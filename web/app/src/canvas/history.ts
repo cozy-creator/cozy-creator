@@ -1,5 +1,5 @@
 import { ApiError, type Client } from "../api/client"
-import type { HistoryEntry } from "../types"
+import type { HistoryEntry } from "../api/calcifer"
 import { signal } from "../ui/signal"
 
 /** What Undo or Redo takes: an entry of the project's history, or an edit of this page's that may not be one yet. */
@@ -74,7 +74,7 @@ export class PageHistory<S> {
     this.reading = true
     this.client.history(id, LISTED).then(
       (history) => {
-        this.redo = history.redo
+        this.redo = history.redo ?? undefined
         for (const entry of history.entries) {
           for (const edit of entry.edits ?? []) {
             const step = this.steps.find((held) => held.edit === edit)

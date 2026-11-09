@@ -5,7 +5,7 @@
 //! on every way out: q, Ctrl-C, a signal, an error, and (ratatui's hook) a panic.
 use std::io::{self, Write as _};
 
-use protocol::error::{Error, Kind};
+use api::error::{Error, Kind};
 use crossterm::{
     cursor::{MoveTo, Show},
     event::{Event as Input, EventStream, KeyCode, KeyEventKind, KeyModifiers},
@@ -392,7 +392,7 @@ pub mod testing {
     use std::path::Path;
 
     use platform::paths::Home;
-    use protocol::{
+    use api::{
         config::{Config, Loaded},
         error::Error,
     };

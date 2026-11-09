@@ -36,7 +36,7 @@ const cozyHere = (args, options) => new Promise((done, fail) => {
 });
 const element = (page, name) => page.locator('.react-flow__node').filter({ has: page.locator(`.nm:text-is("${name}")`) });
 
-/** The folder at `root` held by Calcifer as a tree (`protocol::tree`): each file PUT by its sha256, then the document. Its digest. */
+/** The folder at `root` held by Calcifer as a tree (`api::tree`): each file PUT by its sha256, then the document. Its digest. */
 async function sentTree(base, token, root) {
   const walk = (dir) => readdirSync(join(root, dir), { withFileTypes: true }).flatMap((entry) =>
     entry.isDirectory() ? (entry.name === '__pycache__' ? [] : walk(join(dir, entry.name))) : [join(dir, entry.name)]);

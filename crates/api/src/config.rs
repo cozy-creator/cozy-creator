@@ -118,11 +118,12 @@ pub struct MachineConfig {
     pub mode: Option<MachineMode>,
     /// A shared machine's calls on a GPU that also drives the display pause for it, so the
     /// desktop stays smooth: `[machine.display_pace]` `work_ms` (80) and `pause_ms` (16, 0: never).
-    pub display_pace: Option<executor_protocol::DisplayPace>,
+    pub display_pace: Option<executor_api::DisplayPace>,
 }
 
 /// How a machine shares its computer (`machine.mode`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "lowercase")]
 pub enum MachineMode {
     Shared,

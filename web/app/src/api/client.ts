@@ -1,22 +1,33 @@
 import type {
-  Pickup,
   Account,
   Agreed,
   Approved,
   Asked,
+  AssetDeleted,
+  AssetMade,
+  AssetPatch,
+  AssetPatched,
+  AssetVersions,
   Browsed,
+  BrowserSession,
+  CalciferStatus,
   Canvas,
+  CanvasPatched,
+  Card,
   Code,
   Ended,
-  Fit,
   ErrorBody,
-  Held,
+  Families,
+  Fit,
+  HeldFile,
+  History,
+  HistoryStep,
+  HistoryStepped,
   Import,
   Imported,
   Keepalive,
   Machine,
   MachineList,
-  MachineLogName,
   MachineModels,
   MachinePackages,
   MachineUpdate,
@@ -26,43 +37,38 @@ import type {
   ModelReleased,
   ModelSearch,
   ModelUploading,
-  AssetDeleted,
-  AssetMade,
-  AssetPatched,
+  NewAsset,
   Opened,
   OrgClaim,
   PackageDetail,
   PackageRemovals,
   PackageSearch,
-  ProjectList,
-  ProjectState,
-  AssetVersions,
-  History,
-  HistoryStepped,
-  Renamed,
-  Row,
   Play,
+  ProjectState,
+  Projects,
   Proven,
   Quote,
-  Rent,
-  Rented,
+  Renamed,
   RentalSku,
+  RentalSkus,
+  Rented,
   Run,
   RunList,
   RunQuote,
   RunRequest,
-  Session,
-  SignedOutAnswer,
-  Status,
+  Runs,
+  SignedOut,
   Submitted,
   Target,
   ToolList,
+  ToolListChange,
   ToolUi,
   Tools,
   Unpinned,
   Updating,
   VersionMoved,
-} from "../types"
+} from "./calcifer"
+import type { MachineLogName, Rent } from "../types"
 import type { Transport } from "./transport"
 
 export const TRIES = 5
@@ -224,7 +230,7 @@ export class Client {
 
   // Session
 
-  redeem(code: string): Promise<Session> {
+  redeem(code: string): Promise<BrowserSession> {
     return this.write("POST", "/v1/session", { code })
   }
 
@@ -232,7 +238,7 @@ export class Client {
     await this.send("/v1/session", { method: "DELETE" })
   }
 
-  status(): Promise<Status> {
+  status(): Promise<CalciferStatus> {
     return this.json("/v1/status")
   }
 
@@ -270,7 +276,7 @@ export class Client {
     total: number,
     signal: AbortSignal,
     onAttempt?: (attempt: number) => void,
-  ): Promise<Held | null> {
+  ): Promise<HeldFile | null> {
     const headers: Record<string, string> = { "Content-Type": "application/octet-stream" }
     if (total > 0) headers["Content-Range"] = `bytes ${start}-${start + part.size - 1}/${total}`
     const response = await this.send(`/v1/files/${digest}`, { method: "PUT", headers, body: part, signal }, { onAttempt })
@@ -279,7 +285,7 @@ export class Client {
 
   // Projects
 
-  projects(limit = 200): Promise<ProjectList> {
+  projects(limit = 200): Promise<Projects> {
     return this.json(`/v1/projects?limit=${limit}`)
   }
 
@@ -320,7 +326,7 @@ export class Client {
   }
 
   /** A new version of each of `names`, on these machines. A `pickup` goes with this one render of one box; `outdated`, with `all`, re-runs pins that are. */
-  render(id: string, names: string[], on: string[], key: string, also: { pickup?: Pickup; outdated?: boolean } = {}, once?: AbortSignal): Promise<Asked> {
+  render(id: string, names: string[], on: string[], key: string, also: Pick<Runs, "pickup" | "outdated"> = {}, once?: AbortSignal): Promise<Asked> {
     return this.write("POST", `${project(id)}/runs`, { names, on, ...also }, key, { once })
   }
 
@@ -335,12 +341,12 @@ export class Client {
   }
 
   /** A tool dropped on the canvas. */
-  newAsset(id: string, key: string, body: { tool: string; at?: Row; name?: string; fields?: Record<string, unknown>; kind?: string; moves?: Record<string, Row>; placed?: Record<string, number> }, write: Write = {}): Promise<AssetMade> {
+  newAsset(id: string, key: string, body: NewAsset, write: Write = {}): Promise<AssetMade> {
     return this.write("POST", `${project(id)}/assets`, body, key, write)
   }
 
   /** These inputs set. With `read`, only if its own lines are still what that read. */
-  patchAsset(id: string, name: string, body: { fields?: Record<string, unknown>; tool?: string }, read?: string, write: Write = {}): Promise<AssetPatched> {
+  patchAsset(id: string, name: string, body: AssetPatch, read?: string, write: Write = {}): Promise<AssetPatched> {
     const headers: Record<string, string> = { "Content-Type": "application/json" }
     if (read) headers["If-Match"] = read
     const path = `${project(id)}/assets/${encodeURIComponent(name)}`
@@ -370,12 +376,12 @@ export class Client {
   }
 
   /** An entry taken back: by its id, or the edit this page called it. */
-  undo(id: string, target: { entry?: number; edit?: string; to?: number }, write: Write = {}): Promise<HistoryStepped> {
+  undo(id: string, target: HistoryStep, write: Write = {}): Promise<HistoryStepped> {
     return this.write("POST", `${project(id)}/history/undo`, target, undefined, write)
   }
 
   /** What undo took back, done again. */
-  redo(id: string, target: { entry?: number; edit?: string; to?: number }, write: Write = {}): Promise<HistoryStepped> {
+  redo(id: string, target: HistoryStep, write: Write = {}): Promise<HistoryStepped> {
     return this.write("POST", `${project(id)}/history/redo`, target, undefined, write)
   }
 
@@ -389,7 +395,7 @@ export class Client {
   }
 
   /** A package on your list, or tools off it. Nothing is installed or deleted. */
-  changeToolList(change: { add?: string; remove?: string[] }, once?: AbortSignal): Promise<ToolList> {
+  changeToolList(change: ToolListChange, once?: AbortSignal): Promise<ToolList> {
     return this.write("POST", "/v1/tools/list", change, undefined, { once })
   }
 
@@ -425,7 +431,7 @@ export class Client {
   }
 
   /** Rows set; one in `placed`, this page's own working, only if no other client wrote it after the revision it was worked out from, else answered in `kept` as it is. */
-  moveCards(id: string, cards: Record<string, Row | null>, placed: Record<string, number>, write: Write = {}): Promise<{ seq: number; kept?: Record<string, Row | null> }> {
+  moveCards(id: string, cards: Record<string, Card | null>, placed: Record<string, number>, write: Write = {}): Promise<CanvasPatched> {
     return this.write("PATCH", `${project(id)}/canvas`, { cards, ...(Object.keys(placed).length ? { placed } : {}) }, undefined, write)
   }
 
@@ -583,7 +589,7 @@ export class Client {
   }
 
   /** The families a model's weights can verify as, for its owner to pick from. */
-  families(signal?: AbortSignal): Promise<{ families: string[] }> {
+  families(signal?: AbortSignal): Promise<Families> {
     return this.json("/v1/families", { signal })
   }
 
@@ -656,7 +662,7 @@ export class Client {
     return this.write("PUT", "/v1/account/name", { name })
   }
 
-  signOut(): Promise<SignedOutAnswer> {
+  signOut(): Promise<SignedOut> {
     return this.json("/v1/account", { method: "DELETE" })
   }
 
@@ -667,7 +673,7 @@ export class Client {
   // Rentals: nothing here rents but `rent`, under a key that names one order forever.
 
   async rentalSkus(signal?: AbortSignal): Promise<RentalSku[]> {
-    return (await this.json<{ rental_skus: RentalSku[] }>("/v1/rental-skus", { signal })).rental_skus
+    return (await this.json<RentalSkus>("/v1/rental-skus", { signal })).rental_skus
   }
 
   rentalQuote(order: Rent): Promise<Quote> {

@@ -272,7 +272,7 @@ impl Objects {
         let Some(submission) = &record.submission else {
             return Ok(None);
         };
-        if result.asset_bindings.iter().any(|b| b.media_type == protocol::tree::MEDIA) {
+        if result.asset_bindings.iter().any(|b| b.media_type == api::tree::MEDIA) {
             return Ok(None);
         }
         let bound: Vec<_> = result

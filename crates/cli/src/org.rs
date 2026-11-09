@@ -3,8 +3,8 @@
 //! (CALCIFER-API.md "Orgs").
 use std::process::ExitCode;
 
-use protocol::error::Error;
-use protocol::hub::{At, Org, OrgClaim, OrgEdit};
+use api::error::Error;
+use api::calcifer::hub::{At, Org, OrgClaim, OrgEdit};
 
 use crate::Context;
 use crate::calcifer_client::path;

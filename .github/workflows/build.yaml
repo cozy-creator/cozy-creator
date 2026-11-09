@@ -2,7 +2,8 @@ name: build
 # The PR check (tracker/design/ci-v2.md §1): the workspace compiles, clippy's deny lints pass (warnings are not
 # gates yet: master has 61 in tensorfs), and the routes hold to their API documents: every route hub-client calls is
 # in tensorhub's api/openapi.yaml, and TensorD's router, its client and crates/tensord/api/openapi.yaml name the same
-# routes, and every route web/app calls is one Calcifer serves. It also builds the page, so the checks compile it in.
+# routes, and every route web/app calls is one Calcifer serves; web/app/src/api/calcifer.ts is api's types as ts-rs writes them
+# (scripts/web-types.sh). It also builds the page, so the checks compile it in.
 # Required for merges into master and rc/*: it runs on the merge queue's group (merge_group), on the final
 # PR + branch state; on a pull request it is skipped, which lets the PR be queued. A docs-only entry (its diff from
 # the entry ahead) passes without building; ALLGREEN keeps it from vouching for the entries ahead (e2e.yaml).
@@ -78,6 +79,8 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/master' }}
+      - if: steps.scope.outputs.run == 'true'
+        run: scripts/web-types.sh
       - if: steps.scope.outputs.run == 'true' && steps.scope.outputs.memory_safety == 'true'
         run: scripts/memory-safety.sh
       - if: steps.scope.outputs.run == 'true'

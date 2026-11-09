@@ -2,9 +2,9 @@
 //! signed out), through Calcifer (CALCIFER-API.md "Packages").
 use std::process::ExitCode;
 
-use protocol::{
+use api::{
     error::Error,
-    hub::{PackageDetail, PackageSearch},
+    calcifer::hub::{PackageDetail, PackageSearch},
 };
 
 use super::PackageRef;

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react"
 import { TAB } from "../api/transport"
 import { span } from "../panels/format"
-import type { By } from "../types"
+import type { By } from "../api/calcifer"
 import { Icon } from "../ui/Icon"
 import { useSignal } from "../ui/signal"
 import { useCanvasStore } from "./context"

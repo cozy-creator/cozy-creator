@@ -6,10 +6,10 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 
-use protocol::{
+use api::{
     error::{Error, Kind},
-    project::{Read, Timeline, Track, Warning},
-    tool::EDIT,
+    calcifer::project::{Read, Timeline, Track, Warning},
+    calcifer::tool::EDIT,
 };
 use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
@@ -44,7 +44,7 @@ const TOOL_INPUTS: [&str; 6] = ["tracks", "fps", "aspect_ratio", "resolution", "
 /// Whether `tool` names what Calcifer makes itself: a function of the package `cozy`.
 pub fn made_here(tool: &str) -> bool {
     let tool = tool.trim();
-    let path = protocol::target::written_as_path(tool) || tool.ends_with(".py");
+    let path = api::target::written_as_path(tool) || tool.ends_with(".py");
     !path && tool.split(['@', '/']).find(|part| *part != "_") == Some(COZY)
 }
 
@@ -183,7 +183,7 @@ pub struct Reading {
 
 /// A project.yaml read as one mapping, and its boxes' names in order. What doesn't read is refused with its line.
 fn parsed(text: &str) -> Result<(Value, Vec<String>), Error> {
-    protocol::yaml::to_json_and_keys(text, &["assets"], names_a_file).map_err(|why| {
+    api::yaml::to_json_and_keys(text, &["assets"], names_a_file).map_err(|why| {
         let (line, written) = at_line(text, &why);
         let refused = invalid("project_yaml", format!("{}: {why}{line}", folder::PROJECT));
         match written.trim_start().split_once(':').is_some_and(|(_, value)| value.trim_start().starts_with('[')) {
@@ -1089,7 +1089,7 @@ fn words_in<'a>(value: &'a Value, words: &mut Vec<&'a str>) {
 /// from a checkout to the published package puts nothing out of date.
 pub fn plain_tool(tool: &str, folder: &Folder) -> String {
     let with = tool.trim();
-    if protocol::target::written_as_path(with) || with.ends_with(".py") {
+    if api::target::written_as_path(with) || with.ends_with(".py") {
         let dir_name = |path: &str| {
             let name = path.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().unwrap_or(path).to_owned();
             name.strip_suffix(".py").map(str::to_owned).unwrap_or(name)
@@ -1230,7 +1230,7 @@ pub fn refuse_tag(lock: &Lock, name: &str) -> Result<(), Error> {
 
 /// `name` as a key of a mapping: quoted where YAML in general would read it as something other than this text.
 pub fn yaml_key(name: &str) -> String {
-    match protocol::yaml::to_json(name) {
+    match api::yaml::to_json(name) {
         Ok(Value::String(read)) if read == name && name.parse::<f64>().is_err() => name.to_owned(),
         _ => format!("\"{name}\""),
     }

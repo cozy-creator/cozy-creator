@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use protocol::{
+use api::{
     calcifer::{EtaBasis, Progress},
     machine::{Basis, JobSize},
 };

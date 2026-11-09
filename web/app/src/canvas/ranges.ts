@@ -33,7 +33,7 @@ export function timecode(frame: number, fps: number): string {
 }
 
 /** How many frames a video of `ms` holds. */
-export const framesIn = (ms: number | undefined, fps: number) => Math.max(1, Math.round(((ms ?? 0) / 1000) * fps))
+export const framesIn = (ms: number | null | undefined, fps: number) => Math.max(1, Math.round(((ms ?? 0) / 1000) * fps))
 
 /** `<old>` written as `<now>` wherever the text says it. */
 export const retext = (text: string, old: string, now: string) => text.split(`<${old}>`).join(`<${now}>`)

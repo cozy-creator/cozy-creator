@@ -9,7 +9,7 @@ import { useConnection } from "../app/Connection"
 import { leftWords } from "../panels/format"
 import { fractionOf, packageWords, useInstalling, useWaitsOn } from "../panels/machines/activity"
 import { long, workWords } from "../panels/runs/words"
-import type { Run, Tool } from "../types"
+import type { Run, Tool } from "../api/calcifer"
 import { useCanvasStore, useElement } from "./context"
 import type { ElementView } from "./CanvasStore"
 import { fieldsOf } from "./controls"
@@ -469,17 +469,17 @@ function OnItsWay({ view, name, number }: { view: ElementView; name: string; num
   const read = useElement(store.mentionOf(waits ?? name, "")?.name ?? name)
   const going = useQuery({ ...runsQuery(client, { status: "in_progress" }, 100), enabled: !run })
   const lined = useQuery({ ...runsQuery(client, { status: "queued" }, 100), enabled: !run })
-  if (asset?.rendering !== undefined) return <Progress fraction={asset.rendering} says={`Rendering ${Math.round(asset.rendering * 100)}%`} rendering />
+  if (asset?.rendering != null) return <Progress fraction={asset.rendering} says={`Rendering ${Math.round(asset.rendering * 100)}%`} rendering />
   if (waits && !on) {
     const theirs = read?.asset?.making?.length ? read.run : undefined
     const words = theirs && theirs.status !== "completed" ? workWords(theirs) : ""
-    return <Progress fraction={theirs?.progress?.done_fraction} says={`Waits for <${waits}>${words ? `: ${words}` : ""}`} />
+    return <Progress fraction={theirs?.progress?.done_fraction ?? undefined} says={`Waits for <${waits}>${words ? `: ${words}` : ""}`} />
   }
   const before = on ?? installing
   if (before?.kind === "install") return <Progress phase="install" says={`Installing ${packageWords(before.subject)}…`} />
   if (before?.kind === "download") {
     const fraction = fractionOf(before)
-    const left = before.eta_s === undefined ? "" : `, ${leftWords(before.eta_s)}`
+    const left = before.eta_s == null ? "" : `, ${leftWords(before.eta_s)}`
     return <Progress phase="download" fraction={fraction} says={`Waiting on download… ${fraction === undefined ? "" : `${Math.round(fraction * 100)}%`}${left}`} />
   }
   // A run that ended says no more of how far: it's all there, on its way here.
@@ -494,7 +494,7 @@ function OnItsWay({ view, name, number }: { view: ElementView; name: string; num
     work ||
     (machine && `Getting ${machine} ready`) ||
     ((!run || run.status === "queued") && "Queued")
-  return <Progress veil={making} fraction={run?.progress?.done_fraction} says={says || undefined} />
+  return <Progress veil={making} fraction={run?.progress?.done_fraction ?? undefined} says={says || undefined} />
 }
 
 /** The picture in a box's frame, one take's alone. At rest, as wide as it's drawn, in line with the rest. Open, its small thumbnail at once, the one

@@ -13,7 +13,7 @@ use axum::{
     extract::{Query, State, rejection::BytesRejection},
     http::StatusCode,
 };
-use protocol::{
+use api::{
     calcifer::{Kind as RunKind, MachineEstimate, MachineKind, MachineState, Note, NoteLevel, On, RunEstimate, RunQuote, RunRequest, StagedInput, SubmitRun, Submitted},
     code::LocalCode,
     error::{Error, Kind},
@@ -63,7 +63,7 @@ pub(crate) async fn quote(
             let on = ask.on.clone().unwrap_or_else(|| default_on(&api));
             let hub = hub(&api, &ask.hub);
             let home = api.machines.hubs.home();
-            let origin = protocol::config::Origin::parse(&hub).map_err(Refusal)?;
+            let origin = api::config::Origin::parse(&hub).map_err(Refusal)?;
             let reader = api.machines.hubs.reader(&hub).map_err(Refusal)?;
             let source = crate::local_code::source(home, code, (&reader, &origin)).await.map_err(Refusal)?;
             crate::local_code::install_run(home, &hub, on, &source)
@@ -137,7 +137,7 @@ pub(crate) struct Asked {
     on: Option<String>,
     /// Local code by content: its tree, and where its package is in it.
     #[serde(default)]
-    tree: Option<protocol::ids::Digest>,
+    tree: Option<api::ids::Digest>,
     #[serde(default)]
     at: Option<String>,
 }
@@ -146,7 +146,7 @@ pub(crate) struct Asked {
 pub(crate) async fn describe(
     State(api): State<Arc<Api>>,
     query: Result<Query<Asked>, axum::extract::rejection::QueryRejection>,
-) -> Result<Json<protocol::calcifer::Target>, Refusal> {
+) -> Result<Json<api::calcifer::Target>, Refusal> {
     let Query(asked) = query?;
     let hub = hub(&api, asked.hub.as_deref().unwrap_or_default());
     let on = asked.on.map_or_else(|| default_on(&api), On::from);
@@ -217,13 +217,13 @@ pub async fn request(api: &Arc<Api>, key: &str, ask: RunRequest) -> Result<Submi
 /// The files a submission's call is given, with their hashes: not a folder's manifest or its members, nor local code's own.
 fn given(submit: &SubmitRun) -> Vec<(PathBuf, String)> {
     let staged = |digest: &str| submit.inputs.iter().find(|input| input.digest.to_string() == digest).map(|input| input.path.clone());
-    let files = submit.spec.inputs.iter().filter(|input| input.media_type != protocol::tree::MEDIA);
+    let files = submit.spec.inputs.iter().filter(|input| input.media_type != api::tree::MEDIA);
     files.filter_map(|input| Some((staged(&input.digest)?, input.digest.clone()))).collect()
 }
 
 /// What a run was asked, from the spec it was sent: its payload, the models and LoRAs it chose as `input`'s `models` takes them,
 /// and its seed. None for what no one asked with a payload.
-pub(crate) fn asked(row: &crate::store::RunRow) -> Option<protocol::calcifer::RunAsked> {
+pub(crate) fn asked(row: &crate::store::RunRow) -> Option<api::calcifer::RunAsked> {
     let mut input: serde_json::Map<String, serde_json::Value> = serde_json::from_str(row.spec.payload.as_ref()?.get()).ok()?;
     let seed = input.get("seed").and_then(serde_json::Value::as_i64);
     let reference = |source: &str, repository: &str, manifest: &str, release: &str| match (source, manifest, release) {
@@ -249,7 +249,7 @@ pub(crate) fn asked(row: &crate::store::RunRow) -> Option<protocol::calcifer::Ru
     if !models.is_empty() {
         input.insert("models".into(), models.into());
     }
-    Some(protocol::calcifer::RunAsked { target: row.target.clone(), input, seed })
+    Some(api::calcifer::RunAsked { target: row.target.clone(), input, seed })
 }
 
 /// The ask's identity: what it asks, whatever price it was quoted since.
@@ -262,11 +262,11 @@ enum Prepared {
     /// The submission, what binding it said, and its machines' offers where they were asked, for each copy quoted.
     Run { submit: SubmitRun, notes: Vec<Note>, offers: Vec<Vec<crate::placement::Offer>> },
     /// Local code's install, still running.
-    Install(protocol::calcifer::Run),
+    Install(api::calcifer::Run),
 }
 
 /// What a client following `run` before its ask goes again is told, when it is its machine's update to this cozy's minor.
-fn updating(run: &protocol::calcifer::Run) -> Option<Note> {
+fn updating(run: &api::calcifer::Run) -> Option<Note> {
     let machine = run.machine.as_deref().filter(|_| run.kind == RunKind::Update)?;
     Some(Note { level: NoteLevel::Warning, message: format!("{machine} runs another minor than this cozy: updating it to {} first", crate::update::this_release()) })
 }
@@ -303,7 +303,7 @@ async fn prepare(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: For) -> R
     // Local code installs as it resolves. A package answers for itself first: one named without a
     // function lists its functions on an OS that runs no models here.
     if ask.code.is_some() {
-        protocol::calcifer::local_usable(&on.to_string())?;
+        api::calcifer::local_usable(&on.to_string())?;
         // Refused before that install, not after it.
         project_of(api, ask)?;
     }
@@ -353,7 +353,7 @@ async fn prepare(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: For) -> R
         return Err(recipes(package, code.interface));
     }
     if set.len() == 1 {
-        protocol::calcifer::local_usable(&on.to_string())?;
+        api::calcifer::local_usable(&on.to_string())?;
     }
     let (gpu, needs_gpu) = (code.interface.gpu(callable), code.interface.needs_gpu(callable));
     let named = format!("{package}/{}", callable.name);
@@ -389,7 +389,7 @@ async fn prepare(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: For) -> R
     if let Resolved::Release { .. } = &resolved {
         submit.on = on.clone();
     }
-    protocol::calcifer::local_usable(&submit.on.to_string())?;
+    api::calcifer::local_usable(&submit.on.to_string())?;
     if let Some(warning) = gpuless(api, &submit.on, gpu, &named).await.filter(|_| ask.warm.is_none()) {
         notes.push(Note { level: NoteLevel::Warning, message: warning });
     }
@@ -450,7 +450,7 @@ fn project_of(api: &Api, ask: &RunRequest) -> Result<Option<PathBuf>, Error> {
         None => None,
     };
     if project.is_none() && ask.warm.is_none() && !ask.recipes {
-        return Err(protocol::project::unnamed());
+        return Err(api::calcifer::project::unnamed());
     }
     Ok(project)
 }
@@ -466,10 +466,10 @@ async fn call(
     hub: &str,
 ) -> Result<(SubmitRun, Vec<Note>), Error> {
     if let Some(gpus) = ask.gpus {
-        protocol::calcifer::gpu_count(&gpus.to_string()).map_err(|why| Error::new(Kind::Usage, "gpus_invalid", why))?;
+        api::calcifer::gpu_count(&gpus.to_string()).map_err(|why| Error::new(Kind::Usage, "gpus_invalid", why))?;
     }
     if let Some(pin) = &ask.attention_kernel {
-        protocol::calcifer::attention_pin(pin).map_err(|why| Error::new(Kind::Usage, "attention_kernel_invalid", why))?;
+        api::calcifer::attention_pin(pin).map_err(|why| Error::new(Kind::Usage, "attention_kernel_invalid", why))?;
     }
     let home = api.machines.hubs.home().root().to_path_buf();
     let mut notes = vec![];
@@ -489,7 +489,7 @@ async fn call(
         project: project.clone().map(|dir| crate::project::Holding::new(api.calcifer.clone(), dir)),
     };
     for term in &terms.fidelities {
-        protocol::calcifer::fidelity(term).map_err(|why| Error::new(Kind::Usage, "file_fidelity_invalid", why))?;
+        api::calcifer::fidelity(term).map_err(|why| Error::new(Kind::Usage, "file_fidelity_invalid", why))?;
     }
     let call = spec::Call {
         package: code.package,
@@ -588,7 +588,7 @@ pub(crate) fn recipes(package: &str, interface: &Interface) -> Error {
     let mut error = Error::new(
         Kind::Usage,
         "callable_recipe",
-        format!("{package}/{} runs its recipes", protocol::interface::RECIPES),
+        format!("{package}/{} runs its recipes", api::interface::RECIPES),
     )
     .remedy(format!("its recipes: {}", flags.join(", ")));
     for flag in flags.iter().take(2) {

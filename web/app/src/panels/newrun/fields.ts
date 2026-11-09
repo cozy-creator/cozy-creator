@@ -1,4 +1,4 @@
-import type { FieldType, RequestField } from "../../types"
+import type { RequestFieldType, RequestField } from "../../types"
 
 export type Widget =
   | { kind: "text" }
@@ -11,7 +11,7 @@ export type Widget =
   | { kind: "json" }
 
 /** Which control a field gets. An optional field is its type or null; anything richer is JSON, since the same reader takes it. */
-export function widgetOf(type: FieldType): Widget {
+export function widgetOf(type: RequestFieldType): Widget {
   if (typeof type === "string") {
     if (type === "str") return { kind: "text" }
     if (type === "int" || type === "float") return { kind: "number", integer: type === "int" }

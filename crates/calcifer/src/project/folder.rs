@@ -13,10 +13,10 @@ use std::{
 
 use infer::MatcherType;
 use platform::{durable, paths::Home};
-use protocol::{
+use api::{
     calcifer::On,
     error::{Error, Kind},
-    project::Unheld,
+    calcifer::project::Unheld,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -251,10 +251,10 @@ pub struct Version {
     pub tool: Option<String>,
     /// The take it picked up from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pickup: Option<protocol::project::Pickup>,
+    pub pickup: Option<api::calcifer::project::Pickup>,
     /// An Edit's: the clips that made it, each with its file, and their rate.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub clips: Vec<protocol::project::Clip>,
+    pub clips: Vec<api::calcifer::project::Clip>,
     #[serde(default, skip_serializing_if = "is_zero_f")]
     pub fps: f64,
     /// A cut's: the pieces it was cut without.
@@ -537,7 +537,7 @@ impl Bound {
 struct KeptBoard {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     bound: Option<Bound>,
-    board: protocol::project::Board,
+    board: api::calcifer::project::Board,
 }
 
 /// This Calcifer's id, the same across its restarts, once it has said it.
@@ -644,7 +644,7 @@ pub struct Take {
     pub new: bool,
     /// Pick up from here: the take its new part goes on from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pickup: Option<protocol::project::Pickup>,
+    pub pickup: Option<api::calcifer::project::Pickup>,
 }
 
 impl Lock {
@@ -732,7 +732,7 @@ impl Lock {
         if let Some(files) = value["files"].as_object_mut() {
             files.retain(|sha256, _| self.files.get(sha256).is_some_and(|file| Self::keeps_row(sha256, file, &recorded)));
         }
-        protocol::yaml::from_json(&value)
+        api::yaml::from_json(&value)
     }
 
     /// Whether a file has a row: for what can't be read again from a file here (where it stays, its parts), or the whole hash of one no
@@ -1030,14 +1030,14 @@ impl Folder {
 
     /// The board the last render here ended on, as project.db keeps it. A copy's (its original's render) or another Calcifer's is none:
     /// its runs aren't this project's, as what its walk owed isn't (`unbind_elsewhere`).
-    pub fn last_board(&self) -> Option<protocol::project::Board> {
+    pub fn last_board(&self) -> Option<api::calcifer::project::Board> {
         let kept: KeptBoard = self.reading_db(|conn| db::meta(conn, BOARD)).ok().flatten().and_then(|kept| serde_json::from_str(&kept).ok())?;
         let theirs = kept.bound.as_ref().zip(self.bound()).is_some_and(|(bound, here)| bound.elsewhere(&here));
         (!theirs).then_some(kept.board)
     }
 
     /// Keeps the board a render ended on, for a read after this project has closed and opened again.
-    pub fn keep_board(&self, board: &protocol::project::Board) -> Result<(), Error> {
+    pub fn keep_board(&self, board: &api::calcifer::project::Board) -> Result<(), Error> {
         let kept = KeptBoard { bound: self.bound(), board: board.clone() };
         self.write_past(|conn| db::set_meta(conn, &self.db(), BOARD, Some(&serde_json::to_string(&kept).expect("a board serializes"))))
     }
@@ -1876,7 +1876,7 @@ impl Folder {
 /// `text` as a `project.lock` of format 3, for the first open's import. A lock of another isn't read.
 pub(super) fn parse_lock(text: &str) -> Result<Lock, Error> {
     let unreadable = |why: String| Error::new(Kind::Validation, "lock_unreadable", format!("{LOCK}: {why}"));
-    let value = protocol::yaml::to_json(text).map_err(unreadable)?;
+    let value = api::yaml::to_json(text).map_err(unreadable)?;
     match value["format"].as_u64() {
         Some(format) if format == u64::from(FORMAT) => serde_json::from_value(value).map_err(|e| unreadable(e.to_string())),
         Some(format) => Err(old_lock(&format.to_string())),

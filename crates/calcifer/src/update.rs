@@ -14,7 +14,7 @@ use axum::{
     extract::{Path as UrlPath, State},
     http::StatusCode,
 };
-use protocol::{
+use api::{
     calcifer::{self as wire, Component, DevBuild, Machine, MachineKind, MachineStatus, MachineUpdate, On, Run, StagedInput, Status, SubmitRun, Updating},
     error::{Error, Kind},
     ids::Digest,
@@ -420,7 +420,7 @@ async fn prerelease(distribution: &str, version: &str, platform: &str) -> Result
     if pypi.status().is_success() {
         return Ok(None);
     }
-    let base = protocol::prerelease::base(distribution, version);
+    let base = api::prerelease::base(distribution, version);
     let sums = http.get(format!("{base}/SHA256SUMS")).send().await.map_err(failed)?;
     if !sums.status().is_success() {
         return Err(Error::new(
@@ -431,7 +431,7 @@ async fn prerelease(distribution: &str, version: &str, platform: &str) -> Result
         .remedy("with no version named, `cozy machine update <machine>` moves it to its Hub's target"));
     }
     let sums = sums.text().await.map_err(failed)?;
-    let (file, sha256) = protocol::prerelease::wheel(&sums, distribution, version, platform).ok_or_else(|| {
+    let (file, sha256) = api::prerelease::wheel(&sums, distribution, version, platform).ok_or_else(|| {
         Error::new(Kind::NotFound, "release_wheel_absent", format!("{project} {version}'s prerelease holds no wheel for {platform}"))
     })?;
     Ok(Some((format!("{base}/{file}"), sha256.to_owned())))

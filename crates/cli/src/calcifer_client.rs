@@ -19,7 +19,7 @@ use platform::{
     service::{ServiceSpec, Services},
     tools,
 };
-use protocol::{
+use api::{
     calcifer::{Down, Event, Holder, LogEvent, MachineList, REFUSED, Run, RunList, StreamEvent},
     error::{Envelope, Error, Kind},
     ids::Digest,
@@ -623,7 +623,7 @@ impl Client {
             std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).collect();
         if !managed
             && cfg!(target_os = "linux")
-            && !protocol::config::image_machine()
+            && !api::config::image_machine()
             && tools::on_path("systemctl", &path).is_none()
             && let Some(warning) = tools::warn_once("systemctl")
         {

@@ -3,9 +3,9 @@
 //! package code never runs, and the authored files never change but `uv.lock`, which the CLI writes.
 use std::process::ExitCode;
 
-use protocol::{
+use api::{
     error::{Error, Kind},
-    hub::{At, Authoring, AuthoringEvent, LockAsk, PackageDeleted, PackageUnyanked, PackageYanked, PublishAsk, WorkState},
+    calcifer::hub::{At, Authoring, AuthoringEvent, LockAsk, PackageDeleted, PackageUnyanked, PackageYanked, PublishAsk, WorkState},
 };
 use serde::Serialize;
 
@@ -42,7 +42,7 @@ async fn authored(ctx: &Context, route: &str, ask: &impl Serialize) -> Result<Au
 }
 
 /// The package folder `path` names (else this one), sent by content.
-async fn sent(ctx: &Context, path: Option<std::path::PathBuf>) -> Result<(std::path::PathBuf, protocol::code::LocalCode), Error> {
+async fn sent(ctx: &Context, path: Option<std::path::PathBuf>) -> Result<(std::path::PathBuf, api::code::LocalCode), Error> {
     let dir = match path {
         Some(path) => here()?.join(path),
         None => here()?,

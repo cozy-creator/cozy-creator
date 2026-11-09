@@ -18,9 +18,9 @@ use axum::{
     response::sse::{self, KeepAlive, Sse},
 };
 use futures_util::Stream;
-use protocol::{
+use api::{
     error::Error,
-    hub::{Authoring, AuthoringEvent, LockAsk, PublishAsk, WorkState},
+    calcifer::hub::{Authoring, AuthoringEvent, LockAsk, PublishAsk, WorkState},
 };
 use serde::{Deserialize, Serialize};
 

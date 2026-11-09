@@ -1301,7 +1301,7 @@ echo "unheld: run $n output ${digest:-none}; reclaim --yes left ${left#"$U"/} sh
 rm -rf "$U"
 }
 
-# by_content <script>: a one-file package as `protocol::code` sends it, the script and then its tree's document, each PUT by its
+# by_content <script>: a one-file package as `api::code` sends it, the script and then its tree's document, each PUT by its
 # digest; the tree's digest on stdout.
 by_content() {
   local hex doc tree
@@ -1313,7 +1313,7 @@ by_content() {
   echo "sha256:$tree"
 }
 
-# What a page sends, or any client on another computer: a project by its id, local code by content (its tree, as `protocol::code`
+# What a page sends, or any client on another computer: a project by its id, local code by content (its tree, as `api::code`
 # makes it), a payload as text, a file by its hash, and no path. A file given to a run joins its project, so the run can be asked
 # again once what held it is gone.
 path_free() {

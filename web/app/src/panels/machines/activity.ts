@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query"
 import { machinesQuery } from "../../api/queries"
 import { useConnection } from "../../app/Connection"
-import type { Machine, Operation, Run } from "../../types"
+import type { Machine, Operation, Run } from "../../api/calcifer"
 import { bytes, leftWords } from "../format"
 import { target } from "../runs/words"
 
@@ -42,7 +42,7 @@ export function doingOf(machine: Machine, runs: Run[]): Doing[] {
   const booting: Doing[] = machine.state === "booting" ? [{ kind: "boot", key: "boot", words: machine.boot ?? "booting" }] : []
   const operations: Doing[] = [...activity]
     .sort((a, b) => Number(a.kind === "download") - Number(b.kind === "download"))
-    .map((operation) => ({ kind: operation.kind, key: operation.id, operation }))
+    .map((operation) => ({ kind: operation.kind as "install" | "download", key: operation.id, operation }))
   const mine: Doing[] = runs
     .filter((run) => run.machine === machine.name)
     .map((run) => ({ kind: "run", key: `run ${run.number}`, run, on: waitsOnOf(activity, run.number) }))
@@ -57,7 +57,7 @@ export const runName = (run: Run, boxes: Map<number, string>) => boxes.get(run.n
 export function fetchedWords(operation: Operation): string {
   const parts = [operation.bytes_total ? `${bytes(operation.bytes_done)} / ${bytes(operation.bytes_total)}` : bytes(operation.bytes_done)]
   if (operation.bytes_per_s) parts.push(`${bytes(operation.bytes_per_s)}/s`)
-  if (operation.eta_s !== undefined) parts.push(leftWords(operation.eta_s))
+  if (operation.eta_s != null) parts.push(leftWords(operation.eta_s))
   if (operation.bytes_here) parts.push(`${bytes(operation.bytes_here)} already here`)
   return parts.join(" · ")
 }

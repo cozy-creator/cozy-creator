@@ -16,13 +16,13 @@ use axum::{
     extract::{Path, State, rejection::BytesRejection},
 };
 use hub_client::types::RentalPlacementRequest;
-use protocol::{
+use api::{
     calcifer::{On, ReleaseFrom},
     error::{Error, Kind},
     interface::{Interface, Slot},
     model_ref::ModelRef,
-    project::{Fit, FitAsk, RentFor, ToolFit},
-    tool,
+    calcifer::project::{Fit, FitAsk, RentFor, ToolFit},
+    calcifer::tool,
 };
 use serde_json::{Map, Value};
 
@@ -155,7 +155,7 @@ fn rendered(doc: &Doc, stand: &[super::Standing], asked: &FitAsk) -> Vec<usize> 
 /// This computer's GPUs as its machine last said: each one's name and the memory it may use. None: it hasn't said.
 fn gpus(api: &Api) -> Option<Vec<(String, u64)>> {
     let frame = api.machines.frame("local")?;
-    let usable = |gpu: &protocol::machine::Gpu| match gpu.memory_limit_bytes {
+    let usable = |gpu: &api::machine::Gpu| match gpu.memory_limit_bytes {
         0 => gpu.memory_bytes,
         limit => limit.min(gpu.memory_bytes),
     };
@@ -376,7 +376,7 @@ async fn checkpoint(api: &Api, hub: &str, written: &str, lane: Option<&str>) -> 
 
 /// The checkpoints `function` of `package` loads, each by its Hub card's lane commit and bytes: what a machine's estimate counts the
 /// fetch of (cl-816). What the Hub doesn't say in time is left out.
-pub(super) async fn checkpoints(api: &Api, hub: &str, package: &super::Package, function: &str, made: &Map<String, Value>) -> Vec<protocol::machine::ModelRef> {
+pub(super) async fn checkpoints(api: &Api, hub: &str, package: &super::Package, function: &str, made: &Map<String, Value>) -> Vec<api::machine::ModelRef> {
     let Some(weights) = Weights::of(package.document(), function, made) else { return vec![] };
     let placed = match package.local {
         None => placed(api, hub, &package.name, &package.release, function).await,
@@ -389,7 +389,7 @@ pub(super) async fn checkpoints(api: &Api, hub: &str, package: &super::Package, 
         let placed = placed.as_ref().and_then(|placed| placed.slots.iter().find(|(held, ..)| held == param));
         let lane = placed.map(|(_, lane, _)| lane.clone()).or_else(|| slot.lane.clone());
         if let Some((commit, bytes)) = checkpoint(api, hub, written, lane.as_deref()).await {
-            found.push(protocol::machine::ModelRef { commit, bytes });
+            found.push(api::machine::ModelRef { commit, bytes });
         }
     }
     found

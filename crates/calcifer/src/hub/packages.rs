@@ -11,11 +11,11 @@ use axum::{
     },
     http::StatusCode,
 };
-use protocol::{
+use api::{
     calcifer::{Environment, Kind as RunKind, On, SubmitRun},
     config::Origin,
     error::{Error, Kind},
-    hub::{
+    calcifer::hub::{
         At, FoundPackage, PackageDeleted, PackageDetail, PackageInstall, PackageRelease, PackageRemoval, PackageRemovals,
         PackageSearch, PackageUnyanked, PackageYanked,
     },
@@ -214,7 +214,7 @@ impl Ask for PackageInstall {
             submit.agreed = self.agreed;
             return Ok(Prepared { submit, after: Some(After::Keep(source.filed())) });
         }
-        if protocol::target::written_as_path(&self.package) {
+        if api::target::written_as_path(&self.package) {
             return Err(Refusal(crate::runs::target::by_path(&self.package)));
         }
         let package = self.package.trim().to_ascii_lowercase();
@@ -242,7 +242,7 @@ impl Ask for PackageInstall {
 }
 
 /// The run that installs `release` of `package` on a machine: a warm one naming no function.
-fn release_install(hub: &str, on: On, package: &str, release: &str, agreed: Option<protocol::calcifer::Agreed>) -> SubmitRun {
+fn release_install(hub: &str, on: On, package: &str, release: &str, agreed: Option<api::calcifer::Agreed>) -> SubmitRun {
     SubmitRun {
         agreed,
         stays: vec![],

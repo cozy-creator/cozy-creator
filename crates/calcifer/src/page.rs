@@ -9,7 +9,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
-use protocol::error::{Error, Kind};
+use api::error::{Error, Kind};
 
 use crate::{
     api::{Api, Refusal, refuse},

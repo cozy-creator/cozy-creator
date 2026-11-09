@@ -86,6 +86,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "api"
+version = "0.22.0"
+dependencies = [
+ "base64",
+ "ed25519-dalek",
+ "executor-api",
+ "hex",
+ "idna_adapter",
+ "platform",
+ "saphyr",
+ "saphyr-parser",
+ "serde",
+ "serde_ignored",
+ "serde_json",
+ "serde_path_to_error",
+ "sha2",
+ "tempfile",
+ "tensorfs",
+ "thiserror 2.0.21",
+ "toml",
+ "ts-rs",
+ "url",
+]
+
+[[package]]
 name = "approx"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -329,8 +354,10 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 name = "calcifer"
 version = "0.22.0"
 dependencies = [
+ "api",
  "axum",
  "base64",
+ "bytes",
  "ed25519-dalek",
  "futures-util",
  "getrandom 0.3.4",
@@ -339,9 +366,9 @@ dependencies = [
  "infer",
  "jiff",
  "platform",
- "protocol",
  "reqwest",
  "rusqlite",
+ "rustls",
  "serde",
  "serde_ignored",
  "serde_json",
@@ -352,6 +379,7 @@ dependencies = [
  "tensorfs",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-rustls",
  "tokio-util",
  "toml",
  "toml_edit",
@@ -485,9 +513,9 @@ version = "0.22.0"
 dependencies = [
  "anstream",
  "anstyle",
+ "api",
  "base64",
  "bytes",
- "calcifer",
  "clap",
  "clap_complete",
  "comfy-table",
@@ -497,7 +525,6 @@ dependencies = [
  "hex",
  "jiff",
  "platform",
- "protocol",
  "ratatui",
  "reqwest",
  "rustix",
@@ -1113,7 +1140,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "executor-protocol"
+name = "executor-api"
 version = "0.22.0"
 dependencies = [
  "base64",
@@ -1594,13 +1621,13 @@ checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 name = "hub-client"
 version = "0.22.0"
 dependencies = [
+ "api",
  "aws-lc-rs",
  "base64",
  "ed25519-dalek",
  "httpdate",
  "percent-encoding",
  "platform",
- "protocol",
  "reqwest",
  "serde",
  "serde_json",
@@ -2525,36 +2552,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
  "unicode-ident",
-]
-
-[[package]]
-name = "protocol"
-version = "0.22.0"
-dependencies = [
- "base64",
- "bytes",
- "ed25519-dalek",
- "executor-protocol",
- "futures-util",
- "hex",
- "idna_adapter",
- "platform",
- "reqwest",
- "rustls",
- "saphyr",
- "saphyr-parser",
- "serde",
- "serde_ignored",
- "serde_json",
- "serde_path_to_error",
- "sha2",
- "tempfile",
- "tensorfs",
- "thiserror 2.0.21",
- "tokio",
- "tokio-rustls",
- "toml",
- "url",
 ]
 
 [[package]]
@@ -3768,13 +3765,14 @@ dependencies = [
 name = "tensord"
 version = "0.22.0"
 dependencies = [
+ "api",
  "aws-lc-rs",
  "axum",
  "base64",
  "bytes",
  "clap",
  "ed25519-dalek",
- "executor-protocol",
+ "executor-api",
  "futures-util",
  "getrandom 0.3.4",
  "http-body-util",
@@ -3785,7 +3783,6 @@ dependencies = [
  "libc",
  "pep440_rs",
  "platform",
- "protocol",
  "rcgen",
  "reqwest",
  "rusqlite",
@@ -3847,7 +3844,7 @@ dependencies = [
 name = "tensorfs-py"
 version = "0.22.0"
 dependencies = [
- "executor-protocol",
+ "executor-api",
  "libc",
  "platform",
  "pyo3",
@@ -3858,6 +3855,15 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "varena",
+]
+
+[[package]]
+name = "termcolor"
+version = "1.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "06794f8f6c5c898b3275aebefa6b8a1cb24cd2c6c79397ab15774837a0bc5755"
+dependencies = [
+ "winapi-util",
 ]
 
 [[package]]
@@ -4152,6 +4158,29 @@ name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
+
+[[package]]
+name = "ts-rs"
+version = "12.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "756050066659291d47a554a9f558125db17428b073c5ffce1daf5dcb0f7231d8"
+dependencies = [
+ "serde_json",
+ "thiserror 2.0.21",
+ "ts-rs-macros",
+]
+
+[[package]]
+name = "ts-rs-macros"
+version = "12.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38d90eea51bc7988ef9e674bf80a85ba6804739e535e9cab48e4bb34a8b652aa"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+ "termcolor",
+]
 
 [[package]]
 name = "typed-path"

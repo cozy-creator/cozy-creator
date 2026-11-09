@@ -1,7 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query"
 import type { Client } from "../../api/client"
 import { useConnection } from "../../app/Connection"
-import type { Machine, MachineList } from "../../types"
+import type { Machine, MachineList } from "../../api/calcifer"
 import { Copyable } from "../../ui/Copyable"
 import { say } from "../../ui/notes"
 import { Confirm, Failure, useAsk } from "../common"

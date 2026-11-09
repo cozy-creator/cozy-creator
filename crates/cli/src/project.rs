@@ -6,11 +6,11 @@ pub(crate) mod render;
 
 use std::{path::PathBuf, process::ExitCode};
 
-use protocol::{
+use api::{
     calcifer::{MachineList, On, local_usable},
     error::{Error, Kind},
-    hub::At,
-    project::{
+    calcifer::hub::At,
+    calcifer::project::{
         Approve, Approved, Asked, By, Cancel, Cancelled, Event, Fit, FitAsk, History, HistoryStep, HistoryStepped, Import, Imported, NewVersion, Open, Opened, Pickup, Projects, Reclaim,
         Reclaimed, Rename, Renamed, Runs, Standing, State, Transferred, Unpin, Unpinned, VersionMoved,
     },
@@ -266,7 +266,7 @@ struct Render {
 pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     match args.verb {
         Verb::New { project } => {
-            let ask = match protocol::target::written_as_path(&project) {
+            let ask = match api::target::written_as_path(&project) {
                 true => Open { path: Some(PathBuf::from(&project)), starter: true, ..Open::default() },
                 false => Open { name: Some(project), starter: true, ..Open::default() },
             };
@@ -544,7 +544,7 @@ async fn import(ctx: &Context, at: Option<&String>, args: ImportFile) -> Result<
     let (source, name) = match args.source.contains("://") || by_hash {
         true => (args.source, args.name),
         false => {
-            let file = protocol::target::spelled(&args.source, &cwd, &ctx.user_home);
+            let file = api::target::spelled(&args.source, &cwd, &ctx.user_home);
             let stem = file.file_stem().map(|stem| stem.to_string_lossy().to_lowercase());
             let digest = crate::send::Sender::new(ctx).await?.file(&file).await.map_err(|e| Error { code: "import_unreadable".into(), ..e })?;
             (digest.to_string(), args.name.or(stem))
@@ -793,7 +793,7 @@ fn shown(ctx: &Context, state: &State) {
 
 /// `4 assets: 1 approved, 1 current, 1 out of date, 1 missing`, leaving out what none are.
 pub(crate) fn totals(state: &State) -> String {
-    let standing = |asset: &protocol::project::Asset| match asset.standing {
+    let standing = |asset: &api::calcifer::project::Asset| match asset.standing {
         Standing::Making => "rendering",
         Standing::Missing => "missing",
         Standing::OutOfDate => "out of date",
@@ -851,7 +851,7 @@ fn full_summary(ctx: &Context, state: &State) {
         println!("{line}");
     }
     for asset in state.assets.iter().filter(|asset| !asset.prefixes.is_empty()) {
-        let from = |made: &protocol::project::VersionPrefix| match made.from.as_slice() {
+        let from = |made: &api::calcifer::project::VersionPrefix| match made.from.as_slice() {
             [] => String::new(),
             pieces => format!(" (from {})", pieces.join(", ")),
         };
@@ -916,13 +916,13 @@ fn retimes(retimed: &[String], fps: f64) -> String {
 
 /// The project `at` names, else COZY_PROJECT's, as Calcifer opens it.
 pub(crate) async fn open(ctx: &Context, at: Option<&String>) -> Result<Opened, Error> {
-    let project = chosen(at).ok_or_else(protocol::project::unnamed)?;
+    let project = chosen(at).ok_or_else(api::calcifer::project::unnamed)?;
     let opened: Opened = ctx.calcifer().await?.post("/v1/projects", &Open { project: Some(project), ..Open::default() }, None).await?;
     opened.said.iter().for_each(|said| output::warn(said));
     Ok(opened)
 }
 
-/// The project a verb works in, as it's named (`protocol::project::NAMED_BY`): `-p`, else `COZY_PROJECT`. Never the folder this
+/// The project a verb works in, as it's named (`api::calcifer::project::NAMED_BY`): `-p`, else `COZY_PROJECT`. Never the folder this
 /// is run in: Calcifer may be on another computer.
 pub(crate) fn chosen(at: Option<&String>) -> Option<String> {
     let named = at.cloned().or_else(|| std::env::var("COZY_PROJECT").ok());

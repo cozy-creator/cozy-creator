@@ -13,11 +13,11 @@ use axum::{
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use hub_client::types::ModelCard;
-use protocol::{
+use api::{
     calcifer::{Run, RunQuote, RunRequest, Submitted},
     config::Origin,
     error::{Error, Kind},
-    hub::ModelQuantize,
+    calcifer::hub::ModelQuantize,
     interface::{Interface, RECIPES, Recipe},
     model_ref::{self as refs, ModelRef, Repo},
     target::Published,
@@ -95,7 +95,7 @@ async fn plan(api: &Arc<Api>, key: &str, ask: ModelQuantize) -> Result<Planned, 
     let model = ModelRef::parse(&ask.model).map_err(Refusal)?;
     let (target, code) = match &ask.code {
         Some(code) => (RECIPES.to_owned(), Some(code.clone())),
-        None if protocol::target::written_as_path(&ask.package) => return Err(Refusal(crate::runs::target::by_path(&ask.package))),
+        None if api::target::written_as_path(&ask.package) => return Err(Refusal(crate::runs::target::by_path(&ask.package))),
         None => (published(&ask.package)?, None),
     };
     let (package, interface, release) = match resolve(api, &hub, &target, code.as_ref(), &ask.on, false, true, key, ask.agreed).await.map_err(Refusal)? {

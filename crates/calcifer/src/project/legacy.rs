@@ -3,7 +3,7 @@
 //! format 2 or 3 file is upgraded to 4 first (`upgrade::on_touch`), as before.
 use std::{collections::BTreeMap, path::Path};
 
-use protocol::error::{Error, Kind};
+use api::error::{Error, Kind};
 use tracing::{info, warn};
 
 use super::{
@@ -127,7 +127,7 @@ pub(super) fn files_of(folder: &Folder) -> Result<(String, Lock), Error> {
 pub(super) fn canvas_renamed(dir: &Path, renamed: &dyn Fn(&str) -> Option<String>) -> Result<(), Error> {
     let at = dir.join(CANVAS);
     let Ok(text) = std::fs::read_to_string(&at) else { return Ok(()) };
-    let rows: BTreeMap<String, protocol::project::Card> = canvas::legacy_rows(&text).into_iter().map(|(name, card)| (renamed(&name).unwrap_or(name), card)).collect();
+    let rows: BTreeMap<String, api::calcifer::project::Card> = canvas::legacy_rows(&text).into_iter().map(|(name, card)| (renamed(&name).unwrap_or(name), card)).collect();
     let mut out = "version: 1\ncards:\n".to_owned();
     for (name, card) in rows {
         let width = card.w.map_or(String::new(), |w| format!(", w: {w}"));

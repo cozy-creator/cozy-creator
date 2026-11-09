@@ -1226,7 +1226,7 @@ impl Publisher {
                 "declared model slot absent".to_string(),
             ))?;
         // The GPUs the call runs on (none for `accelerator=False`): what its models resolve for.
-        let entry = protocol::interface::entrypoint(&interface, &request.entrypoint).cloned().unwrap_or_default();
+        let entry = api::interface::entrypoint(&interface, &request.entrypoint).cloned().unwrap_or_default();
         let degree = gpu.degree(&entry, request.gpus);
         let hardware = gpu.hardware(degree);
         let main = main_model(&slots);
@@ -1834,7 +1834,7 @@ pub(crate) fn default_choice(slot: &Value, path: &str) -> Option<domain::ModelCh
     };
     let repository = match model.contains('/') {
         true => model.into(),
-        false => format!("{}/{model}", protocol::names::ROOT),
+        false => format!("{}/{model}", api::names::ROOT),
     };
     let lane = slot.get("lane").and_then(Value::as_str).unwrap_or_default().into();
     Some(domain::ModelChoice { parameter: path.into(), repository, release: release.into(), lane, ..Default::default() })
@@ -1860,8 +1860,8 @@ pub(crate) fn choice_absent(path: &str, package: &str) -> Failure {
 }
 
 fn model_slots(interface: &Value, entrypoint: &str) -> Option<Vec<Value>> {
-    let entry = protocol::interface::entrypoint(interface, entrypoint)?;
-    entry["models"].is_array().then(|| protocol::interface::models(entry).to_vec())
+    let entry = api::interface::entrypoint(interface, entrypoint)?;
+    entry["models"].is_array().then(|| api::interface::models(entry).to_vec())
 }
 
 fn declares_models(installation: &Installation, entrypoint: &str) -> bool {

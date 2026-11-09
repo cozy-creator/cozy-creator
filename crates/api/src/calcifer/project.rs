@@ -14,6 +14,7 @@ use crate::{calcifer::On, error::Error};
 /// `path` (absolute, on Calcifer's computer), with the starter film when `starter`. A project is its id, kept in its
 /// `project.db`: the folder is only where it lives.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Open {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
@@ -26,6 +27,7 @@ pub struct Open {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Opened {
     pub id: String,
     /// Where it lives on Calcifer's computer.
@@ -53,6 +55,7 @@ pub fn unnamed() -> Error {
 
 /// Where a card sits on a project's canvas: one row of `project.canvas.yaml`.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Card {
     pub x: f64,
     pub y: f64,
@@ -62,6 +65,7 @@ pub struct Card {
 
 /// `POST /v1/projects/{id}/runs`: what the ask found. `/events` opens with the runs already going.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Asked {
     pub id: String,
     /// This render, which the `ended` that names it ends. None when it joined one going and added nothing: that one's end is its own.
@@ -89,6 +93,7 @@ pub struct Asked {
 
 /// One thing an ask queued, and the names ahead of it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct QueuedNow {
     pub name: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -97,6 +102,7 @@ pub struct QueuedNow {
 
 /// One thing a project has to do: running, with its run's number once it has one, else queued.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Queued {
     pub name: String,
     #[serde(default)]
@@ -122,6 +128,7 @@ pub struct Cancelled {
 
 /// `GET /v1/projects`: the projects this computer's Calcifer has opened, last used first.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Projects {
     pub projects: Vec<Known>,
     /// How many more are older than this page.
@@ -131,6 +138,7 @@ pub struct Projects {
 
 /// One project in the index.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "KnownProject"))]
 pub struct Known {
     pub id: String,
     /// Its name: what `-p` takes.
@@ -147,6 +155,7 @@ pub struct Known {
 
 /// `GET /v1/projects/{id}`: its assets in order, and what reading the project said.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "ProjectState"))]
 pub struct State {
     pub id: String,
     pub path: PathBuf,
@@ -191,6 +200,7 @@ pub struct State {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Stale {
     pub name: String,
     pub why: String,
@@ -198,6 +208,7 @@ pub struct Stale {
 
 /// What reading a project said: of the asset or entity `name`, or of the file as a whole.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "ProjectWarning"))]
 pub struct Warning {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -216,6 +227,7 @@ impl Warning {
 
 /// A `<mention>` an asset's text makes that names something: an asset, an entity, a sub-entity, or a link of one, as the file names it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Read {
     pub name: String,
     /// The one version of it the text fixes: `<name.2>`, `<self.2>`.
@@ -235,6 +247,7 @@ pub struct Read {
 /// when project.yaml has exactly one new asset of its kind with none, that asset: renamed, it would
 /// be this (`POST /v1/projects/{id}/rename`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Orphan {
     pub name: String,
     pub kind: String,
@@ -247,6 +260,7 @@ pub struct Orphan {
 /// A file the project uses: its path in the project (`files/<sha256>.<ext>`, `GET
 /// /v1/projects/{id}/files/{sha256}.{ext}`) and its sha256.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "ProjectFile"))]
 pub struct File {
     pub path: String,
     pub sha256: String,
@@ -262,6 +276,7 @@ pub struct File {
 /// project.yaml, with `at` a card on its canvas. `source` is a held file (`sha256:<hex>`, moved rather than copied), a file of the project's
 /// by its hash or the start of it, or an `http(s)` URL.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Import {
     pub source: String,
     /// What to call it, through `as_name` with `.` as `_`; a taken name gets `_2`. Absent: the stem of a path or URL, lower-cased, else `file`.
@@ -284,6 +299,7 @@ pub struct Import {
 
 /// What an import made: the element's name, its file's hash, the field that names one of its type (`image`, `video`, `audio`), and its path in the project.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Imported {
     pub name: String,
     pub sha256: String,
@@ -299,6 +315,7 @@ pub struct Imported {
 
 /// `GET /v1/projects/{id}/canvas`: each element's row, by name. A name with no row isn't listed, and the page places it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Canvas {
     /// The project's revision these rows are of.
     pub seq: u64,
@@ -308,6 +325,7 @@ pub struct Canvas {
 /// `PATCH /v1/projects/{id}/canvas`: these rows set, a null one gone. Last move wins, but for a name in `placed`, the client's own working:
 /// its row is set only if no other client wrote it after the revision it was worked out from, so it can't clobber a newer one (cl-800).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct CanvasPatch {
     pub cards: BTreeMap<String, Option<Card>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -315,6 +333,7 @@ pub struct CanvasPatch {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct CanvasPatched {
     pub seq: u64,
     /// Each of `placed` another wrote since, left as it is: its row now (null: none).
@@ -337,6 +356,7 @@ pub struct Track {
 
 /// A clip: an asset, and the part of it. Its place in the list is its place on the track, with no gaps. Points are frames at the Edit's rate.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Clip {
     /// `<name>`.
     pub clip: String,
@@ -356,18 +376,21 @@ pub struct Clip {
 
 /// An Edit's clips as they read now, or as they read when a version of it was rendered.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct TimelineNow {
     pub fps: f64,
     pub tracks: Vec<TrackNow>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct TrackNow {
     pub clips: Vec<ClipNow>,
 }
 
 /// A clip and what it reads.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ClipNow {
     #[serde(flatten)]
     pub clip: Clip,
@@ -391,6 +414,7 @@ pub struct ClipNow {
 
 /// A version's number and the hash prefix project.yaml can name its file by.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct VersionPrefix {
     pub number: u32,
     pub prefix: String,
@@ -422,6 +446,7 @@ pub struct VersionPrefix {
 
 /// The file people mean by a version, and what is measured of it so far.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct MainFile {
     /// Its output's name in the version, which `GET /v1/runs/{id}/play` takes.
     pub output: String,
@@ -451,6 +476,7 @@ pub struct MainFile {
 
 /// Pick up from here: a take, by mention, and the frame its new part starts at. Never written to project.yaml; the take it makes records it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Pickup {
     /// `<shot_1.3>`: one of the box's own takes, or another box's.
     pub take: String,
@@ -472,6 +498,7 @@ impl Pickup {
 /// (None: not yet), the takes it retimed to that rate (`<asset> (<fps> fps)`), and what it cuts that
 /// has nothing made yet, which it skips.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Cut {
     pub cut: String,
     pub path: PathBuf,
@@ -491,6 +518,7 @@ pub struct Cut {
 
 /// How an asset stands, for a client that shows it rather than says it (`status` says it).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum Standing {
     /// It has a state: a pin, or a version with these inputs.
@@ -507,6 +535,7 @@ pub enum Standing {
 
 /// An asset: a stable name holding a set of files.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Asset {
     pub name: String,
     #[serde(default)]
@@ -598,6 +627,7 @@ pub struct Asset {
 
 /// `GET /v1/projects/{id}/assets/{name}`: an asset and each of its versions, 1 first.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct AssetVersions {
     pub asset: Asset,
     pub versions: Vec<Version>,
@@ -613,6 +643,7 @@ pub struct AssetVersions {
 
 /// `POST /v1/projects/{id}/assets`: a tool dropped on the canvas. Under an `Idempotency-Key`, a retry makes no `_2`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct NewAsset {
     /// A tool's `id`, from `GET /v1/tools`. Empty: a text asset, its words in `fields.text`.
     #[serde(default)]
@@ -639,6 +670,7 @@ pub struct NewAsset {
 
 /// What a write of an asset answers: its name, and what `If-Match` names from here on.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct AssetMade {
     pub name: String,
     pub etag: String,
@@ -650,6 +682,7 @@ pub struct AssetMade {
 /// `PATCH /v1/projects/{id}/assets/{name}`: these inputs set, each by a control's `field`, and nothing else moved. A null clears one.
 /// `tool` changes what makes it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct AssetPatch {
     #[serde(default, skip_serializing_if = "Map::is_empty")]
     pub fields: Map<String, Value>,
@@ -662,6 +695,7 @@ pub struct AssetPatch {
 
 /// What a `PATCH` answers. `was` is the ETag it wrote over: equal to what a window read means nobody else wrote since.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct AssetPatched {
     pub name: String,
     pub etag: String,
@@ -672,6 +706,7 @@ pub struct AssetPatched {
 
 /// What `DELETE /v1/projects/{id}/assets/{name}` took: `PUT` on the same name with `text` and `at` puts it back, and its versions with it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct AssetDeleted {
     pub name: String,
     /// Opaque to a client.
@@ -682,6 +717,7 @@ pub struct AssetDeleted {
 
 /// `PUT /v1/projects/{id}/assets/{name}`: a deleted asset back.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct AssetBack {
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -690,6 +726,7 @@ pub struct AssetBack {
 
 /// `DELETE` and `PUT /v1/projects/{id}/assets/{name}/versions/{number}`: a version discarded, or back.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct VersionMoved {
     pub name: String,
     pub number: u32,
@@ -720,6 +757,7 @@ pub struct NewVersion {
 
 /// `PUT /v1/projects/{id}/assets/{name}/versions/{number}`: what `DELETE` answered.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct VersionBack {
     #[serde(default)]
     pub approved: bool,
@@ -727,6 +765,7 @@ pub struct VersionBack {
 
 /// One version (a take, if it holds a video).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Version {
     pub number: u32,
     /// By output name.
@@ -759,6 +798,7 @@ pub struct Version {
 /// only if that has no state. With `all`, of everything not pinned. It joins the project's walk, which sends each once what it reads
 /// is settled; `on` lists the machines they may go to.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Runs {
     #[serde(default)]
     pub names: Vec<String>,
@@ -790,6 +830,7 @@ fn one() -> u32 {
 /// `POST /v1/projects/{id}/fit` and `…/fit/here`: what a render of `names` on this computer (`local`) asks of it, `all` and `outdated` as
 /// a render reads them.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct FitAsk {
     #[serde(default)]
     pub names: Vec<String>,
@@ -800,6 +841,7 @@ pub struct FitAsk {
 /// How this computer would do what a render asks: each tool it would do poorly, and the GPU to rent instead. Empty: well enough, or
 /// nothing says otherwise.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Fit {
     pub tools: Vec<ToolFit>,
     /// What the Hub places them all on.
@@ -809,6 +851,7 @@ pub struct Fit {
 
 /// One tool this computer would run poorly.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ToolFit {
     pub tool: String,
     pub label: String,
@@ -826,6 +869,7 @@ pub struct ToolFit {
 
 /// A GPU to rent for it, as `POST /v1/machines` `{kind: rent}` names one.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct RentFor {
     pub sku: String,
     pub gpus: u32,
@@ -840,12 +884,14 @@ pub struct RentFor {
 /// `POST /v1/projects/{id}/approve`: `name` pinned in project.yaml to `version`: a short run of digits is its version (1 first),
 /// anything else a hash prefix of any file in the project's `files/`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Approve {
     pub name: String,
     pub version: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Approved {
     pub name: String,
     pub noun: String,
@@ -865,11 +911,13 @@ pub struct Approved {
 
 /// `POST /v1/projects/{id}/unpin`: `name`'s approval gone, so its state follows its inputs again.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Unpin {
     pub name: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Unpinned {
     pub name: String,
     /// The version it had pinned.
@@ -885,12 +933,14 @@ pub struct Unpinned {
 /// `POST /v1/projects/{id}/rename`: what project.lock keeps of `from` kept as `to`, an asset project.yaml names now with no
 /// versions. Nothing on disk moves; people rename the asset, and its `<mentions>`, in project.yaml.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Rename {
     pub from: String,
     pub to: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Renamed {
     pub from: String,
     pub to: String,
@@ -947,6 +997,7 @@ fn is_zero(n: &u64) -> bool {
 /// What a push or pull moved (`POST /v1/projects/{id}/push`, `/pull`). A push sends every file
 /// project.lock names that the Hub lacks; a pull fetches every one `files/` lacks.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Transferred {
     /// The files project.lock names.
     pub files: u64,
@@ -965,6 +1016,7 @@ pub struct Transferred {
 
 /// A file a push or pull left out: its path in the project, and why.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Skipped {
     pub path: String,
     pub why: String,
@@ -973,6 +1025,7 @@ pub struct Skipped {
 /// What a walk landed: how many takes and versions, how long it took, and its runs' execution time summed, which is more
 /// than that when they ran at once.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Rendered {
     pub takes: u32,
     pub versions: u32,
@@ -983,6 +1036,7 @@ pub struct Rendered {
 /// A render as a view draws it: everything it covers, what has ended first, then what is going, then what waits. It is
 /// the whole of what a client needs to show how a render goes, so a client follows no run of its own.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Board {
     /// Goes up with each change, across a Calcifer restart: a client keeps the highest it heard.
     pub seq: u64,
@@ -1009,6 +1063,7 @@ pub const AHEAD: &str = "ahead ";
 /// One function's code and weights a machine is fetching ahead of jobs that will need them. It is no job of anyone's: wrong, it costs
 /// bytes, and its job's run fetches what it needs.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Ahead {
     /// `org/package/function`.
     pub function: String,
@@ -1032,6 +1087,7 @@ pub struct Ahead {
 
 /// How a job stands.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum JobState {
     Running,
@@ -1048,6 +1104,7 @@ pub enum JobState {
 
 /// One version of one asset being made.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Job {
     /// The same for as long as the render goes, whatever it does: what `job.updated` names it by.
     #[serde(default)]
@@ -1115,6 +1172,7 @@ pub struct Job {
 
 /// A file a run showed before it ended: its package's word for it, in a sentence (`segment 1/2`), and its path in the project.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Preview {
     pub label: String,
     pub path: String,
@@ -1122,6 +1180,7 @@ pub struct Preview {
 
 /// `GET /v1/projects/{id}/events`: what the project's runs do, as they do it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "ProjectEvent"))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
     /// The project's render as it stands now, whole: heard when the stream opens and at each change, later ones standing for any
@@ -1241,6 +1300,7 @@ pub struct Captioned {
 
 /// Who made a change to a project: the page (`client` names its tab), the CLI, a hand in project.yaml, or another client of the API.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct By {
     /// `page`, `cli`, `file` or `api`.
     pub via: String,
@@ -1250,6 +1310,7 @@ pub struct By {
 
 /// One edit of a project as its history keeps it: what it did in plain words, and whether it's undone.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct HistoryEntry {
     pub id: u64,
     pub at_ms: i64,
@@ -1266,6 +1327,7 @@ pub struct HistoryEntry {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Undone {
     pub at_ms: i64,
     pub by: By,
@@ -1273,6 +1335,7 @@ pub struct Undone {
 
 /// `GET /v1/projects/{id}/history`: newest first, and the entries undo and redo would take now.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct History {
     pub entries: Vec<HistoryEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1284,6 +1347,7 @@ pub struct History {
 /// `POST /v1/projects/{id}/history/undo` and `…/redo`: one entry by its `id` or the page's `edit`; with `to`, every entry back to it (undo)
 /// or up to it (redo); with nothing, the next.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct HistoryStep {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry: Option<u64>,
@@ -1295,6 +1359,7 @@ pub struct HistoryStep {
 
 /// What a step undid or redid, in the order it did them; `already` when the entry asked was so already.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct HistoryStepped {
     pub entries: Vec<HistoryEntry>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

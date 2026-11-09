@@ -10,7 +10,7 @@ import { noHash } from "../canvas/text"
 import { MachineTabs } from "../panels/machines/MachineTabs"
 import type { ProjectsAsk } from "../panels/Projects"
 import { RunsLink } from "../panels/runs/RunsLink"
-import type { ProjectRow } from "../types"
+import type { KnownProject } from "../api/calcifer"
 import { Icon } from "../ui/Icon"
 import { Notes } from "../ui/NoteList"
 import { useSignal } from "../ui/signal"
@@ -67,7 +67,7 @@ function Connectivity() {
 }
 
 /** Projects in the order they took their tabs, each staying where it is so a tab doesn't jump from under the pointer. What's new takes the end. */
-function useOrder(rows: ProjectRow[]): ProjectRow[] {
+function useOrder(rows: KnownProject[]): KnownProject[] {
   const order = useRef<string[]>([])
   const known = new Map(rows.map((row) => [row.id, row]))
   order.current = [...order.current.filter((held) => known.has(held)), ...rows.map((row) => row.id).filter((held) => !order.current.includes(held))]
@@ -75,7 +75,7 @@ function useOrder(rows: ProjectRow[]): ProjectRow[] {
 }
 
 /** The first `count`, with the open project in the last place if it isn't one of them. */
-function tabsOf(order: ProjectRow[], id: string | null, count: number): ProjectRow[] {
+function tabsOf(order: KnownProject[], id: string | null, count: number): KnownProject[] {
   const shown = order.slice(0, Math.max(count, 1))
   const open = order.find((row) => row.id === id)
   if (open && !shown.includes(open)) shown[shown.length - 1] = open

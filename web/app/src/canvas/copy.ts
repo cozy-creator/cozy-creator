@@ -1,5 +1,5 @@
 import type { Client } from "../api/client"
-import type { Asset } from "../types"
+import type { Asset } from "../api/calcifer"
 import type { CanvasStore, CarriedFile } from "./CanvasStore"
 import { fieldsOf } from "./controls"
 import type { Box } from "./graph"

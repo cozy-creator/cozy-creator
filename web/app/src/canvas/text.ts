@@ -1,7 +1,7 @@
 // What the page reads of an asset's words. `text` is whatever a person or a pod wrote, so each read takes only the shape it wants and
 // nothing here is more than text.
 
-import type { Field } from "../types"
+import type { ToolField } from "../api/calcifer"
 
 export type Row = Record<string, unknown>
 
@@ -21,8 +21,8 @@ export function piecesOf(text?: Record<string, unknown>): string[] {
 }
 
 /** The words a card shows when it has nothing else to show: its first prompt's, at the top or in its rows, else its description. */
-export function lineOf(text: Record<string, unknown> | undefined, fields: Field[]): string | null {
-  const isText = (field: Field) => field.type === "prompt" || field.type === "words"
+export function lineOf(text: Record<string, unknown> | undefined, fields: ToolField[]): string | null {
+  const isText = (field: ToolField) => field.type === "prompt" || field.type === "words"
   const said = fields.flatMap((field) =>
     field.type === "group" ? rowsIn(text?.[field.field]).flatMap((row) => (field.members ?? []).filter(isText).map((member) => row[member.field])) : isText(field) ? [text?.[field.field]] : [],
   )

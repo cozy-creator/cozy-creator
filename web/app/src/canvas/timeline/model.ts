@@ -1,6 +1,6 @@
 // An Edit as the box holds it: clips end to end on V1, every point a whole frame at the edit's rate. No gaps and no overlaps
 // can be written, since a clip has no place of its own: where it sits is the sum of what's before it.
-import type { Clip, ClipNow } from "../../types"
+import type { Clip, ClipNow } from "../../api/calcifer"
 import type { CanvasStore } from "../CanvasStore"
 import { shownOf } from "../shown"
 
@@ -62,7 +62,7 @@ export function lay(clips: ClipNow[], fps: number, scale: number): Layout {
 
 /** The same cut at another rate: a clip's points are times, so their frames move with it. What no clip says stays unsaid. */
 export function retimed(timeline: { tracks: { clips: Clip[] }[] }, from: number, to: number) {
-  const at = (frame?: number) => (frame === undefined ? undefined : Math.round((frame * to) / from))
+  const at = (frame?: number | null) => (frame == null ? undefined : Math.round((frame * to) / from))
   return { ...timeline, tracks: timeline.tracks.map((track) => ({ ...track, clips: track.clips.map((clip) => ({ ...clip, in: at(clip.in), out: at(clip.out), frames: at(clip.frames) })) })) }
 }
 

@@ -7,10 +7,10 @@ use std::{
     time::Instant,
 };
 
-use protocol::{
+use api::{
     calcifer::StreamEvent,
     error::{Error, Kind},
-    project::{Asset as Row, Cut, Standing as RowStanding, State as ProjectState},
+    calcifer::project::{Asset as Row, Cut, Standing as RowStanding, State as ProjectState},
 };
 
 use super::{
@@ -44,7 +44,7 @@ pub(super) struct Told {
     model: Arc<Model>,
     rendering: BTreeMap<String, f64>,
     making: HashMap<String, Vec<u64>>,
-    queue: Vec<protocol::project::Queued>,
+    queue: Vec<api::calcifer::project::Queued>,
     busy: bool,
     moving: bool,
 }
@@ -94,7 +94,7 @@ fn read_model(api: &Arc<Api>, project: &Project, rev: String, heard: u64) -> Res
     for (i, standing) in stand.iter().enumerate() {
         let held = lock.asset(&doc.assets[i].name);
         let made = standing.version().and_then(|number| held?.version(number));
-        warnings.extend(made.into_iter().flat_map(|made| made.warnings.iter().map(|message| protocol::project::Warning::of(&doc.assets[i].name, message.clone()))));
+        warnings.extend(made.into_iter().flat_map(|made| made.warnings.iter().map(|message| api::calcifer::project::Warning::of(&doc.assets[i].name, message.clone()))));
     }
     warnings.dedup();
     let (mut missing, mut stale) = (vec![], vec![]);
@@ -150,7 +150,7 @@ impl Model {
         let mut state = self.head.clone();
         // As it is this moment: it moves no revision, so the model worked out once per revision can't hold it (cl-837).
         if let Some(why) = project.folder.unsaved() {
-            state.warnings.insert(0, protocol::project::Warning::of_file(super::not_saved(&why)));
+            state.warnings.insert(0, api::calcifer::project::Warning::of_file(super::not_saved(&why)));
         }
         state.busy = *project.walking.lock().expect("walking lock");
         state.moving = project.moving.try_lock().is_err();

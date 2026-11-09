@@ -258,7 +258,7 @@ impl Capability {
     /// grants more is redeemed before its runs read. None for a request that carries none. A
     /// capability signed for another workload key (this machine's TensorD started again since) is
     /// refused: its computer signs one for this key.
-    pub fn offer(actor: &str, hub: &protocol::machine::HubAccess) -> Result<Option<Arc<Capability>>, (&'static str, String)> {
+    pub fn offer(actor: &str, hub: &api::machine::HubAccess) -> Result<Option<Arc<Capability>>, (&'static str, String)> {
         let Some(origin) = origin_key(&hub.origin).filter(|_| !hub.capability.is_empty()) else {
             return Ok(None);
         };

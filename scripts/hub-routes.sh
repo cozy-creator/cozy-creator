@@ -32,8 +32,8 @@ perl - "$1" "$held" "$undocumented" "$(dirname "$0")/../crates" <<'PERL'
 use strict; use warnings;
 my ($doc, $held, $undocumented, $crates) = @ARGV;
 sub slurp { local (@ARGV, $/) = @_; <> }
-my ($client, $protocol) = map { slurp("$crates/$_") } 'hub-client/src/types.rs', 'protocol/src/calcifer.rs';
-my %reexported = map { $_ => 1 } (($client =~ /pub use protocol::calcifer::\{([^}]*)\}/)[0] // '') =~ /(\w+)/g;
+my ($client, $protocol) = map { slurp("$crates/$_") } 'hub-client/src/types.rs', 'api/src/calcifer.rs';
+my %reexported = map { $_ => 1 } (($client =~ /pub use api::calcifer::\{([^}]*)\}/)[0] // '') =~ /(\w+)/g;
 my ($schemas) = slurp($doc) =~ /^  schemas:\n(.*?)(?=^ {0,2}\S|\z)/ms or die "hub-fields: no components.schemas\n";
 my %excused = map { $_ => 1 } split ' ', $undocumented;
 my ($bad, $count) = (0, 0);

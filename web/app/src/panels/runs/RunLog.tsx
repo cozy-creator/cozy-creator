@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 import { useConnection } from "../../app/Connection"
-import type { Run, RunEvent } from "../../types"
+import type { Run, RunEvent } from "../../api/calcifer"
 import { LogView, plain, Section } from "../common"
 import { Failure } from "../common"
 import { follow, followingLine, type Following } from "../follow"

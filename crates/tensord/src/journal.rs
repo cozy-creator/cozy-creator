@@ -192,7 +192,7 @@ impl ExecutorFacts {
         Self {
             pid, runtime_version, tensorfs_version,
             tensord_version: env!("CARGO_PKG_VERSION").into(),
-            tensord_commit: Some(protocol::COMMIT.to_owned()),
+            tensord_commit: Some(api::COMMIT.to_owned()),
         }
     }
 
@@ -383,7 +383,7 @@ impl Execution {
 #[derive(Clone, Debug)]
 pub struct RunTime {
     pub width: u32,
-    pub size: protocol::machine::JobSize,
+    pub size: api::machine::JobSize,
     pub ms: f64,
     pub load_ms: f64,
 }
@@ -1649,7 +1649,7 @@ impl Journal {
             return Ok(());
         }
         let ran = Ran::of(tx, record)?;
-        let size = encoded(&protocol::machine::JobSize::of(&invocation.input))?;
+        let size = encoded(&api::machine::JobSize::of(&invocation.input))?;
         tx.execute(
             "INSERT OR REPLACE INTO root_times(execution,function,width,size,ms,load_ms) VALUES(?1,?2,?3,?4,?5,?6)",
             params![record.id, function_key(&invocation.package, &invocation.entrypoint), record.width, size, ran.compute_ms as i64, ran.load_ms as i64],

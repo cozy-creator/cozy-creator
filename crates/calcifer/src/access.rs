@@ -15,7 +15,7 @@ use std::{
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use hub_client::Credential;
 use serde_json::json;
-use protocol::{
+use api::{
     calcifer::Reason,
     config::Origin,
     error::{Error, Kind},

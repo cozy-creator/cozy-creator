@@ -21,7 +21,7 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "time"] }
 tracing.workspace = true
 platform.workspace = true
-protocol.workspace = true
+api.workspace = true
 
 [lints]
 workspace = true

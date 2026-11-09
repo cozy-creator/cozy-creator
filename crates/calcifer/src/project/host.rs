@@ -8,13 +8,13 @@ use std::{
     time::Duration,
 };
 
-use protocol::{
+use api::{
     calcifer::{MachineState, On, OutputItem, Run, Status as RunStatus, SubmitRun},
     error::{Error, Kind},
     ids::{Digest, RunId},
     interface::{self, Call, Interface, Slot},
     names::shown,
-    tool,
+    calcifer::tool,
 };
 use serde_json::Value;
 
@@ -82,7 +82,7 @@ impl Package {
     }
 
     /// The typed inputs of `function`.
-    pub fn callable(&self, function: &str) -> Option<protocol::interface::Callable> {
+    pub fn callable(&self, function: &str) -> Option<api::interface::Callable> {
         self.interface().callables.into_iter().find(|callable| callable.name == function)
     }
 

@@ -10,7 +10,7 @@ mod device;
 pub mod types;
 pub mod workload;
 
-use protocol::error::{Error as Refusal, Kind};
+use api::error::{Error as Refusal, Kind};
 use serde_json::Value;
 
 pub use client::{Client, Credential};

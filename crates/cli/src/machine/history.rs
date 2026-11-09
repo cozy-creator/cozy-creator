@@ -4,7 +4,7 @@
 use std::process::ExitCode;
 
 use jiff::{SignedDuration, Timestamp};
-use protocol::{
+use api::{
     calcifer::{RentalHistory, RentalSum, clock},
     error::Error,
 };

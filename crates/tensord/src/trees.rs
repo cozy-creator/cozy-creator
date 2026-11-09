@@ -1,9 +1,9 @@
-//! Retained file trees: a run's native inputs, a result's bytes, each a `protocol::tree` document
+//! Retained file trees: a run's native inputs, a result's bytes, each a `api::tree` document
 //! and its files. One hold in the run objects' store (`cas`), `tree-<owner>`, keeps the document
 //! and every file until the owner releases it.
 use std::{collections::BTreeMap, io};
 
-use protocol::tree::{self, Member};
+use api::tree::{self, Member};
 
 use crate::cas::{Cas, Hold};
 use tensorfs::format::ObjectRef;

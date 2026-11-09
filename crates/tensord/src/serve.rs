@@ -136,7 +136,7 @@ pub fn version() -> io::Result<()> {
     let record = Version {
         name: "tensord",
         version: env!("CARGO_PKG_VERSION"),
-        commit: Some(protocol::COMMIT),
+        commit: Some(::api::COMMIT),
         api: ["cozy.machine.v1"],
         capabilities,
     };
@@ -150,7 +150,7 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
     let config::Config { mut grant, visible_devices, gpu_memory_limit, mode, display_pace, endpoint, logs, .. } = config;
     // A shared computer's own programs come first: from this thread, before the runtime's, the
     // background priority reaches every thread and process the machine starts (executors too).
-    if mode == protocol::config::MachineMode::Shared {
+    if mode == ::api::config::MachineMode::Shared {
         platform::process::background_process();
     }
     let runtime = machine_runtime()?;

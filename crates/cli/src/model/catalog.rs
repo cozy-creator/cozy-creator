@@ -3,11 +3,11 @@
 //! the commits of a model of the user's org.
 use std::process::ExitCode;
 
-use protocol::error::{Error, Kind};
-use protocol::hub::{FamilyFrom, ModelAuthor, ModelDetail, ModelEdit, ModelEdited, ModelSearch};
+use api::error::{Error, Kind};
+use api::calcifer::hub::{FamilyFrom, ModelAuthor, ModelDetail, ModelEdit, ModelEdited, ModelSearch};
 use serde::Serialize;
 
-use protocol::model_ref::{ModelRef, Repo};
+use api::model_ref::{ModelRef, Repo};
 use super::{Edit, Info, Ls};
 use crate::Context;
 use crate::calcifer_client::path;
@@ -90,7 +90,7 @@ pub(crate) async fn info(ctx: &Context, args: Info) -> Result<ExitCode, Error> {
         output::json(&view);
         return Ok(ExitCode::SUCCESS);
     }
-    let shown = protocol::names::shown(&repo.to_string());
+    let shown = api::names::shown(&repo.to_string());
     said(&view, &repo).print(ctx);
     for release in &view.releases {
         let mirror = match (release.mirror, release.by_admin) {
@@ -101,7 +101,7 @@ pub(crate) async fn info(ctx: &Context, args: Info) -> Result<ExitCode, Error> {
         anstream::println!("\n{shown}@{}{mirror}", release.version);
         let mut table = Table::new(ctx, ["lane", "kinds", "bytes", "commit", "recipe"]);
         for lane in &release.lanes {
-            let recipe = lane.provenance.as_ref().map_or_else(|| "-".into(), |p| format!("{}@{} {}", protocol::names::shown(&p.package), p.release, p.recipe));
+            let recipe = lane.provenance.as_ref().map_or_else(|| "-".into(), |p| format!("{}@{} {}", api::names::shown(&p.package), p.release, p.recipe));
             table = table.row([lane.lane.clone(), lane.kinds.join("+"), output::bytes(lane.bytes as u64), lane.commit.clone(), recipe]);
         }
         // A recipe is its fingerprint: the digest of the plan the lane was written by.
@@ -137,7 +137,7 @@ fn family(view: &ModelDetail) -> String {
 fn said(view: &ModelDetail, repo: &Repo) -> Record {
     let mut record = Record::new().field("model", &view.model).field("family", &family(view));
     if let Some(kind) = view.kind {
-        use protocol::hub::ModelKind;
+        use api::calcifer::hub::ModelKind;
         let kind = match kind {
             ModelKind::Lora => "LoRA",
             ModelKind::Weights => "a model's weights",

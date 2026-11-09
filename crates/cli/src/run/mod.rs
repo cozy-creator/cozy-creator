@@ -7,7 +7,7 @@ use std::{
 
 use clap::ValueHint;
 use clap_complete::ArgValueCompleter;
-use protocol::{
+use api::{
     calcifer::{FileTerm, On, ReleaseFrom, Run, RunEstimate, RunRequest, Target},
     code::LocalCode,
     error::{Error, Kind},
@@ -72,14 +72,14 @@ struct RunArgs {
     #[command(flatten)]
     placement: Placement,
     /// Use at most N GPUs for the run and its calls.
-    #[arg(long, value_name = "N", value_parser = protocol::calcifer::gpu_count)]
+    #[arg(long, value_name = "N", value_parser = api::calcifer::gpu_count)]
     gpus: Option<u32>,
     /// The lane of the function's main model (a label: bf16, fp8, int8, …); its LoRAs and other
     /// models take their own. Absent, the Hub picks what this machine's hardware runs best.
-    #[arg(long, value_parser = protocol::model_ref::lane)]
+    #[arg(long, value_parser = api::model_ref::lane)]
     lane: Option<String>,
     /// Pin an attention kernel for this run: everywhere, or at one `[slot/]component`.
-    #[arg(long, value_name = "[[SLOT/]COMPONENT=]KERNEL", value_parser = protocol::calcifer::attention_pin, conflicts_with = "warm")]
+    #[arg(long, value_name = "[[SLOT/]COMPONENT=]KERNEL", value_parser = api::calcifer::attention_pin, conflicts_with = "warm")]
     attention_kernel: Option<String>,
     /// The whole payload from a JSON or YAML file; inline inputs override it.
     #[arg(long = "input", value_name = "FILE")]
@@ -88,7 +88,7 @@ struct RunArgs {
     #[arg(long = "file", value_name = "[NAME=]FILE", value_hint = ValueHint::FilePath)]
     assets: Vec<String>,
     /// A hint for one attached file: `label-or-index=auto|low|medium|high`.
-    #[arg(long = "file-fidelity", value_name = "FILE=FIDELITY", value_parser = protocol::calcifer::fidelity)]
+    #[arg(long = "file-fidelity", value_name = "FILE=FIDELITY", value_parser = api::calcifer::fidelity)]
     fidelities: Vec<String>,
     /// Apply a LoRA, in order: `org/lora[,strength]` adapts the function's model; `slot=org/lora`
     /// names one of several (strength 1 by default).
@@ -122,7 +122,7 @@ impl Placement {
     /// Where the run goes; `local` refused where this OS runs no models itself.
     pub fn on(&self) -> Result<On, Error> {
         let on = self.named();
-        protocol::calcifer::local_usable(&on.to_string())?;
+        api::calcifer::local_usable(&on.to_string())?;
         Ok(on)
     }
 
@@ -303,8 +303,8 @@ pub(crate) fn paste(ctx: &Context, run: &Run) {
 /// The package (a folder or a script) and function `raw` names when it is local code here (`./dir[/fn]`, `x.py[/fn]`): it goes
 /// by content, as Calcifer reads no client's folder. A path that names neither is refused.
 pub(crate) fn local(ctx: &Context, raw: &str, cwd: &Path) -> Result<Option<(PathBuf, Option<String>)>, Error> {
-    let Some(path) = protocol::target::local(raw, cwd, &ctx.user_home) else { return Ok(None) };
-    let found = protocol::code::split(&path).ok_or_else(|| {
+    let Some(path) = api::target::local(raw, cwd, &ctx.user_home) else { return Ok(None) };
+    let found = api::code::split(&path).ok_or_else(|| {
         Error::new(Kind::NotFound, "target_not_found", format!("{raw} is not a package directory or a script here"))
     })?;
     Ok(Some(found))
@@ -369,7 +369,7 @@ async fn term_paths(paths: &mut Paths<'_, '_>, term: &str, cwd: &Path) -> Result
 
 /// `--input FILE`: JSON, or YAML by its name or when it is not JSON, holding one object; and its folder, where the files it names start.
 fn read_input(ctx: &Context, file: &Path, cwd: &Path) -> Result<(Map<String, Value>, PathBuf), Error> {
-    let path = protocol::target::spelled(&file.to_string_lossy(), cwd, &ctx.user_home);
+    let path = api::target::spelled(&file.to_string_lossy(), cwd, &ctx.user_home);
     let what = format!("--input {}", file.display());
     let text = std::fs::read_to_string(&path).map_err(|e| {
         Error::new(Kind::NotFound, "input_unreadable", format!("{what}: {e}")).remedy("--input takes one JSON or YAML file holding the whole payload")
@@ -377,7 +377,7 @@ fn read_input(ctx: &Context, file: &Path, cwd: &Path) -> Result<(Map<String, Val
     let yaml = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("yaml") || e.eq_ignore_ascii_case("yml"));
     let loaded = match serde_json::from_str(&text) {
         Ok(value) if !yaml => value,
-        _ => protocol::yaml::to_json(&text).map_err(|e| Error::new(Kind::Validation, "input_invalid", format!("{what}: {e}")))?,
+        _ => api::yaml::to_json(&text).map_err(|e| Error::new(Kind::Validation, "input_invalid", format!("{what}: {e}")))?,
     };
     let Value::Object(loaded) = loaded else {
         return Err(Error::new(Kind::Validation, "input_invalid", format!("{what} does not hold one object")));

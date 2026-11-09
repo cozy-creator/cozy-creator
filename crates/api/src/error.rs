@@ -5,6 +5,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "ErrorKind"))]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
     /// A bad invocation: unknown flag, malformed `key=value`, malformed target.
@@ -29,6 +30,7 @@ pub enum Kind {
 #[derive(
     Clone, Debug, Deserialize, Serialize, PartialEq, Eq, thiserror::Error,
 )]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "ErrorBody"))]
 #[error("{code}: {message}")]
 pub struct Error {
     pub kind: Kind,
@@ -52,6 +54,7 @@ pub struct Error {
 
 /// The HTTP body of a refusal.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Envelope {
     pub error: Error,
 }

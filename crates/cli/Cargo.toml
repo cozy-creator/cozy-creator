@@ -17,8 +17,7 @@ clap_complete.workspace = true
 comfy-table.workspace = true
 crossterm.workspace = true
 platform = { workspace = true, features = ["fetch"] }
-calcifer.workspace = true
-protocol.workspace = true
+api.workspace = true
 futures-util = { workspace = true, features = ["alloc"] }
 getrandom.workspace = true
 hex.workspace = true

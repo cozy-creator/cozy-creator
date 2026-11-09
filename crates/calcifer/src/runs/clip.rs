@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use protocol::{
+use api::{
     calcifer::{Note, NoteLevel},
     error::{Error, Kind},
 };

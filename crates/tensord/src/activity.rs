@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use protocol::machine as v1;
+use api::machine as v1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {

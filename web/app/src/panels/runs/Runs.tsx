@@ -4,7 +4,7 @@ import { Link, useSearchParams } from "react-router-dom"
 import { machinesQuery, runsQuery } from "../../api/queries"
 import { useConnection } from "../../app/Connection"
 import { useProjectId, useTo } from "../../app/Shell"
-import type { Run } from "../../types"
+import type { Run } from "../../api/calcifer"
 import { Bar, Failure, useNow } from "../common"
 import { DrawerFrame } from "../Drawer"
 import { progressWords, runTime, settled, stalledWords, statusClass, statusWord, target } from "./words"
@@ -30,7 +30,7 @@ function RunRow({ run, now }: { run: Run; now: number }) {
         </span>
         {line && <small className="under">{line}</small>}
         {run.stalled && <small className="under warn">{stalledWords(run.stalled, now)}</small>}
-        {live && run.progress?.done_fraction !== undefined && <Bar fraction={run.progress.done_fraction} />}
+        {live && run.progress?.done_fraction != null && <Bar fraction={run.progress.done_fraction} />}
       </Link>
     </li>
   )

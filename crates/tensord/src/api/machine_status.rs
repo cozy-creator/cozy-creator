@@ -2,7 +2,7 @@
 //! readiness receipt; a machine-scope cap gets the whole picture, sent again whenever it changes.
 //! An open stream is not activity: only `keepalive` resets the idle deadline, once.
 use super::{auth::VerifiedActor, backend::MachineBackend, domain, http::blocking, v1, MachineIdentity};
-use protocol::error::Error;
+use api::error::Error;
 use std::{
     sync::{Arc, Mutex},
     time::Duration,
@@ -109,7 +109,7 @@ pub(super) fn identity_frame(identity: &MachineIdentity) -> v1::StatusFrame {
         worker_id: identity.authority.worker_id.clone(),
         boot_id: identity.authority.boot_id.clone(),
         version: env!("CARGO_PKG_VERSION").into(),
-        commit: protocol::COMMIT.into(),
+        commit: api::COMMIT.into(),
         dev: identity.updates.as_ref().is_some_and(|u| u.dev()),
         capabilities: capabilities(identity),
         workload_key: crate::hub::workload_key().thumbprint().into(),

@@ -3,10 +3,10 @@
 //! good; a commit no release names can be deleted, as can the whole model.
 use std::process::ExitCode;
 
-use protocol::error::{Error, Kind};
-use protocol::hub::{At, ModelDeleted, ModelReleaseAsk, ModelReleased};
+use api::error::{Error, Kind};
+use api::calcifer::hub::{At, ModelDeleted, ModelReleaseAsk, ModelReleased};
 
-use protocol::model_ref::{ModelRef, Repo};
+use api::model_ref::{ModelRef, Repo};
 use super::{Delete, Publish};
 use crate::Context;
 use crate::calcifer_client::path;

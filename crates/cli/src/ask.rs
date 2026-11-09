@@ -1,6 +1,6 @@
 //! Asks Calcifer turns into runs (model downloads and uploads, package installs, quantizations):
 //! one POST under a fresh key, a `new` run quoted from the same body first and agreed to.
-use protocol::{
+use api::{
     calcifer::{Agreed, On, RunQuote},
     error::{Error, Kind},
 };

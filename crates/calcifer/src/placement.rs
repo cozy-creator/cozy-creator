@@ -6,7 +6,7 @@
 //! yet rented (`any`, `new`) are never asked: the Hub keeps no times per SKU.
 use std::sync::Arc;
 
-use protocol::{
+use api::{
     calcifer::{MachineEstimate, On},
     machine::{self as v1, Basis, JobSize},
 };

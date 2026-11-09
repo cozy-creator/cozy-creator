@@ -4,10 +4,10 @@
 //! key for another computer (CI) into a file, which that computer installs with `--key`.
 use std::{io::Write as _, path::PathBuf, process::ExitCode};
 
-use protocol::{
+use api::{
     config::Origin,
     error::{Error, Kind},
-    hub::{Account, At, Code, CodeAnswer, CodeRequest, KeyInstall, Naming, Proven, Purpose, SignedOut},
+    calcifer::hub::{Account, At, Code, CodeAnswer, CodeRequest, KeyInstall, Naming, Proven, Purpose, SignedOut},
 };
 use serde_json::json;
 

@@ -4,7 +4,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom"
 import { rentalSkusQuery } from "../../api/queries"
 import { useConnection } from "../../app/Connection"
 import { useTo } from "../../app/Shell"
-import type { RentalSku } from "../../types"
+import type { RentalSku } from "../../api/calcifer"
 import { say } from "../../ui/notes"
 import { useSignal } from "../../ui/signal"
 import { Failure, Section } from "../common"
@@ -87,7 +87,7 @@ function Order() {
   }
 
   if (now.state === "idle") return null
-  const line = (held: { sku: string; gpus?: number }, price: number) => `${held.gpus ?? 1}× ${held.sku.toUpperCase()} at ${usd(price)}/h`
+  const line = (held: { sku: string; gpus?: number | null }, price: number) => `${held.gpus ?? 1}× ${held.sku.toUpperCase()} at ${usd(price)}/h`
   return (
     <div className="order" aria-live="polite" ref={here}>
       {now.state === "quoting" && <p className="muted">Asking the Hub its price for {now.order.gpus ?? 1}× {now.order.sku}…</p>}

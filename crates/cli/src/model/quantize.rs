@@ -5,9 +5,9 @@
 //! Runtime's) runs on the machine, which uploads the output as a commit of the model in that lane.
 use std::process::ExitCode;
 
-use protocol::calcifer::{On, Run, RunQuote, Status, Submitted};
-use protocol::error::{Error, Kind};
-use protocol::hub::ModelQuantize;
+use api::calcifer::{On, Run, RunQuote, Status, Submitted};
+use api::error::{Error, Kind};
+use api::calcifer::hub::ModelQuantize;
 
 use super::Quantize;
 use crate::Context;
@@ -59,6 +59,6 @@ pub(crate) async fn quantize(ctx: &Context, args: Quantize) -> Result<ExitCode, 
 }
 
 /// The commit the run's `lane` output became.
-fn written<'a>(run: &'a Run, lane: &str) -> Option<&'a protocol::machine::CheckpointRef> {
+fn written<'a>(run: &'a Run, lane: &str) -> Option<&'a api::machine::CheckpointRef> {
     run.output.iter().filter(|item| item.name == lane).find_map(|item| item.checkpoint.as_ref())
 }

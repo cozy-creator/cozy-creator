@@ -422,7 +422,7 @@ def call(method, path, body=b"", token=""):
 worker = json.loads(call("GET", "/v1/status")[1])["worker_id"]
 public = key.public_key().public_bytes_raw()
 grant = json.dumps({"m": worker, "a": "machine", "e": int(time.time()) + 600, "k": b64(hashlib.sha256(public).digest()[:16])}).encode()
-signed = key.sign(b"cozy-capability/1\0" + grant)  # protocol::capability's DOMAIN, then the grant
+signed = key.sign(b"cozy-capability/1\0" + grant)  # api::machine::capability's DOMAIN, then the grant
 token = f"{b64(grant)}.{b64(signed)}"
 # The fixture's folder on this computer, as a manifest named it before cl-817 (`in_place`).
 manifest = json.dumps({"package": "local/e2e-weightless", "release": "0.1.0", "path": os.path.dirname(project),

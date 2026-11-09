@@ -3,10 +3,10 @@
 //! that release's card, which the next `cozy run` binds against.
 use std::process::ExitCode;
 
-use protocol::{
+use api::{
     calcifer::{HeldPackage, Machine, MachinePackages, MachineState, On, Run, Status, Submitted, package_source},
     error::{Error, Kind},
-    hub::{AfterRun, PackageInstall, PackageRemoval, PackageRemovals},
+    calcifer::hub::{AfterRun, PackageInstall, PackageRemoval, PackageRemovals},
 };
 use serde::{Deserialize, Serialize};
 
@@ -52,7 +52,7 @@ struct Installed {
 
 /// Installs `package` (`org/name`), or local code by content, on a machine through Calcifer: its environment, no weights.
 /// Calcifer names the newest release when none is given, and retires the older ones the machine holds once it is in.
-pub async fn install(ctx: &Context, package: String, code: Option<protocol::code::LocalCode>, release: Option<String>, on: On) -> Result<ExitCode, Error> {
+pub async fn install(ctx: &Context, package: String, code: Option<api::code::LocalCode>, release: Option<String>, on: On) -> Result<ExitCode, Error> {
     let mut ask = PackageInstall { hub: Some(ctx.hub().to_string()), package, code, release, on: on.clone(), agreed: None };
     let submitted: Submitted = crate::ask::start(
         ctx,
@@ -79,7 +79,7 @@ pub async fn install(ctx: &Context, package: String, code: Option<protocol::code
                 Some(why) => output::say(ctx, &format!("{package}@{} stays on {machine}: {why}", retired.release)),
             }
         }
-        let first = protocol::interface::Interface::parse(&installed.interface)
+        let first = api::interface::Interface::parse(&installed.interface)
             .ok()
             .and_then(|interface| interface.public().first().map(|name| name.to_string()));
         if let Some(callable) = first {

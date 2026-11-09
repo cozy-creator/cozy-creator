@@ -7,7 +7,7 @@ use axum::{
     Json,
     extract::{Path as UrlPath, State},
 };
-use protocol::{
+use api::{
     calcifer::{Authorized, AuthorizedKeys},
     error::{Error, Kind},
 };
@@ -22,7 +22,7 @@ impl Machines {
     /// call, which this makes: once idle it listens on every interface, and `reach` then says
     /// where other computers add it.
     pub async fn authorize(self: &Arc<Self>, key: &str, add: bool) -> Result<Authorized, Error> {
-        protocol::calcifer::local_usable("local")?;
+        api::calcifer::local_usable("local")?;
         let changed = self.local.authorize(key, add)?;
         let image = self.local.image();
         let machine = self.show("local").await?;

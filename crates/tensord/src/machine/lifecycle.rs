@@ -19,7 +19,7 @@ use std::{
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use protocol::error::Error;
+use api::error::Error;
 
 /// The idle window, `RentalIdleTimeoutSeconds` in the CLI.
 pub const IDLE_GRACE_MS: i64 = 900_000;

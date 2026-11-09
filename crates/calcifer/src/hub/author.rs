@@ -16,10 +16,10 @@ use std::{
 
 use futures_util::{StreamExt as _, TryStreamExt as _};
 use hub_client::types::{PackageDeclaredFile, PackageFileGrant, PresignedUpload};
-use protocol::{
+use api::{
     config::Origin,
     error::{Error, Kind},
-    hub::{LockAsk, Locked, PublishAsk, Published},
+    calcifer::hub::{LockAsk, Locked, PublishAsk, Published},
     interface::Interface,
 };
 use serde::Deserialize;
@@ -53,7 +53,7 @@ async fn tools(api: &Api, project: &Project, say: Say<'_>) -> Result<PathBuf, Er
 fn git_missing() -> Error {
     let tool = platform::tools::tool("git");
     Error::new(Kind::Unavailable, "git_unavailable", format!("git not found: {}", tool.cost))
-        .next(crate::tools::install_hint(tool, &crate::tools::path()))
+        .next(platform::tools::install_hint(tool, &crate::tools::path()))
         .next("cozy doctor")
 }
 
@@ -196,13 +196,13 @@ fn versions(lock: &str) -> Result<BTreeMap<String, String>, Error> {
 /// (first-party; the Hub admits only its admins there).
 async fn publisher(client: &hub_client::Client, root: bool) -> Result<String, Error> {
     match root {
-        true => Ok(protocol::names::ROOT.to_owned()),
+        true => Ok(api::names::ROOT.to_owned()),
         false => account(client).await,
     }
 }
 
 /// The package `code` names, in Calcifer's copy.
-fn sent(api: &Api, code: &protocol::code::LocalCode) -> Result<Project, Error> {
+fn sent(api: &Api, code: &api::code::LocalCode) -> Result<Project, Error> {
     blocking(|| Project::read(crate::local_code::copied(api.machines.hubs.home(), code)?))
 }
 
@@ -219,7 +219,7 @@ pub(super) async fn lock(api: &Arc<Api>, ask: LockAsk, work: &Work) -> Result<Lo
         false => None,
         true => {
             let namespace = match ask.root {
-                true => Some(protocol::names::ROOT.to_owned()),
+                true => Some(api::names::ROOT.to_owned()),
                 false => locked_namespace(&project.root),
             };
             let (client, namespace) = match namespace {

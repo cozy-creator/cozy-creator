@@ -7,8 +7,8 @@ use std::{
 };
 
 use platform::durable;
-use protocol::error::{Error, Kind};
-use protocol::interface::Interface;
+use api::error::{Error, Kind};
+use api::interface::Interface;
 use serde_json::Value;
 
 use crate::Client;
@@ -36,7 +36,7 @@ impl Card {
     /// A callable's request struct as its card spells it, with `accelerator: false` for a CPU
     /// function: what `--describe --json` prints.
     pub fn request(&self, name: &str) -> Value {
-        protocol::interface::request(&self.document["package_interface"], name)
+        api::interface::request(&self.document["package_interface"], name)
     }
 }
 

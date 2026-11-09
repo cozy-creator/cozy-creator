@@ -1,20 +1,13 @@
 //! The tools cozy runs and never bundles that it fetches itself on first need, pinned builds held
-//! to their sha256, into `~/.cozy/tools`: ffmpeg (cuts, clips) and uv (local code, authoring).
-//! Calcifer fetches what its own work needs; the CLI calls the same functions until its work moves
-//! behind the API (cl-716).
-use std::{
-    fs::{File, OpenOptions},
-    io::{self, Seek as _, SeekFrom, Write as _},
-    path::{Path, PathBuf},
-};
+//! to their sha256, into `~/.cozy/tools`: ffmpeg (cuts, clips) and uv (local code, authoring), as
+//! Calcifer's own work first needs them.
+use std::path::{Path, PathBuf};
 
+use api::error::{Error, Kind};
 use platform::{
     paths::Home,
-    tools::{self, Archive, Found, Install, Tool},
+    tools::{self, Archive, Found, Install, Tool, install_hint},
 };
-use protocol::error::{Error, Kind};
-use sha2::{Digest as _, Sha256};
-use tensorfs::err::{Code, Refusal};
 
 /// What a fetch says as it goes ("fetching ffmpeg: <url>"): the CLI prints it, Calcifer logs it.
 pub type Say<'a> = &'a (dyn Fn(&str) + Sync);
@@ -78,16 +71,6 @@ pub async fn uv(home: &Home, say: Say<'_>) -> Result<PathBuf, Error> {
     })
 }
 
-/// The words that install `tool` here.
-pub fn install_hint(tool: &Tool, path: &[PathBuf]) -> String {
-    match tool.install {
-        Install::Fetched => "cozy fetches it when a feature first needs it".into(),
-        Install::System(package) => tools::system_install(package, path)
-            .unwrap_or_else(|| format!("install {package} with this computer's package manager")),
-        Install::Note(text) => format!("install {text}"),
-    }
-}
-
 /// No build is pinned for this OS/CPU: the OS's own command installs it.
 fn unpinned(name: &'static str) -> Error {
     let tool = tools::tool(name);
@@ -114,7 +97,7 @@ async fn fetch(say: Say<'_>, name: &str, archives: &[Archive], dir: &Path) -> Re
     for archive in archives {
         say(&format!("fetching {name}: {}", archive.url));
         let part = parent.join(format!(".{name}-{}.part", &archive.sha256[..12]));
-        let (mut download, got) = download(archive.url, &part, &mut |_| {}).await.map_err(failed)?;
+        let (mut download, got) = tensorfs::fetch::get_pinned_into(archive.url, &part, &mut |_| {}).await.map_err(failed)?;
         if got != archive.sha256 {
             let _ = std::fs::remove_file(&part);
             return Err(Error::new(
@@ -140,38 +123,4 @@ async fn fetch(say: Say<'_>, name: &str, archives: &[Archive], dir: &Path) -> Re
             Err(failed(format!("{}: {e}", dir.display())))
         }
     }
-}
-
-/// Downloads `url` into `part` from the bytes it holds (what an earlier fetch reached resumes),
-/// telling `moved` each byte position reached, and answers the file and its sha256 for the caller
-/// to hold to its pin. A transfer that stalls or fails is asked again from the byte reached, by
-/// TensorFS's one rule; once nothing moves for its stall rule it is refused, its bytes kept for
-/// the next fetch. Another fetch of the same file holds it: this one is refused.
-pub async fn download(url: &str, part: &Path, moved: &mut (dyn FnMut(u64) + Send)) -> Result<(File, String), String> {
-    let failed = |e: io::Error| format!("{}: {e}", part.display());
-    let mut file = OpenOptions::new().create(true).truncate(false).read(true).write(true).open(part).map_err(failed)?;
-    if !platform::lock::try_claim(&file).map_err(|e| e.to_string())? {
-        return Err(format!("another cozy command is fetching {url} now; run this again once it has"));
-    }
-    let (from, mut at) = (file.metadata().map_err(failed)?.len(), 0);
-    moved(from);
-    let mut sink = |start: u64, frame: &[u8]| -> tensorfs::err::Result<()> {
-        let written = (|| {
-            if start != at {
-                file.set_len(start)?;
-                file.seek(SeekFrom::Start(start))?;
-            }
-            file.write_all(frame)
-        })();
-        written.map_err(|e| Refusal { code: Code::IO_FAILED, detail: failed(e) })?;
-        at = start + frame.len() as u64;
-        moved(at);
-        Ok(())
-    };
-    tensorfs::fetch::get_pinned(url, from, &mut sink).await.map_err(|e| e.to_string())?;
-    file.rewind().map_err(failed)?;
-    let mut hash = Sha256::new();
-    io::copy(&mut file, &mut hash).map_err(failed)?;
-    file.rewind().map_err(failed)?;
-    Ok((file, hex::encode(hash.finalize())))
 }

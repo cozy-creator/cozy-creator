@@ -22,9 +22,9 @@ use axum::{
     routing::{delete, get, patch, post, put},
 };
 use hub_client::{Client, DeviceKey};
-use protocol::{
+use api::{
     config::Origin,
-    hub::{ModelDownload, PackageInstall},
+    calcifer::hub::{ModelDownload, PackageInstall},
 };
 use serde::de::DeserializeOwned;
 

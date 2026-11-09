@@ -19,7 +19,7 @@ use axum::{
     response::Response,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use protocol::error::{Envelope, Error};
+use api::error::{Envelope, Error};
 use std::{
     pin::Pin,
     sync::{Arc, Mutex},

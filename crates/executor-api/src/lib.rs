@@ -4,7 +4,8 @@
 //! This is the current typed command contract. Declared optional fields take their defaults;
 //! required fields fail by name and removed commands are refused.
 //!
-//! The tensorfs wheel takes this crate, not `protocol`, whose machine client is reqwest and everything under it.
+//! A crate of its own so the tensorfs wheel builds it alone: as `api::executor` the wheel took 20 more crates and
+//! built 31% longer, for a library 0.7% larger (cl-829).
 #![forbid(unsafe_code)]
 use std::{collections::BTreeMap, path::PathBuf};
 

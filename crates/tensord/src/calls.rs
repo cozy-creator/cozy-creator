@@ -178,7 +178,7 @@ impl Calls {
         self.runs.upgrade().map_or(crate::access::Ready::Yes, |runs| runs.source_ready(id))
     }
 
-    pub(crate) fn tensorfs(&self, id: &str) -> Option<protocol::machine::TensorFSOptions> {
+    pub(crate) fn tensorfs(&self, id: &str) -> Option<api::machine::TensorFSOptions> {
         self.runs.upgrade().and_then(|runs| runs.tensorfs(id))
     }
 
@@ -219,8 +219,8 @@ impl Calls {
             actor: submission.map(|s| s.actor.clone()).unwrap_or_default(),
             spool: spool.into(),
             callables,
-            pure: protocol::interface::entrypoint(document, &record.invocation.entrypoint)
-                .is_some_and(protocol::interface::memoized),
+            pure: api::interface::entrypoint(document, &record.invocation.entrypoint)
+                .is_some_and(api::interface::memoized),
             pure_callables: pure_callables(&held.record),
             inputs: record.invocation.inputs.clone(),
             calls: Mutex::new(CallTable::default()),
@@ -291,7 +291,7 @@ impl Calls {
     }
 
     /// `child_call`: the call's run, accepted once per index (its intent must not change).
-    fn child_call(&self, parent: &Parent, seq: u64, call: &executor_protocol::ChildCall) -> Result<Answer, (&'static str, String)> {
+    fn child_call(&self, parent: &Parent, seq: u64, call: &executor_api::ChildCall) -> Result<Answer, (&'static str, String)> {
         let service = self
             .service
             .upgrade()
@@ -396,7 +396,7 @@ impl Calls {
                 fields.insert("call_request".into(), call.request.clone().into());
                 fields.insert("call_attempt".into(), record.attempt.into());
             }
-            answer.progress = Some(CallProgress { sequence: call.progress.0, payload: executor_protocol::Json(payload) });
+            answer.progress = Some(CallProgress { sequence: call.progress.0, payload: executor_api::Json(payload) });
         }
         match record.state {
             State::Completed => {
@@ -636,10 +636,10 @@ pub(crate) fn observe(engine: &Engine, id: &str, seen: &mut Seen, frame: &Frame,
 fn pure_callables(generation: &crate::catalog::Generation) -> std::collections::HashSet<(String, String)> {
     std::iter::once(&generation.interface)
         .chain(generation.callees.iter().map(|c| &c.interface))
-        .flat_map(protocol::interface::entrypoints)
-        .filter(|entry| protocol::interface::memoized(entry))
+        .flat_map(api::interface::entrypoints)
+        .filter(|entry| api::interface::memoized(entry))
         .filter_map(|entry| {
-            let (module, export) = protocol::interface::callable(entry)?;
+            let (module, export) = api::interface::callable(entry)?;
             Some((module.into(), export.into()))
         })
         .collect()
@@ -667,14 +667,14 @@ fn invocables(
         }));
     for (owner, interface, builtin) in apps {
         let own = owner == application;
-        for entry in protocol::interface::entrypoints(interface) {
+        for entry in api::interface::entrypoints(interface) {
             let (Some((module, export)), Some(name)) =
-                (protocol::interface::callable(entry), protocol::interface::name(entry))
+                (api::interface::callable(entry), api::interface::name(entry))
             else {
                 continue;
             };
             // Another package's internal callable is its own business.
-            if !own && protocol::interface::internal(entry) {
+            if !own && api::interface::internal(entry) {
                 continue;
             }
             let key = (module.to_string(), export.to_string());
@@ -692,7 +692,7 @@ fn invocables(
                 self_call: own,
                 // The Runtime binds its own operations from its own code, not a document.
                 interface_document: (!own && !builtin && documented.insert(module.to_string()))
-                    .then(|| executor_protocol::Json(module_interface(interface, module))),
+                    .then(|| executor_api::Json(module_interface(interface, module))),
                 builtin: (builtin && !own).then(|| "operations".into()),
             });
         }
@@ -704,10 +704,10 @@ fn invocables(
 /// module's callers from it).
 fn module_interface(interface: &Value, module: &str) -> Value {
     let mut narrowed = interface.clone();
-    if let Some(Value::Array(entries)) = narrowed.get_mut(protocol::interface::ENTRYPOINTS) {
+    if let Some(Value::Array(entries)) = narrowed.get_mut(api::interface::ENTRYPOINTS) {
         entries.retain(|entry| {
-            protocol::interface::callable(entry).is_some_and(|(m, _)| m == module)
-                && !protocol::interface::internal(entry)
+            api::interface::callable(entry).is_some_and(|(m, _)| m == module)
+                && !api::interface::internal(entry)
         });
     }
     narrowed
@@ -732,7 +732,7 @@ fn model_choices(
     models: &Value,
     entrypoint: &str,
 ) -> Result<Vec<crate::api::domain::ModelChoice>, (&'static str, String)> {
-    use protocol::model_ref::{self, ModelRef};
+    use api::model_ref::{self, ModelRef};
     let refuse = |why: String| ("child_call_refused", format!("model choices {why}"));
     if !models.is_null() && !models.is_object() {
         return Err(refuse("must be an object".into()));
@@ -745,17 +745,17 @@ fn model_choices(
         if !chosen.is_object() {
             return Err(refuse(format!("for {name}: a choice is {{ref, lora}}")));
         }
-        let invalid = |error: protocol::error::Error| refuse(format!("for {name}: {}", error.message));
+        let invalid = |error: api::error::Error| refuse(format!("for {name}: {}", error.message));
         let parameter = format!("{entrypoint}.models.{name}");
         let artifact = if chosen["ref"].is_object() { &chosen["ref"] } else { chosen };
         let mut choice = match (&chosen["ref"], &artifact["checkpoint"]) {
             (Value::String(raw), Value::Null) => ModelRef::parse(raw).map_err(invalid)?.choice(&parameter),
-            (Value::Object(_) | Value::Null, Value::String(digest)) => protocol::machine::ModelChoice {
+            (Value::Object(_) | Value::Null, Value::String(digest)) => api::machine::ModelChoice {
                 parameter,
                 manifest: model_ref::commit(digest).map_err(invalid)?,
                 ..Default::default()
             },
-            (Value::Null, Value::Null) => protocol::machine::ModelChoice { parameter, ..Default::default() },
+            (Value::Null, Value::Null) => api::machine::ModelChoice { parameter, ..Default::default() },
             _ => return Err(refuse(format!("for {name}: ref is neither a model name nor a ModelArtifact"))),
         };
         if !chosen["lora"].is_null() && !chosen["lora"].is_array() {
@@ -906,7 +906,7 @@ fn receive(
         fs::copy(root.join(&artifact.path), &local)?;
         hold(&local, &artifact.sha256, artifact.length)?;
         let digest = format!("sha256:{}", artifact.sha256);
-        if binding.media_type == protocol::tree::MEDIA {
+        if binding.media_type == api::tree::MEDIA {
             // A tree: its manifest's members materialized as the directory the parent reads.
             let tree = directory.join(format!("{}-tree-{}", grants.len(), artifact.sha256));
             let mut content = 0;

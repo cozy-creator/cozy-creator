@@ -7,9 +7,9 @@ use axum::{
     Json,
     extract::{Path, Query, State, rejection::QueryRejection},
 };
-use protocol::{
+use api::{
     calcifer::Play,
-    capability::{self, Grant},
+    machine::capability::{self, Grant},
     error::{Error, Kind},
     ids::RunId,
 };

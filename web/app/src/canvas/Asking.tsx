@@ -1,4 +1,4 @@
-import type { Fit } from "../types"
+import type { Fit } from "../api/calcifer"
 import { useCanvasStore } from "./context"
 
 /** This computer would render it poorly, and nothing's said for that: how, in a line, then here anyway or a GPU to rent. */

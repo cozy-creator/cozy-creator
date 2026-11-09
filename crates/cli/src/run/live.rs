@@ -1,5 +1,5 @@
 //! `cozy run ls` as a live view (`crate::tui`), fed by Calcifer's events.
-use protocol::{
+use api::{
     calcifer::{Run, StreamEvent},
     error::Error,
 };

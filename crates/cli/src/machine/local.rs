@@ -7,7 +7,7 @@ use std::{
 };
 
 use platform::lock::{Kind as LockKind, LockFile};
-use protocol::{calcifer::Authorized, error::Error};
+use api::{calcifer::Authorized, error::Error};
 use serde::Serialize;
 
 use crate::{Context, output};
@@ -16,7 +16,7 @@ use crate::{Context, output};
 fn machine_root(ctx: &Context) -> Result<PathBuf, Error> {
     let path = ctx.home.config();
     let text = std::fs::read_to_string(&path).unwrap_or_default();
-    let (config, _) = protocol::config::Config::parse(&text, &path.display().to_string())?;
+    let (config, _) = api::config::Config::parse(&text, &path.display().to_string())?;
     Ok(config.machine.root(&ctx.home))
 }
 
@@ -52,7 +52,7 @@ pub(crate) fn adopt(ctx: &Context) -> Result<Adopted, Error> {
 /// where other computers add it. `--remove` takes a key back (`DELETE`): its next call is refused,
 /// its open streams end, and runs it started finish.
 pub async fn authorize(ctx: &Context, key: &str, remove: bool) -> Result<ExitCode, Error> {
-    protocol::calcifer::local_usable("local")?;
+    api::calcifer::local_usable("local")?;
     let key = key.trim();
     let path = crate::calcifer_client::path(&["v1", "machines", "local", "authorized-keys", key]);
     let calcifer = ctx.calcifer().await?;

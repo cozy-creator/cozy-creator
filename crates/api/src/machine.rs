@@ -2,11 +2,14 @@
 //! every request carrying `authorization: Cozy-Cap <token>`. Live state and run events are SSE;
 //! files move by ranged `PUT`/`HEAD`/`GET`. Refusals are [`crate::error::Envelope`]. Unknown fields
 //! are ignored, and clients skip SSE events they do not know.
-pub use executor_protocol::TensorFSOptions;
-use executor_protocol::base64_bytes;
+pub use executor_api::TensorFSOptions;
+use executor_api::base64_bytes;
 use serde::{Deserialize, Serialize};
 
-pub mod client;
+pub mod capability;
+
+/// The one DNS name every machine's self-signed leaf carries; clients pin the leaf itself.
+pub const SERVER_NAME: &str = "cozy-worker";
 
 /// Routes, as axum templates.
 pub mod path {
@@ -248,6 +251,7 @@ pub enum RunKind {
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize,
 )]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum WarmLevel {
     /// Not kept: a warm set's item at this level leaves it.
@@ -597,6 +601,7 @@ pub struct Progress {
 
 /// A weights output's commit: `revision` (`sha256:<tree>`) of `repo_id`, in `lane`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default)]
 pub struct CheckpointRef {
     pub repo_id: String,
@@ -677,6 +682,7 @@ pub struct Outcome {
 
 /// One request field served other than as sent.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default)]
 pub struct Adjustment {
     /// Its path in the request: `steps`, `assets.2.asset`.
@@ -691,6 +697,7 @@ pub struct Adjustment {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default)]
 pub struct Reason {
     pub code: String,
@@ -699,10 +706,10 @@ pub struct Reason {
     pub origin: String,
     /// A failed call's traceback, else its executor's stderr: the last lines, secrets masked.
     /// It explains the failure after its machine is gone.
-    #[serde(skip_serializing_if = "String::is_empty")]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub detail: String,
     /// The exact commands to run next, when a refusal leaves one; at most two.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub next: Vec<String>,
 }
 
@@ -976,6 +983,7 @@ pub struct Operation {
 /// A killed process in uninterruptible sleep (`D`: a driver after an Xid, a hung network
 /// filesystem): it exits once that wait ends.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default)]
 pub struct StuckProcess {
     pub pid: u32,
@@ -996,6 +1004,7 @@ pub struct Booting {
 
 /// The machine's build toolchain: CUDA's compiler and a host C/C++ compiler.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default)]
 pub struct Toolchain {
     /// ready, absent, installing, failed
@@ -1015,6 +1024,7 @@ pub struct Toolchain {
 /// One kernel's verification on this machine (the Runtime's `verify_op`), keyed by its
 /// artifact, the card's architecture and the driver.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default)]
 pub struct KernelVerdict {
     pub kernel: String,

@@ -2,7 +2,7 @@
 //! JSON (`--full`: every column and field).
 use std::process::ExitCode;
 
-use protocol::{
+use api::{
     calcifer::{Kind as RunKind, Run, RunList, Status},
     error::Error,
 };
@@ -180,7 +180,7 @@ pub(crate) fn rows(runs: &[Run]) -> Vec<Vec<String>> {
 
 /// Whether the list people read shows it: what a walk sends ahead of itself is `cozy project`'s own (`run show` and `--json` have it).
 pub(crate) fn shown(run: &Run) -> bool {
-    !run.target.starts_with(protocol::project::AHEAD)
+    !run.target.starts_with(api::calcifer::project::AHEAD)
 }
 
 fn row(run: &Run) -> Vec<String> {

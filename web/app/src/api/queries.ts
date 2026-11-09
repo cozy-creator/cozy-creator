@@ -1,11 +1,12 @@
 import { keepPreviousData, queryOptions } from "@tanstack/react-query"
-import type { Asset, ProjectState, Run, RunList, Status } from "../types"
+import type { Asset, Run, RunList, CalciferStatus } from "./calcifer"
+import type { Project } from "../types"
 import type { Client, RunFilter } from "./client"
 
 /** Keyed by name, so an asset that didn't change keeps its identity whatever moved around it. */
 function keepAssets(old: unknown, next: unknown): unknown {
-  const before = old as ProjectState | undefined
-  const after = next as ProjectState
+  const before = old as Project | undefined
+  const after = next as Project
   if (!before) return after
   return { ...after, assets: kept(before.assets, after.assets), entities: kept(before.entities ?? [], after.entities ?? []) }
 }
@@ -19,7 +20,7 @@ function kept<T extends { name: string }>(before: T[], after: T[]): T[] {
 }
 
 /** A state with these assets as they now are, these gone, and with `head`, all that's now said of the project besides them: what it no longer says isn't in it. */
-export function withAssets(state: ProjectState, rows: Asset[], gone: Iterable<string>, head?: ProjectState): ProjectState {
+export function withAssets(state: Project, rows: Asset[], gone: Iterable<string>, head?: Project): Project {
   const fresh = new Map(rows.map((row) => [row.name, row]))
   const left = new Set(gone)
   const assets = state.assets.flatMap((row) => {
@@ -124,7 +125,7 @@ export function runsAfter(list: RunList, filter: RunFilter, changed: Run[]): { l
 }
 
 /** Whether this computer is signed in moves when a person signs in or out, and with each `hello`. */
-export const statusQuery = (client: Client, initial: Status) =>
+export const statusQuery = (client: Client, initial: CalciferStatus) =>
   queryOptions({
     queryKey: ["status"],
     queryFn: () => client.status(),

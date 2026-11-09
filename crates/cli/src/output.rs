@@ -12,8 +12,8 @@ use std::{
 
 use anstyle::{AnsiColor, Style};
 use comfy_table::{ContentArrangement, presets};
-use protocol::error::{Envelope, Error, Kind};
-use protocol::names::shown;
+use api::error::{Envelope, Error, Kind};
+use api::names::shown;
 use serde::Serialize;
 
 use crate::Context;

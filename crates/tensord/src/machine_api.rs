@@ -19,7 +19,7 @@ use std::{
 };
 use crate::storage::Store;
 use tensorfs::{format::ObjectRef, sha256};
-use protocol::error::Error;
+use api::error::Error;
 
 pub struct NativeBackend {
     pub service: Arc<Service>,
@@ -213,7 +213,7 @@ impl NativeBackend {
             let declaration =
                 entrypoint(&interface, &record.invocation.entrypoint)?;
             schema_digest =
-                Some(identity(protocol::interface::result(declaration).ok_or_else(|| {
+                Some(identity(api::interface::result(declaration).ok_or_else(|| {
                     Error::conflict("precondition_failed", "result schema absent")
                 })?)?);
             let mut references = std::collections::HashMap::new();
@@ -246,11 +246,11 @@ impl NativeBackend {
                 )
                 .map_err(problem)?;
                 // A tree's members are held too: Read serves them, a child may be handed it.
-                if binding.media_type == protocol::tree::MEDIA {
+                if binding.media_type == api::tree::MEDIA {
                     let mut manifest = Vec::new();
                     self.service.engine.open_result(&record.id, index).map_err(problem)?
                         .read_to_end(&mut manifest).map_err(problem)?;
-                    for protocol::tree::Member { sha256: sha, length, .. } in protocol::tree::parse(&manifest).map_err(problem)?.into_values() {
+                    for api::tree::Member { sha256: sha, length, .. } in api::tree::parse(&manifest).map_err(problem)?.into_values() {
                         let member = result.artifacts.iter().position(|a| a.sha256 == sha && a.length == length)
                             .ok_or_else(|| Error::internal("custody_corrupt", "a tree member is not held"))?;
                         let owner = identity(&json!({"workspace":self.workspace_id(),"actor":context.actor,
@@ -268,7 +268,7 @@ impl NativeBackend {
             if let Some(value) = &mut value {
                 rewrite_assets(
                     value,
-                    protocol::interface::result(declaration)
+                    api::interface::result(declaration)
                         .ok_or_else(|| Error::internal("custody_corrupt", "result schema absent"))?,
                     "",
                     domain::RunProductOp::Set,
@@ -544,7 +544,7 @@ impl MachineBackend for NativeBackend {
         member: &str,
     ) -> Result<crate::api::backend::OutputSnapshot, Error> {
         let tree = self.open_output(actor, run, output, index)?;
-        if tree.media_type != protocol::tree::MEDIA {
+        if tree.media_type != api::tree::MEDIA {
             return Err(Error::validation("invalid_request", "only a tree output has members"));
         }
         let mut manifest = Vec::new();
@@ -649,8 +649,8 @@ impl MachineBackend for NativeBackend {
                 .collect();
             let interface: Value = serde_json::from_slice(&installed.interface)
                 .map_err(|_| Error::internal("custody_corrupt", "held interface corrupt"))?;
-            let mut entrypoints = protocol::interface::entrypoints(&interface)
-                .filter_map(|e| protocol::interface::name(e).map(str::to_string))
+            let mut entrypoints = api::interface::entrypoints(&interface)
+                .filter_map(|e| api::interface::name(e).map(str::to_string))
                 .collect::<Vec<_>>();
             entrypoints.sort();
             packages.push(domain::MachinePackage {
@@ -1003,7 +1003,7 @@ fn digest_bytes(value: &str) -> Result<Vec<u8>, Error> {
 }
 /// A callable's declaration.
 fn entrypoint<'a>(interface: &'a Value, name: &str) -> Result<&'a Value, Error> {
-    protocol::interface::entrypoint(interface, name)
+    api::interface::entrypoint(interface, name)
         .ok_or_else(|| Error::validation("invalid_request", "entrypoint is not declared by this held package: `cozy run <package>` lists its functions"))
 }
 fn problem(error: io::Error) -> Error {

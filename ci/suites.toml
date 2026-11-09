@@ -60,9 +60,9 @@ select = ["os:macos", "os:windows"]
 
 # Whether every published package still installs and imports, and a real model's forward pass, are the Runtime's and
 # the packages' questions, and of the crates that install, load and run them; a crate TensorD only depends on
-# (protocol, platform) is not.
+# (api, platform) is not.
 [[cozy-creator.also]]
-paths = ["crates/tensord/**", "crates/executor-protocol/**", "crates/tensorfs/**", "crates/tensorfs-py/**", "crates/varena/**", "crates/varena-ledger/**"]
+paths = ["crates/tensord/**", "crates/executor-api/**", "crates/tensorfs/**", "crates/tensorfs-py/**", "crates/varena/**", "crates/varena-ledger/**"]
 select = ["imports", "model"]
 
 # A crate's own change selects its tokens here, and also the tokens of every crate that depends on
@@ -72,9 +72,9 @@ cozy = ["cli", "build:cozy"]
 cli = ["cli", "gpu", "pkg:sdxl", "build:cozy"]
 calcifer = ["cli", "gpu", "pkg:sdxl", "build:cozy"]
 hub-client = ["cli", "gpu", "pkg:sdxl", "build:cozy"]
-protocol = ["cli", "gpu", "pkg:sdxl", "build:cozy"]
+api = ["cli", "gpu", "pkg:sdxl", "build:cozy"]
 platform = ["cli", "os:macos", "os:windows", "build:cozy"]
-executor-protocol = ["cli", "build:cozy"]
+executor-api = ["cli", "build:cozy"]
 tensord = ["cli", "gpu", "gpu-datacenter", "varena", "pkg:*", "build:cozy"]
 tensorfs = ["cli", "gpu", "gpu-datacenter", "varena", "pkg:*", "build:cozy"]
 varena = ["cli", "gpu", "gpu-datacenter", "varena", "pkg:*", "build:cozy"]

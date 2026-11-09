@@ -26,11 +26,11 @@ use axum::{
 use futures_util::{StreamExt as _, TryStreamExt as _, stream};
 use hub_client::{Client, Credential};
 use platform::durable::FileAt as _;
-use protocol::{
+use api::{
     config::Origin,
     error::{Error, Kind},
-    hub::At,
-    project::{Event, Opened, Skipped, Transferred},
+    calcifer::hub::At,
+    calcifer::project::{Event, Opened, Skipped, Transferred},
 };
 use sha2::{Digest as _, Sha256};
 use tensorfs::{

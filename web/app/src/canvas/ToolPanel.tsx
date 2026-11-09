@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query"
 import { useEffect, useState } from "react"
 import { toolsQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
-import type { Tool, Tools } from "../types"
+import type { Tool, Tools } from "../api/calcifer"
 import { Icon } from "../ui/Icon"
 import { say } from "../ui/notes"
 import { useSignal } from "../ui/signal"
@@ -88,7 +88,7 @@ function ToolRow({ tool, place, yours }: { tool: Tool; place: (tool: Tool) => vo
 export function ToolPanel({ project, machine, waiting, shut, setShut, place, choose, box }: { project: string | null; machine: string | null; waiting: boolean; shut: boolean; setShut: (shut: boolean) => void; place: (tool: Tool) => void; choose: () => void; box?: string }) {
   const { client } = useConnection()
   const store = useCanvasStore()
-  const runs = useOfElement(box ?? "", (view) => view?.asset?.tool)
+  const runs = useOfElement(box ?? "", (view) => view?.asset?.tool ?? undefined)
   const known = useSignal(store.tools)
   const boxed = box && known.get(runs ?? "")?.model ? box : null
   const [typed, setTyped] = useState("")

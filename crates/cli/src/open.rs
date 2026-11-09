@@ -3,7 +3,7 @@
 //! printed: it works once, for 60 s.
 use std::process::{Command, ExitCode, Stdio};
 
-use protocol::{calcifer::SessionCode, error::Error};
+use api::{calcifer::SessionCode, error::Error};
 use serde_json::{Value, json};
 
 use crate::{Context, output, project};

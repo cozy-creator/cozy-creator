@@ -1,6 +1,6 @@
 //! The machine's launch grant: what a Hub (rental) or this computer's home (local) gives
 //! it, judged once from [`crate::config`]'s load.
-use protocol::config::MachineConfig;
+use api::config::MachineConfig;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use platform::paths::Home;
 use ed25519_dalek::VerifyingKey;

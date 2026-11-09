@@ -1,5 +1,5 @@
 //! `cozy machine ls` as a live view (`crate::tui`), fed by Calcifer's events.
-use protocol::{
+use api::{
     calcifer::{Machine, MachineList, MachineState, StreamEvent},
     error::{Error, Kind},
 };

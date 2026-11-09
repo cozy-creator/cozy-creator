@@ -1,4 +1,4 @@
-import type { Machine } from "../../types"
+import type { Machine } from "../../api/calcifer"
 import { span, usd } from "../format"
 
 /** What `name` in a route means: a machine's name, former name or rental id. */
@@ -55,13 +55,13 @@ export const kindWords = (machine: Machine) =>
 /** When an idle machine ends itself; a rental with work names no deadline and ends after it. */
 export function endsWords(machine: Machine, now: number): string {
   const deadline = machine.status?.idle_deadline_ms
-  if (deadline !== undefined) return deadline > now ? `ends in ${span((deadline - now) / 1000)} if it stays idle` : "ends now"
+  if (deadline != null) return deadline > now ? `ends in ${span((deadline - now) / 1000)} if it stays idle` : "ends now"
   return machine.status && machine.kind === "rental" ? "ends after its jobs" : ""
 }
 
 export function spentWords(machine: Machine): string {
   const rental = machine.rental
-  if (rental?.spend_usd_micros === undefined) return ""
+  if (rental?.spend_usd_micros == null) return ""
   const basis = rental.spend_basis === "charged" ? "" : rental.spend_basis === "unmetered" ? " unmetered" : " est."
   return `${usd(rental.spend_usd_micros)}${basis}`
 }

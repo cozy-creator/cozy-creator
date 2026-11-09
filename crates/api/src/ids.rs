@@ -8,6 +8,7 @@ use sha2::{Digest as _, Sha256};
 /// and TensorD. Minted as `run-` and 24 hex characters; any 1–256 bytes are accepted, so runs
 /// another client sent keep their ids.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(try_from = "String", into = "String")]
 pub struct RunId(String);
 
@@ -45,6 +46,7 @@ impl fmt::Display for RunId {
 
 /// Content's name on the wire: `sha256:` and 64 lowercase hex characters.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(type = "string"))]
 #[serde(try_from = "String", into = "String")]
 pub struct Digest([u8; 32]);
 

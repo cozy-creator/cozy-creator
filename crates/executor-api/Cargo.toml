@@ -1,6 +1,6 @@
 [package]
-name = "executor-protocol"
-description = "The TensorD and Runtime executor seam's types: all of `protocol` that the tensorfs wheel needs."
+name = "executor-api"
+description = "The TensorD and Runtime executor seam's types, which the tensorfs wheel takes without the rest of api"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -3,7 +3,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { Link } from "react-router-dom"
 import { machinesQuery, projectQuery, runsQuery } from "../../api/queries"
 import { useConnection } from "../../app/Connection"
-import type { Machine } from "../../types"
+import type { Machine } from "../../api/calcifer"
 import { Icon } from "../../ui/Icon"
 import { Bar } from "../common"
 import { workWords } from "../runs/words"
@@ -76,7 +76,7 @@ function Row({ doing, boxes, to }: { doing: Doing; boxes: Map<number, string>; t
         <b>{runName(run, boxes)}</b>
       </Link>
       <span className="kind">Run {run.number}</span>
-      {going && fraction !== undefined && <Bar fraction={fraction} />}
+      {going && fraction != null && <Bar fraction={fraction} />}
       {said && <span className="said">{said}</span>}
     </li>
   )

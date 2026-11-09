@@ -7,9 +7,9 @@ use std::{
     process::ExitCode,
 };
 
-use protocol::{
+use api::{
     error::{Error, Kind},
-    project::{Ahead, Board, Event, Job, JobState, Rendered},
+    calcifer::project::{Ahead, Board, Event, Job, JobState, Rendered},
 };
 use ratatui::{
     Frame,

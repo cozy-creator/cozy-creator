@@ -5,9 +5,9 @@
 //! Hub: nothing moves.
 use std::process::ExitCode;
 
-use protocol::calcifer::{MachineModels, Run, Status};
-use protocol::error::Error;
-use protocol::hub::{Displayed, Mirrored, ModelDownload, ModelUpload, ModelUploading, RecordedCommit};
+use api::calcifer::{MachineModels, Run, Status};
+use api::error::Error;
+use api::calcifer::hub::{Displayed, Mirrored, ModelDownload, ModelUpload, ModelUploading, RecordedCommit};
 
 use super::{Download, Upload};
 use crate::Context;
@@ -64,7 +64,7 @@ pub(crate) async fn download(ctx: &Context, args: Download) -> Result<ExitCode, 
         agreed: None,
     };
     crate::send::held(ctx, &mut ask.model, &mut ask.name, false).await?;
-    let submitted: protocol::calcifer::Submitted =
+    let submitted: api::calcifer::Submitted =
         start(ctx, "/v1/model-downloads", "/v1/model-download-quotes", &on, &mut ask, |a, agreed| a.agreed = Some(agreed)).await?;
     let run = crate::run::follow(ctx, submitted.run).await?;
     made(ctx, &run);
@@ -113,7 +113,7 @@ pub(crate) async fn upload(ctx: &Context, args: Upload) -> Result<ExitCode, Erro
 }
 
 /// What Calcifer did once the run completed.
-fn after(run: &Run) -> protocol::hub::AfterRun {
+fn after(run: &Run) -> api::calcifer::hub::AfterRun {
     (run.result.as_ref()).and_then(|r| serde_json::from_value(r["after"].clone()).ok()).unwrap_or_default()
 }
 

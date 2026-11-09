@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react"
 import { parseLink, play } from "../../../../player/cozy-webrtc.js"
 import { useConnection } from "../../app/Connection"
 import { Player } from "../../canvas/Media"
-import type { OutputItem, Run } from "../../types"
+import type { OutputItem, Run } from "../../api/calcifer"
 import { Failure, useAsk } from "../common"
 import { bytes, span } from "../format"
 

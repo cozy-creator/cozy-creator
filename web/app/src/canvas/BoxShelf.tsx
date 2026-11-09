@@ -1,7 +1,7 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query"
 import { useEffect, useState } from "react"
 import { useConnection } from "../app/Connection"
-import type { FoundModel } from "../types"
+import type { FoundModel } from "../api/calcifer"
 import { useSignal } from "../ui/signal"
 import { NSFW, useShowNsfw } from "../ui/Tags"
 import { AddOnRow } from "./AddOns"
@@ -14,7 +14,7 @@ import { toolName } from "./shown"
 /** As many as one search of the Hub reads. */
 const MOST = 100
 
-const own = (ref?: string) => ref?.split("@")[0]
+const own = (ref?: string | null) => ref?.split("@")[0]
 
 /**
  * The left bar while a box whose tool runs a model is open (Paul, 11-06): what can go on it, in place of the tools, each picked with a click or dragged
@@ -38,7 +38,7 @@ export function BoxShelf({ name }: { name: string }) {
   const [showNsfw] = useShowNsfw()
   const { data, error, isPending } = useQuery({
     queryKey: ["models", q, MOST, model?.family, showNsfw],
-    queryFn: ({ signal }) => client.models(q, MOST, signal, { family: model?.family, noTag: showNsfw ? undefined : NSFW }),
+    queryFn: ({ signal }) => client.models(q, MOST, signal, { family: model?.family ?? undefined, noTag: showNsfw ? undefined : NSFW }),
     enabled: Boolean(model?.family),
     staleTime: 60_000,
     placeholderData: keepPreviousData,
@@ -60,7 +60,7 @@ export function BoxShelf({ name }: { name: string }) {
   const current = fine?.ref ?? base
   // Another function's own model in its package is its Turbo: the box's switch, not a pick.
   const switches = new Set([...tools.values()].flatMap((other) => (other !== tool && other.package === tool.package && other.model?.default ? [own(other.model.default)] : [])))
-  const words = (ref: string) => shortName(ref, model.family)
+  const words = (ref: string) => shortName(ref, model.family ?? undefined)
   const shownBase = base && (!q || base.toLowerCase().includes(q.toLowerCase()))
   const checkpoints = found.filter((one) => one.kind === "weights" && one.model !== base && !switches.has(one.model))
   const loras = found.filter((one) => one.kind === "lora" && !held.some((addOn) => addOn.lora && addOn.ref === one.model))

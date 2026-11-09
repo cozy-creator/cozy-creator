@@ -8,7 +8,7 @@ use crate::{
     runs::Runs,
     service::Service,
 };
-use protocol::{
+use api::{
     error::Error,
     machine::{self as v1, Basis, JobSize},
 };
@@ -134,7 +134,7 @@ impl<'a> Here<'a> {
     fn installed(&self, installation: &Installation, entrypoint: &str, gpus: u32) -> (Option<Vec<u32>>, String) {
         let Ok(generation) = self.service.catalog.record(&installation.generation) else { return (None, String::new()) };
         let interface: Option<serde_json::Value> = serde_json::from_slice(&installation.interface).ok();
-        let entry = interface.as_ref().and_then(|interface| protocol::interface::entrypoint(interface, entrypoint));
+        let entry = interface.as_ref().and_then(|interface| api::interface::entrypoint(interface, entrypoint));
         let widths = entry.zip(self.service.pool()).map(|(entry, pool)| pool.widths(entry, &generation, gpus));
         (widths, generation.package)
     }

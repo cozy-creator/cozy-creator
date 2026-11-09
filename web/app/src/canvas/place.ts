@@ -2,7 +2,7 @@ import { ApiError, type Client } from "../api/client"
 import { lost } from "../api/outbox"
 import { hashFile, inLine, sendFile } from "../api/upload"
 import { say } from "../ui/notes"
-import type { Asset, Imported, Row, Tool } from "../types"
+import type { Asset, Imported, Card, Tool } from "../api/calcifer"
 import { CARD_WIDTH, type CanvasStore, type CarriedFile, type MediaKind, type Pushes, type Stage, UNDO_MS } from "./CanvasStore"
 import { startingFields, TEXT_TOOL } from "./controls"
 import type { CopiedBox } from "./copy"
@@ -75,7 +75,7 @@ export class Placer {
   }
 
   /** An asset that holds these, there at once, with nothing made yet. */
-  private box(wanted: string, { kind, tool, fields, timeline }: Pick<Asset, "kind" | "tool" | "fields" | "timeline">, at: Row, failed: string, edit?: string): string {
+  private box(wanted: string, { kind, tool, fields, timeline }: Pick<Asset, "kind" | "tool" | "fields" | "timeline">, at: Card, failed: string, edit?: string): string {
     const key = `asset-${crypto.randomUUID()}`
     const text = !tool
     const body = text ? { tool: "", name: wanted, fields } : { tool, name: wanted, fields, kind }
@@ -143,7 +143,7 @@ export class Placer {
     this.file(file, { x: Math.round(point.x - CARD_WIDTH / 2), y: Math.round(point.y - 16), w: CARD_WIDTH })
   }
 
-  private file(file: CarriedFile, at: Row, edit?: string): string {
+  private file(file: CarriedFile, at: Card, edit?: string): string {
     const key = `import-${crypto.randomUUID()}`
     const { description, from, number } = file
     return this.store.place(
@@ -203,7 +203,6 @@ export class Placer {
       const answer = await new Promise<Imported>((done, refused) => this.store.outbox.add({ send, done, refused }))
       if (pushes) this.store.pushesSent(pushes, answer.kept)
       this.store.land(key, answer, at, edit)
-      if (answer.note) say(answer.note)
       return answer.name
     } finally {
       this.store.endAdding()

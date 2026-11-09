@@ -1,5 +1,5 @@
 //! Local code as it travels (cl-819): a package folder or a PEP 723 script, with the path dependencies its sources name,
-//! under their common folder, as one tree (`protocol::tree`). Whoever holds the folder reads it here, the CLI its own and
+//! under their common folder, as one tree (`api::tree`). Whoever holds the folder reads it here, the CLI its own and
 //! Calcifer a project's `with: ./dir`, and Calcifer works from its copy of the tree, by its digest: it reads no client's disk.
 use std::{
     collections::BTreeMap,
@@ -19,6 +19,7 @@ use crate::{
 /// Local code by content: its tree document's digest, each file and then the document sent first (`PUT /v1/files`), and
 /// where the package is in the tree.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct LocalCode {
     pub tree: Digest,
     /// The package's folder or script in the tree, `/`-separated; empty: the tree itself.

@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query"
 import { useState } from "react"
 import { useConnection } from "../../app/Connection"
-import type { Machine } from "../../types"
+import type { Machine } from "../../api/calcifer"
 import { Failure } from "../common"
 import { bytes, shown } from "../format"
 

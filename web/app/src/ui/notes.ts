@@ -22,7 +22,7 @@ export function say(message: string, error?: unknown, offer?: { action: NonNulla
   const reason = error instanceof Error ? error.message : undefined
   const text = reason && reason !== message ? `${message}: ${reason}` : message
   const id = ++last
-  notes.set([...notes.get().slice(-7), { id, message: text, remedy: body?.remedy, next: body?.next, action: offer?.action }])
+  notes.set([...notes.get().slice(-7), { id, message: text, remedy: body?.remedy ?? undefined, next: body?.next, action: offer?.action }])
   setTimeout(() => dismiss(id), offer?.ms ?? (error ? FAILED_MS : SAID_MS))
   return id
 }

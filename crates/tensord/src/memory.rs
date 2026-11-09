@@ -38,7 +38,7 @@ impl Gpu {
     }
 
     /// Driver-attributed process usage. Missing pid accounting is unknown, not zero.
-    pub fn status(&self, tenants: &Tenants) -> Option<protocol::machine::GpuMemory> {
+    pub fn status(&self, tenants: &Tenants) -> Option<api::machine::GpuMemory> {
         let read = platform::gpu::Device::open(&self.uuid).and_then(|gpu| gpu.read()).ok()?;
         let processes = read.processes?;
         let book = tenants.lock().unwrap_or_else(|e| e.into_inner());
@@ -47,10 +47,10 @@ impl Gpu {
         }
         let processes: Vec<_> = processes.into_iter().filter_map(|(pid, bytes)| {
             let tenant = book.get(&pid)?;
-            Some(protocol::machine::ProcessMemory { pid, executor: format!("{}#{}", tenant.plan, tenant.start), bytes, chunks: 0 })
+            Some(api::machine::ProcessMemory { pid, executor: format!("{}#{}", tenant.plan, tenant.start), bytes, chunks: 0 })
         }).collect();
         let allocated_bytes: u64 = processes.iter().map(|p| p.bytes).sum();
-        Some(protocol::machine::GpuMemory {
+        Some(api::machine::GpuMemory {
             capacity_bytes: read.total, free_bytes: read.free,
             foreign_bytes: read.total.saturating_sub(read.free).saturating_sub(allocated_bytes),
             allocated_bytes, processes, ..Default::default()

@@ -113,7 +113,7 @@ fn spool_file(spool: &Path, name: &str) -> io::Result<PathBuf> {
 /// bytes hash here to the digest it is named by, so only a holder of the bytes passes, whatever
 /// digest it names. No tree: its manifest would name objects the caller need not hold.
 pub(crate) fn saved(spool: &Path, file: &SavedFile) -> io::Result<(PathBuf, ObjectRef)> {
-    if file.media_type == protocol::tree::MEDIA {
+    if file.media_type == api::tree::MEDIA {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "a tree cannot be passed as a saved file"));
     }
     let path = spool_file(spool, &spool_name(&file.asset_ref))?;
@@ -235,7 +235,7 @@ fn declared(engine: &Engine, generation: &Generation, id: &str) -> io::Result<(c
     let (_, _, interface) = generation
         .app(&record.invocation.module)
         .ok_or_else(|| io::Error::other("held application interface absent"))?;
-    let entry = protocol::interface::entrypoint(interface, &record.invocation.entrypoint)
+    let entry = api::interface::entrypoint(interface, &record.invocation.entrypoint)
         .cloned()
         .ok_or_else(|| io::Error::other("declared entrypoint absent"))?;
     Ok((context, entry))
@@ -248,7 +248,7 @@ pub fn checkpoint(engine: &Engine, generation: &Generation, id: &str, seq: u64, 
     publish: &dyn Fn(&str) -> Result<Option<(String, tensorfs::format::ObjectRef)>, crate::objects::Refused>) -> Answer {
     let record = || -> io::Result<u64> {
         let (_, entry) = declared(engine, generation, id)?;
-        if !protocol::interface::weights_outputs(&entry).any(|(output, _)| output == item.output) {
+        if !api::interface::weights_outputs(&entry).any(|(output, _)| output == item.output) {
             return Err(io::Error::new(io::ErrorKind::InvalidInput,
                 format!("{:?} is not a declared weights output", item.output)));
         }
@@ -260,7 +260,7 @@ pub fn checkpoint(engine: &Engine, generation: &Generation, id: &str, seq: u64, 
             Some((destination, commit)) => (destination, commit.id()),
             None => (item.repo_id.clone(), item.revision.clone()),
         };
-        let reference = protocol::machine::CheckpointRef { repo_id, revision, lane: item.output.clone() };
+        let reference = api::machine::CheckpointRef { repo_id, revision, lane: item.output.clone() };
         let product = domain::RunProduct {
             output: item.output.clone(), checkpoint: Some(reference.clone()),
             op: domain::RunProductOp::Set as i32, ..Default::default()
@@ -288,7 +288,7 @@ fn commit(
     publish: &Publish,
 ) -> io::Result<(domain::Ref, u64)> {
     let (context, entry) = declared(engine, generation, id)?;
-    let result = protocol::interface::result(&entry).ok_or_else(|| io::Error::other("declared result schema absent"))?;
+    let result = api::interface::result(&entry).ok_or_else(|| io::Error::other("declared result schema absent"))?;
     let op = output_op(result, &publish.output).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,

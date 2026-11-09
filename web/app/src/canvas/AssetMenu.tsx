@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
-import type { Tool } from "../types"
+import type { Tool } from "../api/calcifer"
 import { useSignal } from "../ui/signal"
 import { useCanvasStore, useElement } from "./context"
 import { makes, toolName } from "./shown"

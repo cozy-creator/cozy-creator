@@ -5,12 +5,12 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 doc=$root/crates/tensord/api/openapi.yaml
 routers=("$root/crates/tensord/src/api/http.rs" "$root/crates/tensord/src/api/server.rs")
-client=$root/crates/protocol/src/machine/client.rs
+client=$root/crates/calcifer/src/machine_client.rs
 shape() { sed -E 's/\{[^}]*\}/{}/g' | sort -u; }
 fail() { echo "machine-routes: $*" >&2; exit 1; }
 
-# `path::NAME` to its path, from protocol::machine's `pub mod path`.
-paths=$(sed -n '/^pub mod path {/,/^}/p' "$root/crates/protocol/src/machine.rs" |
+# `path::NAME` to its path, from api::machine's `pub mod path`.
+paths=$(sed -n '/^pub mod path {/,/^}/p' "$root/crates/api/src/machine.rs" |
   { grep -oE 'const [A-Z_]+: &str = "[^"]+"' || true; } | sed -E 's/const ([A-Z_]+): &str = "([^"]+)"/\1 \2/')
 resolve() { awk 'NR == FNR { at[$1] = $2; next } !($2 in at) { print "?", $2; next } { print $1, at[$2] }' <(echo "$paths") -; }
 
@@ -36,7 +36,7 @@ calls=$({ grep -oE '\.request\( *Method::[A-Z]+, *path::[A-Z_]+' <<<"$source" ||
 called=$(resolve <<<"$calls" | shape)
 
 [ -n "$documented" ] && [ -n "$served" ] && [ -n "$called" ] || fail "no routes read"
-! printf '%s\n%s\n' "$served" "$called" | grep -q '^?' || fail "a route names a path:: constant protocol::machine does not have"
+! printf '%s\n%s\n' "$served" "$called" | grep -q '^?' || fail "a route names a path:: constant api::machine does not have"
 drift=
 differ() { [ -z "$2" ] || drift+=$(printf '\n%s:\n%s' "$1" "$2"); }
 differ "TensorD serves, the document lacks" "$(comm -23 <(echo "$served") <(echo "$documented"))"

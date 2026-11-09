@@ -10,7 +10,7 @@
 //! outcome.
 use super::{auth::VerifiedActor, backend::MachineBackend, v1, MachineIdentity};
 use crate::machine::update::{Choice, Request, Status as Update, Updates, BINARY};
-use protocol::error::Error;
+use api::error::Error;
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use futures_util::Stream;
 
@@ -56,7 +56,7 @@ struct Cohort {
     /// The most memory each GPU offers, in bytes; 0 lifts it (`--gpu-memory-limit`).
     gpu_memory_limit: Option<u64>,
     /// Categorical sharing policy, applied by the same drain/restart as other machine settings.
-    mode: Option<protocol::config::MachineMode>,
+    mode: Option<api::config::MachineMode>,
     #[serde(flatten)]
     unknown: BTreeMap<String, serde_json::Value>,
 }

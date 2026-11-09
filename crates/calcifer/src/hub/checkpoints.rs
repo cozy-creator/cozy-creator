@@ -11,11 +11,11 @@ use std::{
 
 use futures_util::{StreamExt as _, stream};
 use hub_client::{Client, types};
-use protocol::{
+use api::{
     config::Origin,
-    hub::{FamilyFrom, FoundModel, ModelKind},
+    calcifer::hub::{FamilyFrom, FoundModel, ModelKind},
     model_ref::{ModelRef, Repo},
-    tool::Tool,
+    calcifer::tool::Tool,
 };
 use tensorfs::{
     Endpoint,

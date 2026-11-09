@@ -72,8 +72,8 @@ impl Generation {
     pub fn groups(&self, available: usize) -> Vec<u32> {
         let mut groups: Vec<u32> = std::iter::once(&self.interface)
             .chain(self.callees.iter().map(|callee| &callee.interface))
-            .flat_map(protocol::interface::entrypoints)
-            .map(protocol::interface::models)
+            .flat_map(api::interface::entrypoints)
+            .map(api::interface::models)
             .filter(|models| models.iter().any(crate::gpu_service::constructed))
             .flat_map(|models| crate::gpu_service::group_degrees(models, 0, available))
             .collect();

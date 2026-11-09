@@ -3,11 +3,11 @@
 //! written in it; a pickup comes only from the gesture. What's past a bound is clamped and said. It knows no model.
 use std::collections::BTreeSet;
 
-use protocol::{
+use api::{
     error::{Error, Kind},
     interface::{Callable, Field, Snap, Struct, Type, Wire},
-    project::Pickup,
-    tool::{MEDIA, PLATFORM},
+    calcifer::project::Pickup,
+    calcifer::tool::{MEDIA, PLATFORM},
 };
 use serde_json::{Map, Value, json};
 

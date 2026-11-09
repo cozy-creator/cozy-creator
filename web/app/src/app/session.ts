@@ -1,8 +1,8 @@
-import type { Session } from "../types"
+import type { BrowserSession } from "../api/calcifer"
 
 const KEY = "cozy.session"
 
-export function readSession(): Session | null {
+export function readSession(): BrowserSession | null {
   try {
     const held = JSON.parse(localStorage.getItem(KEY) ?? "null")
     return typeof held?.token === "string" && typeof held?.media === "string" ? held : null
@@ -11,7 +11,7 @@ export function readSession(): Session | null {
   }
 }
 
-export function saveSession(session: Session | null) {
+export function saveSession(session: BrowserSession | null) {
   try {
     if (session) localStorage.setItem(KEY, JSON.stringify(session))
     else localStorage.removeItem(KEY)

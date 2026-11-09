@@ -23,7 +23,7 @@ use axum::{
 };
 use futures_util::StreamExt as _;
 use platform::durable::{self, FileAt as _};
-use protocol::{
+use api::{
     calcifer::File,
     error::{Error, Kind},
     ids::Digest,

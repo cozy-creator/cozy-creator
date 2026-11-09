@@ -6,10 +6,10 @@ use std::{
     sync::Mutex,
 };
 
-use protocol::{
+use api::{
     calcifer::{Event as RunEvent, Progress, Run, Status},
     ids::RunId,
-    project::{Ahead, Board, Event, Job, JobState, Preview},
+    calcifer::project::{Ahead, Board, Event, Job, JobState, Preview},
 };
 use tokio::sync::{broadcast, watch};
 

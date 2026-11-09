@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query"
 import { Link } from "react-router-dom"
 import { runsQuery } from "../../api/queries"
 import { useConnection } from "../../app/Connection"
-import type { RunList } from "../../types"
+import type { RunList } from "../../api/calcifer"
 
 const going = (list?: RunList) => (list?.runs.length ?? 0) + (list?.older ?? 0)
 

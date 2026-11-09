@@ -3,7 +3,7 @@
 use std::process::ExitCode;
 
 use clap::{CommandFactory, Parser, Subcommand};
-use protocol::{
+use api::{
     config,
     error::{Error, Kind},
 };

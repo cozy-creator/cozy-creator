@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use protocol::yaml::keys;
+use api::yaml::keys;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
@@ -654,7 +654,7 @@ fn beat_writes(body: &Map<String, Value>) -> Vec<(usize, String, f64)> {
 /// `with` as the key held it: no release, no root namespace, local code by its directory's name.
 fn plain_with(with: &str) -> String {
     let with = with.trim();
-    if protocol::target::written_as_path(with) || with.ends_with(".py") {
+    if api::target::written_as_path(with) || with.ends_with(".py") {
         let name = with.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().unwrap_or(with);
         return name.strip_suffix(".py").unwrap_or(name).to_owned();
     }

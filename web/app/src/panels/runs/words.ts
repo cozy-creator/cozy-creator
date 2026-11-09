@@ -1,4 +1,4 @@
-import type { Run, Stalled } from "../../types"
+import type { Run, Stalled } from "../../api/calcifer"
 import { bytes, shown, span, usd } from "../format"
 
 export const settled = (run: Run) => run.status === "completed" || run.status === "failed" || run.status === "canceled"
@@ -19,12 +19,12 @@ export const statusClass = (run: Run) =>
 export function stalledWords(stalled: Stalled, now: number): string {
   const minutes = Math.floor(Math.max(0, now - stalled.since_ms) / 60_000)
   const hourly = stalled.usd_micros_per_hour
-  const cost = hourly === undefined ? "" : `, ${usd((hourly * minutes) / 60)} so far at ${usd(hourly)}/h`
+  const cost = hourly == null ? "" : `, ${usd((hourly * minutes) / 60)} so far at ${usd(hourly)}/h`
   return `No progress for ${span(minutes * 60)} on ${stalled.machine}${cost}`
 }
 
 /** The seconds the run has left, as Calcifer estimates them for every client. */
-export const secondsLeft = (run: Run): number | undefined => run.progress?.eta_s
+export const secondsLeft = (run: Run): number | undefined => run.progress?.eta_s ?? undefined
 
 /** That nothing like it ran on its machine to tell how long it takes. */
 const firstRun = (run: Run) => run.progress?.eta_s === undefined && run.progress?.eta_basis === "first_run"
@@ -33,7 +33,7 @@ const firstRun = (run: Run) => run.progress?.eta_s === undefined && run.progress
 export function eta(run: Run): string | null {
   const progress = run.progress
   if (firstRun(run)) return "first run on this machine"
-  if (progress?.eta_s === undefined) return null
+  if (progress?.eta_s == null) return null
   return `${(progress.eta_confidence ?? 1) < 0.5 ? "about " : ""}${span(progress.eta_s)} left`
 }
 
@@ -78,7 +78,7 @@ export function progressWords(run: Run): string {
 
 /** Its own time, never its queue's. */
 export function runTime(run: Run, now: number): string {
-  if (run.execution_ms !== undefined) return span(run.execution_ms / 1000)
-  if (run.started_at_ms !== undefined && !settled(run)) return span((now - run.started_at_ms) / 1000)
+  if (run.execution_ms != null) return span(run.execution_ms / 1000)
+  if (run.started_at_ms != null && !settled(run)) return span((now - run.started_at_ms) / 1000)
   return ""
 }

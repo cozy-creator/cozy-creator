@@ -66,7 +66,7 @@ export function RunDrawer() {
       {run.stalled && (
         <p className="failure" role="alert">
           {stalledWords(run.stalled, now)}. Nothing ends it but you.
-          {run.stalled.usd_micros_per_hour !== undefined && <span className="remedy">{run.stalled.machine} bills {usd(run.stalled.usd_micros_per_hour)}/h meanwhile.</span>}
+          {run.stalled.usd_micros_per_hour != null && <span className="remedy">{run.stalled.machine} bills {usd(run.stalled.usd_micros_per_hour)}/h meanwhile.</span>}
         </p>
       )}
       {run.reason && (
@@ -80,12 +80,12 @@ export function RunDrawer() {
           )}
         </div>
       )}
-      {live && run.progress?.done_fraction !== undefined && <Bar fraction={run.progress.done_fraction} />}
+      {live && run.progress?.done_fraction != null && <Bar fraction={run.progress.done_fraction} />}
       {live && <p className="muted">{progressWords(run)}</p>}
       <KV
         rows={[
           ["Machine", run.machine && <Link className="more" to={to(`machines/${encodeURIComponent(run.machine)}`)}>{run.machine}</Link>],
-          ["Waits", run.queue_position === undefined ? run.waiting : `${run.queue_position === 1 ? "next" : `${run.queue_position - 1} ahead`}${run.waiting ? `: ${run.waiting}` : ""}`],
+          ["Waits", run.queue_position == null ? run.waiting : `${run.queue_position === 1 ? "next" : `${run.queue_position - 1} ahead`}${run.waiting ? `: ${run.waiting}` : ""}`],
           ["Left", live ? eta(run) : null],
           ["Time", runTime(run, now)],
           ["Asked", when(run.created_at_ms)],

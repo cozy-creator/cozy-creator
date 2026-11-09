@@ -1,4 +1,5 @@
-import type { Field, MainFile, Media, Tool } from "../types"
+import type { ToolField, MainFile, Tool } from "../api/calcifer"
+import type { Media } from "../types"
 import type { ElementView } from "./CanvasStore"
 
 /** The file a card shows, and where it came from. */
@@ -20,15 +21,15 @@ export function shownOf(view: ElementView): Shown | null {
   const watch = watched(view)
   if (watch && watch.number === undefined) return null
   const versions = asset.prefixes ?? []
-  const version = (number?: number) => versions.find((held) => held.number === number)
+  const version = (number?: number | null) => versions.find((held) => held.number === number)
   const held = version(view.viewed) ?? version(asset.version)
-  if (held?.main) return { ...held.main, number: held.number, run: held.run }
+  if (held?.main) return { ...held.main, number: held.number, run: held.run ?? undefined }
   if (asset.sha256 && asset.path && asset.field) {
     const { path, sha256, field, width, height, duration_ms, alpha, absent, machine } = asset
     return { output: field, path, sha256, field, width, height, duration_ms, alpha, absent, machine }
   }
   const newest = versions.at(-1)
-  return newest?.main ? { ...newest.main, number: newest.number, run: newest.run } : null
+  return newest?.main ? { ...newest.main, number: newest.number, run: newest.run ?? undefined } : null
 }
 
 /** A card's size, unmeasured, so a card culled away still counts in a fit. */
@@ -67,7 +68,7 @@ export const makes = (view: ElementView | undefined) => Boolean(view?.asset?.too
 export const toolName = (tool: Tool) => (tool.package_title && tool.package_title !== tool.label ? `${tool.package_title} · ${tool.label}` : tool.label)
 
 /** What Calcifer makes itself, free, with no machine. */
-export const madeHere = (tool: string | undefined) => tool === "cozy" || Boolean(tool?.startsWith("cozy/"))
+export const madeHere = (tool?: string | null) => tool === "cozy" || Boolean(tool?.startsWith("cozy/"))
 
 /** A box that makes something is what it's asked for; approved, it's that file, until its words are asked for. */
 export const faceOf = (view: ElementView): "edit" | "media" => (makes(view) && (view.hereWords || !view.asset?.pinned) ? "edit" : "media")
@@ -99,8 +100,8 @@ const MEDIA: Media[] = ["image", "video", "audio"]
 
 /** The kinds `tool`'s prompts send a mention as, each its `takes`, else any. None: it has no prompt. */
 function takenBy(tool: Tool | undefined): Media[] {
-  const prompts = (fields: Field[]): Field[] => fields.flatMap((field) => (field.type === "prompt" ? [field] : prompts(field.members ?? [])))
-  return [...new Set(prompts(tool?.fields ?? []).flatMap((field) => field.takes ?? MEDIA))]
+  const prompts = (fields: ToolField[]): ToolField[] => fields.flatMap((field) => (field.type === "prompt" ? [field] : prompts(field.members ?? [])))
+  return [...new Set(prompts(tool?.fields ?? []).flatMap((field) => (field.takes as Media[] | null) ?? MEDIA))]
 }
 
 /** Why `tool`'s words can't send a mention of `view`: a box of a kind none of its prompts takes. A text box is words, and a tool with no prompt takes anything. */
@@ -116,7 +117,7 @@ export function watched(view: ElementView): { run?: number; number?: number } | 
   const { watchRun, watchFrom: from } = view
   if (watchRun === undefined && from === undefined) return undefined
   const versions = view.asset?.prefixes ?? []
-  const newer = (run?: number) => (run ?? 0) > (from ?? 0)
+  const newer = (run?: number | null) => (run ?? 0) > (from ?? 0)
   const run = watchRun ?? Math.max(0, ...(view.asset?.making ?? []).filter(newer), ...versions.filter((held) => newer(held.run)).map((held) => held.run ?? 0))
   return { run: run || undefined, number: run ? versions.find((held) => held.run === run)?.number : undefined }
 }
