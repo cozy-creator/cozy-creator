@@ -58,7 +58,7 @@ function Connectivity() {
           {owed.held ? `Not saved: ${noHash(owed.held)}: ${changes} waiting` : `Saving ${changes}`}
         </span>
       ) : (
-        trying > 0 && <span className="pill warn">Trying again, attempt {trying}/{TRIES}</span>
+        trying > 0 && <span className="pill warn">Trying again, attempt {trying}/{TRIES}{owed.count > 0 && ` · ${changes} waiting`}</span>
       )}
       {version && (
         <button type="button" className="pill warn" onClick={() => location.reload()}>
