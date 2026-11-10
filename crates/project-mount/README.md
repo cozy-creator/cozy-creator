@@ -43,3 +43,10 @@ with `COZY_VAULT_PROVIDER_DIAGNOSTICS=<private-log-file>`; the platform fixture
 uses this only with synthetic data. Release builds do not expose that channel.
 Filesystem status/unmount controls have bounded acknowledgments; a timeout
 reports unconfirmed/pending status and never authorizes killing a live mount.
+
+The macOS CI fixture explicitly enables only the two installed signed macFUSE
+FSKit modules for its disposable runner user, records those exact IDs, and
+restores the original approval list afterward. This is test setup, not product
+behavior. End users enable macFUSE under System Settings → General → Login Items
+& Extensions → By Category → File System Extensions. PluginKit registration
+alone does not grant FSKit approval. See the upstream [activation issue](https://github.com/macfuse/macfuse/issues/1194).

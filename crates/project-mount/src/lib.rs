@@ -99,7 +99,10 @@ pub enum Error {
         code: Option<i32>,
         requirements: &'static str,
     },
-    #[error("the encrypted filesystem did not become ready within the startup deadline")]
+    #[error(
+        "the encrypted filesystem did not become ready within the startup deadline; check {}",
+        requirements()
+    )]
     NotReady,
     #[error("the encrypted filesystem provider has not exited; locking is not complete")]
     StillRunning,
@@ -124,7 +127,7 @@ pub fn requirements() -> &'static str {
             "FUSE2 (/dev/fuse and fusermount); the bundled provider also requires glibc 2.34 or newer"
         }
         "macos" => {
-            "macOS 15.4 or newer and macFUSE 5.5 or newer with its FSKit extension enabled (https://macfuse.github.io/)"
+            "macOS 15.4 or newer and macFUSE 5.5 or newer, enabled in System Settings > General > Login Items & Extensions > By Category > File System Extensions (https://macfuse.github.io/)"
         }
         "windows" => "WinFsp and the Microsoft Visual C++ x64 runtime",
         _ => "a supported encrypted filesystem driver",
