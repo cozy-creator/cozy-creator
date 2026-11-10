@@ -149,7 +149,11 @@ impl Drop for Project {
 }
 
 /// A project held open, by a stream that shows it: it closes once nothing holds it.
-pub(crate) struct Reader(#[allow(dead_code, reason = "held for its drop")] Arc<Project>);
+pub(crate) struct Reader(Arc<Project>);
+
+impl Reader {
+    pub(crate) fn id(&self) -> &str { &self.0.id }
+}
 
 pub(crate) fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
     Router::new()
@@ -610,10 +614,27 @@ fn identify(api: &Api, dir: &FsPath) -> Result<(String, String), Error> {
     let mut conn = db::open(&path)?;
     let kept = db::identity(&conn);
     let store = api.calcifer.store();
+    let logical = vault::logical(dir);
+    let encrypted = vault::encrypted(&logical);
     let copied = |id: &str| {
-        let elsewhere = store.known_project(id).ok().flatten().filter(|known| known.path != dir);
-        elsewhere.is_some_and(|known| kept_identity(&known.path).is_some_and(|(held, _)| held == id))
+        let elsewhere = store.known_project(id).ok().flatten().filter(|known| known.path != logical);
+        elsewhere.is_some_and(|known| {
+            if vault::encrypted(&known.path) {
+                project_vault::Keybag::load(&known.path.join(project_vault::KEYBAG_FILE))
+                    .is_ok_and(|keybag| keybag.info().project_id == id)
+            } else { kept_identity(&known.path).is_some_and(|(held, _)| held == id) }
+        })
     };
+    if encrypted {
+        let keybag = project_vault::Keybag::load(&logical.join(project_vault::KEYBAG_FILE))
+            .map_err(|_| Error::new(Kind::Conflict, "vault_identity", "the encrypted project keybag is unreadable"))?;
+        if kept.as_ref().is_none_or(|(id, _)| id != &keybag.info().project_id) {
+            return Err(Error::new(Kind::Conflict, "vault_identity", "the encrypted project identity does not match its keybag"));
+        }
+        if copied(&keybag.info().project_id) {
+            return Err(Error::new(Kind::Conflict, "vault_copy", "another folder still holds this encrypted project; open that project or move its folder instead"));
+        }
+    }
     let (id, name) = match &kept {
         Some((id, name)) if !copied(id) => (id.clone(), name.clone()),
         Some((_, name)) => (fresh_id(), name.clone()),
@@ -3113,7 +3134,8 @@ impl Walk {
         let (source, inputs) = match &renderer.local {
             None => (v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone() }), vec![]),
             Some(path) => {
-                let prepared = self.host.ready(path, &placed, &hub).await?;
+                let scope = crate::private_io::of_path(&self.folder().dir)?;
+                let prepared = crate::private_io::context(scope, self.host.ready(path, &placed, &hub)).await?;
                 (v1::Source::Local(prepared.source), prepared.files)
             }
         };
@@ -4057,7 +4079,10 @@ impl Walk {
         let source = match &renderer.local {
             None => v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone() }),
             Some(path) => {
-                let prepared = self.again(|| self.host.ready(path, &placed, &hub)).await.map_err(named)?;
+                let prepared = self.again(|| async {
+                    let scope = crate::private_io::of_path(&self.folder().dir)?;
+                    crate::private_io::context(scope, self.host.ready(path, &placed, &hub)).await
+                }).await.map_err(named)?;
                 staged.extend(prepared.files);
                 v1::Source::Local(prepared.source)
             }
@@ -4495,7 +4520,8 @@ impl Walk {
         said.extend(tools::past_end(&mut pieces, canvas.fps));
         said.iter().for_each(|message| self.say(Event::Warning { message: message.clone(), name: None }));
         let (project, cutting, began) = (self.project.clone(), self.project.cutting.clone(), Instant::now());
-        let cache = self.host.cache().join("cuts");
+        let scope = crate::private_io::of_path(&self.project.folder.dir)?;
+        let cache = crate::private_io::cache(scope.as_ref(), self.host.cache().join("cuts"), "cuts")?;
         let cutting_name = name.clone();
         let fps = canvas.fps;
         let (rendering, rendered) = (self.project.rendering.clone(), asset.name.clone());

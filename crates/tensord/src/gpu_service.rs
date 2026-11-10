@@ -2978,6 +2978,12 @@ impl Pool {
             fs::create_dir_all(&tmp)?;
             environment.insert("TEMP".into(), tmp.clone());
             environment.insert("TMP".into(), tmp);
+            let private_root = private_root.as_ref().expect("verified private root");
+            for (name, relative) in [("XDG_CACHE_HOME", "cache"), ("MPLCONFIGDIR", "matplotlib"), ("UV_CACHE_DIR", "uv-cache"), ("UV_TOOL_DIR", "uv-tools")] {
+                let path = private_root.join(relative);
+                fs::create_dir_all(&path)?;
+                environment.insert(name.into(), path.to_string_lossy().into_owned());
+            }
         }
         Ok(ExecutorConfig {
             private: private.is_some(),
@@ -3559,8 +3565,9 @@ impl Pool {
         self.running.lock().unwrap().insert(id.into(), call);
         let spool = engine.staging(id)?;
         let spool_owner = crate::execution::Spool(spool.clone());
+        let input_store = engine.store_for(id)?;
         let inputs = stage_inputs(
-            &engine.store,
+            &input_store,
             &spool,
             &record.invocation.inputs,
         )?;

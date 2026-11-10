@@ -64,6 +64,9 @@ pub(super) struct Asked {
 /// What to draw of one file.
 struct Drawing {
     source: PathBuf,
+    /// Remember the logical private project across queueing and lock/remount. A failed
+    /// lookup later must never turn this drawing into an ordinary global-cache write.
+    project: Option<PathBuf>,
     field: &'static str,
     /// How long it lasts, when that is measured.
     seconds: f64,
@@ -100,8 +103,11 @@ pub(super) async fn thumb(
     let field = file.field();
     let preview = asked.preview && field == "video";
     let frames = asked.strip.filter(|_| field == "video" && !preview).map_or(0, |n| n.clamp(1, MOST_FRAMES));
+    let source = folder.path(&file.path);
+    let private = private_project(&source);
     let drawing = Drawing {
-        source: folder.path(&file.path),
+        source: if private.is_some() { super::vault::logical(&source) } else { source },
+        project: private,
         field,
         seconds: file.lasts_ms() as f64 / 1000.0,
         width: asked.w.unwrap_or(WIDTH).clamp(16, WIDEST),
@@ -109,7 +115,8 @@ pub(super) async fn thumb(
         preview,
     };
     let name = drawing.name(&hex);
-    let dir = api.machines.hubs.home().thumbs();
+    let private = drawing.project.is_some();
+    let dir = directory(&drawing, api.machines.hubs.home().thumbs()).map_err(Refusal)?;
     let at = match kept(&dir, &name) {
         Some(at) => at,
         None => made(Host::new(&api), drawing, dir, name.clone()).await?,
@@ -120,13 +127,15 @@ pub(super) async fn thumb(
     let opened = std::fs::File::open(&at).map_err(unreadable)?;
     let len = opened.metadata().map_err(unreadable)?.len();
     let mut response = crate::files::send(opened, len, media_type(&at), &format!("\"{name}\""), &headers).map_err(unreadable)?;
-    response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static(crate::files::IMMUTABLE));
+    response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static(if private { "private, no-store" } else { crate::files::IMMUTABLE }));
     Ok(response)
 }
 
 /// A video at `source` that just landed, measured: its preview is made soon, after the thumbnails asked before it.
 pub(super) fn landed(source: PathBuf, sha256: &str, seconds: f64) {
-    let drawing = Drawing { source, field: "video", seconds, width: 0, frames: 0, preview: true };
+    let project = private_project(&source);
+    let source = if project.is_some() { super::vault::logical(&source) } else { source };
+    let drawing = Drawing { source, project, field: "video", seconds, width: 0, frames: 0, preview: true };
     LANDED.0.lock().expect("landed lock").push_back((drawing.name(&folder::hex_of(sha256).to_ascii_lowercase()), drawing));
     LANDED.1.notify_one();
 }
@@ -144,6 +153,17 @@ pub(crate) fn previews(api: Arc<Api>) {
     });
 }
 
+fn private_project(source: &FsPath) -> Option<PathBuf> {
+    super::vault::logical(source).ancestors().find(|path| super::vault::encrypted(path)).map(FsPath::to_owned)
+}
+
+fn directory(drawing: &Drawing, ordinary: PathBuf) -> Result<PathBuf, Error> {
+    let Some(root) = &drawing.project else { return Ok(ordinary) };
+    let scope = crate::private_io::of_output(&super::landing(root))?
+        .ok_or_else(|| Error::new(Kind::Conflict, "project_locked", "the private project view is unavailable"))?;
+    crate::private_io::cache(Some(&scope), ordinary, "thumbs")
+}
+
 /// The thumbnail called `name`, if it is there.
 fn kept(dir: &FsPath, name: &str) -> Option<PathBuf> {
     ["png", "jpg", "mp4"].iter().map(|ext| dir.join(format!("{name}.{ext}"))).find(|at| at.is_file())
@@ -151,13 +171,14 @@ fn kept(dir: &FsPath, name: &str) -> Option<PathBuf> {
 
 /// The thumbnail called `name`, made now if no one has: the wait for it is all a request holds.
 async fn made(host: Host, drawing: Drawing, dir: PathBuf, name: String) -> Result<PathBuf, Refusal> {
-    let turn = MAKING.lock().expect("making lock").entry(name.clone()).or_default().clone();
+    let key = format!("{}\0{name}", dir.display());
+    let turn = MAKING.lock().expect("making lock").entry(key.clone()).or_default().clone();
     let making = tokio::spawn(async move {
         let answer = {
             let _turn = turn.lock().await;
             make(host, drawing, dir, name.clone()).await
         };
-        MAKING.lock().expect("making lock").remove(&name);
+        MAKING.lock().expect("making lock").remove(&key);
         answer
     });
     let answer = making.await.map_err(|e| Refusal(Error::new(Kind::Internal, "thumb_failed", e.to_string())))?;
@@ -165,7 +186,10 @@ async fn made(host: Host, drawing: Drawing, dir: PathBuf, name: String) -> Resul
 }
 
 /// What the one making the thumbnail called `name` does: nothing if one before it did, or found ffmpeg can't.
-async fn make(host: Host, drawing: Drawing, dir: PathBuf, name: String) -> Result<PathBuf, Error> {
+async fn make(host: Host, mut drawing: Drawing, dir: PathBuf, name: String) -> Result<PathBuf, Error> {
+    let private = drawing.project.is_some();
+    let dir = directory(&drawing, dir)?;
+    if private { drawing.source = super::vault::resolve_path(&drawing.source)?; }
     if let Some(at) = kept(&dir, &name) {
         return Ok(at);
     }
@@ -184,7 +208,7 @@ async fn make(host: Host, drawing: Drawing, dir: PathBuf, name: String) -> Resul
     .map_err(|e| Error::new(Kind::Internal, "thumb_failed", e.to_string()))?;
     drawn.map_err(|why| {
         // Kept for a day, so this is the one place it's said.
-        warn!("thumbnail {marked_name} can't be drawn: {why}", marked_name = marked.display());
+        if !private { warn!("thumbnail {marked_name} can't be drawn: {why}", marked_name = marked.display()); }
         let _ = std::fs::write(&marked, &why);
         unreadable_file(why)
     })
