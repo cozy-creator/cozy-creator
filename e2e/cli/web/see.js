@@ -610,9 +610,15 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   let ours = [];
   let treeTab;
   try {
-    for (const tree of trees) execFileSync(COZY, ['project', 'new', join(forest, tree)], { stdio: 'ignore' });
-    ours = (await listed()).filter((row) => row.path.startsWith(forest));
-    check('tabs_projects_made', ours.length === trees.length, ours.map((row) => row.name));
+    const created = trees.map((tree) => JSON.parse(execFileSync(COZY, ['--json', 'project', 'new', join(forest, tree)], { encoding: 'utf8' })));
+    // The native answer identifies each project; Windows and Node need not spell its parent path alike.
+    const createdIds = new Set(created.map((row) => row.id));
+    const listing = await api('/v1/projects?limit=200');
+    ours = listing.projects.filter((row) => createdIds.has(row.id));
+    seen.tabs_creation = { forest, created, projects: listing.projects, older: listing.older, missing: [...createdIds].filter((id) => !ours.some((row) => row.id === id)) };
+    const made = createdIds.size === trees.length && ours.length === trees.length && seen.tabs_creation.missing.length === 0;
+    check('tabs_projects_made', made, seen.tabs_creation);
+    if (!made) throw new Error('the project list does not hold all 16 newly created project IDs; see tabs_creation');
     const tab = treeTab = await context.newPage();
     watch(tab);
     tab.setDefaultTimeout(STEP_MS);
