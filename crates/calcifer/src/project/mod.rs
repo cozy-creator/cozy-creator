@@ -2561,20 +2561,25 @@ fn going(api: &Api, folder: &Folder) -> Result<Vec<Event>, Error> {
 
 const YAML_EXPORT_BASE: &str = "# cozy-project-base: ";
 
-/// The canonical graph body's ETag, independent of canvas, runtime state and export comments.
+/// The digest of the exact bytes a conditional HTTP request names.
 fn yaml_etag(text: &str) -> String {
     format!("\"{}\"", hex::encode(Sha256::digest(text)))
+}
+
+/// Only the canonical graph body participates in the editable export's base stamp.
+fn yaml_export(id: &str, text: &str) -> String {
+    format!("{YAML_EXPORT_BASE}{id} {}\n{text}", yaml_etag(text))
 }
 
 /// `GET /v1/projects/{id}/yaml`: the project as YAML, format 4, as it is this moment (`cozy project export`), and the ETag a `PUT` may name.
 async fn yaml(State(api): State<Arc<Api>>, Path(id): Path<String>, headers: HeaderMap) -> Result<Response, Refusal> {
     let project = api.projects.get(&api, &id)?;
     let text = project.folder.text().map_err(Refusal)?;
-    let etag = yaml_etag(&text);
+    let exported = yaml_export(&project.id, &text);
+    let etag = yaml_etag(&exported);
     if headers.get(header::IF_NONE_MATCH).and_then(|value| value.to_str().ok()) == Some(etag.as_str()) {
         return Ok((StatusCode::NOT_MODIFIED, [(header::ETAG, etag)]).into_response());
     }
-    let exported = format!("{YAML_EXPORT_BASE}{} {etag}\n{text}", project.id);
     Ok(([(header::CONTENT_TYPE, "application/yaml".to_owned()), (header::ETAG, etag)], exported).into_response())
 }
 
@@ -2600,9 +2605,10 @@ async fn save(
     let doc = Doc::of_text(folder, text, &folder.lock().map_err(Refusal)?).map_err(Refusal)?;
     let text = folder
         .act(|| {
-            let current = yaml_etag(&folder.text()?);
-            if read.as_ref().is_some_and(|read| *read != current)
-                || base.is_some_and(|(owner, base)| owner == project.id && base != current)
+            let current = folder.text()?;
+            let representation = yaml_etag(&yaml_export(&project.id, &current));
+            if read.as_ref().is_some_and(|read| *read != representation)
+                || base.is_some_and(|(owner, base)| owner == project.id && base != yaml_etag(&current))
             {
                 return Err(Error::new(Kind::Conflict, "project_changed", "the project changed since it was read").remedy("export it again and make the edit on what it holds"));
             }
@@ -2615,7 +2621,7 @@ async fn save(
             folder.text()
         })
         .map_err(Refusal)?;
-    Ok((StatusCode::NO_CONTENT, [(header::ETAG, yaml_etag(&text))]).into_response())
+    Ok((StatusCode::NO_CONTENT, [(header::ETAG, yaml_etag(&yaml_export(&project.id, &text)))]).into_response())
 }
 
 /// One of the project's files by its name in files/ (`<sha256>.<ext>`): content-addressed, so its sha256 is its ETag.
