@@ -118,6 +118,12 @@ vault_web() {
   [ -n "$chrome" ] && [ -x "$chrome" ] || { check "project vault: native browser is unavailable"; return; }
   mkdir -p "$pw"
   printf '{"private":true}\n' > "$pw/package.json"
-  pnpm --dir "$(web_path "$pw")" add --ignore-scripts playwright-core@1.55.0 > "$OUT/vault-playwright.log" 2>&1 || { check "project vault: browser driver install failed"; return; }
+  if command -v pnpm > /dev/null; then
+    pnpm --dir "$(web_path "$pw")" add --ignore-scripts playwright-core@1.55.0 > "$OUT/vault-playwright.log" 2>&1 || { check "project vault: browser driver install failed"; return; }
+  else
+    # The CLI runner does not inherit the separate candidate-build job's pnpm setup.
+    # Use its existing npm, as web_serves does, without changing the pinned driver.
+    npm install -s --ignore-scripts --prefix "$(web_path "$pw")" playwright-core@1.55.0 > "$OUT/vault-playwright.log" 2>&1 || { check "project vault: browser driver install failed"; return; }
+  fi
   web_proof vault "$chrome" "$pw" ''
 }
