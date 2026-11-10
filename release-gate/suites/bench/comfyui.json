@@ -1,0 +1,5 @@
+{"rtx-4090x1": {
+ "sdxl": {"total_s": 3.26, "cozy_s": 1.96, "comfyui": "v0.43.0 (426f5eea), fp8 e4m3", "source": "xs138-0213/comfy-gap.md:118, 11-09, same pod, warm"},
+ "flux2": {"total_s": 83.6, "cozy_s": 61.3, "comfyui": "v0.43.0 (426f5eea), fp8mixed DiT + fp8 text encoder", "source": "xs138-0213/comfy-gap.md:116, 11-09, same pod, warm"},
+ "qwen4mp": {"total_s": 59.6, "cozy_s": 58.2, "comfyui": "v0.43.0 (426f5eea), no --use-ck-attention", "source": "xs138-0213/comfy-gap.md:119, 11-09, same pod, warm"}
+}}

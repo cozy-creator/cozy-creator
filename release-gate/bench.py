@@ -65,6 +65,7 @@ class Kernels(TypedDict):
 
 class Output(TypedDict):
     sha256: str
+    seed: int | None
     faults: list[str]
     file: NotRequired[str]  # this gate's copy
     asset: NotRequired[str]  # a stored reference's name among the release-gate-baselines assets
@@ -249,14 +250,14 @@ def output_of(d: str, run: Run, judged: bool) -> Output | None:
                   key=lambda o: MEDIA.index(o.get('media_type', '').split('/')[0]))
     if not outs:
         return None  # a text answer: nothing to look at
-    digest = outs[0].get('sha256', '').split(':')[-1]
+    digest, seed = outs[0].get('sha256', '').split(':')[-1], run.seed
     if not judged:
-        return {'sha256': digest, 'faults': []}
+        return {'sha256': digest, 'seed': seed, 'faults': []}
     files = [f for sub in ('project/files', 'proj/files', '../proj/files', '../project/files') for f in glob.glob(os.path.join(d, sub, digest + '.*'))]
     if not files:
-        return {'sha256': digest, 'faults': ["its output is not among the gate's files"]}
+        return {'sha256': digest, 'seed': seed, 'faults': ["its output is not among the gate's files"]}
     look = media.alone(files[0])
-    return {'sha256': digest, 'file': files[0], 'look': look, 'faults': media.faults(look)}
+    return {'sha256': digest, 'seed': seed, 'file': files[0], 'look': look, 'faults': media.faults(look)}
 
 
 def summary(cold: Metrics | None, warm: list[Metrics]) -> Cell:
@@ -358,25 +359,29 @@ def ref_file(refs: str, asset: str) -> str | None:
     return path if os.path.exists(path) else None
 
 
-def judge_output(d: CellDef, c: Cell, b: Cell | None, others: list[Gate], refs: str, like_group: str | None) -> list[str]:
-    """Why a cell's judged output fails: against its stored reference, and against `like`'s of the same request and seed
-    when `like`'s group ran beside this one."""
+def judge_output(d: CellDef, c: Cell, b: Cell | None, others: list[Gate], refs: str, like_group: str | None) -> tuple[list[str], list[str]]:
+    """Why a cell's judged output fails, and notes: against its stored reference, and against `like`'s of the same request
+    and seed when `like`'s group ran beside this one."""
     why: list[str] = []
     o = c['output']
     if not o or 'file' not in o or 'look' not in o:
-        return why
-    stored = (b or {}).get('output') if b else None
+        return why, []
+    stored = b['output'] if b else None
+    if stored and stored['seed'] != o['seed']:
+        return why, [f"its stored output is seed {stored['seed']}, this one {o['seed']}: not compared"]
     if stored and 'look' in stored and 'asset' in stored:
         why += [w for w in media.faults(o['look'], stored['look']) if w not in o['faults']]
         ref = ref_file(refs, stored['asset'])
         why += media.differs(media.pair(ref, o['file'])) if ref else [f"reference output {stored['asset']} is not in {refs} or the {TAG} release"]
     if d['like'] and any(g['group'] == like_group for g in others):
         found = [x for g in others if g['group'] == like_group and (y := g['cells'].get(d['like'])) and (x := y['output']) and 'file' in x]
-        if found and 'file' in found[0]:
+        if found and found[0]['seed'] != o['seed']:
+            why.append(f"{d['like']}'s output is seed {found[0]['seed']}, this one {o['seed']}: cells.tsv must give the two one seed")
+        elif found and 'file' in found[0]:
             why += media.differs(media.pair(found[0]['file'], o['file']), f"{d['like']}'s output (same request and seed)")
         else:
             why.append(f"no {d['like']} output of this candidate to hold it against")
-    return why
+    return why, []
 
 
 def judge(defs: list[CellDef], cand: Gate, base: Group | None, version: str | None, known: list[Known], others: list[Gate],
@@ -394,7 +399,9 @@ def judge(defs: list[CellDef], cand: Gate, base: Group | None, version: str | No
             continue
         v.why += c['failed'] + c['faults']
         if refs is not None:
-            v.why += judge_output(d, c, b, others, refs, groups.get(d['like']))
+            why, notes = judge_output(d, c, b, others, refs, groups.get(d['like']))
+            v.why += why
+            v.notes += notes
             if d['like'] and not any(g['group'] == groups.get(d['like']) for g in others):
                 v.notes.append(f"its output is held against {d['like']}'s by the table of every group")
         w = c['warm']
@@ -521,7 +528,7 @@ def baseline(version: str, gates: list[Gate], previous: Baseline | None, comfy: 
             if o and 'file' in o:
                 asset = f"bench-{version}-{g['group']}-{name}{os.path.splitext(o['file'])[1]}"
                 shutil.copyfile(o['file'], os.path.join(refs, asset))
-                stored: Output = {'sha256': o['sha256'], 'faults': o['faults'], 'asset': asset}
+                stored: Output = {'sha256': o['sha256'], 'seed': o['seed'], 'faults': o['faults'], 'asset': asset}
                 if 'look' in o:
                     stored['look'] = o['look']
                 c['output'] = stored

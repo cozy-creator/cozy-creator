@@ -45,14 +45,16 @@ def timed(fn: Callable[[], object], runs: int = 20) -> float:
     """The median of `runs` timings in ms, after three warm-ups."""
     for _ in range(3):
         fn()
-    times = []
+    times: list[float] = []
     for _ in range(runs):
-        start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+        # torch.cuda.Event carries no annotations: a third-party boundary, its times read as floats
+        start = torch.cuda.Event(enable_timing=True)  # type: ignore[no-untyped-call]
+        end = torch.cuda.Event(enable_timing=True)  # type: ignore[no-untyped-call]
         start.record()
         fn()
         end.record()
         end.synchronize()
-        times.append(start.elapsed_time(end))
+        times.append(float(start.elapsed_time(end)))
     return round(statistics.median(times), 3)
 
 

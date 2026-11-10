@@ -19,11 +19,10 @@ Kind = Literal['image', 'video', 'audio']
 IMAGE, VIDEO, AUDIO = ('.png', '.webp', '.jpg', '.jpeg'), ('.mp4', '.webm', '.mov'), ('.wav', '.flac', '.mp3', '.ogg')
 # A picture or frame under this luma deviation is flat: a failed or non-finite decode reads back one colour.
 FLAT = 2.0
-# Consecutive frames of one unbroken shot: 0.96-0.98 for H3's 5 s shots; 0.538 where 0.22.1's two-GPU shot broke into
-# tiled, shifted copies (run 43975, against 43974 and 42745).
-LEAST = 0.85
 # The largest change of a frame's structure (brightness removed) between the 1/16-video windows either side of a frame,
-# over the video's median change (sp-speed's frame check): good H3 videos <= 4.4 (a beam flash), broken 43973/43975 >= 20.
+# over the video's median change (sp-speed's frame check). 62 good videos on disk (v1, 0.21.x, 0.22.1; H3 with and without
+# references, capped and not, SeedVR2): 1.1-4.4. 0.22.1's scrambled two-GPU runs 43973, 43975: 20.5, 23.5. The least SSIM
+# of consecutive frames, reported, does not separate them: 0.70-0.99 good, 0.54 and 0.65 broken.
 JUMP = 10.0
 # Against the same request and seed from another build, pod or GPU count. Pictures: layout SSIM at 128x128 grey, recorded
 # 0.99-1.00 across v1/0.21.1/0.21.2/0.22.1 and three pods, 0.35-0.70 for another seed. Video: mean absolute difference
@@ -143,11 +142,8 @@ def faults(now: Look, was: Look | None = None) -> list[str]:
         if was and (now.get('width'), now.get('height')) != (was.get('width'), was.get('height')):
             why.append(f"{now.get('width')}x{now.get('height')}, reference {was.get('width')}x{was.get('height')}")
     if now['kind'] == 'video':
-        floor = min(LEAST, was.get('least', LEAST) - 0.1) if was else LEAST
-        if now.get('least', 0.0) < floor:
-            why.append(f"breaks between two frames (least SSIM {now.get('least')}, at least {floor:.2f})")
         if now.get('jump', 0.0) >= JUMP:
-            why.append(f"its structure jumps at frame {now.get('jump_at')} ({now.get('jump')}x the median change, under {JUMP:.0f}x)")
+            why.append(f"its structure jumps at frame {now.get('jump_at')} ({now.get('jump')}x the median change, at most {JUMP:.0f}x)")
         if was and now.get('frames') != was.get('frames'):
             why.append(f"{now.get('frames')} frames, reference {was.get('frames')}")
     if now['kind'] in ('video', 'audio') and was and was.get('audio_s'):
