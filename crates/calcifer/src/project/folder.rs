@@ -1316,7 +1316,9 @@ impl Folder {
 
     /// Every history row, oldest first.
     pub(super) fn ops(&self) -> Result<Vec<db::OpRow>, Error> {
-        self.reading_db(|conn| db::ops(conn, &self.db()))?
+        let held = self.held()?;
+        held.as_ref().and_then(|held| held.stored.crdt.as_ref())
+            .ok_or_else(|| Error::new(Kind::Validation, "project_crdt", "the canonical project document is missing"))?.ops()
     }
 
     /// What the request under `key` asked and answered here, if it was kept.

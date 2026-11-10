@@ -435,6 +435,8 @@ PY
 # Its next real CLI edit must preserve both stable identities, rather than choose by that number.
 cozy project -p "$H" set groudon 'description=After an offline history merge.' > "$OUT/crdt-history-set.txt" 2>&1 \
   || check "CRDT: CLI write after history merge: $(tail -c 300 "$OUT/crdt-history-set.txt")"
+cozy --json project -p "$H" status > "$OUT/crdt-peer-state.json" || check "CRDT: inspect merged conflict state"
+J '[.warnings[]?.message | select(contains("Concurrent project values") and contains("remote dawn") and contains("remote dusk"))] | length > 0' "$OUT/crdt-peer-state.json" || check "CRDT: retained native prompt alternatives are not visible through the CLI"
 cozy --json project -p "$H" history > "$OUT/crdt-peer-history.json" || check "CRDT: list merged peer history"
 J '[.entries[] | select(.words == "e2e-history-a" or .words == "e2e-history-b")] | length == 2' "$OUT/crdt-peer-history.json" || check "CRDT: merged peer history is not readable through the CLI"
 python3 - "$H/project.db" "$OUT/crdt-history-after.am" <<'PY'
