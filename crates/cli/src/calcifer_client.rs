@@ -1236,3 +1236,7 @@ fn write_key() -> String {
     getrandom::fill(&mut bytes).expect("the OS has randomness");
     format!("cli-{}", hex::encode(bytes))
 }
+
+#[cfg(test)]
+#[path = "calcifer_client_tests.rs"]
+mod tests;

@@ -503,6 +503,11 @@ then the call with its files. Every machine, `local` too, is sent the files by c
 host path. Its interface comes from Runtime's static describer on the Python and cozy-runtime its project locks; nothing runs
 to describe it.
 
+The source bundle includes project files, including Git-ignored runtime resources. Known credential
+names (`.env`, `.env.*`, `.envrc`, `.direnv/`, `.aws/`, `.ssh/`, and named key/credential files),
+known key/weight suffixes, bytecode and symlinks are excluded and listed as left out. This filter does not
+detect secrets stored under other names; keep those outside the package source folder.
+
 ### Projects
 A project is a folder holding `project.db`, `files/` and its edits at its root (`<name>.mp4` and `<name>.otio`). `project.db` (SQLite, WAL;
 `PROJECT-DB.md`) holds all the project says and has made: its boxes and their fields, their rows on the canvas, versions and takes, what is

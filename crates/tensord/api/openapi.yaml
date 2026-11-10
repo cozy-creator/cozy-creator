@@ -125,6 +125,33 @@ paths:
           description: '`machine_disk_full`'
           content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
   /v1/runs:
+    get:
+      summary: >-
+        The runs this signer reads, newest first; a rental's owner reads every client's runs. Machine scope
+        only; a run-scope cap answers 403 `capability_scope`.
+      operationId: runs
+      parameters:
+        - name: before
+          in: query
+          description: 'Before this machine run number, exclusive; absent or 0: the newest.'
+          schema: {type: integer, minimum: 0, maximum: 18446744073709551615, default: 0}
+        - name: limit
+          in: query
+          description: 'At most this many runs; absent or 0: 64. Values above 256 are clamped to 256.'
+          schema: {type: integer, minimum: 0, maximum: 4294967295, default: 0}
+      responses:
+        '200':
+          description: The runs the caller reads
+          content: {application/json: {schema: {$ref: '#/components/schemas/RunList'}}}
+        '400':
+          description: '`invalid_request`: the query is invalid'
+          content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
+        '401':
+          description: '`capability_absent`, `capability_invalid` or `machine_clock`'
+          content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
+        '403':
+          description: '`capability_scope`: a machine-scope Cozy-Cap is required'
+          content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
     post:
       summary: >-
         Submits a machine update (`kind: update`), idempotent on its id per signer. It is the one request a

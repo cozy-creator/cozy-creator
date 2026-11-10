@@ -1,4 +1,4 @@
-//! Output export: each output item of a run lands at `<out_dir>/<number>-<name>[-<i>]` with its
+//! Output export: each output item lands at `<out_dir>/<number>-<name>[-<i>]-<identity>` with its
 //! media type's extension, rewritten in place as revisions arrive; a project's run keeps it in the
 //! project's `files/` too, by hash, which is the file it names from then on. A revision's bytes are read
 //! from the run's machine into a `.part` beside the file (ranged and side by side when big) and
@@ -1106,5 +1106,27 @@ fn refused(e: machine_client::Error) -> Ranged<Failure> {
         }
         machine_client::Error::Answer(message) => Ranged::Stop(Failure::Again(message)),
         e => Ranged::Again(e.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires ffmpeg and ffprobe on PATH"]
+    fn output_probe_does_not_follow_downloaded_playlist() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("marker.mp4");
+        let made = std::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-f", "lavfi", "-i", "color=c=blue:s=32x32:r=1", "-t", "1", "-c:v", "libx264", "-threads", "1"])
+            .arg(&marker).output().unwrap();
+        assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
+        let valid = crate::project::measured(dir.path(), &marker, "video/mp4").expect("valid video measured");
+        assert_eq!((valid.width, valid.height), (32, 32));
+        let downloaded = dir.path().join("42-video.mp4.part");
+        std::fs::write(&downloaded, "ffconcat version 1.0\nfile marker.mp4\n").unwrap();
+        let measured = crate::project::measured(dir.path(), &downloaded, "video/mp4");
+        assert!(measured.is_none(), "a downloaded playlist is not measured as a media file");
     }
 }
