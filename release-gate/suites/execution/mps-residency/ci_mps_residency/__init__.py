@@ -36,8 +36,10 @@ def gpu(payload: Request, ctx: Context) -> Report:
         "half": (128, 128, torch.float16),
         "empty": (2, 0, torch.float32),
     }
+    models: "dict[str, residency.Model]"
+    modules: dict[str, torch.nn.Linear]
     models, modules = {}, {}
-    alias = None
+    alias: torch.Tensor | None = None
     with tempfile.TemporaryDirectory(prefix="cozy-mps-residency-") as directory:
         writer = tensorfs.Writer(Path(directory) / "weights.cozytensors")
         for name, (out_width, in_width, dtype) in specs.items():

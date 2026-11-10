@@ -3,10 +3,36 @@
 concurrent.py <record.json>...  prints `PASS|FAIL <what happened>`."""
 import json
 import sys
+from typing import TypedDict
 
+
+class Gpu(TypedDict):
+    uuid: str
+    pid: int
+    start_us: int
+    end_us: int
+
+
+class Execution(TypedDict, total=False):
+    gpus: list[Gpu] | None
+
+
+class Measurements(TypedDict, total=False):
+    execution: Execution | None
+
+
+class Record(TypedDict, total=False):
+    """A run's record (`cozy run show --json`), the fields read here."""
+    number: int
+    status: str
+    measurements: Measurements | None
+
+
+rows: list[tuple[int | None, str, int, int, int]]
+bad: list[str]
 rows, bad = [], []
 for path in sys.argv[1:]:
-    rec = json.load(open(path))
+    rec: Record = json.load(open(path))
     gpus = ((rec.get('measurements') or {}).get('execution') or {}).get('gpus') or []
     if rec.get('status') != 'completed' or len(gpus) != 1:
         bad.append(f"{path}: {rec.get('status')}, {len(gpus)} GPU(s)")

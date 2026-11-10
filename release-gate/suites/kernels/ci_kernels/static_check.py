@@ -17,11 +17,11 @@ import sys
 from pathlib import Path
 
 
-def literal_keys(node):
+def literal_keys(node: ast.expr) -> list[tuple[str, str]] | None:
     """The keys of a dict literal, `**dict.fromkeys((...), v)` included; None if not all literal."""
     if not isinstance(node, ast.Dict):
         return None
-    keys = []
+    keys: list[tuple[str, str]] = []
     for key, value in zip(node.keys, node.values, strict=True):
         if key is None:
             if (
@@ -34,16 +34,16 @@ def literal_keys(node):
             else:
                 return None
         elif isinstance(key, ast.Constant) and isinstance(value, ast.Constant):
-            keys.append((key.value, str(value.value)))
+            keys.append((key.value, str(value.value)))  # type: ignore[arg-type]  # a TritonEntry signature's keys are str constants
         elif isinstance(key, ast.Constant):
-            keys.append((key.value, ast.unparse(value).strip("'\"")))
+            keys.append((key.value, ast.unparse(value).strip("'\"")))  # type: ignore[arg-type]  # as above
         else:
             return None
     return keys
 
 
-def jits(tree):
-    found = {}
+def jits(tree: ast.AST) -> dict[str, list[tuple[str, bool]]]:
+    found: dict[str, list[tuple[str, bool]]] = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and any(
             ast.unparse(d) == "triton.jit" for d in node.decorator_list
@@ -55,7 +55,7 @@ def jits(tree):
     return found
 
 
-def name_of(node):
+def name_of(node: ast.expr) -> str | None:
     if isinstance(node, ast.Name):
         return node.id
     if isinstance(node, ast.Attribute):
@@ -63,9 +63,9 @@ def name_of(node):
     return None
 
 
-def check(path, known):
+def check(path: Path, known: dict[str, list[tuple[str, bool]]]) -> list[str]:
     tree = ast.parse(path.read_text())
-    out = []
+    out: list[str] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
@@ -75,7 +75,7 @@ def check(path, known):
             kernel = name_of(node.args[0])
             if kernel not in known:
                 continue
-            params = known[kernel]
+            params = known[kernel]  # type: ignore[index]  # in known, so not None
             keys = literal_keys(node.args[1]) if len(node.args) > 1 else None
             if keys is not None:
                 names = [k for k, _ in keys]
@@ -95,7 +95,7 @@ def check(path, known):
             kernel = name_of(node.args[0])
             if kernel not in known:
                 continue
-            params = known[kernel]
+            params = known[kernel]  # type: ignore[index]  # in known, so not None
             passed = node.args[2:]
             spread = any(isinstance(a, ast.Starred) for a in passed)
             count = sum(not isinstance(a, ast.Starred) for a in passed)
@@ -107,10 +107,10 @@ def check(path, known):
     return out
 
 
-def mismatches(roots):
+def mismatches(roots: list[str] | list[Path]) -> tuple[list[str], int]:
     """Each mismatch in these trees, and how many jit functions it read."""
     files = [f for root in roots for f in Path(root).rglob("*.py") if "research" not in f.parts and ".venv" not in f.parts and "triton" in f.read_text(errors="replace")]
-    known = {}
+    known: dict[str, list[tuple[str, bool]]] = {}
     for f in files:
         known.update(jits(ast.parse(f.read_text())))
     return [line for f in files for line in check(f, known)], len(known)

@@ -10,7 +10,7 @@ import msgspec
 import sdxl
 from sdxl import GenerateInput, SdxlModel
 
-from cozy_runtime.author import Adjustments, App, Context, Outputs, Telemetry, invocable
+from cozy_runtime.author import Adjustments, App, Context, Outputs, Seed, Telemetry, invocable
 from cozy_runtime.image import ImageResult
 
 app = App()
@@ -22,7 +22,7 @@ async def paint(
     tel: Telemetry, adj: Adjustments,
 ) -> ImageResult:
     """sdxl's own generate, as this package's GPU call."""
-    payload = GenerateInput(prompt=prompt, seed=seed, steps=steps)
+    payload = GenerateInput(prompt=prompt, seed=Seed(seed), steps=steps)
     generate = sdxl.app._registry["generate"].fn
     return generate(ctx, payload, sdxl.resolve_generate(payload), model, out, tel, adj)
 

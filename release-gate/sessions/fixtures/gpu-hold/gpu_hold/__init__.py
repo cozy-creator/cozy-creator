@@ -6,12 +6,16 @@ none) frees nothing of it; only ending the process does.
 """
 
 import os
+from typing import TYPE_CHECKING
 
 import msgspec
 from cozy_runtime.author import App, Context
 
+if TYPE_CHECKING:
+    import torch
+
 app = App()
-_HELD = []
+_HELD: 'list[torch.Tensor]' = []
 
 
 class Hold(msgspec.Struct, forbid_unknown_fields=True):

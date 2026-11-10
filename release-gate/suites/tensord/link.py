@@ -2,7 +2,7 @@
 import sys
 import time
 
-begun = None
+begun: float | None = None
 n = 0
 while chunk := sys.stdin.buffer.read1(1 << 20):
     begun = begun or time.monotonic()

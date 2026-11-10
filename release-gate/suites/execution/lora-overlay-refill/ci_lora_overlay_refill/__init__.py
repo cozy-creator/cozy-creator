@@ -11,9 +11,10 @@ pages while a ballast keeps the DiT paging within and between calls (`exercise`)
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from functools import partial
 from itertools import pairwise
-from typing import Any
+from typing import Literal, cast
 
 import msgspec
 import torch
@@ -61,8 +62,8 @@ class DiTGraph:
         dit = dit.to(dtype=torch.bfloat16)
         dit._ci_arming = None
 
-        def arm(_: nn.Module, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
-            options = dict(kwargs.get("attention_kwargs") or {})
+        def arm(_: nn.Module, args: tuple[object, ...], kwargs: dict[str, object]) -> tuple[tuple[object, ...], dict[str, object]]:
+            options = dict(cast(dict[str, object] | None, kwargs.get("attention_kwargs")) or {})  # diffusers' attention options
             dit._ci_arming = options.pop(OVERLAY, None)
             return args, {**kwargs, "attention_kwargs": options}
 
@@ -145,7 +146,7 @@ class QwenDiT(Model[DiTGraph]):
         self.graph = loader.construct(DiTGraph)
 
     @uses_components("transformer")
-    def denoise(self, inputs: Inputs, overlay: nn.Module | None, after: Any) -> torch.Tensor:
+    def denoise(self, inputs: Inputs, overlay: nn.Module | None, after: Callable[[int], None]) -> torch.Tensor:
         """`inputs.steps` Euler steps from seeded noise and seeded text rows, each DiT forward
         armed with `overlay` (or a base forward); `after(step)` runs after each forward."""
         dit = self.graph.components["transformer"]
@@ -178,7 +179,7 @@ class Lightning(Model[LoRAGraph]):
         self.graph = loader.construct(LoRAGraph)
 
     @uses_components(LORA_COMPONENT)
-    def denoise(self, base: QwenDiT, inputs: Inputs, after: Any) -> torch.Tensor:
+    def denoise(self, base: QwenDiT, inputs: Inputs, after: Callable[[int], None]) -> torch.Tensor:
         """`base.denoise` with this LoRA handed to each of its forwards, as H3's `_sample` hands
         its overlay through `attention_kwargs` while its own scope holds the factors."""
         return base.denoise(inputs, self.graph.components[LORA_COMPONENT], after)
@@ -216,7 +217,8 @@ def gpu(
     result = exercise(payload, model, turbo_lora, ctx, tel)
     tel.log("lora overlay refill result", result=json.dumps(result, sort_keys=True))
     if not result["passed"]:
-        keys = ("failures", "lora_effect", "bake_error", "runtime", "runtime_commit")
+        keys: tuple[Literal["failures", "lora_effect", "bake_error", "runtime", "runtime_commit"], ...] = (
+            "failures", "lora_effect", "bake_error", "runtime", "runtime_commit")
         brief = {k: result[k] for k in keys}
         raise RuntimeError(f"LoRA overlay refill failed: {json.dumps(brief, sort_keys=True)}")
     return Report(True, json.dumps(result, sort_keys=True))

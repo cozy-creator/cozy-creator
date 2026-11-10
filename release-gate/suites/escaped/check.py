@@ -7,10 +7,11 @@ if the capped cell did, with the same kernels, and the capped one's driver peak 
 success, peak and kernels, never the bytes (a cap may tile).
     check.py <gate dir> <SKU>     the same verdict alone"""
 import os, sys
+from collections.abc import Callable
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
 import record  # noqa: E402
-from runs import Run  # noqa: E402
+from runs import EscapedLoop, GateRuns, Run  # noqa: E402
 
 MIB = 1 << 20
 BOUND, GROWTH = 256 * MIB, 16 * MIB
@@ -19,24 +20,26 @@ CAP, CONTEXT = 6 << 30, 1 << 30
 TWIN = '-uncapped'
 
 
-def loops(run):
+def loops(run: Run) -> tuple[list[EscapedLoop], bool]:
     """Each loop's record in the run's and its calls' memory, and whether any GPU row carried one."""
     rows = [s for m in run.measurements if m.get('memory') for s in record.rows(m['memory'])]
-    return [l for s in rows for l in s.get('escaped') or [] if isinstance(l, dict)], any('escaped' in s for s in rows)
+    return [l for s in rows for l in s.get('escaped') or [] if isinstance(l, dict)], any('escaped' in s for s in rows)  # type: ignore[redundant-expr]  # unvalidated JSON: other shapes are skipped
 
 
-def named(sites):
+def named(sites: list[tuple[str, int]]) -> str:
     return ', '.join(f'{s} {b / MIB:.0f} MiB' for s, b in sites) or 'no site named'
 
 
-def twins(out):
+def twins(out: str) -> list[tuple[str, Run | None, Run | None]]:
     """Each capped cell's run beside its uncapped twin's: (cell, capped, uncapped), either None when it has no record."""
     names = [line.split('\t')[0] for line in open(os.path.join(out, 'cells.tsv'))]
-    read = lambda n: Run.read(os.path.join(out, n + '.json'))
+    read: Callable[[str], Run | None] = lambda n: Run.read(os.path.join(out, n + '.json'))
     return [(n[:-len(TWIN)], read(n[:-len(TWIN)]), read(n)) for n in names if n.endswith(TWIN)]
 
 
-def compared(out):
+def compared(out: str) -> tuple[list[str], list[str]]:
+    fails: list[str]
+    notes: list[str]
     fails, notes = [], []
     for cell, capped, uncapped in twins(out):
         if uncapped is None or uncapped.status != 'completed':
@@ -48,7 +51,7 @@ def compared(out):
             continue
         if (capped.gemm, capped.attention) != (uncapped.gemm, uncapped.attention):
             fails.append(f'{cell}: kernels {capped.gemm} / {capped.attention} capped, {uncapped.gemm} / {uncapped.attention} uncapped')
-        peak = (capped.vram or {}).get('added')
+        peak = capped.vram['added'] if capped.vram else None
         line = f'{cell}: capped run {capped.number} added {peak / 1024:.1f} GiB' if peak is not None else f'{cell}: capped run {capped.number}: no driver reading'
         if peak is not None and uncapped.vram:
             line += f', uncapped run {uncapped.number} {uncapped.vram["added"] / 1024:.1f} GiB'
@@ -56,7 +59,7 @@ def compared(out):
     return fails, notes
 
 
-def check(gate):
+def check(gate: GateRuns) -> tuple[list[str], list[str]]:
     fails, notes = compared(gate['out'])
     for name, run in gate['runs'].items():
         if not run.gpus or name.endswith(TWIN):
@@ -76,7 +79,7 @@ def check(gate):
 
 if __name__ == '__main__':
     out, sku = sys.argv[1].rstrip('/'), sys.argv[2]
-    runs = {}
+    runs: dict[str, Run] = {}
     for line in open(os.path.join(out, 'cells.tsv')):
         cell = line.split('\t')[0]
         run = Run.read(os.path.join(out, cell + '.json'))

@@ -8,10 +8,11 @@ the records the other suites made and runs nothing. A cell fails on
 A Runtime Retry (`finer_splits`) and a decode through Transformers' loop (a model `lm` does not serve yet) are notes.
     check.py <gate dir>     the same verdict alone"""
 import json, os, re, sys
+from typing import TypedDict
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
 import record  # noqa: E402
-from runs import Run  # noqa: E402
+from runs import GateDir, Run  # noqa: E402
 
 MIB = 1 << 20
 # Escaped bytes past this in a run that declared `retained` are state its port left out (the Runtime's own size floor).
@@ -19,13 +20,20 @@ PARTIAL = 64 * MIB
 OOM = ('device_out_of_memory', 'memory_exhausted')
 
 
-def warnings(out, cell):
+class Event(TypedDict, total=False):
+    """A line of <cell>.ndjson, the run's event stream."""
+    type: str
+    level: str
+    text: str | None
+
+
+def warnings(out: str, cell: str) -> list[tuple[str, str]]:
     """The run's warning logs (<cell>.ndjson `run.log`), as (code, text)."""
     path = os.path.join(out, cell + '.ndjson')
-    rows = []
+    rows: list[tuple[str, str]] = []
     for line in open(path, errors='replace') if os.path.exists(path) else ():
         try:
-            event = json.loads(line)
+            event: Event = json.loads(line)
         except ValueError:
             continue
         if event.get('type') == 'run.log' and event.get('level') in ('warning', 'warn'):
@@ -35,14 +43,16 @@ def warnings(out, cell):
     return rows
 
 
-def judge(out, cell, run):
+def judge(out: str, cell: str, run: Run) -> tuple[list[str], list[str]]:
+    fails: list[str]
+    notes: list[str]
     fails, notes = [], []
     code, _, message = run.reason.partition(': ')
     rows = [s for m in run.measurements if m.get('memory') for s in record.rows(m['memory'])]
     if code == 'contract_violation':
         fails.append(f'{cell}: run {run.number} {message[:300]}')
     if run.status == 'failed' and code in OOM:
-        for split in (s for r in rows for s in r.get('working_splits') or [] if isinstance(s, dict)):
+        for split in (s for r in rows for s in r.get('working_splits') or [] if isinstance(s, dict)):  # type: ignore[redundant-expr]  # unvalidated JSON: other shapes are skipped
             refused = split.get('refused')
             if isinstance(refused, dict):
                 who = 'a Runtime estimate (its pure op had no Retry)' if refused.get('pure') else "the package's split: its holds is short"
@@ -60,7 +70,7 @@ def judge(out, cell, run):
     if retried:
         notes.append(f'{cell}: {retried} Runtime split(s) ran again finer: an estimate to fix')
     if any(r.get('retained_bytes') for r in rows):
-        for loop in (l for r in rows for l in r.get('escaped') or [] if isinstance(l, dict)):
+        for loop in (l for r in rows for l in r.get('escaped') or [] if isinstance(l, dict)):  # type: ignore[redundant-expr]  # unvalidated JSON: other shapes are skipped
             if (loop.get('escaped_peak_bytes') or 0) > PARTIAL:
                 sites = ', '.join(f'{s} {b / MIB:.0f} MiB' for s, b in loop.get('escaped_sites') or []) or 'no site named'
                 fails.append(f"{cell}: {loop.get('head')} declares author.retained and still keeps "
@@ -68,7 +78,9 @@ def judge(out, cell, run):
     return fails, notes
 
 
-def check(gate):
+def check(gate: GateDir) -> tuple[list[str], list[str]]:
+    fails: list[str]
+    notes: list[str]
     fails, notes = [], []
     out = gate['out']
     for line in open(os.path.join(out, 'cells.tsv')):
