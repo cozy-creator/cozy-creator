@@ -275,6 +275,8 @@ case $SHARD in
   projectdb-web) parts="tools_read db_existing_web logs" ;;
   projectdb-cancel) parts="db_cancel_undo logs" ;;
   projectdb-live) parts="tools_read db_existing_web logs"; DB_WEB=live ;;
+  projectdb-instant) parts="tools_read db_existing_web logs"; DB_WEB=instant ;;
+  projectdb-offline) parts="tools_read db_existing_web logs"; DB_WEB=offline ;;
   # Local code and every input by content (cl-817, cl-820): the CLI in a folder Calcifer can't see, edits timed, its quote from its
   # runs (cl-816), a host path refused.
   local-code) parts="unseen local_edits local_quote path_manifest logs" ;;
