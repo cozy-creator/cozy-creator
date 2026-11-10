@@ -36,6 +36,7 @@ seed: 7
 
 ```sh
 cozy login you@example.com
+cozy new                                  # initialize the current directory
 cozy run sdxl/generate --input request.yaml
 cozy run sdxl/generate --input request.yaml seed=8      # an inline input overrides the file
 cozy run birefnet/remove_background --file image=./character.png
@@ -64,10 +65,11 @@ First-party packages have no owner (`sdxl/generate`); everyone else's are `owner
 `cozy login` signs you up on first use, with a code it emails. On Linux, runs go to this computer's
 machine, which starts when used and stops after 15 minutes idle; without an NVIDIA GPU here, add
 `--on new` to run on a rented one. macOS and Windows don't run models locally yet: add `--on new` to
-rent a Linux GPU, or `--on <machine>` for one you have. The current working directory is the project. Its outputs land in `files/`, and Cozy creates its
-project database when you first use a project command.
+rent a Linux GPU, or `--on <machine>` for one you have. Run project commands from the project directory. `cozy new [directory]` creates a project explicitly.
+`cozy open`, `cozy run` and `cozy status` use an existing project. Outputs land in its `files/` directory.
 
-`cozy` lists the commands. `cozy <verb> --help` shows a command's options.
+`cozy` lists the main commands. `cozy <verb> --help` shows a command's options.
+The browser opened by `cozy open` provides asset import, editing, rendering, export, history and file transfers.
 
 `cozy doctor` diagnoses this computer's cozy (Calcifer, its service, the machine, tools, GPUs) and
 restarts a Calcifer that is stuck or runs an older cozy.
@@ -79,12 +81,10 @@ and the cuts. Everything in the film is an asset, a package's function makes it,
 state. Putting old text back returns the old take with no run, and approving pins a take.
 
 ```sh
-mkdir garden && cd garden                 # this directory is the project
-cozy render all --on <machine>
-cozy render clash -n 3 --on <machine>
-cozy approve clash 2               # clash holds take 2, as `approved`
-cozy status
-cozy open                                  # this directory's canvas, in your browser
+cozy new garden
+cd garden
+cozy open                                  # edit assets in the browser
+cozy status                                # this project's runs and machines
 ```
 
 The format and every command: [PROJECT-YAML.md](crates/calcifer/docs/PROJECT-YAML.md).

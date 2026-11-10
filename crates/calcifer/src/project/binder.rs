@@ -1,4 +1,4 @@
-//! The one binder: a box's written fields, by its tool's types, as the call its function gets. Render, `cozy render` and `cozy run`
+//! The one binder: a box's written fields, by its tool's types, as the call its function gets. The browser's Render and `cozy run`
 //! all use it. A prompt goes as its text, each mention spelled as its box is, with what that text mentions; a slot takes only what's
 //! written in it; a pickup comes only from the gesture. What's past a bound is clamped and said. It knows no model.
 use std::collections::BTreeSet;
@@ -129,7 +129,7 @@ pub(crate) fn bind(call: &Call) -> Result<Bound, Error> {
             // A run's own: a box of its project, or one of its own references.
             None => refused
                 .remedy(format!("make <{first}> a box of the run's project, or name it in the run: references:='[{{\"name\": \"{first}\", \"image\": \"<file>\"}}]'"))
-                .next(format!("cozy import <file> {first}")),
+                .next("cozy open"),
         });
     }
     let mut payload = std::mem::take(&mut binder.bound.payload);

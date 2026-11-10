@@ -347,19 +347,19 @@ fn no_version(lock: &folder::Lock, name: &str, noun: &str, number: u32) -> Error
     let key = name_key(name);
     if lock.pending.values().any(|pending| name_key(&pending.asset) == key && pending.version.number == number) {
         let said = format!("{name}'s {noun} {number} is still being made: canceling stops what it would spend");
-        return Error::new(Kind::Conflict, "version_running", said).next(format!("cozy cancel {name}"));
+        return Error::new(Kind::Conflict, "version_running", said).next("cozy open");
     }
     let held = lock.asset(name);
     if held.is_some_and(|held| held.discarded.iter().any(|version| version.number == number)) {
         let said = format!("{name}'s {noun} {number} is already discarded");
-        return Error::new(Kind::NotFound, "version_unknown", said).next("cozy history");
+        return Error::new(Kind::NotFound, "version_unknown", said).next("cozy open");
     }
     let numbers: Vec<String> = held.into_iter().flat_map(|held| &held.versions).map(|version| version.number.to_string()).collect();
     let said = match numbers.as_slice() {
         [] => format!("{name} has no {noun} yet"),
         numbers => format!("{name} has no {noun} {number}: it has {}", numbers.join(", ")),
     };
-    Error::new(Kind::NotFound, "version_unknown", said).next(format!("cozy status {name}"))
+    Error::new(Kind::NotFound, "version_unknown", said).next("cozy status --full")
 }
 
 /// What a version going or coming back left: what's reading `name` looks again, a cut's film follows, and the answer.
@@ -378,7 +378,7 @@ async fn moved(api: &Arc<Api>, project: &Arc<Project>, name: String, number: u32
 }
 
 fn taken(name: &str) -> Error {
-    Error::new(Kind::Conflict, "asset_exists", format!("the project has a {name} again, so this one stays deleted")).remedy("rename that one, then undo again").next(format!("cozy rename {name} <another name>"))
+    Error::new(Kind::Conflict, "asset_exists", format!("the project has a {name} again, so this one stays deleted")).remedy("rename that one, then undo again").next("cozy open")
 }
 
 /// A box back as `removed` took it, its versions with it, and with `at` its row, in one transaction: its new ETag.

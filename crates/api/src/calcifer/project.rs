@@ -41,13 +41,13 @@ pub struct Opened {
 }
 
 /// How a client names a project: its id or name, or its folder on Calcifer's computer by its absolute path (cl-819). The
-/// folder a client is in names none: Calcifer may be on another computer.
+/// CLI project commands resolve their current directory and send its absolute path.
 pub const NAMED_BY: &str = "a project's name or id, or its folder on Calcifer's computer by its absolute path";
 
 /// A request in no project, which needs one.
 pub fn unnamed() -> Error {
-    Error::new(crate::error::Kind::Usage, "not_in_a_project", "run this command from a project directory")
-        .next("cozy open")
+    Error::new(crate::error::Kind::Usage, "not_in_a_project", "run this command from an existing project directory. Use cozy new to create one")
+        .next("cozy new")
 }
 
 /// Where a card sits on a project's canvas: one row of `project.canvas.yaml`.

@@ -747,7 +747,7 @@ pub(super) fn upgrade(dir: &Path, status: Option<&str>) -> Result<Upgraded, Erro
     }
     let was_lock: format2::Lock = serde_json::from_value(old.clone()).map_err(|e| Error::new(Kind::Validation, "lock_unreadable", format!("{}: {e}", folder::LOCK)))?;
     let was = format2::Doc::read(&dir, &text, top, &was_lock);
-    let status: Option<Value> = status.map(serde_json::from_str).transpose().map_err(|e| refused("status_unreadable", format!("that isn't what `cozy status --json` says: {e}")))?;
+    let status: Option<Value> = status.map(serde_json::from_str).transpose().map_err(|e| refused("status_unreadable", format!("that isn't a format-2 status report: {e}")))?;
     let rows = match &status {
         Some(status) => status["assets"].as_array().cloned().unwrap_or_default(),
         None => was.rows(&was_lock),
