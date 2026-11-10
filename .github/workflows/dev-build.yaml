@@ -393,9 +393,19 @@ jobs:
         with:
           node-version: 24
       - uses: pnpm/setup@v1
+        if: runner.os != 'macOS' || runner.arch != 'X64'
         with:
           package-json-file: web/app/package.json
           install: false
+      - name: Install pinned JavaScript pnpm on Intel macOS
+        if: runner.os == 'macOS' && runner.arch == 'X64'
+        run: |
+          # @pnpm/exe's Intel macOS SEA binary is broken upstream. Run the same pinned
+          # pnpm JavaScript package under the Node installed above; project operations
+          # still use pnpm, and no global privileged installation is needed.
+          manager=$(node -p "require('./web/app/package.json').packageManager.split('+')[0]")
+          npm install --global --ignore-scripts --prefix "$RUNNER_TEMP/pnpm-js" "$manager"
+          echo "$RUNNER_TEMP/pnpm-js/bin" >> "$GITHUB_PATH"
       - uses: Swatinem/rust-cache@v2
         with:
           key: project-vault-cli-${{ runner.os }}-${{ runner.arch }}
