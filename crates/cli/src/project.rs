@@ -38,21 +38,22 @@ pub(crate) async fn create(ctx: &Context, args: New) -> Result<ExitCode, Error> 
         .map_err(|error| Error::new(Kind::Usage, "project_path", error.to_string()))?;
     let request = Open { path: Some(directory.clone()), ..Open::default() };
     let client = ctx.calcifer().await?;
-    let (id, path, created) = match client.post::<_, Opened>("/v1/projects", &request, Some(&mint_key())).await {
-        Ok(opened) => (opened.id, opened.path, true),
+    let (id, code, path, created) = match client.post::<_, Opened>("/v1/projects", &request, Some(&mint_key())).await {
+        Ok(opened) => (opened.id, opened.code, opened.path, true),
         Err(error) if error.code == "project_exists" => {
             let path = crate::calcifer_client::path(&["v1", "projects", &directory.to_string_lossy()]);
             let state: State = client.get(&format!("{path}?assets=false")).await?;
-            (state.id, state.path, false)
+            (state.id, state.code, state.path, false)
         }
         Err(error) => return Err(error),
     };
+    let label = if code.is_empty() { &id } else { &code };
     let message = if created {
-        format!("Created project {id} at {}.", path.display())
+        format!("Created project {label} at {}.", path.display())
     } else {
-        format!("Project not created. {} already contains project {id}.", path.display())
+        format!("Project not created. {} already contains project {label}.", path.display())
     };
-    let document = serde_json::json!({ "id": id, "path": path, "created": created, "message": message });
+    let document = serde_json::json!({ "id": id, "code": code, "path": path, "created": created, "message": message });
     if ctx.json {
         output::document(ctx, &document);
     } else {
