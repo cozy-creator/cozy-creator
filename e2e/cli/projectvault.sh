@@ -100,6 +100,9 @@ PY_BACKING_SCAN
   cozy project -p "$P" export -o "$work/before-rekey.yaml"
   cozy --json project -p "$P" vault rotate --passphrase-file "$secrets/rekey" --recovery-out "$secrets/recovery3" > "$work/rekey.json"
   view=$(jq -r '.vault.view // empty' "$work/rekey.json")
+  if [ -n "$LOCAL" ]; then
+    python3 "$E2E/cli/private_alias.py" --verify-rekey --project "$P" --view "$view" --out "$work/private-rekey" --cli "$COZY"
+  fi
   [ "$(sha "$view/files/movie.mp4")" = "$before" ] || fail "rekey changed original video bytes"
   cozy project -p "$P" export -o "$work/after-rekey.yaml"
   cmp "$work/before-rekey.yaml" "$work/after-rekey.yaml" || fail "rekey changed logical project history"
