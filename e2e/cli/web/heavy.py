@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime[media]>=0.43", "msgspec>=0.19"]
+# dependencies = ["cozy-runtime[media]>=0.43,<0.43.1", "msgspec>=0.19"]
 # ///
 """The localfit cell's tool: a still made on the CPU by a tool that, as MiniMax H3's shot does, composes a GPU function of its own that
 loads a model. That is what a computer with no GPU does poorly, so rendering it there asks first. The model paints only pictures its

@@ -365,6 +365,7 @@ dependencies = [
  "hex",
  "hub-client",
  "infer",
+ "pep440_rs",
  "platform",
  "protocol",
  "reqwest",

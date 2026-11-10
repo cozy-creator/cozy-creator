@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime>=0.38", "msgspec>=0.19"]
+# dependencies = ["cozy-runtime>=0.38,<0.43.1", "msgspec>=0.19"]
 # ///
 """The project cell's package with no seed: weightless, a new picture from the one it is given, so one result per inputs."""
 

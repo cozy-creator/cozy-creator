@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime[media]>=0.43", "msgspec>=0.19"]
+# dependencies = ["cozy-runtime[media]>=0.43,<0.43.1", "msgspec>=0.19"]
 # ///
 """The node cell's package: weightless tools in a video model's own shape, so what a project gives a function can be read from its run
 with no model. `shot` takes a summary and beats, a first and last frame, a plate and a pickup. `up` is an upscale whose video slot reads

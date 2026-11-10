@@ -7,7 +7,7 @@ name = "e2e-inspect"
 version = "0.1.0"
 description = "The cli suite's bound run: what a function was given, as Calcifer bound it"
 requires-python = ">=3.12"
-dependencies = ["cozy-runtime[media]>=0.37", "msgspec>=0.19"]
+dependencies = ["cozy-runtime[media]>=0.37,<0.43.1", "msgspec>=0.19"]
 
 [project.entry-points."cozy.application"]
 default = "e2e_inspect:app"

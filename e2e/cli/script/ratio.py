@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime>=0.30", "msgspec>=0.19"]
+# dependencies = ["cozy-runtime>=0.30,<0.43.1", "msgspec>=0.19"]
 # ///
 """The cli suite's image-ratio script: a weightless image request whose reply is the canvas the shared
 `ImageRequest` contract resolves. A ratio outside 1:16 through 16:1 is refused while the request decodes."""

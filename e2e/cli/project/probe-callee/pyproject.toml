@@ -7,7 +7,7 @@ name = "e2e-probe-callee"
 version = "0.1.0"
 description = "The tools cells' second package: a CPU shade a composed tool calls, and a GPU enlarge it calls only when asked"
 requires-python = ">=3.12"
-dependencies = ["cozy-runtime[media]>=0.41", "msgspec>=0.19"]
+dependencies = ["cozy-runtime[media]>=0.41,<0.43.1", "msgspec>=0.19"]
 
 [project.entry-points."cozy.application"]
 default = "e2e_probe_callee:app"

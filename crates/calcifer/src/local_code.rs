@@ -1000,18 +1000,65 @@ pub fn locked_namespace(root: &Path) -> Option<String> {
     (!namespace.is_empty()).then(|| namespace.to_owned())
 }
 
-/// What Runtime's static describer reads from the source at `dir`, with `runtime`'s release (else
-/// the newest) on `python`: its exact words and the document they are. Nothing installs, and none
-/// of the code runs.
+/// The SDK is always cozy-runtime: an authoritative lock, else plain unconditional version
+/// bounds. URLs, markers and unspecified versions retain the newest-SDK fallback; extras
+/// belong to the package, not its static reader. Never forward a project's source as the SDK.
+fn describer_requirement(dir: &Path, runtime: Option<&str>) -> Result<String, Error> {
+    if let Some(version) = runtime {
+        return Ok(format!("cozy-runtime=={version}"));
+    }
+    let text = fs::read_to_string(dir.join("pyproject.toml"))
+        .map_err(|e| refuse("project_file_missing", format!("pyproject.toml: {e}")))?;
+    let document: toml::Value = toml::from_str(&text)
+        .map_err(|e| refuse("project_file_invalid", format!("pyproject.toml: {e}")))?;
+    let dependencies = document.get("project").and_then(|p| p.get("dependencies")).and_then(toml::Value::as_array);
+    let mut specifiers = Vec::new();
+    for requirement in dependencies.into_iter().flatten().filter_map(toml::Value::as_str) {
+        let requirement = requirement.trim();
+        let end = requirement.find(|c: char| !c.is_ascii_alphanumeric() && !"-_.".contains(c)).unwrap_or(requirement.len());
+        let (name, mut bounds) = requirement.split_at(end);
+        // PEP 503: case-insensitive names with runs of '-', '_' and '.' folded to '-'.
+        let normalized = name.split(['-', '_', '.']).filter(|part| !part.is_empty()).collect::<Vec<_>>().join("-").to_ascii_lowercase();
+        if !name.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric)
+            || !name.as_bytes().last().is_some_and(u8::is_ascii_alphanumeric)
+            || normalized != "cozy-runtime"
+        {
+            continue;
+        }
+        bounds = bounds.trim();
+        if let Some(extras) = bounds.strip_prefix('[') {
+            let Some((_, rest)) = extras.split_once(']') else { continue };
+            bounds = rest.trim();
+        }
+        if bounds.is_empty() || bounds.starts_with('@') || bounds.contains(';') {
+            continue;
+        }
+        let bounds = bounds.strip_prefix('(').and_then(|s| s.strip_suffix(')')).unwrap_or(bounds).trim();
+        let parsed: pep440_rs::VersionSpecifiers = bounds.parse()
+            .map_err(|e| refuse("runtime_requirement_invalid", format!("cozy-runtime version bounds: {e}")))?;
+        specifiers.extend(parsed);
+    }
+    let bounds: pep440_rs::VersionSpecifiers = specifiers.into_iter().collect();
+    Ok(if bounds.is_empty() {
+        // A bare name would take whatever cozy-runtime `uv tool install` left here.
+        "cozy-runtime@latest".into()
+    } else {
+        format!("cozy-runtime{bounds}")
+    })
+}
+
+/// Runtime's source-only description on `python`: the locked SDK, else the newest within
+/// declared plain bounds, else PyPI's newest. No package code runs and no project is locked.
 pub fn describe_with(uv: &Path, dir: &Path, python: &str, runtime: Option<&str>) -> Result<(String, Value), Error> {
-    let from = match runtime {
-        Some(version) => format!("cozy-runtime=={version}"),
-        // `@latest`: a bare name would take whatever cozy-runtime `uv tool install` left here.
-        None => "cozy-runtime@latest".into(),
-    };
+    let from = describer_requirement(dir, runtime)?;
+    let mut command = self::uv(uv, dir);
+    command.args(["tool", "run", "--no-progress", "--python", python, "--from", from.as_str()]);
+    if runtime.is_none() && from != "cozy-runtime@latest" {
+        // Refresh within the bounds, ignoring an older installed tool even when it meets them.
+        command.args(["--isolated", "--upgrade-package", "cozy-runtime"]);
+    }
     let said = run(
-        self::uv(uv, dir)
-            .args(["tool", "run", "--no-progress", "--python", python, "--from", from.as_str()])
+        command
             .args(["cozy-runtime", "--json", "--dir"])
             .arg(dir)
             .arg("describe"),
@@ -1039,8 +1086,8 @@ fn last_runtime(api: &Api, on: &On) -> Option<String> {
 }
 
 /// `code` as a run `on` its machine reads it: `local/<name>` and its interface. What that machine's Runtime said installing this
-/// very source, else Runtime's static describer, on the Python and Runtime release its project names, or PyPI's newest. That can
-/// be older than the machine's, and refuse what the machine runs. Nothing installs, and no machine is asked.
+/// very source, else Runtime's static describer, using its lock, plain version bounds or PyPI's newest. That can
+/// be older than the machine's, and refuse what the machine runs. No package code runs and no machine is asked.
 pub async fn describe(api: &Arc<Api>, code: &LocalCode, on: &On, hub: &str) -> Result<(String, Value), Error> {
     let runtime = last_runtime(api, on);
     let held = DESCRIBED.lock().expect("described lock").entry((code.clone(), runtime.clone())).or_default().clone();
@@ -1076,7 +1123,7 @@ async fn own_reading(api: &Arc<Api>, local: &LocalCode, hub: &str, runtime: Opti
     Some((code.package.clone(), kept(home, &code.filed(), runtime?)?))
 }
 
-/// Runtime's static describer's reading, on the Python and Runtime release its project names, or PyPI's newest.
+/// Runtime's static reading on the project's Python and locked SDK, declared plain bounds or newest fallback.
 async fn read_interface(api: &Arc<Api>, code: &LocalCode, on: &On, runtime: Option<String>) -> Result<(String, Value), Error> {
     let home = api.machines.hubs.home();
     let project = Project::read(copied(home, code)?)?;
@@ -1089,7 +1136,7 @@ async fn read_interface(api: &Arc<Api>, code: &LocalCode, on: &On, runtime: Opti
         .map_err(|why| refuse("describe_failed", why))?;
     let described = described.map_err(|error| match (&runtime, &locked, on) {
         (Some(runtime), None, On::Machine(name)) if error.code == "describe_failed" => error
-            .remedy(format!("PyPI's newest Runtime read this, and {name} runs {runtime}: a run there reads it with that one, and this then answers what it read"))
+            .remedy(format!("The Runtime describing this source refused it, and {name} runs {runtime}: a run there reads it with that one, and this then answers what it read"))
             .next(format!("cozy run <its folder> --on {name}")),
         _ => error,
     });
