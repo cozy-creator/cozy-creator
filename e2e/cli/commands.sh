@@ -273,7 +273,7 @@ sleep 5
 [[ $(row "$RUN_PROJECT" hostile_control .duration_ms) =~ ^[0-9]+$ ]] || check "hostile media: the control clip was never probed: $(tail -c 200 "$OUT/hostile-control.json")"
 if [[ $(uname -s) == Linux ]]; then
   # A literal questionmark is a valid POSIX project path, not an image sequence pattern.
-  local literal="$OUT/hostile?image"
+  local literal; literal=$(mktemp -d "$RUNNER_TEMP/hostile?image.XXXXXX")
   ffmpeg -v error -y -f lavfi -i color=c=blue:size=8x8 -frames:v 1 "$dir/image.png"
   cozy --json project new "$literal" > "$OUT/hostile-questionmark-new.json" 2>&1 || check "literal image: project creation failed"
   cozy --json project -p "$literal" import "$dir/image.png" literal_image > "$OUT/hostile-questionmark-import.json" 2>&1 || check "literal image: import failed"
