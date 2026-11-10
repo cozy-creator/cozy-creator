@@ -53,19 +53,21 @@ PY
     sleep 0.3
   done
   while kill -0 "$(cat pc-cut.pid)" 2> /dev/null; do sleep 0.2; done
-  # The next command starts Calcifer again. It drives the cut run on, or ended it: then the file is sent again. Either
-  # send begins at what the machine holds of it for this signer.
+  # A service manager or the next command starts Calcifer again; it drives the cut run on, and the follower goes on with
+  # it. Each send of a file says where it begins with no rate (`uploading <x>: <held>/<total>`): the second such line is
+  # the send after the cut, which must begin at what the machine holds (42756795346: 73.3 of 256 MiB). A run Calcifer
+  # ended instead is sent again, and its first line says the same.
   "$CLI" --json machine show "$M" > /dev/null 2>&1
-  "$CLI" --json run show "$n" > pc-cut-after.ndjson 2> pc-cut-after.err || true
-  run_show "$OUT" pc-cut "$n"; events=pc-cut-after.ndjson
+  run_show "$OUT" pc-cut "$n"; events=pc-cut.ndjson
   if [ "$(run_get "$OUT" pc-cut .status)" != completed ]; then
     run_submit "$OUT" pc-resume model upload "$OUT/pc-big.safetensors" "$dest" --lane f16-c --source-format as-is --on "$M" -y > /dev/null
     run_wait "$OUT" pc-resume; events=pc-resume.ndjson
   fi
-  read -r first _ total < <(run_uploaded "$events")
-  [ "$cut" -gt 0 ] && [ "$first" -gt 0 ] && [ "$first" -le "$total" ] \
-    && expect pc-resume PASS "Calcifer killed at $cut of $total bytes; the upload went on from $first ($events)" \
-    || expect pc-resume FAIL "killed at $cut, sent on from $first of $total ($events): $(grep -o '"reason":"[^"]*"' "$events" | head -3 | tr '\n' ' ')"
+  begins=$(grep '^{' "$events" | jq -r 'select(.type? == "run.waiting") | .reason // "" | select(test("^uploading .*: [0-9.]+ [KMGT]?i?B/[0-9.]+ [KMGT]?i?B$"))' | sed -E 's/.*: ([^/]+)\/.*/\1/')
+  from=$([ "$events" = pc-cut.ndjson ] && sed -n 2p <<< "$begins" || sed -n 1p <<< "$begins")
+  [ "$cut" -gt 0 ] && [ -n "$from" ] && [[ $from != "0 B" ]] && [ "$(run_get "$OUT" "${events%.ndjson}" .status)" = completed ] \
+    && expect pc-resume PASS "Calcifer killed at $cut bytes; the send after began at $from of the file ($events), and completed" \
+    || expect pc-resume FAIL "killed at $cut; the send after began at ${from:-nothing} ($events): $(grep -o '"reason":"uploading[^"]*"' "$events" | grep -v ' at ' | head -3 | tr '\n' ' ')"
   rm -f "$OUT/pc-big.safetensors"
   "$CLI" --json model delete "$dest" -y > pc-delete.json 2>&1 || log "model delete $dest: $(tail -c 200 pc-delete.json)"
 fi
