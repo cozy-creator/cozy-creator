@@ -179,6 +179,11 @@ pub(crate) fn ahead_updated(id: &str, ahead: &api::calcifer::project::Ahead) {
     let _ = PROJECTS.said.send(StreamEvent::AheadUpdated { project: id.to_owned(), ahead: Box::new(ahead.clone()) });
 }
 
+/// Tells every stream project `id`'s render, whole: more than one job of it changed.
+pub(crate) fn board_updated(id: &str, board: &api::calcifer::project::Board) {
+    let _ = PROJECTS.said.send(StreamEvent::BoardUpdated { project: id.to_owned(), board: Box::new(board.clone()) });
+}
+
 /// Tells every stream one job of project `id` changed.
 pub(crate) fn job_updated(id: &str, job: &api::calcifer::project::Job, seq: u64) {
     let _ = PROJECTS.said.send(StreamEvent::JobUpdated { project: id.to_owned(), job: Box::new(job.clone()), seq });
@@ -227,6 +232,11 @@ impl Showing {
         let id = format!("stream-{}", hex::encode(bytes));
         SHOWN.lock().expect("shown lock").insert(id.clone(), vec![]);
         Self(id)
+    }
+
+    fn includes(&self, project: &str) -> bool {
+        SHOWN.lock().expect("shown lock").get(&self.0)
+            .is_some_and(|readers| readers.iter().any(|reader| reader.id() == project))
     }
 }
 
@@ -284,7 +294,6 @@ const SHOWN_MOST: usize = 64;
 /// One subscriber: what it owes, and the machine list as it last told it.
 struct Watch {
     /// Its id, and the projects it holds open.
-    #[allow(dead_code, reason = "held for its drop")]
     showing: Showing,
     pending: VecDeque<StreamEvent>,
     runs: broadcast::Receiver<(RunId, Event)>,
@@ -306,6 +315,14 @@ impl Watch {
             }
             self.arrived()?;
             if let Some(event) = self.pending.pop_front() {
+                let project = match &event {
+                    StreamEvent::ProjectChanged { id, .. } | StreamEvent::Canvas { id, .. } | StreamEvent::History { id, .. } => Some(id),
+                    StreamEvent::BoardUpdated { project, .. } | StreamEvent::JobUpdated { project, .. } | StreamEvent::AheadUpdated { project, .. } => Some(project),
+                    _ => None,
+                };
+                if project.is_some_and(|project| !self.showing.includes(project)) {
+                    continue;
+                }
                 return Some((Ok(frame(&event)), self));
             }
             if let Some(id) = self.owed.pop_front() {

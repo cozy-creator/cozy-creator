@@ -1987,10 +1987,12 @@ assets:
     tool: $here/project/draw.py/draw
     instructions: Also from <slow>, and deleted while it waits.
 YAML
-id=$(in_project "$W" --json status | jq -r .id)
+id=$(status "$W" | jq -r .id)
 api -N --max-time 120 "http://$ADDR/v1/events" > "$stream" 2> /dev/null &
 local tail=$!
-in_project "$W" render all --queue --on local > "$OUT/walking-queue.txt" 2>&1 || check "walking: render: $(tail -c 300 "$OUT/walking-queue.txt")"
+show_events "$stream" "$id" || check "walking: project interest not held"
+api -f -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: walking-$RANDOM$RANDOM" \
+  -d '{"names":["all"],"on":["local"]}' "http://$ADDR/v1/projects/$id/runs" > "$OUT/walking-queue.txt" 2>&1 || check "walking: render: $(tail -c 300 "$OUT/walking-queue.txt")"
 J '[.board.jobs[].asset] as $a | (["running_gone", "reads_gone", "slow", "beside", "one", "two", "last", "gone_soon"] - $a) == []' <<< "$(status "$W")" || check "walking: not every job is on the board at once: $(status "$W" | jq -c '[.board.jobs[] | .asset]')"
 J '.board.jobs[] | select(.asset == "last") | .needs | contains(["one", "two"])' <<< "$(status "$W")" || check "walking: last doesn't say what it waits for: $(status "$W" | jq -c '.board.jobs[] | select(.asset == "last")')"
 for _ in $(seq 240); do run=$(status "$W" | jq -r '.board.jobs[] | select(.asset == "running_gone") | .run // empty'); [ -n "$run" ] && [ "$(cozy --json run show "$run" --once | jq -r .status)" = in_progress ] && break; sleep 0.25; done
@@ -1999,7 +2001,8 @@ for _ in $(seq 240); do run=$(status "$W" | jq -r '.board.jobs[] | select(.asset
 for _ in $(seq 120); do J '[.board.jobs[] | select(.asset == "slow" or .asset == "beside") | .run] | all' <<< "$(status "$W")" && break; sleep 0.25; done
 J '[.board.jobs[] | select(.asset == "slow" or .asset == "beside") | .run] | all' <<< "$(status "$W")" || check "walking: what reads nothing waited for the long job: $(status "$W" | jq -c '[.board.jobs[] | {asset, run}]')"
 [ "$(owed "$W")" -ge 1 ] || check "walking: what the walk owes isn't in project.db"
-dropped "$W" gone_soon
+project_api "$W" /yaml | perl -ne 'if (/^  gone_soon:/) { $skip = 1; next } $skip = 0 if /^ {0,2}\S/; print unless $skip' > "$OUT/walking-drop.yaml"
+project_api "$W" /yaml -X PUT -H 'Content-Type: application/yaml' --data-binary "@$OUT/walking-drop.yaml" > /dev/null || check "walking: hand deletion failed"
 for _ in $(seq 20); do J '.board.jobs[] | select(.asset == "gone_soon") | .state == "canceled"' <<< "$(status "$W")" && break; sleep 0.25; done
 api -o /dev/null -X DELETE "http://$ADDR/v1/projects/$id/assets/running_gone"
 back=$(api "http://$ADDR/v1/projects/$id/history" | jq -r '[.entries[] | select(.undone == null and (.names | index("running_gone")))][0].id')
@@ -2015,10 +2018,14 @@ done
 J '.board.jobs[] | select(.asset == "reads_gone") | .state == "failed" and (.error.message | test("running_gone was deleted"))' <<< "$(status "$W")" || check "walking: what read a deleted asset says $(status "$W" | jq -c '.board.jobs[] | select(.asset == "reads_gone")')"
 # Its delete undone, it is the asset, and not the render it stopped.
 J --argjson e "$back" '[.entries[].id] == [$e]' <<< "$(api -X POST -d "{\"entry\": $back}" "http://$ADDR/v1/projects/$id/history/undo")" || check "walking: undo didn't take back the DELETE (entry $back)"
-{ grep -q '^  running_gone:' <(in_project "$W" export) && J '.busy | not' <<< "$(status "$W")" && [ "$(made "$W" running_gone)" = 0 ]; } || check "walking: put back, running_gone went again: $(status "$W" | jq -c '{busy, jobs: [.board.jobs[] | select(.asset == "running_gone")]}')"
+{ grep -q '^  running_gone:' <(project_api "$W" /yaml) && J '.busy | not' <<< "$(status "$W")" && [ "$(made "$W" running_gone)" = 0 ]; } || check "walking: put back, running_gone went again: $(status "$W" | jq -c '{busy, jobs: [.board.jobs[] | select(.asset == "running_gone")]}')"
 [ "$(owed "$W")" = 0 ] || check "walking: what the walk owed outlived the render"
 [ -z "$(find "$W/.runs" -type f 2> /dev/null)" ] || check "walking: left in .runs: $(find "$W/.runs" -type f)"
 grep -q "\"type\":\"job.updated\".*\"project\":\"$id\"\|\"project\":\"$id\".*\"type\":\"job.updated\"" "$stream" || check "walking: /v1/events told no job.updated: $(head -c 300 "$stream")"
+# Its end is the board's, told whole on the same stream, as status keeps it.
+sse "$stream" | J -s --arg id "$id" 'map(select(.type == "board.updated" and .project == $id)) | (length > 1) and (last.board.ended != null) and (first.board.ended == null)' \
+  || check "walking: /v1/events told no board.updated that began and ended it: $(sse "$stream" | jq -c --arg id "$id" 'select(.type == "board.updated" and .project == $id) | {seq: .board.seq, ended: .board.ended}' | tail -3)"
+J '.board.ended != null and .board.elapsed_ms != null' <<< "$(status "$W")" || check "walking: status's board doesn't say it ended: $(status "$W" | jq -c '.board | {elapsed_ms, ended}')"
 }
 
 walk_restarted() {
@@ -3932,38 +3939,49 @@ revs() { sse "$1" | jq -r --arg i "$2" 'select(.type == "project.changed" and .i
 soon() { for _ in $(seq 100); do "$@" && return 0; sleep 0.2; done; return 1; }
 told() { sse "$1" | jq -e "select($2)" > /dev/null; }
 told_more() { [ "$(revs "$1" "$2" | wc -l)" -gt "$3" ]; }
+show_events() {
+  local log=$1 project=$2 stream
+  soon told "$log" '.type == "hello"' || return
+  stream=$(sse "$log" | sed -n '1p' | jq -er 'select(.type == "hello") | .stream') || return
+  api -f -X PUT -H 'Content-Type: application/json' -d "$(jq -nc --arg id "$project" '{projects: [$id]}')" \
+    "http://$ADDR/v1/events/$stream" | J --arg id "$project" '.held | index($id) != null'
+}
 
 # `GET /v1/events`, read as the page reads it: the first event, an edit from outside, a landing that writes only the lock, the local
 # machine, a comment when nothing happens, and the routes it replaced gone.
 event_stream() {
 step "a project: GET /v1/events"
-local R=$OUT/stream log=$OUT/events.sse stream id n seen yaml real
+local R=$OUT/stream log=$OUT/events.sse other=$OUT/events-unrelated.sse stream other_stream id n seen yaml
 starter_project "$R" > /dev/null || check "stream: project new"
-real=$(status "$R" | jq -r .id)
 id=$(status "$R" | jq -r .id)
 curl -sSN -H "Authorization: Bearer $TOKEN" "http://$ADDR/v1/events" > "$log" 2> "$OUT/events.err" & stream=$!
-soon told "$log" '.type == "hello"' || check "stream: no hello: $(head -c 300 "$log"; cat "$OUT/events.err")"
+show_events "$log" "$id" || check "stream: project interest not held: $(head -c 300 "$log"; cat "$OUT/events.err")"
+curl -sSN -H "Authorization: Bearer $TOKEN" "http://$ADDR/v1/events" > "$other" 2> "$OUT/events-unrelated.err" & other_stream=$!
+soon told "$other" '.type == "hello"' || check "stream: no hello on unrelated connection"
 sse "$log" | sed -n 1p | J --arg v "$(fixture_calcifer | jq -r .calcifer.version)" '.type == "hello" and .version == $v' || check "stream: its first event: $(sse "$log" | sed -n 1p)"
 
 seen=$(revs "$log" "$id" | wc -l)
 # A hand's edit, its export imported (project.db has no other writer to watch for, cl-803).
-printf '  edited:\n    text: By hand.\n' | added "$R"
+{ project_api "$R" /yaml | perl -0pe 's/^assets: \{\}\n?\z/assets:\n/m; $_ .= "assets:\n" unless /^assets:/m'; printf '  edited:\n    text: By hand.\n'; } > "$OUT/stream-hand.yaml"
+project_api "$R" /yaml -X PUT -H 'Content-Type: application/yaml' --data-binary "@$OUT/stream-hand.yaml" > /dev/null || check "stream: hand edit refused"
 soon told_more "$log" "$id" "$seen" || check "stream: a hand's edit told nothing: $(sse "$log" | cut -c1-200 | tail -5)"
 
-seen=$(revs "$log" "$id" | wc -l) yaml=$(in_project "$R" export | sha /dev/stdin)
+seen=$(revs "$log" "$id" | wc -l) yaml=$(project_api "$R" /yaml | sha /dev/stdin)
 (cd "$R" && in_project "$R" run "$here/project/draw.py" instructions=stream) > "$OUT/stream-run.txt" 2>&1 || check "stream: a run in the project: $(tail -c 300 "$OUT/stream-run.txt")"
 n=$(cd "$R" && in_project "$R" --json run ls --limit 1 | jq -r '.runs[0].number') || check "stream: run ls in the project failed"
-[ "$(in_project "$R" export | sha /dev/stdin)" = "$yaml" ] || check "stream: a landing changed the boxes, and this was to prove its own rows reach the stream"
+[ "$(project_api "$R" /yaml | sha /dev/stdin)" = "$yaml" ] || check "stream: a landing changed the boxes, and this was to prove its own rows reach the stream"
 soon told_more "$log" "$id" "$seen" || check "stream: a landing's lock told nothing"
-soon told "$log" ".type == \"run.updated\" and .run.number == $n and .run.status == \"completed\" and .run.project_id == \"$real\"" \
-  || check "stream: no run.updated says run $n completed in $real: $(sse "$log" | jq -c 'select(.type == "run.updated") | [.run.number, .run.status, .run.project_id]' | tail -5)"
+soon told "$log" ".type == \"run.updated\" and .run.number == $n and .run.status == \"completed\" and .run.project_id == \"$id\"" \
+  || check "stream: no run.updated says run $n completed in $id: $(sse "$log" | jq -c 'select(.type == "run.updated") | [.run.number, .run.status, .run.project_id]' | tail -5)"
+soon told "$other" ".type == \"run.updated\" and .run.number == $n and .run.status == \"completed\"" || check "stream: a connection with no projects missed the global run"
+[ -z "$(revs "$other" "$id")" ] || check "stream: project changes reached a connection with no interest"
 soon told "$log" '.type == "machine.updated" and .machine.name == "local"' || check "stream: a run on local moved no machine.updated"
 [ -z "$(revs "$log" "$id" | sort | uniq -d)" ] || check "stream: a rev told twice: $(revs "$log" "$id" | sort | uniq -d)"
 
 soon grep -q '^:' "$log" || check "stream: no comment after 20 s"
 kill -0 "$stream" 2> /dev/null || check "stream: it ended: $(cat "$OUT/events.err")"
-kill "$stream" 2> /dev/null || true
-for route in runs machines; do
+kill "$stream" "$other_stream" 2> /dev/null || true
+for route in runs machines "projects/$id"; do
   [ "$(api -o /dev/null -w '%{http_code}' "http://$ADDR/v1/$route/events")" = 404 ] || check "stream: /v1/$route/events still answers"
 done
 }
@@ -4031,13 +4049,13 @@ port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0));
 python3 -m http.server "$port" --bind 127.0.0.1 --directory "$here/project" > "$OUT/cross-site.log" 2>&1 & server=$!
 for _ in $(seq 50); do curl -fsS -o /dev/null "http://localhost:$port/cross-site.html" && break; sleep 0.1; done
 # The re-cut the page follows: the edit a second shorter.
-in_project "$P" export | sed -E 's/^( +)- <a>$/\1- {video: <a>, start: 0, end: 120}/' > "$OUT/recut.yaml"
-code_got=$(cd "$OUT" && cozy --json open | jq -r .url | sed -n 's/.*#code=\([0-9a-f]*\).*/\1/p')
+project_api "$P" /yaml | sed -E 's/^( +)- <a>$/\1- {video: <a>, start: 0, end: 120}/' > "$OUT/recut.yaml"
+code_got=$(in_project "$P" --json open | jq -r .url | sed -n 's/.*#code=\([0-9a-f]*\).*/\1/p')
 local code=0 log=$HOME/.cozy/calcifer/calcifer.log seen pid
 seen=$(stat -c %s "$log" 2>/dev/null || echo 0)
 pid=$(jq -r .pid "$lock") was_addr=$(jq -r .address "$lock") was_token=$(jq -r .token "$lock")
 CHROME=$CHROME PLAYWRIGHT=$pw/node_modules/playwright-core node "$here/project/browser.js" "$ADDR" "$code_got" "$ID" "$HOSTILE" "$port" \
-  "cd '$P' && '$COZY' import '$OUT/recut.yaml' && '$COZY' render all --on local" \
+  "$OUT/recut.yaml" \
   "kill -TERM $pid; while kill -0 $pid 2> /dev/null; do sleep 0.1; done; '$COZY' machine ls > /dev/null" > "$OUT/browser.json" 2> "$OUT/browser.err" || code=$?
 kill "$server" 2> /dev/null || true
 ADDR=$(jq -r .address "$lock") TOKEN=$(jq -r .token "$lock")

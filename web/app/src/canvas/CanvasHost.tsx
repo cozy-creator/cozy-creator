@@ -79,7 +79,7 @@ function ProjectSync({ id }: { id: string }) {
   const store = useCanvasStore()
   const navigate = useNavigate()
   const { data: state, error: stateError } = useQuery(projectQuery(client, stream, id))
-  const { data: canvas, error: canvasError } = useQuery(canvasQuery(client, id))
+  const { data: canvas, error: canvasError } = useQuery(canvasQuery(client, stream, id))
   const asked = useRef(new Set<string>())
   const queries = useQueryClient()
 
@@ -115,15 +115,18 @@ function ProjectSync({ id }: { id: string }) {
     if (canvasError && !lost(canvasError)) say("Couldn't read where things sit", canvasError)
   }, [canvasError])
   useEffect(() => {
-    store.history.read()
-    return stream.subscribe((event) => {
+    const controller = new AbortController()
+    const readHistory = () => void stream.whenShown(id, controller.signal).then(() => store.history.read(), () => {})
+    readHistory()
+    const unsubscribe = stream.subscribe((event) => {
       if (event.type === "canvas" && event.id === id) store.applyRows(event.cards, event.seq)
       if (event.type === "history" && event.id === id) store.history.read()
       if (event.type === "resync" || event.type === "hello") {
         store.fellBehind()
-        store.history.read()
+        readHistory()
       }
     })
+    return () => { controller.abort(); unsubscribe() }
   }, [stream, store, id])
   useEffect(() => bridge.onRun((run) => store.applyRun(run)), [bridge, store])
   useEffect(() => {

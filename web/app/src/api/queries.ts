@@ -57,10 +57,12 @@ export const toolsQuery = (client: Client, q: string, on: string | null, project
     refetchInterval: (query) => (query.state.data?.note ? 10_000 : false),
   })
 
-export const canvasQuery = (client: Client, id: string) =>
+export const canvasQuery = (client: Client, stream: EventStream, id: string) =>
   queryOptions({
     queryKey: ["canvas", id],
     queryFn: async ({ signal }) => {
+      await stream.whenShown(id, signal)
+      signal.throwIfAborted()
       const began = performance.now()
       return { ...(await client.canvas(id, signal)), began }
     },

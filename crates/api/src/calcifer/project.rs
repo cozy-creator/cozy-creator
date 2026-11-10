@@ -60,7 +60,7 @@ pub struct Card {
     pub w: Option<f64>,
 }
 
-/// `POST /v1/projects/{id}/runs`: what the ask found. `/events` opens with the runs already going.
+/// `POST /v1/projects/{id}/runs`: what the ask found. `GET /v1/events` tells its board's changes from here.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Asked {
@@ -81,10 +81,13 @@ pub struct Asked {
     /// What it added, each with what is ahead of it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub queued: Vec<QueuedNow>,
+    /// What the ask found of what it names, each line once: what it skips and why, a flag it ignores.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub said: Vec<Said>,
     /// Commands to run next.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub next: Vec<String>,
-    /// The render as this ask left it: `/events` says each change from here.
+    /// The render as this ask left it: `board.updated` and `job.updated` on `GET /v1/events` say each change from here.
     pub board: Board,
 }
 
@@ -906,6 +909,9 @@ pub struct Unpinned {
     pub version: Option<u32>,
     /// What this put out of date, itself too.
     pub stale: Vec<String>,
+    /// What making the tools that read it now said.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
     /// What `If-Match` names from here on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub etag: Option<String>,
@@ -1010,6 +1016,42 @@ pub struct Board {
     /// What machines are fetching ahead of what's queued, one per function.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ahead: Vec<Ahead>,
+    /// What it said as it went, each line once, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub said: Vec<Said>,
+    /// What failed of no one asset, each once; what does not read it goes on. A job's failure is its own `error`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub errors: Vec<Error>,
+    /// How its walk ended, once it has.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended: Option<Ended>,
+}
+
+/// A line a render said, once however often it came: of the assets `names` (a warning's are those whose runs gave it), or of the
+/// render.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct Said {
+    pub level: crate::calcifer::NoteLevel,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub names: Vec<String>,
+}
+
+/// How a render's walk ended: nothing it was asked is left to send or follow, and every take it made is whole here. `error` is the
+/// first thing that failed, or when more than that was asked, `render_incomplete`: how far it got, that failure, and the command for
+/// the rest.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "RenderEnded"))]
+pub struct Ended {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<Error>,
+    /// What it landed, if it landed anything.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rendered: Option<Rendered>,
+    /// The renders it ended, by `Asked::ask`: an ask made as another walk ends is the next one's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub asks: Vec<String>,
 }
 
 /// How the target of a run fetching ahead starts.
@@ -1131,100 +1173,6 @@ pub struct Job {
 pub struct Preview {
     pub label: String,
     pub path: String,
-}
-
-/// `GET /v1/projects/{id}/events`: what the project's runs do, as they do it.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "ProjectEvent"))]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum Event {
-    /// The project's render as it stands now, whole: heard when the stream opens and at each change, later ones standing for any
-    /// a slow reader missed.
-    Board {
-        board: Board,
-    },
-    /// One job as it stands now, whole. What changed since the `board` heard first: `seq` as that board's goes up.
-    Job {
-        job: Job,
-        seq: u64,
-    },
-    /// What a machine is fetching ahead, as it stands now, whole.
-    Ahead {
-        ahead: Ahead,
-    },
-    /// A run for `name` began: its id and number, which `GET /v1/runs/{id}/events` follows.
-    Started {
-        name: String,
-        run: String,
-        number: u64,
-    },
-    /// `name`'s version `number` (its `noun`) was made: its files, and the one people mean by it.
-    Landed {
-        name: String,
-        noun: String,
-        number: u32,
-        files: BTreeMap<String, File>,
-        path: String,
-        /// Its run's execution time.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        execution_ms: Option<u64>,
-    },
-    /// `name`: the asset it is of, if it is of one.
-    Said {
-        message: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        name: Option<String>,
-    },
-    /// `name`: the asset whose run said it. The same `message` can come from several. With none, it names its asset itself, if it is of one.
-    Warning {
-        message: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        name: Option<String>,
-    },
-    /// Something asked could not be made, said as it happens; the walk goes on with what does not
-    /// read it. `name`, the asset, and `run`, the run that failed, when it is of one: its row's `failure` holds this for later readers.
-    Failed {
-        error: Error,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        name: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        run: Option<u64>,
-    },
-    /// Materializing a stored file landed `file`, with `bytes` read from the Hub.
-    Moved {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        file: Option<String>,
-        bytes: u64,
-    },
-    /// Asset `name`'s cut (`edit.mp4`, and its `.otio`) was made here, in `took_s`: `frames` long at `fps`, the takes
-    /// in `retimed` retimed to it. `unchanged`: what it holds did not change, so it was left.
-    Cut {
-        name: String,
-        cut: String,
-        frames: u64,
-        fps: f64,
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        retimed: Vec<String>,
-        took_s: f64,
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        unchanged: bool,
-        /// What this film was cut without: `<piece>: <why>`.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        without: Vec<String>,
-    },
-    /// The walk is over: nothing it was asked is left to send or follow, and every take it made is whole here (its file, its row and
-    /// what's measured of it). `error` is the first thing that failed (`Failed` said it already, unless the walk itself stopped), or
-    /// when more than that was asked, `render_incomplete`: how far it got, that failure, and the command for the rest.
-    Ended {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        error: Option<Error>,
-        /// What this walk landed, if it landed anything.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        rendered: Option<Rendered>,
-        /// The renders it ended, by `Asked::ask`: an ask made as another walk ends is the next one's.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        asks: Vec<String>,
-    },
 }
 
 /// Who made a change to a project: the page (`client` names its tab), the CLI, a hand in project.yaml, or another client of the API.
