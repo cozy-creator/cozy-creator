@@ -8,7 +8,7 @@ const { execFileSync } = require('child_process');
 const { mkdtempSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { STEP_MS, boxOf, calcifer, closeBox, importYaml, lastLook, launch, lookAt, noStall, openBox, panning, png, settled, signIn, summary, until } = require('./page');
+const { STEP_MS, boxOf, calcifer, closeBox, importYaml, lastLook, launch, lookAt, noStall, openBox, panning, png, removeGeneratedProject, settled, signIn, summary, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -184,8 +184,12 @@ const shows = (at) => at.shown === `${Math.round(at.zoom * 100)}%`;
     await closeBox(tab);
     check('box_left', !(await tab.locator('.card.here').count()) && (await boxOf(tab, 'n0').count()) === 1);
     await tab.close();
+  } catch (error) {
+    await lastLook();
+    throw error;
   } finally {
-    if (made.path?.includes('web-zoom-')) rmSync(made.path, { recursive: true, force: true });
+    await context.close();
+    await removeGeneratedProject(made.path, 'web-zoom-');
     rmSync(scratch, { recursive: true, force: true });
   }
 

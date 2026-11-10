@@ -1,7 +1,8 @@
 #!/bin/bash
 # verify.sh <gate run id | gate dir>...: prints the candidate set that passed (candidate.json) and exits 0 only when
 # every SKU's gate passed (or the lead accepted its FAIL) and all of them gated the same set. A run id is a
-# cozy-creator Actions run that ran release-gate.yml (its gate-<SKU> artifacts); a dir is a hand gate's --out.
+# completed, repository-owned workflow_dispatch of release-gate.yml (its gate-<SKU> artifacts);
+# a dir is a hand gate's --out. A trusted failed run may carry a lead-accepted FAIL.
 # Promotions (promote.sh, cozy-promote.yaml, tensorfs-publish.yaml, cozy-runtime runtime-publish.yaml) check what they
 # publish against this output.
 set -euo pipefail
@@ -9,6 +10,14 @@ set -euo pipefail
 dirs=() tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 for e in "$@"; do
   if [[ $e =~ ^[0-9]+$ ]]; then
+    # PR artifacts run the PR's code. Their own PASS/hash claims cannot establish that a gate ran.
+    # Branch dispatches remain supported for release candidates; dispatch authority is repository-scoped.
+    gh api "repos/cozy-creator/cozy-creator/actions/runs/$e" | jq -e '
+      .repository.full_name == "cozy-creator/cozy-creator" and
+      .head_repository.full_name == "cozy-creator/cozy-creator" and
+      .event == "workflow_dispatch" and .path == ".github/workflows/release-gate.yml" and
+      .status == "completed" and (.conclusion == "success" or .conclusion == "failure")
+    ' > /dev/null || { echo "$e: not a completed trusted release-gate dispatch" >&2; exit 1; }
     gh run download "$e" -R cozy-creator/cozy-creator -p 'gate-*' -D "$tmp/$e" >&2
     for d in "$tmp/$e"/gate-*; do [ -d "$d" ] && dirs+=("$d"); done
   else

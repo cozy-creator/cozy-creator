@@ -25,7 +25,7 @@ const VAE_SAID = 'Sdxl Vae';
 // e2e/cli/project/draw.py is, on the 0.22 line's Runtime (0.43.1: fields from cozy_runtime.fields, a picture's request from cozy_runtime.image).
 const TOOL = `# /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime[media]>=0.43", "msgspec>=0.19"]
+# dependencies = ["cozy-runtime[media]>=0.43.1", "msgspec>=0.19"]
 # ///
 """The activity cell's picture tool: a weightless still of one random colour."""
 

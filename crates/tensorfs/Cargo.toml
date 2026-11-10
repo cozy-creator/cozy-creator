@@ -1,6 +1,6 @@
 [package]
 name = "tensorfs"
-version = "0.23.0"
+version = "0.23.1"
 edition = "2021"
 license.workspace = true
 publish.workspace = true
@@ -61,3 +61,6 @@ rustix = { workspace = true, features = ["fs", "process", "thread"] }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -30,8 +30,11 @@ pub(crate) struct Written {
 }
 
 /// One box: its name as written, and its fields in the order they were written.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub(crate) struct Boxed {
+    /// Stable logical identity; names and positions can change. Absent only while importing a legacy value.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
     pub name: String,
     pub fields: Vec<(String, Value)>,
     /// Where it was in the list, for one taken out: a put back goes there.
@@ -41,6 +44,13 @@ pub(crate) struct Boxed {
 
 fn unknown(name: &str) -> Error {
     Error::new(Kind::Usage, "project_edit", format!("the project has no box {name}")).next("cozy project status")
+}
+
+impl PartialEq for Boxed {
+    fn eq(&self, other: &Self) -> bool {
+        // History from before stable IDs still compares the actual edit, not its storage bookkeeping.
+        self.name == other.name && self.fields == other.fields && self.at == other.at
+    }
 }
 
 impl Boxed {
@@ -136,7 +146,7 @@ impl Written {
                     Value::Object(fields) => ordered(fields, orders.get(name).map_or(&[][..], Vec::as_slice)),
                     _ => vec![],
                 };
-                Some(Boxed { name: name.clone(), fields, at: None })
+                Some(Boxed { name: name.clone(), fields, ..Default::default() })
             })
             .collect();
         Ok(Self { head, boxes })
@@ -224,13 +234,13 @@ impl Written {
             true => (TEXT.to_owned(), json!("")),
             false => (TOOL.to_owned(), json!(tool)),
         };
-        self.push(Boxed { name: name.to_owned(), fields: vec![first], at: None })?;
+        self.push(Boxed { id: super::new_key(), name: name.to_owned(), fields: vec![first], at: None })?;
         self.set(name, fields)
     }
 
     /// A box holding one file: a name and the file it approves.
     pub(crate) fn constant(&mut self, name: &str, sha256: &str) -> Result<(), Error> {
-        self.push(Boxed { name: name.to_owned(), fields: vec![("approved".to_owned(), json!(prefix_of(sha256)))], at: None })
+        self.push(Boxed { id: super::new_key(), name: name.to_owned(), fields: vec![("approved".to_owned(), json!(prefix_of(sha256)))], at: None })
     }
 
     fn push(&mut self, held: Boxed) -> Result<(), Error> {

@@ -88,13 +88,11 @@ pub(super) async fn answered(State(api): State<Arc<Api>>, request: Request, next
             match store.answer(&key) {
                 Ok(Some(kept)) if kept.digest == digest => replay(Some((kept.status, kept.content_type, kept.body))),
                 Ok(Some(_)) => conflict(&key),
-                found => {
-                    if let Err(e) = found {
-                        warn!("reading what Idempotency-Key {key} answered: {e}");
-                    }
+                Ok(None) => {
                     let response = next.run(Request::from_parts(parts, Body::from(bytes))).await;
                     keep(&api, &key, digest, response).await
                 }
+                Err(error) => Refusal::from(error).into_response(),
             }
         }
     };

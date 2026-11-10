@@ -4,7 +4,7 @@ use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     convert::Infallible,
     path::{Path, PathBuf},
-    sync::{Arc, LazyLock, Mutex},
+    sync::{Arc, LazyLock, Mutex, atomic::{AtomicU64, Ordering}},
     time::Duration,
 };
 
@@ -14,7 +14,7 @@ use axum::{
 };
 use futures_util::Stream;
 use api::{
-    calcifer::{Event, Machine, Shown, StreamEvent},
+    calcifer::{Event, Machine, ProjectEventCursor, ProjectShowReply, ProjectShowRefusal, Shown, StreamEvent},
     error::Error,
     ids::RunId,
     calcifer::project::Card,
@@ -41,20 +41,40 @@ const LOOK: Duration = Duration::from_millis(250);
 
 /// What projects say to every stream. Process-wide, as `folder::WRITING` is: one process holds one
 /// Calcifer, and a `Folder` that writes may be no more than a path.
-static PROJECTS: LazyLock<Projects> = LazyLock::new(|| Projects {
-    said: broadcast::channel(1024).0,
-    revs: Mutex::default(),
-    owed: Mutex::default(),
-    wake: Notify::new(),
+static PROJECTS: LazyLock<Projects> = LazyLock::new(|| {
+    let mut generation = [0u8; 16];
+    getrandom::fill(&mut generation).expect("the OS gives random bytes");
+    Projects {
+        generation: hex::encode(generation),
+        sequence: AtomicU64::new(0),
+        said: broadcast::channel(1024).0,
+        revs: Mutex::default(),
+        owed: Mutex::default(),
+        wake: Notify::new(),
+    }
 });
 
 struct Projects {
+    generation: String,
+    sequence: AtomicU64,
     said: broadcast::Sender<StreamEvent>,
     /// Each project's `rev` as last noticed, so a write and the look after it say it once.
     revs: Mutex<HashMap<String, String>>,
     /// The projects to say something of, each by id: its folder, and whether it's to be said though neither file changed.
     owed: Mutex<BTreeMap<String, (PathBuf, bool)>>,
     wake: Notify,
+}
+
+fn cursor(sequence: u64) -> Option<ProjectEventCursor> {
+    // The page compares JSON numbers. Outside their exact integer range, keep ordinary
+    // refreshes instead of claiming coverage with a rounded or reused sequence.
+    (sequence < (1u64 << 53)).then(|| ProjectEventCursor { generation: PROJECTS.generation.clone(), sequence })
+}
+
+/// Capture before any read supplying a full state. Never capture after the snapshot: an
+/// event published while it was read may describe a commit that snapshot did not include.
+pub(crate) fn snapshot_cursor() -> Option<ProjectEventCursor> {
+    cursor(PROJECTS.sequence.load(Ordering::Acquire))
 }
 
 fn owe(dir: &Path, settled: bool) {
@@ -113,12 +133,16 @@ pub(crate) fn tell(api: Arc<Api>) {
                     project::model::forget(&api, &id);
                     continue;
                 }
-                let event = project::model::told(&api, id.clone(), &dir, settled).await;
+                let mut event = project::model::told(&api, id.clone(), &dir, settled).await;
                 // A write that came as this read the files is told here and owed again: once is enough.
                 if let StreamEvent::ProjectChanged { rev, .. } = &event
                     && last.insert(id, rev.clone()).as_ref() == Some(rev)
                 {
                     continue;
+                }
+                if let StreamEvent::ProjectChanged { cursor: position, .. } = &mut event {
+                    *position = PROJECTS.sequence.try_update(Ordering::AcqRel, Ordering::Acquire, |sequence| sequence.checked_add(1))
+                        .ok().and_then(|sequence| cursor(sequence + 1));
                 }
                 let _ = PROJECTS.said.send(event);
             }
@@ -153,6 +177,12 @@ pub(crate) fn history(id: &str, undo: Option<Box<api::calcifer::project::History
 /// Tells every stream what project `id` is fetching ahead moved.
 pub(crate) fn ahead_updated(id: &str, ahead: &api::calcifer::project::Ahead) {
     let _ = PROJECTS.said.send(StreamEvent::AheadUpdated { project: id.to_owned(), ahead: Box::new(ahead.clone()) });
+}
+
+/// Protection changes must reach inactive/global views too; they contain no private
+/// project content and remain visible after the project's read authority is closed.
+pub(crate) fn project_vault(id: &str, state: &str) {
+    let _ = PROJECTS.said.send(StreamEvent::ProjectVault { id: id.to_owned(), state: state.to_owned() });
 }
 
 /// Tells every stream one job of project `id` changed.
@@ -193,6 +223,23 @@ pub(crate) async fn stream(
 /// What each stream shows, by its id: the projects it holds open (`PUT /v1/events/{stream}`), until it ends or shows others (cl-823).
 static SHOWN: LazyLock<Mutex<HashMap<String, Vec<project::Reader>>>> = LazyLock::new(Mutex::default);
 
+/// Closing storage releases the readers a still-connected page keeps alive. Drop outside SHOWN:
+/// the last reader closes SQLite and may itself publish a project-closed event.
+pub(crate) fn release_project_readers(id: &str) {
+    let mut gone = Vec::new();
+    {
+        let mut shown = SHOWN.lock().expect("shown lock");
+        for readers in shown.values_mut() {
+            let mut kept = Vec::with_capacity(readers.len());
+            for reader in std::mem::take(readers) {
+                if reader.id() == id { gone.push(reader); } else { kept.push(reader); }
+            }
+            *readers = kept;
+        }
+    }
+    drop(gone);
+}
+
 /// A stream's place in `SHOWN`, by its id: what it holds is let go when it ends.
 struct Showing(String);
 
@@ -215,13 +262,13 @@ impl Drop for Showing {
 }
 
 /// `PUT /v1/events/{stream}` `{projects}`: what the page on `stream` shows now, each project held open while the stream lasts or
-/// until it shows others. One that doesn't open isn't held: the page's own read of it says why. `404 stream_unknown` once the stream
+/// until it shows others. The reply names those held and preserves each attempted ID's refusal. `404 stream_unknown` once the stream
 /// has ended: the next one's `hello` names it.
 pub(crate) async fn show(
     State(api): State<Arc<Api>>,
     axum::extract::Path(stream): axum::extract::Path<String>,
     body: Result<axum::body::Bytes, axum::extract::rejection::BytesRejection>,
-) -> Result<axum::http::StatusCode, crate::api::Refusal> {
+) -> Result<axum::Json<ProjectShowReply>, crate::api::Refusal> {
     let shown: Shown = crate::api::parse(&body?)?;
     let gone = || crate::api::Refusal(Error::new(api::error::Kind::NotFound, "stream_unknown", format!("no stream {stream} is open: it ended")));
     if !SHOWN.lock().expect("shown lock").contains_key(&stream) {
@@ -231,12 +278,24 @@ pub(crate) async fn show(
     ids.sort();
     ids.dedup();
     // What it showed already is held until these are: a project shown before and now isn't closed between.
-    let readers: Vec<project::Reader> = ids.iter().take(SHOWN_MOST).filter_map(|id| api.projects.reader(&api, id).ok()).collect();
+    let mut readers = Vec::new();
+    let mut reply = ProjectShowReply::default();
+    for id in ids.iter().take(SHOWN_MOST) {
+        match api.projects.reader(&api, id) {
+            Ok(reader) => {
+                readers.push(reader);
+                reply.held.push(id.clone());
+            }
+            Err(crate::api::Refusal(error)) => {
+                reply.refused.insert(id.clone(), ProjectShowRefusal { status: error.kind.http_status(), error });
+            }
+        }
+    }
     let was = SHOWN.lock().expect("shown lock").get_mut(&stream).map(|held| std::mem::replace(held, readers));
     match was {
         Some(was) => {
             drop(was);
-            Ok(axum::http::StatusCode::NO_CONTENT)
+            Ok(axum::Json(reply))
         }
         None => Err(gone()),
     }
@@ -270,6 +329,7 @@ impl Watch {
             }
             self.arrived()?;
             if let Some(event) = self.pending.pop_front() {
+                if !self.visible(&event) { continue; }
                 return Some((Ok(frame(&event)), self));
             }
             if let Some(id) = self.owed.pop_front() {
@@ -300,6 +360,19 @@ impl Watch {
                 () = stopping(&mut self.stop) => return None,
             }
         }
+    }
+
+    fn visible(&self, event: &StreamEvent) -> bool {
+        let project_id = match event {
+            StreamEvent::ProjectVault { .. } => return true,
+            StreamEvent::ProjectChanged { id, .. } | StreamEvent::Canvas { id, .. } | StreamEvent::History { id, .. } => Some(id),
+            StreamEvent::JobUpdated { project, .. } | StreamEvent::AheadUpdated { project, .. } => Some(project),
+            StreamEvent::RunUpdated { run } => {
+                return self.api.calcifer.store().run(run.id.as_str()).ok().flatten().is_some_and(|row| project::vault::require_path(&row.out_dir).is_ok());
+            }
+            _ => None,
+        };
+        project_id.is_none_or(|id| self.api.calcifer.store().known_project(id).ok().flatten().is_some_and(|known| project::vault::require_path(&known.path).is_ok()))
     }
 
     /// Takes in whatever else has arrived: a run is sent once, as it is now, and nothing waits behind
@@ -357,7 +430,8 @@ impl Watch {
     fn run(&mut self, id: &RunId) -> Option<StreamEvent> {
         let calcifer = &self.api.calcifer;
         let run = match calcifer.store().run(id.as_str()) {
-            Ok(Some(row)) => calcifer.record(&row),
+            Ok(Some(row)) if project::vault::require_path(&row.out_dir).is_ok() => calcifer.record(&row),
+            Ok(Some(_)) => return None,
             Ok(None) => return None,
             Err(e) => Err(crate::Error::Store(e)),
         };

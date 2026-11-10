@@ -2,6 +2,7 @@
 //! project, makes its assets' takes and versions and keeps their files; these verbs ask it and print,
 //! and `render` draws what Calcifer says of it (`render.rs`). Ctrl-C stops following, never the runs.
 mod assets;
+mod vault;
 pub(crate) mod render;
 
 use std::{path::PathBuf, process::ExitCode};
@@ -88,6 +89,14 @@ enum Verb {
     /// List your projects.
     #[command(alias = "list", after_help = "Example:\n  cozy project ls")]
     Ls,
+    /// Encrypt this project locally. The existing state and media are copied and verified before switching.
+    Encrypt(vault::Encrypt),
+    /// Unlock an encrypted project into a temporary readable filesystem view.
+    Unlock(vault::Unlock),
+    /// Lock this project, stopping new reads and unmounting its readable view.
+    Lock,
+    /// Local encryption status and key/recovery operations.
+    Vault(vault::Args),
     Import(ImportFile),
     Add(assets::Add),
     Set(assets::Set),
@@ -275,6 +284,10 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
                 output::say(ctx, &format!("{} more, used earlier (?before=<id>)", listed.older));
             }
         }
+        Verb::Encrypt(ask) => return vault::encrypt(ctx, args.project.as_ref(), ask).await,
+        Verb::Unlock(ask) => return vault::unlock(ctx, args.project.as_ref(), ask).await,
+        Verb::Lock => return vault::lock(ctx, args.project.as_ref()).await,
+        Verb::Vault(ask) => return vault::exec(ctx, args.project.as_ref(), ask).await,
         Verb::Import(import) => return self::import(ctx, args.project.as_ref(), import).await,
         Verb::Export { out } => return export(ctx, args.project.as_ref(), out).await,
         Verb::Add(add) => return assets::add(ctx, args.project.as_ref(), add).await,
@@ -514,7 +527,7 @@ async fn import(ctx: &Context, at: Option<&String>, args: ImportFile) -> Result<
         false => {
             let file = api::target::spelled(&args.source, &cwd, &ctx.user_home);
             let stem = file.file_stem().map(|stem| stem.to_string_lossy().to_lowercase());
-            let digest = crate::send::Sender::new(ctx).await?.file(&file).await.map_err(|e| Error { code: "import_unreadable".into(), ..e })?;
+            let digest = crate::send::Sender::for_project(ctx, &project).await?.file(&file).await.map_err(|e| Error { code: "import_unreadable".into(), ..e })?;
             (digest.to_string(), args.name.or(stem))
         }
     };
