@@ -17,7 +17,7 @@ const { execFileSync, spawn } = require('child_process');
 const { mkdtempSync, readFileSync, renameSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { BARS, GPU, calcifer, MP4, boxOf, closeBox, openBox, STEP_MS, lastLook, launch, lookAt, png, noStall, renderOf, settled, until, wav, importYaml, yamlOf } = require('./page');
+const { BARS, GPU, calcifer, MP4, boxOf, closeBox, openBox, fitCanvas, STEP_MS, lastLook, launch, lookAt, png, noStall, renderOf, settled, until, wav, importYaml, yamlOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -425,6 +425,39 @@ async function drawnEdges(page, decoder, label) {
   return said;
 }
 
+/** A real pane point, with both ends of the existing drag inside the viewport. */
+function panPoint() {
+  const side = document.querySelector('.card.here > .here-side:not(:empty)')?.getBoundingClientRect() ?? document.querySelector('.card.here > .media')?.getBoundingClientRect();
+  const bare = (x, y) => x >= 80 && y >= 60 && x <= innerWidth - 20 && y <= innerHeight - 20 && document.elementFromPoint(x, y)?.classList.contains('react-flow__pane');
+  if (side) {
+    const y = Math.max(60, Math.min(innerHeight - 20, side.top + side.height * 0.8));
+    for (let x = side.right + 30; x <= innerWidth - 20; x += 20) if (bare(x, y)) return { x, y };
+    for (let x = side.left - 30; x >= 80; x -= 20) if (bare(x, y)) return { x, y };
+  }
+  for (let y = 60; y <= innerHeight - 20; y += 20) for (let x = 80; x <= innerWidth - 20; x += 20) if (bare(x, y)) return { x, y };
+  return null;
+}
+
+async function panCanvas(page) {
+  let from = await page.evaluate(panPoint);
+  const fitted = !from;
+  if (!from) {
+    await fitCanvas(page);
+    from = await page.evaluate(panPoint);
+  }
+  if (!from) return { from, fitted, reason: 'no in-viewport pane point after actual Zoom to fit' };
+  await page.mouse.move(from.x, from.y);
+  const hit = await page.evaluate(({ x, y }) => x >= 80 && y >= 60 && x <= innerWidth - 20 && y <= innerHeight - 20 && document.elementFromPoint(x, y)?.classList.contains('react-flow__pane'), from);
+  if (!hit) return { from: null, fitted, reason: 'the chosen pane point no longer hits the canvas before its drag' };
+  const viewport = () => page.evaluate(() => document.querySelector('.react-flow__viewport').style.transform);
+  const before = await viewport();
+  await page.mouse.down();
+  try { await page.mouse.move(from.x - 60, from.y - 40, { steps: 6 }); }
+  finally { await page.mouse.up(); }
+  await settled(page);
+  return { from, fitted, before, after: await viewport() };
+}
+
 /** A frame's sides from its two pictures, with it and without it: on each, its line is drawn within a few pixels of its edge, and nothing of
  *  it lies past that. Self-contained: it runs in the decoder's page. */
 async function edgesOf({ shown, bare, clip, frame }) {
@@ -620,13 +653,13 @@ ${local ? `  card:
     await page.goto(`${base}/#/projects/${id}`);
     await page.locator('.react-flow__node').first().waitFor();
     await placed();
-    const look = async (state, keep) => {
+    const look = async (state, keep, fitted = true) => {
       // What opens animates in: measured once it's still. A pulse goes on forever, and is no move.
       await page.waitForFunction(() => !document.getAnimations().some((held) => held.playState === 'running' && held.timeline === document.timeline && held.effect?.getComputedTiming().iterations !== Infinity), null, { timeout: 5000 }).catch(() => {});
       seen.looks = (seen.looks ?? 0) + 1;
-      const said = await page.evaluate(audit, { floor: FLOOR, hangZoom: HANG_ZOOM, fitted: !/^zoom-.*-in$/.test(state) });
+      const said = await page.evaluate(audit, { floor: FLOOR, hangZoom: HANG_ZOOM, fitted });
       // The pointer where nothing's drawn, around a box worked on or all over.
-      if (state === 'rest' || /^(open|writing|zoom)-/.test(state)) {
+      if (state === 'rest' || /^(open|writing|zoom|fit)-/.test(state)) {
         const block = await page.evaluate(() => {
           const rects = [...document.querySelectorAll('.card.here, .card.here > .here-side, .card.here > .here-under')].map((el) => el.getBoundingClientRect()).filter((r) => r.width);
           return rects.length ? [Math.min(...rects.map((r) => r.left)) - 60, Math.min(...rects.map((r) => r.top)) - 60, Math.max(...rects.map((r) => r.right)) + 60, Math.max(...rects.map((r) => r.bottom)) + 60] : null;
@@ -781,26 +814,15 @@ ${local ? `  card:
       ]) {
         await act();
         await settled(page);
-        await look(`zoom-${asset}-${step}`, step.endsWith('out'));
+        await look(`zoom-${asset}-${step}`, step.endsWith('out'), false);
       }
-      // Beside its takes where only the canvas is: a box pushed aside may sit close by, and a drag on it would carry it onto this one.
-      const from = await page.evaluate(() => {
-        const side = document.querySelector('.card.here > .here-side:not(:empty)')?.getBoundingClientRect() ?? document.querySelector('.card.here > .media').getBoundingClientRect();
-        const y = side.top + side.height * 0.8;
-        const bare = (x) => document.elementFromPoint(x, y)?.classList.contains('react-flow__pane');
-        for (let x = side.right + 30; x < innerWidth - 20; x += 20) if (bare(x)) return { x, y };
-        for (let x = side.left - 30; x > 20; x -= 20) if (bare(x)) return { x, y };
-        return { x: side.right + 30, y };
-      });
-      const viewport = () => page.evaluate(() => document.querySelector('.react-flow__viewport').style.transform);
-      const before = await viewport();
-      await page.mouse.move(from.x, from.y);
-      await page.mouse.down();
-      await page.mouse.move(from.x - 60, from.y - 40, { steps: 6 });
-      await page.mouse.up();
-      await settled(page);
-      const after = await viewport();
-      if (after === before) findings.push({ size: size.name, state: `zoom-${asset}`, rule: 'drag-no-pan', at: `beside <${asset}>'s takes`, what: `a drag from ${Math.round(from.x)},${Math.round(from.y)} left the canvas where it was` });
+      // Manual zoom may crop. A drag still needs a visible pane, and explicit fit gets its own unchanged chrome audit.
+      const panned = await panCanvas(page);
+      (seen.pan_targets ??= []).push({ size: size.name, asset, ...panned });
+      if (!panned.from) findings.push({ size: size.name, state: `zoom-${asset}`, rule: 'pan-target', at: `beside <${asset}>'s takes`, what: panned.reason });
+      else if (panned.after === panned.before) findings.push({ size: size.name, state: `zoom-${asset}`, rule: 'drag-no-pan', at: `beside <${asset}>'s takes`, what: `a drag from ${Math.round(panned.from.x)},${Math.round(panned.from.y)} left the canvas where it was` });
+      await fitCanvas(page);
+      await look(`fit-${asset}`, true);
       await closeBox(page);
     }
     // What's around the canvas.

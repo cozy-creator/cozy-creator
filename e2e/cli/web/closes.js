@@ -10,10 +10,10 @@
 const { chromium } = require(process.env.PLAYWRIGHT);
 const { execFile, execFileSync } = require('child_process');
 const { createHash } = require('crypto');
-const { appendFileSync, copyFileSync, linkSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, writeFileSync } = require('fs');
+const { appendFileSync, copyFileSync, linkSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } = require('fs');
 const { homedir } = require('os');
 const { join } = require('path');
-const { calcifer, signIn, STEP_MS, lastLook, lookAt, png, noStall, until } = require('./page');
+const { calcifer, signIn, STEP_MS, lastLook, lookAt, png, noStall, until, projectHeld } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -126,29 +126,7 @@ async function memoryNow(cozy) {
 }
 
 /** Whether Calcifer has the project in `folder` open: its project.db among the files it holds. Null where this can't be read (Windows). */
-function held(folder) {
-  const db = join(realpathSync(folder), 'project.db');
-  if (process.platform === 'linux') {
-    const fds = `/proc/${HOLDER.pid}/fd`;
-    return readdirSync(fds).some((fd) => {
-      try {
-        return readlinkSync(join(fds, fd)) === db;
-      } catch {
-        return false;
-      }
-    });
-  }
-  if (process.platform === 'darwin') {
-    let said = '';
-    try {
-      said = execFileSync('lsof', ['-p', String(HOLDER.pid), '-Fn'], { encoding: 'utf8', maxBuffer: 1 << 26 });
-    } catch (error) {
-      said = error.stdout ?? '';
-    }
-    return said.split('\n').some((line) => line === `n${db}`);
-  }
-  return null;
-}
+const held = (folder) => projectHeld(folder, HOLDER.pid);
 
 (async () => {
   const base = calcifer();
