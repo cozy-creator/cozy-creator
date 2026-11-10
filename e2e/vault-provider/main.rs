@@ -295,10 +295,32 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let mut crashed =
             provider.mount(&backing, &view, secret.as_bytes(), MountOptions::default())?;
         let supervisor = crashed.provider_pid();
-        let helpers: Vec<_> = platform::process::tree(supervisor)
-            .into_iter()
-            .filter(|process| process.birth().pid != supervisor)
-            .collect();
+        let mut helpers = Vec::new();
+        for process in platform::process::tree(supervisor) {
+            if process.birth().pid == supervisor {
+                continue;
+            }
+            // A console host can also descend from the supervisor and is not our provider.
+            // Query only the image name (never command-line credentials) before killing the
+            // exact already-open process handle belonging to securefs.
+            let image = Command::new("tasklist")
+                .args([
+                    "/FI",
+                    &format!("PID eq {}", process.birth().pid),
+                    "/FO",
+                    "CSV",
+                    "/NH",
+                ])
+                .output()?;
+            assert!(image.status.success());
+            if String::from_utf8_lossy(&image.stdout).lines().any(|line| {
+                line.split(',')
+                    .next()
+                    .is_some_and(|name| name.eq_ignore_ascii_case("\"securefs.exe\""))
+            }) {
+                helpers.push(process);
+            }
+        }
         assert!(!helpers.is_empty(), "owned securefs helper must be present");
         for helper in helpers {
             helper.kill()?;
