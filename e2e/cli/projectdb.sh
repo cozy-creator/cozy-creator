@@ -389,6 +389,26 @@ with sqlite3.connect(f'file:{sys.argv[1]}?mode=ro',uri=True) as db:
 PY
 # Deliberately form a v1 fixture from this real project's materialized SQL rows, without modifying
 # its active source. Opening the copy invokes the actual migration and preserves a v1 recovery DB.
+printf 'interrupted VACUUM recovery copy' > "$V/project.db.v1"
+if cozy --json project -p "$V" export > "$OUT/crdt-v1-partial.json" 2> "$OUT/crdt-v1-partial.err"; then
+  check "CRDT: migrated despite an incomplete recovery copy"
+fi
+grep -q project_recovery_backup "$OUT/crdt-v1-partial.json" "$OUT/crdt-v1-partial.err" || check "CRDT: incomplete recovery copy did not explain its refusal"
+[ "$(sql1 "$V" 'PRAGMA user_version')" = 1 ] || check "CRDT: incomplete backup refusal changed the original schema"
+[ "$(cat "$V/project.db.v1")" = 'interrupted VACUUM recovery copy' ] || check "CRDT: incomplete recovery copy was overwritten"
+mv "$V/project.db.v1" "$OUT/crdt-v1-interrupted-backup"
+python3 - "$V/project.db" "$V/project.db.v1" <<'PY'
+import sqlite3,sys
+with sqlite3.connect(f'file:{sys.argv[1]}?mode=ro',uri=True) as source, sqlite3.connect(sys.argv[2]) as backup:
+    source.backup(backup)
+    backup.execute("INSERT OR REPLACE INTO meta VALUES ('id', 'another-project')")
+PY
+if cozy --json project -p "$V" export > "$OUT/crdt-v1-foreign.json" 2> "$OUT/crdt-v1-foreign.err"; then
+  check "CRDT: migrated using another project's recovery copy"
+fi
+grep -q project_recovery_backup "$OUT/crdt-v1-foreign.json" "$OUT/crdt-v1-foreign.err" || check "CRDT: different-project recovery copy did not explain its refusal"
+[ "$(sql1 "$V" 'PRAGMA user_version')" = 1 ] || check "CRDT: different-project backup refusal changed the original schema"
+mv "$V/project.db.v1" "$OUT/crdt-v1-foreign-backup"
 cozy project -p "$V" export > "$OUT/crdt-v1-export.yaml" 2> "$OUT/crdt-v1.err" || check "CRDT: v1 migration: $(tail -c 300 "$OUT/crdt-v1.err")"
 diff -u <(sed '/^# cozy-project-base: /d' "$OUT/crdt-export.yaml") <(sed '/^# cozy-project-base: /d' "$OUT/crdt-v1-export.yaml") > "$OUT/crdt-v1-export.diff" || check "CRDT: v1 migration changed logical fields"
 { [ -f "$V/project.db.v1" ] && [ "$(sql1 "$V" 'PRAGMA user_version')" = 2 ]; } || check "CRDT: v1 backup/schema missing"
