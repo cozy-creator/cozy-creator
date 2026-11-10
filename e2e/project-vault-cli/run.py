@@ -73,7 +73,11 @@ class Proof:
         self.commands.append(record)
         self.flush()
         print(f'project vault CLI command: {args[0]}', flush=True)
-        completed = subprocess.run(command, capture_output=True, text=True)
+        completed = subprocess.run(command, capture_output=True)
+        # Export integrity stamps cover exact UTF8 bytes. text=True would silently rewrite
+        # Windows CRLF and make an otherwise valid exported graph fail its own digest.
+        completed.stdout = completed.stdout.decode('utf-8')
+        completed.stderr = completed.stderr.decode('utf-8', errors='replace')
         record.update(state='complete', exit_code=completed.returncode,
                       seconds=round(time.monotonic() - began, 3))
         self.flush()
