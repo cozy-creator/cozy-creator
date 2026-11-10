@@ -52,8 +52,6 @@ pub(crate) struct Terms {
     pub digests: Option<PathBuf>,
     /// Where segments of videos are cut and kept.
     pub clips: Clips,
-    /// Where uploaded files are held (`PUT /v1/files`), by their digest's hex.
-    pub uploads: PathBuf,
     /// The run's project, whose files a request may name by hash.
     pub project: Option<crate::project::Holding>,
 }
@@ -61,12 +59,7 @@ pub(crate) struct Terms {
 impl Terms {
     /// The file Calcifer holds under `digest`.
     fn held(&self, digest: &Digest) -> Option<PathBuf> {
-        let path = self.uploads.join(hex::encode(digest.bytes()));
-        let held = path.is_file();
-        if held {
-            super::files::touch(&path);
-        }
-        held.then_some(path)
+        super::files::held(digest)
     }
 
     /// What the client sent under the path `text`.

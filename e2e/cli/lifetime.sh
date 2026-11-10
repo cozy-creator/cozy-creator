@@ -120,4 +120,28 @@ if launch halted silent seconds:=600; then
   update_done halted
   echo "halted: the update said $(jq -c .status.update "$OUT/halted.machine.json") until run $n was canceled, then activated"
 fi
+
+step "a machine from before the one store moves its held outputs into the TensorFS store at its next start (cl-843)"
+# What such a machine kept beside its journal: an output a hold keeps, an object nothing holds, an upload under way.
+local E=$HOME/.cozy/machine/var/lib/cozy/tensord store=${TENSORFS_HOME:-$HOME/.cache/tensorfs} kept loose old
+old=$E/execution/objects
+printf 'a held output %s' "$RANDOM" > "$OUT/upgrade.kept"
+printf 'nothing holds this %s' "$RANDOM" > "$OUT/upgrade.loose"
+kept=$(sha256sum "$OUT/upgrade.kept" | cut -c1-64) loose=$(sha256sum "$OUT/upgrade.loose" | cut -c1-64)
+mkdir -p "$old/holds" "$old/${kept:0:2}" "$old/${loose:0:2}" "$E/writes/e2e"
+cp "$OUT/upgrade.kept" "$old/${kept:0:2}/$kept"
+cp "$OUT/upgrade.loose" "$old/${loose:0:2}/$loose"
+echo part > "$E/writes/e2e/$loose.part"
+jq -n --arg s "$kept" --argjson n "$(wc -c < "$OUT/upgrade.kept")" '{owner: "e2e-upgrade", roots: [{sha256: $s, length: $n}]}' > "$old/holds/tree-e2e.json"
+cozy --json machine update local --gpu-memory-limit off -y > "$OUT/upgrade.update.json" 2>&1 || check "upgrade: the restart failed: $(tail -c 300 "$OUT/upgrade.update.json")"
+machine_ready
+cmp -s "$OUT/upgrade.kept" "$store/blobs/${kept:0:2}/${kept:2:2}/$kept" || check "upgrade: the held output is not in the store: $(ls "$old" 2>&1 | head -5)"
+grep -qx "$kept" "$store/uses/$(printf e2e-upgrade | sha256sum | cut -c1-64)" || check "upgrade: no use keeps the held output"
+[ ! -e "$store/blobs/${loose:0:2}/${loose:2:2}/$loose" ] || check "upgrade: an object nothing held was moved"
+{ [ ! -e "$old" ] && [ ! -e "$E/writes" ]; } || check "upgrade: the old folders remain: $(ls -d "$old" "$E/writes" 2> /dev/null | tr '\n' ' ')"
+[ "$(ls -ld "$store" | cut -c1-10)" = drwx------ ] || check "upgrade: the store is not its owner's alone: $(ls -ld "$store")"
+# A second start finds nothing to move, and what it moved is still there.
+cozy --json machine update local --gpu-memory-limit off -y > "$OUT/upgrade.again.json" 2>&1 || check "upgrade: the second restart failed: $(tail -c 300 "$OUT/upgrade.again.json")"
+machine_ready
+cmp -s "$OUT/upgrade.kept" "$store/blobs/${kept:0:2}/${kept:2:2}/$kept" || check "upgrade: the held output did not outlive the next start"
 }

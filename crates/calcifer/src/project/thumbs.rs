@@ -111,7 +111,8 @@ pub(super) async fn thumb(
         Some(at) => at,
         None => made(Host::new(&api), drawing, dir, name.clone()).await?,
     };
-    crate::runs::files::touch(&at);
+    // Shown now: a use.
+    let _ = std::fs::File::options().write(true).open(&at).and_then(|f| f.set_modified(std::time::SystemTime::now()));
     let unreadable = |e: std::io::Error| Refusal(Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", at.display())));
     let opened = std::fs::File::open(&at).map_err(unreadable)?;
     let len = opened.metadata().map_err(unreadable)?.len();

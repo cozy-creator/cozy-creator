@@ -216,7 +216,8 @@ pub(crate) async fn request(api: &Arc<Api>, key: &str, ask: RunRequest) -> Resul
                 calcifer.quoted(&submitted.run.id, offer.quoted());
             }
             if let Some(project) = project.filter(|_| !submitted.replay) {
-                let uploads = files::dir(calcifer);
+                // What Calcifer holds is in this computer's store.
+                let uploads = files::store().map(|store| store.root().to_owned()).unwrap_or_default();
                 let kept = tokio::task::spawn_blocking(move || crate::project::keep_given(&project, &given, &uploads)).await;
                 let said = kept.map_err(|e| Error::internal("keep_given", e.to_string()))?;
                 notes.extend(said.into_iter().map(|message| Note { level: NoteLevel::Warning, message }));
@@ -497,7 +498,6 @@ async fn call(
         paths: ask.paths.clone(),
         digests: Some(home.join("cache").join("digests")),
         clips: clip::Clips { dir: home.join("cache").join("clips"), home: api.machines.hubs.home().clone() },
-        uploads: files::dir(&api.calcifer),
         project: project.clone().map(|dir| crate::project::Holding::new(api.calcifer.clone(), dir)),
     };
     for term in &terms.fidelities {

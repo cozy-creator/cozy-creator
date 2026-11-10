@@ -45,28 +45,27 @@ impl From<(ModelChoice, Option<StagedInput>)> for Made {
 }
 
 /// The model a warm run makes present: a reference, or a held `.safetensors` file (`PUT /v1/files`) by its client's `name`.
-fn source(api: &Api, raw: &str, name: Option<&str>) -> Result<(ModelChoice, Option<StagedInput>), Refusal> {
+fn source(raw: &str, name: Option<&str>) -> Result<(ModelChoice, Option<StagedInput>), Refusal> {
     match raw.starts_with("sha256:") {
-        true => safetensors(api, raw, name),
+        true => safetensors(raw, name),
         false => Ok((ModelRef::parse(raw).map_err(Refusal)?.choice("model"), None)),
     }
 }
 
 /// The file `named` holds (`sha256:<hex>`), if Calcifer holds it.
-fn held_file(api: &Api, named: &str) -> Result<(PathBuf, Digest), Refusal> {
+fn held_file(named: &str) -> Result<(PathBuf, Digest), Refusal> {
     let digest: Digest = named.parse().map_err(|why: &str| usage("file_name_invalid", format!("{named:?}: {why}")))?;
-    let Some(path) = crate::runs::files::held(&api.calcifer, &digest) else {
+    let Some(path) = crate::runs::files::held(&digest) else {
         let said = format!("Calcifer holds no file {named}");
         return Err(Refusal(Error::new(Kind::NotFound, "file_not_held", said).remedy(format!("PUT its bytes to /v1/files/{named} first"))));
     };
-    crate::runs::files::touch(&path);
     Ok((path, digest))
 }
 
 /// The held file `named` as the model a warm run makes present: one `.safetensors` file by its bytes, named for the object as its
 /// client named it.
-fn safetensors(api: &Api, named: &str, name: Option<&str>) -> Result<(ModelChoice, Option<StagedInput>), Refusal> {
-    let (path, digest) = held_file(api, named)?;
+fn safetensors(named: &str, name: Option<&str>) -> Result<(ModelChoice, Option<StagedInput>), Refusal> {
+    let (path, digest) = held_file(named)?;
     let shown = name.unwrap_or(named);
     let refused = |why: String| Refusal(Error::new(Kind::Validation, "model_file_refused", why));
     let mut file = std::fs::File::open(&path).map_err(|e| refused(e.to_string()))?;
@@ -95,12 +94,12 @@ fn escape(name: &str) -> String {
 /// The CozyTensors folder a held tree document names (`api::tree`), each of its files held: an ordinary retained input
 /// tree. The machine admits its headers without importing or fetching the tensor objects a thin folder omits. None: `path`
 /// holds no tree document.
-fn folder(api: &Api, path: &Path, digest: Digest) -> Result<Option<Made>, Refusal> {
+fn folder(path: &Path, digest: Digest) -> Result<Option<Made>, Refusal> {
     let Ok(document) = std::fs::read(path) else { return Ok(None) };
     let Ok(members) = api::tree::parse(&document) else { return Ok(None) };
     let mut staged = vec![];
     for (name, member) in members {
-        let (path, digest) = held_file(api, &format!("sha256:{}", member.sha256)).map_err(|Refusal(e)| Refusal(Error { message: format!("{name} of the folder: {}", e.message), ..e }))?;
+        let (path, digest) = held_file(&format!("sha256:{}", member.sha256)).map_err(|Refusal(e)| Refusal(Error { message: format!("{name} of the folder: {}", e.message), ..e }))?;
         staged.push(StagedInput { path, digest, length: member.length });
     }
     let length = document.len() as u64;
@@ -172,14 +171,14 @@ fn warm(hub: &Origin, on: On, agreed: Option<Agreed>, target: String, made: Made
 }
 
 /// `cozy/model_download`: the warm run that makes `ask.model` present on `on`.
-pub(super) fn download(api: &Api, hub: &Origin, on: On, agreed: Option<Agreed>, ask: ModelDownload) -> Result<Planned, Refusal> {
+pub(super) fn download(hub: &Origin, on: On, agreed: Option<Agreed>, ask: ModelDownload) -> Result<Planned, Refusal> {
     let mut said = vec![];
     let mut destination = match ask.alias.as_deref().map(Repo::parse).transpose().map_err(Refusal)? {
         Some(repo) if repo.org == "local" => repo.to_string(),
         Some(_) => return Err(usage("model_alias_invalid", "the name a machine keeps a model under is local/<name>")),
         None => String::new(),
     };
-    let mut made = source(api, &ask.model, ask.name.as_deref())?;
+    let mut made = source(&ask.model, ask.name.as_deref())?;
     if let Some(format) = &ask.source_format {
         match formatted(&mut made.0, format) {
             Ok(()) => {}
@@ -259,8 +258,8 @@ pub(super) async fn upload(api: &Arc<Api>, hub: &Origin, on: On, agreed: Option<
     signed_in(api, hub)?;
     let tree = match ask.source.starts_with("sha256:") {
         true => {
-            let (path, digest) = held_file(api, &ask.source)?;
-            folder(api, &path, digest)?
+            let (path, digest) = held_file(&ask.source)?;
+            folder(&path, digest)?
         }
         false => None,
     };
@@ -277,7 +276,7 @@ pub(super) async fn upload(api: &Arc<Api>, hub: &Origin, on: On, agreed: Option<
             }
             made
         }
-        None => source(api, &ask.source, ask.name.as_deref())?.into(),
+        None => source(&ask.source, ask.name.as_deref())?.into(),
     };
     if let Some(format) = &ask.source_format {
         formatted(&mut made.choice, format)?;

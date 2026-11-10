@@ -321,7 +321,7 @@ pub(super) async fn join(State(api): State<Arc<Api>>, Path((id, name)): Path<(St
     let i = find(&doc, &name).map_err(Refusal)?;
     let asset = &doc.assets[i];
     let name = asset.name.clone();
-    let kept = keep_file(&api, folder, &asked.source).await?;
+    let kept = keep_file(folder, &asked.source).await?;
     let before = stale_names(&doc, &doc.stand(&folder.lock().map_err(Refusal)?));
     let (number, already) = folder
         .act(|| {

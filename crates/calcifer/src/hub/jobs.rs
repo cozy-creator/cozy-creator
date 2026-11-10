@@ -80,7 +80,7 @@ async fn plan(api: &Arc<Api>, key: &str, hub: &Origin, ask: &RunRequest) -> Resu
         usable()?;
     }
     match ask.target.as_str() {
-        job::MODEL_DOWNLOAD => weights::download(api, hub, on, agreed, input(ask)?),
+        job::MODEL_DOWNLOAD => weights::download(hub, on, agreed, input(ask)?),
         job::MODEL_UPLOAD => weights::upload(api, hub, on, agreed, input(ask)?).await,
         job::MODEL_QUANTIZE => quantize::plan(api, key, hub, on, agreed, ask.code.clone(), input(ask)?).await,
         job::PACKAGE_INSTALL => packages::install(api, hub, on, agreed, ask.code.clone(), input(ask)?).await,

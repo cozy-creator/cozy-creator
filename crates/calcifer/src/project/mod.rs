@@ -2150,7 +2150,7 @@ fn stop_jobs(api: &Api, project: &Project, lock: &Lock, wanted: &dyn Fn(&str) ->
 }
 
 /// `source` kept as a file of the project, in project.lock.
-async fn keep_file(api: &Api, folder: &Folder, source: &str) -> Result<folder::Kept, Refusal> {
+async fn keep_file(folder: &Folder, source: &str) -> Result<folder::Kept, Refusal> {
     // A file of the project's by the start of its hash, as `status` shows it: what lifting a take out of its asset names.
     let whole = written_hash(source).and_then(|hex| match folder.lock().ok()?.matching(&hex).as_slice() {
         [file] => Some(file.sha256.clone()),
@@ -2160,7 +2160,7 @@ async fn keep_file(api: &Api, folder: &Folder, source: &str) -> Result<folder::K
     let Some(digest) = held_name(source)? else {
         return folder.import(source).await.map_err(|why| import_failed(source, why));
     };
-    match crate::runs::files::held(&api.calcifer, &digest) {
+    match crate::runs::files::held(&digest) {
         Some(at) => tokio::task::block_in_place(|| folder.take_held(&at, &digest.to_string())).map_err(|why| import_failed(source, why)),
         None => folder.own(&digest.to_string()).ok_or_else(|| not_held(source)),
     }
@@ -2276,7 +2276,7 @@ async fn import(
             return Err(Refusal(format::name_taken(&doc, &wanted)));
         }
     }
-    let kept = keep_file(&api, folder, &asked.source).await?;
+    let kept = keep_file(folder, &asked.source).await?;
     let answer = element(&project, &id, &wanted, asked.at, asked.description.as_deref(), kept, asked.exact, asked.moves, &asked.placed)?;
     measure_soon(&api, &project);
     Ok(Json(answer))
