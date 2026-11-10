@@ -58,7 +58,7 @@ def kernels(run: Run) -> tuple[list[list[str]], list[str]]:
 
 def memories(run: Run) -> list[Memory]:
     """The run's and its calls' memory records (H3 keeps its rows in its calls)."""
-    return [m['memory'] for m in run.measurements if m.get('memory')]
+    return [memory for m in run.measurements if (memory := m.get('memory'))]
 
 
 @overload
