@@ -266,28 +266,21 @@ impl Projects {
             true => vec![],
             false => tokio::task::block_in_place(|| upgrade::on_touch(dir))?,
         };
-        // A folder from before project.db is imported as it opens, and given its id once it has one.
-        let known = match dir.join(db::DB).is_file() {
-            true => Some(tokio::task::block_in_place(|| identify(api, dir))?),
-            false => None,
-        };
-        let id = known.as_ref().map_or_else(|| folder_id(dir), |(id, _)| id.clone());
-        // Moved since it opened: the same project, read where it is now, and what reads it where it was goes on reading that. One
-        // rendering goes on where it was.
-        let moved = self.open.lock().expect("projects lock").get(&id).and_then(Weak::upgrade)
-            .filter(|open| open.root != root || open.mount_id != mount_id || open.folder.dir != dir);
-        if let Some(open) = moved {
-            if *open.walking.lock().expect("walking lock") {
-                let said = format!("{id} moved from {} while it renders: move it back, or once its runs land", open.folder.dir.display());
-                return Err(Error::new(Kind::Conflict, "project_busy", said));
+        let (folder, (id, name)) = tokio::task::block_in_place(|| Folder::open_with(dir, api.machines.hubs.home(), |folder| {
+            let (id, name) = identify_loaded(api, dir, folder)?;
+            // Validate a move before inherited local work can be unbound or resumed. A
+            // rendering project keeps its original physical folder until its runs land.
+            let moved = self.open.lock().expect("projects lock").get(&id).and_then(Weak::upgrade)
+                .filter(|open| open.root != root || open.mount_id != mount_id || open.folder.dir != dir);
+            if let Some(open) = moved {
+                if *open.walking.lock().expect("walking lock") {
+                    let said = format!("{id} moved from {} while it renders: move it back, or once its runs land", open.folder.dir.display());
+                    return Err(Error::new(Kind::Conflict, "project_busy", said));
+                }
+                self.open.lock().expect("projects lock").remove(&id);
             }
-            self.open.lock().expect("projects lock").remove(&id);
-        }
-        let folder = tokio::task::block_in_place(|| Folder::open(dir, api.machines.hubs.home()))?;
-        let (id, name) = match known {
-            Some(known) => known,
-            None => tokio::task::block_in_place(|| identify(api, dir))?,
-        };
+            Ok((id, name))
+        }))?;
         IDENTITIES.lock().expect("identities lock").insert(dir.to_owned(), (id.clone(), name));
         crate::events::project_opened(dir);
         let mut open = self.open.lock().expect("projects lock");
@@ -641,6 +634,14 @@ fn identify(api: &Api, dir: &FsPath) -> Result<(String, String), Error> {
     }
     let mut conn = db::open(&path)?;
     let kept = db::identity(&conn);
+    identify_with(api, dir, kept, |id, name| db::set_identity(&mut conn, &path, id, name))
+}
+
+fn identify_loaded(api: &Api, dir: &FsPath, folder: &Folder) -> Result<(String, String), Error> {
+    identify_with(api, dir, folder.canonical_identity()?, |id, name| folder.set_identity(id, name))
+}
+
+fn identify_with(api: &Api, dir: &FsPath, kept: Option<(String, String)>, keep: impl FnOnce(&str, &str) -> Result<(), Error>) -> Result<(String, String), Error> {
     let store = api.calcifer.store();
     let logical = vault::logical(dir);
     let encrypted = vault::encrypted(&logical);
@@ -670,9 +671,8 @@ fn identify(api: &Api, dir: &FsPath) -> Result<(String, String), Error> {
     };
     let name = unique_name(api, &id, dir, if name.is_empty() { folder_name(dir) } else { name })?;
     if kept.as_ref() != Some(&(id.clone(), name.clone())) {
-        db::set_identity(&mut conn, &path, &id, &name)?;
+        keep(&id, &name)?;
     }
-    drop(conn);
     store.project_opened(&id, &name, &vault::logical(dir), None).map_err(|e| Error::internal("calcifer_store", e.to_string()))?;
     Ok((id, name))
 }
