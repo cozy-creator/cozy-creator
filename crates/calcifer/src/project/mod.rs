@@ -611,6 +611,7 @@ fn kept_identity(dir: &FsPath) -> Option<(String, String)> {
 
 /// The id a folder from before cl-819 takes at its first open: its path's, as it was known by then, so links to it stand.
 fn folder_id(dir: &FsPath) -> String {
+    let dir = vault::logical(dir);
     format!("project-{}", &hex::encode(Sha256::digest(dir.to_string_lossy().as_bytes()))[..16])
 }
 
