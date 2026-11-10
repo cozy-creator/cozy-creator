@@ -18,7 +18,7 @@ from hunyuan_image_3.tencent.modeling_hunyuan_image_3 import HunyuanImage3ForCau
 from PIL import Image
 from tokenizers import AddedToken, Regex, Tokenizer, decoders, models as bpe, pre_tokenizers
 
-from cell import Cell, Json, module, quantize, size
+from cell import Cell, Json, defined, module, quantize, size
 
 INSTRUCT, DISTIL = "tencent/hunyuan-image-3-instruct@0.1.1", "tencent/hunyuan-image-3-instruct-distil@0.1.1"
 #: Instruct-Distil whose thought ends at once (`_terse`), for the thinking cell.
@@ -123,7 +123,8 @@ def _checkpoint(store: Path, distilled: bool, seed: int, assets: dict[str, bytes
     torch.manual_seed(seed)
     # Tencent's config takes the release's keys as keyword arguments, typed one by one: the JSON goes in whole.
     configure: Callable[..., HunyuanImage3Config] = HunyuanImage3Config
-    model = module(HunyuanImage3ForCausalMM(configure(**config))).to(torch.bfloat16)
+    with defined():
+        model = module(HunyuanImage3ForCausalMM(configure(**config))).to(torch.bfloat16)
     if terse:
         _terse(model)
     generator = torch.Generator().manual_seed(seed)

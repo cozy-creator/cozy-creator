@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, NotRequired, Protocol, TypedDict, cast
 
@@ -97,6 +98,25 @@ def answers(count: int) -> Check:
         return None
 
     return check
+
+
+@contextlib.contextmanager
+def defined() -> Iterator[None]:
+    """While a fixture builds its models, `torch.empty` fills NaN, so a tensor its class leaves uninitialized is drawn
+    from the fixture's seed (its non-finite branch) instead of written as whatever the allocator held: a reference needs
+    every byte fixed (seedvr2's modulation vectors took the memory's leftovers, so its output changed run to run)."""
+    import torch
+    import torch.utils.deterministic as deterministic
+
+    # Its module class holds the switch as a property, which the stubs do not declare.
+    was = torch.are_deterministic_algorithms_enabled(), bool(getattr(deterministic, "fill_uninitialized_memory"))
+    torch.use_deterministic_algorithms(True, warn_only=True)
+    setattr(deterministic, "fill_uninitialized_memory", True)
+    try:
+        yield
+    finally:
+        torch.use_deterministic_algorithms(was[0])
+        setattr(deterministic, "fill_uninitialized_memory", was[1])
 
 
 class Pretrained(Protocol):

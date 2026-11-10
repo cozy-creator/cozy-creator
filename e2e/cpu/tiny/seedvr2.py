@@ -16,7 +16,7 @@ import tensorfs
 import torch
 from seedvr2 import model as seedvr
 
-from cell import Cell, Json, quantize
+from cell import Cell, Json, defined, quantize
 
 #: 2 of the release's 128-wide heads and 2 blocks (256 wide, so int8.convrot's 256-column blocks fit), the 16-channel
 #: latent and 33-channel input kept.
@@ -33,7 +33,8 @@ _NAMES = {torch.bfloat16: "BF16", torch.float16: "F16", torch.float32: "F32"}
 def models(root: Path, store: Path) -> dict[str, Path | str]:
     torch.manual_seed(0)
     seedvr.DIT, seedvr.VAE = DIT, VAE  # this process only: the executor takes PATCH
-    built: dict[str, torch.nn.Module] = {**seedvr.modules(), "conditioning": seedvr.Conditioning()}
+    with defined():
+        built: dict[str, torch.nn.Module] = {**seedvr.modules(), "conditioning": seedvr.Conditioning()}
     writer = tensorfs.Writer(cache_dir=store)
     generator = torch.Generator().manual_seed(1)
     for name, module in built.items():
