@@ -718,8 +718,9 @@ ${local ? `  card:
         const now = await zoom();
         if (Math.abs(now - want) < 0.005) break;
         await page.click(now > want ? 'button[aria-label="Zoom out"]' : 'button[aria-label="Zoom in"]');
-        await page.waitForTimeout(80);
+        await settled(page);
       }
+      await until(`the camera reaches ${want}`, () => page.evaluate(() => new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a), (actual) => actual === want);
       await settled(page);
     };
     const home = async () => {
@@ -751,18 +752,44 @@ ${local ? `  card:
     // At rest, being made, at 75%: what it says of how far it's got hangs off it as all else at rest does, one size on screen.
     const making = page.locator('.react-flow__node .card[data-asset="making"] > .media').first();
     await home();
-    if (names.includes('making') && (await making.count())) {
+    if (names.includes('making')) {
+      await making.waitFor();
       // Shift adds to a selection: rest-close leaves its box selected, and Shift+2 would fit both.
       await page.keyboard.press('Escape');
+      await page.waitForFunction(() => !document.querySelector('.card.here') && !document.querySelector('.react-flow__node.selected'));
       const at = await making.boundingBox();
       await page.keyboard.down('Shift');
       await page.mouse.click(at.x + at.width / 2, at.y + at.height / 2);
       await page.keyboard.up('Shift');
+      await page.waitForFunction(() => {
+        const selected = [...document.querySelectorAll('.react-flow__node.selected')];
+        return selected.length === 1 && selected[0].querySelector('.card')?.dataset.asset === 'making';
+      });
+      (seen.making_selected ??= []).push({ size: size.name, selected: await page.evaluate(() => [...document.querySelectorAll('.react-flow__node.selected')].map((node) => ({ id: node.getAttribute('data-id'), name: node.querySelector('.card')?.dataset.asset }))) });
       await page.keyboard.press('Shift+2');
       await settled(page);
-      await page.mouse.click(2, size.viewport.height - 2);
+      await page.keyboard.press('Escape');
+      await page.waitForFunction(() => !document.querySelector('.card.here') && !document.querySelector('.react-flow__node.selected'));
       await zoomTo(0.75);
-      const said = await until('it says how far', () => making.locator('.prog b').innerText().catch(() => ''), (text) => /steps/i.test(text)).catch(() => '');
+      const makingState = () => page.evaluate(() => {
+        const media = document.querySelector('.card[data-asset="making"] > .media');
+        const rect = media?.getBoundingClientRect();
+        const left = document.querySelector('.tools')?.getBoundingClientRect().right ?? 0;
+        const top = document.querySelector('.top')?.getBoundingClientRect().bottom ?? 0;
+        const transform = getComputedStyle(document.querySelector('.react-flow__viewport')).transform;
+        const progress = media?.querySelector('.prog b');
+        const visible = Boolean(rect && rect.width && rect.height && rect.left >= left && rect.top >= top && rect.right <= innerWidth && rect.bottom <= innerHeight);
+        const text = progress?.innerText ?? null;
+        return { hash: location.hash, open: [...document.querySelectorAll('.card.here')].map((card) => card.dataset.asset), selected: [...document.querySelectorAll('.react-flow__node.selected .card')].map((card) => card.dataset.asset), zoom: new DOMMatrix(transform).a, transform, mounted: Boolean(media), rect: rect && { x: rect.x, y: rect.y, width: rect.width, height: rect.height }, visible, progress: Boolean(progress), text, reason: !media ? 'missing-media' : !visible ? 'offscreen-media' : !progress ? 'missing-progress-label' : !text ? 'empty-progress-text' : null };
+      });
+      const setup = await makingState();
+      (seen.making_setup ??= []).push({ size: size.name, ...setup });
+      if (setup.zoom !== 0.75 || !setup.mounted || !setup.visible || setup.open.length || setup.selected.length) throw new Error(`making setup is not a visible resting 75% canvas: ${JSON.stringify(setup)}`);
+      const said = await until('it says how far', () => making.locator('.prog b').innerText().catch(() => ''), (text) => /steps/i.test(text)).catch(async () => {
+        const state = await makingState();
+        (seen.making_progress_failure ??= []).push({ size: size.name, ...state });
+        return '';
+      });
       check(`making_says_how_far_${size.name}`, /steps/i.test(said), said);
       await look('rest-making', true);
     }
