@@ -30,33 +30,26 @@ mod update;
 
 use context::Context;
 
-/// `cozy --help`'s last words: what each exit means, the same for every verb.
-const EXITS: &str = "Exit codes:
-  0  done, or nothing to do
-  1  refused, or a run or render failed: it says why and what's next
-  2  a usage error: nothing happened
-  3  a push or pull left files out, or an upgrade put something out of date
-  4  a run stopped moving, as Calcifer says after 10 minutes with no progress: it goes on until you cancel it
-
-`cozy` lists the commands. Commands that use a project work in the current directory.
---json prints what a view shows, --full all of it.";
+const NEXT: &str = "next: cozy new \"<directory>\"
+next: cozy open
+next: cozy run --help";
 
 #[derive(Parser, Debug)]
 #[command(
     name = "cozy",
     version,
     about = "Run models on your machines and rented GPUs",
-    after_help = EXITS
+    after_help = NEXT
 )]
 struct Cli {
-    /// Print JSON (NDJSON when following) instead of tables: what the view shows, by the record's own names.
+    /// Print JSON (NDJSON when following).
     #[arg(long, global = true)]
     json: bool,
     /// The whole record where a view shows part of it: every field with --json, every table and line without.
-    #[arg(long, global = true)]
+    #[arg(long, global = true, hide = true)]
     full: bool,
     /// Agree without being asked: to a rental's quote, a deletion.
-    #[arg(long, short = 'y', global = true)]
+    #[arg(long, short = 'y', global = true, hide = true)]
     yes: bool,
     /// None: show the available commands.
     #[command(subcommand)]
@@ -71,7 +64,7 @@ enum Command {
     Open(open::Args),
     /// Run a function in the current project.
     Run(run::Args),
-    /// Show the current project's runs and machines.
+    /// Show the current project's health and warnings.
     Status(daemon::Status),
     /// Upload the current project's files to your account.
     Push,
@@ -98,7 +91,7 @@ enum Command {
 }
 
 /// Parses the command line, loads the config once, runs the verb and renders its refusal. Exit
-/// codes: `EXITS`.
+/// codes follow the operation's outcome.
 pub fn main() -> ExitCode {
     completion::answer(Cli::command);
     let cli = match Cli::try_parse() {
@@ -135,24 +128,29 @@ pub fn main() -> ExitCode {
     }
 }
 
-/// clap's own rendering for a person; with `--json` the typed envelope, exit 2.
+/// Help and version keep clap's rendering; usage errors carry a self-correcting reference.
 fn usage(error: clap::Error) -> ExitCode {
     use clap::error::ErrorKind;
-    let json = std::env::args_os().any(|arg| arg == "--json");
-    if !json
-        || matches!(
-            error.kind(),
-            ErrorKind::DisplayHelp
-                | ErrorKind::DisplayVersion
-                | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
-        )
-    {
+    let arguments: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    let json = arguments.iter().any(|arg| arg == "--json");
+    if matches!(error.kind(), ErrorKind::DisplayHelp | ErrorKind::DisplayVersion | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand) {
         error.exit();
     }
-    let message = error.render().to_string();
-    let message = message.lines().next().unwrap_or_default();
-    let message = message.strip_prefix("error: ").unwrap_or(message);
-    output::refuse(true, &Error::new(Kind::Usage, "usage", message))
+    let rendered = error.render().to_string();
+    let message = rendered.lines().next().unwrap_or_default().trim_start_matches("error: ");
+    let mut command = Cli::command();
+    let mut invocation = String::from("cozy");
+    for argument in &arguments {
+        if matches!(argument.to_str(), Some("--json" | "--full" | "--yes" | "-y")) {
+            continue;
+        }
+        let Some(child) = argument.to_str().and_then(|word| command.find_subcommand(word)) else { break };
+        invocation.push(' ');
+        invocation.push_str(&argument.to_string_lossy());
+        command = child.clone().bin_name(invocation.clone());
+    }
+    let reference = command.render_help().to_string();
+    output::refuse(json, &Error::new(Kind::Usage, "usage", message).remedy(reference))
 }
 
 async fn dispatch(ctx: &Context, command: Command) -> Result<ExitCode, Error> {

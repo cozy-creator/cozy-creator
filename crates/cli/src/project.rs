@@ -36,15 +36,20 @@ pub(crate) struct New {
 pub(crate) async fn create(ctx: &Context, args: New) -> Result<ExitCode, Error> {
     let directory = std::path::absolute(&args.directory)
         .map_err(|error| Error::new(Kind::Usage, "project_path", error.to_string()))?;
-    let request = Open { path: Some(directory), ..Open::default() };
-    let mut opened: Opened = ctx.calcifer().await?.post("/v1/projects", &request, Some(&mint_key())).await?;
-    opened.next.clear();
-    if ctx.json {
-        output::json(&opened);
-    } else {
-        println!("Created project {}", opened.path.display());
-        opened.said.iter().for_each(|said| output::warn(said));
-    }
+    let request = Open { path: Some(directory.clone()), ..Open::default() };
+    let client = ctx.calcifer().await?;
+    let (id, path, created) = match client.post::<_, Opened>("/v1/projects", &request, Some(&mint_key())).await {
+        Ok(opened) => (opened.id, opened.path, true),
+        Err(error) if error.code == "project_exists" => {
+            let path = crate::calcifer_client::path(&["v1", "projects", &directory.to_string_lossy()]);
+            let state: State = client.get(&format!("{path}?assets=false")).await?;
+            (state.id, state.path, false)
+        }
+        Err(error) => return Err(error),
+    };
+    output::document(ctx, &serde_json::json!({
+        "id": id, "path": path, "created": created,
+    }));
     Ok(ExitCode::SUCCESS)
 }
 
@@ -63,12 +68,7 @@ pub(crate) async fn transfer(ctx: &Context, verb: &str, moved: &str) -> Result<E
             Event::Moved { file: None, bytes } => output::say(ctx, &format!("{} so far", output::bytes(bytes))),
             Event::Transferred { error: Some(error), .. } => return Err(error),
             Event::Transferred { done: Some(done), .. } => {
-                if ctx.json {
-                    output::json(&done);
-                } else {
-                    let rest = done.files - done.moved - done.skipped.len() as u64;
-                    println!("{} files: {} {moved} ({}), {rest} already present", done.files, done.moved, output::bytes(done.bytes));
-                }
+                output::document(ctx, &done);
                 for file in &done.skipped {
                     output::warn(&format!("skipped {}: {}", file.path, file.why));
                 }
