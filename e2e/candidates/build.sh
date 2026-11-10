@@ -61,13 +61,12 @@ elif [ "$what" = cozy ]; then
   # cozy is one file (00e565d72): varena is the TensorFS wheel's.
   cp "$src/target/release/cozy$exe" "$out/cozy$exe"
 elif [ "$what" = tensorfs ]; then
-  # tfs resolved with the extension's features (tensorfs-py's default store), as maturin resolves them: TensorFS and
-  # every dependency compile once for both.
-  (cd "$src"
-    cargo build --release --locked -p tensorfs-py -p tensorfs --bin tfs --no-default-features --features tensorfs/net,tensorfs-py/store
-    mkdir -p crates/tensorfs-py/wheel-data/scripts
-    cp "target/release/tfs$exe" crates/tensorfs-py/wheel-data/scripts/
-    cd crates/tensorfs-py && uvx -q maturin@1.15.0 build --release --locked --out "$out")
+  # Staged as the release wheel is (backend/stage_cli.py, as dev-build): `tfs` with the extension's features, so TensorFS
+  # and every dependency compile once for both, and on Linux the Torch allocator shims, without which the candidate runs
+  # no GPU work ("this TensorFS wheel has no Torch allocator shim": cli-release, e2e 42749286657).
+  (cd "$src/crates/tensorfs-py"
+    uv run -q --no-project --python 3.11 python backend/stage_cli.py --release > /dev/null
+    uvx -q maturin@1.15.0 build --release --locked --out "$out")
 else
   # Its own version, <version>+dev.g<sha8> as the dev cozy's, so the imports suite tells it from PyPI's.
   (cd "$src"
