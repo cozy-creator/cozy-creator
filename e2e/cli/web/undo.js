@@ -18,8 +18,9 @@ const failures = [];
 const seen = {};
 noStall(seen, died);
 function check(name, ok, detail) {
-  seen[name] = ok ? true : (detail ?? false);
-  if (!ok) failures.push(name);
+  const passed = ok === true;
+  seen[name] = passed ? true : (detail ?? false);
+  if (!passed) failures.push(name);
 }
 
 (async () => {
@@ -83,7 +84,16 @@ function check(name, ok, detail) {
     await page.keyboard.press('ControlOrMeta+Shift+z');
   };
   /** Each check of a step: what the file says, waited for until it says so, else what it says. */
-  const says = async (name, read, wanted) => check(name, await until(name, () => Promise.resolve(read()), wanted).then(() => true, () => read()));
+  const says = async (name, read, wanted) => {
+    let last;
+    try {
+      await until(name, async () => { last = await read(); return last; }, wanted);
+      check(name, true);
+    } catch (error) {
+      check(name, false, { last: last ?? null, error: String(error) });
+    }
+    return last;
+  };
   const place = async (name) => {
     const [, x, y] = (await box(name).evaluate((node) => node.style.transform)).match(/translate\((-?[\d.]+)px, *(-?[\d.]+)px\)/);
     return `${Math.round(x)},${Math.round(y)}`;
@@ -141,16 +151,60 @@ function check(name, ok, detail) {
   await says('spare_back', () => lines('spare'), Boolean);
 
   // A merge: green into red, one entry, one undo.
-  const green = (await asset('green')).sha256;
-  const holds = async () => (await asset('red'))?.prefixes?.some((held) => held.main?.sha256 === green || green.includes(held.prefix)) ?? false;
-  await drag('green', 'red');
-  await says('merge_written', () => lines('green'), (held) => held === null);
-  check('merge_one_entry', await until('the merge listed', history, (held) => held.entries[0]?.words === 'Merged green into red').then(() => true, async () => (await history()).entries[0]));
-  check('merge_made_a_version', await until('green a version of red', holds, Boolean).then(() => true, () => false));
+  const versionsOf = (held) => held ? { sha256: held.sha256 ?? null, versions: held.versions ?? null, prefixes: held.prefixes ?? null } : null;
+  const beforeMerge = await api(at);
+  const green = beforeMerge.body?.assets?.find((held) => held.name === 'green')?.sha256;
+  const merge = seen.merge = { green_sha256: green ?? null, before_status: beforeMerge.status,
+    red_before: versionsOf(beforeMerge.body?.assets?.find((held) => held.name === 'red')), requests: [] };
+  if (beforeMerge.status !== 200 || typeof green !== 'string' || !green) throw new Error('merge fixture did not return the green source digest');
+  const red = async () => {
+    const answer = await api(at);
+    return { status: answer.status, asset: versionsOf(answer.body?.assets?.find((held) => held.name === 'red')) };
+  };
+  const holds = (held) => held.status === 200 && Boolean(held.asset?.prefixes?.some((prefix) => prefix.main?.sha256 === green || green.includes(prefix.prefix)));
+  const requests = new Map();
+  const mergeRequest = (request) => {
+    const path = new URL(request.url()).pathname;
+    const method = request.method();
+    if (!(method === 'POST' && path === `${at}/assets/red/versions`) && !(method === 'DELETE' && path === `${at}/assets/green`)) return;
+    if (requests.size >= 16) { merge.requests_truncated = true; return; }
+    const item = { method, path, request_ms: Date.now(), status: null, response_ms: null };
+    if (method === 'POST') {
+      try { item.source = request.postDataJSON()?.source ?? null; }
+      catch (error) { item.body_error = String(error); }
+    }
+    requests.set(request, item);
+    merge.requests.push(item);
+  };
+  const mergeResponse = (response) => {
+    const item = requests.get(response.request());
+    if (item) { item.status = response.status(); item.response_ms = Date.now(); }
+  };
+  const mergeFailed = (request) => {
+    const item = requests.get(request);
+    if (item) { item.failure = request.failure()?.errorText ?? null; item.failed_ms = Date.now(); }
+  };
+  page.on('request', mergeRequest);
+  page.on('response', mergeResponse);
+  page.on('requestfailed', mergeFailed);
+  try {
+    merge.drag_started_ms = Date.now();
+    await drag('green', 'red');
+    merge.drag_done_ms = Date.now();
+    await says('merge_written', () => lines('green'), (held) => held === null);
+    merge.history = await says('merge_one_entry', async () => (await history()).entries[0], (held) => held?.words === 'Merged green into red');
+    merge.history_checked_ms = Date.now();
+    merge.red_after = await says('merge_made_a_version', red, holds);
+    merge.version_checked_ms = Date.now();
+  } finally {
+    page.off('request', mergeRequest);
+    page.off('response', mergeResponse);
+    page.off('requestfailed', mergeFailed);
+  }
   await undo();
   check('merge_undone_at_once', (await box('green').count()) === 1);
   await says('merge_undone_in_the_file', () => lines('green'), Boolean);
-  check('merge_undone_its_version', await until('that version gone', holds, (held) => !held).then(() => true, () => false));
+  merge.red_after_undo = await says('merge_undone_its_version', red, (held) => held.status === 200 && Boolean(held.asset) && !holds(held));
   await redo();
   await says('merge_redone', () => lines('green'), (held) => held === null);
   await undo();
@@ -187,7 +241,7 @@ function check(name, ok, detail) {
   await closeBox(page);
   await undo();
   await says('words_undone', () => lines('words'), (held) => held?.includes('a quiet harbour'));
-  check('words_undone_shown', await until('shown', () => box('words').innerText(), (said) => said.includes('a quiet harbour')).then(() => true, () => box('words').innerText()));
+  await says('words_undone_shown', () => box('words').innerText(), (said) => said.includes('a quiet harbour'));
   await redo();
   await says('words_redone', () => lines('words'), (held) => held?.includes('a stormy harbour'));
 
@@ -240,7 +294,7 @@ function check(name, ok, detail) {
   cozy('set', 'words', 'text=the cli was here');
   await says('cli_edit_written', () => lines('words'), (held) => held?.includes('the cli was here'));
   const button = page.locator('.top .history [aria-label=Undo]');
-  check('undo_says_the_cli', await until('the CLI named', () => button.getAttribute('title'), (said) => said?.includes('by the CLI')).then(() => true, () => button.getAttribute('title')));
+  await says('undo_says_the_cli', () => button.getAttribute('title'), (said) => said?.includes('by the CLI'));
   await button.click();
   await says('cli_edit_undone_from_the_page', () => lines('words'), (held) => held?.includes('a stormy harbour'));
 

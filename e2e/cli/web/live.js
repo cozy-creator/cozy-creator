@@ -600,8 +600,14 @@ function linesOf(text, name) {
   const [projectReads, headReads, canvasReads, assetReads] = [reads.project, reads.heads, reads.canvas, reads.assets];
   const cdp = await context.newCDPSession(page);
   await cdp.send('Performance.enable');
-  const threadBusy = async () => (await cdp.send('Performance.getMetrics')).metrics.find(({ name }) => name === 'TaskDuration').value * 1000;
-  const busyFrom = await threadBusy();
+  const threadSample = async () => {
+    const { metrics } = await cdp.send('Performance.getMetrics');
+    const task = metrics.find(({ name }) => name === 'TaskDuration')?.value;
+    const at = metrics.find(({ name }) => name === 'Timestamp')?.value;
+    if (!Number.isFinite(task) || task < 0 || !Number.isFinite(at) || at < 0) throw new Error('invalid Performance TaskDuration/Timestamp sample');
+    return { TaskDuration: task, Timestamp: at };
+  };
+  const busyFrom = await threadSample();
   const started = Date.now();
   const lasts = await Promise.all(lanes.map(async (lane) => {
     let at = 0;
@@ -611,7 +617,11 @@ function linesOf(text, name) {
   const ended = Math.max(...lasts);
   const right = { all: fixed.map((name, i) => ({ name, has: last.get(name), x: targets[i].x, y: targets[i].y })) };
   const { when } = await shows(right, STEP_MS);
-  const thread = ((await threadBusy()) - busyFrom) / (when - started);
+  const busyTo = await threadSample();
+  const task_s = busyTo.TaskDuration - busyFrom.TaskDuration;
+  const elapsed_s = busyTo.Timestamp - busyFrom.Timestamp;
+  if (!Number.isFinite(task_s) || task_s < 0 || !Number.isFinite(elapsed_s) || elapsed_s <= 0) throw new Error('invalid Performance TaskDuration/Timestamp interval');
+  const thread = task_s / elapsed_s;
   const { frames, texts } = await bounded(page.evaluate(() => new Promise((done) => { window.stopWatching = done; })), STEP_MS, () => 'no frame came');
   const burst = {
     edits: 200,
@@ -624,6 +634,8 @@ function linesOf(text, name) {
     shown_along_the_way: texts.length,
     frames: summary(frames),
     thread: +thread.toFixed(2),
+    thread_mixed: +(task_s * 1000 / (when - started)).toFixed(2),
+    thread_samples: { before: busyFrom, after: busyTo, task_s, elapsed_s, started_ms: started, shown_ms: when },
   };
   seen.burst = burst;
   check('burst_right_in_a_second', burst.right_after_ms <= LIVE_MS, burst);
