@@ -3,7 +3,8 @@
 # source, on a fresh Linux runner with Docker and Go (xs-166; e2e.yaml's `skew`, by hand on a computer that is yours to
 # replace). The Hub serves on a throwaway Postgres and a MinIO built from its last source, whose SigV4 check is R2's: a
 # key's reserved characters are percent-encoded in the canonical request, so v0.40.33-35's bare ':' in a workload's
-# proof key fails here as it failed on R2. It runs as a development Hub: http on loopback, sign-in codes in its log.
+# proof key fails here as it failed on R2. It runs as a development Hub (sign-in codes in its log): cozy dials it on
+# loopback, and machines at its https public origin, an ingress under a fresh CA the Hub hands them (ingress.go).
 # The client is installed by its own release's installer into this computer's default home, signed in with the code
 # the Hub logs, and runs the Hub suite's cells (release-gate/suites/hub/lib.sh) on its local machine: account, the
 # catalog, package publish, install and run, new weights uploaded by the machine (the workload writer, as pods
@@ -36,13 +37,14 @@ verdict() {
 older() { local a=${1%%[-+]*} b=${2%%[-+]*}; [ "$a" != "$b" ] && [ "$(printf '%s\n%s\n' "$a" "$b" | sort -V | head -1)" = "$a" ]; }
 HUB=http://127.0.0.1:8819 S3=http://127.0.0.1:9000 S3KEY=skew S3SECRET=skew-$RANDOM$RANDOM$RANDOM
 MINIO=RELEASE.2025-09-07T16-13-09Z  # the archived repository's last release; its source still builds
-cleanup() { kill "${HUBPID:-}" "${S3PID:-}" 2>/dev/null; docker rm -f skew-pg >/dev/null 2>&1; }
+WORK=$(mktemp -d)  # what isn't published: the store's objects, the Hub's binary, keys and scratch
+cleanup() { kill "${HUBPID:-}" "${S3PID:-}" "${INGRESS:-}" 2>/dev/null; docker rm -f skew-pg >/dev/null 2>&1; }
 trap cleanup EXIT
 
 # The store, the database, the Hub.
 log "MinIO $MINIO from source"
 GOBIN=${SKEW_TOOLS:-$OUT/tools} go install "github.com/minio/minio@$MINIO" > minio-build.log 2>&1 || die store "MinIO $MINIO did not build: $(tail -c 300 minio-build.log)"
-MINIO_ROOT_USER=$S3KEY MINIO_ROOT_PASSWORD=$S3SECRET "${SKEW_TOOLS:-$OUT/tools}/minio" server "$(mktemp -d)" --address 127.0.0.1:9000 --quiet > minio.log 2>&1 & S3PID=$!
+MINIO_ROOT_USER=$S3KEY MINIO_ROOT_PASSWORD=$S3SECRET "${SKEW_TOOLS:-$OUT/tools}/minio" server "$WORK/s3" --address 127.0.0.1:9000 --quiet > minio.log 2>&1 & S3PID=$!
 docker run -d --name skew-pg -e POSTGRES_HOST_AUTH_METHOD=trust -p 127.0.0.1:5432:5432 postgres:18-alpine > /dev/null || die store "Postgres did not start"
 for _ in $(seq 60); do curl -sf "$S3/minio/health/live" > /dev/null && docker exec skew-pg pg_isready -q -U postgres && break; sleep 1; done
 for b in repo source; do
@@ -53,22 +55,24 @@ done
 go run "$E2E/skew/sigv4.go" "$S3" "$S3KEY" "$S3SECRET" repo > store-check.txt 2>&1 &&
   expect "skew store strict" PASS "$(cat store-check.txt)" || die store "the store is not R2's strictness: $(cat store-check.txt)"
 
-(cd "$SRC" && nice -n 19 go build -o "$OUT/tensorhub" .) > hub-build.log 2>&1 || die hub "the Hub did not build: $(tail -c 300 hub-build.log)"
-./tensorhub version | tee hub.version
-mkdir -p authkit release
-hub=(./tensorhub --config "$SRC/config.local.yaml"
-  --set env.name=development --set server.host=127.0.0.1 --set server.http_port=8819 --set server.public_origin=$HUB
-  --set auth.issuer=$HUB/v1/auth --set auth.keys_path="$OUT/authkit" --set auth.trusted_proxies=
+(cd "$SRC" && nice -n 19 go build -o "$WORK/tensorhub" .) > hub-build.log 2>&1 || die hub "the Hub did not build: $(tail -c 300 hub-build.log)"
+"$WORK/tensorhub" version | tee hub.version
+go run "$E2E/skew/ingress.go" 127.0.0.1:8443 $HUB "$WORK" > ingress.addr 2> ingress.log & INGRESS=$!
+for _ in $(seq 60); do [ -s ingress.addr ] && break; kill -0 $INGRESS 2>/dev/null || break; sleep 1; done
+ORIGIN=$(head -1 ingress.addr); [ -n "$ORIGIN" ] || die hub "the ingress did not start: $(tail -c 300 ingress.log)"
+hub=("$WORK/tensorhub" --config "$SRC/config.local.yaml"
+  --set env.name=development --set server.host=127.0.0.1 --set server.http_port=8819 --set server.public_origin=$ORIGIN
+  --set auth.issuer=$ORIGIN/v1/auth --set rental.hub_ca_path="$WORK/ca.pem" --set auth.keys_path="$WORK/authkit" --set auth.trusted_proxies=
   --set database.url="postgres://postgres@127.0.0.1:5432/postgres?sslmode=disable"
   --set storage.backend.kind=s3 --set storage.backend.endpoint_url=$S3 --set storage.backend.region=us-east-1
   --set storage.backend.access_key_id=$S3KEY --set storage.backend.secret_access_key=$S3SECRET
   --set storage.repo_cas.bucket=repo --set storage.package_source.bucket=source
-  --set package_release.scratch_root="$OUT/release" ${MIN:+--set clients.cozy_min=$MIN})
+  --set package_release.scratch_root="$WORK/release" ${MIN:+--set clients.cozy_min=$MIN})
 "${hub[@]}" migrate > hub-migrate.log 2>&1 || die hub "migrate: $(tail -c 300 hub-migrate.log)"
 "${hub[@]}" serve > hub.log 2>&1 & HUBPID=$!
 for _ in $(seq 90); do [ "$(curl -s -o /dev/null -w '%{http_code}' $HUB/healthz)" = 204 ] && break; kill -0 $HUBPID 2>/dev/null || break; sleep 1; done
 [ "$(curl -s -o /dev/null -w '%{http_code}' $HUB/healthz)" = 204 ] || die hub "the Hub did not come up: $(tail -c 600 hub.log)"
-log "Hub $(cat hub.version) on $HUB${MIN:+, clients.cozy_min $MIN}"
+log "Hub $(cat hub.version) on $HUB, machines at $ORIGIN${MIN:+, clients.cozy_min $MIN}"
 
 # The client, as its release installs it; every cozy process reads config.toml's hub_url.
 mkdir -p ~/.cozy && printf 'hub_url = "%s"\n' "$HUB" >> ~/.cozy/config.toml
