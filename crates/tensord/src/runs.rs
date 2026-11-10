@@ -836,14 +836,18 @@ impl Runs {
             .map_err(|_| refused("package_interface_invalid", "held interface is corrupt"))?;
         let generation = self.service.catalog.resolve(&installation.generation)?;
         // A call's weights come from here on, in the Start pass's order, until its executor
-        // asks for them itself; its import-only parent starts now unless it already did.
+        // asks for them itself; its import-only parent starts now unless it already did. A
+        // child's are a started run's, ahead of every queued run's (cl-804).
         let mut ahead = None;
         if let (false, Some(pool)) = (spec.warm, self.service.pool()) {
             ahead = plan.as_ref().map(|plan| {
-                let order = self.service.engine.get(id).map_or(u64::MAX, |record| record.root_seq());
+                let order = self.service.engine.get(id).map_or(u64::MAX, |record| match record.invocation.parent.is_empty() {
+                    true => record.root_seq(),
+                    false => crate::origin::priority::STARTED,
+                });
                 let fetch = crate::access::Fetch::new(self.publisher.machine().clone(), hub.clone(), order);
                 let room = |missing| self.service.room_for(id, missing);
-                match fetch.ahead(&plan.upfront(), &plan.on_demand(), !pool.loaded(plan), &self.service.engine, &room) {
+                match fetch.ahead(&plan.upfront(), !pool.loaded(plan), &self.service.engine, &room) {
                     Ok(()) => crate::access::meter(self.service.engine.clone(), id.to_string(), &fetch),
                     Err(error) => tracing::warn!("run {id}: its weights' early fetch: {error}"),
                 }
@@ -935,11 +939,12 @@ impl Runs {
                 }
                 plan => plan.into_iter().collect(),
             };
-            // A function's warm run ends holding what its constructions read (`downloaded`), its
-            // on-demand models' too: only if that fits. It is a guess, so it never makes room.
+            // A function's warm run (a project's fetch ahead) ends holding what its constructions
+            // read up front: only if that fits. It is a guess, so it never makes room. An
+            // on-demand model comes when a stage reads it: the request may never (cl-804).
             let mut moved = tensorfs::fetch::Landed::default();
             if !plans.is_empty() {
-                let each: Vec<_> = plans.iter().map(Plan::read).collect();
+                let each: Vec<_> = plans.iter().map(Plan::upfront).collect();
                 // Only what they all share: that's sure to be read. The rest comes when its run begins, which on a slow link costs no
                 // more time than fetching it now, as fetching ahead is canceled then, and on a fast one costs seconds, while bytes for a
                 // function that isn't called are paid for wherever downloads are billed.
@@ -1528,9 +1533,9 @@ impl Runs {
                     match runs.service.catalog.resolve(&installation.generation)
                         .and_then(|held| held.application(&application)) {
                         Ok(held) => {
-                            // Its weights come after its root's own, under the child's access.
+                            // A started run's, under the child's access: ahead of every queued run's.
                             let hub = spec.hub.clone().or_else(|| runs.own_hub.clone());
-                            let fetch = crate::access::Fetch::new(runs.publisher.machine().clone(), hub, root);
+                            let fetch = crate::access::Fetch::new(runs.publisher.machine().clone(), hub, crate::origin::priority::STARTED);
                             gpu.prefetch(&runs.service.engine, held, plan, (root, family.clone()), owner.clone(), fetch)
                         }
                         Err(error) => tracing::warn!("prefetch of {entrypoint}: {error}"),
