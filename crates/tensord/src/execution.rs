@@ -38,6 +38,7 @@ pub(crate) struct Engine {
     /// The machine's one store: its runs' objects live there with its models.
     pub(crate) store: Arc<crate::storage::Store>,
     roots: Mutex<crate::storage::Roots>,
+    private_roots: Mutex<HashMap<String, crate::storage::Roots>>,
     journal: Mutex<Journal>,
     /// Held while a run takes object references, and while unneeded roots are released.
     pub(crate) object_custody: Mutex<()>,
@@ -169,6 +170,7 @@ impl Engine {
             root: root.to_path_buf(),
             store,
             roots: Mutex::default(),
+            private_roots: Mutex::default(),
             journal: Mutex::new(journal),
             object_custody: Mutex::new(()),
             active: Mutex::new(HashMap::new()),
@@ -184,6 +186,11 @@ impl Engine {
 
     /// Registers run `id`'s preparation until the answer is dropped. A cancel journaled before
     /// it registered stops it at once.
+    /// A verified scope rebind may resume a queued preparation exactly once.
+    pub(crate) fn is_preparing(&self, id: &str) -> bool {
+        self.preparations.lock().unwrap().contains_key(id)
+    }
+
     pub(crate) fn stoppable(self: &Arc<Self>, id: &str) -> Stoppable {
         let stop = Cancel::default();
         self.preparations.lock().unwrap().insert(id.into(), Preparation { stop: stop.clone(), committed: false, halt: None });
@@ -208,14 +215,64 @@ impl Engine {
     pub(crate) fn workspace_id(&self) -> String {
         self.journal.lock().unwrap().workspace_id().into()
     }
+
+    pub(crate) fn private_storage(&self, id: &str) -> io::Result<Option<api::machine::LocalPrivateStorage>> {
+        let scope = self.journal.lock().unwrap().private_descriptor(id)?;
+        scope.map(|scope| crate::private_io::resolve(&scope)).transpose()
+    }
+    pub(crate) fn private_root(&self, id: &str) -> io::Result<Option<PathBuf>> {
+        self.private_storage(id)?.as_ref().map(crate::private_io::root).transpose()
+    }
+    pub(crate) fn store_for(&self, id: &str) -> io::Result<Arc<crate::storage::Store>> {
+        match self.private_storage(id)? {
+            Some(scope) => crate::private_io::store(&scope),
+            None => Ok(self.store.clone()),
+        }
+    }
+    /// Filesystem custody is scoped independently of the machine's one GPU admission root.
+    pub(crate) fn custody_root(&self, id: &str) -> io::Result<PathBuf> {
+        Ok(self.private_root(id)?.unwrap_or_else(|| self.root.clone()))
+    }
+    pub(crate) fn root_objects_for(&self, id: &str, objects: &[tensorfs::format::ObjectRef]) -> io::Result<()> {
+        match self.private_storage(id)? {
+            Some(scope) => {
+                let store = crate::private_io::store(&scope)?;
+                self.private_roots.lock().unwrap().entry(scope.project_id).or_default().add(&store, objects)
+            }
+            None => self.root_objects(objects),
+        }
+    }
+    pub(crate) fn assert_private_idle(&self, project_id: &str) -> io::Result<()> {
+        if self.journal.lock().unwrap().private_active(project_id)? {
+            return Err(io::Error::new(io::ErrorKind::ResourceBusy, "private executions must finish or cancel before closing their storage"));
+        }
+        Ok(())
+    }
+    pub(crate) fn close_private_storage(&self, project_id: &str) -> io::Result<()> {
+        self.assert_private_idle(project_id)?;
+        self.private_roots.lock().unwrap().remove(project_id);
+        Ok(())
+    }
     /// Keeps `objects` from the store's eviction while this machine runs, until the next sweep
     /// judges them again (`Objects::sweep`). Called once the journal names them.
     pub(crate) fn root_objects(&self, objects: &[tensorfs::format::ObjectRef]) -> io::Result<()> {
-        self.roots.lock().unwrap().add(&self.store, objects)
+        match crate::private_io::current() {
+            Some(scope) => {
+                let store = crate::private_io::store(&scope)?;
+                self.private_roots.lock().unwrap().entry(scope.project_id).or_default().add(&store, objects)
+            }
+            None => self.roots.lock().unwrap().add(&self.store, objects),
+        }
     }
     /// Keeps exactly `objects` from the store's eviction from now on.
     pub(crate) fn reroot_objects(&self, objects: &[tensorfs::format::ObjectRef]) -> io::Result<()> {
-        self.roots.lock().unwrap().reset(&self.store, objects)
+        match crate::private_io::current() {
+            Some(scope) => {
+                let store = crate::private_io::store(&scope)?;
+                self.private_roots.lock().unwrap().entry(scope.project_id).or_default().reset(&store, objects)
+            }
+            None => self.roots.lock().unwrap().reset(&self.store, objects),
+        }
     }
     pub(crate) fn installation(
         &self,
@@ -626,7 +683,11 @@ impl Engine {
             .name(format!("execution-{id}"))
             .spawn(move || {
                 if let Err(error) = run(engine.clone(), thread_id.clone()) {
-                    tracing::warn!("execution {thread_id}: {error}");
+                    if matches!(engine.private_storage(&thread_id), Ok(None)) {
+                        tracing::warn!("execution {thread_id}: {error}");
+                    } else {
+                        tracing::warn!(execution = %thread_id, "private execution failed; diagnostic details stay in its protected journal");
+                    }
                 }
                 if engine
                     .get(&thread_id)
@@ -896,7 +957,11 @@ impl Engine {
     fn faulted(&self, id: &str, outcome: Outcome) -> Outcome {
         match (self.faults.lock().unwrap().remove(id), outcome) {
             (Some(fault), Outcome::Failed(said)) => {
-                tracing::warn!("run {id}: after its fault, {}: {}", said.code, said.message);
+                if matches!(self.private_storage(id), Ok(None)) {
+                    tracing::warn!("run {id}: after its fault, {}: {}", said.code, said.message);
+                } else {
+                    tracing::warn!(run = %id, "private run ended after a device fault");
+                }
                 Outcome::Failed(fault)
             }
             (_, outcome) => outcome,
@@ -1068,7 +1133,7 @@ impl Engine {
     /// keep it is reported, never fatal to the settlement.
     pub(crate) fn record_triage(&self, id: &str, facts: &crate::triage::Facts) {
         let executor = self.get(id).ok().and_then(|record| record.executor);
-        let result = crate::triage::write(&self.root, facts, executor.as_ref())
+        let result = self.custody_root(id).and_then(|root| crate::triage::write(&root, facts, executor.as_ref()))
             .and_then(|triage| self.journal.lock().unwrap().bind_triage(id, &triage));
         if let Err(error) = result {
             tracing::warn!("execution {id}: triage bundle not kept: {error}");
@@ -1076,19 +1141,23 @@ impl Engine {
         // The whole failure stays in the machine's log (`cozy machine logs`); the run carries its
         // reason and a short detail.
         let text = format!("{}\n{}\n{}", facts.fault, facts.traceback, facts.stderr_tail);
-        tracing::warn!("run {id}: {} ({}), executor {}:\n{}", facts.message, facts.code, facts.executor_pid,
-            crate::triage::masked(text.trim()));
+        if !matches!(self.private_storage(id), Ok(None)) {
+            tracing::warn!(run = %id, "private run failed; details are retained in its protected journal");
+        } else {
+            tracing::warn!("run {id}: {} ({}), executor {}:\n{}", facts.message, facts.code, facts.executor_pid,
+                crate::triage::masked(text.trim()));
+        }
     }
     /// The run's triage bundle bytes and their reference, if it kept one.
     pub(crate) fn triage(&self, id: &str) -> io::Result<Option<(crate::triage::TriageRef, Vec<u8>)>> {
         let Some(triage) = self.journal.lock().unwrap().triage(id)? else {
             return Ok(None);
         };
-        let bytes = crate::triage::read(&self.root, &triage)?;
+        let bytes = crate::triage::read(&self.custody_root(id)?, &triage)?;
         Ok(Some((triage, bytes)))
     }
     pub(crate) fn staging(&self, id: &str) -> io::Result<PathBuf> {
-        let root = self.root.join("staging").join(id);
+        let root = self.custody_root(id)?.join("staging").join(id);
         fs::create_dir_all(&root)?;
         Ok(root)
     }
@@ -1215,7 +1284,8 @@ impl Engine {
         value: Value,
         paths: Vec<String>,
     ) -> io::Result<ResultRecord> {
-        let destination = self.root.join("results").join(id);
+        let storage_root = self.custody_root(id)?;
+        let destination = storage_root.join("results").join(id);
         fs::create_dir_all(&destination)?;
         let mut artifacts = Vec::new();
         for (index, name) in paths.into_iter().enumerate() {
@@ -1249,7 +1319,7 @@ impl Engine {
             });
         }
         platform::durable::sync_dir(&destination)?;
-        platform::durable::sync_dir(&self.root.join("results"))?;
+        platform::durable::sync_dir(&storage_root.join("results"))?;
         Ok(ResultRecord {
             value,
             artifacts,
@@ -1283,7 +1353,7 @@ impl Engine {
                     "durable result artifact is unavailable",
                 )
             })?;
-        let file = open_artifact(&self.root, Path::new(&artifact.path))?;
+        let file = open_artifact(&self.custody_root(id)?, Path::new(&artifact.path))?;
         if file.metadata()?.len() != artifact.length {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,

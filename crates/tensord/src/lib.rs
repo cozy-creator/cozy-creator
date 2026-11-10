@@ -24,6 +24,7 @@ mod hub;
 mod import_pages;
 mod calls;
 mod journal;
+mod private_journal;
 mod launch_identity;
 mod local_source;
 mod machine;
