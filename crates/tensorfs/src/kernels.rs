@@ -25,6 +25,13 @@ pub struct Binary {
 
 include!(concat!(env!("OUT_DIR"), "/kernels.rs"));
 
+/// What a wheel's prebuilt catalog holds: every core kind and GGUF struct, three dtypes, for each sm family
+/// (`crates/tensorfs-py/kernels/build.py`).
+#[cfg(require_aot)]
+const FAMILIES: [u32; 6] = [80, 86, 89, 90, 100, 120];
+#[cfg(require_aot)]
+const CORE_KINDS: [&str; 7] = ["codes", "unpack", "regular_h4", "rotated", "requantize", "grouped_rotated", "cast_metadata"];
+
 #[cfg(require_aot)]
 const _: () = assert!(
     BINARIES.len()
