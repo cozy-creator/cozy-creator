@@ -4,7 +4,7 @@ import json
 import os
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Required, TypeAlias, TypedDict, cast
+from typing import NotRequired, Required, TypeAlias, TypedDict, cast
 
 # Free JSON: a record's `result`, and whatever a walk over it meets.
 JSON: TypeAlias = str | int | float | bool | None | list['JSON'] | dict[str, 'JSON']
@@ -550,6 +550,15 @@ class Baseline(TypedDict, total=False):
     quality: list[QualityPass]
     varena: list[VarenaPass]
     suites: Suites
+
+
+class KnownFailing(TypedDict):
+    """A known-failing.json row: a cell parked on a known open bug, not run until it is fixed."""
+    sku: str  # or '*'
+    cell: str
+    issue: str
+    what: str
+    cells: NotRequired[list[str]]  # the cells it parks (varena's check reads these)
 
 
 class GateDir(TypedDict):

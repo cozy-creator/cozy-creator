@@ -16,7 +16,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, 'suites'))
 import lm, quality, swap  # noqa: E402
-from runs import JSON, STEP_EXTRA_MS, STEP_RATIO, Baseline, Cell, Gate, Good, Observation, Run, slow_steps  # noqa: E402
+from runs import JSON, STEP_EXTRA_MS, STEP_RATIO, Baseline, Cell, Gate, Good, KnownFailing, Observation, Run, slow_steps  # noqa: E402
 from tensorfs import check as tensorfs  # noqa: E402  (release-gate/suites/tensorfs, never the tensorfs library)
 from varena import check as varena  # noqa: E402
 from cli import check as cli  # noqa: E402
@@ -63,13 +63,6 @@ class KernelProbe(TypedDict, total=False):
     sm: int
     driver: str
     detail: str
-
-
-class KnownFailing(TypedDict):
-    sku: str  # or '*'
-    cell: str
-    issue: str
-    what: str
 
 
 def walk(o: JSON) -> Iterator[dict[str, JSON]]:
