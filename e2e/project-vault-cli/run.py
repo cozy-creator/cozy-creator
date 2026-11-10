@@ -15,6 +15,7 @@ import struct
 import subprocess
 import sys
 import time
+import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -23,12 +24,18 @@ import zlib
 FIRST_COLD_SECONDS = 300
 
 
+class LocalOnly(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, message, headers, url):
+        # The bearer belongs to this exact controller. A redirect is a failed fixture call.
+        return None
+
+
 class Proof:
     def __init__(self, artifacts, source):
         if os.environ.get('GITHUB_ACTIONS') != 'true':
             raise RuntimeError('run this default-home proof only in an ephemeral GitHub runner')
-        if 'COZY_HOME' in os.environ or 'COZY_PROJECT' in os.environ:
-            raise RuntimeError('the proof requires the normal default home and explicit project paths')
+        if 'COZY_HOME' in os.environ:
+            raise RuntimeError('the proof requires the normal default home')
         self.home = Path.home() / '.cozy'
         self.binary = self.home / 'bin' / ('cozy.exe' if os.name == 'nt' else 'cozy')
         found = shutil.which('cozy')
@@ -41,6 +48,8 @@ class Proof:
         self.credentials = self.out / 'credentials'
         self.credentials.mkdir(mode=0o700)
         self.project = self.out / 'project'
+        self.holder_file = self.home / 'calcifer' / 'calcifer.lock.holder'
+        self.direct = urllib.request.build_opener(urllib.request.ProxyHandler({}), LocalOnly())
         self.source = source
         self.commands = []
         self.canary = 'COZY_PRIVATE_PROOF_' + secrets.token_hex(24)
@@ -82,24 +91,22 @@ class Proof:
                     self.secret_values.append(value)
         for value in self.secret_values:
             text = text.replace(value, '[credential redacted]')
-        return text
+        return text.replace(self.canary, '[synthetic canary redacted]')
 
-    def command(self, *args, json_output=True, refusal=False, project=True, allow_locking=False,
+    def command(self, *args, json_output=True, refusal=False, cwd=None, allow_locking=False,
                 full=False, timeout=None):
         command = ['cozy'] + (['--json'] if json_output else [])
         if full:
             command += ['--full']
-        if project:
-            command += ['project', '-p', str(self.project)]
         command += [str(arg) for arg in args]
+        directory = self.out if cwd is None else cwd
         began = time.monotonic()
-        record = {'args': command[1:], 'state': 'running'}
+        record = {'args': command[1:], 'cwd': str(directory), 'state': 'running'}
         self.commands.append(record)
         self.flush()
         print(f'project vault CLI command: {args[0]}', flush=True)
-        completed = subprocess.run(command, capture_output=True, env=self.cli_env, timeout=timeout)
-        # Export integrity stamps cover exact UTF8 bytes. text=True would silently rewrite
-        # Windows CRLF and make an otherwise valid exported graph fail its own digest.
+        completed = subprocess.run(command, capture_output=True, cwd=directory,
+                                   env=self.cli_env, timeout=timeout)
         completed.stdout = completed.stdout.decode('utf-8')
         completed.stderr = completed.stderr.decode('utf-8', errors='replace')
         record.update(state='complete', exit_code=completed.returncode,
@@ -151,6 +158,74 @@ class Proof:
                                                   'completion': 'lock_acknowledgement'}
             self.flush()
         return result
+
+    def vault(self, *args, **options):
+        # Windows needs the invoking process outside the backing directory during a rename.
+        return self.command('vault', '--directory', self.project, *args, **options)
+
+    def controller(self):
+        holder = json.loads(self.holder_file.read_text(encoding='utf-8'))
+        address = holder['address']
+        if not re.fullmatch(r'(?:127\.0\.0\.1|\[::1\]):[0-9]{1,5}', address):
+            raise RuntimeError('the default controller must have a loopback address')
+        token = holder['token']
+        if not isinstance(token, str) or not token:
+            raise RuntimeError('the default controller record has no bearer')
+        if token not in self.secret_values:
+            self.secret_values.append(token)
+        return holder
+
+    def request(self, method, route, *, body=None, headers=None, json_output=True, holder=None):
+        if holder is None:
+            holder = self.controller()
+        fields = {'Authorization': 'Bearer ' + holder['token'], **(headers or {})}
+        if isinstance(body, dict):
+            fields['Content-Type'] = 'application/json'
+            body = json.dumps(body).encode('utf-8')
+        request = urllib.request.Request('http://' + holder['address'] + route, data=body,
+                                         method=method, headers=fields)
+        # Keep only request metadata. The bearer, edit body and returned project data stay in memory.
+        record = {'method': method, 'route': route, 'state': 'running'}
+        self.commands.append(record)
+        self.flush()
+        began = time.monotonic()
+        try:
+            with self.direct.open(request, timeout=30) as response:
+                data = response.read()
+                record.update(state='complete', http_status=response.status)
+        except urllib.error.HTTPError as error:
+            record.update(state='failed', http_status=error.code)
+            detail = error.read(4096).decode('utf-8', errors='replace')
+            raise RuntimeError(f'{method} {route} refused ({error.code}): {self.redact(detail)}') from None
+        except urllib.error.URLError:
+            record['state'] = 'failed'
+            raise RuntimeError(f'{method} {route} could not reach the default controller') from None
+        finally:
+            record['seconds'] = round(time.monotonic() - began, 3)
+            self.flush()
+        return json.loads(data) if json_output else data.decode('utf-8')
+
+    def project_route(self, project_id=None):
+        project = self.project_id if project_id is None else project_id
+        return '/v1/projects/' + urllib.parse.quote(project, safe='')
+
+    def yaml(self, project_id=None):
+        return self.request('GET', self.project_route(project_id) + '/yaml', json_output=False)
+
+    def import_media(self, path, name):
+        data = path.read_bytes()
+        digest = 'sha256:' + hashlib.sha256(data).hexdigest()
+        upload = '/v1/project-files/' + urllib.parse.quote(digest, safe='')
+        upload += '?' + urllib.parse.urlencode({'project': self.project_id})
+        held = self.request('PUT', upload, body=data, headers={
+            'Content-Type': 'application/octet-stream',
+            'Content-Range': f'bytes 0-{len(data) - 1}/{len(data)}',
+        })
+        assert held['digest'] == digest and held['length'] == len(data)
+        imported = self.request('POST', self.project_route() + '/imports',
+                                body={'source': digest, 'name': name, 'exact': True},
+                                headers={'Idempotency-Key': secrets.token_hex(16)})
+        assert imported['name'] == name and imported['sha256'] == digest
 
     def flush(self):
         (self.out / 'commands.json').write_text(json.dumps(self.commands, indent=2) + '\n')
@@ -233,8 +308,8 @@ foreach ($rule in $allowed) {
             raise RuntimeError('recovery output permits group or other-user access')
         self.redact('')
 
-    def status(self):
-        return self.command('vault', 'status')
+    def status(self, timeout=None):
+        return self.command('vault', 'status', cwd=self.project, timeout=timeout)
 
     def view(self, changed):
         value = changed.get('vault', changed)
@@ -245,7 +320,8 @@ foreach ($rule in $allowed) {
     def assert_locked(self, old_view=None, old_file=None):
         if self.status()['state'] != 'locked':
             raise RuntimeError('lock was acknowledged without reaching locked state')
-        self.command('status', refusal=True)
+        refused = self.command('status', cwd=self.project, refusal=True)
+        assert json.loads(refused.stdout)['error']['code'] == 'project_locked'
         self.assert_inaccessible(old_view, old_file)
 
     def assert_inaccessible(self, old_view=None, old_file=None):
@@ -275,32 +351,17 @@ foreach ($rule in $allowed) {
         raise RuntimeError(failure)
 
     def shutdown(self):
-        # The CLI intentionally exposes no up/down verb. Exercise its real graceful restart
-        # API, using only the default controller discovered by the normal CLI status verb.
-        status = self.command('status', project=False)['calcifer']
-        if not status.get('running'):
-            return
-        record = self.home / 'calcifer' / 'calcifer.lock.holder'
-        holder = json.loads(record.read_text())
-        if holder['pid'] != status['pid'] or holder['address'] != status['address']:
+        # Current-directory status describes the project. Check the live controller through
+        # its authenticated status API before asking that same holder to shut down.
+        holder = self.controller()
+        self.request('GET', '/v1/status', holder=holder)
+        if self.controller() != holder:
             raise RuntimeError('the default controller changed before graceful shutdown')
-        base = 'http://' + holder['address']
-        if urllib.parse.urlsplit(base).hostname not in ['127.0.0.1', '::1']:
-            raise RuntimeError('the default controller is not loopback')
-        self.secret_values.append(holder['token'])
-        request = urllib.request.Request(base + '/v1/down', data=b'{}', method='POST',
-                                         headers={'Authorization': 'Bearer ' + holder['token'],
-                                                  'Content-Type': 'application/json'})
         print('project vault CLI lifecycle: graceful shutdown of discovered controller', flush=True)
-        try:
-            direct = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-            with direct.open(request) as response:
-                json.load(response)
-        except urllib.error.HTTPError as error:
-            detail = error.read().decode(errors='replace')
-            raise RuntimeError('graceful shutdown refused: ' + self.redact(detail)) from None
+        if self.request('POST', '/v1/down', body={}, holder=holder).get('stopping') is not True:
+            raise RuntimeError('the default controller did not acknowledge graceful shutdown')
         deadline = time.monotonic() + 30
-        while record.exists():
+        while self.holder_file.exists():
             if time.monotonic() >= deadline:
                 raise RuntimeError('shutdown acknowledged but the controller holder remained published')
             time.sleep(0.05)
@@ -359,14 +420,16 @@ foreach ($rule in $allowed) {
             return budget
 
         while True:
-            state = self.command('status', full=True, timeout=remaining())
-            assets = {asset['name']: asset for asset in state['assets']}
+            state = self.command('status', cwd=self.project, full=True, timeout=remaining())
+            project = state['project']
+            assert project['id'] == self.project_id
+            assets = {asset['name']: asset for asset in project['assets']}
             measured = {name: {key: assets.get(name, {}).get(key)
                                for key in ['width', 'height', 'duration_ms']}
                         for name in ['proof_image', 'proof_video', 'proof_audio']}
             image = assets.get('proof_image', {})
             self.winarm_image = {key: image.get(key) for key in ['path', 'sha256']}
-            self.winarm_image['canonical_root'] = state.get('path')
+            self.winarm_image['canonical_root'] = project.get('path')
             observed = {'normal_cli_metadata': measured,
                         'expected_assets_present': {name: name in assets for name in measured},
                         'image_row': {'field': image.get('field'), 'absent': image.get('absent', False),
@@ -398,7 +461,7 @@ foreach ($rule in $allowed) {
         self.cell('windows_arm64_pinned_media_runtime')
 
     def media_diagnostic_text(self, text):
-        text = self.redact(str(text)).replace(self.canary, '[synthetic canary redacted]')
+        text = self.redact(str(text))
         # Media errors need no long opaque tokens, including private/holder credentials.
         return re.sub(r'[A-Za-z0-9_+/-]{32,}', '[opaque value redacted]', text)[:512]
 
@@ -408,10 +471,9 @@ foreach ($rule in $allowed) {
         evidence = self.receipt.setdefault('windows_arm_media', {})
         diagnostic = evidence['failure_diagnostic'] = {'budget_seconds': 10, 'helpers': []}
         try:
-            holder = self.home / 'calcifer' / 'calcifer.lock.holder'
-            with holder.open('rb') as handle:
+            with self.holder_file.open('rb') as handle:
                 token = json.loads(handle.read(16384)).get('token')
-            if isinstance(token, str) and token:
+            if isinstance(token, str) and token and token not in self.secret_values:
                 self.secret_values.append(token)
         except (OSError, ValueError):
             pass
@@ -496,7 +558,7 @@ foreach ($rule in $allowed) {
         relative = Path(selected.get('path') or '')
         if relative.is_absolute() or relative.drive or relative.parts[:1] != ('files',) or '..' in relative.parts:
             raise RuntimeError('the image row did not select a project files path')
-        status = self.command('vault', 'status', timeout=remaining())
+        status = self.status(timeout=remaining())
         view = self.view(status)
         imported = view / relative
         diagnostic['imported_png_in_unlocked_encrypted_view'] = probe_file(imported)
@@ -585,92 +647,97 @@ foreach ($rule in $allowed) {
         return inspected
 
     def run(self):
-        self.receipt['version'] = self.command('--version', project=False, json_output=False).strip()
+        self.receipt['version'] = self.command('--version', json_output=False).strip()
         initial = self.private_file('initial', secrets.token_urlsafe(32))
         changed = self.private_file('changed', secrets.token_urlsafe(32))
         rekey = self.private_file('rekey', secrets.token_urlsafe(32))
         wrong = self.private_file('wrong', secrets.token_urlsafe(32))
         plain = self.out / 'ordinary'
-        self.command('project', 'new', plain, project=False)
-        self.command('project', '-p', plain, 'status', project=False)
-        ordinary = self.command('project', '-p', plain, 'vault', 'status', project=False)
+        created = self.command('new', plain)
+        assert created['created']
+        plain_status = self.command('status', cwd=plain, full=True)
+        assert plain_status['project']['id'] == created['id']
+        ordinary = self.command('vault', 'status', cwd=plain)
         assert ordinary['state'] == 'plain' and not ordinary['encrypted']
         self.cell('ordinary_project_without_encryption')
-        self.command('project', 'new', self.project, project=False)
-        before = self.command('export', json_output=False)
+        created = self.command('new', self.project)
+        assert created['created']
+        # The compact code is for display. Project routes and upload scope use the canonical ID.
+        self.project_id = created['id']
+        assert self.command('status', cwd=self.project, full=True)['project']['id'] == self.project_id
+        before = self.yaml()
         unsafe_backing = self.project / 'unsafe-recovery.txt'
-        refused = self.command('encrypt', '--passphrase-file', initial, '--recovery-out', unsafe_backing,
-                               '--remove-plaintext', '--idle', 0, refusal=True)
+        refused = self.vault('encrypt', '--passphrase-file', initial, '--recovery-out', unsafe_backing,
+                             '--remove-plaintext', '--idle', 0, refusal=True)
         assert json.loads(refused.stdout)['error']['code'] == 'vault_recovery_location'
         assert not unsafe_backing.exists()
         unchanged = self.status()
         assert unchanged['state'] == 'plain' and not unchanged['encrypted']
-        assert before == self.command('export', json_output=False)
+        assert before == self.yaml()
         self.cell('recovery_output_refuses_backing_before_conversion')
-        self.command('encrypt', '--passphrase-file', initial, '--recovery-out', self.recovery('recovery1'),
-                     '--remove-plaintext', '--idle', 0)
+        self.vault('encrypt', '--passphrase-file', initial, '--recovery-out', self.recovery('recovery1'),
+                   '--remove-plaintext', '--idle', 0)
         self.check_recovery('recovery1')
-        assert before == self.command('export', json_output=False)
+        assert before == self.yaml()
         self.cell('convert_without_changing_logical_state')
         sources = self.media()
         for path, name in zip(sources, ['proof_image', 'proof_video', 'proof_audio']):
-            self.command('import', path, name)
+            self.import_media(path, name)
         if self.winarm:
             self.pinned_winarm_media()
-        edit = self.out / 'state-edit.json'
-        edit.write_text(json.dumps({'description': self.canary}))
-        self.command('set', 'proof_image', '--input', edit)
-        state = self.command('export', json_output=False)
+        self.request('PATCH', self.project_route() + '/assets/proof_image',
+                     body={'fields': {'description': self.canary}})
+        state = self.yaml()
         assert self.canary in state
-        assert self.command('history')['entries']
+        assert self.request('GET', self.project_route() + '/history')['entries']
         view = self.view(self.status())
         saved = [self.find_media(view, path) for path in sources]
         self.ffmpeg('-ss', '1', '-i', saved[1], '-frames:v', '1', '-f', 'null', '-')
         self.ffmpeg('-i', saved[2], '-f', 'null', '-')
         self.cell('encrypted_import_image_video_audio_and_crdt_edit')
         unsafe_view = view / 'unsafe-recovery.txt'
-        refused = self.command('vault', 'recovery', '--recovery-out', unsafe_view, refusal=True)
+        refused = self.vault('recovery', '--recovery-out', unsafe_view, refusal=True)
         assert json.loads(refused.stdout)['error']['code'] == 'vault_recovery_location'
         assert not unsafe_view.exists()
-        self.command('lock', allow_locking=True)
+        self.vault('lock', allow_locking=True)
         self.assert_locked(view, saved[0])
-        self.command('unlock', '--passphrase-file', wrong, refusal=True)
-        self.view(self.command('unlock', '--recovery-file', self.recovery('recovery1'), '--idle', 0))
-        assert self.command('export', json_output=False) == state
+        self.vault('unlock', '--passphrase-file', wrong, refusal=True)
+        self.view(self.vault('unlock', '--recovery-file', self.recovery('recovery1'), '--idle', 0))
+        assert self.yaml() == state
         self.cell('recovery_output_refuses_view_without_rotating_recovery')
         self.cell('lock_refusal_and_saved_recovery')
-        self.command('vault', 'passphrase', '--passphrase-file', changed)
-        self.command('vault', 'recovery', '--recovery-out', self.recovery('recovery2'))
+        self.vault('passphrase', '--passphrase-file', changed)
+        self.vault('recovery', '--recovery-out', self.recovery('recovery2'))
         self.check_recovery('recovery2')
-        self.command('lock')
-        self.command('unlock', '--passphrase-file', initial, refusal=True)
-        self.command('unlock', '--recovery-file', self.recovery('recovery1'), refusal=True)
-        self.view(self.command('unlock', '--passphrase-file', changed, '--idle', 0))
+        self.vault('lock')
+        self.vault('unlock', '--passphrase-file', initial, refusal=True)
+        self.vault('unlock', '--recovery-file', self.recovery('recovery1'), refusal=True)
+        self.view(self.vault('unlock', '--passphrase-file', changed, '--idle', 0))
         self.cell('replace_passphrase_and_recovery_slots')
-        rotated = self.command('vault', 'rotate', '--passphrase-file', rekey,
-                               '--recovery-out', self.recovery('recovery3'))
+        rotated = self.vault('rotate', '--passphrase-file', rekey,
+                             '--recovery-out', self.recovery('recovery3'))
         self.check_recovery('recovery3')
         view = self.view(rotated)
-        assert state == self.command('export', json_output=False)
+        assert state == self.yaml()
         for path in sources:
             self.find_media(view, path)
         for forbidden in [view / 'must-refuse-recursive-export',
                           self.project / 'project.vault.data' / 'must-refuse-plaintext-export']:
-            self.command('vault', 'export', '--output', forbidden, refusal=True)
+            self.vault('export', '--output', forbidden, refusal=True)
             if forbidden.exists():
                 raise RuntimeError('a refused recursive/backing export created its output directory')
         self.cell('plaintext_export_refuses_view_and_backing_children')
         exported = self.out / 'plaintext-export'
-        self.command('vault', 'export', '--output', exported)
+        self.vault('export', '--output', exported)
         for path in sources:
             self.find_media(exported, path)
         assert (exported / 'project.db').is_file()
         self.cell('full_rekey_and_explicit_plaintext_export_bytes')
         # Two normal clients lock the same unlocked project; both acknowledgements must
         # agree on the locked state. Pending-unlock ordering has separate controller coverage.
-        processes = [subprocess.Popen(['cozy', '--json', 'project', '-p', str(self.project), 'lock'],
+        processes = [subprocess.Popen(['cozy', '--json', 'vault', '--directory', str(self.project), 'lock'],
                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                                      env=self.cli_env)
+                                      cwd=self.out, env=self.cli_env)
                      for _ in range(2)]
         for process in processes:
             stdout, stderr = process.communicate()
@@ -678,19 +745,18 @@ foreach ($rule in $allowed) {
                 raise RuntimeError('parallel lock failed: ' + self.redact(stderr[-4096:]))
         self.assert_locked(view)
         self.cell('concurrent_manual_locks')
-        self.command('unlock', '--passphrase-file', rekey, '--idle', 0, '--max-duration', 2)
+        self.vault('unlock', '--passphrase-file', rekey, '--idle', 0, '--max-duration', 2)
         self.wait_locked()
         self.assert_locked()
         self.cell('absolute_expiry_despite_status_polling')
-        self.command('unlock', '--recovery-file', self.recovery('recovery3'), '--idle', 2)
+        self.vault('unlock', '--recovery-file', self.recovery('recovery3'), '--idle', 2)
         self.wait_locked()
         self.assert_locked()
         self.cell('idle_expiry_without_activity')
-        view = self.view(self.command('unlock', '--recovery-file', self.recovery('recovery3'), '--idle', 0))
-        assert state == self.command('export', json_output=False)
+        view = self.view(self.vault('unlock', '--recovery-file', self.recovery('recovery3'), '--idle', 0))
+        assert state == self.yaml()
         old_file = self.find_media(view, sources[0])
-        # Stop only this fresh runner's normal Calcifer through the installed command. This
-        # must close an unlocked project, not rely on an earlier explicit project lock.
+        # The normal graceful shutdown must close the still-unlocked project.
         self.shutdown()
         self.assert_inaccessible(view, old_file)
         self.cell('normal_shutdown_closes_an_unlocked_project')
@@ -701,9 +767,11 @@ foreach ($rule in $allowed) {
         self.cell('no_known_private_canary_in_global_caches_or_backing')
         # Opening the intentionally plaintext copy is an ordinary-project operation and
         # may legitimately populate ordinary caches. Do it after the encrypted-only scan.
-        copied_state = self.command('project', '-p', exported, 'export', project=False, json_output=False)
+        copied = self.command('status', cwd=exported, full=True)['project']
+        copied_state = self.yaml(copied['id'])
         original_id, original_graph = self.graph_export(state)
         copied_id, copied_graph = self.graph_export(copied_state)
+        assert original_id == self.project_id and copied_id == copied['id']
         # A plain folder copy intentionally receives a new project identity when the original
         # remains registered. Compare the entire graph body, not that anti-stale-edit marker.
         if original_graph != copied_graph:
@@ -726,7 +794,9 @@ def main():
     try:
         proof.run()
     except Exception as error:
-        proof.receipt.update(result='failed', error=proof.redact(str(error)))
+        failed = traceback.extract_tb(error.__traceback__)[-1]
+        detail = proof.redact(f'{type(error).__name__} in {failed.name}:{failed.lineno}: {error}')
+        proof.receipt.update(result='failed', error=detail)
         if proof.winarm:
             try:
                 proof.diagnose_winarm_media()
@@ -734,19 +804,20 @@ def main():
                 proof.receipt['media_diagnostic_error'] = type(diagnostic_error).__name__
         proof.diagnose_mount_holders()
         proof.flush()
-        raise
+        raise SystemExit(detail) from None
     finally:
-        if proof.receipt['result'] != 'pass':
-            if proof.project.exists():
-                subprocess.run(['cozy', '--json', 'project', '-p', str(proof.project), 'lock'],
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                               env=proof.cli_env)
-            try:
-                proof.shutdown()
-            except Exception:
-                pass
-        # Credentials/recovery output are intentionally never part of published evidence.
-        shutil.rmtree(proof.credentials)
+        try:
+            if proof.receipt['result'] != 'pass':
+                if proof.project.exists():
+                    subprocess.run(['cozy', '--json', 'vault', '--directory', str(proof.project), 'lock'],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                   cwd=proof.out, env=proof.cli_env)
+                try:
+                    proof.shutdown()
+                except Exception:
+                    pass
+        finally:
+            shutil.rmtree(proof.credentials)
 
 
 if __name__ == '__main__':

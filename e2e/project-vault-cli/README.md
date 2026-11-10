@@ -2,9 +2,17 @@
 
 The manual `dev-build` option `project-vault-cli` builds the actual candidate page
 and single Cozy executable, embeds its pinned provider, and installs it at the
-ordinary `~/.cozy/bin/cozy` path in a fresh GitHub runner. The script invokes only
-that normal CLI. Calcifer starts through its normal client/service path; no
-alternate home, extra daemon, model, account or rental is created.
+ordinary `~/.cozy/bin/cozy` path in a fresh GitHub runner. The installed CLI
+creates projects with `cozy new`, reads them with `cozy status` from their
+directories, and exercises the `cozy vault` lifecycle. Encrypt and rotate run
+from outside the project with `cozy vault --directory`, so Windows can rename
+the backing directory. Calcifer starts through the normal CLI service path.
+
+Media imports, field edits, history, and YAML reads use the installed
+controller's authenticated browser API over loopback. Media uploaded after
+encryption goes to `/v1/project-files/{digest}?project={id}` before the import.
+The route uses the canonical project ID returned in JSON. The API authentication
+comes from the default controller's holder record and stays in memory.
 
 The fixture covers an ordinary project, conversion, encrypted image/audio/video
 imports, a CRDT state edit and history, media decoding/seek, lock/read/fallback
@@ -16,20 +24,23 @@ scans global retained files (CAS, journals, databases and logs included) plus th
 encrypted backing for known synthetic canaries and credential strings. Only
 runtime `view` directories are excluded. A canary scan is a functional privacy
 check, not a cryptographic audit or proof against every possible encoding.
-The intentionally plaintext exported copy is opened through the CLI only after
-this scan, so ordinary-project caching cannot contaminate the encrypted-only
-privacy check. It must open independently with the original locked.
+The fixture opens the intentionally plaintext export with `cozy status` after
+the scan. It then compares the whole graph through the YAML endpoint and
+requires a distinct project identity while the original is locked.
 
 The parallel cell checks two concurrent manual locks. The controller's separate
 qualification owns pending-unlock/lock ordering. Expiration checks a requested
 two-second policy with status polling; desktop file reads do not automatically
 renew Calcifer activity.
 
-This fixture refuses to run outside an ephemeral GitHub Actions host, with
-`COZY_HOME`/`COZY_PROJECT`, or when PATH chooses a different Cozy executable.
+This fixture refuses to run outside an ephemeral GitHub Actions host, with a
+`COZY_HOME` override, or when PATH chooses a different Cozy executable.
 Synthetic inputs and intended plaintext exports live outside `~/.cozy`.
 Credentials/recovery files are deleted afterward and are never uploaded. Only
-`receipt.json` and credential-free command metadata are retained as artifacts.
+`receipt.json` and credential-free command and API request metadata are retained
+as artifacts. The Windows ARM64 media cell reads measured metadata and the
+canonical project path from `cozy --json --full status`. The first cold media
+budget is 300 seconds, and failure diagnostics have a separate 10-second budget.
 
 The integration owner dispatches it against the final combined full SHA on each
 native runner; source/syntax checks alone are not a product pass. The public
