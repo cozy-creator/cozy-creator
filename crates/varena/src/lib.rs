@@ -717,6 +717,11 @@ impl Device {
         wanted <= self.capacity().saturating_add(self.outside.load(Ordering::Acquire))
     }
 
+    /// A request runs here (`request_boundary`): what is not one, idle work, waits for nothing.
+    fn in_request(&self) -> bool {
+        self.requests.load(Ordering::Acquire) != 0
+    }
+
     /// A limit someone set on the machine.
     fn capped(&self) -> bool {
         self.ceiling.load(Ordering::Acquire) != usize::MAX

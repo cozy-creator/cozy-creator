@@ -55,8 +55,9 @@ pub(crate) struct Protect<'a> {
     pub(crate) reuse_working: bool,
     /// The absent region this is for: a region of its size evicted moves its pages there.
     pub(crate) into: Option<u64>,
-    /// No smaller unit stands behind the caller (a Region's fill, a working allocation): with
-    /// nothing of ours left to give, it waits for memory held outside this process (`OUTSIDE_WAIT`).
+    /// No smaller unit stands behind the caller (a Region's fill, a working allocation): in a
+    /// request, with nothing of ours left to give, it waits for memory held outside this process
+    /// (`OUTSIDE_WAIT`).
     pub(crate) outside: bool,
 }
 
@@ -64,7 +65,9 @@ pub(crate) struct Protect<'a> {
 /// back (a game's, a browser's), re-reading the room every `OUTSIDE_POLL` and trying every lever
 /// again once it grew: Paul 11-07, keep trying while any lever can make it fit, give up last.
 /// retained-pressure's game holds 18 GiB of a 4090 for 120 s; Qwen's K/V refill failed at once (run
-/// 43123).
+/// 43123). Only in a request (`Device::in_request`): idle work gives up at once. An idle graph
+/// recording slept here on the thread that orders commands, and the next request waited 293 s
+/// behind it (SDXL at 6 GiB, run 43986).
 const OUTSIDE_WAIT: Duration = Duration::from_secs(300);
 const OUTSIDE_POLL: Duration = Duration::from_millis(250);
 
@@ -370,7 +373,7 @@ pub(crate) fn acquire<T>(
             // has `want` more free, every lever again from the first.
             // Only a physical refusal: under a cap the card's free bytes are no room of ours, and on
             // kesshouban H3's 207 MB GEMM output waited 300 s beside 19.6 GB free (run 43277).
-            if protect.outside && wait == Wait::Yes && physical {
+            if protect.outside && wait == Wait::Yes && physical && sequence.gpu.in_request() {
                 let start = free_now(sequence.gpu)?;
                 let came = sequence.gpu.outside.load(Ordering::Acquire)
                     .saturating_sub(sequence.gpu.outside_floor.load(Ordering::Acquire));
