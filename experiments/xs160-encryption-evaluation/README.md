@@ -8,4 +8,13 @@ Questions:
 2. What does OpenMLS actually provide for group membership, removal, epochs and recovering persistent encrypted project objects?
 3. Which off-device recovery mechanisms preserve the required user experience without granting TensorHub unilateral decryption authority?
 
-All data and keys are synthetic. No user account, paid rental or deployed service is involved. Results, exact versions, commands and limitations will be recorded with the experiments. Sui/Seal remains an optional candidate evaluated on the same requirements as the other approaches.
+All data and keys are synthetic. No user account, paid rental or deployed service is involved. Sui/Seal remains an optional candidate evaluated on the same requirements as the other approaches.
+
+## Executed evidence
+
+- [Automerge/Loro results](merge/RESULTS.md): real native Rust convergence, current conflict alternatives versus historical checkout, version-ID collisions, deletes, snapshot/restart behavior and reordered delivery. This favors Automerge's conflict API for project metadata; semantic deletion/immutability policy remains application work.
+- [OpenMLS membership results](membership/RESULTS.md): real group crypto, joins, storage reload, epoch/history behavior, concurrent membership commits and removal. Persistent project archives and application permissions remain separate work.
+- [Recovery options](recovery/EVALUATION.md): concrete Rust components and service/provider boundaries; includes an executed [vsss-rs primitive receipt](recovery/threshold-smoke/receipt.json) and read-only Seal endpoint receipts. No passkey provider recovery or hosted decryption was executed.
+- [Filesystem results](filesystem/README.md): actual securefs Linux mount, file I/O, media seeking, busy unmount, remount and idle unmount. Windows/macOS/native GUI player remain untested; securefs is not the selected Rust backend.
+
+Each standalone Rust manifest has its own workspace and lockfile. Build with the documented toolchain/commands, outside the main Creator workspace. Do not interpret these fixtures as production authorization, key custody, protocol or performance qualification.

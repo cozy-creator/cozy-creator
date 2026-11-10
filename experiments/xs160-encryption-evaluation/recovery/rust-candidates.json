@@ -1,0 +1,42 @@
+[
+  {
+    "id": "vsss-rs",
+    "max_stable_version": "6.0.1",
+    "max_version": "6.0.1",
+    "repository": "https://github.com/mikelodder7/vsss-rs",
+    "updated_at": "2026-07-31T17:03:12.363182Z",
+    "documentation": "https://docs.rs/vsss-rs",
+    "version_license": "Apache-2.0 OR MIT",
+    "rust_version": null
+  },
+  {
+    "id": "opaque-ke",
+    "max_stable_version": "4.0.1",
+    "max_version": "4.1.0-pre.2",
+    "repository": "https://github.com/facebook/opaque-ke",
+    "updated_at": "2026-03-27T03:04:59.836156Z",
+    "documentation": null,
+    "version_license": "Apache-2.0 OR MIT",
+    "rust_version": "1.87"
+  },
+  {
+    "id": "objc2-authentication-services",
+    "max_stable_version": "0.3.2",
+    "max_version": "0.3.2",
+    "repository": "https://github.com/madsmtm/objc2",
+    "updated_at": "2025-10-04T16:19:09.880094Z",
+    "documentation": null,
+    "version_license": "Zlib OR Apache-2.0 OR MIT",
+    "rust_version": "1.71"
+  },
+  {
+    "id": "windows",
+    "max_stable_version": "0.62.2",
+    "max_version": "0.62.2",
+    "repository": "https://github.com/microsoft/windows-rs",
+    "updated_at": "2025-10-06T19:19:49.704461Z",
+    "documentation": "https://microsoft.github.io/windows-docs-rs/",
+    "version_license": "MIT OR Apache-2.0",
+    "rust_version": "1.82"
+  }
+]

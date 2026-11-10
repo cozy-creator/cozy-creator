@@ -1,0 +1,110 @@
+[
+  {
+    "name": "mysten-testnet-1",
+    "url": "https://seal-key-server-testnet-1.mystenlabs.com/v1/service?service_id=0x73d05d62c18d9374e3ea529e8e0ed6161da1a141a94d3f76ae3fe4e99356db75",
+    "retrieved_at": "2026-11-10T01:26:04.359258+00:00",
+    "operation": "GET public service metadata; no authentication or decryption request",
+    "http_status": 200,
+    "body_bytes": 156,
+    "body_sha256": "7b176016be4202835b089947191c272e0699462dd4d0e3b5efac87b6e33db87b",
+    "headers": {
+      "content-type": "application/json",
+      "x-keyserver-version": "0.6.16",
+      "x-keyserver-gitversion": "54eff6a7621b"
+    },
+    "response_fields": [
+      "service_id",
+      "pop"
+    ],
+    "service_id_matches": true,
+    "elapsed_seconds": 0.335
+  },
+  {
+    "name": "ruby-testnet",
+    "url": "https://seal-testnet.api.rubynodes.io/v1/service?service_id=0x6068c0acb197dddbacd4746a9de7f025b2ed5a5b6c1b1ab44dade4426d141da2",
+    "retrieved_at": "2026-11-10T01:26:04.360881+00:00",
+    "operation": "GET public service metadata; no authentication or decryption request",
+    "http_status": 403,
+    "body_bytes": 719,
+    "body_sha256": "0bb03a48d3f294d4c2b68b483c9ea9fcfc139cca1272ea9a488ee5710e84b412",
+    "headers": {
+      "Content-Type": "application/json; charset=utf-8"
+    },
+    "response_fields": [
+      "type",
+      "title",
+      "status",
+      "detail",
+      "instance",
+      "error_code",
+      "error_name",
+      "error_category",
+      "ray_id",
+      "timestamp",
+      "zone",
+      "cloudflare_error",
+      "retryable",
+      "owner_action_required",
+      "what_you_should_do",
+      "footer"
+    ],
+    "service_id_matches": false,
+    "error": "{'type': 'https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-1xxx-errors/error-1010/', 'title': 'Error 1010: Access denied', 'status': 403, 'detail': \"The site owner has blocked access based on your browser's signature.\", 'instance': 'a5814456a9c7e767', 'error_code': 1010, 'error_name': 'browser_signature_banned', 'error_category': 'access_denied', 'ray_id': 'a5814456a9c7e767', 'timestamp': '2026-11-10T01:26:04Z', 'zone': 'seal-testnet.api.rubynodes.io', 'clou",
+    "elapsed_seconds": 0.26
+  },
+  {
+    "name": "nodeinfra-testnet",
+    "url": "https://open-seal-testnet.nodeinfra.com/v1/service?service_id=0x5466b7df5c15b508678d51496ada8afab0d6f70a01c10613123382b1b8131007",
+    "retrieved_at": "2026-11-10T01:26:04.361935+00:00",
+    "operation": "GET public service metadata; no authentication or decryption request",
+    "http_status": 200,
+    "body_bytes": 156,
+    "body_sha256": "f3945af878e0a90c72639f5fc91eb31c0782e48b9fca612b03bc1fa34d8e0344",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Keyserver-Gitversion": "54eff6a7621b",
+      "X-Keyserver-Version": "0.6.16"
+    },
+    "response_fields": [
+      "service_id",
+      "pop"
+    ],
+    "service_id_matches": true,
+    "elapsed_seconds": 0.355
+  },
+  {
+    "name": "committee-testnet",
+    "url": "https://seal-aggregator-testnet.mystenlabs.com/v1/service?service_id=0xb012378c9f3799fb5b1a7083da74a4069e3c3f1c93de0b27212a5799ce1e1e98",
+    "retrieved_at": "2026-11-10T01:26:04.363288+00:00",
+    "operation": "GET public service metadata; no authentication or decryption request",
+    "http_status": 400,
+    "body_bytes": 11,
+    "body_sha256": "54324658e2eba91c826cb01a802414559c8b8b713b28b4df68cd5075611cf1b5",
+    "headers": {
+      "content-type": "text/plain; charset=utf-8",
+      "x-keyserver-version": "0.6.16",
+      "x-keyserver-gitversion": "54eff6a7621b"
+    },
+    "error": "Unsupported",
+    "elapsed_seconds": 0.32
+  },
+  {
+    "name": "committee-mainnet",
+    "url": "https://seal-aggregator-mainnet.mystenlabs.com/v1/service?service_id=0x686098f1439237fff9f36b99c7329683c22979d2005c2465cb891acb012a7595",
+    "retrieved_at": "2026-11-10T01:26:04.364351+00:00",
+    "operation": "GET public service metadata; no authentication or decryption request",
+    "http_status": 401,
+    "body_bytes": 96,
+    "body_sha256": "1d32dfabe0c968072bb4089b7ff4c84d68b711b239319461a63fea1908e722b1",
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "response_fields": [
+      "message",
+      "request_id"
+    ],
+    "service_id_matches": false,
+    "error": "{'message': 'No API key found in request', 'request_id': '2392d3211891cf6a097e81692fb47728'}",
+    "elapsed_seconds": 0.328
+  }
+]

@@ -1,0 +1,8 @@
+**/target/
+**/cargo-home/
+filesystem/downloads/
+filesystem/bin/
+filesystem/new-fixture/
+membership/encrypted-local-state.json
+membership/synthetic-archival-envelope.json
+membership/synthetic-encrypted-object.json

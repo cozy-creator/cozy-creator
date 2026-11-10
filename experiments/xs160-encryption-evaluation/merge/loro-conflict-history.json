@@ -1,0 +1,229 @@
+{
+  "changes": [
+    {
+      "deps": [],
+      "id": "0@100",
+      "lamport": 0,
+      "msg": null,
+      "ops": [
+        {
+          "container": "cid:root-project:Map",
+          "content": {
+            "key": "project_id",
+            "type": "insert",
+            "value": "project-xs160"
+          },
+          "counter": 0
+        },
+        {
+          "container": "cid:root-project:Map",
+          "content": {
+            "key": "title",
+            "type": "insert",
+            "value": "Cozy project"
+          },
+          "counter": 1
+        },
+        {
+          "container": "cid:root-project:Map",
+          "content": {
+            "key": "description",
+            "type": "insert",
+            "value": "seed description"
+          },
+          "counter": 2
+        },
+        {
+          "container": "cid:root-project:Map",
+          "content": {
+            "key": "prompt",
+            "type": "insert",
+            "value": "seed prompt"
+          },
+          "counter": 3
+        },
+        {
+          "container": "cid:root-project:Map",
+          "content": {
+            "key": "approval",
+            "type": "insert",
+            "value": "pending"
+          },
+          "counter": 4
+        },
+        {
+          "container": "cid:root-project:Map",
+          "content": {
+            "key": "assets",
+            "type": "insert",
+            "value": "🦜:cid:5@100:Map"
+          },
+          "counter": 5
+        },
+        {
+          "container": "cid:5@100:Map",
+          "content": {
+            "key": "asset-0001",
+            "type": "insert",
+            "value": "🦜:cid:6@100:Map"
+          },
+          "counter": 6
+        },
+        {
+          "container": "cid:6@100:Map",
+          "content": {
+            "key": "asset_id",
+            "type": "insert",
+            "value": "asset-0001"
+          },
+          "counter": 7
+        },
+        {
+          "container": "cid:6@100:Map",
+          "content": {
+            "key": "name",
+            "type": "insert",
+            "value": "Asset 1"
+          },
+          "counter": 8
+        },
+        {
+          "container": "cid:6@100:Map",
+          "content": {
+            "key": "versions",
+            "type": "insert",
+            "value": "🦜:cid:9@100:Map"
+          },
+          "counter": 9
+        },
+        {
+          "container": "cid:9@100:Map",
+          "content": {
+            "key": "version-0001",
+            "type": "insert",
+            "value": "🦜:cid:10@100:Map"
+          },
+          "counter": 10
+        },
+        {
+          "container": "cid:10@100:Map",
+          "content": {
+            "key": "version_id",
+            "type": "insert",
+            "value": "version-0001"
+          },
+          "counter": 11
+        },
+        {
+          "container": "cid:10@100:Map",
+          "content": {
+            "key": "blob_hash",
+            "type": "insert",
+            "value": "blake3:synthetic/asset-0001/version-0001"
+          },
+          "counter": 12
+        },
+        {
+          "container": "cid:10@100:Map",
+          "content": {
+            "key": "prompt",
+            "type": "insert",
+            "value": "seed"
+          },
+          "counter": 13
+        }
+      ],
+      "timestamp": 0
+    },
+    {
+      "deps": [
+        "13@100"
+      ],
+      "id": "0@103",
+      "lamport": 14,
+      "msg": null,
+      "ops": [
+        {
+          "container": "cid:root-project:Map",
+          "content": {
+            "key": "prompt",
+            "type": "insert",
+            "value": "noon"
+          },
+          "counter": 0
+        },
+        {
+          "container": "cid:root-project:Map",
+          "content": {
+            "key": "approval",
+            "type": "insert",
+            "value": "needs-review"
+          },
+          "counter": 1
+        }
+      ],
+      "timestamp": 0
+    },
+    {
+      "deps": [
+        "13@100"
+      ],
+      "id": "0@101",
+      "lamport": 14,
+      "msg": null,
+      "ops": [
+        {
+          "container": "cid:root-project:Map",
+          "content": {
+            "key": "prompt",
+            "type": "insert",
+            "value": "dawn"
+          },
+          "counter": 0
+        },
+        {
+          "container": "cid:root-project:Map",
+          "content": {
+            "key": "approval",
+            "type": "insert",
+            "value": "approved"
+          },
+          "counter": 1
+        }
+      ],
+      "timestamp": 0
+    },
+    {
+      "deps": [
+        "13@100"
+      ],
+      "id": "0@102",
+      "lamport": 14,
+      "msg": null,
+      "ops": [
+        {
+          "container": "cid:root-project:Map",
+          "content": {
+            "key": "prompt",
+            "type": "insert",
+            "value": "dusk"
+          },
+          "counter": 0
+        },
+        {
+          "container": "cid:root-project:Map",
+          "content": {
+            "key": "approval",
+            "type": "insert",
+            "value": "rejected"
+          },
+          "counter": 1
+        }
+      ],
+      "timestamp": 0
+    }
+  ],
+  "peers": null,
+  "schema_version": 1,
+  "start_version": {}
+}
