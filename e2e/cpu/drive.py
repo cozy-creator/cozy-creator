@@ -2,7 +2,7 @@
 
 Runs in the package's own environment (run.sh). It stands where TensorD stands: the executor process is the
 Runtime's (`python -m cozy_runtime.internal.executor`), and this sends it TensorD's frames (`executor-protocol`) over
-the seam: hello, start, load, activate, prepare_request, invoke, shutdown, with the bindings built from the package
+the seam: hello, start, load, prepare_request, invoke, shutdown, with the bindings built from the package
 interface as `tensord/src/gpu_service.rs` builds them. The weights are the fixture's (`tiny/<package>.py`): the
 model's real classes at a tiny config, written into a throwaway store by TensorFS's own import or writer.
 
@@ -79,19 +79,12 @@ class Binding(TypedDict):
     model_class: NotRequired[str]
     model_binding_path: NotRequired[str]
     model_parameter_name: NotRequired[str]
-    model_parameter_names: NotRequired[list[str]]
-    component: NotRequired[str]
     components: NotRequired[list[str]]
-    snapshots: NotRequired[dict[str, str]]
     store: NotRequired[str]
     snapshot: NotRequired[str]
     release: NotRequired[str]
     package: NotRequired[str]
     model: NotRequired[str]
-
-
-class ModelLoad(TypedDict):
-    binding: Binding
 
 
 class Construction(TypedDict):
@@ -140,8 +133,8 @@ class Load(TypedDict):
     construction: str
     devices: str
     sequence_parallel_degree: int
-    binding: Binding
-    models: NotRequired[list[ModelLoad]]
+    #: every slot's binding (Runtime 0.44, xs-081)
+    models: list[Binding]
 
 
 class PrepareRequest(TypedDict):
@@ -212,12 +205,7 @@ class Named(TypedDict):
     cmd: Literal["hello", "shutdown"]
 
 
-class Activate(TypedDict):
-    cmd: Literal["activate"]
-    construction: str
-
-
-type Command = Start | Load | PrepareRequest | Invoke | Named | Activate
+type Command = Start | Load | PrepareRequest | Invoke | Named
 type Frame = Command | Answer
 
 
@@ -512,8 +500,7 @@ def bindings(interface: Interface, interface_path: str, entry: Entrypoint, manif
         rows.append({
             "application": interface["application"], "package_interface": interface_path,
             "model_class": cast(dict[str, str], slot)["class"], "model_binding_path": slot["path"],
-            "model_parameter_name": parameter, "model_parameter_names": [parameter], "component": components[0],
-            "components": components, "snapshots": {c: manifest for c in components}, "snapshot": manifest,
+            "model_parameter_name": parameter, "components": components, "snapshot": manifest,
             "store": str(store), "release": release, "package": package, "model": f"tiny/{ref}",
         })
     return rows
@@ -858,6 +845,9 @@ def main() -> int:
         {str(call.get("function")) for row in interface["entrypoints"] for call in row.get("calls", [])})]
     children: dict[str, Executor] = {}
 
+    #: a call that constructs nothing loads one binding naming only its package, as TensorD sends it
+    weightless: Binding = {"application": interface["application"], "package_interface": str(interface_path)}
+
     def run_child(export: str, request: dict[str, Json], files: dict[str, Path], child: str) -> tuple[Reply, Path]:
         """A child call through the child executor, as TensorD runs it on its own (GPU) executor: the callee's slots
         bound and loaded once, its input files granted where its request names them."""
@@ -875,13 +865,9 @@ def main() -> int:
         construction = f"{export}@child"
         if (0, construction) not in loaded:
             load: Load = {"cmd": "load", "construction": construction, "devices": "", "sequence_parallel_degree": 1,
-                          "binding": rows[0] if rows else {"application": interface["application"],
-                                                           "package_interface": str(interface_path)}}
-            if len(rows) > 1:
-                load["models"] = [{"binding": b} for b in rows]
+                          "models": rows or [weightless]}
             executor.must(load)
             loaded.add((0, construction))
-        executor.must({"cmd": "activate", "construction": construction})
         rows_in = {field: grant(field, path) for field, path in files.items()}
         executor.must({"cmd": "prepare_request", "request_id": child, "entrypoint": export, "payload": request,
                        "construction": construction, "input_metadata": {k: v[0] for k, v in rows_in.items()}})
@@ -930,13 +916,9 @@ def main() -> int:
                 construction = f"{entry}@{ranks}" + "".join(f":{k}={v}" for k, v in sorted(cell.get("models", {}).items()))
                 if (ranks, construction) not in loaded:
                     load: Load = {"cmd": "load", "construction": construction, "devices": "", "sequence_parallel_degree": ranks,
-                                  "binding": rows[0] if rows else {"application": interface["application"],
-                                                                   "package_interface": str(interface_path)}}
-                    if len(rows) > 1:
-                        load["models"] = [{"binding": b} for b in rows]
+                                  "models": rows or [weightless]}
                     executor.must(load)
                     loaded.add((ranks, construction))
-                executor.must({"cmd": "activate", "construction": construction})
                 payload = cast(dict[str, Json], json.loads(json.dumps(cell["payload"])))
                 metadata, granted = inputs(cell, payload, out / "inputs" / request, out / "made")
                 executor.must({"cmd": "prepare_request", "request_id": request, "entrypoint": entry, "payload": payload,
