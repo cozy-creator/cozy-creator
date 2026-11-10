@@ -18,6 +18,7 @@ const compiled = new Map()
 const baseline = process.env.COZY_PRESENCE_QUERY_BASELINE === "1"
 const baselineEvents = process.env.COZY_PRESENCE_EVENTS_BASELINE === "1"
 const baselineCoordination = process.env.COZY_PRESENCE_COORDINATION_BASELINE === "1"
+const baselineBridge = process.env.COZY_PRESENCE_BRIDGE_BASELINE === "1"
 const ackOnly = process.env.COZY_PRESENCE_ACK_ONLY === "1"
 function compile(filename, variant = "current") {
   const key = `${variant}:${filename}`
@@ -29,6 +30,7 @@ function compile(filename, variant = "current") {
   if (baseline && filename.endsWith("/api/queries.ts")) source = execFileSync("git", ["show", "a411ddba0:web/app/src/api/queries.ts"], { cwd: app, encoding: "utf8" })
   if (baselineEvents && filename.endsWith("/api/events.ts")) source = execFileSync("git", ["show", "0e7cd997b:web/app/src/api/events.ts"], { cwd: app, encoding: "utf8" })
   if (baselineCoordination && variant === "current" && filename.endsWith("/api/events.ts")) source = execFileSync("git", ["show", "021e52427:web/app/src/api/events.ts"], { cwd: app, encoding: "utf8" })
+  if (baselineBridge && filename.endsWith("/app/Connection.tsx")) source = execFileSync("git", ["show", "0e7cd997b:web/app/src/app/Connection.tsx"], { cwd: app, encoding: "utf8" })
   sourceHashes[`${variant}/${path.relative(app, filename)}`] = createHash("sha256").update(source).digest("hex")
   // Observe Bridge's unchanged production implementation without exporting it in the product.
   if (filename.endsWith("/app/Connection.tsx")) source += "\nexport { Bridge };\n"
@@ -55,7 +57,7 @@ function compile(filename, variant = "current") {
 Object.defineProperty(navigator, "locks", { value: locks })
 const { Client, ApiError } = await import(pathToFileURL(compile(path.join(app, "src/api/client.ts"))))
 const { EventStream, COORDINATION } = await import(pathToFileURL(compile(path.join(app, "src/api/events.ts"))))
-const { projectQuery } = await import(pathToFileURL(compile(path.join(app, "src/api/queries.ts"))))
+const { projectQuery, withAssets, yamlQuery } = await import(pathToFileURL(compile(path.join(app, "src/api/queries.ts"))))
 const { Bridge } = await import(pathToFileURL(compile(path.join(app, "src/app/Connection.tsx"))))
 const { QueryClient, QueryObserver } = await import(pathToFileURL(require.resolve("@tanstack/react-query").replace(/\.cjs$/, ".js")))
 const base = process.env.COZY_PRESENCE_URL
@@ -71,6 +73,7 @@ const showStarts = []
 const requestWaiters = new Set()
 const owned = []
 let delayedShow = null
+let delayedSnapshot = null
 let delayCreation = null
 let legacy = false
 let failShow = null
@@ -122,6 +125,26 @@ function query(client, stream, id, signal = new AbortController().signal) {
   return (baseline ? projectQuery(client, id) : projectQuery(client, stream, id)).queryFn({ signal })
 }
 async function open(id) { return (await api(`/fixture/open/${id}`)).open }
+function readsOf(bridge) {
+  const records = [], waits = new Set()
+  const notify = () => { for (const wait of waits) if (wait.test()) { waits.delete(wait); wait.done() } }
+  const original = bridge.read
+  bridge.read = async function (...args) {
+    const record = { done: false }
+    records.push(record); notify()
+    try { return await original.apply(this, args) }
+    finally { record.done = true; notify() }
+  }
+  const wait = (test) => test() ? Promise.resolve() : new Promise((done) => waits.add({ test, done }))
+  return { mark: () => records.length, entered: (mark) => wait(() => records.length > mark), done: (mark) => wait(() => records.slice(mark).some((record) => record.done)) }
+}
+async function writeYaml(id, count, label, changed = count, previous = label) {
+  let text = "version: 4\nassets:\n"
+  for (let i = 0; i < count; i++) text += `  w${i}: {text: "${i < changed ? label : previous} ${i}"}\n`
+  const response = await fetch(`${base}/v1/projects/${id}/yaml`, { method: "PUT", headers: { ...headers, "Content-Type": "application/yaml" }, body: text })
+  const result = await response.text()
+  assert.ok(response.ok, `${response.status} ${result}`)
+}
 async function clear(...streams) {
   const before = showRequests.length
   for (const stream of streams) stream.show(null)
@@ -153,6 +176,12 @@ const transport = {
       failShow = null
     }
     let response = await fetch(base + actual, { ...init, signal, headers: { ...headers, ...init.headers } })
+    if (delayedSnapshot && route === `/v1/projects/${delayedSnapshot.id}` && (!init.method || init.method === "GET")) {
+      const held = delayedSnapshot
+      delayedSnapshot = null
+      held.entered.done(await response.clone().json())
+      await held.release.promise
+    }
     if (init.method === "PUT" && route.startsWith("/v1/events/")) {
       const projects = JSON.parse(init.body).projects
       const record = { projects, status: response.status, route: actual, reply: response.status === 200 ? await response.clone().json() : null, completed: false }
@@ -322,6 +351,9 @@ try {
   const db = new DatabaseSync(path.join(unreadable.path, "project.db"))
   db.exec("PRAGMA user_version=99")
   db.close()
+  const failedState = await fetch(`${base}/v1/projects/${unreadable.id}`, { headers })
+  assert.equal(failedState.ok, false)
+  assert.equal("covered" in await failedState.json(), false)
   const good = query(client, owner, healthy.id)
   owner.show(healthy.id)
   assert.equal((await good).id, healthy.id)
@@ -440,41 +472,119 @@ try {
     process.exit(0)
   }
 
-  // Preserve the real Bridge fallback: delay the native creation frame until after its snapshot.
+  // Delay a real emitted creation frame across its full snapshot, keeping YAML invalidation.
   const entered = deferred(), release = deferred()
   delayCreation = { entered, release }
   const late = await made("late-creation", false)
   const creation = await entered.promise
   const queries = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } })
   const bridge = new Bridge(queries, client)
-  const unsubscribe = owner.subscribe(bridge.handle)
+  let unsubscribe = owner.subscribe(bridge.handle)
+  const reads = readsOf(bridge)
   const options = projectQuery(client, owner, late.id)
   const observer = new QueryObserver(queries, options)
   const stop = observer.subscribe(() => {})
   owner.show(late.id)
   await queries.fetchQuery(options)
-  const loaded = getRequests.length
+  const yOptions = yamlQuery(client, late.id)
+  const yObserver = new QueryObserver(queries, yOptions)
+  const yStop = yObserver.subscribe(() => {})
+  await queries.fetchQuery(yOptions)
+  const loaded = getRequests.filter((route) => route === `/v1/projects/${late.id}`).length
+  const yamlReads = getRequests.filter((route) => route === `/v1/projects/${late.id}/yaml`).length
+  const initialRead = reads.mark()
   release.done()
-  await waitRequest(() => getRequests.slice(loaded).includes(`/v1/projects/${late.id}`))
-  await new Promise((done) => {
-    const check = () => { if (queries.getQueryState(["project", late.id])?.fetchStatus === "idle") { remove(); done() } }
-    const remove = queries.getQueryCache().subscribe(check)
-    check()
-  })
-  console.log(JSON.stringify({ delayed_native_creation_event: creation, independent_whole_fetch_after_snapshot: true, project_summary_has_revision: "rev" in queries.getQueryData(["project", late.id]) }))
+  await reads.done(initialRead)
+  assert.equal(getRequests.filter((route) => route === `/v1/projects/${late.id}`).length, loaded, "covered pre-snapshot event reloaded the whole project")
+  assert.ok(getRequests.filter((route) => route === `/v1/projects/${late.id}/yaml`).length > yamlReads)
+  const key = ["project", late.id]
+  const firstSnapshot = queries.getQueryData(key)
+  assert.equal(firstSnapshot.covered.generation, creation.cursor.generation)
+  assert.ok(firstSnapshot.covered.sequence >= creation.cursor.sequence)
+  console.log(JSON.stringify({ delayed_native_creation_event: creation, snapshot_covered: firstSnapshot.covered, redundant_project_gets: 0, yaml_invalidation_preserved: true }))
   // A real other writer still refreshes the asset instead of being suppressed as an own echo.
+  unsubscribe()
   const eventFrom = events.length
   const externalReads = getRequests.length
   await api(`/v1/projects/${late.id}/assets`, { method: "POST", body: JSON.stringify({ name: "outside", tool: "", fields: { text: "external" } }) })
-  await waitEvent((event) => event.type === "project.changed" && event.id === late.id && event.assets?.includes("outside"), eventFrom)
-  await new Promise((done) => {
-    const check = () => { if (queries.getQueryData(["project", late.id])?.assets.some((asset) => asset.name === "outside")) { remove(); done() } }
-    const remove = queries.getQueryCache().subscribe(check)
-    check()
-  })
+  const named = await waitEvent((event) => event.type === "project.changed" && event.id === late.id && event.assets?.includes("outside"), eventFrom)
+  const mixed = reads.mark()
+  bridge.changed(late.id, { assets: null, cursor: creation.cursor })
+  bridge.handle(named)
+  await reads.done(mixed)
+  assert.ok(queries.getQueryData(key).assets.some((asset) => asset.name === "outside"))
+  assert.equal(getRequests.filter((route) => route === `/v1/projects/${late.id}`).length, loaded)
   assert.ok(getRequests.slice(externalReads).includes(`/v1/projects/${late.id}/assets/outside`))
+  assert.deepEqual(queries.getQueryData(key).covered, firstSnapshot.covered, "head delta promoted full asset coverage")
+  const realHead = await client.projectHead(late.id)
+  assert.equal(realHead.covered, undefined)
+  assert.deepEqual(withAssets(firstSnapshot, [], [], { ...realHead, covered: { ...firstSnapshot.covered, sequence: firstSnapshot.covered.sequence + 100 } }).covered, firstSnapshot.covered)
+  unsubscribe = owner.subscribe(bridge.handle)
+  console.log(JSON.stringify({ covered_whole_plus_newer_named_delta_retained: true, head_never_promotes_full_coverage: true }))
+
+  // The response snapshot is captured, but not delivered, when a newer genuine whole event emits.
+  const snapshotGate = { id: late.id, entered: deferred(), release: deferred() }
+  delayedSnapshot = snapshotGate
+  const pendingSnapshot = queries.refetchQueries({ queryKey: key })
+  const snapshotData = await snapshotGate.entered.promise
+  const duringMark = reads.mark(), duringEvents = events.length
+  await writeYaml(late.id, 257, "during")
+  const during = await waitEvent((event) => event.type === "project.changed" && event.id === late.id && !event.assets, duringEvents)
+  assert.equal(during.cursor.generation, snapshotData.covered.generation)
+  assert.ok(during.cursor.sequence > snapshotData.covered.sequence, "snapshot claimed a later emission")
+  await reads.entered(duringMark)
+  snapshotGate.release.done()
+  await pendingSnapshot
+  await reads.done(duringMark)
+  assert.equal(queries.getQueryData(key).assets.length, 257)
+  const beforeAfter = queries.getQueryData(key)
+  const afterMark = reads.mark(), afterEvents = events.length
+  await writeYaml(late.id, 258, "after")
+  const after = await waitEvent((event) => event.type === "project.changed" && event.id === late.id && !event.assets, afterEvents)
+  assert.ok(after.cursor.sequence > beforeAfter.covered.sequence)
+  await reads.done(afterMark)
+  assert.equal(queries.getQueryData(key).assets.length, 258)
+  console.log(JSON.stringify({ newer_emission_while_snapshot_response_pending: during.cursor, captured_before_read: snapshotData.covered, after_cached_snapshot: after.cursor, genuine_whole_refreshes_preserved: true }))
+
+  async function boundary(label, causes, expected, cache, handle = false) {
+    if (cache) queries.setQueryData(key, cache)
+    const count = getRequests.filter((route) => route === `/v1/projects/${late.id}`).length
+    const mark = reads.mark()
+    for (const cause of causes) {
+      if (handle) bridge.handle(cause)
+      else bridge.changed(late.id, cause)
+    }
+    await reads.done(mark)
+    assert.equal(getRequests.filter((route) => route === `/v1/projects/${late.id}`).length - count, expected, label)
+    console.log(JSON.stringify({ coverage_boundary: label, whole_gets: expected }))
+  }
+  const full = queries.getQueryData(key)
+  await boundary("same generation covered maximum", [{ assets: null, cursor: creation.cursor }, { assets: null, cursor: after.cursor }], 0)
+  await boundary("older whole plus newer whole", [{ assets: null, cursor: creation.cursor }, { assets: null, cursor: after.cursor }], 1, beforeAfter)
+  await boundary("unknown cause poisons covered maximum", [{ assets: null, cursor: after.cursor }, { assets: null }, { assets: null, cursor: creation.cursor }], 1)
+  await boundary("different generation", [{ assets: null, cursor: { ...after.cursor, generation: "another-controller-generation" } }], 1)
+  await boundary("record prior opaque revision", [creation], 0, undefined, true)
+  await boundary("same opaque revision with new generation", [{ ...creation, cursor: { ...creation.cursor, generation: "restarted-controller-generation" } }], 1, undefined, true)
+  await boundary("same opaque revision with newer emission", [{ ...after, rev: creation.rev }], 1, beforeAfter, true)
+  const { covered: ignored, ...legacySnapshot } = full
+  void ignored
+  await boundary("older snapshot without cursor", [{ assets: null, cursor: creation.cursor }], 1, legacySnapshot)
+  await boundary("head-only cache", [{ assets: null, cursor: creation.cursor }], 1, { ...realHead, began: performance.now() })
+  queries.getQueryCache().find({ queryKey: key }).setState({ data: undefined })
+  await boundary("no cached full state", [{ assets: null, cursor: creation.cursor }], 1)
+
+  // Count fallback remains conservative even when a later full read covers all 65 names.
+  unsubscribe()
+  const manyEvents = events.length
+  await writeYaml(late.id, 258, "sixtyfive", 65, "after")
+  const many = await waitEvent((event) => event.type === "project.changed" && event.id === late.id && event.assets?.length === 65, manyEvents)
+  const newest = await api(`/v1/projects/${late.id}`)
+  assert.ok(newest.covered.sequence >= many.cursor.sequence)
+  await boundary("more than64 names", [many], 1, { ...newest, began: performance.now() })
+  unsubscribe = owner.subscribe(bridge.handle)
   // End a real SSE connection: the new hello and show acknowledgement must still refresh.
   const requested = getRequests.length
+  const stateRequests = getRequests.filter((route) => route === `/v1/projects/${late.id}`).length
   const oldAck = acknowledgements.findLast((ack) => ack.project === late.id && ack.tab === owner.tab)
   assert.ok(oldAck)
   const reconnected = holdShow(late.id)
@@ -482,11 +592,11 @@ try {
   connection = new AbortController()
   await reconnected.entered.promise
   await replay(owner, oldAck)
-  assert.equal(getRequests.length, requested, "old stream acknowledgement released a reconnected query")
+  assert.equal(getRequests.filter((route) => route === `/v1/projects/${late.id}`).length, stateRequests, "old stream acknowledgement released a reconnected state query")
   reconnected.release.done()
   await waitRequest(() => getRequests.slice(requested).includes(`/v1/projects/${late.id}`))
   assert.equal(owner.health.get().state, "live")
-  stop(); unsubscribe(); queries.clear()
+  stop(); yStop(); unsubscribe(); queries.clear()
   await clear(owner, follower)
   for (const id of owned) assert.equal(await open(id), false, `Reader retained after hide: ${id}`)
   console.log(JSON.stringify({ genuine_external_refresh_and_new_hello_preserved: true, stale_stream_ack_rejected: true, readers_released: owned, source_hashes: sourceHashes }))

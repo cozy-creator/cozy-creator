@@ -31,7 +31,8 @@ export function withAssets(state: Project, rows: Asset[], gone: Iterable<string>
     return [now ?? row]
   })
   assets.push(...fresh.values())
-  return { ...(head ?? state), assets }
+  // A head/asset delta cannot claim that every cached asset covers its newer position.
+  return { ...(head ?? state), assets, covered: state.covered }
 }
 
 export const projectQuery = (client: Client, stream: EventStream, id: string) =>

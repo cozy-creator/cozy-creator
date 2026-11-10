@@ -1920,6 +1920,12 @@ rendered?: Rendered | null,
 asks?: Array<string>, };
 
 /**
+ * A project event's position in one controller process. Generations never compare across
+ * restarts; a full snapshot covers only positions captured before its read began.
+ */
+export type ProjectEventCursor = { generation: string, sequence: number, };
+
+/**
  * A file the project uses: its path in the project (`files/<sha256>.<ext>`, `GET
  * /v1/projects/{id}/files/{sha256}.{ext}`) and its sha256.
  */
@@ -1946,6 +1952,8 @@ export type ProjectShowReply = { held: Array<string>, refused: { [key in string]
 
 /**
  * `GET /v1/projects/{id}`: its assets in order, and what reading the project said.
+ * Optional `covered` describes only a successful full snapshot: project-event emissions
+ * before its read began. Head-only and partial/error-derived states do not claim coverage.
  */
 export type ProjectState = { id: string, path: string, assets: Array<Asset>, 
 /**
@@ -1995,7 +2003,7 @@ board?: Board | null,
 /**
  * What kept its last render from reaching a machine, each once, until another is asked.
  */
-unsent?: Array<ErrorBody>, };
+unsent?: Array<ErrorBody>, covered?: ProjectEventCursor | null, };
 
 /**
  * What reading a project said: of the asset or entity `name`, or of the file as a whole.
@@ -2673,7 +2681,7 @@ gone?: Array<string>,
 /**
  * What's said of the project besides its assets changed: `GET /v1/projects/{id}?assets=false`.
  */
-head?: boolean, } | { "type": "canvas", id: string, seq: number, cards: { [key in string]: Card | null }, } | { "type": "job.updated", project: string, job: Job, seq: number, } | { "type": "ahead.updated", project: string, ahead: Ahead, } | { "type": "history", id: string, undo?: HistoryEntry | null, redo?: HistoryEntry | null, } | { "type": "resync" };
+head?: boolean, cursor?: ProjectEventCursor | null, } | { "type": "canvas", id: string, seq: number, cards: { [key in string]: Card | null }, } | { "type": "job.updated", project: string, job: Job, seq: number, } | { "type": "ahead.updated", project: string, ahead: Ahead, } | { "type": "history", id: string, undo?: HistoryEntry | null, redo?: HistoryEntry | null, } | { "type": "resync" };
 
 /**
  * A killed process in uninterruptible sleep (`D`: a driver after an Xid, a hung network

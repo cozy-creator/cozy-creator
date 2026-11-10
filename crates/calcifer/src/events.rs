@@ -4,7 +4,7 @@ use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     convert::Infallible,
     path::{Path, PathBuf},
-    sync::{Arc, LazyLock, Mutex},
+    sync::{Arc, LazyLock, Mutex, atomic::{AtomicU64, Ordering}},
     time::Duration,
 };
 
@@ -14,7 +14,7 @@ use axum::{
 };
 use futures_util::Stream;
 use api::{
-    calcifer::{Event, Machine, ProjectShowReply, ProjectShowRefusal, Shown, StreamEvent},
+    calcifer::{Event, Machine, ProjectEventCursor, ProjectShowReply, ProjectShowRefusal, Shown, StreamEvent},
     error::Error,
     ids::RunId,
     calcifer::project::Card,
@@ -41,20 +41,40 @@ const LOOK: Duration = Duration::from_millis(250);
 
 /// What projects say to every stream. Process-wide, as `folder::WRITING` is: one process holds one
 /// Calcifer, and a `Folder` that writes may be no more than a path.
-static PROJECTS: LazyLock<Projects> = LazyLock::new(|| Projects {
-    said: broadcast::channel(1024).0,
-    revs: Mutex::default(),
-    owed: Mutex::default(),
-    wake: Notify::new(),
+static PROJECTS: LazyLock<Projects> = LazyLock::new(|| {
+    let mut generation = [0u8; 16];
+    getrandom::fill(&mut generation).expect("the OS gives random bytes");
+    Projects {
+        generation: hex::encode(generation),
+        sequence: AtomicU64::new(0),
+        said: broadcast::channel(1024).0,
+        revs: Mutex::default(),
+        owed: Mutex::default(),
+        wake: Notify::new(),
+    }
 });
 
 struct Projects {
+    generation: String,
+    sequence: AtomicU64,
     said: broadcast::Sender<StreamEvent>,
     /// Each project's `rev` as last noticed, so a write and the look after it say it once.
     revs: Mutex<HashMap<String, String>>,
     /// The projects to say something of, each by id: its folder, and whether it's to be said though neither file changed.
     owed: Mutex<BTreeMap<String, (PathBuf, bool)>>,
     wake: Notify,
+}
+
+fn cursor(sequence: u64) -> Option<ProjectEventCursor> {
+    // The page compares JSON numbers. Outside their exact integer range, keep ordinary
+    // refreshes instead of claiming coverage with a rounded or reused sequence.
+    (sequence < (1u64 << 53)).then(|| ProjectEventCursor { generation: PROJECTS.generation.clone(), sequence })
+}
+
+/// Capture before any read supplying a full state. Never capture after the snapshot: an
+/// event published while it was read may describe a commit that snapshot did not include.
+pub(crate) fn snapshot_cursor() -> Option<ProjectEventCursor> {
+    cursor(PROJECTS.sequence.load(Ordering::Acquire))
 }
 
 fn owe(dir: &Path, settled: bool) {
@@ -113,12 +133,16 @@ pub(crate) fn tell(api: Arc<Api>) {
                     project::model::forget(&api, &id);
                     continue;
                 }
-                let event = project::model::told(&api, id.clone(), &dir, settled).await;
+                let mut event = project::model::told(&api, id.clone(), &dir, settled).await;
                 // A write that came as this read the files is told here and owed again: once is enough.
                 if let StreamEvent::ProjectChanged { rev, .. } = &event
                     && last.insert(id, rev.clone()).as_ref() == Some(rev)
                 {
                     continue;
+                }
+                if let StreamEvent::ProjectChanged { cursor: position, .. } = &mut event {
+                    *position = PROJECTS.sequence.try_update(Ordering::AcqRel, Ordering::Acquire, |sequence| sequence.checked_add(1))
+                        .ok().and_then(|sequence| cursor(sequence + 1));
                 }
                 let _ = PROJECTS.said.send(event);
             }
