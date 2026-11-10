@@ -27,7 +27,9 @@ Encrypted-project prerequisites:
 - macOS: 15.4+ and macFUSE 5.5+ with the FSKit extension enabled. Read-only
   FSKit views additionally require macOS 26.4+. No kernel-extension fallback
   silently changes the user's boot policy.
-- Windows: WinFsp 2.1 and the Microsoft Visual C++ x64 runtime. The upstream
+- Windows: WinFsp 2.1 and the Microsoft Visual C++ x64 runtime. Read-only
+  mount requests are explicitly refused because this provider does not enforce
+  that mode on Windows; ordinary local encrypted projects are writable. The upstream
   x64 provider runs under Windows 11's x64 emulation on ARM64.
 
 The manual `dev-build` option `vault-provider` builds and runs the real fixture
@@ -35,3 +37,9 @@ in [`e2e/vault-provider`](../../e2e/vault-provider). It writes/reads/seeks media
 checks normal and idle locking, remount parity, mountpoint fallback prevention
 and controller SIGKILL. Run it separately on each supported OS/architecture;
 compilation is not a claim that the driver or installed CLI has been qualified.
+
+Debug builds alone can write explicitly requested provider stderr diagnostics
+with `COZY_VAULT_PROVIDER_DIAGNOSTICS=<private-log-file>`; the platform fixture
+uses this only with synthetic data. Release builds do not expose that channel.
+Filesystem status/unmount controls have bounded acknowledgments; a timeout
+reports unconfirmed/pending status and never authorizes killing a live mount.

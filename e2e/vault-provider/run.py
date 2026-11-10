@@ -21,10 +21,14 @@ def main():
     args.artifacts.mkdir(parents=True, exist_ok=False)
     environment = os.environ.copy()
     environment.pop('COZY_SECUREFS_PROVIDER', None)
+    environment['COZY_VAULT_PROVIDER_DIAGNOSTICS'] = str(args.artifacts / 'provider.log')
     normal = subprocess.run([str(args.probe), 'normal', str(args.securefs), str(args.artifacts / 'normal')], capture_output=True, text=True, env=environment)
     (args.artifacts / 'normal.log').write_text(normal.stdout + normal.stderr)
     if normal.returncode:
         print((normal.stdout + normal.stderr)[-65536:], file=sys.stderr)
+        diagnostics = args.artifacts / 'provider.log'
+        if diagnostics.exists():
+            print(diagnostics.read_text(errors='replace')[-32768:], file=sys.stderr)
         (args.artifacts / 'results.json').write_text(json.dumps({'normal': {'result': 'failed', 'exit_code': normal.returncode}}, indent=2) + '\n')
         raise SystemExit(normal.returncode)
     result = {'normal': json.loads(normal.stdout.strip().splitlines()[-1])}

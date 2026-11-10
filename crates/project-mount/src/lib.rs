@@ -68,6 +68,8 @@ const NOTICES: &[(&str, &str)] = &[
     ),
 ];
 const STARTUP: Duration = Duration::from_secs(60);
+const CONTROL_ACK: Duration = Duration::from_secs(10);
+static MOUNT_TRANSITION: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -85,6 +87,8 @@ pub enum Error {
     },
     #[error("{0}")]
     Invalid(&'static str),
+    #[error("{0}")]
+    Unsupported(&'static str),
     #[error("encrypted project is still in use; close programs using {} and try locking again", .0.display())]
     Busy(PathBuf),
     #[error(
@@ -99,6 +103,10 @@ pub enum Error {
     NotReady,
     #[error("the encrypted filesystem provider has not exited; locking is not complete")]
     StillRunning,
+    #[error(
+        "filesystem {0} did not acknowledge; its state is unconfirmed and locking is not complete"
+    )]
+    ControlTimeout(&'static str),
     #[error(transparent)]
     Platform(#[from] platform::Error),
 }
@@ -284,15 +292,20 @@ impl Provider {
         // A selected free Windows drive can be claimed by another concurrent unlock. Keep
         // preflight through readiness atomic so a second caller refuses, never aliases the
         // first project's mounted drive. The same rule prevents duplicate Unix view mounts.
-        static STARTING: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _starting = STARTING
+        let _starting = MOUNT_TRANSITION
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         validate_secret(secret)?;
         self.check_driver()?;
+        #[cfg(windows)]
+        if options.read_only {
+            return Err(Error::Unsupported(
+                "read-only mounts are not supported by the Windows securefs provider",
+            ));
+        }
         #[cfg(target_os = "macos")]
         if options.read_only && macos_version() < (26, 4) {
-            return Err(Error::Invalid(
+            return Err(Error::Unsupported(
                 "read-only encrypted views with FSKit require macOS 26.4 or newer",
             ));
         }
@@ -370,13 +383,9 @@ impl Provider {
         return linux_mounted(view);
         #[cfg(not(target_os = "linux"))]
         {
-            let status = self
-                .command("ismount")
-                .arg(helper_view(view))
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .map_err(io_error("read encrypted filesystem status"))?;
+            let mut command = self.command("ismount");
+            command.arg(helper_view(view));
+            let status = control_status(command, "status", Duration::from_secs(5))?;
             match status.code() {
                 Some(0) => Ok(true),
                 Some(1) => Ok(false),
@@ -400,18 +409,20 @@ impl Provider {
     }
 
     fn unmount(&self, view: &Path) -> Result<()> {
-        // securefs's unmount may detach a live Unix mount. A normal lock must instead let the
-        // kernel refuse open handles, leaving the provider owned and its writes intact.
+        self.unmount_with_budget(view, CONTROL_ACK)
+    }
+
+    fn unmount_with_budget(&self, view: &Path, budget: Duration) -> Result<()> {
+        // securefs may detach a live Unix mount. Normal locking instead lets the kernel refuse
+        // open handles; a missing acknowledgment never authorizes killing a live provider.
         #[cfg(unix)]
-        let status = unix_unmount(view, false)?;
+        let status = unix_unmount(view, false, budget)?;
         #[cfg(not(unix))]
-        let status = self
-            .command("unmount")
-            .arg(helper_view(view))
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map_err(io_error("unmount encrypted filesystem"))?;
+        let status = {
+            let mut command = self.command("unmount");
+            command.arg(helper_view(view));
+            control_status(command, "unmount", budget)?
+        };
         if self.is_mounted(view)? {
             return Err(Error::Busy(view.to_path_buf()));
         }
@@ -423,13 +434,14 @@ impl Provider {
 
     fn cleanup_dead(&self, view: &Path) {
         #[cfg(unix)]
-        if self.is_mounted(view).unwrap_or(false) {
-            // Only the supervisor calls this after waiting for the provider process to exit.
-            // No key-holding service remains; detach an inaccessible stale kernel mount.
-            let _ = unix_unmount(view, true);
+        if self.is_mounted(view).unwrap_or(true) {
+            // Only after waiting for the key-holding provider to exit: remove stale kernel state.
+            let _ = unix_unmount(view, true, Duration::from_secs(2));
         }
+        // WinFsp destroys its volume when the provider exits. Do not unmount a newly assigned
+        // drive letter after the old provider is gone.
         #[cfg(not(unix))]
-        let _ = self.unmount(view);
+        let _ = view;
     }
 
     fn check_driver(&self) -> Result<()> {
@@ -485,6 +497,9 @@ impl Mounted {
     /// Normal unmount only. An open player/editor can return Busy; its handle and provider stay
     /// owned here. A successful result means the readable view and key-holding helper are gone.
     pub fn try_unmount(&mut self) -> Result<()> {
+        let _transition = MOUNT_TRANSITION
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if self.provider.is_mounted(&self.view)? {
             self.provider.unmount(&self.view)?;
         }
@@ -509,6 +524,9 @@ impl Mounted {
 impl Drop for Mounted {
     fn drop(&mut self) {
         self.input.take();
+        // A failed startup cannot return while its delayed helper could still expose a view.
+        // EOF makes the supervisor stop its owned provider before this process releases it.
+        let _ = self.child.wait();
         let _ = self.guard.seal();
     }
 }
@@ -596,16 +614,18 @@ fn supervise(arguments: &[OsString]) -> Result<()> {
         command.args(["-o", "ro"]);
     }
     command.arg(&backing).arg(helper_view(&view));
-    let mut child = OwnedChild(
-        command
+    let mut child = OwnedChild {
+        child: command
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(provider_stderr()?)
             .spawn()
             .map_err(io_error("start securefs"))?,
-    );
+        provider: provider.clone(),
+        view: view.clone(),
+    };
     let mut provider_input = child
-        .0
+        .child
         .stdin
         .take()
         .ok_or(Error::Invalid("securefs stdin is unavailable"))?;
@@ -623,7 +643,7 @@ fn supervise(arguments: &[OsString]) -> Result<()> {
     let mut sealed = false;
     loop {
         if let Some(status) = child
-            .0
+            .child
             .try_wait()
             .map_err(io_error("read securefs status"))?
         {
@@ -637,22 +657,27 @@ fn supervise(arguments: &[OsString]) -> Result<()> {
             sealed = true;
         }
         if stop.try_recv().is_ok() || parent.wait_for(Duration::from_millis(100))? {
-            let _ = provider.unmount(&view);
+            let _ = provider.unmount_with_budget(&view, Duration::from_secs(2));
             // Shutdown is not a normal lock: if open handles prevent unmount, terminating the
             // provider makes further reads fail and its key disappear. The underlay is sealed.
-            let _ = child.0.kill();
-            let _ = child.0.wait();
+            let _ = child.child.kill();
+            let _ = child.child.wait();
             provider.cleanup_dead(&view);
             return Ok(());
         }
     }
 }
 
-struct OwnedChild(Child);
+struct OwnedChild {
+    child: Child,
+    provider: Provider,
+    view: PathBuf,
+}
 impl Drop for OwnedChild {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        self.provider.cleanup_dead(&self.view);
     }
 }
 
@@ -666,6 +691,7 @@ fn clean_command(program: &Path) -> Command {
         "WINDIR",
         "TEMP",
         "TMP",
+        "TMPDIR",
         "USERPROFILE",
     ] {
         if let Some(value) = std::env::var_os(name) {
@@ -673,7 +699,62 @@ fn clean_command(program: &Path) -> Command {
         }
     }
     command.env("LC_ALL", "C");
+    #[cfg(debug_assertions)]
+    if let Some(path) = std::env::var_os("COZY_VAULT_PROVIDER_DIAGNOSTICS") {
+        command.env("COZY_VAULT_PROVIDER_DIAGNOSTICS", path);
+    }
     command
+}
+
+fn provider_stderr() -> Result<Stdio> {
+    #[cfg(debug_assertions)]
+    if let Some(path) = std::env::var_os("COZY_VAULT_PROVIDER_DIAGNOSTICS") {
+        let file = OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(path)
+            .map_err(io_error("open explicitly requested provider diagnostics"))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(fs::Permissions::from_mode(0o600))
+                .map_err(io_error("protect provider diagnostics"))?;
+        }
+        return Ok(Stdio::from(file));
+    }
+    Ok(Stdio::null())
+}
+
+fn control_status(
+    mut command: Command,
+    operation: &'static str,
+    budget: Duration,
+) -> Result<ExitStatus> {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(io_error("start filesystem control command"))?;
+    let deadline = Instant::now() + budget;
+    loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(io_error("read filesystem control acknowledgment"))?
+        {
+            return Ok(status);
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            // No key is passed to a control process. Reap separately so a wedged driver does
+            // not hold Calcifer's session mutex; the actual provider is separately owned.
+            thread::spawn(move || {
+                let _ = child.wait();
+            });
+            return Err(Error::ControlTimeout(operation));
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -725,7 +806,7 @@ fn linux_mounted(view: &Path) -> Result<bool> {
 }
 
 #[cfg(unix)]
-fn unix_unmount(view: &Path, dead_provider: bool) -> Result<ExitStatus> {
+fn unix_unmount(view: &Path, dead_provider: bool, budget: Duration) -> Result<ExitStatus> {
     #[cfg(target_os = "linux")]
     {
         for program in ["fusermount3", "fusermount"] {
@@ -734,15 +815,11 @@ fn unix_unmount(view: &Path, dead_provider: bool) -> Result<ExitStatus> {
             if dead_provider {
                 command.arg("-z");
             }
-            match command
-                .arg(view)
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-            {
+            command.arg(view);
+            match control_status(command, "unmount", budget) {
                 Ok(status) => return Ok(status),
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => return Err(io_error("unmount encrypted filesystem")(error)),
+                Err(Error::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
             }
         }
         Err(Error::DriverMissing(requirements()))
@@ -753,12 +830,8 @@ fn unix_unmount(view: &Path, dead_provider: bool) -> Result<ExitStatus> {
         if dead_provider {
             command.arg("-f");
         }
-        command
-            .arg(view)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map_err(io_error("unmount encrypted filesystem"))
+        command.arg(view);
+        control_status(command, "unmount", budget)
     }
 }
 
