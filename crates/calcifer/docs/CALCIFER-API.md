@@ -126,10 +126,25 @@ private, max-age=31536000, immutable`; everything else, `outputs/{name}` include
 - `history {id, undo?, redo?}`: a project's history moved, an edit, an undo or a redo, and the entries undo and redo would take now, as `GET /v1/projects/{id}/history` lists them.
 - `resync`: this stream fell behind and goes on: read again what you hold.
 
-`PUT /v1/events/{stream}` `{projects: [id]}`: `204`, the projects the page on this stream shows now, each held open while the stream
-lasts or until a later `PUT` names it no more. One that can't open isn't held, and the page's own read of it says why. `404
+Newer services add optional `project.changed.cursor {generation, sequence}` and full project-state `covered` with the same shape.
+The opaque generation is fresh per controller process; the sequence is assigned by its project-event publisher, not a database revision.
+`covered` is captured before any state read/validation supplying that full response. It never comes from a later cursor and is absent on
+head-only, failed or partial/error-derived snapshots. A client can avoid a whole project-state reload only when every whole cause is at
+or before its cached full snapshot's covered sequence in the same generation. Named/head deltas still apply; YAML/non-project
+invalidations, newer/unknown/legacy/generation-mismatched causes, hello/resync and count fallbacks still refresh. A summary or partial
+merge cannot promote full-snapshot coverage. Older peers omit or ignore these additive fields and retain ordinary refresh behavior.
+
+`PUT /v1/events/{stream}` `{projects: [id]}`: `200 {held: [id], refused: {id: {status, error}}}`, the projects the page on this stream shows now,
+each held open while the stream lasts or until a later `PUT` names it no more. At most 64 sorted, distinct IDs are attempted; an ID outside
+that bound is not acknowledged. One that can't open keeps its own refusal without dropping the healthy IDs. The reply comes after Reader
+installation; a page orders its first project-state GET after its own held acknowledgement. Older services answer `204`, confirming completion
+without an authoritative per-ID result. `404
 stream_unknown` once the stream has ended: the next stream's `hello` names it. The page sends what all its tabs show, from the tab that
 holds the stream, each time that changes.
+
+ACK-capable pages share the stable `cozy-events-presence-v1` Web Lock and BroadcastChannel. An older open page retains its older
+coordination cohort during an upgrade, so it cannot strand a new page waiting for an acknowledgement it does not implement. This is a
+coordination protocol boundary, not a build/version pin; tab liveness, media/log locks and ordinary browser storage remain shared.
 
 ### The page
 The web UI, embedded when cozy is built (`crates/calcifer/build.rs`, from `web/app/dist`). It holds no secret, so these

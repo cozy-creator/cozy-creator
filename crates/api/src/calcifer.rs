@@ -911,6 +911,32 @@ pub struct Shown {
     pub projects: Vec<String>,
 }
 
+/// The Readers installed by `PUT /v1/events/{stream}`. IDs not in `held` are not acknowledged;
+/// at most 64 IDs are attempted, and attempted IDs that could not open retain their refusal.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ProjectShowReply {
+    pub held: Vec<String>,
+    pub refused: BTreeMap<String, ProjectShowRefusal>,
+}
+
+/// One requested project's refusal, independent of the other projects on the same stream.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ProjectShowRefusal {
+    pub status: u16,
+    pub error: crate::error::Error,
+}
+
+/// A project event's position in one controller process. Generations never compare across
+/// restarts; a full snapshot covers only positions captured before its read began.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ProjectEventCursor {
+    pub generation: String,
+    pub sequence: u64,
+}
+
 /// `GET /v1/events`: what a client keeps on screen, on one stream, each thing whole as its route
 /// answers it. No backlog: a client subscribes, then reads what it holds.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -927,7 +953,8 @@ pub enum StreamEvent {
     /// It left the list.
     #[serde(rename = "machine.removed")]
     MachineRemoved { name: String },
-    /// `rev` is opaque, and changes whenever project.yaml or project.lock does.
+    /// `rev` is opaque, and changes whenever project.yaml or project.lock does. Optional
+    /// `cursor` is its emission position, comparable only with the same controller generation.
     #[serde(rename = "project.changed")]
     ProjectChanged {
         id: String,
@@ -941,6 +968,8 @@ pub enum StreamEvent {
         /// What's said of the project besides its assets changed: `GET /v1/projects/{id}?assets=false`.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         head: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor: Option<ProjectEventCursor>,
     },
     /// The rows of a project's canvas that changed, at revision `seq`; none is a row gone.
     #[serde(rename = "canvas")]

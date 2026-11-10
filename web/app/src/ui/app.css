@@ -593,6 +593,17 @@ code {
   align-items: center;
   justify-content: center;
 }
+.media-pixels {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  pointer-events: none;
+}
+.card.here > .media {
+  width: var(--surface-media-width, 100%);
+  overflow: var(--surface-media-overflow, hidden);
+}
 .card:active > .media {
   outline: 2px solid var(--ember);
   outline-offset: 2px;
@@ -1045,7 +1056,7 @@ video.preview.on {
   animation: fade-in 120ms ease-out;
 }
 .card:has(> .here-side:not(:empty)) > .here-under {
-  width: calc(100% / (var(--text, 1) * var(--here)) + var(--here-gap) + var(--side-width));
+  width: max(calc(100% / (var(--text, 1) * var(--here))), calc(var(--surface-media-width, 100%) / (var(--text, 1) * var(--here)) + var(--here-gap) + var(--side-width)));
 }
 .here-under > * {
   --text: 1;
@@ -1056,7 +1067,7 @@ video.preview.on {
 .here-side {
   position: absolute;
   top: var(--head);
-  left: calc(100% + var(--here-gap) * var(--text, 1) * var(--here));
+  left: calc(var(--surface-media-width, 100%) + var(--here-gap) * var(--text, 1) * var(--here));
   width: var(--side-width);
   height: calc((100% - var(--head)) / (var(--text, 1) * var(--here)));
   overflow: hidden auto;
