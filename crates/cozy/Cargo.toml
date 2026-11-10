@@ -13,7 +13,7 @@ publish.workspace = true
 calcifer.workspace = true
 cli.workspace = true
 mimalloc.workspace = true
-platform.workspace = true
+platform = { workspace = true, features = ["seams"] }
 tensord.workspace = true
 
 [features]

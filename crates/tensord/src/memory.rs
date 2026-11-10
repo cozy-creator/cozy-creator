@@ -4,7 +4,7 @@
 use crate::machine::receipt;
 use platform::contain::host_memory;
 use platform::contain::host_pressure::{self, Growth, HostMode, Nudge};
-use platform::memory::{wait_any, Signal, Waitable};
+use platform::signal::{wait_any, Signal, Waitable};
 use platform::process::Exact;
 use std::{collections::BTreeMap, fs::{self, OpenOptions}, io::{self, Write}, path::PathBuf,
     sync::{Arc, Mutex}, time::{SystemTime, UNIX_EPOCH}};
