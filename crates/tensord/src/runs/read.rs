@@ -186,6 +186,17 @@ impl Runs {
         events.sort_by_key(|event| event.sequence);
         Ok(events)
     }
+    /// A root that settled (`Engine::finish`): its outcome made now, from what this machine holds
+    /// now, so no later read depends on what may go meanwhile (its installation, its result
+    /// copies, a store under pressure). One that can't be made yet is made by its next reader.
+    pub(crate) fn settled(&self, record: &Execution) {
+        let made = self.service.engine.private_storage(&record.id).map_err(problem)
+            .and_then(|scope| crate::private_io::within(scope, || self.terminal(record)));
+        if let Err(error) = made {
+            crate::private_io::warning(&self.service.engine, &record.id,
+                format_args!("outcome is not made yet: {}: {}", error.code, error.message));
+        }
+    }
     fn terminal(&self, record: &Execution) -> Result<stored::LogPage, Error> {
         let _guard = self.projection.lock().unwrap();
         if let Some(held) = self

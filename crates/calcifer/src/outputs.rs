@@ -2,7 +2,8 @@
 //! media type's extension, rewritten in place as revisions arrive; a project's run keeps it in the
 //! project's `files/` too, by hash, which is the file it names from then on. A revision's bytes are read
 //! from the run's machine into a `.part` beside the file (ranged and side by side when big) and
-//! replace the file whole once they match the revision's digest; a tree output is a directory
+//! replace the file whole once they match the revision's digest; `.part.held` beside it keeps the
+//! stretches in place, so a transfer cut off resumes with the rest; a tree output is a directory
 //! replaced the same way. One exporter works per run with something to export, started by the
 //! run's output events or, at startup, from the store. What stays on its machine (`OutputItem::stays`)
 //! is no export's: `bring` fetches it when something needs it. `serve` answers
@@ -339,6 +340,7 @@ impl Calcifer {
                         if let Ok(out_dir) = crate::project::vault::resolve_path(&run.out_dir) {
                             let dest = out_dir.join(file_name(run.number, name, index, &item.media_type));
                             remove(&suffixed(&dest, ".part"));
+                            remove(&suffixed(&dest, HELD));
                             remove(&suffixed(&dest, ".manifest.part"));
                         }
                         match (self.store).export_failed(id.as_str(), name, index, rev, &reason) {
@@ -457,7 +459,9 @@ impl Calcifer {
             };
             let measured = self.measured(item, &staged).await;
             // It waits on its project's turn and the store's commit: off the async workers, which answer the page.
-            tokio::task::block_in_place(|| self.land(run, item, &staged, &dest, measured.as_ref()))
+            tokio::task::block_in_place(|| self.land(run, item, &staged, &dest, measured.as_ref()))?;
+            remove(&suffixed(&dest, HELD));
+            Ok(())
         };
         tokio::pin!(work);
         let done = loop {
@@ -810,7 +814,8 @@ fn remove(path: &Path) {
 }
 
 /// This revision's bytes in `<file>.part`, checked against its digest. A revision that extends
-/// the one the file holds reads only its new tail.
+/// the one the file holds reads only its new tail; an attempt cut off before resumes with what it
+/// left in place (`.part.held`), cleared by a digest that doesn't match.
 async fn fetch_file(
     link: &Link,
     target: &v1::OutputTarget,
@@ -819,36 +824,47 @@ async fn fetch_file(
     appended: Option<u64>,
     moved: &Arc<AtomicU64>,
 ) -> Result<PathBuf, Failure> {
-    let part = suffixed(dest, ".part");
+    let (part, journal) = (suffixed(dest, ".part"), suffixed(dest, HELD));
     let follows = item.exported_rev.is_some_and(|held| held + 1 == item.rev);
     let mut from = appended.filter(|_| follows).unwrap_or(0);
     loop {
         let prepare_began = Instant::now();
         let prepared = blocking({
-            let (part, dest, length) = (part.clone(), dest.to_owned(), item.length);
-            move || prepare(&part, &dest, from, length)
+            let (part, dest, length, digest) = (part.clone(), dest.to_owned(), item.length, item.digest.clone());
+            move || prepare(&part, &dest, from, length, &digest)
         })
         .await;
-        if let Err(e) = prepared {
-            if from == 0 {
+        let held = match prepared {
+            Ok(held) => held,
+            Err(e) if from == 0 => {
                 return Err(Failure::Again(format!(
                     "cannot write {}: {e}",
                     part.display()
                 )));
             }
-            from = 0;
-            continue;
-        }
+            Err(_) => {
+                from = 0;
+                continue;
+            }
+        };
+        let in_place = v1::held_bytes(&held);
         if !private_path(dest) { info!(run = %target.run, output = %target.output, index = target.index, rev = item.rev,
-            phase = "output_prepare_file", bytes = item.length, appended_from = from,
+            phase = "output_prepare_file", bytes = item.length, appended_from = from, in_place,
             elapsed_ms = prepare_began.elapsed().as_secs_f64() * 1000.0); }
-        moved.store(from, Ordering::Relaxed);
-        fetch(link, target, item.rev, from, item.length, &part, moved).await?;
+        moved.store(in_place, Ordering::Relaxed);
+        fetch(link, target, item.rev, &held, item.length, &part, Some(&journal), moved).await?;
         match check(&part, item.length, &item.digest).await {
             Ok(()) => return Ok(part),
-            // The file did not hold the revision this one extends.
-            Err(Failure::Wrong(_)) if from > 0 => from = 0,
-            Err(failure) => return Err(failure),
+            // What was in place before (an earlier attempt's, the revision this one extends) was
+            // not this revision's: read whole once more.
+            Err(Failure::Wrong(_)) if in_place > 0 => {
+                remove(&journal);
+                from = 0;
+            }
+            Err(failure) => {
+                remove(&journal);
+                return Err(failure);
+            }
         }
     }
 }
@@ -870,11 +886,12 @@ async fn fetch_tree(
         move || {
             remove(&stage);
             std::fs::create_dir_all(&stage)?;
-            prepare(&manifest, &stage, 0, length)
+            let empty = std::fs::File::create(&manifest)?;
+            empty.set_len(length)
         }
     });
     prepared.await.map_err(unwritable)?;
-    fetch(link, target, item.rev, 0, item.length, &manifest, moved).await?;
+    fetch(link, target, item.rev, &[], item.length, &manifest, None, moved).await?;
     check(&manifest, item.length, &item.digest).await?;
     let listed = std::fs::read(&manifest).map_err(unwritable)?;
     let _ = std::fs::remove_file(&manifest);
@@ -897,7 +914,7 @@ async fn fetch_tree(
             member: path,
             ..target.clone()
         };
-        fetch(link, &member, item.rev, 0, length, &file, moved).await?;
+        fetch(link, &member, item.rev, &[], length, &file, None, moved).await?;
         check(&file, length, &digest).await?;
         read.insert(digest, file);
     }
@@ -912,8 +929,24 @@ async fn blocking<T: Send + 'static>(
         .unwrap_or_else(|e| Err(std::io::Error::other(e)))
 }
 
-/// A fresh `part` of `length` bytes, its first `from` copied from `dest`.
-fn prepare(part: &Path, dest: &Path, from: u64, length: u64) -> std::io::Result<()> {
+/// Beside a `.part`: the bytes it is for (`<digest> <length>`), then each stretch `<start> <end>`
+/// in place, a line as each range stops.
+const HELD: &str = ".part.held";
+
+/// The `part` this revision's `length` bytes are read into, and the stretches of it in place: an
+/// earlier attempt's for the same bytes kept as it left them (its `.held` names `digest`), else a
+/// fresh one, its first `from` copied from `dest`.
+fn prepare(part: &Path, dest: &Path, from: u64, length: u64, digest: &str) -> std::io::Result<Vec<(u64, u64)>> {
+    let journal = suffixed(part, ".held");
+    let named = format!("{digest} {length}");
+    let kept = std::fs::read_to_string(&journal).ok().filter(|kept| kept.lines().next() == Some(named.as_str()));
+    if let Some(kept) = kept.filter(|_| std::fs::metadata(part).is_ok_and(|m| m.len() == length)) {
+        let stretches = kept.lines().skip(1).filter_map(|line| {
+            let (start, end) = line.split_once(' ')?;
+            Some((start.parse().ok()?, end.parse::<u64>().ok()?.min(length)))
+        });
+        return Ok(merged(stretches.collect()));
+    }
     let _ = std::fs::remove_file(part);
     let mut file = std::fs::File::create(part)?;
     if from > 0 {
@@ -924,7 +957,25 @@ fn prepare(part: &Path, dest: &Path, from: u64, length: u64) -> std::io::Result<
             ));
         }
     }
-    file.set_len(length)
+    file.set_len(length)?;
+    let held = if from > 0 { vec![(0, from)] } else { vec![] };
+    let lines: String = held.iter().map(|(start, end)| format!("{start} {end}\n")).collect();
+    std::fs::write(&journal, format!("{named}\n{lines}"))?;
+    Ok(held)
+}
+
+/// `stretches` sorted, those that touch as one.
+fn merged(mut stretches: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
+    stretches.retain(|(start, end)| start < end);
+    stretches.sort_unstable();
+    let mut merged: Vec<(u64, u64)> = vec![];
+    for (start, end) in stretches {
+        match merged.last_mut() {
+            Some(last) if start <= last.1 => last.1 = last.1.max(end),
+            _ => merged.push((start, end)),
+        }
+    }
+    merged
 }
 
 /// Whether `path` holds exactly `length` bytes with `digest`; they are on the disk if so, before any name is.
@@ -968,23 +1019,27 @@ async fn check(path: &Path, length: u64, digest: &str) -> Result<(), Failure> {
     result
 }
 
-/// Reads bytes `[from, length)` of `target` at revision `rev` into `part` at their offsets: ranges
-/// cut as `lanes::parts` cuts them (at most `RANGE`), `LANES` side by side on the machine's bulk
-/// lanes (`lanes::transfer`).
+/// Reads the bytes of `target` at revision `rev` that `held` leaves of `[0, length)` into `part` at
+/// their offsets: ranges cut as `lanes::parts` cuts them (at most `RANGE`), `LANES` side by side on
+/// the machine's bulk lanes (`lanes::transfer`). Each stretch in place is told to `journal`.
+#[allow(clippy::too_many_arguments)]
 async fn fetch(
     link: &Link,
     target: &v1::OutputTarget,
     rev: u64,
-    from: u64,
+    held: &[(u64, u64)],
     length: u64,
     part: &Path,
+    journal: Option<&Path>,
     moved: &Arc<AtomicU64>,
 ) -> Result<(), Failure> {
-    let ranges = lanes::parts(&[(0, from)], length, RANGES_PER_LANE * LANES, RANGE);
+    let ranges = lanes::parts(held, length, RANGES_PER_LANE * LANES, RANGE);
     let read = lanes::transfer(ranges, LANES, |leg| {
         let lane = link.lane(leg.lane, leg.fresh);
         let (target, part, moved) = (target.clone(), part.to_owned(), moved.clone());
+        let stretch = Stretch { journal: journal.map(Path::to_owned), first: leg.first, at: leg.at.clone() };
         async move {
+            let _stretch = stretch;
             let lane = lane.ok_or_else(|| Ranged::Again("no connection to the machine".into()))?;
             let range = (leg.first, leg.end, length);
             read_range(lane, target, rev, range, part, leg.at, &moved).await
@@ -994,6 +1049,28 @@ async fn fetch(
         Ok(()) => Ok(()),
         Err(Ranged::Stop(failure)) => Err(failure),
         Err(Ranged::Again(message)) => Err(Failure::Again(message)),
+    }
+}
+
+/// A range's bytes in place, told to its `.part.held` when it stops however it stops: done, failed,
+/// or dropped as slow.
+struct Stretch {
+    journal: Option<PathBuf>,
+    first: u64,
+    at: Arc<AtomicU64>,
+}
+
+impl Drop for Stretch {
+    fn drop(&mut self) {
+        let at = self.at.load(Ordering::Relaxed);
+        if let (Some(journal), true) = (&self.journal, at > self.first) {
+            let line = format!("{} {at}\n", self.first);
+            let appended = std::fs::OpenOptions::new().append(true).open(journal);
+            if let Err(e) = appended.and_then(|mut file| std::io::Write::write_all(&mut file, line.as_bytes())) {
+                if private_path(journal) { warn!("private output range progress could not be saved"); }
+                else { warn!(path = %journal.display(), "what a range left in place is not kept: {e}"); }
+            }
+        }
     }
 }
 

@@ -403,6 +403,14 @@ fn finish_conversion(root: &FsPath) -> Result<(), Error> {
 
 fn convert(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret, ask: &VaultAsk) -> Result<PathBuf, Error> {
     let source = view(root)?;
+    // A child project has its own activity, connections and transition gate. Never move/delete
+    // its live storage as an incidental part of converting its parent.
+    let nested = api.calcifer.store().known_projects().map_err(|e| error("vault_journal", e))?
+        .into_iter().any(|project| project.path != root && project.path.starts_with(root) && project.path.exists());
+    if nested || api.projects.now_open().iter().any(|project| {
+        let path = logical(&project.folder.dir);
+        path != root && path.starts_with(root)
+    }) { return Err(Error::new(Kind::Conflict, "vault_nested_project", "move nested projects outside this project before converting its storage")); }
     let old_secret = held(root).map(|session| session.lock().expect("vault session").secret.duplicate());
     let target_keybag = keybag.clone();
     if !CONVERTING.lock().expect("vault conversions").insert(root.to_owned()) { return Err(error("vault_busy", "the project is already being converted")); }
@@ -465,6 +473,9 @@ fn copy_tree_at(source: &FsPath, target: &FsPath, relative: &FsPath, managed: bo
         let from = entry.path();
         let to = target.join(entry.file_name());
         let relative = relative.join(entry.file_name());
+        if entry.file_name() == KEYBAG_FILE || (entry.file_name() == "project.db" && relative.parent().is_some_and(|parent| !parent.as_os_str().is_empty())) {
+            return Err(Error::new(Kind::Conflict, "vault_nested_project", "conversion/export refuses a nested project's storage"));
+        }
         if managed {
             let mut parts = relative.components();
             let first = parts.next().and_then(|part| part.as_os_str().to_str());

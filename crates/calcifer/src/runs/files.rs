@@ -66,6 +66,10 @@ fn held_in(store: &Store, digest: &Digest) -> Option<PathBuf> {
     (store.reuse(&object).ok()? && store.used(&object.sha256, [&object]).is_ok()).then_some(path)
 }
 
+#[cfg(test)]
+#[path = "files_http_tests.rs"]
+mod http_tests;
+
 /// Byte ranges `[start, end)`, sorted and apart.
 type Ranges = Vec<(u64, u64)>;
 
@@ -225,6 +229,24 @@ pub(crate) async fn put(State(api): State<Arc<Api>>, Query(scope): Query<UploadS
         Ok((status, [held_header(&whole(file.length))], Json(file)).into_response())
     };
     if let Some(path) = held_in(&storage, &digest) {
+        let held = file(digest, &path)?;
+        if held.length != length {
+            return Err(Refusal(Error::new(Kind::Conflict, "file_length_conflict", format!("{digest} is held as {} bytes, not {length}", held.length))));
+        }
+        // An already-held object needs no write, but the caller still sends this body. Leaving
+        // it unread makes HTTP/1 close the connection when the remainder is not buffered yet.
+        let mut stream = body.into_data_stream();
+        let mut at = start;
+        while let Some(data) = stream.next().await {
+            let data = data.map_err(|error| Refusal(Error::new(Kind::Validation, "body_unreadable", error.to_string())))?;
+            if data.len() as u64 > end - at {
+                return Err(Refusal(Error::new(Kind::Usage, "invalid_range", "the body is longer than its Content-Range")));
+            }
+            at += data.len() as u64;
+        }
+        if at != end {
+            return Err(Refusal(Error::new(Kind::Usage, "invalid_range", "the body is shorter than its Content-Range")));
+        }
         return answer(StatusCode::OK, &path);
     }
     let upload = opened(storage.clone(), digest, length).await?;

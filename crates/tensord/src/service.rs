@@ -120,7 +120,8 @@ impl Service {
         match platform::contain::Scope::sweep(&platform::contain::namespace(root)) {
             Ok(0) => (),
             Ok(held) => tracing::info!("ended {held} process(es) left in earlier executor scopes"),
-            Err(error) => tracing::warn!("earlier executor scopes remain: {error}"),
+            Err(error) if error.is_unsupported() => (),
+            Err(error) => return Err(io::Error::other(error)),
         }
         let service = Arc::new(Self {
             engine,

@@ -1346,6 +1346,12 @@ impl Calcifer {
     ) -> Result<(), Stop> {
         use v1::Event as Frame;
         let (mut batch, mut frames) = (Batch::default(), 0u64);
+        // Why its machine says a finished run's outcome isn't sent, when it says (cl-806).
+        let mut unsent = String::new();
+        let unsent_said = |state_now: &str, unsent: &str| match unsent.is_empty() {
+            true => format!("it says the run {state_now}, and sends no outcome"),
+            false => format!("it says the run {state_now}, and sends no outcome: {unsent}"),
+        };
         let mut ticks = tokio::time::interval(ETA_EVERY);
         ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
@@ -1382,7 +1388,7 @@ impl Calcifer {
                 // A stream's end with its outcome unread is, to a client, a body that broke off.
                 Some(Err(LinkError::Unanswered(_))) if finished(&state_now) => {
                     self.record_batch(id, &mut batch)?;
-                    return Err(Stop::Broken("outcome_unsent".into(), format!("it says the run {state_now}, and sends no outcome")));
+                    return Err(Stop::Broken("outcome_unsent".into(), unsent_said(&state_now, &unsent)));
                 }
                 Some(Err(e)) => {
                     self.record_batch(id, &mut batch)?;
@@ -1391,7 +1397,7 @@ impl Calcifer {
                 // A run its machine calls over with no outcome sent is no stream held open to start another: it can't read that outcome.
                 None if finished(&state_now) => {
                     self.record_batch(id, &mut batch)?;
-                    return Err(Stop::Broken("outcome_unsent".into(), format!("it says the run {state_now}, and sends no outcome")));
+                    return Err(Stop::Broken("outcome_unsent".into(), unsent_said(&state_now, &unsent)));
                 }
                 // The machine ends a stream it holds open only to start another: attach again.
                 None if frames > 0 => return self.record_batch(id, &mut batch),
@@ -1453,6 +1459,9 @@ impl Calcifer {
                 }
                 Frame::State(state) => {
                     state_now.clone_from(&state.state);
+                    if finished(&state.state) {
+                        unsent.clone_from(&state.waiting);
+                    }
                     self.machine_waiting(id, state.clone());
                     if state.started_at_ms > 0 {
                         batch.started_at_ms = Some(state.started_at_ms as i64);

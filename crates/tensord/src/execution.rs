@@ -50,6 +50,8 @@ pub(crate) struct Engine {
     activity_changed: Condvar,
     /// What holds a memoizable run's success for its signer (`call_memo`), once configured.
     memo: OnceLock<Weak<crate::objects::Objects>>,
+    /// What makes a root's outcome the moment it settles (`Runs::settled`), once configured.
+    settled: OnceLock<Settled>,
     /// Each preparing run's stop, and whether it has begun what cannot stop (`Stoppable`).
     preparations: Mutex<HashMap<String, Preparation>>,
     /// Runs a GPU fault failed (`fault`): their failure, whatever their executor said after.
@@ -154,6 +156,7 @@ fn stop_preparation(
 }
 
 type Halt = Arc<dyn Fn() -> io::Result<()> + Send + Sync>;
+type Settled = Box<dyn Fn(&Execution) + Send + Sync>;
 
 impl Engine {
 
@@ -179,6 +182,7 @@ impl Engine {
             activity: Mutex::new(0),
             activity_changed: Condvar::new(),
             memo: OnceLock::new(),
+            settled: OnceLock::new(),
             preparations: Mutex::new(HashMap::new()),
             faults: Mutex::new(HashMap::new()),
         }))
@@ -203,6 +207,11 @@ impl Engine {
     /// A memoizable run's success is kept by `objects` from now on (`Objects::keep`).
     pub(crate) fn hold_memos(&self, objects: &Arc<crate::objects::Objects>) {
         let _ = self.memo.set(Arc::downgrade(objects));
+    }
+
+    /// `settled` makes each root's outcome as it settles (`finish`), from what it holds then.
+    pub(crate) fn on_settled(&self, settled: Settled) {
+        let _ = self.settled.set(settled);
     }
 
     pub(crate) fn get(&self, id: &str) -> io::Result<Execution> {
@@ -1002,6 +1011,9 @@ impl Engine {
         }
         drop(progress);
         self.notify_activity();
+        if let Some(settled) = self.settled.get().filter(|_| record.state.terminal() && record.invocation.parent.is_empty()) {
+            settled(&record);
+        }
         Ok(record)
     }
 
