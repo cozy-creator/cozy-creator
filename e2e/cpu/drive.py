@@ -460,7 +460,13 @@ class Broker:
 
 
 def spooled(spool: Path, asset_ref: str) -> Path:
-    """The file an attempt saved under `asset_ref` (`attempt:<id>/video/0001`), in its spool."""
+    """The file an attempt saved under `asset_ref` (`attempt:<id>/video/0001`), in its spool; or one it holds by its
+    digest (`sha256:<hex>`: a child's output it returns as its own, held as `sha256-<hex>`)."""
+    if asset_ref.startswith("sha256:"):
+        held = spool / asset_ref.replace(":", "-", 1)
+        if not held.exists():
+            raise Failed(f"{asset_ref} is not held in {spool.name}'s spool")
+        return held
     found = sorted(spool.glob(asset_ref.split("/", 1)[-1].replace("/", "-") + "*"))
     if not found:
         raise Failed(f"{asset_ref} has no file in {spool.name}'s spool")
@@ -637,10 +643,7 @@ def judge(cell: Cell, reply: Reply, spool: Path, reference: Seen | None,
     named: Files = {}
     for declared in sorted(reply.get("outputs") or [], key=lambda o: str(o.get("output_id"))):
         output, ref, media_type = (str(declared.get(k, "")) for k in ("output_id", "asset_ref", "media_type"))
-        found = sorted(spool.glob(ref.split("/", 1)[1].replace("/", "-") + "*"))
-        if not found:
-            raise Failed(f"output {output} ({ref}) has no file in the spool")
-        path = found[0]
+        path = spooled(spool, ref)
         files.append(path)
         named[output] = (path, media_type)
         if not path.stat().st_size:
