@@ -98,7 +98,7 @@ class Proof:
                                                       'initial_state': state,
                                                       'completion': 'automatic_close_observed_by_status'}
                 self.flush()
-                self.wait_locked()
+                self.wait_locked('a manual lock did not finish draining accepted requests')
                 self.receipt['first_manual_lock']['final_state'] = 'locked'
                 self.flush()
                 return answer
@@ -240,7 +240,7 @@ foreach ($rule in $allowed) {
             else:
                 raise RuntimeError('an absent mount accepted a plaintext fallback write')
 
-    def wait_locked(self):
+    def wait_locked(self, failure='a configured two-second session deadline failed to lock'):
         # The requested two-second session deadline is the policy under test. Status polling
         # must not refresh it; the wider budget permits the actual normal unmount to finish.
         deadline = time.monotonic() + 30
@@ -248,7 +248,7 @@ foreach ($rule in $allowed) {
             if self.status()['state'] == 'locked':
                 return
             time.sleep(0.25)
-        raise RuntimeError('a configured two-second session deadline failed to lock')
+        raise RuntimeError(failure)
 
     def shutdown(self):
         # The CLI intentionally exposes no up/down verb. Exercise its real graceful restart
