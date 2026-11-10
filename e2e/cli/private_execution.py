@@ -12,6 +12,9 @@ import os
 from pathlib import Path
 import subprocess
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 import uuid
 
 
@@ -85,6 +88,67 @@ def scan(roots: list[Path], exclusions: list[Path], since_ns: int, markers: list
     return leaked, checked
 
 
+def observed_run(body: bytes) -> dict:
+    for line in reversed(body.splitlines()):
+        try:
+            row = json.loads(line).get("run", {})
+        except (ValueError, AttributeError):
+            continue
+        if isinstance(row, dict) and row.get("id") and row.get("number") and row.get("target"):
+            return {key: row[key] for key in ("id", "number", "target")}
+    raise AssertionError("the real CLI returned no identifiable private run")
+
+
+def runs_page(prefix: str, before: int | None = None) -> dict:
+    # Use the installed Calcifer's ordinary authenticated API. Never save its bearer
+    # or a complete private response in the proof's artifacts.
+    holder = json.loads((Path.home() / ".cozy/calcifer/calcifer.lock.holder").read_text())
+    query = {"package": prefix, "limit": 1}
+    if before is not None:
+        query["before"] = before
+    request = urllib.request.Request(
+        f"http://{holder['address']}/v1/runs?{urllib.parse.urlencode(query)}",
+        headers={"Authorization": f"Bearer {holder['token']}"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as error:
+        raise AssertionError(f"the authenticated private history query returned HTTP {error.code}") from None
+    except urllib.error.URLError:
+        raise AssertionError("the authenticated private history query could not reach Calcifer") from None
+
+
+def target_history(cli: Path, output: Path, label: str, proof: dict, *, locked: bool = False) -> list[str]:
+    target = proof["target"]
+    # An actual partial function prefix, rather than an exact-target shortcut.
+    prefix = target[:-8]
+    listed = json.loads(command(cli, output, label, "run", "ls", "--all", "--package", prefix, "--limit", "0"))
+    rows = listed["runs"]
+    if locked:
+        assert not rows and listed["older"] == 0, "locked private target history remained visible through the CLI"
+        page = runs_page(prefix)
+        assert not page["runs"] and page["older"] == 0, "locked private target history remained visible through the API"
+        return []
+    ids = [row["id"] for row in rows]
+    assert set(proof["ids"]).issubset(ids), "authorized private target history lost an original run"
+    assert all(row["target"] == target for row in rows), "private prefix query returned an unrelated target"
+    assert len(ids) == len(set(ids)), "private target history duplicated a run"
+    assert [row["number"] for row in rows] == sorted((row["number"] for row in rows), reverse=True), "private target history is not newest first"
+    assert listed["older"] == 0, "the CLI did not finish its requested complete private history"
+    before = None
+    for index, expected in enumerate(rows):
+        page = runs_page(prefix, before)
+        assert len(page["runs"]) == 1 and page["runs"][0]["id"] == expected["id"], "private target cursor skipped or repeated a run"
+        assert page["runs"][0]["target"] == target, "private target cursor returned an unrelated run"
+        assert page["older"] == len(rows) - index - 1, "private target pagination counted unrelated or unreadable rows"
+        before = expected["number"]
+    page = runs_page(prefix, before)
+    assert not page["runs"] and page["older"] == 0, "private target pagination did not end"
+    (output / f"{label}-receipt.json").write_text(json.dumps({"prefix_filter": True, "cursor_pages": len(rows), "exact_older": True, "retained_run_ids": ids}, indent=2))
+    return ids
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project", required=True, type=Path)
@@ -105,6 +169,7 @@ def main() -> None:
     source_canary = f"XS160_SOURCE_{unique}"
     input_canary = f"XS160_INPUT_{unique}"
     payload_canary = f"XS160_PAYLOAD_{unique}"
+    target_canary = f"xs160_target_{unique}"
     folder = view / "private-execution-proof"
     folder.mkdir(exist_ok=True)
     script = folder / "probe.py"
@@ -129,7 +194,7 @@ class Answer(msgspec.Struct):
     text: str
     scratch_private: bool
 @app.entrypoint(accelerator=False)
-def probe(payload: Request, out: Outputs) -> Answer:
+def ''' + target_canary + '''(payload: Request, out: Outputs) -> Answer:
     content = payload.source.read_bytes() + b"\\n" + payload.text.encode() + b"\\n" + SOURCE.encode()
     with tempfile.NamedTemporaryFile(delete=False) as scratch:
         scratch.write(content)
@@ -142,6 +207,7 @@ def probe(payload: Request, out: Outputs) -> Answer:
     target.write_bytes(content)
     return Answer(out.save_file(target, media_type="text/plain"), payload.text, private)
 ''')
+    compile(script.read_text(), str(script), "exec")
     source = folder / "input.txt"
     source.write_text(input_canary)
     request = folder / "input.json"
@@ -156,7 +222,13 @@ def probe(payload: Request, out: Outputs) -> Answer:
     request.write_text(json.dumps({"text": payload_canary, "source": str(source), "fail": True}))
     failed = command(args.cli, args.out, "failure", "run", "-p", str(project), str(script), "--input", str(request), "--on", "local", fails=True)
     assert payload_canary.encode() in failed + (args.out / "failure.stderr").read_bytes(), "private failure did not expose its authorized detail to the caller"
-    markers = [value.encode() for value in (source_canary, input_canary, payload_canary)]
+    completed, failed_run = observed_run(run), observed_run(failed)
+    assert completed["target"].endswith(f"/{target_canary}") and failed_run["target"] == completed["target"], "authorized private target was not preserved"
+    marker = json.loads((view / ".vault-local-execution.json").read_text())["storage"]
+    proof = {"target": completed["target"], "function": target_canary, "ids": [completed["id"], failed_run["id"]], "project_id": marker["project_id"], "generation": marker["generation"]}
+    proof["ids"] = target_history(args.cli, args.out, "target-history", proof)
+    (folder / "target-proof.json").write_text(json.dumps(proof))
+    markers = [value.encode() for value in (source_canary, input_canary, payload_canary, target_canary)]
     files = [path for path in view.rglob("*") if path.is_file() and not path.is_symlink()]
     assert any(contains(path, markers) for path in files if ".vault-machine" in path.parts), "no protected machine journal/source/result was retained"
     store = Path(os.environ.get("TENSORFS_HOME", str(Path.home() / ".cache/tensorfs")))
@@ -165,7 +237,7 @@ def probe(payload: Request, out: Outputs) -> Answer:
     leaked, checked = scan(roots, exclusions, stamp, markers)
     (args.out / "scan.json").write_text(json.dumps({"checked_new_or_modified_files": checked, "leaked_paths": leaked}, indent=2))
     assert not leaked, "private test markers reached global plaintext storage; see scan.json"
-    (args.out / "receipt.json").write_text(json.dumps({"describe": True, "local_file_execution": True, "protected_scratch": True, "private_failure": True, "global_plaintext_scan": True, "synthetic_only": True}, indent=2))
+    (args.out / "receipt.json").write_text(json.dumps({"describe": True, "local_file_execution": True, "protected_scratch": True, "private_failure": True, "private_target_metadata": True, "target_filter_pagination": True, "global_plaintext_scan": True, "synthetic_only": True}, indent=2))
 
 
 if __name__ == "__main__":

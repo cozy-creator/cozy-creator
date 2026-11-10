@@ -18,7 +18,7 @@ import sqlite3
 import time
 import uuid
 
-from private_execution import command, scan
+from private_execution import command, observed_run, scan, target_history
 
 
 def installations(home: Path, project_id: str) -> set[tuple[str, str, str, str]]:
@@ -38,7 +38,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project", required=True, type=Path)
     parser.add_argument("--view", required=True, type=Path)
-    parser.add_argument("--passphrase-file", required=True, type=Path)
+    parser.add_argument("--passphrase-file", type=Path)
+    parser.add_argument("--verify-rekey", action="store_true", help="verify retained target history on the caller's already-rotated mount; execute no work")
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--cli", type=Path, default=Path.home() / ".cozy/bin/cozy")
     args = parser.parse_args()
@@ -51,6 +52,23 @@ def main() -> None:
     project_id = marker["storage"]["project_id"]
     folder = view / "private-execution-proof"
     script, request = folder / "probe.py", folder / "input.json"
+    proof = json.loads((folder / "target-proof.json").read_text())
+    assert proof["project_id"] == project_id, "private target proof belongs to another project"
+    if args.verify_rekey:
+        assert marker["storage"]["generation"] > proof["generation"], "the target proof needs an actually rotated project generation"
+        assert proof["function"].encode() in script.read_bytes(), "rekey changed the private source's target"
+        ids = target_history(args.cli, args.out, "rekey-target-history", proof)
+        assert ids == proof["ids"], "rekey changed private target history or generated work again"
+        # The new keybag predates its verified copy and global journal rewrap.
+        stamp = max(0, (args.project / "project.vault.keys.json").stat().st_mtime_ns - 2_000_000_000)
+        store = Path(os.environ.get("TENSORFS_HOME", str(Path.home() / ".cache/tensorfs")))
+        leaked, checked = scan([home, store, args.project], [home / "calcifer/vaults", args.out.resolve()], stamp, [proof["function"].encode()])
+        (args.out / "scan.json").write_text(json.dumps({"checked_new_or_modified_files": checked, "leaked_paths": leaked}, indent=2))
+        assert not leaked, "rekey exposed private target metadata in global storage"
+        (args.out / "receipt.json").write_text(json.dumps({"new_generation": True, "target_history_retained": True, "target_filter_pagination": True, "no_reexecution": True, "global_target_scan": True, "synthetic_only": True}, indent=2))
+        return
+    if args.passphrase_file is None:
+        parser.error("--passphrase-file is required for the actual lock/remount proof")
     source_bytes = script.read_bytes()
     input_bytes = (folder / "input.txt").read_bytes()
     source_canary = re.search(rb"XS160_SOURCE_[0-9a-f]{32}", source_bytes)
@@ -67,6 +85,7 @@ def main() -> None:
 
     locked = json.loads(command(args.cli, args.out, "lock", "project", "-p", str(args.project), "lock"))
     assert locked["vault"]["state"] == "locked", "fixture must close its first mounted view"
+    target_history(args.cli, args.out, "locked-target-history", proof, locked=True)
     unlocked = json.loads(command(args.cli, args.out, "unlock", "project", "-p", str(args.project), "unlock",
                                   "--passphrase-file", str(args.passphrase_file), "--idle", "0"))
     after_view = Path(unlocked["vault"]["view"]).resolve(strict=True)
@@ -84,11 +103,16 @@ def main() -> None:
                      "--input", str(request), "--on", "local")
     assert payload_canary.encode() in result, "remounted private call did not return its fresh input"
     assert b'"scratch_private":true' in result.replace(b" ", b""), "remounted execution escaped protected storage"
+    remounted = observed_run(result)
+    assert remounted["target"] == proof["target"], "remount changed the authorized private target"
+    proof["ids"].append(remounted["id"])
+    proof["ids"] = target_history(args.cli, args.out, "remount-target-history", proof)
+    (folder / "target-proof.json").write_text(json.dumps(proof))
     after = installations(home, project_id)
     (args.out / "bindings-after.json").write_text(json.dumps(snapshot(after), indent=2))
     assert before.issubset(after), "remount rewrote/deleted historical installation bindings"
     assert len(after) > len(before), "the new physical mount did not receive its own installation binding"
-    markers = [source_canary.group(), payload_canary.encode()]
+    markers = [source_canary.group(), payload_canary.encode(), proof["function"].encode()]
     store = Path(os.environ.get("TENSORFS_HOME", str(Path.home() / ".cache/tensorfs")))
     leaked, checked = scan([home, store], [home / "calcifer/vaults", args.out.resolve()], stamp, markers)
     (args.out / "scan.json").write_text(json.dumps({"checked_new_or_modified_files": checked, "leaked_paths": leaked}, indent=2))
@@ -97,6 +121,7 @@ def main() -> None:
         "same_project": True, "same_source": True, "changed_physical_view": True,
         "new_binding": True, "historical_bindings_retained": True,
         "actual_private_execution": True, "global_plaintext_scan": True,
+        "target_hidden_when_locked": True, "target_filter_pagination": True,
         "synthetic_only": True,
     }, indent=2))
 
