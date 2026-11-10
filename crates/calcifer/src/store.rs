@@ -550,8 +550,17 @@ impl Store {
 
     /// Rewrite every retained protected payload using the owner's verified replacement generation.
     pub(crate) fn rekey_project_journal(&self, root: &Path, old: &project_vault::ProjectSecret, new: &project_vault::Keybag) -> Result<()> {
-        self.rewrite_project_journal(root, |context, value, _| {
-            vault::rekey_payload(context, value, old, new).map_err(private_error)
+        self.rewrite_project_journal(root, |context, value, protected| {
+            if protected {
+                return vault::rekey_payload(context, value, old, new).map_err(private_error);
+            }
+            // A newly protected slot (target on an older sealed-spec row) can still be
+            // plaintext. Put it in the current protected view rather than carrying it on.
+            let sealed = seal_at(root, context, value)?;
+            if !vault::is_payload(&sealed) {
+                return Err(StoreError::Protected("project encryption is not ready for journal rekey".into()));
+            }
+            Ok(sealed)
         })
         .map(drop)
     }
@@ -584,10 +593,14 @@ impl Store {
                         }
                     }
                 }
-                for column in ["warnings", "inputs", "reason_code", "reason"] {
+                for column in ["target", "warnings", "inputs", "reason_code", "reason"] {
                     let value: Option<String> =
                         tx.query_row(&format!("SELECT {column} FROM runs WHERE id = ?1"), [&id], |row| row.get(0))?;
                     if let Some(value) = value {
+                        // Earlier private records already sealed their spec, before target
+                        // became a private slot. Its own envelope decides whether to retain
+                        // or seal it; the spec's marker alone is not sufficient.
+                        let protected = protected && (column != "target" || vault::is_payload(value.as_bytes()));
                         let sealed = as_text(transform(&run_context(&id, column), value.as_bytes(), protected)?)?;
                         if sealed != value {
                             tx.execute(&format!("UPDATE runs SET {column} = ?2 WHERE id = ?1"), params![id, sealed])?;
@@ -1109,7 +1122,7 @@ impl Store {
                     digest,
                     new.hub.as_deref().unwrap_or_default(),
                     new.kind.as_str(),
-                    new.target,
+                    as_text(seal_at(&new.out_dir, &run_context(new.id.as_str(), "target"), new.target.as_bytes())?)?,
                     machine,
                     new.pinned,
                     seal_at(
@@ -1183,6 +1196,9 @@ impl Store {
             AND (?4 IS NULL OR machine = ?4)
             AND (?5 IS NULL OR out_dir = ?5)";
         self.read(|conn| {
+            // Keep classification, counts and the combined page on one read snapshot.
+            let snapshot = conn.unchecked_transaction()?;
+            let conn = &snapshot;
             let status = filter.status.map(|status| match status {
                 Status::Queued => "queued",
                 Status::InProgress => "in_progress",
@@ -1191,6 +1207,14 @@ impl Store {
                 Status::Canceled => "canceled",
             });
             let before = filter.before.map_or(i64::MAX, |n| n as i64);
+            let private: bool = conn.query_row(
+                &format!("SELECT EXISTS(SELECT 1 {RUN_LIST_SCOPE} AND {PRIVATE_RUN_TARGET})"),
+                params![before, status, filter.machine, filter.out_dir, vault::PAYLOAD_PREFIX.len() as i64, vault::PAYLOAD_PREFIX],
+                |row| row.get(0),
+            )?;
+            if private {
+                return runs_with_private_targets(conn, filter, before, status);
+            }
             let matching = params![before, status, filter.target, filter.machine, filter.out_dir];
             let total: i64 = conn.query_row(&format!("SELECT COUNT(*) {MATCHING}"), matching, |r| r.get(0))?;
             let mut statement = conn.prepare(&format!("SELECT {RUN_COLUMNS} {MATCHING} ORDER BY number DESC LIMIT ?6"))?;
@@ -1946,8 +1970,82 @@ const RUN_COLUMNS: &str = "id, number, kind, target, hub, machine, pinned, spec,
     cursor, machine_state, status, reason_code, reason, state_seq, created_at, accepted_at, settled_at, warnings,
     inputs, outcome, wants, agreed, started_at";
 
+const RUN_LIST_SCOPE: &str = "FROM runs WHERE number < ?1
+    AND (?2 IS NULL OR CASE state WHEN 'accepted' THEN 'in_progress' WHEN 'settled' THEN status ELSE 'queued' END = ?2)
+    AND (?3 IS NULL OR machine = ?3) AND (?4 IS NULL OR out_dir = ?4)";
+// Spec also classifies the old sealed-spec/plaintext-target representation. Otherwise a
+// locked legacy row could reveal its target through prefix-filter membership.
+const PRIVATE_RUN_TARGET: &str = "(substr(CAST(target AS BLOB), 1, ?5) = ?6 OR substr(spec, 1, ?5) = ?6)";
+
+/// Only private target slots need opening to choose a page. Ordinary history keeps its
+/// SQL prefix/count/limit path; full specs are decoded only for the requested merged page.
+fn runs_with_private_targets(conn: &Connection, filter: &RunFilter, before: i64, status: Option<&str>) -> Result<(Vec<RunRow>, u64, Vec<String>)> {
+    let prefix = vault::PAYLOAD_PREFIX;
+    let length = prefix.len() as i64;
+    let limit = filter.limit.min(i64::MAX as u64) as i64;
+    let public = format!("{RUN_LIST_SCOPE} AND NOT {PRIVATE_RUN_TARGET}
+        AND target NOT LIKE '%/project-adapter-%' AND (?7 IS NULL OR substr(target, 1, length(?7)) = ?7)");
+    let public_count: u64 = conn.query_row(
+        &format!("SELECT COUNT(*) {public}"),
+        params![before, status, filter.machine, filter.out_dir, length, prefix, filter.target],
+        |row| Ok(row.get::<_, i64>(0)? as u64),
+    )?;
+    let mut candidates: Vec<(u64, String)> = {
+        let mut statement = conn.prepare(&format!("SELECT number, id {public} ORDER BY number DESC LIMIT ?8"))?;
+        statement.query_map(params![before, status, filter.machine, filter.out_dir, length, prefix, filter.target, limit], |row| {
+            Ok((row.get::<_, i64>(0)? as u64, row.get(1)?))
+        })?.collect::<rusqlite::Result<_>>()?
+    };
+    let mut private_count = 0u64;
+    let mut private_page = 0i64;
+    let mut statement = conn.prepare(&format!(
+        "SELECT number, id, target, CASE WHEN substr(CAST(target AS BLOB), 1, ?5) = ?6 THEN NULL ELSE spec END
+         {RUN_LIST_SCOPE} AND {PRIVATE_RUN_TARGET} ORDER BY number DESC"
+    ))?;
+    let targets = statement.query_map(params![before, status, filter.machine, filter.out_dir, length, prefix], |row| {
+        Ok((row.get::<_, i64>(0)? as u64, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, Option<Vec<u8>>>(3)?))
+    })?;
+    for target in targets {
+        let (number, id, target, legacy_spec) = target?;
+        let opened = (|| {
+            if let Some(spec) = legacy_spec {
+                // A legacy target is plaintext, but it still belongs to the protected spec.
+                // Do not use its bytes for matching unless that journal is accessible.
+                open_bytes(&run_context(&id, "spec"), &spec)?;
+            }
+            open_text(&run_context(&id, "target"), &target)
+        })();
+        let matching = match opened {
+            Ok(target) => !target.to_ascii_lowercase().contains("/project-adapter-") && filter.target.as_ref().is_none_or(|prefix| target.starts_with(prefix)),
+            // An unfiltered list may report opaque unreadable run numbers, as before. A
+            // target-filtered list must reveal no matching/nonmatching fact while locked.
+            Err(_) => filter.target.is_none(),
+        };
+        if matching {
+            private_count += 1;
+            if private_page < limit {
+                candidates.push((number, id));
+                private_page += 1;
+            }
+        }
+    }
+    candidates.sort_unstable_by_key(|(number, _)| std::cmp::Reverse(*number));
+    candidates.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
+    let older = public_count.saturating_add(private_count).saturating_sub(candidates.len() as u64);
+    let (mut rows, mut unreadable) = (Vec::new(), Vec::new());
+    for (number, id) in candidates {
+        match run_in(conn, &id) {
+            Ok(Some(row)) => rows.push(row),
+            Ok(None) => return Err(corrupt("a listed run vanished from its read snapshot")),
+            Err(error) => unreadable.push(format!("run {number}: {error}")),
+        }
+    }
+    Ok((rows, older, unreadable))
+}
+
 fn run_row(r: &Row) -> rusqlite::Result<Result<RunRow>> {
     let id: String = r.get(0)?;
+    let target: String = r.get(3)?;
     let kind: String = r.get(2)?;
     let hub: String = r.get(4)?;
     let state: String = r.get(9)?;
@@ -1964,6 +2062,7 @@ fn run_row(r: &Row) -> rusqlite::Result<Result<RunRow>> {
     Ok((|| {
         let out_dir = match vault::payload_root(&spec).map_err(private_error)? { Some(root) => crate::project::landing(&root), None => PathBuf::from(out_dir) };
         let spec = open_bytes(&run_context(&id, "spec"), &spec)?;
+        let target = open_text(&run_context(&id, "target"), &target)?;
         let warnings = open_text(&run_context(&id, "warnings"), &warnings)?;
         let inputs = open_text(&run_context(&id, "inputs"), &inputs)?;
         let reason_code = optional_text(&run_context(&id, "reason_code"), reason_code)?;
@@ -1973,7 +2072,7 @@ fn run_row(r: &Row) -> rusqlite::Result<Result<RunRow>> {
             id: RunId::try_from(id).map_err(|_| corrupt("a run id"))?,
             number: r.get::<_, i64>(1)? as u64,
             kind: Kind::parse(&kind).ok_or_else(|| corrupt("a run kind"))?,
-            target: r.get(3)?,
+            target,
             // One spelling, whatever an older Calcifer recorded (`https://tensorhub.com:443`).
             hub: (!hub.is_empty())
                 .then(|| Origin::parse(&hub))
