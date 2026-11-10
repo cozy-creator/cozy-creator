@@ -221,12 +221,14 @@ def get(url: str, rng: tuple[int, int] | None = None) -> bytes:
     headers = {"Authorization": f"Bearer {TOKEN}"} if TOKEN else {}
     if rng:
         headers["Range"] = f"bytes={rng[0]}-{rng[1] - 1}"
+    err: object = None
     for attempt in range(5):
         try:
             with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=300) as r:
                 body = r.read()
             if rng is None or len(body) == rng[1] - rng[0]:
                 return body
+            err = f"read {len(body)} of {rng[1] - rng[0]} bytes"
         except Exception as e:  # noqa: BLE001
             err = e
     sys.exit(f"{url}: {err}")
