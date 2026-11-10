@@ -281,14 +281,11 @@ e2e/imports/probe.py: [no-untyped-def] Function is missing a type annotation for
 release-gate/sessions/fixtures/hub-outage/ci_hub_outage/__init__.py: [arg-type] Argument "model" to "piece" has incompatible type "ModelChoice"; expected "Weights[Any]"
 release-gate/sessions/fixtures/hub-outage/ci_hub_outage/__init__.py: [misc] Type of decorated function contains type "Any" ("def (*, model: Weights[Any]) -> PendingCall[Read]")
 release-gate/sessions/fixtures/hub-outage/ci_hub_outage/__init__.py: [type-arg] Missing type arguments for generic type "Weights"
-release-gate/sessions/fixtures/pause-twice/ci_pause_twice/__init__.py: [arg-type] Argument "seed" to "GenerateInput" has incompatible type "int"; expected "Seed | None"
 release-gate/sessions/fixtures/pause-twice/ci_pause_twice/__init__.py: [call-arg] Missing named argument "adj" for "paint"
 release-gate/sessions/fixtures/pause-twice/ci_pause_twice/__init__.py: [call-arg] Missing named argument "model" for "paint"
 release-gate/sessions/fixtures/pause-twice/ci_pause_twice/__init__.py: [call-arg] Missing named argument "out" for "paint"
 release-gate/sessions/fixtures/pause-twice/ci_pause_twice/__init__.py: [call-arg] Missing named argument "tel" for "paint"
 release-gate/sessions/fixtures/pause-twice/ci_pause_twice/__init__.py: [return-value] Incompatible return value type (got "object", expected "ImageResult")
-release-gate/sessions/fixtures/xs132-pipeline/xs132_pipeline/__init__.py: [call-arg] Unexpected keyword argument "image" for "remove_background"
-release-gate/sessions/fixtures/xs132-pipeline/xs132_pipeline/__init__.py: [misc] Incompatible types in "await" (actual type "RemoveBackgroundOutput", expected type "Awaitable[Any]")
 release-gate/suites/execution/child-lora-stacks/ci_child_lora_stacks/__init__.py: [arg-type] Argument "model" to "paint" has incompatible type "ModelChoice | None"; expected "SdxlModel"
 release-gate/suites/execution/child-lora-stacks/ci_child_lora_stacks/__init__.py: [arg-type] Argument "seed" to "GenerateInput" has incompatible type "int"; expected "Seed | None"
 release-gate/suites/execution/child-lora-stacks/ci_child_lora_stacks/__init__.py: [call-arg] Missing named argument "adj" for "paint"
