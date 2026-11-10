@@ -19,11 +19,13 @@ Kind = Literal['image', 'video', 'audio']
 IMAGE, VIDEO, AUDIO = ('.png', '.webp', '.jpg', '.jpeg'), ('.mp4', '.webm', '.mov'), ('.wav', '.flac', '.mp3', '.ogg')
 # A picture or frame under this luma deviation is flat: a failed or non-finite decode reads back one colour.
 FLAT = 2.0
-# The largest change of a frame's structure (brightness removed) between the 1/16-video windows either side of a frame,
-# over the video's median change (sp-speed's frame check). 62 good videos on disk (v1, 0.21.x, 0.22.1; H3 with and without
-# references, capped and not, SeedVR2): 1.1-4.4. 0.22.1's scrambled two-GPU runs 43973, 43975: 20.5, 23.5. The least SSIM
-# of consecutive frames, reported, does not separate them: 0.70-0.99 good, 0.54 and 0.65 broken.
-JUMP = 10.0
+# The largest change of local structure (each 16 px block against its own mean and spread) between the 1/16-video windows
+# either side of a frame, over the video's median change. On disk (11-10): 62 good videos (v1, 0.21.x, 0.22.1; H3 with and
+# without references, capped and not, SeedVR2) 1.06-2.24, 21 more 0.22.1 sp-speed/spmd outputs 1.10-2.23, the two lighthouse
+# beam flashes (44006, gaara's 44051) 2.98 and 2.85; 0.22.1's scrambled two-GPU runs 43975, 43973: 7.02 and 11.14. With the
+# frame's brightness removed only as a whole (before 11-10) the flashes read 10.0 and 11.5 against 20.5 and 23.5 broken. The
+# least SSIM of consecutive frames, reported, does not separate them: 0.70-0.99 good, 0.54 and 0.65 broken.
+JUMP = 4.5
 # Against the same request and seed from another build, pod or GPU count. Pictures: layout SSIM at 128x128 grey, recorded
 # 0.99-1.00 across v1/0.21.1/0.21.2/0.22.1 and three pods, 0.35-0.70 for another seed. Video: mean absolute difference
 # (grey 0..1, 168x96) of each eighth of the video, 0.042-0.046 same seed (0.22.1 one GPU against 0.21.1 two GPUs),
@@ -77,13 +79,16 @@ def envelope(x: npt.NDArray[np.float32], window: int = 400) -> npt.NDArray[np.fl
     return np.abs(x[:n * window]).astype(np.float64).reshape(n, window).mean(axis=1) if n else np.zeros(0)
 
 
-def jump(f: frames.Frames) -> tuple[float, int]:
-    """The largest structure change over the median one, and the frame it falls at."""
-    g = f - f.mean((1, 2), keepdims=True)
-    g /= g.std((1, 2), keepdims=True) + 1e-6
-    w = max(4, len(g) // 16)
-    change = np.array([np.abs(g[t:t + w].mean(0) - g[t - w:t].mean(0)).mean() for t in range(w, len(g) - w + 1)])
-    return round(float(change.max() / max(float(np.median(change)), 1e-9)), 2), int(change.argmax()) + w
+def jump(f: frames.Frames, block: int = 16) -> tuple[float, int]:
+    """The largest change of local structure over the median one, and the frame it falls at. Each block of each frame is
+    held against its own mean and spread first, so light flooding part of the frame (a lighthouse beam into the camera)
+    is not a break by itself, while a frame cut into shifted tiles (43975, 43973) is. Changes are of window means."""
+    t, h, w = f.shape
+    b = f[:, :h // block * block, :w // block * block].reshape(t, h // block, block, w // block, block)
+    g = ((b - b.mean((2, 4), keepdims=True)) / (b.std((2, 4), keepdims=True) + 2.0)).reshape(t, h // block * block, -1)
+    n = max(4, t // 16)
+    change = np.array([np.abs(g[i:i + n].mean(0) - g[i - n:i].mean(0)).mean() for i in range(n, t - n + 1)])
+    return round(float(change.max() / max(float(np.median(change)), 1e-9)), 2), int(change.argmax()) + n
 
 
 def alone(path: str) -> Look:
@@ -143,7 +148,7 @@ def faults(now: Look, was: Look | None = None) -> list[str]:
             why.append(f"{now.get('width')}x{now.get('height')}, reference {was.get('width')}x{was.get('height')}")
     if now['kind'] == 'video':
         if now.get('jump', 0.0) >= JUMP:
-            why.append(f"its structure jumps at frame {now.get('jump_at')} ({now.get('jump')}x the median change, at most {JUMP:.0f}x)")
+            why.append(f"its structure jumps at frame {now.get('jump_at')} ({now.get('jump')}x the median change, at most {JUMP:g}x)")
         if was and now.get('frames') != was.get('frames'):
             why.append(f"{now.get('frames')} frames, reference {was.get('frames')}")
     if now['kind'] in ('video', 'audio') and was and was.get('audio_s'):
