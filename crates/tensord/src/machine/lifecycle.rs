@@ -376,40 +376,66 @@ impl Lifecycle {
     }
 }
 
-/// Keeps the Hub's authorized keys: asked again at half the lease it names. A rental not yet ready
-/// is asked again after 1 s, doubling to 5 s (the Hub reads a pod's readiness every 5 s). While the
-/// Hub cannot answer the keys stay as they were, and it is asked again when it said, else after
-/// 1 s, doubling to a minute; so while it denies this attempt. A rental the Hub says has ended is
-/// asked no more: nothing it says will change that, and it holds no key.
-pub(crate) async fn keep_authority(hub: Arc<Hub>, keys: Keys) {
+/// The Hub's last answer of keys, kept under the machine's state (`lease.json`, 0600) so a
+/// restarted machine admits its renter at once; the Hub's next answer replaces it.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Lease {
+    keys: Vec<String>,
+}
+
+/// The keys of the kept lease; none when there is none.
+pub(crate) fn kept_lease(state: &std::path::Path) -> Vec<ed25519_dalek::VerifyingKey> {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    let Ok(raw) = std::fs::read(state.join("lease.json")) else { return vec![] };
+    let Ok(lease) = serde_json::from_slice::<Lease>(&raw) else { return vec![] };
+    (lease.keys.iter())
+        .filter_map(|key| URL_SAFE_NO_PAD.decode(key).ok()?.try_into().ok())
+        .filter_map(|raw: [u8; 32]| ed25519_dalek::VerifyingKey::from_bytes(&raw).ok())
+        .collect()
+}
+
+fn keep_lease(state: &std::path::Path, keys: &[ed25519_dalek::VerifyingKey]) {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    let lease = Lease { keys: keys.iter().map(|key| URL_SAFE_NO_PAD.encode(key.to_bytes())).collect() };
+    let written = serde_json::to_vec(&lease)
+        .map_err(io::Error::from)
+        .and_then(|raw| super::identity::write_atomic(&state.join("lease.json"), &raw, 0o600));
+    if let Err(error) = written {
+        tracing::warn!("keeping the Hub's lease: {error}");
+    }
+}
+
+/// Keeps the Hub's authorized keys: asked again at half the lease it names. A rental the Hub has
+/// not reached yet is asked again each second: the Hub makes it ready once its pinned machine has
+/// read them. While the Hub cannot answer the keys stay as they were, and it is asked again when it
+/// said, else after 1 s, doubling to a minute; so while it denies this attempt. A rental the Hub
+/// says has ended is asked no more: nothing it says will change that, and it holds no key.
+pub(crate) async fn keep_authority(hub: Arc<Hub>, keys: Keys, state: PathBuf) {
     const FIRST: Duration = Duration::from_secs(1);
-    const NOT_READY: Duration = Duration::from_secs(5);
     const MOST: Duration = Duration::from_secs(60);
     let mut unanswered = FIRST;
     loop {
         let delay = match hub.authorized_keys().await {
             Ok((current, lease)) => {
+                keep_lease(&state, &current);
                 keys.renew(current);
                 unanswered = FIRST;
                 lease / 2
             }
             Err(Refusal::Ended) => {
                 tracing::error!("the Hub says this rental has ended; no new control is admitted, and its keys are asked for no more");
+                keep_lease(&state, &[]);
                 keys.revoke();
                 return;
             }
-            Err(Refusal::Denied) => {
-                tracing::error!(
-                    "the Hub denied rental authority; no new control is admitted"
-                );
+            Err(Refusal::Denied(why)) => {
+                tracing::error!("the Hub denied rental authority ({why}); no new control is admitted");
+                keep_lease(&state, &[]);
                 keys.revoke();
                 unanswered = (unanswered * 2).min(MOST);
                 unanswered
             }
-            Err(Refusal::NotReady) => {
-                unanswered = (unanswered * 2).min(NOT_READY);
-                unanswered
-            }
+            Err(Refusal::NotReady) => FIRST,
             Err(Refusal::Transport(_, wait)) => {
                 unanswered = (unanswered * 2).min(MOST);
                 wait.unwrap_or(unanswered)

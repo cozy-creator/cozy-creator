@@ -858,7 +858,7 @@ pub enum Basis {
 // ---- Status ---------------------------------------------------------------------------------
 
 /// The machine's picture. Without a machine-scope cap, `GET /v1/status` answers identity,
-/// version and the sealed readiness `receipt` only. With one it answers all of it,
+/// version and the readiness `receipt` only. With one it answers all of it,
 /// and as SSE (`Accept: text/event-stream`) sends the whole frame again whenever it changes. An
 /// open stream is not activity.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -875,7 +875,8 @@ pub struct StatusFrame {
     /// The RFC 7638 thumbprint of this TensorD's workload key, made at its start and held in memory
     /// only: what its runs' capabilities bind (cl-675).
     pub workload_key: String,
-    /// The sealed readiness envelope (base64); empty until sealed.
+    /// This boot's readiness facts (JSON, base64), which a Hub binds to the leaf it pinned at the
+    /// provider's address; empty until measured.
     #[serde(with = "base64_bytes")]
     pub receipt: Vec<u8>,
     /// An idle rental's release, 15 min after its last job; 0: none (a job is queued or running,
