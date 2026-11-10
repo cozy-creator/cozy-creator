@@ -7,9 +7,11 @@
 #![deny(unreachable_pub)]
 
 use sha2::{Digest, Sha256};
+#[cfg(unix)]
+use std::fs::File;
 use std::{
     ffi::OsString,
-    fs::{self, File, OpenOptions},
+    fs::{self, OpenOptions},
     io::{self, Read, Write},
     path::{Path, PathBuf},
     process::{Child, ChildStdin, Command, ExitStatus, Stdio},
@@ -26,6 +28,45 @@ pub const PROVIDER_VERSION: &str = "2.0.0";
 const ROLE: &str = "__cozy_vault_provider";
 const ARCHIVE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/securefs.zip"));
 const LICENSE: &str = include_str!("../helper/LICENSE.securefs.md");
+const NOTICES: &[(&str, &str)] = &[
+    ("NOTICE.md", include_str!("../helper/NOTICE.md")),
+    (
+        "licenses/argon2.txt",
+        include_str!("../helper/licenses/argon2.txt"),
+    ),
+    (
+        "licenses/cryptopp.txt",
+        include_str!("../helper/licenses/cryptopp.txt"),
+    ),
+    (
+        "licenses/abseil.txt",
+        include_str!("../helper/licenses/abseil.txt"),
+    ),
+    (
+        "licenses/uni-algo.txt",
+        include_str!("../helper/licenses/uni-algo.txt"),
+    ),
+    (
+        "licenses/protobuf.txt",
+        include_str!("../helper/licenses/protobuf.txt"),
+    ),
+    (
+        "licenses/mimalloc.txt",
+        include_str!("../helper/licenses/mimalloc.txt"),
+    ),
+    (
+        "licenses/doctest.txt",
+        include_str!("../helper/licenses/doctest.txt"),
+    ),
+    (
+        "licenses/tclap.txt",
+        include_str!("../helper/licenses/tclap.txt"),
+    ),
+    (
+        "licenses/sources.json",
+        include_str!("../helper/licenses/sources.json"),
+    ),
+];
 const STARTUP: Duration = Duration::from_secs(60);
 
 #[derive(Debug, thiserror::Error)]
@@ -71,8 +112,12 @@ fn io_error(operation: &'static str) -> impl FnOnce(io::Error) -> Error {
 /// The driver is an explicit prerequisite only for encrypted projects.
 pub fn requirements() -> &'static str {
     match std::env::consts::OS {
-        "linux" => "FUSE (/dev/fuse and fusermount3 or fusermount)",
-        "macos" => "macFUSE (https://macfuse.github.io/)",
+        "linux" => {
+            "FUSE2 (/dev/fuse and fusermount); the bundled provider also requires glibc 2.34 or newer"
+        }
+        "macos" => {
+            "macOS 15.4 or newer and macFUSE 5.5 or newer with its FSKit extension enabled (https://macfuse.github.io/)"
+        }
         "windows" => "WinFsp and the Microsoft Visual C++ x64 runtime",
         _ => "a supported encrypted filesystem driver",
     }
@@ -127,6 +172,10 @@ impl Provider {
                 LICENSE.as_bytes(),
                 false,
             )?;
+            platform::durable::private_dir(&directory.join("licenses"))?;
+            for (name, text) in NOTICES {
+                install(&directory.join(name), text.as_bytes(), false)?;
+            }
             return Self::from_path(executable);
         }
         let name = if cfg!(windows) {
@@ -234,6 +283,12 @@ impl Provider {
     ) -> Result<Mounted> {
         validate_secret(secret)?;
         self.check_driver()?;
+        #[cfg(target_os = "macos")]
+        if options.read_only && macos_version() < (26, 4) {
+            return Err(Error::Invalid(
+                "read-only encrypted views with FSKit require macOS 26.4 or newer",
+            ));
+        }
         if !backing.join(".config.pb").is_file() {
             return Err(Error::Invalid(
                 "the encrypted backing storage has no securefs configuration",
@@ -304,17 +359,22 @@ impl Provider {
     }
 
     pub fn is_mounted(&self, view: &Path) -> Result<bool> {
-        let status = self
-            .command("ismount")
-            .arg(helper_view(view))
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map_err(io_error("read encrypted filesystem status"))?;
-        match status.code() {
-            Some(0) => Ok(true),
-            Some(1) => Ok(false),
-            _ => Err(self.failure("ismount", status)),
+        #[cfg(target_os = "linux")]
+        return linux_mounted(view);
+        #[cfg(not(target_os = "linux"))]
+        {
+            let status = self
+                .command("ismount")
+                .arg(helper_view(view))
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map_err(io_error("read encrypted filesystem status"))?;
+            match status.code() {
+                Some(0) => Ok(true),
+                Some(1) => Ok(false),
+                _ => Err(self.failure("ismount", status)),
+            }
         }
     }
 
@@ -333,6 +393,11 @@ impl Provider {
     }
 
     fn unmount(&self, view: &Path) -> Result<()> {
+        // securefs's unmount may detach a live Unix mount. A normal lock must instead let the
+        // kernel refuse open handles, leaving the provider owned and its writes intact.
+        #[cfg(unix)]
+        let status = unix_unmount(view, false)?;
+        #[cfg(not(unix))]
         let status = self
             .command("unmount")
             .arg(helper_view(view))
@@ -349,6 +414,17 @@ impl Provider {
         Ok(())
     }
 
+    fn cleanup_dead(&self, view: &Path) {
+        #[cfg(unix)]
+        if self.is_mounted(view).unwrap_or(false) {
+            // Only the supervisor calls this after waiting for the provider process to exit.
+            // No key-holding service remains; detach an inaccessible stale kernel mount.
+            let _ = unix_unmount(view, true);
+        }
+        #[cfg(not(unix))]
+        let _ = self.unmount(view);
+    }
+
     fn check_driver(&self) -> Result<()> {
         #[cfg(target_os = "linux")]
         if OpenOptions::new()
@@ -360,8 +436,10 @@ impl Provider {
             return Err(Error::DriverMissing(requirements()));
         }
         #[cfg(target_os = "macos")]
-        if !Path::new("/Library/Filesystems/macfuse.fs").exists()
-            && !Path::new("/Library/Filesystems/osxfuse.fs").exists()
+        if macos_version() < (15, 4)
+            || (!Path::new("/Library/Filesystems/macfuse.fs").exists()
+                && !Path::new("/Library/Filesystems/osxfuse.fs").exists())
+            || macfuse_version() < (5, 5)
         {
             return Err(Error::DriverMissing(requirements()));
         }
@@ -500,6 +578,9 @@ fn supervise(arguments: &[OsString]) -> Result<()> {
     }
     validate_secret(&secret[..43])?;
     let mut command = provider.command("mount");
+    // FSKit avoids requiring Apple Silicon users to weaken boot policy for a kernel extension.
+    #[cfg(target_os = "macos")]
+    command.args(["-o", "backend=fskit"]);
     let idle = number(6)?;
     if idle > 0 {
         command.arg("--max-idle-seconds").arg(idle.to_string());
@@ -554,7 +635,7 @@ fn supervise(arguments: &[OsString]) -> Result<()> {
             // provider makes further reads fail and its key disappear. The underlay is sealed.
             let _ = child.0.kill();
             let _ = child.0.wait();
-            let _ = provider.unmount(&view);
+            provider.cleanup_dead(&view);
             return Ok(());
         }
     }
@@ -586,6 +667,92 @@ fn clean_command(program: &Path) -> Command {
     }
     command.env("LC_ALL", "C");
     command
+}
+
+#[cfg(target_os = "linux")]
+fn linux_mounted(view: &Path) -> Result<bool> {
+    use std::os::unix::ffi::OsStrExt;
+    // Canonicalize only the parent: probing the mounted root can issue FUSE operations and
+    // accidentally renew its idle timeout. The parent remains the private ordinary directory.
+    let view = view
+        .parent()
+        .and_then(|parent| fs::canonicalize(parent).ok())
+        .zip(view.file_name())
+        .map_or_else(|| view.to_path_buf(), |(parent, name)| parent.join(name));
+    let table = fs::read("/proc/self/mountinfo").map_err(io_error("read kernel mount state"))?;
+    for line in table.split(|byte| *byte == b'\n') {
+        let fields: Vec<_> = line.split(|byte| *byte == b' ').collect();
+        let Some(separator) = fields.iter().position(|field| *field == b"-") else {
+            continue;
+        };
+        if fields.get(separator + 1) != Some(&b"fuse.securefs".as_slice()) {
+            continue;
+        }
+        let Some(encoded) = fields.get(4) else {
+            continue;
+        };
+        let mut decoded = Vec::new();
+        let mut at = 0;
+        while at < encoded.len() {
+            if encoded[at] == b'\\'
+                && at + 3 < encoded.len()
+                && encoded[at + 1..at + 4]
+                    .iter()
+                    .all(|byte| (b'0'..=b'7').contains(byte))
+            {
+                decoded.push(
+                    (encoded[at + 1] - b'0') * 64 + (encoded[at + 2] - b'0') * 8 + encoded[at + 3]
+                        - b'0',
+                );
+                at += 4;
+            } else {
+                decoded.push(encoded[at]);
+                at += 1;
+            }
+        }
+        if decoded == view.as_os_str().as_bytes() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+#[cfg(unix)]
+fn unix_unmount(view: &Path, dead_provider: bool) -> Result<ExitStatus> {
+    #[cfg(target_os = "linux")]
+    {
+        for program in ["fusermount3", "fusermount"] {
+            let mut command = clean_command(Path::new(program));
+            command.arg("-u");
+            if dead_provider {
+                command.arg("-z");
+            }
+            match command
+                .arg(view)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+            {
+                Ok(status) => return Ok(status),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(io_error("unmount encrypted filesystem")(error)),
+            }
+        }
+        Err(Error::DriverMissing(requirements()))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let mut command = clean_command(Path::new("/sbin/umount"));
+        if dead_provider {
+            command.arg("-f");
+        }
+        command
+            .arg(view)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map_err(io_error("unmount encrypted filesystem"))
+    }
 }
 
 fn validate_secret(secret: &[u8]) -> Result<()> {
@@ -624,6 +791,44 @@ fn helper_view(view: &Path) -> OsString {
     {
         view.as_os_str().to_owned()
     }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_version() -> (u64, u64) {
+    static VERSION: std::sync::OnceLock<(u64, u64)> = std::sync::OnceLock::new();
+    *VERSION.get_or_init(|| {
+        let Ok(output) = Command::new("/usr/bin/sw_vers")
+            .arg("-productVersion")
+            .output()
+        else {
+            return (0, 0);
+        };
+        let text = String::from_utf8_lossy(&output.stdout);
+        let mut parts = text.trim().split('.').filter_map(|part| part.parse().ok());
+        (parts.next().unwrap_or(0), parts.next().unwrap_or(0))
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn macfuse_version() -> (u64, u64) {
+    let plist = "/Library/Filesystems/macfuse.fs/Contents/Info.plist";
+    for key in ["CFBundleShortVersionString", "CFBundleVersion"] {
+        let Ok(output) = Command::new("/usr/libexec/PlistBuddy")
+            .args(["-c", &format!("Print :{key}"), plist])
+            .output()
+        else {
+            continue;
+        };
+        if !output.status.success() {
+            continue;
+        }
+        let text = String::from_utf8_lossy(&output.stdout);
+        let mut parts = text.trim().split('.').filter_map(|part| part.parse().ok());
+        if let Some(major) = parts.next() {
+            return (major, parts.next().unwrap_or(0));
+        }
+    }
+    (0, 0)
 }
 
 struct ViewGuard {

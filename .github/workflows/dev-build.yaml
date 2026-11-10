@@ -14,7 +14,7 @@ on:
         type: string
         default: master
       build:
-        description: "cozy: dev binary; tensord: manylinux binary; tensorfs: wheel; kernels: CUDA AOT; check: native Rust compilation only (comma-separate several)"
+        description: "cozy: dev binary; tensord: manylinux binary; tensorfs: wheel; kernels: CUDA AOT; check: native Rust compilation only; vault-provider: real encrypted filesystem/media/crash proof (comma-separate several)"
         type: string
         default: cozy
       features:
@@ -24,7 +24,7 @@ on:
       runner:
         description: A standard runner, free on this public repo
         type: choice
-        options: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, macos-latest]
+        options: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, windows-11-arm, macos-latest, macos-26]
         default: ubuntu-latest
       billed_runner:
         description: "A larger runner, named on purpose in place of runner. Never free (linux-x64-16core: $0.042/min, $2.52 a 60-min job) and the budget is about $10/day per org"
@@ -266,3 +266,74 @@ jobs:
         run: |
           cargo check --locked -p varena -p tensorfs -p tensorfs-py
           cargo check --locked -p tensorfs --no-default-features
+
+  # Manual platform proof of the actual encrypted filesystem, no account/rental/daemon.
+  vault-provider:
+    if: contains(inputs.build, 'vault-provider')
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: vault-provider-${{ runner.os }}-${{ runner.arch }}
+      - name: Install pinned Rust
+        run: rustup toolchain install 1.99.1 --profile minimal
+      - name: Install Linux filesystem driver and media tool
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fuse libfuse2t64 ffmpeg
+          sudo modprobe fuse || test -e /dev/fuse
+      - name: Install pinned macOS filesystem driver and media tool
+        if: runner.os == 'macOS'
+        run: |
+          curl --fail --location --retry 3 https://github.com/macfuse/macfuse/releases/download/macfuse-5.5.0/macfuse-5.5.0.dmg -o "$RUNNER_TEMP/macfuse.dmg"
+          echo "92c21ef2db4199bcf5bddc8e6efb57b23ecb9715f74ab38cba2c77ab226d3830  $RUNNER_TEMP/macfuse.dmg" | shasum -a 256 -c -
+          hdiutil attach -nobrowse -quiet -mountpoint "$RUNNER_TEMP/macfuse-volume" "$RUNNER_TEMP/macfuse.dmg"
+          package=$(find "$RUNNER_TEMP/macfuse-volume" -name '*.pkg' | head -1)
+          test -n "$package"
+          sudo installer -pkg "$package" -target /
+          hdiutil detach -quiet "$RUNNER_TEMP/macfuse-volume"
+          /Library/Filesystems/macfuse.fs/Contents/Resources/macfuse.app/Contents/MacOS/macfuse install --force --components file-system-extensions
+          pluginkit -e use -i io.macfuse.app.fsmodule.macfuse || true
+          pluginkit -e use -i io.macfuse.app.fsmodule.macfuse-local || true
+          brew install ffmpeg
+      - name: Install pinned Windows filesystem driver and media tool
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $msi = Join-Path $env:RUNNER_TEMP winfsp.msi
+          Invoke-WebRequest https://github.com/winfsp/winfsp/releases/download/v2.1/winfsp-2.1.25156.msi -OutFile $msi
+          if ((Get-FileHash $msi -Algorithm SHA256).Hash.ToLower() -ne '073a70e00f77423e34bed98b86e600def93393ba5822204fac57a29324db9f7a') { throw 'WinFsp checksum mismatch' }
+          $installed = Start-Process msiexec.exe -ArgumentList @('/i', $msi, '/qn', '/norestart', 'ADDLOCAL=ALL') -Wait -PassThru
+          if ($installed.ExitCode -notin @(0, 3010)) { throw "WinFsp install failed: $($installed.ExitCode)" }
+          choco install ffmpeg --no-progress -y
+      - name: Embed the pinned provider and build its real fixture
+        run: |
+          target=$(rustc +1.99.1 -vV | sed -n 's/^host: //p')
+          python scripts/prepare-securefs.py --target "$target" --out-dir "$RUNNER_TEMP/vault-helper" --github-env "$GITHUB_ENV"
+          echo "VAULT_TARGET=$target" >> "$GITHUB_ENV"
+      - name: Run encrypted filesystem and controller-death proof
+        run: |
+          cargo +1.99.1 build -p project-mount --example vault-provider --locked
+          helper=securefs probe=target/debug/examples/vault-provider
+          if [[ "$RUNNER_OS" == Windows ]]; then helper=securefs.exe; probe=$probe.exe; fi
+          python -c 'import os, pathlib, zipfile; z=zipfile.ZipFile(os.environ["COZY_SECUREFS_ARCHIVE"]); p=pathlib.Path(os.environ["RUNNER_TEMP"])/"vault-provider-bin"; p.mkdir(); z.extractall(p); [f.chmod(0o755) for f in p.iterdir() if f.is_file()]'
+          python e2e/vault-provider/run.py --probe "$probe" --securefs "$RUNNER_TEMP/vault-provider-bin/$helper" --artifacts "provider-proof"
+      - name: Keep platform proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vault-provider-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}
+          path: provider-proof
+          if-no-files-found: warn
+          retention-days: 14

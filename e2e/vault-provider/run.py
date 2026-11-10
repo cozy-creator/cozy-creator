@@ -2,6 +2,7 @@
 """Run the real encrypted filesystem fixture, including controller SIGKILL."""
 import argparse
 import json
+import os
 from pathlib import Path
 import subprocess
 import time
@@ -36,7 +37,11 @@ def main():
             host.wait(timeout=10)
             deadline = time.monotonic() + 15
             while time.monotonic() < deadline:
-                mounted = subprocess.run([str(args.securefs), 'ismount', str(view)], capture_output=True).returncode == 0
+                if Path('/proc/self/mountinfo').exists():
+                    paths = [line.split()[4].replace('\\040', ' ').replace('\\134', '\\') for line in Path('/proc/self/mountinfo').read_text().splitlines()]
+                    mounted = os.path.realpath(view) in paths
+                else:
+                    mounted = subprocess.run([str(args.securefs), 'ismount', str(view)], capture_output=True).returncode == 0
                 if not mounted:
                     break
                 time.sleep(0.05)
