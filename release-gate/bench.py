@@ -27,6 +27,7 @@ BENCH = os.path.join(HERE, 'suites', 'bench')
 sys.path.insert(0, HERE)
 sys.path.insert(0, BENCH)
 import media  # noqa: E402  (suites/bench/media.py)
+from comfy import Row as Comfy  # noqa: E402  (suites/bench/comfy.py: ComfyUI's row for a cell)
 from runs import Run  # noqa: E402
 
 # The owner's bar: a judged time more than 5% over its baseline fails, unless the cell's own measured noise is wider.
@@ -127,14 +128,7 @@ class Gate(TypedDict):
     label: str | None
     reference: dict[str, Reference]  # before, after
     cells: dict[str, Cell]
-
-
-class Comfy(TypedDict):
-    """ComfyUI's warm total for a cell's request on the group's GPU type, measured on one pod beside Cozy's."""
-    total_s: float
-    cozy_s: NotRequired[float]
-    comfyui: NotRequired[str]
-    source: NotRequired[str]
+    comfyui: dict[str, Comfy]  # measured on this pod after the cells (comfyui.sh), when it ran
 
 
 class Group(TypedDict):
@@ -163,6 +157,7 @@ class CellDef(TypedDict):
     beats: str
     like: str
     route: str
+    comfyui: str  # the benchmarks runner's cell of the same request (comfy.py)
     guards: str
 
 
@@ -320,12 +315,14 @@ def read_gate(d: str, judged: bool = True) -> Gate:
         cold, warm = by.setdefault(cell, ([], []))
         (cold if role == 'cold' else warm).append(m)
     reference = {w: r for w in ('before', 'after') if (r := reference_of(Run.read(os.path.join(d, f'calibrate-{w}.json')))) is not None}
+    rows = os.path.join(d, 'comfyui-rows.json')
     return {'dir': d, 'group': text(d, 'bench-group') or '?', 'pod': text(d, 'machine'), 'label': text(d, 'label'), 'reference': reference,
-            'cells': {name: summary(cold[0] if cold else None, warm) for name, (cold, warm) in by.items()}}
+            'cells': {name: summary(cold[0] if cold else None, warm) for name, (cold, warm) in by.items()},
+            'comfyui': cast(dict[str, Comfy], load_json(rows)) if os.path.exists(rows) else {}}  # comfy.py rows wrote it
 
 
 def cells_file(path: str | None = None) -> list[CellDef]:
-    keys = ('name', 'group', 'cap', 'warm', 'seed', 'target', 'args', 'before', 'beats', 'like', 'route', 'guards')
+    keys = ('name', 'group', 'cap', 'warm', 'seed', 'target', 'args', 'before', 'beats', 'like', 'route', 'comfyui', 'guards')
     rows = []
     with open(path or os.path.join(BENCH, 'cells.tsv')) as f:
         for line in f:
@@ -392,7 +389,7 @@ def judge(defs: list[CellDef], cand: Gate, base: Group | None, version: str | No
     same_pod = bool(base and base['pod'] and base['pod'] == cand['pod'])
     for d in defs:
         c, b = cand['cells'].get(d['name']), bcells.get(d['name'])
-        v = Verdict(d['name'], b, c, comfy.get(d['name']))
+        v = Verdict(d['name'], b, c, cand['comfyui'].get(d['name']) or comfy.get(d['name']))  # this pod's ComfyUI, else the stored
         out.append(v)
         if not c or (not c['n'] and not c['failed']):
             v.verdict, v.why = 'FAIL', ['not run']
@@ -447,11 +444,14 @@ def judge(defs: list[CellDef], cand: Gate, base: Group | None, version: str | No
                 v.notes.append(f"kernels {b['kernels']['gemm']} / {b['kernels']['attention']} -> {c['kernels']['gemm']} / {c['kernels']['attention']}")
         elif c['n']:
             v.notes.append('no baseline: this run starts it')
-        x = v.comfy
-        if x and b and b['n'] and c['n'] and 'total_ms' in w:
-            ours = (w['total_ms'] - w.get('denoise_ms', 0.0) * (1 - clock)) / 1000
-            if b['warm']['total_ms'] / 1000 < x['total_s'] <= ours:
-                v.why.append(f"loses to ComfyUI ({ours:.1f} s against {x['total_s']:.1f} s) where {version} won ({b['warm']['total_ms'] / 1000:.1f} s)")
+        x, was = v.comfy, comfy.get(d['name'])
+        if x and x['total_s'] is None:
+            v.notes.append(f"ComfyUI: no warm number ({x['status']})")
+        elif x and x['total_s'] and b and b['n'] and c['n'] and 'total_ms' in w:
+            ours = w['total_ms'] / 1000 if x is not was else (w['total_ms'] - w.get('denoise_ms', 0.0) * (1 - clock)) / 1000
+            won = was is not None and was['total_s'] is not None and b['warm']['total_ms'] / 1000 < was['total_s']
+            if won and x['total_s'] <= ours:
+                v.why.append(f"loses to ComfyUI ({ours:.1f} s against {x['total_s']:.1f} s) where {version} won")
         if 'sw_thermal' in c['throttles']:
             v.notes.append(f"thermal throttling ({w.get('temperature_c')} C, throttled {w.get('throttled', 0):.0%} of the time)")
         issue = next((k for k in known if k['cell'] == d['name'] and k.get('group', cand['group']) == cand['group']), None)
@@ -536,7 +536,7 @@ def baseline(version: str, gates: list[Gate], previous: Baseline | None, comfy: 
                 c['cold']['output'] = None  # the cell's own output is the stored one
         kept = previous['groups'].get(g['group']) if previous else None
         out['groups'][g['group']] = {'pod': g['pod'], 'label': g['label'], 'reference': g['reference'].get('before') or {}, 'cells': g['cells'],
-                                     'comfyui': comfy.get(g['group']) or (kept['comfyui'] if kept else {})}
+                                     'comfyui': g['comfyui'] or comfy.get(g['group']) or (kept['comfyui'] if kept else {})}
     return out
 
 

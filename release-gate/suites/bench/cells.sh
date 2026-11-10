@@ -51,5 +51,4 @@ done < "$HERE/suites/bench/cells.tsv"
 ONLY=$ONLY_ASKED
 [ "$CAPNOW" = off ] || "$CLI" machine update "$M" --gpu-memory-limit off -y > cap-lift.log 2>&1 || log "cap lift: $(tail -c 300 cap-lift.log)"
 cell calibrate-after ./bench-calibrate/measure seed:="$R"
-podsh "cat /var/tmp/memavail.log" > memavail.log 2>/dev/null
-podsh "sh /var/tmp/bench-pod.sh release" >> host.txt 2>&1
+podsh "cat /var/tmp/memavail.log" > memavail.log 2>/dev/null  # the hog stays: comfyui.sh runs under it, and the pod ends after

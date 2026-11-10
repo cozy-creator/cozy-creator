@@ -18,6 +18,13 @@ release-gate/bench.py baseline <version> <gate dir>... [--comfyui suites/bench/c
   the pod's facts, before and after the cells. A pod more than 12% off its GPU type's stored kernels (35% copy, 60% disk) is
   ended and replaced before any cell; more than 3% drift over the run is flagged.
 
+## ComfyUI
+
+`bench.sh --comfyui` runs ComfyUI after the cells on the same pod, under the same host RAM, for the cells whose `comfyui`
+column names a cell of the benchmarks runner (`comfyui.sh`, `comfy.py`; cozy-creator/benchmarks pinned there), with the
+cells' own prompts and seeds. Its rows (`comfyui-rows.json`) are judged beside the cells and go into the next baseline;
+without the flag the baseline's stored rows are used.
+
 ## Verdict (`bench.py judge`)
 
 A cell FAILs when
