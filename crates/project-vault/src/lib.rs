@@ -141,6 +141,19 @@ impl fmt::Debug for ProjectSecret {
 }
 
 impl ProjectSecret {
+    /// Deliberately copy an already authorized in-memory secret for one scoped operation
+    /// such as rekeying. The independent copy remains redacted, non-serializable and
+    /// zeroizing; callers drop it after the operation and never persist it.
+    pub fn duplicate(&self) -> Self {
+        Self {
+            project_id: self.project_id.clone(),
+            generation: self.generation,
+            key_id: self.key_id.clone(),
+            value: self.value.clone(),
+            journal_identity: self.journal_identity.clone(),
+        }
+    }
+
     pub fn project_id(&self) -> &str {
         &self.project_id
     }
