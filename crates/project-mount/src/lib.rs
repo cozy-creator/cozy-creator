@@ -381,7 +381,9 @@ impl Provider {
     pub fn is_mounted(&self, view: &Path) -> Result<bool> {
         #[cfg(target_os = "linux")]
         return linux_mounted(view);
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(target_os = "macos")]
+        return macos_mounted(view);
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             let mut command = self.command("ismount");
             command.arg(helper_view(view));
@@ -730,19 +732,27 @@ fn control_status(
     operation: &'static str,
     budget: Duration,
 ) -> Result<ExitStatus> {
-    let mut child = command
+    let child = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .map_err(io_error("start filesystem control command"))?;
+    control_process(child, operation, budget).map(|(status, _)| status)
+}
+
+fn control_process(
+    mut child: Child,
+    operation: &'static str,
+    budget: Duration,
+) -> Result<(ExitStatus, Child)> {
     let deadline = Instant::now() + budget;
     loop {
         if let Some(status) = child
             .try_wait()
             .map_err(io_error("read filesystem control acknowledgment"))?
         {
-            return Ok(status);
+            return Ok((status, child));
         }
         if Instant::now() >= deadline {
             let _ = child.kill();
@@ -755,6 +765,38 @@ fn control_status(
         }
         thread::sleep(Duration::from_millis(20));
     }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_mounted(view: &Path) -> Result<bool> {
+    // securefs's own ismount uses a custom FUSE ioctl, which FSKit does not implement.
+    // Read the kernel's mount table instead of issuing requests to the encrypted filesystem.
+    let view = view
+        .parent()
+        .and_then(|parent| fs::canonicalize(parent).ok())
+        .zip(view.file_name())
+        .map_or_else(|| view.to_path_buf(), |(parent, name)| parent.join(name));
+    let child = clean_command(Path::new("/sbin/mount"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(io_error("read kernel mount table"))?;
+    let (status, mut child) = control_process(child, "status", Duration::from_secs(5))?;
+    if !status.success() {
+        return Err(Error::Invalid("the kernel mount table is unavailable"));
+    }
+    let mut bytes = Vec::new();
+    child
+        .stdout
+        .take()
+        .ok_or(Error::Invalid("the kernel mount table is unavailable"))?
+        .read_to_end(&mut bytes)
+        .map_err(io_error("read kernel mount table"))?;
+    let needle = format!(" on {} (", view.display());
+    Ok(String::from_utf8_lossy(&bytes)
+        .lines()
+        .any(|line| line.contains(&needle)))
 }
 
 #[cfg(target_os = "linux")]
