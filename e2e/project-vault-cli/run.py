@@ -199,7 +199,8 @@ foreach ($rule in $allowed) {
                                                   'Content-Type': 'application/json'})
         print('project vault CLI lifecycle: graceful shutdown of discovered controller', flush=True)
         try:
-            with urllib.request.urlopen(request) as response:
+            direct = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            with direct.open(request) as response:
                 json.load(response)
         except urllib.error.HTTPError as error:
             detail = error.read().decode(errors='replace')
