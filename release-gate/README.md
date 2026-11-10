@@ -39,8 +39,9 @@ way a suite runs `cozy` and reads a run), optional `check.py` (`check(gate) -> (
 
 ## Before renting
 
-`release-gate/interfaces.sh --runtime <wheel file|version> <packages checkout>` reads each package's interface back through the
-reader an executor starts on, as TensorD writes it: no GPU, no pod, seconds. Describing alone misses what only that reader
+`release-gate/interfaces.sh --runtime <wheel file|version> [--tensorfs <wheel file|version>] <packages checkout>` reads each
+package's interface back through the reader an executor starts on, as TensorD writes it, with the TensorFS the Runtime imports
+(its own requirement from PyPI unless named): no GPU, no pod, seconds. Describing alone misses what only that reader
 refuses, as with minimax-h3 on Runtime 0.40.0. A cut runs it before anything else.
 
 ## What a gate does
