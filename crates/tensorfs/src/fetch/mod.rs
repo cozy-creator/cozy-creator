@@ -50,6 +50,41 @@ pub async fn get_pinned(url: &str, from: u64, sink: &mut (dyn FnMut(u64, &[u8]) 
     get_body(policy, url, &[], from, sink).await
 }
 
+/// The length of the file at `url`, for bytes the caller holds to a digest, asked as [`get_pinned`] asks: one ranged
+/// byte, whose answer states the whole (`Content-Range`, or a server that sends all of it: `Content-Length`). `roots`:
+/// PEM roots beyond the public ones.
+pub async fn length_pinned(url: &str, roots: Option<&[u8]>) -> Result<u64> {
+    let policy = SourcePolicy { any_host: true, allow_local: policy::is_loopback_origin(url), max_redirects: 5, ..Default::default() };
+    let client = match roots {
+        Some(pem) => Client::with_roots(policy, pem)?,
+        None => Client::new(policy),
+    };
+    let mut backoff = Backoff::transfer();
+    loop {
+        let (why, wait) = match client.get_authorized(url, &[("range".into(), "bytes=0-0".into())], None).await {
+            Ok(answer) if !ask::weather(answer.status()) => {
+                let length = match answer.status() {
+                    206 => answer.content_range().and_then(|(_, total)| total),
+                    200 => answer.header("content-length").and_then(|length| length.parse().ok()),
+                    status @ (404 | 410) => return refuse(Code::REF_NOT_FOUND, format!("{url}: HTTP {status}")),
+                    _ => None,
+                };
+                return length.ok_or_else(|| Refusal { code: Code::ORIGIN_REFUSED, detail: format!("{url}: HTTP {} with no length", answer.status()) });
+            }
+            Ok(answer) => (format!("{url}: HTTP {}", answer.status()), answer.stated_wait()),
+            Err(GetError::Exchange(refusal)) if ask::transient(&refusal) => (refusal.detail, None),
+            Err(error) => return Err(error.refusal()),
+        };
+        match backoff.again(&why, false, wait) {
+            Some((pause, line)) => {
+                tracing::info!("{line}");
+                tokio::time::sleep(pause).await;
+            }
+            None => return Err(Refusal { code: Code::HUB_UNREACHABLE, detail: backoff.spent(&why) }),
+        }
+    }
+}
+
 /// [`get_pinned`] into the file at `part`, from the bytes it holds (what an earlier fetch reached resumes), telling
 /// `moved` each byte position reached; answers the file and its sha256 for the caller to hold to its pin. Once nothing
 /// moves for the stall rule it is refused, its bytes kept for the next fetch. Another fetch of the same file holds it:

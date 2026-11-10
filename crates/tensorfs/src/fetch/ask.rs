@@ -134,9 +134,11 @@ pub(crate) async fn get(
             Err(GetError::Exchange(refusal)) if transient(&refusal) => (refusal.detail, None),
             Err(error) => return Err(error),
         };
-        tracing::info!(url = %shown(url), at, %why, "asked again");
-        match backoff.after(at > from, wait) {
-            Some(pause) => tokio::time::sleep(pause).await,
+        match backoff.again(&why, at > from, wait) {
+            Some((pause, line)) => {
+                tracing::info!(url = %shown(url), at, "{line}");
+                tokio::time::sleep(pause).await;
+            }
             None => {
                 let detail = format!("{why}; {ATTEMPTS} attempts in a row moved nothing");
                 return Err(GetError::Exchange(Refusal { code: Code::HUB_UNREACHABLE, detail }));

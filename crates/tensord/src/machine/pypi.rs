@@ -8,7 +8,7 @@ use std::{
 };
 
 use tensorfs::{
-    err::{refuse, Code, Refusal, Result},
+    err::{Code, Refusal, Result},
     fetch::{is_loopback_origin, Boxed, Location, Origin},
     format::ObjectRef,
 };
@@ -17,8 +17,6 @@ use crate::{
     origin::{priority, Machine, Remote},
     stop::Stop,
 };
-
-const MAX_REDIRECTS: usize = 8;
 
 pub(crate) fn wheel(distribution: &str, version: &str, uv: &super::uv::Uv, python: &str, dir: &Path, machine: &Machine, stop: &Stop) -> io::Result<PathBuf> {
     let project = distribution.replace('_', "-");
@@ -80,22 +78,9 @@ fn selected(plan: &str, distribution: &str, version: &str) -> io::Result<Artifac
 pub(crate) fn prerelease(distribution: &str, meets: &dyn Fn(&str) -> bool, dir: &Path, machine: &Machine, stop: &Stop) -> io::Result<Option<(String, PathBuf)>> {
     #[derive(serde::Deserialize)]
     struct Release { tag_name: String, #[serde(default)] draft: bool }
-    let http = tensorfs::fetch::http(&[]).expect("the webpki roots alone").read_timeout(tensorfs::fetch::STALL).build().map_err(io::Error::other)?;
-    let read = |url: String| {
-        let http = http.clone();
-        machine.block(stop, async move {
-            let answer = http.get(&url).send().await.map_err(weather)?;
-            let status = answer.status();
-            let text = answer.text().await.map_err(weather)?;
-            Ok::<_, Refusal>((status, text))
-        })
-    };
     // Nothing yet says what is published: `NotConnected`, asking again may be answered.
-    let unread = |why: String| io::Error::new(io::ErrorKind::NotConnected, why);
-    let (status, listed) = read(api::prerelease::releases(distribution)).map_err(|e| unread(e.to_string()))?;
-    if !status.is_success() {
-        return Err(unread(format!("GitHub answered HTTP {status}")));
-    }
+    let unread = |why: Refusal| io::Error::new(io::ErrorKind::NotConnected, why.to_string());
+    let listed = text(machine, stop, api::prerelease::releases(distribution)).map_err(unread)?;
     let releases: Vec<Release> = serde_json::from_str(&listed).map_err(io::Error::other)?;
     let mut versions: Vec<&str> = (releases.iter().filter(|release| !release.draft))
         .filter_map(|release| api::prerelease::version_of(distribution, &release.tag_name))
@@ -105,10 +90,11 @@ pub(crate) fn prerelease(distribution: &str, meets: &dyn Fn(&str) -> bool, dir: 
     while let Some(version) = tensorfs::format::newest_by(versions.iter().copied(), |version| version) {
         versions.retain(|other| *other != version);
         let base = api::prerelease::base(distribution, version);
-        let (status, sums) = read(format!("{base}/SHA256SUMS")).map_err(|e| unread(e.to_string()))?;
-        if !status.is_success() {
-            continue;
-        }
+        let sums = match text(machine, stop, format!("{base}/SHA256SUMS")) {
+            Ok(sums) => sums,
+            Err(e) if matches!(e.code, Code::REF_NOT_FOUND | Code::ORIGIN_REFUSED) => continue,
+            Err(e) => return Err(unread(e)),
+        };
         if let Some((file, sha256)) = api::prerelease::wheel(&sums, distribution, version, &platform) {
             let wheel = wheel_at(&format!("{base}/{file}"), sha256, file, dir, machine, stop)?;
             return Ok(Some((version.to_owned(), wheel)));
@@ -144,22 +130,8 @@ pub(crate) fn object_at(machine: &Machine, url: &str, sha256: &str, length: Opti
     let length = match length {
         Some(length) => length,
         None => {
-            let http = client(trust.as_deref()).map_err(|e| Refusal { code: Code::TRANSFER_FAILED, detail: e.to_string() })?;
-            let probed = url.to_string();
-            machine.block(stop, async move {
-                // One byte asked: the answer states the whole length (`Content-Range`).
-                let answer = http.get(&probed).header("range", "bytes=0-0").send().await.map_err(weather)?;
-                let header = |name: &str| answer.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_string);
-                let length = match answer.status().as_u16() {
-                    206 => header("content-range").and_then(|r| r.rsplit('/').next()?.parse::<u64>().ok()),
-                    200 => header("content-length").and_then(|l| l.parse::<u64>().ok()),
-                    _ => None,
-                };
-                match length {
-                    Some(length) => Ok(length),
-                    None => refuse(Code::TRANSFER_FAILED, format!("a ranged GET answered HTTP {} with no length", answer.status())),
-                }
-            })?
+            let (probed, roots) = (url.to_string(), trust.clone());
+            machine.block(stop, async move { tensorfs::fetch::length_pinned(&probed, roots.as_deref()).await })?
         }
     };
     let object = ObjectRef { sha256: sha256.into(), length };
@@ -186,14 +158,21 @@ impl Origin for Url {
     }
 }
 
-fn client(bundle: Option<&[u8]>) -> io::Result<reqwest::Client> {
-    let roots = bundle.map(tensorfs::fetch::pem_roots).transpose().map_err(io::Error::other)?.unwrap_or_default();
-    let builder = tensorfs::fetch::http(&roots.iter().map(Vec::as_slice).collect::<Vec<_>>()).map_err(io::Error::other)?;
-    builder.redirect(reqwest::redirect::Policy::limited(MAX_REDIRECTS)).build().map_err(io::Error::other)
-}
-
-fn weather(error: reqwest::Error) -> Refusal {
-    Refusal { code: Code::TRANSFER_FAILED, detail: error.to_string() }
+/// A published text file (a release's manifest or signatures, a listing), asked again by the one retry rule
+/// (`tensorfs::fetch::get_pinned`): what reads it judges it.
+pub(crate) fn text(machine: &Machine, stop: &Stop, url: String) -> Result<String> {
+    let asked = url.clone();
+    let bytes = machine.block(stop, async move {
+        let mut bytes = vec![];
+        tensorfs::fetch::get_pinned(&asked, 0, &mut |at, frame| {
+            bytes.truncate(at as usize);
+            bytes.extend_from_slice(frame);
+            Ok(())
+        })
+        .await
+        .map(|()| bytes)
+    })?;
+    String::from_utf8(bytes).map_err(|e| Refusal { code: Code::ORIGIN_REFUSED, detail: format!("{url}: {e}") })
 }
 
 fn land(blob: &Path, dir: &Path, file: &str) -> io::Result<PathBuf> {

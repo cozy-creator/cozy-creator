@@ -7,7 +7,6 @@ use std::{
 };
 
 use platform::release::{self, Release};
-use tensorfs::err::{Code, Refusal};
 
 use super::update::Coded;
 use crate::{origin::Machine, stop::Stop};
@@ -29,11 +28,7 @@ pub(crate) fn cozy(version: &str, dir: &Path, machine: &Machine, stop: &Stop) ->
     Ok(binary)
 }
 
+/// A release's text file through `pypi::text`'s retry rule; its signature judges it.
 fn text(machine: &Machine, stop: &Stop, url: String) -> io::Result<String> {
-    let http = tensorfs::fetch::http(&[]).expect("the webpki roots alone").read_timeout(tensorfs::fetch::STALL).build().map_err(io::Error::other)?;
-    let failed = |e: reqwest::Error| Refusal { code: Code::TRANSFER_FAILED, detail: e.to_string() };
-    let asked = url.clone();
-    machine
-        .block(stop, async move { http.get(&asked).send().await.and_then(|a| a.error_for_status()).map_err(failed)?.text().await.map_err(failed) })
-        .map_err(|e| io::Error::other(format!("{url}: {e}")))
+    super::pypi::text(machine, stop, url).map_err(|e| io::Error::other(e.to_string()))
 }
