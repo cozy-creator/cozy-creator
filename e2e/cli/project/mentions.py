@@ -5,7 +5,8 @@
 """A prompt as the function gets it: its text, and each reference its mentions sent, by key and picture width."""
 
 import msgspec
-from cozy_runtime.author import App, Image, Prompt
+from cozy_runtime.author import App
+from cozy_runtime.fields import Image, Prompt
 
 app = App()
 
