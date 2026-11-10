@@ -29,9 +29,10 @@ class Cell(TypedDict):
     check: NotRequired[Check]
     #: ranks of a CPU (gloo) group; 1 when absent
     ranks: NotRequired[int]
-    #: judged against another cell's reference (`entry/name`): a group's output equals one rank's
+    #: judged against another cell's output (`entry/name`; that cell's run here, else its reference): a group's output
+    #: equals one rank's
     same_as: NotRequired[str]
-    #: the largest difference of a 64-part output signature from its reference, of 255
+    #: the mean difference of an output's thumbnail from its reference's allowed, of 255 (default 1)
     tolerance: NotRequired[float]
     #: why this cell cannot run on the CPU; printed as SKIP
     skip: NotRequired[str]
@@ -55,6 +56,7 @@ class Output(TypedDict):
     name: str
     #: how many samples it decodes to (its bytes when it is not a picture, video or sound)
     bytes: int
+    #: its thumbnail (`drive.signature`)
     signature: list[float]
 
 

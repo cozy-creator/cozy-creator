@@ -318,10 +318,41 @@ def bindings(interface: Interface, interface_path: str, entry: Entrypoint, manif
     return rows
 
 
-def signature(data: npt.NDArray[np.generic], parts: int = 64) -> list[float]:
-    """A coarse picture of an output: the mean of each of `parts` equal runs of its samples."""
-    flat = data.reshape(-1)
-    return [round(float(chunk.mean(dtype=np.float64)), 2) if chunk.size else 0.0 for chunk in np.array_split(flat, parts)]
+def block_means(values: npt.NDArray[np.generic], grid: tuple[int, ...]) -> npt.NDArray[np.float64]:
+    """`values` cut into `grid` blocks along its leading axes, each block's mean (its trailing axes kept)."""
+    out = values.astype(np.float64)
+    for axis, count in enumerate(grid):
+        out = np.stack([part.mean(axis=axis) for part in np.array_split(out, min(count, out.shape[axis]), axis=axis)], axis)
+    return out
+
+
+def signature(values: npt.NDArray[np.generic]) -> list[float]:
+    """An output's thumbnail, 0-255: a picture 16x16 blocks, a video 8 frames of 8x8, else 1024 runs of its samples.
+    Each block of a decoded picture spans a few VAE patches, so another latent shows here where a whole-file mean
+    would not."""
+    if values.ndim == 4:
+        frames = values[np.linspace(0, len(values) - 1, min(8, len(values))).round().astype(int)]
+        thumb = block_means(frames, (len(frames), 8, 8))
+    elif values.ndim == 3:
+        thumb = block_means(values, (16, 16))
+    else:
+        thumb = block_means(values.reshape(-1), (1024,))
+    return [round(float(v), 1) for v in thumb.reshape(-1)]
+
+
+def shaped(values: npt.NDArray[np.generic], result: Json) -> npt.NDArray[np.generic]:
+    """A raw RGB picture as height x width x 3, when the result states its canvas."""
+    if values.ndim == 1 and isinstance(result, dict):
+        width, height = result.get("width"), result.get("height")
+        if isinstance(width, int) and isinstance(height, int) and values.size == width * height * 3:
+            return values.reshape(height, width, 3)
+    return values
+
+
+def differ(a: list[float], b: list[float]) -> tuple[float, float]:
+    """Mean and largest absolute difference of two thumbnails."""
+    gap = np.abs(np.asarray(a) - np.asarray(b))
+    return (float(gap.mean()), float(gap.max())) if gap.size else (0.0, 0.0)
 
 
 def samples(path: Path, media_type: str) -> dict[str, npt.NDArray[np.generic]]:
@@ -393,6 +424,7 @@ def judge(cell: Cell, reply: Reply, spool: Path, reference: Seen | None) -> Seen
             seen["outputs"].append({"name": output, "bytes": 0, "signature": []})
             continue
         for suffix, values in samples(path, media_type).items():
+            values = shaped(values, result)
             width = spread(values)
             if not np.isfinite(width):
                 raise Failed(f"output {output}{suffix} is not finite")
@@ -405,11 +437,13 @@ def judge(cell: Cell, reply: Reply, spool: Path, reference: Seen | None) -> Seen
     if check is not None and (problem := check(result, files)):
         raise Failed(problem)
     if reference is not None:
-        compare(seen, reference, float(cell.get("tolerance", 3.0)))
+        compare(seen, reference, float(cell.get("tolerance", 1.0)))
     return seen
 
 
 def compare(seen: Seen, reference: Seen, tolerance: float) -> None:
+    """Same outputs, each decoding to as many samples, thumbnails within `tolerance` on average (and 12 times it at
+    most), and the same result document."""
     def shape(outputs: list[Output]) -> list[tuple[str, int]]:
         return [(o["name"], o["bytes"]) for o in outputs]
 
@@ -417,9 +451,10 @@ def compare(seen: Seen, reference: Seen, tolerance: float) -> None:
     if shape(want) != shape(got):
         raise Failed(f"outputs {shape(got)} differ from the reference's {shape(want)}")
     for a, b in zip(want, got, strict=True):
-        worst = max((abs(x - y) for x, y in zip(a["signature"], b["signature"], strict=True)), default=0.0)
-        if worst > tolerance:
-            raise Failed(f"output {b['name']} differs from its reference by {worst:.1f}/255 (tolerance {tolerance})")
+        mean, worst = differ(a["signature"], b["signature"])
+        if mean > tolerance or worst > 12 * tolerance:
+            raise Failed(f"output {b['name']} differs from its reference by {mean:.2f}/255 on average, {worst:.0f} at most "
+                         f"(tolerance {tolerance})")
     if reference["result"] != seen["result"]:
         raise Failed(f"result {json.dumps(seen['result'])[:160]} differs from the reference's {json.dumps(reference['result'])[:160]}")
 
@@ -515,6 +550,8 @@ def main() -> int:
     cells = [c for c in fixture.CELLS if only is None or c["name"] in only or f"{c['entry']}/{c['name']}" in only]
     executors: dict[int, Executor] = {}
     loaded: set[tuple[int, str]] = set()
+    #: each cell's judged output this run: a `same_as` cell is judged against its twin's here
+    ran: dict[str, Seen] = {}
     try:
         for cell in cells:
             entry, name, ranks = cell["entry"], cell["name"], cell.get("ranks", 1)
@@ -559,11 +596,13 @@ def main() -> int:
                 (out / f"{request}.reply.json").write_text(json.dumps(reply, indent=1))
                 key = f"{entry}/{name}"
                 same_as = cell.get("same_as")
-                seen = judge(cell, reply, spool, None if record and same_as is None else references.get(same_as or key))
+                against = ran.get(same_as) or references.get(same_as) if same_as else None if record else references.get(key)
+                if against is None and not (record and same_as is None):
+                    raise Failed(f"no output of {same_as or key} to judge against: run it too, or record (run.sh --record)")
+                seen = judge(cell, reply, spool, against)
+                ran[key] = seen
                 if record and same_as is None:
                     references[key] = seen
-                elif (same_as or key) not in references:
-                    raise Failed(f"no stored reference for {same_as or key}: record one (run.sh --record)")
                 line(True, entry, name, started)
             except Exception as exc:
                 why = first_line(exc) if isinstance(exc, Failed) else f"{type(exc).__name__}: {first_line(exc)}"

@@ -3,8 +3,9 @@
 # weights (README "cpu"). No GPU, no rental, no sign-in.
 #
 #   e2e/cpu/run.sh --out DIR --packages DIR --runtime R --tensorfs T [--envs DIR] [--only pkg,...]
-#                  [--cells entry/cell,...] [--jobs N] [--refs DIR] [--helpers pkg,...] [--record]
+#                  [--cells entry/cell,...] [--jobs N] [--refs DIR] [--helpers pkg,...] [--record] [--keep]
 # R and T: a wheel, a source dir (the Runtime), an exact release version, or `lock` (what each package's lock pins).
+# --keep keeps each package's tiny weights, inputs and outputs (else only logs and replies stay);
 # --refs reads (and --record writes) references elsewhere than refs/; --helpers installs those packages from the
 # checkout over the releases the locks pin (a helper not yet published). e2e/lib.sh's other candidate flags are ignored.
 # A lock whose helper comes from the Hub's index, which needs a sign-in, falls back to the checkout's helper and says so.
@@ -12,12 +13,13 @@
 # One line per cell: PASS|FAIL|SKIP <package> <entry> <cell> <seconds>s[: first error line]; the summary last.
 set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-OUT='' PACKAGES='' RUNTIME='' TENSORFS='' ENVS=${XDG_CACHE_HOME:-$HOME/.cache}/cozy-e2e-cpu ONLY='' CELLS='' JOBS=2 RECORD='' REFS='' HELPERS=''
+OUT='' PACKAGES='' RUNTIME='' TENSORFS='' ENVS=${XDG_CACHE_HOME:-$HOME/.cache}/cozy-e2e-cpu ONLY='' CELLS='' JOBS=2 RECORD='' REFS='' HELPERS='' KEEP=''
 while [ $# -gt 0 ]; do
   case $1 in
     --out) OUT=$2 ;; --packages) PACKAGES=$2 ;; --runtime) RUNTIME=$2 ;; --tensorfs) TENSORFS=$2 ;;
     --envs) ENVS=$2 ;; --only) ONLY=$2 ;; --cells) CELLS=$2 ;; --jobs) JOBS=$2 ;; --refs) REFS=$2 ;; --helpers) HELPERS=$2 ;;
     --record) RECORD=--record; shift; continue ;;
+    --keep) KEEP=1; shift; continue ;;
     --tensord | --pod-tensord | --release) ;;
     *) echo "unknown argument $1" >&2; exit 2 ;;
   esac
@@ -29,7 +31,7 @@ abs() { if [ -e "$1" ]; then (cd "$(dirname "$1")" && echo "$PWD/$(basename "$1"
 OUT=$(mkdir -p "$OUT" && cd "$OUT" && pwd) PACKAGES=$(cd "$PACKAGES" && pwd) RUNTIME=$(abs "$RUNTIME") TENSORFS=$(abs "$TENSORFS")
 mkdir -p "$ENVS"
 REFS=$(mkdir -p "${REFS:-$HERE/refs}" && cd "${REFS:-$HERE/refs}" && pwd)
-export PACKAGES RUNTIME TENSORFS ENVS OUT RECORD CELLS HERE REFS HELPERS
+export PACKAGES RUNTIME TENSORFS ENVS OUT RECORD CELLS HERE REFS HELPERS KEEP
 
 # A package's fixture is tiny/<its name, - and . as _>.py. Every package in the checkout runs, or --only's.
 fixture() { local f=${1//-/_}; echo "$HERE/tiny/${f//./_}.py"; }
@@ -78,7 +80,8 @@ one() {
   fi
   echo "PASS $p - conformance $((SECONDS - t))s"
   CUDA_VISIBLE_DEVICES= nice -n 19 "$env/bin/python" "$HERE/drive.py" "$PACKAGES/$p" "$out/interface.json" \
-    "$(fixture "$p")" "$out" --refs "$REFS" ${CELLS:+--only "$CELLS"} $RECORD 2> "$out/drive.err"
+    "$(fixture "$p")" "$out" --refs "$REFS" ${CELLS:+--only "$CELLS"} $RECORD 2> "$out/drive.err" || true
+  [ -n "$KEEP" ] || rm -rf "$out"/{store,source,spool,made,inputs}
 }
 export -f one
 

@@ -191,10 +191,10 @@ CELLS: list[Cell] = [
     {"entry": "ref2va_segment", "name": "reference", "payload": {"payload": _REF2VA, "assets": [{"label": "fox"}]},
      "files": {"assets.0.asset": picture("fox", 512, 512)}, "empty": _EMPTY},
     {"entry": "fl2va_segment", "name": "text-2-ranks", "payload": {"payload": _SEGMENT}, "ranks": 2, "empty": _EMPTY,
-     "same_as": "fl2va_segment/text", "tolerance": 6.0},
+     "same_as": "fl2va_segment/text"},
     {"entry": "ref2va_segment", "name": "reference-2-ranks", "payload": {"payload": _REF2VA, "assets": [{"label": "fox"}]},
      "files": {"assets.0.asset": picture("fox", 512, 512)}, "ranks": 2, "empty": _EMPTY,
-     "same_as": "ref2va_segment/reference", "tolerance": 6.0},
+     "same_as": "ref2va_segment/reference"},
     {"entry": "regenerate_shot", "name": "native", "payload": {},
      "skip": "the latent upscaler is LatentResizer3D() at its fixed 345M parameters; its 3D convs do not fit a CPU budget"},
 ]
