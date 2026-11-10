@@ -12,6 +12,9 @@ release-gate/bench.py baseline <version> <gate dir>... [--comfyui suites/bench/c
 ## What runs
 
 - `skus`: the groups (`<sku>x<gpus>`), one fresh pod each, held to a fixed host RAM (30.46 GiB a GPU) by `pod.sh` over SSH.
+- A capped cell (`cap` GiB) runs on a card of that size, the way ComfyUI does: Cozy's executors leave the GPU (one restart),
+  then a separate process (`vram.py`) holds all but `cap` GiB, counting what other processes already hold as theirs. Not
+  `--gpu-memory-limit`, which caps Cozy alone. Its peak VRAM is the driver's less the holder's.
 - `cells.tsv`: the cells and what each guards. Each runs once cold on its fixed seed (the judged output) and then `warm`
   times on fresh seeds (the judged times). Weights download before the cold run (gate.sh `ahead`).
 - `calibrate/`: a reference workload and the pod's facts, before and after the cells: fixed GEMM, attention and convolution,
@@ -38,7 +41,7 @@ A cell FAILs when
   or late eighths > 2.5x the first; sound envelope < 0.6), or a multi-GPU output from its one-GPU twin (`like`);
 - its warm steady step or total is over the baseline by more than max(5%, 3 sd of the two medians' ratio), uncapped cells
   scaled by each call's SM clock first (a total by its denoise part);
-- its peak VRAM is over its cap, its multi-GPU run does not beat the one-GPU cell (`beats`) or takes another transport;
+- its peak VRAM (less the holder's) is over its cap, its multi-GPU run does not beat the one-GPU cell (`beats`) or takes another transport;
 - it loses to ComfyUI where the baseline won.
 
 `known-issues.json` (`cell`, `group`, `issue`, `reason`) makes a FAIL a KNOWN.

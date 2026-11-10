@@ -8,7 +8,7 @@
         the pod's reference workload against its GPU type's stored one; exit 1 when out of range
     bench.py noise <gate dir>...     each cell's run-to-run spread over its warm runs
 A gate dir is gate.sh's --out after suite `bench` (suites/bench/cells.sh): bench.tsv names each cell's runs
-(cell, cold|warm, record), bench-group its group (<sku>x<gpus>), calibrate-{before,after}.json the reference workload.
+(cell, cold|warm, record, the VRAM holder's MiB), bench-group its group (<sku>x<gpus>), calibrate-{before,after}.json the reference workload.
 Outputs are judged with numpy and ffmpeg: uv run -q --no-project --with numpy python -I bench.py ..."""
 import glob
 import json
@@ -222,8 +222,9 @@ def transport_of(o: object) -> Transport | None:
     return None
 
 
-def metrics(run: Run, memavail: list[tuple[int, int]]) -> Metrics:
-    """One run's numbers, from its record and the pod's MemAvailable log when the gate kept one."""
+def metrics(run: Run, memavail: list[tuple[int, int]], held_mib: int = 0) -> Metrics:
+    """One run's numbers, from its record and the pod's MemAvailable log when the gate kept one. A capped run's peak VRAM
+    is less the holder's `held_mib` (cells.sh: the driver counts the whole GPU)."""
     rec, s = run.record, run.steps
     rows = [r for m in run.measurements for r in (m.get('memory') or {}).get('driver') or []]
     stats = [v.get('stats') or {} for m in run.measurements for v in ((m.get('memory') or {}).get('stats') or {}).get('varena') or []]
@@ -236,7 +237,7 @@ def metrics(run: Run, memavail: list[tuple[int, int]]) -> Metrics:
         'step1_ms': round(s[0]) if s else None, 'to_step1_ms': run.to_step1_ms,
         'steady_ms': round(sum(s[1:]) / len(s[1:]), 1) if len(s) > 1 else None,  # the mean: SDXL's steps are quantized to ~10 ms
         'denoise_ms': round(sum(s)) if s else None, 'steps': len(s) or None,
-        'vram_mib': run.vram['peak'] if run.vram else None,
+        'vram_mib': run.vram['peak'] - held_mib if run.vram else None,
         'host_low_mib': min((kb for at, kb in memavail if began and ended and began / 1000 - 5 <= at <= ended / 1000 + 5), default=None),
         'fills': sum((x.get('weight_residency') or {}).get('fills') or 0 for x in stats),
         'evictions': sum((x.get('weight_residency') or {}).get('evictions') or 0 for x in stats),
@@ -325,7 +326,8 @@ def read_gate(d: str, judged: bool = True) -> Gate:
             memavail.append((int(parts[0]), int(parts[1])))
     by: dict[str, tuple[list[Metrics], list[Metrics]]] = {}
     for line in (text(d, 'bench.tsv') or '').splitlines():
-        cell, role, record = line.split('\t')[:3]
+        cell, role, record, *rest = line.split('\t')
+        held = int(rest[0]) if rest and rest[0].isdigit() else 0
         path = record if record.endswith('.json') else record + '.json'
         path = path if os.path.isabs(path) else os.path.join(d, path)
         run = Run.read(path)
@@ -333,7 +335,7 @@ def read_gate(d: str, judged: bool = True) -> Gate:
             m: Metrics = {'run': None, 'status': 'no record', 'reason': record, 'seed': None, 'memo': [], 'computed': True, 'numbers': {},
                           'kernels': {'gemm': [], 'attention': [], 'graphs': None}, 'transport': None, 'throttles': [], 'output': None}
         else:
-            m = metrics(run, memavail)
+            m = metrics(run, memavail, held)
             if run.status == 'completed':
                 m['output'] = output_of(os.path.dirname(path), run, judged)
         cold, warm = by.setdefault(cell, ([], []))

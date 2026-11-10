@@ -4,7 +4,9 @@
 #                  a /dev/shm file when there is no swap and room (pinned; no OOM pick), else in touched anonymous memory of
 #                  hog.py at oom_score_adj -1000, mlocked when there is swap; start the MemAvailable log; print the facts
 #   check          the bytes held now, and what hold was asked to hold
-#   release        drop the hog; stop the log
+#   vram <bytes|off>  GPU 0 as a card of <bytes> for every other process (vram.py, copied to /var/tmp/bench-vram.py): the
+#                  previous holder ended first; prints '<pid> <held> <free> <total> <others>'; off ends it
+#   release        drop the hog and the VRAM holder; stop the log
 set -u
 facts() {
   grep -E '^(MemTotal|MemAvailable|SwapTotal|Shmem):' /proc/meminfo
@@ -45,7 +47,19 @@ case $1 in
       *) held=0 ;;
     esac
     echo "$held $want" ;;
+  vram)
+    if [ -s /var/tmp/bench-vram.ready ]; then
+      pid=$(cut -d' ' -f1 /var/tmp/bench-vram.ready); kill "$pid" 2>/dev/null
+      i=0; while kill -0 "$pid" 2>/dev/null && [ $i -lt 100 ]; do sleep 0.2; i=$((i + 1)); done
+    fi
+    rm -f /var/tmp/bench-vram.ready
+    [ "$2" != off ] || { echo off; exit 0; }
+    setsid nohup python3 /var/tmp/bench-vram.py "$2" /var/tmp/bench-vram.ready > /var/tmp/bench-vram.out 2>&1 < /dev/null &
+    i=0; while [ ! -s /var/tmp/bench-vram.ready ] && kill -0 $! 2>/dev/null && [ $i -lt 240 ]; do sleep 0.5; i=$((i + 1)); done
+    [ -s /var/tmp/bench-vram.ready ] || { echo "no holder: $(tail -c 300 /var/tmp/bench-vram.out)"; exit 1; }
+    cat /var/tmp/bench-vram.ready; echo ;;
   release)
+    sh "$0" vram off > /dev/null
     rm -f /dev/shm/cozy-bench-hog
     [ ! -s /var/tmp/bench-hog.ready ] || kill "$(cut -d' ' -f1 /var/tmp/bench-hog.ready)" 2>/dev/null
     [ ! -s /var/tmp/memavail.pid ] || kill "$(cat /var/tmp/memavail.pid)" 2>/dev/null

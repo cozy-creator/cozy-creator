@@ -1,4 +1,4 @@
-# Suite bench's fixed cells (README.md). Tab-separated, `-` empty: name, group (<sku>x<gpus>), cap (GiB), warm runs, seed
+# Suite bench's fixed cells (README.md). Tab-separated, `-` empty: name, group (<sku>x<gpus>), cap (GiB: a holder leaves only that much of the GPU free), warm runs, seed
 # (the cold run's; warm run i takes seed + 100000 i), target, inputs ($FX: fixtures/; <still>, <lead>, <photo>, <teapot>: the
 # project's pictures), a call before each run, the cell it must beat, the cell of the same request and seed its output must
 # look like, the transport its group must take, the benchmarks runner's ComfyUI cell of the same request (comfy.py), and
