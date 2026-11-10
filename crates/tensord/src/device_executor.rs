@@ -31,6 +31,8 @@ use std::os::{fd::AsRawFd, unix::process::ExitStatusExt};
 
 #[derive(Clone, Debug)]
 pub(crate) struct ExecutorConfig {
+    /// Machine-verified project scope; private processes have their own protected cwd for their whole lifetime.
+    pub private: bool,
     pub python: PathBuf,
     pub root: PathBuf,
     pub socket: PathBuf,
@@ -775,6 +777,7 @@ impl DeviceExecutor {
             .stdin(Stdio::null())
             .stdout(File::create(config.root.join("stdout.log"))?)
             .stderr(File::create(config.root.join("stderr.log"))?);
+        if config.private { command.current_dir(&config.root); }
         // Its generation and kernel namespace stay held while it lives, past this machine's death.
         crate::launch_identity::inherit(
             &mut command,

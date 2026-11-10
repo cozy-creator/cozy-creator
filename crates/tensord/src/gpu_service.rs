@@ -484,6 +484,7 @@ impl Member {
 
 /// One executor process: its environment's App on a lane, with every construction it loaded.
 struct Session {
+    private_project: Option<String>,
     /// The executors' key it serves (`Plan::executor`).
     env: String,
     /// Its lane's first GPU (envelope index), for groups as well as one-GPU replicas.
@@ -520,6 +521,7 @@ impl Session {
 
 #[derive(Clone)]
 struct Leader {
+    private_project: Option<String>,
     birth: Birth,
     /// Its session's `env`, and the constructions it loaded.
     env: String,
@@ -838,6 +840,7 @@ pub(crate) struct Pool {
     exits: Option<Exits>,
     /// Memoized Model methods' results, shared by every run on this machine.
     memo: Arc<crate::memo::Memo>,
+    private_memos: Mutex<BTreeMap<(String, u64), Arc<crate::memo::Memo>>>,
     /// The calls running on its GPUs, by request: the host rule reads them.
     running: memory::Running,
     /// Each run with an executor on its GPUs, by request: its lane, which a GPU fault fails.
@@ -1059,6 +1062,7 @@ impl Pool {
                 keeping: Mutex::new(()),
                 levels: Mutex::new(BTreeMap::new()),
                 memo,
+            private_memos: Mutex::default(),
                 running,
                 lanes: Mutex::default(),
                 unreported: Mutex::default(),
@@ -1848,6 +1852,7 @@ impl Pool {
     /// parent's first import, waited for. Its refusal's code and line; None where nothing imports
     /// ahead for it (no fork, it binds no model, the host has no room): its first call says then.
     pub(crate) fn import_verdict(self: &Arc<Self>, held: &HeldGeneration, stop: &crate::stop::Stop) -> Option<(&'static str, String)> {
+        if crate::private_io::current().is_some() || crate::private_io::is_private_path(&held.record.python) { return None; }
         self.prespawn(held.clone());
         let parent = self.zygotes.lock().unwrap().get(&parent_app(held))?.clone();
         // Package code runs here, and may not end: the install's cancel still does.
@@ -2513,7 +2518,7 @@ impl Pool {
             }
             None => {
                 let born = Mutex::new(vec![]);
-                let created = self.new_session(engine, held, &plan, start, |birth, cancel| {
+                let created = self.new_session(engine, held, &plan, start, None, |birth, cancel| {
                     born.lock().unwrap().push(birth.clone());
                     serve(cancel);
                     Ok(())
@@ -2735,6 +2740,7 @@ impl Pool {
     /// machine holds at most one parent imported ahead of its request. Past it, only its import
     /// pages are read ahead; its parent starts when its call does.
     pub(crate) fn prespawn(self: &Arc<Self>, held: HeldGeneration) {
+        if crate::private_io::current().is_some() || crate::private_io::is_private_path(&held.record.python) { return; }
         {
             let zygotes = self.zygotes.lock().unwrap();
             if zygotes.contains_key(&parent_app(&held)) {
@@ -2768,6 +2774,7 @@ impl Pool {
     /// that never served one (Paul, 10-29: a laptop must not hold half its RAM for packages it
     /// is not using). A parent a request used stays until the machine's idle exit.
     pub(crate) fn installed(self: &Arc<Self>, held: HeldGeneration) {
+        if crate::private_io::current().is_some() || crate::private_io::is_private_path(&held.record.python) { return; }
         self.kernel_boot(held.clone());
         if self.config.host.mode == HostMode::Shared {
             let key = parent_app(&held);
@@ -2921,8 +2928,12 @@ impl Pool {
 
     /// A new executor root and its socket path. The socket is named through this process's
     /// descriptor of the root (Linux `sun_path` limit).
-    fn executor_endpoint(&self) -> io::Result<(PathBuf, PathBuf, File)> {
-        let root = self.root.join(crate::uuid::simple());
+    fn executor_endpoint(&self) -> io::Result<(PathBuf, PathBuf, File)> { self.executor_endpoint_in(None) }
+
+    fn executor_endpoint_in(&self, private: Option<&Path>) -> io::Result<(PathBuf, PathBuf, File)> {
+        let base = private.map(|path| path.join("executors")).unwrap_or_else(|| self.root.clone());
+        fs::create_dir_all(&base)?;
+        let root = base.join(crate::uuid::simple());
         fs::create_dir(&root)?;
         let directory = platform::durable::open_dir(&root)?;
         // Linux names it through this process's descriptor of the root; elsewhere it is the
@@ -2945,24 +2956,35 @@ impl Pool {
         socket: PathBuf,
         start: usize,
         degree: u32,
-    ) -> io::Result<ExecutorConfig> {
+    ) -> io::Result<ExecutorConfig> { self.executor_config_in(held, root, socket, start, degree, None) }
+
+    fn executor_config_in(&self, held: &HeldGeneration, root: PathBuf, socket: PathBuf, start: usize, degree: u32, private: Option<&api::machine::LocalPrivateStorage>) -> io::Result<ExecutorConfig> {
+        let private_root = private.map(crate::private_io::root).transpose()?;
         let mut seal = Seal::prepare(
-            &self.root,
+            private_root.as_deref().unwrap_or(&self.root),
             &self.incarnation,
             &held.record.identity,
             &self.lane_devices(start, degree)?,
         )?;
         // A group's NCCL seal (NVLS off, peer memory only over NVLink).
         seal.group = degree > 1;
-        seal.tensorfs_home = Some(self.store.root().to_path_buf());
+        seal.tensorfs_home = Some(match private { Some(scope) => crate::private_io::store(scope)?.root().to_path_buf(), None => self.store.root().to_path_buf() });
+        let mut environment = match &self.config.toolchain {
+            Some(dir) => crate::machine::toolchain::environment(&self.config.environment, dir, ""),
+            None => self.config.environment.clone(),
+        };
+        if private.is_some() {
+            let tmp = seal.imposed().get("TMPDIR").cloned().ok_or_else(|| io::Error::other("private executor has no protected temporary directory"))?;
+            fs::create_dir_all(&tmp)?;
+            environment.insert("TEMP".into(), tmp.clone());
+            environment.insert("TMP".into(), tmp);
+        }
         Ok(ExecutorConfig {
+            private: private.is_some(),
             python: held.record.python.clone(),
             root,
             socket,
-            environment: match &self.config.toolchain {
-                Some(dir) => crate::machine::toolchain::environment(&self.config.environment, dir, ""),
-                None => self.config.environment.clone(),
-            },
+            environment,
             seal,
             generation_hold: Some(held.retention()),
             cgroup_namespace: Some(platform::contain::namespace(
@@ -2990,6 +3012,7 @@ impl Pool {
         start: usize,
         calls: Option<&Arc<crate::calls::Calls>>,
     ) -> io::Result<Option<Postprocess>> {
+        let plan = self.private_plan(engine, id, plan)?;
         let key = plan.executor.clone();
         let mut disposition = Disposition::default();
         if plan.degree > 0 {
@@ -3002,6 +3025,44 @@ impl Pool {
         }
         self.finish_returned(engine, id, &key, start, &disposition)?;
         result
+    }
+
+    fn private_plan(&self, engine: &Engine, id: &str, mut plan: Plan) -> io::Result<Plan> {
+        if let Some(scope) = engine.private_storage(id)? {
+            let identity = tensorfs::sha256::hex_digest(&crate::boundary_json::exact(&serde_json::json!([scope.project_id, scope.generation])));
+            let prefix = format!("private-{identity}:");
+            if !plan.executor.starts_with(&prefix) { plan.executor = format!("{prefix}{}", plan.executor); }
+        }
+        Ok(plan)
+    }
+
+    pub(crate) fn memo_for_private(&self, scope: &api::machine::LocalPrivateStorage) -> io::Result<Arc<crate::memo::Memo>> {
+        let key = (scope.project_id.clone(), scope.generation);
+        let mut memos = self.private_memos.lock().unwrap();
+        if let Some(memo) = memos.get(&key) { return Ok(memo.clone()); }
+        let memo = Arc::new(crate::memo::Memo::open(crate::private_io::root(scope)?.join("stage-memo"))?);
+        memos.insert(key, memo.clone());
+        Ok(memo)
+    }
+
+    /// The caller first proves this project has no active work/finalization. Public executors are untouched.
+    pub(crate) fn close_private_namespace(&self, scope: &api::machine::LocalPrivateStorage) -> io::Result<()> {
+        let id = &scope.project_id;
+        let keys: Vec<_> = self.sessions.lock().unwrap().iter()
+            .filter(|(_, session)| session.private_project.as_ref() == Some(id)).map(|(key, _)| key.clone()).collect();
+        for key in keys { self.end_session(&key); }
+        let cpu: Vec<_> = self.deviceless.lock().unwrap().extract_if(.., |session| session.private_project.as_ref() == Some(id)).collect();
+        for session in cpu {
+            let (plan, start) = (session.env.clone(), session.start);
+            session.executor.terminate()?;
+            self.ended(&plan, start);
+        }
+        self.reap();
+        if self.leaders.lock().unwrap().values().any(|leader| leader.private_project.as_ref() == Some(id) && !leader.birth.ended().unwrap_or(false)) {
+            return Err(io::Error::new(io::ErrorKind::ResourceBusy, "a private executor has not exited"));
+        }
+        self.private_memos.lock().unwrap().retain(|(project, _), _| project != id);
+        Ok(())
     }
 
     /// A run ending on these GPUs carries what the driver said there that failed no run.
@@ -3032,6 +3093,8 @@ impl Pool {
         calls: Option<&Arc<crate::calls::Calls>>,
         disposition: &mut Disposition,
     ) -> io::Result<Option<Postprocess>> {
+        let private = engine.private_storage(id)?;
+        let plan = self.private_plan(engine, id, plan)?;
         // Retain the exact cancellation object registered for this invocation. Removing its
         // map entry cannot revoke a Halt clone another thread already took.
         let cancellation = Mutex::new(None::<Cancellation>);
@@ -3078,7 +3141,7 @@ impl Pool {
                     born.lock().unwrap().extend(executor_births(birth, &[]));
                     engine.register_managed(id, birth.clone(), stops(cancel.clone()))
                 };
-                let created = self.new_session(engine, &held, &plan, start, on_birth);
+                let created = self.new_session(engine, &held, &plan, start, private.as_ref(), on_birth);
                 let births = born.into_inner().unwrap();
                 *disposition = Disposition::Unknown(births.clone());
                 match created {
@@ -3166,18 +3229,20 @@ impl Pool {
         held: &HeldGeneration,
         plan: &Plan,
         start: usize,
+        private: Option<&api::machine::LocalPrivateStorage>,
         on_birth: impl Fn(&Birth, &Cancellation) -> io::Result<()>,
     ) -> io::Result<Session> {
         let launched = Instant::now();
-        let (root, socket, directory) = self.executor_endpoint()?;
-        let config = self.executor_config(held, root, socket, start, plan.degree)?;
+        let private_root = private.map(crate::private_io::root).transpose()?;
+        let (root, socket, directory) = self.executor_endpoint_in(private_root.as_deref())?;
+        let config = self.executor_config_in(held, root, socket, start, plan.degree, private)?;
         // A forked child takes its lane and seal with its environment, so a group forks from
         // the same import-only parent (sealed to the first GPU) as a single GPU does.
         let mut config = Some(config);
         let mut forked = None;
         // A parent found dead is replaced at once: importing a new one costs this executor
         // what a spawn would, and the next ones fork again.
-        for _ in 0..2 {
+        for _ in 0..(if private.is_some() { 0 } else { 2 }) {
             let Some((zygote, start)) = self.zygote(held) else {
                 break;
             };
@@ -3223,12 +3288,13 @@ impl Pool {
         };
         executor.retain_until_exit(directory);
         executor.retain_until_exit(WakeOnExit(Arc::downgrade(engine)));
-        executor.keep_memo(self.memo.clone());
+        executor.keep_memo(match private { Some(scope) => self.memo_for_private(scope)?, None => self.memo.clone() });
         if plan.degree > 0 {
             let exact = Exact::open(&executor.birth)?.ok_or_else(|| io::Error::other("executor exited before its start"))?;
             let tenant = Tenant { plan: plan.executor.clone(), start, exact };
             self.tenants.lock().unwrap().insert(executor.birth.pid, tenant);
             self.leaders.lock().unwrap().insert(executor.birth.pid, Leader {
+                private_project: private.map(|scope| scope.project_id.clone()),
                 birth: executor.birth.clone(), env: plan.executor.clone(), constructions: Default::default(), start,
                 lookahead: (plan.degree == 1).then(|| executor.lookahead()),
             });
@@ -3247,6 +3313,7 @@ impl Pool {
         });
         let ledger = in_ledger(&executor.hello.tensorfs_version);
         Ok(Session {
+            private_project: private.map(|scope| scope.project_id.clone()),
             ledger,
             env: plan.executor.clone(),
             start,
