@@ -13,7 +13,16 @@ from typing import Annotated, Literal
 
 import msgspec
 from cozy_runtime.author import App, Context, ImageFrame, Outputs, Seed, Telemetry
-from cozy_runtime.fields import AspectRatio, Count, Image, Prompt, Range, Ratios, Total, Video
+from cozy_runtime.fields import (
+    AspectRatio,
+    Count,
+    Image,
+    Prompt,
+    Range,
+    Ratios,
+    Total,
+    Video,
+)
 from cozy_runtime.media import File, ImageFile, VideoFile
 
 app = App()
