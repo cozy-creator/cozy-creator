@@ -1356,7 +1356,7 @@ impl ViewGuard {
             // This descriptor names the original directory inode below the mount, not the
             // mounted filesystem root. After crash/unmount, normal writes receive EACCES.
             self.directory
-                .set_permissions(fs::Permissions::from_mode(0))
+                .set_permissions(fs::Permissions::from_mode(0o0))
                 .map_err(io_error("seal private mount underlay"))?;
         }
         Ok(())
