@@ -15,6 +15,7 @@ const { appendFileSync, closeSync, copyFileSync, fsyncSync, linkSync, mkdirSync,
 const { homedir } = require('os');
 const { join } = require('path');
 const { calcifer, signIn, STEP_MS, lastLook, lookAt, png, noStall, renderOf, until, projectHeld } = require('./page');
+const { readFootprint, closedProjectMemory } = require('./native-memory');
 
 const failures = [];
 const seen = {};
@@ -196,6 +197,11 @@ function calciferMb() {
 async function nativeMemory(base, folder) {
   const holder = JSON.parse(readFileSync(process.env.HOLDER, 'utf8'));
   const sample = { at_ms: Date.now(), heap_bytes: null, project_db_open: null };
+  let physicalBefore;
+  if (process.platform === 'darwin') {
+    try { physicalBefore = readFootprint(holder.pid); }
+    catch (error) { sample.physical_error = error.message; }
+  }
   try {
     const reply = await fetch(`${base}/v1/status`, { headers: { Authorization: `Bearer ${holder.token}` } });
     const status = await reply.json();
@@ -204,6 +210,14 @@ async function nativeMemory(base, folder) {
   } catch (error) { sample.heap_error = error.message; }
   try { sample.project_db_open = projectHeld(folder, holder.pid); }
   catch (error) { sample.ownership_error = error.message; }
+  if (process.platform === 'darwin') {
+    try {
+      const after = JSON.parse(readFileSync(process.env.HOLDER, 'utf8'));
+      const pressure = readFootprint(after.pid);
+      const current = JSON.parse(readFileSync(process.env.HOLDER, 'utf8'));
+      sample.physical = { holder_pid: holder.pid, after_holder_pid: current.pid, before: physicalBefore, after: pressure };
+    } catch (error) { sample.physical_error = error.message; }
+  }
   sample.finished_at_ms = Date.now();
   return sample;
 }
@@ -661,7 +675,10 @@ async function nativeMemory(base, folder) {
   await new Promise((done) => setTimeout(done, CLOSED_MS));
   memory.closed = calciferMb();
   numbers.calcifer_native.closed = await nativeMemory(base, folder);
-  check('calcifer_gives_back_a_closed_project', memory.closed <= memory.before + BARS.calcifer_kept_mb, memory);
+  const closedMetric = process.platform === 'darwin' ? 'physical_footprint' : 'rss';
+  numbers.calcifer_closed_memory_metric = closedMetric;
+  check('calcifer_gives_back_a_closed_project', closedProjectMemory(process.platform, memory, numbers.calcifer_native, BARS.calcifer_kept_mb),
+    process.platform === 'darwin' ? { metric: closedMetric, budget_mb: BARS.calcifer_kept_mb, rss_mb: memory, before: numbers.calcifer_native.before, closed: numbers.calcifer_native.closed } : memory);
   console.log(JSON.stringify({ failures, seen }, null, 2));
   process.exit(failures.length ? 1 : 0);
 })().catch(died);
