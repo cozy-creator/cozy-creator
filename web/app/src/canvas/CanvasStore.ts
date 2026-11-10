@@ -1,4 +1,5 @@
 import type { Edge, Node, ReactFlowInstance, Viewport } from "@xyflow/react"
+import { flushSync } from "react-dom"
 import { ApiError, type Client, type Write } from "../api/client"
 import { type Action, lost, type OutboxPort } from "../api/outbox"
 import type {
@@ -26,6 +27,7 @@ import { carriedFile } from "./carry"
 import { addOnsOf } from "./checkpoints"
 import { Field, fit, type Give, GLIDE_MS, pushAside } from "./clear"
 import { type Box, homesFor, readsOf, warningsOf } from "./graph"
+import type { ReadableProjection } from "./readableSurface"
 import { fieldsOf, fullRows, heldTo, shapesOf, snapped } from "./controls"
 import { baseOf } from "./ranges"
 import { asName, freeName, nameKey } from "./names"
@@ -213,10 +215,6 @@ const samePlace = (a: { x: number; y: number }, b: { x: number; y: number }) => 
 const onlyHere = (on: string[]) => on.length === 1 && on[0] === "local"
 const unsaid = (fit: Fit | null): fit is Fit => Boolean(fit?.tools.some((tool) => !tool.here))
 
-export function toRow(node: ElementNode): Card {
-  return { x: Math.round(node.position.x), y: Math.round(node.position.y), w: node.width ?? CARD_WIDTH }
-}
-
 /** What the state says of one element: an asset, or an entity. */
 type Placed = Pick<ElementView, "name" | "asset" | "entity" | "linked" | "queued" | "warnings">
 
@@ -299,6 +297,9 @@ export class CanvasStore {
   readonly allAsking = signal<{ fit: Fit } | null>(null)
   /** The box being worked on where it stands: the view to go back to, the one fitted to it, and whether a hand has since moved the canvas or is pulling its corner. */
   inPlace: { name: string; back: Viewport; fitted?: Viewport; moved?: boolean; pulled?: boolean } | null = null
+  /** Only the opened card has a viewport-dependent presentation. The cached value owns no DOM. */
+  private surface: { id: string; current?: ReadableProjection; pose?: Box; zoom?: number; update?: (room?: Box, at?: Viewport) => ReadableProjection | null } | null = null
+  private surfaceFrame = 0
   /** Done with the box where it stands: what's typed is saved, and the canvas goes back. */
   leaveHere: () => void = () => {}
   /** Opens a box where it stands, as a click on it does. */
@@ -324,6 +325,8 @@ export class CanvasStore {
   private state: Project | null = null
   private began = 0
   private rows: Map<string, Card> | null = null
+  /** Canonical rows, including an unadopted card and an unsaved corner pull. Never the presentation envelope. */
+  private poses = new Map<string, Card>()
   private owners = new Map<number, string>()
   private dragging = new Set<string>()
   /** Where what's being dragged started, for a drop that isn't a move. */
@@ -402,6 +405,9 @@ export class CanvasStore {
 
   /** Its canvas goes, and the store stays for when it's drawn again: nothing is open or held in a drag by then. */
   detach() {
+    cancelAnimationFrame(this.surfaceFrame)
+    this.surfaceFrame = 0
+    this.surface = null
     this.flow = null
     if (this.inPlace) this.patch(this.inPlace.name, { here: undefined, hereWords: undefined })
     this.inPlace = null
@@ -563,9 +569,128 @@ export class CanvasStore {
   }
 
   position(name: string): Card | null {
+    const key = this.resolveName(name)
+    const row = this.poses.get(key) ?? this.masks.get(key) ?? this.rows?.get(key)
+    return row ? { ...row } : null
+  }
+
+  private rememberPose(name: string, row: Card) {
+    const view = this.get(name)
+    const w = row.w ?? this.poses.get(name)?.w ?? (view ? widthFor(view) : CARD_WIDTH)
+    const pose = { x: row.x, y: row.y, w }
+    this.poses.set(name, pose)
+    return pose
+  }
+
+  /** Its canonical body, before any opened surface expands around it. */
+  poseOf(name: string): Box | null {
+    const key = this.resolveName(name)
+    const row = this.position(key)
+    const view = this.get(key)
+    if (!row || !view) return null
+    const w = row.w ?? widthFor(view)
+    const id = this.ids.get(key)
+    const at = this.dragging.has(key) && id ? this.flow?.getNode(id)?.position : undefined
+    return { x: at?.x ?? row.x, y: at?.y ?? row.y, w, h: heightFor(view, w) }
+  }
+
+  /** Only a person's drag reads the node's anchor; its width remains the canonical row's. */
+  private draggedRow(node: ElementNode): Card {
+    const row = this.position(node.data.name)
+    return { x: Math.round(node.position.x), y: Math.round(node.position.y), w: row?.w ?? this.poseOf(node.data.name)?.w ?? CARD_WIDTH }
+  }
+
+  /** Mount just the opened node for its first real measurement, even when its saved picture is offscreen. */
+  openSurface(name: string) {
     const id = this.ids.get(this.resolveName(name))
-    const node = id ? this.flow?.getNode(id) : undefined
-    return node ? toRow(node) : null
+    if (!id) return
+    this.surface = { id }
+    this.measureSurface()
+  }
+
+  private measureSurface() {
+    const id = this.surface?.id
+    const owner = this.inPlace
+    if (!id || this.surfaceFrame) return
+    this.surfaceFrame = requestAnimationFrame(() => {
+      this.surfaceFrame = 0
+      // An on-screen card binds before this frame. Only a culled one needs mounting.
+      if (this.inPlace !== owner || this.surface?.id !== id || this.surface.update) return
+      const flow = this.flow
+      flushSync(() => flow?.updateNode(id, { height: 0, measured: { width: flow.getNode(id)?.width, height: 0 } }))
+    })
+  }
+
+  bindSurface(id: string, update: (room?: Box, at?: Viewport) => ReadableProjection | null) {
+    if (this.surface?.id !== id) return () => {}
+    this.surface.update = update
+    return () => {
+      if (this.surface?.id === id && this.surface.update === update) this.surface.update = undefined
+    }
+  }
+
+  surfaceOf(name: string): ReadableProjection | undefined {
+    const held = this.surface
+    return held && this.ids.get(this.resolveName(name)) === held.id ? held.current : undefined
+  }
+
+  drawSurface(room?: Box, at?: Viewport): ReadableProjection | null {
+    if (this.surface?.update) return this.surface.update(room, at)
+    if (room) this.measureSurface()
+    return null
+  }
+
+  refreshSurface(viewport: Viewport) {
+    if (this.surface?.current && this.surface.zoom === viewport.zoom) this.surface.current = { ...this.surface.current, view: viewport }
+    else if (this.surface?.update) this.surface.update()
+    else if (this.surface?.current && this.surface.current.view.zoom !== viewport.zoom) this.measureSurface()
+  }
+
+  presentSurface(id: string, current: ReadableProjection) {
+    if (this.surface?.id !== id) return
+    const name = this.namesById.get(id)
+    const pose = name && this.poseOf(name)
+    const node = this.flow?.getNode(id)
+    if (!pose || !node) return
+    this.surface.current = current
+    this.surface.pose = pose
+    this.surface.zoom = this.flow?.getZoom()
+    const { bounds } = current
+    const origin: [number, number] = [(pose.x - bounds.x) / bounds.w, (pose.y - bounds.y) / bounds.h]
+    if (node.width === bounds.w && node.height === bounds.h && node.position.x === pose.x && node.position.y === pose.y && node.origin?.[0] === origin[0] && node.origin?.[1] === origin[1]) return
+    // The card's frame and its React Flow envelope are one layout change, before size observers run.
+    flushSync(() => this.flow?.updateNode(id, { position: { x: pose.x, y: pose.y }, width: bounds.w, height: bounds.h, origin, measured: { width: bounds.w, height: bounds.h } }))
+  }
+
+  closeSurface() {
+    const id = this.surface?.id
+    cancelAnimationFrame(this.surfaceFrame)
+    this.surfaceFrame = 0
+    this.surface = null
+    const name = id && this.namesById.get(id)
+    if (name) requestAnimationFrame(() => {
+      if (this.surface?.id !== id) flushSync(() => this.paintPose(name))
+    })
+  }
+
+  private paintPose(name: string) {
+    const id = this.ids.get(name)
+    const pose = this.poseOf(name)
+    if (!id || !pose) return
+    if (this.surface?.id === id) {
+      if (this.surface.update) {
+        if (!this.surfaceFrame) this.surfaceFrame = requestAnimationFrame(() => {
+          this.surfaceFrame = 0
+          this.surface?.update?.()
+        })
+        return
+      }
+      const before = this.surface.pose
+      if (before?.w !== pose.w || before.h !== pose.h) return this.measureSurface()
+      this.flow?.updateNode(id, { position: { x: pose.x, y: pose.y } })
+      return
+    }
+    this.flow?.updateNode(id, { position: { x: pose.x, y: pose.y }, width: pose.w, height: undefined, origin: [0, 0], measured: { width: pose.w, height: pose.h } })
   }
 
   // From Calcifer
@@ -624,8 +749,9 @@ export class CanvasStore {
       if (samePlace(mask, row)) this.masks.delete(name)
       return
     }
+    this.rememberPose(name, row)
     const id = this.ids.get(name)
-    if (id) this.flow?.updateNode(id, { position: { x: row.x, y: row.y }, ...(row.w ? { width: row.w } : {}) })
+    if (id) this.paintPose(name)
     if (row.w) this.reshape(name)
   }
 
@@ -831,8 +957,8 @@ export class CanvasStore {
       const row = this.rows?.get(name)
       const view = this.views.get(name)
       if ((!node && !row) || !view) continue
-      const w = node?.width ?? row?.w ?? widthFor(view)
-      boxes.set(name, this.laid(name, { x: node?.position.x ?? row!.x, y: node?.position.y ?? row!.y, w, h: node?.measured?.height ?? heightFor(view, w) }))
+      const pose = this.poseOf(name)
+      if (pose) boxes.set(name, this.laid(name, pose))
     }
     const sizes = new Map(left.map((element) => {
       const view = viewOf(element)
@@ -874,6 +1000,7 @@ export class CanvasStore {
     if (!this.served.has(id)) this.served.set(id, name)
     const view = this.views.get(name)!
     const width = row.w ?? widthFor(view)
+    this.rememberPose(name, { ...row, w: width })
     const height = heightFor(view, width)
     this.shapes.set(name, this.shapeOf(name, width, height))
     return {
@@ -901,12 +1028,12 @@ export class CanvasStore {
     const view = this.views.get(key)
     const node = id ? this.flow?.getNode(id) : undefined
     if (!id || !view || !node) return
-    const width = node.width ?? widthFor(view)
+    const width = this.poseOf(key)?.w ?? widthFor(view)
     const height = heightFor(view, width)
     const shape = this.shapeOf(key, width, height)
     if (this.shapes.get(key) === shape) return
     this.shapes.set(key, shape)
-    this.flow?.updateNode(id, { measured: { width, height } })
+    this.paintPose(key)
     this.unsettle(key, true)
   }
 
@@ -953,8 +1080,8 @@ export class CanvasStore {
     const row = this.rows?.get(name)
     if ((!node && !row) || !view) return null
     // A row is what the page last said of it, and a node may not have heard yet.
-    const w = row?.w ?? node?.width ?? widthFor(view)
-    const box = { x: row?.x ?? node!.position.x, y: row?.y ?? node!.position.y, w, h: heightFor(view, w) }
+    const box = this.poseOf(name)
+    if (!box) return null
     return bare ? box : this.laid(name, box)
   }
 
@@ -987,8 +1114,11 @@ export class CanvasStore {
   private glide(name: string, at: { x: number; y: number; w?: number | null }) {
     const id = this.ids.get(name)
     if (!id) return
+    const was = this.position(name)
+    this.rememberPose(name, { ...was, x: at.x, y: at.y, ...(at.w == null ? {} : { w: at.w }) })
     clearTimeout(this.gliding.get(id))
-    this.flow?.updateNode(id, { position: { x: at.x, y: at.y }, ...(at.w == null ? {} : { width: at.w }), className: "glide" })
+    this.flow?.updateNode(id, { className: "glide" })
+    this.paintPose(name)
     this.gliding.set(id, setTimeout(() => this.flow?.updateNode(id, { className: undefined }), GLIDE_MS))
   }
 
@@ -997,7 +1127,7 @@ export class CanvasStore {
     const id = this.ids.get(name)
     if (!id) return
     const row = { x: Math.round(to.x), y: Math.round(to.y), w: Math.round(to.w) }
-    const resized = this.flow?.getNode(id)?.width !== row.w
+    const resized = this.poseOf(name)?.w !== row.w
     this.glide(name, resized ? row : { x: row.x, y: row.y })
     if (resized) this.reshape(name)
     if (this.views.get(name)?.placing) this.rows?.set(name, row)
@@ -1510,8 +1640,10 @@ export class CanvasStore {
 
   private removeNode(name: string) {
     const id = this.ids.get(name)
+    if (this.surface?.id === id) this.surface = null
     this.unsettled.delete(name)
     this.views.delete(name)
+    this.poses.delete(name)
     this.ids.delete(name)
     if (id) {
       this.namesById.delete(id)
@@ -1539,6 +1671,9 @@ export class CanvasStore {
     this.views.set(to, { ...view, name: to })
     this.ids.set(to, id)
     this.namesById.set(id, to)
+    const pose = this.poses.get(from)
+    this.poses.delete(from)
+    if (pose) this.poses.set(to, pose)
     const mask = this.masks.get(from)
     this.masks.delete(from)
     if (mask) this.masks.set(to, mask)
@@ -2292,12 +2427,16 @@ export class CanvasStore {
     }
   }
 
+  isDragging(name: string): boolean {
+    return this.dragging.has(this.resolveName(name))
+  }
+
   /** Let go: each lands where it was let go, a little smaller at most, and what it lies on is pushed aside, in the same step. Only with something that can't be pushed in the way does it move off. */
   dragStopped(nodes: ElementNode[]) {
     const names = nodes.map((node) => node.data.name)
     const held = new Set(names)
     const field = this.field(held)
-    const moved = new Map(nodes.map((node) => [node.data.name, toRow(node)]))
+    const moved = new Map(nodes.map((node) => [node.data.name, this.draggedRow(node)]))
     const boxes = names.filter((name) => this.views.get(name) && !this.views.get(name)?.placing && !samePlace(moved.get(name)!, this.rows?.get(name) ?? moved.get(name)!))
     this.gesture = boxes.length ? this.step(`Moved ${boxes.length > 3 ? `${boxes.length} boxes` : boxes.join(", ")}`, boxes) : null
     for (const node of [...nodes].sort((a, b) => (a.data.name < b.data.name ? -1 : 1))) {
@@ -2306,10 +2445,11 @@ export class CanvasStore {
       this.dragFrom.delete(name)
       const view = this.views.get(name)
       if (!view) continue
-      const row = toRow(node)
+      const row = this.draggedRow(node)
       const box = this.laid(name, { x: row.x, y: row.y, w: row.w ?? CARD_WIDTH, h: heightFor(view, row.w ?? CARD_WIDTH) })
       if (view.placing) this.rows?.set(name, row)
       else this.move(name, row)
+      if (this.surface?.id === node.id) this.paintPose(name)
       field.add(name, this.giveWay(name, field, box, { tall: this.tallOf(name), pushes: this.pushable(held) }))
     }
     this.gesture = null
@@ -2338,8 +2478,10 @@ export class CanvasStore {
     if (!id || !node) return
     if (this.pulling?.name !== key) this.pulling = { name: key, was: this.boxOf(key) ?? undefined, shown: new Set() }
     const pulling = this.pulling
-    this.flow?.updateNode(id, { width })
-    const row = { x: Math.round(node.position.x), y: Math.round(node.position.y), w: Math.round(width) }
+    const before = this.position(key)!
+    this.rememberPose(key, { ...before, w: width })
+    this.paintPose(key)
+    const row = { x: Math.round(before.x), y: Math.round(before.y), w: Math.round(width) }
     const view = this.views.get(key)
     const box = view && this.laid(key, { ...row, h: heightFor(view, row.w) })
     const may = this.pushable(new Set([key]))
@@ -2498,6 +2640,7 @@ export class CanvasStore {
     const key = this.resolveName(name)
     const id = this.ids.get(key)
     if (!id) return
+    this.rememberPose(key, row)
     // What an act moves, pushed aside or put down, it began from where it was.
     if (edit) {
       this.joinStep(edit, [key])
