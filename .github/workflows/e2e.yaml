@@ -490,6 +490,22 @@ jobs:
           umask 077; printf '%s' "$KEY" > "$RUNNER_TEMP/key.json"
           code=0; bash .creator/e2e/release/run.sh --out "$RUNNER_TEMP/e2e" --key "$RUNNER_TEMP/key.json" ${SKU:+--sku "$SKU"} ${QUOTE:+--quote} ${PINS:+--pins "$PINS"} $CANDIDATES 2>&1 | node .creator/e2e/publish/scrub.js || code=$?
           rm -f "$RUNNER_TEMP/key.json"; exit $code
+      # The suite's trap ends its order; a cancel kills it before `machine end` returns (42747641307's order stayed): end it here too.
+      - if: always()
+        run: |
+          r=$(jq -r 'select(.type? == "rental.accepted") | .rental_id // empty' "$RUNNER_TEMP/e2e/rent.ndjson" 2> /dev/null | tail -1) || true
+          [ -n "$r" ] || exit 0
+          cozy=$HOME/.cozy/bin/cozy hc=$RUNNER_TEMP/hubcheck
+          [ -x "$hc" ] || hc=$hc.exe
+          # Calcifer reaches the Hub through hubcheck, which the suite stopped: the same address again.
+          addr=$(head -1 "$RUNNER_TEMP/e2e/hubcheck.addr" 2> /dev/null) || true
+          [ -z "$addr" ] || [ ! -x "$hc" ] || { "$hc" --listen "$addr" --out "$RUNNER_TEMP" > /dev/null 2>&1 & sleep 2; }
+          . .creator/release-gate/machines.sh
+          for _ in $(seq 1 30); do
+            listed "$r" "$cozy" || { echo "$r is gone"; exit 0; }
+            "$cozy" machine end "$r" --force -y < /dev/null || true; sleep 10
+          done
+          echo "::error::$r is still listed, or no machine listing answered: end it by hand (cozy machine end $r)"; exit 1
       - if: always()
         uses: ./.creator/e2e/publish
         with:
