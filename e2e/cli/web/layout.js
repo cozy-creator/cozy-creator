@@ -340,11 +340,81 @@ function emptyHits({ around, step }) {
   return [...found].map(([at, [x, y]]) => ({ rule: 'unseen-blocker', at, what: `takes the pointer at ${x},${y}, where nothing is drawn, from the canvas` }));
 }
 
-/** Each drawn edge on top, as the GPU draws it: its line on all four sides, and nothing of it past the line. Each is pictured with it and
- *  without it, the page held still, and what it draws is where the two differ; `decoder` reads the pictures. */
+/** Each drawn edge on top, as the GPU draws it: coverage from black and white versions of the same ink path,
+ *  and spill from the actual frame against its original whole-hidden underlay. */
 async function drawnEdges(page, decoder, label) {
   const said = [];
   const proofs = [];
+  const pictures = new Map();
+  const picturesFor = async (source) => {
+    if (!pictures.has(source)) pictures.set(source, await page.evaluate(async (source) => {
+      const match = source.match(/^url\(["']?([^"')]+)["']?\)$/);
+      const url = match && new URL(match[1], location.href);
+      if (!url || url.origin !== location.origin || !/\/frame-(chosen|control|field|panel|primary|sheet)(-[\w-]+)?\.svg$/.test(url.pathname)) {
+        throw new Error(`drawn edge has no owned SVG counterfactual: ${source}`);
+      }
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`drawn edge SVG: ${response.status}`);
+      const doc = new DOMParser().parseFromString(await response.text(), 'image/svg+xml');
+      const svg = doc.documentElement;
+      const paths = [...svg.children];
+      const view = (svg.getAttribute('viewBox') ?? '').trim().split(/\s+/).map(Number);
+      const dimensions = ['width', 'height'].map((name) => Number(svg.getAttribute(name)));
+      const svgNs = 'http://www.w3.org/2000/svg';
+      const only = (el, names) => [...el.attributes].every((attr) => names.includes(attr.name));
+      if (doc.querySelector('parsererror') || doc.childNodes.length !== 1 || svg.localName !== 'svg' || paths.length !== 2
+          || svg.namespaceURI !== svgNs || !only(svg, ['xmlns', 'width', 'height', 'viewBox'])
+          || dimensions.some((n) => !Number.isFinite(n) || n <= 0)
+          || paths.some((path, i) => path.localName !== 'path' || path.namespaceURI !== svgNs || path.children.length
+            || !only(path, i === 0 ? ['d', 'fill'] : ['d', 'fill', 'fill-rule'])
+            || !path.getAttribute('d') || !/^#[0-9a-f]{6}$/i.test(path.getAttribute('fill') ?? ''))
+          || paths[1].getAttribute('fill-rule') !== 'evenodd' || view.length !== 4 || !view.every(Number.isFinite) || view[2] <= 0 || view[3] <= 0) {
+        throw new Error('drawn edge SVG is not the owned opaque paper-first, filled-ink-second structure');
+      }
+      const urls = [];
+      const picture = async (color, bleed) => {
+        const copy = svg.cloneNode(true);
+        if (bleed) {
+          const [x, y, width, height] = view;
+          copy.children[0].setAttribute('d', `M${x} ${y}H${x + width}V${y + height}H${x}Z`);
+          copy.children[0].setAttribute('fill', '#ff00ff');
+        }
+        // Recolor only the actual opaque ink fill; never alter its path, opacity, or paper.
+        if (color === null) copy.children[1].remove();
+        else if (color) copy.children[1].setAttribute('fill', color);
+        const url = URL.createObjectURL(new Blob([new XMLSerializer().serializeToString(copy)], { type: 'image/svg+xml' }));
+        urls.push(url);
+        const image = new Image();
+        image.src = url;
+        await image.decode();
+        return `url("${url}")`;
+      };
+      try {
+        const [black, white, noInk, bleed, bleedBlack, bleedWhite] = await Promise.all([
+          picture('#000000'), picture('#ffffff'), picture(null),
+          picture(undefined, true), picture('#000000', true), picture('#ffffff', true),
+        ]);
+        return { black, white, noInk, bleed, bleedBlack, bleedWhite, urls };
+      } catch (error) {
+        for (const url of urls) URL.revokeObjectURL(url);
+        throw error;
+      }
+    }, source));
+    return pictures.get(source);
+  };
+  const imageAt = (i, image) => page.evaluate(({ i, image }) => {
+    const el = window.drawnFrames[i];
+    if (!el?.isConnected) return null;
+    const saved = [el.style.getPropertyValue('border-image-source'), el.style.getPropertyPriority('border-image-source')];
+    el.style.setProperty('border-image-source', image, 'important');
+    return { saved, image: getComputedStyle(el).borderImageSource };
+  }, { i, image });
+  const restoreImage = (i, saved) => page.evaluate(({ i, saved }) => {
+    const el = window.drawnFrames[i];
+    if (!el) return;
+    if (saved[0]) el.style.setProperty('border-image-source', saved[0], saved[1]);
+    else el.style.removeProperty('border-image-source');
+  }, { i, saved });
   try {
     // Settle before reading a rectangle: finishing an animation can move the frame itself.
     const ids = await page.evaluate(() => {
@@ -384,21 +454,23 @@ async function drawnEdges(page, decoder, label) {
         rect: [r.left, r.top, r.right, r.bottom], o, scale, samples,
         view: [innerWidth, innerHeight, devicePixelRatio, document.querySelector('.react-flow__viewport')?.style.transform ?? ''],
         image: style.borderImageSource,
+        imageInline: [el.style.getPropertyValue('border-image-source'), el.style.getPropertyPriority('border-image-source')],
+        visibilityInline: [el.style.getPropertyValue('visibility'), el.style.getPropertyPriority('visibility')],
+        slices: [style.borderImageSlice, style.borderImageWidth, style.borderImageOutset, style.borderImageRepeat],
         eligible: !(r.width < 40 || r.height < 30 || r.left - o < 1 || r.top - o < 1 || r.right + o > innerWidth - 1 || r.bottom + o > innerHeight - 1),
       };
     }, i);
-    const geometry = (frame) => frame && JSON.stringify([frame.rect, frame.scale, frame.view]);
+    const geometry = (frame) => frame && JSON.stringify([frame.rect, frame.scale, frame.view, frame.slices]);
     const paint = (frame) => frame && JSON.stringify([frame.o, frame.image]);
-    for (const i of ids) {
-      const first = await frameAt(i);
-      if (first && !first.eligible) continue; // The same size/on-screen exclusions as the pixel audit.
+    const inline = (frame) => frame && JSON.stringify([frame.imageInline, frame.visibilityInline]);
+    const capture = async (i, witnesses) => {
       let last;
-      const what = `drawn edge ${i} stays in place through its two pictures`;
-      let pair;
+      const what = `drawn edge ${i} stays in place through its four pictures`;
       try {
         await until(what, async () => {
           const frame = await frameAt(i);
           if (!frame?.eligible) { last = { frame, stable: false }; return false; }
+          const variants = witnesses ? null : await picturesFor(frame.image);
           const [left, top, right, bottom] = frame.rect;
           const pad = frame.o + 3;
           const [width, height] = frame.view;
@@ -406,6 +478,20 @@ async function drawnEdges(page, decoder, label) {
           const clip = { x, y, width: Math.min(width, Math.ceil(right + pad)) - x, height: Math.min(height, Math.ceil(bottom + pad)) - y };
           const shown = await page.screenshot({ clip });
           const afterShown = await frameAt(i);
+          const captured = [];
+          for (const image of witnesses ?? [variants.black, variants.white]) {
+            const changed = await imageAt(i, image);
+            if (!changed) { last = { frame, afterShown, stable: false }; return false; }
+            let picture, after;
+            try {
+              picture = await page.screenshot({ clip });
+              after = await frameAt(i);
+            } finally {
+              await restoreImage(i, changed.saved);
+            }
+            captured.push({ picture, after, image: changed.image, restored: await frameAt(i) });
+          }
+          const [black, white] = captured;
           const visibility = await page.evaluate((i) => {
             const el = window.drawnFrames[i];
             if (!el?.isConnected) return null;
@@ -427,38 +513,76 @@ async function drawnEdges(page, decoder, label) {
             }, { i, saved: visibility });
           }
           const restored = await frameAt(i);
-          const stable = [afterShown, afterBare, restored].every((after) => geometry(after) === geometry(frame))
-            && [afterShown, restored].every((after) => paint(after) === paint(frame));
-          last = { frame, afterShown, afterBare, restored, clip, viewport: { width, height }, shown, bare, stable };
+          const stable = [afterShown, black.after, black.restored, white.after, white.restored, afterBare, restored].every((after) => geometry(after) === geometry(frame))
+            && [afterShown, black.restored, white.restored, restored].every((after) => paint(after) === paint(frame) && inline(after) === inline(frame))
+            && black.after.image === black.image && white.after.image === white.image;
+          last = { frame, afterShown, afterBlack: black.after, afterBlackRestored: black.restored,
+            afterWhite: white.after, afterWhiteRestored: white.restored, afterBare, restored, clip, viewport: { width, height },
+            shown, black: black.picture, white: white.picture, bare, variants, stable };
           return stable;
         }, (stable) => stable, STEP_MS);
-        pair = last;
+        const { frame, clip, shown, black, white, bare } = last;
+        const found = await decoder.evaluate(edgesOf, { shown: shown.toString('base64'), black: black.toString('base64'), white: white.toString('base64'), bare: bare.toString('base64'), clip, frame });
+        return { ...last, found };
       } catch (error) {
         if (!last || !error.message.startsWith(`${what}: still `)) throw error;
-        const found = [{ rule: 'capture-moved', what: `${what}: geometry kept changing during capture` }];
-        for (const finding of found) said.push({ at: first?.at ?? `drawn edge ${i}`, ...finding });
-        if (process.env.SHOT) proofs.push({ i, ...last, found });
-        continue;
+        return { ...last, found: [{ rule: 'capture-moved', what: `${what}: geometry kept changing during capture` }] };
       }
-      const { frame, clip, shown, bare } = pair;
-      const found = await decoder.evaluate(edgesOf, { shown: shown.toString('base64'), bare: bare.toString('base64'), clip, frame });
-      for (const { rule, what } of found) said.push({ rule, at: frame.at, what });
-      if (found.length && process.env.SHOT) proofs.push({ i, ...pair, found });
+    };
+    for (const i of ids) {
+      const first = await frameAt(i);
+      if (first && !first.eligible) continue; // The same size/on-screen exclusions as the pixel audit.
+      const pair = await capture(i);
+      const { frame, found } = pair;
+      for (const { rule, what } of found) said.push({ rule, at: frame?.at ?? first?.at ?? `drawn edge ${i}`, what });
+      // Exercise spill only where the existing audit has its outside sampling window, with all four sides present.
+      const controls = pair.stable && frame.at === 'div.zoom' && frame.samples.length === 12
+        && frame.o - 0.5 > 3.5 * frame.scale && !seen.edge_controls;
+      // Keep exact positive comparisons over media and on the primary button at the same two views.
+      const keep = (frame?.at === 'div.zoom' && label === '1600x1000-drawer-runs')
+        || (frame?.at === 'button.tb.primary' && ['1600x1000-open-card-zoomed-out-again', '1600x1000-writing-card'].includes(label));
+      if ((found.length || controls || keep) && process.env.SHOT) proofs.push({ i, ...pair });
+      if (controls) {
+        const result = { label, at: frame.at, positive: found.length === 0, original: found };
+        for (const [name, image, witnesses, expected] of [
+          ['missing_ink', pair.variants.noInk, [pair.variants.noInk, pair.variants.noInk], 'edge-gone'],
+          ['fill_bleed', pair.variants.bleed, [pair.variants.bleedBlack, pair.variants.bleedWhite], 'past-edge'],
+        ]) {
+          const changed = await imageAt(i, image);
+          if (!changed) throw new Error('drawn edge control lost its frame');
+          let control;
+          try {
+            control = await capture(i, witnesses);
+          } finally {
+            await restoreImage(i, changed.saved);
+          }
+          const restored = await frameAt(i);
+          const same = control.stable && geometry(control.frame) === geometry(frame)
+            && JSON.stringify(control.frame.samples) === JSON.stringify(frame.samples)
+            && geometry(restored) === geometry(frame) && paint(restored) === paint(frame) && inline(restored) === inline(frame);
+          result[name] = same && control.found.length > 0 && control.found.every((finding) => finding.rule === expected);
+          result[`${name}_observed`] = { stable: same, findings: control.found };
+          if (process.env.SHOT) proofs.push({ i, control: name, ...control, controlRestored: restored });
+        }
+        seen.edge_controls = result;
+      }
     }
   } finally {
-    await page.evaluate(() => {
+    await page.evaluate((urls) => {
+      for (const url of urls) URL.revokeObjectURL(url);
       for (const el of window.drawnFrames ?? []) delete el.dataset.drawnEdge;
       for (const held of window.heldStill ?? []) held.play();
       delete window.drawnFrames;
       delete window.heldStill;
-    });
+    }, [...pictures.values()].flatMap((held) => held.urls));
   }
   // Keep the exact comparison inputs after this pass has finished measuring, without another screenshot or DOM read.
-  for (const { i, frame, clip, viewport, shown, bare, afterShown, afterBare, restored, found } of proofs) {
-    const path = `${process.env.SHOT}-${label}-edge-${i}`;
-    if (shown) writeFileSync(`${path}-drawn.png`, shown);
-    if (bare) writeFileSync(`${path}-bare.png`, bare);
-    writeFileSync(`${path}-frame.json`, JSON.stringify({ label, frame, clip, viewport, afterShown, afterBare, restored, findings: found }, null, 2));
+  for (const { i, control, frame, clip, viewport, shown, black, white, bare, afterShown, afterBlack, afterBlackRestored, afterWhite, afterWhiteRestored, afterBare, restored, controlRestored, found } of proofs) {
+    const path = `${process.env.SHOT}-${label}-edge-${i}${control ? `-${control}` : ''}`;
+    for (const [name, picture] of Object.entries({ drawn: shown, black, white, bare })) {
+      if (picture) writeFileSync(`${path}-${name}.png`, picture);
+    }
+    writeFileSync(`${path}-frame.json`, JSON.stringify({ label, control, frame, clip, viewport, afterShown, afterBlack, afterBlackRestored, afterWhite, afterWhiteRestored, afterBare, restored, controlRestored, findings: found }, null, 2));
   }
   return said;
 }
@@ -496,9 +620,9 @@ async function panCanvas(page) {
   return { from, fitted, before, after: await viewport() };
 }
 
-/** A frame's sides from its two pictures, with it and without it: on each, its line is drawn within a few pixels of its edge, and nothing of
- *  it lies past that. Self-contained: it runs in the decoder's page. */
-async function edgesOf({ shown, bare, clip, frame }) {
+/** Coverage from the same ink geometry recolored black and white; spill from actual shown versus whole-hidden.
+ *  Self-contained: it runs in the decoder's page. */
+async function edgesOf({ shown, black, white, bare, clip, frame }) {
   const read = async (base64) => {
     const bitmap = await createImageBitmap(await (await fetch(`data:image/png;base64,${base64}`)).blob());
     const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
@@ -506,9 +630,9 @@ async function edgesOf({ shown, bare, clip, frame }) {
     context.drawImage(bitmap, 0, 0);
     return context.getImageData(0, 0, bitmap.width, bitmap.height);
   };
-  const [a, b] = [await read(shown), await read(bare)];
-  const k = a.width / clip.width;
-  const differs = (x, y) => {
+  const [actual, darkInk, lightInk, underlay] = [await read(shown), await read(black), await read(white), await read(bare)];
+  const k = actual.width / clip.width;
+  const differs = (a, b, x, y) => {
     const [px, py] = [Math.round((x - clip.x) * k), Math.round((y - clip.y) * k)];
     if (px < 0 || py < 0 || px >= a.width || py >= a.height) return 0;
     const i = (py * a.width + px) * 4;
@@ -519,16 +643,16 @@ async function edgesOf({ shown, bare, clip, frame }) {
   for (const { side, x, y } of frame.samples) {
     const [dx, dy] = { top: [0, -1], right: [1, 0], bottom: [0, 1], left: [-1, 0] }[side];
     const [ex, ey] = { top: [x, top], right: [right, y], bottom: [x, bottom], left: [left, y] }[side];
-    const most = (from, to) => {
+    const most = (a, b, from, to) => {
       let held = 0;
-      for (let d = from; d <= to; d += 0.5 / k) held = Math.max(held, differs(ex + dx * d, ey + dy * d));
+      for (let d = from; d <= to; d += 0.5 / k) held = Math.max(held, differs(a, b, ex + dx * d, ey + dy * d));
       return held;
     };
     const tally = (sides[side] ??= { at: 0, line: 0, past: 0 });
     tally.at++;
     // The line wobbles from 3 px inside its edge to 2 px out; past it to the edge of its picture, nothing.
-    if (most(-4 * frame.scale, 2.5 * frame.scale) > 80) tally.line++;
-    if (frame.o - 0.5 > 3.5 * frame.scale && most(3.5 * frame.scale, frame.o - 0.5) > 12) tally.past++;
+    if (most(darkInk, lightInk, -4 * frame.scale, 2.5 * frame.scale) > 80) tally.line++;
+    if (frame.o - 0.5 > 3.5 * frame.scale && most(actual, underlay, 3.5 * frame.scale, frame.o - 0.5) > 12) tally.past++;
   }
   const found = [];
   for (const [side, { at, line, past }] of Object.entries(sides)) {
@@ -959,6 +1083,7 @@ ${local ? `  card:
 
   summed();
   seen.shots = shots.length;
+  check('drawn_edge_controls', Boolean(seen.edge_controls?.positive && seen.edge_controls?.missing_ink && seen.edge_controls?.fill_bleed), seen.edge_controls ?? 'no eligible zoom frame was controlled');
   check('page_errors', errors.length === 0, errors.slice(0, 10));
   for (const rule of new Set(findings.map((held) => held.rule))) check(`no_${rule.replace(/-/g, '_')}`, false, seen.found.filter((held) => held.rule === rule).length);
   check('laid_out', findings.length === 0, findings.length);
