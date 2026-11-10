@@ -73,7 +73,7 @@ impl Api {
         machines: Arc<Machines>,
         token: &str,
     ) -> Arc<Self> {
-        Arc::new(Self {
+        let api = Arc::new(Self {
             sessions: crate::sessions::Sessions::open(calcifer.store()),
             calcifer,
             machines,
@@ -84,7 +84,9 @@ impl Api {
             bearer: Sha256::digest(token).into(),
             stopping: RwLock::new(false),
             stop: watch::channel(false).0,
-        })
+        });
+        crate::project::vault::start(&api);
+        api
     }
 
     /// `down`: admission closes once the mutations in flight are done, then every stream and the

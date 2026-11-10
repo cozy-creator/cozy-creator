@@ -27,6 +27,7 @@ mod upgrade;
 mod walker;
 mod written;
 mod legacy;
+pub(crate) mod vault;
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -180,6 +181,7 @@ pub(crate) fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
         .route_layer(axum::middleware::from_fn(history::record))
         // Outside the history's: a write answered again is no edit of its own.
         .route_layer(axum::middleware::from_fn_with_state(api.clone(), keyed::answered))
+        .route("/v1/projects/{id}/vault", get(vault::read).post(vault::write))
 }
 
 impl Projects {
@@ -191,6 +193,7 @@ impl Projects {
         for project in self.now_open() {
             let id = &project.id;
             let dir = &project.folder.dir;
+            if vault::encrypted(&vault::logical(dir)) { continue; }
             let rev = format!("{}.{}", project.folder.stamp(), stamp(&dir.join(folder::FILES)));
             // Held while it's told: a forget waits for it.
             let still = self.open.lock().expect("projects lock");
@@ -214,6 +217,7 @@ impl Projects {
     /// else opened from the index. It stays open while the answer is held.
     fn get(&self, api: &Arc<Api>, named: &str) -> Result<Arc<Project>, Refusal> {
         if let Some(project) = self.open_now(named) {
+            vault::view(&vault::logical(&project.folder.dir)).map_err(Refusal)?;
             return Ok(project);
         }
         if api::target::written_as_path(named.trim()) {
@@ -226,7 +230,7 @@ impl Projects {
             return Err(Refusal(Error::new(Kind::NotFound, "project_unknown", said).next("cozy project ls")));
         }
         // Opened for a call: used now, which the index lists by.
-        api.calcifer.store().project_opened(&project.id, &identity(&project.folder.dir).1, &project.folder.dir, Some(now_ms()))?;
+        api.calcifer.store().project_opened(&project.id, &identity(&project.folder.dir).1, &vault::logical(&project.folder.dir), Some(now_ms()))?;
         Ok(project)
     }
 
@@ -238,6 +242,8 @@ impl Projects {
     /// The project in `dir` (canonical), opened if it isn't, given its id and name and recorded in the index; its walk goes on when
     /// one is owed. It stays open while the answer is held.
     fn open(&self, api: &Arc<Api>, dir: &FsPath) -> Result<Arc<Project>, Error> {
+        let physical = vault::view(dir)?;
+        let dir = physical.as_path();
         // Before `project.db`: a format 2 or 3 folder moves to 4, and its files are imported once (cl-803).
         let said = match dir.join(db::DB).is_file() {
             true => vec![],
@@ -313,7 +319,7 @@ const HEARD_FOR: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
 /// Where a run of the project in `dir` lands its outputs.
 pub(crate) fn landing(dir: &FsPath) -> PathBuf {
-    dir.join(folder::RUNS)
+    vault::logical(dir).join(folder::RUNS)
 }
 
 /// The project a run's landing folder is in, if it's one.
@@ -331,6 +337,7 @@ pub(crate) fn named(api: &Api, text: &str) -> Result<PathBuf, Error> {
             let said = format!("{text} is relative, and Calcifer has no folder of a client's to start it from");
             return Err(Error::new(Kind::Usage, "project_path", said).remedy(format!("name {}", api::calcifer::project::NAMED_BY)));
         }
+        if let Some(root) = path.ancestors().find(|root| vault::encrypted(root)) { return Ok(root.to_owned()); }
         return holding(path);
     }
     Ok(known(api, text)?.path)
@@ -342,7 +349,7 @@ pub(crate) fn named(api: &Api, text: &str) -> Result<PathBuf, Error> {
 fn indexed(api: &Api) -> Result<Vec<crate::state::KnownProject>, Error> {
     let store = api.calcifer.store();
     let failed = |e: crate::store::StoreError| Error::internal("calcifer_store", e.to_string());
-    let (here, gone): (Vec<_>, Vec<_>) = store.known_projects().map_err(failed)?.into_iter().partition(|entry| Folder::is_project(&entry.path));
+    let (here, gone): (Vec<_>, Vec<_>) = store.known_projects().map_err(failed)?.into_iter().partition(|entry| Folder::is_project(&entry.path) || vault::encrypted(&entry.path));
     if !gone.is_empty() {
         store.projects_gone(&gone.into_iter().map(|entry| entry.id).collect::<Vec<_>>()).map_err(failed)?;
     }
@@ -607,7 +614,7 @@ fn identify(api: &Api, dir: &FsPath) -> Result<(String, String), Error> {
         db::set_identity(&mut conn, &path, &id, &name)?;
     }
     drop(conn);
-    store.project_opened(&id, &name, dir, None).map_err(|e| Error::internal("calcifer_store", e.to_string()))?;
+    store.project_opened(&id, &name, &vault::logical(dir), None).map_err(|e| Error::internal("calcifer_store", e.to_string()))?;
     Ok((id, name))
 }
 
@@ -1026,7 +1033,7 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Byte
             return Err(Refusal(Error::new(Kind::Usage, "project_path", said)));
         }
         Some(path) => {
-            if Folder::is_project(path) {
+            if Folder::is_project(path) || vault::encrypted(path) {
                 let said = format!("{} is a project already", path.display());
                 return Err(Refusal(Error::new(Kind::Conflict, "project_exists", said).next(format!("cozy project -p {} status", path.display()))));
             }

@@ -8,6 +8,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+project-vault.workspace = true
 axum.workspace = true
 base64.workspace = true
 bytes.workspace = true
@@ -20,7 +21,7 @@ hex.workspace = true
 infer.workspace = true
 pep440_rs = { version = "0.7.3", default-features = false }
 reqwest.workspace = true
-rusqlite.workspace = true
+rusqlite = { workspace = true, features = ["backup", "functions"] }
 rustls.workspace = true
 serde.workspace = true
 serde_ignored.workspace = true

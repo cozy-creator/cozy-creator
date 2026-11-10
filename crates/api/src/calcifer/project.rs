@@ -1358,6 +1358,7 @@ pub struct VaultStatus {
 
 /// POST /v1/projects/{id}/vault. Credentials are deliberately not Debug; neither the request nor its response is cached in history.
 #[derive(Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct VaultAsk {
     pub action: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1377,6 +1378,7 @@ pub struct VaultAsk {
 
 /// A vault operation can disclose a new recovery secret exactly to the caller. Do not persist this response in request/history caches.
 #[derive(Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct VaultChanged {
     pub vault: VaultStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
