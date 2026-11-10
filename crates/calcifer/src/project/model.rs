@@ -87,7 +87,6 @@ pub(super) async fn of(api: &Arc<Api>, project: &Arc<Project>) -> Result<Arc<Mod
     }
     project.require_view()?;
     *held = Some(model.clone());
-    drop(access);
     Ok(model)
 }
 
