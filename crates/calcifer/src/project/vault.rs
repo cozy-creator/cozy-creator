@@ -127,6 +127,7 @@ fn mount(api: &Api, root: &FsPath, keybag: Keybag, secret: ProjectSecret, ask: &
     let engine = Provider::discover(&api.machines.hubs.home().tools()).map_err(provider)?;
     let mounted = secret.with_bytes(|bytes| engine.mount(&root.join(BACKING), &view, bytes, MountOptions { idle_timeout: None, read_only: false })).map_err(provider)?;
     ROOTS.lock().expect("vault roots").insert(mounted.view().to_owned(), root.to_owned());
+    TRUSTED_KEYS.lock().expect("trusted vault recipients").insert(root.to_owned(), keybag.clone());
     let now = Instant::now();
     let session = Session { root: root.to_owned(), mount: mounted, secret, keybag, idle: ask.idle_timeout_s.unwrap_or(DEFAULT_IDLE), maximum: ask.max_duration_s.unwrap_or(0), began: now, active: now, began_ms: super::now_ms(), closing: false };
     SESSIONS.lock().expect("vault sessions").insert(root.to_owned(), Arc::new(Mutex::new(session)));
@@ -316,3 +317,56 @@ fn hash(path: &FsPath) -> Result<[u8;32], Error> {
 }
 
 fn fresh() -> String { let mut bytes = [0u8;16]; getrandom::fill(&mut bytes).expect("OS randomness"); hex::encode(bytes) }
+
+const PAYLOAD_PREFIX: &[u8] = b"cozy:vault:journal:1:";
+static TRUSTED_KEYS: LazyLock<Mutex<BTreeMap<PathBuf, Keybag>>> = LazyLock::new(Mutex::default);
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ProtectedPayload {
+    root: PathBuf,
+    context: String,
+    ciphertext: String,
+}
+
+pub(crate) fn is_payload(value: &[u8]) -> bool { value.starts_with(PAYLOAD_PREFIX) }
+
+/// Seal private global journal fields BEFORE binding them into SQLite. Ordinary project values pass through.
+pub(crate) fn seal_payload(path: &FsPath, context: &str, value: &[u8]) -> Result<Vec<u8>, Error> {
+    use base64::Engine as _;
+    if is_payload(value) { return Ok(value.to_vec()); }
+    let path = logical(path);
+    let Some(root) = path.ancestors().find(|root| encrypted(root)) else { return Ok(value.to_vec()) };
+    let keybag = TRUSTED_KEYS.lock().expect("trusted vault recipients").get(root).cloned().ok_or_else(|| locked(root))?;
+    let ciphertext = keybag.seal(context, value).map_err(key)?;
+    let payload = ProtectedPayload { root: root.to_owned(), context: context.into(), ciphertext: base64::engine::general_purpose::STANDARD.encode(ciphertext) };
+    let mut encoded = PAYLOAD_PREFIX.to_vec();
+    encoded.extend(serde_json::to_vec(&payload).map_err(|e| error("vault_journal", e))?);
+    Ok(encoded)
+}
+
+/// None is an intentionally locked field, never a failed parse to be treated as plaintext.
+pub(crate) fn open_payload(context: &str, value: &[u8]) -> Result<Option<Vec<u8>>, Error> {
+    use base64::Engine as _;
+    let Some(encoded) = value.strip_prefix(PAYLOAD_PREFIX) else { return Ok(Some(value.to_vec())) };
+    let payload: ProtectedPayload = serde_json::from_slice(encoded).map_err(|_| error("vault_journal", "invalid protected journal envelope"))?;
+    if payload.context != context { return Err(error("vault_journal", "protected journal context mismatch")); }
+    let Some(session) = held(&payload.root) else { return Ok(None) };
+    let session = session.lock().expect("vault session");
+    if session.closing || expired(&session) { return Ok(None); }
+    let ciphertext = base64::engine::general_purpose::STANDARD.decode(&payload.ciphertext).map_err(|_| error("vault_journal", "invalid protected journal ciphertext"))?;
+    Ok(Some(session.secret.open(context, &ciphertext).map_err(key)?.to_vec()))
+}
+
+/// Rewrite a protected field during full local rekey. The caller commits all replacements atomically.
+pub(crate) fn rekey_payload(context: &str, value: &[u8], old: &ProjectSecret, new: &Keybag) -> Result<Vec<u8>, Error> {
+    use base64::Engine as _;
+    let Some(encoded) = value.strip_prefix(PAYLOAD_PREFIX) else { return Err(error("vault_journal", "expected a protected field during rekey")) };
+    let mut payload: ProtectedPayload = serde_json::from_slice(encoded).map_err(|_| error("vault_journal", "invalid protected journal envelope"))?;
+    if payload.context != context { return Err(error("vault_journal", "protected journal context mismatch")); }
+    let ciphertext = base64::engine::general_purpose::STANDARD.decode(&payload.ciphertext).map_err(|_| error("vault_journal", "invalid protected journal ciphertext"))?;
+    let plain = old.open(context, &ciphertext).map_err(key)?;
+    payload.ciphertext = base64::engine::general_purpose::STANDARD.encode(new.seal(context, &plain).map_err(key)?);
+    let mut out = PAYLOAD_PREFIX.to_vec();
+    out.extend(serde_json::to_vec(&payload).map_err(|e| error("vault_journal", e))?);
+    Ok(out)
+}

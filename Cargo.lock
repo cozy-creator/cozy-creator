@@ -511,6 +511,7 @@ dependencies = [
  "jiff",
  "pep440_rs",
  "platform",
+ "project-mount",
  "project-vault",
  "reqwest",
  "rusqlite",
@@ -827,6 +828,7 @@ dependencies = [
  "cli",
  "mimalloc",
  "platform",
+ "project-mount",
  "tensord",
 ]
 
@@ -3189,6 +3191,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "project-mount"
+version = "0.23.1"
+dependencies = [
+ "base64 0.23.1",
+ "getrandom 0.3.4",
+ "platform",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+ "zeroize",
+ "zip",
 ]
 
 [[package]]
