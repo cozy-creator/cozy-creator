@@ -289,6 +289,32 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         assert!(fs::write(view.join("crash-leak.bin"), marker).is_err());
         crashed.try_unmount()?;
     }
+    #[cfg(windows)]
+    {
+        eprintln!("provider fixture: Windows helper crash cleanup");
+        let mut crashed =
+            provider.mount(&backing, &view, secret.as_bytes(), MountOptions::default())?;
+        let supervisor = crashed.provider_pid();
+        let helpers: Vec<_> = platform::process::tree(supervisor)
+            .into_iter()
+            .filter(|process| process.birth().pid != supervisor)
+            .collect();
+        assert!(!helpers.is_empty(), "owned securefs helper must be present");
+        for helper in helpers {
+            helper.kill()?;
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        while crashed.is_mounted()? && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            !crashed.is_mounted()?,
+            "a crashed helper must release its WinFsp volume"
+        );
+        assert!(fs::read(&renamed).is_err());
+        assert!(fs::write(view.join("crash-leak.bin"), marker).is_err());
+        crashed.try_unmount()?;
+    }
     eprintln!("provider fixture: read-only view");
     let read_only = match provider.mount(
         &backing,
