@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import secrets
 import shutil
+import sqlite3
 import struct
 import subprocess
 import sys
@@ -363,8 +364,12 @@ foreach ($rule in $allowed) {
             measured = {name: {key: assets.get(name, {}).get(key)
                                for key in ['width', 'height', 'duration_ms']}
                         for name in ['proof_image', 'proof_video', 'proof_audio']}
+            image = assets.get('proof_image', {})
+            self.winarm_image = {key: image.get(key) for key in ['path', 'sha256']}
             observed = {'normal_cli_metadata': measured,
                         'expected_assets_present': {name: name in assets for name in measured},
+                        'image_row': {'field': image.get('field'), 'absent': image.get('absent', False),
+                                      'path_present': bool(image.get('path'))},
                         'warnings': [self.media_diagnostic_text(warning.get('message', ''))
                                      for warning in state.get('warnings', [])[:16]]}
             if any(evidence.get(key) != value for key, value in observed.items()):
@@ -429,6 +434,10 @@ foreach ($rule in $allowed) {
                 helper['version'] = self.media_diagnostic_text(lines[0] if lines else '')
             except Exception as error:
                 helper['error'] = self.media_diagnostic_text(error)
+        try:
+            self.diagnose_winarm_png(diagnostic, cache / 'ffprobe.exe', deadline)
+        except Exception as error:
+            diagnostic['png_diagnostic_error'] = self.media_diagnostic_text(error)
         diagnostic['partial_downloads'] = [
             {'name': path.name, 'bytes': path.stat().st_size}
             for path in sorted(cache.parent.glob('.ffmpeg-*.part'))[:4] if path.is_file()]
@@ -443,6 +452,64 @@ foreach ($rule in $allowed) {
                 for line in tail.splitlines() for marker in markers if marker in line][-12:]
         diagnostic['seconds'] = round(time.monotonic() - (deadline - 10), 3)
         self.flush()
+
+    def diagnose_winarm_png(self, diagnostic, ffprobe, deadline):
+        def remaining():
+            value = deadline - time.monotonic()
+            if value <= 0:
+                raise RuntimeError('media failure diagnostic budget exhausted')
+            return value
+
+        def probe_file(path):
+            result = {'is_file': path.is_file()}
+            if not result['is_file']:
+                return result
+            result['bytes'] = path.stat().st_size
+            # Same arguments as project/tools.rs::probe and tools.rs::Media::reading.
+            formats = ('mov,matroska,avi,asf,mpeg,mpegts,flv,png_pipe,apng,jpeg_pipe,webp_pipe,'
+                       'gif,bmp_pipe,tiff_pipe,jpegxl_pipe,jpegxl_anim,psd_pipe,ico,mp3,ogg,flac,'
+                       'wav,aac,aiff,amr,ape,dsf')
+            fields = ('stream=codec_type,codec_name,width,height,pix_fmt,r_frame_rate,nb_frames,'
+                      'nb_read_packets,bit_rate,sample_rate,channels:format=duration,bit_rate,start_time')
+            done = subprocess.run([str(ffprobe), '-v', 'error', '-count_packets', '-show_entries',
+                                   fields, '-of', 'json', '-protocol_whitelist', 'file',
+                                   '-format_whitelist', formats, '-i', str(path)],
+                                  capture_output=True, env=self.cli_env, timeout=remaining())
+            result.update(exit_code=done.returncode,
+                          stderr=self.media_diagnostic_text(done.stderr.decode('utf-8', errors='replace')))
+            try:
+                streams = json.loads(done.stdout).get('streams', [])
+                result['streams'] = [{key: stream.get(key) for key in
+                                      ['codec_type', 'codec_name', 'width', 'height']}
+                                     for stream in streams[:4]]
+            except ValueError:
+                result['stdout_is_json'] = False
+            return result
+
+        original = self.out / 'inputs' / 'image.png'
+        diagnostic['original_source_png'] = probe_file(original)
+        selected = getattr(self, 'winarm_image', {})
+        relative = Path(selected.get('path') or '')
+        if relative.is_absolute() or relative.drive or relative.parts[:1] != ('files',) or '..' in relative.parts:
+            raise RuntimeError('the image row did not select a project files path')
+        status = self.command('vault', 'status', timeout=remaining())
+        view = self.view(status)
+        imported = view / relative
+        diagnostic['imported_png_in_unlocked_encrypted_view'] = probe_file(imported)
+        if original.is_file() and imported.is_file() and max(original.stat().st_size, imported.stat().st_size) <= 1048576:
+            diagnostic['original_imported_digest_equal'] = self.digest(original) == self.digest(imported)
+        remaining()
+        connection = sqlite3.connect((view / 'project.db').as_uri() + '?mode=ro', uri=True,
+                                     timeout=min(0.1, remaining()))
+        try:
+            row = connection.execute('SELECT record FROM measured WHERE sha256 = ? LIMIT 1',
+                                     (selected.get('sha256'),)).fetchone()
+            record = json.loads(row[0]) if row else {}
+            diagnostic['image_measured_row'] = {'present': row is not None, 'values': {
+                key: record.get(key) for key in ['width', 'height', 'fps', 'frames', 'alpha', 'duration_ms']
+                if isinstance(record.get(key), (int, float))}}
+        finally:
+            connection.close()
 
     @staticmethod
     def digest(path):
