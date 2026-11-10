@@ -47,6 +47,8 @@ installed="$HOME/.cozy/bin/cozy"
 # Keep a stable install candidate while other checks use the build directory.
 staged=$(mktemp "$HOME/.cozy/bin/.cozy-dev.XXXXXX")
 trap 'rm -f "$staged"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 install -m 755 "$binary" "$staged"
 flock -u 8
 exec 8>&-
@@ -63,6 +65,40 @@ fi
 cp --reflink=auto -p "$installed" "$HOME/.cozy/bin/.cozy-previous"
 mv -f "$staged" "$installed"
 systemctl --user restart cozy-calcifer.service
-"$installed" --json machine ls >/dev/null
+python3 - "$installed" <<'PYTHON'
+import hashlib
+import json
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+binary = Path(sys.argv[1])
+expected = hashlib.sha256(binary.read_bytes()).digest()
+holder_file = Path.home() / ".cozy/calcifer/calcifer.lock.holder"
+while True:
+    try:
+        holder = json.loads(holder_file.read_text())
+        running = Path(f"/proc/{holder['pid']}/exe")
+        if hashlib.sha256(running.read_bytes()).digest() == expected:
+            request = urllib.request.Request(
+                f"http://{holder['address']}/v1/status",
+                headers={"Authorization": f"Bearer {holder['token']}"},
+            )
+            with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=2) as response:
+                json.load(response)
+            break
+    except (OSError, KeyError, ValueError, urllib.error.URLError):
+        pass
+    service = subprocess.run(
+        ["systemctl", "--user", "is-failed", "--quiet", "cozy-calcifer.service"],
+        check=False,
+    )
+    if service.returncode == 0:
+        raise SystemExit("Calcifer failed to start; see journalctl --user -u cozy-calcifer")
+    time.sleep(0.25)
+PYTHON
 printf '%s local CLI and Calcifer updated in %ss\n' "$(date -Is)" "$((SECONDS - started))"
 "$installed" --version

@@ -86,7 +86,7 @@ state. Putting old text back returns the old take with no run, and approving pin
 cozy new garden
 cd garden
 cozy open                                  # edit assets in the browser
-cozy status                                # this project's runs and machines
+cozy status                                # project health and warnings
 ```
 
 The format and every command: [PROJECT-YAML.md](crates/calcifer/docs/PROJECT-YAML.md).

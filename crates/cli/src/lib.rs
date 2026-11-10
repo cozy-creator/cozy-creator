@@ -143,7 +143,8 @@ fn usage(error: clap::Error) -> ExitCode {
     }
     let rendered = error.render().to_string();
     let message = rendered.lines().next().unwrap_or_default().trim_start_matches("error: ");
-    let mut command = Cli::command();
+    let mut command = dev::hide(Cli::command());
+    command.build();
     let mut invocation = String::from("cozy");
     for argument in &arguments {
         if matches!(argument.to_str(), Some("--json" | "--full" | "--yes" | "-y")) {
