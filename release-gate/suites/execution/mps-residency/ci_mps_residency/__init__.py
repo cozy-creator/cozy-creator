@@ -5,9 +5,13 @@ import importlib.metadata
 import json
 import tempfile
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import msgspec
 from cozy_runtime.author import App, Context
+
+if TYPE_CHECKING:
+    from cozy_runtime.internal import residency
 
 app = App()
 
@@ -19,6 +23,11 @@ class Request(msgspec.Struct, forbid_unknown_fields=True):
 class Report(msgspec.Struct):
     passed: bool
     detail: str
+
+
+def _moved(request: "residency.Request") -> int:
+    """The bytes this request filled, from every origin (`Request.moved` counts them per origin)."""
+    return sum(nbytes for nbytes, _, _ in request.moved.values())
 
 
 @app.entrypoint(accelerator=True)
@@ -73,13 +82,13 @@ def gpu(payload: Request, ctx: Context) -> Report:
                     actual = modules["wide"](wide_input)
                     alias = modules["wide"].weight.detach()
                 torch.testing.assert_close(actual.cpu(), expected, rtol=0, atol=0)
-                cold_bytes = request.moved
+                cold_bytes = _moved(request)
                 assert cold_bytes == rows * cols * 4
                 with models["wide"].passing("warm"):
                     torch.testing.assert_close(
                         modules["wide"](wide_input).cpu(), expected, rtol=0, atol=0
                     )
-                assert request.moved == cold_bytes, "warm MPS weights were reread"
+                assert _moved(request) == cold_bytes, "warm MPS weights were reread"
                 with models["half"].passing("typed"):
                     half = torch.ones((1, 128), dtype=torch.float16, device="mps")
                     torch.testing.assert_close(
@@ -119,7 +128,7 @@ def gpu(payload: Request, ctx: Context) -> Report:
                     torch.testing.assert_close(
                         modules["wide"](wide_input).cpu(), expected, rtol=0, atol=0
                     )
-                assert request.moved == rows * cols * 4, request.stats()
+                assert _moved(request) == rows * cols * 4, request.stats()
             result = {
                 "seed": payload.seed,
                 "device": str(ctx.device),
@@ -133,7 +142,7 @@ def gpu(payload: Request, ctx: Context) -> Report:
                 "allocated_before_trim": before,
                 "allocated_with_alias": held,
                 "allocated_after_alias_drop": after,
-                "refill_bytes": request.moved,
+                "refill_bytes": _moved(request),
                 "mps_stats": stats,
             }
             return Report(True, json.dumps(result, sort_keys=True))
