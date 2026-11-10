@@ -3,12 +3,12 @@
   "repository": "netheril96/securefs",
   "targets": {
     "x86_64-unknown-linux-gnu": {
-      "asset": "securefs-linux-amd64-musl-static-release.zip",
-      "sha256": "9b77878da9f43f598b66e1a77e3fa230ca4dab2f5ca7ea4a85dadbb22e76d138"
+      "asset": "securefs-linux-amd64-release.zip",
+      "sha256": "ebb8fbe8fec36b51c8c8edde12bf4fb45d1a289f3f08c196ee29f6d5c1bdc2c2"
     },
     "aarch64-unknown-linux-gnu": {
-      "asset": "securefs-linux-arm64-musl-static-release.zip",
-      "sha256": "7d3f01c57528ccc850dddbe1f3c0a83adf8d4004dc0b9f07bec7d99ece261c77"
+      "asset": "securefs-linux-arm64-release.zip",
+      "sha256": "3a272fe9d090611513b9df97053a2b5a87bf38c4dc31eb12e0a86f9d972ee91e"
     },
     "aarch64-apple-darwin": {
       "asset": "securefs-macos-arm64-release.zip",
