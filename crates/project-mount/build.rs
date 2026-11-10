@@ -6,6 +6,15 @@ fn main() {
     println!("cargo:rerun-if-env-changed=COZY_SECUREFS_REQUIRED");
     println!("cargo:rerun-if-changed=helper/manifest.json");
     let output = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo supplies OUT_DIR"));
+    if env::var("TARGET")
+        .expect("Cargo supplies TARGET")
+        .contains("apple-darwin")
+    {
+        // Native encrypted APFS needs no redistributable filesystem executable or driver.
+        fs::write(output.join("securefs.zip"), []).expect("write native provider marker");
+        return;
+    }
+
     let Some(archive) = env::var_os("COZY_SECUREFS_ARCHIVE") else {
         assert!(
             env::var_os("COZY_SECUREFS_REQUIRED").is_none(),

@@ -24,7 +24,11 @@ use std::{
 };
 use zeroize::Zeroizing;
 
+#[cfg(target_os = "macos")]
+mod apfs;
+
 pub const PROVIDER_VERSION: &str = "2.0.0";
+const APFS_MARKER: &str = ".cozy-apfs-v1";
 const ROLE: &str = "__cozy_vault_provider";
 const ARCHIVE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/securefs.zip"));
 const LICENSE: &str = include_str!("../helper/LICENSE.securefs.md");
@@ -69,7 +73,21 @@ const NOTICES: &[(&str, &str)] = &[
 ];
 const STARTUP: Duration = Duration::from_secs(60);
 const CONTROL_ACK: Duration = Duration::from_secs(10);
-static MOUNT_TRANSITION: std::sync::Mutex<()> = std::sync::Mutex::new(());
+type TransitionMap = std::collections::BTreeMap<PathBuf, std::sync::Weak<std::sync::Mutex<()>>>;
+fn transition(view: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
+    static TRANSITIONS: std::sync::LazyLock<std::sync::Mutex<TransitionMap>> =
+        std::sync::LazyLock::new(std::sync::Mutex::default);
+    let mut transitions = TRANSITIONS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    transitions.retain(|_, held| held.strong_count() > 0);
+    if let Some(held) = transitions.get(view).and_then(std::sync::Weak::upgrade) {
+        return held;
+    }
+    let held = std::sync::Arc::new(std::sync::Mutex::new(()));
+    transitions.insert(view.to_path_buf(), std::sync::Arc::downgrade(&held));
+    held
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -92,7 +110,7 @@ pub enum Error {
     #[error("encrypted project is still in use; close programs using {} and try locking again", .0.display())]
     Busy(PathBuf),
     #[error(
-        "securefs {operation} failed ({code:?}); check that {requirements} is installed and available"
+        "filesystem provider {operation} failed ({code:?}); check that {requirements} is installed and available"
     )]
     Provider {
         operation: &'static str,
@@ -143,6 +161,8 @@ pub fn is_bundled() -> bool {
 #[derive(Clone, Debug)]
 pub struct Provider {
     executable: PathBuf,
+    #[cfg(target_os = "macos")]
+    native: bool,
 }
 
 impl Provider {
@@ -153,6 +173,10 @@ impl Provider {
         // including relinking modified LGPL components. It is never supplied by the Hub.
         if let Some(path) = std::env::var_os("COZY_SECUREFS_PROVIDER") {
             return Self::from_path(PathBuf::from(path));
+        }
+        #[cfg(target_os = "macos")]
+        if Path::new("/usr/bin/hdiutil").is_file() {
+            return Self::from_path(PathBuf::from("/usr/bin/hdiutil"));
         }
         if is_bundled() {
             let directory = tools.join("securefs").join(PROVIDER_VERSION);
@@ -212,7 +236,18 @@ impl Provider {
     /// An explicit development/helper path. Its version must match the supported format tool.
     pub fn from_path(executable: impl Into<PathBuf>) -> Result<Self> {
         let executable = fs::canonicalize(executable.into()).map_err(io_error("find securefs"))?;
-        let provider = Self { executable };
+        #[cfg(target_os = "macos")]
+        if fs::canonicalize("/usr/bin/hdiutil").is_ok_and(|native| executable == native) {
+            return Ok(Self {
+                executable,
+                native: true,
+            });
+        }
+        let provider = Self {
+            executable,
+            #[cfg(target_os = "macos")]
+            native: false,
+        };
         let output = provider
             .command("version")
             .output()
@@ -231,6 +266,15 @@ impl Provider {
 
     pub fn executable(&self) -> &Path {
         &self.executable
+    }
+
+    /// Physical storage is deliberately separate from the shared logical CRDT format.
+    pub fn storage_format(&self) -> &'static str {
+        #[cfg(target_os = "macos")]
+        if self.native {
+            return "apple-apfs-encrypted-sparsebundle-v1";
+        }
+        "securefs-lite-v4"
     }
 
     /// Creates only a new encrypted backing directory, never an existing plaintext project.
@@ -254,6 +298,10 @@ impl Provider {
             }
         } else {
             platform::durable::private_dir(backing)?;
+        }
+        #[cfg(target_os = "macos")]
+        if self.native {
+            return apfs::create(self, backing, secret);
         }
         let mut command = self.command("create");
         command.args(["--format", "lite"]).arg(backing);
@@ -295,10 +343,17 @@ impl Provider {
         // A selected free Windows drive can be claimed by another concurrent unlock. Keep
         // preflight through readiness atomic so a second caller refuses, never aliases the
         // first project's mounted drive. The same rule prevents duplicate Unix view mounts.
-        let _starting = MOUNT_TRANSITION
+        let transition = transition(view);
+        let _starting = transition
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         validate_secret(secret)?;
+        #[cfg(not(target_os = "macos"))]
+        if backing.join(APFS_MARKER).exists() {
+            return Err(Error::Unsupported(
+                "this raw encrypted APFS vault requires macOS; use a decrypted logical export for another operating system",
+            ));
+        }
         self.check_driver()?;
         #[cfg(windows)]
         if options.read_only {
@@ -307,14 +362,34 @@ impl Provider {
             ));
         }
         #[cfg(target_os = "macos")]
-        if options.read_only && macos_version() < (26, 4) {
+        if !self.native && backing.join(APFS_MARKER).exists() {
+            return Err(Error::Unsupported(
+                "this vault uses native encrypted APFS; select the default macOS provider",
+            ));
+        }
+        #[cfg(target_os = "macos")]
+        if !self.native && options.read_only && macos_version() < (26, 4) {
             return Err(Error::Unsupported(
                 "read-only encrypted views with FSKit require macOS 26.4 or newer",
             ));
         }
-        if !backing.join(".config.pb").is_file() {
+        #[cfg(target_os = "macos")]
+        if self.native {
+            apfs::validate(backing)?;
+            if options.idle_timeout.is_some() {
+                return Err(Error::Unsupported(
+                    "Calcifer manages native APFS idle locking; provider idle timers are not supported",
+                ));
+            }
+        }
+        if backing.join(APFS_MARKER).exists() {
+            #[cfg(not(target_os = "macos"))]
+            return Err(Error::Unsupported(
+                "this raw encrypted APFS vault requires macOS; use a decrypted logical export for another operating system",
+            ));
+        } else if !backing.join(".config.pb").is_file() {
             return Err(Error::Invalid(
-                "the encrypted backing storage has no securefs configuration",
+                "the encrypted backing storage has no supported filesystem format marker",
             ));
         }
         if self.is_mounted(view)? {
@@ -420,6 +495,10 @@ impl Provider {
     }
 
     fn unmount_with_budget(&self, view: &Path, budget: Duration) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        if self.native {
+            return apfs::unmount(self, view, budget);
+        }
         // securefs may detach a live Unix mount. Normal locking instead lets the kernel refuse
         // open handles; a missing acknowledgment never authorizes killing a live provider.
         #[cfg(unix)]
@@ -452,6 +531,10 @@ impl Provider {
     }
 
     fn check_driver(&self) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        if self.native {
+            return Ok(());
+        }
         #[cfg(target_os = "linux")]
         if OpenOptions::new()
             .read(true)
@@ -504,7 +587,8 @@ impl Mounted {
     /// Normal unmount only. An open player/editor can return Busy; its handle and provider stay
     /// owned here. A successful result means the readable view and key-holding helper are gone.
     pub fn try_unmount(&mut self) -> Result<()> {
-        let _transition = MOUNT_TRANSITION
+        let transition = transition(&self.view);
+        let _transition = transition
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if self.provider.is_mounted(&self.view)? {
@@ -609,6 +693,19 @@ fn supervise(arguments: &[OsString]) -> Result<()> {
         return Err(Error::Invalid("invalid filesystem unlock material"));
     }
     validate_secret(&secret[..43])?;
+    #[cfg(target_os = "macos")]
+    if provider.native {
+        return apfs::serve(apfs::Request {
+            provider,
+            backing,
+            view,
+            secret,
+            parent,
+            input,
+            guard,
+            read_only: arguments[7] == "1",
+        });
+    }
     let mut command = provider.command("mount");
     // FSKit avoids requiring Apple Silicon users to weaken boot policy for a kernel extension.
     #[cfg(target_os = "macos")]

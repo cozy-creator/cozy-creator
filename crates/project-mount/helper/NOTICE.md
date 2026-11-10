@@ -17,9 +17,10 @@ bundled copies. The bundled Linux helper requires glibc 2.34 or newer; ordinary
 Cozy projects retain Cozy's existing platform floor. The static musl/FUSE
 archive is not part of this distribution.
 
-macFUSE and WinFsp are separately installed filesystem drivers. Cozy neither
-ships those drivers nor silently changes a computer's boot/security policy.
-Their own licenses and installation terms apply to their separate packages.
+WinFsp is a separately installed Windows filesystem driver; its own license
+and installation terms apply. Native macOS storage uses Apple's system hdiutil
+and APFS implementation, not this bundled executable or a macFUSE driver. Cozy
+never silently changes boot/security policy.
 
 The optional `COZY_SECUREFS_PROVIDER` environment variable selects an explicit
 local securefs executable before the bundled one. It permits using a locally

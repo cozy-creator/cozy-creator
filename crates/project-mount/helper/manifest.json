@@ -10,10 +10,6 @@
       "asset": "securefs-linux-arm64-release.zip",
       "sha256": "3a272fe9d090611513b9df97053a2b5a87bf38c4dc31eb12e0a86f9d972ee91e"
     },
-    "aarch64-apple-darwin": {
-      "asset": "securefs-macos-arm64-release.zip",
-      "sha256": "86b1d9ace972e1b332ffd92561aabfb5bf6446072c0d27a3238f48e675329c4a"
-    },
     "x86_64-pc-windows-msvc": {
       "asset": "securefs-windows-amd64-release.zip",
       "sha256": "f482e2c5f513a0de921eba2a2af507ae578b4b2957153d0791f5a7eaaf02869a"

@@ -1,52 +1,55 @@
 # Local project mounts
 
-`project-mount` owns securefs 2.0.0 lite-format mounts. The keybag is another
-module: it supplies only the random 43-character internal unlock secret through
-stdin. The helper never receives a user's passphrase, recovery secret or Hub
-credentials. Ordinary projects do not load a helper or require a driver.
+`project-mount` owns optional encrypted project storage and the process that
+keeps its readable view alive. The keybag is another module: it supplies only a
+random 43-character internal unlock secret through stdin. No provider receives
+the user's passphrase, recovery secret or Hub credentials. Ordinary projects
+load no provider and require no driver.
+
+Linux and Windows use securefs 2.0.0 lite format. Their releases embed a pinned
+upstream executable and redistribution notices. Linux's dynamic provider needs
+glibc 2.34+ and FUSE2; Windows needs WinFsp 2.1 and the Microsoft Visual C++ x64
+runtime. The x64 helper runs under Windows11 emulation on ARM64. Windows read-only
+requests are explicitly refused because this provider does not enforce them.
+
+macOS uses its built-in `hdiutil` and an AES-256-encrypted, case-sensitive APFS
+sparsebundle. No macFUSE extension, boot-policy change or additional driver is
+required. The virtual volume is 16 TiB and grows with actual writes; that capacity
+is not preallocated. The internal password is supplied through stdin, never
+arguments, environment or a keychain-store operation. The format marker is
+`.cozy-apfs-v1`; the image is `project.sparsebundle` under encrypted backing.
+
+The **logical Automerge format is identical on every OS**, but physical storage
+formats differ. A raw APFS vault copy requires macOS. A raw securefs copy needs a
+compatible securefs provider. Wrong-format opens refuse clearly. Cross-OS
+movement uses decoded project export/transfer; future portable logical backup
+is independent of the local storage provider. Do not claim a common raw
+ciphertext fixture opens on every OS.
 
 The executable calls `project_mount::run_supervisor()` before normal CLI parsing.
 An encrypted mount starts that private role in the same executable. It watches
-the exact controller process birth and its pipe, stops the foreground provider
-after controller death, and protects the old Unix mountpoint inode against
-plaintext writes. Windows uses an unused drive root instead of a writable
-directory below a missing mount. A normal Unix lock uses a non-lazy OS unmount
-and reports `Busy` while handles prevent it. Emergency crash cleanup may detach
-an inaccessible mount only after the key-holding provider has exited.
+the exact controller process birth and its pipe, and releases its provider/image
+after controller death. Unix views retain a sealed original mountpoint inode;
+Windows uses an unused drive root. Normal locks preserve busy handles. Emergency
+cleanup acts only on the owned provider or image/device association.
 
-Release builds run `scripts/prepare-securefs.py` and set
-`COZY_SECUREFS_ARCHIVE` plus `COZY_SECUREFS_REQUIRED=1`. The build verifies the
-archive against `helper/manifest.json`; the release executable contains the
-helper and redistribution notices, and installs them in the user's protected
-tools directory without a runtime download. Development builds may use an
-explicitly installed provider. See [provider notices](helper/NOTICE.md).
+Release builds run `scripts/prepare-securefs.py`; Linux/Windows then require
+`COZY_SECUREFS_ARCHIVE` and `COZY_SECUREFS_REQUIRED=1`. The archive is verified
+against `helper/manifest.json`; extraction needs no runtime network. Mac builds
+use the OS-native provider. Explicit local `COZY_SECUREFS_PROVIDER` overrides
+permit compatible rebuilt securefs providers; see [notices](helper/NOTICE.md).
 
-Encrypted-project prerequisites:
+The manual `dev-build` option `vault-provider` runs actual mounted file I/O,
+SQLite transactions, media seek, normal lock/busy states, remount parity and
+controller SIGKILL. Its [execution evidence](../../e2e/vault-provider/RESULTS.md)
+states which backends actually passed. Compile success is not driver, filesystem
+or installed-CLI qualification. Calcifer owns session idle/absolute expiry;
+native APFS explicitly refuses an independent provider-idle timer.
 
-- Linux: glibc 2.34+ for the bundled helper, FUSE2 and `/dev/fuse` access.
-- macOS: 15.4+ and macFUSE 5.5+ with the FSKit extension enabled. Read-only
-  FSKit views additionally require macOS 26.4+. No kernel-extension fallback
-  silently changes the user's boot policy.
-- Windows: WinFsp 2.1 and the Microsoft Visual C++ x64 runtime. Read-only
-  mount requests are explicitly refused because this provider does not enforce
-  that mode on Windows; ordinary local encrypted projects are writable. The upstream
-  x64 provider runs under Windows 11's x64 emulation on ARM64.
-
-The manual `dev-build` option `vault-provider` builds and runs the real fixture
-in [`e2e/vault-provider`](../../e2e/vault-provider). It writes/reads/seeks media,
-checks normal and idle locking, remount parity, mountpoint fallback prevention
-and controller SIGKILL. Run it separately on each supported OS/architecture;
-compilation is not a claim that the driver or installed CLI has been qualified.
-
+The earlier FSKit route was exercised with signed modules explicitly enabled
+only in the disposable test user, then restored. It failed actual file creation
+with ENOSYS78 before write/fsync (run42804959021), so no fsync or data-durability
+check was waived to make it pass. Native APFS replaces that incompatible route.
 Debug builds alone can write explicitly requested provider stderr diagnostics
-with `COZY_VAULT_PROVIDER_DIAGNOSTICS=<private-log-file>`; the platform fixture
-uses this only with synthetic data. Release builds do not expose that channel.
-Filesystem status/unmount controls have bounded acknowledgments; a timeout
-reports unconfirmed/pending status and never authorizes killing a live mount.
-
-The macOS CI fixture explicitly enables only the two installed signed macFUSE
-FSKit modules for its disposable runner user, records those exact IDs, and
-restores the original approval list afterward. This is test setup, not product
-behavior. End users enable macFUSE under System Settings → General → Login Items
-& Extensions → By Category → File System Extensions. PluginKit registration
-alone does not grant FSKit approval. See the upstream [activation issue](https://github.com/macfuse/macfuse/issues/1194).
+with `COZY_VAULT_PROVIDER_DIAGNOSTICS=<private-log-file>`; release builds expose
+no diagnostic log channel.
