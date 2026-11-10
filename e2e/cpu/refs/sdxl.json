@@ -3,7 +3,7 @@
   "outputs": [
    {
     "bytes": 3145728,
-    "name": "image-0001.raw",
+    "name": "image",
     "signature": [
      129.1,
      130.85,
@@ -40,7 +40,7 @@
      132.75,
      132.45,
      131.78,
-     132.8,
+     132.81,
      131.47,
      132.42,
      131.36,
@@ -75,7 +75,7 @@
   "result": {
    "height": 1024,
    "image": {
-    "asset_ref": "attempt:generate-hidiffusion/image/0001",
+    "asset_ref": "image/0001",
     "kind": "image",
     "media_type": "image/webp"
    },
@@ -88,7 +88,7 @@
   "outputs": [
    {
     "bytes": 3145728,
-    "name": "image-0001.raw",
+    "name": "image",
     "signature": [
      132.72,
      135.46,
@@ -128,7 +128,7 @@
      135.77,
      134.71,
      135.6,
-     134.64,
+     134.63,
      134.56,
      134.54,
      134.97,
@@ -160,7 +160,7 @@
   "result": {
    "height": 1024,
    "image": {
-    "asset_ref": "attempt:generate-no-cfg/image/0001",
+    "asset_ref": "image/0001",
     "kind": "image",
     "media_type": "image/webp"
    },
@@ -173,7 +173,7 @@
   "outputs": [
    {
     "bytes": 3145728,
-    "name": "image-0001.raw",
+    "name": "image",
     "signature": [
      133.15,
      135.58,
@@ -245,7 +245,7 @@
   "result": {
    "height": 1024,
    "image": {
-    "asset_ref": "attempt:generate-text/image/0001",
+    "asset_ref": "image/0001",
     "kind": "image",
     "media_type": "image/webp"
    },
@@ -258,7 +258,7 @@
   "outputs": [
    {
     "bytes": 3096576,
-    "name": "image-0001.raw",
+    "name": "image",
     "signature": [
      132.65,
      134.66,
@@ -330,7 +330,7 @@
   "result": {
    "height": 768,
    "image": {
-    "asset_ref": "attempt:generate-wide/image/0001",
+    "asset_ref": "image/0001",
     "kind": "image",
     "media_type": "image/webp"
    },
@@ -343,7 +343,7 @@
   "outputs": [
    {
     "bytes": 3145728,
-    "name": "image-0001.raw",
+    "name": "image",
     "signature": [
      135.82,
      138.64,
@@ -415,7 +415,7 @@
   "result": {
    "height": 1024,
    "image": {
-    "asset_ref": "attempt:image-tool/image/0001",
+    "asset_ref": "image/0001",
     "kind": "image",
     "media_type": "image/webp"
    },

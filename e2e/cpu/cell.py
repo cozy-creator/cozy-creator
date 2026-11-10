@@ -38,6 +38,9 @@ class Cell(TypedDict):
     skip: NotRequired[str]
     #: outputs (by output id) the function returns empty by design
     empty: NotRequired[list[str]]
+    #: each `Weights[M]` parameter's model (a ref `models` builds), and each weights output's byte grant
+    sources: NotRequired[dict[str, str]]
+    weights: NotRequired[dict[str, int]]
 
 
 class Fixture(Protocol):
@@ -61,10 +64,12 @@ class Output(TypedDict):
 
 
 class Seen(TypedDict):
-    """A cell's judged output: its result document and each output file's size and signature."""
+    """A cell's judged output: its result document, each output file's size and signature, and each weights output's
+    tensors (how many, how many encoded)."""
 
     result: Json
     outputs: list[Output]
+    weights: NotRequired[dict[str, dict[str, int]]]
 
 
 def size(width: int, height: int) -> Check:
@@ -121,3 +126,9 @@ def qwen_tokenizer(folder: Path) -> None:
     save(AutoTokenizer.from_pretrained(source), folder)
     template = json.loads((source / "tokenizer_config.json").read_text())["chat_template"]
     (folder / "chat_template.json").write_text(json.dumps({"chat_template": template}))
+
+
+def quantize(ref: str, lane: str, package: str, release: str) -> Cell:
+    """The package's `quantize` writing `lane` from the tiny `ref`, as `cozy model quantize` asks it."""
+    return {"entry": "quantize", "name": lane, "payload": {"lane": lane, "package": package, "release": release},
+            "sources": {"source": ref}, "weights": {lane: 1 << 34}}

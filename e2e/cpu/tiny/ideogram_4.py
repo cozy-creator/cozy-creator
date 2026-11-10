@@ -92,6 +92,5 @@ CELLS: list[Cell] = [
         "regions": [{"box": [0.1, 0.1, 0.5, 0.5], "prompt": "a lantern"},
                     {"box": [0.55, 0.6, 0.95, 0.9], "prompt": "hand-lettered", "text": "OPEN"}]}},
     {"entry": "image", "name": "tool", "payload": {"instructions": "a red fox on a mossy log", "seed": 7}},
-    {"entry": "quantize", "name": "fp8", "payload": {},
-     "skip": "weights entry: the driver does not grant Invoke.sources yet"},
+    {"entry": "quantize", "name": "int8", "payload": {}, "skip": "int8.convrot needs matrices whose columns come in 256s; the tiny model's are narrower (sdxl and anima run fp8)"},
 ]

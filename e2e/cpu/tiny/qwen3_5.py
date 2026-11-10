@@ -92,7 +92,7 @@ def cells(picture: Callable[[Path], Path], clip: Callable[[Path], Path]) -> list
                                                         "max_tokens": 8, "temperature": 0.8, "seed": 3}, "check": answers(2)},
         {"entry": "caption", "name": "image", "payload": {"max_tokens": 12}, "files": {"images.0": picture},
          "check": answers(1)},
-        {"entry": "quantize", "name": "int8", "payload": {}, "skip": "weights entry: the driver does not grant Invoke.sources yet"},
+        {"entry": "quantize", "name": "int8", "payload": {}, "skip": "int8.convrot needs matrices whose columns come in 256s; the tiny model's are narrower (sdxl and anima run fp8)"},
     ]
 
 

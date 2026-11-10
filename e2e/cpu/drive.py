@@ -25,7 +25,7 @@ import sys
 import sysconfig
 import time
 import traceback
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Literal, NotRequired, TypedDict, cast
 
@@ -148,6 +148,28 @@ class Invoke(TypedDict):
     spool: str
     deadline_s: float
     inputs: dict[str, InputFile]
+    #: each `Weights[M]` parameter's checkpoint, and each weights output's granted bytes
+    sources: NotRequired[dict[str, str]]
+    weights: NotRequired[dict[str, int]]
+    operation: NotRequired[str]
+
+
+class Answer(TypedDict):
+    """TensorD's answer to the executor's durable request `seq` (`author._executor_requests`)."""
+
+    event: Literal["answer"]
+    seq: int
+    ok: bool
+    code: str
+    detail: str
+
+
+class Item(TypedDict):
+    """A weights output's local commit, as the executor names it to TensorD (`checkpoint_item`)."""
+
+    output: str
+    repo_id: str
+    revision: str
 
 
 class Named(TypedDict):
@@ -159,7 +181,8 @@ class Activate(TypedDict):
     construction: str
 
 
-type Frame = Start | Load | PrepareRequest | Invoke | Named | Activate
+type Command = Start | Load | PrepareRequest | Invoke | Named | Activate
+type Frame = Command | Answer
 
 
 class Outcome(TypedDict, total=False):
@@ -172,6 +195,10 @@ class Reply(TypedDict, total=False):
     reply: str
     event: str
     kind: str
+    seq: int
+    output: str
+    repo_id: str
+    revision: str
     ok: bool
     code: str
     detail: str
@@ -214,6 +241,7 @@ class Executor:
         listening.settimeout(180)
         self.sock, _ = listening.accept()
         listening.close()
+        self.items: list[Item] = []
 
     def send(self, frame: Frame) -> None:
         data = json.dumps(frame, separators=(",", ":"), sort_keys=True).encode()
@@ -240,7 +268,7 @@ class Executor:
             buf += chunk
         return bytes(buf)
 
-    def ask(self, frame: Frame, timeout: float = 900) -> Reply:
+    def ask(self, frame: Command, timeout: float = 900) -> Reply:
         self.send(frame)
         deadline = time.monotonic() + timeout
         while True:
@@ -252,10 +280,16 @@ class Executor:
                 raise Failed(f"the executor left during {frame['cmd']}: {self.last_error()}")
             if got.get("reply") == frame["cmd"]:
                 return got
-            if got.get("event") == "request":
+            if got.get("event") == "request" and got.get("kind") == "checkpoint_item":
+                # A weights output committed in the local store: TensorD records it (and uploads it only for a remote
+                # destination, which no cell names).
+                self.items.append({"output": got.get("output", ""), "repo_id": got.get("repo_id", ""),
+                                   "revision": got.get("revision", "")})
+                self.send({"event": "answer", "seq": got.get("seq", 0), "ok": True, "code": "", "detail": ""})
+            elif got.get("event") == "request":
                 raise Failed(f"the executor asked TensorD for {got.get('kind')}, which this driver does not stand in for")
 
-    def must(self, frame: Frame, timeout: float = 900) -> Reply:
+    def must(self, frame: Command, timeout: float = 900) -> Reply:
         reply = self.ask(frame, timeout)
         if not reply.get("ok"):
             raise Failed(f"{frame['cmd']}: {reply.get('code')}: {first_line(reply.get('detail', ''))}")
@@ -388,9 +422,12 @@ def spread(values: npt.NDArray[np.generic]) -> float:
 
 def plain(result: Json) -> Json:
     """The result document without what names the attempt or the encoder's exact bytes: an output's `asset_ref` keeps
-    its kind and number, and its digest and size go (its samples are judged instead)."""
+    its kind and number, its digest and size go (its samples are judged instead), and a checkpoint's id is only an id
+    (its tensors are judged instead: `written`)."""
     if isinstance(result, list):
         return [plain(item) for item in result]
+    if isinstance(result, str) and len(result) == 71 and result.startswith("sha256:"):
+        return "sha256:*"
     if not isinstance(result, dict):
         return result
     kept = {k: plain(v) for k, v in result.items() if not ("asset_ref" in result and k in ("digest", "size_bytes"))}
@@ -400,7 +437,25 @@ def plain(result: Json) -> Json:
     return kept
 
 
-def judge(cell: Cell, reply: Reply, spool: Path, reference: Seen | None) -> Seen:
+def written(cell: Cell, items: list[Item], store: Path) -> dict[str, dict[str, int]]:
+    """Each weights output the cell asks for, committed: its checkpoint's tensors, and how many are encoded."""
+    import tensorfs
+
+    found: dict[str, dict[str, int]] = {}
+    for output in cell.get("weights", {}):
+        commits = [item["revision"] for item in items if item["output"] == output]
+        if not commits:
+            raise Failed(f"weights output {output} was never committed")
+        checkpoint = tensorfs.open(commits[-1], cache_dir=store, local_files_only=True)
+        rows = [row for component in checkpoint.components.values() for row in component.tensors.values()]
+        found[output] = {"tensors": len(rows), "encoded": sum(row.encoding is not None for row in rows)}
+        if not rows:
+            raise Failed(f"weights output {output} holds no tensors")
+    return found
+
+
+def judge(cell: Cell, reply: Reply, spool: Path, reference: Seen | None,
+          committed: Callable[[], dict[str, dict[str, int]]]) -> Seen:
     """The cell's output judged, never only its completion: every declared output present, finite and not flat (or
     declared empty), the cell's own check, and the stored reference's."""
     outcome = reply.get("outcome", {})
@@ -409,6 +464,9 @@ def judge(cell: Cell, reply: Reply, spool: Path, reference: Seen | None) -> Seen
     result_file = spool / "result.canonical"
     result = cast(Json, json.loads(result_file.read_bytes())) if result_file.exists() else reply.get("result")
     seen: Seen = {"result": plain(result), "outputs": []}
+    weights = committed()
+    if weights:
+        seen["weights"] = weights
     empty = set(cell.get("empty", []))
     files: list[Path] = []
     for declared in sorted(reply.get("outputs") or [], key=lambda o: str(o.get("output_id"))):
@@ -431,7 +489,7 @@ def judge(cell: Cell, reply: Reply, spool: Path, reference: Seen | None) -> Seen
             if width < 1.0 and media_type.split("/")[0] in ("image", "video", "audio"):
                 raise Failed(f"output {output}{suffix} is flat (spread {width:.3f})")
             seen["outputs"].append({"name": output + suffix, "bytes": values.size, "signature": signature(values)})
-    if not seen["outputs"] and result in (None, {}, []):
+    if not seen["outputs"] and not weights and result in (None, {}, []):
         raise Failed("the reply declares no outputs and an empty result")
     check = cell.get("check")
     if check is not None and (problem := check(result, files)):
@@ -455,6 +513,8 @@ def compare(seen: Seen, reference: Seen, tolerance: float) -> None:
         if mean > tolerance or worst > 12 * tolerance:
             raise Failed(f"output {b['name']} differs from its reference by {mean:.2f}/255 on average, {worst:.0f} at most "
                          f"(tolerance {tolerance})")
+    if reference.get("weights") != seen.get("weights"):
+        raise Failed(f"weights {seen.get('weights')} differ from the reference's {reference.get('weights')}")
     if reference["result"] != seen["result"]:
         raise Failed(f"result {json.dumps(seen['result'])[:160]} differs from the reference's {json.dumps(reference['result'])[:160]}")
 
@@ -591,15 +651,21 @@ def main() -> int:
                                "construction": construction, "input_metadata": metadata})
                 spool = out / "spool" / request
                 spool.mkdir(parents=True)
-                reply = executor.ask({"cmd": "invoke", "request_id": request, "entrypoint": entry, "spool": str(spool),
-                                      "construction": construction, "deadline_s": 1800, "inputs": granted})
+                invoke: Invoke = {"cmd": "invoke", "request_id": request, "entrypoint": entry, "spool": str(spool),
+                                  "construction": construction, "deadline_s": 1800, "inputs": granted}
+                if "sources" in cell:
+                    invoke |= {"sources": {k: manifests[ref] for k, ref in cell["sources"].items()},
+                               "weights": cell.get("weights", {}), "operation": f"{package}/{entry}"}
+                executor.items.clear()
+                reply = executor.ask(invoke)
                 (out / f"{request}.reply.json").write_text(json.dumps(reply, indent=1))
                 key = f"{entry}/{name}"
                 same_as = cell.get("same_as")
                 against = ran.get(same_as) or references.get(same_as) if same_as else None if record else references.get(key)
                 if against is None and not (record and same_as is None):
                     raise Failed(f"no output of {same_as or key} to judge against: run it too, or record (run.sh --record)")
-                seen = judge(cell, reply, spool, against)
+                items = executor.items
+                seen = judge(cell, reply, spool, against, lambda: written(cell, items, store))
                 ran[key] = seen
                 if record and same_as is None:
                     references[key] = seen
@@ -615,6 +681,7 @@ def main() -> int:
         for executor in executors.values():
             executor.close()
     if record:
+        references_path.parent.mkdir(parents=True, exist_ok=True)
         references_path.write_text(json.dumps(references, indent=1, sort_keys=True) + "\n")
     return 1 if failed else 0
 
