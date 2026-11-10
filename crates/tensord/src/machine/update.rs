@@ -1246,8 +1246,34 @@ impl Updates {
     }
 }
 
-/// Resolves SDK requirements for the executors' `python` over uv's configured index.
+/// Resolves SDK requirements for the executors' `python` over uv's configured index, read afresh (`--no-cache`). A
+/// release it doesn't list yet (minutes old: PyPI's CDN lags an upload) is waited for by uv's index rule
+/// (`platform::tools::uv_listed`, on `Backoff::published`), each wait said in the log.
 pub(crate) fn compile_sdk(uv: &super::uv::Uv, python: &str, input: &str, stop: &Stop, wheel_plan: bool) -> io::Result<Result<String, String>> {
+    let mut backoff = tensorfs::fetch::Backoff::published();
+    let compiled = platform::tools::uv_listed(
+        |_| match compile_once(uv, python, input, stop, wheel_plan) {
+            Ok(Ok(plan)) => Ok(plan),
+            Ok(Err(why)) => Err(Ok(why)),
+            Err(e) => Err(Err(e)),
+        },
+        |failed: &Result<String, io::Error>| failed.as_ref().ok().map(String::as_str),
+        || match backoff.again("the index lists no release that meets it yet", false, None) {
+            Some((pause, line)) => {
+                tracing::info!("resolving {}: {line}", input.trim().replace('\n', ", "));
+                stop.sleep(pause)
+            }
+            None => false,
+        },
+    );
+    match compiled {
+        Ok(plan) => Ok(Ok(plan)),
+        Err(Ok(why)) => Ok(Err(why)),
+        Err(Err(e)) => Err(e),
+    }
+}
+
+fn compile_once(uv: &super::uv::Uv, python: &str, input: &str, stop: &Stop, wheel_plan: bool) -> io::Result<Result<String, String>> {
     let mut command = uv.command()?;
     command.args(["pip", "compile"]);
     if wheel_plan { command.args(["--format", "pylock.toml", "--only-binary", ":all:"]); }
