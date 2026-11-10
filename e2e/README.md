@@ -24,6 +24,10 @@ Real runs of `cozy` on GitHub's runners, chosen by what a change touches (CI v2:
   redeemed as Calcifer and TensorD do, renewed, a copied token refused without its DPoP key, refused for another repository,
   a release, a delete, rentals, another account's repository, an altered or expired capability and, with `--rental`, once the
   rental ends. It speaks the Hub's API, runs nothing; the release suite runs it on its throwaway upload.
+- `podsecrets/run.sh <tensorhub checkout> <cozy binary> <out>`: xs-157, by hand on a computer with Docker. The real Hub
+  (throwaway Postgres, its Docker provider) rents a pod of that cozy binary: the pod's environment names no secret, the
+  Hub pins the leaf at the provider's address, only that key's signature speaks for the worker (another key, a token, a
+  stale clock and an endpoint report are refused), and a restart keeps the pin. On real pods: the `hub` release suite.
 - `.github/workflows/e2e.yaml` runs the selected suites on PRs here and for cozy-runtime, packages and the release gate. On Linux
   each candidate is one `candidate` job (`candidates/build.sh`), reused from an earlier merge-group or dispatched run that built
   the same build inputs, and `cli` and `imports` run in shards (`--shard`) on their own runners; `e2e` checks coverage over

@@ -32,8 +32,6 @@ impl Flags {
     }
 }
 
-/// The readiness key's names, taken out of the environment once read.
-const RECEIPT_KEYS: [&str; 2] = ["COZY_BOOTSTRAP_RECEIPT_HMAC_KEY_B64URL", "COZY_BOOTSTRAP_RECEIPT_HMAC_KEY_FILE"];
 /// The provider's own names: where it maps this pod's ports, and its credential.
 const PROVIDER: &[&str] = &[
     "COZY_WEBRTC_PUBLIC_ADDRESS",
@@ -59,7 +57,7 @@ pub(crate) struct Config {
     /// How a call shares a GPU that drives a display: `machine.display_pace` on a shared machine
     /// (absent: the default), none on a dedicated one or when it never pauses.
     pub display_pace: Option<DisplayPace>,
-    /// The provider's public mapping of this pod's ports, told to the Hub at boot.
+    /// The provider's public mapping of this pod's ports: where other computers reach it.
     pub endpoint: Option<Endpoint>,
     /// The provider's names, for [`crate::machine::provider::ProviderSelf::take`].
     pub provider: BTreeMap<String, String>,
@@ -100,20 +98,6 @@ fn mode(lifetime: Lifetime, machine: &MachineConfig) -> MachineMode {
     })
 }
 
-/// Takes the readiness key out of the environment, so nothing this machine starts inherits it.
-/// Call before any thread starts, after a provider's re-execution (which still needs it).
-pub(crate) fn forget_receipt_key() {
-    for name in RECEIPT_KEYS {
-        std::env::remove_var(name);
-    }
-}
-
-/// What a process this service starts inherits: never the worker credential. Called in the service
-/// alone, before any thread: its stable parent keeps the credential for the machine it may exec again.
-pub(crate) fn for_what_it_starts() {
-    std::env::remove_var("COZY_WORKER_AUTH_TOKEN");
-}
-
 fn from_loaded(lifetime: Lifetime, loaded: Loaded, environment: &BTreeMap<String, String>) -> io::Result<Config> {
     let machine = &loaded.config.machine;
     let provider: BTreeMap<String, String> = environment
@@ -145,7 +129,7 @@ fn from_loaded(lifetime: Lifetime, loaded: Loaded, environment: &BTreeMap<String
 }
 
 fn known(name: &str) -> bool {
-    ENV.iter().any(|(n, _)| *n == name) || PROVIDER.contains(&name) || name == shared::AUTHORIZED_KEYS
+    ENV.iter().any(|(n, _)| *n == name) || PROVIDER.contains(&name)
 }
 
 /// A load refusal naming a `machine.*` key also names the variable a pod sets it with.

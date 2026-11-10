@@ -122,6 +122,23 @@ included), and an explicit keepalive restarts the clock once. An output read or 
 restarts it as its bytes move, so a stalled one never holds a rental. Open streams, status and every
 other call are not activity: a Calcifer that holds a stream must not bill forever.
 
+## A rental's credential
+
+A pod's environment is public: its provider shows it to any holder of the account's API key, and
+RunPod puts one in every pod (xs-157). So it carries only public facts (worker id, ports, Hub origin
+and CA, object hosts), never a token, a key or the renter's keys. The machine's credential is its TLS
+leaf's key, minted at its first boot under its root (`run/cozy/bootstrap/tls.key`, 0400) and kept
+across restarts; it stays P-256 because browsers' WebRTC DTLS takes no Ed25519.
+
+- **The Hub pins it** at the address the provider's API reports, never one the pod names: the leaf
+  that answers `GET /v1/status` there is the attempt's. Status's `receipt` is the boot's readiness
+  facts, unsigned (`readiness.json`), read over that connection.
+- **Worker requests are signed** with that key (`X-Cozy-Worker-ID`, `-Time`, `-Signature`; Tensorhub
+  `internal/workerauth`): the lease, release and speed report. Nothing is handed over.
+- **Whom it admits** comes only from the lease (`GET /v1/worker/rental/authorized-keys`), asked each
+  second until the Hub has pinned the machine; the Hub makes the rental ready once it has been read.
+  The last answer is kept in `var/lib/cozy/machine/lease.json` (0600), so a restart admits at once.
+
 ## What a machine and a package can reach
 
 A machine (a rented pod or this computer's own) never holds the account's sign-in. At the run's

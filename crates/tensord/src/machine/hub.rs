@@ -1,10 +1,10 @@
-//! The Hub's worker API as this machine (`api::hub`, the worker credential), HTTPS to the
-//! granted origin (public roots plus the granted CA): rental authority, the endpoint and speed
-//! reports and release.
+//! The Hub's worker API as this machine (`api::hub`), HTTPS to the granted origin (public roots
+//! plus the granted CA): rental authority, the speed report and release. Each request is signed by
+//! the machine's leaf key, which the Hub pinned when it reached the machine at its provider's address.
 use super::grant::HubGrant;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use ed25519_dalek::VerifyingKey;
-use ::api::hub::{types, Credential};
+use ::api::hub::{types, Credential, WorkerSigner};
 use std::{
     io,
     sync::atomic::{AtomicI64, Ordering},
@@ -22,9 +22,9 @@ pub(crate) struct Hub {
 pub(crate) enum Refusal {
     /// 401 `worker.ended`: the rental behind this pod is over, for good.
     Ended,
-    /// Any other 401/403: the Hub denies this attempt's authority now.
-    Denied,
-    /// 425 `worker.not_ready`: its readiness receipt has not landed yet.
+    /// Any other 401/403: the Hub denies this attempt's authority now, saying why.
+    Denied(String),
+    /// 425 `worker.not_ready`: the Hub has not reached this machine yet.
     NotReady,
     /// Unreachable, slow or any other answer: proves nothing either way. With how long the answer
     /// said to wait.
@@ -32,12 +32,9 @@ pub(crate) enum Refusal {
 }
 
 impl Hub {
-    pub(crate) fn new(grant: HubGrant) -> io::Result<Self> {
+    pub(crate) fn new(grant: HubGrant, sign: WorkerSigner) -> io::Result<Self> {
         let http = crate::hub::http(grant.ca_der.as_deref()).map_err(|e| io::Error::other(e.0))?;
-        let credential = Credential::Worker {
-            id: grant.worker_id.clone(),
-            token: grant.worker_token.clone(),
-        };
+        let credential = Credential::Worker { id: grant.worker_id.clone(), sign };
         Ok(Self {
             client: ::api::hub::Client::connect(&grant.origin, http, credential),
             grant,
@@ -65,9 +62,7 @@ impl Hub {
         }
         answer.map_err(|error| match error {
             ::api::hub::Error::Hub { status: 401, code, .. } if code == "worker.ended" => Refusal::Ended,
-            ::api::hub::Error::Hub {
-                status: 401 | 403, ..
-            } => Refusal::Denied,
+            error @ ::api::hub::Error::Hub { status: 401 | 403, .. } => Refusal::Denied(error.to_string()),
             ::api::hub::Error::Hub { status: 425, .. } => Refusal::NotReady,
             ::api::hub::Error::Call(why) => Refusal::Transport(format!("reach Tensorhub: {why}"), None),
             other => {
@@ -87,34 +82,20 @@ impl Hub {
         {
             return Err(invalid());
         }
-        let keys = document
-            .authorized_keys
-            .iter()
-            .map(|spelled| {
-                let raw: [u8; 32] = URL_SAFE_NO_PAD.decode(spelled).ok()?.try_into().ok()?;
-                VerifyingKey::from_bytes(&raw).ok()
+        // The lease is the only source of whom this machine admits: a key it cannot read is skipped
+        // and said, never a reason to admit nobody.
+        let keys = (document.authorized_keys.iter())
+            .filter_map(|spelled| {
+                let key = (URL_SAFE_NO_PAD.decode(spelled).ok())
+                    .and_then(|raw| <[u8; 32]>::try_from(raw).ok())
+                    .and_then(|raw| VerifyingKey::from_bytes(&raw).ok());
+                if key.is_none() {
+                    tracing::warn!("the Hub's lease names a key that is not an Ed25519 public key; it is not admitted: {spelled}");
+                }
+                key
             })
-            .collect::<Option<Vec<_>>>()
-            .ok_or_else(invalid)?;
+            .collect();
         Ok((keys, Duration::from_secs(document.lease_seconds as u64)))
-    }
-
-    /// Tells the Hub where this booting machine listens.
-    pub(crate) async fn report_endpoint(
-        &self,
-        endpoint: &super::endpoint::Endpoint,
-    ) -> Result<(), Refusal> {
-        let report = types::WorkerEndpointReport {
-            public_host: endpoint.public_host.clone(),
-            ports: endpoint
-                .ports
-                .iter()
-                .filter(|(_, public)| **public > 0)
-                .map(|(private, public)| (private.clone(), *public))
-                .collect(),
-        };
-        let answer = self.client.report_worker_endpoint(&report).await;
-        self.heard(answer)
     }
 
     /// What this machine measured of its host (`machine::speed`). A Hub from before the route
@@ -142,7 +123,7 @@ impl std::fmt::Display for Refusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Ended => write!(f, "the Hub says this rental has ended"),
-            Self::Denied => write!(f, "the Hub denied this rental's authority"),
+            Self::Denied(why) => write!(f, "the Hub denied this rental's authority: {why}"),
             Self::NotReady => write!(f, "the Hub says this rental is not ready yet"),
             Self::Transport(detail, _) => write!(f, "{detail}"),
         }
