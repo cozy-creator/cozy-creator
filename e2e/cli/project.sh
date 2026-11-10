@@ -1954,7 +1954,7 @@ assets:
     instructions: Also from <slow>, and deleted while it waits.
 YAML
 id=$(cozy --json project -p "$W" status | jq -r .id)
-api -N --max-time 120 "http://$ADDR/v1/events" > "$stream" 2> /dev/null &
+api -N --max-time 600 "http://$ADDR/v1/events" > "$stream" 2> /dev/null &
 local tail=$!
 cozy project -p "$W" render all --queue --on local > "$OUT/walking-queue.txt" 2>&1 || check "walking: render: $(tail -c 300 "$OUT/walking-queue.txt")"
 J '[.board.jobs[].asset] as $a | (["running_gone", "reads_gone", "slow", "beside", "one", "two", "last", "gone_soon"] - $a) == []' <<< "$(status "$W")" || check "walking: not every job is on the board at once: $(status "$W" | jq -c '[.board.jobs[] | .asset]')"
@@ -1985,6 +1985,10 @@ J --argjson e "$back" '[.entries[].id] == [$e]' <<< "$(api -X POST -d "{\"entry\
 [ "$(owed "$W")" = 0 ] || check "walking: what the walk owed outlived the render"
 [ -z "$(find "$W/.runs" -type f 2> /dev/null)" ] || check "walking: left in .runs: $(find "$W/.runs" -type f)"
 grep -q "\"type\":\"job.updated\".*\"project\":\"$id\"\|\"project\":\"$id\".*\"type\":\"job.updated\"" "$stream" || check "walking: /v1/events told no job.updated: $(head -c 300 "$stream")"
+# Its end is the board's, told whole on the same stream, as status keeps it.
+sse "$stream" | J -s --arg id "$id" 'map(select(.type == "board.updated" and .project == $id)) | (length > 1) and (last.board.ended != null) and (first.board.ended == null)' \
+  || check "walking: /v1/events told no board.updated that began and ended it: $(sse "$stream" | jq -c --arg id "$id" 'select(.type == "board.updated" and .project == $id) | {seq: .board.seq, ended: .board.ended}' | tail -3)"
+J '.board.ended != null and .board.elapsed_ms != null' <<< "$(status "$W")" || check "walking: status's board doesn't say it ended: $(status "$W" | jq -c '.board | {elapsed_ms, ended}')"
 }
 
 walk_restarted() {
@@ -3930,8 +3934,12 @@ soon told "$log" '.type == "machine.updated" and .machine.name == "local"' || ch
 soon grep -q '^:' "$log" || check "stream: no comment after 20 s"
 kill -0 "$stream" 2> /dev/null || check "stream: it ended: $(cat "$OUT/events.err")"
 kill "$stream" 2> /dev/null || true
-for route in runs machines; do
+for route in runs machines "projects/$id"; do
   [ "$(api -o /dev/null -w '%{http_code}' "http://$ADDR/v1/$route/events")" = 404 ] || check "stream: /v1/$route/events still answers"
+done
+# A push and a pull are runs (cozy/project_push, cozy/project_pull): their routes are gone.
+for route in push pull; do
+  [ "$(api -o /dev/null -w '%{http_code}' -X POST -d '{}' "http://$ADDR/v1/projects/$id/$route")" = 404 ] || check "stream: POST /v1/projects/{id}/$route still answers"
 done
 }
 

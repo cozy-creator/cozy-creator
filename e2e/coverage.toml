@@ -199,10 +199,10 @@ test = "pr: projects: the index; a folder gone leaves it and frees its name; mov
 test = "pr: projects: by -p from elsewhere; what changed; a rename suggested; orphans with their bytes; by the CLI: one asset"
 
 ["project wait"]
-test = "pr: agent: nothing going says the project, a render followed to its end, a failure exits 1 (gate: a stall exits 4)"
+test = "pr: agent: nothing going says the project, a render followed to its end on GET /v1/events, a failure exits 1 (gate: a stall exits 4)"
 
 ["project render"]
-test = "pr: projects: only what has no state; reverting runs nothing; cuts; a function's inputs; every mention filled; a world-state series"
+test = "pr: projects: only what has no state; reverting runs nothing; cuts; a function's inputs; every mention filled; a world-state series; its board on GET /v1/events from begun to ended (walking), --json each run's own events, the browser following a re-cut there"
 "--on" = "pr: projects: --on local"
 "--approve" = "pr: projects: --approve with -n 2 refused before any run"
 "--missing" = "pr: projects: only what has no state; reverting runs nothing"
@@ -255,7 +255,7 @@ test = "pr: projects: old renamed new, its versions kept, its reader out of date
 test = "pr: projects: lists, deletes only what nothing else names, refuses while rendering, and with --yes deletes"
 
 ["project push"]
-test = "manual: release-gate/sessions/project-remote.sh (pod-session, signed in): nothing moves twice, a killed push goes on"
+test = "manual: release-gate/sessions/project-remote.sh (pod-session, signed in): the cozy/project_push run, nothing moves twice, a killed push goes on"
 
 ["project pull"]
 test = "manual: release-gate/sessions/project-remote.sh: a clone of yaml and lock, signed in as a second home: the same edit.mp4"

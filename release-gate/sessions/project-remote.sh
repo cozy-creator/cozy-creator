@@ -71,11 +71,13 @@ say "edit.mp4 $CUT; $TOTAL bytes to move"
 
 say "push, its Calcifer killed once the first file landed"
 cozy project -p "$P" push > "$OUT/push-killed.txt" 2>&1 & PUSH=$!
-until grep -q '^sent files/' "$OUT/push-killed.txt" || ! kill -0 "$PUSH" 2> /dev/null; do sleep 0.05; done
+# The push is Calcifer's own run, cozy/project_push: its progress counts the files sent.
+sent() { cozy --json run ls --limit 5 2> /dev/null | jq -r '[.runs[] | select(.target == "cozy/project_push") | .progress.completed // 0][0] // 0'; }
+until [ "$(sent)" -gt 0 ] || ! kill -0 "$PUSH" 2> /dev/null; do sleep 0.1; done
 kill -0 "$PUSH" 2> /dev/null || fail "push ended before a file landed: $(tail -3 "$OUT/push-killed.txt")"
-kill -9 "$(pid_of "$HOME")"; wait "$PUSH"; code=$?
+LANDED=$(sent); kill -9 "$(pid_of "$HOME")"; wait "$PUSH"; code=$?
 [ "$code" != 0 ] || fail "the push finished before its Calcifer was killed: make the bulk bigger"
-say "killed: $(grep -c '^sent files/' "$OUT/push-killed.txt") files had landed; the CLI said $(tail -1 "$OUT/push-killed.txt" | cut -c1-120)"
+say "killed: $LANDED files had landed; the CLI said $(tail -1 "$OUT/push-killed.txt" | cut -c1-120)"
 cozy --json project -p "$P" push > "$OUT/push-2.json" 2> "$OUT/push-2.err" || fail "push again: $(tail -3 "$OUT/push-2.err")"
 COMMIT=$(jq -r .commit "$OUT/push-2.json"); say "push again: $(jq -c . "$OUT/push-2.json")"
 J --argjson t "$TOTAL" --argjson f "$FILES" '.files == $f and .moved > 0 and .moved < $f and .bytes > 0 and .bytes < $t' "$OUT/push-2.json" || fail "the second push did not send only the rest"
