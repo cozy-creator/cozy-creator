@@ -1195,11 +1195,13 @@ impl Folder {
         let asked = Instant::now();
         let mut turn = self.shared.writing.lock().unwrap_or_else(|e| e.into_inner());
         let (began, wait_ms) = (Instant::now(), ms(asked));
+        let phase = Instant::now();
         let (base, files, seen) = {
             let held = self.held()?;
             let held = held.as_ref().expect("held");
             (held.stored.clone(), held.files.clone(), held.seen)
         };
+        super::profile("write_base", phase, base.written.boxes.len());
         let act = Rc::new(Acting {
             id,
             base,
@@ -1212,11 +1214,14 @@ impl Folder {
             made: RefCell::default(),
             after: RefCell::default(),
         });
+        let phase = Instant::now();
         let done = {
             let _in = In::enter(act.clone());
             change()
         };
+        super::profile("write_change", phase, 0);
         let answer = done?;
+        let phase = Instant::now();
         let act = Rc::try_unwrap(act).unwrap_or_else(|_| panic!("an act outlives its turn"));
         let mut after = act.base.clone();
         let changed = [act.written.borrow().is_some(), act.canvas.borrow().is_some(), act.lock.borrow().is_some(), act.walk.borrow().is_some(), act.measured.borrow().is_some()];
@@ -1242,13 +1247,19 @@ impl Folder {
         if let Some(key) = super::keyed::claimed() {
             extra.key = Some(key);
         }
+        super::profile("write_history", phase, extra.ops.len());
         if !changed.contains(&true) && extra.ops.is_empty() && extra.ops_gone.is_empty() && extra.asked.is_empty() && !extra.asked_cleared && extra.key.is_none() {
             return Ok(answer);
         }
         // SQLite's wait on another program's write lock holds the turn alone: every read goes on meanwhile (cl-837).
+        let phase = Instant::now();
         let conn = self.writer(&mut turn)?;
+        super::profile("write_connection", phase, 0);
         let mut current = false;
+        let phase = Instant::now();
         let seq = db::commit(conn, &self.db(), &act.base, &mut after, &extra, || current = self.version() == seen)?;
+        super::profile("write_commit_total", phase, 0);
+        let phase = Instant::now();
         let (seq, shown) = {
             let mut held = self.shared.held.lock().unwrap_or_else(|e| e.into_inner());
             let held = held.as_mut().expect("held");
@@ -1274,13 +1285,16 @@ impl Folder {
             (seq, shown)
         };
         super::history::committed(self, entry);
+        super::profile("write_publish", phase, 0);
         let now = seq.unwrap_or(act.base.seq);
+        let phase = Instant::now();
         for told in act.after.into_inner() {
             told(now);
         }
         if (seq.is_some() || shown) && changed.contains(&true) {
             crate::events::project_changed(&self.dir);
         }
+        super::profile("write_callbacks", phase, 0);
         let held_ms = ms(began);
         if wait_ms + held_ms >= SLOW_MS {
             info!(phase = "project_write", seq = seq.unwrap_or_default(), wait_ms, held_ms);

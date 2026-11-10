@@ -394,12 +394,18 @@ fn read_document(conn: &Connection, at: &Path) -> Result<crdt::Document, Error> 
 }
 
 fn save_document(tx: &Transaction<'_>, at: &Path, doc: &mut crdt::Document, seq: u64) -> Result<(), Error> {
+    let phase = std::time::Instant::now();
     if let Some(change) = doc.doc.get_last_local_change() {
         tx.execute("INSERT OR IGNORE INTO crdt_changes (hash, seq, actor, bytes) VALUES (?1, ?2, ?3, ?4)", params![change.hash().to_string(), seq as i64, change.actor_id().to_hex_string(), change.raw_bytes()]).map_err(|e| sql(at, e))?;
     }
     let heads: Vec<String> = doc.doc.get_heads().iter().map(ToString::to_string).collect();
+    super::profile("write_save_changes_bind", phase, heads.len());
+    let phase = std::time::Instant::now();
     let bytes = doc.doc.save();
+    super::profile("write_save_native", phase, bytes.len());
+    let phase = std::time::Instant::now();
     tx.execute("INSERT OR REPLACE INTO crdt_document (id, format, snapshot, heads) VALUES (1, ?1, ?2, ?3)", params![crdt::FORMAT, bytes, json(&heads)]).map_err(|e| sql(at, e))?;
+    super::profile("write_save_snapshot_bind", phase, bytes.len());
     Ok(())
 }
 
@@ -441,19 +447,26 @@ fn file_record(file: &File) -> String {
 /// `locked` runs once it holds the write lock, before it writes: no other connection commits until it does.
 pub(crate) fn commit(conn: &mut Connection, at: &Path, before: &Stored, after: &mut Stored, extra: &Extra, locked: impl FnOnce()) -> Result<Option<u64>, Error> {
     let e = |error: rusqlite::Error| sql(at, error);
+    let phase = std::time::Instant::now();
     crdt::identify(before, after);
     if !Arc::ptr_eq(&before.lock, &after.lock) {
         Arc::make_mut(&mut after.lock).mark_rows();
     }
+    super::profile("write_identity", phase, after.written.boxes.len());
+    let phase = std::time::Instant::now();
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(e)?;
     locked();
+    super::profile("write_sql_begin", phase, 0);
     let was = tx.total_changes();
+    let phase = std::time::Instant::now();
     write(&tx, before, after, extra).map_err(e)?;
+    super::profile("write_sql_projection", phase, 0);
     if tx.total_changes() == was {
         tx.rollback().map_err(e)?;
         return Ok(None);
     }
     let seq = before.seq + 1;
+    let phase = std::time::Instant::now();
     let mut doc = match &before.crdt {
         Some(doc) => (**doc).clone(),
         None => read_document(&tx, at)?,
@@ -463,14 +476,19 @@ pub(crate) fn commit(conn: &mut Connection, at: &Path, before: &Stored, after: &
     let mut ops = doc.ops()?;
     ops.retain(|row| !extra.ops_gone.iter().any(|(uid, _)| uid == &row.uid) && !extra.ops.iter().any(|next| next.uid == row.uid));
     ops.extend(extra.ops.iter().cloned());
+    super::profile("write_clone_ops", phase, ops.len());
+    let phase = std::time::Instant::now();
     let value = crdt::value(after, &ops, &doc.value, identity);
+    super::profile("write_value", phase, after.written.boxes.len());
     doc.update(value)?;
     if doc.doc.get_heads() != old_heads {
         save_document(&tx, at, &mut doc, seq)?;
     }
     after.crdt = Some(Arc::new(doc));
+    let phase = std::time::Instant::now();
     tx.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('seq', ?1)", [seq.to_string()]).map_err(e)?;
     tx.commit().map_err(e)?;
+    super::profile("write_sql_commit", phase, 0);
     Ok(Some(seq))
 }
 

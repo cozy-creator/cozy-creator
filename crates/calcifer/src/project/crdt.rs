@@ -103,8 +103,13 @@ impl Document {
     /// independently added entities/versions separate, and scalar conflicts remain multi-value.
     pub(super) fn update(&mut self, value: Value) -> Result<(), Error> {
         let known_empty = self.conflicts.get().is_some_and(Vec::is_empty);
+        let phase = std::time::Instant::now();
         reconcile_map(&mut self.doc, &ROOT, &self.value, &value)?;
+        super::profile("write_reconcile", phase, 0);
+        let phase = std::time::Instant::now();
         self.doc.commit();
+        super::profile("write_am_commit", phase, 0);
+        let phase = std::time::Instant::now();
         self.value = Arc::new(value);
         // A local observing mutation cannot introduce concurrency. Imported snapshots always
         // start with an empty cache and are inspected; existing alternatives invalidate it.
@@ -113,6 +118,7 @@ impl Document {
             let _ = conflicts.set(Vec::new());
         }
         self.conflicts = Arc::new(conflicts);
+        super::profile("write_update_view", phase, 0);
         Ok(())
     }
 
