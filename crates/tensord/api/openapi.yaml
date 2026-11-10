@@ -951,11 +951,6 @@ components:
       properties:
         runs: {type: array, items: {$ref: '#/components/schemas/RunState'}}
     RunKind: {type: string, enum: [call, warm, update, remove]}
-    RunList:
-      type: object
-      description: The runs the caller reads, newest first; a rental's owner reads every client's runs.
-      properties:
-        runs: {type: array, items: {$ref: '#/components/schemas/RunState'}}
     RunRequest:
       type: object
       description: >-
