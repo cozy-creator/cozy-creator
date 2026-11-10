@@ -122,6 +122,9 @@ fn history_check(input: &Path) -> Result<Value, String> {
     let b = &value["runs"]["e2e-history-b-file"];
     require(a["present"] == true && b["present"] == true, "next CLI write lost a same-number peer run file")?;
     require(a["record"]["run"] == b["record"]["run"] && a["record"]["run_id"] != b["record"]["run_id"], "run fixture lost its distinct global origins")?;
+    let mut orders = [a["order"].as_u64().ok_or("missing run order")?, b["order"].as_u64().ok_or("missing run order")?];
+    orders.sort();
+    require(orders == [0, 1], "unrelated CLI edit did not normalize merged run display order as full logical state does")?;
     let boxes = object(&doc, &ROOT, "boxes")?;
     let held = object(&doc, &boxes, &named(&value, "whale")?)?;
     let fields = object(&doc, &held, "fields")?;
@@ -236,8 +239,70 @@ fn run(before: &Path, renamed: &Path) -> Result<Value, String> {
         json!({"passed":true,"native_replicas":3,"stable_rename_id":box_id,"same_number_versions_preserved":2,"original_versions":original.len(),"prompt_alternatives":alternatives,"duplicate_reordered_delivery":true,"snapshot_reload":true}),
     )
 }
+fn canvas_collision(input: &Path, output: &Path) -> Result<Value, String> {
+    let mut doc = AutoCommit::load(&fs::read(input).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?.with_actor(ActorId::from(65534u64.to_be_bytes()));
+    let id = named(&value(&doc), "whale")?;
+    let canvas = object(&doc, &ROOT, "canvas")?;
+    for (id, x, y) in [(id.as_str(), 10.0, 20.0), ("zzzz-e2e-canvas-peer", 700.0, 800.0)] {
+        let held = doc.put_object(&canvas, id, ObjType::Map).map_err(|e| e.to_string())?;
+        doc.put(&held, "present", true).map_err(|e| e.to_string())?;
+        doc.put(&held, "key", "whale").map_err(|e| e.to_string())?;
+        let record = doc.put_object(&held, "record", ObjType::Map).map_err(|e| e.to_string())?;
+        doc.put(&record, "name", "whale").map_err(|e| e.to_string())?;
+        doc.put(&record, "seq", 7u64).map_err(|e| e.to_string())?;
+        doc.put(&record, "by", "native peer").map_err(|e| e.to_string())?;
+        let card = doc.put_object(&record, "card", ObjType::Map).map_err(|e| e.to_string())?;
+        doc.put(&card, "x", x).map_err(|e| e.to_string())?;
+        doc.put(&card, "y", y).map_err(|e| e.to_string())?;
+    }
+    let heads: Vec<_> = doc.get_heads().iter().map(ToString::to_string).collect();
+    fs::write(output, doc.save()).map_err(|e| e.to_string())?;
+    Ok(json!({"id":id,"heads":heads,"selected_record":{"name":"whale","card":{"x":700.0,"y":800.0},"seq":7,"by":"native peer"}}))
+}
+
+fn canvas_check(input: &Path, report: &Path) -> Result<Value, String> {
+    let doc = AutoCommit::load(&fs::read(input).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let report: Value = serde_json::from_slice(&fs::read(report).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let value = value(&doc);
+    let target = report["id"].as_str().ok_or("missing mapped canvas identity")?;
+    require(value["canvas"][target]["record"] == report["selected_record"], "mapped canvas retained an older peer record")?;
+    require(value["canvas"][target]["present"] == true && value["canvas"]["zzzz-e2e-canvas-peer"]["present"] == false, "canvas normalization lost mapped identity or failed to retire peer")?;
+    Ok(json!({"passed":true,"mapped_canvas_id":target,"selected_record":report["selected_record"]}))
+}
+
+/// One independent native writer against actual CLI-created state. The CLI fixture holds
+/// SQLite's writer turn, installs this complete native change, then checks stale-base refusal.
+fn outside_edit(input: &Path, output: &Path) -> Result<Value, String> {
+    let mut bytes = fs::read(input).map_err(|e| e.to_string())?;
+    let mut doc = AutoCommit::load(&bytes).map_err(|e| e.to_string())?.with_actor(ActorId::from(65535u64.to_be_bytes()));
+    let old_heads = doc.get_heads();
+    let boxes = object(&doc, &ROOT, "boxes")?;
+    let held = object(&doc, &boxes, &named(&value(&doc), "whale")?)?;
+    let fields = object(&doc, &held, "fields")?;
+    doc.put(&fields, "e2e_outside", format!("retained native writer {}", output.file_stem().unwrap_or_default().to_string_lossy())).map_err(|e| e.to_string())?;
+    doc.commit();
+    let change = doc.get_last_local_change().ok_or("no outside native change")?;
+    fs::write(output.with_extension("change"), change.raw_bytes()).map_err(|e| e.to_string())?;
+    let heads: Vec<_> = doc.get_heads().iter().map(ToString::to_string).collect();
+    bytes.extend(doc.save_after(&old_heads));
+    let restored = AutoCommit::load(&bytes).map_err(|e| e.to_string())?;
+    require(value(&restored) == value(&doc), "appended outside stream changed native state")?;
+    fs::write(output, bytes).map_err(|e| e.to_string())?;
+    Ok(json!({"heads":heads,"hash":change.hash().to_string(),"actor":change.actor_id().to_hex_string()}))
+}
+
 fn main() {
     let args: Vec<_> = std::env::args_os().collect();
+    if args.len() == 4 && ["--outside-edit", "--canvas-collision", "--canvas-check"].iter().any(|mode| args[1] == *mode) {
+        let report = if args[1] == "--outside-edit" { outside_edit(Path::new(&args[2]), Path::new(&args[3])) }
+            else if args[1] == "--canvas-collision" { canvas_collision(Path::new(&args[2]), Path::new(&args[3])) }
+            else { canvas_check(Path::new(&args[2]), Path::new(&args[3])) };
+        match report {
+            Ok(report) => println!("{report}"),
+            Err(why) => { eprintln!("{why}"); std::process::exit(1); }
+        }
+        return;
+    }
     if (args.len() == 4 && args[1] == "--history-fixture") || (args.len() == 3 && args[1] == "--history-check") {
         let report = if args.len() == 4 {
             history_fixture(Path::new(&args[2]), Path::new(&args[3]))

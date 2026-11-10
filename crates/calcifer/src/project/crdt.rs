@@ -609,8 +609,9 @@ pub(super) fn changed_value(before: &Stored, after: &Stored, ops: &[OpRow], prev
         for (key, row) in after.canvas.iter() {
             let id = identities.get(key).cloned().or_else(|| canvas.iter().find(|(_, record)| text(record, "key") == *key).map(|(id, _)| id.clone())).unwrap_or_else(super::new_key);
             live.insert(id.clone());
-            if before.canvas.get(key) != Some(row) || !canvas.get(&id).is_some_and(|value| present(value) && text(value, "key") == *key) {
-                canvas.insert(id, json!({"present":true,"key":key,"record":row}));
+            let record = encoded(row);
+            if !canvas.get(&id).is_some_and(|value| present(value) && text(value, "key") == *key && value["record"] == record) {
+                canvas.insert(id, json!({"present":true,"key":key,"record":record}));
             }
         }
         retire(canvas, live.iter().map(String::as_str));
@@ -624,6 +625,14 @@ pub(super) fn changed_value(before: &Stored, after: &Stored, ops: &[OpRow], prev
         if !history.get(&id).is_some_and(|old| present(old) && old["record"] == record) {
             history.insert(id, json!({"present":true,"record":record}));
         }
+    }
+    // Merged replicas can retain equal display orders even when this edit changed
+    // another branch. Match the full builder's normalization on every logical commit.
+    for (index, held) in after.written.boxes.iter().enumerate() {
+        records(&mut next, "boxes").get_mut(&held.id).expect("current box")["order"] = json!(index);
+    }
+    for (index, row) in after.lock.runs.iter().enumerate() {
+        records(&mut next, "runs").get_mut(&row.id).expect("current run")["order"] = json!(index);
     }
     let (id, name) = identity.unwrap_or_else(|| (super::new_key(), String::new()));
     next["schema"] = FORMAT.into();
