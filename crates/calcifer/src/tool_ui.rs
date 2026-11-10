@@ -20,7 +20,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use futures_util::StreamExt as _;
-use hub_client::{cards, types::PackageInstallFile};
+use hub_client::{cards, types::{PackageInstallFile, PackageInstallPlan}};
 use protocol::{
     error::{Error, Kind},
     interface::Interface,
@@ -198,13 +198,24 @@ async fn released(api: &Arc<Api>, id: &str, shown_package: &str, function: &str)
     let card = cards::card(client, api.machines.hubs.home().root(), &hub, &package, &release).await?;
     let (ui, module) = declared(&card.interface, function, id)?;
     let (org, name) = package.split_once('/').expect("a package is org/name");
-    let plan = client()?.get_package_download_plan(org, name, &release, None, None).await.map_err(cards::refusal)?;
+    let plan = archive_plan(&client()?, org, name, &release).await.map_err(cards::refusal)?;
     let wheel = plan.downloads.iter().find(|file| wheel_of(&file.path, name)).ok_or_else(|| missing(id, &ui))?;
     let held = fetched(id, wheel).await?;
     let (id_owned, entry) = (id.to_owned(), ui.clone());
     let files = tokio::task::spawn_blocking(move || from_wheel(&id_owned, held, &module, &ui)).await.map_err(|why| unreadable(id, why))??;
     let hash = wheel.digest.strip_prefix("sha256:").unwrap_or(&wheel.digest).to_owned();
     Ok(api.tool_uis.hold(Component { id: id.to_owned(), hash, release, entry, files }))
+}
+
+/// UI modules are read from the wheel as an archive, never installed on this computer. Keep
+/// the default plan when available; an ARM-only release can supply the same static files.
+async fn archive_plan(client: &hub_client::Client, org: &str, name: &str, release: &str) -> Result<PackageInstallPlan, hub_client::Error> {
+    match client.get_package_download_plan(org, name, release, None, None).await {
+        Err(hub_client::Error::Hub { code, .. }) if code == "package_download.project_wheel_unavailable" => {
+            client.get_package_download_plan(org, name, release, None, Some("aarch64")).await
+        }
+        answer => answer,
+    }
 }
 
 /// `shown_package` as a machine you hold has it from `hub`: its whole name and its newest release on any of them.
@@ -345,3 +356,7 @@ fn from_folder(id: &str, roots: &[PathBuf], module: &str, ui: &str) -> Result<Fi
     }
     Ok(files)
 }
+
+#[cfg(test)]
+#[path = "tool_ui_tests.rs"]
+mod tests;
