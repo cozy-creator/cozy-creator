@@ -16,6 +16,12 @@ def main():
     parser.add_argument('--out-dir', type=Path, required=True)
     parser.add_argument('--github-env', type=Path)
     args = parser.parse_args()
+    if args.target.endswith('apple-darwin'):
+        if args.github_env:
+            with args.github_env.open('a', encoding='utf-8') as output:
+                output.write('COZY_VAULT_NATIVE_APFS=1\n')
+        print('/usr/bin/hdiutil')
+        return
     repo = Path(__file__).resolve().parent.parent
     manifest = json.loads((repo / 'crates/project-mount/helper/manifest.json').read_text())
     try:

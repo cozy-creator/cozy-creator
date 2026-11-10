@@ -293,24 +293,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y fuse libfuse2t64 ffmpeg
           sudo modprobe fuse || test -e /dev/fuse
-      - name: Install pinned macOS filesystem driver and media tool
+      - name: Install macOS media tool (native encrypted APFS needs no driver)
         if: runner.os == 'macOS'
-        run: |
-          curl --fail --location --retry 3 https://github.com/macfuse/macfuse/releases/download/macfuse-5.5.0/macfuse-5.5.0.dmg -o "$RUNNER_TEMP/macfuse.dmg"
-          echo "92c21ef2db4199bcf5bddc8e6efb57b23ecb9715f74ab38cba2c77ab226d3830  $RUNNER_TEMP/macfuse.dmg" | shasum -a 256 -c -
-          hdiutil attach -nobrowse -quiet -mountpoint "$RUNNER_TEMP/macfuse-volume" "$RUNNER_TEMP/macfuse.dmg"
-          package=$(find "$RUNNER_TEMP/macfuse-volume" -name '*.pkg' | head -1)
-          test -n "$package"
-          sudo installer -pkg "$package" -target /
-          hdiutil detach -quiet "$RUNNER_TEMP/macfuse-volume"
-          /Library/Filesystems/macfuse.fs/Contents/Resources/macfuse.app/Contents/MacOS/macfuse install --force --components file-system-extensions
-          pluginkit -e use -i io.macfuse.app.fsmodule.macfuse || true
-          pluginkit -e use -i io.macfuse.app.fsmodule.macfuse-local || true
-          # Only this disposable test user: the actual product never edits FSKit approval.
-          python e2e/vault-provider/fskit.py enable --backup-dir "$RUNNER_TEMP/cozy-ci-fskit" > fskit-setup.json
-          sudo killall fskitd || true
-          killall fskit_agent || true
-          brew install ffmpeg
+        run: brew install ffmpeg
       - name: Install pinned Windows filesystem driver and media tool
         if: runner.os == 'Windows'
         shell: pwsh
@@ -329,23 +314,24 @@ jobs:
       - name: Run encrypted filesystem and controller-death proof
         run: |
           cargo +1.99.1 build -p project-mount --example vault-provider --locked
-          helper=securefs probe=target/debug/examples/vault-provider
-          if [[ "$RUNNER_OS" == Windows ]]; then helper=securefs.exe; probe=$probe.exe; fi
-          python -c 'import os, pathlib, zipfile; z=zipfile.ZipFile(os.environ["COZY_SECUREFS_ARCHIVE"]); p=pathlib.Path(os.environ["RUNNER_TEMP"])/"vault-provider-bin"; p.mkdir(); z.extractall(p); [f.chmod(0o755) for f in p.iterdir() if f.is_file()]'
-          python e2e/vault-provider/run.py --probe "$probe" --securefs "$RUNNER_TEMP/vault-provider-bin/$helper" --artifacts "provider-proof"
-      - name: Restore macOS test-user activation
-        if: always() && runner.os == 'macOS'
-        run: |
-          python e2e/vault-provider/fskit.py restore --backup-dir "$RUNNER_TEMP/cozy-ci-fskit" > fskit-restore.json
-          sudo killall fskitd || true
-          killall fskit_agent || true
-      - name: Keep macOS driver diagnostics
+          probe=target/debug/examples/vault-provider
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            helper=/usr/bin/hdiutil
+          else
+            name=securefs
+            if [[ "$RUNNER_OS" == Windows ]]; then name=securefs.exe; probe=$probe.exe; fi
+            python -c 'import os, pathlib, zipfile; z=zipfile.ZipFile(os.environ["COZY_SECUREFS_ARCHIVE"]); p=pathlib.Path(os.environ["RUNNER_TEMP"])/"vault-provider-bin"; p.mkdir(); z.extractall(p); [f.chmod(0o755) for f in p.iterdir() if f.is_file()]'
+            helper="$RUNNER_TEMP/vault-provider-bin/$name"
+          fi
+          python e2e/vault-provider/run.py --probe "$probe" --securefs "$helper" --artifacts "provider-proof"
+      - name: Keep native macOS provider diagnostics
         if: always() && runner.os == 'macOS'
         run: |
           mkdir -p provider-proof
           /sbin/mount > provider-proof/macos-mounts.log
-          pluginkit -m -A -D -vv -p com.apple.fskit.fsmodule > provider-proof/macos-extensions.log 2>&1 || true
-          sudo /usr/bin/log show --style compact --last 3m --predicate 'process == "fskitd" OR process == "fskit_agent" OR subsystem BEGINSWITH "io.macfuse"' > provider-proof/macos-fskit.log 2>&1 || true
+          hdiutil info -plist > provider-proof/macos-images.plist
+          hdiutil help create > provider-proof/hdiutil-create.log 2>&1 || true
+          sudo /usr/bin/log show --style compact --last 3m --predicate 'process == "diskimages-helper" OR process == "diskimagesiod" OR subsystem BEGINSWITH "com.apple.DiskImages"' > provider-proof/macos-diskimages.log 2>&1 || true
       - name: Collect only proof records
         if: always()
         run: |
@@ -354,7 +340,7 @@ jobs:
           import shutil
           source, target = Path('provider-proof'), Path('provider-evidence')
           target.mkdir(exist_ok=True)
-          for name in ['results.json', 'normal.log', 'crash.log', 'provider.log', 'crash/ready.json', 'macos-mounts.log', 'macos-extensions.log', 'macos-fskit.log']:
+          for name in ['results.json', 'normal.log', 'crash.log', 'provider.log', 'crash/ready.json', 'macos-mounts.log', 'macos-images.plist', 'macos-diskimages.log', 'hdiutil-create.log']:
               item = source / name
               if item.is_file():
                   shutil.copy2(item, target / name.replace('/', '-'))

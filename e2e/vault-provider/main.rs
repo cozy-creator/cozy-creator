@@ -146,6 +146,28 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "ffmpeg must seek and decode through the mounted view"
     );
     eprintln!("provider fixture: normal lock with open handle");
+    eprintln!("provider fixture: durable SQLite transaction");
+    let database = view.join("project-state.sqlite");
+    {
+        let mut conn = rusqlite::Connection::open(&database)?;
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE state (id INTEGER PRIMARY KEY, payload BLOB NOT NULL)")?;
+        let transaction = conn.transaction()?;
+        transaction.execute("INSERT INTO state (id,payload) VALUES (1,?1)", [&content])?;
+        transaction.commit()?;
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")?;
+    }
+    {
+        let conn = rusqlite::Connection::open_with_flags(
+            &database,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )?;
+        let saved: Vec<u8> =
+            conn.query_row("SELECT payload FROM state WHERE id=1", [], |row| row.get(0))?;
+        assert!(
+            saved == content,
+            "the committed SQLite payload must survive reopen"
+        );
+    }
     let held = fs::File::open(&renamed)?;
     let busy = match mounted.try_unmount() {
         Err(project_mount::Error::Busy(_)) => {
@@ -170,6 +192,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut remount =
         provider.mount(&backing, &view, secret.as_bytes(), MountOptions::default())?;
     assert_eq!(fs::read(&renamed)?, content);
+    {
+        let conn = rusqlite::Connection::open_with_flags(
+            &database,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )?;
+        let saved: Vec<u8> =
+            conn.query_row("SELECT payload FROM state WHERE id=1", [], |row| row.get(0))?;
+        assert!(
+            saved == content,
+            "the SQLite commit must survive a full encrypted unmount/remount"
+        );
+    }
     remount.try_unmount()?;
     #[cfg(target_os = "linux")]
     {
@@ -224,7 +258,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Err(error) => return Err(error.into()),
     };
     eprintln!("provider fixture: idle expiration");
-    let mut idle = provider.mount(
+    let idle = match provider.mount(
         &backing,
         &view,
         secret.as_bytes(),
@@ -232,11 +266,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             idle_timeout: Some(Duration::from_secs(2)),
             ..MountOptions::default()
         },
-    )?;
-    // Do not issue filesystem requests while the provider's own idle timer runs.
-    std::thread::sleep(Duration::from_secs(4));
-    assert!(!idle.is_mounted()?, "provider idle timeout must unmount");
-    idle.try_unmount()?;
+    ) {
+        Ok(mut idle) => {
+            std::thread::sleep(Duration::from_secs(4));
+            assert!(!idle.is_mounted()?, "provider idle timeout must unmount");
+            idle.try_unmount()?;
+            "provider-enforced"
+        }
+        Err(project_mount::Error::Unsupported(_)) => "controller-managed",
+        Err(error) => return Err(error.into()),
+    };
 
     fn inspect(directory: &std::path::Path, marker: &[u8]) -> std::io::Result<()> {
         for entry in fs::read_dir(directory)? {
@@ -260,7 +299,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     inspect(&backing, marker)?;
     println!(
         "{}",
-        json!({"result":"pass","provider":"securefs 2.0.0 lite","bundled_provider":project_mount::is_bundled(),"bytes":content.len(),"normal_io":true,"media_seek":true,"open_handle_result":busy,"manual_lock":true,"no_plaintext_fallback":true,"remount_parity":true,"read_only":read_only,"idle_lock":true,"backing_marker_absent":true,"view":view})
+        json!({"result":"pass","provider":provider.storage_format(),"bundled_provider":project_mount::is_bundled(),"bytes":content.len(),"normal_io":true,"media_seek":true,"open_handle_result":busy,"manual_lock":true,"no_plaintext_fallback":true,"remount_parity":true,"read_only":read_only,"idle_lock":idle,"sqlite_durable_commit":true,"backing_marker_absent":true,"view":view})
     );
     Ok(())
 }

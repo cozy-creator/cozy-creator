@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import plistlib
 from pathlib import Path
 import subprocess
 import sys
@@ -54,6 +55,13 @@ def main():
                 if Path('/proc/self/mountinfo').exists():
                     paths = [line.split()[4].replace('\\040', ' ').replace('\\134', '\\') for line in Path('/proc/self/mountinfo').read_text().splitlines()]
                     mounted = os.path.realpath(view) in paths
+                elif sys.platform == 'darwin':
+                    table = subprocess.check_output(['/sbin/mount'], text=True)
+                    mounted = f' on {view} (' in table
+                    info = plistlib.loads(subprocess.check_output(['/usr/bin/hdiutil', 'info', '-plist']))
+                    own_image = (crash / 'encrypted/project.sparsebundle').resolve()
+                    attached = any(Path(item.get('image-path', '')).resolve() == own_image for item in info.get('images', []))
+                    mounted = mounted or attached
                 else:
                     mounted = subprocess.run([str(args.securefs), 'ismount', str(view)], capture_output=True).returncode == 0
                 if not mounted:
