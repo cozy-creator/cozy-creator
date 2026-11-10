@@ -45,6 +45,50 @@ fn new_version(doc: &mut AutoCommit, asset_id: &str, id: &str, number: u64, sour
     doc.commit();
     Ok(())
 }
+
+/// Add independent history entries with the same local display number to real CLI state.
+/// The caller installs this native merged snapshot as a fixture, then exercises the product's
+/// next ordinary CLI transaction before checking that both original identities survive.
+fn history_fixture(input: &Path, output: &Path) -> Result<Value, String> {
+    let bytes = fs::read(input).map_err(|e| e.to_string())?;
+    let seed = AutoCommit::load(&bytes).map_err(|e| e.to_string())?;
+    let number = value(&seed)["history"]
+        .as_object().into_iter().flatten()
+        .filter_map(|(_, record)| record["record"]["id"].as_u64())
+        .max().unwrap_or(0) + 1;
+    let mut replicas = Vec::new();
+    for (actor, uid) in [(201u64, "e2e-history-a"), (202u64, "e2e-history-b")] {
+        let mut doc = AutoCommit::load(&bytes).map_err(|e| e.to_string())?.with_actor(ActorId::from(actor.to_be_bytes()));
+        let history = object(&doc, &ROOT, "history")?;
+        let entry = doc.put_object(&history, uid, ObjType::Map).map_err(|e| e.to_string())?;
+        doc.put(&entry, "present", true).map_err(|e| e.to_string())?;
+        let record = doc.put_object(&entry, "record", ObjType::Map).map_err(|e| e.to_string())?;
+        doc.put(&record, "uid", uid).map_err(|e| e.to_string())?;
+        doc.put(&record, "id", number).map_err(|e| e.to_string())?;
+        doc.put(&record, "at_ms", 1i64).map_err(|e| e.to_string())?;
+        for (key, text) in [("by", "{}"), ("words", uid), ("edits", "[]"), ("changes", "[]")] {
+            doc.put(&record, key, text).map_err(|e| e.to_string())?;
+        }
+        doc.commit();
+        replicas.push(doc);
+    }
+    let mut merged = replicas.remove(0);
+    merged.merge(&mut replicas[0]).map_err(|e| e.to_string())?;
+    let heads: Vec<String> = merged.get_heads().iter().map(ToString::to_string).collect();
+    fs::write(output, merged.save()).map_err(|e| e.to_string())?;
+    Ok(json!({"passed":true,"same_number_history":number,"heads":heads}))
+}
+
+fn history_check(input: &Path) -> Result<Value, String> {
+    let doc = AutoCommit::load(&fs::read(input).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let value = value(&doc);
+    let a = &value["history"]["e2e-history-a"];
+    let b = &value["history"]["e2e-history-b"];
+    require(a["present"] == true && b["present"] == true, "next CLI write lost a concurrent same-number history entry")?;
+    require(a["record"]["uid"] == "e2e-history-a" && b["record"]["uid"] == "e2e-history-b", "history map identity was replaced")?;
+    require(a["record"]["id"] == b["record"]["id"], "history fixture no longer exercises colliding local labels")?;
+    Ok(json!({"passed":true,"same_number_history_preserved_after_cli_commit":2}))
+}
 fn run(before: &Path, renamed: &Path) -> Result<Value, String> {
     let seed_bytes = fs::read(before).map_err(|e| e.to_string())?;
     let mut seed = AutoCommit::load(&seed_bytes).map_err(|e| e.to_string())?;
@@ -139,6 +183,39 @@ fn run(before: &Path, renamed: &Path) -> Result<Value, String> {
 }
 fn main() {
     let args: Vec<_> = std::env::args_os().collect();
+    if (args.len() == 4 && args[1] == "--history-fixture") || (args.len() == 3 && args[1] == "--history-check") {
+        let report = if args.len() == 4 {
+            history_fixture(Path::new(&args[2]), Path::new(&args[3]))
+        } else {
+            history_check(Path::new(&args[2]))
+        };
+        match report {
+            Ok(report) => println!("{report}"),
+            Err(why) => { eprintln!("{why}"); std::process::exit(1); }
+        }
+        return;
+    }
+    if args.len() == 5 && args[1] == "--identity" {
+        let report = (|| -> Result<Value, String> {
+            let before = AutoCommit::load(&fs::read(&args[2]).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+            let after = AutoCommit::load(&fs::read(&args[3]).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+            let name = args[4].to_str().ok_or("non-UTF8 box name")?;
+            let id = named(&value(&before), name)?;
+            require(
+                named(&value(&after), name)? == id,
+                "redo/undo changed restored legacy entity identity",
+            )?;
+            Ok(json!({"passed":true,"restored_entity_id":id}))
+        })();
+        match report {
+            Ok(value) => println!("{value}"),
+            Err(why) => {
+                eprintln!("{why}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     if args.len() != 3 {
         eprintln!("usage: cozy-project-crdt-proof BEFORE.am RENAMED.am");
         std::process::exit(2);

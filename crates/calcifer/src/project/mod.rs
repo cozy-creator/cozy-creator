@@ -4270,6 +4270,7 @@ impl Walk {
         }
         let mut version = pending.version.clone();
         version.run = Some(run.number);
+        version.run_id = Some(run.id.clone());
         version.execution_ms += run.execution_ms.unwrap_or(0);
         for said in said_by(run) {
             let message = format!("{name}: {said}");

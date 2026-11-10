@@ -247,6 +247,9 @@ pub(crate) struct Version {
     /// The last run that made it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<u64>,
+    /// The globally stable run identity; the number remains a local display label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<api::ids::RunId>,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub execution_ms: u64,
     /// What made it, `org/package/function@release`, as the asset's tool can change after.
@@ -1262,7 +1265,7 @@ impl Folder {
     }
 
     /// History rows this act writes, and those it deletes.
-    pub(super) fn write_ops(&self, ops: Vec<db::OpRow>, gone: Vec<u64>) -> Result<(), Error> {
+    pub(super) fn write_ops(&self, ops: Vec<db::OpRow>, gone: Vec<(String, u64)>) -> Result<(), Error> {
         self.act(|| {
             let act = acting(self.id()).expect("in its act");
             let mut extra = act.extra.borrow_mut();

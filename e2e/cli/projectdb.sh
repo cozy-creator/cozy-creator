@@ -137,6 +137,20 @@ J '.assets | any(.name == "sky")' <<< "$(status "$F")" || check "first open: sky
 answer=$(cozy project -p "$F" export)
 grep -q 'text: A blue sky.' <<< "$answer" || grep -q 'text: "A blue sky."' <<< "$answer" || check "first open: sky's words: $answer"
 grep -q 'comment' <<< "$answer" && check "first open: a comment came through: $answer"
+# The ID assigned to a deleted legacy box belongs to that history, not to each undo attempt.
+python3 - "$F/project.db" "$OUT/crdt-sky-before.am" <<'PYSKY'
+import sqlite3,sys
+with sqlite3.connect(f'file:{sys.argv[1]}?mode=ro',uri=True) as db:
+    open(sys.argv[2],'wb').write(db.execute('SELECT snapshot FROM crdt_document WHERE id=1').fetchone()[0])
+PYSKY
+cozy project -p "$F" redo 1 > /dev/null 2>&1 || check "first open: redo 1"
+cozy project -p "$F" undo 1 > /dev/null 2>&1 || check "first open: repeat undo 1"
+python3 - "$F/project.db" "$OUT/crdt-sky-after.am" <<'PYSKY'
+import sqlite3,sys
+with sqlite3.connect(f'file:{sys.argv[1]}?mode=ro',uri=True) as db:
+    open(sys.argv[2],'wb').write(db.execute('SELECT snapshot FROM crdt_document WHERE id=1').fetchone()[0])
+PYSKY
+CARGO_BUILD_JOBS=1 nice -n 19 cargo run --quiet --locked --manifest-path "$here/crdt/Cargo.toml" -- --identity "$OUT/crdt-sky-before.am" "$OUT/crdt-sky-after.am" sky > "$OUT/crdt-legacy-identity.json" 2> "$OUT/crdt-legacy-identity.err" || check "first open: stable legacy identity: $(tail -c 300 "$OUT/crdt-legacy-identity.err")"
 cozy project -p "$F" undo 2 > /dev/null 2>&1 || check "first open: undo 2"
 cozy project -p "$F" export | grep -q 'aspect_ratio: "1:1"' || check "first open: undo 2 didn't put 1:1 back"
 # Opened again, nothing more happens.
@@ -392,4 +406,30 @@ CARGO_BUILD_JOBS=1 nice -n 19 cargo run --quiet --locked --manifest-path "$here/
   || check "CRDT: native format/replica proof: $(tail -c 400 "$OUT/crdt-native.err")"
 J '.passed and .native_replicas == 3 and .same_number_versions_preserved == 2 and (.prompt_alternatives == ["dawn","dusk","noon"])' "$OUT/crdt-native.json" \
   || check "CRDT: native merge report: $(cat "$OUT/crdt-native.json")"
+CARGO_BUILD_JOBS=1 nice -n 19 cargo run --quiet --locked --manifest-path "$here/crdt/Cargo.toml" -- --history-fixture "$OUT/crdt-renamed.am" "$OUT/crdt-history-merged.am" > "$OUT/crdt-history-fixture.json" 2> "$OUT/crdt-history-fixture.err" \
+  || { check "CRDT: history merge fixture: $(tail -c 300 "$OUT/crdt-history-fixture.err")"; return; }
+local H=$OUT/crdt-history-merged
+python3 - "$P" "$H" "$OUT/crdt-history-merged.am" "$OUT/crdt-history-fixture.json" <<'PY'
+import json,os,shutil,sqlite3,sys
+source,target,snapshot,report=sys.argv[1:]
+os.makedirs(target,exist_ok=True)
+if os.path.isdir(os.path.join(source,'files')):
+    shutil.copytree(os.path.join(source,'files'),os.path.join(target,'files'))
+with sqlite3.connect(f'file:{source}/project.db?mode=ro',uri=True) as original:
+    with sqlite3.connect(os.path.join(target,'project.db')) as db:
+        original.backup(db)
+        db.execute('UPDATE crdt_document SET snapshot=?, heads=? WHERE id=1',
+                   (open(snapshot,'rb').read(),json.dumps(json.load(open(report))['heads'])))
+PY
+# The product now loads two independently authored history records sharing a display number.
+# Its next real CLI edit must preserve both stable identities, rather than choose by that number.
+cozy project -p "$H" set groudon 'description=After an offline history merge.' > "$OUT/crdt-history-set.txt" 2>&1 \
+  || check "CRDT: CLI write after history merge: $(tail -c 300 "$OUT/crdt-history-set.txt")"
+python3 - "$H/project.db" "$OUT/crdt-history-after.am" <<'PY'
+import sqlite3,sys
+with sqlite3.connect(f'file:{sys.argv[1]}?mode=ro',uri=True) as db:
+    open(sys.argv[2],'wb').write(db.execute('SELECT snapshot FROM crdt_document WHERE id=1').fetchone()[0])
+PY
+CARGO_BUILD_JOBS=1 nice -n 19 cargo run --quiet --locked --manifest-path "$here/crdt/Cargo.toml" -- --history-check "$OUT/crdt-history-after.am" > "$OUT/crdt-history-check.json" 2> "$OUT/crdt-history-check.err" \
+  || check "CRDT: history identity after next commit: $(tail -c 300 "$OUT/crdt-history-check.err")"
 }

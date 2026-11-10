@@ -92,6 +92,8 @@ impl Change {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) struct Entry {
+    #[serde(default = "super::new_key")]
+    uid: String,
     id: u64,
     at_ms: i64,
     by: By,
@@ -115,11 +117,12 @@ impl Entry {
     }
 
     fn row(&self) -> db::OpRow {
-        db::OpRow { id: self.id, at_ms: self.at_ms, by: json(&self.by), words: self.words.clone(), edits: json(&self.edits), changes: json(&self.changes), undone: self.undone.as_ref().map(json) }
+        db::OpRow { uid: self.uid.clone(), id: self.id, at_ms: self.at_ms, by: json(&self.by), words: self.words.clone(), edits: json(&self.edits), changes: json(&self.changes), undone: self.undone.as_ref().map(json) }
     }
 
     fn of(row: db::OpRow) -> Option<Self> {
         Some(Self {
+            uid: row.uid,
             id: row.id,
             at_ms: row.at_ms,
             by: serde_json::from_str(&row.by).ok()?,
@@ -155,7 +158,7 @@ fn book(folder: &Folder) -> Arc<Book> {
 }
 
 /// `changes`, made by `by`, in `entries`: one more entry, or onto what `edits` began, if one did and it stands. The rows that change.
-fn add(entries: &mut Vec<Entry>, by: By, edits: Vec<String>, changes: Vec<Change>, lock: Option<&Lock>) -> (Vec<db::OpRow>, Vec<u64>) {
+fn add(entries: &mut Vec<Entry>, by: By, edits: Vec<String>, changes: Vec<Change>, lock: Option<&Lock>) -> (Vec<db::OpRow>, Vec<(String, u64)>) {
     let joins = entries.iter_mut().rev().find(|entry| entry.undone.is_none() && entry.edits.iter().any(|edit| edits.contains(edit)));
     if let Some(entry) = joins {
         changes.into_iter().for_each(|change| push(&mut entry.changes, change));
@@ -165,12 +168,12 @@ fn add(entries: &mut Vec<Entry>, by: By, edits: Vec<String>, changes: Vec<Change
             }
         }
         entry.words = words(&entry.changes, lock);
-        let (id, empty) = (entry.id, entry.changes.is_empty());
+        let (id, uid, empty) = (entry.id, entry.uid.clone(), entry.changes.is_empty());
         if empty {
-            entries.retain(|entry| entry.id != id);
-            return (vec![], vec![id]);
+            entries.retain(|entry| entry.uid != uid);
+            return (vec![], vec![(uid, id)]);
         }
-        return (entries.iter().filter(|entry| entry.id == id).map(Entry::row).collect(), vec![]);
+        return (entries.iter().filter(|entry| entry.uid == uid).map(Entry::row).collect(), vec![]);
     }
     let mut composed = vec![];
     changes.into_iter().for_each(|change| push(&mut composed, change));
@@ -179,11 +182,11 @@ fn add(entries: &mut Vec<Entry>, by: By, edits: Vec<String>, changes: Vec<Change
     }
     let id = entries.last().map_or(0, |entry| entry.id) + 1;
     let words = words(&composed, lock);
-    let entry = Entry { id, at_ms: now_ms(), by, words, edits, changes: composed, undone: None };
+    let entry = Entry { uid: super::new_key(), id, at_ms: now_ms(), by, words, edits, changes: composed, undone: None };
     let row = entry.row();
     entries.push(entry);
     let over = entries.len().saturating_sub(KEPT);
-    let gone = entries.drain(..over).map(|entry| entry.id).collect();
+    let gone = entries.drain(..over).map(|entry| (entry.uid, entry.id)).collect();
     (vec![row], gone)
 }
 
@@ -619,7 +622,7 @@ async fn step(State(api): State<Arc<Api>>, Path(id): Path<String>, headers: Head
         match stepped {
             Ok(marked) => {
                 let mut entries = book.entries.lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(held) = entries.iter_mut().find(|held| held.id == marked.id) {
+                if let Some(held) = entries.iter_mut().find(|held| held.uid == marked.uid) {
                     *held = marked.clone();
                 }
                 drop(entries);

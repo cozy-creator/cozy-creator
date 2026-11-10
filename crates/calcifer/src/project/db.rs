@@ -102,6 +102,9 @@ pub(crate) struct Stored {
 /// One history entry as its row holds it, each part JSON.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct OpRow {
+    /// Stable history identity; `id` is only this replica's display number.
+    #[serde(default)]
+    pub uid: String,
     pub id: u64,
     pub at_ms: i64,
     pub by: String,
@@ -119,7 +122,7 @@ pub(crate) struct Extra {
     pub asked_cleared: bool,
     /// History rows written whole, or by id gone.
     pub ops: Vec<OpRow>,
-    pub ops_gone: Vec<u64>,
+    pub ops_gone: Vec<(String, u64)>,
     /// A request's key, with the digest of its ask: done, its answer kept after.
     pub key: Option<(String, String)>,
 }
@@ -200,7 +203,7 @@ pub(crate) fn open(path: &Path) -> Result<Connection, Error> {
 pub(crate) fn identity(conn: &Connection) -> Option<(String, String)> {
     let current: Option<Vec<u8>> = conn.query_row("SELECT snapshot FROM crdt_document WHERE id = 1", [], |row| row.get(0)).optional().ok().flatten();
     if let Some(bytes) = current {
-        return crdt::Document::load(&bytes, Path::new(conn.path().unwrap_or_default())).ok()?.identity();
+        return crdt::identity_bytes(&bytes);
     }
     // Only the first import of a v1 database reads identity from the relational store.
     let value = |key: &str| conn.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get::<_, String>(0)).optional().ok().flatten();
@@ -376,9 +379,10 @@ fn initialize_crdt(conn: &mut Connection, at: &Path) -> Result<(), Error> {
     let mut after = before.clone();
     crdt::identify(&before, &mut after);
     let mut doc = crdt::Document::new(at);
-    let ops = legacy_ops(&tx, at)?;
+    let mut ops = legacy_ops(&tx, at)?;
+    crdt::identify_history(&after, &mut ops);
     doc.update(crdt::value(&after, &ops, &serde_json::Value::Null, identity(&tx)))?;
-    write(&tx, &before, &after, &Extra::default()).map_err(|e| sql(at, e))?;
+    write(&tx, &before, &after, &Extra { ops:ops.clone(), ..Default::default() }).map_err(|e| sql(at, e))?;
     save_document(&tx, at, &mut doc, after.seq)?;
     tx.pragma_update(None, "user_version", VERSION).map_err(|e| sql(at, e))?;
     tx.commit().map_err(|e| sql(at, e))
@@ -418,7 +422,7 @@ pub(crate) fn commit(conn: &mut Connection, at: &Path, before: &Stored, after: &
     let old_heads = doc.doc.get_heads();
     let identity = doc.identity();
     let mut ops = doc.ops()?;
-    ops.retain(|row| !extra.ops_gone.contains(&row.id) && !extra.ops.iter().any(|next| next.id == row.id));
+    ops.retain(|row| !extra.ops_gone.iter().any(|(uid, _)| uid == &row.uid) && !extra.ops.iter().any(|next| next.uid == row.uid));
     ops.extend(extra.ops.iter().cloned());
     let value = crdt::value(after, &ops, &doc.value, identity);
     doc.update(value)?;
@@ -490,7 +494,7 @@ fn write(tx: &Transaction, before: &Stored, after: &Stored, extra: &Extra) -> ru
             None => drop(tx.execute("DELETE FROM asked WHERE digest = ?1", [digest])?),
         }
     }
-    for id in &extra.ops_gone {
+    for (_, id) in &extra.ops_gone {
         tx.execute("DELETE FROM ops WHERE id = ?1", [*id as i64])?;
     }
     for op in &extra.ops {
@@ -571,7 +575,7 @@ fn legacy_ops(conn: &Connection, at: &Path) -> Result<Vec<OpRow>, Error> {
     let e = |error: rusqlite::Error| sql(at, error);
     let mut rows = conn.prepare("SELECT id, at_ms, by, words, edits, changes, undone FROM ops ORDER BY id").map_err(e)?;
     let found = rows
-        .query_map([], |r| Ok(OpRow { id: r.get::<_, i64>(0)? as u64, at_ms: r.get(1)?, by: r.get(2)?, words: r.get(3)?, edits: r.get(4)?, changes: r.get(5)?, undone: r.get(6)? }))
+        .query_map([], |r| Ok(OpRow { uid: String::new(), id: r.get::<_, i64>(0)? as u64, at_ms: r.get(1)?, by: r.get(2)?, words: r.get(3)?, edits: r.get(4)?, changes: r.get(5)?, undone: r.get(6)? }))
         .map_err(e)?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(e)?;
