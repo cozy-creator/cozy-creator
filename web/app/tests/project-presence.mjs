@@ -17,17 +17,22 @@ const sourceHashes = {}
 const compiled = new Map()
 const baseline = process.env.COZY_PRESENCE_QUERY_BASELINE === "1"
 const baselineEvents = process.env.COZY_PRESENCE_EVENTS_BASELINE === "1"
+const baselineCoordination = process.env.COZY_PRESENCE_COORDINATION_BASELINE === "1"
 const ackOnly = process.env.COZY_PRESENCE_ACK_ONLY === "1"
-function compile(filename) {
-  if (compiled.has(filename)) return compiled.get(filename)
-  const target = path.join(temporary, path.relative(path.join(app, "src"), filename).replace(/\.tsx?$/, ".mjs"))
-  compiled.set(filename, target)
+function compile(filename, variant = "current") {
+  const key = `${variant}:${filename}`
+  if (compiled.has(key)) return compiled.get(key)
+  const target = path.join(temporary, variant, path.relative(path.join(app, "src"), filename).replace(/\.tsx?$/, ".mjs"))
+  compiled.set(key, target)
   let source = fs.readFileSync(filename, "utf8")
+  if (variant === "legacy" && /\/api\/(events|client)\.ts$/.test(filename)) source = execFileSync("git", ["show", `a411ddba0:web/app/${path.relative(app, filename)}`], { cwd: app, encoding: "utf8" })
   if (baseline && filename.endsWith("/api/queries.ts")) source = execFileSync("git", ["show", "a411ddba0:web/app/src/api/queries.ts"], { cwd: app, encoding: "utf8" })
   if (baselineEvents && filename.endsWith("/api/events.ts")) source = execFileSync("git", ["show", "0e7cd997b:web/app/src/api/events.ts"], { cwd: app, encoding: "utf8" })
-  sourceHashes[path.relative(app, filename)] = createHash("sha256").update(source).digest("hex")
+  if (baselineCoordination && variant === "current" && filename.endsWith("/api/events.ts")) source = execFileSync("git", ["show", "021e52427:web/app/src/api/events.ts"], { cwd: app, encoding: "utf8" })
+  sourceHashes[`${variant}/${path.relative(app, filename)}`] = createHash("sha256").update(source).digest("hex")
   // Observe Bridge's unchanged production implementation without exporting it in the product.
   if (filename.endsWith("/app/Connection.tsx")) source += "\nexport { Bridge };\n"
+  if (filename.endsWith("/api/events.ts") && source.includes("const COORDINATION =")) source += "\nexport { COORDINATION };\n"
   let { outputText } = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext, jsx: ts.JsxEmit.ReactJSX } })
   outputText = outputText.replace(/\bfrom\s+(["'])([^"']+)\1/g, (_, quote, specifier) => {
     let resolved
@@ -35,7 +40,7 @@ function compile(filename) {
       const base = path.resolve(path.dirname(filename), specifier)
       const next = [base, `${base}.ts`, `${base}.tsx`].find((candidate) => fs.existsSync(candidate) && fs.statSync(candidate).isFile())
       assert.ok(next, specifier)
-      resolved = compile(next)
+      resolved = compile(next, variant)
     } else {
       resolved = require.resolve(specifier)
       if (resolved.endsWith(".cjs") && fs.existsSync(resolved.slice(0, -4) + ".js")) resolved = resolved.slice(0, -4) + ".js"
@@ -49,7 +54,7 @@ function compile(filename) {
 
 Object.defineProperty(navigator, "locks", { value: locks })
 const { Client, ApiError } = await import(pathToFileURL(compile(path.join(app, "src/api/client.ts"))))
-const { EventStream } = await import(pathToFileURL(compile(path.join(app, "src/api/events.ts"))))
+const { EventStream, COORDINATION } = await import(pathToFileURL(compile(path.join(app, "src/api/events.ts"))))
 const { projectQuery } = await import(pathToFileURL(compile(path.join(app, "src/api/queries.ts"))))
 const { Bridge } = await import(pathToFileURL(compile(path.join(app, "src/app/Connection.tsx"))))
 const { QueryClient, QueryObserver } = await import(pathToFileURL(require.resolve("@tanstack/react-query").replace(/\.cjs$/, ".js")))
@@ -71,7 +76,7 @@ let legacy = false
 let failShow = null
 let connection = new AbortController()
 const acknowledgements = []
-const monitor = new BroadcastChannel("cozy-events")
+const monitor = new BroadcastChannel(COORDINATION ?? "cozy-events")
 monitor.onmessage = ({ data }) => { if (data.shown) acknowledgements.push(data.shown) }
 
 function tellEvent(event) {
@@ -197,6 +202,69 @@ const transport = {
   },
 }
 const client = new Client(transport, { signedOut() {}, attempt() {} })
+if (process.env.COZY_PRESENCE_OLD_HOLDER === "1") {
+  const { EventStream: OldEvents } = await import(pathToFileURL(compile(path.join(app, "src/api/events.ts"), "legacy")))
+  const { Client: OldClient } = await import(pathToFileURL(compile(path.join(app, "src/api/client.ts"), "legacy")))
+  const old = new OldEvents(new OldClient(transport, { signedOut() {}, attempt() {} }))
+  old.subscribe(tellEvent)
+  old.start()
+  await observeHealth(old, "live")
+  const oldProject = await made("old-page-reader")
+  const oldBefore = showRequests.length
+  old.show(oldProject.id)
+  await waitRequest(() => showRequests.slice(oldBefore).some((request) => request.projects.includes(oldProject.id) && request.completed))
+  assert.equal(await open(oldProject.id), true)
+  const target = await made("old-page-overlap")
+  const current = new EventStream(client)
+  const confirmed = deferred()
+  for (const [label, actor] of [["old", old], ["current", current]]) {
+    const original = actor.tell
+    actor.tell = function (...args) {
+      const task = original.apply(this, args)
+      task.then(() => {
+        const key = typeof this.told === "string" ? this.told : this.told?.key
+        if (key?.split(",").includes(target.id)) confirmed.done(label)
+      }, () => {})
+      return task
+    }
+  }
+  const deadline = setTimeout(() => { console.error("old/new coordination protocol did not complete"); process.exit(1) }, 60_000)
+  try {
+    current.start()
+    const before = getRequests.length
+    const state = query(client, current, target.id)
+    current.show(target.id)
+    const holder = await confirmed.promise
+    assert.equal(await open(target.id), true)
+    console.log(JSON.stringify({ exact_old_holder: "a411ddba0", holder_for_new_query: holder, state_requests_after_ack: getRequests.length - before }))
+    assert.equal(holder, "current", "old page owns incompatible coordination and cannot acknowledge the new follower")
+    assert.equal((await state).id, target.id)
+    assert.notEqual(old.stream, current.stream)
+    await clear(current)
+    assert.equal(await open(target.id), false)
+    assert.equal(await open(oldProject.id), true, "new cohort closed the old cohort's Reader")
+    const hiddenBefore = showRequests.length
+    old.show(null)
+    await waitRequest(() => showRequests.slice(hiddenBefore).some((request) => request.projects.length === 0 && request.completed))
+    assert.equal(await open(oldProject.id), false)
+    assert.equal(old.health.get().state, "live")
+    const closeBefore = showRequests.length
+    old.show(oldProject.id)
+    current.show(target.id)
+    await waitRequest(() => [oldProject.id, target.id].every((id) => showRequests.slice(closeBefore).some((request) => request.projects.includes(id) && request.completed)))
+    assert.equal(await open(oldProject.id), true)
+    assert.equal(await open(target.id), true)
+    console.log(JSON.stringify({ old_page_preserved: true, new_query_completed: true, independent_streams: true, hide_releases_each_reader: true, close_on_exit: [oldProject.id, target.id], source_hashes: sourceHashes }))
+    clearTimeout(deadline)
+    fs.rmSync(temporary, { recursive: true, force: true })
+    process.exit(0)
+  } catch (error) {
+    clearTimeout(deadline)
+    fs.rmSync(temporary, { recursive: true, force: true })
+    console.error(error)
+    process.exit(1)
+  }
+}
 const owner = new EventStream(client)
 owner.subscribe(tellEvent)
 owner.start()
