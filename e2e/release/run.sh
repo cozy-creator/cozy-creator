@@ -350,7 +350,7 @@ uploaded() {
      | split(" at ")[0] | split("/") | [(.[0] | b), (.[1] | b)]]
     | if length == 0 then "0 0 0" else "\(.[0][0] | floor) \(map(.[0]) | max | floor) \(.[0][1] | floor)" end'
 }
-cut=0 n=$(run_submit "$OUT" upload-cut model upload "$OUT/big.safetensors" "$model-store" --lane bf16-c --source-format as-is --on "$M")
+cut=0 n=$(run_submit "$OUT" upload-cut model upload "$OUT/big.safetensors" "$model-store" --lane f16-c --source-format as-is --on "$M")
 while [ -n "$n" ] && kill -0 "$(cat "$OUT/upload-cut.pid")" 2> /dev/null; do
   read -r _ most total < <(uploaded "$OUT/upload-cut.ndjson")
   if [ "$total" -gt 0 ] && [ "$most" -ge $((total / 4)) ]; then cozy --json run cancel "$n" > "$OUT/upload-cut-cancel.json" 2>&1; cut=$most; break; fi
@@ -358,7 +358,7 @@ while [ -n "$n" ] && kill -0 "$(cat "$OUT/upload-cut.pid")" 2> /dev/null; do
 done
 run_wait "$OUT" upload-cut || true
 if [ "$cut" = 0 ]; then check "upload-cut: never cut a quarter in ($(run_get "$OUT" upload-cut .status): $(tail -c 200 "$OUT/upload-cut.ndjson"))"
-elif watched upload-resume model upload "$OUT/big.safetensors" "$model-store" --lane bf16-c --source-format as-is --on "$M"; then
+elif watched upload-resume model upload "$OUT/big.safetensors" "$model-store" --lane f16-c --source-format as-is --on "$M"; then
   read -r first most total < <(uploaded "$OUT/upload-resume.ndjson")
   echo "upload-resume: cut at $cut of $total bytes; sent again from $first"
   [ "$first" -gt 0 ] && [ "$first" -le "$total" ] \
