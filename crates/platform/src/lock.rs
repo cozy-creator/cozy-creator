@@ -237,7 +237,7 @@ mod sys {
     pub(super) struct DirLock(HANDLE);
 
     pub(super) fn dir(path: &Path) -> Result<DirLock> {
-        let canonical = std::fs::canonicalize(path)?
+        let canonical = crate::durable::canonical(path)?
             .to_string_lossy()
             .to_lowercase();
         let digest = hex::encode(Sha256::digest(canonical.as_bytes()));
