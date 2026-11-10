@@ -140,6 +140,35 @@ HUB_CHECK=$!
 for _ in $(seq 30); do curl -sS -m 5 -o /dev/null "http://$addr/openapi.yaml" 2> /dev/null && break; sleep 1; done
 }
 
+# uv answers an index's page from its cache for the page's max-age (PyPI's: 10 minutes): a release newer than the page it
+# holds still locks, named by --upgrade-package, and under a floor raised to it (cl-846).
+lock_refresh() {
+[ "$RUNNER_OS" = Linux ] || return 0
+step "package lock takes a release newer than uv's cached index page (cl-846)"
+local dir=$OUT/lock-refresh wheels=$OUT/lock-refresh-wheels name=e2efresh$RANDOM addr='' index
+mkdir -p "$wheels"
+python3 "$here/index.py" wheel "$wheels" "$name" 1.0
+python3 "$here/index.py" serve "$wheels" > "$OUT/lock-refresh.addr" 2> "$OUT/lock-refresh-index.log" &
+index=$!
+for _ in $(seq 50); do addr=$(head -1 "$OUT/lock-refresh.addr") && [ -n "$addr" ] && break; sleep 0.2; done
+floored() {
+  counting | package_at "$dir" lock_refresh "\"$name>=$1\"" \
+    "$(printf '\n[[tool.uv.index]]\nname = "fresh"\nurl = "http://%s/simple"\nexplicit = true\n\n[tool.uv.sources]\n%s = { index = "fresh" }' "$addr" "$name")"
+}
+locked() {
+  cozy --json package lock -p "$dir" "$@" > "$OUT/lock-refresh.json" 2>&1 || return 0
+  grep -A1 "^name = \"$name\"" "$dir/uv.lock" | sed -n 's/^version = "\(.*\)"/\1/p'
+}
+floored 1.0
+[ "$(locked)" = 1.0 ] || { check "lock refresh: the first lock: $(tail -c 300 "$OUT/lock-refresh.json")"; kill "$index"; return; }
+python3 "$here/index.py" wheel "$wheels" "$name" 1.1
+[ "$(locked --upgrade-package "$name")" = 1.1 ] || check "lock refresh: --upgrade-package $name kept its cached page: $(tail -c 300 "$OUT/lock-refresh.json")"
+python3 "$here/index.py" wheel "$wheels" "$name" 1.2
+floored 1.2
+[ "$(locked)" = 1.2 ] || check "lock refresh: a floor raised to a release newer than its cached page: $(tail -c 300 "$OUT/lock-refresh.json")"
+kill "$index"
+}
+
 # The machine's own failure when asked about a run: its journal's run_measurements table away while the run ends, so every
 # read of the run's outcome fails there, for past the 120 s Calcifer once settled it FAILED at. Then the table is back.
 broken_answers() {
