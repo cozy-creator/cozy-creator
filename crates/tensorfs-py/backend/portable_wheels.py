@@ -11,10 +11,16 @@ import tempfile
 import zipfile
 from pathlib import Path
 
+
+class Args(argparse.Namespace):
+    directory: Path
+    platform: str
+
+
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("directory", type=Path)
 parser.add_argument("--platform", required=True)
-args = parser.parse_args()
+args = parser.parse_args(namespace=Args())
 for wheel in list(args.directory.glob("*.whl")):
     with zipfile.ZipFile(wheel) as archive:
         has_shim = any(name.startswith("tensorfs/_varena_torch-") for name in archive.namelist())

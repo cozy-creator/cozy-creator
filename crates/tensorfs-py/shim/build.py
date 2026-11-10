@@ -11,11 +11,16 @@ import subprocess
 import torch
 
 
+class Args(argparse.Namespace):
+    out: Path
+    torch: str
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, default=Path(__file__).parents[1] / "python/tensorfs")
     parser.add_argument("--torch", required=True, help="the exact torch.__version__ this build is for")
-    args = parser.parse_args()
+    args = parser.parse_args(namespace=Args())
     if platform.system() != "Linux":
         raise SystemExit("the Torch shim builds on Linux only")
     if torch.__version__ != args.torch:

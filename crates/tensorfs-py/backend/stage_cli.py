@@ -9,6 +9,46 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import TypedDict
+
+
+class Options(argparse.Namespace):
+    manifest_path: str | None
+    profile: str | None
+    release: bool
+    target: str | None
+    target_dir: str | None
+    features: list[str]
+    all_features: bool
+    no_default_features: bool
+    config: list[str]
+    offline: bool
+    frozen: bool
+    jobs: str | None
+    interpreter: list[str] | None
+    find_interpreter: bool
+
+
+class CargoPackage(TypedDict):
+    name: str
+    manifest_path: str
+    features: dict[str, list[str]]
+
+
+class CargoMetadata(TypedDict):
+    packages: list[CargoPackage]
+
+
+class CargoTarget(TypedDict):
+    name: str
+
+
+class CargoMessage(TypedDict, total=False):
+    """A `cargo build --message-format=json` line's fields read here (total=False: Python 3.10 has no NotRequired)."""
+
+    reason: str
+    target: CargoTarget
+    executable: str | None
 
 
 def build_command(
@@ -29,7 +69,7 @@ def build_command(
     parser.add_argument("-j", "--jobs")
     parser.add_argument("-i", "--interpreter", nargs="+")
     parser.add_argument("--find-interpreter", action="store_true")
-    options, _ = parser.parse_known_args(args)
+    options, _ = parser.parse_known_args(args, namespace=Options())
     if options.no_default_features or options.find_interpreter:
         raise ValueError(
             "the full TensorFS wheel needs explicit interpreters and store support"
@@ -37,7 +77,7 @@ def build_command(
     if options.release and options.profile:
         raise ValueError("choose --release or --profile, not both")
     interpreter = (options.interpreter or [sys.executable])[0]
-    version = json.loads(
+    version: list[int] = json.loads(
         subprocess.check_output(
             [
                 interpreter,
@@ -79,7 +119,8 @@ def build_command(
         for flag in ("offline", "frozen"):
             if getattr(options, flag):
                 metadata.append("--" + flag)
-        packages = json.loads(subprocess.check_output(metadata, text=True))["packages"]
+        cargo: CargoMetadata = json.loads(subprocess.check_output(metadata, text=True))
+        packages = cargo["packages"]
         package = next(
             (package for package in packages
              if package["name"] == "tensorfs-py"
@@ -110,13 +151,13 @@ def build_command(
     ]
     profile = "release" if options.release else options.profile or default_profile
     command.extend(["--profile", profile])
-    for flag, value in (
+    for flag, given in (
         ("--target", options.target),
         ("--target-dir", options.target_dir),
         ("--jobs", options.jobs),
     ):
-        if value is not None:
-            command.extend([flag, value])
+        if given is not None:
+            command.extend([flag, given])
     for value in options.config:
         command.extend(["--config", value])
     for flag in ("offline", "frozen"):
@@ -135,9 +176,10 @@ def stage(args: list[str], default_profile: str = "release") -> Path:
     process = subprocess.Popen(
         command, stdout=subprocess.PIPE, text=True, env=environment
     )
-    executable = None
+    executable: str | None = None
+    assert process.stdout is not None
     for line in process.stdout:
-        message = json.loads(line)
+        message: CargoMessage = json.loads(line)
         if (
             message.get("reason") == "compiler-artifact"
             and message["target"]["name"] == "tfs"
@@ -145,10 +187,10 @@ def stage(args: list[str], default_profile: str = "release") -> Path:
             executable = message.get("executable") or executable
     if process.wait() or executable is None:
         raise RuntimeError("native CLI cohort build failed")
-    executable = Path(executable)
-    staged = root / "wheel-data/scripts" / executable.name
+    built = Path(executable)
+    staged = root / "wheel-data/scripts" / built.name
     staged.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(executable, staged)
+    shutil.copy2(built, staged)
     return staged
 
 

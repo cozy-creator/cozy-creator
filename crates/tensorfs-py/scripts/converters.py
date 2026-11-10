@@ -44,11 +44,13 @@ import tempfile
 import types
 import urllib.request
 import zipfile
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, Required, TypedDict, cast
 
 import numpy as np
+import numpy.typing as npt
 import torch
 from diffusers.loaders import lora_conversion_utils, single_file_utils
 from diffusers.utils import state_dict_utils
@@ -70,28 +72,166 @@ H3_REFERENCE = "hf://MiniMaxAI/MiniMax-H3@42ed227ee7df40d41602854ae760620d6eb651
 MAGNITUDE = [".dora_scale", ".lora_magnitude_vector"]
 SEEDVR = "https://raw.githubusercontent.com/ByteDance-Seed/SeedVR/e4de8c24441a67e1b7df56abea10645059bb1185/"
 
+type JSON = str | int | float | bool | None | list[JSON] | dict[str, JSON]
+# A model's config.json.
+Config = dict[str, Any]  # type: ignore[explicit-any]  # free-form model config, passed through to Diffusers/Transformers
+Shape = tuple[int, ...]
+type Index = int | slice[int | None, int | None, int | None]
+Header = dict[str, tuple[str, Shape]]
+
+
+class Ops(TypedDict, total=False):
+    """A row's ops, with numpy semantics (`apply`, the engine's)."""
+
+    view: list[int]
+    take: list[int | list[int] | list[str]]  # [axis, indices]; "{e}" indexes a repeated row
+    permute: list[int]
+    shape: list[int]
+    io: list[int]  # a LoRA row's [in, out]
+    b: Ops  # its B factor's
+    kernel: list[int]
+    table: str  # a curve site's constant
+
+
+class Stored(TypedDict):
+    """A tensor read straight from a file's bytes."""
+
+    sha256: str
+    length: int
+    offset: int
+    dtype: str
+    shape: list[int]
+
+
+# A table row, written as a JSON array: [target, source?, ops?]; [target, source, ops, {mark: n}] once per index;
+# [key, stored]. A LoRA row is [target, stem, ops].
+TableRow = tuple[str] | tuple[str, str] | tuple[str, str, Ops]
+RepeatedRow = tuple[str, str, Ops, dict[str, int]]
+StoredRow = tuple[str, Stored]
+LoraRow = tuple[str, str, Ops]
+
+
+class Component[R](TypedDict, total=False):
+    name: Required[str]
+    prefix: str
+    cast: str
+    drop: list[str]
+    optional: list[str]
+    expect: dict[str, list[int]]
+    folders: dict[str, str]
+    rows: Required[list[R]]
+    keep: list[R]
+
+
+class Lora(TypedDict):
+    a: list[str]
+    b: list[str]
+    alpha: list[str]
+    magnitude: list[str]
+
+
+class Producer(TypedDict):
+    name: str
+    keys: list[str]
+    metadata: dict[str, JSON]
+    cite: list[str]
+
+
+class Constant(TypedDict):
+    dtype: str
+    shape: list[int]
+    sha256: str
+    base64: str
+
+
+class Table[R](TypedDict, total=False):
+    """A `converters/<name>.json`."""
+
+    name: Required[str]
+    reference: str
+    producers: list[Producer]
+    lora: Lora
+    constants: dict[str, Constant]
+    files: dict[str, dict[str, JSON]]
+    keep_config: bool
+    components: Required[list[Component[R]]]
+
+
+Generated = (Table[TableRow] | Table[TableRow | RepeatedRow] | Table[TableRow | StoredRow] | Table[LoraRow]
+            | Table[LoraRow | RepeatedRow])
+
+
+class SingleFileComponent(TypedDict, total=False):
+    name: Required[str]
+    prefix: Required[str]
+    model: Required[str]
+    config: Required[str]
+    upstream: Required[str]
+    header: str
+    convert: str
+    arguments: list[str]
+    census: dict[str, str]
+    discard: list[str]
+    optional: list[str]
+
+
+class SingleFile(TypedDict, total=False):
+    reference: Required[str]
+    cast: Required[str]
+    header: str
+    components: Required[list[SingleFileComponent]]
+
+
+class Comfy(TypedDict):
+    family: str
+    component: str
+    prefix: str
+    reference: str
+    model: str
+    config: str
+    fused: dict[str, list[str]]
+    headers: list[str]
+
+
+class FamilyComponent(TypedDict):
+    keys: list[tuple[str, list[int]]]  # JSON [key, shape] pairs
+
+
+class FamilyDoc(TypedDict):
+    """A `families/<name>.json`, as read here."""
+
+    components: dict[str, FamilyComponent]
+
+
+# A native module onto its Diffusers targets, "swap" to swap B's halves.
+Rule = tuple[str, list[str]] | tuple[str, list[str], str]
+
+
+class Args(argparse.Namespace):
+    write: bool
+
 
 def fetch(url: str, sha256: str | None = None) -> bytes:
     with urllib.request.urlopen(url, timeout=120) as response:
-        body = response.read()
+        body: bytes = response.read()
     if sha256 and hashlib.sha256(body).hexdigest() != sha256:
         sys.exit(f"{url}: sha256 differs from the pinned {sha256}")
     return body
 
 
-def header(path: Path) -> dict[str, tuple[str, tuple[int, ...]]]:
+def header(path: Path) -> Header:
     raw = path.read_bytes()
     (length,) = struct.unpack("<Q", raw[:8])
     doc = json.loads(raw[8 : 8 + length])
     return {k: (v["dtype"], tuple(v["shape"])) for k, v in doc.items() if k != "__metadata__"}
 
 
-def apply(a: np.ndarray, ops: dict[str, Any]) -> np.ndarray:
+def apply[D: np.generic](a: npt.NDArray[D], ops: Ops) -> npt.NDArray[D]:
     """A row's ops with numpy semantics, which the engine implements."""
     if "view" in ops:
         a = a.reshape(ops["view"])
     if "take" in ops:
-        a = np.take(a, ops["take"][1], axis=ops["take"][0])
+        a = np.take(a, cast(list[int], ops["take"][1]), axis=cast(int, ops["take"][0]))  # [axis, indices]
     if "permute" in ops:
         a = a.transpose(ops["permute"])
     if "shape" in ops:
@@ -99,10 +239,10 @@ def apply(a: np.ndarray, ops: dict[str, Any]) -> np.ndarray:
     return a
 
 
-def row(target: str, source: str, ops: dict[str, Any] | None = None) -> list[Any]:
+def row(target: str, source: str, ops: Ops | None = None) -> TableRow:
     if ops:
-        return [target, source, ops]
-    return [target] if target == source else [target, source]
+        return (target, source, ops)
+    return (target,) if target == source else (target, source)
 
 
 # ------------------------------------------------------------------ diffusers single-file
@@ -112,12 +252,18 @@ def contiguous(shape: tuple[int, ...]) -> tuple[int, ...]:
     return tuple(math.prod(shape[i + 1 :]) for i in range(len(shape)))
 
 
+class Deferred(Protocol):
+    """A stand-in's method: any arguments, a Materialized."""
+
+    def __call__(self, *args: object, **kwargs: object) -> Materialized: ...
+
+
 @dataclass(frozen=True)
 class Materialized:
     op: str
     sources: tuple[str, ...]
 
-    def __getattr__(self, name: str) -> Any:
+    def __getattr__(self, name: str) -> Deferred:
         if name.startswith("__"):
             raise AttributeError(name)
         return lambda *a, **k: Materialized(f"{self.op}.{name}", self.sources)
@@ -144,7 +290,7 @@ class Route:
     def dim(self) -> int:
         return self.ndim
 
-    def size(self, axis: int | None = None) -> Any:
+    def size(self, axis: int | None = None) -> tuple[int, ...] | int:
         return self.shape if axis is None else self.shape[axis]
 
     def numel(self) -> int:
@@ -155,10 +301,12 @@ class Route:
 
     clone = detach = contiguous
 
-    def __getitem__(self, key: Any) -> Route:
+    def __getitem__(self, key: Index | tuple[Index, ...]) -> Route:
         index = key if isinstance(key, tuple) else (key,)
         index = (*index, *([slice(None)] * (self.ndim - len(index))))
-        shape, stride, offset = [], [], self.offset
+        shape: list[int] = []
+        stride: list[int] = []
+        offset = self.offset
         for size, step, item in zip(self.shape, self.strides, index, strict=True):
             if isinstance(item, int):
                 offset += item * step
@@ -169,16 +317,17 @@ class Route:
                 offset += start * step
         return replace(self, shape=tuple(shape), strides=tuple(stride), offset=offset)
 
-    def __getattr__(self, name: str) -> Any:
+    def __getattr__(self, name: str) -> Deferred:
         if name.startswith("__"):
             raise AttributeError(name)
         return lambda *a, **k: Materialized(name, (self.key,))
 
     @classmethod
-    def __torch_function__(cls, func: Any, types: Any, args: Any = (), kwargs: Any = None) -> Any:
+    def __torch_function__(cls, func: object, types: tuple[type, ...], args: tuple[object, ...] = (),
+                           kwargs: dict[str, object] | None = None) -> Materialized:
         sources: list[str] = []
 
-        def collect(v: Any) -> None:
+        def collect(v: object) -> None:
             if isinstance(v, Route):
                 sources.append(v.key)
             elif isinstance(v, list | tuple):
@@ -189,9 +338,10 @@ class Route:
         return Materialized(getattr(func, "__name__", str(func)), tuple(sources))
 
 
-def route_ops(route: Route, source: tuple[int, ...]) -> dict[str, Any] | None:
+def route_ops(route: Route, source: tuple[int, ...]) -> Ops | None:
     """The row ops reproducing `route`, checked element for element."""
     size = math.prod(route.shape)
+    ops: Ops | None
     if route.strides == contiguous(route.shape) and route.offset % size == 0:
         if route.shape == source:
             ops = None
@@ -211,19 +361,21 @@ def route_ops(route: Route, source: tuple[int, ...]) -> dict[str, Any] | None:
     return ops
 
 
-def reference_config(reference: str, path: str) -> dict[str, Any]:
+def reference_config(reference: str, path: str) -> Config:
     repository, revision = reference.removeprefix("hf://").split("@")
-    return json.loads(fetch(f"{HF}/{repository}/resolve/{revision}/{path}"))
+    config: Config = json.loads(fetch(f"{HF}/{repository}/resolve/{revision}/{path}"))
+    return config
 
 
-def construct(model: str, config: dict[str, Any]) -> Any:
+def construct(model: str, config: Config) -> torch.nn.Module:
     library, name = model.split(":")
     kind = getattr(importlib.import_module(library), name)
     with torch.device("meta"):
-        return kind.from_config(config) if library == "diffusers" else kind(kind.config_class(**config))
+        built: torch.nn.Module = kind.from_config(config) if library == "diffusers" else kind(kind.config_class(**config))
+        return built
 
 
-SINGLE_FILE = {
+SINGLE_FILE: dict[str, SingleFile] = {
     "sdxl.single_file": {
         "reference": "hf://stabilityai/stable-diffusion-xl-base-1.0@462165984030d82259a11f4367a4eed129e94a7b",
         "header": "civitai-sdxl-headers/128078-92696.safetensors.header",
@@ -268,15 +420,17 @@ SINGLE_FILE = {
 }
 
 
-def single_file(name: str) -> tuple[dict[str, Any], dict[str, dict[str, tuple[int, ...]]]]:
+def single_file(name: str) -> tuple[Table[TableRow], dict[str, dict[str, Shape]]]:
     """The table, and each component's linears and convolutions with their weight shapes (the
     LoRA tables' targets)."""
     spec = SINGLE_FILE[name]
     prefixes = [c["prefix"] for c in spec["components"]]
-    components, shapes, layers = [], {}, {}
+    components: list[Component[TableRow]] = []
+    shapes: dict[str, dict[str, Shape]] = {}
+    layers: dict[str, dict[str, Shape]] = {}
     for c in spec["components"]:
         prefix = c["prefix"]
-        source = header(VECTORS / c.get("header", spec.get("header")))
+        source = header(VECTORS / cast(str, c.get("header", spec.get("header"))))  # the component's or the file's
         checkpoint = {
             k: Route(k, shape, 0, contiguous(shape))
             for k, (_, shape) in source.items()
@@ -284,7 +438,8 @@ def single_file(name: str) -> tuple[dict[str, Any], dict[str, dict[str, tuple[in
         }
         config = reference_config(spec["reference"], c["config"])
         model = construct(c["model"], config)
-        arguments = {"checkpoint": checkpoint, "config": config, "model": model, "prefix": prefix}
+        arguments: dict[str, object] = {"checkpoint": checkpoint, "config": config, "model": model, "prefix": prefix}
+        converted: dict[str, Route | Materialized]
         if c.get("convert"):
             converted = getattr(single_file_utils, c["convert"])(*(arguments[a] for a in c["arguments"]))
         else:
@@ -297,7 +452,9 @@ def single_file(name: str) -> tuple[dict[str, Any], dict[str, dict[str, tuple[in
                     return disk + census_key.removeprefix(census)
             return census_key
 
-        rows, used, shapes[c["name"]] = [], set(), {}
+        rows: list[TableRow] = []
+        used: set[str] = set()
+        shapes[c["name"]] = {}
         for key, value in model.state_dict().items():
             target = on_disk(key)
             route = converted.pop(target)
@@ -325,18 +482,19 @@ def single_file(name: str) -> tuple[dict[str, Any], dict[str, dict[str, tuple[in
 # ------------------------------------------------------------------ MiniMax-H3
 
 
-def h3_converter() -> Any:
+def h3_converter() -> types.ModuleType:
     body = fetch(*H3_SCRIPT)
     with tempfile.NamedTemporaryFile("wb", suffix=".py", delete=False) as f:
         f.write(body)
     spec = importlib.util.spec_from_file_location("convert_minimax_h3_to_diffusers", f.name)
+    assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     Path(f.name).unlink()
     return module
 
 
-def row_ops(rows: np.ndarray, source: tuple[int, ...]) -> dict[str, Any] | None:
+def row_ops(rows: npt.NDArray[np.int64], source: tuple[int, ...]) -> Ops | None:
     """The fewest-member view/take whose output rows are `rows` of a `source`-shaped tensor."""
     count, out = source[0], len(rows)
     rest = [-1] if len(source) > 1 else []
@@ -351,7 +509,7 @@ def row_ops(rows: np.ndarray, source: tuple[int, ...]) -> dict[str, Any] | None:
         groups = blocks // members
         picked = [int(b) % members for b in rows[::unit][: out // (groups * unit)] // unit]
         view = [members, -1] if groups == 1 else [groups, members, -1]
-        ops = {"view": view, "take": [len(view) - 2, picked], "shape": [out, *rest]}
+        ops: Ops = {"view": view, "take": [len(view) - 2, picked], "shape": [out, *rest]}
         if np.array_equal(apply(stand_in, ops), stand_in[rows]):
             return ops
     raise SystemExit(f"rows of {source}: no view/take expresses them")
@@ -361,7 +519,7 @@ def h3_index(rows: int) -> torch.Tensor:
     return torch.arange(rows).reshape(rows, 1)
 
 
-def h3_native(h3: Any, comfy: bool = False) -> tuple[dict[str, Any], dict[str, tuple[str, tuple[int, ...]]]]:
+def h3_native(h3: types.ModuleType, comfy: bool = False) -> tuple[Table[TableRow], Header]:
     """The native transformer table, and the native header (for the LoRA). `comfy`: ComfyUI's
     layout of the same keys, which holds each fused qkv as [q_all; k_all; v_all]
     (comfy/ldm/minimax/model.py splits it contiguously, and nothing reorders it on load) where the
@@ -371,16 +529,19 @@ def h3_native(h3: Any, comfy: bool = False) -> tuple[dict[str, Any], dict[str, t
     from diffusers import MiniMaxH3Transformer3DModel
 
     with torch.device("meta"):
-        census = {k: tuple(v.shape) for k, v in MiniMaxH3Transformer3DModel(**config).state_dict().items()}
-    variants = {}
+        model = cast(torch.nn.Module, MiniMaxH3Transformer3DModel(**config))  # type: ignore[no-untyped-call]  # type checkers see diffusers' dummy class
+        census = {k: tuple(v.shape) for k, v in model.state_dict().items()}
+    variants: dict[str, Header] = {}
     for variant in ("FL2VA", "Ref2VA"):
-        merged: dict[str, tuple[str, tuple[int, ...]]] = {}
+        merged: Header = {}
         for shard in sorted((VECTORS / "h3-headers").glob(f"{variant}__transformer__model-*.safetensors")):
             merged.update(header(shard))
         variants[variant] = merged
     source = variants["FL2VA"]
     assert {k: s for k, (_, s) in variants["Ref2VA"].items()} == {k: s for k, (_, s) in source.items()}
-    mapped, dropped, expect = {}, [], {}
+    mapped: dict[str, TableRow] = {}
+    dropped: list[str] = []
+    expect: dict[str, list[int]] = {}
     for key, (_, shape) in source.items():
         stand_in = h3_index(shape[0]) if len(shape) > 1 else torch.arange(shape[0])
         if key.endswith(".attn.qkv_proj.weight"):
@@ -403,8 +564,8 @@ def h3_native(h3: Any, comfy: bool = False) -> tuple[dict[str, Any], dict[str, t
     rows = [mapped[k] for k in census]
     if comfy:
         # ComfyUI saves a DiT alone under its checkpoint prefix (Singularity V2).
-        component = {"name": "transformer", "prefix": "model.diffusion_model.",
-                     "drop": sorted(dropped), "expect": dict(sorted(expect.items())), "rows": rows}
+        component: Component[TableRow] = {"name": "transformer", "prefix": "model.diffusion_model.",
+                                          "drop": sorted(dropped), "expect": dict(sorted(expect.items())), "rows": rows}
         return {"name": "h3.comfy", "reference": H3_REFERENCE, "components": [component]}, source
     component = {"name": "transformer", "folders": {"FL2VA/transformer": "transformer", "Ref2VA/transformer": "transformer_ref"},
                  "drop": sorted(dropped), "expect": dict(sorted(expect.items())), "rows": rows}
@@ -417,7 +578,7 @@ def h3_native(h3: Any, comfy: bool = False) -> tuple[dict[str, Any], dict[str, t
 # DiffSynth-Studio (head-interleaved on MiniMax's raw base, `blocks.*` keys and `format: pt` only),
 # convert_h3_lora.py and MidLAB (no public code).
 GH = "https://github.com"
-H3_LORA_PRODUCERS = [
+H3_LORA_PRODUCERS: list[Producer] = [
     {"name": "ai-toolkit", "keys": ["diffusion_model."], "metadata": {"software": {"json": {"name": "ai-toolkit"}}}, "cite": [
         f"{GH}/ostris/ai-toolkit/blob/b69b98314557f7c8b08e11bbb14e48d959e6ab26/extensions_built_in/diffusion_models/minimax_h3/src/transformer.py#L184",
         f"{GH}/ostris/ai-toolkit/blob/b69b98314557f7c8b08e11bbb14e48d959e6ab26/extensions_built_in/diffusion_models/minimax_h3/minimax_h3.py#L1113",
@@ -432,9 +593,9 @@ H3_LORA_PRODUCERS = [
     {"name": "SimpleTuner", "keys": ["diffusion_model."], "metadata": {"modelspec.architecture": {"prefix": "minimaxh3-"}, "modelspec.implementation": "diffusers"}, "cite": [
         f"{GH}/bghira/SimpleTuner/blob/4b7edb115f95f5bae8855da5dd8e68242eea6922/simpletuner/helpers/models/minimaxh3/modular_pipeline.py#L332-L443"]},
     # Its MiniMax trainers' LoRAs (not `fizgig.model_eq`, a diff of whatever two checkpoints it is given).
-    *({"name": "Fizgig", "keys": ["lora_unet_"], "metadata": {"ss_network_module": {"prefix": prefix}}, "cite": [
+    *(Producer(name="Fizgig", keys=["lora_unet_"], metadata={"ss_network_module": {"prefix": prefix}}, cite=[
         f"{GH}/shootthesound/Fizgig/blob/15c8447941842aeb8c8472daf0ea627f0034fbb8/src/fizgig/minimax/model.py#L361",
-        f"{GH}/shootthesound/Fizgig/blob/15c8447941842aeb8c8472daf0ea627f0034fbb8/src/fizgig/families/minimax.py#L359-L365"]}
+        f"{GH}/shootthesound/Fizgig/blob/15c8447941842aeb8c8472daf0ea627f0034fbb8/src/fizgig/families/minimax.py#L359-L365"])
       for prefix in ("fizgig.minimax", "fizgig.families (minimax")),
     # Its converter is not public; the file states the fusion of Diffusers' separate Q/K/V.
     {"name": "lightx2v", "keys": ["diffusion_model."], "metadata": {"source_format": "Diffusers PEFT LoRA", "qkv_fusion": "block diagonal B; concat A; alpha multiplied by 3"}, "cite": [
@@ -442,7 +603,7 @@ H3_LORA_PRODUCERS = [
 ]
 
 
-def h3_lora(h3: Any, source: dict[str, tuple[str, tuple[int, ...]]]) -> dict[str, Any]:
+def h3_lora(h3: types.ModuleType, source: Header) -> Table[LoraRow | RepeatedRow]:
     """Trainer LoRA factors: A as is, B through diffusers' own transformer conversion given the
     trainer's contiguous Q/K/V thirds (docs/h3-lora-source-layout.md), so fc1 B halves swap."""
     config = h3.MINIMAX_H3_TRANSFORMER_CONFIG
@@ -453,47 +614,49 @@ def h3_lora(h3: Any, source: dict[str, tuple[str, tuple[int, ...]]]) -> dict[str
                for family, i, kohya in blocks for leaf, flat in leaves.items()]
     # The audio patch projections, which audio-trained LoRAs adapt (Mystic XXX v5).
     modules += [("audio_patch_proj", "audio_patch_proj"), ("final_layer.audio_out", "final_layer_audio_out")]
-    rows = []
+    rows: list[LoraRow | RepeatedRow] = []
     for native, flat in modules:
         stems = [f"diffusion_model.{native}"] + ([f"lora_unet_{flat}"] if flat else [])
         fused, inp = source[f"{native}.weight"][1]
         for target, b in h3.convert_transformer_key(f"{native}.weight", h3_index(fused), config):
-            ops: dict[str, Any] = {"io": [inp, fused]}
+            ops: Ops = {"io": [inp, fused]}
             if b_ops := row_ops(b[:, 0].numpy(), (fused, 1)):
                 ops["b"] = b_ops
-            rows.extend([target.removesuffix(".weight"), stem, ops] for stem in stems)
+            rows.extend((target.removesuffix(".weight"), stem, ops) for stem in stems)
     # Rows in the transformer's construction order (#624): its state_dict, not the trainer's.
     from diffusers import MiniMaxH3Transformer3DModel
 
     with torch.device("meta"):
-        census = {k: i for i, k in enumerate(MiniMaxH3Transformer3DModel(**config).state_dict())}
+        model = cast(torch.nn.Module, MiniMaxH3Transformer3DModel(**config))  # type: ignore[no-untyped-call]  # type checkers see diffusers' dummy class
+        census = {k: i for i, k in enumerate(model.state_dict())}
     # Diffusers/PEFT trainers spell the target itself under `transformer.` (Open-H3-Regenerate-2K's
     # merged LoRA, diffusers' `save_lora_weights`).
     shapes = {k.removesuffix(".weight"): tuple(v) for k, v in census_shapes(config).items() if k.endswith(".weight")}
     for target in dict.fromkeys(r[0] for r in list(rows)):
         out, inp = shapes[target]
-        rows.append([target, f"transformer.{target}", {"io": [inp, out]}])
+        rows.append((target, f"transformer.{target}", Ops(io=[inp, out])))
     rows.sort(key=lambda r: census[r[0] + ".weight"])
     # The AdaLN curve: ComfyUI's pruned H3 computes each block's modulation from an 8-D curve of
     # the timestep (`lerp(adaln_t_table, t)`), so a LoRA trained on it adapts `adaln_proj` with
     # A [r, 8]. Its update, B·A·curve(t), depends on t alone: the curve site carries its factors
     # and the curve table it reads, and the serving side folds it into exact-timestep tables.
-    blocks = config["num_layers"]
+    count = config["num_layers"]
     width = shapes["transformer_blocks.0.adaln_proj.linear"][0]
-    curve = {"io": [8, width], "table": "adaln_t_table"}
+    curve: Ops = {"io": [8, width], "table": "adaln_t_table"}
     for stem in ("transformer.transformer_blocks.{N}.adaln_proj.linear", "diffusion_model.blocks.{N}.adaln_proj.linear"):
-        rows.append(["transformer_blocks.{N}.adaln_curve", stem, curve, {"N": blocks}])
-    lora = {"a": [".lora_A.weight", ".lora_down.weight", ".curve_A.weight"],
+        rows.append(("transformer_blocks.{N}.adaln_curve", stem, curve, {"N": count}))
+    lora: Lora = {"a": [".lora_A.weight", ".lora_down.weight", ".curve_A.weight"],
             "b": [".lora_B.weight", ".lora_up.weight", ".curve_B.weight"], "alpha": [".alpha"], "magnitude": MAGNITUDE}
     return {"name": "h3.lora", "producers": H3_LORA_PRODUCERS, "lora": lora, "constants": {"adaln_t_table": adaln_t_table()},
             "components": [{"name": "transformer", "rows": rows}]}
 
 
-def census_shapes(config: dict[str, Any]) -> dict[str, torch.Size]:
+def census_shapes(config: Config) -> dict[str, torch.Size]:
     from diffusers import MiniMaxH3Transformer3DModel
 
     with torch.device("meta"):
-        return {k: v.shape for k, v in MiniMaxH3Transformer3DModel(**config).state_dict().items()}
+        model = cast(torch.nn.Module, MiniMaxH3Transformer3DModel(**config))  # type: ignore[no-untyped-call]  # type checkers see diffusers' dummy class
+        return {k: v.shape for k, v in model.state_dict().items()}
 
 
 # ComfyUI's pruned-AdaLN curve table: 1025 timesteps x 8, F32, read by byte range from its pinned file.
@@ -508,13 +671,13 @@ ADALN_T_TABLE = (
 def fetch_range(url: str, start: int, length: int) -> bytes:
     request = urllib.request.Request(url, headers={"Range": f"bytes={start}-{start + length - 1}"})
     with urllib.request.urlopen(request, timeout=120) as response:
-        body = response.read()
+        body: bytes = response.read()
     if response.status != 206 or len(body) != length:
         sys.exit(f"{url}: range {start}+{length} was not served")
     return body
 
 
-def adaln_t_table() -> dict[str, Any]:
+def adaln_t_table() -> Constant:
     import base64
 
     url, name, digest = ADALN_T_TABLE
@@ -532,32 +695,33 @@ def adaln_t_table() -> dict[str, Any]:
 SDXL_LORA = {"unet": "lora_unet_", "text_encoder": "lora_te1_", "text_encoder_2": "lora_te2_"}
 
 
-def kohya_reading(prefix: str, stems: list[str], unet: Any) -> dict[str, str]:
+def kohya_reading(prefix: str, stems: list[str], unet: types.SimpleNamespace) -> dict[str, str]:
     """The module diffusers' SDXL loader adapts with each kohya `<prefix><stem>` factor pair
     (`lora_state_dict`'s conversion, then the PEFT renames its loaders apply), by stem: each
     stem's down factor carries its index through."""
-    state = {}
+    state: dict[str, torch.Tensor] = {}
     for i, stem in enumerate(stems):
         state[f"{prefix}{stem}.lora_down.weight"] = torch.full((1, 1), float(i))
         state[f"{prefix}{stem}.lora_up.weight"] = torch.zeros(1, 1)
         state[f"{prefix}{stem}.alpha"] = torch.tensor(1.0)
-    state = lora_conversion_utils._maybe_map_sgm_blocks_to_diffusers(state, unet)
-    state, _ = lora_conversion_utils._convert_non_diffusers_lora_to_diffusers(state)
+    state = lora_conversion_utils._maybe_map_sgm_blocks_to_diffusers(state, unet)  # type: ignore[no-untyped-call]  # diffusers' converters are untyped
+    state, _ = lora_conversion_utils._convert_non_diffusers_lora_to_diffusers(state)  # type: ignore[no-untyped-call]  # as above
     component = next(iter(state)).partition(".")[0]
     local = {k.partition(".")[2]: v for k, v in state.items()}
+    peft: dict[str, torch.Tensor]
     if component == "unet":
-        peft = state_dict_utils.convert_unet_state_dict_to_peft(local)
+        peft = state_dict_utils.convert_unet_state_dict_to_peft(local)  # type: ignore[no-untyped-call]  # as above
     else:
-        peft = state_dict_utils.convert_state_dict_to_peft(state_dict_utils.convert_state_dict_to_diffusers(local))
+        peft = state_dict_utils.convert_state_dict_to_peft(state_dict_utils.convert_state_dict_to_diffusers(local))  # type: ignore[no-untyped-call]  # as above
     return {stems[int(v.item())]: k.removesuffix(".lora_A.weight") for k, v in peft.items() if k.endswith(".lora_A.weight")}
 
 
-def sdxl_lora(table: dict[str, Any], layers: dict[str, dict[str, tuple[int, ...]]], unet: Any) -> dict[str, Any]:
+def sdxl_lora(table: Table[TableRow], layers: dict[str, dict[str, Shape]], unet: types.SimpleNamespace) -> Table[LoraRow]:
     """Kohya SDXL factors onto every linear and convolution of the single-file table's UNet (its
     LDM or Diffusers spelling) and CLIP towers. A spelling is a row where diffusers' own loader
     reads it as that module (`kohya_reading`); one it reads as no module (a Diffusers-spelled
     `add_embedding`) is not."""
-    components = []
+    components: list[Component[LoraRow]] = []
     for c in table["components"]:
         if c["name"] not in SDXL_LORA:
             continue
@@ -572,13 +736,13 @@ def sdxl_lora(table: dict[str, Any], layers: dict[str, dict[str, tuple[int, ...]
                 assert read == spelled[stem] or read not in modules, (prefix, stem, spelled[stem], read)
                 if read == spelled[stem] and stem not in stems[read]:
                     stems[read].append(stem)
-        rows = []
+        rows: list[LoraRow] = []
         for module, shape in modules.items():
-            ops = {"io": [shape[1], shape[0]]} | ({"kernel": list(shape[2:])} if len(shape) == 4 else {})
-            rows.extend([module, stem, ops] for stem in stems[module])
+            ops = Ops(io=[shape[1], shape[0]]) | (Ops(kernel=list(shape[2:])) if len(shape) == 4 else Ops())
+            rows.extend((module, stem, ops) for stem in stems[module])
         components.append({"name": c["name"], "prefix": prefix, "rows": rows})
-    lora = {"a": [".lora_down.weight", ".lora_A.weight"], "b": [".lora_up.weight", ".lora_B.weight"], "alpha": [".alpha"],
-            "magnitude": MAGNITUDE}
+    lora: Lora = {"a": [".lora_down.weight", ".lora_A.weight"], "b": [".lora_up.weight", ".lora_B.weight"], "alpha": [".alpha"],
+                  "magnitude": MAGNITUDE}
     return {"name": "sdxl.lora", "lora": lora, "components": components}
 
 
@@ -587,7 +751,7 @@ def sdxl_lora(table: dict[str, Any], layers: dict[str, dict[str, tuple[int, ...]
 KREA2 = VECTORS / "krea2-headers"
 
 
-def krea2_lora() -> dict[str, Any]:
+def krea2_lora() -> Table[LoraRow]:
     """Krea 2 LoRA factors onto every linear of the DiT, in each spelling a published loader reads:
     the reference checkpoint's names (`krea2_raw_bf16`, Krea's trainer) under `diffusion_model.` (ComfyUI,
     AI-Toolkit) or `base_model.model.` (AI-Toolkit's PEFT), each one where diffusers' own conversion reads
@@ -598,7 +762,8 @@ def krea2_lora() -> dict[str, Any]:
     from diffusers import Krea2Transformer2DModel
 
     with torch.device("meta"):
-        model = Krea2Transformer2DModel()  # the class defaults are Krea 2's config
+        # the class defaults are Krea 2's config
+        model = cast(torch.nn.Module, Krea2Transformer2DModel())  # type: ignore[no-untyped-call]  # type checkers see diffusers' dummy class
     census = {n: (m.in_features, m.out_features) for n, m in model.named_modules() if isinstance(m, torch.nn.Linear)}
     source = header(KREA2 / "krea2_raw_bf16.safetensors.header")
     stand_in = torch.zeros(1, 1)
@@ -608,7 +773,7 @@ def krea2_lora() -> dict[str, Any]:
             continue
         stem = key.removesuffix(".weight")
         for prefix in ("diffusion_model.", "base_model.model."):
-            read = lora_conversion_utils._convert_non_diffusers_krea2_lora_to_diffusers(
+            read: dict[str, torch.Tensor] = lora_conversion_utils._convert_non_diffusers_krea2_lora_to_diffusers(  # type: ignore[no-untyped-call]  # untyped
                 {f"{prefix}{stem}.lora_A.weight": stand_in, f"{prefix}{stem}.lora_B.weight": stand_in})
             target = next(iter(read)).removeprefix("transformer.").removesuffix(".lora_A.weight")
             assert census[target] == shape[::-1], (stem, target, shape)
@@ -618,7 +783,7 @@ def krea2_lora() -> dict[str, Any]:
     def spelled(diffusers: str) -> list[str]:
         return [diffusers, diffusers.removesuffix(".0")] if diffusers.endswith(".to_out.0") else [diffusers]
 
-    spellings = {
+    spellings: dict[str, Callable[[str], list[str]]] = {
         "diffusion_model.": lambda d: [reference[d], *spelled(d)],
         "base_model.model.": lambda d: [reference[d]],
         "transformer.": spelled,
@@ -626,9 +791,9 @@ def krea2_lora() -> dict[str, Any]:
         "lycoris_": lambda d: [s.replace(".", "_") for s in spelled(d)],
         "": lambda d: [reference[d], *spelled(d)],
     }
-    components = [
+    components: list[Component[LoraRow]] = [
         {"name": "transformer", "prefix": prefix,
-         "rows": [[d, stem, {"io": list(io)}] for d, io in census.items() for stem in spell(d)]}
+         "rows": [(d, stem, {"io": list(io)}) for d, io in census.items() for stem in spell(d)]}
         for prefix, spell in spellings.items()
     ]
     # Krea's own (Diffusers) and AI-Toolkit's published LoRAs are spelled as rows say.
@@ -639,8 +804,8 @@ def krea2_lora() -> dict[str, Any]:
             mine = [k for k in keys if k.startswith(c["prefix"])] if c["prefix"] else []
             assert all(k[len(c["prefix"]):].rsplit(".", 2)[0] in stems for k in mine), (vector, c["prefix"])
         assert any(k.startswith(c["prefix"]) for c in components[:-1] for k in keys), vector
-    lora = {"a": [".lora_A.weight", ".lora_down.weight"], "b": [".lora_B.weight", ".lora_up.weight"], "alpha": [".alpha"],
-            "magnitude": MAGNITUDE}
+    lora: Lora = {"a": [".lora_A.weight", ".lora_down.weight"], "b": [".lora_B.weight", ".lora_up.weight"], "alpha": [".alpha"],
+                  "magnitude": MAGNITUDE}
     return {"name": "krea2.lora", "lora": lora, "components": components}
 
 
@@ -650,7 +815,7 @@ QWEN21 = VECTORS / "qwen-image-2.1-lora-headers"
 QWEN21_REFERENCE = "hf://Qwen/Qwen-Image-2.1@790c92633540aa0cb11d9abf19eb46d861714758"
 
 
-def qwenimage21_lora() -> dict[str, Any]:
+def qwenimage21_lora() -> Table[LoraRow]:
     """Qwen-Image 2.1 LoRA factors onto every linear of the DiT. Its reference is in Diffusers' layout, so
     every loader reads Diffusers' names: under `transformer.` (Diffusers' `save_lora_weights`: LightX2V's
     Lightning, Turbo8), `diffusion_model.` or bare (ComfyUI; PAI's Fun Acc export; DiffSynth-Studio),
@@ -672,14 +837,15 @@ def qwenimage21_lora() -> dict[str, Any]:
     def flat(diffusers: str) -> list[str]:
         return [s.replace(".", "_") for s in spelled(diffusers)]
 
-    spellings = {"transformer.": spelled, "diffusion_model.": spelled, "base_model.model.": lambda d: [d],
-                 "lora_unet_": flat, "lycoris_": flat, "": spelled}
-    components = [
+    spellings: dict[str, Callable[[str], list[str]]] = {
+        "transformer.": spelled, "diffusion_model.": spelled, "base_model.model.": lambda d: [d],
+        "lora_unet_": flat, "lycoris_": flat, "": spelled}
+    components: list[Component[LoraRow]] = [
         {"name": "transformer", "prefix": prefix,
-         "rows": [[d, stem, {"io": list(io)}] for d, io in census.items() for stem in spell(d)]}
+         "rows": [(d, stem, {"io": list(io)}) for d, io in census.items() for stem in spell(d)]}
         for prefix, spell in spellings.items()
     ]
-    components[-1]["keep"] = [["proj_out.heads", "proj_out.weight", {"io": list(census["proj_out"])}]]
+    components[-1]["keep"] = [("proj_out.heads", "proj_out.weight", {"io": list(census["proj_out"])})]
     norms = [n for n, m in model.named_modules() if n.endswith((".norm_q", ".norm_k")) or n == "txt_in.text_norm"]
     components[-1]["optional"] = [f"{n}.weight" for n in norms]
     for c in components:
@@ -690,8 +856,8 @@ def qwenimage21_lora() -> dict[str, Any]:
                 fused = d.removesuffix(".gate_layer") + ".gate_up"
                 stem = fused.replace(".", "_") if c["prefix"] == "lora_unet_" else fused
                 for half, target in enumerate((d, fused.removesuffix(".gate_up") + ".proj")):
-                    ops = {"io": [fan_in, 2 * fan_out], "b": {"view": [2, -1], "take": [0, [half]], "shape": [fan_out, -1]}}
-                    c["rows"].append([target, stem, ops])
+                    ops: Ops = {"io": [fan_in, 2 * fan_out], "b": {"view": [2, -1], "take": [0, [half]], "shape": [fan_out, -1]}}
+                    c["rows"].append((target, stem, ops))
     # Each published LoRA is spelled as some component's rows say: every factor at its row's shape, else
     # PDD's heads and its norms (left out by name).
     a = (".lora_A.weight", ".lora_down.weight", ".lora.down.weight", ".lora_down", ".lora_A.default.weight")
@@ -713,7 +879,7 @@ def qwenimage21_lora() -> dict[str, Any]:
             fan_in, fan_out = io[stem]
             assert (shape[1] == fan_in) if factor == "a" else (shape[0] == fan_out), (vector, key, shape)
             assert factor != "m" or tuple(shape[1:]) in ((), (1,)), (vector, key, shape)
-    lora = {"a": list(a), "b": list(b), "alpha": [".alpha"], "magnitude": MAGNITUDE}
+    lora: Lora = {"a": list(a), "b": list(b), "alpha": [".alpha"], "magnitude": MAGNITUDE}
     return {"name": "qwenimage21.lora", "lora": lora, "components": components}
 
 
@@ -724,7 +890,7 @@ QWEN21_COMFY = VECTORS / "qwen-image-2.1-comfy-headers"
 # A family component in ComfyUI's single-file layout: its own (Diffusers') names under `prefix`, but for the
 # linears ComfyUI's model fuses, each stored as the concatenation of the family's along the output axis, in the
 # order `fused` names them. The headers are published files in it, plain and quantized.
-COMFY = {
+COMFY: dict[str, Comfy] = {
     "qwenimage21.comfy": {
         "family": "qwen-image-2", "component": "transformer", "prefix": "", "reference": QWEN21_REFERENCE,
         "model": "diffusers:QwenImage21Transformer2DModel", "config": "transformer/config.json",
@@ -737,16 +903,17 @@ COMFY = {
 COMPANIONS = (".comfy_quant", ".weight_scale")
 
 
-def comfy_single_file(name: str) -> dict[str, Any]:
+def comfy_single_file(name: str) -> Table[TableRow]:
     """A family component from ComfyUI's single file: each of the family's keys, in its model's construction order,
     read by its own name, or as its slice of the tensor ComfyUI fuses it into."""
     spec = COMFY[name]
-    family = json.loads((FAMILIES / f"{spec['family']}.json").read_text())
+    family: FamilyDoc = json.loads((FAMILIES / f"{spec['family']}.json").read_text())
     keys = {k: tuple(shape) for k, shape in family["components"][spec["component"]]["keys"]}
     model = construct(spec["model"], reference_config(spec["reference"], spec["config"]))
     census = {k: tuple(v.shape) for k, v in model.state_dict().items()}
     assert census == keys, (name, "the model's census is not the family's component")
-    rows, sources = [], {}
+    rows: list[TableRow] = []
+    sources: dict[str, Shape] = {}
     for target, shape in census.items():
         module, _, param = target.rpartition(".")
         found = [(module.removesuffix(member) + stem, j, len(members)) for stem, members in spec["fused"].items()
@@ -757,7 +924,7 @@ def comfy_single_file(name: str) -> dict[str, Any]:
             continue
         [(fused, j, n)] = found
         # Rows lead (`-1` for the rest), so a row-wise quantized tensor is cut into whole rows (engine `selected_rows`).
-        ops = {"view": [n, -1], "take": [0, [j]], "shape": [shape[0], -1] if len(shape) > 1 else [-1]}
+        ops: Ops = {"view": [n, -1], "take": [0, [j]], "shape": [shape[0], -1] if len(shape) > 1 else [-1]}
         stand_in = np.arange(n * math.prod(shape)).reshape(n * shape[0], *shape[1:])
         assert np.array_equal(apply(stand_in, ops), np.split(stand_in, n)[j]), target
         rows.append(row(target, f"{fused}.{param}", ops))
@@ -766,7 +933,7 @@ def comfy_single_file(name: str) -> dict[str, Any]:
         held = {k.removeprefix(spec["prefix"]): s for k, (_, s) in header(QWEN21_COMFY / f"{vector}.safetensors.header").items()
                 if not k.endswith(COMPANIONS)}
         assert held == sources, (name, vector, sorted(set(held) ^ set(sources))[:4])
-    component = {"name": spec["component"], "prefix": spec["prefix"], "rows": rows}
+    component: Component[TableRow] = {"name": spec["component"], "prefix": spec["prefix"], "rows": rows}
     return {"name": name, "reference": spec["reference"], "components": [component]}
 
 
@@ -778,7 +945,7 @@ DIT_B = (".lora_B.weight", ".lora_up.weight", ".lora_B.default.weight")
 #: One native module onto Diffusers' (diffusers 0.41.0 `convert_flux2_transformer_checkpoint_to_diffusers`): several
 #: targets split its rows evenly (a fused Q/K/V's thirds), `swap` swaps its halves (BFL's adaLN is [shift; scale],
 #: Diffusers' [scale; shift]). `{i}` is each block.
-FLUX2_NATIVE = [
+FLUX2_NATIVE: list[Rule] = [
     ("double_blocks.{i}.img_attn.qkv", ["transformer_blocks.{i}.attn.to_q", "transformer_blocks.{i}.attn.to_k", "transformer_blocks.{i}.attn.to_v"]),
     ("double_blocks.{i}.txt_attn.qkv", [f"transformer_blocks.{{i}}.attn.add_{p}_proj" for p in "qkv"]),
     ("double_blocks.{i}.img_attn.proj", ["transformer_blocks.{i}.attn.to_out.0"]),
@@ -804,7 +971,7 @@ FLUX2_NATIVE = [
 #: FLUX.3's (diffusers@7ecb1e1b, the flux-3-klein package's pin, `convert_flux3_transformer_checkpoint_to_diffusers`): renames.
 FLUX3_BLOCK = [("q_proj", "attn.to_q"), ("k_proj", "attn.to_k"), ("v_proj", "attn.to_v"), ("attn_out", "attn.to_out.0"),
                ("mlp_in", "ff.linear_in"), ("mlp_out", "ff.linear_out")]
-FLUX3_NATIVE = [
+FLUX3_NATIVE: list[Rule] = [
     *((f"content_mode_blocks.{m}.{{i}}.{n}", [f"mode_blocks.{m}.{{i}}.{d}"]) for m in ("image", "image_cond") for n, d in FLUX3_BLOCK),
     *((f"txt_mode_blocks.{{i}}.{n}", [f"txt_mode_blocks.{{i}}.{d}"]) for n, d in FLUX3_BLOCK),
     *((f"single_blocks.{{i}}.{n}", [f"single_transformer_blocks.{{i}}.{d}"]) for n, d in FLUX3_BLOCK),
@@ -822,15 +989,17 @@ FLUX3_NATIVE = [
 
 def family_linears(name: str, component: str = "transformer") -> dict[str, tuple[int, int]]:
     """A family's linears as its reference header has them (`families/<name>.json`): `{module: (in, out)}`."""
-    keys = json.loads((FAMILIES / f"{name}.json").read_text())["components"][component]["keys"]
+    family: FamilyDoc = json.loads((FAMILIES / f"{name}.json").read_text())
+    keys = family["components"][component]["keys"]
     return {k.removesuffix(".weight"): (s[1], s[0]) for k, s in keys if k.endswith(".weight") and len(s) == 2}
 
 
-def native_rows(census: dict[str, tuple[int, int]], rules: list[tuple[Any, ...]], reference: Path) -> list[list[Any]]:
+def native_rows(census: dict[str, tuple[int, int]], rules: list[Rule], reference: Path) -> list[LoraRow]:
     """Each Diffusers linear's row from its native module, checked against the BFL reference header: every
     native module's shape is its targets', and every native linear is mapped."""
     native = {k.removesuffix(".weight"): s for k, (_, s) in header(reference).items() if k.endswith(".weight") and len(s) == 2}
-    rows, mapped = [], set()
+    rows: list[LoraRow] = []
+    mapped: set[str] = set()
     for stem, targets, *how in rules:
         for i in range(1000) if "{i}" in stem else [0]:
             names = [t.replace("{i}", str(i)) for t in targets]
@@ -842,18 +1011,18 @@ def native_rows(census: dict[str, tuple[int, int]], rules: list[tuple[Any, ...]]
             outs = {census[n][1] for n in names}
             assert {census[n][0] for n in names} == {fan_in} and len(outs) == 1 and outs.pop() * len(names) == fan_out, source
             for j, target in enumerate(names):
-                ops: dict[str, Any] = {"io": [fan_in, fan_out]}
+                ops: Ops = {"io": [fan_in, fan_out]}
                 if how == ["swap"]:
                     ops["b"] = {"view": [2, -1], "take": [0, [1, 0]], "shape": [fan_out, -1]}
                 elif len(names) > 1:
                     ops["b"] = {"view": [len(names), -1], "take": [0, [j]], "shape": [fan_out // len(names), -1]}
-                rows.append([target, source, ops])
+                rows.append((target, source, ops))
             mapped.add(source)
     assert mapped == set(native), (reference.name, sorted(set(native) - mapped)[:5])
     return rows
 
 
-def dit_lora(name: str, family: str, native: list[list[Any]], keep: list[list[Any]], vectors: dict[str, bool]) -> dict[str, Any]:
+def dit_lora(name: str, family: str, native: list[LoraRow], keep: list[LoraRow], vectors: dict[str, bool]) -> Table[LoraRow]:
     """LoRA factors onto every linear of a Diffusers DiT, in each spelling a published loader reads: Diffusers'
     names under `transformer.` (Diffusers' `save_lora_weights`, SimpleTuner), `diffusion_model.` or bare
     (ComfyUI, DiffSynth-Studio), `base_model.model.` (PEFT), and kohya's flattened `lora_unet_` and `lycoris_`,
@@ -866,19 +1035,20 @@ def dit_lora(name: str, family: str, native: list[list[Any]], keep: list[list[An
     def spelled(d: str) -> list[str]:
         return [d, d.removesuffix(".0")] if d.endswith(".to_out.0") else [d]
 
-    diffusers = [[d, s, {"io": list(io)}] for d, io in census.items() for s in spelled(d)]
-    flat = lambda rows: [[t, s.replace(".", "_"), o] for t, s, o in rows]  # noqa: E731
-    spellings = {
+    diffusers: list[LoraRow] = [(d, s, {"io": list(io)}) for d, io in census.items() for s in spelled(d)]
+    flat: Callable[[list[LoraRow]], list[LoraRow]] = lambda rows: [(t, s.replace(".", "_"), o) for t, s, o in rows]  # noqa: E731
+    spellings: dict[str, list[LoraRow]] = {
         "transformer.": diffusers,
         "diffusion_model.": diffusers + native,
-        "base_model.model.": [[d, d, {"io": list(io)}] for d, io in census.items()],
+        "base_model.model.": [(d, d, {"io": list(io)}) for d, io in census.items()],
         "lora_unet_": flat(diffusers) + flat(native),
         "lycoris_": flat(diffusers),
         "": diffusers + native,
     }
-    components = [{"name": "transformer", "prefix": prefix, "rows": rows} for prefix, rows in spellings.items()]
+    components: list[Component[LoraRow]] = [{"name": "transformer", "prefix": prefix, "rows": rows} for prefix, rows in spellings.items()]
     if keep:
         components[-1]["keep"] = keep
+    stem: str | None
     for c in components:
         targets: dict[str, set[str]] = {}
         for target, stem, ops in c["rows"]:
@@ -903,7 +1073,7 @@ def dit_lora(name: str, family: str, native: list[list[Any]], keep: list[list[An
             assert fits or not claimed, (vector, key, shape)
             known += fits
         assert (known * 2 > len(keys)) == claimed, (vector, known, len(keys))
-    lora = {"a": list(DIT_A), "b": list(DIT_B), "alpha": [".alpha"], "magnitude": MAGNITUDE}
+    lora: Lora = {"a": list(DIT_A), "b": list(DIT_B), "alpha": [".alpha"], "magnitude": MAGNITUDE}
     return {"name": name, "lora": lora, "components": components}
 
 
@@ -912,7 +1082,7 @@ FLUX3 = VECTORS / "flux3-klein-headers"
 FIBO2 = VECTORS / "fibo2-headers"
 
 
-def flux2_lora() -> dict[str, Any]:
+def flux2_lora() -> Table[LoraRow]:
     census = family_linears("flux-2")
     native = native_rows(census, FLUX2_NATIVE, FLUX2 / "flux2-dev.safetensors.header")
     vectors = {f"flux2-headers/{v}.safetensors.header": True for v in (
@@ -920,13 +1090,13 @@ def flux2_lora() -> dict[str, Any]:
     return dit_lora("flux2.lora", "flux-2", native, [], vectors)
 
 
-def flux3klein_lora() -> dict[str, Any]:
+def flux3klein_lora() -> Table[LoraRow]:
     """Also PDD's per-step output heads (NoiseToNova's Turbo): `proj_out.weight` `[steps, out, in]` in its PEFT
     export, `pdd.heads` in its ComfyUI one, both stored as `proj_out.heads`."""
     census = family_linears("flux-3-klein")
     native = native_rows(census, FLUX3_NATIVE, FLUX3 / "flux-3-image-klein.safetensors.header")
-    heads = {"io": list(census["proj_out"])}
-    keep = [["proj_out.heads", "proj_out.weight", heads], ["proj_out.heads", "pdd.heads", heads]]
+    heads: Ops = {"io": list(census["proj_out"])}
+    keep: list[LoraRow] = [("proj_out.heads", "proj_out.weight", heads), ("proj_out.heads", "pdd.heads", heads)]
     vectors = {f"flux3-klein-headers/{v}.safetensors.header": True for v in (
         "simpletuner-photo-aesthetics", "klein-angles", "RadianceChromeVoluptuous_Flux3Klein_v1.0", "alphajace_klein_comfy",
         "Flux-3-Klein-turbo-pdd-4_8-steps-comfy", "Flux-3-Klein-turbo-pdd-v0.1-8_4step-lora-r128",
@@ -938,7 +1108,7 @@ def flux3klein_lora() -> dict[str, Any]:
     return dit_lora("flux3klein.lora", "flux-3-klein", native, keep, vectors)
 
 
-def fibo2_lora() -> dict[str, Any]:
+def fibo2_lora() -> Table[LoraRow]:
     """Diffusers' names only: FIBO 2's ComfyUI exports fuse Q/K/V (and K/V, w1/w3) block-diagonally and pad the
     FFN to 9728, which no row op expresses."""
     vectors = {f"fibo2-headers/{v}.safetensors.header": claimed for v, claimed in (
@@ -977,7 +1147,7 @@ def seedvr_census() -> dict[str, list[str]]:
     sys.path.insert(0, str(root / f"SeedVR-{commit}"))
     stub = types.ModuleType("flash_attn")
     stub.__spec__ = importlib.machinery.ModuleSpec("flash_attn", None)
-    stub.flash_attn_varlen_func = None
+    stub.flash_attn_varlen_func = None  # type: ignore[attr-defined]  # a stand-in module
     sys.modules.setdefault("flash_attn", stub)
     from models.dit.nadit import NaDiT
     from models.video_vae_v3.modules.attn_video_vae import VideoAutoencoderKLWrapper
@@ -987,18 +1157,18 @@ def seedvr_census() -> dict[str, list[str]]:
                 "vae": list(VideoAutoencoderKLWrapper(**SEEDVR_VAE).state_dict())}
 
 
-def seedvr2() -> dict[str, Any]:
+def seedvr2() -> Table[TableRow | StoredRow]:
     """The package's normalize composition: the two fp16 checkpoints as they are, and
     upstream's fixed text conditioning read straight from the pinned `.pt` files' storage
     (no unpickling). Rows follow NaDiT's/the VAE's construction order; the banked headers hold
     exactly their keys."""
     census = seedvr_census()
-    components = []
+    components: list[Component[TableRow | StoredRow]] = []
     for name, file in (("dit", "seedvr2_ema_7b_fp16.safetensors"), ("vae", "ema_vae_fp16.safetensors")):
         keys = header(VECTORS / "seedvr2-headers" / f"{file}.header")
         assert sorted(keys) == sorted(census[name]), name
-        components.append({"name": name, "cast": "F16", "rows": [[k] for k in census[name]]})
-    rows = []
+        components.append({"name": name, "cast": "F16", "rows": [(k,) for k in census[name]]})
+    rows: list[TableRow | StoredRow] = []
     for key, file, shape, digest in (
         ("positive", "pos_emb.pt", (58, 5120), "fa07a14844314772266b66c3b95deb0027696d8fe7065721263db5176f45d799"),
         ("negative", "neg_emb.pt", (64, 5120), "6a43e5800ef2354f1c156d27535834da055cbec8248298b8923492bba2076581"),
@@ -1014,7 +1184,7 @@ def seedvr2() -> dict[str, Any]:
         want = tensor.contiguous().view(torch.uint16).numpy().tobytes()
         assert info.compress_type == zipfile.ZIP_STORED and tuple(tensor.shape) == shape and tensor.dtype == torch.bfloat16
         assert body[offset : offset + len(want)] == want, file
-        rows.append([key, {"sha256": digest, "length": len(body), "offset": offset, "dtype": "BF16", "shape": list(shape)}])
+        rows.append((key, {"sha256": digest, "length": len(body), "offset": offset, "dtype": "BF16", "shape": list(shape)}))
     components.append({"name": "conditioning", "rows": rows})
     return {"name": "seedvr2", "files": {"config.json": {"architecture": "SeedVR2-7B"}}, "components": components}
 
@@ -1029,16 +1199,17 @@ H3_UPSCALER_NODE = (
 )
 
 
-def h3_latent_upscaler() -> dict[str, Any]:
+def h3_latent_upscaler() -> Table[TableRow]:
     """LBH's checkpoint as it is: rows in `LatentResizer3D`'s construction order, built from the
     node's own code (its ComfyUI imports stubbed), against the banked header's key set."""
     for name in ("folder_paths", "comfy", "comfy.model_management", "comfy_api", "comfy_api.latest"):
         sys.modules.setdefault(name, types.ModuleType(name))
-    sys.modules["folder_paths"].folder_names_and_paths = {"latent_upscale_models": ([], set())}
-    sys.modules["folder_paths"].models_dir = tempfile.mkdtemp()
+    sys.modules["folder_paths"].folder_names_and_paths = {"latent_upscale_models": ([], set())}  # type: ignore[attr-defined]  # a stand-in module
+    sys.modules["folder_paths"].models_dir = tempfile.mkdtemp()  # type: ignore[attr-defined]  # as above
     with tempfile.NamedTemporaryFile("wb", suffix=".py", delete=False) as f:
         f.write(fetch(*H3_UPSCALER_NODE))
     spec = importlib.util.spec_from_file_location("h3_upscaler_node", f.name)
+    assert spec is not None and spec.loader is not None
     node = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(node)
     keys = header(VECTORS / "h3-latent-upscaler-headers" / "minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors.header")
@@ -1047,7 +1218,7 @@ def h3_latent_upscaler() -> dict[str, Any]:
         census = list(node.LatentResizer3D(**config).state_dict())
     assert sorted(census) == sorted(keys), "the upscaler's header is not LatentResizer3D's state_dict"
     return {"name": "h3.latent_upscaler", "files": {"config.json": {"architecture": "minimax-h3-latent-upscaler-3d-conv-v1"}},
-            "components": [{"name": "upscaler", "rows": [[k] for k in census]}]}
+            "components": [{"name": "upscaler", "rows": [(k,) for k in census]}]}
 
 
 # ------------------------------------------------------------------ Ideogram 4
@@ -1068,7 +1239,7 @@ IDEOGRAM_CONFIG = (
 )
 
 
-def ideogram4() -> dict[str, Any]:
+def ideogram4() -> Table[TableRow]:
     """Ideogram 4's official checkpoint: both DiTs in its original layout. Every linear's weight-only
     fp8 carrier (`.weight` + `.weight_scale`) is folded into one fp8.rowwise tensor before a table
     row reads it, so the scales are not rows here; `qkv`'s thirds are whole rows of it."""
@@ -1076,22 +1247,24 @@ def ideogram4() -> dict[str, Any]:
 
     tree = ast.parse(fetch(*IDEOGRAM_CONVERTER))
     (node,) = [n for n in tree.body if getattr(n, "name", "") == "convert_ideogram4_transformer_checkpoint_to_diffusers"]
-    space: dict[str, Any] = {"torch": torch}
+    space: dict[str, Any] = {"torch": torch}  # type: ignore[explicit-any]  # exec's namespace: upstream's code
     exec(compile(ast.Module([node], []), "single_file_utils.py", "exec"), space)
     url, blob = IDEOGRAM_CONFIG
     body = fetch(url)
     assert hashlib.sha1(b"blob %d\0" % len(body) + body).hexdigest() == blob, "the config is not the official blob"
-    config = {k: v for k, v in json.loads(body).items() if not k.startswith("_")}
+    config: Config = {k: v for k, v in json.loads(body).items() if not k.startswith("_")}
     from diffusers import Ideogram4Transformer2DModel
 
     with torch.device("meta"):
-        census = {k: tuple(v.shape) for k, v in Ideogram4Transformer2DModel(**config).state_dict().items()}
+        model = cast(torch.nn.Module, Ideogram4Transformer2DModel(**config))  # type: ignore[no-untyped-call]  # type checkers see diffusers' dummy class
+        census = {k: tuple(v.shape) for k, v in model.state_dict().items()}
     source = {k: s for k, (_, s) in header(VECTORS / "ideogram4-headers" / "transformer__diffusion_pytorch_model.safetensors").items()
               if not k.endswith(".weight_scale")}
     stand_ins = {k: h3_index(s[0]) if len(s) > 1 else torch.arange(s[0]) for k, s in source.items()}
     origin = {id(t): k for k, t in stand_ins.items()}
-    converted = space["convert_ideogram4_transformer_checkpoint_to_diffusers"](dict(stand_ins))
-    mapped, expect = {}, {}
+    converted: dict[str, torch.Tensor] = space["convert_ideogram4_transformer_checkpoint_to_diffusers"](dict(stand_ins))
+    mapped: dict[str, TableRow] = {}
+    expect: dict[str, list[int]] = {}
     for target, tensor in converted.items():
         key = origin.get(id(tensor)) or next(k for k, t in stand_ins.items() if tensor.untyped_storage().data_ptr()
                                               == t.untyped_storage().data_ptr())
@@ -1103,9 +1276,9 @@ def ideogram4() -> dict[str, Any]:
         got = apply(np.zeros(shape, np.int8), ops) if ops else np.zeros(shape, np.int8)
         assert got.shape == census[target], (target, got.shape, census[target])
     assert sorted(mapped) == sorted(census), "targets are not the transformer's census"
-    component = {"name": "transformer", "folders": {"transformer": "transformer",
-                                                    "unconditional_transformer": "unconditional_transformer"},
-                 "expect": dict(sorted(expect.items())), "rows": [mapped[k] for k in census]}
+    component: Component[TableRow] = {"name": "transformer", "folders": {"transformer": "transformer",
+                                                                      "unconditional_transformer": "unconditional_transformer"},
+                                      "expect": dict(sorted(expect.items())), "rows": [mapped[k] for k in census]}
     return {"name": "ideogram4.fp8", "components": [component]}
 
 
@@ -1115,7 +1288,7 @@ QWEN_MOE = {"qwen3.6-35b-a3b.experts": "Qwen/Qwen3.6-35B-A3B@995ad96eacd98c81ed3
 QWEN_EXPERTS = {"gate_up_proj": "gate_and_up_proj", "down_proj": "down_proj"}
 
 
-def qwen_moe(name: str, pinned: str) -> dict[str, Any]:
+def qwen_moe(name: str, pinned: str) -> Table[TableRow | RepeatedRow]:
     """Every key as stored, except each layer's fused experts (`experts.gate_up_proj` [E, 2I, H],
     `experts.down_proj` [E, H, I]), which become one row per expert, `experts.{e}.gate_and_up_proj.weight`
     and `.down_proj.weight`: the blocks cozy-runtime's `moe.split` builds, which its weight paging moves one
@@ -1123,19 +1296,21 @@ def qwen_moe(name: str, pinned: str) -> dict[str, Any]:
     census of Transformers' model plus the multi-token-prediction layer cozy-runtime's `lm.Draft` adds
     (`mtp.*`, one decoder layer at the first full-attention index), experts split."""
     repo, _, commit = pinned.partition("@")
-    index = json.loads(fetch(f"{HF}/{repo}/resolve/{commit}/model.safetensors.index.json"))["weight_map"]
-    config = json.loads(fetch(f"{HF}/{repo}/resolve/{commit}/config.json"))
+    index: dict[str, str] = json.loads(fetch(f"{HF}/{repo}/resolve/{commit}/model.safetensors.index.json"))["weight_map"]
+    config: Config = json.loads(fetch(f"{HF}/{repo}/resolve/{commit}/config.json"))
     text = config["text_config"]
     experts, inner, hidden = text["num_experts"], text["moe_intermediate_size"], text["hidden_size"]
-    fused = {"gate_up_proj": [experts, 2 * inner, hidden], "down_proj": [experts, hidden, inner]}
+    fused: dict[str, list[int]] = {"gate_up_proj": [experts, 2 * inner, hidden], "down_proj": [experts, hidden, inner]}
     with torch.device("meta"):
-        model = AutoModelForImageTextToText.from_config(AutoConfig.for_model(**config))
+        model = AutoModelForImageTextToText.from_config(AutoConfig.for_model(**config))  # type: ignore[no-untyped-call]  # Transformers leaves it untyped
         space = sys.modules[type(model).__module__]
         layer = space.Qwen3_5MoeDecoderLayer(model.config.text_config, text["layer_types"].index("full_attention"))
     census = [*model.state_dict(), "mtp.fc.weight", "mtp.pre_fc_norm_embedding.weight", "mtp.pre_fc_norm_hidden.weight",
               *(f"mtp.layers.0.{k}" for k in layer.state_dict()), "mtp.norm.weight"]
     assert set(census) == set(index), sorted(set(census) ^ set(index))[:5]
-    rows, expect, targets = [], {}, []
+    rows: list[TableRow | RepeatedRow] = []
+    expect: dict[str, list[int]] = {}
+    targets: list[str] = []
     for key in census:
         stem, _, role = key.rpartition(".")
         if not (stem.endswith(".experts") and role in QWEN_EXPERTS):
@@ -1144,8 +1319,8 @@ def qwen_moe(name: str, pinned: str) -> dict[str, Any]:
             continue
         shape = fused[role]
         expect[key] = shape
-        ops = {"take": [0, ["{e}"]], "shape": shape[1:]}
-        rows.append([f"{stem}.{{e}}.{QWEN_EXPERTS[role]}.weight", key, ops, {"e": experts}])
+        ops: Ops = {"take": [0, ["{e}"]], "shape": shape[1:]}
+        rows.append((f"{stem}.{{e}}.{QWEN_EXPERTS[role]}.weight", key, ops, {"e": experts}))
         stand_in = np.arange(math.prod(shape[:2]) * 2).reshape(shape[0], shape[1], 2)
         for e in range(experts):
             got = apply(stand_in, {"take": [0, [e]], "shape": [shape[1], 2]})
@@ -1156,7 +1331,7 @@ def qwen_moe(name: str, pinned: str) -> dict[str, Any]:
             "components": [{"name": "model", "expect": dict(sorted(expect.items())), "rows": rows}]}
 
 
-def generate() -> dict[str, dict[str, Any]]:
+def generate() -> dict[str, Generated]:
     sdxl, layers = single_file("sdxl.single_file")
     anima, _ = single_file("anima.single_file")
     unet = types.SimpleNamespace(**reference_config(SINGLE_FILE["sdxl.single_file"]["reference"], "unet/config.json"))
@@ -1185,11 +1360,11 @@ def generate() -> dict[str, dict[str, Any]]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--write", action="store_true", help="rewrite the tables")
-    args = parser.parse_args()
+    args = parser.parse_args(namespace=Args())
     for package, version in PINS.items():
         if importlib.metadata.version(package) != version:
             sys.exit(f"{package} {importlib.metadata.version(package)} is not the pinned {version}")
-    stale = []
+    stale: list[str] = []
     for name, table in generate().items():
         path = OUT / f"{name}.json"
         body = (json.dumps(table, separators=(",", ":")) + "\n").encode()

@@ -8,9 +8,9 @@ from tensorfs import varena
 
 
 def main() -> None:
-    asked = []
+    asked: list[int] = []
 
-    def shrink(cache, requested):
+    def shrink(cache: varena.CacheView, requested: int) -> bool:
         # The core calls this under memory pressure. A scheduler with no preemptible sequences
         # declines: being a cache does not make a live KV range free memory.
         asked.append(requested)
