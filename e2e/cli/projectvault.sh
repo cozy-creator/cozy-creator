@@ -61,6 +61,7 @@ projectvault() (
   if [ -n "$LOCAL" ]; then
     step "private execution keeps code, inputs, outputs and failure details in protected storage"
     python3 "$E2E/cli/private_execution.py" --project "$P" --view "$(jq -r '.vault.view' "$work/new-recovery.json")" --out "$work/private-execution" --cli "$COZY"
+    python3 "$E2E/cli/private_alias.py" --project "$P" --view "$(jq -r '.vault.view' "$work/new-recovery.json")" --passphrase-file "$secrets/changed" --out "$work/private-alias" --cli "$COZY"
   fi
   cozy project -p "$P" export -o "$work/before-rekey.yaml"
   cozy --json project -p "$P" vault rotate --passphrase-file "$secrets/rekey" --recovery-out "$secrets/recovery3" > "$work/rekey.json"

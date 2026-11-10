@@ -1,9 +1,9 @@
 //! Optional local encrypted project sessions. A registered path never becomes a plaintext fallback mount.
-use std::{collections::{BTreeMap, BTreeSet}, fs, io::Read as _, path::{Path as FsPath, PathBuf}, sync::{Arc, LazyLock, Mutex, atomic::{AtomicBool, Ordering}}, time::{Duration, Instant}};
+use std::{collections::{BTreeMap, BTreeSet}, fs, io::Read as _, path::{Path as FsPath, PathBuf}, sync::{Arc, LazyLock, Mutex, atomic::{AtomicBool, Ordering}}, time::Duration};
 use axum::{body::Bytes, extract::{Path, State, rejection::BytesRejection}, http::{HeaderValue, header}, response::{IntoResponse as _, Response}};
 use api::{calcifer::project::{VaultAsk, VaultChanged, VaultStatus}, error::{Error, Kind}};
 use project_mount::{MountOptions, Mounted, Provider};
-use project_vault::{Credential, Keybag, ProjectSecret, SecretString, KEYBAG_FILE};
+use project_vault::{Credential, Keybag, ProjectSecret, SecretString, SessionPolicy, SessionTimer, KEYBAG_FILE};
 use sha2::{Digest as _, Sha256};
 use crate::api::{Api, Refusal, parse};
 
@@ -17,14 +17,12 @@ static ACCESS: LazyLock<Mutex<BTreeMap<PathBuf, Arc<tokio::sync::RwLock<()>>>>>=
 static CONVERTING: LazyLock<Mutex<BTreeSet<PathBuf>>> = LazyLock::new(Mutex::default);
 
 struct Session {
-    root: PathBuf,
     mount: Mounted,
     secret: ProjectSecret,
     keybag: Keybag,
     idle: u64,
     maximum: u64,
-    began: Instant,
-    active: Instant,
+    timer: SessionTimer,
     active_ms: i64,
     began_ms: i64,
     closing: bool,
@@ -153,10 +151,10 @@ fn status(root: &FsPath) -> VaultStatus {
 
 fn milliseconds(seconds: u64) -> i64 { i64::try_from(seconds).unwrap_or(i64::MAX).saturating_mul(1000) }
 
-fn expired(session: &Session) -> bool {
-    (session.idle > 0 && (session.active.elapsed() >= Duration::from_secs(session.idle) || super::now_ms().saturating_sub(session.active_ms) >= milliseconds(session.idle)))
-        || (session.maximum > 0 && (session.began.elapsed() >= Duration::from_secs(session.maximum)
-            || super::now_ms().saturating_sub(session.began_ms) >= milliseconds(session.maximum)))
+fn expired(session: &Session) -> bool { session.timer.expired() }
+
+fn timer(idle: u64, maximum: u64) -> SessionTimer {
+    SessionTimer::new(SessionPolicy { idle_seconds: (idle > 0).then_some(idle), maximum_seconds: (maximum > 0).then_some(maximum) })
 }
 
 fn credential(ask: &mut VaultAsk) -> Result<Credential, Error> {
@@ -183,7 +181,7 @@ fn mount(api: &Api, root: &FsPath, keybag: Keybag, secret: ProjectSecret, ask: &
     }
     // IDs are document data, not filesystem path components (legacy/imported IDs may be arbitrary).
     let runtime_id = hex::encode(Sha256::digest(keybag.info().project_id.as_bytes()));
-    let runtime = api.machines.hubs.home().calcifer().join("vaults").join(runtime_id);
+    let runtime = api.machines.hubs.home().calcifer().join("vaults").join(runtime_id).join(fresh());
     fs::create_dir_all(&runtime).map_err(io)?;
     platform::durable::set_mode(&runtime, 0o700).map_err(provider)?;
     let view = project_mount::view_path(&runtime).map_err(provider)?;
@@ -195,9 +193,10 @@ fn mount(api: &Api, root: &FsPath, keybag: Keybag, secret: ProjectSecret, ask: &
     crate::private_io::descriptor_for_mounted(&canonical_view, &keybag.info().project_id, keybag.info().generation)?;
     TRUSTED_KEYS.lock().expect("trusted vault recipients").insert(root.to_owned(), keybag.clone());
     KEY_ROOTS.lock().expect("vault project roots").insert(keybag.info().project_id.clone(), root.to_owned());
-    let now = Instant::now();
     let project_id = keybag.info().project_id;
-    let session = Session { root: root.to_owned(), mount: mounted, secret, keybag, idle: ask.idle_timeout_s.unwrap_or(DEFAULT_IDLE), maximum: ask.max_duration_s.unwrap_or(0), began: now, active: now, active_ms: super::now_ms(), began_ms: super::now_ms(), closing: false, readable: Arc::new(AtomicBool::new(true)) };
+    let idle = ask.idle_timeout_s.unwrap_or(DEFAULT_IDLE);
+    let maximum = ask.max_duration_s.unwrap_or(0);
+    let session = Session { mount: mounted, secret, keybag, idle, maximum, timer: timer(idle, maximum), active_ms: super::now_ms(), began_ms: super::now_ms(), closing: false, readable: Arc::new(AtomicBool::new(true)) };
     SESSIONS.lock().expect("vault sessions").insert(root.to_owned(), Arc::new(Mutex::new(session)));
     crate::events::project_vault(&project_id, "unlocked");
     Ok(())
@@ -242,11 +241,23 @@ fn close(api: &Arc<Api>, root: &FsPath) -> Result<(), Error> {
     crate::runs::files::release_private(root)?;
     if let Some(session) = held(root) {
         let mut session = session.lock().expect("vault session");
-        if session.mount.is_mounted().map_err(provider)? { session.mount.try_unmount().map_err(provider)?; }
+        session.mount.try_unmount().map_err(provider)?;
         drop(session);
         SESSIONS.lock().expect("vault sessions").remove(root);
         ROOTS.lock().expect("vault roots").retain(|_, logical| logical != root);
         if let Ok(keybag) = Keybag::load(&root.join(KEYBAG_FILE)) { crate::events::project_vault(&keybag.info().project_id, "locked"); }
+    }
+    Ok(())
+}
+
+pub(crate) fn close_all(api: &Arc<Api>) -> Result<(), Error> {
+    let roots: Vec<_> = SESSIONS.lock().expect("vault sessions").keys().cloned().collect();
+    for root in roots {
+        let op = operation(&root);
+        let _operation = op.lock().expect("vault operation");
+        if let Some(session) = held(&root) { mark_closing(&mut session.lock().expect("vault session")); }
+        let _access = exclusive(&root)?;
+        close(api, &root)?;
     }
     Ok(())
 }
@@ -327,9 +338,9 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk) -> Result<VaultChan
                     session.keybag = keybag;
                     session.closing = false;
                     session.readable = Arc::new(AtomicBool::new(true));
-                    session.began = Instant::now(); session.active = session.began;
                     session.began_ms = super::now_ms(); session.active_ms = session.began_ms;
                     session.idle = ask.idle_timeout_s.unwrap_or(DEFAULT_IDLE); session.maximum = ask.max_duration_s.unwrap_or(0);
+                    session.timer = timer(session.idle, session.maximum);
                 } else {
                     drop(session);
                     SESSIONS.lock().expect("vault sessions").remove(root);
@@ -348,7 +359,7 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk) -> Result<VaultChan
             close(api, root)?;
         }
         "activity" => {
-            if let Some(session) = held(root) { let mut session = session.lock().expect("vault session"); if !session.closing && !expired(&session) { session.active = Instant::now(); session.active_ms = super::now_ms(); } }
+            if let Some(session) = held(root) { let mut session = session.lock().expect("vault session"); if !session.closing && !expired(&session) { if session.timer.activity() { session.active_ms = super::now_ms(); } } }
         }
         "passphrase" | "recovery" => {
             let session = held(root).ok_or_else(|| locked(root))?;
@@ -359,7 +370,7 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk) -> Result<VaultChan
             else { recovery_secret = Some(keybag.replace_recovery(&session.secret).map_err(key)?.expose().to_owned()); }
             keybag.save(&root.join(KEYBAG_FILE)).map_err(key)?;
             session.keybag = keybag;
-            session.active = Instant::now(); session.active_ms = super::now_ms();
+            if session.timer.activity() { session.active_ms = super::now_ms(); }
         }
         "export" => {
             let source = view(root)?;
@@ -672,7 +683,7 @@ pub(super) async fn privacy(
     if !encrypted(&root) { return next.run(request).await; }
     let token = held(&root).map(|session| session.lock().expect("vault session").readable.clone());
     if request.method() != axum::http::Method::GET && request.method() != axum::http::Method::HEAD {
-        if let Some(session) = held(&root) { let mut session = session.lock().expect("vault session"); if !session.closing && !expired(&session) { session.active = Instant::now(); session.active_ms = super::now_ms(); } }
+        if let Some(session) = held(&root) { let mut session = session.lock().expect("vault session"); if !session.closing && !expired(&session) { if session.timer.activity() { session.active_ms = super::now_ms(); } } }
     }
     let response = private(next.run(request).await);
     let Some(token) = token else { return response };

@@ -91,14 +91,18 @@ impl Api {
 
     /// `down`: admission closes once the mutations in flight are done, then every stream and the
     /// server end. Machines run on. What Calcifer still owes (`resume` takes it up) is answered.
-    pub(crate) async fn down(&self) -> Vec<String> {
+    pub(crate) async fn down(self: &Arc<Self>) -> Result<Vec<String>, Error> {
         let mut stopping = self.stopping.write().await;
         *stopping = true;
+        if let Err(error) = tokio::task::block_in_place(|| crate::project::vault::close_all(self)) {
+            *stopping = false;
+            return Err(error);
+        }
         let owed = self.calcifer.owed();
         drop(stopping);
         info!(owed = owed.len(), "down: stopping");
         self.stop();
-        owed
+        Ok(owed)
     }
 
     /// Ends every stream and the server.
@@ -576,14 +580,14 @@ async fn cancel(
     Ok((StatusCode::ACCEPTED, Json(run)))
 }
 
-/// Stops Calcifer. It never refuses and never cancels: machines keep what they accepted, and the
-/// next Calcifer resumes what is owed.
-async fn down(State(api): State<Arc<Api>>) -> Json<Down> {
-    let owed = api.down().await;
-    Json(Down {
+/// Stops Calcifer after its encrypted mounts close. Busy views refuse without losing custody.
+/// Machines keep what they accepted, and the next Calcifer resumes what is owed.
+async fn down(State(api): State<Arc<Api>>) -> Result<Json<Down>, Refusal> {
+    let owed = api.down().await.map_err(Refusal)?;
+    Ok(Json(Down {
         stopping: true,
         owed,
-    })
+    }))
 }
 
 async fn status(State(api): State<Arc<Api>>) -> Result<Json<CalciferStatus>, Refusal> {
