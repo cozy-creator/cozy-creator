@@ -9,7 +9,7 @@
 # A broken step is recorded and the suite goes on, so one run reports all of them.
 # --shard runs one of `shards` below after the same start, each on its own runner: e2e.yaml checks coverage over
 # all their calls. Whole, the suite checks it itself.
-#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|web|projectdb|projectdb-latency|projectdb-existing|projectdb-web|local-code]
+#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|web|project-stream|projectdb|projectdb-latency|projectdb-existing|projectdb-web|local-code]
 #                  [--tensord F|V] [--tensorfs F|V] [--runtime F|V] [--packages DIR]
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
@@ -265,6 +265,7 @@ case $SHARD in
   commands) parts="entrypoints catalog basics yaml_requests run_filters bound_runs own_references old_runtime hostile_media machine_show_runs writes_once logs" ;;
   # Its own runner: under `set -e` a cell that dies ends its shard, and a page's proofs shouldn't go with it.
   web) parts="tools_read web_serves page_resend logs" ;;
+  project-stream) parts="project_stream logs" ;;
   follow) parts="script_package one_name_two_paths image_ratio run_follow time_left broken_answers queued_download machines completions calcifer_faults calcifer_restarts logs" ;;
   # project.db (cl-803) and state.db (cl-818) alone, and project.db's latency against the cozy before it.
   projectdb) parts="projectdb statedb logs" ;;

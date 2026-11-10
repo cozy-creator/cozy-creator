@@ -114,7 +114,7 @@ private, max-age=31536000, immutable`; everything else, `outputs/{name}` include
 ## Resources
 
 ### The event stream
-`GET /v1/events`: what a client keeps on screen, on one stream, each thing whole. There is no backlog: subscribe, then read what you hold. It ends only when Calcifer stops, and a type a client doesn't know is for it to skip.
+`GET /v1/events`: what a client keeps on screen, on one stream. Runs and machines go to every connection. Project changes, canvas rows, history and the render board go to connections holding that project through `PUT /v1/events/{stream}`. There is no backlog: subscribe, confirm the projects held, then read their state. It ends only when Calcifer stops, and a type a client doesn't know is for it to skip.
 
 - `hello {version, stream}`, first. `stream` names this stream for `PUT /v1/events/{stream}`.
 - `run.updated {run}`: a run's change, as `GET /v1/runs/{id}` answers it.

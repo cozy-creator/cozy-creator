@@ -2009,6 +2009,7 @@ back=$(api "http://$ADDR/v1/projects/$id/history" | jq -r '[.entries[] | select(
 for _ in $(seq 60); do [ "$(cozy --json run show "$run" --once | jq -r .status)" = canceled ] && break; sleep 0.5; done
 [ "$(cozy --json run show "$run" --once | jq -r .status)" = canceled ] || check "walking: a deleted asset's run goes on billing: $(cozy --json run show "$run" --once | jq -c '{status, progress}')"
 for _ in $(seq 240); do J '.busy | not' <<< "$(status "$W")" && break; sleep 0.5; done
+soon told "$stream" ".type == \"board.updated\" and .project == \"$id\" and .board.ended != null" || check "walking: terminal board not delivered"
 kill "$tail" 2> /dev/null
 { [ "$(made "$W" slow)" = 1 ] && [ "$(made "$W" beside)" = 1 ] && [ "$(made "$W" one)" = 1 ] && [ "$(made "$W" two)" = 1 ] && [ "$(made "$W" last)" = 1 ]; } || check "walking: made $(status "$W" | jq -c '[.assets[] | {(.name): .versions}] | add')"
 for gone in gone_soon running_gone; do
@@ -3945,6 +3946,13 @@ show_events() {
   stream=$(sse "$log" | sed -n '1p' | jq -er 'select(.type == "hello") | .stream') || return
   api -f -X PUT -H 'Content-Type: application/json' -d "$(jq -nc --arg id "$project" '{projects: [$id]}')" \
     "http://$ADDR/v1/events/$stream" | J --arg id "$project" '.held | index($id) != null'
+}
+
+project_stream() {
+  local holder=$HOME/.cozy/calcifer/calcifer.lock.holder ADDR TOKEN
+  ADDR=$(jq -er .address "$holder") && TOKEN=$(jq -er .token "$holder") || fail "project stream: missing Calcifer session"
+  walking
+  event_stream
 }
 
 # `GET /v1/events`, read as the page reads it: the first event, an edit from outside, a landing that writes only the lock, the local
