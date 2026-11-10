@@ -4,9 +4,10 @@ Every release candidate runs the same cells on the same GPU types, and each is h
 and to ComfyUI's. A cell passes only when its output is right as well as fast.
 
 ```
-release-gate/bench.sh --runtime F --tensorfs F --tensord F [--packages DIR] [--groups rtx-4090x1]
-release-gate/bench.py table <gate dir>...           # again, from the gate dirs
-release-gate/bench.py baseline <version> <gate dir>... [--comfyui suites/bench/comfyui.json]  # after a release
+release-gate/bench.sh --comfyui [--runtime F --tensorfs F --tensord F] [--packages DIR] [--groups rtx-4090x1] [--out DIR]
+release-gate/bench.py table <gate dir>... [--comfyui FILE]  # again, from the gate dirs
+release-gate/bench.py versus <gate dir>...                 # Cozy against ComfyUI on the same pods
+release-gate/bench.py baseline <version> <gate dir>... --comfyui-out FILE   # after a release
 ```
 
 ## What runs
@@ -23,15 +24,21 @@ release-gate/bench.py baseline <version> <gate dir>... [--comfyui suites/bench/c
   clock and temperature from TensorD's reads of that call, its name, driver, PCIe link and power limit from `pod.sh gpu`. Eager steps
   are host-bound: a 2-4x slower host CPU (euclase, 11-10) stepped SDXL at 193 ms against 120 on a normal GPU. A pod more
   than 12% off its GPU type's stored kernels (35% copy, 60% disk, 50% CPU probes, 75% fork), or over the CPU ceilings
-  (executor fork 220 ms, CUDA init 1.3 s), is ended and replaced before any cell; in a table it fails the group. More than
+  (executor fork 220 ms, CUDA init 1.3 s and 0.4 s more a GPU), is ended and replaced before any cell, twice; the third host
+  runs anyway, labelled; in a table it fails the group. More than
   3% kernel drift over the run is noted, as is a cell whose executor started 1.5x slower than its baseline's.
 
 ## ComfyUI
 
 `bench.sh --comfyui` runs ComfyUI after the cells on the same pod, under the same host RAM, for the cells whose `comfyui`
-column names a cell of the benchmarks runner (`comfyui.sh`, `comfy.py`; cozy-creator/benchmarks pinned there), with the
-cells' own prompts and seeds. Its rows (`comfyui-rows.json`) are judged beside the cells and go into the next baseline;
-without the flag the baseline's stored rows are used.
+column names a cell of the benchmarks runner (`comfyui.sh`, `comfy.py`; cozy-creator/benchmarks pinned there): the same
+model, shape, steps, prompts and seeds, ComfyUI set to the kernels Cozy served. A matched cell's warm runs each get their
+own prompt (`vary`), so neither engine reuses a text encoding. A capped cell's ComfyUI runs beside the same holder. Its
+rows (`comfyui-rows.json`) carry warm total, steady step, peak VRAM and cold; `bench.py versus` (`comfyui.md`) puts them
+beside Cozy's and names every cell Cozy loses. Peak VRAM on a whole card is Cozy's executor's own peak plus its CUDA context
+(the calibrate call's, on that pod) against ComfyUI's NVML peak with ComfyUI alone on the GPU: the driver's figure counts
+every executor's resident weights, and varena fills a free card as a cache. ComfyUI's rows stay off the repo until every
+cell is won (Paul 11-10): `baseline` writes them to `--comfyui-out`, and `table --comfyui` reads them back.
 
 ## Verdict (`bench.py judge`)
 
@@ -49,6 +56,5 @@ A cell FAILs when
 
 ## Stored numbers
 
-`../../baselines/<version>.json`: per group the pod, its reference workload, each cell's medians and spread, and ComfyUI's
-rows. Reference outputs are assets of the `release-gate-baselines` release (`bench-<version>-<group>-<cell>.<ext>`), fetched
+`../../baselines/<version>.json`: per group the pod, its reference workload, each cell's medians and spread (Cozy only). Reference outputs are assets of the `release-gate-baselines` release (`bench-<version>-<group>-<cell>.<ext>`), fetched
 into `baselines/refs/` (untracked).

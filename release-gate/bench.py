@@ -1,9 +1,12 @@
 """The fixed benchmark suite's numbers, stored baselines and table (suites/bench/README.md).
     bench.py table <gate dir>... [--baseline FILE] [--cells FILE] [--known FILE] [--refs DIR] [--no-output]
         each group's cells against the stored baseline and ComfyUI; exit 1 on any FAIL
-    bench.py baseline <version> <gate dir>... [--out FILE] [--refs DIR] [--comfyui FILE] [--cells FILE]
-        baselines/<version>.json from those dirs (the previous file's ComfyUI rows kept), each cell's reference output
-        copied into --refs (baselines/refs/, untracked: assets of the release-gate-baselines release, which `table` fetches)
+    bench.py versus <gate dir>...   each cell with a ComfyUI row against it: warm total, steady step, peak VRAM, cold; every
+        cell where Cozy is slower or holds more memory, with the gap
+    bench.py baseline <version> <gate dir>... [--out FILE] [--refs DIR] [--comfyui-out FILE] [--cells FILE]
+        baselines/<version>.json from those dirs, Cozy's numbers only: ComfyUI's rows go to --comfyui-out, kept off the public
+        repo until every cell is won (Paul 11-10); each cell's reference output copied into --refs (baselines/refs/,
+        untracked: assets of the release-gate-baselines release, which `table` fetches). `table --comfyui FILE` reads them back
     bench.py admit <gate dir> [--baseline FILE]
         the pod's reference workload against its GPU type's stored one; exit 1 when out of range
     bench.py noise <gate dir>...     each cell's run-to-run spread over its warm runs
@@ -49,12 +52,14 @@ COLD_NOTE = 0.25  # a cold total this far over its baseline's is noted: one samp
 POD_RANGE = {'attention_ms': 0.12, 'conv_ms': 0.12, 'gemm_ms': 0.12, 'h2d_gbps': 0.35, 'disk_gbps': 0.6,
              'python_ms': 0.5, 'launch_us': 0.5, 'tokenize_ms': 0.5, 'exec_fork_ms': 0.75, 'cuda_init_ms': 0.5}
 # Whatever is stored: a host whose executor took this long is the slow class (its record's legs, TensorD's own reads).
+# CUDA init grows with the GPUs it opens: five 2x 4090 hosts in a row read 1545-1616 ms (11-10), the 1x slow class 1.7-2.6 s.
 HOST_CEILING = {'exec_fork_ms': 220.0, 'cuda_init_ms': 1300.0}
+CUDA_INIT_PER_GPU = 400.0
 SLOW_LEG = 1.5  # a cell whose executor's package import or CUDA init is this much over its baseline's: noted
 DRIFT = 0.03  # the reference workload after the cells against before them
 REPO, TAG = 'cozy-creator/cozy-creator', 'release-gate-baselines'
 MEDIA = ('video', 'image', 'audio')  # a run's judged output: its first file of the first of these kinds it has
-NUMBERS = ('total_ms', 'execution_ms', 'step1_ms', 'to_step1_ms', 'steady_ms', 'denoise_ms', 'steps', 'vram_mib', 'host_low_mib',
+NUMBERS = ('total_ms', 'execution_ms', 'step1_ms', 'to_step1_ms', 'steady_ms', 'denoise_ms', 'steps', 'vram_mib', 'proc_mib', 'host_low_mib',
            'fills', 'evictions', 'refilled_gib', 'replays', 'clock_mhz', 'clock_limit_mhz', 'throttled', 'temperature_c', 'power_w',
            'fork_ms', 'cuda_init_ms', 'package_import_ms')
 
@@ -125,6 +130,7 @@ class Reference(TypedDict, total=False):
     tokenize_ms: float
     exec_fork_ms: float  # the calibrate executor's own legs, from its record
     cuda_init_ms: float
+    ctx_mib: float  # an executor's CUDA context: the calibrate call's driver peak less its process's, alone on the GPU
     host_gib: float
     limit_gib: float | None
     clock_mhz: float  # TensorD's reads of the calibrate call: its SM clock and hottest temperature
@@ -238,6 +244,9 @@ def metrics(run: Run, memavail: list[tuple[int, int]], held_mib: int = 0) -> Met
         'steady_ms': round(sum(s[1:]) / len(s[1:]), 1) if len(s) > 1 else None,  # the mean: SDXL's steps are quantized to ~10 ms
         'denoise_ms': round(sum(s)) if s else None, 'steps': len(s) or None,
         'vram_mib': run.vram['peak'] - held_mib if run.vram else None,
+        # The executor's own peak, which ComfyUI's is held against on a whole card: the driver's counts every other
+        # executor's resident weights, and varena fills a free card as a cache.
+        'proc_mib': max(proc) >> 20 if (proc := [b for m in run.measurements if (b := (m.get('memory') or {}).get('peak_reserved_bytes'))]) else None,
         'host_low_mib': min((kb for at, kb in memavail if began and ended and began / 1000 - 5 <= at <= ended / 1000 + 5), default=None),
         'fills': sum((x.get('weight_residency') or {}).get('fills') or 0 for x in stats),
         'evictions': sum((x.get('weight_residency') or {}).get('evictions') or 0 for x in stats),
@@ -318,6 +327,9 @@ def reference_of(run: Run | None, facts: str | None = None) -> Reference | None:
         ref['clock_mhz'] = round(statistics.median(clocks))
     if temps := [t for r in rows if (t := r.get('temperature_max_c'))]:
         ref['temperature_c'] = max(temps)
+    proc = [b for m in run.measurements if (b := (m.get('memory') or {}).get('peak_reserved_bytes'))]
+    if rows and proc and max(r['before_bytes'] for r in rows) < 512 << 20:  # alone on the GPU
+        ref['ctx_mib'] = round(max(r['peak_bytes'] for r in rows) / 2**20 - max(proc) / 2**20)
     said = dict(line.split('=', 1) for line in (facts or '').splitlines() if '=' in line)  # pod.sh facts
     if said.get('gpu'):
         ref['gpu'] = said['gpu']
@@ -514,7 +526,9 @@ def pod_check(cand: Gate, stored: Reference | None) -> tuple[list[str], list[str
     before = ref.get('before')
     if not before:
         return ['no reference workload on this pod'], []
+    gpus = int(m.group(1)) if (m := re.search(r'x(\d+)$', cand['group'])) else 1
     for k, most in HOST_CEILING.items():
+        most += CUDA_INIT_PER_GPU * (gpus - 1) if k == 'cuda_init_ms' else 0
         now = cast(float | None, before.get(k))
         if now and now > most:
             out.append(f"{k} {now:.0f} ms: a slow host CPU (a normal 4090 host is under {most:.0f})")
@@ -575,8 +589,57 @@ def table(gates: list[Gate], base: Baseline | None, defs: list[CellDef], known: 
     return lines, fails
 
 
-def baseline(version: str, gates: list[Gate], previous: Baseline | None, comfy: dict[str, dict[str, Comfy]], refs: str) -> Baseline:
-    """The gates as a release's stored numbers; each cell's judged output copied into `refs` under its asset name."""
+def versus(gates: list[Gate], defs: list[CellDef]) -> tuple[list[str], list[str]]:
+    """Each cell with a ComfyUI row on its pod, both engines side by side, as markdown lines, and every cell where Cozy is
+    slower (warm total, steady step) or holds more GPU memory, with the gap. Peak VRAM on a whole card: Cozy's executor's
+    own (with its CUDA context, measured on this pod) against ComfyUI's NVML peak, ComfyUI alone on the GPU; on a capped
+    cell both are the driver's less the holder's. Cold is shown, not judged: Cozy's is its first call after the weights
+    landed, ComfyUI's a new server with the page cache dropped, its start not counted."""
+    cap = {d['name']: d['cap'] for d in defs}
+    lines: list[str] = []
+    losses: list[str] = []
+    for g in gates:
+        if not g['comfyui']:
+            continue
+        ctx = (g['reference'].get('before') or {}).get('ctx_mib')
+        lines += [f"\n### {g['group']} on {g['pod']}: {g['label']} against ComfyUI {next(iter(g['comfyui'].values()))['comfyui']}"
+                  f" (Cozy's CUDA context {ctx if ctx is not None else '?'} MiB)", '',
+                  '| cell | GPU | warm total s: Cozy / ComfyUI | ComfyUI / Cozy | steady step s: Cozy / ComfyUI | peak VRAM GiB: Cozy / ComfyUI |'
+                  ' cold s: Cozy / ComfyUI | Cozy loses |', '|---|---|---|---|---|---|---|---|']
+        for name, x in g['comfyui'].items():
+            c = g['cells'].get(name)
+            w = c['warm'] if c and c['n'] else {}
+            proc = w.get('proc_mib')
+            ours_peak = w.get('vram_mib') if cap.get(name) else (proc + (ctx or 0) if proc is not None else None)
+            cold = c['cold']['numbers'].get('total_ms') if c and c['cold'] and c['cold']['status'] == 'completed' else None
+
+            def sec(v: float | None) -> float | None:
+                return None if v is None else v / 1000
+
+            def gib(v: float | None) -> float | None:
+                return None if v is None else v / 1024
+            judged = {'warm total': (sec(w.get('total_ms')), x['total_s'], 's'), 'steady step': (sec(w.get('steady_ms')), x.get('steady_s'), 's'),
+                      'peak VRAM': (gib(ours_peak), gib(x.get('peak_mib')), 'GiB')}
+            gaps = [f"{k} +{a - b:.3g} {u} ({a / b - 1:+.0%})" for k, (a, b, u) in judged.items() if a is not None and b and a > b]
+            if not w:
+                gaps = [f"Cozy did not complete: {'; '.join(c['failed'][:1]) if c else 'not run'}"]
+            elif x['status'] != 'ok' and x['total_s'] is None:
+                gaps = []  # ComfyUI did not complete: a completion win
+            if gaps:
+                losses.append(f"{g['group']} {name}: {'; '.join(gaps)}")
+
+            def pair(a: float | None, b: float | None, digits: int) -> str:
+                return f"{'-' if a is None else f'{a:.{digits}f}'} / {'-' if b is None else f'{b:.{digits}f}'}"
+            tot, steady, peak = judged['warm total'], judged['steady step'], judged['peak VRAM']
+            speed = f"{tot[1] / tot[0]:.2f}x" if tot[0] and tot[1] else ('ComfyUI failed' if x['status'] != 'ok' else '-')
+            lines.append(f"| {name} | {f'{cap[name]} GiB' if cap.get(name) else 'whole'} | {pair(tot[0], tot[1], 2)} | {speed} |"
+                         f" {pair(steady[0], steady[1], 3)} | {pair(peak[0], peak[1], 1)} | {pair(sec(cold), x['cold_s'], 1)} |"
+                         f" {'; '.join(gaps) or ('no: ComfyUI ' + x['status'] if x['status'] != 'ok' else 'no')} |")
+    return lines, losses
+
+
+def baseline(version: str, gates: list[Gate], refs: str) -> Baseline:
+    """The gates as a release's stored numbers, Cozy's only; each cell's judged output copied into `refs` under its asset name."""
     os.makedirs(refs, exist_ok=True)
     out: Baseline = {'version': version, 'groups': {}}
     for g in gates:
@@ -591,9 +654,8 @@ def baseline(version: str, gates: list[Gate], previous: Baseline | None, comfy: 
                 c['output'] = stored
             if c['cold'] and c['cold']['output']:
                 c['cold']['output'] = None  # the cell's own output is the stored one
-        kept = previous['groups'].get(g['group']) if previous else None
-        out['groups'][g['group']] = {'pod': g['pod'], 'label': g['label'], 'host': g['host'], 'reference': g['reference'].get('before') or {}, 'cells': g['cells'],
-                                     'comfyui': g['comfyui'] or comfy.get(g['group']) or (kept['comfyui'] if kept else {})}
+        out['groups'][g['group']] = {'pod': g['pod'], 'label': g['label'], 'host': g['host'], 'reference': g['reference'].get('before') or {},
+                                     'cells': g['cells'], 'comfyui': {}}
     return out
 
 
@@ -618,7 +680,7 @@ def check(gate: dict[str, object]) -> tuple[list[str], list[str]]:
 
 
 def main(argv: list[str]) -> int:
-    flags = ('--baseline', '--cells', '--known', '--comfyui', '--refs', '--out')
+    flags = ('--baseline', '--cells', '--known', '--comfyui', '--comfyui-out', '--refs', '--out')
     opt = {f: argv[argv.index(f) + 1] for f in flags if f in argv}
     skip = {i for f in opt for i in (argv.index(f), argv.index(f) + 1)}
     args = [a for i, a in enumerate(argv) if i not in skip and not a.startswith('--')]
@@ -630,6 +692,10 @@ def main(argv: list[str]) -> int:
     known = known_issues(opt.get('--known'))
     base_file = opt.get('--baseline') or newest_baseline()
     base = cast(Baseline, load_json(base_file)) if base_file and os.path.exists(base_file) else None  # bench.py baseline's own file
+    if base and '--comfyui' in opt:  # the release's ComfyUI rows, kept off the repo (baseline --comfyui-out)
+        for name, rows in cast(dict[str, dict[str, Comfy]], load_json(opt['--comfyui'])).items():
+            if name in base['groups']:
+                base['groups'][name]['comfyui'] = rows
     refs = opt.get('--refs') or os.path.join(HERE, 'baselines', 'refs')
     if verb == 'table':
         judged = '--no-output' not in argv
@@ -640,9 +706,17 @@ def main(argv: list[str]) -> int:
         print('\n' + '\n'.join(f'FAIL {f}' for f in fails) if fails else '')
         print(f"VERDICT {'FAIL' if fails else 'PASS'} ({len(fails)} failing cells)")
         return 1 if fails else 0
+    if verb == 'versus':
+        lines, losses = versus([read_gate(d, judged=False) for d in rest], defs)
+        print('\n'.join(lines))
+        print('\n' + '\n'.join(f'LOSS {x}' for x in losses) if losses else '\nno losses')
+        return 0
     if verb == 'baseline':
-        comfy = cast(dict[str, dict[str, Comfy]], load_json(opt['--comfyui'])) if '--comfyui' in opt else {}  # group -> cell -> row
-        written = baseline(rest[0], [read_gate(d) for d in rest[1:]], base, comfy, refs)
+        gates = [read_gate(d) for d in rest[1:]]
+        if '--comfyui-out' in opt:
+            with open(opt['--comfyui-out'], 'w') as f:
+                json.dump({g['group']: g['comfyui'] for g in gates if g['comfyui']}, f, indent=1, sort_keys=True)
+        written = baseline(rest[0], gates, refs)
         path = opt.get('--out') or os.path.join(HERE, 'baselines', rest[0] + '.json')
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         with open(path, 'w') as f:

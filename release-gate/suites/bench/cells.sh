@@ -30,16 +30,28 @@ ln -sfn "$HERE/suites/bench/calibrate" "$OUT/bench-calibrate"
 ONLY_ASKED=$ONLY ONLY=  # --only names bench cells, each run of which is a gate cell of its own name
 cell calibrate-before ./bench-calibrate/measure seed:="$R"
 if ! "${BENCH_PY[@]}" admit "$OUT" > admit.txt 2>&1; then
-  # Another class of pod: ended, and the gate starts again on the next host (gate.sh `again`).
-  ONLY=$ONLY_ASKED; echo "pod out of range: $(paste -sd';' admit.txt)" > host-slow
-  expect bench-pod FAIL "$(cat host-slow)"
-  exit 1
+  if [ "$HOST" -lt 3 ]; then
+    # Another class of pod: ended, and the gate starts again on the next host (gate.sh `again`).
+    ONLY=$ONLY_ASKED; echo "pod out of range: $(paste -sd';' admit.txt)" > host-slow
+    expect bench-pod FAIL "$(cat host-slow)"
+    exit 1
+  fi
+  # The third host runs whatever it is: its numbers are labelled, and ComfyUI's on the same pod still compare.
+  expect bench-pod FAIL "host $HOST runs anyway, out of range: $(paste -sd';' admit.txt)"
+else
+  expect bench-pod PASS "$(paste -sd';' admit.txt)"
 fi
-expect bench-pod PASS "$(paste -sd';' admit.txt)"
 # A capped cell runs on a card of that size, as ComfyUI does: Cozy's executors leave the GPU (one restart), then a holder
 # process takes all but `cap` GiB (vram.py). Each run's row carries the holder's MiB, which bench.py takes off its peak.
 CAPNOW=off HELD=0 LEVEL_OK=1
-while IFS=$'\t' read -r name group cap warm seed target args before _; do
+# vary <args> <i>: a ComfyUI-matched cell's warm run i gets its own prompt, the cold run's and a fixed phrase, so neither
+# engine reuses the last request's text encoding (Paul 09-30); comfy.py hands ComfyUI each run's prompt from its record.
+VARY=("at dawn" "in light rain" "in deep winter" "under a full moon" "in late autumn")
+vary() {
+  local v=${VARY[$((($2 - 1) % ${#VARY[@]}))]}
+  sed -E "s/prompt=\"([^\"]*)\"/prompt=\"\\1, $v\"/; s/\"description\":\"([^\"]*)\"/\"description\":\"\\1 The scene is set $v.\"/" <<< "$1"
+}
+while IFS=$'\t' read -r name group cap warm seed target args before _ _ _ comfy _; do
   [ "${name:0:1}" != '#' ] && [ "$group" = "$BG" ] || continue
   [ -z "$ONLY_ASKED" ] || [[ $ONLY_ASKED == *",$name,"* ]] || continue
   want=off; [ "$cap" = - ] || want=$cap
@@ -64,7 +76,8 @@ while IFS=$'\t' read -r name group cap warm seed target args before _; do
       b=${before%% *}
       eval "cell \"\$name-before-\$i\" \"\$(pkg \${b%/*} \${b##*/})\" ${before#* } seed:=$((RANDOM + 1000000))"
     fi
-    eval "cell \"\$name-\$i\" \"\$t\" $args $s"
+    a=$args; [ "$comfy" = - ] || [ "$i" = 0 ] || a=$(vary "$args" "$i")
+    eval "cell \"\$name-\$i\" \"\$t\" $a $s"
     printf '%s\t%s\t%s\t%s\n' "$name" "$([ "$i" = 0 ] && echo cold || echo warm)" "$name-$i" "$HELD" >> bench.tsv
   done
   read -r held want_bytes < <(podsh "sh /var/tmp/bench-pod.sh check" 2>/dev/null)

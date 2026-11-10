@@ -116,6 +116,7 @@ class MemoryStats(TypedDict, total=False):
 class Memory(TypedDict, total=False):
     driver: list[DriverRow] | None
     stats: MemoryStats | None
+    peak_reserved_bytes: int | None  # what the executor process held from the driver at most (torch and varena)
 
 
 class Loop(TypedDict, total=False):

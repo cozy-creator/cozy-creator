@@ -3,18 +3,21 @@ same pod under the same host RAM, through the benchmarks runner's own setup and 
 comfyui.sh, which runs this).
     comfy.py jobs <gate dir>      here: one job per cell, its benchmarks cell, each run's prompt and seed, its cold record
     comfy.py run <jobs file>      on the pod, in the benchmarks checkout (/var/tmp/bm): rows into results/bench-comfy.jsonl
-    comfy.py rows <gate dir>      here: comfyui/bench-comfy.jsonl as the group's ComfyUI rows (bench.py's Comfy)"""
+    comfy.py rows <gate dir>      here: comfyui/bench-comfy.jsonl as the group's ComfyUI rows (bench.py's Comfy)
+A capped cell's job runs beside the suite's VRAM holder at the cell's level (pod.sh vram), the holder Cozy's run had."""
 import argparse
 import importlib
 import json
 import os
 import statistics
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
 from typing import NotRequired, TypedDict, cast
 
 SESSION = 'bench-comfy'
+POD_SH = '/var/tmp/bench-pod.sh'  # cells.sh copied it here
 
 
 class Request(TypedDict):
@@ -28,13 +31,18 @@ class Job(TypedDict):
     tiers: list[str]  # cold, w1, ...
     requests: list[Request]
     length: int | None  # a video's seconds
+    cap_gib: int | None  # a capped cell's level: ComfyUI runs beside a holder that leaves this much of the GPU
     record: object  # the cell's cold Cozy record: the kernels and Sol schedule ComfyUI is matched to
 
 
 class Row(TypedDict):
-    """One ComfyUI call, as bench.py stores it beside the cell."""
+    """A cell's ComfyUI requests, as bench.py stores them beside the cell."""
     total_s: float | None  # the warm runs' median end-to-end, as Cozy's warm total
     cold_s: float | None
+    steady_s: float | None  # the warm runs' median steady step (each run's median of steps 2..N)
+    step1_s: float | None
+    peak_mib: int | None  # the warm runs' highest NVML peak on the GPU, less the holder's
+    held_mib: int  # the VRAM holder's, on a capped cell
     status: str
     comfyui: str
     differences: list[str]
@@ -76,13 +84,23 @@ def jobs(gate: str) -> list[Job]:
             continue  # Cozy's own runs did not all complete: nothing to match ComfyUI to
         reqs = [request_of(r) for r in records]
         out.append({'cell': cell, 'key': defs[cell]['comfyui'], 'tiers': ['cold'] + [f'w{i}' for i in range(1, len(runs))],
-                    'requests': [q for q, _ in reqs], 'length': reqs[0][1], 'record': records[0]})
+                    'requests': [q for q, _ in reqs], 'length': reqs[0][1], 'cap_gib': int(defs[cell]['cap']) if defs[cell]['cap'] else None,
+                    'record': records[0]})
     return out
+
+
+def holder(cap_gib: int | None) -> int:
+    """GPU 0 as a card of `cap_gib` (pod.sh vram), or the whole card for None: the MiB the holder takes, -1 when it won't stand."""
+    if cap_gib is None:
+        subprocess.run(['sh', POD_SH, 'vram', 'off'], capture_output=True)
+        return 0
+    out = subprocess.run(['sh', POD_SH, 'vram', str(cap_gib << 30)], capture_output=True, text=True).stdout.split()
+    return int(out[1]) >> 20 if len(out) >= 2 and out[1].isdigit() else -1
 
 
 def run(path: str) -> None:
     """The benchmarks runner's setup, then its matched arm for each job; a run out of GPU memory at ComfyUI's own flags is run
-    again with --lowvram, as its user would."""
+    again with --lowvram, as its user would. A capped job runs beside the holder at its level."""
     here = os.path.dirname(os.path.abspath(path))
     sys.path.insert(0, here)
     bm: ModuleType = importlib.import_module('bench')  # cozy-creator/benchmarks: untyped, read through this boundary
@@ -110,11 +128,21 @@ def run(path: str) -> None:
     sampler = gpu.Sampler()
     sampler.start()
     roots = {'cozy': gpu.tensorfs_roots(), 'comfy': [s.work / 'ComfyUI/models']}
+    cap: int | None = None
+    held = 0
     for j in todo:
         m = bm.CELLS['models'][j['key']]
         pin = bm.PINS['comfyui']
+        if j['cap_gib'] != cap:
+            cap, held = j['cap_gib'], holder(j['cap_gib'])
+            s.say(f"a {cap} GiB card: holder {held} MiB" if cap else 'the whole card')
         base = {'v': 1, 'session': s.id, 'sku': s.sku, 'gpu': s.gpu, 'model': j['key'], 'name': m['name'], 'shape': m['shape'], 'cell': j['cell'],
-                'comfyui': f"{pin['tag']} ({pin['commit'][:8]})", 'versions': {}, 'disk_settle': {'settled_mb_s': {'comfy': None}}}
+                'comfyui': f"{pin['tag']} ({pin['commit'][:8]})", 'versions': {}, 'disk_settle': {'settled_mb_s': {'comfy': None}},
+                'cap_gib': cap, 'held_mib': held}
+        if held < 0:
+            s.write(base | {'engine': 'comfy', 'arm': 'matched', 'tier': 'cold', 'status': 'no holder', 'error': f'no {cap} GiB holder', 'e2e_s': None,
+                            'phases': {}, 'meters': {}})
+            continue
         rows = bm.comfy_arm(s, m, j['key'], 'matched', j['tiers'], j['requests'], j['length'], bm.served(j['record']), sampler, roots, base)
         if rows and rows[-1]['status'] == 'oom':
             s.say(f"{j['cell']}: out of GPU memory at ComfyUI's own flags: again with --lowvram")
@@ -126,6 +154,7 @@ def run(path: str) -> None:
             setattr(bm, 'match', lowvram)
             bm.comfy_arm(s, m, j['key'], 'matched', j['tiers'], j['requests'], j['length'], bm.served(j['record']), sampler, roots, base)
             setattr(bm, 'match', match)
+    holder(None)
     s.say('done')
 
 
@@ -137,12 +166,26 @@ def rows(gate: str) -> dict[str, Row]:
         d = cast(dict[str, object], json.loads(line))  # the benchmarks runner's row
         by.setdefault(str(d.get('cell')), {})[str(d.get('tier'))] = d
     out: dict[str, Row] = {}
+    def num(d: dict[str, object], *path: str) -> float | None:
+        o: object = d
+        for k in path:
+            o = o.get(k) if isinstance(o, dict) else None
+        return float(o) if isinstance(o, (int, float)) else None
+
     for cell, tiers in by.items():
-        ok = {t: float(str(d['e2e_s'])) for t, d in tiers.items() if d.get('status') == 'ok' and d.get('e2e_s') is not None}
-        warm = [v for t, v in ok.items() if t != 'cold']
+        ok = {t: d for t, d in tiers.items() if d.get('status') == 'ok' and d.get('e2e_s') is not None}
+        warm = [d for t, d in ok.items() if t != 'cold']
+        held = int(num(next(iter(tiers.values())), 'held_mib') or 0)
+
+        def mid(*path: str, rows: list[dict[str, object]] = warm) -> float | None:
+            vals = [v for d in rows if (v := num(d, *path)) is not None]
+            return round(statistics.median(vals), 4) if vals else None
+        peaks = [v for d in warm if (v := num(d, 'meters', 'peak_vram_mib')) is not None]
         failed = next((d for d in tiers.values() if d.get('status') != 'ok'), None)
         config = tiers.get('cold', {}).get('config')
-        out[cell] = {'total_s': round(statistics.median(warm), 2) if warm else None, 'cold_s': ok.get('cold'),
+        out[cell] = {'total_s': round(v, 2) if (v := mid('e2e_s')) is not None else None, 'cold_s': num(ok['cold'], 'e2e_s') if 'cold' in ok else None,
+                     'steady_s': mid('phases', 'step'), 'step1_s': mid('phases', 'step1'),
+                     'peak_mib': int(max(peaks)) - held if peaks else None, 'held_mib': held,
                      'status': 'ok' if not failed else f"{failed.get('status')}: {str(failed.get('error'))[:160]}",
                      'comfyui': str(next((d.get('comfyui') for d in tiers.values()), '')),
                      'differences': [str(x) for x in (config.get('differences') or [])] if isinstance(config, dict) else [],
