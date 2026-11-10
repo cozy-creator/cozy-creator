@@ -137,6 +137,9 @@ fn status(root: &FsPath) -> VaultStatus {
         let mut session = session.lock().expect("vault session");
         if session.mount.reconcile().is_err() { mark_closing(&mut session); }
         idle = session.idle;
+        // Only removing the fully closed session acknowledges lock. A native volume can
+        // lose its path while its exact image/key or an old handle still needs cleanup.
+        state = "locking";
         if session.mount.is_mounted().unwrap_or(false) {
             state = if session.closing || expired(&session) { "locking" } else { "unlocked" };
             if state == "unlocked" { view = Some(session.mount.view().to_owned()); }
@@ -353,6 +356,7 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk) -> Result<VaultChan
                     session.idle = ask.idle_timeout_s.unwrap_or(DEFAULT_IDLE); session.maximum = ask.max_duration_s.unwrap_or(0);
                     session.timer = timer(session.idle, session.maximum);
                 } else {
+                    session.mount.try_unmount().map_err(provider)?;
                     drop(session);
                     SESSIONS.lock().expect("vault sessions").remove(root);
                     mount(api, root, keybag, secret, ask)?;
