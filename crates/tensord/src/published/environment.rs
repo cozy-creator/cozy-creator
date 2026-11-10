@@ -348,7 +348,9 @@ impl Publisher {
             true => "update this machine: `cozy machine update <machine>`".to_string(),
             false => relock(project, ranged),
         };
-        ("runtime_protocol_unspoken", format!("{} runs on {}, which can't speak this machine's executor protocol ({}'s): {why}; {next}",
+        // A newer pair is a floor this machine misses, as an unpublished one is.
+        let code = if newer { "runtime_floor_unmet" } else { "runtime_protocol_unspoken" };
+        (code, format!("{} runs on {}, which can't speak this machine's executor protocol ({}'s): {why}; {next}",
             project.label, shown(pair), shown(&ours)))
     }
 
