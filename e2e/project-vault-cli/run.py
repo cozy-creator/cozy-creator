@@ -65,9 +65,13 @@ class Proof:
             command += ['project', '-p', str(self.project)]
         command += [str(arg) for arg in args]
         began = time.monotonic()
+        record = {'args': command[1:], 'state': 'running'}
+        self.commands.append(record)
+        self.flush()
+        print(f'project vault CLI command: {args[0]}', flush=True)
         completed = subprocess.run(command, capture_output=True, text=True)
-        self.commands.append({'args': command[1:], 'exit_code': completed.returncode,
-                              'seconds': round(time.monotonic() - began, 3)})
+        record.update(state='complete', exit_code=completed.returncode,
+                      seconds=round(time.monotonic() - began, 3))
         self.flush()
         if refusal:
             if completed.returncode == 0:
