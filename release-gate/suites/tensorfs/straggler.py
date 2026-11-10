@@ -22,7 +22,6 @@ import threading
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import cast
 
 
 class Args(argparse.Namespace):
