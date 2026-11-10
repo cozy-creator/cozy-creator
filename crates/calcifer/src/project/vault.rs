@@ -94,8 +94,12 @@ fn exclusive(root: &FsPath) -> Result<tokio::sync::OwnedRwLockWriteGuard<()>, Er
 /// lease through their body and commit. A delayed upload cannot write into a reused drive.
 pub(crate) async fn admit_project(api: &Api, named: &str) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, Error> {
     let root = location(api, named)?;
-    let guard = access(&root).read_owned().await;
-    view(&root)?;
+    admit_root(&root).await
+}
+
+pub(super) async fn admit_root(root: &FsPath) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, Error> {
+    let guard = access(root).read_owned().await;
+    view(root)?;
     Ok(guard)
 }
 

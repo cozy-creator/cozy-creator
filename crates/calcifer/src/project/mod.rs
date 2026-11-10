@@ -2330,6 +2330,8 @@ fn element(project: &Project, id: &str, wanted: &str, at: Option<api::calcifer::
 fn measure_soon(api: &Arc<Api>, project: &Arc<Project>) {
     let (host, project) = (Host::new(api), project.clone());
     tokio::spawn(async move {
+        let Ok(access) = vault::admit_root(&project.root).await else { return; };
+        if project.require_view().is_err() { return; }
         if project.folder.lock().map_or(true, |lock| !lock.files.values().any(folder::File::unmeasured)) {
             return;
         }
@@ -2339,14 +2341,17 @@ fn measure_soon(api: &Arc<Api>, project: &Arc<Project>) {
         }
         let dir = project.folder.dir.clone();
         let measuring = tokio::task::spawn_blocking(move || {
+            // This task can outlive its importer and must drain before storage is replaced.
+            let _access = access;
             let _permit = permit;
-            project.folder.lock().and_then(|mut lock| project.folder.measure(&mut lock))
+            let measured = project.folder.lock().and_then(|mut lock| project.folder.measure(&mut lock));
+            // What was read before this finished said nothing of how long a clip is.
+            crate::events::project_settled(&dir);
+            measured
         });
         if let Ok(Err(error)) = measuring.await {
             warn!("measuring a project's files: {}", error.message);
         }
-        // What was read before this finished said nothing of how long a clip is.
-        crate::events::project_settled(&dir);
     });
 }
 

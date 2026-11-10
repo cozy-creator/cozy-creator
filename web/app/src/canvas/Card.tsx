@@ -600,7 +600,7 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
     const card = self.current
     const id = store.idOf(name)
     if (!id) return
-    const original = Array.from(card.style, (property) => [property, card.style.getPropertyValue(property), card.style.getPropertyPriority(property)] as const)
+    const original = Array.from(card.style, (name) => [name, card.style.getPropertyValue(name), card.style.getPropertyPriority(name)] as const)
     const apply = (style: CSSProperties) => {
       for (const [property, value] of Object.entries(style)) {
         const name = property.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)
@@ -700,9 +700,11 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
       document.fonts.removeEventListener("loadingdone", schedule)
       unbind()
       const width = card.style.width
-      for (const property of Array.from(card.style)) card.style.removeProperty(property)
-      for (const [property, value, priority] of original) card.style.setProperty(property, value, priority)
-      card.style.width = width
+      const priority = card.style.getPropertyPriority("width")
+      // Restore through CSSOM: a raw style attribute is refused by the native page's CSP.
+      for (const name of Array.from(card.style)) card.style.removeProperty(name)
+      for (const [name, value, priority] of original) card.style.setProperty(name, value, priority)
+      if (width) card.style.setProperty("width", width, priority)
     }
   }, [here, name, store, flow, owner])
   if (!view) return null
