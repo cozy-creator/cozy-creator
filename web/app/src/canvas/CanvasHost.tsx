@@ -210,8 +210,10 @@ function Zoom({ zoomBy, items }: { zoomBy: (by: 1 | -1) => void; items: () => Zo
 
 /** One line, and it does what it says when clicked too. */
 function Empty({ choose }: { choose: () => void }) {
+  const store = useCanvasStore()
+  useSignal(store.names)
   const empty = useStore((state) => state.nodes.length === 0)
-  if (!empty) return null
+  if (!empty || (store.projectId && !store.hasRead) || !store.empty) return null
   return (
     <div className="empty-canvas">
       <button type="button" onClick={choose}>
