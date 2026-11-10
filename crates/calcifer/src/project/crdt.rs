@@ -3,7 +3,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
-    sync::Arc,
+    sync::{Arc, OnceLock},
 };
 
 use api::error::{Error, Kind};
@@ -26,6 +26,7 @@ pub(super) const FORMAT: i64 = 1;
 pub(super) struct Document {
     pub(super) doc: AutoCommit,
     pub(super) value: Arc<Value>,
+    conflicts: Arc<OnceLock<Vec<String>>>,
 }
 
 fn invalid(detail: impl std::fmt::Display) -> Error {
@@ -40,6 +41,19 @@ fn actor(_at: &Path) -> ActorId {
     ActorId::from(bytes.as_slice())
 }
 
+pub(super) fn identity_bytes(bytes: &[u8]) -> Option<(String, String)> {
+    let doc = AutoCommit::load(bytes).ok()?;
+    let (_, identity) = doc.get(ROOT, "identity").ok()??;
+    let (id, _) = doc.get(&identity, "id").ok()??;
+    let name = doc
+        .get(&identity, "name")
+        .ok()
+        .flatten()
+        .and_then(|(name, _)| name.as_str().map(str::to_owned))
+        .unwrap_or_default();
+    Some((id.as_str()?.to_owned(), name))
+}
+
 impl Document {
     pub(super) fn load(bytes: &[u8], at: &Path) -> Result<Self, Error> {
         let doc = AutoCommit::load(bytes).map_err(invalid)?.with_actor(actor(at));
@@ -52,6 +66,7 @@ impl Document {
         Ok(Self {
             doc,
             value: Arc::new(value),
+            conflicts: Arc::new(OnceLock::new()),
         })
     }
 
@@ -59,23 +74,36 @@ impl Document {
         Self {
             doc: AutoCommit::new().with_actor(actor(at)),
             value: Arc::new(json!({})),
+            conflicts: Arc::new(OnceLock::new()),
         }
     }
 
     /// A narrow recursive diff, never one opaque serialized project string. Stable-ID maps keep
     /// independently added entities/versions separate, and scalar conflicts remain multi-value.
     pub(super) fn update(&mut self, value: Value) -> Result<(), Error> {
+        let known_empty = self.conflicts.get().is_some_and(Vec::is_empty);
         reconcile_map(&mut self.doc, &ROOT, &self.value, &value)?;
         self.doc.commit();
         self.value = Arc::new(value);
+        // A local observing mutation cannot introduce concurrency. Imported snapshots always
+        // start with an empty cache and are inspected; existing alternatives invalidate it.
+        let conflicts = OnceLock::new();
+        if known_empty {
+            let _ = conflicts.set(Vec::new());
+        }
+        self.conflicts = Arc::new(conflicts);
         Ok(())
     }
 
     /// Explicit conflict metadata, rather than silently presenting AutoSerde's selected winner.
     pub(super) fn conflicts(&self) -> Vec<String> {
-        let mut found = Vec::new();
-        self.conflicts_under(&ROOT, "", &mut found);
-        found
+        self.conflicts
+            .get_or_init(|| {
+                let mut found = Vec::new();
+                self.conflicts_under(&ROOT, "", &mut found);
+                found
+            })
+            .clone()
     }
 
     fn conflicts_under(&self, object: &ObjId, path: &str, found: &mut Vec<String>) {
@@ -128,10 +156,12 @@ impl Document {
 
     pub(super) fn ops(&self) -> Result<Vec<OpRow>, Error> {
         let mut rows = Vec::new();
-        for record in objects(&self.value, "history").values().filter(|record| present(record)) {
-            rows.push(decode::<OpRow>(record.get("record").cloned().unwrap_or_default())?);
+        for (uid, record) in objects(&self.value, "history").iter().filter(|(_, record)| present(record)) {
+            let mut row = decode::<OpRow>(record.get("record").cloned().unwrap_or_default())?;
+            row.uid.clone_from(uid);
+            rows.push(row);
         }
-        rows.sort_by_key(|row| row.id);
+        rows.sort_by(|a, b| (&a.id, &a.uid).cmp(&(&b.id, &b.uid)));
         Ok(rows)
     }
 
@@ -316,6 +346,53 @@ pub(super) fn identify(before: &Stored, after: &mut Stored) {
     }
 }
 
+pub(super) fn identify_history(stored: &Stored, ops: &mut [OpRow]) {
+    let mut ids: BTreeMap<String, String> = stored
+        .written
+        .boxes
+        .iter()
+        .map(|held| (name_key(&held.name), held.id.clone()))
+        .collect();
+    for op in ops.iter_mut().rev() {
+        if op.uid.is_empty() {
+            op.uid = super::new_key();
+        }
+        let Ok(mut changes) = serde_json::from_str::<Value>(&op.changes) else {
+            continue;
+        };
+        let Some(changes_array) = changes.as_array_mut() else { continue };
+        for change in changes_array.iter_mut().rev() {
+            if change["kind"] == "renamed" {
+                let (from, to) = (text(change, "from"), text(change, "to"));
+                let id = ids.remove(&name_key(&to)).unwrap_or_else(super::new_key);
+                ids.insert(name_key(&from), id);
+                continue;
+            }
+            if change["kind"] != "asset" {
+                continue;
+            }
+            let name = text(change, "name");
+            let key = name_key(&name);
+            let id = ["after", "before"]
+                .into_iter()
+                .find_map(|side| change.get(side)?.get("id")?.as_str().filter(|id| !id.is_empty()).map(str::to_owned))
+                .or_else(|| ids.get(&key).cloned())
+                .unwrap_or_else(super::new_key);
+            for side in ["before", "after"] {
+                if let Some(body) = change.get_mut(side).and_then(Value::as_object_mut) {
+                    body.insert("id".into(), id.clone().into());
+                }
+            }
+            if change["before"].is_null() && !change["after"].is_null() {
+                ids.remove(&key);
+            } else {
+                ids.insert(key, id);
+            }
+        }
+        op.changes = changes.to_string();
+    }
+}
+
 /// Form the logical state. Retain explicit entity/version/history tombstones rather than losing
 /// a concurrent child's bytes when a parent disappears from the materialized view.
 pub(super) fn value(stored: &Stored, ops: &[OpRow], previous: &Value, identity: Option<(String, String)>) -> Value {
@@ -369,13 +446,13 @@ pub(super) fn value(stored: &Stored, ops: &[OpRow], previous: &Value, identity: 
         canvas.insert(id, json!({ "present": true, "key": key, "record": row }));
     }
     let mut history = tombstoned(previous, "history");
-    let history_ids: BTreeMap<u64, String> = history
-        .iter()
-        .filter_map(|(id, record)| Some((record["record"]["id"].as_u64()?, id.clone())))
-        .collect();
     for row in ops {
-        let id = history_ids.get(&row.id).cloned().unwrap_or_else(super::new_key);
-        history.insert(id, json!({ "present": true, "record": row }));
+        // Display numbers can collide after an offline merge. Only the immutable global
+        // history identity chooses the map entry; loading carries this key back into OpRow.
+        let id = if row.uid.is_empty() { super::new_key() } else { row.uid.clone() };
+        let mut record = encoded(row);
+        record["uid"] = id.clone().into();
+        history.insert(id, json!({ "present": true, "record": record }));
     }
     let mut runs = tombstoned(previous, "runs");
     let run_ids: BTreeMap<String, String> = runs.iter().map(|(id, record)| (record["record"].to_string(), id.clone())).collect();
