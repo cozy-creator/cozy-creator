@@ -15,6 +15,7 @@
 #   disk-room  a render that needs more than the disk can make free (H3 bf16 here) fails `machine_disk_full` while it
 #              prepares, naming the sizes and `--disk-gb`, with nothing downloaded; SDXL again, which fits only by
 #              evicting, runs and its warnings name what was evicted
+#   disk-held-output (cl-843) a weights output made before the fill is read after it: held outputs go after models
 # DISK_INSTALLS=no (the `disk` session) leaves out disk-envs and torch-layer: their installs are most of the suite's time.
 T=$OUT/disk; mkdir -p "$T"
 use() { "$CLI" --json machine show "$M" 2>/dev/null | jq -r --arg s "$1" '.status | [$s, .disk_free_bytes, .disk_models_bytes,
@@ -44,6 +45,10 @@ most=$(awk -F'\t' 'NR > 1 && p - $2 > m {m = p - $2; w = $1} {p = $2} END {print
   || expect torch-layer FAIL "$own installs brought their own Torch; the largest took $(( ${most%% *} >> 20 )) MiB (${most#* }); $(grep -h -m2 'installs its own' "$T"/install-*.log "$T/tensord.log" | tr '\n' ' ')"
 fi
 
+# cl-843: a held output goes after every model the store may evict. A weights output made now stays on the machine, and
+# is read after the fill (`model upload run:N#model`, disk-held-output).
+ln -sfn "$HERE/suites/tensorfs/multi-conversion" "$OUT/ci-multi-conversion"
+made=$(step held-output run ./ci-multi-conversion/source --on "$M" seed:=$((R + 704)))
 held=$(basename "$(mktemp -u "$T/run-XXXXXX")")
 run_submit "$T" "$held" run "$(pkg sdxl generate)" --on "$M" prompt="$OBJECT, held through a full disk" steps:=8 seed:=$((R + 700)) > /dev/null
 run_wait "$T" "$held" in_progress  # accepted: its preparation holds SDXL from here
@@ -68,6 +73,18 @@ silent=$(grep -cE 'tensorfs: freed .* \(0 evicted' "$T/tensord.log")
 [ "$sdxl$again" = completedcompleted ] && [ "$evictions" -gt 0 ] \
   && expect disk-lru PASS "$evictions lanes evicted, $garbage garbage sweeps, $silent sweeps of unreferenced objects; $(grep -m3 'tensorfs: evicted' "$T/tensord.log" | sed 's/.*tensorfs: //' | paste -sd';')" \
   || expect disk-lru FAIL "sdxl $sdxl, h3 again $again; $evictions evictions, $garbage garbage sweeps; free $(tail -1 "$T/use.tsv" | cut -f2); $(run_get "$T" h3-again .reason.message)"
+
+WHO=$("$CLI" --json whoami 2> /dev/null | jq -r '.account // empty')
+if [ "$made" = completed ] && [ -n "$WHO" ]; then
+  n=$(cat "$T/held-output.number")
+  up=$(step held-read model upload "run:$n#model" "$WHO/ci-disk-$R" --lane bf16 --on "$M" -y)
+  [ "$up" = completed ] && [ "$evictions" -gt 0 ] \
+    && expect disk-held-output PASS "run $n's output read after $evictions model lanes were evicted (run $(cat "$T/held-read.number"))" \
+    || expect disk-held-output FAIL "run $n's output after $evictions evictions: $up $(run_get "$T" held-read .reason.message | head -c 300)"
+  "$CLI" --json model delete "$WHO/ci-disk-$R" -y > "$T/held-delete.json" 2>&1 || true
+else
+  expect disk-held-output FAIL "no held output to read: run $made $(run_get "$T" held-output .reason.message | head -c 300)"
+fi
 
 read -r stored listed < <("$CLI" --json machine show "$M" 2>/dev/null | jq -r '.status | "\(.disk_models_bytes // 0) \(.models_bytes // 0)"')
 unlisted=$(( stored > listed ? stored - listed : 0 ))
