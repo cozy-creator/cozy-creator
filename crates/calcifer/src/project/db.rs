@@ -381,7 +381,13 @@ fn initialize_crdt(conn: &mut Connection, at: &Path) -> Result<(), Error> {
     let mut doc = crdt::Document::new(at);
     let mut ops = legacy_ops(&tx, at)?;
     crdt::identify_history(&after, &mut ops);
-    doc.update(crdt::value(&after, &ops, &serde_json::Value::Null, identity(&tx)))?;
+    // Before stored IDs, indexed projects were identified by their canonical folder path.
+    // Preserve that ID on legacy import/restore; new-project creation explicitly replaces
+    // it with its freshly generated UUID after this initializer completes.
+    let inherited = identity(&tx).unwrap_or_else(|| {
+        (super::folder_id(at.parent().unwrap_or_else(|| Path::new("."))), String::new())
+    });
+    doc.update(crdt::value(&after, &ops, &serde_json::Value::Null, Some(inherited)))?;
     write(&tx, &before, &after, &Extra { ops:ops.clone(), ..Default::default() }).map_err(|e| sql(at, e))?;
     save_document(&tx, at, &mut doc, after.seq)?;
     tx.pragma_update(None, "user_version", VERSION).map_err(|e| sql(at, e))?;
