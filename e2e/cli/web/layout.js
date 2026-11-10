@@ -752,6 +752,8 @@ ${local ? `  card:
     const making = page.locator('.react-flow__node .card[data-asset="making"] > .media').first();
     await home();
     if (names.includes('making') && (await making.count())) {
+      // Shift adds to a selection: rest-close leaves its box selected, and Shift+2 would fit both.
+      await page.keyboard.press('Escape');
       const at = await making.boundingBox();
       await page.keyboard.down('Shift');
       await page.mouse.click(at.x + at.width / 2, at.y + at.height / 2);
