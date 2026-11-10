@@ -143,8 +143,12 @@ impl Machine {
 
     fn private_headers(&self, request: RequestBuilder) -> RequestBuilder {
         match &self.private {
-            Some(scope) => request.header(api::machine::LOCAL_PRIVATE_DESCRIPTOR, scope.descriptor_header())
-                .header(api::machine::LOCAL_PRIVATE_TOKEN, scope.token()),
+            Some(scope) => {
+                let mut token = header::HeaderValue::from_str(scope.token()).expect("a verified hexadecimal proof token");
+                token.set_sensitive(true);
+                request.header(api::machine::LOCAL_PRIVATE_DESCRIPTOR, scope.descriptor_header())
+                    .header(api::machine::LOCAL_PRIVATE_TOKEN, token)
+            },
             None => request,
         }
     }
