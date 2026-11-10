@@ -514,29 +514,19 @@ pub(crate) struct ProgressSnapshot {
 }
 
 /// Weights arriving for a run (`access::meter`): their repositories, and the bytes here of their
-/// total. `behind`: its on-demand models, which it waits on only if a step reads them.
+/// total.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Weights {
     pub models: String,
     pub done: u64,
     pub total: u64,
-    pub behind: bool,
 }
 
 impl Weights {
     /// The progress detail they show over the run's own `detail`: its enclosing scope (what the
     /// stage is part of) and the download, never a step its weights have not reached.
     pub(crate) fn over(&self, detail: &str) -> String {
-        let mut own: Value = serde_json::from_str(detail).unwrap_or(Value::Null);
-        // On-demand weights keep the run's own stage and steps, their bytes beside them: a step
-        // that waits on them moves with them.
-        if self.behind {
-            if !own.is_object() {
-                own = serde_json::json!({"stage": "", "step_ms": 0.0});
-            }
-            (own["bytes_done"], own["bytes_total"]) = (self.done.into(), self.total.into());
-            return own.to_string();
-        }
+        let own: Value = serde_json::from_str(detail).unwrap_or(Value::Null);
         let label = format!("downloading {} weights", self.models);
         let stage = match own["stage"].as_str().and_then(|stage| stage.rsplit_once(" / ")) {
             Some((scope, _)) => format!("{scope} · {label}"),
