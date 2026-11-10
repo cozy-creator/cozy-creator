@@ -285,7 +285,7 @@ async fn keep(endpoint: &Endpoint, name: &str, files: &std::collections::BTreeMa
 async fn fetch(project: &Project, endpoint: &Endpoint, tally: &Tally, wanted: folder::File) -> Result<(), Failed> {
     let (path, sha256) = (wanted.path.clone(), wanted.sha256.clone());
     let Some(objects) = held(endpoint, &wanted).await? else {
-        tally.skip(path, "it is not at the Hub: open the project with cozy open on the computer that has it and upload its files".into());
+        tally.skip(path, "it is not at the Hub: cozy push on the computer that has it".into());
         return Ok(());
     };
     let at = project.folder.dir.join(&path);

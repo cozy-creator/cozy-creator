@@ -69,7 +69,8 @@ rent a Linux GPU, or `--on <machine>` for one you have. Run project commands fro
 `cozy open`, `cozy run` and `cozy status` use an existing project. Outputs land in its `files/` directory.
 
 `cozy` lists the main commands. `cozy <verb> --help` shows a command's options.
-The browser opened by `cozy open` provides asset import, editing, rendering, export, history and file transfers.
+The browser opened by `cozy open` provides asset import, editing, rendering, export and history.
+Use `cozy push` and `cozy pull` to synchronize the current project's files with your account.
 
 `cozy doctor` diagnoses this computer's cozy (Calcifer, its service, the machine, tools, GPUs) and
 restarts a Calcifer that is stuck or runs an older cozy.

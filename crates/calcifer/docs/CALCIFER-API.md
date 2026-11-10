@@ -616,13 +616,14 @@ ffmpeg (cuts, frames, clips) and uv (local code). No route asks for them.
 
 ## CLI verbs and their calls
 
-The CLI resolves the current directory to an existing project and sends its absolute path as the routes' `{id}`. `cozy new [directory]` creates a project explicitly through `POST /v1/projects`. `cozy open`, `cozy run` and `cozy status` require an existing project. API clients can also use a project name or id. The browser provides asset import, editing, rendering, export, history and file transfers through the project endpoints described above.
+The CLI resolves the current directory to an existing project and sends its absolute path as the routes' `{id}`. `cozy new [directory]` creates a project explicitly through `POST /v1/projects`. `cozy open`, `cozy run` and `cozy status` require an existing project. API clients can also use a project name or id. The browser provides asset import, editing, rendering, export and history through the project endpoints described above. `cozy push` and `cozy pull` synchronize the current project's files.
 
 | Verb | Calls |
 |---|---|
 | `cozy new [directory]` | `POST /v1/projects` with the selected absolute path |
 | `cozy open [--no-open]` | current directory, `GET /v1/projects/{id}?assets=false` for its id; then `GET /`, `POST /v1/session-codes` |
 | `cozy status` | the current project from `GET /v1/projects/{id}`, its runs and the machines |
+| `cozy push`, `cozy pull` | `GET /v1/projects/{id}/events`, then `POST /v1/projects/{id}/push` or `/pull`; exits 3 when files are skipped |
 | any verb, Calcifer of another version | `POST /v1/down`, then the installed cozy's Calcifer started |
 | `cozy run <target> [inputs] [flags]` | `HEAD`/`PUT /v1/files/sha256:<hex>` for each file and folder it names, and local code's tree, `POST /v1/run-quotes` (`--on new`), `POST /v1/runs` (again after a `preparing` install), then `GET /v1/runs/{id}/events`; `-o DIR`, each output `GET /v1/runs/{id}/outputs/{name}` |
 | `cozy run <target> --describe`, `cozy run <package>` | local code's tree `PUT`, `GET /v1/targets` (`tree`, `at`) |
