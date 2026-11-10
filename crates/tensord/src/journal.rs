@@ -650,6 +650,11 @@ fn read_payload(conn: &Connection, id: &str, slot: &str, body: &[u8]) -> io::Res
 fn metadata_actor(actor: &str) -> String {
     crate::private_io::resource_key(actor)
 }
+fn metadata_name(name: &str) -> String {
+    if crate::private_io::current().is_some() {
+        metadata_actor(&tensorfs::sha256::hex_digest(name.as_bytes()))
+    } else { name.to_owned() }
+}
 fn encoded_metadata(value: &impl Serialize, scope: Option<&api::machine::LocalPrivateStorage>, context: &str, mut index: Value) -> io::Result<String> {
     let Some(scope) = scope else { return encoded(value) };
     let pointer = private_journal::write(Some(scope), context, encoded(value)?.as_bytes())?;
@@ -912,23 +917,33 @@ impl Journal {
         package: &str,
         preparation: &str,
     ) -> io::Result<()> {
+        let scope = crate::private_io::current();
+        let package = private_journal::write(scope.as_ref(), &format!("resolution:{actor}:{key}:package"), package.as_bytes())?;
+        let package = String::from_utf8(package).map_err(db_error)?;
         self.connection
             .execute("INSERT OR REPLACE INTO resolutions(actor,key,package,preparation) VALUES(?1,?2,?3,?4)", params![metadata_actor(actor), key, package, preparation])
             .map_err(db_error)?;
         Ok(())
     }
-    /// What a Hub named `name` (its origin, a repository, release and lane: th-245), and when it
-    /// was read there, or None.
+    /// Private preparation warnings share this cache with public Hub names, so both the
+    /// private value and its lookup label must stay outside the global plaintext journal.
     pub(crate) fn named(&self, name: &str) -> io::Result<Option<(String, i64)>> {
-        self.connection
-            .query_row("SELECT named,read_ms FROM held_names WHERE name=?1", [name], |r| Ok((r.get(0)?, r.get(1)?)))
-            .optional()
-            .map_err(db_error)
+        let name = metadata_name(name);
+        let row: Option<(String, i64)> = self.connection
+            .query_row("SELECT named,read_ms FROM held_names WHERE name=?1", [&name], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional().map_err(db_error)?;
+        row.map(|(body, read_ms)| {
+            let body = private_journal::read_scoped(&format!("named:{name}"), body.as_bytes())?;
+            Ok((String::from_utf8(body).map_err(db_error)?, read_ms))
+        }).transpose()
     }
     /// `name` as read now.
     pub(crate) fn bind_named(&mut self, name: &str, named: &str) -> io::Result<()> {
+        let name = metadata_name(name);
+        let body = private_journal::write(crate::private_io::current().as_ref(), &format!("named:{name}"), named.as_bytes())?;
+        let body = String::from_utf8(body).map_err(db_error)?;
         self.connection
-            .execute("INSERT OR REPLACE INTO held_names(name,named,read_ms) VALUES(?1,?2,?3)", params![name, named, timestamp()])
+            .execute("INSERT OR REPLACE INTO held_names(name,named,read_ms) VALUES(?1,?2,?3)", params![name, body, timestamp()])
             .map_err(db_error)?;
         Ok(())
     }
