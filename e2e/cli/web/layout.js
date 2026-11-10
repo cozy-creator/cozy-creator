@@ -87,6 +87,10 @@ async function restClose(page) {
   requireRest(await state());
   if (!(await page.locator('.zoom-menu').count())) await page.click('.zoom-at');
   await page.getByRole('menuitem', { name: 'Zoom to 200%', exact: true }).click();
+  await until('rest-close reaches 200%', state, (at) => {
+    requireRest(at);
+    return at.zoom === 2;
+  }, 5000);
   await settled(page);
   const at = await state();
   requireRest(at);
