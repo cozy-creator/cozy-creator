@@ -3,7 +3,7 @@ branches on `dark`, and `hold` keeps it going that long. `enlarge` runs a model 
 GPUs; nothing calls it unless asked."""
 
 import time
-from typing import Annotated, Any
+from typing import Annotated
 
 import msgspec
 from cozy_runtime.accel import sequence_parallel
@@ -36,14 +36,14 @@ def shade(payload: ShadeInput, out: Outputs) -> Shaded:
 
 
 @sequence_parallel(degrees=(2, 4))
-class Upscaler(Model[Any]):
-    graph: Any
+class Upscaler(Model[object]):
+    graph: object
 
     def load(self, loader: Loader) -> None:
         self.graph = loader.construct(object)
 
     @uses_components("transformer")
-    def forward(self, pixels: Any) -> Any:
+    def forward[T](self, pixels: T) -> T:
         return pixels
 
 

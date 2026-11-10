@@ -23,7 +23,7 @@ class Painted(msgspec.Struct):
 
 
 @invocable(defaults={"weights": "zhengpeng7/birefnet@0.1.0"})
-async def paint(ctx: Context, *, image: ImageFile, weights: Weights, out: Outputs) -> Painted:
+async def paint(ctx: Context, *, image: ImageFile, weights: Weights, out: Outputs) -> Painted:  # type: ignore[type-arg]  # bare Weights: any layout, as the Runtime spells it
     """The model on a GPU that makes `heavy` one."""
     return Painted(image)
 
@@ -40,6 +40,6 @@ class Words(msgspec.Struct, kw_only=True):
 async def heavy(ctx: Context, payload: Words, out: Outputs) -> ImageResult:
     """A still of one colour, and each picture it mentions painted by the model."""
     for picture in payload.instructions.references.values():
-        await paint(image=picture.file)
+        await paint(image=picture.file)  # type: ignore[call-arg]  # weights and out are injected; invocable's ParamSpec still lists them
     image = out.save_image(ImageFrame(SIDE, SIDE, os.urandom(3) * SIDE**2), format="png")
     return ImageResult(image, SIDE, SIDE, payload.seed or 0, payload.instructions.text)
