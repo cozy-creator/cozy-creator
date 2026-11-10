@@ -27,9 +27,157 @@ import struct
 import sys
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Literal, NotRequired, Required, TypedDict, cast
 
 import numpy as np
+import numpy.typing as npt
+
+# JSON [key, shape] pairs, typed as tuples; a None dimension is any size.
+Keyed = tuple[str, list[int]]
+Edit = tuple[str, list[int | None]]
+# Where a tensor's bytes are: (url, absolute offset, dtype).
+Location = tuple[str, int, str]
+
+
+class ProbeConstants(TypedDict):
+    seed: int
+    rows: int
+    dims: int
+    min_cosine: float
+    distinct: float
+
+
+class ProbeTensor(TypedDict):
+    component: str
+    key: str
+    blocks: list[int]
+    sketch: dict[str, str]
+
+
+class Probe(ProbeConstants):
+    tensors: list[ProbeTensor]
+
+
+class ProbeSpec(TypedDict):
+    component: str
+    keys: list[str]
+    variants: dict[str, str]
+
+
+class Form(TypedDict, total=False):
+    components: Required[list[str]]
+    drop: list[str]
+    set: list[Edit]
+    add: list[Edit]
+
+
+class TrainedOn(TypedDict):
+    producer: str
+    field: str
+    values: dict[str, str]
+
+
+class Spec(TypedDict, total=False):
+    """A FAMILIES entry."""
+
+    name: Required[str]
+    reference: Required[str]
+    folders: Required[list[str]]
+    classes: list[str]
+    sources: list[str]
+    forms: dict[str, Form]
+    form_sizes: dict[str, int]
+    sites: dict[str, list[Keyed]]
+    probe: ProbeSpec
+    trained_on: list[TrainedOn]
+    optional: dict[str, list[str]]
+    converted: dict[str, str]
+    variants: dict[str, tuple[str, str]]
+    banked: dict[str, str]
+
+
+# A family's component (`class` is a keyword, hence the functional form).
+Component = TypedDict("Component", {"class": str | None, "keys": list[Keyed], "same_as": str, "reference": str,
+                                    "optional": list[str], "sites": list[Keyed]}, total=False)
+
+
+class Family(TypedDict, total=False):
+    """A `families/<name>.json`."""
+
+    name: Required[str]
+    reference: Required[str]
+    sources: list[str]
+    classes: list[str]
+    components: dict[str, Component]
+    forms: dict[str, Form]
+    probe: Probe
+    trained_on: list[TrainedOn]
+
+
+ModelConfig = TypedDict("ModelConfig", {"_class_name": str, "architectures": list[str | None]}, total=False)
+
+
+class HubFile(TypedDict):
+    """An entry of the Hub's tree API."""
+
+    type: str
+    path: str
+
+
+class Entry(TypedDict):
+    """A safetensors header's tensor entry (its `__metadata__` is never read as one)."""
+
+    dtype: str
+    shape: list[int]
+    data_offsets: list[int]
+
+
+class Ops(TypedDict, total=False):
+    """A converter table row's ops (engine.rs)."""
+
+    view: list[int]
+    take: tuple[int, list[int]]  # a JSON [axis, indices] pair
+    permute: list[int]
+    shape: list[int]
+    io: list[int]
+    b: Ops
+    kernel: list[int]
+
+
+class Stored(TypedDict):
+    """A conditioning row's stored tensor (seedvr2)."""
+
+    shape: list[int]
+
+
+# A table row, a JSON array: [target, source?, ops?, repeat?], or [key, stored].
+Row = list[str | Ops | dict[str, int] | Stored]
+
+
+class TableComponent(TypedDict, total=False):
+    name: Required[str]
+    prefix: str
+    folders: dict[str, str]
+    rows: Required[list[Row]]
+
+
+class Table(TypedDict, total=False):
+    """A `converters/<name>.json`, as read here."""
+
+    components: Required[list[TableComponent]]
+    lora: dict[str, list[str]]
+
+
+class Reader(TypedDict):
+    at: Location
+    cols: int
+    rows: npt.NDArray[np.int64]
+    scale: NotRequired[Location | None]
+
+
+class Args(argparse.Namespace):
+    write: bool
+    names: list[str]
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT.parent / "tensorfs" / "families"
@@ -40,7 +188,7 @@ HF = "https://huggingface.co"
 # The probe (src/family/probe.rs): per probed tensor, BLOCKS evenly spaced ROWS-row blocks, each
 # sketched as P·(W_b·r). Thresholds measured on H3 (outputs/opus-takeover-20261027/tfs-137):
 # fine-tunes ≥ 0.998 on every block, other blocks' rows ≤ 0.54, the nearer variant 6–10× nearer.
-PROBE = {"seed": 137, "rows": 128, "dims": 32, "min_cosine": 0.9, "distinct": 3.0}
+PROBE: ProbeConstants = {"seed": 137, "rows": 128, "dims": 32, "min_cosine": 0.9, "distinct": 3.0}
 BLOCKS = 8
 
 H3 = "hf://MiniMaxAI/MiniMax-H3@42ed227ee7df40d41602854ae760620d6eb651fe"
@@ -51,7 +199,7 @@ H3_PROBED = [
 ]
 H3_DIT = ["transformer", "transformer_ref"]
 
-FAMILIES: list[dict[str, Any]] = [
+FAMILIES: list[Spec] = [
     {
         "name": "minimax-h3",
         "reference": H3,
@@ -64,20 +212,20 @@ FAMILIES: list[dict[str, Any]] = [
             "curve": {
                 "components": H3_DIT,
                 "drop": ["time_embedder.*"],
-                "set": [["transformer_blocks.*.adaln_proj.linear.weight", [96768, 8]], ["norm_out.linear.weight", [10752, 8]]],
-                "add": [["adaln_t_table", [1025, 8]]],
+                "set": [("transformer_blocks.*.adaln_proj.linear.weight", [96768, 8]), ("norm_out.linear.weight", [10752, 8])],
+                "add": [("adaln_t_table", [1025, 8])],
             },
             "pruned": {
                 "components": H3_DIT,
                 "drop": ["time_embedder.*", "norm_out.linear.*", "transformer_blocks.*.adaln_proj.linear.*"],
-                "add": [[f"transformer_blocks.{n}.adaln_proj.table", [None, 6, 5376]] for n in range(50)]
-                + [["norm_out.table", [None, 2, 5376]]],
+                "add": [(f"transformer_blocks.{n}.adaln_proj.table", [None, 6, 5376]) for n in range(50)]
+                + [("norm_out.table", [None, 2, 5376])],
             },
         },
         "form_sizes": {"canonical": 638, "curve": 635, "pruned": 583},
         # h3.lora's LoRA-only AdaLN-curve sites (#2245): factors over the curve's k coordinates, folded into the
         # served tables, never a weight.
-        "sites": {"transformer": [[f"transformer_blocks.{n}.adaln_curve", [96768, 8]] for n in range(50)]},
+        "sites": {"transformer": [(f"transformer_blocks.{n}.adaln_curve", [96768, 8]) for n in range(50)]},
         "probe": {"component": "transformer", "keys": H3_PROBED, "variants": {"transformer": "transformer", "transformer_ref": "transformer_ref"}},
         # musubi-tuner (AkaneTendo25@0499c2f8 minimax_h3_train_network.py `extra_metadata`): the
         # mode picks the DiT it trains. ai-toolkit (ostris@b69b9831 minimax_h3.py): only the
@@ -224,12 +372,12 @@ def get(url: str, rng: tuple[int, int] | None = None) -> bytes:
     for attempt in range(5):
         try:
             with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=300) as r:
-                body = r.read()
+                body: bytes = r.read()
             if rng is None or len(body) == rng[1] - rng[0]:
                 return body
         except Exception as e:  # noqa: BLE001
             err = e
-    sys.exit(f"{url}: {err}")
+    sys.exit(f"{url}: {err}")  # type: ignore[possibly-undefined]  # bug: unbound when every attempt returns a short body (typing-tools bugs list)
 
 
 def split(reference: str) -> tuple[str, str]:
@@ -237,9 +385,10 @@ def split(reference: str) -> tuple[str, str]:
     return repo, commit
 
 
-def tree(reference: str) -> list[dict[str, Any]]:
+def tree(reference: str) -> list[HubFile]:
     repo, commit = split(reference)
-    return json.loads(get(f"{HF}/api/models/{repo}/tree/{commit}?recursive=true"))
+    files: list[HubFile] = json.loads(get(f"{HF}/api/models/{repo}/tree/{commit}?recursive=true"))
+    return files
 
 
 def url(reference: str, path: str) -> str:
@@ -247,17 +396,17 @@ def url(reference: str, path: str) -> str:
     return f"{HF}/{repo}/resolve/{commit}/{path}"
 
 
-HEADERS: dict[str, tuple[int, dict[str, Any]]] = {}
+HEADERS: dict[str, tuple[int, dict[str, Entry]]] = {}
 
 
-def header(u: str) -> tuple[int, dict[str, Any]]:
+def header(u: str) -> tuple[int, dict[str, Entry]]:
     if u not in HEADERS:
         (n,) = struct.unpack("<Q", get(u, (0, 8)))
         HEADERS[u] = (8 + n, json.loads(get(u, (8, 8 + n))))
     return HEADERS[u]
 
 
-def folder_files(files: list[dict[str, Any]], folder: str) -> list[str]:
+def folder_files(files: list[HubFile], folder: str) -> list[str]:
     """A folder's weights: its index's shards, else its one file; the default variant first."""
     names = [f["path"] for f in files if f["type"] == "file" and f["path"].rpartition("/")[0] == folder]
     weights = [n for n in names if n.endswith(".safetensors")]
@@ -265,9 +414,10 @@ def folder_files(files: list[dict[str, Any]], folder: str) -> list[str]:
     return sorted(plain)
 
 
-def component(reference: str, files: list[dict[str, Any]], folder: str) -> tuple[list[tuple[str, list[int]]], dict[str, tuple[str, int]]]:
+def component(reference: str, files: list[HubFile], folder: str) -> tuple[list[Keyed], dict[str, Location]]:
     """(key, shape) in file order, and where each key's bytes are: (url, absolute offset)."""
-    keys, at = [], {}
+    keys: list[Keyed] = []
+    at: dict[str, Location] = {}
     for path in folder_files(files, folder):
         u = url(reference, path)
         base, h = header(u)
@@ -278,42 +428,43 @@ def component(reference: str, files: list[dict[str, Any]], folder: str) -> tuple
     return keys, at
 
 
-def class_of(reference: str, files: list[dict[str, Any]], folder: str) -> str | None:
+def class_of(reference: str, files: list[HubFile], folder: str) -> str | None:
     paths = {f["path"] for f in files}
     index = "model_index.json"
     if index in paths:
-        entry = json.loads(get(url(reference, index))).get(folder)
+        components: dict[str, str | list[str | None]] = json.loads(get(url(reference, index)))
+        entry = components.get(folder)
         if isinstance(entry, list) and len(entry) >= 2 and isinstance(entry[1], str):
             return entry[1]
     config = f"{folder}/config.json" if folder else "config.json"
     if config in paths:
-        c = json.loads(get(url(reference, config)))
+        c: ModelConfig = json.loads(get(url(reference, config)))
         return c.get("_class_name") or (c.get("architectures") or [None])[0]
     return None
 
 
-def banked(path: str) -> list[tuple[str, list[int]]]:
+def banked(path: str) -> list[Keyed]:
     raw = (VECTORS / path).read_bytes()
     (n,) = struct.unpack("<Q", raw[:8])
-    h = json.loads(raw[8 : 8 + n])
+    h: dict[str, Entry] = json.loads(raw[8 : 8 + n])
     rows = sorted(((k, v) for k, v in h.items() if k != "__metadata__"), key=lambda kv: kv[1]["data_offsets"][0])
     return [(k, v["shape"]) for k, v in rows]
 
 
 # --------------------------------------------------------------------------------- tables
 
-def table(name: str) -> dict[str, Any] | None:
+def table(name: str) -> Table | None:
     path = TABLES / f"{name}.json"
     return json.loads(path.read_text()) if path.exists() else None
 
 
-def expand(rows: list[Any]) -> list[list[Any]]:
+def expand(rows: list[Row]) -> list[Row]:
     """A table's rows with `{"e": n}` repetition expanded (engine.rs `rows`)."""
-    out = []
+    out: list[Row] = []
     for r in rows:
-        if isinstance(r, list) and len(r) == 4 and isinstance(r[3], dict):
+        if isinstance(r, list) and len(r) == 4 and isinstance(r[3], dict):  # type: ignore[redundant-expr]  # a guard on JSON input
             texts = [json.dumps(r[:3])]
-            for mark, n in r[3].items():
+            for mark, n in cast(dict[str, int], r[3]).items():  # a fourth item is the repetition
                 texts = [t.replace(f'"{{{mark}}}"', str(i)).replace(f"{{{mark}}}", str(i)) for t in texts for i in range(n)]
             out.extend(json.loads(t) for t in texts)
         else:
@@ -326,7 +477,7 @@ def resolve(dims: list[int], numel: int) -> list[int]:
     return [numel // known if d == -1 else d for d in dims]
 
 
-def shaped(shape: list[int], ops: dict[str, Any]) -> list[int]:
+def shaped(shape: list[int], ops: Ops) -> list[int]:
     """The output shape of a row's ops over `shape` (engine.rs `layout`)."""
     numel = math.prod(shape)
     dims = resolve(ops["view"], numel) if "view" in ops else list(shape)
@@ -340,7 +491,7 @@ def shaped(shape: list[int], ops: dict[str, Any]) -> list[int]:
     return dims
 
 
-def rows_of(source_rows: int, ops: dict[str, Any]) -> np.ndarray:
+def rows_of(source_rows: int, ops: Ops) -> npt.NDArray[np.int64]:
     """The source row each output row reads, for ops that select whole rows."""
     a = np.arange(source_rows).reshape(source_rows, 1)
     if "view" in ops:
@@ -353,12 +504,18 @@ def rows_of(source_rows: int, ops: dict[str, Any]) -> np.ndarray:
     return a[:, 0]
 
 
-def converted(t: dict[str, Any], comp: str, source: list[tuple[str, list[int]]]) -> list[tuple[str, list[int]]]:
+def parts(r: Row) -> tuple[str, str, Ops]:
+    """A row's target, source and ops: [target, source?, ops?]."""
+    return cast(str, r[0]), cast(str, r[1] if len(r) > 1 else r[0]), cast(Ops, r[2] if len(r) > 2 else {})
+
+
+def converted(t: Table | None, comp: str, source: list[Keyed]) -> list[Keyed]:
+    assert t is not None
     shapes = dict(source)
     (c,) = [c for c in t["components"] if c["name"] == comp or comp in c.get("folders", {}).values()]
-    out = []
+    out: list[Keyed] = []
     for r in expand(c["rows"]):
-        target, src, ops = r[0], (r[1] if len(r) > 1 else r[0]), (r[2] if len(r) > 2 else {})
+        target, src, ops = parts(r)
         out.append((target, shaped(shapes[c.get("prefix", "") + src], ops) if ops else shapes[c.get("prefix", "") + src]))
     return out
 
@@ -383,17 +540,17 @@ def glob(pattern: str, text: str) -> bool:
 EXPECTED: dict[tuple[str, str, str], dict[str, list[int | None]]] = {}
 
 
-def expected(fam: dict[str, Any], comp: str, form: str) -> dict[str, list[int | None]]:
+def expected(fam: Family, comp: str, form: str) -> dict[str, list[int | None]]:
     key = (fam["name"], comp, form)
     if key not in EXPECTED:
         EXPECTED[key] = edited(fam, comp, form)
     return EXPECTED[key]
 
 
-def edited(fam: dict[str, Any], comp: str, form: str) -> dict[str, list[int | None]]:
+def edited(fam: Family, comp: str, form: str) -> dict[str, list[int | None]]:
     root = fam["components"][comp].get("same_as", comp)
-    keys = {k: list(s) for k, s in fam["components"][root]["keys"]}
-    edit = fam.get("forms", {}).get(form)
+    keys: dict[str, list[int | None]] = {k: list(s) for k, s in fam["components"][root]["keys"]}
+    edit = cast(Form, fam.get("forms", {}).get(form))  # every form but canonical has its edit
     if form == "canonical" or comp not in edit["components"] and root not in edit["components"]:
         return keys
     keys = {k: s for k, s in keys.items() if not any(glob(p, k) for p in edit.get("drop", []))}
@@ -409,7 +566,7 @@ def fits(want: list[int | None], got: list[int]) -> bool:
     return len(want) == len(got) and all(w is None or w == g for w, g in zip(want, got))
 
 
-def check_tables(fam: dict[str, Any]) -> None:
+def check_tables(fam: Family) -> None:
     forms = ["canonical", *fam.get("forms", {})]
     for name in fam.get("sources", []):
         t = table(name)
@@ -424,10 +581,11 @@ def check_tables(fam: dict[str, Any]) -> None:
                 targets = [r[0] for r in expand(c["rows"])]
                 if t.get("lora"):
                     for r in expand(c["rows"]):
-                        i, o = r[2]["io"]
+                        ops = cast(Ops, r[2])  # a LoRA row: [target, stem, ops]
+                        i, o = ops["io"]
                         # The B factor's ops cut a fused module's rows to the target's.
-                        o = shaped([o, 1], r[2]["b"])[0] if "b" in r[2] else o
-                        want = [o, i, *r[2].get("kernel", [])]
+                        o = shaped([o, 1], ops["b"])[0] if "b" in ops else o
+                        want = [o, i, *ops.get("kernel", [])]
                         ok = any(fits(expected(fam, comp, f).get(f"{r[0]}.weight", []), want) for f in forms) or any(
                             p == r[0] and s == want for p, s in fam["components"][comp].get("sites", []))
                         if not ok:
@@ -442,7 +600,7 @@ def check_tables(fam: dict[str, Any]) -> None:
 
 # --------------------------------------------------------------------------------- probe
 
-def splitmix64(x: np.ndarray) -> np.ndarray:
+def splitmix64(x: npt.NDArray[np.uint64]) -> npt.NDArray[np.uint64]:
     with np.errstate(over="ignore"):
         z = x + np.uint64(0x9E3779B97F4A7C15)
         z = (z ^ (z >> np.uint64(30))) * np.uint64(0xBF58476D1CE4E5B9)
@@ -450,7 +608,7 @@ def splitmix64(x: np.ndarray) -> np.ndarray:
         return z ^ (z >> np.uint64(31))
 
 
-def signs(seed: int, n: int) -> np.ndarray:
+def signs(seed: int, n: int) -> npt.NDArray[np.float64]:
     x = (np.uint64(seed) << np.uint64(32)) + np.arange(n, dtype=np.uint64)
     return np.where(splitmix64(x) >> np.uint64(63) == 1, -1.0, 1.0)
 
@@ -465,7 +623,7 @@ E4M3 = np.array([e4m3(b) for b in range(256)])
 E4M3[[0x7F, 0xFF]] = np.nan
 
 
-def decode(dtype: str, raw: bytes, cols: int) -> np.ndarray:
+def decode(dtype: str, raw: bytes, cols: int) -> npt.NDArray[np.float64]:
     if dtype == "BF16":
         a = (np.frombuffer(raw, np.uint16).astype(np.uint32) << 16).view(np.float32)
     elif dtype == "F16":
@@ -479,7 +637,7 @@ def decode(dtype: str, raw: bytes, cols: int) -> np.ndarray:
     return a.astype(np.float64).reshape(-1, cols)
 
 
-def read_rows(where: tuple[str, int, str], cols: int, rows: np.ndarray) -> np.ndarray:
+def read_rows(where: tuple[str, int, str], cols: int, rows: npt.NDArray[np.int64]) -> npt.NDArray[np.float64]:
     u, start, dtype = where
     size = {"BF16": 2, "F16": 2, "F32": 4, "F8_E4M3": 1}[dtype]
     out, i = [], 0
@@ -493,27 +651,29 @@ def read_rows(where: tuple[str, int, str], cols: int, rows: np.ndarray) -> np.nd
     return np.concatenate(out)
 
 
-def sketch(w: np.ndarray) -> np.ndarray:
+def sketch(w: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
     y = w @ signs(PROBE["seed"], w.shape[1])
-    return signs(PROBE["seed"] + 1, PROBE["dims"] * len(y)).reshape(PROBE["dims"], len(y)) @ y
+    sketched: npt.NDArray[np.float64] = signs(PROBE["seed"] + 1, PROBE["dims"] * len(y)).reshape(PROBE["dims"], len(y)) @ y
+    return sketched
 
 
-def probe(fam: dict[str, Any], where: dict[str, dict[str, tuple[str, int, str]]], shapes: dict[str, dict[str, list[int]]]) -> dict[str, Any]:
+def probe(fam: Spec, where: dict[str, dict[str, Reader]], shapes: dict[str, dict[str, list[int]]]) -> Probe:
     spec = fam["probe"]
-    tensors = []
+    tensors: list[ProbeTensor] = []
     for key in spec["keys"]:
         rows_total, cols = shapes[spec["component"]][key][0], math.prod(shapes[spec["component"]][key][1:])
         n = rows_total // PROBE["rows"]
         blocks = sorted({round(x) for x in np.linspace(0, n - 1, BLOCKS)})
-        out = {}
+        out: dict[str, str] = {}
         for variant, folder in spec["variants"].items():
             reader = where[folder][key]
-            sketches = []
+            sketches: list[npt.NDArray[np.float64]] = []
             for b in blocks:
                 rows = reader["rows"][b * PROBE["rows"] : (b + 1) * PROBE["rows"]]
                 w = read_rows(reader["at"], reader["cols"], rows)
-                if reader.get("scale") is not None:
-                    w = w * read_rows(reader["scale"], 1, rows)
+                scale = reader.get("scale")
+                if scale is not None:
+                    w = w * read_rows(scale, 1, rows)
                 sketches.append(sketch(w))
             out[variant] = base64.b64encode(np.concatenate(sketches).astype("<f2").tobytes()).decode()
             print(f"  {fam['name']}: probe {key} ({variant}) {len(blocks)} blocks")
@@ -521,7 +681,7 @@ def probe(fam: dict[str, Any], where: dict[str, dict[str, tuple[str, int, str]]]
     return {**PROBE, "tensors": tensors}
 
 
-def readers(fam: dict[str, Any], folder: str, at: dict[str, tuple[str, int, str]], source: list[tuple[str, list[int]]]) -> dict[str, dict[str, Any]]:
+def readers(fam: Spec, folder: str, at: dict[str, Location], source: list[Keyed]) -> dict[str, Reader]:
     """How each canonical key's rows are read from the reference: directly, or through the
     family's converter (each output row a source row; an fp8 row with its scale)."""
     shapes = dict(source)
@@ -529,10 +689,11 @@ def readers(fam: dict[str, Any], folder: str, at: dict[str, tuple[str, int, str]
     if name is None:
         return {k: {"at": at[k], "cols": math.prod(s[1:]), "rows": np.arange(s[0])} for k, s in source if len(s) >= 2}
     t = table(name)
+    assert t is not None
     (c,) = [c for c in t["components"] if folder in c.get("folders", {}).values() or c["name"] == folder]
-    out = {}
+    out: dict[str, Reader] = {}
     for r in expand(c["rows"]):
-        target, src, ops = r[0], (r[1] if len(r) > 1 else r[0]), (r[2] if len(r) > 2 else {})
+        target, src, ops = parts(r)
         s = shapes[src]
         if len(s) < 2:
             continue
@@ -543,11 +704,12 @@ def readers(fam: dict[str, Any], folder: str, at: dict[str, tuple[str, int, str]
 
 # --------------------------------------------------------------------------------- families
 
-def build(spec: dict[str, Any]) -> dict[str, Any]:
+def build(spec: Spec) -> Family:
     print(spec["name"])
     files = tree(spec["reference"]) if spec["folders"] else []
-    comps: dict[str, Any] = {}
-    where, shapes = {}, {}
+    comps: dict[str, Component] = {}
+    where: dict[str, dict[str, Reader]] = {}
+    shapes: dict[str, dict[str, list[int]]] = {}
     for folder in spec["folders"]:
         source, at = component(spec["reference"], files, folder)
         name = spec.get("converted", {}).get(folder)
@@ -561,7 +723,7 @@ def build(spec: dict[str, Any]) -> dict[str, Any]:
         if same:
             comps[comp] = {"same_as": same}
             continue
-        comps[comp] = {"class": class_of(spec["reference"], files, folder), "keys": [[k, s] for k, s in keys]}
+        comps[comp] = {"class": class_of(spec["reference"], files, folder), "keys": [(k, s) for k, s in keys]}
         if comp in spec.get("optional", {}):
             comps[comp]["optional"] = spec["optional"][comp]
     # A variant with a checkpoint of its own: its keys and shapes are its root's, but for the root's optional ones.
@@ -574,15 +736,18 @@ def build(spec: dict[str, Any]) -> dict[str, Any]:
     for comp, sites in spec.get("sites", {}).items():
         comps[comp]["sites"] = sites
     for comp, path in spec.get("banked", {}).items():
-        comps[comp] = {"keys": [[k, s] for k, s in banked(path)]}
+        comps[comp] = {"keys": [(k, s) for k, s in banked(path)]}
     if spec["name"] == "seedvr2":
         t = table("seedvr2")
+        assert t is not None
         (cond,) = [c for c in t["components"] if c["name"] == "conditioning"]
-        comps["conditioning"] = {"keys": [[r[0], r[1]["shape"]] for r in cond["rows"]]}
+        # Its rows are [key, stored].
+        comps["conditioning"] = {"keys": [(cast(str, r[0]), cast(Stored, r[1])["shape"]) for r in cond["rows"]]}
     for d in comps.values():
         if d.get("class") is None:
             d.pop("class", None)
-    fam: dict[str, Any] = {"name": spec["name"], "reference": spec["reference"]}
+    fam: Family = {"name": spec["name"], "reference": spec["reference"]}
+    field: Literal["sources", "classes"]
     for field in ("sources", "classes"):
         if spec.get(field):
             fam[field] = spec[field]
@@ -594,13 +759,13 @@ def build(spec: dict[str, Any]) -> dict[str, Any]:
         assert got == n, f"{spec['name']} {form}: {got} keys, {n} expected"
     check_tables(fam)
     if spec.get("probe"):
-        fam["probe"] = probe(spec | fam, where, shapes)
+        fam["probe"] = probe(spec, where, shapes)  # what it reads of `spec | fam` is spec's
     if spec.get("trained_on"):
         fam["trained_on"] = spec["trained_on"]
     return fam
 
 
-def render(fam: dict[str, Any]) -> str:
+def render(fam: Family) -> str:
     return json.dumps(fam, separators=(",", ":")) + "\n"
 
 
@@ -608,7 +773,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--write", action="store_true", help="rewrite the families")
     parser.add_argument("names", nargs="*", help="only these families")
-    args = parser.parse_args()
+    args = parser.parse_args(namespace=Args())
     OUT.mkdir(exist_ok=True)
     differ = []
     for spec in FAMILIES:
