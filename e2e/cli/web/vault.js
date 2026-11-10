@@ -4,7 +4,7 @@ const { execFileSync } = require('child_process');
 const { mkdtempSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { calcifer, signIn, launch, png, until, drop } = require('./page');
+const { calcifer, signIn, launch, png, MP4, until, drop } = require('./page');
 const failures = [], seen = {};
 let browser, context, page, peer, scratch;
 const check = (name, okay) => { seen[name] = !!okay; if (!okay) failures.push(name); };
@@ -16,6 +16,9 @@ const cli = (...args) => execFileSync(process.env.COZY, ['--json', ...args], { e
   writeFileSync(picture, png(23));
   cli('project', 'new', folder);
   cli('project', '-p', folder, 'import', picture);
+  const movie = join(scratch, 'private_loop_movie.mp4');
+  writeFileSync(movie, MP4);
+  cli('project', '-p', folder, 'import', movie);
   const id = JSON.parse(cli('project', '-p', folder, 'status')).id;
   seen.project = { id, folder };
   browser = await launch(playwright);
@@ -57,6 +60,18 @@ const cli = (...args) => execFileSync(process.env.COZY, ['--json', ...args], { e
   check('private_upload_uses_project_route', fileWrites.length > 0 && fileWrites.every((write) => write.path.startsWith('/v1/project-files/') && write.project === id));
   const stored = await page.evaluate(() => JSON.stringify(Object.fromEntries(Object.keys(localStorage).map((key) => [key, localStorage.getItem(key)]))));
   check('no_private_browser_persistence', !stored.includes(recovery) && !stored.includes('synthetic browser passphrase') && !stored.includes('private_vault_picture') && !stored.includes('private_after_encryption'));
+  // Automatic hover previews are not user activity. The real video decoder keeps
+  // looping, while an idle-only deadline still locks the project.
+  await page.locator('.react-flow__node').filter({ hasText: 'private_loop_movie' }).first().hover();
+  await page.waitForFunction(() => [...document.querySelectorAll('video')].some((el) => el.loop && !el.paused && el.currentTime > 0.05));
+  execFileSync(process.env.COZY, ['--json', 'project', '-p', folder, 'unlock', '--recovery-file', '-', '--idle', '2', '--max-duration', '0'], { input: `${recovery}\n`, encoding: 'utf8', timeout: 180000 });
+  await page.locator('[data-vault-state="locked"]').waitFor();
+  check('autoplay_preview_does_not_extend_idle_unlock', await page.locator('.react-flow').count() === 0);
+  await page.getByLabel('Unlock with').selectOption('recovery');
+  await page.getByLabel('Recovery secret', { exact: true }).fill(recovery);
+  await page.getByRole('button', { name: 'Unlock project', exact: true }).click();
+  await page.locator('.react-flow').waitFor();
+
   // A second actual tab shares the real SSE connection. Locking from the CLI must
   // conceal both pages without relying on the active tab's one-second status poll.
   peer = await context.newPage();

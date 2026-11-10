@@ -329,7 +329,7 @@ export function Shell() {
     const interval = Math.min(10_000, Math.max(100, (vault.data?.idle_timeout_s || 30) * 1000 / 3))
     const activity = (event: Event) => {
       if (!event.isTrusted || document.visibilityState !== "visible" || performance.now() - last < interval) return
-      if (event.type === "timeupdate" && (!(event.target instanceof HTMLMediaElement) || event.target.paused)) return
+      if ((event.type === "play" || event.type === "timeupdate") && (!(event.target instanceof HTMLMediaElement) || event.target.paused || !event.target.controls)) return
       if (event.type === "pointermove" && (!(event instanceof PointerEvent) || event.buttons === 0)) return
       last = performance.now()
       void client.vaultChange(id, { action: "activity" }).catch(() => { void vault.refetch() })
