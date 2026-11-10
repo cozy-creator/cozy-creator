@@ -10,6 +10,11 @@ description = "Safe Rust ownership over the Varena v1 C ABI; no embedded allocat
 [lib]
 name = "varena_client"
 
+# The public-api gate's Rust client, which `mixed.py` loads beside the C one.
+[[example]]
+name = "mixed"
+crate-type = ["cdylib"]
+
 [dev-dependencies]
 libloading.workspace = true
 

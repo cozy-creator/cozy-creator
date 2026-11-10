@@ -1,5 +1,5 @@
 //! Owned producer submission, event ordering and deferred native fill completion.
-use platform_signal::{Signal, wait_any};
+use platform::signal::{Signal, wait_any};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak, mpsc};

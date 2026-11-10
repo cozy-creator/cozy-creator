@@ -56,14 +56,14 @@ def python(script, *arguments):
 
 
 def mixed(order):
-    return python(SUITE / "mixed.py", "--c", str(WORK / "mixed-c.so"), "--rust", str(TARGET / "debug/libvarena_mixed_client.so"),
+    return python(SUITE / "mixed.py", "--c", str(WORK / "mixed-c.so"), "--rust", str(TARGET / "debug/examples/libmixed.so"),
                   "--order", order, "--gpu")
 
 
 def cases(seed):
     cell = lambda *arguments: python(SUITE / "cells.py", "--seed", str(seed), *arguments)
     return {
-        "mixed": [cc(SUITE / "native.c", "mixed-c.so", "-fPIC", "-shared"), RUSTUP, cargo("-p", "varena-mixed-client"),
+        "mixed": [cc(SUITE / "native.c", "mixed-c.so", "-fPIC", "-shared"), RUSTUP, cargo("-p", "varena-client", "--example", "mixed"),
                   mixed("native-first"), mixed("python-first")],
         "engines": [cc(EXAMPLES / "native_engine.c", "native-engine"), [str(WORK / "native-engine")],
                     RUSTUP, cargo("-p", "varena-client", "--example", "engine"), [str(TARGET / "debug/examples/engine")],

@@ -12,7 +12,6 @@ crates/platform/src/handles/windows.rs
 crates/platform/src/heap.rs
 crates/platform/src/ipc/windows.rs
 crates/platform/src/lock.rs
-crates/platform-signal/src/windows.rs
 crates/platform/src/net.rs
 crates/platform/src/paths.rs
 crates/platform/src/process/linux.rs
@@ -20,6 +19,7 @@ crates/platform/src/process/macos.rs
 crates/platform/src/process/unix.rs
 crates/platform/src/process/windows.rs
 crates/platform/src/service/windows.rs
+crates/platform/src/signal/windows.rs
 crates/platform/src/watch/macos.rs
 crates/platform/src/watch/windows.rs
 crates/tensorfs-py/src/cleanup.rs
@@ -48,6 +48,7 @@ crates/tensorfs/src/session/checkpoint.rs
 crates/tensorfs/src/session/file.rs
 crates/tensorfs/src/store/checkpoint.rs
 crates/varena-client/examples/engine.rs
+crates/varena-client/examples/mixed.rs
 crates/varena-client/examples/parts.rs
 crates/varena-client/examples/source.rs
 crates/varena-client/examples/support/cuda.rs
@@ -65,7 +66,6 @@ crates/varena/src/fork_guard.rs
 crates/varena/src/lib.rs
 crates/varena/src/tensor_consumers.rs
 crates/varena/src/working.rs
-release-gate/suites/varena/public-api/src/lib.rs
 crates/varena-ledger/src/lib.rs
 crates/varena/src/abi/sizing.rs
 release-gate/suites/varena/ledger/src/cells.rs

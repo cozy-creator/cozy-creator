@@ -5,27 +5,42 @@
 //! caller's `?` work across the boundary, an `io::Error` keeping its errno both ways.
 //!
 //! The workspace's FFI lives here: only its boundary files allow `unsafe`.
+//!
+//! Every seam is behind the default `seams` feature but [`signal`], which varena links alone.
 #![deny(unsafe_code, clippy::undocumented_unsafe_blocks)]
 #![deny(unreachable_pub)]
 use std::{fmt, io, path::PathBuf};
 
+#[cfg(feature = "seams")]
 pub mod contain;
+#[cfg(feature = "seams")]
 pub mod durable;
+#[cfg(feature = "seams")]
 pub mod gpu;
+#[cfg(feature = "seams")]
 pub mod handles;
+#[cfg(feature = "seams")]
 pub mod heap;
+#[cfg(feature = "seams")]
 pub mod ipc;
+#[cfg(feature = "seams")]
 pub mod lock;
-pub mod memory;
-#[cfg(unix)]
+#[cfg(all(unix, feature = "seams"))]
 pub mod net;
+#[cfg(feature = "seams")]
 pub mod paths;
+#[cfg(feature = "seams")]
 pub mod process;
 #[cfg(feature = "fetch")]
 pub mod release;
+#[cfg(feature = "seams")]
 pub mod service;
+pub mod signal;
+#[cfg(feature = "seams")]
 pub mod tail;
+#[cfg(feature = "seams")]
 pub mod tools;
+#[cfg(feature = "seams")]
 mod watch;
 
 /// A seam's failure: unsupported on this OS, an I/O or OS call, a service manager, or NVML.
@@ -60,6 +75,7 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 impl Error {
+    #[cfg(feature = "seams")]
     pub(crate) fn unsupported(seam: Seam) -> Self {
         Self::Unsupported {
             seam,
@@ -71,6 +87,7 @@ impl Error {
         matches!(self, Self::Unsupported { .. })
     }
 
+    #[cfg(feature = "seams")]
     pub(crate) fn io(op: &'static str, path: impl Into<PathBuf>) -> impl FnOnce(io::Error) -> Self {
         let path = path.into();
         move |source| Self::Io { op, path, source }
@@ -78,13 +95,6 @@ impl Error {
 
     pub(crate) fn os(op: &'static str) -> impl FnOnce(io::Error) -> Self {
         move |source| Self::Os { op, source }
-    }
-}
-
-impl From<platform_signal::Error> for Error {
-    fn from(error: platform_signal::Error) -> Self {
-        let platform_signal::Error::Os { op, source } = error;
-        Self::Os { op, source }
     }
 }
 

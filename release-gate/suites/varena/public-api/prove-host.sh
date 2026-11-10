@@ -13,8 +13,7 @@ nice -n 19 cargo build --locked -p tensorfs-py --features extension-module -p te
     --lib --bin tfs -j 2 > "$out/build.log" 2>&1
 # The public clients deliberately have no Cargo dependency on the core implementation.
 # Their external -lvarena must be available before their final link starts.
-nice -n 19 cargo build --locked -p varena-client --example engine -j 2 >> "$out/build.log" 2>&1
-nice -n 19 cargo build --locked -p varena-mixed-client -j 2 >> "$out/build.log" 2>&1
+nice -n 19 cargo build --locked -p varena-client --example engine --example mixed -j 2 >> "$out/build.log" 2>&1
 nice -n 19 uv run --no-project --with patchelf python crates/varena/bundle.py \
     --target target/debug --sdk "$out/sdk" > "$out/bundle.json"
 native="$out/sdk/python/tensorfs/.native"
@@ -30,7 +29,7 @@ export PYTHONPATH="$out/sdk/python"
 export LD_LIBRARY_PATH="$native"
 for order in native-first python-first; do
     python3 release-gate/suites/varena/public-api/mixed.py --c "$out/mixed-c.so" \
-        --rust target/debug/libvarena_mixed_client.so --order "$order" > "$out/$order.json"
+        --rust target/debug/examples/libmixed.so --order "$order" > "$out/$order.json"
 done
 "$out/native-engine" --host > "$out/c-engine-host.json"
 target/debug/examples/engine --host > "$out/rust-engine-host.json"
