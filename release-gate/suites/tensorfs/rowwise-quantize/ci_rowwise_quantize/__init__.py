@@ -7,9 +7,14 @@ import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import ModuleType
+from typing import TYPE_CHECKING, cast
 
 import msgspec
 from cozy_runtime.author import App, Context, Telemetry
+
+if TYPE_CHECKING:
+    from . import _types as t
 
 app = App()
 
@@ -36,7 +41,7 @@ def run(payload: Request, ctx: Context, tel: Telemetry) -> Report:
 
     torch.set_num_threads(1)
     if payload.mode == "cancel":
-        return cancel_rowwise(payload.seed, tensorfs, np)
+        return cancel_rowwise(payload.seed, cast("t.TensorFS", tensorfs), np)  # cast: `_ext` is private to tensorfs
     assert payload.mode == "basic"
     rows, cols = 7, 256
     kinds = [
@@ -50,7 +55,7 @@ def run(payload: Request, ctx: Context, tel: Telemetry) -> Report:
         ("BF16", torch.bfloat16),
     ]
     logical = ["F32", "F16", "BF16"]
-    cases = []
+    cases: list[tuple[str, str, str, str, t.F32]] = []
     with tempfile.TemporaryDirectory(prefix="cozy-rowwise-quantize-") as temporary:
         directory = Path(temporary)
         writer = tensorfs.Writer(directory / "source.cozytensors")
@@ -111,7 +116,7 @@ def run(payload: Request, ctx: Context, tel: Telemetry) -> Report:
             )
             cases.append((key, dtype, weight_dtype, scale_dtype, values.numpy().copy()))
         source = writer.commit()
-        summaries = []
+        summaries: list[t.Summary] = []
         for target, strategy, params, producer in [
             (
                 "int8.convrot",
@@ -131,7 +136,7 @@ def run(payload: Request, ctx: Context, tel: Telemetry) -> Report:
                 encode_nvfp4,
             ),
         ]:
-            selected = [
+            selected: list[t.Selection] = [
                 {
                     "component": "net",
                     "key": key,
@@ -158,19 +163,19 @@ def run(payload: Request, ctx: Context, tel: Telemetry) -> Report:
             # 4KiB fixed scratch plus one F64 encoder row bounds all27 source variants.
             per_row = 9 * cols + 8
             fixed = 4096 + (8 * cols if target == "int8.convrot" else 0)
-            previous = None
+            previous: dict[str, str] | None = None
             for chunk in (1, 2, 7):
                 output = tensorfs.Writer(
                     directory / f"{target}-{chunk}.cozytensors", base=source
                 )
                 control = tensorfs.ConversionControl()
-                stats = output.quantize(
+                stats = cast("t.Conversion", output.quantize(  # cast: Writer.quantize's result
                     source,
                     selected,
                     max_buffer_bytes=fixed + per_row * chunk,
                     max_new_bytes=encoded_bytes,
                     control=control,
-                )
+                ))
                 assert stats["source_bytes_read"] == expected_read
                 assert control.progress()[0] == expected_read
                 assert (
@@ -179,11 +184,11 @@ def run(payload: Request, ctx: Context, tel: Telemetry) -> Report:
                 )
                 checkpoint = output.commit()
                 assert checkpoint.verify().ok
-                digests = {}
+                digests: dict[str, str] = {}
                 measured = {row["key"]: row["measured"] for row in stats["tensors"]}
-                for key, _, _, _, values in cases:
-                    expected = producer(key, values)
-                    actual = checkpoint.components["net"].tensors.read(key)
+                for key, _, _, _, source_values in cases:
+                    expected = producer(key, source_values)
+                    actual = cast("tensorfs.Encoded", checkpoint.components["net"].tensors.read(key))  # cast: put encoded
                     assert actual.parts["weight"].tobytes() == expected.payload, (
                         key,
                         target,
@@ -215,7 +220,7 @@ def run(payload: Request, ctx: Context, tel: Telemetry) -> Report:
                     assert previous == digests
                 previous = digests
                 assert (
-                    checkpoint.components["net"].tensors.read("keep").tobytes()
+                    cast("tensorfs.Array", checkpoint.components["net"].tensors.read("keep")).tobytes()  # cast: plain
                     == np.arange(9, dtype=np.float32).tobytes()
                 )
                 summaries.append(
@@ -248,15 +253,15 @@ def run(payload: Request, ctx: Context, tel: Telemetry) -> Report:
                     ),
                 )
                 checkpoint.close()
-        refusals = []
-        for name, options in [
+        refusals: list[t.Refusal] = []
+        for name, options in cast("list[tuple[str, t.BadSource]]", [
             ("params", {"params": {"extra": 1}}),
             ("scale_count", {"scale_shape": (rows + 1,)}),
             ("weight_dtype", {"weight_dtype": "I8"}),
             ("scale_dtype", {"scale_dtype": "I32"}),
             ("extra_role", {"extra": True}),
             ("nonfinite", {"nonfinite": True}),
-        ]:
+        ]):
             invalid_source = tensorfs.Writer(directory / f"bad-{name}.cozytensors")
             bad_parts = {
                 "weight": (
@@ -275,7 +280,7 @@ def run(payload: Request, ctx: Context, tel: Telemetry) -> Report:
             }
             if options.get("extra"):
                 bad_parts["extra"] = ("F32", (1,), torch.ones(1))
-            bad_parts = {
+            stored_parts = {
                 role: (dtype, shape, data.view(torch.uint8).numpy().tobytes())
                 for role, (dtype, shape, data) in bad_parts.items()
             }
@@ -285,13 +290,13 @@ def run(payload: Request, ctx: Context, tel: Telemetry) -> Report:
                 shape=(rows, cols),
                 scheme="fp8.rowwise",
                 params=options.get("params", {}),
-                parts=bad_parts,
+                parts=stored_parts,
             )
             bad_checkpoint = invalid_source.commit()
             output = tensorfs.Writer(
                 directory / f"bad-out-{name}.cozytensors", base=bad_checkpoint
             )
-            selected_bad = [
+            selected_bad: list[t.Selection] = [
                 {
                     "component": "net",
                     "key": "bad.weight",
@@ -357,12 +362,12 @@ def run(payload: Request, ctx: Context, tel: Telemetry) -> Report:
         )
 
 
-def cancel_rowwise(seed, tensorfs, np):
+def cancel_rowwise(seed: int, tensorfs: "t.TensorFS", np: ModuleType) -> Report:
     with tempfile.TemporaryDirectory(prefix="cozy-rowwise-cancel-") as temporary:
         directory = Path(temporary)
         writer = tensorfs.Writer(directory / "source.cozytensors")
         component = writer.component("net")
-        selected = []
+        selected: list[t.Selection] = []
         for key, shape in [("first", (1, 256)), ("large", (16384, 1024))]:
             codes = np.resize(np.arange(-128, 128, dtype=np.int8), shape)
             component.put_encoded(
