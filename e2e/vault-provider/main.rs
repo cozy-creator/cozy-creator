@@ -54,8 +54,42 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let secret = Zeroizing::new(URL_SAFE_NO_PAD.encode(*randomness));
     eprintln!("provider fixture: create and mount");
     provider.create(&backing, secret.as_bytes())?;
+    #[cfg(target_os = "macos")]
+    {
+        eprintln!("provider fixture: immediate private SQLite stage detach");
+        let mut stage =
+            provider.mount(&backing, &view, secret.as_bytes(), MountOptions::default())?;
+        {
+            let connection = rusqlite::Connection::open(view.join("initial-stage.sqlite"))?;
+            connection.execute_batch("PRAGMA journal_mode=DELETE; CREATE TABLE snapshot (id INTEGER PRIMARY KEY); INSERT INTO snapshot VALUES (1)")?;
+        }
+        stage.try_unmount()?;
+    }
     let mut mounted =
         provider.mount(&backing, &view, secret.as_bytes(), MountOptions::default())?;
+    #[cfg(windows)]
+    {
+        eprintln!("provider fixture: native canonical path on a WinFsp volume");
+        let canonical = platform::durable::canonical(&view)?;
+        assert!(canonical.is_dir());
+        let probe = canonical.join("canonical-probe.bin");
+        fs::write(&probe, b"CANONICAL_VIRTUAL_VOLUME")?;
+        assert_eq!(
+            fs::read(view.join("canonical-probe.bin"))?,
+            b"CANONICAL_VIRTUAL_VOLUME"
+        );
+        assert_eq!(platform::durable::canonical(&probe)?, probe);
+        let database = canonical.join("canonical-state.sqlite");
+        {
+            let connection = rusqlite::Connection::open(&database)?;
+            connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE payload (value TEXT); INSERT INTO payload VALUES ('NATIVE_CANONICAL_SQLITE'); PRAGMA wal_checkpoint(TRUNCATE)")?;
+        }
+        let connection = rusqlite::Connection::open(&database)?;
+        let saved: String =
+            connection.query_row("SELECT value FROM payload", [], |row| row.get(0))?;
+        assert_eq!(saved, "NATIVE_CANONICAL_SQLITE");
+        drop(connection);
+    }
     let file = view.join("private-media-input.bin");
     let marker = b"COZY_XS160_PRIVATE_FILE_CONTENT";
     let mut content = marker.repeat(36_000);
