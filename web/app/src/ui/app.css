@@ -1723,10 +1723,18 @@ video.preview.on {
   height: 18px;
 }
 
-/* Drawers */
+/* Drawers, and what floats over the canvas keeps clear of the rest by: the tools' width, the zoom's height, an open drawer's width as drawn,
+   and where what sits beside the tools starts. */
 .shell {
   --drawer: 0px;
+  --drawn: var(--drawer);
+  --tools-w: calc(188px * var(--ui));
+  --zoom-h: calc(28px * var(--ui));
+  --beside-tools: calc(24px + var(--tools-w));
   height: 100%;
+}
+.shell:has(> .tools.shut) {
+  --beside-tools: 8px;
 }
 .shell[data-drawer="normal"] {
   --drawer: 470px;
@@ -1739,7 +1747,7 @@ video.preview.on {
   top: var(--top);
   bottom: 8px;
   right: 8px;
-  width: var(--drawer);
+  width: var(--drawn);
   max-width: calc(100vw - 16px);
   background: var(--float);
   border: 1px solid var(--line);
@@ -1816,13 +1824,13 @@ video.preview.on {
 }
 
 /* Lines the page says */
-/* Bottom left, over the tools. */
+/* Bottom left, beside the tools and over the zoom's row, short of an open drawer where there's room: on no other panel. */
 /* A note is read, and only its buttons take the pointer: a drag or a click goes through it to what's under it. */
 .notes {
   position: fixed;
-  left: 8px;
-  bottom: 8px;
-  width: min(560px, calc(100vw - 16px));
+  left: var(--beside-tools);
+  bottom: calc(16px * var(--ui) + var(--zoom-h));
+  width: min(560px, calc(100vw - var(--beside-tools) - 8px), max(320px, calc(100vw - var(--beside-tools) - var(--drawn) - 24px)));
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -2412,7 +2420,6 @@ a.tab:hover {
   position: fixed;
   left: 8px;
   top: var(--top);
-  width: 188px;
   max-height: calc(100vh - var(--top) - 8px);
   padding: 8px;
   display: flex;
@@ -3467,8 +3474,8 @@ input[type="checkbox"] {
   height: calc(32px * var(--ui));
 }
 @media (min-width: 760px) {
-  .drawer {
-    width: calc(var(--drawer) * 1.15);
+  .shell {
+    --drawn: calc(var(--drawer) * 1.15);
   }
   .drawer-head,
   .drawer-body {
@@ -3478,7 +3485,7 @@ input[type="checkbox"] {
 }
 .tools {
   top: var(--top);
-  width: calc(188px * var(--ui));
+  width: var(--tools-w);
   padding: calc(8px * var(--ui));
   gap: calc(6px * var(--ui));
   border-radius: calc(var(--round2) * var(--ui));
@@ -3838,13 +3845,6 @@ input[type="checkbox"] {
   line-height: 1.45;
 }
 
-@media (max-width: 640px) {
-  .notes {
-    left: 12px;
-    width: calc(100vw - 24px);
-  }
-}
-
 /* All projects: a search, and a line under those with no tab. */
 .field.find {
   margin-top: 8px;
@@ -3870,7 +3870,7 @@ input[type="checkbox"] {
   z-index: 30;
   display: flex;
   align-items: center;
-  height: calc(28px * var(--ui));
+  height: var(--zoom-h);
   padding: 0 calc(2px * var(--ui));
   border: 1px solid var(--line);
   border-radius: calc(var(--round) * var(--ui));
@@ -3960,7 +3960,7 @@ input[type="checkbox"] {
 /* Clear of an open drawer, where there's room beside it. */
 @media (min-width: 760px) {
   .shell:not([data-drawer="none"]) .zoom {
-    right: calc(var(--drawer) * 1.15 + 16px);
+    right: calc(var(--drawn) + 16px);
   }
 }
 
