@@ -37,9 +37,11 @@ restarts. No normal lock acknowledges success while that owned image remains.
 The executable calls `project_mount::run_supervisor()` before normal CLI parsing.
 An encrypted mount starts that private role in the same executable. It watches
 the exact controller process birth and its pipe, and releases its provider/image
-after controller death. Unix views retain a sealed original mountpoint inode;
+after controller death. Its Unix process group is separate from the controller so normal launchd group cleanup cannot kill it first. Unix views retain a sealed original mountpoint inode;
 Windows uses an unused drive root. Normal locks preserve busy handles. Emergency
-cleanup acts only on the owned provider or image/device association.
+cleanup acts only on the owned provider or image/device association. Readiness is acknowledged only after the guardian records ownership. Linux binds mount ID/device; Windows binds the NT volume target and exact process handles; macOS binds both image/backing disk and the mounted volume device. A stale session cannot adopt or unmount a replacement at the same path.
+
+Native Mac normal locking uses an unforced kernel volume unmount, followed by exact image/key release; Spotlight monitoring alone must not block a private conversion stage. Creation disables Spotlight indexing. Windows virtual-file canonicalization uses normalized NT device names when DOS naming is unsupported, keeping internal paths tied to their original volume.
 
 Release builds run `scripts/prepare-securefs.py`; Linux/Windows then require
 `COZY_SECUREFS_ARCHIVE` and `COZY_SECUREFS_REQUIRED=1`. The archive is verified
