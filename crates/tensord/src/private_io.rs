@@ -368,3 +368,16 @@ pub(crate) fn warning(engine: &crate::execution::Engine, run: &str, detail: impl
         tracing::warn!(run, "execution warning; open the authorized run history for details");
     }
 }
+
+/// Public provider weights keep the shared model cache. A private local weight file
+/// cannot be imported there until model imports have their own protected-store contract.
+pub(crate) fn check_model_source(source: &str) -> io::Result<()> {
+    if current().is_none() || source.trim().is_empty() { return Ok(()); }
+    if source.starts_with("object://") || source.starts_with("input://")
+        || matches!(tensorfs::import::remote::parse(source), Ok(tensorfs::import::remote::Spec::Local(_)))
+    {
+        return Err(io::Error::new(io::ErrorKind::Unsupported,
+            "local model-weight imports are unavailable in encrypted project execution"));
+    }
+    Ok(())
+}

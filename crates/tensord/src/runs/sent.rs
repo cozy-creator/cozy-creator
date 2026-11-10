@@ -159,6 +159,10 @@ fn spec_of(mut spec: v1::RunSpec) -> Result<(crate::runs::Spec, Option<v1::HubAc
         Some(set) => Some(set.items.into_iter().filter_map(|item| member(item).transpose()).collect::<Result<_, _>>()?),
     };
     let models = choices(spec.models)?;
+    for source in models.iter().flat_map(|choice| std::iter::once(choice.source.as_str()).chain(choice.adapters.iter().map(|adapter| adapter.source.as_str()))) {
+        crate::private_io::check_model_source(source)
+            .map_err(|error| Error::validation("private_model_import_unsupported", error.to_string()))?;
+    }
     if remove && !matches!(source, crate::runs::Source::Release { .. } | crate::runs::Source::Installation(_)) {
         return Err(Error::validation("invalid_source", "a removal names a release or an installation"));
     }
