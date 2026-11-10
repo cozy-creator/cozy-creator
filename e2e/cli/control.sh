@@ -72,14 +72,14 @@ settled held 60
 }
 
 # The same POST twice under one key, as the CLI's resend after a dropped answer and the page's outbox send it: the first
-# answer twice, and the history stepped once. Then `cozy project undo`'s own write is kept under the CLI's key.
+# answer twice, and the history stepped once. Then `cozy undo`'s own write is kept under the CLI's key.
 writes_once() {
 step "a project write resent under its key is done once (cl-812)"
 local P=$OUT/writes-once lock=$HOME/.cozy/calcifer/calcifer.lock.holder addr token id key=resend-$RANDOM$RANDOM first second
-cozy project new "$P" > "$OUT/once-new.txt" 2>&1 || { check "once: project new failed: $(tail -c 300 "$OUT/once-new.txt")"; return; }
+starter_project "$P" > "$OUT/once-new.txt" 2>&1 || { check "once: project new failed: $(tail -c 300 "$OUT/once-new.txt")"; return; }
 for c in red green blue; do
   ffmpeg -v error -y -f lavfi -i "color=c=$c:size=64x64" -frames:v 1 "$OUT/once-$c.png" || { check "once: ffmpeg failed"; return; }
-  cozy --json project -p "$P" import "$OUT/once-$c.png" > "$OUT/once-import-$c.json" || { check "once: import $c failed"; return; }
+  in_project "$P" --json import "$OUT/once-$c.png" > "$OUT/once-import-$c.json" || { check "once: import $c failed"; return; }
 done
 id=$(status "$P" | jq -r '.id // empty')
 addr=$(jq -r .address < "$lock") token=$(jq -r .token < "$lock")
@@ -89,18 +89,18 @@ for try in first second; do
     -H "Idempotency-Key: $key" -X POST -d '{}' "http://$addr/v1/projects/$id/history/undo" || check "once: the $try undo got no answer"
 done
 first=$(jq -c '[.entries[].id]' "$OUT/once-first.json") second=$(jq -c '[.entries[].id]' "$OUT/once-second.json")
-cozy --json project -p "$P" history > "$OUT/once-history.json"
+in_project "$P" --json history > "$OUT/once-history.json"
 undone=$(jq -c '[.entries[] | select(.undone) | .id]' "$OUT/once-history.json")
 echo "once: undo sent twice under $key undid $first, then $second; the history's undone: $undone"
 [ "$first" = "$second" ] || check "once: the undo sent again was answered $second, not the first answer $first"
 grep -qi '^idempotent-replayed: true' "$OUT/once-second.headers" || check "once: the second undo isn't answered as replayed"
 [ "$(jq 'length' <<< "$undone")" = 1 ] || check "once: one undo sent twice undid $undone (cl-812)"
 # The CLI's own undo goes under a key of its own: kept, so a resend of it is answered, not done again.
-cozy --json project -p "$P" undo > "$OUT/once-cli-undo.json" || check "once: cozy project undo failed"
+in_project "$P" --json undo > "$OUT/once-cli-undo.json" || check "once: cozy undo failed"
 # Its key is the project's own, in project.db's request_keys (cl-803), committed with the undo.
 kept=$(sql1 "$P" "SELECT count(*) FROM request_keys WHERE key LIKE 'cli-%'" 2> "$OUT/once-keys.err") || kept=0
 echo "once: request keys kept under the CLI's keys: ${kept:-0}"
-[ "${kept:-0}" -ge 1 ] || check "once: cozy project undo's write carried no key project.db kept: $(head -c 200 "$OUT/once-keys.err")"
+[ "${kept:-0}" -ge 1 ] || check "once: cozy undo's write carried no key project.db kept: $(head -c 200 "$OUT/once-keys.err")"
 }
 
 # web/resend.js in Chrome: the outbox's tries of one action share its key, and a discard and an undo whose answers are lost land once.

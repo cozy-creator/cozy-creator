@@ -12,7 +12,8 @@ RUN_CLI=${RUN_CLI:-cozy}
 
 # run_project <dir>: <dir> made a project unless it is one, for this script's runs wherever the script goes.
 run_project() {
-  [ -f "$1/project.db" ] || [ -f "$1/project.yaml" ] || "$RUN_CLI" project new "$1" > /dev/null || return 1
+  mkdir -p "$1" || return 1
+  (cd "$1" && "$RUN_CLI" --json status > /dev/null) || return 1
   RUN_PROJECT=$(cd "$1" && pwd)
 }
 
@@ -23,9 +24,13 @@ run_project() {
 # never a run.
 run_submit() {
   local dir=$1 name=$2 n='' k=1 limit=${RUN_NUMBER_S:-1860} start=$SECONDS at; shift 2
-  [ "$1" != run ] || set -- "$@" -p "$RUN_PROJECT"
+  local words=("$@")
+  if [[ ${words[0]} = run && ${words[1]:-} = .* ]]; then
+    words[1]="$PWD/${words[1]//\\//}"
+  fi
+
   rm -f "$dir/$name".{ndjson,err,json,number,pid}
-  "$RUN_CLI" --json "$@" > "$dir/$name.ndjson" 2> "$dir/$name.err" &
+  (cd "${RUN_PROJECT:-$PWD}" && "$RUN_CLI" --json "${words[@]}") > "$dir/$name.ndjson" 2> "$dir/$name.err" &
   local pid=$!
   echo "$pid" > "$dir/$name.pid"
   at=$((limit / 31))

@@ -23,9 +23,9 @@ parse "$@"
 . "$(dirname "$0")/statedb.sh"
 
 start() {
-step install; install_cozy; run_project "$OUT/project" || fail "cozy project new failed"
+step install; install_cozy; run_project "$OUT/project" || fail "project initialization failed"
 user_services
-step status; cozy --json status | tee "$OUT/status.json"
+step status; fixture_calcifer | tee "$OUT/status.json"
 [ -z "$LOCAL" ] || { step "the local machine"; machine_ready; }
 [ "$SHARD" != commands ] || version_skew
 step candidates; candidates
@@ -173,7 +173,7 @@ if calcifer_stuck; then
   if [ -n "$LOCAL" ]; then
     (cd "$here" && cell after-stuck ./weightless/reverse "text=after$RANDOM") || check "no run went after cozy doctor restarted Calcifer"
   else
-    cozy --json status | jq -e '.calcifer.running' > /dev/null || check "Calcifer does not answer after cozy doctor restarted it"
+    fixture_calcifer | jq -e '.calcifer.running' > /dev/null || check "Calcifer does not answer after cozy doctor restarted it"
   fi
 fi
 }
@@ -184,7 +184,7 @@ calcifer_restarts() {
 [ "$RUNNER_OS" = Linux ] || return 0
 step "a run followed across a Calcifer restart"
 local code n
-(cd "$here" && cozy run -p "$RUN_PROJECT" ./weightless/wait seconds:=15 --on local > "$OUT/across.txt" 2>&1; echo $? > "$OUT/across.code") &
+(cd "$here" && in_project "$RUN_PROJECT" run "$here/weightless/wait" seconds:=15 --on local > "$OUT/across.txt" 2>&1; echo $? > "$OUT/across.code") &
 local follower=$!
 for _ in $(seq 120); do n=$(grep -oE '^run [0-9]+ ' "$OUT/across.txt" | head -1 | grep -oE '[0-9]+') && break; sleep 0.5; done
 [ -n "$n" ] || check "across: the run never began"
@@ -199,7 +199,7 @@ step "a burst of Calcifer restarts past systemd's start limit"
 for _ in 1 2 3 4 5 6 7; do systemctl --user restart cozy-calcifer > /dev/null 2>&1 || true; done
 systemctl --user show -p Result --value cozy-calcifer > "$OUT/burst-result.txt" || true
 echo "after the burst: $(cat "$OUT/burst-result.txt")"
-cozy --json machine ls > "$OUT/burst-machines.json" 2> "$OUT/burst-machines.err" && cozy --json status | J '.calcifer.running == true' \
+cozy --json machine ls > "$OUT/burst-machines.json" 2> "$OUT/burst-machines.err" && fixture_calcifer | J '.calcifer.running == true' \
   || check "after a burst of restarts ($(cat "$OUT/burst-result.txt")), the next command did not start Calcifer: $(tail -c 300 "$OUT/burst-machines.err")"
 (cd "$here" && cell after-burst ./weightless/reverse "text=burst$RANDOM") || check "no run went after the burst of restarts"
 }

@@ -39,7 +39,7 @@ local addr token base chrome id
 chrome=$(web_chrome)
 [ -n "$chrome" ] && [ -x "$chrome" ] || { check "web-serves: no Google Chrome on this runner (${chrome:-none})"; return; }
 npm install -s --prefix "$(web_path "$pw")" playwright-core@1.55.0 > "$OUT/web-npm.log" 2>&1 || { check "web-serves: npm install playwright-core failed: $(tail -c 300 "$OUT/web-npm.log")"; return; }
-cozy project new "$P" > "$OUT/web-new.txt" 2>&1 || { check "web-serves: project new failed: $(tail -c 300 "$OUT/web-new.txt")"; return; }
+starter_project "$P" > "$OUT/web-new.txt" 2>&1 || { check "web-serves: project new failed: $(tail -c 300 "$OUT/web-new.txt")"; return; }
 id=$(status "$P" | jq -r '.id // empty')
 [ -n "$id" ] || { check "web-serves: the project has no id"; return; }
 addr=$(jq -r .address < "$lock") token=$(jq -r .token < "$lock") base=http://$addr
@@ -119,10 +119,10 @@ web_held "$chrome" "$pw"
 web_held() {
   local T=$OUT/web-held id
   step "web-held: a save past project.db held by another program: said, kept, and saved when it's let go"
-  # A new project, its boxes by `cozy project import` (cl-803: a project is project.db, and YAML its import).
-  cozy project new "$T" > "$OUT/web-held-new.txt" 2>&1 || { check "web-held: project new: $(tail -c 300 "$OUT/web-held-new.txt")"; return; }
+  # A new project, its boxes by `cozy import` (cl-803: a project is project.db, and YAML its import).
+  starter_project "$T" > "$OUT/web-held-new.txt" 2>&1 || { check "web-held: project new: $(tail -c 300 "$OUT/web-held-new.txt")"; return; }
   printf 'version: 4\nassets:\n  stays:\n    tool: cozy/edit\n  goes:\n    tool: cozy/edit\n' > "$OUT/web-held.yaml"
-  cozy project -p "$T" import "$OUT/web-held.yaml" > "$OUT/web-held-import.txt" 2>&1 || { check "web-held: import: $(tail -c 300 "$OUT/web-held-import.txt")"; return; }
+  in_project "$T" import "$OUT/web-held.yaml" > "$OUT/web-held-import.txt" 2>&1 || { check "web-held: import: $(tail -c 300 "$OUT/web-held-import.txt")"; return; }
   id=$(status "$T" | jq -r '.id // empty')
   [ -n "$id" ] || { check "web-held: the project has no id"; return; }
   HELD_FOLDER=$(web_path "$T") HELD_ID=$id web_proof held "$1" "$2" ''
