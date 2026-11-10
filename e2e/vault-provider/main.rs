@@ -98,6 +98,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             b"CANONICAL_VIRTUAL_VOLUME"
         );
         assert_eq!(platform::durable::canonical(&probe)?, probe);
+        let directory = canonical.join("native-directory-lock");
+        fs::create_dir(&directory)?;
+        let held_directory = platform::lock::dir(&directory)?;
+        drop(held_directory);
+        let file = fs::OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(canonical.join("native-file-lock.bin"))?;
+        file.lock()?;
+        file.unlock()?;
+        file.lock_shared()?;
+        file.unlock()?;
+        drop(file);
         let database = canonical.join("canonical-state.sqlite");
         {
             let connection = rusqlite::Connection::open(&database)?;
