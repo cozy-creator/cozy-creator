@@ -1,6 +1,6 @@
 // What the web proofs share: real media made here, a timeout on every wait, and a drop as the browser delivers one.
 const { execFileSync } = require('child_process');
-const { appendFileSync, readFileSync, rmSync, writeFileSync, readdirSync, readlinkSync, realpathSync } = require('fs');
+const { readFileSync, rmSync, writeFileSync, readdirSync, readlinkSync, realpathSync } = require('fs');
 const { join } = require('path');
 const zlib = require('zlib');
 
@@ -333,16 +333,16 @@ async function upload(token, path) {
   return digest;
 }
 
-/** `page`, signed in as a person is: `cozy open --no-open`, and its link at once. Its code lives 60 s, so a cell asks for it with its browser
- *  up: asked for before a slow runner launched one, a code had run out by the time the page redeemed it (42113601659). */
-function signIn(page, options) {
-  const words = ['open', '--no-open'];
-  if (process.env.ARGV_LOG) appendFileSync(process.env.ARGV_LOG, `${words.map((word) => `${word}\x1f`).join('')}\x1e`);
-  const said = execFileSync(process.env.COZY, words, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-  const link = said.match(/http:\/\/\S+#code=[0-9a-f]+\S*/)?.[0]?.replace(/&to=[^&]*/, '');
-  if (!link) throw new Error(`cozy open --no-open printed no link: ${said.slice(0, 300)}`);
-  // $PAGE_ORIGIN: the page from elsewhere (a `vite` of the tree under test), its API through it.
-  return page.goto(process.env.PAGE_ORIGIN ? link.replace(/^http:\/\/[^/]+/, process.env.PAGE_ORIGIN) : link, options);
+/** Sign the browser in with a fresh session code after it has launched. The code lives 60 seconds. */
+async function signIn(page, options) {
+  const holder = JSON.parse(readFileSync(process.env.HOLDER, 'utf8'));
+  const response = await fetch(`http://${holder.address}/v1/session-codes`, {
+    method: 'POST', headers: { Authorization: `Bearer ${holder.token}`, 'Content-Type': 'application/json' }, body: '{}',
+  });
+  if (!response.ok) throw new Error(`session code: ${response.status} ${await response.text()}`);
+  const code = await response.json();
+  const link = process.env.PAGE_ORIGIN ? code.url.replace(/^http:\/\/[^/]+/, process.env.PAGE_ORIGIN) : code.url;
+  return page.goto(link, options);
 }
 
 /** Chrome with its scrollbars shown, as on a person's screen, not hidden as headless has them. */
@@ -411,7 +411,153 @@ function cozyIn(folder, words, options = {}) {
   return execFileSync(process.env.COZY, words, { ...options, cwd: folder });
 }
 
-/** Keep starter-film fixtures explicit while the CLI creates empty projects on first use. */
+/** A separate process lets synchronous fixture readers talk to the real Calcifer. */
+const HTTP_READ = `
+const fs = require('node:fs');
+const http = require('node:http');
+const holder = JSON.parse(fs.readFileSync(process.env.HOLDER, 'utf8'));
+const body = fs.readFileSync(0);
+const url = new URL(process.argv[2], 'http://' + holder.address);
+const request = http.request(url, { method: process.argv[1], headers: {
+  Authorization: 'Bearer ' + holder.token,
+  'Content-Type': process.argv[3],
+  'Content-Length': body.length,
+}}, (response) => {
+  const chunks = [];
+  response.on('data', (chunk) => chunks.push(chunk));
+  response.on('end', () => {
+    const text = Buffer.concat(chunks);
+    if (response.statusCode >= 400) { process.stderr.write(text); process.exitCode = 1; }
+    else process.stdout.write(text);
+  });
+});
+request.on('error', (error) => { console.error(error.message); process.exitCode = 1; });
+request.end(body);
+`;
+
+function apiText(method, path, body = '', type = 'application/json') {
+  return execFileSync(process.execPath, ['-e', HTTP_READ, method, path, type], {
+    input: body, encoding: 'utf8', maxBuffer: 1 << 28, timeout: STEP_MS,
+  });
+}
+
+const projectPath = (folder, suffix = '') => `/v1/projects/${encodeURIComponent(folder)}${suffix}`;
+function projectJson(folder, method = 'GET', suffix = '', body) {
+  const text = apiText(method, projectPath(folder, suffix), body === undefined ? '' : JSON.stringify(body));
+  return text ? JSON.parse(text) : null;
+}
+
+/** Import a real file by the same content endpoint the browser uses. */
+function importFile(folder, file, name) {
+  const bytes = readFileSync(file);
+  const sha256 = `sha256:${require('crypto').createHash('sha256').update(bytes).digest('hex')}`;
+  apiText('PUT', `/v1/files/${sha256}`, bytes, 'application/octet-stream');
+  const stem = require('path').parse(file).name;
+  return projectJson(folder, 'POST', '/imports', { source: sha256, name: name ?? stem, exact: name !== undefined });
+}
+
+/** Concurrent fixture mutations go directly to the existing project HTTP API. */
+async function projectAction(folder, action, ...args) {
+  const started = Date.now();
+  const path = projectPath(folder);
+  const request = async (method, suffix = '', body) => {
+    const holder = JSON.parse(readFileSync(process.env.HOLDER, 'utf8'));
+    const response = await fetch(`http://${holder.address}${path}${suffix}`, {
+      method, headers: { Authorization: `Bearer ${holder.token}`, 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(STEP_MS),
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const text = await response.text();
+    if (!response.ok) throw new Error(`${method} ${suffix}: ${response.status} ${text}`);
+    if (!text) return null;
+    return suffix === '/yaml' && method === 'GET' ? text : JSON.parse(text);
+  };
+  const fieldsOf = (terms) => Object.fromEntries(terms.map((term) => {
+    const at = term.indexOf('=');
+    if (at < 1) throw new Error(`fixture field has no value: ${term}`);
+    let key = term.slice(0, at), value = term.slice(at + 1);
+    if (key.endsWith(':')) { key = key.slice(0, -1); value = JSON.parse(value); }
+    else if (!value) value = null;
+    else if (/^(true|false|-?\d+(\.\d+)?)$/.test(value)) value = JSON.parse(value);
+    return [key, value];
+  }));
+  const takePlace = (fields) => {
+    if (!Object.hasOwn(fields, 'at')) return undefined;
+    const [x, y, w] = String(fields.at).split(',').map(Number);
+    delete fields.at;
+    return w === undefined ? { x, y } : { x, y, w };
+  };
+  let value;
+  switch (action) {
+    case 'status': value = await request('GET', args[0] ? `/assets/${encodeURIComponent(args[0])}` : ''); break;
+    case 'export': value = await request('GET', '/yaml'); break;
+    case 'add': {
+      const [tool, name, ...terms] = args;
+      const fields = fieldsOf(terms);
+      const at = takePlace(fields);
+      value = await request('POST', '/assets', { tool: tool === 'text' ? '' : tool, name, exact: true, fields, at });
+      break;
+    }
+    case 'set': {
+      const [name, ...terms] = args;
+      const fields = terms[0] === '--input' ? JSON.parse(readFileSync(terms[1], 'utf8')) : fieldsOf(terms);
+      const at = takePlace(fields);
+      const tool = fields.tool;
+      delete fields.tool;
+      if (Object.keys(fields).length || tool !== undefined) value = await request('PATCH', `/assets/${encodeURIComponent(name)}`, { fields, tool });
+      if (at) value = await request('PATCH', '/canvas', { cards: { [name]: at } });
+      break;
+    }
+    case 'import': {
+      const [source, name, , description] = args;
+      if (/\.ya?ml$/i.test(source)) {
+        const holder = JSON.parse(readFileSync(process.env.HOLDER, 'utf8'));
+        const response = await fetch(`http://${holder.address}${path}/yaml`, {
+          method: 'PUT', headers: { Authorization: `Bearer ${holder.token}` }, body: readFileSync(source),
+        });
+        if (!response.ok) throw new Error(`PUT /yaml: ${response.status} ${await response.text()}`);
+        value = null;
+      } else if (/^(sha256:)?[0-9a-f]{6,64}$/i.test(source)) value = await request('POST', '/imports', { source, name, description, exact: true });
+      else {
+        const holder = JSON.parse(readFileSync(process.env.HOLDER, 'utf8'));
+        const sourceHash = await upload(holder.token, source);
+        value = await request('POST', '/imports', { source: sourceHash, name: name ?? require('path').parse(source).name, exact: name !== undefined });
+      }
+      break;
+    }
+    case 'delete': {
+      for (const name of args) value = await request('DELETE', `/assets/${encodeURIComponent(name)}`);
+      const history = await request('GET', '/history');
+      value.history = history.entries.find((entry) => entry.words?.startsWith('Deleted ') && entry.names?.some((name) => args.includes(name)))?.id;
+      break;
+    }
+    case 'approve': value = await request('POST', '/approve', { name: args[0], version: args[1] }); break;
+    case 'unapprove': value = await request('POST', '/unpin', { name: args[0] }); break;
+    case 'rename': value = await request('POST', '/rename', { from: args[0], to: args[1] }); break;
+    case 'cancel': value = await request('POST', '/cancel', { names: args }); break;
+    case 'history': value = await request('GET', `/history?limit=${args[1] ?? 50}`); break;
+    case 'undo':
+    case 'redo': value = await request('POST', `/history/${action}`, args[0] ? { entry: Number(args[0]) } : {}); break;
+    case 'render': {
+      const index = args.indexOf('--on');
+      const on = index < 0 ? [] : args[index + 1].split(',');
+      const firstFlag = args.findIndex((arg) => arg.startsWith('--'));
+      const names = firstFlag < 0 ? args : args.slice(0, firstFlag);
+      value = await request('POST', '/runs', { names, on });
+      if (!args.includes('--queue')) {
+        const state = await until('fixture render ends', () => request('GET'), (state) => !state.busy, 300_000);
+        const failed = state.board?.jobs?.filter((job) => ['failed', 'not_sent'].includes(job.state));
+        if (failed?.length) throw new Error(`fixture render failed: ${JSON.stringify(failed)}`);
+      }
+      break;
+    }
+    default: throw new Error(`unknown fixture action ${action}`);
+  }
+  const at = Date.now();
+  return { value, at, ms: at - started };
+}
+
+/** Create starter-film fixtures through the project API. */
 async function newProject(folder) {
   const holder = JSON.parse(readFileSync(process.env.HOLDER, 'utf8'));
   const answer = await fetch(`http://${holder.address}/v1/projects`, {
@@ -424,16 +570,14 @@ async function newProject(folder) {
   return opened;
 }
 
-/** The project in `folder` as YAML (cl-803: its state is project.db, and this is its export), as `cozy export` writes it. */
+/** The project in `folder` as YAML (cl-803: its state is project.db, and this is its export), through its export endpoint. */
 function yamlOf(folder) {
-  return cozyIn(folder, ['export'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
+  return apiText('GET', projectPath(folder, '/yaml'));
 }
 
-/** `text` as the project in `folder`, as a hand's edit of its export: `cozy import <file>.yaml`, one edit. */
+/** `text` as the project in `folder`, as a hand's edit of its export: its YAML endpoint, one edit. */
 function importYaml(folder, text) {
-  const at = `${folder}.import-${process.pid}-${Date.now()}.yaml`;
-  writeFileSync(at, text);
-  cozyIn(folder, ['import', at], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  apiText('PUT', projectPath(folder, '/yaml'), text, 'application/yaml');
 }
 
 /** Rows of `folder`'s project.db for `query`, read only, each an array. */
@@ -445,4 +589,4 @@ function rowsOf(folder, query) {
 /** Python as this OS names it: Windows has no python3 of its own. */
 const PYTHON = process.platform === 'win32' ? 'python' : 'python3';
 
-module.exports = { cozyIn, newProject, BARS, DARK_OPEN, GPU, MP4, PYTHON, STEP_MS, boxLog, boxOf, calcifer, carry, closeBox, openBox, openCanvas, drop, importYaml, lastLook, launch, lookAt, noStall, panning, png, pointAt, removeGeneratedProject, renderOf, rowsOf, settled, fitCanvas, projectHeld, observeResizes, signIn, summary, until, upload, watchBoxes, wav, yamlOf };
+module.exports = { projectJson, importFile, projectAction, cozyIn, newProject, BARS, DARK_OPEN, GPU, MP4, PYTHON, STEP_MS, boxLog, boxOf, calcifer, carry, closeBox, openBox, openCanvas, drop, importYaml, lastLook, launch, lookAt, noStall, panning, png, pointAt, removeGeneratedProject, renderOf, rowsOf, settled, fitCanvas, projectHeld, observeResizes, signIn, summary, until, upload, watchBoxes, wav, yamlOf };

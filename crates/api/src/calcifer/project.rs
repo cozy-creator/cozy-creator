@@ -170,10 +170,7 @@ pub struct State {
     pub orphans: Vec<Orphan>,
     /// Whether its walk is going: runs being made, or asked and not yet sent.
     pub busy: bool,
-    /// Whether a push or pull is going.
-    #[serde(default)]
-    pub moving: bool,
-    /// How many files project.lock names are not on this computer (`POST /v1/projects/{id}/pull`).
+    /// How many files project.lock names are not on this computer.
     #[serde(default)]
     pub absent: u64,
     /// How many files `cozy run`s left here, that belong to no asset.
@@ -980,34 +977,6 @@ fn is_zero(n: &u64) -> bool {
     *n == 0
 }
 
-/// What a push or pull moved (`POST /v1/projects/{id}/push`, `/pull`). A push sends every file
-/// project.lock names that the Hub lacks; a pull fetches every one `files/` lacks.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct Transferred {
-    /// The files project.lock names.
-    pub files: u64,
-    /// Those sent or fetched now.
-    pub moved: u64,
-    pub bytes: u64,
-    /// The files it could not move, which stopped nothing else.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub skipped: Vec<Skipped>,
-    /// A push's: the private model and commit that keep them at the Hub, until deleted by name.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kept_in: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub commit: Option<String>,
-}
-
-/// A file a push or pull left out: its path in the project, and why.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct Skipped {
-    pub path: String,
-    pub why: String,
-}
-
 /// What a walk landed: how many takes and versions, how long it took, and its runs' execution time summed, which is more
 /// than that when they ran at once.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -1221,18 +1190,11 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         run: Option<u64>,
     },
-    /// A push or pull landed `file` (None: it is under way), `bytes` moved so far.
+    /// Materializing a stored file landed `file`, with `bytes` read from the Hub.
     Moved {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         file: Option<String>,
         bytes: u64,
-    },
-    /// A push or pull ended: what it moved, or what stopped it.
-    Transferred {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        done: Option<Transferred>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        error: Option<Error>,
     },
     /// Asset `name`'s cut (`edit.mp4`, and its `.otio`) was made here, in `took_s`: `frames` long at `fps`, the takes
     /// in `retimed` retimed to it. `unchanged`: what it holds did not change, so it was left.

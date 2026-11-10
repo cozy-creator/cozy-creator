@@ -1,8 +1,6 @@
-// Thousands of assets (Paul expects them): a generated 5,000-asset project, a real Calcifer, the real CLI, a real Chrome. How long `cozy
-// status` takes, opening it in the page, one edit to show, what's read for it, a box let go on the crowd by hand, a render landing, panning, memory.
+// Thousands of assets (Paul expects them): a generated 5,000-asset project, a real Calcifer, a real Chrome. How long a project API read takes, opening it in the page, one edit to show, what's read for it, a box let go on the crowd by hand, a render landing, panning, memory.
 // It's generated as a folder of the files from before project.db (cl-803), 4,000 shots rendered twice each, which Calcifer's first open imports, as it
-// imports a person's: nothing else makes that many rendered takes short of rendering them. From there it's project.db's, and only the CLI, the page
-// and Calcifer's HTTP touch it.
+// imports a person's: nothing else makes that many rendered takes short of rendering them. From there it's project.db's, and only the page and Calcifer's HTTP API touch it.
 // The bars are what a person would feel, in BARS. What each took is seen.scale.
 //   node scale.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $SHOT: where to keep its screenshots; $ALONE: on a shared
@@ -14,7 +12,7 @@ const { createHash } = require('crypto');
 const { appendFileSync, closeSync, copyFileSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } = require('fs');
 const { homedir } = require('os');
 const { join } = require('path');
-const { calcifer, signIn, STEP_MS, lastLook, lookAt, png, noStall, closeBox, openBox, renderOf, until, projectHeld } = require('./page');
+const { projectAction, calcifer, signIn, STEP_MS, lastLook, lookAt, png, noStall, closeBox, openBox, renderOf, until, projectHeld } = require('./page');
 const { readFootprint, closedProjectMemory } = require('./native-memory');
 
 const failures = [];
@@ -243,10 +241,10 @@ async function nativeMemory(base, folder) {
     });
   });
   const cozy = (...words) => cozyAt(folder, ...words);
-  const project = (...words) => cozy(...words);
+  const project = (...words) => projectAction(folder, ...words);
   const status = async (at = folder) => {
-    const answer = await cozyAt(at, '--json', '--full', 'status');
-    return { state: JSON.parse(answer.stdout), ms: answer.ms };
+    const answer = await projectAction(at, 'status');
+    return { state: answer.value, ms: answer.ms };
   };
   const mb = (bytes) => +(bytes / 1048576).toFixed(1);
   const dbMb = () => mb(statSync(join(folder, 'project.db')).size);
@@ -280,7 +278,7 @@ async function nativeMemory(base, folder) {
   const read = await status();
   numbers.status_s = seconds(read.ms);
   numbers.db_mb = dbMb();
-  const exported = () => project('export').then(({ stdout }) => stdout);
+  const exported = () => project('export').then(({ value }) => value);
   numbers.export_mb = mb(Buffer.byteLength(await exported()));
   numbers.status_answer_mb = mb(JSON.stringify(read.state).length);
   const standing = read.state.assets.reduce((held, asset) => ({ ...held, [asset.standing]: (held[asset.standing] ?? 0) + 1 }), {});
@@ -458,7 +456,7 @@ async function nativeMemory(base, folder) {
   const smallFolder = join(homedir(), '.cozy', 'projects', `web-scale-small-${Date.now()}`);
   mkdirSync(smallFolder, { recursive: true });
   generated(smallFolder, null, 36, 8);
-  const small = JSON.parse((await cozyAt(smallFolder, '--json', '--full', 'status')).stdout);
+  const small = (await projectAction(smallFolder, 'status')).value;
   await page.goto(`${base}/#/projects/${small.id}`);
   await page.waitForSelector('.react-flow__node .nm');
   numbers.pan_small = await measuredPan();
@@ -654,7 +652,7 @@ async function nativeMemory(base, folder) {
   if (process.env.RUNNER_OS !== 'Windows') check('a_write_is_under_the_bar', Object.values(numbers.write_ms).every((ms) => ms <= BARS.write_ms), { bar: BARS.write_ms, ...numbers.write_ms, ...numbers.write_disk });
   check('writes_leave_the_project_whole', (await status()).state.assets.length === ASSETS, 'assets count changed');
 
-  // A render from the CLI, on the fixture tool, landing on the open canvas.
+  // A render from the API, on the fixture tool, landing on the open canvas.
   if ((await (await fetch(`${base}/v1/status`, { headers: { Authorization: `Bearer ${token}` } })).json()).local_usable && !process.env.ALONE) {
     await cozy('--json', 'run', `${TOOL}/still`, 'prompt=primed', '--on', 'local');
     await project('add', `${TOOL}/still`, 'scale_shot', `at=${HOLE.col * 300},${HOLE.row * 320},200`, 'instructions=A landing at scale');

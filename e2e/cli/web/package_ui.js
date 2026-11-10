@@ -15,7 +15,7 @@ const { cpSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } = requir
 const http = require('http');
 const { homedir, tmpdir } = require('os');
 const { join } = require('path');
-const { cozyIn, calcifer, signIn, STEP_MS, boxOf, closeBox, noStall, openBox, renderOf, until, boxLog, lastLook, lookAt, watchBoxes, yamlOf } = require('./page');
+const { projectJson, calcifer, signIn, STEP_MS, boxOf, closeBox, noStall, openBox, renderOf, until, boxLog, lastLook, lookAt, watchBoxes, yamlOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -169,9 +169,9 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
   const state = async () => (await api(`/v1/projects/${id}`)).body;
   const folder = (await state()).path;
   seen.project = { id, folder };
-  // The project as `cozy export` writes it (cl-803: its state is project.db).
+  // The project as the YAML export API writes it (cl-803: its state is project.db).
   const yaml = () => yamlOf(folder);
-  const status = () => JSON.parse(cozyIn(folder, ['--json', '--full', 'status'], quiet).toString());
+  const status = () => projectJson(folder);
   const held = (name) => status().assets.find((asset) => asset.name === name);
   const box = (name) => boxOf(page, name);
   const away = async () => {

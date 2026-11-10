@@ -7,7 +7,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { cozyIn, STEP_MS, boxOf, calcifer, closeBox, importYaml, lastLook, launch, lookAt, noStall, openBox, panning, png, removeGeneratedProject, settled, signIn, summary, until } = require('./page');
+const { importFile, STEP_MS, boxOf, calcifer, closeBox, importYaml, lastLook, launch, lookAt, noStall, openBox, panning, png, removeGeneratedProject, settled, signIn, summary, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -55,12 +55,12 @@ const shows = (at) => at.shown === `${Math.round(at.zoom * 100)}%`;
   try {
     // 300 boxes in 18 columns, each a picture (see.js's scale case, with no video).
     writeFileSync(join(scratch, 'a.png'), png(140));
-    cozyIn(made.path, ['import', join(scratch, 'a.png'), 'a_picture']);
+    importFile(made.path, join(scratch, 'a.png'), 'a_picture');
     const held = await api(`/v1/projects/${made.id}`);
     const hash = held.assets.find((row) => row.name === 'a_picture').sha256.replace('sha256:', '').slice(0, 12);
     const COUNT = 300;
     const perRow = Math.ceil(Math.sqrt(COUNT));
-    // Its boxes by `cozy import`, and each one's place by the canvas's PATCH, as the page moves them (cl-803: both are project.db's).
+    // Its boxes by the import API, and each one's place by the canvas's PATCH, as the page moves them (cl-803: both are project.db's).
     let text = 'version: 4\nassets:\n';
     const cards = {};
     for (let i = 0; i < COUNT; i++) {

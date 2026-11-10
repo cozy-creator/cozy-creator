@@ -132,9 +132,9 @@ refused() {  # refused <name> <cozy args...>
 refused run run birefnet/remove_background --file "image=$dog"
 refused run-on-local run birefnet/remove_background --input "$OUT/refused.yaml" --on local
 refused run-warm run birefnet/remove_background --warm installed
-(cd "$here" && refused run-code run ./weightless/reverse text=refused)
+(refused run-code run "$here/weightless/reverse" text=refused)
 # Describing local code reads its source here and uses no machine: it works where none runs.
-(cd "$here" && cozy --json run ./weightless/reverse --describe > "$OUT/describe-code.json" 2> "$OUT/describe-code.err") \
+(in_project "$RUN_PROJECT" --json run "$here/weightless/reverse" --describe > "$OUT/describe-code.json" 2> "$OUT/describe-code.err") \
   && J '.fields | any(.name == "text")' "$OUT/describe-code.json" \
   || check "cozy run ./weightless/reverse --describe: $(tail -c 300 "$OUT/describe-code.json") $(tail -c 200 "$OUT/describe-code.err")"
 refused install package install birefnet
@@ -188,10 +188,10 @@ mkdir -p "$dir/folder/sub"; echo one > "$dir/folder/a.txt"; echo two > "$dir/fol
 ffmpeg -v error -y -f lavfi -i testsrc2=size=320x240:rate=24:duration=8 -c:v libx264 -pix_fmt yuv420p -g 24 "$dir/clip.mp4"
 ffmpeg -v error -y -f lavfi -i "color=c=teal:size=64x64" -frames:v 1 "$dir/still.png"
 size=$(stat -c %s "$dir/still.png")
-[ -n "$(row "$RUN_PROJECT" bound_clip .name)" ] || in_project "$RUN_PROJECT" import "$dir/clip.mp4" bound_clip > /dev/null || check "bound: import the clip"
+[ -n "$(row "$RUN_PROJECT" bound_clip .name)" ] || project_import "$RUN_PROJECT" "$dir/clip.mp4" bound_clip > /dev/null || check "bound: import the clip"
 for _ in $(seq 60); do [ "$(row "$RUN_PROJECT" bound_clip .duration_ms)" != null ] && break; sleep 0.5; done
 # Frames 48 up to 144 at 24 fps: 2 to 6 s.
-if (cd "$dir" && cell bound "$here/inspect/inspect" 'clip=<bound_clip:48-144>' --file still=./still.png folder=./folder label=bound); then
+if (cd "$dir" && cell bound "$here/inspect/inspect" 'clip=<bound_clip:48-144>' --file "still=$dir/still.png" "folder=$dir/folder" label=bound); then
   grep -qE '"clip_seconds": *(3\.9|4\.0|4\.1)' "$OUT/bound.ndjson" && grep -qE "\"still_bytes\": *$size" "$OUT/bound.ndjson" \
     && grep -qE '"folder_files": *\[ *"a.txt", *"sub/b.txt" *\]' "$OUT/bound.ndjson" \
     || check "bound: not a 4 s clip, the picture and the folder's two files: $(grep -oE '"(clip_seconds|still_bytes|folder_files)": *[^,}]*' "$OUT/bound.ndjson" | head -3 | paste -sd' ')"
@@ -206,11 +206,11 @@ code=$(curl -sS -o "$OUT/put.json" -w '%{http_code}' -X PUT -H "Authorization: B
 # 200: the CLI sent it already, for the run above.
 { [ "$code" = 201 ] || [ "$code" = 200 ]; } || check "PUT /v1/files/sha256:$hex is not 201 or 200: $(head -c 300 "$OUT/put.json")"
 [ "$(curl -sS -o /dev/null -w '%{http_code}' -I -H "Authorization: Bearer $token" "http://$addr/v1/files/sha256:$hex")" = 200 ] || check "HEAD of an uploaded file is not 200"
-if (cd "$dir" && cell bound-digest "$here/inspect/inspect" --file "clip=./clip.mp4" --file "still=sha256:$hex" folder=./folder label=digest); then
+if (cd "$dir" && cell bound-digest "$here/inspect/inspect" --file "clip=$dir/clip.mp4" --file "still=sha256:$hex" "folder=$dir/folder" label=digest); then
   grep -qE "\"still_bytes\": *$size" "$OUT/bound-digest.ndjson" || check "bound-digest: the run was not given the uploaded picture"
 fi
 before=$(cozy --json run ls --limit 0 | jq '.runs | length')
-(cd "$dir" && ALLOW=file_not_held cell bound-unheld "$here/inspect/inspect" --file "clip=./clip.mp4" --file "still=sha256:$(head -c 64 /dev/urandom | sha256sum | cut -c1-64)" folder=./folder) || true
+(cd "$dir" && ALLOW=file_not_held cell bound-unheld "$here/inspect/inspect" --file "clip=$dir/clip.mp4" --file "still=sha256:$(head -c 64 /dev/urandom | sha256sum | cut -c1-64)" "folder=$dir/folder") || true
 { [ -f "$OUT/bound-unheld.refused" ] && [ "$(cozy --json run ls --limit 0 | jq '.runs | length')" = "$before" ]; } \
   || check "a digest Calcifer does not hold was not refused file_not_held before any run"
 
@@ -236,12 +236,12 @@ step "a run's own references: the <name> its request gives"
 local dir=$OUT/own-refs code=0
 rm -rf "$dir"; mkdir -p "$dir"
 ffmpeg -v error -y -f lavfi -i "color=c=teal:size=48x32" -frames:v 1 "$dir/amy.png"
-if (cd "$dir" && cell own-refs "$here/project/mentions.py/mentions" 'instructions=<Amy> waves at <Amy>' 'references:=[{"name": "Amy", "image": "./amy.png"}]'); then
+if (cd "$dir" && cell own-refs "$here/project/mentions.py/mentions" 'instructions=<Amy> waves at <Amy>' "references:=$(jq -cn --arg image "$dir/amy.png" '[{name: "Amy", image: $image}]')"); then
   grep -qE '"keys": *\[ *"Amy" *\]' "$OUT/own-refs.ndjson" && grep -qE '"widths": *\[ *48 *\]' "$OUT/own-refs.ndjson" \
     || check "own references: <Amy> did not send its picture: $(grep -oE '"(text|keys|widths)": *("[^"]*"|\[[^]]*\])' "$OUT/own-refs.ndjson" | head -3 | paste -sd' ')"
 fi
 (cd "$dir" && in_project "$RUN_PROJECT" --json run "$here/project/mentions.py/mentions" 'instructions=<Nobody> waves' --on local) > "$OUT/own-refs-nothing.json" 2>&1 || code=$?
-[ "$code" != 0 ] && grep -q input_missing "$OUT/own-refs-nothing.json" && grep -q 'cozy import <file> Nobody' "$OUT/own-refs-nothing.json" \
+[ "$code" != 0 ] && grep -q input_missing "$OUT/own-refs-nothing.json" && grep -q 'cozy open' "$OUT/own-refs-nothing.json" \
   || check "own references: <Nobody> was not refused with the command that makes it a box (exit $code): $(tail -c 300 "$OUT/own-refs-nothing.json")"
 }
 
@@ -273,7 +273,7 @@ printf "ffconcat version 1.0\nfile '%s'\n" "$dir/marker" > "$dir/list.mp4"
 ffmpeg -v error -y -f lavfi -i testsrc2=size=160x120:rate=24:duration=2 -c:v libx264 -pix_fmt yuv420p "$dir/control.mp4"
 (timeout 120 sh -c 'echo read > "$1"' _ "$dir/marker" && touch "$dir/opened") &
 for name in playlist list control; do
-  in_project "$RUN_PROJECT" --json import "$dir/$name.mp4" "hostile_$name" > "$OUT/hostile-$name.json" 2>&1 || true
+  project_import "$RUN_PROJECT" "$dir/$name.mp4" "hostile_$name" > "$OUT/hostile-$name.json" 2>&1 || true
 done
 for _ in $(seq 60); do [[ $(row "$RUN_PROJECT" hostile_control .duration_ms) =~ ^[0-9]+$ ]] && break; sleep 0.5; done
 sleep 5
@@ -308,7 +308,7 @@ step "the CLI in a folder Calcifer can't see"
 # The runner's own OS: a candidate cozy is built on it, for its glibc (debian:12's 2.36 runs only a release's).
 local src=$OUT/unseen seen=$OUT/unseen-seen image=ubuntu:24.04 size name n hex
 rm -rf "$src" "$seen"; mkdir -p "$src/folder/sub" "$src/sub" "$seen/project"
-(cd "$seen/project" && cozy --json status) > "$OUT/unseen-new.out" || { check "unseen: initialize project"; return; }
+(cd "$seen/project" && cozy --json new) > "$OUT/unseen-new.out" || { check "unseen: initialize project"; return; }
 echo one > "$src/folder/a.txt"; echo two > "$src/folder/sub/b.txt"
 ffmpeg -v error -y -f lavfi -i testsrc2=size=320x240:rate=24:duration=3 -c:v libx264 -pix_fmt yuv420p "$src/clip.mp4"
 for name in still other; do
@@ -348,7 +348,6 @@ refused_inside() {
 }
 said() { grep -qE "$2" "$OUT/unseen-$1.out" || check "unseen $1: not $2: $(grep -oE '"(clip_seconds|still_bytes|folder_files|label)": *[^,}]*' "$OUT/unseen-$1.out" | paste -sd' ')"; }
 # Client code is sent by content; its working directory names the separate host project.
-UNSEEN_PROJECT=$seen/project
 if inside files --json run ./inspect/inspect --file clip=./clip.mp4 --file still=./still.png folder=./folder label=files --on local; then
   said files '"clip_seconds": *(2\.9|3\.0|3\.1)' && said files "\"still_bytes\": *$size" && said files '"folder_files": *\[ *"a.txt", *"sub/b.txt" *\]'
   said files '"target": *"local/e2e-inspect/inspect"'
@@ -377,9 +376,6 @@ AFTER='grep -c "name = \"e2e-weightless\"" uv.lock' DIR=weightless inside lock -
 # Locked in Calcifer's copy of the tree, which it holds by the tree's digest.
 ls -d "$HOME"/.cozy/calcifer/code/*/tree/e2e_weightless > /dev/null 2>&1 || check "unseen lock: Calcifer holds no copy of the package: $(ls "$HOME/.cozy/calcifer/code" 2> /dev/null | head -3)"
 DIR=weightless refused_inside publish not_logged_in package publish
-inside import import ./still.png && grep -qx still "$OUT/unseen-import.out" || check "unseen import: not named still: $(cat "$OUT/unseen-import.out")"
-inside into import ./other.png --into still && grep -qx still.2 "$OUT/unseen-into.out" || check "unseen into: not still.2: $(cat "$OUT/unseen-into.out")"
-[ "$(row "${UNSEEN_PROJECT:-none}" still .versions)" = 2 ] || check "unseen: still has not 2 versions: $(row "${UNSEEN_PROJECT:-none}" still .)"
 inside model --json model download ./tiny.safetensors local/e2e-unseen --source-format as-is --on local \
   && cozy --json model ls --on local | grep -q e2e-unseen || check "unseen model: local/e2e-unseen is not on local"
 if [ -f "${CAND_RT:-}" ]; then
@@ -390,7 +386,6 @@ local lock=$HOME/.cozy/calcifer/calcifer.lock.holder
 [ "$(curl -sS -o "$OUT/unseen-list.json" -w '%{http_code}' -H "Authorization: Bearer $(jq -r .token "$lock")" -H 'Content-Type: application/json' \
   -d '{"add": "/work/weightless"}' "http://$(jq -r .address "$lock")/v1/tools/list")" = 400 ] && J '.error.code == "tool_list_local"' "$OUT/unseen-list.json" \
   || check "unseen: a path added to the tool list: $(cat "$OUT/unseen-list.json")"
-unset UNSEEN_PROJECT
 }
 
 # cl-820: local code edited between runs on `local`, as cl-817's edit.sh timed it (an edit took 7.9 s read in place, 10.2 s once it
@@ -539,7 +534,7 @@ fi
 run_flags() {
 step "run flags"
 before=$(cozy --json run ls --limit 0 | jq '.runs | length') || true
-(cd "$here" && cozy --json run ./weightless/reverse --describe) > "$OUT/describe.json" || check "run --describe failed"
+(in_project "$RUN_PROJECT" --json run "$here/weightless/reverse" --describe) > "$OUT/describe.json" || check "run --describe failed"
 J '.fields | any(.name == "text")' "$OUT/describe.json" || check "run --describe: no text field"
 [ "$(cozy --json run ls --limit 0 | jq '.runs | length')" = "$before" ] || check "run --describe started a run"
 note=$OUT/inputs/note.txt; mkdir -p "$OUT/inputs"; echo "an asset" > "$note"

@@ -22,7 +22,7 @@ Calcifer owns all of this. It knows no inputs and no packages by name.
 | `<edit_name>.mp4`, `.otio` | Each edit |
 | `.runs/` | Where a run's outputs land on their way into `files/` |
 
-An export holds what the project says, so it travels, and `files/` with `cozy push` and `cozy pull`. An unknown key warns when it's imported.
+An export holds what the project says. Its media remains in `files/`. An unknown key warns when it's imported.
 
 ## The file
 
@@ -146,7 +146,7 @@ cozy status
 
 `cozy new [directory]` creates a project explicitly. `cozy open`, `cozy run` and `cozy status` use an existing project for the current directory.
 
-Use the browser for asset import, creation, field edits, rendering, approval, history, undo and export. Use `cozy push` and `cozy pull` from the project directory for file synchronization. The browser and other API clients use the project endpoints described in `CALCIFER-API.md`, and edits appear in connected views.
+Use the browser for asset import, creation, field edits, rendering, approval, history, undo and export. The browser and other API clients use the project endpoints described in `CALCIFER-API.md`, and edits appear in connected views.
 
 ## Queueing
 
@@ -214,7 +214,7 @@ The package `cozy` is reserved: Calcifer runs it itself, free, with no machine, 
 
 ## Runs
 
-`cozy run` uses the existing project for the current directory. Create a project explicitly with `cozy new [directory]` before running it. `cozy open` opens that project for asset editing in the browser.
+`cozy run` uses the existing project for the current directory. Create a project explicitly with `cozy new [directory]` before running it. `cozy open` prints that project's authenticated local URL for asset editing in the browser.
 
 - **Outputs** land in `files/` by hash, listed as the run's, and the run prints one line per file: `image: 65b436d4f9a3`. There's no memo.
 - **Use one:** `--file image=65b436d4f9a3` names a file by its hash, and approving that file for `kyogre` in the browser makes it what `kyogre` holds.

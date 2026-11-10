@@ -13,11 +13,10 @@
 // $PAGE_ORIGIN: the page from elsewhere (a `vite` of the tree under test), its API through it; $PROJECT: one an earlier pass made, measured again; $SIZES: some of
 // the sizes, by name. Prints what it saw as JSON and exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
-const { execFileSync, spawn } = require('child_process');
 const { mkdtempSync, readFileSync, renameSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { cozyIn, BARS, GPU, calcifer, MP4, boxOf, closeBox, openBox, fitCanvas, STEP_MS, lastLook, launch, lookAt, png, noStall, renderOf, settled, until, wav, importYaml, yamlOf } = require('./page');
+const { signIn,importFile, projectAction, projectJson, BARS, GPU, calcifer, MP4, boxOf, closeBox, openBox, fitCanvas, STEP_MS, lastLook, launch, lookAt, png, noStall, renderOf, settled, until, wav, importYaml, yamlOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -633,11 +632,7 @@ async function edgesOf({ shown, bare, black, white, clip, frame }) {
   const browser = await launch(playwright, BARS);
   const holder = JSON.parse(readFileSync(process.env.HOLDER, 'utf8'));
   const signedIn = async (page) => {
-    // `cozy open --no-open`'s link, on the page under test.
-    const said = execFileSync(COZY, ['open', '--no-open'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-    const link = said.match(/http:\/\/\S+#code=[0-9a-f]+\S*/)?.[0]?.replace(/&to=[^&]*/, '');
-    if (!link) throw new Error(`cozy open --no-open printed no link: ${said.slice(0, 300)}`);
-    await page.goto(link.replace(/^http:\/\/[^/]+/, base));
+    await signIn(page);
     await page.waitForSelector('.top');
     return page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session')).token);
   };
@@ -684,7 +679,7 @@ async function edgesOf({ shown, bare, black, white, clip, frame }) {
     ['clip_b', 'clip_b.mp4', MP4],
   ]) {
     writeFileSync(join(scratch, file), bytes);
-    cozyIn(folder, ['import', join(scratch, file), asset], { encoding: 'utf8' });
+    importFile(folder, join(scratch, file), asset);
   }
   const local = (await api('/v1/status')).local_usable && !process.env.ALONE;
   seen.ran = local;
@@ -733,39 +728,34 @@ ${local ? `  card:
 ` : ''}`);
   names = ['hero_art', 'wide_art', 'tall_art', LONG, 'sea_sound', 'clip', 'clip_b', 'style', 'still', 'edit', 'odd', ...(local ? ['card', 'posed', 'shot', 'broken', 'making'] : [])];
   await placed();
-  const render = (asset, wait = true) => {
-    const words = ['render', asset, ...(local ? ['--on', 'local'] : [])];
-    if (!wait) return spawn(COZY, words, { cwd: folder, stdio: 'ignore' });
-    try {
-      execFileSync(COZY, words, { cwd: folder, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: RUN_MS });
-    } catch (error) {
-      if (asset !== 'broken') throw error;
-    }
+  const render = async (asset, wait = true) => {
+    try { return await projectAction(folder, 'render', asset, ...(local ? ['--on', 'local'] : []), ...(wait ? [] : ['--queue'])); }
+    catch (error) { if (asset !== 'broken') throw error; }
   };
   // Takes: the frame thrice, the Edit once, and where this computer runs, many of the picture tool's, the shot's two and a failure.
   for (const at of [0.2, 0.5, 0.8]) {
     importYaml(folder, yamlOf(folder).replace(/(\n  still:\n    video: <clip>\n    at: )[\d.]+/, `$1${at}`));
-    render('still');
+    await render('still');
   }
-  render('edit');
+  await render('edit');
   const box = (asset) => boxOf(page, asset);
   if (local) {
     // Its first render waits on its install, which the box says.
-    render('card', false);
+    await render('card', false);
     const waiting = await until('the picture tool waits', () => box('card').locator('.prog b, .take.making').count(), (n) => n > 0, RUN_MS).catch(() => 0);
     seen.waits = waiting > 0;
     if (waiting) for (const finding of await page.evaluate(audit, { floor: FLOOR, hangZoom: HANG_ZOOM })) findings.push({ size: '1600x1000', state: 'waiting-on-install', ...finding });
     await until('the first take', () => api(`/v1/projects/${id}`), (state) => state.assets.find((held) => held.name === 'card')?.prefixes?.length >= 1, RUN_MS);
-    for (let i = 0; i < 8; i++) render('card');
-    render('shot');
-    render('shot');
-    render('broken');
+    for (let i = 0; i < 8; i++) await render('card');
+    await render('shot');
+    await render('shot');
+    await render('broken');
   }
   await until('every take landed', () => api(`/v1/projects/${id}`), (state) => !state.assets.some((held) => held.standing === 'making'), RUN_MS);
   // One being made all through the measuring, saying how far it's got, its steps a second each.
   if (local) {
-    render('making', false);
-    stopMaking = () => cozyIn(folder, ['cancel', 'making'], { stdio: 'ignore' });
+    await render('making', false);
+    stopMaking = () => projectJson(folder, 'POST', '/cancel', { names: ['making'] });
   }
   }
   await first.close();

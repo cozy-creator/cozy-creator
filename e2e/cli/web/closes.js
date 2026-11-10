@@ -8,12 +8,12 @@
 // Calcifer's lock file, which names its process; $ARGV_LOG: where each cozy call is logged for coverage.
 // Prints what it saw as JSON and exits 1 if anything failed.
 const { chromium } = require(process.env.PLAYWRIGHT);
-const { execFile, execFileSync } = require('child_process');
+const { execFileSync } = require('child_process');
 const { createHash } = require('crypto');
-const { appendFileSync, copyFileSync, linkSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } = require('fs');
+const { copyFileSync, linkSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } = require('fs');
 const { homedir } = require('os');
 const { join } = require('path');
-const { newProject, calcifer, signIn, STEP_MS, lastLook, lookAt, png, noStall, until, projectHeld } = require('./page');
+const { projectAction, newProject, calcifer, signIn, STEP_MS, lastLook, lookAt, png, noStall, until, projectHeld } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -131,17 +131,9 @@ const held = (folder) => projectHeld(folder, HOLDER.pid);
 (async () => {
   const base = calcifer();
   const api = (path, init = {}) => fetch(`${base}${path}`, { ...init, headers: { Authorization: `Bearer ${HOLDER.token}`, ...init.headers } }).then((answer) => answer.json());
-  const cozy = (folder, ...words) => new Promise((done, fail) => {
-    if (process.env.ARGV_LOG) appendFileSync(process.env.ARGV_LOG, `${words.map((word) => `${word}\x1f`).join('')}\x1e`);
-    const from = Date.now();
-    execFile(COZY, words, { cwd: folder, encoding: 'utf8', maxBuffer: 1 << 28 }, (error, stdout, stderr) => {
-      if (error) fail(new Error(`cozy ${words.join(' ').slice(0, 300)}: ${error.message}: ${stdout.slice(0, 500)}${stderr.slice(0, 500)}`));
-      else done({ stdout, stderr, ms: Date.now() - from });
-    });
-  });
   const status = async (folder) => {
-    const answer = await cozy(folder, '--json', 'status');
-    return { state: JSON.parse(answer.stdout), ms: answer.ms };
+    const answer = await projectAction(folder, 'status');
+    return { state: answer.value, ms: answer.ms };
   };
   const readable = process.platform === 'linux' || process.platform === 'darwin';
   /** The project in `folder` closes within CLOSE_MS of `after`, and how long that took, else null. */
@@ -258,13 +250,13 @@ const held = (folder) => projectHeld(folder, HOLDER.pid);
     const made = [];
     for (const [folder, wait] of [[first, 20], [second, 1]]) {
       await newProject(folder);
-      await cozy(folder, 'add', `${WAITS}/wait`, 'waits', `instructions=waits ${wait}`, `seconds:=${wait}`);
+      await projectAction(folder, 'add', `${WAITS}/wait`, 'waits', `instructions=waits ${wait}`, `seconds:=${wait}`);
       made.push((await status(folder)).state.id);
     }
     ids.push(...made);
     await closes(first);
     await closes(second);
-    for (const folder of [first, second]) await cozy(folder, 'render', 'waits', '--on', 'local', '--queue');
+    for (const folder of [first, second]) await projectAction(folder, 'render', 'waits', '--on', 'local', '--queue');
     const busy = async () => {
       const { projects } = await api('/v1/projects?limit=1000');
       return made.map((id) => projects.find((row) => row.id === id)?.busy === true);

@@ -461,7 +461,7 @@ pub(crate) struct Lock {
     /// renamed or reclaimed.
     #[serde(default)]
     pub assets: BTreeMap<String, Asset>,
-    /// By idempotency key. Never in project.lock, which a copy or a `push` carries: `Folder::lock` reads it from `WALK`.
+    /// By idempotency key. Never in project.lock, which a project copy carries: `Folder::lock` reads it from `WALK`.
     #[serde(skip)]
     pub pending: BTreeMap<String, Pending>,
     /// What `cozy run`s left here: they belong to no asset, and no memo holds them.

@@ -10,29 +10,26 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 # A fixture chooses its project by running the actual CLI in that directory.
 in_project() { local directory=$1; shift; (cd "$directory" && cozy "$@"); }
-# Browser-owned project operations use the actual authenticated Calcifer routes.
-project_segment() { python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1"; }
-project_request() {
-  local directory=$1 method=$2 suffix=$3 holder=$HOME/.cozy/calcifer/calcifer.lock.holder encoded
-  shift 3
-  directory=$(cd "$directory" && pwd) || return
-  [ "${RUNNER_OS:-}" != Windows ] || directory=$(cygpath -w "$directory")
-  encoded=$(project_segment "$directory") || return
-  curl --fail-with-body -sS -X "$method" -H "Authorization: Bearer $(jq -r .token "$holder")" \
-    -H 'Cozy-Client: page e2e-project' "$@" "http://$(jq -r .address "$holder")/v1/projects/$encoded$suffix"
+# Fixture edits use the project HTTP API that the browser uses.
+project_api() {
+  local directory=$1 suffix=$2; shift 2
+  cozy --json machine ls > /dev/null || return
+  local holder=$HOME/.cozy/calcifer/calcifer.lock.holder encoded
+  encoded=$(python3 -c 'from urllib.parse import quote; import os,sys; print(quote(os.path.abspath(sys.argv[1]), safe=""))' "$directory")
+  curl --fail-with-body -sS -H "Authorization: Bearer $(jq -r .token "$holder")" "$@" "http://$(jq -r .address "$holder")/v1/projects/$encoded$suffix"
 }
-project_json() {
-  local directory=$1 method=$2 suffix=$3 body=$4
-  project_request "$directory" "$method" "$suffix" -H 'Content-Type: application/json' \
-    -H "Idempotency-Key: e2e-project-$RANDOM$RANDOM$RANDOM" --data-binary "$body"
-}
-project_history_step() { project_json "$1" POST "/history/$2" "$(jq -n --argjson entry "$3" '{entry:$entry}')"; }
-project_reclaim() { project_json "$1" POST /reclaim "$(jq -n --argjson yes "$2" '{yes:$yes}')"; }
 project_import() {
-  local source=$2
-  [ "${RUNNER_OS:-}" != Windows ] || source=$(cygpath -w "$source")
-  project_json "$1" POST /imports "$(jq -n --arg source "$source" --arg name "${3:-}" '{source:$source} + (if $name == "" then {} else {name:$name,exact:true} end)')"
+  local directory=$1 file=$2 name=${3:-} source holder=$HOME/.cozy/calcifer/calcifer.lock.holder
+  cozy --json machine ls > /dev/null || return
+  source="sha256:$(sha "$file")"
+  curl --fail-with-body -sS -X PUT -H "Authorization: Bearer $(jq -r .token "$holder")" \
+    --data-binary "@$file" "http://$(jq -r .address "$holder")/v1/files/$source" > /dev/null || return
+  project_api "$directory" /imports -X POST -H 'Content-Type: application/json' \
+    -d "$(jq -n --arg source "$source" --arg name "$name" '{source: $source} + (if $name == "" then {} else {name: $name, exact: true} end)')"
 }
+
+project_history_step() { project_api "$1" "/history/$2" -X POST -H 'Content-Type: application/json' -d "$(jq -n --argjson entry "$3" '{entry:$entry}')"; }
+project_reclaim() { project_api "$1" /reclaim -X POST -H 'Content-Type: application/json' -d "$(jq -n --argjson yes "$2" '{yes:$yes}')"; }
 
 # Controller health is read through its API; `cozy status` describes project assets.
 fixture_calcifer() {
@@ -171,19 +168,13 @@ ask() {
 ended() { cozy --json run show "$1" > /dev/null 2>&1 || true; cozy --json --full run show "$1" 2> /dev/null; }
 # status <project> [file]: its status as JSON.
 # status <project>: what status says. Why it can't be read goes to the log, and an answer the CLI can't read is a failure of its own.
-status() {
-  in_project "$1" --json --full status 2> "$OUT/status.err" && return 0
-  local code=$?
-  echo "status of $1: $(tail -c 300 "$OUT/status.err")" >&2
-  grep -q answer_unreadable "$OUT/status.err" && check "status of $1: $(tail -c 300 "$OUT/status.err")" >&2
-  return "$code"
-}
+status() { project_api "$1" '' 2> "$OUT/status.err"; }
 # row <project> <asset> <jq>: that of its row in status.
 row() { status "$1" | jq -c --arg n "$2" ".assets[] | select(.name == \$n) | $3"; }
 # made <project> <asset>: how many versions the lock keeps.
 made() { local n; n=$(held "$1" "$2" 2> /dev/null | jq '.versions | length'); echo "${n:-0}"; }
 # held <project> <asset>: what `cozy status <asset>` says of it, `.asset` and `.versions`. Why it can't goes to the log.
-held() { in_project "$1" --json --full status "$2" 2> "$OUT/held.err" || echo "status $2 of $1: $(tail -c 200 "$OUT/held.err")" >&2; }
+held() { project_api "$1" "/assets/$2" 2> "$OUT/held.err"; }
 # take_file <project> <asset> <role> [version index]: that version's file by its hash.
 take_file() { held "$1" "$2" | jq -r --arg r "$3" --argjson v "${4:--1}" '.versions[$v].files[$r].sha256 // empty'; }
 # counts <project>: how many versions each asset has.
@@ -983,7 +974,7 @@ for part in $(seq 1 12); do
     { [ ! -e "$F/project.yaml.v2" ] || cmp -s "$F/project.yaml.v2" "$OUT/killed.yaml"; } || check "killed at ${at} ms: project.yaml.v2 isn't the original"
     { [ ! -e "$F/project.lock.v2" ] || cmp -s "$F/project.lock.v2" "$OUT/killed.lock"; } || check "killed at ${at} ms: project.lock.v2 isn't the original"
   fi
-  project_request "$F" GET /yaml > "$OUT/killed-again.yaml" 2>&1 || check "killed at ${at} ms: opened again: $(tail -c 300 "$OUT/killed-again.yaml")"
+  project_api "$F" /yaml > "$OUT/killed-again.yaml" 2>&1 || check "killed at ${at} ms: opened again: $(tail -c 300 "$OUT/killed-again.yaml")"
   cmp -s <(yaml_body "$OUT/killed-again.yaml") <(yaml_body "$OUT/killed-done.yaml") || check "killed at ${at} ms: it came out otherwise: $(diff <(yaml_body "$OUT/killed-done.yaml") <(yaml_body "$OUT/killed-again.yaml") | head -5)"
   { cmp -s "$F/project.yaml.v2" "$OUT/killed.yaml" && cmp -s "$F/project.lock.v2" "$OUT/killed.lock"; } || check "killed at ${at} ms: an original went"
   [ -z "$(cd "$F" && ls -A | grep -vxE 'files|\.runs|\.cozy-legacy-v1|project\.db(-wal|-shm)?|project\.(yaml|lock)\.v[23]')" ] || check "killed at ${at} ms: left: $(ls -A "$F" | tr '\n' ' ')"
@@ -1542,7 +1533,7 @@ in_project "$T" approve card 1 > "$OUT/approve.txt" 2>&1 || check "pins: approve
 grep -q 'A flat one, edited just now' <(in_project "$T" export) || check "pins: an edit saved just before approve is gone"
 file=$(take_file "$T" card image 0); file=${file#sha256:}
 hand "$T" 's/instructions: A flat one, edited just now\./instructions: A flat one./'
-diff <(yaml_body "$before") <(project_request "$T" GET /yaml | yaml_body) > "$OUT/approve.diff" || true
+diff <(yaml_body "$before") <(project_api "$T" /yaml | yaml_body) > "$OUT/approve.diff" || true
 { [ "$(grep -c '^[<>]' "$OUT/approve.diff")" = 1 ] && grep -Eq "^> *approved: \"?${file:0:12}\"?$" "$OUT/approve.diff"; } || check "pins: approve changed more than its one line: $(cat "$OUT/approve.diff")"
 J '.assets[] | select(.name == "card") | .approved == 1 and .pinned and .status == "approved: version 1"' <<< "$(status "$T")" || check "pins: status does not say card is pinned to 1: $(row "$T" card .)"
 [ "$(sql1 "$T" "SELECT count(*) FROM versions WHERE record LIKE '%\"pin\"%'")" = 0 ] || check "pins: a version's record holds an approval"
@@ -3674,7 +3665,7 @@ YAML
 in_project "$Y" export > "$OUT/imported-kept.before"
 still "$Y/hero.png" navy
 [ "$(project_import "$Y" "$Y/hero.png" | jq -r .name)" = hero_2 ] || check "import: a name the project has is not taken"
-project_request "$Y" GET /yaml | yaml_body | perl -0pe 's/\n  hero_2:\n    approved: "?\w+"?\n//' | diff - <(yaml_body "$OUT/imported-kept.before") > "$OUT/imported-kept.diff" || check "import: other boxes moved: $(cat "$OUT/imported-kept.diff")"
+project_api "$Y" /yaml | yaml_body | perl -0pe 's/\n  hero_2:\n    approved: "?\w+"?\n//' | diff - <(yaml_body "$OUT/imported-kept.before") > "$OUT/imported-kept.diff" || check "import: other boxes moved: $(cat "$OUT/imported-kept.diff")"
 J '.assets | map(.name) | sort == ["hero", "hero_2", "shot"]' <<< "$(status "$Y")" || check "import: the file does not read as it did with one asset more: $(status "$Y" | jq -c '.assets | map(.name)')"
 
 step "a project: a take lifted out: a file by its hash, a name and words, and what it held goes on standing"
@@ -3921,14 +3912,14 @@ session_surface() {
 step "a project: its link, and what's kept of a session"
 local P=$1 ID=$2 B=http://$ADDR code token media store=$HOME/.cozy/calcifer/state.db U
 U=$B/v1/projects/$ID/cuts/edit.mp4
-(cd "$P" && cozy --json open --no-open) > "$OUT/project-open.json" || check "session: open of working directory failed"
+(cd "$P" && cozy --json open) > "$OUT/project-open.json" || check "session: open of working directory failed"
 J --arg to "&to=/projects/$ID" --arg base "$B/#code=" '.url | startswith($base) and endswith($to)' "$OUT/project-open.json" || check "session: open did not select the working directory"
-(cd "$P/sub" && cozy --json open --no-open) > "$OUT/project-open-named.json" || check "session: open of a subdirectory failed"
+(cd "$P/sub" && cozy --json open) > "$OUT/project-open-named.json" || check "session: open of a subdirectory failed"
 J --arg to "&to=/projects/$ID" '.url | endswith($to)' "$OUT/project-open-named.json" || check "session: open did not find the containing project"
 mkdir -p "$OUT/open-none" "$OUT/open-old"; printf 'version: 1\nassets: {}\n' > "$OUT/open-old/project.yaml"
-(cd "$OUT/open-none" && cozy open --no-open) > "$OUT/open-none.txt" 2> "$OUT/open-none.err" || check "session: open of a fresh directory failed"
+(cd "$OUT/open-none" && cozy open) > "$OUT/open-none.txt" 2> "$OUT/open-none.err" || check "session: open of a fresh directory failed"
 { grep -q '#code=' "$OUT/open-none.txt" && grep -q '&to=/projects/' "$OUT/open-none.txt" && [ -f "$OUT/open-none/project.db" ]; } || check "session: open did not initialize the working directory"
-code=0; (cd "$OUT/open-old" && cozy open --no-open) > "$OUT/open-old.txt" 2>&1 || code=$?
+code=0; (cd "$OUT/open-old" && cozy open) > "$OUT/open-old.txt" 2>&1 || code=$?
 { [ "$code" != 0 ] && ! grep -q '#code=' "$OUT/open-old.txt"; } || check "session: unsupported old format was silently opened"
 code=$(jq -r .url "$OUT/project-open.json" | sed -n 's/.*#code=\([0-9a-f]*\)&.*/\1/p')
 [ "$(curl -sS -o "$OUT/session.json" -w '%{http_code}' -X POST -d "{\"code\":\"$code\"}" "$B/v1/session")" = 200 ] || check "session: its code was not traded: $(cat "$OUT/session.json")"
@@ -3981,7 +3972,7 @@ cmp -s <(in_project "$P" export) "$OUT/yaml-theirs.yaml" || check "a refused sav
 [ "$(api -D "$OUT/yaml-put.hdr" -o /dev/null -w '%{http_code}' -X PUT -H "If-Match: $et" --data-binary @"$OUT/yaml-mine.yaml" "$U")" = 204 ] || check "a good save was not 204"
 grep -q '^  mine:$' <(in_project "$P" export) || check "the save isn't in the project: $(in_project "$P" export | tail -5)"
 next=$(grep -i '^etag:' "$OUT/yaml-put.hdr" | cut -d' ' -f2 | tr -d '\r')
-[ "$next" = "\"$(project_request "$P" GET /yaml | sha /dev/stdin)\"" ] || check "the save's ETag isn't its export's digest: $next"
+[ "$next" = "\"$(project_api "$P" /yaml | sha /dev/stdin)\"" ] || check "the save's ETag isn't its export's digest: $next"
 # An explicit fixture reset is intentionally unstamped; stale stamped saves were refused above.
 yaml_body "$OUT/yaml-kept.yaml" | yaml_in "$P"
 }
@@ -4096,7 +4087,7 @@ python3 -m http.server "$port" --bind 127.0.0.1 --directory "$here/project" > "$
 for _ in $(seq 50); do curl -fsS -o /dev/null "http://localhost:$port/cross-site.html" && break; sleep 0.1; done
 # The re-cut the page follows: the edit a second shorter.
 in_project "$P" export | sed -E 's/^( +)- <a>$/\1- {video: <a>, start: 0, end: 120}/' > "$OUT/recut.yaml"
-code_got=$(cd "$OUT" && cozy --json open --no-open | jq -r .url | sed -n 's/.*#code=\([0-9a-f]*\).*/\1/p')
+code_got=$(cd "$OUT" && cozy --json open | jq -r .url | sed -n 's/.*#code=\([0-9a-f]*\).*/\1/p')
 local code=0 log=$HOME/.cozy/calcifer/calcifer.log seen pid
 seen=$(stat -c %s "$log" 2>/dev/null || echo 0)
 pid=$(jq -r .pid "$lock") was_addr=$(jq -r .address "$lock") was_token=$(jq -r .token "$lock")
@@ -4129,13 +4120,9 @@ tail -c +$((seen + 1)) "$log" | grep 'refused ' > "$OUT/browser-refused.txt" || 
 [ "$(owed "$P")" = 0 ] && ! sql "$P" "SELECT record FROM walk" | grep -q nothing || check "another origin's POST started a render"
 }
 
-# Alone: this computer's cozy, as it is, in the default home.
+# The standalone CLI check covers the retained project and run entrypoints.
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   . "$here/../lib.sh"
   parse "$@"
-  ALONE=1
-  hub_checked() { :; }
-  run_project "$OUT/project" || fail "starter_project failed"
-  projects
-  finish project
+  python3 "$here/entrypoints.py" --cozy "$COZY" --out "$OUT/entrypoints"
 fi

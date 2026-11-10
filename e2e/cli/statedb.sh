@@ -70,7 +70,7 @@ done < <(jq -r .token "$S/signed")
 [ ${#lost[@]} = 0 ] || check "state crash: answered, then lost: ${lost[*]:0:5}"
 echo "state crash: in state.db $(state1 "SELECT count(*) FROM projects WHERE path LIKE '$S/%'") projects, $(state1 "SELECT count(*) FROM tools_off WHERE tool LIKE 'qwen-image-2/crash_%'") tools off, $(state1 'SELECT count(*) FROM sessions') sessions"
 # The Calcifer the next command starts answers each as it was kept.
-cozy --json project ls > /dev/null 2> "$S/ls.err" || check "state crash: no Calcifer after the kill: $(tail -c 300 "$S/ls.err")"
+cozy --json machine ls > /dev/null 2> "$S/ls.err" || check "state crash: no Calcifer after the kill: $(tail -c 300 "$S/ls.err")"
 db_calcifer
 api "http://$ADDR/v1/projects?limit=1000" > "$S/ls.json"
 lost=()
@@ -118,7 +118,7 @@ fi
 for name in projects.json sessions.json tools.json here.json checkpoints.json after; do
   [ ! -e "$OLD/$name" ] || cp -a "$OLD/$name" "$dir/"
 done
-cozy --json project ls > /dev/null 2> "$OUT/state-import-ls.err" || check "state import: Calcifer didn't start: $(tail -c 300 "$OUT/state-import-ls.err")"
+cozy --json machine ls > /dev/null 2> "$OUT/state-import-ls.err" || check "state import: Calcifer didn't start: $(tail -c 300 "$OUT/state-import-ls.err")"
 db_calcifer
 api "http://$ADDR/v1/projects?limit=1000" > "$OUT/state-import-ls.json"
 for name in projects.json sessions.json tools.json here.json checkpoints.json after; do

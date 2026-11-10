@@ -46,7 +46,6 @@ pub(super) struct Told {
     making: HashMap<String, Vec<u64>>,
     queue: Vec<api::calcifer::project::Queued>,
     busy: bool,
-    moving: bool,
 }
 
 impl Told {
@@ -54,7 +53,7 @@ impl Told {
         let rendering = project.rendering.lock().expect("rendering lock").clone();
         let busy = *project.walking.lock().expect("walking lock");
         let walk = project.folder.walk_now().unwrap_or_default();
-        Self { model, rendering, making: making_now(&walk), queue: queue(project, &walk), busy, moving: project.moving.try_lock().is_err() }
+        Self { model, rendering, making: making_now(&walk), queue: queue(project, &walk), busy }
     }
 }
 
@@ -131,7 +130,7 @@ fn read_model(api: &Arc<Api>, project: &Project, rev: String, heard: u64) -> Res
     let next = next_steps(&orphans, absent, !missing.is_empty() || !stale.is_empty());
     let failed: std::collections::BTreeSet<&str> = rows.iter().filter_map(|row| Some(row.failure.as_ref()?.message.as_str())).collect();
     warnings.retain(|warning| !failed.contains(warning.message.as_str()));
-    let head = ProjectState { covered: None, id: super::project_id(&folder.dir), path: folder.dir.clone(), assets: vec![], queue: vec![], missing, stale, orphans, busy: false, moving: false, absent, run_files, cuts, warnings, next, board: None, unsent: vec![] };
+    let head = ProjectState { covered: None, id: super::project_id(&folder.dir), path: folder.dir.clone(), assets: vec![], queue: vec![], missing, stale, orphans, busy: false, absent, run_files, cuts, warnings, next, board: None, unsent: vec![] };
     Ok(Model { rev, heard, doc, lock, head, rows, stand })
 }
 
@@ -165,7 +164,6 @@ impl Model {
             state.warnings.insert(0, api::calcifer::project::Warning::of_file(super::not_saved(&why)));
         }
         state.busy = *project.walking.lock().expect("walking lock");
-        state.moving = project.moving.try_lock().is_err();
         state.board = board_of(project);
         let walk = project.folder.walk_now().unwrap_or_default();
         state.queue = queue(project, &walk);
@@ -210,7 +208,7 @@ pub(crate) async fn told(api: &Arc<Api>, id: String, dir: &Path, settled: bool) 
     let (assets, gone) = changed(&was, &now);
     let (from, to) = (&was.model.head, &now.model.head);
     // Told with no file moved, it's what the head says that moved, even if it went there and back since the last telling and a reader saw it there.
-    let head = settled || was.busy != now.busy || was.moving != now.moving || was.queue != now.queue || (&from.missing, &from.stale, &from.orphans, &from.absent, &from.run_files, &from.cuts, &from.warnings, &from.next) != (&to.missing, &to.stale, &to.orphans, &to.absent, &to.run_files, &to.cuts, &to.warnings, &to.next);
+    let head = settled || was.busy != now.busy || was.queue != now.queue || (&from.missing, &from.stale, &from.orphans, &from.absent, &from.run_files, &from.cuts, &from.warnings, &from.next) != (&to.missing, &to.stale, &to.orphans, &to.absent, &to.run_files, &to.cuts, &to.warnings, &to.next);
     match assets.len() + gone.len() > MOST_TOLD {
         true => whole(id, rev),
         false => StreamEvent::ProjectChanged { id, rev, cursor: None, assets: Some(assets), gone, head },

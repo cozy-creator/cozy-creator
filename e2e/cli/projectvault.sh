@@ -17,7 +17,7 @@ projectvault() (
   jq -e '.encrypted == false and .state == "plain"' "$work/plain-status.json" > /dev/null || fail "ordinary project unexpectedly needs encryption"
   in_project "$plain" --json --full status > "$work/plain-project.json" || fail "ordinary project no longer opens"
   cozy --json new "$P" > "$work/created.json"
-  project_request "$P" GET /yaml > "$work/before.yaml"
+  project_api "$P" /yaml > "$work/before.yaml"
   mkdir -p "$P/files"
   printf '%s\n' 'SYNTHETIC_PRIVATE_VAULT_CONTENT_1762838400' > "$P/files/private-sentinel.txt"
   base64 -d > "$P/files/image.png" <<< 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg=='
@@ -55,7 +55,7 @@ PY_ENCRYPT_DEADLINE
   ffprobe -v error -show_entries format=duration -of json "$view/files/movie.mp4" > "$work/video.json"
   ffmpeg -v error -ss 1 -i "$view/files/movie.mp4" -frames:v 1 -f null -
   ffprobe -v error -show_entries format=duration -of json "$view/files/audio.wav" > "$work/audio.json"
-  project_request "$P" GET /yaml > "$work/after-encryption.yaml"
+  project_api "$P" /yaml > "$work/after-encryption.yaml"
   cmp "$work/before.yaml" "$work/after-encryption.yaml" || fail "encryption changed logical project state"
   # The fixture directory contains only encrypted backing storage and a public keybag.
   python3 - "$E2E/cli" "$P" > "$work/plaintext-matches.txt" <<'PY_BACKING_SCAN'
@@ -108,14 +108,14 @@ PY_BACKING_SCAN
     python3 "$E2E/cli/private_execution.py" --project "$P" --view "$(jq -r '.vault.view' "$work/new-recovery.json")" --out "$work/private-execution" --cli "$COZY"
     python3 "$E2E/cli/private_alias.py" --project "$P" --view "$(jq -r '.vault.view' "$work/new-recovery.json")" --passphrase-file "$secrets/changed" --out "$work/private-alias" --cli "$COZY"
   fi
-  project_request "$P" GET /yaml > "$work/before-rekey.yaml"
+  project_api "$P" /yaml > "$work/before-rekey.yaml"
   cozy --json vault --directory "$P" rotate --passphrase-file "$secrets/rekey" --recovery-out "$secrets/recovery3" > "$work/rekey.json"
   view=$(jq -r '.vault.view // empty' "$work/rekey.json")
   if [ -n "$LOCAL" ]; then
     python3 "$E2E/cli/private_alias.py" --verify-rekey --project "$P" --view "$view" --out "$work/private-rekey" --cli "$COZY"
   fi
   [ "$(sha "$view/files/movie.mp4")" = "$before" ] || fail "rekey changed original video bytes"
-  project_request "$P" GET /yaml > "$work/after-rekey.yaml"
+  project_api "$P" /yaml > "$work/after-rekey.yaml"
   cmp "$work/before-rekey.yaml" "$work/after-rekey.yaml" || fail "rekey changed logical project history"
   in_project "$P" --json vault export --output "$work/exported" > "$work/export.json"
   [ "$(sha "$work/exported/files/movie.mp4")" = "$before" ] || fail "explicit export changed the video"

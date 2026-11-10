@@ -10,8 +10,6 @@
 
 [global]
 "--json" = "pr: every step reads the JSON answer"
-"--full" = "pr: agent, a run's whole record and the live view's columns"
-"--yes" = "pr: candidates (machine update -y)"
 
 [completion]
 test = "pr: completion, each shell's script loads and completes cozy's verbs"
@@ -34,7 +32,7 @@ test = "pr: signed out, whoami says so (release: signed in as fidika, its balanc
 test = "pr: entrypoints, explicit creation in the current directory or a named directory"
 
 [status]
-test = "pr: entrypoints, existing current project with project-scoped runs and machines"
+test = "pr: entrypoints, current-project health counts and warnings with an expanded full record"
 
 [update]
 test = "pr: update, the candidate to the newest release"
@@ -143,14 +141,6 @@ test = "gate: cli cells, the throwaway model's int8 and fp8 lanes"
 "--package" = "gate: cli cells"
 "--on" = "gate: cli cells"
 
-["org edit"]
-test = "manual: a platform admin edits a parked org's name, links and handles on tensorhub.com (xs-131); a CI edit would change a real parked org"
-"--name" = "manual: as the command"
-"--link" = "manual: as the command"
-"--handle" = "manual: as the command"
-["org claim"]
-test = "manual: the author posts the code on a handle the org lists, then claims (xs-131, proved on the dev Hub); a CI claim needs a parked org and a public handle"
-
 [run]
 test = "pr: a weightless request; BiRefNet on the CPU"
 "--input" = "pr: a YAML request, then inline inputs over it"
@@ -185,9 +175,8 @@ test = "pr: run play, its link serves the output, then expires"
 
 # Hidden (`hide = true`, in no --help): probed in the binary; `coverage.py --source` finds any not listed here.
 [hidden]
-"org" = "manual: organization command group remains callable through hidden help"
-"login" = "manual: a person types the emailed code (release-gate/enroll-ci-key.sh)"
-"logout" = "pr: signed out, logout says so"
+"--full" = "pr: entrypoints, full project health; run records and live view columns"
+"--yes" = "pr: candidates (machine update -y) and entrypoint flag parsing"
 "whoami" = "pr: signed out, whoami says so"
 "completion" = "pr: completion, each shell script loads and completes the visible verbs"
 "machine rent --provider" = "pending: dev-only (`dev = true`, crates/cli/DEV.md); release-gate/suites/hub rents cpu once per provider where the config has it, ended and checked gone"
@@ -195,17 +184,9 @@ test = "pr: run play, its link serves the output, then expires"
 "machine rent --image-digest" = "pending: release tier, a Hub admin's gated worker-image bake; waits for the CI key"
 
 [open]
-test = "pr: web-serves (e2e/cli/web.sh), every OS: its link, redeemed in Chrome; each refusal; Place and a kill -9 in the page"
-"--no-open" = "pr: web-serves; an existing project's session from its working directory and an older format; an uninitialized directory is refused. Opening a browser: manual, a person on a desktop"
-
-["push"]
-test = "manual: release-gate/sessions/project-remote.sh (pod-session, signed in): nothing moves twice, a killed push goes on"
-
-["pull"]
-test = "manual: release-gate/sessions/project-remote.sh: a clone of yaml and lock, signed in as a second home: the same edit.mp4"
+test = "pr: entrypoints, local authenticated URL and expiry; web-serves redeems the link in Chrome"
 
 ["vault"]
-test = "pr: projectvault: current-directory encryption lifecycle"
 "--directory" = "pr: projectvault: convert and rekey from outside the backing folder"
 
 ["vault encrypt"]
