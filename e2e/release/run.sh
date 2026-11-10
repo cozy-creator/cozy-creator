@@ -8,8 +8,7 @@
 # publish, yank, un-yank and delete, run on this computer's machine or, where the OS runs none (macOS, Windows), on the
 # rental, which first takes --pod-tensord (the candidate's Linux TensorD). On the rental: package install and list,
 # BiRefNet from a YAML request and with --file, each output landed here (one in a folder named with spaces and
-# non-ASCII), SDXL with a LoRA and its other function, a weights output read after TensorD restarts, a cut upload
-# resumed, machine ls, show and logs, keepalive, a run followed and canceled, an end while a run still goes,
+# non-ASCII), SDXL with a LoRA and its other function, a weights output read after TensorD restarts, machine ls, show and logs, keepalive, a run followed and canceled, an end while a run still goes,
 # checked gone, and the ended rental in `machine ls --history`. The throwaway and the rental are removed in an EXIT
 # trap whatever fails. --quote stops at the rental's quote and rents nothing: the $0 pre-flight of every step before it.
 #   e2e/release/run.sh --out DIR [--key FILE | --installed] [--sku SKU] [--max-hourly USD] [--max-usd USD] [--quote] [--rent-wait S]
@@ -179,6 +178,14 @@ ON=$M
 step "throwaway package"
 dir=$OUT/$pkg
 cp -r "$here/../cli/weightless" "$dir"
+# It publishes what a published package may hold: weightless's `orphan` forks on purpose (the executor cells' kill test), which
+# a Runtime's describe refuses since 0.43.1 ("os.fork: a child process is outside the sandbox"; e2e 42762119315).
+uv run -q --no-project python -I - "$dir/e2e_weightless/__init__.py" <<'PY'
+import re, sys
+path = sys.argv[1]
+text = open(path).read()
+open(path, "w").write(re.sub(r"@app\.entrypoint\(accelerator=False\)\ndef orphan\(.*?(?=\n@app\.)", "", text, flags=re.S))
+PY
 sed -i.orig -e "s/^name = \"e2e-weightless\"/name = \"$pkg\"/" "$dir/pyproject.toml" && rm -f "$dir/pyproject.toml.orig"
 (cd "$dir" && cozy --json package lock > "$OUT/lock.json") && [ -s "$dir/uv.lock" ] || check "package lock: no uv.lock"
 (cd "$dir" && cozy --json package lock --upgrade-package msgspec > "$OUT/lock-upgrade.json") && grep -q 'name = "msgspec"' "$dir/uv.lock" \
@@ -332,31 +339,8 @@ if [ -n "$src" ]; then
   watched held-upload model upload "run:$src#model" "$model-store" --lane bf16 --on "$M" \
     || check "held-upload: run $src's output after TensorD restarted: $(run_get "$OUT" held-upload '.reason.message' | head -c 300)"
 fi
-# A cut upload to the machine resumes from what the machine holds of it (Partial::held), within one TensorD life.
-uv run -q --no-project python -I - "$OUT/big.safetensors" <<'PY'
-import json, os, struct, sys
-n = 256 << 20
-header = json.dumps({"w": {"dtype": "F16", "shape": [n // 2], "data_offsets": [0, n]}}).encode()
-header += b" " * (-len(header) % 8)
-with open(sys.argv[1], "wb") as f:
-    f.write(struct.pack("<Q", len(header)) + header)
-    for _ in range(n >> 24):
-        f.write(os.urandom(1 << 24))
-PY
-cut=0 n=$(run_submit "$OUT" upload-cut model upload "$OUT/big.safetensors" "$model-store" --lane f16-c --source-format as-is --on "$M")
-while [ -n "$n" ] && kill -0 "$(cat "$OUT/upload-cut.pid")" 2> /dev/null; do
-  read -r _ most total < <(run_uploaded "$OUT/upload-cut.ndjson")
-  if [ "$total" -gt 0 ] && [ "$most" -ge $((total / 4)) ]; then cozy --json run cancel "$n" > "$OUT/upload-cut-cancel.json" 2>&1; cut=$most; break; fi
-  sleep 0.3
-done
-run_wait "$OUT" upload-cut || true
-if [ "$cut" = 0 ]; then check "upload-cut: never cut a quarter in ($(run_get "$OUT" upload-cut .status): $(tail -c 200 "$OUT/upload-cut.ndjson"))"
-elif watched upload-resume model upload "$OUT/big.safetensors" "$model-store" --lane f16-c --source-format as-is --on "$M"; then
-  read -r first most total < <(run_uploaded "$OUT/upload-resume.ndjson")
-  echo "upload-resume: cut at $cut of $total bytes; sent again from $first"
-  [ "$first" -gt 0 ] && [ "$first" -le "$total" ] \
-    || check "upload-resume: cut at $cut bytes, the second upload began at $first of $total$(grep -q 'already holds' "$OUT/upload-resume.ndjson" && echo ': the machine held it whole, so the cancel never cut it')"
-else check "upload-resume: did not complete: $(run_get "$OUT" upload-resume '.reason.message' | head -c 300)"; fi
+# A cut upload resumes: release-gate/suites/tensord/pod-cells.sh (pc-resume) cuts one by killing Calcifer. A cancel never cuts
+# one: the canceled run's upload goes on and the next run of the file waits for it (kept so: dedup, 11-09).
 
 step "a run on $M followed, then canceled"
 deadline=$(jq '.idle_deadline_ms // 0' "$OUT/rental.json") || true
