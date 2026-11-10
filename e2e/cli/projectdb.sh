@@ -563,7 +563,7 @@ clone(project,collision)
 report=json.loads((output/'crdt-canvas-collision.json').read_text())
 with sqlite3.connect(f'{collision}/project.db') as db:
     db.execute('UPDATE crdt_document SET snapshot=?,heads=? WHERE id=1',((output/'crdt-canvas-collision.am').read_bytes(),json.dumps(report['heads'])))
-cli('project','-p',collision,'rename','groudon','surface')
+cli('project','-p',collision,'rename','art','surface')
 (output/'crdt-canvas-after.am').write_bytes(snapshot(collision)[0])
 canvas=native('--canvas-check',output/'crdt-canvas-after.am',output/'crdt-canvas-collision.json')
 # Hold the real SQLite writer turn while a real CLI edit reads its old base. Accept the
