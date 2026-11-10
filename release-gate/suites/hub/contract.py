@@ -12,23 +12,37 @@ import re
 import sys
 import urllib.error
 import urllib.request
+from typing import TypedDict
 
 import yaml
 
 HUB, MODE = sys.argv[1].rstrip('/'), sys.argv[2]
 # The first-party root namespace and a package, model and SKU every Hub release serves.
-PATHS = [('/v1/software', {}), ('/.well-known/oauth-protected-resource', {}),
+PATHS: list[tuple[str, dict[str, str]]] = [('/v1/software', {}), ('/.well-known/oauth-protected-resource', {}),
          ('/v1/auth/.well-known/jwks.json', {}), ('/v1/packages', {}), ('/v1/packages/{org}/{name}', {'org': '_', 'name': 'sdxl'}),
          ('/v1/models', {}), ('/v1/models/{org}/{name}', {'org': 'stabilityai', 'name': 'sdxl'}), ('/v1/rental-skus', {}),
          ('/v1/rental-skus/{name}', {'name': 'cpu'}), ('/v1/execution-environment', {}), ('/v1/index/{org}/simple/', {'org': '_'}),
          ('/v1/index/{org}/simple/{distribution}/', {'org': '_', 'distribution': 'sdxl'})]
 
 
-def row(check, ok, what):
+class Operation(TypedDict, total=False):
+    security: list[dict[str, list[str]]]  # each a way in; an empty one is anonymous
+
+
+class PathItem(TypedDict, total=False):
+    get: Operation
+
+
+class Contract(TypedDict):
+    """The Hub's OpenAPI document, what is read here."""
+    paths: dict[str, PathItem]
+
+
+def row(check: str, ok: bool, what: str) -> None:
     print(f'{check}\t{"PASS" if ok else "FAIL"}\t{what}')
 
 
-def get(path):
+def get(path: str) -> tuple[int, str, bytes]:
     req = urllib.request.Request(HUB + path, headers={'Accept': 'application/json, text/html'})
     try:
         with urllib.request.urlopen(req, timeout=60) as r:
@@ -38,7 +52,7 @@ def get(path):
 
 
 if MODE in ('paths', 'paths-empty'):
-    spec = yaml.safe_load(get('/openapi.yaml')[2])
+    spec: Contract = yaml.safe_load(get('/openapi.yaml')[2])
     for template, args in PATHS:
         path = template.format(**args)
         status, ctype, body = get(path)

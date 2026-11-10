@@ -12,6 +12,7 @@ import uuid
 from collections.abc import Callable
 from functools import partial
 from pathlib import Path
+from typing import TypedDict
 
 import msgspec
 import torch
@@ -32,7 +33,24 @@ class Report(msgspec.Struct):
     detail: str
 
 
-def _late(name: str, mode: str, product: Callable[[], torch.Tensor], missing: Path) -> dict:
+class Facts(TypedDict, total=False):
+    """What a mode saw, printed and returned as its detail."""
+    openers: int
+    ready_before: bool
+    ready_after: bool
+    same_kernel_after: bool
+    failure: str | None
+    first_waiter_failure: str | None
+    epoch_before: int
+    epoch_after: int
+    mode: str
+    runtime: str
+    torch: str
+    exact: bool
+    cuda_initialized: bool
+
+
+def _late(name: str, mode: str, product: Callable[[], torch.Tensor], missing: Path) -> Facts:
     """A background opener finishes after an explicit wait made the kernel serve."""
     owner = threading.get_ident()
     entered, release = threading.Event(), threading.Event()
@@ -72,7 +90,7 @@ def _late(name: str, mode: str, product: Callable[[], torch.Tensor], missing: Pa
         release.set()
 
 
-def _dropped(name: str, product: Callable[[], torch.Tensor], missing: Path) -> dict:
+def _dropped(name: str, product: Callable[[], torch.Tensor], missing: Path) -> Facts:
     """The waiter that opened the slot fails while a second waiter of it succeeds."""
     entered, fail = threading.Event(), threading.Event()
     first: list[BaseException] = []
@@ -138,13 +156,13 @@ def cpu(payload: Probe, ctx: Context) -> Report:
         else:
             facts = _late(name, payload.mode, product, missing)
     served = kernel_ready.ready(name)
-    facts.update(
-        mode=payload.mode,
-        runtime=importlib.metadata.version("cozy-runtime"),
-        torch=str(torch.__version__),
-        exact=served is not None and torch.equal(served, expected),
-        cuda_initialized=torch.cuda.is_initialized(),
-    )
+    facts.update({
+        "mode": payload.mode,
+        "runtime": importlib.metadata.version("cozy-runtime"),
+        "torch": str(torch.__version__),
+        "exact": served is not None and torch.equal(served, expected),
+        "cuda_initialized": torch.cuda.is_initialized(),
+    })
     print("KERNEL-READY " + json.dumps(facts, sort_keys=True), flush=True)
     assert not facts["cuda_initialized"], facts
     grew = facts["epoch_after"] - facts["epoch_before"]

@@ -43,7 +43,7 @@ ANSWERS = {
 class Hostile(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
-    def answer(self):
+    def answer(self) -> None:
         length = int(self.headers.get("Content-Length") or 0)
         self.rfile.read(length)
         with open(LOG, "a") as log:
@@ -60,7 +60,7 @@ class Hostile(http.server.BaseHTTPRequestHandler):
 
     do_GET = do_HEAD = do_POST = do_PUT = do_PATCH = do_DELETE = answer
 
-    def log_message(self, *_):
+    def log_message(self, *_: object) -> None:
         pass
 
 

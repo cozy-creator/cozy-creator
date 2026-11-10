@@ -11,6 +11,7 @@ import ctypes
 import errno
 import json
 import os
+from typing import TypeAlias, TypedDict, cast
 
 ELF = b"\x7fELF"
 PR_GET_DUMPABLE = 3
@@ -25,11 +26,41 @@ class IoVec(ctypes.Structure):
     _fields_ = [("base", ctypes.c_void_p), ("length", ctypes.c_size_t)]
 
 
-def named(code):
+Fact: TypeAlias = str | int | bool | None
+
+
+class ProcMem(TypedDict, total=False):
+    open: str
+    read: str
+    is_elf_header: bool
+
+
+class VmRead(TypedDict, total=False):
+    read: str
+    is_elf_header: bool
+
+
+class Attempt(TypedDict):
+    proc_mem: ProcMem
+    process_vm_readv: VmRead
+
+
+class ProbeReport(TypedDict):
+    self: dict[str, Fact]
+    ptrace_scope: str
+    suid_dumpable: str
+    pid_1: str
+    provider_names_present: list[str]
+    key_names_in_own_environment: list[str]
+    control_own_memory: dict[str, str | None | ProcMem | VmRead]
+    tensord: list[dict[str, Fact | Attempt | str]]
+
+
+def named(code: int) -> str:
     return errno.errorcode.get(code, str(code))
 
 
-def text(path):
+def text(path: str) -> str:
     try:
         with open(path) as file:
             return file.read().strip()
@@ -37,16 +68,16 @@ def text(path):
         return named(error.errno)
 
 
-def status(pid):
+def status(pid: int | str) -> dict[str, Fact]:
     wanted = ("Uid", "Gid", "PPid", "CapEff", "CapPrm", "CapBnd", "Seccomp", "NoNewPrivs")
     with open(f"/proc/{pid}/status") as file:
         rows = dict(line.rstrip("\n").split(":\t", 1) for line in file if ":\t" in line)
-    held = {name: rows.get(name) for name in wanted}
+    held: dict[str, Fact] = {name: rows.get(name) for name in wanted}
     held["sys_ptrace"] = bool(int(rows.get("CapEff", "0"), 16) >> CAP_SYS_PTRACE & 1)
     return held
 
 
-def image_start(pid):
+def image_start(pid: int | str) -> tuple[int | None, str | None]:
     """Where a process's first file-backed image begins: file offset 0, so its first bytes are an ELF header."""
     try:
         with open(f"/proc/{pid}/maps") as file:
@@ -59,7 +90,7 @@ def image_start(pid):
     return None, "no image"
 
 
-def by_proc_mem(pid, address):
+def by_proc_mem(pid: int, address: int | None) -> ProcMem:
     try:
         descriptor = os.open(f"/proc/{pid}/mem", os.O_RDONLY)
     except OSError as error:
@@ -74,7 +105,7 @@ def by_proc_mem(pid, address):
         os.close(descriptor)
 
 
-def by_process_vm(pid, address):
+def by_process_vm(pid: int, address: int | None) -> VmRead:
     if address is None:
         return {"read": "no address"}
     buffer = ctypes.create_string_buffer(len(ELF))
@@ -89,11 +120,11 @@ def by_process_vm(pid, address):
     return {"read": "ok", "is_elf_header": buffer.raw[:got] == ELF}
 
 
-def attempt(pid, address):
+def attempt(pid: int, address: int | None) -> Attempt:
     return {"proc_mem": by_proc_mem(pid, address), "process_vm_readv": by_process_vm(pid, address)}
 
 
-def as_nobody(pid, address):
+def as_nobody(pid: int, address: int | None) -> str | Attempt:
     """The same attempt from a child that has become another user: what running executors as another user would meet."""
     if os.geteuid() != 0:
         return "not root: cannot become another user"
@@ -110,23 +141,24 @@ def as_nobody(pid, address):
     with os.fdopen(read_end) as answer:
         said = answer.read()
     os.waitpid(child, 0)
-    return json.loads(said)
+    return cast(Attempt, json.loads(said))  # the child's attempt()
 
 
-def ancestors():
+def ancestors() -> list[int]:
+    chain: list[int]
     chain, pid = [], os.getpid()
     while pid > 1:
-        pid = int(status(pid)["PPid"])
+        pid = int(cast(str, status(pid)["PPid"]))  # every /proc/<pid>/status has it
         chain.append(pid)
     return chain
 
 
-def probe():
+def probe() -> ProbeReport:
     pids = sorted(int(name) for name in os.listdir("/proc") if name.isdigit())
     tensords = [pid for pid in pids if text(f"/proc/{pid}/comm") == "tensord"]
     above = ancestors()
     start, why = image_start("self")
-    report = {
+    report: ProbeReport = {
         "self": {"pid": os.getpid(), "uid": os.getuid(), "euid": os.geteuid(), "comm": text("/proc/self/comm"),
                  "dumpable": LIBC.prctl(PR_GET_DUMPABLE, 0, 0, 0, 0), **status("self")},
         "ptrace_scope": text("/proc/sys/kernel/yama/ptrace_scope"),

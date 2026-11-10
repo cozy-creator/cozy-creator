@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+from collections.abc import Awaitable, Callable
 from typing import Annotated
 
 import msgspec
@@ -82,7 +83,7 @@ class Result(msgspec.Struct):
     symlink: str
 
 
-async def code_of(call) -> str:
+async def code_of(call: Callable[[], Awaitable[Seen]]) -> str:
     try:
         await call()
     except (CapabilityError, ChildCallError) as refused:
