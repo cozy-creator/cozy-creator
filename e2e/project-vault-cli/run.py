@@ -366,6 +366,7 @@ foreach ($rule in $allowed) {
                         for name in ['proof_image', 'proof_video', 'proof_audio']}
             image = assets.get('proof_image', {})
             self.winarm_image = {key: image.get(key) for key in ['path', 'sha256']}
+            self.winarm_image['canonical_root'] = state.get('path')
             observed = {'normal_cli_metadata': measured,
                         'expected_assets_present': {name: name in assets for name in measured},
                         'image_row': {'field': image.get('field'), 'absent': image.get('absent', False),
@@ -460,7 +461,7 @@ foreach ($rule in $allowed) {
                 raise RuntimeError('media failure diagnostic budget exhausted')
             return value
 
-        def probe_file(path):
+        def probe_file(path, explicit_png=False):
             result = {'is_file': path.is_file()}
             if not result['is_file']:
                 return result
@@ -473,10 +474,13 @@ foreach ($rule in $allowed) {
                       'nb_read_packets,bit_rate,sample_rate,channels:format=duration,bit_rate,start_time')
             done = subprocess.run([str(ffprobe), '-v', 'error', '-count_packets', '-show_entries',
                                    fields, '-of', 'json', '-protocol_whitelist', 'file',
-                                   '-format_whitelist', formats, '-i', str(path)],
+                                   '-format_whitelist', formats]
+                                  + (['-f', 'png_pipe'] if explicit_png else []) + ['-i', str(path)],
                                   capture_output=True, env=self.cli_env, timeout=remaining())
+            stderr = done.stderr.decode('utf-8', errors='replace').replace(str(path), '[PNG input]')
+            stderr = re.sub(r'\\\\\?\\GLOBALROOT[^\r\n]*', '[NT path redacted]', stderr, flags=re.I)
             result.update(exit_code=done.returncode,
-                          stderr=self.media_diagnostic_text(done.stderr.decode('utf-8', errors='replace')))
+                          stderr=self.media_diagnostic_text(stderr))
             try:
                 streams = json.loads(done.stdout).get('streams', [])
                 result['streams'] = [{key: stream.get(key) for key in
@@ -496,6 +500,17 @@ foreach ($rule in $allowed) {
         view = self.view(status)
         imported = view / relative
         diagnostic['imported_png_in_unlocked_encrypted_view'] = probe_file(imported)
+        canonical_root = selected.get('canonical_root') or ''
+        diagnostic['canonical_input_kind'] = {
+            'extended_prefix': canonical_root.startswith('\\\\?\\'),
+            'globalroot_prefix': canonical_root.upper().startswith('\\\\?\\GLOBALROOT\\'),
+            'contains_questionmark': '?' in canonical_root,
+            'spelling_matches_vault_view': canonical_root.casefold() == str(view).casefold()}
+        if not Path(canonical_root).is_absolute():
+            raise RuntimeError('full status did not retain an absolute canonical project root')
+        canonical = Path(canonical_root) / relative
+        diagnostic['canonical_png_default'] = probe_file(canonical)
+        diagnostic['canonical_png_forced_single_image'] = probe_file(canonical, explicit_png=True)
         if original.is_file() and imported.is_file() and max(original.stat().st_size, imported.stat().st_size) <= 1048576:
             diagnostic['original_imported_digest_equal'] = self.digest(original) == self.digest(imported)
         remaining()
