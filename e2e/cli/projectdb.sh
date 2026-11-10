@@ -476,7 +476,7 @@ with sqlite3.connect(f'file:{source}/project.db?mode=ro',uri=True) as original:
     with sqlite3.connect(os.path.join(target,'project.db')) as db:
         original.backup(db)
         db.execute('UPDATE crdt_document SET snapshot=?, heads=? WHERE id=1',
-                   (open(snapshot,'rb').read(),json.dumps(json.load(open(report))['heads'])))
+                   (open(snapshot,'rb').read(),json.dumps(list(reversed(json.load(open(report))['heads'])))))
 PY
 # The product now loads two independently authored history records sharing a display number.
 # Its next real CLI edit must preserve both stable identities, rather than choose by that number.
@@ -504,4 +504,112 @@ with sqlite3.connect(f'file:{sys.argv[1]}?mode=ro',uri=True) as db:
 PY
 CARGO_BUILD_JOBS=1 nice -n 19 cargo run --quiet --locked --manifest-path "$here/crdt/Cargo.toml" -- --history-check "$OUT/crdt-history-after.am" > "$OUT/crdt-history-check.json" 2> "$OUT/crdt-history-check.err" \
   || check "CRDT: history identity after next commit: $(tail -c 300 "$OUT/crdt-history-check.err")"
+db_crdt_stream "$P" "$H"
+}
+
+
+# Native append is a storage stream, not a new state authority. Each mutation goes through cozy;
+# the outside writer/corrupt copies are explicit fault fixtures against actual CLI-created data.
+db_crdt_stream() {
+step "project CRDT: native append, strict restart/corruption and observed-base refusal"
+local P=$1 H=$2 C=$OUT/crdt-canvas-collision
+CARGO_BUILD_JOBS=1 nice -n 19 cargo run --quiet --locked --manifest-path "$here/crdt/Cargo.toml" -- --canvas-collision "$OUT/crdt-renamed.am" "$OUT/crdt-canvas-collision.am" > "$OUT/crdt-canvas-collision.json" 2> "$OUT/crdt-canvas-collision.err" \
+  || { check "CRDT: native canvas fixture: $(tail -c 300 "$OUT/crdt-canvas-collision.err")"; return; }
+CARGO_BUILD_JOBS=1 python3 - "$COZY" "$P" "$H" "$C" "$OUT" "$here/crdt/Cargo.toml" <<'STREAM_PROOF' > "$OUT/crdt-stream-proof.json" 2> "$OUT/crdt-stream-proof.err" || check "CRDT: stream/CAS proof: $(tail -c 600 "$OUT/crdt-stream-proof.err")"
+import hashlib,json,os,sqlite3,subprocess,sys,time
+from pathlib import Path
+binary,project,peer,collision,output,manifest=sys.argv[1:]
+output=Path(output)
+def cli(*args,ok=True):
+    done=subprocess.run([binary,*map(str,args)],capture_output=True,text=True,timeout=40)
+    if ok and done.returncode: raise AssertionError((args,done.stdout,done.stderr))
+    return done
+def snapshot(project):
+    with sqlite3.connect(f'file:{project}/project.db?mode=ro',uri=True) as db:
+        data,heads,kind=db.execute('SELECT snapshot,heads,typeof(snapshot) FROM crdt_document WHERE id=1').fetchone()
+    return data,heads,kind
+def clone(source,target):
+    Path(target).mkdir()
+    with sqlite3.connect(f'file:{source}/project.db?mode=ro',uri=True) as src, sqlite3.connect(f'{target}/project.db') as dst: src.backup(dst)
+def native(mode,source,target):
+    done=subprocess.run(['nice','-n','19','cargo','run','--quiet','--locked','--manifest-path',manifest,'--',mode,str(source),str(target)],capture_output=True,text=True,timeout=60)
+    assert done.returncode==0,done.stderr
+    return json.loads(done.stdout)
+original_id=json.loads(cli('--json','project','-p',project,'status').stdout)['id']
+before,_,_=snapshot(project)
+cli('project','-p',project,'set','groudon','description=Native stream append proof.')
+after,heads,kind=snapshot(project)
+assert kind=='blob' and len(after)>len(before) and after.startswith(before), (kind,len(before),len(after))
+(output/'crdt-stream-before.am').write_bytes(before)
+(output/'crdt-stream-after.am').write_bytes(after)
+# Both parser truncation and a syntactically complete older prefix must refuse. Current
+# schema with no native row must not invent identity from the relational meta fallback.
+for label,data in [('partial',after[:-1]),('older-prefix',before),('missing-row',None)]:
+    target=output/f'crdt-bad-{label}'
+    clone(project,target)
+    with sqlite3.connect(target/'project.db') as db:
+        kept_id=db.execute("SELECT value FROM meta WHERE key='id'").fetchone()
+        if data is None: db.execute('DELETE FROM crdt_document WHERE id=1')
+        else: db.execute('UPDATE crdt_document SET snapshot=? WHERE id=1',(data,))
+    refused=cli('--json','project','-p',target,'status',ok=False)
+    assert refused.returncode!=0,(label,refused.stdout)
+    with sqlite3.connect(target/'project.db') as db:
+        assert db.execute("SELECT value FROM meta WHERE key='id'").fetchone()==kept_id,label
+        row=db.execute('SELECT snapshot,heads FROM crdt_document WHERE id=1').fetchone()
+        assert row is None if data is None else row==(data,heads),label
+# A valid merge can expose two canvas IDs with the same local key. The selected typed
+# peer row must be copied into the mapped identity on the next real mapping edit.
+clone(project,collision)
+report=json.loads((output/'crdt-canvas-collision.json').read_text())
+with sqlite3.connect(f'{collision}/project.db') as db:
+    db.execute('UPDATE crdt_document SET snapshot=?,heads=? WHERE id=1',((output/'crdt-canvas-collision.am').read_bytes(),json.dumps(report['heads'])))
+cli('project','-p',collision,'rename','groudon','surface')
+(output/'crdt-canvas-after.am').write_bytes(snapshot(collision)[0])
+canvas=native('--canvas-check',output/'crdt-canvas-after.am',output/'crdt-canvas-collision.json')
+# Hold the real SQLite writer turn while a real CLI edit reads its old base. Accept the
+# proof ONLY after the append CAS itself reports project_changed; early-start variation
+# may observe the new base, so retry with distinct edits, never treating a sleep as proof.
+observed=False
+for attempt in range(8):
+    source=output/f'crdt-outside-{attempt}-before.am'; source.write_bytes(snapshot(peer)[0])
+    target=output/f'crdt-outside-{attempt}.am'
+    report=native('--outside-edit',source,target)
+    lock=sqlite3.connect(f'{peer}/project.db',timeout=20)
+    lock.execute('BEGIN IMMEDIATE')
+    asked=f'description=STALE_NATIVE_{attempt}'
+    pending=subprocess.Popen([binary,'--json','project','-p',peer,'set','groudon',asked],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+    try:
+        time.sleep(.8)
+        assert pending.poll() is None,'CLI returned while the owned write lock was held'
+        seq=int(lock.execute("SELECT value FROM meta WHERE key='seq'").fetchone()[0])+1
+        lock.execute('UPDATE crdt_document SET snapshot=?,heads=? WHERE id=1',(target.read_bytes(),json.dumps(report['heads'])))
+        lock.execute('INSERT INTO crdt_changes(hash,seq,actor,bytes) VALUES(?,?,?,?)',(report['hash'],seq,report['actor'],target.with_suffix('.change').read_bytes()))
+        lock.execute("UPDATE meta SET value=? WHERE key='seq'",(str(seq),))
+        lock.commit()
+    finally:
+        lock.close()
+    stdout,stderr=pending.communicate(timeout=40)
+    if pending.returncode:
+        assert 'project_changed' in stdout+stderr and 'while this edit was being committed' in stdout+stderr,(stdout,stderr)
+        exported=cli('project','-p',peer,'export').stdout
+        assert f'STALE_NATIVE_{attempt}' not in exported and f'retained native writer crdt-outside-{attempt}' in exported,exported
+        cli('project','-p',peer,'set','groudon',asked)
+        exported=cli('project','-p',peer,'export').stdout
+        assert f'STALE_NATIVE_{attempt}' in exported and f'retained native writer crdt-outside-{attempt}' in exported,exported
+        observed=True
+        break
+assert observed,'no observed stale native base; proof is inconclusive'
+print(json.dumps({'passed':True,'append_type':kind,'prefix_bytes':len(before),'after_bytes':len(after),'project_id':original_id,'partial_and_boundary_truncation_refused':True,'missing_native_row_refused':True,'outside_writer_cas_refused_then_retry':True,'canvas':canvas}))
+STREAM_PROOF
+# The existing suite's real fresh-runner crash/restart path, with no second home or daemon.
+local prior; prior=$(id_of "$P")
+kill9
+[ "$(id_of "$P")" = "$prior" ] || check "CRDT: native appended identity changed across daemon restart"
+db_calcifer
+python3 - "$P/project.db" "$OUT/crdt-stream-after.am" <<'STREAM_RESTART' || check "CRDT: native appended stream changed on readonly restart"
+import sqlite3,sys
+with sqlite3.connect(f'file:{sys.argv[1]}?mode=ro',uri=True) as db:
+    data,kind=db.execute('SELECT snapshot,typeof(snapshot) FROM crdt_document WHERE id=1').fetchone()
+assert kind=='blob' and data==open(sys.argv[2],'rb').read()
+STREAM_RESTART
 }
