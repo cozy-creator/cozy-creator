@@ -278,154 +278,6 @@ e2e/imports/paging.py: [call-overload] No overload variant of "__new__" of "type
 e2e/imports/paging.py: [misc] Generator has incompatible item type "int"; expected "bool"
 e2e/imports/probe.py: [no-any-return] Returning Any from function declared to return "object | None"
 e2e/imports/probe.py: [no-untyped-def] Function is missing a type annotation for one or more parameters
-release-gate/analyze.py: [assignment] Incompatible types in assignment (expression has type "dict[str, Any] | None", variable has type "dict[str, Any]")
-release-gate/analyze.py: [no-untyped-call] Call to untyped function "canonical" in typed context
-release-gate/analyze.py: [no-untyped-call] Call to untyped function "canonical" in typed context
-release-gate/analyze.py: [no-untyped-call] Call to untyped function "canonical" in typed context
-release-gate/analyze.py: [no-untyped-call] Call to untyped function "fp8_weight_only" in typed context
-release-gate/analyze.py: [no-untyped-call] Call to untyped function "image" in typed context
-release-gate/analyze.py: [no-untyped-call] Call to untyped function "image" in typed context
-release-gate/analyze.py: [no-untyped-call] Call to untyped function "image" in typed context
-release-gate/analyze.py: [no-untyped-call] Call to untyped function "image" in typed context
-release-gate/analyze.py: [no-untyped-call] Call to untyped function "read" of "Run" in typed context
-release-gate/analyze.py: [no-untyped-call] Call to untyped function "slow_steps" in typed context
-release-gate/analyze.py: [no-untyped-call] Call to untyped function "walk" in typed context
-release-gate/analyze.py: [no-untyped-call] Call to untyped function "walk" in typed context
-release-gate/analyze.py: [no-untyped-call] Call to untyped function "walk" in typed context
-release-gate/analyze.py: [no-untyped-call] Call to untyped function (unknown) in typed context
-release-gate/analyze.py: [no-untyped-call] Call to untyped function (unknown) in typed context
-release-gate/analyze.py: [no-untyped-call] Call to untyped function (unknown) in typed context
-release-gate/analyze.py: [no-untyped-call] Call to untyped function (unknown) in typed context
-release-gate/analyze.py: [no-untyped-call] Call to untyped function (unknown) in typed context
-release-gate/analyze.py: [no-untyped-call] Call to untyped function (unknown) in typed context
-release-gate/analyze.py: [no-untyped-def] Function is missing a type annotation
-release-gate/analyze.py: [no-untyped-def] Function is missing a type annotation
-release-gate/analyze.py: [no-untyped-def] Function is missing a type annotation
-release-gate/analyze.py: [no-untyped-def] Function is missing a type annotation
-release-gate/analyze.py: [union-attr] Item "Collection[str]" of "Any | Collection[str]" has no attribute "get"
-release-gate/analyze.py: [union-attr] Item "Collection[str]" of "Any | Collection[str]" has no attribute "setdefault"
-release-gate/analyze.py: [union-attr] Item "None" of "Match[str] | None" has no attribute "group"
-release-gate/analyze.py: [var-annotated] Need type annotation for "blocking" (hint: "blocking: dict[<type>, <type>] = ...")
-release-gate/analyze.py: [var-annotated] Need type annotation for "legs" (hint: "legs: dict[<type>, <type>] = ...")
-release-gate/analyze.py: [var-annotated] Need type annotation for "notes" (hint: "notes: list[<type>] = ...")
-release-gate/backfill_to_step1.py: [no-untyped-call] Call to untyped function "read" of "Run" in typed context
-release-gate/frames.py: [explicit-any] Explicit "Any" is not allowed
-release-gate/frames.py: [explicit-any] Explicit "Any" is not allowed
-release-gate/frames.py: [explicit-any] Explicit "Any" is not allowed
-release-gate/frames.py: [explicit-any] Explicit "Any" is not allowed
-release-gate/frames.py: [no-any-return] Returning Any from function declared to return "ndarray[tuple[Any, ...], dtype[Any]]"
-release-gate/frames.py: [no-untyped-call] Call to untyped function (unknown) in typed context
-release-gate/frames.py: [no-untyped-call] Call to untyped function (unknown) in typed context
-release-gate/frames.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/frames.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/frames.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/frames.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/frames.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/frames.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/frames.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/lm.py: [no-untyped-def] Function is missing a type annotation
-release-gate/quality.py: [assignment] Incompatible types in assignment (expression has type "Image", variable has type "ImageFile")
-release-gate/quality.py: [assignment] Incompatible types in assignment (expression has type "None", variable has type "str")
-release-gate/quality.py: [no-untyped-call] Call to untyped function "check" in typed context
-release-gate/quality.py: [no-untyped-call] Call to untyped function "clip" in typed context
-release-gate/quality.py: [no-untyped-call] Call to untyped function "eval" in typed context
-release-gate/quality.py: [no-untyped-call] Call to untyped function "frames" in typed context
-release-gate/quality.py: [no-untyped-call] Call to untyped function "frames" in typed context
-release-gate/quality.py: [no-untyped-call] Call to untyped function "judge" in typed context
-release-gate/quality.py: [no-untyped-call] Call to untyped function "read" of "Run" in typed context
-release-gate/quality.py: [no-untyped-call] Call to untyped function "read" of "Run" in typed context
-release-gate/quality.py: [no-untyped-call] Call to untyped function "rgb" in typed context
-release-gate/quality.py: [no-untyped-call] Call to untyped function "rgb" in typed context
-release-gate/quality.py: [no-untyped-def] Function is missing a return type annotation
-release-gate/quality.py: [no-untyped-def] Function is missing a type annotation
-release-gate/quality.py: [no-untyped-def] Function is missing a type annotation
-release-gate/quality.py: [no-untyped-def] Function is missing a type annotation
-release-gate/quality.py: [no-untyped-def] Function is missing a type annotation
-release-gate/record.py: [no-untyped-call] Call to untyped function "_num" in typed context
-release-gate/record.py: [no-untyped-call] Call to untyped function "_num" in typed context
-release-gate/record.py: [no-untyped-call] Call to untyped function "_num" in typed context
-release-gate/record.py: [no-untyped-call] Call to untyped function "_num" in typed context
-release-gate/record.py: [no-untyped-call] Call to untyped function "_num" in typed context
-release-gate/record.py: [no-untyped-call] Call to untyped function "_num" in typed context
-release-gate/record.py: [no-untyped-call] Call to untyped function "_num" in typed context
-release-gate/record.py: [no-untyped-call] Call to untyped function "_num" in typed context
-release-gate/record.py: [no-untyped-call] Call to untyped function "_num" in typed context
-release-gate/record.py: [no-untyped-call] Call to untyped function "_num" in typed context
-release-gate/record.py: [no-untyped-call] Call to untyped function "_stats" in typed context
-release-gate/record.py: [no-untyped-call] Call to untyped function "_stats" in typed context
-release-gate/record.py: [no-untyped-call] Call to untyped function "_stats" in typed context
-release-gate/record.py: [no-untyped-call] Call to untyped function "_stats" in typed context
-release-gate/record.py: [no-untyped-call] Call to untyped function "rows" in typed context
-release-gate/record.py: [no-untyped-call] Call to untyped function "rows" in typed context
-release-gate/record.py: [no-untyped-call] Call to untyped function "rows" in typed context
-release-gate/record.py: [no-untyped-call] Call to untyped function "rows" in typed context
-release-gate/record.py: [no-untyped-call] Call to untyped function "rows" in typed context
-release-gate/record.py: [no-untyped-call] Call to untyped function "rows" in typed context
-release-gate/record.py: [no-untyped-def] Function is missing a type annotation
-release-gate/record.py: [no-untyped-def] Function is missing a type annotation
-release-gate/record.py: [no-untyped-def] Function is missing a type annotation
-release-gate/record.py: [no-untyped-def] Function is missing a type annotation
-release-gate/record.py: [no-untyped-def] Function is missing a type annotation
-release-gate/record.py: [no-untyped-def] Function is missing a type annotation
-release-gate/record.py: [no-untyped-def] Function is missing a type annotation
-release-gate/record.py: [no-untyped-def] Function is missing a type annotation
-release-gate/record.py: [var-annotated] Need type annotation for "out" (hint: "out: dict[<type>, <type>] = ...")
-release-gate/runs.py: [no-untyped-call] Call to untyped function "_step_track" in typed context
-release-gate/runs.py: [no-untyped-call] Call to untyped function "_step_track" in typed context
-release-gate/runs.py: [no-untyped-call] Call to untyped function "_step_track" in typed context
-release-gate/runs.py: [no-untyped-call] Call to untyped function "dense_steps" in typed context
-release-gate/runs.py: [no-untyped-call] Call to untyped function "of" of "Run" in typed context
-release-gate/runs.py: [no-untyped-call] Call to untyped function "walk" in typed context
-release-gate/runs.py: [no-untyped-call] Call to untyped function "walk" in typed context
-release-gate/runs.py: [no-untyped-call] Call to untyped function "walk" in typed context
-release-gate/runs.py: [no-untyped-call] Call to untyped function (unknown) in typed context
-release-gate/runs.py: [no-untyped-call] Call to untyped function (unknown) in typed context
-release-gate/runs.py: [no-untyped-def] Function is missing a return type annotation
-release-gate/runs.py: [no-untyped-def] Function is missing a return type annotation
-release-gate/runs.py: [no-untyped-def] Function is missing a return type annotation
-release-gate/runs.py: [no-untyped-def] Function is missing a return type annotation
-release-gate/runs.py: [no-untyped-def] Function is missing a return type annotation
-release-gate/runs.py: [no-untyped-def] Function is missing a return type annotation
-release-gate/runs.py: [no-untyped-def] Function is missing a return type annotation
-release-gate/runs.py: [no-untyped-def] Function is missing a return type annotation
-release-gate/runs.py: [no-untyped-def] Function is missing a return type annotation
-release-gate/runs.py: [no-untyped-def] Function is missing a return type annotation
-release-gate/runs.py: [no-untyped-def] Function is missing a return type annotation
-release-gate/runs.py: [no-untyped-def] Function is missing a return type annotation
-release-gate/runs.py: [no-untyped-def] Function is missing a return type annotation
-release-gate/runs.py: [no-untyped-def] Function is missing a return type annotation
-release-gate/runs.py: [no-untyped-def] Function is missing a return type annotation
-release-gate/runs.py: [no-untyped-def] Function is missing a type annotation
-release-gate/runs.py: [no-untyped-def] Function is missing a type annotation
-release-gate/runs.py: [no-untyped-def] Function is missing a type annotation
-release-gate/runs.py: [no-untyped-def] Function is missing a type annotation
-release-gate/runs.py: [no-untyped-def] Function is missing a type annotation
-release-gate/runs.py: [no-untyped-def] Function is missing a type annotation
-release-gate/runs.py: [no-untyped-def] Function is missing a type annotation
-release-gate/runs.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/runs.py: [type-arg] Missing type arguments for generic type "tuple"
-release-gate/runs.py: [type-arg] Missing type arguments for generic type "tuple"
-release-gate/runs.py: [unreachable] Right operand of "or" is never evaluated
-release-gate/runs.py: [var-annotated] Need type annotation for "found" (hint: "found: dict[<type>, <type>] = ...")
-release-gate/sessions/fixtures/client-gone/link.py: [no-untyped-call] Call to untyped function "carry" in typed context
-release-gate/sessions/fixtures/client-gone/link.py: [no-untyped-call] Call to untyped function "main" in typed context
-release-gate/sessions/fixtures/client-gone/link.py: [no-untyped-call] Call to untyped function "said" in typed context
-release-gate/sessions/fixtures/client-gone/link.py: [no-untyped-call] Call to untyped function "said" in typed context
-release-gate/sessions/fixtures/client-gone/link.py: [no-untyped-def] Function is missing a return type annotation
-release-gate/sessions/fixtures/client-gone/link.py: [no-untyped-def] Function is missing a return type annotation
-release-gate/sessions/fixtures/client-gone/link.py: [no-untyped-def] Function is missing a type annotation
-release-gate/sessions/fixtures/client-gone/link.py: [no-untyped-def] Function is missing a type annotation
-release-gate/sessions/fixtures/client-gone/link.py: [var-annotated] Need type annotation for "writers" (hint: "writers: set[<type>] = ...")
-release-gate/sessions/fixtures/door/hostile_calcifer.py: [no-untyped-def] Function is missing a return type annotation
-release-gate/sessions/fixtures/door/hostile_calcifer.py: [no-untyped-def] Function is missing a type annotation
-release-gate/sessions/fixtures/game.py: [no-any-return] Returning Any from function declared to return "dict[Any, Any]"
-release-gate/sessions/fixtures/game.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/sessions/fixtures/game.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/sessions/fixtures/game.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/sessions/fixtures/game.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/sessions/fixtures/game.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/sessions/fixtures/game.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/sessions/fixtures/gpu-hold/gpu_hold/__init__.py: [var-annotated] Need type annotation for "_HELD" (hint: "_HELD: list[<type>] = ...")
 release-gate/sessions/fixtures/hub-outage/ci_hub_outage/__init__.py: [arg-type] Argument "model" to "piece" has incompatible type "ModelChoice"; expected "Weights[Any]"
 release-gate/sessions/fixtures/hub-outage/ci_hub_outage/__init__.py: [misc] Type of decorated function contains type "Any" ("def (*, model: Weights[Any]) -> PendingCall[Read]")
 release-gate/sessions/fixtures/hub-outage/ci_hub_outage/__init__.py: [type-arg] Missing type arguments for generic type "Weights"
@@ -435,82 +287,14 @@ release-gate/sessions/fixtures/pause-twice/ci_pause_twice/__init__.py: [call-arg
 release-gate/sessions/fixtures/pause-twice/ci_pause_twice/__init__.py: [call-arg] Missing named argument "out" for "paint"
 release-gate/sessions/fixtures/pause-twice/ci_pause_twice/__init__.py: [call-arg] Missing named argument "tel" for "paint"
 release-gate/sessions/fixtures/pause-twice/ci_pause_twice/__init__.py: [return-value] Incompatible return value type (got "object", expected "ImageResult")
-release-gate/sessions/fixtures/probes/fixture.py: [assignment] Incompatible types in assignment (expression has type "bool", target has type "str | None")
-release-gate/sessions/fixtures/probes/fixture.py: [no-untyped-call] Call to untyped function "ancestors" in typed context
-release-gate/sessions/fixtures/probes/fixture.py: [no-untyped-call] Call to untyped function "as_nobody" in typed context
-release-gate/sessions/fixtures/probes/fixture.py: [no-untyped-call] Call to untyped function "attempt" in typed context
-release-gate/sessions/fixtures/probes/fixture.py: [no-untyped-call] Call to untyped function "attempt" in typed context
-release-gate/sessions/fixtures/probes/fixture.py: [no-untyped-call] Call to untyped function "attempt" in typed context
-release-gate/sessions/fixtures/probes/fixture.py: [no-untyped-call] Call to untyped function "by_proc_mem" in typed context
-release-gate/sessions/fixtures/probes/fixture.py: [no-untyped-call] Call to untyped function "by_process_vm" in typed context
-release-gate/sessions/fixtures/probes/fixture.py: [no-untyped-call] Call to untyped function "image_start" in typed context
-release-gate/sessions/fixtures/probes/fixture.py: [no-untyped-call] Call to untyped function "image_start" in typed context
-release-gate/sessions/fixtures/probes/fixture.py: [no-untyped-call] Call to untyped function "named" in typed context
-release-gate/sessions/fixtures/probes/fixture.py: [no-untyped-call] Call to untyped function "named" in typed context
-release-gate/sessions/fixtures/probes/fixture.py: [no-untyped-call] Call to untyped function "named" in typed context
-release-gate/sessions/fixtures/probes/fixture.py: [no-untyped-call] Call to untyped function "named" in typed context
-release-gate/sessions/fixtures/probes/fixture.py: [no-untyped-call] Call to untyped function "named" in typed context
-release-gate/sessions/fixtures/probes/fixture.py: [no-untyped-call] Call to untyped function "probe" in typed context
-release-gate/sessions/fixtures/probes/fixture.py: [no-untyped-call] Call to untyped function "probe" in typed context
-release-gate/sessions/fixtures/probes/fixture.py: [no-untyped-call] Call to untyped function "status" in typed context
-release-gate/sessions/fixtures/probes/fixture.py: [no-untyped-call] Call to untyped function "status" in typed context
-release-gate/sessions/fixtures/probes/fixture.py: [no-untyped-call] Call to untyped function "status" in typed context
-release-gate/sessions/fixtures/probes/fixture.py: [no-untyped-call] Call to untyped function "text" in typed context
-release-gate/sessions/fixtures/probes/fixture.py: [no-untyped-call] Call to untyped function "text" in typed context
-release-gate/sessions/fixtures/probes/fixture.py: [no-untyped-call] Call to untyped function "text" in typed context
-release-gate/sessions/fixtures/probes/fixture.py: [no-untyped-call] Call to untyped function "text" in typed context
-release-gate/sessions/fixtures/probes/fixture.py: [no-untyped-call] Call to untyped function "text" in typed context
-release-gate/sessions/fixtures/probes/fixture.py: [no-untyped-def] Function is missing a return type annotation
-release-gate/sessions/fixtures/probes/fixture.py: [no-untyped-def] Function is missing a return type annotation
-release-gate/sessions/fixtures/probes/fixture.py: [no-untyped-def] Function is missing a type annotation
-release-gate/sessions/fixtures/probes/fixture.py: [no-untyped-def] Function is missing a type annotation
-release-gate/sessions/fixtures/probes/fixture.py: [no-untyped-def] Function is missing a type annotation
-release-gate/sessions/fixtures/probes/fixture.py: [no-untyped-def] Function is missing a type annotation
-release-gate/sessions/fixtures/probes/fixture.py: [no-untyped-def] Function is missing a type annotation
-release-gate/sessions/fixtures/probes/fixture.py: [no-untyped-def] Function is missing a type annotation
-release-gate/sessions/fixtures/probes/fixture.py: [no-untyped-def] Function is missing a type annotation
-release-gate/sessions/fixtures/probes/fixture.py: [no-untyped-def] Function is missing a type annotation
 release-gate/sessions/fixtures/xs132-pipeline/xs132_pipeline/__init__.py: [call-arg] Unexpected keyword argument "image" for "remove_background"
 release-gate/sessions/fixtures/xs132-pipeline/xs132_pipeline/__init__.py: [misc] Incompatible types in "await" (actual type "RemoveBackgroundOutput", expected type "Awaitable[Any]")
-release-gate/suites/cli/check.py: [no-untyped-call] Call to untyped function "reserved_mib" in typed context
-release-gate/suites/cli/check.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/cli/check.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/cli/check.py: [var-annotated] Need type annotation for "fails" (hint: "fails: list[<type>] = ...")
-release-gate/suites/cli/check.py: [var-annotated] Need type annotation for "notes" (hint: "notes: list[<type>] = ...")
-release-gate/suites/contract/check.py: [no-untyped-call] Call to untyped function "check" in typed context
-release-gate/suites/contract/check.py: [no-untyped-call] Call to untyped function "judge" in typed context
-release-gate/suites/contract/check.py: [no-untyped-call] Call to untyped function "read" of "Run" in typed context
-release-gate/suites/contract/check.py: [no-untyped-call] Call to untyped function "rows" in typed context
-release-gate/suites/contract/check.py: [no-untyped-call] Call to untyped function "warnings" in typed context
-release-gate/suites/contract/check.py: [no-untyped-call] Call to untyped function "warnings" in typed context
-release-gate/suites/contract/check.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/contract/check.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/contract/check.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/contract/check.py: [var-annotated] Need type annotation for "notes" (hint: "notes: list[<type>] = ...")
-release-gate/suites/escaped/check.py: [no-untyped-call] Call to untyped function "check" in typed context
-release-gate/suites/escaped/check.py: [no-untyped-call] Call to untyped function "compared" in typed context
-release-gate/suites/escaped/check.py: [no-untyped-call] Call to untyped function "loops" in typed context
-release-gate/suites/escaped/check.py: [no-untyped-call] Call to untyped function "named" in typed context
-release-gate/suites/escaped/check.py: [no-untyped-call] Call to untyped function "read" of "Run" in typed context
-release-gate/suites/escaped/check.py: [no-untyped-call] Call to untyped function "read" of "Run" in typed context
-release-gate/suites/escaped/check.py: [no-untyped-call] Call to untyped function "rows" in typed context
-release-gate/suites/escaped/check.py: [no-untyped-call] Call to untyped function "twins" in typed context
-release-gate/suites/escaped/check.py: [no-untyped-call] Call to untyped function (unknown) in typed context
-release-gate/suites/escaped/check.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/escaped/check.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/escaped/check.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/escaped/check.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/escaped/check.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/escaped/check.py: [var-annotated] Need type annotation for "notes" (hint: "notes: list[<type>] = ...")
-release-gate/suites/execution/capture-refusal/ci_capture_refusal/__init__.py: [no-untyped-call] Call to untyped function "step" in typed context
-release-gate/suites/execution/capture-refusal/ci_capture_refusal/__init__.py: [no-untyped-def] Function is missing a type annotation
 release-gate/suites/execution/child-lora-stacks/ci_child_lora_stacks/__init__.py: [arg-type] Argument "model" to "paint" has incompatible type "ModelChoice | None"; expected "SdxlModel"
 release-gate/suites/execution/child-lora-stacks/ci_child_lora_stacks/__init__.py: [arg-type] Argument "seed" to "GenerateInput" has incompatible type "int"; expected "Seed | None"
 release-gate/suites/execution/child-lora-stacks/ci_child_lora_stacks/__init__.py: [call-arg] Missing named argument "adj" for "paint"
 release-gate/suites/execution/child-lora-stacks/ci_child_lora_stacks/__init__.py: [call-arg] Missing named argument "out" for "paint"
 release-gate/suites/execution/child-lora-stacks/ci_child_lora_stacks/__init__.py: [call-arg] Missing named argument "tel" for "paint"
 release-gate/suites/execution/child-lora-stacks/ci_child_lora_stacks/__init__.py: [return-value] Incompatible return value type (got "object", expected "ImageResult")
-release-gate/suites/execution/child-saved-file/ci_child_saved_file/__init__.py: [no-untyped-def] Function is missing a type annotation for one or more parameters
 release-gate/suites/execution/child-saved-file/ci_child_saved_file/__init__.py: [union-attr] Item "None" of "Path | None" has no attribute "parent"
 release-gate/suites/execution/child-saved-file/ci_child_saved_file/__init__.py: [union-attr] Item "None" of "Path | None" has no attribute "read_bytes"
 release-gate/suites/execution/child-saved-file/ci_child_saved_file/__init__.py: [union-attr] Item "None" of "Path | None" has no attribute "read_bytes"
@@ -522,82 +306,21 @@ release-gate/suites/execution/conditional-body/ci_conditional_body/__init__.py: 
 release-gate/suites/execution/conditional-body/ci_conditional_body/__init__.py: [var-annotated] Need type annotation for "SEEN" (hint: "SEEN: dict[<type>, <type>] = ...")
 release-gate/suites/execution/conditional-body/ci_conditional_body/__init__.py: [var-annotated] Need type annotation for "checks" (hint: "checks: list[<type>] = ...")
 release-gate/suites/execution/conditional-body/ci_conditional_body/__init__.py: [var-annotated] Need type annotation for "ops" (hint: "ops: list[<type>] = ...")
-release-gate/suites/execution/kernel-ready-publication/ci_kernel_ready_publication/__init__.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/suites/execution/kernel-ready-publication/ci_kernel_ready_publication/__init__.py: [type-arg] Missing type arguments for generic type "dict"
 release-gate/suites/execution/kernel-ready-publication/ci_kernel_ready_publication/__init__.py: [unreachable] Right operand of "and" is never evaluated
 release-gate/suites/execution/kernel-ready-publication/ci_kernel_ready_publication/__init__.py: [unreachable] Statement is unreachable
-release-gate/suites/execution/kernel-regret/ci_kernel_regret/__init__.py: [arg-type] Argument 1 to "_bench" has incompatible type "dict[Any, Callable[[Any, Any], Tensor]]"; expected "dict[str, Callable[[int], object]]"
-release-gate/suites/execution/kernel-regret/ci_kernel_regret/__init__.py: [arg-type] Argument 1 to "_bench" has incompatible type "dict[Any, partial[Tensor]]"; expected "dict[str, Callable[[int], object]]"
-release-gate/suites/execution/kernel-regret/ci_kernel_regret/__init__.py: [arg-type] Argument 1 to "_bench" has incompatible type "dict[str, Callable[[int], Tensor]]"; expected "dict[str, Callable[[int], object]]"
-release-gate/suites/execution/kernel-regret/ci_kernel_regret/__init__.py: [arg-type] Argument 1 to "_sparse" has incompatible type "dict[str, str]"; expected "Row"
-release-gate/suites/execution/kernel-regret/ci_kernel_regret/__init__.py: [arg-type] Argument 1 to "walk" has incompatible type "dict[str, str]"; expected "Row"
 release-gate/suites/execution/kernel-regret/ci_kernel_regret/__init__.py: [arg-type] Argument 2 to "_warm" has incompatible type "int"; expected "bool"
-release-gate/suites/execution/kernel-regret/ci_kernel_regret/__init__.py: [assignment] Incompatible types in assignment (expression has type "Row", variable has type "dict[str, str]")
 release-gate/suites/execution/kernel-regret/ci_kernel_regret/__init__.py: [assignment] Incompatible types in assignment (expression has type "list[str]", variable has type "tuple[str, ...]")
 release-gate/suites/execution/kernel-regret/ci_kernel_regret/__init__.py: [assignment] Incompatible types in assignment (expression has type "tuple[int, int, int]", variable has type "tuple[int, int, int, int]")
-release-gate/suites/execution/kernel-regret/ci_kernel_regret/__init__.py: [attr-defined] "dict[str, str]" has no attribute "family"
-release-gate/suites/execution/kernel-regret/ci_kernel_regret/__init__.py: [attr-defined] "dict[str, str]" has no attribute "family"
 release-gate/suites/execution/kernel-regret/ci_kernel_regret/__init__.py: [call-arg] Too many arguments for "_warm"
-release-gate/suites/execution/kernel-regret/ci_kernel_regret/__init__.py: [explicit-any] Explicit "Any" is not allowed
-release-gate/suites/execution/kernel-regret/ci_kernel_regret/__init__.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/suites/execution/kernel-regret/ci_kernel_regret/__init__.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/suites/execution/kernel-regret/ci_kernel_regret/__init__.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/suites/execution/kernel-regret/ci_kernel_regret/__init__.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/suites/execution/kernel-regret/ci_kernel_regret/__init__.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/suites/execution/kernel-regret/ci_kernel_regret/__init__.py: [var-annotated] Need type annotation for "reps" (hint: "reps: dict[<type>, <type>] = ...")
-release-gate/suites/execution/kernel-regret/ci_kernel_regret/__init__.py: [var-annotated] Need type annotation for "samples"
 release-gate/suites/execution/lora-overlay-refill/ci_lora_overlay_refill/__init__.py: [arg-type] Argument 1 to "Hook" has incompatible type "partial[Module | None]"; expected "Callable[[], Factors | None]"
 release-gate/suites/execution/lora-overlay-refill/ci_lora_overlay_refill/__init__.py: [arg-type] Argument 1 to "float" has incompatible type "Tensor | Module"; expected "str | Buffer | SupportsFloat | SupportsIndex"
-release-gate/suites/execution/lora-overlay-refill/ci_lora_overlay_refill/__init__.py: [explicit-any] Explicit "Any" is not allowed
-release-gate/suites/execution/lora-overlay-refill/ci_lora_overlay_refill/__init__.py: [explicit-any] Explicit "Any" is not allowed
-release-gate/suites/execution/lora-overlay-refill/ci_lora_overlay_refill/__init__.py: [explicit-any] Explicit "Any" is not allowed
-release-gate/suites/execution/lora-overlay-refill/ci_lora_overlay_refill/__init__.py: [misc] Type of decorated function contains type "Any" ("Callable[[Lightning, QwenDiT, Inputs, Any], Tensor]")
-release-gate/suites/execution/lora-overlay-refill/ci_lora_overlay_refill/__init__.py: [misc] Type of decorated function contains type "Any" ("Callable[[QwenDiT, Inputs, Module | None, Any], Tensor]")
 release-gate/suites/execution/lora-overlay-refill/ci_lora_overlay_refill/__init__.py: [no-untyped-call] Call to untyped function "from_config" of "QwenImageTransformer2DModel" in typed context
 release-gate/suites/execution/lora-overlay-refill/ci_lora_overlay_refill/__init__.py: [redundant-expr] If condition is always false
 release-gate/suites/execution/lora-overlay-refill/ci_lora_overlay_refill/__init__.py: [union-attr] Item "Tensor" of "Tensor | Module" has no attribute "get_submodule"
-release-gate/suites/execution/lora-overlay-refill/ci_lora_overlay_refill/exercise.py: [attr-defined] "Residency" has no attribute "baked"
-release-gate/suites/execution/lora-overlay-refill/ci_lora_overlay_refill/exercise.py: [attr-defined] "Residency" has no attribute "baked"
-release-gate/suites/execution/lora-overlay-refill/ci_lora_overlay_refill/exercise.py: [attr-defined] "Residency" has no attribute "bakes"
-release-gate/suites/execution/lora-overlay-refill/ci_lora_overlay_refill/exercise.py: [attr-defined] "Residency" has no attribute "models"
-release-gate/suites/execution/lora-overlay-refill/ci_lora_overlay_refill/exercise.py: [attr-defined] "Residency" has no attribute "serve_lora"
-release-gate/suites/execution/lora-overlay-refill/ci_lora_overlay_refill/exercise.py: [attr-defined] "Residency" has no attribute "serve_lora"
-release-gate/suites/execution/lora-overlay-refill/ci_lora_overlay_refill/exercise.py: [explicit-any] Explicit "Any" is not allowed
-release-gate/suites/execution/lora-overlay-refill/ci_lora_overlay_refill/exercise.py: [explicit-any] Explicit "Any" is not allowed
-release-gate/suites/execution/lora-overlay-refill/ci_lora_overlay_refill/exercise.py: [explicit-any] Explicit "Any" is not allowed
-release-gate/suites/execution/lora-overlay-refill/ci_lora_overlay_refill/exercise.py: [explicit-any] Explicit "Any" is not allowed
-release-gate/suites/execution/lora-overlay-refill/ci_lora_overlay_refill/exercise.py: [explicit-any] Explicit "Any" is not allowed
-release-gate/suites/execution/lora-overlay-refill/ci_lora_overlay_refill/exercise.py: [explicit-any] Explicit "Any" is not allowed
 release-gate/suites/execution/lora-overlay-refill/ci_lora_overlay_refill/exercise.py: [misc] Assignment to variable "error" outside except: block
 release-gate/suites/execution/lora-overlay-refill/ci_lora_overlay_refill/exercise.py: [misc] Trying to read deleted variable "error"
 release-gate/suites/execution/lora-overlay-refill/ci_lora_overlay_refill/exercise.py: [misc] Trying to read deleted variable "error"
 release-gate/suites/execution/lora-overlay-refill/ci_lora_overlay_refill/exercise.py: [misc] Trying to read deleted variable "error"
-release-gate/suites/execution/model-qualification/run.py: [no-untyped-call] Call to untyped function "command" in typed context
-release-gate/suites/execution/model-qualification/run.py: [no-untyped-call] Call to untyped function "command" in typed context
-release-gate/suites/execution/model-qualification/run.py: [no-untyped-call] Call to untyped function "image_evidence" in typed context
-release-gate/suites/execution/model-qualification/run.py: [no-untyped-call] Call to untyped function "main" in typed context
-release-gate/suites/execution/model-qualification/run.py: [no-untyped-call] Call to untyped function "read_snapshot" in typed context
-release-gate/suites/execution/model-qualification/run.py: [no-untyped-call] Call to untyped function "read_snapshot" in typed context
-release-gate/suites/execution/model-qualification/run.py: [no-untyped-call] Call to untyped function "read_snapshot" in typed context
-release-gate/suites/execution/model-qualification/run.py: [no-untyped-call] Call to untyped function "read_snapshot" in typed context
-release-gate/suites/execution/model-qualification/run.py: [no-untyped-call] Call to untyped function "run_events" in typed context
-release-gate/suites/execution/model-qualification/run.py: [no-untyped-call] Call to untyped function "run_events" in typed context
-release-gate/suites/execution/model-qualification/run.py: [no-untyped-call] Call to untyped function "source_identity" in typed context
-release-gate/suites/execution/model-qualification/run.py: [no-untyped-call] Call to untyped function "source_identity" in typed context
-release-gate/suites/execution/model-qualification/run.py: [no-untyped-call] Call to untyped function "summarize" in typed context
-release-gate/suites/execution/model-qualification/run.py: [no-untyped-call] Call to untyped function "write" in typed context
-release-gate/suites/execution/model-qualification/run.py: [no-untyped-call] Call to untyped function "write" in typed context
-release-gate/suites/execution/model-qualification/run.py: [no-untyped-call] Call to untyped function "write" in typed context
-release-gate/suites/execution/model-qualification/run.py: [no-untyped-call] Call to untyped function "write" in typed context
-release-gate/suites/execution/model-qualification/run.py: [no-untyped-call] Call to untyped function "write" in typed context
-release-gate/suites/execution/model-qualification/run.py: [no-untyped-def] Function is missing a return type annotation
-release-gate/suites/execution/model-qualification/run.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/execution/model-qualification/run.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/execution/model-qualification/run.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/execution/model-qualification/run.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/execution/model-qualification/run.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/execution/model-qualification/run.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/execution/model-qualification/run.py: [no-untyped-def] Function is missing a type annotation
 release-gate/suites/execution/mps-residency/ci_mps_residency/__init__.py: [comparison-overlap] Non-overlapping equality check (left operand type: "dict[str, list[int]]", right operand type: "int")
 release-gate/suites/execution/mps-residency/ci_mps_residency/__init__.py: [unreachable] Statement is unreachable
 release-gate/suites/execution/overlay-replay/ci_overlay_replay/__init__.py: [arg-type] Argument 1 to "Hook" has incompatible type "partial[Module | None]"; expected "Callable[[], Factors | None]"
@@ -605,7 +328,6 @@ release-gate/suites/execution/overlay-replay/ci_overlay_replay/__init__.py: [arg
 release-gate/suites/execution/overlay-replay/ci_overlay_replay/__init__.py: [assignment] Incompatible types in assignment (expression has type "None", variable has type "Tensor | Module")
 release-gate/suites/execution/overlay-replay/ci_overlay_replay/__init__.py: [assignment] Incompatible types in assignment (expression has type Module | None, variable has type "Tensor | Module")
 release-gate/suites/execution/overlay-replay/ci_overlay_replay/__init__.py: [assignment] Incompatible types in assignment (expression has type Module | None, variable has type "Tensor | Module")
-release-gate/suites/execution/overlay-replay/ci_overlay_replay/__init__.py: [explicit-any] Explicit "Any" is not allowed
 release-gate/suites/execution/overlay-replay/ci_overlay_replay/__init__.py: [no-untyped-call] Call to untyped function "from_config" of "QwenImageTransformer2DModel" in typed context
 release-gate/suites/execution/overlay-replay/ci_overlay_replay/__init__.py: [operator] "Tensor" not callable
 release-gate/suites/execution/overlay-replay/ci_overlay_replay/__init__.py: [operator] "Tensor" not callable
@@ -615,151 +337,17 @@ release-gate/suites/execution/overlay-replay/ci_overlay_replay/__init__.py: [ope
 release-gate/suites/execution/overlay-replay/ci_overlay_replay/__init__.py: [redundant-expr] If condition is always false
 release-gate/suites/execution/overlay-replay/ci_overlay_replay/__init__.py: [union-attr] Item "Tensor" of "Tensor | Module" has no attribute "get_submodule"
 release-gate/suites/execution/overlay-replay/ci_overlay_replay/__init__.py: [union-attr] Item Module of "Tensor | Module" has no attribute "__iter__" (not iterable)
-release-gate/suites/hub/contract.py: [no-untyped-call] Call to untyped function "get" in typed context
-release-gate/suites/hub/contract.py: [no-untyped-call] Call to untyped function "get" in typed context
-release-gate/suites/hub/contract.py: [no-untyped-call] Call to untyped function "get" in typed context
-release-gate/suites/hub/contract.py: [no-untyped-call] Call to untyped function "row" in typed context
-release-gate/suites/hub/contract.py: [no-untyped-call] Call to untyped function "row" in typed context
-release-gate/suites/hub/contract.py: [no-untyped-call] Call to untyped function "row" in typed context
-release-gate/suites/hub/contract.py: [no-untyped-call] Call to untyped function "row" in typed context
-release-gate/suites/hub/contract.py: [no-untyped-call] Call to untyped function "row" in typed context
-release-gate/suites/hub/contract.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/hub/contract.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/kernels/check.py: [no-untyped-call] Call to untyped function "_detail" in typed context
-release-gate/suites/kernels/check.py: [no-untyped-call] Call to untyped function "_detail" in typed context
-release-gate/suites/kernels/check.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/kernels/check.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/kernels/check.py: [var-annotated] Need type annotation for "fails" (hint: "fails: list[<type>] = ...")
-release-gate/suites/kernels/check.py: [var-annotated] Need type annotation for "notes" (hint: "notes: list[<type>] = ...")
-release-gate/suites/kernels/ci_kernels/__init__.py: [arg-type] Argument 1 to "dispatch_attention_fn" has incompatible type "*list[Tensor]"; expected "bool"
-release-gate/suites/kernels/ci_kernels/__init__.py: [arg-type] Argument 1 to "dispatch_attention_fn" has incompatible type "*list[Tensor]"; expected "dict[str, Any] | None"
-release-gate/suites/kernels/ci_kernels/__init__.py: [arg-type] Argument 1 to "dispatch_attention_fn" has incompatible type "*list[Tensor]"; expected "float | None"
-release-gate/suites/kernels/ci_kernels/__init__.py: [arg-type] Argument 1 to "dispatch_attention_fn" has incompatible type "*list[Tensor]"; expected "float"
-release-gate/suites/kernels/ci_kernels/__init__.py: [attr-defined] "Ready" has no attribute "member"
-release-gate/suites/kernels/ci_kernels/__init__.py: [attr-defined] "Ready" has no attribute "member"
-release-gate/suites/kernels/ci_kernels/__init__.py: [attr-defined] "Ready" has no attribute "member"
-release-gate/suites/kernels/ci_kernels/__init__.py: [explicit-any] Explicit "Any" is not allowed
-release-gate/suites/kernels/ci_kernels/__init__.py: [method-assign] Cannot assign to a method
-release-gate/suites/kernels/ci_kernels/__init__.py: [misc] "scaled_dot_product_attention" gets multiple values for keyword argument "is_causal"
-release-gate/suites/kernels/ci_kernels/__init__.py: [no-untyped-call] Call to untyped function "_bf16" in typed context
-release-gate/suites/kernels/ci_kernels/__init__.py: [no-untyped-call] Call to untyped function "_bf16" in typed context
-release-gate/suites/kernels/ci_kernels/__init__.py: [no-untyped-call] Call to untyped function "_bf16" in typed context
-release-gate/suites/kernels/ci_kernels/__init__.py: [no-untyped-call] Call to untyped function "_bf16" in typed context
-release-gate/suites/kernels/ci_kernels/__init__.py: [no-untyped-call] Call to untyped function "_bf16" in typed context
-release-gate/suites/kernels/ci_kernels/__init__.py: [no-untyped-call] Call to untyped function "_bf16" in typed context
-release-gate/suites/kernels/ci_kernels/__init__.py: [no-untyped-call] Call to untyped function "_bf16" in typed context
-release-gate/suites/kernels/ci_kernels/__init__.py: [no-untyped-call] Call to untyped function "_bf16" in typed context
-release-gate/suites/kernels/ci_kernels/__init__.py: [no-untyped-call] Call to untyped function "_bf16" in typed context
-release-gate/suites/kernels/ci_kernels/__init__.py: [no-untyped-call] Call to untyped function "_bf16" in typed context
-release-gate/suites/kernels/ci_kernels/__init__.py: [no-untyped-call] Call to untyped function "data" in typed context
-release-gate/suites/kernels/ci_kernels/__init__.py: [no-untyped-call] Call to untyped function "law" in typed context
-release-gate/suites/kernels/ci_kernels/__init__.py: [no-untyped-call] Call to untyped function "mismatches" in typed context
-release-gate/suites/kernels/ci_kernels/__init__.py: [no-untyped-def] Function is missing a return type annotation
-release-gate/suites/kernels/ci_kernels/__init__.py: [no-untyped-def] Function is missing a return type annotation
-release-gate/suites/kernels/ci_kernels/__init__.py: [no-untyped-def] Function is missing a return type annotation
-release-gate/suites/kernels/ci_kernels/__init__.py: [no-untyped-def] Function is missing a return type annotation
-release-gate/suites/kernels/ci_kernels/__init__.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/kernels/ci_kernels/__init__.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/kernels/ci_kernels/__init__.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/kernels/ci_kernels/__init__.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/kernels/ci_kernels/__init__.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/kernels/ci_kernels/__init__.py: [no-untyped-def] Function is missing a type annotation for one or more parameters
-release-gate/suites/kernels/ci_kernels/__init__.py: [no-untyped-def] Function is missing a type annotation for one or more parameters
-release-gate/suites/kernels/ci_kernels/__init__.py: [no-untyped-def] Function is missing a type annotation for one or more parameters
-release-gate/suites/kernels/ci_kernels/__init__.py: [no-untyped-def] Function is missing a type annotation for one or more parameters
-release-gate/suites/kernels/ci_kernels/__init__.py: [no-untyped-def] Function is missing a type annotation for one or more parameters
-release-gate/suites/kernels/ci_kernels/__init__.py: [no-untyped-def] Function is missing a type annotation for one or more parameters
-release-gate/suites/kernels/ci_kernels/__init__.py: [no-untyped-def] Function is missing a type annotation for one or more parameters
-release-gate/suites/kernels/ci_kernels/__init__.py: [no-untyped-def] Function is missing a type annotation for one or more parameters
-release-gate/suites/kernels/ci_kernels/__init__.py: [no-untyped-def] Function is missing a type annotation for one or more parameters
-release-gate/suites/kernels/ci_kernels/__init__.py: [no-untyped-def] Function is missing a type annotation for one or more parameters
-release-gate/suites/kernels/ci_kernels/__init__.py: [no-untyped-def] Function is missing a type annotation for one or more parameters
-release-gate/suites/kernels/ci_kernels/__init__.py: [no-untyped-def] Function is missing a type annotation for one or more parameters
-release-gate/suites/kernels/ci_kernels/__init__.py: [no-untyped-def] Function is missing a type annotation for one or more parameters
-release-gate/suites/kernels/ci_kernels/__init__.py: [no-untyped-def] Function is missing a type annotation for one or more parameters
-release-gate/suites/kernels/ci_kernels/__init__.py: [possibly-undefined] Name "why" may be undefined
 release-gate/suites/kernels/ci_kernels/__init__.py: [redundant-expr] If condition is always false
 release-gate/suites/kernels/ci_kernels/__init__.py: [redundant-expr] If condition is always false
 release-gate/suites/kernels/ci_kernels/__init__.py: [redundant-expr] If condition is always false
 release-gate/suites/kernels/ci_kernels/__init__.py: [redundant-expr] If condition is always false
-release-gate/suites/kernels/ci_kernels/__init__.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/suites/kernels/ci_kernels/__init__.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/suites/kernels/ci_kernels/__init__.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/suites/kernels/ci_kernels/__init__.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/suites/kernels/ci_kernels/__init__.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/suites/kernels/ci_kernels/__init__.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/suites/kernels/ci_kernels/__init__.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/suites/kernels/ci_kernels/__init__.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/suites/kernels/ci_kernels/__init__.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/suites/kernels/ci_kernels/__init__.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/suites/kernels/ci_kernels/__init__.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/suites/kernels/ci_kernels/__init__.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/suites/kernels/ci_kernels/__init__.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/suites/kernels/ci_kernels/__init__.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/suites/kernels/ci_kernels/__init__.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/suites/kernels/ci_kernels/__init__.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/suites/kernels/ci_kernels/__init__.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/suites/kernels/ci_kernels/__init__.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/suites/kernels/ci_kernels/__init__.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/suites/kernels/ci_kernels/__init__.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/suites/kernels/ci_kernels/__init__.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/suites/kernels/ci_kernels/__init__.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/suites/kernels/ci_kernels/__init__.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/suites/kernels/ci_kernels/__init__.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/suites/kernels/ci_kernels/__init__.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/suites/kernels/ci_kernels/__init__.py: [type-arg] Missing type arguments for generic type "dict"
-release-gate/suites/kernels/ci_kernels/__init__.py: [type-arg] Missing type arguments for generic type "dict"
 release-gate/suites/kernels/ci_kernels/__init__.py: [unreachable] Subclass of "Tensor" and "tuple[Any, ...]" cannot exist: would have incompatible method signatures
 release-gate/suites/kernels/ci_kernels/__init__.py: [unreachable] Subclass of "Tensor" and "tuple[Any, ...]" cannot exist: would have incompatible method signatures
 release-gate/suites/kernels/ci_kernels/__init__.py: [unreachable] Subclass of "Tensor" and "tuple[Any, ...]" cannot exist: would have incompatible method signatures
 release-gate/suites/kernels/ci_kernels/__init__.py: [unreachable] Subclass of "Tensor" and "tuple[Any, ...]" cannot exist: would have incompatible method signatures
-release-gate/suites/kernels/ci_kernels/__init__.py: [var-annotated] Need type annotation for "errors" (hint: "errors: dict[<type>, <type>] = ...")
-release-gate/suites/kernels/ci_kernels/__init__.py: [var-annotated] Need type annotation for "errors" (hint: "errors: dict[<type>, <type>] = ...")
-release-gate/suites/kernels/ci_kernels/__init__.py: [var-annotated] Need type annotation for "errors" (hint: "errors: dict[<type>, <type>] = ...")
-release-gate/suites/kernels/ci_kernels/__init__.py: [var-annotated] Need type annotation for "skipped" (hint: "skipped: list[<type>] = ...")
 release-gate/suites/kernels/ci_kernels/static_check.py: [attr-defined] "expr" has no attribute "value"
 release-gate/suites/kernels/ci_kernels/static_check.py: [str-bytes-safe] If x = b'abc' then f"{x}" or "{}".format(x) produces "b'abc'", not "abc". If this is desired behavior, use f"{x!r}" or "{!r}".format(x). Otherwise, decode the bytes
 release-gate/suites/project/still.py: [call-arg] Too many positional arguments for "Kept"
-release-gate/suites/tensord/idle_entrypoints.py: [no-untyped-call] Call to untyped function "executor" in typed context
-release-gate/suites/tensord/idle_entrypoints.py: [no-untyped-call] Call to untyped function "executor" in typed context
-release-gate/suites/tensord/idle_entrypoints.py: [no-untyped-call] Call to untyped function "executor" in typed context
-release-gate/suites/tensord/idle_entrypoints.py: [no-untyped-call] Call to untyped function "gpu_calls" in typed context
-release-gate/suites/tensord/idle_entrypoints.py: [no-untyped-call] Call to untyped function "gpu_calls" in typed context
-release-gate/suites/tensord/idle_entrypoints.py: [no-untyped-call] Call to untyped function "gpu_calls" in typed context
-release-gate/suites/tensord/idle_entrypoints.py: [no-untyped-call] Call to untyped function "gpu_calls" in typed context
-release-gate/suites/tensord/idle_entrypoints.py: [no-untyped-call] Call to untyped function "host_stall_s" in typed context
-release-gate/suites/tensord/idle_entrypoints.py: [no-untyped-call] Call to untyped function "kernels_ms" in typed context
-release-gate/suites/tensord/idle_entrypoints.py: [no-untyped-call] Call to untyped function "kernels_ms" in typed context
-release-gate/suites/tensord/idle_entrypoints.py: [no-untyped-call] Call to untyped function "legs" in typed context
-release-gate/suites/tensord/idle_entrypoints.py: [no-untyped-call] Call to untyped function "offloads" in typed context
-release-gate/suites/tensord/idle_entrypoints.py: [no-untyped-call] Call to untyped function "peak" in typed context
-release-gate/suites/tensord/idle_entrypoints.py: [no-untyped-call] Call to untyped function "piece_calls" in typed context
-release-gate/suites/tensord/idle_entrypoints.py: [no-untyped-call] Call to untyped function "piece_calls" in typed context
-release-gate/suites/tensord/idle_entrypoints.py: [no-untyped-call] Call to untyped function "ready_s" in typed context
-release-gate/suites/tensord/idle_entrypoints.py: [no-untyped-call] Call to untyped function "ready_s" in typed context
-release-gate/suites/tensord/idle_entrypoints.py: [no-untyped-call] Call to untyped function "reclaimed" in typed context
-release-gate/suites/tensord/idle_entrypoints.py: [no-untyped-call] Call to untyped function "record" in typed context
-release-gate/suites/tensord/idle_entrypoints.py: [no-untyped-call] Call to untyped function "record" in typed context
-release-gate/suites/tensord/idle_entrypoints.py: [no-untyped-call] Call to untyped function "record" in typed context
-release-gate/suites/tensord/idle_entrypoints.py: [no-untyped-call] Call to untyped function "refilled" in typed context
-release-gate/suites/tensord/idle_entrypoints.py: [no-untyped-call] Call to untyped function "row" in typed context
-release-gate/suites/tensord/idle_entrypoints.py: [no-untyped-call] Call to untyped function "row" in typed context
-release-gate/suites/tensord/idle_entrypoints.py: [no-untyped-call] Call to untyped function "row" in typed context
-release-gate/suites/tensord/idle_entrypoints.py: [no-untyped-call] Call to untyped function "row" in typed context
-release-gate/suites/tensord/idle_entrypoints.py: [no-untyped-call] Call to untyped function "row" in typed context
-release-gate/suites/tensord/idle_entrypoints.py: [no-untyped-def] Function is missing a return type annotation
-release-gate/suites/tensord/idle_entrypoints.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/tensord/idle_entrypoints.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/tensord/idle_entrypoints.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/tensord/idle_entrypoints.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/tensord/idle_entrypoints.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/tensord/idle_entrypoints.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/tensord/idle_entrypoints.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/tensord/idle_entrypoints.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/tensord/idle_entrypoints.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/tensord/idle_entrypoints.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/tensord/idle_entrypoints.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/tensord/idle_entrypoints.py: [no-untyped-def] Function is missing a type annotation
 release-gate/suites/tensord/link.py: [union-attr] Item "BinaryIO" of "BinaryIO | Any" has no attribute "read1"
 release-gate/suites/tensorfs/bf16-normalize/ci_bf16_normalize/__init__.py: [no-untyped-call] Call to untyped function "basic" in typed context
 release-gate/suites/tensorfs/bf16-normalize/ci_bf16_normalize/__init__.py: [no-untyped-call] Call to untyped function "cancel" in typed context
@@ -1167,49 +755,6 @@ release-gate/suites/tensorfs/svdq-calibration/run.py: [no-untyped-def] Function 
 release-gate/suites/tensorfs/svdq-calibration/run.py: [no-untyped-def] Function is missing a type annotation
 release-gate/suites/tensorfs/svdq-calibration/run.py: [no-untyped-def] Function is missing a type annotation
 release-gate/suites/tensorfs/svdq-calibration/run.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/varena/check.py: [no-untyped-call] Call to untyped function "bandwidth" in typed context
-release-gate/suites/varena/check.py: [no-untyped-call] Call to untyped function "caps" in typed context
-release-gate/suites/varena/check.py: [no-untyped-call] Call to untyped function "check" in typed context
-release-gate/suites/varena/check.py: [no-untyped-call] Call to untyped function "copies" in typed context
-release-gate/suites/varena/check.py: [no-untyped-call] Call to untyped function "host" in typed context
-release-gate/suites/varena/check.py: [no-untyped-call] Call to untyped function "host" in typed context
-release-gate/suites/varena/check.py: [no-untyped-call] Call to untyped function "kernels" in typed context
-release-gate/suites/varena/check.py: [no-untyped-call] Call to untyped function "kernels" in typed context
-release-gate/suites/varena/check.py: [no-untyped-call] Call to untyped function "leftover" in typed context
-release-gate/suites/varena/check.py: [no-untyped-call] Call to untyped function "memories" in typed context
-release-gate/suites/varena/check.py: [no-untyped-call] Call to untyped function "memories" in typed context
-release-gate/suites/varena/check.py: [no-untyped-call] Call to untyped function "memories" in typed context
-release-gate/suites/varena/check.py: [no-untyped-call] Call to untyped function "memories" in typed context
-release-gate/suites/varena/check.py: [no-untyped-call] Call to untyped function "paged" in typed context
-release-gate/suites/varena/check.py: [no-untyped-call] Call to untyped function "paged" in typed context
-release-gate/suites/varena/check.py: [no-untyped-call] Call to untyped function "read" of "Run" in typed context
-release-gate/suites/varena/check.py: [no-untyped-call] Call to untyped function "result" in typed context
-release-gate/suites/varena/check.py: [no-untyped-call] Call to untyped function "result" in typed context
-release-gate/suites/varena/check.py: [no-untyped-call] Call to untyped function "unowned" in typed context
-release-gate/suites/varena/check.py: [no-untyped-call] Call to untyped function "unowned" in typed context
-release-gate/suites/varena/check.py: [no-untyped-call] Call to untyped function "videos" in typed context
-release-gate/suites/varena/check.py: [no-untyped-call] Call to untyped function "walk" in typed context
-release-gate/suites/varena/check.py: [no-untyped-call] Call to untyped function "walk" in typed context
-release-gate/suites/varena/check.py: [no-untyped-call] Call to untyped function "walk" in typed context
-release-gate/suites/varena/check.py: [no-untyped-call] Call to untyped function "warm" in typed context
-release-gate/suites/varena/check.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/varena/check.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/varena/check.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/varena/check.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/varena/check.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/varena/check.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/varena/check.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/varena/check.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/varena/check.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/varena/check.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/varena/check.py: [no-untyped-def] Function is missing a type annotation
-release-gate/suites/varena/check.py: [var-annotated] Need type annotation for "fails" (hint: "fails: list[<type>] = ...")
-release-gate/suites/varena/check.py: [var-annotated] Need type annotation for "fails" (hint: "fails: list[<type>] = ...")
-release-gate/suites/varena/check.py: [var-annotated] Need type annotation for "moved" (hint: "moved: dict[<type>, <type>] = ...")
-release-gate/suites/varena/check.py: [var-annotated] Need type annotation for "notes" (hint: "notes: list[<type>] = ...")
-release-gate/suites/varena/check.py: [var-annotated] Need type annotation for "notes" (hint: "notes: list[<type>] = ...")
-release-gate/suites/varena/check.py: [var-annotated] Need type annotation for "notes" (hint: "notes: list[<type>] = ...")
-release-gate/suites/varena/check.py: [var-annotated] Need type annotation for "notes" (hint: "notes: list[<type>] = ...")
 release-gate/suites/varena/core/ci_varena_core/__init__.py: [no-untyped-call] Call to untyped function "child" in typed context
 release-gate/suites/varena/core/ci_varena_core/__init__.py: [no-untyped-call] Call to untyped function "child" in typed context
 release-gate/suites/varena/core/ci_varena_core/__init__.py: [no-untyped-def] Function is missing a type annotation
@@ -1685,4 +1230,3 @@ release-gate/suites/varena/torch-offload/ci_torch_offload/sdxl.py: [no-untyped-d
 release-gate/suites/varena/torch-offload/ci_torch_offload/sdxl.py: [possibly-undefined] Name "vt" may be undefined
 release-gate/suites/varena/torch-offload/ci_torch_offload/sdxl.py: [possibly-undefined] Name "vt" may be undefined
 release-gate/suites/varena/torch-offload/ci_torch_offload/sdxl.py: [var-annotated] Need type annotation for "events" (hint: "events: list[<type>] = ...")
-release-gate/swap.py: [no-untyped-def] Function is missing a type annotation
