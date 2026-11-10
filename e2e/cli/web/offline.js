@@ -11,7 +11,7 @@ const { createHash } = require('crypto');
 const { mkdtempSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { calcifer, signIn, STEP_MS, boxOf, closeBox, drop, importYaml, lastLook, launch, lookAt, noStall, openBox, openCanvas, png, pointAt, rowsOf, until, upload, yamlOf } = require('./page');
+const { projectFromPage, projectUrl, calcifer, signIn, STEP_MS, boxOf, closeBox, drop, importYaml, lastLook, launch, lookAt, noStall, openBox, openCanvas, png, pointAt, rowsOf, until, upload, yamlOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -36,11 +36,11 @@ const DESCRIBED_MS = 300_000;
   page.on('pageerror', (error) => errors.push(error.message));
   await signIn(page);
   await page.waitForSelector('.top');
-  await page.goto(`${base}/#/projects`);
+  await page.goto(`${base}/projects`);
   await page.fill('input[aria-label="New project\'s name"]', `web-offline-${Date.now()}`);
   await page.click('form button[type=submit]');
-  await page.waitForURL(/#\/projects\/[^/]+$/);
-  const id = page.url().match(/#\/projects\/([^/]+)/)[1];
+  await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
+  const id = (await projectFromPage(page)).id;
   const token = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session') ?? 'null')?.token);
   const api = (path, init = {}) => page.evaluate(async ({ path, init, token }) => {
     const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), 'Content-Type': 'application/json', ...init.headers } });
@@ -111,7 +111,7 @@ const DESCRIBED_MS = 300_000;
   const other = (await api('/v1/projects', { method: 'POST', body: JSON.stringify({ name: `web-offline-other-${Date.now()}` }), headers: { 'Idempotency-Key': `other-${Date.now()}` } })).body;
   dropOther = async () => rmSync(other.path, { recursive: true, force: true });
   // Read again, as the tabs list what's read at the start.
-  await page.goto(`${base}/#/projects/${other.id}`);
+  await page.goto(await projectUrl(other.id));
   await page.reload();
   await page.locator('.ptab.on').and(page.getByTitle(other.path, { exact: true })).waitFor();
   await page.getByTitle(folder, { exact: true }).click();

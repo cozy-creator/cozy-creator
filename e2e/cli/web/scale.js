@@ -12,7 +12,7 @@ const { createHash } = require('crypto');
 const { appendFileSync, closeSync, copyFileSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } = require('fs');
 const { homedir } = require('os');
 const { join } = require('path');
-const { projectAction, calcifer, signIn, STEP_MS, lastLook, lookAt, png, noStall, closeBox, openBox, renderOf, until, projectHeld } = require('./page');
+const { projectUrl, projectAction, calcifer, signIn, STEP_MS, lastLook, lookAt, png, noStall, closeBox, openBox, renderOf, until, projectHeld } = require('./page');
 const { readFootprint, closedProjectMemory } = require('./native-memory');
 
 const failures = [];
@@ -420,7 +420,7 @@ async function nativeMemory(base, folder) {
   const resting = async () => {
     await closeBox(page);
     await page.locator('.card.here').waitFor({ state: 'detached' });
-    const state = await page.evaluate(() => ({ hash: location.hash, opened: document.querySelectorAll('.card.here').length }));
+    const state = await page.evaluate(() => ({ hash: location.pathname, opened: document.querySelectorAll('.card.here').length }));
     if (state.opened || state.hash.includes('/assets/')) throw new Error(`expected the real resting canvas: ${JSON.stringify(state)}`);
   };
   const measuredPan = async () => {
@@ -457,13 +457,13 @@ async function nativeMemory(base, folder) {
   mkdirSync(smallFolder, { recursive: true });
   generated(smallFolder, null, 36, 8);
   const small = (await projectAction(smallFolder, 'status')).value;
-  await page.goto(`${base}/#/projects/${small.id}`);
+  await page.goto(await projectUrl(small.id));
   await page.waitForSelector('.react-flow__node .nm');
   numbers.pan_small = await measuredPan();
 
   // Opening it: boxes on screen, then the page settled, its frames short.
   const opening = Date.now();
-  await page.goto(`${base}/#/projects/${id}`);
+  await page.goto(await projectUrl(id));
   await page.waitForSelector('.nm:text-is("shot_0")', { timeout: 120_000 });
   numbers.open_boxes_s = seconds(Date.now() - opening);
   check('it_opens_quickly', numbers.open_boxes_s <= BARS.open_boxes_s, numbers.open_boxes_s);

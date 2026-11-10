@@ -15,7 +15,7 @@ const { exec } = require('child_process');
 const { existsSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } = require('fs');
 const { homedir, tmpdir } = require('os');
 const { basename, join } = require('path');
-const { importFile, projectJson, newProject, calcifer, signIn, DARK_OPEN, MP4, boxLog, boxOf, closeBox, openBox, STEP_MS, importYaml, lastLook, launch, lookAt, png, noStall, panning, removeGeneratedProject, renderOf, rowsOf, summary, until, watchBoxes, wav, yamlOf } = require('./page');
+const { projectFromPage, projectUrl, importFile, projectJson, newProject, calcifer, signIn, DARK_OPEN, MP4, boxLog, boxOf, closeBox, openBox, STEP_MS, importYaml, lastLook, launch, lookAt, png, noStall, panning, removeGeneratedProject, renderOf, rowsOf, summary, until, watchBoxes, wav, yamlOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -139,11 +139,11 @@ async function rest(page, handle) {
   };
 
   // A project of its own, by name, from the Projects drawer: the page is open on it from here on, and nothing below reloads it unless it says so.
-  await page.goto(`${base}/#/projects`);
+  await page.goto(`${base}/projects`);
   await page.fill('input[aria-label="New project\'s name"]', `web-see-${Date.now()}`);
   await page.click('form button[type=submit]');
-  await page.waitForURL(/#\/projects\/[^/]+$/);
-  const id = page.url().match(/#\/projects\/([^/]+)/)[1];
+  await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
+  const id = (await projectFromPage(page)).id;
   const state = () => api(`/v1/projects/${id}`);
   const folder = (await state()).path;
   seen.project = { id, folder };
@@ -506,7 +506,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
       watch(tab);
       tab.setDefaultTimeout(STEP_MS);
       await tab.addInitScript(([id, zoom, x]) => localStorage.setItem(`cozy.view:${id}`, JSON.stringify({ x, y: 60, zoom })), [made.id, zoom, x]);
-      await tab.goto(`${base}/#/projects/${made.id}`);
+      await tab.goto(await projectUrl(made.id));
       await tab.waitForSelector('.react-flow__node');
       await until('every card its thumbnail', () => tab.evaluate(() => {
         const images = [...document.querySelectorAll('.react-flow__node .media img')];
@@ -625,7 +625,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
     const snap = (name) => (process.env.SHOT ? tab.screenshot({ path: `${process.env.SHOT}-${name}.png` }) : Promise.resolve());
     await tab.setViewportSize({ width: 1000, height: 800 });
     // By name: an earlier pass's forest is deleted, so its names are free (cl-842).
-    const spruce = `${base}/#/projects/${ours.find((row) => row.name === 'spruce').id}`;
+    const spruce = await projectUrl(ours.find((row) => row.name === 'spruce').id);
     await tab.goto(spruce);
     await tab.waitForSelector('nav.ptabs a.ptab.on');
     // What the bar is as each frame is painted: a ResizeObserver made after the page's hears of a resize after the page has answered it.
@@ -633,7 +633,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
       window.frames_seen = [];
       new ResizeObserver(() => window.frames_seen.push([...document.querySelectorAll('nav.ptabs a.ptab:not(.more):not(.new)')].map((link) => {
         const { x, width } = link.getBoundingClientRect();
-        return { id: link.getAttribute('href').split('/').pop(), on: link.classList.contains('on'), x, width };
+        return { code: link.getAttribute('href').split('/').pop(), on: link.classList.contains('on'), x, width };
       }))).observe(document.querySelector('.top'));
     });
     const frame = () => tab.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
@@ -643,7 +643,8 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
     }));
     const narrow = await bar();
     const all = await listed();
-    const hidden = all.map((row) => row.id).filter((held) => !narrow.tabs.includes(held));
+    check('tab_codes_match_projects', all.every((row) => /^[0-9A-HJKMNP-TV-Z]{9}$/.test(row.code)) && new Set(all.map((row) => row.code)).size === all.length, all.map((row) => ({ id: row.id, code: row.code })));
+    const hidden = all.map((row) => row.code).filter((held) => !narrow.tabs.includes(held));
     await snap('tabs-narrow');
     check('tabs_overflow', hidden.length > 0 && narrow.more === `${hidden.length} more`, { narrow, projects: all.length });
     for (let width = 1000; width <= 1800; width += 40) {
@@ -662,17 +663,17 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
     const first = new Map();
     const moved = [];
     for (const seen of frames) for (const one of seen) {
-      const was = first.get(one.id) ?? (first.set(one.id, one), one);
+      const was = first.get(one.code) ?? (first.set(one.code, one), one);
       if (Math.abs(was.width - one.width) > 0.5 || (!one.on && Math.abs(was.x - one.x) > 0.5)) moved.push({ was, now: one });
     }
     check('tabs_still_while_resizing', frames.length >= 40 && moved.length === 0, { frames: frames.length, moved: moved.slice(0, 5) });
     check('tabs_back_when_narrower', (await bar()).tabs.join() === narrow.tabs.join(), { narrow, now: await bar() });
 
     // With no project open its "untitled" tab is measured too, so what has a tab keeps its width.
-    await tab.goto(`${base}/#/projects`);
+    await tab.goto(`${base}/projects`);
     await tab.waitForSelector('nav.ptabs span.ptab.on');
-    const untitled = await tab.evaluate(() => [...document.querySelectorAll('nav.ptabs a.ptab:not(.more):not(.new)')].map((link) => ({ id: link.getAttribute('href').split('/').pop(), width: link.getBoundingClientRect().width })));
-    const squeezed = untitled.filter((one) => first.has(one.id) && !first.get(one.id).on && Math.abs(first.get(one.id).width - one.width) > 0.5);
+    const untitled = await tab.evaluate(() => [...document.querySelectorAll('nav.ptabs a.ptab:not(.more):not(.new)')].map((link) => ({ code: link.getAttribute('href').split('/').pop(), width: link.getBoundingClientRect().width })));
+    const squeezed = untitled.filter((one) => first.has(one.code) && !first.get(one.code).on && Math.abs(first.get(one.code).width - one.width) > 0.5);
     check('tabs_untitled_measured', untitled.length > 0 && squeezed.length === 0, { untitled, squeezed });
     await tab.goto(spruce);
     await tab.waitForSelector('nav.ptabs a.ptab.on');
@@ -689,11 +690,11 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
     // Found by name, and by a folder no name holds.
     const find = tab.locator('.drawer input[aria-label="Search projects"]');
     await find.fill('ginkgo');
-    const ginkgo = ours.find((row) => row.name === 'ginkgo').id;
+    const ginkgo = ours.find((row) => row.name === 'ginkgo').code;
     await until('one found by name', drawn, (now) => now.join() === ginkgo).then(() => check('tabs_find_by_name', true), (error) => check('tabs_find_by_name', false, error.message));
     await find.fill(basename(forest));
-    const ids = ours.map((row) => row.id).sort().join();
-    await until('ours found by folder', drawn, (now) => [...now].sort().join() === ids).then(() => check('tabs_find_by_folder', true), (error) => check('tabs_find_by_folder', false, error.message));
+    const codes = ours.map((row) => row.code).sort().join();
+    await until('ours found by folder', drawn, (now) => [...now].sort().join() === codes).then(() => check('tabs_find_by_folder', true), (error) => check('tabs_find_by_folder', false, error.message));
     await snap('tabs-found');
     await find.fill('');
 
