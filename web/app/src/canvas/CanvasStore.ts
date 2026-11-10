@@ -418,6 +418,21 @@ export class CanvasStore {
     this.viewing.set(null)
   }
 
+  /** A confirmed vault lock retires even an off-route store. Navigation alone keeps its work. */
+  revokePrivateView() {
+    for (const pause of this.pauses.values()) clearTimeout(pause)
+    this.pauses.clear()
+    for (const view of this.views.values()) {
+      view.placing?.abort.abort()
+      if (view.preview) {
+        URL.revokeObjectURL(view.preview)
+        view.preview = undefined
+      }
+    }
+    this.menu.set(null)
+    this.viewing.set(null)
+  }
+
   // Reading, by name
 
   resolveName(name: string): string {
