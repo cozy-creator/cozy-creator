@@ -8,10 +8,14 @@ import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING, Literal
 
 import torch
 
 from cozy_runtime.internal.contract import unsealed
+
+if TYPE_CHECKING:
+    from tensorfs.varena._facts import WorkingStats
 
 #: The driver's view, read on purpose: this cell tests the memory manager itself.
 mem_get_info: Callable[[int], tuple[int, int]] = unsealed(torch, "mem_get_info")
@@ -28,7 +32,8 @@ if MODE == "varena":
 torch.cuda.set_device(0)
 MIB = 1 << 20
 SIZES = (512, 513, 1536, 4096, 65536, MIB, MIB + 17, 8 * MIB)
-COST = ("driver_memory_calls", "event_records", "event_queries", "event_waits", "context_joins")
+COST: tuple[Literal["driver_memory_calls", "event_records", "event_queries", "event_waits", "context_joins"], ...] = (
+    "driver_memory_calls", "event_records", "event_queries", "event_waits", "context_joins")
 type JSON = None | bool | int | float | str | Sequence[JSON] | Mapping[str, JSON]
 type Row = Mapping[str, JSON]  # what a case prints
 CASES: dict[str, Callable[[], Row]] = {}
@@ -55,7 +60,7 @@ def give_back() -> None:
     vt.set_limit(0, None)
 
 
-def delta(before: dict[str, int], after: dict[str, int]) -> dict[str, int]:
+def delta(before: "WorkingStats", after: "WorkingStats") -> dict[str, int]:
     return {key: after[key] - before[key] for key in COST}
 
 

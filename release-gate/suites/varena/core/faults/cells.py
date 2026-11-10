@@ -145,7 +145,7 @@ def give_back() -> int:
     return taken
 
 
-def unmap_pool(pool: PoolId, held: list[torch.Tensor | None], stream: torch.cuda.Stream) -> int:
+def unmap_pool(pool: PoolId, held: list[torch.Tensor], stream: torch.cuda.Stream) -> int:
     """Declare a pool's tensors dead between uses, end this use, and let the core take its pages."""
     vt.pool_scratch(pool, held, DEVICE)
     vt.record_pool_stream(pool, stream)
@@ -184,7 +184,7 @@ class Graph:
         with vt.graph(self.graph, pool=self.pool, stream=stream, reserve_bytes=reserve):
             if static_in_pool:
                 self.input = torch.empty(SHAPE, dtype=HALF, device=device)
-            self.output: torch.Tensor | None = net(self.input)
+            self.output: torch.Tensor = net(self.input)
         self.ranges = pool_ranges(self.pool)
         self.bytes = sum(size for _, size in self.ranges)
 
@@ -195,7 +195,6 @@ class Graph:
             torch.cuda.manual_seed(seed)
         replay(self.graph, self.stream)
         self.stream.synchronize()
-        assert self.output is not None
         return raw(self.output)
 
 
@@ -1013,7 +1012,7 @@ def workspace_unmapped() -> None:
     a, b, address, want = workspace_graphs(stream)
     reference = b.run(sample(1))
     a.graph.reset()
-    a.output = None
+    a.output = None  # type: ignore[assignment]  # released: its pool's memory goes back
     stream.synchronize()
     give_back()
     gone = not any(s["address"] <= (address or 0) < s["address"] + s["total_size"] for s in torch.cuda.memory_snapshot())
@@ -1028,7 +1027,7 @@ def workspace_reuse() -> None:
     a, b, address, want = workspace_graphs(stream)
     reference = b.run(sample(1))
     a.graph.reset()
-    a.output = None
+    a.output = None  # type: ignore[assignment]  # released: its pool's memory goes back
     stream.synchronize()
     held: list[torch.Tensor] = []
     found: torch.Tensor | None = None

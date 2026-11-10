@@ -99,7 +99,7 @@ def counters() -> dict[str, JSON]:
     stats = vt.stats(0)
     row: dict[str, JSON] = {"allocated_peak": stats["allocated_peak"], "mapped_peak": stats["mapped_peak"], "pools": stats["pools_bytes"], "weights_resident": stats["weights_resident"],
            "weights_filled": stats["weights_filled"], "event_waits": stats["event_waits"]}
-    return {**row, "graphs": {**handle.graphs.counts}} if handle.graphs else row
+    return {**row, "graphs": {**handle.graphs.counts}} if handle.graphs else row  # type: ignore[dict-item]  # GraphCounts: JSON values
 
 
 for index, prompt in enumerate(request["prompts"]):

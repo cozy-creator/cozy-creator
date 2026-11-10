@@ -31,7 +31,7 @@ began = time.monotonic()
 for _ in range(int((free0 + EXTRA) // BLOCK)):
     start = time.monotonic()
     pointer: ctypes.c_uint64 | None = ctypes.c_uint64()
-    while cu.cuMemAlloc_v2(ctypes.byref(pointer), ctypes.c_size_t(BLOCK)) != 0:
+    while cu.cuMemAlloc_v2(ctypes.byref(pointer), ctypes.c_size_t(BLOCK)) != 0:  # type: ignore[arg-type]  # None only after the loop's break
         if time.monotonic() - start > GIVE_UP:
             pointer = None
             break
