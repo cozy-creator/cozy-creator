@@ -383,23 +383,14 @@ impl Publisher {
 
     /// uv as the machine runs it (`machine::uv`). `job` hears the bytes it writes about once a
     /// second; its process group is killed when the run is canceled (`process::supervise`).
+    /// Linux tags the builder and its descendants before exec, so a new machine sweeps an
+    /// interrupted builder before reusing its environment, even after SIGKILL.
     pub(crate) fn uv(&self, args: &[&str], env: &[(&str, &std::ffi::OsStr)], job: &Job) -> Result<(), Failure> {
         let mut command = self.sdk.uv.command().map_err(|e| ("uv_unavailable", e.to_string()))?;
         command.args(args).envs(env.iter().copied()).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
-        platform::process::own_group(&mut command);
-        let mut child = command.spawn().map_err(|e| ("package_installation_uv_absent", format!("cannot run uv: {e}")))?;
-        let mut stderr = child.stderr.take().expect("piped uv stderr");
-        let (ended, stderr) = std::thread::scope(|scope| {
-            let drained = scope.spawn(move || {
-                let mut kept = Vec::new();
-                let _ = stderr.read_to_end(&mut kept);
-                kept
-            });
-            let ended = crate::process::supervise(&mut child, job.stop.as_ref(), &|read| job.bytes(read, 0));
-            (ended, drained.join().unwrap_or_default())
-        });
+        let (ended, stderr) = run_builder(&mut command, &self.scope_namespace, job.stop.as_ref(), &|read| job.bytes(read, 0))?;
         let step = args[..2.min(args.len())].join(" ");
-        match ended.map_err(|e| ("package_installation_uv_failed", format!("uv: {e}")))? {
+        match ended {
             Supervised::Exited(status) if status.success() => Ok(()),
             Supervised::Exited(_) => {
                 let said = stderr_tail(&stderr);
@@ -413,6 +404,49 @@ impl Publisher {
         }
     }
 }
+
+/// A builder's own group and inherited ownership, supervised while its stderr is drained.
+fn run_builder(command: &mut Command, namespace: &str, stop: Option<&crate::stop::Stop>, wrote: &dyn Fn(u64)) -> Result<(Supervised, Vec<u8>), Failure> {
+    let scope = match platform::contain::Scope::inherited(namespace) {
+        Ok(scope) => Some(scope),
+        Err(error) if error.is_unsupported() => None,
+        Err(error) => return Err(io_failure(io::Error::other(error))),
+    };
+    // After the caller's environment: no override can accidentally erase the owner token.
+    command.envs(scope.as_ref().and_then(platform::contain::Scope::environment));
+    platform::process::own_group(command);
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            if let Some(scope) = &scope {
+                scope.end().map_err(|error| io_failure(io::Error::other(error)))?;
+            }
+            return Err(("package_installation_uv_absent", format!("cannot run uv: {error}")));
+        }
+    };
+    let mut stderr = child.stderr.take().expect("piped builder stderr");
+    std::thread::scope(|threads| {
+        let drained = threads.spawn(move || {
+            let mut kept = Vec::new();
+            let _ = stderr.read_to_end(&mut kept);
+            kept
+        });
+        let ended = crate::process::supervise(&mut child, stop, wrote)
+            .map_err(|error| ("package_installation_uv_failed", format!("uv: {error}")));
+        // A build backend can outlive uv and keep its stderr open. End it before waiting on
+        // that pipe, including when supervision failed or the run was canceled.
+        let cleaned = scope.as_ref().map(platform::contain::Scope::end).transpose()
+            .map_err(|error| io_failure(io::Error::other(error)));
+        let stderr = drained.join().unwrap_or_default();
+        let ended = ended?;
+        cleaned?;
+        Ok((ended, stderr))
+    })
+}
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "environment_process_tests.rs"]
+mod process_tests;
 
 /// The generation at `dir` published: its record written last, by rename, so only a whole
 /// environment ever resolves (`catalog`).

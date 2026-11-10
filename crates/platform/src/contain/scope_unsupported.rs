@@ -5,6 +5,10 @@ use crate::{Error, Result, Seam};
 pub struct Scope(());
 
 impl Scope {
+    pub fn inherited(_: &str) -> Result<Self> {
+        Err(Error::unsupported(Seam::Containment))
+    }
+
     pub fn create(_: &str) -> Result<Self> {
         Err(Error::unsupported(Seam::Containment))
     }
