@@ -102,7 +102,7 @@ def _gemm(gemm: Callable[..., torch.Tensor], fp8: bool, m: int, n: int, k: int, 
 def _attend(ready: dict, shape: tuple[int, ...]) -> dict:
     """The cell's kernels at one shape, in the cell's order: the first is the rule's pick."""
     q, k, v = (torch.randn(*shape, device="cuda", dtype=torch.bfloat16) for _ in range(3))
-    calls = {name: (lambda i, m=r.member: dispatch_attention_fn(q, k, v, backend=m))
+    calls = {name: partial(lambda i, m: dispatch_attention_fn(q, k, v, backend=m), m=attention._member(r.candidate))
              for name, r in ready.items() if not r.candidate.refusal(q, k, {})}  # fmt: skip
     if not calls:
         return {"ms": {}}
@@ -139,7 +139,7 @@ def _sparse(row: arch.Row, ready: dict, shape: tuple[int, ...]) -> dict:
                     continue
                 if r.candidate.import_name == "sol_attn":
                     _sol_built(q)
-                call = partial(lambda i, m: dispatch_attention_fn(q, k, v, backend=m), m=r.member)
+                call = partial(lambda i, m: dispatch_attention_fn(q, k, v, backend=m), m=attention._member(r.candidate))
                 with attention_sol.observing() as counts:
                     call(0)
                 if counts["sparse"] != 1:  # it served a dense reference: not a sparse time
