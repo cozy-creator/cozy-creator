@@ -65,7 +65,32 @@ impl Media {
 
     /// `input`'s arguments, for a run whose arguments are put together before it.
     pub(crate) fn reading(path: impl AsRef<OsStr>) -> Vec<OsString> {
-        ["-protocol_whitelist", "file", "-format_whitelist", DEMUXERS, "-i"].into_iter().map(OsString::from).chain([path.as_ref().to_owned()]).collect()
+        let path = path.as_ref();
+        // FFmpeg pre-probes these filenames as image2 before opening them, including Windows' \\?\ device paths.
+        // Pick the single-file demuxer instead; ordinary paths retain their container autodetection.
+        let demuxer = if path.to_string_lossy().chars().any(|ch| matches!(ch, '*' | '?' | '{')) {
+            Path::new(path).extension().and_then(OsStr::to_str).and_then(|extension| match extension.to_ascii_lowercase().as_str() {
+                "png" => Some("png_pipe"),
+                "apng" => Some("apng"),
+                "jpg" | "jpeg" => Some("jpeg_pipe"),
+                "webp" => Some("webp_pipe"),
+                "gif" => Some("gif"),
+                "bmp" => Some("bmp_pipe"),
+                "tif" | "tiff" => Some("tiff_pipe"),
+                "jxl" => Some("jpegxl_pipe"),
+                "psd" => Some("psd_pipe"),
+                "ico" => Some("ico"),
+                _ => None,
+            })
+        } else {
+            None
+        };
+        let mut args: Vec<OsString> = ["-protocol_whitelist", "file", "-format_whitelist", DEMUXERS].into_iter().map(OsString::from).collect();
+        if let Some(demuxer) = demuxer {
+            args.extend(["-f", demuxer].into_iter().map(OsString::from));
+        }
+        args.extend([OsString::from("-i"), path.to_owned()]);
+        args
     }
 
     /// `list`, a `concat` script Calcifer wrote itself, of MPEG-TS pieces it cut.
