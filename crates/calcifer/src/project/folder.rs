@@ -552,10 +552,6 @@ struct KeptBoard {
 /// This Calcifer's id, the same across its restarts, once it has said it.
 static CALCIFER: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
-/// Local writer identity, held outside the copied project database.
-pub(super) fn writer_identity() -> Option<&'static str> {
-    CALCIFER.get().map(String::as_str)
-}
 
 /// Reads this Calcifer's id from `dir`, or makes it. Before any project is read.
 pub(crate) fn bind_calcifer(dir: &Path) -> Result<(), Error> {
@@ -1122,6 +1118,12 @@ impl Folder {
             held.files = now;
         }
         Ok(held)
+    }
+
+    /// Native CRDT conflicts are kept visible even though an ordinary value read chooses one.
+    pub(crate) fn crdt_conflicts(&self) -> Result<Vec<String>, Error> {
+        let held = self.held()?;
+        Ok(held.as_ref().and_then(|held| held.stored.crdt.as_ref()).map_or_else(Vec::new, |doc| doc.conflicts()))
     }
 
     /// The revision: one more with each commit.

@@ -3,7 +3,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
-    sync::{Arc, OnceLock},
+    sync::Arc,
 };
 
 use api::error::{Error, Kind};
@@ -12,7 +12,6 @@ use automerge::{
 };
 use serde::Serialize;
 use serde_json::{Map, Value, json};
-use sha2::{Digest as _, Sha256};
 
 use super::{
     db::{CardRow, OpRow, Stored},
@@ -33,16 +32,12 @@ fn invalid(detail: impl std::fmt::Display) -> Error {
     Error::new(Kind::Validation, "project_crdt", detail.to_string())
 }
 
-/// Writer identity belongs to the local Calcifer and this local store, not a copied snapshot.
-fn actor(at: &Path) -> ActorId {
-    static PROCESS: OnceLock<String> = OnceLock::new();
-    let local = super::folder::writer_identity().unwrap_or_else(|| PROCESS.get_or_init(super::new_key));
-    let mut hash = Sha256::new();
-    hash.update(b"cozy-project-writer-v1\0");
-    hash.update(local.as_bytes());
-    hash.update(b"\0");
-    hash.update(at.as_os_str().as_encoded_bytes());
-    ActorId::from(hash.finalize().as_slice())
+/// Every loaded local replica begins a fresh writer session. Existing actors and causal history
+/// stay in the document, but a copied/restored snapshot can never resume an old actor's counters.
+fn actor(_at: &Path) -> ActorId {
+    let mut bytes = [0u8; 32];
+    getrandom::fill(&mut bytes).expect("the OS has randomness");
+    ActorId::from(bytes.as_slice())
 }
 
 impl Document {
@@ -74,6 +69,47 @@ impl Document {
         self.doc.commit();
         self.value = Arc::new(value);
         Ok(())
+    }
+
+    /// Explicit conflict metadata, rather than silently presenting AutoSerde's selected winner.
+    pub(super) fn conflicts(&self) -> Vec<String> {
+        let mut found = Vec::new();
+        self.conflicts_under(&ROOT, "", &mut found);
+        found
+    }
+
+    fn conflicts_under(&self, object: &ObjId, path: &str, found: &mut Vec<String>) {
+        let properties: Vec<Prop> = match self.doc.object_type(object) {
+            Ok(ObjType::Map) => self.doc.keys(object).map(Prop::Map).collect(),
+            Ok(ObjType::List) => (0..self.doc.length(object)).map(Prop::Seq).collect(),
+            _ => return,
+        };
+        for property in properties {
+            let label = match &property {
+                Prop::Map(key) => key.clone(),
+                Prop::Seq(index) => index.to_string(),
+            };
+            let at = if path.is_empty() { label } else { format!("{path}/{label}") };
+            let Ok(values) = self.doc.get_all(object, property) else { continue };
+            if values.len() > 1 {
+                let alternatives = values
+                    .iter()
+                    .map(|(value, operation)| {
+                        let value = value.as_str().map(str::to_owned).unwrap_or_else(|| format!("{value:?}"));
+                        format!("{operation}: {value}")
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                found.push(format!(
+                    "Concurrent project values at {at}: {alternatives}. The alternatives are retained for explicit resolution."
+                ));
+            }
+            for (value, child) in values {
+                if matches!(value, AmValue::Object(_)) {
+                    self.conflicts_under(&child, &at, found);
+                }
+            }
+        }
     }
 
     pub(super) fn identity(&self) -> Option<(String, String)> {

@@ -909,7 +909,7 @@ for part in $(seq 1 12); do
   cozy project -p "$F" export > "$OUT/killed-again.yaml" 2>&1 || check "killed at ${at} ms: opened again: $(tail -c 300 "$OUT/killed-again.yaml")"
   cmp -s "$OUT/killed-again.yaml" "$OUT/killed-done.yaml" || check "killed at ${at} ms: it came out otherwise: $(diff "$OUT/killed-done.yaml" "$OUT/killed-again.yaml" | head -5)"
   { cmp -s "$F/project.yaml.v2" "$OUT/killed.yaml" && cmp -s "$F/project.lock.v2" "$OUT/killed.lock"; } || check "killed at ${at} ms: an original went"
-  [ -z "$(cd "$F" && ls -A | grep -vxE 'files|\.runs|project\.db(-wal|-shm)?|project\.(yaml|lock)\.v[23]')" ] || check "killed at ${at} ms: left: $(ls -A "$F" | tr '\n' ' ')"
+  [ -z "$(cd "$F" && ls -A | grep -vxE 'files|\.runs|\.cozy-legacy-v1|project\.db(-wal|-shm)?|project\.(yaml|lock)\.v[23]')" ] || check "killed at ${at} ms: left: $(ls -A "$F" | tr '\n' ' ')"
   rm -rf "$F"
 done
 echo "first open killed mid-way $stopped of $tried times, in $took ms"
