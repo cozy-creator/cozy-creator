@@ -116,7 +116,8 @@ async fn change(ctx: &Context, project: Option<&String>, request: VaultAsk, reco
     if ctx.json { output::json(&changed); return Ok(ExitCode::SUCCESS); }
     show(ctx, &changed.vault);
     if let Some(source) = changed.preserved_source {
-        output::warn(&format!("plaintext source preserved at {}; this copy is not protected by the vault", source.display()));
+        let protection = if request.action == "encrypt" { "this source is still plaintext" } else { "its original protection is unchanged" };
+        output::warn(&format!("source preserved at {}; {protection}", source.display()));
     }
     if let Some(secret) = changed.recovery_secret {
         output::say(ctx, "Save this recovery secret on another device or in your password manager. TensorHub does not receive it:");

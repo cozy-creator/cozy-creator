@@ -26,11 +26,16 @@ const PART: u64 = 64 << 20;
 pub(crate) struct Sender<'a> {
     ctx: &'a Context,
     calcifer: Client,
+    project: Option<String>,
 }
 
 impl<'a> Sender<'a> {
     pub(crate) async fn new(ctx: &'a Context) -> Result<Self, Error> {
-        Ok(Self { ctx, calcifer: ctx.calcifer().await? })
+        Ok(Self { ctx, calcifer: ctx.calcifer().await?, project: None })
+    }
+
+    pub(crate) async fn for_project(ctx: &'a Context, project: &str) -> Result<Self, Error> {
+        Ok(Self { ctx, calcifer: ctx.calcifer().await?, project: Some(project.to_owned()) })
     }
 
     fn memo(&self) -> PathBuf {
@@ -39,8 +44,8 @@ impl<'a> Sender<'a> {
 
     /// The file at `path`, held by Calcifer: its digest.
     pub(crate) async fn file(&self, path: &Path) -> Result<Digest, Error> {
-        let (at, memo) = (path.to_owned(), self.memo());
-        let digest = tokio::task::spawn_blocking(move || api::digests::of(Some(&memo), &at))
+        let (at, memo) = (path.to_owned(), self.project.is_none().then(|| self.memo()));
+        let digest = tokio::task::spawn_blocking(move || api::digests::of(memo.as_deref(), &at))
             .await
             .map_err(|e| Error::internal("digest", e.to_string()))??;
         let length = std::fs::metadata(path).map_err(|e| unreadable(path, e))?.len();
@@ -50,8 +55,8 @@ impl<'a> Sender<'a> {
 
     /// The folder at `root`, each file and then its tree document held by Calcifer: the document's digest.
     pub(crate) async fn tree(&self, root: &Path) -> Result<Digest, Error> {
-        let (at, memo) = (root.to_owned(), self.memo());
-        let staged = tokio::task::spawn_blocking(move || api::stage::stage(&at, Some(&memo)))
+        let (at, memo) = (root.to_owned(), self.project.is_none().then(|| self.memo()));
+        let staged = tokio::task::spawn_blocking(move || api::stage::stage(&at, memo.as_deref()))
             .await
             .map_err(|e| Error::internal("stage", e.to_string()))??;
         for file in &staged.files {
@@ -59,8 +64,8 @@ impl<'a> Sender<'a> {
         }
         let digest = Digest::of(&staged.document);
         let length = staged.document.len() as u64;
-        if self.calcifer.held(&digest).await?.is_some() {
-            self.calcifer.put_part(&digest, staged.document.into(), 0, length).await?;
+        if self.calcifer.held_for(&digest, self.project.as_deref()).await?.is_some() {
+            self.calcifer.put_part_for(&digest, staged.document.into(), 0, length, self.project.as_deref()).await?;
         }
         Ok(digest)
     }
@@ -68,8 +73,8 @@ impl<'a> Sender<'a> {
     /// The package at `path` (a folder or a script) as local code: its tree, each file and then the document held by Calcifer
     /// (`api::code`). What never goes is said.
     pub(crate) async fn code(&self, path: &Path) -> Result<LocalCode, Error> {
-        let (at, memo) = (path.to_owned(), self.memo());
-        let staged = tokio::task::spawn_blocking(move || api::code::stage(&at, Some(&memo)))
+        let (at, memo) = (path.to_owned(), self.project.is_none().then(|| self.memo()));
+        let staged = tokio::task::spawn_blocking(move || api::code::stage(&at, memo.as_deref()))
             .await
             .map_err(|e| Error::internal("stage", e.to_string()))??;
         if !staged.left.is_empty() {
@@ -80,17 +85,17 @@ impl<'a> Sender<'a> {
         }
         let code = staged.code();
         let length = staged.document.len() as u64;
-        if self.calcifer.held(&code.tree).await?.is_some() {
-            self.calcifer.put_part(&code.tree, staged.document.into(), 0, length).await?;
+        if self.calcifer.held_for(&code.tree, self.project.as_deref()).await?.is_some() {
+            self.calcifer.put_part_for(&code.tree, staged.document.into(), 0, length, self.project.as_deref()).await?;
         }
         Ok(code)
     }
 
     /// `path`'s `length` bytes under `digest`, but what Calcifer holds of them.
     async fn bytes(&self, path: &Path, digest: Digest, length: u64) -> Result<(), Error> {
-        let Some(held) = self.calcifer.held(&digest).await? else { return Ok(()) };
+        let Some(held) = self.calcifer.held_for(&digest, self.project.as_deref()).await? else { return Ok(()) };
         if length == 0 {
-            self.calcifer.put_part(&digest, bytes::Bytes::new(), 0, 0).await?;
+            self.calcifer.put_part_for(&digest, bytes::Bytes::new(), 0, 0, self.project.as_deref()).await?;
             return Ok(());
         }
         let gaps = missing(&held, length);
@@ -108,7 +113,7 @@ impl<'a> Sender<'a> {
                 let mut part = vec![0; (end - at).min(PART) as usize];
                 file.read_exact(&mut part).await.map_err(|e| unreadable(path, e))?;
                 let n = part.len() as u64;
-                self.calcifer.put_part(&digest, part.into(), at, length).await?;
+                self.calcifer.put_part_for(&digest, part.into(), at, length, self.project.as_deref()).await?;
                 at += n;
                 bar.inc(n);
             }

@@ -378,6 +378,13 @@ fn known(api: &Api, text: &str) -> Result<crate::state::KnownProject, Error> {
 
 /// The files a run is `given`, each `(path, sha256)`, kept in its project unless they're there. What Calcifer holds in `uploads` is
 /// named by its content and linked; anything else is a person's file and is copied. Says what it couldn't keep.
+/// An encrypted project's transport uploads stay inside its mounted storage, never the shared plaintext CAS.
+pub(crate) fn private_upload_root(api: &Arc<Api>, named: &str) -> Result<Option<PathBuf>, Error> {
+    let project = api.projects.get(api, named).map_err(|e| e.0)?;
+    let private = vault::encrypted(&vault::logical(&project.folder.dir));
+    Ok(private.then(|| project.folder.dir.clone()))
+}
+
 pub(crate) fn keep_given(project: &FsPath, given: &[(PathBuf, String)], uploads: &FsPath) -> Vec<String> {
     let folder = Folder::at(project);
     let unkept = given.iter().filter_map(|(path, sha256)| {
@@ -2174,7 +2181,7 @@ async fn keep_file(folder: &Folder, source: &str) -> Result<folder::Kept, Refusa
     let Some(digest) = held_name(source)? else {
         return folder.import(source).await.map_err(|why| import_failed(source, why));
     };
-    match crate::runs::files::held(&digest) {
+    match crate::runs::files::held_for(&folder.dir, &digest) {
         Some(at) => tokio::task::block_in_place(|| folder.take_held(&at, &digest.to_string())).map_err(|why| import_failed(source, why)),
         None => folder.own(&digest.to_string()).ok_or_else(|| not_held(source)),
     }

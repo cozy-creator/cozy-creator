@@ -12,6 +12,7 @@ const DEFAULT_IDLE: u64 = 900;
 type Held = Arc<Mutex<Session>>;
 static SESSIONS: LazyLock<Mutex<BTreeMap<PathBuf, Held>>> = LazyLock::new(Mutex::default);
 static ROOTS: LazyLock<Mutex<BTreeMap<PathBuf, PathBuf>>> = LazyLock::new(Mutex::default);
+static OPERATIONS: LazyLock<Mutex<BTreeMap<PathBuf, Arc<Mutex<()>>>>> = LazyLock::new(Mutex::default);
 static CONVERTING: LazyLock<Mutex<BTreeSet<PathBuf>>> = LazyLock::new(Mutex::default);
 
 struct Session {
@@ -33,7 +34,7 @@ fn io(e: std::io::Error) -> Error { error("vault_io", e) }
 fn provider(e: impl std::fmt::Display) -> Error { error("vault_provider", e) }
 fn key(e: project_vault::Error) -> Error { error("vault_key", e) }
 fn held(root: &FsPath) -> Option<Held> { SESSIONS.lock().expect("vault sessions").get(root).cloned() }
-pub(super) fn encrypted(root: &FsPath) -> bool { root.join(KEYBAG_FILE).is_file() }
+pub(crate) fn encrypted(root: &FsPath) -> bool { root.join(KEYBAG_FILE).is_file() }
 
 /// Logical registered path of an unlocked mount, including any relative subpath.
 pub(crate) fn logical(path: &FsPath) -> PathBuf {
@@ -53,10 +54,28 @@ pub(super) fn view(root: &FsPath) -> Result<PathBuf, Error> {
     Ok(session.mount.view().to_owned())
 }
 
+/// A key-holding work lease can drain already-authorized work while the viewing session is locking.
+fn work_view(root: &FsPath) -> Result<PathBuf, Error> {
+    let Some(session) = held(root) else { return Err(locked(root)); };
+    let session = session.lock().expect("vault session");
+    if !session.mount.is_mounted().map_err(provider)? { return Err(locked(root)); }
+    Ok(session.mount.view().to_owned())
+}
+
+fn operation(root: &FsPath) -> Arc<Mutex<()>> {
+    OPERATIONS.lock().expect("vault operations").entry(root.to_owned()).or_default().clone()
+}
+
+pub(crate) fn readable_token(path: &FsPath) -> Option<Arc<AtomicBool>> {
+    let path = logical(path);
+    let root = path.ancestors().find(|root| encrypted(root))?;
+    held(root).map(|session| session.lock().expect("vault session").readable.clone())
+}
+
 pub(crate) fn resolve_path(path: &FsPath) -> Result<PathBuf, Error> {
     let path = logical(path);
     if let Some(root) = path.ancestors().find(|root| encrypted(root)) {
-        return Ok(view(root)?.join(path.strip_prefix(root).expect("ancestor")));
+        return Ok(work_view(root)?.join(path.strip_prefix(root).expect("ancestor")));
     }
     Ok(path)
 }
@@ -129,6 +148,7 @@ fn mount(api: &Api, root: &FsPath, keybag: Keybag, secret: ProjectSecret, ask: &
     let mounted = secret.with_bytes(|bytes| engine.mount(&root.join(BACKING), &view, bytes, MountOptions { idle_timeout: None, read_only: false })).map_err(provider)?;
     ROOTS.lock().expect("vault roots").insert(mounted.view().to_owned(), root.to_owned());
     TRUSTED_KEYS.lock().expect("trusted vault recipients").insert(root.to_owned(), keybag.clone());
+    KEY_ROOTS.lock().expect("vault project roots").insert(keybag.info().project_id.clone(), root.to_owned());
     let now = Instant::now();
     let session = Session { root: root.to_owned(), mount: mounted, secret, keybag, idle: ask.idle_timeout_s.unwrap_or(DEFAULT_IDLE), maximum: ask.max_duration_s.unwrap_or(0), began: now, active: now, began_ms: super::now_ms(), closing: false, readable: Arc::new(AtomicBool::new(true)) };
     SESSIONS.lock().expect("vault sessions").insert(root.to_owned(), Arc::new(Mutex::new(session)));
@@ -151,12 +171,15 @@ fn forget(api: &Api, root: &FsPath) -> Result<(), Error> {
 }
 
 fn close(api: &Api, root: &FsPath) -> Result<(), Error> {
-    forget(api, root)?;
     if let Some(session) = held(root) {
         let mut session = session.lock().expect("vault session");
         session.closing = true;
         session.readable.store(false, Ordering::Release);
-        // Busy remains a truthful locking state. Never report locked while a readable mount survives.
+    }
+    // Existing accepted work may drain while the key is retained, but no new viewing stream can read it.
+    forget(api, root)?;
+    if let Some(session) = held(root) {
+        let mut session = session.lock().expect("vault session");
         if session.mount.is_mounted().map_err(provider)? { session.mount.try_unmount().map_err(provider)?; }
         drop(session);
         SESSIONS.lock().expect("vault sessions").remove(root);
@@ -173,7 +196,11 @@ pub(crate) fn start(api: &Arc<Api>) {
             let roots: Vec<PathBuf> = SESSIONS.lock().expect("vault sessions").keys().cloned().collect();
             for root in roots {
                 let needs = held(&root).is_some_and(|session| { let session = session.lock().expect("vault session"); session.closing || expired(&session) || !session.mount.is_mounted().unwrap_or(false) });
-                if needs { let _ = tokio::task::block_in_place(|| close(&api, &root)); }
+                if needs { let _ = tokio::task::block_in_place(|| {
+                    let op = operation(&root); let _guard = op.lock().expect("vault operation");
+                    let still = held(&root).is_some_and(|session| { let session = session.lock().expect("vault session"); session.closing || expired(&session) || !session.mount.is_mounted().unwrap_or(false) });
+                    if still { close(&api, &root) } else { Ok(()) }
+                }); }
             }
         }
     });
@@ -187,7 +214,10 @@ pub(super) async fn read(State(api): State<Arc<Api>>, Path(named): Path<String>)
 pub(super) async fn write(State(api): State<Arc<Api>>, Path(named): Path<String>, body: Result<Bytes, BytesRejection>) -> Result<Response, Refusal> {
     let mut ask: VaultAsk = parse(&body?)?;
     let root = location(&api, &named).map_err(Refusal)?;
-    let changed = tokio::task::block_in_place(|| change(&api, &root, &mut ask)).map_err(Refusal)?;
+    let changed = tokio::task::block_in_place(|| {
+        let op = operation(&root); let _guard = op.lock().expect("vault operation");
+        change(&api, &root, &mut ask)
+    }).map_err(Refusal)?;
     Ok(private(axum::Json(changed).into_response()))
 }
 
@@ -321,10 +351,12 @@ fn hash(path: &FsPath) -> Result<[u8;32], Error> {
 fn fresh() -> String { let mut bytes = [0u8;16]; getrandom::fill(&mut bytes).expect("OS randomness"); hex::encode(bytes) }
 
 const PAYLOAD_PREFIX: &[u8] = b"cozy:vault:journal:1:";
+static KEY_ROOTS: LazyLock<Mutex<BTreeMap<String, PathBuf>>> = LazyLock::new(Mutex::default);
 static TRUSTED_KEYS: LazyLock<Mutex<BTreeMap<PathBuf, Keybag>>> = LazyLock::new(Mutex::default);
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct ProtectedPayload {
+    project_id: String,
     root: PathBuf,
     context: String,
     ciphertext: String,
@@ -332,15 +364,22 @@ struct ProtectedPayload {
 
 pub(crate) fn is_payload(value: &[u8]) -> bool { value.starts_with(PAYLOAD_PREFIX) }
 
+/// Public envelope ownership only; this does not decrypt or authorize a field.
+pub(crate) fn payload_root(value: &[u8]) -> Result<Option<PathBuf>, Error> {
+    let Some(encoded) = value.strip_prefix(PAYLOAD_PREFIX) else { return Ok(None) };
+    let payload: ProtectedPayload = serde_json::from_slice(encoded).map_err(|_| error("vault_journal", "invalid protected journal envelope"))?;
+    Ok(Some(KEY_ROOTS.lock().expect("vault project roots").get(&payload.project_id).cloned().unwrap_or(payload.root)))
+}
+
+
 /// Seal private global journal fields BEFORE binding them into SQLite. Ordinary project values pass through.
 pub(crate) fn seal_payload(path: &FsPath, context: &str, value: &[u8]) -> Result<Vec<u8>, Error> {
     use base64::Engine as _;
-    if is_payload(value) { return Ok(value.to_vec()); }
     let path = logical(path);
     let Some(root) = path.ancestors().find(|root| encrypted(root)) else { return Ok(value.to_vec()) };
     let keybag = TRUSTED_KEYS.lock().expect("trusted vault recipients").get(root).cloned().ok_or_else(|| locked(root))?;
     let ciphertext = keybag.seal(context, value).map_err(key)?;
-    let payload = ProtectedPayload { root: root.to_owned(), context: context.into(), ciphertext: base64::engine::general_purpose::STANDARD.encode(ciphertext) };
+    let payload = ProtectedPayload { project_id: keybag.info().project_id, root: root.to_owned(), context: context.into(), ciphertext: base64::engine::general_purpose::STANDARD.encode(ciphertext) };
     let mut encoded = PAYLOAD_PREFIX.to_vec();
     encoded.extend(serde_json::to_vec(&payload).map_err(|e| error("vault_journal", e))?);
     Ok(encoded)
@@ -352,11 +391,15 @@ pub(crate) fn open_payload(context: &str, value: &[u8]) -> Result<Option<Vec<u8>
     let Some(encoded) = value.strip_prefix(PAYLOAD_PREFIX) else { return Ok(Some(value.to_vec())) };
     let payload: ProtectedPayload = serde_json::from_slice(encoded).map_err(|_| error("vault_journal", "invalid protected journal envelope"))?;
     if payload.context != context { return Err(error("vault_journal", "protected journal context mismatch")); }
-    let Some(session) = held(&payload.root) else { return Ok(None) };
+    let current_root = KEY_ROOTS.lock().expect("vault project roots").get(&payload.project_id).cloned().unwrap_or_else(|| payload.root.clone());
+    let Some(session) = held(&current_root) else { return Ok(None) };
     let session = session.lock().expect("vault session");
-    if session.closing || expired(&session) { return Ok(None); }
+    // Internal journal reads may finish an already-authorized work lease during locking/busy.
+    // Public API routes independently enforce the viewing token; fully locked sessions are absent.
     let ciphertext = base64::engine::general_purpose::STANDARD.decode(&payload.ciphertext).map_err(|_| error("vault_journal", "invalid protected journal ciphertext"))?;
-    Ok(Some(session.secret.open(context, &ciphertext).map_err(key)?.to_vec()))
+    let plain = session.secret.open(context, &ciphertext).map_err(key)?.to_vec();
+    if payload.root != current_root { ROOTS.lock().expect("vault roots").insert(payload.root, current_root); }
+    Ok(Some(plain))
 }
 
 /// Rewrite a protected field during full local rekey. The caller commits all replacements atomically.

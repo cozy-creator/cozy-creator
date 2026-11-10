@@ -270,6 +270,7 @@ impl Watch {
             }
             self.arrived()?;
             if let Some(event) = self.pending.pop_front() {
+                if !self.visible(&event) { continue; }
                 return Some((Ok(frame(&event)), self));
             }
             if let Some(id) = self.owed.pop_front() {
@@ -300,6 +301,18 @@ impl Watch {
                 () = stopping(&mut self.stop) => return None,
             }
         }
+    }
+
+    fn visible(&self, event: &StreamEvent) -> bool {
+        let project_id = match event {
+            StreamEvent::ProjectChanged { id, .. } | StreamEvent::Canvas { id, .. } | StreamEvent::History { id, .. } => Some(id),
+            StreamEvent::JobUpdated { project, .. } | StreamEvent::AheadUpdated { project, .. } => Some(project),
+            StreamEvent::RunUpdated { run } => {
+                return self.api.calcifer.store().run(run.id.as_str()).ok().flatten().is_some_and(|row| project::vault::require_path(&row.out_dir).is_ok());
+            }
+            _ => None,
+        };
+        project_id.is_none_or(|id| self.api.calcifer.store().known_project(id).ok().flatten().is_some_and(|known| project::vault::require_path(&known.path).is_ok()))
     }
 
     /// Takes in whatever else has arrived: a run is sent once, as it is now, and nothing waits behind
@@ -357,7 +370,8 @@ impl Watch {
     fn run(&mut self, id: &RunId) -> Option<StreamEvent> {
         let calcifer = &self.api.calcifer;
         let run = match calcifer.store().run(id.as_str()) {
-            Ok(Some(row)) => calcifer.record(&row),
+            Ok(Some(row)) if project::vault::require_path(&row.out_dir).is_ok() => calcifer.record(&row),
+            Ok(Some(_)) => return None,
             Ok(None) => return None,
             Err(e) => Err(crate::Error::Store(e)),
         };

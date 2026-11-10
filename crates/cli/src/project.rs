@@ -527,7 +527,7 @@ async fn import(ctx: &Context, at: Option<&String>, args: ImportFile) -> Result<
         false => {
             let file = api::target::spelled(&args.source, &cwd, &ctx.user_home);
             let stem = file.file_stem().map(|stem| stem.to_string_lossy().to_lowercase());
-            let digest = crate::send::Sender::new(ctx).await?.file(&file).await.map_err(|e| Error { code: "import_unreadable".into(), ..e })?;
+            let digest = crate::send::Sender::for_project(ctx, &project).await?.file(&file).await.map_err(|e| Error { code: "import_unreadable".into(), ..e })?;
             (digest.to_string(), args.name.or(stem))
         }
     };

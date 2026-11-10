@@ -166,6 +166,12 @@ pub(crate) fn router(api: Arc<Api>) -> Router {
         .route("/v1/tools/browse", get(crate::toolbox::browse))
         .route("/v1/tools/{id}/ui", get(crate::tool_ui::find))
         .route(
+            "/v1/project-files/{name}",
+            axum::routing::put(crate::runs::files::put)
+                .head(crate::runs::files::head)
+                .layer(DefaultBodyLimit::disable()),
+        )
+        .route(
             "/v1/files/{name}",
             axum::routing::put(crate::runs::files::put)
                 .head(crate::runs::files::head)
@@ -442,12 +448,14 @@ pub(crate) fn find(api: &Api, key: &str) -> Result<RunRow, Refusal> {
             Err(_) => None,
         },
     };
-    row.ok_or_else(|| {
+    let row = row.ok_or_else(|| {
         Refusal(
             Error::new(Kind::NotFound, "run_not_found", format!("no run {key}"))
                 .next("cozy run ls"),
         )
-    })
+    })?;
+    crate::project::vault::require_path(&row.out_dir).map_err(Refusal)?;
+    Ok(row)
 }
 
 #[derive(Deserialize)]
@@ -493,6 +501,7 @@ async fn list(
     })?;
     let mut runs = Vec::with_capacity(rows.len());
     for row in &rows {
+        if crate::project::vault::require_path(&row.out_dir).is_err() { continue; }
         match api.calcifer.record(row) {
             Ok(run) => runs.push(run),
             Err(e) => unreadable.push(format!("run {}: {e}", row.number)),
@@ -627,6 +636,7 @@ async fn events(
     );
     pending.extend(api.calcifer.live(&row.id));
     let follow = Follow {
+        vault_token: crate::project::vault::readable_token(&row.out_dir),
         id: row.id,
         pending,
         last: starting_after,
@@ -641,6 +651,7 @@ async fn events(
 
 /// One SSE subscriber's place in its run's stream.
 struct Follow {
+    vault_token: Option<Arc<std::sync::atomic::AtomicBool>>,
     id: RunId,
     pending: VecDeque<Event>,
     /// The highest sequence number sent; a durable event at or below it is already known.
@@ -655,6 +666,7 @@ struct Follow {
 impl Follow {
     async fn next(mut self) -> Option<(Result<sse::Event, Infallible>, Self)> {
         loop {
+            if self.vault_token.as_ref().is_some_and(|token| !token.load(std::sync::atomic::Ordering::Acquire)) { return None; }
             if let Some(event) = self.pending.pop_front() {
                 self.ended |= event.is_terminal();
                 let mut sent = sse::Event::default();
