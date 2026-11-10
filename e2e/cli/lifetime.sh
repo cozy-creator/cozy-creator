@@ -258,3 +258,36 @@ fi
 trap - EXIT
 kept_restore "$gate" "$config" "$OUT/kept/config.toml"
 }
+
+# Two downloads on one machine, the second's weights behind the first's: it says whose download it waits for and how much is
+# ahead, and doesn't read stalled while that one moves (cl-849). The first is 1.6 GiB, the second 115 MiB, used nowhere else.
+queued_download() {
+[ "$RUNNER_OS" = Linux ] || return 0
+step "a download queued behind another run's says whose, and how much is ahead (cl-849)"
+local first second n1='' n2='' said='' behind
+cozy --json model download qwen/qwen3.5-0.8b --on local > "$OUT/queued-first.ndjson" 2>&1 &
+first=$!
+# The second goes once the first's bytes move: its objects queue behind all of the first's.
+for _ in $(seq 240); do grep -qE '"bytes_done": *[1-9]' "$OUT/queued-first.ndjson" && break; sleep 0.25; done
+cozy --json model download lilylilith/fontbox --on local > "$OUT/queued-second.ndjson" 2>&1 &
+second=$!
+for _ in $(seq 80); do
+  n1=$(grep -oE '"number": *[0-9]+' "$OUT/queued-first.ndjson" | head -1 | grep -oE '[0-9]+$') || true
+  n2=$(grep -oE '"number": *[0-9]+' "$OUT/queued-second.ndjson" | head -1 | grep -oE '[0-9]+$') || true
+  [ -n "$n1" ] && [ -n "$n2" ] && break
+  sleep 0.25
+done
+behind="waiting for run $n1's download ("
+for _ in $(seq 240); do
+  cozy --json run show "${n2:-0}" --once > "$OUT/queued-show.json" 2> /dev/null || true
+  said=$(jq -r '.waiting // empty' "$OUT/queued-show.json" 2> /dev/null) || said=
+  [[ $said == "$behind"*" ahead)" ]] && break
+  J '.status == "completed"' "$OUT/queued-show.json" 2> /dev/null && break
+  sleep 0.25
+done
+echo "queued: run ${n2:-?} said: ${said:-nothing}"
+[[ $said == "$behind"*" ahead)" ]] || check "queued: run ${n2:-?} never said it waits for run ${n1:-?}'s download: ${said:-nothing}"
+J '.stalled == null' "$OUT/queued-show.json" || check "queued: run ${n2:-?} reads stalled while it waits"
+wait "$first" || check "queued: the first download failed: $(tail -c 300 "$OUT/queued-first.ndjson")"
+wait "$second" || check "queued: the second download failed: $(tail -c 300 "$OUT/queued-second.ndjson")"
+}
