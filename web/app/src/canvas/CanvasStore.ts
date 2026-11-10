@@ -1502,8 +1502,7 @@ export class CanvasStore {
   async pull() {
     if (!this.projectId) return
     try {
-      // Every file `files/` lacks, from the Hub, as Calcifer's own run; the project's `moving` says it's going.
-      await this.client.job("cozy/project_pull", { project: this.projectId }, `pull-${crypto.randomUUID()}`)
+      await this.client.pull(this.projectId)
     } catch (error) {
       say("Couldn't pull this project's files", error)
     }

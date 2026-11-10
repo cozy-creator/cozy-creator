@@ -1,8 +1,7 @@
 //! Calcifer's own jobs (`api::calcifer::hub::job`; cl-841): a model's download, upload and quantization, a package's install,
-//! removal, lock and publication, a project's push and pull. Each is a run, asked by `POST /v1/runs` of its reserved target with its
-//! fields as `input`, and quoted by `POST /v1/run-quotes`. Most are a machine's run with a step of Calcifer's once it completes
-//! (`after`); a lock, a publication, a commit recorded at the Hub, a removal, a push and a pull are Calcifer's own (`Kind::Here`), on
-//! no machine.
+//! removal, lock and publication. Each is a run, asked by `POST /v1/runs` of its reserved target with its fields as `input`, and
+//! quoted by `POST /v1/run-quotes`. Most are a machine's run with a step of Calcifer's once it completes (`after`); a lock, a
+//! publication, a commit recorded at the Hub and a removal are Calcifer's own (`Kind::Here`), on no machine.
 use std::sync::Arc;
 
 use api::{
@@ -45,7 +44,6 @@ pub(super) enum Work {
     Publish(LocalCode, PackagePublish),
     Record(Box<weights::Record>),
     Remove(packages::Removal),
-    Transfer(Box<crate::project::Transfer>),
 }
 
 /// A machine's run with nothing more to it.
@@ -89,10 +87,6 @@ async fn plan(api: &Arc<Api>, key: &str, hub: &Origin, ask: &RunRequest) -> Resu
         job::PACKAGE_REMOVE => packages::removal(api, hub, &on, input(ask)?).await,
         job::PACKAGE_LOCK => Ok(Planned::Here { target: ask.target.clone(), work: Work::Lock(code(ask)?, input(ask)?) }),
         job::PACKAGE_PUBLISH => Ok(Planned::Here { target: ask.target.clone(), work: Work::Publish(code(ask)?, input(ask)?) }),
-        job::PROJECT_PUSH | job::PROJECT_PULL => {
-            let transfer = crate::project::Transfer::plan(api, hub, &input(ask)?, ask.target == job::PROJECT_PUSH)?;
-            Ok(Planned::Here { target: ask.target.clone(), work: Work::Transfer(Box::new(transfer)) })
-        }
         other => unreachable!("{other} is no job"),
     }
 }
@@ -160,7 +154,6 @@ impl Work {
             Work::Publish(code, ask) => serde_json::to_value(author::publish(api, hub, &code, &ask, here).await?),
             Work::Record(record) => serde_json::to_value(record.run(api, hub).await.map_err(|Refusal(e)| e)?),
             Work::Remove(removal) => serde_json::to_value(removal.run(api, key).await?),
-            Work::Transfer(transfer) => serde_json::to_value(transfer.run(api, hub, here).await?),
         };
         result.map_err(|e| Error::internal("job_result", e.to_string()))
     }

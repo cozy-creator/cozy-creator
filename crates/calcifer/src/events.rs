@@ -155,11 +155,6 @@ pub(crate) fn ahead_updated(id: &str, ahead: &api::calcifer::project::Ahead) {
     let _ = PROJECTS.said.send(StreamEvent::AheadUpdated { project: id.to_owned(), ahead: Box::new(ahead.clone()) });
 }
 
-/// Tells every stream project `id`'s render, whole: more than one job of it changed.
-pub(crate) fn board_updated(id: &str, board: &api::calcifer::project::Board) {
-    let _ = PROJECTS.said.send(StreamEvent::BoardUpdated { project: id.to_owned(), board: Box::new(board.clone()) });
-}
-
 /// Tells every stream one job of project `id` changed.
 pub(crate) fn job_updated(id: &str, job: &api::calcifer::project::Job, seq: u64) {
     let _ = PROJECTS.said.send(StreamEvent::JobUpdated { project: id.to_owned(), job: Box::new(job.clone()), seq });

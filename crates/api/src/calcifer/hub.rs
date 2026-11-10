@@ -563,16 +563,9 @@ pub mod job {
     pub const PACKAGE_LOCK: &str = "cozy/package_lock";
     /// `input`: [`super::PackagePublish`], of the request's `code`. Calcifer's run; its result is a [`super::Published`].
     pub const PACKAGE_PUBLISH: &str = "cozy/package_publish";
-    /// `input`: [`super::ProjectFiles`]. Calcifer's run: every file the project's lock names that the Hub lacks, sent and kept as a
-    /// private commit of the account's model `project-assets`; its result is a [`crate::calcifer::project::Transferred`].
-    pub const PROJECT_PUSH: &str = "cozy/project_push";
-    /// `input`: [`super::ProjectFiles`]. Calcifer's run: every file the project's lock names that `files/` lacks, fetched from the
-    /// Hub; its result is a [`crate::calcifer::project::Transferred`].
-    pub const PROJECT_PULL: &str = "cozy/project_pull";
 
     /// Every job, by its target.
-    pub const ALL: [&str; 9] =
-        [MODEL_DOWNLOAD, MODEL_UPLOAD, MODEL_QUANTIZE, PACKAGE_INSTALL, PACKAGE_REMOVE, PACKAGE_LOCK, PACKAGE_PUBLISH, PROJECT_PUSH, PROJECT_PULL];
+    pub const ALL: [&str; 7] = [MODEL_DOWNLOAD, MODEL_UPLOAD, MODEL_QUANTIZE, PACKAGE_INSTALL, PACKAGE_REMOVE, PACKAGE_LOCK, PACKAGE_PUBLISH];
 }
 
 /// `cozy/model_download`'s input.
@@ -663,13 +656,6 @@ pub struct PackageInstall {
 pub struct PackageRemove {
     /// `org/name`, or `local/name`.
     pub packages: Vec<String>,
-}
-
-/// `cozy/project_push`'s and `cozy/project_pull`'s input: the project, as a route names one (`project::NAMED_BY`).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct ProjectFiles {
-    pub project: String,
 }
 
 /// `cozy/package_remove`'s result: what left the machine, what that freed, and what did not go.

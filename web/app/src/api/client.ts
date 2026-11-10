@@ -410,6 +410,11 @@ export class Client {
     return this.write("POST", `${project(id)}/cancel`, { names }, undefined, { once })
   }
 
+  /** Every file `files/` lacks, from the Hub; a project's `moving` says it's going. */
+  pull(id: string): Promise<Opened> {
+    return this.write("POST", `${project(id)}/pull`, {})
+  }
+
   rename(id: string, from: string, to: string, write: Write = {}): Promise<Renamed> {
     return this.write("POST", `${project(id)}/rename`, { from, to }, undefined, write)
   }

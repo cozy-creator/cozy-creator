@@ -7,12 +7,12 @@ pub(crate) mod render;
 use std::{path::PathBuf, process::ExitCode};
 
 use api::{
-    calcifer::{MachineList, NoteLevel, On, local_usable},
+    calcifer::{MachineList, On, local_usable},
     error::{Error, Kind},
-    calcifer::hub::{ProjectFiles, job},
+    calcifer::hub::At,
     calcifer::project::{
-        Approve, Approved, Asked, By, Cancel, Cancelled, Fit, FitAsk, History, HistoryStep, HistoryStepped, Import, Imported, JobState, NewVersion, Open, Opened, Pickup, Projects, Reclaim,
-        Reclaimed, Rename, Renamed, Runs, Said, Standing, State, Transferred, Unpin, Unpinned, VersionMoved,
+        Approve, Approved, Asked, By, Cancel, Cancelled, Event, Fit, FitAsk, History, HistoryStep, HistoryStepped, Import, Imported, NewVersion, Open, Opened, Pickup, Projects, Reclaim,
+        Reclaimed, Rename, Renamed, Runs, Standing, State, Transferred, Unpin, Unpinned, VersionMoved,
     },
 };
 
@@ -20,7 +20,6 @@ use crate::{
     Context, output,
     run::{exit_code, mint_key, settled, watched},
 };
-use render::{Follow, Rendering};
 
 /// A push or pull that moved all it could and left out a file.
 const PARTIAL: u8 = 3;
@@ -302,7 +301,6 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         Verb::Unapprove { name } => {
             let path = at(&named(args.project.as_ref())?, &["unpin"]);
             let unpinned: Unpinned = ctx.calcifer().await?.post(&path, &Unpin { name }, None).await?;
-            unpinned.warnings.iter().for_each(|warning| output::warn(warning));
             if ctx.json {
                 output::json(&unpinned);
             } else {
@@ -376,14 +374,14 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         Verb::Undo { entry, to } => return step(ctx, args.project.as_ref(), "undo", HistoryStep { entry, to, edit: None }).await,
         Verb::Redo { entry, to } => return step(ctx, args.project.as_ref(), "redo", HistoryStep { entry, to, edit: None }).await,
         Verb::Push => {
-            let done = transfer(ctx, args.project.as_ref(), job::PROJECT_PUSH).await?;
+            let done = transfer(ctx, args.project.as_ref(), "push", "sent").await?;
             let at = done.kept_in.as_deref().unwrap_or("the Hub");
             let (moved, bytes, rest) = (done.moved, output::bytes(done.bytes), rest(&done));
             output::say(ctx, &format!("{} files at {at}: {moved} sent ({bytes}), {rest} there already", done.files));
             return Ok(skipped(&done));
         }
         Verb::Pull => {
-            let done = transfer(ctx, args.project.as_ref(), job::PROJECT_PULL).await?;
+            let done = transfer(ctx, args.project.as_ref(), "pull", "fetched").await?;
             let (moved, bytes, rest) = (done.moved, output::bytes(done.bytes), rest(&done));
             output::say(ctx, &format!("{} files: {moved} fetched ({bytes}), {rest} here already", done.files));
             return Ok(skipped(&done));
@@ -468,14 +466,29 @@ fn skipped(done: &Transferred) -> ExitCode {
     if done.skipped.is_empty() { ExitCode::SUCCESS } else { ExitCode::from(PARTIAL) }
 }
 
-/// A push or pull, Calcifer's own run (`target`), followed to its end: what it moved, which `--json` prints.
-async fn transfer(ctx: &Context, at: Option<&String>, target: &str) -> Result<Transferred, Error> {
-    let run = crate::run::job(ctx, target, &ProjectFiles { project: named(at)? }, None, None).await?;
-    let done: Transferred = crate::run::done(ctx, run).await?;
-    if ctx.json {
-        output::json(&done);
+/// `POST /v1/projects/{id}/<verb>`, followed on the project's events to its end, which `--json` prints.
+async fn transfer(ctx: &Context, at: Option<&String>, verb: &str, moved: &str) -> Result<Transferred, Error> {
+    let project = named(at)?;
+    let calcifer = ctx.calcifer().await?;
+    let mut events = calcifer.watch::<Event>(&self::at(&project, &["events"])).await?;
+    let ask = At { hub: Some(ctx.hub().to_string()) };
+    let _: Opened = calcifer.post(&self::at(&project, &[verb]), &ask, None).await?;
+    while let Some(event) = events.next().await {
+        match event {
+            Event::Moved { file: Some(file), bytes } => output::say(ctx, &format!("{moved} {file} ({} so far)", output::bytes(bytes))),
+            Event::Moved { file: None, bytes } => output::say(ctx, &format!("{} so far", output::bytes(bytes))),
+            Event::Transferred { error: Some(error), .. } => return Err(error),
+            Event::Transferred { done: Some(done), .. } => {
+                if ctx.json {
+                    output::json(&done);
+                }
+                return Ok(done);
+            }
+            _ => {}
+        }
     }
-    Ok(done)
+    let said = format!("Calcifer stopped before the {verb} ended; run it again and it goes on from what landed");
+    Err(Error::new(Kind::Unavailable, "project_events_ended", said).next(format!("cozy project{} {verb}", from(at))))
 }
 
 /// `POST /v1/projects/{id}/imports`, and the name it got.
@@ -570,10 +583,10 @@ async fn render(ctx: &Context, at: Option<&String>, mut args: Render) -> Result<
     let project = named(at)?;
     let calcifer = ctx.calcifer().await?;
     let queued = args.queue;
-    // Subscribed before the ask, so nothing it sets going is missed.
-    let mut watch = match queued {
+    // Opened before the ask, so nothing it sets going is missed.
+    let mut events = match queued {
         true => None,
-        false => Some(calcifer.changes().await?),
+        false => Some(calcifer.watch::<Event>(&self::at(&project, &["events"])).await?),
     };
     // Named, it's held to what this OS can do. Unnamed it's every rental of yours and this computer last, as the page sends it, each job going
     // where it ends first; with none, `local`, and Calcifer says so only of what needs a machine: an Edit needs none.
@@ -601,8 +614,7 @@ async fn render(ctx: &Context, at: Option<&String>, mut args: Render) -> Result<
         [one] => output::say(ctx, &format!("{one} is approved: skipped. Name it to make a new version, or unapprove it")),
         many => output::say(ctx, &format!("{} are approved: skipped. Name them to make new versions, or unapprove them", many.join(", "))),
     }
-    said(ctx, &asked.said);
-    let Some(watch) = watch.take() else {
+    if events.is_none() {
         if ctx.json {
             output::json(&asked);
             return Ok(ExitCode::SUCCESS);
@@ -618,7 +630,7 @@ async fn render(ctx: &Context, at: Option<&String>, mut args: Render) -> Result<
         }
         output::nexts(ctx, &asked.next);
         return Ok(ExitCode::SUCCESS);
-    };
+    }
     if asked.joined {
         let name = asked.path.file_name().map_or_else(|| project.clone(), |name| name.to_string_lossy().into_owned());
         output::say(ctx, &match asked.added {
@@ -626,23 +638,12 @@ async fn render(ctx: &Context, at: Option<&String>, mut args: Render) -> Result<
             _ => format!("a render is already going in {name}: joining it"),
         });
     }
+    let events = events.take().expect("following");
     let status = format!("cozy project{} status", from(at));
-    let follow = Follow::new(calcifer, asked.id, watch);
-    let rendering = Rendering::new(asked.path, asked.board, asked.ask);
     if ctx.json {
-        return following_json(ctx, follow, rendering, &status).await;
+        return following_json(ctx, events, &status, asked.ask.as_deref()).await;
     }
-    render::follow(ctx, rendering, follow, &status).await
-}
-
-/// What an ask found of what it names, each line once: a warning on stderr, as `--json` too.
-fn said(ctx: &Context, said: &[Said]) {
-    for said in said {
-        match said.level {
-            NoteLevel::Warning => output::warn(&said.message),
-            NoteLevel::Info => output::say(ctx, &said.message),
-        }
-    }
+    render::follow(ctx, render::Rendering::new(asked.path.clone(), asked.board, asked.ask), events, &status).await
 }
 
 /// What this computer would render poorly, in the line the page asks with, said once as a warning: this never asks, and goes on. A
@@ -657,36 +658,36 @@ async fn poorly_here(calcifer: &crate::calcifer_client::Client, project: &str, n
     output::warn(&lines.collect::<Vec<_>>().join(" "));
 }
 
-/// `--json`: each run's own events, as `cozy run` gives them, one run after another as each shows on the board, its warnings once each
-/// on stderr, and the render's refusal as its envelope. It ends with the walk that ends its ask, or with none the one going.
-async fn following_json(ctx: &Context, mut follow: Follow, mut rendering: Rendering, status: &str) -> Result<ExitCode, Error> {
+/// `--json`: each run's own events, as `cozy run` gives them, and the render's refusal as its envelope. It ends with the walk that ends
+/// `ask`, or with None the one going.
+async fn following_json(ctx: &Context, mut events: crate::calcifer_client::Watch<Event>, status: &str, ask: Option<&str>) -> Result<ExitCode, Error> {
     let calcifer = ctx.calcifer().await?;
     let mut warned = std::collections::HashSet::new();
-    // What had ended when following began is no run of this to follow.
-    let ended = |state: JobState| !matches!(state, JobState::Running | JobState::Waiting);
-    let mut followed: std::collections::HashSet<u64> = rendering.board.jobs.iter().filter(|job| ended(job.state)).filter_map(|job| job.run).collect();
-    loop {
-        for said in rendering.board.said.iter().filter(|said| said.level == NoteLevel::Warning) {
-            if warned.insert(said.message.clone()) {
-                output::warn(&said.message);
+    // `/events` opens with the runs going, and one that began just then can be told twice.
+    let mut followed = std::collections::HashSet::new();
+    while let Some(event) = events.next().await {
+        match event {
+            Event::Started { run, .. } if followed.insert(run.clone()) => {
+                let run = watched(ctx, calcifer.run(&run).await?).await?;
+                if !settled(&run) {
+                    return Ok(exit_code(&run));
+                }
             }
-        }
-        let going: Vec<u64> = rendering.board.jobs.iter().filter_map(|job| job.run).filter(|run| followed.insert(*run)).collect();
-        for run in going {
-            let run = watched(ctx, calcifer.run(&run.to_string()).await?).await?;
-            if !settled(&run) {
-                return Ok(exit_code(&run));
+            Event::Warning { message, .. } => {
+                if warned.insert(message.clone()) {
+                    output::warn(&message);
+                }
             }
+            Event::Ended { error, asks, .. } if ask.is_none_or(|ask| asks.iter().any(|ended| ended == ask)) => {
+                return match error {
+                    Some(error) => Err(error),
+                    None => Ok(ExitCode::SUCCESS),
+                };
+            }
+            _ => {}
         }
-        if let Some(ended) = rendering.ended() {
-            return match ended.and_then(|ended| ended.error.clone()) {
-                Some(error) => Err(error),
-                None => Ok(ExitCode::SUCCESS),
-            };
-        }
-        let Some(change) = follow.next().await else { return Err(render::ended_early(status)) };
-        rendering.apply(change);
     }
+    Err(Error::new(Kind::Unavailable, "project_events_ended", "Calcifer stopped telling how the runs go").next(status))
 }
 
 /// What `--json` keeps of a project (`--full`: all of it): what the view shows, by the record's own names.
@@ -709,18 +710,13 @@ async fn status(ctx: &Context, at: Option<&String>) -> Result<ExitCode, Error> {
 async fn wait(ctx: &Context, at: Option<&String>) -> Result<ExitCode, Error> {
     let project = named(at)?;
     let calcifer = ctx.calcifer().await?;
-    // Subscribed before the read, so nothing between the two is missed.
-    let watch = calcifer.changes().await?;
+    // Opened before the read, so nothing between the two is missed.
+    let events = calcifer.watch::<Event>(&self::at(&project, &["events"])).await?;
     let state: State = calcifer.get(&self::at(&project, &[])).await?;
     let status = format!("cozy project{} status", from(at));
     match state.board.clone().filter(|_| state.busy) {
-        Some(board) => {
-            let (follow, rendering) = (Follow::new(calcifer, state.id.clone(), watch), Rendering::new(state.path.clone(), board, None));
-            match ctx.json {
-                true => following_json(ctx, follow, rendering, &status).await,
-                false => render::follow(ctx, rendering, follow, &status).await,
-            }
-        }
+        Some(_) if ctx.json => following_json(ctx, events, &status, None).await,
+        Some(board) => render::follow(ctx, render::Rendering::new(state.path.clone(), board, None), events, &status).await,
         None => {
             shown(ctx, &state);
             let failed = state.assets.iter().any(|asset| asset.failure.is_some());

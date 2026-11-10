@@ -3,8 +3,8 @@
 //! Push records them as a private commit of the account's one model `project-assets`: objects no commit
 //! reaches are swept within days, and a commit stays until its owner deletes it (`cozy model delete`).
 //! A file too big for one object goes as parts, each its own object, which project.lock lists.
-//! Each is a run of Calcifer's own (`cozy/project_push`, `cozy/project_pull`), its progress the files and bytes it moved and its
-//! result a `Transferred`: a client that goes stops following, never the work, and a stopping Calcifer waits for no transfer.
+//! Each runs in its own task and says how it goes on the project's events: a client that goes stops
+//! following, never the work, and a stopping Calcifer waits for no transfer.
 use std::{
     fs::File,
     future::Future,
@@ -17,14 +17,20 @@ use std::{
     time::Duration,
 };
 
-use axum::body::Bytes;
+use axum::{
+    Json,
+    body::Bytes,
+    extract::{Path, State, rejection::BytesRejection},
+    http::StatusCode,
+};
 use futures_util::{StreamExt as _, TryStreamExt as _, stream};
 use ::api::hub::{Client, Credential};
 use platform::durable::FileAt as _;
 use api::{
     config::Origin,
     error::{Error, Kind},
-    calcifer::{hub::ProjectFiles, project::{Skipped, Transferred}},
+    calcifer::hub::At,
+    calcifer::project::{Event, Opened, Skipped, Transferred},
 };
 use sha2::{Digest as _, Sha256};
 use tensorfs::{
@@ -34,10 +40,7 @@ use tensorfs::{
 };
 
 use super::{Project, folder};
-use crate::{
-    Here,
-    api::{Api, Refusal},
-};
+use crate::api::{Api, Refusal};
 
 /// The account's model whose commits keep its projects' files.
 const MODEL: &str = "project-assets";
@@ -50,7 +53,7 @@ const MOST: u64 = 5 << 30;
 /// What a file over `MOST` is split into, so a killed transfer goes on from the part it reached.
 const PART: u64 = 1 << 30;
 /// How often a transfer says how far it is, between files.
-const TICK: Duration = Duration::from_secs(1);
+const TICK: Duration = Duration::from_secs(5);
 
 /// A signed-in client's Bearer on each request.
 struct Signed(Client);
@@ -83,18 +86,18 @@ fn local(detail: impl ToString) -> Failed {
     Failed { code: Code::IO_FAILED, detail: detail.to_string() }
 }
 
-/// `work`, saying how far it is as `stage` (files `moved` of `files`, and their bytes) every `TICK` that moved something.
-async fn ticking<T>(here: &Here, stage: &str, files: u64, tally: &Tally, moved: impl Fn() -> u64, work: impl Future<Output = T>) -> T {
+/// `work`, saying how far it is (`moved`) every `TICK` that moved something.
+async fn ticking<T>(project: &Project, moved: impl Fn() -> u64, work: impl Future<Output = T>) -> T {
     let mut work = std::pin::pin!(work);
-    let (mut tick, mut said) = (tokio::time::interval(TICK), None);
+    let (mut tick, mut said) = (tokio::time::interval(TICK), 0);
     loop {
         tokio::select! {
             done = &mut work => return done,
             _ = tick.tick() => {
-                let now = (tally.moved.load(Ordering::Relaxed), moved());
-                if said != Some(now) {
-                    said = Some(now);
-                    here.progress(stage, now.0, files, now.1);
+                let now = moved();
+                if now != said {
+                    said = now;
+                    let _ = project.events.send(Event::Moved { file: None, bytes: now });
                 }
             }
         }
@@ -233,12 +236,14 @@ async fn send(project: &Project, endpoint: &Endpoint, tally: &Tally, file: folde
     }
     if moved {
         tally.moved.fetch_add(1, Ordering::Relaxed);
+        let bytes = tally.bytes.load(Ordering::Relaxed);
+        let _ = project.events.send(Event::Moved { file: Some(file.path), bytes });
     }
     Ok(objects)
 }
 
 /// Sends every file project.lock names that the Hub lacks, then records all it can as a commit.
-async fn push(project: &Project, hub: &Origin, client: &Client, endpoint: &Endpoint, here: &Here) -> Result<Transferred, Error> {
+async fn push(project: &Project, hub: &Origin, client: &Client, endpoint: &Endpoint) -> Result<Transferred, Error> {
     let account = client.get_current_account().await.map_err(|e| crate::hub::refusal(hub, e).0)?.name;
     let _held = project.moving.lock().await;
     crate::events::project_settled(&project.folder.dir);
@@ -248,7 +253,7 @@ async fn push(project: &Project, hub: &Origin, client: &Client, endpoint: &Endpo
         .map(|file| send(project, endpoint, &tally, file))
         .buffer_unordered(AT_ONCE)
         .try_collect::<Vec<_>>();
-    let objects = ticking(here, "sending", files, &tally, || endpoint.sent() - before, sending).await.map_err(failed)?;
+    let objects = ticking(project, || endpoint.sent() - before, sending).await.map_err(failed)?;
     let objects: Vec<ObjectRef> = objects.into_iter().flatten().collect();
     let (mut kept_in, mut commit) = (None, None);
     if !objects.is_empty() {
@@ -318,20 +323,23 @@ async fn fetch(project: &Project, endpoint: &Endpoint, tally: &Tally, wanted: fo
     std::fs::rename(&part, &at).map_err(named)?;
     folder::sealed(&at);
     tally.moved.fetch_add(1, Ordering::Relaxed);
+    let _ = project.events.send(Event::Moved { file: Some(path), bytes: tally.bytes.load(Ordering::Relaxed) });
     Ok(())
 }
 
 /// Fetches every file project.lock names that `files/` lacks.
-async fn pull(project: &Project, endpoint: &Endpoint, here: &Here) -> Result<Transferred, Error> {
+async fn pull(project: &Project, endpoint: &Endpoint) -> Result<Transferred, Error> {
     let _held = project.moving.lock().await;
     crate::events::project_settled(&project.folder.dir);
     let (dir, named) = (&project.folder.dir, named(project)?);
     let store = dir.join(folder::FILES);
     std::fs::create_dir_all(&store).map_err(|e| Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", store.display())))?;
     let (files, tally) = (named.len() as u64, Tally::default());
-    let lacking: Vec<folder::File> = named.into_iter().filter(|file| !dir.join(&file.path).is_file()).collect();
-    let fetching = stream::iter(lacking.iter().cloned()).map(|file| fetch(project, endpoint, &tally, file)).buffer_unordered(AT_ONCE).try_collect::<Vec<_>>();
-    ticking(here, "fetching", lacking.len() as u64, &tally, || tally.bytes.load(Ordering::Relaxed), fetching).await.map_err(failed)?;
+    let fetching = stream::iter(named.into_iter().filter(|file| !dir.join(&file.path).is_file()))
+        .map(|file| fetch(project, endpoint, &tally, file))
+        .buffer_unordered(AT_ONCE)
+        .try_collect::<Vec<_>>();
+    ticking(project, || tally.bytes.load(Ordering::Relaxed), fetching).await.map_err(failed)?;
     let (moved, bytes) = (tally.moved.load(Ordering::Relaxed), tally.bytes.load(Ordering::Relaxed));
     Ok(Transferred { files, moved, bytes, skipped: tally.skipped(), kept_in: None, commit: None })
 }
@@ -352,41 +360,48 @@ pub(super) async fn pull_one(api: &Api, project: &Project, hub: &str, file: fold
     tally.skipped().pop().map_or(Ok(()), |skipped| Err(skipped.why))
 }
 
-/// A push or pull of one project, planned: refused at once when the project is unknown or this computer is not signed in at the Hub.
-pub(crate) struct Transfer {
-    project: Arc<Project>,
-    client: Client,
-    endpoint: Endpoint,
-    push: bool,
+/// What a transfer asks for, refused now when this computer is not signed in.
+fn asked(api: &Arc<Api>, id: &str, body: Result<Bytes, BytesRejection>) -> Result<(Arc<Project>, Origin, Client, Endpoint), Refusal> {
+    let at: At = crate::hub::body(body)?;
+    let (project, hub) = (api.projects.get(api, id)?, crate::hub::origin(api, at.hub.as_deref())?);
+    let (client, endpoint) = signed(api, &hub).map_err(Refusal)?;
+    Ok((project, hub, client, endpoint))
 }
 
-impl Transfer {
-    pub(crate) fn plan(api: &Arc<Api>, hub: &Origin, ask: &ProjectFiles, push: bool) -> Result<Self, Refusal> {
-        let project = api.projects.get(api, &ask.project)?;
-        let (client, endpoint) = signed(api, hub).map_err(Refusal)?;
-        Ok(Self { project, client, endpoint, push })
-    }
+/// How a transfer ended, on the project's events.
+fn ended(project: &Project, done: Result<Transferred, Error>) {
+    let (done, error) = match done {
+        Ok(done) => (Some(done), None),
+        Err(error) => (None, Some(error)),
+    };
+    let _ = project.events.send(Event::Transferred { done, error });
+    crate::events::project_settled(&project.folder.dir);
+}
 
-    /// Carries it out as the run `here`: what it moved.
-    pub(crate) async fn run(self, api: &Arc<Api>, hub: &Origin, here: &Here) -> Result<Transferred, Error> {
-        let Self { project, client, endpoint, push: sends } = self;
-        // Its end, or its cancel, is told to every stream: `moving` is over.
-        let _settled = Settled(project.clone());
-        if sends {
-            return push(&project, hub, &client, &endpoint, here).await;
-        }
-        let done = pull(&project, &endpoint, here).await;
+/// `POST /v1/projects/{id}/push`.
+pub(super) async fn pushed(
+    State(api): State<Arc<Api>>,
+    Path(id): Path<String>,
+    body: Result<Bytes, BytesRejection>,
+) -> Result<(StatusCode, Json<Opened>), Refusal> {
+    let (project, hub, client, endpoint) = asked(&api, &id, body)?;
+    let path = project.folder.dir.clone();
+    tokio::spawn(async move { ended(&project, push(&project, &hub, &client, &endpoint).await) });
+    Ok((StatusCode::ACCEPTED, Json(super::opened(id, &path))))
+}
+
+/// `POST /v1/projects/{id}/pull`.
+pub(super) async fn pulled(
+    State(api): State<Arc<Api>>,
+    Path(id): Path<String>,
+    body: Result<Bytes, BytesRejection>,
+) -> Result<(StatusCode, Json<Opened>), Refusal> {
+    let (project, _, _, endpoint) = asked(&api, &id, body)?;
+    let opened = super::opened(id, &project.folder.dir);
+    tokio::spawn(async move {
+        ended(&project, pull(&project, &endpoint).await);
         // What came is no one's to measure until a render otherwise.
-        super::measure_soon(api, &project);
-        done
-    }
-}
-
-/// A project whose push or pull ended, told so as this goes.
-struct Settled(Arc<Project>);
-
-impl Drop for Settled {
-    fn drop(&mut self) {
-        crate::events::project_settled(&self.0.folder.dir);
-    }
+        super::measure_soon(&api, &project);
+    });
+    Ok((StatusCode::ACCEPTED, Json(opened)))
 }
