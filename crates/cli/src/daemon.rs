@@ -39,6 +39,9 @@ pub(crate) async fn status(ctx: &Context, _args: Status) -> Result<ExitCode, Err
     if !attention {
         next.push("cozy run --help");
     }
+    if !ctx.full && (project.warnings.len() > 10 || project.unsent.len() > 5) {
+        next.push("cozy status --full");
+    }
     let mut document = json!({
         "project": if ctx.full {
             json!({
@@ -54,11 +57,12 @@ pub(crate) async fn status(ctx: &Context, _args: Status) -> Result<ExitCode, Err
             "missing_files": project.absent,
             "warnings": project.warnings.len(),
         },
-        "warnings": project.warnings,
+        "warnings": project.warnings.iter().take(if ctx.full { usize::MAX } else { 10 }).collect::<Vec<_>>(),
         "next": next,
     });
     if !project.unsent.is_empty() {
-        document["errors"] = json!(project.unsent);
+        document["counts"]["errors"] = json!(project.unsent.len());
+        document["errors"] = json!(project.unsent.iter().take(if ctx.full { usize::MAX } else { 5 }).collect::<Vec<_>>());
     }
     output::view(ctx, &document, &["project", "health", "counts", "warnings", "errors", "next"]);
     Ok(ExitCode::SUCCESS)
