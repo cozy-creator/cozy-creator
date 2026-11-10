@@ -87,7 +87,7 @@ dependencies = [
 
 [[package]]
 name = "api"
-version = "0.23.1"
+version = "0.24.0"
 dependencies = [
  "aws-lc-rs",
  "base64",
@@ -358,7 +358,7 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
 name = "calcifer"
-version = "0.23.1"
+version = "0.24.0"
 dependencies = [
  "api",
  "axum",
@@ -514,7 +514,7 @@ checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
 
 [[package]]
 name = "cli"
-version = "0.23.1"
+version = "0.24.0"
 dependencies = [
  "anstream",
  "anstyle",
@@ -640,7 +640,7 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
 name = "cozy"
-version = "0.23.1"
+version = "0.24.0"
 dependencies = [
  "calcifer",
  "cli",
@@ -1146,7 +1146,7 @@ dependencies = [
 
 [[package]]
 name = "executor-api"
-version = "0.23.1"
+version = "0.24.0"
 dependencies = [
  "base64",
  "pyo3",
@@ -2459,7 +2459,7 @@ checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
 name = "platform"
-version = "0.23.1"
+version = "0.24.0"
 dependencies = [
  "flate2",
  "getrandom 0.3.4",
@@ -3739,7 +3739,7 @@ dependencies = [
 
 [[package]]
 name = "tensord"
-version = "0.23.1"
+version = "0.24.0"
 dependencies = [
  "api",
  "aws-lc-rs",
@@ -4266,7 +4266,7 @@ dependencies = [
 
 [[package]]
 name = "varena-ledger"
-version = "0.23.1"
+version = "0.24.0"
 dependencies = [
  "libc",
  "platform",
@@ -4274,7 +4274,7 @@ dependencies = [
 
 [[package]]
 name = "varena-ledger-cells"
-version = "0.23.1"
+version = "0.24.0"
 dependencies = [
  "libc",
  "varena-ledger",
