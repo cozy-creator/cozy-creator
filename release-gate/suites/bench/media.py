@@ -28,10 +28,13 @@ FLAT = 2.0
 JUMP = 4.5
 # Against the same request and seed from another build, pod or GPU count. Pictures: layout SSIM at 128x128 grey, recorded
 # 0.99-1.00 across v1/0.21.1/0.21.2/0.22.1 and three pods, 0.35-0.70 for another seed. Video: mean absolute difference
-# (grey 0..1, 168x96) of each eighth of the video, 0.042-0.046 same seed (0.22.1 one GPU against 0.21.1 two GPUs),
-# 0.10-0.31 other seeds; and no eighth over RATIO x the first (the broken half leaves the early frames matching).
-# Sound: envelope correlation 0.93-0.99 same seed, -0.13 another.
-ALIKE, APART, RATIO, ENVELOPE = 0.90, 0.08, 2.5, 0.6
+# (grey 0..1, 168x96) of each eighth of the video. Same-seed one-GPU/two-GPU pairs on disk (11-10: three of released 0.22.1,
+# five experimental, across kernel paths: one GPU runs the package's int4 shared-QKV producer, two the Runtime's sparse
+# kernel) differ 0.017-0.084 in their worst eighth and drift smoothly: no eighth more than 1.35x the one before. Those pairs
+# with the two-GPU side's late half tiled and shifted (43975's frames) reach 0.14-0.27 with a step of 3.9-5.1x; 43975 and
+# 43973 against 43974 (another seed) 0.23-0.24. So a video fails over APART in any eighth (a different video) or with a step
+# over STEP into an eighth above 0.05 (a break partway). Sound: envelope correlation 0.93-0.99 same seed, -0.13 another.
+ALIKE, APART, STEP, ENVELOPE = 0.90, 0.15, 2.0, 0.6
 SILENT_DB = -60.0
 
 
@@ -170,10 +173,11 @@ def differs(said: Pair, what: str = 'the reference') -> list[str]:
         why.append(f"{said['frames'][1]} frames against {what}'s {said['frames'][0]}")
     e = said.get('eighths')
     if e:
+        steps = [(e[i] / max(e[i - 1], 1e-9), i) for i in range(1, len(e)) if e[i] > 0.05]
         if max(e) > APART:
             why.append(f"differs from {what} by {max(e):.3f} in its worst eighth (at most {APART})")
-        elif max(e) > RATIO * e[0] and max(e) > 0.03:
-            why.append(f"late frames differ {max(e) / max(e[0], 1e-9):.1f}x more from {what} than its first eighth")
+        elif steps and max(steps)[0] > STEP:
+            why.append(f"breaks from {what} at eighth {max(steps)[1] + 1}: {max(steps)[0]:.1f}x the eighth before (at most {STEP:g}x)")
     env = said.get('envelope')
     if env is not None and env < ENVELOPE:
         why.append(f"sound envelope {env} against {what} (at least {ENVELOPE})")

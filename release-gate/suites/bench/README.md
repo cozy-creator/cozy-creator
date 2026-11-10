@@ -38,8 +38,8 @@ without the flag the baseline's stored rows are used.
 A cell FAILs when
 - a run failed, did not run, or the memo answered it;
 - its output is no output (flat, a structure jump between frames, wrong size, frames or sound), or differs from the
-  stored output of the same request and seed (pictures: layout SSIM < 0.90; video: any eighth > 0.08 mean grey difference,
-  or late eighths > 2.5x the first; sound envelope < 0.6), or a multi-GPU output from its one-GPU twin (`like`);
+  stored output of the same request and seed (pictures: layout SSIM < 0.90; video: any eighth > 0.15 mean grey difference,
+  or an eighth above 0.05 over 2x the one before it, a break partway; kernel paths drift smoothly); sound envelope < 0.6), or a multi-GPU output from its one-GPU twin (`like`);
 - its warm steady step or total is over the baseline by more than max(5%, 3 sd of the two medians' ratio), uncapped cells
   scaled by each call's SM clock first (a total by its denoise part);
 - its peak VRAM (less the holder's) is over its cap, its multi-GPU run does not beat the one-GPU cell (`beats`) or takes another transport;
