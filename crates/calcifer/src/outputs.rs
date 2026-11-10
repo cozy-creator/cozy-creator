@@ -557,7 +557,7 @@ impl Calcifer {
             let mut unlisted = None;
             let kept = match crate::project::of_landing(&run.out_dir).filter(|_| item.media_type != tree::MEDIA) {
                 Some(project) => {
-                    let made = crate::project::Landed { run: run.number, target: &run.target, output: name, index, digest: &item.digest, measured };
+                    let made = crate::project::Landed { run_id: &run.id, run: run.number, target: &run.target, output: name, index, digest: &item.digest, measured };
                     match crate::project::landed(project, &made, dest) {
                         Ok((kept, said)) => {
                             unlisted = said;
