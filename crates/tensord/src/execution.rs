@@ -976,7 +976,11 @@ impl Engine {
         if matches!(outcome, Outcome::Completed(_)) {
             // A warning never stands between a run and its result.
             if let Err(error) = journal.warn_unapplied_attention(id, progress.get(id)) {
-                tracing::warn!("run {id}: attention pin warning not logged: {error}");
+                if journal.private_descriptor(id).is_ok_and(|scope| scope.is_none()) {
+                    tracing::warn!("run {id}: attention pin warning not logged: {error}");
+                } else {
+                    tracing::warn!(run = %id, "private run attention warning could not be journaled");
+                }
             }
         }
         let began = std::time::Instant::now();
@@ -1020,7 +1024,11 @@ impl Engine {
         };
         let record = self.get(id).ok().filter(|r| !r.memo.computation.is_empty() && !r.memo.memoized)?;
         objects.keep(&record, result).unwrap_or_else(|error| {
-            tracing::warn!("run {id}: its success is not held for the memo: {error}");
+            if record.invocation.local_private.is_some() {
+                tracing::warn!(run = %id, "private run success could not be held for the memo");
+            } else {
+                tracing::warn!("run {id}: its success is not held for the memo: {error}");
+            }
             None
         })
     }
@@ -1135,13 +1143,18 @@ impl Engine {
         let executor = self.get(id).ok().and_then(|record| record.executor);
         let result = self.custody_root(id).and_then(|root| crate::triage::write(&root, facts, executor.as_ref()))
             .and_then(|triage| self.journal.lock().unwrap().bind_triage(id, &triage));
+        let private = !matches!(self.private_storage(id), Ok(None));
         if let Err(error) = result {
-            tracing::warn!("execution {id}: triage bundle not kept: {error}");
+            if private {
+                tracing::warn!(run = %id, "private triage bundle could not be retained");
+            } else {
+                tracing::warn!("execution {id}: triage bundle not kept: {error}");
+            }
         }
         // The whole failure stays in the machine's log (`cozy machine logs`); the run carries its
         // reason and a short detail.
         let text = format!("{}\n{}\n{}", facts.fault, facts.traceback, facts.stderr_tail);
-        if !matches!(self.private_storage(id), Ok(None)) {
+        if private {
             tracing::warn!(run = %id, "private run failed; details are retained in its protected journal");
         } else {
             tracing::warn!("run {id}: {} ({}), executor {}:\n{}", facts.message, facts.code, facts.executor_pid,
