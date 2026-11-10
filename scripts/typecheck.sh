@@ -43,9 +43,16 @@ mypy_path() {
   echo "$path"
 }
 
-roots | while read -r root entries; do
+out=$(mktemp)
+trap 'rm -f "$out" "$out.root"' EXIT
+# mypy exits 1 when it reports errors (the baseline judges those) and 2 when it cannot run.
+while read -r root files; do
+  status=0
   # shellcheck disable=SC2086  # file names hold no spaces
   (cd "$root" && MYPYPATH=$(mypy_path "$root") "$top/$venv/bin/mypy" --config-file "$top/mypy.ini" \
     --cache-dir "$top/.mypy_cache" --python-executable "$top/$venv/bin/python" --no-error-summary --no-pretty \
-    --show-error-codes $entries || [ $? -eq 1 ]) | sed "s|^|$root/|"
-done | "$venv/bin/python" scripts/typecheck.py "${1:-check}"
+    --show-error-codes $files) > "$out.root" || status=$?
+  if [ "$status" -gt 1 ]; then cat "$out.root" >&2; echo "typecheck: mypy could not run in $root" >&2; exit "$status"; fi
+  sed "s|^|$root/|" "$out.root" >> "$out"
+done < <(roots)
+"$venv/bin/python" scripts/typecheck.py "${1:-check}" < "$out"
