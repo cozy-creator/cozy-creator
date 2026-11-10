@@ -1396,6 +1396,8 @@ pub(super) fn scalar(ty: &Type, raw: &str) -> Option<Value> {
                 .filter(|b| matches!(b, Type::Str | Type::Literal(_)))
                 .find_map(|b| scalar(b, raw))
                 .or_else(|| scalars().find_map(|b| scalar(b, raw)))
+                // Shape's text spelling must not take a primitive spelling such as None or 20.0.
+                .or_else(|| branches.iter().filter(|b| matches!(b, Type::Shape)).find_map(|b| scalar(b, raw)))
         }
         Type::List(_) | Type::Map(_) | Type::Struct(_) | Type::Asset(_) | Type::Media { .. } | Type::Pickup(_) | Type::Model => None,
     }
@@ -1783,3 +1785,7 @@ fn usage(code: &str, message: impl Into<String>) -> Error {
 fn invalid(code: &str, message: impl Into<String>) -> Error {
     Error::new(Kind::Validation, code, message)
 }
+
+#[cfg(test)]
+#[path = "bind_tests.rs"]
+mod tests;
