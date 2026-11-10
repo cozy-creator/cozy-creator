@@ -100,8 +100,8 @@ from cozy_runtime.media import File
 app = App()
 SOURCE = "''' + source_canary + '''"
 class Request(msgspec.Struct, forbid_unknown_fields=True):
-    text: str
     source: File
+    text: str = "''' + source_canary + '''"
     fail: bool = False
 class Answer(msgspec.Struct):
     file: File
@@ -139,7 +139,7 @@ def probe(payload: Request, out: Outputs) -> Answer:
     files = [path for path in view.rglob("*") if path.is_file() and not path.is_symlink()]
     assert any(contains(path, markers) for path in files if ".vault-machine" in path.parts), "no protected machine journal/source/result was retained"
     store = Path(os.environ.get("TENSORFS_HOME", str(Path.home() / ".cache/tensorfs")))
-    roots = [home, store]
+    roots = [home, store, project]
     exclusions = [home / "calcifer/vaults", args.out.resolve()]
     leaked, checked = scan(roots, exclusions, stamp, markers)
     (args.out / "scan.json").write_text(json.dumps({"checked_new_or_modified_files": checked, "leaked_paths": leaked}, indent=2))

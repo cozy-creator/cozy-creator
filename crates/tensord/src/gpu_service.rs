@@ -2936,11 +2936,15 @@ impl Pool {
         // Linux names it through this process's descriptor of the root; elsewhere it is the
         // root's own, or a short private one when that is too long.
         #[cfg(target_os = "linux")]
-        let socket = PathBuf::from(format!(
+        let socket = if private.is_some() {
+            // securefs holds regular data, but cannot create AF_UNIX socket inodes.
+            // IPC stays in the kernel; only its opaque owner-only endpoint is outside.
+            crate::device_executor::socket_path(&root, "executor")?
+        } else { PathBuf::from(format!(
             "/proc/{}/fd/{}/executor",
             std::process::id(),
             std::os::fd::AsRawFd::as_raw_fd(&directory)
-        ));
+        )) };
         #[cfg(not(target_os = "linux"))]
         let socket = crate::device_executor::socket_path(&root, "executor")?;
         Ok((root, socket, directory))
