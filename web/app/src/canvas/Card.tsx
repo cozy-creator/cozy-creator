@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query"
 import type { NodeProps, Viewport } from "@xyflow/react"
 import { useReactFlow } from "@xyflow/react"
 import { type CSSProperties, type MouseEvent, memo, type PointerEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
+import { flushSync } from "react-dom"
 import { machinesQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
 import { useWaitsOn } from "../panels/machines/activity"
@@ -496,32 +497,38 @@ function Corner({ name, view, width }: { name: string; view: ElementView; width:
   const pulled = useRef<{ w: number; h: number } | null>(null)
   const [nearest, setNearest] = useState<string | null>(null)
   const moved = (event: PointerEvent) => {
-    if (!from.current) return
-    const { x: dx, y: dy } = from.current.delta(from.current, { x: event.clientX, y: event.clientY })
-    if (!control) {
-      const w = Math.min(WIDEST, Math.max(NARROWEST, from.current.w * Math.max(1 + dx / from.current.w, 1 + dy / from.current.h)))
-      pulled.current = { w, h: w / aspectOf(view) }
-      return store.setWidth(name, w, false)
-    }
-    const w = Math.min(WIDEST, Math.max(NARROWEST, from.current.w + dx))
-    const h = Math.min(WIDEST, Math.max(LOWEST, from.current.h + dy))
-    pulled.current = { w, h }
-    store.drawShape(name, w, h)
-    setNearest(snapped(w / h, shapesOf(control)))
+    const start = from.current
+    if (!start) return
+    flushSync(() => {
+      const { x: dx, y: dy } = start.delta(start, { x: event.clientX, y: event.clientY })
+      if (!control) {
+        const w = Math.min(WIDEST, Math.max(NARROWEST, start.w * Math.max(1 + dx / start.w, 1 + dy / start.h)))
+        pulled.current = { w, h: w / aspectOf(view) }
+        return store.setWidth(name, w, false)
+      }
+      const w = Math.min(WIDEST, Math.max(NARROWEST, start.w + dx))
+      const h = Math.min(WIDEST, Math.max(LOWEST, start.h + dy))
+      pulled.current = { w, h }
+      store.drawShape(name, w, h)
+      setNearest(snapped(w / h, shapesOf(control)))
+    })
   }
   const done = () => {
-    if (!from.current) return
-    const owner = from.current.owner
-    from.current = null
-    const size = pulled.current
-    pulled.current = null
-    setNearest(null)
-    if (size && control) store.setShape(name, control, size.w, snapped(size.w / size.h, shapesOf(control)))
-    else if (size) store.setWidth(name, size.w)
-    if (!owner || store.inPlace !== owner) return
-    owner.pulled = false
-    requestAnimationFrame(() => {
-      if (store.inPlace === owner) store.fitHere(true)
+    const start = from.current
+    if (!start) return
+    flushSync(() => {
+      const owner = start.owner
+      from.current = null
+      const size = pulled.current
+      pulled.current = null
+      setNearest(null)
+      if (size && control) store.setShape(name, control, size.w, snapped(size.w / size.h, shapesOf(control)))
+      else if (size) store.setWidth(name, size.w)
+      if (!owner || store.inPlace !== owner) return
+      owner.pulled = false
+      requestAnimationFrame(() => {
+        if (store.inPlace === owner) store.fitHere(true)
+      })
     })
   }
   return (
