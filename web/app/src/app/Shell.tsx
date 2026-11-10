@@ -249,7 +249,19 @@ export function Shell() {
   const checked = vault.isSuccess && (vault.isFetchedAfterMount || freshOrdinary.current === id)
   const allowed = Boolean(vault.data && (vault.data.state === "plain" || vault.data.state === "unlocked"))
   const uncertain = Boolean(vault.data?.encrypted && vault.isError)
+  const revoked = Boolean(checked && vault.data?.encrypted && (vault.data.state === "locked" || vault.data.state === "locking"))
   const readable = !id || (verified === id && checked && allowed && !checking && !uncertain)
+  // Temporary verification covers the existing canvas. Its private drafts, queued edits and
+  // imports stay in memory; only a confirmed lock releases their ownership.
+  const heldCanvas = !id || (verified === id && !revoked)
+  useLayoutEffect(() => {
+    if (readable) return
+    const pause = (event: Event) => { if (event.target instanceof HTMLMediaElement) event.target.pause() }
+    for (const media of document.querySelectorAll<HTMLMediaElement>("video,audio")) media.pause()
+    // Also stop a pending source load from starting playback after the cover appeared.
+    document.addEventListener("play", pause, true)
+    return () => document.removeEventListener("play", pause, true)
+  }, [readable])
   useEffect(() => {
     stream.show(readable ? id : null)
     return () => stream.show(null)
@@ -279,8 +291,8 @@ export function Shell() {
       setVerified(id)
       return
     }
+    if (!revoked) return
     setVerified(null)
-    if (!vault.data.encrypted || (!checked && !checking && !uncertain)) return
     bridge.forgetProject(id)
     outbox.discardProject(id)
     canvases.delete(id)
@@ -297,7 +309,7 @@ export function Shell() {
     void queries.cancelQueries({ predicate: privateData })
     queries.removeQueries({ predicate: privateData })
     notes.set([])
-  }, [id, vault.data, checked, allowed, checking, uncertain, bridge, outbox, canvases, queries])
+  }, [id, vault.data, checked, allowed, checking, uncertain, revoked, bridge, outbox, canvases, queries])
 
   useEffect(() => {
     if (!id || !vault.data?.encrypted) return
@@ -371,6 +383,7 @@ export function Shell() {
   const mixedDrawer = /(?:^|\/)(?:runs|new|packages|models)(?:\/|$)/.test(location.pathname)
   const drawerEpoch = mixedDrawer ? privateEpoch : 0
   const handle = matches[matches.length - 1]?.handle as { drawer?: "normal" | "wide" } | undefined
+  const drawerReadable = readable || (location.pathname.endsWith("/vault") && checked && !checking && !uncertain)
   return (
     <div className="shell" data-drawer={handle?.drawer ?? "none"}>
       <header className="top">
@@ -382,9 +395,10 @@ export function Shell() {
         <span className="canvas-controls" ref={setSlot} />
         <MainMenu id={id} />
       </header>
-      {readable ? <CanvasHost key={hostKey} projectId={id} slot={slot} history={history} onAdopt={adopt} /> : id && (checking || !checked ? <main className="gate"><p>{vault.isError ? "Project protection could not be checked." : "Checking project protection…"}</p>{vault.isError && <button className="tb" type="button" onClick={() => void vault.refetch()}>Try again</button>}</main> : location.pathname.endsWith("/vault") ? <main className="gate"><p>Project protection</p></main> : <ProjectLocked id={id} />)}
-      {handle?.drawer && (readable || (location.pathname.endsWith("/vault") && checked && !checking)) && (
-        <aside className="drawer">
+      {heldCanvas && <div hidden={!readable} inert={!readable} style={{ display: readable ? "contents" : "none" }}><CanvasHost key={hostKey} projectId={id} active={readable} slot={readable ? slot : null} history={readable ? history : null} onAdopt={adopt} /></div>}
+      {!readable && id && (checking || !checked || uncertain ? <main className="gate"><p>{vault.isError ? "Project protection could not be checked." : "Checking project protection…"}</p>{vault.isError && <button className="tb" type="button" onClick={() => void vault.refetch()}>Try again</button>}</main> : location.pathname.endsWith("/vault") ? <main className="gate"><p>Project protection</p></main> : <ProjectLocked id={id} />)}
+      {handle?.drawer && (heldCanvas || drawerReadable) && (
+        <aside className="drawer" hidden={!drawerReadable} inert={!drawerReadable} style={drawerReadable ? undefined : { display: "none" }}>
           <Outlet key={drawerEpoch} />
         </aside>
       )}
