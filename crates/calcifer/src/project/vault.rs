@@ -653,7 +653,7 @@ fn hash(path: &FsPath) -> Result<[u8;32], Error> {
 
 fn fresh() -> String { let mut bytes = [0u8;16]; getrandom::fill(&mut bytes).expect("OS randomness"); hex::encode(bytes) }
 
-const PAYLOAD_PREFIX: &[u8] = b"cozy:vault:journal:2:";
+pub(crate) const PAYLOAD_PREFIX: &[u8] = b"cozy:vault:journal:2:";
 const JOURNAL_DIR: &str = ".vault-journal";
 const MAX_JOURNAL_BYTES: u64 = 32 << 20;
 static KEY_ROOTS: LazyLock<Mutex<BTreeMap<String, PathBuf>>> = LazyLock::new(Mutex::default);
