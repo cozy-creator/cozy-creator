@@ -10,7 +10,10 @@ import os
 import sys
 import time
 from collections.abc import Callable
-from typing import NotRequired, TypedDict, cast
+from typing import TYPE_CHECKING, TypedDict, cast
+
+if TYPE_CHECKING:
+    from runs import GateHistory  # release-gate/runs.py, on analyze.py's path
 
 SLACK = 0.25
 
@@ -104,24 +107,6 @@ class Timing(TypedDict):
     bytes: int
 
 
-class KnownGood(Timing):
-    label: str
-    at: str
-
-
-class Suites(TypedDict, total=False):
-    tensorfs: dict[str, list[KnownGood]]
-
-
-class Baseline(TypedDict):
-    suites: NotRequired[Suites]
-
-
-class Gate(TypedDict):
-    out: str
-    baseline: Baseline
-
-
 def events(path: str) -> list[Line]:
     out: list[Line] = []
     for line in open(path) if os.path.exists(path) else ():
@@ -190,7 +175,7 @@ def landed_bytes(rec: RunRecord | None) -> list[Bytes]:
     return found
 
 
-def check(gate: Gate) -> tuple[list[str], list[str]]:
+def check(gate: 'GateHistory') -> tuple[list[str], list[str]]:
     t = os.path.join(gate['out'], 'suite-tensorfs')
     if not os.path.isdir(t):
         return [], []

@@ -531,9 +531,10 @@ class VarenaPass(TypedDict):
     shares: dict[str, float]  # '<cell> <copy kind>': its share of the ceiling
 
 
-class CaseGood(TypedDict, total=False):
+class CaseGood(TypedDict):
+    """A tensorfs suite case's known-good (suites/tensorfs/check.py): its time and bytes, and the gate that passed it."""
     seconds: float
-    bytes: int | None
+    bytes: NotRequired[int]
     label: str
     at: str
 
