@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Watch this checkout and install successful incremental builds into the local Cozy.
+# Requires watchexec, pnpm, and the Rust toolchain pinned by rust-toolchain.toml.
+# Run with --once for one build. The default watches until stopped.
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+export CARGO_TARGET_DIR="${COZY_DEV_TARGET_DIR:-$root/target/dev-local}"
+export CARGO_PROFILE_DEV_DEBUG=0
+export CARGO_INCREMENTAL=1
+mkdir -p "$CARGO_TARGET_DIR"
+cd "$root"
+
+if [[ ${1:-} != --once ]]; then
+    exec watchexec --debounce 500ms --on-busy-update queue --shell none \
+        --watch crates --watch web --watch vendor --watch scripts/dev-local.sh \
+        --watch Cargo.toml --watch Cargo.lock --watch rust-toolchain.toml \
+        --ignore '**/target/**' --ignore '**/node_modules/**' --ignore '**/dist/**' \
+        --ignore '**/__pycache__/**' --ignore '**/*.pyc' \
+        -- "$root/scripts/dev-local.sh" --once
+fi
+
+exec 8>"$CARGO_TARGET_DIR/build.lock"
+flock 8
+started=$SECONDS
+printf '\n%s building local Cozy from %s\n' "$(date -Is)" "$root"
+
+# Hash names and contents so deletion, rename and checkout also rebuild the page.
+page_stamp="$CARGO_TARGET_DIR/page-built"
+page_inputs=$(git ls-files -z --cached --others --exclude-standard -- web | sort -zu | \
+    while IFS= read -r -d '' file; do
+        if [[ -f $file ]]; then sha256sum -- "$file"; fi
+    done | sha256sum | cut -d ' ' -f 1)
+if [[ ! -f web/app/dist/index.html || ! -f $page_stamp ]] || \
+    [[ $page_inputs != "$(cat "$page_stamp")" ]]; then
+    web/build.sh
+    printf '%s\n' "$page_inputs" > "$page_stamp"
+fi
+
+cargo build --locked --jobs "${COZY_DEV_JOBS:-4}" --package cozy
+binary="$CARGO_TARGET_DIR/debug/cozy"
+installed="$HOME/.cozy/bin/cozy"
+"$binary" --version
+
+# Use the existing machine update path to install, drain the local worker and
+# restart Calcifer. It accepts another build of the same version by file digest.
+install_lock="${COZY_DEV_INSTALL_LOCK:-$HOME/.cozy/dev-local-install.lock}"
+exec 9>"$install_lock"
+flock 9
+if cmp --silent "$binary" "$installed"; then
+    printf '%s installed Cozy already matches this build\n' "$(date -Is)"
+    exit 0
+fi
+"$installed" --json machine update local --tensord "$binary" --yes
+printf '%s local Cozy updated in %ss\n' "$(date -Is)" "$((SECONDS - started))"
+"$installed" --version
