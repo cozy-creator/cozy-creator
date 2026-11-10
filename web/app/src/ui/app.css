@@ -2721,6 +2721,13 @@ a.tab:hover {
 .main-menu {
   position: relative;
 }
+.top > .main-menu {
+  pointer-events: none;
+}
+.main-menu > summary,
+.main-menu > nav {
+  pointer-events: auto;
+}
 .main-menu summary {
   list-style: none;
   cursor: pointer;
