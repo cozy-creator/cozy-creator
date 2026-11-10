@@ -546,7 +546,7 @@ pub(super) fn changed_value(before: &Stored, after: &Stored, ops: &[OpRow], prev
         retire(boxes, after.written.boxes.iter().map(|held| held.id.as_str()));
         for (index, held) in after.written.boxes.iter().enumerate() {
             let unchanged = old.get(held.id.as_str()).is_some_and(|old| *old == held)
-                && boxes.get(&held.id).is_some_and(|row| present(row));
+                && boxes.get(&held.id).is_some_and(present);
             if unchanged {
                 // Concurrent insertions can share old display orders. As the full builder
                 // does, normalize them against this replica's selected stable-ID ordering.
@@ -562,7 +562,7 @@ pub(super) fn changed_value(before: &Stored, after: &Stored, ops: &[OpRow], prev
         retire(assets, after.lock.assets.values().map(|held| held.id.as_str()));
         for (key, held) in &after.lock.assets {
             if old.get(held.id.as_str()).is_some_and(|(old_key, old)| *old_key == key && *old == held)
-                && assets.get(&held.id).is_some_and(|row| present(row)) { continue; }
+                && assets.get(&held.id).is_some_and(present) { continue; }
             let row = assets.entry(held.id.clone()).or_insert_with(|| json!({}));
             let old_versions: BTreeMap<_, _> = old.get(held.id.as_str()).into_iter().flat_map(|(_, held)|
                 held.versions.iter().map(|version| (version.id.as_str(), (false, version)))
@@ -571,7 +571,7 @@ pub(super) fn changed_value(before: &Stored, after: &Stored, ops: &[OpRow], prev
             retire(versions, held.versions.iter().chain(&held.discarded).map(|version| version.id.as_str()));
             for (discarded, version) in held.versions.iter().map(|v| (false, v)).chain(held.discarded.iter().map(|v| (true, v))) {
                 if old_versions.get(version.id.as_str()).is_some_and(|(was_discarded, old)| *was_discarded == discarded && *old == version)
-                    && versions.get(&version.id).is_some_and(|row| present(row)) { continue; }
+                    && versions.get(&version.id).is_some_and(present) { continue; }
                 versions.insert(version.id.clone(), json!({"present":true,"discarded":discarded,"record":version}));
             }
             let metadata = Asset { versions:vec![], discarded:vec![], ..held.clone() };
@@ -583,7 +583,7 @@ pub(super) fn changed_value(before: &Stored, after: &Stored, ops: &[OpRow], prev
         retire(runs, after.lock.runs.iter().map(|row| row.id.as_str()));
         let old: BTreeMap<_, _> = before.lock.runs.iter().map(|row| (row.id.as_str(), row)).collect();
         for (index, row) in after.lock.runs.iter().enumerate() {
-            if old.get(row.id.as_str()).is_some_and(|old| *old == row) && runs.get(&row.id).is_some_and(|row| present(row)) {
+            if old.get(row.id.as_str()).is_some_and(|old| *old == row) && runs.get(&row.id).is_some_and(present) {
                 runs.get_mut(&row.id).expect("existing run")["order"] = json!(index);
             } else {
                 runs.insert(row.id.clone(), json!({"present":true,"order":index,"record":row}));
