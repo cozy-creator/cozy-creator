@@ -330,7 +330,8 @@ jobs:
           mkdir -p provider-proof
           /sbin/mount > provider-proof/macos-mounts.log
           hdiutil info -plist > provider-proof/macos-images.plist
-          hdiutil help create > provider-proof/hdiutil-create.log 2>&1 || true
+          hdiutil create -help > provider-proof/hdiutil-create.log 2>&1 || true
+          diskutil listFilesystems > provider-proof/macos-filesystems.log 2>&1 || true
           sudo /usr/bin/log show --style compact --last 3m --predicate 'process == "diskimages-helper" OR process == "diskimagesiod" OR subsystem BEGINSWITH "com.apple.DiskImages"' > provider-proof/macos-diskimages.log 2>&1 || true
       - name: Collect only proof records
         if: always()
@@ -340,14 +341,10 @@ jobs:
           import shutil
           source, target = Path('provider-proof'), Path('provider-evidence')
           target.mkdir(exist_ok=True)
-          for name in ['results.json', 'normal.log', 'crash.log', 'provider.log', 'crash/ready.json', 'macos-mounts.log', 'macos-images.plist', 'macos-diskimages.log', 'hdiutil-create.log']:
+          for name in ['results.json', 'normal.log', 'crash.log', 'provider.log', 'crash/ready.json', 'macos-mounts.log', 'macos-images.plist', 'macos-diskimages.log', 'hdiutil-create.log', 'macos-filesystems.log']:
               item = source / name
               if item.is_file():
                   shutil.copy2(item, target / name.replace('/', '-'))
-          for name in ['fskit-setup.json', 'fskit-restore.json']:
-              item = Path(name)
-              if item.is_file():
-                  shutil.copy2(item, target / name)
           PY_EVIDENCE
       - name: Keep platform proof
         if: always()
