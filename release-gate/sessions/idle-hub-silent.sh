@@ -2,7 +2,8 @@
 # 2026-11-09: an idle pod ended itself only when the Hub had been silent since before the window began, so a Hub that died
 # during it left the pod asking for its release every minute for as long as the Hub was down. One pod with SSH (`cpu` is
 # enough: it runs nothing), the session's cozy as TensorD. `silent_s` into its idle window a root shell names the Hub's host
-# in /etc/hosts at an address nothing answers; the provider stays reachable, as in a Hub outage. The pod must then:
+# in /etc/hosts at an address nothing answers and TensorD restarts, so no open connection outlives the line; the provider
+# stays reachable, as in a Hub outage. The pod must then:
 #   say its release is not accepted once its deadline passes (the Hub is silent to it; if the Hub accepts it, the silence
 #     never took: a connection TensorD held outlived the hosts line, and the session fails saying so)
 #   end itself at its provider, and be gone within one idle window of its deadline (plus `slack_s` for the Hub to see it);
@@ -28,10 +29,13 @@ deadline() { cozy machine show "$NAME" --json 2>/dev/null | jq -r '.status.idle_
 D=$(deadline); [ -n "$D" ] || fail "the pod names no idle deadline"
 sleep "$SILENT"
 sh "printf '127.0.0.9 %s cl778\n' '$HUB' >> /etc/hosts && getent hosts '$HUB' | grep -q 127.0.0.9" || fail "the Hub's host did not move"
+# TensorD keeps its connection to the Hub open (keepalive), which a hosts line never touches (42748695490: the Hub accepted
+# the release). A restart opens new ones, at the address nothing answers; a rental's restart keeps its idle clock.
+step restart machine update "$NAME" --gpu-memory-limit off -y || fail "the restart, with the Hub silent: $(tail -c 300 "$OUT/restart.txt")"
 D=$(deadline); [ -n "$D" ] || fail "the pod names no idle deadline"
 T=$(date +%s); D=$((D / 1000))
 say "t=0 $HUB is silent to the pod; its idle deadline is in $((D - T))s"
-[ $((D - T)) -gt 60 ] && [ $((D - T)) -lt "$WINDOW" ] || fail "the Hub did not go silent inside the idle window"
+[ $((D - T)) -gt 60 ] && [ $((D - T)) -le "$WINDOW" ] || fail "the Hub did not go silent inside the idle window"
 until gone "$RID"; do
   now=$(date +%s)
   cozy machine logs "$NAME" tensord -n 0 2>/dev/null | grep -E 'idle release|accepted the release|ending (it|this)|provider' > "$OUT/lifecycle.log.new" \
