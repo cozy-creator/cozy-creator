@@ -9,13 +9,122 @@ import json
 import os
 import sys
 import time
+from collections.abc import Callable
+from typing import NotRequired, TypedDict, cast
 
 SLACK = 0.25
 
+type JSON = str | int | float | bool | None | list[JSON] | dict[str, JSON]
 
-def events(path):
-    out = []
-    for line in open(path) if os.path.exists(path) else []:
+
+class Progress(TypedDict, total=False):
+    stage: str
+    bytes_done: int
+    bytes_total: int
+
+
+class Settled(TypedDict, total=False):
+    settled_at_ms: int
+
+
+class Line(TypedDict, total=False):
+    """A line of a run's events (`type`, ...) or of straggler.py's proxy log (`kind`, ...)."""
+    type: str
+    progress: Progress
+    at_ms: int
+    text: str
+    run: Settled
+    kind: str
+    path: str
+    slow: bool
+    ask: int
+    bytes: int
+    silent: bool
+
+
+class RunRecord(TypedDict, total=False):
+    status: str
+    reason: JSON
+    result: JSON
+
+
+class Bytes(TypedDict, total=False):
+    """A result's `bytes: {hub, volume, local}`."""
+    hub: int
+    volume: int
+    local: int
+
+
+class Measured(TypedDict, total=False):
+    """The probe's result (ci_tfs_probe.Measured)."""
+    disk_write_bytes_per_s: int
+    disk_read_bytes_per_s: int
+
+
+class Held(TypedDict):
+    component: str
+    key: str
+    scheme: str | None
+    relative_error: float | None
+
+
+class Inspected(TypedDict, total=False):
+    """multi-conversion's `inspect` result (ci_multi_conversion.Report)."""
+    checkpoint: str
+    tensors: list[Held]
+
+
+class LoraConfig(TypedDict, total=False):
+    peft_type: str
+    lora_alpha: float
+    r: int
+
+
+class Row(TypedDict, total=False):
+    run: str
+    wall_s: float | None
+    rec: RunRecord | None
+    evs: list[Line]
+
+
+class Straggler(TypedDict):
+    ok: bool
+    seconds: float
+    slowed: int
+    reasked: int
+    bytes: int
+    asks: int
+    error: str
+    silenced: set[str]
+    body_failed: int
+
+
+class Timing(TypedDict):
+    seconds: float
+    bytes: int
+
+
+class KnownGood(Timing):
+    label: str
+    at: str
+
+
+class Suites(TypedDict, total=False):
+    tensorfs: dict[str, list[KnownGood]]
+
+
+class Baseline(TypedDict):
+    suites: NotRequired[Suites]
+
+
+class Gate(TypedDict):
+    out: str
+    baseline: Baseline
+
+
+def events(path: str) -> list[Line]:
+    out: list[Line] = []
+    for line in open(path) if os.path.exists(path) else ():
         line = line.strip()
         if line.startswith('{'):
             try:
@@ -25,7 +134,7 @@ def events(path):
     return out
 
 
-def stage_progress(evs, stage):
+def stage_progress(evs: list[Line], stage: str) -> tuple[int, int]:
     """(bytes done, bytes total) of the last progress in a stage naming <stage>."""
     last = (0, 0)
     for e in evs:
@@ -35,7 +144,7 @@ def stage_progress(evs, stage):
     return last
 
 
-def dropped(evs, stage):
+def dropped(evs: list[Line], stage: str) -> int | None:
     """The bytes <stage> had moved when the machine went: a wait after progress began, or progress lost. None if it never did."""
     last = 0
     for e in evs:
@@ -49,7 +158,7 @@ def dropped(evs, stage):
     return None
 
 
-def stage_seconds(evs, stage):
+def stage_seconds(evs: list[Line], stage: str) -> float | None:
     """From the log line that opened <stage> to the run's end."""
     start = next((e['at_ms'] for e in evs if e.get('type') == 'run.log' and stage in (e.get('text') or '')), None)
     end = next((e['run'].get('settled_at_ms') for e in reversed(evs) if isinstance(e.get('run'), dict)
@@ -57,21 +166,21 @@ def stage_seconds(evs, stage):
     return (end - start) / 1000 if start and end else None
 
 
-def hub_bytes(rec):
+def hub_bytes(rec: RunRecord | None) -> tuple[int | None, int | None]:
     """What the run fetched from the Hub and the volume: every `bytes: {hub, volume}` its result carries."""
     found = landed_bytes(rec)
     return (sum(b.get('hub') or 0 for b in found), sum(b.get('volume') or 0 for b in found)) if found else (None, None)
 
 
-def landed_bytes(rec):
+def landed_bytes(rec: RunRecord | None) -> list[Bytes]:
     """Every `bytes: {hub, volume, local}` the run's result carries."""
-    found = []
+    found: list[Bytes] = []
 
-    def walk(o):
+    def walk(o: JSON) -> None:
         if isinstance(o, dict):
             b = o.get('bytes')
             if isinstance(b, dict) and 'hub' in b:
-                found.append(b)
+                found.append(cast(Bytes, b))  # cast: a result's `bytes` object holding `hub` is the store's {hub, volume, local}
             for v in o.values():
                 walk(v)
         elif isinstance(o, list):
@@ -81,26 +190,28 @@ def landed_bytes(rec):
     return found
 
 
-def check(gate):
+def check(gate: Gate) -> tuple[list[str], list[str]]:
     t = os.path.join(gate['out'], 'suite-tensorfs')
     if not os.path.isdir(t):
         return [], []
-    fails, notes, rows = [], [], {}
-    for line in open(os.path.join(t, 'steps.tsv')) if os.path.exists(os.path.join(t, 'steps.tsv')) else []:
-        name, number, wall = (line.rstrip('\n').split('\t') + ['', ''])[:3]
+    fails: list[str] = []
+    notes: list[str] = []
+    rows: dict[str, Row] = {}
+    for line in open(os.path.join(t, 'steps.tsv')) if os.path.exists(os.path.join(t, 'steps.tsv')) else ():
+        name, number, wall_ms = (line.rstrip('\n').split('\t') + ['', ''])[:3]
         p = os.path.join(t, name + '.json')
-        rows[name] = {'run': number, 'wall_s': int(wall) / 1000 if wall else None,
+        rows[name] = {'run': number, 'wall_s': int(wall_ms) / 1000 if wall_ms else None,
                       'rec': json.load(open(p)) if os.path.exists(p) else None, 'evs': events(os.path.join(t, name + '.ndjson'))}
 
     # The cases cells.sh ran (--only selects some); none listed: every case.
     path = os.path.join(t, 'cases')
     cases = set(open(path).read().split()) if os.path.exists(path) else None
 
-    def chosen(name):
+    def chosen(name: str) -> bool:
         case = name.split('-')[0]
         return cases is None or {'mc': 'multi-conversion', 'lora': 'lora-alpha', 'layout': 'family'}.get(case, case) in cases
 
-    def done(name, cancelled=False):
+    def done(name: str, cancelled: bool = False) -> bool:
         if not chosen(name):
             return False
         r = rows.get(name)
@@ -117,9 +228,9 @@ def check(gate):
         return True
 
     base = gate['baseline'].setdefault('suites', {}).setdefault('tensorfs', {})
-    now = {}
+    now: dict[str, Timing] = {}
 
-    def against(case, seconds, nbytes, what):
+    def against(case: str, seconds: float | None, nbytes: int, what: str) -> None:
         if seconds is None:
             return
         now[case] = {'seconds': round(seconds, 2), 'bytes': nbytes}
@@ -133,11 +244,13 @@ def check(gate):
             f'tensorfs {case}: {what} {seconds:.1f} s vs known-good {min(vals):.1f}-{max(vals):.1f} s (limit {limit:.1f})')
 
     if done('probe'):
-        d = rows['probe']['rec'].get('result') or {}
+        probe = rows['probe']['rec']
+        assert probe is not None
+        d = cast(Measured, probe.get('result') or {})  # cast: the probe's result is its Measured
         notes.append(f'tensorfs probe: the machine\'s disk writes {(d.get("disk_write_bytes_per_s") or 0) / 1e6:.0f} MB/s, '
                      f'reads cold {(d.get("disk_read_bytes_per_s") or 0) / 1e6:.0f} MB/s')
-    st = {}
-    for line in open(os.path.join(t, 'straggler.tsv')) if os.path.exists(os.path.join(t, 'straggler.tsv')) else []:
+    st: dict[str, Straggler] = {}
+    for line in open(os.path.join(t, 'straggler.tsv')) if os.path.exists(os.path.join(t, 'straggler.tsv')) else ():
         name, code, ms = line.rstrip('\n').split('\t')
         proxy = events(os.path.join(t, name + '.proxy'))
         objs = [r for r in proxy if r.get('kind') == 'object']
@@ -205,7 +318,7 @@ def check(gate):
             (notes if good else fails).append(f'tensorfs straggler-silent: {sl["seconds"]:.1f} s (limit 60), {sl["body_failed"]} body '
                                               f'failed, the silent object asked {asks} times')
 
-    def rate(name, nbytes, seconds):
+    def rate(name: str, nbytes: int | None, seconds: float | None) -> None:
         if nbytes and seconds:
             notes.append(f'tensorfs {name}: {nbytes / seconds / 1e6:.0f} MB/s')
 
@@ -223,7 +336,7 @@ def check(gate):
         hub, _ = hub_bytes(rows['download-again']['rec'])
         if hub:
             fails.append(f'tensorfs download-again: {hub / 2**20:.0f} MiB came from the Hub again: the store did not hold it')
-    def resumed(cut, resume):
+    def resumed(cut: str, resume: str) -> None:
         # Judged against the model, not against what the resume fetched: it must find what the cut run
         # landed (`local`) and fetch only the rest of the model's bytes. Bytes arrived count in `moved` as they arrive
         # (tfs-141), unfinished chunks too, and a chunk's kept bytes count in `local`, so this is every byte's fate.
@@ -235,7 +348,7 @@ def check(gate):
         local = sum(b.get('local') or 0 for b in found) if found and all('local' in b for b in found) else None
         _, total = stage_progress(rows[resume]['evs'], 'downloading')
         fetched = (hub or 0) + (vol or 0)
-        mib = lambda n: f'{(n or 0) / 2**20:.0f} MiB'
+        mib: Callable[[int | None], str] = lambda n: f'{(n or 0) / 2**20:.0f} MiB'
         if not moved:
             fails.append(f'tensorfs {resume}: the first download was never cut part-way: nothing was resumed')
         elif local is None or not total:
@@ -255,7 +368,7 @@ def check(gate):
     # The same run goes on once TensorD is back: its own record is the resume.
     if done('kill-cut'):
         resumed('kill-cut', 'kill-cut')
-    up = None
+    up: float | None = None
     if done('upload'):
         evs = rows['upload']['evs']
         sec, (_, total) = stage_seconds(evs, 'uploading to'), stage_progress(evs, 'uploading to')
@@ -282,6 +395,7 @@ def check(gate):
                 f'(limit {limit:.1f} s at the upload\'s own rate)')
     if chosen('lora-alpha'):
         p = os.path.join(t, 'lora-alpha.json')
+        cfg: LoraConfig
         try:
             (cfg,) = [c['config'] for c in json.load(open(p))['components'] if c.get('config', {}).get('peft_type') == 'LORA']
         except (OSError, ValueError, KeyError):
@@ -294,9 +408,11 @@ def check(gate):
                 notes.append(f'tensorfs lora-alpha: lora_alpha {cfg["lora_alpha"]} = r, whatever the metadata says')
     # The lane's commit holds both components' weights encoded (inspect also held them to the source).
     if all(done(name) for name in ('mc-source', 'mc-upload', 'mc-quantize', 'mc-inspect')):
-        held = (rows['mc-inspect']['rec'].get('result') or {}).get('tensors') or []
+        inspected = rows['mc-inspect']['rec']
+        assert inspected is not None
+        held = cast(Inspected, inspected.get('result') or {}).get('tensors') or []  # cast: inspect's result is its Report
         encoded = sorted({h['component'] for h in held if h.get('scheme') == 'int8.convrot'})
-        worst = max((h['relative_error'] for h in held if h.get('relative_error') is not None), default=0)
+        worst = max((cast(float, h['relative_error']) for h in held if h.get('relative_error') is not None), default=0)  # cast: the filter drops None
         ok = encoded == ['decoder', 'encoder']
         (notes if ok else fails).append(
             f'tensorfs multi-conversion: quantize run {rows["mc-quantize"]["run"]}, one call per component: '
