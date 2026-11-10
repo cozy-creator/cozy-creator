@@ -19,7 +19,8 @@ release-gate/bench.py baseline <version> <gate dir>... [--comfyui suites/bench/c
   times on fresh seeds (the judged times). Weights download before the cold run (gate.sh `ahead`).
 - `calibrate/`: a reference workload and the pod's facts, before and after the cells: fixed GEMM, attention and convolution,
   the host-to-device copy, a cold disk read, and the host CPU (single-thread Python, 10k tiny kernel launches, a CLIP-style
-  tokenize, a fork, a fresh `import torch`, and its executor's own fork and CUDA init; CPU model, cores, quota). Eager steps
+  tokenize, and its executor's own fork and CUDA init; CPU model, cores, quota), all within the package contract; the GPU's
+  clock and temperature from TensorD's reads of that call, its name, driver, PCIe link and power limit from `pod.sh gpu`. Eager steps
   are host-bound: a 2-4x slower host CPU (euclase, 11-10) stepped SDXL at 193 ms against 120 on a normal GPU. A pod more
   than 12% off its GPU type's stored kernels (35% copy, 60% disk, 50% CPU probes, 75% fork), or over the CPU ceilings
   (executor fork 220 ms, CUDA init 1.3 s), is ended and replaced before any cell; in a table it fails the group. More than

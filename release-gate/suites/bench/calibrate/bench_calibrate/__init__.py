@@ -1,13 +1,14 @@
-"""Suite bench's reference workload, run before and after a group's cells (cells.sh): fixed bf16 kernels timed with CUDA
-events (a GEMM, attention, a convolution), the pinned host-to-device copy rate, a cold disk read, the host CPU's own speed
-(single-thread Python, 10k tiny kernel launches, a CLIP-style tokenize, a fork, a fresh `import torch`), and the pod's facts.
+"""Suite bench's reference workload, run before and after a group's cells (cells.sh): fixed bf16 kernels (a GEMM, attention,
+a convolution), the pinned host-to-device copy rate, a cold disk read, and the host CPU's own speed (single-thread Python,
+10k tiny kernel launches, a CLIP-style tokenize). Within the package contract: no subprocess, fork, CUDA events or driver
+reads. The GPU's clock and temperature come from TensorD's reads of this call (its record), its executor's fork and CUDA
+init from the record's legs, and the GPU's name, driver, PCIe link and power limit from pod.sh `facts` (bench.py).
 bench.py admit holds it against the GPU type's stored one: a pod off by more than its range is another class of pod, and is
 replaced. Eager steps are host-bound: a 2-4x slower host CPU (euclase, 11-10) stepped SDXL at 193 ms against 120."""
 
 import os
 import re
 import statistics
-import subprocess
 import sys
 import tempfile
 import time
@@ -17,6 +18,7 @@ import msgspec
 import torch
 import torch.nn.functional as F
 
+from cozy_runtime import rng
 from cozy_runtime.author import App, device
 
 app = App()
@@ -28,17 +30,11 @@ class Calibrate(msgspec.Struct, forbid_unknown_fields=True):
 
 
 class Measured(msgspec.Struct):
-    gpu: str
-    driver: str
-    pcie: str  # the link while copying: gen current/max, width
     cpu: str
     cores: int  # the CPUs this process may run on
     cpu_limit: float | None  # the container's CPU quota in cores, when it has one
     host_gib: float  # MemTotal
     limit_gib: float | None  # the container's memory limit, cgroup v2 or v1, when under MemTotal
-    clock_mhz: float  # the SM clock right after the GEMMs
-    power_limit_w: float
-    temperature_c: float
     gemm_ms: float
     attention_ms: float
     conv_ms: float
@@ -47,24 +43,20 @@ class Measured(msgspec.Struct):
     python_ms: float  # a fixed single-thread pure-Python workload
     launch_us: float  # one tiny CUDA kernel launch, over 10k: torch's dispatch and the driver's launch, host-bound
     tokenize_ms: float  # a fixed CLIP-style regex tokenize, 200 times
-    fork_ms: float  # a fork of this process (torch and a CUDA context loaded) and its child's exit
-    import_ms: float  # a fresh interpreter's `import torch`, its files in the page cache
 
 
-def timed(fn: Callable[[], object], runs: int = 20) -> float:
-    """The median of `runs` timings in ms, after three warm-ups."""
+def timed(fn: Callable[[], object], dev: torch.device, runs: int = 20, batch: int = 10) -> float:
+    """The median of `runs` samples in ms per call, each `batch` calls between two device waits, after three warm-ups."""
     for _ in range(3):
         fn()
+    torch.cuda.synchronize(dev)
     times: list[float] = []
     for _ in range(runs):
-        # torch.cuda.Event carries no annotations: a third-party boundary, its times read as floats
-        start = torch.cuda.Event(enable_timing=True)  # type: ignore[no-untyped-call]
-        end = torch.cuda.Event(enable_timing=True)  # type: ignore[no-untyped-call]
-        start.record()
-        fn()
-        end.record()
-        end.synchronize()
-        times.append(float(start.elapsed_time(end)))
+        start = time.perf_counter()
+        for _ in range(batch):
+            fn()
+        torch.cuda.synchronize(dev)
+        times.append((time.perf_counter() - start) * 1000 / batch)
     return round(statistics.median(times), 3)
 
 
@@ -100,13 +92,6 @@ def tokenize() -> int:
     return n
 
 
-def fork() -> None:
-    pid = os.fork()
-    if pid == 0:
-        os._exit(0)
-    os.waitpid(pid, 0)
-
-
 def cpu_limit() -> float | None:
     try:
         with open('/sys/fs/cgroup/cpu.max') as f:
@@ -118,12 +103,6 @@ def cpu_limit() -> float | None:
         except OSError:
             return None
     return round(int(quota) / int(period), 2) if quota.lstrip('-').isdigit() and int(quota) > 0 else None
-
-
-def smi(uuid: str, fields: str) -> list[str]:
-    out = subprocess.run(['nvidia-smi', '-i', uuid, f'--query-gpu={fields}', '--format=csv,noheader,nounits'],
-                         capture_output=True, text=True, check=True).stdout
-    return [x.strip() for x in out.strip().split(',')]
 
 
 def limit_bytes() -> int | None:
@@ -170,23 +149,23 @@ def disk_gbps(total: int = GIB, chunk: int = 16 << 20) -> float:
 @app.entrypoint(accelerator=True)
 def measure(payload: Calibrate) -> Measured:
     dev = torch.device(str(device()))
-    uuid = 'GPU-' + str(torch.cuda.get_device_properties(dev).uuid)
-    g = torch.Generator(device=dev).manual_seed(payload.seed)
-    a, b = (torch.randn(8192, 8192, device=dev, dtype=torch.bfloat16, generator=g) for _ in range(2))
-    gemm = timed(lambda: a @ b)
-    clock = float(smi(uuid, 'clocks.sm')[0])
+    g = rng.generator(payload.seed)
+
+    def draw(*shape: int) -> torch.Tensor:
+        return torch.randn(shape, dtype=torch.bfloat16, generator=g).to(dev)
+    a, b = draw(8192, 8192), draw(8192, 8192)
+    gemm = timed(lambda: a @ b, dev, batch=2)
     del a, b
-    q, k, v = (torch.randn(1, 24, 4096, 128, device=dev, dtype=torch.bfloat16, generator=g) for _ in range(3))
-    attention = timed(lambda: F.scaled_dot_product_attention(q, k, v))
+    q, k, v = draw(1, 24, 4096, 128), draw(1, 24, 4096, 128), draw(1, 24, 4096, 128)
+    attention = timed(lambda: F.scaled_dot_product_attention(q, k, v), dev)
     del q, k, v
-    x = torch.randn(1, 512, 128, 128, device=dev, dtype=torch.bfloat16, generator=g).to(memory_format=torch.channels_last)
-    w = torch.randn(512, 512, 3, 3, device=dev, dtype=torch.bfloat16, generator=g).to(memory_format=torch.channels_last)
-    conv = timed(lambda: F.conv2d(x, w, padding=1))
+    x = draw(1, 512, 128, 128).to(memory_format=torch.channels_last)
+    w = draw(512, 512, 3, 3).to(memory_format=torch.channels_last)
+    conv = timed(lambda: F.conv2d(x, w, padding=1), dev)
     del x, w
     host = torch.empty(GIB, dtype=torch.uint8).pin_memory()
     there = torch.empty(GIB, dtype=torch.uint8, device=dev)
-    h2d = timed(lambda: there.copy_(host, non_blocking=True), runs=5)
-    gen, gen_max, width = smi(uuid, 'pcie.link.gen.current,pcie.link.gen.max,pcie.link.width.current')
+    h2d = timed(lambda: there.copy_(host, non_blocking=True), dev, runs=5, batch=1)
     del host, there
     one = torch.zeros(1, device=dev)
 
@@ -196,14 +175,9 @@ def measure(payload: Calibrate) -> Measured:
         torch.cuda.synchronize(dev)
     launch = wall(launches, runs=3)  # ms per 10k launches: microseconds per launch is a tenth of it
     del one
-    torch.cuda.empty_cache()
-    python, tokenized, forked = wall(python_work), wall(tokenize), wall(fork)
-    imported = wall(lambda: subprocess.run([sys.executable, '-c', 'import torch'], check=True), runs=3)
-    name, driver, power, temperature = smi(uuid, 'name,driver_version,power.limit,temperature.gpu')
+    python, tokenized = wall(python_work), wall(tokenize)
     total, limit = meminfo('MemTotal'), limit_bytes()
-    return Measured(gpu=name, driver=driver, pcie=f'gen{gen}/{gen_max} x{width}', cpu=cpu(), cores=len(os.sched_getaffinity(0)),
-                    cpu_limit=cpu_limit(), python_ms=python, launch_us=round(launch / 10, 3), tokenize_ms=tokenized,
-                    fork_ms=forked, import_ms=imported, host_gib=round(total / GIB, 2),
-                    limit_gib=round(limit / GIB, 2) if limit and limit < total else None, clock_mhz=clock,
-                    power_limit_w=float(power), temperature_c=float(temperature), gemm_ms=gemm, attention_ms=attention,
-                    conv_ms=conv, h2d_gbps=round(GIB / h2d / 1e6, 2), disk_gbps=disk_gbps())
+    return Measured(cpu=cpu(), cores=len(os.sched_getaffinity(0)), cpu_limit=cpu_limit(), python_ms=python,
+                    launch_us=round(launch / 10, 3), tokenize_ms=tokenized, host_gib=round(total / GIB, 2),
+                    limit_gib=round(limit / GIB, 2) if limit and limit < total else None, gemm_ms=gemm,
+                    attention_ms=attention, conv_ms=conv, h2d_gbps=round(GIB / h2d / 1e6, 2), disk_gbps=disk_gbps())

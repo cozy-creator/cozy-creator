@@ -13,6 +13,7 @@ podsh "echo $(base64 -w0 "$HERE/suites/bench/pod.sh") | base64 -d > /var/tmp/ben
   sh /var/tmp/bench-pod.sh hold $(awk -v g="$HOST_GIB" 'BEGIN {printf "%d", g * 2^30}')" > host.txt 2>&1 ||
   { expect bench-host FAIL "could not hold the host to $HOST_GIB GiB: $(tail -c 300 host.txt)"; return 0; }
 log "host held to $HOST_GIB GiB: $(tr '\n' ' ' < host.txt)"
+podsh "sh /var/tmp/bench-pod.sh gpu" > pod-facts.txt 2> /dev/null || log "no GPU facts: $(tail -c 200 pod-facts.txt)"
 # The pictures cells.tsv names in prompts, as project assets.
 for a in "$HERE/ref/seed.jpg still" "$HERE/ref/seed.jpg lead" "$FX/lighthouse.jpg photo" "$FX/teapot.jpg teapot"; do
   "$CLI" project -p "$RUN_PROJECT" import ${a% *} ${a#* } < /dev/null >> import.log 2>&1 || log "project import ${a#* }: $(tail -c 200 import.log)"

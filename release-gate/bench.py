@@ -47,7 +47,7 @@ COLD_NOTE = 0.25  # a cold total this far over its baseline's is noted: one samp
 # import 2.0-2.2 s, tokenize 1.4-1.7 ms; the slow class (euclase, eleonora, norgalle, 11-10) is 2-4x, and steps eager SDXL at
 # 193 ms against 120 (capped-sdxl.md).
 POD_RANGE = {'attention_ms': 0.12, 'conv_ms': 0.12, 'gemm_ms': 0.12, 'h2d_gbps': 0.35, 'disk_gbps': 0.6,
-             'python_ms': 0.5, 'launch_us': 0.5, 'tokenize_ms': 0.5, 'import_ms': 0.5, 'fork_ms': 0.75, 'exec_fork_ms': 0.75, 'cuda_init_ms': 0.5}
+             'python_ms': 0.5, 'launch_us': 0.5, 'tokenize_ms': 0.5, 'exec_fork_ms': 0.75, 'cuda_init_ms': 0.5}
 # Whatever is stored: a host whose executor took this long is the slow class (its record's legs, TensorD's own reads).
 HOST_CEILING = {'exec_fork_ms': 220.0, 'cuda_init_ms': 1300.0}
 SLOW_LEG = 1.5  # a cell whose executor's package import or CUDA init is this much over its baseline's: noted
@@ -112,24 +112,22 @@ class Cell(TypedDict):
 
 
 class Reference(TypedDict, total=False):
-    """The pod's reference workload and facts (suites/bench/calibrate)."""
-    gpu: str
+    """The pod's reference workload (suites/bench/calibrate), its record's GPU reads and legs, and pod.sh `facts`."""
+    gpu: str  # pod.sh facts (pod-facts.txt)
     driver: str
     pcie: str
+    power_limit_w: float
     cpu: str
     cores: int
     cpu_limit: float | None
     python_ms: float
     launch_us: float
     tokenize_ms: float
-    fork_ms: float
-    import_ms: float
     exec_fork_ms: float  # the calibrate executor's own legs, from its record
     cuda_init_ms: float
     host_gib: float
     limit_gib: float | None
-    clock_mhz: float
-    power_limit_w: float
+    clock_mhz: float  # TensorD's reads of the calibrate call: its SM clock and hottest temperature
     temperature_c: float
     attention_ms: float
     conv_ms: float
@@ -304,7 +302,7 @@ def text(d: str, name: str) -> str | None:
         return f.read().strip()
 
 
-def reference_of(run: Run | None) -> Reference | None:
+def reference_of(run: Run | None, facts: str | None = None) -> Reference | None:
     if run is None or run.status != 'completed' or not isinstance(run.result, dict):
         return None
     ref = cast(Reference, dict(run.result))  # the calibrate package's Measured, as the record carries it
@@ -313,6 +311,20 @@ def reference_of(run: Run | None) -> Reference | None:
         ref['exec_fork_ms'] = legs['fork']
     if 'cuda_init' in legs:
         ref['cuda_init_ms'] = legs['cuda_init']
+    rows = [r for m in run.measurements for r in (m.get('memory') or {}).get('driver') or []]
+    if clocks := [c for r in rows if (c := r.get('sm_mhz_mean'))]:
+        ref['clock_mhz'] = round(statistics.median(clocks))
+    if temps := [t for r in rows if (t := r.get('temperature_max_c'))]:
+        ref['temperature_c'] = max(temps)
+    said = dict(line.split('=', 1) for line in (facts or '').splitlines() if '=' in line)  # pod.sh facts
+    if said.get('gpu'):
+        ref['gpu'] = said['gpu']
+    if said.get('driver'):
+        ref['driver'] = said['driver']
+    if said.get('pcie'):
+        ref['pcie'] = said['pcie']
+    if re.fullmatch(r'[0-9.]+', said.get('power_limit_w', '')):
+        ref['power_limit_w'] = float(said['power_limit_w'])
     return ref
 
 
@@ -340,7 +352,7 @@ def read_gate(d: str, judged: bool = True) -> Gate:
                 m['output'] = output_of(os.path.dirname(path), run, judged)
         cold, warm = by.setdefault(cell, ([], []))
         (cold if role == 'cold' else warm).append(m)
-    reference = {w: r for w in ('before', 'after') if (r := reference_of(Run.read(os.path.join(d, f'calibrate-{w}.json')))) is not None}
+    reference = {w: r for w in ('before', 'after') if (r := reference_of(Run.read(os.path.join(d, f'calibrate-{w}.json')), text(d, 'pod-facts.txt'))) is not None}
     rows = os.path.join(d, 'comfyui-rows.json')
     return {'dir': d, 'group': text(d, 'bench-group') or '?', 'pod': text(d, 'machine'), 'label': text(d, 'label'), 'reference': reference,
             'cells': {name: summary(cold[0] if cold else None, warm) for name, (cold, warm) in by.items()},
