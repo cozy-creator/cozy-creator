@@ -24,6 +24,39 @@ const names = (page) => page.evaluate(() => [...document.querySelectorAll('.reac
   .map((el) => el.value ?? el.textContent).sort());
 const element = boxOf;
 const yaml = (folder) => yamlOf(folder);
+/** The intentional denial owns a blank page under the server's actual policy. App errors stay on the app page. */
+async function policyEvalProbe(context, base) {
+  const native = await context.request.get(base);
+  const policy = native.headers()['content-security-policy'];
+  if (!native.ok() || !policy) return { ok: false, why: 'native page has no successful CSP response' };
+  const probe = await context.newPage();
+  const errors = [];
+  const consoleErrors = [];
+  probe.on('pageerror', (error) => errors.push(error.message));
+  probe.on('console', (message) => { if (message.type() === 'error') consoleErrors.push(message.text()); });
+  let evidence;
+  try {
+    const url = new URL(`/__cozy_e2e_policy_probe_${Date.now()}`, base).href;
+    await probe.route(url, (route) => route.fulfill({ status: 200, contentType: 'text/html', headers: { 'Content-Security-Policy': policy }, body: '<!doctype html><html><head><link rel="icon" href="data:,"></head><body>Owned CSP negative control</body></html>' }));
+    await probe.addInitScript(() => {
+      window.probeViolations = [];
+      document.addEventListener('securitypolicyviolation', (event) => window.probeViolations.push({ directive: event.effectiveDirective, blocked: event.blockedURI, policy: event.originalPolicy, disposition: event.disposition }));
+    });
+    const loaded = await probe.goto(url);
+    // A timer runs as page code; the automation's own evaluation is allowed by the browser.
+    const attempt = await probe.evaluate(() => new Promise((done) => setTimeout(() => {
+      try { done({ refused: false, value: new Function('return 1')() }); }
+      catch (error) { done({ refused: true, name: error.name }); }
+    })));
+    if (attempt.refused) await probe.waitForFunction(() => window.probeViolations.length > 0);
+    const violations = await probe.evaluate(() => window.probeViolations);
+    const expected = violations.length > 0 && violations.every((event) => event.directive === 'script-src' && event.blocked === 'eval' && event.policy === policy && event.disposition === 'enforce');
+    evidence = { ok: attempt.refused && attempt.name === 'EvalError' && expected && errors.length === 0 && loaded.headers()['content-security-policy'] === policy, policy, attempt, violations, errors, consoleErrors };
+  } finally {
+    await probe.close();
+  }
+  return { ...evidence, closed: probe.isClosed() };
+}
 /** Its rows, as project.db holds them (cl-803). */
 function rows(folder) {
   const found = {};
@@ -486,8 +519,8 @@ async function placedInView(page, expected) {
   // Everything above hashed in WebAssembly under the page's own CSP, with no violation; `eval` stays refused beside it.
   const violations = await page.evaluate(() => window.violations);
   check('csp_holds', violations.length === 0, { violations, styles: await page.evaluate(() => [...document.querySelectorAll('style')].map((held) => held.textContent.slice(0, 80))) });
-  // In a timer, as the page's own code runs: an evaluation itself is let past the CSP.
-  check('eval_refused', await page.evaluate(() => new Promise((done) => setTimeout(() => { try { new Function('return 1')(); done(false); } catch { done(true); } }))));
+  seen.eval_probe = await policyEvalProbe(context, base);
+  check('eval_refused', seen.eval_probe.ok && seen.eval_probe.closed, seen.eval_probe);
   seen.resize_observers = await page.evaluate(() => window.resizeEvidence ?? null);
   check('no_page_errors', errors.length === 0, errors);
   console.log(JSON.stringify({ failures, seen }, null, 2));
