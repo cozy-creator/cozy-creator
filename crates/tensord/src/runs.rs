@@ -1305,8 +1305,14 @@ impl Runs {
 
     /// A local package is one installation: the state just installed replaces its earlier
     /// ones, whose executors end and environments' records leave. One an unfinished run names
-    /// stays until a later install finds it idle.
+    /// stays until a later install finds it idle. Private project bindings are immutable
+    /// history: a changed physical mount must not uninstall earlier source/interfaces.
+    /// Their rebuildable physical caches may grow until explicit rekey/reclaim.
     fn supersede(&self, actor: &str, current: &Installation) -> Result<(), Refused> {
+        if let Some(scope) = crate::private_io::current() {
+            crate::private_io::resolve(&scope)?;
+            return Ok(());
+        }
         let unsettled = self.service.engine.with_journal(|j| j.unsettled_generations())?;
         let preparing = self.local.preparing();
         self.service.uninstall(actor, |prior| {

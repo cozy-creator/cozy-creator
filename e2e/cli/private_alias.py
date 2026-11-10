@@ -57,6 +57,12 @@ def main() -> None:
     assert source_canary, "first run the owned synthetic private_execution.py fixture"
     before = installations(home, project_id)
     assert before, "private local-code installation was not retained before remount"
+    def snapshot(rows):
+        return [{"journal": path, "actor": actor, "alias": alias, "record": json.loads(record)}
+                for path, actor, alias, record in sorted(rows)]
+    # These are protected references and public cache identities, not decrypted source,
+    # credentials or request bodies. Retain exact evidence if the invariant ever fails.
+    (args.out / "bindings-before.json").write_text(json.dumps(snapshot(before), indent=2))
     stamp = time.time_ns() - 2_000_000_000
 
     locked = json.loads(command(args.cli, args.out, "lock", "project", "-p", str(args.project), "lock"))
@@ -79,6 +85,7 @@ def main() -> None:
     assert payload_canary.encode() in result, "remounted private call did not return its fresh input"
     assert b'"scratch_private":true' in result.replace(b" ", b""), "remounted execution escaped protected storage"
     after = installations(home, project_id)
+    (args.out / "bindings-after.json").write_text(json.dumps(snapshot(after), indent=2))
     assert before.issubset(after), "remount rewrote/deleted historical installation bindings"
     assert len(after) > len(before), "the new physical mount did not receive its own installation binding"
     markers = [source_canary.group(), payload_canary.encode()]
