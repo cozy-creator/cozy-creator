@@ -168,8 +168,11 @@ hub_checked() {
   kill "$HUB_CHECK" 2> /dev/null || true
   HUB_CHECK=''
   echo "the Hub's operations called: $(jq -c . "$OUT/hub-calls.json" 2> /dev/null)"
-  [ -s "$OUT/hub-mismatches.jsonl" ] || return 0
-  jq -r '"\(.side) \(.method) \(.route // .path) \(.status // "") \(.field // ""): \(.message)"' "$OUT/hub-mismatches.jsonl" \
+  # A cell that stopped the Hub started another hubcheck at its address, writing into a folder of its own.
+  local found
+  found=$(cat "$OUT/hub-mismatches.jsonl" "$OUT"/*/hub-mismatches.jsonl 2> /dev/null || true)
+  [ -n "$found" ] || return 0
+  jq -r '"\(.side) \(.method) \(.route // .path) \(.status // "") \(.field // ""): \(.message)"' <<< "$found" \
     | sort | uniq -c | while read -r n what; do check "the Hub's API document, ${n}x: $what"; done
 }
 

@@ -415,7 +415,7 @@ def runtime_adapter(directory, source, specifications, cases, tensorfs, np, ctx,
     assert finished.source_bytes_read == finished.stored_source_bytes_read == finished.new_bytes_written == 0
     assert finished.worst_relative_frobenius is None
     changed = Bf16Plan(plan.components, plan.order, plan.tensors[:-1], [])
-    from cozy_runtime.author import CapabilityError
+    from cozy_runtime.author._errors import CapabilityError
     try:
         write_bf16(source, output, ctx, tel, plan=changed)
     except CapabilityError as error:

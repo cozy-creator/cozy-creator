@@ -40,6 +40,7 @@ fn state_name(record: &Execution) -> &'static str {
         State::Failed => "failed",
         State::Canceled => "canceled",
         State::Queued if record.waiting_reason.as_deref() == Some(crate::journal::PREPARING) => "preparing",
+        State::Queued if record.waiting_reason.as_deref() == Some(crate::journal::NEEDS_ACCESS) => "needs_access",
         State::Queued | State::Starting => "queued",
         State::Running => "running",
         State::Unknown => "unknown",

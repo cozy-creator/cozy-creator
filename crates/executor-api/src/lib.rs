@@ -110,6 +110,11 @@ pub struct Start {
     /// The machine's mode: idle memory yields to foreign programs too. Peers donate either way.
     #[serde(default)]
     pub shared: bool,
+    /// Each GPU's limit while it drives this computer's display, in the session's device order:
+    /// its total less what the display keeps free at the driver (0: it drives none; empty: none
+    /// does). The development `gpu_memory_limit` holds where it is lower.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub display_limit: Vec<u64>,
     /// A GPU of the session drives this computer's display (a shared machine): its calls pause
     /// for the desktop to draw.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -221,6 +226,9 @@ pub struct Invoke {
     /// this name, so the child is admitted beside it.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub family: String,
+    /// Start's `display_limit` as the display uses it now, read again for each request.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub display_limit: Vec<u64>,
 }
 
 /// Warm a loaded construction at `level`; with a `payload`, also prepare its entrypoint's program.

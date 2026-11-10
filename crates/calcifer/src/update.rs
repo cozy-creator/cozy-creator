@@ -293,6 +293,9 @@ impl Machines {
             if reason.next.is_empty() {
                 reason.next = commands(&reason.message);
             }
+            if reason.code == "does_not_fit" && reason.next.is_empty() {
+                reason.next.push(format!("cozy run {} … --on new", row.target));
+            }
             for next in &mut reason.next {
                 *next = next.replace("<machine>", name);
             }

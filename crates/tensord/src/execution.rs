@@ -465,6 +465,26 @@ impl Engine {
         Ok(runs)
     }
 
+    /// A preparing run a restart interrupted waits, `needs_access`, for its sender to send it again
+    /// with the access that stayed off this machine's disk.
+    pub(crate) fn park(&self, id: &str) -> io::Result<()> {
+        self.journal.lock().unwrap().park(id)?;
+        self.end_observation(id);
+        Ok(())
+    }
+
+    /// Run `id` prepares again if it waited `needs_access` (one sender of its access wins).
+    pub(crate) fn unpark(&self, id: &str) -> io::Result<bool> {
+        let mut owned = self.owned.lock().unwrap();
+        let unparked = self.journal.lock().unwrap().unpark(id)?;
+        if unparked {
+            owned.insert(id.to_string());
+        }
+        drop(owned);
+        self.notify_activity();
+        Ok(unparked)
+    }
+
     /// The preparing run ends undispatched (warm success or preparation failure).
     pub(crate) fn end_preparation(&self, id: &str, outcome: Outcome) -> io::Result<Execution> {
         let record = self.journal.lock().unwrap().end_preparation(id, outcome);

@@ -289,6 +289,8 @@ struct Entry {
     filled: u64,
     // Its owner ranks it above rebuilding a cache: `reclaim::HIGH`.
     high: bool,
+    // State a loop keeps across steps, refilled from its pinned host copy.
+    retained: bool,
 }
 
 impl Entry {
@@ -339,13 +341,50 @@ impl State {
         }
     }
 
+    /// Where a planned loop's kept prefix ends: the latest plan position of a region that stayed
+    /// through the pass with more bytes kept than streamed up to it. None in a loop's first pass,
+    /// or with no plan. A region kept far past the streamed ones does not stretch it.
+    pub(crate) fn prefix(&self, order: &plan::Order) -> Option<u64> {
+        let boundary = self.phase_boundary?;
+        if !self.plan_phase.as_ref().is_none_or(PlanPhase::loops) {
+            return None;
+        }
+        let mut regions: Vec<(u64, usize, bool)> = self.entries.iter()
+            .filter(|(_, entry)| entry.last_use > boundary && !entry.retained && !entry.high && !entry.prefetched
+                && !matches!(entry.uses.state(), Contents::Cold | Contents::Retired))
+            .filter_map(|(id, entry)| match order.next_use(*id) {
+                Some((0, position)) => Some((position, entry.bytes, entry.filled <= boundary)),
+                _ => None,
+            })
+            .collect();
+        regions.sort_unstable();
+        let (mut kept, mut streamed, mut end) = (0usize, 0usize, None);
+        for (position, bytes, stayed) in regions {
+            if stayed {
+                kept += bytes;
+                if kept > streamed {
+                    end = Some(position);
+                }
+            } else {
+                streamed += bytes;
+            }
+        }
+        end
+    }
+
     /// Eviction order for idle regions, lowest first. With a plan, the furthest next use goes
     /// first; in a phase's loop that is most recently used first, as the loop reaches its
     /// oldest use next, and of those what this pass filled before what stayed through it: the
     /// loop streams the same regions each pass, so the bytes it reads back fit the page cache.
     /// Taking whatever finished last let the resident set wander, and on a 26 GB cgroup Flux-2
     /// read all 57 blocks back from disk in turn (24 GB a step against v1's 13).
-    fn rank(&self, id: u64, entry: &Entry, order: &plan::Order) -> (u8, u64) {
+    ///
+    /// A planned loop keeps a prefix of its plan, as v1 did: what it refilled inside the prefix
+    /// (`prefix`) is the prefix's again, and the prefix gives way from its end, the region the next
+    /// pass needs last. By fill alone, a region another phase had evicted was streamed every pass
+    /// after: Klein's upsampler refilled its 1.9 GB embedding each token, 6.2 GB a pass to v1's
+    /// 4.7 (pasan, run 42322).
+    fn rank(&self, id: u64, entry: &Entry, order: &plan::Order, prefix: Option<u64>) -> (u8, u64) {
         if matches!(entry.uses.state(), Contents::Cold | Contents::Retired) {
             return (reclaim::CONTENTLESS, entry.last_use);
         }
@@ -363,10 +402,18 @@ impl State {
             true => reclaim::PHASE_FRESH,
             false => reclaim::PHASE_USED,
         };
+        // A loop's retained state is its own, read again next step like its weights: most recent
+        // first, with what this pass streamed, as its refill is one DMA from pinned host RAM.
+        if entry.retained && touched {
+            return (reclaim::PHASE_FRESH, u64::MAX - entry.last_use);
+        }
         match order.next_use(id) {
             None if order.planned() || !touched => (reclaim::UNPLANNED, entry.last_use),
             None => (used, u64::MAX - entry.last_use),
-            Some((0, _)) if touched && looping => (used, u64::MAX - entry.last_use),
+            Some((0, position)) if touched && looping => match prefix {
+                Some(end) if used == reclaim::PHASE_USED || position < end => (reclaim::PHASE_USED, u64::MAX - position),
+                _ => (used, u64::MAX - entry.last_use),
+            },
             Some((0, position)) if !touched => (reclaim::PHASE_NEXT, u64::MAX - position),
             // A single pass uses what it used next in a later phase, else next cycle, as late as what no
             // plan names; most recent first, so the next pass finds its start. Ranked as a loop's, Qwen
@@ -399,10 +446,20 @@ pub fn activate(device: i32, shared: bool) -> Result<()> {
     working::mark_cooperation_bound(device)
 }
 
-/// A request started or ended on `device`: an atomic store, which orders who donates first.
+/// A request started or ended on `device`, which orders who donates first. The
+/// first one running here is also a phase boundary, for eager callers too: the last call's regions
+/// are no longer in this one's loop, so they go first, by last use (hidream-o1's generate kept its
+/// turbo streaming in the same process, run 39070).
 pub fn request_boundary(device: i32, begin: bool) {
-    if begin && let Ok(device) = gpu(device) {
-        device.held_peak.store(0, Ordering::Release);
+    if let Ok(device) = gpu(device) {
+        if !begin {
+            let _ = device.requests.try_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1));
+        } else {
+            device.held_peak.store(0, Ordering::Release);
+            if device.requests.fetch_add(1, Ordering::AcqRel) == 0 && let Ok(mut state) = device.lock() {
+                state.phase_boundary = Some(device.clock.load(Ordering::Relaxed));
+            }
+        }
     }
     #[cfg(target_os = "linux")]
     cooperative::request_boundary(device, begin);
@@ -471,10 +528,15 @@ pub struct Device {
     reservation: OnceLock<usize>,
     /// That charge at the last sample: what the card uses beyond our own bytes.
     outside: AtomicUsize,
+    /// The least of it any sample read: this process's own context and what was there before it.
+    /// What `outside` holds past it came since, and can go again (a game's, a peer's).
+    outside_floor: AtomicUsize,
     pages: AtomicUsize,
     working: AtomicUsize,
     // The most weight bytes held for use at once this request.
     held_peak: AtomicUsize,
+    // Requests running here: the first to begin is a phase boundary.
+    requests: AtomicUsize,
     // Weight bytes held for use now: regions with a pin.
     held: AtomicUsize,
     // Moves when the room this process can have shrinks for a reason outside its program: a cap,
@@ -514,9 +576,11 @@ impl Device {
             total: AtomicUsize::new(usize::MAX),
             reservation: OnceLock::new(),
             outside: AtomicUsize::new(0),
+            outside_floor: AtomicUsize::new(usize::MAX),
             pages: AtomicUsize::new(0),
             working: AtomicUsize::new(0),
             held_peak: AtomicUsize::new(0),
+            requests: AtomicUsize::new(0),
             held: AtomicUsize::new(0),
             room: AtomicU64::new(0),
             room_outside: AtomicU64::new(0),
@@ -629,6 +693,7 @@ impl Device {
             self.reservation.get_or_init(|| cooperative::driver_reservation(self.ordinal, total));
         }
         let outside = total.saturating_sub(free).saturating_sub(self.owned());
+        self.outside_floor.fetch_min(outside, Ordering::AcqRel);
         if outside > self.outside.swap(outside, Ordering::AcqRel) {
             self.room_outside.fetch_add(1, Ordering::Relaxed);
             self.room_shrank();
@@ -650,6 +715,11 @@ impl Device {
     fn peers_can_lift(&self, more: usize) -> bool {
         let wanted = self.owned().saturating_add(more);
         wanted <= self.capacity().saturating_add(self.outside.load(Ordering::Acquire))
+    }
+
+    /// A request runs here (`request_boundary`): what is not one, idle work, waits for nothing.
+    fn in_request(&self) -> bool {
+        self.requests.load(Ordering::Acquire) != 0
     }
 
     /// A limit someone set on the machine.
@@ -703,6 +773,7 @@ impl Device {
                     last_use: 0,
                     filled: 0,
                     high: false,
+                    retained: false,
                 },
             );
             Region {
@@ -1165,6 +1236,13 @@ impl Region {
         Ok(())
     }
 
+    /// State a loop keeps across steps: once used in the loop it ranks as the loop's own.
+    /// Metadata only.
+    pub fn set_retained(&self) -> Result<()> {
+        self.gpu.lock()?.entries.get_mut(&self.id).expect("live region").retained = true;
+        Ok(())
+    }
+
     /// This fill is not the region's first: it has been evicted and read back.
     pub fn refilled(&self) -> bool {
         self.uses.generation.load(Ordering::Acquire) > 1
@@ -1173,7 +1251,9 @@ impl Region {
     /// Demand: anything idle may go to make room, in the one reclaim order.
     fn prepare(self: &Arc<Self>) -> Result<Preparation> {
         let protected = std::collections::BTreeSet::from([self.id]);
-        let protect = reclaim::Protect { regions: Some(&protected), keep_phase: true, into: Some(self.id), ..Default::default() };
+        let protect = reclaim::Protect {
+            regions: Some(&protected), keep_phase: true, into: Some(self.id), outside: true, ..Default::default()
+        };
         let result = (|| loop {
             let prepared = reclaim::acquire(self.gpu.ordinal, self.rounded, reclaim::Wait::Yes, protect, || {
                 let gate = gate(self.gpu.ordinal)?;
@@ -1204,7 +1284,9 @@ impl Region {
             match unsafe { self.prepare_on(consumer) } {
                 Ok(async_fill::StreamPreparation::Ready(pin) | async_fill::StreamPreparation::Ordered(pin)) => break pin,
                 Ok(async_fill::StreamPreparation::Fill(fill)) => {
-                    source::yield_to(self);
+                    if self.source.reads() {
+                        source::yield_to(self);
+                    }
                     // The worker takes up what comes next while this thread reads: asked only after the
                     // read, it lost the race to this thread's next use every time.
                     let _ = source::after_use(self);
@@ -1334,6 +1416,20 @@ impl Region {
         }
         state.used(self.id, self.gpu.next_use());
         self.pin_locked(&mut state).map(Some)
+    }
+
+    /// `try_pin` that is no use: its place in the reclaim order stays where its last use left it.
+    /// Another Region copying its bytes (TensorFS's content-addressed fill) is not a use of it.
+    pub fn try_pin_unused(self: &Arc<Self>) -> Result<Option<Pin>> {
+        let mut state = self.gpu.lock()?;
+        let entry = state.entries.get(&self.id).expect("live region");
+        if entry.uses.state() != Contents::Ready {
+            return Ok(None);
+        }
+        let prefetched = entry.prefetched;
+        let pin = self.pin_locked(&mut state)?;
+        state.entries.get_mut(&self.id).expect("live region").prefetched = prefetched;
+        Ok(Some(pin))
     }
 
     fn pin_locked(self: &Arc<Self>, state: &mut State) -> Result<Pin> {

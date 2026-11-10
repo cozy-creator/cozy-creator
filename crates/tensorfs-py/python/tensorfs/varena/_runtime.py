@@ -16,8 +16,6 @@ if TYPE_CHECKING:
     from torch import Tensor
     from typing_extensions import Buffer
 
-PoisonedError = _ext.VarenaPoisonedError
-
 
 def activate(device: int, *, shared: bool) -> None:
     """This GPU's context and this process's row in its ledger. `shared` is the machine's mode: it
@@ -32,7 +30,8 @@ def poisoned() -> str | None:
 
 
 def request_boundary(device: int, *, begin: bool) -> None:
-    """A request started or ended here: orders who donates first. An atomic store, never fails."""
+    """A request started or ended here: orders who donates first, and the first to begin is a phase
+    boundary. Never fails."""
     _ext._varena_request_boundary(device, begin)
 
 
@@ -107,12 +106,6 @@ class Device:
     def stats(self) -> dict[str, int]:
         return self._native.stats()
 
-    @contextmanager
-    def capture(self) -> Iterator[None]:
-        """Exclude native producers and recovery during actual CUDA capture."""
-        with capture(self.device):
-            yield
-
 
 class Plan:
     """Copied native region intent on one device; no fills, pins or prefetch promise.
@@ -153,8 +146,14 @@ class PhaseController:
 class Pages:
     """One GPU's host tier: weight pages in pinned host RAM, which TensorFS alone manages."""
 
-    def __init__(self, device: int, *, cap: int, headroom: int) -> None:
-        self._native = _ext._VarenaPages(device, cap, headroom)
+    def __init__(
+        self, device: int, *, cap: int | None = None, shared: bool = False, headroom: int | None = None
+    ) -> None:
+        """The tier sizes itself from the host and shares it through the host's ledger page.
+        `cap`: at most this many bytes (default half of physical memory). `shared`: a person's
+        computer, where nothing pins while it stalls. `headroom` is an older Runtime's, unread."""
+        del headroom
+        self._native = _ext._VarenaPages(device, cap, shared)
 
     def pending(self) -> bool:
         """Whether pages wait for an idle executor to pin them."""
@@ -171,12 +170,55 @@ class Pages:
     def request_ended(self) -> None:
         self._native.request_ended()
 
+    def retained_room(self) -> int:
+        """Host bytes retained regions may take now: available beyond the headroom, this tier's
+        own pages included, which yield to them."""
+        return self._native.retained_room()
+
+    def staging(self, bytes: int) -> Staging | None:
+        """`bytes` of shared host memory the executors of a group exchange through, pinned for
+        this GPU and held against varena's host number until it closes; None: no room now."""
+        native = self._native.staging(bytes)
+        return None if native is None else Staging(native)
+
     def drain(self) -> list[tuple[str, int, int, str, bool, int, float]]:
         """The fills since the last call: (set, block, bytes, origin, ahead, ns, unix ms)."""
         return self._native.drain()
 
     def stats(self) -> dict[str, Any]:
         return self._native.stats()
+
+
+class Staging:
+    """Host bytes the executors of a group exchange through, mapped and pinned for this GPU at
+    `ptr`. The owner's (`Pages.staging`) counts against varena's host number; a peer's mapping of
+    it (`Staging.open`, by `name`) counts nothing. Close it before its last copy's memory goes."""
+
+    def __init__(self, native: _ext._VarenaStaging) -> None:
+        self._native = native
+
+    @classmethod
+    def open(cls, device: int, name: str, bytes: int) -> Staging:
+        return cls(_ext._VarenaStaging.open(device, name, bytes))
+
+    @property
+    def name(self) -> str:
+        return self._native.name
+
+    @property
+    def ptr(self) -> int:
+        return self._native.ptr
+
+    @property
+    def bytes(self) -> int:
+        return self._native.bytes
+
+    def unlink(self) -> None:
+        """Its name goes, once every peer has opened it: nothing outlives the processes."""
+        self._native.unlink()
+
+    def close(self) -> None:
+        self._native.close()
 
 
 class Source:
@@ -241,6 +283,34 @@ class Region:
         return None if native is None else Use(native)
 
 
+class Retained:
+    """State a model writes on the card once and reads every step (a prefix's K/V): a Region
+    the core keeps resident while there is room. A pinned host copy, taken behind compute on its
+    own stream, refills it once evicted, and the core fills it ahead of its next use."""
+
+    def __init__(self, device: Device, pages: Pages, bytes: int) -> None:
+        self._native = _ext._VarenaRetained(device._native, pages._native, bytes)
+
+    def write(self, stream: int, parts: Sequence[tuple[int, int, int]], *, spill: bool = True) -> Use:
+        """Copy `parts`, (offset, device address, bytes) of live tensors ordered on `stream`,
+        into the region on `stream`, pinned for it. Once, before any other use. `spill`: a host
+        copy is taken behind compute and the region is evictable once it lands; else it stays."""
+        return Use(self._native.write(stream, list(parts), spill=spill))
+
+    def use(self, stream: int) -> Use:
+        """Pinned for `stream`: refilled from its host copy if it was evicted."""
+        return Use(self._native.use_on(stream))
+
+    @property
+    def landed(self) -> bool:
+        """Whether its host copy has landed: from then on the core may evict it."""
+        return self._native.landed
+
+    @property
+    def resident(self) -> bool:
+        return self._native.resident
+
+
 class Use:
     """Pinned storage. This Use and every independently exported Storage share one checked
     native Pin owner, and Storage references survive this Python object."""
@@ -284,13 +354,3 @@ def replay(device: int) -> Iterator[None]:
     finally:
         guard.close()
 
-
-@contextmanager
-def no_capture(device: int) -> Iterator[None]:
-    """No CUDA capture is in progress on `device`, and none begins until it exits (one that
-    tries is refused). Raises if one is in progress."""
-    guard = _ext._VarenaNoCapture(device)
-    try:
-        yield
-    finally:
-        guard.close()

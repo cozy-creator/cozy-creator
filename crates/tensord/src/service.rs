@@ -282,8 +282,9 @@ impl Service {
         gpu.import_recent(self.catalog.recent(bound));
         Ok(())
     }
+    /// No job: a run waiting for its sender's access is kept in the journal, not held up here.
     pub(crate) fn idle(&self) -> io::Result<bool> {
-        Ok(self.engine.nonterminal(1)?.is_empty())
+        Ok(!self.engine.jobs(i64::MAX)?.0)
     }
     pub(crate) fn hold_while(&self, held: impl Fn() -> bool + Send + Sync + 'static) {
         let _ = self.held.set(Box::new(held));

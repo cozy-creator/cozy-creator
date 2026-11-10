@@ -14,21 +14,9 @@ import time
 from typing import Annotated
 
 import msgspec
-from cozy_runtime.author import (
-    App,
-    File,
-    InvalidRequest,
-    Latents,
-    Outputs,
-    Pickup,
-    Prompt,
-    Range,
-    Seed,
-    Telemetry,
-    Total,
-    Video,
-    VideoFile,
-)
+from cozy_runtime.author import App, InvalidRequest, Outputs, Seed, Telemetry
+from cozy_runtime.fields import Pickup, Prompt, Range, Total, Video
+from cozy_runtime.media import File, Latents, VideoFile
 
 app = App()
 

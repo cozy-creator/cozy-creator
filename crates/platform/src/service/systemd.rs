@@ -63,9 +63,11 @@ pub(super) fn announce(_: &Path, _: &str) -> Result<()> {
 }
 
 /// `spec` in a transient scope of its own (`systemd-run --scope` execs it in place), out of the
-/// cgroup of the unit that starts it, which systemd ends whole when that unit stops.
+/// cgroup of the unit that starts it, which systemd ends whole when that unit stops. Delegated:
+/// the machine arranges the cgroups below it (its executors', with their memory limit) and
+/// systemd leaves them alone.
 pub(super) fn scope(spec: &ServiceSpec) -> Option<(PathBuf, Vec<OsString>)> {
-    let run = ["--user", "--scope", "--quiet", "--collect", "--"].map(OsString::from);
+    let run = ["--user", "--scope", "--quiet", "--collect", "--property=Delegate=yes", "--"].map(OsString::from);
     let command = std::iter::once(spec.program.clone().into_os_string());
     Some(("systemd-run".into(), run.into_iter().chain(command).chain(spec.args.iter().cloned()).collect()))
 }

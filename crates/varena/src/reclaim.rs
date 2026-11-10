@@ -55,6 +55,40 @@ pub(crate) struct Protect<'a> {
     pub(crate) reuse_working: bool,
     /// The absent region this is for: a region of its size evicted moves its pages there.
     pub(crate) into: Option<u64>,
+    /// No smaller unit stands behind the caller (a Region's fill, a working allocation): in a
+    /// request, with nothing of ours left to give, it waits for memory held outside this process
+    /// (`OUTSIDE_WAIT`).
+    pub(crate) outside: bool,
+}
+
+/// How long a demand with no lever left of its own waits for memory outside this process to come
+/// back (a game's, a browser's), re-reading the room every `OUTSIDE_POLL` and trying every lever
+/// again once it grew: Paul 11-07, keep trying while any lever can make it fit, give up last.
+/// retained-pressure's game holds 18 GiB of a 4090 for 120 s; Qwen's K/V refill failed at once (run
+/// 43123). Only in a request (`Device::in_request`): idle work gives up at once. An idle graph
+/// recording slept here on the thread that orders commands, and the next request waited 293 s
+/// behind it (SDXL at 6 GiB, run 43986).
+const OUTSIDE_WAIT: Duration = Duration::from_secs(300);
+const OUTSIDE_POLL: Duration = Duration::from_millis(250);
+
+/// Whether at least `want` more bytes came free on the card than at `start` before `deadline`.
+fn outside_gave(gpu: &Device, want: usize, start: usize, deadline: Instant) -> Result<bool> {
+    while Instant::now() < deadline {
+        std::thread::sleep(OUTSIDE_POLL);
+        if free_now(gpu)? >= start.saturating_add(want) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// The driver's free bytes now, the room's outside share sampled with them.
+fn free_now(gpu: &Device) -> Result<usize> {
+    let gate = crate::gate(gpu.ordinal)?;
+    gate.not_capturing()?;
+    let _context = gpu.driver().enter()?;
+    gpu.sample()?;
+    Ok(gpu.driver().memory_info()?.0)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -260,9 +294,10 @@ impl<'a> Sequence<'a> {
         gate.not_capturing()?;
         let mut state = self.gpu.lock()?;
         self.gpu.poll_fences(&mut state)?;
+        let prefix = state.prefix(&order);
         let mut candidates: Vec<_> = state.entries.iter()
             .filter(|(id, entry)| entry.idle() && !self.protect.regions.is_some_and(|ids| ids.contains(id)))
-            .map(|(id, entry)| (state.rank(*id, entry, &order), *id, entry.bytes))
+            .map(|(id, entry)| (state.rank(*id, entry, &order, prefix), *id, entry.bytes))
             .filter(|(rank, ..)| classes.contains(&rank.0))
             .collect();
         candidates.sort_unstable();
@@ -321,6 +356,7 @@ pub(crate) fn acquire<T>(
 ) -> Result<T> {
     let mut sequence = Sequence::new(device, usize::MAX, wait, protect, ReclaimReason::Allocator)?;
     let mut floor = 2usize << 20;
+    let mut waiting: Option<Instant> = None;
     loop {
         let failure = match try_map() {
             Ok(value) => return Ok(value),
@@ -332,6 +368,28 @@ pub(crate) fn acquire<T>(
         let physical = !sequence.gpu.capped() || failure.physical_bytes().is_some()
             || sequence.gpu.peers_can_lift(want);
         if !sequence.advance(want, physical)? {
+            // Nothing of ours is left to give. What came onto the card outside this process since
+            // its quietest sample (a game's, a peer's) may go again: wait for it, and once the card
+            // has `want` more free, every lever again from the first.
+            // Only a physical refusal: under a cap the card's free bytes are no room of ours, and on
+            // kesshouban H3's 207 MB GEMM output waited 300 s beside 19.6 GB free (run 43277).
+            if protect.outside && wait == Wait::Yes && physical && sequence.gpu.in_request() {
+                let start = free_now(sequence.gpu)?;
+                let came = sequence.gpu.outside.load(Ordering::Acquire)
+                    .saturating_sub(sequence.gpu.outside_floor.load(Ordering::Acquire));
+                if came >= want {
+                    let began = *waiting.get_or_insert_with(Instant::now);
+                    if outside_gave(sequence.gpu, want, start, began + OUTSIDE_WAIT)? {
+                        sequence = Sequence::new(device, usize::MAX, wait, protect, ReclaimReason::Allocator)?;
+                        continue;
+                    }
+                    eprintln!(
+                        "varena: GPU {device}: {need} bytes found no room after every lever and {} s waiting \
+                         for the {came} bytes that came outside this process: {start} bytes free",
+                        began.elapsed().as_secs(),
+                    );
+                }
+            }
             return Err(failure.into());
         }
         // Gave what the arithmetic said and still short: the driver's free reading is only
@@ -416,9 +474,10 @@ pub(crate) fn prefetch_room(device: i32, bytes: usize, group: &BTreeSet<u64>, fr
         let _context = gpu.driver().enter()?;
         let room = gpu.driver().memory_info()?.0.min(gpu.headroom());
         let state = gpu.lock()?;
+        let prefix = state.prefix(&order);
         let idle = state.entries.iter()
             .filter(|(id, entry)| {
-                let class = state.rank(**id, entry, &order).0;
+                let class = state.rank(**id, entry, &order, prefix).0;
                 entry.idle() && (UNPLANNED..=PHASE_FRESH).contains(&class) && !group.contains(id)
                     && gpu.completion(&state, **id) == Completion::Done
             })
@@ -508,10 +567,12 @@ impl Recovery {
         }
         let before = crate::released_bytes(device)?;
         self.cache_request = cache_owner::request_shrink(device, cache_owner::RequestKey {
-            cause: cache_owner::Cause::Allocation, generation: cache_owner::next_generation()?,
+            generation: cache_owner::next_generation()?,
         }, bytes)?;
         let Some(request) = self.cache_request.as_ref() else { return Ok(false) };
-        if HOST_LOCK.get().is_some_and(|holds| holds()) {
+        // Owners whose callbacks take the host lock cannot run while this thread holds it; native
+        // ones can, so with only those this waits.
+        if HOST_LOCK.get().is_some_and(|holds| holds()) && cache_owner::hosted(device)? != 0 {
             return Ok(crate::released_bytes(device)? > before);
         }
         working::invalidate_current_phase(device, "cache_recovery")?;

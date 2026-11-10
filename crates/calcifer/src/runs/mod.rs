@@ -73,8 +73,7 @@ pub(crate) async fn priced(api: &Arc<Api>, ask: RunRequest) -> Result<Option<Run
             let hub = hub(api, &ask.hub);
             let home = api.machines.hubs.home();
             let origin = api::config::Origin::parse(&hub)?;
-            let reader = api.machines.hubs.reader(&hub)?;
-            let source = crate::local_code::source(home, code, (&reader, &origin)).await?;
+            let source = crate::local_code::source(home, code, &api.machines.hubs, &origin).await?;
             crate::local_code::install_run(home, &hub, on, &source)
         }
         None => match prepare(api, "quote", &ask, For::Quote).await? {

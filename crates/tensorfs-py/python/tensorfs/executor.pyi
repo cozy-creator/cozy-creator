@@ -60,6 +60,7 @@ class Start(_Wire):
     memo: MemoSettings | None
     gpu_memory_limit: int | None
     shared: bool
+    display_limit: list[int]
     display_pace: DisplayPace | None
     def __init__(self, **fields: Any) -> None: ...
 
@@ -143,6 +144,7 @@ class Invoke(_Wire):
     actor: str
     operation: str
     family: str
+    display_limit: list[int]
     def __init__(self, **fields: Any) -> None: ...
 
 class Map(_Wire):

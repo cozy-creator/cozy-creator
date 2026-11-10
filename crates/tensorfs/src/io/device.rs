@@ -587,6 +587,7 @@ impl Engine {
     fn run(
         self: &Arc<Self>,
         copies: &[(usize, Copy)],
+        cold: &[bool],
         opts: &ReadOpts,
         staged_host: bool,
         issued: Option<Issued>,
@@ -618,7 +619,7 @@ impl Engine {
             let mut jobs = Vec::new();
             let tally = Tally::default();
             for (local, &(copy, c)) in copies.iter().enumerate() {
-                if let Src::Device { device, stream, .. } = c.src {
+                if let Some(Src::Device { device, stream, .. }) = c.src.ordered() {
                     let source = Engine::get(device).map_err(|e| failed(copy, e))?;
                     owners
                         .events
@@ -675,6 +676,7 @@ impl Engine {
                         at,
                         len: step.min(c.dst.len() - at),
                         direct,
+                        cold: cold[copy],
                     });
                 }
             }
@@ -868,7 +870,7 @@ impl Engine {
                     ..opts.clone()
                 };
                 // SAFETY: the staging slot is this engine's own and the source is the caller's (read's contract).
-                let stats = unsafe { host::fill(&[copy], &options, None) }.map_err(|e| Error {
+                let stats = unsafe { host::fill(&[copy], &[job.cold], &options, None) }.map_err(|e| Error {
                     copy: job.copy,
                     source: e.source,
                 })?;
@@ -930,6 +932,8 @@ struct Job<'a> {
     at: usize,
     len: usize,
     direct: bool,
+    /// Its file bytes read past the page cache.
+    cold: bool,
 }
 
 #[derive(Default)]
@@ -942,8 +946,10 @@ struct Tally {
 }
 
 /// Same bounded B7 staging, with checked completion and retained native resources on error.
+/// `cold` is by each copy's index (`super::cold`).
 pub(super) unsafe fn fill(
     copies: &[(usize, Copy)],
+    cold: &[bool],
     opts: &ReadOpts,
     staged_host: bool,
     issued: Option<Issued>,
@@ -982,7 +988,7 @@ pub(super) unsafe fn fill(
     for ((device, kind), copies) in groups {
         let engine = Engine::get(device).map_err(|e| failed(copies[0].0, e))?;
         let start = Instant::now();
-        let stats = engine.run(&copies, opts, staged_host, issued, cancel)?;
+        let stats = engine.run(&copies, cold, opts, staged_host, issued, cancel)?;
         #[cfg(unix)]
         {
             let ns = start.elapsed().as_nanos() as u64;

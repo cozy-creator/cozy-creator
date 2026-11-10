@@ -67,12 +67,28 @@ pub enum Src<'a> {
     File(&'a File, u64),
     /// Host memory (a sealed layout's mapping): RAM to the destination, no disk.
     Host(*const u8),
-    /// Device bytes ordered on the producer's stream (0: the CUDA default stream).
+    /// Device bytes ordered on the producer's stream (0: the CUDA default stream; [`COMPLETE`]:
+    /// none, their writers are known complete).
     Device {
         device: i32,
         ptr: u64,
         stream: usize,
     },
+}
+
+/// A [`Src::Device`] stream for bytes whose writers are known complete (a resident page): the
+/// copy waits for no producer, so it never queues behind compute.
+pub const COMPLETE: usize = usize::MAX;
+
+impl Src<'_> {
+    /// Itself, unless it is device bytes with no producer to wait for ([`COMPLETE`]).
+    #[cfg(feature = "cuda")]
+    pub(crate) fn ordered(self) -> Option<Self> {
+        match self {
+            Src::Device { stream: COMPLETE, .. } => None,
+            src => Some(src),
+        }
+    }
 }
 
 /// Where a copy's bytes go: host or device memory.
@@ -254,7 +270,8 @@ pub struct ReadOpts {
     pub request: usize,
     /// Copy streams per device (device destinations).
     pub streams: usize,
-    /// Read what the page cache lacks with O_DIRECT, where the filesystem allows.
+    /// Read a range the page cache mostly lacks with O_DIRECT once the cache has no room for it,
+    /// where the filesystem allows.
     pub direct: bool,
     /// Told of each copy as it lands, before the read returns; `None` costs nothing.
     pub landed: Option<Landed>,
@@ -314,8 +331,8 @@ pub fn drain(device: i32) -> cuda::Result<()> {
 }
 
 /// Every copy, at once: reads on `opts.threads` threads, each cut on the `opts.request` grid,
-/// O_DIRECT for what the page cache lacks (straight into the destination where it is aligned
-/// with the file, else through a bounce buffer), buffered for what it holds.
+/// buffered for a range the page cache mostly holds or has room for, else O_DIRECT (straight into
+/// the destination where it is aligned with the file, else through a bounce buffer).
 ///
 /// # Safety
 /// Each destination is valid for writes of its length, the destinations do not overlap, and
@@ -379,6 +396,7 @@ unsafe fn read_impl(
             });
         }
     }
+    let cold = cold(copies, opts);
     let (host, devices): (Vec<_>, Vec<_>) =
         copies.iter().copied().enumerate().partition(|(_, c)| {
             !matches!(c.src, Src::Device { .. }) && !matches!(c.dst, Dst::Device { .. })
@@ -389,8 +407,9 @@ unsafe fn read_impl(
     } else {
         #[cfg(unix)]
         let host_start = Instant::now();
+        let host_cold: Vec<bool> = host.iter().map(|&(i, _)| cold[i]).collect();
         // SAFETY: host copies keep `read`'s contract.
-        let stats = unsafe { host::fill(&host_copies, opts, cancel) }.map_err(|e| Error {
+        let stats = unsafe { host::fill(&host_copies, &host_cold, opts, cancel) }.map_err(|e| Error {
             copy: host[e.copy].0,
             source: e.source,
         })?;
@@ -404,7 +423,7 @@ unsafe fn read_impl(
     #[cfg(feature = "cuda")]
     {
         // SAFETY: device copies keep `read`'s contract.
-        let device = unsafe { device::fill(&devices, opts, staged_host, issued, cancel) }?;
+        let device = unsafe { device::fill(&devices, &cold, opts, staged_host, issued, cancel) }?;
         stats.direct += device.direct;
         stats.cached += device.cached;
         stats.bounced += device.bounced;
@@ -424,6 +443,28 @@ unsafe fn read_impl(
     stats.bytes = copies.iter().map(|c| c.dst.len() as u64).sum();
     stats.ns = start.elapsed().as_nanos() as u64;
     Ok(stats)
+}
+
+/// Whether each copy reads past the page cache (O_DIRECT, where `opts.direct` allows), sampled
+/// once a read, never per piece. A range the cache mostly holds reads through it: the disk serves
+/// only its holes. So does the rest while varena's host number leaves cache room for this read's
+/// missing bytes (`varena_ledger::host::Budget::cache`: memory nothing holds), so a second read of
+/// them hits memory. Past it the read goes O_DIRECT: caching it would displace other cache, a
+/// store larger than memory its own earlier bytes, and the cache then thrashes (Flux-2 on a 31 GiB
+/// pod read buffered at 0.45–0.95 GB/s against 1.26 GB/s direct, run 42010).
+fn cold(copies: &[Copy], opts: &ReadOpts) -> Vec<bool> {
+    let page = platform::durable::page_size();
+    let missing: Vec<u64> = copies.iter().map(|c| match c.src {
+        Src::File(f, at) if opts.direct && !c.dst.is_empty() => match platform::durable::cached_pages(f, at, c.dst.len() as u64) {
+            Some((held, of)) if held * 2 >= of => 0,
+            Some((held, of)) => (of - held) * page,
+            None => c.dst.len() as u64,
+        },
+        _ => 0,
+    }).collect();
+    let need: u64 = missing.iter().sum();
+    let past = need > 0 && varena_ledger::host::budget().cache() < i64::try_from(need).unwrap_or(i64::MAX);
+    missing.iter().map(|&m| past && m > 0).collect()
 }
 
 /// Logs the file reads among `copies` as one disk run (`metrics`).

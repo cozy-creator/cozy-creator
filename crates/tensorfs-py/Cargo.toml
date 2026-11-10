@@ -1,6 +1,6 @@
 [package]
 name = "tensorfs-py"
-version = "0.22.0"
+version = "0.22.1"
 edition = "2021"
 license.workspace = true
 publish.workspace = true
@@ -15,6 +15,7 @@ serde_json.workspace = true
 serde_path_to_error.workspace = true
 executor-api = { workspace = true, features = ["python"] }
 varena.workspace = true
+varena-ledger.workspace = true
 libc.workspace = true
 platform = { workspace = true, features = ["seams"] }
 tensorfs = { workspace = true, features = ["net", "cuda"] }

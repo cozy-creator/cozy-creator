@@ -7,7 +7,7 @@ mod host_parts;
 mod sizing;
 mod tensor_export;
 #[doc(hidden)]
-pub use tensor_export::{TensorExport, export_use, gpu_event_counts};
+pub use tensor_export::{TensorExport, export_use};
 pub use source::{Job as SourceJob, Provider as SourceProvider};
 
 use crate::retirement;
@@ -908,6 +908,7 @@ pub extern "C" fn vr_v1_cache_release(id: u64, offset: u64, bytes: u64, stream: 
         let c = cache_borrow(id)?;
         c._gpu.eager(stream)?;
         c.storage.release(size(offset)?, size(bytes)?, stream)?;
+        working::seal_stream(c._gpu.device(), stream)?;
         Ok(())
     })
 }
@@ -1132,6 +1133,7 @@ fn close_handle(id: u64, deferred: bool) -> Result<()> {
                     pin.into_fenced_region(&[used.stream]);
                 }
             }
+            working::seal_stream(used._weights[0].gpu.device(), used.stream)?;
         }
         Handle::Allocation(a) => {
             let mut live = lock(&a.live)?;
@@ -1139,6 +1141,7 @@ fn close_handle(id: u64, deferred: bool) -> Result<()> {
                 a.gpu.eager(a.stream)?;
                 working::free(a.gpu.device(), a.pointer, a.stream)?;
                 *live = false;
+                working::seal_stream(a.gpu.device(), a.stream)?;
             }
         }
         Handle::Cache(c) => {

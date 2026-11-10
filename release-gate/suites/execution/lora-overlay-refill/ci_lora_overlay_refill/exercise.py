@@ -13,6 +13,7 @@ from functools import partial
 from typing import Any
 
 import cozy_runtime
+import tensorfs.varena.torch as vt
 import torch
 from cozy_runtime import _build_provenance
 from cozy_runtime.author import Context, Telemetry
@@ -62,13 +63,13 @@ def _boundary(placement: Any, device: torch.device, kind: str, paging: bool) -> 
     memory's own record, and the scope holds."""
     memory = placement.memory
     facts: dict[str, Any] = {"kind": kind, "paging": paging}
-    free, total = torch.cuda.mem_get_info(device)
+    room, working = vt.room(device), vt.stats(device)
     facts.update(
-        free=free,
-        total=total,
-        allocated=torch.cuda.memory_allocated(device),
-        reserved=torch.cuda.memory_reserved(device),
-        peak=torch.cuda.max_memory_allocated(device),
+        free=room["free"],
+        total=room["capacity"],
+        allocated=working["allocated_bytes"],
+        reserved=working["mapped_bytes"],
+        peak=working["allocated_peak"],
         holds=sorted(getattr(placement, "holds", {})),
         unheld=sorted(getattr(placement, "unheld", ())),
     )

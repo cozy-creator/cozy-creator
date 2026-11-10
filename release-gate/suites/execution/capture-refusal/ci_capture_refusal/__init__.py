@@ -1,15 +1,13 @@
-"""A `denoise_loop` whose step reads a value back to the host, as a scheduler's `.item()` does (`item`), or
-synchronizes the device (`sync`); `warm` only does the arithmetic, so the executor's kernels are ready (a new
-executor's first loop is refused before its capture while they open). No capture records a host read: the recording fails with a CUDA capture error, the loop
-refuses it and runs the rest eagerly, and the values match an eager reference. cr-227 (Runtime 0.35.8): the failed
-capture stayed open after its refusal, so the eager rest failed `device_fault`."""
+"""A plain step loop whose step reads a value back to the host, as a scheduler's `.item()` does (`item`), or
+synchronizes the device (`sync`); `warm` only does the arithmetic. Every step runs and the values match a reference
+computed beside it. cr-227 (Runtime 0.35.8): a loop capture's refusal of a host read left the capture open, so the
+eager rest failed `device_fault`; Runtime 0.43 has no loop capture, and the cell keeps the host reads and syncs."""
 
 import json
 
 import msgspec
 import torch
-from cozy_runtime.author import App, Context, denoise_loop
-from cozy_runtime.internal import loop
+from cozy_runtime.author import App, Context
 
 app = App()
 STEPS = 4
@@ -47,17 +45,14 @@ def gpu(payload: Probe, ctx: Context) -> Report:
     for _ in range(STEPS):
         want_x.mul_(0.5)
         want_total.add_(want_x.sum())
-    denoise_loop(step, range(STEPS), state=(x, total))
+    for index in range(STEPS):
+        step(index, x, total)
     torch.cuda.synchronize()
-    row = (loop.ROWS.get(ctx.request_id) or [{}])[-1]
     checks = {
         "values": bool(torch.equal(x, want_x) and torch.equal(total, want_total)),
         "host_reads": payload.variant != "item" or len(host) == STEPS,
-        "refused": payload.variant == "warm"
-        or (row.get("mode") == "eager" and any("cannot be recorded" in r for r in row.get("refusals") or ())),
     }
-    detail = json.dumps({"variant": payload.variant, "checks": checks,
-                         "loop": {k: row.get(k) for k in ("mode", "native_steps", "refusals")}}, sort_keys=True)
+    detail = json.dumps({"variant": payload.variant, "checks": checks, "request": ctx.request_id}, sort_keys=True)
     if not all(checks.values()):
         raise RuntimeError(f"capture refusal {detail}")
     return Report(True, detail)

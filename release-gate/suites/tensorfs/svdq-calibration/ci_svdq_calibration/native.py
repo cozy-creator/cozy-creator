@@ -800,7 +800,8 @@ def runtime_components(
 ) -> ComponentsConverted:
     """Two real component calls share full identity and publish only their own scope."""
     import tensorfs
-    from cozy_runtime.author import CapabilityError, UnsupportedInput
+    from cozy_runtime.author import UnsupportedInput
+    from cozy_runtime.author._errors import CapabilityError
     from cozy_runtime.derive import native_quantization
     from cozy_runtime.derive.quantization import (
         ArtifactQuantizationPlan,
@@ -1090,7 +1091,7 @@ def runtime_components(
 def runtime_resume(payload: Request, ctx: Context, tel: Telemetry) -> Report:
     """Actual public component conversion across an unfinished Output's close/reopen."""
     import tensorfs
-    from cozy_runtime.author import CapabilityError
+    from cozy_runtime.author._errors import CapabilityError
     from cozy_runtime.derive.quantization import (
         ArtifactQuantizationPlan,
         ArtifactQuantizationRequest,

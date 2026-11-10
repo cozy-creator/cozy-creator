@@ -20,18 +20,18 @@ pub enum Error {
         name: String,
     },
 }
-pub(crate) type Result<T> = std::result::Result<T, Error>;
+pub type Result<T> = std::result::Result<T, Error>;
 
-pub(crate) type CUresult = c_int;
+pub type CUresult = c_int;
 pub(crate) type CUdevice = c_int;
 pub(crate) type CUdeviceptr = u64;
-pub(crate) type CUcontext = *mut c_void;
-pub(crate) type CUstream = *mut c_void;
-pub(crate) type CUevent = *mut c_void;
+pub type CUcontext = *mut c_void;
+pub type CUstream = *mut c_void;
+pub type CUevent = *mut c_void;
 pub(crate) type CUmodule = *mut c_void;
 pub(crate) type CUfunction = *mut c_void;
 /// `CUmemGenericAllocationHandle`: one physical VRAM allocation.
-pub(crate) type Handle = u64;
+pub type Handle = u64;
 
 pub(crate) const SUCCESS: CUresult = 0;
 pub(crate) const ERROR_INVALID_VALUE: CUresult = 1;
@@ -41,7 +41,7 @@ pub(crate) const ERROR_NOT_SUPPORTED: CUresult = 801;
 
 pub(crate) const STREAM_NON_BLOCKING: c_uint = 0x1;
 pub(crate) const EVENT_DEFAULT: c_uint = 0x0;
-pub(crate) const EVENT_DISABLE_TIMING: c_uint = 0x2;
+pub const EVENT_DISABLE_TIMING: c_uint = 0x2;
 pub(crate) const MEMHOSTREGISTER_PORTABLE: c_uint = 0x1;
 /// The range is mapped read-only (a sealed layout); the device only reads it.
 pub(crate) const MEMHOSTREGISTER_READ_ONLY: c_uint = 0x8;
@@ -53,14 +53,14 @@ pub(crate) const ATTR_PCI_DOMAIN_ID: c_int = 50;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default, Debug)]
-pub(crate) struct MemLocation {
+pub struct MemLocation {
     pub kind: u32,
     pub id: c_int,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Default, Debug)]
-pub(crate) struct AllocFlags {
+pub struct AllocFlags {
     pub compression_type: u8,
     pub gpu_direct_rdma_capable: u8,
     pub usage: u16,
@@ -69,7 +69,7 @@ pub(crate) struct AllocFlags {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct AllocationProp {
+pub struct AllocationProp {
     pub kind: u32,
     pub requested_handle_types: u32,
     pub location: MemLocation,
@@ -82,14 +82,14 @@ impl AllocationProp {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct AccessDesc {
+pub struct AccessDesc {
     pub location: MemLocation,
     pub flags: u32,
 }
 
 type F<Args, R = CUresult> = unsafe extern "C" fn(Args) -> R;
 
-pub(crate) struct Driver {
+pub struct Driver {
     _lib: libloading::Library,
     pub init: unsafe extern "C" fn(c_uint) -> CUresult,
     pub get_error_name: unsafe extern "C" fn(CUresult, *mut *const c_char) -> CUresult,
@@ -186,7 +186,7 @@ unsafe impl Sync for Driver {}
 static DRIVER: OnceLock<Result<Driver>> = OnceLock::new();
 
 /// The process-wide driver. `Err` when there is no usable CUDA driver.
-pub(crate) fn driver() -> Result<&'static Driver> {
+pub fn driver() -> Result<&'static Driver> {
     match DRIVER.get_or_init(Driver::load) {
         Ok(d) => Ok(d),
         Err(error) => Err(error.clone()),
@@ -320,7 +320,7 @@ impl Driver {
 
 /// Map a driver result to the crate error.
 #[inline]
-pub(crate) fn check(op: &'static str, rc: CUresult) -> Result<()> {
+pub fn check(op: &'static str, rc: CUresult) -> Result<()> {
     if rc == SUCCESS {
         Ok(())
     } else {
@@ -335,14 +335,14 @@ pub(crate) fn check(op: &'static str, rc: CUresult) -> Result<()> {
 /// Makes `ctx` current on this thread for the guard's life, then restores the caller's
 /// context. Caller threads belong to someone else (the executor's framework keeps its own
 /// current device), so TensorFS never leaves a different context bound behind it.
-pub(crate) struct CtxGuard {
+pub struct CtxGuard {
     prev: Option<CUcontext>,
 }
 
 impl CtxGuard {
     // Driver handles are opaque: Rust never dereferences them.
     #[allow(clippy::not_unsafe_ptr_arg_deref)]
-    pub(crate) fn enter(ctx: CUcontext) -> Result<CtxGuard> {
+    pub fn enter(ctx: CUcontext) -> Result<CtxGuard> {
         let d = driver()?;
         let mut prev: CUcontext = std::ptr::null_mut();
         // SAFETY: out-param of the documented shape.
@@ -367,7 +367,7 @@ impl Drop for CtxGuard {
 
 /// A device's PRIMARY context: the one the CUDA runtime uses, so TensorFS's pointers, streams and
 /// events are valid in the executor's framework unchanged. Retained for the process's life.
-pub(crate) fn primary_context(ordinal: c_int) -> Result<(CUdevice, CUcontext)> {
+pub fn primary_context(ordinal: c_int) -> Result<(CUdevice, CUcontext)> {
     let d = driver()?;
     let mut dev: CUdevice = 0;
     let mut ctx: CUcontext = std::ptr::null_mut();

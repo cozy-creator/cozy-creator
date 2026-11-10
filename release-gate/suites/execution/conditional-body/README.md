@@ -1,19 +1,13 @@
 # Conditional body
 
-Runtime's native `ResidentRepeat` composes a recorded step into an IF -> WHILE conditional graph. Each
-cell records one step per node class through `author.denoise_loop` (no components: tensor work only),
-runs its first step eagerly and 3 more natively, and checks the values and that the loop ran resident:
+Each cell runs one node class in a plain step loop of 4 steps (no components: tensor work only) and checks
+the values: `scalar`, `memset` (8-bit), `memset32`, `memcpy`, `reduce`, `parallel` (a forked stream), `triton`,
+`triton_pdl`, `cublas`, `cudnn`, `sdpa`, `mix` (memset, memcpy, cuBLAS, cuDNN, SDPA and Triton in one step),
+`labels` (A B A B) and `legacy` (28892's shape, a launch on the legacy stream). One run per variant
+(`conditional-body-<variant>`): a crash ends that run's executor only, and the gate names the variant.
 
-`scalar`, `memset` (8-bit), `memset32`, `memcpy`, `reduce`, `parallel` (a forked stream), `triton`,
-`triton_pdl`, `cublas`, `cudnn`, `sdpa`, `mix` (memset, memcpy, cuBLAS, cuDNN, SDPA and Triton in
-one body), and `labels` (A B A B: two bodies, the first call eager through B's first step, then A
-and B natively). `parallel` and the Triton variants write outside the loop's
-state, so their counts show a step run more often than eager would (Runtime 90721eb84's check replayed one:
-32269, 32272, 32305). `legacy` is 28892's shape, a launch on the legacy stream: its capture must fail, and the
-call runs eagerly to the same counts.
-
-One run per variant (`conditional-body-<variant>`): a crash ends that run's executor only, and the gate
-names the variant. A refusal (the loop ran eagerly) fails the cell too.
+Until Runtime 0.43 the loop was `author.denoise_loop`, whose native `ResidentRepeat` composed a recorded step into an
+IF -> WHILE conditional graph; Runtime 0.43 removed loop programs, so each step now runs as written.
 
 Escaped in Runtime 0.34.2: on driver 615 (615.71.09 on an RTX 5090, 615.78.08 on an RTX 3060),
 `cuGraphInstantiate` read a null pointer when the body held a memcpy node. That crashed native Qwen

@@ -9,7 +9,9 @@ import time
 from typing import Annotated
 
 import msgspec
-from cozy_runtime.author import Adjustments, App, AspectRatio, Image, ImageFrame, ImageRequest, ImageResult, Outputs, Prompt, Range, Seed, Sizes
+from cozy_runtime.author import Adjustments, App, ImageFrame, Outputs, Seed
+from cozy_runtime.fields import AspectRatio, Image, Prompt, Range
+from cozy_runtime.image import ImageRequest, ImageResult, Sizes
 
 app = App()
 SIZES = Sizes((0.25, 4.0), (64, 8192), 16, "the still's 0.25-4 MP")

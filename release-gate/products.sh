@@ -15,13 +15,13 @@ H3_SEED=2026102801
 # av <cell> <height>: its tallest mp4 is <height>p and carries a soundtrack as long as its picture (within 0.1 s).
 # seedvr2 0.1.0 wrote a batch's audio after all its frames, past the writer's interleave buffer (run 20347).
 av() {
-  [ -f "$1.number" ] || return 0
-  local f v a
-  f=$(run_outputs "$OUT" "$1" | grep -E '\.mp4$' | while read -r p; do
+  local c=$1${TWIN:-} f v a
+  [ -f "$c.number" ] || return 0
+  f=$(run_outputs "$OUT" "$c" | grep -E '\.mp4$' | while read -r p; do
     echo "$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$p") $p"; done | sort -n | tail -1)
   v=$(ffprobe -v error -select_streams v:0 -show_entries stream=duration -of csv=p=0 "${f#* }" 2>/dev/null)
   a=$(ffprobe -v error -select_streams a:0 -show_entries stream=duration -of csv=p=0 "${f#* }" 2>/dev/null)
-  expect "$1-av" "$(awk -v h="${f%% *}" -v want="$2" -v v="$v" -v a="$a" \
+  expect "$c-av" "$(awk -v h="${f%% *}" -v want="$2" -v v="$v" -v a="$a" \
     'BEGIN { print (h == want && v != "" && a != "" && (v - a) ^ 2 < 0.01) ? "PASS" : "FAIL" }')" \
     "${f%% *}p, video ${v:-none} s, audio ${a:-none} s"
 }
@@ -56,9 +56,9 @@ product_minimax_h3() {
   cell regen-1440p-15s "$(pkg minimax-h3 upscale)" --file video="$CLIP" resolution=1440p prompt="$who. $motion" \
     seed:=$((R + 19)) 'upscale:={"model": "regenerate-2k"}'
   av regen-1440p-15s 1440
-  if [ -f regen-1440p-15s.number ]; then
-    r=$(nice -n 19 uv run -q --no-project --with numpy python -I "$HERE/frames.py" regen "$CLIP" "$(output regen-1440p-15s mp4)" 2>&1 | tail -1)
-    expect regen-1440p-15s-frames "$(jq -r 'if .structure_psnr >= 18 and .structure_ssim >= 0.5 and .flicker <= 2 and .corr >= 0.95 then "PASS" else "FAIL" end' <<< "$r" 2>/dev/null || echo FAIL)" "$r"
+  if [ -f "regen-1440p-15s${TWIN:-}.number" ]; then
+    r=$(nice -n 19 uv run -q --no-project --with numpy python -I "$HERE/frames.py" regen "$CLIP" "$(output "regen-1440p-15s${TWIN:-}" mp4)" 2>&1 | tail -1)
+    expect "regen-1440p-15s${TWIN:-}-frames" "$(jq -r 'if .structure_psnr >= 18 and .structure_ssim >= 0.5 and .flicker <= 2 and .corr >= 0.95 then "PASS" else "FAIL" end' <<< "$r" 2>/dev/null || echo FAIL)" "$r"
   fi
 }
 product_seedvr2() {

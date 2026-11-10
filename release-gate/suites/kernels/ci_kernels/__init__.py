@@ -15,11 +15,18 @@ from pathlib import Path
 import cozy_runtime
 import msgspec
 import torch
+
+from cozy_runtime.internal.contract import unsealed
+
+#: The driver's view, read on purpose: this cell tests the memory manager itself.
+mem_get_info = unsealed(torch, "mem_get_info")
 import triton
 from cozy_runtime import _kernels
-from cozy_runtime import lm, moe
-from cozy_runtime.author import App, AttentionLayout, Context, attention_scope
-from cozy_runtime.author import kernels as author_kernels
+from cozy_runtime import lm
+from cozy_runtime.accel import moe
+from cozy_runtime.accel.attention import AttentionLayout, attention_scope
+from cozy_runtime.author import App, Context
+from cozy_runtime.accel import kernels as author_kernels
 from cozy_runtime.internal import (
     arch,
     attention,
@@ -40,9 +47,9 @@ from cozy_runtime.internal import (
 )
 from cozy_runtime.internal.encoding.selection import launch_providers, measure_device
 from cozy_runtime.internal.probe import UnmeasuredEvidence, conform
-from cozy_runtime.fusion import _kernels as fused
+from cozy_runtime.accel.fusion import _kernels as fused
 from cozy_runtime.lm import _kernels as lm_kernels
-from cozy_runtime.moe import _kernels as moe_kernels
+from cozy_runtime.accel.moe import _kernels as moe_kernels
 from diffusers.models.attention_dispatch import dispatch_attention_fn
 from triton.runtime.jit import JITFunction
 
@@ -310,7 +317,7 @@ def _big(name: str, index: int, shape: tuple[int, ...], shared: bool) -> dict:
     ready = attention.pinned(name, device)[0]
     candidate, target = ready.candidate, torch.device("cuda", index)
     torch.cuda.empty_cache()
-    free, _ = torch.cuda.mem_get_info(index)
+    free, _ = mem_get_info(index)
     if free < 24 << 30:
         return {"passed": True, "detail": f"not run: {free >> 30} GiB free cannot hold 2^31 elements of Q, K, V and out"}
     tokens, heads, dim = shape[1:]
@@ -787,7 +794,7 @@ def _big_gemm(name: str, index: int) -> dict:
     if fp8 and not ops.cutlass_fp8:
         return {"passed": True, "detail": "not run: no wheel GEMM for fp8 on this card"}
     torch.cuda.empty_cache()
-    free, _ = torch.cuda.mem_get_info(index)
+    free, _ = mem_get_info(index)
     if free < 12 << 30:
         return {"passed": True, "detail": f"not run: {free >> 30} GiB free cannot hold it"}
     g = torch.Generator(device=target).manual_seed(10)

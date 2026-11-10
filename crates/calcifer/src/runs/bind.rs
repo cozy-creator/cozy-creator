@@ -1384,6 +1384,7 @@ pub(super) fn scalar(ty: &Type, raw: &str) -> Option<Value> {
             (members.iter().any(|m| same(m, &parsed)) || numbers(members, &parsed)).then_some(parsed)
         }
         Type::Union { branches, .. } => {
+            // Every branch a bare field of its type spells: `16:9` for a shape|null, `7` for a seed|null.
             let scalars = || {
                 branches.iter().filter(|b| {
                     matches!(
@@ -1395,25 +1396,29 @@ pub(super) fn scalar(ty: &Type, raw: &str) -> Option<Value> {
                             | Type::Null
                             | Type::Literal(_)
                             | Type::Shape
+                            | Type::Seed
+                            | Type::Prompt(_)
+                            | Type::Tree
                     )
                 })
             };
-            // A branch with an unambiguous JSON spelling wins over a string branch.
+            let text = |b: &Type| matches!(b, Type::Str | Type::Shape | Type::Prompt(_) | Type::Tree);
+            // A branch with an unambiguous JSON spelling wins over a text branch.
             if let Ok(parsed) = serde_json::from_str::<Value>(raw)
                 && !parsed.is_string()
                 && scalars().any(|b| check(b, &mut parsed.clone(), "", &mut vec![]).is_empty())
             {
                 return Some(match parsed {
                     Value::Number(_) => scalars()
-                        .find_map(|b| (*b != Type::Str).then(|| scalar(b, raw)).flatten())
+                        .find_map(|b| (!text(b)).then(|| scalar(b, raw)).flatten())
                         .unwrap_or(parsed),
                     other => other,
                 });
             }
-            // `True` for a bool|null, `20.0` for an int|null: text is text wherever a string could hold it.
+            // `True` for a bool|null, `20.0` for an int|null: text is text wherever a text branch takes it.
             scalars()
-                .filter(|b| matches!(b, Type::Str | Type::Literal(_)))
-                .find_map(|b| scalar(b, raw))
+                .filter(|b| text(b) || matches!(b, Type::Literal(_)))
+                .find_map(|b| scalar(b, raw).filter(|v| check(b, &mut v.clone(), "", &mut vec![]).is_empty()))
                 .or_else(|| scalars().find_map(|b| scalar(b, raw)))
         }
         Type::List(_) | Type::Map(_) | Type::Struct(_) | Type::Asset(_) | Type::Media { .. } | Type::Pickup(_) | Type::Model => None,
@@ -1581,7 +1586,11 @@ fn check(ty: &Type, value: &mut Value, path: &str, ignored: &mut Vec<String>) ->
         | (Type::Null, Value::Null)
         | (Type::Float, Value::Number(_)) => vec![],
         (Type::Int, Value::Number(n)) if n.is_i64() || n.is_u64() => vec![],
-        (Type::Asset(_) | Type::Tree | Type::Shape, Value::String(s)) if !s.is_empty() => vec![],
+        (Type::Asset(_) | Type::Tree, Value::String(s)) if !s.is_empty() => vec![],
+        (Type::Shape, Value::String(s)) if ratio(s) => vec![],
+        (Type::Shape, value) if value.is_string() => {
+            vec![format!("{path}: {} names no ratio: write it as 16:9 or 2.39:1", shown(value))]
+        }
         (Type::Seed, Value::Number(n)) if n.is_u64() => vec![],
         // What the project's binder made of a prompt, a described file and a pickup.
         (Type::Prompt(_) | Type::Media { .. } | Type::Pickup(_), Value::Object(_)) => vec![],
@@ -1697,6 +1706,16 @@ fn check(ty: &Type, value: &mut Value, path: &str, ignored: &mut Vec<String>) ->
             problems
         }
         _ => vec![format!("{path} is not {}", describe::phrase(ty))],
+    }
+}
+
+/// Whether `text` names a ratio as Runtime reads one: `16:9`, `2.39:1`, `4/3`, `1920x1080`, `1.5`.
+fn ratio(text: &str) -> bool {
+    let side = |s: &str| s.trim().parse::<f64>().ok().filter(|v| v.is_finite());
+    match text.split([':', '/', 'x', 'X', '×']).map(side).collect::<Vec<_>>()[..] {
+        [Some(w)] => w > 0.0,
+        [Some(w), Some(h)] => h != 0.0 && w / h > 0.0,
+        _ => false,
     }
 }
 

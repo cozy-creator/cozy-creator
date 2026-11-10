@@ -275,10 +275,10 @@ impl Client {
         let answer = self
             .send(&|c: &reqwest::Client, base: &str| {
                 let put = c.put(format!("{base}{path}")).header(header::CONTENT_TYPE, "application/octet-stream");
-                // A whole file goes by its Content-Length, which its body carries; a part names its range.
+                // A whole file goes by its Content-Length, stated: an empty body carries none of its own.
                 match &range {
                     Some(range) if part.len() as u64 != length => put.header(header::CONTENT_RANGE, range),
-                    _ => put,
+                    _ => put.header(header::CONTENT_LENGTH, part.len() as u64),
                 }
                 .body(part.clone())
             })

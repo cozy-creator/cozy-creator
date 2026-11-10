@@ -83,6 +83,26 @@ impl Fences {
         Ok(())
     }
 
+    /// Records `raw`'s stamps now, while its owner holds it: a public client may destroy a stream as
+    /// soon as its work is done, and an event recorded on it later crashes the driver.
+    pub(crate) fn seal(&mut self, driver: &Driver, raw: u64) -> Result<()> {
+        let Some(stream) = self.ids.get(&raw).and_then(|id| self.streams.get_mut(id)).filter(|stream| stream.dirty) else {
+            return Ok(());
+        };
+        let event = match self.idle.pop() {
+            Some(event) => event,
+            None => driver.create_event()?,
+        };
+        if let Err(error) = driver.record(event, stream.raw as usize) {
+            self.idle.push(event);
+            return Err(error);
+        }
+        stream.sealed.push_back((event, stream.next));
+        stream.next += 1;
+        stream.dirty = false;
+        Ok(())
+    }
+
     /// Events to wait on before these waits can complete. If a stamp is not sealed yet the
     /// newest event stands in: the caller polls and comes back, having made progress.
     pub(crate) fn events(&self, waits: &[(u64, u64)], events: &mut Vec<usize>) {

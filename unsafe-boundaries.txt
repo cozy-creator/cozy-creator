@@ -31,7 +31,9 @@ crates/tensorfs-py/src/varena/continuation.rs
 crates/tensorfs-py/src/varena/mod.rs
 crates/tensorfs-py/src/varena/pages.rs
 crates/tensorfs-py/src/varena/phase.rs
+crates/tensorfs-py/src/varena/retained.rs
 crates/tensorfs-py/src/varena/source.rs
+crates/tensorfs-py/src/varena/staging.rs
 crates/tensorfs-py/src/varena/tensor_export.rs
 crates/tensorfs-py/src/varena/working.rs
 crates/tensorfs/src/fetch/mod.rs
@@ -54,9 +56,11 @@ crates/varena-client/examples/source.rs
 crates/varena-client/examples/support/cuda.rs
 crates/varena-client/src/lib.rs
 crates/varena-client/src/source.rs
+crates/varena-ledger/src/table.rs
 crates/varena/src/abi.rs
 crates/varena/src/abi/host_parts.rs
 crates/varena/src/abi/host_source.rs
+crates/varena/src/abi/sizing.rs
 crates/varena/src/abi/source.rs
 crates/varena/src/abi/tensor_export.rs
 crates/varena/src/async_fill.rs

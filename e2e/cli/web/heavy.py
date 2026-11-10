@@ -9,7 +9,10 @@ words mention, and the cell mentions none, so nothing is fetched."""
 import os
 
 import msgspec
-from cozy_runtime.author import App, Context, Image, ImageFile, ImageFrame, ImageResult, Outputs, Prompt, Seed, Weights, invocable
+from cozy_runtime.author import App, Context, ImageFrame, Outputs, Seed, Weights, invocable
+from cozy_runtime.fields import Image, Prompt
+from cozy_runtime.image import ImageResult
+from cozy_runtime.media import ImageFile
 
 app = App()
 SIDE = 16
@@ -25,7 +28,7 @@ async def paint(ctx: Context, *, image: ImageFile, weights: Weights, out: Output
     return Painted(image)
 
 
-app.child_task(paint)
+app.entrypoint(paint, private=True)
 
 
 class Words(msgspec.Struct, kw_only=True):

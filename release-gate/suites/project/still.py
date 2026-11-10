@@ -9,7 +9,9 @@ given, so a picture counts as this package's without being drawn again."""
 import hashlib
 
 import msgspec
-from cozy_runtime.author import Adjustments, App, ImageFile, ImageFrame, ImageRequest, ImageResult, Outputs, Sizes
+from cozy_runtime.author import Adjustments, App, ImageFrame, Outputs
+from cozy_runtime.image import ImageRequest, ImageResult, Sizes
+from cozy_runtime.media import ImageFile
 
 app = App()
 SIZES = Sizes((0.25, 4.0), (64, 8192), 16, "the still's 0.25-4 MP")

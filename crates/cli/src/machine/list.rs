@@ -253,12 +253,11 @@ fn live_run(held: &LiveRun) -> (String, String) {
     let Some(run) = &held.run else {
         return (format!("run {}", held.id), format!("{}; no record of it here", held.state));
     };
-    let row = run::list::rows(std::slice::from_ref(run)).remove(0);
-    let progress = Some(&row[4]).filter(|p| !p.is_empty()).unwrap_or(&held.waiting);
-    let cells = [&held.state, &row[1], progress];
-    let mut cell = cells.into_iter().filter(|c| !c.is_empty()).cloned().collect::<Vec<_>>().join(" · ");
+    let progress = Some(run::list::progress(run)).filter(|p| !p.is_empty()).unwrap_or_else(|| held.waiting.clone());
+    let cells = [held.state.clone(), run::list::target(run), progress];
+    let mut cell = cells.into_iter().filter(|c| !c.is_empty()).collect::<Vec<_>>().join(" · ");
     if run::settled(run) {
-        cell += &format!("; {} here, left behind on the machine", row[3]);
+        cell += &format!("; {} here, left behind on the machine", run::list::status(run));
     }
     (format!("run {}", run.number), cell)
 }

@@ -68,7 +68,9 @@ warning each). A model-only upload's lane labels the commit it makes.
   [DEVICE-EXECUTOR.md](DEVICE-EXECUTOR.md)), so a call that outlives one still reads and
   uploads. It presents it only to that Hub's origin. A refused capability ends the run
   `hub_credential_refused`, naming its expiry. If the machine restarts before
-  preparation completes, the run ends FAILED with a typed reason; started work is never re-run.
+  preparation completes, the run prepares again from its spec, which the machine keeps less its
+  access; one that came with access waits as `needs_access` (no job to the idle clock) until its
+  sender submits the same id and spec again. Started work is never re-run.
 - **Names** (th-245): the machine resolves them at the run's Hub. A release (`org/name`, its
   release, or none for the newest this signer holds, else the Hub's newest) installs from the card and locked requirements it reads there
   by name. A model slot is the run's choice, else its declared `default` release (a callee's
@@ -77,8 +79,10 @@ warning each). A model-only upload's lane labels the commit it makes.
   `manifest` names a commit (or a header) by hash: one the capability reads, or one the machine
   holds. A weights output the Runtime writes, the machine uploads itself as a commit of the run's
   `weights_destination` in the output's lane. Name
-  resolutions and held preparations are kept per `catalog_revision`, so a warm run reads nothing
-  at a Hub and a revision the caller moved resolves once more; there is no TTL guess or forget verb.
+  resolutions and held preparations are kept, so a warm run never waits on a Hub; one older than
+  10 minutes is read again in the background by the run that uses it, and an answer that moved
+  (a publish, yank or new lane) makes the preparations held under the old one again. There is no
+  forget verb.
 - **List** is deleted. Status shows live runs; history is the CLI's own records plus a run's events.
 - **Update** is a run of `kind: update`. It stages and verifies a software cohort, activates it at
   measured idle and keeps the known-good install for rollback. The rental keeps its downloaded

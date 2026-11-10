@@ -24,6 +24,16 @@ pub(super) fn total() -> i64 {
 }
 
 /// No limit below physical memory is read here.
+/// No swap figures read here: the reserve has no swap term.
+pub(super) fn swap() -> (u64, u64) {
+    (0, 0)
+}
+
+/// No PSI here.
+pub(super) fn stall() -> super::Stall {
+    super::Stall::default()
+}
+
 pub(super) fn limit() -> Option<u64> {
     None
 }
@@ -36,6 +46,7 @@ pub(super) fn read() -> HostMemory {
         mem_available: available,
         bound: total(),
         active: 0,
+        charged: total() - available,
     }
 }
 

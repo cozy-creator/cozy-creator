@@ -208,8 +208,7 @@ fn newest_first<T>(mut items: Vec<T>, version: impl Fn(&T) -> &str) -> Vec<T> {
 pub(super) async fn install(api: &Arc<Api>, hub: &Origin, on: On, agreed: Option<Agreed>, code: Option<LocalCode>, ask: PackageInstall) -> Result<Planned, Refusal> {
     let home = api.machines.hubs.home();
     if let Some(code) = &code {
-        let reader = reader(api, hub)?;
-        let source = crate::local_code::source(home, code, (&reader, hub)).await.map_err(Refusal)?;
+        let source = crate::local_code::source(home, code, &api.machines.hubs, hub).await.map_err(Refusal)?;
         let mut submit = crate::local_code::install_run(home, hub.as_str(), on, &source);
         submit.agreed = agreed;
         return Ok(Planned::Run { submit: Box::new(submit), after: Some(After::Keep(source.filed())), notes: vec![], mirror: None });

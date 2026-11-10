@@ -101,12 +101,7 @@ fn spec_of(mut spec: v1::RunSpec) -> Result<(crate::runs::Spec, Option<v1::HubAc
         v1::RunKind::Remove => (false, true),
         v1::RunKind::Update => return Err(Error::validation("invalid_kind", "an update is not a run of code")),
     };
-    // Kept while it prepares, for a restart to prepare it again. Tokens stay in memory: a run sent
-    // with them keeps nothing, and its controller sends it again (`interrupt_preparations`).
-    let tokens = spec.providers.as_ref().is_some_and(|p| !p.huggingface.is_empty() || !p.civitai.is_empty())
-        || spec.tensorfs.as_ref().is_some_and(|options| !options.token.is_empty())
-        || spec.hub.as_ref().is_some_and(|hub| !hub.capability.is_empty());
-    let journaled = if tokens { vec![] } else { serde_json::to_vec(&spec).unwrap_or_default() };
+    let journaled = serde_json::to_vec(&Kept::of(&spec)).unwrap_or_default();
     let input: Value = match &spec.payload {
         None => serde_json::json!({}),
         Some(payload) => crate::boundary_json::parse(payload.get().as_bytes())
@@ -115,11 +110,10 @@ fn spec_of(mut spec: v1::RunSpec) -> Result<(crate::runs::Spec, Option<v1::HubAc
     let hub = spec.hub.take();
     let providers = spec.providers.take();
     let tensorfs = spec.tensorfs.take();
-    // What the run is, not how it reaches its sources: a spec re-sent with other access,
-    // another catalog revision or a reformatted payload names the same run.
+    // What the run is, not how it reaches its sources: a spec re-sent with other access or a
+    // reformatted payload names the same run.
     let identity_digest = {
         let mut identity = spec.clone();
-        identity.catalog_revision.clear();
         identity.payload = None;
         identity.hub = hub.as_ref().map(|hub| v1::HubAccess {
             origin: hub.origin.trim_end_matches('/').into(),
@@ -198,7 +192,6 @@ fn spec_of(mut spec: v1::RunSpec) -> Result<(crate::runs::Spec, Option<v1::HubAc
             .unwrap_or_default(),
         weights_destination: spec.weights_destination,
         owner: spec.owner,
-        catalog_revision: spec.catalog_revision,
         application: String::new(),
         digest: identity_digest,
         journaled,
@@ -235,13 +228,42 @@ fn reach(actor: &str, mut spec: crate::runs::Spec, hub: Option<v1::HubAccess>) -
     Ok(spec)
 }
 
+/// A preparing run's spec as the journal keeps it, for a restart to prepare it again. Its access
+/// (Hub capability, provider and TensorFS tokens) stays in memory only: a run that came with any
+/// waits, `needs_access`, for its sender to send it again.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Kept {
+    spec: v1::RunSpec,
+    access: bool,
+}
+impl Kept {
+    fn of(spec: &v1::RunSpec) -> Self {
+        let mut spec = spec.clone();
+        let mut access = spec.providers.take().is_some_and(|p| !p.huggingface.is_empty() || !p.civitai.is_empty());
+        if let Some(options) = spec.tensorfs.as_mut() {
+            access |= !std::mem::take(&mut options.token).is_empty();
+        }
+        if let Some(hub) = spec.hub.as_mut() {
+            access |= !std::mem::take(&mut hub.capability).is_empty();
+        }
+        Self { spec, access }
+    }
+}
+
 /// The runs a restart interrupted while they prepared: each prepares again from its journaled
-/// spec, or ends FAILED with why it cannot.
+/// spec, waits `needs_access` for its sender when it came with access, or ends FAILED with why
+/// it cannot.
 pub(crate) fn resume(runs: &Arc<crate::runs::Runs>) -> std::io::Result<()> {
-    for (run, actor, sent) in runs.service.engine.interrupted()? {
-        let spec = serde_json::from_slice(&sent)
-            .map_err(|e| refused("preparation_interrupted", format!("its kept spec is unreadable: {e}")))
-            .and_then(spec_of)
+    for (run, actor, kept) in runs.service.engine.interrupted()? {
+        let spec = serde_json::from_slice::<Kept>(&kept)
+            .map_err(|e| refused("preparation_interrupted", format!("its kept spec is unreadable: {e}")));
+        if spec.as_ref().is_ok_and(|kept| kept.access) {
+            runs.service.engine.park(&run)?;
+            tracing::info!(run = %runs.service.engine.caller_id(&run), number = %run, "kept across the restart, needs_access: its sender sends its access again");
+            continue;
+        }
+        let spec = spec
+            .and_then(|kept| spec_of(kept.spec))
             .and_then(|(spec, hub)| reach(&actor, spec, hub));
         let failure = match spec {
             Ok(spec) => {

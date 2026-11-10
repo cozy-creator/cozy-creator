@@ -13,7 +13,7 @@ use crate::{Error, Result};
 use nvml_wrapper::{
     Nvml,
     bitmasks::device::ThrottleReasons,
-    enum_wrappers::device::{Clock, TemperatureSensor},
+    enum_wrappers::device::{Clock, ComputeMode, TemperatureSensor},
     enums::device::UsedGpuMemory,
     error::NvmlError,
     struct_wrappers::device::{MemoryInfo, ProcessInfo},
@@ -231,6 +231,31 @@ impl Device {
             Ok(info) => Ok(info.used),
             answer => memory(answer).map(|(total, free)| total.saturating_sub(free)),
         }
+    }
+
+    /// Whether its compute mode admits one context at a time (exclusive-process) or none
+    /// (prohibited): a second process holding a context locks every other out. A driver that
+    /// does not say shares it.
+    pub fn exclusive(&self) -> Result<bool> {
+        match self.nvml.device_by_index(self.index).and_then(|device| device.compute_mode()) {
+            Ok(mode) => Ok(mode != ComputeMode::Default),
+            Err(NvmlError::NotSupported) => Ok(false),
+            Err(error) => Err(failed("compute mode")(error)),
+        }
+    }
+
+    /// What the display it drives uses now: its graphics processes' bytes (0 where the driver
+    /// does not attribute them), or None when it drives none.
+    pub fn display_use(&self) -> Result<Option<u64>> {
+        let device = self.nvml.device_by_index(self.index).map_err(failed("open device"))?;
+        if !device.is_display_active().map_err(failed("display active"))? {
+            return Ok(None);
+        }
+        let graphics = device.running_graphics_processes().unwrap_or_default();
+        Ok(Some(graphics.iter().map(|row| match row.used_gpu_memory {
+            UsedGpuMemory::Used(bytes) => bytes,
+            UsedGpuMemory::Unavailable => 0,
+        }).sum()))
     }
 
     pub fn display_active(&self) -> Result<bool> {
