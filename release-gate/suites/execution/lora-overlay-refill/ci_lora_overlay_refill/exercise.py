@@ -156,8 +156,8 @@ def exercise(
             raise RuntimeError("no Triton here")
         opener = partial(kernel_ready.TRITON[0], lora_bake.KERNELS, partial(lora_bake.probe, torch, device), device=device)
         kernel_ready.wait(kernel, opener)
-    except Exception as error:
-        tel.log("the LoRA bake kernels failed; baking eagerly", reason=str(error)[:300])
+    except Exception as failure:
+        tel.log("the LoRA bake kernels failed; baking eagerly", reason=str(failure)[:300])
     held = placement.models[name]
     set_name, blocks = held.name, len(held.blocks)
     # Weights a refilled block bakes: its hooked linears this lane bakes into the page (an svdq

@@ -7,22 +7,36 @@ root runs as written. Runtime 0.43 dropped `denoise_loop` and the executor's loo
 and the executor's execution record carries them."""
 
 import hashlib
-from typing import Any
+from collections.abc import Callable, Mapping, Sequence
+from types import ModuleType
+from typing import Protocol, TypedDict, cast
 
 import torch
 
 from cozy_runtime.internal.contract import unsealed
 
 #: The driver's view, read on purpose: this cell tests the memory manager itself.
-mem_get_info = unsealed(torch, "mem_get_info")
+mem_get_info: Callable[[torch.device], tuple[int, int]] = unsealed(torch, "mem_get_info")
 from cozy_runtime import graphs
 from cozy_runtime.internal import executor
 from cozy_runtime.internal.execution import catch
 from cozy_runtime.internal.residency import _REQUEST
 from torch.utils._pytree import tree_leaves
 
+
+class _Checks(Protocol):
+    """What the hook calls of `tensorfs.varena.torch`."""
+
+    def checks(self, *, unmap_idle: bool = False, perturb: bool = False, guards: bool = False) -> None: ...
+
+    def check_counts(self) -> dict[str, int]: ...
+
+
+vt: _Checks | None
 try:
-    import tensorfs.varena.torch as vt
+    import tensorfs.varena.torch as varena_torch
+
+    vt = varena_torch
 except ImportError:  # a v1 TensorFS has no checks: its base, cap, press and eager arms still digest
     vt = None
 
@@ -32,9 +46,30 @@ LEFT = 4 << 30  # less than SDXL's UNet: its weights can't all be here, and a bl
 
 if vt is not None:
     vt.checks(**ARM)
-_sums: dict[str, dict[str, Any]] = {}
-_traces: dict[str, dict[str, list[list[Any]]]] = {}
-_rows: dict[str, list[dict[str, Any]]] = {}  # each request's rows, until its execution record takes them
+#: A split site's run of one decision: [level, basis, calls].
+type Mark = list[str | int]
+type Menu = Sequence[tuple[str, Sequence[int]]]
+
+
+class Row(TypedDict, total=False):
+    steps: int
+    digests: dict[str, str]
+    split_trace: dict[str, list[Mark]]
+    checks: dict[str, int]
+
+
+class Call(Protocol):
+    """A component root's call, as the Runtime hands it to `_dispatch`."""
+
+    def __call__(self, module: torch.nn.Module, /, *args: object, **kwargs: object) -> object: ...
+
+
+#: The native selection this hook was written for: (level, selection), or no selection when refused.
+type Select = Callable[[int, str, Menu, int, int], tuple[str, Mapping[str, str] | None]]
+
+_sums: dict[str, dict[str, "hashlib._Hash"]] = {}
+_traces: dict[str, dict[str, list[Mark]]] = {}
+_rows: dict[str, list[Row]] = {}  # each request's rows, until its execution record takes them
 _requests: list[str] = []  # the requests seen, in order: the second one meets the press
 _held: list[torch.Tensor] = []
 _dispatch, _execution = graphs._dispatch, executor.Executor._execution
@@ -45,14 +80,14 @@ def _bytes(tensor: torch.Tensor) -> bytes:
     return (held.to(torch.float64) if held.is_floating_point() else held).numpy().tobytes()
 
 
-def _add(name: str, value: Any) -> None:
+def _add(name: str, value: object) -> None:
     request = _REQUEST.get()
     if request is None:
         return
     rows = _rows.setdefault(request.id, [])
     row = next((row for row in rows if "digests" in row), None)
     if row is None:
-        row = {"steps": 0, "digests": {}, "split_trace": _traces.setdefault(request.id, {})}
+        row = Row(steps=0, digests={}, split_trace=_traces.setdefault(request.id, {}))
         rows.append(row)
         _sums[request.id] = {}
     digest = _sums[request.id].setdefault(name, hashlib.sha256())
@@ -63,7 +98,7 @@ def _add(name: str, value: Any) -> None:
     row["checks"] = vt.check_counts() if vt is not None else {}
 
 
-def _press(module: Any) -> None:
+def _press(module: torch.nn.Module) -> None:
     """Before the second request's first component call: fill the card, and let go ("refill") or keep it ("hold")."""
     request = _REQUEST.get()
     if request is None or request.id in _requests:
@@ -77,43 +112,53 @@ def _press(module: Any) -> None:
             _held.append(held)
 
 
-def execution(self: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:
-    """The executor's execution record, with this request's rows as `loops`; a held press lets go here."""
-    _held.clear()
-    document = _execution(self, *args, **kwargs)
-    rows = [row for held in _rows.values() for row in held]
-    _rows.clear()
-    return {**document, "loops": rows} if rows else document
+type Record = dict[str, object]
 
 
-def dispatch(owner: Any, module: Any, call: Any, args: Any, kwargs: Any) -> Any:
+def _with_loops[**P](record: Callable[P, Record]) -> Callable[P, Record]:
+    def execution(*args: P.args, **kwargs: P.kwargs) -> Record:
+        """The executor's execution record (`record(self, ...)`), with this request's rows as `loops`; a held press
+        lets go here."""
+        _held.clear()
+        document = record(*args, **kwargs)
+        rows = [row for held in _rows.values() for row in held]
+        _rows.clear()
+        return {**document, "loops": rows} if rows else document
+
+    return execution
+
+
+def dispatch(torch: ModuleType, module: torch.nn.Module, call: Call, args: tuple[object, ...], kwargs: dict[str, object]) -> object:
+    """`_dispatch` as Runtime 0.44.0 has it: `torch` is the torch module."""
     _press(module)
-    result = _dispatch(owner, module, call, args, kwargs)
+    result: object = _dispatch(torch, module, call, args, kwargs)
     if not (graphs.BYPASS.get() or graphs._WARMING.get() or torch.cuda.is_current_stream_capturing()):
         _add(graphs._name(module), result)
     return result
 
 
-_select = getattr(catch, "select", None)
+_select: Select | None = getattr(catch, "select", None)
 
 
-def select(device: int, key: str, menu: Any, stream: int, floor: int = 0) -> Any:
+def select(device: int, key: str, menu: Menu, stream: int, floor: int = 0) -> tuple[str, Mapping[str, str] | None]:
     """Each split decision in order, run-length: [level, basis, calls]. `declared` after a site has
     `measured` is a level that never ran (its trial); `refused` is the finest, chosen with no estimate."""
+    assert _select is not None  # installed only where it exists
     level, selection = _select(device, key, menu, stream, floor)
     request = catch.CURRENT.get()
     if request is not None:
         trace = _traces.setdefault(request.id, {}).setdefault(key, [])
-        mark = [level, selection["basis"] if selection else "refused"]
+        mark: Mark = [level, selection["basis"] if selection else "refused"]
         if trace and trace[-1][:2] == mark:
-            trace[-1][2] += 1
+            trace[-1][2] = cast(int, trace[-1][2]) + 1  # a mark's third item is its count
         else:
             trace.append([*mark, 1])
     return level, selection
 
 
 if _select is not None:  # v2's native selection
-    catch.select = select
-graphs._dispatch, executor.Executor._execution = dispatch, execution
+    catch.select = select  # type: ignore[assignment]  # bug: Runtime 0.44's select is (device, key, name, menu, stream) -> selection; this unpacks (level, selection)
+graphs._dispatch = dispatch
+executor.Executor._execution = _with_loops(_execution)  # type: ignore[method-assign]  # the hook wraps the executor's record
 if PRESS == "eager":
     graphs._region_call = lambda torch, module, recorder, call, args, kwargs: call(module, *args, **kwargs)

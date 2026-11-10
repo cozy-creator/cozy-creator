@@ -39,7 +39,7 @@ from tensorfs.varena import torch as vt  # noqa: E402
 from tensorfs.varena.torch import PoolId
 
 if TYPE_CHECKING:
-    from tensorfs.varena._offload import Offload
+    from tensorfs.varena._offload import GraphsMode, Offload
 
 sys.path[:0] = [str(HERE.parent.parent / "native-tensor-export"), str(HERE.parent.parent / "ledger")]
 from provider import Provider  # noqa: E402
@@ -221,10 +221,10 @@ def setup() -> tuple[torch.cuda.Stream, None]:
 def squeeze(leave: int = 64 * MIB) -> torch.Tensor:
     """Hold the card so released pages are the only free ones."""
     free, _ = torch.cuda.mem_get_info(DEVICE)
-    while True:
+    hold: torch.Tensor | None = None
+    while hold is None:
         try:
             hold = torch.empty(free - leave, dtype=torch.uint8, device=device)
-            break
         except torch.OutOfMemoryError:
             leave += 128 * MIB
     hold.fill_(0x11)
@@ -531,6 +531,7 @@ def create_oom(reclaimable: bool) -> None:
         stream.synchronize()
     _ext._varena_fail_create_after(DEVICE, 5, 1 if reclaimable else 1 << 62)
     refused: torch.OutOfMemoryError | None
+    held = False
     try:
         big = torch.empty(256 * MIB, dtype=torch.uint8, device=device)  # 16 handles of 16 MiB
     except torch.OutOfMemoryError as error:
@@ -948,7 +949,7 @@ class NoStream(torch.nn.Module):
         return out
 
 
-def no_stream_adopted(graphs: str) -> tuple[NoStream, torch.Tensor, torch.Tensor, Offload]:
+def no_stream_adopted(graphs: GraphsMode) -> tuple[NoStream, torch.Tensor, torch.Tensor, Offload]:
     torch.manual_seed(138)
     net = NoStream().eval()
     value = torch.randn(8, 256)

@@ -8,7 +8,7 @@ import json
 import resource
 import time
 from collections import OrderedDict
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, TypedDict, cast
 
 import msgspec
 import numpy as np
@@ -437,7 +437,14 @@ def predict(
 from . import native as native
 
 
-def _working() -> dict[str, int]:
+class _Peaks(TypedDict):
+    """The working allocator's figures this cell reads (of varena's `WorkingStats`)."""
+
+    allocated_peak: int
+    mapped_peak: int
+
+
+def _working() -> _Peaks:
     """The working allocator's own figures (varena's): Torch's readers are sealed."""
     import tensorfs.varena.torch as vt
 

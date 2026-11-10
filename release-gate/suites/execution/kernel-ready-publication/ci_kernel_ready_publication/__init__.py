@@ -12,7 +12,7 @@ import uuid
 from collections.abc import Callable
 from functools import partial
 from pathlib import Path
-from typing import TypedDict
+from typing import TypedDict, cast
 
 import msgspec
 import torch
@@ -71,11 +71,12 @@ def _late(name: str, mode: str, product: Callable[[], torch.Tensor], missing: Pa
         assert kernel_ready.ready(name, opener) is None, "in a request it opens in the background"
         assert entered.wait(5), "the background opener did not start"
         explicit = kernel_ready.wait(name, opener)
-        assert kernel_ready.ready(name) is explicit, "the explicit wait's kernel does not serve"
+        assert cast("torch.Tensor | None", kernel_ready.ready(name)) is explicit, "the explicit wait's kernel does not serve"
         before = kernel_ready.epoch()
         release.set()
         background[0].join(5)
         assert not background[0].is_alive(), "the background opener did not finish"
+        after: torch.Tensor | None
         after, failure = kernel_ready.ready(name), kernel_ready.failed(name)
         return {
             "openers": 2,
@@ -124,6 +125,7 @@ def _dropped(name: str, product: Callable[[], torch.Tensor], missing: Path) -> F
         assert entered.wait(5), "the first waiter did not start"
         before = kernel_ready.epoch()
         served = kernel_ready.wait(name, opener)
+        after: torch.Tensor | None
         after, failure = kernel_ready.ready(name), kernel_ready.failed(name)
         return {
             "openers": 2,
@@ -155,7 +157,7 @@ def cpu(payload: Probe, ctx: Context) -> Report:
             facts = _dropped(name, product, missing)
         else:
             facts = _late(name, payload.mode, product, missing)
-    served = kernel_ready.ready(name)
+    served: torch.Tensor | None = kernel_ready.ready(name)
     facts.update({
         "mode": payload.mode,
         "runtime": importlib.metadata.version("cozy-runtime"),

@@ -8,7 +8,13 @@ import threading
 import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import TypedDict
+from typing import TYPE_CHECKING, Literal, TypedDict, cast
+
+if TYPE_CHECKING:
+    import tensorfs.varena.torch as vt
+    from diffusers.pipelines.stable_diffusion_xl.pipeline_stable_diffusion_xl import (
+        StableDiffusionXLPipeline,
+    )
 
 type JSON = None | bool | int | float | str | Sequence[JSON] | Mapping[str, JSON]
 
@@ -58,7 +64,12 @@ model = huggingface_hub.snapshot_download(
 )
 pynvml.nvmlInit()
 gpu = pynvml.nvmlDeviceGetHandleByIndex(0)
-used = lambda: pynvml.nvmlDeviceGetMemoryInfo(gpu).used
+
+
+def used() -> int:
+    return pynvml.nvmlDeviceGetMemoryInfo(gpu).used
+
+
 baseline = used()
 peak = [baseline]
 stop = threading.Event()
@@ -78,9 +89,11 @@ def host() -> dict[str, int]:
 
 
 started = time.perf_counter()
-pipe = diffusers.StableDiffusionXLPipeline.from_pretrained(model, torch_dtype=torch.float16, variant="fp16", use_safetensors=True,
-                                                           local_files_only=True, add_watermarker=False)
-pipe.set_progress_bar_config(disable=True)
+# For mypy, diffusers' __init__ binds its dummy stand-in first; at run time this is the real pipeline.
+Pipeline = cast("type[StableDiffusionXLPipeline]", diffusers.StableDiffusionXLPipeline)
+pipe = Pipeline.from_pretrained(model, torch_dtype=torch.float16, variant="fp16", use_safetensors=True, local_files_only=True,
+                                add_watermarker=False)
+pipe.set_progress_bar_config(disable=True)  # type: ignore[no-untyped-call]  # Diffusers leaves it unannotated
 loaded = time.perf_counter()
 handle = None
 if mode == "stock":
@@ -88,7 +101,8 @@ if mode == "stock":
 elif mode == "stock-cpu-offload":
     pipe.enable_model_cpu_offload()
 else:
-    handle = vt.offload(pipe, device=0, graphs={"eager": "eager", "graphs": "auto"}[mode])
+    graphs: dict[str, Literal["auto", "eager"]] = {"eager": "eager", "graphs": "auto"}
+    handle = vt.offload(pipe, device=0, graphs=graphs[mode])
 report: Report = {"mode": mode, "torch": torch.__version__, "gpu": torch.cuda.get_device_name(0), "load_s": loaded - started,
           "adopt_s": time.perf_counter() - loaded, "nvml_baseline": baseline, "calls": []}
 
@@ -110,7 +124,7 @@ for index, prompt in enumerate(request["prompts"]):
     peak[0] = used()
     events: "list[torch.cuda.Event]" = []
 
-    def step_end(pipeline: diffusers.StableDiffusionXLPipeline, step: int, timestep: torch.Tensor,
+    def step_end(pipeline: "StableDiffusionXLPipeline", step: int, timestep: torch.Tensor,
                  kwargs: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         event = torch.cuda.Event(enable_timing=True)
         event.record(torch.cuda.current_stream(0))

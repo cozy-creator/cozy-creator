@@ -13,7 +13,7 @@ from tensorfs.varena import api
 vt.install(0)
 
 import torch
-from diffusers import AutoencoderKL
+from diffusers.models.autoencoders.autoencoder_kl import AutoencoderKL
 from tensorfs.varena import _offload as offload_module
 from torch import nn
 
@@ -259,6 +259,7 @@ def graphs() -> None:
     with torch.inference_mode():
         want = plain(y).to(device)
     handle = offload(plain, device=0)
+    assert handle.graphs is not None  # graphs="auto", offload's default
     y = y.to(device)
     with torch.inference_mode():
         for _ in range(6):
@@ -266,11 +267,13 @@ def graphs() -> None:
     assert (handle.graphs.counts["captures"], handle.graphs.counts["replays"]) == (1, 4), handle.graphs.counts
     noisy = Noisy().eval()
     handle = offload(noisy, device=0)
+    assert handle.graphs is not None
     with torch.inference_mode():
         outputs = [noisy(y) for _ in range(6)]
     assert not torch.equal(outputs[-1], outputs[-2]) and handle.graphs.counts["captures"] == 0, handle.graphs.counts
     counting = Counting().eval()
     handle = offload(counting, device=0)
+    assert handle.graphs is not None
     with torch.inference_mode():
         for _ in range(6):
             counting(y)

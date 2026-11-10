@@ -15,6 +15,7 @@ A signature built by a helper (`_signature(kernel, ...)`) names the parameters b
 import ast
 import sys
 from pathlib import Path
+from typing import cast
 
 
 def literal_keys(node: ast.expr) -> list[tuple[str, str]] | None:
@@ -30,7 +31,12 @@ def literal_keys(node: ast.expr) -> list[tuple[str, str]] | None:
                 and isinstance(value.args[0], (ast.Tuple, ast.List))
                 and all(isinstance(e, ast.Constant) for e in value.args[0].elts)
             ):
-                keys += [(e.value, ast.unparse(value.args[1]).strip("'\"")) for e in value.args[0].elts]
+                # A TritonEntry signature's keys are str constants.
+                keys += [
+                    (cast(str, e.value), ast.unparse(value.args[1]).strip("'\""))
+                    for e in value.args[0].elts
+                    if isinstance(e, ast.Constant)
+                ]
             else:
                 return None
         elif isinstance(key, ast.Constant) and isinstance(value, ast.Constant):
@@ -89,7 +95,7 @@ def check(path: Path, known: dict[str, list[tuple[str, bool]]]) -> list[str]:
             if len(node.args) > 3 and isinstance(node.args[3], ast.Tuple):
                 for e in node.args[3].elts:
                     if isinstance(e, ast.Constant) and e.value not in [p for p, _ in params]:
-                        out.append(f"{at}: {kernel}: aligned {e.value} is not a parameter")
+                        out.append(f"{at}: {kernel}: aligned {e.value!s} is not a parameter")
         launched = func == "launch" or func.endswith("launch") or func.startswith("_LAUNCH[") or func.startswith("launch[")
         if launched and len(node.args) >= 2:
             kernel = name_of(node.args[0])

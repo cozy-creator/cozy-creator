@@ -30,16 +30,17 @@ def main() -> None:
     )
     parser.add_argument("--gpu", action="store_true")
     args = parser.parse_args(namespace=Args())
-    if args.order == "native-first":
-        c = C.CDLL(str(args.c.resolve()), mode=C.RTLD_GLOBAL)
-        rust = C.CDLL(str(args.rust.resolve()), mode=C.RTLD_GLOBAL)
+
+    def load() -> tuple[C.CDLL, C.CDLL]:
+        """The C library, then the Rust one, each global."""
+        return C.CDLL(str(args.c.resolve()), mode=C.RTLD_GLOBAL), C.CDLL(str(args.rust.resolve()), mode=C.RTLD_GLOBAL)
+
+    first = load() if args.order == "native-first" else None
     import tensorfs.varena.torch as vt
     from tensorfs import _ext
     from tensorfs.varena import api
 
-    if args.order == "python-first":
-        c = C.CDLL(str(args.c.resolve()), mode=C.RTLD_GLOBAL)
-        rust = C.CDLL(str(args.rust.resolve()), mode=C.RTLD_GLOBAL)
+    c, rust = first if first is not None else load()  # python-first: after TensorFS
     for function in [
         c.mixed_c_identity,
         rust.mixed_rust_identity,

@@ -226,7 +226,7 @@ def header(path: Path) -> Header:
     return {k: (v["dtype"], tuple(v["shape"])) for k, v in doc.items() if k != "__metadata__"}
 
 
-def apply[D: np.generic](a: npt.NDArray[D], ops: Ops) -> npt.NDArray[D]:
+def apply[D: np.generic[object]](a: npt.NDArray[D], ops: Ops) -> npt.NDArray[D]:
     """A row's ops with numpy semantics, which the engine implements."""
     if "view" in ops:
         a = a.reshape(ops["view"])

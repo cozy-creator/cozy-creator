@@ -6,8 +6,10 @@ import subprocess
 import tempfile
 import unittest
 
+type Json = None | bool | int | str | list[Json] | dict[str, Json]
+
 VERIFY = Path(__file__).resolve().parents[1] / "verify.sh"
-TRUSTED = {
+TRUSTED: dict[str, Json] = {
     "repository": {"full_name": "cozy-creator/cozy-creator"},
     "head_repository": {"full_name": "cozy-creator/cozy-creator"},
     "event": "workflow_dispatch",
@@ -32,7 +34,9 @@ else:
 '''
 
 class VerifyTest(unittest.TestCase):
-    def run_gate(self, metadata, verdict="VERDICT PASS", local=False):
+    def run_gate(
+        self, metadata: dict[str, Json], verdict: str = "VERDICT PASS", local: bool = False
+    ) -> tuple[subprocess.CompletedProcess[str], list[list[str]]]:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             gh = root / "gh"
@@ -51,18 +55,18 @@ class VerifyTest(unittest.TestCase):
                 gate = str(directory)
             result = subprocess.run(["bash", str(VERIFY), gate], env=env, text=True,
                                     capture_output=True, check=False)
-            calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+            calls: list[list[str]] = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
             return result, calls
 
-    def test_trusted_dispatch_accepts_matching_pass(self):
+    def test_trusted_dispatch_accepts_matching_pass(self) -> None:
         result, calls = self.run_gate(TRUSTED)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)["cozy_sha256"], "a" * 64)
         self.assertEqual(calls[0][0], "api")
         self.assertEqual(calls[1][:2], ["run", "download"])
 
-    def test_untrusted_or_incomplete_run_cannot_supply_artifacts(self):
-        cases = [
+    def test_untrusted_or_incomplete_run_cannot_supply_artifacts(self) -> None:
+        cases: list[dict[str, Json]] = [
             {"event": "pull_request"}, {"event": "pull_request_target"},
             {"path": ".github/workflows/forged.yml"},
             {"head_repository": {"full_name": "attacker/cozy-creator"}},
@@ -79,14 +83,14 @@ class VerifyTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(len(calls), 1)
 
-    def test_lead_accepted_failure_preserves_explicit_policy(self):
-        metadata = {**TRUSTED, "conclusion": "failure"}
+    def test_lead_accepted_failure_preserves_explicit_policy(self) -> None:
+        metadata: dict[str, Json] = {**TRUSTED, "conclusion": "failure"}
         result, _ = self.run_gate(metadata, "VERDICT FAIL (accepted by the lead)")
         self.assertEqual(result.returncode, 0, result.stderr)
         result, _ = self.run_gate(metadata, "VERDICT FAIL (numerical mismatch)")
         self.assertNotEqual(result.returncode, 0)
 
-    def test_hand_gate_remains_an_explicit_local_receipt(self):
+    def test_hand_gate_remains_an_explicit_local_receipt(self) -> None:
         result, calls = self.run_gate({}, local=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(calls, [])

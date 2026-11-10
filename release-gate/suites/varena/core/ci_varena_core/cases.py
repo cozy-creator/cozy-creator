@@ -15,6 +15,7 @@ import torch
 from cozy_runtime.internal.contract import unsealed
 
 if TYPE_CHECKING:
+    import tensorfs.varena.torch as vt
     from tensorfs.varena._facts import WorkingStats
 
 #: The driver's view, read on purpose: this cell tests the memory manager itself.
@@ -201,15 +202,14 @@ def fast_path() -> Row:
                 release(allocate(size, handle))
 
     pairs(512)
-    if MODE == "varena":
-        before = vt.stats(0)
+    before = vt.stats(0) if MODE == "varena" else None
     samples: list[float] = []
     for _ in range(7):
         began = time.perf_counter_ns()
         pairs(20_000)
         samples.append((time.perf_counter_ns() - began) / (20_000 * len(SIZES)))
     row: dict[str, JSON] = {"ns_per_pair": sorted(samples)[3], "samples": samples}
-    if MODE == "varena":
+    if before is not None:
         spent = delta(before, vt.stats(0))
         # The cooperation service polls fences on its own clock, a handful of times in this.
         assert spent["driver_memory_calls"] == spent["event_waits"] == 0 and spent["event_records"] < 64, spent

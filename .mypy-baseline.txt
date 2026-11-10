@@ -1,4 +1,3 @@
-crates/tensorfs-py/scripts/converters.py: [explicit-any] Explicit "Any" is not allowed
 release-gate/sessions/fixtures/hub-outage/ci_hub_outage/__init__.py: [arg-type] Argument "model" to "piece" has incompatible type "ModelChoice"; expected "Weights[Any]"
 release-gate/sessions/fixtures/hub-outage/ci_hub_outage/__init__.py: [misc] Type of decorated function contains type "Any" ("def (*, model: Weights[Any]) -> PendingCall[Read]")
 release-gate/sessions/fixtures/hub-outage/ci_hub_outage/__init__.py: [type-arg] Missing type arguments for generic type "Weights"
@@ -20,93 +19,12 @@ release-gate/suites/execution/child-saved-file/ci_child_saved_file/__init__.py: 
 release-gate/suites/execution/child-saved-file/ci_child_saved_file/__init__.py: [union-attr] Item "None" of "Path | None" has no attribute "read_bytes"
 release-gate/suites/execution/child-saved-file/ci_child_saved_file/__init__.py: [union-attr] Item "None" of "Path | None" has no attribute "read_bytes"
 release-gate/suites/execution/child-saved-file/ci_child_saved_file/__init__.py: [union-attr] Item "None" of "_Broker | None" has no attribute "exchange"
-release-gate/suites/execution/conditional-body/ci_conditional_body/__init__.py: [arg-type] Argument 2 to "scaled_dot_product_attention" has incompatible type "int"; expected "Tensor"
-release-gate/suites/execution/conditional-body/ci_conditional_body/__init__.py: [arg-type] Argument 2 to "scaled_dot_product_attention" has incompatible type "int"; expected "Tensor"
-release-gate/suites/execution/conditional-body/ci_conditional_body/__init__.py: [assignment] Incompatible types in assignment (expression has type "Tensor", variable has type "int")
-release-gate/suites/execution/conditional-body/ci_conditional_body/__init__.py: [var-annotated] Need type annotation for "LAUNCHES" (hint: "LAUNCHES: dict[<type>, <type>] = ...")
-release-gate/suites/execution/conditional-body/ci_conditional_body/__init__.py: [var-annotated] Need type annotation for "SEEN" (hint: "SEEN: dict[<type>, <type>] = ...")
-release-gate/suites/execution/conditional-body/ci_conditional_body/__init__.py: [var-annotated] Need type annotation for "checks" (hint: "checks: list[<type>] = ...")
-release-gate/suites/execution/conditional-body/ci_conditional_body/__init__.py: [var-annotated] Need type annotation for "ops" (hint: "ops: list[<type>] = ...")
-release-gate/suites/execution/kernel-ready-publication/ci_kernel_ready_publication/__init__.py: [unreachable] Right operand of "and" is never evaluated
-release-gate/suites/execution/kernel-ready-publication/ci_kernel_ready_publication/__init__.py: [unreachable] Statement is unreachable
 release-gate/suites/execution/kernel-regret/ci_kernel_regret/__init__.py: [arg-type] Argument 2 to "_warm" has incompatible type "int"; expected "bool"
 release-gate/suites/execution/kernel-regret/ci_kernel_regret/__init__.py: [assignment] Incompatible types in assignment (expression has type "list[str]", variable has type "tuple[str, ...]")
 release-gate/suites/execution/kernel-regret/ci_kernel_regret/__init__.py: [assignment] Incompatible types in assignment (expression has type "tuple[int, int, int]", variable has type "tuple[int, int, int, int]")
 release-gate/suites/execution/kernel-regret/ci_kernel_regret/__init__.py: [call-arg] Too many arguments for "_warm"
-release-gate/suites/execution/lora-overlay-refill/ci_lora_overlay_refill/__init__.py: [arg-type] Argument 1 to "Hook" has incompatible type "partial[Module | None]"; expected "Callable[[], Factors | None]"
-release-gate/suites/execution/lora-overlay-refill/ci_lora_overlay_refill/__init__.py: [arg-type] Argument 1 to "float" has incompatible type "Tensor | Module"; expected "str | Buffer | SupportsFloat | SupportsIndex"
-release-gate/suites/execution/lora-overlay-refill/ci_lora_overlay_refill/__init__.py: [no-untyped-call] Call to untyped function "from_config" of "QwenImageTransformer2DModel" in typed context
-release-gate/suites/execution/lora-overlay-refill/ci_lora_overlay_refill/__init__.py: [union-attr] Item "Tensor" of "Tensor | Module" has no attribute "get_submodule"
-release-gate/suites/execution/lora-overlay-refill/ci_lora_overlay_refill/exercise.py: [misc] Assignment to variable "error" outside except: block
-release-gate/suites/execution/lora-overlay-refill/ci_lora_overlay_refill/exercise.py: [misc] Trying to read deleted variable "error"
-release-gate/suites/execution/lora-overlay-refill/ci_lora_overlay_refill/exercise.py: [misc] Trying to read deleted variable "error"
-release-gate/suites/execution/lora-overlay-refill/ci_lora_overlay_refill/exercise.py: [misc] Trying to read deleted variable "error"
-release-gate/suites/execution/mps-residency/ci_mps_residency/__init__.py: [comparison-overlap] Non-overlapping equality check (left operand type: "dict[str, list[int]]", right operand type: "int")
-release-gate/suites/execution/mps-residency/ci_mps_residency/__init__.py: [unreachable] Statement is unreachable
-release-gate/suites/execution/overlay-replay/ci_overlay_replay/__init__.py: [arg-type] Argument 1 to "Hook" has incompatible type "partial[Module | None]"; expected "Callable[[], Factors | None]"
-release-gate/suites/execution/overlay-replay/ci_overlay_replay/__init__.py: [arg-type] Argument 1 to "float" has incompatible type "Tensor | Module"; expected "str | Buffer | SupportsFloat | SupportsIndex"
-release-gate/suites/execution/overlay-replay/ci_overlay_replay/__init__.py: [assignment] Incompatible types in assignment (expression has type "None", variable has type "Tensor | Module")
-release-gate/suites/execution/overlay-replay/ci_overlay_replay/__init__.py: [assignment] Incompatible types in assignment (expression has type Module | None, variable has type "Tensor | Module")
-release-gate/suites/execution/overlay-replay/ci_overlay_replay/__init__.py: [assignment] Incompatible types in assignment (expression has type Module | None, variable has type "Tensor | Module")
-release-gate/suites/execution/overlay-replay/ci_overlay_replay/__init__.py: [no-untyped-call] Call to untyped function "from_config" of "QwenImageTransformer2DModel" in typed context
-release-gate/suites/execution/overlay-replay/ci_overlay_replay/__init__.py: [operator] "Tensor" not callable
-release-gate/suites/execution/overlay-replay/ci_overlay_replay/__init__.py: [operator] "Tensor" not callable
-release-gate/suites/execution/overlay-replay/ci_overlay_replay/__init__.py: [operator] "Tensor" not callable
-release-gate/suites/execution/overlay-replay/ci_overlay_replay/__init__.py: [operator] "Tensor" not callable
-release-gate/suites/execution/overlay-replay/ci_overlay_replay/__init__.py: [operator] "Tensor" not callable
-release-gate/suites/execution/overlay-replay/ci_overlay_replay/__init__.py: [union-attr] Item "Tensor" of "Tensor | Module" has no attribute "get_submodule"
-release-gate/suites/execution/overlay-replay/ci_overlay_replay/__init__.py: [union-attr] Item Module of "Tensor | Module" has no attribute "__iter__" (not iterable)
 release-gate/suites/kernels/ci_kernels/__init__.py: [unreachable] Subclass of "Tensor" and "tuple[Any, ...]" cannot exist: would have incompatible method signatures
 release-gate/suites/kernels/ci_kernels/__init__.py: [unreachable] Subclass of "Tensor" and "tuple[Any, ...]" cannot exist: would have incompatible method signatures
 release-gate/suites/kernels/ci_kernels/__init__.py: [unreachable] Subclass of "Tensor" and "tuple[Any, ...]" cannot exist: would have incompatible method signatures
 release-gate/suites/kernels/ci_kernels/__init__.py: [unreachable] Subclass of "Tensor" and "tuple[Any, ...]" cannot exist: would have incompatible method signatures
-release-gate/suites/kernels/ci_kernels/static_check.py: [attr-defined] "expr" has no attribute "value"
-release-gate/suites/kernels/ci_kernels/static_check.py: [str-bytes-safe] If x = b'abc' then f"{x}" or "{}".format(x) produces "b'abc'", not "abc". If this is desired behavior, use f"{x!r}" or "{!r}".format(x). Otherwise, decode the bytes
 release-gate/suites/project/still.py: [call-arg] Too many positional arguments for "Kept"
-release-gate/suites/tensord/link.py: [union-attr] Item "BinaryIO" of "BinaryIO | Any" has no attribute "read1"
-release-gate/suites/tensorfs/svdq-calibration/ci_svdq_calibration/__init__.py: [return-value] Incompatible return value type (got "WorkingStats", expected "dict[str, int]")
-release-gate/suites/varena/core/ci_varena_core/cases.py: [possibly-undefined] Name "before" may be undefined
-release-gate/suites/varena/core/ci_varena_core/cases.py: [possibly-undefined] Name "vt" may be undefined
-release-gate/suites/varena/core/faults/cells.py: [arg-type] Argument "graphs" to "offload" has incompatible type "str"; expected "Literal['auto', 'eager']"
-release-gate/suites/varena/core/faults/cells.py: [possibly-undefined] Name "held" may be undefined
-release-gate/suites/varena/core/faults/cells.py: [possibly-undefined] Name "hold" may be undefined
-release-gate/suites/varena/differential/hook.py: [assignment] Incompatible types in assignment (expression has type "Callable[[int, str, Any, int, int], Any]", variable has type "Callable[[int, str, str, Sequence[tuple[str, Sequence[int]]], int], dict[str, Any]]")
-release-gate/suites/varena/differential/hook.py: [assignment] Incompatible types in assignment (expression has type "None", variable has type Module)
-release-gate/suites/varena/differential/hook.py: [assignment] Incompatible types in assignment (expression has type "def dispatch(owner: Any, module: Any, call: Any, args: Any, kwargs: Any) -> Any", variable has type "def _dispatch(torch: Any, module: Any, call: Callable[..., Any], args: Any, kwargs: Any) -> Any")
-release-gate/suites/varena/differential/hook.py: [explicit-any] Explicit "Any" is not allowed
-release-gate/suites/varena/differential/hook.py: [explicit-any] Explicit "Any" is not allowed
-release-gate/suites/varena/differential/hook.py: [explicit-any] Explicit "Any" is not allowed
-release-gate/suites/varena/differential/hook.py: [explicit-any] Explicit "Any" is not allowed
-release-gate/suites/varena/differential/hook.py: [explicit-any] Explicit "Any" is not allowed
-release-gate/suites/varena/differential/hook.py: [explicit-any] Explicit "Any" is not allowed
-release-gate/suites/varena/differential/hook.py: [explicit-any] Explicit "Any" is not allowed
-release-gate/suites/varena/differential/hook.py: [explicit-any] Explicit "Any" is not allowed
-release-gate/suites/varena/differential/hook.py: [method-assign] Cannot assign to a method
-release-gate/suites/varena/differential/hook.py: [misc] "None" not callable
-release-gate/suites/varena/public-api/mixed.py: [possibly-undefined] Name "c" may be undefined
-release-gate/suites/varena/public-api/mixed.py: [possibly-undefined] Name "rust" may be undefined
-release-gate/suites/varena/torch-offload/ci_torch_offload/adapter.py: [attr-defined] "AutoencoderKL" has no attribute "to"
-release-gate/suites/varena/torch-offload/ci_torch_offload/adapter.py: [no-untyped-call] Call to untyped function "AutoencoderKL" in typed context
-release-gate/suites/varena/torch-offload/ci_torch_offload/adapter.py: [no-untyped-call] Call to untyped function "from_config" of "AutoencoderKL" in typed context
-release-gate/suites/varena/torch-offload/ci_torch_offload/adapter.py: [union-attr] Item "None" of "Graphs | None" has no attribute "counts"
-release-gate/suites/varena/torch-offload/ci_torch_offload/adapter.py: [union-attr] Item "None" of "Graphs | None" has no attribute "counts"
-release-gate/suites/varena/torch-offload/ci_torch_offload/adapter.py: [union-attr] Item "None" of "Graphs | None" has no attribute "counts"
-release-gate/suites/varena/torch-offload/ci_torch_offload/sdxl.py: [arg-type] Argument "graphs" to "offload" has incompatible type "str"; expected "Literal['auto', 'eager']"
-release-gate/suites/varena/torch-offload/ci_torch_offload/sdxl.py: [no-untyped-call] Call to untyped function "from_pretrained" of "StableDiffusionXLPipeline" in typed context
-release-gate/suites/varena/torch-offload/ci_torch_offload/sdxl.py: [no-untyped-call] Call to untyped function (unknown) in typed context
-release-gate/suites/varena/torch-offload/ci_torch_offload/sdxl.py: [no-untyped-call] Call to untyped function (unknown) in typed context
-release-gate/suites/varena/torch-offload/ci_torch_offload/sdxl.py: [no-untyped-call] Call to untyped function (unknown) in typed context
-release-gate/suites/varena/torch-offload/ci_torch_offload/sdxl.py: [possibly-undefined] Name "vt" may be undefined
-release-gate/suites/varena/torch-offload/ci_torch_offload/sdxl.py: [possibly-undefined] Name "vt" may be undefined
-release-gate/tests/test_verify.py: [dict-item] Unpacked dict entry 1 has incompatible type "object"; expected "SupportsKeysAndGetItem[Any, Any]"
-release-gate/tests/test_verify.py: [no-untyped-call] Call to untyped function "run_gate" in typed context
-release-gate/tests/test_verify.py: [no-untyped-call] Call to untyped function "run_gate" in typed context
-release-gate/tests/test_verify.py: [no-untyped-call] Call to untyped function "run_gate" in typed context
-release-gate/tests/test_verify.py: [no-untyped-call] Call to untyped function "run_gate" in typed context
-release-gate/tests/test_verify.py: [no-untyped-call] Call to untyped function "run_gate" in typed context
-release-gate/tests/test_verify.py: [no-untyped-call] Call to untyped function "run_gate" in typed context
-release-gate/tests/test_verify.py: [no-untyped-def] Function is missing a return type annotation
-release-gate/tests/test_verify.py: [no-untyped-def] Function is missing a return type annotation
-release-gate/tests/test_verify.py: [no-untyped-def] Function is missing a return type annotation
-release-gate/tests/test_verify.py: [no-untyped-def] Function is missing a return type annotation
-release-gate/tests/test_verify.py: [no-untyped-def] Function is missing a type annotation
