@@ -877,8 +877,11 @@ def main() -> int:
                        "construction": construction, "input_metadata": {k: v[0] for k, v in rows_in.items()}})
         spool = out / "spool" / child
         spool.mkdir(parents=True)
+        executor.broker = Broker(child, spool, run_child)
+        executor.broker.held |= {rows_in[field][1]["digest"]: path for field, path in files.items()}
         reply = executor.ask({"cmd": "invoke", "request_id": child, "entrypoint": export, "spool": str(spool),
                               "construction": construction, "deadline_s": 1800, "inputs": {k: v[1] for k, v in rows_in.items()}})
+        executor.broker = None
         (out / f"{child}.reply.json").write_text(json.dumps(reply, indent=1))
         return reply, spool
 
@@ -936,9 +939,9 @@ def main() -> int:
                     invoke |= {"sources": {k: manifests[ref] for k, ref in cell["sources"].items()},
                                "weights": cell.get("weights", {}), "operation": f"{package}/{entry}"}
                 executor.items.clear()
-                executor.broker = Broker(request, spool, run_child) if row.get("calls") else None
-                if executor.broker is not None:  # the attempt's own inputs, which it may pass to a child
-                    executor.broker.held |= {g["digest"]: Path(g["local"]) for g in granted.values()}
+                # TensorD answers every attempt's durable requests: a call, a GPU release, a stage memo.
+                executor.broker = Broker(request, spool, run_child)
+                executor.broker.held |= {g["digest"]: Path(g["local"]) for g in granted.values()}  # it may pass them on
                 reply = executor.ask(invoke)
                 executor.broker = None
                 (out / f"{request}.reply.json").write_text(json.dumps(reply, indent=1))
