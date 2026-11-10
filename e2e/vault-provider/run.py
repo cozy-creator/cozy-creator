@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import time
 
 
@@ -14,9 +15,16 @@ def main():
     parser.add_argument('--securefs', type=Path, required=True)
     parser.add_argument('--artifacts', type=Path, required=True)
     args = parser.parse_args()
+    args.probe = args.probe.resolve()
+    args.securefs = args.securefs.resolve()
+    args.artifacts = args.artifacts.resolve()
     args.artifacts.mkdir(parents=True, exist_ok=False)
-    normal = subprocess.run([str(args.probe), 'normal', str(args.securefs), str(args.artifacts / 'normal')], capture_output=True, text=True, check=True)
+    normal = subprocess.run([str(args.probe), 'normal', str(args.securefs), str(args.artifacts / 'normal')], capture_output=True, text=True)
     (args.artifacts / 'normal.log').write_text(normal.stdout + normal.stderr)
+    if normal.returncode:
+        print((normal.stdout + normal.stderr)[-65536:], file=sys.stderr)
+        (args.artifacts / 'results.json').write_text(json.dumps({'normal': {'result': 'failed', 'exit_code': normal.returncode}}, indent=2) + '\n')
+        raise SystemExit(normal.returncode)
     result = {'normal': json.loads(normal.stdout.strip().splitlines()[-1])}
     crash = args.artifacts / 'crash'
     with (args.artifacts / 'crash.log').open('w') as log:

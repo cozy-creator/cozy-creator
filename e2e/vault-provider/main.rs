@@ -35,6 +35,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut randomness = Zeroizing::new([0u8; 32]);
     getrandom::fill(&mut *randomness).map_err(|error| std::io::Error::other(error.to_string()))?;
     let secret = Zeroizing::new(URL_SAFE_NO_PAD.encode(*randomness));
+    eprintln!("provider fixture: create and mount");
     provider.create(&backing, secret.as_bytes())?;
     let mut mounted =
         provider.mount(&backing, &view, secret.as_bytes(), MountOptions::default())?;
@@ -82,6 +83,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Err("unknown provider fixture mode".into());
     }
 
+    eprintln!("provider fixture: overwrite and rename");
     let mut update = fs::OpenOptions::new().write(true).open(&file)?;
     update.seek(SeekFrom::Start(1024))?;
     update.write_all(b"UPDATED")?;
@@ -92,6 +94,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     fs::rename(&file, &renamed)?;
     assert_eq!(fs::read(&renamed)?, content);
 
+    eprintln!("provider fixture: media write and seek");
     let media = view.join("private-video.mp4");
     let status = Command::new("ffmpeg")
         .args([
@@ -121,6 +124,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         status.success(),
         "ffmpeg must seek and decode through the mounted view"
     );
+    eprintln!("provider fixture: normal lock with open handle");
     let held = fs::File::open(&renamed)?;
     let busy = match mounted.try_unmount() {
         Err(project_mount::Error::Busy(_)) => {
@@ -141,10 +145,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "an absent mount must refuse plaintext fallback writes"
     );
 
+    eprintln!("provider fixture: remount parity");
     let mut remount =
         provider.mount(&backing, &view, secret.as_bytes(), MountOptions::default())?;
     assert_eq!(fs::read(&renamed)?, content);
     remount.try_unmount()?;
+    eprintln!("provider fixture: read-only view");
     let mut read_only = provider.mount(
         &backing,
         &view,
@@ -157,6 +163,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(fs::read(&renamed)?, content);
     assert!(fs::write(view.join("read-only.bin"), marker).is_err());
     read_only.try_unmount()?;
+    eprintln!("provider fixture: idle expiration");
     let mut idle = provider.mount(
         &backing,
         &view,
