@@ -14,7 +14,7 @@ use sha2::{Digest as _, Sha256};
 use tensorfs::family::Facts;
 use tracing::{info, warn};
 
-use crate::store::{Result, Store};
+use crate::store::{Result, Store, StoreError};
 
 /// Made at open when absent, at the store's version: every statement names its columns.
 pub(crate) const TABLES: &str = "
@@ -23,7 +23,8 @@ pub(crate) const TABLES: &str = "
         path TEXT NOT NULL,
         used_at_ms INTEGER NOT NULL,
         walking INTEGER NOT NULL DEFAULT 0,
-        name TEXT NOT NULL DEFAULT ''
+        name TEXT NOT NULL DEFAULT '',
+        code TEXT NOT NULL DEFAULT ''
     ) STRICT;
     CREATE TABLE IF NOT EXISTS sessions (
         token_sha256 TEXT PRIMARY KEY,
@@ -61,6 +62,7 @@ pub(crate) const TABLES: &str = "
 #[derive(Clone, Debug)]
 pub(crate) struct KnownProject {
     pub id: String,
+    pub code: String,
     pub name: String,
     pub path: PathBuf,
     pub used_at_ms: i64,
@@ -80,7 +82,7 @@ fn known(row: &rusqlite::Row) -> rusqlite::Result<KnownProject> {
     let path = PathBuf::from(row.get::<_, String>(1)?);
     let name = Some(row.get::<_, String>(4)?).filter(|name| !name.is_empty());
     let name = name.unwrap_or_else(|| path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default());
-    Ok(KnownProject { id: row.get(0)?, name, path, used_at_ms: row.get(2)?, walking: row.get(3)? })
+    Ok(KnownProject { id: row.get(0)?, code: row.get(5)?, name, path, used_at_ms: row.get(2)?, walking: row.get(3)? })
 }
 
 /// A store from before cl-819 names no project: its column, added.
@@ -89,6 +91,81 @@ pub(crate) fn project_names(conn: &Connection) -> rusqlite::Result<()> {
     match named {
         true => Ok(()),
         false => conn.execute_batch("ALTER TABLE projects ADD COLUMN name TEXT NOT NULL DEFAULT ''"),
+    }
+}
+
+/// Older indexes gain public codes without replacing their project identities or rows.
+pub(crate) fn project_codes(conn: &Connection) -> rusqlite::Result<()> {
+    if conn.prepare("SELECT code FROM projects LIMIT 0").is_err() {
+        conn.execute_batch("ALTER TABLE projects ADD COLUMN code TEXT NOT NULL DEFAULT ''")?;
+    }
+    conn.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS projects_code ON projects (code) WHERE code <> ''")
+}
+
+fn project_code(conn: &Connection, id: &str, preferred: Option<&str>, mut generate: impl FnMut() -> String) -> Result<String> {
+    let existing = conn.query_row("SELECT code FROM projects WHERE id = ?1 AND code <> ''", [id], |row| row.get::<_, String>(0)).optional()?;
+    if let Some(code) = preferred {
+        if crate::project::code::parse(code).as_deref() != Some(code) {
+            return Err(StoreError::ProjectCode(format!("project {id} has an invalid public code {code:?}")));
+        }
+        if existing.as_deref().is_some_and(|existing| existing != code) {
+            return Err(StoreError::ProjectCode(format!("project {id} already has another public code")));
+        }
+    }
+    if let Some(code) = existing {
+        return Ok(code);
+    }
+    for _ in 0..8 {
+        let code = preferred.map(str::to_owned).unwrap_or_else(&mut generate);
+        let taken: bool = conn.query_row("SELECT EXISTS (SELECT 1 FROM projects WHERE code = ?1)", [&code], |row| row.get(0))?;
+        if !taken {
+            return Ok(code);
+        }
+        if preferred.is_some() {
+            return Err(StoreError::ProjectCode(format!("public code {code} already belongs to another project")));
+        }
+    }
+    Err(StoreError::ProjectCode("could not assign a unique public project code after 8 attempts".into()))
+}
+
+#[cfg(test)]
+mod project_code_tests {
+    use super::*;
+
+    #[test]
+    fn collision_retries_and_kept_codes_are_checked() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(TABLES).unwrap();
+        project_codes(&conn).unwrap();
+        conn.execute("INSERT INTO projects (id, path, used_at_ms, code) VALUES ('old', '/old', 1, 'ABCD12345')", []).unwrap();
+        let mut candidates = ["ABCD12345", "EFGH12345"].into_iter();
+        assert_eq!(project_code(&conn, "new", None, || candidates.next().unwrap().into()).unwrap(), "EFGH12345");
+        assert!(project_code(&conn, "new", Some("ABCD12345"), || unreachable!()).is_err());
+        assert!(project_code(&conn, "old", Some("EFGH12345"), || unreachable!()).is_err());
+        assert_eq!(project_code(&conn, "old", None, || unreachable!()).unwrap(), "ABCD12345");
+        assert!(project_code(&conn, "new", None, || "ABCD12345".into()).is_err());
+    }
+
+    #[test]
+    fn legacy_index_gains_code_column_and_unique_reservation() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("state.db");
+        let store = Store::open(&path).unwrap();
+        store.write(|tx| {
+            tx.execute_batch("DROP INDEX projects_code; ALTER TABLE projects DROP COLUMN code;")?;
+            tx.execute("INSERT INTO projects (id, name, path, used_at_ms) VALUES ('old', 'Old', '/old', 42)", [])?;
+            Ok(())
+        }).unwrap();
+        drop(store);
+        let store = Store::open(&path).unwrap();
+        assert_eq!(store.known_project("old").unwrap().unwrap().code, "");
+        let code = store.project_opened("old", "Old", Path::new("/old"), None, None).unwrap();
+        assert_eq!(store.known_project("old").unwrap().unwrap().used_at_ms, 42);
+        assert_eq!(store.project_opened("old", "Renamed", Path::new("/moved"), None, None).unwrap(), code);
+        assert!(store.project_opened("new", "New", Path::new("/new"), None, Some(&code)).is_err());
+        assert!(store.known_project("new").unwrap().is_none());
+        drop(store);
+        assert_eq!(Store::open(&path).unwrap().known_project("old").unwrap().unwrap().code, code);
     }
 }
 
@@ -113,13 +190,13 @@ fn digest(key: &str) -> String {
 
 impl Store {
     pub(crate) fn known_project(&self, id: &str) -> Result<Option<KnownProject>> {
-        self.read(|conn| Ok(conn.query_row("SELECT id, path, used_at_ms, walking, name FROM projects WHERE id = ?1", [id], known).optional()?))
+        self.read(|conn| Ok(conn.query_row("SELECT id, path, used_at_ms, walking, name, code FROM projects WHERE id = ?1", [id], known).optional()?))
     }
 
     /// Every project opened here, last used first.
     pub(crate) fn known_projects(&self) -> Result<Vec<KnownProject>> {
         self.read(|conn| {
-            let mut statement = conn.prepare("SELECT id, path, used_at_ms, walking, name FROM projects ORDER BY used_at_ms DESC, id")?;
+            let mut statement = conn.prepare("SELECT id, path, used_at_ms, walking, name, code FROM projects ORDER BY used_at_ms DESC, id")?;
             Ok(statement.query_map([], known)?.collect::<rusqlite::Result<_>>()?)
         })
     }
@@ -136,16 +213,17 @@ impl Store {
     }
 
     /// `id`, called `name`, in `path`, opened at `used_at_ms` (none: when it was last, or now if it's new here); whether it was walking stands.
-    pub(crate) fn project_opened(&self, id: &str, name: &str, path: &Path, used_at_ms: Option<i64>) -> Result<()> {
+    pub(crate) fn project_opened(&self, id: &str, name: &str, path: &Path, used_at_ms: Option<i64>, preferred: Option<&str>) -> Result<String> {
         self.write(|tx| {
             // A folder holds one project: another the index had there is gone.
             tx.execute("DELETE FROM projects WHERE path = ?2 AND id <> ?1", params![id, path.to_string_lossy()])?;
+            let code = project_code(tx, id, preferred, crate::project::code::generate)?;
             tx.execute(
-                "INSERT INTO projects (id, path, used_at_ms, name) VALUES (?1, ?2, COALESCE(?4, CAST(strftime('%s', 'now') AS INTEGER) * 1000), ?3)
-                 ON CONFLICT (id) DO UPDATE SET path = excluded.path, name = excluded.name, used_at_ms = COALESCE(?4, projects.used_at_ms)",
-                params![id, path.to_string_lossy(), name, used_at_ms],
+                "INSERT INTO projects (id, path, used_at_ms, name, code) VALUES (?1, ?2, COALESCE(?4, CAST(strftime('%s', 'now') AS INTEGER) * 1000), ?3, ?5)
+                 ON CONFLICT (id) DO UPDATE SET path = excluded.path, name = excluded.name, code = excluded.code, used_at_ms = COALESCE(?4, projects.used_at_ms)",
+                params![id, path.to_string_lossy(), name, used_at_ms, code],
             )?;
-            Ok(())
+            Ok(code)
         })
     }
 
