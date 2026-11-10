@@ -391,9 +391,11 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk) -> Result<VaultChan
                 }
             } else { mount(api, root, keybag, secret, ask)?; }
             api.calcifer.store().protect_project_journal(root).map_err(|e| error("vault_journal", e))?;
-            if receipt_path(root).is_file() {
+            let completing = receipt_path(root).is_file();
+            if completing || journal_cleanup_pending(root)? {
                 api.calcifer.store().cleanup_private_journal().map_err(|e| error("vault_journal_cleanup", e))?;
-                finish_conversion(root)?;
+                journal_cleanup_done(root)?;
+                if completing { finish_conversion(root)?; }
             }
             if let Some(session) = held(root) { crate::events::project_vault(session.lock().expect("vault session").secret.project_id(), "unlocked"); }
         }
@@ -556,6 +558,7 @@ fn convert(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret,
     };
     journal.map_err(|e| error("vault_journal", format!("encrypted files are in place; source preserved at {}; journal conversion needs recovery: {e}", saved.display())))?;
     api.calcifer.store().cleanup_private_journal().map_err(|e| error("vault_journal_cleanup", format!("encrypted data is in place; source preserved at {}; journal cleanup is pending: {e}", saved.display())))?;
+    journal_cleanup_done(root)?;
     finish_conversion(root)?;
     Ok(saved)
 }
@@ -656,8 +659,43 @@ fn fresh() -> String { let mut bytes = [0u8;16]; getrandom::fill(&mut bytes).exp
 pub(crate) const PAYLOAD_PREFIX: &[u8] = b"cozy:vault:journal:2:";
 const JOURNAL_DIR: &str = ".vault-journal";
 const MAX_JOURNAL_BYTES: u64 = 32 << 20;
+const JOURNAL_CLEANUP_FILE: &str = "project.vault.journal-pending";
+const JOURNAL_CLEANUP_MARKER: &[u8] = b"cozy project journal cleanup 1\n";
 static KEY_ROOTS: LazyLock<Mutex<BTreeMap<String, PathBuf>>> = LazyLock::new(Mutex::default);
 static TRUSTED_KEYS: LazyLock<Mutex<BTreeMap<PathBuf, Keybag>>> = LazyLock::new(Mutex::default);
+
+fn journal_cleanup_pending(root: &FsPath) -> Result<bool, Error> {
+    let path = root.join(JOURNAL_CLEANUP_FILE);
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(why) if why.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(why) => return Err(io(why)),
+    };
+    let mut bytes = Vec::new();
+    if metadata.file_type().is_file() {
+        fs::File::open(&path).map_err(io)?.take(JOURNAL_CLEANUP_MARKER.len() as u64 + 1).read_to_end(&mut bytes).map_err(io)?;
+    }
+    if bytes != JOURNAL_CLEANUP_MARKER {
+        return Err(error("vault_journal_cleanup", format!("unexpected {JOURNAL_CLEANUP_FILE}; preserve this file and resolve the conflict before retrying")));
+    }
+    Ok(true)
+}
+
+/// Durable before the global SQL rewrite commits; contains no private data or key material.
+pub(crate) fn mark_journal_cleanup(root: &FsPath) -> Result<(), Error> {
+    if !journal_cleanup_pending(root)? {
+        platform::durable::replace(&root.join(JOURNAL_CLEANUP_FILE), JOURNAL_CLEANUP_MARKER, 0o600).map_err(provider)?;
+    }
+    Ok(())
+}
+
+fn journal_cleanup_done(root: &FsPath) -> Result<(), Error> {
+    if journal_cleanup_pending(root)? {
+        fs::remove_file(root.join(JOURNAL_CLEANUP_FILE)).map_err(io)?;
+        platform::durable::sync_dir(root).map_err(provider)?;
+    }
+    Ok(())
+}
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct ProtectedPayload {

@@ -700,6 +700,7 @@ impl Store {
                     changed = true;
                 }
             }
+            if changed { vault::mark_journal_cleanup(root).map_err(private_error)?; }
             Ok(changed)
         })
     }
