@@ -19,7 +19,7 @@ on:
         type: string
         default: released
       runtime_wheel:
-        description: "Candidate Runtime wheel: https://…/<wheel>#sha256=<hex>, or artifact:<name> of this run (empty: the Hub's target)"
+        description: "Candidate Runtime wheel: https://…/<wheel>#sha256=<hex>, or artifact:[<run id>/]<name>, of this run or another of this repo's (empty: the Hub's target)"
         type: string
         default: ''
       tensorfs_wheel:
@@ -202,15 +202,18 @@ jobs:
             gh run download "$COZY" -R cozy-creator/cozy-creator -p 'cozy-*' -D dev
             install -m 0755 dev/cozy-*/cozy-linux-x86_64 "$bin/cozy"; args+=(--tensord "$bin/cozy")
           fi
-          # A wheel is a URL#sha256 the gate fetches and checks, or an artifact of this run.
+          # A wheel is a URL#sha256 the gate fetches and checks, or an artifact of this run or of another run of this repo
+          # (e2e's candidate-runtime-*, dev-build's tensorfs-wheel-*): artifact:<run id>/<name>.
           for w in "runtime-wheel|$RUNTIME_WHEEL|cozy_runtime" "tensorfs-wheel|$TENSORFS_WHEEL|tensorfs"; do
             IFS="|" read -r flag value dist <<< "$w"
             case $value in
               '') ;;
               artifact:*)
-                gh run download "$GITHUB_RUN_ID" -R "$GITHUB_REPOSITORY" -n "${value#artifact:}" -D "wheels-$flag"
+                name=${value#artifact:} run=$GITHUB_RUN_ID
+                [[ $name != */* ]] || { run=${name%%/*}; name=${name#*/}; }
+                gh run download "$run" -R "$GITHUB_REPOSITORY" -n "$name" -D "wheels-$flag"
                 f=$(ls "wheels-$flag/$dist"-*manylinux*x86_64*.whl "wheels-$flag/$dist"-*-py3-none-any.whl 2>/dev/null | head -1)
-                [ -n "$f" ] || { echo "::error::no $dist x86_64 wheel in artifact ${value#artifact:}"; exit 1; }
+                [ -n "$f" ] || { echo "::error::no $dist x86_64 wheel in artifact $value"; exit 1; }
                 args+=("--$flag" "$PWD/$f") ;;
               *) args+=("--$flag" "$value") ;;
             esac
