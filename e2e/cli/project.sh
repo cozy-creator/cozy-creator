@@ -909,7 +909,7 @@ for part in $(seq 1 12); do
   cozy project -p "$F" export > "$OUT/killed-again.yaml" 2>&1 || check "killed at ${at} ms: opened again: $(tail -c 300 "$OUT/killed-again.yaml")"
   cmp -s "$OUT/killed-again.yaml" "$OUT/killed-done.yaml" || check "killed at ${at} ms: it came out otherwise: $(diff "$OUT/killed-done.yaml" "$OUT/killed-again.yaml" | head -5)"
   { cmp -s "$F/project.yaml.v2" "$OUT/killed.yaml" && cmp -s "$F/project.lock.v2" "$OUT/killed.lock"; } || check "killed at ${at} ms: an original went"
-  [ -z "$(cd "$F" && ls -A | grep -vxE 'files|\.runs|project\.db(-wal|-shm)?|project\.(yaml|lock)\.v[23]')" ] || check "killed at ${at} ms: left: $(ls -A "$F" | tr '\n' ' ')"
+  [ -z "$(cd "$F" && ls -A | grep -vxE 'files|\.runs|\.cozy-legacy-v1|project\.db(-wal|-shm)?|project\.(yaml|lock)\.v[23]')" ] || check "killed at ${at} ms: left: $(ls -A "$F" | tr '\n' ' ')"
   rm -rf "$F"
 done
 echo "first open killed mid-way $stopped of $tried times, in $took ms"
@@ -2967,7 +2967,24 @@ YAML
 render "$T" edit || check "healing: first cut: $(tail -c 400 "$OUT/render.txt")"
 J '.cuts[0].frames == 288' <<< "$(status "$T")" || check "healing: the whole film: $(status "$T" | jq -c .cuts)"
 local whole; whole=$(take_file "$T" edit video)
-db_replace "$T" "${whole#sha256:}" "$(sha "$T/short.mp4")"
+if [ "$(sql1 "$T" 'PRAGMA user_version')" = 2 ]; then
+  # A relational query projection is no longer authoritative. Form a REAL historical v1
+  # fixture with the bad short-film reference, then let the actual first-open migration and
+  # normal CLI render repair it. Do not weaken the out-of-date/full-length assertions.
+  local historical=$OUT/healing-v1
+  mkdir -p "$historical"; cp -R "$T/files" "$historical/files"; cp "$T/short.mp4" "$historical/short.mp4"
+  python3 - "$T/project.db" "$historical/project.db" "${whole#sha256:}" "$(sha "$T/short.mp4")" <<'PYHEAL'
+import sqlite3,sys
+with sqlite3.connect(f'file:{sys.argv[1]}?mode=ro',uri=True) as source:
+    with sqlite3.connect(sys.argv[2]) as target:
+        source.backup(target)
+        target.executescript('DROP TABLE crdt_document; DROP TABLE crdt_changes; PRAGMA user_version=1;')
+        target.execute('UPDATE versions SET record=replace(record,?,?)',(sys.argv[3],sys.argv[4]))
+PYHEAL
+  T=$historical
+else
+  db_replace "$T" "${whole#sha256:}" "$(sha "$T/short.mp4")"
+fi
 rm -f "$T/edit.mp4"; cp "$T/short.mp4" "$T/edit.mp4"
 [ "$(row "$T" edit .standing)" = '"out_of_date"' ] || check "healing: a short film stands as its state: $(row "$T" edit .status)"
 render "$T" all --missing || check "healing: render: $(tail -c 400 "$OUT/render.txt")"
@@ -2978,6 +2995,9 @@ version=$(held "$T" edit | jq '.versions[-1].number')
 render "$T" edit || check "healing: naming it: $(tail -c 400 "$OUT/render.txt")"
 says healing "(unchanged)"
 [ "$(held "$T" edit | jq '.versions[-1].number')" = "$version" ] || check "healing: the same bytes made a new version: $(tail -c 400 "$OUT/render.txt")"
+if [ "$(sql1 "$T" 'PRAGMA user_version')" = 2 ]; then
+  [ "$(sql1 "$T" "SELECT count(*) FROM versions WHERE json_extract(record,'$.run') IS NOT NULL AND json_type(record,'$.run_id') IS NOT 'text'")" = 0 ] || check "healing: a new generated version lost its globally stable run id"
+fi
 }
 
 # Takes cut in the walk that lands them, new bytes nothing has measured. First in the project part: on a new computer this is also

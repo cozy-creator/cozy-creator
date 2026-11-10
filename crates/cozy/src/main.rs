@@ -9,6 +9,7 @@
 static ALLOCATOR: platform::heap::Counted<mimalloc::MiMalloc> = platform::heap::Counted(mimalloc::MiMalloc);
 
 fn main() -> std::process::ExitCode {
+    if let Some(code) = project_mount::run_supervisor() { std::process::exit(code); }
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     let words: Vec<&std::ffi::OsString> = args.iter().filter(|arg| *arg != "--json").collect();
     match words.as_slice() {

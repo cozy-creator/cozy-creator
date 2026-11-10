@@ -85,7 +85,7 @@ pub(crate) fn failed(refusal: Refusal) -> io::Error {
     io::Error::other(failure)
 }
 
-/// Only upfront required inputs gate GPU admission. On-demand sources keep fetching behind.
+/// Only upfront required inputs gate GPU admission; on-demand ones come when a stage reads them.
 /// A run waiting says on what (`Fetch::waiting_on`).
 #[derive(Clone, Debug)]
 pub(crate) enum Ready {
@@ -124,7 +124,8 @@ pub(crate) struct Fetch {
     machine: Arc<Machine>,
     /// Where its checkpoints come from.
     hub: Option<hub::Source>,
-    /// Its schedules' order: the root run's acceptance, or after every run (no run).
+    /// Its schedules' order: the root run's acceptance, a started run's (`priority::STARTED`) ahead
+    /// of them, or after every run (no run).
     order: u64,
     stop: Stop,
     kept: Mutex<Vec<tokio::task::JoinHandle<tensorfs::err::Result<tensorfs::fetch::Landed>>>>,
@@ -134,8 +135,6 @@ pub(crate) struct Fetch {
     replaced: Mutex<Option<Arc<Fetch>>>,
     /// Each wanted checkpoint not all here when it was wanted.
     arriving: Mutex<Vec<Arriving>>,
-    /// The same of its on-demand models, which a step reads when it comes to them.
-    behind: Mutex<Vec<Arriving>>,
     required: Mutex<Required>,
 }
 
@@ -171,7 +170,6 @@ impl Fetch {
             held: Mutex::default(),
             replaced: Mutex::default(),
             arriving: Mutex::default(),
-            behind: Mutex::default(),
             required: Mutex::default(),
         })
     }
@@ -194,22 +192,21 @@ impl Fetch {
     }
 
     /// Want each of `selected`'s (header, components) components next, before the call's
-    /// executor reads them, in Runtime's Start-pass order: the smallest component first; then
-    /// `later`'s (its on-demand models, built when a stage first uses one) the same way, right
-    /// behind them. Held until the call ends. Its run's progress waits on `selected` only. For a
-    /// `cold` call (no executor holds its construction) the chunks already on disk are read into
-    /// the page cache in the same order meanwhile (`read_ahead`).
-    /// `room` is asked for the bytes absent of both, else of `selected` alone, before any is
+    /// executor reads them, in Runtime's Start-pass order: the smallest component first. Held until
+    /// the call ends; its run waits on them. Its on-demand models are not: a stage that reads one
+    /// fetches it then, and one no stage reads costs nothing (cl-804). For a `cold` call (no
+    /// executor holds its construction) the chunks already on disk are read into the page cache in
+    /// the same order meanwhile (`read_ahead`). `room` is asked for the bytes absent before any is
     /// wanted: it frees them on the disk or refuses, and a refusal fails the call before it
     /// downloads or starts.
     pub(crate) fn ahead(
-        self: &Arc<Self>, selected: &[(String, Vec<String>)], later: &[(String, Vec<String>)], cold: bool,
+        self: &Arc<Self>, selected: &[(String, Vec<String>)], cold: bool,
         engine: &Arc<Engine>, room: &dyn Fn(u64) -> Result<(), String>,
     ) -> io::Result<()> {
         if cold {
-            self.read_ahead(selected, later);
+            self.read_ahead(selected);
         }
-        let mut wanted = match self.components(selected, true) {
+        let mut wanted = match self.components(selected) {
             Ok(wanted) => wanted,
             Err(error) => {
                 self.required.lock().unwrap().failure = Some(error.to_string());
@@ -217,19 +214,11 @@ impl Fetch {
                 return Err(error);
             }
         };
-        // A model the call may never read must not block admission or cost its first inputs.
-        let mut behind = self.components(later, false).unwrap_or_else(|error| {
-            tracing::warn!("its on-demand models' early fetch: {error}");
-            vec![]
-        });
         wanted.sort_by_key(|w| w.bytes);
-        behind.sort_by_key(|w| w.bytes);
         let required = wanted.len();
-        let bytes = |wants: &[Wanted]| wants.iter().flat_map(|w| &w.objects).map(|o| o.length).sum::<u64>();
-        let missing = bytes(&wanted) + bytes(&behind);
-        // Its checkpoints are held from `components` on: making room never evicts its own. Only
-        // what it must read refuses it; room for its on-demand models too where there is some.
-        if let Err(refusal) = room(missing).or_else(|_| room(bytes(&wanted))) {
+        let missing = wanted.iter().flat_map(|w| &w.objects).map(|o| o.length).sum::<u64>();
+        // Its checkpoints are held from `components` on: making room never evicts its own.
+        if let Err(refusal) = room(missing) {
             self.required.lock().unwrap().failure = Some(refusal.clone());
             engine.notify_activity();
             return Err(io::Error::other(refusal));
@@ -242,50 +231,45 @@ impl Fetch {
             }).collect();
         }
         let mut kept = self.kept.lock().unwrap();
-        for (rank, Wanted { remote, objects, .. }) in wanted.into_iter().chain(behind).enumerate() {
-            let needed = rank < required;
+        for (rank, Wanted { remote, objects, .. }) in wanted.into_iter().enumerate() {
             let weak = Arc::downgrade(self);
             let wake = Arc::downgrade(engine);
             let started = self.machine.want_observed(&remote, objects, priority::next(self.order, rank as u32), move |result| {
-                if needed {
-                    if let Some(fetch) = weak.upgrade() {
-                        let mut state = fetch.required.lock().unwrap();
-                        state.pending = state.pending.saturating_sub(1);
-                        if let Some(want) = state.wants.get_mut(rank) {
-                            want.settled = true;
-                        }
-                        if let Err(error) = result {
-                            // A full disk says what fills it and the disk that would hold the call.
-                            let advice = match error.code == Code::CAPACITY_EXHAUSTED {
-                                true => crate::reclaim::advice(fetch.store().root(), missing),
-                                false => String::new(),
-                            };
-                            state.failure.get_or_insert_with(|| failed(error.clone()).to_string() + &advice);
-                        }
+                if let Some(fetch) = weak.upgrade() {
+                    let mut state = fetch.required.lock().unwrap();
+                    state.pending = state.pending.saturating_sub(1);
+                    if let Some(want) = state.wants.get_mut(rank) {
+                        want.settled = true;
                     }
-                    if let Some(engine) = wake.upgrade() { engine.notify_activity(); }
+                    if let Err(error) = result {
+                        // A full disk says what fills it and the disk that would hold the call.
+                        let advice = match error.code == Code::CAPACITY_EXHAUSTED {
+                            true => crate::reclaim::advice(fetch.store().root(), missing),
+                            false => String::new(),
+                        };
+                        state.failure.get_or_insert_with(|| failed(error.clone()).to_string() + &advice);
+                    }
                 }
+                if let Some(engine) = wake.upgrade() { engine.notify_activity(); }
             });
             match started {
                 Ok(task) => kept.push(task),
-                Err(error) if needed => {
+                Err(error) => {
                     let error = failed(error);
                     self.required.lock().unwrap().failure = Some(error.to_string());
                     engine.notify_activity();
                     return Err(error);
                 }
-                Err(error) => tracing::warn!("on-demand early fetch: {error}"),
             }
         }
         Ok(())
     }
 
-    /// The page cache takes `selected`'s and then `later`'s chunks on disk, the smallest component
-    /// first, while the call's executor forks, imports and opens its GPU: its Start pass and first
+    /// The page cache takes `selected`'s chunks on disk, the smallest component first, while the call's executor forks, imports and opens its GPU: its Start pass and first
     /// phase then read memory, not the disk (a cold Qwen-Image text encoder is 8.4 GB). Read on
     /// threads of their own, a chunk the cache holds skipped, within half of the host's available
     /// memory, ending with the call.
-    fn read_ahead(self: &Arc<Self>, selected: &[(String, Vec<String>)], later: &[(String, Vec<String>)]) {
+    fn read_ahead(self: &Arc<Self>, selected: &[(String, Vec<String>)]) {
         let store = self.store().clone();
         let ordered = |groups: &[(String, Vec<String>)]| {
             let mut components: Vec<(u64, Vec<ObjectRef>)> = groups.iter()
@@ -298,8 +282,7 @@ impl Fetch {
             components.sort_by_key(|(bytes, _)| *bytes);
             components.into_iter().flat_map(|(_, objects)| objects).collect::<Vec<_>>()
         };
-        let chunks: Vec<ObjectRef> = ordered(selected).into_iter().chain(ordered(later))
-            .filter(|o| store.holds(o)).collect();
+        let chunks: Vec<ObjectRef> = ordered(selected).into_iter().filter(|o| store.holds(o)).collect();
         if chunks.is_empty() {
             return;
         }
@@ -384,14 +367,14 @@ impl Fetch {
         Some(each.join("; "))
     }
     /// Each component of `selected` (header, components) from a Hub: its bytes, origin and
-    /// chunks, its checkpoint held until the call ends. With `metered`, what is absent now is
-    /// what its run waits on (`meter`), under the repository it came from.
-    fn components(&self, selected: &[(String, Vec<String>)], metered: bool) -> io::Result<Vec<Wanted>> {
+    /// chunks, its checkpoint held until the call ends. What is absent now is what its run waits
+    /// on (`meter`), under the repository it came from.
+    fn components(&self, selected: &[(String, Vec<String>)]) -> io::Result<Vec<Wanted>> {
         let mut wanted = vec![];
         for (header, components) in selected {
             let checkpoint = checkpoint(self.store(), header)?;
             let Some(remote) = self.source(checkpoint.id())? else {
-                if metered && storage::chunks(&checkpoint, components).iter().any(|o| !self.store().holds(o)) {
+                if storage::chunks(&checkpoint, components).iter().any(|o| !self.store().holds(o)) {
                     return Err(io::Error::other("required local checkpoint input is missing and has no fetch source"));
                 }
                 // Retain local checkpoints too, so GC cannot remove required inputs between
@@ -423,8 +406,7 @@ impl Fetch {
             if let (false, Some(pulled)) = (absent_all.is_empty(), pulled) {
                 // What it has to fetch, never what was here already (shared with another model, or an earlier pull's).
                 let fetch = absent_all.iter().map(|o| o.length).sum();
-                let list = if metered { &self.arriving } else { &self.behind };
-                list.lock().unwrap().push(Arriving { repository: pulled.repository, remote: remote.clone(), fetch, here: here_all, absent: absent_all });
+                self.arriving.lock().unwrap().push(Arriving { repository: pulled.repository, remote: remote.clone(), fetch, here: here_all, absent: absent_all });
             }
             self.held.lock().unwrap().push(checkpoint);
         }
@@ -480,12 +462,11 @@ impl Fetch {
         })
     }
 
-    /// The weights it wants that are not all here yet, while any are not: those its run waits on,
-    /// then its on-demand ones; and each repository its run waits on.
+    /// The weights its run waits on that are not all here yet, while any are not; and each
+    /// repository of them.
     pub(crate) fn arriving(&self) -> (Option<Weights>, Vec<Repository>) {
         let waited = self.each(&self.arriving);
-        let weights = counted(&waited, false).or_else(|| counted(&self.each(&self.behind), true));
-        (weights, waited.into_iter().filter(|each| each.absent).collect())
+        (counted(&waited), waited.into_iter().filter(|each| each.absent).collect())
     }
 
     /// Each of `list`'s repositories, its bytes fetched (an object still arriving counted to the byte it reached) of those it
@@ -538,20 +519,19 @@ impl Fetch {
 }
 
 /// The repositories of `each` not all here, and the bytes fetched of all they had to fetch.
-fn counted(each: &[Repository], behind: bool) -> Option<Weights> {
+fn counted(each: &[Repository]) -> Option<Weights> {
     let models: Vec<&str> = each.iter().filter(|each| each.absent).map(|each| each.repository.as_str()).collect();
     let (done, total) = each.iter().fold((0, 0), |(done, total), each| (done + each.done, total + each.total));
-    (!models.is_empty()).then(|| Weights { models: models.join(" and "), done, total, behind })
+    (!models.is_empty()).then(|| Weights { models: models.join(" and "), done, total })
 }
 
 /// While what `fetch` wants is not all here, run `id`'s progress says which weights it waits on
 /// and how many of their bytes are here, from a quarter-second look at the store; once they are,
-/// or the fetch ends, its own stage shows again. On-demand weights arriving show beside its stage,
-/// so a step that reads them, which says nothing itself meanwhile, is seen moving. While a required want is unanswered, the run's
+/// or the fetch ends, its own stage shows again. While a required want is unanswered, the run's
 /// waiting reason says on what (`Fetch::waiting_on`), and TensorD's log says so each time where
 /// its chunks are changes. A run whose weights are here hears nothing.
 pub(crate) fn meter(engine: Arc<Engine>, id: String, fetch: &Arc<Fetch>) {
-    if fetch.arriving.lock().unwrap().is_empty() && fetch.behind.lock().unwrap().is_empty() && fetch.required.lock().unwrap().pending == 0 {
+    if fetch.arriving.lock().unwrap().is_empty() && fetch.required.lock().unwrap().pending == 0 {
         return;
     }
     let (store, fetch, began) = (fetch.store().clone(), Arc::downgrade(fetch), std::time::Instant::now());
@@ -591,7 +571,7 @@ pub(crate) fn meter(engine: Arc<Engine>, id: String, fetch: &Arc<Fetch>) {
             }
             // What the run waited for lands in the transport log, as a pull's does.
             if weights.is_none() && waiting.is_none() {
-                if let (Some(Weights { models, total, behind: false, .. }), true) = (last, live.is_some()) {
+                if let (Some(Weights { models, total, .. }), true) = (last, live.is_some()) {
                     let waited = format!("bytes={total} seconds={:.1} run={id}", began.elapsed().as_secs_f64());
                     storage::transport(&store, "arrived", &models, &waited);
                     // Its time waiting on them is no part of its compute (`journal::Ran`).

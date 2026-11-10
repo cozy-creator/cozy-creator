@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime[media]>=0.43", "msgspec>=0.19"]
+# dependencies = ["cozy-runtime[media]>=0.43.1", "msgspec>=0.19"]
 # ///
 """A prompt as the function gets it: its text, and each reference its mentions sent, by key and picture width."""
 

@@ -245,22 +245,24 @@ async fn run(ctx: &Context, args: RunArgs, within: Option<String>) -> Result<Exi
     let cwd = std::env::current_dir()
         .map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
     let written = args.target.clone().unwrap_or_default();
+    let sender = match within.as_deref() { Some(project) => Sender::for_project(ctx, project).await?, None => Sender::new(ctx).await? };
     // Local code goes by content: the target is then the function it names.
     let (target, code) = match local(ctx, &written, &cwd)? {
-        Some((package, function)) => (function.unwrap_or_default(), Some(Sender::new(ctx).await?.code(&package).await?)),
+        Some((package, function)) => (function.unwrap_or_default(), Some(sender.code(&package).await?)),
         None => (written, None),
     };
     let inputs = !args.inputs.is_empty() || args.input_file.is_some();
     if args.describe && !inputs {
-        return describe(ctx, &target, code.as_ref(), args.placement.on.as_deref()).await;
+        return describe(ctx, &target, code.as_ref(), args.placement.on.as_deref(), within.as_deref()).await;
     }
+    let project = within.clone();
     let ask = request(ctx, &args, target.clone(), code.clone(), &cwd, within).await?;
     if let Some(count) = args.estimate {
         return estimate(ctx, ask, count).await;
     }
     match send(ctx, ask).await {
         // A package's functions, when the run names none and gives it nothing.
-        Err(e) if e.code == "function_unnamed" && !inputs => functions(ctx, &target, code.as_ref(), args.placement.on.as_deref()).await,
+        Err(e) if e.code == "function_unnamed" && !inputs => functions(ctx, &target, code.as_ref(), args.placement.on.as_deref(), project.as_deref()).await,
         Err(e) => Err(e),
         Ok(run) => {
             if let Some(dir) = &args.output {
@@ -311,7 +313,7 @@ pub(crate) fn local(ctx: &Context, raw: &str, cwd: &Path) -> Result<Option<(Path
 
 /// The request `args` make of `target` (of `code`, when it's local), with every file and folder it names here sent first.
 async fn request(ctx: &Context, args: &RunArgs, target: String, code: Option<LocalCode>, cwd: &Path, within: Option<String>) -> Result<RunRequest, Error> {
-    let sender = Sender::new(ctx).await?;
+    let sender = match within.as_deref() { Some(project) => Sender::for_project(ctx, project).await?, None => Sender::new(ctx).await? };
     let mut paths = Paths::new(&sender);
     for term in &args.inputs {
         term_paths(&mut paths, term, cwd).await?;
@@ -460,8 +462,8 @@ fn seconds(ms: u64) -> String {
 }
 
 /// `GET /v1/targets`: the target's function's contract, or its package's functions.
-async fn describe(ctx: &Context, raw: &str, code: Option<&LocalCode>, on: Option<&str>) -> Result<ExitCode, Error> {
-    let target = target(ctx, raw, code, on).await?;
+async fn describe(ctx: &Context, raw: &str, code: Option<&LocalCode>, on: Option<&str>, project: Option<&str>) -> Result<ExitCode, Error> {
+    let target = target(ctx, raw, code, on, project).await?;
     match (&target.contract, &target.request) {
         (Some(_), Some(request)) if ctx.json => output::json(request),
         (Some(contract), _) => anstream::print!("{contract}"),
@@ -471,18 +473,20 @@ async fn describe(ctx: &Context, raw: &str, code: Option<&LocalCode>, on: Option
 }
 
 /// `cozy run [org/]pkg`: the package's public functions.
-async fn functions(ctx: &Context, raw: &str, code: Option<&LocalCode>, on: Option<&str>) -> Result<ExitCode, Error> {
-    print_functions(ctx, &target(ctx, raw, code, on).await?);
+async fn functions(ctx: &Context, raw: &str, code: Option<&LocalCode>, on: Option<&str>, project: Option<&str>) -> Result<ExitCode, Error> {
+    print_functions(ctx, &target(ctx, raw, code, on, project).await?);
     Ok(ExitCode::SUCCESS)
 }
 
-async fn target(ctx: &Context, raw: &str, code: Option<&LocalCode>, on: Option<&str>) -> Result<Target, Error> {
+async fn target(ctx: &Context, raw: &str, code: Option<&LocalCode>, on: Option<&str>, project: Option<&str>) -> Result<Target, Error> {
     let tree = code.map(|code| code.tree.to_string());
     let mut query = vec![("target", raw), ("hub", ctx.hub().as_str())];
     query.extend(on.map(|on| ("on", on)));
     query.extend(tree.as_deref().map(|tree| ("tree", tree)));
     query.extend(code.map(|code| ("at", code.at.as_str())).filter(|(_, at)| !at.is_empty()));
-    ctx.calcifer().await?.get_query("/v1/targets", &query).await
+    query.extend(project.map(|project| ("project", project)));
+    let path = if project.is_some() { "/v1/project-targets" } else { "/v1/targets" };
+    ctx.calcifer().await?.get_query(path, &query).await
 }
 
 /// A package's functions, and what each does. Its recipes are not functions: `cozy model

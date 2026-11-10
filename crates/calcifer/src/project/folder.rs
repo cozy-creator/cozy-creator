@@ -230,6 +230,9 @@ pub(crate) type Files = BTreeMap<String, String>;
 /// One result of a tool: its number, its files and the key it was made under.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Version {
+    /// Stable identity independent of the local display number.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
     /// 1 first, never reused.
     #[serde(default)]
     pub number: u32,
@@ -244,6 +247,9 @@ pub(crate) struct Version {
     /// The last run that made it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<u64>,
+    /// The globally stable run identity; the number remains a local display label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<api::ids::RunId>,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub execution_ms: u64,
     /// What made it, `org/package/function@release`, as the asset's tool can change after.
@@ -331,6 +337,9 @@ pub(crate) struct Pending {
 /// kept for the next try on those inputs.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Asset {
+    /// Stable identity shared with the written box; a rename preserves it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
     /// Its name as the file wrote it when it was made.
     #[serde(default)]
     pub name: String,
@@ -398,6 +407,9 @@ impl Asset {
 
     /// `version` on the list in its place, in place of one of that number.
     pub(crate) fn list(&mut self, mut version: Version) {
+        if version.id.is_empty() {
+            version.id = self.version(version.number).filter(|held| !held.id.is_empty()).map_or_else(super::new_key, |held| held.id.clone());
+        }
         let mut texts = self.texts();
         texts.extend(version.text.take().map(|text| (version.number, text)));
         self.versions.retain(|held| held.number != version.number);
@@ -467,8 +479,12 @@ pub(crate) struct Lock {
 }
 
 /// One file a `cozy run` left in the project.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct RunFile {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<api::ids::RunId>,
     pub run: u64,
     pub function: String,
     pub output: String,
@@ -542,6 +558,7 @@ struct KeptBoard {
 
 /// This Calcifer's id, the same across its restarts, once it has said it.
 static CALCIFER: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
 
 /// Reads this Calcifer's id from `dir`, or makes it. Before any project is read.
 pub(crate) fn bind_calcifer(dir: &Path) -> Result<(), Error> {
@@ -980,6 +997,23 @@ pub(crate) struct Folder {
 }
 
 impl Folder {
+    /// Release cached connections before unmounting or moving the storage. The caller has
+    /// stopped admissions and checked background work; an in-flight DB operation refuses it.
+    pub(crate) fn close_connections(&self) -> Result<(), Error> {
+        let busy = || Error::new(api::error::Kind::Conflict, "project_busy", "a project database operation is still running");
+        if self.shared.checkpointing.load(std::sync::atomic::Ordering::Acquire) { return Err(busy()); }
+        let mut writer = self.shared.writing.try_lock().map_err(|_| busy())?;
+        let mut reader = self.shared.reading.try_lock().map_err(|_| busy())?;
+        let writing = writer.take();
+        let reading = reader.take();
+        *self.shared.held.lock().expect("held lock") = None;
+        drop(reader);
+        drop(writer);
+        drop(reading);
+        drop(writing);
+        Ok(())
+    }
+
     /// `stamp` of the project in `dir` while anything holds it. Of one nothing does, its transactions' count, read with nothing opened:
     /// another than any it had open, and it moves with each commit.
     pub(crate) fn stamp_at(dir: &Path) -> String {
@@ -1108,6 +1142,12 @@ impl Folder {
             held.files = now;
         }
         Ok(held)
+    }
+
+    /// Native CRDT conflicts are kept visible even though an ordinary value read chooses one.
+    pub(crate) fn crdt_conflicts(&self) -> Result<Vec<String>, Error> {
+        let held = self.held()?;
+        Ok(held.as_ref().and_then(|held| held.stored.crdt.as_ref()).map_or_else(Vec::new, |doc| doc.conflicts()))
     }
 
     /// The revision: one more with each commit.
@@ -1246,7 +1286,7 @@ impl Folder {
     }
 
     /// History rows this act writes, and those it deletes.
-    pub(super) fn write_ops(&self, ops: Vec<db::OpRow>, gone: Vec<u64>) -> Result<(), Error> {
+    pub(super) fn write_ops(&self, ops: Vec<db::OpRow>, gone: Vec<(String, u64)>) -> Result<(), Error> {
         self.act(|| {
             let act = acting(self.id()).expect("in its act");
             let mut extra = act.extra.borrow_mut();
@@ -1293,7 +1333,9 @@ impl Folder {
 
     /// Every history row, oldest first.
     pub(super) fn ops(&self) -> Result<Vec<db::OpRow>, Error> {
-        self.reading_db(|conn| db::ops(conn, &self.db()))?
+        let held = self.held()?;
+        held.as_ref().and_then(|held| held.stored.crdt.as_ref())
+            .ok_or_else(|| Error::new(Kind::Validation, "project_crdt", "the canonical project document is missing"))?.ops()
     }
 
     /// What the request under `key` asked and answered here, if it was kept.
@@ -1578,9 +1620,16 @@ impl Folder {
             }
             let old = std::cell::RefCell::new(vec![]);
             let listed = |rows: &mut Vec<RunFile>| {
-                let earlier = rows.iter().position(|row| row.run == made.run && row.output == made.output);
+                let earlier = rows.iter().position(|row| row.output == made.output && match (&row.run_id, &made.run_id) {
+                    (Some(held), Some(made)) => held == made,
+                    (None, None) => row.run == made.run,
+                    _ => false,
+                });
                 match earlier {
-                    Some(at) => *old.borrow_mut() = vec![std::mem::replace(&mut rows[at], made.clone()).sha256],
+                    Some(at) => {
+                        let next = RunFile { id: rows[at].id.clone(), ..made.clone() };
+                        *old.borrow_mut() = vec![std::mem::replace(&mut rows[at], next).sha256];
+                    }
                     None => rows.push(made.clone()),
                 }
             };

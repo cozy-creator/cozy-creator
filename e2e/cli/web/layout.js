@@ -304,17 +304,34 @@ function emptyHits({ around, step }) {
 
 /** Each drawn edge on top, as the GPU draws it: its line on all four sides, and nothing of it past the line. Each is pictured with it and
  *  without it, the page held still, and what it draws is where the two differ; `decoder` reads the pictures. */
-async function drawnEdges(page, decoder) {
-  const frames = await page.evaluate(() => {
-    const all = [...document.querySelectorAll('body *')].filter((el) => getComputedStyle(el).borderImageSource !== 'none' && el.checkVisibility({ opacityProperty: true, visibilityProperty: true }));
-    const out = [];
-    for (const el of all) {
-      if (all.some((other) => other !== el && other.contains(el))) continue;
+async function drawnEdges(page, decoder, label) {
+  const said = [];
+  const proofs = [];
+  try {
+    // Settle before reading a rectangle: finishing an animation can move the frame itself.
+    const ids = await page.evaluate(() => {
+      for (const held of document.getAnimations()) if (held.timeline === document.timeline && held.effect?.getComputedTiming().iterations !== Infinity) held.finish();
+      window.heldStill = document.getAnimations().filter((held) => held.playState === 'running' && held.timeline === document.timeline);
+      for (const held of window.heldStill) held.pause();
+      const all = [...document.querySelectorAll('body *')].filter((el) => getComputedStyle(el).borderImageSource !== 'none' && el.checkVisibility({ opacityProperty: true, visibilityProperty: true }));
+      const ids = [];
+      window.drawnFrames = [];
+      for (const el of all) {
+        if (all.some((other) => other !== el && other.contains(el))) continue;
+        el.dataset.drawnEdge = String(ids.length);
+        window.drawnFrames.push(el);
+        ids.push(ids.length);
+      }
+      return ids;
+    });
+    // Each pair has its own current frame. The viewport may refit while earlier pairs are read.
+    const frameAt = (i) => page.evaluate((i) => {
+      const el = window.drawnFrames[i];
+      if (!el?.isConnected) return null;
       const r = el.getBoundingClientRect();
+      const style = getComputedStyle(el);
       const scale = r.width / el.offsetWidth;
-      const o = parseFloat(getComputedStyle(el).borderImageOutset) * scale;
-      if (r.width < 40 || r.height < 30 || r.left - o < 1 || r.top - o < 1 || r.right + o > innerWidth - 1 || r.bottom + o > innerHeight - 1) continue;
-      // Along each side clear of its corners, where nothing else is over it.
+      const o = parseFloat(style.borderImageOutset) * scale;
       const samples = [];
       for (const side of ['top', 'right', 'bottom', 'left']) {
         for (const t of [0.3, 0.5, 0.7]) {
@@ -324,32 +341,87 @@ async function drawnEdges(page, decoder) {
           if (top && el.contains(top)) samples.push({ side, x, y });
         }
       }
-      el.dataset.drawnEdge = String(out.length);
-      out.push({ at: `${el.tagName.toLowerCase()}${[...el.classList].slice(0, 3).map((c) => `.${c}`).join('')}`, rect: [r.left, r.top, r.right, r.bottom], o, scale, samples });
+      return {
+        at: `${el.tagName.toLowerCase()}${[...el.classList].slice(0, 3).map((c) => `.${c}`).join('')}`,
+        rect: [r.left, r.top, r.right, r.bottom], o, scale, samples,
+        view: [innerWidth, innerHeight, devicePixelRatio, document.querySelector('.react-flow__viewport')?.style.transform ?? ''],
+        image: style.borderImageSource,
+        eligible: !(r.width < 40 || r.height < 30 || r.left - o < 1 || r.top - o < 1 || r.right + o > innerWidth - 1 || r.bottom + o > innerHeight - 1),
+      };
+    }, i);
+    const geometry = (frame) => frame && JSON.stringify([frame.rect, frame.scale, frame.view]);
+    const paint = (frame) => frame && JSON.stringify([frame.o, frame.image]);
+    for (const i of ids) {
+      const first = await frameAt(i);
+      if (first && !first.eligible) continue; // The same size/on-screen exclusions as the pixel audit.
+      let last;
+      const what = `drawn edge ${i} stays in place through its two pictures`;
+      let pair;
+      try {
+        await until(what, async () => {
+          const frame = await frameAt(i);
+          if (!frame?.eligible) { last = { frame, stable: false }; return false; }
+          const [left, top, right, bottom] = frame.rect;
+          const pad = frame.o + 3;
+          const [width, height] = frame.view;
+          const [x, y] = [Math.max(0, Math.floor(left - pad)), Math.max(0, Math.floor(top - pad))];
+          const clip = { x, y, width: Math.min(width, Math.ceil(right + pad)) - x, height: Math.min(height, Math.ceil(bottom + pad)) - y };
+          const shown = await page.screenshot({ clip });
+          const afterShown = await frameAt(i);
+          const visibility = await page.evaluate((i) => {
+            const el = window.drawnFrames[i];
+            if (!el?.isConnected) return null;
+            const saved = [el.style.getPropertyValue('visibility'), el.style.getPropertyPriority('visibility')];
+            el.style.setProperty('visibility', 'hidden', 'important');
+            return saved;
+          }, i);
+          if (!visibility) { last = { frame, afterShown, stable: false }; return false; }
+          let bare, afterBare;
+          try {
+            bare = await page.screenshot({ clip });
+            afterBare = await frameAt(i);
+          } finally {
+            await page.evaluate(({ i, saved }) => {
+              const el = window.drawnFrames[i];
+              if (!el) return;
+              if (saved[0]) el.style.setProperty('visibility', saved[0], saved[1]);
+              else el.style.removeProperty('visibility');
+            }, { i, saved: visibility });
+          }
+          const restored = await frameAt(i);
+          const stable = [afterShown, afterBare, restored].every((after) => geometry(after) === geometry(frame))
+            && [afterShown, restored].every((after) => paint(after) === paint(frame));
+          last = { frame, afterShown, afterBare, restored, clip, viewport: { width, height }, shown, bare, stable };
+          return stable;
+        }, (stable) => stable, STEP_MS);
+        pair = last;
+      } catch (error) {
+        if (!last || !error.message.startsWith(`${what}: still `)) throw error;
+        const found = [{ rule: 'capture-moved', what: `${what}: geometry kept changing during capture` }];
+        for (const finding of found) said.push({ at: first?.at ?? `drawn edge ${i}`, ...finding });
+        if (process.env.SHOT) proofs.push({ i, ...last, found });
+        continue;
+      }
+      const { frame, clip, shown, bare } = pair;
+      const found = await decoder.evaluate(edgesOf, { shown: shown.toString('base64'), bare: bare.toString('base64'), clip, frame });
+      for (const { rule, what } of found) said.push({ rule, at: frame.at, what });
+      if (found.length && process.env.SHOT) proofs.push({ i, ...pair, found });
     }
-    // Still: what opens is at its end (the GPU path's compositor holds it at its start), and what goes on forever is held.
-    for (const held of document.getAnimations()) if (held.timeline === document.timeline && held.effect?.getComputedTiming().iterations !== Infinity) held.finish();
-    window.heldStill = document.getAnimations().filter((held) => held.playState === 'running' && held.timeline === document.timeline);
-    for (const held of window.heldStill) held.pause();
-    return out;
-  });
-  const said = [];
-  for (const [i, frame] of frames.entries()) {
-    const [left, top, right, bottom] = frame.rect;
-    const pad = frame.o + 3;
-    const { width, height } = page.viewportSize();
-    const [x, y] = [Math.max(0, Math.floor(left - pad)), Math.max(0, Math.floor(top - pad))];
-    const clip = { x, y, width: Math.min(width, Math.ceil(right + pad)) - x, height: Math.min(height, Math.ceil(bottom + pad)) - y };
-    const shown = await page.screenshot({ clip });
-    await page.evaluate((i) => (document.querySelector(`[data-drawn-edge="${i}"]`).style.visibility = 'hidden'), i);
-    const bare = await page.screenshot({ clip });
-    await page.evaluate((i) => document.querySelector(`[data-drawn-edge="${i}"]`).style.removeProperty('visibility'), i);
-    for (const { rule, what } of await decoder.evaluate(edgesOf, { shown: shown.toString('base64'), bare: bare.toString('base64'), clip, frame })) said.push({ rule, at: frame.at, what });
+  } finally {
+    await page.evaluate(() => {
+      for (const el of window.drawnFrames ?? []) delete el.dataset.drawnEdge;
+      for (const held of window.heldStill ?? []) held.play();
+      delete window.drawnFrames;
+      delete window.heldStill;
+    });
   }
-  await page.evaluate(() => {
-    for (const el of document.querySelectorAll('[data-drawn-edge]')) delete el.dataset.drawnEdge;
-    for (const held of window.heldStill) held.play();
-  });
+  // Keep the exact comparison inputs after this pass has finished measuring, without another screenshot or DOM read.
+  for (const { i, frame, clip, viewport, shown, bare, afterShown, afterBare, restored, found } of proofs) {
+    const path = `${process.env.SHOT}-${label}-edge-${i}`;
+    if (shown) writeFileSync(`${path}-drawn.png`, shown);
+    if (bare) writeFileSync(`${path}-bare.png`, bare);
+    writeFileSync(`${path}-frame.json`, JSON.stringify({ label, frame, clip, viewport, afterShown, afterBare, restored, findings: found }, null, 2));
+  }
   return said;
 }
 
@@ -789,7 +861,7 @@ ${local ? `  card:
         last = now;
       }
       seen.looks = (seen.looks ?? 0) + 1;
-      const said = await drawnEdges(page, decoder);
+      const said = await drawnEdges(page, decoder, `${size.name}-${state}`);
       for (const finding of said) findings.push({ size: `${size.name} drawn`, state, ...finding });
       if (process.env.SHOT && said.length) {
         const path = `${process.env.SHOT}-${size.name}-drawn-${state}.png`;
