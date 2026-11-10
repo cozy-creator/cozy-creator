@@ -1,0 +1,21 @@
+// Pure source/header controls only. Read exact811 scale.js on stdin; no port/process/target/browser actions.
+const assert = require('node:assert/strict');
+const { readFileSync } = require('node:fs');
+const { forwardHeaders, upstreamUrl } = require('./proxy-headers.cjs');
+const { instrument } = require('./harness-injection.cjs');
+const original = readFileSync(0, 'utf8');
+const patched = instrument(original);
+assert.equal(patched.guard.reverse_exact, true);
+assert.throws(() => instrument(original.replace('const ASSETS = 5000;', 'const ASSETS = 4999;')));
+const incoming = { authorization: 'Bearer fixture-session-value', cookie: 'fixture=value', host: '127.0.0.1:10001', origin: 'http://127.0.0.1:10001', 'sec-fetch-site': 'same-origin' };
+const headers = forwardHeaders(incoming, 'http://127.0.0.1:10002');
+assert.equal(headers.authorization, incoming.authorization);
+assert.equal(headers.cookie, incoming.cookie);
+assert.equal(headers.host, '127.0.0.1:10002');
+assert.equal(headers.origin, 'http://127.0.0.1:10002');
+assert.equal(headers['sec-fetch-site'], undefined);
+assert.equal(incoming['sec-fetch-site'], 'same-origin');
+assert.equal(forwardHeaders({host:'127.0.0.1:10001'},'http://127.0.0.1:10002').authorization, undefined);
+assert.equal(upstreamUrl('/v1/files/fixture?media=fixture-media-value','http://127.0.0.1:10002').search, '?media=fixture-media-value');
+assert.throws(() => upstreamUrl('https://outside.example/v1/status','http://127.0.0.1:10002'));
+console.log(JSON.stringify({status:'PASS_PURE_SOURCE_REVERSAL_AND_AUTH_TRANSPORT',...patched.guard,auth:'actual bearer/cookie/media preserved; no privileged fallback; no secrets printed'}));
