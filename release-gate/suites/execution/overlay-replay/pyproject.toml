@@ -5,7 +5,7 @@ build-backend = "uv_build"
 [project]
 name = "ci-overlay-replay"
 version = "0.1.0"
-description = "A kept denoise_loop program recorded with no LoRA overlay armed never serves a call that arms one"
+description = "A LoRA overlay armed before a plain step loop: armed latents equal eager, byte for byte"
 requires-python = ">=3.12"
 dependencies = ["cozy-runtime>=0.40.4", "diffusers>=0.41,<0.42", "msgspec>=0.19", "torch>=2.14"]
 

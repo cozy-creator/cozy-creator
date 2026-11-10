@@ -1,6 +1,7 @@
-"""One node class inside the native conditional body `denoise_loop` records (IF -> WHILE -> body):
-the first step runs eagerly, the rest natively, and the values are checked. One variant per run, so a
-native fault ends only its executor and names its variant."""
+"""One node class in a plain step loop: `STEPS + 1` steps, and the values are checked. One variant per
+run, so a fault ends only its executor and names its variant. It was the native conditional body
+(IF -> WHILE -> body) of `denoise_loop`; Runtime 0.43 has no loop programs, so each step now runs as
+written, and the cell keeps each node class's values."""
 
 import json
 import subprocess
@@ -10,16 +11,15 @@ import torch
 import torch.nn.functional as F
 import triton
 import triton.language as tl
-from cozy_runtime.author import App, Context, denoise_loop
-from cozy_runtime.internal import loop
+from cozy_runtime.author import App, Context
 from cuda.bindings import driver
 
 app = App()
-STEPS = 3  # native passes; the eager first step makes STEPS + 1
+STEPS = 3  # the loop runs STEPS + 1 steps
 MIX = ("memset", "memcpy", "cublas", "cudnn", "sdpa", "triton")
 VARIANTS = ("scalar", "memset", "memset32", "memcpy", "reduce", "parallel", "triton", "triton_pdl",
             "cublas", "cudnn", "sdpa", "mix", "labels", "legacy")
-#: two labels, each run twice: eager through b's first step, then a and b natively
+#: two labels, each run twice
 LABELS = ("a", "b", "a", "b")
 
 
@@ -163,19 +163,14 @@ def gpu(payload: Probe, ctx: Context) -> Report:
         counter.add_(1)
 
     labels = LABELS if payload.variant == "labels" else None
-    denoise_loop(step, range(STEPS + 1), state=(counter,), labels=labels)
+    for index in range(STEPS + 1):
+        step(index, counter, labels[index] if labels else None)
     torch.cuda.synchronize()
     results = {name: bool(check()) for name, check in checks}
     seen = {name: dict(zip(*(v.tolist() for v in SEEN[name].unique(return_counts=True)))) for name in SEEN if not results.get(name, True)}
     results["counter"] = bool(torch.all(counter == STEPS + 1).item())
-    row = (loop.ROWS.get(ctx.request_id) or [{}])[-1]
-    warm = 1 if labels is None else max(labels.index(label) for label in set(labels)) + 1
-    native = row.get("mode") == "resident" and row.get("native_steps") == STEPS + 1 - warm
-    if payload.variant == "legacy":  # its capture must fail, and the call run eagerly to the same values
-        native = row.get("mode") == "eager" and bool(row.get("refusals"))
     detail = {"variant": payload.variant, "gpu": gpus(), "checks": results, "want": STEPS + 1, "seen": seen,
-              "launches": {name: sorted(map(list, v)) for name, v in LAUNCHES.items()},
-              "loop": {k: row.get(k) for k in ("mode", "native_steps", "refusals")}}
-    if not native or not all(results.values()):
+              "launches": {name: sorted(map(list, v)) for name, v in LAUNCHES.items()}}
+    if not all(results.values()):
         raise RuntimeError(f"conditional body {json.dumps(detail, sort_keys=True)}")
     return Report(True, json.dumps(detail, sort_keys=True))

@@ -12,24 +12,9 @@ import time
 from typing import Annotated, Literal
 
 import msgspec
-from cozy_runtime.author import (
-    App,
-    AspectRatio,
-    Count,
-    File,
-    Image,
-    ImageFile,
-    ImageFrame,
-    Outputs,
-    Prompt,
-    Range,
-    Ratios,
-    Seed,
-    Telemetry,
-    Total,
-    Video,
-    VideoFile,
-)
+from cozy_runtime.author import App, ImageFrame, Outputs, Seed, Telemetry
+from cozy_runtime.fields import AspectRatio, Count, Image, Prompt, Range, Ratios, Total, Video
+from cozy_runtime.media import File, ImageFile, VideoFile
 
 app = App()
 SIDE = 16

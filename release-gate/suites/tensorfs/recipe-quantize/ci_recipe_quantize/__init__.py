@@ -63,11 +63,11 @@ def build(config: Any) -> Pipeline:
     return Pipeline(config)
 
 
-class LinearModel(Model[Pipeline], encoded_leaves="accept"):
+class LinearModel(Model[Pipeline]):
     pipe: Pipeline
 
     def load(self, loader: Loader) -> None:
-        self.pipe = loader.construct(Pipeline, factory=build)
+        self.pipe = loader.construct(build)
 
     @uses_components("net")
     def predict(self, operand: torch.Tensor) -> tuple[torch.Tensor, str, str]:

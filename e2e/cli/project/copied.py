@@ -5,7 +5,8 @@
 """The project cell's package with no seed: weightless, a new picture from the one it is given, so one result per inputs."""
 
 import msgspec
-from cozy_runtime.author import App, File, Outputs
+from cozy_runtime.author import App, Outputs
+from cozy_runtime.media import File
 
 app = App()
 

@@ -17,7 +17,8 @@ from typing import Any
 
 import msgspec
 import torch
-from cozy_runtime import lora, rng
+from cozy_runtime import rng
+from cozy_runtime.accel import lora
 from cozy_runtime.author import App, Config, Context, Loader, Model, Telemetry, uses_components
 from diffusers import QwenImageTransformer2DModel
 from torch import nn
@@ -137,11 +138,11 @@ class Inputs(msgspec.Struct, frozen=True):
     steps: int
 
 
-class QwenDiT(Model[DiTGraph], encoded_leaves="accept"):
+class QwenDiT(Model[DiTGraph]):
     graph: DiTGraph
 
     def load(self, loader: Loader) -> None:
-        self.graph = loader.construct(DiTGraph, factory=DiTGraph)
+        self.graph = loader.construct(DiTGraph)
 
     @uses_components("transformer")
     def denoise(self, inputs: Inputs, overlay: nn.Module | None, after: Any) -> torch.Tensor:
@@ -174,7 +175,7 @@ class Lightning(Model[LoRAGraph]):
     graph: LoRAGraph
 
     def load(self, loader: Loader) -> None:
-        self.graph = loader.construct(LoRAGraph, factory=LoRAGraph)
+        self.graph = loader.construct(LoRAGraph)
 
     @uses_components(LORA_COMPONENT)
     def denoise(self, base: QwenDiT, inputs: Inputs, after: Any) -> torch.Tensor:

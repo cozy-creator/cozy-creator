@@ -6,7 +6,10 @@ import time
 from typing import Annotated, Any
 
 import msgspec
-from cozy_runtime.author import App, ImageFile, ImageFrame, Loader, Model, Outputs, Range, sequence_parallel, uses_components
+from cozy_runtime.accel import sequence_parallel
+from cozy_runtime.author import App, ImageFrame, Loader, Model, Outputs, uses_components
+from cozy_runtime.fields import Range
+from cozy_runtime.media import ImageFile
 
 app = App()
 SIDE = 16
@@ -37,7 +40,7 @@ class Upscaler(Model[Any]):
     graph: Any
 
     def load(self, loader: Loader) -> None:
-        self.graph = loader.construct(object, factory=object)
+        self.graph = loader.construct(object)
 
     @uses_components("transformer")
     def forward(self, pixels: Any) -> Any:
@@ -52,7 +55,7 @@ class Enlarged(msgspec.Struct):
     image: ImageFile
 
 
-@app.entrypoint(defaults={"model": "e2e/upscaler@0.1.0"}, emits_media=True)
+@app.entrypoint(defaults={"model": "e2e/upscaler@0.1.0"})
 def enlarge(payload: EnlargeInput, model: Upscaler, out: Outputs) -> Enlarged:
     """The still, twice the size."""
     return Enlarged(payload.image)

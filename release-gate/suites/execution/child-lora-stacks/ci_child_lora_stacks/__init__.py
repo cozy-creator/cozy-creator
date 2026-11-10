@@ -9,18 +9,9 @@ import msgspec
 import sdxl
 from sdxl import GenerateInput, SdxlModel
 
-from cozy_runtime.author import (
-    Adjustments,
-    App,
-    Context,
-    File,
-    ImageResult,
-    Lora,
-    ModelChoice,
-    Outputs,
-    Telemetry,
-    invocable,
-)
+from cozy_runtime.author import Adjustments, App, Context, Lora, ModelChoice, Outputs, Telemetry, invocable
+from cozy_runtime.image import ImageResult
+from cozy_runtime.media import File
 
 app = App()
 BALLOON, IKEA = "proomptengineer/balloon-lora-sdxl", "ostris/ikea-lora-sdxl"
@@ -37,7 +28,7 @@ async def paint(
     return generate(ctx, payload, sdxl.resolve_generate(payload), model, out, tel, adj)
 
 
-app.child_task(paint)
+app.entrypoint(paint, private=True)
 
 
 class Compare(msgspec.Struct):

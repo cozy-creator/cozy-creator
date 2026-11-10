@@ -10,7 +10,8 @@ from functools import partial
 
 import msgspec
 import torch
-from cozy_runtime.author import App, AttentionLayout, Context, attention_scope
+from cozy_runtime.accel.attention import AttentionLayout, attention_scope
+from cozy_runtime.author import App, Context
 from cozy_runtime.internal import (
     arch,
     attention,
