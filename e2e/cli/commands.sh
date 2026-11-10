@@ -222,6 +222,27 @@ else
 fi
 }
 
+# cl-779: Calcifer's ffmpeg and ffprobe read only the file they are given. A playlist and a concat list, each named as a
+# clip, name a FIFO beside them; a reader opening it lets a waiting writer finish. Imported (a probe, a thumbnail) before
+# a real clip whose probe is awaited, neither may open it.
+hostile_media() {
+step "media naming another file: nothing else is read"
+local dir=$OUT/hostile name
+rm -rf "$dir"; mkdir -p "$dir"; mkfifo "$dir/marker"
+printf '#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\n%s\n#EXT-X-ENDLIST\n' "$dir/marker" > "$dir/playlist.mp4"
+printf "ffconcat version 1.0\nfile '%s'\n" "$dir/marker" > "$dir/list.mp4"
+ffmpeg -v error -y -f lavfi -i testsrc2=size=160x120:rate=24:duration=2 -c:v libx264 -pix_fmt yuv420p "$dir/control.mp4"
+(timeout 120 sh -c 'echo read > "$1"' _ "$dir/marker" && touch "$dir/opened") &
+for name in playlist list control; do
+  cozy --json project -p "$RUN_PROJECT" import "$dir/$name.mp4" "hostile_$name" > "$OUT/hostile-$name.json" 2>&1 || true
+done
+for _ in $(seq 60); do [[ $(row "$RUN_PROJECT" hostile_control .duration_ms) =~ ^[0-9]+$ ]] && break; sleep 0.5; done
+sleep 5
+[[ $(row "$RUN_PROJECT" hostile_control .duration_ms) =~ ^[0-9]+$ ]] || check "hostile media: the control clip was never probed: $(tail -c 200 "$OUT/hostile-control.json")"
+[ ! -e "$dir/opened" ] || check "hostile media: ffmpeg or ffprobe opened a file an imported playlist or concat list names"
+echo "hostile media: playlist $(tail -c 160 "$OUT/hostile-playlist.json"); list $(tail -c 160 "$OUT/hostile-list.json")"
+}
+
 # cl-817, cl-819: the CLI in a container whose /work only it has, Calcifer out here, sharing no disk: it sees only Calcifer's lock
 # record (its address and bearer) and config.toml, copied into a HOME of its own. Each verb goes by content, never a path:
 # a clip, a picture and a folder (a Tree), --input naming files beside it, a positional file; local code from /work (a package
