@@ -229,14 +229,27 @@ pub(super) fn unmount(provider: &Provider, view: &Path, budget: Duration) -> Res
     result.map(drop)
 }
 
-struct Lease {
+pub(super) struct Lease {
     provider: Provider,
     image: PathBuf,
     device: Option<String>,
     attached: bool,
 }
 impl Lease {
-    fn finish(&mut self) -> Result<bool> {
+    pub(super) fn capture(provider: &Provider, backing: &Path) -> Result<Self> {
+        let image = validate(backing)?;
+        let device = current_device(provider, &image)?.ok_or(Error::Invalid(
+            "the mounted image has no owned backing-device identity",
+        ))?;
+        Ok(Self {
+            provider: provider.clone(),
+            image,
+            device: Some(device),
+            attached: true,
+        })
+    }
+
+    pub(super) fn finish(&mut self) -> Result<bool> {
         if !self.attached {
             return Ok(true);
         }

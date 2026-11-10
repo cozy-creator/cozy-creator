@@ -205,6 +205,53 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     remount.try_unmount()?;
+    #[cfg(target_os = "macos")]
+    if provider.storage_format() == "apple-apfs-encrypted-sparsebundle-v1" {
+        eprintln!("provider fixture: native supervisor crash reconciliation");
+        let mut crashed =
+            provider.mount(&backing, &view, secret.as_bytes(), MountOptions::default())?;
+        let birth = platform::process::Birth::of(crashed.provider_pid())?;
+        platform::process::Exact::open(&birth)?
+            .ok_or("owned supervisor already exited")?
+            .kill()?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            crashed.reconcile()?;
+            if !crashed.is_mounted()? {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the controller must reconcile a killed native supervisor"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let output = Command::new("/usr/bin/hdiutil")
+            .args(["info", "-plist"])
+            .output()?;
+        assert!(output.status.success());
+        let info = plist::Value::from_reader(std::io::Cursor::new(output.stdout))?;
+        let image = fs::canonicalize(backing.join("project.sparsebundle"))?;
+        for entry in info
+            .as_dictionary()
+            .and_then(|dictionary| dictionary.get("images"))
+            .and_then(plist::Value::as_array)
+            .ok_or("native image registry missing")?
+        {
+            if let Some(path) = entry
+                .as_dictionary()
+                .and_then(|dictionary| dictionary.get("image-path"))
+                .and_then(plist::Value::as_string)
+            {
+                assert!(
+                    fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path)) != image,
+                    "reconciliation must release the kernel image/key attachment"
+                );
+            }
+        }
+        assert!(fs::write(view.join("crash-leak.bin"), marker).is_err());
+        crashed.try_unmount()?;
+    }
     #[cfg(target_os = "linux")]
     {
         eprintln!("provider fixture: helper crash cleanup");

@@ -433,6 +433,8 @@ impl Provider {
             child,
             input: Some(input),
             guard,
+            #[cfg(target_os = "macos")]
+            native_lease: None,
         };
         let deadline = Instant::now() + STARTUP;
         loop {
@@ -445,6 +447,10 @@ impl Provider {
             }
             if self.is_mounted(view)? {
                 mounted.guard.seal()?;
+                #[cfg(target_os = "macos")]
+                if self.native {
+                    mounted.native_lease = Some(apfs::Lease::capture(self, backing)?);
+                }
                 return Ok(mounted);
             }
             if Instant::now() >= deadline {
@@ -569,6 +575,8 @@ pub struct Mounted {
     child: Child,
     input: Option<ChildStdin>,
     guard: ViewGuard,
+    #[cfg(target_os = "macos")]
+    native_lease: Option<apfs::Lease>,
 }
 
 impl Mounted {
@@ -580,6 +588,27 @@ impl Mounted {
     }
     pub fn is_mounted(&self) -> Result<bool> {
         self.provider.is_mounted(&self.view)
+    }
+
+    /// Reconciles an unexpectedly exited supervisor before the caller checks mount status.
+    /// Native disk-image keys live in the kernel, so an exited helper alone is not a lock.
+    pub fn reconcile(&mut self) -> Result<()> {
+        if self
+            .child
+            .try_wait()
+            .map_err(io_error("read filesystem supervisor status"))?
+            .is_some()
+        {
+            self.input.take();
+            #[cfg(target_os = "macos")]
+            if let Some(lease) = &mut self.native_lease {
+                if !lease.finish()? {
+                    return Err(Error::StillRunning);
+                }
+            }
+            self.guard.seal()?;
+        }
+        Ok(())
     }
 
     /// Normal unmount only. An open player/editor can return Busy; its handle and provider stay
@@ -605,6 +634,7 @@ impl Mounted {
             }
             thread::sleep(Duration::from_millis(20));
         }
+        self.reconcile()?;
         self.guard.seal()?;
         Ok(())
     }
