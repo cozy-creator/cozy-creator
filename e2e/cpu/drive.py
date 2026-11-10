@@ -666,25 +666,24 @@ def tolerance(cell: Cell) -> float:
 
 
 def frames(path: Path, media_type: str, result: Json) -> Iterator[npt.NDArray[np.int16]]:
-    """An output's samples a frame at a time: a video's pictures, then its sound whole; else the output whole."""
+    """An output's samples a frame at a time: a video's pictures; else the output whole. A video's sound is not here:
+    its encoder (AAC) turns a last-bit difference between a group's sum and one rank's into whole-band noise, so a sound
+    is judged by its thumbnail (`compare`)."""
     if media_type.startswith("video/"):
         import av
 
         with av.open(str(path)) as container:
             for frame in container.decode(video=0):
                 yield frame.to_ndarray(format="rgb24").astype(np.int16)
-        sound = samples(path, media_type).get(".audio")
-        if sound is not None:
-            yield sound.astype(np.int16)
         return
     for values in samples(path, media_type).values():
         yield shaped(values, result).astype(np.int16)
 
 
 def twin_gap(mine: Files, theirs: Files, result: Json) -> tuple[str, float]:
-    """How far a group's outputs are from its one-rank twin's, sample by sample: the worst frame's (or picture's, or
-    sound's) mean absolute difference, of 255, and where. A group computes what one rank does, so this is near 0; a rank
-    that reads another rank's rows, or runs without an overlay the others armed, moves whole frames."""
+    """How far a group's outputs are from its one-rank twin's, sample by sample: the worst frame's (or picture's) mean
+    absolute difference, of 255, and where. A group computes what one rank does, so its pictures are that twin's to the
+    bit; a rank that reads another rank's rows, or runs without an overlay the others armed, moves whole frames."""
     worst, where = 0.0, ""
     for output in sorted(mine):
         if output not in theirs:
@@ -719,9 +718,10 @@ def compare(seen: Seen, reference: Seen, tolerance: float) -> None:
             raise Failed(f"output {b['name']}'s reference is a {len(a['signature'])}-part signature, not this "
                          f"{len(b['signature'])}-part thumbnail: re-record it (run.sh --record)")
         mean, worst = differ(a["signature"], b["signature"])
-        if mean > tolerance or worst > 12 * tolerance:
+        allowed = max(tolerance, 1.0) if b["name"].endswith(".audio") else tolerance  # an encoded sound (`frames`)
+        if mean > allowed or worst > 12 * allowed:
             raise Failed(f"output {b['name']} differs from its reference by {mean:.2f}/255 on average, {worst:.0f} at most "
-                         f"(tolerance {tolerance})")
+                         f"(tolerance {allowed})")
     if reference.get("weights") != seen.get("weights"):
         raise Failed(f"weights {seen.get('weights')} differ from the reference's {reference.get('weights')}")
     if reference["result"] != seen["result"]:
