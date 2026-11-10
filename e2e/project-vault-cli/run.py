@@ -12,6 +12,9 @@ import struct
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 import zlib
 
 
@@ -177,6 +180,36 @@ foreach ($rule in $allowed) {
             time.sleep(0.25)
         raise RuntimeError('a configured two-second session deadline failed to lock')
 
+    def shutdown(self):
+        # The CLI intentionally exposes no up/down verb. Exercise its real graceful restart
+        # API, using only the default controller discovered by the normal CLI status verb.
+        status = self.command('status', project=False)['calcifer']
+        if not status.get('running'):
+            return
+        record = self.home / 'calcifer' / 'calcifer.lock.holder'
+        holder = json.loads(record.read_text())
+        if holder['pid'] != status['pid'] or holder['address'] != status['address']:
+            raise RuntimeError('the default controller changed before graceful shutdown')
+        base = 'http://' + holder['address']
+        if urllib.parse.urlsplit(base).hostname not in ['127.0.0.1', '::1']:
+            raise RuntimeError('the default controller is not loopback')
+        self.secret_values.append(holder['token'])
+        request = urllib.request.Request(base + '/v1/down', data=b'{}', method='POST',
+                                         headers={'Authorization': 'Bearer ' + holder['token'],
+                                                  'Content-Type': 'application/json'})
+        print('project vault CLI lifecycle: graceful shutdown of discovered controller', flush=True)
+        try:
+            with urllib.request.urlopen(request) as response:
+                json.load(response)
+        except urllib.error.HTTPError as error:
+            detail = error.read().decode(errors='replace')
+            raise RuntimeError('graceful shutdown refused: ' + self.redact(detail)) from None
+        deadline = time.monotonic() + 30
+        while record.exists():
+            if time.monotonic() >= deadline:
+                raise RuntimeError('shutdown acknowledged but the controller holder remained published')
+            time.sleep(0.05)
+
     def media(self):
         source = self.out / 'inputs'
         source.mkdir()
@@ -332,7 +365,7 @@ foreach ($rule in $allowed) {
         old_file = self.find_media(view, sources[0])
         # Stop only this fresh runner's normal Calcifer through the installed command. This
         # must close an unlocked project, not rely on an earlier explicit project lock.
-        self.command('down', project=False, json_output=False)
+        self.shutdown()
         self.assert_inaccessible(view, old_file)
         self.cell('normal_shutdown_closes_an_unlocked_project')
         # All retained global databases/logs are now flushed before the disk-byte scan.
@@ -343,7 +376,7 @@ foreach ($rule in $allowed) {
         # Opening the intentionally plaintext copy is an ordinary-project operation and
         # may legitimately populate ordinary caches. Do it after the encrypted-only scan.
         assert state == self.command('project', '-p', exported, 'export', project=False, json_output=False)
-        self.command('down', project=False, json_output=False)
+        self.shutdown()
         self.cell('plaintext_export_opens_independently_after_lock')
         self.receipt['result'] = 'pass'
         self.flush()
@@ -366,7 +399,10 @@ def main():
             if proof.project.exists():
                 subprocess.run(['cozy', '--json', 'project', '-p', str(proof.project), 'lock'],
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            subprocess.run(['cozy', 'down'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                proof.shutdown()
+            except Exception:
+                pass
         # Credentials/recovery output are intentionally never part of published evidence.
         shutil.rmtree(proof.credentials)
 

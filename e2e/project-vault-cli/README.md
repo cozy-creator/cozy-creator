@@ -11,7 +11,7 @@ imports, a CRDT state edit and history, media decoding/seek, lock/read/fallback
 refusal, wrong credentials, recovery/passphrase replacement, full rekey, explicit
 plaintext export, parallel manual locks, idle/absolute expiration, recovery
 of the new generation, and normal shutdown while still unlocked. It stops that
-runner's Calcifer with `cozy down`, then
+runner's Calcifer through its real authenticated graceful shutdown API, then
 scans global retained files (CAS, journals, databases and logs included) plus the
 encrypted backing for known synthetic canaries and credential strings. Only
 runtime `view` directories are excluded. A canary scan is a functional privacy
