@@ -1,6 +1,7 @@
 // What the web proofs share: real media made here, a timeout on every wait, and a drop as the browser delivers one.
 const { execFileSync } = require('child_process');
-const { appendFileSync, readFileSync, rmSync, writeFileSync } = require('fs');
+const { appendFileSync, readFileSync, rmSync, writeFileSync, readdirSync, readlinkSync, realpathSync } = require('fs');
+const { join } = require('path');
 const zlib = require('zlib');
 
 const STEP_MS = 60_000;
@@ -112,6 +113,76 @@ async function settled(page) {
     still = now === last ? still + 1 : 0;
     last = now;
   }
+}
+
+/** The actual fit action, independent of what control last had keyboard focus. */
+async function fitCanvas(page) {
+  if (!(await page.locator('.zoom-menu').count())) await page.click('.zoom-at');
+  await page.getByRole('menuitem', { name: /^Zoom to fit/ }).click();
+  await settled(page);
+}
+
+/** Whether this process holds the project's database; null where ownership cannot be read. */
+function projectHeld(folder, pid) {
+  if (!['linux', 'darwin'].includes(process.platform)) return null;
+  const db = join(realpathSync(folder), 'project.db');
+  if (process.platform === 'linux') {
+    const fds = `/proc/${pid}/fd`;
+    let unread;
+    for (const fd of readdirSync(fds)) {
+      try {
+        if (readlinkSync(join(fds, fd)) === db) return true;
+      } catch (error) {
+        if (error.code !== 'ENOENT') unread ??= error;
+      }
+    }
+    if (unread) throw unread;
+    return false;
+  }
+  if (process.platform === 'darwin') {
+    let said = '', unread;
+    try {
+      said = execFileSync('lsof', ['-p', String(pid), '-Fn'], { encoding: 'utf8', maxBuffer: 1 << 26 });
+    } catch (error) {
+      if (error.code === 'ENOENT') return null;
+      unread = error;
+      said = String(error.stdout ?? '');
+    }
+    if (said.split('\n').some((line) => line === `n${db}`)) return true;
+    if (unread) throw unread;
+    return false;
+  }
+  return null;
+}
+
+/** Observer provenance from delivered entries only: no extra geometry/layout reads and no error suppression. */
+function observeResizes() {
+  const Native = window.ResizeObserver;
+  const evidence = { callbacks: [], errors: [] };
+  window.resizeEvidence = evidence;
+  let next = 0;
+  window.ResizeObserver = class ResizeObserver extends Native {
+    constructor(callback) {
+      if (typeof callback !== 'function') { super(callback); return; }
+      const id = ++next, producer = new Error().stack;
+      super((entries, observer) => {
+        evidence.callbacks.push({ id, producer, at_ms: performance.now(), count: entries.length,
+          targets: entries.slice(0, 32).map(({ target, contentRect: r }) => ({
+            at: `${target.tagName.toLowerCase()}${target.id ? `#${target.id}` : ''}.${String(target.getAttribute('class') ?? '').replaceAll(' ', '.')}`.slice(0, 200),
+            asset: target.closest('.card')?.dataset.asset,
+            rect: [r.x, r.y, r.width, r.height],
+          })), truncated: entries.length > 32 });
+        if (evidence.callbacks.length > 16) evidence.callbacks.shift();
+        return Reflect.apply(callback, observer, [entries, observer]);
+      });
+    }
+  };
+  addEventListener('error', (event) => {
+    if (!/ResizeObserver/.test(event.message)) return;
+    evidence.errors.push({ message: event.message, source: event.filename?.split(/[?#]/)[0], line: event.lineno, column: event.colno,
+      stack: event.error?.stack, at_ms: performance.now(), callbacks: evidence.callbacks.slice() });
+    if (evidence.errors.length > 4) evidence.errors.shift();
+  });
 }
 
 // A box as a person reaches it, worked on or at rest: it's always on the canvas.
@@ -349,4 +420,4 @@ function rowsOf(folder, query) {
 /** Python as this OS names it: Windows has no python3 of its own. */
 const PYTHON = process.platform === 'win32' ? 'python' : 'python3';
 
-module.exports = { BARS, DARK_OPEN, GPU, MP4, PYTHON, STEP_MS, boxLog, boxOf, calcifer, carry, closeBox, openBox, openCanvas, drop, importYaml, lastLook, launch, lookAt, noStall, panning, png, pointAt, removeGeneratedProject, renderOf, rowsOf, settled, signIn, summary, until, upload, watchBoxes, wav, yamlOf };
+module.exports = { BARS, DARK_OPEN, GPU, MP4, PYTHON, STEP_MS, boxLog, boxOf, calcifer, carry, closeBox, openBox, openCanvas, drop, importYaml, lastLook, launch, lookAt, noStall, panning, png, pointAt, removeGeneratedProject, renderOf, rowsOf, settled, fitCanvas, projectHeld, observeResizes, signIn, summary, until, upload, watchBoxes, wav, yamlOf };
