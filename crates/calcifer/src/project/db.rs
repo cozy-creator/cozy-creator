@@ -233,7 +233,9 @@ fn verify_v1_backup(primary: &Connection, at: &Path) -> Result<(), Error> {
 pub(crate) fn identity(conn: &Connection) -> Option<(String, String)> {
     let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0)).ok()?;
     if version == VERSION {
+        let began = std::time::Instant::now();
         let (format, bytes, heads): (i64, Vec<u8>, String) = conn.query_row("SELECT format, snapshot, heads FROM crdt_document WHERE id = 1", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).ok()?;
+        super::profile("identity_snapshot_query", began, bytes.len());
         return (format == crdt::FORMAT).then(|| crdt::identity_bytes(&bytes, &heads)).flatten();
     }
     if version != 1 { return None; }
@@ -386,7 +388,9 @@ pub(crate) fn load(conn: &Connection, at: &Path) -> Result<Stored, Error> {
 }
 
 fn read_document(conn: &Connection, at: &Path) -> Result<crdt::Document, Error> {
+    let began = std::time::Instant::now();
     let (format, bytes, heads): (i64, Vec<u8>, String) = conn.query_row("SELECT format, snapshot, heads FROM crdt_document WHERE id = 1", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).map_err(|e| sql(at, e))?;
+    super::profile("document_snapshot_query", began, bytes.len());
     if format != crdt::FORMAT {
         return Err(err(at, format!("unknown CRDT storage format {format}; update cozy")));
     }
@@ -394,24 +398,37 @@ fn read_document(conn: &Connection, at: &Path) -> Result<crdt::Document, Error> 
 }
 
 fn save_document(tx: &Transaction<'_>, at: &Path, doc: &mut crdt::Document, seq: u64, base: Option<&[automerge::ChangeHash]>) -> Result<(), Error> {
+    let began = std::time::Instant::now();
     if let Some(change) = doc.doc.get_last_local_change() {
         tx.execute("INSERT OR IGNORE INTO crdt_changes (hash, seq, actor, bytes) VALUES (?1, ?2, ?3, ?4)", params![change.hash().to_string(), seq as i64, change.actor_id().to_hex_string(), change.raw_bytes()]).map_err(|e| sql(at, e))?;
     }
     let heads: Vec<String> = doc.doc.get_heads().iter().map(ToString::to_string).collect();
+    super::profile("write_save_changes_bind", began, heads.len());
     match base {
         None => {
+            let began = std::time::Instant::now();
             let bytes = doc.doc.save();
+            super::profile("write_save_initial_native", began, bytes.len());
+            let began = std::time::Instant::now();
             tx.execute("INSERT OR REPLACE INTO crdt_document (id, format, snapshot, heads) VALUES (1, ?1, ?2, ?3)", params![crdt::FORMAT, bytes, json(&heads)]).map_err(|e| sql(at, e))?;
+            super::profile("write_save_initial_sql_bind", began, bytes.len());
         }
         Some(base) => {
             let changed = || Error::new(Kind::Conflict, "project_changed", "the project changed while this edit was being committed; read it again and retry");
-            let token: String = tx.query_row("SELECT heads FROM crdt_document WHERE id = 1", [], |row| row.get(0)).map_err(|e| sql(at, e))?;
+            let began = std::time::Instant::now();
+            let (token, prior_bytes): (String, i64) = tx.query_row("SELECT heads, length(snapshot) FROM crdt_document WHERE id = 1", [], |row| Ok((row.get(0)?, row.get(1)?))).map_err(|e| sql(at, e))?;
             if crdt::head_set(&token)? != base.iter().copied().collect() { return Err(changed()); }
+            let prior_bytes = usize::try_from(prior_bytes).unwrap_or(0);
+            super::profile("write_append_head_cas", began, prior_bytes);
             // Explicit heads avoid AutoCommit::load's empty save cursor. The result is
             // supported native Change chunks, appended to the complete native stream.
+            let began = std::time::Instant::now();
             let bytes = doc.doc.save_after(base);
+            super::profile("write_save_after", began, bytes.len());
+            let began = std::time::Instant::now();
             let wrote = tx.execute("UPDATE crdt_document SET snapshot = CAST(snapshot || ?1 AS BLOB), heads = ?2 WHERE id = 1 AND heads = ?3", params![bytes, json(&heads), token]).map_err(|e| sql(at, e))?;
             if wrote != 1 { return Err(changed()); }
+            super::profile("write_sql_blob_append", began, prior_bytes.saturating_add(bytes.len()));
         }
     }
     Ok(())
@@ -456,19 +473,26 @@ fn file_record(file: &File) -> String {
 /// SQLite commit, allowing the caller to publish its held view without a reload gap.
 pub(crate) fn commit(conn: &mut Connection, at: &Path, before: &Stored, after: &mut Stored, extra: &Extra, locked: impl FnOnce(), before_commit: impl FnOnce()) -> Result<Option<u64>, Error> {
     let e = |error: rusqlite::Error| sql(at, error);
+    let began = std::time::Instant::now();
     crdt::identify(before, after);
     if !Arc::ptr_eq(&before.lock, &after.lock) {
         Arc::make_mut(&mut after.lock).mark_rows();
     }
+    super::profile("write_identity", began, after.written.boxes.len());
+    let began = std::time::Instant::now();
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(e)?;
     locked();
+    super::profile("write_sql_begin_inclusive", began, 0);
     let was = tx.total_changes();
+    let began = std::time::Instant::now();
     write(&tx, before, after, extra).map_err(e)?;
+    super::profile("write_sql_projection_inclusive", began, 0);
     if tx.total_changes() == was {
         tx.rollback().map_err(e)?;
         return Ok(None);
     }
     let seq = before.seq + 1;
+    let began = std::time::Instant::now();
     let mut doc = match &before.crdt {
         Some(doc) => (**doc).clone(),
         None => read_document(&tx, at)?,
@@ -478,6 +502,7 @@ pub(crate) fn commit(conn: &mut Connection, at: &Path, before: &Stored, after: &
     let mut ops = doc.ops()?;
     ops.retain(|row| !extra.ops_gone.iter().any(|(uid, _)| uid == &row.uid) && !extra.ops.iter().any(|next| next.uid == row.uid));
     ops.extend(extra.ops.iter().cloned());
+    super::profile("write_clone_ops", began, ops.len());
     let value = crdt::changed_value(before, after, &ops, &doc.value, identity);
     doc.update(value)?;
     if doc.doc.get_heads() != old_heads {
@@ -489,16 +514,23 @@ pub(crate) fn commit(conn: &mut Connection, at: &Path, before: &Stored, after: &
     after.crdt = Some(Arc::new(doc));
     tx.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('seq', ?1)", [seq.to_string()]).map_err(e)?;
     before_commit();
+    let began = std::time::Instant::now();
     tx.commit().map_err(e)?;
+    super::profile("write_sql_commit", began, 0);
     Ok(Some(seq))
 }
 
 fn write(tx: &Transaction, before: &Stored, after: &Stored, extra: &Extra) -> rusqlite::Result<()> {
     let seq = before.seq + 1;
-    if !Arc::ptr_eq(&before.written, &after.written) {
+    let began = std::time::Instant::now();
+    let active = !Arc::ptr_eq(&before.written, &after.written);
+    if active {
         written_rows(tx, &before.written, &after.written)?;
     }
-    if !Arc::ptr_eq(&before.canvas, &after.canvas) {
+    super::profile("write_sql_group_written_inclusive", began, if active { after.written.boxes.len() } else { 0 });
+    let began = std::time::Instant::now();
+    let active = !Arc::ptr_eq(&before.canvas, &after.canvas);
+    if active {
         for key in before.canvas.keys().filter(|key| !after.canvas.contains_key(*key)) {
             tx.execute("DELETE FROM canvas WHERE key = ?1", [key])?;
         }
@@ -506,10 +538,16 @@ fn write(tx: &Transaction, before: &Stored, after: &Stored, extra: &Extra) -> ru
             tx.execute("INSERT OR REPLACE INTO canvas (key, name, x, y, w, seq, by) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)", params![key, row.name, row.card.x, row.card.y, row.card.w, row.seq as i64, row.by])?;
         }
     }
-    if !Arc::ptr_eq(&before.lock, &after.lock) {
+    super::profile("write_sql_group_canvas", began, if active { after.canvas.len() } else { 0 });
+    let began = std::time::Instant::now();
+    let active = !Arc::ptr_eq(&before.lock, &after.lock);
+    if active {
         lock_written(tx, &before.lock, &after.lock)?;
     }
-    if !Arc::ptr_eq(&before.walk, &after.walk) {
+    super::profile("write_sql_group_lock", began, if active { after.lock.assets.len() } else { 0 });
+    let began = std::time::Instant::now();
+    let active = !Arc::ptr_eq(&before.walk, &after.walk);
+    if active {
         let walk = json(&*after.walk);
         if json(&*before.walk) != walk {
             match after.walk.is_empty() && after.walk.bound.is_none() {
@@ -518,7 +556,10 @@ fn write(tx: &Transaction, before: &Stored, after: &Stored, extra: &Extra) -> ru
             }
         }
     }
-    if !Arc::ptr_eq(&before.measured, &after.measured) {
+    super::profile("write_sql_group_walk", began, if active { usize::from(!after.walk.is_empty()) } else { 0 });
+    let began = std::time::Instant::now();
+    let active = !Arc::ptr_eq(&before.measured, &after.measured);
+    if active {
         for sha256 in before.measured.keys().filter(|sha256| !after.measured.contains_key(*sha256)) {
             tx.execute("DELETE FROM measured WHERE sha256 = ?1", [sha256])?;
         }
@@ -526,6 +567,8 @@ fn write(tx: &Transaction, before: &Stored, after: &Stored, extra: &Extra) -> ru
             tx.execute("INSERT OR REPLACE INTO measured (sha256, record) VALUES (?1, ?2)", params![sha256, json(held)])?;
         }
     }
+    super::profile("write_sql_group_measured", began, if active { after.measured.len() } else { 0 });
+    let began = std::time::Instant::now();
     if extra.asked_cleared {
         tx.execute("DELETE FROM asked", [])?;
     }
@@ -549,20 +592,26 @@ fn write(tx: &Transaction, before: &Stored, after: &Stored, extra: &Extra) -> ru
         tx.execute("DELETE FROM request_keys WHERE at_ms < ?1", [now - KEY_KEPT_MS])?;
         tx.execute("INSERT OR REPLACE INTO request_keys (key, digest, at_ms) VALUES (?1, ?2, ?3)", params![key, digest, now])?;
     }
+    super::profile("write_sql_group_extra", began, extra.ops.len());
     Ok(())
 }
 
 /// Project the selected box for each normalized name, with each side's own ordinal.
 fn written_rows(tx: &Transaction, before: &Written, after: &Written) -> rusqlite::Result<()> {
+    let began = std::time::Instant::now();
     if before.head != after.head {
         tx.execute("DELETE FROM head", [])?;
         for (ord, (key, value)) in after.head.iter().enumerate() {
             tx.execute("INSERT INTO head (key, ord, value) VALUES (?1, ?2, ?3)", params![key, ord as i64, json(value)])?;
         }
     }
+    super::profile("write_sql_written_head", began, after.head.len());
+    let began = std::time::Instant::now();
+    let prefix_began = std::time::Instant::now();
     let common = before.boxes.iter().zip(&after.boxes)
         .take_while(|(old, new)| old.id == new.id && old.name == new.name)
         .count();
+    super::profile("write_sql_common_prefix", prefix_began, common);
     let mut rows = BTreeMap::new();
     for (ord, (old, new)) in before.boxes.iter().zip(&after.boxes).take(common).enumerate() {
         rows.insert(name_key(&old.name), (Some((ord, old)), Some((ord, new))));
@@ -575,6 +624,8 @@ fn written_rows(tx: &Transaction, before: &Written, after: &Written) -> rusqlite
     for (ord, held) in after.boxes.iter().enumerate().skip(common) {
         rows.entry(name_key(&held.name)).or_default().1 = Some((ord, held));
     }
+    super::profile("write_sql_paired_map_inclusive", began, rows.len());
+    let began = std::time::Instant::now();
     for (key, (old, new)) in &rows {
         if old.is_some() && new.is_none() {
             tx.execute("DELETE FROM fields WHERE box = ?1", [key])?;
@@ -598,6 +649,7 @@ fn written_rows(tx: &Transaction, before: &Written, after: &Written) -> rusqlite
             }
         }
     }
+    super::profile("write_sql_box_rows", began, rows.len());
     Ok(())
 }
 
