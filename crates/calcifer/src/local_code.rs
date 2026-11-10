@@ -906,6 +906,9 @@ pub(crate) fn uv(uv: &Path, dir: &Path) -> Command {
             }
             command.env("UV_CACHE_DIR", scratch.join("uv-cache"))
                 .env("UV_TOOL_DIR", scratch.join("uv-tools"))
+                .env("XDG_CACHE_HOME", scratch.join("cache"))
+                .env("PYTHONPYCACHEPREFIX", scratch.join("bytecode"))
+                .env("MPLCONFIGDIR", scratch.join("matplotlib"))
                 .env("TMPDIR", &temp).env("TEMP", &temp).env("TMP", &temp)
                 .env("PYTHONDONTWRITEBYTECODE", "1");
         }

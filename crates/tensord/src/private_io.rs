@@ -351,6 +351,9 @@ pub(crate) fn protect_command(command: &mut std::process::Command) -> io::Result
     command.current_dir(&root)
         .env("UV_CACHE_DIR", root.join("uv-cache"))
         .env("UV_TOOL_DIR", root.join("uv-tools"))
+        .env("XDG_CACHE_HOME", root.join("cache"))
+        .env("PYTHONPYCACHEPREFIX", root.join("bytecode"))
+        .env("MPLCONFIGDIR", root.join("matplotlib"))
         .env("TMPDIR", &temp).env("TEMP", &temp).env("TMP", &temp)
         .env("PYTHONDONTWRITEBYTECODE", "1");
     Ok(true)
