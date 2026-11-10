@@ -150,20 +150,27 @@ class Handler(BaseHTTPRequestHandler):
                 pass
             return sent
         if BURST:  # a cold object: BURST bytes as they come, then the rest dripped
-            self.send_header('Content-Length', resp.getheader('content-length'))
+            length = resp.getheader('content-length')
+            if length:
+                self.send_header('Content-Length', length)
+            else:  # storage gave no length: chunked, as the other paths relay it
+                self.send_header('Transfer-Encoding', 'chunked')
             self.end_headers()
             sent = 0
             try:
                 while sent < BURST and (chunk := resp.read1(min(1 << 16, BURST - sent))):
-                    self.send(chunk)
+                    self.send(chunk if length else b'%x\r\n%s\r\n' % (len(chunk), chunk))
                     sent += len(chunk)
                 self.wfile.flush()
                 rest = resp.read()
                 for i in range(0, len(rest), RATE // 4 or 1):
                     time.sleep(0.25)
-                    self.send(rest[i:i + (RATE // 4 or 1)])
+                    piece = rest[i:i + (RATE // 4 or 1)]
+                    self.send(piece if length else b'%x\r\n%s\r\n' % (len(piece), piece))
                     self.wfile.flush()
-                    sent += len(rest[i:i + (RATE // 4 or 1)])
+                    sent += len(piece)
+                if not length:
+                    self.send(b'0\r\n\r\n')
             except OSError:  # the client gave up on it: what a cold object's drip should cause
                 pass
             return sent
