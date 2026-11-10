@@ -7,7 +7,7 @@ name = "e2e-probe"
 version = "0.1.0"
 description = "The tools cells' package: a composed tool calling e2e-probe-callee"
 requires-python = ">=3.12"
-dependencies = ["cozy-runtime[media]>=0.43", "e2e-probe-callee", "msgspec>=0.19"]
+dependencies = ["cozy-runtime[media]>=0.44", "e2e-probe-callee", "msgspec>=0.19"]
 
 [project.entry-points."cozy.application"]
 default = "e2e_probe:app"
