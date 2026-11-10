@@ -53,7 +53,7 @@ pub(super) fn view(root: &FsPath) -> Result<PathBuf, Error> {
     let mut session = session.lock().expect("vault session");
     if session.mount.reconcile().is_err() { mark_closing(&mut session); }
     if session.closing || expired(&session) || !session.mount.is_mounted().map_err(provider)? { return Err(locked(root)); }
-    session.mount.view().canonicalize().map_err(io)
+    platform::durable::canonical(session.mount.view()).map_err(provider)
 }
 
 /// A key-holding work lease can drain already-authorized work while the viewing session is locking.
@@ -63,7 +63,7 @@ fn work_view(root: &FsPath) -> Result<PathBuf, Error> {
     session.mount.reconcile().map_err(provider)?;
     if !session.mount.is_mounted().map_err(provider)? { return Err(locked(root)); }
     // The provider guards its underlying path against plaintext fallback; lost mounts fail I/O.
-    session.mount.view().canonicalize().map_err(io)
+    platform::durable::canonical(session.mount.view()).map_err(provider)
 }
 
 fn operation(root: &FsPath) -> Arc<Mutex<()>> {
@@ -123,7 +123,7 @@ pub(super) fn location(api: &Api, named: &str) -> Result<PathBuf, Error> {
             _ => path.to_owned(),
         };
         recover_conversion(&candidate)?;
-        let path = platform::durable::canonical(&candidate).map_err(provider)?;
+        let path = logical(&platform::durable::canonical(&candidate).map_err(provider)?);
         if let Some(root) = path.ancestors().find(|root| encrypted(root)) { return Ok(root.to_owned()); }
         return super::named(api, named);
     }
@@ -187,7 +187,7 @@ fn mount(api: &Api, root: &FsPath, keybag: Keybag, secret: ProjectSecret, ask: &
     let view = project_mount::view_path(&runtime).map_err(provider)?;
     let engine = Provider::discover(&api.machines.hubs.home().tools()).map_err(provider)?;
     let mounted = secret.with_bytes(|bytes| engine.mount(&root.join(BACKING), &view, bytes, MountOptions { idle_timeout: None, read_only: false })).map_err(provider)?;
-    let canonical_view = mounted.view().canonicalize().map_err(io)?;
+    let canonical_view = platform::durable::canonical(mounted.view()).map_err(provider)?;
     ROOTS.lock().expect("vault roots").insert(mounted.view().to_owned(), root.to_owned());
     ROOTS.lock().expect("vault roots").insert(canonical_view.clone(), root.to_owned());
     crate::private_io::descriptor_for_mounted(&canonical_view, &keybag.info().project_id, keybag.info().generation)?;
@@ -203,6 +203,7 @@ fn mount(api: &Api, root: &FsPath, keybag: Keybag, secret: ProjectSecret, ask: &
 }
 
 fn forget(api: &Api, root: &FsPath) -> Result<(), Error> {
+    let available = !encrypted(root) || held(root).is_some_and(|session| session.lock().expect("vault session").mount.is_mounted().unwrap_or(false));
     let landing = super::landing(root);
     let active = api.calcifer.store().read(|conn| Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM runs WHERE out_dir = ?1 AND state <> 'settled')", [landing.to_string_lossy().as_ref()], |row| row.get::<_, bool>(0))?))
         .map_err(|e| error("vault_journal", e))?;
@@ -216,9 +217,19 @@ fn forget(api: &Api, root: &FsPath) -> Result<(), Error> {
         if let Ok(mut model) = project.model.try_lock() { *model = None; }
         *project.told.lock().expect("project told") = None;
         crate::events::release_project_readers(&project.id);
-        project.folder.close_connections()?;
+        project.folder.close_connections(available)?;
         api.projects.open.lock().expect("projects lock").remove(&project.id);
         crate::events::project_closed(&project.id);
+    }
+    if available {
+        // A vault may have no retained Project/Folder reader at all. Still checkpoint it before
+        // a read-only source mount: immutable SQLite must never ignore committed WAL frames.
+        let source = if encrypted(root) { work_view(root)? } else { root.to_owned() };
+        let conn = rusqlite::Connection::open_with_flags(source.join("project.db"), rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
+            .map_err(|e| error("vault_database", format!("open project before storage transition: {e}")))?;
+        let busy: i64 = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))
+            .map_err(|e| error("vault_database", format!("checkpoint project before storage transition: {e}")))?;
+        if busy != 0 { return Err(Error::new(Kind::Conflict, "project_busy", "a database reader is preventing its verified storage snapshot")); }
     }
     Ok(())
 }
@@ -488,7 +499,7 @@ fn convert(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret,
     platform::durable::set_mode(&runtime, 0o700).map_err(provider)?;
     let view = project_mount::view_path(&runtime).map_err(provider)?;
     let mut target = secret.with_bytes(|bytes| engine.mount(&staged.join(BACKING), &view, bytes, MountOptions { idle_timeout: None, read_only: false })).map_err(provider)?;
-    if source_mount.is_some() { copy_tree_at(&source, target.view(), FsPath::new(""), true)?; }
+    if source_mount.is_some() { copy_tree_at(&source, target.view(), FsPath::new(""), true, !cfg!(windows))?; }
     else { copy_tree(&source, target.view())?; }
     target.try_unmount().map_err(provider)?;
     if let Some(mut source) = source_mount.take() { source.try_unmount().map_err(provider)?; }
@@ -520,12 +531,12 @@ fn copy_tree(source: &FsPath, target: &FsPath) -> Result<(), Error> {
             .and_then(|bytes| serde_json::from_slice::<api::machine::LocalPrivateMarker>(&bytes).ok())
             .is_some_and(|marker| marker.format_version == 1 && marker.storage.project_id == bag.info().project_id
                 && marker.storage.generation == bag.info().generation
-                && source.canonicalize().is_ok_and(|path| path == marker.storage.view_root))
+                && platform::durable::canonical(source).is_ok_and(|path| path == marker.storage.view_root))
     });
-    copy_tree_at(source, target, FsPath::new(""), managed)
+    copy_tree_at(source, target, FsPath::new(""), managed, false)
 }
 
-fn copy_tree_at(source: &FsPath, target: &FsPath, relative: &FsPath, managed: bool) -> Result<(), Error> {
+fn copy_tree_at(source: &FsPath, target: &FsPath, relative: &FsPath, managed: bool, frozen: bool) -> Result<(), Error> {
     for entry in fs::read_dir(source).map_err(io)? {
         let entry = entry.map_err(io)?;
         let kind = entry.file_type().map_err(io)?;
@@ -544,13 +555,30 @@ fn copy_tree_at(source: &FsPath, target: &FsPath, relative: &FsPath, managed: bo
                     Some("editable" | "generations" | "executors" | "home" | "jit" | "kernels" | "tmp" | "cache" | "matplotlib" | "uv-cache" | "uv-tools"))) { continue; }
         }
         if kind.is_symlink() { return Err(Error::new(Kind::Usage, "vault_symlink", "conversion/export refuses symlinks; replace them with project-owned files")); }
-        if kind.is_dir() { fs::create_dir(&to).map_err(io)?; copy_tree_at(&from, &to, &relative, managed)?; }
+        if kind.is_dir() { fs::create_dir(&to).map_err(io)?; copy_tree_at(&from, &to, &relative, managed, frozen)?; }
         else if kind.is_file() {
             if entry.file_name() == "project.db-wal" || entry.file_name() == "project.db-shm" { continue; }
             if entry.file_name() == "project.db" {
-                let conn = rusqlite::Connection::open_with_flags(&from, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| error("vault_database", e))?;
-                conn.backup(rusqlite::MAIN_DB, &to, rusqlite::backup::NO_PROGRESS).map_err(|e| error("vault_database", e))?;
-                let copied = rusqlite::Connection::open_with_flags(&to, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| error("vault_database", e))?;
+                if frozen {
+                    if fs::metadata(from.with_file_name("project.db-wal")).is_ok_and(|meta| meta.len() > 0) { return Err(error("vault_database", "read-only project snapshot was not fully checkpointed")); }
+                    fs::copy(&from, &to).map_err(io)?;
+                    if hash(&from)? != hash(&to)? { return Err(error("vault_database", "frozen project database copy did not verify")); }
+                } else {
+                    let conn = rusqlite::Connection::open_with_flags(&from, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| error("vault_database", format!("open source snapshot: {e}")))?;
+                    conn.backup(rusqlite::MAIN_DB, &to, rusqlite::backup::NO_PROGRESS).map_err(|e| error("vault_database", format!("backup project snapshot: {e}")))?;
+                }
+                // Leave a self-contained database, not a WAL header that needs a writable SHM
+                // beside it. Immutable verification is safe only after this explicit checkpoint.
+                {
+                    let copied = rusqlite::Connection::open_with_flags(&to, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE).map_err(|e| error("vault_database", format!("open replacement checkpoint: {e}")))?;
+                    let busy: i64 = copied.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0)).map_err(|e| error("vault_database", format!("checkpoint replacement: {e}")))?;
+                    let mode: String = copied.query_row("PRAGMA journal_mode=DELETE", [], |row| row.get(0)).map_err(|e| error("vault_database", format!("finalize replacement journal: {e}")))?;
+                    if busy != 0 || mode != "delete" { return Err(error("vault_database", "replacement database is still in use")); }
+                }
+                if fs::metadata(to.with_file_name("project.db-wal")).is_ok_and(|meta| meta.len() > 0) { return Err(error("vault_database", "replacement database still has uncheckpointed data")); }
+                let mut uri = url::Url::from_file_path(&to).map_err(|_| error("vault_database", "database snapshot path is not an absolute file path"))?;
+                uri.query_pairs_mut().append_pair("immutable", "1");
+                let copied = rusqlite::Connection::open_with_flags(uri.as_str(), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI).map_err(|e| error("vault_database", format!("open copied snapshot for verification: {e}")))?;
                 let okay: String = copied.query_row("PRAGMA quick_check", [], |row| row.get(0)).map_err(|e| error("vault_database", e))?;
                 if okay != "ok" { return Err(error("vault_database", "the copied project database did not verify")); }
             } else {
@@ -615,7 +643,7 @@ pub(crate) fn seal_payload(path: &FsPath, context: &str, value: &[u8]) -> Result
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => fs::create_dir(&dir).map_err(io)?,
         Err(e) => return Err(io(e)),
     }
-    if !dir.canonicalize().map_err(io)?.starts_with(view.canonicalize().map_err(io)?) { return Err(error("vault_journal", "private journal escapes its mounted project")); }
+    if !platform::durable::canonical(&dir).map_err(provider)?.starts_with(platform::durable::canonical(&view).map_err(provider)?) { return Err(error("vault_journal", "private journal escapes its mounted project")); }
     let object = fresh();
     let private = PrivateRecord { project_id: project_id.clone(), context: context.into(), data: base64::engine::general_purpose::STANDARD.encode(value) };
     let bytes = serde_json::to_vec(&private).map_err(|e| error("vault_journal", e))?;
@@ -650,7 +678,7 @@ pub(crate) fn open_payload(context: &str, value: &[u8]) -> Result<Option<Vec<u8>
     drop(session);
     let at = view.join(JOURNAL_DIR).join(&reference.object);
     if fs::symlink_metadata(&at).map_err(io)?.file_type().is_symlink() { return Err(error("vault_journal", "private journal objects cannot be symlinks")); }
-    if !at.canonicalize().map_err(io)?.starts_with(view.canonicalize().map_err(io)?) { return Err(error("vault_journal", "private journal object escapes its mounted project")); }
+    if !platform::durable::canonical(&at).map_err(provider)?.starts_with(platform::durable::canonical(&view).map_err(provider)?) { return Err(error("vault_journal", "private journal object escapes its mounted project")); }
     let mut bytes = Vec::new();
     fs::File::open(&at).map_err(io)?.take(MAX_JOURNAL_BYTES + 1).read_to_end(&mut bytes).map_err(io)?;
     if bytes.len() as u64 > MAX_JOURNAL_BYTES { return Err(error("vault_journal", "private journal record is too large")); }

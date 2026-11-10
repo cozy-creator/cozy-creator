@@ -47,7 +47,7 @@ fn marker(descriptor: &LocalPrivateStorage) -> io::Result<LocalPrivateMarker> {
     {
         return Err(denied());
     }
-    let real = fs::canonicalize(&descriptor.view_root).map_err(|_| denied())?;
+    let real = platform::durable::canonical(&descriptor.view_root).map_err(|_| denied())?;
     if real != descriptor.view_root {
         return Err(denied());
     }
