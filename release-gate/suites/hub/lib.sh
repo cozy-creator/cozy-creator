@@ -7,7 +7,7 @@ export COZY_HUB_URL=$HUB_URL
 HUB_PKG= HUB_MODELS= HUB_LIVE= HUB_RENTED= WHO=
 mkdir -p "$HB"
 # hub_5xx <file>: the Hub answered a server failure, which no cell accepts, as a refusal or otherwise.
-hub_5xx() { grep -qE '"status": ?5[0-9][0-9]|HTTP 5[0-9][0-9]|unexpected internal failure|"code": ?"(internal|hub_answer)"' "$1"; }
+hub_5xx() { grep -qE '"status": ?5[0-9][0-9]|HTTP 5[0-9][0-9]|: 5[0-9][0-9]; |unexpected internal failure|"code": ?"(internal|hub_answer)"' "$1"; }
 # hub_do <check> ok|refused <cozy args...>: PASS (returns 0) when the command exits as wanted and the Hub answered no 5xx.
 hub_do() {
   local check=$1 want=$2 code; shift 2
@@ -90,15 +90,16 @@ hub_cleanup() {
   HUB_LIVE= HUB_MODELS= HUB_RENTED=
 }
 
-# hub_contract: each path no verb reaches, called anonymously through e2e/hubcheck (contract.py paths), answers as its
-# contract says, and every request and response is as the document the Hub serves has it; mismatches are FAILs.
+# hub_contract [paths|paths-empty]: each path no verb reaches, called anonymously through e2e/hubcheck (contract.py),
+# answers as its contract says, and every request and response is as the document the Hub serves has it; mismatches are
+# FAILs. paths-empty: a Hub without production's data, where a named package, model or SKU may be absent (404).
 hub_contract() {
   local hc=''
   go build -C "$HERE/../e2e/hubcheck" -o "$HB/hubcheck" . 2> "$HB/hubcheck.log" && { "$HB/hubcheck" --hub "$HUB_URL" --out "$HB" > "$HB/hubcheck.addr" 2>> "$HB/hubcheck.log" & hc=$!; }
   until [ -z "$hc" ] || [ -s "$HB/hubcheck.addr" ] || ! kill -0 "$hc" 2> /dev/null; do sleep 1; done
   if [ -s "$HB/hubcheck.addr" ]; then
     while IFS=$'\t' read -r check verdict what; do expect "$check" "$verdict" "$what"; done < <(uv run -q --no-project \
-      --with pyyaml python -I "$HERE/suites/hub/contract.py" "http://$(head -1 "$HB/hubcheck.addr")" paths)
+      --with pyyaml python -I "$HERE/suites/hub/contract.py" "http://$(head -1 "$HB/hubcheck.addr")" "${1:-paths}")
     kill "$hc"
     if [ -s "$HB/hub-mismatches.jsonl" ]; then
       while read -r what; do expect "hub contract document" FAIL "$what"; done < <(jq -r \
