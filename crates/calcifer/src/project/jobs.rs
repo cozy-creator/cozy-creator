@@ -60,6 +60,8 @@ struct Held {
     /// The board as last told: a client hears it whole when more than a job changed, else each job that did.
     board: Board,
     seq: u64,
+    /// The sequence of the active walk's first board.
+    active: Option<u64>,
     on: Vec<String>,
     began_at_ms: i64,
     elapsed_ms: Option<u64>,
@@ -107,6 +109,10 @@ impl Jobs {
         Board { ahead: held.ahead.iter().map(|(.., row)| row.clone()).collect(), ..held.board.clone() }
     }
 
+    pub(crate) fn active(&self) -> Option<u64> {
+        self.held.lock().expect("jobs lock").active
+    }
+
     /// The board an earlier walk ended on, as project.db kept it: what this shows until a walk begins.
     pub(crate) fn ended_on(&self, board: Board) {
         let mut held = self.held.lock().expect("jobs lock");
@@ -115,16 +121,19 @@ impl Jobs {
     }
 
     /// A walk begins: the board starts empty, its `seq` still rising.
-    pub(crate) fn begin(&self) {
+    pub(crate) fn begin(&self) -> u64 {
         let mut held = self.held.lock().expect("jobs lock");
         *held = Held { seq: held.seq, began_at_ms: crate::store::now_ms(), ..Held::default() };
         self.publish(&mut held);
+        held.active = Some(held.seq);
+        held.seq
     }
 
     /// The walk is over, as `ended` says: nothing more changes. A cut no version of it came with is what a render ends on: the film
     /// that stands.
-    pub(crate) fn end(&self, elapsed_ms: u64, ended: Ended) {
+    pub(crate) fn end(&self, elapsed_ms: u64, ended: Ended) -> Board {
         let mut held = self.held.lock().expect("jobs lock");
+        held.active = None;
         held.elapsed_ms = Some(elapsed_ms);
         held.end = Some(ended);
         // What it fetched ahead goes no further: nothing here hears of it now.
@@ -141,12 +150,16 @@ impl Jobs {
             }
         }
         self.publish(&mut held);
+        held.board.clone()
     }
 
     /// The board as project.lock stands: what it sends and what it still owes, each `coming` with whether it makes a shot. A run it
-    /// holds no row of is read by `run`.
-    pub(crate) fn sync(&self, on: Vec<String>, going: Vec<Going>, coming: Vec<(Job, bool)>, run: impl Fn(u64) -> Option<Run>) {
+    /// holds no row of is read by `run`. The data is read outside this lock and may belong to a walk that has ended.
+    pub(crate) fn sync(&self, active: u64, on: Vec<String>, going: Vec<Going>, coming: Vec<(Job, bool)>, run: impl Fn(u64) -> Option<Run>) {
         let mut held = self.held.lock().expect("jobs lock");
+        if held.active != Some(active) {
+            return;
+        }
         for machine in on {
             if !held.on.contains(&machine) {
                 held.on.push(machine);
@@ -357,8 +370,11 @@ impl Jobs {
     }
 
     /// What run `id` did, when it is one of this board's, under `dir`: a warning it gave is said once, as its asset's.
-    pub(crate) fn ran(&self, id: &RunId, event: &RunEvent, dir: &Path) {
+    pub(crate) fn ran(&self, active: u64, id: &RunId, event: &RunEvent, dir: &Path) {
         let mut held = self.held.lock().expect("jobs lock");
+        if held.active != Some(active) {
+            return;
+        }
         if self.ahead_ran(&mut held, id, event) {
             return;
         }
