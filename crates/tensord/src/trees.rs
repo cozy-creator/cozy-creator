@@ -33,15 +33,6 @@ pub(crate) fn parse(bytes: &[u8]) -> io::Result<BTreeMap<String, ObjectRef>> {
     Ok(files.map(|(path, Member { length, sha256, .. })| (path, ObjectRef { sha256, length })).collect())
 }
 
-/// Holds the tree of `files` (each already held) for `owner`. Idempotent per owner.
-pub(crate) fn put(engine: &Engine, owner: &str, files: BTreeMap<String, ObjectRef>) -> io::Result<Tree> {
-    let store = match crate::private_io::current() {
-        Some(scope) => crate::private_io::store(&scope)?,
-        None => engine.store.clone(),
-    };
-    put_in(&store, owner, files)
-}
-
 /// A run's products use its admitted store even on background execution threads.
 pub(crate) fn put_for(engine: &Engine, run: &str, owner: &str, files: BTreeMap<String, ObjectRef>) -> io::Result<Tree> {
     let store = engine.store_for(run)?;

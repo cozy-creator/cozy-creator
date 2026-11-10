@@ -963,8 +963,11 @@ impl Journal {
     /// Every held memo naming `sha256` goes with it (its file is no longer this machine's).
     pub(crate) fn drop_held_memos(&mut self, sha256: &str) -> io::Result<usize> {
         let tx = self.connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db_error)?;
+        let scope = crate::private_io::current();
+        let prefix = scope.as_ref().map(|scope| format!("local-private:{}:{}:", scope.project_id.len(), scope.project_id));
         let dropped = tx.execute("DELETE FROM held_memos WHERE (actor,computation) IN
-            (SELECT actor,computation FROM held_memo_objects WHERE sha256=?1)", params![sha256]).map_err(db_error)?;
+            (SELECT actor,computation FROM held_memo_objects WHERE sha256=?1
+             AND ((?2 IS NULL AND substr(actor,1,14)!='local-private:') OR substr(actor,1,length(?2))=?2))", params![sha256, prefix]).map_err(db_error)?;
         tx.execute("DELETE FROM held_memo_objects WHERE (actor,computation) NOT IN
             (SELECT actor,computation FROM held_memos)", []).map_err(db_error)?;
         tx.commit().map_err(db_error)?;
@@ -1010,6 +1013,8 @@ impl Journal {
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(db_error)?;
+        let scope = private_scope(&tx, parent)?;
+        let actor = crate::private_io::within(scope, || metadata_actor(actor));
         tx.execute(
             "INSERT OR REPLACE INTO objects(actor,sha256,length) VALUES(?1,?2,?3)",
             params![actor, object.sha256, object.length],
