@@ -503,11 +503,12 @@ impl Runs {
                 .filter_map(|p| p.content.as_ref())
                 .collect()
         };
+        let store = self.service.engine.store_for(id).map_err(problem)?;
         let parts = refs
             .into_iter()
             .map(|r| {
                 let object = ObjectRef { sha256: sha256::hex(&r.digest), length: r.length };
-                let file = crate::storage::file(&self.service.engine.store, &object).map_err(problem)?;
+                let file = crate::storage::file(&store, &object).map_err(problem)?;
                 Ok((file, r.length))
             })
             .collect::<Result<Vec<_>, Error>>()?;
@@ -542,7 +543,8 @@ impl Runs {
             .get(member)
             .ok_or_else(|| Error::not_found("output_not_found", "the tree has no such member"))?;
         let (sha, length) = (object.sha256.as_str(), object.length);
-        let file = crate::storage::file(&self.service.engine.store, object).map_err(storage)?;
+        let store = self.service.engine.store_for(id).map_err(problem)?;
+        let file = crate::storage::file(&store, object).map_err(storage)?;
         Ok(OutputSnapshot {
             parts: vec![(file, length)],
             length,
@@ -557,13 +559,14 @@ impl Runs {
         let held = self
             .service
             .engine
-            .with_journal(|j| j.object(&actor_id(actor), sha256))
+            .with_journal(|j| j.object(&crate::private_io::resource_key(&actor_id(actor)), sha256))
             .map_err(problem)?;
         let Some(length) = held else {
             return Err(Error::not_found("object_not_found", "this signer wrote no such object"));
         };
         let object = ObjectRef { sha256: sha256.to_string(), length };
-        crate::storage::file(&self.service.engine.store, &object).map_err(storage)
+        let store = self.objects.store().map_err(problem)?;
+        crate::storage::file(&store, &object).map_err(storage)
     }
     /// `actor`'s installations, each with what it holds now (`StatusFrame.environments`).
     pub(crate) fn environments(&self, actor: VerifiedActor) -> Result<Vec<v1::Environment>, Error> {

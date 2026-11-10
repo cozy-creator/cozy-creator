@@ -409,7 +409,9 @@ impl Calls {
                         .spool
                         .join("child-results")
                         .join(call_index.to_string());
-                    let (text, rows, held) = receive(&service.engine.root, result, &parent.spool, &directory)
+                    let root = service.engine.custody_root(&record.id)
+                        .map_err(|e| ("child_result_unavailable", e.to_string()))?;
+                    let (text, rows, held) = receive(&root, result, &parent.spool, &directory)
                         .map_err(|e| ("child_result_unavailable", e.to_string()))?;
                     let settled = (text, rows);
                     // Each file is the signer's object too: a later child may be handed it.
