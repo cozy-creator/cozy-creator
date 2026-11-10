@@ -1,4 +1,4 @@
-//! Real native client over the public C ABI: it builds against a wheel's core on a pod.
+//! The public-api gate's Rust client over the C ABI (`mixed.py`): it builds against a wheel's core on a pod.
 #![deny(unsafe_code)]
 
 #[allow(unsafe_code)]
