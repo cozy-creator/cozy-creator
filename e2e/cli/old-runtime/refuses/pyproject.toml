@@ -1,0 +1,17 @@
+[build-system]
+requires = ["uv_build>=0.12.7,<0.13"]
+build-backend = "uv_build"
+
+[project]
+name = "e2e-old-runtime-pinned"
+version = "0.1.0"
+description = "Locked on Runtime 0.43 and refusing 0.44: nothing runs, and the refusal names the re-lock (cl-854)"
+requires-python = ">=3.12"
+dependencies = ["cozy-runtime>=0.43,<0.44", "msgspec>=0.19"]
+
+[project.entry-points."cozy.application"]
+default = "e2e_old_runtime_pinned:app"
+
+[tool.uv.build-backend]
+module-name = "e2e_old_runtime_pinned"
+module-root = ""

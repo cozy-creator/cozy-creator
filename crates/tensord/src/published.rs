@@ -38,7 +38,8 @@ use tensorfs::{
 use crate::catalog::normalized;
 
 /// This machine's Runtime/TensorFS pair: what unlocked code is offered first, and what goes over
-/// a lock whose pair it is a later patch of (`Publisher::stands_in`). Empty `requirements`: none.
+/// a lock whose pair it is a later patch of, or that can't speak this machine's executor protocol
+/// (`Publisher::stands_in`). Empty `requirements`: none.
 #[derive(Clone, Debug)]
 pub(crate) struct PackageSdk {
     pub uv: crate::machine::uv::Uv,
@@ -1128,7 +1129,7 @@ impl Publisher {
     /// the lock covers installs it. The wheels the release's Hub hosts (its project wheel, its
     /// carried git dependencies, its org's packages) come through TensorFS's downloader instead
     /// and install from disk. The pair is the lock's at its series' newest released patch, or this
-    /// machine's where that is a later patch of the lock's (`Publisher::stands_in`).
+    /// machine's where it stands in for the lock's (`Publisher::stands_in`).
     fn generation(
         &self,
         generations: &Path,
