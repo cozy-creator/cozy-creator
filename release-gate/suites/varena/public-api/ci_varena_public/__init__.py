@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import Protocol, TypedDict
 
 import msgspec
 import tensorfs
@@ -30,6 +31,7 @@ if not pathlib.Path({str(CARGO)!r}).exists():
     os.chmod(init, 0o755)
     os.execv(init, [init, "-y", "-q", "--profile", "minimal", "--no-modify-path", "--default-toolchain", "1.99.1"])
 """]
+type JSON = None | bool | int | float | str | list[JSON] | dict[str, JSON]
 
 
 class Request(msgspec.Struct, forbid_unknown_fields=True):
@@ -42,26 +44,37 @@ class Report(msgspec.Struct):
     detail: str
 
 
-def cc(source, output, *flags):
+class Cell(Protocol):
+    def __call__(self, *arguments: str) -> list[str]: ...
+
+
+class Step(TypedDict):  # one command's outcome
+    step: str
+    exit: int
+    rows: list[JSON]  # its JSON lines
+    tail: list[str]
+
+
+def cc(source: Path, output: str, *flags: str) -> list[str]:
     return ["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", *flags, f"-I{TREE}/crates/varena/include", f"-L{NATIVE}",
             f"-Wl,-rpath-link,{NATIVE}", str(source), "-lvarena", "-ldl", "-o", str(WORK / output)]
 
 
-def cargo(*arguments):
+def cargo(*arguments: str) -> list[str]:
     return [str(CARGO), "build", "--manifest-path", str(TREE / "Cargo.toml"), "--target-dir", str(TARGET), "-j", "2", *arguments]
 
 
-def python(script, *arguments):
+def python(script: Path, *arguments: str) -> list[str]:
     return [sys.executable, "-B", str(script), *arguments]
 
 
-def mixed(order):
+def mixed(order: str) -> list[str]:
     return python(SUITE / "mixed.py", "--c", str(WORK / "mixed-c.so"), "--rust", str(TARGET / "debug/libvarena_mixed_client.so"),
                   "--order", order, "--gpu")
 
 
-def cases(seed):
-    cell = lambda *arguments: python(SUITE / "cells.py", "--seed", str(seed), *arguments)
+def cases(seed: int) -> dict[str, list[list[str]]]:
+    cell: Cell = lambda *arguments: python(SUITE / "cells.py", "--seed", str(seed), *arguments)
     return {
         "mixed": [cc(SUITE / "native.c", "mixed-c.so", "-fPIC", "-shared"), RUSTUP, cargo("-p", "varena-mixed-client"),
                   mixed("native-first"), mixed("python-first")],
@@ -74,10 +87,10 @@ def cases(seed):
     }
 
 
-def run(argv, ctx):
+def run(argv: list[str], ctx: Context) -> Step:
     process = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=ENV)
     assert process.stdout is not None
-    lines = []
+    lines: list[str] = []
     for line in process.stdout:
         lines.append(line.rstrip())
         ctx.raise_if_cancelled()
@@ -91,7 +104,7 @@ def run(argv, ctx):
 def public(request: Request, ctx: Context) -> Report:
     WORK.mkdir(exist_ok=True)
     chosen = cases(request.seed)
-    steps = []
+    steps: list[Step] = []
     for name in chosen if request.case == "all" else [request.case]:
         for argv in chosen[name]:
             steps.append(run(argv, ctx))
