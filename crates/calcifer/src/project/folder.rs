@@ -1406,7 +1406,16 @@ impl Folder {
 
     /// `seen` of its boxes, with no copy made.
     pub(crate) fn reading_boxes<R>(&self, seen: impl FnOnce(&Written) -> R) -> Result<R, Error> {
-        self.reading_written(seen)
+        if acting(self.id()).is_some() {
+            return self.reading_written(seen);
+        }
+        let written = {
+            let held = self.held()?;
+            held.as_ref().expect("held").stored.written.clone()
+        };
+        // A bounded immutable snapshot, not a cache: building a model from it must
+        // not retain the held mutex and delay publication of an independent edit.
+        Ok(seen(&written))
     }
 
     /// The project as YAML, format 4: its export, and what a render keeps of what it was asked.
