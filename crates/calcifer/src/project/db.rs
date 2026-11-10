@@ -582,11 +582,6 @@ fn legacy_ops(conn: &Connection, at: &Path) -> Result<Vec<OpRow>, Error> {
     Ok(found)
 }
 
-/// History is part of the logical document, not an independently synchronized SQL table.
-pub(crate) fn ops(conn: &Connection, at: &Path) -> Result<Vec<OpRow>, Error> {
-    read_document(conn, at)?.ops()
-}
-
 /// What the request under `key` asked and answered, if it was kept.
 pub(crate) fn keyed(conn: &Connection, key: &str) -> Option<Keyed> {
     conn.query_row("SELECT digest, status, content_type, body FROM request_keys WHERE key = ?1", [key], |r| {
