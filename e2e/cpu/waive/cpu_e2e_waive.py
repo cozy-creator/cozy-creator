@@ -1,6 +1,7 @@
-"""A fixture's waivers (`WAIVE` in tiny/<package>.py), in the executor and every rank it spawns: each named
-`module:function` returns None instead of running once its module is imported. Only release-geometry pins a tiny model
-cannot meet are waived; the coverage table lists each as reachable on a GPU only."""
+"""A fixture's waivers (`WAIVE` in tiny/<package>.py): each `module:function` named in CPU_E2E_WAIVE returns None
+instead of running once its module is imported. drive.py puts this module and a `.pth` importing it in the package
+environment's site-packages, so it holds in the executor and every rank it spawns (`python -I` reads no PYTHONPATH).
+Only release-geometry pins a tiny model cannot meet are waived; the coverage table lists each as GPU-only."""
 
 from __future__ import annotations
 

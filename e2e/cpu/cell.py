@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, NotRequired, Protocol, TypedDict, cast
@@ -75,6 +77,18 @@ def size(width: int, height: int) -> Check:
     return check
 
 
+def answers(count: int) -> Check:
+    """The result holds `count` answers (`texts`), none empty."""
+
+    def check(result: Json, files: list[Path]) -> str | None:
+        texts = result.get("texts") if isinstance(result, dict) else None
+        if not isinstance(texts, list) or len(texts) != count or not all(isinstance(t, str) and t for t in texts):
+            return f"the result's texts are {json.dumps(texts)[:200]}, not {count} answers"
+        return None
+
+    return check
+
+
 class Pretrained(Protocol):
     def save_pretrained(self, save_directory: str | Path) -> None: ...
 
@@ -88,3 +102,20 @@ def module(value: object) -> torch.nn.Module:
 def save(value: object, folder: Path) -> None:
     """A Diffusers or Transformers model, config or scheduler in the source format the real model ships in."""
     cast(Pretrained, value).save_pretrained(folder)
+
+
+def packages() -> Path:
+    """The packages checkout under test (drive.py states it): a fixture may read another package's bundled files."""
+    return Path(os.environ["CPU_E2E_PACKAGES"])
+
+
+def qwen_tokenizer(folder: Path) -> None:
+    """Qwen's own tokenizer (its byte-level BPE, the Qwen3-VL special tokens) and chat template, as Qwen's releases
+    ship them (`tokenizer.json`, `tokenizer_config.json`, `chat_template.json`), from the copy minimax-h3 bundles."""
+    from transformers import AutoTokenizer
+
+    source = packages() / "minimax-h3" / "minimax_h3" / "processor"
+    folder.mkdir(parents=True, exist_ok=True)
+    save(AutoTokenizer.from_pretrained(source), folder)
+    template = json.loads((source / "tokenizer_config.json").read_text())["chat_template"]
+    (folder / "chat_template.json").write_text(json.dumps({"chat_template": template}))

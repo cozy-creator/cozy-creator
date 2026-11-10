@@ -6,7 +6,7 @@ the seam: hello, start, load, activate, prepare_request, invoke, shutdown, with 
 interface as `tensord/src/gpu_service.rs` builds them. The weights are the fixture's (`tiny/<package>.py`): the
 model's real classes at a tiny config, written into a throwaway store by TensorFS's own import or writer.
 
-    drive.py <package dir> <interface.json> <fixture.py> <out dir> [--only cell,...] [--record]
+    drive.py <package dir> <interface.json> <fixture.py> <out dir> [--refs DIR] [--only cell,...] [--record]
 
 Prints one line per cell: PASS|FAIL|SKIP <package> <entry> <cell> <seconds>s[: first error line]. Exit 1 on any FAIL.
 """
@@ -22,6 +22,7 @@ import socket
 import struct
 import subprocess
 import sys
+import sysconfig
 import time
 import traceback
 from collections.abc import Mapping
@@ -200,10 +201,13 @@ class Executor:
         }
         if waive:
             # A fixture's waivers (WAIVE): release-geometry pins a tiny model cannot meet, each named with its reason.
-            env |= {"PYTHONPATH": str(HERE / "waive"), "CPU_E2E_WAIVE": json.dumps(dict(waive))}
+            site = Path(sysconfig.get_paths()["purelib"])
+            shutil.copyfile(HERE / "waive" / "cpu_e2e_waive.py", site / "cpu_e2e_waive.py")
+            (site / "cpu_e2e_waive.pth").write_text("import cpu_e2e_waive\n")
+            env["CPU_E2E_WAIVE"] = json.dumps(dict(waive))
         self.stderr = work / "executor.log"
         self.child = subprocess.Popen(
-            [sys.executable, "-m", "cozy_runtime.internal.executor", "--socket", f"/proc/{os.getpid()}/fd/{self.fd}/seam",
+            [sys.executable, "-I", "-m", "cozy_runtime.internal.executor", "--socket", f"/proc/{os.getpid()}/fd/{self.fd}/seam",
              "--root", str(work)],
             env=env, stderr=open(self.stderr, "w"), stdout=subprocess.DEVNULL,
         )
@@ -395,8 +399,8 @@ def judge(cell: Cell, reply: Reply, spool: Path, reference: Seen | None) -> Seen
             if width < 1.0 and media_type.split("/")[0] in ("image", "video", "audio"):
                 raise Failed(f"output {output}{suffix} is flat (spread {width:.3f})")
             seen["outputs"].append({"name": output + suffix, "bytes": values.size, "signature": signature(values)})
-    if not seen["outputs"]:
-        raise Failed("the reply declares no outputs")
+    if not seen["outputs"] and result in (None, {}, []):
+        raise Failed("the reply declares no outputs and an empty result")
     check = cell.get("check")
     if check is not None and (problem := check(result, files)):
         raise Failed(problem)
@@ -438,13 +442,20 @@ def inputs(cell: Cell, payload: dict[str, Json], work: Path, made: Path) -> tupl
         shutil.copyfile(source, local)
         data = local.read_bytes()
         digest = "sha256:" + hashlib.sha256(data).hexdigest()
-        *parents, last = field.split(".")
+        parts = field.split(".")
         node: Json = payload
-        for part in parents:
-            node = node[int(part)] if isinstance(node, list) else cast(dict[str, Json], node)[part]
-        order = 0
+        for part, after in zip(parts, parts[1:]):
+            empty: Json = [] if after.isdigit() else {}
+            if isinstance(node, list):
+                node.extend([None] * (int(part) + 1 - len(node)))
+                node[int(part)] = node[int(part)] or empty
+                node = node[int(part)]
+            else:
+                node = cast(dict[str, Json], node).setdefault(part, empty)
+        last = parts[-1]
+        # The position in the nearest containing list (`asset_inputs`): `prompt.references.1.file` is 1.
+        order = next((int(part) for part in reversed(field.split(".")) if part.isdigit()), 0)
         if isinstance(node, list):
-            order = int(last)
             node.extend([None] * (order + 1 - len(node)))
             node[order] = digest
         else:
@@ -475,7 +486,7 @@ def main() -> int:
     interface = cast(Interface, json.loads(interface_path.read_text()))
     fixture = load_fixture(fixture_path, package)
     waive = cast(dict[str, str], getattr(fixture, "WAIVE", {}))
-    references_path = HERE / "refs" / f"{package}.json"
+    references_path = (Path(flags[flags.index("--refs") + 1]) if "--refs" in flags else HERE / "refs") / f"{package}.json"
     references = cast(dict[str, Seen], json.loads(references_path.read_text())) if references_path.exists() else {}
     failed = 0
 
@@ -490,6 +501,7 @@ def main() -> int:
         import tensorfs
 
         manifests: dict[str, str] = {}
+        os.environ["CPU_E2E_PACKAGES"] = str(package_dir.parent)
         for ref, source in fixture.models(out / "source", store).items():
             manifests[ref] = source if isinstance(source, str) else tensorfs.convert_to_cozytensors(str(source), cache_dir=store).id
         line(True, "-", "tiny-weights", started)
