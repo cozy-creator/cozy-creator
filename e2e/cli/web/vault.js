@@ -50,7 +50,7 @@ const sanitized = (text) => String(text ?? '').replace(/cozy1-[a-z0-9_-]+/gi, '[
   // Import returns before first-use ffprobe preparation and background measurement.
   // Wait for its actual committed result before asking to replace that plain storage.
   await until('plain seed media measured before encryption', () => {
-    const state = JSON.parse(cli('project', '-p', folder, 'status'));
+    const state = JSON.parse(cli('project', '-p', folder, 'status', '--full'));
     const movie = state.assets.find((asset) => asset.name === 'private_loop_movie');
     const picture = state.assets.find((asset) => asset.name === 'private_vault_picture');
     return { idle: !state.busy && !state.moving, movie: { width: movie?.width, height: movie?.height, duration_ms: movie?.duration_ms }, picture: { width: picture?.width, height: picture?.height } };
@@ -123,7 +123,7 @@ const sanitized = (text) => String(text ?? '').replace(/cozy1-[a-z0-9_-]+/gi, '[
   await page.locator('.gate').waitFor();
   check('hide_show_keeps_pending_edit', /1 change/.test(await page.locator('.top').innerText()));
   await context.setOffline(false);
-  await until('pending encrypted edit commits after reconnect', () => JSON.parse(cli('project', '-p', folder, 'status')).assets.find((asset) => asset.name === 'private_pending_words')?.fields?.text, (text) => text?.includes('RETAINED-THROUGH-PRIVATE-COVER'), 45000);
+  await until('pending encrypted edit commits after reconnect', () => JSON.parse(cli('project', '-p', folder, 'status', '--full')).assets.find((asset) => asset.name === 'private_pending_words')?.fields?.text?.includes('RETAINED-THROUGH-PRIVATE-COVER') ?? false, Boolean, 45000);
   await until('same private canvas revealed', () => page.evaluate(() => document.querySelector('.react-flow') === window.__pendingCanvas && !document.querySelector('.react-flow')?.closest('[hidden]')), Boolean, 20000);
   check('pending_edit_commits_after_cover', true);
   check('no_private_paint_during_cover', await page.evaluate(() => window.__coverPaints.length === 0));
@@ -149,7 +149,7 @@ const sanitized = (text) => String(text ?? '').replace(/cozy1-[a-z0-9_-]+/gi, '[
   check('navigation_retains_pending_private_import', /1 change/.test(await page.locator('.top').innerText()));
   check('offline_navigation_covers_private_content', !(await page.locator('body').innerText()).includes('private_navigation_import'));
   await context.setOffline(false);
-  await until('private import commits after project navigation', () => JSON.parse(cli('project', '-p', folder, 'status')).assets.some((asset) => asset.name === 'private_navigation_import' && asset.sha256), Boolean, 45000);
+  await until('private import commits after project navigation', () => JSON.parse(cli('project', '-p', folder, 'status', '--full')).assets.some((asset) => asset.name === 'private_navigation_import' && asset.sha256), Boolean, 45000);
   await page.locator('.react-flow').waitFor();
   check('private_import_survives_project_navigation', true);
   // Automatic hover previews are not user activity. The real video decoder keeps
