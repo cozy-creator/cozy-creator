@@ -168,7 +168,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "the committed SQLite payload must survive reopen"
         );
     }
-    let held = fs::File::open(&renamed)?;
+    let mut held = fs::File::open(&renamed)?;
     let busy = match mounted.try_unmount() {
         Err(project_mount::Error::Busy(_)) => {
             assert!(mounted.is_mounted()?);
@@ -176,6 +176,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         Ok(()) => {
             assert!(!mounted.is_mounted()?);
+            assert!(
+                held.read_exact(&mut [0]).is_err(),
+                "a successful lock must refuse fresh reads through a previously opened handle"
+            );
             "unmounted"
         }
         Err(error) => return Err(error.into()),
