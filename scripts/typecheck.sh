@@ -23,7 +23,8 @@ if ! cmp -s "$req.txt" "$venv/requirements.txt"; then
 fi
 
 roots() {  # "<root> <file>…": each root's own files, relative to it (a directory would take in nested roots too)
-  git ls-files -- '*.py' '*.pyi' | while read -r file; do
+  # e2e/cpu is checked by e2e/cpu/run.sh instead: per package, in the environment its fixture builds models with.
+  git ls-files -- '*.py' '*.pyi' ':!e2e/cpu' | while read -r file; do
     [ "${file%.py}" = "$file" ] || [ ! -f "${file}i" ] || continue  # a module with a stub is checked as its stub
     dir=$(dirname "$file")
     while [ -f "$dir/__init__.py" ]; do dir=$(dirname "$dir"); done

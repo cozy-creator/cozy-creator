@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Callable
 from pathlib import Path
+from typing import Protocol, cast
 
 import numpy as np
 import tensorfs
@@ -118,11 +118,17 @@ def _terse(model: torch.nn.Module) -> None:
         model.get_parameter("lm_head.weight")[FIRST_SPECIAL].fill_(1.0)
 
 
+class _Configure(Protocol):
+    """Tencent's config, as the fixture calls it: the release's JSON in whole, as keyword arguments."""
+
+    def __call__(self, **config: Json) -> HunyuanImage3Config: ...
+
+
 def _checkpoint(store: Path, distilled: bool, seed: int, assets: dict[str, bytes], terse: bool = False) -> str:
     config = {**CONFIG, "cfg_distilled": distilled, "use_meanflow": distilled}
     torch.manual_seed(seed)
-    # Tencent's config takes the release's keys as keyword arguments, typed one by one: the JSON goes in whole.
-    configure: Callable[..., HunyuanImage3Config] = HunyuanImage3Config
+    # It types the release's keys one by one, so the whole JSON is not one of its signatures.
+    configure = cast(_Configure, HunyuanImage3Config)
     model = module(HunyuanImage3ForCausalMM(configure(**config))).to(torch.bfloat16)
     if terse:
         _terse(model)

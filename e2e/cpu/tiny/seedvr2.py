@@ -33,7 +33,10 @@ _NAMES = {torch.bfloat16: "BF16", torch.float16: "F16", torch.float32: "F32"}
 def models(root: Path, store: Path) -> dict[str, Path | str]:
     torch.manual_seed(0)
     seedvr.DIT, seedvr.VAE = DIT, VAE  # this process only: the executor takes PATCH
-    built: dict[str, torch.nn.Module] = {**seedvr.modules(), "conditioning": seedvr.Conditioning()}
+    made = seedvr.modules()
+    vae = made["vae"]
+    assert isinstance(vae, torch.nn.Module)  # upstream's wrapper, typed as what the restoration calls of it
+    built: dict[str, torch.nn.Module] = {"dit": made["dit"], "vae": vae, "conditioning": seedvr.Conditioning()}
     writer = tensorfs.Writer(cache_dir=store)
     generator = torch.Generator().manual_seed(1)
     for name, module in built.items():

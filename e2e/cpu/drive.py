@@ -39,6 +39,8 @@ from cell import Cell, Fixture, Json, Output, Seen
 HERE = Path(__file__).resolve().parent
 THREADS = os.environ.get("CPU_E2E_THREADS", "2")
 HEADER = struct.Struct("!I")
+#: Any numpy scalar: `np.generic` alone takes Any for its item type.
+type Scalar = np.generic[object]
 
 
 class Failed(Exception):
@@ -506,7 +508,7 @@ def bindings(interface: Interface, interface_path: str, entry: Entrypoint, manif
     return rows
 
 
-def block_means(values: npt.NDArray[np.generic], grid: tuple[int, ...]) -> npt.NDArray[np.float64]:
+def block_means(values: npt.NDArray[Scalar], grid: tuple[int, ...]) -> npt.NDArray[np.float64]:
     """`values` cut into `grid` blocks along its leading axes, each block's mean (its trailing axes kept)."""
     out = values.astype(np.float64)
     for axis, count in enumerate(grid):
@@ -514,7 +516,7 @@ def block_means(values: npt.NDArray[np.generic], grid: tuple[int, ...]) -> npt.N
     return out
 
 
-def signature(values: npt.NDArray[np.generic]) -> list[float]:
+def signature(values: npt.NDArray[Scalar]) -> list[float]:
     """An output's thumbnail, 0-255: a picture 16x16 blocks, a video 8 frames of 8x8, else 1024 runs of its samples.
     Each block of a decoded picture spans a few VAE patches, so another latent shows here where a whole-file mean
     would not."""
@@ -528,7 +530,7 @@ def signature(values: npt.NDArray[np.generic]) -> list[float]:
     return [round(float(v), 1) for v in thumb.reshape(-1)]
 
 
-def shaped(values: npt.NDArray[np.generic], result: Json) -> npt.NDArray[np.generic]:
+def shaped(values: npt.NDArray[Scalar], result: Json) -> npt.NDArray[Scalar]:
     """A raw RGB picture as height x width x 3, when the result states its canvas."""
     if values.ndim == 1 and isinstance(result, dict):
         width, height = result.get("width"), result.get("height")
@@ -543,12 +545,12 @@ def differ(a: list[float], b: list[float]) -> tuple[float, float]:
     return (float(gap.mean()), float(gap.max())) if gap.size else (0.0, 0.0)
 
 
-def samples(path: Path, media_type: str) -> dict[str, npt.NDArray[np.generic]]:
+def samples(path: Path, media_type: str) -> dict[str, npt.NDArray[Scalar]]:
     """An output's samples as 0-255 numbers: a picture or a video's frames decoded, a video's sound, else its bytes."""
     if media_type.startswith("video/"):
         import av
 
-        found: dict[str, npt.NDArray[np.generic]] = {}
+        found: dict[str, npt.NDArray[Scalar]] = {}
         with av.open(str(path)) as container:
             frames = [frame.to_ndarray(format="rgb24") for frame in container.decode(video=0)]
         if not frames:
@@ -568,7 +570,7 @@ def samples(path: Path, media_type: str) -> dict[str, npt.NDArray[np.generic]]:
     return {"": np.frombuffer(path.read_bytes(), dtype=np.uint8)}
 
 
-def spread(values: npt.NDArray[np.generic]) -> float:
+def spread(values: npt.NDArray[Scalar]) -> float:
     """The samples' standard deviation, from at most a million of them."""
     flat = values.reshape(-1)
     return float(flat[:: max(1, flat.size // 1_000_000)].astype(np.float64).std())
