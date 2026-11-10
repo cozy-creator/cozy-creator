@@ -71,7 +71,7 @@ _FOX = _shared.picture("fox", 200, 136)
 _SNOW = _shared.picture("snow", 128, 128)
 #: 128², 2 steps, the prompt as written.
 _SMALL: dict[str, Json] = {"seed": 7, "megapixels": 128 * 128 / (1 << 20), "steps": 2, "prompt_upsampling": False}
-_SIGN = [{"box": [0.55, 0.6, 0.95, 0.9], "prompt": "a wooden sign", "text": "SNOW"}]
+_SIGN: list[Json] = [{"box": [0.55, 0.6, 0.95, 0.9], "prompt": "a wooden sign", "text": "SNOW"}]
 
 CELLS: list[Cell] = [
     {"entry": "generate_turbo", "name": "text", "payload": {"prompt": _prompt("a red fox in fresh snow"), **_SMALL},

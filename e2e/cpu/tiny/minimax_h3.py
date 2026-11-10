@@ -258,6 +258,15 @@ CELLS: list[Cell] = [
     {"entry": "ref2va_segment", "name": "reference-2-ranks", "payload": {"payload": _REF2VA, "assets": [{"label": "fox"}]},
      "files": {"assets.0.asset": picture("fox", 512, 512)}, "ranks": 2, "empty": _EMPTY,
      "same_as": "ref2va_segment/reference"},
+    # The orchestrators: their segments run as child calls through the driver's broker (TensorD's `calls.rs`).
+    {"entry": "generate", "name": "beat", "payload": {"payload": {
+        "beats": [{"duration": 5, "description": {"text": "a red fox runs across a snowy field"}}], "seed": 7,
+        "quality": "full"}}},
+    {"entry": "upscale", "name": "1080p", "payload": {"payload": {"video": {"description": "a red fox in the snow"},
+                                                                  "to": "1080p", "strength": 0.7}},
+     "files": {"payload.video.file": clip(25)}},
+    {"entry": "edit", "name": "plate", "payload": {},
+     "skip": "an edit calls its segment with an edit LoRA as a model choice, which TensorD binds from the Hub"},
     {"entry": "regenerate_shot", "name": "native", "payload": {"payload": _REGENERATE},
      "files": {"payload.video": clip(25)}},
     {"entry": "regenerate_shot", "name": "1080p", "payload": {"payload": {**_REGENERATE, "resolution": "1080p",

@@ -14,6 +14,7 @@ Prints one line per cell: PASS|FAIL|SKIP <package> <entry> <cell> <seconds>s[: f
 from __future__ import annotations
 
 import hashlib
+import contextlib
 import importlib.util
 import itertools
 import json
@@ -62,6 +63,8 @@ class Slot(TypedDict):
 class Entrypoint(TypedDict):
     name: str
     models: NotRequired[list[Slot]]
+    #: the functions it calls (an orchestrator's segments)
+    calls: NotRequired[list[dict[str, Json]]]
 
 
 class Interface(TypedDict):
@@ -113,6 +116,14 @@ class InputFile(TypedDict):
     order: int
 
 
+class CallRow(TypedDict):
+    """One function an attempt may call (`Start.call_interfaces`): here a package's own (`self`)."""
+
+    module: str
+    export: str
+    self: bool
+
+
 class Start(TypedDict):
     cmd: Literal["start"]
     devices: str
@@ -121,6 +132,7 @@ class Start(TypedDict):
     sequence_parallel_degree: int
     model_choices: bool
     constructions: list[Construction]
+    call_interfaces: NotRequired[list[CallRow]]
 
 
 class Load(TypedDict):
@@ -155,14 +167,34 @@ class Invoke(TypedDict):
     operation: NotRequired[str]
 
 
+class Grant(TypedDict):
+    """A child's output projected into its caller's spool (`ByteGrant`)."""
+
+    output_id: str
+    kind: str
+    digest: str
+    length: int
+    content_bytes: int
+    media_type: str
+    local: str
+
+
 class Answer(TypedDict):
-    """TensorD's answer to the executor's durable request `seq` (`author._executor_requests`)."""
+    """TensorD's answer to the executor's durable request `seq` (`author._executor_requests`): a verdict, and for a
+    call its state (`CallState`), for a memo its entry (`MemoEntry`, `MemoStored`)."""
 
     event: Literal["answer"]
     seq: int
     ok: bool
     code: str
     detail: str
+    state: NotRequired[str]
+    child_request_id: NotRequired[str]
+    result: NotRequired[str]
+    byte_grants: NotRequired[list[Grant]]
+    local: NotRequired[str]
+    stored: NotRequired[bool]
+    reason: NotRequired[str]
 
 
 class Item(TypedDict):
@@ -192,11 +224,22 @@ class Outcome(TypedDict, total=False):
     message: str
 
 
+class Saved(TypedDict):
+    asset_ref: str
+    digest: str
+    media_type: str
+
+
 class Reply(TypedDict, total=False):
     reply: str
     event: str
     kind: str
     seq: int
+    call_index: int
+    module: str
+    export: str
+    payload: str
+    saved: list[Saved]
     output: str
     repo_id: str
     revision: str
@@ -244,6 +287,8 @@ class Executor:
         self.sock, _ = listening.accept()
         listening.close()
         self.items: list[Item] = []
+        #: TensorD's call broker for the attempt being invoked, when its function calls others
+        self.broker: Broker | None = None
 
     def send(self, frame: Frame) -> None:
         data = json.dumps(frame, separators=(",", ":"), sort_keys=True).encode()
@@ -288,6 +333,8 @@ class Executor:
                 self.items.append({"output": got.get("output", ""), "repo_id": got.get("repo_id", ""),
                                    "revision": got.get("revision", "")})
                 self.send({"event": "answer", "seq": got.get("seq", 0), "ok": True, "code": "", "detail": ""})
+            elif got.get("event") == "request" and self.broker is not None and got.get("kind", "") in Broker.KINDS:
+                self.send(self.broker.answer(got))
             elif got.get("event") == "request":
                 raise Failed(f"the executor asked TensorD for {got.get('kind')}, which this driver does not stand in for")
 
@@ -314,6 +361,108 @@ class Executor:
             self.child.wait()
         self.sock.close()
         os.close(self.fd)
+
+
+#: A child call: (its function, its request, its input files by field path, its request id) -> its reply and spool.
+type RunChild = Callable[[str, dict[str, Json], dict[str, Path], str], tuple[Reply, Path]]
+
+
+class Broker:
+    """TensorD's call broker (`tensord/src/calls.rs`) for one attempt: a child call runs to its end on the child executor
+    before it is answered, so every poll finds it settled and the attempt never waits on a nudge (`child_events`). Its
+    outputs are projected into the caller's spool as TensorD projects them (`receive`): each named by its sha256, granted
+    by its result path, and held for a later child."""
+
+    KINDS = frozenset({"child_call", "child_poll", "child_cancel", "child_forget", "gpu_release", "stage_memo_lookup",
+                       "stage_memo_store"})
+
+    def __init__(self, request: str, spool: Path, run: RunChild) -> None:
+        self.request, self.spool, self.run = request, spool, run
+        #: each file the caller holds, by digest: what it saved and passed, and what its children returned
+        self.held: dict[str, Path] = {}
+        self.settled: dict[int, Answer] = {}
+
+    def answer(self, got: Reply) -> Answer:
+        seq, kind, index = got.get("seq", 0), got.get("kind", ""), got.get("call_index", -1)
+        verdict: Answer = {"event": "answer", "seq": seq, "ok": True, "code": "", "detail": ""}
+        settled: Answer = verdict
+        if kind == "child_call":
+            settled = self.call(got).copy()
+        elif kind == "child_poll":
+            settled = self.settled[index].copy() if index in self.settled else verdict | {
+                "ok": False, "code": "child_call_refused", "detail": "parent call has not been activated"}
+        elif kind == "stage_memo_lookup":
+            settled = verdict | {"local": ""}
+        elif kind == "stage_memo_store":
+            settled = verdict | {"stored": False, "reason": "no memo store here"}
+        settled["seq"] = seq
+        return settled
+
+    def call(self, got: Reply) -> Answer:
+        index = got.get("call_index", -1)
+        if index in self.settled:
+            return self.settled[index]
+        for saved in got.get("saved", []):
+            self.held[saved["digest"]] = spooled(self.spool, saved["asset_ref"])
+        document = cast(dict[str, Json], json.loads(got.get("payload", "{}")))
+        # A call's model choices (`models`) bind its slots; a cell's call takes the defaults.
+        request = {k: v for k, v in document.items() if k != "models"}
+        files = {path: self.held[digest] for path, digest in digests(request) if digest in self.held}
+        child = f"{self.request}-call-{index}"
+        reply, spool = self.run(got.get("export", ""), request, files, child)
+        outcome = reply.get("outcome", {})
+        verdict: Answer = {"event": "answer", "seq": 0, "ok": True, "code": "", "detail": ""}
+        if not reply.get("ok") or outcome.get("terminal") != "succeeded":
+            verdict |= {"ok": False, "code": outcome.get("code") or reply.get("code") or "child_failed",
+                        "detail": (outcome.get("message") or reply.get("detail") or "")[:1024]}
+        else:
+            result, grants = self.receive(reply, spool, index)
+            verdict |= {"state": "succeeded", "child_request_id": child, "result": result, "byte_grants": grants}
+        self.settled[index] = verdict
+        return verdict
+
+    def receive(self, reply: Reply, spool: Path, index: int) -> tuple[str, list[Grant]]:
+        result_file = spool / "result.canonical"
+        value = cast(Json, json.loads(result_file.read_bytes())) if result_file.exists() else reply.get("result")
+        directory = self.spool / "child-results" / str(index)
+        directory.mkdir(parents=True, exist_ok=True)
+        grants: list[Grant] = []
+        for declared in reply.get("outputs") or []:
+            output, ref, media_type = (str(declared.get(k, "")) for k in ("output_id", "asset_ref", "media_type"))
+            path = spooled(spool, ref)
+            data = path.read_bytes()
+            sha = hashlib.sha256(data).hexdigest()
+            local = directory / f"{len(grants)}-{sha}"
+            shutil.copyfile(path, local)
+            with contextlib.suppress(FileExistsError):
+                os.link(local, self.spool / f"sha256-{sha}")
+            digest = f"sha256:{sha}"
+            node: Json = value
+            for part in output.split(".") if output else []:
+                node = node[int(part)] if isinstance(node, list) else cast(dict[str, Json], node)[part]
+            if not isinstance(node, dict):
+                raise Failed(f"child output {output} is not a file in its result")
+            node.update(asset_ref=digest, digest=digest, size_bytes=len(data), media_type=media_type)
+            grants.append({"output_id": output, "kind": str(node.get("kind", "")), "digest": digest, "length": len(data),
+                           "content_bytes": len(data), "media_type": media_type, "local": str(local)})
+            self.held[digest] = local
+        return json.dumps(value, separators=(",", ":"), sort_keys=True), grants
+
+
+def spooled(spool: Path, asset_ref: str) -> Path:
+    """The file an attempt saved under `asset_ref` (`attempt:<id>/video/0001`), in its spool."""
+    found = sorted(spool.glob(asset_ref.split("/", 1)[-1].replace("/", "-") + "*"))
+    if not found:
+        raise Failed(f"{asset_ref} has no file in {spool.name}'s spool")
+    return found[0]
+
+
+def digests(value: Json, path: str = "") -> list[tuple[str, str]]:
+    """Every `sha256:` string in a request, by its field path (`payload.first_frame`)."""
+    if isinstance(value, str):
+        return [(path, value)] if value.startswith("sha256:") and len(value) == 71 else []
+    items = enumerate(value) if isinstance(value, list) else value.items() if isinstance(value, dict) else ()
+    return [found for key, item in items for found in digests(item, f"{path}.{key}" if path else str(key))]
 
 
 def slot_ref(slot: Slot) -> str:
@@ -616,6 +765,16 @@ def inputs(cell: Cell, payload: dict[str, Json], work: Path, made: Path) -> tupl
     return metadata, granted
 
 
+def granted(field: str, path: Path) -> tuple[InputMetadata, InputFile]:
+    """A file the machine grants at `field` (its own path): `PrepareRequest.input_metadata`'s row and `Invoke.inputs`'."""
+    data = path.read_bytes()
+    digest = "sha256:" + hashlib.sha256(data).hexdigest()
+    order = next((int(part) for part in reversed(field.split(".")) if part.isdigit()), 0)
+    media_type = MEDIA.get(path.suffix, "application/octet-stream")
+    return ({"input_id": field, "media_type": media_type, "digest": digest, "length": len(data), "order": order},
+            {"local": str(path), "media_type": media_type, "digest": digest, "length": len(data), "order": order})
+
+
 def load_fixture(path: Path, package: str) -> Fixture:
     spec = importlib.util.spec_from_file_location(f"tiny_{package.replace('-', '_').replace('.', '_')}", path)
     assert spec is not None and spec.loader is not None
@@ -666,6 +825,46 @@ def main() -> int:
     cells = [c for c in fixture.CELLS if only is None or c["name"] in only or f"{c['entry']}/{c['name']}" in only]
     executors: dict[int, Executor] = {}
     loaded: set[tuple[int, str]] = set()
+    module = interface["application"].split(":")[0]
+    #: the package's functions its orchestrators call, as TensorD lists them on a Start (`calls::call_interfaces`)
+    calls: list[CallRow] = [{"module": module, "export": export, "self": True} for export in sorted(
+        {str(call.get("function")) for row in interface["entrypoints"] for call in row.get("calls", [])})]
+    children: dict[str, Executor] = {}
+
+    def run_child(export: str, request: dict[str, Json], files: dict[str, Path], child: str) -> tuple[Reply, Path]:
+        """A child call through the child executor, as TensorD runs it on its own (GPU) executor: the callee's slots
+        bound and loaded once, its input files granted where its request names them."""
+        row = entries.get(export)
+        if row is None:
+            raise Failed(f"a call names {export}, which the package interface does not have")
+        rows = bindings(interface, str(interface_path), row, manifests, store, f"{package}@{version}", package)
+        executor = children.get("child")
+        if executor is None:
+            executor = children["child"] = Executor(out / "executor-child", store, waive, patch)
+            executor.must({"cmd": "hello"})
+            executor.must({"cmd": "start", "devices": "", "application": interface["application"],
+                           "package_interface": str(interface_path), "sequence_parallel_degree": 1, "model_choices": True,
+                           "constructions": []})
+        construction = f"{export}@child"
+        if (0, construction) not in loaded:
+            load: Load = {"cmd": "load", "construction": construction, "devices": "", "sequence_parallel_degree": 1,
+                          "binding": rows[0] if rows else {"application": interface["application"],
+                                                           "package_interface": str(interface_path)}}
+            if len(rows) > 1:
+                load["models"] = [{"binding": b} for b in rows]
+            executor.must(load)
+            loaded.add((0, construction))
+        executor.must({"cmd": "activate", "construction": construction})
+        rows_in = {field: granted(field, path) for field, path in files.items()}
+        executor.must({"cmd": "prepare_request", "request_id": child, "entrypoint": export, "payload": request,
+                       "construction": construction, "input_metadata": {k: v[0] for k, v in rows_in.items()}})
+        spool = out / "spool" / child
+        spool.mkdir(parents=True)
+        reply = executor.ask({"cmd": "invoke", "request_id": child, "entrypoint": export, "spool": str(spool),
+                              "construction": construction, "deadline_s": 1800, "inputs": {k: v[1] for k, v in rows_in.items()}})
+        (out / f"{child}.reply.json").write_text(json.dumps(reply, indent=1))
+        return reply, spool
+
     #: each cell's judged output this run: a `same_as` cell is judged against its twin's here
     ran: dict[str, Seen] = {}
     #: and its output files, for a twin compared sample by sample
@@ -689,12 +888,15 @@ def main() -> int:
                 if executor is None:
                     executor = executors[ranks] = Executor(out / f"executor-{ranks}", store, waive, patch, ranks)
                     executor.must({"cmd": "hello"})
-                    executor.must({
+                    start: Start = {
                         "cmd": "start", "devices": "", "application": interface["application"],
                         "package_interface": str(interface_path), "sequence_parallel_degree": ranks, "model_choices": True,
                         "constructions": [{"path": b["model_binding_path"], "manifest": b["snapshot"], "components": b["components"]}
                                           for b in rows if "snapshot" in b and "model_binding_path" in b and "components" in b],
-                    })
+                    }
+                    if calls:
+                        start["call_interfaces"] = calls
+                    executor.must(start)
                 construction = f"{entry}@{ranks}" + "".join(f":{k}={v}" for k, v in sorted(cell.get("models", {}).items()))
                 if (ranks, construction) not in loaded:
                     load: Load = {"cmd": "load", "construction": construction, "devices": "", "sequence_parallel_degree": ranks,
@@ -717,7 +919,11 @@ def main() -> int:
                     invoke |= {"sources": {k: manifests[ref] for k, ref in cell["sources"].items()},
                                "weights": cell.get("weights", {}), "operation": f"{package}/{entry}"}
                 executor.items.clear()
+                executor.broker = Broker(request, spool, run_child) if row.get("calls") else None
+                if executor.broker is not None:  # the attempt's own inputs, which it may pass to a child
+                    executor.broker.held |= {g["digest"]: Path(g["local"]) for g in granted.values()}
                 reply = executor.ask(invoke)
+                executor.broker = None
                 (out / f"{request}.reply.json").write_text(json.dumps(reply, indent=1))
                 key = f"{entry}/{name}"
                 same_as = cell.get("same_as")
@@ -743,7 +949,7 @@ def main() -> int:
                     dead.close()
                     loaded = {key for key in loaded if key[0] != ranks}
     finally:
-        for executor in executors.values():
+        for executor in [*executors.values(), *children.values()]:
             executor.close()
     if record:
         references_path.parent.mkdir(parents=True, exist_ok=True)

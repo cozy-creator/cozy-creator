@@ -88,7 +88,7 @@ def cells(picture: Callable[[Path], Path], clip: Callable[[Path], Path]) -> list
          "files": {"images.0": picture}, "check": answers(1)},
         {"entry": "ask", "name": "video", "payload": {"prompt": "What happens here?", "max_tokens": 12, "max_frames": 4},
          "files": {"videos.0": clip}, "check": answers(1)},
-        {"entry": "ask", "name": "sampled", "payload": {"prompts": [{"prompt": "Name a color."}, {"prompt": "Name a fruit."}],
+        {"entry": "ask", "name": "sampled", "payload": {"prompts": [{"text": "Name a color."}, {"text": "Name a fruit."}],
                                                         "max_tokens": 8, "temperature": 0.8, "seed": 3}, "check": answers(2)},
         {"entry": "caption", "name": "image", "payload": {"max_tokens": 12}, "files": {"images.0": picture},
          "check": answers(1)},
