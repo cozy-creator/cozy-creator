@@ -630,6 +630,7 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
       const current = store.get(name)
       const pose = store.poseOf(name)
       if (!current?.here || !pose || !card.isConnected) return null
+      if (!card.offsetWidth || !card.offsetHeight) return null
       if (!room && !store.inPlace?.fitted && !store.inPlace?.moved && !store.inPlace?.pulled) return null
       if (!project) {
         if (previous) apply(previous.style)

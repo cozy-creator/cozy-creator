@@ -63,6 +63,17 @@ pub(crate) async fn quote(
 
 /// What `ask` would rent.
 pub(crate) async fn priced(api: &Arc<Api>, ask: RunRequest) -> Result<Option<RunQuote>, Error> {
+    let scope = match ask.project.as_deref() {
+        Some(project) => {
+            let root = crate::project::named(api, project)?;
+            crate::private_io::of_output(&crate::project::landing(&root))?
+        },
+        None => None,
+    };
+    crate::private_io::context(scope, priced_scoped(api, ask)).await
+}
+
+async fn priced_scoped(api: &Arc<Api>, ask: RunRequest) -> Result<Option<RunQuote>, Error> {
     if crate::hub::jobs::is(&ask.target) {
         return crate::hub::jobs::quote(api, ask).await;
     }
@@ -135,6 +146,8 @@ pub(crate) struct Copies {
 
 #[derive(Deserialize)]
 pub(crate) struct Asked {
+    #[serde(default)]
+    project: Option<String>,
     /// With `tree`, the function of that local code (empty: none named).
     #[serde(default)]
     target: String,
@@ -162,7 +175,14 @@ pub(crate) async fn describe(
         (Some(tree), at) => Some(LocalCode { tree, at: at.unwrap_or_default() }),
         (None, _) => None,
     };
-    let resolved = target::describe(&api, &hub, &asked.target, code.as_ref(), None, &on).await.map_err(Refusal)?;
+    let scope = match asked.project.as_deref() {
+        Some(project) => {
+            let root = crate::project::named(&api, project).map_err(Refusal)?;
+            crate::private_io::of_output(&crate::project::landing(&root)).map_err(Refusal)?
+        },
+        None => None,
+    };
+    let resolved = crate::private_io::context(scope, target::describe(&api, &hub, &asked.target, code.as_ref(), None, &on)).await.map_err(Refusal)?;
     Ok(Json(resolved))
 }
 
@@ -216,10 +236,18 @@ pub(crate) async fn request(api: &Arc<Api>, key: &str, ask: RunRequest) -> Resul
             }
             if let Some(project) = project.filter(|_| !submitted.replay) {
                 // What Calcifer holds is in this computer's store.
-                let uploads = files::store().map(|store| store.root().to_owned()).unwrap_or_default();
-                let kept = tokio::task::spawn_blocking(move || crate::project::keep_given(&project, &given, &uploads)).await;
-                let said = kept.map_err(|e| Error::internal("keep_given", e.to_string()))?;
-                notes.extend(said.into_iter().map(|message| Note { level: NoteLevel::Warning, message }));
+                let uploads = match crate::private_io::of_output(&crate::project::landing(&project)) {
+                    Ok(Some(scope)) => Some(scope.storage.view_root.join(".vault-uploads")),
+                    Ok(None) => Some(files::store().map(|store| store.root().to_owned()).unwrap_or_default()),
+                    Err(_) => None,
+                };
+                if let Some(uploads) = uploads {
+                    let kept = tokio::task::spawn_blocking(move || crate::project::keep_given(&project, &given, &uploads)).await;
+                    let said = kept.map_err(|e| Error::internal("keep_given", e.to_string()))??;
+                    notes.extend(said.into_iter().map(|message| Note { level: NoteLevel::Warning, message }));
+                } else {
+                    notes.push(Note { level: NoteLevel::Warning, message: "the run was accepted, but its private inputs could not be added to project history while the view was closing".into() });
+                }
             }
             Ok(Submitted { notes, ..submitted })
         }
@@ -296,6 +324,17 @@ enum For {
 
 /// Resolves and binds `ask` into the submission Calcifer records, on the machine of its set that would finish it soonest (cl-816).
 async fn prepare(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: For) -> Result<Prepared, Error> {
+    let scope = match ask.project.as_deref() {
+        Some(project) => {
+            let root = crate::project::named(api, project)?;
+            crate::private_io::of_output(&crate::project::landing(&root))?
+        },
+        None => None,
+    };
+    crate::private_io::context(scope, prepare_scoped(api, key, ask, purpose)).await
+}
+
+async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: For) -> Result<Prepared, Error> {
     // Named, it goes there; else where a render's job would (Paul, 11-06), resolved first on the first of that set.
     let set = match &ask.on {
         Some(on) => vec![on.clone()],
@@ -486,6 +525,9 @@ async fn call(
     let home = api.machines.hubs.home().root().to_path_buf();
     let mut notes = vec![];
     let project = project_of(api, ask)?;
+    let scope = crate::private_io::current();
+    let digests = crate::private_io::cache(scope.as_ref(), home.join("cache").join("digests"), "digests")?;
+    let clips = crate::private_io::cache(scope.as_ref(), home.join("cache").join("clips"), "clips")?;
     let terms = Terms {
         input: ask.input.clone(),
         inputs: ask.terms.clone(),
@@ -495,8 +537,8 @@ async fn call(
         loras: ask.loras.clone(),
         key: key.to_owned(),
         paths: ask.paths.clone(),
-        digests: Some(home.join("cache").join("digests")),
-        clips: clip::Clips { dir: home.join("cache").join("clips"), home: api.machines.hubs.home().clone() },
+        digests: Some(digests),
+        clips: clip::Clips { dir: clips, home: api.machines.hubs.home().clone() },
         project: project.clone().map(|dir| crate::project::Holding::new(api.calcifer.clone(), dir)),
     };
     for term in &terms.fidelities {
@@ -534,6 +576,8 @@ async fn call(
             (call.spec(&bound)?, Some(bound), out)
         }
     };
+    // Even a prepare-only private local-code call needs protected input/journal scope.
+    let out = out.or_else(|| project.as_deref().filter(|project| crate::project::vault::encrypted(&crate::project::vault::logical(project))).map(crate::project::landing));
     let mut submission = call.submission(code.on, hub, &spec, bound.as_ref(), out);
     submission.inputs.extend(code.files.iter().cloned());
     Ok((submission, notes))

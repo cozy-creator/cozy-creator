@@ -62,7 +62,7 @@ function Asking({ target, resolved, id, startInput }: { target: string; resolved
   const { client } = useConnection()
   const navigate = useNavigate()
   const to = useTo()
-  const files = useFiles()
+  const files = useFiles([], id)
   const entry = (resolved.interface as TargetInterface).entrypoints?.find((candidate) => candidate.name === resolved.function)
   const fields = useMemo(() => (resolved.request as TargetRequest | null | undefined)?.fields ?? [], [resolved])
   const declared = useMemo(() => new Set(fields.map((field) => field.name)), [fields])

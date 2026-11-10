@@ -225,11 +225,13 @@ function Empty({ choose }: { choose: () => void }) {
 
 function Canvas({
   projectId,
+  active,
   slot,
   history,
   onAdopt,
 }: {
   projectId: string | null
+  active: boolean
   slot: HTMLElement | null
   history: HTMLElement | null
   onAdopt: (id: string) => void
@@ -243,7 +245,9 @@ function Canvas({
   // One a code reload left is another class's, and is made again.
   const [store] = useState(() => {
     const kept = projectId ? canvases.get(projectId) : undefined
-    return kept instanceof CanvasStore ? kept : new CanvasStore(client, outbox, projectId, loadSelection(projectId), loadMore(projectId))
+    if (kept instanceof CanvasStore) return kept
+    const made: CanvasStore = new CanvasStore(client, outbox.scoped(() => made.projectId), projectId, loadSelection(projectId), loadMore(projectId))
+    return made
   })
   // A canvas's first box makes its project: kept from then on.
   useEffect(() => {
@@ -257,6 +261,16 @@ function Canvas({
   const [shut, setShut] = useState(loadToolsShut)
   const opened = useMatch("/projects/:id/assets/:name")?.params.name
   const stage = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    if (active) {
+      store.refreshSurface(flow.getViewport())
+      store.fitHere(true)
+      return
+    }
+    // Keep draft/import owners alive under the cover, while closing any mention
+    // popup portaled outside its hidden DOM subtree. Shell pauses covered media.
+    if (document.activeElement instanceof HTMLElement && stage.current?.contains(document.activeElement)) document.activeElement.blur()
+  }, [active, store, flow])
   const returning = useRef<{ view: Viewport; until: number } | null>(null)
   const folded = useRef(false)
   const shutNow = useRef(shut)
@@ -638,6 +652,7 @@ function Canvas({
   )
 
   useEffect(() => {
+    if (!active) return
     const key = (event: KeyboardEvent) => {
       // Bubbling up to here: a name field or the names offered in a text has taken its own Esc, and a menu goes first.
       if (store.viewing.get()) return
@@ -692,10 +707,11 @@ function Canvas({
     }
     window.addEventListener("keydown", key)
     return () => window.removeEventListener("keydown", key)
-  }, [flow, store, fit, fitSelected, zoomTo, zoomBy, leaveHere, stepTakes])
+  }, [active, flow, store, fit, fitSelected, zoomTo, zoomBy, leaveHere, stepTakes])
 
   // A text copies and pastes its own, and so does any selection of words on the page.
   useEffect(() => {
+    if (!active) return
     const copy = (event: ClipboardEvent) => {
       if (typing(event.target) || store.viewing.get() || !event.clipboardData || !document.getSelection()?.isCollapsed) return
       const here = store.inPlace?.name
@@ -725,7 +741,7 @@ function Canvas({
       window.removeEventListener("copy", copy)
       window.removeEventListener("paste", paste)
     }
-  }, [store, client, flow, placer, visibleCentre])
+  }, [active, store, client, flow, placer, visibleCentre])
 
   // Every box's node is handed these: made once, so drawing the canvas again draws no box again.
   const moveStarted = useCallback(
@@ -904,8 +920,8 @@ function Canvas({
         {veil && <div className="dropveil" />}
       </div>
       {opened && <Addressed name={opened} enter={writeHere} leave={leaveHere} />}
-      <AssetMenu />
-      <Viewer />
+      {active && <AssetMenu />}
+      {active && <Viewer />}
       <input ref={picker} className="picker" type="file" multiple accept={ACCEPT} onChange={picked} aria-label="Add a file" />
       {slot && projectId && createPortal(<RenderAll id={projectId} />, slot)}
       {history && projectId && createPortal(<HistoryControls />, history)}
@@ -925,7 +941,7 @@ const LAYERED = /AppleWebKit/.test(navigator.userAgent) && !/Chrome|Chromium/.te
 const textScale = (zoom: number) => Math.round((1 / Math.min(2.5, Math.max(0.25, zoom))) * 20) / 20
 
 /** Always mounted: everything else is a drawer over it, so opening one loses no viewport, no draft and no import in flight. */
-export function CanvasHost(props: { projectId: string | null; slot: HTMLElement | null; history: HTMLElement | null; onAdopt: (id: string) => void }) {
+export function CanvasHost(props: { projectId: string | null; active: boolean; slot: HTMLElement | null; history: HTMLElement | null; onAdopt: (id: string) => void }) {
   return (
     <ReactFlowProvider defaultNodes={[]}>
       <Canvas {...props} />

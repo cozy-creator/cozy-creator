@@ -3,6 +3,8 @@ import { ApiError, sessionLost } from "./client"
 
 /** One thing a person did. The page already shows it; this is its way to Calcifer. */
 export interface Action<T = unknown> {
+  /** Local project privacy scope; never serialized or sent as authority. */
+  project?: string | null
   /** One try. `once` ends it. `action` is made with the action and goes with every try (`Write.action`), so every try is the same ask. */
   send(once: AbortSignal, action: string): Promise<T>
   /** Calcifer has it. */
@@ -42,6 +44,8 @@ export function lost(error: unknown): boolean {
  * Ordered, one at a time, for every project this tab has open: frontend first, then this, then the answer. What can't reach Calcifer waits here,
  * however long, and goes when it can. It lives as long as the tab: leaving with something in it asks the browser's own question.
  */
+export type OutboxPort = Pick<Outbox, "add" | "owing" | "back" | "wait" | "owed">
+
 export class Outbox {
   readonly owed = signal<Owed>({ count: 0, slow: false })
   private queue: Action<any>[] = []
@@ -51,6 +55,38 @@ export class Outbox {
   private trying?: AbortController
   private wakes = new Set<() => void>()
   private slowly?: ReturnType<typeof setTimeout>
+  private blocked = new Set<string>()
+  private cancelled = new WeakSet<Action<any>>()
+  private active = new Map<Action<any>, AbortController>()
+
+  /** The existing shared queue, with project ownership attached by its canvas. */
+  scoped(project: () => string | null): OutboxPort {
+    return {
+      owed: this.owed,
+      add: (action) => this.add({ ...action, project: project() }),
+      owing: () => this.owing(),
+      back: () => this.back(),
+      wait: (tries, signal) => this.wait(tries, signal),
+    }
+  }
+
+  allowProject(project: string) { this.blocked.delete(project) }
+
+  /** Cancel only this project's queued bodies and suppress late private callbacks. */
+  discardProject(project: string) {
+    this.blocked.add(project)
+    const error = new ApiError(423, { kind: "conflict", code: "project_locked", message: "The project was locked before this change was saved" })
+    const discarded = new Set([...this.queue, ...this.active.keys()].filter((action) => action.project === project))
+    for (const action of discarded) {
+      this.cancelled.add(action)
+      this.active.get(action)?.abort()
+      this.active.delete(action)
+      action.refused?.(error)
+    }
+    this.queue = this.queue.filter((action) => !discarded.has(action))
+    for (const wake of [...this.wakes]) wake()
+    this.tell({ slow: false, held: undefined })
+  }
 
   constructor() {
     addEventListener("beforeunload", (event) => {
@@ -59,6 +95,10 @@ export class Outbox {
   }
 
   add<T>(action: Action<T>) {
+    if (action.project && this.blocked.has(action.project)) {
+      action.refused?.(new ApiError(423, { kind: "conflict", code: "project_locked", message: "Unlock the project before saving this change" }))
+      return
+    }
     this.queue.push(action)
     this.tell()
     void this.drain()
@@ -117,7 +157,7 @@ export class Outbox {
         void this.attempt(action)
       } else {
         await this.attempt(action)
-        this.queue.shift()
+        if (this.queue[0] === action) this.queue.shift()
         this.tell()
       }
     }
@@ -129,23 +169,28 @@ export class Outbox {
   private async attempt<T>(action: Action<T>) {
     const id = crypto.randomUUID()
     for (let tries = 1; ; tries++) {
+      if (this.cancelled.has(action)) return
       const trying = new AbortController()
+      this.active.set(action, trying)
       if (!action.long) this.trying = trying
       let answer: T
       try {
         answer = await action.send(trying.signal, id)
       } catch (error) {
+        if (this.cancelled.has(action)) return
         if (lost(error)) {
           this.tell({ slow: true, held: error instanceof ApiError && error.body.code === HELD ? error.message : undefined })
           if (!trying.signal.aborted) await this.wait(tries)
           continue
         }
         const was = tries > 1 && error instanceof ApiError ? action.landed?.(error) : undefined
+        this.active.delete(action)
         if (was === undefined) action.refused?.(error)
         else action.done?.(was)
         return
       }
-      action.done?.(answer)
+      this.active.delete(action)
+      if (!this.cancelled.has(action)) action.done?.(answer)
       return
     }
   }

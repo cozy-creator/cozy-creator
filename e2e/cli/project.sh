@@ -10,6 +10,30 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 # A fixture chooses its project by running the actual CLI in that directory.
 in_project() { local directory=$1; shift; (cd "$directory" && cozy "$@"); }
+# Browser-owned project operations use the actual authenticated Calcifer routes.
+project_segment() { python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1"; }
+project_request() {
+  local directory=$1 method=$2 suffix=$3 holder=$HOME/.cozy/calcifer/calcifer.lock.holder encoded
+  shift 3
+  directory=$(cd "$directory" && pwd) || return
+  [ "${RUNNER_OS:-}" != Windows ] || directory=$(cygpath -w "$directory")
+  encoded=$(project_segment "$directory") || return
+  curl --fail-with-body -sS -X "$method" -H "Authorization: Bearer $(jq -r .token "$holder")" \
+    -H 'Cozy-Client: page e2e-project' "$@" "http://$(jq -r .address "$holder")/v1/projects/$encoded$suffix"
+}
+project_json() {
+  local directory=$1 method=$2 suffix=$3 body=$4
+  project_request "$directory" "$method" "$suffix" -H 'Content-Type: application/json' \
+    -H "Idempotency-Key: e2e-project-$RANDOM$RANDOM$RANDOM" --data-binary "$body"
+}
+project_history_step() { project_json "$1" POST "/history/$2" "$(jq -n --argjson entry "$3" '{entry:$entry}')"; }
+project_reclaim() { project_json "$1" POST /reclaim "$(jq -n --argjson yes "$2" '{yes:$yes}')"; }
+project_import() {
+  local source=$2
+  [ "${RUNNER_OS:-}" != Windows ] || source=$(cygpath -w "$source")
+  project_json "$1" POST /imports "$(jq -n --arg source "$source" --arg name "${3:-}" '{source:$source} + (if $name == "" then {} else {name:$name,exact:true} end)')"
+}
+
 # Controller health is read through its API; `cozy status` describes project assets.
 fixture_calcifer() {
   local machines holder=$HOME/.cozy/calcifer/calcifer.lock.holder status
@@ -81,6 +105,34 @@ conn = sqlite3.connect(sys.argv[1], isolation_level=None, timeout=30)
 conn.executescript(sys.argv[2])
 PY
 }
+# Export metadata belongs to its project/revision; compare graph bytes when the test
+# deliberately compares separate project copies or one specific graph edit.
+yaml_body() { sed '/^# cozy-project-base: /d' "$@"; }
+
+# A real historical-v1 fault, not damage to schema2's disposable SQL projection. These
+# cells run only in the fresh-runner suite; stop its owned Calcifer before replacing storage.
+v1_fault() {
+  local P=$1 statement=$2 lock=$HOME/.cozy/calcifer/calcifer.lock.holder
+  [ -z "${ALONE:-}" ] || { check "v1 fault cells require an owned fresh-runner Calcifer"; return 1; }
+  eval "$(web_stop "$lock")" 2> /dev/null || true
+  db_sql "$P" "DROP TABLE IF EXISTS crdt_document; DROP TABLE IF EXISTS crdt_changes; PRAGMA user_version=1; $statement"
+  in_project "$P" status > "$OUT/v1-fault-open.txt" 2>&1 || { check "v1 fault migration: $(tail -c 300 "$OUT/v1-fault-open.txt")"; return 1; }
+  ADDR=$(jq -r .address "$lock") TOKEN=$(jq -r .token "$lock")
+}
+
+restore_project_db() {
+  local P=$1 snapshot=$2 lock=$HOME/.cozy/calcifer/calcifer.lock.holder
+  eval "$(web_stop "$lock")" 2> /dev/null || true
+  python3 - "$snapshot" "$P/project.db" <<'PYRESTORE'
+import sqlite3,sys
+with sqlite3.connect(f'file:{sys.argv[1]}?mode=ro',uri=True) as source:
+    with sqlite3.connect(sys.argv[2]) as target:
+        source.backup(target)
+PYRESTORE
+  in_project "$P" status > "$OUT/restored-db-open.txt" 2>&1 || { check "restored database: $(tail -c 300 "$OUT/restored-db-open.txt")"; return 1; }
+  ADDR=$(jq -r .address "$lock") TOKEN=$(jq -r .token "$lock")
+}
+
 # seq_of <project>: its revision, one more each commit.
 seq_of() { sql1 "$1" "SELECT value FROM meta WHERE key = 'seq'"; }
 # owed <project>: how many runs its walk has pending.
@@ -931,10 +983,10 @@ for part in $(seq 1 12); do
     { [ ! -e "$F/project.yaml.v2" ] || cmp -s "$F/project.yaml.v2" "$OUT/killed.yaml"; } || check "killed at ${at} ms: project.yaml.v2 isn't the original"
     { [ ! -e "$F/project.lock.v2" ] || cmp -s "$F/project.lock.v2" "$OUT/killed.lock"; } || check "killed at ${at} ms: project.lock.v2 isn't the original"
   fi
-  in_project "$F" export > "$OUT/killed-again.yaml" 2>&1 || check "killed at ${at} ms: opened again: $(tail -c 300 "$OUT/killed-again.yaml")"
-  cmp -s "$OUT/killed-again.yaml" "$OUT/killed-done.yaml" || check "killed at ${at} ms: it came out otherwise: $(diff "$OUT/killed-done.yaml" "$OUT/killed-again.yaml" | head -5)"
+  project_request "$F" GET /yaml > "$OUT/killed-again.yaml" 2>&1 || check "killed at ${at} ms: opened again: $(tail -c 300 "$OUT/killed-again.yaml")"
+  cmp -s <(yaml_body "$OUT/killed-again.yaml") <(yaml_body "$OUT/killed-done.yaml") || check "killed at ${at} ms: it came out otherwise: $(diff <(yaml_body "$OUT/killed-done.yaml") <(yaml_body "$OUT/killed-again.yaml") | head -5)"
   { cmp -s "$F/project.yaml.v2" "$OUT/killed.yaml" && cmp -s "$F/project.lock.v2" "$OUT/killed.lock"; } || check "killed at ${at} ms: an original went"
-  [ -z "$(cd "$F" && ls -A | grep -vxE 'files|\.runs|project\.db(-wal|-shm)?|project\.(yaml|lock)\.v[23]')" ] || check "killed at ${at} ms: left: $(ls -A "$F" | tr '\n' ' ')"
+  [ -z "$(cd "$F" && ls -A | grep -vxE 'files|\.runs|\.cozy-legacy-v1|project\.db(-wal|-shm)?|project\.(yaml|lock)\.v[23]')" ] || check "killed at ${at} ms: left: $(ls -A "$F" | tr '\n' ' ')"
   rm -rf "$F"
 done
 echo "first open killed mid-way $stopped of $tried times, in $took ms"
@@ -982,17 +1034,17 @@ render "$L" made -n 2 || check "lost lock: render: $(tail -c 300 "$OUT/render.tx
 count=$(ls "$L/files" | wc -l)
 [ "$count" -ge 2 ] || check "lost lock: it made $count files"
 db_sql "$L" "VACUUM INTO '$OUT/lost-lock.db'"
-db_sql "$L" "DELETE FROM versions; DELETE FROM run_files"
-J '.deleted != true and (.next // []) == [] and (.lost | contains("lists no versions")) and .files >= 2' <<< "$(in_project "$L" --json reclaim)" || check "lost lock: a dry reclaim: $(in_project "$L" --json reclaim)"
-code=0; in_project "$L" reclaim --yes > "$OUT/lost-lock.txt" 2>&1 || code=$?
+v1_fault "$L" "DELETE FROM versions; DELETE FROM run_files"
+J '.deleted != true and (.next // []) == [] and (.lost | contains("lists no versions")) and .files >= 2' <<< "$(project_reclaim "$L" false)" || check "lost lock: a dry reclaim: $(project_reclaim "$L" false)"
+code=0; project_reclaim "$L" true > "$OUT/lost-lock.txt" 2>&1 || code=$?
 { [ "$code" != 0 ] && grep -qF "lists no versions" "$OUT/lost-lock.txt" && grep -q 'put project.db back' "$OUT/lost-lock.txt"; } || check "lost lock: reclaim --yes (exit $code): $(tail -c 300 "$OUT/lost-lock.txt")"
 [ "$(ls "$L/files" | wc -l)" = "$count" ] || check "lost lock: reclaim --yes deleted: $(ls "$L/files" | wc -l) of $count"
-db_sql "$L" "ATTACH '$OUT/lost-lock.db' AS kept; INSERT INTO versions SELECT * FROM kept.versions; INSERT INTO run_files SELECT * FROM kept.run_files"
-in_project "$L" reclaim --yes > "$OUT/lost-lock.txt" 2>&1 || check "lost lock: reclaim with them back: $(tail -c 300 "$OUT/lost-lock.txt")"
+restore_project_db "$L" "$OUT/lost-lock.db"
+project_reclaim "$L" true > "$OUT/lost-lock.txt" 2>&1 || check "lost lock: reclaim with them back: $(tail -c 300 "$OUT/lost-lock.txt")"
 [ "$(ls "$L/files" | wc -l)" = "$count" ] || check "lost lock: with them back, reclaim took what they name"
 
 step "a project: with a version landed since its versions were lost, reclaim --yes takes nothing old"
-db_sql "$L" "DELETE FROM versions; DELETE FROM run_files"
+v1_fault "$L" "DELETE FROM versions; DELETE FROM run_files"
 render "$L" made || check "lost lock: a version since: $(tail -c 300 "$OUT/render.txt")"
 count=$(ls "$L/files" | wc -l)
 J --argjson n "$((count - 1))" '.unrecorded == $n and (.lost // null) == null' <<< "$(in_project "$L" --json reclaim)" || check "lost lock: what's listed: $(in_project "$L" --json reclaim)"
@@ -1490,7 +1542,7 @@ in_project "$T" approve card 1 > "$OUT/approve.txt" 2>&1 || check "pins: approve
 grep -q 'A flat one, edited just now' <(in_project "$T" export) || check "pins: an edit saved just before approve is gone"
 file=$(take_file "$T" card image 0); file=${file#sha256:}
 hand "$T" 's/instructions: A flat one, edited just now\./instructions: A flat one./'
-diff "$before" <(in_project "$T" export) > "$OUT/approve.diff" || true
+diff <(yaml_body "$before") <(project_request "$T" GET /yaml | yaml_body) > "$OUT/approve.diff" || true
 { [ "$(grep -c '^[<>]' "$OUT/approve.diff")" = 1 ] && grep -Eq "^> *approved: \"?${file:0:12}\"?$" "$OUT/approve.diff"; } || check "pins: approve changed more than its one line: $(cat "$OUT/approve.diff")"
 J '.assets[] | select(.name == "card") | .approved == 1 and .pinned and .status == "approved: version 1"' <<< "$(status "$T")" || check "pins: status does not say card is pinned to 1: $(row "$T" card .)"
 [ "$(sql1 "$T" "SELECT count(*) FROM versions WHERE record LIKE '%\"pin\"%'")" = 0 ] || check "pins: a version's record holds an approval"
@@ -1878,7 +1930,7 @@ added "$T" <<YAML
 YAML
 render "$T" all --missing || check "orphans: render all with doomed"
 gone_file=$(take_file "$T" doomed image 0)
-db_sql "$T" "UPDATE versions SET record = json_set(record, '\$.files.frame', '$gone_file') WHERE key = 'kept'"
+v1_fault "$T" "UPDATE versions SET record = json_set(record, '\$.files.frame', '$gone_file') WHERE key = 'kept'"
 dropped "$T" doomed
 added "$T" <<YAML
   second:
@@ -2990,7 +3042,24 @@ YAML
 render "$T" edit || check "healing: first cut: $(tail -c 400 "$OUT/render.txt")"
 J '.cuts[0].frames == 288' <<< "$(status "$T")" || check "healing: the whole film: $(status "$T" | jq -c .cuts)"
 local whole; whole=$(take_file "$T" edit video)
-db_replace "$T" "${whole#sha256:}" "$(sha "$T/short.mp4")"
+if [ "$(sql1 "$T" 'PRAGMA user_version')" = 2 ]; then
+  # A relational query projection is no longer authoritative. Form a REAL historical v1
+  # fixture with the bad short-film reference, then let the actual first-open migration and
+  # normal CLI render repair it. Do not weaken the out-of-date/full-length assertions.
+  local historical=$OUT/healing-v1
+  mkdir -p "$historical"; cp -R "$T/files" "$historical/files"; cp "$T/short.mp4" "$historical/short.mp4"
+  python3 - "$T/project.db" "$historical/project.db" "${whole#sha256:}" "$(sha "$T/short.mp4")" <<'PYHEAL'
+import sqlite3,sys
+with sqlite3.connect(f'file:{sys.argv[1]}?mode=ro',uri=True) as source:
+    with sqlite3.connect(sys.argv[2]) as target:
+        source.backup(target)
+        target.executescript('DROP TABLE crdt_document; DROP TABLE crdt_changes; PRAGMA user_version=1;')
+        target.execute('UPDATE versions SET record=replace(record,?,?)',(sys.argv[3],sys.argv[4]))
+PYHEAL
+  T=$historical
+else
+  db_replace "$T" "${whole#sha256:}" "$(sha "$T/short.mp4")"
+fi
 rm -f "$T/edit.mp4"; cp "$T/short.mp4" "$T/edit.mp4"
 [ "$(row "$T" edit .standing)" = '"out_of_date"' ] || check "healing: a short film stands as its state: $(row "$T" edit .status)"
 render "$T" all --missing || check "healing: render: $(tail -c 400 "$OUT/render.txt")"
@@ -3001,6 +3070,9 @@ version=$(held "$T" edit | jq '.versions[-1].number')
 render "$T" edit || check "healing: naming it: $(tail -c 400 "$OUT/render.txt")"
 says healing "(unchanged)"
 [ "$(held "$T" edit | jq '.versions[-1].number')" = "$version" ] || check "healing: the same bytes made a new version: $(tail -c 400 "$OUT/render.txt")"
+if [ "$(sql1 "$T" 'PRAGMA user_version')" = 2 ]; then
+  [ "$(sql1 "$T" "SELECT count(*) FROM versions WHERE json_extract(record,'$.run') IS NOT NULL AND json_type(record,'$.run_id') IS NOT 'text'")" = 0 ] || check "healing: a new generated version lost its globally stable run id"
+fi
 }
 
 # Takes cut in the walk that lands them, new bytes nothing has measured. First in the project part: on a new computer this is also
@@ -3601,8 +3673,8 @@ assets:
 YAML
 in_project "$Y" export > "$OUT/imported-kept.before"
 still "$Y/hero.png" navy
-[ "$(in_project "$Y" import "$Y/hero.png")" = hero_2 ] || check "import: a name the project has is not taken"
-in_project "$Y" export | perl -0pe 's/\n  hero_2:\n    approved: "?\w+"?\n//' | diff - "$OUT/imported-kept.before" > "$OUT/imported-kept.diff" || check "import: other boxes moved: $(cat "$OUT/imported-kept.diff")"
+[ "$(project_import "$Y" "$Y/hero.png" | jq -r .name)" = hero_2 ] || check "import: a name the project has is not taken"
+project_request "$Y" GET /yaml | yaml_body | perl -0pe 's/\n  hero_2:\n    approved: "?\w+"?\n//' | diff - <(yaml_body "$OUT/imported-kept.before") > "$OUT/imported-kept.diff" || check "import: other boxes moved: $(cat "$OUT/imported-kept.diff")"
 J '.assets | map(.name) | sort == ["hero", "hero_2", "shot"]' <<< "$(status "$Y")" || check "import: the file does not read as it did with one asset more: $(status "$Y" | jq -c '.assets | map(.name)')"
 
 step "a project: a take lifted out: a file by its hash, a name and words, and what it held goes on standing"
@@ -3909,8 +3981,9 @@ cmp -s <(in_project "$P" export) "$OUT/yaml-theirs.yaml" || check "a refused sav
 [ "$(api -D "$OUT/yaml-put.hdr" -o /dev/null -w '%{http_code}' -X PUT -H "If-Match: $et" --data-binary @"$OUT/yaml-mine.yaml" "$U")" = 204 ] || check "a good save was not 204"
 grep -q '^  mine:$' <(in_project "$P" export) || check "the save isn't in the project: $(in_project "$P" export | tail -5)"
 next=$(grep -i '^etag:' "$OUT/yaml-put.hdr" | cut -d' ' -f2 | tr -d '\r')
-[ "$next" = "\"$(in_project "$P" export | sha /dev/stdin)\"" ] || check "the save's ETag isn't its export's digest: $next"
-yaml_in "$P" < "$OUT/yaml-kept.yaml"
+[ "$next" = "\"$(project_request "$P" GET /yaml | sha /dev/stdin)\"" ] || check "the save's ETag isn't its export's digest: $next"
+# An explicit fixture reset is intentionally unstamped; stale stamped saves were refused above.
+yaml_body "$OUT/yaml-kept.yaml" | yaml_in "$P"
 }
 
 # sse <file>: what a stream wrote, one JSON object a line.
@@ -3982,6 +4055,8 @@ if [ -z "${ALONE:-}" ] && [ "$RUNNER_OS" = Linux ]; then
   gid=$(status "$G" | jq -r .id)
   # Its files from before, in place of its database, as a folder copied back from an old backup is.
   rm -f "$G"/project.db*
+  # Preserve the prior import's originals separately before restoring a different old backup.
+  if [ -d "$G/.cozy-legacy-v1" ]; then mv "$G/.cozy-legacy-v1" "$OUT/opened-by-id-original-archive"; fi
   printf 'version: 2\nassets:\n  a:\n    description: A.\n' > "$G/project.yaml"
   printf '{"format": 2, "assets": {}, "files": {}}\n' > "$G/project.lock"
   systemctl --user restart cozy-calcifer || check "live: systemctl --user restart cozy-calcifer failed"

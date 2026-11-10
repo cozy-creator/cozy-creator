@@ -9,7 +9,7 @@
 # A broken step is recorded and the suite goes on, so one run reports all of them.
 # --shard runs one of `shards` below after the same start, each on its own runner: e2e.yaml checks coverage over
 # all their calls. Whole, the suite checks it itself.
-#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|web|projectdb|projectdb-latency|projectdb-existing|projectdb-web|local-code]
+#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|web|projectdb|projectdb-latency|projectdb-existing|projectdb-web|projectvault|projectdb-cancel|projectdb-live|projectdb-scale|local-code]
 #                  [--tensord F|V] [--tensorfs F|V] [--runtime F|V] [--packages DIR]
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
@@ -21,6 +21,7 @@ parse "$@"
 . "$(dirname "$0")/agent.sh"
 . "$(dirname "$0")/projectdb.sh"
 . "$(dirname "$0")/statedb.sh"
+. "$(dirname "$0")/projectvault.sh"
 
 start() {
 step install; install_cozy; run_project "$OUT/project" || fail "project initialization failed"
@@ -269,9 +270,15 @@ case $SHARD in
   follow) parts="script_package one_name_two_paths image_ratio run_follow time_left broken_answers queued_download machines completions calcifer_faults calcifer_restarts logs" ;;
   # project.db (cl-803) and state.db (cl-818) alone, and project.db's latency against the cozy before it.
   projectdb) parts="projectdb statedb logs" ;;
+  projectvault) parts="projectvault vault_web logs" ;;
   projectdb-latency) parts="db_latency logs" ;;
   projectdb-existing) parts="db_existing logs" ;;
   projectdb-web) parts="tools_read db_existing_web logs" ;;
+  projectdb-cancel) parts="db_cancel_undo logs" ;;
+  projectdb-live) parts="tools_read db_existing_web logs"; DB_WEB=live ;;
+  projectdb-instant) parts="tools_read db_existing_web logs"; DB_WEB=instant ;;
+  projectdb-offline) parts="tools_read db_existing_web logs"; DB_WEB=offline ;;
+  projectdb-scale) parts="tools_read db_existing_web logs"; DB_WEB=scale ;;
   # Local code and every input by content (cl-817, cl-820): the CLI in a folder Calcifer can't see, edits timed, its quote from its
   # runs (cl-816), a host path refused.
   local-code) parts="unseen local_edits local_quote path_manifest logs" ;;
@@ -279,7 +286,7 @@ case $SHARD in
   control) parts="machine_show_runs writes_once page_resend hub_away broken_answers logs" ;;
   *) echo "no cli shard $SHARD" >&2; exit 2 ;;
 esac
-[ -n "$LOCAL" ] || [ "$SHARD" = entrypoints ] || parts="catalog refusals web_serves project_files completions homebrew calcifer_faults update remove"
+[ -n "$LOCAL" ] || [[ "$SHARD" = entrypoints || "$SHARD" = projectvault ]] || parts="catalog refusals web_serves project_files completions homebrew calcifer_faults update remove"
 
 start
 for part in $parts; do $part; done

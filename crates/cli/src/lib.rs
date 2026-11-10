@@ -74,6 +74,8 @@ enum Command {
     Run(run::Args),
     /// Show the current project's runs and machines.
     Status(daemon::Status),
+    /// Encrypt, lock or recover the current project.
+    Vault(project::vault::Args),
     /// Upload the current project's files to your account.
     Push,
     /// Download the current project's files from your account.
@@ -171,6 +173,7 @@ async fn dispatch(ctx: &Context, command: Command) -> Result<ExitCode, Error> {
         Command::Model(args) => model::exec(ctx, args).await,
         Command::New(args) => project::create(ctx, args).await,
         Command::Status(args) => daemon::status(ctx, args).await,
+        Command::Vault(args) => project::vault::exec(ctx, args).await,
         Command::Push => project::transfer(ctx, "push", "sent").await,
         Command::Pull => project::transfer(ctx, "pull", "fetched").await,
         Command::Open(args) => open::exec(ctx, args).await,

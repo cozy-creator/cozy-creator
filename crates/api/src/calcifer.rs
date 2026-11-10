@@ -974,6 +974,9 @@ pub enum StreamEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cursor: Option<ProjectEventCursor>,
     },
+    /// Public protection metadata reaches every tab, including tabs showing another project.
+    #[serde(rename = "project.vault")]
+    ProjectVault { id: String, state: String },
     /// The rows of a project's canvas that changed, at revision `seq`; none is a row gone.
     #[serde(rename = "canvas")]
     Canvas { id: String, seq: u64, cards: BTreeMap<String, Option<crate::calcifer::project::Card>> },
