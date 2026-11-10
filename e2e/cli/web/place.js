@@ -10,7 +10,7 @@ const { execFileSync } = require('child_process');
 const { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { calcifer, signIn, MP4, STEP_MS, boxOf, closeBox, drop, openBox, png, launch, noStall, until, wav, rowsOf, yamlOf, importYaml } = require('./page');
+const { calcifer, signIn, MP4, STEP_MS, boxOf, closeBox, drop, openBox, png, launch, noStall, until, wav, rowsOf, yamlOf, importYaml, fitCanvas, observeResizes } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -41,6 +41,41 @@ const constants = (folder) => {
   return found;
 };
 
+/** The exact view in which a row may be culled; this reads no API or client data. */
+function placementState(expected) {
+  const viewport = document.querySelector('.react-flow__viewport');
+  const pane = document.querySelector('.react-flow__pane')?.getBoundingClientRect();
+  const node = [...document.querySelectorAll('.react-flow__node')].find((one) => one.querySelector('.card[data-asset="raced"]'));
+  const own = node && new DOMMatrix(getComputedStyle(node).transform);
+  const matrix = viewport && new DOMMatrix(getComputedStyle(viewport).transform);
+  const point = matrix?.transformPoint(new DOMPoint(expected.x, expected.y));
+  const projected = point && pane ? { x: point.x + pane.left, y: point.y + pane.top, width: expected.w * Math.hypot(matrix.a, matrix.b) } : null;
+  return {
+    node: own ? { x: Math.round(own.e), y: Math.round(own.f) } : null,
+    projected, expected_visible: Boolean(projected && projected.x >= pane.left && projected.x < pane.right && projected.y >= pane.top && projected.y < pane.bottom),
+    viewport: viewport?.style.transform, matrix: matrix?.toString(), zoom: document.querySelector('.zoom-at')?.textContent,
+    pane: pane && [pane.left, pane.top, pane.right, pane.bottom], mounted: document.querySelectorAll('.react-flow__node').length,
+    open: document.querySelector('.card.here')?.dataset.asset, focus: `${document.activeElement?.tagName}.${document.activeElement?.className}`,
+  };
+}
+
+async function placedInView(page, expected) {
+  const evidence = { before: await page.evaluate(placementState, expected), samples: [], attempts: 0, fit_requested: true };
+  await closeBox(page);
+  await fitCanvas(page);
+  let last;
+  try {
+    await until('the fitted page presents the CLI placement', async () => {
+      last = await page.evaluate(placementState, expected);
+      evidence.attempts++;
+      evidence.samples.push(last);
+      if (evidence.samples.length > 16) evidence.samples.shift();
+      return last;
+    }, (state) => state.expected_visible && state.node?.x === expected.x && state.node?.y === expected.y);
+  } catch (error) { evidence.wait_error = error.message; }
+  return { ...evidence, last };
+}
+
 (async () => {
   const base = calcifer();
   const browser = await launch(playwright);
@@ -48,7 +83,11 @@ const constants = (folder) => {
   const page = await context.newPage();
   page.setDefaultTimeout(STEP_MS);
   const errors = [];
-  page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
+  page.on('pageerror', (error) => {
+    errors.push(`pageerror: ${error.message}`);
+    (seen.page_error_details ??= []).push({ message: error.message, stack: error.stack });
+  });
+  await page.addInitScript(observeResizes);
   page.on('console', (m) => { if (m.type() === 'error' && !/status of 4\d\d/.test(m.text())) errors.push(`console: ${m.text()}`); });
   await page.addInitScript(() => {
     window.violations = [];
@@ -430,14 +469,10 @@ const constants = (folder) => {
     }, Boolean);
     await page.unroute(canvasRead);
     check('a_placement_never_overwrites_an_at', settled.x === cli.x && settled.y === cli.y && settled.w === cli.w, { settled, cli });
-    await page.keyboard.press('f');
-    await page.waitForTimeout(600);
-    const shown = await page.evaluate(() => {
-      const node = [...document.querySelectorAll('.react-flow__node')].find((one) => one.querySelector('.card[data-asset="raced"]'));
-      const m = node && new DOMMatrix(getComputedStyle(node).transform);
-      return m ? { x: Math.round(m.e), y: Math.round(m.f) } : null;
-    });
-    check('the_page_shows_the_cli_place', shown?.x === cli.x && shown?.y === cli.y, { shown, cli });
+    const presentation = await placedInView(page, cli);
+    seen.cli_placement = presentation;
+    const shown = presentation.last?.node;
+    check('the_page_shows_the_cli_place', presentation.last?.expected_visible && shown?.x === cli.x && shown?.y === cli.y, { shown, cli, presentation });
     rmSync(pictures, { recursive: true, force: true });
   }
 
@@ -453,6 +488,7 @@ const constants = (folder) => {
   check('csp_holds', violations.length === 0, { violations, styles: await page.evaluate(() => [...document.querySelectorAll('style')].map((held) => held.textContent.slice(0, 80))) });
   // In a timer, as the page's own code runs: an evaluation itself is let past the CSP.
   check('eval_refused', await page.evaluate(() => new Promise((done) => setTimeout(() => { try { new Function('return 1')(); done(false); } catch { done(true); } }))));
+  seen.resize_observers = await page.evaluate(() => window.resizeEvidence ?? null);
   check('no_page_errors', errors.length === 0, errors);
   console.log(JSON.stringify({ failures, seen }, null, 2));
   await browser.close();

@@ -150,6 +150,36 @@ function projectHeld(folder, pid) {
   return null;
 }
 
+/** Observer provenance from delivered entries only: no extra geometry/layout reads and no error suppression. */
+function observeResizes() {
+  const Native = window.ResizeObserver;
+  const evidence = { callbacks: [], errors: [] };
+  window.resizeEvidence = evidence;
+  let next = 0;
+  window.ResizeObserver = class ResizeObserver extends Native {
+    constructor(callback) {
+      if (typeof callback !== 'function') { super(callback); return; }
+      const id = ++next, producer = new Error().stack;
+      super((entries, observer) => {
+        evidence.callbacks.push({ id, producer, at_ms: performance.now(), count: entries.length,
+          targets: entries.slice(0, 32).map(({ target, contentRect: r }) => ({
+            at: `${target.tagName.toLowerCase()}${target.id ? `#${target.id}` : ''}.${String(target.getAttribute('class') ?? '').replaceAll(' ', '.')}`.slice(0, 200),
+            asset: target.closest('.card')?.dataset.asset,
+            rect: [r.x, r.y, r.width, r.height],
+          })), truncated: entries.length > 32 });
+        if (evidence.callbacks.length > 16) evidence.callbacks.shift();
+        return Reflect.apply(callback, observer, [entries, observer]);
+      });
+    }
+  };
+  addEventListener('error', (event) => {
+    if (!/ResizeObserver/.test(event.message)) return;
+    evidence.errors.push({ message: event.message, source: event.filename?.split(/[?#]/)[0], line: event.lineno, column: event.colno,
+      stack: event.error?.stack, at_ms: performance.now(), callbacks: evidence.callbacks.slice() });
+    if (evidence.errors.length > 4) evidence.errors.shift();
+  });
+}
+
 // A box as a person reaches it, worked on or at rest: it's always on the canvas.
 const boxOf = (page, name) => page.locator(`.react-flow__node:has(.card[data-asset="${name}"])`).first();
 async function closeBox(page) {
@@ -385,4 +415,4 @@ function rowsOf(folder, query) {
 /** Python as this OS names it: Windows has no python3 of its own. */
 const PYTHON = process.platform === 'win32' ? 'python' : 'python3';
 
-module.exports = { BARS, DARK_OPEN, GPU, MP4, PYTHON, STEP_MS, boxLog, boxOf, calcifer, carry, closeBox, openBox, openCanvas, drop, importYaml, lastLook, launch, lookAt, noStall, panning, png, pointAt, removeGeneratedProject, renderOf, rowsOf, settled, fitCanvas, projectHeld, signIn, summary, until, upload, watchBoxes, wav, yamlOf };
+module.exports = { BARS, DARK_OPEN, GPU, MP4, PYTHON, STEP_MS, boxLog, boxOf, calcifer, carry, closeBox, openBox, openCanvas, drop, importYaml, lastLook, launch, lookAt, noStall, panning, png, pointAt, removeGeneratedProject, renderOf, rowsOf, settled, fitCanvas, projectHeld, observeResizes, signIn, summary, until, upload, watchBoxes, wav, yamlOf };
