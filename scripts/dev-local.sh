@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Watch this checkout and install successful incremental builds into the local Cozy.
-# Requires watchexec, pnpm, and the Rust toolchain pinned by rust-toolchain.toml.
+# Requires watchexec, pnpm, Python 3, and the pinned Rust toolchain.
 # Run with --once for one build. The default watches until stopped.
 set -euo pipefail
 
@@ -58,31 +58,28 @@ exec 8>&-
 install_lock="${COZY_DEV_INSTALL_LOCK:-$HOME/.cozy/dev-local-install.lock}"
 exec 9>"$install_lock"
 flock 9
-if cmp --silent "$staged" "$installed"; then
-    printf '%s installed Cozy already matches this build\n' "$(date -Is)"
-    exit 0
-fi
-cp --reflink=auto -p "$installed" "$HOME/.cozy/bin/.cozy-previous"
-mv -f "$staged" "$installed"
-systemctl --user restart cozy-calcifer.service
+ready() {
 python3 - "$installed" <<'PYTHON'
-import hashlib
 import json
 import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 from pathlib import Path
 
 binary = Path(sys.argv[1])
-expected = hashlib.sha256(binary.read_bytes()).digest()
+deadline = time.monotonic() + 30
 holder_file = Path.home() / ".cozy/calcifer/calcifer.lock.holder"
-while True:
+while time.monotonic() < deadline:
     try:
         holder = json.loads(holder_file.read_text())
         running = Path(f"/proc/{holder['pid']}/exe")
-        if hashlib.sha256(running.read_bytes()).digest() == expected:
+        address = urlsplit(f"http://{holder['address']}")
+        if address.hostname not in ("127.0.0.1", "::1"):
+            raise SystemExit("Calcifer's record does not name a loopback address")
+        if running.samefile(binary):
             request = urllib.request.Request(
                 f"http://{holder['address']}/v1/status",
                 headers={"Authorization": f"Bearer {holder['token']}"},
@@ -92,13 +89,29 @@ while True:
             break
     except (OSError, KeyError, ValueError, urllib.error.URLError):
         pass
-    service = subprocess.run(
-        ["systemctl", "--user", "is-failed", "--quiet", "cozy-calcifer.service"],
-        check=False,
-    )
-    if service.returncode == 0:
-        raise SystemExit("Calcifer failed to start; see journalctl --user -u cozy-calcifer")
+    service = subprocess.check_output(
+        ["systemctl", "--user", "show", "cozy-calcifer.service", "-p", "ActiveState", "--value"],
+        text=True,
+    ).strip()
+    if service in ("inactive", "failed"):
+        raise SystemExit(f"Calcifer service is {service}; see journalctl --user -u cozy-calcifer")
     time.sleep(0.25)
+else:
+    raise SystemExit("Calcifer readiness is unconfirmed after 30s; further source edits can retry")
 PYTHON
+}
+
+if cmp --silent "$staged" "$installed"; then
+    if ! ready; then
+        systemctl --user restart cozy-calcifer.service
+        ready
+    fi
+    printf '%s installed Cozy already matches this build\n' "$(date -Is)"
+    exit 0
+fi
+cp --reflink=auto -p "$installed" "$HOME/.cozy/bin/.cozy-previous"
+mv -f "$staged" "$installed"
+systemctl --user restart cozy-calcifer.service
+ready
 printf '%s local CLI and Calcifer updated in %ss\n' "$(date -Is)" "$((SECONDS - started))"
 "$installed" --version

@@ -141,7 +141,7 @@ Python package and wheel configuration together. The browser player is `web/play
 
 On Linux, `scripts/dev-local.sh` watches the checkout with Watchexec, builds incrementally, installs
 successful builds into `~/.cozy/bin/cozy`, and restarts `cozy-calcifer.service`. It needs Watchexec,
-pnpm, binutils, and the pinned Rust toolchain. `scripts/dev-local.sh --once` runs one update.
+pnpm, Python 3, binutils, and the pinned Rust toolchain. `scripts/dev-local.sh --once` runs one update.
 
 For browser hot reload, run `pnpm --dir web/app dev --host 127.0.0.1`. Vite uses the local Calcifer
 through the existing development proxy. The watcher also rebuilds the page embedded in the binary.
