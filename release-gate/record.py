@@ -21,7 +21,7 @@ def _stats(memory: Memory | None) -> MemoryStats:
 def rows(memory: Memory | None) -> list[VarenaStats]:
     """0.32's per-GPU varena Stats (none on 0.30)."""
     v = _stats(memory).get('varena')
-    return [cast(VarenaStats, r['stats']) for r in v if isinstance(r, dict) and isinstance(r.get('stats'), dict)] if isinstance(v, list) else []  # type: ignore[redundant-expr]  # unvalidated JSON: other shapes are skipped; a dict: checked
+    return [cast(VarenaStats, r['stats']) for r in v if isinstance(r, dict) and isinstance(r.get('stats'), dict)] if isinstance(v, list) else []
 
 
 #: The ceiling a copy kind is held against.
@@ -38,7 +38,7 @@ def copies(memory: Memory | None) -> dict[str, tuple[float, float]]:
             b, t = out.get(kind, (0, 0.0))
             out[kind] = (b + _num(f.get('bytes')), t + _num(f.get('ns')) / 1e9)
     for c in _stats(memory).get('copies') or []:
-        if isinstance(c, dict) and c.get('kind') in ('disk', 'h2d'):  # type: ignore[redundant-expr]  # unvalidated JSON: other shapes are skipped
+        if isinstance(c, dict) and c.get('kind') in ('disk', 'h2d'):
             kind = 'load' if c['kind'] == 'disk' else 'refill'
             b, t = out.get(kind, (0, 0.0))
             out[kind] = (b + _num(c.get('bytes')), t + _num(c.get('seconds')))

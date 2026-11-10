@@ -379,7 +379,7 @@ def get(url: str, rng: tuple[int, int] | None = None) -> bytes:
             err = f"read {len(body)} of {rng[1] - rng[0]} bytes"
         except Exception as e:  # noqa: BLE001
             err = e
-    sys.exit(f"{url}: {err}")  # type: ignore[possibly-undefined]  # bug: unbound when every attempt returns a short body (typing-tools bugs list)
+    sys.exit(f"{url}: {err}")
 
 
 def split(reference: str) -> tuple[str, str]:
@@ -464,7 +464,7 @@ def expand(rows: list[Row]) -> list[Row]:
     """A table's rows with `{"e": n}` repetition expanded (engine.rs `rows`)."""
     out: list[Row] = []
     for r in rows:
-        if isinstance(r, list) and len(r) == 4 and isinstance(r[3], dict):  # type: ignore[redundant-expr]  # a guard on JSON input
+        if isinstance(r, list) and len(r) == 4 and isinstance(r[3], dict):
             texts = [json.dumps(r[:3])]
             for mark, n in cast(dict[str, int], r[3]).items():  # a fourth item is the repetition
                 texts = [t.replace(f'"{{{mark}}}"', str(i)).replace(f"{{{mark}}}", str(i)) for t in texts for i in range(n)]

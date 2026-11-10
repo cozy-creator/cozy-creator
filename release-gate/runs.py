@@ -307,7 +307,7 @@ class Run:
         return Run(record=rec, number=rec.get('number'), status=rec.get('status') or '',
                    reason=f"{why.get('code')}: {why.get('message')}" if isinstance(why, dict) else str(why or ''),
                    target=rec.get('target') or '', execution_ms=rec.get('execution_ms'), result=rec.get('result'),
-                   outputs=tuple(sorted(o['path'] for o in rec.get('output') or [] if isinstance(o, dict) and o.get('path'))),  # type: ignore[redundant-expr]  # unvalidated JSON: other shapes are skipped
+                   outputs=tuple(sorted(o['path'] for o in rec.get('output') or [] if isinstance(o, dict) and o.get('path'))),
                    measurements=tuple([rec.get('measurements') or {}] + [c.get('measurements') or {} for c in rec.get('calls') or []]))
 
     @staticmethod

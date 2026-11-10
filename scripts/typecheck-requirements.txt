@@ -5,7 +5,7 @@ ast-serialize==0.13.1
 certifi==2026.10.23
 charset-normalizer==3.5.2
 click==8.5.1
-cozy-runtime==0.43.1
+cozy-runtime==0.44.0
 cuda-bindings==13.5.0
 cuda-core==1.2.2
 cuda-pathfinder==1.8.6
@@ -49,7 +49,7 @@ safetensors==0.8.0
 setuptools==84.2.1
 shellingham==1.5.4
 sympy==1.14.0
-tensorfs==0.22.1
+tensorfs==0.23.0
 tokenizers==0.23.3
 tomli-w==1.2.0
 torch @ https://download.pytorch.org/whl/cpu/torch-2.15.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl

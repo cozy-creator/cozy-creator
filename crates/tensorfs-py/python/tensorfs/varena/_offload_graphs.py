@@ -228,7 +228,7 @@ class Graphs:
                     vt.replay(graph.cuda, stream=stream)
                 self.counts["replays"] += 1
                 result = tree_map(lambda v: v.clone() if isinstance(v, torch.Tensor) else v, graph.outputs)
-                vt.record_pool_stream(self.pool, stream)  # type: ignore[arg-type]  # bug (typing.md): a failed later capture clears the pool live graphs replay on
+                vt.record_pool_stream(self.pool, stream)  # type: ignore[arg-type]  # a graph exists only once its pool is set, and a failed later capture keeps it (tfs-147)
                 return result
         except Exception as error:  # Eager serves it, and a real fault surfaces there too.
             if launched:
@@ -285,7 +285,7 @@ class Graphs:
             inputs = [torch.empty(v.shape, dtype=v.dtype, device=v.device).copy_(v) if type(v) is torch.Tensor else None for v in leaves]
         statics = tree_unflatten([v if s is None else s for v, s in zip(leaves, inputs)], spec)
         fresh = self.pool is None
-        if fresh:
+        if self.pool is None:
             self.pool = cast("PoolId", tuple(torch.cuda.graph_pool_handle()))
         graph = _Graph()
         bound: list[tuple[_Unit, Sequence[torch.Tensor]]] = []

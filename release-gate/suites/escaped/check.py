@@ -23,7 +23,7 @@ TWIN = '-uncapped'
 def loops(run: Run) -> tuple[list[EscapedLoop], bool]:
     """Each loop's record in the run's and its calls' memory, and whether any GPU row carried one."""
     rows = [s for m in run.measurements if m.get('memory') for s in record.rows(m['memory'])]
-    return [l for s in rows for l in s.get('escaped') or [] if isinstance(l, dict)], any('escaped' in s for s in rows)  # type: ignore[redundant-expr]  # unvalidated JSON: other shapes are skipped
+    return [l for s in rows for l in s.get('escaped') or [] if isinstance(l, dict)], any('escaped' in s for s in rows)
 
 
 def named(sites: list[tuple[str, int]]) -> str:
