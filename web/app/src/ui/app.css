@@ -600,9 +600,22 @@ code {
   border-radius: inherit;
   pointer-events: none;
 }
+.card.here > .media > .media-pixels {
+  left: 50%;
+  right: auto;
+  width: var(--surface-content-width, 100%);
+  transform: translateX(-50%);
+}
 .card.here > .media {
   width: var(--surface-media-width, 100%);
+  height: var(--surface-media-height, auto);
   overflow: var(--surface-media-overflow, hidden);
+}
+.card.here > .media > .live:not(.audio) {
+  left: 50%;
+  right: auto;
+  width: var(--surface-content-width, 100%);
+  transform: translateX(-50%);
 }
 .card:active > .media {
   outline: 2px solid var(--ember);
@@ -907,6 +920,9 @@ video.preview.on {
   height: 22px;
   cursor: nwse-resize;
   z-index: 3;
+}
+.card.here > .media > .corner {
+  right: calc((100% - var(--surface-content-width, 100%)) / 2);
 }
 .corner::after {
   content: "";

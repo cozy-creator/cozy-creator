@@ -2509,6 +2509,8 @@ export class CanvasStore {
       return
     }
     // Let go: where things are now, as any act begins from.
+    // Rebuild from committed neighbors, not their live preview, so every push joins this resize edit.
+    this.letBack(new Map())
     const field = this.field(new Set([key]))
     const fitted = box && fit(box, field, { pushes: may, was: pulling.was })
     this.letBack(fitted?.pushed ?? new Map())
