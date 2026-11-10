@@ -781,6 +781,17 @@ def granted(field: str, path: Path) -> tuple[InputMetadata, InputFile]:
             {"local": str(path), "media_type": media_type, "digest": digest, "length": len(data), "order": order})
 
 
+def compact(value: object, depth: int = 0) -> str:
+    """JSON with one key a line, each list of numbers (a thumbnail) on one line."""
+    pad, inner = " " * depth, " " * (depth + 1)
+    if isinstance(value, dict) and value:
+        rows = [f"{inner}{json.dumps(k)}: {compact(v, depth + 1)}" for k, v in sorted(value.items())]
+        return "{\n" + ",\n".join(rows) + f"\n{pad}}}"
+    if isinstance(value, list) and value and not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in value):
+        return "[\n" + ",\n".join(f"{inner}{compact(v, depth + 1)}" for v in value) + f"\n{pad}]"
+    return json.dumps(value, separators=(",", ":"))
+
+
 def load_fixture(path: Path, package: str) -> Fixture:
     spec = importlib.util.spec_from_file_location(f"tiny_{package.replace('-', '_').replace('.', '_')}", path)
     assert spec is not None and spec.loader is not None
@@ -959,7 +970,7 @@ def main() -> int:
             executor.close()
     if record:
         references_path.parent.mkdir(parents=True, exist_ok=True)
-        references_path.write_text(json.dumps(references, indent=1, sort_keys=True) + "\n")
+        references_path.write_text(compact(references) + "\n")
     return 1 if failed else 0
 
 
