@@ -682,7 +682,9 @@ def main() -> int:
                 row = entries.get(entry)
                 if row is None:
                     raise Failed(f"the package interface has no entry point {entry}")
-                rows = bindings(interface, str(interface_path), row, manifests, store, f"{package}@{version}", package)
+                # A cell may bind a slot to another of the fixture's models (`model=` on a request).
+                chosen = {**manifests, **{path: manifests[ref] for path, ref in cell.get("models", {}).items()}}
+                rows = bindings(interface, str(interface_path), row, chosen, store, f"{package}@{version}", package)
                 executor = executors.get(ranks)
                 if executor is None:
                     executor = executors[ranks] = Executor(out / f"executor-{ranks}", store, waive, patch, ranks)
@@ -693,7 +695,7 @@ def main() -> int:
                         "constructions": [{"path": b["model_binding_path"], "manifest": b["snapshot"], "components": b["components"]}
                                           for b in rows if "snapshot" in b and "model_binding_path" in b and "components" in b],
                     })
-                construction = f"{entry}@{ranks}"
+                construction = f"{entry}@{ranks}" + "".join(f":{k}={v}" for k, v in sorted(cell.get("models", {}).items()))
                 if (ranks, construction) not in loaded:
                     load: Load = {"cmd": "load", "construction": construction, "devices": "", "sequence_parallel_degree": ranks,
                                   "binding": rows[0] if rows else {"application": interface["application"],

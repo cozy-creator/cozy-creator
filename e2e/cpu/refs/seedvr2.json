@@ -1,0 +1,17 @@
+{
+ "quantize/int8": {
+  "outputs": [],
+  "result": {
+   "checkpoint": "sha256:*",
+   "output_slot": "int8",
+   "producer_request_id": "quantize-int8",
+   "transaction": "sha256:*"
+  },
+  "weights": {
+   "int8": {
+    "encoded": 16,
+    "tensors": 256
+   }
+  }
+ }
+}

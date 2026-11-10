@@ -3,8 +3,8 @@ Qwen2.5-VL with its vision tower, the Qwen-Image VAE in bf16, Qwen's tokenizer a
 channels. The edit checkpoint's DiT reads its references at t = 0 (`zero_cond_t`); its text encoder and VAE are the
 base's, byte for byte, as in the releases.
 
-lightx2v's Lightning LoRAs build at the 20B DiT's geometry (`model.py` LoRAGraph: 3072 wide, 60 blocks), which no tiny
-DiT matches, and `generate_turbo` loads its `turbo_lora` with the function: every Lightning path is GPU-only."""
+lightx2v's Lightning LoRAs build at the 20B DiT's geometry (`model.py` LoRAGraph: 3072 wide, 60 blocks, rank 64): the
+executor's LoRAGraph takes the tiny DiT's (PATCH), and the release geometry stays GPU-only."""
 
 from __future__ import annotations
 
@@ -23,6 +23,9 @@ from tiny import _shared
 BASE, EDIT = "qwen/qwen-image-2512@0.1.1", "qwen/qwen-image-edit-2511@0.1.0"
 LORAS = ("lightx2v/qwen-image-2512-lightning-lora@0.1.0", "lightx2v/qwen-image-edit-2511-lightning-lora@0.1.0")
 TEXT_WIDTH, Z = 32, 16
+#: LoRAGraph's keyword defaults (width, MLP width, blocks, rank): the 20B's 3072, 12288, 60, 64, as the tiny DiT has them.
+PATCH: dict[str, object] = {"qwen_image.model:LoRAGraph.__init__.__kwdefaults__": {"width": 32, "hidden": 128, "blocks": 2,
+                                                                                  "rank": 4}}
 _SITES = ("attn.to_q", "attn.to_k", "attn.to_v", "attn.to_out.0", "attn.add_q_proj", "attn.add_k_proj", "attn.add_v_proj",
           "attn.to_add_out", "img_mlp.net.0.proj", "img_mlp.net.2", "txt_mlp.net.0.proj", "txt_mlp.net.2")
 
@@ -84,7 +87,7 @@ def _lora(store: Path, seed: int) -> str:
                 data = (torch.randn(shape, generator=generator) * 0.02).to(torch.bfloat16).contiguous()
                 component.put(f"{path}.{factor}.weight", memoryview(data.view(torch.uint8).numpy()).cast("B"), dtype="BF16",
                               shape=shape)
-            alpha = torch.tensor(float(rank)).contiguous()
+            alpha = torch.tensor([float(rank)])  # a scalar's bytes (a 0-d tensor has no byte view)
             component.put(f"{path}.alpha", memoryview(alpha.view(torch.uint8).numpy()).cast("B"), dtype="F32", shape=[])
     return writer.commit().id
 
@@ -109,7 +112,6 @@ _FOX = _shared.picture("fox", 320, 256)
 _SNOW = _shared.picture("snow", 128, 128)
 #: 256², Qwen-Image's smallest canvas (0.0625 MP).
 _SMALL: dict[str, Json] = {"seed": 7, "megapixels": 0.0625, "steps": 2}
-_LIGHTNING = "lightx2v's Lightning LoRA builds at the 20B DiT's geometry (model.py LoRAGraph); no tiny DiT takes it"
 
 CELLS: list[Cell] = [
     {"entry": "generate", "name": "text", "payload": {"prompt": _prompt("a red fox in fresh snow"), **_SMALL},
@@ -122,7 +124,12 @@ CELLS: list[Cell] = [
      "files": {"prompt.references.0.file": _FOX, "prompt.references.1.file": _SNOW}, "check": size(320, 256)},
     {"entry": "image", "name": "full", "payload": {"instructions": _prompt("a red fox in fresh snow"), "seed": 7, "turbo": False},
      "check": size(1328, 1328)},
-    {"entry": "generate_turbo", "name": "text", "payload": {}, "skip": _LIGHTNING + "; generate_turbo loads it eagerly"},
-    {"entry": "image", "name": "turbo", "payload": {}, "skip": _LIGHTNING},
+    {"entry": "generate_turbo", "name": "text", "payload": {"prompt": _prompt("a red fox in fresh snow"), "seed": 7,
+                                                            "megapixels": 0.0625}, "check": size(256, 256)},
+    {"entry": "generate_turbo", "name": "edit", "payload": {"prompt": _prompt("the fox in <fox> wears a hat", "fox"),
+                                                            "seed": 7, "megapixels": 0.0625},
+     "files": {"prompt.references.0.file": _FOX}},
+    {"entry": "image", "name": "turbo", "payload": {"instructions": _prompt("a red fox in fresh snow"), "seed": 7},
+     "check": size(1328, 1328)},
     {"entry": "quantize", "name": "lanes", "payload": {}, "skip": NARROW},
 ]

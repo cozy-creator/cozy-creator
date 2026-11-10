@@ -42,9 +42,13 @@ def qwen3_vl(layers: int, width: int = 32, tie_word_embeddings: bool = False, **
                      "num_hidden_layers": layers, "num_attention_heads": 4, "num_key_value_heads": 2,
                      "head_dim": width // 4, "max_position_embeddings": 32768,
                      "rope_parameters": {"rope_type": "default", "rope_theta": 5e6, "mrope_interleaved": True,
-                                         "mrope_section": [width // 16, width // 32, width // 32]}, **text},
+                                         "mrope_section": [width // 16, width // 32, width // 32]},
+                     # Qwen3-VL's releases state the tie in text_config too (`get_text_config()` reads it there).
+                     "tie_word_embeddings": tie_word_embeddings, **text},
         vision_config={**_VISION, "out_hidden_size": width, "deepstack_visual_indexes": [0, 1]},
-        tie_word_embeddings=tie_word_embeddings, **QWEN_IDS,
+        tie_word_embeddings=tie_word_embeddings, image_token_id=QWEN_IDS["image_token_id"],
+        video_token_id=QWEN_IDS["video_token_id"], vision_start_token_id=QWEN_IDS["vision_start_token_id"],
+        vision_end_token_id=QWEN_IDS["vision_end_token_id"],
     )
 
 
@@ -57,8 +61,9 @@ def qwen3_5_vl(layers: int = 4, width: int = 32, **text: Json) -> Qwen3_5Config:
                      "linear_num_value_heads": 4, "max_position_embeddings": 32768,
                      "rope_parameters": {"rope_type": "default", "rope_theta": 1e7, "partial_rotary_factor": 0.25,
                                          "mrope_interleaved": True, "mrope_section": [2, 1, 1]}, **text},
-        vision_config={**_VISION, "out_hidden_size": width},
-        **QWEN_IDS,
+        vision_config={**_VISION, "out_hidden_size": width}, image_token_id=QWEN_IDS["image_token_id"],
+        video_token_id=QWEN_IDS["video_token_id"], vision_start_token_id=QWEN_IDS["vision_start_token_id"],
+        vision_end_token_id=QWEN_IDS["vision_end_token_id"],
     )
 
 #: Mistral-Small-3.2 under Pixtral's processor.

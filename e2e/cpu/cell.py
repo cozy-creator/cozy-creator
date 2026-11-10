@@ -27,6 +27,8 @@ class Cell(TypedDict):
     #: field path (`image`, `assets.0`) -> the file the machine grants there
     files: NotRequired[dict[str, Source]]
     check: NotRequired[Check]
+    #: a slot (its path) bound to another of the fixture's models (a ref `models` builds), as `model=` binds it
+    models: NotRequired[dict[str, str]]
     #: ranks of a CPU (gloo) group; 1 when absent
     ranks: NotRequired[int]
     #: judged against another cell's output (`entry/name`; that cell's run here, else its reference): a group's output
@@ -124,7 +126,9 @@ def qwen_tokenizer(folder: Path) -> None:
 
     source = packages() / "minimax-h3" / "minimax_h3" / "processor"
     folder.mkdir(parents=True, exist_ok=True)
-    save(AutoTokenizer.from_pretrained(source), folder)
+    # Transformers' loader is untyped in some releases a package locks: typed here, at the boundary.
+    load: Callable[[Path], object] = AutoTokenizer.from_pretrained
+    save(load(source), folder)
     template = json.loads((source / "tokenizer_config.json").read_text())["chat_template"]
     (folder / "chat_template.json").write_text(json.dumps({"chat_template": template}))
 

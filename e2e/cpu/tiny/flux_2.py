@@ -3,8 +3,7 @@ guidance, a bf16 VAE), each a Diffusers folder of the pipeline's real classes at
 and a byte-level Mistral one. The text encoders keep the depth the conditioning taps (30 and 27 layers) at 32 wide.
 
 `generate` runs [dev]; `generate_turbo` and the `image` tool are bound to the [klein] (`model=`), which runs distilled
-(4 steps) or as Base (CFG). fal's Turbo LoRA builds its sites at [dev]'s class-default geometry (`turbo.py` TurboGraph:
-`Flux2Transformer2DModel(**(geometry or {}))`, and `loader.construct` passes no geometry): no tiny [dev] can take it."""
+(4 steps) or as Base (CFG), and `generate_turbo` once to [dev] with fal's Turbo LoRA (its geometry PATCHed)."""
 
 from __future__ import annotations
 
@@ -26,12 +25,19 @@ TEXT_WIDTH = 32
 _TURBO_SITES = ("transformer_blocks.0.attn.to_q", "transformer_blocks.0.attn.to_k", "single_transformer_blocks.0.attn.to_out")
 
 
+#: The tiny DiT's geometry ([dev] with its guidance embedding; [klein] without).
+GEOMETRY: dict[str, object] = {
+    "patch_size": 1, "in_channels": 16, "num_layers": 1, "num_single_layers": 1, "attention_head_dim": 8,
+    "num_attention_heads": 2, "joint_attention_dim": 3 * TEXT_WIDTH, "timestep_guidance_channels": 32,
+    "axes_dims_rope": (2, 2, 2, 2),
+}
+#: fal's Turbo LoRA builds its sites at [dev]'s class-default geometry (`TurboGraph(config, geometry=None)`): the
+#: executor's TurboGraph takes the tiny [dev]'s instead, and the release geometry stays GPU-only.
+PATCH: dict[str, object] = {"flux_2.turbo:TurboGraph.__init__.__defaults__": ({**GEOMETRY, "guidance_embeds": True},)}
+
+
 def _transformer(guidance: bool) -> torch.nn.Module:
-    return module(Flux2Transformer2DModel(
-        patch_size=1, in_channels=16, num_layers=1, num_single_layers=1, attention_head_dim=8, num_attention_heads=2,
-        joint_attention_dim=3 * TEXT_WIDTH, timestep_guidance_channels=32, axes_dims_rope=(2, 2, 2, 2),
-        guidance_embeds=guidance,
-    )).to(torch.bfloat16)
+    return module(Flux2Transformer2DModel(**GEOMETRY, guidance_embeds=guidance)).to(torch.bfloat16)
 
 
 def _vae(dtype: torch.dtype) -> torch.nn.Module:
@@ -145,7 +151,7 @@ CELLS: list[Cell] = [
      "check": size(1024, 1024)},
     {"entry": "image", "name": "klein-base", "payload": {"instructions": _prompt("a red fox"), "seed": 7, "turbo": False,
                                                          "prompt_upsampling": False}, "check": size(1024, 1024)},
-    {"entry": "generate_turbo", "name": "dev-turbo-lora", "payload": {},
-     "skip": "fal's Turbo LoRA builds its sites at [dev]'s class-default geometry (turbo.py TurboGraph); no tiny [dev] takes it"},
+    {"entry": "generate_turbo", "name": "dev-turbo-lora", "payload": {"prompt": _prompt("a red fox"), **_SMALL},
+     "models": {"generate_turbo.models.model": DEV}, "check": size(128, 128)},
     {"entry": "quantize", "name": "lanes", "payload": {}, "skip": NARROW},
 ]

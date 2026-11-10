@@ -22,7 +22,8 @@ from cell import Cell, Json, module, quantize, size
 INSTRUCT, DISTIL = "tencent/hunyuan-image-3-instruct@0.1.1", "tencent/hunyuan-image-3-instruct-distil@0.1.1"
 FIRST_SPECIAL = 127957
 #: Tencent's config.json (HunyuanImage-3.0-Instruct), its widths shrunk: 64 wide, 2 layers of 4 experts (top 2), a
-#: 1-layer SigLIP2 of 32, the VAE at 8-16 channels. Ids, ratios, rope, routing and the VAE's 16x stay the release's.
+#: 1-layer SigLIP2 of 32, the VAE at 32-64 channels (its GroupNorms take 32 groups). Ids, ratios, rope, routing and
+#: the VAE's 16x stay the release's.
 CONFIG: dict[str, Json] = {
     "add_classification_head": False, "anyres_pooling_size": 2, "anyres_vit_max_image_size": None,
     "anyres_vit_two_views": False, "attention_bias": False, "attention_dropout": 0.0, "attention_head_dim": 16,
@@ -47,7 +48,7 @@ CONFIG: dict[str, Json] = {
     "xdrope_section": None, "head_dim": 16, "rope_type": "2d", "vae_downsample_factor": [16, 16],
     "vit_downsample_factor": [16, 16], "cond_token_attn_type": "joint_full", "cond_image_type": "vae_vit",
     "vae_type": "hunyuan-image-vae-v1", "vae_dtype": "float32", "vae_autocast_dtype": "float16",
-    "vae": {"_class_name": "AutoencoderKLConv3D", "block_out_channels": [8, 8, 16, 16, 16], "in_channels": 3,
+    "vae": {"_class_name": "AutoencoderKLConv3D", "block_out_channels": [32, 32, 64, 64, 64], "in_channels": 3,
             "out_channels": 3, "latent_channels": 32, "layers_per_block": 1, "ffactor_spatial": 16, "ffactor_temporal": 4,
             "sample_size": 384, "sample_tsize": 96, "downsample_match_channel": True, "upsample_match_channel": True,
             "scaling_factor": 0.562679178327931},

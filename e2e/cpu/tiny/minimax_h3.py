@@ -20,8 +20,10 @@ import tensorfs
 import torch
 from cozy_runtime.author import Config
 from diffusers import AutoencoderKLMiniMaxH3Audio, MiniMaxH3Scheduler
-from minimax_h3 import official
+from h3_tables import regenerate as tools_regenerate
+from minimax_h3 import latent_upscaler, official
 from minimax_h3.conditioner import build_text_conditioner
+from minimax_h3.latent_upscaler.architecture import LatentResizer3D
 from minimax_h3.official import Schedule, TimestepPlan, Trunk
 from minimax_h3.vae_tiles import TileBatchedVideoVAE
 from PIL import Image
@@ -29,6 +31,11 @@ from PIL import Image
 from cell import Cell, Json, module
 
 WAIVE = {"minimax_h3.official:_validate_model_contract": "the release geometry: 56x128 heads, 50 layers, 5120 text width"}
+REGENERATE, UPSCALER = "efficient-large-model/open-h3-regenerate-2k@0.1.0", "lbh-123-ai/h3-latent-upscaler@0.1.0"
+#: LatentResizer3D's defaults (in_channels, in_blocks, out_blocks, channels, dropout, temporal_every, temporal_kernel):
+#: the release's 12 + 12 blocks of 512 channels (345M) shrunk to 1 + 1 of 32.
+_UPSCALER_DEFAULTS = (24, 1, 1, 32, 0.1, 2, 5)
+PATCH: dict[str, object] = {"minimax_h3.latent_upscaler.architecture:LatentResizer3D.__init__.__defaults__": _UPSCALER_DEFAULTS}
 
 _TRUNKS: tuple[Trunk, Trunk] = ("fl2va", "ref2va")
 _DIT = {"fl2va": "transformer", "ref2va": "transformer_ref"}
@@ -160,7 +167,30 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
         overlay = module(built.components[_TURBO[trunk]])
         _fill(overlay, seed)
         _write(lora, _TURBO[trunk], overlay, overlays[_TURBO[trunk]], {official.PLAN_ASSET: turbo[trunk].canonical_bytes()})
-    return {"minimaxai/minimax-h3@1.0.0-rc.7": base.commit().id, "alibaba-pai/minimax-h3-turbo-lora@1.0.1": lora.commit().id}
+    return {"minimaxai/minimax-h3@1.0.0-rc.7": base.commit().id, "alibaba-pai/minimax-h3-turbo-lora@1.0.1": lora.commit().id,
+            REGENERATE: _regenerate(store), UPSCALER: _upscaler(store)}
+
+
+def _regenerate(store: Path) -> str:
+    """Open-H3-Regenerate-2K's rank-576 refine overlay over the tiny FL2VA DiT, with the refine plan the tools write
+    (`h3_tables.regenerate.plan`: its three starts)."""
+    plan = official.timestep_plan(tools_regenerate.plan().canonical_bytes, "fl2va")
+    config: dict[str, Json] = {**DIT, "cozy_h3": {"task": "fl2va", "modulation": "adaln-pruned", "distillation": "regenerate",
+                                                  "lora_rank": 576, "lora_alpha": 576.0, "table_keys": _keys(plan)}}
+    overlay = module(official.OfficialH3RegenerateLoRA(Config(config), plan).components[official.REGENERATE_COMPONENT])
+    _fill(overlay, 8)
+    writer = tensorfs.Writer(cache_dir=store)
+    _write(writer, official.REGENERATE_COMPONENT, overlay, config, {official.PLAN_ASSET: plan.canonical_bytes()})
+    return writer.commit().id
+
+
+def _upscaler(store: Path) -> str:
+    """LBH-123-AI's 3D-conv latent upscaler at the PATCHed width (one block each side, 32 channels)."""
+    upscaler = module(LatentResizer3D(*_UPSCALER_DEFAULTS)).bfloat16()
+    _fill(upscaler, 9)
+    writer = tensorfs.Writer(cache_dir=store)
+    _write(writer, "upscaler", upscaler, {"architecture": latent_upscaler.ARCHITECTURE}, {})
+    return writer.commit().id
 
 
 def picture(name: str, width: int, height: int) -> Callable[[Path], Path]:
@@ -182,6 +212,37 @@ _EMPTY = ["context", "latents"]
 _SEGMENT: dict[str, Json] = {"prompt": "a red fox runs across a snowy field", "seed": 7, "duration_s": 5, "steps": 2,
                              "turbo": False, "canvas": [1344, 768]}
 _REF2VA: dict[str, Json] = {**_SEGMENT, "frames": 124, "videos": []}
+_REGENERATE: dict[str, Json] = {"prompt": "a red fox runs across a snowy field", "seed": 7, "resolution": "768p",
+                                "quality": "full"}
+
+
+def clip(frames: int) -> Callable[[Path], Path]:
+    """A second of 320x180 video at 24 fps with a tone, each frame a shifted gradient and a disc."""
+
+    def make(folder: Path) -> Path:
+        import av
+
+        path = folder / f"shot-{frames}.mp4"
+        with av.open(str(path), "w") as container:
+            video = container.add_stream("libx264", rate=24)
+            video.width, video.height, video.pix_fmt = 320, 180, "yuv420p"
+            sound = container.add_stream("aac", rate=48000)
+            y, x = np.mgrid[0:180, 0:320]
+            for index in range(frames):
+                disc = ((x - 100 - index * 4) ** 2 + (y - 90) ** 2) < 900
+                rgb = np.stack([(x + index * 6) % 256, y, np.where(disc, 230, 40)], axis=-1).astype(np.uint8)
+                for packet in video.encode(av.VideoFrame.from_ndarray(rgb, format="rgb24")):
+                    container.mux(packet)
+            for packet in video.encode():
+                container.mux(packet)
+            tone = (np.sin(np.arange(48000 * frames // 24) * 0.03) * 0.3).astype(np.float32)[None]
+            chunk = av.AudioFrame.from_ndarray(tone, format="fltp", layout="mono")
+            chunk.sample_rate = 48000
+            for packet in [*sound.encode(chunk), *sound.encode()]:
+                container.mux(packet)
+        return path
+
+    return make
 
 CELLS: list[Cell] = [
     {"entry": "fl2va_segment", "name": "text", "payload": {"payload": _SEGMENT}, "empty": _EMPTY},
@@ -197,6 +258,9 @@ CELLS: list[Cell] = [
     {"entry": "ref2va_segment", "name": "reference-2-ranks", "payload": {"payload": _REF2VA, "assets": [{"label": "fox"}]},
      "files": {"assets.0.asset": picture("fox", 512, 512)}, "ranks": 2, "empty": _EMPTY,
      "same_as": "ref2va_segment/reference"},
-    {"entry": "regenerate_shot", "name": "native", "payload": {},
-     "skip": "the latent upscaler is LatentResizer3D() at its fixed 345M parameters; its 3D convs do not fit a CPU budget"},
+    {"entry": "regenerate_shot", "name": "native", "payload": {"payload": _REGENERATE},
+     "files": {"payload.video": clip(25)}},
+    {"entry": "regenerate_shot", "name": "1080p", "payload": {"payload": {**_REGENERATE, "resolution": "1080p",
+                                                                          "strength": 0.7}},
+     "files": {"payload.video": clip(25)}},
 ]

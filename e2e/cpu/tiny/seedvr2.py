@@ -35,10 +35,10 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
     seedvr.DIT, seedvr.VAE = DIT, VAE  # this process only: the executor takes PATCH
     built: dict[str, torch.nn.Module] = {**seedvr.modules(), "conditioning": seedvr.Conditioning()}
     writer = tensorfs.Writer(cache_dir=store)
-    writer.pipeline(None, {"architecture": seedvr.ARCHITECTURE})
     generator = torch.Generator().manual_seed(1)
     for name, module in built.items():
-        component = writer.component(name)
+        # The release's one construction config (its `config.json`), carried by the DiT.
+        component = writer.component(name, config={"architecture": seedvr.ARCHITECTURE} if name == "dit" else None)
         for key, tensor in module.state_dict().items():
             data = tensor.detach()
             if name == "conditioning" or not bool(torch.isfinite(data).all()):

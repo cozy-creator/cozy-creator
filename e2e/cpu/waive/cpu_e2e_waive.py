@@ -35,9 +35,14 @@ class _Loader(importlib.abc.Loader):
                 raise RuntimeError(f"cpu-e2e waives {module.__name__}:{function}, which the package no longer has")
             setattr(module, function, _waived)
         for name, literal in self.values.items():
-            if not hasattr(module, name):
+            # `NAME`, or a dotted path into it (`Class.__init__.__defaults__`: a constructor's defaults).
+            *path, last = name.split(".")
+            owner: object = module
+            for part in path:
+                owner = getattr(owner, part, None)
+            if owner is None or not hasattr(owner, last):
                 raise RuntimeError(f"cpu-e2e patches {module.__name__}:{name}, which the package no longer has")
-            setattr(module, name, ast.literal_eval(literal))
+            setattr(owner, last, ast.literal_eval(literal))
 
 
 class _Finder(importlib.abc.MetaPathFinder):

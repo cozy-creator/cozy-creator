@@ -33,3 +33,6 @@ candidate tensorfs "$tensorfs"
 candidate cozy-runtime "$runtime"
 uv pip install -q --python "$py" --no-deps --no-sources -e "$pkg"
 for helper in "$@"; do uv pip install -q --python "$py" --no-deps --no-sources -e "$helper"; done
+# Its bytecode, as TensorD compiles an environment's (`environment.rs` compile_bytecode): uncompiled, the Runtime's 60 s
+# import ceiling counts the compile on a busy computer. Compiled files are skipped.
+nice -n 19 "$py" -I -c "import compileall, sysconfig; compileall.compile_dir(sysconfig.get_paths()['purelib'], quiet=2, workers=2)" > /dev/null || true
