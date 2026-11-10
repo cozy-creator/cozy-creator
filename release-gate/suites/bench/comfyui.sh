@@ -10,6 +10,12 @@ if [ "$(jq length comfy-jobs.json)" = 0 ]; then log "comfyui: no completed cell 
   "$CLI" machine ssh "$M" "cat > /var/tmp/bm/bench_comfy.py" < "$HERE/suites/bench/comfy.py" &&
   "$CLI" machine ssh "$M" "cat > /var/tmp/bm/jobs.json" < comfy-jobs.json ||
   { expect comfyui-setup FAIL "the benchmarks runner at $BENCHMARKS_AT did not reach $M"; return 0; }
+# Gated ComfyUI files (Klein): the laptop's Hugging Face token, over stdin (never an argument or a log line), which comfy.py
+# hands to the weights step alone and deletes before ComfyUI starts.
+HF_FILE=${HF_HOME:-$HOME/.cache/huggingface}/token
+if [ -n "${HF_TOKEN:-}" ]; then printf %s "$HF_TOKEN" | "$CLI" machine ssh "$M" "umask 077 && cat > /var/tmp/bm/.hf-token" || log "comfyui: the HF token did not reach $M"
+elif [ -s "$HF_FILE" ]; then "$CLI" machine ssh "$M" "umask 077 && cat > /var/tmp/bm/.hf-token" < "$HF_FILE" || log "comfyui: the HF token did not reach $M"
+else log "comfyui: no HF token here: gated ComfyUI files (Klein) cannot download"; fi
 # One restart: Cozy's executors leave the GPU to ComfyUI.
 "$CLI" machine update "$M" --gpu-memory-limit off -y > comfy-free.log 2>&1 || log "comfyui: freeing the GPU: $(tail -c 300 comfy-free.log)"
 podsh "cd /var/tmp/bm && setsid nohup python3 bench_comfy.py run jobs.json > comfy.log 2>&1 < /dev/null & echo \$! > /var/tmp/bm/comfy.pid" > /dev/null

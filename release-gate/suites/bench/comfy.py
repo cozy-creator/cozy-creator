@@ -97,7 +97,14 @@ def run(path: str) -> None:
 
     bm.checkout(s.work, keys, do)
     bm.environment(s.work, do)
-    bm.weights(s.work, bm.comfy_files(keys, ['matched']), do)
+    token = Path(here, '.hf-token')  # comfyui.sh: for gated files; the weights step alone sees it, ComfyUI never does
+    if token.exists():
+        os.environ['HF_TOKEN'] = token.read_text().strip()
+        token.unlink()
+    try:
+        bm.weights(s.work, bm.comfy_files(keys, ['matched']), do)
+    finally:
+        os.environ.pop('HF_TOKEN', None)
     bm.Comfy(s, []).stop()  # a new venv's first start compiles every module, which is not the cold being measured
     s.say('setup done')
     sampler = gpu.Sampler()
