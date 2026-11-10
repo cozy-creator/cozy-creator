@@ -372,6 +372,8 @@ impl Provider {
                 return Ok(mounted);
             }
             if Instant::now() >= deadline {
+                #[cfg(all(debug_assertions, target_os = "macos"))]
+                debug_readiness(view, mounted.child.id());
                 return Err(Error::NotReady);
             }
             thread::sleep(Duration::from_millis(100));
@@ -768,35 +770,71 @@ fn control_process(
 }
 
 #[cfg(target_os = "macos")]
+fn control_output(mut command: Command, operation: &'static str) -> Result<Vec<u8>> {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(io_error("read filesystem control output"))?;
+    let mut output = child
+        .stdout
+        .take()
+        .ok_or(Error::Invalid("filesystem control output is unavailable"))?;
+    let reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        output.read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let (status, _) = control_process(child, operation, Duration::from_secs(5))?;
+    if !status.success() {
+        return Err(Error::Invalid("filesystem control output is unavailable"));
+    }
+    reader
+        .join()
+        .map_err(|_| Error::Invalid("filesystem control output reader failed"))?
+        .map_err(io_error("read filesystem control output"))
+}
+
+#[cfg(target_os = "macos")]
 fn macos_mounted(view: &Path) -> Result<bool> {
-    // securefs's own ismount uses a custom FUSE ioctl, which FSKit does not implement.
-    // Read the kernel's mount table instead of issuing requests to the encrypted filesystem.
+    // securefs's custom FUSE ioctl is unavailable with FSKit. Read kernel mount state.
     let view = view
         .parent()
         .and_then(|parent| fs::canonicalize(parent).ok())
         .zip(view.file_name())
         .map_or_else(|| view.to_path_buf(), |(parent, name)| parent.join(name));
-    let child = clean_command(Path::new("/sbin/mount"))
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(io_error("read kernel mount table"))?;
-    let (status, mut child) = control_process(child, "status", Duration::from_secs(5))?;
-    if !status.success() {
-        return Err(Error::Invalid("the kernel mount table is unavailable"));
-    }
-    let mut bytes = Vec::new();
-    child
-        .stdout
-        .take()
-        .ok_or(Error::Invalid("the kernel mount table is unavailable"))?
-        .read_to_end(&mut bytes)
-        .map_err(io_error("read kernel mount table"))?;
+    let bytes = control_output(clean_command(Path::new("/sbin/mount")), "status")?;
     let needle = format!(" on {} (", view.display());
     Ok(String::from_utf8_lossy(&bytes)
         .lines()
         .any(|line| line.contains(&needle)))
+}
+
+#[cfg(all(debug_assertions, target_os = "macos"))]
+fn debug_readiness(view: &Path, supervisor: u32) {
+    let Some(path) = std::env::var_os("COZY_VAULT_PROVIDER_DIAGNOSTICS") else {
+        return;
+    };
+    let Ok(mut file) = OpenOptions::new().append(true).create(true).open(path) else {
+        return;
+    };
+    let _ = writeln!(file, "Unready requested view: {}", view.display());
+    if let Ok(bytes) = control_output(clean_command(Path::new("/sbin/mount")), "diagnostic status")
+    {
+        let _ = file.write_all(&bytes);
+    }
+    for process in platform::process::tree(supervisor) {
+        let mut command = clean_command(Path::new("/bin/ps"));
+        command.args([
+            "-p",
+            &process.birth().pid.to_string(),
+            "-o",
+            "pid=,pcpu=,state=,wchan=,comm=",
+        ]);
+        if let Ok(bytes) = control_output(command, "diagnostic process") {
+            let _ = file.write_all(&bytes);
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]
