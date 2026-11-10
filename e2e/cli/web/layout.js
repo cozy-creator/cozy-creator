@@ -69,6 +69,31 @@ function replaceFile(at, text) {
   renameSync(`${at}.part`, at);
 }
 
+/** A resting canvas at 200%: a corner may hit a box, and a zoom button's move may still be on its way. */
+async function restClose(page) {
+  const state = () => page.evaluate(() => {
+    const transform = document.querySelector('.react-flow__viewport')?.style.transform;
+    return {
+      hash: location.hash,
+      open: [...document.querySelectorAll('.card.here')].map((card) => card.dataset.asset),
+      transform,
+      zoom: transform ? new DOMMatrix(transform).a : null,
+    };
+  });
+  const requireRest = (at) => {
+    if (at.hash.includes('/assets/') || at.open.length) throw new Error(`rest-close expected a resting canvas: ${JSON.stringify(at)}`);
+  };
+  await closeBox(page);
+  requireRest(await state());
+  if (!(await page.locator('.zoom-menu').count())) await page.click('.zoom-at');
+  await page.getByRole('menuitem', { name: 'Zoom to 200%', exact: true }).click();
+  await settled(page);
+  const at = await state();
+  requireRest(at);
+  if (at.zoom !== 2) throw new Error(`rest-close expected 200%: ${JSON.stringify(at)}`);
+  return at;
+}
+
 /** What's wrong with how `scope` is laid out, in the page: each finding a rule, where, and what. A rule is one person's eye on it, measured.
  *  Self-contained: it runs in the page. */
 function audit({ floor, hangZoom, fitted = true }) {
@@ -716,8 +741,7 @@ ${local ? `  card:
       await page.keyboard.up('Shift');
       await page.keyboard.press('Shift+2');
       await settled(page);
-      await page.mouse.click(2, size.viewport.height - 2);
-      await zoomTo(2);
+      (seen.rest_close ??= []).push({ size: size.name, ...(await restClose(page)) });
       await look('rest-close', true);
     }
     // At rest, being made, at 75%: what it says of how far it's got hangs off it as all else at rest does, one size on screen.
