@@ -833,8 +833,8 @@ impl Lock {
 
 /// What this Calcifer holds of one project folder, whichever `Folder` names it, for as long as one does: the last to go closes it (cl-823).
 struct Shared {
-    /// Its canonical folder, which `SHARED` knows it by.
-    dir: PathBuf,
+    /// Captured logical ownership and canonical physical view; a reused drive is another owner.
+    key: (PathBuf, PathBuf, Option<super::vault::MountIdentity>),
     /// One writer at a time, with the connection that writes: an act, or a write of no act's, holds it from what it changes to its commit,
     /// SQLite's wait on another program's write lock too. Nothing that only reads waits on it (cl-837).
     writing: Mutex<Option<rusqlite::Connection>>,
@@ -847,7 +847,7 @@ struct Shared {
     /// A checkpoint is going.
     checkpointing: std::sync::atomic::AtomicBool,
     /// Its history, read from project.db once.
-    book: std::sync::OnceLock<Arc<super::history::Book>>,
+    book: Mutex<Option<Arc<super::history::Book>>>,
     /// What ffprobe last said of each film at its root.
     films: Mutex<HashMap<PathBuf, Frames>>,
 }
@@ -859,8 +859,8 @@ impl Drop for Shared {
     /// Nothing names the folder now: project.db's connection closes, beside whatever dropped it, as closing it may checkpoint its WAL.
     fn drop(&mut self) {
         let mut shared = SHARED.lock().unwrap_or_else(|e| e.into_inner());
-        if shared.get(&self.dir).is_some_and(|held| held.strong_count() == 0) {
-            shared.remove(&self.dir);
+        if shared.get(&self.key).is_some_and(|held| held.strong_count() == 0) {
+            shared.remove(&self.key);
         }
         drop(shared);
         let writing = self.writing.get_mut().unwrap_or_else(|e| e.into_inner()).take();
@@ -887,25 +887,28 @@ struct Held {
 }
 
 /// Each project folder some `Folder` names now, by its canonical path: one `Shared` while any does.
-static SHARED: LazyLock<Mutex<HashMap<PathBuf, std::sync::Weak<Shared>>>> = LazyLock::new(Mutex::default);
+static SHARED: LazyLock<Mutex<HashMap<(PathBuf, PathBuf, Option<super::vault::MountIdentity>), std::sync::Weak<Shared>>>> = LazyLock::new(Mutex::default);
 
 fn shared(dir: &Path) -> Arc<Shared> {
     let dir = durable::canonical(dir).unwrap_or_else(|_| dir.to_owned());
+    let owner = super::vault::logical(&dir);
+    let identity = super::vault::mount_identity(&owner);
+    let key = (owner, dir, identity);
     let mut shared = SHARED.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(held) = shared.get(&dir).and_then(std::sync::Weak::upgrade) {
+    if let Some(held) = shared.get(&key).and_then(std::sync::Weak::upgrade) {
         return held;
     }
     let held = Arc::new(Shared {
-        dir: dir.clone(),
+        key: key.clone(),
         writing: Mutex::default(),
         collecting: Mutex::default(),
         held: Mutex::default(),
         reading: Mutex::default(),
         checkpointing: std::sync::atomic::AtomicBool::default(),
-        book: std::sync::OnceLock::new(),
+        book: Mutex::default(),
         films: Mutex::default(),
     });
-    shared.insert(dir, Arc::downgrade(&held));
+    shared.insert(key, Arc::downgrade(&held));
     held
 }
 
@@ -1025,6 +1028,8 @@ impl Folder {
         drop(reader);
         drop(writer);
         drop(writing);
+        *self.shared.book.lock().expect("history cache") = None;
+        self.shared.films.lock().expect("film cache").clear();
         Ok(())
     }
 
@@ -1032,7 +1037,10 @@ impl Folder {
     /// another than any it had open, and it moves with each commit.
     pub(crate) fn stamp_at(dir: &Path) -> String {
         let canonical = durable::canonical(dir).unwrap_or_else(|_| dir.to_owned());
-        let held = SHARED.lock().unwrap_or_else(|e| e.into_inner()).get(&canonical).and_then(std::sync::Weak::upgrade);
+        let owner = super::vault::logical(&canonical);
+        let identity = super::vault::mount_identity(&owner);
+        let key = (owner, canonical, identity);
+        let held = SHARED.lock().unwrap_or_else(|e| e.into_inner()).get(&key).and_then(std::sync::Weak::upgrade);
         match held {
             Some(shared) => Self { dir: dir.to_owned(), tools: PathBuf::new(), shared, unsaved: Mutex::default() }.stamp(),
             None => db::seq_at(&dir.join(db::DB)).map_or_else(String::new, |seq| seq.to_string()),
@@ -1108,7 +1116,7 @@ impl Folder {
 
     /// Its history, as `read` first reads it, for as long as anything holds the project.
     pub(super) fn book(&self, read: impl FnOnce() -> super::history::Book) -> Arc<super::history::Book> {
-        self.shared.book.get_or_init(|| Arc::new(read())).clone()
+        self.shared.book.lock().expect("history cache").get_or_insert_with(|| Arc::new(read())).clone()
     }
 
     pub(crate) fn db(&self) -> PathBuf {

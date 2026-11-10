@@ -10,6 +10,16 @@ use crate::api::{Api, Refusal, parse};
 pub(super) const BACKING: &str = "project.vault.data";
 const DEFAULT_IDLE: u64 = 900;
 type Held = Arc<Mutex<Session>>;
+
+/// In-memory identity of one physical mount. It survives reauthorization of that mount,
+/// but a new unlock can never inherit caches from an older mount at the same OS path.
+#[derive(Clone)]
+pub(crate) struct MountIdentity(Arc<()>);
+impl PartialEq for MountIdentity { fn eq(&self, other: &Self) -> bool { Arc::ptr_eq(&self.0, &other.0) } }
+impl Eq for MountIdentity {}
+impl std::hash::Hash for MountIdentity {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) { std::hash::Hash::hash(&Arc::as_ptr(&self.0), state); }
+}
 static SESSIONS: LazyLock<Mutex<BTreeMap<PathBuf, Held>>> = LazyLock::new(Mutex::default);
 static ROOTS: LazyLock<Mutex<BTreeMap<PathBuf, PathBuf>>> = LazyLock::new(Mutex::default);
 static OPERATIONS: LazyLock<Mutex<BTreeMap<PathBuf, Arc<Mutex<()>>>>> = LazyLock::new(Mutex::default);
@@ -17,6 +27,7 @@ static ACCESS: LazyLock<Mutex<BTreeMap<PathBuf, Arc<tokio::sync::RwLock<()>>>>>=
 static CONVERTING: LazyLock<Mutex<BTreeSet<PathBuf>>> = LazyLock::new(Mutex::default);
 
 struct Session {
+    identity: MountIdentity,
     mount: Mounted,
     secret: ProjectSecret,
     keybag: Keybag,
@@ -34,6 +45,7 @@ fn io(e: std::io::Error) -> Error { error("vault_io", e) }
 fn provider(e: impl std::fmt::Display) -> Error { error("vault_provider", e) }
 fn key(e: project_vault::Error) -> Error { error("vault_key", e) }
 fn held(root: &FsPath) -> Option<Held> { SESSIONS.lock().expect("vault sessions").get(root).cloned() }
+pub(crate) fn mount_identity(root: &FsPath) -> Option<MountIdentity> { held(root).map(|session| session.lock().expect("vault session").identity.clone()) }
 pub(crate) fn encrypted(root: &FsPath) -> bool { root.join(KEYBAG_FILE).is_file() || SESSIONS.lock().expect("vault sessions").contains_key(root) }
 
 /// Logical registered path of an unlocked mount, including any relative subpath.
@@ -199,7 +211,7 @@ fn mount(api: &Api, root: &FsPath, keybag: Keybag, secret: ProjectSecret, ask: &
     let project_id = keybag.info().project_id;
     let idle = ask.idle_timeout_s.unwrap_or(DEFAULT_IDLE);
     let maximum = ask.max_duration_s.unwrap_or(0);
-    let session = Session { mount: mounted, secret, keybag, idle, maximum, timer: timer(idle, maximum), active_ms: super::now_ms(), began_ms: super::now_ms(), closing: false, readable: Arc::new(AtomicBool::new(true)) };
+    let session = Session { identity: MountIdentity(Arc::new(())), mount: mounted, secret, keybag, idle, maximum, timer: timer(idle, maximum), active_ms: super::now_ms(), began_ms: super::now_ms(), closing: false, readable: Arc::new(AtomicBool::new(true)) };
     SESSIONS.lock().expect("vault sessions").insert(root.to_owned(), Arc::new(Mutex::new(session)));
     crate::events::project_vault(&project_id, "unlocked");
     Ok(())
@@ -351,6 +363,7 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk) -> Result<VaultChan
                     session.secret = secret;
                     session.keybag = keybag;
                     session.closing = false;
+                    session.readable.store(false, Ordering::Release);
                     session.readable = Arc::new(AtomicBool::new(true));
                     session.began_ms = super::now_ms(); session.active_ms = session.began_ms;
                     session.idle = ask.idle_timeout_s.unwrap_or(DEFAULT_IDLE); session.maximum = ask.max_duration_s.unwrap_or(0);
