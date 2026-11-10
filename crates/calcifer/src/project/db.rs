@@ -452,8 +452,9 @@ fn file_record(file: &File) -> String {
 }
 
 /// `after` written over `before`, row by row, with `extra`, as one transaction: the new revision, or none when nothing differed.
-/// `locked` runs once it holds the write lock, before it writes: no other connection commits until it does.
-pub(crate) fn commit(conn: &mut Connection, at: &Path, before: &Stored, after: &mut Stored, extra: &Extra, locked: impl FnOnce()) -> Result<Option<u64>, Error> {
+/// `locked` runs once it holds the write lock. `before_commit` runs only at the final
+/// SQLite commit, allowing the caller to publish its held view without a reload gap.
+pub(crate) fn commit(conn: &mut Connection, at: &Path, before: &Stored, after: &mut Stored, extra: &Extra, locked: impl FnOnce(), before_commit: impl FnOnce()) -> Result<Option<u64>, Error> {
     let e = |error: rusqlite::Error| sql(at, error);
     crdt::identify(before, after);
     if !Arc::ptr_eq(&before.lock, &after.lock) {
@@ -480,10 +481,14 @@ pub(crate) fn commit(conn: &mut Connection, at: &Path, before: &Stored, after: &
     let value = crdt::changed_value(before, after, &ops, &doc.value, identity);
     doc.update(value)?;
     if doc.doc.get_heads() != old_heads {
-        save_document(&tx, at, &mut doc, seq, Some(&old_heads))?;
+        // A fresh staged store's first populated document is its full baseline, not
+        // a large change tail on the empty initializer. Normal edits stay incremental.
+        let base = before.crdt.as_ref().map(|_| old_heads.as_slice());
+        save_document(&tx, at, &mut doc, seq, base)?;
     }
     after.crdt = Some(Arc::new(doc));
     tx.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('seq', ?1)", [seq.to_string()]).map_err(e)?;
+    before_commit();
     tx.commit().map_err(e)?;
     Ok(Some(seq))
 }
@@ -669,7 +674,7 @@ pub(crate) fn create(path: &Path, stored: &Stored, ops: &[OpRow], asked: &[(Stri
     crdt::identify_history(&fresh, &mut ops);
     let extra = Extra { asked: asked.iter().map(|(digest, text)| (digest.clone(), Some(text.clone()))).collect(), ops, ..Default::default() };
     fresh.seq = 0;
-    commit(&mut conn, path, &Stored::default(), &mut fresh, &extra, || ())?;
+    commit(&mut conn, path, &Stored::default(), &mut fresh, &extra, || (), || ())?;
     set_meta(&conn, path, "created_complete", Some("1"))?;
     conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").map_err(|e| err(path, e))?;
     drop(conn);

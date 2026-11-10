@@ -1268,9 +1268,16 @@ impl Folder {
         // SQLite's wait on another program's write lock holds the turn alone: every read goes on meanwhile (cl-837).
         let conn = self.writer(&mut turn)?;
         let mut current = false;
-        let seq = db::commit(conn, &self.db(), &act.base, &mut after, &extra, || current = self.version() == seen)?;
+        // Readers retain the old view throughout preparation and an outside writer's
+        // BEGIN wait. Only COMMIT and publication share the held guard: a reader can
+        // never see our committed data_version with the cache still on the old view.
+        let mut publication = None;
+        let seq = db::commit(conn, &self.db(), &act.base, &mut after, &extra, || current = self.version() == seen,
+            || publication = Some(self.shared.held.lock().unwrap_or_else(|e| e.into_inner())))?;
         let (seq, shown) = {
-            let mut held = self.shared.held.lock().unwrap_or_else(|e| e.into_inner());
+            // A no-op rollback does not call before_commit; local-only file facts
+            // still use the existing short publication path in that case.
+            let mut held = publication.unwrap_or_else(|| self.shared.held.lock().unwrap_or_else(|e| e.into_inner()));
             let held = held.as_mut().expect("held");
             after.seq = seq.unwrap_or(act.base.seq);
             let shown = seq.is_none() && changed[2] && after.lock.files != act.base.lock.files;
