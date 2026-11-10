@@ -91,15 +91,17 @@ const cli = (...args) => execFileSync(process.env.COZY, ['--json', ...args], { e
   await page.keyboard.type(' RETAINED-THROUGH-PRIVATE-COVER');
   await page.keyboard.press('Tab');
   await until('encrypted edit waits for network', () => page.locator('.top').innerText(), (text) => /1 change/.test(text), 15000);
-  await page.locator('.gate').waitFor();
-  check('offline_cover_keeps_private_canvas_owner', await page.evaluate(() => document.querySelector('.react-flow') === window.__pendingCanvas));
-  check('offline_cover_conceals_private_content', !(await page.locator('body').innerText()).includes('private_pending_words'));
-  check('temporary_cover_does_not_lock_project', JSON.parse(cli('project', '-p', folder, 'vault', 'status')).state === 'unlocked');
+  // Offline queries pause; the real visibility transition triggers the privacy cover.
   peer = await context.newPage();
   await peer.goto('about:blank');
   await peer.bringToFront();
   await until('pending private tab hidden', () => page.evaluate(() => document.visibilityState), (state) => state === 'hidden', 10000);
+  await page.locator('.gate').waitFor();
+  check('offline_cover_keeps_private_canvas_owner', await page.evaluate(() => document.querySelector('.react-flow') === window.__pendingCanvas));
+  check('offline_cover_conceals_private_content', !(await page.locator('body').innerText()).includes('private_pending_words'));
+  check('temporary_cover_does_not_lock_project', JSON.parse(cli('project', '-p', folder, 'vault', 'status')).state === 'unlocked');
   await page.bringToFront();
+  await page.locator('.gate').waitFor();
   check('hide_show_keeps_pending_edit', /1 change/.test(await page.locator('.top').innerText()));
   await context.setOffline(false);
   await until('pending encrypted edit commits after reconnect', () => JSON.parse(cli('project', '-p', folder, 'status')).assets.find((asset) => asset.name === 'private_pending_words')?.fields?.text, (text) => text?.includes('RETAINED-THROUGH-PRIVATE-COVER'), 45000);
