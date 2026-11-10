@@ -24,7 +24,7 @@ fi
 podsh "sh /var/tmp/bench-pod.sh gpu" > pod-facts.txt 2> /dev/null || log "no GPU facts: $(tail -c 200 pod-facts.txt)"
 # The pictures cells.tsv names in prompts, as project assets.
 for a in "$HERE/ref/seed.jpg still" "$HERE/ref/seed.jpg lead" "$FX/lighthouse.jpg photo" "$FX/teapot.jpg teapot"; do
-  "$CLI" project -p "$RUN_PROJECT" import ${a% *} ${a#* } < /dev/null >> import.log 2>&1 || log "project import ${a#* }: $(tail -c 200 import.log)"
+  (cd "$RUN_PROJECT" && "$CLI" import ${a% *} ${a#* } < /dev/null) >> import.log 2>&1 || log "import ${a#* }: $(tail -c 200 import.log)"
 done
 ln -sfn "$HERE/suites/bench/calibrate" "$OUT/bench-calibrate"
 ONLY_ASKED=$ONLY ONLY=  # --only names bench cells, each run of which is a gate cell of its own name
@@ -36,15 +36,17 @@ if ! "${BENCH_PY[@]}" admit "$OUT" > admit.txt 2>&1; then
     expect bench-pod FAIL "$(cat host-slow)"
     exit 1
   fi
-  # The third host, or a pod a previous gate kept (--on), runs whatever it is: labelled, and what runs on the same pod
-  # still compares.
-  expect bench-pod FAIL "host $HOST${ON:+ (kept $ON)} runs anyway, out of range: $(paste -sd';' admit.txt)"
+  # The third host, or the machine --on named, runs whatever it is: labelled, and what runs on the same pod still compares.
+  expect bench-pod FAIL "host $HOST${ON:+ ($ON)} runs anyway, out of range: $(paste -sd';' admit.txt)"
 else
   expect bench-pod PASS "$(paste -sd';' admit.txt)"
 fi
 # A capped cell runs on a card of that size, as ComfyUI does: Cozy's executors leave the GPU (one restart), then a holder
 # process takes all but `cap` GiB (vram.py). Each run's row carries the holder's MiB, which bench.py takes off its peak.
 CAPNOW=off HELD=0 LEVEL_OK=1
+# build: this computer's cozy, the version and the file's digest: the laptop may be rebuilt mid-run (a dev install), and
+# each run says which build sent it, and which the machine ran.
+build() { local f; f=$(readlink -f "$(command -v "$CLI")" 2>/dev/null); echo "$("$CLI" --version 2>/dev/null | awk '{print $2}')@$(sha256sum "$f" 2>/dev/null | cut -c1-12)"; }
 # vary <args> <i>: a ComfyUI-matched cell's warm run i gets its own prompt, the cold run's and a fixed phrase, so neither
 # engine reuses the last request's text encoding (Paul 09-30); comfy.py hands ComfyUI each run's prompt from its record.
 VARY=("at dawn" "in light rain" "in deep winter" "under a full moon" "in late autumn")
@@ -78,8 +80,11 @@ while IFS=$'\t' read -r name group cap warm seed target args before _ _ _ comfy 
       eval "cell \"\$name-before-\$i\" \"\$(pkg \${b%/*} \${b##*/})\" ${before#* } seed:=$((RANDOM + 1000000))"
     fi
     a=$args; [ "$comfy" = - ] || [ "$i" = 0 ] || a=$(vary "$args" "$i")
+    b=$(build)
     eval "cell \"\$name-\$i\" \"\$t\" $a $s"
-    printf '%s\t%s\t%s\t%s\n' "$name" "$([ "$i" = 0 ] && echo cold || echo warm)" "$name-$i" "$HELD" >> bench.tsv
+    [ "$(build)" = "$b" ] || b="$b>$(build)"
+    mv=$("$CLI" --json machine show "$M" 2> /dev/null < /dev/null | jq -r '.status.version // empty')
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$([ "$i" = 0 ] && echo cold || echo warm)" "$name-$i" "$HELD" "$b" "$mv" >> bench.tsv
   done
   read -r held want_bytes < <(podsh "sh /var/tmp/bench-pod.sh check" 2>/dev/null)
   [ "${held:-0}" -ge "${want_bytes:-0}" ] || expect "$name-host" FAIL "the host hog shrank to ${held:-?} of ${want_bytes:-?} bytes: this cell ran on more RAM"

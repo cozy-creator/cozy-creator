@@ -49,10 +49,6 @@ facts() {
 case $1 in
   hold)
     echo "before: $(facts | tr '\n' ' ')"  # first, so a pod that stalls still says what it was
-    if [ -s /var/tmp/bench-hog.want ] && kill -0 "$(cat /var/tmp/memavail.pid 2>/dev/null)" 2>/dev/null; then
-      read -r mode held < /var/tmp/bench-hog.want  # a previous gate's hold on this pod stands: kept, not stacked
-      echo "hog $mode $held (kept)"; facts; exit 0
-    fi
     swap=$(swaps)
     shm=$(df -B1 --output=avail /dev/shm 2>/dev/null | tail -1)
     hog=$(( ($(room) - $2) / 2147483648 * 2147483648 ))

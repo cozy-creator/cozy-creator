@@ -4,9 +4,9 @@ Every release candidate runs the same cells on the same GPU types, and each is h
 and to ComfyUI's. A cell passes only when its output is right as well as fast.
 
 ```
-release-gate/bench.sh --comfyui --previous --runtime F --tensorfs F --tensord F --packages DIR [--groups rtx-4090x1] [--out DIR]
+release-gate/bench.sh --comfyui --runtime F --tensorfs F --tensord F --packages DIR [--groups rtx-4090x1] [--out DIR]
 release-gate/bench.py table <gate dir>... [--comfyui FILE]  # again, from the gate dirs
-release-gate/bench.py versus <gate dir>... [--previous DIR] # Cozy against ComfyUI on the same pods, H3 by stage
+release-gate/bench.py versus <gate dir>...                 # Cozy against ComfyUI on the same pods, H3 by stage
 release-gate/bench.py baseline <version> <gate dir>... --comfyui-out FILE   # after a release
 ```
 
@@ -14,14 +14,6 @@ release-gate/bench.py baseline <version> <gate dir>... --comfyui-out FILE   # af
 
 - `skus`: the groups (`<sku>x<gpus>[.<part>]`: a part splits one SKU's cells over two pods), one fresh pod each, held to a
   fixed host RAM (30.46 GiB a GPU) by `pod.sh` over SSH, each with its disk and hard stop, ComfyUI's included.
-- `--previous`: each pod first runs the release it boots (the Hub's), then stays up (`gate.sh --keep`) for the candidate
-  (`gate.sh --on <pod> --end`): the previous release on the same pod is the candidate's baseline (`previous.json`), and
-  ComfyUI runs last. The first passes are staggered by `skus`' estimate to end together; the pods are kept alive until
-  all are done; then `--between FILE` runs once, which moves this computer's cozy to the candidate when the candidate is
-  another minor (Calcifer sends only to machines on its own minor); then the second passes.
-- A capped cell (`cap` GiB) runs on a card of that size, the way ComfyUI does: Cozy's executors leave the GPU (one restart),
-  then a separate process (`vram.py`) holds all but `cap` GiB, counting what other processes already hold as theirs. Not
-  `--gpu-memory-limit`, which caps Cozy alone. Its peak VRAM is the driver's less the holder's.
 - `cells.tsv`: the cells and what each guards. Each runs once cold on its fixed seed (the judged output) and then `warm`
   times on fresh seeds (the judged times). Weights download before the cold run (gate.sh `ahead`).
 - `calibrate/`: a reference workload and the pod's facts, before and after the cells: fixed GEMM, attention and convolution,
