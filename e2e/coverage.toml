@@ -184,6 +184,7 @@ test = "pr: run play, its link serves the output, then expires"
 # Hidden (`hide = true`, in no --help): probed in the binary; `coverage.py --source` finds any not listed here.
 [hidden]
 "machine rent --provider" = "pending: dev-only (`dev = true`, crates/cli/DEV.md); release-gate/suites/hub rents cpu once per provider where the config has it, ended and checked gone"
+"run --no-memo" = "pending: dev-only (`dev = true`, crates/cli/DEV.md); the bench suite's same-seed pairs"
 "machine rent --image-digest" = "pending: release tier, a Hub admin's gated worker-image bake; waits for the CI key"
 
 [open]

@@ -23,6 +23,8 @@ pub struct Call<'a> {
     pub lane: String,
     /// `--attention-kernel`; empty: the machine's own selection.
     pub attention_kernel: &'a str,
+    /// `--no-memo`: computed afresh.
+    pub no_memo: bool,
 }
 
 /// Where the machine finds the function's code.
@@ -73,6 +75,7 @@ impl Call<'_> {
             attention_kernel: self.attention_kernel.to_owned(),
             gpus: self.gpus,
             lane: self.lane.clone(),
+            no_memo: self.no_memo,
             ..Default::default()
         })
     }

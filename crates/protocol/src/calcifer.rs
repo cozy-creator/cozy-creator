@@ -174,6 +174,9 @@ pub struct RunRequest {
     /// `KERNEL` or `[SLOT/]COMPONENT=KERNEL`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attention_kernel: Option<String>,
+    /// Compute it afresh: no machine memo answers or keeps it (dev-only `--no-memo`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_memo: bool,
     /// Keep the function at this level instead of running it (`off` takes it out).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warm: Option<crate::machine::WarmLevel>,

@@ -497,6 +497,7 @@ async fn call(
         gpus: ask.gpus.unwrap_or(0),
         lane: ask.lane.clone().unwrap_or_default(),
         attention_kernel: ask.attention_kernel.as_deref().unwrap_or_default(),
+        no_memo: ask.no_memo,
     };
     let target = format!("{}/{}", code.package, callable.name);
     let (spec, bound, out) = match ask.warm {

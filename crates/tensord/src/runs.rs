@@ -75,6 +75,8 @@ pub struct Spec {
     /// The main model's lane; empty, and every other slot: the Hub's pick for the hardware. A
     /// model-only upload's commit lane.
     pub lane: String,
+    /// Computed afresh, its children too: the memo neither answers nor keeps it.
+    pub no_memo: bool,
     /// The Hub the run reads, under its signer's newest capability there when its request carried one.
     pub hub: Option<hub::Source>,
     /// Provider tokens for source models, held in memory only.
@@ -126,6 +128,7 @@ pub struct RunContext {
     pub(crate) attention_kernel: String,
     pub(crate) gpus: u32,
     pub(crate) lane: String,
+    pub(crate) no_memo: bool,
     pub(crate) models: Vec<domain::ModelChoice>,
     /// What its weights come under before its call's executor reads them (`Fetch::ahead`).
     pub(crate) ahead: Option<Arc<crate::access::Fetch>>,
@@ -981,6 +984,10 @@ impl Runs {
             ),
             true => Memo::Off,
         };
+        let memo = match memo {
+            Memo::Key(..) if spec.no_memo => Memo::Unmet("asked afresh (--no-memo)".into()),
+            memo => memo,
+        };
         let (memo, answer) = match memo {
             Memo::Key(computation, basis) => {
                 let answer = self.objects.recall(actor, &computation, id)?;
@@ -1002,6 +1009,7 @@ impl Runs {
                 attention_kernel: spec.attention_kernel.clone(),
                 gpus: spec.gpus,
                 lane: spec.lane.clone(),
+                no_memo: spec.no_memo,
                 models: spec.models.clone(),
                 ahead,
             };
@@ -1445,6 +1453,7 @@ impl Runs {
             // The asked lane follows the main model into the package's own children (long_form's
             // segments); another package's model (qwen-image-2 for references) takes its default.
             lane: if installed.package == caller { context.lane.clone() } else { String::new() },
+            no_memo: context.no_memo,
             hub: context.hub,
             providers: context.providers,
             tensorfs: context.tensorfs,
