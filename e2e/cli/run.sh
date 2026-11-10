@@ -9,7 +9,7 @@
 # A broken step is recorded and the suite goes on, so one run reports all of them.
 # --shard runs one of `shards` below after the same start, each on its own runner: e2e.yaml checks coverage over
 # all their calls. Whole, the suite checks it itself.
-#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|web|projectdb|projectdb-latency|projectdb-existing|projectdb-web|projectvault|projectdb-cancel|projectdb-live|projectdb-scale|local-code]
+#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|web|projectdb|projectdb-latency|projectdb-existing|projectdb-web|projectvault|projectdb-cancel|projectdb-live|projectdb-scale|projectdb-layout|local-code]
 #                  [--tensord F|V] [--tensorfs F|V] [--runtime F|V] [--packages DIR]
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
@@ -278,6 +278,7 @@ case $SHARD in
   projectdb-instant) parts="tools_read db_existing_web logs"; DB_WEB=instant ;;
   projectdb-offline) parts="tools_read db_existing_web logs"; DB_WEB=offline ;;
   projectdb-scale) parts="tools_read db_existing_web logs"; DB_WEB=scale ;;
+  projectdb-layout) parts="tools_read db_existing_web logs"; DB_WEB=layout ;;
   # Local code and every input by content (cl-817, cl-820): the CLI in a folder Calcifer can't see, edits timed, its quote from its
   # runs (cl-816), a host path refused.
   local-code) parts="unseen local_edits local_quote path_manifest logs" ;;
