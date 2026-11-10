@@ -39,6 +39,7 @@ import { noHash } from "./text"
 import { ToolPanel } from "./ToolPanel"
 import { Viewer } from "./Viewer"
 import { keys, stepZoom, ZOOMS, ZoomControl, type ZoomItem } from "./ZoomControl"
+import { MOST_HERE } from "./readableSurface"
 
 const nodeTypes = { element: Card, entity: EntityCard }
 /** The room left on the canvas by what floats over it: the tools at the left, the top bar, and the zoom control in the bottom corner. */
@@ -55,63 +56,10 @@ const fitOver = () => {
 }
 
 const [MIN_ZOOM, MAX_ZOOM] = [ZOOMS[0], ZOOMS[ZOOMS.length - 1]]
-/** How far a box being worked on is drawn in, past which its words stop shrinking to match (`textScale`). */
-const MOST_HERE = 2.5
-/** Of the height there is, what a box keeps however much is under it, which then scrolls. */
-const LEAST_BOX = 0.35
 /** A window this narrow has no room for the tools beside a box being worked on: they fold away, and come back after. */
 const NARROW = 760
 /** How long the canvas takes to draw in on a box, or go back. */
 const HERE_MS = 260
-
-/**
- * The view of a box with its takes beside it and what's under it, as large as they go together, and what's under it told how tall it may be.
- * What's under it spans the picture and its takes at any zoom (app.css `.here-under`): its height at a zoom is read with that zoom's --text on
- * it. `below` is that height with the gap above it. Null with no node to fit to.
- */
-function hereFit(flow: ReturnType<typeof useReactFlow<ElementNode, Edge>>, id: string, stage: HTMLElement) {
-  const node = flow.getNode(id)
-  const w = node?.measured?.width ?? node?.width
-  const h = node?.measured?.height ?? node?.height
-  if (!node || !w || !h) return null
-  const { left, top, right, bottom } = clearOf()
-  const room = stage.getBoundingClientRect()
-  const wide = room.width - left - right
-  const tall = room.height - top - bottom
-  const under = stage.querySelector<HTMLElement>(`.react-flow__node[data-id="${CSS.escape(id)}"] .here-under`)
-  const side = stage.querySelector<HTMLElement>(`.react-flow__node[data-id="${CSS.escape(id)}"] .here-side:not(:empty)`)
-  const style = getComputedStyle(stage)
-  const gap = Number.parseFloat(style.getPropertyValue("--here-gap"))
-  const scale = (zoom: number) => textScale(zoom) * zoom * Number(style.getPropertyValue("--here"))
-  /** The takes beside it with the gap before them, in the canvas's own units at `zoom`. */
-  const beside = (zoom: number) => (side ? ((side.offsetWidth + gap) * scale(zoom)) / zoom : 0)
-  const most = tall * (1 - LEAST_BOX)
-  /** What's under it and the gap above it, on screen at `zoom`: as tall as what it holds, up to what it may have. */
-  const belowAt = (zoom: number) => {
-    if (!under) return 0
-    under.style.setProperty("--text", String(textScale(zoom)))
-    const holds = (under.firstElementChild as HTMLElement | null)?.scrollHeight ?? 0
-    under.style.removeProperty("--text")
-    return Math.min(most, holds * scale(zoom)) + gap * scale(zoom)
-  }
-  const zoomFor = (below: number, across: number) => Math.min(MOST_HERE, wide / (w + across), (tall - below) / h)
-  // How tall it is depends on how wide, which goes with the zoom, which depends on how tall: twice round settles it.
-  let zoom = zoomFor(most / 2, 0)
-  zoom = zoomFor(belowAt(zoom), beside(zoom))
-  zoom = zoomFor(belowAt(zoom), beside(zoom))
-  const below = belowAt(zoom)
-  under?.style.setProperty("--here-room", `${most / scale(zoom)}px`)
-  const high = h * zoom + below
-  return {
-    below,
-    view: {
-      x: left + wide / 2 - (node.position.x + (w + beside(zoom)) / 2) * zoom,
-      y: top + Math.max(0, tall - high) / 2 - node.position.y * zoom,
-      zoom,
-    },
-    room: { left, right: left + wide, bottom: top + tall },
-  }
-}
 
 type Pointing = ReactMouseEvent | MouseEvent | TouchEvent
 const pointOf = (event: Pointing) => ("clientX" in event ? event : event.changedTouches[0])
@@ -311,49 +259,89 @@ function Canvas({
   const folded = useRef(false)
   const shutNow = useRef(shut)
   shutNow.current = shut
-  const fitHere = useCallback(
+  const fitHereNow = useCallback(
     (only = false) => {
       const held = store.inPlace
       const id = held && store.idOf(held.name)
-      if (!held || !id || !stage.current || held.moved || held.pulled) return
-      const fit = hereFit(flow, id, stage.current)
-      if (!fit) return
+      if (!held || !id || !stage.current || held.moved || held.pulled || store.isDragging(held.name)) return
+      const { left, top, right, bottom } = clearOf()
+      const stageBox = stage.current.getBoundingClientRect()
+      const room = { x: left, y: top, w: stageBox.width - left - right, h: stageBox.height - top - bottom }
       // What's still in reach stays as it is: nothing moves under what's being typed.
       const at = held.fitted
       if (only && at) {
-        const node = flow.getNode(id)
-        const left = (node?.position.x ?? 0) * at.zoom + at.x
-        const right = left + (node?.measured?.width ?? 0) * at.zoom
-        const end = (node?.position.y ?? 0) * at.zoom + at.y + (node?.measured?.height ?? 0) * at.zoom + fit.below
-        if (end <= fit.room.bottom + 1 && left >= fit.room.left - 1 && right <= fit.room.right + 1) return
+        const projected = store.drawSurface(undefined, at)
+        if (!projected) return
+        const { bounds } = projected
+        const x = bounds.x * at.zoom + at.x
+        const y = bounds.y * at.zoom + at.y
+        if (x >= room.x - 1 && y >= room.y - 1 && x + bounds.w * at.zoom <= room.x + room.w + 1 && y + bounds.h * at.zoom <= room.y + room.h + 1) return
+      }
+      const fit = store.drawSurface(room)
+      if (!fit) {
+        held.fitted = undefined
+        return
       }
       held.fitted = fit.view
       void flow.setViewport(fit.view, { duration: HERE_MS })
     },
     [store, flow],
   )
+  const fitting = useRef<{ frame: number; only: boolean; owner: NonNullable<CanvasStore["inPlace"]> } | null>(null)
+  const fitHere = useCallback((only = false) => {
+    const owner = store.inPlace
+    if (!owner) return
+    if (fitting.current && fitting.current.owner !== owner) {
+      cancelAnimationFrame(fitting.current.frame)
+      fitting.current = null
+    }
+    if (fitting.current) {
+      fitting.current.only &&= only
+      return
+    }
+    const request = { frame: 0, only, owner }
+    fitting.current = request
+    request.frame = requestAnimationFrame(() => {
+      fitting.current = null
+      if (store.inPlace !== owner) return
+      fitHereNow(request.only)
+    })
+  }, [fitHereNow, store])
+  useEffect(() => () => {
+    if (fitting.current) cancelAnimationFrame(fitting.current.frame)
+    fitting.current = null
+  }, [])
   store.fitHere = fitHere
   /** Working on a box where it stands: the canvas draws in on it, and all it can do comes around it. Another box takes over, and leaving goes back to just where it was. */
   const writeHere = useCallback(
     (name: string) => {
       if (store.inPlace?.name === name) return
-      if (store.inPlace) store.patch(store.inPlace.name, { here: undefined, hereWords: undefined })
+      if (fitting.current) cancelAnimationFrame(fitting.current.frame)
+      fitting.current = null
+      if (store.inPlace) {
+        store.closeSurface()
+        store.patch(store.inPlace.name, { here: undefined, hereWords: undefined })
+      }
       // Still on its way back from the last one, that's where to come back to.
       const going = returning.current
-      store.inPlace = { name, back: store.inPlace?.back ?? (going && performance.now() < going.until ? going.view : flow.getViewport()) }
+      const owner = { name, back: store.inPlace?.back ?? (going && performance.now() < going.until ? going.view : flow.getViewport()) }
+      store.inPlace = owner
       store.view(name)
       const view = store.get(name)
       // Its approved take, else its newest; with none yet, its words, ready to type in.
       const words = !view?.asset?.prefixes?.length && !view?.asset?.sha256
       if (words) store.focusing = name
       store.patch(name, { here: true, hereWords: words || undefined })
+      store.openSurface(name)
       if (store.writeOnOpen === name) store.writeNext(name, true)
       store.writeOnOpen = null
       if (window.innerWidth < NARROW && !shutNow.current) {
         folded.current = true
         setShut(true)
       }
-      requestAnimationFrame(() => fitHere())
+      requestAnimationFrame(() => {
+        if (store.inPlace === owner) fitHere()
+      })
     },
     [store, flow, fitHere],
   )
@@ -364,7 +352,10 @@ function Canvas({
   const stopWriting = useCallback(() => {
     const held = store.inPlace
     if (!held) return
+    if (fitting.current) cancelAnimationFrame(fitting.current.frame)
+    fitting.current = null
     store.inPlace = null
+    store.closeSurface()
     void store.save(held.name)
     store.patch(held.name, { here: undefined, hereWords: undefined, pickingUp: undefined })
     store.view(held.name)
@@ -456,6 +447,7 @@ function Canvas({
   const fitSelected = useCallback(() => {
     const nodes = flow.getNodes().filter((node) => node.selected)
     if (!nodes.length) return fit()
+    if (nodes.length === 1 && nodes[0].data.name === store.inPlace?.name) return fit()
     aim.current = null
     if (store.inPlace) store.inPlace.moved = true
     void flow.fitView({ ...fitOver(), maxZoom: MOST_HERE, nodes, duration: HERE_MS })
@@ -781,17 +773,34 @@ function Canvas({
   const flowStore = useStoreApi<ElementNode, Edge>()
   useLayoutEffect(() => {
     let held = 0
-    const set = (zoom: number) => {
+    let drawn = ""
+    let frame = 0
+    let latest: Viewport
+    const set = ([x, y, zoom]: [number, number, number]) => {
       const text = textScale(zoom)
-      if (text === held) return
-      held = text
-      stage.current?.style.setProperty("--text", String(text))
-      // What hangs off a box at rest stops growing here, and shrinks with the canvas past it, in the room its box keeps (shown.ts).
-      stage.current?.style.setProperty("--hang", String(Math.min(text, HANG)))
+      if (text !== held) {
+        held = text
+        stage.current?.style.setProperty("--text", String(text))
+        // Resting cards keep their existing inverse limit.
+        stage.current?.style.setProperty("--hang", String(Math.min(text, HANG)))
+      }
+      const now = `${x}:${y}:${zoom}`
+      if (now !== drawn) {
+        drawn = now
+        latest = { x, y, zoom }
+        if (!frame) frame = requestAnimationFrame(() => {
+          frame = 0
+          store.refreshSurface(latest)
+        })
+      }
     }
-    set(flowStore.getState().transform[2])
-    return flowStore.subscribe((state) => set(state.transform[2]))
-  }, [flowStore])
+    set(flowStore.getState().transform)
+    const stop = flowStore.subscribe((state) => set(state.transform))
+    return () => {
+      stop()
+      cancelAnimationFrame(frame)
+    }
+  }, [flowStore, store])
   // A zoom draws the boxes and the dots each frame at their size, and two frames after it they go back on their layers, drawn at the new one.
   useLayoutEffect(() => {
     let [held, settle] = [flowStore.getState().transform[2], 0]
