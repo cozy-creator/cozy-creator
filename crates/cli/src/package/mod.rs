@@ -24,31 +24,26 @@ pub(crate) struct Args {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// The Hub's packages; words search. `--on` lists what machines have installed instead, live on
-    /// a terminal.
+    /// Search the Hub's packages, or list installed packages with --on.
     #[command(alias = "list")]
     Ls {
-        /// Words to match; none lists every package.
+        /// Search words.
         query: Vec<String>,
-        /// At most this many results (the Hub lists up to 200 at once).
+        /// Maximum packages to show.
         #[arg(long, default_value_t = 20)]
         limit: u32,
-        /// What machines hold instead of the Hub's packages: `local`, a machine's name, or `all`.
+        /// List installed packages on local, a named machine, or all machines.
         #[arg(long, value_name = "MACHINE")]
         on: Option<String>,
     },
-    /// A published package's releases, newest first; one release, with what its publish warned
-    /// of (its owner sees the warnings).
+    /// Show a package's releases.
     Info {
         /// [org/]name[@release]
         package: String,
     },
-    /// Install a published package ([org/]name[@release]), a directory or a script on a machine:
-    /// its environment, no weights. Without a release, the newest; over an installed package, it moves
-    /// to that release and its older ones there go: a run with no version stays on what is installed
-    /// until this. Follows the install; Ctrl-C stops following, never it.
+    /// Install a package, directory or script on a machine.
     Install {
-        /// [org/]name[@release], a directory such as `.` or `./project`, or a `script.py`.
+        /// Package reference, ./directory or script.py.
         #[arg(add = clap_complete::ArgValueCompleter::new(crate::completion::local))]
         package: String,
         #[command(flatten)]
@@ -62,39 +57,37 @@ enum Command {
         #[command(flatten)]
         placement: Placement,
     },
-    /// Lock this package's dependencies for the Hub and account it publishes to, writing its uv.lock.
+    /// Resolve package dependencies and write uv.lock.
     Lock {
-        /// The package's folder, if not the one you are in.
+        /// Package directory. Defaults to the current directory.
         #[arg(short = 'p', value_name = "PATH")]
         path: Option<PathBuf>,
-        /// Let this dependency move to its newest compatible release; repeat for each.
+        /// Upgrade this dependency to its newest compatible release. Repeat as needed.
         #[arg(long = "upgrade-package", value_name = "PACKAGE")]
         upgrade: Vec<String>,
-        /// For the root namespace (first-party, Hub admins), not your account.
+        /// Use the first-party root namespace (Hub admins only).
         #[arg(long)]
         root: bool,
     },
-    /// Publish the package in this folder as <account>/<name>@<version>, or <name>@<version> with --root.
+    /// Publish the package in the current directory.
     Publish {
-        /// At the root namespace: first-party, Hub admins only.
+        /// Use the first-party root namespace (Hub admins only).
         #[arg(long)]
         root: bool,
-        /// Published yanked (a gated candidate): only an exact pin installs it, and it is never the
-        /// newest release, until `cozy package yank --undo`.
+        /// Publish as yanked. Only exact version pins can install it.
         #[arg(long)]
         yanked: bool,
     },
-    /// Delete a package from the Hub with every release, for good: its name and versions are free
-    /// again. Machines that installed it keep their copies.
+    /// Delete a package and all its releases from the Hub.
     Delete {
         /// [org/]name
         package: String,
     },
-    /// Yank a release: machines that hold it keep it, only an exact pin installs it.
+    /// Yank a release so new unpinned installs skip it.
     Yank {
         /// [org/]name@release
         release: String,
-        /// Un-yank it instead: the unversioned default again (a gated candidate's promotion).
+        /// Restore the yanked release.
         #[arg(long)]
         undo: bool,
     },
