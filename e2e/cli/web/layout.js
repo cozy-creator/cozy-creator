@@ -781,9 +781,10 @@ ${local ? `  card:
     await page.goto(`${base}/#/projects/${id}`);
     await page.locator('.react-flow__node').first().waitFor();
     await placed();
-    const look = async (state, keep, fitted = true) => {
+    const look = async (state, keep, fitted = true, beforeAudit) => {
       // What opens animates in: measured once it's still. A pulse goes on forever, and is no move.
       await page.waitForFunction(() => !document.getAnimations().some((held) => held.playState === 'running' && held.timeline === document.timeline && held.effect?.getComputedTiming().iterations !== Infinity), null, { timeout: 5000 }).catch(() => {});
+      if (beforeAudit) await beforeAudit();
       seen.looks = (seen.looks ?? 0) + 1;
       const said = await page.evaluate(audit, { floor: FLOOR, hangZoom: HANG_ZOOM, fitted });
       // The pointer where nothing's drawn, around a box worked on or all over.
@@ -843,7 +844,41 @@ ${local ? `  card:
     const making = page.locator('.react-flow__node .card[data-asset="making"] > .media').first();
     await home();
     if (names.includes('making')) {
-      await making.waitFor();
+      const makingState = () => page.evaluate(() => {
+        const media = document.querySelector('.card[data-asset="making"] > .media');
+        const rect = media?.getBoundingClientRect();
+        const left = document.querySelector('.tools')?.getBoundingClientRect().right ?? 0;
+        const top = document.querySelector('.top')?.getBoundingClientRect().bottom ?? 0;
+        const viewport = document.querySelector('.react-flow__viewport');
+        const transform = viewport ? getComputedStyle(viewport).transform : null;
+        const progress = media?.querySelector('.prog b');
+        const visibility = { opacityProperty: true, visibilityProperty: true };
+        const rendered = Boolean(media?.checkVisibility?.(visibility));
+        const inBounds = Boolean(rect && rect.width && rect.height && rect.left >= left && rect.top >= top && rect.right <= innerWidth && rect.bottom <= innerHeight);
+        const progressVisible = Boolean(progress?.checkVisibility?.(visibility));
+        const text = progress?.innerText ?? null;
+        let reason = null;
+        if (!media) reason = 'missing-media';
+        else if (!rendered) reason = 'hidden-media';
+        else if (!inBounds) reason = 'offscreen-media';
+        else if (!progress) reason = 'missing-progress-label';
+        else if (!progressVisible) reason = 'hidden-progress-label';
+        else if (!text) reason = 'empty-progress-text';
+        return {
+          hash: location.hash, open: [...document.querySelectorAll('.card.here')].map((card) => card.dataset.asset),
+          selected: [...document.querySelectorAll('.react-flow__node.selected')].map((node) => node.querySelector('.card')?.dataset.asset ?? node.dataset.id),
+          zoom: transform === null ? null : new DOMMatrix(transform).a, transform, mounted: Boolean(media),
+          rect: rect && { x: rect.x, y: rect.y, width: rect.width, height: rect.height }, rendered, inBounds, visible: rendered && inBounds,
+          progress: Boolean(progress), progressVisible, text, reason,
+        };
+      });
+      const restingMaking = (at) => at.zoom === 0.75 && at.mounted && at.visible && !at.open.length && !at.selected.length;
+      const makingProgress = (at) => restingMaking(at) && at.progressVisible && /steps/i.test(at.text ?? '');
+      await making.waitFor().catch(async (error) => {
+        const state = await makingState();
+        (seen.making_setup ??= []).push({ size: size.name, phase: 'mount', ...state });
+        throw new Error(`making media did not mount visibly: ${JSON.stringify(state)}`, { cause: error });
+      });
       // Shift adds to a selection: rest-close leaves its box selected, and Shift+2 would fit both.
       await page.keyboard.press('Escape');
       await page.waitForFunction(() => !document.querySelector('.card.here') && !document.querySelector('.react-flow__node.selected'));
@@ -861,27 +896,21 @@ ${local ? `  card:
       await page.keyboard.press('Escape');
       await page.waitForFunction(() => !document.querySelector('.card.here') && !document.querySelector('.react-flow__node.selected'));
       await zoomTo(0.75);
-      const makingState = () => page.evaluate(() => {
-        const media = document.querySelector('.card[data-asset="making"] > .media');
-        const rect = media?.getBoundingClientRect();
-        const left = document.querySelector('.tools')?.getBoundingClientRect().right ?? 0;
-        const top = document.querySelector('.top')?.getBoundingClientRect().bottom ?? 0;
-        const transform = getComputedStyle(document.querySelector('.react-flow__viewport')).transform;
-        const progress = media?.querySelector('.prog b');
-        const visible = Boolean(rect && rect.width && rect.height && rect.left >= left && rect.top >= top && rect.right <= innerWidth && rect.bottom <= innerHeight);
-        const text = progress?.innerText ?? null;
-        return { hash: location.hash, open: [...document.querySelectorAll('.card.here')].map((card) => card.dataset.asset), selected: [...document.querySelectorAll('.react-flow__node.selected .card')].map((card) => card.dataset.asset), zoom: new DOMMatrix(transform).a, transform, mounted: Boolean(media), rect: rect && { x: rect.x, y: rect.y, width: rect.width, height: rect.height }, visible, progress: Boolean(progress), text, reason: !media ? 'missing-media' : !visible ? 'offscreen-media' : !progress ? 'missing-progress-label' : !text ? 'empty-progress-text' : null };
-      });
       const setup = await makingState();
       (seen.making_setup ??= []).push({ size: size.name, ...setup });
-      if (setup.zoom !== 0.75 || !setup.mounted || !setup.visible || setup.open.length || setup.selected.length) throw new Error(`making setup is not a visible resting 75% canvas: ${JSON.stringify(setup)}`);
-      const said = await until('it says how far', () => making.locator('.prog b').innerText().catch(() => ''), (text) => /steps/i.test(text)).catch(async () => {
+      if (!restingMaking(setup)) throw new Error(`making setup is not a visible resting 75% canvas: ${JSON.stringify(setup)}`);
+      const progress = await until('it says how far', makingState, makingProgress).catch(async () => {
         const state = await makingState();
         (seen.making_progress_failure ??= []).push({ size: size.name, ...state });
-        return '';
+        return null;
       });
+      const said = progress?.text ?? '';
       check(`making_says_how_far_${size.name}`, /steps/i.test(said), said);
-      await look('rest-making', true);
+      await look('rest-making', true, true, async () => {
+        const state = await makingState();
+        (seen.making_audit ??= []).push({ size: size.name, ...state });
+        if (!restingMaking(state)) throw new Error(`making is not visible on the resting 75% canvas before audit: ${JSON.stringify(state)}`);
+      });
     }
     await home();
     for (const asset of size.open ? [] : names) {
