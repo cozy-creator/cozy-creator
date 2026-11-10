@@ -71,6 +71,31 @@ for name in ${DB_WEB:-place nodes versions tools live layout undo offline held};
 done
 }
 
+db_cancel_undo() {
+[ -n "$LOCAL" ] || return
+[ -z "${ALONE:-}" ] || { check "cancel/undo proof requires an owned fresh-runner Calcifer"; return; }
+step "project: a delete held at commit cancels its render, and undo retains its three prior versions"
+local P=$OUT/cancel-undo run i
+cozy project new "$P" > "$OUT/cancel-new.txt" 2>&1 || { check "cancel/undo: new"; return; }
+cozy project -p "$P" add "$here/project/tool.py/slow" shot 'seconds:=0.01' 'instructions=Before cancellation.' > "$OUT/cancel-add.txt" 2>&1 || { check "cancel/undo: add"; return; }
+for i in 1 2 3; do
+  cozy project -p "$P" set shot "instructions=Prior version $i." > "$OUT/cancel-set-$i.txt" 2>&1 || check "cancel/undo: set $i"
+  render "$P" shot || { check "cancel/undo: render $i: $(tail -c 300 "$OUT/render.txt")"; return; }
+done
+[ "$(made "$P" shot)" = 3 ] || { check "cancel/undo: fixture did not make three prior versions"; return; }
+cozy project -p "$P" set shot 'seconds:=60' > "$OUT/cancel-set-long.txt" 2>&1 || check "cancel/undo: set long"
+cozy project -p "$P" render shot --queue --on local > "$OUT/cancel-queue.txt" 2>&1 || { check "cancel/undo: queue"; return; }
+for _ in $(seq 240); do
+  run=$(status "$P" | jq -r '.board.jobs[] | select(.asset == "shot") | .run // empty')
+  [ -z "$run" ] || [ "$(cozy --json run show "$run" --once | jq -r .status)" != in_progress ] || break
+  sleep 0.1
+done
+[ -n "$run" ] && [ "$(cozy --json run show "$run" --once | jq -r .status)" = in_progress ] || { check "cancel/undo: long run did not start"; return; }
+python3 "$here/cancel_undo.py" "$P" "$run" "$OUT" > "$OUT/cancel-undo-proof.json" 2> "$OUT/cancel-undo-proof.err" \
+  || check "cancel/undo: $(cat "$OUT/cancel-undo-proof.json") $(tail -c 300 "$OUT/cancel-undo-proof.err")"
+cat "$OUT/cancel-undo-proof.json"
+}
+
 projectdb() {
 db_crdt
 db_first_open
