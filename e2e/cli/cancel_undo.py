@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -19,10 +20,17 @@ def main() -> int:
     def status() -> dict:
         return json.loads(cozy("--json", "project", "-p", str(project), "status"))
 
-    def capture(name: str) -> None:
+    def capture(name: str) -> list[str]:
         with sqlite3.connect(f"file:{project / 'project.db'}?mode=ro", uri=True) as source:
             with sqlite3.connect(output / name) as target:
                 source.backup(target)
+            versions = [json.loads(row[0]) for row in source.execute("SELECT record FROM versions WHERE key = 'shot' OR key LIKE 'shot#%' ORDER BY number")]
+        for version in versions:
+            for digest in version.get("files", {}).values():
+                paths = list((project / "files").glob(digest.removeprefix("sha256:") + ".*"))
+                if not paths or not any(hashlib.sha256(path.read_bytes()).hexdigest() == digest.removeprefix("sha256:") for path in paths):
+                    raise RuntimeError(f"a retained original version's media is missing or changed: {digest}")
+        return sorted(version["id"] for version in versions)
 
     before = status()
     report["before_versions"] = next(asset["versions"] for asset in before["assets"] if asset["name"] == "shot")
@@ -62,15 +70,15 @@ def main() -> int:
         time.sleep(0.05)
     else:
         raise RuntimeError("the canceled project's work did not settle")
-    capture("cancel-before-undo.db")
+    report["retained_ids_before_undo"] = capture("cancel-before-undo.db")
     entry = stdout.strip().split()[-1]
     report["undo_entry"] = entry
     (output / "cancel-undo.txt").write_text(cozy("project", "-p", str(project), "undo", entry))
     after = status()
     report["after_versions"] = next(asset["versions"] for asset in after["assets"] if asset["name"] == "shot")
     report["after_queue"] = after.get("queue", [])
-    capture("cancel-after-undo.db")
-    report["passed"] = report["before_versions"] == report["after_versions"] == 3 and not report["after_queue"]
+    report["retained_ids_after_undo"] = capture("cancel-after-undo.db")
+    report["passed"] = report["before_versions"] == report["after_versions"] == 3 and not report["after_queue"] and len(report["retained_ids_before_undo"]) == 3 and report["retained_ids_before_undo"] == report["retained_ids_after_undo"]
     print(json.dumps(report))
     return 0 if report["passed"] else 1
 

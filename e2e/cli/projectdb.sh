@@ -98,6 +98,7 @@ cat "$OUT/cancel-undo-proof.json"
 
 projectdb() {
 db_crdt
+db_cancel_undo
 db_first_open
 db_concurrent
 db_crash

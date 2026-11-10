@@ -4253,13 +4253,27 @@ impl Walk {
             self.missed.lock().expect("missed lock").names.insert(name.clone());
             // Made again with what it asked, its seed too; and its number stays taken, so the next try is the next.
             let tried = pending.version.seed.map(|seed| Tried { inputs: pending.version.inputs.clone(), seed });
-            folder.update_lock(|lock| {
-                let held = lock.asset_mut(&name, &pending.kind);
-                held.numbered = held.numbered.max(pending.version.number);
-                if tried.is_some() {
-                    held.tried.clone_from(&tried);
+            let remains = folder.act(|| {
+                // A delete can stage its cancellation while its commit waits on SQLite.
+                // Readers still see the old name then. Recheck under the same project
+                // transaction as the mutation, so a late canceled result cannot create an
+                // empty live row that hides the deleted asset's retained versions from undo.
+                if self.gone(&name) {
+                    return Ok(false);
                 }
+                folder.update_lock(|lock| {
+                    let held = lock.asset_mut(&name, &pending.kind);
+                    held.numbered = held.numbered.max(pending.version.number);
+                    if tried.is_some() {
+                        held.tried.clone_from(&tried);
+                    }
+                })?;
+                Ok(true)
             })?;
+            if !remains {
+                self.deleted(pending.job_of(key), &name);
+                return Ok(None);
+            }
             if let (Some(machine), Some(reason), RunStatus::Failed) = (&run.machine, &run.reason, run.status) {
                 self.fault(machine, &reason.code, &reason.message)?;
             }
