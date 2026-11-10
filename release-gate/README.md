@@ -229,6 +229,11 @@ that pair misses takes its own Runtime in its own environment, and the machine's
     in sha256-checked chunks, a full `pg_restore -f /dev/null`), restore it into a scratch Postgres, start the
     candidate image against it (it migrates on start) and wait for `/healthz` 204. Record the dump and the result
     with the gate.
+  - **Every Hub prod pin is gated by the hub suite's rental model upload** (`hub model-upload`: `cozy model upload … --on`
+    the gate's rental, the bytes going through the Hub's object store). Run it against the candidate before the pin wherever a
+    rental can reach the candidate Hub, else at once after the pin, before anything else moves (images, Latest); a FAIL
+    reverts the pin. Escaped 11-10: v0.40.33-v0.40.35 answered every rental upload of a new blob `500` (the object store
+    signed keys holding `:` without SigV4's `%3A`), and no gate rented and uploaded until 0.23.1's go-live.
 - **Rent:** an order that a moved price holds gets a new order at the new price, at most 5; 20 min with no pod bought fails the gate, a not-run and not a verdict.
 - **Quality** (`quality.py`, every gate): CLIP prompt adherence of every render against its prompt (floor 0.25; 0.20 for varena's 4-step CPU `host-sdxl`), and
   the gate's median CLIP-IQA sharpness against the last passed gates. Never a same-seed pixel diff.
