@@ -114,7 +114,7 @@ def walk(o):
         for v in o: walk(v)
 walk(json.load(sys.stdin))' 2>/dev/null | sort -u
 }
-# hub_rent_on <provider>: a rental of `cpu` there (`machine rent --provider`, in dev builds only; the Hub decides who may), ended and checked
+# hub_rent_on <provider>: a rental of `cpu` there (`machine rent --provider`, dev-only: `dev = true`), ended and checked
 # gone. A rental it cannot name from the reply is the one new in `machine ls`; hub_cleanup ends any left.
 hub_rent_on() {
   local m before
@@ -137,7 +137,7 @@ while (i := t.find("{", i)) >= 0:
   done
   expect "hub end on $1" FAIL "$m still listed 5 min after cozy machine end: $(tail -c 200 "$HB/end-$1.out")"
 }
-if "$CLI" machine rent --help 2>/dev/null | grep -q -- --provider || "$CLI" machine rent cpu --provider runpod --help >/dev/null 2>&1; then
+if ! "$CLI" machine rent cpu --provider runpod </dev/null 2>&1 | grep -q dev-only; then
   for p in runpod vast; do hub_rent_on "$p"; done
 fi
 [ -n "$WHO" ] || return 0

@@ -1074,6 +1074,14 @@ pub struct Rental {
     /// `host:port` of its sshd, when it was rented with an SSH key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ssh: Option<String>,
+    /// Where it runs and whether its pod mounted the datacenter's NFS drive: a Hub admin's read, or
+    /// a renter's who named the provider (dev-only `--provider`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub datacenter: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub nfs_drive: bool,
 }
 
 /// A machine's `Status`, as it last sent it.
@@ -1518,6 +1526,11 @@ pub struct Quote {
     /// What the Hub changed of the ask to quote it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// Where the quoted offer is, for an ask that named its provider or a Hub admin's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub datacenter: Option<String>,
 }
 
 /// The most a renter agreed to pay an hour: the order's `max_usd_micros_per_hour` at the Hub.
@@ -1580,8 +1593,7 @@ pub enum NewMachine {
         /// one; the Hub refuses anyone else.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         image: Option<String>,
-        /// A Hub admin's provider (`runpod`, `vast`), in place of every provider; the Hub refuses
-        /// anyone else.
+        /// The one provider to buy from (`runpod`, `vast`): dev-only `--provider`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider: Option<String>,
         /// The quote the renter agreed to (`POST /v1/rental-quotes`): a dearer one rents nothing.

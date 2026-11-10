@@ -30,10 +30,9 @@ pub struct Rent {
     /// A Hub admin's worker image by digest (sha256:<hex>), for a gated image bake.
     #[arg(long, requires = "sku", hide = true, value_parser = image_digest)]
     image_digest: Option<String>,
-    /// Dev builds only: the provider to buy from (runpod or vast), for a release suite that rents on
-    /// each. The Hub decides who may.
-    #[cfg(feature = "dev")]
-    #[arg(long, requires = "sku", hide = true, value_parser = ["runpod", "vast"])]
+    /// Dev-only (DEV.md): the one provider to buy from. The Hub then prefers a datacenter holding an
+    /// NFS drive; `cozy machine show` says where it landed and whether the drive mounted.
+    #[arg(long, requires = "sku", value_parser = ["runpod", "vast"])]
     provider: Option<String>,
 }
 
@@ -51,20 +50,9 @@ fn image_digest(digest: &str) -> Result<String, String> {
     }
 }
 
-impl Rent {
-    #[cfg(feature = "dev")]
-    fn provider(&self) -> Option<String> {
-        self.provider.clone()
-    }
-    #[cfg(not(feature = "dev"))]
-    fn provider(&self) -> Option<String> {
-        None
-    }
-}
-
 pub async fn exec(ctx: &Context, rent: Rent) -> Result<ExitCode, Error> {
     let hub = ctx.hub();
-    let provider = rent.provider();
+    let provider = rent.provider.clone();
     let Some(sku) = rent.sku else {
         return catalog(ctx, hub).await;
     };
@@ -223,7 +211,9 @@ impl Notices {
 
 /// What a renter is charged: the GPUs and the Hub's one price an hour (`1× L40S at $1.64/h`).
 fn price(sku: &str, gpus: u32, q: &Quote) -> String {
-    format!("{gpus}× {} at {}/h", sku.to_ascii_uppercase(), usd(q.usd_micros_per_hour))
+    let at = q.provider.iter().chain(&q.datacenter).map(|w| format!(" {w}")).collect::<String>();
+    let at = if at.is_empty() { at } else { format!(" on{at}") };
+    format!("{gpus}× {} at {}/h{at}", sku.to_ascii_uppercase(), usd(q.usd_micros_per_hour))
 }
 
 /// A quote as `price` says it, then why the Hub placed it there and the machines it would rent
@@ -266,6 +256,8 @@ pub(crate) fn agree(ctx: &Context, quoted: &RunQuote) -> Result<bool, Error> {
             "gpus": quoted.gpus.unwrap_or(1),
             "usd_micros_per_hour": quoted.quote.usd_micros_per_hour,
             "container_disk_gb": quoted.quote.disk_gb,
+            "provider": quoted.quote.provider,
+            "datacenter": quoted.quote.datacenter,
             "why": quoted.why,
             "alternatives": quoted.alternatives,
         }}));

@@ -635,6 +635,11 @@ pub struct RentalQuote {
     #[serde(default)]
     pub container_disk_gb: i64,
     pub expected_price: RentalPriceEstimate,
+    /// Where the quoted offer is: for an ask that named its provider, or an admin's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub datacenter: Option<String>,
     /// What reading the quoted request changed: a disk clamped, a fallback bought, a name fixed.
     #[serde(default, deserialize_with = "null_is_empty", skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
@@ -676,6 +681,10 @@ pub struct Rental {
     pub requested_accelerator_model: String,
     pub accelerator_count: i64,
     pub provider: Option<String>,
+    /// Where its latest attempt was bought, and that its pod mounted the datacenter's NFS drive:
+    /// an admin's read, or a renter's who named the provider.
+    pub datacenter: Option<String>,
+    pub nfs_drive: bool,
     pub machine_name: Option<String>,
     pub worker_id: Option<String>,
     pub worker_address: Option<String>,
