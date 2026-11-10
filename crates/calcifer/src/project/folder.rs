@@ -1055,11 +1055,33 @@ impl Folder {
     /// The project in `dir`, its files measured with the ffprobe in `home`'s tools (else PATH's). A folder of the files before
     /// `project.db` is imported now, once, and they're deleted (cl-803).
     pub(crate) fn open(dir: &Path, home: &Home) -> Result<Self, Error> {
+        Self::open_with(dir, home, |_| Ok(())).map(|(folder, ())| folder)
+    }
+
+    /// Inspect the loaded canonical state before resuming any local work. In particular a
+    /// copy must receive its own identity before deciding whether its inherited walk belongs here.
+    pub(crate) fn open_with<T>(dir: &Path, home: &Home, inspect: impl FnOnce(&Self) -> Result<T, Error>) -> Result<(Self, T), Error> {
         let folder = Self { dir: dir.to_owned(), tools: home.tools(), shared: shared(dir), unsaved: Mutex::default() };
         drop(folder.held()?);
+        let inspected = inspect(&folder)?;
         super::legacy::leftovers(dir);
         folder.unbind_elsewhere()?;
-        Ok(folder)
+        Ok((folder, inspected))
+    }
+
+    /// Identity from the same native document used by this open, never a query projection
+    /// or another independent decode of its Automerge snapshot.
+    pub(crate) fn canonical_identity(&self) -> Result<Option<(String, String)>, Error> {
+        let held = self.held()?;
+        Ok(held.as_ref().and_then(|held| held.stored.crdt.as_ref()).and_then(|doc| doc.identity()))
+    }
+
+    /// Rare identity changes (first name or a copied project) invalidate the held native view.
+    pub(crate) fn set_identity(&self, id: &str, name: &str) -> Result<(), Error> {
+        let mut turn = self.shared.writing.lock().unwrap_or_else(|e| e.into_inner());
+        db::set_identity(self.writer(&mut turn)?, &self.db(), id, name)?;
+        *self.shared.held.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        Ok(())
     }
 
     /// What the first open's upgrade said and nothing has said yet: once. project.db keeps it until then, whatever closes between.
@@ -1467,8 +1489,9 @@ impl Folder {
 
     /// Who may go on with this project's walk: this project, under this Calcifer. None where no Calcifer runs, which judges nothing.
     fn bound(&self) -> Option<Bound> {
-        let dir = durable::canonical(&self.dir).unwrap_or_else(|_| self.dir.clone());
-        CALCIFER.get().map(|calcifer| Bound { project: super::project_id(&dir), calcifer: calcifer.clone() })
+        let calcifer = CALCIFER.get()?;
+        let (project, _) = self.canonical_identity().ok()??;
+        Some(Bound { project, calcifer: calcifer.clone() })
     }
 
     /// A walk of another project (this is a copy) or another Calcifer's doesn't go on here: what it owes is dropped.

@@ -8,7 +8,7 @@ use std::{
 
 use api::error::{Error, Kind};
 use automerge::{
-    ActorId, AutoCommit, ObjId, ObjType, Prop, ROOT, ReadDoc, ScalarValue, Value as AmValue, transaction::Transactable,
+    ActorId, AutoCommit, ObjId, ObjType, Prop, ROOT, ReadDoc, ScalarValue, Value as AmValue, ValueRef, transaction::Transactable,
 };
 use serde::Serialize;
 use serde_json::{Map, Value, json};
@@ -41,20 +41,77 @@ fn actor(_at: &Path) -> ActorId {
     ActorId::from(bytes.as_slice())
 }
 
-/// Sequential native ranges avoid AutoSerde's keys()+get(key) lookup for every scalar.
-/// This remains only a view of native values; conflicts are retained in the document itself.
-fn materialize(doc: &AutoCommit, object: &ObjId, value: AmValue<'_>) -> Result<Value, Error> {
+/// Materialize native winners and inspect conflicts in the same sequential walk. Only
+/// conflicting properties need get_all; their alternative objects are still all inspected.
+fn materialize(doc: &AutoCommit, object: &ObjId, value: AmValue<'_>, path: &str, mut found: Option<&mut Vec<String>>) -> Result<Value, Error> {
     match value {
         AmValue::Object(ObjType::Map | ObjType::Table) => doc.map_range(object, ..).map(|item| {
-            let id = item.id();
-            Ok((item.key.into_owned(), materialize(doc, &id, item.value.into_value())?))
+            let child = (item.conflict || matches!(item.value, ValueRef::Object(_))).then(|| item.id());
+            let key = item.key.into_owned();
+            if item.conflict && let Some(found) = found.as_deref_mut() {
+                conflict_at(doc, object, Prop::Map(key.clone()), path, child.as_ref(), true, found);
+            }
+            let at = child.as_ref().map(|_| beneath(path, &key)).unwrap_or_default();
+            let nested = if item.conflict { None } else { found.as_deref_mut() };
+            Ok((key, materialize(doc, child.as_ref().unwrap_or(object), item.value.into_value(), &at, nested)?))
         }).collect::<Result<Map<_, _>, Error>>().map(Value::Object),
         AmValue::Object(ObjType::List) => doc.list_range(object, ..).map(|item| {
-            let id = item.id();
-            materialize(doc, &id, item.value.into_value())
+            let child = (item.conflict || matches!(item.value, ValueRef::Object(_))).then(|| item.id());
+            if item.conflict && let Some(found) = found.as_deref_mut() {
+                conflict_at(doc, object, Prop::Seq(item.index), path, child.as_ref(), true, found);
+            }
+            let at = child.as_ref().map(|_| beneath(path, &item.index.to_string())).unwrap_or_default();
+            let nested = if item.conflict { None } else { found.as_deref_mut() };
+            materialize(doc, child.as_ref().unwrap_or(object), item.value.into_value(), &at, nested)
         }).collect::<Result<Vec<_>, Error>>().map(Value::Array),
         AmValue::Object(ObjType::Text) => doc.text(object).map(Value::String).map_err(invalid),
         AmValue::Scalar(value) => serde_json::to_value(value).map_err(invalid),
+    }
+}
+
+fn beneath(path: &str, label: &str) -> String {
+    if path.is_empty() { label.to_owned() } else { format!("{path}/{label}") }
+}
+
+fn conflicts_under(doc: &AutoCommit, object: &ObjId, path: &str, found: &mut Vec<String>) {
+    match doc.object_type(object) {
+        Ok(ObjType::Map | ObjType::Table) => {
+            for item in doc.map_range(object, ..) {
+                let child = (item.conflict || matches!(item.value, ValueRef::Object(_))).then(|| item.id());
+                if item.conflict || child.is_some() {
+                    conflict_at(doc, object, Prop::Map(item.key.into_owned()), path, child.as_ref(), item.conflict, found);
+                }
+            }
+        }
+        Ok(ObjType::List) => {
+            for item in doc.list_range(object, ..) {
+                let child = (item.conflict || matches!(item.value, ValueRef::Object(_))).then(|| item.id());
+                if item.conflict || child.is_some() {
+                    conflict_at(doc, object, Prop::Seq(item.index), path, child.as_ref(), item.conflict, found);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn conflict_at(doc: &AutoCommit, object: &ObjId, property: Prop, path: &str, child: Option<&ObjId>, conflict: bool, found: &mut Vec<String>) {
+    let label = match &property { Prop::Map(key) => key.clone(), Prop::Seq(index) => index.to_string() };
+    let at = beneath(path, &label);
+    if !conflict {
+        if let Some(child) = child { conflicts_under(doc, child, &at, found); }
+        return;
+    }
+    let Ok(values) = doc.get_all(object, property) else { return };
+    if values.len() > 1 {
+        let alternatives = values.iter().map(|(value, operation)| {
+            let value = value.as_str().map(str::to_owned).unwrap_or_else(|| format!("{value:?}"));
+            format!("{operation}: {value}")
+        }).collect::<Vec<_>>().join(" | ");
+        found.push(format!("Concurrent project values at {at}: {alternatives}. The alternatives are retained for explicit resolution."));
+    }
+    for (value, child) in values {
+        if matches!(value, AmValue::Object(_)) { conflicts_under(doc, &child, &at, found); }
     }
 }
 
@@ -74,7 +131,8 @@ pub(super) fn identity_bytes(bytes: &[u8]) -> Option<(String, String)> {
 impl Document {
     pub(super) fn load(bytes: &[u8], at: &Path) -> Result<Self, Error> {
         let doc = AutoCommit::load(bytes).map_err(invalid)?.with_actor(actor(at));
-        let value = materialize(&doc, &ROOT, AmValue::Object(ObjType::Map))?;
+        let mut found = Vec::new();
+        let value = materialize(&doc, &ROOT, AmValue::Object(ObjType::Map), "", Some(&mut found))?;
         if value.get("schema").and_then(Value::as_u64) != Some(FORMAT as u64) {
             return Err(invalid(
                 "unsupported logical project schema; update cozy before opening this project",
@@ -83,7 +141,7 @@ impl Document {
         Ok(Self {
             doc,
             value: Arc::new(value),
-            conflicts: Arc::new(OnceLock::new()),
+            conflicts: Arc::new(OnceLock::from(found)),
         })
     }
 
@@ -102,8 +160,8 @@ impl Document {
         reconcile_map(&mut self.doc, &ROOT, &self.value, &value)?;
         self.doc.commit();
         self.value = Arc::new(value);
-        // A local observing mutation cannot introduce concurrency. Imported snapshots always
-        // start with an empty cache and are inspected; existing alternatives invalidate it.
+        // A local observing mutation cannot introduce concurrency. Imported snapshots seed
+        // this cache during materialization; existing alternatives invalidate it on mutation.
         let conflicts = OnceLock::new();
         if known_empty {
             let _ = conflicts.set(Vec::new());
@@ -117,48 +175,10 @@ impl Document {
         self.conflicts
             .get_or_init(|| {
                 let mut found = Vec::new();
-                self.conflicts_under(&ROOT, "", &mut found);
+                conflicts_under(&self.doc, &ROOT, "", &mut found);
                 found
             })
             .clone()
-    }
-
-    fn conflicts_under(&self, object: &ObjId, path: &str, found: &mut Vec<String>) {
-        match self.doc.object_type(object) {
-            Ok(ObjType::Map | ObjType::Table) => {
-                for item in self.doc.map_range(object, ..) {
-                    let id = item.id();
-                    self.conflict_at(object, Prop::Map(item.key.into_owned()), path, item.value.into_value(), id, item.conflict, found);
-                }
-            }
-            Ok(ObjType::List) => {
-                for item in self.doc.list_range(object, ..) {
-                    let id = item.id();
-                    self.conflict_at(object, Prop::Seq(item.index), path, item.value.into_value(), id, item.conflict, found);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn conflict_at(&self, object: &ObjId, property: Prop, path: &str, value: AmValue<'_>, child: ObjId, conflict: bool, found: &mut Vec<String>) {
-        let label = match &property { Prop::Map(key) => key.clone(), Prop::Seq(index) => index.to_string() };
-        let at = if path.is_empty() { label } else { format!("{path}/{label}") };
-        if !conflict {
-            if matches!(value, AmValue::Object(_)) { self.conflicts_under(&child, &at, found); }
-            return;
-        }
-        let Ok(values) = self.doc.get_all(object, property) else { return };
-        if values.len() > 1 {
-            let alternatives = values.iter().map(|(value, operation)| {
-                let value = value.as_str().map(str::to_owned).unwrap_or_else(|| format!("{value:?}"));
-                format!("{operation}: {value}")
-            }).collect::<Vec<_>>().join(" | ");
-            found.push(format!("Concurrent project values at {at}: {alternatives}. The alternatives are retained for explicit resolution."));
-        }
-        for (value, child) in values {
-            if matches!(value, AmValue::Object(_)) { self.conflicts_under(&child, &at, found); }
-        }
     }
 
     pub(super) fn identity(&self) -> Option<(String, String)> {

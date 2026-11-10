@@ -480,10 +480,21 @@ with sqlite3.connect(f'file:{source}/project.db?mode=ro',uri=True) as original:
 PY
 # The product now loads two independently authored history records sharing a display number.
 # Its next real CLI edit must preserve both stable identities, rather than choose by that number.
+cozy --json project -p "$H" status > "$OUT/crdt-peer-before.json" || check "CRDT: read merged native conflicts"
 cozy project -p "$H" set groudon 'description=After an offline history merge.' > "$OUT/crdt-history-set.txt" 2>&1 \
   || check "CRDT: CLI write after history merge: $(tail -c 300 "$OUT/crdt-history-set.txt")"
 cozy --json project -p "$H" status > "$OUT/crdt-peer-state.json" || check "CRDT: inspect merged conflict state"
 J '[.warnings[]?.message | select(contains("Concurrent project values") and contains("remote dawn") and contains("remote dusk"))] | length > 0' "$OUT/crdt-peer-state.json" || check "CRDT: retained native prompt alternatives are not visible through the CLI"
+python3 - "$OUT/crdt-peer-before.json" "$OUT/crdt-peer-state.json" <<'PY' || check "CRDT: nested conflict alternatives/order changed across CLI edit"
+import json,sys
+def conflicts(path):
+    return [w['message'] for w in json.load(open(path))['warnings'] if 'Concurrent project values' in w['message']]
+before,after=map(conflicts,sys.argv[1:])
+assert before == after, (before,after)
+for peer in ['a','b']:
+    assert any(f'e2e-history-{peer}-left' in message and f'e2e-history-{peer}-right' in message and '/choices/0:' in message for message in after), after
+assert any('/e2e_details:' in message for message in after), after
+PY
 cozy --json project -p "$H" history > "$OUT/crdt-peer-history.json" || check "CRDT: list merged peer history"
 J '[.entries[] | select(.words == "e2e-history-a" or .words == "e2e-history-b")] | length == 2' "$OUT/crdt-peer-history.json" || check "CRDT: merged peer history is not readable through the CLI"
 python3 - "$H/project.db" "$OUT/crdt-history-after.am" <<'PY'

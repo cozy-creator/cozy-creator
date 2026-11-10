@@ -68,6 +68,16 @@ fn history_fixture(input: &Path, output: &Path) -> Result<Value, String> {
         let held = object(&doc, &boxes, &named(&graph, "whale")?)?;
         let fields = object(&doc, &held, "fields")?;
         doc.put(&fields, "instructions", if actor == 201 { "remote dawn" } else { "remote dusk" }).map_err(|e| e.to_string())?;
+        // The outer objects conflict, and each has a concurrent scalar conflict inside a
+        // list. A CLI read must report both retained subtrees, including the losing object.
+        let details = doc.put_object(&fields, "e2e_details", ObjType::Map).map_err(|e| e.to_string())?;
+        let choices = doc.put_object(&details, "choices", ObjType::List).map_err(|e| e.to_string())?;
+        doc.insert(&choices, 0, "initial").map_err(|e| e.to_string())?;
+        doc.commit();
+        let mut other = doc.fork().with_actor(ActorId::from((actor + 1000).to_be_bytes()));
+        doc.put(&choices, 0, format!("{uid}-left")).map_err(|e| e.to_string())?;
+        other.put(&choices, 0, format!("{uid}-right")).map_err(|e| e.to_string())?;
+        doc.merge(&mut other).map_err(|e| e.to_string())?;
         let history = object(&doc, &ROOT, "history")?;
         let entry = doc.put_object(&history, uid, ObjType::Map).map_err(|e| e.to_string())?;
         doc.put(&entry, "present", true).map_err(|e| e.to_string())?;
@@ -119,7 +129,20 @@ fn history_check(input: &Path) -> Result<Value, String> {
         .filter_map(|(value, _)| value.as_str().map(str::to_owned)).collect();
     alternatives.sort();
     require(alternatives == ["remote dawn", "remote dusk"], "unrelated CLI edit erased retained prompt alternatives")?;
-    Ok(json!({"passed":true,"same_number_history_preserved_after_cli_commit":2,"same_number_run_files_preserved_after_cli_commit":2,"conflicts_retained_after_cli_commit":alternatives}))
+    let details = doc.get_all(&fields, "e2e_details").map_err(|e| e.to_string())?;
+    require(details.len() == 2, "next CLI write lost a conflicting object alternative")?;
+    let mut nested = Vec::new();
+    for (_, detail) in details {
+        let choices = object(&doc, &detail, "choices")?;
+        let mut values: Vec<_> = doc.get_all(&choices, 0).map_err(|e| e.to_string())?.into_iter()
+            .filter_map(|(value, _)| value.as_str().map(str::to_owned)).collect();
+        values.sort();
+        require(values.len() == 2, "next CLI write lost a nested list conflict")?;
+        nested.push(values);
+    }
+    nested.sort();
+    require(nested == [vec!["e2e-history-a-left", "e2e-history-a-right"], vec!["e2e-history-b-left", "e2e-history-b-right"]], "nested object alternatives changed")?;
+    Ok(json!({"passed":true,"same_number_history_preserved_after_cli_commit":2,"same_number_run_files_preserved_after_cli_commit":2,"conflicts_retained_after_cli_commit":alternatives,"nested_conflicts_retained_after_cli_commit":nested}))
 }
 fn run(before: &Path, renamed: &Path) -> Result<Value, String> {
     let seed_bytes = fs::read(before).map_err(|e| e.to_string())?;
