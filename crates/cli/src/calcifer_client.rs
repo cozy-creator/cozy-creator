@@ -127,8 +127,8 @@ impl Client {
     /// Whether the Calcifer `holder` names answers one request: any reply is an answer. Waits as
     /// long as the request does; the caller judges a silence by the process's progress.
     pub(crate) async fn answers(&self, holder: &Holder) -> bool {
-        let probe = format!("http://{}/v1/runs", holder.address);
-        let request = self.0.http.get(probe).query(&[("limit", 1)]);
+        let probe = format!("http://{}/v1/status", holder.address);
+        let request = self.0.http.get(probe);
         request.bearer_auth(&holder.token).send().await.is_ok()
     }
 
@@ -586,8 +586,8 @@ impl Client {
     /// stays open for the command: Calcifer stays up while a client is connected.
     async fn live(&self) -> Option<Holder> {
         let holder = self.record()?;
-        let probe = format!("http://{}/v1/runs", holder.address);
-        let request = self.0.http.get(probe).query(&[("limit", 1)]);
+        let probe = format!("http://{}/v1/status", holder.address);
+        let request = self.0.http.get(probe);
         let answer = request.bearer_auth(&holder.token).send();
         self.heard(holder.pid, Instant::now(), REPORT, answer).await.ok()?;
         Some(holder)
