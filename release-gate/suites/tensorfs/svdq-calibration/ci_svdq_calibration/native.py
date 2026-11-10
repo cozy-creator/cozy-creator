@@ -19,7 +19,7 @@ import zlib
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Unpack, cast
 
 import msgspec
 import numpy as np
@@ -28,6 +28,30 @@ from cozy_runtime.author import Context, ModelArtifact, Telemetry, WeightsOutput
 
 from . import Report, Request, app
 from .oracle import E2M1_DECODE32, E4M3_MAG32, encode_nvfp4
+
+if TYPE_CHECKING:
+    from cozy_runtime.derive.native_quantization import QuantizationStats
+
+    from ._types import (
+        F32,
+        ArrayTensor,
+        Budget,
+        Checkpoint,
+        ComponentWriter,
+        Control,
+        Conversion,
+        Converted,
+        EncodedTensor,
+        Facts,
+        Floats,
+        Observation,
+        Parts,
+        Refusing,
+        Run,
+        Selection,
+        Served,
+        TensorFS,
+    )
 
 STRATEGY = "svdq-nvfp4-r32-faer/1"
 WORKSPACE = 64 << 20
@@ -43,7 +67,7 @@ PARAMS = {
 
 def selection(
     key: str, dtype: str, shape: tuple[int, int], component: str = "weights"
-) -> dict[str, Any]:
+) -> Selection:
     return {
         "component": component,
         "key": key,
@@ -66,7 +90,7 @@ def encoded_bytes(shape: tuple[int, int]) -> int:
     return n * k // 2 + n * k // 16 + 8 + k * 4 + (n + k) * 32 * 2
 
 
-def f32(part: Any) -> np.ndarray:
+def f32(part: ArrayTensor) -> F32:
     raw = part.tobytes()
     if part.dtype == "BF16":
         return (
@@ -78,8 +102,8 @@ def f32(part: Any) -> np.ndarray:
 
 
 def selected_residual(
-    parts: Any, weight: np.ndarray
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    parts: Parts, weight: F32
+) -> tuple[F32, F32, F32, F32]:
     """Exact declared new-producer order; never infer the pre-rounding power-law scale.
 
     The Rust producer first canonicalizes s through stored p: s = F32(1/p). For each
@@ -102,27 +126,27 @@ def selected_residual(
 
 
 def residual_values(
-    parts: Any, shape: tuple[int, int], dtype: Any = np.float64
-) -> np.ndarray:
+    parts: Parts, shape: tuple[int, int], dtype: type[np.float32 | np.float64] = np.float64
+) -> Floats:
     n, k = shape
     packed = np.frombuffer(parts["weight"].tobytes(), dtype=np.uint8).reshape(n, k // 2)
     codes = np.empty((n, k), dtype=np.uint8)
     codes[:, 0::2], codes[:, 1::2] = packed & 15, packed >> 4
     scales = np.frombuffer(parts["scale"].tobytes(), dtype=np.uint8).reshape(n, k // 16)
-    second = f32(parts["scale_2"]).item()
+    second: float = f32(parts["scale_2"]).item()
     # Decoder evaluation is (code*scale)*global, rather than code*(scale*global).
-    return (
+    return cast("Floats", (  # cast: astype of a dtype union
         E2M1_DECODE32[codes].astype(dtype)
         * np.repeat(E4M3_MAG32[scales].astype(dtype), 16, axis=1)
-    ) * second
+    ) * second)
 
 
-def stored_values(parts: Any, shape: tuple[int, int]) -> np.ndarray:
+def stored_values(parts: Parts, shape: tuple[int, int]) -> F32:
     """Existing decoder order: F32 code*scale*global*pre, then rank-ordered F32 adds."""
     pre, down, up = (
         f32(parts[role]) for role in ("pre_quant_scale", "lowrank_down", "lowrank_up")
     )
-    values = np.multiply(
+    values: F32 = np.multiply(
         residual_values(parts, shape, np.float32), pre, dtype=np.float32
     )
     for rank in range(32):
@@ -132,8 +156,8 @@ def stored_values(parts: Any, shape: tuple[int, int]) -> np.ndarray:
 
 
 def served_score(
-    parts: Any, weight: np.ndarray, calibration: np.ndarray
-) -> dict[str, Any]:
+    parts: Parts, weight: F32, calibration: F32
+) -> Served:
     """Independent frozen serving law uses rows*stored_pre, never rows/reconstructed_s."""
     from .historical_svdq import _fake
 
@@ -158,13 +182,13 @@ def served_score(
 
 
 def check_selected(
-    item: Any,
-    weight: np.ndarray,
-    measured: dict[str, Any],
+    item: EncodedTensor,
+    weight: F32,
+    measured: Converted,
     *,
     exact_svd: bool = True,
-    calibration: np.ndarray | None = None,
-) -> dict[str, Any]:
+    calibration: F32 | None = None,
+) -> Facts:
     n, k = weight.shape
     expected_geometry = {
         "weight": ("F4", (n, k)),
@@ -210,7 +234,7 @@ def check_selected(
         fit["plain_nvfp4_error"]
     )
     assert np.all(np.isfinite(smooth)) and np.all(smooth > 0)
-    facts = {
+    facts: Facts = {
         "fit": fit,
         "relative_frobenius": relative,
         "logical_energy": energy,
@@ -229,7 +253,7 @@ def check_selected(
             rtol=2e-5,
             atol=2e-7,
         ), (fit["calibration_error"], served)
-        facts.update(served)
+        facts.update(served)  # type: ignore[typeddict-item]  # Served is a partial Facts
     if exact_svd:
         target = weight.astype(np.float64) * smooth
         approximation = up.astype(np.float64) @ (down.astype(np.float64) * smooth)
@@ -246,7 +270,7 @@ def check_selected(
     return facts
 
 
-def put_source(component: Any, key: str, weight: np.ndarray, dtype: str) -> np.ndarray:
+def put_source(component: ComponentWriter, key: str, weight: F32, dtype: str) -> F32:
     if dtype == "BF16":
         t = torch.from_numpy(weight).bfloat16()
         raw, held = t.view(torch.uint8).numpy().tobytes(), t.float().numpy()
@@ -260,13 +284,13 @@ def put_source(component: Any, key: str, weight: np.ndarray, dtype: str) -> np.n
 
 
 def calibration_writer(
-    tensorfs: Any,
+    tensorfs: TensorFS,
     path: Path,
-    cases: dict[str, np.ndarray],
-    rows: dict[str, np.ndarray],
+    cases: dict[str, F32],
+    rows: dict[str, F32],
     *,
     change: bool = False,
-) -> Any:
+) -> Checkpoint:
     writer = tensorfs.Writer(path)
     component = writer.component("weights")
     for key in cases:
@@ -280,13 +304,13 @@ def calibration_writer(
 
 
 def refused(
-    tensorfs: Any,
+    tensorfs: TensorFS,
     directory: Path,
     label: str,
-    source: Any,
-    specs: list[dict[str, Any]],
-    calibration: Any,
-    **options: Any,
+    source: Checkpoint,
+    specs: list[Selection],
+    calibration: Checkpoint | None,
+    **options: Unpack[Refusing],
 ) -> str:
     output = tensorfs.Writer(directory / (label + ".cozytensors"), base=source)
     control = options.pop("control", tensorfs.ConversionControl())
@@ -296,7 +320,7 @@ def refused(
             specs,
             calibration=calibration,
             control=control,
-            **{"max_buffer_bytes": WORKSPACE, "max_new_bytes": 16 << 20, **options},
+            **cast("Budget", {"max_buffer_bytes": WORKSPACE, "max_new_bytes": 16 << 20, **options}),  # cast: control popped
         )
     except tensorfs.Error as error:
         assert not any(output.has(spec["component"], spec["key"]) for spec in specs)
@@ -306,7 +330,7 @@ def refused(
     raise AssertionError(label + " unexpectedly published")
 
 
-def basic(payload: Request) -> dict[str, Any]:
+def basic(payload: Request) -> dict[str, object]:
     import tensorfs
 
     rng = np.random.default_rng(payload.seed)
@@ -330,7 +354,9 @@ def basic(payload: Request) -> dict[str, Any]:
             ("rankdef", deficient, "F32"),
             ("outlier", outlier, "F32"),
         ]
-        cases, specs, samples = {}, [], {}
+        cases: dict[str, F32] = {}
+        specs: list[Selection] = []
+        samples: dict[str, F32] = {}
         for key, weight, dtype in inputs:
             cases[key] = put_source(component, key, weight, dtype)
             specs.append(selection(key, dtype, weight.shape))
@@ -342,8 +368,9 @@ def basic(payload: Request) -> dict[str, Any]:
             tensorfs, directory / "calibration.cozytensors", cases, samples
         )
         allowance = sum(encoded_bytes(w.shape) for w in cases.values())
-        controls = []
-        reports, baseline = [], None
+        controls: list[Control] = []
+        reports: list[Run] = []
+        baseline: dict[str, dict[str, bytes]] | None = None
         for index, workspace in enumerate((WORKSPACE, WORKSPACE * 2)):
             output = tensorfs.Writer(
                 directory / f"fitted-{index}.cozytensors", base=source
@@ -351,14 +378,14 @@ def basic(payload: Request) -> dict[str, Any]:
             control = tensorfs.ConversionControl()
             controls.append(control)
             started = time.perf_counter()
-            result = output.quantize(
+            result = cast("Conversion", output.quantize(  # cast: its result
                 source,
                 specs,
                 calibration=calibration,
                 max_buffer_bytes=workspace,
                 max_new_bytes=allowance,
                 control=control,
-            )
+            ))
             fit_seconds = time.perf_counter() - started
             checkpoint = output.commit()
             assert checkpoint.verify().ok
@@ -369,7 +396,8 @@ def basic(payload: Request) -> dict[str, Any]:
             )
             assert result["source_bytes_read"] == expected_read
             by_key = {entry["key"]: entry for entry in result["tensors"]}
-            facts, encoded = {}, {}
+            facts: dict[str, Facts] = {}
+            encoded: dict[str, dict[str, bytes]] = {}
             for key, weight in cases.items():
                 item = checkpoint.components["weights"].tensors.read(key)
                 assert isinstance(item, tensorfs.Encoded)
@@ -404,7 +432,7 @@ def basic(payload: Request) -> dict[str, Any]:
                 )
                 assert result["identity"] == reports[0]["result"]["identity"]
             assert (
-                checkpoint.components["weights"].tensors.read("bias").tobytes()
+                cast("ArrayTensor", checkpoint.components["weights"].tensors.read("bias")).tobytes()  # cast: plain
                 == np.arange(128, dtype="<f4").tobytes()
             )
             reports.append(
@@ -482,7 +510,7 @@ def basic(payload: Request) -> dict[str, Any]:
         )
         assert before.progress() == (0, 0, 0)
         changed = copy.deepcopy(one)
-        changed[0]["shape"][1] -= 1
+        cast("list[int]", changed[0]["shape"])[1] -= 1  # cast: selection() builds it a list
         refusals["shape"] = refused(
             tensorfs, directory, "shape", source, changed, calibration
         )
@@ -551,7 +579,7 @@ def basic(payload: Request) -> dict[str, Any]:
         }
 
 
-def cancel(payload: Request) -> dict[str, Any]:
+def cancel(payload: Request) -> dict[str, object]:
     """Cancels a real conversion inside its native fit, every time: the fit can end before a poll here
     sees its window (gates 41911483592, 41939634423), so the conversion runs in a worker that this
     process holds with SIGSTOP once the worker's progress shows the first tensor written and every
@@ -565,14 +593,15 @@ def cancel(payload: Request) -> dict[str, Any]:
         )
         watchdog = threading.Timer(300, worker.kill)
         watchdog.start()
-        held = None
+        held: list[int] | None = None
+        assert worker.stdout is not None and worker.stdin is not None
         try:
             for line in worker.stdout:
                 word, _, rest = line.partition(" ")
                 if word == "early":
                     raise AssertionError(f"the conversion ended before its cancellation window: {rest.strip()[:400]}")
                 if word == "result":
-                    result = json.loads(rest)
+                    result: dict[str, object] = json.loads(rest)
                     assert worker.wait(timeout=60) == 0
                     result["held_at_progress"] = held
                     result["worker_peak_rss_bytes"] = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss * 1024
@@ -631,7 +660,7 @@ def cancel_worker() -> None:
         control = tensorfs.ConversionControl()
         monitor = threading.get_native_id()
 
-        def convert():
+        def convert() -> dict[str, object]:
             # Every thread but the monitor's runs at nice 19, and those the conversion starts inherit it.
             for task in os.listdir("/proc/self/task"):
                 if int(task) != monitor:
@@ -648,7 +677,7 @@ def cancel_worker() -> None:
         with ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(convert)
             # Progress out, until `cancel` has held this process and says to cancel. No hook or mock advances fitting.
-            seen = None
+            seen: tuple[int, int, int] | None = None
             while not select.select([sys.stdin], [], [], 0.0002)[0]:
                 if future.done():
                     print("early", repr(future.exception() or future.result()), flush=True)
@@ -679,7 +708,7 @@ def cancel_worker() -> None:
         reopened = tensorfs.Writer(target, base=source, resume=resume)
         changed = copy.deepcopy(specs)
         changed[0]["fit"]["seed"] += 1
-        refusals = []
+        refusals: list[str] = []
         for rows, calibration_arg in (
             (changed, calibration),
             (specs, changed_calibration),
@@ -702,20 +731,20 @@ def cancel_worker() -> None:
                 "weights", "large"
             )
         resume_began = time.perf_counter()
-        result = reopened.quantize(
+        result = cast("Conversion", reopened.quantize(  # cast: its result
             source,
             specs,
             calibration=calibration,
             max_buffer_bytes=WORKSPACE,
             max_new_bytes=allowance,
             control=tensorfs.ConversionControl(),
-        )
+        ))
         resume_fit_seconds = time.perf_counter() - resume_began
         assert result["reused_keys"] == 1 and result["encoded_keys"] == 1
         assert result["worst_relative_frobenius"] is None
         checkpoint = reopened.commit()
         assert checkpoint.verify().ok
-        item = checkpoint.components["weights"].tensors.read("large")
+        item = cast("EncodedTensor", checkpoint.components["weights"].tensors.read("large"))  # cast: quantized
         facts = check_selected(
             item,
             cases["large"],
@@ -756,7 +785,7 @@ def empty_dlpack(payload: Request) -> Report:
     """Real Writer imports of empty NumPy DLPack arrays, plus nonempty stride refusals."""
     import tensorfs
 
-    observations = []
+    observations: list[Observation] = []
     with tempfile.TemporaryDirectory(prefix="cozy-empty-dlpack-") as temporary:
         writer = tensorfs.Writer(Path(temporary) / "empty.cozytensors")
         component = writer.component("weights")
@@ -776,7 +805,7 @@ def empty_dlpack(payload: Request) -> Report:
         checkpoint = writer.commit()
         assert checkpoint.verify().ok
         for row in observations:
-            value = checkpoint.components["weights"].tensors.read(row["key"])
+            value = cast("ArrayTensor", checkpoint.components["weights"].tensors.read(row["key"]))  # cast: plain
             assert tuple(value.shape) == tuple(row["shape"])
             assert value.tobytes() == np.ones(row["shape"], dtype="<f4").tobytes()
         checkpoint.close()
@@ -816,7 +845,8 @@ def runtime_components(
     with tempfile.TemporaryDirectory(prefix="cozy-svdq-components-") as temporary:
         directory = Path(temporary)
         writer = tensorfs.Writer(directory / "source.cozytensors")
-        modules, values = {}, {}
+        modules: dict[str, torch.nn.Sequential] = {}
+        values: dict[str, F32] = {}
         for name in ("a", "b"):
             weight = torch.from_numpy(
                 rng.normal(0, 0.0625, (64, 256)).astype("<f4")
@@ -832,7 +862,7 @@ def runtime_components(
                 )
             )
             with torch.no_grad():
-                modules[name].proj.weight.copy_(weight)
+                cast(torch.nn.Linear, modules[name].proj).weight.copy_(weight)  # cast: the Linear built above
             writer.component(name).put(
                 "proj.weight",
                 weight.view(torch.uint8).numpy().tobytes(),
@@ -901,7 +931,7 @@ def runtime_components(
                     raise AssertionError(
                         "unknown component did not refuse before writes"
                     )
-                made = []
+                made: list[QuantizationStats] = []
                 for name in ("a", "b"):
                     measured = quantize_component_into(
                         source,
@@ -1008,7 +1038,7 @@ def runtime_components(
                 plain_output.slot,
                 plain_output.transaction,
             )
-        nonfit_refusals = []
+        nonfit_refusals: list[str] = []
         with Output(
             plain_store, plain_slot, plain_transaction, plain_work, 2 << 20
         ) as reopened:
@@ -1055,13 +1085,13 @@ def runtime_components(
                     )
         committed = tensorfs.open(artifact.checkpoint, local_files_only=True)
         try:
-            facts = {}
+            facts: dict[str, Facts] = {}
             for name, measured in zip(("a", "b"), made, strict=True):
-                item = committed.components[name].tensors.read("proj.weight")
+                item = cast("EncodedTensor", committed.components[name].tensors.read("proj.weight"))  # cast: quantized
                 facts[name] = check_selected(
                     item,
                     values[name],
-                    measured.tensors[0],
+                    cast("Converted", measured.tensors[0]),  # cast: the Runtime's rows are untyped dicts
                     calibration=calibration.stats(name, "proj.weight")
                     .rows.float()
                     .numpy(),
@@ -1107,7 +1137,7 @@ def runtime_resume(payload: Request, ctx: Context, tel: Telemetry) -> Report:
         directory = Path(temporary)
         store = directory / "store"
         writer = tensorfs.Writer(directory / "source.cozytensors", cache_dir=store)
-        values = {}
+        values: dict[str, F32] = {}
         for name in ("a", "b"):
             values[name] = rng.normal(0, 0.0625, (64, 256)).astype("<f4")
             writer.component(name).put(
@@ -1124,14 +1154,14 @@ def runtime_resume(payload: Request, ctx: Context, tel: Telemetry) -> Report:
         )
         work = Derivation(base=source, order=plan.order)
 
-        def args(label):
+        def args(label: str) -> tuple[Path, str, str, Derivation, int]:
             transaction = (
                 "sha256:"
                 + hashlib.sha256((ctx.request_id + ":" + label).encode()).hexdigest()
             )
             return (store, label, transaction, work, 2 << 20)
 
-        def convert(output, component, bound=0.2):
+        def convert(output: Output, component: str, bound: float = 0.2) -> QuantizationStats:
             return quantize_component_into(
                 source,
                 output,
@@ -1144,7 +1174,7 @@ def runtime_resume(payload: Request, ctx: Context, tel: Telemetry) -> Report:
                 logical_dtype=lambda row: row.logical_dtype,
             )
 
-        def rejected(output, component, bound=0.2):
+        def rejected(output: Output, component: str, bound: float = 0.2) -> str:
             try:
                 convert(output, component, bound)
             except CapabilityError as error:
@@ -1199,7 +1229,7 @@ def runtime_resume(payload: Request, ctx: Context, tel: Telemetry) -> Report:
                     )
             assert resumed.has("a", "weight") and not resumed.has("b", "weight")
 
-        controls = {}
+        controls: dict[str, dict[str, str | int]] = {}
         for label, manual in (
             ("manual-before-binding", True),
             ("inherited-base", False),
