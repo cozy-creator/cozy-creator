@@ -63,10 +63,11 @@ const until = async (page, ask, ms = 120000) => {
     const status = async (path, init) => (await fetch(`${path}?media=${media}`, init)).status;
     return { machines: await status('/v1/machines'), project: await status(`/v1/projects/${id}`), post: await status(`/v1/projects/${id}/runs`, { method: 'POST', body: '{}' }) };
   }, { id, media });
-  // The stream is open before the re-cut is asked; it ends with the walk's `ended`.
+  // `GET /v1/events` is open before the re-cut is asked: the project's board as it goes, its cut a job whose file is the film at its
+  // root, until the board says it ended.
   await page.evaluate((id) => new Promise((ok, no) => {
     window.got = [];
-    fetch(`/v1/projects/${id}/events`, { headers: { Authorization: 'Bearer ' + localStorage.getItem('e2e-token') } }).then(async (r) => {
+    fetch('/v1/events', { headers: { Authorization: 'Bearer ' + localStorage.getItem('e2e-token') } }).then(async (r) => {
       if (!r.ok) throw new Error(`events: ${r.status}`);
       window.got.push('open'); ok();
       const lines = r.body.pipeThrough(new TextDecoderStream()).getReader();
@@ -78,7 +79,14 @@ const until = async (page, ask, ms = 120000) => {
           const data = block.split('\n').filter((line) => line.startsWith('data:')).map((line) => line.slice(5)).join('\n');
           if (!data) continue;
           const m = JSON.parse(data);
-          window.got.push(m.type === 'cut' ? `cut ${m.cut}` : m.type);
+          if (m.project !== id) continue;
+          const jobs = m.type === 'board.updated' ? m.board.jobs : m.type === 'job.updated' ? [m.job] : [];
+          for (const job of jobs) {
+            const cut = job.state === 'done' && job.path && !job.path.startsWith('files/') && `cut ${job.path}`;
+            if (cut && !window.got.includes(cut)) window.got.push(cut);
+          }
+          window.got.push(m.type);
+          if (m.type === 'board.updated' && m.board.ended) window.got.push('ended');
         }
       }
       window.got.push('closed');

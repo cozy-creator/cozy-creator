@@ -120,6 +120,12 @@ impl Here {
             Err(e) => warn!(run = %self.id, "{message}: unrecorded: {e}"),
         }
     }
+
+    /// How far it is, as its progress: a stage, its steps of their total, and the bytes it moved.
+    pub(crate) fn progress(&self, stage: &str, completed: u64, total: u64, bytes_done: u64) {
+        let progress = Progress { stage: stage.to_owned(), completed, total, bytes_done, at_ms: store::now_ms(), ..Progress::default() };
+        self.calcifer.progress(&self.id, progress);
+    }
 }
 
 /// A turn to write one object to one machine, and the number of the run whose turn it is.
@@ -298,6 +304,7 @@ impl Calcifer {
                 };
                 me.ended_here(&id, end);
                 lock(&me.drivers).remove(&id);
+                lock(&me.live).remove(&id);
             });
         }
         Ok(Submitted { run: self.record(&row)?, replay: !fresh, notes: vec![], preparing: false })

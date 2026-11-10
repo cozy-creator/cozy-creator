@@ -90,7 +90,6 @@ fn main() {
     v.visit::<project::Canvas>();
     v.visit::<project::CanvasPatch>();
     v.visit::<project::CanvasPatched>();
-    v.visit::<project::Event>();
     v.visit::<project::History>();
     v.visit::<project::HistoryStep>();
     v.visit::<project::HistoryStepped>();
@@ -117,6 +116,8 @@ fn main() {
     v.visit::<hub::PackageInstall>();
     v.visit::<hub::PackageRemove>();
     v.visit::<hub::PackagesRemoved>();
+    v.visit::<hub::ProjectFiles>();
+    v.visit::<project::Transferred>();
     v.visit::<report::Report>();
     v.visit::<tool::Tools>();
     v.visit::<tool::ToolList>();

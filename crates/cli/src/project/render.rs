@@ -1,6 +1,7 @@
-//! `cozy project render` for a person, all drawn from the project's `Board`: on a terminal one live view, then a plain block that stays
-//! in the scrollback; anywhere else one line per event, each starting with its asset's name, so runs at once stay readable. Run
-//! numbers, machines and raw outputs stay in `--json` and `cozy run show`. Ctrl-C stops following, never the runs.
+//! `cozy project render` for a person, all drawn from the project's `Board` as `GET /v1/events` tells it: on a terminal one live
+//! view, then a plain block that stays in the scrollback; anywhere else one line per change, each starting with its asset's name, so
+//! runs at once stay readable. Run numbers, machines and raw outputs stay in `--json` and `cozy run show`. Ctrl-C stops following,
+//! never the runs.
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
@@ -8,8 +9,11 @@ use std::{
 };
 
 use api::{
+    calcifer::{
+        NoteLevel, StreamEvent,
+        project::{Ahead, Board, Ended, Job, JobState, Rendered, State},
+    },
     error::{Error, Kind},
-    calcifer::project::{Ahead, Board, Event, Job, JobState, Rendered},
 };
 use ratatui::{
     Frame,
@@ -18,52 +22,128 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Cell, Paragraph, Row, Table, TableState},
 };
+use tokio::task::JoinHandle;
 
-use crate::{Context, calcifer_client::Watch, output, run::stalled_words, tui};
+use crate::{
+    Context,
+    calcifer_client::{Client, Watch},
+    output,
+    run::stalled_words,
+    tui,
+};
 
 /// How many warnings the live view keeps in sight; the block says them all.
 const WARNINGS_SHOWN: usize = 3;
 /// How much of a reason the block shows of one, up to its traceback: its `next` reads the rest, and lines off a terminal say it whole.
 const REASON_SHOWN: usize = 300;
 
+/// What changed of a followed render.
+pub(super) enum Change {
+    /// Its board whole: as the stream tells it, or read again, with whether its project is still walking.
+    Board { board: Box<Board>, busy: Option<bool> },
+    Job { job: Job, seq: u64 },
+    Ahead(Ahead),
+}
+
+/// A project's render as `GET /v1/events` tells it. A stream that fell behind, or ended as Calcifer restarted, is subscribed to again
+/// and the project read again: nothing between is missed.
+pub(super) struct Follow {
+    calcifer: Client,
+    /// The project's id, which its events name.
+    project: String,
+    watch: Watch<StreamEvent>,
+    /// A live view's: Calcifer's silence goes in its title.
+    quiet: bool,
+    /// Subscribing and reading again, which a live view's next redraw doesn't stop.
+    again: Option<Again>,
+}
+
+/// A stream subscribed to again, and its project read after it.
+type Again = JoinHandle<Result<(Watch<StreamEvent>, State), Error>>;
+
+impl Follow {
+    /// Follows project `project` (its id) on `watch`, subscribed before its board was read or asked for.
+    pub(super) fn new(calcifer: Client, project: String, watch: Watch<StreamEvent>) -> Self {
+        Self { calcifer, project, watch, quiet: false, again: None }
+    }
+
+    fn quiet(self) -> Self {
+        Self { watch: self.watch.quiet(), quiet: true, ..self }
+    }
+
+    /// The next change of the render; `None` once Calcifer can't be heard. Cancel-safe.
+    pub(super) async fn next(&mut self) -> Option<Change> {
+        loop {
+            if let Some(again) = &mut self.again {
+                let read = again.await;
+                self.again = None;
+                let (watch, state) = read.ok()?.ok()?;
+                self.watch = if self.quiet { watch.quiet() } else { watch };
+                return Some(Change::Board { board: Box::new(state.board.unwrap_or_default()), busy: Some(state.busy) });
+            }
+            let mine = |project: &String| *project == self.project;
+            match self.watch.change().await {
+                Some(StreamEvent::BoardUpdated { project, board }) if mine(&project) => return Some(Change::Board { board, busy: None }),
+                Some(StreamEvent::JobUpdated { project, job, seq }) if mine(&project) => return Some(Change::Job { job: *job, seq }),
+                Some(StreamEvent::AheadUpdated { project, ahead }) if mine(&project) => return Some(Change::Ahead(*ahead)),
+                Some(_) => {}
+                None => {
+                    let (calcifer, path) = (self.calcifer.clone(), super::at(&self.project, &[]));
+                    self.again = Some(tokio::spawn(async move {
+                        let watch = calcifer.changes().await?;
+                        let state: State = calcifer.get_query(&path, &[("assets", false)]).await?;
+                        Ok::<_, Error>((watch, state))
+                    }));
+                }
+            }
+        }
+    }
+
+    /// Calcifer not answering on this stream past two keepalives, said for a view's title.
+    fn silence(&self) -> Option<String> {
+        self.watch.silence()
+    }
+}
+
 /// All a client knows of a render.
 pub(super) struct Rendering {
     /// The project's folder.
     dir: PathBuf,
-    board: Board,
-    /// Each distinct warning once, with whose it is.
-    warnings: Vec<Warned>,
-    said: Vec<Said>,
-    /// What failed that is no asset's.
-    errors: Vec<Error>,
+    pub(super) board: Board,
     /// This render, whose walk's end is its end; None follows whatever walk is going to its end.
     ask: Option<String>,
-    ended: Option<(Option<Error>, Option<Rendered>)>,
-}
-
-struct Warned {
-    names: Vec<String>,
-    message: String,
-}
-
-struct Said {
-    name: Option<String>,
-    message: String,
+    /// The `seq` of a board it began with that had ended already: another walk's end, which isn't this one's.
+    before: Option<u64>,
+    /// It is over: how it ended, if it said.
+    over: Option<Option<Ended>>,
 }
 
 impl Rendering {
     pub(super) fn new(dir: PathBuf, board: Board, ask: Option<String>) -> Self {
-        Self { dir, board, warnings: vec![], said: vec![], errors: vec![], ask, ended: None }
+        let before = board.ended.is_some().then_some(board.seq);
+        Self { dir, board, ask, before, over: None }
     }
 
-    /// Takes in `event`; what it newly is for a person to read.
-    fn apply(&mut self, event: Event) -> Fresh {
-        match event {
-            Event::Board { board } if board.seq >= self.board.seq => {
-                self.board = board;
+    /// Takes in `change`; whether there is more to show.
+    pub(super) fn apply(&mut self, change: Change) -> Fresh {
+        match change {
+            Change::Board { board, busy } => {
+                if board.seq >= self.board.seq {
+                    self.board = *board;
+                }
+                // Nothing walks: nothing more will come of it.
+                if busy == Some(false) {
+                    self.over = Some(self.board.ended.clone());
+                    return Fresh::Ended;
+                }
+                let fresh = self.before.is_none_or(|seq| self.board.seq > seq);
+                if let Some(ended) = self.board.ended.as_ref().filter(|ended| fresh && self.ask.as_ref().is_none_or(|ask| ended.asks.contains(ask))) {
+                    self.over = Some(Some(ended.clone()));
+                    return Fresh::Ended;
+                }
                 Fresh::Board
             }
-            Event::Job { job, seq } if seq >= self.board.seq => {
+            Change::Job { job, seq } if seq >= self.board.seq => {
                 self.board.seq = seq;
                 match self.board.jobs.iter_mut().find(|held| held.id == job.id) {
                     Some(held) => *held = job,
@@ -77,47 +157,25 @@ impl Rendering {
                 });
                 Fresh::Board
             }
-            Event::Ahead { ahead } => {
+            Change::Job { .. } => Fresh::Nothing,
+            Change::Ahead(ahead) => {
                 match self.board.ahead.iter_mut().find(|held| held.run == ahead.run) {
                     Some(held) => *held = ahead,
                     None => self.board.ahead.push(ahead),
                 }
                 Fresh::Board
             }
-            Event::Warning { message, name } => {
-                let line = name.as_ref().map_or_else(|| format!("warning: {message}"), |name| format!("{name}: warning: {message}"));
-                match self.warnings.iter_mut().find(|warned| warned.message == message) {
-                    Some(warned) => {
-                        warned.names.extend(name.filter(|name| !warned.names.contains(name)));
-                        Fresh::Nothing
-                    }
-                    None => {
-                        self.warnings.push(Warned { names: name.into_iter().collect(), message });
-                        Fresh::Warning(line)
-                    }
-                }
-            }
-            Event::Said { message, name } => match self.said.iter().any(|said| said.message == message) {
-                true => Fresh::Nothing,
-                false => {
-                    self.said.push(Said { name, message: message.clone() });
-                    Fresh::Said(message)
-                }
-            },
-            Event::Failed { error, name: None, .. } => match self.errors.iter().any(|said| said.message == error.message) {
-                true => Fresh::Nothing,
-                false => {
-                    self.errors.push(error.clone());
-                    Fresh::Failed(error)
-                }
-            },
-            // Another walk's end, one ending as this was asked, isn't this render's.
-            Event::Ended { error, rendered, asks } if self.ask.as_ref().is_none_or(|ask| asks.contains(ask)) => {
-                self.ended = Some((error, rendered));
-                Fresh::Ended
-            }
-            _ => Fresh::Nothing,
         }
+    }
+
+    /// How it ended, once it is over.
+    pub(super) fn ended(&self) -> Option<Option<&Ended>> {
+        self.over.as_ref().map(Option::as_ref)
+    }
+
+    /// Each warning it said, with the assets whose it is.
+    fn warnings(&self) -> impl Iterator<Item = &api::calcifer::project::Said> {
+        self.board.said.iter().filter(|said| said.level == NoteLevel::Warning)
     }
 
     /// `3 of 8`, with what failed.
@@ -161,7 +219,6 @@ impl Rendering {
     }
 }
 
-/// What an event newly is for a person to read.
 /// One line for what a machine is fetching ahead of its jobs; none once it is all there.
 pub(super) fn ahead_line(ahead: &Ahead) -> Option<String> {
     let function = &ahead.function;
@@ -175,38 +232,36 @@ pub(super) fn ahead_line(ahead: &Ahead) -> Option<String> {
     })
 }
 
-enum Fresh {
+/// What a change newly is for a person to read.
+pub(super) enum Fresh {
     Nothing,
     Board,
-    Warning(String),
-    Said(String),
-    Failed(Error),
     Ended,
 }
 
 /// Follows a render to its end, or until Ctrl-C leaves it going: the live view on a terminal, else line by line.
-pub(super) async fn follow(ctx: &Context, mut rendering: Rendering, events: Watch<Event>, status: &str) -> Result<ExitCode, Error> {
+pub(super) async fn follow(ctx: &Context, mut rendering: Rendering, follow: Follow, status: &str) -> Result<ExitCode, Error> {
     let live = ctx.term.stdout && !rendering.board.jobs.is_empty() && std::env::var_os("TERM").is_none_or(|term| term != "dumb");
-    let mut events = events;
+    let mut follow = follow;
     if live {
-        let mut view = View { rendering, events: events.quiet(), selected: None, left: false, closed: false };
+        let mut view = View { rendering, follow: follow.quiet(), selected: None, left: false, closed: false };
         match tui::board(ctx, &mut view).await {
             Ok(()) => {}
             // Nowhere to draw: line by line.
             Err(error) if error.code == "terminal" => {
                 rendering = view.rendering;
-                events = view.events;
-                return lines(ctx, rendering, events, status).await;
+                follow = view.follow;
+                return lines(ctx, rendering, follow, status).await;
             }
             Err(error) => return Err(error),
         }
         return view.rendering.block(ctx, view.left, view.closed, status);
     }
-    lines(ctx, rendering, events, status).await
+    lines(ctx, rendering, follow, status).await
 }
 
-/// One line per event, each starting with its asset's name, on the render's way to its end.
-async fn lines(ctx: &Context, mut rendering: Rendering, mut events: Watch<Event>, status: &str) -> Result<ExitCode, Error> {
+/// One line per change, each starting with its asset's name, on the render's way to its end.
+async fn lines(ctx: &Context, mut rendering: Rendering, mut follow: Follow, status: &str) -> Result<ExitCode, Error> {
     output::say(ctx, &format!("{}: following the render: Ctrl-C leaves it queued", rendering.title()));
     let mut said = Lines::default();
     said.board(ctx, &rendering);
@@ -214,16 +269,16 @@ async fn lines(ctx: &Context, mut rendering: Rendering, mut events: Watch<Event>
         return Ok(stalled);
     }
     loop {
-        let event = tokio::select! {
-            event = events.next() => event,
+        let change = tokio::select! {
+            change = follow.next() => change,
             _ = tokio::signal::ctrl_c() => {
                 output::say(ctx, "the project's runs go on in Calcifer");
                 output::next(ctx, &[status]);
                 return Ok(ExitCode::SUCCESS);
             }
         };
-        let Some(event) = event else { return Err(ended_early(status)) };
-        match rendering.apply(event) {
+        let Some(change) = change else { return Err(ended_early(status)) };
+        match rendering.apply(change) {
             Fresh::Nothing => {}
             Fresh::Board => {
                 said.board(ctx, &rendering);
@@ -231,10 +286,10 @@ async fn lines(ctx: &Context, mut rendering: Rendering, mut events: Watch<Event>
                     return Ok(stalled);
                 }
             }
-            Fresh::Warning(line) => output::warned(&line),
-            Fresh::Said(line) => output::say(ctx, &line),
-            Fresh::Failed(error) => output::failure(ctx, &error.message, &error.next),
-            Fresh::Ended => return rendering.last_line(ctx),
+            Fresh::Ended => {
+                said.board(ctx, &rendering);
+                return rendering.last_line(ctx);
+            }
         }
     }
 }
@@ -249,20 +304,20 @@ fn stalled(ctx: &Context, rendering: &Rendering) -> Option<ExitCode> {
     Some(ExitCode::from(output::STALLED))
 }
 
-fn ended_early(status: &str) -> Error {
+pub(super) fn ended_early(status: &str) -> Error {
     Error::new(Kind::Unavailable, "project_events_ended", "Calcifer stopped telling how the runs go").next(status)
 }
 
 impl Rendering {
     /// How a render said line by line ends: how far it got, and its exit.
     fn last_line(&self, ctx: &Context) -> Result<ExitCode, Error> {
-        let Some((error, rendered)) = &self.ended else { return Ok(ExitCode::SUCCESS) };
+        let Some(Some(ended)) = self.ended() else { return Ok(ExitCode::SUCCESS) };
         // A render that fell short ends on how far it got, the error's own words.
-        match error {
+        match &ended.error {
             Some(error) if error.code != "render_incomplete" && self.told(error) => Ok(ExitCode::from(error.exit_code() as u8)),
             Some(error) => Err(error.clone()),
             None => {
-                rendered.iter().for_each(|rendered| output::say(ctx, &finished(rendered)));
+                ended.rendered.iter().for_each(|rendered| output::say(ctx, &finished(rendered)));
                 Ok(ExitCode::SUCCESS)
             }
         }
@@ -271,23 +326,23 @@ impl Rendering {
     /// Whether `error` was said already.
     fn told(&self, error: &Error) -> bool {
         let of_job = self.board.jobs.iter().filter_map(|job| job.error.as_ref());
-        of_job.chain(&self.errors).any(|told| told.message == error.message)
+        of_job.chain(&self.board.errors).any(|told| told.message == error.message)
     }
 
     /// What stays in the scrollback once the live view is gone: each asset, its time and its file; one total line; what failed, last.
     fn block(&self, ctx: &Context, left: bool, closed: bool, status: &str) -> Result<ExitCode, Error> {
-        for warned in &self.warnings {
+        for warned in self.warnings() {
             match warned.names.as_slice() {
                 [] => output::warn(&brief(&warned.message)),
                 names => output::warn(&format!("{}: {}", names.join(", "), brief(&warned.message))),
             }
         }
         let has_row = |name: &String| self.board.jobs.iter().any(|job| job.asset == *name);
-        for said in self.said.iter().filter(|said| !said.name.as_ref().is_some_and(has_row)) {
+        for said in self.board.said.iter().filter(|said| said.level == NoteLevel::Info && !said.names.iter().any(has_row)) {
             output::say(ctx, &said.message);
         }
         self.rows(ctx);
-        let Some((error, rendered)) = &self.ended else {
+        let Some(ended) = self.ended() else {
             let going: Vec<&str> = self.board.jobs.iter().filter(|job| matches!(job.state, JobState::Running | JobState::Waiting)).map(|job| job.asset.as_str()).collect();
             if !going.is_empty() {
                 anstream::println!("still going: {}", going.join(", "));
@@ -301,6 +356,7 @@ impl Rendering {
             }
             return Ok(ExitCode::SUCCESS);
         };
+        let (error, rendered) = (ended.and_then(|ended| ended.error.as_ref()), ended.and_then(|ended| ended.rendered.as_ref()));
         match error {
             Some(error) if error.code == "render_incomplete" => {
                 let words = error.message.split_once(": ").map_or(error.message.as_str(), |(words, _)| words);
@@ -364,7 +420,7 @@ impl Rendering {
             let line = if reason.contains(names[0]) { reason.to_owned() } else { format!("{of}: {reason}") };
             output::failure(ctx, &brief(&line), next);
         }
-        for error in &self.errors {
+        for error in &self.board.errors {
             output::failure(ctx, &brief(&error.message), &error.next);
         }
         let unsent: Vec<&str> = self.board.jobs.iter().filter(|job| job.state == JobState::NotSent).map(|job| job.asset.as_str()).collect();
@@ -435,6 +491,8 @@ fn finished(rendered: &Rendered) -> String {
 /// What has been said of each job, so each change is said once. A stage's steps are said at each tenth of the way.
 #[derive(Default)]
 struct Lines {
+    /// Each line the render said, and each failure of no asset's, by its words.
+    spoken: HashSet<String>,
     /// What it last said of each thing fetched ahead, by run.
     ahead: HashMap<u64, String>,
     said: HashSet<(String, Option<u32>, String)>,
@@ -449,6 +507,22 @@ impl Lines {
     }
 
     fn board(&mut self, ctx: &Context, rendering: &Rendering) {
+        // What it said, each line once: a warning with the first asset whose it is.
+        for said in &rendering.board.said {
+            match said.level {
+                NoteLevel::Warning if self.spoken.insert(format!("warning {}", said.message)) => output::warned(&match said.names.first() {
+                    Some(name) => format!("{name}: warning: {}", said.message),
+                    None => format!("warning: {}", said.message),
+                }),
+                NoteLevel::Info if self.spoken.insert(format!("info {}", said.message)) => output::say(ctx, &said.message),
+                _ => {}
+            }
+        }
+        for error in &rendering.board.errors {
+            if self.spoken.insert(format!("error {}", error.message)) {
+                output::failure(ctx, &error.message, &error.next);
+            }
+        }
         // What is fetched ahead, as it starts a stage or every quarter of the way.
         for ahead in &rendering.board.ahead {
             // Nothing to say until it has bytes to fetch: what weighs nothing is ready as soon as it's asked.
@@ -555,7 +629,7 @@ fn of_shot(rendering: &Rendering, job: &Job) -> String {
 /// The live view of a render: one row per job, drawn from the board.
 pub(crate) struct View {
     rendering: Rendering,
-    events: Watch<Event>,
+    follow: Follow,
     /// The row chosen by ↑/↓, by what it is making: rows move as they end.
     selected: Option<(String, Option<u32>)>,
     /// The person left it going.
@@ -580,15 +654,15 @@ struct Drawn {
 impl View {
     /// Waits for what Calcifer says next. Cancel-safe.
     pub(crate) async fn changed(&mut self) {
-        match self.events.next().await {
-            Some(event) => drop(self.rendering.apply(event)),
+        match self.follow.next().await {
+            Some(change) => drop(self.rendering.apply(change)),
             None => self.closed = true,
         }
     }
 
     /// Nothing more will come.
     pub(crate) fn over(&self) -> bool {
-        self.closed || self.rendering.ended.is_some()
+        self.closed || self.rendering.over.is_some()
     }
 
     fn at(&self) -> Option<usize> {
@@ -700,18 +774,19 @@ impl View {
     /// One frame. What it can't draw itself is the links; they are returned to go over it.
     pub(crate) fn draw(&self, ctx: &Context, frame: &mut Frame, table: &mut TableState) -> Vec<Overlay> {
         let rendering = &self.rendering;
-        let warned: Vec<String> = (rendering.warnings.iter().rev().take(WARNINGS_SHOWN).rev())
+        let warnings: Vec<&api::calcifer::project::Said> = rendering.warnings().collect();
+        let warned: Vec<String> = (warnings[warnings.len().saturating_sub(WARNINGS_SHOWN)..].iter())
             .map(|warned| match warned.names.as_slice() {
                 [] => format!("warning: {}", warned.message),
                 names => format!("warning: {}: {}", names.join(", "), warned.message),
             })
             .collect();
-        let said = rendering.said.last().filter(|said| said.name.is_none()).map(|said| said.message.clone());
+        let said = (rendering.board.said.iter().rfind(|said| said.level == NoteLevel::Info)).filter(|said| said.names.is_empty()).map(|said| said.message.clone());
         let ahead: Vec<String> = rendering.board.ahead.iter().filter_map(ahead_line).collect();
         let foot = warned.len() as u16 + ahead.len() as u16 + u16::from(said.is_some()) + 1;
         let [top, body, bottom] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1), Constraint::Length(foot)]).areas(frame.area());
 
-        let silence = self.events.silence().map(|silence| format!(" · {silence}")).unwrap_or_default();
+        let silence = self.follow.silence().map(|silence| format!(" · {silence}")).unwrap_or_default();
         frame.render_widget(Line::from(format!("{}{silence}", rendering.title())).style(Style::new().add_modifier(Modifier::BOLD)), top);
         frame.render_widget(Line::from(format!("{} · {}", rendering.count(), rendering.elapsed())).right_aligned(), top);
 
