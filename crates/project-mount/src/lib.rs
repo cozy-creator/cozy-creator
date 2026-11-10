@@ -504,7 +504,7 @@ impl Provider {
                 mounted.guard.seal()?;
                 #[cfg(target_os = "macos")]
                 if self.native {
-                    mounted.native_lease = Some(apfs::Lease::capture(self, backing)?);
+                    mounted.native_lease = Some(apfs::Lease::capture(self, backing, view)?);
                 }
                 #[cfg(not(target_os = "macos"))]
                 {
@@ -703,7 +703,7 @@ impl Mounted {
             {
                 return Ok(false);
             }
-            self.provider.is_mounted(&self.view)
+            Ok(true)
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -1075,7 +1075,11 @@ fn control_output(mut command: Command, operation: &'static str) -> Result<Vec<u
 
 #[cfg(target_os = "macos")]
 fn macos_mounted(view: &Path) -> Result<bool> {
-    // securefs's custom FUSE ioctl is unavailable with FSKit. Read kernel mount state.
+    Ok(macos_source(view)?.is_some())
+}
+
+#[cfg(target_os = "macos")]
+fn macos_source(view: &Path) -> Result<Option<String>> {
     let view = view
         .parent()
         .and_then(|parent| fs::canonicalize(parent).ok())
@@ -1085,7 +1089,9 @@ fn macos_mounted(view: &Path) -> Result<bool> {
     let needle = format!(" on {} (", view.display());
     Ok(String::from_utf8_lossy(&bytes)
         .lines()
-        .any(|line| line.contains(&needle)))
+        .find(|line| line.contains(&needle))
+        .and_then(|line| line.split_once(" on "))
+        .map(|(source, _)| source.to_owned()))
 }
 
 #[cfg(all(debug_assertions, target_os = "macos"))]
