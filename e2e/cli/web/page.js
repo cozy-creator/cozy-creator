@@ -200,9 +200,16 @@ async function closeBox(page) {
 /** An open box's Render. An image tool's box looking at a take shows only its description: its + goes to its next take's words, with Render. */
 async function renderOf(page, name) {
   const here = page.locator(`.card.here[data-asset="${name}"]`).first();
+  await here.waitFor();
   const next = here.locator('.here-side .take.add[aria-label="Its next take"]');
+  // A cold tool list can briefly show fallback fields before an image take gains its +.
+  // Wait for an editor (including non-image/custom editors) or that actual next-take control.
+  const editor = here.locator('.in-frame, .tl, .tool-ui, .tool-ui-failed, .media.blank:not(:has(.media-making, .made-from, .prog)), .media:has(.play, video, audio)');
+  await editor.or(next).first().waitFor();
   if (!(await here.locator('.in-frame').count()) && (await next.count())) await next.click();
-  return here.locator('button[aria-label=Render]');
+  const render = here.locator('button[aria-label=Render]');
+  await render.waitFor();
+  return render;
 }
 
 async function openBox(page, name) {

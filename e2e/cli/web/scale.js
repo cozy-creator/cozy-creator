@@ -14,7 +14,7 @@ const { createHash } = require('crypto');
 const { appendFileSync, closeSync, copyFileSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } = require('fs');
 const { homedir } = require('os');
 const { join } = require('path');
-const { calcifer, signIn, STEP_MS, lastLook, lookAt, png, noStall, renderOf, until, projectHeld } = require('./page');
+const { calcifer, signIn, STEP_MS, lastLook, lookAt, png, noStall, closeBox, openBox, renderOf, until, projectHeld } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -389,7 +389,14 @@ async function nativeMemory(base, folder) {
     const named = profile.nodes.map(({ id, callFrame: { functionName, url, lineNumber } }) => ({ what: `${functionName || '(anonymous)'} ${url.split('/').at(-1)}:${lineNumber}`, ms: Math.round((spent.get(id) ?? 0) / 1000) }));
     return named.filter(({ what, ms: took }) => took > 0 && !what.startsWith('(idle)')).sort((a, b) => b.ms - a.ms).slice(0, 10);
   };
+  const resting = async () => {
+    await closeBox(page);
+    await page.locator('.card.here').waitFor({ state: 'detached' });
+    const state = await page.evaluate(() => ({ hash: location.hash, opened: document.querySelectorAll('.card.here').length }));
+    if (state.opened || state.hash.includes('/assets/')) throw new Error(`expected the real resting canvas: ${JSON.stringify(state)}`);
+  };
   const measuredPan = async () => {
+    await resting();
     await drawn();
     const still = summary(await page.evaluate(() => window.takeFrames(1000)));
     // Left alone, no frame asked for and nothing moved, as a canvas is on a laptop with no one at it.
@@ -460,11 +467,12 @@ async function nativeMemory(base, folder) {
   // A box of a picture says nothing at rest of its words, nor that they've changed (Paul, 11-05): open, its instructions are what the file says,
   // its tool's own field, or under More what it holds that its tool doesn't read.
   const openOn = async (name) => {
-    await page.goto(`${base}/#/projects/${id}/assets/${encodeURIComponent(name)}`);
+    await resting();
+    await openBox(page, name);
     const here = page.locator(`.card.here[data-asset="${name}"]`);
     await here.waitFor();
     // On a take an image tool made, its words are its next take's, behind its +.
-    await renderOf(page, name);
+    await (await renderOf(page, name)).waitFor();
     await here.locator('.more-toggle').waitFor();
     if (!(await here.locator('.edit-more').count())) await here.locator('.more-toggle').click();
     await here.locator('.mention-text[data-field=instructions], .held-line:has-text("Instructions")').first().waitFor();
@@ -501,8 +509,7 @@ async function nativeMemory(base, folder) {
   numbers.hand_import_s = seconds(saved.ms);
   numbers.hand_shows_ms = (await shownHand) - saved.at;
   check('a_hand_shows_live', numbers.hand_shows_ms <= BARS.edit_shows_ms, numbers.hand_shows_ms);
-  await page.goto(`${base}/#/projects/${id}`);
-  await page.locator('.card.here').waitFor({ state: 'detached' });
+  await resting();
   await until('its frames short again', shortFrames, (p95) => p95 < 100, 60_000);
 
   // Moved by a command, as a drag is: a row, and no read of the project.
