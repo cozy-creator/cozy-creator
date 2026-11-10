@@ -93,7 +93,7 @@ enum Command {
     Logout(account::Logout),
     #[command(hide = true)]
     Whoami(account::Whoami),
-    #[command(hide = true)]
+    /// Set up Tab completion for your shell.
     Completion(completion::Args),
 }
 
