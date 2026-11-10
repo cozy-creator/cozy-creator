@@ -11,7 +11,7 @@ export type Health =
 type Presence = { tab: string; project: string | null; revision: number }
 type Acknowledged = Presence & { stream: string; refusal?: ProjectShowRefusal }
 type Waiter = { project: string; done(): void; fail(error: unknown): void }
-type Confirmed = { stream: string; key: string; reply: ProjectShowReply | null }
+type Confirmed = { stream: string; key: string; readers: number; reply: ProjectShowReply | null }
 
 type Shared =
   | { event: StreamEvent }
@@ -77,6 +77,8 @@ export class EventStream {
   private following: AbortController | null = null
   private told: Confirmed | null = null
   private telling = false
+  /** Lock drops server Readers even when the displayed project set later returns to the same IDs. */
+  private readers = 0
 
   constructor(client: Client) {
     this.client = client
@@ -194,20 +196,21 @@ export class EventStream {
     const projects = [...new Set(snapshot.flatMap(({ project }) => project === null ? [] : [project]))].sort()
     const key = projects.join()
     const stream = this.stream
-    if (this.told?.stream === stream && this.told.key === key) {
+    const readers = this.readers
+    if (this.told?.stream === stream && this.told.key === key && this.told.readers === readers) {
       this.confirm(snapshot, this.told)
       return
     }
     this.telling = true
     try {
       const reply = await this.client.show(stream, projects, this.following.signal)
-      if (this.stream === stream) {
-        this.told = { stream, key, reply }
+      if (this.stream === stream && this.readers === readers) {
+        this.told = { stream, key, readers, reply }
         this.confirm(snapshot, this.told)
       }
     } catch (error) {
       // The stream's existing reconnect loop owns recovery; a failed show is never an ack.
-      if (this.stream === stream) this.following?.abort(error)
+      if (this.stream === stream && this.readers === readers) this.following?.abort(error)
       return
     } finally {
       this.telling = false
@@ -231,6 +234,20 @@ export class EventStream {
     if (event.type === "hello" && this.epoch !== event.stream) {
       this.epoch = event.stream
       this.acknowledged = null
+    }
+    if (event.type === "project.vault") {
+      this.readers++
+      this.told = null
+      if (this.showing === event.id) {
+        this.revision++
+        this.acknowledged = null
+        if (event.state !== "unlocked") {
+          for (const waiter of this.waiters) {
+            if (waiter.project === event.id) waiter.fail(new DOMException("Project access changed", "AbortError"))
+          }
+        }
+        this.show(this.showing)
+      } else if (this.holding) void this.tell()
     }
     for (const listener of this.listeners) listener(event)
   }
