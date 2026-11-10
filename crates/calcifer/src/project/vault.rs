@@ -59,7 +59,7 @@ pub(super) fn view(root: &FsPath) -> Result<PathBuf, Error> {
 fn work_view(root: &FsPath) -> Result<PathBuf, Error> {
     let Some(session) = held(root) else { return Err(locked(root)); };
     let session = session.lock().expect("vault session");
-    if !session.mount.is_mounted().map_err(provider)? { return Err(locked(root)); }
+    // The provider guards its underlying path against plaintext fallback; lost mounts fail I/O.
     Ok(session.mount.view().to_owned())
 }
 
@@ -357,7 +357,9 @@ fn hash(path: &FsPath) -> Result<[u8;32], Error> {
 
 fn fresh() -> String { let mut bytes = [0u8;16]; getrandom::fill(&mut bytes).expect("OS randomness"); hex::encode(bytes) }
 
-const PAYLOAD_PREFIX: &[u8] = b"cozy:vault:journal:1:";
+const PAYLOAD_PREFIX: &[u8] = b"cozy:vault:journal:2:";
+const JOURNAL_DIR: &str = ".vault-journal";
+const MAX_JOURNAL_BYTES: u64 = 32 << 20;
 static KEY_ROOTS: LazyLock<Mutex<BTreeMap<String, PathBuf>>> = LazyLock::new(Mutex::default);
 static TRUSTED_KEYS: LazyLock<Mutex<BTreeMap<PathBuf, Keybag>>> = LazyLock::new(Mutex::default);
 
@@ -366,63 +368,83 @@ struct ProtectedPayload {
     project_id: String,
     root: PathBuf,
     context: String,
-    ciphertext: String,
+    object: String,
 }
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PrivateRecord { project_id: String, context: String, data: String }
 
 pub(crate) fn is_payload(value: &[u8]) -> bool { value.starts_with(PAYLOAD_PREFIX) }
 
-/// Public envelope ownership only; this does not decrypt or authorize a field.
-pub(crate) fn payload_root(value: &[u8]) -> Result<Option<PathBuf>, Error> {
+fn payload(value: &[u8]) -> Result<Option<ProtectedPayload>, Error> {
     let Some(encoded) = value.strip_prefix(PAYLOAD_PREFIX) else { return Ok(None) };
-    let payload: ProtectedPayload = serde_json::from_slice(encoded).map_err(|_| error("vault_journal", "invalid protected journal envelope"))?;
-    Ok(Some(KEY_ROOTS.lock().expect("vault project roots").get(&payload.project_id).cloned().unwrap_or(payload.root)))
+    let record: ProtectedPayload = serde_json::from_slice(encoded).map_err(|_| error("vault_journal", "invalid private journal pointer"))?;
+    if record.object.len() != 32 || !record.object.bytes().all(|byte| byte.is_ascii_hexdigit()) { return Err(error("vault_journal", "invalid private journal object")); }
+    Ok(Some(record))
 }
 
+fn current_root(record: &ProtectedPayload) -> PathBuf { KEY_ROOTS.lock().expect("vault project roots").get(&record.project_id).cloned().unwrap_or_else(|| record.root.clone()) }
 
-/// Seal private global journal fields BEFORE binding them into SQLite. Ordinary project values pass through.
+/// Global SQL stores only public pointer metadata. Private bytes live under the SAME project filesystem cipher.
 pub(crate) fn seal_payload(path: &FsPath, context: &str, value: &[u8]) -> Result<Vec<u8>, Error> {
     use base64::Engine as _;
     let path = logical(path);
     let Some(root) = path.ancestors().find(|root| encrypted(root)) else { return Ok(value.to_vec()) };
+    let view = work_view(root)?;
     let keybag = TRUSTED_KEYS.lock().expect("trusted vault recipients").get(root).cloned().ok_or_else(|| locked(root))?;
-    let ciphertext = keybag.seal(context, value).map_err(key)?;
-    let payload = ProtectedPayload { project_id: keybag.info().project_id, root: root.to_owned(), context: context.into(), ciphertext: base64::engine::general_purpose::STANDARD.encode(ciphertext) };
-    let mut encoded = PAYLOAD_PREFIX.to_vec();
-    encoded.extend(serde_json::to_vec(&payload).map_err(|e| error("vault_journal", e))?);
-    Ok(encoded)
-}
-
-/// None is an intentionally locked field, never a failed parse to be treated as plaintext.
-pub(crate) fn open_payload(context: &str, value: &[u8]) -> Result<Option<Vec<u8>>, Error> {
-    use base64::Engine as _;
-    let Some(encoded) = value.strip_prefix(PAYLOAD_PREFIX) else { return Ok(Some(value.to_vec())) };
-    let payload: ProtectedPayload = serde_json::from_slice(encoded).map_err(|_| error("vault_journal", "invalid protected journal envelope"))?;
-    if payload.context != context { return Err(error("vault_journal", "protected journal context mismatch")); }
-    let current_root = KEY_ROOTS.lock().expect("vault project roots").get(&payload.project_id).cloned().unwrap_or_else(|| payload.root.clone());
-    let Some(session) = held(&current_root) else { return Ok(None) };
-    let session = session.lock().expect("vault session");
-    // Internal journal reads may finish an already-authorized work lease during locking/busy.
-    // Public API routes independently enforce the viewing token; fully locked sessions are absent.
-    let ciphertext = base64::engine::general_purpose::STANDARD.decode(&payload.ciphertext).map_err(|_| error("vault_journal", "invalid protected journal ciphertext"))?;
-    let plain = session.secret.open(context, &ciphertext).map_err(key)?.to_vec();
-    if payload.root != current_root { ROOTS.lock().expect("vault roots").insert(payload.root, current_root); }
-    Ok(Some(plain))
-}
-
-/// Rewrite a protected field during full local rekey. The caller commits all replacements atomically.
-pub(crate) fn rekey_payload(context: &str, value: &[u8], old: &ProjectSecret, new: &Keybag) -> Result<Vec<u8>, Error> {
-    use base64::Engine as _;
-    let Some(encoded) = value.strip_prefix(PAYLOAD_PREFIX) else { return Err(error("vault_journal", "expected a protected field during rekey")) };
-    let mut payload: ProtectedPayload = serde_json::from_slice(encoded).map_err(|_| error("vault_journal", "invalid protected journal envelope"))?;
-    if payload.context != context { return Err(error("vault_journal", "protected journal context mismatch")); }
-    let ciphertext = base64::engine::general_purpose::STANDARD.decode(&payload.ciphertext).map_err(|_| error("vault_journal", "invalid protected journal ciphertext"))?;
-    let plain = old.open(context, &ciphertext).map_err(key)?;
-    payload.ciphertext = base64::engine::general_purpose::STANDARD.encode(new.seal(context, &plain).map_err(key)?);
+    let project_id = keybag.info().project_id;
+    let dir = view.join(JOURNAL_DIR);
+    match fs::symlink_metadata(&dir) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {},
+        Ok(_) => return Err(error("vault_journal", "the private journal is not a project-owned directory")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => fs::create_dir(&dir).map_err(io)?,
+        Err(e) => return Err(io(e)),
+    }
+    if !dir.canonicalize().map_err(io)?.starts_with(view.canonicalize().map_err(io)?) { return Err(error("vault_journal", "private journal escapes its mounted project")); }
+    let object = fresh();
+    let private = PrivateRecord { project_id: project_id.clone(), context: context.into(), data: base64::engine::general_purpose::STANDARD.encode(value) };
+    let bytes = serde_json::to_vec(&private).map_err(|e| error("vault_journal", e))?;
+    if bytes.len() as u64 > MAX_JOURNAL_BYTES { return Err(error("vault_journal", "private journal record is too large")); }
+    // A fresh immutable revision is durable BEFORE the SQL pointer transaction commits.
+    platform::durable::replace(&dir.join(&object), &bytes, 0o600).map_err(provider)?;
+    let reference = ProtectedPayload { project_id, root: root.to_owned(), context: context.into(), object };
     let mut out = PAYLOAD_PREFIX.to_vec();
-    out.extend(serde_json::to_vec(&payload).map_err(|e| error("vault_journal", e))?);
+    out.extend(serde_json::to_vec(&reference).map_err(|e| error("vault_journal", e))?);
     Ok(out)
 }
 
+pub(crate) fn payload_root(value: &[u8]) -> Result<Option<PathBuf>, Error> { Ok(payload(value)?.map(|record| current_root(&record))) }
+
+pub(crate) fn open_payload(context: &str, value: &[u8]) -> Result<Option<Vec<u8>>, Error> {
+    use base64::Engine as _;
+    let Some(reference) = payload(value)? else { return Ok(Some(value.to_vec())) };
+    if reference.context != context { return Err(error("vault_journal", "private journal context mismatch")); }
+    let root = current_root(&reference);
+    let Some(session) = held(&root) else { return Ok(None) };
+    let session = session.lock().expect("vault session");
+    if session.secret.project_id() != reference.project_id { return Err(error("vault_journal", "private journal project mismatch")); }
+    let view = session.mount.view().to_owned();
+    drop(session);
+    let at = view.join(JOURNAL_DIR).join(&reference.object);
+    if fs::symlink_metadata(&at).map_err(io)?.file_type().is_symlink() { return Err(error("vault_journal", "private journal objects cannot be symlinks")); }
+    if !at.canonicalize().map_err(io)?.starts_with(view.canonicalize().map_err(io)?) { return Err(error("vault_journal", "private journal object escapes its mounted project")); }
+    let mut bytes = Vec::new();
+    fs::File::open(&at).map_err(io)?.take(MAX_JOURNAL_BYTES + 1).read_to_end(&mut bytes).map_err(io)?;
+    if bytes.len() as u64 > MAX_JOURNAL_BYTES { return Err(error("vault_journal", "private journal record is too large")); }
+    let private: PrivateRecord = serde_json::from_slice(&bytes).map_err(|_| error("vault_journal", "invalid private journal record"))?;
+    if private.project_id != reference.project_id || private.context != context { return Err(error("vault_journal", "private journal ownership mismatch")); }
+    let plain = base64::engine::general_purpose::STANDARD.decode(private.data).map_err(|_| error("vault_journal", "invalid private journal value"))?;
+    if reference.root != root { ROOTS.lock().expect("vault roots").insert(reference.root, root); }
+    Ok(Some(plain))
+}
+
+/// Full filesystem rekey already rewrites these blob bytes. Preserve their logical pointer identity.
+pub(crate) fn rekey_payload(context: &str, value: &[u8], old: &ProjectSecret, new: &Keybag) -> Result<Vec<u8>, Error> {
+    let Some(reference) = payload(value)? else { return Err(error("vault_journal", "expected a private journal pointer")) };
+    if reference.context != context || reference.project_id != old.project_id() || reference.project_id != new.info().project_id { return Err(error("vault_journal", "private journal rekey context mismatch")); }
+    if open_payload(context, value)?.is_none() { return Err(locked(&current_root(&reference))); }
+    Ok(value.to_vec())
+}
 
 /// Private responses never enter browser caches; an existing stream stops yielding new chunks once lock begins.
 pub(super) async fn privacy(
