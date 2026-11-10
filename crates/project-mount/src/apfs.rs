@@ -110,6 +110,17 @@ fn run(
     secret: Option<&[u8]>,
     budget: Duration,
 ) -> Result<Vec<u8>> {
+    #[cfg(debug_assertions)]
+    if let Some(path) = std::env::var_os("COZY_VAULT_PROVIDER_DIAGNOSTICS") {
+        let mut log = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .map_err(io_error("open native provider diagnostics"))?;
+        // Only executable/arguments: unlock material is supplied separately over stdin.
+        writeln!(log, "native operation {operation}: {command:?}")
+            .map_err(io_error("write native provider diagnostics"))?;
+    }
     let mut child = command
         .stdin(if secret.is_some() {
             Stdio::piped()
@@ -125,9 +136,9 @@ fn run(
             .stdin
             .take()
             .ok_or(Error::Invalid("native image stdin is unavailable"))?;
-        // hdiutil reads the entire stdin password. Deliberately no newline, argv or environment
-        // secret, and no -storepass/keychain operation. Closing the pipe terminates the input.
-        if let Err(error) = input.write_all(secret) {
+        // hdiutil's -stdinpass consumes a NUL-terminated single password. In particular,
+        // securefs's newline/confirmation framing must never enter this password.
+        if let Err(error) = input.write_all(secret).and_then(|_| input.write_all(&[0])) {
             let _ = child.kill();
             let _ = child.wait();
             return Err(io_error("send native image unlock material")(error));
