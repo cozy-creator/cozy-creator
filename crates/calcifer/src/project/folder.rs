@@ -999,17 +999,31 @@ pub(crate) struct Folder {
 impl Folder {
     /// Release cached connections before unmounting or moving the storage. The caller has
     /// stopped admissions and checked background work; an in-flight DB operation refuses it.
-    pub(crate) fn close_connections(&self) -> Result<(), Error> {
+    pub(crate) fn close_connections(&self, checkpoint: bool) -> Result<(), Error> {
         let busy = || Error::new(api::error::Kind::Conflict, "project_busy", "a project database operation is still running");
         if self.shared.checkpointing.load(std::sync::atomic::Ordering::Acquire) { return Err(busy()); }
         let mut writer = self.shared.writing.try_lock().map_err(|_| busy())?;
         let mut reader = self.shared.reading.try_lock().map_err(|_| busy())?;
-        let writing = writer.take();
         let reading = reader.take();
+        drop(reading);
+        if checkpoint {
+            let extra;
+            let conn = match writer.as_ref() {
+                Some(conn) => conn,
+                None => {
+                    extra = rusqlite::Connection::open_with_flags(self.db(), rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
+                        .map_err(|e| Error::new(api::error::Kind::Unavailable, "vault_database", format!("open project checkpoint: {e}")))?;
+                    &extra
+                }
+            };
+            let occupied: i64 = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))
+                .map_err(|e| Error::new(api::error::Kind::Unavailable, "vault_database", format!("checkpoint project before closing: {e}")))?;
+            if occupied != 0 { return Err(busy()); }
+        }
+        let writing = writer.take();
         *self.shared.held.lock().expect("held lock") = None;
         drop(reader);
         drop(writer);
-        drop(reading);
         drop(writing);
         Ok(())
     }

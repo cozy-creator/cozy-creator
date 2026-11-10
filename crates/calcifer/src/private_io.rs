@@ -72,8 +72,7 @@ pub(crate) fn descriptor_for_mounted(
     project_id: &str,
     generation: u64,
 ) -> Result<Scope, Error> {
-    let view = view
-        .canonicalize()
+    let view = platform::durable::canonical(view)
         .map_err(|_| error("the private project view is unavailable"))?;
     let storage = LocalPrivateStorage {
         project_id: project_id.to_owned(),
