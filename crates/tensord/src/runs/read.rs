@@ -490,7 +490,7 @@ impl Runs {
             .into_iter()
             .map(|r| {
                 let object = ObjectRef { sha256: sha256::hex(&r.digest), length: r.length };
-                let file = self.service.engine.cas().file(&object).map_err(problem)?;
+                let file = crate::storage::file(&self.service.engine.store, &object).map_err(problem)?;
                 Ok((file, r.length))
             })
             .collect::<Result<Vec<_>, Error>>()?;
@@ -525,7 +525,7 @@ impl Runs {
             .get(member)
             .ok_or_else(|| Error::not_found("output_not_found", "the tree has no such member"))?;
         let (sha, length) = (object.sha256.as_str(), object.length);
-        let file = self.service.engine.cas().file(object).map_err(storage)?;
+        let file = crate::storage::file(&self.service.engine.store, object).map_err(storage)?;
         Ok(OutputSnapshot {
             parts: vec![(file, length)],
             length,
@@ -546,7 +546,7 @@ impl Runs {
             return Err(Error::not_found("object_not_found", "this signer wrote no such object"));
         };
         let object = ObjectRef { sha256: sha256.to_string(), length };
-        self.service.engine.cas().file(&object).map_err(storage)
+        crate::storage::file(&self.service.engine.store, &object).map_err(storage)
     }
     /// `actor`'s installations, each with what it holds now (`StatusFrame.environments`).
     pub(crate) fn environments(&self, actor: VerifiedActor) -> Result<Vec<v1::Environment>, Error> {

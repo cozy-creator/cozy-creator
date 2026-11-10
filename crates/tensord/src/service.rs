@@ -75,14 +75,14 @@ fn holds_gpus(birth: &Birth, before: u64) -> bool {
     !left.is_empty() && !platform::contain::all_stuck(&left)
 }
 impl Service {
-    pub(crate) fn open(root: &Path, generations: &Path, parallelism: usize) -> io::Result<Arc<Self>> {
+    pub(crate) fn open(root: &Path, generations: &Path, parallelism: usize, store: Arc<crate::storage::Store>) -> io::Result<Arc<Self>> {
         if parallelism == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "CPU parallelism must be positive",
             ));
         }
-        let engine = Engine::open(&root.join("execution"))?;
+        let engine = Engine::open(&root.join("execution"), store)?;
         // A completed request does not prove its retained CUDA context ended. A prior
         // machine's executor cannot be adopted (nothing can reach it), so it is ended now
         // and GPU admission stays fenced until its exit is observed.
@@ -529,14 +529,11 @@ impl Service {
         let uv_cache = publisher.as_ref().map(|publisher| publisher.uv_cache());
         let generations = self.catalog.root();
         let engine = generations.parent().unwrap_or(generations);
-        // Run objects no unfinished run needs go first.
-        let objects = match (all, self.calls()) {
-            (true, Some(calls)) => calls.sweep_objects().unwrap_or_else(|error| {
+        if let (true, Some(calls)) = (all, self.calls()) {
+            if let Err(error) = calls.sweep_objects() {
                 tracing::warn!("reclaim object roots: {error}");
-                (0, 0)
-            }),
-            _ => (0, 0),
-        };
+            }
+        }
         let sweep = || -> io::Result<crate::reclaim::Swept> {
             let pool = self.pool().filter(|_| all);
             let bound = self.engine.bound_generations()?;
@@ -554,7 +551,6 @@ impl Service {
                 torch: publisher.as_ref().map(|publisher| &publisher.sdk.torch),
                 disk: &disk,
             })?;
-            swept.add(crate::reclaim::Kind::Object, objects.0, objects.1);
             if let Some(calls) = self.calls().filter(|_| all) {
                 if disk()?.short().is_some() {
                     let (count, bytes) = calls.make_room()?;

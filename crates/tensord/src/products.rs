@@ -1,5 +1,5 @@
 //! The run output log's products: what a run has made so far, as it makes it (wire 65).
-//! `Outputs.publish` commits the asset's bytes into the run objects' store (`cas`), binds them to the run's
+//! `Outputs.publish` commits the asset's bytes into the machine's store, binds them to the run's
 //! actor and journals one `product` on the run's log, in that order, so every product a
 //! client reads can be fetched with ReadByteTreeObject. A single output's product is replaced
 //! by each publish (SET); a list output grows (APPEND). The returned result publishes only
@@ -41,11 +41,8 @@ pub(crate) fn retain(
 ) -> io::Result<stored::NativeByteRetentionRequest> {
     // Bytes already held (a product published while the run made it, a memoized or child
     // result) are not read again.
-    let cas = engine.cas();
-    if !cas.reuse(object)? {
-        cas.put(source, Some(object))?;
-    }
-    let tree = crate::trees::put(&cas, owner, [("payload".to_string(), object.clone())].into())?;
+    crate::storage::put(&engine.store, source, Some(object))?;
+    let tree = crate::trees::put(engine, owner, [("payload".to_string(), object.clone())].into())?;
     let native = stored::NativeByteRetentionRequest {
         source: Some(stored::NativeByteTreeRef {
             producer_root_id: tree.hold,
@@ -61,6 +58,8 @@ pub(crate) fn retain(
     engine.bind_native_output(actor, owner, &crate::stored::encode(&native))?;
     // The signer's own, so a later run of it may name these bytes by their hash, with nothing written.
     engine.with_journal(|j| j.adopt_object(actor, run, object))?;
+    // Journaled, so the next sweep finds them; held from now so nothing evicts them before it.
+    engine.root_objects(&[tree.manifest, object.clone()])?;
     Ok(native)
 }
 

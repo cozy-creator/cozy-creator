@@ -916,6 +916,26 @@ impl Journal {
         tx.commit().map_err(db_error)
     }
 
+    /// The objects something needs now: used (a Write, a new run) since `since_ms`, or named by
+    /// a run that is unfinished or ended since.
+    pub(crate) fn needed_objects(&self, since_ms: i64) -> io::Result<Vec<tensorfs::format::ObjectRef>> {
+        let mut statement = self.connection
+            .prepare("SELECT sha256,length FROM object_uses WHERE used_ms>=?1
+                UNION SELECT r.sha256,r.length FROM run_objects r JOIN executions e ON e.id=r.execution
+                    WHERE e.updated_ms>=?1 OR e.state NOT IN ('completed','failed','canceled')")
+            .map_err(db_error)?;
+        let rows = statement
+            .query_map([since_ms], |row| Ok(tensorfs::format::ObjectRef { sha256: row.get(0)?, length: row.get(1)? }))
+            .map_err(db_error)?;
+        rows.collect::<Result<_, _>>().map_err(db_error)
+    }
+    /// Every retained output's record (`bind_native_output`).
+    pub(crate) fn native_outputs(&self) -> io::Result<Vec<Vec<u8>>> {
+        let mut statement = self.connection.prepare("SELECT source FROM native_outputs").map_err(db_error)?;
+        let rows = statement.query_map([], |row| row.get(0)).map_err(db_error)?;
+        rows.collect::<Result<_, _>>().map_err(db_error)
+    }
+
     /// Whether nothing needs this object's root: no use (a Write, a new run) since
     /// `before_ms`, and no run naming it that is unfinished (any state but the three
     /// terminal ones) or ended since then.

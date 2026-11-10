@@ -18,8 +18,13 @@ pub(crate) use tensorfs::store::Store;
 use tensorfs::format::{ObjectRef, Repo, Tree};
 
 /// Opens (or creates) the machine store at `root`; one in an older format is refused.
+/// It holds this machine's runs' inputs and outputs with its models: its owner's alone to read.
 pub(crate) fn open(root: &Path) -> io::Result<Arc<Store>> {
-    Store::open(root).map(Arc::new).map_err(io_error)
+    let store = Store::open(root).map_err(io_error)?;
+    if let Err(error) = platform::durable::set_mode(store.root(), 0o700) {
+        tracing::warn!("{} stays readable by other users: {error}", store.root().display());
+    }
+    Ok(Arc::new(store))
 }
 
 /// The machine's claim on its store: `owner.lock` at the store's real path, held exclusively
@@ -40,6 +45,64 @@ pub(crate) fn claim(root: &Path) -> io::Result<std::fs::File> {
 
 /// The machine's claim on its store (`claim`).
 const OWNER_LOCK: &str = "owner.lock";
+
+/// Admits a run object (an input, an output, a tree's document). With `expect`, one already here is
+/// reused unread and other bytes are refused (`InvalidData`).
+pub(crate) fn put(store: &Store, src: impl io::Read, expect: Option<&ObjectRef>) -> io::Result<ObjectRef> {
+    store.put(src, expect).map_err(io_error)
+}
+
+/// A run object to read. A read is a use.
+pub(crate) fn file(store: &Store, object: &ObjectRef) -> io::Result<std::fs::File> {
+    match store.reuse(object).map_err(io_error)? {
+        true => store.file(object).map_err(io_error),
+        false => Err(io::Error::new(io::ErrorKind::NotFound, format!("object {} is absent", object.id()))),
+    }
+}
+
+/// Keeps `object` for the store's TTL from now, under its own digest: an input, a child's result.
+pub(crate) fn keep(store: &Store, object: &ObjectRef) -> io::Result<()> {
+    store.used(&object.sha256, [object]).map_err(io_error)
+}
+
+/// How many objects one hold of recent additions grows to before the next starts.
+const FOLD: usize = 256;
+
+/// What this machine keeps from the store's eviction while it runs: an unfinished run's objects
+/// and a run's held outputs. A store hold only grows, so what was added since the last `reset` is
+/// held again whole with each addition, `FOLD` objects to a hold.
+#[derive(Default)]
+pub(crate) struct Roots {
+    folded: Vec<Arc<tensorfs::store::retention::Hold>>,
+    recent: Vec<ObjectRef>,
+    last: Option<Arc<tensorfs::store::retention::Hold>>,
+}
+
+impl Roots {
+    pub(crate) fn add(&mut self, store: &Store, objects: &[ObjectRef]) -> io::Result<()> {
+        if objects.is_empty() {
+            return Ok(());
+        }
+        self.recent.extend_from_slice(objects);
+        let hold = store.hold(&self.recent).map_err(io_error)?;
+        match self.recent.len() >= FOLD {
+            true => {
+                self.folded.push(hold);
+                self.recent.clear();
+                self.last = None;
+            }
+            false => self.last = Some(hold),
+        }
+        Ok(())
+    }
+
+    /// Holds exactly `objects` from now on: taken before the earlier holds are let go.
+    pub(crate) fn reset(&mut self, store: &Store, objects: &[ObjectRef]) -> io::Result<()> {
+        let hold = store.hold(objects).map_err(io_error)?;
+        *self = Roots { folded: vec![hold], ..Roots::default() };
+        Ok(())
+    }
+}
 
 /// Past this the transport log rotates to `transport.log.1`, so it holds at most twice this.
 const TRANSPORT_ROTATE: u64 = 4 << 20;

@@ -1,12 +1,21 @@
-//! Objects a signer uploads (run inputs, local package sources), content-addressed. An upload
-//! lands byte ranges in any order, several side by side, and resumes from the ranges held. Bytes
-//! stage per signer and enter the run objects' store (`cas`) only once every byte is held and the
-//! digest verifies. A run names only objects its own signer wrote, so another signer's object is neither
+//! A machine's run objects (inputs, outputs, trees, products, local package sources) live in its
+//! TensorFS store, with its models. The store's own retention keeps them:
+//!
+//! - an object a signer wrote, or a run was handed, is a use under its own digest (`storage::keep`):
+//!   kept for the store's TTL after its last use;
+//! - a run's output is a use under its owner's name (`trees::put`), kept the same way;
+//! - while the machine runs it holds what the journal needs now and every output (`root`), so the
+//!   store's eviction on a low disk never takes them. An output goes last: only once the disk is
+//!   still low after the store evicted what it could, and nothing used it for `IDLE` (`make_room`).
+//!
+//! An upload lands byte ranges in any order, several side by side, and resumes from the ranges
+//! held. Bytes stage per signer and enter the store only once every byte is held and the digest
+//! verifies. A run names only objects its own signer wrote, so another signer's object is neither
 //! readable nor reported as held.
 use crate::{
-    cas::Cas,
     execution::Engine,
     journal::{Artifact, Execution, HeldMemo, ResultRecord},
+    storage,
 };
 use platform::durable::FileAt;
 use std::{
@@ -32,10 +41,7 @@ pub(crate) type Ranges = Vec<(u64, u64)>;
 
 pub(crate) struct Objects {
     root: PathBuf,
-    cas: Cas,
     engine: Arc<Engine>,
-    /// Its `maintain` frees the machine's garbage, then what the store may evict, for bytes coming in.
-    store: Arc<tensorfs::store::Store>,
     /// Uploads under way, by part file.
     uploads: Mutex<HashMap<PathBuf, Weak<Upload>>>,
 }
@@ -145,81 +151,166 @@ fn write_held(part: &Path, length: u64, held: &Ranges) -> io::Result<()> {
     fs::rename(next, path)
 }
 
+/// The journal's time `age` ago.
+fn since(age: Duration) -> i64 {
+    let before = SystemTime::now().checked_sub(age).unwrap_or(UNIX_EPOCH);
+    before.duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as i64
+}
+
+/// Holds what the journal needs now (`Journal::needed_objects`) and every run's held output,
+/// and nothing else. An output whose document and files all went unused for `unused`, and
+/// that no run needs, is let go, least recently used first, until those let go cover `room`
+/// bytes: the store then keeps it as cache. Called with the object custody held.
+fn root(engine: &Engine, unused: Duration, room: u64) -> io::Result<()> {
+    let store = &engine.store;
+    let mut keep = engine.with_journal(|j| j.needed_objects(since(crate::reclaim::IDLE)))?;
+    let mut spare = vec![];
+    for record in engine.with_journal(|j| j.native_outputs())? {
+        let request = crate::stored::decode::<crate::stored::NativeByteRetentionRequest>(&record).ok();
+        let Some(manifest) = request.and_then(|r| r.source?.manifest) else {
+            continue;
+        };
+        let manifest = ObjectRef { sha256: sha256::hex(&manifest.digest), length: manifest.length };
+        let Some(roots) = crate::trees::roots(store, &manifest) else {
+            continue;
+        };
+        let used = roots.iter().filter_map(|root| fs::metadata(store.path(root).ok()?).ok()?.modified().ok()).max();
+        let mut free = used.is_none_or(|at| at.elapsed().is_ok_and(|idle| idle >= unused));
+        for root in &roots {
+            free = free && engine.with_journal(|j| j.object_releasable(&root.sha256, since(unused)))?;
+        }
+        match free {
+            true => spare.push((used, roots)),
+            false => keep.extend(roots),
+        }
+    }
+    spare.sort_by_key(|(used, _)| *used);
+    let mut freed = 0u64;
+    for (_, roots) in spare {
+        match freed >= room {
+            true => keep.extend(roots),
+            false => freed = freed.saturating_add(roots.iter().map(|root| root.length).sum()),
+        }
+    }
+    engine.reroot_objects(&keep)
+}
+
+/// The run objects' own store a machine before 0.23 kept (`objects/` beside the journal): what
+/// a hold kept (a run's output) and what the journal still needs move into the TensorFS store,
+/// by rename, each under its use before it moves. The rest goes: unheld objects, and uploads
+/// under way (`writes/`), which their senders still have. A move that fails leaves the folder
+/// as it is for the next start.
+fn upgrade(engine: &Engine, writes: &Path) {
+    #[derive(serde::Deserialize)]
+    struct Hold {
+        owner: String,
+        roots: Vec<ObjectRef>,
+    }
+    let old = engine.root.join("objects");
+    if !old.is_dir() {
+        return;
+    }
+    let store = &engine.store;
+    let moved = (|| -> io::Result<usize> {
+        let mut objects = engine.with_journal(|j| j.needed_objects(since(crate::reclaim::IDLE)))?;
+        for object in &objects {
+            storage::keep(store, object)?;
+        }
+        for entry in fs::read_dir(old.join("holds")).into_iter().flatten() {
+            let hold: Hold = serde_json::from_slice(&fs::read(entry?.path())?).map_err(io::Error::other)?;
+            store.used(&crate::trees::name(&hold.owner), &hold.roots).map_err(storage::io_error)?;
+            objects.extend(hold.roots);
+        }
+        engine.root_objects(&objects)?;
+        let mut moved = 0;
+        for object in &objects {
+            let from = old.join(&object.sha256[..2]).join(&object.sha256);
+            if !fs::metadata(&from).is_ok_and(|meta| meta.len() == object.length) {
+                continue; // moved by an earlier start, or gone before the update
+            }
+            let to = store.path(object).map_err(storage::io_error)?;
+            fs::create_dir_all(to.parent().expect("a blob has a shard"))?;
+            // Another filesystem: copied in through the store's own door, which checks it.
+            if store.holds(object) || fs::rename(&from, &to).is_err() {
+                storage::put(store, File::open(&from)?, Some(object))?;
+            }
+            moved += 1;
+        }
+        Ok(moved)
+    })();
+    match moved {
+        Ok(moved) => {
+            tracing::info!("moved {moved} run objects into the TensorFS store at {}; the old run object folder is removed", store.root().display());
+            let removed = fs::remove_dir_all(&old).and_then(|()| fs::remove_dir_all(writes));
+            if let Err(error) = removed {
+                tracing::warn!("removing {}: {error}", old.display());
+            }
+        }
+        Err(error) => tracing::warn!("run objects stay in {} until the next start: moving them into the TensorFS store failed: {error}", old.display()),
+    }
+}
+
+/// At the machine's start, before anything is admitted: a machine updated from before 0.23 moves
+/// its run objects into the store (`upgrade`), and what must not be evicted is held (`root`).
+pub(crate) fn restore(engine: &Engine, writes: &Path) -> io::Result<()> {
+    upgrade(engine, writes);
+    let _custody = engine.object_custody.lock().unwrap();
+    root(engine, crate::reclaim::TTL, u64::MAX)
+}
+
 impl Objects {
-    pub(crate) fn new(root: &Path, engine: Arc<Engine>, store: Arc<tensorfs::store::Store>) -> io::Result<Self> {
+    pub(crate) fn new(root: &Path, engine: Arc<Engine>) -> io::Result<Self> {
         fs::create_dir_all(root)?;
-        Ok(Self {
-            root: root.to_path_buf(),
-            cas: engine.cas(),
-            engine,
-            store,
-            uploads: Mutex::default(),
-        })
+        Ok(Self { root: root.to_path_buf(), engine, uploads: Mutex::default() })
     }
 
     /// The store the objects are held in.
-    pub(crate) fn cas(&self) -> &Cas {
-        &self.cas
+    pub(crate) fn store(&self) -> &storage::Store {
+        &self.engine.store
     }
 
     /// Excludes root release while a Write or an acceptance takes references.
     pub(crate) fn guard(&self) -> MutexGuard<'_, ()> {
         self.engine.object_custody.lock().unwrap()
     }
-    /// Renews `objects`, each here, so no sweep takes them soon; called with `guard` held.
+    /// Renews `objects`, each here, and holds them, so nothing evicts them before their run is
+    /// journaled; called with `guard` held.
     pub(crate) fn retain(&self, objects: &[ObjectRef]) -> io::Result<()> {
         for object in objects {
-            if !self.cas.reuse(object)? {
+            if !self.store().reuse(object).map_err(storage::io_error)? {
                 return Err(io::Error::new(io::ErrorKind::NotFound, format!("object {} is absent", object.id())));
             }
+            storage::keep(self.store(), object)?;
         }
-        Ok(())
+        self.engine.root_objects(objects)
     }
 
-    /// Removes objects no unfinished run names and nothing used for the TTL, or for `IDLE`
-    /// while the disk is low, and held outputs unused for the TTL: how many, and their bytes.
-    pub(crate) fn sweep(&self) -> io::Result<(usize, u64)> {
-        let held = self.evict_outputs(crate::reclaim::TTL, u64::MAX)?;
-        let unheld = self.release(match Disk::measure(&self.engine.root)?.short() {
-            Some(_) => crate::reclaim::IDLE,
-            None => crate::reclaim::TTL,
-        })?;
-        Ok((held.0 + unheld.0, held.1 + unheld.1))
+    /// Holds what is needed now, and lets go of outputs nothing used for the TTL: the store
+    /// expires those with the rest of its cache.
+    pub(crate) fn sweep(&self) -> io::Result<()> {
+        let _custody = self.guard();
+        root(&self.engine, crate::reclaim::TTL, u64::MAX)
     }
 
-    /// A disk still low after every cache: held outputs nothing used for `IDLE`, least recently used first, until it isn't.
+    /// A disk still low after every cache: the store evicts what it may (idle models, objects no
+    /// run needs), and only then held outputs nothing used for `IDLE`, least recently used first,
+    /// until it isn't. How many objects the outputs let go freed, and their bytes.
     pub(crate) fn make_room(&self) -> io::Result<(usize, u64)> {
         // What the caches just freed shows a moment later.
         std::thread::sleep(Duration::from_secs(1));
-        match Disk::measure(&self.engine.root)?.short() {
-            Some(short) => self.evict_outputs(crate::reclaim::IDLE, short),
-            None => Ok((0, 0)),
+        let Some(short) = Disk::measure(self.store().root())?.short() else {
+            return Ok((0, 0));
+        };
+        let freed = self.store().make_room(0).map_err(storage::io_error)?.bytes;
+        if freed >= short {
+            return Ok((0, 0));
         }
-    }
-
-    fn evict_outputs(&self, unused: Duration, room: u64) -> io::Result<(usize, u64)> {
-        let _custody = self.guard();
-        let before = SystemTime::now().checked_sub(unused).unwrap_or(UNIX_EPOCH);
-        let since = before.duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as i64;
-        let removed = self.cas.evict_held(unused, &mut |sha256| self.engine.with_journal(|j| j.object_releasable(sha256, since)), room)?;
-        for (sha256, _) in &removed {
-            self.engine.with_journal(|j| j.drop_held_memos(sha256))?;
+        {
+            let _custody = self.guard();
+            root(&self.engine, crate::reclaim::IDLE, short - freed)?;
         }
-        Ok((removed.len(), removed.iter().map(|(_, length)| length).sum()))
-    }
-
-    /// `sweep` over objects unused for `unused`. One written just before a crash has no journal
-    /// row yet: it ages from its own last use.
-    pub(crate) fn release(&self, unused: Duration) -> io::Result<(usize, u64)> {
-        let _custody = self.guard();
-        let before = SystemTime::now().checked_sub(unused).unwrap_or(UNIX_EPOCH);
-        let since = before.duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as i64;
-        let released = self.cas.sweep(unused, &mut |sha256| self.engine.with_journal(|j| j.object_releasable(sha256, since)))?;
-        for (sha256, _) in &released {
-            // A memo answered from this file cannot be answered any more.
-            self.engine.with_journal(|j| j.drop_held_memos(sha256))?;
-        }
-        Ok((released.len(), released.iter().map(|(_, length)| length).sum()))
+        let freed = self.store().make_room(0).map_err(storage::io_error)?;
+        Ok((freed.objects as usize, freed.bytes))
     }
 
     /// The stored object this signer wrote, or None.
@@ -230,7 +321,7 @@ impl Objects {
         let Some(length) = self.engine.with_journal(|j| j.object(actor, &hex))? else {
             return Ok(None);
         };
-        let path = self.cas.path(&ObjectRef { sha256: hex, length })?;
+        let path = self.store().path(&ObjectRef { sha256: hex, length }).map_err(storage::io_error)?;
         Ok(path.is_file().then_some((path, length)))
     }
 
@@ -307,12 +398,13 @@ impl Objects {
     /// later run of that signer may be handed it.
     pub(crate) fn adopt(&self, actor: &str, parent: &str, file: &Path, object: &ObjectRef) -> io::Result<()> {
         let _custody = self.guard();
-        if !self.cas.reuse(object)? {
-            self.cas.put(File::open(file)?, Some(object))?;
+        if !self.store().reuse(object).map_err(storage::io_error)? {
+            storage::put(self.store(), File::open(file)?, Some(object))?;
         }
+        storage::keep(self.store(), object)?;
         self.engine
             .with_journal(|j| j.adopt_object(actor, parent, object))?;
-        Ok(())
+        self.engine.root_objects(std::slice::from_ref(object))
     }
 
     fn part(&self, actor: &str, hex: &str) -> PathBuf {
@@ -368,7 +460,7 @@ impl Objects {
             // Short: what the machine can free goes first (no lock held: a sweep takes custody),
             // and then it may use the reserve, since this is what the caller asked to put here.
             Err(refusal) if refusal.code == "machine_disk_full" => {
-                if let Err(error) = self.store.maintain(length) {
+                if let Err(error) = self.store().maintain(length) {
                     tracing::warn!("making room for an upload: {error}");
                 }
                 self.open_upload(actor, digest, length, true)
@@ -451,7 +543,7 @@ impl Objects {
         upload.ended.store(true, Ordering::Release);
         self.uploads.lock().unwrap().remove(&upload.part);
         let stored = File::open(&upload.part).map_err(Refused::from).and_then(|part| {
-            self.cas.put(part, Some(&upload.object)).map_err(|e| {
+            storage::put(self.store(), part, Some(&upload.object)).and_then(|_| storage::keep(self.store(), &upload.object)).map_err(|e| {
                 let code = match e.kind() {
                     io::ErrorKind::StorageFull | io::ErrorKind::QuotaExceeded => "machine_disk_full",
                     io::ErrorKind::InvalidData => "object_digest_mismatch",
@@ -465,6 +557,7 @@ impl Objects {
         stored?;
         self.engine
             .with_journal(|j| j.bind_object(&upload.actor, &upload.object))?;
+        self.engine.root_objects(std::slice::from_ref(&upload.object))?;
         Ok(held)
     }
 }
