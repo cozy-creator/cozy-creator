@@ -306,6 +306,10 @@ jobs:
           /Library/Filesystems/macfuse.fs/Contents/Resources/macfuse.app/Contents/MacOS/macfuse install --force --components file-system-extensions
           pluginkit -e use -i io.macfuse.app.fsmodule.macfuse || true
           pluginkit -e use -i io.macfuse.app.fsmodule.macfuse-local || true
+          # Only this disposable test user: the actual product never edits FSKit approval.
+          python e2e/vault-provider/fskit.py enable --backup-dir "$RUNNER_TEMP/cozy-ci-fskit" > fskit-setup.json
+          sudo killall fskitd || true
+          killall fskit_agent || true
           brew install ffmpeg
       - name: Install pinned Windows filesystem driver and media tool
         if: runner.os == 'Windows'
@@ -329,6 +333,12 @@ jobs:
           if [[ "$RUNNER_OS" == Windows ]]; then helper=securefs.exe; probe=$probe.exe; fi
           python -c 'import os, pathlib, zipfile; z=zipfile.ZipFile(os.environ["COZY_SECUREFS_ARCHIVE"]); p=pathlib.Path(os.environ["RUNNER_TEMP"])/"vault-provider-bin"; p.mkdir(); z.extractall(p); [f.chmod(0o755) for f in p.iterdir() if f.is_file()]'
           python e2e/vault-provider/run.py --probe "$probe" --securefs "$RUNNER_TEMP/vault-provider-bin/$helper" --artifacts "provider-proof"
+      - name: Restore macOS test-user activation
+        if: always() && runner.os == 'macOS'
+        run: |
+          python e2e/vault-provider/fskit.py restore --backup-dir "$RUNNER_TEMP/cozy-ci-fskit" > fskit-restore.json
+          sudo killall fskitd || true
+          killall fskit_agent || true
       - name: Keep macOS driver diagnostics
         if: always() && runner.os == 'macOS'
         run: |
@@ -348,6 +358,10 @@ jobs:
               item = source / name
               if item.is_file():
                   shutil.copy2(item, target / name.replace('/', '-'))
+          for name in ['fskit-setup.json', 'fskit-restore.json']:
+              item = Path(name)
+              if item.is_file():
+                  shutil.copy2(item, target / name)
           PY_EVIDENCE
       - name: Keep platform proof
         if: always()
