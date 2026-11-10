@@ -12,7 +12,6 @@ crates/platform/src/handles/windows.rs
 crates/platform/src/heap.rs
 crates/platform/src/ipc/windows.rs
 crates/platform/src/lock.rs
-crates/platform-signal/src/windows.rs
 crates/platform/src/net.rs
 crates/platform/src/paths.rs
 crates/platform/src/process/linux.rs
@@ -20,6 +19,7 @@ crates/platform/src/process/macos.rs
 crates/platform/src/process/unix.rs
 crates/platform/src/process/windows.rs
 crates/platform/src/service/windows.rs
+crates/platform/src/signal/windows.rs
 crates/platform/src/watch/macos.rs
 crates/platform/src/watch/windows.rs
 crates/tensorfs-py/src/cleanup.rs

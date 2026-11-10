@@ -15,7 +15,7 @@ crate-type = ["dylib"]
 [dependencies]
 libloading.workspace = true
 thiserror.workspace = true
-platform-signal.workspace = true
+platform.workspace = true
 varena-ledger.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]

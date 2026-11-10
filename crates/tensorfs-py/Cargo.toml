@@ -16,7 +16,7 @@ serde_path_to_error.workspace = true
 executor-api = { workspace = true, features = ["python"] }
 varena.workspace = true
 libc.workspace = true
-platform.workspace = true
+platform = { workspace = true, features = ["seams"] }
 tensorfs = { workspace = true, features = ["net", "cuda"] }
 pyo3 = "0.29.2"
 tracing.workspace = true

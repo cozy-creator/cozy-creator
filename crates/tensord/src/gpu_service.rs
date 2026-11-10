@@ -840,15 +840,15 @@ pub(crate) struct Pool {
 /// While the pool lives, its idle executors are watched for their exit: one killed or crashed
 /// while idle leaves the pool and is reaped at once, never left a zombie until the next call.
 /// Dropped with the pool, its thread ends.
-struct Exits(Arc<platform::memory::Signal>);
+struct Exits(Arc<platform::signal::Signal>);
 impl Exits {
     fn watch(pool: Weak<Pool>) -> io::Result<Exits> {
-        let changed = Arc::new(platform::memory::Signal::new().map_err(io::Error::other)?);
+        let changed = Arc::new(platform::signal::Signal::new().map_err(io::Error::other)?);
         let woken = changed.clone();
         std::thread::Builder::new().name("executor-exits".into()).spawn(move || loop {
             let Some(handles) = pool.upgrade().map(|pool| pool.idle_handles()) else { return };
             let waitables: Vec<_> = std::iter::once(woken.waitable()).chain(handles.iter().map(waitable)).collect();
-            let ready = match platform::memory::wait_any(&waitables) {
+            let ready = match platform::signal::wait_any(&waitables) {
                 Ok(ready) => ready,
                 Err(error) => return tracing::warn!("executor exits: {error}"),
             };
@@ -871,11 +871,11 @@ impl Drop for Exits {
     }
 }
 #[cfg(unix)]
-fn waitable(file: &std::fs::File) -> platform::memory::Waitable<'_> {
+fn waitable(file: &std::fs::File) -> platform::signal::Waitable<'_> {
     std::os::fd::AsFd::as_fd(file)
 }
 #[cfg(windows)]
-fn waitable(file: &std::fs::File) -> platform::memory::Waitable<'_> {
+fn waitable(file: &std::fs::File) -> platform::signal::Waitable<'_> {
     std::os::windows::io::AsHandle::as_handle(file)
 }
 
