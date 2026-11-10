@@ -399,6 +399,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: project-vault-cli-${{ runner.os }}-${{ runner.arch }}
+          cache-on-failure: true
       - name: Install pinned Rust
         run: rustup toolchain install 1.99.1 --profile minimal
       - name: Install optional Linux encryption driver and real media tools
