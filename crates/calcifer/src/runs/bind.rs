@@ -256,7 +256,8 @@ pub(crate) async fn bind(
     binder.seed();
     if let Some(project) = &terms.project {
         let package = target.rsplit_once('/').map_or(target, |(package, _)| package);
-        let (payload, named, said) = project.bound(target, package, callable, std::mem::take(&mut binder.document), &terms.clips).await?;
+        let inline = binder.inline_references().await?;
+        let (payload, named, said) = project.bound(target, package, callable, std::mem::take(&mut binder.document), &terms.clips, &inline).await?;
         binder.document = payload;
         files.retain(|file| !named.iter().any(|held| held.field == file.field));
         files.extend(named);
@@ -297,6 +298,30 @@ struct Binder<'a> {
 }
 
 impl Binder<'_> {
+    /// The run's own named files, `references: [{name, image|video|audio}]`, when its function reads no `references` of its own:
+    /// taken out of the payload, each a file sent with the run, which a `<name>` in its prompts sends.
+    async fn inline_references(&mut self) -> Result<Vec<(crate::project::Inline, PathBuf)>, Error> {
+        if self.callable.request.fields.iter().any(|field| field.name == "references") {
+            return Ok(vec![]);
+        }
+        let Some(written) = self.document.remove("references") else { return Ok(vec![]) };
+        let shape = || usage("references_malformed", "a run's own references are [{name, image|video|audio: <file>}]");
+        let Value::Array(rows) = written else { return Err(shape()) };
+        let mut own = vec![];
+        for row in &rows {
+            let name = row.get("name").and_then(Value::as_str).map(str::trim).filter(|name| !name.is_empty()).ok_or_else(shape)?;
+            let (kind, text) = ["image", "video", "audio"]
+                .into_iter()
+                .find_map(|kind| row.get(kind).and_then(Value::as_str).map(|text| (kind, text)))
+                .ok_or_else(shape)?;
+            let Some((path, digest)) = self.terms.file(text).await? else {
+                return Err(usage("reference_file_missing", format!("references: {name}'s {kind}, {text}, is no file sent with this run or held here")));
+            };
+            own.push((crate::project::Inline { name: name.to_owned(), kind: kind.to_owned(), file: digest.to_string() }, path));
+        }
+        Ok(own)
+    }
+
     /// A conversion reads `<input-model> [<org/model>]`: the first is its first slot's choice.
     fn conversion(&mut self, inputs: &mut Vec<String>) -> Result<Option<String>, Error> {
         if !self.callable.is_conversion() {

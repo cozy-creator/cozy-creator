@@ -258,10 +258,10 @@ cozy --json package remove local/one_script --on local > /dev/null || check "pac
 
 # Balanced by step times (runs 40128128311, 40132063815, 40132725041). A shard keeps its parts' order; whole, the suite runs every part.
 case $SHARD in
-  '') parts="weightless script_package one_name_two_paths image_ratio describe first_run second_executor lifetime catalog basics yaml_requests run_flags run_follow time_left run_filters run_play projects bound_runs hostile_media unseen local_edits local_quote path_manifest agent web_serves machines completions calcifer_faults calcifer_restarts update remove" ;;
+  '') parts="weightless script_package one_name_two_paths image_ratio describe first_run second_executor lifetime catalog basics yaml_requests run_flags run_follow time_left run_filters run_play projects bound_runs own_references hostile_media unseen local_edits local_quote path_manifest agent web_serves machines completions calcifer_faults calcifer_restarts update remove" ;;
   runs) parts="weightless describe first_run run_flags run_play logs" ;;
   executors) parts="second_executor lifetime update remove" ;;
-  commands) parts="catalog basics yaml_requests run_filters projects bound_runs hostile_media agent logs" ;;
+  commands) parts="catalog basics yaml_requests run_filters projects bound_runs own_references hostile_media agent logs" ;;
   # Its own runner: under `set -e` a cell that dies ends its shard, and a page's proofs shouldn't go with it.
   web) parts="tools_read web_serves logs" ;;
   follow) parts="script_package one_name_two_paths image_ratio run_follow time_left machines completions calcifer_faults calcifer_restarts logs" ;;

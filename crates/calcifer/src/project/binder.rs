@@ -50,6 +50,19 @@ pub(crate) struct Call<'a> {
     pub gone: &'a BTreeSet<String>,
     /// Pick up from here, the one way a pickup is filled.
     pub pickup: Option<&'a Pickup>,
+    /// A direct run's own named files, which its prompts' mentions read after the project's boxes.
+    pub inline: &'a [Inline],
+}
+
+/// A file a direct run names in its own `references` (`[{name, image|video|audio}]`): `<name>` in its prompts sends it, as a
+/// box's file would go.
+#[derive(Clone, Debug)]
+pub(crate) struct Inline {
+    pub name: String,
+    /// `image`, `video` or `audio`.
+    pub kind: String,
+    /// Its digest, `sha256:<hex>`.
+    pub file: String,
 }
 
 /// What a call is.
@@ -108,9 +121,16 @@ pub(crate) fn bind(call: &Call) -> Result<Bound, Error> {
     for written in call.fields.keys().filter(|written| !PLATFORM.contains(&written.as_str()) && declared.fields.iter().all(|field| field.name != **written)) {
         binder.warn(format!("{}: {} reads no input {written}", call.name, call.tool));
     }
-    if !binder.nothing.is_empty() {
+    if let Some(first) = binder.nothing.first() {
         let said: Vec<String> = binder.nothing.iter().map(|mention| call.doc.not_there(mention, call.reserved)).collect();
-        return Err(Error::new(Kind::Validation, "input_missing", format!("{}: {}", call.name, said.join("; "))).remedy(format!("bring it back, or edit {}'s text", call.name)));
+        let refused = Error::new(Kind::Validation, "input_missing", format!("{}: {}", call.name, said.join("; ")));
+        return Err(match call.own {
+            Some(_) => refused.remedy(format!("bring it back, or edit {}'s text", call.name)),
+            // A run's own: a box of its project, or one of its own references.
+            None => refused
+                .remedy(format!("make <{first}> a box of the run's project, or name it in the run: references:='[{{\"name\": \"{first}\", \"image\": \"<file>\"}}]'"))
+                .next(format!("cozy project import <file> {first}")),
+        });
     }
     let mut payload = std::mem::take(&mut binder.bound.payload);
     binder.rows(declared, &mut payload, call.name);
@@ -272,7 +292,7 @@ impl Binder<'_> {
     /// What `mention` sends. None: it names nothing; Some(None): its box has no file.
     fn named(&mut self, mention: &graph::Mention) -> Option<Option<Named>> {
         let Call { doc, lock, stand, gone, .. } = self.call;
-        let j = self.box_of(mention)?;
+        let Some(j) = self.box_of(mention) else { return self.inline(mention).map(Some) };
         let asset = &doc.assets[j];
         let (files, number) = match mention.version {
             Some(number) => (doc.version_files(j, number, lock)?, Some(number)),
@@ -310,6 +330,16 @@ impl Binder<'_> {
             }
         }
         Some(Some(named))
+    }
+
+    /// The run's own reference `mention` names, whole: no version, part or range of it.
+    fn inline(&self, mention: &graph::Mention) -> Option<Named> {
+        if mention.version.is_some() || mention.part.is_some() || mention.range.is_some() {
+            return None;
+        }
+        let own = self.call.inline.iter().find(|inline| name_key(&inline.name) == name_key(mention.name))?;
+        let files = Files::from([(own.kind.clone(), own.file.clone())]);
+        Some(Named { key: own.name.clone(), kind: own.kind.clone(), file: own.file.clone(), files, description: String::new(), made_by: String::new(), own: false })
     }
 
     /// Frames `from` to `to` of a video, to be cut: past its end, to its end.

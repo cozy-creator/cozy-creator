@@ -21,6 +21,7 @@ pub(crate) mod model;
 mod remote;
 mod thumbs;
 mod binder;
+pub(crate) use binder::Inline;
 mod tools;
 mod upgrade;
 mod walker;
@@ -426,9 +427,10 @@ impl Holding {
         }
     }
 
-    /// `cozy run`'s written fields bound as Render binds a box's: mentions read this project's boxes, ranges are cut here, and `pickup.`
-    /// terms are the gesture. Answers the call, the project's files it names (fetched here if a machine keeps them), and what was said.
-    pub(crate) async fn bound(&self, target: &str, package: &str, callable: &api::interface::Callable, written: Map<String, Value>, clips: &crate::runs::clip::Clips) -> Result<(Map<String, Value>, Vec<crate::runs::bind::InputFile>, Vec<String>), Error> {
+    /// `cozy run`'s written fields bound as Render binds a box's: mentions read this project's boxes, then the run's own references
+    /// (`inline`, each with its file here), ranges are cut here, and `pickup.` terms are the gesture. Answers the call, the files it
+    /// names (the project's fetched here if a machine keeps them), and what was said.
+    pub(crate) async fn bound(&self, target: &str, package: &str, callable: &api::interface::Callable, written: Map<String, Value>, clips: &crate::runs::clip::Clips, inline: &[(binder::Inline, PathBuf)]) -> Result<(Map<String, Value>, Vec<crate::runs::bind::InputFile>, Vec<String>), Error> {
         let folder = Folder::at(&self.dir);
         // One that doesn't read as this format (an older one moves as the run lands) still takes the run, as written, its mentions unread.
         let (doc, lock) = match (Doc::load(&folder), folder.lock()) {
@@ -452,9 +454,11 @@ impl Holding {
         };
         let reserved = callable.tool.as_ref().map(|tool| tool.reserved.clone()).unwrap_or_default();
         doc.worded(&mut fields, &reserved);
-        let call = binder::Call { name: target, tool: target, package, callable, fields: &fields, reserved: &reserved, doc: &doc, own: None, lock: &lock, stand: &stand, gone: &BTreeSet::new(), pickup: pickup.as_ref() };
+        let own: Vec<binder::Inline> = inline.iter().map(|(named, _)| named.clone()).collect();
+        let call = binder::Call { name: target, tool: target, package, callable, fields: &fields, reserved: &reserved, doc: &doc, own: None, lock: &lock, stand: &stand, gone: &BTreeSet::new(), pickup: pickup.as_ref(), inline: &own };
         let mut bound = binder::bind(&call)?;
-        let mut cut = HashMap::new();
+        // The run's own files go as a cut clip does: by their digest, from where they are here.
+        let mut cut: HashMap<String, PathBuf> = inline.iter().map(|(named, path)| (named.file.clone(), path.clone())).collect();
         let mut digests = vec![];
         for range in &bound.cuts {
             let Some(path) = self.file(&range.source).await? else { continue };
@@ -3792,7 +3796,7 @@ impl Walk {
             let callable = package.callable(&maker.function).ok_or_else(unknown)?;
             let fields = doc.inputs_of(i);
             let reserved = package.reserved();
-            let call = binder::Call { name: &name, tool: &doc.target(i), package: &package.name, callable: &callable, fields: &fields, reserved: &reserved, doc, own: Some(i), lock, stand, gone: &gone, pickup: pickup.as_ref() };
+            let call = binder::Call { name: &name, tool: &doc.target(i), package: &package.name, callable: &callable, fields: &fields, reserved: &reserved, doc, own: Some(i), lock, stand, gone: &gone, pickup: pickup.as_ref(), inline: &[] };
             let mut bound = binder::bind(&call)?;
             self.cut(&mut bound, lock).await.map_err(|why| cannot(&name, why))?;
             let (input, mut warnings) = (bound.payload, bound.warnings);

@@ -134,7 +134,7 @@ pub(super) async fn read(State(api): State<Arc<Api>>, Path((id, name)): Path<(St
                 let (fields, reserved, stand) = (doc.inputs_of(i), package.reserved(), &model.stand);
                 // A mention of nothing is said, as a render would refuse it, and the rest of the call stands.
                 let missing = doc.missing_inputs(i, &reserved, lock);
-                let call = binder::Call { name: &asset.name, tool: &doc.target(i), package: &package.name, callable: &callable, fields: &fields, reserved: &reserved, doc, own: Some(i), lock, stand, gone: &Default::default(), pickup: None };
+                let call = binder::Call { name: &asset.name, tool: &doc.target(i), package: &package.name, callable: &callable, fields: &fields, reserved: &reserved, doc, own: Some(i), lock, stand, gone: &Default::default(), pickup: None, inline: &[] };
                 let bound = binder::bind(&call)?;
                 Ok::<_, Error>((bound.payload, missing.into_iter().chain(bound.warnings).collect::<Vec<String>>()))
             };

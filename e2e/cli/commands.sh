@@ -222,6 +222,22 @@ else
 fi
 }
 
+# A run's own references: `<Name>` in a direct run's prompt that names one of its `references:=[{name, image}]` sends that
+# picture (H3's form); a name that names nothing is still refused, with the command that makes it a box.
+own_references() {
+step "a run's own references: the <name> its request gives"
+local dir=$OUT/own-refs code=0
+rm -rf "$dir"; mkdir -p "$dir"
+ffmpeg -v error -y -f lavfi -i "color=c=teal:size=48x32" -frames:v 1 "$dir/amy.png"
+if (cd "$dir" && cell own-refs "$here/project/mentions.py/mentions" 'instructions=<Amy> waves at <Amy>' 'references:=[{"name": "Amy", "image": "./amy.png"}]'); then
+  grep -qE '"keys": *\[ *"Amy" *\]' "$OUT/own-refs.ndjson" && grep -qE '"widths": *\[ *48 *\]' "$OUT/own-refs.ndjson" \
+    || check "own references: <Amy> did not send its picture: $(grep -oE '"(text|keys|widths)": *("[^"]*"|\[[^]]*\])' "$OUT/own-refs.ndjson" | head -3 | paste -sd' ')"
+fi
+(cd "$dir" && cozy --json run -p "$RUN_PROJECT" "$here/project/mentions.py/mentions" 'instructions=<Nobody> waves' --on local) > "$OUT/own-refs-nothing.json" 2>&1 || code=$?
+[ "$code" != 0 ] && grep -q input_missing "$OUT/own-refs-nothing.json" && grep -q 'cozy project import <file> Nobody' "$OUT/own-refs-nothing.json" \
+  || check "own references: <Nobody> was not refused with the command that makes it a box (exit $code): $(tail -c 300 "$OUT/own-refs-nothing.json")"
+}
+
 # cl-779: Calcifer's ffmpeg and ffprobe read only the file they are given. A playlist and a concat list, each named as a
 # clip, name a FIFO beside them; a reader opening it lets a waiting writer finish. Imported (a probe, a thumbnail) before
 # a real clip whose probe is awaited, neither may open it. Today the import's own sniff refuses both ("no picture, video
