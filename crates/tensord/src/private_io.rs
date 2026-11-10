@@ -358,3 +358,13 @@ pub(crate) fn protect_command(command: &mut std::process::Command) -> io::Result
         .env("PYTHONDONTWRITEBYTECODE", "1");
     Ok(true)
 }
+
+/// Global machine logs keep only opaque run identity for protected (or unresolved)
+/// storage. Detailed failures remain in the authenticated run's private journal.
+pub(crate) fn warning(engine: &crate::execution::Engine, run: &str, detail: impl std::fmt::Display) {
+    if current().is_none() && matches!(engine.private_storage(run), Ok(None)) {
+        tracing::warn!(run, "{detail}");
+    } else {
+        tracing::warn!(run, "execution warning; open the authorized run history for details");
+    }
+}

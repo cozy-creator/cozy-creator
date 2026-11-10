@@ -1271,13 +1271,19 @@ impl Calcifer {
             code: error.code, message: error.message, origin: "private_storage".into(), ..Default::default()
         }))?.map(|scope| scope.storage.project_id) } else { None };
         for row in self.store.batched(run.id.as_str())? {
+            let own = row.id == run.id;
             if machine == "local" {
-                let candidate = private_io::of_output(&row.out_dir).map_err(|error| Stop::Refused(Reason {
-                    code: error.code, message: error.message, origin: "private_storage".into(), ..Default::default()
-                }))?.map(|scope| scope.storage.project_id);
+                let candidate = match private_io::of_output(&row.out_dir) {
+                    Ok(scope) => scope.map(|scope| scope.storage.project_id),
+                    Err(error) if own => return Err(Stop::Refused(Reason {
+                        code: error.code, message: error.message, origin: "private_storage".into(), ..Default::default()
+                    })),
+                    // A different project's unavailable view must neither spill into this
+                    // batch nor prevent an unrelated authorized batch from progressing.
+                    Err(_) => continue,
+                };
                 if candidate != own_scope { continue }
             }
-            let own = row.id == run.id;
             if own && row.state != run.state {
                 return Ok(None);
             }

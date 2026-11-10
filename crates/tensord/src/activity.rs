@@ -58,7 +58,7 @@ pub(crate) struct Waiting {
 
 /// Run `run` (its caller's id) waits on the `kind` of `subject`: the one already listed, or a new one.
 pub(crate) fn wait(kind: Kind, subject: &str, run: &str) -> Waiting {
-    let id = format!("{} {subject}", kind.word());
+    let id = crate::private_io::resource_key(&format!("{} {subject}", kind.word()));
     let mut listed = operations();
     let operation = listed.entry(id.clone()).or_insert_with(|| Operation {
         kind,
@@ -171,7 +171,7 @@ pub(crate) fn listed(mine: impl Fn(&str) -> bool) -> Vec<v1::Operation> {
             let runs: Vec<String> = operation.runs.keys().filter(|run| mine(run)).cloned().collect();
             operation.listed |= !runs.is_empty();
             (!runs.is_empty()).then(|| v1::Operation {
-                id: id.clone(),
+                id: crate::private_io::unscoped_key(id),
                 kind: operation.kind.word().into(),
                 subject: operation.subject.clone(),
                 stage: operation.stage.clone(),

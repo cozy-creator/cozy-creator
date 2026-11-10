@@ -592,7 +592,7 @@ fn script(path: &Path, root: &Path) -> Result<PathBuf, Error> {
             ));
         }
     };
-    if let Some(other) = block.keys().next() {
+    if let Some(other) = block.keys().next().filter(|_| crate::private_io::current().is_none()) {
         tracing::warn!("the `# /// script` block names {other:?}: it takes dependencies, requires-python and [tool]; ignored");
     }
     // A path source names a directory beside the script: relative to the written project
