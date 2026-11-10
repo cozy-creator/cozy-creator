@@ -191,12 +191,42 @@ pub(crate) fn open(path: &Path) -> Result<Connection, Error> {
             if !backup.exists() {
                 conn.execute("VACUUM INTO ?1", [backup.to_string_lossy().as_ref()]).map_err(e)?;
             }
+            verify_v1_backup(&conn, &backup)?;
             initialize_crdt(&mut conn, path)?;
         }
         VERSION => {}
         other => return Err(Error::new(Kind::Validation, "project_db_version", format!("{} is of schema {other}, and this cozy reads {VERSION}", path.display())).next("cozy update")),
     }
     Ok(conn)
+}
+
+/// A kill can leave VACUUM's output partly written. Never treat its mere existence as a
+/// recovery copy, and make its bytes/name durable before changing the intact v1 primary.
+fn verify_v1_backup(primary: &Connection, at: &Path) -> Result<(), Error> {
+    let checked = || -> Result<(), Error> {
+        let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        let copy = Connection::open_with_flags(at, flags).map_err(|e| sql(at, e))?;
+        let version: i64 = copy.pragma_query_value(None, "user_version", |r| r.get(0)).map_err(|e| sql(at, e))?;
+        let integrity: String = copy.query_row("PRAGMA quick_check", [], |r| r.get(0)).map_err(|e| sql(at, e))?;
+        if version != 1 || integrity != "ok" {
+            return Err(err(at, "the migration recovery copy is incomplete or is not schema 1"));
+        }
+        if meta(primary, "id") != meta(&copy, "id") {
+            return Err(err(at, "the migration recovery copy belongs to a different project"));
+        }
+        legacy_load(&copy, at)?;
+        legacy_ops(&copy, at)?;
+        for table in ["asked", "request_keys"] {
+            copy.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get::<_, i64>(0)).map_err(|e| sql(at, e))?;
+        }
+        drop(copy);
+        std::fs::OpenOptions::new().read(true).write(true).open(at).and_then(|file| file.sync_all()).map_err(|e| err(at, e))?;
+        platform::durable::sync_dir(at.parent().unwrap_or_else(|| Path::new("."))).map_err(|e| err(at, e))
+    };
+    checked().map_err(|error| {
+        Error::new(Kind::Unavailable, "project_recovery_backup", format!("{}; the original project remains schema 1", error.message))
+            .remedy("preserve the recovery copy and move it aside before retrying migration")
+    })
 }
 
 /// The project's id and name, as `meta` keeps them (cl-819); none before it was given one.

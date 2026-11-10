@@ -5,7 +5,7 @@ import { EventStream } from "../api/events"
 import { Outbox } from "../api/outbox"
 import { runsAfter, withAssets } from "../api/queries"
 import { sameOrigin } from "../api/transport"
-import type { Machine, MachineList, Run, RunList, StreamEvent, CalciferStatus } from "../api/calcifer"
+import type { Machine, MachineList, Run, RunList, StreamEvent, CalciferStatus, ProjectEventCursor } from "../api/calcifer"
 import type { Project } from "../types"
 import type { CanvasStore } from "../canvas/CanvasStore"
 import { signal } from "../ui/signal"
@@ -26,6 +26,7 @@ interface Owed {
   gone: Set<string>
   head: boolean
   whole: boolean
+  wholeCursor: ProjectEventCursor | null
 }
 
 /** Stream events into the query cache. The stream invalidates, so nothing goes stale by itself. */
@@ -70,14 +71,20 @@ class Bridge {
    * What the stream said changed of a project: at once if none was read lately, else one read per `READ_GAP_MS`, so a burst shows as it goes,
    * in few reads. One at a time, and one more if it changed during that read. Only what changed is read, whatever else the project holds.
    */
-  changed(id: string, change: { assets?: string[] | null; gone?: string[]; head?: boolean }) {
+  changed(id: string, change: { assets?: string[] | null; gone?: string[]; head?: boolean; cursor?: ProjectEventCursor | null }) {
     if (this.privateBlocked.has(id)) return
     let slot = this.owed.get(id)
-    if (!slot) this.owed.set(id, (slot = { read: 0, flying: false, names: new Set(), gone: new Set(), head: false, whole: false }))
+    if (!slot) this.owed.set(id, (slot = { read: 0, flying: false, names: new Set(), gone: new Set(), head: false, whole: false, wholeCursor: null }))
     for (const name of change.assets ?? []) slot.names.add(name)
     for (const name of change.gone ?? []) slot.gone.add(name)
     slot.head ||= Boolean(change.head)
-    slot.whole ||= !change.assets
+    if (!change.assets) {
+      const cursor = change.cursor ?? null
+      if (!slot.whole) slot.wholeCursor = cursor
+      else if (!cursor || !slot.wholeCursor || cursor.generation !== slot.wholeCursor.generation) slot.wholeCursor = null
+      else if (cursor.sequence > slot.wholeCursor.sequence) slot.wholeCursor = cursor
+      slot.whole = true
+    }
     this.go(id, slot)
   }
 
@@ -98,18 +105,22 @@ class Bridge {
     if (this.privateBlocked.has(id)) return
     const epoch = this.privacyEpoch.get(id) ?? 0
     const key = ["project", id]
-    const whole = held.whole || held.names.size > MOST_ASSETS
+    const tooMany = held.names.size > MOST_ASSETS
+    const whole = held.whole || tooMany
+    const cursor = held.wholeCursor
     const [names, gone, head] = [[...held.names], [...held.gone], held.head]
     held.names.clear()
     held.gone.clear()
-    Object.assign(held, { head: false, whole: false })
+    Object.assign(held, { head: false, whole: false, wholeCursor: null })
     void this.queries.invalidateQueries({ queryKey: ["yaml", id] })
     const query = this.queries.getQueryCache().find({ queryKey: key })
     // No one's looking: what's held is read when someone is.
     if (!query?.getObserversCount()) return void query?.invalidate()
     // A first read still going may be older than this: this waits for it, and then what changed is read over it.
     await query.promise?.catch(() => {})
-    if (whole || this.queries.getQueryData(key) === undefined) {
+    const state = this.queries.getQueryData<Project>(key)
+    const covered = cursor && state?.covered && cursor.generation === state.covered.generation && cursor.sequence <= state.covered.sequence
+    if (tooMany || (whole && !covered) || state === undefined) {
       await this.queries.refetchQueries({ queryKey: key })
       return
     }
@@ -129,6 +140,7 @@ class Bridge {
     } catch {
       // Whatever kept it from reading those, the next says why, of all of it.
       held.whole = true
+      held.wholeCursor = null
     }
   }
 
@@ -219,8 +231,9 @@ class Bridge {
         break
       }
       case "project.changed":
-        if (this.revs.get(event.id) !== event.rev) {
-          this.revs.set(event.id, event.rev)
+        const revision = event.cursor ? JSON.stringify([event.cursor.generation, event.cursor.sequence]) : event.rev
+        if (this.revs.get(event.id) !== revision) {
+          this.revs.set(event.id, revision)
           this.changed(event.id, event)
         }
         break

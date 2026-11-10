@@ -87,9 +87,9 @@ function tabsOf(order: KnownProject[], id: string | null, count: number): KnownP
 
 /** As many tabs as fit the bar, the rest behind "N more". `room` is the bar's free space past them; a hidden copy of every tab says what each takes. */
 function ProjectTabs({ id, room, readable }: { id: string | null; room: HTMLElement | null; readable: boolean }) {
-  const { client } = useConnection()
+  const { client, stream } = useConnection()
   const to = useTo()
-  const { data: heldProject } = useQuery({ ...projectQuery(client, id ?? ""), enabled: Boolean(id) && readable })
+  const { data: heldProject } = useQuery({ ...projectQuery(client, stream, id ?? ""), enabled: Boolean(id) && readable })
   const data = readable ? heldProject : undefined
   const { data: list } = useQuery(projectsQuery(client))
   const order = useOrder(list?.projects ?? [])
@@ -250,7 +250,10 @@ export function Shell() {
   const allowed = Boolean(vault.data && (vault.data.state === "plain" || vault.data.state === "unlocked"))
   const uncertain = Boolean(vault.data?.encrypted && vault.isError)
   const readable = !id || (verified === id && checked && allowed && !checking && !uncertain)
-  useEffect(() => stream.show(readable ? id : null), [stream, id, readable])
+  useEffect(() => {
+    stream.show(readable ? id : null)
+    return () => stream.show(null)
+  }, [stream, id, readable])
   useEffect(() => {
     if (freshOrdinary.current !== id || vault.isFetchedAfterMount) freshOrdinary.current = null
     if (checked && document.visibilityState === "visible") setChecking(false)
