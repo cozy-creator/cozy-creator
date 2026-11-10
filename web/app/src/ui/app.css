@@ -1057,7 +1057,7 @@ video.preview.on {
   position: absolute;
   top: calc(100% + var(--here-gap) * var(--text, 1) * var(--here));
   left: 0;
-  width: calc(var(--surface-media-width, 100%) / (var(--text, 1) * var(--here)));
+  width: calc(100% / (var(--text, 1) * var(--here)));
   max-height: var(--here-room, 60vh);
   display: flex;
   flex-direction: column;
