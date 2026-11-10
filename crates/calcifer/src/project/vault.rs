@@ -53,7 +53,7 @@ pub(super) fn view(root: &FsPath) -> Result<PathBuf, Error> {
     if !encrypted(root) { return Ok(root.to_owned()); }
     let Some(session) = held(root) else { return Err(locked(root)); };
     let mut session = session.lock().expect("vault session");
-    if session.mount.reconcile().is_err() { session.closing = true; session.readable.store(false, Ordering::Release); }
+    if session.mount.reconcile().is_err() { mark_closing(&mut session); }
     if session.closing || expired(&session) || !session.mount.is_mounted().map_err(provider)? { return Err(locked(root)); }
     session.mount.view().canonicalize().map_err(io)
 }
@@ -137,7 +137,7 @@ fn status(root: &FsPath) -> VaultStatus {
     let (mut view, mut expires, mut idle) = (None, None, 0);
     if let Some(session) = held(root) {
         let mut session = session.lock().expect("vault session");
-        if session.mount.reconcile().is_err() { session.closing = true; session.readable.store(false, Ordering::Release); }
+        if session.mount.reconcile().is_err() { mark_closing(&mut session); }
         idle = session.idle;
         if session.mount.is_mounted().unwrap_or(false) {
             state = if session.closing || expired(&session) { "locking" } else { "unlocked" };
@@ -196,8 +196,10 @@ fn mount(api: &Api, root: &FsPath, keybag: Keybag, secret: ProjectSecret, ask: &
     TRUSTED_KEYS.lock().expect("trusted vault recipients").insert(root.to_owned(), keybag.clone());
     KEY_ROOTS.lock().expect("vault project roots").insert(keybag.info().project_id.clone(), root.to_owned());
     let now = Instant::now();
+    let project_id = keybag.info().project_id;
     let session = Session { root: root.to_owned(), mount: mounted, secret, keybag, idle: ask.idle_timeout_s.unwrap_or(DEFAULT_IDLE), maximum: ask.max_duration_s.unwrap_or(0), began: now, active: now, active_ms: super::now_ms(), began_ms: super::now_ms(), closing: false, readable: Arc::new(AtomicBool::new(true)) };
     SESSIONS.lock().expect("vault sessions").insert(root.to_owned(), Arc::new(Mutex::new(session)));
+    crate::events::project_vault(&project_id, "unlocked");
     Ok(())
 }
 
@@ -222,11 +224,17 @@ fn forget(api: &Api, root: &FsPath) -> Result<(), Error> {
     Ok(())
 }
 
+fn mark_closing(session: &mut Session) {
+    let changed = !session.closing;
+    session.closing = true;
+    session.readable.store(false, Ordering::Release);
+    if changed { crate::events::project_vault(session.secret.project_id(), "locking"); }
+}
+
 fn close(api: &Arc<Api>, root: &FsPath) -> Result<(), Error> {
     if let Some(session) = held(root) {
         let mut session = session.lock().expect("vault session");
-        session.closing = true;
-        session.readable.store(false, Ordering::Release);
+        mark_closing(&mut session);
     }
     // Existing accepted work may drain while the key is retained, but no new viewing stream can read it.
     forget(api, root)?;
@@ -238,6 +246,7 @@ fn close(api: &Arc<Api>, root: &FsPath) -> Result<(), Error> {
         drop(session);
         SESSIONS.lock().expect("vault sessions").remove(root);
         ROOTS.lock().expect("vault roots").retain(|_, logical| logical != root);
+        if let Ok(keybag) = Keybag::load(&root.join(KEYBAG_FILE)) { crate::events::project_vault(&keybag.info().project_id, "locked"); }
     }
     Ok(())
 }
@@ -252,11 +261,12 @@ pub(crate) fn start(api: &Arc<Api>) {
             for root in roots {
                 let needs = tokio::task::block_in_place(|| held(&root).is_some_and(|session| {
                     let mut session = session.lock().expect("vault session");
-                    if session.mount.reconcile().is_err() { session.closing = true; session.readable.store(false, Ordering::Release); }
+                    if session.mount.reconcile().is_err() { mark_closing(&mut session); }
                     session.closing || expired(&session) || !session.mount.is_mounted().unwrap_or(false)
                 }));
                 if needs { let _ = tokio::task::block_in_place(|| {
                     let op = operation(&root); let _guard = op.lock().expect("vault operation");
+                    if let Some(session) = held(&root) { mark_closing(&mut session.lock().expect("vault session")); }
                     let _access = exclusive(&root)?;
                     let still = held(&root).is_some_and(|session| { let session = session.lock().expect("vault session"); session.closing || expired(&session) || !session.mount.is_mounted().unwrap_or(false) });
                     if still { close(&api, &root) } else { Ok(()) }
@@ -276,6 +286,7 @@ pub(super) async fn write(State(api): State<Arc<Api>>, Path(named): Path<String>
     let root = location(&api, &named).map_err(Refusal)?;
     let changed = tokio::task::block_in_place(|| {
         let op = operation(&root); let _guard = op.lock().expect("vault operation");
+        if ask.action == "lock" { if let Some(session) = held(&root) { mark_closing(&mut session.lock().expect("vault session")); } }
         let _access = exclusive(&root)?;
         change(&api, &root, &mut ask)
     }).map_err(Refusal)?;
@@ -329,6 +340,7 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk) -> Result<VaultChan
                 api.calcifer.store().cleanup_private_journal().map_err(|e| error("vault_journal_cleanup", e))?;
                 finish_conversion(root)?;
             }
+            if let Some(session) = held(root) { crate::events::project_vault(session.lock().expect("vault session").secret.project_id(), "unlocked"); }
         }
         "lock" => {
             if !encrypted(root) { return Err(Error::new(Kind::Usage, "project_plain", "unencrypted projects cannot be locked")); }
@@ -444,8 +456,9 @@ fn convert(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret,
     secret.with_bytes(|bytes| engine.create(&staged.join(BACKING), bytes)).map_err(provider)?;
     keybag.save(&staged.join(KEYBAG_FILE)).map_err(key)?;
     // Retire the published old view BEFORE snapshotting an encrypted project. A native editor
-    // must release its old handles (Busy refuses); it cannot change files after we copied them.
-    // The replacement source mount is private to this conversion and is never published to apps.
+    // must release its stale handles (Busy refuses). The replacement source mount is never
+    // published to apps. Windows lacks a qualified read-only provider: do not browse conversion
+    // drives while this runs; Linux/macOS enforce a read-only source volume.
     let mut source_mount = None;
     let source = if let Some(old) = &old_secret {
         close(api, root)?;
