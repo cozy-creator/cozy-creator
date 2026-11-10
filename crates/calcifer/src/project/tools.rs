@@ -790,7 +790,10 @@ fn probe(ffprobe: &Path, path: &Path, keys: bool) -> Result<Probe, Error> {
     let read = |args: &[&str]| -> Result<Vec<u8>, Error> {
         let done = std::process::Command::new(ffprobe)
             .args(["-v", "error"])
-            .args(crate::media::options(path)?)
+            .args(crate::media::options(path).map_err(|mut error| {
+                error.message = format!("{} holds no video ffprobe reads: {}", path.display(), error.message);
+                error
+            })?)
             .args(args)
             .arg(path)
             .output()
