@@ -33,6 +33,10 @@ fn native_presence_orders_and_client_contract() {
         .output().unwrap();
     print!("{}", String::from_utf8_lossy(&output.stdout));
     eprint!("{}", String::from_utf8_lossy(&output.stderr));
+    let directory = root.path().to_owned();
+    root.close().expect("owned native fixture profile did not close");
+    assert!(!directory.exists());
+    println!("{}", serde_json::json!({"native_profile_removed": directory}));
     assert!(output.status.success(), "native presence fixture: {}", output.status);
 }
 
@@ -76,22 +80,29 @@ async fn native_presence_fixture() {
         // later asset write, or let it warm the comparison baseline between the barriers.
         let created = changed(&mut events, &mut buffered, id).await;
         println!("{}", serde_json::json!({"creation": created}));
+        let full;
         if read_first {
             let state: serde_json::Value = client.get(format!("{base}/v1/projects/{id}")).bearer_auth("presence-fixture")
                 .send().await.unwrap().json().await.unwrap();
             assert!(state["assets"].as_array().unwrap().is_empty());
+            full = Some(state);
             assert!(api.projects.open_now(id).is_none(), "GET's unleased project did not close");
+        } else {
+            full = None;
         }
         let shown = client.put(format!("{base}/v1/events/{stream}")).bearer_auth("presence-fixture")
             .json(&serde_json::json!({"projects": [id]})).send().await.unwrap();
         assert!(shown.status().is_success());
         let _ = shown.bytes().await.unwrap();
         assert!(api.projects.open_now(id).is_some(), "show did not install Reader");
-        if !read_first {
+        let full = if !read_first {
             let state: serde_json::Value = client.get(format!("{base}/v1/projects/{id}")).bearer_auth("presence-fixture")
                 .send().await.unwrap().json().await.unwrap();
             assert!(state["assets"].as_array().unwrap().is_empty());
-        }
+            state
+        } else { full.unwrap() };
+        assert_eq!(full["covered"]["generation"], created["cursor"]["generation"]);
+        assert!(full["covered"]["sequence"].as_u64().unwrap() >= created["cursor"]["sequence"].as_u64().unwrap());
         let response = client.post(format!("{base}/v1/projects/{id}/assets")).bearer_auth("presence-fixture")
             .json(&serde_json::json!({"name": "words", "tool": "", "fields": {"text": "hello"}})).send().await.unwrap();
         assert!(response.status().is_success(), "{}", response.text().await.unwrap());
@@ -103,6 +114,7 @@ async fn native_presence_fixture() {
         };
         if read_first { assert!(event["assets"].is_null(), "{event}") }
         else { assert!(event["assets"].as_array().unwrap().iter().any(|name| name == "words"), "{event}") }
+        assert!(event["cursor"]["sequence"].as_u64().unwrap() > full["covered"]["sequence"].as_u64().unwrap(), "snapshot covered a later write");
         println!("{}", serde_json::json!({"schedule": if read_first { "GET-close-show-write" } else { "show-GET-write" }, "event": event}));
     }
     let mut many: Vec<String> = (0..64).map(|i| format!("absent-{i:02}")).collect();

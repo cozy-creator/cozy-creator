@@ -149,6 +149,8 @@ pub struct Known {
 }
 
 /// `GET /v1/projects/{id}`: its assets in order, and what reading the project said.
+/// Optional `covered` describes only a successful full snapshot: project-event emissions
+/// before its read began. Head-only and partial/error-derived states do not claim coverage.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "ProjectState"))]
 pub struct State {
@@ -192,6 +194,8 @@ pub struct State {
     /// What kept its last render from reaching a machine, each once, until another is asked.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unsent: Vec<Error>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub covered: Option<super::ProjectEventCursor>,
 }
 
 /// An asset out of date, and why.
