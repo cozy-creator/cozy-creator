@@ -23,6 +23,9 @@ type Shared =
 
 /** Three missed comments: the connection is dead, whatever the socket says. */
 const SILENT_MS = 45_000
+// Stable coordination ABI: an older open page cannot acknowledge Reader ownership.
+// Keep tab liveness, media/log locks and ordinary storage shared across page generations.
+const COORDINATION = "cozy-events-presence-v1"
 
 /** Server-sent events off a `fetch` body, so one parser serves every transport. */
 export async function readEvents(body: ReadableStream<Uint8Array<ArrayBuffer>>, onData: (data: string) => void, onBytes?: () => void) {
@@ -48,7 +51,7 @@ export async function readEvents(body: ReadableStream<Uint8Array<ArrayBuffer>>, 
 }
 
 /**
- * `GET /v1/events`, one per Calcifer across all tabs: a browser allows six connections to a host. The tab that wins the Web Lock
+ * `GET /v1/events`, shared by compatible page protocols: a browser allows six connections to a host. The tab that wins the Web Lock
  * holds it and shares it by `BroadcastChannel`; when that tab goes, the next waiting takes the lock. It tells Calcifer which project
  * each tab shows (`PUT /v1/events/{stream}`), which stays open while one does: each tab says what it shows, and holds a lock of its own
  * for its life, which the holding tab waits on to hear it's gone.
@@ -77,7 +80,7 @@ export class EventStream {
 
   constructor(client: Client) {
     this.client = client
-    this.channel = new BroadcastChannel("cozy-events")
+    this.channel = new BroadcastChannel(COORDINATION)
     this.channel.onmessage = ({ data }: MessageEvent<Shared>) => {
       if ("event" in data) this.dispatch(data.event)
       else if ("health" in data) this.heardHealth(data.health, data.stream)
@@ -221,7 +224,7 @@ export class EventStream {
 
   start() {
     this.channel.postMessage({ ask: true } satisfies Shared)
-    void navigator.locks.request("cozy-events", () => this.hold())
+    void navigator.locks.request(COORDINATION, () => this.hold())
   }
 
   private dispatch(event: StreamEvent) {

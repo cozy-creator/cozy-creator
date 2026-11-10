@@ -134,6 +134,10 @@ without an authoritative per-ID result. `404
 stream_unknown` once the stream has ended: the next stream's `hello` names it. The page sends what all its tabs show, from the tab that
 holds the stream, each time that changes.
 
+ACK-capable pages share the stable `cozy-events-presence-v1` Web Lock and BroadcastChannel. An older open page retains its older
+coordination cohort during an upgrade, so it cannot strand a new page waiting for an acknowledgement it does not implement. This is a
+coordination protocol boundary, not a build/version pin; tab liveness, media/log locks and ordinary browser storage remain shared.
+
 ### The page
 The web UI, embedded when cozy is built (`crates/calcifer/build.rs`, from `web/app/dist`). It holds no secret, so these
 two routes need no credential; the guard's first three checks still apply.

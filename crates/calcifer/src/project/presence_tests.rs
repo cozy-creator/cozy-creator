@@ -121,6 +121,18 @@ async fn native_presence_fixture() {
         print!("{}", String::from_utf8_lossy(&output.stdout));
         eprint!("{}", String::from_utf8_lossy(&output.stderr));
         assert!(output.status.success(), "actual client fixture: {}", output.status);
+        let close: Vec<String> = String::from_utf8_lossy(&output.stdout).lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter_map(|value| value.get("close_on_exit").cloned())
+            .flat_map(|value| serde_json::from_value::<Vec<String>>(value).unwrap()).collect();
+        if !close.is_empty() {
+            // The owned Node realm ends with live SSE streams, like closing its pages. This
+            // fixture protocol observes the native Reader drops; it never kills a real run.
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while close.iter().any(|id| api.projects.open_now(id).is_some()) { tokio::task::yield_now().await; }
+            }).await.expect("closed page cohorts did not release their native Readers");
+            println!("{}", serde_json::json!({"closed_cohort_readers_released": close}));
+        }
     }
     drop(events);
     api.down().await;
