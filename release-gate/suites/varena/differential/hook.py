@@ -8,7 +8,6 @@ and the executor's execution record carries them."""
 
 import hashlib
 from collections.abc import Callable, Mapping, Sequence
-from types import ModuleType
 from typing import Protocol, TypedDict, cast
 
 import torch
@@ -128,10 +127,10 @@ def _with_loops[**P](record: Callable[P, Record]) -> Callable[P, Record]:
     return execution
 
 
-def dispatch(torch: ModuleType, module: torch.nn.Module, call: Call, args: tuple[object, ...], kwargs: dict[str, object]) -> object:
-    """`_dispatch` as Runtime 0.44.0 has it: `torch` is the torch module."""
+def dispatch(module: torch.nn.Module, call: Call, args: tuple[object, ...], kwargs: dict[str, object]) -> object:
+    """`_dispatch` as the Runtime has it (no `torch` argument since the typed Runtime)."""
     _press(module)
-    result: object = _dispatch(torch, module, call, args, kwargs)
+    result: object = _dispatch(module, call, args, kwargs)
     if not (graphs.BYPASS.get() or graphs._WARMING.get() or torch.cuda.is_current_stream_capturing()):
         _add(graphs._name(module), result)
     return result
@@ -161,4 +160,4 @@ if _select is not None:  # v2's native selection
 graphs._dispatch = dispatch
 executor.Executor._execution = _with_loops(_execution)  # type: ignore[method-assign]  # the hook wraps the executor's record
 if PRESS == "eager":
-    graphs._region_call = lambda torch, module, recorder, call, args, kwargs: call(module, *args, **kwargs)
+    graphs._region_call = lambda module, recorder, call, args, kwargs: call(module, *args, **kwargs)
