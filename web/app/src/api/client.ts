@@ -43,6 +43,7 @@ import type {
   PackageSearch,
   Play,
   ProjectState,
+  ProjectShowReply,
   Projects,
   Proven,
   Quote,
@@ -241,9 +242,11 @@ export class Client {
   }
 
   /** The projects the tabs on `stream` show, which Calcifer holds open while it lasts. One that ended is told again on the next. */
-  async show(stream: string, projects: string[]): Promise<void> {
+  async show(stream: string, projects: string[], signal: AbortSignal): Promise<ProjectShowReply | null> {
     const body = JSON.stringify({ projects })
-    await this.transport.fetch(`/v1/events/${encodeURIComponent(stream)}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body }).catch(() => {})
+    const response = await this.send(`/v1/events/${encodeURIComponent(stream)}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body }, { once: signal })
+    // Older services confirm completion without saying which Readers they could install.
+    return response.status === 204 ? null : response.json()
   }
 
   // Files

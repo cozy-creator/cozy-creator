@@ -2,6 +2,7 @@ import { keepPreviousData, queryOptions } from "@tanstack/react-query"
 import type { Asset, Run, RunList, CalciferStatus } from "./calcifer"
 import type { Project } from "../types"
 import type { Client, RunFilter } from "./client"
+import type { EventStream } from "./events"
 
 /** Keyed by name, so an asset that didn't change keeps its identity whatever moved around it. */
 function keepAssets(old: unknown, next: unknown): unknown {
@@ -33,10 +34,12 @@ export function withAssets(state: Project, rows: Asset[], gone: Iterable<string>
   return { ...(head ?? state), assets }
 }
 
-export const projectQuery = (client: Client, id: string) =>
+export const projectQuery = (client: Client, stream: EventStream, id: string) =>
   queryOptions({
     queryKey: ["project", id],
     queryFn: async ({ signal }) => {
+      await stream.whenShown(id, signal)
+      signal.throwIfAborted()
       const began = performance.now()
       return { ...(await client.project(id, signal)), began }
     },

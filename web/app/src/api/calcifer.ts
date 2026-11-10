@@ -1934,6 +1934,17 @@ absent?: boolean,
 machine?: string | null, };
 
 /**
+ * One requested project's refusal, independent of the other projects on the same stream.
+ */
+export type ProjectShowRefusal = { status: number, error: ErrorBody, };
+
+/**
+ * The Readers installed by `PUT /v1/events/{stream}`. IDs not in `held` are not acknowledged;
+ * at most 64 IDs are attempted, and attempted IDs that could not open retain their refusal.
+ */
+export type ProjectShowReply = { held: Array<string>, refused: { [key in string]: ProjectShowRefusal }, };
+
+/**
  * `GET /v1/projects/{id}`: its assets in order, and what reading the project said.
  */
 export type ProjectState = { id: string, path: string, assets: Array<Asset>, 

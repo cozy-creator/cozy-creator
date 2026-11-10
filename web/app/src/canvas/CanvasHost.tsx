@@ -130,7 +130,7 @@ function ProjectSync({ id }: { id: string }) {
   const { client, stream, bridge } = useConnection()
   const store = useCanvasStore()
   const navigate = useNavigate()
-  const { data: state, error: stateError } = useQuery(projectQuery(client, id))
+  const { data: state, error: stateError } = useQuery(projectQuery(client, stream, id))
   const { data: canvas, error: canvasError } = useQuery(canvasQuery(client, id))
   const asked = useRef(new Set<string>())
   const queries = useQueryClient()
@@ -208,9 +208,9 @@ function useMachines(store: CanvasStore): string[] | null {
 
 /** Render all, and how many that is. Approved assets stay. */
 function RenderAll({ id }: { id: string }) {
-  const { client } = useConnection()
+  const { client, stream } = useConnection()
   const store = useCanvasStore()
-  const { data } = useQuery(projectQuery(client, id))
+  const { data } = useQuery(projectQuery(client, stream, id))
   const fresh = (data?.assets ?? []).filter((asset) => asset.tool && !madeHere(asset.tool) && !asset.pinned).length
   const asking = useSignal(store.allAsking)
   if (!fresh) return null
@@ -287,7 +287,7 @@ function Canvas({
   const connection = useConnection()
   const flow = useReactFlow<ElementNode, Edge>()
   const navigate = useNavigate()
-  const { client, bridge, outbox, canvases } = connection
+  const { client, stream, bridge, outbox, canvases } = connection
   const [saved] = useState(() => loadViewport(projectId))
   // One per project for as long as the tab is open: a tab gone to and back finds what it showed, and what's still waiting for Calcifer shows as done.
   // One a code reload left is another class's, and is made again.
@@ -393,7 +393,7 @@ function Canvas({
   const machines = useMachines(store)
   const machine = machines?.at(-1) ?? null
   // What can't be read says so on the canvas, and everything around it still works. One already read stays while Calcifer's away.
-  const { data: read, error } = useQuery({ ...projectQuery(client, projectId ?? ""), enabled: Boolean(projectId) })
+  const { data: read, error } = useQuery({ ...projectQuery(client, stream, projectId ?? ""), enabled: Boolean(projectId) })
   const unread = error && !(read && lost(error)) ? error : null
   const readable = unread ? null : projectId
   const { data: listed } = useQuery({ ...toolsQuery(client, "", machine, readable), enabled: machines !== null })

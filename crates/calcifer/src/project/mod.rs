@@ -149,6 +149,10 @@ impl Drop for Project {
 /// A project held open, by a stream that shows it: it closes once nothing holds it.
 pub(crate) struct Reader(#[allow(dead_code, reason = "held for its drop")] Arc<Project>);
 
+#[cfg(test)]
+#[path = "presence_tests.rs"]
+mod presence_tests;
+
 pub(crate) fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
     Router::new()
         .route("/v1/projects", post(open).get(list))

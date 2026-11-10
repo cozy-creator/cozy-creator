@@ -126,8 +126,11 @@ private, max-age=31536000, immutable`; everything else, `outputs/{name}` include
 - `history {id, undo?, redo?}`: a project's history moved, an edit, an undo or a redo, and the entries undo and redo would take now, as `GET /v1/projects/{id}/history` lists them.
 - `resync`: this stream fell behind and goes on: read again what you hold.
 
-`PUT /v1/events/{stream}` `{projects: [id]}`: `204`, the projects the page on this stream shows now, each held open while the stream
-lasts or until a later `PUT` names it no more. One that can't open isn't held, and the page's own read of it says why. `404
+`PUT /v1/events/{stream}` `{projects: [id]}`: `200 {held: [id], refused: {id: {status, error}}}`, the projects the page on this stream shows now,
+each held open while the stream lasts or until a later `PUT` names it no more. At most 64 sorted, distinct IDs are attempted; an ID outside
+that bound is not acknowledged. One that can't open keeps its own refusal without dropping the healthy IDs. The reply comes after Reader
+installation; a page orders its first project-state GET after its own held acknowledgement. Older services answer `204`, confirming completion
+without an authoritative per-ID result. `404
 stream_unknown` once the stream has ended: the next stream's `hello` names it. The page sends what all its tabs show, from the tab that
 holds the stream, each time that changes.
 
