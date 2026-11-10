@@ -62,7 +62,7 @@ function Recovery({ secret, onDone }: { secret: string; onDone: () => void }) {
 }
 
 function VaultBody({ id }: { id: string }) {
-  const { client, outbox } = useConnection()
+  const { client, outbox, bridge } = useConnection()
   const queries = useQueryClient()
   const { data: status, error, refetch } = useQuery(vaultQuery(client, id))
   const pending = useSignal(outbox.owed)
@@ -86,7 +86,20 @@ function VaultBody({ id }: { id: string }) {
 
   const change = (action: string, fields: Partial<VaultAsk> = {}) => ask.run(async () => {
     setPassphrase(""); setConfirmation(""); setRecovery("")
+    const epoch = bridge.projectEpoch(id)
     const answer = await client.vaultChange(id, { action, ...fields })
+    if (bridge.projectEpoch(id) !== epoch) {
+      // A full rekey closes its old mount itself. Recheck its replacement before
+      // showing the new recovery secret; an unrelated lock suppresses late responses.
+      const completed = bridge.projectEpoch(id)
+      const current = await client.vault(id)
+      if (action !== "rotate" || current.state !== "unlocked" || bridge.projectEpoch(id) !== completed) {
+        delete answer.recovery_secret
+        await queries.invalidateQueries({ queryKey: vaultKey(id) })
+        return current
+      }
+      answer.vault = current
+    }
     queries.setQueryData(vaultKey(id), answer.vault)
     if (answer.recovery_secret) setNewRecovery(answer.recovery_secret)
     if (answer.preserved_source) setPreserved(answer.preserved_source)

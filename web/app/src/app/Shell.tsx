@@ -237,16 +237,24 @@ function MainMenu({ id }: { id: string | null }) {
 }
 
 export function Shell() {
-  const { client, stream, bridge, outbox, canvases } = useConnection()
+  const { client, stream, bridge, outbox, canvases, privateViewEpoch } = useConnection()
+  const privateEpoch = useSignal(privateViewEpoch)
   const id = useProjectId()
   const vault = useQuery({ ...vaultQuery(client, id ?? ""), enabled: Boolean(id) })
   const [verified, setVerified] = useState<string | null>(null)
   const [checking, setChecking] = useState(false)
+  // A cached unlocked status is not authority after selecting this project again.
+  // The initial empty-canvas import alone already has a fresh ordinary-project reply.
+  const freshOrdinary = useRef<string | null>(null)
+  const checked = vault.isSuccess && (vault.isFetchedAfterMount || freshOrdinary.current === id)
   const allowed = Boolean(vault.data && (vault.data.state === "plain" || vault.data.state === "unlocked"))
   const uncertain = Boolean(vault.data?.encrypted && vault.isError)
-  const readable = !id || (verified === id && allowed && !checking && !uncertain)
+  const readable = !id || (verified === id && checked && allowed && !checking && !uncertain)
   useEffect(() => stream.show(readable ? id : null), [stream, id, readable])
-  useEffect(() => { if (vault.isSuccess) setChecking(false) }, [id, vault.dataUpdatedAt, vault.isSuccess])
+  useEffect(() => {
+    if (freshOrdinary.current !== id || vault.isFetchedAfterMount) freshOrdinary.current = null
+    if (checked && document.visibilityState === "visible") setChecking(false)
+  }, [id, vault.dataUpdatedAt, vault.isFetchedAfterMount, checked])
   const to = useTo()
   const navigate = useNavigate()
   const location = useLocation()
@@ -262,14 +270,14 @@ export function Shell() {
   useLayoutEffect(() => {
     if (!id || !vault.data) { if (id) setVerified(null); return }
     protectProjectView(id, vault.data.encrypted)
-    if (allowed && !checking && !uncertain) {
+    if (checked && allowed && !checking && !uncertain) {
       bridge.allowProject(id)
       outbox.allowProject(id)
       setVerified(id)
       return
     }
     setVerified(null)
-    if (!vault.data.encrypted) return
+    if (!vault.data.encrypted || (!checked && !checking && !uncertain)) return
     bridge.forgetProject(id)
     outbox.discardProject(id)
     canvases.delete(id)
@@ -286,7 +294,7 @@ export function Shell() {
     void queries.cancelQueries({ predicate: privateData })
     queries.removeQueries({ predicate: privateData })
     notes.set([])
-  }, [id, vault.data, allowed, checking, uncertain, bridge, outbox, canvases, queries])
+  }, [id, vault.data, checked, allowed, checking, uncertain, bridge, outbox, canvases, queries])
 
   useEffect(() => {
     if (!id || !vault.data?.encrypted) return
@@ -335,6 +343,7 @@ export function Shell() {
       adopted.current.set(project, "empty")
       // This callback only adopts a newly created ordinary project. Preserve the initial
       // import's live canvas/outbox while its first status read catches up.
+      freshOrdinary.current = project
       queries.setQueryData(vaultKey(project), { encrypted: false, state: "plain", path: "", idle_timeout_s: 0, next: [] })
       setVerified(project)
       void queries.invalidateQueries({ queryKey: ["projects"] })
@@ -356,6 +365,8 @@ export function Shell() {
     }
   }, [])
 
+  const mixedDrawer = /(?:^|\/)(?:runs|new|packages|models)(?:\/|$)/.test(location.pathname)
+  const drawerEpoch = mixedDrawer ? privateEpoch : 0
   const handle = matches[matches.length - 1]?.handle as { drawer?: "normal" | "wide" } | undefined
   return (
     <div className="shell" data-drawer={handle?.drawer ?? "none"}>
@@ -368,10 +379,10 @@ export function Shell() {
         <span className="canvas-controls" ref={setSlot} />
         <MainMenu id={id} />
       </header>
-      {readable ? <CanvasHost key={hostKey} projectId={id} slot={slot} history={history} onAdopt={adopt} /> : id && (checking ? <main className="gate"><p>Checking project protection…</p></main> : location.pathname.endsWith("/vault") ? <main className="gate"><p>Project protection</p></main> : <ProjectLocked id={id} />)}
-      {handle?.drawer && (readable || (location.pathname.endsWith("/vault") && !checking)) && (
+      {readable ? <CanvasHost key={hostKey} projectId={id} slot={slot} history={history} onAdopt={adopt} /> : id && (checking || !checked ? <main className="gate"><p>{vault.isError ? "Project protection could not be checked." : "Checking project protection…"}</p>{vault.isError && <button className="tb" type="button" onClick={() => void vault.refetch()}>Try again</button>}</main> : location.pathname.endsWith("/vault") ? <main className="gate"><p>Project protection</p></main> : <ProjectLocked id={id} />)}
+      {handle?.drawer && (readable || (location.pathname.endsWith("/vault") && checked && !checking)) && (
         <aside className="drawer">
-          <Outlet />
+          <Outlet key={drawerEpoch} />
         </aside>
       )}
       {!handle?.drawer && readable && <Outlet />}
