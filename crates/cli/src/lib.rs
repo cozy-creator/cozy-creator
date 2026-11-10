@@ -39,6 +39,7 @@ next: cozy run --help";
 #[command(
     name = "cozy",
     version,
+    disable_help_subcommand = true,
     about = "Run models on your machines and rented GPUs",
     after_help = NEXT
 )]

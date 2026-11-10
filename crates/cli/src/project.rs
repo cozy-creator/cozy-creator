@@ -47,8 +47,16 @@ pub(crate) async fn create(ctx: &Context, args: New) -> Result<ExitCode, Error> 
         }
         Err(error) => return Err(error),
     };
-    output::document(ctx, &serde_json::json!({
-        "id": id, "path": path, "created": created,
-    }));
+    let message = if created {
+        format!("Created project {id} at {}.", path.display())
+    } else {
+        format!("Project not created. {} already contains project {id}.", path.display())
+    };
+    let document = serde_json::json!({ "id": id, "path": path, "created": created, "message": message });
+    if ctx.json {
+        output::document(ctx, &document);
+    } else {
+        output::view(ctx, &document, &["message"]);
+    }
     Ok(ExitCode::SUCCESS)
 }

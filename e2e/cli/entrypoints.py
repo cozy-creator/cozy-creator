@@ -12,10 +12,11 @@ import time
 
 
 PUBLIC = {
-    "new", "open", "run", "status", "machine", "model", "package", "update", "doctor", "completion", "login", "logout", "help",
+    "new", "open", "run", "status", "machine", "model", "package", "update", "doctor", "completion", "login", "logout",
 }
 HIDDEN = {"whoami"}
 REMOVED = {
+    "help",
     "push", "pull", "org", "project", "import", "export", "add", "set", "delete", "render", "approve", "unapprove", "cancel",
     "wait", "history", "undo", "redo", "rename", "reclaim",
 }
