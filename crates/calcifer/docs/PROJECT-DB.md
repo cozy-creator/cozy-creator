@@ -1,14 +1,16 @@
-# `project.db`: a project's state in one SQLite database (cl-803)
+# `project.db`: canonical Automerge state in a SQLite transaction
 
 Paul, 11-07: a project was seven files with no transaction between them (`project.yaml`, `project.canvas.yaml`, `.history.json`,
 `.keys.json`, `.measured.json`, `project.lock`, `.runs/walk.json`). Now it is one database in its folder. Calcifer is its only writer; the
-CLI and the page go through Calcifer's HTTP. Media stays content-addressed in `files/`, so the folder can still be copied or zipped.
+CLI and the page go through Calcifer's HTTP. Schema 2 makes native Automerge values and original changes authoritative for logical
+project structure, canvas, versions and undo history. SQLite commits those bytes with local execution bookkeeping and disposable
+relational projections. Media stays content-addressed in `files/`; video, audio and images are never CRDT values. Encryption is optional.
 
 ## The folder
 
 | Path | Holds |
 |---|---|
-| `project.db` (+ `-wal`, `-shm` while open) | Everything below. WAL, `synchronous=NORMAL`: a crash of Calcifer loses nothing committed; a power cut can lose the last moment, never corrupt |
+| `project.db` (+ `-wal`, `-shm` while open) | Canonical native state, projections and local bookkeeping below. WAL, `synchronous=FULL`; committed SQLite transactions are durable subject to the filesystem/device honoring flushes |
 | `files/<sha256>.<ext>` | Every file, by hash |
 | `<edit>.mp4`, `<edit>.otio` | Each edit's film |
 | `.runs/` | Where a run's outputs land on their way into `files/`. Nothing else |
@@ -17,6 +19,8 @@ CLI and the page go through Calcifer's HTTP. Media stays content-addressed in `f
 
 | Table | Row | Was |
 |---|---|---|
+| `crdt_document(id, format, snapshot, heads)` | The complete native Automerge snapshot and causal heads; logical schema 1 | new canonical state |
+| `crdt_changes(hash, seq, actor, bytes)` | Original immutable native changes, keyed by native change hash | new canonical journal |
 | `meta(key, value)` | `seq`: the revision, one more per committed transaction; `format`: 1; `id` and `name`, the project's identity (cl-819); `board`: the board its last render ended on, and whose (a copy's or another Calcifer's isn't shown); `upgraded`: what upgrading its files from before said, until a run landing in it says it | file stats, its path |
 | `head(key, value)` | A top-level section other than `assets` (`version`, `defaults`), as JSON | project.yaml |
 | `boxes(key, name, ord)` | One box: its name key, its name as written, its place in the list | project.yaml |
@@ -33,9 +37,20 @@ CLI and the page go through Calcifer's HTTP. Media stays content-addressed in `f
 | `request_keys(key, digest, status, content_type, body, at_ms)` | One write's `Idempotency-Key`, its ask's digest and its answer, a day | `.keys.json`, `state.db` |
 | `ops(id, seq, at_ms, by, words, edits, changes, undone)` | One history entry: undo/redo | `.history.json` |
 
+The relational `head`, `boxes`, `fields`, `canvas`, `lock_assets`, `versions`, `lock_files`, `run_files`, `facts` and `ops` rows are
+query projections. Logical reads, history reads and the next write derive from the native document, even if a projection was damaged.
+`walk`, `asked`, `measured` and request keys remain local SQL bookkeeping. A render's temporary `asked` text is dropped at settlement;
+its retained versions keep original text, input digest, files, seed, tool, pickup/clips, warnings and actual global run identity.
+
+`project/crdt.rs` maps boxes, assets, versions, canvas and history by permanent IDs rather than names or local display numbers.
+Explicit presence tombstones retain concurrently written children. The document uses native maps/lists/scalars, not one opaque JSON
+string. Original actors/changes survive save/load; each local load starts a fresh writer actor so copied snapshots cannot resume the
+same actor counter. Concurrent scalar alternatives remain in `get_all` and surface as warnings; application conflicts still need a
+person's choice. No network replication service is introduced in this phase.
+
 In memory Calcifer holds one copy per folder (`folder::Shared`): the boxes (`written::Written`), the canvas, the lock and the walk. A
-read costs no query. A write is applied to a copy of what it changes and committed as row changes; nothing is rewritten whole. Another
-connection's commit (`PRAGMA data_version`) drops the copy. Two connections: the one that writes lives in the write turn, and one that
+read costs no query. A write is applied to a copy of what it changes and committed as native changes plus a recoverable snapshot and
+projection row changes. Another connection's commit (`PRAGMA data_version`) drops the copy. Two connections: the one that writes lives in the write turn, and one that
 only reads answers what the copy doesn't hold (history, keys, asked texts, `meta`). A read never waits on a writer, even one waiting
 out another program's write lock (cl-837). The copy, its history and the connections last as long as anything holds the project open
 (`CALCIFER-API.md`, Projects): the last `Folder` to go closes them.
@@ -64,7 +79,8 @@ applies its change to what is there when its turn comes.
 
 ## The op log
 
-An entry is today's history entry, kept as a row: `{id, at_ms, by: {via, client?}, words, edits, changes, undone?}`. A change is one of:
+An entry is a native history-map record with a permanent `uid`; `id` is a local display label. Its projection is
+`{id, at_ms, by: {via, client?}, words, edits, changes, undone?}`. A change is one of:
 - `asset {name, before?, after?}`: a box added, gone, or rewritten, each side its fields (JSON) where `.history.json` had its YAML lines;
 - `fields {name, fields: {field: [before, after]}}`;
 - `card {name, before?, after?}`;
@@ -115,8 +131,13 @@ A folder with `project.yaml` and no `project.db` is imported once, when Calcifer
 1. a format 2 or 3 file is upgraded as before (`upgrade::on_touch`, its `.v2`/`.v3` backups stay);
 2. `project.yaml`, `project.lock`, `project.canvas.yaml`, `.measured.json`, `.keys.json`, `.history.json`, `.runs/walk.json` and
    `.runs/asked/` are read into `project.db.new`, committed and renamed to `project.db`;
-3. those files are deleted. Killed before the rename, the files stand and the next open imports again; after it, the next open deletes
-   what's left.
+3. those original files move to `.cozy-legacy-v1/`, retaining their exact bytes. Interrupted completion resumes on the next open;
+   an incomplete staging database never replaces the originals.
+
+An existing schema-1 `project.db` first receives a recoverable `project.db.v1` SQLite snapshot (including committed WAL pages), then
+imports once into native state in one SQLite transaction. The original is never overwritten. History payloads receive permanent
+entity IDs too, so redo/undo cannot silently replace the identity of a legacy deleted box. Schema-2 readers refuse unknown versions;
+old readers cannot open schema 2. Recovery copies contain the original data, not edits made after migration.
 
 `cozy project upgrade` goes: the first open does it, inside Calcifer. `cozy project new` makes `project.db` with the starter boxes. A
 folder is a project when it holds `project.db` (or a `project.yaml` to import).
@@ -124,7 +145,7 @@ folder is a project when it holds `project.db` (or a `project.yaml` to import).
 ## Open for Paul
 
 1. `cozy project import x.yaml` reads a project; any other file is an asset, as before. Recommended over a new verb.
-2. Identity is `meta`'s `id` (cl-819): 128 random bits for a new project, the path hash it had for one from before. Calcifer's index
+2. Identity is canonical `identity.id` (also projected in `meta`, cl-819): 128 random bits for a new project, the path hash it had for one from before. Calcifer's index
    (`state.db`) maps it to its name and where it last was; a moved folder is the same project, and a copy of one another folder still
    holds takes a new id when it opens, so its walk's paid work doesn't go on there.
 3. A hand-edited YAML imports without its comments: the database holds values, not text.
