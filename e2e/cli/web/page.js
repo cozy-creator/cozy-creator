@@ -114,6 +114,13 @@ async function settled(page) {
   }
 }
 
+/** The actual fit action, independent of what control last had keyboard focus. */
+async function fitCanvas(page) {
+  if (!(await page.locator('.zoom-menu').count())) await page.click('.zoom-at');
+  await page.getByRole('menuitem', { name: /^Zoom to fit/ }).click();
+  await settled(page);
+}
+
 // A box as a person reaches it, worked on or at rest: it's always on the canvas.
 const boxOf = (page, name) => page.locator(`.react-flow__node:has(.card[data-asset="${name}"])`).first();
 async function closeBox(page) {
@@ -349,4 +356,4 @@ function rowsOf(folder, query) {
 /** Python as this OS names it: Windows has no python3 of its own. */
 const PYTHON = process.platform === 'win32' ? 'python' : 'python3';
 
-module.exports = { BARS, DARK_OPEN, GPU, MP4, PYTHON, STEP_MS, boxLog, boxOf, calcifer, carry, closeBox, openBox, openCanvas, drop, importYaml, lastLook, launch, lookAt, noStall, panning, png, pointAt, removeGeneratedProject, renderOf, rowsOf, settled, signIn, summary, until, upload, watchBoxes, wav, yamlOf };
+module.exports = { BARS, DARK_OPEN, GPU, MP4, PYTHON, STEP_MS, boxLog, boxOf, calcifer, carry, closeBox, openBox, openCanvas, drop, importYaml, lastLook, launch, lookAt, noStall, panning, png, pointAt, removeGeneratedProject, renderOf, rowsOf, settled, fitCanvas, signIn, summary, until, upload, watchBoxes, wav, yamlOf };
