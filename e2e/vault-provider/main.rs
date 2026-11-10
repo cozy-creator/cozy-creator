@@ -255,6 +255,59 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         assert!(fs::write(view.join("crash-leak.bin"), marker).is_err());
         crashed.try_unmount()?;
+        eprintln!("provider fixture: native stale volume owner cannot adopt a reused view");
+        let replacement_backing = artifacts.join("replacement-encrypted");
+        let mut replacement_random = Zeroizing::new([0u8; 32]);
+        getrandom::fill(&mut *replacement_random)
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        let replacement_secret = Zeroizing::new(URL_SAFE_NO_PAD.encode(*replacement_random));
+        provider.create(&replacement_backing, replacement_secret.as_bytes())?;
+        let mut previous =
+            provider.mount(&backing, &view, secret.as_bytes(), MountOptions::default())?;
+        struct Resume(u32);
+        impl Drop for Resume {
+            fn drop(&mut self) {
+                let _ = Command::new("/bin/kill")
+                    .args(["-CONT", &self.0.to_string()])
+                    .status();
+            }
+        }
+        assert!(
+            Command::new("/bin/kill")
+                .args(["-STOP", &previous.provider_pid().to_string()])
+                .status()?
+                .success()
+        );
+        let paused = Resume(previous.provider_pid());
+        // Unmount only the volume while its unlocked image and stopped supervisor remain.
+        assert!(
+            Command::new("/usr/bin/hdiutil")
+                .arg("unmount")
+                .arg(&view)
+                .status()?
+                .success()
+        );
+        let mut replacement = provider.mount(
+            &replacement_backing,
+            &view,
+            replacement_secret.as_bytes(),
+            MountOptions::default(),
+        )?;
+        let independent = view.join("independent-project.bin");
+        fs::write(&independent, b"SECOND_PROJECT_INDEPENDENT_CONTENT")?;
+        assert!(
+            !previous.is_mounted()?,
+            "an attached old image must not adopt another image's mounted volume"
+        );
+        drop(paused);
+        previous.try_unmount()?;
+        drop(previous);
+        assert!(replacement.is_mounted()?);
+        assert_eq!(
+            fs::read(&independent)?,
+            b"SECOND_PROJECT_INDEPENDENT_CONTENT"
+        );
+        replacement.try_unmount()?;
     }
     #[cfg(target_os = "linux")]
     {

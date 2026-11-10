@@ -237,16 +237,20 @@ pub(super) struct Lease {
     provider: Provider,
     image: PathBuf,
     device: Option<String>,
+    view: PathBuf,
+    volume: Option<String>,
     attached: bool,
 }
 impl Lease {
     pub(super) fn is_current(&self) -> Result<bool> {
         Ok(self.attached
             && self.device.is_some()
+            && self.volume.is_some()
+            && macos_source(&self.view)? == self.volume
             && current_device(&self.provider, &self.image)? == self.device)
     }
 
-    pub(super) fn capture(provider: &Provider, backing: &Path) -> Result<Self> {
+    pub(super) fn capture(provider: &Provider, backing: &Path, view: &Path) -> Result<Self> {
         let image = validate(backing)?;
         let device = current_device(provider, &image)?.ok_or(Error::Invalid(
             "the mounted image has no owned backing-device identity",
@@ -255,6 +259,10 @@ impl Lease {
             provider: provider.clone(),
             image,
             device: Some(device),
+            view: view.to_owned(),
+            volume: Some(macos_source(view)?.ok_or(Error::Invalid(
+                "the native image has no mounted volume identity",
+            ))?),
             attached: true,
         })
     }
@@ -348,6 +356,8 @@ pub(super) fn serve(request: Request) -> Result<()> {
         provider: provider.clone(),
         image: image.clone(),
         device: None,
+        view: view.clone(),
+        volume: None,
         attached: true,
     };
     let mut command = provider.command("attach");
@@ -374,6 +384,9 @@ pub(super) fn serve(request: Request) -> Result<()> {
         "the native image attached without an owned device identity",
     ))?;
     lease.device = Some(device);
+    lease.volume = Some(macos_source(&view)?.ok_or(Error::Invalid(
+        "the native image has no mounted volume identity",
+    ))?);
     guard.seal()?;
     acknowledge()?;
     let (ended, stop) = mpsc::channel();
