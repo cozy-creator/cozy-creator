@@ -236,6 +236,12 @@ pub(super) struct Lease {
     attached: bool,
 }
 impl Lease {
+    pub(super) fn is_current(&self) -> Result<bool> {
+        Ok(self.attached
+            && self.device.is_some()
+            && current_device(&self.provider, &self.image)? == self.device)
+    }
+
     pub(super) fn capture(provider: &Provider, backing: &Path) -> Result<Self> {
         let image = validate(backing)?;
         let device = current_device(provider, &image)?.ok_or(Error::Invalid(
@@ -365,6 +371,7 @@ pub(super) fn serve(request: Request) -> Result<()> {
     ))?;
     lease.device = Some(device);
     guard.seal()?;
+    acknowledge()?;
     let (ended, stop) = mpsc::channel();
     thread::spawn(move || {
         let mut byte = [0];

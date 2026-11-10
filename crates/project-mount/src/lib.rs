@@ -30,6 +30,7 @@ mod apfs;
 pub const PROVIDER_VERSION: &str = "2.0.0";
 const APFS_MARKER: &str = ".cozy-apfs-v1";
 const ROLE: &str = "__cozy_vault_provider";
+const READY: &[u8; 17] = b"COZY_VAULT_READY\n";
 const ARCHIVE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/securefs.zip"));
 const LICENSE: &str = include_str!("../helper/LICENSE.securefs.md");
 const NOTICES: &[(&str, &str)] = &[
@@ -279,6 +280,12 @@ impl Provider {
     /// Lite format encrypts file names and contents while preserving encrypted hierarchy.
     pub fn create(&self, backing: &Path, secret: &[u8]) -> Result<()> {
         validate_secret(secret)?;
+        #[cfg(target_os = "macos")]
+        if !self.native {
+            return Err(Error::Unsupported(
+                "macOS project storage requires the native encrypted APFS provider",
+            ));
+        }
         if backing.exists() {
             if fs::symlink_metadata(backing)
                 .map_err(io_error("read backing directory"))?
@@ -346,6 +353,12 @@ impl Provider {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         validate_secret(secret)?;
+        #[cfg(target_os = "macos")]
+        if !self.native {
+            return Err(Error::Unsupported(
+                "macOS project storage requires the native encrypted APFS provider",
+            ));
+        }
         #[cfg(not(target_os = "macos"))]
         if backing.join(APFS_MARKER).exists() {
             return Err(Error::Unsupported(
@@ -414,7 +427,7 @@ impl Provider {
             .arg(if options.read_only { "1" } else { "0" });
         let mut child = command
             .stdin(Stdio::piped())
-            .stdout(Stdio::null())
+            .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
             .map_err(io_error("start encrypted filesystem supervisor"))?;
@@ -427,15 +440,45 @@ impl Provider {
             let _ = child.wait();
             return Err(error);
         }
+        let owner = platform::process::Birth::of(child.id())
+            .and_then(|birth| platform::process::Exact::open(&birth));
+        let owner = match owner {
+            Ok(Some(owner)) => owner,
+            other => {
+                drop(input);
+                let _ = child.wait();
+                return Err(match other {
+                    Err(error) => Error::Platform(error),
+                    _ => {
+                        Error::Invalid("the filesystem supervisor exited before it could be owned")
+                    }
+                });
+            }
+        };
         let mut mounted = Mounted {
             provider: self.clone(),
             view: view.to_path_buf(),
             child,
             input: Some(input),
             guard,
+            owner,
+            identity: None,
+            helpers: Vec::new(),
             #[cfg(target_os = "macos")]
             native_lease: None,
         };
+        let mut output = mounted
+            .child
+            .stdout
+            .take()
+            .ok_or(Error::Invalid("provider readiness pipe is unavailable"))?;
+        let (ready, readiness) = mpsc::channel();
+        thread::spawn(move || {
+            let mut marker = [0u8; 17];
+            let result = output.read_exact(&mut marker).map(|()| marker == *READY);
+            let _ = ready.send(result);
+        });
+        let mut acknowledged = false;
         let deadline = Instant::now() + STARTUP;
         loop {
             if let Some(status) = mounted
@@ -445,11 +488,47 @@ impl Provider {
             {
                 return Err(self.failure("mount", status));
             }
-            if self.is_mounted(view)? {
+            if !acknowledged {
+                match readiness.try_recv() {
+                    Ok(Ok(true)) => acknowledged = true,
+                    Ok(_) | Err(mpsc::TryRecvError::Disconnected) => {
+                        return Err(Error::Invalid(
+                            "provider failed to acknowledge its owned mount",
+                        ));
+                    }
+                    Err(mpsc::TryRecvError::Empty) => {}
+                }
+            }
+            if acknowledged && self.is_mounted(view)? {
                 mounted.guard.seal()?;
                 #[cfg(target_os = "macos")]
                 if self.native {
                     mounted.native_lease = Some(apfs::Lease::capture(self, backing)?);
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    mounted.identity = self.identity(view)?;
+                    for process in platform::process::tree(mounted.child.id()) {
+                        if process.birth().pid == mounted.child.id() {
+                            continue;
+                        }
+                        #[cfg(windows)]
+                        if process
+                            .executable()
+                            .ok()
+                            .and_then(|path| fs::canonicalize(path).ok())
+                            .as_ref()
+                            != Some(&self.executable)
+                        {
+                            continue;
+                        }
+                        mounted.helpers.push(process);
+                    }
+                    if mounted.identity.is_none() || mounted.helpers.is_empty() {
+                        return Err(Error::Invalid(
+                            "the mounted filesystem has no verified provider identity",
+                        ));
+                    }
                 }
                 return Ok(mounted);
             }
@@ -477,6 +556,21 @@ impl Provider {
                 Some(1) => Ok(false),
                 _ => Err(self.failure("ismount", status)),
             }
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn identity(&self, view: &Path) -> Result<Option<String>> {
+        #[cfg(target_os = "linux")]
+        return linux_identity(view);
+        #[cfg(windows)]
+        return Ok(platform::durable::drive_identity(view)?);
+        #[cfg(not(any(target_os = "linux", windows)))]
+        {
+            let _ = view;
+            Err(Error::Unsupported(
+                "this OS has no encrypted mount identity",
+            ))
         }
     }
 
@@ -522,16 +616,16 @@ impl Provider {
         Ok(())
     }
 
-    fn cleanup_dead(&self, view: &Path) {
-        #[cfg(unix)]
-        if self.is_mounted(view).unwrap_or(true) {
+    fn cleanup_dead(&self, view: &Path, identity: &Option<String>) {
+        #[cfg(target_os = "linux")]
+        if identity.is_some() && self.identity(view).ok().as_ref() == Some(identity) {
             // Only after waiting for the key-holding provider to exit: remove stale kernel state.
             let _ = unix_unmount(view, true, Duration::from_secs(2));
         }
         // WinFsp destroys its volume when the provider exits. Do not unmount a newly assigned
         // drive letter after the old provider is gone.
-        #[cfg(not(unix))]
-        let _ = view;
+        #[cfg(not(target_os = "linux"))]
+        let _ = (view, identity);
     }
 
     fn check_driver(&self) -> Result<()> {
@@ -575,6 +669,9 @@ pub struct Mounted {
     child: Child,
     input: Option<ChildStdin>,
     guard: ViewGuard,
+    owner: platform::process::Exact,
+    identity: Option<String>,
+    helpers: Vec<platform::process::Exact>,
     #[cfg(target_os = "macos")]
     native_lease: Option<apfs::Lease>,
 }
@@ -587,7 +684,29 @@ impl Mounted {
         self.child.id()
     }
     pub fn is_mounted(&self) -> Result<bool> {
-        self.provider.is_mounted(&self.view)
+        if self.owner.wait_for(Duration::ZERO)? {
+            return Ok(false);
+        }
+        for helper in &self.helpers {
+            if helper.wait_for(Duration::ZERO)? {
+                return Ok(false);
+            }
+        }
+        #[cfg(target_os = "macos")]
+        {
+            if !self
+                .native_lease
+                .as_ref()
+                .map_or(Ok(false), apfs::Lease::is_current)?
+            {
+                return Ok(false);
+            }
+            self.provider.is_mounted(&self.view)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            Ok(self.identity.is_some() && self.provider.identity(&self.view)? == self.identity)
+        }
     }
 
     /// Reconciles an unexpectedly exited supervisor before the caller checks mount status.
@@ -600,6 +719,14 @@ impl Mounted {
             .is_some()
         {
             self.input.take();
+            for helper in &self.helpers {
+                if !helper.wait_for(Duration::ZERO)? {
+                    let _ = helper.kill();
+                }
+            }
+            if self.helpers.iter().any(|helper| !helper.ended()) {
+                return Err(Error::StillRunning);
+            }
             #[cfg(target_os = "macos")]
             if let Some(lease) = &mut self.native_lease {
                 if !lease.finish()? {
@@ -618,7 +745,8 @@ impl Mounted {
         let _transition = transition
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if self.provider.is_mounted(&self.view)? {
+        self.reconcile()?;
+        if self.is_mounted()? {
             self.provider.unmount(&self.view)?;
         }
         self.input.take();
@@ -646,6 +774,9 @@ impl Drop for Mounted {
         // A failed startup cannot return while its delayed helper could still expose a view.
         // EOF makes the supervisor stop its owned provider before this process releases it.
         let _ = self.child.wait();
+        while self.reconcile().is_err() {
+            thread::sleep(Duration::from_millis(100));
+        }
         let _ = self.guard.seal();
     }
 }
@@ -755,6 +886,7 @@ fn supervise(arguments: &[OsString]) -> Result<()> {
             .map_err(io_error("start securefs"))?,
         provider: provider.clone(),
         view: view.clone(),
+        identity: None,
     };
     let mut provider_input = child
         .child
@@ -785,31 +917,48 @@ fn supervise(arguments: &[OsString]) -> Result<()> {
             return Err(provider.failure("mount", status));
         }
         if !sealed && provider.is_mounted(&view).unwrap_or(false) {
+            #[cfg(not(target_os = "macos"))]
+            {
+                child.identity = provider.identity(&view)?;
+            }
             guard.seal()?;
             sealed = true;
+            acknowledge()?;
         }
         if stop.try_recv().is_ok() || parent.wait_for(Duration::from_millis(100))? {
-            let _ = provider.unmount_with_budget(&view, Duration::from_secs(2));
+            #[cfg(not(target_os = "macos"))]
+            if child.identity.is_some() && provider.identity(&view)? == child.identity {
+                let _ = provider.unmount_with_budget(&view, Duration::from_secs(2));
+            }
             // Shutdown is not a normal lock: if open handles prevent unmount, terminating the
             // provider makes further reads fail and its key disappear. The underlay is sealed.
             let _ = child.child.kill();
             let _ = child.child.wait();
-            provider.cleanup_dead(&view);
+            provider.cleanup_dead(&view, &child.identity);
             return Ok(());
         }
     }
+}
+
+fn acknowledge() -> Result<()> {
+    let mut output = io::stdout().lock();
+    output
+        .write_all(READY)
+        .and_then(|()| output.flush())
+        .map_err(io_error("acknowledge owned encrypted mount"))
 }
 
 struct OwnedChild {
     child: Child,
     provider: Provider,
     view: PathBuf,
+    identity: Option<String>,
 }
 impl Drop for OwnedChild {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
-        self.provider.cleanup_dead(&self.view);
+        self.provider.cleanup_dead(&self.view, &self.identity);
     }
 }
 
@@ -967,6 +1116,11 @@ fn debug_readiness(view: &Path, supervisor: u32) {
 
 #[cfg(target_os = "linux")]
 fn linux_mounted(view: &Path) -> Result<bool> {
+    Ok(linux_identity(view)?.is_some())
+}
+
+#[cfg(target_os = "linux")]
+fn linux_identity(view: &Path) -> Result<Option<String>> {
     use std::os::unix::ffi::OsStrExt;
     // Canonicalize only the parent: probing the mounted root can issue FUSE operations and
     // accidentally renew its idle timeout. The parent remains the private ordinary directory.
@@ -1007,10 +1161,14 @@ fn linux_mounted(view: &Path) -> Result<bool> {
             }
         }
         if decoded == view.as_os_str().as_bytes() {
-            return Ok(true);
+            return Ok(Some(format!(
+                "{}:{}",
+                String::from_utf8_lossy(fields[0]),
+                String::from_utf8_lossy(fields[2])
+            )));
         }
     }
-    Ok(false)
+    Ok(None)
 }
 
 #[cfg(unix)]

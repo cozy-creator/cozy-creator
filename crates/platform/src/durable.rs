@@ -239,6 +239,38 @@ pub fn open_dir(path: &Path) -> Result<File> {
     opened.map_err(Error::io("open directory", path))
 }
 
+/// The current NT device behind a Windows drive root, independent of its reusable letter.
+#[cfg(windows)]
+pub fn drive_identity(path: &Path) -> Result<Option<String>> {
+    use windows_sys::Win32::Storage::FileSystem::QueryDosDeviceW;
+    let written = path.to_string_lossy();
+    let bytes = written.as_bytes();
+    if bytes.len() != 3 || !bytes[0].is_ascii_alphabetic() || bytes[1] != b':' || !matches!(bytes[2], b'\\' | b'/')
+    {
+        return Err(Error::io("read drive identity", path)(
+            io::ErrorKind::InvalidInput.into(),
+        ));
+    }
+    let drive = [bytes[0] as u16, b':' as u16, 0];
+    let mut target = vec![0u16; 32768];
+    // SAFETY: a terminated drive name and an output buffer of the declared length.
+    let length =
+        unsafe { QueryDosDeviceW(drive.as_ptr(), target.as_mut_ptr(), target.len() as u32) };
+    if length == 0 {
+        let error = io::Error::last_os_error();
+        return if matches!(error.raw_os_error(), Some(2 | 3)) {
+            Ok(None)
+        } else {
+            Err(Error::io("read drive identity", path)(error))
+        };
+    }
+    let end = target
+        .iter()
+        .position(|value| *value == 0)
+        .unwrap_or(length as usize);
+    Ok(Some(String::from_utf16_lossy(&target[..end])))
+}
+
 /// Creates `path` (and its parents) and makes it private to this user: 0700 on Unix; on Windows
 /// the profile's ACL already is.
 pub fn private_dir(path: &Path) -> Result<()> {

@@ -279,11 +279,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .ok_or("owned provider already exited")?
             .kill()?;
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while crashed.is_mounted()? && std::time::Instant::now() < deadline {
+        while provider.is_mounted(&view)? && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(
-            !crashed.is_mounted()?,
+            !provider.is_mounted(&view)?,
             "a crashed provider must not leave a stale kernel mount"
         );
         assert!(fs::write(view.join("crash-leak.bin"), marker).is_err());
@@ -292,6 +292,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(windows)]
     {
         eprintln!("provider fixture: Windows helper crash cleanup");
+        let replacement_backing = artifacts.join("replacement-encrypted");
+        let mut replacement_random = Zeroizing::new([0u8; 32]);
+        getrandom::fill(&mut *replacement_random)
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        let replacement_secret = Zeroizing::new(URL_SAFE_NO_PAD.encode(*replacement_random));
+        provider.create(&replacement_backing, replacement_secret.as_bytes())?;
         let mut crashed =
             provider.mount(&backing, &view, secret.as_bytes(), MountOptions::default())?;
         let supervisor = crashed.provider_pid();
@@ -300,24 +306,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if process.birth().pid == supervisor {
                 continue;
             }
-            // A console host can also descend from the supervisor and is not our provider.
-            // Query only the image name (never command-line credentials) before killing the
-            // exact already-open process handle belonging to securefs.
-            let image = Command::new("tasklist")
-                .args([
-                    "/FI",
-                    &format!("PID eq {}", process.birth().pid),
-                    "/FO",
-                    "CSV",
-                    "/NH",
-                ])
-                .output()?;
-            assert!(image.status.success());
-            if String::from_utf8_lossy(&image.stdout).lines().any(|line| {
-                line.split(',')
-                    .next()
-                    .is_some_and(|name| name.eq_ignore_ascii_case("\"securefs.exe\""))
-            }) {
+            // A console host can also descend from the supervisor. Query the executable
+            // through the exact process handle; no command-line or credential is read.
+            if process
+                .executable()
+                .ok()
+                .and_then(|path| fs::canonicalize(path).ok())
+                .as_deref()
+                == Some(provider.executable())
+            {
                 helpers.push(process);
             }
         }
@@ -326,7 +323,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             helper.kill()?;
         }
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
-        while crashed.is_mounted()? && std::time::Instant::now() < deadline {
+        while provider.is_mounted(&view)? && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(
@@ -335,7 +332,30 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
         assert!(fs::read(&renamed).is_err());
         assert!(fs::write(view.join("crash-leak.bin"), marker).is_err());
+        eprintln!("provider fixture: stale Windows owner cannot lock a reused drive");
+        let mut replacement = provider.mount(
+            &replacement_backing,
+            &view,
+            replacement_secret.as_bytes(),
+            MountOptions::default(),
+        )?;
+        let independent = view.join("independent-project.bin");
+        fs::write(&independent, b"SECOND_PROJECT_INDEPENDENT_CONTENT")?;
+        assert!(
+            !crashed.is_mounted()?,
+            "the dead owner must not adopt a replacement volume"
+        );
         crashed.try_unmount()?;
+        drop(crashed);
+        assert!(
+            replacement.is_mounted()?,
+            "locking/dropping the dead owner must preserve its replacement"
+        );
+        assert_eq!(
+            fs::read(&independent)?,
+            b"SECOND_PROJECT_INDEPENDENT_CONTENT"
+        );
+        replacement.try_unmount()?;
     }
     eprintln!("provider fixture: read-only view");
     let read_only = match provider.mount(
