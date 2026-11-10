@@ -118,7 +118,7 @@ def run(payload: Request, ctx: Context, tel: Telemetry) -> Report:
         source = writer.commit()
         summaries: list[t.Summary] = []
         params: "dict[str, t.MetadataInput]"
-        for target, strategy, params, producer in [
+        for target, strategy, params, producer in [  # type: ignore[assignment]  # the literals' str and int values are MetadataInput
             (
                 "int8.convrot",
                 "int8-convrot256/1",
