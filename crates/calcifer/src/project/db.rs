@@ -615,8 +615,11 @@ pub(crate) fn keep_answer(conn: &Connection, key: &str, digest: &str, status: u1
 pub(crate) fn create(path: &Path, stored: &Stored, ops: &[OpRow], asked: &[(String, String)]) -> Result<(), Error> {
     let _ = std::fs::remove_file(path);
     let mut conn = open(path)?;
-    let extra = Extra { asked: asked.iter().map(|(digest, text)| (digest.clone(), Some(text.clone()))).collect(), ops: ops.to_vec(), ..Default::default() };
     let mut fresh = stored.clone();
+    crdt::identify(&Stored::default(), &mut fresh);
+    let mut ops = ops.to_vec();
+    crdt::identify_history(&fresh, &mut ops);
+    let extra = Extra { asked: asked.iter().map(|(digest, text)| (digest.clone(), Some(text.clone()))).collect(), ops, ..Default::default() };
     fresh.seq = 0;
     commit(&mut conn, path, &Stored::default(), &mut fresh, &extra, || ())?;
     set_meta(&conn, path, "created_complete", Some("1"))?;
