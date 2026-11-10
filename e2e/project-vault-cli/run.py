@@ -78,8 +78,15 @@ class Proof:
                 raise RuntimeError(f'{args[0]} unexpectedly succeeded while access should be refused')
             return completed
         if completed.returncode:
+            detail = completed.stderr[-4096:]
+            try:
+                error = json.loads(completed.stdout).get('error', {})
+                if isinstance(error, dict):
+                    detail += f" {error.get('code', '')}: {error.get('message', '')}"
+            except (ValueError, AttributeError):
+                pass
             raise RuntimeError(f'{args[0]} refused ({completed.returncode}): '
-                               + self.redact(completed.stderr[-4096:]))
+                               + self.redact(detail))
         if not json_output:
             return completed.stdout
         result = json.loads(completed.stdout)
