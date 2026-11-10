@@ -1152,7 +1152,9 @@ impl Folder {
         if held.as_ref().is_none_or(|held| db::data_version(conn) != held.seen) {
             let (seen, mut stored) = db::read(conn, &self.db())?;
             let files = super::stamp(&self.dir.join(FILES));
+            let began = Instant::now();
             self.fill(Arc::make_mut(&mut stored.lock), &stored.measured);
+            super::profile("folder_fill", began, stored.lock.files.len());
             let loads = held.as_ref().map_or(0, |held| held.loads + 1);
             *held = Some(Held { seen, loads, stored, files, commits: 0, shown: 0 });
         }
@@ -1416,9 +1418,11 @@ impl Folder {
 
     /// The history: this and `update_lock` are the one way to it, whatever holds it. What the walk owes is in it.
     pub(crate) fn lock(&self) -> Result<Lock, Error> {
+        let began = Instant::now();
         let mut lock = self.reading_bare_lock(Lock::clone)?;
         let walk = self.reading_walk(WalkFile::clone)?;
         (lock.pending, lock.walk) = (walk.pending, walk.walk);
+        super::profile("folder_lock_clone", began, lock.assets.len());
         Ok(lock)
     }
 

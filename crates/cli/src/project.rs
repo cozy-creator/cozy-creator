@@ -713,8 +713,16 @@ pub(crate) const FIELDS: &[&str] = &[
 /// `cozy project status`: an asset a row, what makes it and how it stands, the totals, then what to know and do. `--full`:
 /// every column and line, each file's path among them.
 async fn status(ctx: &Context, at: Option<&String>) -> Result<ExitCode, Error> {
-    let state: State = ctx.calcifer().await?.get(&self::at(&named(at)?, &[])).await?;
+    let profiling = std::env::var_os("COZY_XS160_PROJECT_PROFILE").is_some();
+    let began = std::time::Instant::now();
+    let client = ctx.calcifer().await?;
+    if profiling { eprintln!("xs160_profile stage=cli_bootstrap elapsed_ms={:.3} count=0", began.elapsed().as_secs_f64() * 1000.0); }
+    let began = std::time::Instant::now();
+    let state: State = client.get(&self::at(&named(at)?, &[])).await?;
+    if profiling { eprintln!("xs160_profile stage=cli_request_decode elapsed_ms={:.3} count={}", began.elapsed().as_secs_f64() * 1000.0, state.assets.len()); }
+    let began = std::time::Instant::now();
     shown(ctx, &state);
+    if profiling { eprintln!("xs160_profile stage=cli_output elapsed_ms={:.3} count={}", began.elapsed().as_secs_f64() * 1000.0, state.assets.len()); }
     Ok(ExitCode::SUCCESS)
 }
 

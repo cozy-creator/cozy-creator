@@ -73,8 +73,12 @@ pub(super) fn identity_bytes(bytes: &[u8]) -> Option<(String, String)> {
 
 impl Document {
     pub(super) fn load(bytes: &[u8], at: &Path) -> Result<Self, Error> {
+        let began = std::time::Instant::now();
         let doc = AutoCommit::load(bytes).map_err(invalid)?.with_actor(actor(at));
+        super::profile("native_load", began, bytes.len());
+        let began = std::time::Instant::now();
         let value = materialize(&doc, &ROOT, AmValue::Object(ObjType::Map))?;
+        super::profile("native_materialize", began, bytes.len());
         if value.get("schema").and_then(Value::as_u64) != Some(FORMAT as u64) {
             return Err(invalid(
                 "unsupported logical project schema; update cozy before opening this project",
@@ -187,6 +191,7 @@ impl Document {
     }
 
     pub(super) fn stored(&self) -> Result<Stored, Error> {
+        let began = std::time::Instant::now();
         let mut written = Written::default();
         let head = objects(&self.value, "head");
         for key in order(&self.value, "head_order", &head) {
@@ -252,11 +257,15 @@ impl Document {
             let row: CardRow = decode(record["record"].clone())?;
             canvas.insert(text(&record, "key"), row);
         }
+        super::profile("native_typed_decode", began, written.boxes.len());
+        let began = std::time::Instant::now();
+        let crdt = Some(Arc::new(self.clone()));
+        super::profile("native_clone", began, written.boxes.len());
         Ok(Stored {
             written: Arc::new(written),
             lock: Arc::new(lock),
             canvas: Arc::new(canvas),
-            crdt: Some(Arc::new(self.clone())),
+            crdt,
             ..Default::default()
         })
     }
