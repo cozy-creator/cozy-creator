@@ -58,7 +58,7 @@ async function died(why) {
   const state = async () => (await api(`/v1/projects/${id}`)).body;
   const folder = (await state()).path;
   seen.project = { id, folder };
-  // The project as `cozy project export` writes it (cl-803: its state is project.db).
+  // The project as `cozy export` writes it (cl-803: its state is project.db).
   const yaml = () => yamlOf(folder);
   const box = (name) => boxOf(page, name);
 

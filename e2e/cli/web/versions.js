@@ -72,7 +72,7 @@ async function died(why) {
   const asset = async (name) => (await state()).assets.find((row) => row.name === name);
   const folder = (await state()).path;
   seen.project = { id, folder };
-  /** Undo of the newest edit of `name` that stands, as the line `cozy project delete` prints does. */
+  /** Undo of the newest edit of `name` that stands, as the line `cozy delete` prints does. */
   const undoOf = async (name) => post(`${at}/history/undo`, { entry: (await api(`${at}/history`)).body?.entries?.find((entry) => !entry.undone && entry.names?.some((held) => held.toLowerCase() === name.toLowerCase()))?.id });
   const yamlAt = join(folder, 'project.yaml');
   const yaml = () => yamlOf(folder);

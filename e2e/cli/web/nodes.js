@@ -10,7 +10,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
 const { existsSync, readFileSync, readdirSync, renameSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { calcifer, carry, signIn, MP4, boxLog, boxOf, closeBox, openBox, openCanvas, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, renderOf, rowsOf, settled, until, watchBoxes, importYaml, yamlOf } = require('./page');
+const { cozyIn, calcifer, carry, signIn, MP4, boxLog, boxOf, closeBox, openBox, openCanvas, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, renderOf, rowsOf, settled, until, watchBoxes, importYaml, yamlOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -327,13 +327,13 @@ function linesOf(text, name) {
 
   // Another writer's `at`, on a box, settles the same way; so does a file that arrives with two on one spot, as a converted project does, with no input changing.
   const held = (await rows())['source-a'];
-  execFileSync(COZY, ['project', '-p', folder, 'set', 'source-b', `at=${held.x},${held.y}`], { stdio: 'ignore' });
+  cozyIn(folder, ['set', 'source-b', `at=${held.x},${held.y}`], { stdio: 'ignore' });
   await page.waitForTimeout(300);
   await until('an `at` on a box comes off it', () => apart('source-a', 'source-b'), Boolean);
   check('an_at_settles', true);
   const asItStood = (await state()).assets.map(({ name, inputs, standing }) => [name, inputs, standing]);
   // Another writer's row, onto it: no window had it to settle.
-  execFileSync(COZY, ['project', '-p', folder, 'set', 'source-b', `at=${held.x},${held.y}`], { stdio: 'ignore' });
+  cozyIn(folder, ['set', 'source-b', `at=${held.x},${held.y}`], { stdio: 'ignore' });
   await page.reload();
   await box('source-a').waitFor();
   await page.keyboard.press('f');
@@ -507,14 +507,14 @@ function linesOf(text, name) {
   check('box_menu', ['Change the tool', 'Rename', 'Delete'].every((item) => items.includes(item)), items);
   await page.keyboard.press('Escape');
 
-  // A fresh box, from the list: one prompt, or a prompt and one beat that's in the file from the start. All else is behind More, which stays as it's left, says what's set there, and saves what `cozy project status` reads.
-  const statusOf = (name) => JSON.parse(execFileSync(COZY, ['--json', '--full', 'project', '-p', folder, 'status'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] })).assets.find((held) => held.name === name);
+  // A fresh box, from the list: one prompt, or a prompt and one beat that's in the file from the start. All else is behind More, which stays as it's left, says what's set there, and saves what `cozy status` reads.
+  const statusOf = (name) => JSON.parse(cozyIn(folder, ['--json', '--full', 'status'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] })).assets.find((held) => held.name === name);
   if (local) {
     const fixture = join(__dirname, '..', 'project', 'tool.py');
     importYaml(folder, `${yaml().trimEnd()}\n  fixture:\n    tool: ${fixture}/told\n`);
     await box('fixture').waitFor();
     // Read with this machine's Runtime, as a run reads it: PyPI's can't, and this may be the first run of it here.
-    execFileSync(COZY, ['--json', 'run', `${fixture}/still`, 'prompt=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, env: { ...process.env, COZY_PROJECT: folder }, stdio: ['ignore', 'pipe', 'inherit'], timeout: FIRST_RUN_MS });
+    execFileSync(COZY, ['--json', 'run', `${fixture}/still`, 'prompt=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, stdio: ['ignore', 'pipe', 'inherit'], timeout: FIRST_RUN_MS });
     const wire = await until('its functions listed', async () => (await api(`/v1/tools?project=${id}`)).body.tools.filter((held) => held.local && held.id.startsWith(fixture)), (held) => held.length > 0, FIRST_RUN_MS);
     const labelOf = (name) => wire.find((held) => held.function === name).label;
     const reload = async () => {
@@ -670,7 +670,7 @@ function linesOf(text, name) {
     // What a package shows beside its first text: both on the box as it opens, empty reading N/A, and what's typed is the file's, as the CLI reads it. An empty one is written nowhere.
     const shaped = join(__dirname, '..', 'project', 'shaped.py');
     // Read with this machine's Runtime, as tool.py is above.
-    execFileSync(COZY, ['--json', 'run', `${shaped}/picture`, 'prompt=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, env: { ...process.env, COZY_PROJECT: folder }, stdio: ['ignore', 'pipe', 'inherit'], timeout: FIRST_RUN_MS });
+    execFileSync(COZY, ['--json', 'run', `${shaped}/picture`, 'prompt=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, stdio: ['ignore', 'pipe', 'inherit'], timeout: FIRST_RUN_MS });
     importYaml(folder, `${yaml().trimEnd()}\n  sounded:\n    tool: ${shaped}/shot\n`);
     // Render kept Other open, and drawn in on a box the canvas draws only what's near it: a new one is seen at rest, all of it in view.
     await away();
@@ -702,9 +702,9 @@ function linesOf(text, name) {
     await page.keyboard.press('f');
     await page.waitForTimeout(400);
     await box('mentioning').waitFor();
-    execFileSync(COZY, ['project', '-p', folder, 'render', 'mentioning', '--on', 'local'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'], timeout: FIRST_RUN_MS });
+    cozyIn(folder, ['render', 'mentioning', '--on', 'local'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'], timeout: FIRST_RUN_MS });
     // A project's status counts an asset's versions; one asset's status lists them.
-    const madeBy = JSON.parse(execFileSync(COZY, ['--json', '--full', 'project', '-p', folder, 'status', 'mentioning'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] })).versions.at(-1).runs.at(-1);
+    const madeBy = JSON.parse(cozyIn(folder, ['--json', '--full', 'status', 'mentioning'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] })).versions.at(-1).runs.at(-1);
     const sent = JSON.parse(execFileSync(COZY, ['--json', '--full', 'run', 'show', String(madeBy), '--once'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] })).request.input;
     check('a_mention_is_no_keyframe', !('first_frame' in sent) && !('last_frame' in sent), sent);
     check('a_mention_is_a_reference', sent.summary?.references?.length === 2 && sent.aspect_ratio === '16:9', sent);
@@ -900,7 +900,7 @@ function linesOf(text, name) {
     await shot('takes');
 
     // The terminal sees the same project.
-    const status = JSON.parse(execFileSync(COZY, ['--json', '--full', 'project', '-p', folder, 'status'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }));
+    const status = JSON.parse(cozyIn(folder, ['--json', '--full', 'status'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }));
     check('cli_sees_it', ['Sheet', 'Sheet_2', 'Other', 'source-a', 'source-b', 'Clip'].every((name) => status.assets.some((held) => held.name === name)), status.assets.map((held) => held.name));
   } else {
     // No machine: Render offers one, under Machines, and waits.

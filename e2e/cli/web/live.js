@@ -8,11 +8,11 @@
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $SHOT: where to keep its screenshots; $ALONE: on a shared
 // computer, so it runs nothing; $ARGV_LOG: where each cozy call is logged for coverage. Prints what it saw as JSON and exits 1 if anything failed.
 const { chromium } = require(process.env.PLAYWRIGHT);
-const { execFile, execFileSync } = require('child_process');
+const { execFile } = require('child_process');
 const { appendFileSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { calcifer, signIn, STEP_MS, boxOf, closeBox, lastLook, lookAt, noStall, openBox, png, until, pointAt, importYaml, yamlOf } = require('./page');
+const { cozyIn, calcifer, signIn, STEP_MS, boxOf, closeBox, lastLook, lookAt, noStall, openBox, png, until, pointAt, importYaml, yamlOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -231,14 +231,14 @@ function linesOf(text, name) {
   });
   const cozy = (...words) => new Promise((done, fail) => {
     if (process.env.ARGV_LOG) appendFileSync(process.env.ARGV_LOG, `${words.map((word) => `${word}\x1f`).join('')}\x1e`);
-    execFile(COZY, words, { cwd: folder, env: { ...process.env, COZY_PROJECT: folder }, encoding: 'utf8', maxBuffer: 1 << 26, timeout: FIRST_RUN_MS }, (error, stdout, stderr) => {
+    execFile(COZY, words, { cwd: folder, encoding: 'utf8', maxBuffer: 1 << 26, timeout: FIRST_RUN_MS }, (error, stdout, stderr) => {
       const at = Date.now();
       if (error) fail(new Error(`cozy ${words.join(' ')}: ${error.message}: ${stdout}${stderr}`));
       else done({ stdout, stderr, at });
     });
   });
-  const project = (...words) => cozy('project', '-p', folder, ...words);
-  const asJson = async (...words) => JSON.parse((await cozy('--json', '--full', 'project', '-p', folder, ...words)).stdout);
+  const project = (...words) => cozy(...words);
+  const asJson = async (...words) => JSON.parse((await cozy('--json', '--full', ...words)).stdout);
   const status = () => asJson('status');
   const rows = async () => (await api(`/v1/projects/${id}/canvas`)).body.cards;
   const held = async (name) => (await status()).assets.find((asset) => asset.name === name);
@@ -302,7 +302,7 @@ function linesOf(text, name) {
   // A picture.
   const picture = join(scratch, 'Live Picture.png');
   writeFileSync(picture, png(77));
-  const imported = await timed('import', { name: 'live_pic' }, () => cozy('--json', 'project', '-p', folder, 'import', picture, 'live_pic'));
+  const imported = await timed('import', { name: 'live_pic' }, () => cozy('--json', 'import', picture, 'live_pic'));
   check('import_lands', imported.landing);
   const hash = JSON.parse(imported.stdout).sha256.replace('sha256:', '').slice(0, 12);
 
@@ -349,7 +349,7 @@ function linesOf(text, name) {
   // Deleted by a command, which prints the command that undoes it. That brings it back where it was.
   const deleted = await timed('delete', { gone: 'live_b' }, () => project('delete', 'live_b'));
   const back = deleted.stdout.trim().split('\n').at(-1);
-  check('delete_prints_its_undo', back.startsWith(`cozy project -p ${folder} undo `) && /^\d+$/.test(back.split(' ').at(-1)), deleted.stdout);
+  check('delete_prints_its_undo', back.startsWith('cozy undo ') && /^\d+$/.test(back.split(' ').at(-1)), deleted.stdout);
   check('delete_gone_from_the_status', !(await held('live_b')));
   await timed('undo', { name: 'live_b', x: place.x, y: place.y, w: 320 }, () => project('undo', back.split(' ').at(-1)));
   check('undo_in_the_status', (await held('live_b'))?.fields?.description === 'Hand words two');
@@ -357,7 +357,7 @@ function linesOf(text, name) {
   // By hand: a row from the CLI, an asset gone in an edited export, and an export that doesn't read, which is refused and changes nothing.
   place = await spot();
   await timed('hand_row', { name: 'live_b', x: place.x, y: place.y }, () => saved(() => {
-    execFileSync(process.env.COZY, ['project', '-p', folder, 'set', 'live_b', `at=${place.x},${place.y}`], { stdio: 'ignore' });
+    cozyIn(folder, ['set', 'live_b', `at=${place.x},${place.y}`], { stdio: 'ignore' });
   }));
   await timed('hand_delete', { gone: 'live_auto' }, () => saved(() => importYaml(folder, yaml().replace(`${linesOf(yaml(), 'live_auto').trimEnd()}\n`, ''))));
   const whole = yaml();

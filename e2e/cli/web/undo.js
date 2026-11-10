@@ -3,7 +3,7 @@
 // a take discarded is undone (Ctrl+Z, the top bar's Undo, a note's Undo) and redone (Ctrl+Shift+Z), shown at once and checked in project.yaml,
 // its canvas rows and takes in project.db after each. The CLI's edit is undone from the page, the page's from the CLI; an undo a later edit would
 // clobber is refused, saying which; and with Calcifer stopped, an edit and its undo wait, land in order when it's back, and the history is there
-// after a restart, for `cozy project redo`.
+// after a restart, for `cozy redo`.
 //   node undo.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $SHOT: where to keep its screenshots; $STOP: a shell command
 // that stops this Calcifer, and $START one that brings it back. Prints what it saw as JSON and exits 1 if anything failed.
@@ -58,10 +58,10 @@ function check(name, ok, detail) {
   };
   // What the CLI says, on either stream; refused, it throws.
   const cozy = (...words) => {
-    const argv = ['project', '-p', folder, ...words];
+    const argv = [...words];
     if (process.env.ARGV_LOG) appendFileSync(process.env.ARGV_LOG, `${argv.map((word) => `${word}\x1f`).join('')}\x1e`);
-    const ran = spawnSync(process.env.COZY, argv, { encoding: 'utf8' });
-    if (ran.status !== 0) throw new Error(`cozy project ${words.join(' ')}: ${ran.stderr}`);
+    const ran = spawnSync(process.env.COZY, argv, { cwd: folder, encoding: 'utf8' });
+    if (ran.status !== 0) throw new Error(`cozy ${words.join(' ')}: ${ran.stderr}`);
     return `${ran.stdout}${ran.stderr}`;
   };
   const history = async () => (await api(`${at}/history?limit=50`)).body;

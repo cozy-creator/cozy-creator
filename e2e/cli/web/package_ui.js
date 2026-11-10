@@ -1,5 +1,5 @@
 // A package's own UI (crates/calcifer/docs/PACKAGE-UI.md), in a real browser on a real Calcifer. Local code a project names: a component draws
-// one field, saved through setFields and read back by the file, `cozy project status` and a reload; one draws the whole face; one that throws,
+// one field, saved through setFields and read back by the file, `cozy status` and a reload; one draws the whole face; one that throws,
 // one from a later API and one that isn't there leave the declared box, with the canvas up. What's served: a module's type and CSP, and that a
 // wrong hash, a climb out, a file that's no module and a foreign origin get nothing. A release: Calcifer on a Hub this cell stands up: not
 // installed, it doesn't load; installed, it loads under the wheel's digest; a Hub whose file isn't what it says doesn't load. The Hub's own API
@@ -15,7 +15,7 @@ const { cpSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } = requir
 const http = require('http');
 const { homedir, tmpdir } = require('os');
 const { join } = require('path');
-const { calcifer, signIn, STEP_MS, boxOf, closeBox, noStall, openBox, renderOf, until, boxLog, lastLook, lookAt, watchBoxes, yamlOf } = require('./page');
+const { cozyIn, calcifer, signIn, STEP_MS, boxOf, closeBox, noStall, openBox, renderOf, until, boxLog, lastLook, lookAt, watchBoxes, yamlOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -169,9 +169,9 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
   const state = async () => (await api(`/v1/projects/${id}`)).body;
   const folder = (await state()).path;
   seen.project = { id, folder };
-  // The project as `cozy project export` writes it (cl-803: its state is project.db).
+  // The project as `cozy export` writes it (cl-803: its state is project.db).
   const yaml = () => yamlOf(folder);
-  const status = () => JSON.parse(execFileSync(COZY, ['--json', '--full', 'project', '-p', folder, 'status'], quiet).toString());
+  const status = () => JSON.parse(cozyIn(folder, ['--json', '--full', 'status'], quiet).toString());
   const held = (name) => status().assets.find((asset) => asset.name === name);
   const box = (name) => boxOf(page, name);
   const away = async () => {
@@ -211,7 +211,7 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
     // Local code the project names, as a person keeps it beside the project. A run reads it with this machine's Runtime, so a box doesn't wait on PyPI's.
     const boxed = join(folder, 'boxed');
     cpSync(join(__dirname, '..', 'project', 'boxed'), boxed, { recursive: true });
-    const primed = () => execFileSync(COZY, ['--json', 'run', './boxed/plain', 'instructions=primed', '--on', 'local'], { ...quiet, cwd: folder, env: { ...process.env, COZY_PROJECT: folder } });
+    const primed = () => execFileSync(COZY, ['--json', 'run', './boxed/plain', 'instructions=primed', '--on', 'local'], { ...quiet, cwd: folder });
     primed();
     await page.reload();
     await page.waitForSelector('.top');

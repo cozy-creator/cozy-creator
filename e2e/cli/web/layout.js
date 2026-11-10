@@ -17,7 +17,7 @@ const { execFileSync, spawn } = require('child_process');
 const { mkdtempSync, readFileSync, renameSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { BARS, GPU, calcifer, MP4, boxOf, closeBox, openBox, fitCanvas, STEP_MS, lastLook, launch, lookAt, png, noStall, renderOf, settled, until, wav, importYaml, yamlOf } = require('./page');
+const { cozyIn, BARS, GPU, calcifer, MP4, boxOf, closeBox, openBox, fitCanvas, STEP_MS, lastLook, launch, lookAt, png, noStall, renderOf, settled, until, wav, importYaml, yamlOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -635,7 +635,7 @@ async function edgesOf({ shown, bare, black, white, clip, frame }) {
   const signedIn = async (page) => {
     // `cozy open --no-open`'s link, on the page under test.
     const said = execFileSync(COZY, ['open', '--no-open'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-    const link = said.match(/http:\/\/\S+#code=[0-9a-f]+\S*/)?.[0];
+    const link = said.match(/http:\/\/\S+#code=[0-9a-f]+\S*/)?.[0]?.replace(/&to=[^&]*/, '');
     if (!link) throw new Error(`cozy open --no-open printed no link: ${said.slice(0, 300)}`);
     await page.goto(link.replace(/^http:\/\/[^/]+/, base));
     await page.waitForSelector('.top');
@@ -684,7 +684,7 @@ async function edgesOf({ shown, bare, black, white, clip, frame }) {
     ['clip_b', 'clip_b.mp4', MP4],
   ]) {
     writeFileSync(join(scratch, file), bytes);
-    execFileSync(COZY, ['project', '-p', folder, 'import', join(scratch, file), asset], { encoding: 'utf8' });
+    cozyIn(folder, ['import', join(scratch, file), asset], { encoding: 'utf8' });
   }
   const local = (await api('/v1/status')).local_usable && !process.env.ALONE;
   seen.ran = local;
@@ -734,10 +734,10 @@ ${local ? `  card:
   names = ['hero_art', 'wide_art', 'tall_art', LONG, 'sea_sound', 'clip', 'clip_b', 'style', 'still', 'edit', 'odd', ...(local ? ['card', 'posed', 'shot', 'broken', 'making'] : [])];
   await placed();
   const render = (asset, wait = true) => {
-    const words = ['project', '-p', folder, 'render', asset, ...(local ? ['--on', 'local'] : [])];
-    if (!wait) return spawn(COZY, words, { stdio: 'ignore' });
+    const words = ['render', asset, ...(local ? ['--on', 'local'] : [])];
+    if (!wait) return spawn(COZY, words, { cwd: folder, stdio: 'ignore' });
     try {
-      execFileSync(COZY, words, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: RUN_MS });
+      execFileSync(COZY, words, { cwd: folder, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: RUN_MS });
     } catch (error) {
       if (asset !== 'broken') throw error;
     }
@@ -765,7 +765,7 @@ ${local ? `  card:
   // One being made all through the measuring, saying how far it's got, its steps a second each.
   if (local) {
     render('making', false);
-    stopMaking = () => execFileSync(COZY, ['project', '-p', folder, 'cancel', 'making'], { stdio: 'ignore' });
+    stopMaking = () => cozyIn(folder, ['cancel', 'making'], { stdio: 'ignore' });
   }
   }
   await first.close();

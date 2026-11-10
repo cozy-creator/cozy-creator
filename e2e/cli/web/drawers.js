@@ -7,7 +7,7 @@
 const { chromium } = require(process.env.PLAYWRIGHT);
 const { execFileSync, spawn } = require('child_process');
 const { join } = require('path');
-const { signIn, STEP_MS, noStall, until } = require('./page');
+const { cozyIn, signIn, STEP_MS, noStall, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -35,11 +35,11 @@ const numberIn = async (row) => Number((await row.first().locator('b').textConte
 async function runs(page, base, id, folder) {
   /** A real run the terminal asks for: the CLI follows it, and exits when it ends. */
   const asked = (seconds) => {
-    const child = spawn(process.env.COZY, ['run', '-p', folder, './weightless/wait', `seconds:=${seconds}`, '--on', 'local'], { cwd: here, stdio: 'ignore' });
+    const child = spawn(process.env.COZY, ['run', join(here, 'weightless/wait'), `seconds:=${seconds}`, '--on', 'local'], { cwd: folder, stdio: 'ignore' });
     return new Promise((done) => child.on('exit', done));
   };
   // Local code installs on first use, as its own run: past that, a run of it is one row.
-  cozy('run', '-p', folder, './weightless/reverse', 'text=warm', '--on', 'local');
+  cozyIn(folder, ['run', join(here, 'weightless/reverse'), 'text=warm', '--on', 'local'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 600_000 });
 
   await page.goto(`${base}/#/projects/${id}/runs`);
   await page.waitForSelector('.drawer');

@@ -1,4 +1,4 @@
-// Thousands of assets (Paul expects them): a generated 5,000-asset project, a real Calcifer, the real CLI, a real Chrome. How long `cozy project
+// Thousands of assets (Paul expects them): a generated 5,000-asset project, a real Calcifer, the real CLI, a real Chrome. How long `cozy
 // status` takes, opening it in the page, one edit to show, what's read for it, a box let go on the crowd by hand, a render landing, panning, memory.
 // It's generated as a folder of the files from before project.db (cl-803), 4,000 shots rendered twice each, which Calcifer's first open imports, as it
 // imports a person's: nothing else makes that many rendered takes short of rendering them. From there it's project.db's, and only the CLI, the page
@@ -233,18 +233,19 @@ async function nativeMemory(base, folder) {
   seen.scale = numbers;
   seen.bars = BARS;
 
-  const cozy = (...words) => new Promise((done, fail) => {
+  const cozyAt = (at, ...words) => new Promise((done, fail) => {
     if (process.env.ARGV_LOG) appendFileSync(process.env.ARGV_LOG, `${words.map((word) => `${word}\x1f`).join('')}\x1e`);
     const from = Date.now();
-    execFile(COZY, words, { cwd: folder, env: { ...process.env, COZY_PROJECT: folder }, encoding: 'utf8', maxBuffer: 1 << 28 }, (error, stdout, stderr) => {
+    execFile(COZY, words, { cwd: at, encoding: 'utf8', maxBuffer: 1 << 28 }, (error, stdout, stderr) => {
       const at = Date.now();
       if (error) fail(new Error(`cozy ${words.join(' ').slice(0, 300)}: ${error.message}: ${stdout.slice(0, 500)}${stderr.slice(0, 500)}`));
       else done({ stdout, stderr, at, ms: at - from });
     });
   });
-  const project = (...words) => cozy('project', '-p', folder, ...words);
+  const cozy = (...words) => cozyAt(folder, ...words);
+  const project = (...words) => cozy(...words);
   const status = async (at = folder) => {
-    const answer = await cozy('--json', '--full', 'project', '-p', at, 'status');
+    const answer = await cozyAt(at, '--json', '--full', 'status');
     return { state: JSON.parse(answer.stdout), ms: answer.ms };
   };
   const mb = (bytes) => +(bytes / 1048576).toFixed(1);
@@ -263,7 +264,7 @@ async function nativeMemory(base, folder) {
   numbers.status_first_s = seconds(keyed.ms);
   const local = (await (await fetch(`${base}/v1/status`, { headers: { Authorization: `Bearer ${JSON.parse(readFileSync(process.env.HOLDER, 'utf8')).token}` } })).json()).local_usable;
   if (local) {
-    await cozy('--json', 'run', '-p', keying, `${TOOL}/still`, 'instructions=primed', '--on', 'local');
+    await cozyAt(keying, '--json', 'run', `${TOOL}/still`, 'instructions=primed', '--on', 'local');
     keyed = await status(keying);
   }
   const inputs = Object.fromEntries(keyed.state.assets.filter((asset) => asset.name.startsWith('shot_')).map((asset) => [asset.name, asset.inputs]));
@@ -457,7 +458,7 @@ async function nativeMemory(base, folder) {
   const smallFolder = join(homedir(), '.cozy', 'projects', `web-scale-small-${Date.now()}`);
   mkdirSync(smallFolder, { recursive: true });
   generated(smallFolder, null, 36, 8);
-  const small = JSON.parse((await cozy('--json', '--full', 'project', '-p', smallFolder, 'status')).stdout);
+  const small = JSON.parse((await cozyAt(smallFolder, '--json', '--full', 'status')).stdout);
   await page.goto(`${base}/#/projects/${small.id}`);
   await page.waitForSelector('.react-flow__node .nm');
   numbers.pan_small = await measuredPan();

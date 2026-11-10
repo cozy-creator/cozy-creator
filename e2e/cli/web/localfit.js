@@ -85,7 +85,7 @@ const finish = (code) => {
 
   // A still whose tool composes a GPU function that loads a model, not yet rendered here. Named before it's run, it's read by PyPI's Runtime, which
   // knows no tool; the install a run makes on this machine's Runtime takes its place, as tools.js primes its fixture.
-  execFileSync(COZY, ['--json', 'run', `${heavy}/heavy`, 'instructions=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, env: { ...process.env, COZY_PROJECT: folder }, stdio: ['ignore', 'pipe', 'pipe'], timeout: FIRST_RUN_MS });
+  execFileSync(COZY, ['--json', 'run', `${heavy}/heavy`, 'instructions=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, stdio: ['ignore', 'pipe', 'pipe'], timeout: FIRST_RUN_MS });
   const primed = (await runsOf('heavy')).length;
   importYaml(folder, `version: 4\nassets:\n  heavy:\n    tool: ${heavy}/heavy\n    instructions: a lantern in fog\n`);
   await box('heavy').waitFor();
@@ -124,7 +124,7 @@ const finish = (code) => {
   check('reload_does_not_ask', await neverAsks('heavy', 3));
 
   // 5. The CLI never asks: it says the line once, as a warning, and goes on. With no --on it sends what the page does, here only this computer.
-  const cli = (args) => new Promise((done) => execFile(COZY, ['project', '-p', folder, 'render', 'heavy', ...args], { encoding: 'utf8', timeout: FIRST_RUN_MS }, (error, stdout, stderr) => done({ code: error?.code ?? 0, stdout, stderr })));
+  const cli = (args) => new Promise((done) => execFile(COZY, ['render', 'heavy', ...args], { cwd: folder, encoding: 'utf8', timeout: FIRST_RUN_MS }, (error, stdout, stderr) => done({ code: error?.code ?? 0, stdout, stderr })));
   const warnedOf = (said) => (said.stderr.match(/warning: This computer has no GPU/g) ?? []).length;
   const rendered = await versions('heavy');
   const unnamed = await cli([]);

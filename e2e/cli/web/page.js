@@ -339,7 +339,7 @@ function signIn(page, options) {
   const words = ['open', '--no-open'];
   if (process.env.ARGV_LOG) appendFileSync(process.env.ARGV_LOG, `${words.map((word) => `${word}\x1f`).join('')}\x1e`);
   const said = execFileSync(process.env.COZY, words, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-  const link = said.match(/http:\/\/\S+#code=[0-9a-f]+\S*/)?.[0];
+  const link = said.match(/http:\/\/\S+#code=[0-9a-f]+\S*/)?.[0]?.replace(/&to=[^&]*/, '');
   if (!link) throw new Error(`cozy open --no-open printed no link: ${said.slice(0, 300)}`);
   // $PAGE_ORIGIN: the page from elsewhere (a `vite` of the tree under test), its API through it.
   return page.goto(process.env.PAGE_ORIGIN ? link.replace(/^http:\/\/[^/]+/, process.env.PAGE_ORIGIN) : link, options);
@@ -406,16 +406,34 @@ function summary(frames) {
   return { median_ms: +sorted[sorted.length >> 1].toFixed(1), p95_ms: +sorted[Math.floor(sorted.length * 0.95)].toFixed(1), frames: sorted.length };
 }
 
-/** The project in `folder` as YAML (cl-803: its state is project.db, and this is its export), as `cozy project export` writes it. */
-function yamlOf(folder) {
-  return execFileSync(process.env.COZY, ['project', '-p', folder, 'export'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
+/** A native CLI command in the project directory, matching a person's shell. */
+function cozyIn(folder, words, options = {}) {
+  return execFileSync(process.env.COZY, words, { ...options, cwd: folder });
 }
 
-/** `text` as the project in `folder`, as a hand's edit of its export: `cozy project import <file>.yaml`, one edit. */
+/** Keep starter-film fixtures explicit while the CLI creates empty projects on first use. */
+async function newProject(folder) {
+  const holder = JSON.parse(readFileSync(process.env.HOLDER, 'utf8'));
+  const answer = await fetch(`http://${holder.address}/v1/projects`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${holder.token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: folder, starter: true }),
+  });
+  const opened = await answer.json();
+  if (!answer.ok) throw new Error(`create starter project ${folder}: ${answer.status} ${JSON.stringify(opened)}`);
+  return opened;
+}
+
+/** The project in `folder` as YAML (cl-803: its state is project.db, and this is its export), as `cozy export` writes it. */
+function yamlOf(folder) {
+  return cozyIn(folder, ['export'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
+}
+
+/** `text` as the project in `folder`, as a hand's edit of its export: `cozy import <file>.yaml`, one edit. */
 function importYaml(folder, text) {
   const at = `${folder}.import-${process.pid}-${Date.now()}.yaml`;
   writeFileSync(at, text);
-  execFileSync(process.env.COZY, ['project', '-p', folder, 'import', at], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  cozyIn(folder, ['import', at], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 }
 
 /** Rows of `folder`'s project.db for `query`, read only, each an array. */
@@ -427,4 +445,4 @@ function rowsOf(folder, query) {
 /** Python as this OS names it: Windows has no python3 of its own. */
 const PYTHON = process.platform === 'win32' ? 'python' : 'python3';
 
-module.exports = { BARS, DARK_OPEN, GPU, MP4, PYTHON, STEP_MS, boxLog, boxOf, calcifer, carry, closeBox, openBox, openCanvas, drop, importYaml, lastLook, launch, lookAt, noStall, panning, png, pointAt, removeGeneratedProject, renderOf, rowsOf, settled, fitCanvas, projectHeld, observeResizes, signIn, summary, until, upload, watchBoxes, wav, yamlOf };
+module.exports = { cozyIn, newProject, BARS, DARK_OPEN, GPU, MP4, PYTHON, STEP_MS, boxLog, boxOf, calcifer, carry, closeBox, openBox, openCanvas, drop, importYaml, lastLook, launch, lookAt, noStall, panning, png, pointAt, removeGeneratedProject, renderOf, rowsOf, settled, fitCanvas, projectHeld, observeResizes, signIn, summary, until, upload, watchBoxes, wav, yamlOf };

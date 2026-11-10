@@ -93,7 +93,7 @@ const DESCRIBED_MS = 300_000;
   await imported('spare', 40, 880);
   importYaml(folder, `${yamlOf(folder).trimEnd()}\n  quick:\n    tool: ${QUICK}/still\n    instructions: a lighthouse\n`);
   // Named first, it's read by PyPI's Runtime, which knows no tool; the install a run makes on this machine's Runtime takes its place.
-  if ((await api('/v1/status')).body.local_usable) execFileSync(process.env.COZY, ['--json', 'run', `${QUICK}/still`, 'instructions=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, env: { ...process.env, COZY_PROJECT: folder }, stdio: ['ignore', 'pipe', 'inherit'], timeout: DESCRIBED_MS });
+  if ((await api('/v1/status')).body.local_usable) execFileSync(process.env.COZY, ['--json', 'run', `${QUICK}/still`, 'instructions=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, stdio: ['ignore', 'pipe', 'inherit'], timeout: DESCRIBED_MS });
   await box('quick').waitFor();
   await page.keyboard.press('f');
   const turbo = box('quick').locator('input[type=checkbox][aria-label="Turbo"]');

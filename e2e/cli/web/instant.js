@@ -96,13 +96,13 @@ async function loseAnswers(page, method, path, times) {
   }, [path, init]);
   const folder = (await api(`/v1/projects/${id}`)).body.path;
   seen.project = { id, folder };
-  // The project as `cozy project export` writes it, and its canvas as Calcifer answers it (cl-803: both are project.db's), asked from here: what
+  // The project as `cozy export` writes it, and its canvas as Calcifer answers it (cl-803: both are project.db's), asked from here: what
   // the page reads is counted.
   const yaml = () => yamlOf(folder);
   const token = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session') ?? 'null')?.token);
   const cards = async () => (await (await fetch(`${base}/v1/projects/${id}/canvas`, { headers: { Authorization: `Bearer ${token}` } })).json()).cards ?? {};
-  const cozy = (...words) => execFileSync(COZY, words, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-  const status = () => JSON.parse(cozy('--json', 'project', '-p', folder, 'status')).assets;
+  const cozy = (...words) => execFileSync(COZY, words, { cwd: folder, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  const status = () => JSON.parse(cozy('--json', 'status')).assets;
   const hasAsset = (name) => new RegExp(`^  ${name}:`, 'm').test(yaml());
   const count = (name) => yaml().match(new RegExp(`^  ${name}(_\\d+)?:`, 'gm'))?.length ?? 0;
   const box = (name) => boxOf(page, name);
@@ -175,7 +175,7 @@ async function loseAnswers(page, method, path, times) {
   await carry(page, row('cozy/edit'), { x: 400, y: 200 });
   const third = `${name}_3`;
   await box(third).waitFor();
-  cozy('project', '-p', folder, 'add', 'cozy/edit', third);
+  cozy('add', 'cozy/edit', third);
   await until('the other in the file', () => Promise.resolve(hasAsset(third)), Boolean);
   await stalled.release();
   await box(`${name}_4`).waitFor();
@@ -204,7 +204,7 @@ async function loseAnswers(page, method, path, times) {
   check('refused_says_one_line', said.filter((line) => /never_held/.test(line)).length === 1, said);
 
   // A pending edit and another writer's edit of the same field: the conflict line, and neither lost.
-  cozy('project', '-p', folder, 'add', 'text', 'words', 'text=A storm.');
+  cozy('add', 'text', 'words', 'text=A storm.');
   await page.waitForTimeout(600);
   // Nothing held open: what's open lies over what's below it.
   await page.keyboard.press('f');
@@ -217,7 +217,7 @@ async function loseAnswers(page, method, path, times) {
   await page.keyboard.type('mine');
   await page.mouse.click(1500, 1050);
   await until('its PATCH is held', () => Promise.resolve(patches.calls.length), (n) => n === 1);
-  cozy('project', '-p', folder, 'set', 'words', 'text=theirs');
+  cozy('set', 'words', 'text=theirs');
   await until('theirs in the file', () => Promise.resolve(yaml().includes('text: theirs')), Boolean);
   await page.waitForTimeout(600);
   await patches.release();
@@ -258,7 +258,7 @@ async function loseAnswers(page, method, path, times) {
     // Named before it's run, it's read by PyPI's Runtime, which knows no tool: the install a run makes on this machine's Runtime takes its place, as
     // tools.js primes its fixture, and the page knows it makes pictures.
     const stillRuns = async () => (await api(`/v1/runs?project=${id}&limit=50`)).body.runs.filter((run) => run.function === 'still' || /\/still$/.test(run.target ?? ''));
-    execFileSync(COZY, ['--json', 'run', `${TOOL}/still`, 'instructions=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, env: { ...process.env, COZY_PROJECT: folder }, stdio: ['ignore', 'pipe', 'pipe'], timeout: FIRST_RUN_MS });
+    execFileSync(COZY, ['--json', 'run', `${TOOL}/still`, 'instructions=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, stdio: ['ignore', 'pipe', 'pipe'], timeout: FIRST_RUN_MS });
     const primed = (await stillRuns()).length;
     importYaml(folder, `${yaml().trimEnd()}\n  fixture:\n    tool: ${TOOL}/still\n    instructions: a whale\n`);
     await box('fixture').waitFor();

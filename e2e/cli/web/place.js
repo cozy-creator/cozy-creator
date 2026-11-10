@@ -6,11 +6,10 @@
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser (Google Chrome, which plays H.264); $COZY: the CLI, to check the
 // terminal sees the same project and to lay boxes out; $SHOT: where to keep its screenshots. Prints what it saw as JSON and exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
-const { execFileSync } = require('child_process');
 const { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { calcifer, signIn, MP4, STEP_MS, boxOf, closeBox, drop, openBox, png, launch, noStall, until, wav, rowsOf, yamlOf, importYaml, fitCanvas, observeResizes } = require('./page');
+const { cozyIn, calcifer, signIn, MP4, STEP_MS, boxOf, closeBox, drop, openBox, png, launch, noStall, until, wav, rowsOf, yamlOf, importYaml, fitCanvas, observeResizes } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -338,7 +337,7 @@ async function placedInView(page, expected) {
   //   One Undo puts all of it back.
   if (process.env.COZY) {
     const pictures = mkdtempSync(join(tmpdir(), 'web-place-'));
-    const at = (name, x, y, w) => execFileSync(process.env.COZY, ['project', '-p', folder, 'set', name, `at=${x},${y},${w}`], { stdio: 'ignore' });
+    const at = (name, x, y, w) => cozyIn(folder, ['set', name, `at=${x},${y},${w}`], { stdio: 'ignore' });
     const lay = {};
     const left = Math.max(...Object.values(rows(folder)).map((row) => row.x)) + 1500;
     const put = (name, x, y, w) => { lay[name] = { x: left + x, y, w }; };
@@ -360,7 +359,7 @@ async function placedInView(page, expected) {
     Object.keys(lay).forEach((name, i) => {
       const file = join(pictures, `${name}.png`);
       writeFileSync(file, png(40 + i * 9, 320, 180));
-      execFileSync(process.env.COZY, ['project', '-p', folder, 'import', file, name], { stdio: 'ignore' });
+      cozyIn(folder, ['import', file, name], { stdio: 'ignore' });
     });
     // Each placed by the page as it arrives first: placed after its `at`, it would be put where the page found room (the page's read of where
     // things sit, then its write of a new one's place, can straddle another writer's).
@@ -518,11 +517,11 @@ async function placedInView(page, expected) {
       await held;
       await route.fulfill({ response: answer }).catch(() => {});
     });
-    execFileSync(process.env.COZY, ['project', '-p', folder, 'import', file, 'raced'], { stdio: 'ignore' });
+    cozyIn(folder, ['import', file, 'raced'], { stdio: 'ignore' });
     await until('the page reads where things sit', () => Promise.resolve(read), Boolean);
     // Clear of everything, so nothing moves it off another.
     const cli = { x: Math.max(...Object.values(rows(folder)).map((row) => row.x + (row.w ?? 240))) + 2000, y: 0, w: 240 };
-    execFileSync(process.env.COZY, ['project', '-p', folder, 'set', 'raced', `at=${cli.x},${cli.y},${cli.w}`], { stdio: 'ignore' });
+    cozyIn(folder, ['set', 'raced', `at=${cli.x},${cli.y},${cli.w}`], { stdio: 'ignore' });
     release();
     // The page's place goes now, after the CLI's: what's written is still the CLI's, once and for good.
     const settled = await until('its row settled', async () => {
@@ -541,7 +540,7 @@ async function placedInView(page, expected) {
 
   // The terminal sees the same project.
   if (process.env.COZY) {
-    const status = JSON.parse(execFileSync(process.env.COZY, ['--json', '--full', 'project', '-p', folder, 'status'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }));
+    const status = JSON.parse(cozyIn(folder, ['--json', '--full', 'status'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }));
     const held = status.assets.map((asset) => asset.name);
     check('cli_sees_it', ['kyogre_art_1', 'kyogre_art_2', 'clash_take', 'ocean', 'Hero_Shot_v2'].every((name) => held.includes(name)), held);
   }
