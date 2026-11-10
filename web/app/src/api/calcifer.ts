@@ -2662,7 +2662,7 @@ gone?: Array<string>,
 /**
  * What's said of the project besides its assets changed: `GET /v1/projects/{id}?assets=false`.
  */
-head?: boolean, } | { "type": "canvas", id: string, seq: number, cards: { [key in string]: Card | null }, } | { "type": "job.updated", project: string, job: Job, seq: number, } | { "type": "ahead.updated", project: string, ahead: Ahead, } | { "type": "history", id: string, undo?: HistoryEntry | null, redo?: HistoryEntry | null, } | { "type": "resync" };
+head?: boolean, } | { "type": "project.vault", id: string, state: string, } | { "type": "canvas", id: string, seq: number, cards: { [key in string]: Card | null }, } | { "type": "job.updated", project: string, job: Job, seq: number, } | { "type": "ahead.updated", project: string, ahead: Ahead, } | { "type": "history", id: string, undo?: HistoryEntry | null, redo?: HistoryEntry | null, } | { "type": "resync" };
 
 /**
  * A killed process in uninterruptible sleep (`D`: a driver after an Xid, a hung network

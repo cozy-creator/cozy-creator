@@ -155,6 +155,12 @@ pub(crate) fn ahead_updated(id: &str, ahead: &api::calcifer::project::Ahead) {
     let _ = PROJECTS.said.send(StreamEvent::AheadUpdated { project: id.to_owned(), ahead: Box::new(ahead.clone()) });
 }
 
+/// Protection changes must reach inactive/global views too; they contain no private
+/// project content and remain visible after the project's read authority is closed.
+pub(crate) fn project_vault(id: &str, state: &str) {
+    let _ = PROJECTS.said.send(StreamEvent::ProjectVault { id: id.to_owned(), state: state.to_owned() });
+}
+
 /// Tells every stream one job of project `id` changed.
 pub(crate) fn job_updated(id: &str, job: &api::calcifer::project::Job, seq: u64) {
     let _ = PROJECTS.said.send(StreamEvent::JobUpdated { project: id.to_owned(), job: Box::new(job.clone()), seq });
@@ -322,6 +328,7 @@ impl Watch {
 
     fn visible(&self, event: &StreamEvent) -> bool {
         let project_id = match event {
+            StreamEvent::ProjectVault { .. } => return true,
             StreamEvent::ProjectChanged { id, .. } | StreamEvent::Canvas { id, .. } | StreamEvent::History { id, .. } => Some(id),
             StreamEvent::JobUpdated { project, .. } | StreamEvent::AheadUpdated { project, .. } => Some(project),
             StreamEvent::RunUpdated { run } => {
