@@ -17,11 +17,9 @@ pub(crate) struct Args {
     no_open: bool,
 }
 
-/// Open the current directory's existing project, or initialize an empty one.
+/// Open the existing project containing the current directory.
 async fn route(ctx: &Context) -> Result<String, Error> {
-    let project = project::ensure(ctx, None).await?;
-    let path = format!("{}?assets=false", project::at(&project, &[]));
-    let state: api::calcifer::project::State = ctx.calcifer().await?.get(&path).await?;
+    let state = project::current(ctx).await?;
     Ok(format!("/projects/{}", state.id))
 }
 

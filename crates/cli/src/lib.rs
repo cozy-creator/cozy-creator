@@ -18,7 +18,6 @@ mod doctor;
 mod machine;
 mod model;
 mod open;
-mod org;
 mod output;
 mod package;
 mod progress;
@@ -66,33 +65,36 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Run a function: `pkg/fn` (first-party), `org/pkg/fn`, `./dir[/fn]` or `./script.py[/fn]`.
+    /// Create a project in a new or existing directory.
+    New(project::New),
+    /// Open the current project in your browser.
+    Open(open::Args),
+    /// Run a function in the current project.
     Run(run::Args),
+    /// Show the current project's runs and machines.
+    Status(daemon::Status),
+    /// Upload the current project's files to your account.
+    Push,
+    /// Download the current project's files from your account.
+    Pull,
     /// Local, rented and added machines.
     Machine(machine::Args),
-    /// Find, install and publish packages.
-    Package(package::Args),
     /// Find, download, upload and publish models.
     Model(model::Args),
-    #[command(flatten)]
-    Project(project::Verb),
-    /// Open the current directory's canvas in your browser.
-    Open(open::Args),
-    /// Claim an organization parked under your name.
-    Org(org::Args),
-    /// Sign in to the Hub with this computer's device key.
-    Login(account::Login),
-    /// Sign out of the Hub.
-    Logout(account::Logout),
-    /// Show the signed-in account, its credit and where to buy more.
-    Whoami(account::Whoami),
+    /// Find, install and publish packages.
+    Package(package::Args),
     /// Replace this binary with the newest release.
     Update(update::Args),
-    /// Print a shell completion script.
-    Completion(completion::Args),
-    /// Diagnose this computer's cozy (Calcifer, its service, the machine) and fix a stuck Calcifer;
-    /// then a machine's driver, GPUs, toolchain and kernels.
+    /// Diagnose this computer's Cozy installation and machines.
     Doctor(doctor::Args),
+    #[command(hide = true)]
+    Login(account::Login),
+    #[command(hide = true)]
+    Logout(account::Logout),
+    #[command(hide = true)]
+    Whoami(account::Whoami),
+    #[command(hide = true)]
+    Completion(completion::Args),
 }
 
 /// Parses the command line, loads the config once, runs the verb and renders its refusal. Exit
@@ -159,9 +161,11 @@ async fn dispatch(ctx: &Context, command: Command) -> Result<ExitCode, Error> {
         Command::Machine(args) => machine::exec(ctx, args).await,
         Command::Package(args) => package::exec(ctx, args).await,
         Command::Model(args) => model::exec(ctx, args).await,
-        Command::Project(args) => project::exec(ctx, args).await,
+        Command::New(args) => project::create(ctx, args).await,
+        Command::Status(args) => daemon::status(ctx, args).await,
+        Command::Push => project::transfer(ctx, "push", "sent").await,
+        Command::Pull => project::transfer(ctx, "pull", "fetched").await,
         Command::Open(args) => open::exec(ctx, args).await,
-        Command::Org(args) => org::exec(ctx, args).await,
         Command::Login(args) => account::login(ctx, args).await,
         Command::Logout(args) => account::logout(ctx, args).await,
         Command::Whoami(args) => account::whoami(ctx, args).await,

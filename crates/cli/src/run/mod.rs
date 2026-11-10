@@ -19,7 +19,7 @@ use crate::{
     Context, output,
     send::{Paths, Sender},
 };
-pub(crate) use follow::{done, exit_code, follow, follow_until, job, mint_key, settled, stalled_words, watched};
+pub(crate) use follow::{done, exit_code, follow, follow_until, job, mint_key, settled};
 
 pub(crate) mod fetch;
 mod follow;
@@ -208,20 +208,7 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             let project = if all {
                 None
             } else {
-                let directory = crate::project::named(None)?;
-                let path = format!("{}?assets=false", crate::project::at(&directory, &[]));
-                match ctx.calcifer().await?.get::<api::calcifer::project::State>(&path).await {
-                    Ok(state) => Some(state.id),
-                    Err(error) if error.code == "project_not_found" => {
-                        if ctx.json {
-                            output::json(&serde_json::json!({ "runs": [], "older": 0 }));
-                        } else {
-                            output::say(ctx, "runs: none in this directory");
-                        }
-                        return Ok(ExitCode::SUCCESS);
-                    }
-                    Err(error) => return Err(error),
-                }
+                Some(crate::project::current(ctx).await?.id)
             };
             let query = list::Query { status: state, package, machine: on, project, before: None, limit };
             list::exec(ctx, query).await
@@ -247,6 +234,7 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
 
 
 async fn run(ctx: &Context, args: RunArgs) -> Result<ExitCode, Error> {
+    let project = crate::project::current(ctx).await?;
     let cwd = std::env::current_dir()
         .map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
     let written = args.target.clone().unwrap_or_default();
@@ -270,7 +258,7 @@ async fn run(ctx: &Context, args: RunArgs) -> Result<ExitCode, Error> {
     }
     let within = match args.warm {
         Some(_) => None,
-        None => Some(crate::project::ensure(ctx, None).await?),
+        None => Some(project.id),
     };
     let ask = request(ctx, &args, target.clone(), code.clone(), &cwd, within).await?;
     if let Some(count) = args.estimate {

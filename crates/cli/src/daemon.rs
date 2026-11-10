@@ -97,7 +97,7 @@ pub(crate) async fn status(ctx: &Context, _args: Status) -> Result<ExitCode, Err
             })),
         })).collect::<Vec<_>>();
         let mut document = json!({
-            "project": { "id": project.id, "path": project.path },
+            "project": if ctx.full { serde_json::to_value(&project).expect("project serializes") } else { json!({ "id": project.id, "path": project.path }) },
             "runs": runs,
             "machines": machines,
             "unreadable": unreadable,
