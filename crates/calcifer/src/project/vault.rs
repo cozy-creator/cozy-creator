@@ -103,6 +103,15 @@ pub(super) async fn admit_root(root: &FsPath) -> Result<tokio::sync::OwnedRwLock
     Ok(guard)
 }
 
+/// An already accepted walker may finish while viewing is closing, but only on its own mount.
+pub(super) async fn admit_work(project: &super::Project) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, Error> {
+    let guard = access(&project.root).read_owned().await;
+    if project.mount_id != mount_identity(&project.root) || resolve_path(&project.root)? != project.folder.dir {
+        return Err(Error::new(Kind::Conflict, "project_view_changed", "the project's mounted view changed; reopen this project"));
+    }
+    Ok(guard)
+}
+
 pub(crate) fn readable_token(path: &FsPath) -> Option<Arc<AtomicBool>> {
     let path = logical(path);
     let root = path.ancestors().find(|root| encrypted(root))?;

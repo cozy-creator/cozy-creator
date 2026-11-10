@@ -723,17 +723,22 @@ fn walk(api: &Arc<Api>, project: &Arc<Project>) {
     }
     project.jobs.begin();
     let walk = Walk::new(api, project);
-    let following = following(api, project);
     let api = api.clone();
     tokio::spawn(async move {
+        let access = vault::admit_work(&walk.project).await;
+        let following = access.as_ref().ok().map(|_| following(&api, &walk.project));
         remember(&api);
-        let error = match walk.go().await {
+        let outcome = match &access {
+            Ok(_) => walk.go().await,
+            Err(error) => Err(error.clone()),
+        };
+        let error = match outcome {
             Ok(first) => first.map(|first| walk.last_word(first)),
             Err(error) => {
                 *walk.project.walking.lock().expect("walking lock") = false;
                 walk.project.unsent.lock().expect("unsent lock").push(error.clone());
                 // What it was asked stays owed for the next walk; for whoever follows these, this one stopped.
-                if let Ok(owed) = walk.folder().walk_now() {
+                if access.is_ok() && let Ok(owed) = walk.folder().walk_now() {
                     walk.ended.lock().expect("ended lock").extend(owed.walk.asks.into_iter().map(|ask| ask.id));
                 }
                 Some(error)
@@ -741,14 +746,17 @@ fn walk(api: &Arc<Api>, project: &Arc<Project>) {
         };
         remember(&api);
         // A take is measured as it lands. What this walk made here (a cut, a frame), or what landed before ffprobe was, is measured now.
-        if let Err(error) = walk.measure() {
+        if access.is_ok() && let Err(error) = walk.measure() {
             warn!("measuring a project's files: {}", error.message);
         }
-        crate::events::project_settled(&walk.project.folder.dir);
-        following.abort();
+        if access.is_ok() { crate::events::project_settled(&walk.project.folder.dir); }
+        if let Some(following) = following {
+            following.abort();
+            let _ = following.await;
+        }
         walk.project.jobs.end(walk.began.elapsed().as_millis() as u64);
         // What it ended on is read after the project has closed, as status gives it.
-        if let Err(error) = walk.project.folder.keep_board(&walk.project.jobs.board()) {
+        if access.is_ok() && let Err(error) = walk.project.folder.keep_board(&walk.project.jobs.board()) {
             warn!("keeping a render's board: {}", error.message);
         }
         let asks = std::mem::take(&mut *walk.ended.lock().expect("ended lock"));
