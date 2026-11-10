@@ -514,7 +514,7 @@ impl Runs {
                 .filter_map(|p| p.content.as_ref())
                 .collect()
         };
-        let store = self.service.engine.store_for(id).map_err(problem)?;
+        let store = self.service.engine.store_for(&record.id).map_err(problem)?;
         let parts = refs
             .into_iter()
             .map(|r| {
@@ -554,7 +554,8 @@ impl Runs {
             .get(member)
             .ok_or_else(|| Error::not_found("output_not_found", "the tree has no such member"))?;
         let (sha, length) = (object.sha256.as_str(), object.length);
-        let store = self.service.engine.store_for(id).map_err(problem)?;
+        let record = self.record(actor, id)?;
+        let store = self.service.engine.store_for(&record.id).map_err(problem)?;
         let file = crate::storage::file(&store, object).map_err(storage)?;
         Ok(OutputSnapshot {
             parts: vec![(file, length)],
