@@ -278,6 +278,13 @@ impl Scope {
         if let Some(scope) = Self::cgroup(namespace, id)? {
             return Ok(scope);
         }
+        Self::inherited(namespace)
+    }
+
+    /// A process-tree token given to a command before its exec. Its descendants retain that
+    /// ownership even if this machine dies; the next machine sweeps them before reusing files.
+    pub fn inherited(namespace: &str) -> crate::Result<Self> {
+        let id = id()?;
         let token = format!("{namespace}-{id}");
         LIVE.lock().unwrap().insert(token.clone());
         Ok(Self(Backend::Tree { token, oom_before: host_oom_kills() }))
