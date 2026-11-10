@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import ctypes as C
 import struct
+from collections.abc import Callable
 from pathlib import Path
 
 
-def _identity(read, mapped: bool) -> str:
+def _identity(read: Callable[[int, int], bytes], mapped: bool) -> str:
     header = read(0, 64)
     if header[:6] == b"\x7fELF\x02\x01":
         phoff = struct.unpack_from("<Q", header, 32)[0]
@@ -70,7 +71,7 @@ def _identity(read, mapped: bool) -> str:
         debug, debug_size = struct.unpack_from("<II", optional, 112 + 6 * 8)
         table = read(pe + 24 + optional_size, sections * 40)
 
-        def rva(address, length):
+        def rva(address: int, length: int) -> bytes:
             if address + length > image_size:
                 raise ValueError("PE address outside image")
             if mapped:
@@ -96,7 +97,7 @@ def _identity(read, mapped: bool) -> str:
 def file_identity(path: Path) -> str:
     with path.open("rb") as file:
 
-        def read(offset, size):
+        def read(offset: int, size: int) -> bytes:
             file.seek(offset)
             value = file.read(size)
             if len(value) != size:
@@ -106,16 +107,16 @@ def file_identity(path: Path) -> str:
         return _identity(read, False)
 
 
-def loaded_identity(library, windows: bool = False) -> str:
+def loaded_identity(library: C.CDLL | None, windows: bool = False) -> str:
     symbol = C.cast(library.vr_v1_core_identity, C.c_void_p)
     if windows:
-        kernel = C.WinDLL("kernel32", use_last_error=True)
+        kernel = C.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined,unused-ignore]  # Windows-only
         module = C.c_void_p()
         lookup = kernel.GetModuleHandleExW
         lookup.argtypes = [C.c_uint32, C.c_void_p, C.POINTER(C.c_void_p)]
         lookup.restype = C.c_int
         if not lookup(0x6, symbol, C.byref(module)):
-            raise OSError(C.get_last_error(), "GetModuleHandleExW")
+            raise OSError(C.get_last_error(), "GetModuleHandleExW")  # type: ignore[attr-defined,unused-ignore]  # Windows-only
         base = module.value
     else:
 

@@ -8,3 +8,7 @@ tensorfs.api.QuantizeFit
 tensorfs.api.QuantizeTensor
 tensorfs.api.StrPath
 tensorfs.api.Token
+tensorfs._ext.ConfigValue
+tensorfs._ext.ConfigInput
+tensorfs._ext.MetadataValue
+tensorfs._ext.MetadataInput

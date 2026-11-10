@@ -12,7 +12,7 @@ import threading
 from contextlib import ExitStack
 from pathlib import Path
 
-_libraries: list[ctypes.CDLL] = []
+_libraries: list[ctypes.CDLL | None] = []
 _directories: list[object] = []
 
 # Package aliases/reloads share one acquisition lock, rather than each protecting only
@@ -32,10 +32,10 @@ with _state["lock"]:
 class _Reference:
     """One loader reference acquired here, never a borrowed module handle."""
 
-    def __init__(self, library):
-        self.library = library
+    def __init__(self, library: ctypes.CDLL) -> None:
+        self.library: ctypes.CDLL | None = library
 
-    def close(self):
+    def close(self) -> None:
         if self.library is None:
             return
         handle = self.library._handle
@@ -51,12 +51,12 @@ class _Reference:
         self.library._handle = 0
         self.library = None
 
-    def retain(self):
+    def retain(self) -> ctypes.CDLL | None:
         library, self.library = self.library, None
         return library
 
 
-def _loaded(name):
+def _loaded(name: str) -> _Reference | None:
     """Acquire a reference to an already loaded canonical core, or return None."""
     if sys.platform == "win32":
         kernel = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -82,7 +82,7 @@ def _loaded(name):
         return None
 
 
-def _validate(library, expected):
+def _validate(library: ctypes.CDLL | None, expected: str) -> None:
     from ._native_identity import loaded_identity
 
     try:
