@@ -157,7 +157,15 @@ hub_rent_on() {
   local m before
   before=$(hub_machines)
   [ -s "$HB/pod-ssh.pub" ] || ssh-keygen -q -t ed25519 -N '' -C ci-hub-pod -f "$HB/pod-ssh"
-  "$CLI" --json machine rent cpu --provider "$1" --ssh "$HB/pod-ssh.pub" -y >"$HB/rent-$1.out" 2>&1
+  # `cpu` first; a provider with no `cpu` inventory gets its cheapest GPU of these, in turn (xs-157's proof must reach it).
+  local sku
+  for sku in cpu ${HUB_GPU_FALLBACK:-rtx-3060 rtx-4060-ti rtx-3070 rtx-a4000 rtx-3080 rtx-3090}; do
+    "$CLI" --json machine rent "$sku" --provider "$1" --ssh "$HB/pod-ssh.pub" -y >"$HB/rent-$1.out" 2>&1
+    grep -q '"machine"' "$HB/rent-$1.out" && break
+    grep -qiE 'no provider inventory|not offered|unknown sku|no such sku|sku_unknown' "$HB/rent-$1.out" || break
+    log "hub rent on $1: no $sku there; trying the next"
+  done
+  echo "$sku" > "$HB/rent-$1.sku"
   m=$(python3 -c 'import json,sys
 t = open(sys.argv[1]).read(); dec = json.JSONDecoder(); i = 0
 while (i := t.find("{", i)) >= 0:
@@ -166,7 +174,7 @@ while (i := t.find("{", i)) >= 0:
   [ -n "$m" ] || m=$(comm -13 <(echo "$before") <(hub_machines) | grep -vxF "$M" | head -1)
   [ -n "$m" ] || { expect "hub rent on $1" FAIL "$(tail -c 300 "$HB/rent-$1.out")"; return; }
   HUB_RENTED="$HUB_RENTED $m"
-  grep -q '"machine"' "$HB/rent-$1.out" && expect "hub rent on $1" PASS "rented $m on $1" ||
+  grep -q '"machine"' "$HB/rent-$1.out" && expect "hub rent on $1" PASS "rented $m ($(cat "$HB/rent-$1.sku")) on $1" ||
     expect "hub rent on $1" FAIL "rented $m on $1, but the reply named no machine: $(tail -c 200 "$HB/rent-$1.out")"
   hub_pod_secrets "$1" "$m"
   "$CLI" machine end "$m" -y >"$HB/end-$1.out" 2>&1
