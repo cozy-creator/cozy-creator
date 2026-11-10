@@ -539,7 +539,7 @@ impl Catalog {
         block(self.hub.get_package(org, name))
     }
 
-    /// The exact files of one committed release (`python_version` picks its project wheel):
+    /// The exact files of one committed release for this machine's CPU and selected Python:
     /// its documents' bytes and its wheels behind presigned URLs, which expire.
     pub(crate) fn install_plan(
         &self,
@@ -547,7 +547,11 @@ impl Catalog {
         name: &str,
         release: &str,
         python_version: Option<&str>,
-    ) -> Result<types::PackageInstallPlan, ::api::hub::Error> {
-        block(self.hub.get_package_download_plan(org, name, release, python_version))
+) -> Result<types::PackageInstallPlan, ::api::hub::Error> {
+        block(self.hub.get_package_download_plan(org, name, release, python_version, Some(std::env::consts::ARCH)))
     }
 }
+
+#[cfg(test)]
+#[path = "hub_package_plan_tests.rs"]
+mod package_plan_tests;
