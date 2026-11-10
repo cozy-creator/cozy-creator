@@ -30,8 +30,16 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     };
     calcifer.text("/").await?;
     let code: SessionCode = calcifer.post("/v1/session-codes", &json!({}), None).await?;
-    let link = format!("{}&to=/projects/{}", code.url, project.id);
-    output::document(ctx, &json!({ "url": link, "expires_ms": code.expires_ms }));
+    let mut link = url::Url::parse(&code.url)
+        .map_err(|error| Error::new(Kind::Internal, "session_url", error.to_string()))?;
+    let path = if project.code.is_empty() {
+        format!("/projects/{}", project.id)
+    } else {
+        format!("/p/{}", project.code)
+    };
+    link.set_path(&path);
+    link.set_fragment(Some(&format!("code={}", code.code)));
+    output::document(ctx, &json!({ "url": link.as_str(), "expires_ms": code.expires_ms }));
     Ok(ExitCode::SUCCESS)
 }
 

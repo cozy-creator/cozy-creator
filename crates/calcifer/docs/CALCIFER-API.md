@@ -12,7 +12,7 @@ them (`scripts/web-types.sh`, checked in build).
 ## Clients and discovery
 
 Calcifer listens on `127.0.0.1` only: on `calcifer.port` from `~/.cozy/config.toml` and no other if it's set, else
-on 7317 or the next free port, so a page's origin outlives a restart. It holds `~/.cozy/calcifer/calcifer.lock` and publishes a lock record beside it at `calcifer.lock.holder` (owner-only): `{address, token,
+on 8818 or the next free port, so a page's origin outlives a restart. It holds `~/.cozy/calcifer/calcifer.lock` and publishes a lock record beside it at `calcifer.lock.holder` (owner-only): `{address, token,
 pid, version, started_at_ms}`. A client reads the record for the address and the bearer. The CLI starts Calcifer when none
 answers, and restarts it when it runs another cozy than the installed one.
 
