@@ -112,11 +112,9 @@ struct Project {
     told: Mutex<Option<model::Told>>,
     /// What its render is doing, asset by asset.
     jobs: Jobs,
-    /// Held by a walk until its end is told: the next walk's board begins after it.
-    ending: Arc<tokio::sync::Mutex<()>>,
     /// What its walker needn't read again: the jobs, and each text.
     walker: Mutex<Walker>,
-    /// Whether its one walker is going; it goes until nothing is owed.
+    /// Whether its one walker is going. Admission and the terminal board share this lock.
     walking: Mutex<bool>,
     /// Tells the walker something was asked.
     asked: Notify,
@@ -282,7 +280,6 @@ impl Projects {
                     code,
                     folder,
                     jobs: Jobs::new(id.clone()),
-                    ending: Arc::default(),
                     model: tokio::sync::Mutex::default(),
                     told: Mutex::default(),
                     walker: Mutex::default(),
@@ -686,58 +683,38 @@ pub(crate) fn resume(api: &Arc<Api>) {
 
 /// Starts the project's walker, or tells the one going that something was asked. Its board begins once the last walk's end is told.
 fn walk(api: &Arc<Api>, project: &Arc<Project>) {
-    if std::mem::replace(&mut *project.walking.lock().expect("walking lock"), true) {
+    let mut walking = project.walking.lock().expect("walking lock");
+    walk_under(api, project, &mut walking);
+}
+
+fn walk_under(api: &Arc<Api>, project: &Arc<Project>, walking: &mut bool) {
+    if std::mem::replace(walking, true) {
         return project.asked.notify_one();
     }
-    let ending = project.ending.clone();
-    let now = ending.clone().try_lock_owned().ok();
-    if now.is_some() {
-        project.jobs.begin();
-    }
+    let active = project.jobs.begin();
     let walk = Walk::new(api, project);
-    let following = following(api, project);
+    let following = following(api, project, active);
     let api = api.clone();
     tokio::spawn(async move {
-        let _ending = match now {
-            Some(held) => held,
-            None => {
-                let held = ending.lock_owned().await;
-                walk.project.jobs.begin();
-                held
-            }
-        };
         remember(&api);
-        let error = match walk.go().await {
-            Ok(first) => first.map(|first| walk.last_word(first)),
-            Err(error) => {
-                *walk.project.walking.lock().expect("walking lock") = false;
-                walk.project.unsent.lock().expect("unsent lock").push(error.clone());
-                // What it was asked stays owed for the next walk; for whoever follows these, this one stopped.
-                if let Ok(owed) = walk.folder().walk_now() {
-                    walk.ended.lock().expect("ended lock").extend(owed.walk.asks.into_iter().map(|ask| ask.id));
-                }
-                Some(error)
+        if let Err(error) = walk.go(&following).await {
+            walk.measure_at_end();
+            let mut walking = walk.project.walking.lock().expect("walking lock");
+            walk.project.unsent.lock().expect("unsent lock").push(error.clone());
+            // The stopped walk reports every accepted ask it still owes. Their
+            // durable rows remain for a later walk to resume.
+            if let Ok(owed) = walk.folder().walk_now() {
+                walk.ended.lock().expect("ended lock").extend(owed.walk.asks.into_iter().map(|ask| ask.id));
             }
-        };
-        remember(&api);
-        // A take is measured as it lands. What this walk made here (a cut, a frame), or what landed before ffprobe was, is measured now.
-        if let Err(error) = walk.measure() {
-            warn!("measuring a project's files: {}", error.message);
+            walk.end(&mut walking, Some(error), &following);
         }
+        remember(&api);
         crate::events::project_settled(&walk.project.folder.dir);
-        following.abort();
-        let asks = std::mem::take(&mut *walk.ended.lock().expect("ended lock"));
-        let ended = api::calcifer::project::Ended { error, rendered: walk.rendered(), asks };
-        walk.project.jobs.end(walk.began.elapsed().as_millis() as u64, ended);
-        // What it ended on is read after the project has closed, as status gives it.
-        if let Err(error) = walk.project.folder.keep_board(&walk.project.jobs.board()) {
-            warn!("keeping a render's board: {}", error.message);
-        }
     });
 }
 
 /// Keeps the board as the project's runs go, with the warnings their logs give, each once, as its asset's.
-fn following(api: &Arc<Api>, project: &Arc<Project>) -> tokio::task::JoinHandle<()> {
+fn following(api: &Arc<Api>, project: &Arc<Project>, active: u64) -> tokio::task::JoinHandle<()> {
     let mut tail = api.calcifer.subscribe();
     let project = project.clone();
     tokio::spawn(async move {
@@ -747,13 +724,14 @@ fn following(api: &Arc<Api>, project: &Arc<Project>) -> tokio::task::JoinHandle<
                 Err(broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(broadcast::error::RecvError::Closed) => return,
             };
-            project.jobs.ran(&id, &event, &project.folder.dir);
+            project.jobs.ran(active, &id, &event, &project.folder.dir);
         }
     })
 }
 
 /// The board as the graph and what is on its way stand now. `run` reads a run by its number.
 fn sync_jobs(project: &Project, run: impl Fn(u64) -> Option<Run>) -> Result<(), Error> {
+    let Some(active) = project.jobs.active() else { return Ok(()) };
     let walk = project.folder.walk_now()?;
     let walker = project.walker.lock().expect("walker lock");
     let graph = &walker.graph;
@@ -804,7 +782,7 @@ fn sync_jobs(project: &Project, run: impl Fn(u64) -> Option<Run>) -> Result<(), 
     drop(walker);
     let on = walk.walk.asks.iter().map(|ask| &ask.target).chain(walk.pending.values().map(|pending| &pending.target));
     let on = on.flat_map(|target| target.on.iter().map(ToString::to_string)).collect();
-    project.jobs.sync(on, going, coming, run);
+    project.jobs.sync(active, on, going, coming, run);
     Ok(())
 }
 
@@ -2040,8 +2018,9 @@ async fn runs(
     if let (Some(error), true, false) = (first, takes.is_empty(), all) {
         return Err(Refusal(error));
     }
-    // Held until the ask is in the walk's file: a walk ending in between would take its text from under it.
-    let walking = project.walking.lock().expect("walking lock");
+    // Hold admission through the commit and its board. The previous walk
+    // publishes its end under this same lock before a new one can begin.
+    let mut walking = project.walking.lock().expect("walking lock");
     let joined = *walking;
     let new_all = all && missing && !lock.walk.asks.iter().any(|ask| ask.all && ask.digest == digest);
     let new_outdated = outdated && !lock.walk.asks.iter().any(|ask| ask.outdated && ask.digest == digest);
@@ -2066,14 +2045,15 @@ async fn runs(
         })
     }))
     .map_err(Refusal)?;
-    drop(walking);
     project.join(&project.folder.lock().map_err(Refusal)?);
     let queued = queued_now(&project, &ask.id);
-    walk(&api, &project);
+    walk_under(&api, &project, &mut walking);
     sync_jobs(&project, numbered(&api)).map_err(Refusal)?;
+    let board = project.jobs.board();
+    drop(walking);
     let ask = (!joined || added > 0).then_some(ask.id);
     let said = lines.into_inner();
-    Ok((StatusCode::ACCEPTED, Json(Asked { id, ask, path: project.folder.dir.clone(), joined, added, skipped, queued, said, next: vec!["cozy status".into()], board: project.jobs.board() })))
+    Ok((StatusCode::ACCEPTED, Json(Asked { id, ask, path: project.folder.dir.clone(), joined, added, skipped, queued, said, next: vec!["cozy status".into()], board })))
 }
 
 /// A run by its number, as its record says now.
@@ -2829,6 +2809,25 @@ impl Walk {
         self.folder().measure(&mut self.folder().lock()?)
     }
 
+    /// Measure the files the walk made here, or that landed before ffprobe was available.
+    fn measure_at_end(&self) {
+        if let Err(error) = self.measure() {
+            warn!("measuring a project's files: {}", error.message);
+        }
+    }
+
+    /// Publish and keep the old board before another request can admit a new walk.
+    fn end(&self, walking: &mut bool, error: Option<Error>, following: &tokio::task::JoinHandle<()>) {
+        following.abort();
+        let asks = std::mem::take(&mut *self.ended.lock().expect("ended lock"));
+        let ended = api::calcifer::project::Ended { error, rendered: self.rendered(), asks };
+        let board = self.project.jobs.end(self.began.elapsed().as_millis() as u64, ended);
+        if let Err(error) = self.folder().keep_board(&board) {
+            warn!("keeping a render's board: {}", error.message);
+        }
+        *walking = false;
+    }
+
     /// A render has nothing more that can go: each cut it ends on is said, and it is done.
     async fn finish(&self, id: &str) -> Result<(), Error> {
         {
@@ -2924,8 +2923,8 @@ impl Walk {
     }
 
     /// Gives each ready job its turn as it comes up, each sending, making or following on its own so none holds up another, and goes on
-    /// as each ends or something is asked, until nothing is owed: then the first thing that failed, if one did.
-    async fn go(&self) -> Result<Option<Error>, Error> {
+    /// as each ends or something is asked, until nothing is owed and its terminal board is kept.
+    async fn go(&self, following: &tokio::task::JoinHandle<()>) -> Result<(), Error> {
         let (mut first, mut followed) = (None, HashSet::new());
         let mut work: FuturesUnordered<BoxFuture<'_, Done>> = FuturesUnordered::new();
         // An edit by hand says nothing, so the file's stamp is looked at. One stat a second, and nothing more if it's the same.
@@ -2983,8 +2982,8 @@ impl Walk {
                 for ask in self.folder().walk_now()?.walk.asks.into_iter().filter(|ask| done.contains(&ask.id)) {
                     self.finish(&ask.id).await?;
                 }
-                if self.over()? {
-                    return Ok(first);
+                if self.over(&mut first, following)? {
+                    return Ok(());
                 }
                 continue;
             }
@@ -3586,13 +3585,20 @@ impl Walk {
         Ok(())
     }
 
-    /// Whether the walk is over, nothing owed or followed. Decided under `walking`, so an ask finds
-    /// this walker going or starts the next.
-    fn over(&self) -> Result<bool, Error> {
+    /// Measure before taking the admission lock. An ask can join meanwhile,
+    /// so check what is owed again before closing the walk under the lock.
+    fn over(&self, first: &mut Option<Error>, following: &tokio::task::JoinHandle<()>) -> Result<bool, Error> {
+        let owes = |walk: &folder::WalkFile| !walk.walk.asks.is_empty() || !walk.pending.is_empty();
+        if owes(&self.folder().walk_now()?) {
+            return Ok(false);
+        }
+        self.measure_at_end();
         let mut walking = self.project.walking.lock().expect("walking lock");
         let walk = self.folder().walk_now()?;
-        *walking = !walk.walk.asks.is_empty() || !walk.pending.is_empty();
-        if !*walking && !walk.walk.renames.is_empty() {
+        if owes(&walk) {
+            return Ok(false);
+        }
+        if !walk.walk.renames.is_empty() {
             self.folder().update_lock(|lock| {
                 for (from, to) in std::mem::take(&mut lock.walk.renames) {
                     // Still under its old name: a rename an older Calcifer left for this moment.
@@ -3605,16 +3611,15 @@ impl Walk {
                 }
             })?;
         }
-        if !*walking {
-            self.folder().update_walk(|walk| {
-                walk.walk.runs.clear();
-                walk.walk.landing.clear();
-                walk.walk.numbered.clear();
-            })?;
-            *self.project.walker.lock().expect("walker lock") = Walker::default();
-            self.folder().drop_texts();
-        }
-        Ok(!*walking)
+        self.folder().update_walk(|walk| {
+            walk.walk.runs.clear();
+            walk.walk.landing.clear();
+            walk.walk.numbered.clear();
+        })?;
+        *self.project.walker.lock().expect("walker lock") = Walker::default();
+        self.folder().drop_texts();
+        self.end(&mut walking, first.take().map(|error| self.last_word(error)), following);
+        Ok(true)
     }
 
     /// What failed, of no one asset: said now; what does not read it goes on.
