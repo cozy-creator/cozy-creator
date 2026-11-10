@@ -158,8 +158,8 @@ pub(crate) struct PlanSlot {
     pub precision: String,
     /// Native selected encoded source bytes; not a GPU-fit or full-memory charge.
     pub selected_encoded_bytes: u64,
-    /// Built when the function first uses it (`on_demand`); its bytes are fetched right behind
-    /// the up-front set's (`Plan::on_demand`), so that build reads them from the store.
+    /// Built when the function first uses it (`on_demand`), its bytes fetched then: never ahead
+    /// of a call, which may never use it (cl-804); a warm set's `downloaded` holds them.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub on_demand: bool,
     /// Components the model class declares placeable (`@placeable`): in a group, TensorD names
@@ -305,11 +305,8 @@ impl Plan {
     pub(crate) fn upfront(&self) -> Vec<(String, Vec<String>)> {
         merged(self.slots.iter().filter(|slot| !slot.on_demand)).into_iter().map(|s| (s.manifest, s.components)).collect()
     }
-    /// What it reads only once a stage first uses an on-demand slot: fetched behind `upfront`.
-    pub(crate) fn on_demand(&self) -> Vec<(String, Vec<String>)> {
-        merged(self.slots.iter().filter(|slot| slot.on_demand)).into_iter().map(|s| (s.manifest, s.components)).collect()
-    }
-    /// All its calls may read, on-demand slots too: what a `downloaded` warm set member holds.
+    /// All its calls may read, on-demand slots too: what a `downloaded` warm set member holds,
+    /// asked for by name (`cozy machine warm`), so its first call waits on no download (cl-790).
     pub(crate) fn read(&self) -> Vec<(String, Vec<String>)> {
         merged(&self.slots).into_iter().map(|s| (s.manifest, s.components)).collect()
     }

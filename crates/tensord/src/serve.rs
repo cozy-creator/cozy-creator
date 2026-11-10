@@ -444,6 +444,14 @@ fn start_api(
         contexts: Default::default(),
         projection: Default::default(),
     });
+    service.engine.on_settled(Box::new({
+        let runs = Arc::downgrade(&runs);
+        move |record| {
+            if let Some(runs) = runs.upgrade() {
+                runs.settled(record);
+            }
+        }
+    }));
     crate::calls::Calls::configure(service, machine.clone(), Some(&runs))?;
     runs.restore_warm_sets()?;
     crate::runs::resume(&runs)?;

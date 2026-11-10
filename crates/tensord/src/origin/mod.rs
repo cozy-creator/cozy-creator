@@ -35,6 +35,9 @@ const TICK: Duration = Duration::from_millis(100);
 pub(crate) mod priority {
     /// A reader is blocked on it.
     pub(crate) const NOW: u64 = 0;
+    /// The order of what a started run fetches (its calls' weights): ahead of every queued root,
+    /// whose order is its acceptance, from 1.
+    pub(crate) const STARTED: u64 = 0;
     /// Next for `run` (by acceptance), `rank` within it.
     pub(crate) fn next(run: u64, rank: u32) -> u64 {
         1 + (run.min((1 << 31) - 1) << 32 | u64::from(rank))
