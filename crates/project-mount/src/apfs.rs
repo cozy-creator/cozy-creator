@@ -336,7 +336,7 @@ pub(super) fn serve(request: Request) -> Result<()> {
         command.arg("-readonly");
     }
     command.arg(&image);
-    let attached = run(
+    run(
         &provider,
         command,
         "attach encrypted image",
@@ -344,11 +344,12 @@ pub(super) fn serve(request: Request) -> Result<()> {
         STARTUP,
     )?;
     drop(secret);
-    let device = base_device(&decode(attached)?)
-        .or(current_device(&provider, &image)?)
-        .ok_or(Error::Invalid(
-            "the native image attached without an owned device identity",
-        ))?;
+    // APFS attach output may name its synthesized container rather than the backing disk.
+    // Record identity from the same image registry used for every later ownership check;
+    // comparing those two different device identities would skip controller-death cleanup.
+    let device = current_device(&provider, &image)?.ok_or(Error::Invalid(
+        "the native image attached without an owned device identity",
+    ))?;
     lease.device = Some(device);
     guard.seal()?;
     let (ended, stop) = mpsc::channel();
