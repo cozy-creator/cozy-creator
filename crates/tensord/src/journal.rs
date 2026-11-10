@@ -648,7 +648,10 @@ fn read_payload(conn: &Connection, id: &str, slot: &str, body: &[u8]) -> io::Res
 }
 
 fn metadata_actor(actor: &str) -> String {
-    crate::private_io::current().map_or_else(|| actor.to_owned(), |scope| format!("local-private:{}:{}:{actor}", scope.project_id.len(), scope.project_id))
+    crate::private_io::current().map_or_else(|| actor.to_owned(), |scope| {
+        let prefix=format!("local-private:{}:{}:",scope.project_id.len(),scope.project_id);
+        if actor.starts_with(&prefix) {actor.to_owned()} else {format!("{prefix}{actor}")}
+    })
 }
 fn encoded_metadata(value: &impl Serialize, scope: Option<&api::machine::LocalPrivateStorage>, context: &str, mut index: Value) -> io::Result<String> {
     let Some(scope) = scope else { return encoded(value) };
@@ -1138,46 +1141,29 @@ impl Journal {
     }
 
     pub(crate) fn native_output(&self, actor: &str, owner: &str) -> io::Result<Option<Vec<u8>>> {
+        let (actor,owner)=(metadata_actor(actor),metadata_actor(owner));
         let body: Option<Vec<u8>> = self.connection.query_row("SELECT source FROM native_outputs WHERE actor=?1 AND owner=?2", params![actor, owner], |row| row.get(0)).optional().map_err(db_error)?;
         body.map(|body| private_journal::read_scoped(&format!("native:{actor}:{owner}"), &body)).transpose()
     }
-
     pub(crate) fn native_owner(&self, owner: &str) -> io::Result<Option<String>> {
-        self.connection
-            .query_row(
-                "SELECT actor FROM native_outputs WHERE owner=?1 LIMIT 1",
-                [owner],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(db_error)
+        let actor: Option<String> = self.connection.query_row("SELECT actor FROM native_outputs WHERE owner=?1 LIMIT 1",[metadata_actor(owner)],|row|row.get(0)).optional().map_err(db_error)?;
+        Ok(actor.map(|actor| {
+            let Some(scope) = crate::private_io::current() else { return actor };
+            let prefix = format!("local-private:{}:{}:", scope.project_id.len(), scope.project_id);
+            actor.strip_prefix(&prefix).unwrap_or(&actor).to_owned()
+        }))
     }
-    pub(crate) fn bind_native_output(
-        &mut self,
-        actor: &str,
-        owner: &str,
-        source: &[u8],
-    ) -> io::Result<()> {
-        if self.native_owner(owner)?.is_some_and(|held| held != actor) {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "native retention is already owned by another actor",
-            ));
+    pub(crate) fn bind_native_output(&mut self, actor: &str, owner: &str, source: &[u8]) -> io::Result<()> {
+        let (actor,owner)=(metadata_actor(actor),metadata_actor(owner));
+        if self.native_owner(&owner)?.is_some_and(|held|metadata_actor(&held)!=actor) {return Err(io::Error::new(io::ErrorKind::PermissionDenied,"native retention is already owned by another actor"));}
+        if let Some(prior)=self.native_output(&actor,&owner)? {
+            return if prior==source {Ok(())} else {Err(admission(AdmissionError::BindingConflict))};
         }
-        if let Some(prior) = self.native_output(actor, owner)? {
-            if prior != source {
-                return Err(admission(AdmissionError::BindingConflict));
-            }
-            return Ok(());
-        }
-        self.connection
-            .execute(
-                "INSERT INTO native_outputs(actor,owner,source) VALUES(?1,?2,?3)",
-                params![actor, owner, private_journal::write(crate::private_io::current().as_ref(), &format!("native:{actor}:{owner}"), source)?],
-            )
-            .map_err(db_error)?;
+        let body=private_journal::write(crate::private_io::current().as_ref(),&format!("native:{actor}:{owner}"),source)?;
+        self.connection.execute("INSERT INTO native_outputs(actor,owner,source) VALUES(?1,?2,?3)",params![actor,owner,body]).map_err(db_error)?;
         Ok(())
     }
+
     pub(crate) fn commit_public_terminal(
         &mut self,
         id: &str,

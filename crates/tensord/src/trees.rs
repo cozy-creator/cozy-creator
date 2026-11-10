@@ -35,17 +35,31 @@ pub(crate) fn parse(bytes: &[u8]) -> io::Result<BTreeMap<String, ObjectRef>> {
 
 /// Holds the tree of `files` (each already held) for `owner`. Idempotent per owner.
 pub(crate) fn put(engine: &Engine, owner: &str, files: BTreeMap<String, ObjectRef>) -> io::Result<Tree> {
-    let manifest = storage::put(&engine.store, &document(&files)[..], None)?;
+    let store = match crate::private_io::current() {
+        Some(scope) => crate::private_io::store(&scope)?,
+        None => engine.store.clone(),
+    };
+    put_in(&store, owner, files)
+}
+
+/// A run's products use its admitted store even on background execution threads.
+pub(crate) fn put_for(engine: &Engine, run: &str, owner: &str, files: BTreeMap<String, ObjectRef>) -> io::Result<Tree> {
+    let store = engine.store_for(run)?;
+    put_in(&store, owner, files)
+}
+
+fn put_in(store: &storage::Store, owner: &str, files: BTreeMap<String, ObjectRef>) -> io::Result<Tree> {
+    let manifest = storage::put(store, &document(&files)[..], None)?;
     let mut roots = vec![manifest.clone()];
     for file in files.values() {
-        if !engine.store.reuse(file).map_err(storage::io_error)? {
+        if !store.reuse(file).map_err(storage::io_error)? {
             return Err(io::Error::new(io::ErrorKind::NotFound, format!("object {} is absent", file.id())));
         }
         if !roots.contains(file) {
             roots.push(file.clone());
         }
     }
-    engine.store.used(&name(owner), &roots).map_err(storage::io_error)?;
+    store.used(&name(owner), &roots).map_err(storage::io_error)?;
     Ok(Tree { hold: format!("tree-{}", name(owner)), manifest, content: files.values().map(|f| f.length).sum() })
 }
 
