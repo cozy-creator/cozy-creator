@@ -25,7 +25,7 @@ Real runs of `cozy` on GitHub's runners, chosen by what a change touches (CI v2:
   (`tiny/<package>.py`, ingested by TensorFS's import or writer). Each cell judges its output (present, finite, not
   flat, thumbnails within tolerance of `refs/<package>.json`); a two-rank cell runs a gloo group through the executor
   and equals its one-rank twin sample by sample (a CPU group is bit-identical; 0.5/255 allowed in the worst frame). An
-  orchestrator's child calls run on a child executor through the driver's stand-in for TensorD's call broker. Also a strict typecheck, `describe --conformance`, and `surface.py` (static: every
+  orchestrator's child calls run on a child executor through the driver's stand-in for TensorD's call broker. Also a strict typecheck, `describe` (the static reader), and `surface.py` (static: every
   TensorFS name the Runtime reads exists). One line per cell, `PASS|FAIL|SKIP <package> <entry> <cell>`. No GPU,
   rental or sign-in. `e2e/cpu/run.sh --out DIR --packages DIR --runtime <wheel|dir|version|lock> --tensorfs <wheel|version|lock> [--only pkg,..] [--cells entry/cell,..] [--record]`;
   a fixture's `WAIVE` names the release-geometry checks a tiny model cannot meet, and `PATCH` the geometry constants it

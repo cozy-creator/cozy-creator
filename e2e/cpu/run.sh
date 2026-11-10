@@ -72,14 +72,14 @@ one() {
     echo "PASS $p - typecheck $((SECONDS - t))s"
   fi
   t=$SECONDS
-  # The static reader's interface, refused unless the import agrees (`--conformance`).
-  if ! CUDA_VISIBLE_DEVICES= nice -n 19 "$env/bin/cozy-runtime" --json describe --conformance --dir "$PACKAGES/$p" \
+  # The static reader's interface: since Runtime 0.44 (cr-269) the only describer, so no import to compare.
+  if ! CUDA_VISIBLE_DEVICES= nice -n 19 "$env/bin/cozy-runtime" --json describe --dir "$PACKAGES/$p" \
       > "$out/interface.json" 2> "$out/describe.err"; then
     local why; why=$(grep -o '"message": *"[^"]*' "$out/describe.err" | head -n1 | sed 's/"message": *"//')
-    echo "FAIL $p - conformance $((SECONDS - t))s: $(echo "${why:-$(grep -v '^\s*$' "$out/describe.err" | tail -n1)}" | cut -c1-300)"
+    echo "FAIL $p - describe $((SECONDS - t))s: $(echo "${why:-$(grep -v '^\s*$' "$out/describe.err" | tail -n1)}" | cut -c1-300)"
     return 1
   fi
-  echo "PASS $p - conformance $((SECONDS - t))s"
+  echo "PASS $p - describe $((SECONDS - t))s"
   CUDA_VISIBLE_DEVICES= nice -n 19 "$env/bin/python" "$HERE/drive.py" "$PACKAGES/$p" "$out/interface.json" \
     "$(fixture "$p")" "$out" --refs "$REFS" ${CELLS:+--only "$CELLS"} $RECORD 2> "$out/drive.err" || true
   [ -n "$KEEP" ] || rm -rf "$out"/{store,source,spool,made,inputs}
