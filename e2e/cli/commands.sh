@@ -371,6 +371,7 @@ local code=$OUT/edits/e2e-edits envs=$HOME/.cozy/machine/var/lib/cozy/tensord/ed
 local module=$code/e2e_weightless/__init__.py first now
 rm -rf "$code" && mkdir -p "$OUT/edits" && cp -r "$here/weightless" "$code"
 sed -i 's/^name = "e2e-weightless"/name = "e2e-edits"/' "$code/pyproject.toml"
+: > "$code/e2e_weightless/empty.py"  # 0.22.1 (f82d8de26): an empty file's PUT states its Content-Length, or Calcifer refuses it
 : > "$OUT/edits.txt"
 timed() {  # timed <step> <reply>: the environment its run had, on stdout
   local t0 t1 env
