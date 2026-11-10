@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import shutil
 import struct
@@ -344,6 +345,10 @@ foreach ($rule in $allowed) {
             raise RuntimeError('x64 media helper emulation requires Windows 11')
         if self.pe_machine(self.binary) != 0xaa64:
             raise RuntimeError('the Cozy executable must remain native ARM64')
+        evidence = self.receipt['windows_arm_media'] = {
+            'cozy_architecture': 'native ARM64 PE0xaa64',
+            'fixture_generator': self.fixture_ffmpeg, 'cozy_subprocess_system_media_hidden': True,
+            'pin_cache_initially_absent': True, 'cold_budget_seconds': FIRST_COLD_SECONDS}
         deadline = time.monotonic() + FIRST_COLD_SECONDS
 
         def remaining():
@@ -358,6 +363,13 @@ foreach ($rule in $allowed) {
             measured = {name: {key: assets.get(name, {}).get(key)
                                for key in ['width', 'height', 'duration_ms']}
                         for name in ['proof_image', 'proof_video', 'proof_audio']}
+            observed = {'normal_cli_metadata': measured,
+                        'expected_assets_present': {name: name in assets for name in measured},
+                        'warnings': [self.media_diagnostic_text(warning.get('message', ''))
+                                     for warning in state.get('warnings', [])[:16]]}
+            if any(evidence.get(key) != value for key, value in observed.items()):
+                evidence.update(observed)
+                self.flush()
             if (measured['proof_image']['width'] == 8 and measured['proof_image']['height'] == 8
                     and measured['proof_video']['width'] == 320
                     and measured['proof_video']['height'] == 180
@@ -376,12 +388,61 @@ foreach ($rule in $allowed) {
             if not version.startswith(f'{name} version 9.0.2'):
                 raise RuntimeError('the cached media helper does not report its pinned version')
             helpers.append({'path': str(path), 'architecture': 'x64 PE0x8664', 'version': version})
-        self.receipt['windows_arm_media'] = {
-            'cozy_architecture': 'native ARM64 PE0xaa64', 'helpers': helpers,
-            'fixture_generator': self.fixture_ffmpeg, 'cozy_subprocess_system_media_hidden': True,
-            'pin_cache_initially_absent': True, 'normal_cli_metadata': measured,
-            'cold_budget_seconds': FIRST_COLD_SECONDS}
+        evidence['helpers'] = helpers
         self.cell('windows_arm64_pinned_media_runtime')
+
+    def media_diagnostic_text(self, text):
+        text = self.redact(str(text)).replace(self.canary, '[synthetic canary redacted]')
+        # Media errors need no long opaque tokens, including private/holder credentials.
+        return re.sub(r'[A-Za-z0-9_+/-]{32,}', '[opaque value redacted]', text)[:512]
+
+    def diagnose_winarm_media(self):
+        # Failure evidence has its own short bound and can never satisfy the runtime cell.
+        deadline = time.monotonic() + 10
+        evidence = self.receipt.setdefault('windows_arm_media', {})
+        diagnostic = evidence['failure_diagnostic'] = {'budget_seconds': 10, 'helpers': []}
+        try:
+            holder = self.home / 'calcifer' / 'calcifer.lock.holder'
+            with holder.open('rb') as handle:
+                token = json.loads(handle.read(16384)).get('token')
+            if isinstance(token, str) and token:
+                self.secret_values.append(token)
+        except (OSError, ValueError):
+            pass
+        cache = self.home / 'tools' / 'ffmpeg' / '9.0.2'
+        for name in ['ffmpeg', 'ffprobe']:
+            path = cache / f'{name}.exe'
+            helper = {'path': str(path), 'present': path.is_file()}
+            diagnostic['helpers'].append(helper)
+            if not helper['present']:
+                continue
+            try:
+                helper['pe_machine'] = hex(self.pe_machine(path))
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    helper['version_probe'] = 'diagnostic budget exhausted'
+                    continue
+                probe = subprocess.run([str(path), '-hide_banner', '-version'],
+                                       capture_output=True, env=self.cli_env, timeout=remaining)
+                helper['exit_code'] = probe.returncode
+                lines = (probe.stdout or probe.stderr).decode('utf-8', errors='replace').splitlines()
+                helper['version'] = self.media_diagnostic_text(lines[0] if lines else '')
+            except Exception as error:
+                helper['error'] = self.media_diagnostic_text(error)
+        diagnostic['partial_downloads'] = [
+            {'name': path.name, 'bytes': path.stat().st_size}
+            for path in sorted(cache.parent.glob('.ffmpeg-*.part'))[:4] if path.is_file()]
+        log = self.home / 'calcifer' / 'calcifer.log'
+        if log.is_file():
+            with log.open('rb') as handle:
+                handle.seek(max(0, log.stat().st_size - 65536))
+                tail = handle.read(65536).decode('utf-8', errors='replace')
+            markers = ['fetching ffmpeg:', "measuring a project's files:"]
+            diagnostic['media_log'] = [
+                self.media_diagnostic_text(line[line.index(marker):])
+                for line in tail.splitlines() for marker in markers if marker in line][-12:]
+        diagnostic['seconds'] = round(time.monotonic() - (deadline - 10), 3)
+        self.flush()
 
     @staticmethod
     def digest(path):
@@ -584,6 +645,11 @@ def main():
         proof.run()
     except Exception as error:
         proof.receipt.update(result='failed', error=proof.redact(str(error)))
+        if proof.winarm:
+            try:
+                proof.diagnose_winarm_media()
+            except Exception as diagnostic_error:
+                proof.receipt['media_diagnostic_error'] = type(diagnostic_error).__name__
         proof.diagnose_mount_holders()
         proof.flush()
         raise
