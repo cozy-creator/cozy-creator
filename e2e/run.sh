@@ -72,6 +72,14 @@ run_cell() {
   return "$code"
 }
 
+# run_uploaded <ndjson>: "<first> <most> <total>" bytes of the run's upload to its machine, from its waiting reasons
+# (`uploading <name>: 9.9 MiB/256.0 MiB at 5.5 MiB/s`); "0 0 0" with none. A resumed upload's first is what the machine held.
+run_uploaded() {
+  grep '^{' "$1" 2> /dev/null | jq -rn 'def b: capture("^(?<n>[0-9.]+) (?<u>[KMGT]?i?B)$") | (.n | tonumber) * {"B": 1, "KiB": 1024, "MiB": 1048576, "GiB": 1073741824, "TiB": 1099511627776}[.u];
+    [inputs | select(.type? == "run.waiting") | .reason // "" | capture("^uploading .*: (?<d>[0-9.]+ [KMGT]?i?B)/(?<t>[0-9.]+ [KMGT]?i?B)") | [(.d | b), (.t | b)]]
+    | if length == 0 then "0 0 0" else "\(.[0][0] | floor) \(map(.[0]) | max | floor) \(.[0][1] | floor)" end'
+}
+
 # run_get <dir> <name> <jq filter>: from its record, empty when absent.
 run_get() { jq -r "($3) // empty" "$1/$2.json" 2> /dev/null || true; }
 

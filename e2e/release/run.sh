@@ -343,23 +343,16 @@ with open(sys.argv[1], "wb") as f:
     for _ in range(n >> 24):
         f.write(os.urandom(1 << 24))
 PY
-# uploaded <ndjson>: "<first> <most> <total>" bytes of the run's upload to its machine, from its waiting reasons.
-uploaded() {
-  grep '^{' "$1" 2> /dev/null | jq -rn 'def b: capture("(?<n>[0-9.]+) (?<u>[KMGT]?i?B)") | (.n | tonumber) * {"B": 1, "KiB": 1024, "MiB": 1048576, "GiB": 1073741824}[.u];
-    [inputs | select(.type? == "run.waiting") | .reason // "" | select(test("^uploading [^:]+: [0-9]")) | sub("^uploading [^:]+: "; "")
-     | split(" at ")[0] | split("/") | [(.[0] | b), (.[1] | b)]]
-    | if length == 0 then "0 0 0" else "\(.[0][0] | floor) \(map(.[0]) | max | floor) \(.[0][1] | floor)" end'
-}
 cut=0 n=$(run_submit "$OUT" upload-cut model upload "$OUT/big.safetensors" "$model-store" --lane f16-c --source-format as-is --on "$M")
 while [ -n "$n" ] && kill -0 "$(cat "$OUT/upload-cut.pid")" 2> /dev/null; do
-  read -r _ most total < <(uploaded "$OUT/upload-cut.ndjson")
+  read -r _ most total < <(run_uploaded "$OUT/upload-cut.ndjson")
   if [ "$total" -gt 0 ] && [ "$most" -ge $((total / 4)) ]; then cozy --json run cancel "$n" > "$OUT/upload-cut-cancel.json" 2>&1; cut=$most; break; fi
   sleep 0.3
 done
 run_wait "$OUT" upload-cut || true
 if [ "$cut" = 0 ]; then check "upload-cut: never cut a quarter in ($(run_get "$OUT" upload-cut .status): $(tail -c 200 "$OUT/upload-cut.ndjson"))"
 elif watched upload-resume model upload "$OUT/big.safetensors" "$model-store" --lane f16-c --source-format as-is --on "$M"; then
-  read -r first most total < <(uploaded "$OUT/upload-resume.ndjson")
+  read -r first most total < <(run_uploaded "$OUT/upload-resume.ndjson")
   echo "upload-resume: cut at $cut of $total bytes; sent again from $first"
   [ "$first" -gt 0 ] && [ "$first" -le "$total" ] \
     || check "upload-resume: cut at $cut bytes, the second upload began at $first of $total$(grep -q 'already holds' "$OUT/upload-resume.ndjson" && echo ': the machine held it whole, so the cancel never cut it')"
