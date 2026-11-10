@@ -5,7 +5,6 @@ use std::{
     fmt,
     fs::{self, FileTimes},
     path::{Path, PathBuf},
-    process::Command,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -14,6 +13,8 @@ use api::{
     error::{Error, Kind},
 };
 use sha2::{Digest as _, Sha256};
+
+use crate::tools::Media;
 
 const THREADS: &str = "4";
 /// Re-encoded at the source's size and rate. Part of each clip's key.
@@ -155,7 +156,7 @@ fn encode(
         .suffix(".mp4")
         .tempfile_in(dir)
         .map_err(failed)?;
-    let out = niced(&ffmpeg.ffmpeg)
+    let out = Media::niced(&ffmpeg.ffmpeg)
         .args([
             "-hide_banner",
             "-nostdin",
@@ -165,8 +166,8 @@ fn encode(
             "-threads",
             THREADS,
         ])
-        .args(["-ss", &decimal(start), "-to", &decimal(end), "-i"])
-        .arg(source)
+        .args(["-ss", &decimal(start), "-to", &decimal(end)])
+        .input(source)
         .args(ENCODE)
         .arg(part.path())
         .output()
@@ -191,7 +192,7 @@ fn encode(
 
 /// The container's duration, in seconds.
 fn probe(ffprobe: &Path, source: &Path) -> Result<f64, Error> {
-    let out = Command::new(ffprobe)
+    let out = Media::new(ffprobe)
         .args([
             "-v",
             "error",
@@ -200,7 +201,7 @@ fn probe(ffprobe: &Path, source: &Path) -> Result<f64, Error> {
             "-of",
             "default=nw=1:nk=1",
         ])
-        .arg(source)
+        .input(source)
         .output()
         .map_err(|e| {
             Error::new(
@@ -220,18 +221,6 @@ fn probe(ffprobe: &Path, source: &Path) -> Result<f64, Error> {
                 source.display()
             ))
         })
-}
-
-#[cfg(unix)]
-fn niced(program: &Path) -> Command {
-    let mut command = Command::new("nice");
-    command.args(["-n", "19"]).arg(program);
-    command
-}
-
-#[cfg(not(unix))]
-fn niced(program: &Path) -> Command {
-    Command::new(program)
 }
 
 /// Names one version of the source (path, length, modification time), the range and the encode.

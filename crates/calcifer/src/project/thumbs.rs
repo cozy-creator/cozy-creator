@@ -5,8 +5,8 @@
 //! lands, too.
 use std::{
     collections::{HashMap, VecDeque},
+    ffi::OsString,
     path::{Path as FsPath, PathBuf},
-    process::Command,
     sync::{Arc, LazyLock, Mutex},
     time::{Duration, SystemTime},
 };
@@ -22,7 +22,10 @@ use tokio::sync::{Notify, Semaphore};
 use tracing::warn;
 
 use super::{folder, host::Host, media_type, tools};
-use crate::api::{Api, Refusal};
+use crate::{
+    api::{Api, Refusal},
+    tools::Media,
+};
 
 /// The ffmpegs a project's files may have going at once, for this and for measuring: a canvas of hundreds asks for all of them at once.
 pub(super) static FFMPEGS: Semaphore = Semaphore::const_new(2);
@@ -191,13 +194,13 @@ fn unreadable_file(why: String) -> Error {
 }
 
 /// Runs ffmpeg writing its one picture over `out`. Err: what it said.
-fn run(ffmpeg: &FsPath, before: &[String], after: &[String], out: &FsPath) -> Result<(), String> {
+fn run(ffmpeg: &FsPath, before: &[OsString], after: &[OsString], out: &FsPath) -> Result<(), String> {
     ran(ffmpeg, &[before, after, &strs(&["-frames:v", "1", "-update", "1"])].concat(), out)
 }
 
 /// Runs ffmpeg with `args` writing over `out`. Err: what it said.
-fn ran(ffmpeg: &FsPath, args: &[String], out: &FsPath) -> Result<(), String> {
-    let done = Command::new(ffmpeg).args(["-y", "-v", "error", "-nostdin"]).args(args).arg(out).output();
+fn ran(ffmpeg: &FsPath, args: &[OsString], out: &FsPath) -> Result<(), String> {
+    let done = Media::new(ffmpeg).args(["-y", "-v", "error", "-nostdin"]).args(args).arg(out).output();
     let done = done.map_err(|e| e.to_string())?;
     let written = std::fs::metadata(out).is_ok_and(|meta| meta.len() > 0);
     match done.status.success() && written {
@@ -206,14 +209,14 @@ fn ran(ffmpeg: &FsPath, args: &[String], out: &FsPath) -> Result<(), String> {
     }
 }
 
-fn strs(args: &[&str]) -> Vec<String> {
-    args.iter().map(|arg| (*arg).to_owned()).collect()
+fn strs(args: &[&str]) -> Vec<OsString> {
+    args.iter().map(OsString::from).collect()
 }
 
 /// `source` as ffmpeg's input, which may read nothing else: what a machine made can be a playlist in a picture's name, and a canvas
 /// draws each file unasked.
-fn input(source: &str) -> Vec<String> {
-    strs(&["-protocol_whitelist", "file", "-i", source])
+fn input(source: &str) -> Vec<OsString> {
+    Media::reading(source)
 }
 
 /// Draws `drawing` as the thumbnail called `name`, whole or not there at all.
@@ -291,7 +294,7 @@ fn poster_at(ffmpeg: &FsPath, source: &str, seconds: f64) -> f64 {
 fn spread(ffmpeg: &FsPath, source: &str, at: f64) -> Option<f64> {
     let before = strs(&["-v", "error", "-nostdin", "-threads", "1", "-ss", &format!("{at:.3}")]);
     let after = strs(&["-map", "0:v:0", "-frames:v", "1", "-vf", "scale=64:36,format=gray", "-f", "rawvideo", "-"]);
-    let done = Command::new(ffmpeg).args(before).args(input(source)).args(after).output().ok()?;
+    let done = Media::new(ffmpeg).args(before).input(source).args(after).output().ok()?;
     let grey: Vec<f64> = done.stdout.iter().map(|&luma| f64::from(luma)).collect();
     if !done.status.success() || grey.is_empty() {
         return None;
@@ -327,7 +330,7 @@ fn preview(ffmpeg: &FsPath, source: &str, seconds: f64, at: f64, out: &FsPath) -
 fn strip(ffmpeg: &FsPath, ffprobe: &FsPath, drawing: &Drawing, source: &str, frames: u32, scale: &str, out: &FsPath) -> Result<(), String> {
     let seconds = seconds(ffprobe, drawing);
     let at = |n: u32| seconds * (f64::from(n) + 0.5) / f64::from(frames);
-    let inputs: Vec<String> = (0..frames).flat_map(|n| [strs(&["-threads", "1", "-ss", &format!("{:.3}", at(n))]), input(source)].concat()).collect();
+    let inputs: Vec<OsString> = (0..frames).flat_map(|n| [strs(&["-threads", "1", "-ss", &format!("{:.3}", at(n))]), input(source)].concat()).collect();
     let scaled: String = (0..frames).map(|n| format!("[{n}:v:0]{scale},setsar=1[s{n}];")).collect();
     let joined: String = (0..frames).map(|n| format!("[s{n}]")).collect();
     let graph = format!("{scaled}{joined}hstack=inputs={frames}[out]");
