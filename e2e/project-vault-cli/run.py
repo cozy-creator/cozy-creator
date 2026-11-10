@@ -111,8 +111,8 @@ foreach ($rule in $allowed) {
     }
 }
 '''
-            subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-Command', '-'],
-                           input=script, text=True, check=True,
+            subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-Command', script],
+                           text=True, check=True,
                            env={**os.environ, 'COZY_PROOF_RECOVERY_PATH': str(path)},
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         elif path.stat().st_mode & 0o077:
