@@ -12,7 +12,7 @@ import torch
 from diffusers import AutoencoderKLQwenImage, FlowMatchEulerDiscreteScheduler, Krea2Transformer2DModel
 from transformers import Qwen3VLModel
 
-from cell import NARROW, Cell, module, qwen_tokenizer, save, size
+from cell import NARROW, Cell, Json, module, qwen_tokenizer, save, size
 from tiny import _shared
 
 RAW, TURBO = "krea/krea-2@0.1.0", "krea/krea-2-turbo@0.1.0"
@@ -49,7 +49,7 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
 
 
 #: 512², Krea's smallest canvas (0.25 MP).
-_SMALL = {"prompt": "a red fox in fresh snow", "seed": 7, "megapixels": 0.25, "steps": 2}
+_SMALL: dict[str, Json] = {"prompt": "a red fox in fresh snow", "seed": 7, "megapixels": 0.25, "steps": 2}
 
 CELLS: list[Cell] = [
     {"entry": "generate", "name": "text", "payload": dict(_SMALL), "check": size(512, 512)},

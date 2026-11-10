@@ -43,10 +43,10 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
     return {"circlestone-labs/anima@1.0.0": out}
 
 
-_SMALL: dict[str, Json] = {"prompt": "masterpiece, a red fox in the snow", "steps": 2, "seed": 7, "megapixels": 0.25}
+_SMALL: dict[str, Json] = {"prompt": "masterpiece, a red fox in the snow", "steps": 2, "seed": 7, "megapixels": 1}
 
 CELLS: list[Cell] = [
-    {"entry": "generate", "name": "text", "payload": _SMALL, "check": size(512, 512)},
+    {"entry": "generate", "name": "text", "payload": _SMALL, "check": size(1024, 1024)},
     {"entry": "generate", "name": "wide", "payload": {**_SMALL, "aspect_ratio": "16:9", "negative_prompt": "blurry"}},
     {"entry": "generate", "name": "step-cache", "payload": {**_SMALL, "steps": 4, "first_block_cache": 0.5}},
     {"entry": "image", "name": "tool", "payload": {"instructions": "a red fox in the snow", "megapixels": "1", "seed": 7}},

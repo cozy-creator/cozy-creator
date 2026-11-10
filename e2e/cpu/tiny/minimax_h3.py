@@ -269,6 +269,9 @@ CELLS: list[Cell] = [
      "skip": "an edit calls its segment with an edit LoRA as a model choice, which TensorD binds from the Hub"},
     {"entry": "regenerate_shot", "name": "native", "payload": {"payload": _REGENERATE},
      "files": {"payload.video": clip(25)}},
+    # The refine overlay on every rank (5ac8a48e armed it on rank 0 alone).
+    {"entry": "regenerate_shot", "name": "native-2-ranks", "payload": {"payload": _REGENERATE},
+     "files": {"payload.video": clip(25)}, "ranks": 2, "same_as": "regenerate_shot/native"},
     {"entry": "regenerate_shot", "name": "1080p", "payload": {"payload": {**_REGENERATE, "resolution": "1080p",
                                                                           "strength": 0.7}},
      "files": {"payload.video": clip(25)}},
