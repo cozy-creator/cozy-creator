@@ -621,21 +621,23 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
   const glyph = blank && !words && !clips && faceOf(view) === "edit" && !making && field ? GLYPHS[field] : undefined
   return (
     <div className={`media ${shown?.alpha ? "alpha" : ""} ${slid ? "slid" : ""} ${blank ? "blank" : ""}`} style={{ aspectRatio: aspectOf(view) }} onAnimationEnd={() => slid && store.patch(name, { slid: undefined })} {...hover}>
-      {preview && (
-        <img
-          src={preview}
-          alt=""
-          draggable={false}
-          onLoad={(event) => {
-            const { naturalWidth, naturalHeight } = event.currentTarget
-            if (naturalWidth && naturalHeight) setAspect(naturalWidth / naturalHeight)
-          }}
-        />
-      )}
-      {here && field === "video" && <Poster shown={here} cardWidth={cardWidth} name={name} scrubbed={view.scrub} previewing={previewing} />}
-      {here && field !== "video" && <FramePicture key={here.sha256} sha256={here.sha256} open={Boolean(view.here)} restWidth={restWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
-      {shown?.absent && <span className="media-note">{shown.machine ? `On ${shown.machine}` : "On another computer"}</span>}
-      {!shown && firstClip && <Thumb sha256={firstClip} cardWidth={cardWidth} />}
+      <div className="media-pixels">
+        {preview && (
+          <img
+            src={preview}
+            alt=""
+            draggable={false}
+            onLoad={(event) => {
+              const { naturalWidth, naturalHeight } = event.currentTarget
+              if (naturalWidth && naturalHeight) setAspect(naturalWidth / naturalHeight)
+            }}
+          />
+        )}
+        {here && field === "video" && <Poster shown={here} cardWidth={cardWidth} name={name} scrubbed={view.scrub} previewing={previewing} />}
+        {here && field !== "video" && <FramePicture key={here.sha256} sha256={here.sha256} open={Boolean(view.here)} restWidth={restWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
+        {shown?.absent && <span className="media-note">{shown.machine ? `On ${shown.machine}` : "On another computer"}</span>}
+        {!shown && firstClip && <Thumb sha256={firstClip} cardWidth={cardWidth} />}
+      </div>
       {blank && words && !madeFrom && <Said words={words} view={view} name={name} />}
       {blank && !words && clips && <span className="media-note">Drag videos and stills here</span>}
       {blank && !words && field === "file" && <span className="media-note">A file</span>}

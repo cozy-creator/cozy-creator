@@ -75,7 +75,7 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 impl Error {
-    #[cfg(feature = "seams")]
+    #[cfg(all(feature = "seams", not(target_os = "linux")))]
     pub(crate) fn unsupported(seam: Seam) -> Self {
         Self::Unsupported {
             seam,

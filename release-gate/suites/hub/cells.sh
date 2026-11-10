@@ -5,7 +5,9 @@
 #                    its contract says, and hubcheck finds every request and response as the document has it
 #   account          whoami (the account, its balance, the buy page), the rental catalog, the rental $M itself
 #   providers        dev-build cozy only: an admin rental of the cheapest CPU SKU on each provider (RunPod, vast), ended
-#                    and checked gone, so both acquisition paths are covered (renters never pick one: th-254)
+#                    and checked gone, so both acquisition paths are covered (renters never pick one: th-254). Each is
+#                    rented with a throwaway SSH key, and before it ends (xs-157): no process on the pod holds a Hub
+#                    secret in its environment, and its machine authenticated to the Hub with its own key alone
 #   package          lock and publish 0.1.0 and 0.1.1; the unversioned run takes 0.1.1; yank 0.1.1 → the simple index marks it
 #                    data-yanked, a fresh install takes 0.1.0, its exact pin still installs; un-yank → 0.1.1 again;
 #                    publish 0.1.2 --yanked → the Hub's newest never names it, read throughout, the publisher's next
@@ -114,12 +116,48 @@ def walk(o):
         for v in o: walk(v)
 walk(json.load(sys.stdin))' 2>/dev/null | sort -u
 }
-# hub_rent_on <provider>: a rental of `cpu` there (`machine rent --provider`, dev-only: `dev = true`), ended and checked
-# gone. A rental it cannot name from the reply is the one new in `machine ls`; hub_cleanup ends any left.
+# hub_pod_secrets <provider> <machine>: xs-157 on a fresh rental, over `cozy machine ssh` with the throwaway key.
+#   pod-env   the names (never values) in every process's environment on the pod, pid 1's (what the provider launched it
+#             with) among them: none is a Hub secret (the worker token, the receipt HMAC key, the renter's keys), and the
+#             public names are there (COZY_WORKER_ID), so the read is real. RunPod's own RUNPOD_API_KEY is in every pod
+#             and cannot be removed; it is named in the detail (it ends only its own pod: keyprobe 2026-11-07).
+#   pod-auth  the machine authenticated to the Hub with its leaf key alone: the rental reached ready (the Hub makes it
+#             ready only once its pinned machine has read its lease, signed), and the lease it read is kept (0600) and
+#             names a key, so the renter is admitted.
+hub_pod_secrets() {
+  local p=$1 m=$2 names='' lease='' agent forbidden found SSH_AUTH_SOCK SSH_AGENT_PID  # the agent is this cell's alone
+  agent=$(ssh-agent -s) && eval "$agent" >/dev/null && ssh-add -q "$HB/pod-ssh" 2>/dev/null
+  for _ in 1 2 3 4 5 6; do  # a pod's sshd may start a few seconds after the machine is ready
+    # One argument: ssh hands the remote shell one command line.
+    names=$("$CLI" machine ssh "$m" -- 'for f in /proc/[0-9]*/environ; do tr "\0" "\n" <"$f"; echo; done 2>/dev/null | cut -d= -f1 | sort -u' 2>"$HB/pod-env-$p.err") && [ -n "$names" ] && break
+    sleep 10
+  done
+  lease=$("$CLI" machine ssh "$m" -- 'stat -c %a /var/lib/cozy/machine/lease.json && cat /var/lib/cozy/machine/lease.json' 2>>"$HB/pod-env-$p.err")
+  ssh-agent -k >/dev/null 2>&1
+  echo "$names" >"$HB/pod-env-$p.names"
+  forbidden='COZY_WORKER_AUTH_TOKEN COZY_BOOTSTRAP_RECEIPT_HMAC_KEY_B64URL COZY_BOOTSTRAP_RECEIPT_HMAC_KEY_FILE COZY_AUTHORIZED_KEYS'
+  found=$(for n in $forbidden; do grep -qxF "$n" <<<"$names" && echo "$n"; done | tr '\n' ' ')
+  if [ -z "$names" ] || ! grep -qxF COZY_WORKER_ID <<<"$names"; then
+    expect "hub pod-env on $p" FAIL "could not read $m's environment: $(tail -c 300 "$HB/pod-env-$p.err")"
+  elif [ -n "$found" ]; then
+    expect "hub pod-env on $p" FAIL "$m's environment names Hub secrets: $found"
+  else
+    expect "hub pod-env on $p" PASS "$(wc -l <<<"$names") names on $m, no Hub secret; COZY_/TENSORHUB_: $(grep -E '^(COZY|TENSORHUB)_' <<<"$names" | tr '\n' ' ')$(grep -qxF RUNPOD_API_KEY <<<"$names" && echo '; RUNPOD_API_KEY is RunPod'"'"'s own')"
+  fi
+  if [ "$(head -1 <<<"$lease")" = 600 ] && tail -n +2 <<<"$lease" | python3 -I -c 'import json,sys; sys.exit(0 if json.load(sys.stdin)["keys"] else 1)' 2>/dev/null; then
+    expect "hub pod-auth on $p" PASS "$m ready, its signed lease read kept (0600) with $(tail -n +2 <<<"$lease" | python3 -I -c 'import json,sys; print(len(json.load(sys.stdin)["keys"]))') key(s)"
+  else
+    expect "hub pod-auth on $p" FAIL "$m's kept lease is missing, not 0600 or names no key: $(head -c 300 <<<"$lease") $(tail -c 200 "$HB/pod-env-$p.err")"
+  fi
+}
+# hub_rent_on <provider>: a rental of `cpu` there (`machine rent --provider`, dev-only: `dev = true`), with
+# the throwaway SSH key, checked by hub_pod_secrets, ended and checked gone. A rental it cannot name from the reply is the one
+# new in `machine ls`; hub_cleanup ends any left.
 hub_rent_on() {
   local m before
   before=$(hub_machines)
-  "$CLI" --json machine rent cpu --provider "$1" -y >"$HB/rent-$1.out" 2>&1
+  [ -s "$HB/pod-ssh.pub" ] || ssh-keygen -q -t ed25519 -N '' -C ci-hub-pod -f "$HB/pod-ssh"
+  "$CLI" --json machine rent cpu --provider "$1" --ssh "$HB/pod-ssh.pub" -y >"$HB/rent-$1.out" 2>&1
   m=$(python3 -c 'import json,sys
 t = open(sys.argv[1]).read(); dec = json.JSONDecoder(); i = 0
 while (i := t.find("{", i)) >= 0:
@@ -130,6 +168,7 @@ while (i := t.find("{", i)) >= 0:
   HUB_RENTED="$HUB_RENTED $m"
   grep -q '"machine"' "$HB/rent-$1.out" && expect "hub rent on $1" PASS "rented $m on $1" ||
     expect "hub rent on $1" FAIL "rented $m on $1, but the reply named no machine: $(tail -c 200 "$HB/rent-$1.out")"
+  hub_pod_secrets "$1" "$m"
   "$CLI" machine end "$m" -y >"$HB/end-$1.out" 2>&1
   for _ in $(seq 30); do
     hub_machines | grep -qxF "$m" || { expect "hub end on $1" PASS "$m ended and gone"; HUB_RENTED=${HUB_RENTED/ $m/}; return; }

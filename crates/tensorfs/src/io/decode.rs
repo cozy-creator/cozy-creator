@@ -8,9 +8,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 use super::cuda::{self, CtxGuard};
 use super::{Copy, DeviceBuffer, Dst, ReadOpts, Src};
 use crate::failure::{Failure, Kind, Result};
-use crate::format::decode::plan::{Core, Plan};
+use crate::format::decode::plan::{Core, Plan, Post};
 use crate::format::{decode, Dtype, Encoding, PartBytes};
-use crate::kernels::{self, Binary, Factors, Launch, Prepared};
+use crate::kernels::{self, Binary, Factors, Launch};
 
 /// Declared format metadata and an existing contiguous byte span. No store is consulted.
 /// `src` supports Host or Device; packed carriers retain their format dtype/shape separately.
@@ -42,114 +42,6 @@ pub fn check(
 
 fn invalid<T>(detail: impl Into<String>) -> Result<T> {
     crate::failure::fail(Kind::Invalid, detail)
-}
-
-/// Check the existing resident plan/catalog before source I/O, and bound the bytes
-/// requested by its private CUDA allocations. Excludes the output, supplied parts,
-/// shared read staging, driver/module memory and allocation-granularity overhead.
-pub(crate) fn device_scratch_bytes(
-    device: i32,
-    encoding: &Encoding,
-    dtype: &Dtype,
-    shape: &[u64],
-    parts: &[decode::PartMetadata<'_>],
-) -> Result<usize> {
-    check(encoding, dtype, shape, parts)?;
-    if !decode::supports_sources(encoding) {
-        return crate::failure::fail(
-            Kind::Unsupported,
-            "this scheme has no resident device-input plan",
-        );
-    }
-    let family = (cuda::attribute(device, 75)? * 10 + cuda::attribute(device, 76)?) as u32;
-    decode::planned_sources(dtype, shape, encoding, parts, |plan, geometry| {
-        let count = geometry
-            .rows
-            .checked_mul(geometry.cols)
-            .ok_or_else(|| crate::format::Error::Decode("decode size overflow".into()))?;
-        Ok(device_plan(plan, geometry, dtype, 0, count as u64)
-            .and_then(|launch| scratch_bytes(&launch, family)))
-    })?
-}
-
-fn scratch_bytes(launch: &Launch<'_>, family: u32) -> Result<usize> {
-    let binary = |stage: &str| -> Result<()> {
-        if launch.stage_binary(family, stage).is_none() {
-            return crate::failure::fail(
-                Kind::Unsupported,
-                format!(
-                    "no prebuilt CUDA sm{family} {stage}/{} kernel in this build",
-                    launch.dtype
-                ),
-            );
-        }
-        Ok(())
-    };
-    let overflow = || Failure {
-        kind: Kind::Invalid,
-        detail: "decode scratch size overflow".into(),
-    };
-    let mut bytes = 0usize;
-    let mut add = |count: usize, width: usize| -> Result<()> {
-        bytes = count
-            .checked_mul(width)
-            .and_then(|n| bytes.checked_add(n))
-            .ok_or_else(overflow)?;
-        Ok(())
-    };
-    binary(launch.kind)?;
-    if launch.words.binding().is_none() {
-        add(launch.words.host()?.len(), 1)?;
-    }
-    add(launch.slots.len(), 4)?;
-    add(launch.index.len(), 4)?;
-    add(1, 4)?; // Device error word.
-    add(launch.params.len(), 8)?;
-    for factor in [
-        &launch.scale,
-        &launch.term,
-        &launch.table,
-        &launch.global,
-        &launch.post,
-    ] {
-        match factor {
-            Factors::Host(values) => add(values.len(), 4)?,
-            Factors::Slot {
-                dtype: Dtype::F32, ..
-            } => {}
-            Factors::Slot { dtype, count, .. } => {
-                let table = decode::elem::table(dtype);
-                if !matches!(dtype, Dtype::BF16 | Dtype::F16) && table.is_none() {
-                    return crate::failure::fail(
-                        Kind::Unsupported,
-                        format!("resident factor dtype {dtype} is unsupported"),
-                    );
-                }
-                binary("cast_metadata")?;
-                add(*count, 4)?;
-                add(table.map_or(1, |v| v.len()), 4)?;
-                add(2, 8)?; // Cast count and mode.
-            }
-        }
-    }
-    if matches!(launch.kind, "rotated" | "grouped_rotated") {
-        binary("regular_h4")?;
-        binary(if launch.kind == "grouped_rotated" {
-            "requantize"
-        } else {
-            "unpack"
-        })?;
-        add(
-            usize::try_from(launch.params[0]).map_err(|_| overflow())?,
-            8,
-        )?; // Two I32 buffers.
-        let mut stride = 1u64;
-        while stride < launch.params[28] {
-            add(launch.params.len(), 8)?; // Each queued rotation has immutable parameters.
-            stride = stride.checked_mul(4).ok_or_else(overflow)?;
-        }
-    }
-    Ok(bytes)
 }
 
 fn span(ptr: u64, len: usize) -> Result<std::ops::Range<u64>> {
@@ -340,20 +232,14 @@ fn device_plan<'a>(
     begin: u64,
     count: u64,
 ) -> Result<Box<Launch<'a>>> {
-    // Refuse before prepare can apply host factors, transpose or round a Values payload.
-    if matches!(&plan.core, Core::Values(_)) {
+    // Host values, and a low-rank branch no device core adds (`svdq.nvfp4`), decode on the host alone.
+    if matches!(&plan.core, Core::Values(_)) || matches!(plan.post, Post::LowRank { .. }) {
         return crate::failure::fail(
             Kind::Unsupported,
             "GPU decode requires a device core; host value plans are unsupported",
         );
     }
-    match kernels::prepare(plan, geometry, dtype, begin, count)? {
-        Prepared::Kernel(launch) => Ok(launch),
-        Prepared::Host(_) => crate::failure::fail(
-            Kind::Unsupported,
-            "GPU decode has no prebuilt device core for this plan",
-        ),
-    }
+    Ok(kernels::prepare(plan, geometry, dtype, begin, count)?)
 }
 
 fn io_error(error: super::Error) -> Failure {

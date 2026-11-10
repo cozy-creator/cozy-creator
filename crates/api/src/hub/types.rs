@@ -137,14 +137,6 @@ pub struct WorkerAuthorizedKeys {
     pub lease_seconds: i64,
 }
 
-/// Where a booting machine listens: its public IP and port map (`POST /v1/worker/rental/endpoint`).
-#[derive(Debug, Serialize)]
-pub struct WorkerEndpointReport {
-    pub public_host: String,
-    /// Private TCP port (a decimal string) to its public port.
-    pub ports: BTreeMap<String, u16>,
-}
-
 /// What a rental's machine measured of its own host (`POST /v1/worker/rental/speed`).
 #[derive(Debug, Default, Serialize)]
 pub struct WorkerSpeedReport {

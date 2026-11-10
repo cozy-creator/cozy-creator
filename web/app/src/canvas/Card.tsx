@@ -1,7 +1,8 @@
 import { useQuery } from "@tanstack/react-query"
-import type { NodeProps } from "@xyflow/react"
+import type { NodeProps, Viewport } from "@xyflow/react"
 import { useReactFlow } from "@xyflow/react"
-import { type CSSProperties, type MouseEvent, memo, type PointerEvent, useCallback, useEffect, useRef, useState } from "react"
+import { type CSSProperties, type MouseEvent, memo, type PointerEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
+import { flushSync } from "react-dom"
 import { machinesQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
 import { useWaitsOn } from "../panels/machines/activity"
@@ -10,7 +11,7 @@ import { Icon } from "../ui/Icon"
 import { say } from "../ui/notes"
 import { useSignal } from "../ui/signal"
 import { AssetEdit, InFrame, RenderButton, TextAsset } from "./AssetEdit"
-import type { CarriedFile, ElementNode, ElementView } from "./CanvasStore"
+import type { CanvasStore, CarriedFile, ElementNode, ElementView } from "./CanvasStore"
 import { carryOnMove } from "./carry"
 import { useCanvasStore, useElement } from "./context"
 import { fieldsOf, shapesOf, snapped } from "./controls"
@@ -24,6 +25,8 @@ import { chipWords, noHash, piecesOf, rowsIn, took } from "./text"
 import { TimelineControl } from "./timeline/TimelineControl"
 import { AddOns, Stack } from "./AddOns"
 import { Asking } from "./Asking"
+import { readableSurface } from "./readableSurface"
+import type { Box } from "./graph"
 
 const DOTS: Record<string, string> = { current: "s-current", out_of_date: "s-current", making: "s-making", missing: "s-current", failed: "s-failed" }
 const WIDEST = 1600
@@ -490,41 +493,48 @@ function Corner({ name, view, width }: { name: string; view: ElementView; width:
   const flow = useReactFlow()
   const tools = useSignal(store.tools)
   const control = view.asset && reshapes(view) ? fieldsOf(view.asset, tools).find((held) => held.type === "shape") : undefined
-  const from = useRef<{ x: number; y: number; w: number; h: number } | null>(null)
+  const from = useRef<{ x: number; y: number; w: number; h: number; owner: CanvasStore["inPlace"]; delta(from: { x: number; y: number }, to: { x: number; y: number }): { x: number; y: number } } | null>(null)
   const pulled = useRef<{ w: number; h: number } | null>(null)
   const [nearest, setNearest] = useState<string | null>(null)
   const moved = (event: PointerEvent) => {
-    if (!from.current) return
-    const zoom = flow.getZoom()
-    const dx = (event.clientX - from.current.x) / zoom
-    const dy = (event.clientY - from.current.y) / zoom
-    if (!control) {
-      const w = Math.min(WIDEST, Math.max(NARROWEST, from.current.w * Math.max(1 + dx / from.current.w, 1 + dy / from.current.h)))
-      pulled.current = { w, h: w / aspectOf(view) }
-      return store.setWidth(name, w, false)
-    }
-    const w = Math.min(WIDEST, Math.max(NARROWEST, from.current.w + dx))
-    const h = Math.min(WIDEST, Math.max(LOWEST, from.current.h + dy))
-    pulled.current = { w, h }
-    store.drawShape(name, w, h)
-    setNearest(snapped(w / h, shapesOf(control)))
+    const start = from.current
+    if (!start) return
+    flushSync(() => {
+      const { x: dx, y: dy } = start.delta(start, { x: event.clientX, y: event.clientY })
+      if (!control) {
+        const w = Math.min(WIDEST, Math.max(NARROWEST, start.w * Math.max(1 + dx / start.w, 1 + dy / start.h)))
+        pulled.current = { w, h: w / aspectOf(view) }
+        return store.setWidth(name, w, false)
+      }
+      const w = Math.min(WIDEST, Math.max(NARROWEST, start.w + dx))
+      const h = Math.min(WIDEST, Math.max(LOWEST, start.h + dy))
+      pulled.current = { w, h }
+      store.drawShape(name, w, h)
+      setNearest(snapped(w / h, shapesOf(control)))
+    })
   }
   const done = () => {
-    if (!from.current) return
-    from.current = null
-    const size = pulled.current
-    pulled.current = null
-    setNearest(null)
-    if (size && control) store.setShape(name, control, size.w, snapped(size.w / size.h, shapesOf(control)))
-    else if (size) store.setWidth(name, size.w)
-    if (!store.inPlace) return
-    store.inPlace.pulled = false
-    requestAnimationFrame(() => store.fitHere(true))
+    const start = from.current
+    if (!start) return
+    flushSync(() => {
+      const owner = start.owner
+      from.current = null
+      const size = pulled.current
+      pulled.current = null
+      setNearest(null)
+      if (size && control) store.setShape(name, control, size.w, snapped(size.w / size.h, shapesOf(control)))
+      else if (size) store.setWidth(name, size.w)
+      if (!owner || store.inPlace !== owner) return
+      owner.pulled = false
+      requestAnimationFrame(() => {
+        if (store.inPlace === owner) store.fitHere(true)
+      })
+    })
   }
   return (
     <>
       {nearest && (
-        <div className="ratio-live" style={{ fontSize: 30 / flow.getZoom() }}>
+        <div className="ratio-live" style={{ fontSize: view.here ? "calc(30px * var(--surface-inverse))" : 30 / flow.getZoom() }}>
           <span>{nearest}</span>
         </div>
       )}
@@ -536,8 +546,12 @@ function Corner({ name, view, width }: { name: string; view: ElementView; width:
         tabIndex={-1}
         onClick={(event) => event.stopPropagation()}
         onPointerDown={(event) => {
+          const pose = store.poseOf(name)
+          if (!pose) return
           event.currentTarget.setPointerCapture(event.pointerId)
-          from.current = { x: event.clientX, y: event.clientY, w: width, h: width / aspectOf(view) }
+          const zoom = flow.getZoom()
+          const delta = store.surfaceOf(name)?.resizeDelta ?? ((a: { x: number; y: number }, b: { x: number; y: number }) => ({ x: (b.x - a.x) / zoom, y: (b.y - a.y) / zoom }))
+          from.current = { x: event.clientX, y: event.clientY, w: pose.w, h: pose.w / aspectOf(view), delta, owner: store.inPlace }
           if (store.inPlace) store.inPlace.pulled = true
         }}
         onPointerMove={moved}
@@ -571,8 +585,10 @@ function ShapeLine({ name, view }: { name: string; view: ElementView }) {
 
 const CardBody = memo(function CardBody({ name, width }: { name: string; width: number }) {
   const store = useCanvasStore()
+  const flow = useReactFlow<ElementNode>()
   const view = useElement(name)
   const here = Boolean(view?.here)
+  const owner = here ? store.inPlace : null
   // Far out, only what can be seen: its picture, its name and its state.
   const lite = useSignal(store.far) && !here
   const tools = useSignal(store.tools)
@@ -587,20 +603,118 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
   useEffect(() => {
     if (store.focusing === name) store.focusing = null
   })
-  // However it or what's under it grows, or the window, all of it stays in reach.
-  useEffect(() => {
-    if (!here || !self.current) return
-    const check = () => store.fitHere(true)
-    const watch = new ResizeObserver(check)
-    watch.observe(self.current)
-    const under = self.current.querySelector(".here-all")
-    if (under) watch.observe(under)
-    window.addEventListener("resize", check)
-    return () => {
-      watch.disconnect()
-      window.removeEventListener("resize", check)
+  // One geometry owner for the real card, including the lower panel and its takes.
+  useLayoutEffect(() => {
+    if (!here || owner?.name !== name || !self.current) return
+    const card = self.current
+    const id = store.idOf(name)
+    if (!id) return
+    const original = Array.from(card.style, (name) => [name, card.style.getPropertyValue(name), card.style.getPropertyPriority(name)] as const)
+    const apply = (style: CSSProperties) => {
+      for (const [property, value] of Object.entries(style)) {
+        const name = property.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)
+        if (card.style.getPropertyValue(name) !== String(value)) card.style.setProperty(name, String(value))
+      }
     }
-  }, [here, store])
+    const previous = store.surfaceOf(name)
+    let under = card.querySelector<HTMLElement>(".here-all")
+    const dimensions = () => `${card.offsetWidth}:${card.offsetHeight}:${under?.offsetWidth}:${under?.scrollHeight}`
+    let drawn = ""
+    let project: ReturnType<typeof readableSurface> | undefined
+    const update = (room?: Box, at?: Viewport) => {
+      const name = card.dataset.asset
+      if (!name) return null
+      if (store.inPlace !== owner) return null
+      // React Flow freezes its drag offset from this envelope. Its hidden lower panel must not redefine that offset mid-gesture.
+      if (store.isDragging(name)) return store.surfaceOf(name) ?? null
+      const current = store.get(name)
+      const pose = store.poseOf(name)
+      if (!current?.here || !pose || !card.isConnected) return null
+      if (!room && !store.inPlace?.fitted && !store.inPlace?.moved && !store.inPlace?.pulled) return null
+      if (!project) {
+        if (previous) apply(previous.style)
+        project = readableSurface(card)
+      }
+      const viewport = at ?? flow.getViewport()
+      const projection = project(current, pose, viewport, room)
+      if (!at) {
+        apply(projection.style)
+        store.presentSurface(id, projection)
+        drawn = dimensions()
+      }
+      return room && projection.view === viewport ? null : projection
+    }
+    const unbind = store.bindSurface(id, update)
+    let scheduled = 0
+    let alive = true
+    let observed = new Set<Element>()
+    const watch = new ResizeObserver(() => {
+      if (dimensions() !== drawn) schedule()
+    })
+    const observe = () => {
+      if (!alive || !card.isConnected) return
+      // These children keep their intrinsic height inside the scrolling panel (flex-shrink: 0).
+      // The card/aperture and capped panel are our outputs, not independent measurement inputs.
+      const next = new Set(under?.children ?? [])
+      for (const part of observed) if (!next.has(part)) watch.unobserve(part)
+      for (const part of next) if (!observed.has(part)) watch.observe(part)
+      observed = next
+    }
+    const schedule = () => {
+      if (!alive || !card.isConnected || store.inPlace !== owner) return
+      if (scheduled) return
+      scheduled = requestAnimationFrame(() => {
+        scheduled = 0
+        if (!alive || !card.isConnected || store.inPlace !== owner) return
+        update()
+        store.fitHere(true)
+        observe()
+      })
+    }
+    // Our own projection changes these boxes too. Only new content dimensions need another pass.
+    const check = () => {
+      if (dimensions() !== drawn) schedule()
+    }
+    drawn = dimensions()
+    const contents = new MutationObserver(() => {
+      const next = card.querySelector<HTMLElement>(".here-all")
+      if (next !== under) {
+        under = next
+        schedule()
+      } else {
+        check()
+        if ([...(under?.children ?? [])].some((part) => !observed.has(part))) schedule()
+      }
+    })
+    contents.observe(card, { childList: true, characterData: true, subtree: true })
+    window.addEventListener("resize", schedule)
+    document.fonts.addEventListener("loadingdone", schedule)
+    // React Flow can mount a culled card while delivering its own size observations.
+    // Publish our changed dimensions on the next frame, never from that delivery.
+    const first = requestAnimationFrame(() => {
+      if (!alive || !card.isConnected || store.inPlace !== owner) return
+      // First compute the fit before a full envelope can cull a card mounted for measurement.
+      if (store.inPlace?.fitted || store.inPlace?.moved || store.inPlace?.pulled) update()
+      store.fitHere(true)
+      observe()
+    })
+    return () => {
+      alive = false
+      cancelAnimationFrame(first)
+      cancelAnimationFrame(scheduled)
+      watch.disconnect()
+      contents.disconnect()
+      window.removeEventListener("resize", schedule)
+      document.fonts.removeEventListener("loadingdone", schedule)
+      unbind()
+      const width = card.style.width
+      const priority = card.style.getPropertyPriority("width")
+      // Restore through CSSOM: a raw style attribute is refused by the native page's CSP.
+      for (const name of Array.from(card.style)) card.style.removeProperty(name)
+      for (const [name, value, priority] of original) card.style.setProperty(name, value, priority)
+      if (width) card.style.setProperty("width", width, priority)
+    }
+  }, [here, name, store, flow, owner])
   if (!view) return null
 
   const asset = view.asset
@@ -622,6 +736,7 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
       className={`card ${view.here && !view.hereWords && view.asset?.pinned && shownOf(view)?.number === (view.asset.approved ?? view.asset.version) ? "showing-approved" : ""} ${here ? "here" : ""} ${view.landing ? "landing" : ""} ${view.hot ? "hot" : ""} ${asset?.timeline && face === "edit" ? "tl-rests" : ""}`}
       data-asset={view.name}
       data-kind={kindOf(view)}
+      style={{ width: here ? (store.surfaceOf(name)?.style.width ?? width) : width }}
       onClick={buttonsOnly}
       onAnimationEnd={(event) => {
         if (event.target === event.currentTarget && view.landing) store.patch(name, { landing: undefined })
@@ -742,11 +857,11 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
   )
 })
 
-/** Thin, as React Flow renders it: `data` is only the name. Element types are `nodeTypes`, looks are `CardBody`. */
-export function Card({ data, width }: NodeProps<ElementNode>) {
+/** Thin, as React Flow renders it: identity and body width come from one geometry publication. */
+export function Card({ data }: NodeProps<ElementNode>) {
   return (
     <>
-      <CardBody name={data.name} width={width ?? 240} />
+      <CardBody name={data.name} width={data.width} />
       <AddOns name={data.name} />
     </>
   )

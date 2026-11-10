@@ -8,7 +8,7 @@ use crate::format::decode::grid::{Grid, ScaleLayout};
 #[cfg(feature = "cuda")]
 use crate::format::decode::plan::{Bytes, Core, Elems, Plan, Post, Term};
 #[cfg(feature = "cuda")]
-use crate::format::decode::{round, Geometry};
+use crate::format::decode::Geometry;
 #[cfg(feature = "cuda")]
 use crate::format::{Dtype, Error, Result};
 
@@ -37,13 +37,6 @@ const _: () = assert!(
     BINARIES.len()
         == FAMILIES.len() * (crate::format::decode::gguf::STRUCTS.len() + CORE_KINDS.len()) * 3
 );
-
-#[cfg(feature = "cuda")]
-pub(crate) enum Prepared<'a> {
-    Kernel(Box<Launch<'a>>),
-    /// A scheme with a host-only plan: rounded bytes, ready for the engine's host source.
-    Host(Vec<u8>),
-}
 
 #[cfg(feature = "cuda")]
 /// Device arguments, in order: destination, words, slots, scale, term, table, global, post,
@@ -113,17 +106,6 @@ impl Factors {
             Self::Slot { count, .. } => *count,
         }
     }
-    pub(crate) fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-    fn host(&self) -> Result<&[f32]> {
-        match self {
-            Self::Host(v) => Ok(v),
-            Self::Slot { .. } => Err(Error::Decode(
-                "resident factors require the I/O engine".into(),
-            )),
-        }
-    }
 }
 
 #[cfg(feature = "cuda")]
@@ -149,7 +131,7 @@ pub(crate) fn prepare<'a>(
     dtype: &Dtype,
     begin: u64,
     count: u64,
-) -> Result<Prepared<'a>> {
+) -> Result<Box<Launch<'a>>> {
     let total = g
         .rows
         .checked_mul(g.cols)
@@ -177,14 +159,6 @@ pub(crate) fn prepare<'a>(
         index: vec![0],
         params: [0; 32],
     };
-    // No device core adds a low-rank branch: the host computes its values (`svdq.nvfp4`).
-    let plan = match matches!(plan.post, Post::LowRank { .. }) {
-        true => Plan {
-            core: Core::Values(plan.values(g.rows, g.cols, g.height)?),
-            post: Post::None,
-        },
-        false => plan,
-    };
     launch.params[..7].copy_from_slice(&[
         total,
         g.rows as u64,
@@ -204,7 +178,7 @@ pub(crate) fn prepare<'a>(
             launch.params[27] = 2;
             launch.post = f.try_into()?;
         }
-        Post::LowRank { .. } => unreachable!("computed on the host above"),
+        Post::LowRank { .. } => return Err(Error::Decode("no device core adds a low-rank branch".into())),
     }
     let codes = match plan.core {
         Core::Codes(c) => c,
@@ -269,33 +243,16 @@ pub(crate) fn prepare<'a>(
             launch.params[18] = group as u64;
             launch.params[28] = block as u64;
             launch.params[30] = 1 << (block.trailing_zeros() / 2);
-            return Ok(Prepared::Kernel(Box::new(launch)));
+            return Ok(Box::new(launch));
         }
         Core::Structs { bytes, kind } => {
             launch.kind = kind.name;
             launch.words = bytes.into();
             launch.params[29] = kind.n as u64;
             launch.params[30] = kind.size as u64;
-            return Ok(Prepared::Kernel(Box::new(launch)));
+            return Ok(Box::new(launch));
         }
-        Core::Values(mut v) => {
-            let post = launch.post.host()?;
-            match launch.params[27] {
-                1 => v.iter_mut().for_each(|x| *x *= post[0]),
-                2 => v
-                    .iter_mut()
-                    .enumerate()
-                    .for_each(|(i, x)| *x *= post[i % g.cols]),
-                _ => {}
-            }
-            if g.swap {
-                v = crate::format::decode::swap_last_two(&v, g.height, g.cols);
-            }
-            return Ok(Prepared::Host(round(
-                dtype,
-                &v[begin as usize..(begin + count) as usize],
-            )));
-        }
+        Core::Values(_) => return Err(Error::Decode("host values have no device core".into())),
     };
     let p = codes.packing;
     let (signed, offset) = match p.codes {
@@ -388,5 +345,5 @@ pub(crate) fn prepare<'a>(
         launch.global = v.try_into()?;
         launch.params[26] = launch.global.len() as u64;
     }
-    Ok(Prepared::Kernel(Box::new(launch)))
+    Ok(Box::new(launch))
 }

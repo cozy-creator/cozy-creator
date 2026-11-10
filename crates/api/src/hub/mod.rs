@@ -1,6 +1,6 @@
 //! Tensorhub's client: the routes cozy calls, written against the Hub's `api/openapi.yaml` (tensorhub's
 //! contract; `scripts/hub-routes.sh` holds every route here to it), with the credentials every cozy
-//! process speaks as: a user's device-key login and Bearer, a pod's worker capability, a machine's
+//! process speaks as: a user's device-key login and Bearer, a pod's requests signed by its machine's leaf key, a machine's
 //! workload grant (`workload`). Bulk bytes
 //! (presigned GET/PUT) are not here: TensorFS moves them.
 pub mod cards;
@@ -12,7 +12,7 @@ pub mod workload;
 use crate::error::{Error as Refusal, Kind};
 use serde_json::Value;
 
-pub use client::{Client, Credential};
+pub use client::{Client, Credential, WorkerSigner, worker_message};
 pub use device::{Bearer, DeviceKey, Enrollment, UserSession};
 
 /// What every Hub call goes over: cozy's one outbound client (`tensorfs::fetch::http`: `cozy/<version>` as the

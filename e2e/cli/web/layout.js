@@ -17,7 +17,7 @@ const { execFileSync, spawn } = require('child_process');
 const { mkdtempSync, readFileSync, renameSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { BARS, GPU, calcifer, MP4, boxOf, closeBox, openBox, STEP_MS, lastLook, launch, lookAt, png, noStall, renderOf, settled, until, wav, importYaml, yamlOf } = require('./page');
+const { BARS, GPU, calcifer, MP4, boxOf, closeBox, openBox, fitCanvas, STEP_MS, lastLook, launch, lookAt, png, noStall, renderOf, settled, until, wav, importYaml, yamlOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -67,6 +67,35 @@ function summed() {
 function replaceFile(at, text) {
   writeFileSync(`${at}.part`, text);
   renameSync(`${at}.part`, at);
+}
+
+/** A resting canvas at 200%: a corner may hit a box, and a zoom button's move may still be on its way. */
+async function restClose(page) {
+  const state = () => page.evaluate(() => {
+    const transform = document.querySelector('.react-flow__viewport')?.style.transform;
+    return {
+      hash: location.hash,
+      open: [...document.querySelectorAll('.card.here')].map((card) => card.dataset.asset),
+      transform,
+      zoom: transform ? new DOMMatrix(transform).a : null,
+    };
+  });
+  const requireRest = (at) => {
+    if (at.hash.includes('/assets/') || at.open.length) throw new Error(`rest-close expected a resting canvas: ${JSON.stringify(at)}`);
+  };
+  await closeBox(page);
+  requireRest(await state());
+  if (!(await page.locator('.zoom-menu').count())) await page.click('.zoom-at');
+  await page.getByRole('menuitem', { name: 'Zoom to 200%', exact: true }).click();
+  await until('rest-close reaches 200%', state, (at) => {
+    requireRest(at);
+    return at.zoom === 2;
+  }, 5000);
+  await settled(page);
+  const at = await state();
+  requireRest(at);
+  if (at.zoom !== 2) throw new Error(`rest-close expected 200%: ${JSON.stringify(at)}`);
+  return at;
 }
 
 /** What's wrong with how `scope` is laid out, in the page: each finding a rule, where, and what. A rule is one person's eye on it, measured.
@@ -198,6 +227,15 @@ function audit({ floor, hangZoom, fitted = true }) {
     if (!card || !media) continue;
     const m = R(media);
     const ms = getComputedStyle(media);
+    // The painted frame may letterbox scene-scaled content so its controls can stay readable.
+    const content = media.querySelector(':scope > .media-pixels');
+    if (card.classList.contains('here') && content && visible(content)) {
+      const ink = R(content);
+      if (ink.left < m.left - 1.5 || ink.right > m.right + 1.5 || ink.top < m.top - 1.5 || ink.bottom > m.bottom + 1.5) say('content-outside-frame', content, `${round(ink)} outside ${round(m)}`);
+      if (Math.abs((ink.left - m.left) - (m.right - ink.right)) > 1.5) say('content-off-center', content, `${Math.round(ink.left - m.left)} px left, ${Math.round(m.right - ink.right)} px right`);
+      const image = [...content.querySelectorAll('img')].find((img) => img.complete && img.naturalWidth && img.naturalHeight && !img.style.transform);
+      if (image && !card.querySelector('.in-frame') && Math.abs(ink.height - ink.width * image.naturalHeight / image.naturalWidth) > 1.5) say('content-aspect', content, `${Math.round(ink.width)}×${Math.round(ink.height)} from ${image.naturalWidth}×${image.naturalHeight}`);
+    }
     const ring = (ms.outlineStyle !== 'none' ? parseFloat(ms.outlineWidth) + parseFloat(ms.outlineOffset) : 1) * scaleOf(media);
     for (const el of node.querySelectorAll('.head > *')) {
       if (!visible(el)) continue;
@@ -213,7 +251,7 @@ function audit({ floor, hangZoom, fitted = true }) {
       if (s.top - ringOn < m.top - 1) say('takes-above', side, `its first take starts ${Math.round(m.top - s.top + ringOn)} px above its picture`);
       if (s.top > m.top + 2 + ringOn) say('takes-below', side, `its first take starts ${Math.round(s.top - m.top)} px below its picture's top`);
     }
-    // What's under it, one block with its picture and its takes: from the picture's left edge to the takes' right, a gap under the picture
+    // What's under it, one block with its painted frame and its takes: from the frame's left edge to the takes' right, a gap under the frame
     // and before the takes, and on neither.
     const under = node.querySelector('.here-under');
     if (under && visible(under)) {
@@ -221,8 +259,8 @@ function audit({ floor, hangZoom, fitted = true }) {
       const side = node.querySelector('.here-side:not(:empty)');
       const t = side && visible(side) ? R(side) : null;
       const gap = parseFloat(getComputedStyle(under).getPropertyValue('--here-gap')) * scaleOf(under);
-      if (Math.abs(u.left - m.left) > 1.5) say('under-left', under, `${Math.round(u.left - m.left)} px from its picture's left edge`);
-      if (Math.abs(u.right - (t ?? m).right) > 1.5) say('under-right', under, `${Math.round(u.right - (t ?? m).right)} px from ${t ? "its takes'" : "its picture's"} right edge`);
+      if (Math.abs(u.left - m.left) > 1.5) say('under-left', under, `${Math.round(u.left - m.left)} px from its frame's left edge`);
+      if (Math.abs(u.right - (t ?? m).right) > 1.5) say('under-right', under, `${Math.round(u.right - (t ?? m).right)} px from ${t ? "its takes'" : "its frame's"} right edge`);
       if (u.top - m.bottom < gap - 1) say('under-gap', under, `${Math.round(u.top - m.bottom)} px under its picture, not ${Math.round(gap)}`);
       if (t && t.left - m.right < gap - 1) say('takes-gap', side, `${Math.round(t.left - m.right)} px beside its picture, not ${Math.round(gap)}`);
       if (t && meet(u, t, 0)) say('under-on-takes', under, `${round(u)} on its takes ${round(t)}`);
@@ -305,16 +343,33 @@ function emptyHits({ around, step }) {
 /** Each drawn edge on top, as the GPU draws it: its line on all four sides, and nothing of it past the line. Each is pictured with it and
  *  without it, the page held still, and what it draws is where the two differ; `decoder` reads the pictures. */
 async function drawnEdges(page, decoder, label) {
-  const frames = await page.evaluate(() => {
-    const all = [...document.querySelectorAll('body *')].filter((el) => getComputedStyle(el).borderImageSource !== 'none' && el.checkVisibility({ opacityProperty: true, visibilityProperty: true }));
-    const out = [];
-    for (const el of all) {
-      if (all.some((other) => other !== el && other.contains(el))) continue;
+  const said = [];
+  const proofs = [];
+  try {
+    // Settle before reading a rectangle: finishing an animation can move the frame itself.
+    const ids = await page.evaluate(() => {
+      for (const held of document.getAnimations()) if (held.timeline === document.timeline && held.effect?.getComputedTiming().iterations !== Infinity) held.finish();
+      window.heldStill = document.getAnimations().filter((held) => held.playState === 'running' && held.timeline === document.timeline);
+      for (const held of window.heldStill) held.pause();
+      const all = [...document.querySelectorAll('body *')].filter((el) => getComputedStyle(el).borderImageSource !== 'none' && el.checkVisibility({ opacityProperty: true, visibilityProperty: true }));
+      const ids = [];
+      window.drawnFrames = [];
+      for (const el of all) {
+        if (all.some((other) => other !== el && other.contains(el))) continue;
+        el.dataset.drawnEdge = String(ids.length);
+        window.drawnFrames.push(el);
+        ids.push(ids.length);
+      }
+      return ids;
+    });
+    // Each pair has its own current frame. The viewport may refit while earlier pairs are read.
+    const frameAt = (i) => page.evaluate((i) => {
+      const el = window.drawnFrames[i];
+      if (!el?.isConnected) return null;
       const r = el.getBoundingClientRect();
+      const style = getComputedStyle(el);
       const scale = r.width / el.offsetWidth;
-      const o = parseFloat(getComputedStyle(el).borderImageOutset) * scale;
-      if (r.width < 40 || r.height < 30 || r.left - o < 1 || r.top - o < 1 || r.right + o > innerWidth - 1 || r.bottom + o > innerHeight - 1) continue;
-      // Along each side clear of its corners, where nothing else is over it.
+      const o = parseFloat(style.borderImageOutset) * scale;
       const samples = [];
       for (const side of ['top', 'right', 'bottom', 'left']) {
         for (const t of [0.3, 0.5, 0.7]) {
@@ -324,43 +379,121 @@ async function drawnEdges(page, decoder, label) {
           if (top && el.contains(top)) samples.push({ side, x, y });
         }
       }
-      el.dataset.drawnEdge = String(out.length);
-      out.push({ at: `${el.tagName.toLowerCase()}${[...el.classList].slice(0, 3).map((c) => `.${c}`).join('')}`, rect: [r.left, r.top, r.right, r.bottom], o, scale, samples });
+      return {
+        at: `${el.tagName.toLowerCase()}${[...el.classList].slice(0, 3).map((c) => `.${c}`).join('')}`,
+        rect: [r.left, r.top, r.right, r.bottom], o, scale, samples,
+        view: [innerWidth, innerHeight, devicePixelRatio, document.querySelector('.react-flow__viewport')?.style.transform ?? ''],
+        image: style.borderImageSource,
+        eligible: !(r.width < 40 || r.height < 30 || r.left - o < 1 || r.top - o < 1 || r.right + o > innerWidth - 1 || r.bottom + o > innerHeight - 1),
+      };
+    }, i);
+    const geometry = (frame) => frame && JSON.stringify([frame.rect, frame.scale, frame.view]);
+    const paint = (frame) => frame && JSON.stringify([frame.o, frame.image]);
+    for (const i of ids) {
+      const first = await frameAt(i);
+      if (first && !first.eligible) continue; // The same size/on-screen exclusions as the pixel audit.
+      let last;
+      const what = `drawn edge ${i} stays in place through its two pictures`;
+      let pair;
+      try {
+        await until(what, async () => {
+          const frame = await frameAt(i);
+          if (!frame?.eligible) { last = { frame, stable: false }; return false; }
+          const [left, top, right, bottom] = frame.rect;
+          const pad = frame.o + 3;
+          const [width, height] = frame.view;
+          const [x, y] = [Math.max(0, Math.floor(left - pad)), Math.max(0, Math.floor(top - pad))];
+          const clip = { x, y, width: Math.min(width, Math.ceil(right + pad)) - x, height: Math.min(height, Math.ceil(bottom + pad)) - y };
+          const shown = await page.screenshot({ clip });
+          const afterShown = await frameAt(i);
+          const visibility = await page.evaluate((i) => {
+            const el = window.drawnFrames[i];
+            if (!el?.isConnected) return null;
+            const saved = [el.style.getPropertyValue('visibility'), el.style.getPropertyPriority('visibility')];
+            el.style.setProperty('visibility', 'hidden', 'important');
+            return saved;
+          }, i);
+          if (!visibility) { last = { frame, afterShown, stable: false }; return false; }
+          let bare, afterBare;
+          try {
+            bare = await page.screenshot({ clip });
+            afterBare = await frameAt(i);
+          } finally {
+            await page.evaluate(({ i, saved }) => {
+              const el = window.drawnFrames[i];
+              if (!el) return;
+              if (saved[0]) el.style.setProperty('visibility', saved[0], saved[1]);
+              else el.style.removeProperty('visibility');
+            }, { i, saved: visibility });
+          }
+          const restored = await frameAt(i);
+          const stable = [afterShown, afterBare, restored].every((after) => geometry(after) === geometry(frame))
+            && [afterShown, restored].every((after) => paint(after) === paint(frame));
+          last = { frame, afterShown, afterBare, restored, clip, viewport: { width, height }, shown, bare, stable };
+          return stable;
+        }, (stable) => stable, STEP_MS);
+        pair = last;
+      } catch (error) {
+        if (!last || !error.message.startsWith(`${what}: still `)) throw error;
+        const found = [{ rule: 'capture-moved', what: `${what}: geometry kept changing during capture` }];
+        for (const finding of found) said.push({ at: first?.at ?? `drawn edge ${i}`, ...finding });
+        if (process.env.SHOT) proofs.push({ i, ...last, found });
+        continue;
+      }
+      const { frame, clip, shown, bare } = pair;
+      const found = await decoder.evaluate(edgesOf, { shown: shown.toString('base64'), bare: bare.toString('base64'), clip, frame });
+      for (const { rule, what } of found) said.push({ rule, at: frame.at, what });
+      if (found.length && process.env.SHOT) proofs.push({ i, ...pair, found });
     }
-    // Still: what opens is at its end (the GPU path's compositor holds it at its start), and what goes on forever is held.
-    for (const held of document.getAnimations()) if (held.timeline === document.timeline && held.effect?.getComputedTiming().iterations !== Infinity) held.finish();
-    window.heldStill = document.getAnimations().filter((held) => held.playState === 'running' && held.timeline === document.timeline);
-    for (const held of window.heldStill) held.pause();
-    return out;
-  });
-  const said = [];
-  const proofs = [];
-  for (const [i, frame] of frames.entries()) {
-    const [left, top, right, bottom] = frame.rect;
-    const pad = frame.o + 3;
-    const { width, height } = page.viewportSize();
-    const [x, y] = [Math.max(0, Math.floor(left - pad)), Math.max(0, Math.floor(top - pad))];
-    const clip = { x, y, width: Math.min(width, Math.ceil(right + pad)) - x, height: Math.min(height, Math.ceil(bottom + pad)) - y };
-    const shown = await page.screenshot({ clip });
-    await page.evaluate((i) => (document.querySelector(`[data-drawn-edge="${i}"]`).style.visibility = 'hidden'), i);
-    const bare = await page.screenshot({ clip });
-    await page.evaluate((i) => document.querySelector(`[data-drawn-edge="${i}"]`).style.removeProperty('visibility'), i);
-    const found = await decoder.evaluate(edgesOf, { shown: shown.toString('base64'), bare: bare.toString('base64'), clip, frame });
-    for (const { rule, what } of found) said.push({ rule, at: frame.at, what });
-    if (found.length && process.env.SHOT) proofs.push({ i, frame, clip, viewport: { width, height }, shown, bare, found });
+  } finally {
+    await page.evaluate(() => {
+      for (const el of window.drawnFrames ?? []) delete el.dataset.drawnEdge;
+      for (const held of window.heldStill ?? []) held.play();
+      delete window.drawnFrames;
+      delete window.heldStill;
+    });
   }
-  await page.evaluate(() => {
-    for (const el of document.querySelectorAll('[data-drawn-edge]')) delete el.dataset.drawnEdge;
-    for (const held of window.heldStill) held.play();
-  });
   // Keep the exact comparison inputs after this pass has finished measuring, without another screenshot or DOM read.
-  for (const { i, frame, clip, viewport, shown, bare, found } of proofs) {
+  for (const { i, frame, clip, viewport, shown, bare, afterShown, afterBare, restored, found } of proofs) {
     const path = `${process.env.SHOT}-${label}-edge-${i}`;
-    writeFileSync(`${path}-drawn.png`, shown);
-    writeFileSync(`${path}-bare.png`, bare);
-    writeFileSync(`${path}-frame.json`, JSON.stringify({ label, frame, clip, viewport, findings: found }, null, 2));
+    if (shown) writeFileSync(`${path}-drawn.png`, shown);
+    if (bare) writeFileSync(`${path}-bare.png`, bare);
+    writeFileSync(`${path}-frame.json`, JSON.stringify({ label, frame, clip, viewport, afterShown, afterBare, restored, findings: found }, null, 2));
   }
   return said;
+}
+
+/** A real pane point, with both ends of the existing drag inside the viewport. */
+function panPoint() {
+  const side = document.querySelector('.card.here > .here-side:not(:empty)')?.getBoundingClientRect() ?? document.querySelector('.card.here > .media')?.getBoundingClientRect();
+  const bare = (x, y) => x >= 80 && y >= 60 && x <= innerWidth - 20 && y <= innerHeight - 20 && document.elementFromPoint(x, y)?.classList.contains('react-flow__pane');
+  if (side) {
+    const y = Math.max(60, Math.min(innerHeight - 20, side.top + side.height * 0.8));
+    for (let x = side.right + 30; x <= innerWidth - 20; x += 20) if (bare(x, y)) return { x, y };
+    for (let x = side.left - 30; x >= 80; x -= 20) if (bare(x, y)) return { x, y };
+  }
+  for (let y = 60; y <= innerHeight - 20; y += 20) for (let x = 80; x <= innerWidth - 20; x += 20) if (bare(x, y)) return { x, y };
+  return null;
+}
+
+async function panCanvas(page) {
+  let from = await page.evaluate(panPoint);
+  const fitted = !from;
+  if (!from) {
+    await fitCanvas(page);
+    from = await page.evaluate(panPoint);
+  }
+  if (!from) return { from, fitted, reason: 'no in-viewport pane point after actual Zoom to fit' };
+  await page.mouse.move(from.x, from.y);
+  const hit = await page.evaluate(({ x, y }) => x >= 80 && y >= 60 && x <= innerWidth - 20 && y <= innerHeight - 20 && document.elementFromPoint(x, y)?.classList.contains('react-flow__pane'), from);
+  if (!hit) return { from: null, fitted, reason: 'the chosen pane point no longer hits the canvas before its drag' };
+  const viewport = () => page.evaluate(() => document.querySelector('.react-flow__viewport').style.transform);
+  const before = await viewport();
+  await page.mouse.down();
+  try { await page.mouse.move(from.x - 60, from.y - 40, { steps: 6 }); }
+  finally { await page.mouse.up(); }
+  await settled(page);
+  return { from, fitted, before, after: await viewport() };
 }
 
 /** A frame's sides from its two pictures, with it and without it: on each, its line is drawn within a few pixels of its edge, and nothing of
@@ -558,13 +691,13 @@ ${local ? `  card:
     await page.goto(`${base}/#/projects/${id}`);
     await page.locator('.react-flow__node').first().waitFor();
     await placed();
-    const look = async (state, keep) => {
+    const look = async (state, keep, fitted = true) => {
       // What opens animates in: measured once it's still. A pulse goes on forever, and is no move.
       await page.waitForFunction(() => !document.getAnimations().some((held) => held.playState === 'running' && held.timeline === document.timeline && held.effect?.getComputedTiming().iterations !== Infinity), null, { timeout: 5000 }).catch(() => {});
       seen.looks = (seen.looks ?? 0) + 1;
-      const said = await page.evaluate(audit, { floor: FLOOR, hangZoom: HANG_ZOOM, fitted: !/^zoom-.*-in$/.test(state) });
+      const said = await page.evaluate(audit, { floor: FLOOR, hangZoom: HANG_ZOOM, fitted });
       // The pointer where nothing's drawn, around a box worked on or all over.
-      if (state === 'rest' || /^(open|writing|zoom)-/.test(state)) {
+      if (state === 'rest' || /^(open|writing|zoom|fit)-/.test(state)) {
         const block = await page.evaluate(() => {
           const rects = [...document.querySelectorAll('.card.here, .card.here > .here-side, .card.here > .here-under')].map((el) => el.getBoundingClientRect()).filter((r) => r.width);
           return rects.length ? [Math.min(...rects.map((r) => r.left)) - 60, Math.min(...rects.map((r) => r.top)) - 60, Math.max(...rects.map((r) => r.right)) + 60, Math.max(...rects.map((r) => r.bottom)) + 60] : null;
@@ -612,8 +745,7 @@ ${local ? `  card:
       await page.keyboard.up('Shift');
       await page.keyboard.press('Shift+2');
       await settled(page);
-      await page.mouse.click(2, size.viewport.height - 2);
-      await zoomTo(2);
+      (seen.rest_close ??= []).push({ size: size.name, ...(await restClose(page)) });
       await look('rest-close', true);
     }
     // At rest, being made, at 75%: what it says of how far it's got hangs off it as all else at rest does, one size on screen.
@@ -719,26 +851,15 @@ ${local ? `  card:
       ]) {
         await act();
         await settled(page);
-        await look(`zoom-${asset}-${step}`, step.endsWith('out'));
+        await look(`zoom-${asset}-${step}`, step.endsWith('out'), false);
       }
-      // Beside its takes where only the canvas is: a box pushed aside may sit close by, and a drag on it would carry it onto this one.
-      const from = await page.evaluate(() => {
-        const side = document.querySelector('.card.here > .here-side:not(:empty)')?.getBoundingClientRect() ?? document.querySelector('.card.here > .media').getBoundingClientRect();
-        const y = side.top + side.height * 0.8;
-        const bare = (x) => document.elementFromPoint(x, y)?.classList.contains('react-flow__pane');
-        for (let x = side.right + 30; x < innerWidth - 20; x += 20) if (bare(x)) return { x, y };
-        for (let x = side.left - 30; x > 20; x -= 20) if (bare(x)) return { x, y };
-        return { x: side.right + 30, y };
-      });
-      const viewport = () => page.evaluate(() => document.querySelector('.react-flow__viewport').style.transform);
-      const before = await viewport();
-      await page.mouse.move(from.x, from.y);
-      await page.mouse.down();
-      await page.mouse.move(from.x - 60, from.y - 40, { steps: 6 });
-      await page.mouse.up();
-      await settled(page);
-      const after = await viewport();
-      if (after === before) findings.push({ size: size.name, state: `zoom-${asset}`, rule: 'drag-no-pan', at: `beside <${asset}>'s takes`, what: `a drag from ${Math.round(from.x)},${Math.round(from.y)} left the canvas where it was` });
+      // Manual zoom may crop. A drag still needs a visible pane, and explicit fit gets its own unchanged chrome audit.
+      const panned = await panCanvas(page);
+      (seen.pan_targets ??= []).push({ size: size.name, asset, ...panned });
+      if (!panned.from) findings.push({ size: size.name, state: `zoom-${asset}`, rule: 'pan-target', at: `beside <${asset}>'s takes`, what: panned.reason });
+      else if (panned.after === panned.before) findings.push({ size: size.name, state: `zoom-${asset}`, rule: 'drag-no-pan', at: `beside <${asset}>'s takes`, what: `a drag from ${Math.round(panned.from.x)},${Math.round(panned.from.y)} left the canvas where it was` });
+      await fitCanvas(page);
+      await look(`fit-${asset}`, true);
       await closeBox(page);
     }
     // What's around the canvas.

@@ -1,7 +1,7 @@
 name: build
 # The PR check (tracker/design/ci-v2.md §1): the workspace compiles, clippy's deny lints pass (warnings are not
 # gates yet: master has 61 in tensorfs), and the routes hold to their API documents: every route `api::hub` calls is
-# in tensorhub's api/openapi.yaml, and TensorD's router, its client and crates/tensord/api/openapi.yaml name the same
+# in the Hub contract selected by ci/hub-ref, and TensorD's router, its client and crates/tensord/api/openapi.yaml name the same
 # routes, and every route web/app calls is one Calcifer serves; web/app/src/api/calcifer.ts is api's types as ts-rs writes them
 # (scripts/web-types.sh). It also builds the page, so the checks compile it in.
 # Required for merges into master and rc/*: it runs on the merge queue's group (merge_group), on the final
@@ -49,16 +49,30 @@ jobs:
           fi
       - if: steps.scope.outputs.run == 'true'
         uses: actions/checkout@v5
-      # Every route `api::hub` calls is in tensorhub's API document as it is now.
+      # Select the immutable Hub contract paired with this source cohort. The release owner
+      # coordinates publication, worker images and the production protocol cutover separately.
+      - if: steps.scope.outputs.run == 'true'
+        id: hub_contract
+        name: Select the source cohort's Hub contract
+        run: echo "ref=$(cat ci/hub-ref)" >> "$GITHUB_OUTPUT"
       - if: steps.scope.outputs.run == 'true'
         uses: actions/checkout@v5
         with:
           repository: cozy-creator/tensorhub
+          ref: ${{ steps.hub_contract.outputs.ref }}
           ssh-key: ${{ secrets.TENSORHUB_READ_KEY }}
           persist-credentials: false
           sparse-checkout: api/openapi.yaml
           sparse-checkout-cone-mode: false
           path: .tensorhub
+      - if: steps.scope.outputs.run == 'true'
+        name: Record the resolved Hub contract
+        env:
+          HUB_REF: ${{ steps.hub_contract.outputs.ref }}
+        run: |
+          sha=$(git -C .tensorhub rev-parse HEAD)
+          printf 'Hub contract: %s @ %s\n' "$HUB_REF" "$sha"
+          printf '### Hub API contract\n\n`%s` at `%s`\n' "$HUB_REF" "$sha" >> "$GITHUB_STEP_SUMMARY"
       - if: steps.scope.outputs.run == 'true'
         run: scripts/hub-routes.sh .tensorhub/api/openapi.yaml
       - if: steps.scope.outputs.run == 'true'

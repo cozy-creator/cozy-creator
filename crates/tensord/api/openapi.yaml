@@ -309,7 +309,7 @@ paths:
   /v1/status:
     get:
       summary: >-
-        The machine's picture. Without a machine-scope cap: identity, version and the sealed
+        The machine's picture. Without a machine-scope cap: identity, version and the
         readiness receipt only (what a Hub reads). With one: all of it, and with `Accept: text/event-stream`
         an SSE stream of `status` events, each the whole frame, sent again when it changes.
       operationId: status
@@ -984,7 +984,7 @@ components:
       type: object
       description: >-
         The machine's picture. Without a machine-scope cap, `GET /v1/status` answers identity, version,
-        the workload key and the sealed readiness `receipt` only. With one it answers all of it, and as SSE
+        the workload key and the readiness `receipt` only. With one it answers all of it, and as SSE
         (`Accept: text/event-stream`) sends the whole frame again whenever it changes. An open stream is not
         activity.
       properties:
@@ -1035,7 +1035,7 @@ components:
         receipt:
           type: string
           format: byte
-          description: The sealed readiness envelope (base64); empty until sealed.
+          description: This boot's readiness facts (JSON, base64), which a Hub binds to the leaf it pinned at the provider's address; empty until measured.
         runs:
           type: array
           items: {$ref: '#/components/schemas/RunState'}

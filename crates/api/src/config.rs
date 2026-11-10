@@ -18,8 +18,9 @@ pub(crate) const DEFAULT_HUB_URL: &str = "https://tensorhub.com";
 /// Every environment variable the load reads, with its key: credentials for model sources, by the
 /// names their own tools use; the Hub (dev and CI point one command elsewhere with it); where
 /// releases are downloaded from (dist's installers read the same one); and the machine's settings
-/// a pod's launcher gives (Tensorhub `podenv`, plus the devices the container may use).
-pub const ENV: [(&str, &str); 19] = [
+/// a pod's launcher gives (Tensorhub `podenv`, plus the devices the container may use). A pod's
+/// environment is public: none of its names is a credential.
+pub const ENV: [(&str, &str); 16] = [
     ("HF_TOKEN", "huggingface_token"),
     ("CIVITAI_TOKEN", "civitai_token"),
     ("COZY_HUB_URL", "hub_url"),
@@ -29,12 +30,9 @@ pub const ENV: [(&str, &str); 19] = [
     ("COZY_TENSORFS_CACHE", "machine.cache"),
     ("COZY_LISTEN_HOST", "machine.listen_host"),
     ("COZY_WORKER_ID", "machine.worker_id"),
-    ("COZY_WORKER_AUTH_TOKEN", "machine.worker_token"),
     ("COZY_WORKER_INTERNAL_PORT", "machine.port"),
     ("COZY_WEBRTC_INTERNAL_PORT", "machine.webrtc_port"),
     ("COZY_SSH_PUBLIC_KEY", "machine.ssh_public_key"),
-    ("COZY_BOOTSTRAP_RECEIPT_HMAC_KEY_B64URL", "machine.receipt_key"),
-    ("COZY_BOOTSTRAP_RECEIPT_HMAC_KEY_FILE", "machine.receipt_key_file"),
     ("TENSORHUB_ORIGIN", "machine.hub_origin"),
     ("TENSORHUB_CA_DER_B64URL", "machine.hub_ca_der"),
     ("TENSORHUB_OBJECT_STORAGE_HOSTS", "machine.object_storage_hosts"),
@@ -96,15 +94,8 @@ pub struct MachineConfig {
     /// `0.0.0.0` or `127.0.0.1`.
     pub listen_host: Option<String>,
     pub worker_id: Option<String>,
-    pub worker_token: Option<Secret>,
-    /// A pod's boot keys (`COZY_AUTHORIZED_KEYS=a,b`), from the environment only: this
-    /// computer's controllers are `keys/owner.pem`'s and `keys/authorized`'s.
-    #[serde(skip)]
-    pub authorized_keys: Vec<String>,
     /// A development rental's SSH key.
     pub ssh_public_key: Option<String>,
-    pub receipt_key: Option<Secret>,
-    pub receipt_key_file: Option<PathBuf>,
     pub hub_origin: Option<String>,
     pub hub_ca_der: Option<String>,
     /// Exact hosts, or `.suffix` for subdomains (`a,b` in the environment).
@@ -160,9 +151,6 @@ impl MachineConfig {
 pub fn image_machine() -> bool {
     cfg!(target_os = "linux") && std::path::Path::new("/var/lib/cozy/machine/boot-id").is_file()
 }
-
-/// The environment name of a pod's boot keys.
-pub const AUTHORIZED_KEYS: &str = "COZY_AUTHORIZED_KEYS";
 
 /// A list as a TOML array, or as one comma-separated string (how the environment spells it).
 fn list<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
@@ -393,8 +381,7 @@ pub(crate) fn load_from(environment: &BTreeMap<String, String>, user_home: PathB
             at.insert(name.into(), value.clone().into());
         }
     }
-    let (mut config, warnings) = extract(table, &file, &set)?;
-    config.machine.authorized_keys = split(environment.get(AUTHORIZED_KEYS).map_or("", String::as_str));
+    let (config, warnings) = extract(table, &file, &set)?;
     Ok(Loaded {
         config,
         home,
@@ -420,12 +407,7 @@ impl Config {
 
     /// Drops blank secrets.
     fn normalize(&mut self) {
-        for secret in [
-            &mut self.huggingface_token,
-            &mut self.civitai_token,
-            &mut self.machine.worker_token,
-            &mut self.machine.receipt_key,
-        ] {
+        for secret in [&mut self.huggingface_token, &mut self.civitai_token] {
             if secret.as_ref().is_some_and(|s| s.0.trim().is_empty()) {
                 *secret = None;
             }

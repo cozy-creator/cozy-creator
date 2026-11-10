@@ -82,8 +82,9 @@ pub(crate) struct Producer {
     /// Most of a source's keys start with one of these.
     pub keys: Vec<String>,
     pub metadata: BTreeMap<String, Match>,
-    /// The pinned code (or, without public code, the declaration) the layout is read from.
-    pub cite: Vec<String>,
+    /// The pinned code (or, without public code, the declaration) the layout is read from: for people.
+    #[serde(rename = "cite")]
+    _cite: Vec<String>,
 }
 
 /// A `__metadata__` value a producer writes.

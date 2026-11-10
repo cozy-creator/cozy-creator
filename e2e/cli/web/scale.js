@@ -14,7 +14,8 @@ const { createHash } = require('crypto');
 const { appendFileSync, closeSync, copyFileSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } = require('fs');
 const { homedir } = require('os');
 const { join } = require('path');
-const { calcifer, signIn, STEP_MS, lastLook, lookAt, png, noStall, renderOf, until } = require('./page');
+const { calcifer, signIn, STEP_MS, lastLook, lookAt, png, noStall, closeBox, openBox, renderOf, until, projectHeld } = require('./page');
+const { readFootprint, closedProjectMemory } = require('./native-memory');
 
 const failures = [];
 const seen = {};
@@ -192,6 +193,35 @@ function calciferMb() {
   return Math.round(Number(execFileSync('ps', ['-o', 'rss=', '-p', String(pid)], { encoding: 'utf8' }).trim()) / 1024);
 }
 
+/** Native ownership evidence beside the RSS bar, from this exact scale case. */
+async function nativeMemory(base, folder) {
+  const holder = JSON.parse(readFileSync(process.env.HOLDER, 'utf8'));
+  const sample = { at_ms: Date.now(), heap_bytes: null, project_db_open: null };
+  let physicalBefore;
+  if (process.platform === 'darwin') {
+    try { physicalBefore = readFootprint(holder.pid); }
+    catch (error) { sample.physical_error = error.message; }
+  }
+  try {
+    const reply = await fetch(`${base}/v1/status`, { headers: { Authorization: `Bearer ${holder.token}` } });
+    const status = await reply.json();
+    if (!reply.ok || !Number.isFinite(status.heap_bytes)) throw new Error(`status ${reply.status} carries no native heap counter`);
+    sample.heap_bytes = status.heap_bytes;
+  } catch (error) { sample.heap_error = error.message; }
+  try { sample.project_db_open = projectHeld(folder, holder.pid); }
+  catch (error) { sample.ownership_error = error.message; }
+  if (process.platform === 'darwin') {
+    try {
+      const after = JSON.parse(readFileSync(process.env.HOLDER, 'utf8'));
+      const pressure = readFootprint(after.pid);
+      const current = JSON.parse(readFileSync(process.env.HOLDER, 'utf8'));
+      sample.physical = { holder_pid: holder.pid, after_holder_pid: current.pid, before: physicalBefore, after: pressure };
+    } catch (error) { sample.physical_error = error.message; }
+  }
+  sample.finished_at_ms = Date.now();
+  return sample;
+}
+
 (async () => {
   const base = calcifer();
   // Generated once with no takes, to read each shot's real key, then with them where its first open finds them current.
@@ -222,6 +252,7 @@ function calciferMb() {
   const seconds = (ms) => +(ms / 1000).toFixed(2);
 
   const startMb = calciferMb();
+  numbers.calcifer_native = { before: await nativeMemory(base, folder) };
   const generating = Date.now();
   generated(keying, null, ASSETS, PICTURES, false);
   numbers.generate_s = seconds(Date.now() - generating);
@@ -260,6 +291,7 @@ function calciferMb() {
   check('status_again_is_quicker', numbers.status_again_s <= BARS.status_again_s, numbers.status_again_s);
   const memory = { before: startMb, read: calciferMb() };
   numbers.calcifer_memory_mb = memory;
+  numbers.calcifer_native.read = await nativeMemory(base, folder);
 
   const browser = await chromium.launch({ executablePath: process.env.CHROME, headless: true, args: ['--enable-precise-memory-info'] });
   const context = await browser.newContext({ viewport: { width: 1800, height: 1200 } });
@@ -371,7 +403,14 @@ function calciferMb() {
     const named = profile.nodes.map(({ id, callFrame: { functionName, url, lineNumber } }) => ({ what: `${functionName || '(anonymous)'} ${url.split('/').at(-1)}:${lineNumber}`, ms: Math.round((spent.get(id) ?? 0) / 1000) }));
     return named.filter(({ what, ms: took }) => took > 0 && !what.startsWith('(idle)')).sort((a, b) => b.ms - a.ms).slice(0, 10);
   };
+  const resting = async () => {
+    await closeBox(page);
+    await page.locator('.card.here').waitFor({ state: 'detached' });
+    const state = await page.evaluate(() => ({ hash: location.hash, opened: document.querySelectorAll('.card.here').length }));
+    if (state.opened || state.hash.includes('/assets/')) throw new Error(`expected the real resting canvas: ${JSON.stringify(state)}`);
+  };
   const measuredPan = async () => {
+    await resting();
     await drawn();
     const still = summary(await page.evaluate(() => window.takeFrames(1000)));
     // Left alone, no frame asked for and nothing moved, as a canvas is on a laptop with no one at it.
@@ -418,6 +457,7 @@ function calciferMb() {
   numbers.open_settled_s = seconds(Date.now() - opening);
   check('it_settles_quickly', numbers.open_settled_s <= BARS.open_settled_s, numbers.open_settled_s);
   memory.open = calciferMb();
+  numbers.calcifer_native.open = await nativeMemory(base, folder);
   numbers.mounted_boxes = await page.locator('.react-flow__node').count();
   numbers.pan_big = await measuredPan();
   const allowed = numbers.pan_small.added_ms_per_frame * BARS.pan_work_times_small + BARS.pan_work_slack_ms;
@@ -441,11 +481,12 @@ function calciferMb() {
   // A box of a picture says nothing at rest of its words, nor that they've changed (Paul, 11-05): open, its instructions are what the file says,
   // its tool's own field, or under More what it holds that its tool doesn't read.
   const openOn = async (name) => {
-    await page.goto(`${base}/#/projects/${id}/assets/${encodeURIComponent(name)}`);
+    await resting();
+    await openBox(page, name);
     const here = page.locator(`.card.here[data-asset="${name}"]`);
     await here.waitFor();
     // On a take an image tool made, its words are its next take's, behind its +.
-    await renderOf(page, name);
+    await (await renderOf(page, name)).waitFor();
     await here.locator('.more-toggle').waitFor();
     if (!(await here.locator('.edit-more').count())) await here.locator('.more-toggle').click();
     await here.locator('.mention-text[data-field=instructions], .held-line:has-text("Instructions")').first().waitFor();
@@ -482,8 +523,7 @@ function calciferMb() {
   numbers.hand_import_s = seconds(saved.ms);
   numbers.hand_shows_ms = (await shownHand) - saved.at;
   check('a_hand_shows_live', numbers.hand_shows_ms <= BARS.edit_shows_ms, numbers.hand_shows_ms);
-  await page.goto(`${base}/#/projects/${id}`);
-  await page.locator('.card.here').waitFor({ state: 'detached' });
+  await resting();
   await until('its frames short again', shortFrames, (p95) => p95 < 100, 60_000);
 
   // Moved by a command, as a drag is: a row, and no read of the project.
@@ -562,6 +602,7 @@ function calciferMb() {
   check('a_burst_right_in_a_second', numbers.burst.right_after_ms <= BARS.edit_shows_ms, numbers.burst);
 
   memory.edits = calciferMb();
+  numbers.calcifer_native.edits = await nativeMemory(base, folder);
 
   // Each local write at this size: a box made, an input set, a box moved, a box gone, out where nothing's looked at. The file is whole after each.
   const writes = { post: [], patch: [], move: [], delete: [] };
@@ -622,6 +663,7 @@ function calciferMb() {
   await shot('fitted');
 
   memory.fitted = calciferMb();
+  numbers.calcifer_native.fitted = await nativeMemory(base, folder);
   check('calcifers_memory', memory.edits <= BARS.calcifer_mb, memory);
   check('calcifers_memory_with_asks', memory.fitted <= BARS.calcifer_asks_mb, memory);
   rmSync(smallFolder, { recursive: true, force: true });
@@ -639,7 +681,11 @@ function calciferMb() {
   // Closed once nothing reads it, the browser gone: what Calcifer built and dropped for 5,000 assets goes back.
   await new Promise((done) => setTimeout(done, CLOSED_MS));
   memory.closed = calciferMb();
-  check('calcifer_gives_back_a_closed_project', memory.closed <= memory.before + BARS.calcifer_kept_mb, memory);
+  numbers.calcifer_native.closed = await nativeMemory(base, folder);
+  const closedMetric = process.platform === 'darwin' ? 'physical_footprint' : 'rss';
+  numbers.calcifer_closed_memory_metric = closedMetric;
+  check('calcifer_gives_back_a_closed_project', closedProjectMemory(process.platform, memory, numbers.calcifer_native, BARS.calcifer_kept_mb),
+    process.platform === 'darwin' ? { metric: closedMetric, budget_mb: BARS.calcifer_kept_mb, rss_mb: memory, before: numbers.calcifer_native.before, closed: numbers.calcifer_native.closed } : memory);
   console.log(JSON.stringify({ failures, seen }, null, 2));
   process.exit(failures.length ? 1 : 0);
 })().catch(died);

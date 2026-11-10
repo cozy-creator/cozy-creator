@@ -84,9 +84,9 @@ function tabsOf(order: KnownProject[], id: string | null, count: number): KnownP
 
 /** As many tabs as fit the bar, the rest behind "N more". `room` is the bar's free space past them; a hidden copy of every tab says what each takes. */
 function ProjectTabs({ id, room }: { id: string | null; room: HTMLElement | null }) {
-  const { client } = useConnection()
+  const { client, stream } = useConnection()
   const to = useTo()
-  const { data } = useQuery({ ...projectQuery(client, id ?? ""), enabled: Boolean(id) })
+  const { data } = useQuery({ ...projectQuery(client, stream, id ?? ""), enabled: Boolean(id) })
   const { data: list } = useQuery(projectsQuery(client))
   const order = useOrder(list?.projects ?? [])
   const [count, setCount] = useState(Number.POSITIVE_INFINITY)
@@ -203,7 +203,14 @@ function MainMenu({ id }: { id: string | null }) {
     return () => window.removeEventListener("pointerdown", away)
   }, [])
   return (
-    <details className="main-menu" ref={held}>
+    <details
+      className="main-menu"
+      ref={held}
+      onKeyDown={(event) => {
+        // These keys activate the menu's native controls, not the canvas's pan or take shortcuts.
+        if (event.key === "Enter" || event.key === " ") event.stopPropagation()
+      }}
+    >
       <summary className="tb" aria-label="Menu">
         <Icon name="menu" />
       </summary>
@@ -235,7 +242,10 @@ export function Shell() {
   const { stream } = useConnection()
   const id = useProjectId()
   // Calcifer holds the project open while a tab shows it.
-  useEffect(() => stream.show(id), [stream, id])
+  useEffect(() => {
+    stream.show(id)
+    return () => stream.show(null)
+  }, [stream, id])
   const to = useTo()
   const navigate = useNavigate()
   const location = useLocation()

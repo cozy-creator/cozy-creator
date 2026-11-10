@@ -1,18 +1,12 @@
-//! The GPU half of `metrics`: a device's PCI link and its pinned host→device ceiling.
+//! The GPU half of `metrics`: a device's PCI address and its pinned host→device ceiling.
 
 use std::ffi::c_void;
 use std::time::Instant;
 
 use super::super::{cuda, probe};
-use super::{link, Link};
 use cuda::Result;
 
 const H2D_PROBE: usize = 128 << 20;
-
-/// The current PCIe link of CUDA device `device`, without creating a second context.
-pub(crate) fn device_link(device: i32) -> Option<Link> {
-    link(&pci_address(device)?)
-}
 
 /// CUDA device `device`'s PCI address as sysfs names it (`0000:65:00.0`).
 pub(crate) fn pci_address(device: i32) -> Option<String> {
