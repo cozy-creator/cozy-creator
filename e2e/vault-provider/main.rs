@@ -63,7 +63,26 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let connection = rusqlite::Connection::open(view.join("initial-stage.sqlite"))?;
             connection.execute_batch("PRAGMA journal_mode=DELETE; CREATE TABLE snapshot (id INTEGER PRIMARY KEY); INSERT INTO snapshot VALUES (1)")?;
         }
-        stage.try_unmount()?;
+        if let Err(error) = stage.try_unmount() {
+            // Capture the actual dissenter before Mounted's owned abort cleanup releases it.
+            let holders = Command::new("sudo")
+                .args(["-n", "/usr/sbin/lsof", "-nP", "-Fpcftn", "+f", "--"])
+                .arg(&view)
+                .output()?;
+            eprintln!(
+                "native stage holders: {}{}",
+                String::from_utf8_lossy(&holders.stdout),
+                String::from_utf8_lossy(&holders.stderr)
+            );
+            let unmount = Command::new("/sbin/umount").arg(&view).output()?;
+            eprintln!(
+                "native stage direct normal umount: status={} stdout={} stderr={}",
+                unmount.status,
+                String::from_utf8_lossy(&unmount.stdout),
+                String::from_utf8_lossy(&unmount.stderr)
+            );
+            return Err(error.into());
+        }
     }
     let mut mounted =
         provider.mount(&backing, &view, secret.as_bytes(), MountOptions::default())?;
