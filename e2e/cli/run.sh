@@ -113,8 +113,10 @@ for r in 16:1 1:16 32000:2000 17:1 1:17 32768:32; do
 done
 # What a function doesn't take is said, and the run goes on: these are no input of `ImageRequest`.
 if cell ratio-unknown "$ratio" "prompt=ratio $RANDOM" negative_prompt=blurry guidance:=3 prompt_upsampling:=true; then
-  grep -q 'ignored unknown fields .*guidance.*negative_prompt.*prompt_upsampling' "$OUT/ratio-unknown.ndjson" "$OUT/ratio-unknown.err" \
-    || check "ratio-unknown: what it doesn't take isn't said"
+  local field
+  for field in guidance negative_prompt prompt_upsampling; do
+    grep -q "reads no input $field\$" "$OUT/ratio-unknown.err" || check "ratio-unknown: what it doesn't take isn't said: $field"
+  done
 fi
 }
 
