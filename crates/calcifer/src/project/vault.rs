@@ -445,13 +445,36 @@ fn convert(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret,
 }
 
 fn copy_tree(source: &FsPath, target: &FsPath) -> Result<(), Error> {
+    // Executable environments contain interpreter symlinks. They are reproducible caches,
+    // not retained content. Only omit them for a verified managed view, never a plain user folder.
+    let logical = logical(source);
+    let managed = Keybag::load(&logical.join(KEYBAG_FILE)).ok().is_some_and(|bag| {
+        fs::read(source.join(api::machine::LOCAL_PRIVATE_MARKER)).ok()
+            .and_then(|bytes| serde_json::from_slice::<api::machine::LocalPrivateMarker>(&bytes).ok())
+            .is_some_and(|marker| marker.format_version == 1 && marker.storage.project_id == bag.info().project_id
+                && marker.storage.generation == bag.info().generation
+                && source.canonicalize().is_ok_and(|path| path == marker.storage.view_root))
+    });
+    copy_tree_at(source, target, FsPath::new(""), managed)
+}
+
+fn copy_tree_at(source: &FsPath, target: &FsPath, relative: &FsPath, managed: bool) -> Result<(), Error> {
     for entry in fs::read_dir(source).map_err(io)? {
         let entry = entry.map_err(io)?;
         let kind = entry.file_type().map_err(io)?;
         let from = entry.path();
         let to = target.join(entry.file_name());
+        let relative = relative.join(entry.file_name());
+        if managed {
+            let mut parts = relative.components();
+            let first = parts.next().and_then(|part| part.as_os_str().to_str());
+            let second = parts.next().and_then(|part| part.as_os_str().to_str());
+            if first == Some(api::machine::LOCAL_PRIVATE_MARKER) || first == Some(".vault-calcifer")
+                || (first == Some(".vault-machine") && matches!(second,
+                    Some("editable" | "generations" | "executors" | "home" | "jit" | "kernels" | "tmp" | "cache" | "matplotlib" | "uv-cache" | "uv-tools"))) { continue; }
+        }
         if kind.is_symlink() { return Err(Error::new(Kind::Usage, "vault_symlink", "conversion/export refuses symlinks; replace them with project-owned files")); }
-        if kind.is_dir() { fs::create_dir(&to).map_err(io)?; copy_tree(&from, &to)?; }
+        if kind.is_dir() { fs::create_dir(&to).map_err(io)?; copy_tree_at(&from, &to, &relative, managed)?; }
         else if kind.is_file() {
             if entry.file_name() == "project.db-wal" || entry.file_name() == "project.db-shm" { continue; }
             if entry.file_name() == "project.db" {
