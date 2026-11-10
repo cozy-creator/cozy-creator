@@ -2,6 +2,7 @@
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use project_mount::{MountOptions, Provider};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::{
     fs,
     io::{Read, Seek, SeekFrom, Write},
@@ -27,9 +28,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Err("usage: vault-provider normal|crash-host <securefs> <artifacts>".into());
     }
     let mode = arguments[0].to_string_lossy();
-    let provider = Provider::from_path(PathBuf::from(&arguments[1]))?;
+    let expected_helper = PathBuf::from(&arguments[1]);
     let artifacts = PathBuf::from(&arguments[2]);
     fs::create_dir_all(&artifacts)?;
+    let provider = if project_mount::is_bundled() {
+        let installed = Provider::discover(&artifacts.join("tools"))?;
+        assert_eq!(
+            Sha256::digest(fs::read(installed.executable())?),
+            Sha256::digest(fs::read(&expected_helper)?),
+            "the embedded provider must match its pinned executable"
+        );
+        assert!(
+            artifacts
+                .join("tools/securefs/2.0.0/LICENSE.securefs.md")
+                .is_file()
+        );
+        installed
+    } else {
+        Provider::from_path(expected_helper)?
+    };
     let backing = artifacts.join("encrypted");
     let view = project_mount::view_path(&artifacts.join("runtime"))?;
     let mut randomness = Zeroizing::new([0u8; 32]);
@@ -200,7 +217,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     inspect(&backing, marker)?;
     println!(
         "{}",
-        json!({"result":"pass","provider":"securefs 2.0.0 lite","bytes":content.len(),"normal_io":true,"media_seek":true,"open_handle_result":busy,"manual_lock":true,"no_plaintext_fallback":true,"remount_parity":true,"read_only":true,"idle_lock":true,"backing_marker_absent":true,"view":view})
+        json!({"result":"pass","provider":"securefs 2.0.0 lite","bundled_provider":project_mount::is_bundled(),"bytes":content.len(),"normal_io":true,"media_seek":true,"open_handle_result":busy,"manual_lock":true,"no_plaintext_fallback":true,"remount_parity":true,"read_only":true,"idle_lock":true,"backing_marker_absent":true,"view":view})
     );
     Ok(())
 }

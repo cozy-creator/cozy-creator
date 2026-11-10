@@ -19,7 +19,9 @@ def main():
     args.securefs = args.securefs.resolve()
     args.artifacts = args.artifacts.resolve()
     args.artifacts.mkdir(parents=True, exist_ok=False)
-    normal = subprocess.run([str(args.probe), 'normal', str(args.securefs), str(args.artifacts / 'normal')], capture_output=True, text=True)
+    environment = os.environ.copy()
+    environment.pop('COZY_SECUREFS_PROVIDER', None)
+    normal = subprocess.run([str(args.probe), 'normal', str(args.securefs), str(args.artifacts / 'normal')], capture_output=True, text=True, env=environment)
     (args.artifacts / 'normal.log').write_text(normal.stdout + normal.stderr)
     if normal.returncode:
         print((normal.stdout + normal.stderr)[-65536:], file=sys.stderr)
@@ -28,7 +30,7 @@ def main():
     result = {'normal': json.loads(normal.stdout.strip().splitlines()[-1])}
     crash = args.artifacts / 'crash'
     with (args.artifacts / 'crash.log').open('w') as log:
-        host = subprocess.Popen([str(args.probe), 'crash-host', str(args.securefs), str(crash)], stdout=log, stderr=log)
+        host = subprocess.Popen([str(args.probe), 'crash-host', str(args.securefs), str(crash)], stdout=log, stderr=log, env=environment)
         ready = crash / 'ready.json'
         try:
             deadline = time.monotonic() + 90
