@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import itertools
 import json
 import os
 import shutil
@@ -25,7 +26,7 @@ import sys
 import sysconfig
 import time
 import traceback
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Literal, NotRequired, TypedDict, cast
 
@@ -210,7 +211,7 @@ class Reply(TypedDict, total=False):
 class Executor:
     """One executor process and the seam to it: 4-byte big-endian length, then canonical JSON."""
 
-    def __init__(self, work: Path, store: Path, waive: Mapping[str, str], ranks: int = 1) -> None:
+    def __init__(self, work: Path, store: Path, waive: Mapping[str, str], patch: Mapping[str, str], ranks: int = 1) -> None:
         work.mkdir(parents=True, exist_ok=True)
         self.work, self.ranks = work, ranks
         (work / "seam").unlink(missing_ok=True)
@@ -226,12 +227,13 @@ class Executor:
             "OMP_NUM_THREADS": THREADS,
             "MKL_NUM_THREADS": THREADS,
         }
-        if waive:
-            # A fixture's waivers (WAIVE): release-geometry pins a tiny model cannot meet, each named with its reason.
+        if waive or patch:
+            # A fixture's waivers (WAIVE, PATCH): release-geometry pins a tiny model cannot meet, each named with its reason.
             site = Path(sysconfig.get_paths()["purelib"])
             shutil.copyfile(HERE / "waive" / "cpu_e2e_waive.py", site / "cpu_e2e_waive.py")
             (site / "cpu_e2e_waive.pth").write_text("import cpu_e2e_waive\n")
             env["CPU_E2E_WAIVE"] = json.dumps(dict(waive))
+            env["CPU_E2E_PATCH"] = json.dumps(dict(patch))
         self.stderr = work / "executor.log"
         self.child = subprocess.Popen(
             [sys.executable, "-I", "-m", "cozy_runtime.internal.executor", "--socket", f"/proc/{os.getpid()}/fd/{self.fd}/seam",
@@ -454,8 +456,12 @@ def written(cell: Cell, items: list[Item], store: Path) -> dict[str, dict[str, i
     return found
 
 
+#: an output id -> its file and media type
+type Files = dict[str, tuple[Path, str]]
+
+
 def judge(cell: Cell, reply: Reply, spool: Path, reference: Seen | None,
-          committed: Callable[[], dict[str, dict[str, int]]]) -> Seen:
+          committed: Callable[[], dict[str, dict[str, int]]]) -> tuple[Seen, Files]:
     """The cell's output judged, never only its completion: every declared output present, finite and not flat (or
     declared empty), the cell's own check, and the stored reference's."""
     outcome = reply.get("outcome", {})
@@ -469,6 +475,7 @@ def judge(cell: Cell, reply: Reply, spool: Path, reference: Seen | None,
         seen["weights"] = weights
     empty = set(cell.get("empty", []))
     files: list[Path] = []
+    named: Files = {}
     for declared in sorted(reply.get("outputs") or [], key=lambda o: str(o.get("output_id"))):
         output, ref, media_type = (str(declared.get(k, "")) for k in ("output_id", "asset_ref", "media_type"))
         found = sorted(spool.glob(ref.split("/", 1)[1].replace("/", "-") + "*"))
@@ -476,6 +483,7 @@ def judge(cell: Cell, reply: Reply, spool: Path, reference: Seen | None,
             raise Failed(f"output {output} ({ref}) has no file in the spool")
         path = found[0]
         files.append(path)
+        named[output] = (path, media_type)
         if not path.stat().st_size:
             if output not in empty:
                 raise Failed(f"output {output} is empty")
@@ -495,8 +503,54 @@ def judge(cell: Cell, reply: Reply, spool: Path, reference: Seen | None,
     if check is not None and (problem := check(result, files)):
         raise Failed(problem)
     if reference is not None:
-        compare(seen, reference, float(cell.get("tolerance", 1.0)))
-    return seen
+        compare(seen, reference, tolerance(cell))
+    return seen, named
+
+
+def tolerance(cell: Cell) -> float:
+    """A cell's allowed mean difference, of 255: its own, else 1 from a stored reference and 0.5 from its one-rank twin
+    (a CPU group's output is that twin's to the bit; a rank on another rank's rotary rows is 2/255 off)."""
+    return float(cell.get("tolerance", 0.5 if "same_as" in cell else 1.0))
+
+
+def frames(path: Path, media_type: str, result: Json) -> Iterator[npt.NDArray[np.int16]]:
+    """An output's samples a frame at a time: a video's pictures, then its sound whole; else the output whole."""
+    if media_type.startswith("video/"):
+        import av
+
+        with av.open(str(path)) as container:
+            for frame in container.decode(video=0):
+                yield frame.to_ndarray(format="rgb24").astype(np.int16)
+        sound = samples(path, media_type).get(".audio")
+        if sound is not None:
+            yield sound.astype(np.int16)
+        return
+    for values in samples(path, media_type).values():
+        yield shaped(values, result).astype(np.int16)
+
+
+def twin_gap(mine: Files, theirs: Files, result: Json) -> tuple[str, float]:
+    """How far a group's outputs are from its one-rank twin's, sample by sample: the worst frame's (or picture's, or
+    sound's) mean absolute difference, of 255, and where. A group computes what one rank does, so this is near 0; a rank
+    that reads another rank's rows, or runs without an overlay the others armed, moves whole frames."""
+    worst, where = 0.0, ""
+    for output in sorted(mine):
+        if output not in theirs:
+            raise Failed(f"output {output} is not among its twin's {sorted(theirs)}")
+        (a, kind), (b, _) = mine[output], theirs[output]
+        if not a.stat().st_size and not b.stat().st_size:
+            continue
+        count = 0
+        for index, (x, y) in enumerate(itertools.zip_longest(frames(a, kind, result), frames(b, kind, result))):
+            if x is None or y is None or x.shape != y.shape:
+                raise Failed(f"output {output} has another shape than its twin's at frame {index}")
+            gap = float(np.abs(x - y).mean())
+            count += 1
+            if gap > worst:
+                worst, where = gap, f"{output} frame {index}"
+        if not count:
+            raise Failed(f"output {output} decodes to nothing")
+    return where, worst
 
 
 def compare(seen: Seen, reference: Seen, tolerance: float) -> None:
@@ -581,6 +635,8 @@ def main() -> int:
     interface = cast(Interface, json.loads(interface_path.read_text()))
     fixture = load_fixture(fixture_path, package)
     waive = cast(dict[str, str], getattr(fixture, "WAIVE", {}))
+    #: `module:NAME` -> the literal it takes in the executor (a release geometry shrunk)
+    patch = {k: repr(v) for k, v in cast(dict[str, object], getattr(fixture, "PATCH", {})).items()}
     references_path = (Path(flags[flags.index("--refs") + 1]) if "--refs" in flags else HERE / "refs") / f"{package}.json"
     references = cast(dict[str, Seen], json.loads(references_path.read_text())) if references_path.exists() else {}
     failed = 0
@@ -612,6 +668,8 @@ def main() -> int:
     loaded: set[tuple[int, str]] = set()
     #: each cell's judged output this run: a `same_as` cell is judged against its twin's here
     ran: dict[str, Seen] = {}
+    #: and its output files, for a twin compared sample by sample
+    kept: dict[str, Files] = {}
     try:
         for cell in cells:
             entry, name, ranks = cell["entry"], cell["name"], cell.get("ranks", 1)
@@ -627,7 +685,7 @@ def main() -> int:
                 rows = bindings(interface, str(interface_path), row, manifests, store, f"{package}@{version}", package)
                 executor = executors.get(ranks)
                 if executor is None:
-                    executor = executors[ranks] = Executor(out / f"executor-{ranks}", store, waive, ranks)
+                    executor = executors[ranks] = Executor(out / f"executor-{ranks}", store, waive, patch, ranks)
                     executor.must({"cmd": "hello"})
                     executor.must({
                         "cmd": "start", "devices": "", "application": interface["application"],
@@ -665,8 +723,13 @@ def main() -> int:
                 if against is None and not (record and same_as is None):
                     raise Failed(f"no output of {same_as or key} to judge against: run it too, or record (run.sh --record)")
                 items = executor.items
-                seen = judge(cell, reply, spool, against, lambda: written(cell, items, store))
-                ran[key] = seen
+                seen, named = judge(cell, reply, spool, against, lambda: written(cell, items, store))
+                ran[key], kept[key] = seen, named
+                if same_as is not None and same_as in kept:
+                    where, gap = twin_gap(named, kept[same_as], seen["result"])
+                    if gap > tolerance(cell):
+                        raise Failed(f"{where} differs from {same_as}'s by {gap:.2f}/255 on average "
+                                     f"(tolerance {tolerance(cell)})")
                 if record and same_as is None:
                     references[key] = seen
                 line(True, entry, name, started)

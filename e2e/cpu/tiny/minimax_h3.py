@@ -192,6 +192,8 @@ CELLS: list[Cell] = [
      "files": {"assets.0.asset": picture("fox", 512, 512)}, "empty": _EMPTY},
     {"entry": "fl2va_segment", "name": "text-2-ranks", "payload": {"payload": _SEGMENT}, "ranks": 2, "empty": _EMPTY,
      "same_as": "fl2va_segment/text"},
+    {"entry": "fl2va_segment", "name": "turbo-2-ranks", "payload": {"payload": {**_SEGMENT, "steps": None, "turbo": True}},
+     "ranks": 2, "empty": _EMPTY, "same_as": "fl2va_segment/turbo"},
     {"entry": "ref2va_segment", "name": "reference-2-ranks", "payload": {"payload": _REF2VA, "assets": [{"label": "fox"}]},
      "files": {"assets.0.asset": picture("fox", 512, 512)}, "ranks": 2, "empty": _EMPTY,
      "same_as": "ref2va_segment/reference"},

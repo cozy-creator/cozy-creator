@@ -11,7 +11,7 @@ import torch
 from diffusers import AutoencoderKLFlux2, FlowMatchEulerDiscreteScheduler, Ideogram4Transformer2DModel
 from transformers import AutoTokenizer, Qwen3VLConfig, Qwen3VLForConditionalGeneration
 
-from cell import Cell, Json, module, qwen_tokenizer, save, size
+from cell import NARROW, Cell, Json, module, qwen_tokenizer, save, size
 
 #: Qwen's text width; Ideogram reads 13 of its layers' states side by side.
 WIDTH = 64
@@ -92,5 +92,5 @@ CELLS: list[Cell] = [
         "regions": [{"box": [0.1, 0.1, 0.5, 0.5], "prompt": "a lantern"},
                     {"box": [0.55, 0.6, 0.95, 0.9], "prompt": "hand-lettered", "text": "OPEN"}]}},
     {"entry": "image", "name": "tool", "payload": {"instructions": "a red fox on a mossy log", "seed": 7}},
-    {"entry": "quantize", "name": "int8", "payload": {}, "skip": "int8.convrot needs matrices whose columns come in 256s; the tiny model's are narrower (sdxl and anima run fp8)"},
+    {"entry": "quantize", "name": "int8", "payload": {}, "skip": NARROW},
 ]

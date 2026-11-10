@@ -16,7 +16,7 @@ import torch
 from diffusers import AutoencoderKLFlux2, FlowMatchEulerDiscreteScheduler, Flux2Transformer2DModel
 from transformers import AutoModelForImageTextToText, Mistral3Config, Qwen3Config, Qwen3ForCausalLM
 
-from cell import Cell, Json, module, qwen_tokenizer, save, size
+from cell import NARROW, Cell, Json, module, qwen_tokenizer, save, size
 from tiny import _shared
 
 DEV, KLEIN, TURBO = "black-forest-labs/flux-2-dev@0.1.0", "tiny/flux-2-klein", "fal/flux-2-dev-turbo@0.1.0"
@@ -147,5 +147,5 @@ CELLS: list[Cell] = [
                                                          "prompt_upsampling": False}, "check": size(1024, 1024)},
     {"entry": "generate_turbo", "name": "dev-turbo-lora", "payload": {},
      "skip": "fal's Turbo LoRA builds its sites at [dev]'s class-default geometry (turbo.py TurboGraph); no tiny [dev] takes it"},
-    {"entry": "quantize", "name": "lanes", "payload": {}, "skip": "weights entry: the driver does not grant Invoke.sources yet"},
+    {"entry": "quantize", "name": "lanes", "payload": {}, "skip": NARROW},
 ]

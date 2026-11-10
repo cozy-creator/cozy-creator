@@ -15,7 +15,7 @@ from moss_image.model import MossTransformer
 from safetensors.torch import save_file
 from transformers import Qwen3_5Model
 
-from cell import Cell, Json, module, qwen_tokenizer, save, size
+from cell import NARROW, Cell, Json, module, qwen_tokenizer, save, size
 from tiny import _shared
 
 MOSS = "openmoss-team/moss-image@0.1.0"
@@ -65,5 +65,5 @@ CELLS: list[Cell] = [
             {"box": [0.55, 0.7, 0.95, 0.9], "prompt": "a wooden sign", "text": "SNOW"}]}},
     {"entry": "image", "name": "tool", "payload": {"instructions": "a red fox in fresh snow", "seed": 7,
                                                    "negative_prompt": "blurry"}, "check": size(1024, 1024)},
-    {"entry": "quantize", "name": "lanes", "payload": {}, "skip": "weights entry: the driver does not grant Invoke.sources yet"},
+    {"entry": "quantize", "name": "lanes", "payload": {}, "skip": NARROW},
 ]

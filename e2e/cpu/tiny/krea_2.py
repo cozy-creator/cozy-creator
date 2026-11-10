@@ -12,7 +12,7 @@ import torch
 from diffusers import AutoencoderKLQwenImage, FlowMatchEulerDiscreteScheduler, Krea2Transformer2DModel
 from transformers import Qwen3VLModel
 
-from cell import Cell, module, qwen_tokenizer, save, size
+from cell import NARROW, Cell, module, qwen_tokenizer, save, size
 from tiny import _shared
 
 RAW, TURBO = "krea/krea-2@0.1.0", "krea/krea-2-turbo@0.1.0"
@@ -61,5 +61,5 @@ CELLS: list[Cell] = [
      "check": size(1024, 1024)},
     {"entry": "image", "name": "raw", "payload": {"instructions": "a red fox in fresh snow", "seed": 7, "megapixels": 1,
                                                   "turbo": False}, "check": size(1024, 1024)},
-    {"entry": "quantize", "name": "lanes", "payload": {}, "skip": "weights entry: the driver does not grant Invoke.sources yet"},
+    {"entry": "quantize", "name": "lanes", "payload": {}, "skip": NARROW},
 ]

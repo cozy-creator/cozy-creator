@@ -17,7 +17,7 @@ import torch
 from diffusers import AutoencoderKLQwenImage, FlowMatchEulerDiscreteScheduler, QwenImageTransformer2DModel
 from transformers import Qwen2_5_VLConfig, Qwen2_5_VLForConditionalGeneration
 
-from cell import Cell, Json, module, packages, save, size
+from cell import NARROW, Cell, Json, module, packages, save, size
 from tiny import _shared
 
 BASE, EDIT = "qwen/qwen-image-2512@0.1.1", "qwen/qwen-image-edit-2511@0.1.0"
@@ -124,5 +124,5 @@ CELLS: list[Cell] = [
      "check": size(1328, 1328)},
     {"entry": "generate_turbo", "name": "text", "payload": {}, "skip": _LIGHTNING + "; generate_turbo loads it eagerly"},
     {"entry": "image", "name": "turbo", "payload": {}, "skip": _LIGHTNING},
-    {"entry": "quantize", "name": "lanes", "payload": {}, "skip": "weights entry: the driver does not grant Invoke.sources yet"},
+    {"entry": "quantize", "name": "lanes", "payload": {}, "skip": NARROW},
 ]

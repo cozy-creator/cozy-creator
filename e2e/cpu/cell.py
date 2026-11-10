@@ -32,7 +32,8 @@ class Cell(TypedDict):
     #: judged against another cell's output (`entry/name`; that cell's run here, else its reference): a group's output
     #: equals one rank's
     same_as: NotRequired[str]
-    #: the mean difference of an output's thumbnail from its reference's allowed, of 255 (default 1)
+    #: the mean difference allowed, of 255: an output's thumbnail from its reference's (default 1), and a `same_as`
+    #: cell's worst frame from its twin's, sample by sample (default 0.5)
     tolerance: NotRequired[float]
     #: why this cell cannot run on the CPU; printed as SKIP
     skip: NotRequired[str]
@@ -126,6 +127,10 @@ def qwen_tokenizer(folder: Path) -> None:
     save(AutoTokenizer.from_pretrained(source), folder)
     template = json.loads((source / "tokenizer_config.json").read_text())["chat_template"]
     (folder / "chat_template.json").write_text(json.dumps({"chat_template": template}))
+
+
+#: Why a lane of int8.convrot (or a lane built on it) does not run here.
+NARROW = "int8.convrot takes matrices whose columns come in 256s; the tiny model's are narrower"
 
 
 def quantize(ref: str, lane: str, package: str, release: str) -> Cell:

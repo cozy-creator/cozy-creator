@@ -1,10 +1,12 @@
 """A fixture's waivers (`WAIVE` in tiny/<package>.py): each `module:function` named in CPU_E2E_WAIVE returns None
-instead of running once its module is imported. drive.py puts this module and a `.pth` importing it in the package
-environment's site-packages, so it holds in the executor and every rank it spawns (`python -I` reads no PYTHONPATH).
-Only release-geometry pins a tiny model cannot meet are waived; the coverage table lists each as GPU-only."""
+instead of running once its module is imported, and each `module:NAME` in CPU_E2E_PATCH (`PATCH`) takes the given
+literal: a release geometry a package states as a constant, shrunk. drive.py puts this module and a `.pth` importing it
+in the package environment's site-packages, so it holds in the executor and every rank it spawns (`python -I` reads no
+PYTHONPATH). Only release-geometry pins a tiny model cannot meet are waived; the coverage table lists each as GPU-only."""
 
 from __future__ import annotations
 
+import ast
 import importlib.abc
 import importlib.machinery
 import importlib.util
@@ -20,8 +22,8 @@ def _waived(*_args: object, **_kwargs: object) -> None:
 
 
 class _Loader(importlib.abc.Loader):
-    def __init__(self, inner: importlib.abc.Loader, functions: list[str]) -> None:
-        self.inner, self.functions = inner, functions
+    def __init__(self, inner: importlib.abc.Loader, functions: list[str], values: dict[str, str]) -> None:
+        self.inner, self.functions, self.values = inner, functions, values
 
     def create_module(self, spec: importlib.machinery.ModuleSpec) -> ModuleType | None:
         return self.inner.create_module(spec)
@@ -32,15 +34,19 @@ class _Loader(importlib.abc.Loader):
             if not callable(getattr(module, function, None)):
                 raise RuntimeError(f"cpu-e2e waives {module.__name__}:{function}, which the package no longer has")
             setattr(module, function, _waived)
+        for name, literal in self.values.items():
+            if not hasattr(module, name):
+                raise RuntimeError(f"cpu-e2e patches {module.__name__}:{name}, which the package no longer has")
+            setattr(module, name, ast.literal_eval(literal))
 
 
 class _Finder(importlib.abc.MetaPathFinder):
-    def __init__(self, names: dict[str, list[str]]) -> None:
-        self.names = names
+    def __init__(self, names: dict[str, list[str]], values: dict[str, dict[str, str]]) -> None:
+        self.names, self.values = names, values
 
     def find_spec(self, fullname: str, path: Sequence[str] | None,
                   target: ModuleType | None = None) -> importlib.machinery.ModuleSpec | None:
-        if fullname not in self.names:
+        if fullname not in self.names and fullname not in self.values:
             return None
         sys.meta_path.remove(self)
         try:
@@ -48,7 +54,7 @@ class _Finder(importlib.abc.MetaPathFinder):
         finally:
             sys.meta_path.insert(0, self)
         if spec is not None and spec.loader is not None:
-            spec.loader = _Loader(spec.loader, self.names[fullname])
+            spec.loader = _Loader(spec.loader, self.names.get(fullname, []), self.values.get(fullname, {}))
         return spec
 
 
@@ -57,8 +63,12 @@ def _install() -> None:
     for target in json.loads(os.environ.get("CPU_E2E_WAIVE", "{}")):
         module, function = str(target).split(":")
         names.setdefault(module, []).append(function)
-    if names:
-        sys.meta_path.insert(0, _Finder(names))
+    values: dict[str, dict[str, str]] = {}
+    for target, literal in json.loads(os.environ.get("CPU_E2E_PATCH", "{}")).items():
+        module, name = str(target).split(":")
+        values.setdefault(module, {})[name] = str(literal)
+    if names or values:
+        sys.meta_path.insert(0, _Finder(names, values))
 
 
 _install()

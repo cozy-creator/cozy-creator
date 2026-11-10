@@ -16,7 +16,7 @@ import torch
 from diffusers import AutoencoderKLQwenImage21, FlowMatchEulerDiscreteScheduler, QwenImage21Transformer2DModel
 from transformers import Qwen3_5ForConditionalGeneration, Qwen3VLForConditionalGeneration
 
-from cell import Cell, Json, module, save, size
+from cell import NARROW, Cell, Json, module, save, size
 from tiny import _shared
 
 MODEL, ENCODER = "qwen/qwen-image-2.1@0.1.0", "atomicchat/qwen-image-2.1-text-encoder-abliterated@0.1.0"
@@ -96,5 +96,5 @@ CELLS: list[Cell] = [
                                                   "megapixels": 1, "creativity": "creative"}},
     {"entry": "generate_turbo", "name": "text", "payload": {}, "skip": _FUN_ACC + "; generate_turbo loads it with the function"},
     {"entry": "image", "name": "turbo", "payload": {}, "skip": _FUN_ACC},
-    {"entry": "quantize", "name": "lanes", "payload": {}, "skip": "weights entry: the driver does not grant Invoke.sources yet"},
+    {"entry": "quantize", "name": "lanes", "payload": {}, "skip": NARROW},
 ]

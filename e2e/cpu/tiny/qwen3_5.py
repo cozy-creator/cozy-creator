@@ -17,7 +17,7 @@ from safetensors.torch import load_file, save_file
 from transformers import Qwen3_5Config, Qwen3_5ForConditionalGeneration
 from transformers.models.qwen3_5 import modeling_qwen3_5
 
-from cell import Cell, answers, module, packages, qwen_tokenizer, save
+from cell import NARROW, Cell, answers, module, packages, qwen_tokenizer, save
 
 REF = "qwen/qwen3.5-9b@0.2.0"
 
@@ -92,7 +92,7 @@ def cells(picture: Callable[[Path], Path], clip: Callable[[Path], Path]) -> list
                                                         "max_tokens": 8, "temperature": 0.8, "seed": 3}, "check": answers(2)},
         {"entry": "caption", "name": "image", "payload": {"max_tokens": 12}, "files": {"images.0": picture},
          "check": answers(1)},
-        {"entry": "quantize", "name": "int8", "payload": {}, "skip": "int8.convrot needs matrices whose columns come in 256s; the tiny model's are narrower (sdxl and anima run fp8)"},
+        {"entry": "quantize", "name": "int8", "payload": {}, "skip": NARROW},
     ]
 
 

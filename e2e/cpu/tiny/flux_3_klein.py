@@ -15,7 +15,7 @@ from diffusers import AutoencoderKLFlux2, Flux3Transformer2DModel
 from transformers import Qwen3_5ForConditionalGeneration, Qwen3VLForConditionalGeneration
 from transformers.models.qwen3_5 import modeling_qwen3_5
 
-from cell import Cell, Json, module, save, size
+from cell import NARROW, Cell, Json, module, save, size
 from tiny import _shared
 
 DISTILLED, BASE = "black-forest-labs/flux-3-klein@0.1.0", "black-forest-labs/flux-3-klein-base@0.1.0"
@@ -98,5 +98,5 @@ CELLS: list[Cell] = [
      "check": size(1024, 1024)},
     {"entry": "image", "name": "full", "payload": {"instructions": _prompt("a red fox in fresh snow"), "seed": 7, "turbo": False,
                                                   "prompt_upsampling": False}, "check": size(1024, 1024)},
-    {"entry": "quantize", "name": "lanes", "payload": {}, "skip": "weights entry: the driver does not grant Invoke.sources yet"},
+    {"entry": "quantize", "name": "lanes", "payload": {}, "skip": NARROW},
 ]

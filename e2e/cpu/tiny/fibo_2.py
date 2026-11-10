@@ -12,7 +12,7 @@ import torch
 from diffusers import AutoencoderKLFlux2, BriaFibo2Transformer2DModel, FlowMatchEulerDiscreteScheduler
 from transformers import Qwen3VLForConditionalGeneration
 
-from cell import Cell, Json, module, save, size
+from cell import NARROW, Cell, Json, module, save, size
 from tiny import _shared
 
 DEV, TURBO = "briaai/fibo-2-dev@0.1.0", "briaai/fibo-2-edit-turbo@0.1.0"
@@ -80,5 +80,5 @@ CELLS: list[Cell] = [
      "check": size(1024, 1024)},
     {"entry": "image", "name": "full", "payload": {"instructions": _prompt("a red fox in fresh snow"), "seed": 7, "turbo": False,
                                                   "prompt_upsampling": False}, "check": size(1024, 1024)},
-    {"entry": "quantize", "name": "lanes", "payload": {}, "skip": "weights entry: the driver does not grant Invoke.sources yet"},
+    {"entry": "quantize", "name": "lanes", "payload": {}, "skip": NARROW},
 ]
