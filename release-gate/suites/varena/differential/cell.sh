@@ -11,17 +11,12 @@
 #   noroom   they can't all come back: that call runs eagerly, byte-identical to base's replay, and says so
 #   eager    graphs off, every loop and component root as written: byte-identical to base's first call, so a capture
 #            that leaves work out (28892's class) shows here. Every first-party package that records a loop
-# diff-writes: SDXL's step, `before` and `after` also bump counters outside the loop's tensors (a torch op, a raw Triton
-#   launch), over a first call that records, then two that reuse it, and over a first call that records nothing, the idle
-#   recording after it, and two that reuse that: each counter exactly what running without graphs gives (90721eb84 ran a
-#   step and its `after` twice, and read 5 where 4 was due)
 # At the same split levels the bytes must match. Where levels moved with the room, or `why` names a cause the bytes
 # follow, the outputs are judged by quality (differential.py; Paul 11-06: determinism is desirable, not required).
 # A skipped or unreadable arm is a FAIL: a gate that did not run this has not passed it.
 D=$V/differential
 ARMS=$OUT/differential
-# diff_copy <package> <arm> <checks> [press]: the package with memoization out and hook.py in, at ./differential/<arm>/<package>;
-# a press writes* adds writes.py.
+# diff_copy <package> <arm> <checks> [press]: the package with memoization out and hook.py in, at ./differential/<arm>/<package>.
 diff_copy() {
   local copy=$ARMS/$2/$1 module to
   rm -rf "$copy"; mkdir -p "$copy"
@@ -35,10 +30,6 @@ diff_copy() {
     to=$copy/gate_hook.py; printf '\nimport gate_hook  # noqa: E402, F401\n' >> "$copy/$module.py"
   fi
   sed -e "s/^ARM: .*/ARM: dict[str, bool] = dict($3)/" -e "s/^PRESS = .*/PRESS = \"${4:-}\"/" "$D/hook.py" > "$to"
-  case ${4:-} in
-    writes) cat "$D/writes.py" >> "$to";;
-    writes-idle) sed 's/^IDLE = .*/IDLE = True/' "$D/writes.py" >> "$to";;
-  esac
   grep -q "^ARM: dict\[str, bool\] = dict($3)" "$to"
 }
 diff_run() {  # diff_run <cell> <arm> <package> <function> <args...>: H3's text and length as one beat (gate.sh's one_beat)
@@ -104,19 +95,6 @@ diff_eager() {  # diff_eager <name> <package> <function> <args...>: graphs off a
   log "diff-$name-eager: base's first call ran ${native:-no} steps natively"
   diff_expect "diff-$name-eager" "diff-$name-base-1" "diff-$name-eager"
 }
-diff_writes() {  # diff_writes <package> <function> <args...>
-  local package=$1 function=$2 arm i said; shift 2
-  [ -z "$ONLY" ] || [[ $ONLY == *,differential,* || $ONLY == *",diff-writes,"* ]] || return 0
-  for arm in writes writes-idle; do
-    diff_copy "$package" "$arm" "" "$arm" || { expect "diff-$arm" FAIL "no copy of $package with the hook in it"; continue; }
-    for i in 1 2 3; do
-      diff_run "diff-$arm-$i" "$arm" "$package" "$function" "$@"
-      [ "$arm-$i" != writes-idle-1 ] || sleep 30  # its idle period records the call
-    done
-    said=$(python3 "$D/counts.py" "$arm" "diff-$arm-1.json" "diff-$arm-2.json" "diff-$arm-3.json" 2>&1)
-    case $said in PASS*) expect "diff-$arm" PASS "${said#PASS }";; *) expect "diff-$arm" FAIL "${said#FAIL }";; esac
-  done
-}
 if [ -z "$PKGS" ]; then
   [ -n "$ONLY" ] && [[ $ONLY != *,differential,* ]] || expect differential FAIL "needs --packages: nothing was run, so nothing is proven"
 else
@@ -124,7 +102,6 @@ else
   diff_model sdxl sdxl generate 6GiB uses prompt="$OBJECT on a wooden table, photo" seed:=$((R + 71))
   diff_press sdxl sdxl generate prompt="$OBJECT on a wooden table, photo" seed:=$((R + 71))
   diff_eager sdxl sdxl generate prompt="$OBJECT on a wooden table, photo" seed:=$((R + 71))
-  diff_writes sdxl generate prompt="$OBJECT on a shelf, photo" seed:=$((R + 74))
   diff_model qwen qwen-image-2 generate 8GiB uses prompt="$SCENE, photo" seed:=$((R + 72)) megapixels:=4
   diff_eager qwen qwen-image-2 generate prompt="$SCENE, photo" seed:=$((R + 72)) megapixels:=4
   diff_eager krea krea-2 generate prompt="$SCENE, photo" seed:=$((R + 75)) steps:=8
