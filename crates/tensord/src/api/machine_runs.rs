@@ -41,26 +41,33 @@ pub(super) async fn follow(
     let (sender, receiver) = mpsc::channel(256);
     let snapshot = v1::RunEvent { sequence: 0, at_ms: 0, event: v1::Event::State(current) };
     let _ = sender.try_send(Ok(snapshot));
-    tokio::spawn(async move {
-        if let Err(error) = log(runs, actor, id.clone(), cursor, limit, &sender).await {
-            tracing::warn!("run {id}: its log can't be read: {error}");
-            // An error ends the stream with no word of why, and a controller attaches again. An
-            // outcome that can't be made never can be: said as its outcome, the run ends (cl-773).
-            let lasting = matches!(error.code.as_str(), "custody_corrupt" | "result_unreadable");
-            let _ = sender.send(match lasting {
-                true => Ok(v1::RunEvent {
-                    sequence: cursor + 1,
-                    at_ms: 0,
-                    event: v1::Event::Outcome(v1::Outcome {
-                        status: "failed".into(),
-                        reason: Some(v1::Reason { code: error.code, message: error.message, origin: "machine".into(), ..Default::default() }),
-                        ..Default::default()
-                    }),
-                }),
-                false => Err(error),
-            }).await;
+    let owner = limit.is_none();
+    let scope = crate::private_io::current();
+    tokio::spawn(crate::private_io::request_optional(scope.clone(), async move {
+        if let Err(error) = log(runs.clone(), actor, id.clone(), cursor, limit, &sender).await {
+            if scope.is_some() { tracing::warn!("private run {id}: its protected log cannot be read"); }
+            else { tracing::warn!("run {id}: its log can't be read: {error}"); }
+            // An outcome that can't be made never can be: said as its outcome, the run ends (cl-773).
+            if matches!(error.code.as_str(), "custody_corrupt" | "result_unreadable") {
+                let reason = v1::Reason { code: error.code, message: error.message, origin: "machine".into(), ..Default::default() };
+                let outcome = v1::Outcome { status: "failed".into(), reason: Some(reason), ..Default::default() };
+                let _ = sender.send(Ok(v1::RunEvent { sequence: cursor + 1, at_ms: 0, event: v1::Event::Outcome(outcome) })).await;
+                return;
+            }
+            // A finished run's stream says why its outcome isn't sent, then ends: its controller says
+            // so and asks again (cl-806). A body broken off after it would lose that frame unsent.
+            let run = id.clone();
+            if let Ok(mut state) = blocking(&runs, move |runs| runs.state(actor, &run)).await {
+                if matches!(state.state.as_str(), "succeeded" | "failed" | "canceled") && owner {
+                    state.waiting = format!("its outcome can't be read: {}: {}", error.code, error.message);
+                    let _ = sender.send(Ok(v1::RunEvent { sequence: 0, at_ms: 0, event: v1::Event::State(state) })).await;
+                    return;
+                }
+            }
+            // Any other error breaks the stream off, and its controller attaches again.
+            let _ = sender.send(Err(error)).await;
         }
-    });
+    }));
     Ok(receiver)
 }
 

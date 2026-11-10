@@ -41,8 +41,9 @@ pub(crate) fn retain(
 ) -> io::Result<stored::NativeByteRetentionRequest> {
     // Bytes already held (a product published while the run made it, a memoized or child
     // result) are not read again.
-    crate::storage::put(&engine.store, source, Some(object))?;
-    let tree = crate::trees::put(engine, owner, [("payload".to_string(), object.clone())].into())?;
+    let store = engine.store_for(run)?;
+    crate::storage::put(&store, source, Some(object))?;
+    let tree = crate::trees::put_for(engine, run, owner, [("payload".to_string(), object.clone())].into())?;
     let native = stored::NativeByteRetentionRequest {
         source: Some(stored::NativeByteTreeRef {
             producer_root_id: tree.hold,
@@ -55,11 +56,13 @@ pub(crate) fn retain(
         }),
         retention_id: owner.into(),
     };
-    engine.bind_native_output(actor, owner, &crate::stored::encode(&native))?;
+    crate::private_io::within(engine.private_storage(run)?, || {
+        engine.bind_native_output(actor, owner, &crate::stored::encode(&native))
+    })?;
     // The signer's own, so a later run of it may name these bytes by their hash, with nothing written.
     engine.with_journal(|j| j.adopt_object(actor, run, object))?;
     // Journaled, so the next sweep finds them; held from now so nothing evicts them before it.
-    engine.root_objects(&[tree.manifest, object.clone()])?;
+    engine.root_objects_for(run, &[tree.manifest, object.clone()])?;
     Ok(native)
 }
 

@@ -69,6 +69,8 @@ impl From<io::Error> for Refused {
 /// One object's upload, shared by the writes that carry its ranges.
 pub(crate) struct Upload {
     actor: String,
+    storage: Arc<storage::Store>,
+    private: Option<api::machine::LocalPrivateStorage>,
     object: ObjectRef,
     /// The store's partial, until the settle that stores the object takes it.
     partial: Mutex<Option<Partial>>,
@@ -245,8 +247,18 @@ impl Objects {
     }
 
     /// The store the objects are held in.
-    pub(crate) fn store(&self) -> &storage::Store {
-        &self.engine.store
+    pub(crate) fn store(&self) -> io::Result<Arc<storage::Store>> {
+        match crate::private_io::current() {
+            Some(scope) => crate::private_io::store(&scope),
+            None => Ok(self.engine.store.clone()),
+        }
+    }
+
+    fn root_current(&self, objects: &[ObjectRef]) -> io::Result<()> {
+        match crate::private_io::current() {
+            Some(scope) => crate::private_io::retain(&scope, objects),
+            None => self.engine.root_objects(objects),
+        }
     }
 
     /// Excludes root release while a Write or an acceptance takes references.
@@ -256,13 +268,14 @@ impl Objects {
     /// Renews `objects`, each here, and holds them, so nothing evicts them before their run is
     /// journaled; called with `guard` held.
     pub(crate) fn retain(&self, objects: &[ObjectRef]) -> io::Result<()> {
+        let store = self.store()?;
         for object in objects {
-            if !self.store().reuse(object).map_err(storage::io_error)? {
+            if !store.reuse(object).map_err(storage::io_error)? {
                 return Err(io::Error::new(io::ErrorKind::NotFound, format!("object {} is absent", object.id())));
             }
-            storage::keep(self.store(), object)?;
+            storage::keep(&store, object)?;
         }
-        self.engine.root_objects(objects)
+        self.root_current(objects)
     }
 
     /// Holds what is needed now, and lets go of outputs nothing used for the TTL: the store
@@ -278,10 +291,10 @@ impl Objects {
     pub(crate) fn make_room(&self) -> io::Result<(usize, u64)> {
         // What the caches just freed shows a moment later.
         std::thread::sleep(Duration::from_secs(1));
-        let Some(short) = Disk::measure(self.store().root())?.short() else {
+        let Some(short) = Disk::measure(self.store()?.root())?.short() else {
             return Ok((0, 0));
         };
-        let freed = self.store().make_room(0).map_err(storage::io_error)?.bytes;
+        let freed = self.store()?.make_room(0).map_err(storage::io_error)?.bytes;
         if freed >= short {
             return Ok((0, 0));
         }
@@ -289,19 +302,21 @@ impl Objects {
             let _custody = self.guard();
             root(&self.engine, crate::reclaim::IDLE, short - freed)?;
         }
-        let freed = self.store().make_room(0).map_err(storage::io_error)?;
+        let freed = self.store()?.make_room(0).map_err(storage::io_error)?;
         Ok((freed.objects as usize, freed.bytes))
     }
 
     /// The stored object this signer wrote, or None.
     pub(crate) fn path(&self, actor: &str, digest: &str) -> io::Result<Option<(PathBuf, u64)>> {
+        let key = resource_actor(actor);
+        let actor = key.as_str();
         let Some(hex) = hex(digest) else {
             return Ok(None);
         };
         let Some(length) = self.engine.with_journal(|j| j.object(actor, &hex))? else {
             return Ok(None);
         };
-        let path = self.store().path(&ObjectRef { sha256: hex, length }).map_err(storage::io_error)?;
+        let path = self.store()?.path(&ObjectRef { sha256: hex, length }).map_err(storage::io_error)?;
         Ok(path.is_file().then_some((path, length)))
     }
 
@@ -309,6 +324,13 @@ impl Objects {
     /// custody as that run's own result; None when there is none or a file is gone (the memo
     /// goes with it).
     pub(crate) fn recall(&self, actor: &str, computation: &str, run: &str) -> io::Result<Option<ResultRecord>> {
+        let scope = self.engine.private_storage(run)?;
+        crate::private_io::within(scope, || self.recall_in(actor, computation, run))
+    }
+
+    fn recall_in(&self, actor: &str, computation: &str, run: &str) -> io::Result<Option<ResultRecord>> {
+        let key = resource_actor(actor);
+        let actor = key.as_str();
         let _custody = self.guard();
         let Some(raw) = self.engine.with_journal(|j| j.held_memo(actor, computation))? else {
             return Ok(None);
@@ -316,7 +338,7 @@ impl Objects {
         let Ok(mut record) = serde_json::from_slice::<ResultRecord>(&raw) else {
             return Ok(None);
         };
-        let custody = self.engine.root.join("results").join(run);
+        let custody = self.engine.custody_root(run)?.join("results").join(run);
         for (index, artifact) in record.artifacts.iter_mut().enumerate() {
             let Some((held, _)) = self
                 .path(actor, &format!("sha256:{}", artifact.sha256))?
@@ -341,6 +363,10 @@ impl Objects {
     /// computation while this machine holds every file it names. A tree's members are not held
     /// as one result, nor is a record over `MEMO_RESULT_BYTES`.
     pub(crate) fn keep(&self, record: &Execution, result: &ResultRecord) -> io::Result<Option<HeldMemo>> {
+        crate::private_io::within(record.invocation.local_private.clone(), || self.keep_in(record, result))
+    }
+
+    fn keep_in(&self, record: &Execution, result: &ResultRecord) -> io::Result<Option<HeldMemo>> {
         let Some(submission) = &record.submission else {
             return Ok(None);
         };
@@ -364,10 +390,10 @@ impl Objects {
         }
         for artifact in &bound {
             let object = ObjectRef { sha256: artifact.sha256.clone(), length: artifact.length };
-            self.adopt(&submission.actor, &record.id, &self.engine.root.join(&artifact.path), &object)?;
+            self.adopt(&submission.actor, &record.id, &self.engine.custody_root(&record.id)?.join(&artifact.path), &object)?;
         }
         Ok(Some(HeldMemo {
-            actor: submission.actor.clone(),
+            actor: resource_actor(&submission.actor),
             computation: record.memo.computation.clone(),
             record: raw,
             objects: bound.iter().map(|a| a.sha256.clone()).collect(),
@@ -378,13 +404,15 @@ impl Objects {
     /// later run of that signer may be handed it.
     pub(crate) fn adopt(&self, actor: &str, parent: &str, file: &Path, object: &ObjectRef) -> io::Result<()> {
         let _custody = self.guard();
-        if !self.store().reuse(object).map_err(storage::io_error)? {
-            storage::put(self.store(), File::open(file)?, Some(object))?;
+        let store = self.engine.store_for(parent)?;
+        let scope = self.engine.private_storage(parent)?;
+        let key = crate::private_io::within(scope.clone(), || resource_actor(actor));
+        if !store.reuse(object).map_err(storage::io_error)? {
+            storage::put(&store, File::open(file)?, Some(object))?;
         }
-        storage::keep(self.store(), object)?;
-        self.engine
-            .with_journal(|j| j.adopt_object(actor, parent, object))?;
-        self.engine.root_objects(std::slice::from_ref(object))
+        storage::keep(&store, object)?;
+        crate::private_io::within(scope, || self.engine.with_journal(|j| j.adopt_object(&key, parent, object)))?;
+        self.engine.root_objects_for(parent, std::slice::from_ref(object))
     }
 
     /// The stored object this signer wrote, its roots renewed so a run naming it soon finds it;
@@ -407,6 +435,8 @@ impl Objects {
     /// first, so whole always means stored; bytes that differ from the digest are dropped, and
     /// held no more.
     pub(crate) fn held(&self, actor: &str, digest: &str) -> Result<Ranges, Refused> {
+        let key = resource_actor(actor);
+        let actor = key.as_str();
         let hex = valid(digest)?;
         // Under custody a settle of this upload has not begun or has stored the object (`upload`).
         let upload = {
@@ -416,7 +446,7 @@ impl Objects {
             }
             self.uploads.lock().unwrap().get(&(actor.to_string(), hex.clone())).and_then(Weak::upgrade)
         };
-        let begun = self.begun.lock().unwrap().get(&hex).filter(|(by, _)| by == actor).map(|(_, length)| *length);
+        let begun = self.begun.lock().unwrap().get(&begun_key(actor, &hex)).filter(|(by, _)| by == actor).map(|(_, length)| *length);
         let upload = match (upload, begun) {
             (Some(upload), _) => upload,
             // One this signer began and was cut from: what the store kept of it.
@@ -439,6 +469,8 @@ impl Objects {
     /// resumed from the ranges the store kept of the one this signer began. None once the object
     /// is stored. The store makes its room: the machine's garbage, then what it may evict.
     pub(crate) fn upload(&self, actor: &str, digest: &str, length: u64) -> Result<Option<Arc<Upload>>, Refused> {
+        let key = resource_actor(actor);
+        let actor = key.as_str();
         let hex = valid(digest)?;
         // Custody from the stored check through the partial's open: a settle takes the partial
         // under custody and keeps it until the object is stored and bound.
@@ -459,13 +491,15 @@ impl Objects {
             return Ok(Some(upload));
         }
         let object = ObjectRef { sha256: hex.clone(), length };
+        let storage = self.store()?;
+        let private = crate::private_io::current();
         let full = |refusal: Refused| match refusal.code {
-            "machine_disk_full" => refused("machine_disk_full", format!("no room for the object's {length} bytes{}", crate::reclaim::advice(self.store().root(), length))),
+            "machine_disk_full" => refused("machine_disk_full", format!("no room for the object's {length} bytes{}", crate::reclaim::advice(storage.root(), length))),
             _ => refusal,
         };
-        let open = || self.store().partial(&object).map_err(|error| full(store_refused(error.refusal())));
+        let open = || storage.partial(&object).map_err(|error| full(store_refused(error.refusal())));
         let mut partial = open()?;
-        let mine = self.begun.lock().unwrap().insert(hex, (actor.to_string(), length)).is_some_and(|(by, was)| by == actor && was == length);
+        let mine = self.begun.lock().unwrap().insert(begun_key(actor, &hex), (actor.to_string(), length)).is_some_and(|(by, was)| by == actor && was == length);
         if !mine && !partial.held().is_empty() {
             // Bytes another signer, or this machine before a restart, left of it: never this
             // signer's to take up. Their commit judges them as they stand, and drops them unless
@@ -476,6 +510,8 @@ impl Objects {
         let landed = tokio::sync::watch::Sender::new(partial.held().iter().map(|(s, e)| e - s).sum());
         let upload = Arc::new(Upload {
             actor: actor.to_string(),
+            storage,
+            private,
             object,
             partial: Mutex::new(Some(partial)),
             landed,
@@ -489,6 +525,10 @@ impl Objects {
     /// Once `upload` holds every byte, the object is verified against its digest and stored for
     /// its signer; bytes that differ are dropped. Answers the ranges held.
     pub(crate) fn settle(&self, upload: &Upload) -> Result<Ranges, Refused> {
+        crate::private_io::within(upload.private.clone(), || self.settle_in(upload))
+    }
+
+    fn settle_in(&self, upload: &Upload) -> Result<Ranges, Refused> {
         let digest = format!("sha256:{}", upload.object.sha256);
         let _settling = upload.settling.lock().unwrap();
         if upload.ended.load(Ordering::Acquire) {
@@ -501,15 +541,21 @@ impl Objects {
         let _custody = self.guard();
         upload.ended.store(true, Ordering::Release);
         self.uploads.lock().unwrap().remove(&(upload.actor.clone(), upload.object.sha256.clone()));
-        self.begun.lock().unwrap().remove(&upload.object.sha256);
+        self.begun.lock().unwrap().remove(&begun_key(&upload.actor, &upload.object.sha256));
         let partial = upload.partial.lock().unwrap().take().expect("an upload has its partial until it ends");
         partial.commit().map_err(store_refused)?;
-        storage::keep(self.store(), &upload.object)?;
+        storage::keep(&upload.storage, &upload.object)?;
         self.engine
             .with_journal(|j| j.bind_object(&upload.actor, &upload.object))?;
-        self.engine.root_objects(std::slice::from_ref(&upload.object))?;
+        self.root_current(std::slice::from_ref(&upload.object))?;
         Ok(held)
     }
+}
+
+fn resource_actor(actor: &str) -> String { crate::private_io::resource_key(actor) }
+
+fn begun_key(actor: &str, digest: &str) -> String {
+    if crate::private_io::current().is_some() { format!("{actor}:{digest}") } else { digest.to_owned() }
 }
 
 fn valid(digest: &str) -> Result<String, Refused> {

@@ -5,11 +5,13 @@ import { EventStream } from "../api/events"
 import { Outbox } from "../api/outbox"
 import { runsAfter, withAssets } from "../api/queries"
 import { sameOrigin } from "../api/transport"
-import type { Machine, MachineList, Run, RunList, StreamEvent, CalciferStatus } from "../api/calcifer"
+import type { Machine, MachineList, Run, RunList, StreamEvent, CalciferStatus, ProjectEventCursor } from "../api/calcifer"
 import type { Project } from "../types"
 import type { CanvasStore } from "../canvas/CanvasStore"
 import { signal } from "../ui/signal"
 import { readSession } from "./session"
+import { forgetProjectView, protectProjectView } from "./view"
+import { notes } from "../ui/notes"
 
 const READ_GAP_MS = 250
 /** More than this changing at once is read whole. */
@@ -24,6 +26,7 @@ interface Owed {
   gone: Set<string>
   head: boolean
   whole: boolean
+  wholeCursor: ProjectEventCursor | null
 }
 
 /** Stream events into the query cache. The stream invalidates, so nothing goes stale by itself. */
@@ -38,11 +41,27 @@ class Bridge {
   private runs = new Map<number, Run>()
   private runListeners = new Set<(run: Run) => void>()
   private flushing = false
+  private privateBlocked = new Set<string>()
+  private privacyEpoch = new Map<string, number>()
 
-  constructor(queries: QueryClient, client: Client) {
+  allowProject(id: string) { this.privateBlocked.delete(id) }
+
+  forgetProject(id: string) {
+    this.privateBlocked.add(id)
+    this.privacyEpoch.set(id, (this.privacyEpoch.get(id) ?? 0) + 1)
+    const held = this.owed.get(id)
+    if (held?.timer) clearTimeout(held.timer)
+    this.owed.delete(id)
+    this.revs.delete(id)
+    for (const [number, run] of this.runs) if (run.project_id === id) this.runs.delete(number)
+  }
+
+  constructor(queries: QueryClient, client: Client, private vaultChanged: (id: string, state: string) => void) {
     this.queries = queries
     this.client = client
   }
+
+  projectEpoch(id: string) { return this.privacyEpoch.get(id) ?? 0 }
 
   setVersion(version: string) {
     this.version = version
@@ -52,17 +71,25 @@ class Bridge {
    * What the stream said changed of a project: at once if none was read lately, else one read per `READ_GAP_MS`, so a burst shows as it goes,
    * in few reads. One at a time, and one more if it changed during that read. Only what changed is read, whatever else the project holds.
    */
-  changed(id: string, change: { assets?: string[] | null; gone?: string[]; head?: boolean }) {
+  changed(id: string, change: { assets?: string[] | null; gone?: string[]; head?: boolean; cursor?: ProjectEventCursor | null }) {
+    if (this.privateBlocked.has(id)) return
     let slot = this.owed.get(id)
-    if (!slot) this.owed.set(id, (slot = { read: 0, flying: false, names: new Set(), gone: new Set(), head: false, whole: false }))
+    if (!slot) this.owed.set(id, (slot = { read: 0, flying: false, names: new Set(), gone: new Set(), head: false, whole: false, wholeCursor: null }))
     for (const name of change.assets ?? []) slot.names.add(name)
     for (const name of change.gone ?? []) slot.gone.add(name)
     slot.head ||= Boolean(change.head)
-    slot.whole ||= !change.assets
+    if (!change.assets) {
+      const cursor = change.cursor ?? null
+      if (!slot.whole) slot.wholeCursor = cursor
+      else if (!cursor || !slot.wholeCursor || cursor.generation !== slot.wholeCursor.generation) slot.wholeCursor = null
+      else if (cursor.sequence > slot.wholeCursor.sequence) slot.wholeCursor = cursor
+      slot.whole = true
+    }
     this.go(id, slot)
   }
 
   private go(id: string, held: Owed) {
+    if (this.privateBlocked.has(id)) return
     if (held.flying || held.timer !== undefined) return
     held.timer = setTimeout(async () => {
       held.timer = undefined
@@ -75,19 +102,25 @@ class Bridge {
   }
 
   private async read(id: string, held: Owed) {
+    if (this.privateBlocked.has(id)) return
+    const epoch = this.privacyEpoch.get(id) ?? 0
     const key = ["project", id]
-    const whole = held.whole || held.names.size > MOST_ASSETS
+    const tooMany = held.names.size > MOST_ASSETS
+    const whole = held.whole || tooMany
+    const cursor = held.wholeCursor
     const [names, gone, head] = [[...held.names], [...held.gone], held.head]
     held.names.clear()
     held.gone.clear()
-    Object.assign(held, { head: false, whole: false })
+    Object.assign(held, { head: false, whole: false, wholeCursor: null })
     void this.queries.invalidateQueries({ queryKey: ["yaml", id] })
     const query = this.queries.getQueryCache().find({ queryKey: key })
     // No one's looking: what's held is read when someone is.
     if (!query?.getObserversCount()) return void query?.invalidate()
     // A first read still going may be older than this: this waits for it, and then what changed is read over it.
     await query.promise?.catch(() => {})
-    if (whole || this.queries.getQueryData(key) === undefined) {
+    const state = this.queries.getQueryData<Project>(key)
+    const covered = cursor && state?.covered && cursor.generation === state.covered.generation && cursor.sequence <= state.covered.sequence
+    if (tooMany || (whole && !covered) || state === undefined) {
       await this.queries.refetchQueries({ queryKey: key })
       return
     }
@@ -100,12 +133,14 @@ class Bridge {
         }))),
         head ? this.client.projectHead(id) : undefined,
       ])
+      if (this.privateBlocked.has(id) || (this.privacyEpoch.get(id) ?? 0) !== epoch) return
       const asked = rows.flatMap((row) => row ?? [])
       const left = [...gone, ...names.filter((_, at) => !rows[at])]
       if (asked.length || left.length || said) this.queries.setQueryData<Project>(key, (state) => state && { ...withAssets(state, asked, left, said), began })
     } catch {
       // Whatever kept it from reading those, the next says why, of all of it.
       held.whole = true
+      held.wholeCursor = null
     }
   }
 
@@ -127,7 +162,7 @@ class Bridge {
 
   private flushRuns = () => {
     this.flushing = false
-    const batch = [...this.runs.values()]
+    const batch = [...this.runs.values()].filter((run) => !run.project_id || !this.privateBlocked.has(run.project_id))
     this.runs.clear()
     for (const run of batch) {
       this.queries.setQueryData(["run", run.number], run)
@@ -155,13 +190,20 @@ class Bridge {
   handle = (event: StreamEvent) => {
     switch (event.type) {
       case "hello":
+        this.runs.clear()
+        for (const [id, epoch] of this.privacyEpoch) this.privacyEpoch.set(id, epoch + 1)
+        this.vaultChanged("", "recheck")
         if (this.version && event.version !== this.version) this.newVersion.set(event.version)
         this.readAll(false)
         break
       case "resync":
+        this.runs.clear()
+        for (const [id, epoch] of this.privacyEpoch) this.privacyEpoch.set(id, epoch + 1)
+        this.vaultChanged("", "recheck")
         this.readAll(true)
         break
       case "run.updated":
+        if (event.run.project_id && this.privateBlocked.has(event.run.project_id)) break
         this.runs.set(event.run.number, event.run)
         if (!this.flushing) {
           this.flushing = true
@@ -177,9 +219,21 @@ class Bridge {
       case "machine.removed":
         this.machines((machines) => machines.filter((machine) => machine.name !== event.name))
         break
+      case "project.vault": {
+        if (event.state === "unlocked") this.allowProject(event.id)
+        else this.forgetProject(event.id)
+        this.queries.setQueryData(["project-vault", event.id], (held: import("../api/calcifer").VaultStatus | undefined) => ({
+          ...(held ?? { path: "", idle_timeout_s: 0 }), encrypted: true, state: event.state,
+          ...(event.state === "unlocked" ? {} : { view: null, expires_at_ms: null }),
+        }))
+        this.vaultChanged(event.id, event.state)
+        void this.queries.invalidateQueries({ queryKey: ["project-vault", event.id] })
+        break
+      }
       case "project.changed":
-        if (this.revs.get(event.id) !== event.rev) {
-          this.revs.set(event.id, event.rev)
+        const revision = event.cursor ? JSON.stringify([event.cursor.generation, event.cursor.sequence]) : event.rev
+        if (this.revs.get(event.id) !== revision) {
+          this.revs.set(event.id, revision)
           this.changed(event.id, event)
         }
         break
@@ -196,6 +250,8 @@ export interface Connection {
   outbox: Outbox
   /** Each project's canvas as it was last shown, by its id. */
   canvases: Map<string, CanvasStore>
+  /** Remount mixed-project drawers after a lock, dropping their local logs and snapshots. */
+  privateViewEpoch: ReturnType<typeof signal<number>>
   /** Which try a call is on, when it isn't the first; 0 otherwise. */
   attempt: ReturnType<typeof signal<number>>
   signedOut: ReturnType<typeof signal<boolean>>
@@ -221,15 +277,35 @@ export async function connect(): Promise<Boot> {
     },
   })
   const stream = new EventStream(client)
-  const bridge = new Bridge(queries, client)
   const outbox = new Outbox()
+  const canvases = new Map<string, CanvasStore>()
+  const privateViewEpoch = signal(0)
+  const bridge = new Bridge(queries, client, (id, state) => {
+    if (id) protectProjectView(id, true)
+    if (state === "unlocked") { outbox.allowProject(id); return }
+    if (id) {
+      outbox.discardProject(id)
+      canvases.get(id)?.revokePrivateView()
+      canvases.delete(id)
+      forgetProjectView(id)
+    }
+    const privateData = ({ queryKey }: { queryKey: readonly unknown[] }) =>
+      (Boolean(id) && ["project", "canvas", "yaml", "history"].includes(String(queryKey[0])) && queryKey[1] === id)
+      || ["runs", "run", "tools", "history"].includes(String(queryKey[0]))
+    void queries.cancelQueries({ predicate: privateData })
+    // Reset active observers too: merely removing the cache can leave a mounted drawer's old data.
+    void queries.resetQueries({ predicate: privateData })
+    queries.removeQueries({ predicate: privateData, type: "inactive" })
+    notes.set([])
+    privateViewEpoch.set(privateViewEpoch.get() + 1)
+  })
   bridge.setVersion(status.version)
   stream.subscribe(bridge.handle)
   stream.subscribe((event) => {
     if (event.type === "hello") outbox.back()
   })
   stream.start()
-  return { connection: { client, queries, stream, bridge, outbox, canvases: new Map(), attempt, signedOut, status } }
+  return { connection: { client, queries, stream, bridge, outbox, canvases, privateViewEpoch, attempt, signedOut, status } }
 }
 
 const Context = createContext<Connection | null>(null)

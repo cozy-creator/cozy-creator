@@ -2,7 +2,7 @@
 //! model families and the Client API. Without `net` it has no network or async runtime.
 #![deny(unreachable_pub)]
 
-// Unsafe code lives only in platform, the OS seam.
+// Unsafe code is denied by default and allowed only at the explicit native boundary modules.
 #![deny(unsafe_code)]
 
 /// File descriptor headroom: how many a process may hold open, and what's left.

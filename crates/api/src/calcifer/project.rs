@@ -149,6 +149,8 @@ pub struct Known {
 }
 
 /// `GET /v1/projects/{id}`: its assets in order, and what reading the project said.
+/// Optional `covered` describes only a successful full snapshot: project-event emissions
+/// before its read began. Head-only and partial/error-derived states do not claim coverage.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "ProjectState"))]
 pub struct State {
@@ -192,6 +194,8 @@ pub struct State {
     /// What kept its last render from reaching a machine, each once, until another is asked.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unsent: Vec<Error>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub covered: Option<super::ProjectEventCursor>,
 }
 
 /// An asset out of date, and why.
@@ -1336,4 +1340,53 @@ pub struct HistoryStepped {
     pub undo: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub redo: Option<u64>,
+}
+
+/// Local project encryption. Plain projects never need a mount provider or credentials.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct VaultStatus {
+    pub encrypted: bool,
+    /// plain, locked, unlocked, or locking (a native application still holds the mount).
+    pub state: String,
+    pub path: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<i64>,
+    #[serde(default)]
+    pub idle_timeout_s: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub next: Vec<String>,
+}
+
+/// POST /v1/projects/{id}/vault. Credentials are deliberately not Debug; neither the request nor its response is cached in history.
+#[derive(Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct VaultAsk {
+    pub action: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passphrase: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_secret: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_timeout_s: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_duration_s: Option<u64>,
+    /// Remove a verified plaintext conversion source, only when explicitly asked.
+    #[serde(default)]
+    pub remove_plaintext: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<PathBuf>,
+}
+
+/// A vault operation can disclose a new recovery secret exactly to the caller. Do not persist this response in request/history caches.
+#[derive(Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct VaultChanged {
+    pub vault: VaultStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_secret: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preserved_source: Option<PathBuf>,
 }

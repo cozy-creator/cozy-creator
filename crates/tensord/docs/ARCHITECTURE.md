@@ -100,7 +100,9 @@ code is still not sandboxed.
 | `service.rs` | Sole dispatch policy (CPU parallelism, one GPU slot, startup GPU fences) | `Service` | B2 |
 | `calls.rs` | Child calls (the seam broker): each call a run, canceled with its parent; each attempt's weights grant | `Calls`, `Caller` | G |
 | `execution.rs` | Acceptance, attempt supervision, cancellation, progress coalescing, output custody, reconcile | `Engine` | E |
-| `journal.rs` | SQLite journal: executions, installations, preparations, receipts, process births | `Journal`, `Execution`, `State`, `ProcessBirth` | E |
+| `journal.rs` | One global SQLite scheduling/index journal; private execution/source/log/product/call/terminal bodies are immutable blobs in the verified encrypted workspace | `Journal`, `Execution`, `State`, `ProcessBirth` | E; xs-160 private persistence |
+| `private_journal.rs` | Context-bound opaque references; fresh immutable private blobs fsynced before SQLite pointer commit; no plaintext fallback or storage-key handling | private blob codec | xs-160 |
+| `private_io.rs` | Actor-bound verified local encrypted-view registry; current/historical read resolution and private input/object store selection | `LocalPrivateStorage` | xs-160 |
 | `gpu_service.rs` | Executor pool (degree 0, 1 or n): published package/model mapping, executor retention, request callbacks; GPU groups (a degree-K plan on the first K GPUs, one memory decision per GPU), one call slot per GPU and one-GPU replicas and multi-slot plans | `Pool`, `GpuConfig`, `Plan`, `PlanSlot`, `PlanSource`, `ModelGrant` | B2 (admission, grants), E (spawn/fencing), D1 (published mapping), I (groups, slots) |
 | `memory.rs` | Per-GPU measurement books and persisted maxima, inventory/driver observations, every rank's host-growth accounting | `Gpu`, `Figures`, `Peaks`, `Host` | xs-098 |
 | `deposits.rs` | Sealed host layouts executors deposit, granted to the next executor of the same weights | `Deposits` | xs-046 B4 |
@@ -114,6 +116,14 @@ code is still not sandboxed.
 | `seam.rs` | Length-prefixed frames of the executor seam | `read_body`, `write_body` | E |
 | `boundary_json.rs` | Strict JSON parse (no duplicate keys) for boundary records | — | D1 |
 
+
+## Local encrypted project execution
+
+Optional `Invocation.local_private` selects a verified encrypted project view for private run objects, staging, custody, triage and journal payloads. Public model weights remain in the machine store. Parent/child scope is immutable. Closed scopes defer/reject private work and never select the global store as a fallback; ordinary work continues unchanged.
+
+The numeric execution IDs, root ordering, process births, GPU degree/width and waiting/state indexes stay in the one global journal. There is no per-project Engine, scheduler, pool or GPU admission queue. Full private Execution JSON and opaque body records are written to fresh files below the view's `.vault-machine/journal`; each is synced before its global SQLite reference commits, so a failed commit cannot overwrite the prior revision. Reference/header context is verified on read, and the filesystem provider authenticates encrypted backing bytes. No plaintext-content checksum is exposed in a private payload pointer.
+
+Private local-source installation/preparation/cache metadata is namespaced so it cannot replace ordinary published-package state. Scope close first refuses unfinished work, reaps the scope's idle executor handles, releases scoped store retention and then revokes the verified registry entry. Historical descriptors resolve by stable project ID to the current verified view after move/rekey, while new admissions must prove the current mounted generation.
 
 ## Contracts
 

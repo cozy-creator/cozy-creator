@@ -59,7 +59,10 @@ pub(crate) struct Terms {
 impl Terms {
     /// The file Calcifer holds under `digest`.
     fn held(&self, digest: &Digest) -> Option<PathBuf> {
-        super::files::held(digest)
+        match crate::private_io::current() {
+            Some(scope) => super::files::held_for(&scope.storage.view_root, digest),
+            None => super::files::held(digest),
+        }
     }
 
     /// What the client sent under the path `text`.
@@ -1821,3 +1824,7 @@ fn usage(code: &str, message: impl Into<String>) -> Error {
 fn invalid(code: &str, message: impl Into<String>) -> Error {
     Error::new(Kind::Validation, code, message)
 }
+
+#[cfg(test)]
+#[path = "bind_tests.rs"]
+mod tests;

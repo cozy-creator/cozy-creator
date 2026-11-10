@@ -1,8 +1,9 @@
-//! Output export: each output item of a run lands at `<out_dir>/<number>-<name>[-<i>]` with its
+//! Output export: each output item lands at `<out_dir>/<number>-<name>[-<i>]-<identity>` with its
 //! media type's extension, rewritten in place as revisions arrive; a project's run keeps it in the
 //! project's `files/` too, by hash, which is the file it names from then on. A revision's bytes are read
 //! from the run's machine into a `.part` beside the file (ranged and side by side when big) and
-//! replace the file whole once they match the revision's digest; a tree output is a directory
+//! replace the file whole once they match the revision's digest; `.part.held` beside it keeps the
+//! stretches in place, so a transfer cut off resumes with the rest; a tree output is a directory
 //! replaced the same way. One exporter works per run with something to export, started by the
 //! run's output events or, at startup, from the store. What stays on its machine (`OutputItem::stays`)
 //! is no export's: `bring` fetches it when something needs it. `serve` answers
@@ -13,14 +14,15 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Instant,
 };
 
 use axum::{
+    body::Body,
     extract::{Path as Route, Query, State, rejection::QueryRejection},
-    http::{HeaderMap, HeaderValue},
+    http::{HeaderMap, HeaderValue, header},
     response::Response,
 };
 use futures_util::StreamExt as _;
@@ -113,6 +115,17 @@ impl From<StoreError> for Failure {
     }
 }
 
+fn private_path(path: &Path) -> bool {
+    crate::project::vault::logical(path).ancestors().any(crate::project::vault::encrypted)
+}
+
+fn private_run(run: &RunRow) -> bool { private_path(&run.out_dir) }
+
+fn export_warning(run: &RunRow, detail: impl std::fmt::Display) {
+    if private_run(run) { warn!(run = %run.id, "private output transfer waits; open its project for details"); }
+    else { warn!(run = %run.id, "{detail}"); }
+}
+
 impl Calcifer {
     /// Starts an exporter for each run that owes one, then for each run whose outputs change.
     pub(crate) fn export_outputs(self: &Arc<Self>) -> Result<(), Error> {
@@ -191,7 +204,7 @@ impl Calcifer {
         for item in run.output.iter().filter(|item| item.stays && item.path.is_none()) {
             let Some(sha256) = &item.sha256 else { continue };
             if let Err(why) = crate::project::stays(project, &sha256.to_string(), machine, item.length) {
-                warn!(run = %id, output = %item.name, "not in its project's lock: {why}");
+                export_warning(&row, format_args!("output {} not in its project lock: {why}", item.name));
             }
         }
     }
@@ -264,7 +277,7 @@ impl Calcifer {
                 Err(Failure::Again(message) | Failure::Wrong(message)) => message,
             };
             let Some((wait, said)) = backoff.again(&why, false, None) else { return Err(why) };
-            info!(run = %run.id, output = %item.name, "bringing it here: {said}");
+            if !private_run(&run) { info!(run = %run.id, output = %item.name, "bringing it here: {said}"); }
             tokio::time::sleep(wait).await;
         }
     }
@@ -290,7 +303,7 @@ impl Calcifer {
                 && let Some(machines) = self.machines()
                 && let Err(e) = machines.local_up().await
             {
-                warn!(run = %id, "exporting its outputs: {}", e.message);
+                export_warning(&run, format_args!("exporting outputs: {}", e.message));
                 pause.wait(wake, None).await;
                 continue;
             }
@@ -323,15 +336,13 @@ impl Calcifer {
                 match exported {
                     Ok(()) | Err(Failure::Superseded) => {}
                     Err(Failure::Lost(reason)) => {
-                        warn!(run = %id, output = %name, rev, "not exported: {reason}");
-                        let dest = (run.out_dir).join(file_name(
-                            run.number,
-                            name,
-                            index,
-                            &item.media_type,
-                        ));
-                        remove(&suffixed(&dest, ".part"));
-                        remove(&suffixed(&dest, ".manifest.part"));
+                        export_warning(&run, format_args!("output {name} revision {rev} not exported: {reason}"));
+                        if let Ok(out_dir) = crate::project::vault::resolve_path(&run.out_dir) {
+                            let dest = out_dir.join(file_name(run.number, name, index, &item.media_type));
+                            remove(&suffixed(&dest, ".part"));
+                            remove(&suffixed(&dest, HELD));
+                            remove(&suffixed(&dest, ".manifest.part"));
+                        }
                         match (self.store).export_failed(id.as_str(), name, index, rev, &reason) {
                             Ok(events) => self.publish(id, events),
                             Err(e) => {
@@ -341,7 +352,7 @@ impl Calcifer {
                         }
                     }
                     Err(Failure::Again(message) | Failure::Refused(message) | Failure::Wrong(message)) => {
-                        warn!(run = %id, output = %name, rev, "export waits: {message}");
+                        export_warning(&run, format_args!("output {name} revision {rev} waits: {message}"));
                         again = true;
                     }
                 }
@@ -394,7 +405,13 @@ impl Calcifer {
             let reason = machine.reason.as_deref().unwrap_or("no reason was given");
             return Err(Failure::Lost(format!("its machine {name} ended: {reason}")));
         }
-        link.ok_or_else(|| Failure::Again(format!("waiting for {name} to start")))
+        let link = link.ok_or_else(|| Failure::Again(format!("waiting for {name} to start")))?;
+        if name == "local" {
+            if let Some(scope) = crate::private_io::of_output(&run.out_dir).map_err(|error| Failure::Again(error.message))? {
+                return Ok(link.with_private(scope));
+            }
+        }
+        Ok(link)
     }
 
     /// Makes the item's file (a directory for a tree) this revision's bytes. A newer revision
@@ -415,10 +432,11 @@ impl Calcifer {
             return Err(Failure::Superseded);
         }
         let began = Instant::now();
-        info!(run = %run.id, output = %item.name, index = item.index, rev = item.rev,
-            bytes = item.length, phase = "output_export", state = "begin");
+        if !private_run(run) { info!(run = %run.id, output = %item.name, index = item.index, rev = item.rev,
+            bytes = item.length, phase = "output_export", state = "begin"); }
         let name = file_name(run.number, &item.name, item.index, &item.media_type);
-        let dest = run.out_dir.join(name);
+        let out_dir = crate::project::vault::resolve_path(&run.out_dir).map_err(|error| Failure::Again(error.message))?;
+        let dest = out_dir.join(name);
         let target = v1::OutputTarget {
             run: run.id.to_string(),
             output: item.name.clone(),
@@ -429,8 +447,8 @@ impl Calcifer {
         let key = (run.id.clone(), item.name.clone(), item.index);
         lock(&self.exports.moving).insert(key.clone(), moved.clone());
         let work = async {
-            tokio::fs::create_dir_all(&run.out_dir).await.map_err(|e| {
-                Failure::Again(format!("cannot create {}: {e}", run.out_dir.display()))
+            tokio::fs::create_dir_all(&out_dir).await.map_err(|e| {
+                Failure::Again(format!("cannot create {}: {e}", out_dir.display()))
             })?;
             let staged = if item.media_type == tree::MEDIA {
                 fetch_tree(link, &target, item, &dest, &moved).await?
@@ -441,7 +459,9 @@ impl Calcifer {
             };
             let measured = self.measured(item, &staged).await;
             // It waits on its project's turn and the store's commit: off the async workers, which answer the page.
-            tokio::task::block_in_place(|| self.land(run, item, &staged, &dest, measured.as_ref()))
+            tokio::task::block_in_place(|| self.land(run, item, &staged, &dest, measured.as_ref()))?;
+            remove(&suffixed(&dest, HELD));
+            Ok(())
         };
         tokio::pin!(work);
         let done = loop {
@@ -479,9 +499,9 @@ impl Calcifer {
             }
         };
         lock(&self.exports.moving).remove(&key);
-        info!(run = %run.id, output = %item.name, index = item.index, rev = item.rev,
+        if !private_run(run) { info!(run = %run.id, output = %item.name, index = item.index, rev = item.rev,
             bytes = moved.load(Ordering::Relaxed), phase = "output_export", state = "end",
-            ok = done.is_ok(), elapsed_ms = began.elapsed().as_secs_f64() * 1000.0);
+            ok = done.is_ok(), elapsed_ms = began.elapsed().as_secs_f64() * 1000.0); }
         done
     }
 
@@ -553,7 +573,7 @@ impl Calcifer {
             let mut unlisted = None;
             let kept = match crate::project::of_landing(&run.out_dir).filter(|_| item.media_type != tree::MEDIA) {
                 Some(project) => {
-                    let made = crate::project::Landed { run: run.number, target: &run.target, output: name, index, digest: &item.digest, measured };
+                    let made = crate::project::Landed { run_id: &run.id, run: run.number, target: &run.target, output: name, index, digest: &item.digest, measured };
                     match crate::project::landed(project, &made, dest) {
                         Ok((kept, said)) => {
                             unlisted = said;
@@ -577,7 +597,7 @@ impl Calcifer {
             });
             let mut events = self.store.exported(id, name, index, rev, &kept, measured)?;
             if let Some(said) = unlisted {
-                warn!(run = %run.id, output = %name, "{said}");
+                export_warning(run, &said);
                 events.extend(self.store.warned(id, &::api::calcifer::Warning { code: "output_unlisted".to_owned(), message: said })?);
             }
             let store_ms = store_began.elapsed().as_secs_f64() * 1000.0;
@@ -592,9 +612,9 @@ impl Calcifer {
             )
         };
         let (lock_ms, rename_ms, project_ms, store_ms, publish_ms) = timings;
-        info!(run = %run.id, output = %item.name, index = item.index, rev = item.rev,
+        if !private_run(run) { info!(run = %run.id, output = %item.name, index = item.index, rev = item.rev,
             phase = "output_land", lock_ms, rename_ms, project_ms, store_ms, publish_ms,
-            elapsed_ms = began.elapsed().as_secs_f64() * 1000.0);
+            elapsed_ms = began.elapsed().as_secs_f64() * 1000.0); }
         remove(&old);
         Ok(())
     }
@@ -620,6 +640,8 @@ pub(crate) async fn serve(
 ) -> Result<Response, Refusal> {
     let Item { index, member } = query?.0;
     let row = api::find(&api, &run)?;
+    crate::project::vault::require_path(&row.out_dir).map_err(Refusal)?;
+    let readable = crate::project::vault::readable_token(&row.out_dir);
     let number = row.number;
     let (item, file, landed_folder) = {
         let _placing = lock(&api.calcifer.exports.placing);
@@ -629,8 +651,8 @@ pub(crate) async fn serve(
             Refusal(api::refuse(Kind::NotFound, "output_not_found", message).0.next(format!("cozy run show {number}")))
         })?;
         let (file, landed_folder) = match (&item.checkpoint, &item.path, item.exported_rev) {
-            (None, Some(path), Some(_)) if item.media_type == tree::MEDIA => (None, Some(path.clone())),
-            (None, Some(path), Some(_)) => (Some(std::fs::File::open(path).map_err(|e| {
+            (None, Some(path), Some(_)) if item.media_type == tree::MEDIA => (None, Some(crate::project::vault::resolve_path(path).map_err(Refusal)?)),
+            (None, Some(path), Some(_)) => (Some(std::fs::File::open(crate::project::vault::resolve_path(path).map_err(Refusal)?).map_err(|e| {
                 let message = format!("its file {} is gone: {e}", path.display());
                 Refusal(api::refuse(Kind::NotFound, "output_file_missing", message).0.next(format!("cozy run show {number}")))
             })?), None),
@@ -639,7 +661,7 @@ pub(crate) async fn serve(
         (item, file, landed_folder)
     };
     if let Some(dir) = landed_folder {
-        return folder(&dir, member.as_deref(), number, &name, &headers).await;
+        return folder(&dir, member.as_deref(), number, &name, &headers).await.map(|response| protect(response, readable));
     }
     if let Some(checkpoint) = &item.checkpoint {
         let message = format!(
@@ -680,7 +702,22 @@ pub(crate) async fn serve(
     {
         response.headers_mut().insert("x-cozy-digest", digest);
     }
-    Ok(response)
+    Ok(protect(response, readable))
+}
+
+/// Every chunk checks the viewing lease, including an already-open range response.
+fn protect(mut response: Response, readable: Option<Arc<AtomicBool>>) -> Response {
+    let Some(readable) = readable else { return response };
+    response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response.headers_mut().insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
+    let body = std::mem::replace(response.body_mut(), Body::empty());
+    let chunks = body.into_data_stream().map(move |chunk| {
+        if !readable.load(Ordering::Acquire) {
+            Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "the project is locked"))
+        } else { chunk.map_err(std::io::Error::other) }
+    });
+    *response.body_mut() = Body::from_stream(chunks);
+    response
 }
 
 /// A folder output: its tree document, or with `member` one of its files, each named by its content so a client caches it.
@@ -697,7 +734,8 @@ async fn folder(dir: &Path, member: Option<&str>, number: u64, name: &str, heade
     let (file, media_type, etag) = match member {
         None => {
             let digest = ::api::ids::Digest::of(&staged.document);
-            let mut part = tempfile::tempfile().map_err(gone)?;
+            let private = crate::private_io::of_path(dir).map_err(Refusal)?.is_some();
+            let mut part = if private { tempfile::tempfile_in(dir.parent().unwrap_or(dir)) } else { tempfile::tempfile() }.map_err(gone)?;
             std::io::Write::write_all(&mut part, &staged.document).and_then(|()| std::io::Seek::rewind(&mut part)).map_err(gone)?;
             (part, tree::MEDIA.to_owned(), format!("\"{digest}\""))
         }
@@ -776,7 +814,8 @@ fn remove(path: &Path) {
 }
 
 /// This revision's bytes in `<file>.part`, checked against its digest. A revision that extends
-/// the one the file holds reads only its new tail.
+/// the one the file holds reads only its new tail; an attempt cut off before resumes with what it
+/// left in place (`.part.held`), cleared by a digest that doesn't match.
 async fn fetch_file(
     link: &Link,
     target: &v1::OutputTarget,
@@ -785,36 +824,47 @@ async fn fetch_file(
     appended: Option<u64>,
     moved: &Arc<AtomicU64>,
 ) -> Result<PathBuf, Failure> {
-    let part = suffixed(dest, ".part");
+    let (part, journal) = (suffixed(dest, ".part"), suffixed(dest, HELD));
     let follows = item.exported_rev.is_some_and(|held| held + 1 == item.rev);
     let mut from = appended.filter(|_| follows).unwrap_or(0);
     loop {
         let prepare_began = Instant::now();
         let prepared = blocking({
-            let (part, dest, length) = (part.clone(), dest.to_owned(), item.length);
-            move || prepare(&part, &dest, from, length)
+            let (part, dest, length, digest) = (part.clone(), dest.to_owned(), item.length, item.digest.clone());
+            move || prepare(&part, &dest, from, length, &digest)
         })
         .await;
-        if let Err(e) = prepared {
-            if from == 0 {
+        let held = match prepared {
+            Ok(held) => held,
+            Err(e) if from == 0 => {
                 return Err(Failure::Again(format!(
                     "cannot write {}: {e}",
                     part.display()
                 )));
             }
-            from = 0;
-            continue;
-        }
-        info!(run = %target.run, output = %target.output, index = target.index, rev = item.rev,
-            phase = "output_prepare_file", bytes = item.length, appended_from = from,
-            elapsed_ms = prepare_began.elapsed().as_secs_f64() * 1000.0);
-        moved.store(from, Ordering::Relaxed);
-        fetch(link, target, item.rev, from, item.length, &part, moved).await?;
+            Err(_) => {
+                from = 0;
+                continue;
+            }
+        };
+        let in_place = v1::held_bytes(&held);
+        if !private_path(dest) { info!(run = %target.run, output = %target.output, index = target.index, rev = item.rev,
+            phase = "output_prepare_file", bytes = item.length, appended_from = from, in_place,
+            elapsed_ms = prepare_began.elapsed().as_secs_f64() * 1000.0); }
+        moved.store(in_place, Ordering::Relaxed);
+        fetch(link, target, item.rev, &held, item.length, &part, Some(&journal), moved).await?;
         match check(&part, item.length, &item.digest).await {
             Ok(()) => return Ok(part),
-            // The file did not hold the revision this one extends.
-            Err(Failure::Wrong(_)) if from > 0 => from = 0,
-            Err(failure) => return Err(failure),
+            // What was in place before (an earlier attempt's, the revision this one extends) was
+            // not this revision's: read whole once more.
+            Err(Failure::Wrong(_)) if in_place > 0 => {
+                remove(&journal);
+                from = 0;
+            }
+            Err(failure) => {
+                remove(&journal);
+                return Err(failure);
+            }
         }
     }
 }
@@ -836,11 +886,12 @@ async fn fetch_tree(
         move || {
             remove(&stage);
             std::fs::create_dir_all(&stage)?;
-            prepare(&manifest, &stage, 0, length)
+            let empty = std::fs::File::create(&manifest)?;
+            empty.set_len(length)
         }
     });
     prepared.await.map_err(unwritable)?;
-    fetch(link, target, item.rev, 0, item.length, &manifest, moved).await?;
+    fetch(link, target, item.rev, &[], item.length, &manifest, None, moved).await?;
     check(&manifest, item.length, &item.digest).await?;
     let listed = std::fs::read(&manifest).map_err(unwritable)?;
     let _ = std::fs::remove_file(&manifest);
@@ -863,7 +914,7 @@ async fn fetch_tree(
             member: path,
             ..target.clone()
         };
-        fetch(link, &member, item.rev, 0, length, &file, moved).await?;
+        fetch(link, &member, item.rev, &[], length, &file, None, moved).await?;
         check(&file, length, &digest).await?;
         read.insert(digest, file);
     }
@@ -878,8 +929,24 @@ async fn blocking<T: Send + 'static>(
         .unwrap_or_else(|e| Err(std::io::Error::other(e)))
 }
 
-/// A fresh `part` of `length` bytes, its first `from` copied from `dest`.
-fn prepare(part: &Path, dest: &Path, from: u64, length: u64) -> std::io::Result<()> {
+/// Beside a `.part`: the bytes it is for (`<digest> <length>`), then each stretch `<start> <end>`
+/// in place, a line as each range stops.
+const HELD: &str = ".part.held";
+
+/// The `part` this revision's `length` bytes are read into, and the stretches of it in place: an
+/// earlier attempt's for the same bytes kept as it left them (its `.held` names `digest`), else a
+/// fresh one, its first `from` copied from `dest`.
+fn prepare(part: &Path, dest: &Path, from: u64, length: u64, digest: &str) -> std::io::Result<Vec<(u64, u64)>> {
+    let journal = suffixed(part, ".held");
+    let named = format!("{digest} {length}");
+    let kept = std::fs::read_to_string(&journal).ok().filter(|kept| kept.lines().next() == Some(named.as_str()));
+    if let Some(kept) = kept.filter(|_| std::fs::metadata(part).is_ok_and(|m| m.len() == length)) {
+        let stretches = kept.lines().skip(1).filter_map(|line| {
+            let (start, end) = line.split_once(' ')?;
+            Some((start.parse().ok()?, end.parse::<u64>().ok()?.min(length)))
+        });
+        return Ok(merged(stretches.collect()));
+    }
     let _ = std::fs::remove_file(part);
     let mut file = std::fs::File::create(part)?;
     if from > 0 {
@@ -890,11 +957,30 @@ fn prepare(part: &Path, dest: &Path, from: u64, length: u64) -> std::io::Result<
             ));
         }
     }
-    file.set_len(length)
+    file.set_len(length)?;
+    let held = if from > 0 { vec![(0, from)] } else { vec![] };
+    let lines: String = held.iter().map(|(start, end)| format!("{start} {end}\n")).collect();
+    std::fs::write(&journal, format!("{named}\n{lines}"))?;
+    Ok(held)
+}
+
+/// `stretches` sorted, those that touch as one.
+fn merged(mut stretches: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
+    stretches.retain(|(start, end)| start < end);
+    stretches.sort_unstable();
+    let mut merged: Vec<(u64, u64)> = vec![];
+    for (start, end) in stretches {
+        match merged.last_mut() {
+            Some(last) if start <= last.1 => last.1 = last.1.max(end),
+            _ => merged.push((start, end)),
+        }
+    }
+    merged
 }
 
 /// Whether `path` holds exactly `length` bytes with `digest`; they are on the disk if so, before any name is.
 async fn check(path: &Path, length: u64, digest: &str) -> Result<(), Failure> {
+    let private = private_path(path);
     let (path, digest) = (path.to_owned(), digest.to_owned());
     let reported_path = path.clone();
     let queued = Instant::now();
@@ -923,33 +1009,37 @@ async fn check(path: &Path, length: u64, digest: &str) -> Result<(), Failure> {
         }
         let sync_began = Instant::now();
         platform::durable::ordered(&file)?;
-        info!(path = %path.display(), phase = "output_check", bytes = held,
-            blocking_queue_ms, hash_ms, sync_ms = sync_began.elapsed().as_secs_f64() * 1000.0);
+        if !private { info!(path = %path.display(), phase = "output_check", bytes = held,
+            blocking_queue_ms, hash_ms, sync_ms = sync_began.elapsed().as_secs_f64() * 1000.0); }
         Ok(Ok(()))
     });
     let result = checked.await.unwrap_or_else(|e| Err(Failure::Again(e.to_string())));
-    info!(path = %reported_path.display(), phase = "output_check_result", ok = result.is_ok(),
-        elapsed_ms = queued.elapsed().as_secs_f64() * 1000.0);
+    if !private { info!(path = %reported_path.display(), phase = "output_check_result", ok = result.is_ok(),
+        elapsed_ms = queued.elapsed().as_secs_f64() * 1000.0); }
     result
 }
 
-/// Reads bytes `[from, length)` of `target` at revision `rev` into `part` at their offsets: ranges
-/// cut as `lanes::parts` cuts them (at most `RANGE`), `LANES` side by side on the machine's bulk
-/// lanes (`lanes::transfer`).
+/// Reads the bytes of `target` at revision `rev` that `held` leaves of `[0, length)` into `part` at
+/// their offsets: ranges cut as `lanes::parts` cuts them (at most `RANGE`), `LANES` side by side on
+/// the machine's bulk lanes (`lanes::transfer`). Each stretch in place is told to `journal`.
+#[allow(clippy::too_many_arguments)]
 async fn fetch(
     link: &Link,
     target: &v1::OutputTarget,
     rev: u64,
-    from: u64,
+    held: &[(u64, u64)],
     length: u64,
     part: &Path,
+    journal: Option<&Path>,
     moved: &Arc<AtomicU64>,
 ) -> Result<(), Failure> {
-    let ranges = lanes::parts(&[(0, from)], length, RANGES_PER_LANE * LANES, RANGE);
+    let ranges = lanes::parts(held, length, RANGES_PER_LANE * LANES, RANGE);
     let read = lanes::transfer(ranges, LANES, |leg| {
         let lane = link.lane(leg.lane, leg.fresh);
         let (target, part, moved) = (target.clone(), part.to_owned(), moved.clone());
+        let stretch = Stretch { journal: journal.map(Path::to_owned), first: leg.first, at: leg.at.clone() };
         async move {
+            let _stretch = stretch;
             let lane = lane.ok_or_else(|| Ranged::Again("no connection to the machine".into()))?;
             let range = (leg.first, leg.end, length);
             read_range(lane, target, rev, range, part, leg.at, &moved).await
@@ -962,8 +1052,31 @@ async fn fetch(
     }
 }
 
+/// A range's bytes in place, told to its `.part.held` when it stops however it stops: done, failed,
+/// or dropped as slow.
+struct Stretch {
+    journal: Option<PathBuf>,
+    first: u64,
+    at: Arc<AtomicU64>,
+}
+
+impl Drop for Stretch {
+    fn drop(&mut self) {
+        let at = self.at.load(Ordering::Relaxed);
+        if let (Some(journal), true) = (&self.journal, at > self.first) {
+            let line = format!("{} {at}\n", self.first);
+            let appended = std::fs::OpenOptions::new().append(true).open(journal);
+            if let Err(e) = appended.and_then(|mut file| std::io::Write::write_all(&mut file, line.as_bytes())) {
+                if private_path(journal) { warn!("private output range progress could not be saved"); }
+                else { warn!(path = %journal.display(), "what a range left in place is not kept: {e}"); }
+            }
+        }
+    }
+}
+
 /// Logs even when a range fails or a slow/replaced transfer drops its future.
 struct RangeTiming<'a> {
+    private: bool,
     target: &'a v1::OutputTarget,
     rev: u64,
     first: u64,
@@ -981,6 +1094,7 @@ struct RangeTiming<'a> {
 
 impl Drop for RangeTiming<'_> {
     fn drop(&mut self) {
+        if self.private { return; }
         info!(run = %self.target.run, output = %self.target.output, index = self.target.index,
             rev = self.rev, member = %self.target.member, phase = "output_range",
             stopped_at = self.phase, first = self.first, end = self.end,
@@ -1004,6 +1118,7 @@ async fn read_range(
     moved: &AtomicU64,
 ) -> Result<(), Ranged<Failure>> {
     let mut timing = RangeTiming {
+        private: private_path(&part),
         target: &target,
         rev,
         first,
@@ -1106,5 +1221,26 @@ fn refused(e: machine_client::Error) -> Ranged<Failure> {
         }
         machine_client::Error::Answer(message) => Ranged::Stop(Failure::Again(message)),
         e => Ranged::Again(e.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod security_tests {
+
+    #[test]
+    #[ignore = "requires ffmpeg and ffprobe on PATH"]
+    fn output_probe_does_not_follow_downloaded_playlist() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("marker.mp4");
+        let made = std::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-f", "lavfi", "-i", "color=c=blue:s=32x32:r=1", "-t", "1", "-c:v", "libx264", "-threads", "1"])
+            .arg(&marker).output().unwrap();
+        assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
+        let valid = crate::project::measured(dir.path(), &marker, "video/mp4").expect("valid video measured");
+        assert_eq!((valid.width, valid.height), (32, 32));
+        let downloaded = dir.path().join("42-video.mp4.part");
+        std::fs::write(&downloaded, "ffconcat version 1.0\nfile marker.mp4\n").unwrap();
+        let measured = crate::project::measured(dir.path(), &downloaded, "video/mp4");
+        assert!(measured.is_none(), "a downloaded playlist is not measured as a media file");
     }
 }

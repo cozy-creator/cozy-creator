@@ -211,6 +211,19 @@ jobs:
       - name: Install dependencies
         run: |
           ${{ matrix.packages_install }}
+      # The normal installer and cozy update retain one executable. Embed the pinned encrypted
+      # filesystem helper in that executable, so encrypted projects work offline after update.
+      - uses: actions/setup-python@v6
+        if: ${{ !matrix.container }}
+        with:
+          python-version: '3.12'
+      - name: Prepare the pinned encrypted filesystem provider
+        shell: bash
+        env:
+          # manylinux is AlmaLinux, outside setup-python's hosted Ubuntu distributions.
+          VAULT_BUILD_PYTHON: ${{ matrix.container && '/opt/python/cp312-cp312/bin/python' || 'python' }}
+        run: |
+          "$VAULT_BUILD_PYTHON" scripts/prepare-securefs.py --target '${{ matrix.targets[0] }}' --out-dir "$GITHUB_WORKSPACE/.vault-helper" --github-env "$GITHUB_ENV"
       - name: Build artifacts
         run: |
           # Actually do builds and make zips and whatnot

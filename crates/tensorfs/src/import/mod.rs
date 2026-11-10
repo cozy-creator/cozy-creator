@@ -1095,3 +1095,91 @@ pub(crate) fn convert(req: &Request, sink: &mut dyn Sink) -> Result<Imported> {
     }
     Ok(imported)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write as _;
+
+    use super::{convert, Access, Layout, Part, Request, Sink, AS_IS};
+    use crate::err::{Code, Result};
+    use crate::format::{Dtype, Encoding, Metadata};
+
+    fn safetensors(begin: u64, end: u64, payload: &[u8]) -> tempfile::NamedTempFile {
+        let mut file = tempfile::Builder::new()
+            .suffix(".safetensors")
+            .tempfile()
+            .unwrap();
+        let head =
+            serde_json::json!({"w": {"dtype": "U8", "shape": [1], "data_offsets": [begin, end]}})
+                .to_string();
+        file.write_all(&(head.len() as u64).to_le_bytes()).unwrap();
+        file.write_all(head.as_bytes()).unwrap();
+        file.write_all(payload).unwrap();
+        file
+    }
+
+    #[derive(Default)]
+    struct Collected {
+        bytes: Vec<u8>,
+        committed: bool,
+    }
+
+    impl Sink for Collected {
+        fn begin(&mut self, _: &Layout) -> Result<()> {
+            Ok(())
+        }
+
+        fn put(
+            &mut self,
+            _: &str,
+            _: &str,
+            _: &Dtype,
+            _: &[u64],
+            _: Option<&Encoding>,
+            parts: Vec<Part>,
+        ) -> Result<()> {
+            for part in parts {
+                part.data.read_to_end(&mut self.bytes).unwrap();
+            }
+            Ok(())
+        }
+
+        fn commit(&mut self, _: Metadata, _: &dyn Fn(u64, u64)) -> Result<()> {
+            self.committed = true;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn converter_refuses_wrapped_header_bytes_and_keeps_valid_payload() {
+        let tmp = tempfile::tempdir().unwrap();
+        let access = Access::default();
+        for (file, valid) in [
+            (safetensors(u64::MAX - 32, u64::MAX - 31, &[]), false),
+            (safetensors(0, 1, &[7]), true),
+        ] {
+            let sources = [file.path().display().to_string()];
+            let request = Request {
+                sources: &sources,
+                converter: Some(AS_IS),
+                source_variant: None,
+                trained_on: None,
+                access: &access,
+                tmp: tmp.path(),
+                progress: &|_, _, _| {},
+                stop: None,
+            };
+            let mut sink = Collected::default();
+            let result = convert(&request, &mut sink);
+            if valid {
+                result.unwrap();
+                assert!(sink.committed);
+                assert_eq!(sink.bytes, [7]);
+            } else {
+                assert_eq!(result.unwrap_err().code, Code::CARRIER_GEOMETRY);
+                assert!(!sink.committed);
+                assert!(sink.bytes.is_empty());
+            }
+        }
+    }
+}

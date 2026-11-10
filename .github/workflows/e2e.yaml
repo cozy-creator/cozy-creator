@@ -53,6 +53,10 @@ on:
         description: The cozy-runtime commit the candidate Runtime comes from (the change's own, if cozy-runtime's)
         type: string
         default: master
+      packages_ref:
+        description: The packages checkout beside the candidate set (the change's own, if packages); empty/default follows the RC sibling
+        type: string
+        default: master
       tensord:
         description: TensorD (cozy) to take instead of building it, an exact release version (a prerelease's too) `cozy machine update` fetches
         type: string
@@ -106,6 +110,9 @@ on:
         type: string
         default: master
       runtime_ref:
+        type: string
+        default: master
+      packages_ref:
         type: string
         default: master
       tensord:
@@ -224,6 +231,7 @@ jobs:
           FROM_STACK: ${{ steps.what.outputs.from_stack }}
           STACK: ${{ inputs.stack_ref || 'master' }}
           RUNTIME: ${{ inputs.runtime_ref || 'master' }}
+          PACKAGES: ${{ inputs.packages_ref || 'master' }}
           RC: ${{ steps.what.outputs.rc }}
         run: |
           commit() { gh api "repos/$1/commits/$2" -q .sha; }
@@ -233,7 +241,8 @@ jobs:
           creator=$(git -C .creator rev-parse HEAD)
           stack=$creator; [ -n "$FROM_STACK" ] || stack=$(commit cozy-creator/cozy-creator "$(sibling cozy-creator/cozy-creator "$STACK")")
           runtime=$(commit cozy-creator/cozy-runtime "$(sibling cozy-creator/cozy-runtime "$RUNTIME")")
-          packages=$(commit cozy-creator/packages "$(sibling cozy-creator/packages master)")
+          packages=$ref
+          [ "$GITHUB_REPO" = cozy-creator/packages ] || packages=$(commit cozy-creator/packages "$(sibling cozy-creator/packages "$PACKAGES")")
           for c in "$ref" "$creator" "$stack" "$runtime" "$packages"; do [[ $c =~ ^[0-9a-f]{40}$ ]] || { echo "::error::unresolved ref: '$c'"; exit 1; }; done
           printf 'ref=%s\ncreator=%s\nstack=%s\nruntime=%s\npackages=%s\n' "$ref" "$creator" "$stack" "$runtime" "$packages" | tee -a "$GITHUB_OUTPUT"
       - uses: actions/checkout@v5
@@ -343,7 +352,7 @@ jobs:
       fail-fast: false
       matrix:
         # projectdb*: project.db (cl-803), e2e/cli/projectdb.sh; projectdb also state.db (cl-818), e2e/cli/statedb.sh. local-code: local code by content (cl-817, cl-820).
-        shard: ${{ fromJSON(inputs.shards || '["runs","executors","commands","follow","web","projectdb","projectdb-latency","projectdb-existing","projectdb-web","local-code"]') }}
+        shard: ${{ fromJSON(inputs.shards || '["runs","executors","commands","follow","web","projectdb","projectdb-latency","projectdb-existing","projectdb-web","projectvault","local-code"]') }}
     runs-on: ubuntu-24.04
     # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal. The suites fail on the
     # CLI's typed errors and exits, never on time.
@@ -371,8 +380,14 @@ jobs:
           runtime: ${{ inputs.runtime }}
           release: ${{ inputs.publish_run }}
       # The project part's fixtures and probes (e2e/cli/project.sh); Calcifer, a service, fetches its own.
-      - if: matrix.shard == 'commands' || matrix.shard == 'web' || matrix.shard == 'local-code' || matrix.shard == 'control' || startsWith(matrix.shard, 'projectdb')
+      - if: matrix.shard == 'commands' || matrix.shard == 'web' || matrix.shard == 'local-code' || matrix.shard == 'control' || matrix.shard == 'projectvault' || startsWith(matrix.shard, 'projectdb')
         uses: AnimMouse/setup-ffmpeg@v1
+      - name: Install the optional project-encryption filesystem driver
+        if: matrix.shard == 'projectvault'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fuse libfuse2t64
+          sudo modprobe fuse || test -e /dev/fuse
       - name: cli suite
         env:
           PINS: ${{ inputs.pins }}

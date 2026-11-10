@@ -126,10 +126,25 @@ private, max-age=31536000, immutable`; everything else, `outputs/{name}` include
 - `history {id, undo?, redo?}`: a project's history moved, an edit, an undo or a redo, and the entries undo and redo would take now, as `GET /v1/projects/{id}/history` lists them.
 - `resync`: this stream fell behind and goes on: read again what you hold.
 
-`PUT /v1/events/{stream}` `{projects: [id]}`: `204`, the projects the page on this stream shows now, each held open while the stream
-lasts or until a later `PUT` names it no more. One that can't open isn't held, and the page's own read of it says why. `404
+Newer services add optional `project.changed.cursor {generation, sequence}` and full project-state `covered` with the same shape.
+The opaque generation is fresh per controller process; the sequence is assigned by its project-event publisher, not a database revision.
+`covered` is captured before any state read/validation supplying that full response. It never comes from a later cursor and is absent on
+head-only, failed or partial/error-derived snapshots. A client can avoid a whole project-state reload only when every whole cause is at
+or before its cached full snapshot's covered sequence in the same generation. Named/head deltas still apply; YAML/non-project
+invalidations, newer/unknown/legacy/generation-mismatched causes, hello/resync and count fallbacks still refresh. A summary or partial
+merge cannot promote full-snapshot coverage. Older peers omit or ignore these additive fields and retain ordinary refresh behavior.
+
+`PUT /v1/events/{stream}` `{projects: [id]}`: `200 {held: [id], refused: {id: {status, error}}}`, the projects the page on this stream shows now,
+each held open while the stream lasts or until a later `PUT` names it no more. At most 64 sorted, distinct IDs are attempted; an ID outside
+that bound is not acknowledged. One that can't open keeps its own refusal without dropping the healthy IDs. The reply comes after Reader
+installation; a page orders its first project-state GET after its own held acknowledgement. Older services answer `204`, confirming completion
+without an authoritative per-ID result. `404
 stream_unknown` once the stream has ended: the next stream's `hello` names it. The page sends what all its tabs show, from the tab that
 holds the stream, each time that changes.
+
+ACK-capable pages share the stable `cozy-events-presence-v1` Web Lock and BroadcastChannel. An older open page retains its older
+coordination cohort during an upgrade, so it cannot strand a new page waiting for an acknowledgement it does not implement. This is a
+coordination protocol boundary, not a build/version pin; tab liveness, media/log locks and ordinary browser storage remain shared.
 
 ### The page
 The web UI, embedded when cozy is built (`crates/calcifer/build.rs`, from `web/app/dist`). It holds no secret, so these
@@ -206,7 +221,7 @@ a spec.
 - `GET /v1/tools/{id}/ui/{hash}/{*file}`: a module of a component as `{module}` named it, `application/javascript`, under the page's CSP, `immutable`, needing no session: `import()` can't send one, and the hash is what `GET /v1/tools/{id}/ui` said. Calcifer holds what it read in memory, so after a restart a page asks again. `404 tool_ui_file_not_found`.
 - `GET /v1/targets?target=&hub=&on=&tree=&at=`: what a run of `target` on that machine calls, resolved as `POST /v1/runs` resolves it; with `tree` and `at`, local code's `code`, `target` its function:
   `{package, function?, release, release_from: asked|installed|latest|local, summary, interface, functions, contract?, request?, next?}`:
-  `interface` is the package's interface document. Local code's is what its machine's Runtime said installing this very source, else read from its source by the Runtime release its uv.lock holds or PyPI's newest, installing nothing: `400 describe_failed` when that Runtime can't read it, with `next` the run that reads it with the machine's own; `functions` `[{function, description}]` is what a
+  `interface` is the package's interface document. Local code's is what its machine's Runtime said installing this very source, else read from its source by the Runtime release its uv.lock holds, the newest within its unconditional `cozy-runtime` version bounds, or PyPI's newest when neither is specified. No package code runs: `400 describe_failed` when that Runtime can't read it, with `next` the run that reads it with the machine's own; `functions` `[{function, description}]` is what a
   person runs of it, with no internal function or recipe. A named function is checked as a run checks it, and `contract` is its contract as people
   read it, `request` its schema. `next` names the functions to describe.
 - `PUT /v1/files/sha256:<hex>`: the one way a client's file reaches Calcifer, for a run, an import, a model or a machine update to name by its digest. Its
@@ -500,8 +515,17 @@ written beside it), keeps the newest 64 a day, and works from that copy: it read
 `with: ./dir/fn` is a folder of Calcifer's computer, read into a copy the same way. Calcifer keeps its manifest under
 `~/.cozy/calcifer/local/` and makes it ready on the machine a call goes to: an install run first when that machine lacks it,
 then the call with its files. Every machine, `local` too, is sent the files by content (only what it lacks); none reads a
-host path. Its interface comes from Runtime's static describer on the Python and cozy-runtime its project locks; nothing runs
-to describe it.
+host path. Its interface comes from Runtime's static describer on the project's Python: the exact cozy-runtime its lock holds,
+else the newest within its unconditional version bounds, else PyPI's newest. Only plain PEP 440 bounds on the normalized
+`cozy-runtime` name select that SDK; extras stay package dependencies. Conditional requirements, direct URLs and unspecified
+versions retain the newest-SDK fallback. Project URLs, paths, git sources and indexes are never forwarded as the SDK requirement.
+Invalid plain bounds return `400 runtime_requirement_invalid` before the static reader command runs. The static reader executes no package code and
+creates no project lock.
+
+The source bundle includes project files, including Git-ignored runtime resources. Known credential
+names (`.env`, `.env.*`, `.envrc`, `.direnv/`, `.aws/`, `.ssh/`, and named key/credential files),
+known key/weight suffixes, bytecode and symlinks are excluded and listed as left out. This filter does not
+detect secrets stored under other names; keep those outside the package source folder.
 
 ### Projects
 A project is a folder holding `project.db`, `files/` and its edits at its root (`<name>.mp4` and `<name>.otio`). `project.db` (SQLite, WAL;

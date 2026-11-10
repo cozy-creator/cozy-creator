@@ -118,7 +118,7 @@ pub(super) fn prepare(
         return Err(missing());
     }
     let files = crate::trees::parse(&fs::read(manifest)?)?;
-    let scratch = runs.objects.store().root().join("tmp/model-folders");
+    let scratch = runs.objects.store()?.root().join("tmp/model-folders");
     let staging = Staging::new(&scratch)?;
     let folder = staging.root.join("folder");
     fs::create_dir(&folder)?;

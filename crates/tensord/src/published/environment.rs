@@ -1,7 +1,8 @@
 //! Package environments, built one way for a release (`published`) and for local code
 //! (`local_source`): uv's Python, the locked (or resolved) dependencies with the Runtime/TensorFS
 //! pair the lock names at its newest released patch (this machine's where it is a later patch of
-//! it, `stands_in`), wheels from files, the project, then this machine's PyTorch layer (`layer`),
+//! it or the lock's can't speak this machine's executor protocol, `stands_in`; a pair that can't is
+//! refused, `speaks`), wheels from files, the project, then this machine's PyTorch layer (`layer`),
 //! then the environment's description by its own Runtime and its record; its bytecode compiles
 //! once it is installed. uv runs under one environment.
 use super::{canceled, io_failure, layer::Layer, Failure, Job, Locked, Publisher, SDK};
@@ -98,7 +99,9 @@ impl Publisher {
         };
         let torch = layer.as_ref().and_then(|l| l.version("torch")).unwrap_or_default();
         let warning = format!("requires {missed}; this machine's torch is {torch}: its environment installs its own");
-        tracing::warn!("package {} {warning}", project.label);
+        if crate::private_io::current().is_none() {
+            tracing::warn!("package {} {warning}", project.label);
+        }
         job.stage(format!("warning: {warning}"));
         let own: Vec<String> = missed.split(", ").filter(|r| on_root(r)).map(String::from).collect();
         let mut built = self.build_on(env, project, job, None, &own)?;
@@ -165,6 +168,11 @@ impl Publisher {
         next();
         let mut sdk = if over { "machine" } else { "locked" };
         let mut fallback = vec![];
+        // Why this machine's own pair isn't what it runs on.
+        let mut passed = match self.sdk.requirements.is_empty() {
+            true => "this machine has no pair of its own".to_string(),
+            false => String::new(),
+        };
         match project.locked {
             Some(locked) => sync(locked, over)?,
             None => {
@@ -179,7 +187,12 @@ impl Publisher {
                 // not install here (no macOS TensorFS wheel).
                 let offered = [args.clone(), self.sdk.requirements.iter().map(String::as_str).collect()].concat();
                 sdk = "machine";
-                if self.sdk.requirements.is_empty() || self.uv(&offered, &[], job).is_err() {
+                if passed.is_empty() {
+                    if let Err((_, refused)) = self.uv(&offered, &[], job) {
+                        passed = format!("this machine's doesn't install with it: {}", crate::triage::ends(&refused, 300));
+                    }
+                }
+                if !passed.is_empty() {
                     sdk = "resolved";
                     if let Err(failure) = self.uv(&args, &[], job) {
                         // A floor only a GitHub prerelease meets: uv's index can't resolve the project.
@@ -226,9 +239,27 @@ impl Publisher {
         if let Some(locked) = project.locked {
             let build = &self.sdk.runtime_build;
             next();
+            // A lock's pair of another series can't speak this machine's executor protocol: this
+            // machine's goes over it where every declared range admits it, else nothing runs.
+            let theirs = pair_of(&locked.packages);
+            let foreign = !self.speaks(&theirs);
             if over {
                 match self.pair(env, &py, &self.sdk.requirements, job)? {
-                    Ok(found) => fallback.extend(found),
+                    Ok(found) if foreign => {
+                        let ranges: Vec<&str> = found.iter().map(String::as_str).filter(|line| on_pair(line)).collect();
+                        if !ranges.is_empty() {
+                            let why = format!("its requirements refuse this machine's ({})", ranges.join("; "));
+                            return Err(self.unspoken(env, project, &theirs, &why, true));
+                        }
+                        fallback.push(format!("its lock's {} can't speak this machine's executor protocol: it runs on this machine's {}; {}",
+                            shown(&theirs), shown(&self.machine_pair()), relock(project, false)));
+                        fallback.extend(checked(&found));
+                    }
+                    Ok(found) => fallback.extend(checked(&found)),
+                    Err(conflict) if foreign => {
+                        let why = format!("this machine's doesn't install over its lock ({conflict})");
+                        return Err(self.unspoken(env, project, &theirs, &why, false));
+                    }
                     Err(conflict) => {
                         sync(locked, false)?;
                         sdk = "locked";
@@ -242,7 +273,7 @@ impl Publisher {
                 let newest: Vec<String> = SDK.iter()
                     .filter_map(|name| Some(newest_patch(name, locked.packages.get(*name)?))).collect();
                 match self.pair(env, &py, &newest, job) {
-                    Ok(Ok(found)) => fallback.extend(found),
+                    Ok(Ok(found)) => fallback.extend(checked(&found)),
                     Ok(Err(why)) | Err((super::UNREACHABLE, why)) => {
                         sync(locked, false)?;
                         fallback.push(format!("no newer patch of its lock's {} installs here ({why}): it runs on that", shown(&pair_of(&locked.packages))));
@@ -254,6 +285,11 @@ impl Publisher {
                         shown(&pair_of(&locked.packages))));
                 }
             }
+        }
+        // However it resolved, it runs only on a pair that speaks this machine's protocol.
+        let held = pair_of(&installed(env));
+        if !self.speaks(&held) {
+            return Err(self.unspoken(env, project, &held, &passed, false));
         }
         let fallback = fallback.join("; ");
         if !fallback.is_empty() {
@@ -275,14 +311,49 @@ impl Publisher {
 
     /// Whether this machine's own Runtime/TensorFS pair goes over the one `locked` names: each of
     /// it the lock's or a later patch of it (before 1.0 a minor may change what a package calls, a
-    /// patch doesn't), so a release runs what its lock resolved, with a Runtime's fixes. A member
-    /// the lock doesn't name is this machine's.
+    /// patch doesn't), so a release runs what its lock resolved, with a Runtime's fixes; or a pair
+    /// that can't speak this machine's executor protocol (`speaks`), which only this machine's can.
+    /// A member the lock doesn't name is this machine's.
     pub(crate) fn stands_in(&self, locked: &Locked) -> bool {
         let ours = self.machine_pair();
-        !ours.is_empty() && SDK.iter().all(|name| match (ours.get(*name), locked.packages.get(*name)) {
+        !ours.is_empty() && (!self.speaks(&locked.packages) || SDK.iter().all(|name| match (ours.get(*name), locked.packages.get(*name)) {
             (Some(ours), Some(locked)) => patch_of(ours, locked),
             (ours, _) => ours.is_some(),
-        })
+        }))
+    }
+
+    /// The pair whose series speaks this machine's executor protocol: its own, else the TensorFS
+    /// of its own release, whose `tensorfs.executor` is compiled from the executor-api it is
+    /// built with (a Runtime of another series requires another TensorFS).
+    fn protocol(&self) -> BTreeMap<String, String> {
+        match self.machine_pair() {
+            ours if ours.is_empty() => BTreeMap::from([("tensorfs".to_string(), env!("CARGO_PKG_VERSION").to_string())]),
+            ours => ours,
+        }
+    }
+
+    /// Whether a pair (a lock's, or what an environment holds) speaks this machine's executor
+    /// protocol: each member of the protocol's series. One it doesn't name says nothing.
+    pub(crate) fn speaks(&self, pair: &BTreeMap<String, String>) -> bool {
+        self.protocol().iter().all(|(name, ours)| pair.get(name).is_none_or(|theirs| same_series(theirs, ours)))
+    }
+
+    /// `project` refused, `env` gone: its pair can't speak this machine's executor protocol, and
+    /// this machine's isn't what it runs on (`why`; `ranged`: its declared range refuses it). The
+    /// next command: an updated machine for a newer pair (or none of its own), else a newer lock
+    /// or release.
+    fn unspoken(&self, env: &Path, project: &Project, pair: &BTreeMap<String, String>, why: &str, ranged: bool) -> Failure {
+        let _ = fs::remove_dir_all(env);
+        let ours = self.protocol();
+        let newer = pair.iter().any(|(name, theirs)| ours.get(name).is_some_and(|ours| later_series(theirs, ours)));
+        let next = match newer || self.sdk.requirements.is_empty() {
+            true => "update this machine: `cozy machine update <machine>`".to_string(),
+            false => relock(project, ranged),
+        };
+        // A newer pair is a floor this machine misses, as an unpublished one is.
+        let code = if newer { "runtime_floor_unmet" } else { "runtime_protocol_unspoken" };
+        (code, format!("{} runs on {}, which can't speak this machine's executor protocol ({}'s): {why}; {next}",
+            project.label, shown(pair), shown(&ours)))
     }
 
     /// This machine's own pair (an update's, else the image's) by its wheels' names: empty without one.
@@ -296,9 +367,8 @@ impl Publisher {
 
     /// `requirements` of the pair (this machine's, or the lock's newest patch) over a locked
     /// environment, every other installed version held exact. One the lock's pins refuse leaves
-    /// the lock's (`Err`: why); what uv's check finds that it adds (a ceiling of the package's) is
-    /// the run's warning.
-    fn pair(&self, env: &Path, py: &str, requirements: &[String], job: &Job) -> Result<Result<Option<String>, String>, Failure> {
+    /// the lock's (`Err`: why); what uv's check finds that it adds (a ceiling of the package's).
+    fn pair(&self, env: &Path, py: &str, requirements: &[String], job: &Job) -> Result<Result<Vec<String>, String>, Failure> {
         let constraints = env.join("cozy-constraints.txt");
         let pins: String = installed(env).iter().filter(|(name, _)| !SDK.contains(&name.as_str()))
             .map(|(name, version)| format!("{name}=={version}\n")).collect();
@@ -320,8 +390,7 @@ impl Publisher {
             Err(("package_installation_uv_failed", detail)) => return Ok(Err(crate::triage::ends(&detail, 1000))),
             done => done?,
         }
-        let added: Vec<String> = self.check(py, job)?.difference(&before).cloned().collect();
-        Ok(Ok((!added.is_empty()).then(|| format!("uv pip check: {}", added.join("; ")))))
+        Ok(Ok(self.check(py, job)?.difference(&before).cloned().collect()))
     }
 
     /// Finds a published version for each of `floors` and for what a prerelease's wheel requires of
@@ -383,23 +452,15 @@ impl Publisher {
 
     /// uv as the machine runs it (`machine::uv`). `job` hears the bytes it writes about once a
     /// second; its process group is killed when the run is canceled (`process::supervise`).
+    /// Linux tags the builder and its descendants before exec, so a new machine sweeps an
+    /// interrupted builder before reusing its environment, even after SIGKILL.
     pub(crate) fn uv(&self, args: &[&str], env: &[(&str, &std::ffi::OsStr)], job: &Job) -> Result<(), Failure> {
         let mut command = self.sdk.uv.command().map_err(|e| ("uv_unavailable", e.to_string()))?;
         command.args(args).envs(env.iter().copied()).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
-        platform::process::own_group(&mut command);
-        let mut child = command.spawn().map_err(|e| ("package_installation_uv_absent", format!("cannot run uv: {e}")))?;
-        let mut stderr = child.stderr.take().expect("piped uv stderr");
-        let (ended, stderr) = std::thread::scope(|scope| {
-            let drained = scope.spawn(move || {
-                let mut kept = Vec::new();
-                let _ = stderr.read_to_end(&mut kept);
-                kept
-            });
-            let ended = crate::process::supervise(&mut child, job.stop.as_ref(), &|read| job.bytes(read, 0));
-            (ended, drained.join().unwrap_or_default())
-        });
+        crate::private_io::protect_command(&mut command).map_err(io_failure)?;
+        let (ended, stderr) = run_builder(&mut command, &self.scope_namespace, job.stop.as_ref(), &|read| job.bytes(read, 0))?;
         let step = args[..2.min(args.len())].join(" ");
-        match ended.map_err(|e| ("package_installation_uv_failed", format!("uv: {e}")))? {
+        match ended {
             Supervised::Exited(status) if status.success() => Ok(()),
             Supervised::Exited(_) => {
                 let said = stderr_tail(&stderr);
@@ -413,6 +474,49 @@ impl Publisher {
         }
     }
 }
+
+/// A builder's own group and inherited ownership, supervised while its stderr is drained.
+fn run_builder(command: &mut Command, namespace: &str, stop: Option<&crate::stop::Stop>, wrote: &dyn Fn(u64)) -> Result<(Supervised, Vec<u8>), Failure> {
+    let scope = match platform::contain::Scope::inherited(namespace) {
+        Ok(scope) => Some(scope),
+        Err(error) if error.is_unsupported() => None,
+        Err(error) => return Err(io_failure(io::Error::other(error))),
+    };
+    // After the caller's environment: no override can accidentally erase the owner token.
+    command.envs(scope.as_ref().and_then(platform::contain::Scope::environment));
+    platform::process::own_group(command);
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            if let Some(scope) = &scope {
+                scope.end().map_err(|error| io_failure(io::Error::other(error)))?;
+            }
+            return Err(("package_installation_uv_absent", format!("cannot run uv: {error}")));
+        }
+    };
+    let mut stderr = child.stderr.take().expect("piped builder stderr");
+    std::thread::scope(|threads| {
+        let drained = threads.spawn(move || {
+            let mut kept = Vec::new();
+            let _ = stderr.read_to_end(&mut kept);
+            kept
+        });
+        let ended = crate::process::supervise(&mut child, stop, wrote)
+            .map_err(|error| ("package_installation_uv_failed", format!("uv: {error}")));
+        // A build backend can outlive uv and keep its stderr open. End it before waiting on
+        // that pipe, including when supervision failed or the run was canceled.
+        let cleaned = scope.as_ref().map(platform::contain::Scope::end).transpose()
+            .map_err(|error| io_failure(io::Error::other(error)));
+        let stderr = drained.join().unwrap_or_default();
+        let ended = ended?;
+        cleaned?;
+        Ok((ended, stderr))
+    })
+}
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "environment_process_tests.rs"]
+mod process_tests;
 
 /// The generation at `dir` published: its record written last, by rename, so only a whole
 /// environment ever resolves (`catalog`).
@@ -471,7 +575,10 @@ fn ask_runtime(python: &Path, request: &Value, stop: Option<&crate::stop::Stop>)
         sys.argv=['cozy-runtime','machine-describe'];runpy.run_module('cozy_runtime.cli.main',run_name='__main__')";
     let failed = |why: String| ("package_prepare_description_failed", why);
     let mut command = Command::new(python);
-    command.args(["-I", "-S", "-c", BOOTSTRAP]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
+    command.args(["-I", "-B", "-S", "-c", BOOTSTRAP]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
+    if crate::private_io::protect_command(&mut command).map_err(io_failure)? {
+        command.stderr(Stdio::null());
+    }
     platform::process::own_group(&mut command);
     let mut child = command.spawn().map_err(io_failure)?;
     // Its own exit says why, should it stop before reading the request.
@@ -704,6 +811,40 @@ fn patch_of(ours: &str, locked: &str) -> bool {
         return false;
     };
     series(&ours) == series(&locked) && ours >= locked
+}
+
+/// Whether releases `a` and `b` are of one series.
+fn same_series(a: &str, b: &str) -> bool {
+    matches!((Version::from_str(a), Version::from_str(b)), (Ok(a), Ok(b)) if series(&a) == series(&b))
+}
+
+/// Whether release `a` is of a later series than `b`.
+fn later_series(a: &str, b: &str) -> bool {
+    matches!((Version::from_str(a), Version::from_str(b)), (Ok(a), Ok(b)) if series(&a) > series(&b))
+}
+
+/// What uv's check found that the pair added, as the run's warning.
+fn checked(found: &[String]) -> Option<String> {
+    (!found.is_empty()).then(|| format!("uv pip check: {}", found.join("; ")))
+}
+
+/// Whether uv's finding `line` (`The package `x` requires `cozy-runtime<0.44`, …`) is a range on
+/// a member of the pair.
+fn on_pair(line: &str) -> bool {
+    let required = line.split('`').nth(3).and_then(|r| r.split(|c: char| " ;<>=!~[(".contains(c)).next()).unwrap_or_default();
+    SDK.contains(&normalized(required).as_str())
+}
+
+/// How an older pair takes this machine's: update the refusing SDK requirement or its
+/// dependency owner, then re-lock local code; a published package needs a newer release.
+fn relock(project: &Project, ranged: bool) -> String {
+    const LOCK: &str = "`cozy package lock --upgrade-package cozy-runtime`";
+    match (project.package.starts_with("local/"), project.locked.is_some(), ranged) {
+        (true, true, false) => format!("re-lock it on this machine's: {LOCK}"),
+        (true, true, true) => format!("update the refusing cozy-runtime or tensorfs requirement in pyproject.toml, or upgrade the dependency that declares it, then re-lock it: {LOCK}"),
+        (true, false, _) => "update the refusing cozy-runtime or tensorfs requirement in pyproject.toml, or upgrade the dependency that declares it, to admit this machine's pair".into(),
+        (false, ..) => format!("a newer release of it may: `cozy package info {}`", project.package),
+    }
 }
 
 /// `name` at the newest release of `locked`'s series: `cozy-runtime>=0.41.0,==0.41.*`.
