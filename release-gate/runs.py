@@ -20,7 +20,8 @@ def dense_steps(target, steps):
 # The step tracks the step rule judges: a sampler's steps (`tel.step_callback` stages). Not an autoregressive stage
 # (HunyuanImage-3's `thinking`: token 1 is the prompt's prefill, gate 40907841888) and not per-item work (`decode_video`
 # frames, `scan`, `assemble`, `calibrating`).
-STEP_STAGES = ('denoise', 'generating image', 'refine', 'step')
+# 0.22's plain loops name a sampler's track after the function's stage: SDXL's is `generate` (runs 43985, 43986).
+STEP_STAGES = ('denoise', 'generating image', 'refine', 'step', 'generate')
 
 
 def slow_steps(target, s):
