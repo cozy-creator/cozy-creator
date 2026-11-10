@@ -127,6 +127,7 @@ function VaultBody({ id }: { id: string }) {
       {newRecovery && <Recovery secret={newRecovery} onDone={() => setNewRecovery(null)} />}
       {!status.encrypted ? (
         <form className="stack" onSubmit={(event) => submit(event, "encrypt")}>
+          <p className="warn">Encryption protects this project's folder and future work. Earlier exports, backups, and shared cache copies aren't erased; protect or remove them separately. For a new project, enable encryption before creating or importing files.</p>
           {passwordControls}
           {timeoutControls}
           <label><input type="checkbox" checked={removePlaintext} onChange={(event) => setRemovePlaintext(event.target.checked)} /> Remove the verified unencrypted source after conversion</label>
