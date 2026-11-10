@@ -310,7 +310,7 @@ fn legacy_load(conn: &Connection, at: &Path) -> Result<Stored, Error> {
         lock.files.insert(sha256, file);
     }
     let mut rows = conn.prepare("SELECT run, function, output, sha256 FROM run_files ORDER BY ord").map_err(e)?;
-    for row in rows.query_map([], |r| Ok(RunFile { run: r.get::<_, i64>(0)? as u64, function: r.get(1)?, output: r.get(2)?, sha256: r.get(3)? })).map_err(e)? {
+    for row in rows.query_map([], |r| Ok(RunFile { run: r.get::<_, i64>(0)? as u64, function: r.get(1)?, output: r.get(2)?, sha256: r.get(3)?, ..Default::default() })).map_err(e)? {
         lock.runs.push(row.map_err(e)?);
     }
     let mut rows = conn.prepare("SELECT kind, name, value FROM facts").map_err(e)?;

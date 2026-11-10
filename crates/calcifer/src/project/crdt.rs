@@ -220,7 +220,9 @@ impl Document {
         lock.makes = decode(self.value.get("makes").cloned().unwrap_or_else(|| json!({})))?;
         let mut runs: Vec<(u64, String, RunFile)> = Vec::new();
         for (id, record) in objects(&self.value, "runs").into_iter().filter(|(_, record)| present(record)) {
-            runs.push((record["order"].as_u64().unwrap_or_default(), id, decode(record["record"].clone())?));
+            let mut run: RunFile = decode(record["record"].clone())?;
+            run.id.clone_from(&id);
+            runs.push((record["order"].as_u64().unwrap_or_default(), id, run));
         }
         runs.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
         lock.runs = runs.into_iter().map(|(_, _, run)| run).collect();
@@ -299,6 +301,11 @@ pub(super) fn identify(before: &Stored, after: &mut Stored) {
                     .cloned()
                     .unwrap_or_else(super::new_key);
             }
+        }
+    }
+    if after.lock.runs.iter().any(|row| row.id.is_empty()) {
+        for row in &mut Arc::make_mut(&mut after.lock).runs {
+            if row.id.is_empty() { row.id = super::new_key(); }
         }
     }
     if !after
@@ -455,11 +462,8 @@ pub(super) fn value(stored: &Stored, ops: &[OpRow], previous: &Value, identity: 
         history.insert(id, json!({ "present": true, "record": record }));
     }
     let mut runs = tombstoned(previous, "runs");
-    let run_ids: BTreeMap<String, String> = runs.iter().map(|(id, record)| (record["record"].to_string(), id.clone())).collect();
     for (index, row) in stored.lock.runs.iter().enumerate() {
-        let record = encoded(row);
-        let id = run_ids.get(&record.to_string()).cloned().unwrap_or_else(super::new_key);
-        runs.insert(id, json!({ "present": true, "order": index, "record": record }));
+        runs.insert(row.id.clone(), json!({ "present": true, "order": index, "record": row }));
     }
     let files: Map<String, Value> = stored
         .lock
