@@ -2,16 +2,14 @@ import { type QueryClient, useQuery, useQueryClient } from "@tanstack/react-quer
 import { createContext, type ReactNode, useCallback, useContext, useLayoutEffect } from "react"
 import { Link, useLocation, useMatch, useNavigate } from "react-router-dom"
 import type { Client } from "../api/client"
-import type { ProjectState } from "../api/calcifer"
+import type { ProjectAddress } from "../api/calcifer"
 import { useConnection } from "./Connection"
-
-type ProjectAddress = Pick<ProjectState, "id" | "code">
 
 const CurrentProject = createContext<ProjectAddress | null>(null)
 const referenceKey = (reference: string) => ["project-reference", reference]
 const referenceQuery = (client: Client, reference: string) => ({
   queryKey: referenceKey(reference),
-  queryFn: () => client.projectHead(reference),
+  queryFn: () => client.projectAddress(reference),
   staleTime: Infinity,
 })
 

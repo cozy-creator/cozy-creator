@@ -304,7 +304,7 @@ impl Calls {
             if news {
                 let warning = format!("a memoized function's result isn't kept for later calls: {why}");
                 if let Err(error) = service.engine.append_warning(&parent.id, &warning) {
-                    tracing::warn!("run {}: {warning} ({error})", parent.id);
+                    crate::private_io::warning(&service.engine, &parent.id, format_args!("{warning} ({error})"));
                 }
             }
         }
@@ -409,7 +409,9 @@ impl Calls {
                         .spool
                         .join("child-results")
                         .join(call_index.to_string());
-                    let (text, rows, held) = receive(&service.engine.root, result, &parent.spool, &directory)
+                    let root = service.engine.custody_root(&record.id)
+                        .map_err(|e| ("child_result_unavailable", e.to_string()))?;
+                    let (text, rows, held) = receive(&root, result, &parent.spool, &directory)
                         .map_err(|e| ("child_result_unavailable", e.to_string()))?;
                     let settled = (text, rows);
                     // Each file is the signer's object too: a later child may be handed it.
@@ -501,7 +503,9 @@ impl Calls {
             // to build the construction. This answer does not promise completed loading.
             // A hint: its failure fails nothing, and the Runtime ignores this code.
             Some(Request::ModelPrefetch(prefetch)) => self.model_prefetch(parent, frame.seq, prefetch).map_err(|(code, why)| {
-                tracing::warn!("run {}: a model prefetch was not taken ({code}): {why}", parent.id);
+                if let Some(service) = self.service.upgrade() {
+                    crate::private_io::warning(&service.engine, &parent.id, format_args!("model prefetch was not taken ({code}): {why}"));
+                }
                 ("model_prefetch_unsupported", why)
             }),
             Some(Request::GpuRelease(_)) => {
@@ -549,7 +553,7 @@ impl Calls {
 fn cancel(engine: &Engine, child: &Execution) {
     let actor = child.submission.as_ref().map(|s| s.actor.as_str()).unwrap_or_default();
     if let Err(error) = engine.cancel(&child.id, actor) {
-        tracing::warn!("child run {} of {} remains: {error}", child.id, child.invocation.parent);
+        crate::private_io::warning(engine, &child.id, format_args!("child of {} remains: {error}", child.invocation.parent));
     }
 }
 
@@ -998,7 +1002,7 @@ fn record_call(
         _ => match Failure::decode(record.failure.as_deref().unwrap_or_default()) {
             Ok(failure) => ("failed", failure.code, failure.message),
             Err(error) => {
-                tracing::warn!("run {}: invalid child failure record: {error}", parent.id);
+                crate::private_io::warning(engine, &parent.id, format_args!("invalid child failure record: {error}"));
                 return false;
             }
         },
@@ -1021,7 +1025,7 @@ fn record_call(
     match engine.append_call(&parent.id, &record.id, &crate::boundary_json::exact(&body)) {
         Ok(_) => true,
         Err(error) => {
-            tracing::warn!("run {}: call {index}: {error}", parent.id);
+            crate::private_io::warning(engine, &parent.id, format_args!("call {index}: {error}"));
             false
         }
     }

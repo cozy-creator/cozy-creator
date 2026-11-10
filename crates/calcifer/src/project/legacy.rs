@@ -1,5 +1,5 @@
 //! A project as files, from before `project.db` (cl-803): `project.yaml`, `project.lock`, `project.canvas.yaml`, `.measured.json`,
-//! `.history.json`, `.keys.json` and what its walk owed in `.runs/`. Read once, on its first open, into `project.db`, then deleted. A
+//! `.history.json`, `.keys.json` and what its walk owed in `.runs/`. Read once into canonical CRDT storage in `project.db`; original bytes remain in `.cozy-legacy-v1/`. A
 //! format 2 or 3 file is upgraded to 4 first (`upgrade::on_touch`), as before.
 use std::{collections::BTreeMap, path::Path};
 
@@ -20,7 +20,7 @@ const WALK: &str = ".runs/walk.json";
 const ASKED: &str = ".runs/asked";
 /// What an import writes, whole, before it's `project.db`.
 const NEW: &str = "project.db.new";
-/// What an import deletes once it holds them.
+/// What an import archives once the new store has durably verified them.
 const IMPORTED: [&str; 7] = [PROJECT, LOCK, CANVAS, MEASURED, ".history.json", ".keys.json", WALK];
 
 fn io(at: &Path, e: impl std::fmt::Display) -> Error {
@@ -30,11 +30,13 @@ fn io(at: &Path, e: impl std::fmt::Display) -> Error {
 /// Whether `dir` holds a whole import that a kill stopped before it was named `project.db`.
 pub(super) fn pending(dir: &Path) -> bool {
     let at = dir.join(NEW);
-    at.is_file() && rusqlite::Connection::open(&at).ok().and_then(|conn| conn.query_row("SELECT value FROM meta WHERE key = 'seq'", [], |r| r.get::<_, String>(0)).ok()).is_some_and(|seq| seq != "0")
+    at.is_file() && rusqlite::Connection::open(&at).ok().is_some_and(|conn| {
+        db::meta(&conn, "created_complete").as_deref() == Some("1") || db::meta(&conn, "seq").is_some_and(|seq| seq != "0")
+    })
 }
 
-/// The folder's files read into `project.db`, then deleted. Killed before the end, its files stand (or a whole import does, which this
-/// finishes), and the next open does it again.
+/// Import once, retain original bytes in an archive, then atomically name the verified new store.
+/// An interruption leaves source files or the complete staged store, so the next open resumes.
 pub(super) fn import(folder: &Folder) -> Result<(), Error> {
     let dir = &folder.dir;
     let (new, db) = (dir.join(NEW), dir.join(db::DB));
@@ -44,13 +46,32 @@ pub(super) fn import(folder: &Folder) -> Result<(), Error> {
         db::create(&new, &stored.0, &ops, &stored.1)?;
         info!("{}: imported {} boxes, {} rows and {} history entries into {}", dir.display(), stored.0.written.boxes.len(), stored.0.canvas.len(), ops.len(), db::DB);
     }
+    let archive = dir.join(".cozy-legacy-v1");
     for file in IMPORTED {
-        match std::fs::remove_file(dir.join(file)) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(io(&dir.join(file), e)),
-            _ => {}
+        let source = dir.join(file);
+        if !source.exists() {
+            continue;
         }
+        let target = archive.join(file);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| io(parent, e))?;
+        }
+        if target.exists() {
+            return Err(io(&target, "an earlier migration backup exists; preserve it and move it aside before retrying"));
+        }
+        std::fs::rename(&source, &target).map_err(|e| io(&source, e))?;
     }
-    let _ = std::fs::remove_dir_all(dir.join(ASKED));
+    let asked = dir.join(ASKED);
+    if asked.exists() {
+        let target = archive.join(ASKED);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| io(parent, e))?;
+        }
+        if target.exists() {
+            return Err(io(&target, "an earlier migration backup exists; preserve it and move it aside before retrying"));
+        }
+        std::fs::rename(&asked, &target).map_err(|e| io(&asked, e))?;
+    }
     std::fs::rename(&new, &db).map_err(|e| io(&db, e))
 }
 
@@ -86,7 +107,7 @@ fn read(folder: &Folder) -> Result<(db::Stored, Vec<(String, String)>), Error> {
         Ok(text) => canvas::legacy_rows(&text).into_iter().map(|(name, card)| (name_key(&name), db::CardRow { name, card, seq: 0, by: String::new() })).collect(),
         Err(_) => BTreeMap::new(),
     };
-    let stored = db::Stored { seq: 0, written: written.into(), canvas: canvas.into(), lock: lock.into(), walk: walk.into(), measured: measured(dir).into() };
+    let stored = db::Stored { seq: 0, written: written.into(), canvas: canvas.into(), lock: lock.into(), walk: walk.into(), measured: measured(dir).into(), crdt: None };
     Ok((stored, asked))
 }
 

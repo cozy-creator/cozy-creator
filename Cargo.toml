@@ -11,6 +11,8 @@ members = [
     "crates/cozy",
     "crates/executor-api",
     "crates/platform",
+    "crates/project-vault",
+    "crates/project-mount",
     "crates/tensord",
     "crates/tensorfs",
     "crates/tensorfs-py",
@@ -36,6 +38,8 @@ cli = { path = "crates/cli" }
 executor-api = { path = "crates/executor-api" }
 # Only `signal` unless a member asks for `seams` or `fetch`: varena links nothing else.
 platform = { path = "crates/platform", default-features = false }
+project-vault = { path = "crates/project-vault" }
+project-mount = { path = "crates/project-mount" }
 tensord = { path = "crates/tensord" }
 # Without `net` unless a member asks for it: api needs only the format.
 tensorfs = { path = "crates/tensorfs", default-features = false }

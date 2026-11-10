@@ -283,8 +283,11 @@ function linesOf(text, name) {
     return Boolean(rect) && rect.left >= 0 && rect.top >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight;
   }, name);
 
-  // A command adds it: it shows by itself where it was told, and lands.
+  // The empty hint is published only after the first canonical reconciliation.
   await page.locator('.empty-canvas').waitFor();
+  check('initial_replica_ready', true);
+
+  // A command adds it: it shows by itself where it was told, and lands.
   let place = await spot();
   const added = await timed('add', { name: 'live_a', x: place.x, y: place.y }, () => project('add', 'cozy/edit', 'live_a', `at=${place.x},${place.y},260`, 'description=Words from the CLI'));
   check('add_returns_its_name', added.value.name === 'live_a', added.value);
@@ -328,6 +331,11 @@ function linesOf(text, name) {
   check('add_placed_on_nothing', (await overlaps()).length === 0, await overlaps());
 
   // Approved by a command: it turns into that picture. Unapproved: back. Out of date has no dot now (Paul, 11-05): what shows is the picture.
+  // Its imported picture must be usable before timing state propagation, clear of first-cold media setup.
+  await page.waitForFunction((name) => {
+    const image = window.boxOf(name)?.querySelector('.media img');
+    return image?.complete && image.naturalWidth > 0 && image.naturalHeight > 0;
+  }, 'live_pic', { timeout: FIRST_RUN_MS });
   await timed('approve', { name: 'live_tool', picture: true }, () => project('approve', 'live_tool', hash));
   check('approve_in_the_status', (await held('live_tool')).pinned === true);
   await timed('unapprove', { name: 'live_tool', picture: false }, () => project('unapprove', 'live_tool'));
