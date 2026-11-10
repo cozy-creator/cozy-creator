@@ -18,14 +18,14 @@ done
 OUT=${OUT:-$PWD/bench-$(date -u +%Y%m%dT%H%MZ)}
 mkdir -p "$OUT"
 pids=()
-while read -r group _ disk _; do
+while read -r group _ disk cap _; do
   [ -n "$group" ] && [ "${group:0:1}" != '#' ] || continue
   [ -z "$WANT" ] || [[ $WANT == *",$group,"* ]] || continue
   more=()
   if [ -n "$COMFY" ] && awk -F'\t' -v g="$group" '$2 == g && $12 != "-" {found = 1} END {exit !found}' "$HERE/suites/bench/cells.tsv"; then
-    more=(--cells "$HERE/suites/bench/comfyui.sh" --cap 360); disk=$((disk + 300))
+    more=(--cells "$HERE/suites/bench/comfyui.sh"); disk=$((disk + 300)) cap=$((cap + 60))
   fi
-  "$HERE/gate.sh" "${group%x*}" --gpus "${group##*x}" --suite bench --disk "$disk" --out "$OUT/$group" "${more[@]}" "${GATE[@]}" > "$OUT/$group.log" 2>&1 &
+  "$HERE/gate.sh" "${group%x*}" --gpus "${group##*x}" --suite bench --disk "$disk" --cap "$cap" --out "$OUT/$group" "${more[@]}" "${GATE[@]}" > "$OUT/$group.log" 2>&1 &
   pids+=($!)
   echo "$group: gate.sh pid $!, $OUT/$group"
 done < "$HERE/suites/bench/skus"
