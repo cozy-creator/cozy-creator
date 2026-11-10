@@ -16,7 +16,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, readFileSync, renameSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { signIn,importFile, projectAction, projectJson, BARS, GPU, calcifer, MP4, boxOf, closeBox, openBox, fitCanvas, STEP_MS, lastLook, launch, lookAt, png, noStall, renderOf, settled, until, wav, importYaml, yamlOf } = require('./page');
+const { projectFromPage, projectUrl, signIn,importFile, projectAction, projectJson, BARS, GPU, calcifer, MP4, boxOf, closeBox, openBox, fitCanvas, STEP_MS, lastLook, launch, lookAt, png, noStall, renderOf, settled, until, wav, importYaml, yamlOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -73,7 +73,7 @@ async function restClose(page) {
   const state = () => page.evaluate(() => {
     const transform = document.querySelector('.react-flow__viewport')?.style.transform;
     return {
-      hash: location.hash,
+      hash: location.pathname,
       open: [...document.querySelectorAll('.card.here')].map((card) => card.dataset.asset),
       transform,
       zoom: transform ? new DOMMatrix(transform).a : null,
@@ -661,11 +661,11 @@ async function edgesOf({ shown, bare, black, white, clip, frame }) {
   };
   if (id) names = (await api(`/v1/projects/${id}`)).assets.map((held) => held.name);
   else {
-  await page.goto(`${base}/#/projects`);
+  await page.goto(`${base}/projects`);
   await page.fill('input[aria-label="New project\'s name"]', `web-layout-${Date.now()}`);
   await page.click('form button[type=submit]');
-  await page.waitForURL(/#\/projects\/[^/]+$/);
-  id = page.url().match(/#\/projects\/([^/]+)/)[1];
+  await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
+  id = (await projectFromPage(page)).id;
   const folder = (await api(`/v1/projects/${id}`)).path;
   seen.project = { id, folder };
   const scratch = mkdtempSync(join(tmpdir(), 'web-layout-'));
@@ -768,7 +768,7 @@ ${local ? `  card:
     watch(page);
     lookAt(page);
     await signedIn(page);
-    await page.goto(`${base}/#/projects/${id}`);
+    await page.goto(await projectUrl(id));
     await page.locator('.react-flow__node').first().waitFor();
     await placed();
     const look = async (state, keep, fitted = true, beforeAudit) => {
@@ -855,7 +855,7 @@ ${local ? `  card:
         else if (!progressVisible) reason = 'hidden-progress-label';
         else if (!text) reason = 'empty-progress-text';
         return {
-          hash: location.hash, open: [...document.querySelectorAll('.card.here')].map((card) => card.dataset.asset),
+          hash: location.pathname, open: [...document.querySelectorAll('.card.here')].map((card) => card.dataset.asset),
           selected: [...document.querySelectorAll('.react-flow__node.selected')].map((node) => node.querySelector('.card')?.dataset.asset ?? node.dataset.id),
           zoom: transform === null ? null : new DOMMatrix(transform).a, transform, mounted: Boolean(media),
           rect: rect && { x: rect.x, y: rect.y, width: rect.width, height: rect.height }, rendered, inBounds, visible: rendered && inBounds,
@@ -1025,12 +1025,12 @@ ${local ? `  card:
       await page.keyboard.press('Escape');
     }
     for (const drawer of ['machines', 'runs', 'account', 'projects', 'packages']) {
-      await page.goto(`${base}/#/projects/${id}/${drawer}`);
+      await page.goto(await projectUrl(id, `/${drawer}`));
       await page.locator('.drawer').waitFor();
       await page.waitForTimeout(400);
       await look(`drawer-${drawer}`, true);
     }
-    await page.goto(`${base}/#/projects/${id}`);
+    await page.goto(await projectUrl(id));
     await context.close();
   }
 
@@ -1045,7 +1045,7 @@ ${local ? `  card:
     watch(page);
     lookAt(page);
     await signedIn(page);
-    await page.goto(`${base}/#/projects/${id}`);
+    await page.goto(await projectUrl(id));
     await page.locator('.react-flow__node').first().waitFor();
     await placed();
     const edges = async (state) => {
@@ -1083,7 +1083,7 @@ ${local ? `  card:
     }
     await closeBox(page);
     for (const drawer of ['runs', 'packages']) {
-      await page.goto(`${base}/#/projects/${id}/${drawer}`);
+      await page.goto(await projectUrl(id, `/${drawer}`));
       await page.locator('.drawer').waitFor();
       await page.waitForTimeout(400);
       await edges(`drawer-${drawer}`);

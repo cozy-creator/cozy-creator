@@ -8,7 +8,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { spawn } = require('child_process');
 const { join } = require('path');
 const { createInterface } = require('readline');
-const { PYTHON, calcifer, signIn, STEP_MS, boxOf, lastLook, launch, lookAt, noStall, pointAt, rowsOf, until } = require('./page');
+const { projectUrl, PYTHON, calcifer, signIn, STEP_MS, boxOf, lastLook, launch, lookAt, noStall, pointAt, rowsOf, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -98,7 +98,7 @@ function deletionEvidence(page, pathname, events) {
     page.on('pageerror', (error) => errors.push(error.message));
     await signIn(page);
     await page.waitForSelector('.top');
-    await page.goto(`${base}/#/projects/${encodeURIComponent(id)}`);
+    await page.goto(await projectUrl(id));
     await boxOf(page, 'goes').waitFor();
 
     holder = await holdDatabase(join(folder, 'project.db'), events);

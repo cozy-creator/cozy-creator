@@ -71,14 +71,21 @@ async fn native_presence_fixture() {
     let stream = hello["stream"].as_str().unwrap();
     let mut last = String::new();
     for read_first in [true, false] {
+        let before = crate::events::snapshot_cursor().unwrap();
         let response = client.post(format!("{base}/v1/projects")).bearer_auth("presence-fixture")
             .json(&serde_json::json!({"name": if read_first { "cold" } else { "leased" }})).send().await.unwrap();
         let opened: serde_json::Value = response.json().await.unwrap();
         let id = opened["id"].as_str().expect("project created");
         last = id.to_owned();
-        // Creation itself owes an initial whole-project event. Do not mistake it for the
-        // later asset write, or let it warm the comparison baseline between the barriers.
-        let created = changed(&mut events, &mut buffered, id).await;
+        // Creation is published before interest, so it cannot be used as an SSE barrier.
+        // Observe that publication directly before exercising the two read/show orders.
+        let created = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let cursor = crate::events::snapshot_cursor().unwrap();
+                if cursor.sequence > before.sequence { break cursor; }
+                tokio::task::yield_now().await;
+            }
+        }).await.expect("creation was not published");
         println!("{}", serde_json::json!({"creation": created}));
         let full;
         if read_first {
@@ -101,8 +108,8 @@ async fn native_presence_fixture() {
             assert!(state["assets"].as_array().unwrap().is_empty());
             state
         } else { full.unwrap() };
-        assert_eq!(full["covered"]["generation"], created["cursor"]["generation"]);
-        assert!(full["covered"]["sequence"].as_u64().unwrap() >= created["cursor"]["sequence"].as_u64().unwrap());
+        assert_eq!(full["covered"]["generation"], created.generation);
+        assert!(full["covered"]["sequence"].as_u64().unwrap() >= created.sequence);
         let response = client.post(format!("{base}/v1/projects/{id}/assets")).bearer_auth("presence-fixture")
             .json(&serde_json::json!({"name": "words", "tool": "", "fields": {"text": "hello"}})).send().await.unwrap();
         assert!(response.status().is_success(), "{}", response.text().await.unwrap());

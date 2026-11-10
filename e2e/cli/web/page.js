@@ -190,7 +190,7 @@ const boxOf = (page, name) => page.locator(`.react-flow__node:has(.card[data-ass
 async function closeBox(page) {
   // By the address, as the page has it: after a reload the box is on its way, and not there to count yet, and `page.url()` hears of a move a moment late.
   // Left already, by a click off it say, the canvas may still be on its way back.
-  if (!(await page.evaluate(() => location.hash.includes('/assets/')))) return settled(page);
+  if (!(await page.evaluate(() => location.pathname.includes('/assets/')))) return settled(page);
   await page.locator('.card.here').waitFor();
   await page.keyboard.press('Escape');
   await page.locator('.card.here').waitFor({ state: 'detached' });
@@ -215,7 +215,7 @@ async function renderOf(page, name) {
 async function openBox(page, name) {
   // By the address too: a box left a moment ago can still say so, and reaching for it finds it gone (macOS, 41977214625).
   const card = page.locator(`.card.here[data-asset="${name}"]`);
-  if (await page.evaluate((asked) => location.hash.endsWith(`/assets/${encodeURIComponent(asked)}`), name)) return card.waitFor();
+  if (await page.evaluate((asked) => location.pathname.endsWith(`/assets/${encodeURIComponent(asked)}`), name)) return card.waitFor();
   await closeBox(page);
   // After a drag d3-drag swallows clicks at the window until its zero timer, which a cell can beat and a hand can't. This timer runs after that one.
   await page.evaluate(() => new Promise((done) => setTimeout(done, 0)));
@@ -442,6 +442,36 @@ function apiText(method, path, body = '', type = 'application/json') {
 }
 
 const projectPath = (folder, suffix = '') => `/v1/projects/${encodeURIComponent(folder)}${suffix}`;
+const projectAddresses = new Map();
+async function projectRecord(reference) {
+  const holder = JSON.parse(readFileSync(process.env.HOLDER, 'utf8'));
+  const response = await fetch(`http://${holder.address}${projectPath(reference)}?assets=false`, { headers: { Authorization: `Bearer ${holder.token}` } });
+  if (!response.ok) throw new Error(`project ${reference}: ${response.status} ${await response.text()}`);
+  const project = await response.json();
+  if (!/^[0-9A-HJKMNP-TV-Z]{9}$/.test(project.code ?? '')) throw new Error(`project ${project.id} has no canonical compact code`);
+  projectAddresses.set(project.id, project);
+  projectAddresses.set(project.code, project);
+  return project;
+}
+
+/** The compact path of this exact canonical project, read from the API when needed. */
+async function projectUrl(reference, suffix = '') {
+  const project = typeof reference === 'string'
+    ? projectAddresses.get(reference) ?? await projectRecord(reference)
+    : reference;
+  if (!/^[0-9A-HJKMNP-TV-Z]{9}$/.test(project.code ?? '')) throw new Error(`project ${project.id} has no canonical compact code`);
+  return `${calcifer()}/p/${project.code}${suffix}`;
+}
+
+/** A browser URL names a code; API requests and test identities keep its canonical id. */
+async function projectFromPage(page) {
+  const code = new URL(page.url()).pathname.match(/^\/p\/([0-9A-HJKMNP-TV-Z]{9})(?:\/|$)/)?.[1];
+  if (!code) throw new Error(`not a compact project URL: ${page.url()}`);
+  const project = await projectRecord(code);
+  if (project.code !== code) throw new Error(`the URL code ${code} resolved to ${project.code}`);
+  return project;
+}
+
 function projectJson(folder, method = 'GET', suffix = '', body) {
   const text = apiText(method, projectPath(folder, suffix), body === undefined ? '' : JSON.stringify(body));
   return text ? JSON.parse(text) : null;
@@ -589,4 +619,4 @@ function rowsOf(folder, query) {
 /** Python as this OS names it: Windows has no python3 of its own. */
 const PYTHON = process.platform === 'win32' ? 'python' : 'python3';
 
-module.exports = { projectJson, importFile, projectAction, cozyIn, newProject, BARS, DARK_OPEN, GPU, MP4, PYTHON, STEP_MS, boxLog, boxOf, calcifer, carry, closeBox, openBox, openCanvas, drop, importYaml, lastLook, launch, lookAt, noStall, panning, png, pointAt, removeGeneratedProject, renderOf, rowsOf, settled, fitCanvas, projectHeld, observeResizes, signIn, summary, until, upload, watchBoxes, wav, yamlOf };
+module.exports = { projectUrl, projectFromPage, projectJson, importFile, projectAction, cozyIn, newProject, BARS, DARK_OPEN, GPU, MP4, PYTHON, STEP_MS, boxLog, boxOf, calcifer, carry, closeBox, openBox, openCanvas, drop, importYaml, lastLook, launch, lookAt, noStall, panning, png, pointAt, removeGeneratedProject, renderOf, rowsOf, settled, fitCanvas, projectHeld, observeResizes, signIn, summary, until, upload, watchBoxes, wav, yamlOf };

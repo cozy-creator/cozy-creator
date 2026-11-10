@@ -13,7 +13,7 @@ const { createHash } = require('crypto');
 const { copyFileSync, linkSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } = require('fs');
 const { homedir } = require('os');
 const { join } = require('path');
-const { projectAction, newProject, calcifer, signIn, STEP_MS, lastLook, lookAt, png, noStall, until, projectHeld } = require('./page');
+const { projectUrl, projectAction, newProject, calcifer, signIn, STEP_MS, lastLook, lookAt, png, noStall, until, projectHeld } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -163,7 +163,7 @@ const held = (folder) => projectHeld(folder, HOLDER.pid);
   // The page on what shows no project: the runs. What it held of earlier cells' projects goes.
   await signIn(page);
   await page.waitForSelector('.top');
-  await page.goto(`${base}/#/runs`);
+  await page.goto(`${base}/runs`);
   await page.waitForTimeout(SETTLE_MS);
   memory.cold = await memoryNow(api);
   const notClosed = { cli: [], page: [] };
@@ -198,7 +198,7 @@ const held = (folder) => projectHeld(folder, HOLDER.pid);
       }
       if (afterImport === null || afterOpen === null) notClosed.cli.push(folder);
       // The page shows it, and asks nothing more of it: it's open while it does. The one it showed before closes.
-      await page.goto(`${base}/#/projects/${imported.state.id}`);
+      await page.goto(await projectUrl(imported.state.id));
       await page.waitForSelector('.nm:text-is("shot_0")', { timeout: 120_000 });
       await page.waitForTimeout(1000);
       if (readable && !held(folder)) notHeld.push(folder);
@@ -212,7 +212,7 @@ const held = (folder) => projectHeld(folder, HOLDER.pid);
         }
       }
     }
-    await page.goto(`${base}/#/runs`);
+    await page.goto(`${base}/runs`);
     await reopened(list.length - 1);
     await page.waitForTimeout(SETTLE_MS);
   }

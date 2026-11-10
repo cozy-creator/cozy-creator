@@ -7,6 +7,7 @@
 //! Calcifer goes on with it. Its clients ask and watch; the runs go on without them.
 mod assets;
 mod canvas;
+pub(crate) mod code;
 mod db;
 mod fit;
 mod folder;
@@ -103,6 +104,7 @@ struct Heard {
 
 struct Project {
     id: String,
+    code: String,
     folder: Folder,
     /// What its files say, as last read.
     model: tokio::sync::Mutex<Option<Arc<model::Model>>>,
@@ -153,6 +155,9 @@ impl Reader {
 #[cfg(test)]
 #[path = "presence_tests.rs"]
 mod presence_tests;
+
+#[cfg(test)]
+mod code_tests;
 
 pub(crate) fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
     Router::new()
@@ -212,7 +217,7 @@ impl Projects {
         self.open.lock().expect("projects lock").get(id).and_then(Weak::upgrade)
     }
 
-    /// The project a route's `{id}` names (`api::calcifer::project::NAMED_BY`): its id or name, or its folder on this computer. Open,
+    /// The project a route's `{id}` names (`api::calcifer::project::NAMED_BY`): its id, public code or name, or its folder on this computer. Open,
     /// else opened from the index. It stays open while the answer is held.
     fn get(&self, api: &Arc<Api>, named: &str) -> Result<Arc<Project>, Refusal> {
         if let Some(project) = self.open_now(named) {
@@ -228,7 +233,7 @@ impl Projects {
             return Err(Refusal(Error::new(Kind::NotFound, "project_unknown", said).next("cozy open")));
         }
         // Opened for a call: used now, which the index lists by.
-        api.calcifer.store().project_opened(&project.id, &identity(&project.folder.dir).1, &project.folder.dir, Some(now_ms()))?;
+        api.calcifer.store().project_opened(&project.id, &identity(&project.folder.dir).1, &project.folder.dir, Some(now_ms()), Some(&project.code))?;
         Ok(project)
     }
 
@@ -250,7 +255,7 @@ impl Projects {
             true => Some(tokio::task::block_in_place(|| identify(api, dir))?),
             false => None,
         };
-        let id = known.as_ref().map_or_else(|| folder_id(dir), |(id, _)| id.clone());
+        let id = known.as_ref().map_or_else(|| folder_id(dir), |(id, _, _)| id.clone());
         // Moved since it opened: the same project, read where it is now, and what reads it where it was goes on reading that. One
         // rendering goes on where it was.
         let moved = self.open_now(&id).filter(|open| open.folder.dir != dir);
@@ -262,7 +267,7 @@ impl Projects {
             self.open.lock().expect("projects lock").remove(&id);
         }
         let folder = tokio::task::block_in_place(|| Folder::open(dir, api.machines.hubs.home()))?;
-        let (id, name) = match known {
+        let (id, name, code) = match known {
             Some(known) => known,
             None => tokio::task::block_in_place(|| identify(api, dir))?,
         };
@@ -274,6 +279,7 @@ impl Projects {
             None => {
                 let project = Arc::new(Project {
                     id: id.clone(),
+                    code,
                     folder,
                     jobs: Jobs::new(id.clone()),
                     ending: Arc::default(),
@@ -322,7 +328,7 @@ pub(crate) fn of_landing(out_dir: &FsPath) -> Option<&FsPath> {
     out_dir.file_name().is_some_and(|name| name == folder::RUNS).then(|| out_dir.parent()).flatten()
 }
 
-/// The folder of the project a request names (`api::calcifer::project::NAMED_BY`): its id or name in the index, or the project holding
+/// The folder of the project a request names (`api::calcifer::project::NAMED_BY`): its id, public code or name in the index, or the project holding
 /// a folder of this computer's, by its absolute path. Never a client's folder: a relative path names none.
 pub(crate) fn named(api: &Api, text: &str) -> Result<PathBuf, Error> {
     let text = text.trim();
@@ -343,18 +349,35 @@ pub(crate) fn named(api: &Api, text: &str) -> Result<PathBuf, Error> {
 fn indexed(api: &Api) -> Result<Vec<crate::state::KnownProject>, Error> {
     let store = api.calcifer.store();
     let failed = |e: crate::store::StoreError| Error::internal("calcifer_store", e.to_string());
-    let (here, gone): (Vec<_>, Vec<_>) = store.known_projects().map_err(failed)?.into_iter().partition(|entry| Folder::is_project(&entry.path));
+    let (mut here, gone): (Vec<_>, Vec<_>) = store.known_projects().map_err(failed)?.into_iter().partition(|entry| Folder::is_project(&entry.path));
     if !gone.is_empty() {
         store.projects_gone(&gone.into_iter().map(|entry| entry.id).collect::<Vec<_>>()).map_err(failed)?;
+    }
+    for entry in here.iter_mut().filter(|entry| entry.code.is_empty()) {
+        let path = entry.path.join(db::DB);
+        if path.is_file() {
+            let conn = db::open(&path)?;
+            let kept = db::meta(&conn, "code");
+            entry.code = reserve_code(store, &entry.id, &entry.name, &entry.path, kept.as_deref())?;
+            db::set_meta(&conn, &path, "code", Some(&entry.code))?;
+        } else {
+            // Opening upgrades a pre-database project. Listing keeps its current format.
+            entry.code = reserve_code(store, &entry.id, &entry.name, &entry.path, None)?;
+        }
     }
     Ok(here)
 }
 
-/// The project the index knows by `text`, its id or its name (in any case).
+/// The project the index knows by `text`, its id, public code or its name (in any case).
 fn known(api: &Api, text: &str) -> Result<crate::state::KnownProject, Error> {
     let mut indexed = indexed(api)?;
     if let Some(at) = indexed.iter().position(|entry| entry.id == text) {
         return Ok(indexed.swap_remove(at));
+    }
+    if let Some(code) = code::parse(text) {
+        if let Some(at) = indexed.iter().position(|entry| entry.code == code) {
+            return Ok(indexed.swap_remove(at));
+        }
     }
     let mut named: Vec<_> = indexed.into_iter().filter(|entry| entry.name.eq_ignore_ascii_case(text)).collect();
     match named.len() {
@@ -586,7 +609,7 @@ fn folder_name(dir: &FsPath) -> String {
 /// The project in `dir`, its id and name kept in its `project.db` (which it never makes: a folder from before has one once it's
 /// imported) and recorded in the index. One from before cl-819 keeps the id
 /// its path gave it; a copy of a project another folder still holds takes a new id; a name another project has takes `_2`.
-fn identify(api: &Api, dir: &FsPath) -> Result<(String, String), Error> {
+fn identify(api: &Api, dir: &FsPath) -> Result<(String, String, String), Error> {
     let path = dir.join(db::DB);
     if !path.is_file() {
         return Err(Error::new(Kind::NotFound, "project_not_found", format!("{} holds no {}", dir.display(), db::DB)));
@@ -604,12 +627,21 @@ fn identify(api: &Api, dir: &FsPath) -> Result<(String, String), Error> {
         None => (folder_id(dir), String::new()),
     };
     let name = unique_name(api, &id, dir, if name.is_empty() { folder_name(dir) } else { name })?;
-    if kept.as_ref() != Some(&(id.clone(), name.clone())) {
-        db::set_identity(&mut conn, &path, &id, &name)?;
+    let kept_code = kept.as_ref().filter(|(held, _)| held == &id).and_then(|_| db::meta(&conn, "code"));
+    let code = reserve_code(store, &id, &name, dir, kept_code.as_deref())?;
+    if kept.as_ref() != Some(&(id.clone(), name.clone())) || kept_code.as_deref() != Some(&code) {
+        db::set_identity(&mut conn, &path, &id, &name, Some(&code))?;
     }
-    drop(conn);
-    store.project_opened(&id, &name, dir, None).map_err(|e| Error::internal("calcifer_store", e.to_string()))?;
-    Ok((id, name))
+    Ok((id, name, code))
+}
+
+/// The index reserves the code atomically. If recording it in project.db fails, the next open
+/// recovers the index's assignment before answering with a public URL.
+fn reserve_code(store: &crate::store::Store, id: &str, name: &str, dir: &FsPath, preferred: Option<&str>) -> Result<String, Error> {
+    store.project_opened(id, name, dir, None, preferred).map_err(|error| match error {
+        crate::store::StoreError::ProjectCode(message) => Error::new(Kind::Conflict, "project_code_conflict", message),
+        other => Error::internal("calcifer_store", other.to_string()),
+    })
 }
 
 /// `wanted`, or the first of `wanted_2`, `wanted_3`, … no other project in the index has, in any case: what `-p` names it by. The
@@ -1061,27 +1093,30 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Byte
     // Named, a project nothing reads is only identified: the call that reads it opens it. One open, maybe where it was before it moved,
     // and a folder of files from before project.db, which is imported now, are opened here.
     let unread = match dir.join(db::DB).is_file() {
-        true => Some(tokio::task::block_in_place(|| identify(&api, &dir)).map_err(Refusal)?.0).filter(|id| api.projects.open_now(id).is_none()),
+        true => {
+            let (id, _, code) = tokio::task::block_in_place(|| identify(&api, &dir)).map_err(Refusal)?;
+            api.projects.open_now(&id).is_none().then_some((id, code))
+        },
         false => None,
     };
-    let (id, said) = match unread {
-        Some(id) => (id, vec![]),
+    let (id, code, said) = match unread {
+        Some((id, code)) => (id, code, vec![]),
         None => {
             let project = api.projects.open(&api, &dir).map_err(Refusal)?;
             let said = std::mem::take(&mut *project.said.lock().expect("said lock"));
-            (project.id.clone(), said)
+            (project.id.clone(), project.code.clone(), said)
         }
     };
-    let opened = opened(id, &dir);
-    api.calcifer.store().project_opened(&opened.id, &opened.name, &dir, Some(now_ms()))?;
+    let opened = opened(id, code, &dir);
+    api.calcifer.store().project_opened(&opened.id, &opened.name, &dir, Some(now_ms()), Some(&opened.code))?;
     let next = vec!["cozy open".into()];
     let said = moved_on.into_iter().chain(said).collect();
     Ok(Json(Opened { next, said, ..opened }))
 }
 
 /// The project `id`, in `dir`, as an answer gives it.
-fn opened(id: String, dir: &FsPath) -> Opened {
-    Opened { id, path: dir.to_owned(), name: identity(dir).1, next: vec![], said: vec![] }
+fn opened(id: String, code: String, dir: &FsPath) -> Opened {
+    Opened { id, code, path: dir.to_owned(), name: identity(dir).1, next: vec![], said: vec![] }
 }
 
 /// A new project called `name` in this person's home folder, or the next free name: what it could be called, `_2`, `_3`, …. Whatever is
@@ -1118,7 +1153,7 @@ fn made_new(api: &Api, dir: &FsPath, name: &str, starter: bool) -> Result<PathBu
     db::create(&part, &db::Stored { written: written.into(), ..Default::default() }, &[], &[])?;
     let canonical = platform::durable::canonical(dir).map_err(io)?;
     let (id, name) = (fresh_id(), unique_name(api, "", &canonical, name.to_owned())?);
-    db::set_identity(&mut db::open(&part)?, &part, &id, &name)?;
+    db::set_identity(&mut db::open(&part)?, &part, &id, &name, None)?;
     std::fs::rename(&part, dir.join(db::DB)).map_err(|e| Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", dir.display())))?;
     crate::events::project_changed(&canonical);
     Ok(canonical)
@@ -1164,6 +1199,7 @@ async fn list(State(api): State<Arc<Api>>, Query(page): Query<Page>) -> Result<J
             path: entry.path,
             used_at_ms: entry.used_at_ms,
             id: entry.id,
+            code: entry.code,
         })
         .collect();
     Ok(Json(Listed { projects, older }))
@@ -1186,7 +1222,7 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>, Query(asked)
             let queue = queue(&project, &folder.walk_now().map_err(Refusal)?);
             let busy = *project.walking.lock().expect("walking lock");
             let warning = format!("{}: a render going uses the text it was asked with, and a new one is refused until this reads", error.message);
-            return Ok(Json(ProjectState { covered: None, id, path: folder.dir.clone(), assets: vec![], queue, missing: vec![], stale: vec![], orphans: vec![], busy, absent: 0, run_files: 0, cuts: vec![], warnings: vec![ProjectWarning { name: None, message: warning }], next: vec![], board: board_of(&project), unsent: vec![] }));
+            return Ok(Json(ProjectState { covered: None, id, code: project.code.clone(), path: folder.dir.clone(), assets: vec![], queue, missing: vec![], stale: vec![], orphans: vec![], busy, absent: 0, run_files: 0, cuts: vec![], warnings: vec![ProjectWarning { name: None, message: warning }], next: vec![], board: board_of(&project), unsent: vec![] }));
         }
     };
     // What a reader now holds is what any change from here is told against.

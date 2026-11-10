@@ -122,7 +122,7 @@ export function PackageDrawer() {
         <Section title="Functions">
           <ul className="rows choose">
             {target?.functions?.map((choice) => {
-              const runnable = id ? `/projects/${id}/new?target=${encodeURIComponent(`${name}/${choice.function}`)}` : null
+              const runnable = id ? `${to("new")}?target=${encodeURIComponent(`${name}/${choice.function}`)}` : null
               return (
                 <li className="heldrow" key={choice.function}>
                   <span className="nm">{choice.function}</span>
