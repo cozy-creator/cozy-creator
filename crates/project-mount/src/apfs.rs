@@ -225,13 +225,17 @@ fn current_device(provider: &Provider, image: &Path) -> Result<Option<String>> {
 }
 
 pub(super) fn unmount(provider: &Provider, view: &Path, budget: Duration) -> Result<()> {
-    let mut command = provider.command("detach");
-    command.arg(view);
-    let result = run(provider, command, "detach encrypted image", None, budget);
+    // Disk Arbitration can reject an image eject solely because mds monitors its root.
+    // A normal kernel unmount releases the volume without forcing an editor's open files.
+    // The owned supervisor then detaches the exact image and its key before lock completes.
+    let status = unix_unmount(view, false, budget)?;
     if provider.is_mounted(view)? {
         return Err(Error::Busy(view.to_path_buf()));
     }
-    result.map(drop)
+    if !status.success() {
+        return Err(provider.failure("unmount encrypted volume", status));
+    }
+    Ok(())
 }
 
 pub(super) struct Lease {
