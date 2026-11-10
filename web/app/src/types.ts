@@ -40,8 +40,7 @@ export type Media = "image" | "video" | "audio"
 /** A rental order, as `POST /v1/rental-quotes` and `POST /v1/machines` take it with `kind: "rent"`. */
 export type Rent = Omit<Extract<NewMachine, { kind: "rent" }>, "kind">
 
-/** A project as the page holds it: when the read that says it began (the page's own, so a read from before a write says
- *  nothing of it), and the entities an older project file names. */
+/** A project as this page holds it, with a page-local read-start order and any entities named by an older project file. */
 export type Project = ProjectState & { began?: number; entities?: Entity[] }
 
 /** What the page reads of a target's `interface` (`cozy.package.interface/1`), which the API sends as JSON. */
