@@ -25,7 +25,8 @@ pub(crate) struct Ffmpeg {
 }
 
 /// The demuxers a file is read with: pictures, videos and sounds, and none that reads what a file names (a playlist, a `concat` script).
-const DEMUXERS: &str = "mov,matroska,avi,asf,mpeg,mpegts,flv,image2,png_pipe,apng,jpeg_pipe,webp_pipe,gif,bmp_pipe,tiff_pipe,jpegxl_pipe,jpegxl_anim,psd_pipe,ico,mp3,ogg,flac,wav,aac,aiff,amr,ape,dsf";
+/// `image2` is a sequence reader: even a `%02d` in a parent directory can make it open another file. Images use their file demuxers.
+const DEMUXERS: &str = "mov,matroska,avi,asf,mpeg,mpegts,flv,png_pipe,apng,jpeg_pipe,webp_pipe,gif,bmp_pipe,tiff_pipe,jpegxl_pipe,jpegxl_anim,psd_pipe,ico,mp3,ogg,flac,wav,aac,aiff,amr,ape,dsf";
 
 /// One ffmpeg or ffprobe run, and the only way Calcifer starts either. What it reads is named by `input`, `joined` or `made`
 /// alone, so it reads that file and nothing the file names: a run's output is a package's bytes, and a playlist or a `concat`
@@ -191,3 +192,7 @@ async fn fetch(say: Say<'_>, name: &str, archives: &[Archive], dir: &Path) -> Re
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tools_media_tests.rs"]
+mod media_tests;
