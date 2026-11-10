@@ -4276,13 +4276,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "varena-mixed-client"
-version = "0.0.0"
-dependencies = [
- "varena-client",
-]
-
-[[package]]
 name = "vcpkg"
 version = "0.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"

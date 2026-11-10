@@ -18,7 +18,6 @@ members = [
     "crates/varena-client",
     "crates/varena-ledger",
     "release-gate/suites/varena/ledger",
-    "release-gate/suites/varena/public-api",
 ]
 
 [workspace.package]

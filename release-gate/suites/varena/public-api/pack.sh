@@ -10,13 +10,13 @@ rm -rf "$out"
 mkdir -p "$tree/$suite" "$tree/crates/varena"
 cp "$suite/package.toml" "$suite/pyproject.toml" "$out"
 cp "$suite/ci_varena_public/__init__.py" "$out/ci_varena_public"
-cp -r "$suite"/{Cargo.toml,src,cells.py,mixed.py,native.c,sized_engine.c,streams.py} "$tree/$suite"
+cp -r "$suite"/{cells.py,mixed.py,native.c,sized_engine.c,streams.py} "$tree/$suite"
 cp -r crates/varena/include crates/varena/examples "$tree/crates/varena"
 cp -r crates/varena-client "$tree/crates"
 cat > "$tree/Cargo.toml" <<TOML
 [workspace]
 resolver = "3"
-members = ["crates/varena-client", "$suite"]
+members = ["crates/varena-client"]
 
 [workspace.package]
 edition = "2024"
