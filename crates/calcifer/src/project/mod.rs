@@ -2263,7 +2263,7 @@ async fn events(
     let told = going.into_iter().map(|event| Ok(sse::Event::default().json_data(&event).expect("an event serializes")));
     let stop = api.stop_signal();
     let stream = futures_util::stream::iter(told).chain(futures_util::stream::unfold((tail, boards, stop), |(mut tail, mut boards, mut stop)| async move {
-        loop {
+        {
             // The board first: what the walk says last, it has already shown.
             let event = tokio::select! {
                 biased;
