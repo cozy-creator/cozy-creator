@@ -296,19 +296,21 @@ pub(crate) fn start(api: &Arc<Api>) {
             let Some(api) = api.upgrade() else { return };
             let roots: Vec<PathBuf> = SESSIONS.lock().expect("vault sessions").keys().cloned().collect();
             for root in roots {
-                let needs = tokio::task::block_in_place(|| held(&root).is_some_and(|session| {
-                    let mut session = session.lock().expect("vault session");
-                    if session.mount.reconcile().is_err() { mark_closing(&mut session); }
-                    session.closing || expired(&session) || !session.mount.is_mounted().unwrap_or(false)
-                }));
-                if needs { let _ = tokio::task::block_in_place(|| {
-                    let op = operation(&root); let _guard = op.lock().expect("vault operation");
-                    let still = held(&root).is_some_and(|session| { let session = session.lock().expect("vault session"); session.closing || expired(&session) || !session.mount.is_mounted().unwrap_or(false) });
-                    if !still { return Ok(()); }
+                let api = api.clone();
+                // One slow export/unmount must not delay another project's deadline.
+                tokio::task::spawn_blocking(move || {
+                    let op = operation(&root);
+                    let Ok(_operation) = op.try_lock() else { return; };
+                    let needs = held(&root).is_some_and(|session| {
+                        let mut session = session.lock().expect("vault session");
+                        if session.mount.reconcile().is_err() { mark_closing(&mut session); }
+                        session.closing || expired(&session) || !session.mount.is_mounted().unwrap_or(false)
+                    });
+                    if !needs { return; }
                     if let Some(session) = held(&root) { mark_closing(&mut session.lock().expect("vault session")); }
-                    let _access = exclusive(&root)?;
-                    close(&api, &root)
-                }); }
+                    let Ok(_access) = exclusive(&root) else { return; };
+                    let _ = close(&api, &root);
+                });
             }
         }
     });
@@ -404,8 +406,14 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk) -> Result<VaultChan
             let source = view(root)?;
             let output = ask.output.as_ref().filter(|path| path.is_absolute()).ok_or_else(|| Error::new(Kind::Usage, "vault_export_path", "plaintext export needs a new absolute output directory"))?;
             if output.exists() { return Err(Error::new(Kind::Conflict, "vault_export_exists", "plaintext export destination already exists")); }
-            fs::create_dir(output).map_err(io)?;
-            copy_tree(&source, output)?;
+            let (Some(parent), Some(name)) = (output.parent(), output.file_name()) else { return Err(Error::new(Kind::Usage, "vault_export_path", "choose a new export folder outside the project")); };
+            let output = platform::durable::canonical(parent).map_err(provider)?.join(name);
+            let backing_root = platform::durable::canonical(root).map_err(provider)?;
+            if output.starts_with(&source) || output.starts_with(backing_root) {
+                return Err(Error::new(Kind::Usage, "vault_export_path", "plaintext export must be outside the encrypted backing and unlocked view"));
+            }
+            fs::create_dir(&output).map_err(io)?;
+            copy_tree(&source, &output)?;
         }
         "rotate" => {
             let session = held(root).ok_or_else(|| locked(root))?;
