@@ -79,6 +79,8 @@ class Proof:
             return completed
         if completed.returncode:
             detail = completed.stderr[-4096:]
+            if not json_output:
+                detail += completed.stdout[-4096:]
             try:
                 error = json.loads(completed.stdout).get('error', {})
                 if isinstance(error, dict):
@@ -122,10 +124,14 @@ foreach ($rule in $allowed) {
     }
 }
 '''
-            subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-Command', script],
-                           text=True, check=True,
-                           env={**os.environ, 'COZY_PROOF_RECOVERY_PATH': str(path)},
-                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-Command', script],
+                               text=True, check=True,
+                               env={**os.environ, 'COZY_PROOF_RECOVERY_PATH': str(path)},
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            except subprocess.CalledProcessError as error:
+                raise RuntimeError('recovery output ACL check failed: '
+                                   + self.redact(error.stderr[-4096:])) from None
         elif path.stat().st_mode & 0o077:
             raise RuntimeError('recovery output permits group or other-user access')
         self.redact('')
