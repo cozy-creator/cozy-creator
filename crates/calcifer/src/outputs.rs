@@ -1,4 +1,4 @@
-//! Output export: each output item of a run lands at `<out_dir>/<number>-<name>[-<i>]` with its
+//! Output export: each output item lands at `<out_dir>/<number>-<name>[-<i>]-<identity>` with its
 //! media type's extension, rewritten in place as revisions arrive; a project's run keeps it in the
 //! project's `files/` too, by hash, which is the file it names from then on. A revision's bytes are read
 //! from the run's machine into a `.part` beside the file (ranged and side by side when big) and
@@ -617,7 +617,9 @@ fn probe(ffprobe: &Path, path: &Path) -> Measured {
         streams: Vec<Stream>,
         format: Format,
     }
+    let Ok(options) = crate::media::options(path) else { return Measured::default() };
     let asked = std::process::Command::new(ffprobe)
+        .args(options)
         .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height:format=duration", "-of", "json"])
         .arg(path)
         .output();
@@ -737,9 +739,14 @@ pub fn package_outputs(outputs: &Path, target: &str) -> PathBuf {
     }
 }
 
-/// The item's name in its run's output directory: `<number>-<name>[-<i>]` and its media type's
-/// extension (none for a tree, a directory).
+/// A readable name and the complete output name/index's identity, plus its media extension
+/// (none for a tree). The readable part alone can collide after sanitizing or truncating.
 pub fn file_name(number: u64, name: &str, index: u32, media_type: &str) -> String {
+    let mut identity = Sha256::new();
+    identity.update((name.len() as u64).to_le_bytes());
+    identity.update(name.as_bytes());
+    identity.update(index.to_le_bytes());
+    let identity = hex::encode(identity.finalize());
     let name: String = (name.chars().take(128))
         .map(|c| match c {
             'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '_' | '-' => c,
@@ -767,7 +774,7 @@ pub fn file_name(number: u64, name: &str, index: u32, media_type: &str) -> Strin
         "text/plain" => ".txt",
         _ => "",
     };
-    stem + extension
+    format!("{stem}-{identity}{extension}")
 }
 
 fn item_id(number: u64, item: &OutputRow) -> String {
@@ -1129,5 +1136,27 @@ fn refused(e: client::Error) -> Ranged<Failure> {
         }
         client::Error::Answer(message) => Ranged::Stop(Failure::Again(message)),
         e => Ranged::Again(e.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires ffmpeg and ffprobe on PATH"]
+    fn output_probe_does_not_follow_downloaded_playlist() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("marker.mp4");
+        let made = std::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-f", "lavfi", "-i", "color=c=blue:s=32x32:r=1", "-t", "1", "-c:v", "libx264", "-threads", "1"])
+            .arg(&marker).output().unwrap();
+        assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
+        let valid = probe(Path::new("ffprobe"), &marker);
+        assert_eq!((valid.width, valid.height), (32, 32));
+        let downloaded = dir.path().join("42-video.mp4.part");
+        std::fs::write(&downloaded, "ffconcat version 1.0\nfile marker.mp4\n").unwrap();
+        let measured = probe(Path::new("ffprobe"), &downloaded);
+        assert_eq!((measured.width, measured.height, measured.duration_ms), (0, 0, 0));
     }
 }

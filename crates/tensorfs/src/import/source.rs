@@ -150,7 +150,9 @@ pub fn read_header(path: &Path, file: usize, len_of_file: u64) -> Result<Header>
             Some(want) => want == len,
             None => matches!(e.dtype, Dtype::Other(_)),
         };
-        if !fits || end < begin || data + end > len_of_file {
+        // Compare relative offsets before adding the header: a hostile u64 offset must not
+        // wrap back into the header in an optimized build.
+        if !fits || end < begin || end > len_of_file - data {
             return refuse(
                 Code::CARRIER_GEOMETRY,
                 format!(

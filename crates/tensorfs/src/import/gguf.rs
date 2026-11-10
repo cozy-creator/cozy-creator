@@ -323,8 +323,11 @@ impl Cursor<'_> {
     }
 }
 
-fn pad(n: u64, alignment: u64) -> u64 {
-    n.next_multiple_of(alignment)
+fn pad(n: u64, alignment: u64) -> Result<u64> {
+    match n.checked_next_multiple_of(alignment) {
+        Some(n) => Ok(n),
+        None => refuse(Code::CARRIER_GEOMETRY, "GGUF aligned offset overflows u64"),
+    }
 }
 
 /// The header of the GGUF in `src`: KV, tensor infos and where the data section starts. Every
@@ -402,7 +405,10 @@ pub fn read(src: &dyn At) -> Result<Gguf> {
                 format!("{name}: offset {offset}, llama.cpp expects {expected}"),
             );
         }
-        expected = pad(offset + nbytes, alignment);
+        let Some(end) = offset.checked_add(nbytes) else {
+            return refuse(Code::CARRIER_GEOMETRY, format!("{name}: tensor end overflows u64"));
+        };
+        expected = pad(end, alignment)?;
         tensors.push(Info {
             name,
             ne,
@@ -411,9 +417,10 @@ pub fn read(src: &dyn At) -> Result<Gguf> {
             nbytes,
         });
     }
-    let data = pad(c.pos, alignment);
+    let data = pad(c.pos, alignment)?;
     if let Some(last) = tensors.last() {
-        if data + last.offset + last.nbytes > c.len {
+        let end = data.checked_add(last.offset).and_then(|start| start.checked_add(last.nbytes));
+        if end.is_none_or(|end| end > c.len) {
             return refuse(
                 Code::CARRIER_TRUNCATED,
                 format!("{}: past the file's {} bytes", last.name, c.len),
@@ -467,9 +474,12 @@ pub fn header(version: u32, kv: &[Kv], tensors: &[(String, Vec<u64>, Type)]) -> 
         let nbytes = ty
             .bytes(ne.iter().product())
             .expect("checked by the caller");
-        offset = pad(offset + nbytes, alignment);
+        let Some(end) = offset.checked_add(nbytes) else {
+            return refuse(Code::CARRIER_GEOMETRY, format!("{name}: tensor end overflows u64"));
+        };
+        offset = pad(end, alignment)?;
     }
-    out.resize(pad(out.len() as u64, alignment) as usize, 0);
+    out.resize(pad(out.len() as u64, alignment)? as usize, 0);
     Ok(out)
 }
 
