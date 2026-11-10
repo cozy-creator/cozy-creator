@@ -239,16 +239,16 @@ fi
 }
 
 # cl-854: a lock on Runtime 0.43 can't speak a 0.23 machine's executor protocol. One whose range takes the machine's
-# Runtime runs on it, its run saying to re-lock; one whose range refuses it installs nothing, refused in one line naming
-# the re-lock. Both locks are PyPI's 0.43.1 and TensorFS 0.22.1.
+# Runtime runs on it, its install saying to re-lock; one whose range refuses it installs nothing, refused in one line
+# naming the re-lock. Both locks are PyPI's 0.43.1 and TensorFS 0.22.1.
 old_runtime() {
 step "a lock on an older executor protocol: the machine's pair where its range takes it, else one line naming the re-lock"
 local code=0
 if cell old-runtime "$here/old-runtime/takes/echo" text=old; then
-  grep -q "can't speak this machine's executor protocol" "$OUT/old-runtime.json" && grep -q 'cozy package lock --upgrade-package cozy-runtime' "$OUT/old-runtime.json" \
-    || check "old runtime: its run doesn't say it runs on the machine's pair, or how to re-lock: $(jq -c .warnings "$OUT/old-runtime.json" 2> /dev/null | head -c 400)"
+  grep -q "can't speak this machine's executor protocol.*cozy package lock --upgrade-package cozy-runtime" "$OUT/old-runtime.err" \
+    || check "old runtime: its install doesn't say it runs on the machine's pair, or how to re-lock: $(grep -m1 warning "$OUT/old-runtime.err" | head -c 400)"
 fi
-cozy --json run "$here/old-runtime/refuses/echo" text=old --on local > "$OUT/old-runtime-refused.json" 2>&1 || code=$?
+cozy --json run -p "$RUN_PROJECT" "$here/old-runtime/refuses/echo" text=old --on local > "$OUT/old-runtime-refused.json" 2>&1 || code=$?
 [ "$code" != 0 ] && grep -q runtime_protocol_unspoken "$OUT/old-runtime-refused.json" && grep -q 'cozy package lock --upgrade-package cozy-runtime' "$OUT/old-runtime-refused.json" \
   || check "old runtime: a range refusing the machine's Runtime wasn't refused naming the re-lock (exit $code): $(tail -c 400 "$OUT/old-runtime-refused.json")"
 }
