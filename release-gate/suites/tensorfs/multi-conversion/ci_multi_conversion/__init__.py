@@ -7,10 +7,11 @@ reaches this path; H3 does, but costs ~66 GB per source.
 component's weights are encoded and decode near the source, and that its biases are the source's bytes."""
 
 from operator import attrgetter
-from typing import Any
+from typing import TYPE_CHECKING, cast
 
 import msgspec
 import numpy as np
+import numpy.typing as npt
 from cozy_runtime.author import (
     App,
     Context,
@@ -30,6 +31,9 @@ from cozy_runtime.derive.quantization import (
 )
 from cozy_runtime.weights_store import Derivation
 
+if TYPE_CHECKING:
+    from tensorfs import Array, Tensors
+
 app = App()
 ENCODING = "int8.convrot"
 #: ConvRot int8 of these weights is ~0.007 (recipe-quantize's record); 0.025 is that fixture's bar.
@@ -38,23 +42,23 @@ MAX_RELATIVE_ERROR = 0.025
 LAYERS = {"encoder": ((256, 256), (256, 256)), "decoder": ((256, 256), (64, 256))}
 
 
-class TwoStacks(Model[Any]):
+class TwoStacks(Model[None]):
     """Two linear stacks, `encoder` and `decoder`: the checkpoint layout `INT8` reads. Nothing serves it."""
 
 
-def bf16(values: np.ndarray) -> np.ndarray:
+def bf16(values: npt.NDArray[np.float64]) -> npt.NDArray[np.uint16]:
     """Round-to-nearest-even float32 → bfloat16 bits."""
     bits = values.astype(np.float32).view(np.uint32)
     return ((bits + 0x7FFF + ((bits >> 16) & 1)) >> 16).astype(np.uint16)
 
 
-def f32(raw: bytes, shape: tuple[int, ...]) -> np.ndarray:
+def f32(raw: bytes, shape: tuple[int, ...]) -> npt.NDArray[np.float32]:
     return (np.frombuffer(raw, np.uint16).astype(np.uint32) << 16).view(np.float32).reshape(shape)
 
 
-def tensors(seed: int) -> dict[tuple[str, str], np.ndarray]:
+def tensors(seed: int) -> dict[tuple[str, str], npt.NDArray[np.uint16]]:
     """The source's tensors in construction order, as bfloat16 bits."""
-    out = {}
+    out: dict[tuple[str, str], npt.NDArray[np.uint16]] = {}
     for c, (component, layers) in enumerate(LAYERS.items()):
         for i, (rows, cols) in enumerate(layers):
             rng = np.random.default_rng([seed, c, i])
@@ -78,7 +82,7 @@ def source(payload: Make, ctx: Context) -> ModelArtifact:
         return ctx.adopt_model(output)
 
 
-def quantize(ctx: Context, tel: Telemetry, source: Weights[Any], output: str) -> ModelArtifact:
+def quantize(ctx: Context, tel: Telemetry, source: Weights[TwoStacks], output: str) -> ModelArtifact:
     checkpoint = ctx.tensorfs_source(source)
     request = ArtifactQuantizationRequest()
     plans = [
@@ -119,9 +123,10 @@ class Report(msgspec.Struct):
 @app.entrypoint(accelerator=False)
 def inspect(payload: Inspect, model: Weights[TwoStacks], ctx: Context) -> Report:
     checkpoint = ctx.tensorfs_source(model)
-    held, problems = [], []
+    held: list[Held] = []
+    problems: list[str] = []
     for (component, key), bits in tensors(payload.seed).items():
-        stored = checkpoint.components[component].tensors if component in checkpoint.components else {}
+        stored = cast("Tensors", checkpoint.components[component].tensors if component in checkpoint.components else {})  # cast: {} has no key to read
         if key not in stored:
             problems.append(f"{component}/{key} is missing")
             continue
@@ -135,7 +140,7 @@ def inspect(payload: Inspect, model: Weights[TwoStacks], ctx: Context) -> Report
                 problems.append(f"{component}/{key} is {scheme or 'plain'}, not {ENCODING}")
             elif error > MAX_RELATIVE_ERROR:
                 problems.append(f"{component}/{key} decodes {error:.4f} from the source (bar {MAX_RELATIVE_ERROR})")
-        elif scheme is not None or stored.read(key).tobytes() != bits.tobytes():
+        elif scheme is not None or cast("Array", stored.read(key)).tobytes() != bits.tobytes():  # cast: a plain tensor reads as an Array
             problems.append(f"{component}/{key} is not the source's bytes")
         held.append(Held(component, key, scheme, error))
     if problems:

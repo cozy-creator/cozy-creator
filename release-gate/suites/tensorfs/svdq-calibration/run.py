@@ -7,10 +7,54 @@ import json
 import subprocess
 import time
 from pathlib import Path
+from typing import TypedDict
+
+type JSON = str | int | float | bool | None | list[JSON] | dict[str, JSON]
 
 
-def records(text):
-    result, decoder = [], json.JSONDecoder()
+class Published(TypedDict, total=False):
+    destination: str
+    commit: str
+
+
+class Uploaded(TypedDict, total=False):
+    published: Published
+
+
+class Result(TypedDict, total=False):
+    models: list[Uploaded]
+    passed: bool
+    detail: str
+
+
+class Run(TypedDict, total=False):
+    number: int
+    status: str
+    result: Result
+
+
+class Line(Run, total=False):
+    """One `--json` record: a run, bare or under `run`."""
+
+    run: Run
+
+
+class Native(TypedDict):
+    run: int
+    detail: JSON
+
+
+class Args(argparse.Namespace):
+    machine: str
+    model: str
+    out: Path
+    seed: int
+    require_native: bool
+
+
+def records(text: str) -> list[Line]:
+    result: list[Line] = []
+    decoder = json.JSONDecoder()
     while text.strip():
         value, end = decoder.raw_decode(text.lstrip())
         result.append(value)
@@ -18,7 +62,7 @@ def records(text):
     return result
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--machine", required=True)
     parser.add_argument(
@@ -29,7 +73,7 @@ def main():
     parser.add_argument(
         "--require-native", action="store_true", help="Require SM100+ encoded SVDQ GEMM"
     )
-    args = parser.parse_args()
+    args = parser.parse_args(namespace=Args())
     package = Path(__file__).resolve().parent
     args.out.mkdir(parents=True, exist_ok=True)
 
@@ -37,7 +81,7 @@ def main():
     if not (args.out / "project" / "project.yaml").is_file():
         subprocess.run(["cozy", "project", "new", str(args.out / "project")], check=True, stdout=subprocess.DEVNULL)
 
-    def call(name, argv):
+    def call(name: str, argv: list[str | Path]) -> Run:
         with (
             (args.out / f"{name}.json").open("w") as stdout,
             (args.out / f"{name}.err").open("w") as stderr,
@@ -55,7 +99,7 @@ def main():
         (args.out / f"{name}.number").write_text(str(run["number"]) + "\n")
         return run
 
-    def upload(name, number, slot, lane):
+    def upload(name: str, number: int, slot: str, lane: str) -> tuple[Run, str]:
         result = call(
             name,
             [
@@ -76,7 +120,7 @@ def main():
         ]
         return result, args.model + "@" + published["commit"]
 
-    native = {}
+    native: dict[str, Native] = {}
     for mode in ("basic", "cancel"):
         completed = call(
             "native-" + mode,

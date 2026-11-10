@@ -22,6 +22,21 @@ import threading
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import cast
+
+
+class Args(argparse.Namespace):
+    port: str
+    upstream: str
+    stragglers: str
+    rate: str
+    log: str
+    burst: str | None
+    min: str | None
+    fast: str | None
+    link: int
+    silent: bool
+
 
 ap = argparse.ArgumentParser()
 for name in ('port', 'upstream', 'stragglers', 'rate', 'log'):
@@ -30,7 +45,7 @@ for name in ('burst', 'min', 'fast'):
     ap.add_argument(name, nargs='?')
 ap.add_argument('--link', type=int, default=0)
 ap.add_argument('--silent', action='store_true')
-a = ap.parse_args()
+a = ap.parse_args(namespace=Args())
 PORT, UPSTREAM, STRAGGLERS, RATE, LOG = int(a.port), a.upstream, int(a.stragglers), int(a.rate), a.log
 BURST = int(a.burst or 0)
 MIN = int(a.min) if a.min else 4 * BURST
@@ -38,11 +53,13 @@ FAST, LINK, SILENT = bool(a.fast), a.link, a.silent
 PART = 16 << 20
 up = urllib.parse.urlsplit(UPSTREAM)
 lock = threading.Lock()
-slowed, asked, silenced = set(), {}, set()
+slowed: set[str] = set()
+asked: dict[str, int] = {}
+silenced: set[str] = set()
 HOP = {'connection', 'keep-alive', 'transfer-encoding', 'te', 'trailer', 'upgrade', 'proxy-authorization', 'host'}
 
 
-def log(**row):
+def log(**row: str | float | bool | None) -> None:
     with lock, open(LOG, 'a') as f:
         f.write(json.dumps({'at': time.time(), **row}) + '\n')
 
@@ -50,7 +67,7 @@ def log(**row):
 link = {'at': time.time(), 'tokens': 0.0}
 
 
-def through(n):
+def through(n: int) -> None:
     """Wait until the link (--link) has carried n more bytes: one bucket for every request."""
     while LINK:
         with lock:
@@ -67,9 +84,10 @@ def through(n):
 pool = threading.local()
 
 
-def fetch(url, method, target, body, headers):
+def fetch(url: urllib.parse.SplitResult, method: str, target: str, body: bytes | None,  # type: ignore[return]  # the second attempt returns or re-raises
+          headers: dict[str, str]) -> http.client.HTTPResponse:
     """One request upstream over this thread's kept-alive connection to that host, made again once if it dropped."""
-    conns = pool.__dict__.setdefault('conns', {})
+    conns: dict[str, http.client.HTTPConnection] = pool.__dict__.setdefault('conns', {})
     for attempt in (0, 1):
         c = conns.get(url.netloc)
         if c is None:
@@ -85,30 +103,33 @@ def fetch(url, method, target, body, headers):
                 raise
 
 
-def forget(url):
-    c = pool.__dict__.get('conns', {}).pop(url.netloc, None)
+def forget(url: urllib.parse.SplitResult) -> None:
+    c: http.client.HTTPConnection | None = pool.__dict__.get('conns', {}).pop(url.netloc, None)
     if c is not None:
         c.close()
 
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
+    connection: socket.socket
 
-    def log_message(self, *_):
+    def log_message(self, format: str, *args: object) -> None:
         pass
 
-    def send(self, data):
+    def send(self, data: bytes) -> None:
         through(len(data))
         self.wfile.write(data)
 
-    def hold(self, resp):
+    def hold(self, resp: http.client.HTTPResponse) -> int:
         """Headers and half the body, then silence until the client gives the socket up (at most 5 min)."""
         self.send_response(resp.status)
         for k, v in resp.getheaders():
             if k.lower() not in HOP:
                 self.send_header(k, v)
         self.end_headers()
-        half = resp.read(int(resp.getheader('content-length')) // 2)
+        length = resp.getheader('content-length')
+        assert length is not None
+        half = resp.read(int(length) // 2)
         self.send(half)
         self.wfile.flush()
         self.connection.settimeout(1)
@@ -124,7 +145,7 @@ class Handler(BaseHTTPRequestHandler):
         self.close_connection = True
         return len(half)
 
-    def relay(self, resp, slow=False):
+    def relay(self, resp: http.client.HTTPResponse, slow: bool = False) -> int:
         self.send_response(resp.status)
         for k, v in resp.getheaders():
             if k.lower() not in HOP and k.lower() != 'content-length':
@@ -197,7 +218,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(b'0\r\n\r\n')
             return sent
 
-    def handle_any(self):
+    def handle_any(self) -> None:
         n = int(self.headers.get('content-length') or 0)
         data = self.rfile.read(n) if n else None
         headers = {k: v for k, v in self.headers.items() if k.lower() not in HOP}
