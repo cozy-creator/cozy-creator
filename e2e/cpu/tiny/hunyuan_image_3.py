@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -120,7 +121,9 @@ def _terse(model: torch.nn.Module) -> None:
 def _checkpoint(store: Path, distilled: bool, seed: int, assets: dict[str, bytes], terse: bool = False) -> str:
     config = {**CONFIG, "cfg_distilled": distilled, "use_meanflow": distilled}
     torch.manual_seed(seed)
-    model = module(HunyuanImage3ForCausalMM(HunyuanImage3Config(**config))).to(torch.bfloat16)
+    # Tencent's config takes the release's keys as keyword arguments, typed one by one: the JSON goes in whole.
+    configure: Callable[..., HunyuanImage3Config] = HunyuanImage3Config
+    model = module(HunyuanImage3ForCausalMM(configure(**config))).to(torch.bfloat16)
     if terse:
         _terse(model)
     generator = torch.Generator().manual_seed(seed)
