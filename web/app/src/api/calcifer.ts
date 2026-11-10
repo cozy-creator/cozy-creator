@@ -1596,8 +1596,7 @@ hub?: string, gpus?: number | null, disk_gb?: number | null,
  */
 image?: string | null, 
 /**
- * A Hub admin's provider (`runpod`, `vast`), in place of every provider; the Hub refuses
- * anyone else.
+ * The one provider to buy from (`runpod`, `vast`): dev-only `--provider`.
  */
 provider?: string | null, 
 /**
@@ -2064,7 +2063,11 @@ agreed: Agreed,
 /**
  * What the Hub changed of the ask to quote it.
  */
-warnings?: Array<string>, };
+warnings?: Array<string>, 
+/**
+ * Where the quoted offer is, for an ask that named its provider or a Hub admin's.
+ */
+provider?: string | null, datacenter?: string | null, };
 
 /**
  * A `<mention>` an asset's text makes that names something: an asset, an entity, a sub-entity, or a link of one, as the file names it.
@@ -2186,7 +2189,12 @@ base_worker_image_digest?: string | null,
 /**
  * `host:port` of its sshd, when it was rented with an SSH key.
  */
-ssh?: string | null, };
+ssh?: string | null, 
+/**
+ * Where it runs and whether its pod mounted the datacenter's NFS drive: a Hub admin's read, or
+ * a renter's who named the provider (dev-only `--provider`).
+ */
+provider?: string | null, datacenter?: string | null, nfs_drive?: boolean, };
 
 /**
  * What a rental is expected to cost at its prices, for the expected hours plus its download.
@@ -2544,6 +2552,10 @@ lane?: string | null,
  * `KERNEL` or `[SLOT/]COMPONENT=KERNEL`.
  */
 attention_kernel?: string | null, 
+/**
+ * Compute it afresh: no machine memo answers or keeps it (dev-only `--no-memo`).
+ */
+no_memo?: boolean, 
 /**
  * Keep the function at this level instead of running it (`off` takes it out).
  */
