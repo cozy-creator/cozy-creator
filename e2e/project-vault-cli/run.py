@@ -130,13 +130,20 @@ class Proof:
                     try:
                         target = os.readlink(descriptor)
                         if target.startswith(prefix):
-                            paths.append({'kind': 'fd', 'fd': descriptor.name, 'path': target})
+                            entry = {'kind': 'fd', 'fd': descriptor.name, 'path': target}
+                            # The guardian deliberately retains the *underlying* empty view.
+                            # Its pathname alone must not be mistaken for an open FUSE file.
+                            for line in (process / 'fdinfo' / descriptor.name).read_text().splitlines():
+                                if line.startswith('mnt_id:'):
+                                    entry['mount_id'] = int(line.split(':', 1)[1])
+                            paths.append(entry)
                     except OSError:
                         pass
                 for line in (process / 'maps').read_text().splitlines():
                     parts = line.split(None, 5)
                     if len(parts) == 6 and parts[5].startswith(prefix):
-                        paths.append({'kind': 'mapping', 'path': parts[5]})
+                        paths.append({'kind': 'mapping', 'path': parts[5],
+                                      'device': parts[3], 'inode': parts[4]})
             except OSError:
                 pass
             if paths:
