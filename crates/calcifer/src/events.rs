@@ -193,6 +193,23 @@ pub(crate) async fn stream(
 /// What each stream shows, by its id: the projects it holds open (`PUT /v1/events/{stream}`), until it ends or shows others (cl-823).
 static SHOWN: LazyLock<Mutex<HashMap<String, Vec<project::Reader>>>> = LazyLock::new(Mutex::default);
 
+/// Closing storage releases the readers a still-connected page keeps alive. Drop outside SHOWN:
+/// the last reader closes SQLite and may itself publish a project-closed event.
+pub(crate) fn release_project_readers(id: &str) {
+    let mut gone = Vec::new();
+    {
+        let mut shown = SHOWN.lock().expect("shown lock");
+        for readers in shown.values_mut() {
+            let mut kept = Vec::with_capacity(readers.len());
+            for reader in std::mem::take(readers) {
+                if reader.id() == id { gone.push(reader); } else { kept.push(reader); }
+            }
+            *readers = kept;
+        }
+    }
+    drop(gone);
+}
+
 /// A stream's place in `SHOWN`, by its id: what it holds is let go when it ends.
 struct Showing(String);
 
