@@ -24,6 +24,39 @@ const names = (page) => page.evaluate(() => [...document.querySelectorAll('.reac
   .map((el) => el.value ?? el.textContent).sort());
 const element = boxOf;
 const yaml = (folder) => yamlOf(folder);
+/** The intentional denial owns a blank page under the server's actual policy. App errors stay on the app page. */
+async function policyEvalProbe(context, base) {
+  const native = await context.request.get(base);
+  const policy = native.headers()['content-security-policy'];
+  if (!native.ok() || !policy) return { ok: false, why: 'native page has no successful CSP response' };
+  const probe = await context.newPage();
+  const errors = [];
+  const consoleErrors = [];
+  probe.on('pageerror', (error) => errors.push(error.message));
+  probe.on('console', (message) => { if (message.type() === 'error') consoleErrors.push(message.text()); });
+  let evidence;
+  try {
+    const url = new URL(`/__cozy_e2e_policy_probe_${Date.now()}`, base).href;
+    await probe.route(url, (route) => route.fulfill({ status: 200, contentType: 'text/html', headers: { 'Content-Security-Policy': policy }, body: '<!doctype html><html><head><link rel="icon" href="data:,"></head><body>Owned CSP negative control</body></html>' }));
+    await probe.addInitScript(() => {
+      window.probeViolations = [];
+      document.addEventListener('securitypolicyviolation', (event) => window.probeViolations.push({ directive: event.effectiveDirective, blocked: event.blockedURI, policy: event.originalPolicy, disposition: event.disposition }));
+    });
+    const loaded = await probe.goto(url);
+    // A timer runs as page code; the automation's own evaluation is allowed by the browser.
+    const attempt = await probe.evaluate(() => new Promise((done) => setTimeout(() => {
+      try { done({ refused: false, value: new Function('return 1')() }); }
+      catch (error) { done({ refused: true, name: error.name }); }
+    })));
+    if (attempt.refused) await probe.waitForFunction(() => window.probeViolations.length > 0);
+    const violations = await probe.evaluate(() => window.probeViolations);
+    const expected = violations.length > 0 && violations.every((event) => event.directive === 'script-src' && event.blocked === 'eval' && event.policy === policy && event.disposition === 'enforce');
+    evidence = { ok: attempt.refused && attempt.name === 'EvalError' && expected && errors.length === 0 && loaded.headers()['content-security-policy'] === policy, policy, attempt, violations, errors, consoleErrors };
+  } finally {
+    await probe.close();
+  }
+  return { ...evidence, closed: probe.isClosed() };
+}
 /** Its rows, as project.db holds them (cl-803). */
 function rows(folder) {
   const found = {};
@@ -407,15 +440,45 @@ async function placedInView(page, expected) {
     const zoom = await zoomNow();
     await element(page, 'chain_b').locator('.media').first().hover();
     const corner = await element(page, 'chain_b').locator('.corner').boundingBox();
-    await page.mouse.move(corner.x + corner.width / 2, corner.y + corner.height / 2);
-    await page.mouse.down();
-    await page.mouse.move(corner.x + corner.width / 2 + 100 * zoom, corner.y + corner.height / 2, { steps: 10 });
-    await page.waitForTimeout(300);
-    const live = await page.evaluate((names) => Object.fromEntries(names.map((name) => {
-      const node = [...document.querySelectorAll('.react-flow__node')].find((one) => one.querySelector(`.card[data-asset="${name}"]`));
-      return [name, Math.round(new DOMMatrix(getComputedStyle(node).transform).e)];
-    })), CHAIN);
-    await page.mouse.up();
+    const originalFrom = { x: corner.x + corner.width / 2, y: corner.y + corner.height / 2 };
+    const originalTo = { x: originalFrom.x + 100 * zoom, y: originalFrom.y };
+    // Native mouse coordinates are integers in WebKit: choose the nearest representable 100-wide pull.
+    const from = { x: Math.round(originalFrom.x), y: Math.round(originalFrom.y) };
+    const to = { x: from.x + Math.round(100 * zoom), y: from.y };
+    const input = { zoom, corner, originalFrom, originalTo, from, to, steps: 10, nearestWidth: before.chain_b.w + (to.x - from.x) / zoom };
+    seen.chain = { input };
+    if (!Number.isFinite(input.nearestWidth) || Math.abs(Math.round(input.nearestWidth) - 340) > 2) throw new Error('resize input precondition: nearest integer pointer endpoints cannot reach 340 ±2; see chain.input');
+    await page.evaluate(() => {
+      const events = [];
+      const record = (event) => {
+        const matrix = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform);
+        events.push({ type: event.type, at_ms: performance.now(), x: event.clientX, y: event.clientY, pointerId: event.pointerId, buttons: event.buttons, trusted: event.isTrusted, asset: event.target.closest('.card')?.dataset.asset, camera: { x: matrix.e, y: matrix.f, zoom: matrix.a } });
+      };
+      const types = ['pointerdown', 'pointermove', 'pointerup', 'pointercancel', 'lostpointercapture'];
+      types.forEach((type) => document.addEventListener(type, record, true));
+      window.chainPull = { events, stop: () => types.forEach((type) => document.removeEventListener(type, record, true)) };
+    });
+    let live;
+    try {
+      await page.mouse.move(from.x, from.y);
+      await page.mouse.down();
+      await page.mouse.move(to.x, to.y, { steps: 10 });
+      await page.waitForTimeout(300);
+      live = await page.evaluate((names) => Object.fromEntries(names.map((name) => {
+        const node = [...document.querySelectorAll('.react-flow__node')].find((one) => one.querySelector(`.card[data-asset="${name}"]`));
+        return [name, Math.round(new DOMMatrix(getComputedStyle(node).transform).e)];
+      })), CHAIN);
+    } finally {
+      try { await page.mouse.up(); }
+      finally {
+        input.delivered = await page.evaluate(() => {
+          const { events, stop } = window.chainPull;
+          stop();
+          delete window.chainPull;
+          return events;
+        });
+      }
+    }
     await until('chain_b written', () => Promise.resolve(rows(folder).chain_b), (now) => now.w !== before.chain_b.w);
     const after = await settledRows('chain_b');
     const b = after.chain_b;
@@ -425,7 +488,7 @@ async function placedInView(page, expected) {
       const gap = Math.min(16, before[name].x - before[prev].x - 240);
       want[name] = Math.max(before[name].x, want[prev] + (prev === 'chain_b' ? b.w : 240) + gap);
     }
-    seen.chain = { before: Object.fromEntries(CHAIN.map((name) => [name, before[name]])), after: Object.fromEntries(CHAIN.map((name) => [name, after[name]])), want, live };
+    seen.chain = { before: Object.fromEntries(CHAIN.map((name) => [name, before[name]])), after: Object.fromEntries(CHAIN.map((name) => [name, after[name]])), want, live, input };
     check('a_box_pulled_wider_stays', b.x === before.chain_b.x && b.y === before.chain_b.y && Math.abs(b.w - 340) <= 2, seen.chain);
     check('its_neighbours_go_right_just_enough', CHAIN.every((name) => after[name].x === want[name] && after[name].y === before[name].y) && after.chain_c.x > before.chain_c.x, seen.chain);
     check('the_push_goes_down_the_line', after.chain_c.x - before.chain_c.x >= after.chain_d.x - before.chain_d.x && after.chain_d.x - before.chain_d.x >= after.chain_e.x - before.chain_e.x && after.chain_e.x > before.chain_e.x, seen.chain);
@@ -486,8 +549,8 @@ async function placedInView(page, expected) {
   // Everything above hashed in WebAssembly under the page's own CSP, with no violation; `eval` stays refused beside it.
   const violations = await page.evaluate(() => window.violations);
   check('csp_holds', violations.length === 0, { violations, styles: await page.evaluate(() => [...document.querySelectorAll('style')].map((held) => held.textContent.slice(0, 80))) });
-  // In a timer, as the page's own code runs: an evaluation itself is let past the CSP.
-  check('eval_refused', await page.evaluate(() => new Promise((done) => setTimeout(() => { try { new Function('return 1')(); done(false); } catch { done(true); } }))));
+  seen.eval_probe = await policyEvalProbe(context, base);
+  check('eval_refused', seen.eval_probe.ok && seen.eval_probe.closed, seen.eval_probe);
   seen.resize_observers = await page.evaluate(() => window.resizeEvidence ?? null);
   check('no_page_errors', errors.length === 0, errors);
   console.log(JSON.stringify({ failures, seen }, null, 2));

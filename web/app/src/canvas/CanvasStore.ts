@@ -386,6 +386,11 @@ export class CanvasStore {
     return this.seen
   }
 
+  /** No known or optimistic element, including one still waiting for its row. */
+  get empty() {
+    return !this.views.size && !this.state?.assets.length && !this.state?.entities?.length
+  }
+
   /** A canvas drawn for it, the first or again: back on a project, its boxes are as it left them, whatever's still on its way to Calcifer. */
   attach(flow: Flow) {
     this.flow = flow
@@ -903,7 +908,6 @@ export class CanvasStore {
     this.addNodes(fresh.filter((element) => rows.has(element.name)).map((element) => ({ element, row: rows.get(element.name)! })))
     const homeless = fresh.filter((element) => !rows.has(element.name))
     if (homeless.length) void this.findHomes(homeless)
-    this.names.set(this.names.get() + 1)
     if (before.some((name) => !this.views.has(name))) this.followAll()
     if (!this.seen) {
       this.seen = true
@@ -912,6 +916,7 @@ export class CanvasStore {
     } else {
       for (const { name } of fresh) this.unsettle(name)
     }
+    this.names.set(this.names.get() + 1)
   }
 
   /** Someone wrote this asset, and what that means for what's typed in it: a field typed in is now a conflict, any other only moves what it began from. */
