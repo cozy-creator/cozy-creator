@@ -55,8 +55,11 @@ pub enum Error {
 }
 
 impl Error {
-    /// Whether asking again may be answered: no answer, a timeout (408), rate limit (429) or
-    /// server failure. A refusal, of the credential too, is final.
+    /// Whether asking again may be answered: no answer (no connection, a name that doesn't resolve, 30 s of silence), a
+    /// timeout (408), rate limit (429) or server failure (5xx but 501 and 505). A refusal, of the credential too, a
+    /// certificate that isn't trusted and an answer that can't be read are final. Every call here is safe to ask again:
+    /// a read, a write that sets what it names (an edit, a yank, a publish of one release, a worker's report), or
+    /// `POST /v1/rentals`, which goes under an idempotency key.
     pub fn retry(&self) -> bool {
         match self {
             Self::Call(_) => true,
@@ -128,6 +131,11 @@ impl Error {
         let mut cause: &dyn std::error::Error = error;
         while let Some(next) = cause.source() {
             cause = next;
+        }
+        // Asking again meets the same certificate.
+        if cause.to_string().contains("certificate") {
+            let origin = error.url().map_or_else(|| "the Hub".to_owned(), |url| url.origin().ascii_serialization());
+            return Self::Answer(format!("{origin}'s certificate isn't trusted: {cause}"));
         }
         Self::Call(match error.url() {
             Some(url) => format!(

@@ -378,7 +378,7 @@ impl Capability {
                     return;
                 }
                 Err(error) => {
-                    failing = error.stated_wait().unwrap_or((failing * 2).clamp(Duration::from_secs(1), Duration::from_secs(60)));
+                    failing = error.stated_wait().unwrap_or(failing * 2).clamp(Duration::from_secs(1), Duration::from_secs(60));
                     tracing::warn!(origin = %self.origin, retry_s = failing.as_secs(), "redeeming the run capability: {error}");
                 }
             }

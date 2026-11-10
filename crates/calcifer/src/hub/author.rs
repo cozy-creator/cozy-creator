@@ -502,7 +502,7 @@ async fn put(
             Ok(answer) => match answer.status().as_u16() {
                 200..=299 => return Ok(length),
                 412 => return Ok(0),
-                status @ 500..=599 => format!("the store answered HTTP {status}"),
+                status @ (408 | 429 | 500 | 502..=504) => format!("the store answered HTTP {status}"),
                 status => return Err(failed(format!("{path}: the store answered HTTP {status}"))),
             },
             Err(e) => chain(&e),

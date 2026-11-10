@@ -433,10 +433,26 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
 
       // Installed: drawn, from the release, named by the digest of its wheel.
       // A Hub that takes the request and never answers: the install says so, rather than waiting with nothing in any log.
+      // The one retry rule (cl-840), on an install a person waits on. Silence may end: asked again, each attempt a line, and given up
+      // within about a minute in all. A 503 may recover: asked again by the backoff, then one line naming the Hub's own words. A 404 is
+      // the Hub's refusal: failed at once, never asked again.
+      const install = (name) => {
+        const began = Date.now();
+        return cozyHere(['--json', 'package', 'install', name, '--on', 'local'], { ...quiet, env, cwd: folder })
+          .then(() => 'it installed', (error) => error.said).then((said) => ({ said, took: Date.now() - began }));
+      };
       hub.silent = true;
-      const unanswered = await cozyHere(['--json', 'package', 'install', package_, '--on', 'local'], { ...quiet, env, cwd: folder }).then(() => 'it installed', (error) => error.said);
+      const unanswered = await install(package_);
       hub.silent = false;
-      check('a_silent_hub_says_so', unanswered.includes('hub_slow'), unanswered);
+      check('a_silent_hub_says_so', unanswered.said.includes('hub_slow'), unanswered);
+      check('a_silent_hub_is_asked_again_within_a_minute', /attempt 2\/5 in \d/.test(unanswered.said) && !unanswered.said.includes('attempt 4/5') && unanswered.took < 100_000, unanswered);
+      hub.down = true;
+      const down = await install(package_);
+      hub.down = false;
+      check('a_503_is_asked_again_then_named', /attempt 5\/5 in \d/.test(down.said) && down.said.includes('this Hub is down') && down.took < 100_000, down);
+      const asked = hub.asked.length;
+      const absent = await install('e2e/never-published');
+      check('a_404_fails_at_once', absent.said !== 'it installed' && !absent.said.includes('attempt') && new Set(hub.asked.slice(asked).filter((line) => line.includes('never-published'))).size === hub.asked.slice(asked).filter((line) => line.includes('never-published')).length && absent.took < 20_000, { ...absent, asks: hub.asked.slice(asked) });
       await cozyHere(['--json', 'package', 'install', package_, '--on', 'local'], { ...quiet, env, cwd: folder });
       const wire = await until('its component', () => toolUi(released), (answer) => answer.status !== 404, FIRST_RUN_MS);
       check('installed_loads', wire.status === 200 && wire.body.module.includes(`/ui/${hub.digest}/`), { wire, digest: hub.digest });

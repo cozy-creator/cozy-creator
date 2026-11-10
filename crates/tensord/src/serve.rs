@@ -515,7 +515,7 @@ fn report_endpoint(grant: crate::machine::grant::HubGrant, endpoint: crate::mach
         Err(error) => return tracing::warn!("endpoint report: {error}"),
     };
     runtime.block_on(async {
-        let mut backoff = tensorfs::fetch::Backoff::call();
+        let mut backoff = tensorfs::fetch::Backoff::background();
         loop {
             let (why, stated) = match hub.report_endpoint(&endpoint).await {
                 Ok(()) => return tracing::info!("reported endpoint {}", endpoint.public_host),

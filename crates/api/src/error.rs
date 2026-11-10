@@ -165,7 +165,8 @@ impl Kind {
             404 => Kind::NotFound,
             402 | 409 | 410 => Kind::Conflict,
             408 | 429 => Kind::Unavailable,
-            400..=499 => Kind::Validation,
+            // Never answered, however often it's asked: not implemented, an HTTP version it doesn't speak.
+            400..=499 | 501 | 505 => Kind::Validation,
             507 => Kind::Capacity,
             _ => Kind::Unavailable,
         }

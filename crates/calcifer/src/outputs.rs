@@ -250,7 +250,7 @@ impl Calcifer {
         {
             machines.local_up().await.map_err(|e| e.message)?;
         }
-        let mut backoff = tensorfs::fetch::Backoff::call();
+        let mut backoff = tensorfs::fetch::Backoff::background();
         loop {
             let mut changed = None;
             let done = match self.reach(&run, &mut changed) {
