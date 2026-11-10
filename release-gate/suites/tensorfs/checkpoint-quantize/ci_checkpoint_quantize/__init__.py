@@ -266,13 +266,13 @@ def run(payload: Request, ctx: Context) -> Report:
             else:
                 raise AssertionError("pre-canceled conversion ran")
             assert before.progress() == (0, 0, 0)
-            stats = cast("Conversion", output.quantize(  # cast: its result
+            stats: "Conversion" = output.quantize(
                 source,
                 selected,
                 max_buffer_bytes=buffer_bytes,
                 max_new_bytes=allowance,
                 control=tensorfs.ConversionControl(),
-            ))
+            )
             assert (
                 stats["encoded_keys"] == 6 and stats["new_bytes_written"] == allowance
             )

@@ -378,14 +378,14 @@ def basic(payload: Request) -> dict[str, object]:
             control = tensorfs.ConversionControl()
             controls.append(control)
             started = time.perf_counter()
-            result = cast("Conversion", output.quantize(  # cast: its result
+            result: "Conversion" = output.quantize(
                 source,
                 specs,
                 calibration=calibration,
                 max_buffer_bytes=workspace,
                 max_new_bytes=allowance,
                 control=control,
-            ))
+            )
             fit_seconds = time.perf_counter() - started
             checkpoint = output.commit()
             assert checkpoint.verify().ok
@@ -731,14 +731,14 @@ def cancel_worker() -> None:
                 "weights", "large"
             )
         resume_began = time.perf_counter()
-        result = cast("Conversion", reopened.quantize(  # cast: its result
+        result: "Conversion" = reopened.quantize(
             source,
             specs,
             calibration=calibration,
             max_buffer_bytes=WORKSPACE,
             max_new_bytes=allowance,
             control=tensorfs.ConversionControl(),
-        ))
+        )
         resume_fit_seconds = time.perf_counter() - resume_began
         assert result["reused_keys"] == 1 and result["encoded_keys"] == 1
         assert result["worst_relative_frobenius"] is None
@@ -1091,7 +1091,7 @@ def runtime_components(
                 facts[name] = check_selected(
                     item,
                     values[name],
-                    cast("Converted", measured.tensors[0]),  # cast: the Runtime's rows are untyped dicts
+                    measured.tensors[0],  # Runtime gap: QuantizationStats.tensors rows are dict[str, Any]
                     calibration=calibration.stats(name, "proj.weight")
                     .rows.float()
                     .numpy(),

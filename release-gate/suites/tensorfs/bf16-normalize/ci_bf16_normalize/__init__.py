@@ -70,10 +70,10 @@ def observed(result: "t.Converted", expected: dict[str, float | int], values: "t
 def normalize(writer: "t.Writer", source: "t.Checkpoint", selection: "Sequence[t.Selected]", tensorfs: "t.TensorFS", *, buffer: int = 64 << 10, allowance: int | None = None, control: "t.Control | None" = None) -> "t.Normalization":
     if allowance is None:
         allowance = sum(math.prod(row["shape"]) * 2 for row in selection)
-    return cast("t.Normalization", writer.normalize_bf16(  # cast: its result
+    return writer.normalize_bf16(
         source, selection, max_buffer_bytes=buffer, max_new_bytes=allowance,
         control=control if control is not None else tensorfs.ConversionControl(),
-    ))
+    )
 
 
 def quant_selection(key: str = "quant.weight", dtype: str = "F32") -> "t.Quantize":
@@ -96,9 +96,9 @@ def run(payload: Request, ctx: Context, tel: Telemetry) -> Report:
         directory = Path(temporary)
         result: t.Basic | t.Cancel
         if payload.mode == "cancel":
-            result = cancel(directory, payload.seed, cast("t.TensorFS", tensorfs), np, oracle)  # cast: `raw` is missing from tensorfs.__all__
+            result = cancel(directory, payload.seed, tensorfs, np, oracle)  # stub gap: tensorfs.__all__ lacks `raw`
         else:
-            result = basic(directory, payload.seed, cast("t.TensorFS", tensorfs), np, oracle, ctx, tel, payload.runtime)  # cast: as above
+            result = basic(directory, payload.seed, tensorfs, np, oracle, ctx, tel, payload.runtime)  # stub gap: as above
         result.update({
             "mode": payload.mode, "tensorfs": tensorfs.__version__, "numpy": np.__version__,
             "native_sha256": hashlib.sha256(Path(tensorfs._ext.__file__).read_bytes()).hexdigest(),
@@ -317,8 +317,8 @@ def mixed_resume(directory: Path, source: "t.Checkpoint", specifications: "list[
     output = tensorfs.Writer(path, base=source, resume="mixed-bf16-and-quantization")
     norm = normalize(output, source, specifications, tensorfs)
     qspec = [quant_selection()]
-    quant = cast("t.Conversion", output.quantize(source, qspec, max_buffer_bytes=16 << 10,  # cast: its result
-                            max_new_bytes=7 * (256 + 4), control=tensorfs.ConversionControl()))
+    quant: "t.Conversion" = output.quantize(source, qspec, max_buffer_bytes=16 << 10,
+                            max_new_bytes=7 * (256 + 4), control=tensorfs.ConversionControl())
     assert norm["converted_keys"] == len(specifications) and quant["encoded_keys"] == 1
     del output
     gc.collect()
@@ -347,8 +347,8 @@ def mixed_resume(directory: Path, source: "t.Checkpoint", specifications: "list[
         raise AssertionError("resume accepted changed source checkpoint")
     changed.close()
     # Opposite call order after reopen must remain valid.
-    q_again = cast("t.Conversion", output.quantize(source, qspec, max_buffer_bytes=64 << 10,  # cast: its result
-                             max_new_bytes=0, control=tensorfs.ConversionControl()))
+    q_again: "t.Conversion" = output.quantize(source, qspec, max_buffer_bytes=64 << 10,
+                             max_new_bytes=0, control=tensorfs.ConversionControl())
     n_again = normalize(output, source, specifications, tensorfs, buffer=64 << 10, allowance=0)
     assert q_again["reused_keys"] == 1 and q_again["encoded_keys"] == 0
     assert n_again["reused_keys"] == len(specifications) and n_again["converted_keys"] == 0
@@ -412,7 +412,7 @@ def runtime_adapter(directory: Path, source: "t.Checkpoint", specifications: "li
     assert replayed.source_bytes_read == replayed.stored_source_bytes_read == replayed.new_bytes_written == 0
     assert replayed.worst_relative_frobenius is None
     conversion, pending = output.prepare_quantization(source, [quant_selection()], max_relative_frobenius=None)
-    quant = cast("t.Conversion", native_quantization._run_native(conversion, pending, ctx, tel, stage="mixed native producer"))  # cast: a quantize result
+    quant: "t.Conversion" = native_quantization._run_native(conversion, pending, ctx, tel, stage="mixed native producer")
     assert quant["encoded_keys"] == 1
     checkpoint = output.commit()
     assert checkpoint.verify().ok

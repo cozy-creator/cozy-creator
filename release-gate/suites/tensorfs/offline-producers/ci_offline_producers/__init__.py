@@ -231,7 +231,7 @@ def run(payload: Request, ctx: Context) -> Report:
             if key.endswith(".F32"):
                 decoded = np.empty(stored.shape, dtype="<f4")
                 raw.decode_into(stored.scheme, parts(stored), decoded, dtype="F32", shape=stored.shape, params=stored.params)
-                assert decoded.tobytes() == cast("tensorfs.Array", checkpoint.components["weights"].tensors.read(key, decode=True)).tobytes()  # cast: decoded
+                assert decoded.tobytes() == checkpoint.components["weights"].tensors.read(key, decode=True).tobytes()  # stub gap: no decode=True overload
         checkpoint.close()
 
         # The checkpoint path supplies decoded F16/BF16/F32, and stages the shared codebook once.
@@ -276,8 +276,8 @@ def run(payload: Request, ctx: Context) -> Report:
                 pass
             else:
                 raise AssertionError("pre-canceled conversion ran")
-            report = cast("t.Conversion", output.quantize(source, selected, max_buffer_bytes=buffer_bytes,  # cast: its result
-                                     max_new_bytes=allowance, control=tensorfs.ConversionControl()))
+            report: "t.Conversion" = output.quantize(source, selected, max_buffer_bytes=buffer_bytes,
+                                     max_new_bytes=allowance, control=tensorfs.ConversionControl())
             assert report["encoded_keys"] == 6 and report["new_bytes_written"] == allowance
             assert report["source_bytes_read"] == sum(np.prod(row["shape"]) * (4 if row["source_dtype"] == "F32" else 2) for row in selected)
             repeated = output.quantize(source, selected, max_buffer_bytes=buffer_bytes * 2,
@@ -289,7 +289,7 @@ def run(payload: Request, ctx: Context) -> Report:
             measured = {row["key"]: row["measured"] for row in report["tensors"]}
             for row in selected:
                 key = row["key"]
-                reference, want = expected(originals[key], cast(str, row["encoding"]["scheme"]))  # cast: QuantizeTensor's encoding is a loose Mapping
+                reference, want = expected(originals[key], row["encoding"]["scheme"])  # stub gap: QuantizeTensor.encoding is a loose Mapping
                 assert parts(cast("tensorfs.Encoded", checkpoint.components["weights"].tensors.read(key))) == want  # cast: encoded
                 check_stats(measured[key], reference, originals[key])
             reports.append(report)

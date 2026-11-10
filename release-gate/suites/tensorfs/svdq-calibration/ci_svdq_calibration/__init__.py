@@ -31,7 +31,6 @@ from cozy_runtime.weights_store import Derivation
 if TYPE_CHECKING:
     from cozy_runtime.derive.svdq import Calibration
 
-    from ._types import Converted as ConvertedRow
     from ._types import Parts
 
 app = App()
@@ -286,7 +285,7 @@ def calibrate(
         )
         (row,) = measured.tensors
         detail = check_selected(
-            item, values, cast("ConvertedRow", row), calibration=stats.rows.float().numpy()  # cast: the Runtime's rows are untyped dicts
+            item, values, row, calibration=stats.rows.float().numpy()  # Runtime gap: QuantizationStats.tensors rows are dict[str, Any]
         )
         fit = row["fit"]
         assert fit["calibration_bytes_read"] == COLS * 4 + 128 * COLS * 2
