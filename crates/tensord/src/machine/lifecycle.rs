@@ -420,9 +420,9 @@ pub(crate) async fn keep_authority(hub: Arc<Hub>, keys: Keys) {
 }
 
 /// Reads the journal's jobs each second and releases the rental once 15 minutes passed with
-/// none. Returns when the Hub accepted the release, or when the rental ended itself: idle past
-/// its deadline with no answer from the Hub through that whole idle window, the Hub cannot end
-/// it, so it ends itself at its provider (`provider`, else by stopping) and billing stops.
+/// none. Returns when the Hub accepted the release, or when the rental ended itself at its
+/// provider (`provider`, else by stopping) so billing stops: released, it takes no more work, and
+/// the Hub has not ended it (`on_its_own`).
 pub(crate) async fn release_when_idle(
     lifecycle: Arc<Lifecycle>,
     hub: Arc<Hub>,
@@ -461,11 +461,6 @@ pub(crate) async fn release_when_idle(
                             Refusal::Transport(_, Some(wait)) => wait.as_millis() as i64,
                             _ => unanswered,
                         };
-                        if unheard(hub.contact_ms(), lifecycle.deadline_ms(), lifecycle.grace) {
-                            tracing::warn!("idle past the deadline with no answer from Tensorhub through the whole idle window; ending this rental itself");
-                            end_itself(provider.as_ref()).await;
-                            return;
-                        }
                     }
                 },
                 Ok(false) => (),
@@ -473,6 +468,12 @@ pub(crate) async fn release_when_idle(
                     tracing::warn!("idle release could not be recorded: {error}")
                 }
             }
+        }
+        // Read each second, not at each ask: an ask can wait as long as the Hub last said to.
+        if lifecycle.released() && on_its_own(hub.contact_ms(), lifecycle.deadline_ms(), lifecycle.grace, now_ms()) {
+            tracing::warn!("released, and Tensorhub has not ended this rental: silent for a whole idle window, or a whole window past the deadline; ending it itself");
+            end_itself(provider.as_ref()).await;
+            return;
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
@@ -550,9 +551,11 @@ pub(crate) fn exit_when_idle(
     }
 }
 
-/// The Hub has not answered since this idle window began: it cannot hear the release.
-fn unheard(contact_ms: i64, deadline_ms: i64, grace: i64) -> bool {
-    contact_ms < deadline_ms - grace
+/// A released rental the Hub has not ended ends itself once the Hub has said nothing for a whole
+/// idle window, whenever that silence began (at the deadline when it began before the window), and
+/// at the latest one window past its deadline, whatever the Hub says meanwhile.
+fn on_its_own(contact_ms: i64, deadline_ms: i64, grace: i64, now: i64) -> bool {
+    now >= contact_ms.min(deadline_ms) + grace
 }
 
 async fn end_itself(provider: Option<&super::provider::ProviderSelf>) {

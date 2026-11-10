@@ -162,6 +162,8 @@ pod's executor processes and GPU bytes after each cell, set side by side in `sum
 `hub-outage` (cl-708, one `cpu` pod with SSH) breaks the pod's resolver before a deviceless root's first child call
 resolves its model (`fixtures/hub-outage`): the call waits and its run says it retries until the resolver is mended, a
 later call of the same model asks the Hub nothing, and a model the Hub has not is refused at once. The run completes.
+`idle-hub-silent` (cl-778, one `cpu` pod with SSH) names the Hub's host at an address nothing answers part way through
+the pod's idle window: its release goes unaccepted, and it ends itself at its provider within one window of its deadline.
 `runtime-floor` (run 28075, one cheap GPU pod) puts a machine on an older numbered prerelease pair: a package whose floor
 that pair misses takes its own Runtime in its own environment, and the machine's pair stays.
 
