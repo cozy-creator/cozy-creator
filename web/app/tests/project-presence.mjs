@@ -16,12 +16,15 @@ const temporary = fs.mkdtempSync(path.join(process.env.COZY_PRESENCE_ROOT, "modu
 const sourceHashes = {}
 const compiled = new Map()
 const baseline = process.env.COZY_PRESENCE_QUERY_BASELINE === "1"
+const baselineEvents = process.env.COZY_PRESENCE_EVENTS_BASELINE === "1"
+const ackOnly = process.env.COZY_PRESENCE_ACK_ONLY === "1"
 function compile(filename) {
   if (compiled.has(filename)) return compiled.get(filename)
   const target = path.join(temporary, path.relative(path.join(app, "src"), filename).replace(/\.tsx?$/, ".mjs"))
   compiled.set(filename, target)
   let source = fs.readFileSync(filename, "utf8")
   if (baseline && filename.endsWith("/api/queries.ts")) source = execFileSync("git", ["show", "a411ddba0:web/app/src/api/queries.ts"], { cwd: app, encoding: "utf8" })
+  if (baselineEvents && filename.endsWith("/api/events.ts")) source = execFileSync("git", ["show", "0e7cd997b:web/app/src/api/events.ts"], { cwd: app, encoding: "utf8" })
   sourceHashes[path.relative(app, filename)] = createHash("sha256").update(source).digest("hex")
   // Observe Bridge's unchanged production implementation without exporting it in the product.
   if (filename.endsWith("/app/Connection.tsx")) source += "\nexport { Bridge };\n"
@@ -59,6 +62,7 @@ const events = []
 const eventWaiters = new Set()
 const getRequests = []
 const showRequests = []
+const showStarts = []
 const requestWaiters = new Set()
 const owned = []
 let delayedShow = null
@@ -135,6 +139,7 @@ async function replay(stream, shown) {
 
 const transport = {
   async fetch(route, init = {}) {
+    if (init.method === "PUT" && route.startsWith("/v1/events/")) showStarts.push(route)
     if (route.startsWith("/v1/projects/") && (!init.method || init.method === "GET")) { getRequests.push(route); requestSeen() }
     const signal = route === "/v1/events" ? AbortSignal.any([init.signal, connection.signal]) : init.signal
     let actual = route
@@ -152,6 +157,7 @@ const transport = {
         delayedShow = null
         held.entered.done(record)
         await held.release.promise
+        if (held.rejectAfter) throw new TypeError("controlled deferred old-stream failure")
       }
       record.completed = true
       requestSeen()
@@ -306,6 +312,42 @@ try {
   await clear(owner)
   console.log(JSON.stringify({ failed_show_uses_existing_reconnect_before_query: true, stale_revision_rejected: true }))
 
+  const staleFailure = await made("stale-error")
+  const oldEpoch = owner.stream
+  const oldGate = holdShow(staleFailure.id)
+  oldGate.rejectAfter = true
+  const oldDone = deferred()
+  const tell = owner.tell
+  let captured = false
+  owner.tell = function (...args) {
+    const capture = !captured && !this.telling && this.stream === oldEpoch
+    if (capture) captured = true
+    const task = tell.apply(this, args)
+    if (capture) task.then(oldDone.done, oldDone.done)
+    return task
+  }
+  const staleGet = getRequests.length
+  const stalePending = query(client, owner, staleFailure.id)
+  owner.show(staleFailure.id)
+  await oldGate.entered.promise
+  const reconnectFrom = events.length
+  connection.abort()
+  connection = new AbortController()
+  const newHello = await waitEvent((event) => event.type === "hello" && event.stream !== oldEpoch, reconnectFrom)
+  const starts = showStarts.length
+  const newGate = holdShow(staleFailure.id)
+  oldGate.release.done()
+  await oldDone.promise
+  assert.equal(showStarts.length, starts + 1, "stale show rejection stranded the newer live stream")
+  assert.ok(showStarts.at(-1).endsWith(newHello.stream))
+  await newGate.entered.promise
+  assert.equal(getRequests.length, staleGet)
+  newGate.release.done()
+  assert.equal((await stalePending).id, staleFailure.id)
+  owner.tell = tell
+  await clear(owner)
+  console.log(JSON.stringify({ deferred_old_rejection_reconciles_new_hello: true, no_retry_on_old_stream: true }))
+
   const old = await made("legacy")
   legacy = true
   const oldRead = query(client, owner, old.id)
@@ -321,6 +363,14 @@ try {
   await assert.rejects(failed.show("absent-stream", [], new AbortController().signal), (error) => error instanceof ApiError && error.status === 0)
   assert.equal(calls, 2)
   console.log(JSON.stringify({ legacy204_completion: true, checked_status_and_network_failure: true, no_added_retry: true }))
+
+  if (ackOnly) {
+    for (const id of owned) assert.equal(await open(id), false)
+    clearTimeout(safety)
+    fs.rmSync(temporary, { recursive: true, force: true })
+    console.log(JSON.stringify({ ack_only_complete: true, readers_released: owned, modules_removed: true }))
+    process.exit(0)
+  }
 
   // Preserve the real Bridge fallback: delay the native creation frame until after its snapshot.
   const entered = deferred(), release = deferred()

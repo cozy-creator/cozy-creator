@@ -208,8 +208,10 @@ export class EventStream {
       return
     } finally {
       this.telling = false
+      // A newer hello may have arrived while an older show was pending, even if that old
+      // request failed. Reconcile the current stream; its aborted-follow guard prevents retry.
+      void this.tell()
     }
-    void this.tell()
   }
 
   subscribe(listener: (event: StreamEvent) => void): () => void {
