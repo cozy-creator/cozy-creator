@@ -4,6 +4,13 @@
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 J() { jq -e "$@" > /dev/null; }  # J <filter> <file>: the answer holds what the filter asks
 
+# The public entrypoints work without the retired canvas-editing command group.
+entrypoints() {
+  step "public commands and explicit project creation"
+  ARGV_LOG="$OUT/argv.log" python3 "$here/entrypoints.py" --cozy "$COZY" --out "$OUT/entrypoints" \
+    || check "entrypoints: see $OUT/entrypoints/results.json"
+}
+
 # What needs no machine: Calcifer, the Hub setting, signing out, the Hub's packages and models.
 catalog() {
 step status
