@@ -78,8 +78,6 @@ pub struct Header {
     pub metadata: Metadata,
     /// Component name → (its index, tensor key → tensor index).
     index: HashMap<String, (usize, HashMap<String, usize>)>,
-    /// `metadata.provenance`, read once.
-    provenance: Option<Provenance>,
 }
 
 /// The recipe that wrote a lane (`metadata.provenance`, spec §4): its package and release, its
@@ -97,25 +95,6 @@ pub struct Provenance {
 
 impl Provenance {
     pub const KEY: &'static str = "provenance";
-
-    /// The record in `metadata`; none when it is absent or not this shape.
-    fn of(metadata: &Metadata) -> Option<Provenance> {
-        let Some(Value::Map(fields)) = metadata.get(Self::KEY) else {
-            return None;
-        };
-        let text = |name: &str| match fields.get(name) {
-            Some(Value::Str(text)) => Some(text.clone()),
-            _ => None,
-        };
-        Some(Provenance {
-            package: text("package")?,
-            release: text("release")?,
-            recipe: text("recipe")?,
-            fingerprint: text("fingerprint")?,
-            source: text("source")?,
-            plan: fields.get("plan").filter(|plan| matches!(plan, Value::Map(_)))?.clone(),
-        })
-    }
 }
 
 impl PartialEq for Header {
@@ -295,7 +274,6 @@ impl Header {
             chunks,
             pipeline,
             components: Vec::new(),
-            provenance: Provenance::of(&metadata),
             metadata,
             index: HashMap::new(),
         };

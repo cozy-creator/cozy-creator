@@ -253,7 +253,7 @@ impl DeviceBuffer {
     pub fn len(&self) -> usize {
         self.len
     }
-    pub(crate) fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.len == 0
     }
     pub fn device(&self) -> i32 {
@@ -994,22 +994,8 @@ pub(super) unsafe fn fill(
             let ns = start.elapsed().as_nanos() as u64;
             let plain: Vec<Copy> = copies.iter().map(|&(_, c)| c).collect();
             super::disk_run(&plain, &stats, ns);
-            let run = super::metrics::Copy {
-                kind,
-                gpu: device,
-                bytes: copies.iter().map(|(_, c)| c.dst.len() as u64).sum(),
-                ns,
-                link: super::metrics::device_link(device)
-                    .map_or_else(String::new, |link| link.to_string()),
-                busy_ns: stats.busy_ns,
-                pin_ns: stats.pin_ns,
-                staged: stats.staged,
-                cached: stats.cached,
-                ..Default::default()
-            };
-            match kind {
-                "h2d" => super::metrics::h2d_run(run),
-                _ => super::metrics::record(run),
+            if kind == "h2d" {
+                super::metrics::h2d_run(device, copies.iter().map(|(_, c)| c.dst.len() as u64).sum(), ns);
             }
         }
         #[cfg(not(unix))]

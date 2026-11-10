@@ -140,21 +140,6 @@ pub(crate) fn resolve(host: &str, port: u16) -> std::io::Result<Vec<SocketAddr>>
     Ok((host, port).to_socket_addrs()?.collect())
 }
 
-/// One URL, checked: the exact origin the socket may open, and nothing else about it.
-#[derive(Debug, Clone)]
-pub(crate) struct CheckedUrl {
-    pub https: bool,
-    pub host: String,
-    pub port: u16,
-    /// Path plus query, exactly as given — a presigned URL's query IS its authorization.
-    pub target: String,
-    /// The checked answers. The connection is made to these, never re-resolved.
-    pub addrs: Vec<SocketAddr>,
-}
-
-impl CheckedUrl {
-}
-
 /// The deployment's declared egress bound. Carried by every caller that hands this module
 /// a URL; enforced on the first URL and on every redirect hop, because the hops are only
 /// visible here.
@@ -239,16 +224,15 @@ impl SourcePolicy {
     /// The whole front door: scheme, shape, allowlist, resolution, and the class check on
     /// every answer. Everything this module fetches or pushes passes here first, and every
     /// redirect hop passes here again.
-    pub(crate) fn check(&self, url: &str) -> Result<CheckedUrl> {
-        let (https, host, port, target) = self.admit(url)?;
-        let port = port.unwrap_or(if https { 443 } else { 80 });
-        self.resolve_checked(https, host, port, target)
+    pub(crate) fn check(&self, url: &str) -> Result<()> {
+        let (https, host) = self.admit(url)?;
+        self.addresses_for(&host, https).map(drop)
     }
 
     /// Everything [`check`](Self::check) refuses before resolving: shape, scheme and allowlist.
-    /// Returns whether the URL is https, its host, port and target.
-    pub(crate) fn admit(&self, url: &str) -> Result<(bool, String, Option<u16>, String)> {
-        let (scheme, host, port, target) = split_url(url)?;
+    /// Returns whether the URL is https, and its host.
+    pub(crate) fn admit(&self, url: &str) -> Result<(bool, String)> {
+        let (scheme, host) = split_url(url)?;
         let https = scheme == "https";
         if !https && !self.allow_local && !self.plaintext {
             return refuse(
@@ -270,13 +254,7 @@ impl SourcePolicy {
                 ),
             );
         }
-        Ok((https, host, port, target))
-    }
-
-    fn resolve_checked(&self, https: bool, host: String, port: u16, target: String) -> Result<CheckedUrl> {
-        let mut addrs = self.addresses_for(&host, https)?;
-        addrs.iter_mut().for_each(|addr| addr.set_port(port));
-        Ok(CheckedUrl { https, host, port, target, addrs })
+        Ok((https, host))
     }
 
     /// Every answer for `host`, each checked: what the client dials (its port set by the URL). The
@@ -326,10 +304,10 @@ impl SourcePolicy {
 /// DECLARE a local deployment from its own hub base (`pull` does exactly this, as
 /// cozy-runtime's `local_hub` did).
 pub fn is_loopback_origin(url: &str) -> bool {
-    let Ok((_, host, port, _)) = split_url(url) else {
+    let Ok((_, host)) = split_url(url) else {
         return false;
     };
-    match resolve(&host, port.unwrap_or(443)) {
+    match resolve(&host, 0) {
         Ok(addrs) => {
             !addrs.is_empty() && addrs.iter().all(|a| blocked(a.ip()).contains("loopback"))
         }
@@ -340,12 +318,12 @@ pub fn is_loopback_origin(url: &str) -> bool {
 /// The host a base URL names — what a caller scopes a credential to, and what naming a
 /// hub base declares.
 pub(crate) fn base_host(url: &str) -> Result<String> {
-    split_url(url).map(|(_, host, _, _)| host)
+    split_url(url).map(|(_, host)| host)
 }
 
 /// The small strict split this module needs. Userinfo and fragments are refused outright —
 /// a capability URL carrying either is not one clean origin.
-fn split_url(url: &str) -> Result<(String, String, Option<u16>, String)> {
+fn split_url(url: &str) -> Result<(String, String)> {
     if url.is_empty() || url.len() > 16 * 1024 || !url.is_ascii() {
         return refuse(
             Code::SOURCE_NOT_ALLOWED,
@@ -364,13 +342,7 @@ fn split_url(url: &str) -> Result<(String, String, Option<u16>, String)> {
             format!("{scheme}: not an allowed transport scheme (http/https only)"),
         );
     }
-    let split_at = rest.find(['/', '?']).unwrap_or(rest.len());
-    let (authority, target) = rest.split_at(split_at);
-    let target = if target.is_empty() || target.starts_with('?') {
-        format!("/{target}")
-    } else {
-        target.to_string()
-    };
+    let authority = &rest[..rest.find(['/', '?']).unwrap_or(rest.len())];
     if authority.is_empty() || authority.contains('@') {
         return refuse(
             Code::SOURCE_NOT_ALLOWED,
@@ -401,16 +373,12 @@ fn split_url(url: &str) -> Result<(String, String, Option<u16>, String)> {
             None => (authority.to_string(), None),
         },
     };
-    let port = match port_raw {
-        None => None,
-        Some(text) => Some(text.parse::<u16>().map_err(|_| crate::err::Refusal {
-            code: Code::SOURCE_NOT_ALLOWED,
-            detail: format!("source URL port {text:?} is not a 16-bit number"),
-        })?),
-    };
+    if let Some(text) = port_raw.filter(|text| text.parse::<u16>().is_err()) {
+        return refuse(Code::SOURCE_NOT_ALLOWED, format!("source URL port {text:?} is not a 16-bit number"));
+    }
     let host = host_raw.trim_end_matches('.').to_ascii_lowercase();
     if host.is_empty() {
         return refuse(Code::SOURCE_NOT_ALLOWED, "source URL has no host");
     }
-    Ok((scheme, host, port, target))
+    Ok((scheme, host))
 }

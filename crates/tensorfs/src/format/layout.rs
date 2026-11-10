@@ -15,12 +15,11 @@ pub(crate) const BLOCK_CLOSE: u64 = 16 << 20;
 /// Every packed part starts at a multiple of this.
 pub const ALIGN: u64 = 4096;
 
-/// One stored part: a plain tensor's data (`role` empty) or one part of an encoded tensor.
+/// One stored part: a plain tensor's data or one part of an encoded tensor.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Item<'a> {
     pub component: &'a str,
     pub key: &'a str,
-    pub role: &'a str,
     pub length: u64,
 }
 

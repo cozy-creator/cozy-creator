@@ -467,7 +467,7 @@ fn cold(copies: &[Copy], opts: &ReadOpts) -> Vec<bool> {
     missing.iter().map(|&m| past && m > 0).collect()
 }
 
-/// Logs the file reads among `copies` as one disk run (`metrics`).
+/// The file reads among `copies`, as one disk run against their volume's ceiling (`metrics`).
 #[cfg(unix)]
 fn disk_run(copies: &[Copy], stats: &ReadStats, ns: u64) {
     let mut files: Vec<&File> = Vec::new();
@@ -481,6 +481,6 @@ fn disk_run(copies: &[Copy], stats: &ReadStats, ns: u64) {
         }
     }
     if bytes > 0 {
-        metrics::disk_run(&files, bytes, ns, stats.direct, stats.cached);
+        metrics::disk_run(&files, ns, stats.direct, stats.cached);
     }
 }

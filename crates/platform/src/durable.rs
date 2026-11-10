@@ -96,7 +96,6 @@ pub fn swap(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
 
 enum Flush {
     Durable,
-    Ordered,
     Not,
 }
 
@@ -129,7 +128,6 @@ fn renamed(path: &Path, bytes: &[u8], mode: u32, flush: Flush) -> Result<()> {
         .and_then(|()| set_file_mode(&file, mode).map_err(io::Error::from))
         .and_then(|()| match flush {
             Flush::Durable => file.sync_all(),
-            Flush::Ordered => ordered(&file),
             Flush::Not => Ok(()),
         })
         .map_err(Error::io("write", &temp));

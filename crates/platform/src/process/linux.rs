@@ -231,8 +231,6 @@ struct Stat {
     pgrp: i32,
     /// The kernel's PF_* flags.
     flags: u64,
-    /// User plus system clock ticks.
-    cpu: u64,
     threads: u64,
     start_ticks: u64,
 }
@@ -262,8 +260,6 @@ fn stat(pid: u32) -> io::Result<Stat> {
         ppid: field(1)?.parse().map_err(io::Error::other)?,
         pgrp: field(2)?.parse().map_err(io::Error::other)?,
         flags: field(6)?.parse().map_err(io::Error::other)?,
-        cpu: field(11)?.parse::<u64>().map_err(io::Error::other)?
-            + field(12)?.parse::<u64>().map_err(io::Error::other)?,
         threads: field(17)?.parse().map_err(io::Error::other)?,
         start_ticks: field(19)?.parse().map_err(io::Error::other)?,
     })
