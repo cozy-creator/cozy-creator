@@ -16,12 +16,33 @@ import uuid
 
 
 def command(cli: Path, output: Path, name: str, *args: str, fails: bool = False) -> bytes:
-    result = subprocess.run([str(cli), "--json", *args], capture_output=True)
-    (output / f"{name}.ndjson").write_bytes(result.stdout)
-    (output / f"{name}.stderr").write_bytes(result.stderr)
-    if bool(result.returncode) != fails:
-        raise AssertionError(f"{name} returned unexpected exit {result.returncode}; see its captured output")
-    return result.stdout
+    stdout = output / f"{name}.ndjson"
+    stderr = output / f"{name}.stderr"
+    # Preserve real partial output even if the runner is interrupted. A long-running
+    # call reports progress without imposing a new execution timeout or retry.
+    with stdout.open("wb") as out, stderr.open("wb") as err:
+        process = subprocess.Popen([str(cli), "--json", *args], stdout=out, stderr=err)
+        print(f"vault proof: {name} started", flush=True)
+        report = time.monotonic() + 30
+        while process.poll() is None:
+            time.sleep(1)
+            if time.monotonic() >= report:
+                state = ""
+                for line in reversed(stdout.read_bytes()[-16384:].splitlines()):
+                    try:
+                        event = json.loads(line)
+                    except (ValueError, UnicodeDecodeError):
+                        continue
+                    run = event.get("run", {})
+                    if run.get("status") or event.get("type"):
+                        state = f" event={event.get('type', '')} status={run.get('status', '')} machine_state={run.get('machine_state', '')}"
+                        break
+                print(f"vault proof: {name} still active stdout={stdout.stat().st_size} stderr={stderr.stat().st_size}{state}", flush=True)
+                report = time.monotonic() + 30
+    print(f"vault proof: {name} exited {process.returncode}", flush=True)
+    if bool(process.returncode) != fails:
+        raise AssertionError(f"{name} returned unexpected exit {process.returncode}; see its captured output")
+    return stdout.read_bytes()
 
 
 def contains(path: Path, markers: list[bytes]) -> bool:
