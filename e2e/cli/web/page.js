@@ -128,24 +128,29 @@ function projectHeld(folder, pid) {
   const db = join(realpathSync(folder), 'project.db');
   if (process.platform === 'linux') {
     const fds = `/proc/${pid}/fd`;
-    return readdirSync(fds).some((fd) => {
+    let unread;
+    for (const fd of readdirSync(fds)) {
       try {
-        return readlinkSync(join(fds, fd)) === db;
-      } catch {
-        return false;
+        if (readlinkSync(join(fds, fd)) === db) return true;
+      } catch (error) {
+        if (error.code !== 'ENOENT') unread ??= error;
       }
-    });
+    }
+    if (unread) throw unread;
+    return false;
   }
   if (process.platform === 'darwin') {
-    let said = '';
+    let said = '', unread;
     try {
       said = execFileSync('lsof', ['-p', String(pid), '-Fn'], { encoding: 'utf8', maxBuffer: 1 << 26 });
     } catch (error) {
       if (error.code === 'ENOENT') return null;
-      if (!error.stdout) throw error;
-      said = error.stdout;
+      unread = error;
+      said = String(error.stdout ?? '');
     }
-    return said.split('\n').some((line) => line === `n${db}`);
+    if (said.split('\n').some((line) => line === `n${db}`)) return true;
+    if (unread) throw unread;
+    return false;
   }
   return null;
 }
