@@ -294,7 +294,7 @@ def _attention(name: str, index: int) -> Outcome:
                 )  # fmt: skip
                 want = _exact(q, k, v)
                 dtype = getattr(torch, dtype_name)
-                out = dispatch_attention_fn(q.to(dtype), k.to(dtype), v.to(dtype), backend=ready.member)  # type: ignore[attr-defined]  # bug: Runtime 0.43's attention.Ready has no member
+                out = dispatch_attention_fn(q.to(dtype), k.to(dtype), v.to(dtype), backend=attention._member(ready.candidate))
                 got = out[0] if isinstance(out, tuple) else out
                 case = f"d{dim} {dtype_name} {batch}x{tokens}x{heads}"
                 error, trivial = _beats_trivial(torch, got, want, v.double())
@@ -323,7 +323,7 @@ def _outliers(ready: "attention.Ready", candidate: "attention.Candidate", target
         x[:, ::97] *= 64.0
     want = _exact(q, k, v)
     half = [t.to(torch.bfloat16) for t in (q, k, v)]
-    out = dispatch_attention_fn(*half, backend=ready.member)  # type: ignore[arg-type, attr-defined]  # a splat of the 3-list (mypy can't count it); bug: Ready has no member
+    out = dispatch_attention_fn(*half, backend=attention._member(ready.candidate))  # type: ignore[arg-type]  # a splat of the 3-list (mypy can't count it)
     got = out[0] if isinstance(out, tuple) else out
     return f"{verify.error(torch, got, want):.3f}"
 
@@ -389,13 +389,13 @@ def _big(name: str, index: int, shape: tuple[int, ...], shared: bool) -> Outcome
         site = attention_sol._SITE.set(attention_sol.Site("kernels-suite", "attn"))
         try:
             with attention_scope(layout), attention_sol.observing() as counts:
-                out = dispatch_attention_fn(q, k, v, backend=ready.member)  # type: ignore[attr-defined]  # bug: Runtime 0.43's attention.Ready has no member
+                out = dispatch_attention_fn(q, k, v, backend=attention._member(ready.candidate))
         finally:
             attention_sol._SITE.reset(site)
         took = dict(counts)
         budget = 1 / 3
     else:
-        out = dispatch_attention_fn(q, k, v, backend=ready.member)  # type: ignore[attr-defined]  # bug: Runtime 0.43's attention.Ready has no member
+        out = dispatch_attention_fn(q, k, v, backend=attention._member(ready.candidate))
         took = {}
         budget = prebuilt.ATTENTION_BUDGET[candidate.exact]
     got = out[0] if isinstance(out, tuple) else out
@@ -439,7 +439,7 @@ def _sparse(ready: "attention.Ready", device: "DeviceFacts") -> Outcome:
     site = attention_sol._SITE.set(attention_sol.Site("kernels-suite", "attn"))
     try:
         with attention_scope(layout), attention_sol.observing() as counts:
-            out = dispatch_attention_fn(*half, backend=ready.member)  # type: ignore[arg-type, attr-defined]  # a splat of the 3-list (mypy can't count it); bug: Ready has no member
+            out = dispatch_attention_fn(*half, backend=attention._member(ready.candidate))  # type: ignore[arg-type]  # a splat of the 3-list (mypy can't count it)
     finally:
         attention_sol._SITE.reset(site)
     got = out[0] if isinstance(out, tuple) else out

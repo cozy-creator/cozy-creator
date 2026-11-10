@@ -144,7 +144,7 @@ def _gemm(gemm: Gemm, fp8: bool, m: int, n: int, k: int, l2: int) -> Row:
 def _attend(ready: "dict[str, attention.Ready]", shape: tuple[int, ...]) -> Row:
     """The cell's kernels at one shape, in the cell's order: the first is the rule's pick."""
     q, k, v = (torch.randn(*shape, device="cuda", dtype=torch.bfloat16) for _ in range(3))
-    calls: dict[str, Callable[[int], object]] = {name: (lambda i, m=r.member: dispatch_attention_fn(q, k, v, backend=m))  # type: ignore[attr-defined, misc]  # bug: Runtime 0.43's Ready has no member (the lambda's default)
+    calls: dict[str, Callable[[int], object]] = {name: partial(lambda i, m: dispatch_attention_fn(q, k, v, backend=m), m=attention._member(r.candidate))
              for name, r in ready.items() if not r.candidate.refusal(q, k, {})}  # fmt: skip
     if not calls:
         return {"ms": {}}
@@ -183,7 +183,7 @@ def _sparse(row: arch.Row, ready: "dict[str, attention.Ready]", shape: tuple[int
                     continue
                 if r.candidate.import_name == "sol_attn":
                     _sol_built(q)
-                call = partial(lambda i, m: dispatch_attention_fn(q, k, v, backend=m), m=r.member)  # type: ignore[attr-defined]  # bug: as _attend's
+                call = partial(lambda i, m: dispatch_attention_fn(q, k, v, backend=m), m=attention._member(r.candidate))
                 with attention_sol.observing() as counts:
                     call(0)
                 if counts["sparse"] != 1:  # it served a dense reference: not a sparse time
