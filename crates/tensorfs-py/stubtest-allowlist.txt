@@ -1,0 +1,10 @@
+# Typing-only names the stubs define and the modules never do (`scripts/typecheck.sh` runs stubtest with this).
+tensorfs._ext.__all__
+tensorfs._ext.StrPath
+tensorfs._ext.TokenProvider
+tensorfs.api.DLPack
+tensorfs.api.NormalizeBf16Tensor
+tensorfs.api.QuantizeFit
+tensorfs.api.QuantizeTensor
+tensorfs.api.StrPath
+tensorfs.api.Token

@@ -81,7 +81,7 @@ class Source:
     strides: tuple[int, ...]
     byte_offset: int
 
-    def __new__(cls):
+    def __new__(cls) -> Source:
         raise TypeError("construct Source with from_buffer or from_tensor")
 
     @classmethod
