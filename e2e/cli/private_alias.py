@@ -83,6 +83,24 @@ def main() -> None:
     (args.out / "bindings-before.json").write_text(json.dumps(snapshot(before), indent=2))
     stamp = time.time_ns() - 2_000_000_000
 
+    # Reproduce the exact older representation: protected spec, plaintext target.
+    # Touch only a completed run this fresh, synthetic CLI fixture just created.
+    runner_temp = os.environ.get("RUNNER_TEMP")
+    assert os.environ.get("GITHUB_ACTIONS") == "true" and runner_temp and args.out.resolve().is_relative_to(Path(runner_temp).resolve()), "legacy target mutation requires the owned fresh CI fixture"
+    state = home / "calcifer/state.db"
+    prefix = b"cozy:vault:journal:2:"
+    run_id = proof["ids"][0]
+    with sqlite3.connect(f"file:{state}?mode=rw", uri=True) as db:
+        db.execute("BEGIN IMMEDIATE")
+        target, spec, out_dir, status = db.execute("SELECT target,spec,out_dir,state FROM runs WHERE id = ?", (run_id,)).fetchone()
+        assert status == "settled" and Path(out_dir) == args.project.resolve() / ".runs", "legacy target fixture selected a foreign or active run"
+        assert isinstance(spec, bytes) and spec.startswith(prefix) and target.encode().startswith(prefix), "legacy target fixture needs an already-protected run"
+        changed = db.execute("UPDATE runs SET target = ? WHERE id = ? AND target = ?", (proof["target"], run_id, target)).rowcount
+        assert changed == 1, "legacy target fixture did not change exactly its own slot"
+    legacy_receipt = {"restored": True}
+    (folder / "legacy-target-encoding.json").write_text(json.dumps(legacy_receipt))
+    (args.out / "legacy-target-encoding.json").write_text(json.dumps(legacy_receipt))
+
     locked = json.loads(command(args.cli, args.out, "lock", "project", "-p", str(args.project), "lock"))
     assert locked["vault"]["state"] == "locked", "fixture must close its first mounted view"
     target_history(args.cli, args.out, "locked-target-history", proof, locked=True)
@@ -93,6 +111,12 @@ def main() -> None:
     assert json.loads((after_view / ".vault-local-execution.json").read_text())["storage"]["project_id"] == project_id
     folder = after_view / "private-execution-proof"
     script, request = folder / "probe.py", folder / "input.json"
+    with sqlite3.connect(f"file:{state}?mode=ro", uri=True) as db:
+        target = db.execute("SELECT target FROM runs WHERE id = ?", (run_id,)).fetchone()[0]
+        assert target.encode().startswith(prefix), "normal unlock did not protect the legacy target slot"
+    legacy_receipt["resealed"] = True
+    (folder / "legacy-target-encoding.json").write_text(json.dumps(legacy_receipt))
+    (args.out / "legacy-target-encoding.json").write_text(json.dumps(legacy_receipt))
     assert hashlib.sha256(script.read_bytes()).digest() == hashlib.sha256(source_bytes).digest(), "source bytes changed"
     assert (folder / "input.txt").read_bytes() == input_bytes, "input file bytes changed"
     payload = json.loads(request.read_text())
@@ -122,6 +146,7 @@ def main() -> None:
         "new_binding": True, "historical_bindings_retained": True,
         "actual_private_execution": True, "global_plaintext_scan": True,
         "target_hidden_when_locked": True, "target_filter_pagination": True,
+        "legacy_target_migrated": True,
         "synthetic_only": True,
     }, indent=2))
 
