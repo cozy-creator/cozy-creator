@@ -281,6 +281,13 @@ impl Provider {
         secret: &[u8],
         options: MountOptions,
     ) -> Result<Mounted> {
+        // A selected free Windows drive can be claimed by another concurrent unlock. Keep
+        // preflight through readiness atomic so a second caller refuses, never aliases the
+        // first project's mounted drive. The same rule prevents duplicate Unix view mounts.
+        static STARTING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _starting = STARTING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         validate_secret(secret)?;
         self.check_driver()?;
         #[cfg(target_os = "macos")]
