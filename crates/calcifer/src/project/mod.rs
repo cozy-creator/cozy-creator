@@ -598,7 +598,7 @@ fn identify(api: &Api, dir: &FsPath) -> Result<(String, String), Error> {
         Some((_, name)) => (fresh_id(), name.clone()),
         None => (folder_id(dir), String::new()),
     };
-    let name = unique_name(api, &id, if name.is_empty() { folder_name(dir) } else { name })?;
+    let name = unique_name(api, &id, dir, if name.is_empty() { folder_name(dir) } else { name })?;
     if kept.as_ref() != Some(&(id.clone(), name.clone())) {
         db::set_identity(&mut conn, &path, &id, &name)?;
     }
@@ -607,10 +607,11 @@ fn identify(api: &Api, dir: &FsPath) -> Result<(String, String), Error> {
     Ok((id, name))
 }
 
-/// `wanted`, or the first of `wanted_2`, `wanted_3`, … no other project in the index has, in any case: what `-p` names it by.
-fn unique_name(api: &Api, id: &str, wanted: String) -> Result<String, Error> {
+/// `wanted`, or the first of `wanted_2`, `wanted_3`, … no other project in the index has, in any case: what `-p` names it by. The
+/// project is `id`, in `dir`: one the index still has there was deleted and this made in its place, and holds no name.
+fn unique_name(api: &Api, id: &str, dir: &FsPath, wanted: String) -> Result<String, Error> {
     let known = indexed(api)?;
-    let taken = |name: &str| known.iter().any(|entry| entry.id != id && entry.name.eq_ignore_ascii_case(name));
+    let taken = |name: &str| known.iter().any(|entry| entry.id != id && entry.path != dir && entry.name.eq_ignore_ascii_case(name));
     let names = std::iter::once(wanted.clone()).chain((2..).map(|n| format!("{wanted}_{n}")));
     Ok(names.into_iter().find(|name| !taken(name)).expect("names go on"))
 }
@@ -1105,7 +1106,7 @@ fn made_new(api: &Api, dir: &FsPath, name: &str, starter: bool) -> Result<PathBu
     let part = dir.join(format!("{}.new", db::DB));
     db::create(&part, &db::Stored { written: written.into(), ..Default::default() }, &[], &[])?;
     let canonical = platform::durable::canonical(dir).map_err(io)?;
-    let (id, name) = (fresh_id(), unique_name(api, "", name.to_owned())?);
+    let (id, name) = (fresh_id(), unique_name(api, "", &canonical, name.to_owned())?);
     db::set_identity(&mut db::open(&part)?, &part, &id, &name)?;
     std::fs::rename(&part, dir.join(db::DB)).map_err(|e| Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", dir.display())))?;
     crate::events::project_changed(&canonical);

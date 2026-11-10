@@ -135,13 +135,15 @@ impl Store {
         })
     }
 
-    /// `id`, called `name`, in `path`, opened at `used_at_ms` (none: when it was last); whether it was walking stands.
+    /// `id`, called `name`, in `path`, opened at `used_at_ms` (none: when it was last, or now if it's new here); whether it was walking stands.
     pub(crate) fn project_opened(&self, id: &str, name: &str, path: &Path, used_at_ms: Option<i64>) -> Result<()> {
         self.write(|tx| {
+            // A folder holds one project: another the index had there is gone.
+            tx.execute("DELETE FROM projects WHERE path = ?2 AND id <> ?1", params![id, path.to_string_lossy()])?;
             tx.execute(
-                "INSERT INTO projects (id, path, used_at_ms, name) VALUES (?1, ?2, ?3, ?4)
-                 ON CONFLICT (id) DO UPDATE SET path = excluded.path, name = excluded.name, used_at_ms = COALESCE(?5, projects.used_at_ms)",
-                params![id, path.to_string_lossy(), used_at_ms.unwrap_or(0), name, used_at_ms],
+                "INSERT INTO projects (id, path, used_at_ms, name) VALUES (?1, ?2, COALESCE(?4, CAST(strftime('%s', 'now') AS INTEGER) * 1000), ?3)
+                 ON CONFLICT (id) DO UPDATE SET path = excluded.path, name = excluded.name, used_at_ms = COALESCE(?4, projects.used_at_ms)",
+                params![id, path.to_string_lossy(), name, used_at_ms],
             )?;
             Ok(())
         })
