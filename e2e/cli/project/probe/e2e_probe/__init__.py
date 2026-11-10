@@ -7,7 +7,9 @@ import os
 from typing import Annotated
 
 import msgspec
-from cozy_runtime.author import App, Context, Image, ImageFile, ImageFrame, Outputs, Prompt, Range, Seed, invocable
+from cozy_runtime.author import App, Context, ImageFrame, invocable, Outputs, Seed
+from cozy_runtime.fields import Image, Prompt, Range
+from cozy_runtime.media import ImageFile
 from e2e_probe_callee import enlarge, shade
 
 app = App()

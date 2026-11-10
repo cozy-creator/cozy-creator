@@ -5,7 +5,8 @@ import time
 
 import msgspec
 
-from cozy_runtime.author import App, File, Files, Telemetry
+from cozy_runtime.author import App, Telemetry
+from cozy_runtime.media import File, Files
 
 app = App()
 

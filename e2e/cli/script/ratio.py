@@ -7,7 +7,8 @@
 
 import msgspec
 
-from cozy_runtime.author import Adjustments, App, ImageRequest, Sizes
+from cozy_runtime.author import Adjustments, App
+from cozy_runtime.image import ImageRequest, Sizes
 
 app = App()
 SIZES = Sizes((0.25, 4.0), (64, 8192), 16, "the ratio script's 0.25-4 MP")

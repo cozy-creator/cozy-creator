@@ -10,28 +10,9 @@ from typing import Annotated, Literal
 
 import msgspec
 import numpy as np
-from cozy_runtime.author import (
-    Advanced,
-    App,
-    AspectRatio,
-    Count,
-    Image,
-    ImageFile,
-    ImageFrame,
-    Latents,
-    Outputs,
-    Pickup,
-    Placeholder,
-    Prompt,
-    Range,
-    Ratios,
-    Seed,
-    Snap,
-    Spans,
-    Total,
-    Video,
-    VideoFile,
-)
+from cozy_runtime.author import App, ImageFrame, Outputs, Seed
+from cozy_runtime.fields import Advanced, AspectRatio, Count, Image, Pickup, Placeholder, Prompt, Range, Ratios, Snap, Spans, Total, Video
+from cozy_runtime.media import ImageFile, Latents, VideoFile
 
 app = App()
 SIDE = 16

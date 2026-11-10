@@ -4,7 +4,9 @@ picture's bytes, a folder's files, and the union fields a package's smoke reques
 
 import msgspec
 
-from cozy_runtime.author import App, AspectRatio, ImageFile, Seed, Tree, VideoFile
+from cozy_runtime.author import App, Seed
+from cozy_runtime.fields import AspectRatio
+from cozy_runtime.media import ImageFile, Tree, VideoFile
 
 app = App()
 

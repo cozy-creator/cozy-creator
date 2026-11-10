@@ -6,7 +6,10 @@ import time
 from typing import Annotated, Any
 
 import msgspec
-from cozy_runtime.author import App, ImageFile, ImageFrame, Loader, Model, Outputs, Range, sequence_parallel, uses_components
+from cozy_runtime.accel import sequence_parallel
+from cozy_runtime.author import App, ImageFrame, Loader, Model, Outputs, uses_components
+from cozy_runtime.fields import Range
+from cozy_runtime.media import ImageFile
 
 app = App()
 SIDE = 16
