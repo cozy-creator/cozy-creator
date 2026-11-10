@@ -28,8 +28,8 @@ async fn shape_term(raw: &str, nullable: bool) -> Result<Bound, Error> {
 
 #[tokio::test]
 async fn xs159_nullable_shape_keeps_the_direct_shapes_scalar_spelling() {
-    // The six real CLI failures, plus a value whose interpretation belongs to Runtime.
-    for raw in ["16:1", "1:16", "32000:2000", "17:1", "1:17", "32768:32", "unrecognized-ratio"] {
+    // The six valid ratio spellings must bind equally for direct and optional shapes.
+    for raw in ["16:1", "1:16", "32000:2000", "17:1", "1:17", "32768:32"] {
         let direct = shape_term(raw, false).await.unwrap();
         let nullable = shape_term(raw, true).await.unwrap();
         assert_eq!(nullable.payload, direct.payload, "{raw}");
@@ -37,10 +37,14 @@ async fn xs159_nullable_shape_keeps_the_direct_shapes_scalar_spelling() {
         assert!(nullable.ignored.is_empty() && nullable.notes.is_empty());
     }
     // Optionality still accepts null and does not make an empty shape valid.
-    for raw in ["null"] {
-        assert_eq!(shape_term(raw, true).await.unwrap().payload["aspect_ratio"], Value::Null);
+    assert_eq!(shape_term("null", true).await.unwrap().payload["aspect_ratio"], Value::Null);
+    // 0.23 validates ratio syntax before Runtime for both direct and optional fields.
+    for raw in ["", "unrecognized-ratio"] {
+        let direct = shape_term(raw, false).await.unwrap_err();
+        let nullable = shape_term(raw, true).await.unwrap_err();
+        assert_eq!(nullable.code, direct.code, "{raw}");
+        assert_eq!(nullable.kind, direct.kind, "{raw}");
     }
-    assert_eq!(shape_term("", true).await.unwrap_err().code, shape_term("", false).await.unwrap_err().code);
 }
 
 #[test]
