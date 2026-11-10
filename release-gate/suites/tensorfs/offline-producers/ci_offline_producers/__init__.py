@@ -7,12 +7,16 @@ import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import TYPE_CHECKING, Unpack, cast
 
 import msgspec
 from cozy_runtime.author import App, Context
 
+if TYPE_CHECKING:
+    from . import _types as t
+
 app = App()
-STRATEGIES = {
+STRATEGIES: dict[str, tuple[str, dict[str, object]]] = {
     "fp8.rowwise": ("fp8-rowwise-rne/1", {}),
     "w4a8.convrot": (
         "w4a8-convrot256-fixed/1",
@@ -36,11 +40,11 @@ class Report(msgspec.Struct):
     detail: str
 
 
-def parts(encoded):
+def parts(encoded: "t.EncodedTensor") -> "t.Parts":
     return {k: (v.dtype, v.shape, v.tobytes()) for k, v in encoded.parts.items()}
 
 
-def selection(key, dtype, shape, scheme):
+def selection(key: str, dtype: str, shape: tuple[int, ...], scheme: str) -> "t.Selection":
     strategy, params = STRATEGIES[scheme]
     return {
         "component": "weights", "key": key, "source_dtype": dtype,
@@ -49,7 +53,7 @@ def selection(key, dtype, shape, scheme):
     }
 
 
-def output_bytes(row):
+def output_bytes(row: "t.Selection") -> int:
     n, k = row["shape"]
     return n * (k + 4) if row["encoding"]["scheme"] == "fp8.rowwise" else n * (k // 2 + k // 16 + 4) + 64
 
@@ -68,26 +72,26 @@ def run(payload: Request, ctx: Context) -> Report:
     }
     assert payload.mode in ("basic", "cancel-fp8", "cancel-w4a8")
     rng = np.random.default_rng(payload.seed)
-    records = []
+    records: list[t.Record] = []
     refusals = 0
 
-    def expected(values, scheme):
+    def expected(values: "t.F32", scheme: str) -> "tuple[oracle.Encoded, t.Parts]":
         result = references[scheme]("reference", values)
         stored = {"weight": (result.payload_dtype, tuple(result.payload_shape), result.payload)}
         for role, companion in zip(ROLES[scheme], result.companions):
             stored[role] = (companion.dtype, tuple(companion.shape), companion.raw)
         return result, stored
 
-    def check_stats(measured, reference, values):
+    def check_stats(measured: "t.Stats", reference: "oracle.Encoded", values: "t.F32") -> None:
         assert measured["amax"] == float(np.max(np.abs(values)))
         assert measured["max_abs_error"] == reference.max_abs_err
         assert measured["saturated"] == reference.saturated
         np.testing.assert_allclose(measured["sse"], reference.sse, rtol=2e-13, atol=0)
         np.testing.assert_allclose(measured["energy"], reference.energy, rtol=2e-13, atol=0)
 
-    def encode(values, scheme, dtype="F32", **overrides):
+    def encode(values: "t.F32", scheme: str, dtype: str = "F32", **overrides: "Unpack[t.Overrides]") -> "tensorfs.Encoded":
         strategy, params = STRATEGIES[scheme]
-        options = {"dtype": dtype, "shape": values.shape, "strategy": strategy, "params": params, **overrides}
+        options: t.Options = {"dtype": dtype, "shape": values.shape, "strategy": strategy, "params": params, **overrides}
         encoded, measured = raw.quantize_measured(scheme, values.astype("<f4").tobytes(), **options)
         ordinary = raw.quantize(scheme, values.astype("<f4").tobytes(), **options)
         assert parts(ordinary) == parts(encoded)
@@ -102,7 +106,7 @@ def run(payload: Request, ctx: Context) -> Report:
             scheme = "fp8.rowwise" if payload.mode == "cancel-fp8" else "w4a8.convrot"
             writer = tensorfs.Writer(directory / "source.cozytensors")
             component = writer.component("weights")
-            selected = []
+            selected: list[t.Selection] = []
             # Small durable first entry followed by real long conversion work.
             for key, shape in (("first", (1, 256)), ("large", (16384, 1024))):
                 component.put(key, rng.normal(size=shape).astype("<f4"))
@@ -131,7 +135,7 @@ def run(payload: Request, ctx: Context) -> Report:
             del output, future
             gc.collect()
             output = tensorfs.Writer(path, base=source, resume=f"offline-{payload.seed}-{scheme}")
-            changed = [dict(row) for row in selected]
+            changed = cast("list[t.Selection]", [dict(row) for row in selected])  # cast: copies of the rows
             changed[0]["dtype"] = "BF16"
             try:
                 output.quantize(source, changed, max_buffer_bytes=256 << 10,
@@ -155,7 +159,7 @@ def run(payload: Request, ctx: Context) -> Report:
         outliers[:, 259] = 1e6
         ties = np.zeros((3, 256), dtype=np.float32)
         ties[:, :9] = [448, 1/1024, 3/1024, 1.0625, 1.1875, -1/1024, -3/1024, -1.0625, -1.1875]
-        cases = {
+        cases: dict[str, t.F32] = {
             "zeros": np.zeros((3, 256), dtype=np.float32),
             "negative_zero": np.full((2, 256), -0.0, dtype=np.float32),
             "outliers": outliers, "ties": ties,
@@ -167,7 +171,7 @@ def run(payload: Request, ctx: Context) -> Report:
         }
         writer = tensorfs.Writer(directory / "primitive.cozytensors")
         component = writer.component("weights")
-        stored_references = {}
+        stored_references: dict[str, t.Parts] = {}
         for scheme in STRATEGIES:
             for name, values in cases.items():
                 _, want = expected(values, scheme)
@@ -188,14 +192,14 @@ def run(payload: Request, ctx: Context) -> Report:
                     from cozy_runtime.derive import microscale
                     adapter = microscale.encode_fp8_rowwise if scheme == "fp8.rowwise" else microscale.encode_w4a8
                     actual, original = adapter(name, values), references[scheme](name, values)
-                    assert actual[:5] == original[:5]
+                    assert actual[:5] == original[:5]  # type: ignore[comparison-overlap]  # two NamedTuple Companions compare as tuples
                     assert actual.max_abs_err == original.max_abs_err
                     np.testing.assert_allclose(actual.sse, original.sse, rtol=2e-13, atol=0)
                     np.testing.assert_allclose(actual.energy, original.energy, rtol=2e-13, atol=0)
                 records.append({"scheme": scheme, "name": name, "shape": values.shape,
                                 "parts": {role: hashlib.sha256(part[2]).hexdigest() for role, part in want.items()}})
             good = cases["zeros"]
-            bad = [
+            bad: list[tuple[t.F32, t.Refusal]] = [
                 (good, {"strategy": STRATEGIES[scheme][0] + "unsupported"}),
                 (good, {"params": {**STRATEGIES[scheme][1], "unexpected": 1}}),
                 (good, {"tensor_amax": 0.0}), (good, {"dtype": "I8"}),
@@ -211,8 +215,8 @@ def run(payload: Request, ctx: Context) -> Report:
             for values, options in bad:
                 for method in (raw.quantize, raw.quantize_measured):
                     try:
-                        method(scheme, values.tobytes(), **{"dtype": "F32", "shape": values.shape,
-                               "strategy": STRATEGIES[scheme][0], "params": STRATEGIES[scheme][1], **options})
+                        method(scheme, values.tobytes(), **cast("t.Options", {"dtype": "F32", "shape": values.shape,  # cast: options override
+                               "strategy": STRATEGIES[scheme][0], "params": STRATEGIES[scheme][1], **options}))
                     except tensorfs.DecodeError:
                         pass
                     else:
@@ -222,12 +226,12 @@ def run(payload: Request, ctx: Context) -> Report:
         checkpoint = writer.commit()
         assert checkpoint.verify().ok
         for key, want in stored_references.items():
-            stored = checkpoint.components["weights"].tensors.read(key)
+            stored = cast("tensorfs.Encoded", checkpoint.components["weights"].tensors.read(key))  # cast: put encoded
             assert parts(stored) == want
             if key.endswith(".F32"):
-                output = np.empty(stored.shape, dtype="<f4")
-                raw.decode_into(stored.scheme, parts(stored), output, dtype="F32", shape=stored.shape, params=stored.params)
-                assert output.tobytes() == checkpoint.components["weights"].tensors.read(key, decode=True).tobytes()
+                decoded = np.empty(stored.shape, dtype="<f4")
+                raw.decode_into(stored.scheme, parts(stored), decoded, dtype="F32", shape=stored.shape, params=stored.params)
+                assert decoded.tobytes() == cast("tensorfs.Array", checkpoint.components["weights"].tensors.read(key, decode=True)).tobytes()  # cast: decoded
         checkpoint.close()
 
         # The checkpoint path supplies decoded F16/BF16/F32, and stages the shared codebook once.
@@ -252,13 +256,13 @@ def run(payload: Request, ctx: Context) -> Report:
                 originals[key] = values
         source = writer.commit()
         allowance = sum(map(output_bytes, selected))
-        reports = []
+        reports: list[t.Conversion] = []
         for buffer_bytes in (16 << 10, 64 << 10):
             output = tensorfs.Writer(directory / f"quantized-{buffer_bytes}.cozytensors", base=source)
             for limits in ({"max_buffer_bytes": 1}, {"max_new_bytes": allowance - 1}):
                 try:
                     output.quantize(source, selected, control=tensorfs.ConversionControl(),
-                                    **{"max_buffer_bytes": buffer_bytes, "max_new_bytes": allowance, **limits})
+                                    **cast("t.Budget", {"max_buffer_bytes": buffer_bytes, "max_new_bytes": allowance, **limits}))  # cast: limits override
                 except tensorfs.DiskFullError:
                     pass
                 else:
@@ -272,8 +276,8 @@ def run(payload: Request, ctx: Context) -> Report:
                 pass
             else:
                 raise AssertionError("pre-canceled conversion ran")
-            report = output.quantize(source, selected, max_buffer_bytes=buffer_bytes,
-                                     max_new_bytes=allowance, control=tensorfs.ConversionControl())
+            report = cast("t.Conversion", output.quantize(source, selected, max_buffer_bytes=buffer_bytes,  # cast: its result
+                                     max_new_bytes=allowance, control=tensorfs.ConversionControl()))
             assert report["encoded_keys"] == 6 and report["new_bytes_written"] == allowance
             assert report["source_bytes_read"] == sum(np.prod(row["shape"]) * (4 if row["source_dtype"] == "F32" else 2) for row in selected)
             repeated = output.quantize(source, selected, max_buffer_bytes=buffer_bytes * 2,
@@ -281,12 +285,12 @@ def run(payload: Request, ctx: Context) -> Report:
             assert repeated["encoded_keys"] == 0 and repeated["reused_keys"] == 6
             checkpoint = output.commit()
             assert checkpoint.verify().ok
-            assert checkpoint.components["weights"].tensors.read("keep").tobytes() == np.array([1.0], dtype="<f4").tobytes()
+            assert cast("tensorfs.Array", checkpoint.components["weights"].tensors.read("keep")).tobytes() == np.array([1.0], dtype="<f4").tobytes()  # cast: plain
             measured = {row["key"]: row["measured"] for row in report["tensors"]}
             for row in selected:
                 key = row["key"]
-                reference, want = expected(originals[key], row["encoding"]["scheme"])
-                assert parts(checkpoint.components["weights"].tensors.read(key)) == want
+                reference, want = expected(originals[key], cast(str, row["encoding"]["scheme"]))  # cast: QuantizeTensor's encoding is a loose Mapping
+                assert parts(cast("tensorfs.Encoded", checkpoint.components["weights"].tensors.read(key))) == want  # cast: encoded
                 check_stats(measured[key], reference, originals[key])
             reports.append(report)
             checkpoint.close()
