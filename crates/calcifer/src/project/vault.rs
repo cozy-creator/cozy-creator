@@ -210,7 +210,7 @@ fn forget(api: &Api, root: &FsPath) -> Result<(), Error> {
     if active { return Err(Error::new(Kind::Conflict, "project_busy", "the project has active work; finish or cancel it before locking or converting")); }
     let projects = api.projects.now_open();
     for project in projects {
-        if logical(&project.folder.dir) != root { continue; }
+        if project.root != root { continue; }
         if *project.walking.lock().expect("walking lock") || project.moving.try_lock().is_err() || project.cutting.try_lock().is_err() {
             return Err(Error::new(Kind::Conflict, "project_busy", "the project is rendering, cutting or transferring; finish or cancel it before changing its storage").next("cozy project cancel all"));
         }
@@ -461,7 +461,7 @@ fn convert(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret,
     let nested = api.calcifer.store().known_projects().map_err(|e| error("vault_journal", e))?
         .into_iter().any(|project| project.path != root && project.path.starts_with(root) && project.path.exists());
     if nested || api.projects.now_open().iter().any(|project| {
-        let path = logical(&project.folder.dir);
+        let path = &project.root;
         path != root && path.starts_with(root)
     }) { return Err(Error::new(Kind::Conflict, "vault_nested_project", "move nested projects outside this project before converting its storage")); }
     let old_secret = held(root).map(|session| session.lock().expect("vault session").secret.duplicate());
