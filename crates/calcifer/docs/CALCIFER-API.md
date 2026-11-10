@@ -409,6 +409,11 @@ client has resolved it (Runs). Calcifer reads the package or PEP 723 script, kee
 machine lacks it, then the call with its files. Its interface comes from Runtime's static describer on the
 Python and cozy-runtime its project locks; nothing runs to describe it.
 
+The source bundle includes project files, including Git-ignored runtime resources. Known credential
+names (`.env`, `.env.*`, `.envrc`, `.direnv/`, `.aws/`, `.ssh/`, and named key/credential files),
+known key/weight suffixes, bytecode and symlinks are excluded and listed as left out. This filter does not
+detect secrets stored under other names; keep those outside the package source folder.
+
 ### Projects
 A project is a folder holding `project.yaml` (what a person or the page says, which Calcifer edits line by line, keeping the rest as it stands; `PROJECT-YAML.md` is the format), `project.lock`
 (Calcifer's), `files/`, and its edits at the root (`<name>.mp4` and `<name>.otio`). Its id is fixed by its folder. Every file the project

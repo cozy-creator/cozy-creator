@@ -19,6 +19,7 @@ mod kept;
 mod lanes;
 pub mod link;
 mod local;
+mod media;
 pub mod local_code;
 pub mod tools;
 pub mod machines;
