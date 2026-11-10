@@ -31,7 +31,7 @@ mod model_folder;
 mod read;
 mod sent;
 pub(crate) use read::{actor_id, Log, OutputSnapshot};
-pub(crate) use sent::{choices, resume};
+pub(crate) use sent::{choices, resume, resume_private};
 
 pub(crate) enum Source {
     /// A published release by name (th-245); empty: the Hub's newest.
@@ -61,6 +61,7 @@ pub(crate) struct SetItem {
 }
 
 pub(crate) struct Spec {
+    pub local_private: Option<api::machine::LocalPrivateStorage>,
     /// Prepare only (`kind: warm`): install and download, then succeed.
     pub warm: bool,
     /// `kind: remove`: the caller's installations of the source leave the machine.
@@ -443,6 +444,7 @@ impl Runs {
             Source::Models => "models".into(),
         };
         let draft = crate::journal::Invocation {
+            local_private: spec.local_private.clone(),
             package,
             generation: String::new(),
             module: String::new(),
@@ -470,10 +472,13 @@ impl Runs {
     }
 
     /// Prepare accepted run `run` on a thread of its own, which ends the run unless it binds.
-    pub(crate) fn prepare_later(self: &Arc<Self>, actor: &str, run: &str, spec: Spec) -> io::Result<()> {
+    pub(crate) fn prepare_later(self: &Arc<Self>, actor: &str, run: &str, mut spec: Spec) -> io::Result<()> {
+        // The accepted record is authoritative, including inherited internal child scope.
+        // A closed/unavailable private view is an error, never ordinary preparation.
+        spec.local_private = self.service.engine.private_storage(run)?;
         let (this, actor, run) = (self.clone(), actor.to_string(), run.to_string());
         let thread = std::thread::Builder::new().name(format!("prepare-{run}"));
-        thread.spawn(move || {
+        thread.spawn(move || crate::private_io::within(spec.local_private.clone(), || {
             let stoppable = this.service.engine.stoppable(&run);
             // A panic (a thread the container's task cap refused) ends the run FAILED: no
             // preparation outlives the thread that would end it.
@@ -496,7 +501,7 @@ impl Runs {
             if let Err(error) = ended {
                 tracing::warn!("run {run} preparation: {error}");
             }
-        })?;
+        }))?;
         Ok(())
     }
 
@@ -1415,6 +1420,7 @@ impl Runs {
             .map_err(|_| refused("package_interface_invalid", "held interface is corrupt"))?;
         let prefix = format!("{entrypoint}.");
         let mut spec = Spec {
+            local_private: self.service.engine.private_storage(parent)?,
             remove: false,
             warm: false,
             set: None,

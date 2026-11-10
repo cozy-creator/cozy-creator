@@ -287,7 +287,7 @@ impl LocalSources {
             let object = written_member(&self.objects, actor, file)?;
             fs::create_dir_all(target.parent().expect("a file inside the tree"))?;
             let incoming = home.join(".incoming");
-            fs::copy(self.objects.store().path(&object).map_err(crate::storage::io_error)?, &incoming)?;
+            fs::copy(self.objects.store()?.path(&object).map_err(crate::storage::io_error)?, &incoming)?;
             platform::durable::set_mode(&incoming, if file.executable { 0o755 } else { 0o644 }).map_err(std::io::Error::from)?;
             fs::rename(&incoming, &target)?;
         }
@@ -367,7 +367,7 @@ impl LocalSources {
                     return Err(refused("local_source_invalid", format!("{:?} is not a wheel file name", wheel.name)));
                 }
                 let object = written_member(&self.objects, actor, wheel)?;
-                fs::copy(self.objects.store().path(&object).map_err(crate::storage::io_error)?, carried.join(&wheel.name))?;
+                fs::copy(self.objects.store()?.path(&object).map_err(crate::storage::io_error)?, carried.join(&wheel.name))?;
             }
             let built = published::patiently(job, || self.publisher.build(&environment, &environment::Project {
                 dir: &project,

@@ -41,9 +41,11 @@ pub(super) async fn follow(
     let (sender, receiver) = mpsc::channel(256);
     let snapshot = v1::RunEvent { sequence: 0, at_ms: 0, event: v1::Event::State(current) };
     let _ = sender.try_send(Ok(snapshot));
-    tokio::spawn(async move {
+    let scope = crate::private_io::current();
+    tokio::spawn(crate::private_io::request_optional(scope.clone(), async move {
         if let Err(error) = log(runs, actor, id.clone(), cursor, limit, &sender).await {
-            tracing::warn!("run {id}: its log can't be read: {error}");
+            if scope.is_some() { tracing::warn!("private run {id}: its protected log cannot be read"); }
+            else { tracing::warn!("run {id}: its log can't be read: {error}"); }
             // An error ends the stream with no word of why, and a controller attaches again. An
             // outcome that can't be made never can be: said as its outcome, the run ends (cl-773).
             let lasting = matches!(error.code.as_str(), "custody_corrupt" | "result_unreadable");
@@ -60,7 +62,7 @@ pub(super) async fn follow(
                 false => Err(error),
             }).await;
         }
-    });
+    }));
     Ok(receiver)
 }
 

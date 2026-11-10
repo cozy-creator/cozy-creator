@@ -129,6 +129,8 @@ pub(crate) fn now_ms() -> i64 {
 }
 
 impl Lifecycle {
+    pub(crate) fn is_local(&self) -> bool { !self.rental }
+
     /// `fresh` starts this root's first idle clock; a rental's restart keeps the persisted
     /// ledger. Each start of this computer's machine is a use: its clock starts again, and an
     /// exit it took is over.

@@ -30,6 +30,14 @@ pub(crate) struct OutputSnapshot {
     pub sha256: Option<String>,
 }
 
+fn scope_allows(record: &Execution) -> bool {
+    match crate::private_io::http_scope() {
+        None => true,
+        Some(scope) => scope.as_ref().map(|scope| scope.project_id.as_str())
+            == record.invocation.local_private.as_ref().map(|scope| scope.project_id.as_str()),
+    }
+}
+
 const LIVE: [&str; 3] = ["queued", "starting", "running"];
 
 /// A run's state by name. An attempt is queued until it runs; only a run sent here is accepted
@@ -53,13 +61,15 @@ impl Runs {
     }
     /// `actor`'s run `id`.
     fn record(&self, actor: VerifiedActor, id: &str) -> Result<Execution, Error> {
-        self.service
+        let record = self.service
             .engine
             .get_public(reader(actor).as_deref(), id)
             .map_err(|error| match error.kind() {
                 io::ErrorKind::NotFound => Error::not_found("run_not_found", "this machine has no such run"),
                 _ => problem(error),
-            })
+            })?;
+        if !scope_allows(&record) { return Err(Error::forbidden("private_storage_scope", "the run belongs to another project storage scope")); }
+        Ok(record)
     }
     fn state_of(&self, record: &Execution) -> Result<v1::RunState, Error> {
         let context = record
@@ -110,7 +120,7 @@ impl Runs {
             .engine
             .actor_page(reader(actor).as_deref(), 0, before, newest, states, limit)
             .map_err(problem)?;
-        records.iter().map(|record| self.state_of(record)).collect()
+        records.iter().filter(|record| scope_allows(record)).map(|record| self.state_of(record)).collect()
     }
     /// The runs `actor` reads, newest first, before the run numbered `before` (0: the newest).
     pub(crate) fn list(&self, actor: VerifiedActor, before: u64, limit: u32) -> Result<v1::RunList, Error> {
@@ -123,6 +133,12 @@ impl Runs {
     }
     /// Cancels `actor`'s run `id`; an id this machine never received is recorded canceled.
     pub(crate) fn cancel(&self, actor: VerifiedActor, id: &str) -> Result<v1::RunState, Error> {
+        match self.service.engine.get_public(reader(actor).as_deref(), id) {
+            Ok(record) if !scope_allows(&record) => return Err(Error::forbidden("private_storage_scope", "the run belongs to another project storage scope")),
+            Ok(_) => {},
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {},
+            Err(error) => return Err(problem(error)),
+        }
         let canceled = self.service.engine.cancel_run(&actor_id(actor), id).map_err(|error| match error.kind() {
             io::ErrorKind::Unsupported => refusal("update_control_unsupported", error.to_string()),
             io::ErrorKind::ResourceBusy => refusal("cancel_unavailable", error.to_string()),
