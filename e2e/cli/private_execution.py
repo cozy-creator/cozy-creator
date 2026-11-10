@@ -127,7 +127,8 @@ def probe(payload: Request, out: Outputs) -> Answer:
     request.write_text(json.dumps({"text": payload_canary, "source": str(source)}))
     # --describe and its source staging must use the same project scope as execution.
     described = command(args.cli, args.out, "describe", "run", "-p", str(project), str(script), "--describe", "--on", "local")
-    assert b'"probe"' in described, "private source did not describe its function"
+    schema = json.loads(described)
+    assert schema.get("accelerator") is False and {field["name"] for field in schema.get("fields", [])} == {"text", "source", "fail"}, "private source did not describe its input schema"
     run = command(args.cli, args.out, "run", "run", "-p", str(project), str(script), "--input", str(request), "--on", "local")
     assert payload_canary.encode() in run, "private run did not return its payload"
     assert b'"scratch_private":true' in run.replace(b" ", b""), "runtime scratch or working directory escaped the private namespace"

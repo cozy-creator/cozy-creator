@@ -39,7 +39,27 @@ projectvault() (
   cozy project -p "$P" export -o "$work/after-encryption.yaml"
   cmp "$work/before.yaml" "$work/after-encryption.yaml" || fail "encryption changed logical project state"
   # The fixture directory contains only encrypted backing storage and a public keybag.
-  if rg -a -l SYNTHETIC_PRIVATE_VAULT_CONTENT_1762838400 "$P" > "$work/plaintext-matches.txt"; then fail "encrypted backing retains readable private file content"; fi
+  python3 - "$E2E/cli" "$P" > "$work/plaintext-matches.txt" <<'PY_BACKING_SCAN'
+import os
+from pathlib import Path
+import sys
+sys.path.insert(0, sys.argv[1])
+from private_execution import contains
+markers = [b"SYNTHETIC_PRIVATE_VAULT_CONTENT_1762838400", b"private-sentinel.txt"]
+def failed(error):
+    raise error
+leaks = []
+for directory, dirs, files in os.walk(sys.argv[2], followlinks=False, onerror=failed):
+    for name in dirs + files:
+        path = Path(directory) / name
+        assert not path.is_symlink(), "backing scan encountered an unexpected symlink"
+    for name in files:
+        path = Path(directory) / name
+        if any(marker in name.encode() for marker in markers) or contains(path, markers):
+            leaks.append(str(path))
+print("\n".join(leaks))
+assert not leaks, "encrypted backing retains readable private file content or names"
+PY_BACKING_SCAN
 
   step "locking blocks project reads; wrong credentials do not open it"
   cozy --json project -p "$P" lock > "$work/locked.json"
