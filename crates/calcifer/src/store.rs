@@ -249,6 +249,14 @@ fn sql_optional_text(row: &Row<'_>, column: usize, context: &str) -> rusqlite::R
     let text: Option<String> = row.get(column)?;
     optional_text(context, text).map_err(|error| sql_private(column, error))
 }
+fn sql_optional_path(row: &Row<'_>, column: usize, context: &str) -> rusqlite::Result<Option<PathBuf>> {
+    let encoded: Option<String> = row.get(column)?;
+    encoded.map(|value| {
+        let decoded = open_text(context, &value).map_err(|error| sql_private(column, error))?;
+        vault::payload_path(value.as_bytes(), Path::new(&decoded)).map_err(|error| sql_private(column, private_error(error)))
+    }).transpose()
+}
+
 fn seal_at(path: &Path, context: &str, bytes: &[u8]) -> Result<Vec<u8>> {
     vault::seal_payload(path, context, bytes).map_err(private_error)
 }
@@ -563,6 +571,8 @@ impl Store {
                 if !path.starts_with(root) && scope.as_deref() != Some(root) {
                     continue;
                 }
+                if protected { tx.execute("UPDATE runs SET out_dir = ?2 WHERE id = ?1", params![&id, crate::project::landing(root).to_string_lossy()])?; }
+
                 for column in ["spec", "outcome"] {
                     let value: Option<Vec<u8>> =
                         tx.query_row(&format!("SELECT {column} FROM runs WHERE id = ?1"), [&id], |row| row.get(0))?;
@@ -1799,7 +1809,7 @@ impl Store {
         self.write(|tx| {
             tx.execute(
                 "UPDATE outputs SET exported_rev = ?4, path = ?5, width = ?6, height = ?7, measured_ms = ?8 WHERE run = ?1 AND name = ?2 AND idx = ?3",
-                params![run, name, index, rev as i64, seal_run_text(tx, run, &output_context(run, name, index, rev, "path"), &path.to_string_lossy())?, measured.width, measured.height, measured.duration_ms as i64],
+                params![run, name, index, rev as i64, seal_run_text(tx, run, &output_context(run, name, index, rev, "path"), &vault::logical(path).to_string_lossy())?, measured.width, measured.height, measured.duration_ms as i64],
             )?;
             export_settled(tx, run, name, index, rev, true)
         })
@@ -1885,7 +1895,7 @@ fn output_row(r: &Row) -> rusqlite::Result<OutputRow> {
     let (run, name, index, rev): (String, String, u32, u64) =
         (r.get(11)?, r.get(0)?, r.get::<_, i64>(1)? as u32, r.get::<_, i64>(2)? as u64);
     let exported = r.get::<_, Option<i64>>(8)?.map(|rev| rev as u64);
-    let path = sql_optional_text(r, 7, &output_context(&run, &name, index, exported.unwrap_or(rev), "path"))?.map(PathBuf::from);
+    let path = sql_optional_path(r, 7, &output_context(&run, &name, index, exported.unwrap_or(rev), "path"))?;
     let export_error = sql_optional_text(r, 9, &output_context(&run, &name, index, rev, "export_error"))?;
     let checkpoint = checkpoint_ref(r, 10, &output_context(&run, &name, index, rev, "checkpoint"))?;
     Ok(OutputRow {
@@ -1952,6 +1962,7 @@ fn run_row(r: &Row) -> rusqlite::Result<Result<RunRow>> {
     let wants: Option<String> = r.get(23)?;
     let agreed: Option<String> = r.get(24)?;
     Ok((|| {
+        let out_dir = match vault::payload_root(&spec).map_err(private_error)? { Some(root) => crate::project::landing(&root), None => PathBuf::from(out_dir) };
         let spec = open_bytes(&run_context(&id, "spec"), &spec)?;
         let warnings = open_text(&run_context(&id, "warnings"), &warnings)?;
         let inputs = open_text(&run_context(&id, "inputs"), &inputs)?;
@@ -1975,7 +1986,7 @@ fn run_row(r: &Row) -> rusqlite::Result<Result<RunRow>> {
                 true => v1::RunSpec::default(),
                 false => serde_json::from_slice(&spec).map_err(|_| corrupt("a run's spec"))?,
             },
-            out_dir: PathBuf::from(out_dir),
+            out_dir,
             state: match state.as_str() {
                 "queued" => State::Queued,
                 "sent" => State::Sent,
@@ -2413,7 +2424,7 @@ fn record(conn: &Connection, row: &RunRow) -> Result<Run> {
         let digest: String = r.get(4)?;
         let done: bool = r.get(7)?;
         let rev = r.get::<_, i64>(2)? as u64;
-        let path = sql_optional_text(r, 8, &output_context(row.id.as_str(), &name, index, rev, "path"))?;
+        let path = sql_optional_path(r, 8, &output_context(row.id.as_str(), &name, index, rev, "path"))?;
         let checkpoint = checkpoint_ref(r, 10, &output_context(row.id.as_str(), &name, index, rev, "checkpoint"))?;
         let media_type: String = r.get(5)?;
         let url = (path.is_some() && checkpoint.is_none()).then(|| output_url(row.number, &name, index));
@@ -2446,7 +2457,7 @@ fn record(conn: &Connection, row: &RunRow) -> Result<Run> {
                 .then(|| digest.parse().ok())
                 .flatten(),
             status,
-            path: path.filter(|_| checkpoint.is_none()).map(PathBuf::from),
+            path: path.filter(|_| checkpoint.is_none()),
             export_error: export_error.filter(|_| checkpoint.is_none()),
             checkpoint,
             stays: r.get(11)?,

@@ -35,7 +35,7 @@ fn io(e: std::io::Error) -> Error { error("vault_io", e) }
 fn provider(e: impl std::fmt::Display) -> Error { error("vault_provider", e) }
 fn key(e: project_vault::Error) -> Error { error("vault_key", e) }
 fn held(root: &FsPath) -> Option<Held> { SESSIONS.lock().expect("vault sessions").get(root).cloned() }
-pub(crate) fn encrypted(root: &FsPath) -> bool { root.join(KEYBAG_FILE).is_file() }
+pub(crate) fn encrypted(root: &FsPath) -> bool { root.join(KEYBAG_FILE).is_file() || SESSIONS.lock().expect("vault sessions").contains_key(root) }
 
 /// Logical registered path of an unlocked mount, including any relative subpath.
 pub(crate) fn logical(path: &FsPath) -> PathBuf {
@@ -52,7 +52,7 @@ pub(super) fn view(root: &FsPath) -> Result<PathBuf, Error> {
     let Some(session) = held(root) else { return Err(locked(root)); };
     let session = session.lock().expect("vault session");
     if session.closing || expired(&session) || !session.mount.is_mounted().map_err(provider)? { return Err(locked(root)); }
-    Ok(session.mount.view().to_owned())
+    session.mount.view().canonicalize().map_err(io)
 }
 
 /// A key-holding work lease can drain already-authorized work while the viewing session is locking.
@@ -60,7 +60,7 @@ fn work_view(root: &FsPath) -> Result<PathBuf, Error> {
     let Some(session) = held(root) else { return Err(locked(root)); };
     let session = session.lock().expect("vault session");
     // The provider guards its underlying path against plaintext fallback; lost mounts fail I/O.
-    Ok(session.mount.view().to_owned())
+    session.mount.view().canonicalize().map_err(io)
 }
 
 fn operation(root: &FsPath) -> Arc<Mutex<()>> {
@@ -149,7 +149,10 @@ fn mount(api: &Api, root: &FsPath, keybag: Keybag, secret: ProjectSecret, ask: &
     let view = project_mount::view_path(&runtime).map_err(provider)?;
     let engine = Provider::discover(&api.machines.hubs.home().tools()).map_err(provider)?;
     let mounted = secret.with_bytes(|bytes| engine.mount(&root.join(BACKING), &view, bytes, MountOptions { idle_timeout: None, read_only: false })).map_err(provider)?;
+    let canonical_view = mounted.view().canonicalize().map_err(io)?;
     ROOTS.lock().expect("vault roots").insert(mounted.view().to_owned(), root.to_owned());
+    ROOTS.lock().expect("vault roots").insert(canonical_view.clone(), root.to_owned());
+    crate::private_io::descriptor_for_mounted(&canonical_view, &keybag.info().project_id, keybag.info().generation)?;
     TRUSTED_KEYS.lock().expect("trusted vault recipients").insert(root.to_owned(), keybag.clone());
     KEY_ROOTS.lock().expect("vault project roots").insert(keybag.info().project_id.clone(), root.to_owned());
     let now = Instant::now();
@@ -177,7 +180,7 @@ fn forget(api: &Api, root: &FsPath) -> Result<(), Error> {
     Ok(())
 }
 
-fn close(api: &Api, root: &FsPath) -> Result<(), Error> {
+fn close(api: &Arc<Api>, root: &FsPath) -> Result<(), Error> {
     if let Some(session) = held(root) {
         let mut session = session.lock().expect("vault session");
         session.closing = true;
@@ -185,11 +188,13 @@ fn close(api: &Api, root: &FsPath) -> Result<(), Error> {
     }
     // Existing accepted work may drain while the key is retained, but no new viewing stream can read it.
     forget(api, root)?;
+    tokio::runtime::Handle::current().block_on(crate::private_io::close_private_project(api, root))?;
     if let Some(session) = held(root) {
         let mut session = session.lock().expect("vault session");
         if session.mount.is_mounted().map_err(provider)? { session.mount.try_unmount().map_err(provider)?; }
         drop(session);
         SESSIONS.lock().expect("vault sessions").remove(root);
+        ROOTS.lock().expect("vault roots").retain(|_, logical| logical != root);
     }
     Ok(())
 }
@@ -252,12 +257,31 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk) -> Result<VaultChan
         }
         "unlock" => {
             if !encrypted(root) { return Err(Error::new(Kind::Usage, "project_plain", "this project is not encrypted")); }
-            if held(root).is_some() { return Err(Error::new(Kind::Conflict, "vault_session_exists", "the project already has an unlock session; lock it before changing its policy")); }
             let keybag = Keybag::load(&root.join(KEYBAG_FILE)).map_err(key)?;
             let secret = keybag.unlock(credential(ask)?).map_err(key)?;
-            mount(api, root, keybag, secret, ask)?;
+            if let Some(session) = held(root) {
+                let mut session = session.lock().expect("vault session");
+                if session.mount.is_mounted().map_err(provider)? {
+                    if session.keybag.info().key_id != keybag.info().key_id { return Err(error("vault_key", "the active keybag was replaced; close this mount before recovery")); }
+                    session.secret = secret;
+                    session.keybag = keybag;
+                    session.closing = false;
+                    session.readable = Arc::new(AtomicBool::new(true));
+                    session.began = Instant::now(); session.active = session.began;
+                    session.began_ms = super::now_ms(); session.active_ms = session.began_ms;
+                    session.idle = ask.idle_timeout_s.unwrap_or(DEFAULT_IDLE); session.maximum = ask.max_duration_s.unwrap_or(0);
+                } else {
+                    drop(session);
+                    SESSIONS.lock().expect("vault sessions").remove(root);
+                    mount(api, root, keybag, secret, ask)?;
+                }
+            } else { mount(api, root, keybag, secret, ask)?; }
+            api.calcifer.store().protect_project_journal(root).map_err(|e| error("vault_journal", e))?;
         }
-        "lock" => { close(api, root)?; }
+        "lock" => {
+            if !encrypted(root) { return Err(Error::new(Kind::Usage, "project_plain", "unencrypted projects cannot be locked")); }
+            close(api, root)?;
+        }
         "activity" => {
             if let Some(session) = held(root) { let mut session = session.lock().expect("vault session"); if !session.closing && !expired(&session) { session.active = Instant::now(); session.active_ms = super::now_ms(); } }
         }
@@ -295,6 +319,8 @@ impl Drop for Converting { fn drop(&mut self) { CONVERTING.lock().expect("vault 
 
 fn convert(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret, ask: &VaultAsk) -> Result<PathBuf, Error> {
     let source = view(root)?;
+    let old_secret = held(root).map(|session| session.lock().expect("vault session").secret.duplicate());
+    let target_keybag = keybag.clone();
     if !CONVERTING.lock().expect("vault conversions").insert(root.to_owned()) { return Err(error("vault_busy", "the project is already being converted")); }
     let _converting = Converting(root.to_owned());
     forget(api, root)?;
@@ -319,6 +345,13 @@ fn convert(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret,
     if let Err(e) = fs::rename(&staged, root) { let _ = fs::rename(&saved, root); return Err(io(e)); }
     // The source is still intact if reopening fails. It is never deleted before the verified switch.
     mount(api, root, keybag, secret, ask)?;
+    drop(_converting);
+    let journal = match old_secret {
+        Some(old) => api.calcifer.store().rekey_project_journal(root, &old, &target_keybag),
+        None => api.calcifer.store().protect_project_journal(root),
+    };
+    journal.map_err(|e| error("vault_journal", format!("encrypted files are in place; source preserved at {}; journal conversion needs recovery: {e}", saved.display())))?;
+    api.calcifer.store().cleanup_private_journal().map_err(|e| error("vault_journal_cleanup", format!("encrypted data is in place; source preserved at {}; journal cleanup is pending: {e}", saved.display())))?;
     Ok(saved)
 }
 
@@ -415,6 +448,12 @@ pub(crate) fn seal_payload(path: &FsPath, context: &str, value: &[u8]) -> Result
 
 pub(crate) fn payload_root(value: &[u8]) -> Result<Option<PathBuf>, Error> { Ok(payload(value)?.map(|record| current_root(&record))) }
 
+pub(crate) fn payload_path(value: &[u8], decoded: &FsPath) -> Result<PathBuf, Error> {
+    let Some(reference) = payload(value)? else { return Ok(decoded.to_owned()) };
+    Ok(match decoded.strip_prefix(&reference.root) { Ok(relative) => current_root(&reference).join(relative), Err(_) => decoded.to_owned() })
+}
+
+
 pub(crate) fn open_payload(context: &str, value: &[u8]) -> Result<Option<Vec<u8>>, Error> {
     use base64::Engine as _;
     let Some(reference) = payload(value)? else { return Ok(Some(value.to_vec())) };
@@ -434,7 +473,6 @@ pub(crate) fn open_payload(context: &str, value: &[u8]) -> Result<Option<Vec<u8>
     let private: PrivateRecord = serde_json::from_slice(&bytes).map_err(|_| error("vault_journal", "invalid private journal record"))?;
     if private.project_id != reference.project_id || private.context != context { return Err(error("vault_journal", "private journal ownership mismatch")); }
     let plain = base64::engine::general_purpose::STANDARD.decode(private.data).map_err(|_| error("vault_journal", "invalid private journal value"))?;
-    if reference.root != root { ROOTS.lock().expect("vault roots").insert(reference.root, root); }
     Ok(Some(plain))
 }
 

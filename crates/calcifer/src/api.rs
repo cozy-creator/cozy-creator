@@ -161,6 +161,7 @@ pub(crate) fn router(api: Arc<Api>) -> Router {
         .route("/v1/run-quotes", post(crate::runs::quote))
         .route("/v1/run-estimates", post(crate::runs::estimate))
         .route("/v1/targets", get(crate::runs::describe))
+        .route("/v1/project-targets", get(crate::runs::describe))
         .route("/v1/tools", get(crate::toolbox::list))
         .route("/v1/tools/list", post(crate::toolbox::change))
         .route("/v1/tools/browse", get(crate::toolbox::browse))
