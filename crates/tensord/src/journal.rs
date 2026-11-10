@@ -1390,9 +1390,10 @@ impl Journal {
     }
 
     /// The preparing runs a restart interrupted, each with its signer and kept spec.
-    pub(crate) fn interrupted(&self) -> io::Result<Vec<(String, String, Vec<u8>)>> {
-        let mut statement = self.connection.prepare("SELECT id, actor, spec FROM executions JOIN run_specs ON execution=id WHERE state='queued' AND json_extract(record,'$.waiting_reason')=?1 ORDER BY id").map_err(db_error)?;
-        let rows = statement.query_map([PREPARING], |row| Ok((row.get::<_, i64>(0)?.to_string(), row.get::<_, String>(1)?, row.get::<_, Vec<u8>>(2)?))).map_err(db_error)?;
+    pub(crate) fn interrupted_for(&self, project_id: Option<&str>) -> io::Result<Vec<(String, String, Vec<u8>)>> {
+        let mut statement = self.connection.prepare("SELECT id, actor, spec FROM executions JOIN run_specs ON execution=id WHERE state='queued' AND json_extract(record,'$.waiting_reason')=?1
+            AND ((?2 IS NULL AND json_extract(invocation,'$.local_private.project_id') IS NULL) OR json_extract(invocation,'$.local_private.project_id')=?2) ORDER BY id").map_err(db_error)?;
+        let rows = statement.query_map(params![PREPARING, project_id], |row| Ok((row.get::<_, i64>(0)?.to_string(), row.get::<_, String>(1)?, row.get::<_, Vec<u8>>(2)?))).map_err(db_error)?;
         let mut ready = Vec::new();
         for row in rows {
             let (id, actor, body) = row.map_err(db_error)?;

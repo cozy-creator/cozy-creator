@@ -516,8 +516,15 @@ impl Engine {
     /// The preparing runs a restart interrupted, with their signers and specs, now this
     /// machine's to prepare again.
     pub(crate) fn interrupted(&self) -> io::Result<Vec<(String, String, Vec<u8>)>> {
+        self.interrupted_for(None)
+    }
+
+    /// Reserve only this workspace's interrupted preparations. Selection and reservation share
+    /// one lock so concurrent registration probes cannot start duplicate preparation threads.
+    pub(crate) fn interrupted_for(&self, project_id: Option<&str>) -> io::Result<Vec<(String, String, Vec<u8>)>> {
         let mut owned = self.owned.lock().unwrap();
-        let runs = self.journal.lock().unwrap().interrupted()?;
+        let mut runs = self.journal.lock().unwrap().interrupted_for(project_id)?;
+        runs.retain(|(id, _, _)| !owned.contains(id));
         owned.extend(runs.iter().map(|(id, _, _)| id.clone()));
         Ok(runs)
     }
