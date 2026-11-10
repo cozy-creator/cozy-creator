@@ -26,6 +26,7 @@ expect() { printf '%s\t%s\t%s\n' "$1" "$2" "$(tr '\n\t' '  ' <<< "$3" | cut -c1-
 die() { expect "skew $1" FAIL "$2"; verdict; }
 verdict() {
   local fails passes
+  command -v cozy > /dev/null && for l in tensord calcifer; do timeout 30 cozy machine logs local $l -n 0 > machine-$l.log 2>&1; done
   fails=$(grep -c $'\tFAIL\t' expect.tsv) passes=$(grep -c $'\tPASS\t' expect.tsv)
   grep $'\tFAIL\t' expect.tsv | cut -f1,3 | sed 's/^/FAIL /' | tee verdict.txt
   if [ "$fails" = 0 ] && [ "$passes" -gt 0 ]; then echo "VERDICT PASS: cozy $CLIENT × the Hub at $(cat hub.version 2>/dev/null) ($passes cells)" | tee -a verdict.txt; exit 0; fi
@@ -89,14 +90,18 @@ skew_refused() {
   fi
 }
 # Sign-in: the email's code, as the Hub logs it, typed into `cozy login` on stdin; then the account's name.
+log "cozy login ci@skew.test: the code from the Hub's log, typed on stdin"
 mkfifo login.in; exec 5<> login.in
 cozy --json login ci@skew.test < login.in > login.out 2>&1 & LOGIN=$!
-code=; for _ in $(seq 60); do
-  code=$(grep 'development device enrollment code' hub.log | grep -o '"code":"[0-9A-Za-z-]*"' | tail -1 | cut -d'"' -f4)
-  [ -n "$code" ] || ! kill -0 $LOGIN 2>/dev/null || { sleep 1; continue; }; break
+( sleep 300; kill $LOGIN 2>/dev/null ) & WATCH=$!  # a question this harness doesn't answer must not hang the job
+code=; for _ in $(seq 120); do
+  code=$(grep -h 'development device enrollment code' hub.log | grep -o '"code":"[^"]*"' | tail -1 | cut -d'"' -f4)
+  [ -n "$code" ] && break
+  kill -0 $LOGIN 2>/dev/null || break
+  sleep 1
 done
-[ -z "$code" ] || printf '%s\nciskew%s\n' "$code" "$RANDOM" >&5
-wait $LOGIN; login=$?; exec 5>&-
+if [ -n "$code" ]; then printf '%s\nciskew%s\n' "$code" "$RANDOM" >&5; else kill $LOGIN 2>/dev/null; fi
+wait $LOGIN; login=$?; exec 5>&-; kill $WATCH 2>/dev/null
 if [ -n "$REFUSE" ]; then
   [ "$login" != 0 ] && grep -q '"client_too_old"' login.out && grep -q 'cozy update' login.out &&
     expect "skew login" PASS "cozy $CLIENT < clients.cozy_min $MIN: login refused, client_too_old" ||
@@ -112,12 +117,12 @@ fi
 # package is installed on the machine from the Hub's index, not run.
 HB=$OUT/hub HUB_URL=$HUB
 . "$HERE/suites/hub/lib.sh"
-hub_account
+log "account and catalog"; hub_account
 [ -n "$WHO" ] || verdict
 hub_do catalog ok package ls --limit 5
-hub_publish
+log "model upload by the machine, publish, download, delete"; hub_models
+log "package publish, then install on the machine (its first environment: slow on a fresh runner)"; hub_publish
 hub_do package-install ok package install "$WHO/$HUB_PKG" --on local
-hub_models
 hub_cleanup
 grep -q '"status":5[0-9][0-9]' hub.log && expect "skew no 5xx" FAIL "the Hub logged a 5xx: $(grep '"status":5' hub.log | tail -1 | cut -c1-300)"
 verdict
