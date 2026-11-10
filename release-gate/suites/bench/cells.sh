@@ -8,12 +8,19 @@ read -r _ HOST_GIB _ < <(awk -v g="$BG" '$1 == g' "$HERE/suites/bench/skus")
 BENCH_PY=(nice -n 19 uv run -q --no-project --with numpy python -I "$HERE/bench.py")
 # Never the caller's stdin: inside the cell loop that is cells.tsv, which an ssh would swallow after the first cell (1a, 11-10).
 podsh() { timeout 900 "$CLI" machine ssh "$M" "$1" < /dev/null; }
-# The host's RAM, held to the group's: the rest of the pod's limit is a hog no cozy process can take back.
+# The pod side's scripts, then the host's RAM held to the group's: the rest of the pod's limit is a hog no cozy process can
+# take back. One attempt: a pod it cannot hold runs its cells anyway, labelled in host-ram and the table (coordinator 11-10).
 podsh "echo $(base64 -w0 "$HERE/suites/bench/pod.sh") | base64 -d > /var/tmp/bench-pod.sh && echo $(base64 -w0 "$HERE/suites/bench/hog.py") |
-  base64 -d > /var/tmp/bench-hog.py && echo $(base64 -w0 "$HERE/suites/bench/vram.py") | base64 -d > /var/tmp/bench-vram.py &&
-  sh /var/tmp/bench-pod.sh hold $(awk -v g="$HOST_GIB" 'BEGIN {printf "%d", g * 2^30}')" > host.txt 2>&1 ||
-  { expect bench-host FAIL "could not hold the host to $HOST_GIB GiB: $(tail -c 300 host.txt)"; return 0; }
-log "host held to $HOST_GIB GiB: $(tr '\n' ' ' < host.txt)"
+  base64 -d > /var/tmp/bench-hog.py && echo $(base64 -w0 "$HERE/suites/bench/vram.py") | base64 -d > /var/tmp/bench-vram.py" > pod-copy.log 2>&1 ||
+  log "copying the pod scripts: $(tr '\n\r' '  ' < pod-copy.log | tail -c 300)"
+if timeout 360 "$CLI" machine ssh "$M" "sh /var/tmp/bench-pod.sh hold $(awk -v g="$HOST_GIB" 'BEGIN {printf "%d", g * 2^30}')" < /dev/null > host.txt 2>&1; then
+  echo "held to $HOST_GIB GiB ($(grep -h '^hog ' host.txt))$(grep -h '^SHORT' host.txt | sed 's/^/; /')" > host-ram
+  log "host held to $HOST_GIB GiB: $(tr '\n\r' '  ' < host.txt)"
+else
+  timeout 120 "$CLI" machine ssh "$M" "sh /var/tmp/bench-pod.sh release" < /dev/null > /dev/null 2>&1
+  echo "NOT held to $HOST_GIB GiB: $(tr '\n\r' '  ' < host.txt | tail -c 300)" > host-ram
+  expect bench-host FAIL "host RAM not held, the cells run on the pod's own: $(cat host-ram)"
+fi
 podsh "sh /var/tmp/bench-pod.sh gpu" > pod-facts.txt 2> /dev/null || log "no GPU facts: $(tail -c 200 pod-facts.txt)"
 # The pictures cells.tsv names in prompts, as project assets.
 for a in "$HERE/ref/seed.jpg still" "$HERE/ref/seed.jpg lead" "$FX/lighthouse.jpg photo" "$FX/teapot.jpg teapot"; do
