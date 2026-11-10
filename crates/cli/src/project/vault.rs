@@ -1,5 +1,5 @@
 //! Local encryption credentials are read from a terminal or an explicit file/stdin, never argv or environment variables.
-use std::{io::{Read as _, Write as _}, path::PathBuf, process::ExitCode};
+use std::{io::{Read as _, Write as _}, path::{Path, PathBuf}, process::ExitCode};
 use api::{calcifer::project::{VaultAsk, VaultChanged, VaultStatus}, error::{Error, Kind}};
 use crate::{Context, output};
 
@@ -96,13 +96,36 @@ fn credential(path: Option<&PathBuf>, prompt: &str, confirm: bool) -> Result<Str
     Ok(value)
 }
 
+fn recovery_location(output: &Path, status: &VaultStatus) -> Result<(), Error> {
+    let refuse = |why: &str| Error::new(Kind::Usage, "vault_recovery_location", format!("{why}; save recovery outside the project and keep a copy off this device"));
+    let name = output.file_name().ok_or_else(|| refuse("recovery output must name a new file"))?;
+    let parent = output.parent().filter(|path| !path.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let parent = platform::durable::canonical(parent).map_err(|_| refuse("the recovery output parent must already exist locally"))?;
+    if !parent.is_dir() { return Err(refuse("the recovery output parent must be a local directory")); }
+    let destination = parent.join(name);
+    // Recovery output belongs to the client; a remote Calcifer's paths may not exist here.
+    for root in std::iter::once(&status.path).chain(status.view.iter()) {
+        if let Ok(root) = platform::durable::canonical(root)
+            && destination.starts_with(root)
+        {
+            return Err(refuse("a recovery secret cannot be saved inside its project backing or unlocked view"));
+        }
+    }
+    Ok(())
+}
+
 async fn change(ctx: &Context, project: Option<&String>, request: VaultAsk, recovery_out: Option<PathBuf>) -> Result<ExitCode, Error> {
     if recovery_out.as_ref().is_some_and(|path| path.exists()) {
         return Err(Error::new(Kind::Conflict, "vault_recovery_exists", "the recovery output file already exists; choose a new path"));
     }
     let path = super::at(&super::named(project)?, &["vault"]);
+    let client = ctx.calcifer().await?;
+    if let Some(output) = &recovery_out {
+        let status: VaultStatus = client.get(&path).await?;
+        recovery_location(output, &status)?;
+    }
     // No client idempotency cache for responses containing a recovery secret.
-    let mut changed: VaultChanged = ctx.calcifer().await?.post(&path, &request, None).await?;
+    let mut changed: VaultChanged = client.post(&path, &request, None).await?;
     if let (Some(path), Some(secret)) = (&recovery_out, &changed.recovery_secret) {
         let mut file = platform::durable::create_private_new(path).map_err(|e| Error::new(Kind::Unavailable, "vault_recovery_save", format!("cannot save the recovery secret to {}: {e}; keep the project unlocked and replace the recovery secret", path.display())))?;
         writeln!(file, "{secret}").and_then(|()| file.sync_all()).map_err(|e| Error::new(Kind::Unavailable, "vault_recovery_save", format!("cannot save the recovery secret: {e}")))?;
