@@ -14,7 +14,7 @@ on:
         type: string
         default: master
       build:
-        description: "cozy: dev binary; tensord: manylinux binary; tensorfs: wheel; kernels: CUDA AOT; check: native Rust compilation only; vault-provider: real encrypted filesystem/media/crash proof (comma-separate several)"
+        description: "cozy: dev binary; tensord: manylinux binary; tensorfs: wheel; kernels: CUDA AOT; check: native Rust compilation; vault-provider: filesystem proof; project-vault-cli: full default-home encryption CLI proof (comma-separate several)"
         type: string
         default: cozy
       features:
@@ -352,5 +352,100 @@ jobs:
         with:
           name: vault-provider-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}
           path: provider-evidence
+          if-no-files-found: warn
+          retention-days: 14
+
+  # Full product storage proof on a fresh host. Uses the installed default cozy only,
+  # no model, rental, account, alternate home or independently launched daemon.
+  project-vault-cli:
+    if: contains(inputs.build, 'project-vault-cli')
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: astral-sh/setup-uv@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: pnpm/setup@v1
+        with:
+          package-json-file: web/app/package.json
+          install: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: project-vault-cli-${{ runner.os }}-${{ runner.arch }}
+      - name: Install pinned Rust
+        run: rustup toolchain install 1.99.1 --profile minimal
+      - name: Install optional Linux encryption driver and real media tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fuse libfuse2t64 ffmpeg
+          sudo modprobe fuse || test -e /dev/fuse
+      - name: Install macOS media tool (system encrypted APFS needs no driver)
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg
+      - name: Install pinned Windows driver and media tool
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $msi = Join-Path $env:RUNNER_TEMP winfsp.msi
+          Invoke-WebRequest https://github.com/winfsp/winfsp/releases/download/v2.1/winfsp-2.1.25156.msi -OutFile $msi
+          if ((Get-FileHash $msi -Algorithm SHA256).Hash.ToLower() -ne '073a70e00f77423e34bed98b86e600def93393ba5822204fac57a29324db9f7a') { throw 'WinFsp checksum mismatch' }
+          $installed = Start-Process msiexec.exe -ArgumentList @('/i', $msi, '/qn', '/norestart', 'ADDLOCAL=ALL') -Wait -PassThru
+          if ($installed.ExitCode -notin @(0, 3010)) { throw "WinFsp install failed: $($installed.ExitCode)" }
+          choco install ffmpeg --no-progress -y
+      - name: Build the actual candidate with its embedded page and provider
+        env:
+          CARGO_INCREMENTAL: '0'
+        run: bash e2e/candidates/build.sh cozy . "$RUNNER_TEMP/project-vault-candidate"
+      - name: Install the candidate at the ordinary user path
+        run: |
+          python - <<'PY_INSTALL_VAULT'
+          import os
+          from pathlib import Path
+          import shutil
+          home = Path.home() / '.cozy'
+          if home.exists():
+              raise SystemExit('the product proof requires a fresh default Cozy home')
+          binary = home / 'bin' / ('cozy.exe' if os.name == 'nt' else 'cozy')
+          binary.parent.mkdir(parents=True, mode=0o700)
+          source = Path(os.environ['RUNNER_TEMP']) / 'project-vault-candidate' / binary.name
+          shutil.copy2(source, binary)
+          binary.chmod(0o700)
+          with open(os.environ['GITHUB_PATH'], 'a', encoding='utf-8') as output:
+              output.write(str(binary.parent) + '\n')
+          PY_INSTALL_VAULT
+      - name: Exercise real optional project encryption through the installed CLI
+        run: python e2e/project-vault-cli/run.py --source "$(git rev-parse HEAD)" --artifacts "$RUNNER_TEMP/project-vault-cli"
+      - name: Keep only product proof records
+        if: always()
+        run: |
+          python - <<'PY_VAULT_EVIDENCE'
+          import os
+          from pathlib import Path
+          import shutil
+          source = Path(os.environ['RUNNER_TEMP']) / 'project-vault-cli'
+          target = Path('product-vault-evidence')
+          target.mkdir(exist_ok=True)
+          for name in ['receipt.json', 'commands.json']:
+              path = source / name
+              if path.is_file():
+                  shutil.copy2(path, target / name)
+          PY_VAULT_EVIDENCE
+      - name: Publish synthetic product proof records
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: project-vault-cli-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}
+          path: product-vault-evidence
           if-no-files-found: warn
           retention-days: 14
