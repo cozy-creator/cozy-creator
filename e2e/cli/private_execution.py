@@ -22,7 +22,9 @@ def command(cli: Path, output: Path, name: str, *args: str, fails: bool = False)
     # call reports progress without imposing a new execution timeout or retry.
     with stdout.open("wb") as out, stderr.open("wb") as err:
         process = subprocess.Popen([str(cli), "--json", *args], stdout=out, stderr=err)
-        print(f"vault proof: {name} started", flush=True)
+        annotation = name in {"describe", "run", "failure", "remounted-run"}
+        prefix = "::notice title=private-cli-stage::" if annotation else "vault proof: "
+        print(f"{prefix}{name} started poll_rc=running stdout=0 stderr=0", flush=True)
         report = time.monotonic() + 30
         while process.poll() is None:
             time.sleep(1)
@@ -37,9 +39,9 @@ def command(cli: Path, output: Path, name: str, *args: str, fails: bool = False)
                     if run.get("status") or event.get("type"):
                         state = f" event={event.get('type', '')} status={run.get('status', '')} machine_state={run.get('machine_state', '')}"
                         break
-                print(f"vault proof: {name} still active stdout={stdout.stat().st_size} stderr={stderr.stat().st_size}{state}", flush=True)
+                print(f"{prefix}{name} poll_rc=running stdout={stdout.stat().st_size} stderr={stderr.stat().st_size}{state}", flush=True)
                 report = time.monotonic() + 30
-    print(f"vault proof: {name} exited {process.returncode}", flush=True)
+    print(f"{prefix}{name} poll_rc={process.returncode} stdout={stdout.stat().st_size} stderr={stderr.stat().st_size}", flush=True)
     if bool(process.returncode) != fails:
         raise AssertionError(f"{name} returned unexpected exit {process.returncode}; see its captured output")
     return stdout.read_bytes()
