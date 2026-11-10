@@ -1,6 +1,7 @@
 """vram.py <free bytes> <ready file>: a card of that size for every other process (pod.sh vram). Holds GPU 0's memory until
 <free bytes> less what other processes already hold is free, then writes '<pid> <held> <free> <total> <others>' (bytes) to
-<ready file> and sleeps until killed. libcuda through ctypes: no torch on the pod's python needed."""
+<ready file> and sleeps until killed. <held> is all the holder takes from the card, its own CUDA context included
+(total less free less others): the driver's peak during a capped run less <held> is what that run used. libcuda through ctypes: no torch on the pod's python needed."""
 import ctypes
 import os
 import subprocess
@@ -35,7 +36,7 @@ def main(free_want: int, ready: str) -> None:
     ok(cu.cuCtxCreate_v2(ctypes.byref(ctx), 0, dev), 'cuCtxCreate')
     free, total = ctypes.c_size_t(), ctypes.c_size_t()
     target = max(free_want - held_by_others, 0)
-    held, chunk, ptrs = 0, 1 << 30, []
+    chunk, ptrs = 1 << 30, []
     while chunk >= 8 << 20:
         ok(cu.cuMemGetInfo_v2(ctypes.byref(free), ctypes.byref(total)), 'cuMemGetInfo')
         want = free.value - target
@@ -49,10 +50,9 @@ def main(free_want: int, ready: str) -> None:
             continue
         ok(r, 'cuMemAlloc')
         ptrs.append(p)
-        held += n
     ok(cu.cuMemGetInfo_v2(ctypes.byref(free), ctypes.byref(total)), 'cuMemGetInfo')
     with open(ready + '.tmp', 'w') as f:
-        f.write(f'{os.getpid()} {held} {free.value} {total.value} {held_by_others}')
+        f.write(f'{os.getpid()} {total.value - free.value - held_by_others} {free.value} {total.value} {held_by_others}')
     os.replace(ready + '.tmp', ready)
     while True:
         time.sleep(3600)
