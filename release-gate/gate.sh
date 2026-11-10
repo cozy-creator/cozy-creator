@@ -5,9 +5,12 @@
 #   gate.sh <SKU> --suite name,... [--gpus N] [--out DIR] [--establish] [--publish] [--runtime F|URL] [--tensorfs F|URL]
 #           [--tensord BIN|URL] [--packages DIR] [--pins name@release,...] [--only cell,cell] [--before FILE]...
 #           [--cells FILE]... [--first pkg,...] [--cli BIN] [--disk GB] [--on MACHINE] [--image sha256:HEX] [--stall MIN]
-#           [--cap MIN]
+#           [--cap MIN] [--keep] [--end] [--group NAME]
 # --image boots that worker image (a staged candidate's digest; a Hub admin's choice) in place of the Hub's current one.
-# --on runs on that machine as it is (a dev proof on `local`): no rental, no --before, nothing ended.
+# --on runs on that machine as it is (a dev proof on `local`): no rental, no --before, nothing ended; with --end, a rental
+# this computer holds (a --keep gate's) is kept alive while the gate runs and ended after it.
+# --keep leaves a rental up when the gate finishes (a second gate goes --on it); its hard stop still ends it.
+# --group: suite bench's group (suites/bench/skus) when it is not <SKU>x<GPUS>: two pods of one SKU split its cells.
 # --stall: how long no run on the machine may stand still before the gate calls its cell hung (`hold`; default 15 minutes).
 # --cap: the job's hard stop in minutes from the gate's start (the workflow's cap_minutes; 300). A download that can't land
 # before it, at the rate it has kept, fails the host as too slow (`hold`), and another host is rented (th-364).
@@ -37,11 +40,13 @@ HERE=$2 BEGAN=$3 HOST=$4 BEGUN_IN=$PWD; shift 4; ARGS=("$@")
 . "$HERE/machines.sh"
 REPO=cozy-creator/cozy-creator TAG=release-gate-baselines
 SKU=$1; shift; CAND=() ONLY= EXTRA=() BEFORE=() CLI=cozy DISK=400 OUT= PKGS= ESTABLISH= PUBLISH= PINS= SUITES= K= CLIP= GPUS= FIRST= ON= IMAGE= STALL=15 STALL_STAGE=30 SEEDS= SCENARIO=
-BIN= RW= TW= TD= CAP=300 HOSTS=5
+BIN= RW= TW= TD= CAP=300 HOSTS=5 KEEP_POD= END_ON= GROUP=
 while [ $# -gt 0 ]; do
   case $1 in
     --establish) ESTABLISH=1; shift; continue;;
     --publish) PUBLISH=1; shift; continue;;
+    --keep) KEEP_POD=1; shift; continue;;
+    --end) END_ON=1; shift; continue;;
     --out) OUT=$2;;
     --only) ONLY=",$2,";;
     --cells) EXTRA+=("$2");;
@@ -52,6 +57,7 @@ while [ $# -gt 0 ]; do
     --cli) CLI=$2;;
     --disk) DISK=$2;;
     --on) ON=$2;;
+    --group) GROUP=$2;;
     --image) IMAGE=$2;;
     --stall) STALL=$2;;
     --cap) CAP=$2;;
@@ -131,7 +137,10 @@ end_it() {
     "$CLI" --json machine show "$M" >machine-end.json 2>/dev/null
     if "$CLI" logs --help >/dev/null 2>&1; then "$CLI" logs calcifer; else "$CLI" machine logs local calcifer -n 0; fi >calcifer.log 2>&1
   fi
-  [ -z "$ON" ] || { M=; return; }
+  [ -z "$ON" ] || [ -n "$END_ON" ] || { M=; return; }
+  [ -n "$RID" ] || [ -z "$END_ON" ] || { RID=$("$CLI" --json machine show "$M" 2>/dev/null | jq -r '.rental_id // empty'); [ -z "$RID" ] || echo "$RID" > rental; }
+  # Kept only once its cells ran: a refused, slow or failed host is ended as ever.
+  [ -z "$KEEP_POD" ] || [ -z "${CELLS_DONE:-}" ] || { [ -z "$RID" ] || log "kept $RID ($M) for the next gate"; M= RID=; return; }
   [ -n "$RID" ] || return
   # `machine end` returns once the Hub affirms the pod gone.
   "$CLI" machine end "$RID" -y >end.log 2>&1 && ! listed "$RID" "$CLI" && { log "ended $RID${M:+ ($M)}, gone"; M= RID=; return; }
@@ -146,7 +155,7 @@ again() {
   cd "$BEGUN_IN" && exec bash "$0" --copy "$HERE" "$BEGAN" $((HOST + 1)) "${ARGS[@]}" --out "$OUT"
 }
 trap 'end_it; again' EXIT
-trap 'exit 143' TERM INT
+trap 'KEEP_POD=; exit 143' TERM INT  # a hard stop ends a kept rental too
 RUN_CLI=$CLI; . "$HERE/../e2e/run.sh"
 run_project "$PWD/project" || { log "cozy project new failed"; exit 1; }
 # one_beat [args...]: H3's call in $BEAT: without `beats`, a text and its length are one beat, which goes to the model as
@@ -383,7 +392,7 @@ hold() {
       elif [ -n "$stands" ] && (( SECONDS - still >= STALL_STAGE * 60 )); then why="a run on $M stood for $(( (SECONDS - still) / 60 )) min at: $(paste -sd';' <<< "$stands" | cut -c1-120)"
       elif too_slow; then :
       else
-        [ -n "$ON" ] || "$CLI" machine keepalive "$M" > /dev/null 2>&1
+        [ -n "$ON" ] && [ -z "$END_ON" ] || "$CLI" machine keepalive "$M" > /dev/null 2>&1
         continue
       fi
     elif (( SECONDS - moved >= STALL * 60 )); then why="no listing of $M's runs answered for $(( (SECONDS - moved) / 60 )) min"; active=
@@ -462,6 +471,7 @@ for f in "${EXTRA[@]}"; do
 done
 # A --cells FILE ending in .sh is sourced last, for cells that change the machine between them.
 for f in "${EXTRA[@]}"; do [[ $f != *.sh ]] || . "$f"; done
+CELLS_DONE=1
 end_it
 uv run -q --no-project --with pillow --with numpy --with torch --with transformers --index https://download.pytorch.org/whl/cpu \
   --index-strategy unsafe-best-match python -I "$HERE/analyze.py" "$OUT" "$SKU" "$B/gate-$BK.json" | tee verdict.txt

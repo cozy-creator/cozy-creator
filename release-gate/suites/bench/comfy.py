@@ -35,6 +35,13 @@ class Job(TypedDict):
     record: object  # the cell's cold Cozy record: the kernels and Sol schedule ComfyUI is matched to
 
 
+class Tier(TypedDict):
+    """One request: end to end, each node class's seconds, and the sampler's steps."""
+    e2e_s: float | None
+    stages: dict[str, float]
+    steps_s: list[float]
+
+
 class Row(TypedDict):
     """A cell's ComfyUI requests, as bench.py stores them beside the cell."""
     total_s: float | None  # the warm runs' median end-to-end, as Cozy's warm total
@@ -43,6 +50,7 @@ class Row(TypedDict):
     step1_s: float | None
     peak_mib: int | None  # the warm runs' highest NVML peak on the GPU, less the holder's
     held_mib: int  # the VRAM holder's, on a capped cell
+    tiers: NotRequired[dict[str, Tier]]  # cold, w1, ...: where the time went
     status: str
     comfyui: str
     differences: list[str]
@@ -183,9 +191,16 @@ def rows(gate: str) -> dict[str, Row]:
         peaks = [v for d in warm if (v := num(d, 'meters', 'peak_vram_mib')) is not None]
         failed = next((d for d in tiers.values() if d.get('status') != 'ok'), None)
         config = tiers.get('cold', {}).get('config')
+
+        def tier(d: dict[str, object]) -> Tier:
+            ph = d.get('phases')
+            ph = ph if isinstance(ph, dict) else {}
+            st, steps = ph.get('stages'), ph.get('steps_s')
+            return {'e2e_s': num(d, 'e2e_s'), 'stages': {str(k): float(v) for k, v in st.items() if isinstance(v, (int, float))} if isinstance(st, dict) else {},
+                    'steps_s': [float(x) for x in steps if isinstance(x, (int, float))] if isinstance(steps, list) else []}
         out[cell] = {'total_s': round(v, 2) if (v := mid('e2e_s')) is not None else None, 'cold_s': num(ok['cold'], 'e2e_s') if 'cold' in ok else None,
                      'steady_s': mid('phases', 'step'), 'step1_s': mid('phases', 'step1'),
-                     'peak_mib': int(max(peaks)) - held if peaks else None, 'held_mib': held,
+                     'peak_mib': int(max(peaks)) - held if peaks else None, 'held_mib': held, 'tiers': {t: tier(d) for t, d in tiers.items()},
                      'status': 'ok' if not failed else f"{failed.get('status')}: {str(failed.get('error'))[:160]}",
                      'comfyui': str(next((d.get('comfyui') for d in tiers.values()), '')),
                      'differences': [str(x) for x in (config.get('differences') or [])] if isinstance(config, dict) else [],

@@ -4,15 +4,19 @@ Every release candidate runs the same cells on the same GPU types, and each is h
 and to ComfyUI's. A cell passes only when its output is right as well as fast.
 
 ```
-release-gate/bench.sh --comfyui [--runtime F --tensorfs F --tensord F] [--packages DIR] [--groups rtx-4090x1] [--out DIR]
+release-gate/bench.sh --comfyui --previous --runtime F --tensorfs F --tensord F --packages DIR [--groups rtx-4090x1] [--out DIR]
 release-gate/bench.py table <gate dir>... [--comfyui FILE]  # again, from the gate dirs
-release-gate/bench.py versus <gate dir>...                 # Cozy against ComfyUI on the same pods
+release-gate/bench.py versus <gate dir>... [--previous DIR] # Cozy against ComfyUI on the same pods, H3 by stage
 release-gate/bench.py baseline <version> <gate dir>... --comfyui-out FILE   # after a release
 ```
 
 ## What runs
 
-- `skus`: the groups (`<sku>x<gpus>`), one fresh pod each, held to a fixed host RAM (30.46 GiB a GPU) by `pod.sh` over SSH.
+- `skus`: the groups (`<sku>x<gpus>[.<part>]`: a part splits one SKU's cells over two pods), one fresh pod each, held to a
+  fixed host RAM (30.46 GiB a GPU) by `pod.sh` over SSH, each with its disk and hard stop, ComfyUI's included.
+- `--previous`: each pod first runs the release it boots (the Hub's), then stays up (`gate.sh --keep`) for the candidate
+  (`gate.sh --on <pod> --end`): the previous release on the same pod is the candidate's baseline (`previous.json`), and
+  ComfyUI runs last. A release candidate's dev build reports the released minor (`0.23.1+dev`), so one Calcifer drives both.
 - A capped cell (`cap` GiB) runs on a card of that size, the way ComfyUI does: Cozy's executors leave the GPU (one restart),
   then a separate process (`vram.py`) holds all but `cap` GiB, counting what other processes already hold as theirs. Not
   `--gpu-memory-limit`, which caps Cozy alone. Its peak VRAM is the driver's less the holder's.

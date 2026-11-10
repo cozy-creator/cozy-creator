@@ -1,8 +1,11 @@
-# Suite bench's groups: <sku>x<gpus>, the host RAM in GiB each pod is held to (pod.sh), the disk in GB, and the gate's hard stop
-# in minutes (gate.sh --cap: the pod ends there whatever it is doing). One pod per group.
+# Suite bench's groups: <sku>x<gpus>[.<part>] (a part splits one SKU's cells over two pods), the host RAM in GiB each pod is
+# held to (pod.sh), the disk in GB and each gate's hard stop in minutes (gate.sh --cap: the pod ends there whatever it is
+# doing), ComfyUI's files and time included. One pod per group, the groups at once.
 # 30.46 GiB is kesshouban's host, where the varena matrix was proven; a two-GPU pod gets it per GPU.
-rtx-4090x1 30.46 400 300
-rtx-4090x2 60.92 400 90
+rtx-4090x1 30.46 700 360
+rtx-4090x1.capped 30.46 350 240
+rtx-4090x2 60.92 400 120
 # HunyuanImage 3.0 on a 48 GB card, at a workstation's RAM (a pod with less runs on its own, said in the table).
-rtx-a6000x1 125 250 150
-# Optional, each with its own stored numbers once run: rtx-5090x1 (sm120: FP4 kernels).
+rtx-a6000x1 125 250 180
+# H3 on Blackwell RTX: the card's own lane and kernels, and the 8-bit pair ComfyUI is held to.
+rtx-5090x1 30.46 300 180

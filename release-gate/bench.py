@@ -1,8 +1,9 @@
 """The fixed benchmark suite's numbers, stored baselines and table (suites/bench/README.md).
     bench.py table <gate dir>... [--baseline FILE] [--cells FILE] [--known FILE] [--refs DIR] [--no-output]
         each group's cells against the stored baseline and ComfyUI; exit 1 on any FAIL
-    bench.py versus <gate dir>...   each cell with a ComfyUI row against it: warm total, steady step, peak VRAM, cold; every
-        cell where Cozy is slower or holds more memory, with the gap
+    bench.py versus <gate dir>... [--previous DIR]   each cell with a ComfyUI row against it: warm total, steady step, peak
+        VRAM, cold; every cell where Cozy is slower or holds more memory, with the gap; DIR/<group>: the previous release's
+        gate on the same pod (bench.sh --previous), shown beside
     bench.py baseline <version> <gate dir>... [--out FILE] [--refs DIR] [--comfyui-out FILE] [--cells FILE]
         baselines/<version>.json from those dirs, Cozy's numbers only: ComfyUI's rows go to --comfyui-out, kept off the public
         repo until every cell is won (Paul 11-10); each cell's reference output copied into --refs (baselines/refs/,
@@ -22,7 +23,9 @@ import shutil
 import statistics
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Literal, NotRequired, TypedDict, cast
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -30,7 +33,7 @@ BENCH = os.path.join(HERE, 'suites', 'bench')
 sys.path.insert(0, HERE)
 sys.path.insert(0, BENCH)
 import media  # noqa: E402  (suites/bench/media.py)
-from comfy import Row as Comfy  # noqa: E402  (suites/bench/comfy.py: ComfyUI's row for a cell)
+from comfy import Row as Comfy, Tier  # noqa: E402  (suites/bench/comfy.py: ComfyUI's row for a cell)
 from runs import Run  # noqa: E402
 
 # The owner's bar: a judged time more than 5% over its baseline fails, unless the cell's own measured noise is wider.
@@ -99,6 +102,8 @@ class Metrics(TypedDict):
     transport: Transport | None
     throttles: list[str]
     output: Output | None
+    stages: dict[str, float]  # the record's named stages, ms (attribution, the run's and its calls')
+    series: list[float]  # the dominant sampler track's steps, ms
 
 
 class Cell(TypedDict):
@@ -114,6 +119,8 @@ class Cell(TypedDict):
     kernels: Kernels | None
     transport: Transport | None
     throttles: list[str]
+    stages: dict[str, float]  # the warm runs' median of each stage, ms
+    series: list[float]  # the warm runs' median of each step, ms
 
 
 class Reference(TypedDict, total=False):
@@ -264,7 +271,10 @@ def metrics(run: Run, memavail: list[tuple[int, int]], held_mib: int = 0) -> Met
             'computed': not memo or (memo[0] != 'run' and len(memo) < len(calls)),
             'numbers': {k: float(v) for k, v in n.items() if v is not None},
             'kernels': {'gemm': run.gemm, 'attention': run.attention, 'graphs': run.graphs},
-            'transport': transport_of(rec), 'throttles': sorted({t for r in rows for t in r.get('throttles') or []}), 'output': None}
+            'transport': transport_of(rec), 'throttles': sorted({t for r in rows for t in r.get('throttles') or []}), 'output': None,
+            'stages': {k: float(v.get('total_ms') or 0.0) for m in run.measurements for k, v in ((m.get('attribution') or {}).get('stages') or {}).items()
+                       if not k.startswith('host · ')},
+            'series': [float(x) for x in s]}
 
 
 def output_of(d: str, run: Run, judged: bool) -> Output | None:
@@ -302,7 +312,11 @@ def summary(cold: Metrics | None, warm: list[Metrics]) -> Cell:
             + [f"run {m['run']}: the memo answered it ({', '.join(m['memo'])}): it measured nothing" for m in runs if not m['computed']],
             'faults': [f"run {m['run']} output: {w}" for m in runs if m['output'] for w in m['output']['faults']],
             'kernels': last['kernels'] if last else None, 'transport': last['transport'] if last else None,
-            'throttles': sorted({t for m in done for t in m['throttles']})}
+            'throttles': sorted({t for m in done for t in m['throttles']}),
+            'stages': {k: statistics.median(v) for k in {k for m in done for k in m.get('stages', {})}
+                       if (v := [m['stages'][k] for m in done if k in m.get('stages', {})])},
+            'series': [statistics.median(v) for i in range(max((len(m.get('series', [])) for m in done), default=0))
+                       if (v := [m['series'][i] for m in done if len(m.get('series', [])) > i])]}
 
 
 def text(d: str, name: str) -> str | None:
@@ -359,7 +373,8 @@ def read_gate(d: str, judged: bool = True) -> Gate:
         run = Run.read(path)
         if run is None:
             m: Metrics = {'run': None, 'status': 'no record', 'reason': record, 'seed': None, 'memo': [], 'computed': True, 'numbers': {},
-                          'kernels': {'gemm': [], 'attention': [], 'graphs': None}, 'transport': None, 'throttles': [], 'output': None}
+                          'kernels': {'gemm': [], 'attention': [], 'graphs': None}, 'transport': None, 'throttles': [], 'output': None,
+                          'stages': {}, 'series': []}
         else:
             m = metrics(run, memavail, held)
             if run.status == 'completed':
@@ -526,7 +541,7 @@ def pod_check(cand: Gate, stored: Reference | None) -> tuple[list[str], list[str
     before = ref.get('before')
     if not before:
         return ['no reference workload on this pod'], []
-    gpus = int(m.group(1)) if (m := re.search(r'x(\d+)$', cand['group'])) else 1
+    gpus = int(m.group(1)) if (m := re.search(r'x(\d+)(\.|$)', cand['group'])) else 1  # <sku>x<gpus>[.<part>]
     for k, most in HOST_CEILING.items():
         most += CUDA_INIT_PER_GPU * (gpus - 1) if k == 'cuda_init_ms' else 0
         now = cast(float | None, before.get(k))
@@ -589,7 +604,7 @@ def table(gates: list[Gate], base: Baseline | None, defs: list[CellDef], known: 
     return lines, fails
 
 
-def versus(gates: list[Gate], defs: list[CellDef]) -> tuple[list[str], list[str]]:
+def versus(gates: list[Gate], defs: list[CellDef], previous: dict[str, Gate] | None = None) -> tuple[list[str], list[str]]:
     """Each cell with a ComfyUI row on its pod, both engines side by side, as markdown lines, and every cell where Cozy is
     slower (warm total, steady step) or holds more GPU memory, with the gap. Peak VRAM on a whole card: Cozy's executor's
     own (with its CUDA context, measured on this pod) against ComfyUI's NVML peak, ComfyUI alone on the GPU; on a capped
@@ -598,26 +613,37 @@ def versus(gates: list[Gate], defs: list[CellDef]) -> tuple[list[str], list[str]
     cap = {d['name']: d['cap'] for d in defs}
     lines: list[str] = []
     losses: list[str] = []
+
+    def sec(v: float | None) -> float | None:
+        return None if v is None else v / 1000
+
+    def gib(v: float | None) -> float | None:
+        return None if v is None else v / 1024
+
+    def ours(g: Gate, name: str) -> tuple[dict[str, float], float | None, float | None]:
+        """A cell's warm medians, its peak VRAM as held against ComfyUI's, and its cold total."""
+        c = g['cells'].get(name)
+        w = c['warm'] if c and c['n'] else {}
+        ctx = (g['reference'].get('before') or {}).get('ctx_mib')
+        proc = w.get('proc_mib')
+        peak = w.get('vram_mib') if cap.get(name) else (proc + (ctx or 0) if proc is not None else None)
+        cold = c['cold']['numbers'].get('total_ms') if c and c['cold'] and c['cold']['status'] == 'completed' else None
+        return w, peak, cold
+
     for g in gates:
         if not g['comfyui']:
             continue
         ctx = (g['reference'].get('before') or {}).get('ctx_mib')
-        lines += [f"\n### {g['group']} on {g['pod']}: {g['label']} against ComfyUI {next(iter(g['comfyui'].values()))['comfyui']}"
-                  f" (Cozy's CUDA context {ctx if ctx is not None else '?'} MiB)", '',
-                  '| cell | GPU | warm total s: Cozy / ComfyUI | ComfyUI / Cozy | steady step s: Cozy / ComfyUI | peak VRAM GiB: Cozy / ComfyUI |'
-                  ' cold s: Cozy / ComfyUI | Cozy loses |', '|---|---|---|---|---|---|---|---|']
+        p = (previous or {}).get(g['group'])
+        was = f" / {p['label']}" if p else ''
+        lines += [f"\n### {g['group']} on {g['pod']}: {g['label']}{was} against ComfyUI {next(iter(g['comfyui'].values()))['comfyui']}"
+                  f" (Cozy's CUDA context {ctx if ctx is not None else '?'} MiB)" + (f"; {p['label']} ran first on {p['pod']}" if p else ''), '',
+                  f"| cell | GPU | warm total s: Cozy{was and ' / previous'} / ComfyUI | ComfyUI / Cozy | steady step s: Cozy{was and ' / previous'} / ComfyUI |"
+                  f" peak VRAM GiB: Cozy{was and ' / previous'} / ComfyUI | cold s: Cozy / ComfyUI | Cozy loses |", '|---|---|---|---|---|---|---|---|']
         for name, x in g['comfyui'].items():
             c = g['cells'].get(name)
-            w = c['warm'] if c and c['n'] else {}
-            proc = w.get('proc_mib')
-            ours_peak = w.get('vram_mib') if cap.get(name) else (proc + (ctx or 0) if proc is not None else None)
-            cold = c['cold']['numbers'].get('total_ms') if c and c['cold'] and c['cold']['status'] == 'completed' else None
-
-            def sec(v: float | None) -> float | None:
-                return None if v is None else v / 1000
-
-            def gib(v: float | None) -> float | None:
-                return None if v is None else v / 1024
+            w, ours_peak, cold = ours(g, name)
+            pw, ppeak, _ = ours(p, name) if p else ({}, None, None)
             judged = {'warm total': (sec(w.get('total_ms')), x['total_s'], 's'), 'steady step': (sec(w.get('steady_ms')), x.get('steady_s'), 's'),
                       'peak VRAM': (gib(ours_peak), gib(x.get('peak_mib')), 'GiB')}
             gaps = [f"{k} +{a - b:.3g} {u} ({a / b - 1:+.0%})" for k, (a, b, u) in judged.items() if a is not None and b and a > b]
@@ -628,14 +654,75 @@ def versus(gates: list[Gate], defs: list[CellDef]) -> tuple[list[str], list[str]
             if gaps:
                 losses.append(f"{g['group']} {name}: {'; '.join(gaps)}")
 
-            def pair(a: float | None, b: float | None, digits: int) -> str:
-                return f"{'-' if a is None else f'{a:.{digits}f}'} / {'-' if b is None else f'{b:.{digits}f}'}"
+            def pair(a: float | None, b: float | None, digits: int, *mid: float | None) -> str:
+                """Cozy / [the previous release, when it ran] / ComfyUI."""
+                def f(v: float | None) -> str:
+                    return '-' if v is None else f'{v:.{digits}f}'
+                return ' / '.join(f(v) for v in (a, *(mid if p else ()), b))
             tot, steady, peak = judged['warm total'], judged['steady step'], judged['peak VRAM']
             speed = f"{tot[1] / tot[0]:.2f}x" if tot[0] and tot[1] else ('ComfyUI failed' if x['status'] != 'ok' else '-')
-            lines.append(f"| {name} | {f'{cap[name]} GiB' if cap.get(name) else 'whole'} | {pair(tot[0], tot[1], 2)} | {speed} |"
-                         f" {pair(steady[0], steady[1], 3)} | {pair(peak[0], peak[1], 1)} | {pair(sec(cold), x['cold_s'], 1)} |"
+            lines.append(f"| {name} | {f'{cap[name]} GiB' if cap.get(name) else 'whole'} | {pair(tot[0], tot[1], 2, sec(pw.get('total_ms')))} | {speed} |"
+                         f" {pair(steady[0], steady[1], 3, sec(pw.get('steady_ms')))} | {pair(peak[0], peak[1], 1, gib(ppeak))} | {pair(sec(cold), x['cold_s'], 1)} |"
                          f" {'; '.join(gaps) or ('no: ComfyUI ' + x['status'] if x['status'] != 'ok' else 'no')} |")
+        for name, x in g['comfyui'].items():
+            if name.startswith('h3'):
+                lines += stage_lines(name, g, x, p)
     return lines, losses
+
+
+# H3's stages in both engines: Cozy's attribution stage names, ComfyUI's node classes (substrings).
+H3_STAGES = (('text encode', ('condition_text',), ('TextEncode', 'ImageToVideo')), ('video decode', ('decode_video',), ('VAEDecode',)),
+             ('audio decode', ('decode_audio',), ('VAEDecodeAudio',)))
+
+
+def stage_lines(name: str, g: Gate, x: Comfy, previous: Gate | None) -> list[str]:
+    """A video cell's time by stage, both engines, cold and warm: text encode, the dense and the sparse steps (H3 Turbo's
+    eight: four dense, then four sparse), video and audio decode, and the total; the previous release's warm beside."""
+    c = g['cells'].get(name)
+    tiers = x.get('tiers') or {}
+    if not c or not tiers:
+        return []
+    warm = [t for k, t in tiers.items() if k != 'cold' and t['e2e_s'] is not None]
+
+    def comfy(t: list[Tier], f: Callable[[Tier], float | None]) -> float | None:
+        vals = [v for one in t if (v := f(one)) is not None]
+        return statistics.median(vals) if vals else None
+
+    def node(t: Tier, keys: tuple[str, ...]) -> float | None:
+        found = [v for k, v in t['stages'].items() if any(n in k for n in keys) and not (keys == ('VAEDecode',) and 'Audio' in k)]
+        return sum(found) if found else None
+
+    def half(series: list[float], which: int) -> float | None:
+        part = series[: len(series) // 2] if which == 0 else series[len(series) // 2:]
+        return sum(part) / len(part) if part else None
+
+    def cozy(st: dict[str, float], series: list[float], total: float | None) -> list[float | None]:
+        out: list[float | None] = []
+        for _, ours, _ in H3_STAGES[:1]:
+            out.append(sum(st[k] for k in ours if k in st) / 1000 if any(k in st for k in ours) else None)
+        out += [None if (h := half(series, 0)) is None else h / 1000, None if (h := half(series, 1)) is None else h / 1000]
+        for _, ours, _ in H3_STAGES[1:]:
+            out.append(sum(st[k] for k in ours if k in st) / 1000 if any(k in st for k in ours) else None)
+        return out + [None if total is None else total / 1000]
+
+    def theirs(t: list[Tier]) -> list[float | None]:
+        out: list[float | None] = [comfy(t, lambda one: node(one, H3_STAGES[0][2]))]
+        out += [comfy(t, lambda one: half(one['steps_s'], 0)), comfy(t, lambda one: half(one['steps_s'], 1))]
+        out += [comfy(t, partial(node, keys=keys)) for _, _, keys in H3_STAGES[1:]]
+        return out + [comfy(t, lambda one: one['e2e_s'])]
+    cold = c['cold']
+    cols = [cozy(cold['stages'], cold['series'], cold['numbers'].get('total_ms')) if cold else [None] * 6,
+            theirs([tiers['cold']]) if 'cold' in tiers else [None] * 6,
+            cozy(c['stages'], c['series'], c['warm'].get('total_ms')), theirs(warm)]
+    p = previous['cells'].get(name) if previous else None
+    if previous:
+        cols.append(cozy(p['stages'], p['series'], p['warm'].get('total_ms')) if p and p['n'] else [None] * 6)
+    rows = ['text encode', 'steps 1-4 (dense), each', 'steps 5-8 (sparse), each', 'video decode', 'audio decode', 'total']
+    head = '| stage | Cozy cold | ComfyUI cold | Cozy warm | ComfyUI warm |' + (f" {previous['label']} warm |" if previous else '')
+    out = [f"\n#### {name} by stage, s ({g['pod']})", '', head, '|---' * (6 if previous else 5) + '|']
+    for i, r in enumerate(rows):
+        out.append(f"| {r} | " + ' | '.join('-' if col[i] is None else f'{col[i]:.1f}' for col in cols) + ' |')
+    return out
 
 
 def baseline(version: str, gates: list[Gate], refs: str) -> Baseline:
@@ -680,7 +767,7 @@ def check(gate: dict[str, object]) -> tuple[list[str], list[str]]:
 
 
 def main(argv: list[str]) -> int:
-    flags = ('--baseline', '--cells', '--known', '--comfyui', '--comfyui-out', '--refs', '--out')
+    flags = ('--baseline', '--cells', '--known', '--comfyui', '--comfyui-out', '--refs', '--out', '--previous')
     opt = {f: argv[argv.index(f) + 1] for f in flags if f in argv}
     skip = {i for f in opt for i in (argv.index(f), argv.index(f) + 1)}
     args = [a for i, a in enumerate(argv) if i not in skip and not a.startswith('--')]
@@ -707,7 +794,9 @@ def main(argv: list[str]) -> int:
         print(f"VERDICT {'FAIL' if fails else 'PASS'} ({len(fails)} failing cells)")
         return 1 if fails else 0
     if verb == 'versus':
-        lines, losses = versus([read_gate(d, judged=False) for d in rest], defs)
+        prev = {g['group']: g for d in sorted(glob.glob(os.path.join(opt['--previous'], '*', 'bench-group'))) if (g := read_gate(os.path.dirname(d), judged=False))} \
+            if '--previous' in opt else None
+        lines, losses = versus([read_gate(d, judged=False) for d in rest], defs, prev)
         print('\n'.join(lines))
         print('\n' + '\n'.join(f'LOSS {x}' for x in losses) if losses else '\nno losses')
         return 0

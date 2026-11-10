@@ -1,7 +1,7 @@
 # Suite `bench` (README.md): this pod's group of cells.tsv, each a cold run on its fixed seed and its warm runs on fresh ones,
 # between two runs of the reference workload, on a host held to the group's RAM (`skus`). bench.tsv names every run;
 # bench.py judges them (check.py in analyze.py; bench.sh's table across groups).
-BG=${SKU}x${GPUS:-1} FX=$HERE/suites/bench/fixtures
+BG=${GROUP:-${SKU}x${GPUS:-1}} FX=$HERE/suites/bench/fixtures
 echo "$BG" > bench-group; : > bench.tsv
 read -r _ HOST_GIB _ < <(awk -v g="$BG" '$1 == g' "$HERE/suites/bench/skus")
 [ -n "${HOST_GIB:-}" ] || { expect bench-group FAIL "no group $BG in suites/bench/skus"; return 0; }
@@ -30,14 +30,15 @@ ln -sfn "$HERE/suites/bench/calibrate" "$OUT/bench-calibrate"
 ONLY_ASKED=$ONLY ONLY=  # --only names bench cells, each run of which is a gate cell of its own name
 cell calibrate-before ./bench-calibrate/measure seed:="$R"
 if ! "${BENCH_PY[@]}" admit "$OUT" > admit.txt 2>&1; then
-  if [ "$HOST" -lt 3 ]; then
+  if [ "$HOST" -lt 3 ] && [ -z "$ON" ]; then
     # Another class of pod: ended, and the gate starts again on the next host (gate.sh `again`).
     ONLY=$ONLY_ASKED; echo "pod out of range: $(paste -sd';' admit.txt)" > host-slow
     expect bench-pod FAIL "$(cat host-slow)"
     exit 1
   fi
-  # The third host runs whatever it is: its numbers are labelled, and ComfyUI's on the same pod still compare.
-  expect bench-pod FAIL "host $HOST runs anyway, out of range: $(paste -sd';' admit.txt)"
+  # The third host, or a pod a previous gate kept (--on), runs whatever it is: labelled, and what runs on the same pod
+  # still compares.
+  expect bench-pod FAIL "host $HOST${ON:+ (kept $ON)} runs anyway, out of range: $(paste -sd';' admit.txt)"
 else
   expect bench-pod PASS "$(paste -sd';' admit.txt)"
 fi
