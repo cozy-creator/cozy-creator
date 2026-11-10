@@ -9,15 +9,17 @@ import signal
 import struct
 import sys
 import time
+from typing import TypeAlias
 
 HEADER, ROW, ROWS = 3, 9, 32
+Row: TypeAlias = dict[str, int]  # one executor's row: pid held idle want answered last_use running short donated
 
 
-def tables():
+def tables() -> list[str]:
     return glob.glob(f"/dev/shm/cozy-varena-{os.geteuid()}/v6-*")
 
 
-def rows(path):
+def rows(path: str) -> tuple[dict[str, int], list[Row]]:
     with open(path, "rb") as file:
         words = struct.unpack(f"<{HEADER + ROW * ROWS}Q", file.read(8 * (HEADER + ROW * ROWS)))
     names = "pid held idle want answered last_use running short donated".split()
@@ -25,7 +27,7 @@ def rows(path):
     return dict(zip("generation answers released".split(), words[:HEADER])), [r for r in found if r["pid"]]
 
 
-def show():
+def show() -> None:
     for path in tables():
         header, live = rows(path)
         print(os.path.basename(path), f"asks={header['generation']} released={header['released'] / 2**30:.2f}GiB")
@@ -34,13 +36,14 @@ def show():
                   f"running {r['running']} donated {r['donated'] / 2**30:.2f} GiB")
 
 
-def kill_on_ask():
+def kill_on_ask() -> None:
     while True:
         for path in tables():
             _, live = rows(path)
             asker = next((r for r in live if r["want"]), None)
             donor = next((r for r in live if asker and r["pid"] != asker["pid"] and r["idle"]), None)
             if donor:
+                assert asker is not None
                 print(f"asker {asker['pid']} wants {asker['want'] / 2**30:.2f} GiB; killing donor {donor['pid']} holding {donor['held'] / 2**30:.2f} GiB")
                 os.kill(donor["pid"], signal.SIGKILL)
                 return

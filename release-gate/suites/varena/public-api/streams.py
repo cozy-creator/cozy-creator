@@ -1,11 +1,17 @@
 """Explicit nonblocking stream ownership for the real mixed-client GPU proofs."""
 
 import ctypes as C
+from collections.abc import Iterator
 from contextlib import contextmanager
+from types import ModuleType
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from torch.cuda import ExternalStream
 
 
 @contextmanager
-def owned_stream(torch, vt, device=0):
+def owned_stream(torch: ModuleType, vt: ModuleType, device: int = 0) -> Iterator["ExternalStream"]:
     cuda = C.CDLL("libcuda.so.1")
     create, destroy = cuda.cuStreamCreate, cuda.cuStreamDestroy_v2
     create.argtypes, create.restype = [C.POINTER(C.c_void_p), C.c_uint], C.c_int

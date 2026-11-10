@@ -10,13 +10,18 @@ import sys
 from pathlib import Path
 
 
-def main():
+class Args(argparse.Namespace):
+    old_package: Path
+    order: str
+
+
+def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("old_package", type=Path)
     parser.add_argument(
         "--order", choices=["native-first", "python-first"], required=True
     )
-    args = parser.parse_args()
+    args = parser.parse_args(namespace=Args())
     old = args.old_package.resolve()
     if args.order == "native-first":
         ctypes.CDLL(str(old / ".native/libvarena.so"), mode=ctypes.RTLD_GLOBAL)
@@ -35,6 +40,7 @@ def main():
         # pair, after this installed extension has loaded its own core. No fake DSO.
         name = "tensorfs._old_dependency_check"
         spec = importlib.util.spec_from_file_location(name, _native.__file__)
+        assert spec is not None and spec.loader is not None
         check = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(check)
         check.__file__ = str(old / "_native.py")

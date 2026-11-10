@@ -7,7 +7,18 @@ import ctypes as C
 import json
 import threading
 import time
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import TypeAlias
+
+JSON: TypeAlias = "str | int | float | bool | None | Sequence[JSON] | Mapping[str, JSON]"
+
+
+class Args(argparse.Namespace):
+    c: Path
+    rust: Path
+    order: str
+    gpu: bool
 
 
 def main() -> None:
@@ -18,7 +29,7 @@ def main() -> None:
         "--order", choices=["native-first", "python-first"], required=True
     )
     parser.add_argument("--gpu", action="store_true")
-    args = parser.parse_args()
+    args = parser.parse_args(namespace=Args())
     if args.order == "native-first":
         c = C.CDLL(str(args.c.resolve()), mode=C.RTLD_GLOBAL)
         rust = C.CDLL(str(args.rust.resolve()), mode=C.RTLD_GLOBAL)
@@ -52,9 +63,9 @@ def main() -> None:
     # Invalid handles, including a double close, are errors rather than C pointer UB.
     assert api._lib.vr_v1_gpu_close(2**64 - 1) == 5
     main_error = api._lib.vr_v1_last_error()
-    errors = []
+    errors: list[bytes] = []
 
-    def other_thread():
+    def other_thread() -> None:
         assert c.mixed_c_error() == 1
         errors.append(api._lib.vr_v1_last_error())
 
@@ -71,7 +82,7 @@ def main() -> None:
         if line.endswith("/libvarena.so")
     }
     assert len(mapped) == 1, mapped
-    result = {
+    result: dict[str, JSON] = {
         "scope": "host",
         "order": args.order,
         "identities": identities,
