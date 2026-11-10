@@ -35,6 +35,14 @@ const cli = (...args) => execFileSync(process.env.COZY, ['--json', ...args], { e
     try { text += ` ${decodeURIComponent(text)}`; } catch { /* a binary or malformed URL is still checked as sent */ }
     if (url.origin !== new URL(calcifer()).origin && /cozy1-|synthetic browser passphrase/.test(text)) outbound.push('secret-bearing external request');
   });
+  context.on('response', async (response) => {
+    if (response.request().method() !== 'POST' || !/\/vault$/.test(new URL(response.url()).pathname)) return;
+    try {
+      const action = JSON.parse(response.request().postData() || '{}').action;
+      const answer = await response.json();
+      (seen.vault_replies ??= []).push({ action, status: response.status(), encrypted: answer.vault?.encrypted, state: answer.vault?.state, has_recovery_secret: typeof answer.recovery_secret === 'string' });
+    } catch { /* Failed/offline replies carry no readable evidence. Never retain secret bodies. */ }
+  });
   await signIn(page);
   await page.goto(`${calcifer()}/#/projects/${id}/vault`);
   const body = page.locator('.drawer [data-vault-state]');
@@ -55,11 +63,74 @@ const cli = (...args) => execFileSync(process.env.COZY, ['--json', ...args], { e
   const privateBytes = Buffer.concat([png(24), require('crypto').randomBytes(32)]);
   const imported = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === `/v1/projects/${id}/imports` && response.ok());
   await drop(page, [{ name: 'private_after_encryption.png', type: 'image/png', bytes: privateBytes }], 600, 400);
+  await page.locator('.nm-field').waitFor();
+  await page.keyboard.press('Enter');
   await imported;
   await until('encrypted upload landed', () => page.locator('body').innerText(), (text) => text.includes('private_after_encryption'), 45000);
   check('private_upload_uses_project_route', fileWrites.length > 0 && fileWrites.every((write) => write.path.startsWith('/v1/project-files/') && write.project === id));
   const stored = await page.evaluate(() => JSON.stringify(Object.fromEntries(Object.keys(localStorage).map((key) => [key, localStorage.getItem(key)]))));
   check('no_private_browser_persistence', !stored.includes(recovery) && !stored.includes('synthetic browser passphrase') && !stored.includes('private_vault_picture') && !stored.includes('private_after_encryption'));
+
+  // Real browser network loss must cover private content without destroying its
+  // in-memory pending edit. Hiding and showing the same tab adds no lock authority.
+  cli('project', '-p', folder, 'add', 'text', 'private_pending_words', 'text=before interruption');
+  await page.goto(`${calcifer()}/#/projects/${id}/assets/private_pending_words`);
+  const pendingWords = page.locator('.card.here[data-asset="private_pending_words"] .mention-text[data-field="text"]');
+  await pendingWords.waitFor();
+  await pendingWords.click();
+  await page.evaluate(() => {
+    window.__pendingCanvas = document.querySelector('.react-flow');
+    window.__coverPaints = [];
+    window.__coverWatch = new MutationObserver(() => {
+      if ((document.visibilityState === 'hidden' || document.querySelector('.gate')) && /private_vault_picture|private_after_encryption|private_pending_words/.test(document.body.innerText)) window.__coverPaints.push('private content');
+    });
+    window.__coverWatch.observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true });
+  });
+  await context.setOffline(true);
+  await page.keyboard.press('End');
+  await page.keyboard.type(' RETAINED-THROUGH-PRIVATE-COVER');
+  await page.keyboard.press('Tab');
+  await until('encrypted edit waits for network', () => page.locator('.top').innerText(), (text) => /1 change/.test(text), 15000);
+  await page.locator('.gate').waitFor();
+  check('offline_cover_keeps_private_canvas_owner', await page.evaluate(() => document.querySelector('.react-flow') === window.__pendingCanvas));
+  check('offline_cover_conceals_private_content', !(await page.locator('body').innerText()).includes('private_pending_words'));
+  check('temporary_cover_does_not_lock_project', JSON.parse(cli('project', '-p', folder, 'vault', 'status')).state === 'unlocked');
+  peer = await context.newPage();
+  await peer.goto('about:blank');
+  await peer.bringToFront();
+  await until('pending private tab hidden', () => page.evaluate(() => document.visibilityState), (state) => state === 'hidden', 10000);
+  await page.bringToFront();
+  check('hide_show_keeps_pending_edit', /1 change/.test(await page.locator('.top').innerText()));
+  await context.setOffline(false);
+  await until('pending encrypted edit commits after reconnect', () => JSON.parse(cli('project', '-p', folder, 'status')).assets.find((asset) => asset.name === 'private_pending_words')?.fields?.text, (text) => text?.includes('RETAINED-THROUGH-PRIVATE-COVER'), 45000);
+  await until('same private canvas revealed', () => page.evaluate(() => document.querySelector('.react-flow') === window.__pendingCanvas && !document.querySelector('.react-flow')?.closest('[hidden]')), Boolean, 20000);
+  check('pending_edit_commits_after_cover', true);
+  check('no_private_paint_during_cover', await page.evaluate(() => window.__coverPaints.length === 0));
+  await page.evaluate(() => window.__coverWatch.disconnect());
+  await peer.close(); peer = null;
+  await page.goto(`${calcifer()}/#/projects/${id}`);
+  await page.locator('.react-flow').waitFor();
+
+  // Route changes also retire only the drawn canvas, never an unlocked project's
+  // pending upload. Exercise the real private upload/retry path across A -> B -> A.
+  const ordinary = join(scratch, 'other-project');
+  cli('project', 'new', ordinary);
+  const other = JSON.parse(cli('project', '-p', ordinary, 'status')).id;
+  await context.setOffline(true);
+  await drop(page, [{ name: 'private_navigation_import.png', type: 'image/png', bytes: Buffer.concat([png(25), require('crypto').randomBytes(32)]) }], 650, 450);
+  await page.locator('.nm-field').waitFor();
+  await page.keyboard.press('Enter');
+  await until('private upload waits for network', () => page.locator('.top').innerText(), (text) => /1 change/.test(text), 15000);
+  await page.evaluate((other) => { location.hash = `#/projects/${other}`; }, other);
+  await page.locator('.gate').waitFor();
+  await page.evaluate((id) => { location.hash = `#/projects/${id}`; }, id);
+  await page.locator('.gate').waitFor();
+  check('navigation_retains_pending_private_import', /1 change/.test(await page.locator('.top').innerText()));
+  check('offline_navigation_covers_private_content', !(await page.locator('body').innerText()).includes('private_navigation_import'));
+  await context.setOffline(false);
+  await until('private import commits after project navigation', () => JSON.parse(cli('project', '-p', folder, 'status')).assets.some((asset) => asset.name === 'private_navigation_import' && asset.sha256), Boolean, 45000);
+  await page.locator('.react-flow').waitFor();
+  check('private_import_survives_project_navigation', true);
   // Automatic hover previews are not user activity. The real video decoder keeps
   // looping, while an idle-only deadline still locks the project.
   await page.locator('.react-flow__node').filter({ hasText: 'private_loop_movie' }).first().hover();
@@ -113,9 +184,6 @@ const cli = (...args) => execFileSync(process.env.COZY, ['--json', ...args], { e
 
   // Leaving A stops its selected-project status observer. Keep the same document
   // and query cache, lock A while B is shown, then watch every DOM mutation on return.
-  const ordinary = join(scratch, 'other-project');
-  cli('project', 'new', ordinary);
-  const other = JSON.parse(cli('project', '-p', ordinary, 'status')).id;
   await page.evaluate(() => { window.__vaultDocument = 'same-document'; });
   await page.goto(`${calcifer()}/#/projects/${other}`);
   await page.waitForFunction(() => document.querySelector('.react-flow') && !document.body.innerText.includes('private_vault_picture'));

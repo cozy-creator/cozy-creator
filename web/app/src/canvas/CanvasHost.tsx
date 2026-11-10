@@ -17,7 +17,7 @@ import { ApiError } from "../api/client"
 import { lost } from "../api/outbox"
 import { canvasQuery, machinesQuery, projectQuery, toolsQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
-import { loadMore, loadSelection, loadToolsShut, loadViewport, saveMore, saveSelection, saveToolsShut, saveViewport, privateProject } from "../app/view"
+import { loadMore, loadSelection, loadToolsShut, loadViewport, saveMore, saveSelection, saveToolsShut, saveViewport } from "../app/view"
 import type { Tool } from "../api/calcifer"
 import { Copyable } from "../ui/Copyable"
 import { dismiss, say } from "../ui/notes"
@@ -223,11 +223,13 @@ function Empty({ choose }: { choose: () => void }) {
 
 function Canvas({
   projectId,
+  active,
   slot,
   history,
   onAdopt,
 }: {
   projectId: string | null
+  active: boolean
   slot: HTMLElement | null
   history: HTMLElement | null
   onAdopt: (id: string) => void
@@ -249,15 +251,6 @@ function Canvas({
   useEffect(() => {
     if (store.projectId) canvases.set(store.projectId, store)
   })
-  useEffect(() => () => {
-    if (!privateProject(store.projectId)) return
-    for (const node of flow.getNodes()) {
-      const view = store.get(node.data.name)
-      view?.placing?.abort.abort()
-      if (view?.preview) URL.revokeObjectURL(view.preview)
-    }
-    if (store.projectId) canvases.delete(store.projectId)
-  }, [store, flow, canvases])
   const adopt = useRef(onAdopt)
   adopt.current = onAdopt
   const [placer] = useState(() => new Placer(store, client, { adopt: (id) => adopt.current(id) }))
@@ -266,6 +259,16 @@ function Canvas({
   const [shut, setShut] = useState(loadToolsShut)
   const opened = useMatch("/projects/:id/assets/:name")?.params.name
   const stage = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    if (active) {
+      store.refreshSurface(flow.getViewport())
+      store.fitHere(true)
+      return
+    }
+    // Keep draft/import owners alive under the cover, while closing any mention
+    // popup portaled outside its hidden DOM subtree. Shell pauses covered media.
+    if (document.activeElement instanceof HTMLElement && stage.current?.contains(document.activeElement)) document.activeElement.blur()
+  }, [active, store, flow])
   const returning = useRef<{ view: Viewport; until: number } | null>(null)
   const folded = useRef(false)
   const shutNow = useRef(shut)
@@ -647,6 +650,7 @@ function Canvas({
   )
 
   useEffect(() => {
+    if (!active) return
     const key = (event: KeyboardEvent) => {
       // Bubbling up to here: a name field or the names offered in a text has taken its own Esc, and a menu goes first.
       if (store.viewing.get()) return
@@ -701,10 +705,11 @@ function Canvas({
     }
     window.addEventListener("keydown", key)
     return () => window.removeEventListener("keydown", key)
-  }, [flow, store, fit, fitSelected, zoomTo, zoomBy, leaveHere, stepTakes])
+  }, [active, flow, store, fit, fitSelected, zoomTo, zoomBy, leaveHere, stepTakes])
 
   // A text copies and pastes its own, and so does any selection of words on the page.
   useEffect(() => {
+    if (!active) return
     const copy = (event: ClipboardEvent) => {
       if (typing(event.target) || store.viewing.get() || !event.clipboardData || !document.getSelection()?.isCollapsed) return
       const here = store.inPlace?.name
@@ -734,7 +739,7 @@ function Canvas({
       window.removeEventListener("copy", copy)
       window.removeEventListener("paste", paste)
     }
-  }, [store, client, flow, placer, visibleCentre])
+  }, [active, store, client, flow, placer, visibleCentre])
 
   // Every box's node is handed these: made once, so drawing the canvas again draws no box again.
   const moveStarted = useCallback(
@@ -913,8 +918,8 @@ function Canvas({
         {veil && <div className="dropveil" />}
       </div>
       {opened && <Addressed name={opened} enter={writeHere} leave={leaveHere} />}
-      <AssetMenu />
-      <Viewer />
+      {active && <AssetMenu />}
+      {active && <Viewer />}
       <input ref={picker} className="picker" type="file" multiple accept={ACCEPT} onChange={picked} aria-label="Add a file" />
       {slot && projectId && createPortal(<RenderAll id={projectId} />, slot)}
       {history && projectId && createPortal(<HistoryControls />, history)}
@@ -934,7 +939,7 @@ const LAYERED = /AppleWebKit/.test(navigator.userAgent) && !/Chrome|Chromium/.te
 const textScale = (zoom: number) => Math.round((1 / Math.min(2.5, Math.max(0.25, zoom))) * 20) / 20
 
 /** Always mounted: everything else is a drawer over it, so opening one loses no viewport, no draft and no import in flight. */
-export function CanvasHost(props: { projectId: string | null; slot: HTMLElement | null; history: HTMLElement | null; onAdopt: (id: string) => void }) {
+export function CanvasHost(props: { projectId: string | null; active: boolean; slot: HTMLElement | null; history: HTMLElement | null; onAdopt: (id: string) => void }) {
   return (
     <ReactFlowProvider defaultNodes={[]}>
       <Canvas {...props} />

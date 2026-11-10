@@ -600,7 +600,7 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
     const card = self.current
     const id = store.idOf(name)
     if (!id) return
-    const original = card.getAttribute("style")
+    const original = Array.from(card.style, (property) => [property, card.style.getPropertyValue(property), card.style.getPropertyPriority(property)] as const)
     const apply = (style: CSSProperties) => {
       for (const [property, value] of Object.entries(style)) {
         const name = property.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)
@@ -621,6 +621,7 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
       const current = store.get(name)
       const pose = store.poseOf(name)
       if (!current?.here || !pose || !card.isConnected) return null
+      if (!card.offsetWidth || !card.offsetHeight) return null
       if (!room && !store.inPlace?.fitted && !store.inPlace?.moved && !store.inPlace?.pulled) return null
       if (!project) {
         if (previous) apply(previous.style)
@@ -699,8 +700,8 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
       document.fonts.removeEventListener("loadingdone", schedule)
       unbind()
       const width = card.style.width
-      if (original === null) card.removeAttribute("style")
-      else card.setAttribute("style", original)
+      for (const property of Array.from(card.style)) card.style.removeProperty(property)
+      for (const [property, value, priority] of original) card.style.setProperty(property, value, priority)
       card.style.width = width
     }
   }, [here, name, store, flow, owner])

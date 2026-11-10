@@ -285,6 +285,7 @@ export async function connect(): Promise<Boot> {
     if (state === "unlocked") { outbox.allowProject(id); return }
     if (id) {
       outbox.discardProject(id)
+      canvases.get(id)?.revokePrivateView()
       canvases.delete(id)
       forgetProjectView(id)
     }
