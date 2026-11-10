@@ -99,7 +99,7 @@ class LoRAGraph:
         self.components: dict[str, nn.Module] = {LORA_COMPONENT: root}
 
 
-class QwenDiT(Model[DiTGraph], encoded_leaves="accept"):
+class QwenDiT(Model[DiTGraph]):
     graph: DiTGraph
 
     def load(self, loader: Loader) -> None:

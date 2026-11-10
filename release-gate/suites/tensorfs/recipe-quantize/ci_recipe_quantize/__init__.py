@@ -63,7 +63,7 @@ def build(config: Any) -> Pipeline:
     return Pipeline(config)
 
 
-class LinearModel(Model[Pipeline], encoded_leaves="accept"):
+class LinearModel(Model[Pipeline]):
     pipe: Pipeline
 
     def load(self, loader: Loader) -> None:

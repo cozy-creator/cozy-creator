@@ -138,7 +138,7 @@ class Inputs(msgspec.Struct, frozen=True):
     steps: int
 
 
-class QwenDiT(Model[DiTGraph], encoded_leaves="accept"):
+class QwenDiT(Model[DiTGraph]):
     graph: DiTGraph
 
     def load(self, loader: Loader) -> None:
