@@ -21,7 +21,8 @@ rent
 
 sh() { cozy machine ssh "$NAME" -- "$*" < /dev/null 2>> "$OUT/ssh.err"; }
 mend() { sh 'sed -i "/ cl778$/d" /etc/hosts'; }
-trap 'mend; finish' EXIT
+# The verdict is the script's status, not the mend's (an ssh to a pod that ended itself fails: 42758036799 passed, then said FAILED).
+trap 's=$?; gone "$RID" || mend; (exit "$s"); finish' EXIT
 step update machine update "$NAME" --tensord "$(command -v cozy)" -y || fail "update"
 HUB=$(sh 'for p in /proc/[0-9]*; do tr "\0" "\n" < $p/environ 2>/dev/null | sed -n "s|^TENSORHUB_ORIGIN=https://||p"; done | sort -u | head -1' | cut -d: -f1)
 [ -n "$HUB" ] || fail "no process on the pod names its Hub (TENSORHUB_ORIGIN)"
