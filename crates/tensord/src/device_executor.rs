@@ -7,8 +7,8 @@ use crate::{
     seam,
 };
 pub(crate) use executor_api::{
-    Activate, Answer, Binding, ByteGrant, CallInterface, CallProgress, Cancel, CheckpointItem,
-    Command, Construction, Event, Fork, Frame, Hello, HostFrame, InputFile, InputMetadata, Invoke, Load, Map, MemoSettings, ModelLoad, ModelPrefetch, Outcome,
+    Answer, Binding, ByteGrant, CallInterface, CallProgress, Cancel, CheckpointItem,
+    Command, Construction, Event, Fork, Frame, Hello, HostFrame, InputFile, InputMetadata, Invoke, Load, Map, MemoSettings, ModelPrefetch, Outcome,
     Output, PrepareRequest, Publish, Request, SavedFile,
     StageMemoStore, Start, RESULT_DOCUMENT,
 };
@@ -202,7 +202,6 @@ fn command_bytes(command: &Command) -> io::Result<Vec<u8>> {
         match command {
             Command::Load(load) => load.tensorfs.is_some(),
             Command::Invoke(invoke) => invoke.tensorfs.is_some(),
-            Command::Capability(_) => true,
             _ => false,
         },
         value.get_mut("tensorfs").and_then(Value::as_object_mut),
@@ -1102,7 +1101,7 @@ impl DeviceExecutor {
                 Some(Event::Request) => self.answer(&frame, services)?,
                 Some(Event::Unknown) => (),
                 None if frame.reply == command.name() && request.is_none_or(|id|
-                    frame.request_id == id || !self.hello.request_lookahead && frame.request_id.is_empty()
+                    frame.request_id == id
                 ) => {
                     if sent {
                         self.lookahead.lock().unwrap().queued = None;

@@ -3,11 +3,10 @@
 //! built and written by serde here. The Runtime keeps no copy of them: an unknown field is
 //! ignored, a missing one takes its default, a needed one fails by its path.
 use executor_api::{
-    TensorFSOptions,
-    Activate, Adapter, Answer, Binding, ByteGrant, CallInterface, CallProgress, Cancel, Capability, CheckpointItem,
-    ChildCall, ChildCancel, ChildEvents, ChildForget, ChildPoll, Command, Construction, Fork,
-    DisplayPace, GpuRelease, InputFile, InputMetadata, Invoke, Load, Map, MemoSettings, ModelLoad, ModelPrefetch,
-    PreparedUse, PrepareRequest, Probe, Publish, PublishPart, SavedFile, Start, StageMemoLookup, StageMemoStore, Unload, View,
+    Answer, Binding, ByteGrant, CallInterface, CallProgress, Cancel, CheckpointItem, ChildCall, ChildCancel,
+    ChildEvents, ChildForget, ChildPoll, Command, Construction, DisplayPace, Fork, GpuRelease, InputFile,
+    InputMetadata, Invoke, Load, Map, MemoSettings, ModelPrefetch, PrepareRequest, Publish, PublishPart, SavedFile,
+    StageMemoLookup, StageMemoStore, Start, TensorFSOptions, View,
 };
 use pyo3::{create_exception, exceptions::PyValueError, prelude::*, IntoPyObjectExt};
 
@@ -22,10 +21,6 @@ create_exception!(
 #[pyclass(module = "tensorfs.executor", name = "Hello", frozen)]
 struct HelloCommand;
 
-/// `{"cmd": "shutdown"}`: ends the executor's command loop.
-#[pyclass(module = "tensorfs.executor", name = "Shutdown", frozen)]
-struct ShutdownCommand;
-
 fn decode<T: serde::de::DeserializeOwned>(data: &[u8]) -> PyResult<T> {
     let mut reader = serde_json::Deserializer::from_slice(data);
     serde_path_to_error::deserialize(&mut reader).map_err(|e| Malformed::new_err(e.to_string()))
@@ -36,18 +31,13 @@ fn decode<T: serde::de::DeserializeOwned>(data: &[u8]) -> PyResult<T> {
 fn decode_command(py: Python<'_>, data: &[u8]) -> PyResult<Py<PyAny>> {
     match Command::decode(data).map_err(Malformed::new_err)? {
         Command::Hello => HelloCommand.into_py_any(py),
-        Command::Shutdown => ShutdownCommand.into_py_any(py),
         Command::Start(c) => c.into_py_any(py),
         Command::Load(c) => (*c).into_py_any(py),
-        Command::Activate(c) => c.into_py_any(py),
         Command::PrepareRequest(c) => c.into_py_any(py),
         Command::Cancel(c) => c.into_py_any(py),
         Command::Invoke(c) => (*c).into_py_any(py),
         Command::Map(c) => c.into_py_any(py),
-        Command::Unload(c) => c.into_py_any(py),
-        Command::Probe(c) => c.into_py_any(py),
         Command::Fork(c) => c.into_py_any(py),
-        Command::Capability(c) => c.into_py_any(py),
     }
 }
 
@@ -61,23 +51,15 @@ pub(crate) fn install(parent: &Bound<'_, PyModule>) -> PyResult<()> {
     let py = parent.py();
     let m = PyModule::new(py, "executor")?;
     m.add_class::<HelloCommand>()?;
-    m.add_class::<ShutdownCommand>()?;
     m.add_class::<Start>()?;
     m.add_class::<Load>()?;
-    m.add_class::<Activate>()?;
     m.add_class::<PrepareRequest>()?;
     m.add_class::<Cancel>()?;
     m.add_class::<Invoke>()?;
     m.add_class::<Map>()?;
-    m.add_class::<Unload>()?;
-    m.add_class::<Probe>()?;
     m.add_class::<Fork>()?;
-    m.add_class::<Capability>()?;
-    m.add_class::<Adapter>()?;
     m.add_class::<Binding>()?;
     m.add_class::<View>()?;
-    m.add_class::<PreparedUse>()?;
-    m.add_class::<ModelLoad>()?;
     m.add_class::<MemoSettings>()?;
     m.add_class::<DisplayPace>()?;
     m.add_class::<Construction>()?;

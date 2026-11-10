@@ -47,19 +47,15 @@ needs room. TensorD creates no CUDA context, GPU allocation or lease listener.
 - 4-byte big-endian length + JSON, any size. `seam::MAX_FRAME` (256 MiB, as Runtime's
   `seam.MAX_FRAME`) refuses only a corrupt or hostile prefix. Bulk data goes through the spool.
 - Any outgoing object key named `token`, `credential`, `authorization`, `secret` or `jwt` is
-  refused, except `tensorfs.token` on `load`, `invoke` and `capability`: the signer's run
-  capability, never an account's sign-in.
-- Commands (`cmd`): `hello`, `start`, `load`, `activate`, `prepare_request`, `invoke`, `map`
-  (warming: load the construction's models at `level` `gpu` or `ram`),
-  `unload`, `probe`, `fork`, `shutdown`. The usual sequence is
-  Hello -> Start -> Load -> Activate -> PrepareRequest -> Invoke.
-- `capability` (`{"cmd":"capability","actor","tensorfs":{"endpoint","token","expires_unix_ms"}}`)
-  goes outside any exchange (a `Line`, under the lock every write takes) and is answered by
-  nothing. TensorD sends it to each executor a Load or Invoke gave that signer's capability for
-  that endpoint, whenever it holds a newer one. Load and Invoke name `actor`. A Runtime without the
-  handler answers `reply: capability`, which TensorD ignores.
-- GPU execution requires Hello's concrete `memory_backend="torch"` capability before Start;
-  package versions are not the capability. Start carries no GPU-page namespace or lease protocol.
+  refused, except `tensorfs.token` on `load` and `invoke`: the signer's run capability, never an
+  account's sign-in.
+- Commands (`cmd`), all eight defined in `executor-api` and read by the Runtime as
+  `tensorfs.executor`'s classes: `hello`, `start`, `fork`, `load`, `prepare_request`, `cancel`,
+  `invoke`, `map` (warming: load the construction's models at `level` `gpu` or `ram`). The usual
+  sequence is Hello -> Start -> Load -> PrepareRequest -> Invoke; a request names its
+  construction, and TensorD ends an executor by closing its seam. Load and Invoke carry the
+  signer's run capability (`tensorfs`) and name `actor`.
+- Start carries no GPU-page namespace or lease protocol.
   A configured `gpu_memory_limit` (development-only, for testing constrained VRAM) rides Start
   as `gpu_memory_limit`: the executor's memory budget, its card that size for every process on it.
 - While waiting for a reply, `event=progress` frames go to `Services::progress`. `event=request`

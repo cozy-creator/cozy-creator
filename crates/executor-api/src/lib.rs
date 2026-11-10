@@ -1,8 +1,9 @@
 //! TensorD ↔ executor seam: the commands TensorD sends a Runtime executor, the replies, progress
 //! and requests the executor sends back, and TensorD's answers. One definition for both sides.
 //!
-//! This is the current typed command contract. Declared optional fields take their defaults;
-//! required fields fail by name and removed commands are refused.
+//! The Runtime keeps no copy: it reads and builds these through the tensorfs wheel's
+//! `tensorfs.executor` (the `python` feature). Declared optional fields take their defaults;
+//! required fields fail by name and an unknown command is refused.
 //!
 //! A crate of its own so the tensorfs wheel builds it alone: as `api::executor` the wheel took 20 more crates and
 //! built 31% longer, for a library 0.7% larger (cl-829).
@@ -23,31 +24,22 @@ pub const RESULT_DOCUMENT: &str = "result.canonical";
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum Command {
     Hello,
-    Shutdown,
     Start(Start),
     Load(Box<Load>),
-    Activate(Activate),
     PrepareRequest(PrepareRequest),
     /// Discard a queued preparation; consumed out of band, without a reply.
     Cancel(Cancel),
     Invoke(Box<Invoke>),
     /// Warming: the loaded construction's models at `level`, nothing run.
     Map(Map),
-    Unload(Unload),
-    Probe(Probe),
     /// Fork this import-only executor into a new one on its own seam (`fork/1`).
     Fork(Fork),
-    /// `actor`'s newest run capability at `tensorfs.endpoint`, sent outside any exchange and
-    /// answered by nothing: the executor's reads and uploads there present it from now on.
-    Capability(Capability),
 }
 
 impl Command {
     /// Every `cmd` TensorD sends.
-    pub const NAMES: [&'static str; 13] = [
-        "hello", "shutdown", "start", "load", "activate", "prepare_request", "invoke", "map", "unload",
-        "probe", "fork", "capability", "cancel",
-    ];
+    pub const NAMES: [&'static str; 8] =
+        ["hello", "start", "load", "prepare_request", "cancel", "invoke", "map", "fork"];
 
     /// One command from its wire bytes. An unknown member is ignored and a missing one takes its
     /// default; the error names a needed member's path (`spool`, `bits`) or an unknown `cmd`.
@@ -59,18 +51,13 @@ impl Command {
         let cmd = fields.get("cmd").and_then(Value::as_str).unwrap_or_default().to_owned();
         Ok(match cmd.as_str() {
             "hello" => Command::Hello,
-            "shutdown" => Command::Shutdown,
             "start" => Command::Start(one(fields)?),
             "load" => Command::Load(Box::new(one(fields)?)),
-            "activate" => Command::Activate(one(fields)?),
             "prepare_request" => Command::PrepareRequest(one(fields)?),
             "cancel" => Command::Cancel(one(fields)?),
             "invoke" => Command::Invoke(Box::new(one(fields)?)),
             "map" => Command::Map(one(fields)?),
-            "unload" => Command::Unload(one(fields)?),
-            "probe" => Command::Probe(one(fields)?),
             "fork" => Command::Fork(one(fields)?),
-            "capability" => Command::Capability(one(fields)?),
             other => return Err(format!("unknown command `{other}`")),
         })
     }
@@ -79,18 +66,13 @@ impl Command {
     pub fn name(&self) -> &'static str {
         match self {
             Self::Hello => "hello",
-            Self::Shutdown => "shutdown",
             Self::Start(_) => "start",
             Self::Load(_) => "load",
-            Self::Activate(_) => "activate",
             Self::PrepareRequest(_) => "prepare_request",
             Self::Cancel(_) => "cancel",
             Self::Invoke(_) => "invoke",
             Self::Map(_) => "map",
-            Self::Unload(_) => "unload",
-            Self::Probe(_) => "probe",
             Self::Fork(_) => "fork",
-            Self::Capability(_) => "capability",
         }
     }
 }
@@ -115,10 +97,6 @@ pub struct Start {
     /// package and brokers each attempt's calls.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub call_interfaces: Vec<CallInterface>,
-    /// Its calls take a model choice per slot (`{ref, lora}`), not only an exact checkpoint: a
-    /// Runtime refuses one to an older machine, naming `cozy machine update`.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub model_choices: bool,
     /// Each constructed slot's checkpoint, so the Runtime schedules fetches before it imports.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub constructions: Vec<Construction>,
@@ -154,7 +132,7 @@ impl Default for DisplayPace {
     }
 }
 
-/// Construct models and register their weights: one model in `binding`, several in `models`.
+/// Construct a construction's models and register their weights.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
 pub struct Load {
@@ -168,21 +146,11 @@ pub struct Load {
     pub devices: String,
     #[serde(default = "one")]
     pub sequence_parallel_degree: u32,
-    #[serde(default)]
-    pub binding: Binding,
-    /// Several model slots in one construction (H3 turbo: base + LoRA); the Runtime builds these
-    /// models and loads their granted weights, ignoring `binding`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub models: Vec<ModelLoad>,
+    /// Its model slots, one or several (H3 turbo: base + refiner). A call that constructs nothing
+    /// sends one weightless binding.
+    pub models: Vec<Binding>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub attention_pin: String,
-}
-
-/// Make a loaded construction the active one; switching moves no weights.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
-pub struct Activate {
-    pub construction: String,
 }
 
 /// Resolve one request before entry and keep it for its Invoke; no device is touched.
@@ -190,7 +158,6 @@ pub struct Activate {
 #[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
 pub struct PrepareRequest {
     pub request_id: String,
-    #[serde(default)]
     pub construction: String,
     pub entrypoint: String,
     pub payload: Json,
@@ -222,7 +189,6 @@ pub struct Invoke {
     #[serde(default = "max_output_bytes")]
     pub max_output_bytes: u64,
     pub request_id: String,
-    #[serde(default)]
     pub construction: String,
     pub entrypoint: String,
     pub spool: PathBuf,
@@ -282,22 +248,6 @@ pub enum Level {
     Ram,
 }
 
-/// Drop one construction: its weight sets, its leases and every reference to it.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
-pub struct Unload {
-    pub construction: String,
-}
-
-/// Ask for the executor's state: device memory, residency, RSS, processes and poison.
-#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
-#[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
-pub struct Probe {
-    /// Collect cyclic garbage first: a cycle holding a device tensor is not a leak.
-    #[serde(default)]
-    pub collect: bool,
-}
-
 /// Where the forked executor runs: its seam's socket, its root directory and its environment.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
@@ -306,72 +256,6 @@ pub struct Fork {
     pub root: PathBuf,
     /// The child's whole environment, as the machine seals a spawned executor's.
     pub environment: BTreeMap<String, String>,
-}
-
-/// A signer's newer run capability for one TensorFS endpoint.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
-pub struct Capability {
-    #[serde(default)]
-    pub actor: String,
-    pub tensorfs: TensorFSOptions,
-}
-
-/// One adapter on a binding's model: a LoRA unless `kind` says otherwise, at `scale`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
-#[serde(default)]
-pub struct Adapter {
-    pub model_id: String,
-    pub r#ref: String,
-    pub scale: f64,
-    pub kind: String,
-    pub component: String,
-    pub source_component: String,
-    pub family: String,
-}
-impl Default for Adapter {
-    fn default() -> Self {
-        Self {
-            model_id: String::new(),
-            r#ref: String::new(),
-            scale: 1.0,
-            kind: "lora".into(),
-            component: String::new(),
-            source_component: String::new(),
-            family: String::new(),
-        }
-    }
-}
-
-/// A package's fixed use on an internal GPU call. Runtime alone chooses a representation.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
-pub struct PreparedUse {
-    pub target: String,
-    pub tensors: Vec<String>,
-    pub activation_rows: u32,
-    pub repetitions: u32,
-    pub compute_dtype: String,
-    pub max_resident_bytes: u64,
-    pub workspace_bytes: u64,
-}
-
-impl PreparedUse {
-    pub fn validate(&mut self) -> Result<(), &'static str> {
-        if !matches!(self.target.as_str(), "stored" | "decoded_float")
-            || !matches!(self.compute_dtype.as_str(), "BF16" | "F16" | "F32")
-            || self.max_resident_bytes > i64::MAX as u64
-            || self.workspace_bytes > i64::MAX as u64
-            || self.tensors.iter().any(|key| key.is_empty() || key.len() > 1024 || !key.contains('.')) {
-            return Err("invalid fixed prepared use");
-        }
-        self.tensors.sort();
-        if self.tensors.windows(2).any(|pair| pair[0] == pair[1]) {
-            return Err("prepared tensor keys must be unique");
-        }
-        Ok(())
-    }
 }
 
 /// A checkpoint whose header lives only in TensorD's memory (an adapter view composed by
@@ -388,77 +272,32 @@ pub struct View {
 
 /// One model's construction: its class, where its weights are, and how to fill them. A
 /// weightless binding names only its release and an empty `model_class`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
 #[serde(default)]
 pub struct Binding {
     pub application: String,
     pub package_interface: String,
     pub model_class: String,
+    /// `<fn>.models.<param>`
     pub model_binding_path: String,
     pub model_parameter_name: String,
-    pub model_parameter_names: Vec<String>,
-    pub component: String,
+    /// The components it loads, in its declared order.
     pub components: Vec<String>,
-    pub snapshots: BTreeMap<String, String>,
     pub store: String,
+    /// Its checkpoint (`sha256:<hex>`, its header), which holds every component.
     pub snapshot: String,
     pub release: String,
-    /// Hardware derivation variant, e.g. sm86; empty lets the SDK measure it. Never a catalog lane.
-    pub variant: String,
-    pub development: bool,
-    /// `canonical` or `local`.
-    pub custody: String,
-    pub placement: String,
     pub package: String,
     pub model: String,
-    pub adapters: Vec<Adapter>,
-    /// The snapshots above that are views, by id: set only on the Load sent, never planned.
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub views: BTreeMap<String, View>,
+    /// `snapshot` as a view, when it is one: set only on the Load sent, never planned.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub prepared_use: Option<PreparedUse>,
+    pub view: Option<View>,
     /// A group's placeable components and the GPU that keeps each, an index within the group
     /// (0: GPU 0, the serial scope's; g: GPU g keeps it resident for the group), decided by
     /// TensorD at Load.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub homes: BTreeMap<String, u32>,
-}
-impl Default for Binding {
-    fn default() -> Self {
-        Self {
-            application: String::new(),
-            package_interface: String::new(),
-            model_class: String::new(),
-            model_binding_path: String::new(),
-            model_parameter_name: String::new(),
-            model_parameter_names: Vec::new(),
-            component: String::new(),
-            components: Vec::new(),
-            snapshots: BTreeMap::new(),
-            store: String::new(),
-            snapshot: String::new(),
-            release: String::new(),
-            variant: String::new(),
-            development: false,
-            custody: "canonical".into(),
-            placement: String::new(),
-            package: String::new(),
-            model: String::new(),
-            adapters: Vec::new(),
-            views: BTreeMap::new(),
-            prepared_use: None,
-            homes: BTreeMap::new(),
-        }
-    }
-}
-
-/// One model of a many-model construction (an entrypoint with several model slots).
-#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
-#[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
-pub struct ModelLoad {
-    #[serde(default)]
-    pub binding: Binding,
 }
 
 /// An executor's stage memo tiers (`memo: stage/1`): its in-memory tier (-1: its own default;
@@ -555,20 +394,15 @@ pub enum Kind {
     Unknown,
 }
 
-/// An executor's `hello` reply: who it is, its versions, memory capability and seal.
+/// An executor's `hello` reply: who it is, its versions and its seal.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct Hello {
-    /// Concrete executor allocation/offload capability; unrelated to its package version.
-    #[serde(default)]
-    pub memory_backend: String,
     pub pid: u32,
     pub ppid: u32,
     pub pgid: u32,
     pub runtime_version: String,
     pub tensorfs_version: String,
-    /// Correlated PrepareRequest replies and cancellation-safe prepared-record publication.
-    pub request_lookahead: bool,
     pub sealed: BTreeMap<String, String>,
 }
 
@@ -1293,7 +1127,7 @@ mod python {
         )*};
     }
     methods!(
-        Adapter, PreparedUse, Binding, ModelLoad, MemoSettings, Construction, CallInterface, InputMetadata, InputFile,
+        Binding, MemoSettings, Construction, CallInterface, InputMetadata, InputFile,
         ByteGrant, CallProgress, Answer, PublishPart, SavedFile
     );
 
@@ -1358,15 +1192,11 @@ mod python {
     command_methods!(
         Start => Command::Start,
         Load => |c| Command::Load(Box::new(c)),
-        Activate => Command::Activate,
         PrepareRequest => Command::PrepareRequest,
         Cancel => Command::Cancel,
         Invoke => |c| Command::Invoke(Box::new(c)),
         Map => Command::Map,
-        Unload => Command::Unload,
-        Probe => Command::Probe,
-        Fork => Command::Fork,
-        Capability => Command::Capability
+        Fork => Command::Fork
     );
 }
 
