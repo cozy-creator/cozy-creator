@@ -18,6 +18,8 @@ import urllib.parse
 import urllib.request
 import zlib
 
+FIRST_COLD_SECONDS = 300
+
 
 class Proof:
     def __init__(self, artifacts, source):
@@ -41,6 +43,23 @@ class Proof:
         self.commands = []
         self.canary = 'COZY_PRIVATE_PROOF_' + secrets.token_hex(24)
         self.secret_values = []
+        self.winarm = os.name == 'nt' and os.environ.get('RUNNER_ARCH') == 'ARM64'
+        self.fixture_ffmpeg = 'ffmpeg'
+        self.cli_env = None
+        if self.winarm:
+            self.fixture_ffmpeg = shutil.which('ffmpeg')
+            if not self.fixture_ffmpeg:
+                raise RuntimeError('fixture generation requires its existing system ffmpeg')
+            self.cli_env = dict(os.environ)
+            self.cli_env['PATH'] = os.pathsep.join(
+                entry for entry in os.environ.get('PATH', '').split(os.pathsep)
+                if not any((Path(entry.strip('"') or '.') / name).is_file()
+                           for name in ['ffmpeg.exe', 'ffprobe.exe']))
+            if (shutil.which('ffmpeg', path=self.cli_env['PATH'])
+                    or shutil.which('ffprobe', path=self.cli_env['PATH'])):
+                raise RuntimeError('the controller test environment still exposes system media tools')
+            if (self.home / 'tools' / 'ffmpeg' / '9.0.2').exists():
+                raise RuntimeError('the fresh media proof must start without a cached pin')
         self.receipt = {'result': 'running', 'source': source, 'os': sys.platform,
                         'default_home': str(self.home), 'installed_binary': str(self.binary),
                         'synthetic_only': True, 'cells': {}}
@@ -63,8 +82,11 @@ class Proof:
             text = text.replace(value, '[credential redacted]')
         return text
 
-    def command(self, *args, json_output=True, refusal=False, project=True, allow_locking=False):
+    def command(self, *args, json_output=True, refusal=False, project=True, allow_locking=False,
+                full=False, timeout=None):
         command = ['cozy'] + (['--json'] if json_output else [])
+        if full:
+            command += ['--full']
         if project:
             command += ['project', '-p', str(self.project)]
         command += [str(arg) for arg in args]
@@ -73,7 +95,7 @@ class Proof:
         self.commands.append(record)
         self.flush()
         print(f'project vault CLI command: {args[0]}', flush=True)
-        completed = subprocess.run(command, capture_output=True)
+        completed = subprocess.run(command, capture_output=True, env=self.cli_env, timeout=timeout)
         # Export integrity stamps cover exact UTF8 bytes. text=True would silently rewrite
         # Windows CRLF and make an otherwise valid exported graph fail its own digest.
         completed.stdout = completed.stdout.decode('utf-8')
@@ -301,9 +323,65 @@ foreach ($rule in $allowed) {
                 raise RuntimeError('the real media fixture did not retain its content canary')
         return [image, video, audio]
 
+    def ffmpeg(self, *args):
+        subprocess.run([self.fixture_ffmpeg, '-v', 'error', '-nostdin', *map(str, args)], check=True)
+
     @staticmethod
-    def ffmpeg(*args):
-        subprocess.run(['ffmpeg', '-v', 'error', '-nostdin', *map(str, args)], check=True)
+    def pe_machine(path):
+        with path.open('rb') as handle:
+            if handle.read(2) != b'MZ':
+                raise RuntimeError('expected a PE executable for the Windows media proof')
+            handle.seek(60)
+            offset = struct.unpack('<I', handle.read(4))[0]
+            handle.seek(offset)
+            header = handle.read(6)
+        if header[:4] != b'PE\0\0':
+            raise RuntimeError('invalid PE header in the Windows media proof')
+        return struct.unpack('<H', header[4:])[0]
+
+    def pinned_winarm_media(self):
+        if sys.getwindowsversion().build < 22000:
+            raise RuntimeError('x64 media helper emulation requires Windows 11')
+        if self.pe_machine(self.binary) != 0xaa64:
+            raise RuntimeError('the Cozy executable must remain native ARM64')
+        deadline = time.monotonic() + FIRST_COLD_SECONDS
+
+        def remaining():
+            budget = deadline - time.monotonic()
+            if budget <= 0:
+                raise RuntimeError('pinned Windows ARM media preparation exceeded its first-cold budget')
+            return budget
+
+        while True:
+            state = self.command('status', full=True, timeout=remaining())
+            assets = {asset['name']: asset for asset in state['assets']}
+            measured = {name: {key: assets.get(name, {}).get(key)
+                               for key in ['width', 'height', 'duration_ms']}
+                        for name in ['proof_image', 'proof_video', 'proof_audio']}
+            if (measured['proof_image']['width'] == 8 and measured['proof_image']['height'] == 8
+                    and measured['proof_video']['width'] == 320
+                    and measured['proof_video']['height'] == 180
+                    and (measured['proof_video']['duration_ms'] or 0) > 0
+                    and (measured['proof_audio']['duration_ms'] or 0) > 0):
+                break
+            time.sleep(min(0.25, remaining()))
+        helpers = []
+        for name in ['ffmpeg', 'ffprobe']:
+            path = self.home / 'tools' / 'ffmpeg' / '9.0.2' / f'{name}.exe'
+            if not path.is_file() or self.pe_machine(path) != 0x8664:
+                raise RuntimeError('Calcifer must fetch its pinned x64 media-helper pair')
+            probe = subprocess.run([str(path), '-hide_banner', '-version'], capture_output=True,
+                                   check=True, env=self.cli_env, timeout=remaining())
+            version = probe.stdout.decode('utf-8', errors='replace').splitlines()[0]
+            if not version.startswith(f'{name} version 9.0.2'):
+                raise RuntimeError('the cached media helper does not report its pinned version')
+            helpers.append({'path': str(path), 'architecture': 'x64 PE0x8664', 'version': version})
+        self.receipt['windows_arm_media'] = {
+            'cozy_architecture': 'native ARM64 PE0xaa64', 'helpers': helpers,
+            'fixture_generator': self.fixture_ffmpeg, 'cozy_subprocess_system_media_hidden': True,
+            'pin_cache_initially_absent': True, 'normal_cli_metadata': measured,
+            'cold_budget_seconds': FIRST_COLD_SECONDS}
+        self.cell('windows_arm64_pinned_media_runtime')
 
     @staticmethod
     def digest(path):
@@ -394,6 +472,8 @@ foreach ($rule in $allowed) {
         sources = self.media()
         for path, name in zip(sources, ['proof_image', 'proof_video', 'proof_audio']):
             self.command('import', path, name)
+        if self.winarm:
+            self.pinned_winarm_media()
         edit = self.out / 'state-edit.json'
         edit.write_text(json.dumps({'description': self.canary}))
         self.command('set', 'proof_image', '--input', edit)
@@ -446,7 +526,8 @@ foreach ($rule in $allowed) {
         # Two normal clients lock the same unlocked project; both acknowledgements must
         # agree on the locked state. Pending-unlock ordering has separate controller coverage.
         processes = [subprocess.Popen(['cozy', '--json', 'project', '-p', str(self.project), 'lock'],
-                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                      env=self.cli_env)
                      for _ in range(2)]
         for process in processes:
             stdout, stderr = process.communicate()
@@ -510,7 +591,8 @@ def main():
         if proof.receipt['result'] != 'pass':
             if proof.project.exists():
                 subprocess.run(['cozy', '--json', 'project', '-p', str(proof.project), 'lock'],
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               env=proof.cli_env)
             try:
                 proof.shutdown()
             except Exception:
