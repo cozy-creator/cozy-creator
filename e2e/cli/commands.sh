@@ -305,6 +305,8 @@ printf 'clip: ../clip.mp4\nstill: beside.png\nfolder: ../folder\nlabel: from-inp
 safetensors_file "$src/tiny.safetensors"
 cp -r "$here/inspect" "$here/weightless" "$src/" && cp "$here/project/draw.py" "$src/draw.py"
 rm -rf "$src"/*/.venv "$src"/*/uv.lock
+# Local code holding an empty file goes whole (0.22.1's CLI sent it without a length: file_length_required).
+: > "$src/weightless/e2e_weightless/empty.py"; : > "$src/inspect/e2e_inspect/empty.py"
 size=$(stat -c %s "$src/still.png")
 [ ! -e /work ] || { check "unseen: /work is on this computer too"; return; }
 docker pull -q "$image" > /dev/null || { check "unseen: docker pull $image"; return; }
@@ -333,10 +335,12 @@ refused_inside() {
   grep -q "\"code\": *\"$code\"" "$OUT/unseen-$name.out" || check "unseen $name: cozy $*: not $code: $(tail -c 400 "$OUT/unseen-$name.out")"
 }
 said() { grep -qE "$2" "$OUT/unseen-$1.out" || check "unseen $1: not $2: $(grep -oE '"(clip_seconds|still_bytes|folder_files|label)": *[^,}]*' "$OUT/unseen-$1.out" | paste -sd' ')"; }
-# Client code is sent by content; its working directory names the separate host project.
-if inside files --json run ./inspect/inspect --file clip=./clip.mp4 --file still=./still.png folder=./folder label=files --on local; then
+# Client code is sent by content; its working directory names the separate host project. Union fields go as text, as a
+# smoke request names them (0.22.1's binder refused `aspect_ratio=1:1` on `null|aspect-ratio`).
+if inside files --json run ./inspect/inspect --file clip=./clip.mp4 --file still=./still.png folder=./folder label=files \
+    aspect_ratio=1:1 seed=7 --on local; then
   said files '"clip_seconds": *(2\.9|3\.0|3\.1)' && said files "\"still_bytes\": *$size" && said files '"folder_files": *\[ *"a.txt", *"sub/b.txt" *\]'
-  said files '"target": *"local/e2e-inspect/inspect"'
+  said files '"target": *"local/e2e-inspect/inspect"' && said files '"aspect_ratio": *"1:1"' && said files '"seed": *7'
 fi
 inside input --json run ./inspect/inspect --input ./sub/req.yaml --on local && said input '"label": *"from-input"' && said input "\"still_bytes\": *$size"
 inside positional --json run ./inspect/inspect ./still.png --file clip=./clip.mp4 folder=./folder label=positional --on local && said positional "\"still_bytes\": *$size"
