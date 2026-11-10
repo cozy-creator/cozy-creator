@@ -6,7 +6,8 @@ echo "$BG" > bench-group; : > bench.tsv
 read -r _ HOST_GIB _ < <(awk -v g="$BG" '$1 == g' "$HERE/suites/bench/skus")
 [ -n "${HOST_GIB:-}" ] || { expect bench-group FAIL "no group $BG in suites/bench/skus"; return 0; }
 BENCH_PY=(nice -n 19 uv run -q --no-project --with numpy python -I "$HERE/bench.py")
-podsh() { timeout 900 "$CLI" machine ssh "$M" "$1"; }
+# Never the caller's stdin: inside the cell loop that is cells.tsv, which an ssh would swallow after the first cell (1a, 11-10).
+podsh() { timeout 900 "$CLI" machine ssh "$M" "$1" < /dev/null; }
 # The host's RAM, held to the group's: the rest of the pod's limit is a hog no cozy process can take back.
 podsh "echo $(base64 -w0 "$HERE/suites/bench/pod.sh") | base64 -d > /var/tmp/bench-pod.sh && echo $(base64 -w0 "$HERE/suites/bench/hog.py") |
   base64 -d > /var/tmp/bench-hog.py && echo $(base64 -w0 "$HERE/suites/bench/vram.py") | base64 -d > /var/tmp/bench-vram.py &&
@@ -36,7 +37,7 @@ while IFS=$'\t' read -r name group cap warm seed target args before _; do
   [ -z "$ONLY_ASKED" ] || [[ $ONLY_ASKED == *",$name,"* ]] || continue
   want=off; [ "$cap" = - ] || want=$cap
   if [ "$want" != "$CAPNOW" ]; then
-    "$CLI" machine update "$M" --gpu-memory-limit off -y > "restart-$want.log" 2>&1 || log "restart for $want: $(tail -c 300 "restart-$want.log")"
+    "$CLI" machine update "$M" --gpu-memory-limit off -y < /dev/null > "restart-$want.log" 2>&1 || log "restart for $want: $(tail -c 300 "restart-$want.log")"
     HELD=0 LEVEL_OK=1
     if [ "$want" = off ]; then
       podsh "sh /var/tmp/bench-pod.sh vram off" > /dev/null 2>&1
