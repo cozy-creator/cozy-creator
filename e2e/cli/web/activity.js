@@ -22,7 +22,7 @@ const COZY = process.env.COZY;
 const VAE = 'hf://stabilityai/sdxl-vae/diffusion_pytorch_model.safetensors';
 const VAE_SAID = 'Sdxl Vae';
 // A picture tool of its own, new to the machine, so its environment is installed while the box waits. It takes no GPU. A tool as
-// e2e/cli/project/draw.py is, on the 0.22 line's Runtime.
+// e2e/cli/project/draw.py is, on the 0.22 line's Runtime (0.43.1: fields from cozy_runtime.fields, a picture's request from cozy_runtime.image).
 const TOOL = `# /// script
 # requires-python = ">=3.12"
 # dependencies = ["cozy-runtime[media]>=0.43", "msgspec>=0.19"]
@@ -32,7 +32,9 @@ const TOOL = `# /// script
 import os
 
 import msgspec
-from cozy_runtime.author import Adjustments, App, Image, ImageFrame, ImageRequest, ImageResult, Outputs, Prompt, Seed, Sizes
+from cozy_runtime.author import Adjustments, App, ImageFrame, Outputs, Seed
+from cozy_runtime.fields import Image, Prompt
+from cozy_runtime.image import ImageRequest, ImageResult, Sizes
 
 app = App()
 SIZES = Sizes((0.25, 4.0), (64, 8192), 16, "the still's 0.25-4 MP")
@@ -105,8 +107,10 @@ def draw(payload: Drawing, adj: Adjustments, out: Outputs) -> ImageResult:
   await chip.click();
   const list = page.locator('.activity');
   await list.waitFor();
-  const landed = async () => (await api(`/v1/projects/${id}`)).assets.find((asset) => asset.name === 'waits')?.version;
-  await until('its first take', landed, Boolean, 180_000);
+  // A render that fails ends the wait with its own words.
+  const waits = async () => (await api(`/v1/projects/${id}`)).assets.find((asset) => asset.name === 'waits');
+  const first = await until('its first take', waits, (asset) => asset?.version || asset?.failure, 180_000);
+  if (!first.version) throw new Error(`its render failed: ${first.failure.message}`);
   const said = await page.evaluate(() => window.said);
   seen.said = said;
   check('box_said_installing', said.box.some((text) => /^Installing activity_\d+…$/.test(text)), said.box);

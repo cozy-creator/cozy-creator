@@ -89,7 +89,8 @@ function plate(path, color, seconds, hz) {
   const tools = (await call('GET', '/v1/tools')).body.tools;
   const tool = tools.find((held) => held.id === 'cozy/edit');
   check('edit_is_a_tool', tool?.label === 'Edit' && tool.makes === 'video' && tool.fields[0]?.type === 'timeline', tool);
-  await carry(page, page.locator('.tools .tool').filter({ has: page.locator('b:text-is("Edit")') }), { x: 1208, y: 144 });
+  // By its id: a package's tool can be titled Edit too (minimax-h3/edit, 11-10).
+  await carry(page, page.locator('.tools .tool[data-tool="cozy/edit"]'), { x: 1208, y: 144 });
   const card = (name) => boxOf(page, name);
   await card('Edit').waitFor();
   // A box shows as it's dropped, ahead of Calcifer's answer: it's the project that's asked.
