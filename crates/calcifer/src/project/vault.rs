@@ -109,8 +109,14 @@ pub(super) fn location(api: &Api, named: &str) -> Result<PathBuf, Error> {
     if api::target::written_as_path(named) {
         let path = FsPath::new(named);
         if !path.is_absolute() { return Err(Error::new(Kind::Usage, "project_path", "a project path must be absolute")); }
-        recover_conversion(path)?;
-        let path = path.canonicalize().map_err(io)?;
+        // Match the index's user-spelled canonical path (not Windows' verbatim prefix).
+        // Resolve the parent first so an interrupted rename can recover even with root absent.
+        let candidate = match (path.parent(), path.file_name()) {
+            (Some(parent), Some(name)) => platform::durable::canonical(parent).map_err(provider)?.join(name),
+            _ => path.to_owned(),
+        };
+        recover_conversion(&candidate)?;
+        let path = platform::durable::canonical(&candidate).map_err(provider)?;
         if let Some(root) = path.ancestors().find(|root| encrypted(root)) { return Ok(root.to_owned()); }
         return super::named(api, named);
     }
