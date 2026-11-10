@@ -95,6 +95,30 @@ class Proof:
     def recovery(self, name):
         return self.credentials / name
 
+    def check_recovery(self, name):
+        path = self.recovery(name)
+        if os.name == 'nt':
+            script = '''
+$ErrorActionPreference = 'Stop'
+$sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$acl = Get-Acl -LiteralPath $env:COZY_PROOF_RECOVERY_PATH
+if (-not $acl.AreAccessRulesProtected) { throw 'recovery DACL inherits directory access' }
+$allowed = @($acl.Access | Where-Object { $_.AccessControlType -eq 'Allow' })
+if ($allowed.Count -eq 0) { throw 'recovery DACL has no user allow rule' }
+foreach ($rule in $allowed) {
+    if ($rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -ne $sid) {
+        throw 'recovery DACL allows another principal'
+    }
+}
+'''
+            subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-Command', '-'],
+                           input=script, text=True, check=True,
+                           env={**os.environ, 'COZY_PROOF_RECOVERY_PATH': str(path)},
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        elif path.stat().st_mode & 0o077:
+            raise RuntimeError('recovery output permits group or other-user access')
+        self.redact('')
+
     def status(self):
         return self.command('vault', 'status')
 
@@ -220,6 +244,7 @@ class Proof:
         before = self.command('export', json_output=False)
         self.command('encrypt', '--passphrase-file', initial, '--recovery-out', self.recovery('recovery1'),
                      '--remove-plaintext', '--idle', 0)
+        self.check_recovery('recovery1')
         assert before == self.command('export', json_output=False)
         self.cell('convert_without_changing_logical_state')
         sources = self.media()
@@ -244,6 +269,7 @@ class Proof:
         self.cell('lock_refusal_and_saved_recovery')
         self.command('vault', 'passphrase', '--passphrase-file', changed)
         self.command('vault', 'recovery', '--recovery-out', self.recovery('recovery2'))
+        self.check_recovery('recovery2')
         self.command('lock')
         self.command('unlock', '--passphrase-file', initial, refusal=True)
         self.command('unlock', '--recovery-file', self.recovery('recovery1'), refusal=True)
@@ -251,6 +277,7 @@ class Proof:
         self.cell('replace_passphrase_and_recovery_slots')
         rotated = self.command('vault', 'rotate', '--passphrase-file', rekey,
                                '--recovery-out', self.recovery('recovery3'))
+        self.check_recovery('recovery3')
         view = self.view(rotated)
         assert state == self.command('export', json_output=False)
         for path in sources:
@@ -308,6 +335,11 @@ def main():
         proof.flush()
         raise
     finally:
+        if proof.receipt['result'] != 'pass':
+            if proof.project.exists():
+                subprocess.run(['cozy', '--json', 'project', '-p', str(proof.project), 'lock'],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(['cozy', 'down'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         # Credentials/recovery output are intentionally never part of published evidence.
         shutil.rmtree(proof.credentials)
 
