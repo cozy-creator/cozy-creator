@@ -9,6 +9,8 @@ import math
 import os
 import subprocess
 import sys
+from collections.abc import Iterator
+from typing import TypedDict
 
 # RGB PSNR at 32 px on the 0.21.0 5090 gate: renders whose levels moved 16.3 (H3, 30 steps) to 69 dB (SDXL); unrelated
 # renders 8.8-12.2 dB; a render against grey or noise 14.7, which the flatness bar takes.
@@ -16,15 +18,47 @@ FLOOR = 14.0
 FLAT = 8.0  # a thumbnail's std: renders 37-60, grey 0, noise averaged to a thumbnail 2.6
 
 
-def calls(record):
+# The parts of `cozy run show <n> --json --full` read here.
+class Loop(TypedDict, total=False):  # execution.loops[]: hook.py's row
+    digests: dict[str, str]
+    checks: dict[str, int]
+
+
+class Execution(TypedDict, total=False):
+    safeguards: dict[str, list[str]]
+    loops: list[Loop]
+
+
+class Measurements(TypedDict, total=False):
+    execution: Execution
+
+
+class Call(TypedDict, total=False):
+    measurements: Measurements
+
+
+class Output(TypedDict, total=False):
+    media_type: str
+    path: str
+
+
+class RunRecord(Call, total=False):
+    status: str
+    calls: list[Call]
+    output: list[Output]
+
+
+def calls(record: RunRecord) -> Iterator[Call]:
     yield record
     yield from record.get('calls') or []
 
 
-def facts(path):
+def facts(path: str) -> tuple[RunRecord, dict[str, str], dict[str, int], dict[str, frozenset[str]], int]:
     """Its digests by call and name, what `vt.checks` did, each split site's levels and any replay caught wrong."""
-    record = json.load(open(path))
-    digests, checks, levels = {}, {'uses': 0, 'unmapped_bytes': 0, 'perturbed_bytes': 0}, {}
+    record: RunRecord = json.load(open(path))
+    digests: dict[str, str] = {}
+    checks = {'uses': 0, 'unmapped_bytes': 0, 'perturbed_bytes': 0}
+    levels: dict[str, frozenset[str]] = {}
     mismatched = 0
     for index, call in enumerate(calls(record)):
         measured = call.get('measurements') or {}
@@ -34,7 +68,7 @@ def facts(path):
             for key, value in (row.get('checks') or {}).items():
                 checks[key] = max(checks[key], value)
 
-        def walk(value):
+        def walk(value: object) -> None:
             if isinstance(value, dict):
                 for key, held in value.items():
                     if key == 'working_splits':
@@ -47,7 +81,7 @@ def facts(path):
     return record, digests, checks, levels, mismatched
 
 
-def output(record, path):
+def output(record: RunRecord, path: str) -> str | None:
     """The record's first image or video, where the gate landed it (a copied gate keeps it under project/files)."""
     for row in record.get('output') or []:
         if (row.get('media_type') or '').split('/')[0] in ('image', 'video') and row.get('path'):
@@ -56,18 +90,18 @@ def output(record, path):
     return None
 
 
-def thumbnail(path):
+def thumbnail(path: str) -> bytes:
     """Every frame at 32 px wide, RGB bytes."""
     return subprocess.run(['ffmpeg', '-nostdin', '-loglevel', 'error', '-i', path, '-vf', 'scale=32:-2:flags=area', '-f',
                            'rawvideo', '-pix_fmt', 'rgb24', '-'], capture_output=True, check=True).stdout
 
 
-def std(data):
+def std(data: bytes) -> float:
     mean = sum(data) / len(data)
     return math.sqrt(sum((x - mean) ** 2 for x in data) / len(data))
 
 
-def quality(a, b, check):
+def quality(a: str | None, b: str | None, check: str) -> tuple[float, float] | None:
     """(PSNR, flattest std) of two outputs' thumbnails, `check`.jpg beside them; None with no outputs to judge."""
     if not a or not b or not os.path.exists(a) or not os.path.exists(b):
         return None
@@ -83,7 +117,7 @@ def quality(a, b, check):
     return (math.inf if mse == 0 else 10 * math.log10(255 ** 2 / mse)), min(std(ours[:n]), std(theirs[:n]))
 
 
-def main(a, b, check='', why=''):
+def main(a: str, b: str, check: str = '', why: str = '') -> str:
     (one, ours, _, levels, wrong), (two, theirs, checks, others, wronger) = facts(a), facts(b)
     if one.get('status') != 'completed' or two.get('status') != 'completed':
         return f'FAIL runs ended {one.get("status")} and {two.get("status")}'
