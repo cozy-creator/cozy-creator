@@ -56,12 +56,16 @@ function identity(sample) {
 function closedProjectMemory(platform, memory, native, budgetMiB) {
   // Keep the existing resident-memory oracle on the other platforms, including its exact budget.
   if (platform !== 'darwin') return memory.closed <= memory.before + budgetMiB;
-  if (!Number.isSafeInteger(budgetMiB) || budgetMiB < 0
-    || ![memory?.before, memory?.closed].every((value) => Number.isFinite(value) && value >= 0)) return false;
-  const before = identity(native?.before), closed = identity(native?.closed);
-  if (!before || !closed || [native.before, native.closed].some((sample) => sample.project_db_open !== false || sample.ownership_error
-    || !Number.isSafeInteger(sample.heap_bytes) || sample.heap_bytes < 0)) return false;
-  if (before.pid !== closed.pid || before.start_abstime !== closed.start_abstime) return false;
+  if (!Number.isSafeInteger(budgetMiB) || budgetMiB < 0) return false;
+  const phases = ['before', 'read', 'open', 'edits', 'fitted', 'closed'];
+  const readings = phases.map((phase) => identity(native?.[phase]));
+  if (phases.some((phase, i) => !readings[i] || native[phase].ownership_error || native[phase].heap_error
+    || typeof native[phase].project_db_open !== 'boolean'
+    || !Number.isSafeInteger(native[phase].heap_bytes) || native[phase].heap_bytes < 0
+    || !Number.isFinite(memory?.[phase]) || memory[phase] < 0)) return false;
+  const before = readings[0], closed = readings.at(-1);
+  if (readings.some((sample) => sample.pid !== before.pid || sample.start_abstime !== before.start_abstime)) return false;
+  if (native.before.project_db_open !== false || native.closed.project_db_open !== false) return false;
   return BigInt(closed.physical_bytes) <= BigInt(before.physical_bytes) + BigInt(budgetMiB) * 1048576n;
 }
 
