@@ -6,7 +6,7 @@ const { tmpdir } = require('os');
 const { join } = require('path');
 const { calcifer, signIn, launch, png, until, drop } = require('./page');
 const failures = [], seen = {};
-let browser, page, scratch;
+let browser, context, page, peer, scratch;
 const check = (name, okay) => { seen[name] = !!okay; if (!okay) failures.push(name); };
 const cli = (...args) => execFileSync(process.env.COZY, ['--json', ...args], { encoding: 'utf8', timeout: 180000 });
 (async () => {
@@ -19,12 +19,19 @@ const cli = (...args) => execFileSync(process.env.COZY, ['--json', ...args], { e
   const id = JSON.parse(cli('project', '-p', folder, 'status')).id;
   seen.project = { id, folder };
   browser = await launch(playwright);
-  page = await (await browser.newContext({ viewport: { width: 1440, height: 1000 } })).newPage();
+  context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+  page = await context.newPage();
   page.setDefaultTimeout(45000);
-  const errors = [], outbound = [], fileWrites = [];
+  const errors = [], outbound = [], fileWrites = [], secretIdempotency = [];
   page.on('pageerror', (error) => errors.push(error.message));
-  page.on('request', (request) => { const url = new URL(request.url()); if (request.method() === 'PUT' && /^\/v1\/(project-)?files\//.test(url.pathname)) fileWrites.push({ path: url.pathname, project: url.searchParams.get('project') }); });
-  page.on('request', (request) => { if (new URL(request.url()).origin !== new URL(calcifer()).origin && /cozy1-|synthetic browser passphrase/.test(request.postData() || request.url())) outbound.push('secret-bearing external request'); });
+  context.on('request', (request) => {
+    const url = new URL(request.url());
+    if (request.method() === 'PUT' && /^\/v1\/(project-)?files\//.test(url.pathname)) fileWrites.push({ path: url.pathname, project: url.searchParams.get('project') });
+    if (request.method() === 'POST' && /\/vault$/.test(url.pathname) && request.headers()['idempotency-key']) secretIdempotency.push(url.pathname);
+    let text = `${request.url()} ${request.postData() || ''}`;
+    try { text += ` ${decodeURIComponent(text)}`; } catch { /* a binary or malformed URL is still checked as sent */ }
+    if (url.origin !== new URL(calcifer()).origin && /cozy1-|synthetic browser passphrase/.test(text)) outbound.push('secret-bearing external request');
+  });
   await signIn(page);
   await page.goto(`${calcifer()}/#/projects/${id}/vault`);
   const body = page.locator('.drawer [data-vault-state]');
@@ -50,6 +57,75 @@ const cli = (...args) => execFileSync(process.env.COZY, ['--json', ...args], { e
   check('private_upload_uses_project_route', fileWrites.length > 0 && fileWrites.every((write) => write.path.startsWith('/v1/project-files/') && write.project === id));
   const stored = await page.evaluate(() => JSON.stringify(Object.fromEntries(Object.keys(localStorage).map((key) => [key, localStorage.getItem(key)]))));
   check('no_private_browser_persistence', !stored.includes(recovery) && !stored.includes('synthetic browser passphrase') && !stored.includes('private_vault_picture') && !stored.includes('private_after_encryption'));
+  // A second actual tab shares the real SSE connection. Locking from the CLI must
+  // conceal both pages without relying on the active tab's one-second status poll.
+  peer = await context.newPage();
+  peer.on('pageerror', (error) => errors.push(error.message));
+  await peer.goto(`${calcifer()}/#/projects/${id}`);
+  await peer.locator('.react-flow').waitFor();
+  cli('project', '-p', folder, 'lock');
+  for (const tab of [page, peer]) {
+    await until('external lock concealed a tab', () => tab.locator('body').innerText(), (text) => !text.includes('private_vault_picture') && !text.includes('private_after_encryption'), 20000);
+    check(`external_lock_tab_${tab === page ? 'first' : 'second'}`, await tab.locator('.react-flow').count() === 0);
+  }
+  await peer.close(); peer = null;
+  await page.getByLabel('Unlock with').selectOption('recovery');
+  await page.getByLabel('Recovery secret', { exact: true }).fill(recovery);
+  await page.getByRole('button', { name: 'Unlock project', exact: true }).click();
+  await page.locator('.react-flow').waitFor();
+
+  // Chromium's actual page lifecycle suspends JavaScript while the CLI locks the
+  // project. Resuming the hidden tab must verify protection before showing its canvas.
+  if (!process.env.ENGINE || process.env.ENGINE === 'chromium') {
+    const lifecycle = await context.newCDPSession(page);
+    peer = await context.newPage();
+    await peer.goto('about:blank');
+    await peer.bringToFront();
+    await until('private tab hidden', () => page.evaluate(() => document.visibilityState), (state) => state === 'hidden', 10000);
+    await lifecycle.send('Page.setWebLifecycleState', { state: 'frozen' });
+    try { cli('project', '-p', folder, 'lock'); }
+    finally { await lifecycle.send('Page.setWebLifecycleState', { state: 'active' }); }
+    await page.bringToFront();
+    await page.locator('[data-vault-state="locked"]').waitFor();
+    check('frozen_tab_resume_keeps_locked_data_hidden', await page.locator('.react-flow').count() === 0 && !(await page.locator('body').innerText()).includes('private_vault_picture'));
+    await lifecycle.detach();
+    await peer.close(); peer = null;
+    await page.getByLabel('Unlock with').selectOption('recovery');
+    await page.getByLabel('Recovery secret', { exact: true }).fill(recovery);
+    await page.getByRole('button', { name: 'Unlock project', exact: true }).click();
+    await page.locator('.react-flow').waitFor();
+  } else seen.frozen_tab_resume = 'Chromium lifecycle proof only; this engine still checks tabs and browser history';
+
+  // Leaving A stops its selected-project status observer. Keep the same document
+  // and query cache, lock A while B is shown, then watch every DOM mutation on return.
+  const ordinary = join(scratch, 'other-project');
+  cli('project', 'new', ordinary);
+  const other = JSON.parse(cli('project', '-p', ordinary, 'status')).id;
+  await page.evaluate(() => { window.__vaultDocument = 'same-document'; });
+  await page.goto(`${calcifer()}/#/projects/${other}`);
+  await page.waitForFunction(() => document.querySelector('.react-flow') && !document.body.innerText.includes('private_vault_picture'));
+  cli('project', '-p', folder, 'lock');
+  await page.evaluate((id) => {
+    window.__privatePaints = [];
+    window.__privateWatch = new MutationObserver(() => {
+      if (location.hash === `#/projects/${id}` && /private_vault_picture|private_after_encryption/.test(document.body.innerText)) window.__privatePaints.push('private content');
+    });
+    window.__privateWatch.observe(document.body, { childList: true, subtree: true, characterData: true });
+    location.hash = `#/projects/${id}`;
+  }, id);
+  await page.locator('[data-vault-state="locked"]').waitFor();
+  check('project_reselection_verifies_before_paint', await page.evaluate(() => window.__vaultDocument === 'same-document' && window.__privatePaints.length === 0));
+  await page.goBack();
+  await page.waitForFunction(() => document.querySelector('.react-flow') && !document.body.innerText.includes('private_vault_picture'));
+  await page.goForward();
+  await page.locator('[data-vault-state="locked"]').waitFor();
+  check('history_return_keeps_locked_data_hidden', await page.evaluate(() => window.__privatePaints.length === 0 && !document.querySelector('.react-flow')));
+  await page.evaluate(() => window.__privateWatch.disconnect());
+  await page.getByLabel('Unlock with').selectOption('recovery');
+  await page.getByLabel('Recovery secret', { exact: true }).fill(recovery);
+  await page.getByRole('button', { name: 'Unlock project', exact: true }).click();
+  await page.locator('.react-flow').waitFor();
+
   await page.goto(`${calcifer()}/#/projects/${id}/vault`);
   await page.getByRole('button', { name: 'Lock project', exact: true }).click();
   await until('vault locked', () => page.locator('.drawer [data-vault-state]').getAttribute('data-vault-state'), (state) => state === 'locked', 20000);
@@ -72,10 +148,12 @@ const cli = (...args) => execFileSync(process.env.COZY, ['--json', ...args], { e
   await until('absolute lock', () => page.locator('.drawer [data-vault-state]').getAttribute('data-vault-state'), (state) => state === 'locked', 20000);
   check('polling_does_not_extend_unlock', true);
   check('no_external_secret_delivery', outbound.length === 0);
+  check('secret_actions_skip_idempotency_cache', secretIdempotency.length === 0);
   check('no_page_errors', errors.length === 0);
   seen.page_errors = errors;
 })().catch((error) => { failures.push('browser vault flow'); seen.failure = error.message.replace(/cozy1(?:-[0-9a-f]{8}){9}/gi, '[REDACTED]').replaceAll('synthetic browser passphrase', '[REDACTED]'); process.exitCode = 1; }).finally(async () => {
   // Never take recovery-code screenshots or emit credentials in the fixture's artifacts.
+  if (peer) await peer.close().catch(() => {});
   if (page) await page.close().catch(() => {});
   if (browser) await browser.close().catch(() => {});
   if (scratch) {
