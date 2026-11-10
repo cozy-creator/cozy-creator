@@ -41,7 +41,7 @@ def run(payload: Request, ctx: Context, tel: Telemetry) -> Report:
 
     torch.set_num_threads(1)
     if payload.mode == "cancel":
-        return cancel_rowwise(payload.seed, tensorfs, np)  # `_ext` is private: the Protocol names it
+        return cancel_rowwise(payload.seed, tensorfs, np)  # type: ignore[arg-type]  # the module has `_ext` (private), which the Protocol names
     assert payload.mode == "basic"
     rows, cols = 7, 256
     kinds = [
@@ -117,6 +117,7 @@ def run(payload: Request, ctx: Context, tel: Telemetry) -> Report:
             cases.append((key, dtype, weight_dtype, scale_dtype, values.numpy().copy()))
         source = writer.commit()
         summaries: list[t.Summary] = []
+        params: "dict[str, t.MetadataInput]"
         for target, strategy, params, producer in [
             (
                 "int8.convrot",

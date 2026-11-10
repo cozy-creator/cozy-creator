@@ -215,9 +215,9 @@ def run(payload: Request, ctx: Context) -> Report:
                 shape=values.shape,
                 params=result.params,
             )
-            loaded = cast("tensorfs.Array", checkpoint.components["weights"].tensors.read(
+            loaded = checkpoint.components["weights"].tensors.read(
                 f"{name}.F32", decode=True
-            ))  # cast: a decoded read is an Array
+            )
             assert out.tobytes() == loaded.tobytes(), name
         assert checkpoint.verify().ok
         checkpoint.close()

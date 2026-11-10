@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from . import _types as t
 
 app = App()
-STRATEGIES: dict[str, tuple[str, dict[str, object]]] = {
+STRATEGIES: "dict[str, tuple[str, dict[str, t.MetadataInput]]]" = {
     "fp8.rowwise": ("fp8-rowwise-rne/1", {}),
     "w4a8.convrot": (
         "w4a8-convrot256-fixed/1",

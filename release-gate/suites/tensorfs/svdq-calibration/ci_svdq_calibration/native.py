@@ -44,6 +44,7 @@ if TYPE_CHECKING:
         EncodedTensor,
         Facts,
         Floats,
+        MetadataInput,
         Observation,
         Parts,
         Refusing,
@@ -57,7 +58,7 @@ STRATEGY = "svdq-nvfp4-r32-faer/1"
 WORKSPACE = 64 << 20
 # What the cancellation cell's conversion reads: its two weights, and each one's 64 calibration rows and maxima.
 SOURCE_BYTES = sum(4 * (rows * cols + 64 * cols + cols) for rows, cols in ((64, 256), (1024, 1024)))
-PARAMS = {
+PARAMS: "dict[str, MetadataInput]" = {
     "block_size": 16,
     "global_scale": "multiply",
     "nibble_order": "low_first",
@@ -137,7 +138,7 @@ def residual_values(
     # Decoder evaluation is (code*scale)*global, rather than code*(scale*global).
     return cast("Floats", (  # cast: astype of a dtype union
         E2M1_DECODE32[codes].astype(dtype)
-        * np.repeat(E4M3_MAG32[scales].astype(dtype), 16, axis=1)
+        * np.repeat(E4M3_MAG32[scales].astype(dtype), 16, axis=1)  # type: ignore[operator]  # numpy's stubs: a product of a dtype union's astype
     ) * second)
 
 
@@ -660,7 +661,7 @@ def cancel_worker() -> None:
         control = tensorfs.ConversionControl()
         monitor = threading.get_native_id()
 
-        def convert() -> dict[str, object]:
+        def convert() -> "Conversion":
             # Every thread but the monitor's runs at nice 19, and those the conversion starts inherit it.
             for task in os.listdir("/proc/self/task"):
                 if int(task) != monitor:
@@ -1091,7 +1092,7 @@ def runtime_components(
                 facts[name] = check_selected(
                     item,
                     values[name],
-                    measured.tensors[0],  # Runtime gap: QuantizationStats.tensors rows are dict[str, Any]
+                    measured.tensors[0],  # type: ignore[arg-type]  # Runtime 0.43 gap: QuantizationStats.tensors rows are dict[str, Any]
                     calibration=calibration.stats(name, "proj.weight")
                     .rows.float()
                     .numpy(),

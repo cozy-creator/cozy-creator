@@ -8,8 +8,13 @@ import numpy.typing as npt
 
 if TYPE_CHECKING:
     import tensorfs
-    from tensorfs.api import NormalizeBf16Tensor, QuantizeTensor
-    from tensorfs.api import NormalizationResult, QuantizationResult, QuantizedTensor
+    from tensorfs.api import (
+        NormalizationResult,
+        NormalizeBf16Tensor,
+        QuantizationResult,
+        QuantizedTensor,
+        QuantizeTensor,
+    )
 
     type Converted = QuantizedTensor
     type Conversion = QuantizationResult

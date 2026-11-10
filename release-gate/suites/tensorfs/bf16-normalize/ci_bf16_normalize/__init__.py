@@ -12,7 +12,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import ModuleType
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 import msgspec
 from cozy_runtime.author import App, Context, Telemetry
@@ -61,6 +61,7 @@ def observed(result: "t.Converted", expected: dict[str, float | int], values: "t
         result["relative_frobenius"], expected["relative_frobenius"], rel_tol=2e-13, abs_tol=0
     )
     measured = result["measured"]
+    name: Literal["amax", "max_abs_error", "saturated", "sse", "energy"]
     for name in ("amax", "max_abs_error", "saturated"):
         assert measured[name] == expected[name], (name, measured[name], expected[name])
     for name in ("sse", "energy"):
@@ -412,7 +413,7 @@ def runtime_adapter(directory: Path, source: "t.Checkpoint", specifications: "li
     assert replayed.source_bytes_read == replayed.stored_source_bytes_read == replayed.new_bytes_written == 0
     assert replayed.worst_relative_frobenius is None
     conversion, pending = output.prepare_quantization(source, [quant_selection()], max_relative_frobenius=None)
-    quant: "t.Conversion" = native_quantization._run_native(conversion, pending, ctx, tel, stage="mixed native producer")
+    quant: "t.Conversion" = native_quantization._run_native(conversion, pending, ctx, tel, stage="mixed native producer")  # type: ignore[assignment]  # Runtime 0.43 gap: _run_native returns dict[str, object]
     assert quant["encoded_keys"] == 1
     checkpoint = output.commit()
     assert checkpoint.verify().ok

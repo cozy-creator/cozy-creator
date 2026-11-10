@@ -131,7 +131,7 @@ def inspect(payload: Inspect, model: Weights[TwoStacks], ctx: Context) -> Report
             problems.append(f"{component}/{key} is missing")
             continue
         encoding = stored[key].encoding
-        scheme, error = cast("str | None", encoding and encoding.scheme), None  # cast: an Encoding is truthy
+        scheme, error = encoding and encoding.scheme, None
         if key.endswith(".weight"):
             want = f32(bits.tobytes(), bits.shape)
             got = f32(stored.read(key, decode=True).tobytes(), bits.shape)

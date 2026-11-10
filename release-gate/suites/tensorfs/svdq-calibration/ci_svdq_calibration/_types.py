@@ -9,10 +9,17 @@ import numpy.typing as npt
 
 if TYPE_CHECKING:
     import tensorfs
-    from tensorfs.api import QuantizeFit, QuantizeTensor
+    from tensorfs import _ext
+    from tensorfs.api import (
+        FitResult,
+        QuantizationResult,
+        QuantizedTensor,
+        QuantizeFit,
+        QuantizeTensor,
+    )
     from torch import Tensor
-    from tensorfs.api import FitResult, QuantizationResult, QuantizedTensor
 
+    type MetadataInput = _ext.MetadataInput
     type Converted = QuantizedTensor
     type Conversion = QuantizationResult
     type FitDetails = FitResult

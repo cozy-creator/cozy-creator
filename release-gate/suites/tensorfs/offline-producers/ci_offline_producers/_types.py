@@ -8,10 +8,10 @@ import numpy.typing as npt
 
 if TYPE_CHECKING:
     import tensorfs
-    from tensorfs import raw
-    from tensorfs.api import QuantizeTensor
-    from tensorfs.api import QuantizationResult, QuantizedTensor
+    from tensorfs import _ext, raw
+    from tensorfs.api import QuantizationResult, QuantizedTensor, QuantizeTensor
 
+    type MetadataInput = _ext.MetadataInput
     type Converted = QuantizedTensor
     type Conversion = QuantizationResult
 

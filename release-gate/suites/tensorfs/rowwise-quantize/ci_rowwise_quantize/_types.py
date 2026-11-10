@@ -7,9 +7,10 @@ import numpy.typing as npt
 
 if TYPE_CHECKING:
     import tensorfs
-    from tensorfs.api import QuantizeTensor
-    from tensorfs.api import QuantizationResult, QuantizedTensor
+    from tensorfs import _ext
+    from tensorfs.api import QuantizationResult, QuantizedTensor, QuantizeTensor
 
+    type MetadataInput = _ext.MetadataInput
     type Converted = QuantizedTensor
     type Conversion = QuantizationResult
 
@@ -36,7 +37,7 @@ type F32 = npt.NDArray[np.float32]
 class BadSource(TypedDict, total=False):
     """How one refusal case spoils the rowwise source."""
 
-    params: dict[str, object]
+    params: "dict[str, MetadataInput]"
     scale_shape: tuple[int, ...]
     weight_dtype: str
     scale_dtype: str

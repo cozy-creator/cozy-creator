@@ -7,8 +7,7 @@ import numpy.typing as npt
 
 if TYPE_CHECKING:
     import tensorfs
-    from tensorfs.api import QuantizeTensor
-    from tensorfs.api import QuantizationResult, QuantizedTensor
+    from tensorfs.api import QuantizationResult, QuantizedTensor, QuantizeTensor
 
     type Converted = QuantizedTensor
     type Conversion = QuantizationResult
