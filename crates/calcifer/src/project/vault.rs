@@ -24,6 +24,7 @@ struct Session {
     maximum: u64,
     began: Instant,
     active: Instant,
+    active_ms: i64,
     began_ms: i64,
     closing: bool,
     readable: Arc<AtomicBool>,
@@ -111,8 +112,8 @@ fn status(root: &FsPath) -> VaultStatus {
         if session.mount.is_mounted().unwrap_or(false) {
             state = if session.closing || expired(&session) { "locking" } else { "unlocked" };
             if state == "unlocked" { view = Some(session.mount.view().to_owned()); }
-            let idle_at = (session.idle > 0).then(|| super::now_ms() + session.idle.saturating_sub(session.active.elapsed().as_secs()) as i64 * 1000);
-            let max_at = (session.maximum > 0).then(|| session.began_ms.saturating_add(session.maximum as i64 * 1000));
+            let idle_at = (session.idle > 0).then(|| session.active_ms.saturating_add(milliseconds(session.idle)));
+            let max_at = (session.maximum > 0).then(|| session.began_ms.saturating_add(milliseconds(session.maximum)));
             expires = match (idle_at, max_at) { (Some(a), Some(b)) => Some(a.min(b)), (a,b) => a.or(b) };
         }
     }
@@ -120,10 +121,12 @@ fn status(root: &FsPath) -> VaultStatus {
     VaultStatus { encrypted: encrypted(root), state: state.into(), path: root.to_owned(), view, expires_at_ms: expires, idle_timeout_s: idle, next }
 }
 
+fn milliseconds(seconds: u64) -> i64 { i64::try_from(seconds).unwrap_or(i64::MAX).saturating_mul(1000) }
+
 fn expired(session: &Session) -> bool {
-    (session.idle > 0 && session.active.elapsed() >= Duration::from_secs(session.idle))
+    (session.idle > 0 && (session.active.elapsed() >= Duration::from_secs(session.idle) || super::now_ms().saturating_sub(session.active_ms) >= milliseconds(session.idle)))
         || (session.maximum > 0 && (session.began.elapsed() >= Duration::from_secs(session.maximum)
-            || super::now_ms().saturating_sub(session.began_ms) >= (session.maximum as i64).saturating_mul(1000)))
+            || super::now_ms().saturating_sub(session.began_ms) >= milliseconds(session.maximum)))
 }
 
 fn credential(ask: &mut VaultAsk) -> Result<Credential, Error> {
@@ -150,12 +153,16 @@ fn mount(api: &Api, root: &FsPath, keybag: Keybag, secret: ProjectSecret, ask: &
     TRUSTED_KEYS.lock().expect("trusted vault recipients").insert(root.to_owned(), keybag.clone());
     KEY_ROOTS.lock().expect("vault project roots").insert(keybag.info().project_id.clone(), root.to_owned());
     let now = Instant::now();
-    let session = Session { root: root.to_owned(), mount: mounted, secret, keybag, idle: ask.idle_timeout_s.unwrap_or(DEFAULT_IDLE), maximum: ask.max_duration_s.unwrap_or(0), began: now, active: now, began_ms: super::now_ms(), closing: false, readable: Arc::new(AtomicBool::new(true)) };
+    let session = Session { root: root.to_owned(), mount: mounted, secret, keybag, idle: ask.idle_timeout_s.unwrap_or(DEFAULT_IDLE), maximum: ask.max_duration_s.unwrap_or(0), began: now, active: now, active_ms: super::now_ms(), began_ms: super::now_ms(), closing: false, readable: Arc::new(AtomicBool::new(true)) };
     SESSIONS.lock().expect("vault sessions").insert(root.to_owned(), Arc::new(Mutex::new(session)));
     Ok(())
 }
 
 fn forget(api: &Api, root: &FsPath) -> Result<(), Error> {
+    let landing = super::landing(root);
+    let active = api.calcifer.store().read(|conn| Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM runs WHERE out_dir = ?1 AND state <> 'settled')", [landing.to_string_lossy().as_ref()], |row| row.get::<_, bool>(0))?))
+        .map_err(|e| error("vault_journal", e))?;
+    if active { return Err(Error::new(Kind::Conflict, "project_busy", "the project has active work; finish or cancel it before locking or converting")); }
     let projects = api.projects.now_open();
     for project in projects {
         if logical(&project.folder.dir) != root { continue; }
@@ -252,7 +259,7 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk) -> Result<VaultChan
         }
         "lock" => { close(api, root)?; }
         "activity" => {
-            if let Some(session) = held(root) { let mut session = session.lock().expect("vault session"); if !session.closing && !expired(&session) { session.active = Instant::now(); } }
+            if let Some(session) = held(root) { let mut session = session.lock().expect("vault session"); if !session.closing && !expired(&session) { session.active = Instant::now(); session.active_ms = super::now_ms(); } }
         }
         "passphrase" | "recovery" => {
             let session = held(root).ok_or_else(|| locked(root))?;
@@ -263,7 +270,7 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk) -> Result<VaultChan
             else { recovery_secret = Some(keybag.replace_recovery(&session.secret).map_err(key)?.expose().to_owned()); }
             keybag.save(&root.join(KEYBAG_FILE)).map_err(key)?;
             session.keybag = keybag;
-            session.active = Instant::now();
+            session.active = Instant::now(); session.active_ms = super::now_ms();
         }
         "export" => {
             let source = view(root)?;
@@ -430,7 +437,7 @@ pub(super) async fn privacy(
     if let Err(error) = view(&root) { return private(Refusal(error).into_response()); }
     let token = held(&root).map(|session| session.lock().expect("vault session").readable.clone());
     if request.method() != axum::http::Method::GET && request.method() != axum::http::Method::HEAD {
-        if let Some(session) = held(&root) { let mut session = session.lock().expect("vault session"); if !session.closing && !expired(&session) { session.active = Instant::now(); } }
+        if let Some(session) = held(&root) { let mut session = session.lock().expect("vault session"); if !session.closing && !expired(&session) { session.active = Instant::now(); session.active_ms = super::now_ms(); } }
     }
     let response = private(next.run(request).await);
     let Some(token) = token else { return response };

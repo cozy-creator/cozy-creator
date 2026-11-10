@@ -238,6 +238,7 @@ impl From<crate::Error> for Refusal {
     fn from(e: crate::Error) -> Self {
         Refusal(match e {
             crate::Error::Store(StoreError::Conflict(key)) => conflict(&key),
+            crate::Error::Store(StoreError::Locked(_)) => Error::new(Kind::Conflict, "project_locked", "the project is locked; unlock it to read its private run history"),
             crate::Error::Store(StoreError::UnknownMachine(name)) => Error::new(
                 Kind::NotFound,
                 "machine_not_found",
