@@ -212,8 +212,8 @@ impl Document {
 
     pub(super) fn ops(&self) -> Result<Vec<OpRow>, Error> {
         let mut rows = Vec::new();
-        for (uid, record) in objects(&self.value, "history").iter().filter(|(_, record)| present(record)) {
-            let mut row = decode::<OpRow>(record.get("record").cloned().unwrap_or_default())?;
+        for (uid, record) in entries(&self.value, "history").filter(|(_, record)| present(record)) {
+            let mut row = decode::<OpRow>(&record["record"])?;
             row.uid.clone_from(uid);
             rows.push(row);
         }
@@ -221,22 +221,20 @@ impl Document {
         Ok(rows)
     }
 
-    pub(super) fn stored(&self) -> Result<Stored, Error> {
+    pub(super) fn into_stored(self) -> Result<Stored, Error> {
         let mut written = Written::default();
-        let head = objects(&self.value, "head");
-        for key in order(&self.value, "head_order", &head) {
-            written.head.push((key.clone(), head[&key].clone()));
-        }
-        let mut boxes: Vec<(u64, String, Boxed)> = Vec::new();
-        for (id, record) in objects(&self.value, "boxes").iter().filter(|(_, record)| present(record)) {
-            let fields = objects(record, "fields");
-            let ordered = order(record, "field_order", &fields)
+        written.head = ordered(&self.value, "head_order", "head")
+            .into_iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        let mut boxes = Vec::new();
+        for (id, record) in entries(&self.value, "boxes").filter(|(_, record)| present(record)) {
+            let ordered = ordered(record, "field_order", "fields")
                 .into_iter()
-                .map(|key| (key.clone(), fields[&key].clone()))
+                .map(|(key, value)| (key.clone(), value.clone()))
                 .collect();
             boxes.push((
                 record["order"].as_u64().unwrap_or_default(),
-                id.clone(),
                 Boxed {
                     id: id.clone(),
                     name: text(record, "name"),
@@ -245,14 +243,14 @@ impl Document {
                 },
             ));
         }
-        boxes.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
-        written.boxes = boxes.into_iter().map(|(_, _, held)| held).collect();
+        boxes.sort_by(|(a, first), (b, second)| (a, &first.id).cmp(&(b, &second.id)));
+        written.boxes = boxes.into_iter().map(|(_, held)| held).collect();
         let mut lock = Lock::default();
-        for (id, record) in objects(&self.value, "assets").iter().filter(|(_, record)| present(record)) {
-            let mut held: Asset = decode(record["record"].clone())?;
+        for (id, record) in entries(&self.value, "assets").filter(|(_, record)| present(record)) {
+            let mut held: Asset = decode(&record["record"])?;
             held.id.clone_from(id);
-            for (version_id, version) in objects(record, "versions").iter().filter(|(_, record)| present(record)) {
-                let mut value: Version = decode(version["record"].clone())?;
+            for (version_id, version) in entries(record, "versions").filter(|(_, record)| present(record)) {
+                let mut value: Version = decode(&version["record"])?;
                 value.id.clone_from(version_id);
                 match version["discarded"].as_bool().unwrap_or(false) {
                     true => held.discarded.push(value),
@@ -268,43 +266,46 @@ impl Document {
                 ));
             }
         }
-        lock.files = objects(&self.value, "files")
-            .into_iter()
-            .map(|(hash, value)| decode::<File>(value).map(|file| (hash, File { row: true, ..file })))
+        lock.files = entries(&self.value, "files")
+            .map(|(hash, value)| decode::<File>(value).map(|file| (hash.clone(), File { row: true, ..file })))
             .collect::<Result<_, _>>()?;
-        lock.reserved = decode(self.value.get("reserved").cloned().unwrap_or_else(|| json!({})))?;
-        lock.makes = decode(self.value.get("makes").cloned().unwrap_or_else(|| json!({})))?;
-        let mut runs: Vec<(u64, String, RunFile)> = Vec::new();
-        for (id, record) in objects(&self.value, "runs").into_iter().filter(|(_, record)| present(record)) {
-            let mut run: RunFile = decode(record["record"].clone())?;
-            run.id.clone_from(&id);
-            runs.push((record["order"].as_u64().unwrap_or_default(), id, run));
+        let empty = json!({});
+        lock.reserved = decode(self.value.get("reserved").unwrap_or(&empty))?;
+        lock.makes = decode(self.value.get("makes").unwrap_or(&empty))?;
+        let mut runs = Vec::new();
+        for (id, record) in entries(&self.value, "runs").filter(|(_, record)| present(record)) {
+            let mut run: RunFile = decode(&record["record"])?;
+            run.id.clone_from(id);
+            runs.push((record["order"].as_u64().unwrap_or_default(), run));
         }
-        runs.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
-        lock.runs = runs.into_iter().map(|(_, _, run)| run).collect();
+        runs.sort_by(|(a, first), (b, second)| (a, &first.id).cmp(&(b, &second.id)));
+        lock.runs = runs.into_iter().map(|(_, run)| run).collect();
         let mut canvas = BTreeMap::new();
-        for record in objects(&self.value, "canvas").into_values().filter(present) {
-            let row: CardRow = decode(record["record"].clone())?;
-            canvas.insert(text(&record, "key"), row);
+        for (_, record) in entries(&self.value, "canvas").filter(|(_, record)| present(record)) {
+            let row: CardRow = decode(&record["record"])?;
+            canvas.insert(text(record, "key"), row);
         }
         Ok(Stored {
             written: Arc::new(written),
             lock: Arc::new(lock),
             canvas: Arc::new(canvas),
-            crdt: Some(Arc::new(self.clone())),
+            crdt: Some(Arc::new(self)),
             ..Default::default()
         })
     }
 }
 
-fn decode<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, Error> {
-    serde_json::from_value(value).map_err(invalid)
+fn decode<T: serde::de::DeserializeOwned>(value: &Value) -> Result<T, Error> {
+    T::deserialize(value).map_err(invalid)
 }
 fn encoded<T: Serialize>(value: &T) -> Value {
     serde_json::to_value(value).expect("a logical project value serializes")
 }
-fn objects(value: &Value, key: &str) -> Map<String, Value> {
-    value.get(key).and_then(Value::as_object).cloned().unwrap_or_default()
+fn object<'a>(value: &'a Value, key: &str) -> Option<&'a Map<String, Value>> {
+    value.get(key).and_then(Value::as_object)
+}
+fn entries<'a>(value: &'a Value, key: &str) -> impl Iterator<Item = (&'a String, &'a Value)> {
+    object(value, key).into_iter().flatten()
 }
 fn text(value: &Value, key: &str) -> String {
     value.get(key).and_then(Value::as_str).unwrap_or_default().to_owned()
@@ -312,19 +313,19 @@ fn text(value: &Value, key: &str) -> String {
 fn present(value: &Value) -> bool {
     value.get("present").and_then(Value::as_bool).unwrap_or(true)
 }
-fn order(value: &Value, key: &str, values: &Map<String, Value>) -> Vec<String> {
-    let mut keys: Vec<String> = value
+fn ordered<'a>(value: &'a Value, key: &str, field: &str) -> Vec<(&'a String, &'a Value)> {
+    let Some(values) = object(value, field) else { return Vec::new() };
+    let mut rows: Vec<_> = value
         .get(key)
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .filter_map(Value::as_str)
-        .filter(|key| values.contains_key(*key))
-        .map(str::to_owned)
+        .filter_map(|key| values.get_key_value(key))
         .collect();
-    let listed: BTreeSet<_> = keys.iter().cloned().collect();
-    keys.extend(values.keys().filter(|key| !listed.contains(*key)).cloned());
-    keys
+    let listed: BTreeSet<_> = rows.iter().map(|(key, _)| key.as_str()).collect();
+    rows.extend(values.iter().filter(|(key, _)| !listed.contains(key.as_str())));
+    rows
 }
 fn map_of(values: &[(String, Value)]) -> Value {
     Value::Object(values.iter().cloned().collect())
@@ -333,7 +334,7 @@ fn keys_of(values: &[(String, Value)]) -> Value {
     encoded(&values.iter().map(|(key, _)| key).collect::<Vec<_>>())
 }
 fn tombstoned(previous: &Value, field: &str) -> Map<String, Value> {
-    let mut all = objects(previous, field);
+    let mut all = object(previous, field).cloned().unwrap_or_default();
     for value in all.values_mut() {
         value["present"] = Value::Bool(false);
     }
