@@ -36,20 +36,44 @@ step candidates; candidates
 step doctor; cozy --json doctor > "$OUT/doctor.json" || check "cozy doctor is not healthy: $(grep -o '"state": *"PROBLEM[^"]*"' "$OUT/doctor.json" | head -3)"
 if [ "$SHARD" = projectdb-scale ] && [ "$RUNNER_OS" = Linux ]; then
   [ "${GITHUB_ACTIONS:-}" = true ] || fail "the diagnostic scale restart requires the owned fresh GitHub runner"
-  db_calcifer
-  local profile_pid; profile_pid=$(jq -r .pid "$HOME/.cozy/calcifer/calcifer.lock.holder")
-  api -f -X POST "http://$ADDR/v1/down" > "$OUT/profile-down.json" || fail "diagnostic Calcifer restart was refused"
-  for _ in $(seq 300); do kill -0 "$profile_pid" 2>/dev/null || break; sleep 0.1; done
-  ! kill -0 "$profile_pid" 2>/dev/null || fail "the diagnostic default Calcifer did not finish its normal shutdown"
-  cozy --json machine ls > "$OUT/profile-machine.json" || fail "the diagnostic default Calcifer did not start"
-  db_calcifer
-  python3 - "$HOME/.cozy/calcifer/calcifer.lock.holder" <<'PYPROFILE'
-import json,sys
+  python3 - "$COZY" "$HOME/.cozy/calcifer/calcifer.lock.holder" "$OUT/profile-startup.json" <<'PYPROFILE' || fail "diagnostic Calcifer identity/profile verification failed"
+import ipaddress,json,subprocess,sys,time,urllib.parse,urllib.request
 from pathlib import Path
-pid=json.loads(Path(sys.argv[1]).read_text())['pid']
-assert b'COZY_XS160_PROJECT_PROFILE=1' in Path(f'/proc/{pid}/environ').read_bytes().split(b'\0'), 'candidate Calcifer lacks the numeric profile flag'
-print('candidate Calcifer numeric profile flag verified')
+binary,holder_path,receipt=sys.argv[1:]
+def cli(*words):
+    result=subprocess.run([binary,*words],capture_output=True,timeout=30)
+    if result.returncode: raise RuntimeError('CLI failure')
+    return json.loads(result.stdout)
+def holder():
+    record=json.loads(Path(holder_path).read_text())
+    parsed=urllib.parse.urlsplit('http://'+record['address'])
+    if not ipaddress.ip_address(parsed.hostname).is_loopback or not parsed.port: raise RuntimeError('non-loopback holder')
+    status=cli('--json','status')['calcifer']
+    if (record['pid'],record['address']) != (status['pid'],status['address']): raise RuntimeError('holder/status identity mismatch')
+    return record
+def birth(pid):
+    try: return Path(f'/proc/{pid}/stat').read_text().rsplit(')',1)[1].split()[19]
+    except FileNotFoundError: return None
+try:
+    old=holder(); started=birth(old['pid'])
+    if started is None: raise RuntimeError('old process missing')
+    request=urllib.request.Request('http://'+old['address']+'/v1/down',data=b'',method='POST',headers={'Authorization':'Bearer '+old['token']})
+    opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(request,timeout=30) as response:
+        if not json.load(response)['stopping']: raise RuntimeError('shutdown not accepted')
+    until=time.monotonic()+30
+    while birth(old['pid']) == started and time.monotonic()<until: time.sleep(.1)
+    if birth(old['pid']) == started: raise RuntimeError('old process still present')
+    cli('--json','machine','ls')
+    current=holder()
+    if b'COZY_XS160_PROJECT_PROFILE=1' not in Path(f"/proc/{current['pid']}/environ").read_bytes().split(b'\0'): raise RuntimeError('profile flag absent')
+    Path(receipt).write_text(json.dumps({'loopback':True,'old_pid':old['pid'],'old_identity_gone':True,'new_pid':current['pid'],'holder_status_match':True,'profile_flag':True}))
+    print('candidate Calcifer identity and numeric profile flag verified')
+except Exception:
+    print('diagnostic default Calcifer verification failed',file=sys.stderr)
+    sys.exit(1)
 PYPROFILE
+  db_calcifer
 fi
 }
 
