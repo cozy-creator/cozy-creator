@@ -198,7 +198,7 @@ async fn released(api: &Arc<Api>, id: &str, shown_package: &str, function: &str)
     let card = cards::card(client, api.machines.hubs.home().root(), &hub, &package, &release).await?;
     let (ui, module) = declared(&card.interface, function, id)?;
     let (org, name) = package.split_once('/').expect("a package is org/name");
-    let plan = client()?.get_package_download_plan(org, name, &release, None).await.map_err(cards::refusal)?;
+    let plan = client()?.get_package_download_plan(org, name, &release, None, None).await.map_err(cards::refusal)?;
     let wheel = plan.downloads.iter().find(|file| wheel_of(&file.path, name)).ok_or_else(|| missing(id, &ui))?;
     let held = fetched(id, wheel).await?;
     let (id_owned, entry) = (id.to_owned(), ui.clone());
