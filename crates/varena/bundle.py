@@ -18,6 +18,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
+class Args(argparse.Namespace):
+    target: Path
+    sdk: Path
+
+
 def run(*args: str) -> str:
     return subprocess.check_output(args, text=True).strip()
 
@@ -71,7 +76,7 @@ def main() -> None:
         help="exact Cargo target/profile directory",
     )
     parser.add_argument("--sdk", type=Path, required=True)
-    args = parser.parse_args()
+    args = parser.parse_args(namespace=Args())
     if sys.platform != "linux":
         parser.error("shared-core bundling is implemented for Linux only")
     sdk(args.target.resolve(), args.sdk.resolve())

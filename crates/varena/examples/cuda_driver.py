@@ -1,11 +1,18 @@
 """The examples' own CUDA context and stream, with host readback. Every launch names the stream."""
 
+from __future__ import annotations
+
 import ctypes as C
+from collections.abc import Iterator
 from contextlib import contextmanager
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from typing import Self  # Python 3.11+; the examples run on 3.10 too
 
 
 @contextmanager
-def primary(cuda, device=0):
+def primary(cuda: C.CDLL, device: int = 0) -> Iterator[None]:
     retain = cuda.cuDevicePrimaryCtxRetain
     retain.argtypes = [C.POINTER(C.c_void_p), C.c_int]
     push = cuda.cuCtxPushCurrent_v2
@@ -28,7 +35,7 @@ def primary(cuda, device=0):
 class Stream:
     """Keep this owner until all application and Varena consumers have retired."""
 
-    def __init__(self, cuda):
+    def __init__(self, cuda: C.CDLL) -> None:
         self.cuda = cuda
         pointer = C.POINTER(C.c_void_p)
         for name, arguments in {
@@ -54,17 +61,17 @@ class Stream:
             raise
 
     @property
-    def handle(self):
-        return self._stream.value
+    def handle(self) -> int:
+        return cast(int, self._stream.value)  # a created stream is never NULL
 
-    def finish(self):
+    def finish(self) -> None:
         assert self.cuda.cuEventRecord(self._done, self._stream) == 0
         assert self.cuda.cuEventSynchronize(self._done) == 0
 
-    def fill(self, address, value, length):
+    def fill(self, address: int, value: int, length: int) -> None:
         assert self.cuda.cuMemsetD8Async(address, value, length, self._stream) == 0
 
-    def read(self, address, length):
+    def read(self, address: int, length: int) -> bytes:
         host = C.c_void_p()
         assert self.cuda.cuMemAllocHost_v2(C.byref(host), length) == 0
         # On a failed submission/completion, leave the owning host allocation intact;
@@ -75,10 +82,10 @@ class Stream:
         assert self.cuda.cuMemFreeHost(host) == 0
         return result
 
-    def __enter__(self):
+    def __enter__(self) -> Self:
         return self
 
-    def __exit__(self, *_):
+    def __exit__(self, *_: object) -> None:
         self.finish()
         assert self.cuda.cuEventDestroy_v2(self._done) == 0
         assert self.cuda.cuStreamDestroy_v2(self._stream) == 0
