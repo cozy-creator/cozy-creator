@@ -14,6 +14,8 @@ use api::{
 use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
 
+use crate::tools::Media;
+
 use super::{
     folder::{self, Folder, Lock},
     format::ReadNow,
@@ -154,14 +156,12 @@ fn fails_alone(ffmpeg: &Path, ffprobe: &Path, piece: &Piece, canvas: &Canvas) ->
     let native = piece.shape.is_some_and(|shape| !retimed(&shape, fps));
     let video = whole_filter(piece.still, native, fps, (start, end), (width, height));
     let sound = sound_filter((start, end), fps);
-    let mut command = std::process::Command::new(ffmpeg);
-    command.args(["-y", "-v", "error"]);
+    let mut command = quiet(ffmpeg);
     if piece.still {
         command.args(["-loop", "1", "-framerate", &fps.to_string(), "-t", &format!("{:.6}", (end + 1) as f64 / fps)]);
     }
     let done = command
-        .arg("-i")
-        .arg(&piece.path)
+        .input(&piece.path)
         .args(["-map", "0:v:0", "-map", "0:a:0?", "-vf", &video, "-af", &sound])
         .args(["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-f", "null", "-"])
         .output()
@@ -463,7 +463,6 @@ fn cut(
     let highest = pieces.iter().zip(&probes).filter(|(piece, _)| !piece.still).filter_map(|(_, probe)| probe.video_bit_rate).max();
     let share = |frames: u64| 0.9 * frames as f64 / made.frames.max(1) as f64;
     let mut done = 0;
-    let os = |args: &[&str]| args.iter().map(std::ffi::OsString::from).collect::<Vec<_>>();
     let fast = fast
         && (pieces.iter().zip(&probes))
             .all(|(piece, p)| p.video == probes[0].video && p.video.starts_with("h264 ") && p.size == (width, height) && native(piece));
@@ -483,25 +482,23 @@ fn cut(
                 if copy {
                     // From the keyframe at `from`: half a frame past it, so the seek lands on it.
                     let at = format!("{:.6}", (from as f64 + 0.5) / probe.rate);
-                    let mut args = os(&["-ss", &at, "-i"]);
-                    args.push(piece.path.clone().into_os_string());
-                    args.extend(os(&["-frames:v", &count, "-map", "0:v:0", "-c", "copy", "-f", "mpegts"]));
-                    args.push(part.clone().into_os_string());
-                    run(ffmpeg, &args.iter().map(|a| a.as_os_str()).collect::<Vec<_>>())?;
+                    let mut copying = quiet(ffmpeg);
+                    copying.args(["-ss", &at]).input(&piece.path);
+                    copying.args(["-frames:v", &count, "-map", "0:v:0", "-c", "copy", "-f", "mpegts"]).arg(&part);
+                    run(&mut copying)?;
                 } else if !part.exists() {
                     // From the keyframe at or before `from`, its frames counted to `from`: no timestamp
                     // decides which frame comes first.
                     let staged = work.path().join(format!("{k}-{n}.ts"));
                     let key = probe.keys.iter().copied().filter(|&key| key <= from).max().unwrap_or(0);
                     let at = format!("{:.6}", (key as f64 + 0.5) / probe.rate);
-                    let mut args = os(&["-noaccurate_seek", "-ss", &at, "-i"]);
-                    args.push(piece.path.clone().into_os_string());
                     let trim = format!("trim=start_frame={},setpts=PTS-STARTPTS", from - key);
-                    args.extend(os(&["-map", "0:v:0", "-vf", &trim, "-frames:v", &count, "-c:v", "libx264", "-preset", "veryfast"]));
-                    args.extend(bit_rate(probe.video_bit_rate).iter().map(Into::into));
-                    args.extend(os(&["-pix_fmt", &probe.pix_fmt, "-r", &probe.rate_text, "-f", "mpegts"]));
-                    args.push(staged.clone().into_os_string());
-                    run(ffmpeg, &args.iter().map(|a| a.as_os_str()).collect::<Vec<_>>())?;
+                    let mut encoding = quiet(ffmpeg);
+                    encoding.args(["-noaccurate_seek", "-ss", &at]).input(&piece.path);
+                    encoding.args(["-map", "0:v:0", "-vf", &trim, "-frames:v", &count, "-c:v", "libx264", "-preset", "veryfast"]);
+                    encoding.args(bit_rate(probe.video_bit_rate));
+                    encoding.args(["-pix_fmt", &probe.pix_fmt, "-r", &probe.rate_text, "-f", "mpegts"]).arg(&staged);
+                    run(&mut encoding)?;
                     std::fs::rename(&staged, &part).map_err(io)?;
                 } else {
                     // Used now: its age starts again.
@@ -514,57 +511,41 @@ fn cut(
         }
         let listed = work.path().join("pieces.txt");
         std::fs::write(&listed, list).map_err(io)?;
-        run(
-            ffmpeg,
-            &[
-                "-f".as_ref(),
-                "concat".as_ref(),
-                "-safe".as_ref(),
-                "0".as_ref(),
-                "-i".as_ref(),
-                listed.as_os_str(),
-                "-c".as_ref(),
-                "copy".as_ref(),
-                "-f".as_ref(),
-                "mp4".as_ref(),
-                video.as_os_str(),
-            ],
-        )?;
+        run(quiet(ffmpeg).joined(&listed).args(["-c", "copy", "-f", "mp4"]).arg(&video))?;
     } else {
-        let (mut filter, mut joined, mut inputs) = (String::new(), String::new(), vec![]);
+        let (mut filter, mut joined, mut whole) = (String::new(), String::new(), quiet(ffmpeg));
+        whole.args(["-nostats", "-progress", "pipe:1"]);
         for (k, (piece, (start, end))) in pieces.iter().zip(&ranges).enumerate() {
             if piece.still {
                 let held = format!("{:.6}", (end + 1) as f64 / fps);
-                inputs.extend(["-loop", "1", "-framerate", &rate, "-t", &held].map(Into::into));
+                whole.args(["-loop", "1", "-framerate", &rate, "-t", &held]);
             }
-            inputs.extend(["-i".into(), piece.path.clone().into_os_string()]);
+            whole.input(&piece.path);
             let _ = write!(filter, "[{k}:v]{}[v{k}];", whole_filter(piece.still, native(piece), fps, (*start, *end), (width, height)));
             let _ = write!(joined, "[v{k}]");
         }
         let _ = write!(filter, "{joined}concat=n={}:v=1:a=0[v]", pieces.len());
-        let mut args: Vec<std::ffi::OsString> = inputs;
-        let encode = ["-filter_complex", &filter, "-map", "[v]", "-c:v", "libx264", "-preset", "veryfast"];
-        args.extend(encode.into_iter().chain(bit_rate(highest).iter().map(String::as_str)).map(Into::into));
-        args.extend(["-pix_fmt", "yuv420p", "-r", &rate, "-f", "mp4"].map(Into::into));
-        args.push(video.clone().into_os_string());
-        run_counting(ffmpeg, &args, &|frame| told(share(frame)))?;
+        whole.args(["-filter_complex", &filter, "-map", "[v]", "-c:v", "libx264", "-preset", "veryfast"]).args(bit_rate(highest));
+        whole.args(["-pix_fmt", "yuv420p", "-r", &rate, "-f", "mp4"]).arg(&video);
+        run_counting(&mut whole, &|frame| told(share(frame)))?;
     }
-    let mut mux: Vec<std::ffi::OsString> = vec!["-i".into(), video.into_os_string()];
+    let mut mux = quiet(ffmpeg);
+    mux.input(&video);
     let sounds: Vec<&Sound> = probes.iter().filter_map(|probe| probe.sound.as_ref()).collect();
     if !sounds.is_empty() {
         // The sound once, over the whole edit, each piece's at its frames' times, however short it runs, and silence for one with none.
         let most = |of: fn(&Sound) -> Option<u64>| sounds.iter().filter_map(|sound| of(sound)).max();
         let silence = format!("anullsrc=r={}:cl={}", most(|s| s.sample_rate).unwrap_or(48_000), if most(|s| s.channels) == Some(1) { "mono" } else { "stereo" });
-        let (mut filter, mut joined, mut inputs) = (String::new(), String::new(), vec![]);
+        let (mut filter, mut joined, mut sounding) = (String::new(), String::new(), quiet(ffmpeg));
         for (k, ((piece, probe), (start, end))) in pieces.iter().zip(&probes).zip(&ranges).enumerate() {
             let lasts = (*end - *start) as f64 / fps;
             match probe.sound {
                 Some(_) => {
-                    inputs.extend(["-i".into(), piece.path.clone().into_os_string()]);
+                    sounding.input(&piece.path);
                     let _ = write!(filter, "[{k}:a]{},apad=whole_dur={lasts}[a{k}];", sound_filter((*start, *end), fps));
                 }
                 None => {
-                    inputs.extend(["-f", "lavfi", "-t", &format!("{lasts:.6}"), "-i", &silence].map(Into::into));
+                    sounding.made(&silence, lasts);
                     let _ = write!(filter, "[{k}:a]asetpts=PTS-STARTPTS[a{k}];");
                 }
             }
@@ -572,21 +553,16 @@ fn cut(
         }
         let _ = write!(filter, "{joined}concat=n={}:v=0:a=1[a]", pieces.len());
         let sound = work.path().join("sound.m4a");
-        let mut args: Vec<std::ffi::OsString> = inputs;
-        let mut encode = vec!["-filter_complex".to_owned(), filter, "-map".into(), "[a]".into(), "-c:a".into(), "aac".into()];
+        sounding.args(["-filter_complex", &filter, "-map", "[a]", "-c:a", "aac"]);
         for (flag, value) in [("-b:a", most(|s| s.bit_rate)), ("-ar", most(|s| s.sample_rate)), ("-ac", most(|s| s.channels))] {
-            encode.extend(value.map(|value| [flag.to_owned(), value.to_string()]).into_iter().flatten());
+            sounding.args(value.map(|value| [flag.to_owned(), value.to_string()]).into_iter().flatten());
         }
-        args.extend(encode.into_iter().chain(["-f".into(), "mp4".into()]).map(Into::into));
-        args.push(sound.clone().into_os_string());
-        run(ffmpeg, &args.iter().map(|a| a.as_os_str()).collect::<Vec<_>>())?;
-        mux.extend(["-i".into(), sound.into_os_string(), "-map".into(), "1:a".into()]);
+        run(sounding.args(["-f", "mp4"]).arg(&sound))?;
+        mux.input(&sound).args(["-map", "1:a"]);
     }
     // Made beside the cut, then named it: a reader never meets half a file.
     let part = folder.dir.join(format!(".{name}.part.mp4"));
-    mux.extend(["-map", "0:v", "-c", "copy", "-movflags", "+faststart", "-f", "mp4"].map(Into::into));
-    mux.push(part.clone().into_os_string());
-    run(ffmpeg, &mux.iter().map(|a| a.as_os_str()).collect::<Vec<_>>())?;
+    run(mux.args(["-map", "0:v", "-c", "copy", "-movflags", "+faststart", "-f", "mp4"]).arg(&part))?;
     write_otio(folder, name, pieces, &probes, &ranges, fps)?;
     prune(cache);
     Ok((made, part))
@@ -765,15 +741,15 @@ pub(crate) fn frames_of(ffprobe: &Path, path: &Path) -> Option<u64> {
 
 /// How long the video or sound at `path` lasts, as its container says.
 pub(crate) fn seconds_of(ffprobe: &Path, path: &Path) -> Option<f64> {
-    let args = ["-v", "error", "-protocol_whitelist", "file", "-show_entries", "format=duration", "-of", "csv=p=0"];
-    let done = std::process::Command::new(ffprobe).args(args).arg(path).output().ok()?;
+    let args = ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0"];
+    let done = Media::new(ffprobe).args(args).input(path).output().ok()?;
     String::from_utf8_lossy(&done.stdout).trim().parse().ok()
 }
 
 /// Whether the picture at `path` has an alpha channel, or a palette that may.
 pub(crate) fn has_alpha(ffprobe: &Path, path: &Path) -> bool {
-    let args = ["-v", "error", "-protocol_whitelist", "file", "-select_streams", "v:0", "-show_entries", "stream=pix_fmt", "-of", "csv=p=0"];
-    let Ok(done) = std::process::Command::new(ffprobe).args(args).arg(path).output() else { return false };
+    let args = ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=pix_fmt", "-of", "csv=p=0"];
+    let Ok(done) = Media::new(ffprobe).args(args).input(path).output() else { return false };
     let format = String::from_utf8_lossy(&done.stdout);
     ["rgba", "bgra", "argb", "abgr", "ya", "gbrap", "pal8"].iter().any(|alpha| format.contains(alpha))
 }
@@ -781,10 +757,10 @@ pub(crate) fn has_alpha(ffprobe: &Path, path: &Path) -> bool {
 /// What the edit needs of the video at `path`; its keyframes only with `keys`.
 fn probe(ffprobe: &Path, path: &Path, keys: bool) -> Result<Probe, Error> {
     let read = |args: &[&str]| -> Result<Vec<u8>, Error> {
-        let done = std::process::Command::new(ffprobe)
+        let done = Media::new(ffprobe)
             .args(["-v", "error"])
             .args(args)
-            .arg(path)
+            .input(path)
             .output()
             .map_err(|e| wont_start("ffprobe", &e))?;
         Ok(done.stdout)
@@ -842,14 +818,16 @@ fn number(value: &Value) -> Option<u64> {
     value.as_u64().or_else(|| value.as_str()?.parse().ok())
 }
 
+/// An ffmpeg run that writes over its output and says only what fails.
+fn quiet(ffmpeg: &Path) -> Media {
+    let mut run = Media::new(ffmpeg);
+    run.args(["-y", "-v", "error"]);
+    run
+}
+
 /// One ffmpeg run, `frame` told each frame count it reports.
-fn run_counting(ffmpeg: &Path, args: &[std::ffi::OsString], frame: &dyn Fn(u64)) -> Result<(), Error> {
-    let started = std::process::Command::new(ffmpeg)
-        .args(["-y", "-v", "error", "-nostats", "-progress", "pipe:1"])
-        .args(args)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn();
+fn run_counting(ffmpeg: &mut Media, frame: &dyn Fn(u64)) -> Result<(), Error> {
+    let started = ffmpeg.piped();
     let mut child = started.map_err(|e| failed(format!("ffmpeg did not start: {e}")))?;
     let (stdout, stderr) = (child.stdout.take().expect("piped"), child.stderr.take().expect("piped"));
     // What it says goes on two pipes, each read as it comes, so a full one stops nothing.
@@ -868,12 +846,8 @@ fn run_counting(ffmpeg: &Path, args: &[std::ffi::OsString], frame: &dyn Fn(u64))
 }
 
 /// One ffmpeg run, refused with what it said when it fails.
-fn run(ffmpeg: &Path, args: &[&std::ffi::OsStr]) -> Result<(), Error> {
-    let done = std::process::Command::new(ffmpeg)
-        .args(["-y", "-v", "error"])
-        .args(args)
-        .output()
-        .map_err(|e| wont_start("ffmpeg", &e))?;
+fn run(ffmpeg: &mut Media) -> Result<(), Error> {
+    let done = ffmpeg.output().map_err(|e| wont_start("ffmpeg", &e))?;
     match done.status.success() {
         true => Ok(()),
         false => {
@@ -917,9 +891,9 @@ pub(crate) fn files_in(value: &Value, folder: &Folder, lock: &Lock, clips: &Hash
 
 /// The share of `picture`'s pixels that are fully transparent; none if it can't be read.
 fn transparent_share(ffmpeg: &Path, picture: &Path) -> f64 {
-    let read = std::process::Command::new(ffmpeg)
-        .args(["-v", "error", "-i"])
-        .arg(picture)
+    let read = Media::new(ffmpeg)
+        .args(["-v", "error"])
+        .input(picture)
         .args(["-frames:v", "1", "-vf", "format=rgba,alphaextract", "-f", "rawvideo", "-pix_fmt", "gray", "-"])
         .output();
     match read {
@@ -936,8 +910,8 @@ pub(crate) fn frame(ffmpeg: &Path, video: &Path, at: Option<f64>, dir: &Path) ->
     let io = |e: std::io::Error| Error::new(Kind::Unavailable, "project_io", format!("a frame of {}: {e}", video.display()));
     let frame = tempfile::Builder::new().suffix(".png").tempfile_in(dir).map_err(io)?;
     let grab = |seek: Vec<String>, once: bool| {
-        let mut command = std::process::Command::new(ffmpeg);
-        command.args(["-y", "-v", "error"]).args(seek).arg("-i").arg(video);
+        let mut command = quiet(ffmpeg);
+        command.args(seek).input(video);
         command.args(if once { &["-frames:v", "1", "-update", "1"][..] } else { &["-update", "1"][..] }).arg(frame.path());
         let done = command.output();
         let empty = std::fs::metadata(frame.path()).map_or(true, |meta| meta.len() == 0);

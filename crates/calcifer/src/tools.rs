@@ -1,7 +1,11 @@
 //! The tools cozy runs and never bundles that it fetches itself on first need, pinned builds held
 //! to their sha256, into `~/.cozy/tools`: ffmpeg (cuts, clips) and uv (local code, authoring), as
 //! Calcifer's own work first needs them.
-use std::path::{Path, PathBuf};
+use std::{
+    ffi::{OsStr, OsString},
+    path::{Path, PathBuf},
+    process::{Child, Command, Output, Stdio},
+};
 
 use api::error::{Error, Kind};
 use platform::{
@@ -18,6 +22,69 @@ pub(crate) struct Ffmpeg {
     pub ffmpeg: PathBuf,
     pub ffprobe: PathBuf,
     pub build: String,
+}
+
+/// The demuxers a file is read with: pictures, videos and sounds, and none that reads what a file names (a playlist, a `concat` script).
+const DEMUXERS: &str = "mov,matroska,avi,asf,mpeg,mpegts,flv,image2,png_pipe,apng,jpeg_pipe,webp_pipe,gif,bmp_pipe,tiff_pipe,jpegxl_pipe,jpegxl_anim,psd_pipe,ico,mp3,ogg,flac,wav,aac,aiff,amr,ape,dsf";
+
+/// One ffmpeg or ffprobe run, and the only way Calcifer starts either. What it reads is named by `input`, `joined` or `made`
+/// alone, so it reads that file and nothing the file names: a run's output is a package's bytes, and a playlist or a `concat`
+/// script in a video's name would have it read other files here, or open a URL.
+pub(crate) struct Media(Command);
+
+impl Media {
+    pub(crate) fn new(program: &Path) -> Self {
+        Self(Command::new(program))
+    }
+
+    /// At the lowest priority, where the OS has one.
+    pub(crate) fn niced(program: &Path) -> Self {
+        if cfg!(unix) {
+            let mut command = Command::new("nice");
+            command.args(["-n", "19"]).arg(program);
+            return Self(command);
+        }
+        Self::new(program)
+    }
+
+    pub(crate) fn arg(&mut self, arg: impl AsRef<OsStr>) -> &mut Self {
+        self.0.arg(arg);
+        self
+    }
+
+    pub(crate) fn args(&mut self, args: impl IntoIterator<Item = impl AsRef<OsStr>>) -> &mut Self {
+        self.0.args(args);
+        self
+    }
+
+    /// The file at `path`, read from this computer's disk with a demuxer of `DEMUXERS`.
+    pub(crate) fn input(&mut self, path: impl AsRef<OsStr>) -> &mut Self {
+        self.args(Self::reading(path))
+    }
+
+    /// `input`'s arguments, for a run whose arguments are put together before it.
+    pub(crate) fn reading(path: impl AsRef<OsStr>) -> Vec<OsString> {
+        ["-protocol_whitelist", "file", "-format_whitelist", DEMUXERS, "-i"].into_iter().map(OsString::from).chain([path.as_ref().to_owned()]).collect()
+    }
+
+    /// `list`, a `concat` script Calcifer wrote itself, of MPEG-TS pieces it cut.
+    pub(crate) fn joined(&mut self, list: &Path) -> &mut Self {
+        self.args(["-f", "concat", "-safe", "0", "-protocol_whitelist", "file", "-format_whitelist", "concat,mpegts", "-i"]).arg(list)
+    }
+
+    /// `seconds` of the filter source `graph`, which reads no file.
+    pub(crate) fn made(&mut self, graph: &str, seconds: f64) -> &mut Self {
+        self.args(["-f", "lavfi", "-t", &format!("{seconds:.6}"), "-i", graph])
+    }
+
+    pub(crate) fn output(&mut self) -> std::io::Result<Output> {
+        self.0.output()
+    }
+
+    /// Started with what it says on two pipes.
+    pub(crate) fn piped(&mut self) -> std::io::Result<Child> {
+        self.0.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()
+    }
 }
 
 pub(crate) fn path() -> Vec<PathBuf> {
