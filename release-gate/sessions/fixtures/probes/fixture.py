@@ -45,6 +45,10 @@ class Attempt(TypedDict):
     process_vm_readv: VmRead
 
 
+class OwnMemory(Attempt):
+    maps: str | None
+
+
 class ProbeReport(TypedDict):
     self: dict[str, Fact]
     ptrace_scope: str
@@ -52,12 +56,12 @@ class ProbeReport(TypedDict):
     pid_1: str
     provider_names_present: list[str]
     key_names_in_own_environment: list[str]
-    control_own_memory: dict[str, str | None | ProcMem | VmRead]
+    control_own_memory: OwnMemory
     tensord: list[dict[str, Fact | Attempt | str]]
 
 
-def named(code: int) -> str:
-    return errno.errorcode.get(code, str(code))
+def named(code: int | None) -> str:
+    return errno.errorcode.get(code, str(code))  # type: ignore[arg-type]  # None (OSError.errno's other value) misses too
 
 
 def text(path: str) -> str:

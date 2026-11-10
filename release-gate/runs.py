@@ -139,7 +139,7 @@ class VarenaStats(TypedDict, total=False):
     working_allocator: WorkingAllocator | None
     evicted: list[int] | None
     leftover: int | None
-    outlived: list[Outlived] | None
+    outlived: list[Outlived | JSON] | None  # record.py skips other shapes
     host: int | None
     working_splits: list[WorkingSplit] | None
     swallowed_ooms: int | None
@@ -170,9 +170,9 @@ class Eviction(TypedDict, total=False):
 class MemoryStats(TypedDict, total=False):
     varena: list[VarenaRow] | None  # 0.32
     copies: list[Copy] | None  # 0.30 from here
-    rows: list[StreamRow] | None
+    rows: list[StreamRow | JSON] | None  # record.py skips other shapes
     paged_in: int | None
-    evictions: list[Eviction] | None
+    evictions: list[Eviction | JSON] | None  # as rows
     leftover: int | None
 
 
@@ -307,7 +307,7 @@ class Run:
         return Run(record=rec, number=rec.get('number'), status=rec.get('status') or '',
                    reason=f"{why.get('code')}: {why.get('message')}" if isinstance(why, dict) else str(why or ''),
                    target=rec.get('target') or '', execution_ms=rec.get('execution_ms'), result=rec.get('result'),
-                   outputs=tuple(sorted(o['path'] for o in rec.get('output') or [] if isinstance(o, dict) and o.get('path'))),
+                   outputs=tuple(sorted(o['path'] for o in rec.get('output') or [] if isinstance(o, dict) and o.get('path'))),  # type: ignore[redundant-expr]  # unvalidated JSON: other shapes are skipped
                    measurements=tuple([rec.get('measurements') or {}] + [c.get('measurements') or {} for c in rec.get('calls') or []]))
 
     @staticmethod

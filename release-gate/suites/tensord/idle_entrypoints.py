@@ -179,14 +179,15 @@ pairs = (('idle-klein-a', 'idle-klein-b'), ('idle-klein-b', 'idle-klein-a2'), ('
          ('idle-h3-s', 'idle-h3-t'))
 recs = {n: record(n) for pair in pairs for n in pair}
 for idle, active in pairs:
-    if not recs[active]:
-        continue
     ri, ra = recs[idle], recs[active]
-    ci = ri and ri.get('status') == 'completed' and gpu_calls(ri)
+    if not ra:
+        continue
+    ci = ri is not None and ri.get('status') == 'completed' and gpu_calls(ri)
     ca = ra.get('status') == 'completed' and gpu_calls(ra)
     if not (ci and ca):
         row(active, False, f'{idle} {ri and ri.get("status")}, {active} {ra.get("status")}')
         continue
+    assert ri is not None  # ci holds its calls
     mi, ma = ci[-1], ca[-1]
     was, now = executor(mi), executor(ma)
     since, until = kernels_ms(mi)[1], kernels_ms(ma)[0]
@@ -204,7 +205,7 @@ for idle, active in pairs:
 t, lf = record('idle-h3-t'), record('idle-h3-lf')
 if lf:
     ok = all(r is not None and r.get('status') == 'completed' and piece_calls(r) for r in (t, lf))
-    first, second = (executor(piece_calls(r)[-1]) if ok else None for r in (t, lf))
+    first, second = (executor(piece_calls(r)[-1]) if ok and r is not None else None for r in (t, lf))  # ok: both are
     row('idle-h3-lf', ok and first == second,
         f'turbo call executor {first}, two-piece shot executor {second}; statuses '
         f'{t and t.get("status")}, {lf and lf.get("status")}')
@@ -216,10 +217,11 @@ for befores, canceled, after in ((('idle-klein-b2',), 'idle-cancel', 'idle-after
         continue
     rb = next(filter(None, map(record, befores)), None)
     ca = ra.get('status') == 'completed' and gpu_calls(ra)
-    cb = rb and rb.get('status') == 'completed' and gpu_calls(rb)
+    cb = rb is not None and rb.get('status') == 'completed' and gpu_calls(rb)
     if not (rc and rc.get('status') == 'canceled' and ca and cb):
         row(after, False, f'{canceled} {rc and rc.get("status")}, {after} {ra.get("status")}')
         continue
+    assert rb is not None  # cb holds its calls
     was, now = executor(cb[-1]), executor(ca[-1])
     row(after, was != now, f'on {now} after {canceled} was canceled, which ran beside {was}; ready '
         f'{ready_s(ra, ca[-1]):.1f} s after acceptance (warm before: {ready_s(rb, cb[-1]):.1f} s), its start {legs(ca[-1])}')

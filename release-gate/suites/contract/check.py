@@ -52,7 +52,7 @@ def judge(out: str, cell: str, run: Run) -> tuple[list[str], list[str]]:
     if code == 'contract_violation':
         fails.append(f'{cell}: run {run.number} {message[:300]}')
     if run.status == 'failed' and code in OOM:
-        for split in (s for r in rows for s in r.get('working_splits') or [] if isinstance(s, dict)):
+        for split in (s for r in rows for s in r.get('working_splits') or [] if isinstance(s, dict)):  # type: ignore[redundant-expr]  # unvalidated JSON: other shapes are skipped
             refused = split.get('refused')
             if isinstance(refused, dict):
                 who = 'a Runtime estimate (its pure op had no Retry)' if refused.get('pure') else "the package's split: its holds is short"
@@ -70,7 +70,7 @@ def judge(out: str, cell: str, run: Run) -> tuple[list[str], list[str]]:
     if retried:
         notes.append(f'{cell}: {retried} Runtime split(s) ran again finer: an estimate to fix')
     if any(r.get('retained_bytes') for r in rows):
-        for loop in (l for r in rows for l in r.get('escaped') or [] if isinstance(l, dict)):
+        for loop in (l for r in rows for l in r.get('escaped') or [] if isinstance(l, dict)):  # type: ignore[redundant-expr]  # unvalidated JSON: other shapes are skipped
             if (loop.get('escaped_peak_bytes') or 0) > PARTIAL:
                 sites = ', '.join(f'{s} {b / MIB:.0f} MiB' for s, b in loop.get('escaped_sites') or []) or 'no site named'
                 fails.append(f"{cell}: {loop.get('head')} declares author.retained and still keeps "

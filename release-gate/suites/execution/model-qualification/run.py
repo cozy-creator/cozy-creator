@@ -342,7 +342,7 @@ def summarize(run: RunRecord, request: Request, size: tuple[int, ...], events: l
     )
     gpu_rows = execution["gpus"]
     pids = sorted({gpu["pid"] for gpu in gpu_rows})
-    assert len(pids) == 1 and isinstance(pids[0], int) and pids[0] > 0, pids
+    assert len(pids) == 1 and isinstance(pids[0], int) and pids[0] > 0, pids  # type: ignore[redundant-expr]  # unvalidated JSON: the assert checks the shape
     # A memoized result must not qualify as a new inference merely by carrying old stats.
     # The worker supplies its invocation/step/GPU clocks. Compare within that clock
     # domain: real rental clocks can differ from the controller by tens of seconds.
