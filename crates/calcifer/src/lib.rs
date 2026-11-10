@@ -28,6 +28,7 @@ mod outputs;
 mod others;
 mod page;
 mod placement;
+pub(crate) mod private_io;
 mod play;
 mod project;
 mod rentals;

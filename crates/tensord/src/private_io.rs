@@ -118,7 +118,7 @@ pub(crate) fn register(
         if old.descriptor == *descriptor && old.token_hash == token_hash {
             return Ok(());
         }
-        if marker(&old.descriptor).is_ok() {
+        if marker(&old.descriptor).is_ok_and(|marker| digest(&marker.token) == old.token_hash) {
             return Err(io::Error::new(
                 io::ErrorKind::ResourceBusy,
                 "close the previous private execution scope before replacing it",
@@ -141,6 +141,12 @@ pub(crate) fn register(
 /// Stored physical view paths are not authoritative across mount/recovery changes.
 pub(crate) fn resolve(descriptor: &LocalPrivateStorage) -> io::Result<LocalPrivateStorage> {
     Ok(verified_scope(descriptor)?.descriptor.clone())
+}
+
+/// Conservative metadata classification for generation/import/JIT probes. It grants
+/// no access: actual I/O still resolves and revalidates the mounted proof each time.
+pub(crate) fn is_private_path(path: &std::path::Path) -> bool {
+    VERIFIED.lock().unwrap().values().any(|scope| path.starts_with(&scope.descriptor.view_root))
 }
 
 pub(crate) fn root(descriptor: &LocalPrivateStorage) -> io::Result<PathBuf> {

@@ -101,6 +101,7 @@ pub(crate) struct Machine {
     pin: [u8; 32],
     auth: Auth,
     control: reqwest::Client,
+    private: Option<crate::private_io::Scope>,
 }
 
 /// What a ranged `GET` of an output answered: the revision, the output's whole length, the
@@ -123,7 +124,29 @@ impl Machine {
             pin,
             auth,
             control,
+            private: None,
         })
+    }
+
+    pub(crate) fn with_private(&self, scope: crate::private_io::Scope) -> Self {
+        Self { private: Some(scope), ..self.clone() }
+    }
+
+    /// Feature/authentication probe before any private file bytes cross the wire.
+    pub(crate) async fn probe_private(&self) -> Result<(), Error> {
+        send(self.request(Method::GET, path::HEALTH, &[])).await.map(|_| ())
+    }
+
+    pub(crate) async fn close_private(&self) -> Result<(), Error> {
+        send(self.request(Method::POST, "/v1/close", &[])).await.map(|_| ())
+    }
+
+    fn private_headers(&self, request: RequestBuilder) -> RequestBuilder {
+        match &self.private {
+            Some(scope) => request.header(api::machine::LOCAL_PRIVATE_DESCRIPTOR, scope.descriptor_header())
+                .header(api::machine::LOCAL_PRIVATE_TOKEN, scope.token()),
+            None => request,
+        }
     }
 
     /// A bulk lane: HTTP/1.1 connections of its own. Dropping it closes them.
@@ -295,25 +318,29 @@ impl Machine {
     }
 
     fn request(&self, method: Method, template: &str, args: &[&str]) -> RequestBuilder {
-        authorized(
+        self.private_headers(authorized(
             self.control.request(method, self.url(template, args)),
             &self.auth,
-        )
+        ))
     }
 
     /// `template` with each `{parameter}` filled from `args`, in order, as one path segment.
     fn url(&self, template: &str, args: &[&str]) -> Url {
         let mut url = self.origin.clone();
         let mut args = args.iter();
-        url.path_segments_mut()
-            .expect("an https URL has a path")
-            .clear()
-            .extend(template.trim_start_matches('/').split('/').map(|part| {
+        let mut segments = url.path_segments_mut().expect("an https URL has a path");
+        segments.clear();
+        let path = if let Some(scope) = &self.private {
+            segments.extend(["v1", "local-private", scope.storage.project_id.as_str()]);
+            template.strip_prefix("/v1/").unwrap_or(template.trim_start_matches('/'))
+        } else { template.trim_start_matches('/') };
+        segments.extend(path.split('/').map(|part| {
                 match part.starts_with('{') {
                     true => *args.next().expect("an argument for each parameter"),
                     false => part,
                 }
             }));
+        drop(segments);
         url
     }
 }
@@ -410,7 +437,7 @@ impl Bulk {
 
     fn request(&self, method: Method, template: &str, args: &[&str]) -> RequestBuilder {
         let url = self.machine.url(template, args);
-        authorized(self.client.request(method, url), &self.machine.auth)
+        self.machine.private_headers(authorized(self.client.request(method, url), &self.machine.auth))
     }
 }
 
