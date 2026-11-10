@@ -140,9 +140,30 @@ impl Stage {
             constraints.push(format!("{name}=={version}"));
         }
         fs::write(&path, doc.to_string()).map_err(|e| refuse("stage_unavailable", e))?;
-        let locked = run(uv(&self.uv, &self.src).args(["lock", "--no-progress", "--python", python]), "lock_failed");
+        let locked = self.lock(python, &[]);
         fs::write(&path, authored).map_err(|e| refuse("stage_unavailable", e))?;
-        locked.map(drop)
+        locked
+    }
+
+    /// `uv lock` of the copy, each of `upgrade` free to move to its newest release. uv answers an index's page from its
+    /// cache for the page's max-age (PyPI's: 10 minutes), so a release newer than that page is refreshed by name when
+    /// upgraded, and a requirement the cached pages can't meet is asked once more with every page refreshed (cl-846).
+    fn lock(&self, python: &str, upgrade: &[String]) -> Result<(), Error> {
+        let lock = |refresh: bool| {
+            let mut command = uv(&self.uv, &self.src);
+            command.args(["lock", "--no-progress", "--python", python]);
+            for package in upgrade {
+                command.args(["--upgrade-package", package, "--refresh-package", package]);
+            }
+            if refresh {
+                command.arg("--refresh");
+            }
+            run(&mut command, "lock_failed").map(drop)
+        };
+        match lock(false) {
+            Err(e) if e.message.contains("No solution found") || e.message.contains("unsatisfiable") => lock(true),
+            locked => locked,
+        }
     }
 }
 
@@ -238,12 +259,7 @@ pub(super) async fn lock(api: &Arc<Api>, hub: &Origin, code: &LocalCode, ask: &P
     };
     blocking(|| {
         let python = python(&project, &stage.uv)?;
-        let mut command = uv(&stage.uv, &stage.src);
-        command.args(["lock", "--no-progress", "--python", python.request.as_str()]);
-        for package in &ask.upgrade {
-            command.args(["--upgrade-package", package.as_str()]);
-        }
-        run(&mut command, "lock_failed")?;
+        stage.lock(python.request.as_str(), &ask.upgrade)?;
         let locked = fs::read_to_string(stage.src.join("uv.lock")).map_err(|e| refuse("lock_failed", e))?;
         versions(&locked)?;
         let changed = fs::read_to_string(project.root.join("uv.lock")).ok().as_deref() != Some(locked.as_str());
