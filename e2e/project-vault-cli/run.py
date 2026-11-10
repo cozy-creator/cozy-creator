@@ -108,6 +108,47 @@ class Proof:
         (self.out / 'commands.json').write_text(json.dumps(self.commands, indent=2) + '\n')
         (self.out / 'receipt.json').write_text(json.dumps(self.receipt, indent=2) + '\n')
 
+    def diagnose_mount_holders(self):
+        """Capture kernel paths, never process argv/environment or file contents."""
+        if not sys.platform.startswith('linux'):
+            return
+        prefix = str(self.home / 'calcifer' / 'vaults') + '/'
+        holders = []
+        for process in Path('/proc').iterdir():
+            if not process.name.isdecimal():
+                continue
+            paths = []
+            for kind in ['cwd', 'root']:
+                try:
+                    target = os.readlink(process / kind)
+                    if target.startswith(prefix):
+                        paths.append({'kind': kind, 'path': target})
+                except OSError:
+                    pass
+            try:
+                for descriptor in (process / 'fd').iterdir():
+                    try:
+                        target = os.readlink(descriptor)
+                        if target.startswith(prefix):
+                            paths.append({'kind': 'fd', 'fd': descriptor.name, 'path': target})
+                    except OSError:
+                        pass
+                for line in (process / 'maps').read_text().splitlines():
+                    parts = line.split(None, 5)
+                    if len(parts) == 6 and parts[5].startswith(prefix):
+                        paths.append({'kind': 'mapping', 'path': parts[5]})
+            except OSError:
+                pass
+            if paths:
+                try:
+                    name = (process / 'comm').read_text().strip()
+                except OSError:
+                    name = 'exited'
+                holders.append({'pid': int(process.name), 'name': name, 'paths': paths})
+        mounts = [line for line in Path('/proc/self/mountinfo').read_text().splitlines()
+                  if prefix in line]
+        self.receipt['linux_mount_diagnostic'] = {'holders': holders, 'mountinfo': mounts}
+
     def cell(self, name):
         self.receipt['cells'][name] = True
         self.flush()
@@ -424,6 +465,7 @@ def main():
         proof.run()
     except Exception as error:
         proof.receipt.update(result='failed', error=proof.redact(str(error)))
+        proof.diagnose_mount_holders()
         proof.flush()
         raise
     finally:
