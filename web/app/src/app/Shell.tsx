@@ -203,7 +203,14 @@ function MainMenu({ id }: { id: string | null }) {
     return () => window.removeEventListener("pointerdown", away)
   }, [])
   return (
-    <details className="main-menu" ref={held}>
+    <details
+      className="main-menu"
+      ref={held}
+      onKeyDown={(event) => {
+        // These keys activate the menu's native controls, not the canvas's pan or take shortcuts.
+        if (event.key === "Enter" || event.key === " ") event.stopPropagation()
+      }}
+    >
       <summary className="tb" aria-label="Menu">
         <Icon name="menu" />
       </summary>
