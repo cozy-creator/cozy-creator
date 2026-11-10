@@ -98,6 +98,8 @@ pub(crate) struct Calcifer {
     exports: outputs::Exports,
     /// Each machine's warm set as it last reported it, and as this Calcifer since sent it.
     warm: Mutex<HashMap<String, Vec<v1::WarmItem>>>,
+    /// Each machine's runs whose downloads wait behind other runs' (`observe_downloads`), by id, with what each says.
+    behind: Mutex<HashMap<String, HashMap<String, String>>>,
     /// The machines and their Hubs, which mint what a send carries to its Hub.
     granting: OnceLock<Weak<machines::Machines>>,
     /// When this Calcifer opened its store (Unix ms).
@@ -155,6 +157,9 @@ const BROKEN_ASKED_FIRST: Duration = Duration::from_secs(5);
 const BROKEN_ASKED_MOST: Duration = Duration::from_secs(60);
 /// How long a run goes without moving before its record says so, with what that costs.
 const STALLED_MS: i64 = 10 * 60 * 1000;
+/// How often a run waiting behind other runs' downloads says its progress moved with theirs: well inside the
+/// minute a follower waits before it says "no progress".
+const LINE_MOVED_MS: i64 = 30_000;
 
 /// Why a driver's step stopped short of its run's end.
 enum Stop {
@@ -226,6 +231,7 @@ impl Calcifer {
             machines_changed: watch::channel(()).0,
             exports: outputs::Exports::default(),
             warm: Mutex::default(),
+            behind: Mutex::default(),
             granting: OnceLock::new(),
             opened_ms: std::sync::atomic::AtomicI64::new(store::now_ms()),
         });
@@ -536,15 +542,18 @@ impl Calcifer {
 
     /// Whether `run`, as it stands with what it is doing now, has stopped moving. Its machine's
     /// word for its last move, else when it began; a Calcifer that just started has not heard
-    /// from it yet. One that waits in a line (its machine's, or for GPUs another run holds) has
-    /// only that line's progress.
+    /// from it yet. One that waits in a line (its machine's, for GPUs another run holds, or behind
+    /// other runs' downloads) has only that line's progress.
     fn stalled(&self, run: &Run) -> Option<Stalled> {
         if run.status != RunStatus::InProgress || queued(run) || run.waiting.as_deref().is_some_and(|w| w.contains("held by")) {
             return None;
         }
+        let machine = run.machine.clone()?;
+        if lock(&self.behind).get(&machine).is_some_and(|runs| runs.contains_key(run.id.as_str())) {
+            return None;
+        }
         let moved = run.progress.as_ref().map(|p| p.at_ms).filter(|at| *at > 0);
         let since = moved.or(run.started_at_ms).or(run.accepted_at_ms)?.max(self.opened_ms.load(std::sync::atomic::Ordering::Relaxed));
-        let machine = run.machine.clone()?;
         (store::now_ms() - since >= STALLED_MS).then(|| Stalled {
             since_ms: since,
             usd_micros_per_hour: self.machines().and_then(|machines| machines.hourly(&machine)),
@@ -702,6 +711,60 @@ impl Calcifer {
     /// Records the warm set the machine reported, which a warm run's item is merged into.
     pub(crate) fn observe_warm(&self, machine: &str, items: Vec<v1::WarmItem>) {
         lock(&self.warm).insert(machine.to_owned(), items);
+    }
+
+    /// The machine's downloads, as its Status lists them (none: it went quiet). A run with bytes still to come, none of
+    /// whose own downloads moves while other runs' do, waits behind those: it says so, its progress moves with them, and
+    /// it never reads stalled.
+    pub(crate) fn observe_downloads(&self, machine: &str, activity: &[v1::Operation]) {
+        let downloads: Vec<&v1::Operation> = activity.iter().filter(|op| op.kind == "download").collect();
+        let moving = |op: &&v1::Operation| op.bytes_per_s >= 1.0;
+        let left = |op: &&v1::Operation| op.bytes_total == 0 || op.bytes_done < op.bytes_total;
+        let waiting: HashSet<&String> = downloads.iter().flat_map(|op| &op.runs).collect();
+        let mut behind = HashMap::new();
+        for run in waiting {
+            let (own, others): (Vec<&v1::Operation>, Vec<&v1::Operation>) = downloads.iter().partition(|op| op.runs.contains(run));
+            let ahead: Vec<&v1::Operation> = others.into_iter().filter(moving).collect();
+            if ahead.is_empty() || own.iter().any(moving) || !own.iter().any(left) {
+                continue;
+            }
+            let mut names: Vec<String> = (ahead.iter().flat_map(|op| &op.runs))
+                .map(|id| self.store.run(id).ok().flatten().map_or_else(|| "another run".to_owned(), |row| format!("run {}", row.number)))
+                .collect();
+            names.sort();
+            names.dedup();
+            let rest: u64 = ahead.iter().map(|op| op.bytes_total.saturating_sub(op.bytes_done)).sum();
+            behind.insert(run.clone(), format!("waiting for {}'s download ({} ahead)", names.join(" and "), bytes(rest as f64)));
+        }
+        let was = lock(&self.behind).insert(machine.to_owned(), behind.clone()).unwrap_or_default();
+        for (id, reason) in was.into_iter().filter(|(id, _)| !behind.contains_key(id)) {
+            let Ok(id) = RunId::try_from(id) else { continue };
+            let said = lock(&self.live).get(&id).is_some_and(|live| live.waiting.as_ref() == Some(&reason));
+            if said {
+                self.not_waiting(&id);
+            }
+        }
+        for (id, reason) in behind {
+            let Ok(id) = RunId::try_from(id) else { continue };
+            self.waiting(&id, reason);
+            self.line_moved(&id);
+        }
+    }
+
+    /// A run waiting behind other runs' downloads moved as they did: its progress says so, at most every
+    /// `LINE_MOVED_MS`, though it said nothing itself.
+    fn line_moved(&self, id: &RunId) {
+        let now = store::now_ms();
+        let progress = {
+            let mut live = lock(&self.live);
+            let Some(progress) = live.get_mut(id).and_then(|live| live.progress.as_mut()) else { return };
+            if now - progress.at_ms < LINE_MOVED_MS {
+                return;
+            }
+            progress.at_ms = now;
+            progress.clone()
+        };
+        let _ = self.events.send((id.clone(), Event::Progress { progress }));
     }
 
     /// Places an unplaced run on `machine`.

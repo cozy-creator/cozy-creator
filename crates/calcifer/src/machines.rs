@@ -866,6 +866,7 @@ impl Machines {
 
     fn observe(&self, name: &str, frame: v1::StatusFrame) {
         self.calcifer.observe_warm(name, frame.warm.clone());
+        self.calcifer.observe_downloads(name, &frame.activity);
         let back = {
             let mut seen = lock(&self.seen);
             let seen = seen.entry(name.to_owned()).or_default();
@@ -885,6 +886,7 @@ impl Machines {
     }
 
     fn unreachable(&self, name: &str, reason: String) {
+        self.calcifer.observe_downloads(name, &[]);
         {
             let mut seen = lock(&self.seen);
             let seen = seen.entry(name.to_owned()).or_default();
