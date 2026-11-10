@@ -10,7 +10,7 @@ import { Icon } from "../ui/Icon"
 import { say } from "../ui/notes"
 import { useSignal } from "../ui/signal"
 import { AssetEdit, InFrame, RenderButton, TextAsset } from "./AssetEdit"
-import { CARD_WIDTH, type CanvasStore, type CarriedFile, type ElementNode, type ElementView } from "./CanvasStore"
+import type { CanvasStore, CarriedFile, ElementNode, ElementView } from "./CanvasStore"
 import { carryOnMove } from "./carry"
 import { useCanvasStore, useElement } from "./context"
 import { fieldsOf, shapesOf, snapped } from "./controls"
@@ -539,10 +539,12 @@ function Corner({ name, view, width }: { name: string; view: ElementView; width:
         tabIndex={-1}
         onClick={(event) => event.stopPropagation()}
         onPointerDown={(event) => {
+          const pose = store.poseOf(name)
+          if (!pose) return
           event.currentTarget.setPointerCapture(event.pointerId)
           const zoom = flow.getZoom()
           const delta = store.surfaceOf(name)?.resizeDelta ?? ((a: { x: number; y: number }, b: { x: number; y: number }) => ({ x: (b.x - a.x) / zoom, y: (b.y - a.y) / zoom }))
-          from.current = { x: event.clientX, y: event.clientY, w: width, h: width / aspectOf(view), delta, owner: store.inPlace }
+          from.current = { x: event.clientX, y: event.clientY, w: pose.w, h: pose.w / aspectOf(view), delta, owner: store.inPlace }
           if (store.inPlace) store.inPlace.pulled = true
         }}
         onPointerMove={moved}
@@ -848,12 +850,11 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
   )
 })
 
-/** Thin, as React Flow renders it: `data` is only the name. Element types are `nodeTypes`, looks are `CardBody`. */
+/** Thin, as React Flow renders it: identity and body width come from one geometry publication. */
 export function Card({ data }: NodeProps<ElementNode>) {
-  const store = useCanvasStore()
   return (
     <>
-      <CardBody name={data.name} width={store.poseOf(data.name)?.w ?? CARD_WIDTH} />
+      <CardBody name={data.name} width={data.width} />
       <AddOns name={data.name} />
     </>
   )
