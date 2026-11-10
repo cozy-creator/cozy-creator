@@ -26,6 +26,12 @@ pkg=ci-e2e-$run model=fidika/ci-e2e-$run M='' ended=''
 ordered() { jq -r 'select(.type? == "rental.accepted") | .rental_id // empty' "$1" 2> /dev/null | tail -1; }
 # Whether `machine ls` lists machine $1, by name or rental id.
 listed() { cozy --json machine ls | J --arg m "$1" '.machines | any(.name == $m or .rental_id == $m)'; }
+# The throwaways the suite failed to delete itself, while hubcheck still answers (finish stops it, then the trap runs).
+leftovers() {
+  ! cozy --json package info "fidika/$pkg" > /dev/null 2>&1 || cozy --json package delete "fidika/$pkg" -y > /dev/null 2>&1
+  for m in "$model" "$model-copy"; do ! cozy --json model info "$m" > /dev/null 2>&1 || cozy --json model delete "$m" -y > /dev/null 2>&1; done
+  return 0
+}
 cleanup() {
   set +e
   local rental=$M
@@ -37,9 +43,7 @@ cleanup() {
     cozy --json machine end "$rental" --force -y > "$OUT/end-trap.json" 2>&1
     ! listed "$rental" || echo "::error::the trap ended $rental, but machine ls still lists it: end it by hand"
   fi
-  cozy --json package delete "fidika/$pkg" -y > /dev/null 2>&1
-  cozy --json model delete "$model" -y > /dev/null 2>&1
-  cozy --json model delete "$model-copy" -y > /dev/null 2>&1
+  leftovers
   # Calcifer's log holds each Hub answer about the rental (a boot that failed, why).
   mkdir -p "$OUT/cozy-logs"
   [ -n "$INSTALLED" ] || (cd ~/.cozy && find . -name '*.log' -size -20M | tar -cf - -T - | (cd "$OUT/cozy-logs" && tar -xf -)) > /dev/null 2>&1
@@ -282,8 +286,11 @@ far="$OUT/in dir é ü" landing="$OUT/out dir é ü"
 mkdir -p "$far" && cp "$(picture dog1.jpg)" "$far/chien é.jpg" && printf 'image: chien é.jpg\n' > "$far/request é.yaml"
 cozy project new "$landing" > /dev/null || check "project new '$landing' failed"
 if RUN_PROJECT=$landing watched birefnet-yaml run birefnet/remove_background --input "$far/request é.yaml" --on "$M"; then
-  out=$(run_output "$OUT" birefnet-yaml webp)
-  [[ $out == *"out dir é ü"* ]] && [ -s "$out" ] || check "birefnet-yaml: its output did not land in '$landing' (${out:-none})"
+  # Downloaded by its digest (cl-819), it is the file the project holds under that digest.
+  out=$(run_output "$OUT" birefnet-yaml webp) sha=''
+  [ ! -s "$out" ] || sha=$(sha256sum "$out" | cut -c1-64)
+  [ -n "$sha" ] && ls "$landing/files/$sha".* > /dev/null 2>&1 \
+    || check "birefnet-yaml: its output did not land in '$landing' (${out:-none}, sha256:${sha:-none}; $(ls "$landing/files" 2> /dev/null | tr '\n' ' '))"
   white_background "$out" "$far/chien é.jpg" || check "birefnet-yaml: not a background removal"
 else check "birefnet-yaml: cozy run birefnet/remove_background --input --on $M did not complete: $(run_get "$OUT" birefnet-yaml '.reason.message' | head -c 300)"; fi
 dog=$(picture dog2.jpg)
@@ -335,4 +342,5 @@ cozy machine ls --history --since 1h > "$OUT/history.txt" && grep -q "^Total sin
   || check "machine ls --history --since 1h printed no total"
 
 step coverage; coverage "$COZY" release
+leftovers
 finish "cli-release: $pkg, $model, ${SKU} at \$$(usd "$hourly")/h, \$$(spent) of GPU time"
