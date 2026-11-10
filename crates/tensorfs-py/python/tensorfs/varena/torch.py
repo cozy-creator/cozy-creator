@@ -12,15 +12,19 @@ import os
 from pathlib import Path
 import platform
 import threading
-from typing import TYPE_CHECKING, Any, Iterator, Literal, Sequence, TypeAlias, cast
+from typing import TYPE_CHECKING, Iterator, Sequence, TypeAlias, cast
 
 from .. import _ext
+from ._facts import EscapeRecord, PhaseMode, PhaseObservation, Room, SplitContext, SplitObservation, SplitSelection, Verdict, WorkingStats
 
 PhaseOverlapError = _ext.PhaseOverlapError
 
 if TYPE_CHECKING:
+    from torch import Tensor, UntypedStorage, nn
     from torch import device as TorchDevice
-    from torch.cuda import Stream
+    from torch.cuda import _POOL_HANDLE, CUDAGraph, Stream
+
+    from ._offload import GraphsMode, Offload, Pipeline
 
 DeviceLike: TypeAlias = "int | str | TorchDevice | None"
 _ExplicitDevice: TypeAlias = "int | str | TorchDevice"
@@ -74,7 +78,7 @@ def _device(device: DeviceLike = None) -> int:
     import torch
 
     if device is None:
-        return cast(int, torch.cuda.current_device())
+        return torch.cuda.current_device()
     if isinstance(device, int):
         if device < 0:
             raise ValueError("device must be nonnegative")
@@ -82,7 +86,7 @@ def _device(device: DeviceLike = None) -> int:
     parsed = torch.device(device)
     if parsed.type != "cuda":
         raise ValueError("Varena requires a CUDA device")
-    return cast(int, torch.cuda.current_device() if parsed.index is None else parsed.index)
+    return torch.cuda.current_device() if parsed.index is None else parsed.index  # type: ignore[redundant-expr]  # torch's stub says index is int; a bare "cuda" has None
 
 
 def install(device: _ExplicitDevice = 0) -> None:
@@ -108,7 +112,7 @@ def _activation_device(device: DeviceLike) -> int:
         parsed = torch.device(device)
         if parsed.type != "cuda":
             raise ValueError("Varena requires a CUDA device")
-        index = 0 if parsed.index is None else parsed.index
+        index = 0 if parsed.index is None else parsed.index  # type: ignore[redundant-expr]  # torch's stub says index is int; a bare "cuda" has None
     if index < 0:
         raise ValueError("device must be nonnegative")
     return index
@@ -191,7 +195,7 @@ def initialize(device: _ExplicitDevice = 0) -> None:
             _ext._varena_working_library_workspaces(index, sizes)
 
 
-def stats(device: DeviceLike = 0) -> dict[str, int]:
+def stats(device: DeviceLike = 0) -> WorkingStats:
     _installed()
     return _ext._varena_working_stats(_device(device))
 
@@ -202,7 +206,7 @@ def ooms(device: DeviceLike = 0) -> int:
     return _ext._varena_working_ooms(_device(device))
 
 
-def room(device: DeviceLike = 0) -> dict[str, int]:
+def room(device: DeviceLike = 0) -> Room:
     """What the card has now, as a split chooses by: `capacity` (the card or its cap, less what is
     outside this process), `working_live`, `pinned`, `weights_resident` and `free` bytes."""
     _installed()
@@ -225,7 +229,7 @@ def set_site(device: int, site: int) -> None:
     _ext._varena_set_site(device, site)
 
 
-def pass_mark(device: int, head: int, shape: int, floor: int) -> dict[str, Any] | None:
+def pass_mark(device: int, head: int, shape: int, floor: int) -> Verdict | None:
     """A forward of model `head` begins (inputs of `shape`, `floor` its largest block's weight
     bytes). Its first this request begins a loop, later ones are its passes: working blocks an
     earlier pass left live are its escaped bytes. None, or once per loop why its next pass cannot
@@ -233,7 +237,7 @@ def pass_mark(device: int, head: int, shape: int, floor: int) -> dict[str, Any] 
     return _ext._varena_pass_mark(device, head, shape, floor)
 
 
-def escapes_take(device: int, *, failed: bool) -> list[dict[str, Any]]:
+def escapes_take(device: int, *, failed: bool) -> list[EscapeRecord]:
     """This request's loops, ended, with what each began with and its passes left live; `failed`:
     the request ended in an error, so a refused allocation in its last pass is learned from."""
     return _ext._varena_escapes_take(device, failed=failed)
@@ -252,7 +256,7 @@ def check_counts() -> dict[str, int]:
     return {"uses": uses, "unmapped_bytes": unmapped, "perturbed_bytes": perturbed}
 
 
-def replay_differs(eager: Any, replayed: Any) -> str:
+def replay_differs(eager: object, replayed: object) -> str:
     """Why a replay is not its eager pass bit for bit ("" when it is): every graph's one check
     before it is trusted. Both are pytrees of one shape; NaNs in the same place agree."""
     import torch
@@ -287,7 +291,7 @@ def set_limit(device: DeviceLike, bytes: int | None = None) -> int:
     return _ext._varena_working_set_limit(_device(device), bytes)
 
 
-def split_context(device: int) -> dict[str, Any]:
+def split_context(device: int) -> SplitContext:
     """Metadata-only eligibility for an explicit device; no implicit CUDA initialization."""
     _installed()
     if device < 0:
@@ -295,7 +299,7 @@ def split_context(device: int) -> dict[str, Any]:
     return _ext._varena_split_context(device)
 
 
-def split_select(device: DeviceLike, key: str, choices: Sequence[tuple[str, Sequence[int]]], *, stream: int) -> dict[str, Any]:
+def split_select(device: DeviceLike, key: str, choices: Sequence[tuple[str, Sequence[int]]], *, stream: int) -> SplitSelection:
     """Choose an opaque legal variant from a complete copied allocation menu before execution."""
     _installed()
     return _ext._varena_split_select(_device(device), key, [(name, list(sizes)) for name, sizes in choices], stream=stream)
@@ -313,7 +317,7 @@ def split_begin(device: DeviceLike, key: str, choice_id: str, *, stream: int, co
     return _ext._varena_split_begin(_device(device), key, choice_id, stream=stream, completion_owner=completion_owner, plan_generation=plan_generation)
 
 
-def split_refused(device: DeviceLike, key: str, choice_id: str, *, stream: int) -> dict[str, Any] | None:
+def split_refused(device: DeviceLike, key: str, choice_id: str, *, stream: int) -> SplitSelection | None:
     """After `split_end` closed a leaf whose allocation was refused with everything reclaimable
     gone: a finer level's selection, its room made, for a pure op to run again at (Retry); None when
     no allocation of that leaf was refused (the failure is final). Raises `Exhausted` when no finer
@@ -322,13 +326,13 @@ def split_refused(device: DeviceLike, key: str, choice_id: str, *, stream: int) 
     return _ext._varena_split_refused(_device(device), key, choice_id, stream=stream)
 
 
-def split_end(device: DeviceLike, observation_id: int, *, submitted: bool) -> dict[str, Any]:
+def split_end(device: DeviceLike, observation_id: int, *, submitted: bool) -> SplitObservation:
     """Close host submission; only the enclosing phase's checked completion can publish."""
     _installed()
     return _ext._varena_split_end(_device(device), observation_id, submitted=submitted)
 
 
-def phase_enter(device: DeviceLike, key: str | None = None, *, mode: Literal["eager", "capture", "replay", "preparation"] = "eager") -> int:
+def phase_enter(device: DeviceLike, key: str | None = None, *, mode: PhaseMode = "eager") -> int:
     """Begin one execution observation. An unknown key never enables speculation.
 
     PhaseOverlapError means another observation already owns this device; entry
@@ -340,7 +344,7 @@ def phase_enter(device: DeviceLike, key: str | None = None, *, mode: Literal["ea
     return _ext._varena_phase_enter(_device(device), key, mode=mode)
 
 
-def phase_leave(device: DeviceLike, token: int, *, completed: bool, key: str | None = None) -> dict[str, Any]:
+def phase_leave(device: DeviceLike, token: int, *, completed: bool, key: str | None = None) -> PhaseObservation:
     """End after checked execution completion, supplying an actually observed key if needed.
 
     Aborted, retried, recording/preparation/replay and mismatched-key observations never
@@ -362,7 +366,7 @@ def phase_forget(device: DeviceLike, key: str) -> bool:
     return _ext._varena_phase_forget(_device(device), key)
 
 
-def prepare_pool(pool: PoolId, bytes: int, device: DeviceLike = 0) -> int:
+def prepare_pool(pool: PoolId, bytes: int, device: _ExplicitDevice = 0) -> int:
     """Begin using this pool: its pages mapped, at least this capacity, at the same addresses
     after any idle release. bytes=0 before a replay and before writing its inputs. A scratch
     pool's contents are undefined between uses: copy every input in again, no check can catch an
@@ -385,7 +389,7 @@ def pool_close(pool: PoolId, device: DeviceLike = 0) -> None:
     _ext._varena_working_pool_close(_device(device), cast(PoolId, tuple(pool)))
 
 
-def pool_scratch(pool: PoolId, held: Sequence[Any] = (), device: DeviceLike = 0) -> None:
+def pool_scratch(pool: PoolId, held: Sequence[Tensor] = (), device: DeviceLike = 0) -> None:
     """The owner declares the tensors it holds in this pool dead between uses: nothing reads
     them outside prepare_pool(pool, 0) .. record_pool_stream(pool, stream). The core may then
     release the idle pool's pages, keeping its VA and graph. A tensor sharing a held one's
@@ -393,7 +397,7 @@ def pool_scratch(pool: PoolId, held: Sequence[Any] = (), device: DeviceLike = 0)
     """
     _installed()
     native = cast(ctypes.CDLL, _library)
-    storages: dict[int, tuple[Any, int]] = {}
+    storages: dict[int, tuple[UntypedStorage, int]] = {}
     for tensor in held:
         storage = tensor.untyped_storage()
         storages[storage._cdata] = (storage, storages.get(storage._cdata, (storage, 0))[1] + 1)
@@ -486,8 +490,8 @@ def _graph_stream(device: int) -> Stream:
 
 
 @contextmanager
-def graph(cuda_graph: Any, *, pool: PoolId | None = None, stream: Stream | None = None, reserve_bytes: int | None = None,
-          primed: tuple[Stream, ...] = ()) -> Iterator[Any]:
+def graph(cuda_graph: CUDAGraph, *, pool: PoolId | None = None, stream: Stream | None = None, reserve_bytes: int | None = None,
+          primed: tuple[Stream, ...] = ()) -> Iterator[CUDAGraph]:
     """Prepare and finish capture, joining only its explicit stream and the caller. `primed`: other
     streams the captured work runs on; theirs and the capture stream's workspaces are made first,
     so nothing allocated there under capture is classed as one by its size.
@@ -521,7 +525,7 @@ def graph(cuda_graph: Any, *, pool: PoolId | None = None, stream: Stream | None 
     error = None
     with torch.cuda.device(device), torch.cuda.stream(stream):
         try:
-            cuda_graph.capture_begin(pool=pool)
+            cuda_graph.capture_begin(pool=cast("_POOL_HANDLE", pool))  # a PoolId is graph_pool_handle()'s pair
             started = True
             yield cuda_graph
         except BaseException as caught:
@@ -559,7 +563,7 @@ def graph(cuda_graph: Any, *, pool: PoolId | None = None, stream: Stream | None 
             detail = error.args[0][len(_CAPTURE_CAPACITY_PREFIX):]
             raise torch.OutOfMemoryError(detail) from error
         raise error.with_traceback(error.__traceback__)
-    cuda_graph._varena_owner = (_owner, device, cast(PoolId, tuple(pool)))
+    cuda_graph._varena_owner = (_owner, device, cast(PoolId, tuple(pool)))  # type: ignore[attr-defined]  # marks a graph varena captured
 
 
 @contextmanager
@@ -572,13 +576,13 @@ def replay_scope(device: int) -> Iterator[None]:
         guard.close()
 
 
-def replay(cuda_graph: Any, *, stream: Stream | None = None) -> None:
+def replay(cuda_graph: CUDAGraph, *, stream: Stream | None = None) -> None:
     """Replay an owned graph and retain its pool through completion on the selected stream.
     A scratch pool's contents are undefined between replays: copy every input in first."""
     _installed()
     import torch
 
-    owner, device, pool = cuda_graph._varena_owner
+    owner, device, pool = cuda_graph._varena_owner  # type: ignore[attr-defined]  # set by graph(); a graph it didn't capture raises here
     if owner != _owner:
         raise RuntimeError("a CUDA graph cannot be replayed after fork")
     stream = torch.cuda.current_stream(device) if stream is None else stream
@@ -597,7 +601,7 @@ def replay(cuda_graph: Any, *, stream: Stream | None = None) -> None:
         _ext._varena_working_pool_release(device, pool)
 
 
-def offload(model_or_pipeline, device=0, *, graphs="auto"):
+def offload(model_or_pipeline: nn.Module | Pipeline, device: DeviceLike = 0, *, graphs: GraphsMode = "auto") -> Offload:
     """Adopt immutable CPU weights: blocks bind real tensors, and loops become graphs.
 
     The modules keep the handle alive. See crates/varena/TORCH-OFFLOAD.md.
