@@ -21,7 +21,6 @@ async fn shape_term(raw: &str, nullable: bool) -> Result<Bound, Error> {
         paths: BTreeMap::new(),
         digests: None,
         clips: Clips { dir: dir.path().join("clips"), home: platform::paths::Home::under(dir.path()) },
-        uploads: dir.path().join("uploads"),
         project: None,
     };
     bind("fixture/canvas", None, &interface, &interface.callables[0], &terms).await

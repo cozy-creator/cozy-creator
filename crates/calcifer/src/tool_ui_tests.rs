@@ -1,6 +1,6 @@
 use super::*;
 use axum::{Router, http::StatusCode};
-use std::io::{Cursor, Write as _};
+use std::{io::Cursor, time::Duration};
 
 struct Hub {
     client: ::api::hub::Client,

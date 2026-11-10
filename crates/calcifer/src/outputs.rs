@@ -1111,7 +1111,6 @@ fn refused(e: machine_client::Error) -> Ranged<Failure> {
 
 #[cfg(test)]
 mod security_tests {
-    use super::*;
 
     #[test]
     #[ignore = "requires ffmpeg and ffprobe on PATH"]
