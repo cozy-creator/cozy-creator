@@ -3,6 +3,7 @@ import { createContext, type ReactNode, useCallback, useContext, useLayoutEffect
 import { Link, useLocation, useMatch, useNavigate } from "react-router-dom"
 import type { Client } from "../api/client"
 import type { ProjectState } from "../api/calcifer"
+import { rememberProjectWarnings } from "../api/queries"
 import { useConnection } from "./Connection"
 
 type ProjectAddress = Pick<ProjectState, "id" | "code">
@@ -11,7 +12,11 @@ const CurrentProject = createContext<ProjectAddress | null>(null)
 const referenceKey = (reference: string) => ["project-reference", reference]
 const referenceQuery = (client: Client, reference: string) => ({
   queryKey: referenceKey(reference),
-  queryFn: () => client.projectHead(reference),
+  queryFn: async ({ client: queries }: { client: QueryClient }) => {
+    const head = await client.projectHead(reference)
+    rememberProjectWarnings(queries, head)
+    return { id: head.id, code: head.code }
+  },
   staleTime: Infinity,
 })
 

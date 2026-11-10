@@ -121,8 +121,9 @@ function observeHealth(stream, state) {
   if (stream.health.get().state === state) return Promise.resolve()
   return new Promise((done) => { const stop = stream.health.subscribe(() => { if (stream.health.get().state === state) { stop(); done() } }) })
 }
+const queryCache = new QueryClient()
 function query(client, stream, id, signal = new AbortController().signal) {
-  return (baseline ? projectQuery(client, id) : projectQuery(client, stream, id)).queryFn({ signal })
+  return (baseline ? projectQuery(client, id) : projectQuery(client, stream, id)).queryFn({ client: queryCache, signal })
 }
 async function open(id) { return (await api(`/fixture/open/${id}`)).open }
 function readsOf(bridge) {
