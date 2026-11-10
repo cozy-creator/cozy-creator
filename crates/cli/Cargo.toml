@@ -39,9 +39,5 @@ zip.workspace = true
 rustix = { workspace = true, features = ["termios"] }
 
 
-[features]
-# Dev builds only: the hidden `cozy machine rent --provider`. Never in a release.
-dev = []
-
 [lints]
 workspace = true

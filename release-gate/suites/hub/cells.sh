@@ -150,7 +150,7 @@ hub_pod_secrets() {
     expect "hub pod-auth on $p" FAIL "$m's kept lease is missing, not 0600 or names no key: $(head -c 300 <<<"$lease") $(tail -c 200 "$HB/pod-env-$p.err")"
   fi
 }
-# hub_rent_on <provider>: a rental of `cpu` there (`machine rent --provider`, in dev builds only; the Hub decides who may), with
+# hub_rent_on <provider>: a rental of `cpu` there (`machine rent --provider`, dev-only: `dev = true`), with
 # the throwaway SSH key, checked by hub_pod_secrets, ended and checked gone. A rental it cannot name from the reply is the one
 # new in `machine ls`; hub_cleanup ends any left.
 hub_rent_on() {
@@ -177,11 +177,11 @@ while (i := t.find("{", i)) >= 0:
   expect "hub end on $1" FAIL "$m still listed 5 min after cozy machine end: $(tail -c 200 "$HB/end-$1.out")"
 }
 # xs-157's proof (pod-env, pod-auth) rides these rentals, so a cozy that can't name a provider fails the row instead of
-# skipping it. In 0.23.1 `--provider` is the hidden flag of a cozy built with the `dev` feature (dev-build -f features=dev).
-if "$CLI" machine rent cpu --provider runpod --help >/dev/null 2>&1; then
+# skipping it. `--provider` is dev-only (cl-844): the gate operator's ~/.cozy/config.toml needs `dev = true`.
+if ! "$CLI" machine rent cpu --provider runpod </dev/null 2>&1 | grep -q dev-only; then
   for p in runpod vast; do hub_rent_on "$p"; done
 else
-  expect "hub providers" FAIL "this cozy takes no --provider: run the gate on a dev-feature dev-build (dev-build -f features=dev)"
+  expect "hub providers" FAIL "this cozy refuses --provider (dev-only): put \`dev = true\` at the top of ~/.cozy/config.toml"
 fi
 [ -n "$WHO" ] || return 0
 HUB_PKG=ci-hub-$R

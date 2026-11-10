@@ -77,6 +77,9 @@ struct RunArgs {
     /// Pin an attention kernel for this run: everywhere, or at one `[slot/]component`.
     #[arg(long, value_name = "[[SLOT/]COMPONENT=]KERNEL", value_parser = api::calcifer::attention_pin, conflicts_with = "warm")]
     attention_kernel: Option<String>,
+    /// Dev-only (DEV.md): compute it afresh; no machine memo answers or keeps it.
+    #[arg(long, conflicts_with = "warm")]
+    no_memo: bool,
     /// The whole payload from a JSON or YAML file; inline inputs override it.
     #[arg(long = "input", value_name = "FILE")]
     input_file: Option<PathBuf>,
@@ -350,6 +353,7 @@ async fn request(ctx: &Context, args: &RunArgs, target: String, code: Option<Loc
         gpus: args.gpus,
         lane: args.lane.clone(),
         attention_kernel: args.attention_kernel.clone(),
+        no_memo: args.no_memo,
         warm: args.warm.map(Warm::level),
         project: within,
         recipes: false,
