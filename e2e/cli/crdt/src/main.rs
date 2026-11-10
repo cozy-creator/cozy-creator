@@ -71,7 +71,7 @@ fn history_fixture(input: &Path, output: &Path) -> Result<Value, String> {
         doc.put(&record, "uid", uid).map_err(|e| e.to_string())?;
         doc.put(&record, "id", number).map_err(|e| e.to_string())?;
         doc.put(&record, "at_ms", 1i64).map_err(|e| e.to_string())?;
-        for (key, text) in [("by", "{}"), ("words", uid), ("edits", "[]"), ("changes", "[]")] {
+        for (key, text) in [("by", r#"{"via":"api"}"#), ("words", uid), ("edits", "[]"), ("changes", "[]")] {
             doc.put(&record, key, text).map_err(|e| e.to_string())?;
         }
         let runs = object(&doc, &ROOT, "runs")?;
