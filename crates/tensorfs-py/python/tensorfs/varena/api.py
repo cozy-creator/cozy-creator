@@ -16,7 +16,8 @@ from types import TracebackType
 from typing import TYPE_CHECKING, Literal, TypedDict
 
 from .. import _ext
-from .sources import Source, dtype_descriptor
+from .sources import Source as Source
+from .sources import dtype_descriptor
 
 if TYPE_CHECKING:
     import torch

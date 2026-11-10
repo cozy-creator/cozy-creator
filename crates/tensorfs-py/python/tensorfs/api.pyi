@@ -8,7 +8,8 @@ from typing_extensions import Buffer, NotRequired
 from typing_extensions import CapsuleType
 
 from . import _ext
-from ._ext import Checkpoint, ClassRef, Component, ConversionControl, TokenProvider, _CheckpointFile, ConfigValue, ConfigInput, MetadataInput, _Resolved
+from .raw import QuantizationStats
+from ._ext import Checkpoint, ClassRef, Component, ConversionControl, TokenProvider, _CheckpointFile, ConfigInput, MetadataInput, _Resolved
 
 StrPath = str | PathLike[str]
 Token = str | TokenProvider | Callable[[str, str, Mapping[str, str], str | None], Mapping[str, str]]
@@ -85,15 +86,64 @@ class QuantizeFit(TypedDict):
     xmax: str
     rows: str
 
+class QuantizeEncoding(TypedDict):
+    scheme: str
+    params: NotRequired[Mapping[str, MetadataInput]]
+
 class QuantizeTensor(TypedDict):
     component: str
     key: str
     source_dtype: str
     shape: Sequence[int]
     dtype: str
-    encoding: Mapping[str, ConfigInput]
+    encoding: QuantizeEncoding
     strategy: str
     fit: NotRequired[QuantizeFit]
+
+class FitResult(TypedDict):
+    strategy: str
+    alpha: float
+    residual: QuantizationStats
+    calibration_error: float
+    plain_nvfp4_error: float
+    calibration_bytes_read: int
+    required_buffer_bytes: int
+    workers: int
+    fit_seconds: float
+
+class QuantizedTensor(TypedDict):
+    component: str
+    key: str
+    source_bytes_read: int
+    new_bytes_written: int
+    relative_frobenius: float
+    measured: QuantizationStats
+    fit: NotRequired[FitResult]
+
+class NormalizationResult(TypedDict):
+    """`Writer.normalize_bf16`'s result (crates/tensorfs `NormalizationResult`)."""
+    identity: str
+    converted_keys: int
+    reused_keys: int
+    source_bytes_read: int
+    logical_source_bytes_read: int
+    new_bytes_written: int
+    required_buffer_bytes: int
+    worst_relative_frobenius: float | None
+    tensors: list[QuantizedTensor]
+
+class QuantizationResult(TypedDict):
+    """`Writer.quantize`'s result (crates/tensorfs `QuantizationResult`)."""
+    identity: str
+    encoded_keys: int
+    reused_keys: int
+    source_bytes_read: int
+    calibration_bytes_read: int
+    required_buffer_bytes: int
+    new_bytes_written: int
+    saturated_elements: int
+    worst_relative_frobenius: float | None
+    tensors: list[QuantizedTensor]
 
 class Writer:
     metadata: dict[str, MetadataInput]
@@ -116,9 +166,9 @@ class Writer:
     def has(self, component: str, key: str) -> bool: ...
     def normalize_bf16(self, source: Checkpoint, tensors: Sequence[NormalizeBf16Tensor], *,
                       max_buffer_bytes: int, max_new_bytes: int,
-                      control: ConversionControl) -> dict[str, ConfigValue]: ...
+                      control: ConversionControl) -> NormalizationResult: ...
     def quantize(self, source: Checkpoint, tensors: Sequence[QuantizeTensor], *,
                  max_buffer_bytes: int, max_new_bytes: int, control: ConversionControl,
                  max_relative_frobenius: float | None = None,
                  calibration: Checkpoint | None = None,
-                 component: str | None = None) -> dict[str, ConfigValue]: ...
+                 component: str | None = None) -> QuantizationResult: ...
