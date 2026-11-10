@@ -23,7 +23,7 @@ class Painted(msgspec.Struct):
 
 
 @invocable(defaults={"weights": "zhengpeng7/birefnet@0.1.0"})
-async def paint(ctx: Context, *, image: ImageFile, weights: Weights, out: Outputs) -> Painted:  # type: ignore[type-arg]  # bare Weights: any layout, as the Runtime spells it
+async def paint(ctx: Context, *, image: ImageFile, weights: Weights, out: Outputs) -> Painted:  # type: ignore[type-arg, misc]  # bare Weights: any layout, as the Runtime spells it (its TypeVar has no default)
     """The model on a GPU that makes `heavy` one."""
     return Painted(image)
 

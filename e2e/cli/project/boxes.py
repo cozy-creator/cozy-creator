@@ -9,13 +9,14 @@ has, groups two deep, so the page draws each and each reaches the function as ty
 import os
 import time
 from collections.abc import Mapping
-from typing import Annotated, Literal
+from typing import Annotated, Literal, cast
 
 import msgspec
 from cozy_runtime.author import App, ImageFrame, InvalidRequest, Outputs, Seed
 from cozy_runtime.fields import (
     Advanced,
     AspectRatio,
+    Audio,
     Count,
     Image,
     Label,
@@ -45,20 +46,20 @@ class Look(msgspec.Struct, kw_only=True):
 class Angle(msgspec.Struct, kw_only=True):
     """A group two deep: a beat's angles."""
 
-    framing: Prompt = Prompt()
+    framing: Prompt[Image | Video | Audio] = Prompt()
     hold: Annotated[float, Range(0.5, 4, step=0.5, unit="s")] = 1.0
 
 
 class Beat(msgspec.Struct, kw_only=True):
     duration: Annotated[int, Range(1, 15, unit="s"), Total()] = 5
-    description: Prompt = Prompt()
+    description: Prompt[Image | Video | Audio] = Prompt()
     look: Look | None = None
     angles: Annotated[list[Angle], Count(max=3)] = []
     still: ImageFile | None = None
 
 
 class Everything(msgspec.Struct, kw_only=True):
-    summary: Annotated[Prompt, Placeholder("What happens")] = Prompt()
+    summary: Annotated[Prompt[Image | Video | Audio], Placeholder("What happens")] = Prompt()
     pictures: Prompt[Image] = Prompt()
     negative: str = ""
     beats: Annotated[list[Beat], Count(min=1, max=4)]
@@ -113,7 +114,7 @@ def shot(payload: Everything, out: Outputs) -> Take:
         time.sleep(1.5)
         out.publish("video", _copy(source, out), label=f"Segment {index + 1} of {payload.segments}")
     given = msgspec.json.encode(_seen(payload))
-    return Take(_copy(source, out), out.save_bytes(os.urandom(32), media_type="application/octet-stream"), out.save_bytes(given, media_type="application/json"), [])
+    return Take(_copy(source, out), cast(Latents, out.save_bytes(os.urandom(32), media_type="application/octet-stream")), out.save_bytes(given, media_type="application/json"), [])  # a saved file fills a Latents field: the Runtime checks its kind
 
 
 def _copy(video: VideoFile, out: Outputs) -> VideoFile:

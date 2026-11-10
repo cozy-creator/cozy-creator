@@ -192,32 +192,6 @@ crates/varena/examples/cuda_driver.py: [no-untyped-def] Function is missing a ty
 crates/varena/examples/cuda_driver.py: [no-untyped-def] Function is missing a type annotation
 crates/varena/examples/cuda_driver.py: [no-untyped-def] Function is missing a type annotation
 crates/varena/examples/python_client.py: [no-untyped-call] Call to untyped function "Stream" in typed context
-e2e/capabilities/probe.py: [misc] Type of decorated function contains type "Any" ("Callable[[Probe, Weights[Any]], Report]")
-e2e/cli/project/boxes.py: [arg-type] Argument 2 to "Take" has incompatible type "File"; expected "Latents"
-e2e/cli/project/boxes.py: [type-arg] Missing type arguments for generic type "Prompt"
-e2e/cli/project/boxes.py: [type-arg] Missing type arguments for generic type "Prompt"
-e2e/cli/project/boxes.py: [type-arg] Missing type arguments for generic type "Prompt"
-e2e/cli/project/probe-callee/e2e_probe_callee/__init__.py: [arg-type] Argument 1 to "construct" of "Loader" has incompatible type "type[object]"; expected "Callable[[Config], object]"
-e2e/cli/project/shaped.py: [arg-type] Argument 2 to "Shot" has incompatible type "File"; expected "Latents"
-e2e/cli/project/shaped.py: [misc] Non-frozen dataclass cannot inherit from a frozen dataclass
-e2e/cli/project/shaped.py: [misc] Non-frozen dataclass cannot inherit from a frozen dataclass
-e2e/cli/project/shaped.py: [type-arg] Missing type arguments for generic type "Prompt"
-e2e/cli/project/shaped.py: [type-arg] Missing type arguments for generic type "Prompt"
-e2e/cli/project/shaped.py: [type-arg] Missing type arguments for generic type "Prompt"
-e2e/cli/project/shaped.py: [type-arg] Missing type arguments for generic type "Prompt"
-e2e/cli/project/shots.py: [arg-type] Argument 1 to "BareTake" has incompatible type "VideoFile | None"; expected "File"
-e2e/cli/project/shots.py: [arg-type] Argument 2 to "Take" has incompatible type "File"; expected "Latents"
-e2e/cli/project/shots.py: [type-arg] Missing type arguments for generic type "Prompt"
-e2e/cli/project/shots.py: [type-arg] Missing type arguments for generic type "Prompt"
-e2e/cli/project/shots.py: [type-arg] Missing type arguments for generic type "Prompt"
-e2e/cli/project/shots.py: [type-arg] Missing type arguments for generic type "Prompt"
-e2e/cli/project/shots.py: [type-arg] Missing type arguments for generic type "Prompt"
-e2e/cli/project/shots.py: [type-arg] Missing type arguments for generic type "Prompt"
-e2e/cli/project/shots.py: [type-arg] Missing type arguments for generic type "Prompt"
-e2e/cli/project/shots.py: [type-arg] Missing type arguments for generic type "Prompt"
-e2e/cli/project/tool.py: [type-arg] Missing type arguments for generic type "Prompt"
-e2e/cli/project/tool.py: [type-arg] Missing type arguments for generic type "Prompt"
-e2e/cli/web/heavy.py: [misc] Type of decorated function contains type "Any" ("def (*, image: ImageFile, weights: Weights[Any], out: Outputs) -> PendingCall[Painted]")
 release-gate/analyze.py: [assignment] Incompatible types in assignment (expression has type "dict[str, Any] | None", variable has type "dict[str, Any]")
 release-gate/analyze.py: [no-untyped-call] Call to untyped function "canonical" in typed context
 release-gate/analyze.py: [no-untyped-call] Call to untyped function "canonical" in typed context

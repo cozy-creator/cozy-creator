@@ -13,7 +13,7 @@ from typing import Annotated, Literal
 
 import msgspec
 from cozy_runtime.author import App, ImageFrame, Outputs, Seed, Telemetry
-from cozy_runtime.fields import AspectRatio, Count, Image, Prompt, Range, Ratios, Total, Video
+from cozy_runtime.fields import AspectRatio, Audio, Count, Image, Prompt, Range, Ratios, Total, Video
 from cozy_runtime.media import File, ImageFile, VideoFile
 
 app = App()
@@ -84,12 +84,12 @@ def stepped(payload: SteppedInput, out: Outputs, tel: Telemetry) -> Picture:
 
 
 class Beat(msgspec.Struct, kw_only=True):
-    description: Prompt = Prompt()
+    description: Prompt[Image | Video | Audio] = Prompt()
     duration: Annotated[float, Range(1, 15, step=1, unit="s"), Total()] = 5
 
 
 class ToldBox(msgspec.Struct, kw_only=True):
-    instructions: Prompt = Prompt()
+    instructions: Prompt[Image | Video | Audio] = Prompt()
     bright: bool = True
     shade: Annotated[float, Range(0, 1)] | None = None
     aspect_ratio: Annotated[AspectRatio, Ratios("1:1")] | None = None
