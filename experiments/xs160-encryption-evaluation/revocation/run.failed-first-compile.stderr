@@ -1,0 +1,85 @@
+    Updating crates.io index
+     Locking 68 packages to highest compatible versions
+      Adding aes-gcm v0.10.3 (available: v0.11.1)
+      Adding curve25519-dalek v5.0.0-pre.6 (available: v5.0.0)
+      Adding ed25519-dalek v3.0.0-pre.6 (available: v3.0.0)
+      Adding generic-array v0.14.7 (available: v0.14.9)
+      Adding sha2 v0.10.9 (available: v0.11.1)
+ Downloading crates ...
+  Downloaded ed25519 v3.0.0
+  Downloaded gridiron v0.12.2
+  Downloaded clear_on_drop v0.2.5
+  Downloaded curve25519-dalek v5.0.0-pre.6
+  Downloaded ed25519-dalek v3.0.0-pre.6
+  Downloaded recrypt v0.16.0
+  Downloaded derivative v2.2.0
+   Compiling typenum v1.20.1
+   Compiling cfg-if v1.0.5
+   Compiling libc v0.2.191
+   Compiling version_check v0.9.5
+   Compiling generic-array v0.14.7
+   Compiling proc-macro2 v1.0.107
+   Compiling getrandom v0.2.17
+   Compiling rand_core v0.6.4
+   Compiling quote v1.0.47
+   Compiling crypto-common v0.1.7
+   Compiling unicode-ident v1.0.27
+   Compiling cpufeatures v0.2.17
+   Compiling hybrid-array v0.4.15
+   Compiling subtle v2.6.1
+   Compiling semver v1.0.28
+   Compiling rand_core v0.10.1
+   Compiling crypto-common v0.2.2
+   Compiling rustc_version v0.4.1
+   Compiling block-buffer v0.12.1
+   Compiling zerocopy v0.8.63
+   Compiling autocfg v1.5.1
+   Compiling shlex v2.0.1
+   Compiling cpufeatures v0.3.1
+   Compiling find-msvc-tools v0.1.15
+   Compiling cc v1.11.1
+   Compiling num-traits v0.2.19
+   Compiling digest v0.11.3
+   Compiling curve25519-dalek v5.0.0-pre.6
+   Compiling syn v2.0.119
+   Compiling inout v0.1.4
+   Compiling getrandom v0.4.3
+   Compiling syn v1.0.109
+   Compiling cipher v0.4.4
+   Compiling clear_on_drop v0.2.5
+   Compiling curve25519-dalek-derive v0.1.1
+   Compiling universal-hash v0.5.1
+   Compiling block-buffer v0.10.4
+   Compiling opaque-debug v0.3.1
+   Compiling signature v3.0.0
+   Compiling ed25519 v3.0.0
+   Compiling polyval v0.6.2
+   Compiling digest v0.10.7
+   Compiling ppv-lite86 v0.2.21
+   Compiling sha2 v0.11.1
+   Compiling chacha20 v0.10.2
+   Compiling rand v0.10.3
+   Compiling derivative v2.2.0
+   Compiling ed25519-dalek v3.0.0-pre.6
+   Compiling rand_chacha v0.10.0
+   Compiling gridiron v0.12.2
+   Compiling sha2 v0.10.9
+   Compiling ghash v0.5.1
+   Compiling aes v0.8.4
+   Compiling ctr v0.9.2
+   Compiling aead v0.5.2
+   Compiling lazy_static v1.5.1
+   Compiling log v0.4.35
+   Compiling hex v0.4.3
+   Compiling quick-error v2.0.1
+   Compiling recrypt v0.16.0
+   Compiling aes-gcm v0.10.3
+   Compiling project-pre-revocation-probe v0.1.0 (/home/fidika/cozy_v2/outputs/xs160-revocation-research/pre)
+error[E0599]: no method named `iter` found for reference `&NonEmptyVec<recrypt::api::TransformBlock>` in the current scope
+  --> src/main.rs:23:32
+   |
+23 |             + transform_blocks.iter().map(|b| {
+   |                                ^^^^ method not found in `&NonEmptyVec<recrypt::api::TransformBlock>`
+
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `project-pre-revocation-probe` (bin "project-pre-revocation-probe") due to 1 previous error
