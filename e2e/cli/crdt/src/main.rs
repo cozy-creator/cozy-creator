@@ -255,19 +255,30 @@ fn canvas_collision(input: &Path, output: &Path) -> Result<Value, String> {
         doc.put(&card, "x", x).map_err(|e| e.to_string())?;
         doc.put(&card, "y", y).map_err(|e| e.to_string())?;
     }
+    let boxes = object(&doc, &ROOT, "boxes")?;
+    let whale = object(&doc, &boxes, &id)?;
+    let root_extension = doc.put_object(ROOT, "e2e_extension", ObjType::Map).map_err(|e| e.to_string())?;
+    let box_extension = doc.put_object(&whale, "e2e_extension", ObjType::Map).map_err(|e| e.to_string())?;
+    doc.put(&root_extension, "payload", "root peer data").map_err(|e| e.to_string())?;
+    doc.put(&box_extension, "payload", "box peer data").map_err(|e| e.to_string())?;
+
     let heads: Vec<_> = doc.get_heads().iter().map(ToString::to_string).collect();
     fs::write(output, doc.save()).map_err(|e| e.to_string())?;
-    Ok(json!({"id":id,"heads":heads,"selected_record":{"name":"whale","card":{"x":700.0,"y":800.0},"seq":7,"by":"native peer"}}))
+    Ok(json!({"id":id,"heads":heads,"selected_record":{"name":"whale","card":{"x":700.0,"y":800.0},"seq":7,"by":"native peer"},"root_extension":root_extension.to_string(),"box_extension":box_extension.to_string()}))
 }
 
 fn canvas_check(input: &Path, report: &Path) -> Result<Value, String> {
     let doc = AutoCommit::load(&fs::read(input).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     let report: Value = serde_json::from_slice(&fs::read(report).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-    let value = value(&doc);
+    let state = value(&doc);
     let target = report["id"].as_str().ok_or("missing mapped canvas identity")?;
-    require(value["canvas"][target]["record"] == report["selected_record"], "mapped canvas retained an older peer record")?;
-    require(value["canvas"][target]["present"] == true && value["canvas"]["zzzz-e2e-canvas-peer"]["present"] == false, "canvas normalization lost mapped identity or failed to retire peer")?;
-    Ok(json!({"passed":true,"mapped_canvas_id":target,"selected_record":report["selected_record"]}))
+    require(state["canvas"][target]["record"] == report["selected_record"], "mapped canvas retained an older peer record")?;
+    require(state["canvas"][target]["present"] == true && state["canvas"]["zzzz-e2e-canvas-peer"]["present"] == false, "canvas normalization lost mapped identity or failed to retire peer")?;
+    let boxes = object(&doc, &ROOT, "boxes")?;
+    let whale = object(&doc, &boxes, target)?;
+    require(state["e2e_extension"] == json!({"payload":"root peer data"}) && object(&doc, &ROOT, "e2e_extension")?.to_string() == report["root_extension"], "unknown root value or object identity changed")?;
+    require(state["boxes"][target]["e2e_extension"] == json!({"payload":"box peer data"}) && object(&doc, &whale, "e2e_extension")?.to_string() == report["box_extension"], "untouched record lost its unknown value or object identity")?;
+    Ok(json!({"passed":true,"mapped_canvas_id":target,"selected_record":report["selected_record"],"unknown_objects_retained":true}))
 }
 
 /// One independent native writer against actual CLI-created state. The CLI fixture holds
