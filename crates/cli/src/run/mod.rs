@@ -44,16 +44,12 @@ const EXAMPLES: &str = "Examples:
   cozy run sdxl/generate --input request.yaml --estimate  (when each machine would finish it)
   cozy run sdxl/generate --input request.yaml --estimate 4  (four of it sent at once)
 
-A run belongs to a project: -p, else COZY_PROJECT. Its outputs land there; -o downloads them here.
+A run belongs to the current directory's project. Its outputs land there; -o also downloads them to the directory you name.
 A run is followed to its end: Ctrl-C stops following, never the run; `cozy run show N` follows it again.";
 
 #[derive(clap::Args, Debug)]
 #[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true, arg_required_else_help = true, after_help = EXAMPLES)]
 pub(crate) struct Args {
-    /// The project a run belongs to: its name or id, or its folder on Calcifer's computer by its absolute path. Default:
-    /// COZY_PROJECT. `ls` lists that project's.
-    #[arg(short = 'p', value_name = "PROJECT", global = true)]
-    project: Option<String>,
     #[command(subcommand)]
     verb: Option<Verb>,
     #[command(flatten)]
@@ -201,7 +197,6 @@ fn run_state(text: &str) -> Result<String, String> {
 }
 
 pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
-    let within = crate::project::chosen(args.project.as_ref());
     match args.verb {
         Some(Verb::Ls {
             state,
@@ -210,13 +205,23 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             limit,
             all,
         }) => {
-            // A project named: only its runs. One named by its folder is listed by its id, which a run's record says.
-            let project = match within.filter(|_| !all) {
-                Some(named) if api::target::written_as_path(&named) => {
-                    let state: serde_json::Value = ctx.calcifer().await?.get(&format!("{}?assets=false", crate::project::at(&named, &[]))).await?;
-                    state["id"].as_str().map(str::to_owned)
+            let project = if all {
+                None
+            } else {
+                let directory = crate::project::named(None)?;
+                let path = format!("{}?assets=false", crate::project::at(&directory, &[]));
+                match ctx.calcifer().await?.get::<api::calcifer::project::State>(&path).await {
+                    Ok(state) => Some(state.id),
+                    Err(error) if error.code == "project_not_found" => {
+                        if ctx.json {
+                            output::json(&serde_json::json!({ "runs": [], "older": 0 }));
+                        } else {
+                            output::say(ctx, "runs: none in this directory");
+                        }
+                        return Ok(ExitCode::SUCCESS);
+                    }
+                    Err(error) => return Err(error),
                 }
-                named => named,
             };
             let query = list::Query { status: state, package, machine: on, project, before: None, limit };
             list::exec(ctx, query).await
@@ -236,12 +241,12 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             output,
             expires,
         }) => play::exec(ctx, &run, &output, &expires).await,
-        None => run(ctx, *args.run, within).await,
+        None => run(ctx, *args.run).await,
     }
 }
 
 
-async fn run(ctx: &Context, args: RunArgs, within: Option<String>) -> Result<ExitCode, Error> {
+async fn run(ctx: &Context, args: RunArgs) -> Result<ExitCode, Error> {
     let cwd = std::env::current_dir()
         .map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
     let written = args.target.clone().unwrap_or_default();
@@ -254,6 +259,19 @@ async fn run(ctx: &Context, args: RunArgs, within: Option<String>) -> Result<Exi
     if args.describe && !inputs {
         return describe(ctx, &target, code.as_ref(), args.placement.on.as_deref()).await;
     }
+    // Listing a package's functions needs no project on disk. A named function with
+    // default inputs still runs, and a local package can name its one function.
+    if !inputs && args.assets.is_empty() && args.warm.is_none() {
+        let described = self::target(ctx, &target, code.as_ref(), args.placement.on.as_deref()).await?;
+        if described.contract.is_none() {
+            print_functions(ctx, &described);
+            return Ok(ExitCode::SUCCESS);
+        }
+    }
+    let within = match args.warm {
+        Some(_) => None,
+        None => Some(crate::project::ensure(ctx, None).await?),
+    };
     let ask = request(ctx, &args, target.clone(), code.clone(), &cwd, within).await?;
     if let Some(count) = args.estimate {
         return estimate(ctx, ask, count).await;

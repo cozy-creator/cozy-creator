@@ -1,39 +1,28 @@
-//! `cozy open`: Calcifer's page in a browser, at the project named or its home, signed in by a single-use code. The code goes in a
+//! `cozy open`: the current directory's project in a browser, signed in by a single-use code. The code goes in a
 //! 0600 redirect file and the browser opens the file, so it's in no process's arguments. Only with no browser to open is the link
 //! printed: it works once, for 60 s.
 use std::process::{Command, ExitCode, Stdio};
 
 use api::{calcifer::SessionCode, error::Error};
-use serde_json::{Value, json};
+use serde_json::json;
 
 use crate::{Context, output, project};
 
-/// Open the canvas in your browser: the project you name (else COZY_PROJECT's), or the home.
+/// Open the current directory's project in your browser.
 #[derive(clap::Args, Debug)]
-#[command(after_help = "Examples:\n  cozy open garden\n  cozy open           COZY_PROJECT's, else the home\n  cozy open --no-open   only prints the link: for an agent, or over SSH")]
+#[command(after_help = "Examples:\n  cd garden && cozy open\n  cozy open --no-open   only prints the link: for an agent, or over SSH")]
 pub(crate) struct Args {
-    /// The project: its name or id, or its folder on Calcifer's computer by its absolute path.
-    project: Option<String>,
     /// Only print the link, which works once, for 60 s.
     #[arg(long)]
     no_open: bool,
 }
 
-/// The project named, else COZY_PROJECT's: an older format is refused, saying what to run. None named is the home; a folder that
-/// holds none says so.
-async fn route(ctx: &Context, named: Option<&String>) -> Result<Option<String>, Error> {
-    if project::chosen(named).is_none() {
-        return Ok(None);
-    }
-    let project = project::named(named)?;
-    match ctx.calcifer().await?.get::<Value>(&format!("{}?assets=false", project::at(&project, &[]))).await {
-        Ok(state) => Ok(state["id"].as_str().map(|id| format!("/projects/{id}"))),
-        Err(error) if error.code == "project_not_found" => {
-            output::say(ctx, &format!("{project} is in no project, so this is the home; to make one there: cozy project new {project}"));
-            Ok(None)
-        }
-        Err(error) => Err(error),
-    }
+/// Open the current directory's existing project, or initialize an empty one.
+async fn route(ctx: &Context) -> Result<String, Error> {
+    let project = project::ensure(ctx, None).await?;
+    let path = format!("{}?assets=false", project::at(&project, &[]));
+    let state: api::calcifer::project::State = ctx.calcifer().await?.get(&path).await?;
+    Ok(format!("/projects/{}", state.id))
 }
 
 /// Whether a browser here would be in front of anyone: none over SSH, and on Linux none without a display.
@@ -44,14 +33,11 @@ fn in_front_of_someone() -> bool {
 
 /// A build without its page is refused here, saying how to build it.
 pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
-    let to = route(ctx, args.project.as_ref()).await?;
+    let to = route(ctx).await?;
     let calcifer = ctx.calcifer().await?;
     calcifer.text("/").await?;
     let code: SessionCode = calcifer.post("/v1/session-codes", &json!({}), None).await?;
-    let link = match to {
-        Some(to) => format!("{}&to={to}", code.url),
-        None => code.url,
-    };
+    let link = format!("{}&to={to}", code.url);
     let opened = !args.no_open
         && in_front_of_someone()
         && match browse(ctx, &link) {
