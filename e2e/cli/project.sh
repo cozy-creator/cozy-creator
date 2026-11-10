@@ -10,6 +10,23 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 # A fixture chooses its project by running the actual CLI in that directory.
 in_project() { local directory=$1; shift; (cd "$directory" && cozy "$@"); }
+# Fixture edits use the project HTTP API that the browser uses.
+project_api() {
+  local directory=$1 suffix=$2; shift 2
+  cozy --json machine ls > /dev/null || return
+  local holder=$HOME/.cozy/calcifer/calcifer.lock.holder encoded
+  encoded=$(python3 -c 'from urllib.parse import quote; import os,sys; print(quote(os.path.abspath(sys.argv[1]), safe=""))' "$directory")
+  curl --fail-with-body -sS -H "Authorization: Bearer $(jq -r .token "$holder")" "$@" "http://$(jq -r .address "$holder")/v1/projects/$encoded$suffix"
+}
+project_import() {
+  local directory=$1 file=$2 name=${3:-} source holder=$HOME/.cozy/calcifer/calcifer.lock.holder
+  cozy --json machine ls > /dev/null || return
+  source="sha256:$(sha "$file")"
+  curl --fail-with-body -sS -X PUT -H "Authorization: Bearer $(jq -r .token "$holder")" \
+    --data-binary "@$file" "http://$(jq -r .address "$holder")/v1/files/$source" > /dev/null || return
+  project_api "$directory" /imports -X POST -H 'Content-Type: application/json' \
+    -d "$(jq -n --arg source "$source" --arg name "$name" '{source: $source} + (if $name == "" then {} else {name: $name, exact: true} end)')"
+}
 # Controller health is read through its API; `cozy status` describes project assets.
 fixture_calcifer() {
   local machines holder=$HOME/.cozy/calcifer/calcifer.lock.holder status
@@ -119,19 +136,13 @@ ask() {
 ended() { cozy --json run show "$1" > /dev/null 2>&1 || true; cozy --json --full run show "$1" 2> /dev/null; }
 # status <project> [file]: its status as JSON.
 # status <project>: what status says. Why it can't be read goes to the log, and an answer the CLI can't read is a failure of its own.
-status() {
-  in_project "$1" --json --full status 2> "$OUT/status.err" && return 0
-  local code=$?
-  echo "status of $1: $(tail -c 300 "$OUT/status.err")" >&2
-  grep -q answer_unreadable "$OUT/status.err" && check "status of $1: $(tail -c 300 "$OUT/status.err")" >&2
-  return "$code"
-}
+status() { project_api "$1" '' 2> "$OUT/status.err"; }
 # row <project> <asset> <jq>: that of its row in status.
 row() { status "$1" | jq -c --arg n "$2" ".assets[] | select(.name == \$n) | $3"; }
 # made <project> <asset>: how many versions the lock keeps.
 made() { local n; n=$(held "$1" "$2" 2> /dev/null | jq '.versions | length'); echo "${n:-0}"; }
 # held <project> <asset>: what `cozy status <asset>` says of it, `.asset` and `.versions`. Why it can't goes to the log.
-held() { in_project "$1" --json --full status "$2" 2> "$OUT/held.err" || echo "status $2 of $1: $(tail -c 200 "$OUT/held.err")" >&2; }
+held() { project_api "$1" "/assets/$2" 2> "$OUT/held.err"; }
 # take_file <project> <asset> <role> [version index]: that version's file by its hash.
 take_file() { held "$1" "$2" | jq -r --arg r "$3" --argjson v "${4:--1}" '.versions[$v].files[$r].sha256 // empty'; }
 # counts <project>: how many versions each asset has.
@@ -4054,13 +4065,9 @@ tail -c +$((seen + 1)) "$log" | grep 'refused ' > "$OUT/browser-refused.txt" || 
 [ "$(owed "$P")" = 0 ] && ! sql "$P" "SELECT record FROM walk" | grep -q nothing || check "another origin's POST started a render"
 }
 
-# Alone: this computer's cozy, as it is, in the default home.
+# The standalone CLI check covers the retained project and run entrypoints.
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   . "$here/../lib.sh"
   parse "$@"
-  ALONE=1
-  hub_checked() { :; }
-  run_project "$OUT/project" || fail "starter_project failed"
-  projects
-  finish project
+  python3 "$here/entrypoints.py" --cozy "$COZY" --out "$OUT/entrypoints"
 fi

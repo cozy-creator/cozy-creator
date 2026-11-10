@@ -122,7 +122,7 @@ web_held() {
   # A new project, its boxes by `cozy import` (cl-803: a project is project.db, and YAML its import).
   starter_project "$T" > "$OUT/web-held-new.txt" 2>&1 || { check "web-held: project new: $(tail -c 300 "$OUT/web-held-new.txt")"; return; }
   printf 'version: 4\nassets:\n  stays:\n    tool: cozy/edit\n  goes:\n    tool: cozy/edit\n' > "$OUT/web-held.yaml"
-  in_project "$T" import "$OUT/web-held.yaml" > "$OUT/web-held-import.txt" 2>&1 || { check "web-held: import: $(tail -c 300 "$OUT/web-held-import.txt")"; return; }
+  project_api "$T" /yaml -X PUT -H 'Content-Type: application/yaml' --data-binary "@$OUT/web-held.yaml" > "$OUT/web-held-import.txt" 2>&1 || { check "web-held: import: $(tail -c 300 "$OUT/web-held-import.txt")"; return; }
   id=$(status "$T" | jq -r '.id // empty')
   [ -n "$id" ] || { check "web-held: the project has no id"; return; }
   HELD_FOLDER=$(web_path "$T") HELD_ID=$id web_proof held "$1" "$2" ''

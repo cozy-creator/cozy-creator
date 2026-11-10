@@ -36,7 +36,8 @@ tiny() { base64 -d > "$1" <<< 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAD
 # tools, versions, nodes, place, undo, live, layout, offline and held.
 db_existing() {
 tools_read
-db_existing_projects
+db_first_open
+db_crash
 db_existing_web
 }
 
@@ -71,12 +72,11 @@ for name in ${DB_WEB:-place nodes versions tools live layout undo offline held};
 done
 }
 
+# The deleted asset CLI's concurrent-write, undo/redo and YAML roundtrip cases
+# are retired; the retained checks exercise the project API and storage directly.
 projectdb() {
 db_first_open
-db_concurrent
 db_crash
-db_restart
-db_roundtrip
 db_latency
 }
 
@@ -122,25 +122,25 @@ cat > "$F/.history.json" <<'JSON'
   {"id": 2, "at_ms": 1794000001000, "by": {"via": "page", "client": "tab1"}, "words": "Set aspect_ratio on shot", "changes": [{"kind": "fields", "name": "shot", "fields": {"aspect_ratio": ["1:1", "16:9"]}}]}]}
 JSON
 printf '{}' > "$F/.measured.json"; printf '{}' > "$F/.keys.json"
-in_project "$F" status > "$OUT/db-legacy.txt" 2>&1 || check "first open: status: $(tail -c 300 "$OUT/db-legacy.txt")"
+project_api "$F" '' > "$OUT/db-legacy.txt" 2>&1 || check "first open: status: $(tail -c 300 "$OUT/db-legacy.txt")"
 local left; left=$(cd "$F" && ls -A | grep -vxE 'files|project\.db(-wal|-shm)?' | tr '\n' ' ' || true)
 echo "first open: the folder now holds $(cd "$F" && ls -A | tr '\n' ' ')"
 [ -f "$F/project.db" ] && [ -z "$left" ] || check "first open: project.db made and the files gone, but it holds: ${left:-no project.db}"
 J '[.versions[].number] == [1, 2] and .discarded == [3]' <<< "$(held "$F" shot)" || check "first open: shot's takes: $(held "$F" shot | jq -c '{v: [.versions[].number], d: .discarded}')"
 [ "$(sql "$F" "SELECT name, x, y, w FROM canvas ORDER BY name" | tr -d '\n')" = '["art", 10.0, 20.0, null]["shot", 400.0, 20.0, 360.0]' ] || check "first open: the rows: $(sql "$F" 'SELECT name, x, y, w FROM canvas')"
-in_project "$F" --json history > "$OUT/db-legacy-history.json" || check "first open: history"
+project_api "$F" /history > "$OUT/db-legacy-history.json" || check "first open: history"
 J '[.entries[].words] == ["Set aspect_ratio on shot", "Deleted sky"]' "$OUT/db-legacy-history.json" || check "first open: its history: $(jq -c '[.entries[].words]' "$OUT/db-legacy-history.json")"
 # Undo goes on across the cut: entry 1 put back from the lines .history.json kept.
-in_project "$F" undo 1 > "$OUT/db-legacy-undo.txt" 2>&1 || check "first open: undo 1: $(tail -c 300 "$OUT/db-legacy-undo.txt")"
+project_api "$F" /history/undo -X POST -H 'Content-Type: application/json' -d '{"entry":1}' > "$OUT/db-legacy-undo.txt" 2>&1 || check "first open: undo 1: $(tail -c 300 "$OUT/db-legacy-undo.txt")"
 J '.assets | any(.name == "sky")' <<< "$(status "$F")" || check "first open: sky not back after undo 1"
-answer=$(in_project "$F" export)
+answer=$(project_api "$F" /yaml)
 grep -q 'text: A blue sky.' <<< "$answer" || grep -q 'text: "A blue sky."' <<< "$answer" || check "first open: sky's words: $answer"
 grep -q 'comment' <<< "$answer" && check "first open: a comment came through: $answer"
-in_project "$F" undo 2 > /dev/null 2>&1 || check "first open: undo 2"
-in_project "$F" export | grep -q 'aspect_ratio: "1:1"' || check "first open: undo 2 didn't put 1:1 back"
+project_api "$F" /history/undo -X POST -H 'Content-Type: application/json' -d '{"entry":2}' > /dev/null 2>&1 || check "first open: undo 2"
+project_api "$F" /yaml | grep -q 'aspect_ratio: "1:1"' || check "first open: undo 2 didn't put 1:1 back"
 # Opened again, nothing more happens.
 local before; before=$(sql1 "$F" "SELECT value FROM meta WHERE key = 'seq'")
-in_project "$F" status > /dev/null 2>&1 || check "first open: second open"
+project_api "$F" '' > /dev/null 2>&1 || check "first open: second open"
 [ "$(sql1 "$F" "SELECT value FROM meta WHERE key = 'seq'")" = "$before" ] || check "first open: a second open wrote"
 echo "first open: $(held "$F" shot | jq -c '{takes: [.versions[].number], discarded}'), history $(jq -c '[.entries[].id]' "$OUT/db-legacy-history.json"), undo across the cut ok"
 }
@@ -297,7 +297,7 @@ mkdir -p "$L/clips"
 starter_project "$L" > /dev/null 2>&1 || { check "latency: project new"; return; }
 db_calcifer; ID=$(id_of "$L")
 for ((i = 0; i < takes; i++)); do printf -v c '%06x' $((i * 33331 % 16777215)); ffmpeg -v error -y -f lavfi -i "color=c=0x$c:size=16x16:rate=24:duration=0.125" -pix_fmt yuv420p "$L/clips/$i.mp4"; done
-(cd "$L" && in_project "$L" import "$L/clips/0.mp4" take > /dev/null) || { check "latency: import the first take"; return; }
+(project_import "$L" "$L/clips/0.mp4" take > /dev/null) || { check "latency: import the first take"; return; }
 # Each take held by Calcifer first, as the page sends a file, and untimed: a join names it by its sha256, no path of ours (cl-819).
 local hex=()
 for ((i = 1; i < takes; i++)); do

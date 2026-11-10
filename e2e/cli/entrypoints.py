@@ -6,15 +6,16 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 import time
 
 
 PUBLIC = {
-    "new", "open", "run", "status", "machine", "model", "package", "push", "pull", "update", "doctor", "help",
+    "new", "open", "run", "status", "machine", "model", "package", "push", "pull", "update", "doctor", "completion", "help",
 }
-HIDDEN = {"login", "logout", "whoami", "org", "completion"}
+HIDDEN = {"login", "logout", "whoami"}
 REMOVED = {
-    "project", "import", "export", "add", "set", "delete", "render", "approve", "unapprove", "cancel",
+    "org", "project", "import", "export", "add", "set", "delete", "render", "approve", "unapprove", "cancel",
     "wait", "history", "undo", "redo", "rename", "reclaim",
 }
 
@@ -27,8 +28,9 @@ def main() -> None:
     binary = str(Path(args.cozy).resolve())
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
-    empty = out / "outside"
-    empty.mkdir(exist_ok=True)
+    case = Path(tempfile.mkdtemp(prefix="case-", dir=out))
+    outside = tempfile.TemporaryDirectory(prefix="cozy-entrypoints-outside-")
+    empty = Path(outside.name)
     records = []
     environment = os.environ.copy()
 
@@ -43,13 +45,21 @@ def main() -> None:
         return result
 
     try:
-        bare = run("bare help", []).stdout
+        bare = run("bare requires project", [], code=2)
+        outside_status = run("status requires project", ["status"], code=2)
+        assert bare.stdout == outside_status.stdout and bare.stderr == outside_status.stderr, "bare cozy differs from status"
         help_text = run("explicit help", ["--help"]).stdout
-        assert bare.strip() == help_text.strip(), "bare cozy differs from --help"
-        section = bare.split("Commands:\n", 1)[1].split("\nOptions:", 1)[0]
+        section = help_text.split("Commands:\n", 1)[1].split("\nOptions:", 1)[0]
         commands = set(re.findall(r"^  ([a-z][a-z-]*)\s", section, re.MULTILINE))
         assert commands == PUBLIC, f"public commands: {sorted(commands)}"
-        assert not (empty / "project.db").exists(), "help created a project"
+        assert "Exit codes:" not in help_text, "the removed exit-code footer is still shown"
+        assert "--full" not in help_text and "--yes" not in help_text, "advanced root flags are visible"
+        assert "next: cozy new my-project" in help_text
+        assert "next: cd my-project && cozy open" in help_text
+        assert "next: cozy run --help" in help_text
+        run("hidden full flag", ["--full", "--help"])
+        run("hidden yes flag", ["-y", "--help"])
+        assert not (empty / "project.db").exists(), "a status or help read created a project"
 
         for command in REMOVED:
             run(f"removed {command}", [command, "--help"], code=2)
@@ -58,12 +68,16 @@ def main() -> None:
         run("nested cancellation", ["run", "cancel", "--help"])
         run("bash completion", ["completion", "bash"])
 
-        project = out / "film with spaces"
+        project = case / "film with spaces"
         created = json.loads(run("new directory", ["--json", "new", str(project)]).stdout)
         assert Path(created["path"]).resolve() == project
         assert (project / "project.db").is_file(), "new did not create project.db"
-        again = json.loads(run("new existing project", ["--json", "new"], project).stdout)
-        assert again["id"] == created["id"], "new replaced an existing project's identity"
+        refused = json.loads(run("new existing project", ["--json", "new"], project, code=1).stdout)
+        assert refused["error"]["code"] == "project_exists", "new did not refuse an existing project"
+        existing_directory = case / "existing directory"
+        existing_directory.mkdir(exist_ok=True)
+        initialized = json.loads(run("new current directory", ["--json", "new"], existing_directory).stdout)
+        assert Path(initialized["path"]).resolve() == existing_directory
         environment["COZY_PROJECT"] = str(project)
 
         for name, words in (
@@ -82,7 +96,11 @@ def main() -> None:
         assert status["project"]["id"] == created["id"]
         assert Path(status["project"]["path"]).resolve() == project
         assert status["runs"] == [] and status["machines"] == [], "new project inherited another project's activity"
+        bare_status = json.loads(run("bare project status", ["--json"], project).stdout)
+        assert bare_status == status, "bare cozy JSON differs from status"
         assert "rentals" not in status, "project status contains account-wide rental totals"
+        full = json.loads(run("full project diagnostics", ["--json", "--full", "status"], project).stdout)
+        assert full["project"]["id"] == created["id"] and "calcifer" in full
         child = project / "subdirectory"
         child.mkdir(exist_ok=True)
         nested = json.loads(run("containing project", ["--json", "status"], child).stdout)
@@ -91,7 +109,10 @@ def main() -> None:
         run("removed open selector", ["open", str(project), "--no-open"], project, code=2)
         print(f"entrypoints: {len(records)} checks passed")
     finally:
-        (out / "results.json").write_text(json.dumps(records, indent=2) + "\n")
+        receipt = json.dumps(records, indent=2) + "\n"
+        (case / "results.json").write_text(receipt)
+        (out / "results.json").write_text(receipt)
+        outside.cleanup()
 
 
 if __name__ == "__main__":

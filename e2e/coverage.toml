@@ -10,8 +10,6 @@
 
 [global]
 "--json" = "pr: every step reads the JSON answer"
-"--full" = "pr: agent, a run's whole record and the live view's columns"
-"--yes" = "pr: candidates (machine update -y)"
 
 [completion]
 test = "pr: completion, each shell's script loads and completes cozy's verbs"
@@ -143,14 +141,6 @@ test = "gate: cli cells, the throwaway model's int8 and fp8 lanes"
 "--package" = "gate: cli cells"
 "--on" = "gate: cli cells"
 
-["org edit"]
-test = "manual: a platform admin edits a parked org's name, links and handles on tensorhub.com (xs-131); a CI edit would change a real parked org"
-"--name" = "manual: as the command"
-"--link" = "manual: as the command"
-"--handle" = "manual: as the command"
-["org claim"]
-test = "manual: the author posts the code on a handle the org lists, then claims (xs-131, proved on the dev Hub); a CI claim needs a parked org and a public handle"
-
 [run]
 test = "pr: a weightless request; BiRefNet on the CPU"
 "--input" = "pr: a YAML request, then inline inputs over it"
@@ -185,7 +175,8 @@ test = "pr: run play, its link serves the output, then expires"
 
 # Hidden (`hide = true`, in no --help): probed in the binary; `coverage.py --source` finds any not listed here.
 [hidden]
-"org" = "manual: organization command group remains callable through hidden help"
+"--full" = "pr: entrypoints, full project diagnostics; run records and live view columns"
+"--yes" = "pr: candidates (machine update -y) and entrypoint flag parsing"
 "login" = "manual: a person types the emailed code (release-gate/enroll-ci-key.sh)"
 "logout" = "pr: signed out, logout says so"
 "whoami" = "pr: signed out, whoami says so"
