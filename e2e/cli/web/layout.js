@@ -198,6 +198,15 @@ function audit({ floor, hangZoom, fitted = true }) {
     if (!card || !media) continue;
     const m = R(media);
     const ms = getComputedStyle(media);
+    // The painted frame may letterbox scene-scaled content so its controls can stay readable.
+    const content = media.querySelector(':scope > .media-pixels');
+    if (card.classList.contains('here') && content && visible(content)) {
+      const ink = R(content);
+      if (ink.left < m.left - 1.5 || ink.right > m.right + 1.5 || ink.top < m.top - 1.5 || ink.bottom > m.bottom + 1.5) say('content-outside-frame', content, `${round(ink)} outside ${round(m)}`);
+      if (Math.abs((ink.left - m.left) - (m.right - ink.right)) > 1.5) say('content-off-center', content, `${Math.round(ink.left - m.left)} px left, ${Math.round(m.right - ink.right)} px right`);
+      const image = [...content.querySelectorAll('img')].find((img) => img.complete && img.naturalWidth && img.naturalHeight && !img.style.transform);
+      if (image && !card.querySelector('.in-frame') && Math.abs(ink.height - ink.width * image.naturalHeight / image.naturalWidth) > 1.5) say('content-aspect', content, `${Math.round(ink.width)}×${Math.round(ink.height)} from ${image.naturalWidth}×${image.naturalHeight}`);
+    }
     const ring = (ms.outlineStyle !== 'none' ? parseFloat(ms.outlineWidth) + parseFloat(ms.outlineOffset) : 1) * scaleOf(media);
     for (const el of node.querySelectorAll('.head > *')) {
       if (!visible(el)) continue;
@@ -213,7 +222,7 @@ function audit({ floor, hangZoom, fitted = true }) {
       if (s.top - ringOn < m.top - 1) say('takes-above', side, `its first take starts ${Math.round(m.top - s.top + ringOn)} px above its picture`);
       if (s.top > m.top + 2 + ringOn) say('takes-below', side, `its first take starts ${Math.round(s.top - m.top)} px below its picture's top`);
     }
-    // What's under it, one block with its picture and its takes: from the picture's left edge to the takes' right, a gap under the picture
+    // What's under it, one block with its painted frame and its takes: from the frame's left edge to the takes' right, a gap under the frame
     // and before the takes, and on neither.
     const under = node.querySelector('.here-under');
     if (under && visible(under)) {
@@ -221,8 +230,8 @@ function audit({ floor, hangZoom, fitted = true }) {
       const side = node.querySelector('.here-side:not(:empty)');
       const t = side && visible(side) ? R(side) : null;
       const gap = parseFloat(getComputedStyle(under).getPropertyValue('--here-gap')) * scaleOf(under);
-      if (Math.abs(u.left - m.left) > 1.5) say('under-left', under, `${Math.round(u.left - m.left)} px from its picture's left edge`);
-      if (Math.abs(u.right - (t ?? m).right) > 1.5) say('under-right', under, `${Math.round(u.right - (t ?? m).right)} px from ${t ? "its takes'" : "its picture's"} right edge`);
+      if (Math.abs(u.left - m.left) > 1.5) say('under-left', under, `${Math.round(u.left - m.left)} px from its frame's left edge`);
+      if (Math.abs(u.right - (t ?? m).right) > 1.5) say('under-right', under, `${Math.round(u.right - (t ?? m).right)} px from ${t ? "its takes'" : "its frame's"} right edge`);
       if (u.top - m.bottom < gap - 1) say('under-gap', under, `${Math.round(u.top - m.bottom)} px under its picture, not ${Math.round(gap)}`);
       if (t && t.left - m.right < gap - 1) say('takes-gap', side, `${Math.round(t.left - m.right)} px beside its picture, not ${Math.round(gap)}`);
       if (t && meet(u, t, 0)) say('under-on-takes', under, `${round(u)} on its takes ${round(t)}`);

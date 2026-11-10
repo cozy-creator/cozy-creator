@@ -2,7 +2,7 @@ import type { CSSProperties } from "react"
 import type { Viewport, XYPosition } from "@xyflow/react"
 import { CARD_WIDTH, type ElementView } from "./CanvasStore"
 import type { Box } from "./graph"
-import { HEAD, shownOf } from "./shown"
+import { aspectOf, HEAD, shownOf } from "./shown"
 import { ZOOMS } from "./ZoomControl"
 
 export const MOST_HERE = 2.5
@@ -69,21 +69,23 @@ export function readableSurface(source: HTMLElement) {
       const text = Math.round((1 / Math.min(MOST_HERE, zoom)) * 20) / 20
       const scale = Math.max(1, text)
       const localText = text / scale
-      const mediaWidth = passive ? pose.w / scale : pose.w
-      card.style.width = `${passive ? Math.max(CARD_WIDTH, mediaWidth) : pose.w}px`
+      const contentWidth = passive ? pose.w / scale : pose.w
+      card.style.width = `${passive ? Math.max(CARD_WIDTH, contentWidth) : pose.w}px`
       card.style.position = "absolute"
       card.style.left = "0px"
       card.style.top = "0px"
       card.style.scale = String(scale)
       card.style.setProperty("--text", String(localText))
-      card.style.setProperty("--surface-media-width", passive ? `${mediaWidth}px` : "100%")
+      card.style.setProperty("--surface-media-width", passive ? card.style.width : "100%")
+      card.style.setProperty("--surface-content-width", passive ? `${contentWidth}px` : "100%")
+      card.style.setProperty("--surface-media-height", passive ? `${contentWidth / aspectOf(view)}px` : "auto")
       card.style.setProperty("--surface-media-overflow", passive ? "visible" : "hidden")
       card.style.setProperty("--here-room", cap === undefined ? "none" : `${cap}px`)
       // Individual scale composes with the card's landing/drag transforms. Its origin stays theirs.
       const origin = getComputedStyle(card).transformOrigin.split(" ").map(Number.parseFloat)
       const translate = `${(scale - 1) * origin[0]}px ${(scale - 1) * origin[1]}px`
       card.style.translate = translate
-      return { scale, localText, translate, width: card.style.width }
+      return { scale, localText, translate, width: card.style.width, contentWidth }
     }
     const measure = (scale: number) => {
       const root = card.getBoundingClientRect()
@@ -107,7 +109,14 @@ export function readableSurface(source: HTMLElement) {
       return { x, y, w: Math.ceil(origin.x + right * scale) - x, h: Math.ceil(origin.y + bottom * scale) - y }
     }
     // The picture keeps its canonical canvas anchor while readable chrome rises above it.
-    const anchor = (scale: number) => passive && media ? { x: pose.x - media.offsetLeft * scale, y: pose.y + HEAD - media.offsetTop * scale } : { x: pose.x, y: pose.y }
+    const anchor = (scale: number) => {
+      if (!passive || !media) return { x: pose.x, y: pose.y }
+      const content = media.querySelector<HTMLElement>(":scope > .media-pixels") ?? media
+      // Native CSS widths retain the actual fractional layout without camera-dependent rect rounding.
+      const frameWidth = Number.parseFloat(getComputedStyle(media).width)
+      const contentWidth = Number.parseFloat(getComputedStyle(content).width)
+      return { x: pose.x - (media.offsetLeft + (frameWidth - contentWidth) / 2) * scale, y: pose.y + HEAD - media.offsetTop * scale }
+    }
 
     let zoom = viewport.zoom
     let fitted: Box | undefined
@@ -169,7 +178,9 @@ export function readableSurface(source: HTMLElement) {
         scale: String(selected.scale),
         translate: selected.translate,
         "--text": String(selected.localText),
-        "--surface-media-width": passive ? `${pose.w / selected.scale}px` : "100%",
+        "--surface-media-width": passive ? selected.width : "100%",
+        "--surface-content-width": passive ? `${selected.contentWidth}px` : "100%",
+        "--surface-media-height": passive ? `${selected.contentWidth / aspectOf(view)}px` : "auto",
         "--surface-media-overflow": passive ? "visible" : "hidden",
         "--surface-inverse": String(1 / (viewport.zoom * selected.scale)),
         "--here-room": underRoom === undefined ? "none" : `${underRoom}px`,
