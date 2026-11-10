@@ -462,6 +462,7 @@ impl Provider {
             input: Some(input),
             guard,
             owner,
+            #[cfg(not(target_os = "macos"))]
             identity: None,
             helpers: Vec::new(),
             #[cfg(target_os = "macos")]
@@ -670,6 +671,7 @@ pub struct Mounted {
     input: Option<ChildStdin>,
     guard: ViewGuard,
     owner: platform::process::Exact,
+    #[cfg(not(target_os = "macos"))]
     identity: Option<String>,
     helpers: Vec<platform::process::Exact>,
     #[cfg(target_os = "macos")]
@@ -712,12 +714,11 @@ impl Mounted {
     /// Reconciles an unexpectedly exited supervisor before the caller checks mount status.
     /// Native disk-image keys live in the kernel, so an exited helper alone is not a lock.
     pub fn reconcile(&mut self) -> Result<()> {
-        if self
-            .child
-            .try_wait()
-            .map_err(io_error("read filesystem supervisor status"))?
-            .is_some()
-        {
+        if self.owner.wait_for(Duration::ZERO)? {
+            let _ = self
+                .child
+                .try_wait()
+                .map_err(io_error("reap filesystem supervisor"))?;
             self.input.take();
             for helper in &self.helpers {
                 if !helper.wait_for(Duration::ZERO)? {

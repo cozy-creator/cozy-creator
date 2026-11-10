@@ -177,7 +177,11 @@ fn base_device(value: &Value) -> Option<String> {
         .get("system-entities")?
         .as_array()?
         .iter()
-        .filter_map(|entity| entity.as_dictionary()?.get("dev-entry")?.as_string())
+        .filter_map(Value::as_dictionary)
+        .filter(|entity| {
+            entity.get("content-hint").and_then(Value::as_string) == Some("GUID_partition_scheme")
+        })
+        .filter_map(|entity| entity.get("dev-entry")?.as_string())
         .find(|device| {
             device.strip_prefix("/dev/disk").is_some_and(|suffix| {
                 !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit())
