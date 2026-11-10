@@ -390,7 +390,7 @@ PY
 # Deliberately form a v1 fixture from this real project's materialized SQL rows, without modifying
 # its active source. Opening the copy invokes the actual migration and preserves a v1 recovery DB.
 cozy project -p "$V" export > "$OUT/crdt-v1-export.yaml" 2> "$OUT/crdt-v1.err" || check "CRDT: v1 migration: $(tail -c 300 "$OUT/crdt-v1.err")"
-cmp -s "$OUT/crdt-export.yaml" "$OUT/crdt-v1-export.yaml" || check "CRDT: v1 migration changed logical fields"
+diff -u <(sed '/^# cozy-project-base: /d' "$OUT/crdt-export.yaml") <(sed '/^# cozy-project-base: /d' "$OUT/crdt-v1-export.yaml") > "$OUT/crdt-v1-export.diff" || check "CRDT: v1 migration changed logical fields"
 { [ -f "$V/project.db.v1" ] && [ "$(sql1 "$V" 'PRAGMA user_version')" = 2 ]; } || check "CRDT: v1 backup/schema missing"
 [ "$(sql1 "$P" 'SELECT count(*) FROM crdt_changes')" -ge 4 ] || check "CRDT: original change journal absent"
 # Relational graph/history rows are now projections: damaging them must not become a logical
@@ -400,6 +400,16 @@ cozy project -p "$P" set groudon 'description=A canonical-store check.' > "$OUT/
 cozy project -p "$P" export > "$OUT/crdt-cache-export.yaml" || check "CRDT: read after projection damage"
 cozy --json project -p "$P" history > "$OUT/crdt-cache-history.json" || check "CRDT: history after projection damage"
 { ! grep -q QUERY_CACHE_ONLY "$OUT/crdt-cache-export.yaml" && ! grep -q QUERY_CACHE_ONLY "$OUT/crdt-cache-history.json"; } || check "CRDT: a relational projection overrode canonical state/history"
+# An exported edit carries a graph-body base. A subsequent CLI edit must not be overwritten
+# by an old file; runtime/canvas-only changes do not participate in that precondition.
+cozy project -p "$P" export > "$OUT/crdt-stale-export.yaml" || check "CRDT: export edit base"
+cozy project -p "$P" set groudon 'description=An intervening CLI edit.' > "$OUT/crdt-intervening-set.txt" 2>&1 || check "CRDT: intervening CLI edit"
+if cozy --json project -p "$P" import "$OUT/crdt-stale-export.yaml" > "$OUT/crdt-stale-import.json" 2> "$OUT/crdt-stale-import.err"; then
+  check "CRDT: stale same-project export overwrote a newer CLI edit"
+fi
+grep -q project_changed "$OUT/crdt-stale-import.json" "$OUT/crdt-stale-import.err" || check "CRDT: stale import did not explain project_changed"
+cozy project -p "$P" export > "$OUT/crdt-stale-after.yaml" || check "CRDT: export after stale refusal"
+grep -q 'An intervening CLI edit.' "$OUT/crdt-stale-after.yaml" || check "CRDT: stale import erased the intervening edit"
 # Cargo consumes the same published native library as the product. This is a format/merge proof,
 # not another daemon or a substitute project storage implementation.
 CARGO_BUILD_JOBS=1 nice -n 19 cargo run --quiet --locked --manifest-path "$here/crdt/Cargo.toml" -- "$OUT/crdt-before.am" "$OUT/crdt-renamed.am" > "$OUT/crdt-native.json" 2> "$OUT/crdt-native.err" \

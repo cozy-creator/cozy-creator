@@ -56,6 +56,11 @@ fn history_fixture(input: &Path, output: &Path) -> Result<Value, String> {
         .as_object().into_iter().flatten()
         .filter_map(|(_, record)| record["record"]["id"].as_u64())
         .max().unwrap_or(0) + 1;
+    let graph = value(&seed);
+    let content_hash = graph["assets"].as_object().into_iter().flatten()
+        .flat_map(|(_, asset)| asset["versions"].as_object().into_iter().flatten())
+        .flat_map(|(_, version)| version["record"]["files"].as_object().into_iter().flatten())
+        .find_map(|(_, hash)| hash.as_str()).ok_or("no CLI-created media hash for run fixture")?;
     let mut replicas = Vec::new();
     for (actor, uid) in [(201u64, "e2e-history-a"), (202u64, "e2e-history-b")] {
         let mut doc = AutoCommit::load(&bytes).map_err(|e| e.to_string())?.with_actor(ActorId::from(actor.to_be_bytes()));
@@ -67,6 +72,18 @@ fn history_fixture(input: &Path, output: &Path) -> Result<Value, String> {
         doc.put(&record, "id", number).map_err(|e| e.to_string())?;
         doc.put(&record, "at_ms", 1i64).map_err(|e| e.to_string())?;
         for (key, text) in [("by", "{}"), ("words", uid), ("edits", "[]"), ("changes", "[]")] {
+            doc.put(&record, key, text).map_err(|e| e.to_string())?;
+        }
+        let runs = object(&doc, &ROOT, "runs")?;
+        let run_uid = format!("{uid}-file");
+        let run = doc.put_object(&runs, run_uid.as_str(), ObjType::Map).map_err(|e| e.to_string())?;
+        doc.put(&run, "present", true).map_err(|e| e.to_string())?;
+        doc.put(&run, "order", 0u64).map_err(|e| e.to_string())?;
+        let record = doc.put_object(&run, "record", ObjType::Map).map_err(|e| e.to_string())?;
+        doc.put(&record, "id", run_uid).map_err(|e| e.to_string())?;
+        doc.put(&record, "run_id", uid).map_err(|e| e.to_string())?;
+        doc.put(&record, "run", number).map_err(|e| e.to_string())?;
+        for (key, text) in [("function", "e2e/replica"), ("output", "image"), ("sha256", content_hash)] {
             doc.put(&record, key, text).map_err(|e| e.to_string())?;
         }
         doc.commit();
@@ -87,7 +104,11 @@ fn history_check(input: &Path) -> Result<Value, String> {
     require(a["present"] == true && b["present"] == true, "next CLI write lost a concurrent same-number history entry")?;
     require(a["record"]["uid"] == "e2e-history-a" && b["record"]["uid"] == "e2e-history-b", "history map identity was replaced")?;
     require(a["record"]["id"] == b["record"]["id"], "history fixture no longer exercises colliding local labels")?;
-    Ok(json!({"passed":true,"same_number_history_preserved_after_cli_commit":2}))
+    let a = &value["runs"]["e2e-history-a-file"];
+    let b = &value["runs"]["e2e-history-b-file"];
+    require(a["present"] == true && b["present"] == true, "next CLI write lost a same-number peer run file")?;
+    require(a["record"]["run"] == b["record"]["run"] && a["record"]["run_id"] != b["record"]["run_id"], "run fixture lost its distinct global origins")?;
+    Ok(json!({"passed":true,"same_number_history_preserved_after_cli_commit":2,"same_number_run_files_preserved_after_cli_commit":2}))
 }
 fn run(before: &Path, renamed: &Path) -> Result<Value, String> {
     let seed_bytes = fs::read(before).map_err(|e| e.to_string())?;

@@ -494,6 +494,7 @@ impl Holding {
 
 /// What a project's run landed: which run, of what, its bytes' digest, and what's measured of them.
 pub(crate) struct Landed<'a> {
+    pub run_id: &'a api::ids::RunId,
     pub run: u64,
     pub target: &'a str,
     pub output: &'a str,
@@ -520,7 +521,7 @@ pub(crate) fn landed(project: &FsPath, made: &Landed, dest: &FsPath) -> Result<(
         0 => made.output.to_owned(),
         n => format!("{}-{n}", made.output),
     };
-    let row = folder::RunFile { run: made.run, function: made.target.to_owned(), output, sha256: made.digest.to_owned() };
+    let row = folder::RunFile { run: made.run, run_id: Some(made.run_id.clone()), function: made.target.to_owned(), output, sha256: made.digest.to_owned(), ..Default::default() };
     // A folder from before project.db moves to format 4 here, said once, and its first read imports it. One a read moved as the run
     // was sent (it binds to the project) is said here too.
     let folder = Folder::at(project);
@@ -2477,7 +2478,9 @@ fn going(api: &Api, folder: &Folder) -> Result<Vec<Event>, Error> {
     Ok(running.collect())
 }
 
-/// The export's ETag, as `text` holds it.
+const YAML_EXPORT_BASE: &str = "# cozy-project-base: ";
+
+/// The canonical graph body's ETag, independent of canvas, runtime state and export comments.
 fn yaml_etag(text: &str) -> String {
     format!("\"{}\"", hex::encode(Sha256::digest(text)))
 }
@@ -2490,7 +2493,8 @@ async fn yaml(State(api): State<Arc<Api>>, Path(id): Path<String>, headers: Head
     if headers.get(header::IF_NONE_MATCH).and_then(|value| value.to_str().ok()) == Some(etag.as_str()) {
         return Ok((StatusCode::NOT_MODIFIED, [(header::ETAG, etag)]).into_response());
     }
-    Ok(([(header::CONTENT_TYPE, "application/yaml".to_owned()), (header::ETAG, etag)], text).into_response())
+    let exported = format!("{YAML_EXPORT_BASE}{} {etag}\n{text}", project.id);
+    Ok(([(header::CONTENT_TYPE, "application/yaml".to_owned()), (header::ETAG, etag)], exported).into_response())
 }
 
 /// `PUT /v1/projects/{id}/yaml` (`cozy project import <file>.yaml`): these bytes are the project, each box, field and section that differs
@@ -2508,13 +2512,16 @@ async fn save(
     let text = std::str::from_utf8(&body).map_err(|e| Refusal(Error::new(Kind::Validation, "project_yaml", format!("{}: {e}", folder::PROJECT))))?;
     let project = api.projects.get(&api, &id)?;
     let folder = &project.folder;
+    let exported = text.lines().next().and_then(|line| line.strip_prefix(YAML_EXPORT_BASE));
+    let base = exported.map(|base| base.split_once(' ').ok_or_else(|| Refusal(Error::new(Kind::Validation, "project_yaml", "the export's project/base marker is incomplete")))).transpose()?;
     let given = written::Written::from_yaml(text).map_err(Refusal)?;
     // Read from its text, so what it refuses names its lines.
     let doc = Doc::of_text(folder, text, &folder.lock().map_err(Refusal)?).map_err(Refusal)?;
     let text = folder
         .act(|| {
-            if let Some(read) = &read
-                && yaml_etag(&folder.text()?) != *read
+            let current = yaml_etag(&folder.text()?);
+            if read.as_ref().is_some_and(|read| *read != current)
+                || base.is_some_and(|(owner, base)| owner == project.id && base != current)
             {
                 return Err(Error::new(Kind::Conflict, "project_changed", "the project changed since it was read").remedy("export it again and make the edit on what it holds"));
             }

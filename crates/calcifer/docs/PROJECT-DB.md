@@ -121,7 +121,10 @@ stands, and is answered in `kept` as it is. This is checked in the transaction, 
 ## Export and import
 
 YAML is a view. `cozy project export [-o file]` writes the project as format-4 YAML (`GET /v1/projects/{id}/yaml`), for reading, diffs or
-git. `cozy project import <file>.yaml` reads one back (`PUT …/yaml`): each box, head and field that differs is written, in one
+git. An export-only comment records the project's ID and canonical graph-body base hash. Importing an edited export into that same
+project refuses with `project_changed` if the graph changed since export, preserving intervening edits; canvas/runtime changes do not
+invalidate the base. Legacy/unstamped YAML and another project's exported YAML remain explicit imports. No file watcher treats YAML as
+another authority. `cozy project import <file>.yaml` reads one back (`PUT …/yaml`): each box, head and field that differs is written, in one
 transaction and one entry, and what it doesn't read is refused with the line, changing nothing. A media file to `import` stays an
 asset import. No `project.lock` is exported: versions, takes and files stay in the database.
 

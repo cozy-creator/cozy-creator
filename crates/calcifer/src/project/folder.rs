@@ -479,8 +479,12 @@ pub(crate) struct Lock {
 }
 
 /// One file a `cozy run` left in the project.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct RunFile {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<api::ids::RunId>,
     pub run: u64,
     pub function: String,
     pub output: String,
@@ -1597,9 +1601,16 @@ impl Folder {
             }
             let old = std::cell::RefCell::new(vec![]);
             let listed = |rows: &mut Vec<RunFile>| {
-                let earlier = rows.iter().position(|row| row.run == made.run && row.output == made.output);
+                let earlier = rows.iter().position(|row| row.output == made.output && match (&row.run_id, &made.run_id) {
+                    (Some(held), Some(made)) => held == made,
+                    (None, None) => row.run == made.run,
+                    _ => false,
+                });
                 match earlier {
-                    Some(at) => *old.borrow_mut() = vec![std::mem::replace(&mut rows[at], made.clone()).sha256],
+                    Some(at) => {
+                        let next = RunFile { id: rows[at].id.clone(), ..made.clone() };
+                        *old.borrow_mut() = vec![std::mem::replace(&mut rows[at], next).sha256];
+                    }
                     None => rows.push(made.clone()),
                 }
             };

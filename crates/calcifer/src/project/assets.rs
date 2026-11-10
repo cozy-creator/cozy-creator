@@ -271,7 +271,7 @@ pub(super) fn deleted(api: &Arc<Api>, project: &Arc<Project>, id: &str, name: &s
                 lock.bury(&name_key(&name));
                 // What it held goes on record, so `reclaim` can take it.
                 if let Some(sha256) = pin.clone().filter(|sha256| !lock.recorded().contains(sha256)) {
-                    lock.runs.push(folder::RunFile { run: 0, function: String::new(), output: "deleted".to_owned(), sha256 });
+                    lock.runs.push(folder::RunFile { run: 0, function: String::new(), output: "deleted".to_owned(), sha256, ..Default::default() });
                 }
             })?;
         }
