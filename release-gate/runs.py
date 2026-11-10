@@ -139,7 +139,10 @@ class Execution(TypedDict, total=False):
 
 
 class Graph(TypedDict, total=False):
+    """A component's per-call CUDA graphs (0.22: a call's regions; there are no denoise loops)."""
     replays: int | None
+    captures: int | None
+    region_calls: int | None
 
 
 class Residency(TypedDict, total=False):
@@ -259,12 +262,14 @@ class Run:
 
     @property
     def graphs(self) -> str | None:
-        """How its denoise loops ran: `native` when any step replayed a captured CUDA graph, `eager` when none did,
-        None with no loop (a text model, a describer)."""
+        """How its compiled work ran: `native` when anything replayed a captured CUDA graph (a denoise loop's
+        `native_steps` before 0.22; a component's per-call `replays` since, where `execution.loops` is null), `eager` when
+        work ran and nothing replayed, None when neither recorded any (a text model, a describer)."""
         loops = [l for m in self.measurements for l in (m.get('execution') or {}).get('loops') or []]
-        if not loops:
-            return None
-        return 'native' if any((l.get('native_steps') or 0) > 0 for l in loops) else 'eager'
+        regions = [g for m in self.measurements for g in ((m.get('residency') or {}).get('graphs') or {}).values()]
+        if any((l.get('native_steps') or 0) > 0 for l in loops) or any((g.get('replays') or 0) > 0 for g in regions):
+            return 'native'
+        return 'eager' if loops or any((g.get('region_calls') or 0) or (g.get('captures') or 0) for g in regions) else None
 
     @property
     def replays(self) -> int:

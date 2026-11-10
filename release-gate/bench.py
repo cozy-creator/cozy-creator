@@ -442,6 +442,8 @@ def judge(defs: list[CellDef], cand: Gate, base: Group | None, version: str | No
                 v.notes.append(f"refilled {w['refilled_gib']:.0f} GiB a call, baseline {bw.get('refilled_gib', 0):.0f}")
             if b['kernels'] and c['kernels'] and (b['kernels']['gemm'], b['kernels']['attention']) != (c['kernels']['gemm'], c['kernels']['attention']):
                 v.notes.append(f"kernels {b['kernels']['gemm']} / {b['kernels']['attention']} -> {c['kernels']['gemm']} / {c['kernels']['attention']}")
+            if b['kernels'] and c['kernels'] and b['kernels']['graphs'] != c['kernels']['graphs']:
+                v.notes.append(f"CUDA graphs {b['kernels']['graphs']} -> {c['kernels']['graphs']} (replays {bw.get('replays', 0):.0f} -> {w.get('replays', 0):.0f})")
         elif c['n']:
             v.notes.append('no baseline: this run starts it')
         x, was = v.comfy, comfy.get(d['name'])
