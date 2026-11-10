@@ -55,14 +55,14 @@ class NotYet(Exception):
 @app.tool(label="Probe: composed", named="composed", accelerator=False)
 async def composed(ctx: Context, payload: Compose, out: Outputs) -> Composed:
     """Shade the page in the other package; lighten it here if that came out dark; enlarge it if asked."""
-    shaded = await shade(image=payload.page, amount=payload.darkness, hold=payload.hold)
+    shaded = await shade(image=payload.page, amount=payload.darkness, hold=payload.hold)  # type: ignore[call-arg,misc]  # a cross-package call: request fields by name, awaited; the Runtime types the function itself
     out.publish("image", shaded.image, label="Shaded")
     if payload.fails_until and not os.path.exists(payload.fails_until):
         raise NotYet(f"{payload.fails_until} isn't there yet")
     page = shaded.image
     if shaded.dark:
-        page = (await tint(image=page)).image
+        page = (await tint(image=page)).image  # type: ignore[call-arg]  # out is injected; invocable's ParamSpec still lists it
         out.publish("image", page, label="Lightened")
     if payload.enlarge:
-        page = (await enlarge(image=page)).image
+        page = (await enlarge(image=page)).image  # type: ignore[call-arg,misc]  # a cross-package call, as shade's
     return Composed(page)

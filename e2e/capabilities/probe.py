@@ -103,7 +103,7 @@ def _tensord() -> int:
 
 
 @app.entrypoint(accelerator=False)
-def scan(payload: Probe, weights: Weights) -> Report:
+def scan(payload: Probe, weights: Weights) -> Report:  # type: ignore[type-arg]  # bare Weights: any layout, as the Runtime spells it
     time.sleep(payload.seconds)
     try:
         component = weights.components()[0]
@@ -113,7 +113,7 @@ def scan(payload: Probe, weights: Weights) -> Report:
         read = f"{component}/{key}: {len(into)} bytes"
     except Exception as e:
         read = f"{type(e).__name__}: {e}"[:300]
-    held = {}
+    held: dict[tuple[str, str], tuple[str, int]] = {}  # Bearers._latest: (actor, endpoint) -> (token, expiry ms)
     for obj in gc.get_objects():
         if type(obj).__name__ == "Bearers":
             held.update(getattr(obj, "_latest", {}))

@@ -7,15 +7,61 @@ the timeline is the sum of the entries long."""
 import hashlib
 import os
 import sys
+from collections.abc import Iterator, Mapping, Sequence
+from typing import Protocol, TypedDict
 
-import opentimelineio as otio
+import opentimelineio as otio  # no py.typed: what this reads is typed below
+
+
+class RationalTime(Protocol):
+    value: float
+    rate: float
+
+
+class TimeRange(Protocol):
+    start_time: RationalTime
+    duration: RationalTime
+
+    def end_time_exclusive(self) -> RationalTime: ...
+
+
+class CozyMetadata(TypedDict, total=False):
+    retimed_from_fps: float
+    still: bool
+
+
+class Reference(Protocol):
+    target_url: str
+
+
+class Clip(Protocol):
+    name: str
+    source_range: TimeRange
+    metadata: Mapping[str, CozyMetadata]
+    media_reference: Reference
+
+
+class Track(Protocol):
+    kind: str
+
+    def find_clips(self) -> Iterator[Clip]: ...
+
+
+class Timeline(Protocol):
+    name: str
+    tracks: Sequence[Track]
+
+    def duration(self) -> RationalTime: ...
+    def video_tracks(self) -> list[Track]: ...
+    def audio_tracks(self) -> list[Track]: ...
+
 
 path, fps, specs = sys.argv[1], float(sys.argv[2]), [s.split(":") for s in sys.argv[3:]]
-timeline = otio.adapters.read_from_file(path)
+timeline: Timeline = otio.adapters.read_from_file(path)
 ok = True
 
 
-def check(good, said):
+def check(good: bool, said: str) -> None:
     global ok
     ok &= bool(good)
     print(f"  {'PASS' if good else 'FAIL'} {said}")

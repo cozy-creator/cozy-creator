@@ -193,42 +193,11 @@ crates/varena/examples/cuda_driver.py: [no-untyped-def] Function is missing a ty
 crates/varena/examples/cuda_driver.py: [no-untyped-def] Function is missing a type annotation
 crates/varena/examples/python_client.py: [no-untyped-call] Call to untyped function "Stream" in typed context
 e2e/capabilities/probe.py: [misc] Type of decorated function contains type "Any" ("Callable[[Probe, Weights[Any]], Report]")
-e2e/capabilities/probe.py: [type-arg] Missing type arguments for generic type "Weights"
-e2e/capabilities/probe.py: [var-annotated] Need type annotation for "held" (hint: "held: dict[<type>, <type>] = ...")
 e2e/cli/project/boxes.py: [arg-type] Argument 2 to "Take" has incompatible type "File"; expected "Latents"
 e2e/cli/project/boxes.py: [type-arg] Missing type arguments for generic type "Prompt"
 e2e/cli/project/boxes.py: [type-arg] Missing type arguments for generic type "Prompt"
 e2e/cli/project/boxes.py: [type-arg] Missing type arguments for generic type "Prompt"
-e2e/cli/project/frames.py: [arg-type] Argument "key" to "min" has incompatible type overloaded function; expected "Callable[[int], SupportsDunderLT[Any] | SupportsDunderGT[Any]]"
-e2e/cli/project/frames.py: [assignment] Incompatible types in assignment (expression has type "int", variable has type "str")
-e2e/cli/project/frames.py: [call-overload] No overload variant of "range" matches argument types "str", "str"
-e2e/cli/project/frames.py: [no-untyped-call] Call to untyped function "frames" in typed context
-e2e/cli/project/frames.py: [no-untyped-call] Call to untyped function "frames" in typed context
-e2e/cli/project/frames.py: [no-untyped-call] Call to untyped function "probe" in typed context
-e2e/cli/project/frames.py: [no-untyped-def] Function is missing a type annotation
-e2e/cli/project/frames.py: [no-untyped-def] Function is missing a type annotation
-e2e/cli/project/frames.py: [operator] Unsupported operand types for - ("str" and "int")
-e2e/cli/project/otio_check.py: [no-untyped-call] Call to untyped function "check" in typed context
-e2e/cli/project/otio_check.py: [no-untyped-call] Call to untyped function "check" in typed context
-e2e/cli/project/otio_check.py: [no-untyped-call] Call to untyped function "check" in typed context
-e2e/cli/project/otio_check.py: [no-untyped-call] Call to untyped function "check" in typed context
-e2e/cli/project/otio_check.py: [no-untyped-call] Call to untyped function "check" in typed context
-e2e/cli/project/otio_check.py: [no-untyped-call] Call to untyped function "check" in typed context
-e2e/cli/project/otio_check.py: [no-untyped-call] Call to untyped function "check" in typed context
-e2e/cli/project/otio_check.py: [no-untyped-call] Call to untyped function "check" in typed context
-e2e/cli/project/otio_check.py: [no-untyped-def] Function is missing a type annotation
 e2e/cli/project/probe-callee/e2e_probe_callee/__init__.py: [arg-type] Argument 1 to "construct" of "Loader" has incompatible type "type[object]"; expected "Callable[[Config], object]"
-e2e/cli/project/probe-callee/e2e_probe_callee/__init__.py: [explicit-any] Explicit "Any" is not allowed
-e2e/cli/project/probe-callee/e2e_probe_callee/__init__.py: [explicit-any] Explicit "Any" is not allowed
-e2e/cli/project/probe-callee/e2e_probe_callee/__init__.py: [explicit-any] Explicit "Any" is not allowed
-e2e/cli/project/probe-callee/e2e_probe_callee/__init__.py: [misc] Type of decorated function contains type "Any" ("Callable[[Upscaler, Any], Any]")
-e2e/cli/project/probe/e2e_probe/__init__.py: [call-arg] Missing named argument "out" for "tint"
-e2e/cli/project/probe/e2e_probe/__init__.py: [call-arg] Unexpected keyword argument "amount" for "shade"
-e2e/cli/project/probe/e2e_probe/__init__.py: [call-arg] Unexpected keyword argument "hold" for "shade"
-e2e/cli/project/probe/e2e_probe/__init__.py: [call-arg] Unexpected keyword argument "image" for "enlarge"
-e2e/cli/project/probe/e2e_probe/__init__.py: [call-arg] Unexpected keyword argument "image" for "shade"
-e2e/cli/project/probe/e2e_probe/__init__.py: [misc] Incompatible types in "await" (actual type "Enlarged", expected type "Awaitable[Any]")
-e2e/cli/project/probe/e2e_probe/__init__.py: [misc] Incompatible types in "await" (actual type "Shaded", expected type "Awaitable[Any]")
 e2e/cli/project/shaped.py: [arg-type] Argument 2 to "Shot" has incompatible type "File"; expected "Latents"
 e2e/cli/project/shaped.py: [misc] Non-frozen dataclass cannot inherit from a frozen dataclass
 e2e/cli/project/shaped.py: [misc] Non-frozen dataclass cannot inherit from a frozen dataclass
@@ -246,38 +215,9 @@ e2e/cli/project/shots.py: [type-arg] Missing type arguments for generic type "Pr
 e2e/cli/project/shots.py: [type-arg] Missing type arguments for generic type "Prompt"
 e2e/cli/project/shots.py: [type-arg] Missing type arguments for generic type "Prompt"
 e2e/cli/project/shots.py: [type-arg] Missing type arguments for generic type "Prompt"
-e2e/cli/project/terminal.py: [no-untyped-call] Call to untyped function "Screen" in typed context
-e2e/cli/project/terminal.py: [no-untyped-call] Call to untyped function "char" in typed context
-e2e/cli/project/terminal.py: [no-untyped-call] Call to untyped function "clear" in typed context
-e2e/cli/project/terminal.py: [no-untyped-call] Call to untyped function "escape" in typed context
-e2e/cli/project/terminal.py: [no-untyped-call] Call to untyped function "feed" in typed context
-e2e/cli/project/terminal.py: [no-untyped-call] Call to untyped function "main" in typed context
-e2e/cli/project/terminal.py: [no-untyped-call] Call to untyped function "text" in typed context
-e2e/cli/project/terminal.py: [no-untyped-call] Call to untyped function "text" in typed context
-e2e/cli/project/terminal.py: [no-untyped-def] Function is missing a return type annotation
-e2e/cli/project/terminal.py: [no-untyped-def] Function is missing a return type annotation
-e2e/cli/project/terminal.py: [no-untyped-def] Function is missing a return type annotation
-e2e/cli/project/terminal.py: [no-untyped-def] Function is missing a return type annotation
-e2e/cli/project/terminal.py: [no-untyped-def] Function is missing a type annotation
-e2e/cli/project/terminal.py: [no-untyped-def] Function is missing a type annotation
-e2e/cli/project/terminal.py: [no-untyped-def] Function is missing a type annotation
 e2e/cli/project/tool.py: [type-arg] Missing type arguments for generic type "Prompt"
 e2e/cli/project/tool.py: [type-arg] Missing type arguments for generic type "Prompt"
-e2e/cli/web/heavy.py: [call-arg] Missing named argument "out" for "paint"
-e2e/cli/web/heavy.py: [call-arg] Missing named argument "weights" for "paint"
 e2e/cli/web/heavy.py: [misc] Type of decorated function contains type "Any" ("def (*, image: ImageFile, weights: Weights[Any], out: Outputs) -> PendingCall[Painted]")
-e2e/cli/web/heavy.py: [type-arg] Missing type arguments for generic type "Weights"
-e2e/coverage.py: [union-attr] Item "None" of "Match[str] | None" has no attribute "group"
-e2e/imports/paging.py: [arg-type] Argument 1 to "parts" has incompatible type "object"; expected "Checkpoint"
-e2e/imports/paging.py: [attr-defined] "object" has no attribute "components"
-e2e/imports/paging.py: [attr-defined] "object" has no attribute "components"
-e2e/imports/paging.py: [attr-defined] "object" has no attribute "components"
-e2e/imports/paging.py: [attr-defined] "object" has no attribute "pipeline"
-e2e/imports/paging.py: [attr-defined] "type" has no attribute "load"
-e2e/imports/paging.py: [call-overload] No overload variant of "__new__" of "type" matches argument type "type"
-e2e/imports/paging.py: [misc] Generator has incompatible item type "int"; expected "bool"
-e2e/imports/probe.py: [no-any-return] Returning Any from function declared to return "object | None"
-e2e/imports/probe.py: [no-untyped-def] Function is missing a type annotation for one or more parameters
 release-gate/analyze.py: [assignment] Incompatible types in assignment (expression has type "dict[str, Any] | None", variable has type "dict[str, Any]")
 release-gate/analyze.py: [no-untyped-call] Call to untyped function "canonical" in typed context
 release-gate/analyze.py: [no-untyped-call] Call to untyped function "canonical" in typed context
