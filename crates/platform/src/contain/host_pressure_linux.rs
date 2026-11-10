@@ -20,7 +20,6 @@ pub struct Pressure {
     psi: Option<File>,
     events: Option<OwnedFd>,
     nudge: Nudge,
-    how: String,
 }
 
 /// TensorD's own events wake the watcher for a look: the only wakeups where the kernel allows
@@ -36,8 +35,8 @@ impl Nudge {
 }
 
 impl Pressure {
-    /// Armed on whatever this process may watch, each limit on its own; `how` says what and why
-    /// not. An error only when not even an eventfd exists.
+    /// Armed on whatever this process may watch, each limit on its own. An error only when not
+    /// even an eventfd exists.
     pub fn arm(mode: HostMode) -> crate::Result<Self> {
         let nudge = Nudge(Arc::new(eventfd(0, EventfdFlags::NONBLOCK | EventfdFlags::CLOEXEC).map_err(io::Error::from)?));
         let cgroups = super::super::host_memory::cgroups();
@@ -54,14 +53,9 @@ impl Pressure {
                 .collect(),
             _ => vec![],
         };
-        let mut how = vec![];
-        let psi = trigger(&path, kind)
-            .inspect(|_| how.push(format!("psi {} {kind}", path.display())))
-            .inspect_err(|error| how.push(format!("no psi trigger on {} ({error})", path.display())))
-            .ok();
-        let events = watch(&limited, &mut how);
-        how.push("tensord events".into());
-        Ok(Self { psi, events, nudge, how: how.join("; ") })
+        let psi = trigger(&path, kind).ok();
+        let events = watch(&limited);
+        Ok(Self { psi, events, nudge })
     }
 
     pub fn nudge(&self) -> Nudge {
@@ -106,29 +100,15 @@ fn trigger(path: &Path, kind: &str) -> io::Result<File> {
     Ok(trigger)
 }
 
-/// One inotify descriptor watching each file it can for IN_MODIFY, each noted in `how`; None
-/// when it watches none.
-fn watch(files: &[PathBuf], how: &mut Vec<String>) -> Option<OwnedFd> {
+/// One inotify descriptor watching each file it can for IN_MODIFY; None when it watches none.
+fn watch(files: &[PathBuf]) -> Option<OwnedFd> {
     if files.is_empty() {
-        how.push("no limited cgroup v2".into());
         return None;
     }
-    let fd = match inotify::init(CreateFlags::NONBLOCK | CreateFlags::CLOEXEC) {
-        Ok(fd) => fd,
-        Err(error) => {
-            how.push(format!("no inotify ({})", io::Error::from(error)));
-            return None;
-        }
-    };
+    let fd = inotify::init(CreateFlags::NONBLOCK | CreateFlags::CLOEXEC).ok()?;
     let mut watched = false;
     for file in files {
-        match inotify::add_watch(&fd, file, WatchFlags::MODIFY).map_err(io::Error::from) {
-            Ok(_) => {
-                how.push(format!("inotify {}", file.display()));
-                watched = true;
-            }
-            Err(error) => how.push(format!("no inotify on {} ({error})", file.display())),
-        }
+        watched |= inotify::add_watch(&fd, file, WatchFlags::MODIFY).is_ok();
     }
     watched.then_some(fd)
 }

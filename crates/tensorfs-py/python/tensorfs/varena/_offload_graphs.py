@@ -230,7 +230,8 @@ class Graphs:
         with torch.inference_mode(False):
             inputs = [torch.empty(v.shape, dtype=v.dtype, device=v.device).copy_(v) if type(v) is torch.Tensor else None for v in leaves]
         statics = tree_unflatten([v if s is None else s for v, s in zip(leaves, inputs)], spec)
-        if self.pool is None:
+        fresh = self.pool is None
+        if fresh:
             self.pool = tuple(torch.cuda.graph_pool_handle())
         graph, bound = _Graph(), []
         graph.cuda, graph.inputs, graph.spec = torch.cuda.CUDAGraph(), inputs, spec
@@ -245,7 +246,8 @@ class Graphs:
             with vt.graph(graph.cuda, pool=self.pool, stream=stream, reserve_bytes=vt.pool_bytes(peak)):
                 graph.outputs = candidate.original(*statics[0], **statics[1])
         except BaseException:
-            self.pool = None  # Torch forgets a pool whose only capture failed.
+            if fresh:  # Torch forgets a pool whose only capture failed; one earlier graphs hold stays.
+                self.pool = None
             raise
         finally:
             self.active = None

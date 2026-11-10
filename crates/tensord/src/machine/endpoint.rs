@@ -1,7 +1,6 @@
-//! The pod's public endpoint as its provider put it in the environment, told to the Hub once
-//! the API listens. A provider reports a pod's ports 22-55 s after its machine listens
-//! (2026-10-09); the Hub probes this report at once. The provider's view stays its fallback,
-//! and a Hub that does not take reports answers 404.
+//! The pod's public endpoint as its provider put it in the environment: where other computers
+//! reach it (`api-ready.json`'s `reach`). The Hub never takes it: it reaches the pod only at the
+//! address the provider's API reports, so no pod can name another's.
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]

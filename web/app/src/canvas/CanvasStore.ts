@@ -38,7 +38,8 @@ import { PageHistory, type Target } from "./history"
 import { comingOff, goingOn, holdsPictures, type ToolStep } from "./toolchange"
 import { isSelf, mentionFrom, numbersOf, SELF, versionIn, versionOf } from "./versions"
 
-export type ElementData = { name: string }
+/** The body width in this geometry publication; the node width may be an opened envelope. */
+export type ElementData = { name: string; width: number }
 export type ElementNode = Node<ElementData, "element" | "entity">
 
 /** A box that takes elements dragged onto it, at a point: a text at its caret, a slot. A tool can register one of its own. */
@@ -237,7 +238,7 @@ const worst = (standings: (Standing | "failed" | undefined)[]) => WORST.find((st
 
 /**
  * What the canvas knows beyond React Flow's positions, viewport and selection: a plain store with per-name subscribers. `node.data` is
- * `{name}` and a node's id never changes, so state changes never touch React Flow, and an import or a rename stays the same node.
+ * `{name, width}` carries only its identity and published body geometry. Other view state never touches React Flow, and an import or a rename stays the same node.
  */
 export class CanvasStore {
   projectId: string | null
@@ -675,11 +676,12 @@ export class CanvasStore {
     this.surface.current = current
     this.surface.pose = pose
     this.surface.zoom = this.flow?.getZoom()
-    const { bounds } = current
-    const origin: [number, number] = [(pose.x - bounds.x) / bounds.w, (pose.y - bounds.y) / bounds.h]
-    if (node.width === bounds.w && node.height === bounds.h && node.position.x === pose.x && node.position.y === pose.y && node.origin?.[0] === origin[0] && node.origin?.[1] === origin[1]) return
+    const { x, y, w: bodyWidth } = pose
+    const { x: left, y: top, w: width, h: height } = current.bounds
+    const origin: [number, number] = [(x - left) / width, (y - top) / height]
+    if (node.data.width === bodyWidth && node.width === width && node.height === height && node.position.x === x && node.position.y === y && node.origin?.[0] === origin[0] && node.origin?.[1] === origin[1]) return
     // The card's frame and its React Flow envelope are one layout change, before size observers run.
-    flushSync(() => this.flow?.updateNode(id, { position: { x: pose.x, y: pose.y }, width: bounds.w, height: bounds.h, origin, measured: { width: bounds.w, height: bounds.h } }))
+    flushSync(() => this.flow?.updateNode(id, (queued) => ({ data: { ...queued.data, width: bodyWidth }, position: { x, y }, width, height, origin, measured: { width, height } })))
   }
 
   closeSurface() {
@@ -710,7 +712,8 @@ export class CanvasStore {
       this.flow?.updateNode(id, { position: { x: pose.x, y: pose.y } })
       return
     }
-    this.flow?.updateNode(id, { position: { x: pose.x, y: pose.y }, width: pose.w, height: undefined, origin: [0, 0], measured: { width: pose.w, height: pose.h } })
+    const { x, y, w: width, h: height } = pose
+    this.flow?.updateNode(id, (queued) => ({ data: { ...queued.data, width }, position: { x, y }, width, height: undefined, origin: [0, 0], measured: { width, height } }))
   }
 
   // From Calcifer
@@ -1027,7 +1030,7 @@ export class CanvasStore {
       id,
       type: view.entity ? "entity" : "element",
       position: { x: row.x, y: row.y },
-      data: { name },
+      data: { name, width },
       width,
       // Its size from the row and the lock: a culled node never gets measured, and React Flow's fit leaves out what isn't.
       measured: { width, height },

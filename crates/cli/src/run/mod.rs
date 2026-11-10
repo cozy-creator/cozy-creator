@@ -412,8 +412,9 @@ async fn estimate(ctx: &Context, ask: RunRequest, count: u32) -> Result<ExitCode
     let estimate = loop {
         let estimate: RunEstimate = calcifer.post(&format!("/v1/run-estimates?count={count}"), &ask, Some(&key)).await?;
         let Some(install) = estimate.preparing else { break estimate };
-        if !settled(&follow::settle(ctx, *install).await?) {
-            return Ok(ExitCode::SUCCESS);
+        let install = follow::settle(ctx, *install).await?;
+        if !settled(&install) {
+            return Ok(exit_code(&install));
         }
     };
     for note in &estimate.notes {

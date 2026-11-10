@@ -94,8 +94,25 @@ pub(crate) fn open(layout: &Layout) -> io::Result<Lifetime> {
     })
 }
 
-/// The leaf the Hub admits: P-256, self-signed, exactly the DNS SAN `cozy-worker`, usable as
-/// both TLS server and Tensorhub client, valid until year 9999 (clients pin the bytes).
+/// What signs this machine's worker requests to its Hub: the leaf's own key, which the Hub pinned
+/// when it reached the machine at its provider's address. It is never sent anywhere.
+pub(crate) fn worker_signer(key_pem: &str) -> io::Result<::api::hub::WorkerSigner> {
+    use aws_lc_rs::{rand::SystemRandom, signature::{EcdsaKeyPair, ECDSA_P256_SHA256_ASN1_SIGNING}};
+    use rustls::pki_types::{pem::PemObject, PrivatePkcs8KeyDer};
+    let der = PrivatePkcs8KeyDer::from_pem_slice(key_pem.as_bytes())
+        .map_err(|_| invalid("the machine leaf's key is not PKCS#8"))?;
+    let key = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, der.secret_pkcs8_der())
+        .map_err(|_| invalid("the machine leaf's key is not P-256"))?;
+    let random = SystemRandom::new();
+    Ok(std::sync::Arc::new(move |message: &[u8]| {
+        (key.sign(&random, message).map(|signature| signature.as_ref().to_vec()))
+            .map_err(|_| "the machine leaf could not sign".to_owned())
+    }))
+}
+
+/// The leaf the Hub pins: P-256 (browsers' WebRTC DTLS takes no Ed25519), self-signed, exactly the
+/// DNS SAN `cozy-worker`, usable as both TLS server and Tensorhub client, valid until year 9999
+/// (clients pin the bytes). Minted once per machine root; its key is this machine's credential.
 fn mint_leaf() -> io::Result<(String, String)> {
     use rcgen::{
         CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose, KeyPair,

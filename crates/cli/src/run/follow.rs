@@ -108,11 +108,15 @@ pub(crate) fn mint_key() -> String {
 }
 
 /// 0 for a run that completed or goes on (no longer followed), 1 for one that failed or was canceled,
-/// `STALLED` for one going that has stopped moving.
+/// `STALLED` for one going that has stopped moving, said in one line.
 pub(crate) fn exit_code(run: &Run) -> ExitCode {
     match run.status {
         Status::Failed | Status::Canceled => ExitCode::FAILURE,
-        _ if run.stalled.is_some() && !settled(run) => ExitCode::from(output::STALLED),
+        _ if let Some(stalled) = run.stalled.as_ref().filter(|_| !settled(run)) => {
+            let n = run.name();
+            output::warned(&format!("run {n}: {}. It keeps running: `cozy run show {n}` follows it", stalled_words(stalled)));
+            ExitCode::from(output::STALLED)
+        }
         _ => ExitCode::SUCCESS,
     }
 }
@@ -663,18 +667,12 @@ impl View {
         self.stalled_as(run);
     }
 
-    /// Says once that the run stopped moving. Its status line says so from then on (`tick`).
+    /// The run stopped moving: its status line says so from then on (`tick`), and its exit says why (`exit_code`).
     fn stalled_as(&mut self, run: &Run) {
         // An event replayed as a follower attaches knows nothing of it: progress clears it.
-        let Some(stalled) = &run.stalled else { return };
-        if self.stalled.is_none() {
-            self.line(&format!(
-                "  {}. It keeps running until you end it: cozy run cancel {}",
-                stalled_words(stalled),
-                run.name()
-            ));
+        if let Some(stalled) = &run.stalled {
+            self.stalled = Some(stalled.clone());
         }
-        self.stalled = Some(stalled.clone());
     }
 
     /// The status line: why the run waits, else where it is.

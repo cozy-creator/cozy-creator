@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query"
 import type { NodeProps, Viewport } from "@xyflow/react"
 import { useReactFlow } from "@xyflow/react"
 import { type CSSProperties, type MouseEvent, memo, type PointerEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
+import { flushSync } from "react-dom"
 import { machinesQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
 import { useWaitsOn } from "../panels/machines/activity"
@@ -10,7 +11,7 @@ import { Icon } from "../ui/Icon"
 import { say } from "../ui/notes"
 import { useSignal } from "../ui/signal"
 import { AssetEdit, InFrame, RenderButton, TextAsset } from "./AssetEdit"
-import { CARD_WIDTH, type CanvasStore, type CarriedFile, type ElementNode, type ElementView } from "./CanvasStore"
+import type { CanvasStore, CarriedFile, ElementNode, ElementView } from "./CanvasStore"
 import { carryOnMove } from "./carry"
 import { useCanvasStore, useElement } from "./context"
 import { fieldsOf, shapesOf, snapped } from "./controls"
@@ -496,32 +497,38 @@ function Corner({ name, view, width }: { name: string; view: ElementView; width:
   const pulled = useRef<{ w: number; h: number } | null>(null)
   const [nearest, setNearest] = useState<string | null>(null)
   const moved = (event: PointerEvent) => {
-    if (!from.current) return
-    const { x: dx, y: dy } = from.current.delta(from.current, { x: event.clientX, y: event.clientY })
-    if (!control) {
-      const w = Math.min(WIDEST, Math.max(NARROWEST, from.current.w * Math.max(1 + dx / from.current.w, 1 + dy / from.current.h)))
-      pulled.current = { w, h: w / aspectOf(view) }
-      return store.setWidth(name, w, false)
-    }
-    const w = Math.min(WIDEST, Math.max(NARROWEST, from.current.w + dx))
-    const h = Math.min(WIDEST, Math.max(LOWEST, from.current.h + dy))
-    pulled.current = { w, h }
-    store.drawShape(name, w, h)
-    setNearest(snapped(w / h, shapesOf(control)))
+    const start = from.current
+    if (!start) return
+    flushSync(() => {
+      const { x: dx, y: dy } = start.delta(start, { x: event.clientX, y: event.clientY })
+      if (!control) {
+        const w = Math.min(WIDEST, Math.max(NARROWEST, start.w * Math.max(1 + dx / start.w, 1 + dy / start.h)))
+        pulled.current = { w, h: w / aspectOf(view) }
+        return store.setWidth(name, w, false)
+      }
+      const w = Math.min(WIDEST, Math.max(NARROWEST, start.w + dx))
+      const h = Math.min(WIDEST, Math.max(LOWEST, start.h + dy))
+      pulled.current = { w, h }
+      store.drawShape(name, w, h)
+      setNearest(snapped(w / h, shapesOf(control)))
+    })
   }
   const done = () => {
-    if (!from.current) return
-    const owner = from.current.owner
-    from.current = null
-    const size = pulled.current
-    pulled.current = null
-    setNearest(null)
-    if (size && control) store.setShape(name, control, size.w, snapped(size.w / size.h, shapesOf(control)))
-    else if (size) store.setWidth(name, size.w)
-    if (!owner || store.inPlace !== owner) return
-    owner.pulled = false
-    requestAnimationFrame(() => {
-      if (store.inPlace === owner) store.fitHere(true)
+    const start = from.current
+    if (!start) return
+    flushSync(() => {
+      const owner = start.owner
+      from.current = null
+      const size = pulled.current
+      pulled.current = null
+      setNearest(null)
+      if (size && control) store.setShape(name, control, size.w, snapped(size.w / size.h, shapesOf(control)))
+      else if (size) store.setWidth(name, size.w)
+      if (!owner || store.inPlace !== owner) return
+      owner.pulled = false
+      requestAnimationFrame(() => {
+        if (store.inPlace === owner) store.fitHere(true)
+      })
     })
   }
   return (
@@ -539,10 +546,12 @@ function Corner({ name, view, width }: { name: string; view: ElementView; width:
         tabIndex={-1}
         onClick={(event) => event.stopPropagation()}
         onPointerDown={(event) => {
+          const pose = store.poseOf(name)
+          if (!pose) return
           event.currentTarget.setPointerCapture(event.pointerId)
           const zoom = flow.getZoom()
           const delta = store.surfaceOf(name)?.resizeDelta ?? ((a: { x: number; y: number }, b: { x: number; y: number }) => ({ x: (b.x - a.x) / zoom, y: (b.y - a.y) / zoom }))
-          from.current = { x: event.clientX, y: event.clientY, w: width, h: width / aspectOf(view), delta, owner: store.inPlace }
+          from.current = { x: event.clientX, y: event.clientY, w: pose.w, h: pose.w / aspectOf(view), delta, owner: store.inPlace }
           if (store.inPlace) store.inPlace.pulled = true
         }}
         onPointerMove={moved}
@@ -849,12 +858,11 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
   )
 })
 
-/** Thin, as React Flow renders it: `data` is only the name. Element types are `nodeTypes`, looks are `CardBody`. */
+/** Thin, as React Flow renders it: identity and body width come from one geometry publication. */
 export function Card({ data }: NodeProps<ElementNode>) {
-  const store = useCanvasStore()
   return (
     <>
-      <CardBody name={data.name} width={store.poseOf(data.name)?.w ?? CARD_WIDTH} />
+      <CardBody name={data.name} width={data.width} />
       <AddOns name={data.name} />
     </>
   )

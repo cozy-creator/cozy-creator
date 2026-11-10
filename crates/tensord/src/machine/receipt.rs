@@ -1,5 +1,7 @@
-//! Readiness: what this machine measured about itself, sealed once under the attempt's key and
-//! carried by Status without a capability. The reader is Tensorhub `internal/podreadiness`.
+//! Readiness: what this machine measured about itself, kept once per boot and carried by Status
+//! without a capability. The reader is Tensorhub `internal/podreadiness`, over the TLS connection
+//! it opens to the address the provider reports: it pins the leaf that answers there, so these
+//! facts carry no key of their own.
 use base64::{engine::general_purpose::STANDARD, Engine};
 use std::{
     collections::BTreeMap,
@@ -8,141 +10,67 @@ use std::{
     sync::{Arc, Condvar, Mutex},
 };
 
-pub(crate) const DOMAIN: &[u8] = b"cozy.pod-readiness/1\0";
-const MAX_ENVELOPE_BYTES: usize = 64 << 10;
+const MAX_FACTS_BYTES: usize = 64 << 10;
 
-#[derive(serde::Serialize, serde::Deserialize)]
-struct Envelope {
-    #[serde(with = "standard_base64")]
-    payload: Vec<u8>,
-    #[serde(default)]
-    hmac_sha256: String,
-}
-
-/// This boot's one envelope. A retained envelope is verified with a replayed key and served
-/// byte for byte: a provider restart may verify what was sealed, never sign again.
-/// An unsigned local envelope may refresh GPU discovery while retaining its identity.
+/// This boot's readiness facts. A rental's are measured once and served byte for byte across
+/// restarts, so its Hub reads one boot; this computer's may refresh GPU discovery, never its
+/// identity.
 pub(crate) struct Readiness {
     path: Option<PathBuf>,
-    /// A rental's envelope is signed for its Hub; this computer's is not signed.
-    required: bool,
+    rental: bool,
     state: Mutex<State>,
     proved: Condvar,
 }
 #[derive(Default)]
 struct State {
-    key: Option<Vec<u8>>,
-    retained: Option<Vec<u8>>,
-    sealed: Option<Vec<u8>>,
+    facts: Option<Vec<u8>>,
     proved: bool,
 }
 
 impl Readiness {
-    /// `path` None keeps the envelope in memory (development front doors). `required` is a
-    /// rental: with neither a key nor a retained envelope the boot cannot prove itself.
-    pub(crate) fn open(
-        path: Option<PathBuf>,
-        key: Option<Vec<u8>>,
-        required: bool,
-    ) -> io::Result<Arc<Self>> {
-        let mut state = State {
-            key,
-            ..State::default()
-        };
-        let retained = match &path {
+    /// `path` None keeps the facts in memory (development front doors).
+    pub(crate) fn open(path: Option<PathBuf>, rental: bool) -> io::Result<Arc<Self>> {
+        let facts = match &path {
             Some(path) => match fs::read(path) {
-                Ok(raw) => Some(raw),
+                Ok(raw) if !raw.is_empty() && raw.len() <= MAX_FACTS_BYTES => Some(raw),
+                Ok(_) => return Err(invalid("the retained readiness facts are unreadable")),
                 Err(e) if e.kind() == io::ErrorKind::NotFound => None,
                 Err(e) => return Err(e),
             },
             None => None,
         };
-        match retained {
-            Some(raw) => {
-                let envelope = parse(&raw)?;
-                if let Some(key) = &state.key {
-                    if mac(key, &envelope.payload) != envelope.hmac_sha256 {
-                        return Err(invalid("the retained readiness envelope does not verify under the granted key"));
-                    }
-                }
-                state.key = None;
-                state.retained = Some(envelope.payload);
-                state.sealed = Some(raw);
-            }
-            None if required && state.key.is_none() => {
-                return Err(invalid("COZY_BOOTSTRAP_RECEIPT_HMAC_KEY_B64URL is required when no readiness envelope is retained"))
-            }
-            None => (),
-        }
-        Ok(Arc::new(Self {
-            path,
-            required,
-            state: Mutex::new(state),
-            proved: Condvar::new(),
-        }))
+        Ok(Arc::new(Self { path, rental, state: Mutex::new(State { facts, proved: false }), proved: Condvar::new() }))
     }
 
-    /// A persisted receipt belongs to a real machine, which measures its GPUs. Development
-    /// front doors report none rather than query the driver of the computer they run on.
+    /// Persisted facts belong to a real machine, which measures its GPUs. Development front doors
+    /// report none rather than query the driver of the computer they run on.
     pub(crate) fn measures_gpus(&self) -> bool {
         self.path.is_some()
     }
 
-    /// The sealed envelope, or None before readiness.
-    pub(crate) fn envelope(&self) -> Option<Vec<u8>> {
-        self.state.lock().unwrap().sealed.clone()
+    /// This boot's facts (retained, or measured by this process), or None before readiness.
+    pub(crate) fn facts(&self) -> Option<Vec<u8>> {
+        self.state.lock().unwrap().facts.clone()
     }
 
-    /// The payload a retained envelope or this boot's seal attested.
-    pub(crate) fn attested(&self) -> Option<Vec<u8>> {
-        self.state.lock().unwrap().retained.clone()
-    }
-
-    /// True when this call publishes an envelope. Signed rentals retain the same boot, leaf
-    /// and GPU set. An unsigned local restart may update discovery, never its identity.
+    /// True when this call publishes new facts. A rental keeps the same boot, leaf and GPU set;
+    /// this computer's restart may update discovery, never its identity.
     pub(crate) fn seal(&self, payload: Vec<u8>) -> io::Result<bool> {
         let mut state = self.state.lock().unwrap();
-        if let Some(retained) = &state.retained {
-            let unsigned_local = !self.required
-                && state
-                    .sealed
-                    .as_deref()
-                    .map(parse)
-                    .transpose()?
-                    .is_some_and(|envelope| envelope.hmac_sha256.is_empty());
-            if same_attestation(retained, &payload, unsigned_local)? {
+        if let Some(kept) = &state.facts {
+            if same_attestation(kept, &payload, !self.rental)? {
                 state.proved = true;
                 self.proved.notify_all();
                 return Ok(false);
             }
-            // Only unsigned local GPU discovery changed. Reuse the ordinary atomic seal;
-            // the old envelope remains intact if publication fails.
         }
-        let hmac_sha256 = match &state.key {
-            Some(key) => mac(key, &payload),
-            None if self.path.is_none() || !self.required => String::new(),
-            None => {
-                return Err(invalid(
-                    "the readiness key was spent; this boot signs nothing again",
-                ))
-            }
-        };
-        let raw = serde_json::to_vec(&Envelope {
-            payload: payload.clone(),
-            hmac_sha256,
-        })?;
-        if raw.len() > MAX_ENVELOPE_BYTES {
-            return Err(invalid("the readiness envelope exceeds 64 KiB"));
+        if payload.len() > MAX_FACTS_BYTES {
+            return Err(invalid("the readiness facts exceed 64 KiB"));
         }
         if let Some(path) = &self.path {
-            super::identity::write_atomic(path, &raw, 0o444)?;
-            if let Some(key) = state.key.as_mut() {
-                key.fill(0);
-            }
-            state.key = None;
-            state.retained = Some(payload);
+            super::identity::write_atomic(path, &payload, 0o444)?;
         }
-        state.sealed = Some(raw);
+        state.facts = Some(payload);
         state.proved = true;
         self.proved.notify_all();
         Ok(true)
@@ -168,11 +96,11 @@ pub(crate) struct Gpu {
     pub driver_version: String,
     pub memory_bytes: u64,
     pub pci_bus_id: String,
-    /// `"9.0"`: the lane rule's row (`precision`). Absent from envelopes sealed before it.
+    /// `"9.0"`: the lane rule's row (`precision`).
     #[serde(default)]
     pub compute_cap: String,
     /// How it reaches host memory (`discrete`, `coherent`, `unified`); empty when unread. Status
-    /// reports it; the sealed receipt does not carry it.
+    /// reports it; the readiness facts do not carry it.
     #[serde(skip)]
     pub memory_class: String,
 }
@@ -201,7 +129,7 @@ fn row(g: platform::gpu::Gpu) -> Result<Gpu, String> {
     use platform::gpu::MemoryClass;
     let memory_bytes = match g.memory_bytes {
         0 => return Err(format!("the driver reports no memory for GPU {} ({}): it is not used", g.index, g.name)),
-        // Whole MiB, as the receipts sealed before NVML read them.
+        // Whole MiB, as the readiness facts have always named it.
         bytes => bytes >> 20 << 20,
     };
     Ok(Gpu {
@@ -253,7 +181,7 @@ impl Measured<'_> {
     }
 }
 
-/// The attested facts, as the Go agent and Runtime compare them across a same-boot restart.
+/// The attested facts, as compared across a same-boot restart.
 fn same_attestation(before: &[u8], after: &[u8], refresh_local_gpu: bool) -> io::Result<bool> {
     fn facts(raw: &[u8]) -> io::Result<BTreeMap<&'static str, String>> {
         #[derive(serde::Deserialize, Default)]
@@ -295,7 +223,7 @@ fn same_attestation(before: &[u8], after: &[u8], refresh_local_gpu: bool) -> io:
     let before = facts(before).map_err(|_| invalid("retained readiness facts are unreadable"))?;
     let after = facts(after).map_err(|_| invalid("current readiness facts are unreadable"))?;
     let same_gpus = before.get("gpus") == after.get("gpus");
-    // A signed envelope is served as sealed: a GPU lost since costs that GPU, and Status says so.
+    // A rental's facts are served as measured: a GPU lost since costs that GPU, and Status says so.
     if !same_gpus && !refresh_local_gpu {
         tracing::warn!("this machine's GPUs differ from what this boot attested");
     }
@@ -310,22 +238,6 @@ fn same_attestation(before: &[u8], after: &[u8], refresh_local_gpu: bool) -> io:
     Ok(same_gpus || !refresh_local_gpu)
 }
 
-fn parse(raw: &[u8]) -> io::Result<Envelope> {
-    match serde_json::from_slice::<Envelope>(raw) {
-        Ok(envelope) if raw.len() <= MAX_ENVELOPE_BYTES && !envelope.payload.is_empty() => {
-            Ok(envelope)
-        }
-        _ => Err(invalid("the retained readiness envelope is unreadable")),
-    }
-}
-
-fn mac(key: &[u8], payload: &[u8]) -> String {
-    let mut mac = aws_lc_rs::hmac::Context::with_key(&aws_lc_rs::hmac::Key::new(aws_lc_rs::hmac::HMAC_SHA256, key));
-    mac.update(DOMAIN);
-    mac.update(payload);
-    tensorfs::sha256::hex(mac.sign().as_ref())
-}
-
 /// The boot id the payload names.
 pub(crate) fn boot_id(payload: &[u8]) -> Option<String> {
     #[derive(serde::Deserialize)]
@@ -335,17 +247,6 @@ pub(crate) fn boot_id(payload: &[u8]) -> Option<String> {
     serde_json::from_slice::<Boot>(payload)
         .ok()
         .map(|b| b.pod_boot_id)
-}
-
-mod standard_base64 {
-    use base64::{engine::general_purpose::STANDARD, Engine};
-    pub(crate) fn serialize<S: serde::Serializer>(bytes: &[u8], s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(&STANDARD.encode(bytes))
-    }
-    pub(crate) fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
-        let text: String = serde::Deserialize::deserialize(d)?;
-        STANDARD.decode(text).map_err(serde::de::Error::custom)
-    }
 }
 
 fn invalid(detail: &str) -> io::Error {

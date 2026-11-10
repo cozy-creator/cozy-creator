@@ -1,4 +1,4 @@
-//! The writer: one cozytensors out, component by component, into the store or a plain folder.
+//! The writer: one cozytensors out, component by component, into the store or an upload.
 //!
 //! - `component(name, class, config, config_file)` declares a component and hands back its
 //!   [`ComponentWriter`]: `put` tensors, `copy_as` them from another checkpoint, add `asset`s.
@@ -17,9 +17,6 @@
 //!   (`has`); the producer declares its components again. Its fence is `flock` on an O_CLOEXEC
 //!   descriptor: a forked child holds it only until it execs, and a second opener waits.
 //! - The writer holds every object it refers to until it commits or ends.
-//! - A folder writer writes `chunks/<sha256>` first and `model.cozytensors` last, by rename: a
-//!   folder without the header is unfinished. Objects its base's store holds are referenced,
-//!   not copied (a thin folder).
 //! - An uploading writer hands each object to its [`Upload`] as it seals it and, at commit, the
 //!   header with its repo files.
 
@@ -31,26 +28,23 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use platform::durable::{self, FileId};
+use platform::durable::FileId;
 use serde::{Deserialize, Serialize};
 
 use crate::err;
 use crate::format::layout::{self, GRID, STANDALONE};
 use crate::format::{
     self, segment, Body, ClassRef, Component, Config, Dtype, Encoding, Header, Metadata,
-    ObjectRef, Part, Pipeline, Tensor, Tree, Value, CHUNKS_DIR, CONFIG_FILE, HEADER_PATH,
+    ObjectRef, Part, Pipeline, Tensor, Tree, Value, CONFIG_FILE,
 };
 use crate::store::retention::{self, Hold};
-use crate::sha256::{hex, Sha256};
-use crate::store::{fail, is_name, sync_dir, Admission, Checkpoint, Error, Result, Store};
+use crate::store::{fail, is_name, Admission, Checkpoint, Error, Result, Store};
 
 const SPOOL: &str = "spool";
 const JOURNAL: &str = "journal";
 const LOCK: &str = "lock";
 /// Keyless writers' directories; no key starts with a dot.
 const ANONYMOUS: &str = ".anon-";
-/// A folder writer's directory, under `chunks/`.
-const WRITING: &str = ".writing";
 /// Padding between packed parts, which never reaches an alignment unit.
 const ZEROS: [u8; layout::ALIGN as usize] = [0; layout::ALIGN as usize];
 
@@ -227,12 +221,6 @@ pub(crate) type BeforeCommit = Box<dyn Fn(&mut Metadata, &[Component]) + Send + 
 #[derive(Clone, Debug)]
 enum Dest {
     Store(Store),
-    /// `root/chunks/<sha256>` and `root/model.cozytensors`; `cache` holds what a thin folder
-    /// references.
-    Folder {
-        root: PathBuf,
-        cache: Option<Store>,
-    },
     /// Objects handed to `upload` as they seal; at commit, the header with the repo files.
     Upload {
         store: Store,
@@ -240,7 +228,7 @@ enum Dest {
     },
 }
 
-/// One cozytensors being written into a store, a folder or an upload; sealed at `commit`.
+/// One cozytensors being written into a store or an upload; sealed at `commit`.
 pub struct Writer {
     dest: Dest,
     dir: PathBuf,
@@ -513,8 +501,7 @@ impl Writer {
     }
 
     /// A repo file (README, LICENSE): never inside the cozytensors. Into the store it is an
-    /// object listed by [`Writer::repo_files`] and kept with the header; into a folder, a
-    /// file at its path.
+    /// object listed by [`Writer::repo_files`] and kept with the header.
     pub fn repo_file(&mut self, path: &str, bytes: &[u8]) -> Result<()> {
         self.live()?;
         format::check_file(path)?;
@@ -523,13 +510,6 @@ impl Writer {
         }
         let object = match &self.dest {
             Dest::Store(_) => self.dest.put_bytes(&self.dir, bytes, self.hold.as_ref())?,
-            Dest::Folder { root, .. } => {
-                let at = root.join(path);
-                let parent = at.parent().expect("a file has a directory");
-                fs::create_dir_all(parent).map_err(fail("create", parent))?;
-                durable::replace(&at, bytes, 0o644).map_err(|e| fail("write", &at)(e.into()))?;
-                ObjectRef::of(bytes)
-            }
             Dest::Upload { store, upload } => {
                 let acquisition = retention::acquire(store)?;
                 let object = store.put_bytes(bytes)?;
@@ -549,8 +529,7 @@ impl Writer {
     }
 
     /// Lays out the chunks in header order and writes the header: into the store, a use of it
-    /// with the repo files; or into the folder, last. The journal and spool go; the writer is
-    /// spent.
+    /// with the repo files. The journal and spool go; the writer is spent.
     pub fn commit(&mut self) -> Result<ObjectRef> {
         self.commit_with(&|_, _| {})
     }
@@ -570,10 +549,9 @@ impl Writer {
             .flat_map(|e| e.parts.iter().map(move |(role, s)| (e, role.as_str(), s)))
             .collect();
         let items: Vec<layout::Item> = (list.iter())
-            .map(|(e, role, s)| layout::Item {
+            .map(|(e, _, s)| layout::Item {
                 component: &e.component,
                 key: &e.key,
-                role,
                 length: s.length,
             })
             .collect();
@@ -597,7 +575,7 @@ impl Writer {
         progress(packed, total);
         for (chunk, mut members) in packs {
             members.sort_by_key(|i| plan.places[*i].offset);
-            let mut admit = self.dest.admit(&self.dir, self.hold.as_ref())?;
+            let mut admit = self.dest.admit(self.hold.as_ref())?;
             let mut end = 0;
             for i in members {
                 let (place, stored) = (plan.places[i], list[i].2);
@@ -660,12 +638,6 @@ impl Writer {
                 let id = self.admit_header(store, &header)?;
                 store.used(&id.sha256, std::iter::once(&id).chain(&objects).chain(self.repo.values()))?;
                 id
-            }
-            Dest::Folder { root, .. } => {
-                sync_dir(&root.join(CHUNKS_DIR))?;
-                let at = root.join(HEADER_PATH);
-                durable::replace(&at, &header, 0o644).map_err(|e| fail("write", &at)(e.into()))?;
-                ObjectRef::of(&header)
             }
             Dest::Upload { store, upload } => {
                 let id = self.admit_header(store, &header)?;
@@ -799,7 +771,7 @@ impl Writer {
                 break Ok(());
             }
             let n = left.min(GRID);
-            let written = (self.dest.admit(&self.dir, self.hold.as_ref()))
+            let written = (self.dest.admit(self.hold.as_ref()))
                 .and_then(|mut admit| pour(data, &mut admit, n, &mut buffer, what).and_then(|()| admit.finish()));
             match written {
                 Ok(object) => objects.push(object),
@@ -1109,10 +1081,6 @@ impl Writer {
             let _ = fs::remove_file(self.dir.join(name));
         }
         let _ = fs::remove_dir(&self.dir);
-        if let Dest::Folder { root, .. } = &self.dest {
-            let writing = root.join(CHUNKS_DIR).join(WRITING);
-            let _ = fs::remove_dir(&writing);
-        }
         self.fence = None;
         self.hold = None;
         self.base = None;
@@ -1278,7 +1246,6 @@ impl Dest {
     fn store(&self) -> Option<&Store> {
         match self {
             Dest::Store(store) => Some(store),
-            Dest::Folder { cache, .. } => cache.as_ref(),
             Dest::Upload { store, .. } => Some(store),
         }
     }
@@ -1286,22 +1253,14 @@ impl Dest {
     fn flushes(&self) -> bool {
         match self {
             Dest::Store(store) => store.flushes(),
-            Dest::Folder { .. } => true,
             Dest::Upload { store, .. } => store.flushes(),
         }
     }
 
-    /// True when `object` is here (a folder: in its chunks or its cache), then young for GC.
+    /// True when `object` is here, then young for GC.
     fn has(&self, object: &ObjectRef) -> Result<bool> {
         match self {
             Dest::Store(store) => store.reuse(object),
-            Dest::Folder { root, cache, .. } => {
-                let own = root.join(CHUNKS_DIR).join(&object.sha256);
-                if fs::metadata(&own).is_ok_and(|m| m.len() == object.length) {
-                    return Ok(true);
-                }
-                cache.as_ref().map_or(Ok(false), |c| c.reuse(object))
-            }
             Dest::Upload { store, upload } => {
                 let held = store.reuse(object)?;
                 if held {
@@ -1312,30 +1271,15 @@ impl Dest {
         }
     }
 
-    fn admit(&self, work: &Path, hold: Option<&Arc<Hold>>) -> Result<Admit> {
+    fn admit(&self, hold: Option<&Arc<Hold>>) -> Result<Admit> {
         match self {
             Dest::Store(store) => Ok(Admit::Store(store.admit(None)?, hold.cloned())),
-            Dest::Folder { root, .. } => {
-                static NEXT: AtomicU64 = AtomicU64::new(0);
-                let n = NEXT.fetch_add(1, Ordering::Relaxed);
-                fs::create_dir_all(work).map_err(fail("create", work))?;
-                let temp = work.join(format!("object-{}-{n}", std::process::id()));
-                let file = (OpenOptions::new().write(true).create(true).truncate(true).open(&temp))
-                    .map_err(fail("create", &temp))?;
-                Ok(Admit::Folder(FolderObject {
-                    chunks: root.join(CHUNKS_DIR),
-                    temp,
-                    file: Some(file),
-                    hash: Sha256::new(),
-                    length: 0,
-                }))
-            }
             Dest::Upload { store, upload } => Ok(Admit::Upload(store.clone(), Arc::clone(upload), store.admit(None)?, hold.cloned())),
         }
     }
 
     fn put_bytes(&self, work: &Path, bytes: &[u8], hold: Option<&Arc<Hold>>) -> Result<ObjectRef> {
-        let mut admit = self.admit(work, hold)?;
+        let mut admit = self.admit(hold)?;
         admit.write_all(bytes).map_err(fail("write", work))?;
         admit.finish()
     }
@@ -1349,7 +1293,7 @@ impl Dest {
         }
         drop(acquisition);
         let mut src = from.object(object)?;
-        let mut admit = self.admit(work, hold)?;
+        let mut admit = self.admit(hold)?;
         io::copy(&mut src, &mut admit).map_err(fail("copy", work))?;
         let got = admit.finish()?;
         if got != *object {
@@ -1365,22 +1309,12 @@ impl Dest {
 /// Bytes on their way to becoming an object of the destination.
 enum Admit {
     Store(Admission, Option<Arc<Hold>>),
-    Folder(FolderObject),
     Upload(Store, Arc<dyn Upload>, Admission, Option<Arc<Hold>>),
 }
 
 /// A send that failed, as the writer's error.
 fn sent(refusal: err::Refusal) -> Error {
     Error::Io { op: "send", path: PathBuf::from("the endpoint"), source: io::Error::other(refusal) }
-}
-
-/// A temp in the writer's directory, renamed into `chunks/<sha256>` when finished.
-struct FolderObject {
-    chunks: PathBuf,
-    temp: PathBuf,
-    file: Option<File>,
-    hash: Sha256,
-    length: u64,
 }
 
 impl Admit {
@@ -1392,18 +1326,6 @@ impl Admit {
                 if let Some(hold) = hold { hold.extend([object.sha256.clone()])?; }
                 Ok(object)
             },
-            Admit::Folder(mut o) => {
-                let file = o.file.take().expect("a folder object has its file until it finishes");
-                file.sync_data().map_err(fail("sync", &o.temp))?;
-                drop(file);
-                let got = ObjectRef {
-                    sha256: hex(&std::mem::take(&mut o.hash).finish()),
-                    length: o.length,
-                };
-                let at = o.chunks.join(&got.sha256);
-                fs::rename(&o.temp, &at).map_err(fail("rename into", &at))?;
-                Ok(got)
-            }
             Admit::Upload(store, upload, admission, hold) => {
                 let acquisition = hold.as_ref().map(|hold| hold.acquire()).transpose()?;
                 let object = admission.finish()?;
@@ -1420,26 +1342,12 @@ impl Write for Admit {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         match self {
             Admit::Store(admission, _) => admission.write(bytes),
-            Admit::Folder(o) => {
-                let n = o.file.as_mut().expect("unfinished").write(bytes)?;
-                o.hash.update(&bytes[..n]);
-                o.length += n as u64;
-                Ok(n)
-            }
             Admit::Upload(_, _, admission, _) => admission.write(bytes),
         }
     }
 
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
-    }
-}
-
-impl Drop for FolderObject {
-    fn drop(&mut self) {
-        if self.file.take().is_some() {
-            let _ = fs::remove_file(&self.temp);
-        }
     }
 }
 

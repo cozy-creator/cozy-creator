@@ -140,7 +140,6 @@ fn apple() -> Option<Vec<Gpu>> {
 pub struct Device {
     nvml: Nvml,
     index: u32,
-    key: String,
 }
 
 /// One reading of a GPU's memory.
@@ -166,13 +165,7 @@ impl Device {
         }
         .map_err(failed("open device"))?;
         let index = device.index().map_err(failed("device index"))?;
-        let uuid = device.uuid().unwrap_or_else(|_| entry.into());
-        let driver = nvml.sys_driver_version().unwrap_or_default();
-        Ok(Self {
-            key: format!("{uuid}/{driver}"),
-            index,
-            nvml,
-        })
+        Ok(Self { nvml, index })
     }
 
     pub fn read(&self) -> Result<Reading> {

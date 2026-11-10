@@ -279,7 +279,7 @@ fn wants_events(headers: &HeaderMap) -> bool {
         .is_some_and(|accept| accept.contains("text/event-stream"))
 }
 
-/// `GET /v1/status`: anyone gets the identity frame with the sealed readiness receipt; a
+/// `GET /v1/status`: anyone gets the identity frame with the readiness receipt; a
 /// machine-scope cap gets the whole picture, as SSE (sent again on change) when it asks.
 async fn status(State(m): State<Machine>, headers: HeaderMap) -> Answer {
     let caller = match headers.contains_key(header::AUTHORIZATION) {

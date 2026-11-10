@@ -5,8 +5,8 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use platform::paths::Home;
 use ed25519_dalek::VerifyingKey;
 use std::{
-    fs::{self, File},
-    io::{self, Read},
+    fs,
+    io,
     net::IpAddr,
     path::{Path, PathBuf},
 };
@@ -19,12 +19,12 @@ pub enum Lifetime {
     Local,
 }
 
-/// One Hub's worker registration of this machine.
+/// One Hub's worker registration of this machine. Public facts only: the machine's credential is
+/// its leaf's key, which the Hub pins when it first reaches the machine at its provider's address.
 #[derive(Clone, Debug)]
 pub(crate) struct HubGrant {
     pub origin: String,
     pub worker_id: String,
-    pub worker_token: String,
     pub ca_der: Option<Vec<u8>>,
     pub object_hosts: Vec<String>,
 }
@@ -42,9 +42,6 @@ pub(crate) struct Grant {
     /// Where browsers reach the WebRTC listener ([`super::player::reach`]).
     pub webrtc_reach: super::player::Reach,
     pub hub: Option<HubGrant>,
-    pub authorized: Vec<VerifyingKey>,
-    /// The one-shot readiness key; taken by the receipt and never kept elsewhere.
-    pub receipt_key: Option<Vec<u8>>,
     /// A development rental's SSH key (`COZY_SSH_PUBLIC_KEY`, which the Hub sends only then):
     /// serve SSH maintenance.
     pub developer_key: Option<String>,
@@ -125,10 +122,6 @@ impl Grant {
         let hub = match lifetime {
             Lifetime::Local => None,
             Lifetime::Rental => {
-                let token = raw.worker_token.as_ref().map(|t| t.expose()).unwrap_or_default();
-                if URL_SAFE_NO_PAD.decode(token).map(|t| t.len()) != Ok(32) {
-                    return Err(invalid("COZY_WORKER_AUTH_TOKEN must be 32 bytes of unpadded base64url"));
-                }
                 let ca_der = match get(&raw.hub_ca_der) {
                     None => None,
                     Some(text) => Some(
@@ -141,28 +134,10 @@ impl Grant {
                     origin: origin(get(&raw.hub_origin), "TENSORHUB_ORIGIN")?
                         .ok_or_else(|| invalid("TENSORHUB_ORIGIN is required for a rental"))?,
                     worker_id: worker_id.clone(),
-                    worker_token: token.into(),
                     ca_der,
                     object_hosts: raw.object_storage_hosts.clone(),
                 })
             }
-        };
-        let authorized = raw.authorized_keys.iter().map(|k| public_key(k)).collect::<io::Result<Vec<_>>>()?;
-        if rental && authorized.is_empty() && home_keys(home)?.is_empty() {
-            return Err(invalid("the grant authorizes no key: COZY_AUTHORIZED_KEYS is required"));
-        }
-        let receipt_key = match (raw.receipt_key.as_ref().map(|k| k.expose()), &raw.receipt_key_file) {
-            (Some(_), Some(_)) => return Err(invalid("specify only one bootstrap receipt key source")),
-            (Some(text), None) => Some(text.trim().to_owned()),
-            (None, Some(path)) => Some(private_file(path)?),
-            (None, None) => None,
-        };
-        let receipt_key = match receipt_key {
-            None => None,
-            Some(text) => match URL_SAFE_NO_PAD.decode(&text) {
-                Ok(key) if key.len() == 32 => Some(key),
-                _ => return Err(invalid("bootstrap receipt key must be 32 bytes of unpadded base64url")),
-            },
         };
         let store = match (&raw.store, rental) {
             (None, false) => Some(tensorfs::home::resolve(None).map_err(|e| invalid(&e.to_string()))?),
@@ -183,8 +158,6 @@ impl Grant {
             webrtc_port,
             webrtc_reach,
             hub,
-            authorized,
-            receipt_key,
             developer_key: rental.then(|| get(&raw.ssh_public_key).map(str::to_owned)).flatten(),
             provider: None,
             idle_ms,
@@ -192,12 +165,12 @@ impl Grant {
         })
     }
 
-    /// The keys this machine admits: the grant's (on a rental, replaced by the Hub's lease once
-    /// it is read) and its home's, read again when a signer is unknown: a pod's own shell and the
-    /// controllers it authorizes use it as a laptop's do.
-    pub(crate) fn keys(&self) -> io::Result<crate::api::auth::Keys> {
+    /// The keys this machine admits: on a rental the Hub's lease (`leased`, as last kept, replaced
+    /// at each answer) and its home's, read again when a signer is unknown: a pod's own shell and
+    /// the controllers it authorizes use it as a laptop's do.
+    pub(crate) fn keys(&self, leased: Vec<VerifyingKey>) -> io::Result<crate::api::auth::Keys> {
         let (home, stamped) = (self.home.clone(), self.home.clone());
-        crate::api::auth::Keys::read(self.authorized.clone(), move || home_keys(&home), move || home_stamp(&stamped))
+        crate::api::auth::Keys::read(leased, move || home_keys(&home), move || home_stamp(&stamped))
     }
 }
 
@@ -207,7 +180,7 @@ fn home_stamp(home: &Home) -> [Option<std::time::SystemTime>; 2] {
     [at("owner.pem"), at("authorized")]
 }
 
-/// The controllers the home admits, besides those the grant names: the public half of its owner
+/// The controllers the home admits, besides a rental's lease: the public half of its owner
 /// key (`keys/owner.pem`, this computer's Calcifer's signer) and one unpadded base64url Ed25519
 /// key per line of `keys/authorized` (`cozy machine authorize`; `#` starts a comment). Either
 /// may be absent.
@@ -278,23 +251,6 @@ fn clean_absolute(path: &Path, name: &str) -> io::Result<()> {
         )));
     }
     Ok(())
-}
-
-fn private_file(path: &Path) -> io::Result<String> {
-    let mut file = File::open(path)?;
-    let meta = file.metadata()?;
-    if !path.is_absolute()
-        || !meta.is_file()
-        || platform::durable::mode(&meta).is_some_and(|mode| mode & 0o077 != 0)
-        || fs::symlink_metadata(path)?.file_type().is_symlink()
-    {
-        return Err(invalid(
-            "the receipt key file must be one private regular file",
-        ));
-    }
-    let mut text = String::new();
-    file.by_ref().take(256).read_to_string(&mut text)?;
-    Ok(text.trim().to_owned())
 }
 
 fn invalid(detail: &str) -> io::Error {

@@ -76,7 +76,6 @@ fn run(lifetime: Lifetime, service_ready: Option<u64>) -> io::Result<()> {
     if lifetime == Lifetime::Rental {
         grant.provider = ProviderSelf::take(&grant.layout.root, &config.provider);
     }
-    config::forget_receipt_key();
     identity::hold(&grant.layout)?;
     if let Some(key) = grant.developer_key.as_deref() {
         if let Err(error) = ssh::start(key) {
@@ -87,7 +86,6 @@ fn run(lifetime: Lifetime, service_ready: Option<u64>) -> io::Result<()> {
     #[cfg(unix)]
     let ready = supervise::supervise(&paths, grant.provider.clone())?;
     // The service: why it fails reaches its parent's rollback reason.
-    config::for_what_it_starts();
     config::reread(&mut config)
         .and_then(|()| run_machine(config, ready))
         .inspect_err(|error| update::service_failed(&paths, error))
@@ -143,7 +141,7 @@ pub fn version() -> io::Result<()> {
 /// Runs the machine from its grant: identity and readiness under the machine root, the engine
 /// under `var/lib/cozy/tensord`, the API on the granted port.
 fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Ready) -> io::Result<()> {
-    let config::Config { mut grant, visible_devices, gpu_memory_limit, mode, display_pace, endpoint, logs, .. } = config;
+    let config::Config { grant, visible_devices, gpu_memory_limit, mode, display_pace, endpoint, logs, .. } = config;
     // A shared computer's own programs come first: from this thread, before the runtime's, the
     // background priority reaches every thread and process the machine starts (executors too).
     if mode == ::api::config::MachineMode::Shared {
@@ -154,20 +152,19 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
     let layout = grant.layout.clone();
     let lifetime = identity::open(&layout)?;
     let rental = grant.lifetime == Lifetime::Rental;
-    let readiness = receipt::Readiness::open(
-        Some(layout.bootstrap.join("readiness-envelope.json")),
-        grant.receipt_key.take(),
-        rental,
-    )?;
-    if let Some(attested) = readiness.attested() {
-        if receipt::boot_id(&attested).as_deref() != Some(lifetime.boot_id.as_str()) {
-            return Err(io::Error::other(
-                "the retained readiness envelope names another boot than this machine root",
-            ));
+    let readiness = receipt::Readiness::open(Some(layout.bootstrap.join("readiness.json")), rental)?;
+    if let Some(facts) = readiness.facts() {
+        if receipt::boot_id(&facts).as_deref() != Some(lifetime.boot_id.as_str()) {
+            return Err(io::Error::other("the retained readiness facts name another boot than this machine root"));
         }
     }
-    let fresh = readiness.attested().is_none();
-    let keys = grant.keys()?;
+    let fresh = readiness.facts().is_none();
+    // A rental admits whom its Hub's last lease named until the Hub answers again.
+    let leased = match rental {
+        true => crate::machine::lifecycle::kept_lease(&layout.state),
+        false => vec![],
+    };
+    let keys = grant.keys(leased)?;
     let identity = crate::api::Leaf::machine(
         grant.worker_id.clone(),
         keys.clone(),
@@ -323,7 +320,8 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
     }
     let own_hub = grant.hub.clone().filter(|_| rental);
     if let Some(hub) = own_hub.clone() {
-        let hub = Arc::new(crate::machine::hub::Hub::new(hub)?);
+        let sign = crate::machine::identity::worker_signer(&identity.key_pem)?;
+        let hub = Arc::new(crate::machine::hub::Hub::new(hub, sign)?);
         let lifecycle = lifecycle.clone();
         let service = service.clone();
         let provider = grant.provider.clone();
@@ -332,10 +330,7 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
             .name("rental-lifecycle".into())
             .spawn(move || {
                 runtime.block_on(async {
-                    tokio::spawn(crate::machine::lifecycle::keep_authority(
-                        hub.clone(),
-                        keys,
-                    ));
+                    tokio::spawn(crate::machine::lifecycle::keep_authority(hub.clone(), keys, state.clone()));
                     crate::machine::speed::serve(hub.clone(), state, origin);
                     let jobs = move |since| {
                         let (working, ended_ms) = service.engine.jobs(since)?;
@@ -387,13 +382,6 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
         own_hub,
         reach,
     )?;
-    // The Hub probes the endpoint the provider put in this pod's environment at once,
-    // instead of waiting for the provider to report it.
-    if let (Some(hub), Some(endpoint), true) = (grant.hub.clone(), endpoint, rental) {
-        std::thread::Builder::new()
-            .name("endpoint-report".into())
-            .spawn(move || report_endpoint(hub, endpoint))?;
-    }
     drop(service);
     // The machine runs on its own threads until it is stopped.
     loop {
@@ -510,38 +498,6 @@ fn reach(listener: &std::net::TcpListener, port: Option<u16>, provider: Option<&
     probe.connect("1.1.1.1:53").ok()?;
     let lan = probe.local_addr().ok()?.ip();
     (!lan.is_loopback() && !lan.is_unspecified()).then(|| format!("{lan}:{}", bound.port()))
-}
-
-/// Tells the Hub this machine's endpoint, trying again while the Hub cannot be reached. The
-/// report only saves the provider's lag: after a few misses the provider's view serves.
-fn report_endpoint(grant: crate::machine::grant::HubGrant, endpoint: crate::machine::endpoint::Endpoint) {
-    use crate::machine::hub::{Hub, Refusal};
-    let runtime = match machine_runtime() {
-        Ok(runtime) => runtime,
-        Err(error) => return tracing::warn!("endpoint report: {error}"),
-    };
-    let hub = match Hub::new(grant) {
-        Ok(hub) => hub,
-        Err(error) => return tracing::warn!("endpoint report: {error}"),
-    };
-    runtime.block_on(async {
-        let mut backoff = tensorfs::fetch::Backoff::background();
-        loop {
-            let (why, stated) = match hub.report_endpoint(&endpoint).await {
-                Ok(()) => return tracing::info!("reported endpoint {}", endpoint.public_host),
-                Err(Refusal::Denied | Refusal::Ended) => return tracing::warn!("the Hub refused the endpoint report"),
-                Err(Refusal::NotReady) => ("the Hub is not ready for it".to_owned(), None),
-                Err(Refusal::Transport(error, wait)) => (error, wait),
-            };
-            match backoff.again(&format!("endpoint report: {why}"), false, stated) {
-                Some((wait, said)) => {
-                    tracing::warn!("{said}");
-                    tokio::time::sleep(wait).await;
-                }
-                None => return tracing::warn!("{}", backoff.spent(&format!("endpoint report: {why}"))),
-            }
-        }
-    });
 }
 
 /// A shared machine and its executors under one memory limit the kernel keeps: varena's host
