@@ -141,6 +141,7 @@ class Gate(TypedDict):
     group: str
     pod: str | None
     label: str | None
+    host: str | None  # cells.sh's host-ram: the RAM the pod was held to, or that it was not held and why
     reference: dict[str, Reference]  # before, after
     cells: dict[str, Cell]
     comfyui: dict[str, Comfy]  # measured on this pod after the cells (comfyui.sh), when it ran
@@ -149,6 +150,7 @@ class Gate(TypedDict):
 class Group(TypedDict):
     pod: str | None
     label: str | None
+    host: NotRequired[str | None]
     reference: Reference
     cells: dict[str, Cell]
     comfyui: dict[str, Comfy]
@@ -354,7 +356,7 @@ def read_gate(d: str, judged: bool = True) -> Gate:
         (cold if role == 'cold' else warm).append(m)
     reference = {w: r for w in ('before', 'after') if (r := reference_of(Run.read(os.path.join(d, f'calibrate-{w}.json')), text(d, 'pod-facts.txt'))) is not None}
     rows = os.path.join(d, 'comfyui-rows.json')
-    return {'dir': d, 'group': text(d, 'bench-group') or '?', 'pod': text(d, 'machine'), 'label': text(d, 'label'), 'reference': reference,
+    return {'dir': d, 'group': text(d, 'bench-group') or '?', 'pod': text(d, 'machine'), 'label': text(d, 'label'), 'host': text(d, 'host-ram'), 'reference': reference,
             'cells': {name: summary(cold[0] if cold else None, warm) for name, (cold, warm) in by.items()},
             'comfyui': cast(dict[str, Comfy], load_json(rows)) if os.path.exists(rows) else {}}  # comfy.py rows wrote it
 
@@ -554,7 +556,8 @@ def table(gates: list[Gate], base: Baseline | None, defs: list[CellDef], known: 
                   f"pod: {ref.get('gpu', '?')}, driver {ref.get('driver', '?')}, PCIe {ref.get('pcie', '?')}, CPU {ref.get('cpu', '?')} x{ref.get('cores', '?')}"
                   f" (python {ref.get('python_ms', '?')} ms, launch {ref.get('launch_us', '?')} us, fork {ref.get('exec_fork_ms', '?')} ms,"
                   f" cuda_init {ref.get('cuda_init_ms', '?')} ms), host {ref.get('host_gib', '?')} GiB"
-                  f" (limit {ref.get('limit_gib', '-')}), {ref.get('temperature_c', '?')} C at start", '',
+                  f" (limit {ref.get('limit_gib', '-')}), {ref.get('temperature_c', '?')} C at start",
+                  f"host RAM: {g['host'] or '?'}", '',
                   '| cell | baseline: steady s / warm total s / cold total s / peak GiB | candidate | steady x | total x | ComfyUI s | verdict |',
                   '|---|---|---|---|---|---|---|']
         for v in verdicts:
@@ -589,7 +592,7 @@ def baseline(version: str, gates: list[Gate], previous: Baseline | None, comfy: 
             if c['cold'] and c['cold']['output']:
                 c['cold']['output'] = None  # the cell's own output is the stored one
         kept = previous['groups'].get(g['group']) if previous else None
-        out['groups'][g['group']] = {'pod': g['pod'], 'label': g['label'], 'reference': g['reference'].get('before') or {}, 'cells': g['cells'],
+        out['groups'][g['group']] = {'pod': g['pod'], 'label': g['label'], 'host': g['host'], 'reference': g['reference'].get('before') or {}, 'cells': g['cells'],
                                      'comfyui': g['comfyui'] or comfy.get(g['group']) or (kept['comfyui'] if kept else {})}
     return out
 
