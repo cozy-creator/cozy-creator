@@ -42,13 +42,21 @@ Judged = Literal['steady_ms', 'total_ms']
 JUDGED: tuple[Judged, ...] = ('steady_ms', 'total_ms')
 TOTAL_FLOOR_MS = 300  # a total must also be this much worse: sub-second cells are their host's scheduling
 COLD_NOTE = 0.25  # a cold total this far over its baseline's is noted: one sample, and the pod's disk sets it
-# A reference workload this far from its GPU type's stored one is another class of pod (kesshouban to pasan: 7%).
-POD_RANGE = {'attention_ms': 0.12, 'conv_ms': 0.12, 'gemm_ms': 0.12, 'h2d_gbps': 0.35, 'disk_gbps': 0.6}
+# A reference workload this far from its GPU type's stored one is another class of pod. GPU kernels: kesshouban to pasan
+# 7%. Host CPU: normal 4090 hosts (canute, lieri, kesshouban, crystal) span fork 117-149 ms, cuda_init 0.79-0.88 s, package
+# import 2.0-2.2 s, tokenize 1.4-1.7 ms; the slow class (euclase, eleonora, norgalle, 11-10) is 2-4x, and steps eager SDXL at
+# 193 ms against 120 (capped-sdxl.md).
+POD_RANGE = {'attention_ms': 0.12, 'conv_ms': 0.12, 'gemm_ms': 0.12, 'h2d_gbps': 0.35, 'disk_gbps': 0.6,
+             'python_ms': 0.5, 'launch_us': 0.5, 'tokenize_ms': 0.5, 'import_ms': 0.5, 'fork_ms': 0.75, 'exec_fork_ms': 0.75, 'cuda_init_ms': 0.5}
+# Whatever is stored: a host whose executor took this long is the slow class (its record's legs, TensorD's own reads).
+HOST_CEILING = {'exec_fork_ms': 220.0, 'cuda_init_ms': 1300.0}
+SLOW_LEG = 1.5  # a cell whose executor's package import or CUDA init is this much over its baseline's: noted
 DRIFT = 0.03  # the reference workload after the cells against before them
 REPO, TAG = 'cozy-creator/cozy-creator', 'release-gate-baselines'
 MEDIA = ('video', 'image', 'audio')  # a run's judged output: its first file of the first of these kinds it has
 NUMBERS = ('total_ms', 'execution_ms', 'step1_ms', 'to_step1_ms', 'steady_ms', 'denoise_ms', 'steps', 'vram_mib', 'host_low_mib',
-           'fills', 'evictions', 'refilled_gib', 'replays', 'clock_mhz', 'clock_limit_mhz', 'throttled', 'temperature_c', 'power_w')
+           'fills', 'evictions', 'refilled_gib', 'replays', 'clock_mhz', 'clock_limit_mhz', 'throttled', 'temperature_c', 'power_w',
+           'fork_ms', 'cuda_init_ms', 'package_import_ms')
 
 
 class Transport(TypedDict):
@@ -109,6 +117,15 @@ class Reference(TypedDict, total=False):
     driver: str
     pcie: str
     cpu: str
+    cores: int
+    cpu_limit: float | None
+    python_ms: float
+    launch_us: float
+    tokenize_ms: float
+    fork_ms: float
+    import_ms: float
+    exec_fork_ms: float  # the calibrate executor's own legs, from its record
+    cuda_init_ms: float
     host_gib: float
     limit_gib: float | None
     clock_mhz: float
@@ -225,6 +242,7 @@ def metrics(run: Run, memavail: list[tuple[int, int]]) -> Metrics:
         'evictions': sum((x.get('weight_residency') or {}).get('evictions') or 0 for x in stats),
         'refilled_gib': round(sum((x.get('working_allocator') or {}).get('weights_filled') or 0 for x in stats) / 2**30, 1),
         'replays': run.replays, 'clock_mhz': round(statistics.median(clocks)) if clocks else None,
+        'fork_ms': run.legs.get('fork'), 'cuda_init_ms': run.legs.get('cuda_init'), 'package_import_ms': run.legs.get('package_import'),
         'clock_limit_mhz': next((c for r in rows if (c := r.get('sm_mhz_limit'))), None),
         'throttled': max((r.get('throttled_share') or 0.0 for r in rows), default=None),
         'temperature_c': max((r.get('temperature_max_c') or 0.0 for r in rows), default=None),
@@ -288,7 +306,13 @@ def text(d: str, name: str) -> str | None:
 def reference_of(run: Run | None) -> Reference | None:
     if run is None or run.status != 'completed' or not isinstance(run.result, dict):
         return None
-    return cast(Reference, run.result)  # the calibrate package's Measured, as the record carries it
+    ref = cast(Reference, dict(run.result))  # the calibrate package's Measured, as the record carries it
+    legs = run.legs
+    if 'fork' in legs:
+        ref['exec_fork_ms'] = legs['fork']
+    if 'cuda_init' in legs:
+        ref['cuda_init_ms'] = legs['cuda_init']
+    return ref
 
 
 def read_gate(d: str, judged: bool = True) -> Gate:
@@ -438,6 +462,10 @@ def judge(defs: list[CellDef], cand: Gate, base: Group | None, version: str | No
             bc, cc = b['cold']['numbers'] if b['cold'] else {}, c['cold']['numbers'] if c['cold'] else {}
             if 'total_ms' in bc and 'total_ms' in cc and cc['total_ms'] > (1 + COLD_NOTE) * bc['total_ms'] + 1000:
                 v.notes.append(f"cold {cc['total_ms'] / 1000:.1f} s against {bc['total_ms'] / 1000:.1f} s")
+            slow = [f"{k[:-3].replace('_', ' ')} {w[k] / 1000:.2f} s against {bw[k] / 1000:.2f} s" for k in ('package_import_ms', 'cuda_init_ms')
+                    if k in w and k in bw and bw[k] >= 250 and w[k] > SLOW_LEG * bw[k]]
+            if slow:
+                v.notes.append(f"slower host CPU: {', '.join(slow)}")
             if bw.get('fills') and w.get('refilled_gib', 0) > 1.5 * bw.get('refilled_gib', 0) + 1:
                 v.notes.append(f"refilled {w['refilled_gib']:.0f} GiB a call, baseline {bw.get('refilled_gib', 0):.0f}")
             if b['kernels'] and c['kernels'] and (b['kernels']['gemm'], b['kernels']['attention']) != (c['kernels']['gemm'], c['kernels']['attention']):
@@ -463,22 +491,27 @@ def judge(defs: list[CellDef], cand: Gate, base: Group | None, version: str | No
     return out
 
 
-def pod_check(cand: Gate, stored: Reference | None) -> list[str]:
-    """The pod's reference workload against its GPU type's stored one, and after the cells against before."""
-    ref, out = cand['reference'], []
+def pod_check(cand: Gate, stored: Reference | None) -> tuple[list[str], list[str]]:
+    """Why the pod is not a pod of its GPU type's class (its reference workload against the stored one, its host CPU against
+    the ceilings), and notes: the workload after the cells against before."""
+    ref, out, notes = cand['reference'], [], []
     before = ref.get('before')
     if not before:
-        return ['no reference workload on this pod']
+        return ['no reference workload on this pod'], []
+    for k, most in HOST_CEILING.items():
+        now = cast(float | None, before.get(k))
+        if now and now > most:
+            out.append(f"{k} {now:.0f} ms: a slow host CPU (a normal 4090 host is under {most:.0f})")
     for k, by in POD_RANGE.items():
         now, was = cast(float | None, before.get(k)), cast(float | None, (stored or {}).get(k))
-        if now and was and (now / was - 1 > by if k.endswith('_ms') else 1 - now / was > by):
+        if now and was and (1 - now / was > by if k.endswith('_gbps') else now / was - 1 > by):
             out.append(f"{k} {now:.3g} against this GPU type's {was:.3g} ({now / was - 1:+.0%}, at most {by:.0%} worse)")
     after = ref.get('after') or {}
     for k in ('attention_ms', 'conv_ms', 'gemm_ms'):
         a, b = cast(float | None, after.get(k)), cast(float | None, before.get(k))
         if a and b and abs(a / b - 1) > DRIFT:
-            out.append(f"{k} drifted {a / b - 1:+.1%} over the run ({before.get('temperature_c')} -> {after.get('temperature_c')} C)")
-    return out
+            notes.append(f"{k} drifted {a / b - 1:+.1%} over the run ({before.get('temperature_c')} -> {after.get('temperature_c')} C)")
+    return out, notes
 
 
 def fmt(cell: Cell | None) -> str:
@@ -504,7 +537,9 @@ def table(gates: list[Gate], base: Baseline | None, defs: list[CellDef], known: 
         ref = g['reference'].get('before') or {}
         lines += [f"\n### {g['group']} on {g['pod']}: {g['label']} against {version if group else 'no baseline'}"
                   f"{' (' + str(group['pod']) + ')' if group else ''}",
-                  f"pod: {ref.get('gpu', '?')}, driver {ref.get('driver', '?')}, PCIe {ref.get('pcie', '?')}, host {ref.get('host_gib', '?')} GiB"
+                  f"pod: {ref.get('gpu', '?')}, driver {ref.get('driver', '?')}, PCIe {ref.get('pcie', '?')}, CPU {ref.get('cpu', '?')} x{ref.get('cores', '?')}"
+                  f" (python {ref.get('python_ms', '?')} ms, launch {ref.get('launch_us', '?')} us, fork {ref.get('exec_fork_ms', '?')} ms,"
+                  f" cuda_init {ref.get('cuda_init_ms', '?')} ms), host {ref.get('host_gib', '?')} GiB"
                   f" (limit {ref.get('limit_gib', '-')}), {ref.get('temperature_c', '?')} C at start", '',
                   '| cell | baseline: steady s / warm total s / cold total s / peak GiB | candidate | steady x | total x | ComfyUI s | verdict |',
                   '|---|---|---|---|---|---|---|']
@@ -515,8 +550,11 @@ def table(gates: list[Gate], base: Baseline | None, defs: list[CellDef], known: 
                          f" {v.verdict}{': ' + '; '.join(v.why) if v.why else ''}{' (' + '; '.join(v.notes) + ')' if v.notes else ''} |")
             if v.verdict == 'FAIL':
                 fails.append(f"{g['group']} {v.name}: {'; '.join(v.why)}")
-        for p in pod_check(g, group['reference'] if group else None):
-            lines.append(f"\npod {g['pod']}: {p}")
+        bad, notes = pod_check(g, group['reference'] if group else None)
+        for p in bad:  # its numbers are another class of pod's: no verdict on the code from them
+            lines.append(f"\npod {g['pod']} OUT OF RANGE: {p}")
+            fails.append(f"{g['group']} pod {g['pod']}: {p}")
+        lines += [f"\npod {g['pod']}: {p}" for p in notes]
     return lines, fails
 
 
@@ -597,9 +635,9 @@ def main(argv: list[str]) -> int:
     if verb == 'admit':
         g = read_gate(rest[0], judged=False)
         group = base['groups'].get(g['group']) if base else None
-        bad = pod_check(g, group['reference'] if group else None)
-        print('\n'.join(bad) or f"pod {g['pod']} in range")
-        return 1 if bad and bad != ['no reference workload on this pod'] or not group and not g['reference'] else 0
+        bad, _ = pod_check(g, group['reference'] if group else None)
+        print('\n'.join(bad) or f"pod {g['pod']} in range" + ('' if group else ' (no stored numbers for its GPU type: the ceilings only)'))
+        return 1 if bad else 0
     if verb == 'noise':
         for g in (read_gate(d, judged=False) for d in rest):
             for name, c in g['cells'].items():

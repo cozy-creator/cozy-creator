@@ -14,9 +14,13 @@ release-gate/bench.py baseline <version> <gate dir>... [--comfyui suites/bench/c
 - `skus`: the groups (`<sku>x<gpus>`), one fresh pod each, held to a fixed host RAM (30.46 GiB a GPU) by `pod.sh` over SSH.
 - `cells.tsv`: the cells and what each guards. Each runs once cold on its fixed seed (the judged output) and then `warm`
   times on fresh seeds (the judged times). Weights download before the cold run (gate.sh `ahead`).
-- `calibrate/`: a reference workload (fixed GEMM, attention and convolution, the host-to-device copy, a cold disk read) and
-  the pod's facts, before and after the cells. A pod more than 12% off its GPU type's stored kernels (35% copy, 60% disk) is
-  ended and replaced before any cell; more than 3% drift over the run is flagged.
+- `calibrate/`: a reference workload and the pod's facts, before and after the cells: fixed GEMM, attention and convolution,
+  the host-to-device copy, a cold disk read, and the host CPU (single-thread Python, 10k tiny kernel launches, a CLIP-style
+  tokenize, a fork, a fresh `import torch`, and its executor's own fork and CUDA init; CPU model, cores, quota). Eager steps
+  are host-bound: a 2-4x slower host CPU (euclase, 11-10) stepped SDXL at 193 ms against 120 on a normal GPU. A pod more
+  than 12% off its GPU type's stored kernels (35% copy, 60% disk, 50% CPU probes, 75% fork), or over the CPU ceilings
+  (executor fork 220 ms, CUDA init 1.3 s), is ended and replaced before any cell; in a table it fails the group. More than
+  3% kernel drift over the run is noted, as is a cell whose executor started 1.5x slower than its baseline's.
 
 ## ComfyUI
 
