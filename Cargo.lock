@@ -2531,6 +2531,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "project-mount"
+version = "0.23.1"
+dependencies = [
+ "base64",
+ "getrandom 0.3.4",
+ "platform",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.21",
+ "zeroize",
+ "zip",
+]
+
+[[package]]
 name = "pulp"
 version = "0.22.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
