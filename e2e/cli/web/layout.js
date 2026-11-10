@@ -340,8 +340,8 @@ function emptyHits({ around, step }) {
   return [...found].map(([at, [x, y]]) => ({ rule: 'unseen-blocker', at, what: `takes the pointer at ${x},${y}, where nothing is drawn, from the canvas` }));
 }
 
-/** Each drawn edge on top, as the GPU draws it: ink against its own paper, and nothing of the whole frame past its line.
- *  Paper/children stay for the ink comparison; the original whole-hidden comparison still detects spill. */
+/** Each drawn edge on top, as the GPU draws it: coverage from black and white versions of the same ink path,
+ *  and spill from the actual frame against its original whole-hidden underlay. */
 async function drawnEdges(page, decoder, label) {
   const said = [];
   const proofs = [];
@@ -359,20 +359,29 @@ async function drawnEdges(page, decoder, label) {
       const svg = doc.documentElement;
       const paths = [...svg.children];
       const view = (svg.getAttribute('viewBox') ?? '').trim().split(/\s+/).map(Number);
-      if (doc.querySelector('parsererror') || svg.localName !== 'svg' || paths.length !== 2
-          || paths.some((path) => path.localName !== 'path' || !path.getAttribute('d') || !path.getAttribute('fill') || path.hasAttribute('stroke'))
+      const dimensions = ['width', 'height'].map((name) => Number(svg.getAttribute(name)));
+      const svgNs = 'http://www.w3.org/2000/svg';
+      const only = (el, names) => [...el.attributes].every((attr) => names.includes(attr.name));
+      if (doc.querySelector('parsererror') || doc.childNodes.length !== 1 || svg.localName !== 'svg' || paths.length !== 2
+          || svg.namespaceURI !== svgNs || !only(svg, ['xmlns', 'width', 'height', 'viewBox'])
+          || dimensions.some((n) => !Number.isFinite(n) || n <= 0)
+          || paths.some((path, i) => path.localName !== 'path' || path.namespaceURI !== svgNs || path.children.length
+            || !only(path, i === 0 ? ['d', 'fill'] : ['d', 'fill', 'fill-rule'])
+            || !path.getAttribute('d') || !/^#[0-9a-f]{6}$/i.test(path.getAttribute('fill') ?? ''))
           || paths[1].getAttribute('fill-rule') !== 'evenodd' || view.length !== 4 || !view.every(Number.isFinite) || view[2] <= 0 || view[3] <= 0) {
-        throw new Error('drawn edge SVG is not the owned paper-first, filled-ink-second structure');
+        throw new Error('drawn edge SVG is not the owned opaque paper-first, filled-ink-second structure');
       }
       const urls = [];
-      const picture = async (ink, bleed) => {
+      const picture = async (color, bleed) => {
         const copy = svg.cloneNode(true);
         if (bleed) {
           const [x, y, width, height] = view;
           copy.children[0].setAttribute('d', `M${x} ${y}H${x + width}V${y + height}H${x}Z`);
           copy.children[0].setAttribute('fill', '#ff00ff');
         }
-        if (!ink) copy.children[1].remove(); // The ink is a filled path, not an SVG stroke.
+        // Recolor only the actual opaque ink fill; never alter its path, opacity, or paper.
+        if (color === null) copy.children[1].remove();
+        else if (color) copy.children[1].setAttribute('fill', color);
         const url = URL.createObjectURL(new Blob([new XMLSerializer().serializeToString(copy)], { type: 'image/svg+xml' }));
         urls.push(url);
         const image = new Image();
@@ -381,8 +390,11 @@ async function drawnEdges(page, decoder, label) {
         return `url("${url}")`;
       };
       try {
-        const [paper, bleed, bleedPaper] = await Promise.all([picture(false, false), picture(true, true), picture(false, true)]);
-        return { paper, bleed, bleedPaper, urls };
+        const [black, white, noInk, bleed, bleedBlack, bleedWhite] = await Promise.all([
+          picture('#000000'), picture('#ffffff'), picture(null),
+          picture(undefined, true), picture('#000000', true), picture('#ffffff', true),
+        ]);
+        return { black, white, noInk, bleed, bleedBlack, bleedWhite, urls };
       } catch (error) {
         for (const url of urls) URL.revokeObjectURL(url);
         throw error;
@@ -451,14 +463,14 @@ async function drawnEdges(page, decoder, label) {
     const geometry = (frame) => frame && JSON.stringify([frame.rect, frame.scale, frame.view, frame.slices]);
     const paint = (frame) => frame && JSON.stringify([frame.o, frame.image]);
     const inline = (frame) => frame && JSON.stringify([frame.imageInline, frame.visibilityInline]);
-    const capture = async (i, paper) => {
+    const capture = async (i, witnesses) => {
       let last;
-      const what = `drawn edge ${i} stays in place through its three pictures`;
+      const what = `drawn edge ${i} stays in place through its four pictures`;
       try {
         await until(what, async () => {
           const frame = await frameAt(i);
           if (!frame?.eligible) { last = { frame, stable: false }; return false; }
-          const variants = paper ? null : await picturesFor(frame.image);
+          const variants = witnesses ? null : await picturesFor(frame.image);
           const [left, top, right, bottom] = frame.rect;
           const pad = frame.o + 3;
           const [width, height] = frame.view;
@@ -466,16 +478,20 @@ async function drawnEdges(page, decoder, label) {
           const clip = { x, y, width: Math.min(width, Math.ceil(right + pad)) - x, height: Math.min(height, Math.ceil(bottom + pad)) - y };
           const shown = await page.screenshot({ clip });
           const afterShown = await frameAt(i);
-          const ink = await imageAt(i, paper ?? variants.paper);
-          if (!ink) { last = { frame, afterShown, stable: false }; return false; }
-          let inkless, afterInkless;
-          try {
-            inkless = await page.screenshot({ clip });
-            afterInkless = await frameAt(i);
-          } finally {
-            await restoreImage(i, ink.saved);
+          const captured = [];
+          for (const image of witnesses ?? [variants.black, variants.white]) {
+            const changed = await imageAt(i, image);
+            if (!changed) { last = { frame, afterShown, stable: false }; return false; }
+            let picture, after;
+            try {
+              picture = await page.screenshot({ clip });
+              after = await frameAt(i);
+            } finally {
+              await restoreImage(i, changed.saved);
+            }
+            captured.push({ picture, after, image: changed.image, restored: await frameAt(i) });
           }
-          const afterInkRestored = await frameAt(i);
+          const [black, white] = captured;
           const visibility = await page.evaluate((i) => {
             const el = window.drawnFrames[i];
             if (!el?.isConnected) return null;
@@ -483,7 +499,7 @@ async function drawnEdges(page, decoder, label) {
             el.style.setProperty('visibility', 'hidden', 'important');
             return saved;
           }, i);
-          if (!visibility) { last = { frame, afterShown, afterInkless, afterInkRestored, stable: false }; return false; }
+          if (!visibility) { last = { frame, afterShown, stable: false }; return false; }
           let bare, afterBare;
           try {
             bare = await page.screenshot({ clip });
@@ -497,15 +513,16 @@ async function drawnEdges(page, decoder, label) {
             }, { i, saved: visibility });
           }
           const restored = await frameAt(i);
-          const stable = [afterShown, afterInkless, afterInkRestored, afterBare, restored].every((after) => geometry(after) === geometry(frame))
-            && [afterShown, afterInkRestored, restored].every((after) => paint(after) === paint(frame))
-            && [afterShown, afterInkRestored, restored].every((after) => inline(after) === inline(frame))
-            && afterInkless.image === ink.image;
-          last = { frame, afterShown, afterInkless, afterInkRestored, afterBare, restored, clip, viewport: { width, height }, shown, inkless, bare, variants, stable };
+          const stable = [afterShown, black.after, black.restored, white.after, white.restored, afterBare, restored].every((after) => geometry(after) === geometry(frame))
+            && [afterShown, black.restored, white.restored, restored].every((after) => paint(after) === paint(frame) && inline(after) === inline(frame))
+            && black.after.image === black.image && white.after.image === white.image;
+          last = { frame, afterShown, afterBlack: black.after, afterBlackRestored: black.restored,
+            afterWhite: white.after, afterWhiteRestored: white.restored, afterBare, restored, clip, viewport: { width, height },
+            shown, black: black.picture, white: white.picture, bare, variants, stable };
           return stable;
         }, (stable) => stable, STEP_MS);
-        const { frame, clip, shown, inkless, bare } = last;
-        const found = await decoder.evaluate(edgesOf, { shown: shown.toString('base64'), inkless: inkless.toString('base64'), bare: bare.toString('base64'), clip, frame });
+        const { frame, clip, shown, black, white, bare } = last;
+        const found = await decoder.evaluate(edgesOf, { shown: shown.toString('base64'), black: black.toString('base64'), white: white.toString('base64'), bare: bare.toString('base64'), clip, frame });
         return { ...last, found };
       } catch (error) {
         if (!last || !error.message.startsWith(`${what}: still `)) throw error;
@@ -521,19 +538,21 @@ async function drawnEdges(page, decoder, label) {
       // Exercise spill only where the existing audit has its outside sampling window, with all four sides present.
       const controls = pair.stable && frame.at === 'div.zoom' && frame.samples.length === 12
         && frame.o - 0.5 > 3.5 * frame.scale && !seen.edge_controls;
-      // The zoom control over the runs drawer's media keeps an exact positive comparison too.
-      if ((found.length || controls || (frame?.at === 'div.zoom' && label === '1600x1000-drawer-runs')) && process.env.SHOT) proofs.push({ i, ...pair });
+      // Keep exact positive comparisons over media and on the primary button at the same two views.
+      const keep = (frame?.at === 'div.zoom' && label === '1600x1000-drawer-runs')
+        || (frame?.at === 'button.tb.primary' && ['1600x1000-open-card-zoomed-out-again', '1600x1000-writing-card'].includes(label));
+      if ((found.length || controls || keep) && process.env.SHOT) proofs.push({ i, ...pair });
       if (controls) {
         const result = { label, at: frame.at, positive: found.length === 0, original: found };
-        for (const [name, image, paper, expected] of [
-          ['missing_ink', pair.variants.paper, pair.variants.paper, 'edge-gone'],
-          ['fill_bleed', pair.variants.bleed, pair.variants.bleedPaper, 'past-edge'],
+        for (const [name, image, witnesses, expected] of [
+          ['missing_ink', pair.variants.noInk, [pair.variants.noInk, pair.variants.noInk], 'edge-gone'],
+          ['fill_bleed', pair.variants.bleed, [pair.variants.bleedBlack, pair.variants.bleedWhite], 'past-edge'],
         ]) {
           const changed = await imageAt(i, image);
           if (!changed) throw new Error('drawn edge control lost its frame');
           let control;
           try {
-            control = await capture(i, paper);
+            control = await capture(i, witnesses);
           } finally {
             await restoreImage(i, changed.saved);
           }
@@ -558,12 +577,12 @@ async function drawnEdges(page, decoder, label) {
     }, [...pictures.values()].flatMap((held) => held.urls));
   }
   // Keep the exact comparison inputs after this pass has finished measuring, without another screenshot or DOM read.
-  for (const { i, control, frame, clip, viewport, shown, inkless, bare, afterShown, afterInkless, afterInkRestored, afterBare, restored, controlRestored, found } of proofs) {
+  for (const { i, control, frame, clip, viewport, shown, black, white, bare, afterShown, afterBlack, afterBlackRestored, afterWhite, afterWhiteRestored, afterBare, restored, controlRestored, found } of proofs) {
     const path = `${process.env.SHOT}-${label}-edge-${i}${control ? `-${control}` : ''}`;
-    if (shown) writeFileSync(`${path}-drawn.png`, shown);
-    if (inkless) writeFileSync(`${path}-inkless.png`, inkless);
-    if (bare) writeFileSync(`${path}-bare.png`, bare);
-    writeFileSync(`${path}-frame.json`, JSON.stringify({ label, control, frame, clip, viewport, afterShown, afterInkless, afterInkRestored, afterBare, restored, controlRestored, findings: found }, null, 2));
+    for (const [name, picture] of Object.entries({ drawn: shown, black, white, bare })) {
+      if (picture) writeFileSync(`${path}-${name}.png`, picture);
+    }
+    writeFileSync(`${path}-frame.json`, JSON.stringify({ label, control, frame, clip, viewport, afterShown, afterBlack, afterBlackRestored, afterWhite, afterWhiteRestored, afterBare, restored, controlRestored, findings: found }, null, 2));
   }
   return said;
 }
@@ -601,9 +620,9 @@ async function panCanvas(page) {
   return { from, fitted, before, after: await viewport() };
 }
 
-/** Ink against retained paper for its line; the whole frame against its original underlay for spill.
+/** Coverage from the same ink geometry recolored black and white; spill from actual shown versus whole-hidden.
  *  Self-contained: it runs in the decoder's page. */
-async function edgesOf({ shown, inkless, bare, clip, frame }) {
+async function edgesOf({ shown, black, white, bare, clip, frame }) {
   const read = async (base64) => {
     const bitmap = await createImageBitmap(await (await fetch(`data:image/png;base64,${base64}`)).blob());
     const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
@@ -611,9 +630,9 @@ async function edgesOf({ shown, inkless, bare, clip, frame }) {
     context.drawImage(bitmap, 0, 0);
     return context.getImageData(0, 0, bitmap.width, bitmap.height);
   };
-  const [a, paper, underlay] = [await read(shown), await read(inkless), await read(bare)];
-  const k = a.width / clip.width;
-  const differs = (b, x, y) => {
+  const [actual, darkInk, lightInk, underlay] = [await read(shown), await read(black), await read(white), await read(bare)];
+  const k = actual.width / clip.width;
+  const differs = (a, b, x, y) => {
     const [px, py] = [Math.round((x - clip.x) * k), Math.round((y - clip.y) * k)];
     if (px < 0 || py < 0 || px >= a.width || py >= a.height) return 0;
     const i = (py * a.width + px) * 4;
@@ -624,16 +643,16 @@ async function edgesOf({ shown, inkless, bare, clip, frame }) {
   for (const { side, x, y } of frame.samples) {
     const [dx, dy] = { top: [0, -1], right: [1, 0], bottom: [0, 1], left: [-1, 0] }[side];
     const [ex, ey] = { top: [x, top], right: [right, y], bottom: [x, bottom], left: [left, y] }[side];
-    const most = (b, from, to) => {
+    const most = (a, b, from, to) => {
       let held = 0;
-      for (let d = from; d <= to; d += 0.5 / k) held = Math.max(held, differs(b, ex + dx * d, ey + dy * d));
+      for (let d = from; d <= to; d += 0.5 / k) held = Math.max(held, differs(a, b, ex + dx * d, ey + dy * d));
       return held;
     };
     const tally = (sides[side] ??= { at: 0, line: 0, past: 0 });
     tally.at++;
     // The line wobbles from 3 px inside its edge to 2 px out; past it to the edge of its picture, nothing.
-    if (most(paper, -4 * frame.scale, 2.5 * frame.scale) > 80) tally.line++;
-    if (frame.o - 0.5 > 3.5 * frame.scale && most(underlay, 3.5 * frame.scale, frame.o - 0.5) > 12) tally.past++;
+    if (most(darkInk, lightInk, -4 * frame.scale, 2.5 * frame.scale) > 80) tally.line++;
+    if (frame.o - 0.5 > 3.5 * frame.scale && most(actual, underlay, 3.5 * frame.scale, frame.o - 0.5) > 12) tally.past++;
   }
   const found = [];
   for (const [side, { at, line, past }] of Object.entries(sides)) {
