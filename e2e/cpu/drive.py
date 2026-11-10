@@ -1,14 +1,14 @@
 """e2e/cpu: one package's cells through the Runtime's real executor on the CPU, with tiny random weights.
 
 Runs in the package's own environment (run.sh). It stands where TensorD stands: the executor process is the
-Runtime's (`python -m cozy_runtime.internal.executor`), and this sends it TensorD's frames over the seam (hello,
-start, load, activate, prepare_request, invoke, shutdown), the bindings built from the package interface as
-`tensord/src/gpu_service.rs` builds them. The weights are the fixture's (`tiny/<package>.py`): the model's real
-classes at a tiny config, ingested by TensorFS's own import into a throwaway store.
+Runtime's (`python -m cozy_runtime.internal.executor`), and this sends it TensorD's frames (`executor-protocol`) over
+the seam: hello, start, load, activate, prepare_request, invoke, shutdown, with the bindings built from the package
+interface as `tensord/src/gpu_service.rs` builds them. The weights are the fixture's (`tiny/<package>.py`): the
+model's real classes at a tiny config, written into a throwaway store by TensorFS's own import or writer.
 
     drive.py <package dir> <interface.json> <fixture.py> <out dir> [--only cell,...] [--record]
 
-Prints one line per cell: PASS|FAIL <package> <entry> <cell> <seconds>s[: first error line]. Exit 1 on any FAIL.
+Prints one line per cell: PASS|FAIL|SKIP <package> <entry> <cell> <seconds>s[: first error line]. Exit 1 on any FAIL.
 """
 
 from __future__ import annotations
@@ -17,15 +17,25 @@ import hashlib
 import importlib.util
 import json
 import os
+import shutil
+import socket
+import struct
 import subprocess
 import sys
 import time
 import traceback
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Literal, NotRequired, TypedDict, cast
+
+import numpy as np
+import numpy.typing as npt
+
+from cell import Cell, Fixture, Json, Output, Seen
 
 HERE = Path(__file__).resolve().parent
 THREADS = os.environ.get("CPU_E2E_THREADS", "2")
+HEADER = struct.Struct("!I")
 
 
 class Failed(Exception):
@@ -36,26 +46,161 @@ def first_line(text: object) -> str:
     return next((line.strip() for line in str(text).splitlines() if line.strip()), "")[:300]
 
 
+# The package interface, as far as a binding reads it (`cozy-runtime describe --json`).
+class Slot(TypedDict):
+    path: str
+    # `class` is a keyword: read with slot["class"].
+    default: NotRequired[str]
+    components: NotRequired[list[str]]
+    component_use: NotRequired[dict[str, list[str]]]
+    weights: NotRequired[bool]
+    on_demand: NotRequired[bool]
+
+
+class Entrypoint(TypedDict):
+    name: str
+    models: NotRequired[list[Slot]]
+
+
+class Interface(TypedDict):
+    application: str
+    entrypoints: list[Entrypoint]
+
+
+# TensorD's frames (`crates/executor-protocol`), the fields this driver sends.
+class Binding(TypedDict):
+    application: str
+    package_interface: str
+    model_class: NotRequired[str]
+    model_binding_path: NotRequired[str]
+    model_parameter_name: NotRequired[str]
+    model_parameter_names: NotRequired[list[str]]
+    component: NotRequired[str]
+    components: NotRequired[list[str]]
+    snapshots: NotRequired[dict[str, str]]
+    store: NotRequired[str]
+    snapshot: NotRequired[str]
+    release: NotRequired[str]
+    package: NotRequired[str]
+    model: NotRequired[str]
+
+
+class ModelLoad(TypedDict):
+    binding: Binding
+
+
+class Construction(TypedDict):
+    path: str
+    manifest: str
+    components: list[str]
+
+
+class InputMetadata(TypedDict):
+    input_id: str
+    media_type: str
+    digest: str
+    length: int
+    order: int
+
+
+class InputFile(TypedDict):
+    local: str
+    media_type: str
+    digest: str
+    length: int
+    order: int
+
+
+class Start(TypedDict):
+    cmd: Literal["start"]
+    devices: str
+    application: str
+    package_interface: str
+    sequence_parallel_degree: int
+    model_choices: bool
+    constructions: list[Construction]
+
+
+class Load(TypedDict):
+    cmd: Literal["load"]
+    construction: str
+    devices: str
+    sequence_parallel_degree: int
+    binding: Binding
+    models: NotRequired[list[ModelLoad]]
+
+
+class PrepareRequest(TypedDict):
+    cmd: Literal["prepare_request"]
+    request_id: str
+    construction: str
+    entrypoint: str
+    payload: dict[str, Json]
+    input_metadata: dict[str, InputMetadata]
+
+
+class Invoke(TypedDict):
+    cmd: Literal["invoke"]
+    request_id: str
+    construction: str
+    entrypoint: str
+    spool: str
+    deadline_s: float
+    inputs: dict[str, InputFile]
+
+
+class Named(TypedDict):
+    cmd: Literal["hello", "shutdown"]
+
+
+class Activate(TypedDict):
+    cmd: Literal["activate"]
+    construction: str
+
+
+type Frame = Start | Load | PrepareRequest | Invoke | Named | Activate
+
+
+class Outcome(TypedDict, total=False):
+    terminal: str
+    code: str
+    message: str
+
+
+class Reply(TypedDict, total=False):
+    reply: str
+    event: str
+    kind: str
+    ok: bool
+    code: str
+    detail: str
+    outcome: Outcome
+    outputs: list[dict[str, Json]]
+    result: Json
+
+
 class Executor:
-    """One executor process and its seam."""
+    """One executor process and the seam to it: 4-byte big-endian length, then canonical JSON."""
 
-    def __init__(self, work: Path, store: Path, ranks: int = 1) -> None:
-        from cozy_runtime.internal import seam
-
+    def __init__(self, work: Path, store: Path, waive: Mapping[str, str], ranks: int = 1) -> None:
         work.mkdir(parents=True, exist_ok=True)
         self.work, self.ranks = work, ranks
         (work / "seam").unlink(missing_ok=True)
         # A socket path is at most 107 bytes: bound and dialed through this directory's descriptor.
         self.fd = os.open(work, os.O_RDONLY)
-        listening = seam.listener(f"/proc/self/fd/{self.fd}/seam")
+        listening = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        listening.bind(f"/proc/self/fd/{self.fd}/seam")
+        listening.listen(1)
         env = {
             **{k: v for k, v in os.environ.items() if k in ("PATH", "HOME", "LANG", "TMPDIR", "VIRTUAL_ENV")},
             "CUDA_VISIBLE_DEVICES": "",
             "TENSORFS_HOME": str(store),
             "OMP_NUM_THREADS": THREADS,
             "MKL_NUM_THREADS": THREADS,
-            "COZY_CPU_RANKS": str(ranks),
         }
+        if waive:
+            # A fixture's waivers (WAIVE): release-geometry pins a tiny model cannot meet, each named with its reason.
+            env |= {"PYTHONPATH": str(HERE / "waive"), "CPU_E2E_WAIVE": json.dumps(dict(waive))}
         self.stderr = work / "executor.log"
         self.child = subprocess.Popen(
             [sys.executable, "-m", "cozy_runtime.internal.executor", "--socket", f"/proc/{os.getpid()}/fd/{self.fd}/seam",
@@ -63,26 +208,50 @@ class Executor:
             env=env, stderr=open(self.stderr, "w"), stdout=subprocess.DEVNULL,
         )
         listening.settimeout(180)
-        sock, _ = listening.accept()
-        sock.settimeout(None)
+        self.sock, _ = listening.accept()
         listening.close()
-        self.channel = seam.Channel(sock)
-        self.events: list[dict[str, Any]] = []
 
-    def ask(self, frame: dict[str, Any], timeout: float = 900) -> dict[str, Any]:
-        self.channel.send(frame)
+    def send(self, frame: Frame) -> None:
+        data = json.dumps(frame, separators=(",", ":"), sort_keys=True).encode()
+        self.sock.sendall(HEADER.pack(len(data)) + data)
+
+    def recv(self, timeout: float) -> Reply | None:
+        head = self._exact(HEADER.size, timeout, boundary=True)
+        if head is None:
+            return None
+        (length,) = HEADER.unpack(head)
+        body = self._exact(length, timeout, boundary=False)
+        assert body is not None
+        return cast(Reply, json.loads(body))
+
+    def _exact(self, want: int, timeout: float, *, boundary: bool) -> bytes | None:
+        buf = bytearray()
+        self.sock.settimeout(timeout)
+        while len(buf) < want:
+            chunk = self.sock.recv(want - len(buf))
+            if not chunk:
+                if boundary and not buf:
+                    return None
+                raise Failed("the executor's seam closed inside a frame")
+            buf += chunk
+        return bytes(buf)
+
+    def ask(self, frame: Frame, timeout: float = 900) -> Reply:
+        self.send(frame)
         deadline = time.monotonic() + timeout
         while True:
-            got = self.channel.recv(timeout=max(1.0, deadline - time.monotonic()))
+            try:
+                got = self.recv(max(1.0, deadline - time.monotonic()))
+            except TimeoutError:
+                raise Failed(f"{frame['cmd']} did not answer in {timeout:.0f} s") from None
             if got is None:
                 raise Failed(f"the executor left during {frame['cmd']}: {self.last_error()}")
             if got.get("reply") == frame["cmd"]:
                 return got
-            self.events.append(got)
-            if time.monotonic() > deadline:
-                raise Failed(f"{frame['cmd']} did not answer in {timeout:.0f} s")
+            if got.get("event") == "request":
+                raise Failed(f"the executor asked TensorD for {got.get('kind')}, which this driver does not stand in for")
 
-    def must(self, frame: dict[str, Any], timeout: float = 900) -> dict[str, Any]:
+    def must(self, frame: Frame, timeout: float = 900) -> Reply:
         reply = self.ask(frame, timeout)
         if not reply.get("ok"):
             raise Failed(f"{frame['cmd']}: {reply.get('code')}: {first_line(reply.get('detail', ''))}")
@@ -96,105 +265,165 @@ class Executor:
     def close(self) -> None:
         try:
             if self.child.poll() is None:
-                self.channel.send({"cmd": "shutdown"})
+                self.send({"cmd": "shutdown"})
                 self.child.wait(20)
-        except Exception:
+        except (OSError, subprocess.TimeoutExpired):
             pass
         if self.child.poll() is None:
             self.child.kill()
             self.child.wait()
+        self.sock.close()
         os.close(self.fd)
 
 
-def bindings(interface: dict[str, Any], interface_path: str, entry: dict[str, Any], manifests: dict[str, str],
-             store: Path, release: str, package: str) -> list[dict[str, Any]]:
-    """The entry point's constructed slots as TensorD binds them (`gpu_service.rs`, `Binding`)."""
+def slot_ref(slot: Slot) -> str:
+    return slot.get("default") or slot["path"]
+
+
+def held(manifest: str, store: Path) -> list[str]:
     import tensorfs
 
-    rows = []
+    return list(tensorfs.open(manifest, cache_dir=store, local_files_only=True).components)
+
+
+def bindings(interface: Interface, interface_path: str, entry: Entrypoint, manifests: Mapping[str, str],
+             store: Path, release: str, package: str) -> list[Binding]:
+    """The entry point's constructed slots as TensorD binds them (`gpu_service.rs`, `Binding`)."""
+    rows: list[Binding] = []
     for slot in entry.get("models", []):
         if slot.get("weights"):
             continue
-        ref = slot.get("default") or slot["path"]
+        ref = slot_ref(slot)
         manifest = manifests.get(slot["path"]) or manifests.get(ref)
         if manifest is None:
             raise Failed(f"the fixture builds no model for {slot['path']} ({ref})")
-        held = list(tensorfs.open(manifest, cache_dir=store, local_files_only=True).components)
+        components = held(manifest, store)
         wanted = slot.get("components") or sorted({c for use in slot.get("component_use", {}).values() for c in use})
-        components = [c for c in held if not wanted or c in wanted]
-        missing = [c for c in wanted if c not in held]
+        missing = [c for c in wanted if c not in components]
+        components = [c for c in components if not wanted or c in wanted]
         if missing or not components:
-            raise Failed(f"{slot['path']} uses {', '.join(missing) or 'components'} that the tiny {ref} does not hold ({', '.join(held)})")
+            raise Failed(f"{slot['path']} uses {', '.join(missing) or 'components'} that the tiny {ref} does not hold")
         parameter = slot["path"].rsplit(".", 1)[-1]
-        rows.append({"binding": {
-            "application": interface["application"], "package_interface": interface_path, "model_class": slot["class"],
-            "model_binding_path": slot["path"], "model_parameter_name": parameter, "model_parameter_names": [parameter],
-            "component": components[0], "components": components, "snapshots": {c: manifest for c in components},
-            "snapshot": manifest, "store": str(store), "release": release, "package": package, "model": f"tiny/{ref}",
-        }})
+        rows.append({
+            "application": interface["application"], "package_interface": interface_path,
+            "model_class": cast(dict[str, str], slot)["class"], "model_binding_path": slot["path"],
+            "model_parameter_name": parameter, "model_parameter_names": [parameter], "component": components[0],
+            "components": components, "snapshots": {c: manifest for c in components}, "snapshot": manifest,
+            "store": str(store), "release": release, "package": package, "model": f"tiny/{ref}",
+        })
     return rows
 
 
-def signature(data: bytes, parts: int = 64) -> list[float]:
-    """A coarse picture of an output's bytes: the mean of each of `parts` equal runs."""
-    import numpy as np
-
-    values = np.frombuffer(data, dtype=np.uint8).astype(np.float64)
-    return [round(float(chunk.mean()), 2) if chunk.size else 0.0 for chunk in np.array_split(values, parts)]
+def signature(data: npt.NDArray[np.generic], parts: int = 64) -> list[float]:
+    """A coarse picture of an output: the mean of each of `parts` equal runs of its samples."""
+    flat = data.reshape(-1).astype(np.float64)
+    return [round(float(chunk.mean()), 2) if chunk.size else 0.0 for chunk in np.array_split(flat, parts)]
 
 
-def judge(cell: dict[str, Any], reply: dict[str, Any], spool: Path, reference: dict[str, Any] | None) -> dict[str, Any]:
-    """The cell's output judged, never only its completion: present, not flat, and the stored reference's."""
-    import numpy as np
+def samples(path: Path) -> npt.NDArray[np.generic]:
+    """An output's samples as numbers: a decoded picture or video, else its bytes."""
+    if path.suffix in (".png", ".webp", ".jpg", ".jpeg"):
+        from PIL import Image
 
-    outcome = reply.get("outcome") or {}
+        with Image.open(path) as image:
+            return np.asarray(image.convert("RGB"))
+    if path.suffix in (".mp4", ".webm", ".mov", ".mkv"):
+        import av
+
+        with av.open(str(path)) as container:
+            frames = [frame.to_ndarray(format="rgb24") for frame in container.decode(video=0)]
+        if not frames:
+            raise Failed(f"output {path.name} holds no video frames")
+        return np.stack(frames)
+    return np.frombuffer(path.read_bytes(), dtype=np.uint8)
+
+
+def judge(cell: Cell, reply: Reply, spool: Path, reference: Seen | None) -> Seen:
+    """The cell's output judged, never only its completion: present, finite, not flat, and the stored reference's."""
+    outcome = reply.get("outcome", {})
     if not reply.get("ok") or outcome.get("terminal") != "succeeded":
         raise Failed(f"{outcome.get('code') or reply.get('code')}: {first_line(outcome.get('message') or reply.get('detail', ''))}")
     result_file = spool / "result.canonical"
-    result = json.loads(result_file.read_bytes()) if result_file.exists() else reply.get("result")
-    seen: dict[str, Any] = {"result": result, "outputs": []}
+    result = cast(Json, json.loads(result_file.read_bytes())) if result_file.exists() else reply.get("result")
+    seen: Seen = {"result": result, "outputs": []}
     files = sorted(p for p in spool.iterdir() if p.name != "result.canonical" and p.is_file())
     if len(files) < len(reply.get("outputs") or []):
-        raise Failed(f"{len(reply['outputs'])} outputs declared, {len(files)} files in the spool")
+        raise Failed(f"{len(reply.get('outputs') or [])} outputs declared, {len(files)} files in the spool")
     for path in files:
-        data = path.read_bytes()
-        if not data:
+        if not path.stat().st_size:
             raise Failed(f"output {path.name} is empty")
-        values = np.frombuffer(data, dtype=np.uint8)
-        if path.suffix == ".raw" and float(values.std()) < 1.0:
-            raise Failed(f"output {path.name} is flat (spread {float(values.std()):.3f})")
-        seen["outputs"].append({"name": path.name, "bytes": len(data), "signature": signature(data)})
+        values = samples(path)
+        spread = float(values.astype(np.float64).std())
+        if not np.isfinite(spread):
+            raise Failed(f"output {path.name} is not finite")
+        if path.suffix not in (".json", ".txt", ".safetensors", ".bin") and spread < 1.0:
+            raise Failed(f"output {path.name} is flat (spread {spread:.3f})")
+        seen["outputs"].append({"name": path.name, "bytes": path.stat().st_size, "signature": signature(values)})
     check = cell.get("check")
-    if check is not None:
-        problem = check(result, files)
-        if problem:
-            raise Failed(str(problem))
+    if check is not None and (problem := check(result, files)):
+        raise Failed(problem)
     if reference is not None:
         compare(seen, reference, float(cell.get("tolerance", 3.0)))
     return seen
 
 
-def compare(seen: dict[str, Any], reference: dict[str, Any], tolerance: float) -> None:
-    want, got = reference.get("outputs", []), seen["outputs"]
-    if [(o["name"], o["bytes"]) for o in want] != [(o["name"], o["bytes"]) for o in got]:
-        raise Failed(f"outputs {[(o['name'], o['bytes']) for o in got]} differ from the reference's {[(o['name'], o['bytes']) for o in want]}")
+def compare(seen: Seen, reference: Seen, tolerance: float) -> None:
+    def shape(outputs: list[Output]) -> list[tuple[str, int]]:
+        return [(o["name"], o["bytes"]) for o in outputs]
+
+    want, got = reference["outputs"], seen["outputs"]
+    if [o["name"] for o in want] != [o["name"] for o in got]:
+        raise Failed(f"outputs {shape(got)} differ from the reference's {shape(want)}")
     for a, b in zip(want, got, strict=True):
         worst = max(abs(x - y) for x, y in zip(a["signature"], b["signature"], strict=True))
         if worst > tolerance:
             raise Failed(f"output {b['name']} differs from its reference by {worst:.1f}/255 (tolerance {tolerance})")
-    if "result" in reference and reference["result"] != seen["result"]:
+    if reference["result"] != seen["result"]:
         raise Failed(f"result {json.dumps(seen['result'])[:160]} differs from the reference's {json.dumps(reference['result'])[:160]}")
 
 
-def inputs(cell: dict[str, Any], work: Path) -> tuple[dict[str, Any], dict[str, Any]]:
-    """The cell's input files as the machine hands them: verified, in the attempt's spool."""
-    granted: dict[str, Any] = {}
-    for order, (name, source) in enumerate((cell.get("files") or {}).items()):
-        path, media_type = source
-        data = Path(path).read_bytes()
-        granted[name] = {"local": str(path), "media_type": media_type, "digest": "sha256:" + hashlib.sha256(data).hexdigest(),
-                         "length": len(data), "order": order}
-    return granted, {}
+MEDIA = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".mp4": "video/mp4",
+         ".wav": "audio/wav", ".flac": "audio/flac", ".mp3": "audio/mpeg", ".json": "application/json"}
+
+
+def inputs(cell: Cell, payload: dict[str, Json], work: Path, made: Path) -> tuple[dict[str, InputMetadata], dict[str, InputFile]]:
+    """The cell's input files as the machine grants them: its bytes in the attempt's own directory, the payload's field
+    holding the reference, `PrepareRequest.input_metadata` and `Invoke.inputs` keyed by the field path (`asset_inputs`)."""
+    metadata: dict[str, InputMetadata] = {}
+    granted: dict[str, InputFile] = {}
+    for field, source in cell.get("files", {}).items():
+        if callable(source):
+            made.mkdir(parents=True, exist_ok=True)
+            source = source(made)
+        work.mkdir(parents=True, exist_ok=True)
+        local = (work / field.replace(".", "-")).with_suffix(source.suffix)
+        shutil.copyfile(source, local)
+        data = local.read_bytes()
+        digest = "sha256:" + hashlib.sha256(data).hexdigest()
+        *parents, last = field.split(".")
+        node: Json = payload
+        for part in parents:
+            node = node[int(part)] if isinstance(node, list) else cast(dict[str, Json], node)[part]
+        order = 0
+        if isinstance(node, list):
+            order = int(last)
+            node.extend([None] * (order + 1 - len(node)))
+            node[order] = digest
+        else:
+            cast(dict[str, Json], node)[last] = digest
+        metadata[field] = {"input_id": field, "media_type": MEDIA[source.suffix], "digest": digest, "length": len(data),
+                           "order": order}
+        granted[field] = {"local": str(local), "media_type": MEDIA[source.suffix], "digest": digest, "length": len(data),
+                          "order": order}
+    return metadata, granted
+
+
+def load_fixture(path: Path, package: str) -> Fixture:
+    spec = importlib.util.spec_from_file_location(f"tiny_{package.replace('-', '_').replace('.', '_')}", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return cast(Fixture, module)
 
 
 def main() -> int:
@@ -205,76 +434,86 @@ def main() -> int:
     package = package_dir.name
     out.mkdir(parents=True, exist_ok=True)
     store = out / "store"
-    interface = json.loads(interface_path.read_text())
-    spec = importlib.util.spec_from_file_location(f"tiny_{package.replace('-', '_').replace('.', '_')}", fixture_path)
-    assert spec and spec.loader
-    fixture = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(fixture)
+    interface = cast(Interface, json.loads(interface_path.read_text()))
+    fixture = load_fixture(fixture_path, package)
+    waive = cast(dict[str, str], getattr(fixture, "WAIVE", {}))
     references_path = HERE / "refs" / f"{package}.json"
-    references = json.loads(references_path.read_text()) if references_path.exists() else {}
+    references = cast(dict[str, Seen], json.loads(references_path.read_text())) if references_path.exists() else {}
     failed = 0
 
     def line(ok: bool, entry: str, name: str, started: float, why: str = "") -> None:
         nonlocal failed
         failed += not ok
-        print(f"{'PASS' if ok else 'FAIL'} {package} {entry} {name} {time.monotonic() - started:.1f}s{': ' + why if why else ''}", flush=True)
+        print(f"{'PASS' if ok else 'FAIL'} {package} {entry} {name} {time.monotonic() - started:.1f}s{': ' + why if why else ''}",
+              flush=True)
 
     started = time.monotonic()
     try:
         import tensorfs
 
-        manifests = {}
-        for ref, source in fixture.models(out / "source").items():
-            manifests[ref] = source if str(source).startswith("sha256:") else tensorfs.convert_to_cozytensors(str(source), cache_dir=store).id
+        manifests: dict[str, str] = {}
+        for ref, source in fixture.models(out / "source", store).items():
+            manifests[ref] = source if isinstance(source, str) else tensorfs.convert_to_cozytensors(str(source), cache_dir=store).id
         line(True, "-", "tiny-weights", started)
     except Exception as exc:
-        traceback.print_exc(file=open(out / "tiny-weights.err", "w"))
+        with open(out / "tiny-weights.err", "w") as err:
+            traceback.print_exc(file=err)
         line(False, "-", "tiny-weights", started, f"{type(exc).__name__}: {first_line(exc)}")
         return 1
-    version = next((l.split('"')[1] for l in (package_dir / "pyproject.toml").read_text().splitlines() if l.startswith("version")), "0")
+    version = next((ln.split('"')[1] for ln in (package_dir / "pyproject.toml").read_text().splitlines() if ln.startswith("version")), "0")
     entries = {row["name"]: row for row in interface["entrypoints"]}
     cells = [c for c in fixture.CELLS if only is None or c["name"] in only or f"{c['entry']}/{c['name']}" in only]
     executors: dict[int, Executor] = {}
     loaded: set[tuple[int, str]] = set()
     try:
-        for index, cell in enumerate(cells):
-            entry, name, ranks = cell["entry"], cell["name"], int(cell.get("ranks", 1))
+        for cell in cells:
+            entry, name, ranks = cell["entry"], cell["name"], cell.get("ranks", 1)
             started = time.monotonic()
-            request = f"{entry}-{name}-{index}"
+            request = f"{entry}-{name}"
+            if "skip" in cell:
+                print(f"SKIP {package} {entry} {name} 0.0s: {cell['skip']}", flush=True)
+                continue
             try:
                 row = entries.get(entry)
                 if row is None:
                     raise Failed(f"the package interface has no entry point {entry}")
+                rows = bindings(interface, str(interface_path), row, manifests, store, f"{package}@{version}", package)
                 executor = executors.get(ranks)
                 if executor is None:
-                    executor = executors[ranks] = Executor(out / f"executor-{ranks}", store, ranks)
+                    executor = executors[ranks] = Executor(out / f"executor-{ranks}", store, waive, ranks)
                     executor.must({"cmd": "hello"})
-                    executor.must({"cmd": "start", "devices": "", "application": interface["application"],
-                                   "package_interface": str(interface_path), "sequence_parallel_degree": ranks, "model_choices": True})
+                    executor.must({
+                        "cmd": "start", "devices": "", "application": interface["application"],
+                        "package_interface": str(interface_path), "sequence_parallel_degree": ranks, "model_choices": True,
+                        "constructions": [{"path": b["model_binding_path"], "manifest": b["snapshot"], "components": b["components"]}
+                                          for b in rows if "snapshot" in b and "model_binding_path" in b and "components" in b],
+                    })
                 construction = f"{entry}@{ranks}"
                 if (ranks, construction) not in loaded:
-                    rows = bindings(interface, str(interface_path), row, manifests, store, f"{package}@{version}", package)
-                    load: dict[str, Any] = {"cmd": "load", "construction": construction, "devices": "", "sequence_parallel_degree": ranks}
-                    load["binding"] = rows[0]["binding"] if rows else {"application": interface["application"], "package_interface": str(interface_path)}
+                    load: Load = {"cmd": "load", "construction": construction, "devices": "", "sequence_parallel_degree": ranks,
+                                  "binding": rows[0] if rows else {"application": interface["application"],
+                                                                   "package_interface": str(interface_path)}}
                     if len(rows) > 1:
-                        load["models"] = rows
+                        load["models"] = [{"binding": b} for b in rows]
                     executor.must(load)
                     loaded.add((ranks, construction))
                 executor.must({"cmd": "activate", "construction": construction})
-                executor.must({"cmd": "prepare_request", "request_id": request, "entrypoint": entry, "payload": cell["payload"],
-                               "construction": construction})
+                payload = cast(dict[str, Json], json.loads(json.dumps(cell["payload"])))
+                metadata, granted = inputs(cell, payload, out / "inputs" / request, out / "made")
+                executor.must({"cmd": "prepare_request", "request_id": request, "entrypoint": entry, "payload": payload,
+                               "construction": construction, "input_metadata": metadata})
                 spool = out / "spool" / request
                 spool.mkdir(parents=True)
-                granted, _ = inputs(cell, spool)
                 reply = executor.ask({"cmd": "invoke", "request_id": request, "entrypoint": entry, "spool": str(spool),
-                                      "construction": construction, "deadline_s": 900, "inputs": granted})
+                                      "construction": construction, "deadline_s": 1800, "inputs": granted})
                 (out / f"{request}.reply.json").write_text(json.dumps(reply, indent=1))
                 key = f"{entry}/{name}"
-                seen = judge(cell, reply, spool, None if record else references.get(cell.get("same_as", key)))
-                if record and "same_as" not in cell:
+                same_as = cell.get("same_as")
+                seen = judge(cell, reply, spool, None if record and same_as is None else references.get(same_as or key))
+                if record and same_as is None:
                     references[key] = seen
-                elif key not in references and "same_as" not in cell:
-                    raise Failed("no stored reference for this cell: record one (run.sh --record)")
+                elif (same_as or key) not in references:
+                    raise Failed(f"no stored reference for {same_as or key}: record one (run.sh --record)")
                 line(True, entry, name, started)
             except Exception as exc:
                 why = first_line(exc) if isinstance(exc, Failed) else f"{type(exc).__name__}: {first_line(exc)}"
