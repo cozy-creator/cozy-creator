@@ -521,7 +521,7 @@ from pathlib import Path
 binary,project,peer,collision,output,manifest=sys.argv[1:]
 output=Path(output)
 def cli(*args,ok=True):
-    done=subprocess.run([binary,*map(str,args)],capture_output=True,text=True,timeout=40)
+    done=subprocess.run([binary,*map(str,args)],capture_output=True,encoding="utf-8",timeout=40)
     if ok and done.returncode: raise AssertionError((args,done.stdout,done.stderr))
     return done
 def snapshot(project):
@@ -531,8 +531,8 @@ def snapshot(project):
 def clone(source,target):
     Path(target).mkdir()
     with sqlite3.connect(f'file:{source}/project.db?mode=ro',uri=True) as src, sqlite3.connect(f'{target}/project.db') as dst: src.backup(dst)
-def native(mode,source,target):
-    done=subprocess.run(['nice','-n','19','cargo','run','--quiet','--locked','--manifest-path',manifest,'--',mode,str(source),str(target)],capture_output=True,text=True,timeout=60)
+def native(mode,source,target,*extra):
+    done=subprocess.run(['nice','-n','19','cargo','run','--quiet','--locked','--manifest-path',manifest,'--',mode,str(source),str(target),*extra],capture_output=True,encoding='utf-8',timeout=60)
     assert done.returncode==0,done.stderr
     return json.loads(done.stdout)
 original_id=json.loads(cli('--json','project','-p',project,'status').stdout)['id']
@@ -599,6 +599,52 @@ for attempt in range(8):
         observed=True
         break
 assert observed,'no observed stale native base; proof is inconclusive'
+# Install a native peer fixture whose prefix and suffix contain independently
+# selected normalized names. Seed the old projection so ordinal-only updates
+# exercise real existing rows rather than comparing against a missing fixture.
+mixed=output/'crdt-scan-collisions'; clone(project,mixed)
+scans_before=output/'crdt-scans-before.am'
+fixture=native('--scan-fixture',output/'crdt-stream-after.am',scans_before)
+ord0=fixture['first_collision_order']
+with sqlite3.connect(mixed/'project.db') as db:
+    db.execute('UPDATE crdt_document SET snapshot=?,heads=? WHERE id=1',(scans_before.read_bytes(),json.dumps(fixture['heads'])))
+    for key,name,ord,text in [('mixed name','MIXED-NAME',ord0+3,'last mixed'),('étage a','ÉTAGE_A',ord0+4,'last unicode'),('projection pivot','projection_pivot',ord0+2,'between')]:
+        db.execute('INSERT INTO boxes(key,name,ord) VALUES(?,?,?)',(key,name,ord))
+        db.execute('INSERT INTO fields(box,ord,field,value) VALUES(?,0,?,?)',(key,'text',json.dumps(text)))
+def chosen(project):
+    with sqlite3.connect(f'{project}/project.db') as db:
+        return [(name,ord,json.loads(value)) for name,ord,value in db.execute("SELECT boxes.name,boxes.ord,fields.value FROM boxes JOIN fields ON fields.box=boxes.key WHERE boxes.key IN ('mixed name','étage a') AND fields.field='text' ORDER BY boxes.ord")]
+cli('project','-p',mixed,'delete','projection_pivot')
+assert chosen(mixed)==[('MIXED-NAME',ord0+2,'last mixed'),('ÉTAGE_A',ord0+3,'last unicode')],chosen(mixed)
+cli('project','-p',mixed,'delete','Mixed_Name')
+assert chosen(mixed)==[('MIXED-NAME',ord0+1,'last mixed'),('ÉTAGE_A',ord0+2,'last unicode')],chosen(mixed)
+cli('project','-p',mixed,'set','groudon','e2e_keys:={"keep":"kept","new":["same","same"]}','e2e_replace:=["same","same"]')
+cli('project','-p',mixed,'set','groudon','e2e_replace:={"branch":[1,1]}')
+scans_after=output/'crdt-scans-after.am';scans_after.write_bytes(snapshot(mixed)[0])
+scans=native('--scan-check',scans_before,scans_after)
+
+# A separate valid graph exercises case-only rename and an arbitrary reorder
+# through the CLI. The native identity reader checks both retained boxes.
+control=output/'crdt-case-order';clone(project,control)
+case_before=output/'crdt-case-before.am';case_before.write_bytes(snapshot(control)[0])
+cli('project','-p',control,'rename','groudon','Groudon')
+case_after=output/'crdt-case-after.am';case_after.write_bytes(snapshot(control)[0])
+native('--identity',case_before,case_after,'groudon','Groudon')
+with sqlite3.connect(control/'project.db') as db:
+    ordered=[row[0] for row in db.execute("SELECT name FROM boxes WHERE key IN ('groudon','whale') ORDER BY ord")]
+assert set(ordered)=={'Groudon','whale'},ordered
+wanted=list(reversed(ordered))
+reorder=output/'crdt-reordered.yaml'
+reorder.write_text('version: 4\nassets:\n'+''.join(f'  {name}: {{text: Reordered {name}}}\n' for name in wanted),encoding='utf-8')
+cli('project','-p',control,'import',reorder)
+with sqlite3.connect(control/'project.db') as db:
+    projected=db.execute('SELECT name,ord FROM boxes ORDER BY ord').fetchall()
+assert projected==list(zip(wanted,range(2))),projected
+reordered=output/'crdt-reordered.am';reordered.write_bytes(snapshot(control)[0])
+for name in wanted:
+    native('--identity',case_after,reordered,name)
+scans.update(mixed_projection=chosen(mixed),case_only_id_retained=True,reordered_ids_retained=True)
+(output/'crdt-scans-proof.json').write_text(json.dumps(scans,ensure_ascii=False)+'\n',encoding='utf-8')
 print(json.dumps({'passed':True,'append_type':kind,'prefix_bytes':len(before),'after_bytes':len(after),'project_id':original_id,'partial_and_boundary_truncation_refused':True,'missing_native_row_refused':True,'outside_writer_cas_refused_then_retry':True,'canvas':canvas}))
 STREAM_PROOF
 # The existing suite's real fresh-runner crash/restart path, with no second home or daemon.
