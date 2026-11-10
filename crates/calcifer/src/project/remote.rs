@@ -382,6 +382,12 @@ fn ended(project: &Project, done: Result<Transferred, Error>) {
     crate::events::project_settled(&project.folder.dir);
 }
 
+async fn admitted(project: &Project) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, Error> {
+    let access = super::vault::admit_root(&project.root).await?;
+    project.require_view()?;
+    Ok(access)
+}
+
 /// `POST /v1/projects/{id}/push`.
 pub(super) async fn pushed(
     State(api): State<Arc<Api>>,
@@ -390,7 +396,16 @@ pub(super) async fn pushed(
 ) -> Result<(StatusCode, Json<Opened>), Refusal> {
     let (project, hub, client, endpoint) = asked(&api, &id, body)?;
     let path = project.folder.dir.clone();
-    tokio::spawn(async move { ended(&project, push(&project, &hub, &client, &endpoint).await) });
+    tokio::spawn(async move {
+        let _access = match admitted(&project).await {
+            Ok(access) => access,
+            Err(error) => {
+                let _ = project.events.send(Event::Transferred { done: None, error: Some(error) });
+                return;
+            }
+        };
+        ended(&project, push(&project, &hub, &client, &endpoint).await);
+    });
     Ok((StatusCode::ACCEPTED, Json(super::opened(id, &path))))
 }
 
@@ -403,6 +418,13 @@ pub(super) async fn pulled(
     let (project, _, _, endpoint) = asked(&api, &id, body)?;
     let opened = super::opened(id, &project.folder.dir);
     tokio::spawn(async move {
+        let _access = match admitted(&project).await {
+            Ok(access) => access,
+            Err(error) => {
+                let _ = project.events.send(Event::Transferred { done: None, error: Some(error) });
+                return;
+            }
+        };
         ended(&project, pull(&project, &endpoint).await);
         // What came is no one's to measure until a render otherwise.
         super::measure_soon(&api, &project);
