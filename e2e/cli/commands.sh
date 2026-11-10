@@ -224,7 +224,8 @@ fi
 
 # cl-779: Calcifer's ffmpeg and ffprobe read only the file they are given. A playlist and a concat list, each named as a
 # clip, name a FIFO beside them; a reader opening it lets a waiting writer finish. Imported (a probe, a thumbnail) before
-# a real clip whose probe is awaited, neither may open it.
+# a real clip whose probe is awaited, neither may open it. Today the import's own sniff refuses both ("no picture, video
+# or sound") before ffmpeg sees them; the whitelist stands behind that.
 hostile_media() {
 step "media naming another file: nothing else is read"
 local dir=$OUT/hostile name
