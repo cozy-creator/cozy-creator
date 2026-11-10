@@ -20,6 +20,8 @@ from tokenizers import AddedToken, Regex, Tokenizer, decoders, models as bpe, pr
 from cell import Cell, Json, module, quantize, size
 
 INSTRUCT, DISTIL = "tencent/hunyuan-image-3-instruct@0.1.1", "tencent/hunyuan-image-3-instruct-distil@0.1.1"
+#: Instruct-Distil whose thought ends at once (`_terse`), for the thinking cell.
+TERSE = "tiny/hunyuan-image-3-terse"
 FIRST_SPECIAL = 127957
 #: Tencent's config.json (HunyuanImage-3.0-Instruct), its widths shrunk: 64 wide, 2 layers of 4 experts (top 2), a
 #: 1-layer SigLIP2 of 32, the VAE at 32-64 channels (its GroupNorms take 32 groups). Ids, ratios, rope, routing and
@@ -101,10 +103,26 @@ def tokenizer() -> dict[str, bytes]:
     return {"tokenizer.json": made.to_str().encode(), "tokenizer_config.json": json.dumps(config).encode()}
 
 
-def _checkpoint(store: Path, distilled: bool, seed: int, assets: dict[str, bytes]) -> str:
+def _terse(model: torch.nn.Module) -> None:
+    """A random LM never ends its thought within the 22,800 tokens the image stage reads (2,048 sampled byte-level
+    tokens decode and re-encode to some 37,000): here the decoder layers add nothing to the text stream and every token
+    embeds alike, so the last hidden state is one vector, and the end-of-text row of the head is that vector: the think
+    stage ends on its first token."""
+    with torch.no_grad():
+        for name, parameter in model.named_parameters():
+            if name.startswith("model.layers.") and name.endswith(("o_proj.weight", "down_proj.weight")):
+                parameter.zero_()
+        embedding = model.get_parameter("model.wte.weight")
+        embedding.fill_(0.1)
+        model.get_parameter("lm_head.weight")[FIRST_SPECIAL].fill_(1.0)
+
+
+def _checkpoint(store: Path, distilled: bool, seed: int, assets: dict[str, bytes], terse: bool = False) -> str:
     config = {**CONFIG, "cfg_distilled": distilled, "use_meanflow": distilled}
     torch.manual_seed(seed)
     model = module(HunyuanImage3ForCausalMM(HunyuanImage3Config(**config))).to(torch.bfloat16)
+    if terse:
+        _terse(model)
     generator = torch.Generator().manual_seed(seed)
     writer = tensorfs.Writer(cache_dir=store)
     component = writer.component("model", cls=None, config=config)
@@ -123,7 +141,8 @@ def _checkpoint(store: Path, distilled: bool, seed: int, assets: dict[str, bytes
 
 def models(root: Path, store: Path) -> dict[str, Path | str]:
     assets = tokenizer()
-    return {INSTRUCT: _checkpoint(store, False, 0, assets), DISTIL: _checkpoint(store, True, 1, assets)}
+    return {INSTRUCT: _checkpoint(store, False, 0, assets), DISTIL: _checkpoint(store, True, 1, assets),
+            TERSE: _checkpoint(store, True, 2, assets, terse=True)}
 
 
 def fox(folder: Path) -> Path:
@@ -143,7 +162,8 @@ _DIRECT: dict[str, Json] = {"seed": 7, "aspect_ratio": "1:1", "prompt_upsampling
 CELLS: list[Cell] = [
     {"entry": "generate_turbo", "name": "text", "payload": {"prompt": _prompt("a red fox in fresh snow"), **_DIRECT},
      "check": size(1024, 1024)},
-    {"entry": "generate_turbo", "name": "thinking", "payload": {"prompt": _prompt("a red fox"), "seed": 7}},
+    {"entry": "generate_turbo", "name": "thinking", "payload": {"prompt": _prompt("a red fox"), "seed": 7},
+     "models": {"generate_turbo.models.model": TERSE}},
     {"entry": "generate_turbo", "name": "edit", "payload": {"prompt": _prompt("give <fox> a hat", "fox"), **_DIRECT},
      "files": {"prompt.references.0.file": fox}},
     {"entry": "generate", "name": "text", "payload": {"prompt": _prompt("a red fox in fresh snow"), **_DIRECT, "steps": 2},
