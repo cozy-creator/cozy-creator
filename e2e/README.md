@@ -28,6 +28,12 @@ Real runs of `cozy` on GitHub's runners, chosen by what a change touches (CI v2:
   (throwaway Postgres, its Docker provider) rents a pod of that cozy binary: the pod's environment names no secret, the
   Hub pins the leaf at the provider's address, only that key's signature speaks for the worker (another key, a token, a
   stale clock and an endpoint report are refused), and a restart keeps the pin. On real pods: the `hub` release suite.
+- `skew/run.sh --hub-src <tensorhub checkout> --client <version> --out DIR [--cozy-min X.Y.Z]` (xs-166, `select=skew`
+  with `hub_ref`, `skew_clients`, `cozy_min`): a released cozy (`previous`: the previous minor's latest patch) against a
+  Hub built from source on a throwaway Postgres and a MinIO as strict as R2 about SigV4 (`skew/sigv4.go` checks it
+  first). The client signs in and runs the Hub suite's cells on its local machine, the model upload by the machine (the
+  workload writer, as pods upload); a client older than `cozy_min` must be refused `client_too_old` at every step.
+  Any 5xx fails. Before launch it reports; it is not part of `e2e`'s verdict.
 - `.github/workflows/e2e.yaml` runs the selected suites on PRs here and for cozy-runtime, packages and the release gate. On Linux
   each candidate is one `candidate` job (`candidates/build.sh`), reused from an earlier merge-group or dispatched run that built
   the same build inputs, and `cli` and `imports` run in shards (`--shard`) on their own runners; `e2e` checks coverage over
