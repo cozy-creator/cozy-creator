@@ -187,6 +187,10 @@ async fn made(host: Host, drawing: Drawing, dir: PathBuf, name: String) -> Resul
 
 /// What the one making the thumbnail called `name` does: nothing if one before it did, or found ffmpeg can't.
 async fn make(host: Host, mut drawing: Drawing, dir: PathBuf, name: String) -> Result<PathBuf, Error> {
+    let access = match &drawing.project {
+        Some(root) => Some(super::vault::admit_root(root).await?),
+        None => None,
+    };
     let private = drawing.project.is_some();
     let dir = directory(&drawing, dir)?;
     if private { drawing.source = super::vault::resolve_path(&drawing.source)?; }
@@ -200,18 +204,18 @@ async fn make(host: Host, mut drawing: Drawing, dir: PathBuf, name: String) -> R
     // Its turn first: finding ffmpeg runs it, and blocks, so that too is a few at a time.
     let permit = FFMPEGS.acquire().await.expect("ffmpeg's turns never close");
     let (ffmpeg, ffprobe) = host.ffmpeg().await?;
-    let drawn = tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || {
+        let _access = access;
         let _permit = permit;
-        draw(&ffmpeg, &ffprobe, &drawing, &dir, &name)
+        draw(&ffmpeg, &ffprobe, &drawing, &dir, &name).map_err(|why| {
+            // Keep failure writes under the same lease as the private drawing.
+            if !private { warn!("thumbnail {marked_name} can't be drawn: {why}", marked_name = marked.display()); }
+            let _ = std::fs::write(&marked, &why);
+            unreadable_file(why)
+        })
     })
     .await
-    .map_err(|e| Error::new(Kind::Internal, "thumb_failed", e.to_string()))?;
-    drawn.map_err(|why| {
-        // Kept for a day, so this is the one place it's said.
-        if !private { warn!("thumbnail {marked_name} can't be drawn: {why}", marked_name = marked.display()); }
-        let _ = std::fs::write(&marked, &why);
-        unreadable_file(why)
-    })
+    .map_err(|e| Error::new(Kind::Internal, "thumb_failed", e.to_string()))?
 }
 
 fn unreadable_file(why: String) -> Error {
