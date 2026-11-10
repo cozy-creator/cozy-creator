@@ -370,6 +370,7 @@ dependencies = [
  "hex",
  "infer",
  "jiff",
+ "pep440_rs",
  "platform",
  "reqwest",
  "rusqlite",

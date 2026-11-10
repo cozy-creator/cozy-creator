@@ -547,7 +547,7 @@ impl Catalog {
         name: &str,
         release: &str,
         python_version: Option<&str>,
-) -> Result<types::PackageInstallPlan, ::api::hub::Error> {
+    ) -> Result<types::PackageInstallPlan, ::api::hub::Error> {
         block(self.hub.get_package_download_plan(org, name, release, python_version, Some(std::env::consts::ARCH)))
     }
 }
