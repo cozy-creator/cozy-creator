@@ -298,10 +298,10 @@ foreach ($rule in $allowed) {
             self.find_media(view, path)
         exported = self.out / 'plaintext-export'
         self.command('vault', 'export', '--output', exported)
-        assert state == self.command('project', '-p', exported, 'export', project=False, json_output=False)
         for path in sources:
             self.find_media(exported, path)
-        self.cell('full_rekey_and_explicit_plaintext_export')
+        assert (exported / 'project.db').is_file()
+        self.cell('full_rekey_and_explicit_plaintext_export_bytes')
         # Two normal clients lock the same unlocked project; both acknowledgements must
         # agree on the locked state. Pending-unlock ordering has separate controller coverage.
         processes = [subprocess.Popen(['cozy', '--json', 'project', '-p', str(self.project), 'lock'],
@@ -334,6 +334,11 @@ foreach ($rule in $allowed) {
         self.receipt['global_files_scanned'] = self.scan(self.home, credentials=True)
         self.receipt['encrypted_files_scanned'] = self.scan(self.project)
         self.cell('no_known_private_canary_in_global_caches_or_backing')
+        # Opening the intentionally plaintext copy is an ordinary-project operation and
+        # may legitimately populate ordinary caches. Do it after the encrypted-only scan.
+        assert state == self.command('project', '-p', exported, 'export', project=False, json_output=False)
+        self.command('down', project=False, json_output=False)
+        self.cell('plaintext_export_opens_independently_after_lock')
         self.receipt['result'] = 'pass'
         self.flush()
 
