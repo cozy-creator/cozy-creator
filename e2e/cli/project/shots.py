@@ -11,23 +11,23 @@ import json
 import os
 import struct
 import time
-from typing import Annotated
+from typing import Annotated, cast
 
 import msgspec
 from cozy_runtime.author import App, InvalidRequest, Outputs, Seed, Telemetry
-from cozy_runtime.fields import Pickup, Prompt, Range, Total, Video
+from cozy_runtime.fields import Audio, Image, Pickup, Prompt, Range, Total, Video
 from cozy_runtime.media import File, Latents, VideoFile
 
 app = App()
 
 
 class Beat(msgspec.Struct, kw_only=True):
-    description: Prompt = Prompt()
+    description: Prompt[Image | Video | Audio] = Prompt()
     duration: Annotated[float, Range(1, 15, step=1, unit="s"), Total()] = 5
 
 
 class ShotBox(msgspec.Struct, kw_only=True):
-    summary: Prompt = Prompt()
+    summary: Prompt[Image | Video | Audio] = Prompt()
     beats: list[Beat] = []
     plate: VideoFile | None = None
     seed: Seed | None = None
@@ -42,7 +42,7 @@ class Take(msgspec.Struct):
     warnings: list[str]
 
 
-def _said(prompt: Prompt) -> dict[str, object]:
+def _said(prompt: Prompt[Image | Video | Audio]) -> dict[str, object]:
     return {"text": prompt.text, "references": {key: type(value).__name__.lower() for key, value in prompt.references.items()}}
 
 
@@ -66,12 +66,12 @@ def shoot(payload: ShotBox, out: Outputs) -> Take:
     }
     with source.stream() as events:
         video = out.save_video_stream(iter(events)).video
-    return Take(video, out.save_bytes(os.urandom(32), media_type="application/octet-stream"), out.save_bytes(json.dumps(given).encode(), media_type="application/json"), [])
+    return Take(video, cast(Latents, out.save_bytes(os.urandom(32), media_type="application/octet-stream")), out.save_bytes(json.dumps(given).encode(), media_type="application/json"), [])  # a saved file fills a Latents field: the Runtime checks its kind
 
 
 class Bare(msgspec.Struct, kw_only=True):
     plate: VideoFile
-    summary: Prompt = Prompt()
+    summary: Prompt[Image | Video | Audio] = Prompt()
 
 
 class BareTake(msgspec.Struct):
@@ -80,13 +80,13 @@ class BareTake(msgspec.Struct):
 
 class Fresh(msgspec.Struct, kw_only=True):
     plate: VideoFile
-    summary: Prompt = Prompt()
+    summary: Prompt[Image | Video | Audio] = Prompt()
     seed: int | None = None
 
 
 class Scenes(msgspec.Struct, kw_only=True):
     plate: VideoFile
-    summary: Prompt = Prompt()
+    summary: Prompt[Image | Video | Audio] = Prompt()
     segments: int
     each: float = 2
     seed: int | None = None
@@ -105,6 +105,7 @@ def scenes(payload: Scenes, out: Outputs, tel: Telemetry) -> BareTake:
                 step(at)
         video = out.save_bytes(payload.plate.read_bytes() + struct.pack(">I4s", 24, b"free") + os.urandom(16), media_type="video/mp4")
         out.publish("video", video, label="Video" if index + 1 == count else f"Segment {index + 1} of {count}")
+    assert video is not None  # no segments made none: BareTake's video is not optional
     return BareTake(video)
 
 
@@ -131,12 +132,12 @@ class Saved(msgspec.Struct):
 
 
 class Noise(msgspec.Struct, kw_only=True):
-    summary: Prompt = Prompt()
+    summary: Prompt[Image | Video | Audio] = Prompt()
 
 
 class Crash(msgspec.Struct, kw_only=True):
     crash: str
-    summary: Prompt = Prompt()
+    summary: Prompt[Image | Video | Audio] = Prompt()
 
 
 @app.entrypoint()

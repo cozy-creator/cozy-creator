@@ -103,7 +103,7 @@ def _tensord() -> int:
 
 
 @app.entrypoint(accelerator=False)
-def scan(payload: Probe, weights: Weights) -> Report:  # type: ignore[type-arg]  # bare Weights: any layout, as the Runtime spells it
+def scan(payload: Probe, weights: Weights) -> Report:  # type: ignore[type-arg, misc]  # bare Weights: any layout, as the Runtime spells it (its TypeVar has no default)
     time.sleep(payload.seconds)
     try:
         component = weights.components()[0]

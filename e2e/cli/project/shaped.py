@@ -6,7 +6,7 @@
 with no model. `shot` takes a summary and beats, a first and last frame, a plate and a pickup. `up` is an upscale whose video slot reads
 the latents of a take this package made. Each makes a short grey clip of its own. `picture` takes pictures by its prompt."""
 
-from typing import Annotated, Literal
+from typing import Annotated, Literal, cast
 
 import msgspec
 import numpy as np
@@ -14,6 +14,7 @@ from cozy_runtime.author import App, ImageFrame, Outputs, Seed
 from cozy_runtime.fields import (
     Advanced,
     AspectRatio,
+    Audio,
     Count,
     Image,
     Pickup,
@@ -33,28 +34,28 @@ SIDE = 16
 
 
 class Beat(msgspec.Struct, kw_only=True):
-    description: Prompt = Prompt()
+    description: Prompt[Image | Video | Audio] = Prompt()
     duration: Annotated[float, Range(1, 15, step=1, unit="s"), Total()] = 5
 
 
-class Made(Video, kw_only=True):
+class Made(Video, kw_only=True, frozen=True):
     """A take, with the latents this package kept of it."""
 
     latents: Latents | None = None
     own: bool = False
 
 
-class Picked(Pickup, kw_only=True):
+class Picked(Pickup, kw_only=True, frozen=True):
     take: Made
     beats_from: float | None = None
 
 
 class ShotInput(msgspec.Struct, kw_only=True):
-    summary: Prompt = Prompt()
+    summary: Prompt[Image | Video | Audio] = Prompt()
     beats: Annotated[list[Beat], Count(min=1, max=8)]
     turbo: bool = True
-    soundscape: Annotated[Prompt, Placeholder("N/A (silent)")] = Prompt()
-    music: Annotated[Prompt, Placeholder("N/A (silent)")] = Prompt()
+    soundscape: Annotated[Prompt[Image | Video | Audio], Placeholder("N/A (silent)")] = Prompt()
+    music: Annotated[Prompt[Image | Video | Audio], Placeholder("N/A (silent)")] = Prompt()
     aspect_ratio: Annotated[AspectRatio, Ratios("16:9")] | None = None
     first_frame: ImageFile | None = None
     last_frame: ImageFile | None = None
@@ -80,7 +81,7 @@ def shot(payload: ShotInput, out: Outputs) -> Shot:
     """A video in its own words, beat by beat."""
     warned = [f"beat {at + 1} says nothing" for at, beat in enumerate(payload.beats) if not beat.description.text]
     latents = out.save_bytes(b"latents of this package" + str(payload.seed).encode(), media_type="application/octet-stream")
-    return Shot(_clip(out, 64), latents, warned)
+    return Shot(_clip(out, 64), cast(Latents, latents), warned)  # a saved file fills a Latents field: the Runtime checks its kind
 
 
 class UpInput(msgspec.Struct, kw_only=True):
