@@ -40,7 +40,7 @@ class Upscaler(Model[Any]):
     graph: Any
 
     def load(self, loader: Loader) -> None:
-        self.graph = loader.construct(object)
+        self.graph = loader.construct(lambda config: object())
 
     @uses_components("transformer")
     def forward(self, pixels: Any) -> Any:
