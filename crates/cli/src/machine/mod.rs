@@ -34,100 +34,98 @@ pub(crate) struct Args {
 #[allow(dead_code)]
 #[derive(Subcommand, Debug)]
 enum Verb {
-    /// Every machine: this computer's, rentals and added ones; live on a terminal.
+    /// List local, rented and added machines.
     #[command(alias = "list")]
     Ls {
-        /// Every rental instead, ended ones too and rented from any computer, newest first: what
-        /// each ran and cost, and the total per UTC day and in all.
+        /// Show rental history and daily spending totals.
         #[arg(long)]
         history: bool,
-        /// Only rentals started within this long (`48h`, `7d`); implies --history.
+        /// Show rental history from the last 48h, 7d, or another duration.
         #[arg(long, value_name = "DURATION", value_parser = history::since)]
         since: Option<jiff::SignedDuration>,
     },
-    /// One machine and what it reports of itself; live on a terminal while it lives.
+    /// Show a machine's status and activity.
     Show {
-        /// A live machine's name, or any machine's rental id.
+        /// Machine name or rental ID.
         name: String,
     },
-    /// Print a machine's log: its own, or the tensorfs or memory log it keeps.
+    /// Show a machine's logs.
     Logs {
-        /// A live machine's name, or any machine's rental id.
+        /// Machine name or rental ID.
         name: String,
         #[command(flatten)]
         query: crate::daemon::LogQuery,
     },
-    /// Rent a machine; with no SKU, list what is for rent. Follows the order to its end; the exit
-    /// code and the last line are the verdict, never a progress line: 0 and `<name>: ready` once its
-    /// machine is ready, 1 once the order ended without one (nothing bills). Ctrl-C stops following,
-    /// never the order: 3 and `<name>: still live …`. With --json: NDJSON lines, the quote and then
-    /// `rental.accepted` (its rental id and name) once the Hub accepts, then the machine's document
-    /// when it is ready, or `rental.unfollowed`.
+    // Follows the order to its end. Exit 0 means ready, 1 means the order ended
+    // without a machine, and 3 means the caller stopped following a live order.
+    // JSON emits the quote, rental.accepted, and the ready or unfollowed record.
+    /// Rent a machine, or list available GPUs when no SKU is given.
     Rent(rent::Rent),
-    /// End a rental (billing stops once its Hub confirms), or remove an added machine, once
-    /// its runs' outputs have landed here. Calcifer carries the end out: Ctrl-C stops following,
-    /// never the end.
+    // Billing stops when the Hub confirms termination. Ctrl-C stops following
+    // the request while Calcifer continues to carry it out.
+    /// End a rental or remove an added machine after its outputs arrive.
     End {
+        /// Machine name or rental ID.
         name: String,
-        /// End it now, giving up outputs that have not landed.
+        /// End immediately, discarding outputs that have not arrived.
         #[arg(long)]
         force: bool,
     },
-    /// Reset a rental's 15-minute idle clock once.
-    Keepalive { name: String },
-    /// Log in to a rental as root over SSH (one rented with `--ssh`), or run a command there.
+    /// Reset a rental's 15-minute idle timer.
+    Keepalive {
+        /// Rental name or ID.
+        name: String
+    },
+    /// Open an SSH session on a rental, or run a remote command.
     Ssh {
+        /// Rental name or ID.
         name: String,
-        /// A command to run there instead of a shell.
+        /// Remote command to run instead of opening a shell.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
     },
-    /// Update a machine's Runtime, TensorFS and TensorD in one run and one restart: to the Hub's
-    /// target, or to the versions or local builds named.
+    /// Update a machine's Runtime, TensorFS and Cozy binary.
     Update {
+        /// Machine name or rental ID.
         name: String,
-        /// The Runtime: a release (`0.30.16`) the machine fetches from PyPI, else its GitHub
-        /// prerelease, or a local wheel or project to build, sent from here (dev). Alone, the
-        /// machine keeps its TensorFS when the Runtime accepts it, else installs PyPI's newest that
-        /// it does.
+        // Releases come from PyPI or GitHub prereleases. Updating only Runtime
+        // keeps compatible TensorFS, otherwise it resolves a compatible release.
+        /// Runtime version or path to a wheel or source checkout.
         #[arg(long, value_name = "VERSION|PATH")]
         runtime: Option<String>,
-        /// TensorFS: a release (`0.13.13`) the machine fetches from PyPI, else its GitHub
-        /// prerelease, or a local wheel or project to build, sent from here (dev).
+        /// TensorFS version or path to a wheel or source checkout.
         #[arg(long, value_name = "VERSION|PATH")]
         tensorfs: Option<String>,
-        /// TensorD, the machine's `cozy` binary: a release (`0.11.14`), a prerelease's too, the
-        /// machine fetches from its GitHub release, or a local binary or cozy-creator checkout to
-        /// build, sent from here (dev). On `local` a dev build becomes this computer's cozy, which
-        /// `cozy update` returns to a release.
+        // A dev binary on local also replaces the installed CLI and Calcifer.
+        /// Cozy binary version, local binary or source checkout.
         #[arg(long, value_name = "VERSION|PATH")]
         tensord: Option<String>,
-        /// Development only, for testing constrained VRAM; not a user feature. Use at most this
-        /// much of each GPU's memory (`8GiB`), as a smaller card would; `off` lifts it. The
-        /// machine keeps it in its config, across updates and restarts.
+        // This development limit persists across machine updates and restarts.
+        /// Limit memory per GPU, e.g. 8GiB. Use off to remove the limit.
         #[arg(long, value_name = "SIZE|off", value_parser = gpu_memory_limit)]
         gpu_memory_limit: Option<u64>,
-        /// How this machine shares its GPU. Persists after the ordinary drain and restart.
+        /// Use shared or dedicated GPU mode.
         #[arg(long, value_name = "shared|dedicated", value_parser = machine_mode)]
         mode: Option<api::config::MachineMode>,
     },
-    /// Add another computer's machine by its address and TLS fingerprint.
+    /// Add a machine by address and TLS fingerprint.
     Add {
+        /// Name to use for this machine.
         name: String,
-        /// host:port
+        /// Machine address as host:port.
         address: String,
-        /// The machine's TLS leaf, sha256:<hex> (`cozy machine show local` on that computer).
+        /// SHA-256 TLS fingerprint shown by cozy machine show local.
         #[arg(long)]
         fingerprint: Digest,
     },
-    /// On this computer: let the controller with this public key use this machine, which then
-    /// listens on every interface (every call still needs an authorized key).
+    // Authorizing a controller makes the machine listen on every interface.
+    /// Allow another controller to use this machine.
     Authorize {
-        /// The controller's Ed25519 key (`cozy machine show local` on that computer). A base64url
-        /// key may begin with `-`: it is the key, never a flag.
+        // Base64url keys may begin with a dash, so hyphenated values are accepted.
+        /// Controller public key from cozy machine show local.
         #[arg(allow_hyphen_values = true)]
         public_key: String,
-        /// Take the key back: its next call is refused.
+        /// Remove this controller's access.
         #[arg(long)]
         remove: bool,
     },

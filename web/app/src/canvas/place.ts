@@ -17,7 +17,7 @@ function mediaOf(file: File): MediaKind {
 
 export interface Hooks {
   /** The first import on an empty canvas made this project. */
-  adopt(id: string): void
+  adopt(id: string, code: string): void
 }
 
 /**
@@ -260,10 +260,10 @@ export class Placer {
   private project(): Promise<string> {
     if (this.store.projectId) return Promise.resolve(this.store.projectId)
     this.made ??= this.client.newProject("untitled", this.projectKey).then(
-      ({ id, said }) => {
+      ({ id, code, said }) => {
         this.store.projectId = id
         for (const line of said ?? []) say(line)
-        this.hooks.adopt(id)
+        this.hooks.adopt(id, code ?? "")
         return id
       },
       (error) => {

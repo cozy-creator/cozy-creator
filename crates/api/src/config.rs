@@ -14,6 +14,7 @@ use url::Url;
 use crate::error::{Error, Kind};
 
 pub(crate) const DEFAULT_HUB_URL: &str = "https://tensorhub.com";
+pub const DEFAULT_CALCIFER_PORT: u16 = 8818;
 
 /// Every environment variable the load reads, with its key: credentials for model sources, by the
 /// names their own tools use; the Hub (dev and CI point one command elsewhere with it); where
@@ -64,9 +65,9 @@ pub struct Config {
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct CalciferConfig {
-    /// Calcifer's loopback port, and only that one. Absent: 7317, else the next free one; its lock
+    /// Calcifer's loopback port, and only that one. Absent: 8818, else the next free one; its lock
     /// record says which.
-    #[serde(deserialize_with = "port")]
+    #[serde(deserialize_with = "calcifer_port")]
     pub port: Option<u16>,
 }
 
@@ -181,6 +182,55 @@ fn port<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u16>, D::Error>
             text.trim().parse().map(Some).map_err(|_| serde::de::Error::custom(format!("{text:?} is not a port")))
         }
     }
+}
+
+fn calcifer_port<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u16>, D::Error> {
+    match port(d)? {
+        Some(0) => Err(serde::de::Error::custom("Calcifer's port must be between 1 and 65535")),
+        port => Ok(port),
+    }
+}
+
+/// Persist a loopback port, or remove the explicit choice. Returns the previous setting.
+/// Other settings, unknown fields and authored comments stay in the config file.
+pub fn set_calcifer_port(home: &Home, port: Option<u16>) -> Result<Option<u16>, Error> {
+    if port == Some(0) {
+        return Err(Error::new(Kind::Usage, "calcifer_port", "Calcifer's port must be between 1 and 65535"));
+    }
+    let path = home.config();
+    let shown = path.display().to_string();
+    let io = |error: platform::Error| Error::new(Kind::Unavailable, "config_write", error.to_string());
+    home.open().map_err(io)?;
+    let _held = platform::lock::LockFile::new(path.with_extension("lock"))
+        .lock(platform::lock::Kind::Exclusive).map_err(io)?;
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(invalid(&shown, "", &error.to_string())),
+    };
+    let previous = Config::parse(&text, &shown)?.0.calcifer.port;
+    if previous == port {
+        return Ok(previous);
+    }
+    let mut document: toml_edit::DocumentMut = text.parse().map_err(|error| invalid(&shown, "", &format!("{error}")))?;
+    match port {
+        Some(port) => {
+            if !document.contains_key("calcifer") {
+                document["calcifer"] = toml_edit::table();
+            }
+            document["calcifer"].as_table_like_mut().expect("validated Calcifer table")
+                .insert("port", toml_edit::value(i64::from(port)));
+        }
+        None => {
+            if let Some(table) = document.get_mut("calcifer").and_then(toml_edit::Item::as_table_like_mut) {
+                table.remove("port");
+            }
+        }
+    }
+    let text = document.to_string();
+    Config::parse(&text, &shown)?;
+    platform::durable::replace(&path, text.as_bytes(), 0o600).map_err(io)?;
+    Ok(previous)
 }
 
 fn size<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
@@ -451,4 +501,50 @@ fn extract(table: toml::Table, file: &str, env: &[(&str, &str)]) -> Result<(Conf
         })?;
     config.normalize();
     Ok((config, warnings))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn calcifer_ports_are_nonzero_and_machine_zero_is_unchanged() {
+        assert_eq!(DEFAULT_CALCIFER_PORT, 8818);
+        assert!(Config::parse("[calcifer]\nport = 0\n", "test").is_err());
+        assert!(Config::parse("[calcifer]\nport = 65536\n", "test").is_err());
+        assert_eq!(Config::parse("[calcifer]\nport = 65535\n", "test").unwrap().0.calcifer.port, Some(65535));
+        assert_eq!(Config::parse("[machine]\nport = 0\n", "test").unwrap().0.machine.port, Some(0));
+    }
+
+    #[test]
+    fn saving_calcifer_port_preserves_other_settings_and_comments() {
+        let directory = tempfile::tempdir().unwrap();
+        let home = Home::under(directory.path());
+        home.open().unwrap();
+        let original = "# My local config\ndev = true\nunknown = 'keep me'\n\n[machine]\nport = 0 # automatic\n";
+        std::fs::write(home.config(), original).unwrap();
+        assert_eq!(set_calcifer_port(&home, Some(9900)).unwrap(), None);
+        let saved = std::fs::read_to_string(home.config()).unwrap();
+        assert!(saved.starts_with(original));
+        assert_eq!(Config::parse(&saved, "test").unwrap().0.calcifer.port, Some(9900));
+        assert_eq!(set_calcifer_port(&home, Some(9900)).unwrap(), Some(9900));
+        assert_eq!(std::fs::read_to_string(home.config()).unwrap(), saved);
+        assert_eq!(set_calcifer_port(&home, None).unwrap(), Some(9900));
+        let restored = std::fs::read_to_string(home.config()).unwrap();
+        assert_eq!(Config::parse(&restored, "test").unwrap().0.calcifer.port, None);
+        assert!(restored.starts_with(original));
+    }
+
+    #[test]
+    fn inline_calcifer_table_is_updated_without_losing_its_fields() {
+        let directory = tempfile::tempdir().unwrap();
+        let home = Home::under(directory.path());
+        home.open().unwrap();
+        std::fs::write(home.config(), "calcifer = { port = 8818, future = true } # keep\n").unwrap();
+        assert_eq!(set_calcifer_port(&home, Some(8819)).unwrap(), Some(8818));
+        let saved = std::fs::read_to_string(home.config()).unwrap();
+        assert!(saved.contains("future = true"));
+        assert!(saved.contains("# keep"));
+        assert_eq!(Config::parse(&saved, "test").unwrap().0.calcifer.port, Some(8819));
+    }
 }

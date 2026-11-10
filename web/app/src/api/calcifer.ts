@@ -957,6 +957,10 @@ detail: string, };
  */
 export type KnownProject = { id: string,
 /**
+ * Its stable, nine-character public URL code.
+ */
+code: string,
+/**
  * Its name: what `-p` takes.
  */
 name: string, path: string, used_at_ms: number,
@@ -1639,6 +1643,10 @@ export type Open = { name?: string | null, path?: string | null, starter?: boole
  */
 export type Opened = { id: string,
 /**
+ * Its stable, nine-character public URL code.
+ */
+code: string,
+/**
  * Where it lives on Calcifer's computer.
  */
 path: string,
@@ -1898,6 +1906,11 @@ eta_confidence?: number | null,
 eta_basis?: EtaBasis | null, };
 
 /**
+ * `GET /v1/projects/{id}/address`: the indexed identity used to open a browser route.
+ */
+export type ProjectAddress = { id: string, code: string, };
+
+/**
  * `GET /v1/projects/{id}/events`: what the project's runs do, as they do it.
  */
 export type ProjectEvent = { "type": "board", board: Board, } | { "type": "job", job: Job, seq: number, } | { "type": "ahead", ahead: Ahead, } | { "type": "started", name: string, run: string, number: number, } | { "type": "landed", name: string, noun: string, number: number, files: { [key in string]: ProjectFile }, path: string,
@@ -1954,7 +1967,11 @@ export type ProjectShowReply = { held: Array<string>, refused: { [key in string]
  * Optional `covered` describes only a successful full snapshot: project-event emissions
  * before its read began. Head-only and partial/error-derived states do not claim coverage.
  */
-export type ProjectState = { id: string, path: string, assets: Array<Asset>,
+export type ProjectState = { id: string,
+/**
+ * Its stable, nine-character public URL code.
+ */
+code: string, path: string, assets: Array<Asset>,
 /**
  * What is running and what is queued, in the order it goes.
  */

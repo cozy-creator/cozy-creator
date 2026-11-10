@@ -17,7 +17,7 @@ use crate::{Context, machine::Adopted};
 
 #[derive(clap::Args, Debug)]
 pub(crate) struct Args {
-    /// The release to install, even when it is this one (default: the newest, when newer).
+    /// Release to install. Without a version, update to the latest release.
     version: Option<String>,
 }
 

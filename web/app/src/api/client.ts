@@ -42,6 +42,7 @@ import type {
   PackageDetail,
   PackageSearch,
   Play,
+  ProjectAddress,
   ProjectState,
   ProjectShowReply,
   Projects,
@@ -316,6 +317,10 @@ export class Client {
   /** One asset as it is now: what a change of it costs, whatever else the project holds. */
   asset(id: string, name: string): Promise<AssetVersions> {
     return this.json(`${project(id)}/assets/${encodeURIComponent(name)}`)
+  }
+
+  projectAddress(reference: string): Promise<ProjectAddress> {
+    return this.json(`${project(reference)}/address`)
   }
 
   /** What's said of the project besides its assets. */

@@ -1076,10 +1076,15 @@ impl Folder {
         Ok(held.as_ref().and_then(|held| held.stored.crdt.as_ref()).and_then(|doc| doc.identity()))
     }
 
+    /// The public route code is local metadata, separate from the native project id.
+    pub(crate) fn public_code(&self) -> Result<Option<String>, Error> {
+        self.reading_db(|conn| db::meta(conn, "code"))
+    }
+
     /// Rare identity changes (first name or a copied project) invalidate the held native view.
-    pub(crate) fn set_identity(&self, id: &str, name: &str) -> Result<(), Error> {
+    pub(crate) fn set_identity(&self, id: &str, name: &str, code: &str) -> Result<(), Error> {
         let mut turn = self.shared.writing.lock().unwrap_or_else(|e| e.into_inner());
-        db::set_identity(self.writer(&mut turn)?, &self.db(), id, name)?;
+        db::set_identity(self.writer(&mut turn)?, &self.db(), id, name, Some(code))?;
         *self.shared.held.lock().unwrap_or_else(|e| e.into_inner()) = None;
         Ok(())
     }

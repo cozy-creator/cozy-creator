@@ -6,7 +6,7 @@
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots; $RENDER: a machine with a GPU, on which a box with a LoRA and a fine-tune
 // really renders, and what its run was asked and applied is read back. Prints what it saw as JSON and exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
-const { calcifer, carry: carryTo, signIn, boxOf, closeBox, STEP_MS, importYaml, lastLook, launch, lookAt, noStall, openCanvas, renderOf, settled, until, yamlOf } = require('./page');
+const { projectFromPage, projectUrl, calcifer, carry: carryTo, signIn, boxOf, closeBox, STEP_MS, importYaml, lastLook, launch, lookAt, noStall, openCanvas, renderOf, settled, until, yamlOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -50,11 +50,11 @@ async function died(why) {
     return { status: answer.status, body: await answer.json().catch(() => null) };
   }, { path, init, token: held?.token });
 
-  await page.goto(`${base}/#/projects`);
+  await page.goto(`${base}/projects`);
   await page.fill('input[aria-label="New project\'s name"]', `web-addons-${Date.now()}`);
   await page.click('form button[type=submit]');
-  await page.waitForURL(/#\/projects\/[^/]+$/);
-  const id = page.url().match(/#\/projects\/([^/]+)/)[1];
+  await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
+  const id = (await projectFromPage(page)).id;
   const state = async () => (await api(`/v1/projects/${id}`)).body;
   const folder = (await state()).path;
   seen.project = { id, folder };
@@ -478,7 +478,7 @@ assets:
     for (let tries = 0; !made && tries < 5; tries++) {
       await idle();
       const had = (await state()).assets.find((asset) => asset.name === 'still').versions;
-      await page.evaluate((to) => { location.hash = to; }, `/projects/${id}/assets/still`);
+      await page.evaluate((to) => { history.pushState(null, '', to); dispatchEvent(new PopStateEvent('popstate')); }, await projectUrl(id, '/assets/still'));
       await page.locator('.card.here[data-asset="still"]').waitFor();
       await (await renderOf(page, 'still')).click();
       await closeBox(page);

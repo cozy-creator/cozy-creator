@@ -28,6 +28,9 @@ pub struct Open {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Opened {
     pub id: String,
+    /// Its stable, nine-character public URL code.
+    #[serde(default)]
+    pub code: String,
     /// Where it lives on Calcifer's computer.
     pub path: PathBuf,
     /// Its name, unique among the projects Calcifer knows: what `-p` takes.
@@ -40,9 +43,9 @@ pub struct Opened {
     pub said: Vec<String>,
 }
 
-/// How a client names a project: its id or name, or its folder on Calcifer's computer by its absolute path (cl-819). The
+/// How a client names a project: its id, public code or name, or its folder on Calcifer's computer by its absolute path (cl-819). The
 /// CLI project commands resolve their current directory and send its absolute path.
-pub const NAMED_BY: &str = "a project's name or id, or its folder on Calcifer's computer by its absolute path";
+pub const NAMED_BY: &str = "a project's name, id or public code, or its folder on Calcifer's computer by its absolute path";
 
 /// A request in no project, which needs one.
 pub fn unnamed() -> Error {
@@ -138,6 +141,9 @@ pub struct Projects {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "KnownProject"))]
 pub struct Known {
     pub id: String,
+    /// Its stable, nine-character public URL code.
+    #[serde(default)]
+    pub code: String,
     /// Its name: what `-p` takes.
     pub name: String,
     pub path: PathBuf,
@@ -147,6 +153,14 @@ pub struct Known {
     pub busy: bool,
 }
 
+/// `GET /v1/projects/{id}/address`: the indexed identity used to open a browser route.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "ProjectAddress"))]
+pub struct Address {
+    pub id: String,
+    pub code: String,
+}
+
 /// `GET /v1/projects/{id}`: its assets in order, and what reading the project said.
 /// Optional `covered` describes only a successful full snapshot: project-event emissions
 /// before its read began. Head-only and partial/error-derived states do not claim coverage.
@@ -154,6 +168,9 @@ pub struct Known {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "ProjectState"))]
 pub struct State {
     pub id: String,
+    /// Its stable, nine-character public URL code.
+    #[serde(default)]
+    pub code: String,
     pub path: PathBuf,
     pub assets: Vec<Asset>,
     /// What is running and what is queued, in the order it goes.

@@ -39,6 +39,7 @@ next: cozy run --help";
 #[command(
     name = "cozy",
     version,
+    disable_help_subcommand = true,
     about = "Run models on your machines and rented GPUs",
     after_help = NEXT
 )]
@@ -46,10 +47,10 @@ struct Cli {
     /// Print JSON (NDJSON when following).
     #[arg(long, global = true)]
     json: bool,
-    /// The whole record where a view shows part of it: every field with --json, every table and line without.
+    /// Include complete records and untruncated text.
     #[arg(long, global = true, hide = true)]
     full: bool,
-    /// Agree without being asked: to a rental's quote, a deletion.
+    /// Confirm actions without prompting.
     #[arg(long, short = 'y', global = true, hide = true)]
     yes: bool,
     /// None: show the available commands.

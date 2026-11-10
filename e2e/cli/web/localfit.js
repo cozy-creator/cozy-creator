@@ -8,7 +8,7 @@
 const playwright = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
 const { join } = require('path');
-const { boxOf, calcifer, closeBox, importYaml, launch, lastLook, lookAt, noStall, openBox, renderOf, signIn, STEP_MS, until, watchBoxes, yamlOf } = require('./page');
+const { projectFromPage, boxOf, calcifer, closeBox, importYaml, launch, lastLook, lookAt, noStall, openBox, renderOf, signIn, STEP_MS, until, watchBoxes, yamlOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -53,11 +53,11 @@ const finish = (code) => {
     return finish(0);
   }
 
-  await page.goto(`${base}/#/projects`);
+  await page.goto(`${base}/projects`);
   await page.fill('input[aria-label="New project\'s name"]', `web-localfit-${Date.now()}`);
   await page.click('form button[type=submit]');
-  await page.waitForURL(/#\/projects\/[^/]+$/);
-  const id = page.url().match(/#\/projects\/([^/]+)/)[1];
+  await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
+  const id = (await projectFromPage(page)).id;
   const state = async () => (await api(`/v1/projects/${id}`)).body;
   const folder = (await state()).path;
   seen.project = { id, folder };

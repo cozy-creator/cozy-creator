@@ -7,6 +7,7 @@
 //! Calcifer goes on with it. Its clients ask and watch; the runs go on without them.
 mod assets;
 mod canvas;
+pub(crate) mod code;
 mod db;
 mod crdt;
 mod fit;
@@ -109,6 +110,7 @@ struct Heard {
 
 struct Project {
     id: String,
+    code: String,
     /// Immutable owner. A recycled physical mount path must never choose another project's root.
     root: PathBuf,
     /// Cache ownership follows the physical mount, not a replaceable viewer authorization.
@@ -163,6 +165,9 @@ impl Reader {
 #[path = "presence_tests.rs"]
 mod presence_tests;
 
+#[cfg(test)]
+mod code_tests;
+
 pub(crate) fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
     Router::new()
         .route("/v1/projects", post(open).get(list))
@@ -194,6 +199,7 @@ pub(crate) fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
         .route_layer(axum::middleware::from_fn_with_state(api.clone(), keyed::answered))
         .route_layer(axum::middleware::from_fn_with_state(api.clone(), vault::privacy))
         .route("/v1/projects/{id}/vault", get(vault::read).post(vault::write))
+        .route("/v1/projects/{id}/address", get(address))
 }
 
 impl Projects {
@@ -227,7 +233,7 @@ impl Projects {
         Some(project)
     }
 
-    /// The project a route's `{id}` names (`api::calcifer::project::NAMED_BY`): its id or name, or its folder on this computer. Open,
+    /// The project a route's `{id}` names (`api::calcifer::project::NAMED_BY`): its id, public code or name, or its folder on this computer. Open,
     /// else opened from the index. It stays open while the answer is held.
     fn get(&self, api: &Arc<Api>, named: &str) -> Result<Arc<Project>, Refusal> {
         if let Some(project) = self.open_now(named) {
@@ -243,7 +249,7 @@ impl Projects {
             return Err(Refusal(Error::new(Kind::NotFound, "project_unknown", said).next("cozy open")));
         }
         // Opened for a call: used now, which the index lists by.
-        api.calcifer.store().project_opened(&project.id, &identity(&project.folder.dir).1, &project.root, Some(now_ms()))?;
+        api.calcifer.store().project_opened(&project.id, &identity(&project.folder.dir).1, &project.root, Some(now_ms()), Some(&project.code))?;
         Ok(project)
     }
 
@@ -264,8 +270,8 @@ impl Projects {
             true => vec![],
             false => tokio::task::block_in_place(|| upgrade::on_touch(dir))?,
         };
-        let (folder, (id, name)) = tokio::task::block_in_place(|| Folder::open_with(dir, api.machines.hubs.home(), |folder| {
-            let (id, name) = identify_loaded(api, dir, folder)?;
+        let (folder, (id, name, code)) = tokio::task::block_in_place(|| Folder::open_with(dir, api.machines.hubs.home(), |folder| {
+            let (id, name, code) = identify_loaded(api, dir, folder)?;
             // Validate a move before inherited local work can be unbound or resumed. A
             // rendering project keeps its original physical folder until its runs land.
             let moved = self.open.lock().expect("projects lock").get(&id).and_then(Weak::upgrade)
@@ -277,7 +283,7 @@ impl Projects {
                 }
                 self.open.lock().expect("projects lock").remove(&id);
             }
-            Ok((id, name))
+            Ok((id, name, code))
         }))?;
         IDENTITIES.lock().expect("identities lock").insert(dir.to_owned(), (id.clone(), name));
         crate::events::project_opened(dir);
@@ -289,6 +295,7 @@ impl Projects {
                 let (events, asked) = (broadcast::channel::<Event>(256).0, Notify::new());
                 let project = Arc::new(Project {
                     id: id.clone(),
+                    code,
                     root,
                     mount_id,
                     folder,
@@ -340,7 +347,7 @@ pub(crate) fn of_landing(out_dir: &FsPath) -> Option<&FsPath> {
     out_dir.file_name().is_some_and(|name| name == folder::RUNS).then(|| out_dir.parent()).flatten()
 }
 
-/// The folder of the project a request names (`api::calcifer::project::NAMED_BY`): its id or name in the index, or the project holding
+/// The folder of the project a request names (`api::calcifer::project::NAMED_BY`): its id, public code or name in the index, or the project holding
 /// a folder of this computer's, by its absolute path. Never a client's folder: a relative path names none.
 pub(crate) fn named(api: &Api, text: &str) -> Result<PathBuf, Error> {
     let text = text.trim();
@@ -365,18 +372,38 @@ fn indexed(api: &Api) -> Result<Vec<crate::state::KnownProject>, Error> {
     let failed = |e: crate::store::StoreError| Error::internal("calcifer_store", e.to_string());
     let known = store.known_projects().map_err(failed)?;
     for entry in &known { vault::recover_conversion(&entry.path)?; }
-    let (here, gone): (Vec<_>, Vec<_>) = known.into_iter().partition(|entry| Folder::is_project(&entry.path) || vault::encrypted(&entry.path));
+    let (mut here, gone): (Vec<_>, Vec<_>) = known.into_iter().partition(|entry| Folder::is_project(&entry.path) || vault::encrypted(&entry.path));
     if !gone.is_empty() {
         store.projects_gone(&gone.into_iter().map(|entry| entry.id).collect::<Vec<_>>()).map_err(failed)?;
+    }
+    for entry in here.iter_mut().filter(|entry| entry.code.is_empty()) {
+        // A locked project still has its canonical id. Do not mint a public
+        // code until an opened view can recover the code stored in its DB.
+        if vault::encrypted(&entry.path) { continue; }
+        let path = entry.path.join(db::DB);
+        if path.is_file() {
+            let conn = db::open(&path)?;
+            let kept = db::meta(&conn, "code");
+            entry.code = reserve_code(store, &entry.id, &entry.name, &entry.path, kept.as_deref())?;
+            db::set_meta(&conn, &path, "code", Some(&entry.code))?;
+        } else {
+            // Opening upgrades a pre-database project. Listing keeps its current format.
+            entry.code = reserve_code(store, &entry.id, &entry.name, &entry.path, None)?;
+        }
     }
     Ok(here)
 }
 
-/// The project the index knows by `text`, its id or its name (in any case).
+/// The project the index knows by `text`, its id, public code or its name (in any case).
 fn known(api: &Api, text: &str) -> Result<crate::state::KnownProject, Error> {
     let mut indexed = indexed(api)?;
     if let Some(at) = indexed.iter().position(|entry| entry.id == text) {
         return Ok(indexed.swap_remove(at));
+    }
+    if let Some(code) = code::parse(text) {
+        if let Some(at) = indexed.iter().position(|entry| entry.code == code) {
+            return Ok(indexed.swap_remove(at));
+        }
     }
     let mut named: Vec<_> = indexed.into_iter().filter(|entry| entry.name.eq_ignore_ascii_case(text)).collect();
     match named.len() {
@@ -625,21 +652,22 @@ fn folder_name(dir: &FsPath) -> String {
 /// The project in `dir`, its id and name kept in its `project.db` (which it never makes: a folder from before has one once it's
 /// imported) and recorded in the index. One from before cl-819 keeps the id
 /// its path gave it; a copy of a project another folder still holds takes a new id; a name another project has takes `_2`.
-fn identify(api: &Api, dir: &FsPath) -> Result<(String, String), Error> {
+fn identify(api: &Api, dir: &FsPath) -> Result<(String, String, String), Error> {
     let path = dir.join(db::DB);
     if !path.is_file() {
         return Err(Error::new(Kind::NotFound, "project_not_found", format!("{} holds no {}", dir.display(), db::DB)));
     }
     let mut conn = db::open(&path)?;
     let kept = db::identity(&conn);
-    identify_with(api, dir, kept, |id, name| db::set_identity(&mut conn, &path, id, name))
+    let code = db::meta(&conn, "code");
+    identify_with(api, dir, kept, code, |id, name, code| db::set_identity(&mut conn, &path, id, name, Some(code)))
 }
 
-fn identify_loaded(api: &Api, dir: &FsPath, folder: &Folder) -> Result<(String, String), Error> {
-    identify_with(api, dir, folder.canonical_identity()?, |id, name| folder.set_identity(id, name))
+fn identify_loaded(api: &Api, dir: &FsPath, folder: &Folder) -> Result<(String, String, String), Error> {
+    identify_with(api, dir, folder.canonical_identity()?, folder.public_code()?, |id, name, code| folder.set_identity(id, name, code))
 }
 
-fn identify_with(api: &Api, dir: &FsPath, kept: Option<(String, String)>, keep: impl FnOnce(&str, &str) -> Result<(), Error>) -> Result<(String, String), Error> {
+fn identify_with(api: &Api, dir: &FsPath, kept: Option<(String, String)>, kept_code: Option<String>, keep: impl FnOnce(&str, &str, &str) -> Result<(), Error>) -> Result<(String, String, String), Error> {
     let store = api.calcifer.store();
     let logical = vault::logical(dir);
     let encrypted = vault::encrypted(&logical);
@@ -668,11 +696,21 @@ fn identify_with(api: &Api, dir: &FsPath, kept: Option<(String, String)>, keep: 
         None => (folder_id(dir), String::new()),
     };
     let name = unique_name(api, &id, dir, if name.is_empty() { folder_name(dir) } else { name })?;
-    if kept.as_ref() != Some(&(id.clone(), name.clone())) {
-        keep(&id, &name)?;
+    let kept_code = kept.as_ref().filter(|(held, _)| held == &id).and(kept_code);
+    let code = reserve_code(store, &id, &name, &logical, kept_code.as_deref())?;
+    if kept.as_ref() != Some(&(id.clone(), name.clone())) || kept_code.as_deref() != Some(&code) {
+        keep(&id, &name, &code)?;
     }
-    store.project_opened(&id, &name, &vault::logical(dir), None).map_err(|e| Error::internal("calcifer_store", e.to_string()))?;
-    Ok((id, name))
+    Ok((id, name, code))
+}
+
+/// The index reserves the code atomically. If recording it in project.db fails, the next open
+/// recovers the index's assignment before answering with a public URL.
+fn reserve_code(store: &crate::store::Store, id: &str, name: &str, dir: &FsPath, preferred: Option<&str>) -> Result<String, Error> {
+    store.project_opened(id, name, dir, None, preferred).map_err(|error| match error {
+        crate::store::StoreError::ProjectCode(message) => Error::new(Kind::Conflict, "project_code_conflict", message),
+        other => Error::internal("calcifer_store", other.to_string()),
+    })
 }
 
 /// `wanted`, or the first of `wanted_2`, `wanted_3`, … no other project in the index has, in any case: what `-p` names it by. The
@@ -1137,27 +1175,30 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Byte
     // Named, a project nothing reads is only identified: the call that reads it opens it. One open, maybe where it was before it moved,
     // and a folder of files from before project.db, which is imported now, are opened here.
     let unread = match dir.join(db::DB).is_file() {
-        true => Some(tokio::task::block_in_place(|| identify(&api, &dir)).map_err(Refusal)?.0).filter(|id| api.projects.open_now(id).is_none()),
+        true => {
+            let (id, _, code) = tokio::task::block_in_place(|| identify(&api, &dir)).map_err(Refusal)?;
+            api.projects.open_now(&id).is_none().then_some((id, code))
+        },
         false => None,
     };
-    let (id, said) = match unread {
-        Some(id) => (id, vec![]),
+    let (id, code, said) = match unread {
+        Some((id, code)) => (id, code, vec![]),
         None => {
             let project = api.projects.open(&api, &dir).map_err(Refusal)?;
             let said = std::mem::take(&mut *project.said.lock().expect("said lock"));
-            (project.id.clone(), said)
+            (project.id.clone(), project.code.clone(), said)
         }
     };
-    let opened = opened(id, &dir);
-    api.calcifer.store().project_opened(&opened.id, &opened.name, &dir, Some(now_ms()))?;
+    let opened = opened(id, code, &dir);
+    api.calcifer.store().project_opened(&opened.id, &opened.name, &dir, Some(now_ms()), Some(&opened.code))?;
     let next = vec!["cozy open".into()];
     let said = moved_on.into_iter().chain(said).collect();
     Ok(Json(Opened { next, said, ..opened }))
 }
 
 /// The project `id`, in `dir`, as an answer gives it.
-fn opened(id: String, dir: &FsPath) -> Opened {
-    Opened { id, path: dir.to_owned(), name: identity(dir).1, next: vec![], said: vec![] }
+fn opened(id: String, code: String, dir: &FsPath) -> Opened {
+    Opened { id, code, path: dir.to_owned(), name: identity(dir).1, next: vec![], said: vec![] }
 }
 
 /// A new project called `name` in this person's home folder, or the next free name: what it could be called, `_2`, `_3`, …. Whatever is
@@ -1196,7 +1237,7 @@ fn made_new(api: &Api, dir: &FsPath, name: &str, starter: bool) -> Result<PathBu
     db::create(&part, &db::Stored { written: written.into(), ..Default::default() }, &[], &[])?;
     let canonical = platform::durable::canonical(dir).map_err(io)?;
     let (id, name) = (fresh_id(), unique_name(api, "", &canonical, name.to_owned())?);
-    db::set_identity(&mut db::open(&part)?, &part, &id, &name)?;
+    db::set_identity(&mut db::open(&part)?, &part, &id, &name, None)?;
     std::fs::rename(&part, dir.join(db::DB)).map_err(|e| Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", dir.display())))?;
     crate::events::project_changed(&canonical);
     Ok(canonical)
@@ -1249,9 +1290,16 @@ async fn list(State(api): State<Arc<Api>>, Query(page): Query<Page>) -> Result<J
             path: entry.path,
             used_at_ms: entry.used_at_ms,
             id: entry.id,
+            code: entry.code,
         })
         .collect();
     Ok(Json(Listed { projects, older }))
+}
+
+/// A compact link can reach the unlock UI using only the index, while content stays locked.
+async fn address(State(api): State<Arc<Api>>, Path(reference): Path<String>) -> Result<Json<api::calcifer::project::Address>, Refusal> {
+    let entry = known(&api, &reference).map_err(Refusal)?;
+    Ok(Json(api::calcifer::project::Address { id: entry.id, code: entry.code }))
 }
 
 /// Its assets as they stand.
@@ -1271,7 +1319,7 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>, Query(asked)
             let queue = queue(&project, &folder.walk_now().map_err(Refusal)?);
             let busy = *project.walking.lock().expect("walking lock");
             let warning = format!("{}: a render going uses the text it was asked with, and a new one is refused until this reads", error.message);
-            return Ok(Json(ProjectState { covered: None, id, path: folder.dir.clone(), assets: vec![], queue, missing: vec![], stale: vec![], orphans: vec![], busy, absent: 0, run_files: 0, cuts: vec![], warnings: vec![ProjectWarning { name: None, message: warning }], next: vec![], board: board_of(&project), unsent: vec![] }));
+            return Ok(Json(ProjectState { covered: None, id, code: project.code.clone(), path: folder.dir.clone(), assets: vec![], queue, missing: vec![], stale: vec![], orphans: vec![], busy, absent: 0, run_files: 0, cuts: vec![], warnings: vec![ProjectWarning { name: None, message: warning }], next: vec![], board: board_of(&project), unsent: vec![] }));
         }
     };
     // What a reader now holds is what any change from here is told against.

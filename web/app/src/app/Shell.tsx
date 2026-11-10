@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { flushSync } from "react-dom"
-import { Link, Outlet, useLocation, useMatch, useMatches, useNavigate } from "react-router-dom"
+import { Link, Outlet, useLocation, useMatches, useNavigate } from "react-router-dom"
 import { TRIES } from "../api/client"
 import { ProjectLocked, vaultKey, vaultQuery } from "../panels/ProjectVault"
 import { protectProjectView, forgetProjectView, privateProject } from "./view"
@@ -19,16 +19,8 @@ import { Notes } from "../ui/NoteList"
 import { useSignal } from "../ui/signal"
 import { landscape, setLandscape, setTheme, theme } from "../ui/theme"
 import { useConnection } from "./Connection"
-
-export function useProjectId(): string | null {
-  return useMatch("/projects/:id/*")?.params.id ?? null
-}
-
-/** A path under the current project, or under nothing. */
-export function useTo() {
-  const id = useProjectId()
-  return (rest = "") => (id ? `/projects/${id}${rest && `/${rest}`}` : `/${rest}`)
-}
+import { projectPath, rememberProject, useProjectId, useTo } from "./project"
+export { useProjectId, useTo } from "./project"
 
 /** A few tries in, it isn't a blip. Nothing restarts Calcifer on Windows, and `cozy open` does anywhere. */
 const SAYS_HOW = 5
@@ -144,7 +136,7 @@ function ProjectTabs({ id, room, readable }: { id: string | null; room: HTMLElem
     <>
       <nav className="ptabs" aria-label="Projects" ref={strip}>
         {tabs.map((tab) => (
-          <Link key={tab.id} className={`ptab ${tab.id === id ? "on" : ""}`} to={`/projects/${tab.id}`} title={tab.path} aria-current={tab.id === id ? "page" : undefined}>
+          <Link key={tab.id} className={`ptab ${tab.id === id ? "on" : ""}`} to={projectPath(tab)} title={tab.path} aria-current={tab.id === id ? "page" : undefined}>
             {tab.name}
           </Link>
         ))}
@@ -366,15 +358,16 @@ export function Shell() {
   }, [id, readable, vault.data?.encrypted, vault.data?.idle_timeout_s, client, vault.refetch])
 
   const adopt = useCallback(
-    (project: string) => {
+    (project: string, code: string) => {
       adopted.current.set(project, "empty")
+      rememberProject(queries, { id: project, code })
       // This callback only adopts a newly created ordinary project. Preserve the initial
       // import's live canvas/outbox while its first status read catches up.
       freshOrdinary.current = project
       queries.setQueryData(vaultKey(project), { encrypted: false, state: "plain", path: "", idle_timeout_s: 0, next: [] })
       setVerified(project)
       void queries.invalidateQueries({ queryKey: ["projects"] })
-      navigate(`/projects/${project}${location.pathname.replace(/^\/$/, "")}`, { replace: true })
+      navigate(projectPath({ id: project, code }, location.pathname.replace(/^\/$/, "")), { replace: true })
     },
     [navigate, location.pathname, queries],
   )

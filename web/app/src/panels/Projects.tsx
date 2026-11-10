@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { type FormEvent, useEffect, useRef, useState } from "react"
 import { Link, useLocation, useNavigate } from "react-router-dom"
 import { projectsQuery } from "../api/queries"
+import { projectPath, rememberProject } from "../app/project"
 import { useConnection } from "../app/Connection"
 import { say } from "../ui/notes"
 import { DrawerFrame } from "./Drawer"
@@ -50,7 +51,8 @@ export function Projects() {
       const made = await client.newProject(name.trim() || "untitled", `project-${crypto.randomUUID()}`)
       void queries.invalidateQueries({ queryKey: ["projects"] })
       for (const line of made.said ?? []) say(line)
-      navigate(`/projects/${made.id}`)
+      rememberProject(queries, made)
+      navigate(projectPath(made))
     } catch (failure) {
       say("Couldn't make the project", failure)
     }
@@ -85,7 +87,7 @@ export function Projects() {
       <ul className="list">
         {listed.map((project, at) => (
           <li key={project.id} className={at > 0 && first.has(listed[at - 1].id) && !first.has(project.id) ? "tabbed" : undefined}>
-            <Link to={`/projects/${project.id}`} title={project.path}>
+            <Link to={projectPath(project)} title={project.path}>
               <b>{project.name}</b>
               <small className="project-path">{project.path}</small>
             </Link>

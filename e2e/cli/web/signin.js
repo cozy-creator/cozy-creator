@@ -175,7 +175,7 @@ const logged = (email) => () => readFileSync(process.env.HUB_LOG, 'utf8').split(
   await page.waitForSelector('.top');
   // After the link: a restart loses a code not yet redeemed, and keeps a session.
   if (hub) await shell(process.env.TO_HUB.replaceAll('@HUB@', hub.origin));
-  await page.goto(`${base}/#/account`);
+  await page.goto(`${base}/account`);
 
   const form = page.locator('.authui');
   const said = () => form.innerText();

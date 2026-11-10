@@ -184,6 +184,7 @@ test = "pr: run play, its link serves the output, then expires"
 "machine rent --image-digest" = "pending: release tier, a Hub admin's gated worker-image bake; waits for the CI key"
 
 [open]
+"--port" = "pr: entrypoint parser, loopback listener and preserved config tests"
 test = "pr: entrypoints, local authenticated URL and expiry; web-serves redeems the link in Chrome"
 
 ["vault"]
