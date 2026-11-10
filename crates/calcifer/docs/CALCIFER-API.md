@@ -162,9 +162,8 @@ media-src 'self' blob:; font-src 'self'; connect-src 'self'; base-uri 'none'; fo
   without asking the Hub (`GET /v1/account` does).
 
 ### Session
-A browser signs in with a single-use code. `cozy open` writes it into a 0600 redirect file
-(`~/.cozy/calcifer/open.html`) and opens that, so it's in no process's arguments. With no browser to open, over SSH or with no display, or with
-`--no-open`, it prints the link instead. The
+A browser signs in with a single-use code. `cozy open` prints an authenticated local URL carrying
+that code. The browser exchanges it for a session; the code expires after 60 seconds. The
 fragment may add `&to=<route>`, as `cozy open`'s does in a project (`#code=<code>&to=/projects/<id>`). `state.db` holds sessions' digests; 30 days unused ends one.
 - `POST /v1/session-codes` (the lock record's bearer only, else `403 session_code_needs_bearer`):
   `{code, url, expires_ms}`, 32 random bytes in hex, good for 60 s. `url` is `http://<Host>/#code=<code>`.
@@ -617,8 +616,8 @@ The CLI resolves the current directory to an existing project and sends its abso
 | Verb | Calls |
 |---|---|
 | `cozy new [directory]` | `POST /v1/projects` with the selected absolute path |
-| `cozy open [--no-open]` | current directory, `GET /v1/projects/{id}?assets=false` for its id; then `GET /`, `POST /v1/session-codes` |
-| `cozy status` | the current project from `GET /v1/projects/{id}`, its runs and the machines |
+| `cozy open` | current directory, `GET /v1/projects/{id}?assets=false` for its id; then `GET /`, `POST /v1/session-codes` |
+| `cozy status` | project health, warnings and suggested actions from `GET /v1/projects/{id}` |
 | any verb, Calcifer of another version | `POST /v1/down`, then the installed cozy's Calcifer started |
 | `cozy run <target> [inputs] [flags]` | `HEAD`/`PUT /v1/files/sha256:<hex>` for each file and folder it names, and local code's tree, `POST /v1/run-quotes` (`--on new`), `POST /v1/runs` (again after a `preparing` install), then `GET /v1/runs/{id}/events`; `-o DIR`, each output `GET /v1/runs/{id}/outputs/{name}` |
 | `cozy run <target> --describe`, `cozy run <package>` | local code's tree `PUT`, `GET /v1/targets` (`tree`, `at`) |

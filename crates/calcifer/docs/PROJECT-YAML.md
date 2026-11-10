@@ -214,7 +214,7 @@ The package `cozy` is reserved: Calcifer runs it itself, free, with no machine, 
 
 ## Runs
 
-`cozy run` uses the existing project for the current directory. Create a project explicitly with `cozy new [directory]` before running it. `cozy open` opens that project for asset editing in the browser.
+`cozy run` uses the existing project for the current directory. Create a project explicitly with `cozy new [directory]` before running it. `cozy open` prints that project's authenticated local URL for asset editing in the browser.
 
 - **Outputs** land in `files/` by hash, listed as the run's, and the run prints one line per file: `image: 65b436d4f9a3`. There's no memo.
 - **Use one:** `--file image=65b436d4f9a3` names a file by its hash, and approving that file for `kyogre` in the browser makes it what `kyogre` holds.
