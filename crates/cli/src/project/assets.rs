@@ -105,13 +105,13 @@ async fn as_declared(calcifer: &Client, project: &str, tool: &str, fields: &mut 
 /// Make an asset of a tool, as dropping it on the canvas does, and print the name it got.
 #[derive(clap::Args, Debug)]
 #[command(after_help = "Examples:
-  cozy project add qwen-image-2/generate_turbo kyogre instructions='A colossal blue whale.' aspect_ratio=1:1
-  cozy project add cozy/edit film at=400,120,720
-  cozy project add text style text='Soft morning light.'   words that <style> stands for anywhere
+  cozy add qwen-image-2/generate_turbo kyogre instructions='A colossal blue whale.' aspect_ratio=1:1
+  cozy add cozy/edit film at=400,120,720
+  cozy add text style text='Soft morning light.'   words that <style> stands for anywhere
 
 A tool is a function: `cozy package ls`, `cozy run <package>`, and `cozy run <tool> --describe` for its fields. `cozy/edit` is the Edit.
 A name you give that the project has is refused; one cozy picks takes _2. With no at=, the page puts it somewhere free, right of what it reads.")]
-pub(super) struct Add {
+pub(crate) struct Add {
     /// A function, local code by its path from the project's folder and its function, or `text` for a text asset.
     tool: String,
     /// One word for what to call it, default the tool's, then fields as `set` takes them.
@@ -144,16 +144,16 @@ pub(super) async fn add(ctx: &Context, at: Option<&String>, args: Add) -> Result
 /// Set an asset's fields, as its box's controls do.
 #[derive(clap::Args, Debug)]
 #[command(after_help = "Examples:
-  cozy project set kyogre instructions='A colossal blue whale.' megapixels=1
-  cozy project set kyogre lora:='[{\"name\": \"a/b\", \"strength\": 0.8}]'
-  cozy project set kyogre style=                       clears it
-  cozy project set kyogre tool=qwen-image-2/generate   what makes it; on a picture, the picture is its first version
-  cozy project set kyogre tool=                        takes it off: its pictures and words stay
-  cozy project set kyogre at=400,120,360               where it sits and how wide, as dragging it
-  cozy project set film --input timeline.yaml          an Edit's tracks and clips, or any fields
+  cozy set kyogre instructions='A colossal blue whale.' megapixels=1
+  cozy set kyogre lora:='[{\"name\": \"a/b\", \"strength\": 0.8}]'
+  cozy set kyogre style=                       clears it
+  cozy set kyogre tool=qwen-image-2/generate   what makes it; on a picture, the picture is its first version
+  cozy set kyogre tool=                        takes it off: its pictures and words stay
+  cozy set kyogre at=400,120,360               where it sits and how wide, as dragging it
+  cozy set film --input timeline.yaml          an Edit's tracks and clips, or any fields
 
 A value is a number, true or false, or its text; := is JSON. Only what's named moves, and a comment stays.")]
-pub(super) struct Set {
+pub(crate) struct Set {
     /// The asset.
     name: String,
     /// `field=value` or `field:=json`; `field=` clears it.
@@ -232,8 +232,8 @@ async fn undo_of(calcifer: &Client, project: &str, at: Option<&String>, name: &s
     let same = |held: &String| held.eq_ignore_ascii_case(name);
     let entry = listed.and_then(|listed| listed.entries.into_iter().find(|entry| entry.undone.is_none() && entry.names.iter().any(same)));
     match entry {
-        Some(entry) => format!("cozy project{} undo {}", from(at), entry.id),
-        None => format!("cozy project{} undo", from(at)),
+        Some(entry) => format!("cozy{} undo {}", from(at), entry.id),
+        None => format!("cozy{} undo", from(at)),
     }
 }
 
@@ -251,7 +251,7 @@ pub(super) async fn delete(ctx: &Context, at: Option<&String>, names: Vec<String
         match ctx.json {
             true => output::json(&Deleted { answer: &deleted, next: [back] }),
             false => {
-                println!("deleted {}: what it made stays until `cozy project reclaim`, and what's going was canceled", deleted.name);
+                println!("deleted {}: what it made stays until `cozy reclaim`, and what's going was canceled", deleted.name);
                 anstream::println!("{back}");
             }
         }
@@ -270,7 +270,7 @@ async fn discard(ctx: &Context, calcifer: &Client, project: &str, at: Option<&St
     let (name, noun) = (&moved.name, &moved.noun);
     let approval = if moved.approved { ", and its approval with it" } else { "" };
     let stands = moved.stands.map_or_else(|| format!("it has no {noun} now"), |stands| format!("it's on {noun} {stands} now"));
-    println!("discarded {name}'s {noun} {number}{approval}: {stands}, and the files stay until `cozy project reclaim`");
+    println!("discarded {name}'s {noun} {number}{approval}: {stands}, and the files stay until `cozy reclaim`");
     if !moved.read_by.is_empty() {
         println!("warning: {} read {noun} {number} by name: a render of them fails until it's back", moved.read_by.join(", "));
     }
@@ -314,7 +314,7 @@ pub(super) async fn one(ctx: &Context, at: Option<&String>, name: String) -> Res
     }
     if !held.discarded.is_empty() {
         let numbers: Vec<String> = held.discarded.iter().map(u32::to_string).collect();
-        println!("discarded, until `cozy project reclaim`: {}. `cozy project history` lists each, and `undo <id>` brings it back", numbers.join(", "));
+        println!("discarded, until `cozy reclaim`: {}. `cozy history` lists each, and `undo <id>` brings it back", numbers.join(", "));
     }
     // What a render would send now: the JSON `cozy run --input` takes.
     if let Some(call) = &held.call {

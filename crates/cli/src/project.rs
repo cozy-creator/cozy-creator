@@ -1,4 +1,4 @@
-//! `cozy project`: the CLI's side of Calcifer's projects (xs-151, cl-758). Calcifer finds the
+//! Asset commands: the CLI's side of Calcifer's projects (xs-151, cl-758). Calcifer finds the
 //! project, makes its assets' takes and versions and keeps their files; these verbs ask it and print,
 //! and `render` draws what Calcifer says of it (`render.rs`). Ctrl-C stops following, never the runs.
 mod assets;
@@ -11,7 +11,7 @@ use api::{
     error::{Error, Kind},
     calcifer::hub::At,
     calcifer::project::{
-        Approve, Approved, Asked, By, Cancel, Cancelled, Event, Fit, FitAsk, History, HistoryStep, HistoryStepped, Import, Imported, NewVersion, Open, Opened, Pickup, Projects, Reclaim,
+        Approve, Approved, Asked, By, Cancel, Cancelled, Event, Fit, FitAsk, History, HistoryStep, HistoryStepped, Import, Imported, NewVersion, Open, Opened, Pickup, Reclaim,
         Reclaimed, Rename, Renamed, Runs, Standing, State, Transferred, Unpin, Unpinned, VersionMoved,
     },
 };
@@ -24,40 +24,17 @@ use crate::{
 /// A push or pull that moved all it could and left out a file.
 const PARTIAL: u8 = 3;
 
-const EXAMPLES: &str = "Examples:
-  cozy project new garden                      in Calcifer's home folder, ~/garden; or at a folder of its, by its absolute path
-  export COZY_PROJECT=garden                   the project every verb after works in; -p garden says it for one
-  cozy open garden                             in your browser
-  cozy project import ./kyogre.png             adds it as kyogre, which <kyogre> reads in any text
-  cozy project add qwen-image-2/generate_turbo whale instructions='A whale.'   as dropping that tool on the canvas
-  cozy project set whale megapixels=1 at=400,120   as its box's controls; --input takes a file of them
-  cozy project delete whale                    `undo` puts it back; `delete whale.2` discards its take 2
-  cozy project render all --on kiyui
-  cozy project render fight -n 3 --on kiyui    three more takes of fight
-  cozy project approve fight 2                 fight holds that file, as its `approved`
-  cozy project unapprove fight                  it follows its inputs again
-  cozy project rename theo mara                its <mentions> and its versions too
-  cozy project history                         each edit, by the page, the CLI or an import; `undo` and `redo` take one back or do it again
-  cozy project export -o garden.yaml           the project as YAML, for reading, a diff or git; `import garden.yaml` reads it back
-  cozy project reclaim --yes                   deletes what the project no longer names
-  cozy project push                            its files to your Tensorhub account
-  cozy project pull                            on another computer, the files the project names
-
-A project is named by its name or id, which `ls` lists, with -p or COZY_PROJECT: Calcifer may be on another computer, so the folder
-you are in names none. Its folder, on Calcifer's computer, holds project.db, what it says and has made, and files/. PROJECT-YAML.md
-explains the YAML.";
-
 const RENDER_EXAMPLES: &str = "Examples:
-  cozy project render all --on kiyui               a new version of everything not approved, each reading the new ones before it
-  cozy project render all --on kiyui,jitae         spread over two machines
-  cozy project render all --missing --on kiyui     only what has no state: continues a render that half failed
-  cozy project render fight --on kiyui             a new take of fight, and of what it reads only if that has no state
-  cozy project render fight -n 3 --on kiyui        three new takes of fight; approved, what it approved stays
-  cozy project render fight --approve --on kiyui   a new take, approved as it lands
-  cozy project render all --outdated --on kiyui    and of each approved asset whose inputs changed, as its turn comes: the new one takes its place
-  cozy project render fight pickup.take='<fight.2>' pickup.out_frame=240
+  cozy render all --on kiyui               a new version of everything not approved, each reading the new ones before it
+  cozy render all --on kiyui,jitae         spread over two machines
+  cozy render all --missing --on kiyui     only what has no state: continues a render that half failed
+  cozy render fight --on kiyui             a new take of fight, and of what it reads only if that has no state
+  cozy render fight -n 3 --on kiyui        three new takes of fight; approved, what it approved stays
+  cozy render fight --approve --on kiyui   a new take, approved as it lands
+  cozy render all --outdated --on kiyui    and of each approved asset whose inputs changed, as its turn comes: the new one takes its place
+  cozy render fight pickup.take='<fight.2>' pickup.out_frame=240
                                                    Pick up from here: take 2 up to frame 240, the rest new
-  cozy project render shot_2 pickup.take='<shot_1.3>' pickup.out_frame=120 pickup.beats_from=7
+  cozy render shot_2 pickup.take='<shot_1.3>' pickup.out_frame=120 pickup.beats_from=7
                                                    picking up another box's take, its beats from 7 s
 
 An asset's state is the hash in its image:, video: or audio: (`approve` writes that line, `unapprove` removes it), else its newest
@@ -65,35 +42,15 @@ version with these inputs, else none. Reverting a text returns the old output wi
 
 Ctrl-C stops following, never the runs.";
 
-/// A project: a folder of assets, each a stable name holding a set of files, whose takes and versions
-/// `cozy project render` makes.
-#[derive(clap::Args, Debug)]
-#[command(after_help = EXAMPLES)]
-pub(crate) struct Args {
-    /// The project: its name or id, or its folder on Calcifer's computer by its absolute path. Default: COZY_PROJECT.
-    #[arg(short = 'p', value_name = "PROJECT", global = true)]
-    project: Option<String>,
-    #[command(subcommand)]
-    verb: Verb,
-}
-
+/// Operations on the assets in the current directory's project.
 #[derive(clap::Subcommand, Debug)]
-enum Verb {
-    /// Make a project, holding the starter film.
-    #[command(after_help = "Examples:\n  cozy project new garden && cozy open garden\n  cozy project new /srv/films/garden   at that folder of Calcifer's computer")]
-    New {
-        /// Its name: it lives in Calcifer's home folder (`_2` when that's taken). Or a folder on Calcifer's computer, by its absolute path.
-        project: String,
-    },
-    /// List your projects.
-    #[command(alias = "list", after_help = "Example:\n  cozy project ls")]
-    Ls,
+pub(crate) enum Verb {
     Import(ImportFile),
     Add(assets::Add),
     Set(assets::Set),
     /// Delete assets, as the X on a box: their work stops, and what they made stays until `reclaim`. `<name>.<n>` discards that take
-    /// or version instead. `cozy project undo` puts either back, and each prints the command.
-    #[command(after_help = "Examples:\n  cozy project delete whale\n  cozy project delete whale.2 whale.3   takes 2 and 3 of whale: off it, their numbers never used again\n  cozy project undo 42                  the line it printed")]
+    /// or version instead. `cozy undo` puts either back, and each prints the command.
+    #[command(after_help = "Examples:\n  cozy delete whale\n  cozy delete whale.2 whale.3   takes 2 and 3 of whale: off it, their numbers never used again\n  cozy undo 42                  the line it printed")]
     Delete {
         /// The assets, or `<name>.<n>` for one take or version of one.
         #[arg(required = true, value_name = "NAME")]
@@ -101,7 +58,7 @@ enum Verb {
     },
     Render(Render),
     /// Approve a take or version: its hash is the asset's `approved`.
-    #[command(after_help = "Examples:\n  cozy project approve fight 2\n  cozy project approve kyogre 65b436d4f9a3   any file of the project's, by hash\n\nIt sets fight's `approved`, changing nothing else. `cozy project unapprove fight` takes it away.")]
+    #[command(after_help = "Examples:\n  cozy approve fight 2\n  cozy approve kyogre 65b436d4f9a3   any file of the project's, by hash\n\nIt sets fight's `approved`, changing nothing else. `cozy unapprove fight` takes it away.")]
     Approve {
         /// The asset: `theo`, `dock_b`, `fight`, `fight_upscale`, …
         name: String,
@@ -109,29 +66,29 @@ enum Verb {
         version: String,
     },
     /// Drop assets' queued work and cancel their runs, or `all`.
-    #[command(after_help = "Examples:\n  cozy project cancel clash\n  cozy project cancel all")]
+    #[command(after_help = "Examples:\n  cozy cancel clash\n  cozy cancel all")]
     Cancel {
         /// The assets, or `all`.
         #[arg(required = true, value_name = "NAME")]
         names: Vec<String>,
     },
     /// Take back an asset's approval: its `approved` goes, and its state follows its inputs again.
-    #[command(after_help = "Example:\n  cozy project unapprove fight")]
+    #[command(after_help = "Example:\n  cozy unapprove fight")]
     Unapprove {
         /// The asset.
         name: String,
     },
     /// What has no state and why, and each asset's file; with a name, that asset's fields and each take or version.
-    #[command(after_help = "Examples:\n  cozy project status\n  cozy project status fight")]
+    #[command(alias = "ls", after_help = "Examples:\n  cozy status\n  cozy status fight")]
     Status {
         /// One asset.
         name: Option<String>,
     },
     /// Follow the render going to its end, as `render` follows its own: free, it starts nothing. With none going, the project as it stands.
-    #[command(after_help = "Example:\n  cozy project render clash --on corteo --queue\n  cozy project wait\n\nExits 0 done, 1 something failed, 4 a run stopped moving: it goes on until you cancel it. Ctrl-C stops waiting, never the render.")]
+    #[command(after_help = "Example:\n  cozy render clash --on corteo --queue\n  cozy wait\n\nExits 0 done, 1 something failed, 4 a run stopped moving: it goes on until you cancel it. Ctrl-C stops waiting, never the render.")]
     Wait,
     /// What was done to the project, newest first: each edit by the page, the CLI or an import, and whether it's undone.
-    #[command(after_help = "Example:\n  cozy project history\n  cozy project undo 42   that entry, if nothing since changed what it did")]
+    #[command(after_help = "Example:\n  cozy history\n  cozy undo 42   that entry, if nothing since changed what it did")]
     History {
         /// How many, newest first.
         #[arg(short = 'n', value_name = "N", default_value_t = 20)]
@@ -139,9 +96,9 @@ enum Verb {
     },
     /// Undo the project's newest edit, whoever made it: the page, the CLI, or an import. Refused if a later edit changed the same thing.
     /// Renders aren't undone, and nothing is rented or ended.
-    #[command(after_help = "Examples:\n  cozy project undo\n  cozy project undo 42        that entry of `cozy project history`\n  cozy project undo --to 40   every edit back to 40")]
+    #[command(after_help = "Examples:\n  cozy undo\n  cozy undo 42        that entry of `cozy history`\n  cozy undo --to 40   every edit back to 40")]
     Undo {
-        /// The entry, from `cozy project history`.
+        /// The entry, from `cozy history`.
         #[arg(value_name = "ID")]
         entry: Option<u64>,
         /// Every edit back to this one.
@@ -149,7 +106,7 @@ enum Verb {
         to: Option<u64>,
     },
     /// Do again what undo last took back, unless an edit came since; with an ID, that entry.
-    #[command(after_help = "Examples:\n  cozy project redo\n  cozy project redo 42\n  cozy project redo --to 45   every edit undone, up to 45")]
+    #[command(after_help = "Examples:\n  cozy redo\n  cozy redo 42\n  cozy redo --to 45   every edit undone, up to 45")]
     Redo {
         #[arg(value_name = "ID")]
         entry: Option<u64>,
@@ -157,7 +114,7 @@ enum Verb {
         to: Option<u64>,
     },
     /// Rename an asset: its key, every <mention> of it, its versions and its place on the canvas.
-    #[command(after_help = "Example:\n  cozy project rename theo mara")]
+    #[command(after_help = "Example:\n  cozy rename theo mara")]
     Rename {
         /// Its name now, or an orphan's whose versions the project still keeps.
         from: String,
@@ -165,20 +122,20 @@ enum Verb {
         to: String,
     },
     /// List what the project no longer names, and with --yes delete it: its versions, and any file nothing else names.
-    #[command(after_help = "Example:\n  cozy project reclaim\n  cozy project reclaim --yes\n\nNothing is ever deleted without it.")]
+    #[command(after_help = "Example:\n  cozy reclaim\n  cozy reclaim --yes\n\nNothing is ever deleted without it.")]
     Reclaim {
         /// Delete them.
         #[arg(long)]
         yes: bool,
     },
     /// Send every file the project names that your Tensorhub account lacks, private to it.
-    #[command(after_help = "Example:\n  cozy project push\n\nA file over 5 GiB goes as parts, which the project lists. A file on neither this computer nor the Hub is skipped with a warning, everything else goes, and it exits 3.\nCtrl-C stops following, never the transfer.")]
+    #[command(after_help = "Example:\n  cozy push\n\nA file over 5 GiB goes as parts, which the project lists. A file on neither this computer nor the Hub is skipped with a warning, everything else goes, and it exits 3.\nCtrl-C stops following, never the transfer.")]
     Push,
     /// Fetch every file the project names that files/ lacks, as real files.
-    #[command(after_help = "Example:\n  git clone … && cd garden && cozy project pull\n\nA file not at the Hub is skipped with a warning, everything else comes, and it exits 3.\nCtrl-C stops following, never the transfer.")]
+    #[command(after_help = "Example:\n  git clone … && cd garden && cozy pull\n\nA file not at the Hub is skipped with a warning, everything else comes, and it exits 3.\nCtrl-C stops following, never the transfer.")]
     Pull,
-    /// The project as YAML, format 4: for reading, a diff or git. `cozy project import <file>.yaml` reads it back.
-    #[command(after_help = "Examples:\n  cozy project export\n  cozy project export -o garden.yaml && $EDITOR garden.yaml && cozy project import garden.yaml\n\nIt holds what the project says, its boxes and fields; its versions, takes and files stay in project.db.")]
+    /// The project as YAML, format 4: for reading, a diff or git. `cozy import <file>.yaml` reads it back.
+    #[command(after_help = "Examples:\n  cozy export\n  cozy export -o garden.yaml && $EDITOR garden.yaml && cozy import garden.yaml\n\nIt holds what the project says, its boxes and fields; its versions, takes and files stay in project.db.")]
     Export {
         /// Write it to this file, not stdout.
         #[arg(short = 'o', long, value_name = "FILE")]
@@ -190,16 +147,16 @@ enum Verb {
 /// project as `export` writes it, read back: what differs is written, in one step `undo` takes back.
 #[derive(clap::Args, Debug)]
 #[command(after_help = "Examples:
-  cozy project import garden.yaml                the project as that file says, each box that differs
-  cozy project import ./kyogre.png               prints kyogre
-  cozy project import ./kyogre.png kyogre_art    prints kyogre_art
-  cozy project import https://example.com/groudon.png
-  cozy project import 65b436d4f9a3 kyogre --description 'The colossal blue whale.'    a file of the project's, as an asset of its own
-  cozy project import ./kyogre2.png --into kyogre    the next version of kyogre: <kyogre.2>
+  cozy import garden.yaml                the project as that file says, each box that differs
+  cozy import ./kyogre.png               prints kyogre
+  cozy import ./kyogre.png kyogre_art    prints kyogre_art
+  cozy import https://example.com/groudon.png
+  cozy import 65b436d4f9a3 kyogre --description 'The colossal blue whale.'    a file of the project's, as an asset of its own
+  cozy import ./kyogre2.png --into kyogre    the next version of kyogre: <kyogre.2>
 
 A name something in the project has takes _2, and the same file twice is two elements and one file: <name> reads it in any text.
 A URL is downloaded here, up to 64 MiB, from a public address.")]
-struct ImportFile {
+pub(crate) struct ImportFile {
     /// A path, an http(s) URL, or a file of the project's by the start of its hash, as a take lifted out of what made it.
     source: String,
     /// What to call it. Default: the file's name, lower-cased.
@@ -215,7 +172,7 @@ struct ImportFile {
 /// For each asset named and what it reads, if it has no state, run its operation. Nothing else runs.
 #[derive(clap::Args, Debug)]
 #[command(after_help = RENDER_EXAMPLES)]
-struct Render {
+pub(crate) struct Render {
     /// The assets (`theo`, `dock_b`, `fight`, `fight_upscale`, …), with what they read, or `all`: every asset. For one box, `pickup.take=<box.N>`,
     /// `pickup.out_frame=<frame>` and `pickup.beats_from=<seconds>` pick up from that take.
     #[arg(required = true, value_name = "NAME")]
@@ -242,47 +199,17 @@ struct Render {
 }
 
 
-pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
-    match args.verb {
-        Verb::New { project } => {
-            let ask = match api::target::written_as_path(&project) {
-                true => Open { path: Some(PathBuf::from(&project)), starter: true, ..Open::default() },
-                false => Open { name: Some(project), starter: true, ..Open::default() },
-            };
-            let opened: Opened = ctx.calcifer().await?.post("/v1/projects", &ask, Some(&mint_key())).await?;
-            opened.said.iter().for_each(|said| output::warn(said));
-            if ctx.json {
-                output::json(&opened);
-                return Ok(ExitCode::SUCCESS);
-            }
-            output::say(ctx, &format!("made {} in {}: a short film, ready to render or change", opened.name, opened.path.display()));
-            output::nexts(ctx, &opened.next);
-        }
-        Verb::Ls => {
-            let listed: Projects = ctx.calcifer().await?.get("/v1/projects").await?;
-            if ctx.json {
-                output::json(&listed);
-                return Ok(ExitCode::SUCCESS);
-            }
-            let table = output::Table::new(ctx, ["NAME", "ID", "FOLDER", "USED", "STATE"]);
-            let rows = listed.projects.iter().map(|known| {
-                let state = if known.busy { "rendering" } else { "-" };
-                let used = format!("{} ago", output::age(known.used_at_ms));
-                [known.name.clone(), known.id.clone(), known.path.display().to_string(), used, state.into()]
-            });
-            rows.fold(table, output::Table::row).print();
-            if listed.older > 0 {
-                output::say(ctx, &format!("{} more, used earlier (?before=<id>)", listed.older));
-            }
-        }
-        Verb::Import(import) => return self::import(ctx, args.project.as_ref(), import).await,
-        Verb::Export { out } => return export(ctx, args.project.as_ref(), out).await,
-        Verb::Add(add) => return assets::add(ctx, args.project.as_ref(), add).await,
-        Verb::Set(set) => return assets::set(ctx, args.project.as_ref(), set).await,
-        Verb::Delete { names } => return assets::delete(ctx, args.project.as_ref(), names).await,
-        Verb::Render(render) => return self::render(ctx, args.project.as_ref(), render).await,
+pub(crate) async fn exec(ctx: &Context, verb: Verb) -> Result<ExitCode, Error> {
+    let project = ensure(ctx, None).await?;
+    match verb {
+        Verb::Import(import) => return self::import(ctx, Some(&project), import).await,
+        Verb::Export { out } => return export(ctx, Some(&project), out).await,
+        Verb::Add(add) => return assets::add(ctx, Some(&project), add).await,
+        Verb::Set(set) => return assets::set(ctx, Some(&project), set).await,
+        Verb::Delete { names } => return assets::delete(ctx, Some(&project), names).await,
+        Verb::Render(render) => return self::render(ctx, Some(&project), render).await,
         Verb::Approve { name, version } => {
-            let path = at(&named(args.project.as_ref())?, &["approve"]);
+            let path = at(&project, &["approve"]);
             let approved: Approved = ctx.calcifer().await?.post(&path, &Approve { name: name.clone(), version }, None).await?;
             approved.warnings.iter().for_each(|warning| output::warn(warning));
             if ctx.json {
@@ -299,7 +226,7 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             }
         }
         Verb::Unapprove { name } => {
-            let path = at(&named(args.project.as_ref())?, &["unpin"]);
+            let path = at(&project, &["unpin"]);
             let unpinned: Unpinned = ctx.calcifer().await?.post(&path, &Unpin { name }, None).await?;
             if ctx.json {
                 output::json(&unpinned);
@@ -314,7 +241,7 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             }
         }
         Verb::Cancel { names } => {
-            let path = at(&named(args.project.as_ref())?, &["cancel"]);
+            let path = at(&project, &["cancel"]);
             let cancelled: Cancelled = ctx.calcifer().await?.post(&path, &Cancel { names }, None).await?;
             if ctx.json {
                 output::json(&cancelled);
@@ -327,7 +254,7 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             }
         }
         Verb::Reclaim { yes } => {
-            let path = at(&named(args.project.as_ref())?, &["reclaim"]);
+            let path = at(&project, &["reclaim"]);
             let reclaimed: Reclaimed = ctx.calcifer().await?.post(&path, &Reclaim { yes }, None).await?;
             if ctx.json {
                 output::json(&reclaimed);
@@ -358,11 +285,11 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             }
             output::nexts(ctx, &reclaimed.next);
         }
-        Verb::Status { name: Some(name) } => return assets::one(ctx, args.project.as_ref(), name).await,
-        Verb::Status { name: None } => return status(ctx, args.project.as_ref()).await,
-        Verb::Wait => return wait(ctx, args.project.as_ref()).await,
+        Verb::Status { name: Some(name) } => return assets::one(ctx, Some(&project), name).await,
+        Verb::Status { name: None } => return status(ctx, Some(&project)).await,
+        Verb::Wait => return wait(ctx, Some(&project)).await,
         Verb::Rename { from, to } => {
-            let path = at(&named(args.project.as_ref())?, &["rename"]);
+            let path = at(&project, &["rename"]);
             let renamed: Renamed = ctx.calcifer().await?.post(&path, &Rename { from, to }, None).await?;
             match ctx.json {
                 true => output::json(&renamed),
@@ -370,18 +297,18 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
                 false => output::say(ctx, &format!("{} is {} now: its {} kept", renamed.from, renamed.to, renamed.versions)),
             }
         }
-        Verb::History { limit } => return history(ctx, args.project.as_ref(), limit).await,
-        Verb::Undo { entry, to } => return step(ctx, args.project.as_ref(), "undo", HistoryStep { entry, to, edit: None }).await,
-        Verb::Redo { entry, to } => return step(ctx, args.project.as_ref(), "redo", HistoryStep { entry, to, edit: None }).await,
+        Verb::History { limit } => return history(ctx, Some(&project), limit).await,
+        Verb::Undo { entry, to } => return step(ctx, Some(&project), "undo", HistoryStep { entry, to, edit: None }).await,
+        Verb::Redo { entry, to } => return step(ctx, Some(&project), "redo", HistoryStep { entry, to, edit: None }).await,
         Verb::Push => {
-            let done = transfer(ctx, args.project.as_ref(), "push", "sent").await?;
+            let done = transfer(ctx, Some(&project), "push", "sent").await?;
             let at = done.kept_in.as_deref().unwrap_or("the Hub");
             let (moved, bytes, rest) = (done.moved, output::bytes(done.bytes), rest(&done));
             output::say(ctx, &format!("{} files at {at}: {moved} sent ({bytes}), {rest} there already", done.files));
             return Ok(skipped(&done));
         }
         Verb::Pull => {
-            let done = transfer(ctx, args.project.as_ref(), "pull", "fetched").await?;
+            let done = transfer(ctx, Some(&project), "pull", "fetched").await?;
             let (moved, bytes, rest) = (done.moved, output::bytes(done.bytes), rest(&done));
             output::say(ctx, &format!("{} files: {moved} fetched ({bytes}), {rest} here already", done.files));
             return Ok(skipped(&done));
@@ -420,7 +347,7 @@ async fn history(ctx: &Context, at: Option<&String>, limit: usize) -> Result<Exi
         [entry.id.to_string(), format!("{} ago", output::age(entry.at_ms)), by(&entry.by), what]
     });
     rows.fold(table, output::Table::row).print();
-    let next: Vec<String> = [listed.undo.map(|_| "cozy project undo".to_owned()), listed.redo.map(|_| "cozy project redo".to_owned())].into_iter().flatten().collect();
+    let next: Vec<String> = [listed.undo.map(|_| "cozy undo".to_owned()), listed.redo.map(|_| "cozy redo".to_owned())].into_iter().flatten().collect();
     output::nexts(ctx, &next);
     Ok(ExitCode::SUCCESS)
 }
@@ -446,8 +373,8 @@ async fn step(ctx: &Context, at: Option<&String>, verb: &str, asked: HistoryStep
         return Ok(ExitCode::FAILURE);
     }
     let next: Vec<String> = match verb {
-        "undo" => stepped.entries.last().map(|entry| format!("cozy project redo {}", entry.id)).into_iter().collect(),
-        _ => stepped.entries.last().map(|entry| format!("cozy project undo {}", entry.id)).into_iter().collect(),
+        "undo" => stepped.entries.last().map(|entry| format!("cozy redo {}", entry.id)).into_iter().collect(),
+        _ => stepped.entries.last().map(|entry| format!("cozy undo {}", entry.id)).into_iter().collect(),
     };
     output::nexts(ctx, &next);
     Ok(ExitCode::SUCCESS)
@@ -488,7 +415,7 @@ async fn transfer(ctx: &Context, at: Option<&String>, verb: &str, moved: &str) -
         }
     }
     let said = format!("Calcifer stopped before the {verb} ended; run it again and it goes on from what landed");
-    Err(Error::new(Kind::Unavailable, "project_events_ended", said).next(format!("cozy project{} {verb}", from(at))))
+    Err(Error::new(Kind::Unavailable, "project_events_ended", said).next(format!("cozy{} {verb}", from(at))))
 }
 
 /// `POST /v1/projects/{id}/imports`, and the name it got.
@@ -639,7 +566,7 @@ async fn render(ctx: &Context, at: Option<&String>, mut args: Render) -> Result<
         });
     }
     let events = events.take().expect("following");
-    let status = format!("cozy project{} status", from(at));
+    let status = format!("cozy{} status", from(at));
     if ctx.json {
         return following_json(ctx, events, &status, asked.ask.as_deref()).await;
     }
@@ -697,7 +624,7 @@ pub(crate) const FIELDS: &[&str] = &[
     "assets.status", "assets.failure",
 ];
 
-/// `cozy project status`: an asset a row, what makes it and how it stands, the totals, then what to know and do. `--full`:
+/// `cozy status`: an asset a row, what makes it and how it stands, the totals, then what to know and do. `--full`:
 /// every column and line, each file's path among them.
 async fn status(ctx: &Context, at: Option<&String>) -> Result<ExitCode, Error> {
     let state: State = ctx.calcifer().await?.get(&self::at(&named(at)?, &[])).await?;
@@ -705,7 +632,7 @@ async fn status(ctx: &Context, at: Option<&String>) -> Result<ExitCode, Error> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// `cozy project wait`: the render going, followed as `render` follows its own. None going: the project as `status` shows
+/// `cozy wait`: the render going, followed as `render` follows its own. None going: the project as `status` shows
 /// it, failing when an asset's last try did.
 async fn wait(ctx: &Context, at: Option<&String>) -> Result<ExitCode, Error> {
     let project = named(at)?;
@@ -713,7 +640,7 @@ async fn wait(ctx: &Context, at: Option<&String>) -> Result<ExitCode, Error> {
     // Opened before the read, so nothing between the two is missed.
     let events = calcifer.watch::<Event>(&self::at(&project, &["events"])).await?;
     let state: State = calcifer.get(&self::at(&project, &[])).await?;
-    let status = format!("cozy project{} status", from(at));
+    let status = format!("cozy{} status", from(at));
     match state.board.clone().filter(|_| state.busy) {
         Some(_) if ctx.json => following_json(ctx, events, &status, None).await,
         Some(board) => render::follow(ctx, render::Rendering::new(state.path.clone(), board, None), events, &status).await,
@@ -790,7 +717,7 @@ fn summary(ctx: &Context, state: &State) {
         println!("queued: {}", shown.join(", "));
     }
     if !state.queue.is_empty() && !state.busy {
-        println!("nothing is walking these: any `cozy project render` takes them up again");
+        println!("nothing is walking these: any `cozy render` takes them up again");
     }
     for asset in &state.assets {
         if let Some(failure) = &asset.failure {
@@ -829,7 +756,7 @@ fn full_summary(ctx: &Context, state: &State) {
         }
     }
     if state.run_files > 0 {
-        println!("{} files from `cozy run` here, belonging to no asset: approve one, or `cozy project reclaim` once nothing names them", state.run_files);
+        println!("{} files from `cozy run` here, belonging to no asset: approve one, or `cozy reclaim` once nothing names them", state.run_files);
     }
     if !state.missing.is_empty() {
         println!("missing: {}", state.missing.join(", "));
@@ -879,9 +806,36 @@ fn retimes(retimed: &[String], fps: f64) -> String {
     }
 }
 
-/// The project a verb works in, as its routes name it; none named is refused.
+/// The explicit project a caller resolved, or the current directory.
 pub(crate) fn named(at: Option<&String>) -> Result<String, Error> {
-    chosen(at).ok_or_else(api::calcifer::project::unnamed)
+    if let Some(at) = at.filter(|at| !at.is_empty()) {
+        return Ok(at.clone());
+    }
+    let cwd = std::env::current_dir()
+        .map_err(|error| Error::new(Kind::Unavailable, "cwd", format!("the current directory: {error}")))?;
+    cwd.into_os_string().into_string()
+        .map_err(|_| Error::new(Kind::Usage, "project_path", "the current directory is not a UTF-8 path"))
+}
+
+/// Open the current directory's existing project, or create its empty project on first use.
+pub(crate) async fn ensure(ctx: &Context, at: Option<&String>) -> Result<String, Error> {
+    let project = named(at)?;
+    let path = format!("{}?assets=false", self::at(&project, &[]));
+    let calcifer = ctx.calcifer().await?;
+    match calcifer.get::<serde_json::Value>(&path).await {
+        Ok(_) => return Ok(project),
+        Err(error) if error.code == "project_not_found" => {}
+        Err(error) => return Err(error),
+    }
+    let ask = Open { path: Some(PathBuf::from(&project)), ..Open::default() };
+    match calcifer.post::<_, Opened>("/v1/projects", &ask, Some(&mint_key())).await {
+        Ok(opened) => opened.said.iter().for_each(|said| output::warn(said)),
+        Err(error) if error.code == "project_exists" => {
+            calcifer.get::<serde_json::Value>(&path).await?;
+        }
+        Err(error) => return Err(error),
+    }
+    Ok(project)
 }
 
 /// `/v1/projects/<project>[/<rest>…]`: a route takes a project's name, id or folder.
@@ -890,17 +844,12 @@ pub(crate) fn at(project: &str, rest: &[&str]) -> String {
     crate::calcifer_client::path(&segments)
 }
 
-/// ` -p <project>` when it was given, as a command that's printed has to work from here.
-pub(crate) fn from(at: Option<&String>) -> String {
-    at.map_or_else(String::new, |at| match at.contains(' ') {
-        true => format!(" -p '{at}'"),
-        false => format!(" -p {at}"),
-    })
+/// Follow-up commands run in the same current directory.
+pub(crate) fn from(_at: Option<&String>) -> String {
+    String::new()
 }
 
-/// The project a verb works in, as it's named (`api::calcifer::project::NAMED_BY`): `-p`, else `COZY_PROJECT`. Never the folder this
-/// is run in: Calcifer may be on another computer.
+/// The explicit project a caller resolved, or the current directory.
 pub(crate) fn chosen(at: Option<&String>) -> Option<String> {
-    let named = at.cloned().or_else(|| std::env::var("COZY_PROJECT").ok());
-    named.map(|named| named.trim().to_owned()).filter(|named| !named.is_empty())
+    named(at).ok()
 }

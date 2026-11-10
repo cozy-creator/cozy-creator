@@ -1,4 +1,4 @@
-//! `cozy project render` for a person, all drawn from the project's `Board`: on a terminal one live view, then a plain block that stays
+//! `cozy render` for a person, all drawn from the project's `Board`: on a terminal one live view, then a plain block that stays
 //! in the scrollback; anywhere else one line per event, each starting with its asset's name, so runs at once stay readable. Run
 //! numbers, machines and raw outputs stay in `--json` and `cozy run show`. Ctrl-C stops following, never the runs.
 use std::{
@@ -243,7 +243,7 @@ async fn lines(ctx: &Context, mut rendering: Rendering, mut events: Watch<Event>
 /// goes on until it's canceled.
 fn stalled(ctx: &Context, rendering: &Rendering) -> Option<ExitCode> {
     let job = rendering.board.jobs.iter().find(|job| job.stalled.is_some() && matches!(job.state, JobState::Running | JobState::Waiting))?;
-    let cancel = format!("cozy project cancel {}", job.asset);
+    let cancel = format!("cozy cancel {}", job.asset);
     let logs = job.machine.as_ref().map(|machine| format!("cozy machine logs {machine} -n 40"));
     output::next(ctx, &[cancel.as_str()].into_iter().chain(logs.as_deref()).collect::<Vec<_>>());
     Some(ExitCode::from(output::STALLED))

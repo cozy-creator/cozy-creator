@@ -39,7 +39,8 @@ const EXITS: &str = "Exit codes:
   3  a push or pull left files out, or an upgrade put something out of date
   4  a run stopped moving, as Calcifer says after 10 minutes with no progress: it goes on until you cancel it
 
-`cozy` alone says what's going here. --json prints what a view shows, --full all of it.";
+`cozy` lists the commands. Commands that use a project work in the current directory.
+--json prints what a view shows, --full all of it.";
 
 #[derive(Parser, Debug)]
 #[command(
@@ -58,7 +59,7 @@ struct Cli {
     /// Agree without being asked: to a rental's quote, a deletion.
     #[arg(long, short = 'y', global = true)]
     yes: bool,
-    /// None: `cozy` alone, which is `cozy status`.
+    /// None: show the available commands.
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -73,9 +74,9 @@ enum Command {
     Package(package::Args),
     /// Find, download, upload and publish models.
     Model(model::Args),
-    /// Projects: assets, and the operations that make them.
-    Project(project::Args),
-    /// Open the canvas in your browser: the project you name, else COZY_PROJECT's, else the home.
+    #[command(flatten)]
+    Project(project::Verb),
+    /// Open the current directory's canvas in your browser.
     Open(open::Args),
     /// Claim an organization parked under your name.
     Org(org::Args),
@@ -85,8 +86,6 @@ enum Command {
     Logout(account::Logout),
     /// Show the signed-in account, its credit and where to buy more.
     Whoami(account::Whoami),
-    /// This project, the runs going, machines and spend at a glance; `cozy` alone says the same.
-    Status(daemon::Status),
     /// Replace this binary with the newest release.
     Update(update::Args),
     /// Print a shell completion script.
@@ -103,6 +102,15 @@ pub fn main() -> ExitCode {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(error) => return usage(error),
+    };
+    let Some(command) = cli.command else {
+        return match Cli::command().print_help() {
+            Ok(()) => {
+                println!();
+                ExitCode::SUCCESS
+            }
+            Err(error) => output::refuse(cli.json, &Error::new(Kind::Internal, "help", error.to_string())),
+        };
     };
     let loaded = match config::load() {
         Ok(loaded) => loaded,
@@ -122,7 +130,7 @@ pub fn main() -> ExitCode {
             );
         }
     };
-    match runtime.block_on(dispatch(&ctx, cli.command)) {
+    match runtime.block_on(dispatch(&ctx, command)) {
         Ok(code) => code,
         Err(error) => output::refusal(&ctx, &error),
     }
@@ -148,10 +156,7 @@ fn usage(error: clap::Error) -> ExitCode {
     output::refuse(true, &Error::new(Kind::Usage, "usage", message))
 }
 
-async fn dispatch(ctx: &Context, command: Option<Command>) -> Result<ExitCode, Error> {
-    let Some(command) = command else {
-        return daemon::status(ctx, daemon::Status {}).await;
-    };
+async fn dispatch(ctx: &Context, command: Command) -> Result<ExitCode, Error> {
     match command {
         Command::Run(args) => run::exec(ctx, args).await,
         Command::Machine(args) => machine::exec(ctx, args).await,
@@ -163,7 +168,6 @@ async fn dispatch(ctx: &Context, command: Option<Command>) -> Result<ExitCode, E
         Command::Login(args) => account::login(ctx, args).await,
         Command::Logout(args) => account::logout(ctx, args).await,
         Command::Whoami(args) => account::whoami(ctx, args).await,
-        Command::Status(args) => daemon::status(ctx, args).await,
         Command::Update(args) => update::exec(ctx, args).await,
         Command::Completion(args) => completion::exec(ctx, args).await,
         Command::Doctor(args) => doctor::exec(ctx, args).await,
