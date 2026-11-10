@@ -355,14 +355,15 @@ impl Client {
             .await
     }
 
-    /// The exact files of `release` (`python_version` picks its project wheel), behind presigned
-    /// URLs.
+    /// The exact files of `release` for its Python and Linux CPU architecture, behind presigned
+    /// URLs. Without `cpu_arch`, older callers keep the Hub's x86_64 default.
     pub async fn get_package_download_plan(
         &self,
         org: &str,
         name: &str,
         release: &str,
         python_version: Option<&str>,
+        cpu_arch: Option<&str>,
     ) -> Result<PackageInstallPlan, Error> {
         let request = self.at(
             Method::POST,
@@ -372,6 +373,7 @@ impl Client {
         let query = [
             ("release", Some(release)),
             ("python_version", python_version),
+            ("cpu_arch", cpu_arch),
         ];
         self.json(request.query(&query).json(&json!({}))).await
     }
