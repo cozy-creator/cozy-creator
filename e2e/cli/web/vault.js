@@ -43,8 +43,10 @@ const cli = (...args) => execFileSync(process.env.COZY, ['--json', ...args], { e
   await page.locator('.react-flow').waitFor();
   check('unlocked_canvas', await page.getByText('private_vault_picture', { exact: true }).count() > 0);
   const privateBytes = Buffer.concat([png(24), require('crypto').randomBytes(32)]);
+  const imported = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === `/v1/projects/${id}/imports` && response.ok());
   await drop(page, [{ name: 'private_after_encryption.png', type: 'image/png', bytes: privateBytes }], 600, 400);
-  await until('encrypted upload landed', () => page.locator('body').innerText(), (text) => text.includes('private_after_encryption') && !text.includes('Sending'), 45000);
+  await imported;
+  await until('encrypted upload landed', () => page.locator('body').innerText(), (text) => text.includes('private_after_encryption'), 45000);
   check('private_upload_uses_project_route', fileWrites.length > 0 && fileWrites.every((write) => write.path.startsWith('/v1/project-files/') && write.project === id));
   const stored = await page.evaluate(() => JSON.stringify(Object.fromEntries(Object.keys(localStorage).map((key) => [key, localStorage.getItem(key)]))));
   check('no_private_browser_persistence', !stored.includes(recovery) && !stored.includes('synthetic browser passphrase') && !stored.includes('private_vault_picture') && !stored.includes('private_after_encryption'));
