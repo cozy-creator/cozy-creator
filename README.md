@@ -93,7 +93,14 @@ The format and every command: [PROJECT-YAML.md](crates/calcifer/docs/PROJECT-YAM
 
 ## Remove cozy
 
-End your rentals first (`cozy machine ls`, `cozy machine end <name>`). Then:
+End your rentals first (`cozy machine ls`, `cozy machine end <name>`).
+If you enabled local development services, stop them first:
+
+```sh
+systemctl --user disable --now cozy-dev-local cozy-dev-web
+```
+
+Then remove Cozy:
 
 Linux:
 
