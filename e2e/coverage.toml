@@ -190,7 +190,8 @@ test = "pr: run play, its link serves the output, then expires"
 "logout" = "pr: signed out, logout says so"
 "whoami" = "pr: signed out, whoami says so"
 "completion" = "pr: completion, each shell script loads and completes the visible verbs"
-"machine rent --provider" = "pending: dev builds only (cargo feature `dev`), never in a release; release-gate/suites/hub rents cpu once per provider with a dev-build cozy, ended and checked gone; the Hub decides who may"
+"machine rent --provider" = "pending: dev-only (`dev = true`, crates/cli/DEV.md); release-gate/suites/hub rents cpu once per provider where the config has it, ended and checked gone"
+"run --no-memo" = "pending: dev-only (`dev = true`, crates/cli/DEV.md); the bench suite's same-seed pairs"
 "machine rent --image-digest" = "pending: release tier, a Hub admin's gated worker-image bake; waits for the CI key"
 
 [open]

@@ -16,10 +16,6 @@ mimalloc.workspace = true
 platform = { workspace = true, features = ["seams"] }
 tensord.workspace = true
 
-[features]
-# Dev builds only: the hidden `cozy machine rent --provider`. Never in a release.
-dev = ["cli/dev"]
-
 [lints]
 workspace = true
 

@@ -182,6 +182,7 @@ fn spec_of(mut spec: v1::RunSpec) -> Result<(crate::runs::Spec, Option<v1::HubAc
         attention_kernel: spec.attention_kernel,
         gpus: spec.gpus,
         lane: spec.lane,
+        no_memo: spec.no_memo,
         hub: None,
         tensorfs,
         providers: providers
