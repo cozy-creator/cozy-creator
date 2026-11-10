@@ -182,6 +182,7 @@ pub(crate) fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
         .route_layer(axum::middleware::from_fn(history::record))
         // Outside the history's: a write answered again is no edit of its own.
         .route_layer(axum::middleware::from_fn_with_state(api.clone(), keyed::answered))
+        .route_layer(axum::middleware::from_fn_with_state(api.clone(), vault::privacy))
         .route("/v1/projects/{id}/vault", get(vault::read).post(vault::write))
 }
 

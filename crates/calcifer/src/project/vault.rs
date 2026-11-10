@@ -1,5 +1,5 @@
 //! Optional local encrypted project sessions. A registered path never becomes a plaintext fallback mount.
-use std::{collections::{BTreeMap, BTreeSet}, fs, io::Read as _, path::{Path as FsPath, PathBuf}, sync::{Arc, LazyLock, Mutex}, time::{Duration, Instant}};
+use std::{collections::{BTreeMap, BTreeSet}, fs, io::Read as _, path::{Path as FsPath, PathBuf}, sync::{Arc, LazyLock, Mutex, atomic::{AtomicBool, Ordering}}, time::{Duration, Instant}};
 use axum::{body::Bytes, extract::{Path, State, rejection::BytesRejection}, http::{HeaderValue, header}, response::{IntoResponse as _, Response}};
 use api::{calcifer::project::{VaultAsk, VaultChanged, VaultStatus}, error::{Error, Kind}};
 use project_mount::{MountOptions, Mounted, Provider};
@@ -25,6 +25,7 @@ struct Session {
     active: Instant,
     began_ms: i64,
     closing: bool,
+    readable: Arc<AtomicBool>,
 }
 
 fn error(code: &'static str, why: impl std::fmt::Display) -> Error { Error::new(Kind::Unavailable, code, why.to_string()) }
@@ -71,7 +72,7 @@ fn locked(root: &FsPath) -> Error {
         .next(format!("cozy project -p {} unlock", root.display()))
 }
 
-fn location(api: &Api, named: &str) -> Result<PathBuf, Error> {
+pub(super) fn location(api: &Api, named: &str) -> Result<PathBuf, Error> {
     if api::target::written_as_path(named) {
         let path = FsPath::new(named);
         if !path.is_absolute() { return Err(Error::new(Kind::Usage, "project_path", "a project path must be absolute")); }
@@ -122,14 +123,14 @@ fn new_passphrase(ask: &mut VaultAsk) -> Result<SecretString, Error> {
 fn mount(api: &Api, root: &FsPath, keybag: Keybag, secret: ProjectSecret, ask: &VaultAsk) -> Result<(), Error> {
     let runtime = api.machines.hubs.home().calcifer().join("vaults").join(&keybag.info().project_id);
     fs::create_dir_all(&runtime).map_err(io)?;
-    platform::durable::set_mode(&runtime, 0o700).map_err(io)?;
+    platform::durable::set_mode(&runtime, 0o700).map_err(provider)?;
     let view = project_mount::view_path(&runtime).map_err(provider)?;
     let engine = Provider::discover(&api.machines.hubs.home().tools()).map_err(provider)?;
     let mounted = secret.with_bytes(|bytes| engine.mount(&root.join(BACKING), &view, bytes, MountOptions { idle_timeout: None, read_only: false })).map_err(provider)?;
     ROOTS.lock().expect("vault roots").insert(mounted.view().to_owned(), root.to_owned());
     TRUSTED_KEYS.lock().expect("trusted vault recipients").insert(root.to_owned(), keybag.clone());
     let now = Instant::now();
-    let session = Session { root: root.to_owned(), mount: mounted, secret, keybag, idle: ask.idle_timeout_s.unwrap_or(DEFAULT_IDLE), maximum: ask.max_duration_s.unwrap_or(0), began: now, active: now, began_ms: super::now_ms(), closing: false };
+    let session = Session { root: root.to_owned(), mount: mounted, secret, keybag, idle: ask.idle_timeout_s.unwrap_or(DEFAULT_IDLE), maximum: ask.max_duration_s.unwrap_or(0), began: now, active: now, began_ms: super::now_ms(), closing: false, readable: Arc::new(AtomicBool::new(true)) };
     SESSIONS.lock().expect("vault sessions").insert(root.to_owned(), Arc::new(Mutex::new(session)));
     Ok(())
 }
@@ -154,6 +155,7 @@ fn close(api: &Api, root: &FsPath) -> Result<(), Error> {
     if let Some(session) = held(root) {
         let mut session = session.lock().expect("vault session");
         session.closing = true;
+        session.readable.store(false, Ordering::Release);
         // Busy remains a truthful locking state. Never report locked while a readable mount survives.
         if session.mount.is_mounted().map_err(provider)? { session.mount.try_unmount().map_err(provider)?; }
         drop(session);
@@ -264,13 +266,13 @@ fn convert(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret,
     let staged = parent.join(format!(".cozy-vault-stage-{suffix}"));
     let saved = parent.join(format!(".cozy-project-source-{suffix}"));
     fs::create_dir(&staged).map_err(io)?;
-    platform::durable::set_mode(&staged, 0o700).map_err(io)?;
+    platform::durable::set_mode(&staged, 0o700).map_err(provider)?;
     let engine = Provider::discover(&api.machines.hubs.home().tools()).map_err(provider)?;
     secret.with_bytes(|bytes| engine.create(&staged.join(BACKING), bytes)).map_err(provider)?;
     keybag.save(&staged.join(KEYBAG_FILE)).map_err(key)?;
     let runtime = api.machines.hubs.home().calcifer().join("vaults").join(format!("stage-{suffix}"));
     fs::create_dir_all(&runtime).map_err(io)?;
-    platform::durable::set_mode(&runtime, 0o700).map_err(io)?;
+    platform::durable::set_mode(&runtime, 0o700).map_err(provider)?;
     let view = project_mount::view_path(&runtime).map_err(provider)?;
     let mut target = secret.with_bytes(|bytes| engine.mount(&staged.join(BACKING), &view, bytes, MountOptions { idle_timeout: None, read_only: false })).map_err(provider)?;
     copy_tree(&source, target.view())?;
@@ -295,7 +297,7 @@ fn copy_tree(source: &FsPath, target: &FsPath) -> Result<(), Error> {
             if entry.file_name() == "project.db-wal" || entry.file_name() == "project.db-shm" { continue; }
             if entry.file_name() == "project.db" {
                 let conn = rusqlite::Connection::open_with_flags(&from, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| error("vault_database", e))?;
-                conn.backup(rusqlite::DatabaseName::Main, &to, None).map_err(|e| error("vault_database", e))?;
+                conn.backup(rusqlite::MAIN_DB, &to, rusqlite::backup::NO_PROGRESS).map_err(|e| error("vault_database", e))?;
                 let copied = rusqlite::Connection::open_with_flags(&to, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| error("vault_database", e))?;
                 let okay: String = copied.query_row("PRAGMA quick_check", [], |row| row.get(0)).map_err(|e| error("vault_database", e))?;
                 if okay != "ok" { return Err(error("vault_database", "the copied project database did not verify")); }
@@ -369,4 +371,27 @@ pub(crate) fn rekey_payload(context: &str, value: &[u8], old: &ProjectSecret, ne
     let mut out = PAYLOAD_PREFIX.to_vec();
     out.extend(serde_json::to_vec(&payload).map_err(|e| error("vault_journal", e))?);
     Ok(out)
+}
+
+
+/// Private responses never enter browser caches; an existing stream stops yielding new chunks once lock begins.
+pub(super) async fn privacy(
+    State(api): State<Arc<Api>>,
+    Path(params): Path<std::collections::HashMap<String, String>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    use futures_util::StreamExt as _;
+    let root = params.get("id").and_then(|id| location(&api, id).ok()).filter(|root| encrypted(root));
+    let Some(root) = root else { return next.run(request).await };
+    if let Err(error) = view(&root) { return private(Refusal(error).into_response()); }
+    let token = held(&root).map(|session| session.lock().expect("vault session").readable.clone());
+    if request.method() != axum::http::Method::GET && request.method() != axum::http::Method::HEAD {
+        if let Some(session) = held(&root) { let mut session = session.lock().expect("vault session"); if !session.closing && !expired(&session) { session.active = Instant::now(); } }
+    }
+    let response = private(next.run(request).await);
+    let Some(token) = token else { return response };
+    let (parts, body) = response.into_parts();
+    let body = body.into_data_stream().take_while(move |_| futures_util::future::ready(token.load(Ordering::Acquire)));
+    Response::from_parts(parts, axum::body::Body::from_stream(body))
 }
