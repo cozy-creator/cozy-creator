@@ -10,7 +10,7 @@ import sys
 from collections.abc import Iterator, Mapping, Sequence
 from typing import Protocol, TypedDict
 
-import opentimelineio as otio  # type: ignore[import-untyped]  # no stubs or py.typed: typed below by what this reads
+import opentimelineio as otio  # no py.typed: what this reads is typed below
 
 
 class RationalTime(Protocol):
