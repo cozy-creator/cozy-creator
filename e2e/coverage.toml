@@ -32,7 +32,7 @@ test = "pr: signed out, whoami says so (release: signed in as fidika, its balanc
 test = "pr: entrypoints, explicit creation in the current directory or a named directory"
 
 [status]
-test = "pr: entrypoints, existing current project with project-scoped runs and machines"
+test = "pr: entrypoints, current-project health counts and warnings with an expanded full record"
 
 [update]
 test = "pr: update, the candidate to the newest release"
@@ -175,10 +175,8 @@ test = "pr: run play, its link serves the output, then expires"
 
 # Hidden (`hide = true`, in no --help): probed in the binary; `coverage.py --source` finds any not listed here.
 [hidden]
-"--full" = "pr: entrypoints, full project diagnostics; run records and live view columns"
+"--full" = "pr: entrypoints, full project health; run records and live view columns"
 "--yes" = "pr: candidates (machine update -y) and entrypoint flag parsing"
-"login" = "manual: a person types the emailed code (release-gate/enroll-ci-key.sh)"
-"logout" = "pr: signed out, logout says so"
 "whoami" = "pr: signed out, whoami says so"
 "completion" = "pr: completion, each shell script loads and completes the visible verbs"
 "machine rent --provider" = "pending: dev-only (`dev = true`, crates/cli/DEV.md); release-gate/suites/hub rents cpu once per provider where the config has it, ended and checked gone"
@@ -187,10 +185,4 @@ test = "pr: run play, its link serves the output, then expires"
 
 [open]
 test = "pr: web-serves (e2e/cli/web.sh), every OS: its link, redeemed in Chrome; each refusal; Place and a kill -9 in the page"
-"--no-open" = "pr: web-serves; an existing project's session from its working directory and an older format; an uninitialized directory is refused. Opening a browser: manual, a person on a desktop"
-
-["push"]
-test = "manual: release-gate/sessions/project-remote.sh (pod-session, signed in): nothing moves twice, a killed push goes on"
-
-["pull"]
-test = "manual: release-gate/sessions/project-remote.sh: a clone of yaml and lock, signed in as a second home: the same edit.mp4"
+"--print-url" = "pr: web-serves; an existing project's session from its working directory and an older format; an uninitialized directory is refused. Opening a browser: manual, a person on a desktop"

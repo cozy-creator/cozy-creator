@@ -11,11 +11,11 @@ import time
 
 
 PUBLIC = {
-    "new", "open", "run", "status", "machine", "model", "package", "push", "pull", "update", "doctor", "completion", "help",
+    "new", "open", "run", "status", "machine", "model", "package", "update", "doctor", "completion", "login", "logout", "help",
 }
-HIDDEN = {"login", "logout", "whoami"}
+HIDDEN = {"whoami"}
 REMOVED = {
-    "org", "project", "import", "export", "add", "set", "delete", "render", "approve", "unapprove", "cancel",
+    "push", "pull", "org", "project", "import", "export", "add", "set", "delete", "render", "approve", "unapprove", "cancel",
     "wait", "history", "undo", "redo", "rename", "reclaim",
 }
 
@@ -45,17 +45,16 @@ def main() -> None:
         return result
 
     try:
-        bare = run("bare requires project", [], code=2)
-        outside_status = run("status requires project", ["status"], code=2)
-        assert bare.stdout == outside_status.stdout and bare.stderr == outside_status.stderr, "bare cozy differs from status"
+        bare = run("bare help", []).stdout
         help_text = run("explicit help", ["--help"]).stdout
+        assert bare.strip() == help_text.strip(), "bare cozy differs from --help"
         section = help_text.split("Commands:\n", 1)[1].split("\nOptions:", 1)[0]
         commands = set(re.findall(r"^  ([a-z][a-z-]*)\s", section, re.MULTILINE))
         assert commands == PUBLIC, f"public commands: {sorted(commands)}"
         assert "Exit codes:" not in help_text, "the removed exit-code footer is still shown"
         assert "--full" not in help_text and "--yes" not in help_text, "advanced root flags are visible"
-        assert "next: cozy new my-project" in help_text
-        assert "next: cd my-project && cozy open" in help_text
+        assert 'next: cozy new "<directory>"' in help_text
+        assert "next: cozy open" in help_text
         assert "next: cozy run --help" in help_text
         run("hidden full flag", ["--full", "--help"])
         run("hidden yes flag", ["-y", "--help"])
@@ -72,17 +71,19 @@ def main() -> None:
         created = json.loads(run("new directory", ["--json", "new", str(project)]).stdout)
         assert Path(created["path"]).resolve() == project
         assert (project / "project.db").is_file(), "new did not create project.db"
-        refused = json.loads(run("new existing project", ["--json", "new"], project, code=1).stdout)
-        assert refused["error"]["code"] == "project_exists", "new did not refuse an existing project"
+        assert created["created"] is True, "new did not report creating the project"
+        again = json.loads(run("new existing project", ["--json", "new"], project).stdout)
+        assert again["created"] is False and again["id"] == created["id"], "repeating new replaced project identity"
         existing_directory = case / "existing directory"
         existing_directory.mkdir(exist_ok=True)
         initialized = json.loads(run("new current directory", ["--json", "new"], existing_directory).stdout)
         assert Path(initialized["path"]).resolve() == existing_directory
+        assert initialized["created"] is True
         environment["COZY_PROJECT"] = str(project)
 
         for name, words in (
             ("status requires project", ["--json", "status"]),
-            ("open requires project", ["--json", "open", "--no-open"]),
+            ("open requires project", ["--json", "open", "--print-url"]),
             ("run requires project", ["--json", "run", "example/generate", "prompt=test"]),
             ("run list requires project", ["--json", "run", "ls"]),
         ):
@@ -93,20 +94,23 @@ def main() -> None:
         assert not (empty / "project.db").exists(), "a read or refused run initialized a project"
 
         status = json.loads(run("project status", ["--json", "status"], project).stdout)
-        assert status["project"]["id"] == created["id"]
         assert Path(status["project"]["path"]).resolve() == project
-        assert status["runs"] == [] and status["machines"] == [], "new project inherited another project's activity"
-        bare_status = json.loads(run("bare project status", ["--json"], project).stdout)
-        assert bare_status == status, "bare cozy JSON differs from status"
-        assert "rentals" not in status, "project status contains account-wide rental totals"
-        full = json.loads(run("full project diagnostics", ["--json", "--full", "status"], project).stdout)
-        assert full["project"]["id"] == created["id"] and "calcifer" in full
+        assert status["health"] == "ready" and status["warnings"] == []
+        for field in ("unrendered_assets", "outdated_assets", "missing_files", "warnings"):
+            assert status["counts"][field] == 0, f"new project health count {field} is nonzero"
+        assert not ({"runs", "machines", "rentals"} & status.keys()), "health status contains activity or account totals"
+        assert run("bare help in project", [], project).stdout.strip() == help_text.strip()
+        plain = run("default health output", ["status"], project).stdout
+        assert not plain.lstrip().startswith("{"), "default health output is JSON"
+        assert "health" in plain and "ready" in plain
+        full = json.loads(run("full project health", ["--json", "--full", "status"], project).stdout)
+        assert full["project"]["id"] == created["id"] and full["project"]["assets"] == []
         child = project / "subdirectory"
         child.mkdir(exist_ok=True)
         nested = json.loads(run("containing project", ["--json", "status"], child).stdout)
-        assert nested["project"]["id"] == created["id"]
+        assert Path(nested["project"]["path"]).resolve() == project
         run("removed run selector", ["run", "-p", str(project), "example/generate", "prompt=test"], project, code=2)
-        run("removed open selector", ["open", str(project), "--no-open"], project, code=2)
+        run("removed open selector", ["open", str(project), "--print-url"], project, code=2)
         print(f"entrypoints: {len(records)} checks passed")
     finally:
         receipt = json.dumps(records, indent=2) + "\n"
