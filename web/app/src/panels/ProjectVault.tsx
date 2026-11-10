@@ -1,5 +1,5 @@
 import { queryOptions, useQuery, useQueryClient } from "@tanstack/react-query"
-import { type FormEvent, useEffect, useState } from "react"
+import { type FormEvent, useEffect, useRef, useState } from "react"
 import QRCode from "react-qr-code"
 import type { Client, VaultAsk } from "../api/client"
 import { useConnection } from "../app/Connection"
@@ -77,6 +77,8 @@ function VaultBody({ id }: { id: string }) {
   const [idle, setIdle] = useState("900")
   const [maximum, setMaximum] = useState("0")
   const [output, setOutput] = useState("")
+  const mounted = useRef(false)
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
 
   useEffect(() => {
     if (status?.encrypted && status.state !== "unlocked") {
@@ -88,12 +90,13 @@ function VaultBody({ id }: { id: string }) {
     setPassphrase(""); setConfirmation(""); setRecovery("")
     const epoch = bridge.projectEpoch(id)
     const answer = await client.vaultChange(id, { action, ...fields })
+    if (!mounted.current) { delete answer.recovery_secret; return answer.vault }
     if (bridge.projectEpoch(id) !== epoch) {
-      // A full rekey closes its old mount itself. Recheck its replacement before
-      // showing the new recovery secret; an unrelated lock suppresses late responses.
+      // Conversion/rekey can briefly close their own view. Recheck that completed
+      // project before showing its secret; an unrelated lock suppresses late replies.
       const completed = bridge.projectEpoch(id)
       const current = await client.vault(id)
-      if (action !== "rotate" || current.state !== "unlocked" || bridge.projectEpoch(id) !== completed) {
+      if (!mounted.current || !["encrypt", "rotate"].includes(action) || !current.encrypted || current.state !== "unlocked" || bridge.projectEpoch(id) !== completed) {
         delete answer.recovery_secret
         await queries.invalidateQueries({ queryKey: vaultKey(id) })
         return current
