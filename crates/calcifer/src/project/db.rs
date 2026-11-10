@@ -495,53 +495,36 @@ pub(crate) fn commit(conn: &mut Connection, at: &Path, before: &Stored, after: &
 
 fn write(tx: &Transaction, before: &Stored, after: &Stored, extra: &Extra) -> rusqlite::Result<()> {
     let seq = before.seq + 1;
-    if before.written.head != after.written.head {
-        tx.execute("DELETE FROM head", [])?;
-        for (ord, (key, value)) in after.written.head.iter().enumerate() {
-            tx.execute("INSERT INTO head (key, ord, value) VALUES (?1, ?2, ?3)", params![key, ord as i64, json(value)])?;
+    if !Arc::ptr_eq(&before.written, &after.written) {
+        written_rows(tx, &before.written, &after.written)?;
+    }
+    if !Arc::ptr_eq(&before.canvas, &after.canvas) {
+        for key in before.canvas.keys().filter(|key| !after.canvas.contains_key(*key)) {
+            tx.execute("DELETE FROM canvas WHERE key = ?1", [key])?;
+        }
+        for (key, row) in after.canvas.iter().filter(|(key, row)| before.canvas.get(*key) != Some(row)) {
+            tx.execute("INSERT OR REPLACE INTO canvas (key, name, x, y, w, seq, by) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)", params![key, row.name, row.card.x, row.card.y, row.card.w, row.seq as i64, row.by])?;
         }
     }
-    let was: BTreeMap<String, (usize, &Boxed)> = before.written.boxes.iter().enumerate().map(|(ord, held)| (name_key(&held.name), (ord, held))).collect();
-    let now: BTreeMap<String, (usize, &Boxed)> = after.written.boxes.iter().enumerate().map(|(ord, held)| (name_key(&held.name), (ord, held))).collect();
-    for key in was.keys().filter(|key| !now.contains_key(*key)) {
-        tx.execute("DELETE FROM fields WHERE box = ?1", [key])?;
-        tx.execute("DELETE FROM boxes WHERE key = ?1", [key])?;
+    if !Arc::ptr_eq(&before.lock, &after.lock) {
+        lock_written(tx, &before.lock, &after.lock)?;
     }
-    for (key, (ord, held)) in &now {
-        match was.get(key) {
-            Some((was_ord, was_held)) if was_held == held => {
-                if was_ord != ord {
-                    tx.execute("UPDATE boxes SET ord = ?2 WHERE key = ?1", params![key, *ord as i64])?;
-                }
-            }
-            _ => {
-                tx.execute("INSERT OR REPLACE INTO boxes (key, name, ord) VALUES (?1, ?2, ?3)", params![key, held.name, *ord as i64])?;
-                tx.execute("DELETE FROM fields WHERE box = ?1", [key])?;
-                for (n, (field, value)) in held.fields.iter().enumerate() {
-                    tx.execute("INSERT INTO fields (box, ord, field, value) VALUES (?1, ?2, ?3, ?4)", params![key, n as i64, field, json(value)])?;
-                }
+    if !Arc::ptr_eq(&before.walk, &after.walk) {
+        let walk = json(&*after.walk);
+        if json(&*before.walk) != walk {
+            match after.walk.is_empty() && after.walk.bound.is_none() {
+                true => drop(tx.execute("DELETE FROM walk", [])?),
+                false => drop(tx.execute("INSERT OR REPLACE INTO walk (id, record) VALUES (1, ?1)", [walk])?),
             }
         }
     }
-    for key in before.canvas.keys().filter(|key| !after.canvas.contains_key(*key)) {
-        tx.execute("DELETE FROM canvas WHERE key = ?1", [key])?;
-    }
-    for (key, row) in after.canvas.iter().filter(|(key, row)| before.canvas.get(*key) != Some(row)) {
-        tx.execute("INSERT OR REPLACE INTO canvas (key, name, x, y, w, seq, by) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)", params![key, row.name, row.card.x, row.card.y, row.card.w, row.seq as i64, row.by])?;
-    }
-    lock_written(tx, &before.lock, &after.lock)?;
-    let walk = json(&*after.walk);
-    if json(&*before.walk) != walk {
-        match after.walk.is_empty() && after.walk.bound.is_none() {
-            true => drop(tx.execute("DELETE FROM walk", [])?),
-            false => drop(tx.execute("INSERT OR REPLACE INTO walk (id, record) VALUES (1, ?1)", [walk])?),
+    if !Arc::ptr_eq(&before.measured, &after.measured) {
+        for sha256 in before.measured.keys().filter(|sha256| !after.measured.contains_key(*sha256)) {
+            tx.execute("DELETE FROM measured WHERE sha256 = ?1", [sha256])?;
         }
-    }
-    for sha256 in before.measured.keys().filter(|sha256| !after.measured.contains_key(*sha256)) {
-        tx.execute("DELETE FROM measured WHERE sha256 = ?1", [sha256])?;
-    }
-    for (sha256, held) in after.measured.iter().filter(|(sha256, held)| before.measured.get(*sha256) != Some(held)) {
-        tx.execute("INSERT OR REPLACE INTO measured (sha256, record) VALUES (?1, ?2)", params![sha256, json(held)])?;
+        for (sha256, held) in after.measured.iter().filter(|(sha256, held)| before.measured.get(*sha256) != Some(held)) {
+            tx.execute("INSERT OR REPLACE INTO measured (sha256, record) VALUES (?1, ?2)", params![sha256, json(held)])?;
+        }
     }
     if extra.asked_cleared {
         tx.execute("DELETE FROM asked", [])?;
@@ -565,6 +548,55 @@ fn write(tx: &Transaction, before: &Stored, after: &Stored, extra: &Extra) -> ru
         let now = super::now_ms();
         tx.execute("DELETE FROM request_keys WHERE at_ms < ?1", [now - KEY_KEPT_MS])?;
         tx.execute("INSERT OR REPLACE INTO request_keys (key, digest, at_ms) VALUES (?1, ?2, ?3)", params![key, digest, now])?;
+    }
+    Ok(())
+}
+
+/// Project the selected box for each normalized name, with each side's own ordinal.
+fn written_rows(tx: &Transaction, before: &Written, after: &Written) -> rusqlite::Result<()> {
+    if before.head != after.head {
+        tx.execute("DELETE FROM head", [])?;
+        for (ord, (key, value)) in after.head.iter().enumerate() {
+            tx.execute("INSERT INTO head (key, ord, value) VALUES (?1, ?2, ?3)", params![key, ord as i64, json(value)])?;
+        }
+    }
+    let common = before.boxes.iter().zip(&after.boxes)
+        .take_while(|(old, new)| old.id == new.id && old.name == new.name)
+        .count();
+    let mut rows = BTreeMap::new();
+    for (ord, (old, new)) in before.boxes.iter().zip(&after.boxes).take(common).enumerate() {
+        rows.insert(name_key(&old.name), (Some((ord, old)), Some((ord, new))));
+    }
+    // Each side retains its last occurrence independently, including when a suffix
+    // collides with a shared-prefix name after normalization.
+    for (ord, held) in before.boxes.iter().enumerate().skip(common) {
+        rows.entry(name_key(&held.name)).or_default().0 = Some((ord, held));
+    }
+    for (ord, held) in after.boxes.iter().enumerate().skip(common) {
+        rows.entry(name_key(&held.name)).or_default().1 = Some((ord, held));
+    }
+    for (key, (old, new)) in &rows {
+        if old.is_some() && new.is_none() {
+            tx.execute("DELETE FROM fields WHERE box = ?1", [key])?;
+            tx.execute("DELETE FROM boxes WHERE key = ?1", [key])?;
+        }
+    }
+    for (key, (old, new)) in &rows {
+        let Some((ord, held)) = new else { continue };
+        match old {
+            Some((was_ord, was_held)) if was_held == held => {
+                if was_ord != ord {
+                    tx.execute("UPDATE boxes SET ord = ?2 WHERE key = ?1", params![key, *ord as i64])?;
+                }
+            }
+            _ => {
+                tx.execute("INSERT OR REPLACE INTO boxes (key, name, ord) VALUES (?1, ?2, ?3)", params![key, held.name, *ord as i64])?;
+                tx.execute("DELETE FROM fields WHERE box = ?1", [key])?;
+                for (n, (field, value)) in held.fields.iter().enumerate() {
+                    tx.execute("INSERT INTO fields (box, ord, field, value) VALUES (?1, ?2, ?3, ?4)", params![key, n as i64, field, json(value)])?;
+                }
+            }
+        }
     }
     Ok(())
 }
