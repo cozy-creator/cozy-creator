@@ -83,7 +83,7 @@ while IFS=$'\t' read -r name group cap warm seed target args before _ _ _ comfy 
   read -r held want_bytes < <(podsh "sh /var/tmp/bench-pod.sh check" 2>/dev/null)
   [ "${held:-0}" -ge "${want_bytes:-0}" ] || expect "$name-host" FAIL "the host hog shrank to ${held:-?} of ${want_bytes:-?} bytes: this cell ran on more RAM"
 done < "$HERE/suites/bench/cells.tsv"
-ONLY=$ONLY_ASKED
 [ "$CAPNOW" = off ] || podsh "sh /var/tmp/bench-pod.sh vram off" > /dev/null 2>&1
 cell calibrate-after ./bench-calibrate/measure seed:="$R"
+ONLY=$ONLY_ASKED
 podsh "cat /var/tmp/memavail.log" > memavail.log 2>/dev/null  # the hog stays: comfyui.sh runs under it, and the pod ends after

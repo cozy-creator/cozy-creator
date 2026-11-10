@@ -1,7 +1,7 @@
 # Suite bench's ComfyUI pass (bench.sh --comfyui; gate.sh sources it after cells.sh): ComfyUI at the benchmarks runner's pins
 # on this pod, under the same host RAM, for the cells whose `comfyui` column names a benchmarks cell, with their prompts and
 # seeds. Its rows go to comfyui-rows.json, which bench.py judges beside the cells and puts in the next baseline.
-BENCHMARKS=https://github.com/cozy-creator/benchmarks.git BENCHMARKS_AT=12f5238fc7e98005216e486ae6c0368edb6f1bc8
+BENCHMARKS=https://github.com/cozy-creator/benchmarks.git BENCHMARKS_AT=cea2791fefd700519b336383c4349b2eb80d45fa
 COMFY_PY=(nice -n 19 uv run -q --no-project --with numpy python -I "$HERE/suites/bench/comfy.py")
 "${COMFY_PY[@]}" jobs "$OUT" > comfy-jobs.json 2> comfy-jobs.err || { expect comfyui-jobs FAIL "$(tail -c 300 comfy-jobs.err)"; return 0; }
 if [ "$(jq length comfy-jobs.json)" = 0 ]; then log "comfyui: no completed cell of this group names a ComfyUI cell"; return 0; fi

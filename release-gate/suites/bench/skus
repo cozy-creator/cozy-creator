@@ -3,4 +3,6 @@
 # 30.46 GiB is kesshouban's host, where the varena matrix was proven; a two-GPU pod gets it per GPU.
 rtx-4090x1 30.46 400 300
 rtx-4090x2 60.92 400 90
-# Optional, each with its own stored numbers once run: rtx-5090x1 (sm120: FP4 kernels), a 48 GB card (hunyuan-image-3).
+# HunyuanImage 3.0 on a 48 GB card, at a workstation's RAM (a pod with less runs on its own, said in the table).
+rtx-a6000x1 125 250 150
+# Optional, each with its own stored numbers once run: rtx-5090x1 (sm120: FP4 kernels).
