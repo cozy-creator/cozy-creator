@@ -72,6 +72,7 @@ done
 }
 
 projectdb() {
+db_crdt
 db_first_open
 db_concurrent
 db_crash
@@ -81,7 +82,7 @@ db_latency
 }
 
 db_first_open() {
-step "project.db: a folder of the files from before imports once on first open, its files deleted, its history going on"
+step "project.db: a folder of the files from before imports once on first open, its original bytes archived, its history going on"
 local F=$OUT/db-legacy a b answer
 mkdir -p "$F/files"
 ffmpeg -v error -y -f lavfi -i "color=c=teal:size=64x64" -frames:v 1 "$OUT/db-a.png"
@@ -123,9 +124,9 @@ cat > "$F/.history.json" <<'JSON'
 JSON
 printf '{}' > "$F/.measured.json"; printf '{}' > "$F/.keys.json"
 cozy project -p "$F" status > "$OUT/db-legacy.txt" 2>&1 || check "first open: status: $(tail -c 300 "$OUT/db-legacy.txt")"
-local left; left=$(cd "$F" && ls -A | grep -vxE 'files|project\.db(-wal|-shm)?' | tr '\n' ' ' || true)
+local left; left=$(cd "$F" && ls -A | grep -vxE 'files|\.cozy-legacy-v1|project\.db(-wal|-shm)?' | tr '\n' ' ' || true)
 echo "first open: the folder now holds $(cd "$F" && ls -A | tr '\n' ' ')"
-[ -f "$F/project.db" ] && [ -z "$left" ] || check "first open: project.db made and the files gone, but it holds: ${left:-no project.db}"
+[ -f "$F/project.db" ] && [ -f "$F/.cozy-legacy-v1/project.yaml" ] && [ -f "$F/.cozy-legacy-v1/project.lock" ] && [ -z "$left" ] || check "first open: project.db made and the files gone, but it holds: ${left:-no project.db}"
 J '[.versions[].number] == [1, 2] and .discarded == [3]' <<< "$(held "$F" shot)" || check "first open: shot's takes: $(held "$F" shot | jq -c '{v: [.versions[].number], d: .discarded}')"
 [ "$(sql "$F" "SELECT name, x, y, w FROM canvas ORDER BY name" | tr -d '\n')" = '["art", 10.0, 20.0, null]["shot", 400.0, 20.0, 360.0]' ] || check "first open: the rows: $(sql "$F" 'SELECT name, x, y, w FROM canvas')"
 cozy --json project -p "$F" history > "$OUT/db-legacy-history.json" || check "first open: history"
@@ -338,4 +339,57 @@ if "join" in said:
     said["join_last_100_p50_ms"] = round(statistics.median(joins[-100:]), 1)
 print(json.dumps(said))
 PY
+}
+
+# The persisted representation is an actual native CRDT, not a serialized JSON facade. Every
+# project operation here goes through cozy; the native reader only inspects the resulting bytes.
+db_crdt() {
+step "project CRDT: canonical state, stable identities, v1 migration and native replica convergence"
+local P=$OUT/crdt-project V=$OUT/crdt-v1 before after source
+cozy project new "$P" > "$OUT/crdt-new.txt" 2>&1 || { check "CRDT: project new: $(tail -c 300 "$OUT/crdt-new.txt")"; return; }
+[ "$(sql1 "$P" 'PRAGMA user_version')" = 2 ] || { check "CRDT: project.db is not schema 2"; return; }
+[ "$(sql1 "$P" 'SELECT count(*) FROM crdt_document WHERE format = 1 AND length(snapshot) > 0')" = 1 ] || check "CRDT: no native snapshot"
+tiny "$OUT/crdt-a.png"; cp "$OUT/crdt-a.png" "$OUT/crdt-b.png"; printf 'second' >> "$OUT/crdt-b.png"
+cozy project -p "$P" import "$OUT/crdt-a.png" art > "$OUT/crdt-import.txt" 2>&1 || check "CRDT: import: $(tail -c 300 "$OUT/crdt-import.txt")"
+cozy project -p "$P" import "$OUT/crdt-b.png" --into art > "$OUT/crdt-version.txt" 2>&1 || check "CRDT: version: $(tail -c 300 "$OUT/crdt-version.txt")"
+cozy project -p "$P" set kyogre 'instructions=Before the rename.' > "$OUT/crdt-set.txt" 2>&1 || check "CRDT: set: $(tail -c 300 "$OUT/crdt-set.txt")"
+python3 - "$P/project.db" "$OUT/crdt-before.am" <<'PY'
+import sqlite3,sys
+with sqlite3.connect(f'file:{sys.argv[1]}?mode=ro',uri=True) as db:
+    open(sys.argv[2],'wb').write(db.execute('SELECT snapshot FROM crdt_document WHERE id=1').fetchone()[0])
+PY
+cozy project -p "$P" rename kyogre whale > "$OUT/crdt-rename.txt" 2>&1 || check "CRDT: rename: $(tail -c 300 "$OUT/crdt-rename.txt")"
+cozy project -p "$P" export > "$OUT/crdt-export.yaml" || check "CRDT: export"
+before=$(sql1 "$P" 'SELECT heads FROM crdt_document WHERE id=1')
+cozy project -p "$P" import "$OUT/crdt-export.yaml" > "$OUT/crdt-roundtrip.txt" 2>&1 || check "CRDT: unchanged import"
+after=$(sql1 "$P" 'SELECT heads FROM crdt_document WHERE id=1')
+[ "$before" = "$after" ] || check "CRDT: unchanged YAML export/import rewrote causal history"
+python3 - "$P/project.db" "$OUT/crdt-renamed.am" "$V" <<'PY'
+import os,sqlite3,sys
+with sqlite3.connect(f'file:{sys.argv[1]}?mode=ro',uri=True) as db:
+    open(sys.argv[2],'wb').write(db.execute('SELECT snapshot FROM crdt_document WHERE id=1').fetchone()[0])
+    os.makedirs(sys.argv[3],exist_ok=True)
+    with sqlite3.connect(os.path.join(sys.argv[3],'project.db')) as old:
+        db.backup(old)
+        old.executescript('DROP TABLE crdt_document; DROP TABLE crdt_changes; PRAGMA user_version=1;')
+PY
+# Deliberately form a v1 fixture from this real project's materialized SQL rows, without modifying
+# its active source. Opening the copy invokes the actual migration and preserves a v1 recovery DB.
+cozy project -p "$V" export > "$OUT/crdt-v1-export.yaml" 2> "$OUT/crdt-v1.err" || check "CRDT: v1 migration: $(tail -c 300 "$OUT/crdt-v1.err")"
+cmp -s "$OUT/crdt-export.yaml" "$OUT/crdt-v1-export.yaml" || check "CRDT: v1 migration changed logical fields"
+{ [ -f "$V/project.db.v1" ] && [ "$(sql1 "$V" 'PRAGMA user_version')" = 2 ]; } || check "CRDT: v1 backup/schema missing"
+[ "$(sql1 "$P" 'SELECT count(*) FROM crdt_changes')" -ge 4 ] || check "CRDT: original change journal absent"
+# Relational graph/history rows are now projections: damaging them must not become a logical
+# project edit when the next real CLI transaction commits.
+db_sql "$P" "UPDATE fields SET value = '"QUERY_CACHE_ONLY"' WHERE box = 'whale' AND field = 'instructions'; UPDATE ops SET words = 'QUERY_CACHE_ONLY';"
+cozy project -p "$P" set groudon 'description=A canonical-store check.' > "$OUT/crdt-cache-set.txt" 2>&1 || check "CRDT: write after projection damage"
+cozy project -p "$P" export > "$OUT/crdt-cache-export.yaml" || check "CRDT: read after projection damage"
+cozy --json project -p "$P" history > "$OUT/crdt-cache-history.json" || check "CRDT: history after projection damage"
+{ ! grep -q QUERY_CACHE_ONLY "$OUT/crdt-cache-export.yaml" && ! grep -q QUERY_CACHE_ONLY "$OUT/crdt-cache-history.json"; } || check "CRDT: a relational projection overrode canonical state/history"
+# Cargo consumes the same published native library as the product. This is a format/merge proof,
+# not another daemon or a substitute project storage implementation.
+CARGO_BUILD_JOBS=1 nice -n 19 cargo run --quiet --locked --manifest-path "$here/crdt/Cargo.toml" -- "$OUT/crdt-before.am" "$OUT/crdt-renamed.am" > "$OUT/crdt-native.json" 2> "$OUT/crdt-native.err" \
+  || check "CRDT: native format/replica proof: $(tail -c 400 "$OUT/crdt-native.err")"
+J '.passed and .native_replicas == 3 and .same_number_versions_preserved == 2 and (.prompt_alternatives == ["dawn","dusk","noon"])' "$OUT/crdt-native.json" \
+  || check "CRDT: native merge report: $(cat "$OUT/crdt-native.json")"
 }

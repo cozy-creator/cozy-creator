@@ -198,6 +198,11 @@ pub(crate) fn open(path: &Path) -> Result<Connection, Error> {
 
 /// The project's id and name, as `meta` keeps them (cl-819); none before it was given one.
 pub(crate) fn identity(conn: &Connection) -> Option<(String, String)> {
+    let current: Option<Vec<u8>> = conn.query_row("SELECT snapshot FROM crdt_document WHERE id = 1", [], |row| row.get(0)).optional().ok().flatten();
+    if let Some(bytes) = current {
+        return crdt::Document::load(&bytes, Path::new(conn.path().unwrap_or_default())).ok()?.identity();
+    }
+    // Only the first import of a v1 database reads identity from the relational store.
     let value = |key: &str| conn.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get::<_, String>(0)).optional().ok().flatten();
     Some((value("id")?, value("name").unwrap_or_default()))
 }
@@ -411,8 +416,10 @@ pub(crate) fn commit(conn: &mut Connection, at: &Path, before: &Stored, after: &
         None => read_document(&tx, at)?,
     };
     let old_heads = doc.doc.get_heads();
-    let identity = identity(&tx).or_else(|| doc.identity());
-    let ops = legacy_ops(&tx, at)?;
+    let identity = doc.identity();
+    let mut ops = doc.ops()?;
+    ops.retain(|row| !extra.ops_gone.contains(&row.id) && !extra.ops.iter().any(|next| next.id == row.id));
+    ops.extend(extra.ops.iter().cloned());
     let value = crdt::value(after, &ops, &doc.value, identity);
     doc.update(value)?;
     if doc.doc.get_heads() != old_heads {
