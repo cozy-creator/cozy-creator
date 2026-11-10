@@ -1251,7 +1251,7 @@ impl Publisher {
     /// Held shared through one environment build, so `reclaim` removes nothing from the cache
     /// between uv's own per-command holds either.
     pub(super) fn uv_cache_hold(&self) -> io::Result<File> {
-        let cache = self.uv_cache();
+        let cache = crate::private_io::cache_root(self.uv_cache(), "uv-cache")?;
         fs::create_dir_all(&cache)?;
         let lock = File::options()
             .create(true)

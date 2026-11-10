@@ -310,3 +310,48 @@ pub(crate) fn unscoped_key(key: &str) -> String {
         None => key.to_owned(),
     }
 }
+
+/// A cache produced while reading private source is private too. The public object/model
+/// store never uses this selector.
+pub(crate) fn cache_root(ordinary: PathBuf, name: &str) -> io::Result<PathBuf> {
+    let Some(scope) = current() else { return Ok(ordinary) };
+    let path = root(&scope)?.join(name);
+    fs::create_dir_all(&path)?;
+    Ok(path)
+}
+
+/// Private generations are resolved only from verified live mounts. Background engine
+/// reads have no HTTP task scope, so they may locate an already-authorized generation;
+/// admissions and metadata authorization still require the explicit request namespace.
+pub(crate) fn generation_path(identity: &str) -> io::Result<Option<PathBuf>> {
+    if let Some(scope) = current() {
+        let path = root(&scope)?.join("generations").join(identity);
+        return Ok(path.is_dir().then_some(path));
+    }
+    let scopes: Vec<_> = VERIFIED.lock().unwrap().values().map(|value| value.descriptor.clone()).collect();
+    let mut found = None;
+    for scope in scopes {
+        let Ok(root) = root(&scope) else { continue };
+        let path = root.join("generations").join(identity);
+        if path.is_dir() {
+            if found.is_some() { return Err(io::Error::new(io::ErrorKind::InvalidData, "private generation identity is ambiguous")); }
+            found = Some(path);
+        }
+    }
+    Ok(found)
+}
+
+/// Child tools can copy private sources while building/editing packages. Pin their
+/// cwd, temporary files, uv cache and bytecode to the same protected mount.
+pub(crate) fn protect_command(command: &mut std::process::Command) -> io::Result<bool> {
+    let Some(scope) = current() else { return Ok(false) };
+    let root = root(&scope)?;
+    let temp = root.join("tmp");
+    fs::create_dir_all(&temp)?;
+    command.current_dir(&root)
+        .env("UV_CACHE_DIR", root.join("uv-cache"))
+        .env("UV_TOOL_DIR", root.join("uv-tools"))
+        .env("TMPDIR", &temp).env("TEMP", &temp).env("TMP", &temp)
+        .env("PYTHONDONTWRITEBYTECODE", "1");
+    Ok(true)
+}

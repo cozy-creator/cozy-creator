@@ -154,7 +154,9 @@ fn collect_environments(home: &Path, named: &HashSet<PathBuf>) {
 fn removed(what: &str, path: &Path) {
     let bytes = crate::reclaim::freeable(path);
     if fs::remove_dir_all(path).is_ok() {
-        tracing::info!("removed {what} {}: {}", path.display(), crate::reclaim::size(bytes));
+        if !crate::private_io::is_private_path(path) {
+            tracing::info!("removed {what} {}: {}", path.display(), crate::reclaim::size(bytes));
+        }
     }
 }
 
@@ -231,7 +233,8 @@ impl LocalSources {
         if name.is_empty() || name.contains('/') {
             return Err(refused("local_source_invalid", "a local package manifest names local/<name>"));
         }
-        Ok(self.editable.join(&sha256::hex_digest(actor.as_bytes())[..16]).join(name))
+        let root = crate::private_io::cache_root(self.editable.clone(), "editable")?;
+        Ok(root.join(&sha256::hex_digest(actor.as_bytes())[..16]).join(name))
     }
 
     /// A local source's objects, its manifest and every member: what a run takes custody of when
@@ -265,6 +268,7 @@ impl LocalSources {
             "own": manifest.project,
             "indexes": manifest.indexes, "pair": self.publisher.pair_key(locked), "python": self.publisher.sdk.python,
             "torch": self.publisher.torch_pins(None),
+            "private_view": crate::private_io::current().map(|scope| scope.view_root),
         });
         sha256::hex_digest(key.to_string().as_bytes())
     }
@@ -390,7 +394,7 @@ impl LocalSources {
         let identity = sha256::hex_digest(serde_json::json!([environment, digest]).to_string().as_bytes())[..32].to_string();
         if service.catalog.resolve(&identity).is_err() {
             job.stage(format!("describing {}", manifest.package));
-            let dir = service.catalog.root().join(&identity);
+            let dir = crate::private_io::cache_root(service.catalog.root().to_owned(), "generations")?.join(&identity);
             let _ = fs::remove_dir_all(&dir); // an interrupted, never-published one
             fs::create_dir_all(&dir)?;
             let published = || -> Result<(), published::Failure> {
@@ -440,7 +444,7 @@ impl LocalSources {
     }
 
     fn installer(&self, package: &str) -> Arc<Installing> {
-        self.installing.lock().unwrap().entry(package.to_owned()).or_default().clone()
+        self.installing.lock().unwrap().entry(crate::private_io::resource_key(package)).or_default().clone()
     }
 
     /// Keep remote source homes while a generation names their environment. Only completed,
@@ -452,7 +456,8 @@ impl LocalSources {
         let installer = self.installer(package);
         let _installing = installer.turn.lock().unwrap();
         // An unavailable or partial inventory says nothing about which sources are unused.
-        let Ok(generations) = fs::read_dir(&self.generations)
+        let Ok(generation_root) = crate::private_io::cache_root(self.generations.clone(), "generations") else { return };
+        let Ok(generations) = fs::read_dir(generation_root)
             .and_then(|entries| entries.collect::<std::io::Result<Vec<_>>>()) else { return; };
         // What generations link, canonical as each home's entries are read.
         let mut named = HashSet::new();
@@ -566,7 +571,9 @@ fn callees(environment: &Path, python: &Path, root: &str, packages: &BTreeMap<St
     let staged = kept.with_extension("new");
     let wrote = serde_json::to_vec(&callees).map_err(std::io::Error::other).and_then(|raw| fs::write(&staged, raw)).and_then(|()| fs::rename(&staged, &kept));
     if let Err(error) = wrote {
-        tracing::warn!("{}: its callees were not kept: {error}", environment.display());
+        if !crate::private_io::is_private_path(environment) {
+            tracing::warn!("{}: its callees were not kept: {error}", environment.display());
+        }
     }
     Ok(callees)
 }

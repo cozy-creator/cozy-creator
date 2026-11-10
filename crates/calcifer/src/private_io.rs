@@ -15,6 +15,35 @@ use std::{
 
 static SCOPES: LazyLock<Mutex<HashMap<PathBuf, Scope>>> = LazyLock::new(Mutex::default);
 
+tokio::task_local! { static PROJECT: Option<Scope>; }
+
+pub(crate) fn current() -> Option<Scope> {
+    PROJECT.try_with(Clone::clone).ok().flatten()
+}
+
+pub(crate) fn of_path(path: &Path) -> Result<Option<Scope>, Error> {
+    let logical = crate::project::vault::logical(path);
+    let Some(root) = logical.ancestors().find(|root| crate::project::vault::encrypted(root)) else {
+        return Ok(None);
+    };
+    of_output(&crate::project::landing(root))
+}
+
+pub(crate) async fn context<T>(scope: Option<Scope>, work: impl std::future::Future<Output = T>) -> T {
+    PROJECT.scope(scope, work).await
+}
+
+/// A local-code cache belongs to its project even when it is only being described.
+/// Revalidate the live view before any cache hit; a locked project never falls back.
+pub(crate) fn cache(scope: Option<&Scope>, ordinary: PathBuf, name: &str) -> Result<PathBuf, Error> {
+    let Some(scope) = scope else { return Ok(ordinary) };
+    crate::project::vault::require_path(&scope.storage.view_root)?;
+    let dir = scope.storage.view_root.join(".vault-calcifer").join(name);
+    fs::create_dir_all(&dir).map_err(|_| error("cannot open private code staging"))?;
+    platform::durable::set_mode(&dir, 0o700).map_err(|_| error("cannot protect private code staging"))?;
+    Ok(dir)
+}
+
 #[derive(Clone)]
 pub(crate) struct Scope {
     pub storage: LocalPrivateStorage,
