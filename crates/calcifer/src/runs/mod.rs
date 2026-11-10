@@ -243,7 +243,7 @@ pub(crate) async fn request(api: &Arc<Api>, key: &str, ask: RunRequest) -> Resul
                 };
                 if let Some(uploads) = uploads {
                     let kept = tokio::task::spawn_blocking(move || crate::project::keep_given(&project, &given, &uploads)).await;
-                    let said = kept.map_err(|e| Error::internal("keep_given", e.to_string()))?;
+                    let said = kept.map_err(|e| Error::internal("keep_given", e.to_string()))??;
                     notes.extend(said.into_iter().map(|message| Note { level: NoteLevel::Warning, message }));
                 } else {
                     notes.push(Note { level: NoteLevel::Warning, message: "the run was accepted, but its private inputs could not be added to project history while the view was closing".into() });

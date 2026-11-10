@@ -109,6 +109,8 @@ struct Heard {
 
 struct Project {
     id: String,
+    /// Immutable owner. A recycled physical mount path must never choose another project's root.
+    root: PathBuf,
     folder: Folder,
     /// What its files say, as last read.
     model: tokio::sync::Mutex<Option<Arc<model::Model>>>,
@@ -199,7 +201,7 @@ impl Projects {
         for project in self.now_open() {
             let id = &project.id;
             let dir = &project.folder.dir;
-            if vault::encrypted(&vault::logical(dir)) { continue; }
+            if vault::encrypted(&project.root) || project.require_view().is_err() { continue; }
             let rev = format!("{}.{}", project.folder.stamp(), stamp(&dir.join(folder::FILES)));
             // Held while it's told: a forget waits for it.
             let still = self.open.lock().expect("projects lock");
@@ -216,14 +218,15 @@ impl Projects {
 
     /// Project `id` as it's open now, if it is.
     fn open_now(&self, id: &str) -> Option<Arc<Project>> {
-        self.open.lock().expect("projects lock").get(id).and_then(Weak::upgrade)
+        let project = self.open.lock().expect("projects lock").get(id).and_then(Weak::upgrade)?;
+        project.require_view().ok()?;
+        Some(project)
     }
 
     /// The project a route's `{id}` names (`api::calcifer::project::NAMED_BY`): its id or name, or its folder on this computer. Open,
     /// else opened from the index. It stays open while the answer is held.
     fn get(&self, api: &Arc<Api>, named: &str) -> Result<Arc<Project>, Refusal> {
         if let Some(project) = self.open_now(named) {
-            vault::view(&vault::logical(&project.folder.dir)).map_err(Refusal)?;
             return Ok(project);
         }
         if api::target::written_as_path(named.trim()) {
@@ -236,7 +239,7 @@ impl Projects {
             return Err(Refusal(Error::new(Kind::NotFound, "project_unknown", said).next("cozy project ls")));
         }
         // Opened for a call: used now, which the index lists by.
-        api.calcifer.store().project_opened(&project.id, &identity(&project.folder.dir).1, &vault::logical(&project.folder.dir), Some(now_ms()))?;
+        api.calcifer.store().project_opened(&project.id, &identity(&project.folder.dir).1, &project.root, Some(now_ms()))?;
         Ok(project)
     }
 
@@ -248,7 +251,8 @@ impl Projects {
     /// The project in `dir` (canonical), opened if it isn't, given its id and name and recorded in the index; its walk goes on when
     /// one is owed. It stays open while the answer is held.
     fn open(&self, api: &Arc<Api>, dir: &FsPath) -> Result<Arc<Project>, Error> {
-        let physical = vault::view(dir)?;
+        let root = vault::logical(dir);
+        let physical = current_view(&root)?;
         let dir = physical.as_path();
         // Before `project.db`: a format 2 or 3 folder moves to 4, and its files are imported once (cl-803).
         let said = match dir.join(db::DB).is_file() {
@@ -263,7 +267,8 @@ impl Projects {
         let id = known.as_ref().map_or_else(|| folder_id(dir), |(id, _)| id.clone());
         // Moved since it opened: the same project, read where it is now, and what reads it where it was goes on reading that. One
         // rendering goes on where it was.
-        let moved = self.open_now(&id).filter(|open| open.folder.dir != dir);
+        let moved = self.open.lock().expect("projects lock").get(&id).and_then(Weak::upgrade)
+            .filter(|open| open.root != root || open.folder.dir != dir);
         if let Some(open) = moved {
             if *open.walking.lock().expect("walking lock") {
                 let said = format!("{id} moved from {} while it renders: move it back, or once its runs land", open.folder.dir.display());
@@ -279,12 +284,14 @@ impl Projects {
         IDENTITIES.lock().expect("identities lock").insert(dir.to_owned(), (id.clone(), name));
         crate::events::project_opened(dir);
         let mut open = self.open.lock().expect("projects lock");
-        let project = match open.get(&id).and_then(Weak::upgrade) {
+        let project = match open.get(&id).and_then(Weak::upgrade)
+            .filter(|project| project.root == root && project.folder.dir == dir) {
             Some(project) => project,
             None => {
                 let (events, asked) = (broadcast::channel::<Event>(256).0, Notify::new());
                 let project = Arc::new(Project {
                     id: id.clone(),
+                    root,
                     folder,
                     jobs: Jobs::new(id.clone(), events.clone()),
                     model: tokio::sync::Mutex::default(),
@@ -309,6 +316,7 @@ impl Projects {
             }
         };
         drop(open);
+        project.require_view()?;
         project.said.lock().expect("said lock").extend(said);
         if project.folder.lock()?.owes() {
             walk(api, &project);
@@ -388,17 +396,18 @@ fn known(api: &Api, text: &str) -> Result<crate::state::KnownProject, Error> {
 /// An encrypted project's transport uploads stay inside its mounted storage, never the shared plaintext CAS.
 pub(crate) fn private_upload_root(api: &Arc<Api>, named: &str) -> Result<Option<PathBuf>, Error> {
     let project = api.projects.get(api, named).map_err(|e| e.0)?;
-    let private = vault::encrypted(&vault::logical(&project.folder.dir));
+    let private = vault::encrypted(&project.root);
     Ok(private.then(|| project.folder.dir.clone()))
 }
 
-pub(crate) fn keep_given(project: &FsPath, given: &[(PathBuf, String)], uploads: &FsPath) -> Vec<String> {
-    let folder = Folder::at(project);
+pub(crate) fn keep_given(project: &FsPath, given: &[(PathBuf, String)], uploads: &FsPath) -> Result<Vec<String>, Error> {
+    let physical = vault::resolve_path(project)?;
+    let folder = Folder::at(&physical);
     let unkept = given.iter().filter_map(|(path, sha256)| {
         let why = folder.keep_given(path, sha256, path.starts_with(uploads)).err()?;
         Some(format!("{} isn't kept in its project, so asking this run again needs it given again: {}", path.display(), why.message))
     });
-    unkept.collect()
+    Ok(unkept.collect())
 }
 
 /// The folder a project's runs land in, as a run's record has it.
@@ -427,14 +436,15 @@ fn written_hash(written: &str) -> Option<String> {
 
 impl Holding {
     pub(crate) fn new(calcifer: Arc<crate::Calcifer>, dir: PathBuf) -> Self {
-        Self { calcifer, dir }
+        Self { calcifer, dir: vault::logical(&dir) }
     }
 
     /// The file of this project `written` names by its hash, what stays on a machine fetched now that it's named. None: it names
     /// none of them.
     pub(crate) async fn file(&self, written: &str) -> Result<Option<PathBuf>, Error> {
         let Some(hex) = written_hash(written) else { return Ok(None) };
-        let folder = Folder::at(&self.dir);
+        let physical = vault::resolve_path(&self.dir)?;
+        let folder = Folder::at(&physical);
         let lock = folder.lock()?;
         match lock.matching(&hex).as_slice() {
             [] => Ok(None),
@@ -454,11 +464,13 @@ impl Holding {
     /// (`inline`, each with its file here), ranges are cut here, and `pickup.` terms are the gesture. Answers the call, the files it
     /// names (the project's fetched here if a machine keeps them), and what was said.
     pub(crate) async fn bound(&self, target: &str, package: &str, callable: &api::interface::Callable, written: Map<String, Value>, clips: &crate::runs::clip::Clips, inline: &[(binder::Inline, PathBuf)]) -> Result<(Map<String, Value>, Vec<crate::runs::bind::InputFile>, Vec<String>), Error> {
-        let folder = Folder::at(&self.dir);
+        let physical = vault::resolve_path(&self.dir)?;
+        let folder = Folder::at(&physical);
         // One that doesn't read as this format (an older one moves as the run lands) still takes the run, as written, its mentions unread.
         let (doc, lock) = match (Doc::load(&folder), folder.lock()) {
             (Ok(doc), Ok(lock)) => (doc, lock),
             (Err(why), _) | (_, Err(why)) => {
+                if vault::encrypted(&vault::logical(&self.dir)) { return Err(why); }
                 let mut written = written;
                 for field in callable.request.fields.iter().filter(|field| matches!(field.ty.plain(), api::interface::Type::Prompt(_))) {
                     if let Some(Value::String(text)) = written.get(&field.name).cloned() {
@@ -539,6 +551,8 @@ pub(crate) fn measured(tools: &FsPath, path: &FsPath, media_type: &str) -> Optio
 /// A run's output, landed at `dest`, kept in its project's `files/` and listed there. An operation's run takes its files off the
 /// list when it lands them on its version. Answers the file's path, and what to say if its project couldn't list it.
 pub(crate) fn landed(project: &FsPath, made: &Landed, dest: &FsPath) -> Result<(PathBuf, Option<String>), String> {
+    let physical = vault::resolve_path(project).map_err(|error| error.message)?;
+    let project = physical.as_path();
     let output = match made.index {
         0 => made.output.to_owned(),
         n => format!("{}-{n}", made.output),
@@ -566,7 +580,8 @@ pub(crate) fn landed(project: &FsPath, made: &Landed, dest: &FsPath) -> Result<(
 
 /// An output its machine keeps, in its project's lock.
 pub(crate) fn stays(project: &FsPath, sha256: &str, machine: &str, length: u64) -> Result<(), String> {
-    Folder::at(project).stays(sha256, machine, length).map_err(|e| e.message)
+    let physical = vault::resolve_path(project).map_err(|error| error.message)?;
+    Folder::at(&physical).stays(sha256, machine, length).map_err(|e| e.message)
 }
 
 /// Each open project's id and name by its folder, as its `project.db` keeps them, read as it opens.
@@ -955,7 +970,20 @@ impl Frozen for Now<'_> {
     }
 }
 
+fn current_view(root: &FsPath) -> Result<PathBuf, Error> {
+    platform::durable::canonical(&vault::view(root)?)
+        .map_err(|why| Error::new(Kind::Conflict, "project_view_unavailable", why.to_string()))
+}
+
 impl Project {
+    /// Old references are bound to their original physical view, never a recycled drive.
+    fn require_view(&self) -> Result<(), Error> {
+        if current_view(&self.root)? != self.folder.dir {
+            return Err(Error::new(Kind::Conflict, "project_view_changed", "the project's mounted view changed; reopen this project"));
+        }
+        Ok(())
+    }
+
     /// The renders going say `to` for `from` from now on, as project.lock does: their texts, what they plan on those, and the board. What landed under `from` stands, what lands
     /// is `to`'s, and what reads it reads on. Each text keeps its place in the walk, under its new digest. The old reading stays for this walk: a turn may be holding its digest.
     fn rename_walk(&self, from: &str, to: &str) -> Result<(), Error> {
