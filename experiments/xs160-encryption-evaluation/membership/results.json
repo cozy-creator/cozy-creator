@@ -1,0 +1,103 @@
+{
+  "all_assertions_passed": true,
+  "basic_credential": "0.6.0",
+  "ciphersuite": "MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519",
+  "memory_storage": "0.6.0",
+  "openmls": "0.9.2",
+  "past_epoch_deletion_policy": "MaxEpochs(0)",
+  "provider": "openmls_rust_crypto 0.6.0",
+  "results": [
+    {
+      "case": "authenticated_add_and_welcome",
+      "epoch": 1,
+      "epoch_authenticators_equal": true,
+      "members": [
+        "Alice",
+        "Bob"
+      ],
+      "stranger_without_private_keypackage_rejected": "NoMatchingKeyPackage"
+    },
+    {
+      "authenticated_sender": "Alice",
+      "bob_decrypted_object": true,
+      "case": "application_content_key",
+      "epoch": 1,
+      "mls_ciphertext_bytes": 306,
+      "object_plaintext_bytes": 64,
+      "replay_rejected": "ValidationError(UnableToDecrypt(SecretTreeError(SecretReuseError)))",
+      "tamper_rejected": "ValidationError(UnableToDecrypt(AeadError))",
+      "wire_format": "PrivateMessage"
+    },
+    {
+      "case": "encrypted_local_state_reload",
+      "encrypted_snapshot_bytes": 96199,
+      "epoch": 1,
+      "epoch_authenticators_equal": true,
+      "external_state_wrapping_key_retained": true,
+      "new_message_decrypted": true,
+      "original_provider_group_signer_dropped": true,
+      "signature_key_loaded_from_store": true,
+      "storage_rows": 12
+    },
+    {
+      "automatic_history_grant": false,
+      "bob_unread_prior_epoch_rejected_with_max_epochs_0": "ValidationError(UnableToDecrypt(SecretTreeError(TooDistantInThePast)))",
+      "carol_history_readable_after_explicit_content_key_reshare": true,
+      "carol_prior_mls_message_rejected": "ValidationError(UnableToDecrypt(SecretTreeError(TooDistantInThePast)))",
+      "case": "new_member_history",
+      "counterfactual_bob_unread_prior_epoch_decrypted_with_max_epochs_2": true,
+      "epoch": 2,
+      "members": [
+        "Alice",
+        "Bob",
+        "Carol"
+      ]
+    },
+    {
+      "accepted_alice_commit_epoch": 3,
+      "after_retry_epoch": 4,
+      "alice_operation": "add Dave",
+      "base_epoch": 2,
+      "bob_had_pending_commit_when_winner_received": true,
+      "bob_operation": "remove Carol",
+      "bob_recreated_remove_commit_at_epoch": 3,
+      "carol_active": false,
+      "case": "concurrent_membership_commits",
+      "losing_commit_rejected": "ValidationError(WrongEpoch)",
+      "losing_pending_commit_cleared_when_winner_merged": true,
+      "members": [
+        "Alice",
+        "Bob",
+        "Dave"
+      ],
+      "no_application_acl_prevented_bob_removing_carol": true,
+      "survivor_epoch_authenticators_equal": true
+    },
+    {
+      "bob_after_removal_rejected": "GroupStateError(UseAfterEviction)",
+      "bob_previously_obtained_object_key_still_decrypts_old_object": true,
+      "bob_without_removal_commit_epoch": 4,
+      "bob_without_removal_commit_rejected": "ValidationError(WrongEpoch)",
+      "case": "remove_member",
+      "members": [
+        "Alice",
+        "Dave"
+      ],
+      "new_epoch": 5,
+      "removed_bob_active": false,
+      "retained_dave_decrypted_new_content_key": true
+    },
+    {
+      "case": "archive_and_device_loss_boundary",
+      "durable_backup_protocol_implemented": false,
+      "fresh_device_can_load_mls_group": false,
+      "mls_group_reconstructed_by_archive": false,
+      "recovery_key_not_derived_from_account_or_mls_identity": true,
+      "separately_wrapped_content_key_restores_old_object_with_external_recovery_key": true,
+      "wrong_recovery_key_rejected": "Error"
+    }
+  ],
+  "run_date": "2026-11-09",
+  "synthetic_archive_aead": "aes-gcm 0.10.3 AES-256-GCM",
+  "tls_codec": "0.5.0"
+}

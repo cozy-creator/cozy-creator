@@ -1,0 +1,481 @@
+Automerge behavioral scenarios executed
+Loro behavioral scenarios executed
+{
+  "automerge": {
+    "concurrent_version_additions": {
+      "preserved_all_three": true,
+      "versions": {
+        "version-0001": {
+          "blob_hash": "blake3:synthetic/asset-0001/version-0001",
+          "prompt": "seed",
+          "version_id": "version-0001"
+        },
+        "version-0101": {
+          "blob_hash": "blake3:synthetic/asset-0001/version-0101",
+          "prompt": "dawn",
+          "version_id": "version-0101"
+        },
+        "version-0102": {
+          "blob_hash": "blake3:synthetic/asset-0001/version-0102",
+          "prompt": "dusk",
+          "version_id": "version-0102"
+        }
+      }
+    },
+    "delete_vs_update": {
+      "asset_visible_after_parent_delete_vs_child_update": false,
+      "same_slot_delete_vs_write": [
+        {
+          "deleting_actor": 101,
+          "get_all": [
+            {
+              "operation_id": "15@0000000000000066",
+              "value": "concurrent update"
+            }
+          ],
+          "updating_actor": 102,
+          "visible_title": "concurrent update"
+        },
+        {
+          "deleting_actor": 103,
+          "get_all": [
+            {
+              "operation_id": "15@0000000000000065",
+              "value": "concurrent update"
+            }
+          ],
+          "updating_actor": 101,
+          "visible_title": "concurrent update"
+        }
+      ],
+      "versions_readable_by_retained_object_id": [
+        "version-0001",
+        "version-0102"
+      ]
+    },
+    "disjoint_fields": {
+      "converged": true,
+      "value": {
+        "approval": "pending",
+        "assets": {
+          "asset-0001": {
+            "asset_id": "asset-0001",
+            "name": "offline asset name",
+            "versions": {
+              "version-0001": {
+                "blob_hash": "blake3:synthetic/asset-0001/version-0001",
+                "prompt": "seed",
+                "version_id": "version-0001"
+              }
+            }
+          }
+        },
+        "description": "offline description",
+        "project_id": "project-xs160",
+        "prompt": "seed prompt",
+        "title": "offline title"
+      }
+    },
+    "duplicate_reordered_delivery": {
+      "converged": true,
+      "dependent_packet_before_seed_survived_save_reload": true,
+      "identical_heads": true,
+      "orders": [
+        [
+          4,
+          3,
+          2,
+          1,
+          0,
+          2,
+          0
+        ],
+        [
+          2,
+          4,
+          0,
+          3,
+          1,
+          4,
+          2
+        ],
+        [
+          0,
+          1,
+          2,
+          3,
+          4,
+          0,
+          4
+        ],
+        [
+          3,
+          2,
+          1,
+          4,
+          0,
+          1,
+          3
+        ]
+      ],
+      "snapshot_before_missing_dependencies_bytes": 129
+    },
+    "library": "automerge",
+    "replicas": 4,
+    "save_reload_further_offline_edits": {
+      "converged": true,
+      "snapshot_bytes": 492
+    },
+    "semantic_conflicts": {
+      "alternatives_survive_snapshot_reload": true,
+      "approval_get_all": [
+        {
+          "operation_id": "16@0000000000000065",
+          "value": "approved"
+        },
+        {
+          "operation_id": "16@0000000000000067",
+          "value": "needs-review"
+        },
+        {
+          "operation_id": "16@0000000000000066",
+          "value": "rejected"
+        }
+      ],
+      "current_alternatives_queryable": true,
+      "prompt_after_causally_later_resolution": [
+        {
+          "operation_id": "17@00000000000000c9",
+          "value": "human resolved prompt"
+        }
+      ],
+      "prompt_get_all": [
+        {
+          "operation_id": "15@0000000000000065",
+          "value": "dawn"
+        },
+        {
+          "operation_id": "15@0000000000000066",
+          "value": "dusk"
+        },
+        {
+          "operation_id": "15@0000000000000067",
+          "value": "noon"
+        }
+      ],
+      "visible_projection": {
+        "approval": "needs-review",
+        "assets": {
+          "asset-0001": {
+            "asset_id": "asset-0001",
+            "name": "Asset 1",
+            "versions": {
+              "version-0001": {
+                "blob_hash": "blake3:synthetic/asset-0001/version-0001",
+                "prompt": "seed",
+                "version_id": "version-0001"
+              }
+            }
+          }
+        },
+        "description": "seed description",
+        "project_id": "project-xs160",
+        "prompt": "noon",
+        "title": "Cozy project"
+      }
+    },
+    "version": "0.12.0"
+  },
+  "loro": {
+    "concurrent_version_additions": {
+      "preserved_all_three": true,
+      "versions": {
+        "version-0001": {
+          "blob_hash": "blake3:synthetic/asset-0001/version-0001",
+          "prompt": "seed",
+          "version_id": "version-0001"
+        },
+        "version-0101": {
+          "blob_hash": "blake3:synthetic/asset-0001/version-0101",
+          "prompt": "dawn",
+          "version_id": "version-0101"
+        },
+        "version-0102": {
+          "blob_hash": "blake3:synthetic/asset-0001/version-0102",
+          "prompt": "dusk",
+          "version_id": "version-0102"
+        }
+      }
+    },
+    "delete_vs_update": {
+      "asset_visible_after_parent_delete_vs_child_update": false,
+      "same_slot_delete_vs_write": [
+        {
+          "deleting_peer": 101,
+          "last_editor": 102,
+          "updating_peer": 102,
+          "visible_title": "concurrent update"
+        },
+        {
+          "deleting_peer": 103,
+          "last_editor": 103,
+          "updating_peer": 101,
+          "visible_title": null
+        }
+      ],
+      "versions_readable_by_retained_container_id": {
+        "version-0001": {
+          "blob_hash": "blake3:synthetic/asset-0001/version-0001",
+          "prompt": "seed",
+          "version_id": "version-0001"
+        },
+        "version-0102": {
+          "blob_hash": "blake3:synthetic/asset-0001/version-0102",
+          "prompt": "concurrent child update",
+          "version_id": "version-0102"
+        }
+      }
+    },
+    "disjoint_fields": {
+      "converged": true,
+      "value": {
+        "approval": "pending",
+        "assets": {
+          "asset-0001": {
+            "asset_id": "asset-0001",
+            "name": "offline asset name",
+            "versions": {
+              "version-0001": {
+                "blob_hash": "blake3:synthetic/asset-0001/version-0001",
+                "prompt": "seed",
+                "version_id": "version-0001"
+              }
+            }
+          }
+        },
+        "description": "offline description",
+        "project_id": "project-xs160",
+        "prompt": "seed prompt",
+        "title": "offline title"
+      }
+    },
+    "duplicate_reordered_delivery": {
+      "converged": true,
+      "dependent_packet_before_seed_survived_snapshot_and_pending_export": true,
+      "dependent_packet_before_seed_survived_snapshot_only": false,
+      "identical_version_vectors": true,
+      "import_statuses": [
+        [
+          "packet 4: ImportStatus { success: VersionRange({}), pending: Some(VersionRange({103: (0, 1)})) }",
+          "packet 3: ImportStatus { success: VersionRange({}), pending: Some(VersionRange({102: (0, 4)})) }",
+          "packet 2: ImportStatus { success: VersionRange({}), pending: Some(VersionRange({101: (1, 2)})) }",
+          "packet 1: ImportStatus { success: VersionRange({}), pending: Some(VersionRange({101: (0, 1)})) }",
+          "packet 0: ImportStatus { success: VersionRange({103: (0, 1), 101: (0, 2), 100: (0, 14), 102: (0, 4)}), pending: None }",
+          "packet 2: ImportStatus { success: VersionRange({}), pending: None }",
+          "packet 0: ImportStatus { success: VersionRange({}), pending: None }"
+        ],
+        [
+          "packet 2: ImportStatus { success: VersionRange({}), pending: Some(VersionRange({101: (1, 2)})) }",
+          "packet 4: ImportStatus { success: VersionRange({}), pending: Some(VersionRange({103: (0, 1)})) }",
+          "packet 0: ImportStatus { success: VersionRange({103: (0, 1), 100: (0, 14)}), pending: None }",
+          "packet 3: ImportStatus { success: VersionRange({102: (0, 4)}), pending: None }",
+          "packet 1: ImportStatus { success: VersionRange({101: (0, 2)}), pending: None }",
+          "packet 4: ImportStatus { success: VersionRange({}), pending: None }",
+          "packet 2: ImportStatus { success: VersionRange({}), pending: None }"
+        ],
+        [
+          "packet 0: ImportStatus { success: VersionRange({100: (0, 14)}), pending: None }",
+          "packet 1: ImportStatus { success: VersionRange({101: (0, 1)}), pending: None }",
+          "packet 2: ImportStatus { success: VersionRange({101: (1, 2)}), pending: None }",
+          "packet 3: ImportStatus { success: VersionRange({102: (0, 4)}), pending: None }",
+          "packet 4: ImportStatus { success: VersionRange({103: (0, 1)}), pending: None }",
+          "packet 0: ImportStatus { success: VersionRange({}), pending: None }",
+          "packet 4: ImportStatus { success: VersionRange({}), pending: None }"
+        ],
+        [
+          "packet 3: ImportStatus { success: VersionRange({}), pending: Some(VersionRange({102: (0, 4)})) }",
+          "packet 2: ImportStatus { success: VersionRange({}), pending: Some(VersionRange({101: (1, 2)})) }",
+          "packet 1: ImportStatus { success: VersionRange({}), pending: Some(VersionRange({101: (0, 1)})) }",
+          "packet 4: ImportStatus { success: VersionRange({}), pending: Some(VersionRange({103: (0, 1)})) }",
+          "packet 0: ImportStatus { success: VersionRange({103: (0, 1), 101: (0, 2), 100: (0, 14), 102: (0, 4)}), pending: None }",
+          "packet 1: ImportStatus { success: VersionRange({}), pending: None }",
+          "packet 3: ImportStatus { success: VersionRange({}), pending: None }"
+        ]
+      ],
+      "orders": [
+        [
+          4,
+          3,
+          2,
+          1,
+          0,
+          2,
+          0
+        ],
+        [
+          2,
+          4,
+          0,
+          3,
+          1,
+          4,
+          2
+        ],
+        [
+          0,
+          1,
+          2,
+          3,
+          4,
+          0,
+          4
+        ],
+        [
+          3,
+          2,
+          1,
+          4,
+          0,
+          1,
+          3
+        ]
+      ],
+      "pending_export_bytes": 116,
+      "snapshot_bytes": 139
+    },
+    "library": "loro",
+    "replicas": 4,
+    "save_reload_further_offline_edits": {
+      "converged": true,
+      "snapshot_bytes": 946
+    },
+    "semantic_conflicts": {
+      "branch_values_recovered_by_checkout_after_reload": [
+        {
+          "approval": "approved",
+          "frontiers": "Frontiers([1@101])",
+          "prompt": "dawn"
+        },
+        {
+          "approval": "rejected",
+          "frontiers": "Frontiers([1@102])",
+          "prompt": "dusk"
+        },
+        {
+          "approval": "needs-review",
+          "frontiers": "Frontiers([1@103])",
+          "prompt": "noon"
+        }
+      ],
+      "current_alternatives_queryable": false,
+      "history_after_resolution_file": "loro-after-resolution-history.json",
+      "history_file": "loro-conflict-history.json",
+      "note": "Map read exposes one LWW winner. Exported operations retain alternatives and dependencies, but history alone does not label unresolved semantic conflicts.",
+      "prompt_after_causally_later_resolution": "human resolved prompt",
+      "prompt_get_last_editor": 103,
+      "visible_projection": {
+        "approval": "needs-review",
+        "assets": {
+          "asset-0001": {
+            "asset_id": "asset-0001",
+            "name": "Asset 1",
+            "versions": {
+              "version-0001": {
+                "blob_hash": "blake3:synthetic/asset-0001/version-0001",
+                "prompt": "seed",
+                "version_id": "version-0001"
+              }
+            }
+          }
+        },
+        "description": "seed description",
+        "project_id": "project-xs160",
+        "prompt": "noon",
+        "title": "Cozy project"
+      }
+    },
+    "version": "1.17.1"
+  },
+  "small_shape_measurements": {
+    "assets": 1000,
+    "automerge": [
+      {
+        "create_ms": 192.270938,
+        "import_one_field_delta_ms": 0.078256,
+        "load_ms": 8.92413,
+        "prepare_replica_and_delta_ms": 9.402535,
+        "raw_change_delta_bytes": 119,
+        "save_ms": 1.8284580000000001,
+        "snapshot_bytes": 22845
+      },
+      {
+        "create_ms": 203.674476,
+        "import_one_field_delta_ms": 0.089771,
+        "load_ms": 9.490428,
+        "prepare_replica_and_delta_ms": 9.436405,
+        "raw_change_delta_bytes": 119,
+        "save_ms": 1.905005,
+        "snapshot_bytes": 22845
+      },
+      {
+        "create_ms": 191.53647500000002,
+        "import_one_field_delta_ms": 0.07953500000000001,
+        "load_ms": 8.459815,
+        "prepare_replica_and_delta_ms": 8.544075999999999,
+        "raw_change_delta_bytes": 119,
+        "save_ms": 1.746203,
+        "snapshot_bytes": 22845
+      }
+    ],
+    "loro": [
+      {
+        "create_ms": 15.985432000000001,
+        "encoded_delta_bytes": 123,
+        "import_one_field_delta_ms": 0.09383899999999999,
+        "load_ms": 0.527297,
+        "prepare_replica_and_delta_ms": 0.78487,
+        "save_ms": 9.697054999999999,
+        "snapshot_bytes": 209854
+      },
+      {
+        "create_ms": 15.239189999999999,
+        "encoded_delta_bytes": 123,
+        "import_one_field_delta_ms": 0.092884,
+        "load_ms": 0.471802,
+        "prepare_replica_and_delta_ms": 0.690527,
+        "save_ms": 9.556528,
+        "snapshot_bytes": 209854
+      },
+      {
+        "create_ms": 13.347251,
+        "encoded_delta_bytes": 123,
+        "import_one_field_delta_ms": 0.08602000000000001,
+        "load_ms": 0.448018,
+        "prepare_replica_and_delta_ms": 0.695099,
+        "save_ms": 8.852983,
+        "snapshot_bytes": 209854
+      }
+    ],
+    "repetitions": 3,
+    "same_normalized_model_asserted": true,
+    "scope": "synthetic local micro-measurement, not production benchmark",
+    "seed_commit_count": 1,
+    "timing_boundary": "in-process operations; excludes compile, disk I/O, JSON assertion/normalization; sequential single process; no warmup",
+    "versions_per_asset": 2
+  },
+  "version_identity_and_immutability": {
+    "existing_version_records_are_mutable_in_both": true,
+    "requirement": "Use distributed-unique version IDs and enforce immutable additions in the application; a mutable CRDT map does not enforce this policy.",
+    "same_version_id_concurrent_creation": {
+      "automerge_get_all_child_prompts": [
+        "dawn",
+        "dusk"
+      ],
+      "loro_visible_child": {
+        "blob_hash": "blake3:synthetic/asset-0001/version-collision",
+        "prompt": "dusk",
+        "version_id": "version-collision"
+      }
+    }
+  }
+}
