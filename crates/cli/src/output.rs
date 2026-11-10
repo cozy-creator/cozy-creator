@@ -45,11 +45,6 @@ impl Term {
             hyperlinks: stdout && hyperlinks(),
         }
     }
-
-    /// Whether a path can be shown as a link.
-    pub(crate) fn links(&self) -> bool {
-        self.hyperlinks
-    }
 }
 
 /// Whether the terminal shows OSC 8 links: `FORCE_HYPERLINK` (anything but `0`), or one known to.
@@ -159,16 +154,6 @@ pub(crate) fn refuse(json: bool, error: &Error) -> ExitCode {
     ExitCode::from(error.exit_code() as u8)
 }
 
-/// A failure in one line and where to read more; `--json` has the record.
-pub(crate) fn failure_of(ctx: &Context, error: &Error) {
-    if !ctx.json
-        && let Some(remedy) = &error.remedy
-    {
-        return failure(ctx, &format!("{}\n  {}", error.message, remedy), &error.next);
-    }
-    failure(ctx, &error.message, &error.next);
-}
-
 pub(crate) fn failure(ctx: &Context, message: &str, next: &[String]) {
     if ctx.json {
         return;
@@ -246,11 +231,6 @@ pub(crate) fn hyperlink(term: Term, path: &Path, shown: &str) -> Option<String> 
     }
     let url = url::Url::from_file_path(path).ok()?;
     Some(format!("\x1b]8;;{url}\x1b\\{shown}\x1b]8;;\x1b\\"))
-}
-
-/// A link to `path` that reads `shown`, where the terminal opens links; elsewhere `plain`, as what isn't a link must name the file itself.
-pub(crate) fn named_link(ctx: &Context, path: &Path, shown: &str, plain: &str) -> String {
-    hyperlink(ctx.term, path, shown).unwrap_or_else(|| plain.to_owned())
 }
 
 /// `key  value` lines, keys aligned, then notes.

@@ -237,22 +237,6 @@ impl Client {
         self.exchange(true, |c, base| c.patch(format!("{base}{path}")).json(body).header(KEY, &key)).await
     }
 
-    /// A PATCH that is part of the edit `edit` (`Cozy-Edit`): those that share one are one entry of a project's history.
-    pub(crate) async fn patch_as<B, T>(&self, path: &str, body: &B, edit: &str) -> Result<T, Error>
-    where
-        B: Serialize + ?Sized,
-        T: DeserializeOwned,
-    {
-        let key = write_key();
-        self.exchange(true, |c, base| c.patch(format!("{base}{path}")).json(body).header(KEY, &key).header("cozy-edit", edit)).await
-    }
-
-    /// A text body PUT, as an export read back, under its call's key; its answer's body isn't read.
-    pub(crate) async fn put_text(&self, path: &str, body: &str) -> Result<(), Error> {
-        let key = write_key();
-        self.opened(|c, base| c.put(format!("{base}{path}")).header(reqwest::header::CONTENT_TYPE, "application/yaml").header(KEY, &key).body(body.to_owned())).await.map(drop)
-    }
-
     /// What Calcifer holds of the file `digest` names: all of it (`None`), else the ranges held.
     pub(crate) async fn held(&self, digest: &Digest) -> Result<Option<Ranges>, Error> {
         let path = format!("/v1/files/{digest}");
