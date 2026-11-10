@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+from urllib.parse import urlsplit
 import re
 import subprocess
 import tempfile
@@ -83,7 +84,7 @@ def main() -> None:
 
         for name, words in (
             ("status requires project", ["--json", "status"]),
-            ("open requires project", ["--json", "open", "--print-url"]),
+            ("open requires project", ["--json", "open"]),
             ("run requires project", ["--json", "run", "example/generate", "prompt=test"]),
             ("run list requires project", ["--json", "run", "ls"]),
         ):
@@ -92,6 +93,10 @@ def main() -> None:
             assert refusal["code"] == "not_in_a_project", f"{name}: {refusal}"
             assert "cozy new" in json.dumps(refusal), f"{name}: no creation guidance"
         assert not (empty / "project.db").exists(), "a read or refused run initialized a project"
+        plain_error = run("default project refusal", ["status"], code=2)
+        refusal_text = plain_error.stdout + plain_error.stderr
+        assert not refusal_text.lstrip().startswith("{"), "default refusal is JSON"
+        assert "not_in_a_project" in refusal_text and "cozy new" in refusal_text
 
         status = json.loads(run("project status", ["--json", "status"], project).stdout)
         assert Path(status["project"]["path"]).resolve() == project
@@ -109,8 +114,18 @@ def main() -> None:
         child.mkdir(exist_ok=True)
         nested = json.loads(run("containing project", ["--json", "status"], child).stdout)
         assert Path(nested["project"]["path"]).resolve() == project
+        opened = json.loads(run("project URL", ["--json", "open"], project).stdout)
+        assert set(opened) == {"url", "expires_ms"}, "open includes fields beyond the URL and expiry"
+        url = urlsplit(opened["url"])
+        assert url.hostname in {"127.0.0.1", "localhost", "::1"}, "open did not print a local URL"
+        assert "code=" in url.fragment and f"to=/projects/{created['id']}" in url.fragment
+        assert opened["expires_ms"] > 0
+        plain_url = run("default project URL", ["open"], project).stdout
+        assert not plain_url.lstrip().startswith("{") and "url" in plain_url and "expires_ms" in plain_url
+        for flag in ("--no-open", "--print-url"):
+            run(f"removed open flag {flag}", ["open", flag], project, code=2)
         run("removed run selector", ["run", "-p", str(project), "example/generate", "prompt=test"], project, code=2)
-        run("removed open selector", ["open", str(project), "--print-url"], project, code=2)
+        run("removed open selector", ["open", str(project)], project, code=2)
         print(f"entrypoints: {len(records)} checks passed")
     finally:
         receipt = json.dumps(records, indent=2) + "\n"

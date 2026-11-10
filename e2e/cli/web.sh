@@ -1,5 +1,5 @@
 # e2e/cli/web.sh: the `web-serves` cell, the part cli/run.sh calls `web_serves`, on every OS, with no machine or model. `cozy open
-# --no-open`; Chrome redeems its code (web/serves.js), the page loads under its CSP with no violation, an event arrives on
+#`; Chrome redeems its code (web/serves.js), the page loads under its CSP with no violation, an event arrives on
 # GET /v1/events; and what must be refused is: a foreign Host and Origin, a used or expired code, ?media= past a file route, a
 # call with no holder or session. Then the page as a person uses it: Place (web/place.js), one stream across tabs and a
 # `kill -9` of Calcifer (web/reconnect.js), edits with Calcifer stopped that land when it's back (web/offline.js), undo and redo of the project's history from the page and the CLI (web/undo.js), the Runs and Machines drawers with a real run from the CLI where this computer runs
@@ -168,7 +168,7 @@ web_start() {
 }
 
 # web_proof <place|reconnect|drawers> <chrome> <playwright's prefix> <restart command, or nothing>: web/<it>.js, signed in by its own
-# `cozy open --no-open` once its browser is up (page.js: signIn), on a project of its own by name, whose folder it deletes whatever
+# `cozy open` once its browser is up (page.js: signIn), on a project of its own by name, whose folder it deletes whatever
 # happened.
 web_proof() {
   local name=$1 chrome=$2 pw=$3 restart=$4 pass=$1${ENGINE:+-$ENGINE} json shot code=0 folder

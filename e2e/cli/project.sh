@@ -3860,14 +3860,14 @@ session_surface() {
 step "a project: its link, and what's kept of a session"
 local P=$1 ID=$2 B=http://$ADDR code token media store=$HOME/.cozy/calcifer/state.db U
 U=$B/v1/projects/$ID/cuts/edit.mp4
-(cd "$P" && cozy --json open --no-open) > "$OUT/project-open.json" || check "session: open of working directory failed"
+(cd "$P" && cozy --json open) > "$OUT/project-open.json" || check "session: open of working directory failed"
 J --arg to "&to=/projects/$ID" --arg base "$B/#code=" '.url | startswith($base) and endswith($to)' "$OUT/project-open.json" || check "session: open did not select the working directory"
-(cd "$P/sub" && cozy --json open --no-open) > "$OUT/project-open-named.json" || check "session: open of a subdirectory failed"
+(cd "$P/sub" && cozy --json open) > "$OUT/project-open-named.json" || check "session: open of a subdirectory failed"
 J --arg to "&to=/projects/$ID" '.url | endswith($to)' "$OUT/project-open-named.json" || check "session: open did not find the containing project"
 mkdir -p "$OUT/open-none" "$OUT/open-old"; printf 'version: 1\nassets: {}\n' > "$OUT/open-old/project.yaml"
-(cd "$OUT/open-none" && cozy open --no-open) > "$OUT/open-none.txt" 2> "$OUT/open-none.err" || check "session: open of a fresh directory failed"
+(cd "$OUT/open-none" && cozy open) > "$OUT/open-none.txt" 2> "$OUT/open-none.err" || check "session: open of a fresh directory failed"
 { grep -q '#code=' "$OUT/open-none.txt" && grep -q '&to=/projects/' "$OUT/open-none.txt" && [ -f "$OUT/open-none/project.db" ]; } || check "session: open did not initialize the working directory"
-code=0; (cd "$OUT/open-old" && cozy open --no-open) > "$OUT/open-old.txt" 2>&1 || code=$?
+code=0; (cd "$OUT/open-old" && cozy open) > "$OUT/open-old.txt" 2>&1 || code=$?
 { [ "$code" != 0 ] && ! grep -q '#code=' "$OUT/open-old.txt"; } || check "session: unsupported old format was silently opened"
 code=$(jq -r .url "$OUT/project-open.json" | sed -n 's/.*#code=\([0-9a-f]*\)&.*/\1/p')
 [ "$(curl -sS -o "$OUT/session.json" -w '%{http_code}' -X POST -d "{\"code\":\"$code\"}" "$B/v1/session")" = 200 ] || check "session: its code was not traded: $(cat "$OUT/session.json")"
@@ -4032,7 +4032,7 @@ python3 -m http.server "$port" --bind 127.0.0.1 --directory "$here/project" > "$
 for _ in $(seq 50); do curl -fsS -o /dev/null "http://localhost:$port/cross-site.html" && break; sleep 0.1; done
 # The re-cut the page follows: the edit a second shorter.
 in_project "$P" export | sed -E 's/^( +)- <a>$/\1- {video: <a>, start: 0, end: 120}/' > "$OUT/recut.yaml"
-code_got=$(cd "$OUT" && cozy --json open --no-open | jq -r .url | sed -n 's/.*#code=\([0-9a-f]*\).*/\1/p')
+code_got=$(cd "$OUT" && cozy --json open | jq -r .url | sed -n 's/.*#code=\([0-9a-f]*\).*/\1/p')
 local code=0 log=$HOME/.cozy/calcifer/calcifer.log seen pid
 seen=$(stat -c %s "$log" 2>/dev/null || echo 0)
 pid=$(jq -r .pid "$lock") was_addr=$(jq -r .address "$lock") was_token=$(jq -r .token "$lock")

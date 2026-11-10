@@ -184,5 +184,4 @@ test = "pr: run play, its link serves the output, then expires"
 "machine rent --image-digest" = "pending: release tier, a Hub admin's gated worker-image bake; waits for the CI key"
 
 [open]
-test = "pr: web-serves (e2e/cli/web.sh), every OS: its link, redeemed in Chrome; each refusal; Place and a kill -9 in the page"
-"--print-url" = "pr: web-serves; an existing project's session from its working directory and an older format; an uninitialized directory is refused. Opening a browser: manual, a person on a desktop"
+test = "pr: entrypoints, local authenticated URL and expiry; web-serves redeems the link in Chrome"
