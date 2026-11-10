@@ -478,13 +478,18 @@ picture() {
   echo "$file"
 }
 
+# pinned <package> [function]: a first-party package's `package[/function][@release]`: the release --pins names (an RC's
+# candidate, locked on the Runtime and TensorFS the candidates are, so a machine's own pair stands in for its lock's and
+# its runs speak the candidates' executor protocol), else none: the newest.
+pinned() {
+  local release
+  release=$(tr , '\n' <<< "${PINS:-}" | sed -n "s|^\(_/\)\{0,1\}$1@||p" | head -1)
+  echo "$1${2:+/$2}${release:+@$release}"
+}
 # The BiRefNet target: a pinned release, the packages checkout's directory, or the published release.
 birefnet() {
-  local pin
-  pin=$(tr ',' '\n' <<< "$PINS" | sed -n 's/^birefnet@//p' | head -1)
-  if [ -n "$pin" ]; then echo "birefnet/remove_background@$pin"
-  elif [ -n "$PACKAGES" ]; then echo "./$PACKAGES/birefnet/remove_background"
-  else echo birefnet/remove_background; fi
+  if [ -z "$PACKAGES" ] || [[ $(pinned birefnet) == *@* ]]; then pinned birefnet remove_background
+  else echo "./$PACKAGES/birefnet/remove_background"; fi
 }
 
 echo "::group::start"

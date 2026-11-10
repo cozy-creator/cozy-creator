@@ -66,7 +66,7 @@ on:
         type: string
         default: ''
       pins:
-        description: Package releases the imports suite takes instead of the latest unyanked (name@release,...)
+        description: Package releases the imports and cli-release suites take instead of the latest unyanked (name@release,...)
         type: string
         default: ''
       published:
@@ -484,10 +484,11 @@ jobs:
           KEY: ${{ secrets.COZY_CI_DEVICE_KEY }}
           SKU: ${{ inputs.sku }}
           QUOTE: ${{ inputs.quote && '1' || '' }}
+          PINS: ${{ inputs.pins }}
         run: |
           [ -n "$KEY" ] || { echo "::error::the release-gate environment has no COZY_CI_DEVICE_KEY (release-gate/README.md)"; exit 1; }
           umask 077; printf '%s' "$KEY" > "$RUNNER_TEMP/key.json"
-          code=0; bash .creator/e2e/release/run.sh --out "$RUNNER_TEMP/e2e" --key "$RUNNER_TEMP/key.json" ${SKU:+--sku "$SKU"} ${QUOTE:+--quote} $CANDIDATES 2>&1 | node .creator/e2e/publish/scrub.js || code=$?
+          code=0; bash .creator/e2e/release/run.sh --out "$RUNNER_TEMP/e2e" --key "$RUNNER_TEMP/key.json" ${SKU:+--sku "$SKU"} ${QUOTE:+--quote} ${PINS:+--pins "$PINS"} $CANDIDATES 2>&1 | node .creator/e2e/publish/scrub.js || code=$?
           rm -f "$RUNNER_TEMP/key.json"; exit $code
       - if: always()
         uses: ./.creator/e2e/publish

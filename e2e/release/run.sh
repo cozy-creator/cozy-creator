@@ -8,11 +8,12 @@
 # publish, yank, un-yank and delete, run on this computer's machine or, where the OS runs none (macOS, Windows), on the
 # rental, which first takes --pod-tensord (the candidate's Linux TensorD). On the rental: package install and list,
 # BiRefNet from a YAML request and with --file, each output landed here (one in a folder named with spaces and
-# non-ASCII), machine ls, show and logs, keepalive, a run followed and canceled, an end while a run still goes,
+# non-ASCII), SDXL with a LoRA and its other function, a weights output read after TensorD restarts, a cut upload
+# resumed, machine ls, show and logs, keepalive, a run followed and canceled, an end while a run still goes,
 # checked gone, and the ended rental in `machine ls --history`. The throwaway and the rental are removed in an EXIT
 # trap whatever fails. --quote stops at the rental's quote and rents nothing: the $0 pre-flight of every step before it.
 #   e2e/release/run.sh --out DIR [--key FILE | --installed] [--sku SKU] [--max-hourly USD] [--max-usd USD] [--quote] [--rent-wait S]
-#                      [--rent-lock FILE] [--release DIR]
+#                      [--rent-lock FILE] [--release DIR] [--pins N@R,...]
 #                      [--tensord F|V] [--pod-tensord F|V] [--tensorfs F|V] [--runtime F|V]
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
@@ -29,7 +30,7 @@ listed() { cozy --json machine ls | J --arg m "$1" '.machines | any(.name == $m 
 # The throwaways the suite failed to delete itself, while hubcheck still answers (finish stops it, then the trap runs).
 leftovers() {
   ! cozy --json package info "fidika/$pkg" > /dev/null 2>&1 || cozy --json package delete "fidika/$pkg" -y > /dev/null 2>&1
-  for m in "$model" "$model-copy"; do ! cozy --json model info "$m" > /dev/null 2>&1 || cozy --json model delete "$m" -y > /dev/null 2>&1; done
+  for m in "$model" "$model-copy" "$model-store"; do ! cozy --json model info "$m" > /dev/null 2>&1 || cozy --json model delete "$m" -y > /dev/null 2>&1; done
   return 0
 }
 cleanup() {
@@ -278,23 +279,23 @@ cozy --json model delete "$model" -y > "$OUT/model-delete.json" || check "model 
 ! cozy --json model info "$model" > /dev/null 2>&1 || check "model delete: $model still answers"
 
 step "BiRefNet on $M"
-watched install-birefnet package install birefnet --on "$M" \
-  || check "package install birefnet --on $M failed: $(run_get "$OUT" install-birefnet '.reason.message' | head -c 300)"
+watched install-birefnet package install "$(pinned birefnet)" --on "$M" \
+  || check "package install $(pinned birefnet) --on $M failed: $(run_get "$OUT" install-birefnet '.reason.message' | head -c 300)"
 cozy --json package ls --on "$M" > "$OUT/packages-rental.json" && grep -q birefnet "$OUT/packages-rental.json" || check "package ls --on $M: no birefnet"
 # A request file beside its image, in a folder named with spaces and non-ASCII; its output lands in a project in another such folder.
 far="$OUT/in dir é ü" landing="$OUT/out dir é ü"
 mkdir -p "$far" && cp "$(picture dog1.jpg)" "$far/chien é.jpg" && printf 'image: chien é.jpg\n' > "$far/request é.yaml"
 cozy project new "$landing" > /dev/null || check "project new '$landing' failed"
-if RUN_PROJECT=$landing watched birefnet-yaml run birefnet/remove_background --input "$far/request é.yaml" --on "$M"; then
+if RUN_PROJECT=$landing watched birefnet-yaml run "$(pinned birefnet remove_background)" --input "$far/request é.yaml" --on "$M"; then
   # Downloaded by its digest (cl-819), it is the file the project holds under that digest.
   out=$(run_output "$OUT" birefnet-yaml webp) sha=''
   [ ! -s "$out" ] || sha=$(sha256sum "$out" | cut -c1-64)
   [ -n "$sha" ] && ls "$landing/files/$sha".* > /dev/null 2>&1 \
     || check "birefnet-yaml: its output did not land in '$landing' (${out:-none}, sha256:${sha:-none}; $(ls "$landing/files" 2> /dev/null | tr '\n' ' '))"
   white_background "$out" "$far/chien é.jpg" || check "birefnet-yaml: not a background removal"
-else check "birefnet-yaml: cozy run birefnet/remove_background --input --on $M did not complete: $(run_get "$OUT" birefnet-yaml '.reason.message' | head -c 300)"; fi
+else check "birefnet-yaml: cozy run $(pinned birefnet remove_background) --input --on $M did not complete: $(run_get "$OUT" birefnet-yaml '.reason.message' | head -c 300)"; fi
 dog=$(picture dog2.jpg)
-if run_cell "$OUT" birefnet-asset birefnet/remove_background --file "image=$dog" --on "$M"; then
+if run_cell "$OUT" birefnet-asset "$(pinned birefnet remove_background)" --file "image=$dog" --on "$M"; then
   white_background "$(run_output "$OUT" birefnet-asset webp)" "$dog" || check "birefnet-asset: not a background removal"
   # Downloaded from the rental, its bytes are what the run's record says it made.
   got=$(sha256sum "$(run_output "$OUT" birefnet-asset webp)" | cut -c1-64) made=$(run_get "$OUT" birefnet-asset '[.output[].sha256] | join(" ")')
@@ -303,6 +304,66 @@ if run_cell "$OUT" birefnet-asset birefnet/remove_background --file "image=$dog"
 else check "birefnet-asset: cozy run --file --on $M did not complete: $(run_get "$OUT" birefnet-asset '.reason.message' | head -c 300)"; fi
 cozy --json run ls --on "$M" > "$OUT/runs-rental.json" && J --arg m "$M" '(.runs | length > 0) and all(.runs[]; .machine == $m)' "$OUT/runs-rental.json" \
   || check "run ls --on $M: other machines' runs, or none"
+
+step "SDXL on $M: a LoRA, then the package's other function"
+# The executor protocol (xs-081): a LoRA reaches the executor as an adapter view; a second function is served by the same release.
+if run_cell "$OUT" sdxl-lora "$(pinned sdxl generate)" prompt="a red armchair as flat-pack furniture, catalog photo" seed:=$RANDOM \
+    --lora ostris/ikea-lora-sdxl --on "$M"; then
+  [ -s "$(run_output "$OUT" sdxl-lora 'png|webp|jpg')" ] || check "sdxl-lora: no image came down"
+  grep -q 'ikea-lora-sdxl' "$OUT/sdxl-lora.json" || check "sdxl-lora: its record names no LoRA"
+else check "sdxl-lora: cozy run $(pinned sdxl generate) --lora --on $M did not complete: $(run_get "$OUT" sdxl-lora '.reason.message' | head -c 300)"; fi
+if run_cell "$OUT" sdxl-image "$(pinned sdxl image)" instructions="a lighthouse at dusk, oil painting" seed:=$RANDOM --on "$M"; then
+  [ -s "$(run_output "$OUT" sdxl-image 'png|webp|jpg')" ] || check "sdxl-image: no image came down"
+else check "sdxl-image: cozy run $(pinned sdxl image) --on $M did not complete: $(run_get "$OUT" sdxl-image '.reason.message' | head -c 300)"; fi
+
+step "the content store on $M: a held output across a TensorD restart, a cut upload resumed"
+# cl-843: run objects, held outputs and uploads are the machine's TensorFS store's. A weights output stays on the machine;
+# after TensorD restarts, the live hold rebuilt from its journal keeps it, and an upload of it reads it there.
+ln -sfn "$here/../../release-gate/suites/tensorfs/multi-conversion" "$OUT/ci-multi-conversion"
+src=''
+if (cd "$OUT" && run_cell "$OUT" held-source ./ci-multi-conversion/source seed:=$RANDOM --on "$M"); then src=$(cat "$OUT/held-source.number")
+else check "held-source: a weights output on $M did not complete: $(run_get "$OUT" held-source '.reason.message' | head -c 300)"; fi
+was=$(cozy --json machine show "$M" | jq -r '.status.started_at_ms // empty')
+cozy --json machine update "$M" --gpu-memory-limit off -y > "$OUT/restart.json" 2>&1 \
+  || check "machine update $M --gpu-memory-limit off, a restart: $(tail -c 300 "$OUT/restart.json")"
+now=$(cozy --json machine show "$M" | jq -r '.status.started_at_ms // empty')
+[ -n "$now" ] && [ "$now" != "$was" ] || check "machine update $M --gpu-memory-limit off: TensorD did not restart (started at $was, then $now)"
+if [ -n "$src" ]; then
+  watched held-upload model upload "run:$src#model" "$model-store" --lane bf16 --on "$M" \
+    || check "held-upload: run $src's output after TensorD restarted: $(run_get "$OUT" held-upload '.reason.message' | head -c 300)"
+fi
+# A cut upload to the machine resumes from what the machine holds of it (Partial::held), within one TensorD life.
+uv run -q --no-project python -I - "$OUT/big.safetensors" <<'PY'
+import json, os, struct, sys
+n = 256 << 20
+header = json.dumps({"w": {"dtype": "F16", "shape": [n // 2], "data_offsets": [0, n]}}).encode()
+header += b" " * (-len(header) % 8)
+with open(sys.argv[1], "wb") as f:
+    f.write(struct.pack("<Q", len(header)) + header)
+    for _ in range(n >> 24):
+        f.write(os.urandom(1 << 24))
+PY
+# uploaded <ndjson>: "<first> <most> <total>" bytes of the run's upload to its machine, from its waiting reasons.
+uploaded() {
+  grep '^{' "$1" 2> /dev/null | jq -rn 'def b: capture("(?<n>[0-9.]+) (?<u>[KMGT]?i?B)") | (.n | tonumber) * {"B": 1, "KiB": 1024, "MiB": 1048576, "GiB": 1073741824}[.u];
+    [inputs | select(.type? == "run.waiting") | .reason // "" | select(test("^uploading [^:]+: [0-9]")) | sub("^uploading [^:]+: "; "")
+     | split(" at ")[0] | split("/") | [(.[0] | b), (.[1] | b)]]
+    | if length == 0 then "0 0 0" else "\(.[0][0] | floor) \(map(.[0]) | max | floor) \(.[0][1] | floor)" end'
+}
+cut=0 n=$(run_submit "$OUT" upload-cut model upload "$OUT/big.safetensors" "$model-store" --lane bf16-c --source-format as-is --on "$M")
+while [ -n "$n" ] && kill -0 "$(cat "$OUT/upload-cut.pid")" 2> /dev/null; do
+  read -r _ most total < <(uploaded "$OUT/upload-cut.ndjson")
+  if [ "$total" -gt 0 ] && [ "$most" -ge $((total / 4)) ]; then cozy --json run cancel "$n" > "$OUT/upload-cut-cancel.json" 2>&1; cut=$most; break; fi
+  sleep 0.3
+done
+run_wait "$OUT" upload-cut || true
+if [ "$cut" = 0 ]; then check "upload-cut: never cut a quarter in ($(run_get "$OUT" upload-cut .status): $(tail -c 200 "$OUT/upload-cut.ndjson"))"
+elif watched upload-resume model upload "$OUT/big.safetensors" "$model-store" --lane bf16-c --source-format as-is --on "$M"; then
+  read -r first most total < <(uploaded "$OUT/upload-resume.ndjson")
+  echo "upload-resume: cut at $cut of $total bytes; sent again from $first"
+  [ "$first" -gt 0 ] && [ "$first" -le "$total" ] \
+    || check "upload-resume: cut at $cut bytes, the second upload began at $first of $total$(grep -q 'already holds' "$OUT/upload-resume.ndjson" && echo ': the machine held it whole, so the cancel never cut it')"
+else check "upload-resume: did not complete: $(run_get "$OUT" upload-resume '.reason.message' | head -c 300)"; fi
 
 step "a run on $M followed, then canceled"
 deadline=$(jq '.idle_deadline_ms // 0' "$OUT/rental.json") || true
