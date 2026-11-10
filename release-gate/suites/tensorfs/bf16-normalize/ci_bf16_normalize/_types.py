@@ -9,6 +9,11 @@ import numpy.typing as npt
 if TYPE_CHECKING:
     import tensorfs
     from tensorfs.api import NormalizeBf16Tensor, QuantizeTensor
+    from tensorfs.api import NormalizationResult, QuantizationResult, QuantizedTensor
+
+    type Converted = QuantizedTensor
+    type Conversion = QuantizationResult
+    type Normalization = NormalizationResult
 
     type Selected = NormalizeBf16Tensor
     type Quantize = QuantizeTensor
@@ -64,47 +69,6 @@ class Oracle(Protocol):
     def rowwise(
         self, codes: bytes, weight_dtype: str, scales: bytes, scale_dtype: str, shape: tuple[int, int]
     ) -> F32: ...
-
-
-class Converted(TypedDict):
-    """One tensor of a conversion's result."""
-
-    component: str
-    key: str
-    source_bytes_read: int
-    new_bytes_written: int
-    relative_frobenius: float
-    #: amax, max_abs_error, sse, energy and saturated.
-    measured: Mapping[str, float]
-
-
-class Normalization(TypedDict):
-    """`Writer.normalize_bf16`'s result."""
-
-    identity: str
-    converted_keys: int
-    reused_keys: int
-    source_bytes_read: int
-    logical_source_bytes_read: int
-    new_bytes_written: int
-    required_buffer_bytes: int
-    worst_relative_frobenius: float | None
-    tensors: list[Converted]
-
-
-class Conversion(TypedDict):
-    """`Writer.quantize`'s result."""
-
-    identity: str
-    encoded_keys: int
-    reused_keys: int
-    source_bytes_read: int
-    calibration_bytes_read: int
-    required_buffer_bytes: int
-    new_bytes_written: int
-    saturated_elements: int
-    worst_relative_frobenius: float | None
-    tensors: list[Converted]
 
 
 class Limits(TypedDict, total=False):

@@ -134,7 +134,7 @@ def inspect(payload: Inspect, model: Weights[TwoStacks], ctx: Context) -> Report
         scheme, error = cast("str | None", encoding and encoding.scheme), None  # cast: an Encoding is truthy
         if key.endswith(".weight"):
             want = f32(bits.tobytes(), bits.shape)
-            got = f32(stored.read(key, decode=True).tobytes(), bits.shape)  # stub gap: no decode=True overload
+            got = f32(stored.read(key, decode=True).tobytes(), bits.shape)
             error = float(np.linalg.norm(got - want) / np.linalg.norm(want))
             if scheme != ENCODING:
                 problems.append(f"{component}/{key} is {scheme or 'plain'}, not {ENCODING}")

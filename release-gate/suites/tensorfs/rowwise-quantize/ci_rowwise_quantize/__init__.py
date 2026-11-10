@@ -41,7 +41,7 @@ def run(payload: Request, ctx: Context, tel: Telemetry) -> Report:
 
     torch.set_num_threads(1)
     if payload.mode == "cancel":
-        return cancel_rowwise(payload.seed, tensorfs, np)  # stub gap: tensorfs.__all__ lacks `_ext`
+        return cancel_rowwise(payload.seed, tensorfs, np)  # `_ext` is private: the Protocol names it
     assert payload.mode == "basic"
     rows, cols = 7, 256
     kinds = [

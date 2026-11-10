@@ -9,9 +9,13 @@ import numpy.typing as npt
 
 if TYPE_CHECKING:
     import tensorfs
-    from tensorfs import raw
     from tensorfs.api import QuantizeFit, QuantizeTensor
     from torch import Tensor
+    from tensorfs.api import FitResult, QuantizationResult, QuantizedTensor
+
+    type Converted = QuantizedTensor
+    type Conversion = QuantizationResult
+    type FitDetails = FitResult
 
     type Parts = dict[str, tensorfs.Array]
     type Selection = QuantizeTensor
@@ -47,42 +51,6 @@ if TYPE_CHECKING:
         def xmax(self) -> Tensor: ...
         @property
         def rows(self) -> Tensor: ...
-
-    class FitDetails(TypedDict):
-        strategy: str
-        alpha: float
-        residual: raw.QuantizationStats
-        calibration_error: float
-        plain_nvfp4_error: float
-        calibration_bytes_read: int
-        required_buffer_bytes: int
-        workers: int
-        fit_seconds: float
-
-    class Converted(TypedDict):
-        """One tensor of a conversion's result."""
-
-        component: str
-        key: str
-        source_bytes_read: int
-        new_bytes_written: int
-        relative_frobenius: float
-        measured: raw.QuantizationStats
-        fit: NotRequired[FitDetails]
-
-    class Conversion(TypedDict):
-        """`Writer.quantize`'s result."""
-
-        identity: str
-        encoded_keys: int
-        reused_keys: int
-        source_bytes_read: int
-        calibration_bytes_read: int
-        required_buffer_bytes: int
-        new_bytes_written: int
-        saturated_elements: int
-        worst_relative_frobenius: float | None
-        tensors: list[Converted]
 
     class Facts(TypedDict):
         """`check_selected`'s account of one selected weight."""

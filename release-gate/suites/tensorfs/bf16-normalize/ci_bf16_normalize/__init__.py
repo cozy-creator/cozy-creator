@@ -96,9 +96,9 @@ def run(payload: Request, ctx: Context, tel: Telemetry) -> Report:
         directory = Path(temporary)
         result: t.Basic | t.Cancel
         if payload.mode == "cancel":
-            result = cancel(directory, payload.seed, tensorfs, np, oracle)  # stub gap: tensorfs.__all__ lacks `raw`
+            result = cancel(directory, payload.seed, tensorfs, np, oracle)
         else:
-            result = basic(directory, payload.seed, tensorfs, np, oracle, ctx, tel, payload.runtime)  # stub gap: as above
+            result = basic(directory, payload.seed, tensorfs, np, oracle, ctx, tel, payload.runtime)
         result.update({
             "mode": payload.mode, "tensorfs": tensorfs.__version__, "numpy": np.__version__,
             "native_sha256": hashlib.sha256(Path(tensorfs._ext.__file__).read_bytes()).hexdigest(),
