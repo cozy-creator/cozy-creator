@@ -38,7 +38,8 @@ use tensorfs::{
 use crate::catalog::normalized;
 
 /// This machine's Runtime/TensorFS pair: what unlocked code is offered first, and what goes over
-/// a lock whose pair it is a later patch of (`Publisher::stands_in`). Empty `requirements`: none.
+/// a lock whose pair it is a later patch of, or that can't speak this machine's executor protocol
+/// (`Publisher::stands_in`). Empty `requirements`: none.
 #[derive(Clone, Debug)]
 pub(crate) struct PackageSdk {
     pub uv: crate::machine::uv::Uv,
@@ -299,6 +300,7 @@ struct Environment<'a> {
 
 pub(crate) struct Publisher {
     pub(crate) sdk: PackageSdk,
+    scope_namespace: String,
     machine: Arc<Machine>,
     store: Arc<Store>,
     /// One maker per source: a second asker waits, then finds it held (runs 5393/5394).
@@ -344,9 +346,10 @@ impl Drop for Building<'_> {
 }
 
 impl Publisher {
-    pub(crate) fn new(sdk: PackageSdk, machine: Arc<Machine>) -> Arc<Self> {
+    pub(crate) fn new(sdk: PackageSdk, machine: Arc<Machine>, engine: &Path) -> Arc<Self> {
         Arc::new(Self {
             sdk,
+            scope_namespace: platform::contain::namespace(engine),
             store: machine.store().clone(),
             machine,
             making: Mutex::new(HashMap::new()),
@@ -1126,7 +1129,7 @@ impl Publisher {
     /// the lock covers installs it. The wheels the release's Hub hosts (its project wheel, its
     /// carried git dependencies, its org's packages) come through TensorFS's downloader instead
     /// and install from disk. The pair is the lock's at its series' newest released patch, or this
-    /// machine's where that is a later patch of the lock's (`Publisher::stands_in`).
+    /// machine's where it stands in for the lock's (`Publisher::stands_in`).
     fn generation(
         &self,
         generations: &Path,

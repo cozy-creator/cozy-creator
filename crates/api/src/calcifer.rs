@@ -595,9 +595,15 @@ impl OutputItem {
     }
 }
 
-/// What an output is called as a file, in its run's output directory or where a client downloads it: `<number>-<name>[-<i>]`
-/// and its media type's extension (none for a folder).
+/// An export filename with complete output name/index identity, shared by Calcifer and client downloads.
+/// Sanitizing or truncating the readable part cannot merge distinct slots; TensorFS objects stay content-addressed.
 pub fn output_file_name(number: u64, name: &str, index: u32, media_type: &str) -> String {
+    use sha2::{Digest as _, Sha256};
+    let mut identity = Sha256::new();
+    identity.update((name.len() as u64).to_le_bytes());
+    identity.update(name.as_bytes());
+    identity.update(index.to_le_bytes());
+    let identity = hex::encode(identity.finalize());
     let name: String = (name.chars().take(128))
         .map(|c| match c {
             'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '_' | '-' => c,
@@ -625,7 +631,7 @@ pub fn output_file_name(number: u64, name: &str, index: u32, media_type: &str) -
         "text/plain" => ".txt",
         _ => "",
     };
-    stem + extension
+    format!("{stem}-{identity}{extension}")
 }
 
 /// The machine's progress report, as it last sent it.
@@ -905,6 +911,32 @@ pub struct Shown {
     pub projects: Vec<String>,
 }
 
+/// The Readers installed by `PUT /v1/events/{stream}`. IDs not in `held` are not acknowledged;
+/// at most 64 IDs are attempted, and attempted IDs that could not open retain their refusal.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ProjectShowReply {
+    pub held: Vec<String>,
+    pub refused: BTreeMap<String, ProjectShowRefusal>,
+}
+
+/// One requested project's refusal, independent of the other projects on the same stream.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ProjectShowRefusal {
+    pub status: u16,
+    pub error: crate::error::Error,
+}
+
+/// A project event's position in one controller process. Generations never compare across
+/// restarts; a full snapshot covers only positions captured before its read began.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ProjectEventCursor {
+    pub generation: String,
+    pub sequence: u64,
+}
+
 /// `GET /v1/events`: what a client keeps on screen, on one stream, each thing whole as its route
 /// answers it. No backlog: a client subscribes, then reads what it holds.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -921,7 +953,8 @@ pub enum StreamEvent {
     /// It left the list.
     #[serde(rename = "machine.removed")]
     MachineRemoved { name: String },
-    /// `rev` is opaque, and changes whenever project.yaml or project.lock does.
+    /// `rev` is opaque, and changes whenever project.yaml or project.lock does. Optional
+    /// `cursor` is its emission position, comparable only with the same controller generation.
     #[serde(rename = "project.changed")]
     ProjectChanged {
         id: String,
@@ -935,6 +968,8 @@ pub enum StreamEvent {
         /// What's said of the project besides its assets changed: `GET /v1/projects/{id}?assets=false`.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         head: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor: Option<ProjectEventCursor>,
     },
     /// The rows of a project's canvas that changed, at revision `seq`; none is a row gone.
     #[serde(rename = "canvas")]

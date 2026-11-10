@@ -238,6 +238,21 @@ fi
   || check "own references: <Nobody> was not refused with the command that makes it a box (exit $code): $(tail -c 300 "$OUT/own-refs-nothing.json")"
 }
 
+# cl-854: a lock on Runtime 0.43 can't speak a 0.23 machine's executor protocol. One whose range takes the machine's
+# Runtime runs on it, its install saying to re-lock; one whose range refuses it installs nothing, refused in one line
+# naming the re-lock. Both locks are PyPI's 0.43.1 and TensorFS 0.22.1.
+old_runtime() {
+step "a lock on an older executor protocol: the machine's pair where its range takes it, else one line naming the re-lock"
+local code=0
+if cell old-runtime "$here/old-runtime/takes/echo" text=old; then
+  grep -q "can't speak this machine's executor protocol.*cozy package lock --upgrade-package cozy-runtime" "$OUT/old-runtime.err" \
+    || check "old runtime: its install doesn't say it runs on the machine's pair, or how to re-lock: $(grep -m1 warning "$OUT/old-runtime.err" | head -c 400)"
+fi
+cozy --json run -p "$RUN_PROJECT" "$here/old-runtime/refuses/echo" text=old --on local > "$OUT/old-runtime-refused.json" 2>&1 || code=$?
+[ "$code" != 0 ] && grep -q runtime_protocol_unspoken "$OUT/old-runtime-refused.json" && grep -q 'cozy package lock --upgrade-package cozy-runtime' "$OUT/old-runtime-refused.json" \
+  || check "old runtime: a range refusing the machine's Runtime wasn't refused naming the re-lock (exit $code): $(tail -c 400 "$OUT/old-runtime-refused.json")"
+}
+
 # cl-779: Calcifer's ffmpeg and ffprobe read only the file they are given. A playlist and a concat list, each named as a
 # clip, name a FIFO beside them; a reader opening it lets a waiting writer finish. Imported (a probe, a thumbnail) before
 # a real clip whose probe is awaited, neither may open it. Today the import's own sniff refuses both ("no picture, video

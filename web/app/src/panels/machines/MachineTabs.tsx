@@ -134,11 +134,11 @@ function Activity({ machine, doing, boxes, to, chip, close }: { machine: Machine
 
 /** Each machine, top right, `local` first: what it's doing at a glance, and a click shows each thing with how far it is. Kept by the stream. */
 export function MachineTabs({ to, projectId }: { to: (rest?: string) => string; projectId: string | null }) {
-  const { client } = useConnection()
+  const { client, stream } = useConnection()
   const { data } = useQuery(machinesQuery(client))
   const running = useQuery(runsQuery(client, { status: "in_progress" }, 100))
   const queued = useQuery(runsQuery(client, { status: "queued" }, 100))
-  const { data: project } = useQuery({ ...projectQuery(client, projectId ?? ""), enabled: Boolean(projectId) })
+  const { data: project } = useQuery({ ...projectQuery(client, stream, projectId ?? ""), enabled: Boolean(projectId) })
   const [open, setOpen] = useState<{ name: string; chip: HTMLElement } | null>(null)
   const machines = (data?.machines ?? [])
     .filter((machine) => machine.kind !== "rental" || (machine.ordered !== false && machine.state !== "ended"))
