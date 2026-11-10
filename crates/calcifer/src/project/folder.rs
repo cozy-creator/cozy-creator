@@ -1626,16 +1626,17 @@ impl Folder {
         (file.stays() || self.path(&file.path).is_file()).then(|| Kept { field: file.field(), file, already: true })
     }
 
-    /// The held file at `at`, of `sha256`, moved into `files/` and recorded in project.lock. Err: why not.
+    /// The held file at `at`, of `sha256`, in `files/` and recorded in project.lock: a hard link to the store's object, which stays
+    /// the store's, else a copy. Err: why not.
     pub(crate) fn take_held(&self, at: &Path, sha256: &str) -> Result<Kept, String> {
         let mut head = Vec::new();
         std::fs::File::open(at).and_then(|file| file.take(8192).read_to_end(&mut head)).map_err(|e| e.to_string())?;
         let (kind, field) = media(infer::get(&head))?;
         let path = file_named(sha256, kind.extension());
-        self.recorded(path, sha256.to_owned(), field, |part| match std::fs::rename(at, part) {
+        self.recorded(path, sha256.to_owned(), field, |part| match std::fs::hard_link(at, part) {
             Ok(()) => Ok(()),
             // Another disk.
-            Err(_) => std::fs::copy(at, part).and_then(|_| std::fs::remove_file(at)),
+            Err(_) => std::fs::copy(at, part).map(drop),
         })
     }
 

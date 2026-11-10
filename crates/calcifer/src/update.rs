@@ -17,7 +17,6 @@ use axum::{
 use api::{
     calcifer::{self as wire, Component, DevBuild, Machine, MachineKind, MachineStatus, MachineUpdate, On, Run, StagedInput, Status, SubmitRun, Updating},
     error::{Error, Kind},
-    ids::Digest,
     machine as v1,
 };
 use serde_json::{Value, json};
@@ -50,25 +49,12 @@ pub(crate) fn update_command(name: &str) -> String {
 
 /// This very `cozy`, held as a file an update stages (`--tensord <path>`): what a machine of this computer's platform runs to be on
 /// this build when it has no release to fetch.
-async fn this_build(calcifer: &crate::Calcifer) -> Result<DevBuild, Error> {
+async fn this_build() -> Result<DevBuild, Error> {
     let unreadable = |e: std::io::Error| Error::new(Kind::Unavailable, "cozy_unreadable", format!("this cozy's binary: {e}"));
     let exe = std::env::current_exe().map_err(unreadable)?;
-    let dir = crate::runs::files::dir(calcifer);
-    let digest = tokio::task::spawn_blocking(move || -> std::io::Result<Digest> {
-        let bytes = std::fs::read(&exe)?;
-        let digest = Digest::of(&bytes);
-        let held = dir.join(hex::encode(digest.bytes()));
-        if !held.is_file() {
-            std::fs::create_dir_all(&dir)?;
-            let part = dir.join(format!("{}.cozy", hex::encode(digest.bytes())));
-            std::fs::write(&part, &bytes)?;
-            std::fs::rename(&part, &held)?;
-        }
-        Ok(digest)
-    })
-    .await
-    .map_err(|e| Error::internal("cozy_unreadable", e.to_string()))?
-    .map_err(unreadable)?;
+    let digest = tokio::task::spawn_blocking(move || crate::runs::files::hold(&std::fs::read(&exe).map_err(unreadable)?))
+        .await
+        .map_err(|e| Error::internal("cozy_unreadable", e.to_string()))??;
     Ok(DevBuild { sha256: digest, name: "cozy".into(), version: Some(env!("CARGO_PKG_VERSION").into()) })
 }
 
@@ -130,7 +116,7 @@ impl Machines {
             Some(installed) => Component::Version(installed),
             None if !dev_build() => Component::Version(own.into()),
             None if m.status.as_ref().is_some_and(|status| status.platform == format!("{}/{}", std::env::consts::OS, std::env::consts::ARCH)) => {
-                Component::File(this_build(&self.calcifer).await?)
+                Component::File(this_build().await?)
             }
             None => return Err(refused("this cozy is a dev build of another platform than it, with no release to fetch".into())),
         };
@@ -221,7 +207,7 @@ impl Machines {
                 }
                 Component::File(build) => build,
             };
-            let (file, input, version) = measured(&self.calcifer, path, distribution)?;
+            let (file, input, version) = measured(path, distribution)?;
             named.push(format!("{member} {} (dev)", version.as_deref().unwrap_or(&file)));
             inputs.push(v1::InputFile {
                 field: member.into(),
@@ -436,17 +422,16 @@ async fn prerelease(distribution: &str, version: &str, platform: &str) -> Result
 
 /// A held dev build of `distribution` (or, empty, a `cozy` binary): its file name, what the run stages, and for a `cozy` binary the
 /// release its client says it is.
-fn measured(calcifer: &crate::Calcifer, build: DevBuild, distribution: &str) -> Result<(String, StagedInput, Option<String>), Error> {
+fn measured(build: DevBuild, distribution: &str) -> Result<(String, StagedInput, Option<String>), Error> {
     let refused = |why: String| Error::new(Kind::Validation, "wheel_refused", why);
     let DevBuild { sha256, name, version } = build;
     let named = name.starts_with(&format!("{distribution}-")) && name.ends_with(".whl") && !name.contains(['/', '\\']);
     if !distribution.is_empty() && !named {
         return Err(refused(format!("{name} is not a {distribution} wheel file ({distribution}-<version>-….whl)")));
     }
-    let Some(path) = crate::runs::files::held(calcifer, &sha256) else {
+    let Some(path) = crate::runs::files::held(&sha256) else {
         return Err(Error::new(Kind::NotFound, "file_not_held", format!("Calcifer holds no file {sha256} ({name})")).remedy(format!("PUT its bytes to /v1/files/{sha256} first")));
     };
-    crate::runs::files::touch(&path);
     let length = std::fs::metadata(&path).map_err(|e| refused(format!("{name}: {e}")))?.len();
     let version = version.filter(|_| distribution.is_empty());
     Ok((name, StagedInput { path, digest: sha256, length }, version))

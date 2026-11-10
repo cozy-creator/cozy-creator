@@ -4,7 +4,7 @@
 //! On a low disk a sweep drops, least recently used first until it is not low: uv cache
 //! entries no environment links, settled logs, memoized stages, update downloads, unused
 //! generations (then the uv entries only they linked), compiled kernels, only when they alone
-//! lift it, and last a run's held outputs (`Objects::make_room`). Garbage goes every sweep once
+//! lift it, and last, once the store evicted what it may, a run's held outputs (`Objects::make_room`). Garbage goes every sweep once
 //! idle: a run's result copies once nothing reads them, a generation
 //! whose build failed, an editable environment no generation names, a Runtime pair neither
 //! selected nor kept to roll back to, an unbound environment on a PyTorch base no longer active,
@@ -179,7 +179,7 @@ impl Kind {
     fn name(self) -> &'static str {
         match self {
             Kind::Staging => "staging spools",
-            Kind::Object => "run objects",
+            Kind::Object => "held outputs' objects",
             Kind::UvCache => "uv cache entries",
             Kind::Result => "result copies",
             Kind::Log => "logs",

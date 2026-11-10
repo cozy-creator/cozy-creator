@@ -1382,8 +1382,12 @@ n=$(jq -r '.run.number // empty' <<< "$asked")
 J '.status == "completed"' <<< "$(ended "$n")" || check "path-free: run $n given a held file did not complete"
 [ -f "$R/files/$hex.png" ] || check "path-free: the file a run was given is not in files/: $(ls "$R/files")"
 [ -n "$(file_at "$R" "$hex")" ] || check "path-free: the file a run was given is not in the project"
-# What held it is gone, as a day later.
-rm -f "$HOME/.cozy/calcifer/files/$hex"
+# Calcifer holds it in this computer's TensorFS store, which is its owner's alone (cl-843).
+local held=${TENSORFS_HOME:-$HOME/.cache/tensorfs}/blobs/${hex:0:2}/${hex:2:2}/$hex
+[ -f "$held" ] || check "path-free: the held file is not in the TensorFS store"
+[ ! -e "$HOME/.cozy/calcifer/files" ] || check "path-free: Calcifer still keeps files of its own: $(ls "$HOME/.cozy/calcifer/files" | head -3)"
+# What held it is gone, as once the store let it go.
+rm -f "$held"
 [ "$(api -o /dev/null -w '%{http_code}' -I "http://$ADDR/v1/files/sha256:$hex")" = 404 ] || check "path-free: the held file is still held"
 input=$(cozy --json --full run show "$n" | jq -c .request.input)
 J --arg s "sha256:$hex" '.image == $s' <<< "$input" || check "path-free: request.input: $input"

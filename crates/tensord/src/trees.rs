@@ -1,11 +1,11 @@
 //! Retained file trees: a run's native inputs, a result's bytes, each a `api::tree` document
-//! and its files. One hold in the run objects' store (`cas`), `tree-<owner>`, keeps the document
-//! and every file until the owner releases it.
+//! and its files. One use in the machine's store, named by its owner, keeps the document and every
+//! file past a restart; the machine holds them while it runs (`Objects::sweep`).
 use std::{collections::BTreeMap, io};
 
 use api::tree::{self, Member};
 
-use crate::cas::{Cas, Hold};
+use crate::{execution::Engine, storage};
 use tensorfs::format::ObjectRef;
 
 /// A held tree: its hold's id, its document and the bytes of its files.
@@ -16,9 +16,9 @@ pub(crate) struct Tree {
     pub content: u64,
 }
 
-/// The hold that keeps `owner`'s tree.
-fn id(owner: &str) -> String {
-    format!("tree-{}", tensorfs::sha256::hex_digest(owner.as_bytes()))
+/// The use that keeps `owner`'s tree.
+pub(crate) fn name(owner: &str) -> String {
+    tensorfs::sha256::hex_digest(owner.as_bytes())
 }
 
 /// A tree's document for `files`.
@@ -34,19 +34,25 @@ pub(crate) fn parse(bytes: &[u8]) -> io::Result<BTreeMap<String, ObjectRef>> {
 }
 
 /// Holds the tree of `files` (each already held) for `owner`. Idempotent per owner.
-pub(crate) fn put(cas: &Cas, owner: &str, files: BTreeMap<String, ObjectRef>) -> io::Result<Tree> {
-    let manifest = cas.put_bytes(&document(&files))?;
-    hold(cas, owner, manifest, &files)
-}
-
-/// Holds `manifest`, a tree of `files` already held, for `owner`.
-pub(crate) fn hold(cas: &Cas, owner: &str, manifest: ObjectRef, files: &BTreeMap<String, ObjectRef>) -> io::Result<Tree> {
+pub(crate) fn put(engine: &Engine, owner: &str, files: BTreeMap<String, ObjectRef>) -> io::Result<Tree> {
+    let manifest = storage::put(&engine.store, &document(&files)[..], None)?;
     let mut roots = vec![manifest.clone()];
     for file in files.values() {
+        if !engine.store.reuse(file).map_err(storage::io_error)? {
+            return Err(io::Error::new(io::ErrorKind::NotFound, format!("object {} is absent", file.id())));
+        }
         if !roots.contains(file) {
             roots.push(file.clone());
         }
     }
-    cas.hold(&id(owner), &Hold { owner: owner.to_string(), roots })?;
-    Ok(Tree { hold: id(owner), manifest, content: files.values().map(|f| f.length).sum() })
+    engine.store.used(&name(owner), &roots).map_err(storage::io_error)?;
+    Ok(Tree { hold: format!("tree-{}", name(owner)), manifest, content: files.values().map(|f| f.length).sum() })
+}
+
+/// A held tree's document and files, when its document is still here.
+pub(crate) fn roots(store: &storage::Store, manifest: &ObjectRef) -> Option<Vec<ObjectRef>> {
+    let files = parse(&store.read(manifest).ok()?).ok()?;
+    let mut roots = vec![manifest.clone()];
+    roots.extend(files.into_values().filter(|file| file != manifest));
+    Some(roots)
 }

@@ -198,7 +198,8 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
     boot.at("journal");
     // A tool that composes holds a CPU slot while it computes, and every run's output work takes one: one slot for every four cores.
     let cpu_slots = std::thread::available_parallelism().map_or(1, |cores| (cores.get() / 4).max(1));
-    let service = crate::service::Service::open(&engine, &generations, cpu_slots)?;
+    let service = crate::service::Service::open(&engine, &generations, cpu_slots, store.clone())?;
+    crate::objects::restore(&service.engine, &engine.join("writes"))?;
     // A short store admit frees the machine's garbage before the store evicts a model.
     let reclaimer = Arc::downgrade(&service);
     store.on_short(move |incoming| reclaimer.upgrade().into_iter().for_each(|service| service.reclaim_for(incoming)));
@@ -375,7 +376,6 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
         &generations,
         identity,
         api,
-        &store,
         &machine,
         &service,
         sdk,
@@ -417,7 +417,6 @@ fn start_api(
     generations: &std::path::Path,
     identity: crate::api::MachineIdentity,
     listener: std::net::TcpListener,
-    store: &Arc<Store>,
     machine: &Arc<Machine>,
     service: &Arc<crate::service::Service>,
     sdk: crate::published::PackageSdk,
@@ -425,10 +424,9 @@ fn start_api(
     reach: Option<String>,
 ) -> io::Result<()> {
     use crate::api;
-    let store = store.clone();
     let publisher = crate::published::Publisher::new(sdk, machine.clone());
     service.configure_publisher(publisher.clone());
-    let objects = Arc::new(crate::objects::Objects::new(&root.join("writes"), service.engine.clone(), store.clone())?);
+    let objects = Arc::new(crate::objects::Objects::new(service.engine.clone()));
     service.engine.hold_memos(&objects);
     let runs = Arc::new(crate::runs::Runs {
         service: service.clone(),

@@ -229,11 +229,11 @@ impl Calls {
         (Caller { calls: self.clone(), parent }, rows)
     }
 
-    /// Write roots no unfinished run needs (`objects::Objects::sweep`).
-    pub(crate) fn sweep_objects(&self) -> io::Result<(usize, u64)> {
+    /// What the store must not evict now (`objects::Objects::sweep`).
+    pub(crate) fn sweep_objects(&self) -> io::Result<()> {
         match self.runs.upgrade() {
             Some(runs) => runs.objects.sweep(),
-            None => Ok((0, 0)),
+            None => Ok(()),
         }
     }
 

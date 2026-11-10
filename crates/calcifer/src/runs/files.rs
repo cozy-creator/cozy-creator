@@ -1,66 +1,87 @@
 //! `PUT`/`HEAD /v1/files/sha256:<hex>`: the one way a client's files reach Calcifer, by content, for a run to name (`sha256:<hex>` at
 //! an input, or under a path in its `paths`), a project to import, a model to upload or a machine to update, as a machine takes
-//! objects: byte ranges in any order, several side by side, resuming from the ranges held. Bytes wait in `parts/` and are named only
-//! once every one is held and they hash to the name. Calcifer reads no client's disk. Held under Calcifer's home; a file or part
-//! unused for a day goes the next time an upload starts, and a `HEAD` that finds one held counts as a use.
+//! objects: byte ranges in any order, several side by side, resuming from the ranges held. Calcifer reads no client's disk. A file is
+//! an object of this computer's TensorFS store, where its own machine holds its runs' objects too: its upload is the store's partial
+//! (`Store::partial`), named only once every byte is held and they hash to the name, and kept as the store keeps what is used
+//! (`Store::used`). A `HEAD` that finds one held counts as a use.
 use std::{
     collections::HashMap,
-    fs::{self, File as Disk},
     path::{Path, PathBuf},
     sync::{
-        Arc, LazyLock, Mutex, Weak,
+        Arc, LazyLock, Mutex, OnceLock, Weak,
         atomic::{AtomicBool, Ordering},
     },
-    time::{Duration, SystemTime},
 };
 
 use axum::{
     Json,
     body::{Body, Bytes},
-    extract::{Path as UrlPath, State},
+    extract::Path as UrlPath,
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse as _, Response},
 };
 use futures_util::StreamExt as _;
-use platform::durable::{self, FileAt as _};
 use api::{
     calcifer::File,
     error::{Error, Kind},
     ids::Digest,
     machine::{HELD, spell_held},
 };
-use sha2::{Digest as _, Sha256};
-
-use crate::{
-    Calcifer,
-    api::{Api, Refusal},
+use tensorfs::{
+    err::Code,
+    format::ObjectRef,
+    store::{Partial, Store},
 };
 
-/// A file or part unused this long goes the next time an upload starts.
-const UNUSED: Duration = Duration::from_secs(24 * 60 * 60);
+use crate::api::Refusal;
 
 /// Byte ranges `[start, end)`, sorted and apart.
 type Ranges = Vec<(u64, u64)>;
 
-/// Uploads under way, by part file.
-static UPLOADS: LazyLock<Mutex<HashMap<PathBuf, Weak<Upload>>>> = LazyLock::new(Mutex::default);
+/// Each file's upload not yet named: its length, and the upload while writes carry it. One that was cut keeps its length, so what
+/// the store kept of it can be said.
+static UPLOADS: LazyLock<Mutex<HashMap<Digest, Begun>>> = LazyLock::new(Mutex::default);
+type Begun = (u64, Weak<Upload>);
+
+/// This computer's TensorFS store (`TENSORFS_HOME`, else `~/.cache/tensorfs`), its owner's alone to read.
+pub(crate) fn store() -> Result<&'static Store, Error> {
+    static STORE: OnceLock<Store> = OnceLock::new();
+    if let Some(store) = STORE.get() {
+        return Ok(store);
+    }
+    let unusable = |why: String| Error::new(Kind::Unavailable, "file_store_unusable", format!("this computer's TensorFS store: {why}"));
+    let root = tensorfs::home::resolve(None).map_err(|e| unusable(e.to_string()))?;
+    let store = Store::open(root).map_err(|e| unusable(e.to_string()))?;
+    let _ = platform::durable::set_mode(store.root(), 0o700);
+    Ok(STORE.get_or_init(|| store))
+}
+
+fn object(digest: &Digest, length: u64) -> ObjectRef {
+    ObjectRef { sha256: hex::encode(digest.bytes()), length }
+}
+
+fn refused(refusal: tensorfs::err::Refusal) -> Refusal {
+    let (kind, code) = match refusal.code {
+        Code::OBJECT_ID_MISMATCH => (Kind::Validation, "file_digest_mismatch"),
+        Code::CAPACITY_EXHAUSTED => (Kind::Capacity, "disk_full"),
+        _ => (Kind::Internal, "file_unwritable"),
+    };
+    Refusal(Error::new(kind, code, refusal.detail))
+}
 
 /// One file's upload, shared by the writes that carry its ranges.
 struct Upload {
     digest: Digest,
     length: u64,
-    /// Where it goes once whole.
-    held_at: PathBuf,
-    part: PathBuf,
-    file: Disk,
-    held: Mutex<Ranges>,
-    /// One settle at a time records what landed.
+    /// The store's partial, until the settle that names the file takes it.
+    partial: Mutex<Option<Partial>>,
+    /// One settle at a time.
     settling: Mutex<()>,
     /// Named or dropped: later writes land nowhere, and a new upload starts afresh.
     ended: AtomicBool,
 }
 
-/// How an upload stands once what landed is recorded.
+/// How an upload stands.
 enum Settled {
     Partly(Ranges),
     /// Named now.
@@ -70,61 +91,28 @@ enum Settled {
 }
 
 impl Upload {
-    /// Lands `data` at `offset`.
-    fn write_at(&self, offset: u64, data: &[u8]) -> std::io::Result<()> {
-        if self.ended.load(Ordering::Acquire) {
-            return Ok(());
-        }
-        self.file.write_all_at(data, offset)?;
-        insert(&mut self.held.lock().expect("held lock"), (offset, offset + data.len() as u64));
-        Ok(())
-    }
-
     fn held(&self) -> Ranges {
-        self.held.lock().expect("held lock").clone()
+        self.partial.lock().expect("partial lock").as_ref().map_or_else(|| whole(self.length), Partial::held)
     }
 
-    /// Records what landed, synced; whole, its bytes are verified and it is named.
+    /// Whole, its bytes are verified and it is named.
     fn settle(&self) -> Result<Settled, Refusal> {
         let _settling = self.settling.lock().expect("settling lock");
         if self.ended.load(Ordering::Acquire) {
             return Ok(Settled::Held);
         }
-        let failed = |e: std::io::Error| unwritable(&self.part, e);
         let held = self.held();
-        self.file.sync_data().map_err(failed)?;
         if held != whole(self.length) {
-            write_held(&self.part, self.length, &held).map_err(failed)?;
             return Ok(Settled::Partly(held));
         }
         self.ended.store(true, Ordering::Release);
-        UPLOADS.lock().expect("uploads lock").remove(&self.part);
-        let got = hashed(&self.part).map_err(failed)?;
-        let _ = fs::remove_file(held_path(&self.part));
-        if got != self.digest {
-            let _ = fs::remove_file(&self.part);
-            return Err(mismatch(got, self.digest));
-        }
-        fs::rename(&self.part, &self.held_at).map_err(failed)?;
-        let _ = durable::sync_dir(self.held_at.parent().expect("a file's folder"));
+        UPLOADS.lock().expect("uploads lock").remove(&self.digest);
+        let partial = self.partial.lock().expect("partial lock").take().expect("an upload has its partial until it ends");
+        partial.commit().map_err(refused)?;
+        let object = object(&self.digest, self.length);
+        store().map_err(Refusal)?.used(&object.sha256, [&object]).map_err(|e| refused(e.refusal()))?;
         Ok(Settled::Whole)
     }
-}
-
-/// Adds `[start, end)` to `ranges`, merging what it touches.
-fn insert(ranges: &mut Ranges, (mut start, mut end): (u64, u64)) {
-    if start >= end {
-        return;
-    }
-    ranges.retain(|&(s, e)| {
-        let apart = e < start || s > end;
-        if !apart {
-            (start, end) = (start.min(s), end.max(e));
-        }
-        apart
-    });
-    let at = ranges.partition_point(|&(s, _)| s < start);
-    ranges.insert(at, (start, end));
 }
 
 fn whole(length: u64) -> Ranges {
@@ -134,85 +122,42 @@ fn whole(length: u64) -> Ranges {
     }
 }
 
-/// The record of what a part holds, its file's length and the ranges synced.
-fn held_path(part: &Path) -> PathBuf {
-    part.with_extension("held")
+/// The file Calcifer holds under `digest`, if whole. Finding it is a use.
+pub(crate) fn held(digest: &Digest) -> Option<PathBuf> {
+    let store = store().ok()?;
+    let path = store.path(&object(digest, 0)).ok()?;
+    let object = object(digest, std::fs::metadata(&path).ok()?.len());
+    (store.reuse(&object).ok()? && store.used(&object.sha256, [&object]).is_ok()).then_some(path)
 }
 
-fn read_held(part: &Path) -> Option<(u64, Ranges)> {
-    serde_json::from_slice(&fs::read(held_path(part)).ok()?).ok()
+/// `bytes` as a file Calcifer holds.
+pub(crate) fn hold(bytes: &[u8]) -> Result<Digest, Error> {
+    let unwritable = |e: tensorfs::store::Error| Error::new(Kind::Internal, "file_unwritable", e.to_string());
+    let store = store()?;
+    let object = store.put_bytes(bytes).map_err(unwritable)?;
+    store.used(&object.sha256, [&object]).map_err(unwritable)?;
+    Ok(Digest::of(bytes))
 }
 
-fn write_held(part: &Path, length: u64, held: &Ranges) -> std::io::Result<()> {
-    let path = held_path(part);
-    let next = path.with_extension("held.next");
-    fs::write(&next, serde_json::to_vec(&(length, held))?)?;
-    fs::rename(next, path)
-}
-
-fn hashed(path: &Path) -> std::io::Result<Digest> {
-    let mut hasher = Sha256::new();
-    std::io::copy(&mut Disk::open(path)?, &mut hasher)?;
-    Ok(Digest::from_bytes(hasher.finalize().into()))
-}
-
-fn mismatch(got: Digest, digest: Digest) -> Refusal {
-    Refusal(Error::new(Kind::Validation, "file_digest_mismatch", format!("the bytes sent hash to {got}, not {digest}")))
-}
-
-fn unwritable(path: &Path, e: std::io::Error) -> Refusal {
-    Refusal(Error::new(Kind::Internal, "file_unwritable", format!("{}: {e}", path.display())))
-}
-
-/// Where uploaded files are held, by their digest's hex.
-pub(crate) fn dir(calcifer: &Calcifer) -> PathBuf {
-    calcifer.home().join("files")
-}
-
-/// The file Calcifer holds under `digest`, if whole.
-pub(crate) fn held(calcifer: &Calcifer, digest: &Digest) -> Option<PathBuf> {
-    Some(dir(calcifer).join(hex::encode(digest.bytes()))).filter(|path| path.is_file())
-}
-
-/// `name`'s upload as `length` bytes: going, or begun from what its record says landed.
-fn open(calcifer: &Calcifer, digest: Digest, length: u64) -> Result<Arc<Upload>, Refusal> {
-    let dir = dir(calcifer);
-    let parts = dir.join("parts");
-    let part = parts.join(format!("{}.part", hex::encode(digest.bytes())));
-    let failed = |e: std::io::Error| unwritable(&part, e);
+/// `digest`'s upload as `length` bytes: going, or begun from what the store kept of an earlier one.
+fn open(digest: Digest, length: u64) -> Result<Arc<Upload>, Refusal> {
     let mut uploads = UPLOADS.lock().expect("uploads lock");
-    uploads.retain(|_, upload| upload.strong_count() > 0);
-    if let Some(upload) = uploads.get(&part).and_then(Weak::upgrade) {
-        if upload.length != length {
-            let said = format!("{digest} is being written as {} bytes, not {length}", upload.length);
+    if let Some((was, upload)) = uploads.get(&digest).and_then(|(was, upload)| Some((*was, upload.upgrade()?))) {
+        if was != length {
+            let said = format!("{digest} is being written as {was} bytes, not {length}");
             return Err(Refusal(Error::new(Kind::Conflict, "file_length_conflict", said)));
         }
         return Ok(upload);
     }
-    fs::create_dir_all(&parts).map_err(failed)?;
-    sweep(&dir);
-    sweep(&parts);
-    let file = Disk::options().read(true).write(true).create(true).truncate(false).open(&part).map_err(failed)?;
-    let held = match read_held(&part) {
-        Some((was, held)) if was == length => held,
-        _ => {
-            file.set_len(0).map_err(failed)?;
-            vec![]
-        }
-    };
-    file.set_len(length).map_err(failed)?;
-    let upload = Arc::new(Upload {
-        digest,
-        length,
-        held_at: dir.join(hex::encode(digest.bytes())),
-        part: part.clone(),
-        file,
-        held: Mutex::new(held),
-        settling: Mutex::default(),
-        ended: AtomicBool::new(false),
-    });
-    uploads.insert(part, Arc::downgrade(&upload));
+    let partial = store().map_err(Refusal)?.partial(&object(&digest, length)).map_err(|e| refused(e.refusal()))?;
+    let upload = Arc::new(Upload { digest, length, partial: Mutex::new(Some(partial)), settling: Mutex::default(), ended: AtomicBool::new(false) });
+    uploads.insert(digest, (length, Arc::downgrade(&upload)));
     Ok(upload)
+}
+
+/// `open` off the request's thread: the store may first make room.
+async fn opened(digest: Digest, length: u64) -> Result<Arc<Upload>, Refusal> {
+    tokio::task::spawn_blocking(move || open(digest, length)).await.map_err(|e| Refusal(Error::new(Kind::Internal, "file_unwritable", e.to_string())))?
 }
 
 /// A PUT's `[start, end)` of a file of `length` bytes: its `Content-Range`, else the whole file its `Content-Length` measures.
@@ -239,31 +184,32 @@ fn held_header(ranges: &[(u64, u64)]) -> (axum::http::HeaderName, HeaderValue) {
 }
 
 /// The file `name`: a whole body or one part (`Content-Range`). A part leaves it unnamed: `204`, with what is held in `Cozy-Held`.
-/// The write that completes it answers `201` once its bytes hash to its name, and one that finds it held `200`. What landed is synced
-/// and recorded when the body ends, however it ends.
-pub(crate) async fn put(State(api): State<Arc<Api>>, UrlPath(name): UrlPath<String>, headers: HeaderMap, body: Body) -> Result<Response, Refusal> {
+/// The write that completes it answers `201` once its bytes hash to its name, and one that finds it held `200`.
+pub(crate) async fn put(UrlPath(name): UrlPath<String>, headers: HeaderMap, body: Body) -> Result<Response, Refusal> {
     let digest = named(&name)?;
     let (start, end, length) = span(&headers)?;
     let answer = |status: StatusCode, path: &Path| -> Result<Response, Refusal> {
         let file = file(digest, path)?;
         Ok((status, [held_header(&whole(file.length))], Json(file)).into_response())
     };
-    if let Some(path) = held(&api.calcifer, &digest) {
-        touch(&path);
+    if let Some(path) = held(&digest) {
         return answer(StatusCode::OK, &path);
     }
-    let upload = open(&api.calcifer, digest, length)?;
+    let upload = opened(digest, length).await?;
     let (sender, mut receiver) = tokio::sync::mpsc::channel::<Bytes>(8);
     let landing = upload.clone();
     let writer = tokio::task::spawn_blocking(move || -> Result<Settled, Refusal> {
         let (mut at, mut wrote) = (start, Ok(()));
+        let mut writer = landing.partial.lock().expect("partial lock").as_ref().map(Partial::writer).transpose().map_err(refused)?;
         while let Some(data) = receiver.blocking_recv() {
             if at + data.len() as u64 > end {
                 wrote = Err(Refusal(Error::new(Kind::Usage, "invalid_range", "the body is longer than its Content-Range")));
                 break;
             }
-            if let Err(e) = landing.write_at(at, &data) {
-                wrote = Err(unwritable(&landing.part, e));
+            // An upload that ended meanwhile takes no more.
+            let live = writer.as_mut().filter(|_| !landing.ended.load(Ordering::Acquire));
+            if let Some(Err(e)) = live.map(|writer| writer.write_at(at, &data)) {
+                wrote = Err(refused(e));
                 break;
             }
             at += data.len() as u64;
@@ -294,21 +240,26 @@ pub(crate) async fn put(State(api): State<Arc<Api>>, UrlPath(name): UrlPath<Stri
     }
     match settled {
         Settled::Partly(held) => Ok((StatusCode::NO_CONTENT, [held_header(&held)]).into_response()),
-        Settled::Whole => answer(StatusCode::CREATED, &upload.held_at),
-        Settled::Held => answer(StatusCode::OK, &upload.held_at),
+        Settled::Whole | Settled::Held => {
+            let status = if matches!(settled, Settled::Whole) { StatusCode::CREATED } else { StatusCode::OK };
+            let path = held(&digest).ok_or_else(|| Refusal(Error::new(Kind::Internal, "file_unwritable", format!("{digest} was named and is gone"))))?;
+            answer(status, &path)
+        }
     }
 }
 
 /// Whether Calcifer holds `name`: `200` with its length and media type, else `404`. `Cozy-Held` says which bytes either way.
-pub(crate) async fn head(State(api): State<Arc<Api>>, UrlPath(name): UrlPath<String>) -> Result<Response, Refusal> {
+pub(crate) async fn head(UrlPath(name): UrlPath<String>) -> Result<Response, Refusal> {
     let digest = named(&name)?;
-    let upload = {
-        let parts = dir(&api.calcifer).join("parts");
-        let part = parts.join(format!("{}.part", hex::encode(digest.bytes())));
-        (UPLOADS.lock().expect("uploads lock").get(&part).and_then(Weak::upgrade), part)
+    // One that was cut: what the store kept of it.
+    let begun = UPLOADS.lock().expect("uploads lock").get(&digest).map(|(length, upload)| (*length, upload.upgrade()));
+    let upload = match begun {
+        Some((_, Some(upload))) => Some(upload),
+        Some((length, None)) if held(&digest).is_none() => Some(opened(digest, length).await?),
+        _ => None,
     };
     let ranges = match upload {
-        (Some(upload), _) if upload.held() == whole(upload.length) => {
+        Some(upload) if upload.held() == whole(upload.length) => {
             // All landed: this waits for it to be verified, and says how that went.
             let settling = upload.clone();
             match tokio::task::spawn_blocking(move || settling.settle()).await.map_err(|e| Refusal(Error::new(Kind::Internal, "file_unwritable", e.to_string())))? {
@@ -316,14 +267,13 @@ pub(crate) async fn head(State(api): State<Arc<Api>>, UrlPath(name): UrlPath<Str
                 _ => vec![],
             }
         }
-        (Some(upload), _) => upload.held(),
-        (None, part) => read_held(&part).map(|(_, ranges)| ranges).unwrap_or_default(),
+        Some(upload) => upload.held(),
+        None => vec![],
     };
-    let Some(path) = held(&api.calcifer, &digest) else {
+    let Some(path) = held(&digest) else {
         let refusal = Refusal(Error::new(Kind::NotFound, "file_not_found", format!("Calcifer holds no file {digest}")));
         return Ok((StatusCode::NOT_FOUND, [held_header(&ranges)], refusal).into_response());
     };
-    touch(&path);
     let held = file(digest, &path)?;
     let mut headers = HeaderMap::new();
     headers.insert(header::CONTENT_LENGTH, HeaderValue::from(held.length));
@@ -344,19 +294,4 @@ fn named(name: &str) -> Result<Digest, Refusal> {
 fn file(digest: Digest, path: &Path) -> Result<File, Refusal> {
     let sniffed = super::bind::sniff(path).map_err(Refusal)?;
     Ok(File { digest, length: sniffed.length, media_type: sniffed.media_type })
-}
-
-/// Marks a held file named now.
-pub(crate) fn touch(path: &Path) {
-    let _ = fs::File::options().write(true).open(path).and_then(|f| f.set_modified(SystemTime::now()));
-}
-
-fn sweep(dir: &Path) {
-    let Ok(entries) = fs::read_dir(dir) else { return };
-    let before = SystemTime::now() - UNUSED;
-    for entry in entries.flatten() {
-        if entry.metadata().and_then(|m| m.modified()).is_ok_and(|at| at < before) {
-            let _ = fs::remove_file(entry.path());
-        }
-    }
 }

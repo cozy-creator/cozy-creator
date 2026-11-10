@@ -35,6 +35,9 @@ fn bounded(text: &str, max: usize) -> String {
 
 pub(crate) struct Engine {
     pub root: PathBuf,
+    /// The machine's one store: its runs' objects live there with its models.
+    pub(crate) store: Arc<crate::storage::Store>,
+    roots: Mutex<crate::storage::Roots>,
     journal: Mutex<Journal>,
     /// Held while a run takes object references, and while unneeded roots are released.
     pub(crate) object_custody: Mutex<()>,
@@ -153,7 +156,7 @@ type Halt = Arc<dyn Fn() -> io::Result<()> + Send + Sync>;
 
 impl Engine {
 
-    pub(crate) fn open(root: &Path) -> io::Result<Arc<Self>> {
+    pub(crate) fn open(root: &Path, store: Arc<crate::storage::Store>) -> io::Result<Arc<Self>> {
         fs::create_dir_all(root)?;
         platform::durable::set_mode(root, 0o700)?;
         for name in ["staging", "results"] {
@@ -164,6 +167,8 @@ impl Engine {
         journal.interrupt_preparations()?;
         Ok(Arc::new(Self {
             root: root.to_path_buf(),
+            store,
+            roots: Mutex::default(),
             journal: Mutex::new(journal),
             object_custody: Mutex::new(()),
             active: Mutex::new(HashMap::new()),
@@ -203,9 +208,14 @@ impl Engine {
     pub(crate) fn workspace_id(&self) -> String {
         self.journal.lock().unwrap().workspace_id().into()
     }
-    /// The run objects' store (`cas`), beside the journal.
-    pub(crate) fn cas(&self) -> crate::cas::Cas {
-        crate::cas::Cas::new(self.root.join("objects"))
+    /// Keeps `objects` from the store's eviction while this machine runs, until the next sweep
+    /// judges them again (`Objects::sweep`). Called once the journal names them.
+    pub(crate) fn root_objects(&self, objects: &[tensorfs::format::ObjectRef]) -> io::Result<()> {
+        self.roots.lock().unwrap().add(&self.store, objects)
+    }
+    /// Keeps exactly `objects` from the store's eviction from now on.
+    pub(crate) fn reroot_objects(&self, objects: &[tensorfs::format::ObjectRef]) -> io::Result<()> {
+        self.roots.lock().unwrap().reset(&self.store, objects)
     }
     pub(crate) fn installation(
         &self,

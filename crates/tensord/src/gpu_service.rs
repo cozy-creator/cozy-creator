@@ -3459,7 +3459,7 @@ impl Pool {
         let spool = engine.staging(id)?;
         let spool_owner = crate::execution::Spool(spool.clone());
         let inputs = stage_inputs(
-            &engine.cas(),
+            &engine.store,
             &spool,
             &record.invocation.inputs,
         )?;
@@ -3936,7 +3936,7 @@ pub(crate) struct Staged {
 }
 
 pub(crate) fn stage_inputs(
-    cas: &crate::cas::Cas,
+    store: &crate::storage::Store,
     spool: &Path,
     inputs: &[crate::journal::InputFile],
 ) -> io::Result<Staged> {
@@ -3964,14 +3964,14 @@ pub(crate) fn stage_inputs(
             .collect();
         let local = directory.join(format!("{position:03}-{field}"));
         if input.media_type == api::tree::MEDIA {
-            let manifest = held_bytes(cas, &input.digest, input.length)?;
-            materialize_tree(cas, &manifest, &local)?;
+            let manifest = held_bytes(store, &input.digest, input.length)?;
+            materialize_tree(store, &manifest, &local)?;
             // A payload names a tree by its field's ref or by its manifest digest.
             staged.trees.insert(input.digest.clone(), (local.clone(), input.digest.clone()));
             staged.trees.insert(input.input_id.clone(), (local, input.digest.clone()));
             continue;
         }
-        copy_held(cas, &input.digest, input.length, &local)?;
+        copy_held(store, &input.digest, input.length, &local)?;
         staged.inputs.insert(
             input.input_id.clone(),
             InputFile {
@@ -3988,13 +3988,13 @@ pub(crate) fn stage_inputs(
 
 /// One held object copied read-only to `local`, exactly `length` bytes.
 fn copy_held(
-    cas: &crate::cas::Cas,
+    store: &crate::storage::Store,
     digest: &str,
     length: u64,
     local: &Path,
 ) -> io::Result<()> {
     let object = tensorfs::format::ObjectRef { sha256: digest.trim_start_matches("sha256:").into(), length };
-    let mut source = cas.file(&object)?;
+    let mut source = crate::storage::file(store, &object)?;
     let mut copy = platform::durable::Mode::mode(
         fs::OpenOptions::new().write(true).create_new(true),
         0o444,
@@ -4010,14 +4010,16 @@ fn copy_held(
     Ok(())
 }
 
-fn held_bytes(cas: &crate::cas::Cas, digest: &str, length: u64) -> io::Result<Vec<u8>> {
+fn held_bytes(store: &crate::storage::Store, digest: &str, length: u64) -> io::Result<Vec<u8>> {
     let object = tensorfs::format::ObjectRef { sha256: digest.trim_start_matches("sha256:").into(), length };
-    cas.read(&object)
+    let mut bytes = Vec::with_capacity(length as usize);
+    io::Read::read_to_end(&mut crate::storage::file(store, &object)?, &mut bytes)?;
+    Ok(bytes)
 }
 
 /// A tree manifest's files under `root`: each a relative path below it, each a held object.
 fn materialize_tree(
-    cas: &crate::cas::Cas,
+    store: &crate::storage::Store,
     manifest: &[u8],
     root: &Path,
 ) -> io::Result<()> {
@@ -4031,7 +4033,7 @@ fn materialize_tree(
         if let Some(parent) = target.parent() {
             fs::create_dir_all(parent)?;
         }
-        copy_held(cas, &format!("sha256:{sha}"), length, &target)?;
+        copy_held(store, &format!("sha256:{sha}"), length, &target)?;
     }
     Ok(())
 }

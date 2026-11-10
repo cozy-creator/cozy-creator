@@ -204,6 +204,9 @@ impl Calcifer {
     pub(crate) fn open(home: &Path, outputs: &Path) -> Result<Arc<Self>, Error> {
         let store = Store::open(&home.join("state.db"))?;
         state::import(&store, home);
+        // Before 0.23 Calcifer kept uploaded files here; they are objects of this computer's TensorFS store now
+        // (`runs::files`). A run recorded since staged its own (`inputs/`), and a sender still has the rest.
+        let _ = std::fs::remove_dir_all(home.join("files"));
         let inputs = home.join("inputs");
         std::fs::create_dir_all(&inputs).map_err(|e| Error::Input {
             path: inputs.clone(),
@@ -374,11 +377,6 @@ impl Calcifer {
     /// Says a machine may have changed, to whoever watches the machines.
     pub(crate) fn machine_changed(&self) {
         self.machines_changed.send_replace(());
-    }
-
-    /// Calcifer's home, `~/.cozy/calcifer`.
-    pub(crate) fn home(&self) -> &Path {
-        self.inputs.parent().expect("inputs lie in Calcifer's home")
     }
 
     /// Records a prebuilt run under `key` and starts it; the same key again answers the recorded
