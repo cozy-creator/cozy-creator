@@ -7,7 +7,7 @@ import math
 import statistics
 from collections.abc import Callable
 from functools import partial
-from typing import TypeAlias, TypedDict, cast
+from typing import TYPE_CHECKING, TypeAlias, TypedDict, cast
 
 import msgspec
 import torch
@@ -24,7 +24,12 @@ from cozy_runtime.internal import (
 from cozy_runtime.internal.encoding.selection import measure_device
 from diffusers.models.attention_dispatch import dispatch_attention_fn
 
+if TYPE_CHECKING:
+    from cozy_runtime.internal.attention_ulysses import Options
+
 app = App()
+#: A call with no options: `refusal` reads each with `.get`.
+NO_OPTIONS = cast("Options", {})
 #: M, then (N, K) of qkv/out, FFN up and FFN down: SDXL 1024² (CFG batch 2) at 64² and 32²,
 #: Qwen-Image 1024², H3 15 s on one GPU
 GEMMS = {
@@ -145,7 +150,7 @@ def _attend(ready: "dict[str, attention.Ready]", shape: tuple[int, ...]) -> Row:
     """The cell's kernels at one shape, in the cell's order: the first is the rule's pick."""
     q, k, v = (torch.randn(*shape, device="cuda", dtype=torch.bfloat16) for _ in range(3))
     calls: dict[str, Callable[[int], object]] = {name: partial(lambda i, m: dispatch_attention_fn(q, k, v, backend=m), m=attention._member(r.candidate))
-             for name, r in ready.items() if not r.candidate.refusal(q, k, {})}  # fmt: skip
+             for name, r in ready.items() if not r.candidate.refusal(q, k, NO_OPTIONS)}  # fmt: skip
     if not calls:
         return {"ms": {}}
     ms = _bench(calls)
@@ -179,7 +184,7 @@ def _sparse(row: arch.Row, ready: "dict[str, attention.Ready]", shape: tuple[int
     try:
         with attention_scope(layout):
             for name, r in ready.items():
-                if r.candidate.refusal(q, k, {}):
+                if r.candidate.refusal(q, k, NO_OPTIONS):
                     continue
                 if r.candidate.import_name == "sol_attn":
                     _sol_built(q)

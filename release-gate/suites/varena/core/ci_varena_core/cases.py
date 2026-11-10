@@ -8,7 +8,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, cast
 
 import torch
 
@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from tensorfs.varena._facts import WorkingStats
 
 #: The driver's view, read on purpose: this cell tests the memory manager itself.
-mem_get_info: Callable[[int], tuple[int, int]] = unsealed(torch, "mem_get_info")
+mem_get_info = cast(Callable[[int], tuple[int, int]], unsealed(torch, "mem_get_info"))  # torch.cuda.mem_get_info
 
 MODE, SELECTED = sys.argv[1], sys.argv[2]
 os.environ["TORCH_CUBLAS_WORKSPACE_CACHE"] = "1"  # Runtime's setting

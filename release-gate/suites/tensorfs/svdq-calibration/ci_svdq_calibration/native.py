@@ -1092,7 +1092,7 @@ def runtime_components(
                 facts[name] = check_selected(
                     item,
                     values[name],
-                    measured.tensors[0],  # type: ignore[arg-type]  # Runtime 0.43 gap: QuantizationStats.tensors rows are dict[str, Any]
+                    measured.tensors[0],
                     calibration=calibration.stats(name, "proj.weight")
                     .rows.float()
                     .numpy(),

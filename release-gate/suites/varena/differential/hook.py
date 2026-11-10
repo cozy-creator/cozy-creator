@@ -16,7 +16,7 @@ import torch
 from cozy_runtime.internal.contract import unsealed
 
 #: The driver's view, read on purpose: this cell tests the memory manager itself.
-mem_get_info: Callable[[torch.device], tuple[int, int]] = unsealed(torch, "mem_get_info")
+mem_get_info = cast(Callable[[torch.device], tuple[int, int]], unsealed(torch, "mem_get_info"))  # torch.cuda.mem_get_info
 from cozy_runtime import graphs
 from cozy_runtime.internal import executor
 from cozy_runtime.internal.execution import catch

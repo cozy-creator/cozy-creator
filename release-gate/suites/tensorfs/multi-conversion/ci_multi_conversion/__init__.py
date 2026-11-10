@@ -101,7 +101,7 @@ def quantize(ctx: Context, tel: Telemetry, source: Weights[TwoStacks], output: s
         return ctx.adopt_model(out)
 
 
-INT8 = Recipe(lane="int8", model=TwoStacks, plan=DerivationHook(quantize))
+INT8 = Recipe(lane="int8", model=TwoStacks, plan=DerivationHook(quantize))  # type: ignore[arg-type]  # DerivationHook is not generic in its model (Runtime)
 
 
 class Inspect(msgspec.Struct, forbid_unknown_fields=True):

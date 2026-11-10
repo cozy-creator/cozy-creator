@@ -285,7 +285,7 @@ def calibrate(
         )
         (row,) = measured.tensors
         detail = check_selected(
-            item, values, row, calibration=stats.rows.float().numpy()  # type: ignore[arg-type]  # Runtime 0.43 gap: QuantizationStats.tensors rows are dict[str, Any]
+            item, values, row, calibration=stats.rows.float().numpy()
         )
         fit = row["fit"]
         assert fit["calibration_bytes_read"] == COLS * 4 + 128 * COLS * 2

@@ -21,7 +21,7 @@ import torch
 from cozy_runtime.internal.contract import unsealed
 
 #: The driver's view, read on purpose: this cell tests the memory manager itself.
-mem_get_info = unsealed(torch, "mem_get_info")
+mem_get_info = cast(Callable[[int], tuple[int, int]], unsealed(torch, "mem_get_info"))  # torch.cuda.mem_get_info
 import triton
 from cozy_runtime import _kernels
 from cozy_runtime import lm
@@ -122,7 +122,7 @@ class _Probed(Protocol):
 def _record_launches() -> None:
     entry, run = triton_kernels._Launcher.__call__, JITFunction.run
 
-    def launched(self: "triton_kernels._Launcher", kernel: _Kernel, grid: tuple[int, ...], *args: object) -> None:
+    def launched(self: "triton_kernels._Launcher", kernel: "author_kernels.JitKernel", grid: tuple[int, ...], *args: object) -> None:
         params = kernel.arg_names
         values = {name: args[params.index(name)] for name in self.names[kernel.__name__]}
         _ENTRIES_SEEN.add(author_kernels.entry_key(kernel.__name__, values))
@@ -722,6 +722,7 @@ def _fused_row(launch: author_kernels.Launch, entry: author_kernels.TritonEntry,
             want = want * (1 + scale[index].double())
         if c["MODULATE"] == 2:
             want = want + shift[index].double()
+        assert out is not None  # a NORM entry writes out
         errors[f"out {key}"] = verify.error(torch, out, want)
 
 

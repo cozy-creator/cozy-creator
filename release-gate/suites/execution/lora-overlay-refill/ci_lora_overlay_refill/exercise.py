@@ -23,6 +23,7 @@ from cozy_runtime.internal import kernel_ready, lora_bake
 from . import Inputs, Lightning, Probe, QwenDiT
 
 if TYPE_CHECKING:
+    from cozy_runtime.internal.residency import FillEntry
     from cozy_runtime.internal.weights import Placement
 
 GIB = 1 << 30
@@ -118,7 +119,7 @@ def _boundary(placement: "Placement", device: torch.device, kind: str, paging: b
     return facts
 
 
-def _request_trace() -> list[dict[str, object]] | None:
+def _request_trace() -> list[FillEntry] | None:
     """This request's fill trace (Runtime 0.34+), else None."""
     try:
         from cozy_runtime.internal import residency
