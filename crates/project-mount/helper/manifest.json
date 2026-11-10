@@ -1,0 +1,26 @@
+{
+  "version": "2.0.0",
+  "repository": "netheril96/securefs",
+  "targets": {
+    "x86_64-unknown-linux-gnu": {
+      "asset": "securefs-linux-amd64-musl-static-release.zip",
+      "sha256": "9b77878da9f43f598b66e1a77e3fa230ca4dab2f5ca7ea4a85dadbb22e76d138"
+    },
+    "aarch64-unknown-linux-gnu": {
+      "asset": "securefs-linux-arm64-musl-static-release.zip",
+      "sha256": "7d3f01c57528ccc850dddbe1f3c0a83adf8d4004dc0b9f07bec7d99ece261c77"
+    },
+    "aarch64-apple-darwin": {
+      "asset": "securefs-macos-arm64-release.zip",
+      "sha256": "86b1d9ace972e1b332ffd92561aabfb5bf6446072c0d27a3238f48e675329c4a"
+    },
+    "x86_64-pc-windows-msvc": {
+      "asset": "securefs-windows-amd64-release.zip",
+      "sha256": "f482e2c5f513a0de921eba2a2af507ae578b4b2957153d0791f5a7eaaf02869a"
+    },
+    "aarch64-pc-windows-msvc": {
+      "asset": "securefs-windows-amd64-release.zip",
+      "sha256": "f482e2c5f513a0de921eba2a2af507ae578b4b2957153d0791f5a7eaaf02869a"
+    }
+  }
+}
