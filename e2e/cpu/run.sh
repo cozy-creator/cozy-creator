@@ -75,7 +75,8 @@ one() {
   # The static reader's interface, refused unless the import agrees (`--conformance`).
   if ! CUDA_VISIBLE_DEVICES= nice -n 19 "$env/bin/cozy-runtime" --json describe --conformance --dir "$PACKAGES/$p" \
       > "$out/interface.json" 2> "$out/describe.err"; then
-    echo "FAIL $p - conformance $((SECONDS - t))s: $(grep -v '^\s*$' "$out/describe.err" | tail -n1 | cut -c1-300)"
+    local why; why=$(grep -o '"message": *"[^"]*' "$out/describe.err" | head -n1 | sed 's/"message": *"//')
+    echo "FAIL $p - conformance $((SECONDS - t))s: $(echo "${why:-$(grep -v '^\s*$' "$out/describe.err" | tail -n1)}" | cut -c1-300)"
     return 1
   fi
   echo "PASS $p - conformance $((SECONDS - t))s"

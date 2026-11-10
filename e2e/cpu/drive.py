@@ -195,6 +195,9 @@ class Answer(TypedDict):
     local: NotRequired[str]
     stored: NotRequired[bool]
     reason: NotRequired[str]
+    digest: NotRequired[str]
+    length: NotRequired[int]
+    sequence: NotRequired[int]
 
 
 class Item(TypedDict):
@@ -240,6 +243,8 @@ class Reply(TypedDict, total=False):
     export: str
     payload: str
     saved: list[Saved]
+    digest: str
+    size_bytes: int
     output: str
     repo_id: str
     revision: str
@@ -374,7 +379,7 @@ class Broker:
     by its result path, and held for a later child."""
 
     KINDS = frozenset({"child_call", "child_poll", "child_cancel", "child_forget", "gpu_release", "stage_memo_lookup",
-                       "stage_memo_store"})
+                       "stage_memo_store", "publish"})
 
     def __init__(self, request: str, spool: Path, run: RunChild) -> None:
         self.request, self.spool, self.run = request, spool, run
@@ -395,6 +400,8 @@ class Broker:
             settled = verdict | {"local": ""}
         elif kind == "stage_memo_store":
             settled = verdict | {"stored": False, "reason": "no memo store here"}
+        elif kind == "publish":  # shown to no one here (`sequence` 0), as a child call's product is
+            settled = verdict | {"digest": got.get("digest", ""), "length": got.get("size_bytes", 0), "sequence": 0}
         settled["seq"] = seq
         return settled
 
@@ -771,7 +778,7 @@ def inputs(cell: Cell, payload: dict[str, Json], work: Path, made: Path) -> tupl
     return metadata, granted
 
 
-def granted(field: str, path: Path) -> tuple[InputMetadata, InputFile]:
+def grant(field: str, path: Path) -> tuple[InputMetadata, InputFile]:
     """A file the machine grants at `field` (its own path): `PrepareRequest.input_metadata`'s row and `Invoke.inputs`'."""
     data = path.read_bytes()
     digest = "sha256:" + hashlib.sha256(data).hexdigest()
@@ -872,7 +879,7 @@ def main() -> int:
             executor.must(load)
             loaded.add((0, construction))
         executor.must({"cmd": "activate", "construction": construction})
-        rows_in = {field: granted(field, path) for field, path in files.items()}
+        rows_in = {field: grant(field, path) for field, path in files.items()}
         executor.must({"cmd": "prepare_request", "request_id": child, "entrypoint": export, "payload": request,
                        "construction": construction, "input_metadata": {k: v[0] for k, v in rows_in.items()}})
         spool = out / "spool" / child
