@@ -291,8 +291,83 @@ fn outside_edit(input: &Path, output: &Path) -> Result<Value, String> {
     Ok(json!({"heads":heads,"hash":change.hash().to_string(),"actor":change.actor_id().to_hex_string()}))
 }
 
+fn scan_fixture(input: &Path, output: &Path) -> Result<Value, String> {
+    let mut doc = AutoCommit::load(&fs::read(input).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?
+        .with_actor(ActorId::from(65533u64.to_be_bytes()));
+    let original = value(&doc);
+    let records = original["boxes"].as_object().ok_or("no boxes in CLI fixture")?;
+    let start = records.values().filter_map(|row| row["order"].as_u64()).max().unwrap_or(0) + 1;
+    let first_collision_order = records.values().filter(|row| row["present"] != false).count();
+    let boxes = object(&doc, &ROOT, "boxes")?;
+    for (offset, (id, name, text)) in [
+        ("e2e-scan-mixed-first", "Mixed_Name", "first mixed"),
+        ("e2e-scan-unicode-first", "Étage-A", "first unicode"),
+        ("e2e-scan-pivot", "projection_pivot", "between"),
+        ("e2e-scan-mixed-last", "MIXED-NAME", "last mixed"),
+        ("e2e-scan-unicode-last", "ÉTAGE_A", "last unicode"),
+    ].into_iter().enumerate() {
+        let row = doc.put_object(&boxes, id, ObjType::Map).map_err(|e| e.to_string())?;
+        doc.put(&row, "name", name).map_err(|e| e.to_string())?;
+        doc.put(&row, "present", true).map_err(|e| e.to_string())?;
+        doc.put(&row, "order", start + offset as u64).map_err(|e| e.to_string())?;
+        let fields = doc.put_object(&row, "fields", ObjType::Map).map_err(|e| e.to_string())?;
+        doc.put(&fields, "text", text).map_err(|e| e.to_string())?;
+    }
+    let groudon = object(&doc, &boxes, &named(&original, "groudon")?)?;
+    let fields = object(&doc, &groudon, "fields")?;
+    let keys = doc.put_object(&fields, "e2e_keys", ObjType::Map).map_err(|e| e.to_string())?;
+    for key in ["Ωmega", "zeta", "Éclair", "a", "keep"] {
+        doc.put(&keys, key, "kept").map_err(|e| e.to_string())?;
+    }
+    doc.put(&fields, "e2e_replace", "scalar before replacement").map_err(|e| e.to_string())?;
+    let heads: Vec<_> = doc.get_heads().iter().map(ToString::to_string).collect();
+    let native_order: Vec<_> = doc.keys(&keys).filter(|key| key != "keep").collect();
+    require(native_order == ["a", "zeta", "Éclair", "Ωmega"], "unexpected native map key order")?;
+    fs::write(output, doc.save()).map_err(|e| e.to_string())?;
+    Ok(json!({"heads":heads,"first_collision_order":first_collision_order}))
+}
+
+fn scan_check(before: &Path, after: &Path) -> Result<Value, String> {
+    let mut before = AutoCommit::load(&fs::read(before).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let mut after = AutoCommit::load(&fs::read(after).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let old = value(&before);
+    let new = value(&after);
+    let groudon = named(&old, "groudon")?;
+    require(named(&new, "groudon")? == groudon, "map replacement changed the box identity")?;
+    let fields = &new["boxes"][&groudon]["fields"];
+    require(fields["e2e_keys"] == json!({"keep":"kept","new":["same","same"]}), "reused map did not preserve kept keys and insert equal list items")?;
+    require(fields["e2e_replace"] == json!({"branch":[1,1]}), "replacement map did not retain its new nested list")?;
+    for id in ["e2e-scan-pivot", "e2e-scan-mixed-first"] {
+        require(new["boxes"][id]["present"] == false && new["boxes"][id]["fields"] == old["boxes"][id]["fields"], "deleted box lost its retained fields")?;
+    }
+    for id in ["e2e-scan-mixed-last", "e2e-scan-unicode-first", "e2e-scan-unicode-last"] {
+        require(new["boxes"][id]["present"] == true && new["boxes"][id]["fields"] == old["boxes"][id]["fields"], "a surviving normalized collision lost its native identity or fields")?;
+    }
+    let removed = ["a", "zeta", "Éclair", "Ωmega"];
+    let mut deletes = Vec::new();
+    for change in after.get_changes(&before.get_heads()) {
+        let decoded = serde_json::to_value(change.decode()).map_err(|e| e.to_string())?;
+        deletes.extend(decoded["ops"].as_array().into_iter().flatten().filter_map(|op| {
+            let key = op["key"].as_str()?;
+            (op["action"] == "del" && removed.contains(&key)).then(|| key.to_owned())
+        }));
+    }
+    require(deletes == removed, "native Unicode map deletes were missing or out of order")?;
+    Ok(json!({"passed":true,"deleted_keys":deletes,"retained_box_tombstones":2,"surviving_collision_ids":3,"equal_list_items_retained":true}))
+}
+
 fn main() {
     let args: Vec<_> = std::env::args_os().collect();
+    if args.len() == 4 && (args[1] == "--scan-fixture" || args[1] == "--scan-check") {
+        let input = Path::new(&args[2]);
+        let output = Path::new(&args[3]);
+        let report = if args[1] == "--scan-fixture" { scan_fixture(input, output) } else { scan_check(input, output) };
+        match report {
+            Ok(report) => println!("{report}"),
+            Err(why) => { eprintln!("{why}"); std::process::exit(1); }
+        }
+        return;
+    }
     if args.len() == 4 && ["--outside-edit", "--canvas-collision", "--canvas-check"].iter().any(|mode| args[1] == *mode) {
         let report = if args[1] == "--outside-edit" { outside_edit(Path::new(&args[2]), Path::new(&args[3])) }
             else if args[1] == "--canvas-collision" { canvas_collision(Path::new(&args[2]), Path::new(&args[3])) }
@@ -315,14 +390,18 @@ fn main() {
         }
         return;
     }
-    if args.len() == 5 && args[1] == "--identity" {
+    if matches!(args.len(), 5 | 6) && args[1] == "--identity" {
         let report = (|| -> Result<Value, String> {
             let before = AutoCommit::load(&fs::read(&args[2]).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
             let after = AutoCommit::load(&fs::read(&args[3]).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
             let name = args[4].to_str().ok_or("non-UTF8 box name")?;
+            let after_name = match args.get(5) {
+                Some(name) => name.to_str().ok_or("non-UTF8 new box name")?,
+                None => name,
+            };
             let id = named(&value(&before), name)?;
             require(
-                named(&value(&after), name)? == id,
+                named(&value(&after), after_name)? == id,
                 "redo/undo changed restored legacy entity identity",
             )?;
             Ok(json!({"passed":true,"restored_entity_id":id}))
