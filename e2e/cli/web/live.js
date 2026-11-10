@@ -288,6 +288,7 @@ function linesOf(text, name) {
   }, name);
 
   // A command adds it: it shows by itself where it was told, and lands.
+  await page.locator('.empty-canvas').waitFor();
   let place = await spot();
   const added = await timed('add', { name: 'live_a', x: place.x, y: place.y }, () => project('add', 'cozy/edit', 'live_a', `at=${place.x},${place.y},260`, 'description=Words from the CLI'));
   check('add_prints_its_name', added.stdout.trim() === 'live_a', added.stdout);
