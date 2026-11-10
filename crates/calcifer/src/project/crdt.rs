@@ -8,7 +8,7 @@ use std::{
 
 use api::error::{Error, Kind};
 use automerge::{
-    ActorId, AutoCommit, ObjId, ObjType, Prop, ROOT, ReadDoc, ScalarValue, Value as AmValue, ValueRef, transaction::Transactable,
+    ActorId, AutoCommit, ChangeHash, ObjId, ObjType, Prop, ROOT, ReadDoc, ScalarValue, Value as AmValue, ValueRef, transaction::Transactable,
 };
 use serde::Serialize;
 use serde_json::{Map, Value, json};
@@ -115,8 +115,23 @@ fn conflict_at(doc: &AutoCommit, object: &ObjId, property: Prop, path: &str, chi
     }
 }
 
-pub(super) fn identity_bytes(bytes: &[u8]) -> Option<(String, String)> {
-    let doc = AutoCommit::load(bytes).ok()?;
+pub(super) fn head_set(heads: &str) -> Result<BTreeSet<ChangeHash>, Error> {
+    let heads: Vec<String> = serde_json::from_str(heads).map_err(invalid)?;
+    heads.into_iter().map(|head| head.parse().map_err(invalid)).collect()
+}
+
+fn load_native(bytes: &[u8], heads: &str) -> Result<AutoCommit, Error> {
+    // The pinned loader rejects a partial trailing chunk. A complete older prefix is
+    // syntactically valid, so also require the transaction's expected native heads.
+    let mut doc = AutoCommit::load(bytes).map_err(invalid)?;
+    if doc.get_heads().into_iter().collect::<BTreeSet<_>>() != head_set(heads)? {
+        return Err(invalid("the native project stream does not match its committed heads"));
+    }
+    Ok(doc)
+}
+
+pub(super) fn identity_bytes(bytes: &[u8], heads: &str) -> Option<(String, String)> {
+    let doc = load_native(bytes, heads).ok()?;
     let (_, identity) = doc.get(ROOT, "identity").ok()??;
     let (id, _) = doc.get(&identity, "id").ok()??;
     let name = doc
@@ -129,8 +144,8 @@ pub(super) fn identity_bytes(bytes: &[u8]) -> Option<(String, String)> {
 }
 
 impl Document {
-    pub(super) fn load(bytes: &[u8], at: &Path) -> Result<Self, Error> {
-        let doc = AutoCommit::load(bytes).map_err(invalid)?.with_actor(actor(at));
+    pub(super) fn load(bytes: &[u8], heads: &str, at: &Path) -> Result<Self, Error> {
+        let doc = load_native(bytes, heads)?.with_actor(actor(at));
         let mut found = Vec::new();
         let value = materialize(&doc, &ROOT, AmValue::Object(ObjType::Map), "", Some(&mut found))?;
         if value.get("schema").and_then(Value::as_u64) != Some(FORMAT as u64) {
@@ -515,6 +530,117 @@ pub(super) fn value(stored: &Stored, ops: &[OpRow], previous: &Value, identity: 
         .collect();
     let (id, name) = identity.unwrap_or_else(|| (super::new_key(), String::new()));
     json!({ "schema": FORMAT, "identity": { "id": id, "name": name }, "head": map_of(&stored.written.head), "head_order": keys_of(&stored.written.head), "boxes": boxes, "assets": assets, "files": files, "canvas": canvas, "history": history, "runs": runs, "reserved": stored.lock.reserved, "makes": stored.lock.makes })
+}
+
+/// Build the next derived view once, retaining unchanged encoded records. The native document
+/// remains authoritative; this only avoids serializing every existing asset/version on an edit.
+pub(super) fn changed_value(before: &Stored, after: &Stored, ops: &[OpRow], previous: &Value, identity: Option<(String, String)>) -> Value {
+    let mut next = previous.clone();
+    if !Arc::ptr_eq(&before.written, &after.written) {
+        if before.written.head != after.written.head {
+            next["head"] = map_of(&after.written.head);
+            next["head_order"] = keys_of(&after.written.head);
+        }
+        let old: BTreeMap<_, _> = before.written.boxes.iter().map(|held| (held.id.as_str(), held)).collect();
+        let boxes = records(&mut next, "boxes");
+        retire(boxes, after.written.boxes.iter().map(|held| held.id.as_str()));
+        for (index, held) in after.written.boxes.iter().enumerate() {
+            let unchanged = old.get(held.id.as_str()).is_some_and(|old| *old == held)
+                && boxes.get(&held.id).is_some_and(|row| present(row));
+            if unchanged {
+                // Concurrent insertions can share old display orders. As the full builder
+                // does, normalize them against this replica's selected stable-ID ordering.
+                boxes.get_mut(&held.id).expect("existing box")["order"] = json!(index);
+            } else {
+                boxes.insert(held.id.clone(), json!({"present":true,"name":held.name,"order":index,"fields":map_of(&held.fields),"field_order":keys_of(&held.fields)}));
+            }
+        }
+    }
+    if !Arc::ptr_eq(&before.lock, &after.lock) {
+        let old: BTreeMap<_, _> = before.lock.assets.iter().map(|(key, held)| (held.id.as_str(), (key, held))).collect();
+        let assets = records(&mut next, "assets");
+        retire(assets, after.lock.assets.values().map(|held| held.id.as_str()));
+        for (key, held) in &after.lock.assets {
+            if old.get(held.id.as_str()).is_some_and(|(old_key, old)| *old_key == key && *old == held)
+                && assets.get(&held.id).is_some_and(|row| present(row)) { continue; }
+            let row = assets.entry(held.id.clone()).or_insert_with(|| json!({}));
+            let old_versions: BTreeMap<_, _> = old.get(held.id.as_str()).into_iter().flat_map(|(_, held)|
+                held.versions.iter().map(|version| (version.id.as_str(), (false, version)))
+                    .chain(held.discarded.iter().map(|version| (version.id.as_str(), (true, version))))).collect();
+            let versions = records(row, "versions");
+            retire(versions, held.versions.iter().chain(&held.discarded).map(|version| version.id.as_str()));
+            for (discarded, version) in held.versions.iter().map(|v| (false, v)).chain(held.discarded.iter().map(|v| (true, v))) {
+                if old_versions.get(version.id.as_str()).is_some_and(|(was_discarded, old)| *was_discarded == discarded && *old == version)
+                    && versions.get(&version.id).is_some_and(|row| present(row)) { continue; }
+                versions.insert(version.id.clone(), json!({"present":true,"discarded":discarded,"record":version}));
+            }
+            let metadata = Asset { versions:vec![], discarded:vec![], ..held.clone() };
+            row["present"] = true.into();
+            row["key"] = key.clone().into();
+            row["record"] = encoded(&metadata);
+        }
+        let runs = records(&mut next, "runs");
+        retire(runs, after.lock.runs.iter().map(|row| row.id.as_str()));
+        let old: BTreeMap<_, _> = before.lock.runs.iter().map(|row| (row.id.as_str(), row)).collect();
+        for (index, row) in after.lock.runs.iter().enumerate() {
+            if old.get(row.id.as_str()).is_some_and(|old| *old == row) && runs.get(&row.id).is_some_and(|row| present(row)) {
+                runs.get_mut(&row.id).expect("existing run")["order"] = json!(index);
+            } else {
+                runs.insert(row.id.clone(), json!({"present":true,"order":index,"record":row}));
+            }
+        }
+        if before.lock.files != after.lock.files {
+            next["files"] = Value::Object(after.lock.files.iter().filter(|(_, file)| file.row).map(|(hash, file)| (hash.clone(), encoded(file))).collect());
+        }
+        if before.lock.reserved != after.lock.reserved { next["reserved"] = encoded(&after.lock.reserved); }
+        if before.lock.makes != after.lock.makes { next["makes"] = encoded(&after.lock.makes); }
+    }
+    let identities = |stored: &Stored| -> BTreeMap<String, String> {
+        stored.written.boxes.iter().map(|held| (name_key(&held.name), held.id.clone()))
+            .chain(stored.lock.assets.iter().map(|(key, held)| (key.clone(), held.id.clone()))).collect()
+    };
+    // A rename/replacement can change which stable entity a canvas key belongs to even
+    // when the canvas Arc itself was retained.
+    if !Arc::ptr_eq(&before.canvas, &after.canvas)
+        || ((!Arc::ptr_eq(&before.written, &after.written) || !Arc::ptr_eq(&before.lock, &after.lock)) && identities(before) != identities(after)) {
+        let identities = identities(after);
+        let canvas = records(&mut next, "canvas");
+        let mut live = BTreeSet::new();
+        for (key, row) in after.canvas.iter() {
+            let id = identities.get(key).cloned().or_else(|| canvas.iter().find(|(_, record)| text(record, "key") == *key).map(|(id, _)| id.clone())).unwrap_or_else(super::new_key);
+            live.insert(id.clone());
+            if before.canvas.get(key) != Some(row) || !canvas.get(&id).is_some_and(|value| present(value) && text(value, "key") == *key) {
+                canvas.insert(id, json!({"present":true,"key":key,"record":row}));
+            }
+        }
+        retire(canvas, live.iter().map(String::as_str));
+    }
+    let history = records(&mut next, "history");
+    retire(history, ops.iter().map(|row| row.uid.as_str()));
+    for row in ops {
+        let id = if row.uid.is_empty() { super::new_key() } else { row.uid.clone() };
+        let mut record = encoded(row);
+        record["uid"] = id.clone().into();
+        if !history.get(&id).is_some_and(|old| present(old) && old["record"] == record) {
+            history.insert(id, json!({"present":true,"record":record}));
+        }
+    }
+    let (id, name) = identity.unwrap_or_else(|| (super::new_key(), String::new()));
+    next["schema"] = FORMAT.into();
+    next["identity"] = json!({"id":id,"name":name});
+    next
+}
+
+fn records<'a>(value: &'a mut Value, field: &str) -> &'a mut Map<String, Value> {
+    if !value[field].is_object() { value[field] = json!({}); }
+    value[field].as_object_mut().expect("logical records")
+}
+
+fn retire<'a>(records: &mut Map<String, Value>, live: impl Iterator<Item=&'a str>) {
+    let live: BTreeSet<_> = live.collect();
+    for (_, value) in records.iter_mut().filter(|(id, _)| !live.contains(id.as_str())) {
+        value["present"] = false.into();
+    }
 }
 
 fn reconcile_map(doc: &mut AutoCommit, object: &ObjId, before: &Value, after: &Value) -> Result<(), Error> {

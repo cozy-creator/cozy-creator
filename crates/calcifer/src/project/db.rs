@@ -231,10 +231,12 @@ fn verify_v1_backup(primary: &Connection, at: &Path) -> Result<(), Error> {
 
 /// The project's id and name, as `meta` keeps them (cl-819); none before it was given one.
 pub(crate) fn identity(conn: &Connection) -> Option<(String, String)> {
-    let current: Option<Vec<u8>> = conn.query_row("SELECT snapshot FROM crdt_document WHERE id = 1", [], |row| row.get(0)).optional().ok().flatten();
-    if let Some(bytes) = current {
-        return crdt::identity_bytes(&bytes);
+    let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0)).ok()?;
+    if version == VERSION {
+        let (format, bytes, heads): (i64, Vec<u8>, String) = conn.query_row("SELECT format, snapshot, heads FROM crdt_document WHERE id = 1", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).ok()?;
+        return (format == crdt::FORMAT).then(|| crdt::identity_bytes(&bytes, &heads)).flatten();
     }
+    if version != 1 { return None; }
     // Only the first import of a v1 database reads identity from the relational store.
     let value = |key: &str| conn.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get::<_, String>(0)).optional().ok().flatten();
     Some((value("id")?, value("name").unwrap_or_default()))
@@ -247,9 +249,10 @@ pub(crate) fn set_identity(conn: &mut Connection, at: &Path, id: &str, name: &st
         tx.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)", [key, value]).map_err(|e| sql(at, e))?;
     }
     let mut doc = read_document(&tx, at)?;
+    let old_heads = doc.doc.get_heads();
     doc.set_identity(id, name)?;
     let seq = meta(&tx, "seq").and_then(|value| value.parse().ok()).unwrap_or(0);
-    save_document(&tx, at, &mut doc, seq)?;
+    save_document(&tx, at, &mut doc, seq, Some(&old_heads))?;
     tx.commit().map_err(|e| sql(at, e))
 }
 
@@ -383,20 +386,34 @@ pub(crate) fn load(conn: &Connection, at: &Path) -> Result<Stored, Error> {
 }
 
 fn read_document(conn: &Connection, at: &Path) -> Result<crdt::Document, Error> {
-    let (format, bytes): (i64, Vec<u8>) = conn.query_row("SELECT format, snapshot FROM crdt_document WHERE id = 1", [], |row| Ok((row.get(0)?, row.get(1)?))).map_err(|e| sql(at, e))?;
+    let (format, bytes, heads): (i64, Vec<u8>, String) = conn.query_row("SELECT format, snapshot, heads FROM crdt_document WHERE id = 1", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).map_err(|e| sql(at, e))?;
     if format != crdt::FORMAT {
         return Err(err(at, format!("unknown CRDT storage format {format}; update cozy")));
     }
-    crdt::Document::load(&bytes, at)
+    crdt::Document::load(&bytes, &heads, at)
 }
 
-fn save_document(tx: &Transaction<'_>, at: &Path, doc: &mut crdt::Document, seq: u64) -> Result<(), Error> {
+fn save_document(tx: &Transaction<'_>, at: &Path, doc: &mut crdt::Document, seq: u64, base: Option<&[automerge::ChangeHash]>) -> Result<(), Error> {
     if let Some(change) = doc.doc.get_last_local_change() {
         tx.execute("INSERT OR IGNORE INTO crdt_changes (hash, seq, actor, bytes) VALUES (?1, ?2, ?3, ?4)", params![change.hash().to_string(), seq as i64, change.actor_id().to_hex_string(), change.raw_bytes()]).map_err(|e| sql(at, e))?;
     }
     let heads: Vec<String> = doc.doc.get_heads().iter().map(ToString::to_string).collect();
-    let bytes = doc.doc.save();
-    tx.execute("INSERT OR REPLACE INTO crdt_document (id, format, snapshot, heads) VALUES (1, ?1, ?2, ?3)", params![crdt::FORMAT, bytes, json(&heads)]).map_err(|e| sql(at, e))?;
+    match base {
+        None => {
+            let bytes = doc.doc.save();
+            tx.execute("INSERT OR REPLACE INTO crdt_document (id, format, snapshot, heads) VALUES (1, ?1, ?2, ?3)", params![crdt::FORMAT, bytes, json(&heads)]).map_err(|e| sql(at, e))?;
+        }
+        Some(base) => {
+            let changed = || Error::new(Kind::Conflict, "project_changed", "the project changed while this edit was being committed; read it again and retry");
+            let token: String = tx.query_row("SELECT heads FROM crdt_document WHERE id = 1", [], |row| row.get(0)).map_err(|e| sql(at, e))?;
+            if crdt::head_set(&token)? != base.iter().copied().collect() { return Err(changed()); }
+            // Explicit heads avoid AutoCommit::load's empty save cursor. The result is
+            // supported native Change chunks, appended to the complete native stream.
+            let bytes = doc.doc.save_after(base);
+            let wrote = tx.execute("UPDATE crdt_document SET snapshot = CAST(snapshot || ?1 AS BLOB), heads = ?2 WHERE id = 1 AND heads = ?3", params![bytes, json(&heads), token]).map_err(|e| sql(at, e))?;
+            if wrote != 1 { return Err(changed()); }
+        }
+    }
     Ok(())
 }
 
@@ -419,7 +436,7 @@ fn initialize_crdt(conn: &mut Connection, at: &Path) -> Result<(), Error> {
     });
     doc.update(crdt::value(&after, &ops, &serde_json::Value::Null, Some(inherited)))?;
     write(&tx, &before, &after, &Extra { ops:ops.clone(), ..Default::default() }).map_err(|e| sql(at, e))?;
-    save_document(&tx, at, &mut doc, after.seq)?;
+    save_document(&tx, at, &mut doc, after.seq, None)?;
     tx.pragma_update(None, "user_version", VERSION).map_err(|e| sql(at, e))?;
     tx.commit().map_err(|e| sql(at, e))
 }
@@ -460,10 +477,10 @@ pub(crate) fn commit(conn: &mut Connection, at: &Path, before: &Stored, after: &
     let mut ops = doc.ops()?;
     ops.retain(|row| !extra.ops_gone.iter().any(|(uid, _)| uid == &row.uid) && !extra.ops.iter().any(|next| next.uid == row.uid));
     ops.extend(extra.ops.iter().cloned());
-    let value = crdt::value(after, &ops, &doc.value, identity);
+    let value = crdt::changed_value(before, after, &ops, &doc.value, identity);
     doc.update(value)?;
     if doc.doc.get_heads() != old_heads {
-        save_document(&tx, at, &mut doc, seq)?;
+        save_document(&tx, at, &mut doc, seq, Some(&old_heads))?;
     }
     after.crdt = Some(Arc::new(doc));
     tx.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('seq', ?1)", [seq.to_string()]).map_err(e)?;
