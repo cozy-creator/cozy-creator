@@ -340,19 +340,34 @@ async function nativeMemory(base, folder) {
   const readAlone = new Map();
   /** What the page read and found gone. */
   const readGone = new Set();
+  let handReads;
   page.on('request', (request) => {
     const url = new URL(request.url());
     if (request.method() !== 'GET') return;
-    if (url.pathname === `/v1/projects/${id}`) reads[url.searchParams.get('assets') === 'false' ? 'heads' : 'whole'] += 1;
-    if (url.pathname.startsWith(`/v1/projects/${id}/assets/`)) reads.assets += 1;
+    const kind = url.pathname === `/v1/projects/${id}` ? (url.searchParams.get('assets') === 'false' ? 'heads' : 'whole')
+      : url.pathname.startsWith(`/v1/projects/${id}/assets/`) ? 'assets'
+      : url.pathname === `/v1/projects/${id}/canvas` ? 'canvas' : null;
+    if (kind && kind !== 'canvas') reads[kind] += 1;
+    if (handReads && kind) {
+      handReads.counts[kind] += 1;
+      if (handReads.requests.size < 64) handReads.requests.set(request, { kind, path: url.pathname, request_ms: Date.now(), response_ms: null, status: null });
+      else handReads.truncated = true;
+    }
   });
   page.on('response', (answer) => {
-    if (answer.request().method() !== 'GET') return;
+    const request = answer.request();
+    if (request.method() !== 'GET') return;
     const { pathname } = new URL(answer.url());
+    const handRead = handReads?.requests.get(request);
+    if (handRead) { handRead.response_ms = Date.now(); handRead.status = answer.status(); }
     if (pathname === `/v1/projects/${id}`) answer.body().then((body) => { reads.whole_bytes = Math.max(reads.whole_bytes, body.length); }, () => {});
     if (pathname.startsWith(`/v1/projects/${id}/assets/`)) answer.json().then(({ asset }) => {
       if (asset) readAlone.set(asset.name, { words: asset.fields?.instructions, at: Date.now() });
       else readGone.add(decodeURIComponent(pathname.split('/').at(-1)));
+      if (handRead && handReads?.requests.get(request) === handRead && asset?.name === handReads.asset) {
+        handRead.body_seen_ms = Date.now();
+        handRead.has_hand_words = asset.fields?.instructions === 'ONE EDIT BY HAND';
+      }
     }, () => {});
   });
   const box = (name) => page.locator('.react-flow__node').filter({ has: page.locator(`.nm:text-is("${name}")`) });
@@ -518,10 +533,23 @@ async function nativeMemory(base, folder) {
   const instructionsAt = text.indexOf('    instructions: ', lineAt);
   const edit_at = join(homedir(), '.cozy', 'projects', `web-scale-hand-${Date.now()}.yaml`);
   writeFileSync(edit_at, `${text.slice(0, instructionsAt)}    instructions: ONE EDIT BY HAND${text.slice(text.indexOf('\n', instructionsAt))}`);
-  const saved = await project('import', edit_at);
-  rmSync(edit_at);
-  numbers.hand_import_s = seconds(saved.ms);
-  numbers.hand_shows_ms = (await shownHand) - saved.at;
+  handReads = { asset: byHand, armed_ms: Date.now(), counts: { whole: 0, heads: 0, canvas: 0, assets: 0 }, requests: new Map(), truncated: false };
+  const handObservation = numbers.hand_observation = { asset: byHand, armed_ms: handReads.armed_ms, import_done_ms: null, shown_browser_ms: null };
+  try {
+    const saved = await project('import', edit_at);
+    rmSync(edit_at);
+    numbers.hand_import_s = seconds(saved.ms);
+    handObservation.import_done_ms = saved.at;
+    const shown = await shownHand;
+    numbers.hand_shows_ms = shown - saved.at;
+    handObservation.shown_browser_ms = shown;
+  } finally {
+    handObservation.closed_ms = Date.now();
+    handObservation.counts_since_armed = handReads.counts;
+    handObservation.truncated = handReads.truncated;
+    handObservation.gets = [...handReads.requests.values()];
+    handReads = undefined;
+  }
   check('a_hand_shows_live', numbers.hand_shows_ms <= BARS.edit_shows_ms, numbers.hand_shows_ms);
   await resting();
   await until('its frames short again', shortFrames, (p95) => p95 < 100, 60_000);
