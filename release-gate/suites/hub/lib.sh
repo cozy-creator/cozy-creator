@@ -220,8 +220,8 @@ hub_pod_secrets() {
 # hub_pod <provider|any>: the real-pod cells on one fresh `cpu` rental with a throwaway SSH key: rented (`--provider`, a
 # dev-only option, unless `any`, the Hub's choice), the published package run there, new weights uploaded from it (the
 # workload writer on a pod, the path v0.40.33 broke), pod-env and pod-auth (hub_pod_secrets), ended and checked gone.
-# A rental it cannot name from the reply is the one new in `machine ls`; hub_cleanup ends any left. Returns 2 when this
-# cozy refuses the provider option, having failed the cell.
+# Only a machine the rent reply names is ended (hub_cleanup ends any left); returns 2 when this cozy refuses the
+# provider option, having failed the cell.
 hub_pod() {
   local p=$1 m before model=$WHO/$HUB_PKG-$1 prov=()
   [ "$p" = any ] || prov=(--provider "$p")
@@ -237,8 +237,8 @@ t = open(sys.argv[1]).read(); dec = json.JSONDecoder(); i = 0
 while (i := t.find("{", i)) >= 0:
     d, i = dec.raw_decode(t, i)
     if isinstance(d.get("machine"), dict) and d["machine"].get("name"): print(d["machine"]["name"]); break' "$HB/rent-$p.out" 2>/dev/null)
-  [ -n "$m" ] || m=$(comm -13 <(echo "$before") <(hub_machines) | grep -vxF "$M" | head -1)
-  [ -n "$m" ] || { expect "hub rent on $p" FAIL "$(tail -c 300 "$HB/rent-$p.out")"; return; }
+  # Only the machine the reply names is ours: another session may rent at the same moment, and its pod is never ended here.
+  [ -n "$m" ] || { expect "hub rent on $p" FAIL "the reply named no machine (see cozy machine ls; new since: $(comm -13 <(echo "$before") <(hub_machines) | paste -sd' ')): $(tail -c 300 "$HB/rent-$p.out")"; return; }
   HUB_RENTED="$HUB_RENTED $m"
   echo "$p $m $(date -u +%FT%TZ)" >>"$HB/rented.txt"
   if grep -q '"machine"' "$HB/rent-$p.out"; then
