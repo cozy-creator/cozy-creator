@@ -143,6 +143,9 @@ foreach ($rule in $allowed) {
         if self.status()['state'] != 'locked':
             raise RuntimeError('lock was acknowledged without reaching locked state')
         self.command('status', refusal=True)
+        self.assert_inaccessible(old_view, old_file)
+
+    def assert_inaccessible(self, old_view=None, old_file=None):
         if old_file:
             try:
                 old_file.read_bytes()
@@ -320,11 +323,13 @@ foreach ($rule in $allowed) {
         self.cell('idle_expiry_without_activity')
         view = self.view(self.command('unlock', '--recovery-file', self.recovery('recovery3'), '--idle', 0))
         assert state == self.command('export', json_output=False)
-        self.command('lock')
-        self.assert_locked(view)
+        old_file = self.find_media(view, sources[0])
         # Stop only this fresh runner's normal Calcifer through the installed command. This
-        # flushes the actual global databases/logs before scanning their retained disk bytes.
+        # must close an unlocked project, not rely on an earlier explicit project lock.
         self.command('down', project=False, json_output=False)
+        self.assert_inaccessible(view, old_file)
+        self.cell('normal_shutdown_closes_an_unlocked_project')
+        # All retained global databases/logs are now flushed before the disk-byte scan.
         self.redact('')
         self.receipt['global_files_scanned'] = self.scan(self.home, credentials=True)
         self.receipt['encrypted_files_scanned'] = self.scan(self.project)
