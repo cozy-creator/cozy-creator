@@ -829,14 +829,14 @@ fn on_pair(line: &str) -> bool {
     SDK.contains(&normalized(required).as_str())
 }
 
-/// How a package of an older pair takes this machine's: local code re-locked, its range widened
-/// first where it refuses it (`ranged`) or nothing is locked; a release's newer release.
+/// How an older pair takes this machine's: update the refusing SDK requirement or its
+/// dependency owner, then re-lock local code; a published package needs a newer release.
 fn relock(project: &Project, ranged: bool) -> String {
     const LOCK: &str = "`cozy package lock --upgrade-package cozy-runtime`";
     match (project.package.starts_with("local/"), project.locked.is_some(), ranged) {
         (true, true, false) => format!("re-lock it on this machine's: {LOCK}"),
-        (true, true, true) => format!("widen its cozy-runtime range in pyproject.toml, then re-lock it: {LOCK}"),
-        (true, false, _) => "widen its cozy-runtime range in pyproject.toml to take this machine's".into(),
+        (true, true, true) => format!("update the refusing cozy-runtime or tensorfs requirement in pyproject.toml, or upgrade the dependency that declares it, then re-lock it: {LOCK}"),
+        (true, false, _) => "update the refusing cozy-runtime or tensorfs requirement in pyproject.toml, or upgrade the dependency that declares it, to admit this machine's pair".into(),
         (false, ..) => format!("a newer release of it may: `cozy package info {}`", project.package),
     }
 }
