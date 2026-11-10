@@ -15,7 +15,7 @@ const { exec, execFileSync, spawnSync } = require('child_process');
 const { existsSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } = require('fs');
 const { homedir, tmpdir } = require('os');
 const { basename, join } = require('path');
-const { calcifer, signIn, DARK_OPEN, MP4, boxLog, boxOf, closeBox, openBox, STEP_MS, importYaml, lastLook, launch, lookAt, png, noStall, panning, renderOf, rowsOf, summary, until, watchBoxes, wav, yamlOf } = require('./page');
+const { calcifer, signIn, DARK_OPEN, MP4, boxLog, boxOf, closeBox, openBox, STEP_MS, importYaml, lastLook, launch, lookAt, png, noStall, panning, removeGeneratedProject, renderOf, rowsOf, summary, until, watchBoxes, wav, yamlOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -478,6 +478,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
 
   // 300 elements, on React Flow, by project-web-ui §8's three cases. What's measured is reported; what's checked is that each case really happened.
   const made = await api('/v1/projects', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `see-${Date.now()}` }, body: JSON.stringify({ name: `web-see-scale-${Date.now()}` }) });
+  const scalePages = new Set();
   try {
     const big = made.path;
     for (const [name, file] of [['a_picture', 'older.png'], ['a_video', 'clip.mp4']]) execFileSync(COZY, ['project', '-p', big, 'import', join(scratch, file), name]);
@@ -501,6 +502,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
     check('scale_state', bigState.assets.length === COUNT, bigState.assets?.length);
     const openTab = async (zoom, x) => {
       const tab = await context.newPage();
+      scalePages.add(tab);
       watch(tab);
       tab.setDefaultTimeout(STEP_MS);
       await tab.addInitScript(([id, zoom, x]) => localStorage.setItem(`cozy.view:${id}`, JSON.stringify({ x, y: 60, zoom })), [made.id, zoom, x]);
@@ -595,7 +597,8 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
     seen.scale.move_70 = { ...(await onScreen(tab)), ...summary(frames) };
     await tab.close();
   } finally {
-    if (made.path?.includes('web-see-scale-')) rmSync(made.path, { recursive: true, force: true });
+    await Promise.all([...scalePages].filter((tab) => !tab.isClosed()).map((tab) => tab.close()));
+    await removeGeneratedProject(made.path, 'web-see-scale-');
   }
 
   // The tabs: as many as fit the bar, each where it was and as wide while the window resizes, the rest behind "N more", which opens All
@@ -605,11 +608,12 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   const forest = realpathSync(mkdtempSync(join(tmpdir(), 'web-tabs-')));
   const listed = async () => (await api('/v1/projects?limit=200')).projects;
   let ours = [];
+  let treeTab;
   try {
     for (const tree of trees) execFileSync(COZY, ['project', 'new', join(forest, tree)], { stdio: 'ignore' });
     ours = (await listed()).filter((row) => row.path.startsWith(forest));
     check('tabs_projects_made', ours.length === trees.length, ours.map((row) => row.name));
-    const tab = await context.newPage();
+    const tab = treeTab = await context.newPage();
     watch(tab);
     tab.setDefaultTimeout(STEP_MS);
     const snap = (name) => (process.env.SHOT ? tab.screenshot({ path: `${process.env.SHOT}-${name}.png` }) : Promise.resolve());
@@ -697,7 +701,8 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
     await until('+ names a new one', naming, (label) => label === "New project's name").then(() => check('tabs_plus', true), (error) => check('tabs_plus', false, error.message));
     await tab.close();
   } finally {
-    rmSync(forest, { recursive: true, force: true });
+    if (treeTab && !treeTab.isClosed()) await treeTab.close();
+    await removeGeneratedProject(forest, 'web-tabs-');
   }
 
   // Each refusal's words have had their moment to arrive.
