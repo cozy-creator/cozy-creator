@@ -34,6 +34,23 @@ step status; cozy --json status | tee "$OUT/status.json"
 [ "$SHARD" != commands ] || version_skew
 step candidates; candidates
 step doctor; cozy --json doctor > "$OUT/doctor.json" || check "cozy doctor is not healthy: $(grep -o '"state": *"PROBLEM[^"]*"' "$OUT/doctor.json" | head -3)"
+if [ "$SHARD" = projectdb-scale ] && [ "$RUNNER_OS" = Linux ]; then
+  [ "${GITHUB_ACTIONS:-}" = true ] || fail "the diagnostic scale restart requires the owned fresh GitHub runner"
+  db_calcifer
+  local profile_pid; profile_pid=$(jq -r .pid "$HOME/.cozy/calcifer/calcifer.lock.holder")
+  api -f -X POST "http://$ADDR/v1/down" > "$OUT/profile-down.json" || fail "diagnostic Calcifer restart was refused"
+  for _ in $(seq 300); do kill -0 "$profile_pid" 2>/dev/null || break; sleep 0.1; done
+  ! kill -0 "$profile_pid" 2>/dev/null || fail "the diagnostic default Calcifer did not finish its normal shutdown"
+  cozy --json machine ls > "$OUT/profile-machine.json" || fail "the diagnostic default Calcifer did not start"
+  db_calcifer
+  python3 - "$HOME/.cozy/calcifer/calcifer.lock.holder" <<'PYPROFILE'
+import json,sys
+from pathlib import Path
+pid=json.loads(Path(sys.argv[1]).read_text())['pid']
+assert b'COZY_XS160_PROJECT_PROFILE=1' in Path(f'/proc/{pid}/environ').read_bytes().split(b'\0'), 'candidate Calcifer lacks the numeric profile flag'
+print('candidate Calcifer numeric profile flag verified')
+PYPROFILE
+fi
 }
 
 # The candidate set end to end: a request through TensorD, the Runtime and TensorFS to the reply, no model.
