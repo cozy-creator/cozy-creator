@@ -595,9 +595,15 @@ impl OutputItem {
     }
 }
 
-/// What an output is called as a file, in its run's output directory or where a client downloads it: `<number>-<name>[-<i>]`
-/// and its media type's extension (none for a folder).
+/// An export filename with complete output name/index identity, shared by Calcifer and client downloads.
+/// Sanitizing or truncating the readable part cannot merge distinct slots; TensorFS objects stay content-addressed.
 pub fn output_file_name(number: u64, name: &str, index: u32, media_type: &str) -> String {
+    use sha2::{Digest as _, Sha256};
+    let mut identity = Sha256::new();
+    identity.update((name.len() as u64).to_le_bytes());
+    identity.update(name.as_bytes());
+    identity.update(index.to_le_bytes());
+    let identity = hex::encode(identity.finalize());
     let name: String = (name.chars().take(128))
         .map(|c| match c {
             'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '_' | '-' => c,
@@ -625,7 +631,7 @@ pub fn output_file_name(number: u64, name: &str, index: u32, media_type: &str) -
         "text/plain" => ".txt",
         _ => "",
     };
-    stem + extension
+    format!("{stem}-{identity}{extension}")
 }
 
 /// The machine's progress report, as it last sent it.
@@ -936,6 +942,9 @@ pub enum StreamEvent {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         head: bool,
     },
+    /// Public protection metadata reaches every tab, including tabs showing another project.
+    #[serde(rename = "project.vault")]
+    ProjectVault { id: String, state: String },
     /// The rows of a project's canvas that changed, at revision `seq`; none is a row gone.
     #[serde(rename = "canvas")]
     Canvas { id: String, seq: u64, cards: BTreeMap<String, Option<crate::calcifer::project::Card>> },

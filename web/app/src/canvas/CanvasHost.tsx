@@ -17,7 +17,7 @@ import { ApiError } from "../api/client"
 import { lost } from "../api/outbox"
 import { canvasQuery, machinesQuery, projectQuery, toolsQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
-import { loadMore, loadSelection, loadToolsShut, loadViewport, saveMore, saveSelection, saveToolsShut, saveViewport } from "../app/view"
+import { loadMore, loadSelection, loadToolsShut, loadViewport, saveMore, saveSelection, saveToolsShut, saveViewport, privateProject } from "../app/view"
 import type { Tool } from "../api/calcifer"
 import { Copyable } from "../ui/Copyable"
 import { dismiss, say } from "../ui/notes"
@@ -293,12 +293,23 @@ function Canvas({
   // One a code reload left is another class's, and is made again.
   const [store] = useState(() => {
     const kept = projectId ? canvases.get(projectId) : undefined
-    return kept instanceof CanvasStore ? kept : new CanvasStore(client, outbox, projectId, loadSelection(projectId), loadMore(projectId))
+    if (kept instanceof CanvasStore) return kept
+    const made: CanvasStore = new CanvasStore(client, outbox.scoped(() => made.projectId), projectId, loadSelection(projectId), loadMore(projectId))
+    return made
   })
   // A canvas's first box makes its project: kept from then on.
   useEffect(() => {
     if (store.projectId) canvases.set(store.projectId, store)
   })
+  useEffect(() => () => {
+    if (!privateProject(store.projectId)) return
+    for (const node of flow.getNodes()) {
+      const view = store.get(node.data.name)
+      view?.placing?.abort.abort()
+      if (view?.preview) URL.revokeObjectURL(view.preview)
+    }
+    if (store.projectId) canvases.delete(store.projectId)
+  }, [store, flow, canvases])
   const adopt = useRef(onAdopt)
   adopt.current = onAdopt
   const [placer] = useState(() => new Placer(store, client, { adopt: (id) => adopt.current(id) }))

@@ -13,7 +13,9 @@ use std::{
 };
 
 mod disk;
+mod private;
 mod soon;
+pub use private::create_private_new;
 pub use disk::{DiskClass, Filesystem, cached, cached_pages, cached_runs, filesystem, open_direct, page_size, renames_after_data, will_need};
 pub use soon::soon;
 
@@ -239,6 +241,38 @@ pub fn open_dir(path: &Path) -> Result<File> {
     opened.map_err(Error::io("open directory", path))
 }
 
+/// The current NT device behind a Windows drive root, independent of its reusable letter.
+#[cfg(windows)]
+pub fn drive_identity(path: &Path) -> Result<Option<String>> {
+    use windows_sys::Win32::Storage::FileSystem::QueryDosDeviceW;
+    let written = path.to_string_lossy();
+    let bytes = written.as_bytes();
+    if bytes.len() != 3 || !bytes[0].is_ascii_alphabetic() || bytes[1] != b':' || !matches!(bytes[2], b'\\' | b'/')
+    {
+        return Err(Error::io("read drive identity", path)(
+            io::ErrorKind::InvalidInput.into(),
+        ));
+    }
+    let drive = [bytes[0] as u16, b':' as u16, 0];
+    let mut target = vec![0u16; 32768];
+    // SAFETY: a terminated drive name and an output buffer of the declared length.
+    let length =
+        unsafe { QueryDosDeviceW(drive.as_ptr(), target.as_mut_ptr(), target.len() as u32) };
+    if length == 0 {
+        let error = io::Error::last_os_error();
+        return if matches!(error.raw_os_error(), Some(2 | 3)) {
+            Ok(None)
+        } else {
+            Err(Error::io("read drive identity", path)(error))
+        };
+    }
+    let end = target
+        .iter()
+        .position(|value| *value == 0)
+        .unwrap_or(length as usize);
+    Ok(Some(String::from_utf16_lossy(&target[..end])))
+}
+
 /// Creates `path` (and its parents) and makes it private to this user: 0700 on Unix; on Windows
 /// the profile's ACL already is.
 pub fn private_dir(path: &Path) -> Result<()> {
@@ -262,7 +296,12 @@ pub fn private_dir(path: &Path) -> Result<()> {
 /// The absolute path with every symlink resolved, in the spelling a user writes: Windows'
 /// `canonicalize` answers a verbatim `\\?\` path, which is shortened where it can be.
 pub fn canonical(path: &Path) -> Result<std::path::PathBuf> {
-    let canonical = std::fs::canonicalize(path)?;
+    let canonical = match std::fs::canonicalize(path) {
+        #[cfg(windows)]
+        Err(error) if error.raw_os_error() == Some(1005) => canonical_device(path)
+            .map_err(Error::io("resolve virtual filesystem path", path))?,
+        result => result?,
+    };
     #[cfg(windows)]
     if let Some(rest) = canonical
         .to_str()
@@ -278,6 +317,40 @@ pub fn canonical(path: &Path) -> Result<std::path::PathBuf> {
         }
     }
     Ok(canonical)
+}
+
+/// DOS names do not exist for every WinFsp volume. Resolve the real open object in the
+/// NT namespace instead; retaining that device path also prevents drive-letter reuse
+/// from redirecting a previously resolved path into another mounted project.
+#[cfg(windows)]
+fn canonical_device(path: &Path) -> io::Result<std::path::PathBuf> {
+    use std::os::windows::{ffi::OsStringExt, fs::OpenOptionsExt, io::AsRawHandle};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE, GetFinalPathNameByHandleW, VOLUME_NAME_NT,
+    };
+    let file = OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)?;
+    let mut buffer = vec![0u16; 32768];
+    // SAFETY: a live file/directory handle and output buffer of the declared size. NT
+    // normalized naming follows the actual handle, including symlinks; no lexical fallback.
+    let length = unsafe {
+        GetFinalPathNameByHandleW(file.as_raw_handle(), buffer.as_mut_ptr(), buffer.len() as u32, VOLUME_NAME_NT)
+    };
+    if length == 0 { return Err(io::Error::last_os_error()); }
+    if length as usize >= buffer.len() {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "virtual filesystem path is too long"));
+    }
+    let resolved = std::ffi::OsString::from_wide(&buffer[..length as usize]);
+    if !resolved.to_string_lossy().starts_with(r"\Device\") {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "unexpected virtual filesystem device namespace"));
+    }
+    let mut global = std::ffi::OsString::from(r"\\?\GLOBALROOT");
+    global.push(resolved);
+    Ok(global.into())
 }
 
 /// Opens `path` itself: a symlink at the name is refused, and a FIFO there never blocks the open.

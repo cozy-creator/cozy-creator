@@ -31,7 +31,7 @@ mod model_folder;
 mod read;
 mod sent;
 pub(crate) use read::{actor_id, Log, OutputSnapshot};
-pub(crate) use sent::{choices, resume};
+pub(crate) use sent::{choices, resume, resume_private};
 
 pub(crate) enum Source {
     /// A published release by name (th-245); empty: the Hub's newest.
@@ -61,6 +61,7 @@ pub(crate) struct SetItem {
 }
 
 pub(crate) struct Spec {
+    pub local_private: Option<api::machine::LocalPrivateStorage>,
     /// Prepare only (`kind: warm`): install and download, then succeed.
     pub warm: bool,
     /// `kind: remove`: the caller's installations of the source leave the machine.
@@ -443,6 +444,7 @@ impl Runs {
             Source::Models => "models".into(),
         };
         let draft = crate::journal::Invocation {
+            local_private: spec.local_private.clone(),
             package,
             generation: String::new(),
             module: String::new(),
@@ -470,10 +472,13 @@ impl Runs {
     }
 
     /// Prepare accepted run `run` on a thread of its own, which ends the run unless it binds.
-    pub(crate) fn prepare_later(self: &Arc<Self>, actor: &str, run: &str, spec: Spec) -> io::Result<()> {
+    pub(crate) fn prepare_later(self: &Arc<Self>, actor: &str, run: &str, mut spec: Spec) -> io::Result<()> {
+        // The accepted record is authoritative, including inherited internal child scope.
+        // A closed/unavailable private view is an error, never ordinary preparation.
+        spec.local_private = self.service.engine.private_storage(run)?;
         let (this, actor, run) = (self.clone(), actor.to_string(), run.to_string());
         let thread = std::thread::Builder::new().name(format!("prepare-{run}"));
-        thread.spawn(move || {
+        thread.spawn(move || crate::private_io::within(spec.local_private.clone(), || {
             let stoppable = this.service.engine.stoppable(&run);
             // A panic (a thread the container's task cap refused) ends the run FAILED: no
             // preparation outlives the thread that would end it.
@@ -494,9 +499,9 @@ impl Runs {
             };
             this.local.prepared(&run);
             if let Err(error) = ended {
-                tracing::warn!("run {run} preparation: {error}");
+                crate::private_io::warning(&this.service.engine, &run, format_args!("preparation: {error}"));
             }
-        })?;
+        }))?;
         Ok(())
     }
 
@@ -717,7 +722,7 @@ impl Runs {
             for reason in &named.reasons {
                 let warning = format!("{}: {reason}", named.repository);
                 if let Err(error) = self.service.engine.append_warning(id, &warning) {
-                    tracing::warn!("run {id}: {warning} ({error})");
+                    crate::private_io::warning(&self.service.engine, id, format_args!("{warning} ({error})"));
                 }
             }
             let header = named.header().map_err(|(code, message)| refused(code, message))?.clone();
@@ -833,16 +838,20 @@ impl Runs {
             .map_err(|_| refused("package_interface_invalid", "held interface is corrupt"))?;
         let generation = self.service.catalog.resolve(&installation.generation)?;
         // A call's weights come from here on, in the Start pass's order, until its executor
-        // asks for them itself; its import-only parent starts now unless it already did.
+        // asks for them itself; its import-only parent starts now unless it already did. A
+        // child's are a started run's, ahead of every queued run's (cl-804).
         let mut ahead = None;
         if let (false, Some(pool)) = (spec.warm, self.service.pool()) {
             ahead = plan.as_ref().map(|plan| {
-                let order = self.service.engine.get(id).map_or(u64::MAX, |record| record.root_seq());
+                let order = self.service.engine.get(id).map_or(u64::MAX, |record| match record.invocation.parent.is_empty() {
+                    true => record.root_seq(),
+                    false => crate::origin::priority::STARTED,
+                });
                 let fetch = crate::access::Fetch::new(self.publisher.machine().clone(), hub.clone(), order);
                 let room = |missing| self.service.room_for(id, missing);
-                match fetch.ahead(&plan.upfront(), &plan.on_demand(), !pool.loaded(plan), &self.service.engine, &room) {
+                match fetch.ahead(&plan.upfront(), !pool.loaded(plan), &self.service.engine, &room) {
                     Ok(()) => crate::access::meter(self.service.engine.clone(), id.to_string(), &fetch),
-                    Err(error) => tracing::warn!("run {id}: its weights' early fetch: {error}"),
+                    Err(error) => crate::private_io::warning(&self.service.engine, id, format_args!("weights early fetch: {error}")),
                 }
                 fetch
             });
@@ -855,7 +864,7 @@ impl Runs {
                 for callee in generation.record.callees.iter().filter(|callee| !callee.package.starts_with("runtime/")) {
                     match generation.application(&callee.application) {
                         Ok(view) => gpu.prespawn(view),
-                        Err(error) => tracing::warn!("run {id}: {}'s parent: {error}", callee.application),
+                        Err(error) => crate::private_io::warning(&self.service.engine, id, format_args!("{} parent: {error}", callee.application)),
                     }
                 }
             }
@@ -864,7 +873,7 @@ impl Runs {
             .then(|| format!("{} {}: {}", installation.package, installation.release, generation.record.sdk_fallback));
         for warning in fallback.into_iter().chain(precision) {
             if let Err(error) = self.service.engine.append_warning(id, &warning) {
-                tracing::warn!("run {id}: {warning} ({error})");
+                crate::private_io::warning(&self.service.engine, id, format_args!("{warning} ({error})"));
             }
         }
         let declared = api::interface::entrypoint(&interface, &spec.entrypoint);
@@ -892,7 +901,7 @@ impl Runs {
                     choice.parameter
                 );
                 if let Err(error) = self.service.engine.append_warning(id, &warning) {
-                    tracing::warn!("run {id}: {warning} ({error})");
+                    crate::private_io::warning(&self.service.engine, id, format_args!("{warning} ({error})"));
                 }
             }
         }
@@ -904,7 +913,7 @@ impl Runs {
             if let Some((code, said)) = self.service.gpu().filter(|_| install_only).and_then(|gpu| gpu.import_verdict(&generation, &stoppable.stop)) {
                 let warning = format!("{code}: {said}. Its calls will fail the same way");
                 if let Err(error) = self.service.engine.append_warning(id, &warning) {
-                    tracing::warn!("run {id}: {warning} ({error})");
+                    crate::private_io::warning(&self.service.engine, id, format_args!("{warning} ({error})"));
                 }
             }
             let models = match install_only {
@@ -924,7 +933,10 @@ impl Runs {
                             Some(Box::new(move |stage: &str, done: u64, total: u64| report(stage, done, total))), Some(&stoppable.stop));
                         match resolved {
                             Ok((_, plan, ..)) => plans.extend(plan),
-                            Err(error) if plans.is_empty() => tracing::warn!("run {id}: {callee}'s weights aren't fetched ahead: {}", error.message),
+                            Err(error) if plans.is_empty() => {
+                                if spec.local_private.is_none() { tracing::warn!("run {id}: {callee}'s weights aren't fetched ahead: {}", error.message); }
+                                else { tracing::warn!("private run {id}: model prefetch is unavailable"); }
+                            },
                             Err(_) => {}
                         }
                     }
@@ -932,11 +944,12 @@ impl Runs {
                 }
                 plan => plan.into_iter().collect(),
             };
-            // A function's warm run ends holding what its constructions read (`downloaded`), its
-            // on-demand models' too: only if that fits. It is a guess, so it never makes room.
+            // A function's warm run (a project's fetch ahead) ends holding what its constructions
+            // read up front: only if that fits. It is a guess, so it never makes room. An
+            // on-demand model comes when a stage reads it: the request may never (cl-804).
             let mut moved = tensorfs::fetch::Landed::default();
             if !plans.is_empty() {
-                let each: Vec<_> = plans.iter().map(Plan::read).collect();
+                let each: Vec<_> = plans.iter().map(Plan::upfront).collect();
                 // Only what they all share: that's sure to be read. The rest comes when its run begins, which on a slow link costs no
                 // more time than fetching it now, as fetching ahead is canceled then, and on a fast one costs seconds, while bytes for a
                 // function that isn't called are paid for wherever downloads are billed.
@@ -1170,7 +1183,7 @@ impl Runs {
             if unbound {
                 let warning = format!("{} binds no GPU model of its own: its inputs are not warmed, only the models it calls", item.entrypoint);
                 if let Err(error) = self.service.engine.append_warning(id, &warning) {
-                    tracing::warn!("run {id}: {warning} ({error})");
+                    crate::private_io::warning(&self.service.engine, id, format_args!("{warning} ({error})"));
                 }
             }
             // A function that loads no model itself (an orchestrator) runs on the ones it calls.
@@ -1415,6 +1428,7 @@ impl Runs {
             .map_err(|_| refused("package_interface_invalid", "held interface is corrupt"))?;
         let prefix = format!("{entrypoint}.");
         let mut spec = Spec {
+            local_private: self.service.engine.private_storage(parent)?,
             remove: false,
             warm: false,
             set: None,
@@ -1462,7 +1476,9 @@ impl Runs {
             let Some(path) = addressed(&choice.parameter, &installed.package, &callee_interface)
                 .filter(|path| path.starts_with(&prefix))
             else {
-                tracing::warn!("{}: a call's model choice {} names no slot of {entrypoint}: ignored", installed.package, choice.parameter);
+                if spec.local_private.is_none() {
+                    tracing::warn!("{}: a call's model choice {} names no slot of {entrypoint}: ignored", installed.package, choice.parameter);
+                }
                 continue;
             };
             let prior = spec.models.iter().position(|prior| prior.parameter == path).map(|at| spec.models.remove(at));
@@ -1504,7 +1520,7 @@ impl Runs {
         let owner = parent.id.clone();
         let (runs, entrypoint) = (self.clone(), entrypoint.to_string());
         let application = application.to_string();
-        let started = std::thread::Builder::new().name("child-prefetch".into()).spawn(move || {
+        let started = std::thread::Builder::new().name("child-prefetch".into()).spawn(move || crate::private_io::within(spec.local_private.clone(), || {
             let prepared = (|| {
                     let Source::Installation(alias) = &spec.source else { unreachable!() };
                     let held = match runs.service.engine.installation(&actor, alias)? {
@@ -1519,20 +1535,24 @@ impl Runs {
                     match runs.service.catalog.resolve(&installation.generation)
                         .and_then(|held| held.application(&application)) {
                         Ok(held) => {
-                            // Its weights come after its root's own, under the child's access.
+                            // A started run's, under the child's access: ahead of every queued run's.
                             let hub = spec.hub.clone().or_else(|| runs.own_hub.clone());
-                            let fetch = crate::access::Fetch::new(runs.publisher.machine().clone(), hub, root);
+                            let fetch = crate::access::Fetch::new(runs.publisher.machine().clone(), hub, crate::origin::priority::STARTED);
                             gpu.prefetch(&runs.service.engine, held, plan, (root, family.clone()), owner.clone(), fetch)
                         }
-                        Err(error) => tracing::warn!("prefetch of {entrypoint}: {error}"),
+                        Err(error) => {
+                            if spec.local_private.is_none() { tracing::warn!("prefetch of {entrypoint}: {error}"); }
+                            else { tracing::warn!("private run {owner}: model prefetch is unavailable"); }
+                        },
                     }
                 }
                 Ok(_) => (),
                 Err(refusal) => {
-                    tracing::warn!("prefetch of {entrypoint}: {}: {}", refusal.code, refusal.message)
+                    if spec.local_private.is_none() { tracing::warn!("prefetch of {entrypoint}: {}: {}", refusal.code, refusal.message); }
+                    else { tracing::warn!("private run {owner}: model prefetch is unavailable"); }
                 }
             }
-        });
+        }));
         if let Err(error) = started {
             tracing::warn!("prefetch of a child: {error}");
         }

@@ -28,6 +28,7 @@ mod outputs;
 mod others;
 mod page;
 mod placement;
+pub(crate) mod private_io;
 mod play;
 mod project;
 mod rentals;
@@ -471,9 +472,10 @@ impl Calcifer {
         let (row, fresh) = tokio::task::spawn_blocking(move || {
             // Copied first; then, against a settled run's deletion of the same objects, checked
             // again and recorded under one guard.
-            stage(&me.inputs, &new.spec, &given, &held)?;
+            let input_root = private_io::input_root(&new.out_dir, &me.inputs).map_err(Error::Refused)?;
+            stage(&input_root, &new.spec, &given, &held)?;
             let _staging = lock(&me.staging);
-            let inputs = stage(&me.inputs, &new.spec, &given, &held)?;
+            let inputs = stage(&input_root, &new.spec, &given, &held)?;
             Ok::<_, Error>(me.store.submit(&key, &digest, NewRun { inputs, ..new })?)
         })
         .await
@@ -1181,6 +1183,13 @@ impl Calcifer {
         wake: &Notify,
         pause: &mut Pause,
     ) -> Result<(), Stop> {
+        let private = if machine == "local" {
+            private_io::of_output(&run.out_dir).map_err(|error| Stop::Refused(Reason {
+                code: error.code, message: error.message, origin: "private_storage".into(), ..Default::default()
+            }))?.map(|scope| link.with_private(scope))
+        } else { None };
+        let link = private.as_ref().unwrap_or(link);
+        if private.is_some() { link.probe_private().await?; }
         let id = run.id.as_str();
         let mut canceled = false;
         let (state, stream) = match run.state {
@@ -1258,8 +1267,23 @@ impl Calcifer {
     /// driver. Its own state; none when another driver sent it meanwhile, or a cancel won.
     async fn deliver(&self, run: &RunRow, machine: &str, link: &Link) -> Result<Option<v1::RunState>, Stop> {
         let mut sent = vec![];
+        let own_scope = if machine == "local" { private_io::of_output(&run.out_dir).map_err(|error| Stop::Refused(Reason {
+            code: error.code, message: error.message, origin: "private_storage".into(), ..Default::default()
+        }))?.map(|scope| scope.storage.project_id) } else { None };
         for row in self.store.batched(run.id.as_str())? {
             let own = row.id == run.id;
+            if machine == "local" {
+                let candidate = match private_io::of_output(&row.out_dir) {
+                    Ok(scope) => scope.map(|scope| scope.storage.project_id),
+                    Err(error) if own => return Err(Stop::Refused(Reason {
+                        code: error.code, message: error.message, origin: "private_storage".into(), ..Default::default()
+                    })),
+                    // A different project's unavailable view must neither spill into this
+                    // batch nor prevent an unrelated authorized batch from progressing.
+                    Err(_) => continue,
+                };
+                if candidate != own_scope { continue }
+            }
             if own && row.state != run.state {
                 return Ok(None);
             }
@@ -1322,6 +1346,12 @@ impl Calcifer {
     ) -> Result<(), Stop> {
         use v1::Event as Frame;
         let (mut batch, mut frames) = (Batch::default(), 0u64);
+        // Why its machine says a finished run's outcome isn't sent, when it says (cl-806).
+        let mut unsent = String::new();
+        let unsent_said = |state_now: &str, unsent: &str| match unsent.is_empty() {
+            true => format!("it says the run {state_now}, and sends no outcome"),
+            false => format!("it says the run {state_now}, and sends no outcome: {unsent}"),
+        };
         let mut ticks = tokio::time::interval(ETA_EVERY);
         ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
@@ -1358,7 +1388,7 @@ impl Calcifer {
                 // A stream's end with its outcome unread is, to a client, a body that broke off.
                 Some(Err(LinkError::Unanswered(_))) if finished(&state_now) => {
                     self.record_batch(id, &mut batch)?;
-                    return Err(Stop::Broken("outcome_unsent".into(), format!("it says the run {state_now}, and sends no outcome")));
+                    return Err(Stop::Broken("outcome_unsent".into(), unsent_said(&state_now, &unsent)));
                 }
                 Some(Err(e)) => {
                     self.record_batch(id, &mut batch)?;
@@ -1367,7 +1397,7 @@ impl Calcifer {
                 // A run its machine calls over with no outcome sent is no stream held open to start another: it can't read that outcome.
                 None if finished(&state_now) => {
                     self.record_batch(id, &mut batch)?;
-                    return Err(Stop::Broken("outcome_unsent".into(), format!("it says the run {state_now}, and sends no outcome")));
+                    return Err(Stop::Broken("outcome_unsent".into(), unsent_said(&state_now, &unsent)));
                 }
                 // The machine ends a stream it holds open only to start another: attach again.
                 None if frames > 0 => return self.record_batch(id, &mut batch),
@@ -1429,6 +1459,9 @@ impl Calcifer {
                 }
                 Frame::State(state) => {
                     state_now.clone_from(&state.state);
+                    if finished(&state.state) {
+                        unsent.clone_from(&state.waiting);
+                    }
                     self.machine_waiting(id, state.clone());
                     if state.started_at_ms > 0 {
                         batch.started_at_ms = Some(state.started_at_ms as i64);
@@ -1525,6 +1558,9 @@ impl Calcifer {
         let names: HashMap<&str, &str> = (run.spec.inputs.iter())
             .map(|i| (i.digest.as_str(), i.field.as_str()))
             .collect();
+        let input_root = private_io::input_root(&run.out_dir, &self.inputs).map_err(|error| Stop::Refused(Reason {
+            code: error.code, message: error.message, origin: "private_storage".into(), ..Default::default()
+        }))?;
         let digests: Vec<Digest> = run.inputs.iter().map(|(digest, _)| *digest).collect();
         let held = link.held_many(&digests).await?;
         // An empty object's ranges cannot say it is held: it is always sent (one empty PUT).
@@ -1553,7 +1589,7 @@ impl Calcifer {
                 continue;
             }
             let hex = hex::encode(digest.bytes());
-            let path = self.inputs.join(&hex);
+            let path = input_root.join(&hex);
             let name = match names.get(digest.to_string().as_str()) {
                 Some(field) => field.to_string(),
                 None => format!("sha256:{}", &hex[..12]),
@@ -1652,10 +1688,12 @@ impl Calcifer {
 
     /// Deletes the staged inputs of a settled run that no unsettled run names.
     fn release_inputs(&self, run: &RunRow) {
+        // A locked private view defers cleanup, never redirects it to plaintext staging.
+        let Ok(input_root) = private_io::input_root(&run.out_dir, &self.inputs) else { return };
         let _staging = lock(&self.staging);
         for (digest, _) in &run.inputs {
             if let Ok(false) = self.store.input_in_use(digest) {
-                let _ = std::fs::remove_file(self.inputs.join(hex::encode(digest.bytes())));
+                let _ = std::fs::remove_file(input_root.join(hex::encode(digest.bytes())));
             }
         }
     }

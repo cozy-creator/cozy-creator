@@ -179,7 +179,7 @@ impl Store {
     /// Roots `header` while the file at `path` (absolute) holds it: one record per path, so saving
     /// another header there replaces it.
     pub fn root_file(&self, path: &Path, header: &ObjectRef) -> Result<()> {
-        let path = fs::canonicalize(path).map_err(fail("resolve", path))?;
+        let path = platform::durable::canonical(path).map_err(|e| fail("resolve", path)(e.into()))?;
         let id = ObjectRef::of(path.as_os_str().as_encoded_bytes()).sha256;
         let record = self.root.join("files").join(id);
         let root = FileRoot { path, header: header.clone() };

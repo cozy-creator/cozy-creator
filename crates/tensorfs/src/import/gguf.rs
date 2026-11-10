@@ -306,8 +306,11 @@ impl Cursor<'_> {
     }
 }
 
-fn pad(n: u64, alignment: u64) -> u64 {
-    n.next_multiple_of(alignment)
+fn pad(n: u64, alignment: u64) -> Result<u64> {
+    match n.checked_next_multiple_of(alignment) {
+        Some(n) => Ok(n),
+        None => refuse(Code::CARRIER_GEOMETRY, "GGUF aligned offset overflows u64"),
+    }
 }
 
 /// The header of the GGUF in `src`: KV, tensor infos and where the data section starts. Every
@@ -385,7 +388,10 @@ pub(crate) fn read(src: &dyn At) -> Result<Gguf> {
                 format!("{name}: offset {offset}, llama.cpp expects {expected}"),
             );
         }
-        expected = pad(offset + nbytes, alignment);
+        let Some(end) = offset.checked_add(nbytes) else {
+            return refuse(Code::CARRIER_GEOMETRY, format!("{name}: tensor end overflows u64"));
+        };
+        expected = pad(end, alignment)?;
         tensors.push(Info {
             name,
             ne,
@@ -394,9 +400,10 @@ pub(crate) fn read(src: &dyn At) -> Result<Gguf> {
             nbytes,
         });
     }
-    let data = pad(c.pos, alignment);
+    let data = pad(c.pos, alignment)?;
     if let Some(last) = tensors.last() {
-        if data + last.offset + last.nbytes > c.len {
+        let end = data.checked_add(last.offset).and_then(|start| start.checked_add(last.nbytes));
+        if end.is_none_or(|end| end > c.len) {
             return refuse(
                 Code::CARRIER_TRUNCATED,
                 format!("{}: past the file's {} bytes", last.name, c.len),
@@ -450,9 +457,12 @@ pub(crate) fn header(version: u32, kv: &[Kv], tensors: &[(String, Vec<u64>, Type
         let nbytes = ty
             .bytes(ne.iter().product())
             .expect("checked by the caller");
-        offset = pad(offset + nbytes, alignment);
+        let Some(end) = offset.checked_add(nbytes) else {
+            return refuse(Code::CARRIER_GEOMETRY, format!("{name}: tensor end overflows u64"));
+        };
+        offset = pad(end, alignment)?;
     }
-    out.resize(pad(out.len() as u64, alignment) as usize, 0);
+    out.resize(pad(out.len() as u64, alignment)? as usize, 0);
     Ok(out)
 }
 
@@ -824,5 +834,63 @@ impl Read for Ranges<'_> {
             return Ok(n);
         }
         Ok(0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write as _;
+
+    use super::{header, read};
+    use crate::err::Code;
+    use crate::format::decode::gguf::Type;
+
+    fn gguf_file(tensors: &[(u64, u64)], payload: &[u8]) -> tempfile::NamedTempFile {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        let mut bytes = b"GGUF".to_vec();
+        bytes.extend(3u32.to_le_bytes());
+        bytes.extend((tensors.len() as u64).to_le_bytes());
+        bytes.extend(0u64.to_le_bytes());
+        for (i, (size, offset)) in tensors.iter().enumerate() {
+            let name = format!("w{i}");
+            bytes.extend((name.len() as u64).to_le_bytes());
+            bytes.extend(name.as_bytes());
+            bytes.extend(1u32.to_le_bytes());
+            bytes.extend(size.to_le_bytes());
+            bytes.extend(24u32.to_le_bytes()); // ggml I8
+            bytes.extend(offset.to_le_bytes());
+        }
+        bytes.resize(bytes.len().next_multiple_of(32), 0);
+        bytes.extend(payload);
+        file.write_all(&bytes).unwrap();
+        file
+    }
+
+    #[test]
+    fn gguf_refuses_overflowing_tensor_ends_and_alignment() {
+        for tensors in [
+            vec![(u64::MAX - 31, 0)],                      // data section + tensor size
+            vec![(u64::MAX - 30, 0)],                      // rounding up to alignment
+            vec![(u64::MAX - 63, 0), (64, u64::MAX - 63)], // offset + size
+        ] {
+            let file = gguf_file(&tensors, &[]);
+            let error = read(file.as_file()).unwrap_err();
+            assert!(
+                matches!(error.code, Code::CARRIER_GEOMETRY | Code::CARRIER_TRUNCATED),
+                "{error}"
+            );
+        }
+        let valid = gguf_file(&[(1, 0), (1, 32)], &[7; 33]);
+        let parsed = read(valid.as_file()).unwrap();
+        assert_eq!(parsed.tensors[1].offset, 32);
+        assert_eq!(parsed.tensors[1].nbytes, 1);
+        let bytes = header(3, &[], &[("w".into(), vec![1], Type::by_id(24).unwrap())]).unwrap();
+        assert_eq!(bytes.len() % 32, 0);
+        assert!(header(
+            3,
+            &[],
+            &[("w".into(), vec![u64::MAX - 30], Type::by_id(24).unwrap())]
+        )
+        .is_err());
     }
 }

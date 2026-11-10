@@ -204,13 +204,21 @@ impl Host {
     /// The project's local code at `path` made ready `on` a machine for a call, an install waited for: read into a copy as a
     /// client's is sent.
     pub(crate) async fn ready(&self, path: &Path, on: &On, hub: &str) -> Result<local_code::Prepared, Error> {
-        let code = local_code::own(self.api.machines.hubs.home(), path)?;
-        local_code::ready(&self.api, &code, on, hub, &self.key(path, on)).await
+        let scope = crate::private_io::current().or(crate::private_io::of_path(path)?);
+        crate::private_io::context(scope, async {
+            let code = local_code::own(self.api.machines.hubs.home(), path)?;
+            local_code::ready(&self.api, &code, on, hub, &self.key(path, on)).await
+        }).await
     }
 
     /// The package `with` names: local code (`./dir` from the project's `folder`, `~/…`, an absolute path), described on the first of
     /// `on`'s machines; else `[org/]package[@release]` as `hub` (empty: the default one) has it.
     pub(crate) async fn package(&self, hub: &str, with: &str, folder: &Path, on: &[On]) -> Result<Package, Error> {
+        let scope = crate::private_io::of_path(folder)?;
+        crate::private_io::context(scope, self.package_scoped(hub, with, folder, on)).await
+    }
+
+    async fn package_scoped(&self, hub: &str, with: &str, folder: &Path, on: &[On]) -> Result<Package, Error> {
         let home = self.api.machines.hubs.home().root().parent().map(Path::to_path_buf).unwrap_or_default();
         if let Some(found) = local_code::target(with, Some(folder), &home) {
             let (path, named) = found?;

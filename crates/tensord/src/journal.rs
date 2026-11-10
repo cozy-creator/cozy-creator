@@ -1,5 +1,6 @@
 //! Durable acceptance and transitions. Observation has no lifecycle side effects.
 use platform::process::Birth;
+use crate::private_journal;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -24,6 +25,9 @@ pub(crate) struct Invocation {
     pub module: String,
     pub entrypoint: String,
     pub input: Value,
+    /// Verified local encrypted workspace. It is immutable for this invocation and its children.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_private: Option<api::machine::LocalPrivateStorage>,
     /// The caller's attention-kernel pin, passed to the executor verbatim.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub attention_kernel: String,
@@ -418,7 +422,7 @@ impl Ran {
         };
         spent(root, own.as_deref(), &mut idle);
         for (call, measured) in &calls {
-            let call: Execution = serde_json::from_str(call).map_err(db_error)?;
+            let call = decoded_execution(call)?;
             // A call answered without running (memoized, refused) took no time of its own.
             if call.started_at_ms == 0 {
                 continue;
@@ -514,29 +518,19 @@ pub(crate) struct ProgressSnapshot {
 }
 
 /// Weights arriving for a run (`access::meter`): their repositories, and the bytes here of their
-/// total. `behind`: its on-demand models, which it waits on only if a step reads them.
+/// total.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Weights {
     pub models: String,
     pub done: u64,
     pub total: u64,
-    pub behind: bool,
 }
 
 impl Weights {
     /// The progress detail they show over the run's own `detail`: its enclosing scope (what the
     /// stage is part of) and the download, never a step its weights have not reached.
     pub(crate) fn over(&self, detail: &str) -> String {
-        let mut own: Value = serde_json::from_str(detail).unwrap_or(Value::Null);
-        // On-demand weights keep the run's own stage and steps, their bytes beside them: a step
-        // that waits on them moves with them.
-        if self.behind {
-            if !own.is_object() {
-                own = serde_json::json!({"stage": "", "step_ms": 0.0});
-            }
-            (own["bytes_done"], own["bytes_total"]) = (self.done.into(), self.total.into());
-            return own.to_string();
-        }
+        let own: Value = serde_json::from_str(detail).unwrap_or(Value::Null);
         let label = format!("downloading {} weights", self.models);
         let stage = match own["stage"].as_str().and_then(|stage| stage.rsplit_once(" / ")) {
             Some((scope, _)) => format!("{scope} · {label}"),
@@ -574,7 +568,7 @@ const FILE: &str = "executions.sqlite3";
 /// One unreadable row (written by a newer machine, or damaged) must not hide every other run.
 fn readable(rows: Vec<String>) -> Vec<Execution> {
     rows.into_iter()
-        .filter_map(|row| match serde_json::from_str(&row) {
+        .filter_map(|row| match decoded_execution(&row) {
             Ok(record) => Some(record),
             Err(error) => {
                 tracing::warn!("journal: skipping an unreadable execution row: {error}");
@@ -590,6 +584,85 @@ fn db_error(error: impl std::fmt::Display) -> io::Error {
 fn encoded(value: &impl Serialize) -> io::Result<String> {
     serde_json::to_string(value).map_err(db_error)
 }
+fn invocation_index(invocation: &Invocation) -> io::Result<String> {
+    if invocation.local_private.is_none() { return encoded(invocation); }
+    encoded(&serde_json::json!({
+        "generation": invocation.generation, "degree": invocation.degree, "widths": invocation.widths,
+        "parent": invocation.parent, "root": invocation.root, "family": invocation.family,
+        "prepares": invocation.prepares, "local_private": invocation.local_private,
+    }))
+}
+fn execution_context(id: &str) -> String { format!("execution:{id}") }
+fn payload_context(id: &str, slot: &str) -> String { format!("execution:{id}:{slot}") }
+fn encoded_execution(record: &Execution) -> io::Result<String> {
+    let Some(scope) = &record.invocation.local_private else { return encoded(record); };
+    let pointer = private_journal::write(Some(scope), &execution_context(&record.id), encoded(record)?.as_bytes())?;
+    // All fields read by global SQL admission/recovery indexes remain scalars here. This is
+    // not a dispatchable Execution and must go through decoded_execution before use.
+    encoded(&serde_json::json!({
+        "id": record.id, "state": record.state, "invocation": serde_json::from_str::<Value>(&invocation_index(&record.invocation)?).map_err(db_error)?,
+        "waiting_reason": record.waiting_reason, "process": record.process,
+        "finished_at_ms": record.finished_at_ms,
+        "_private_payload": String::from_utf8(pointer).map_err(db_error)?,
+    }))
+}
+fn decoded_execution(value: &str) -> io::Result<Execution> {
+    let projection: Value = serde_json::from_str(value).map_err(db_error)?;
+    if let Some(pointer) = projection.get("_private_payload") {
+        let id = projection.get("id").and_then(Value::as_str).ok_or_else(|| db_error("private execution index has no id"))?;
+        let pointer = pointer.as_str().ok_or_else(|| db_error("private execution reference is invalid"))?;
+        let bytes = private_journal::read(&execution_context(id), pointer.as_bytes(), true)?;
+        let record: Execution = serde_json::from_slice(&bytes).map_err(|_| db_error("private execution payload cannot be decoded"))?;
+        let indexed: Option<api::machine::LocalPrivateStorage> = serde_json::from_value(projection["invocation"]["local_private"].clone()).map_err(|_| db_error("private execution scope index is invalid"))?;
+        if record.id != id || record.invocation.local_private.is_none() || record.invocation.local_private != indexed {
+            return Err(db_error("private execution scope or identity differs from its index"));
+        }
+        return Ok(record);
+    }
+    let record: Execution = serde_json::from_value(projection).map_err(db_error)?;
+    if record.invocation.local_private.is_some() {
+        return Err(db_error("a private execution has an unprotected global record"));
+    }
+    Ok(record)
+}
+fn private_scope(conn: &Connection, id: &str) -> io::Result<Option<api::machine::LocalPrivateStorage>> {
+    let invocation: String = conn.query_row("SELECT invocation FROM executions WHERE id=?1", [id], |row| row.get(0)).map_err(db_error)?;
+    let value: Value = serde_json::from_str(&invocation).map_err(db_error)?;
+    value.get("local_private").cloned().map(|scope| serde_json::from_value(scope).map_err(db_error)).transpose()
+}
+fn write_payload(conn: &Connection, id: &str, slot: &str, body: &[u8]) -> io::Result<Vec<u8>> {
+    private_journal::write(private_scope(conn, id)?.as_ref(), &payload_context(id, slot), body)
+}
+fn read_payload(conn: &Connection, id: &str, slot: &str, body: &[u8]) -> io::Result<Vec<u8>> {
+    private_journal::read(&payload_context(id, slot), body, private_scope(conn, id)?.is_some())
+}
+
+fn metadata_actor(actor: &str) -> String {
+    crate::private_io::resource_key(actor)
+}
+fn metadata_name(name: &str) -> String {
+    if crate::private_io::current().is_some() {
+        metadata_actor(&tensorfs::sha256::hex_digest(name.as_bytes()))
+    } else { name.to_owned() }
+}
+fn encoded_metadata(value: &impl Serialize, scope: Option<&api::machine::LocalPrivateStorage>, context: &str, mut index: Value) -> io::Result<String> {
+    let Some(scope) = scope else { return encoded(value) };
+    let pointer = private_journal::write(Some(scope), context, encoded(value)?.as_bytes())?;
+    index["_private_payload"] = String::from_utf8(pointer).map_err(db_error)?.into();
+    encoded(&index)
+}
+fn decoded_metadata<T: serde::de::DeserializeOwned>(value: &str, context: &str) -> io::Result<T> {
+    let index: Value = serde_json::from_str(value).map_err(db_error)?;
+    match index.get("_private_payload") {
+        Some(pointer) => {
+            let pointer = pointer.as_str().ok_or_else(|| db_error("invalid private metadata reference"))?;
+            let bytes = private_journal::read_scoped(context, pointer.as_bytes())?;
+            serde_json::from_slice(&bytes).map_err(|_| db_error("private metadata cannot be decoded"))
+        }
+        None => serde_json::from_value(index).map_err(db_error),
+    }
+}
+
 fn timestamp() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -630,6 +703,8 @@ impl Journal {
             CREATE TABLE IF NOT EXISTS run_measurements(execution INTEGER PRIMARY KEY REFERENCES executions(id),measurements BLOB NOT NULL);
             CREATE TABLE IF NOT EXISTS run_logs(execution INTEGER NOT NULL REFERENCES executions(id),sequence INTEGER NOT NULL,at_ms INTEGER NOT NULL,record BLOB NOT NULL,PRIMARY KEY(execution,sequence));
             CREATE TABLE IF NOT EXISTS attention_applied(execution INTEGER PRIMARY KEY REFERENCES executions(id));
+            CREATE TABLE IF NOT EXISTS run_log_lengths(execution INTEGER NOT NULL,sequence INTEGER NOT NULL,length INTEGER NOT NULL,PRIMARY KEY(execution,sequence));
+            CREATE TABLE IF NOT EXISTS package_log_dropped(execution INTEGER PRIMARY KEY);
             CREATE TABLE IF NOT EXISTS run_calls(execution INTEGER NOT NULL REFERENCES executions(id),sequence INTEGER NOT NULL,at_ms INTEGER NOT NULL,call TEXT NOT NULL,record BLOB NOT NULL,PRIMARY KEY(execution,sequence),UNIQUE(execution,call));
             CREATE TABLE IF NOT EXISTS native_outputs(actor TEXT NOT NULL,owner TEXT NOT NULL,source BLOB NOT NULL,PRIMARY KEY(actor,owner));
             CREATE TABLE IF NOT EXISTS triage(execution INTEGER PRIMARY KEY REFERENCES executions(id),record TEXT NOT NULL);
@@ -638,6 +713,7 @@ impl Journal {
             CREATE TABLE IF NOT EXISTS held_names(name TEXT PRIMARY KEY,named TEXT NOT NULL,read_ms INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS objects(actor TEXT NOT NULL,sha256 TEXT NOT NULL,length INTEGER NOT NULL,PRIMARY KEY(actor,sha256));
             CREATE TABLE IF NOT EXISTS object_uses(sha256 TEXT PRIMARY KEY,length INTEGER NOT NULL,used_ms INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS private_object_uses(project TEXT NOT NULL,sha256 TEXT NOT NULL,length INTEGER NOT NULL,used_ms INTEGER NOT NULL,PRIMARY KEY(project,sha256));
             CREATE TABLE IF NOT EXISTS run_objects(execution INTEGER NOT NULL REFERENCES executions(id),sha256 TEXT NOT NULL,length INTEGER NOT NULL,PRIMARY KEY(execution,sha256));
             CREATE INDEX IF NOT EXISTS run_objects_digest ON run_objects(sha256);
             CREATE TABLE IF NOT EXISTS run_specs(execution INTEGER PRIMARY KEY REFERENCES executions(id),spec BLOB NOT NULL);
@@ -705,30 +781,33 @@ impl Journal {
         &self.workspace_id
     }
 
+    /// Public scheduler metadata only: locking does not need to deserialize private requests.
+    pub(crate) fn private_descriptor(&self, id: &str) -> io::Result<Option<api::machine::LocalPrivateStorage>> {
+        private_scope(&self.connection, id)
+    }
+
+    pub(crate) fn private_active(&self, project_id: &str) -> io::Result<bool> {
+        self.connection.query_row("SELECT EXISTS(SELECT 1 FROM executions WHERE state IN ('queued','starting','running') AND json_extract(invocation,'$.local_private.project_id')=?1)", [project_id], |row| row.get(0)).map_err(db_error)
+    }
+
     pub(crate) fn installation(&self, actor: &str, alias: &str) -> io::Result<Option<Installation>> {
-        let record: Option<String> = self
-            .connection
-            .query_row(
-                "SELECT record FROM installations WHERE actor=?1 AND alias=?2",
-                params![actor, alias],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(db_error)?;
-        record
-            .map(|record| serde_json::from_str(&record).map_err(db_error))
-            .transpose()
+        let scoped = metadata_actor(actor);
+        if scoped != actor {
+            let local: Option<String> = self.connection.query_row("SELECT record FROM installations WHERE actor=?1 AND alias=?2", params![scoped, alias], |row| row.get(0)).optional().map_err(db_error)?;
+            if let Some(local) = local { return decoded_metadata(&local, &format!("installation:{actor}:{alias}")).map(Some); }
+        }
+        let body: Option<String> = self.connection.query_row("SELECT record FROM installations WHERE actor=?1 AND alias=?2", params![actor, alias], |row| row.get(0)).optional().map_err(db_error)?;
+        let body: Option<Installation> = body.map(|body| decoded_metadata(&body, &format!("installation:{actor}:{alias}"))).transpose()?;
+        Ok(body.filter(|body| scoped == actor || !body.package.starts_with("local/")))
     }
-    pub(crate) fn installation_for_generation(
-        &self,
-        actor: &str,
-        generation: &str,
-    ) -> io::Result<Option<Installation>> {
-        let record: Option<String> = self.connection.query_row("SELECT record FROM installations WHERE actor=?1 AND json_extract(record,'$.generation')=?2 LIMIT 1", params![actor,generation], |r| r.get(0)).optional().map_err(db_error)?;
-        record
-            .map(|record| serde_json::from_str(&record).map_err(db_error))
-            .transpose()
+    pub(crate) fn installation_for_generation(&self, actor: &str, generation: &str) -> io::Result<Option<Installation>> {
+        let scoped = metadata_actor(actor);
+        let found: Option<(String,String)> = self.connection.query_row("SELECT alias,record FROM installations WHERE actor IN (?1,?2) AND json_extract(record,'$.generation')=?3 ORDER BY CASE actor WHEN ?2 THEN 0 ELSE 1 END LIMIT 1", params![actor, scoped, generation], |row| Ok((row.get(0)?,row.get(1)?))).optional().map_err(db_error)?;
+        let Some((alias, body)) = found else { return Ok(None) };
+        let body: Installation = decoded_metadata(&body, &format!("installation:{actor}:{alias}"))?;
+        Ok((body.generation == generation && (scoped == actor || !body.package.starts_with("local/") || self.connection.query_row("SELECT EXISTS(SELECT 1 FROM installations WHERE actor=?1 AND alias=?2)",params![scoped,alias],|row|row.get::<_,bool>(0)).map_err(db_error)?)).then_some(body))
     }
+
     /// Every generation an installation or an unfinished run names: never evicted meanwhile.
     pub(crate) fn bound_generations(&self) -> io::Result<std::collections::HashSet<String>> {
         let mut bound = self.running_generations()?;
@@ -763,30 +842,29 @@ impl Journal {
     }
 
     pub(crate) fn installations(&self, actor: &str) -> io::Result<Vec<Installation>> {
-        let mut statement = self
-            .connection
-            .prepare("SELECT record FROM installations WHERE actor=?1 ORDER BY alias")
-            .map_err(db_error)?;
-        let rows = statement
-            .query_map([actor], |r| r.get::<_, String>(0))
-            .map_err(db_error)?;
-        rows.map(|r| serde_json::from_str(&r.map_err(db_error)?).map_err(db_error))
-            .collect()
+        let scoped = metadata_actor(actor);
+        let mut statement = self.connection.prepare("SELECT actor,alias,record FROM installations WHERE actor IN (?1,?2) ORDER BY alias").map_err(db_error)?;
+        let rows = statement.query_map(params![actor, scoped], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?))).map_err(db_error)?;
+        let mut found = std::collections::BTreeMap::new();
+        for row in rows {
+            let (owner,alias,body) = row.map_err(db_error)?;
+            let body: Installation = decoded_metadata(&body,&format!("installation:{actor}:{alias}"))?;
+            if scoped != actor && owner == actor && body.package.starts_with("local/") { continue; }
+            found.insert(alias,body);
+        }
+        Ok(found.into_values().collect())
     }
     pub(crate) fn bind_installation(&mut self, record: Installation) -> io::Result<Installation> {
-        validate_scope(&record.actor, &record.alias, &record.generation)?;
-        if let Some(prior) = self.installation(&record.actor, &record.alias)? {
-            return match prior == record {
-                true => Ok(prior),
-                false => Err(admission(AdmissionError::BindingConflict)),
-            };
+        validate_scope(&record.actor,&record.alias,&record.generation)?;
+        let scope = crate::private_io::current().filter(|_| record.package.starts_with("local/"));
+        let actor = if scope.is_some() { metadata_actor(&record.actor) } else { record.actor.clone() };
+        let prior: Option<String> = self.connection.query_row("SELECT record FROM installations WHERE actor=?1 AND alias=?2",params![actor,record.alias],|row|row.get(0)).optional().map_err(db_error)?;
+        if let Some(prior) = prior {
+            let prior: Installation = decoded_metadata(&prior,&format!("installation:{}:{}",record.actor,record.alias))?;
+            return if prior == record { Ok(prior) } else { Err(admission(AdmissionError::BindingConflict)) };
         }
-        self.connection
-            .execute(
-                "INSERT INTO installations(actor,alias,record) VALUES(?1,?2,?3)",
-                params![record.actor, record.alias, encoded(&record)?],
-            )
-            .map_err(db_error)?;
+        let body = encoded_metadata(&record,scope.as_ref(),&format!("installation:{}:{}",record.actor,record.alias),serde_json::json!({"generation":record.generation}))?;
+        self.connection.execute("INSERT INTO installations(actor,alias,record) VALUES(?1,?2,?3)",params![actor,record.alias,body]).map_err(db_error)?;
         Ok(record)
     }
 
@@ -796,6 +874,8 @@ impl Journal {
         let Some(installed) = self.installation(actor, alias)? else {
             return Ok(None);
         };
+        let owned_actor = if installed.package.starts_with("local/") { metadata_actor(actor) } else { actor.to_owned() };
+        let actor = owned_actor.as_str();
         let tx = self.connection.transaction().map_err(db_error)?;
         for statement in [
             "DELETE FROM resolutions WHERE actor=?1 AND preparation IN
@@ -814,7 +894,7 @@ impl Journal {
         self.connection
             .query_row(
                 "SELECT preparation FROM resolutions WHERE actor=?1 AND key=?2",
-                params![actor, key],
+                params![metadata_actor(actor), key],
                 |r| r.get(0),
             )
             .optional()
@@ -827,23 +907,33 @@ impl Journal {
         package: &str,
         preparation: &str,
     ) -> io::Result<()> {
+        let scope = crate::private_io::current();
+        let package = private_journal::write(scope.as_ref(), &format!("resolution:{actor}:{key}:package"), package.as_bytes())?;
+        let package = String::from_utf8(package).map_err(db_error)?;
         self.connection
-            .execute("INSERT OR REPLACE INTO resolutions(actor,key,package,preparation) VALUES(?1,?2,?3,?4)", params![actor, key, package, preparation])
+            .execute("INSERT OR REPLACE INTO resolutions(actor,key,package,preparation) VALUES(?1,?2,?3,?4)", params![metadata_actor(actor), key, package, preparation])
             .map_err(db_error)?;
         Ok(())
     }
-    /// What a Hub named `name` (its origin, a repository, release and lane: th-245), and when it
-    /// was read there, or None.
+    /// Private preparation warnings share this cache with public Hub names, so both the
+    /// private value and its lookup label must stay outside the global plaintext journal.
     pub(crate) fn named(&self, name: &str) -> io::Result<Option<(String, i64)>> {
-        self.connection
-            .query_row("SELECT named,read_ms FROM held_names WHERE name=?1", [name], |r| Ok((r.get(0)?, r.get(1)?)))
-            .optional()
-            .map_err(db_error)
+        let name = metadata_name(name);
+        let row: Option<(String, i64)> = self.connection
+            .query_row("SELECT named,read_ms FROM held_names WHERE name=?1", [&name], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional().map_err(db_error)?;
+        row.map(|(body, read_ms)| {
+            let body = private_journal::read_scoped(&format!("named:{name}"), body.as_bytes())?;
+            Ok((String::from_utf8(body).map_err(db_error)?, read_ms))
+        }).transpose()
     }
     /// `name` as read now.
     pub(crate) fn bind_named(&mut self, name: &str, named: &str) -> io::Result<()> {
+        let name = metadata_name(name);
+        let body = private_journal::write(crate::private_io::current().as_ref(), &format!("named:{name}"), named.as_bytes())?;
+        let body = String::from_utf8(body).map_err(db_error)?;
         self.connection
-            .execute("INSERT OR REPLACE INTO held_names(name,named,read_ms) VALUES(?1,?2,?3)", params![name, named, timestamp()])
+            .execute("INSERT OR REPLACE INTO held_names(name,named,read_ms) VALUES(?1,?2,?3)", params![name, body, timestamp()])
             .map_err(db_error)?;
         Ok(())
     }
@@ -864,7 +954,7 @@ impl Journal {
         Ok(())
     }
     pub(crate) fn held_memo(&self, actor: &str, computation: &str) -> io::Result<Option<Vec<u8>>> {
-        let record = self.connection
+        let record: Option<Vec<u8>> = self.connection
             .query_row("SELECT record FROM held_memos WHERE actor=?1 AND computation=?2",
                 params![actor, computation], |r| r.get(0))
             .optional()
@@ -873,13 +963,16 @@ impl Journal {
             self.connection.execute("UPDATE held_memos SET used_ms=?3 WHERE actor=?1 AND computation=?2",
                 params![actor, computation, timestamp()]).map_err(db_error)?;
         }
-        Ok(record)
+        record.map(|body| private_journal::read_scoped(&format!("memo:{actor}:{computation}"), &body)).transpose()
     }
     /// Every held memo naming `sha256` goes with it (its file is no longer this machine's).
     pub(crate) fn drop_held_memos(&mut self, sha256: &str) -> io::Result<usize> {
         let tx = self.connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db_error)?;
+        let scope = crate::private_io::current();
+        let prefix = scope.as_ref().map(|scope| format!("local-private:{}:{}:", scope.project_id.len(), scope.project_id));
         let dropped = tx.execute("DELETE FROM held_memos WHERE (actor,computation) IN
-            (SELECT actor,computation FROM held_memo_objects WHERE sha256=?1)", params![sha256]).map_err(db_error)?;
+            (SELECT actor,computation FROM held_memo_objects WHERE sha256=?1
+             AND ((?2 IS NULL AND substr(actor,1,14)!='local-private:') OR substr(actor,1,length(?2))=?2))", params![sha256, prefix]).map_err(db_error)?;
         tx.execute("DELETE FROM held_memo_objects WHERE (actor,computation) NOT IN
             (SELECT actor,computation FROM held_memos)", []).map_err(db_error)?;
         tx.commit().map_err(db_error)?;
@@ -925,6 +1018,8 @@ impl Journal {
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(db_error)?;
+        let scope = private_scope(&tx, parent)?;
+        let actor = crate::private_io::within(scope, || metadata_actor(actor));
         tx.execute(
             "INSERT OR REPLACE INTO objects(actor,sha256,length) VALUES(?1,?2,?3)",
             params![actor, object.sha256, object.length],
@@ -937,188 +1032,141 @@ impl Journal {
     /// The objects something needs now: used (a Write, a new run) since `since_ms`, or named by
     /// a run that is unfinished or ended since.
     pub(crate) fn needed_objects(&self, since_ms: i64) -> io::Result<Vec<tensorfs::format::ObjectRef>> {
-        let mut statement = self.connection
-            .prepare("SELECT sha256,length FROM object_uses WHERE used_ms>=?1
-                UNION SELECT r.sha256,r.length FROM run_objects r JOIN executions e ON e.id=r.execution
-                    WHERE e.updated_ms>=?1 OR e.state NOT IN ('completed','failed','canceled')")
-            .map_err(db_error)?;
-        let rows = statement
-            .query_map([since_ms], |row| Ok(tensorfs::format::ObjectRef { sha256: row.get(0)?, length: row.get(1)? }))
-            .map_err(db_error)?;
+        let scope = crate::private_io::current().map(|scope| scope.project_id);
+        let mut statement = self.connection.prepare("SELECT sha256,length FROM object_uses WHERE ?2 IS NULL AND used_ms>=?1
+            UNION SELECT sha256,length FROM private_object_uses WHERE project=?2 AND used_ms>=?1
+            UNION SELECT r.sha256,r.length FROM run_objects r JOIN executions e ON e.id=r.execution
+              WHERE ((?2 IS NULL AND json_extract(e.invocation,'$.local_private.project_id') IS NULL) OR json_extract(e.invocation,'$.local_private.project_id')=?2)
+                AND (e.updated_ms>=?1 OR e.state NOT IN ('completed','failed','canceled'))").map_err(db_error)?;
+        let rows = statement.query_map(params![since_ms, scope], |row| Ok(tensorfs::format::ObjectRef { sha256: row.get(0)?, length: row.get(1)? })).map_err(db_error)?;
         rows.collect::<Result<_, _>>().map_err(db_error)
     }
+
     /// Every retained output's record (`bind_native_output`).
     pub(crate) fn native_outputs(&self) -> io::Result<Vec<Vec<u8>>> {
-        let mut statement = self.connection.prepare("SELECT source FROM native_outputs").map_err(db_error)?;
-        let rows = statement.query_map([], |row| row.get(0)).map_err(db_error)?;
-        rows.collect::<Result<_, _>>().map_err(db_error)
+        let mut statement = self.connection.prepare("SELECT actor,owner,source FROM native_outputs").map_err(db_error)?;
+        let rows = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, Vec<u8>>(2)?))).map_err(db_error)?;
+        let current = crate::private_io::current();
+        let mut outputs = Vec::new();
+        for row in rows {
+            let (actor, owner, source) = row.map_err(db_error)?;
+            let scope = private_journal::scope(&source)?;
+            if scope.as_ref().map(|scope| &scope.project_id) != current.as_ref().map(|scope| &scope.project_id) { continue; }
+            outputs.push(private_journal::read_scoped(&format!("native:{actor}:{owner}"), &source)?);
+        }
+        Ok(outputs)
     }
 
     /// Whether nothing needs this object's root: no use (a Write, a new run) since
     /// `before_ms`, and no run naming it that is unfinished (any state but the three
     /// terminal ones) or ended since then.
     pub(crate) fn object_releasable(&self, sha256: &str, before_ms: i64) -> io::Result<bool> {
-        self.connection
-            .query_row(
-                "SELECT NOT EXISTS(SELECT 1 FROM object_uses WHERE sha256=?1 AND used_ms>=?2)
-                 AND NOT EXISTS(SELECT 1 FROM run_objects r JOIN executions e ON e.id=r.execution
-                     WHERE r.sha256=?1 AND (e.updated_ms>=?2
-                         OR e.state NOT IN ('completed','failed','canceled')))",
-                params![sha256, before_ms],
-                |row| row.get(0),
-            )
-            .map_err(db_error)
+        let scope = crate::private_io::current().map(|scope| scope.project_id);
+        self.connection.query_row("SELECT
+          NOT EXISTS(SELECT 1 FROM object_uses WHERE ?3 IS NULL AND sha256=?1 AND used_ms>=?2)
+          AND NOT EXISTS(SELECT 1 FROM private_object_uses WHERE project=?3 AND sha256=?1 AND used_ms>=?2)
+          AND NOT EXISTS(SELECT 1 FROM run_objects r JOIN executions e ON e.id=r.execution WHERE r.sha256=?1
+            AND ((?3 IS NULL AND json_extract(e.invocation,'$.local_private.project_id') IS NULL) OR json_extract(e.invocation,'$.local_private.project_id')=?3)
+            AND (e.updated_ms>=?2 OR e.state NOT IN ('completed','failed','canceled')))", params![sha256, before_ms, scope], |row| row.get(0)).map_err(db_error)
     }
+
     /// The failed attempt's triage bundle reference; written before the run settles.
     pub(crate) fn bind_triage(&mut self, id: &str, triage: &crate::triage::TriageRef) -> io::Result<()> {
         self.connection
             .execute(
                 "INSERT OR REPLACE INTO triage(execution,record) VALUES(?1,?2)",
-                params![id, encoded(triage)?],
+                params![id, String::from_utf8(write_payload(&self.connection, id, "triage", encoded(triage)?.as_bytes())?).map_err(db_error)?],
             )
             .map_err(db_error)?;
         Ok(())
     }
     pub(crate) fn triage(&self, id: &str) -> io::Result<Option<crate::triage::TriageRef>> {
-        let record: Option<String> = self
-            .connection
-            .query_row("SELECT record FROM triage WHERE execution=?1", [id], |r| {
-                r.get(0)
-            })
-            .optional()
-            .map_err(db_error)?;
-        record
-            .map(|record| serde_json::from_str(&record).map_err(db_error))
-            .transpose()
+        let body: Option<String> = self.connection.query_row("SELECT record FROM triage WHERE execution=?1", [id], |row| row.get(0)).optional().map_err(db_error)?;
+        body.map(|body| {
+            let bytes = read_payload(&self.connection, id, "triage", body.as_bytes())?;
+            serde_json::from_slice(&bytes).map_err(|_| db_error("triage reference cannot be decoded"))
+        }).transpose()
     }
+
     pub(crate) fn preparation(&self, actor: &str, id: &str) -> io::Result<Option<Preparation>> {
-        self.connection
-            .query_row(
-                "SELECT record FROM preparations WHERE actor=?1 AND id=?2",
-                params![actor, id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
-            .map_err(db_error)?
-            .map(|record| serde_json::from_str(&record).map_err(db_error))
-            .transpose()
+        let body: Option<String> = self.connection.query_row("SELECT record FROM preparations WHERE actor=?1 AND id=?2",params![metadata_actor(actor),id],|row|row.get(0)).optional().map_err(db_error)?;
+        body.map(|body| decoded_metadata(&body,&format!("preparation:{actor}:{id}"))).transpose()
     }
 
     /// Replace `actor`'s warm set with `members` (each one's record, in its order).
     pub(crate) fn replace_warm_set(&mut self, actor: &str, members: &[String]) -> io::Result<()> {
+        let owned_actor = metadata_actor(actor);
+        let scope = crate::private_io::current();
         let transaction = self.connection.transaction().map_err(db_error)?;
-        transaction
-            .execute("DELETE FROM warm_sets WHERE actor=?1", [actor])
-            .map_err(db_error)?;
+        transaction.execute("DELETE FROM warm_sets WHERE actor=?1", [&owned_actor]).map_err(db_error)?;
         for (position, record) in members.iter().enumerate() {
-            transaction
-                .execute(
-                    "INSERT INTO warm_sets(actor,position,record) VALUES(?1,?2,?3)",
-                    params![actor, position as i64, record],
-                )
-                .map_err(db_error)?;
+            let body = if scope.is_some() {
+                let value: Value = serde_json::from_str(record).map_err(db_error)?;
+                encoded_metadata(&value,scope.as_ref(),&format!("warm:{actor}:{position}"),serde_json::json!({"installation":value["installation"]}))?
+            } else { record.clone() };
+            transaction.execute("INSERT INTO warm_sets(actor,position,record) VALUES(?1,?2,?3)",params![owned_actor,position as i64,body]).map_err(db_error)?;
         }
         transaction.commit().map_err(db_error)
     }
-    /// Every warm set member's record as (actor, record), each actor's in its order.
-    pub(crate) fn warm_sets(&self) -> io::Result<Vec<(String, String)>> {
-        let mut statement = self
-            .connection
-            .prepare("SELECT actor,record FROM warm_sets ORDER BY actor,position")
-            .map_err(db_error)?;
-        let rows = statement
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-            .map_err(db_error)?;
-        rows.map(|row| row.map_err(db_error)).collect()
-    }
-    /// Every preparation `actor` bound to `installation`.
-    pub(crate) fn preparations_of(&self, actor: &str, installation: &str) -> io::Result<Vec<Preparation>> {
-        let mut statement = self
-            .connection
-            .prepare("SELECT record FROM preparations WHERE actor=?1 AND json_extract(record,'$.installation')=?2")
-            .map_err(db_error)?;
-        let rows = statement
-            .query_map(params![actor, installation], |row| row.get::<_, String>(0))
-            .map_err(db_error)?;
-        rows.map(|row| serde_json::from_str(&row.map_err(db_error)?).map_err(db_error))
-            .collect()
+    pub(crate) fn warm_sets(&self) -> io::Result<Vec<(String,String)>> {
+        let scope=crate::private_io::current();
+        let prefix=scope.as_ref().map(|scope|format!("local-private:{}:{}:",scope.project_id.len(),scope.project_id));
+        let mut statement=self.connection.prepare("SELECT actor,position,record FROM warm_sets ORDER BY actor,position").map_err(db_error)?;
+        let rows=statement.query_map([],|row|Ok((row.get::<_,String>(0)?,row.get::<_,i64>(1)?,row.get::<_,String>(2)?))).map_err(db_error)?;
+        let mut found=Vec::new();
+        for row in rows {
+            let(actor,position,body)=row.map_err(db_error)?;
+            if actor.starts_with("local-private:") {
+                let Some(real)=prefix.as_ref().and_then(|prefix|actor.strip_prefix(prefix)) else {continue};
+                let value:Value=decoded_metadata(&body,&format!("warm:{real}:{position}"))?;
+                found.push((real.to_owned(),value.to_string()));
+            } else {found.push((actor,body));}
+        }
+        Ok(found)
     }
 
+    /// Every preparation `actor` bound to `installation`.
+    pub(crate) fn preparations_of(&self, actor: &str, installation: &str) -> io::Result<Vec<Preparation>> {
+        let mut statement = self.connection.prepare("SELECT id,record FROM preparations WHERE actor=?1 AND json_extract(record,'$.installation')=?2").map_err(db_error)?;
+        let rows = statement.query_map(params![metadata_actor(actor),installation],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?))).map_err(db_error)?;
+        rows.map(|row|{let(id,body)=row.map_err(db_error)?;decoded_metadata(&body,&format!("preparation:{actor}:{id}"))}).collect()
+    }
     pub(crate) fn bind_preparation(&mut self, record: Preparation) -> io::Result<Preparation> {
-        validate_scope(&record.actor, &record.id, &record.installation)?;
-        if self
-            .installation(&record.actor, &record.installation)?
-            .is_none()
-        {
-            return Err(admission(AdmissionError::BindingConflict));
+        validate_scope(&record.actor,&record.id,&record.installation)?;
+        if self.installation(&record.actor,&record.installation)?.is_none() { return Err(admission(AdmissionError::BindingConflict)); }
+        if let Some(prior)=self.preparation(&record.actor,&record.id)? {
+            return if prior==record {Ok(prior)} else {Err(admission(AdmissionError::BindingConflict))};
         }
-        if let Some(prior) = self.preparation(&record.actor, &record.id)? {
-            if prior != record {
-                return Err(admission(AdmissionError::BindingConflict));
-            }
-            return Ok(prior);
-        }
-        self.connection
-            .execute(
-                "INSERT INTO preparations(actor,id,record) VALUES(?1,?2,?3)",
-                params![record.actor, record.id, encoded(&record)?],
-            )
-            .map_err(db_error)?;
+        let body=encoded_metadata(&record,crate::private_io::current().as_ref(),&format!("preparation:{}:{}",record.actor,record.id),serde_json::json!({"installation":record.installation}))?;
+        self.connection.execute("INSERT INTO preparations(actor,id,record) VALUES(?1,?2,?3)",params![metadata_actor(&record.actor),record.id,body]).map_err(db_error)?;
         Ok(record)
     }
-    /// A finished run's log (`stored::LogPage`), once its first read made it.
+
     pub(crate) fn public_terminal(&self, id: &str) -> io::Result<Option<Vec<u8>>> {
-        self.connection
-            .query_row("SELECT events FROM public_terminals WHERE execution=?1", [id], |row| row.get(0))
-            .optional()
-            .map_err(db_error)
+        let body: Option<Vec<u8>> = self.connection.query_row("SELECT events FROM public_terminals WHERE execution=?1", [id], |row| row.get(0)).optional().map_err(db_error)?;
+        body.map(|body| read_payload(&self.connection, id, "terminal", &body)).transpose()
     }
+
     pub(crate) fn native_output(&self, actor: &str, owner: &str) -> io::Result<Option<Vec<u8>>> {
-        self.connection
-            .query_row(
-                "SELECT source FROM native_outputs WHERE actor=?1 AND owner=?2",
-                params![actor, owner],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(db_error)
+        let (actor,owner)=(metadata_actor(actor),metadata_actor(owner));
+        let body: Option<Vec<u8>> = self.connection.query_row("SELECT source FROM native_outputs WHERE actor=?1 AND owner=?2", params![actor, owner], |row| row.get(0)).optional().map_err(db_error)?;
+        body.map(|body| private_journal::read_scoped(&format!("native:{actor}:{owner}"), &body)).transpose()
     }
     pub(crate) fn native_owner(&self, owner: &str) -> io::Result<Option<String>> {
-        self.connection
-            .query_row(
-                "SELECT actor FROM native_outputs WHERE owner=?1 LIMIT 1",
-                [owner],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(db_error)
+        let actor: Option<String> = self.connection.query_row("SELECT actor FROM native_outputs WHERE owner=?1 LIMIT 1",[metadata_actor(owner)],|row|row.get(0)).optional().map_err(db_error)?;
+        Ok(actor.map(|actor| crate::private_io::unscoped_key(&actor)))
     }
-    pub(crate) fn bind_native_output(
-        &mut self,
-        actor: &str,
-        owner: &str,
-        source: &[u8],
-    ) -> io::Result<()> {
-        if self.native_owner(owner)?.is_some_and(|held| held != actor) {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "native retention is already owned by another actor",
-            ));
+    pub(crate) fn bind_native_output(&mut self, actor: &str, owner: &str, source: &[u8]) -> io::Result<()> {
+        let (actor,owner)=(metadata_actor(actor),metadata_actor(owner));
+        if self.native_owner(&owner)?.is_some_and(|held|metadata_actor(&held)!=actor) {return Err(io::Error::new(io::ErrorKind::PermissionDenied,"native retention is already owned by another actor"));}
+        if let Some(prior)=self.native_output(&actor,&owner)? {
+            return if prior==source {Ok(())} else {Err(admission(AdmissionError::BindingConflict))};
         }
-        if let Some(prior) = self.native_output(actor, owner)? {
-            if prior != source {
-                return Err(admission(AdmissionError::BindingConflict));
-            }
-            return Ok(());
-        }
-        self.connection
-            .execute(
-                "INSERT INTO native_outputs(actor,owner,source) VALUES(?1,?2,?3)",
-                params![actor, owner, source],
-            )
-            .map_err(db_error)?;
+        let body=private_journal::write(crate::private_io::current().as_ref(),&format!("native:{actor}:{owner}"),source)?;
+        self.connection.execute("INSERT INTO native_outputs(actor,owner,source) VALUES(?1,?2,?3)",params![actor,owner,body]).map_err(db_error)?;
         Ok(())
     }
+
     pub(crate) fn commit_public_terminal(
         &mut self,
         id: &str,
@@ -1135,7 +1183,7 @@ impl Journal {
         self.connection
             .execute(
                 "INSERT INTO public_terminals(execution,outcome,events) VALUES(?1,x'',?2)",
-                params![id, events],
+                params![id, write_payload(&self.connection, id, "terminal", &events)?],
             )
             .map_err(db_error)?;
         Ok(events)
@@ -1172,19 +1220,19 @@ impl Journal {
             return Err(io::Error::new(io::ErrorKind::Unsupported, "software update runs do not support Control"));
         }
         if let Some(prior) = public_prior(&tx, actor, id, id)? {
-            return serde_json::from_str(&prior).map_err(db_error);
+            return decoded_execution(&prior);
         }
         let context = SubmissionContext {
             actor: actor.into(), request_id: id.into(), submission_id: id.into(),
             ..Default::default()
         };
-        let mut record = insert(&tx, &key, Invocation::default(), Some(context), "", None)?;
+        let mut record = insert(&tx, &key, Invocation { local_private: crate::private_io::current(), ..Default::default() }, Some(context), "", None)?;
         record.state = State::Canceled;
         record.cancel_actor = Some(actor.into());
         record.canceled_before_acceptance = true;
         record.finished_at_ms = timestamp().max(0) as u64;
         tx.execute("UPDATE executions SET record=?1,state='canceled',updated_ms=?2 WHERE id=?3",
-            params![encoded(&record)?, timestamp(), record.id]).map_err(db_error)?;
+            params![encoded_execution(&record)?, timestamp(), record.id]).map_err(db_error)?;
         tx.commit().map_err(db_error)?;
         Ok(record)
     }
@@ -1226,7 +1274,11 @@ impl Journal {
                     return Ok(false);
                 }
                 let (root, family) = (std::mem::take(&mut record.invocation.root), std::mem::take(&mut record.invocation.family));
-                record.invocation = Invocation { root, family, ..invocation };
+                let local_private = record.invocation.local_private.clone();
+                if invocation.local_private.as_ref().is_some_and(|scope| local_private.as_ref().is_none_or(|parent| parent.project_id != scope.project_id)) {
+                    return Err(io::Error::new(io::ErrorKind::PermissionDenied, "preparation cannot change its private workspace"));
+                }
+                record.invocation = Invocation { root, family, local_private, ..invocation };
                 if let Some(submission) = record.submission.as_mut() {
                     submission.preparation_id = preparation.into();
                 }
@@ -1241,7 +1293,7 @@ impl Journal {
             |tx, record| {
                 tx.execute(
                     "UPDATE executions SET invocation=?1 WHERE id=?2",
-                    params![encoded(&record.invocation)?, record.id],
+                    params![invocation_index(&record.invocation)?, record.id],
                 )
                 .map_err(db_error)?;
                 Ok(())
@@ -1343,11 +1395,21 @@ impl Journal {
     }
 
     /// The preparing runs a restart interrupted, each with its signer and kept spec.
-    pub(crate) fn interrupted(&self) -> io::Result<Vec<(String, String, Vec<u8>)>> {
-        let mut statement = self.connection.prepare("SELECT id, actor, spec FROM executions JOIN run_specs ON execution=id WHERE state='queued' AND json_extract(record,'$.waiting_reason')=?1 ORDER BY id").map_err(db_error)?;
-        let rows = statement.query_map([PREPARING], |row| Ok((row.get::<_, i64>(0)?.to_string(), row.get(1)?, row.get(2)?))).map_err(db_error)?;
-        rows.collect::<Result<_, _>>().map_err(db_error)
+    pub(crate) fn interrupted_for(&self, project_id: Option<&str>) -> io::Result<Vec<(String, String, Vec<u8>)>> {
+        let mut statement = self.connection.prepare("SELECT id, actor, spec FROM executions JOIN run_specs ON execution=id WHERE state='queued' AND json_extract(record,'$.waiting_reason')=?1
+            AND ((?2 IS NULL AND json_extract(invocation,'$.local_private.project_id') IS NULL) OR json_extract(invocation,'$.local_private.project_id')=?2) ORDER BY id").map_err(db_error)?;
+        let rows = statement.query_map(params![PREPARING, project_id], |row| Ok((row.get::<_, i64>(0)?.to_string(), row.get::<_, String>(1)?, row.get::<_, Vec<u8>>(2)?))).map_err(db_error)?;
+        let mut ready = Vec::new();
+        for row in rows {
+            let (id, actor, body) = row.map_err(db_error)?;
+            match read_payload(&self.connection, &id, "spec", &body) {
+                Ok(body) => ready.push((id, actor, body)),
+                Err(error) => tracing::warn!(run = %id, "private or unreadable preparation remains deferred: {error}"),
+            }
+        }
+        Ok(ready)
     }
+
 }
 
 /// A memoized call's success, reusable while this machine holds every file it names: its
@@ -1378,26 +1440,25 @@ fn hold_memo(tx: &rusqlite::Transaction<'_>, held: &HeldMemo) -> io::Result<()> 
     Ok(())
 }
 
-fn touch_object(
-    tx: &rusqlite::Transaction<'_>,
-    object: &tensorfs::format::ObjectRef,
-) -> io::Result<()> {
-    crate::storage::check_digest("run object", &object.sha256, false)?;
-    tx.execute(
-        "INSERT INTO object_uses(sha256,length,used_ms) VALUES(?1,?2,?3)
-        ON CONFLICT(sha256) DO UPDATE SET used_ms=excluded.used_ms",
-        params![object.sha256, object.length, timestamp()],
-    )
-    .map_err(db_error)?;
-    Ok(())
+fn touch_object(tx: &rusqlite::Transaction<'_>, object: &tensorfs::format::ObjectRef) -> io::Result<()> {
+    touch_object_scoped(tx, object, crate::private_io::current().as_ref())
 }
+fn touch_object_scoped(tx: &rusqlite::Transaction<'_>, object: &tensorfs::format::ObjectRef, scope: Option<&api::machine::LocalPrivateStorage>) -> io::Result<()> {
+    crate::storage::check_digest("run object", &object.sha256, false)?;
+    match scope {
+        Some(scope) => tx.execute("INSERT INTO private_object_uses(project,sha256,length,used_ms) VALUES(?1,?2,?3,?4) ON CONFLICT(project,sha256) DO UPDATE SET used_ms=excluded.used_ms", params![scope.project_id, object.sha256, object.length, timestamp()]),
+        None => tx.execute("INSERT INTO object_uses(sha256,length,used_ms) VALUES(?1,?2,?3) ON CONFLICT(sha256) DO UPDATE SET used_ms=excluded.used_ms", params![object.sha256, object.length, timestamp()]),
+    }.map(drop).map_err(db_error)
+}
+
 fn reference_objects(
     tx: &rusqlite::Transaction<'_>,
     execution: &str,
     objects: &[tensorfs::format::ObjectRef],
 ) -> io::Result<()> {
+    let scope = private_scope(tx, execution)?;
     for object in objects {
-        touch_object(tx, object)?;
+        touch_object_scoped(tx, object, scope.as_ref())?;
         tx.execute(
             "INSERT OR IGNORE INTO run_objects(execution,sha256,length) VALUES(?1,?2,?3)",
             params![execution, object.sha256, object.length],
@@ -1439,7 +1500,10 @@ fn accepting(tx: &rusqlite::Transaction<'_>, actor: &str, run: Accepting<'_>) ->
         .optional()
         .map_err(db_error)?;
     if let Some(prior) = prior {
-        let execution: Execution = serde_json::from_str(&prior).map_err(db_error)?;
+        let execution = decoded_execution(&prior)?;
+        if execution.invocation.local_private.as_ref().map(|scope| &scope.project_id) != invocation.local_private.as_ref().map(|scope| &scope.project_id) {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "this run belongs to another workspace"));
+        }
         let canceled = execution.canceled_before_acceptance && execution.state == State::Canceled;
         if !canceled && execution.submission.as_ref().map(|s| s.invocation_digest.as_str()) != Some(digest) {
             return Err(io::Error::new(io::ErrorKind::AlreadyExists, "this run id already names another run spec"));
@@ -1459,7 +1523,7 @@ fn accepting(tx: &rusqlite::Transaction<'_>, actor: &str, run: Accepting<'_>) ->
     let execution = insert(tx, &key, invocation, Some(context), "", Some(PREPARING))?;
     reference_objects(tx, &execution.id, objects)?;
     if !spec.is_empty() {
-        tx.execute("INSERT INTO run_specs(execution,spec) VALUES(?1,?2)", params![execution.id, spec]).map_err(db_error)?;
+        tx.execute("INSERT INTO run_specs(execution,spec) VALUES(?1,?2)", params![execution.id, write_payload(tx, &execution.id, "spec", spec)?]).map_err(db_error)?;
     }
     Ok((execution, true))
 }
@@ -1476,7 +1540,11 @@ fn insert(
         let parent: String = tx
             .query_row("SELECT record FROM executions WHERE id=?1", [&invocation.parent], |row| row.get(0))
             .map_err(db_error)?;
-        let parent: Execution = serde_json::from_str(&parent).map_err(db_error)?;
+        let parent = decoded_execution(&parent)?;
+        if invocation.local_private.as_ref().is_some_and(|scope| parent.invocation.local_private.as_ref().is_none_or(|parent| parent.project_id != scope.project_id)) {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "a child cannot change its private workspace"));
+        }
+        invocation.local_private = parent.invocation.local_private.clone();
         invocation.root = parent.root_seq().to_string();
         invocation.family = parent.family().unwrap_or_default().into();
     }
@@ -1490,7 +1558,7 @@ fn insert(
             })
         })
         .collect();
-    tx.execute("INSERT INTO executions(idempotency_key,invocation,record,state,updated_ms,actor,request_id,submission_id) VALUES(?1,?2,'{}','queued',?3,?4,?5,?6)", params![key, encoded(&invocation)?, timestamp(),context.as_ref().map(|context|context.actor.as_str()),context.as_ref().map(|context|context.request_id.as_str()),context.as_ref().map(|context|context.submission_id.as_str())]).map_err(db_error)?;
+    tx.execute("INSERT INTO executions(idempotency_key,invocation,record,state,updated_ms,actor,request_id,submission_id) VALUES(?1,?2,'{}','queued',?3,?4,?5,?6)", params![key, invocation_index(&invocation)?, timestamp(),context.as_ref().map(|context|context.actor.as_str()),context.as_ref().map(|context|context.request_id.as_str()),context.as_ref().map(|context|context.submission_id.as_str())]).map_err(db_error)?;
     let execution = Execution {
         id: tx.last_insert_rowid().to_string(),
         idempotency_key: key.into(),
@@ -1526,7 +1594,7 @@ fn insert(
     };
     tx.execute(
         "UPDATE executions SET record=?1 WHERE id=?2",
-        params![encoded(&execution)?, execution.id],
+        params![encoded_execution(&execution)?, execution.id],
     )
     .map_err(db_error)?;
     reference_objects(tx, &execution.id, &objects)?;
@@ -1544,7 +1612,7 @@ impl Journal {
             .map_err(db_error)?;
         let value = value
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "execution does not exist"))?;
-        serde_json::from_str(&value).map_err(db_error)
+        decoded_execution(&value)
     }
 
     /// The run `actor` sent as `request_id`; with no actor, the one any client sent.
@@ -1558,13 +1626,12 @@ impl Journal {
             )
             .optional()
             .map_err(db_error)?;
-        serde_json::from_str(&value.ok_or_else(|| {
+        decoded_execution(&value.ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
                 "public execution does not exist for this actor",
             )
         })?)
-        .map_err(db_error)
     }
 
     /// Closure is a durable acceptance tombstone, never implicit execution cancellation. With no
@@ -1675,7 +1742,7 @@ impl Journal {
     /// child, which its root's time holds, or for one answered without running.
     fn timed(tx: &rusqlite::Transaction<'_>, record: &Execution) -> io::Result<()> {
         let invocation = &record.invocation;
-        if !invocation.parent.is_empty() || record.executed_ms == 0 || record.memo.memoized {
+        if invocation.local_private.is_some() || !invocation.parent.is_empty() || record.executed_ms == 0 || record.memo.memoized {
             return Ok(());
         }
         let ran = Ran::of(tx, record)?;
@@ -1754,11 +1821,9 @@ impl Journal {
             })
             .optional()
             .map_err(db_error)?;
-        let mut record: Execution =
-            serde_json::from_str(&record.ok_or_else(|| {
-                io::Error::new(io::ErrorKind::NotFound, "execution does not exist")
-            })?)
-            .map_err(db_error)?;
+        let mut record = decoded_execution(&record.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotFound, "execution does not exist")
+        })?)?;
         if record.state == State::Unknown {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -1796,7 +1861,7 @@ impl Journal {
             };
             tx.execute(
                 "UPDATE executions SET record=?1,state=?2,updated_ms=?3 WHERE id=?4",
-                params![encoded(&record)?, record.state.name(), timestamp(), id],
+                params![encoded_execution(&record)?, record.state.name(), timestamp(), id],
             )
             .map_err(db_error)?;
             if was_unprepared && !unprepared(&record) {
@@ -1837,7 +1902,7 @@ impl Journal {
             |tx, record| {
                 tx.execute(
                     "INSERT INTO run_products(execution,sequence,at_ms,product) VALUES(?1,?2,?3,?4)",
-                    params![id, record.revision as i64, timestamp(), product],
+                    params![id, record.revision as i64, timestamp(), write_payload(tx, id, &format!("product:{}", record.revision), product)?],
                 )
                 .map_err(db_error)?;
                 Ok(())
@@ -1868,7 +1933,7 @@ impl Journal {
         let (lines, bytes): (u64, u64) = self
             .connection
             .query_row(
-                "SELECT COUNT(*),COALESCE(SUM(LENGTH(record)),0) FROM run_logs WHERE execution=?1",
+                "SELECT COUNT(*),COALESCE(SUM(COALESCE(n.length,LENGTH(l.record))),0) FROM run_logs l LEFT JOIN run_log_lengths n ON n.execution=l.execution AND n.sequence=l.sequence WHERE l.execution=?1",
                 [root],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
@@ -1880,7 +1945,7 @@ impl Journal {
         let noticed: bool = self
             .connection
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM run_logs WHERE execution=?1 AND record=?2)",
+                "SELECT EXISTS(SELECT 1 FROM package_log_dropped WHERE execution=?1) OR EXISTS(SELECT 1 FROM run_logs WHERE execution=?1 AND record=?2)",
                 params![root, PACKAGE_LOG_DROPPED],
                 |row| row.get(0),
             )
@@ -1942,8 +2007,10 @@ impl Journal {
             progress,
             |record| Ok(!record.state.terminal()),
             |tx, record| {
-                tx.execute(insert, params![id, record.revision as i64, timestamp(), entry])
+                tx.execute(insert, params![id, record.revision as i64, timestamp(), write_payload(tx, id, &format!("log:{}", record.revision), entry)?])
                     .map_err(db_error)?;
+                tx.execute("INSERT OR REPLACE INTO run_log_lengths(execution,sequence,length) VALUES(?1,?2,?3)", params![id, record.revision as i64, entry.len() as i64]).map_err(db_error)?;
+                if entry == PACKAGE_LOG_DROPPED { tx.execute("INSERT OR IGNORE INTO package_log_dropped(execution) VALUES(?1)", [id]).map_err(db_error)?; }
                 Ok(())
             },
         )?;
@@ -1979,7 +2046,7 @@ impl Journal {
                 appended = true;
                 tx.execute(
                     "INSERT INTO run_calls(execution,sequence,at_ms,call,record) VALUES(?1,?2,?3,?4,?5)",
-                    params![id, record.revision as i64, timestamp(), call, body],
+                    params![id, record.revision as i64, timestamp(), call, write_payload(tx, id, &format!("call:{}", record.revision), body)?],
                 )
                 .map_err(db_error)?;
                 Ok(())
@@ -2006,20 +2073,14 @@ impl Journal {
             .execute(
                 "INSERT INTO run_measurements(execution,measurements) VALUES(?1,?2)
                  ON CONFLICT(execution) DO UPDATE SET measurements=excluded.measurements",
-                params![id, measurements],
+                params![id, write_payload(&self.connection, id, "measurements", measurements)?],
             )
             .map(drop)
             .map_err(db_error)
     }
     pub(crate) fn measurements(&self, id: &str) -> io::Result<Option<Vec<u8>>> {
-        self.connection
-            .query_row(
-                "SELECT measurements FROM run_measurements WHERE execution=?1",
-                [id],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(db_error)
+        let body: Option<Vec<u8>> = self.connection.query_row("SELECT measurements FROM run_measurements WHERE execution=?1", [id], |row| row.get(0)).optional().map_err(db_error)?;
+        body.map(|body| read_payload(&self.connection, id, "measurements", &body)).transpose()
     }
 
     /// The execution's output log, oldest first.
@@ -2031,16 +2092,12 @@ impl Journal {
     }
     fn stored(&self, query: &str, id: &str) -> io::Result<Vec<StoredProduct>> {
         let mut statement = self.connection.prepare(query).map_err(db_error)?;
-        let rows = statement
-            .query_map([id], |row| {
-                Ok(StoredProduct {
-                    sequence: row.get::<_, i64>(0)? as u64,
-                    at_ms: row.get::<_, i64>(1)? as u64,
-                    product: row.get(2)?,
-                })
-            })
-            .map_err(db_error)?;
-        rows.collect::<Result<_, _>>().map_err(db_error)
+        let kind = if query.contains("run_calls") { "call" } else if query.contains("run_logs") { "log" } else { "product" };
+        let rows = statement.query_map([id], |row| Ok((row.get::<_, i64>(0)? as u64, row.get::<_, i64>(1)? as u64, row.get::<_, Vec<u8>>(2)?))).map_err(db_error)?;
+        rows.map(|row| {
+            let (sequence, at_ms, body) = row.map_err(db_error)?;
+            Ok(StoredProduct { sequence, at_ms, product: read_payload(&self.connection, id, &format!("{kind}:{sequence}"), &body)? })
+        }).collect()
     }
 
     /// Only one dispatcher can claim a never-started attempt, on `width` GPUs.
@@ -2158,7 +2215,8 @@ impl Journal {
         let line = serde_json::to_vec(&serde_json::json!({"level": "info", "text": phase.to_string()}))?;
         let sequence = record.revision.checked_sub(1).ok_or_else(|| db_error("phase cursor absent"))?;
         tx.execute("INSERT INTO run_logs(execution,sequence,at_ms,record) VALUES(?1,?2,?3,?4)",
-            params![record.id, sequence as i64, timestamp(), line]).map_err(db_error)?;
+            params![record.id, sequence as i64, timestamp(), write_payload(tx, &record.id, &format!("log:{sequence}"), &line)?]).map_err(db_error)?;
+        tx.execute("INSERT OR REPLACE INTO run_log_lengths(execution,sequence,length) VALUES(?1,?2,?3)", params![record.id, sequence as i64, line.len() as i64]).map_err(db_error)?;
         Ok(())
     }
 
@@ -2296,7 +2354,10 @@ impl Journal {
     ) -> io::Result<Execution> {
         let output = std::cell::Cell::new(false);
         let hold = |tx: &rusqlite::Transaction<'_>, record: &Execution| {
-            if let Some(held) = held.filter(|_| record.state == State::Completed) { hold_memo(tx, &held)?; }
+            if let Some(mut held) = held.filter(|_| record.state == State::Completed) {
+                held.record = private_journal::write(record.invocation.local_private.as_ref(), &format!("memo:{}:{}", held.actor, held.computation), &held.record)?;
+                hold_memo(tx, &held)?;
+            }
             if output.get() { Self::phase_log(tx, record, serde_json::json!({"phase": "output_finished"}))?; }
             Ok(())
         };

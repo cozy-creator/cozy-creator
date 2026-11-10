@@ -71,7 +71,7 @@ pub(crate) struct Installed {
 /// Where manifests are kept for their calls to stage: Calcifer's home, the newest 256.
 fn keep_manifest(home: &Home, digest: &Digest, document: &[u8]) -> Result<PathBuf, Error> {
     const KEPT: usize = 256;
-    let dir = home.calcifer().join("local");
+    let dir = crate::private_io::cache(crate::private_io::current().as_ref(), home.calcifer().join("local"), "local")?;
     let path = dir.join(format!("{}.json", digest.to_string().trim_start_matches("sha256:")));
     let failed = |e: platform::Error| refuse("stage_unavailable", format!("{}: {e}", dir.display()));
     durable::private_dir(&dir).map_err(failed)?;
@@ -106,8 +106,8 @@ pub(crate) fn target(text: &str, cwd: Option<&Path>, home: &Path) -> Option<Resu
 }
 
 /// Where copies of local code are kept, by their tree's digest.
-fn copies(home: &Home) -> PathBuf {
-    home.calcifer().join("code")
+fn copies(home: &Home) -> Result<PathBuf, Error> {
+    crate::private_io::cache(crate::private_io::current().as_ref(), home.calcifer().join("code"), "code")
 }
 
 /// How many copies are kept, at least, and for how long one unused stays.
@@ -117,9 +117,13 @@ const UNUSED: Duration = Duration::from_secs(24 * 60 * 60);
 /// The package `code` names, in Calcifer's copy of its tree: made once from the files it holds (`PUT /v1/files`), and only read
 /// after. A script's copy holds the package it is beside its tree. Its project's folder.
 pub(crate) fn copied(home: &Home, code: &LocalCode) -> Result<PathBuf, Error> {
-    let dir = copies(home).join(hex(&code.tree));
+    let dir = copies(home)?.join(hex(&code.tree));
     if !dir.join("tree").is_dir() {
-        let held = crate::runs::files::held;
+        let scope = crate::private_io::current();
+        let held = |digest: &Digest| match &scope {
+            Some(scope) => crate::runs::files::held_for(&scope.storage.view_root, digest),
+            None => crate::runs::files::held(digest),
+        };
         let not_held = |what: String| {
             Error::new(Kind::NotFound, "file_not_held", format!("Calcifer holds no {what}")).remedy("PUT its bytes to /v1/files/sha256:<hex> first")
         };
@@ -140,14 +144,14 @@ pub(crate) fn copied(home: &Home, code: &LocalCode) -> Result<PathBuf, Error> {
 /// A folder of Calcifer's own (a project's `with: ./dir`) as local code: read as a client reads its own, and copied as a
 /// client's is, so the one path from here on is the copy's.
 pub(crate) fn own(home: &Home, path: &Path) -> Result<LocalCode, Error> {
-    let staged = shared::stage(path, Some(&home.root().join("cache").join("digests")))?;
-    if !staged.left.is_empty() {
+    let staged = shared::stage(path, Some(&crate::private_io::cache(crate::private_io::current().as_ref(), home.root().join("cache").join("digests"), "digests")?))?;
+    if !staged.left.is_empty() && crate::private_io::current().is_none() {
         tracing::info!("left out of {}: {}", path.display(), staged.left.join(", "));
     }
     let code = staged.code();
     let members = api::tree::parse(&staged.document).map_err(|e| refuse("code_invalid", e))?;
     let from = |digest: &Digest| staged.files.iter().find(|file| file.digest == *digest).map(|file| file.path.clone());
-    if !copies(home).join(hex(&code.tree)).join("tree").is_dir() {
+    if !copies(home)?.join(hex(&code.tree)).join("tree").is_dir() {
         materialize(home, &code.tree, &members, from)?;
     }
     Ok(code)
@@ -156,7 +160,7 @@ pub(crate) fn own(home: &Home, path: &Path) -> Result<LocalCode, Error> {
 /// The tree's files, each from `from`, copied under `code/<digest>/tree`, made whole and then named; and a copy unused for a day
 /// past the newest `COPIES` goes.
 fn materialize(home: &Home, tree: &Digest, members: &BTreeMap<String, api::tree::Member>, from: impl Fn(&Digest) -> Option<PathBuf>) -> Result<(), Error> {
-    let root = copies(home);
+    let root = copies(home)?;
     let dir = root.join(hex(tree));
     let failed = |e: std::io::Error| refuse("code_unwritable", format!("{}: {e}", root.display()));
     let nanos = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
@@ -588,7 +592,7 @@ fn script(path: &Path, root: &Path) -> Result<PathBuf, Error> {
             ));
         }
     };
-    if let Some(other) = block.keys().next() {
+    if let Some(other) = block.keys().next().filter(|_| crate::private_io::current().is_none()) {
         tracing::warn!("the `# /// script` block names {other:?}: it takes dependencies, requires-python and [tool]; ignored");
     }
     // A path source names a directory beside the script: relative to the written project
@@ -651,16 +655,20 @@ fn from(dir: &Path, to: &Path) -> String {
 /// Where local code's interfaces are kept, beside release cards: one file per source manifest
 /// and Runtime that described it, named for its environment's inputs first, so a changed source
 /// with the same environment is seen.
-fn dir(home: &Home, filed: &Filed) -> PathBuf {
-    let mut dir = home.root().join("packages");
+fn dir(home: &Home, filed: &Filed) -> Result<PathBuf, Error> {
+    let scope = match &filed.project {
+        Some(root) => crate::private_io::of_output(&crate::project::landing(root))?,
+        None => crate::private_io::current(),
+    };
+    let mut dir = crate::private_io::cache(scope.as_ref(), home.root().join("packages"), "packages")?;
     dir.extend(filed.package.split('/'));
-    dir
+    Ok(dir)
 }
 
-fn file(home: &Home, filed: &Filed, runtime: &str) -> PathBuf {
+fn file(home: &Home, filed: &Filed, runtime: &str) -> Result<PathBuf, Error> {
     let manifest = filed.manifest.trim_start_matches("sha256:");
     let runtime = &hex(&Digest::of(runtime.as_bytes()))[..16];
-    dir(home, filed).join(format!("{}-{manifest}-{runtime}.json", &hex(&filed.environment)[..16]))
+    Ok(dir(home, filed)?.join(format!("{}-{manifest}-{runtime}.json", &hex(&filed.environment)[..16])))
 }
 
 /// What a kept interface is filed under: its package, its source's manifest and its environment's inputs. An install's step
@@ -670,11 +678,14 @@ pub(crate) struct Filed {
     pub package: String,
     pub manifest: String,
     pub environment: Digest,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<PathBuf>,
 }
 
 impl Source {
     pub(crate) fn filed(&self) -> Filed {
-        Filed { package: self.package.clone(), manifest: self.source.manifest.clone(), environment: self.environment }
+        Filed { package: self.package.clone(), manifest: self.source.manifest.clone(), environment: self.environment,
+            project: crate::private_io::current().map(|scope| crate::project::vault::logical(&scope.storage.view_root)) }
     }
 }
 
@@ -684,7 +695,7 @@ fn hex(digest: &Digest) -> String {
 
 /// The interface kept for this exact source, as `runtime` described it.
 pub(crate) fn kept(home: &Home, filed: &Filed, runtime: &str) -> Option<Value> {
-    let document: Value = serde_json::from_slice(&fs::read(file(home, filed, runtime)).ok()?).ok()?;
+    let document: Value = serde_json::from_slice(&fs::read(file(home, filed, runtime).ok()?).ok()?).ok()?;
     interface(&document).then_some(document)
 }
 
@@ -692,7 +703,7 @@ pub(crate) fn kept(home: &Home, filed: &Filed, runtime: &str) -> Option<Value> {
 /// is a sync, not an install.
 fn synced(home: &Home, filed: &Filed) -> bool {
     let prefix = format!("{}-", &hex(&filed.environment)[..16]);
-    (fs::read_dir(dir(home, filed)).into_iter().flatten().flatten())
+    (dir(home, filed).ok().and_then(|dir| fs::read_dir(dir).ok()).into_iter().flatten().flatten())
         .any(|e| e.file_name().to_string_lossy().starts_with(&prefix))
 }
 
@@ -702,9 +713,9 @@ pub(crate) fn keep(home: &Home, filed: &Filed, runtime: &str, interface: &Value)
     if !self::interface(interface) {
         return;
     }
-    let dir = dir(home, filed);
+    let (Ok(dir), Ok(path)) = (dir(home, filed), file(home, filed, runtime)) else { return };
     let kept = durable::private_dir(&dir)
-        .and_then(|()| durable::replace(&file(home, filed, runtime), interface.to_string().as_bytes(), 0o600));
+        .and_then(|()| durable::replace(&path, interface.to_string().as_bytes(), 0o600));
     // An interface that cannot be kept is asked again next time; the run goes on.
     drop(kept);
     let mut files: Vec<(std::time::SystemTime, PathBuf)> = (fs::read_dir(&dir).into_iter().flatten().flatten())
@@ -743,7 +754,7 @@ pub(crate) fn install_run(home: &Home, hub: &str, on: On, source: &Source) -> Su
         spec,
         inputs: source.inputs.clone(),
         held: vec![],
-        out: None,
+        out: crate::private_io::current().map(|scope| crate::project::landing(&scope.storage.view_root)),
         warnings: vec![],
     }
 }
@@ -823,7 +834,8 @@ pub(crate) async fn prepare(
         return Ok(prepared(Some(interface), None, None, None));
     }
     let submit = || SubmitRun { agreed: agreed.clone(), ..install_run(&home, origin.as_str(), on.clone(), &code) };
-    match install_through(api, &key, Some(&crate::hub::after::After::Keep(code.filed())), submit).await? {
+    let after = crate::private_io::current().is_none().then(|| crate::hub::after::After::Keep(code.filed()));
+    match install_through(api, &key, after.as_ref(), submit).await? {
         Install::Going(run) => Ok(prepared(None, None, None, Some(run))),
         Install::Ended(run) => {
             let installed = installed(run)?;
@@ -885,6 +897,24 @@ async fn runtime(api: &Arc<Api>, on: &On) -> Option<String> {
 pub(crate) fn uv(uv: &Path, dir: &Path) -> Command {
     let mut command = Command::new(uv);
     command.current_dir(dir).env("NO_COLOR", "1");
+    match crate::private_io::of_path(dir) {
+        Ok(Some(scope)) => {
+            let scratch = scope.storage.view_root.join(".vault-calcifer");
+            let temp = scratch.join("tmp");
+            if fs::create_dir_all(&temp).is_err() {
+                command.current_dir(temp.join("unavailable"));
+            }
+            command.env("UV_CACHE_DIR", scratch.join("uv-cache"))
+                .env("UV_TOOL_DIR", scratch.join("uv-tools"))
+                .env("XDG_CACHE_HOME", scratch.join("cache"))
+                .env("PYTHONPYCACHEPREFIX", scratch.join("bytecode"))
+                .env("MPLCONFIGDIR", scratch.join("matplotlib"))
+                .env("TMPDIR", &temp).env("TEMP", &temp).env("TMP", &temp)
+                .env("PYTHONDONTWRITEBYTECODE", "1");
+        }
+        Err(_) => { command.current_dir(dir.join("private-view-unavailable")); }
+        Ok(None) => {},
+    }
     command
 }
 
@@ -1006,18 +1036,65 @@ pub(crate) fn locked_index(root: &Path) -> Option<String> {
     lock.split('"').find(|text| text.contains("/v1/index/") && text.trim_end_matches('/').ends_with("/simple")).map(|url| format!("{}/", url.trim_end_matches('/')))
 }
 
-/// What Runtime's static describer reads from the source at `dir`, with `runtime`'s release (else
-/// the newest) on `python`: its exact words and the document they are. Nothing installs, and none
-/// of the code runs.
+/// The SDK is always cozy-runtime: an authoritative lock, else plain unconditional version
+/// bounds. URLs, markers and unspecified versions retain the newest-SDK fallback; extras
+/// belong to the package, not its static reader. Never forward a project's source as the SDK.
+fn describer_requirement(dir: &Path, runtime: Option<&str>) -> Result<String, Error> {
+    if let Some(version) = runtime {
+        return Ok(format!("cozy-runtime=={version}"));
+    }
+    let text = fs::read_to_string(dir.join("pyproject.toml"))
+        .map_err(|e| refuse("project_file_missing", format!("pyproject.toml: {e}")))?;
+    let document: toml::Value = toml::from_str(&text)
+        .map_err(|e| refuse("project_file_invalid", format!("pyproject.toml: {e}")))?;
+    let dependencies = document.get("project").and_then(|p| p.get("dependencies")).and_then(toml::Value::as_array);
+    let mut specifiers = Vec::new();
+    for requirement in dependencies.into_iter().flatten().filter_map(toml::Value::as_str) {
+        let requirement = requirement.trim();
+        let end = requirement.find(|c: char| !c.is_ascii_alphanumeric() && !"-_.".contains(c)).unwrap_or(requirement.len());
+        let (name, mut bounds) = requirement.split_at(end);
+        // PEP 503: case-insensitive names with runs of '-', '_' and '.' folded to '-'.
+        let normalized = name.split(['-', '_', '.']).filter(|part| !part.is_empty()).collect::<Vec<_>>().join("-").to_ascii_lowercase();
+        if !name.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric)
+            || !name.as_bytes().last().is_some_and(u8::is_ascii_alphanumeric)
+            || normalized != "cozy-runtime"
+        {
+            continue;
+        }
+        bounds = bounds.trim();
+        if let Some(extras) = bounds.strip_prefix('[') {
+            let Some((_, rest)) = extras.split_once(']') else { continue };
+            bounds = rest.trim();
+        }
+        if bounds.is_empty() || bounds.starts_with('@') || bounds.contains(';') {
+            continue;
+        }
+        let bounds = bounds.strip_prefix('(').and_then(|s| s.strip_suffix(')')).unwrap_or(bounds).trim();
+        let parsed: pep440_rs::VersionSpecifiers = bounds.parse()
+            .map_err(|e| refuse("runtime_requirement_invalid", format!("cozy-runtime version bounds: {e}")))?;
+        specifiers.extend(parsed);
+    }
+    let bounds: pep440_rs::VersionSpecifiers = specifiers.into_iter().collect();
+    Ok(if bounds.is_empty() {
+        // A bare name would take whatever cozy-runtime `uv tool install` left here.
+        "cozy-runtime@latest".into()
+    } else {
+        format!("cozy-runtime{bounds}")
+    })
+}
+
+/// Runtime's source-only description on `python`: the locked SDK, else the newest within
+/// declared plain bounds, else PyPI's newest. No package code runs and no project is locked.
 pub(crate) fn describe_with(uv: &Path, dir: &Path, python: &str, runtime: Option<&str>) -> Result<(String, Value), Error> {
-    let from = match runtime {
-        Some(version) => format!("cozy-runtime=={version}"),
-        // `@latest`: a bare name would take whatever cozy-runtime `uv tool install` left here.
-        None => "cozy-runtime@latest".into(),
-    };
+    let from = describer_requirement(dir, runtime)?;
+    let mut command = self::uv(uv, dir);
+    command.args(["tool", "run", "--no-progress", "--python", python, "--from", from.as_str()]);
+    if runtime.is_none() && from != "cozy-runtime@latest" {
+        // Refresh within the bounds, ignoring an older installed tool even when it meets them.
+        command.args(["--isolated", "--upgrade-package", "cozy-runtime"]);
+    }
     let said = run(
-        self::uv(uv, dir)
-            .args(["tool", "run", "--no-progress", "--python", python, "--from", from.as_str()])
+        command
             .args(["cozy-runtime", "--json", "--dir"])
             .arg(dir)
             .arg("describe"),
@@ -1045,11 +1122,16 @@ fn last_runtime(api: &Api, on: &On) -> Option<String> {
 }
 
 /// `code` as a run `on` its machine reads it: `local/<name>` and its interface. What that machine's Runtime said installing this
-/// very source, else Runtime's static describer, on the Python and Runtime release its project names, or PyPI's newest. That can
-/// be older than the machine's, and refuse what the machine runs. Nothing installs, and no machine is asked.
+/// very source, else Runtime's static describer, using its lock, plain version bounds or PyPI's newest. That can
+/// be older than the machine's, and refuse what the machine runs. No package code runs and no machine is asked.
 pub(crate) async fn describe(api: &Arc<Api>, code: &LocalCode, on: &On, hub: &str) -> Result<(String, Value), Error> {
     let runtime = last_runtime(api, on);
-    let held = DESCRIBED.lock().expect("described lock").entry((code.clone(), runtime.clone())).or_default().clone();
+    let held = if crate::private_io::current().is_some() {
+        copied(api.machines.hubs.home(), code)?;
+        Described::default()
+    } else {
+        DESCRIBED.lock().expect("described lock").entry((code.clone(), runtime.clone())).or_default().clone()
+    };
     let mut held = held.lock().await;
     if let Some((known, own)) = held.as_ref() {
         if *own {
@@ -1081,7 +1163,7 @@ async fn own_reading(api: &Arc<Api>, local: &LocalCode, hub: &str, runtime: Opti
     Some((code.package.clone(), kept(home, &code.filed(), runtime?)?))
 }
 
-/// Runtime's static describer's reading, on the Python and Runtime release its project names, or PyPI's newest.
+/// Runtime's static reading on the project's Python and locked SDK, declared plain bounds or newest fallback.
 async fn read_interface(api: &Arc<Api>, code: &LocalCode, on: &On, runtime: Option<String>) -> Result<(String, Value), Error> {
     let home = api.machines.hubs.home();
     let project = Project::read(copied(home, code)?)?;
@@ -1094,9 +1176,13 @@ async fn read_interface(api: &Arc<Api>, code: &LocalCode, on: &On, runtime: Opti
         .map_err(|why| refuse("describe_failed", why))?;
     let described = described.map_err(|error| match (&runtime, &locked, on) {
         (Some(runtime), None, On::Machine(name)) if error.code == "describe_failed" => error
-            .remedy(format!("PyPI's newest Runtime read this, and {name} runs {runtime}: a run there reads it with that one, and this then answers what it read"))
+            .remedy(format!("The Runtime describing this source refused it, and {name} runs {runtime}: a run there reads it with that one, and this then answers what it read"))
             .next(format!("cozy run <its folder> --on {name}")),
         _ => error,
     });
     Ok((format!("local/{}", project.name), described?.1))
 }
+
+#[cfg(all(test, unix))]
+#[path = "local_code_tests.rs"]
+mod tests;

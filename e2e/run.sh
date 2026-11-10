@@ -101,13 +101,18 @@ run_get() { jq -r "($3) // empty" "$1/$2.json" 2> /dev/null || true; }
 # run_outputs <dir> <name>: each landed output of the run, downloaded into <dir>/<name>.out by its digest, in its record's
 # order, one path a line.
 run_outputs() {
-  local n stem file
+  local n name line path
   n=$(cat "$1/$2.number" 2> /dev/null || true)
   [ -n "$n" ] && [ "$n" != none ] || return 0
-  ls "$1/$2.out/$n-"* > /dev/null 2>&1 || "$RUN_CLI" --json run show "$n" --once -o "$1/$2.out" > /dev/null 2>&1 || true
-  for stem in $(run_get "$1" "$2" '.output[]? | select(.url) | if .index == 0 then .name else "\(.name)-\(.index)" end'); do
-    for file in "$1/$2.out/$n-$stem" "$1/$2.out/$n-$stem".*; do [ ! -e "$file" ] || echo "$file"; done
-  done
+  # JSON's paths belong to Calcifer and are not sent; the CLI says each downloaded path on stderr.
+  "$RUN_CLI" run show "$n" --once -o "$1/$2.out" > /dev/null 2> "$1/$2.export.err" || true
+  while IFS= read -r line; do
+    while IFS= read -r name; do
+      case "$line" in
+        "$name: "*) path=${line#"$name: "}; if [ -e "$path" ]; then printf '%s\n' "$path"; break; fi ;;
+      esac
+    done < <(run_get "$1" "$2" '.output[]? | select(.url) | .name' | uniq)
+  done < "$1/$2.export.err"
 }
 
 # run_output <dir> <name> <extensions, as a|b>: its first landed output with one of these extensions.

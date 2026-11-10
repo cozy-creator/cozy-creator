@@ -88,6 +88,7 @@ fn read_model(api: &Arc<Api>, project: &Project, rev: String, heard: u64) -> Res
     })??;
     let stand = doc.stand(&lock);
     let mut warnings = doc.warnings.clone();
+    warnings.extend(folder.crdt_conflicts()?.into_iter().map(api::calcifer::project::Warning::of_file));
     warnings.extend(doc.said_of_known(&lock));
     let known = known_packages(api, &doc);
     warnings.extend(unmade(&doc, &known, &lock));

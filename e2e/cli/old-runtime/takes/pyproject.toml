@@ -1,0 +1,21 @@
+[build-system]
+requires = ["uv_build>=0.12.7,<0.13"]
+build-backend = "uv_build"
+
+[project]
+name = "e2e-old-runtime"
+version = "0.1.0"
+description = "Locked on Runtime 0.43, whose range takes the machine's: it runs on the machine's pair (cl-854)"
+requires-python = ">=3.12"
+dependencies = ["cozy-runtime>=0.43", "msgspec>=0.19"]
+
+[project.entry-points."cozy.application"]
+default = "e2e_old_runtime:app"
+
+[tool.uv]
+# The lock holds Runtime 0.43, an executor protocol before the machine's; the declared range stays open.
+constraint-dependencies = ["cozy-runtime<0.44"]
+
+[tool.uv.build-backend]
+module-name = "e2e_old_runtime"
+module-root = ""
