@@ -568,6 +568,13 @@ fn copy_tree_at(source: &FsPath, target: &FsPath, relative: &FsPath, managed: bo
         let from = entry.path();
         let to = target.join(entry.file_name());
         let relative = relative.join(entry.file_name());
+        let top = relative.components().next().and_then(|part| part.as_os_str().to_str());
+        let apple_volume = managed && cfg!(target_os = "macos");
+        // These are regenerated volume indexes, not project history. Fresh APFS volumes
+        // already contain them. Other user data, including readable Trash/revision data,
+        // is retained; only known OS auxiliary directories may merge with fresh OS dirs.
+        if apple_volume && relative.components().count() == 1 && matches!(top, Some(".fseventsd" | ".Spotlight-V100")) { continue; }
+        let merge_os_directory = apple_volume && matches!(top, Some(".Trashes" | ".TemporaryItems" | ".DocumentRevisions-V100"));
         if entry.file_name() == KEYBAG_FILE || (entry.file_name() == "project.db" && relative.parent().is_some_and(|parent| !parent.as_os_str().is_empty())) {
             return Err(Error::new(Kind::Conflict, "vault_nested_project", "conversion/export refuses a nested project's storage"));
         }
@@ -580,7 +587,15 @@ fn copy_tree_at(source: &FsPath, target: &FsPath, relative: &FsPath, managed: bo
                     Some("editable" | "generations" | "executors" | "home" | "jit" | "kernels" | "tmp" | "cache" | "matplotlib" | "uv-cache" | "uv-tools"))) { continue; }
         }
         if kind.is_symlink() { return Err(Error::new(Kind::Usage, "vault_symlink", "conversion/export refuses symlinks; replace them with project-owned files")); }
-        if kind.is_dir() { fs::create_dir(&to).map_err(io)?; copy_tree_at(&from, &to, &relative, managed, frozen)?; }
+        if kind.is_dir() {
+            match fs::create_dir(&to) {
+                Ok(()) => {},
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && merge_os_directory
+                    && fs::symlink_metadata(&to).is_ok_and(|meta| meta.is_dir() && !meta.file_type().is_symlink()) => {},
+                Err(e) => return Err(error("vault_copy", format!("create directory {}: {e}", relative.display()))),
+            }
+            copy_tree_at(&from, &to, &relative, managed, frozen)?;
+        }
         else if kind.is_file() {
             if entry.file_name() == "project.db-wal" || entry.file_name() == "project.db-shm" { continue; }
             if entry.file_name() == "project.db" {
