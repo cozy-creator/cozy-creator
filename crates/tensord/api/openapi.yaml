@@ -949,6 +949,11 @@ components:
             the machine's hardware. For a model-only warm run with a weights destination, the lane its commit
             is labelled. The package's own children inherit it; another package's take none.
         models: {type: array, items: {$ref: '#/components/schemas/ModelChoice'}}
+        no_memo:
+          type: boolean
+          description: >-
+            Computed afresh, its children too: the machine memo neither answers nor keeps it (`unmemoized`
+            says so).
         owner: {type: string, description: The account that org-relative references of local code name.}
         payload:
           description: The function's parameters, a JSON object.

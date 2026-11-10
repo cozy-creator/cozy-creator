@@ -12,5 +12,5 @@ and list it here.
 
 | Command | What |
 |---|---|
-| `cozy run … --no-memo` | Compute the run afresh: the machine memo neither answers nor keeps it, nor its calls', so a same-seed pair measures twice. Stage memos (encoder results) still apply. `cozy run show` says `asked afresh (--no-memo)`. |
+| `cozy run … --no-memo` | Compute the run afresh: the machine memo neither answers nor keeps it, nor its calls', so a same-seed pair measures twice. Stage memos (encoder results) still apply. The machine's run record says `unmemoized: asked afresh (--no-memo)`. |
 | `cozy machine rent <sku> --provider runpod\|vast` | Quote and buy on that provider only. The Hub prefers a datacenter holding one of our NFS drives; the quote names provider and datacenter, and `cozy machine show` (`--json`: `rental.provider`, `rental.datacenter`, `rental.nfs_drive`) says where it landed and whether the drive mounted. |
