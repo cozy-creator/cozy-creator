@@ -335,7 +335,7 @@ impl Store {
             return Err(Error::Full { op: "admit", path: self.root.clone() });
         }
         file.set_len(object.length).map_err(fail("size", &temp))?;
-        Ok(Partial { store: self.clone(), object: object.clone(), temp, file: Some(file), journal: journal.map(|j| Arc::new(Mutex::new(j))), held, keep })
+        Ok(Partial { store: self.clone(), object: object.clone(), temp, file: Some(file), journal: journal.map(|j| Arc::new(Mutex::new(j))), held: Arc::new(Mutex::new(held)), keep })
     }
 
     /// Admits everything `src` yields. With `expect`, an object already here is reused without
@@ -682,9 +682,9 @@ impl Drop for Admission {
     }
 }
 
-/// An object a fetch writes at its offsets (`tmp/partial-<sha256>`, as long as the object), kept across a
-/// cut or a kill: `.held` beside it records each stretch once written, so the next fetch asks only for
-/// the rest. Nothing is hashed until commit, which reads the whole file back: only the object's digest
+/// An object a fetch or an upload writes at its offsets (`tmp/partial-<sha256>`, as long as the object),
+/// kept across a cut or a kill: `.held` beside it records each stretch once written, so the next asks
+/// only for the rest. Nothing is hashed until commit, which reads the whole file back: only the object's digest
 /// lets it in, and wrong bytes leave nothing kept.
 pub struct Partial {
     store: Store,
@@ -692,7 +692,7 @@ pub struct Partial {
     temp: PathBuf,
     file: Option<File>,
     journal: Option<Arc<Mutex<File>>>,
-    held: Vec<(u64, u64)>,
+    held: Arc<Mutex<Vec<(u64, u64)>>>,
     /// Whether what it holds outlives it.
     keep: bool,
 }
@@ -701,6 +701,7 @@ pub struct Partial {
 pub struct Stretch {
     file: File,
     journal: Option<Arc<Mutex<File>>>,
+    held: Arc<Mutex<Vec<(u64, u64)>>>,
     path: PathBuf,
     paced: durable::Paced,
 }
@@ -714,20 +715,24 @@ impl Stretch {
             let mut journal = journal.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             writeln!(journal, "{at} {}", at + bytes.len() as u64).map_err(|error| fail("write", journal_path(&self.path))(error).refusal())?;
         }
+        let mut held = self.held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        held.push((at, at + bytes.len() as u64));
+        *held = merged(std::mem::take(&mut held));
         Ok(())
     }
 }
 
 impl Partial {
-    /// What an earlier fetch left: sorted, disjoint `[start, end)` stretches. `commit` judges them too.
+    /// What it holds now, an earlier one's bytes and this one's writes: sorted, disjoint `[start, end)`
+    /// stretches. `commit` judges them all.
     pub fn held(&self) -> Vec<(u64, u64)> {
-        self.held.clone()
+        self.held.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
 
     /// A writer of bytes at their offsets, one per request.
     pub fn writer(&self) -> crate::err::Result<Stretch> {
         let file = self.file.as_ref().expect("a partial has its file until it commits").try_clone().map_err(|error| fail("open", &self.temp)(error).refusal())?;
-        Ok(Stretch { file, journal: self.journal.clone(), path: self.temp.clone(), paced: durable::Paced::default() })
+        Ok(Stretch { file, journal: self.journal.clone(), held: self.held.clone(), path: self.temp.clone(), paced: durable::Paced::default() })
     }
 
     /// Hashes what was written and installs it: only the object's digest lets it in.
@@ -795,14 +800,19 @@ fn journal_path(temp: &Path) -> PathBuf {
 fn read_held(mut journal: &File, length: u64) -> Vec<(u64, u64)> {
     let mut text = String::new();
     let _ = journal.read_to_string(&mut text);
-    let mut stretches: Vec<(u64, u64)> = text
+    let stretches = text
         .lines()
         .filter_map(|line| {
             let (a, b) = line.split_once(' ')?;
             Some((a.parse().ok()?, b.parse::<u64>().ok()?.min(length)))
         })
-        .filter(|(a, b)| a < b)
         .collect();
+    merged(stretches)
+}
+
+/// `stretches` sorted, those that touch as one.
+fn merged(mut stretches: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
+    stretches.retain(|(a, b)| a < b);
     stretches.sort_unstable();
     let mut merged: Vec<(u64, u64)> = Vec::new();
     for (a, b) in stretches {

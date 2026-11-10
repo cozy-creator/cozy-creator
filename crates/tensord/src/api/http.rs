@@ -656,6 +656,7 @@ async fn put_object(
     let landing = upload.clone();
     let writer = tokio::task::spawn_blocking(move || -> Result<Vec<(u64, u64)>, crate::objects::Refused> {
         let mut at = start;
+        let mut writer = landing.writer()?;
         let mut wrote = Ok(());
         while let Some(data) = receiver.blocking_recv() {
             if at + data.len() as u64 > end {
@@ -665,7 +666,7 @@ async fn put_object(
                 });
                 break;
             }
-            if let Err(error) = landing.write_at(at, &data) {
+            if let Err(error) = landing.write_at(&mut writer, at, &data) {
                 wrote = Err(error);
                 break;
             }
