@@ -403,9 +403,10 @@ fn known(api: &Api, text: &str) -> Result<crate::state::KnownProject, Error> {
 /// named by its content and linked; anything else is a person's file and is copied. Says what it couldn't keep.
 /// An encrypted project's transport uploads stay inside its mounted storage, never the shared plaintext CAS.
 pub(crate) fn private_upload_root(api: &Arc<Api>, named: &str) -> Result<Option<PathBuf>, Error> {
+    let root = self::named(api, named)?;
+    if !vault::encrypted(&root) { return Ok(None); }
     let project = api.projects.get(api, named).map_err(|e| e.0)?;
-    let private = vault::encrypted(&project.root);
-    Ok(private.then(|| project.folder.dir.clone()))
+    Ok(Some(project.folder.dir.clone()))
 }
 
 pub(crate) fn keep_given(project: &FsPath, given: &[(PathBuf, String)], uploads: &FsPath) -> Result<Vec<String>, Error> {

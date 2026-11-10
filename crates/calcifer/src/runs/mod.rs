@@ -324,8 +324,11 @@ enum For {
 
 /// Resolves and binds `ask` into the submission Calcifer records, on the machine of its set that would finish it soonest (cl-816).
 async fn prepare(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: For) -> Result<Prepared, Error> {
-    let scope = match project_of(api, ask)? {
-        Some(root) => crate::private_io::of_output(&crate::project::landing(&root))?,
+    let scope = match ask.project.as_deref() {
+        Some(project) => {
+            let root = crate::project::named(api, project)?;
+            crate::private_io::of_output(&crate::project::landing(&root))?
+        },
         None => None,
     };
     crate::private_io::context(scope, prepare_scoped(api, key, ask, purpose)).await
