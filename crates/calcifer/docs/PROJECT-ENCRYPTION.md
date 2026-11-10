@@ -9,12 +9,17 @@ Multiplayer, encrypted hosted backup and trusted collaboration hosting are later
 Enable encryption before importing or generating private data:
 
 ```sh
-cozy project new /absolute/path/MyProject
-cozy project -p /absolute/path/MyProject encrypt --recovery-out /separate/device/recovery.txt --remove-plaintext
-cozy project -p /absolute/path/MyProject vault status
-cozy project -p /absolute/path/MyProject lock
-cozy project -p /absolute/path/MyProject unlock
+cozy new /absolute/path/MyProject
+cozy vault --directory /absolute/path/MyProject encrypt --recovery-out /separate/device/recovery.txt --remove-plaintext
+cd /absolute/path/MyProject
+cozy vault status
+cozy vault lock
+cozy vault unlock
 ```
+
+The vault commands use the current project directory unless you give `--directory`.
+On Windows, run encryption and full rekey from outside the project with `--directory`;
+close other applications and shells that are holding the project directory.
 
 The CLI prompts for a passphrase. Automation uses `--passphrase-file FILE` or stdin (`-`),
 never a literal secret argument. Recovery output must be a new file, created with owner-only
@@ -44,11 +49,10 @@ reports its path. For an explicit plaintext copy, choose a new directory outside
 and readable view:
 
 ```sh
-cozy project -p /absolute/path/MyProject vault export --output /absolute/path/PlainCopy
+cozy vault export --output /absolute/path/PlainCopy
 ```
 
-The existing `project push` protocol uploads plaintext and refuses encrypted projects. Hosted
-encrypted backup is not implemented in this local phase. For now, copy backing and keybag
+Hosted encrypted backup is not implemented in this local phase. Copy the backing and keybag
 while locked when you need a ciphertext backup.
 
 ## Recovery changes and rekey
