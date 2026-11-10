@@ -2,9 +2,9 @@
 """Real Linux private execution after its mounted view's canonical path changes.
 
 Run after private_execution.py in a synthetic unlocked vault. The normal lock/unlock
-commands own the same daemon and home. A runtime-directory alias changes only the
-physical mounted view; project identity, source bytes and logical input references stay.
-The fixture leaves that owned alias in place for subsequent rekey/lock qualification.
+commands own the same daemon and home. A normal fresh unlock changes only the
+physical mounted view; project identity, source bytes and input file bytes stay.
+The caller continues with the newly unlocked view for rekey/lock qualification.
 """
 from __future__ import annotations
 
@@ -47,13 +47,12 @@ def main() -> None:
     args.out.mkdir(parents=True, exist_ok=True)
     home = (Path.home() / ".cozy").resolve()
     view = args.view.resolve(strict=True)
-    runtime = view.parent
-    assert runtime.parent == (home / "calcifer/vaults").resolve(), "fixture must own one vault runtime directory"
     marker = json.loads((view / ".vault-local-execution.json").read_text())
     project_id = marker["storage"]["project_id"]
     folder = view / "private-execution-proof"
     script, request = folder / "probe.py", folder / "input.json"
     source_bytes = script.read_bytes()
+    input_bytes = (folder / "input.txt").read_bytes()
     source_canary = re.search(rb"XS160_SOURCE_[0-9a-f]{32}", source_bytes)
     assert source_canary, "first run the owned synthetic private_execution.py fixture"
     before = installations(home, project_id)
@@ -61,19 +60,19 @@ def main() -> None:
     stamp = time.time_ns() - 2_000_000_000
 
     locked = json.loads(command(args.cli, args.out, "lock", "project", "-p", str(args.project), "lock"))
-    assert locked["vault"]["state"] == "locked", "fixture cannot relocate an active mounted view"
-    relocated = runtime.with_name(f"alias-proof-{uuid.uuid4().hex}")
-    runtime.rename(relocated)
-    runtime.symlink_to(relocated, target_is_directory=True)
+    assert locked["vault"]["state"] == "locked", "fixture must close its first mounted view"
     unlocked = json.loads(command(args.cli, args.out, "unlock", "project", "-p", str(args.project), "unlock",
                                   "--passphrase-file", str(args.passphrase_file), "--idle", "0"))
     after_view = Path(unlocked["vault"]["view"]).resolve(strict=True)
     assert after_view != view, "the native view's canonical path did not change"
     assert json.loads((after_view / ".vault-local-execution.json").read_text())["storage"]["project_id"] == project_id
+    folder = after_view / "private-execution-proof"
+    script, request = folder / "probe.py", folder / "input.json"
     assert hashlib.sha256(script.read_bytes()).digest() == hashlib.sha256(source_bytes).digest(), "source bytes changed"
+    assert (folder / "input.txt").read_bytes() == input_bytes, "input file bytes changed"
     payload = json.loads(request.read_text())
     payload_canary = f"XS160_ALIAS_PAYLOAD_{uuid.uuid4().hex}"
-    payload.update(text=payload_canary, fail=False)
+    payload.update(text=payload_canary, source=str(folder / "input.txt"), fail=False)
     request.write_text(json.dumps(payload))
     result = command(args.cli, args.out, "remounted-run", "run", "-p", str(args.project), str(script),
                      "--input", str(request), "--on", "local")
