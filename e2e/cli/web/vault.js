@@ -3,13 +3,26 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
 const { mkdtempSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
-const { join } = require('path');
+const { dirname, join } = require('path');
 const { calcifer, signIn, launch, png, MP4, until, drop } = require('./page');
 const failures = [], seen = {};
 let browser, context, page, peer, scratch;
 const check = (name, okay) => { seen[name] = !!okay; if (!okay) failures.push(name); };
 const cli = (...args) => execFileSync(process.env.COZY, ['--json', ...args], { encoding: 'utf8', timeout: 180000 });
 const sanitized = (text) => String(text ?? '').replace(/cozy1-[a-z0-9_-]+/gi, '[REDACTED]').replaceAll('synthetic browser passphrase', '[REDACTED]');
+const newPage = async () => {
+  const tab = await context.newPage();
+  if (!process.env.ENGINE || process.env.ENGINE === 'chromium') {
+    const version = require(join(dirname(require.resolve(process.env.PLAYWRIGHT)), 'package.json')).version;
+    // playwright-core@1.55.0/lib/server/chromium/crPage.js forces every tab visible.
+    // Undo that on its owning session; a new CDP session cannot clear another's
+    // emulation. Chrome itself then emits the real visibilitychange events below.
+    const owner = tab._connection?.toImpl?.(tab)?.delegate?._mainFrameSession?._client;
+    if (version !== '1.55.0' || !owner?.send) throw new Error('native visibility proof requires the pinned owning Chromium driver session');
+    await owner.send('Emulation.setFocusEmulationEnabled', { enabled: false });
+  }
+  return tab;
+};
 (async () => {
   scratch = mkdtempSync(join(tmpdir(), 'web-vault-'));
   const folder = join(scratch, 'project');
@@ -24,7 +37,7 @@ const sanitized = (text) => String(text ?? '').replace(/cozy1-[a-z0-9_-]+/gi, '[
   seen.project = { id, folder };
   browser = await launch(playwright);
   context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
-  page = await context.newPage();
+  page = await newPage();
   page.setDefaultTimeout(45000);
   const errors = [], outbound = [], fileWrites = [], secretIdempotency = [];
   page.on('pageerror', (error) => errors.push(error.message));
@@ -111,7 +124,7 @@ const sanitized = (text) => String(text ?? '').replace(/cozy1-[a-z0-9_-]+/gi, '[
   await page.keyboard.press('Tab');
   await until('encrypted edit waits for network', () => page.locator('.top').innerText(), (text) => /1 change/.test(text), 15000);
   // Offline queries pause; the real visibility transition triggers the privacy cover.
-  peer = await context.newPage();
+  peer = await newPage();
   await peer.goto('about:blank');
   await peer.bringToFront();
   await until('pending private tab hidden', () => page.evaluate(() => document.visibilityState), (state) => state === 'hidden', 10000);
@@ -166,7 +179,7 @@ const sanitized = (text) => String(text ?? '').replace(/cozy1-[a-z0-9_-]+/gi, '[
 
   // A second actual tab shares the real SSE connection. Locking from the CLI must
   // conceal both pages without relying on the active tab's one-second status poll.
-  peer = await context.newPage();
+  peer = await newPage();
   peer.on('pageerror', (error) => errors.push(error.message));
   await peer.goto(`${calcifer()}/#/projects/${id}`);
   await peer.locator('.react-flow').waitFor();
@@ -185,7 +198,7 @@ const sanitized = (text) => String(text ?? '').replace(/cozy1-[a-z0-9_-]+/gi, '[
   // project. Resuming the hidden tab must verify protection before showing its canvas.
   if (!process.env.ENGINE || process.env.ENGINE === 'chromium') {
     const lifecycle = await context.newCDPSession(page);
-    peer = await context.newPage();
+    peer = await newPage();
     await peer.goto('about:blank');
     await peer.bringToFront();
     await until('private tab hidden', () => page.evaluate(() => document.visibilityState), (state) => state === 'hidden', 10000);
