@@ -167,8 +167,41 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         provider.mount(&backing, &view, secret.as_bytes(), MountOptions::default())?;
     assert_eq!(fs::read(&renamed)?, content);
     remount.try_unmount()?;
+    #[cfg(target_os = "linux")]
+    {
+        eprintln!("provider fixture: helper crash cleanup");
+        let mut crashed =
+            provider.mount(&backing, &view, secret.as_bytes(), MountOptions::default())?;
+        let supervisor = crashed.provider_pid();
+        let mut victim = None;
+        for pid in fs::read_to_string(format!("/proc/{supervisor}/task/{supervisor}/children"))?
+            .split_whitespace()
+        {
+            let pid: u32 = pid.parse()?;
+            let command = fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+            if command.split(|byte| *byte == 0).nth(1) == Some(b"mount".as_slice()) {
+                victim = Some(pid);
+                break;
+            }
+        }
+        let birth =
+            platform::process::Birth::of(victim.ok_or("owned securefs child was not found")?)?;
+        platform::process::Exact::open(&birth)?
+            .ok_or("owned provider already exited")?
+            .kill()?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while crashed.is_mounted()? && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            !crashed.is_mounted()?,
+            "a crashed provider must not leave a stale kernel mount"
+        );
+        assert!(fs::write(view.join("crash-leak.bin"), marker).is_err());
+        crashed.try_unmount()?;
+    }
     eprintln!("provider fixture: read-only view");
-    let mut read_only = provider.mount(
+    let read_only = match provider.mount(
         &backing,
         &view,
         secret.as_bytes(),
@@ -176,10 +209,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             read_only: true,
             ..MountOptions::default()
         },
-    )?;
-    assert_eq!(fs::read(&renamed)?, content);
-    assert!(fs::write(view.join("read-only.bin"), marker).is_err());
-    read_only.try_unmount()?;
+    ) {
+        Ok(mut read_only) => {
+            assert_eq!(fs::read(&renamed)?, content);
+            assert!(fs::write(view.join("read-only.bin"), marker).is_err());
+            read_only.try_unmount()?;
+            "enforced"
+        }
+        Err(project_mount::Error::Unsupported(_)) if cfg!(windows) => "unsupported-refused",
+        Err(error) => return Err(error.into()),
+    };
     eprintln!("provider fixture: idle expiration");
     let mut idle = provider.mount(
         &backing,
@@ -217,7 +256,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     inspect(&backing, marker)?;
     println!(
         "{}",
-        json!({"result":"pass","provider":"securefs 2.0.0 lite","bundled_provider":project_mount::is_bundled(),"bytes":content.len(),"normal_io":true,"media_seek":true,"open_handle_result":busy,"manual_lock":true,"no_plaintext_fallback":true,"remount_parity":true,"read_only":true,"idle_lock":true,"backing_marker_absent":true,"view":view})
+        json!({"result":"pass","provider":"securefs 2.0.0 lite","bundled_provider":project_mount::is_bundled(),"bytes":content.len(),"normal_io":true,"media_seek":true,"open_handle_result":busy,"manual_lock":true,"no_plaintext_fallback":true,"remount_parity":true,"read_only":read_only,"idle_lock":true,"backing_marker_absent":true,"view":view})
     );
     Ok(())
 }
