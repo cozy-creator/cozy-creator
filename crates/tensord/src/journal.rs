@@ -648,10 +648,7 @@ fn read_payload(conn: &Connection, id: &str, slot: &str, body: &[u8]) -> io::Res
 }
 
 fn metadata_actor(actor: &str) -> String {
-    crate::private_io::current().map_or_else(|| actor.to_owned(), |scope| {
-        let prefix=format!("local-private:{}:{}:",scope.project_id.len(),scope.project_id);
-        if actor.starts_with(&prefix) {actor.to_owned()} else {format!("{prefix}{actor}")}
-    })
+    crate::private_io::resource_key(actor)
 }
 fn encoded_metadata(value: &impl Serialize, scope: Option<&api::machine::LocalPrivateStorage>, context: &str, mut index: Value) -> io::Result<String> {
     let Some(scope) = scope else { return encoded(value) };
@@ -1147,11 +1144,7 @@ impl Journal {
     }
     pub(crate) fn native_owner(&self, owner: &str) -> io::Result<Option<String>> {
         let actor: Option<String> = self.connection.query_row("SELECT actor FROM native_outputs WHERE owner=?1 LIMIT 1",[metadata_actor(owner)],|row|row.get(0)).optional().map_err(db_error)?;
-        Ok(actor.map(|actor| {
-            let Some(scope) = crate::private_io::current() else { return actor };
-            let prefix = format!("local-private:{}:{}:", scope.project_id.len(), scope.project_id);
-            actor.strip_prefix(&prefix).unwrap_or(&actor).to_owned()
-        }))
+        Ok(actor.map(|actor| crate::private_io::unscoped_key(&actor)))
     }
     pub(crate) fn bind_native_output(&mut self, actor: &str, owner: &str, source: &[u8]) -> io::Result<()> {
         let (actor,owner)=(metadata_actor(actor),metadata_actor(owner));
