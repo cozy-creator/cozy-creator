@@ -176,8 +176,12 @@ while (i := t.find("{", i)) >= 0:
   done
   expect "hub end on $1" FAIL "$m still listed 5 min after cozy machine end: $(tail -c 200 "$HB/end-$1.out")"
 }
-if "$CLI" machine rent --help 2>/dev/null | grep -q -- --provider || "$CLI" machine rent cpu --provider runpod --help >/dev/null 2>&1; then
+# xs-157's proof (pod-env, pod-auth) rides these rentals, so a cozy that can't name a provider fails the row instead of
+# skipping it. In 0.23.1 `--provider` is the hidden flag of a cozy built with the `dev` feature (dev-build -f features=dev).
+if "$CLI" machine rent cpu --provider runpod --help >/dev/null 2>&1; then
   for p in runpod vast; do hub_rent_on "$p"; done
+else
+  expect "hub providers" FAIL "this cozy takes no --provider: run the gate on a dev-feature dev-build (dev-build -f features=dev)"
 fi
 [ -n "$WHO" ] || return 0
 HUB_PKG=ci-hub-$R
