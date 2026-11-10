@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PROTOTYPE ONLY — Selected surface geometry</title>
+<style>
+  *{box-sizing:border-box}body{font:15px/1.5 system-ui,sans-serif;max-width:1160px;margin:24px auto;padding:0 20px;color:#17332f;background:#f6f8f7}h1{font-size:25px;margin:8px 0}h2{font-size:18px;margin:0 0 12px}p{margin:8px 0}section{padding:18px;background:white;border:1px solid #ccd8d4;border-radius:7px;margin:16px 0}.warning{font-weight:700;color:#7c2f19}.muted{color:#516761}.columns{display:grid;grid-template-columns:1fr 1fr;gap:18px}dl{display:grid;grid-template-columns:1fr 1fr;gap:6px 12px;margin:0}dt{color:#516761}dd{margin:0;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}button,select,input{font:inherit;padding:6px 10px;border:1px solid #aebfba;border-radius:4px;background:white;color:inherit}button{cursor:pointer}button[aria-selected=true],button.active{background:#16665a;color:white}button:disabled{opacity:.45;cursor:default}.actions{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}.fit-no{color:#8c301b;font-weight:700}.fit-yes{color:#16665a;font-weight:700}table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}th,td{text-align:left;padding:8px;border-bottom:1px solid #dde5e2}th{font-size:13px}.tabs{display:flex;gap:6px;flex-wrap:wrap}.steps{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.diagram-scroll{height:345px;overflow:auto;border:1px solid #b8c9c3;background:#f7faf9;margin-top:12px}.diagram-room{position:relative;transform:scale(.5);transform-origin:top left;width:970px;height:598px;border:2px dashed #62877c}.diagram-card{position:absolute;left:10px;top:10px}.diagram-head{display:flex;align-items:flex-end;gap:4px}.diagram-name{font-family:monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:0 1 auto;line-height:1.25}.diagram-delete{flex:none;display:grid;place-items:center}.diagram-media{border:1px solid #78998e;background:#dfeae5;overflow:hidden}.diagram-under{position:absolute;left:0;border:1px solid #78998e;background:#f3f5ee;overflow:hidden}.diagram-under>div{white-space:nowrap}.diagram-under button{padding:3px 8px}.badge{font-weight:700;font-size:12px;letter-spacing:.05em;color:#7c2f19}code{font-size:13px}ol{padding-left:22px}#notice{font-weight:650}#guide-description{max-width:86ch}#dom-feedback{font-variant-numeric:tabular-nums}.small{font-size:13px}@media(max-width:760px){.columns{grid-template-columns:1fr}table{font-size:12px}th,td{padding:5px}dl{grid-template-columns:1fr 1fr}}
+</style>
+<header>
+  <span class="badge">THROWAWAY PROTOTYPE ONLY — DO NOT MERGE</span>
+  <h1>Can a selected surface keep its own readable geometry?</h1>
+  <p><strong>Assumption: this is a state/geometry logic experiment, not a visual redesign.</strong> “Open” means the app’s <code>.card.here</code> surface; selecting an outline alone keeps resting geometry. Can <code>S=max(1,T)</code>, <code>L=T/S</code>, <code>E=zoom×S</code> preserve readable controls and coherent resizing/fitting while zoom leaves saved position and width untouched?</p>
+  <p class="muted small">Open this HTML by double-click. No imports, server, network, database, or persistence. The neutral diagram uses this file’s fonts and modeled dimensions; it is not a screenshot or qualification of the app.</p>
+</header>
+
+<section>
+  <h2>Current state</h2>
+  <p id="notice" aria-live="polite"></p>
+  <div class="columns"><div><h3>Box and saved canvas pose</h3><dl id="saved-state"></dl></div><div><h3>View and readable surface</h3><dl id="view-state"></dl></div></div>
+  <h3>Geometry after this action</h3><div class="columns"><dl id="geometry-state"></dl><dl id="fit-state"></dl></div>
+</section>
+
+<section>
+  <h2>Free play</h2>
+  <div class="actions"><label>Box <select id="box-kind"><option value="placeholder">Image placeholder</option><option value="text">Built-in Text</option><option value="edit">Built-in Edit</option><option value="portrait">Tall portrait</option></select></label><label>Logic <select id="logic-mode"><option value="legacy">Legacy inverse-text floor</option><option value="fontOnly">Font-only correction</option><option value="factorized">Factorized selected surface</option></select></label></div>
+  <div class="actions"><button data-action="select">Select outline</button><button data-action="open">Open box</button><button data-action="close">Close box</button><button data-zoom="0.05">Zoom 5%</button><button data-zoom="0.25">Zoom 25%</button><button data-zoom="0.5">Zoom 50%</button><button data-zoom="1">Zoom 100%</button><button data-zoom="2.5">Zoom 250%</button><button data-action="fit">Fit in available space</button></div>
+  <div class="actions"><label>Corner pull, screen px <input id="pull-px" type="number" value="100" style="width:95px"></label><button id="pull">Pull corner</button><button data-action="reset">Reset this box</button></div>
+  <p class="small muted">Within a loaded fixture, only a corner pull changes saved width. Zoom, open/close, mode, selection, and fit never write saved pose. Loading/resetting a fixture explicitly starts new in-memory state. Corner mapping uses viewport zoom in the first two models, effective surface zoom in the factorized model; minimum saved width is the existing 160 units.</p>
+</section>
+
+<section>
+  <h2>Compare the logic at this same pose and zoom</h2>
+  <table><thead><tr><th>Model</th><th>Text factor</th><th>Surface factor</th><th>Effective zoom</th><th>Name font px</th><th>Header / name room px</th><th>Panel content room px</th></tr></thead><tbody id="comparison"></tbody></table>
+  <p class="small muted">“Name room” subtracts the non-shrinking Delete control and ordinary spacing. At least one em of room plus the existing 10 px font floor is a model signal, not a replacement for app assertions. Panel room subtracts its existing transformed horizontal padding and border. No automatic containment or new cap is invented.</p>
+</section>
+
+<section>
+  <h2>Guided cases</h2><div class="tabs" id="tabs" role="tablist"></div><p id="guide-description"></p><div class="steps" id="steps"></div>
+</section>
+
+<section>
+  <h2>Geometry diagram and actual prototype text bounds</h2>
+  <p class="small">Diagram is drawn at 50% of modeled CSS pixels. The dashed available room is 970 × 598 inside an assumed 1280 × 720 viewport (left 286, top 62, right 24, bottom 60). Scroll to see overflow; it is deliberately retained.</p>
+  <div class="diagram-scroll"><div class="diagram-room"><div id="diagram" class="diagram-card"></div></div></div>
+  <p id="dom-feedback" class="small"></p>
+</section>
+
+<section>
+  <h2>What this experiment can settle</h2>
+  <p id="verdict"></p>
+  <p class="small muted">Source dimensions: Text and placeholder default width 240, 16:9 media; Edit width 720, fixed 332-unit timeline; portrait 240 × 420 media; header 32; name font 15.5 × 1.35; Delete 30; lower-panel multiplier 1.4, gap 16, padding 20 plus border 2. Preferred lower content heights are explicit model inputs: placeholder/portrait 160, Edit 120, Text 0. The existing 65% room cap is modeled; the remaining panel is not silently shortened to make Fit pass. Fit scans 5%–400% in .005 steps and chooses the largest geometric fit; this is a demo search, not a proposed production algorithm.</p>
+  <h3>Recent actions</h3><ol id="history"></ol>
+</section>
+
+<script id="geometry-logic">
+/* Pure, portable geometry and reducer. No DOM, storage, network, or timers. */
+const SurfaceGeometry = (() => {
+  const MIN_ZOOM=.05, MAX_ZOOM=4, MIN_WIDTH=160, HEAD=32, TITLE=15.5*1.35, HERE=1.4;
+  const ROOM={width:970,height:598};
+  const FIXTURES={
+    placeholder:{label:'Image placeholder',kind:'image',tool:null,width:240,aspect:16/9,panel:160,name:'legible_note'},
+    text:{label:'Built-in Text',kind:'text',tool:null,width:240,aspect:16/9,panel:0,name:'selected_text'},
+    edit:{label:'Built-in Edit',kind:'video',tool:'cozy/edit',width:720,mediaHeight:332,panel:120,name:'selected_edit'},
+    portrait:{label:'Tall portrait',kind:'image',tool:null,width:240,aspect:240/420,panel:160,name:'tall_portrait'},
+  };
+  const MODES={legacy:'Legacy',fontOnly:'Font only',factorized:'Factorized'};
+  const textScale=(z,floor)=>Math.round(20/Math.min(2.5,Math.max(floor,z)))/20;
+  function initial(fixture='placeholder',mode='legacy') {
+    const f=FIXTURES[fixture];
+    return {fixture,mode,zoom:1,outlined:false,open:false,pose:{x:400,y:250,width:f.width},writes:0,poseChanged:false,last:'New in-memory fixture.',fitAttempt:null,resize:null,history:['Loaded '+f.label]};
+  }
+  function measure(state,mode=state.mode,z=state.zoom) {
+    const f=FIXTURES[state.fixture], width=state.pose.width;
+    const T=textScale(z,mode==='legacy'?.25:MIN_ZOOM);
+    const S=state.open&&mode==='factorized'?Math.max(1,T):1;
+    const L=T/S, E=z*S, hang=Math.min(T,2);
+    const labelFactor=state.open?L:hang;
+    const nameFont=TITLE*labelFactor*E;
+    const deleteWidth=30*labelFactor*E;
+    const screenWidth=width*E;
+    const nameRoom=Math.max(0,screenWidth-deleteWidth-8*E);
+    const mediaNative=f.mediaHeight??width/f.aspect;
+    const mainHeight=(HEAD+mediaNative)*E;
+    const panelScale=E*L*HERE;
+    const hasPanel=state.open&&f.panel>0;
+    const panelHeight=hasPanel?Math.min(f.panel*panelScale,ROOM.height*.65):0;
+    const panelGap=hasPanel?16*panelScale:0;
+    const panelPadding=hasPanel?22*panelScale:0;
+    const panelRoom=hasPanel?Math.max(0,screenWidth-panelPadding):null;
+    const totalHeight=mainHeight+panelGap+panelHeight;
+    return {T,S,L,E,hang,nameFont,deleteWidth,screenWidth,nameRoom,mediaNative,mainHeight,panelScale,panelHeight,panelGap,panelPadding,panelRoom,totalHeight,
+      room:ROOM,geometryFits:screenWidth<=ROOM.width&&totalHeight<=ROOM.height,
+      readableName:nameFont>=10&&nameRoom>=nameFont,
+      panelHasRoom:!hasPanel||panelRoom>=14*panelScale,
+      unscaledMainHeight:HEAD+mediaNative,hasPanel,
+    };
+  }
+  function fit(state) {
+    let best=null;
+    for(let step=0;step<=790;step++) {
+      const zoom=+(MIN_ZOOM+step*.005).toFixed(3);
+      const g=measure(state,state.mode,zoom);
+      if(g.geometryFits)best={zoom,width:g.screenWidth,height:g.totalHeight};
+    }
+    return best;
+  }
+  function reducer(state,action) {
+    if(action.type==='load')return initial(action.fixture,action.mode??state.mode);
+    if(action.type==='reset')return initial(state.fixture,state.mode);
+    const next={...state,pose:{...state.pose},poseChanged:false,fitAttempt:null,resize:null};
+    if(action.type==='mode'){next.mode=action.mode;next.last='Changed the geometry model; saved pose stayed.';}
+    if(action.type==='select'){next.outlined=!state.outlined;next.last='Toggled the selection outline; open state and saved pose stayed.';}
+    if(action.type==='open'){next.open=true;next.outlined=false;next.last='Opened the selected surface; saved pose stayed.';}
+    if(action.type==='close'){next.open=false;next.last='Closed the surface; resting presentation restored; saved pose stayed.';}
+    if(action.type==='zoom'){next.zoom=Math.max(MIN_ZOOM,Math.min(MAX_ZOOM,action.zoom));next.last='Changed only the view zoom; saved pose stayed.';}
+    if(action.type==='fit') {
+      const answer=fit(state);next.fitAttempt=answer??{impossible:true};
+      if(answer){next.zoom=answer.zoom;next.last='Found a geometric fit at '+Math.round(answer.zoom*1000)/10+'%; saved pose stayed.';}
+      else next.last='NO FIT: no supported zoom fits this surface. View and saved pose stayed; no containment or extra cap was invented.';
+    }
+    if(action.type==='resize') {
+      const g=measure(state), divisor=g.E;
+      const raw=state.pose.width+action.screenDelta/divisor;
+      next.pose.width=Math.max(MIN_WIDTH,Math.round(raw));
+      next.poseChanged=next.pose.width!==state.pose.width;
+      next.writes=state.writes+(next.poseChanged?1:0);
+      next.resize={screenDelta:action.screenDelta,divisor,rawWidth:raw,storedWidth:next.pose.width,clamped:raw<MIN_WIDTH,visibleDelta:(next.pose.width-state.pose.width)*g.E};
+      next.last='Corner pull writes width using screen delta ÷ effective rendered zoom'+(raw<MIN_WIDTH?'; existing 160-unit minimum applied.':'.');
+    }
+    next.history=[...state.history,next.last].slice(-10);
+    return next;
+  }
+  return {initial,measure,fit,reducer,FIXTURES,MODES};
+})();
+</script>
+
+<script id="geometry-shell">
+/* Throwaway DOM shell: actions in, readable state and a neutral diagram out. */
+const G=SurfaceGeometry;
+let state=G.initial(),guideKey='comparison',guideStep=0;
+const guides={
+  comparison:{title:'Font versus parent',description:'Open the same placeholder at 5%. The font-only correction makes the text larger but leaves the header and panel only 12 pixels wide. The factorized model gives the parent its own geometry.',steps:[
+    ['Load legacy placeholder',{type:'load',fixture:'placeholder',mode:'legacy'}],['Open',{type:'open'}],['Zoom to 5%',{type:'zoom',zoom:.05}],['Use font-only model',{type:'mode',mode:'fontOnly'}],['Use factorized model',{type:'mode',mode:'factorized'}],
+  ]},
+  pose:{title:'Pose stays on zoom',description:'Opening, selecting, zooming and closing must not write saved canvas pose. Watch saved width, position, and write count after each real action.',steps:[
+    ['Load factorized Text',{type:'load',fixture:'text',mode:'factorized'}],['Select outline',{type:'select'}],['Open Text',{type:'open'}],['Zoom to 5%',{type:'zoom',zoom:.05}],['Zoom to 25%',{type:'zoom',zoom:.25}],['Close Text',{type:'close'}],
+  ]},
+  resize:{title:'Corner coordinates',description:'At 5%, the factorized open surface renders at an effective zoom of 1. A 100-pixel pull should add 100 saved units, not 2000. The following zoom must preserve that saved result.',steps:[
+    ['Load factorized placeholder',{type:'load',fixture:'placeholder',mode:'factorized'}],['Open',{type:'open'}],['Zoom to 5%',{type:'zoom',zoom:.05}],['Pull 100 screen pixels',{type:'resize',screenDelta:100}],['Zoom to 25%',{type:'zoom',zoom:.25}],
+  ]},
+  builtins:{title:'Text and Edit',description:'Text means kind=text with a text field and no tool. Edit means kind=video with tool=cozy/edit and a fixed 332-unit timeline. These are modeled dimensions, not API or component execution.',steps:[
+    ['Load factorized Text',{type:'load',fixture:'text',mode:'factorized'}],['Open Text',{type:'open'}],['Zoom to 5%',{type:'zoom',zoom:.05}],['Load factorized Edit',{type:'load',fixture:'edit',mode:'factorized'}],['Open Edit',{type:'open'}],['Zoom to 5%',{type:'zoom',zoom:.05}],
+  ]},
+  tall:{title:'Tall fit failure',description:'The 240×420 portrait plus its ordinary lower content needs about 698 pixels. Available height is 598. A factorized native-size floor cannot shrink it further. Fit must honestly fail instead of quietly changing stored width or inventing containment.',steps:[
+    ['Load factorized portrait',{type:'load',fixture:'portrait',mode:'factorized'}],['Open portrait',{type:'open'}],['Zoom to 5%',{type:'zoom',zoom:.05}],['Ask it to fit',{type:'fit'}],['Compare legacy model',{type:'mode',mode:'legacy'}],['Ask legacy to fit',{type:'fit'}],
+  ]},
+};
+const $=id=>document.getElementById(id), n=v=>v===null?'—':Number(v).toFixed(3).replace(/\.?0+$/,'');
+const fields=(id,rows)=>$(id).innerHTML=rows.map(([label,value])=>'<dt>'+label+'</dt><dd>'+value+'</dd>').join('');
+function dispatch(action){state=G.reducer(state,action);render();}
+function render(){
+  const f=G.FIXTURES[state.fixture],g=G.measure(state),possible=G.fit(state);
+  $('notice').textContent=state.last;
+  $('box-kind').value=state.fixture;$('logic-mode').value=state.mode;
+  fields('saved-state',[
+    ['Fixture',f.label],['Actual kind / tool',f.kind+' / '+(f.tool??'none')],['Modeled text field',f.kind==='text'?'text: Readable words':'none'],
+    ['Saved position',state.pose.x+', '+state.pose.y],['Saved width',n(state.pose.width)+' canvas units'],['Computed media height',n(g.mediaNative)+' canvas units'],
+    ['Saved width writes',state.writes],['Pose changed this action?',state.poseChanged?'YES — resize':'No'],
+  ]);
+  fields('view-state',[
+    ['Model',G.MODES[state.mode]],['View zoom',n(state.zoom*100)+'%'],['Outline selected?',state.outlined?'Yes':'No'],['Open surface?',state.open?'Yes':'No'],
+    ['Canvas text factor T',n(g.T)],['Surface scale S',n(g.S)],['Local text factor L',n(g.L)],['Effective zoom E',n(g.E)],['Resting hang cap',n(g.hang)],
+  ]);
+  fields('geometry-state',[
+    ['Name font',n(g.nameFont)+' px'],['Header width',n(g.screenWidth)+' px'],['Delete control',n(g.deleteWidth)+' px'],['Room left for name',n(g.nameRoom)+' px'],
+    ['Name geometry signal',g.readableName?'Readable font + at least one em':'Fails font or parent room'],['Main surface height',n(g.mainHeight)+' px'],['Lower panel scale',n(g.panelScale)],
+    ['Lower panel height',n(g.panelHeight)+' px'],['Lower panel content width',n(g.panelRoom)+' px'],['Panel room signal',g.panelHasRoom?'Usable inline room':'No usable inline room'],
+  ]);
+  fields('fit-state',[
+    ['Available space',g.room.width+' × '+g.room.height+' px'],['Whole group',n(g.screenWidth)+' × '+n(g.totalHeight)+' px'],
+    ['Fits at current zoom?',g.geometryFits?'YES':'NO'],['Any supported geometric fit?',possible?n(possible.zoom*100)+'% maximum':'NO — fixed surface floor prevents it'],
+    ['Last Fit request',state.fitAttempt?(state.fitAttempt.impossible?'NO FIT; state kept':n(state.fitAttempt.zoom*100)+'%'):'Not requested'],
+    ['Last corner pull',state.resize?n(state.resize.screenDelta)+' px ÷ '+n(state.resize.divisor)+' → '+n(state.resize.storedWidth)+' saved units':'Not requested'],
+    ['Visible resize delta',state.resize?n(state.resize.visibleDelta)+' px':'—'],['Panel content height input',f.panel+' native units; existing 65% room cap'],
+  ]);
+  $('comparison').innerHTML=Object.entries(G.MODES).map(([key,label])=>{
+    const v=G.measure(state,key);return '<tr'+(key===state.mode?' style="background:#edf5f2"':'')+'><td>'+label+'</td><td>'+n(v.T)+'</td><td>'+n(v.S)+'</td><td>'+n(v.E)+'</td><td>'+n(v.nameFont)+'</td><td>'+n(v.screenWidth)+' / '+n(v.nameRoom)+'</td><td>'+n(v.panelRoom)+'</td></tr>';
+  }).join('');
+  $('tabs').innerHTML=Object.entries(guides).map(([key,guide])=>'<button role="tab" data-guide="'+key+'" aria-selected="'+(key===guideKey)+'">'+guide.title+'</button>').join('');
+  $('guide-description').textContent=guides[guideKey].description;
+  $('steps').innerHTML=guides[guideKey].steps.map(([label],index)=>'<button data-step="'+index+'"'+(index!==guideStep?' disabled':'')+'>'+ (index+1)+'. '+label+'</button>').join('')+'<button id="restart-guide">Restart case</button>';
+  $('history').innerHTML=state.history.map(s=>'<li>'+s+'</li>').join('');
+  const tall={...G.initial('portrait','factorized'),open:true,zoom:.05};
+  const tallSize=G.measure(tall);
+  $('verdict').textContent='Model verdict: factorization makes the font and its parent readable in the basic cases, and effective-zoom corner mapping preserves the visible resize amount. Zoom never writes pose. It does NOT solve fit in general: the portrait group needs '+n(tallSize.totalHeight)+' px and no supported zoom fits '+tallSize.room.height+' px. A production fix still needs a separate fit/geometry decision; this prototype does not invent one.';
+  draw(g,f);
+}
+function draw(g,f){
+  const head=document.createElement('div');head.className='diagram-head';
+  head.style.cssText='width:'+g.screenWidth+'px;height:'+(32*g.E)+'px;gap:'+(4*g.E)+'px;padding:0 '+(2*g.E)+'px '+(Math.min(4+8*g.L,24)*g.E)+'px';
+  const name=document.createElement('span');name.id='diagram-name';name.className='diagram-name';name.textContent=f.name;name.style.fontSize=g.nameFont+'px';head.append(name);
+  const close=document.createElement('span');close.textContent='×';close.className='diagram-delete';close.style.cssText='width:'+g.deleteWidth+'px;height:'+g.deleteWidth+'px;font-size:'+(22*(state.open?g.L:g.hang)*g.E)+'px';head.append(close);
+  const media=document.createElement('div');media.className='diagram-media';media.style.cssText='width:'+g.screenWidth+'px;height:'+(g.mediaNative*g.E)+'px;font-size:'+(14*g.E)+'px';media.textContent=f.kind==='video'?'332-unit Edit timeline':f.kind==='text'?'Text editor':'Picture frame';
+  $('diagram').replaceChildren(head,media);
+  if(g.hasPanel){
+    const panel=document.createElement('div');panel.className='diagram-under';panel.style.cssText='top:'+(g.mainHeight+g.panelGap)+'px;width:'+g.screenWidth+'px;height:'+g.panelHeight+'px;padding:'+(8*g.panelScale)+'px '+(10*g.panelScale)+'px;font-size:'+(14*g.panelScale)+'px';
+    const run=document.createElement('button');run.textContent='Render';run.style.fontSize=(14*g.panelScale)+'px';panel.append(run);
+    const desc=document.createElement('div');desc.textContent='Description';panel.append(desc);$('diagram').append(panel);
+  }
+  const range=document.createRange();range.selectNodeContents(name);const ink=range.getBoundingClientRect(),rect=name.getBoundingClientRect();
+  $('dom-feedback').textContent='Actual prototype DOM (50% diagram, normalized back to model pixels): name element width '+n(rect.width/.5)+' px; text Range '+n(ink.width/.5)+' × '+n(ink.height/.5)+' px. A large Range inside a zero-width element is still clipped.';
+}
+document.addEventListener('click',event=>{
+  const button=event.target.closest('button');if(!button)return;
+  if(button.dataset.action)dispatch({type:button.dataset.action});
+  if(button.dataset.zoom)dispatch({type:'zoom',zoom:Number(button.dataset.zoom)});
+  if(button.id==='pull')dispatch({type:'resize',screenDelta:Number($('pull-px').value)});
+  if(button.dataset.guide){guideKey=button.dataset.guide;guideStep=0;state=G.initial();render();}
+  if(button.dataset.step!==undefined){dispatch(guides[guideKey].steps[guideStep][1]);guideStep++;render();}
+  if(button.id==='restart-guide'){guideStep=0;state=G.initial();render();}
+});
+$('box-kind').addEventListener('change',event=>dispatch({type:'load',fixture:event.target.value}));
+$('logic-mode').addEventListener('change',event=>dispatch({type:'mode',mode:event.target.value}));
+window.prototypeSnapshot=()=>({state:structuredClone(state),geometry:G.measure(state),fit:G.fit(state)});
+render();
+</script>
+</html>
