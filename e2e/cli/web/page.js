@@ -1,6 +1,7 @@
 // What the web proofs share: real media made here, a timeout on every wait, and a drop as the browser delivers one.
 const { execFileSync } = require('child_process');
-const { appendFileSync, readFileSync, rmSync, writeFileSync } = require('fs');
+const { appendFileSync, readFileSync, rmSync, writeFileSync, readdirSync, readlinkSync, realpathSync } = require('fs');
+const { join } = require('path');
 const zlib = require('zlib');
 
 const STEP_MS = 60_000;
@@ -119,6 +120,34 @@ async function fitCanvas(page) {
   if (!(await page.locator('.zoom-menu').count())) await page.click('.zoom-at');
   await page.getByRole('menuitem', { name: /^Zoom to fit/ }).click();
   await settled(page);
+}
+
+/** Whether this process holds the project's database; null where ownership cannot be read. */
+function projectHeld(folder, pid) {
+  if (!['linux', 'darwin'].includes(process.platform)) return null;
+  const db = join(realpathSync(folder), 'project.db');
+  if (process.platform === 'linux') {
+    const fds = `/proc/${pid}/fd`;
+    return readdirSync(fds).some((fd) => {
+      try {
+        return readlinkSync(join(fds, fd)) === db;
+      } catch {
+        return false;
+      }
+    });
+  }
+  if (process.platform === 'darwin') {
+    let said = '';
+    try {
+      said = execFileSync('lsof', ['-p', String(pid), '-Fn'], { encoding: 'utf8', maxBuffer: 1 << 26 });
+    } catch (error) {
+      if (error.code === 'ENOENT') return null;
+      if (!error.stdout) throw error;
+      said = error.stdout;
+    }
+    return said.split('\n').some((line) => line === `n${db}`);
+  }
+  return null;
 }
 
 // A box as a person reaches it, worked on or at rest: it's always on the canvas.
@@ -356,4 +385,4 @@ function rowsOf(folder, query) {
 /** Python as this OS names it: Windows has no python3 of its own. */
 const PYTHON = process.platform === 'win32' ? 'python' : 'python3';
 
-module.exports = { BARS, DARK_OPEN, GPU, MP4, PYTHON, STEP_MS, boxLog, boxOf, calcifer, carry, closeBox, openBox, openCanvas, drop, importYaml, lastLook, launch, lookAt, noStall, panning, png, pointAt, removeGeneratedProject, renderOf, rowsOf, settled, fitCanvas, signIn, summary, until, upload, watchBoxes, wav, yamlOf };
+module.exports = { BARS, DARK_OPEN, GPU, MP4, PYTHON, STEP_MS, boxLog, boxOf, calcifer, carry, closeBox, openBox, openCanvas, drop, importYaml, lastLook, launch, lookAt, noStall, panning, png, pointAt, removeGeneratedProject, renderOf, rowsOf, settled, fitCanvas, projectHeld, signIn, summary, until, upload, watchBoxes, wav, yamlOf };
