@@ -1,0 +1,23 @@
+[package]
+name = "project-vault"
+description = "Portable project key custody and local unlock deadlines"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+age = { version = "0.12.1", default-features = false }
+base64.workspace = true
+getrandom.workspace = true
+hex.workspace = true
+platform = { workspace = true, features = ["seams"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+zeroize = { version = "1.8", features = ["derive"] }
+
+[lints]
+workspace = true
