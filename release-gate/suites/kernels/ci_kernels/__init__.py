@@ -22,9 +22,11 @@ from cozy_runtime.internal.contract import unsealed
 mem_get_info = unsealed(torch, "mem_get_info")
 import triton
 from cozy_runtime import _kernels
-from cozy_runtime import lm, moe
-from cozy_runtime.author import App, AttentionLayout, Context, attention_scope
-from cozy_runtime.author import kernels as author_kernels
+from cozy_runtime import lm
+from cozy_runtime.accel import moe
+from cozy_runtime.accel.attention import AttentionLayout, attention_scope
+from cozy_runtime.author import App, Context
+from cozy_runtime.accel import kernels as author_kernels
 from cozy_runtime.internal import (
     arch,
     attention,
@@ -45,9 +47,9 @@ from cozy_runtime.internal import (
 )
 from cozy_runtime.internal.encoding.selection import launch_providers, measure_device
 from cozy_runtime.internal.probe import UnmeasuredEvidence, conform
-from cozy_runtime.fusion import _kernels as fused
+from cozy_runtime.accel.fusion import _kernels as fused
 from cozy_runtime.lm import _kernels as lm_kernels
-from cozy_runtime.moe import _kernels as moe_kernels
+from cozy_runtime.accel.moe import _kernels as moe_kernels
 from diffusers.models.attention_dispatch import dispatch_attention_fn
 from triton.runtime.jit import JITFunction
 

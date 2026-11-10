@@ -150,7 +150,8 @@ if __name__ == "__main__":
 # end of the probe
 
 import msgspec  # noqa: E402
-from cozy_runtime.author import App, File, Outputs  # noqa: E402
+from cozy_runtime.author import App, Outputs
+from cozy_runtime.media import File  # noqa: E402
 
 app = App()
 

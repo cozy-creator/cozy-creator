@@ -8,7 +8,8 @@ that is a job for as long as it is asked."""
 import time
 
 import msgspec
-from cozy_runtime.author import App, File, Outputs
+from cozy_runtime.author import App, Outputs
+from cozy_runtime.media import File
 
 app = App()
 REACH = b"document.documentElement.setAttribute('data-ran', 'yes'); fetch('/v1/runs');"

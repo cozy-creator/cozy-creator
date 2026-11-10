@@ -89,7 +89,7 @@ class LinearModel(Model[Pipeline], encoded_leaves="accept"):
     pipe: Pipeline
 
     def load(self, loader: Loader) -> None:
-        self.pipe = loader.construct(Pipeline, factory=build)
+        self.pipe = loader.construct(build)
 
     @uses_components("net")
     def predict(self, value: torch.Tensor) -> tuple[torch.Tensor, str, str]:

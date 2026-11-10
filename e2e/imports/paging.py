@@ -54,7 +54,7 @@ class Loader:
                 values[f"{prefix}{name}"] = held.asset(name)
         return ModelAssets(values, lambda _: None)
 
-    def construct(self, t: type, *, factory: typing.Callable[[Config], object]) -> object:
+    def construct(self, factory: typing.Callable[[Config], object]) -> object:
         with torch.device("meta"):
             raise Built(factory(self.config))
 

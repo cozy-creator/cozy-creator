@@ -7,7 +7,9 @@
 import os
 
 import msgspec
-from cozy_runtime.author import App, Image, ImageFile, ImageFrame, Outputs, Prompt
+from cozy_runtime.author import App, ImageFrame, Outputs
+from cozy_runtime.fields import Image, Prompt
+from cozy_runtime.media import ImageFile
 
 app = App()
 

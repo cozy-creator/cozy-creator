@@ -5,7 +5,9 @@ import os
 from typing import Annotated
 
 import msgspec
-from cozy_runtime.author import App, Image, ImageFile, ImageFrame, Outputs, Prompt, Range
+from cozy_runtime.author import App, ImageFrame, Outputs
+from cozy_runtime.fields import Image, Prompt, Range
+from cozy_runtime.media import ImageFile
 
 app = App()
 SIDE = 16

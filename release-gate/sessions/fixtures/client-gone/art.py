@@ -12,7 +12,8 @@ import time
 import msgspec
 import numpy as np
 
-from cozy_runtime.author import App, ImageFile, ImageFrame, Outputs, VideoFile
+from cozy_runtime.author import App, ImageFrame, Outputs
+from cozy_runtime.media import ImageFile, VideoFile
 
 app = App()
 

@@ -12,32 +12,24 @@ from collections.abc import Mapping
 from typing import Annotated, Literal
 
 import msgspec
-from cozy_runtime.author import (
+from cozy_runtime.author import App, ImageFrame, InvalidRequest, Outputs, Seed
+from cozy_runtime.fields import (
     Advanced,
-    App,
     AspectRatio,
-    AudioFile,
     Count,
-    File,
     Image,
-    ImageFile,
-    ImageFrame,
-    InvalidRequest,
     Label,
-    Latents,
-    Outputs,
     Pickup,
     Placeholder,
     Prompt,
     Range,
     Ratios,
-    Seed,
     Snap,
     Spans,
     Total,
     Video,
-    VideoFile,
 )
+from cozy_runtime.media import AudioFile, File, ImageFile, Latents, VideoFile
 
 app = App()
 SIDE = 16

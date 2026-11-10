@@ -5,7 +5,8 @@
 """The project cell's hostile outputs, weightless: a page and a drawing whose script would ask for Calcifer's runs if it ran."""
 
 import msgspec
-from cozy_runtime.author import App, File, Outputs
+from cozy_runtime.author import App, Outputs
+from cozy_runtime.media import File
 
 app = App()
 REACH = b"fetch('/v1/runs');"

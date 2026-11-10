@@ -3,7 +3,8 @@ picture's bytes and a folder's files. Weightless; it runs on any computer."""
 
 import msgspec
 
-from cozy_runtime.author import App, ImageFile, Tree, VideoFile
+from cozy_runtime.author import App
+from cozy_runtime.media import ImageFile, Tree, VideoFile
 
 app = App()
 

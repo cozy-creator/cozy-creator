@@ -10,7 +10,8 @@ import msgspec
 import sdxl
 from sdxl import GenerateInput, SdxlModel
 
-from cozy_runtime.author import Adjustments, App, Context, ImageResult, Outputs, Telemetry, invocable
+from cozy_runtime.author import Adjustments, App, Context, Outputs, Telemetry, invocable
+from cozy_runtime.image import ImageResult
 
 app = App()
 
@@ -26,7 +27,7 @@ async def paint(
     return generate(ctx, payload, sdxl.resolve_generate(payload), model, out, tel, adj)
 
 
-app.child_task(paint)
+app.entrypoint(paint, private=True)
 
 
 class Twice(msgspec.Struct):

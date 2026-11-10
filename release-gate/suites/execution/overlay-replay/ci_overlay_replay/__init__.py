@@ -1,9 +1,9 @@
-"""A keyed `denoise_loop` over Qwen-Image-Edit-2511's DiT (its int8 lane, the Lightning LoRA's
-`lora.Hook` on every site), armed before the loop as Qwen-Image's package arms. Three calls in one
-run: unarmed (the first records), unarmed (it replays), armed: the armed overlays are part of the
-kept program's identity, so the armed call never replays the unarmed program, and its latents equal
-the same call run eagerly, byte for byte. `inside` arms in the step instead, which must raise, with
-graphs and without: a replay could not see it."""
+"""Qwen-Image-Edit-2511's DiT (its int8 lane, the Lightning LoRA's `lora.Hook` on every site) in a plain
+step loop, armed before the loop as Qwen-Image's package arms. Three calls in one run: unarmed twice,
+then armed; the armed latents equal the same call with graphs bypassed, byte for byte, and differ from
+the unarmed ones. `inside` arms in the step instead: the latents equal those armed before the loop.
+Until Runtime 0.43 the loop was a keyed `denoise_loop` whose kept program had to tell armed from
+unarmed; Runtime 0.43 has no loop programs."""
 
 from __future__ import annotations
 
@@ -14,9 +14,10 @@ from typing import Any
 
 import msgspec
 import torch
-from cozy_runtime import lora, rng
-from cozy_runtime.author import App, Config, Context, Loader, Model, Telemetry, denoise_loop, uses_components
-from cozy_runtime.internal import kernel_ready, lora_bake, loop
+from cozy_runtime import graphs, rng
+from cozy_runtime.accel import lora
+from cozy_runtime.author import App, Config, Context, Loader, Model, Telemetry, uses_components
+from cozy_runtime.internal import kernel_ready, lora_bake
 from diffusers import QwenImageTransformer2DModel
 from torch import nn
 
@@ -102,12 +103,12 @@ class QwenDiT(Model[DiTGraph], encoded_leaves="accept"):
     graph: DiTGraph
 
     def load(self, loader: Loader) -> None:
-        self.graph = loader.construct(DiTGraph, factory=DiTGraph)
+        self.graph = loader.construct(DiTGraph)
 
     @uses_components("transformer")
     def denoise(self, seed: int, overlay: nn.Module | None, inside: bool = False) -> torch.Tensor:
-        """`STEPS` Euler steps from seeded noise and text rows as one keyed `denoise_loop`, the
-        DiT armed with `overlay` (or none) before it; the step reads its sigma at the step index,
+        """`STEPS` Euler steps from seeded noise and text rows in a plain loop, the DiT armed with
+        `overlay` (or none) before it; the step reads its sigma at the step index,
         its rotary table and modulation rows made once for the layout."""
         dit = self.graph.components["transformer"]
         device = torch.device(str(self.device))
@@ -139,7 +140,9 @@ class QwenDiT(Model[DiTGraph], encoded_leaves="accept"):
 
         dit._ci_arming = None if inside else overlay
         try:
-            denoise_loop(step, range(STEPS), state=(latents,), inputs=(text, sigmas), key=("ci.overlay-replay/1", inside))
+            index = torch.arange(STEPS, device=device)
+            for i in range(STEPS):
+                step(index[i : i + 1], latents, text, sigmas)
         finally:
             dit._ci_arming = None
         return latents.float().cpu()
@@ -149,7 +152,7 @@ class Lightning(Model[LoRAGraph]):
     graph: LoRAGraph
 
     def load(self, loader: Loader) -> None:
-        self.graph = loader.construct(LoRAGraph, factory=LoRAGraph)
+        self.graph = loader.construct(LoRAGraph)
 
     @uses_components(LORA_COMPONENT)
     def denoise(self, base: QwenDiT, seed: int, inside: bool = False) -> torch.Tensor:
@@ -158,7 +161,7 @@ class Lightning(Model[LoRAGraph]):
 
 class Probe(msgspec.Struct, forbid_unknown_fields=True):
     seed: int = 331
-    #: replay: unarmed twice, then armed before the loop; inside: armed in the step, which raises
+    #: replay: unarmed twice, then armed before the loop; inside: armed in the step
     variant: str = "replay"
 
 
@@ -197,44 +200,28 @@ def gpu(payload: Probe, model: QwenDiT, turbo_lora: Lightning, ctx: Context, tel
     model.denoise(payload.seed, None)
     model.denoise(payload.seed + 1, None)
     armed = turbo_lora.denoise(model, payload.seed + 2)
-    rows = [dict(row) for row in loop.ROWS.get(ctx.request_id) or []]
-    eligible = loop._eligible
-    loop._eligible = lambda ctx, steps, tensors: ((), "the cell's eager reference")
+    eager = graphs.BYPASS.set(True)
     try:
         reference = turbo_lora.denoise(model, payload.seed + 2)
         base = model.denoise(payload.seed + 2, None)
     finally:
-        loop._eligible = eligible
-    keep = ("mode", "native_steps", "reused", "whole_call", "dropped", "refusals")
+        graphs.BYPASS.reset(eager)
     checks: dict[str, Any] = {
-        "first_recorded": bool(rows and rows[0].get("whole_call")),
-        "second_replayed": len(rows) > 1 and bool(rows[1].get("reused")),
-        "armed_not_replayed": len(rows) > 2 and not rows[2].get("reused"),
         "armed_equals_eager": bool(torch.equal(armed, reference)),
         "lora_changes_it": not torch.equal(reference, base),
     }
-    detail = json.dumps({"checks": checks, "loops": [{k: r.get(k) for k in keep} for r in rows[:3]]},
-                        sort_keys=True, default=str)
+    detail = json.dumps({"checks": checks}, sort_keys=True, default=str)
     if not all(checks.values()):
         raise RuntimeError(f"overlay replay {detail}")
     return Report(True, detail)
 
 
 def _inside(payload: Probe, model: QwenDiT, turbo_lora: Lightning) -> Report:
-    """An overlay the step arms raises, with graphs and in the eager arm alike."""
-    said = {}
-    eligible = loop._eligible
-    for arm in ("graphs", "eager"):
-        if arm == "eager":
-            loop._eligible = lambda ctx, steps, tensors: ((), "the cell's eager arm")
-        try:
-            turbo_lora.denoise(model, payload.seed, inside=True)
-            said[arm] = "returned"
-        except Exception as error:  # noqa: BLE001 - the cell reads what it raised
-            said[arm] = f"{type(error).__name__}: {error}"[:300]
-        finally:
-            loop._eligible = eligible
-    detail = json.dumps(said, sort_keys=True)
-    if not all("arm overlays before denoise_loop" in why for why in said.values()):
+    """An overlay the step arms gives the latents of one armed before the loop."""
+    before = turbo_lora.denoise(model, payload.seed)
+    inside = turbo_lora.denoise(model, payload.seed, inside=True)
+    checks = {"inside_equals_before": bool(torch.equal(inside, before))}
+    detail = json.dumps({"checks": checks}, sort_keys=True)
+    if not all(checks.values()):
         raise RuntimeError(f"overlay inside a step {detail}")
     return Report(True, detail)

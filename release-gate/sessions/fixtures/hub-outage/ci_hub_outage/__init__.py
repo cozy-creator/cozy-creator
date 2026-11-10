@@ -25,7 +25,7 @@ async def piece(ctx: Context, *, model: Weights) -> Read:
     return Read(model.checkpoint_ref)
 
 
-app.child_task(piece, accelerator=False)
+app.entrypoint(piece, private=True, accelerator=False)
 
 
 class Pieces(msgspec.Struct):

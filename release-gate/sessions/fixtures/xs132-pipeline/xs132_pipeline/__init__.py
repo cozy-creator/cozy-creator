@@ -5,7 +5,9 @@ from typing import Annotated
 import msgspec
 from birefnet import remove_background
 
-from cozy_runtime.author import App, Context, FileBound, ImageFile
+from cozy_runtime.author import App, Context
+from cozy_runtime.fields import FileBound
+from cozy_runtime.media import ImageFile
 
 app = App()
 

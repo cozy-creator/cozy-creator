@@ -5,7 +5,7 @@ build-backend = "uv_build"
 [project]
 name = "ci-capture-refusal"
 version = "0.1.0"
-description = "A denoise_loop step no capture can record: the loop refuses its recording and runs on eagerly"
+description = "A plain step loop that reads the host or synchronizes the device: every step runs, values exact"
 requires-python = ">=3.12"
 dependencies = ["cozy-runtime>=0.35", "msgspec>=0.19", "torch>=2.14"]
 

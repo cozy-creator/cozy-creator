@@ -10,7 +10,8 @@ from pathlib import Path
 import msgspec
 import tensorfs.varena.torch as vt
 import torch
-from cozy_runtime.author import App, Context, File, Outputs
+from cozy_runtime.author import App, Context, Outputs
+from cozy_runtime.media import File
 from torch import nn
 
 app = App()

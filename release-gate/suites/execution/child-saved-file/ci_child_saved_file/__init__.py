@@ -11,7 +11,9 @@ from typing import Annotated
 import msgspec
 from PIL import Image
 
-from cozy_runtime.author import App, Context, File, FileBound, ImageFile, Outputs, invocable
+from cozy_runtime.author import App, Context, Outputs, invocable
+from cozy_runtime.fields import FileBound
+from cozy_runtime.media import File, ImageFile
 from cozy_runtime.author._calls import ChildCallError, _current
 from cozy_runtime.author._errors import CapabilityError
 from cozy_runtime.author._executor_requests import CallState, ChildCall, SavedFile
@@ -47,7 +49,7 @@ async def see_picture(ctx: Context, *, payload: Picture) -> Seen:
     return Seen(sha(data), len(data), payload.picture.media_type, Image.open(io.BytesIO(data)).width)
 
 
-app.child_task(see_picture)
+app.entrypoint(see_picture, private=True)
 
 
 @invocable()
@@ -56,7 +58,7 @@ async def see_blob(ctx: Context, *, payload: Blob) -> Seen:
     return Seen(sha(data), len(data), payload.file.media_type)
 
 
-app.child_task(see_blob)
+app.entrypoint(see_blob, private=True)
 
 
 class Nothing(msgspec.Struct):
