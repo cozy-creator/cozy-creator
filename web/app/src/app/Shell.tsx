@@ -295,6 +295,7 @@ export function Shell() {
     setVerified(null)
     bridge.forgetProject(id)
     outbox.discardProject(id)
+    canvases.get(id)?.revokePrivateView()
     canvases.delete(id)
     forgetProjectView(id)
     for (const media of document.querySelectorAll<HTMLMediaElement>("video,audio")) {

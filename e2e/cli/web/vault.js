@@ -63,6 +63,8 @@ const cli = (...args) => execFileSync(process.env.COZY, ['--json', ...args], { e
   const privateBytes = Buffer.concat([png(24), require('crypto').randomBytes(32)]);
   const imported = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === `/v1/projects/${id}/imports` && response.ok());
   await drop(page, [{ name: 'private_after_encryption.png', type: 'image/png', bytes: privateBytes }], 600, 400);
+  await page.locator('.nm-field').waitFor();
+  await page.keyboard.press('Enter');
   await imported;
   await until('encrypted upload landed', () => page.locator('body').innerText(), (text) => text.includes('private_after_encryption'), 45000);
   check('private_upload_uses_project_route', fileWrites.length > 0 && fileWrites.every((write) => write.path.startsWith('/v1/project-files/') && write.project === id));
@@ -108,6 +110,27 @@ const cli = (...args) => execFileSync(process.env.COZY, ['--json', ...args], { e
   await peer.close(); peer = null;
   await page.goto(`${calcifer()}/#/projects/${id}`);
   await page.locator('.react-flow').waitFor();
+
+  // Route changes also retire only the drawn canvas, never an unlocked project's
+  // pending upload. Exercise the real private upload/retry path across A -> B -> A.
+  const ordinary = join(scratch, 'other-project');
+  cli('project', 'new', ordinary);
+  const other = JSON.parse(cli('project', '-p', ordinary, 'status')).id;
+  await context.setOffline(true);
+  await drop(page, [{ name: 'private_navigation_import.png', type: 'image/png', bytes: Buffer.concat([png(25), require('crypto').randomBytes(32)]) }], 650, 450);
+  await page.locator('.nm-field').waitFor();
+  await page.keyboard.press('Enter');
+  await until('private upload waits for network', () => page.locator('.top').innerText(), (text) => /1 change/.test(text), 15000);
+  await page.evaluate((other) => { location.hash = `#/projects/${other}`; }, other);
+  await page.locator('.gate').waitFor();
+  await page.evaluate((id) => { location.hash = `#/projects/${id}`; }, id);
+  await page.locator('.gate').waitFor();
+  check('navigation_retains_pending_private_import', /1 change/.test(await page.locator('.top').innerText()));
+  check('offline_navigation_covers_private_content', !(await page.locator('body').innerText()).includes('private_navigation_import'));
+  await context.setOffline(false);
+  await until('private import commits after project navigation', () => JSON.parse(cli('project', '-p', folder, 'status')).assets.some((asset) => asset.name === 'private_navigation_import' && asset.sha256), Boolean, 45000);
+  await page.locator('.react-flow').waitFor();
+  check('private_import_survives_project_navigation', true);
   // Automatic hover previews are not user activity. The real video decoder keeps
   // looping, while an idle-only deadline still locks the project.
   await page.locator('.react-flow__node').filter({ hasText: 'private_loop_movie' }).first().hover();
@@ -161,9 +184,6 @@ const cli = (...args) => execFileSync(process.env.COZY, ['--json', ...args], { e
 
   // Leaving A stops its selected-project status observer. Keep the same document
   // and query cache, lock A while B is shown, then watch every DOM mutation on return.
-  const ordinary = join(scratch, 'other-project');
-  cli('project', 'new', ordinary);
-  const other = JSON.parse(cli('project', '-p', ordinary, 'status')).id;
   await page.evaluate(() => { window.__vaultDocument = 'same-document'; });
   await page.goto(`${calcifer()}/#/projects/${other}`);
   await page.waitForFunction(() => document.querySelector('.react-flow') && !document.body.innerText.includes('private_vault_picture'));
