@@ -2,6 +2,7 @@
 """Real project encryption through the default installed cozy, on an ephemeral CI host."""
 import argparse
 import base64
+import difflib
 import hashlib
 import json
 import os
@@ -243,6 +244,17 @@ foreach ($rule in $allowed) {
                 digest.update(chunk)
         return digest.hexdigest()
 
+    @staticmethod
+    def graph_export(text):
+        header, separator, body = text.partition('\n')
+        prefix = '# cozy-project-base: '
+        if not separator or not header.startswith(prefix):
+            raise RuntimeError('the actual YAML export has no project/base marker')
+        owner, etag = header[len(prefix):].split(' ', 1)
+        if json.loads(etag) != hashlib.sha256(body.encode()).hexdigest():
+            raise RuntimeError('the actual YAML export marker does not verify its graph body')
+        return owner, body
+
     def find_media(self, view, source):
         expected = self.digest(source)
         for path in (view / 'files').rglob('*'):
@@ -376,7 +388,16 @@ foreach ($rule in $allowed) {
         self.cell('no_known_private_canary_in_global_caches_or_backing')
         # Opening the intentionally plaintext copy is an ordinary-project operation and
         # may legitimately populate ordinary caches. Do it after the encrypted-only scan.
-        assert state == self.command('project', '-p', exported, 'export', project=False, json_output=False)
+        copied_state = self.command('project', '-p', exported, 'export', project=False, json_output=False)
+        original_id, original_graph = self.graph_export(state)
+        copied_id, copied_graph = self.graph_export(copied_state)
+        # A plain folder copy intentionally receives a new project identity when the original
+        # remains registered. Compare the entire graph body, not that anti-stale-edit marker.
+        if original_graph != copied_graph:
+            difference = ''.join(difflib.unified_diff(original_graph.splitlines(True), copied_graph.splitlines(True), fromfile='original graph', tofile='exported graph'))
+            raise RuntimeError('plaintext export graph changed: ' + self.redact(difference[:16384]))
+        if original_id == copied_id:
+            raise RuntimeError('the independent folder copy reused the registered project identity')
         self.shutdown()
         self.cell('plaintext_export_opens_independently_after_lock')
         self.receipt['result'] = 'pass'
