@@ -957,6 +957,10 @@ detail: string, };
  */
 export type KnownProject = { id: string, 
 /**
+ * Its stable, nine-character public URL code.
+ */
+code?: string, 
+/**
  * Its name: what `-p` takes.
  */
 name: string, path: string, used_at_ms: number, 
@@ -1639,6 +1643,10 @@ export type Open = { name?: string | null, path?: string | null, starter?: boole
  */
 export type Opened = { id: string, 
 /**
+ * Its stable, nine-character public URL code.
+ */
+code?: string, 
+/**
  * Where it lives on Calcifer's computer.
  */
 path: string, 
@@ -1954,7 +1962,11 @@ export type ProjectShowReply = { held: Array<string>, refused: { [key in string]
  * Optional `covered` describes only a successful full snapshot: project-event emissions
  * before its read began. Head-only and partial/error-derived states do not claim coverage.
  */
-export type ProjectState = { id: string, path: string, assets: Array<Asset>, 
+export type ProjectState = { id: string, 
+/**
+ * Its stable, nine-character public URL code.
+ */
+code?: string, path: string, assets: Array<Asset>, 
 /**
  * What is running and what is queued, in the order it goes.
  */

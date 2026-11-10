@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom"
 import { runFullQuery, runQuery } from "../../api/queries"
 import { useConnection } from "../../app/Connection"
 import { useTo } from "../../app/Shell"
+import { useProjectHref } from "../../app/project"
 import { Bar, Confirm, Failure, KV, useAsk, useNow } from "../common"
 import { DrawerFrame } from "../Drawer"
 import { masked, usd, when } from "../format"
@@ -18,6 +19,7 @@ export function RunDrawer() {
   const number = Number(useParams().number)
   const { data: run, error } = useQuery({ ...runQuery(client, number), enabled: Number.isSafeInteger(number) })
   const { data: full } = useQuery({ ...runFullQuery(client, number, run?.settled_at_ms ?? 0), enabled: Boolean(run) })
+  const again = useProjectHref(run?.project_id, `new?again=${number}`)
   const live = Boolean(run && !settled(run))
   const now = useNow(live)
   const cancel = useAsk()
@@ -31,7 +33,6 @@ export function RunDrawer() {
   }
 
   const asked = full?.request
-  const again = run.project_id ? `/projects/${run.project_id}/new?again=${run.number}` : null
   const cancelled = run.cancel_requested
   return (
     <DrawerFrame

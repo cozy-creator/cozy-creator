@@ -16,6 +16,7 @@ import { useMatch, useNavigate } from "react-router-dom"
 import { ApiError } from "../api/client"
 import { lost } from "../api/outbox"
 import { canvasQuery, machinesQuery, projectQuery, toolsQuery } from "../api/queries"
+import { useTo } from "../app/project"
 import { useConnection } from "../app/Connection"
 import { loadMore, loadSelection, loadToolsShut, loadViewport, saveMore, saveSelection, saveToolsShut, saveViewport } from "../app/view"
 import type { Tool } from "../api/calcifer"
@@ -232,11 +233,12 @@ function Canvas({
   projectId: string | null
   slot: HTMLElement | null
   history: HTMLElement | null
-  onAdopt: (id: string) => void
+  onAdopt: (id: string, code: string) => void
 }) {
   const connection = useConnection()
   const flow = useReactFlow<ElementNode, Edge>()
   const navigate = useNavigate()
+  const to = useTo()
   const { client, stream, bridge, outbox, canvases } = connection
   const [saved] = useState(() => loadViewport(projectId))
   // One per project for as long as the tab is open: a tab gone to and back finds what it showed, and what's still waiting for Calcifer shows as done.
@@ -251,11 +253,13 @@ function Canvas({
   })
   const adopt = useRef(onAdopt)
   adopt.current = onAdopt
-  const [placer] = useState(() => new Placer(store, client, { adopt: (id) => adopt.current(id) }))
+  const [placer] = useState(() => new Placer(store, client, { adopt: (id, code) => adopt.current(id, code) }))
   const [openedOn] = useState(projectId)
   const [veil, setVeil] = useState(false)
   const [shut, setShut] = useState(loadToolsShut)
-  const opened = useMatch("/projects/:id/assets/:name")?.params.name
+  const compactAsset = useMatch("/p/:code/assets/:name")
+  const legacyAsset = useMatch("/projects/:id/assets/:name")
+  const opened = (compactAsset ?? legacyAsset)?.params.name
   const stage = useRef<HTMLDivElement>(null)
   const returning = useRef<{ view: Viewport; until: number } | null>(null)
   const folded = useRef(false)
@@ -349,7 +353,7 @@ function Canvas({
   )
   store.openHere = (name: string) => {
     writeHere(name)
-    navigate(`/projects/${store.projectId}/assets/${encodeURIComponent(name)}`)
+    navigate(to(`assets/${encodeURIComponent(name)}`))
   }
   const stopWriting = useCallback(() => {
     const held = store.inPlace
@@ -371,10 +375,10 @@ function Canvas({
   const leaveHere = useCallback(() => {
     if (!store.inPlace) return
     stopWriting()
-    navigate(`/projects/${store.projectId}`)
-  }, [store, navigate, stopWriting])
+    navigate(to())
+  }, [store, navigate, stopWriting, to])
   store.leaveHere = leaveHere
-  store.hereRenamed = (name) => navigate(`/projects/${store.projectId}/assets/${encodeURIComponent(name)}`, { replace: true })
+  store.hereRenamed = (name) => navigate(to(`assets/${encodeURIComponent(name)}`), { replace: true })
   // The address says which box is being worked on, so a reload or Back finds it, and anything else leaves it.
   useEffect(() => {
     if (!opened) stopWriting()
@@ -408,14 +412,14 @@ function Canvas({
     store.onMore = (names) => {
       if (store.projectId) saveMore(store.projectId, names)
     }
-    store.askMachine = () => navigate(store.projectId ? `/projects/${store.projectId}/machines` : "/machines")
+    store.askMachine = () => navigate(to("machines"))
     store.rent = (pick) => {
       const chosen = pick ? `?${new URLSearchParams({ rent: pick.sku, gpus: String(pick.gpus) })}` : ""
-      navigate(`${store.projectId ? `/projects/${store.projectId}` : ""}/machines${chosen}`)
+      navigate(`${to("machines")}${chosen}`)
     }
     store.attach(flow)
     return () => store.detach()
-  }, [store, flow, saved, openedOn, bridge, navigate])
+  }, [store, flow, saved, openedOn, bridge, navigate, to])
 
   /** Where the last zoom of the buttons or keys is going, so a second press steps on from there, not from part of the way. */
   const aim = useRef<{ view: Viewport; until: number } | null>(null)
@@ -746,9 +750,9 @@ function Canvas({
       // A click opens at once: only Shift selects.
       flow.setNodes((nodes) => nodes.map((held) => (held.selected ? { ...held, selected: false } : held)))
       writeHere(name)
-      navigate(`/projects/${store.projectId}/assets/${encodeURIComponent(name)}`)
+      navigate(to(`assets/${encodeURIComponent(name)}`))
     },
-    [store, flow, writeHere, navigate],
+    [store, flow, writeHere, navigate, to],
   )
   const paneClicked = useCallback(() => leaveHere(), [leaveHere])
   const nodeMenu = useCallback(
@@ -925,7 +929,7 @@ const LAYERED = /AppleWebKit/.test(navigator.userAgent) && !/Chrome|Chromium/.te
 const textScale = (zoom: number) => Math.round((1 / Math.min(2.5, Math.max(0.25, zoom))) * 20) / 20
 
 /** Always mounted: everything else is a drawer over it, so opening one loses no viewport, no draft and no import in flight. */
-export function CanvasHost(props: { projectId: string | null; slot: HTMLElement | null; history: HTMLElement | null; onAdopt: (id: string) => void }) {
+export function CanvasHost(props: { projectId: string | null; slot: HTMLElement | null; history: HTMLElement | null; onAdopt: (id: string, code: string) => void }) {
   return (
     <ReactFlowProvider defaultNodes={[]}>
       <Canvas {...props} />
