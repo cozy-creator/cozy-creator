@@ -172,7 +172,7 @@ impl Document {
     /// independently added entities/versions separate, and scalar conflicts remain multi-value.
     pub(super) fn update(&mut self, value: Value) -> Result<(), Error> {
         let known_empty = self.conflicts.get().is_some_and(Vec::is_empty);
-        reconcile_map(&mut self.doc, &ROOT, &self.value, &value)?;
+        reconcile_map(&mut self.doc, &ROOT, &self.value, &value, true)?;
         self.doc.commit();
         self.value = Arc::new(value);
         // A local observing mutation cannot introduce concurrency. Imported snapshots seed
@@ -547,11 +547,7 @@ pub(super) fn changed_value(before: &Stored, after: &Stored, ops: &[OpRow], prev
         for (index, held) in after.written.boxes.iter().enumerate() {
             let unchanged = old.get(held.id.as_str()).is_some_and(|old| *old == held)
                 && boxes.get(&held.id).is_some_and(present);
-            if unchanged {
-                // Concurrent insertions can share old display orders. As the full builder
-                // does, normalize them against this replica's selected stable-ID ordering.
-                boxes.get_mut(&held.id).expect("existing box")["order"] = json!(index);
-            } else {
+            if !unchanged {
                 boxes.insert(held.id.clone(), json!({"present":true,"name":held.name,"order":index,"fields":map_of(&held.fields),"field_order":keys_of(&held.fields)}));
             }
         }
@@ -583,9 +579,9 @@ pub(super) fn changed_value(before: &Stored, after: &Stored, ops: &[OpRow], prev
         retire(runs, after.lock.runs.iter().map(|row| row.id.as_str()));
         let old: BTreeMap<_, _> = before.lock.runs.iter().map(|row| (row.id.as_str(), row)).collect();
         for (index, row) in after.lock.runs.iter().enumerate() {
-            if old.get(row.id.as_str()).is_some_and(|old| *old == row) && runs.get(&row.id).is_some_and(present) {
-                runs.get_mut(&row.id).expect("existing run")["order"] = json!(index);
-            } else {
+            let unchanged = old.get(row.id.as_str()).is_some_and(|old| *old == row)
+                && runs.get(&row.id).is_some_and(present);
+            if !unchanged {
                 runs.insert(row.id.clone(), json!({"present":true,"order":index,"record":row}));
             }
         }
@@ -599,10 +595,21 @@ pub(super) fn changed_value(before: &Stored, after: &Stored, ops: &[OpRow], prev
         stored.written.boxes.iter().map(|held| (name_key(&held.name), held.id.clone()))
             .chain(stored.lock.assets.iter().map(|(key, held)| (key.clone(), held.id.clone()))).collect()
     };
-    // A rename/replacement can change which stable entity a canvas key belongs to even
-    // when the canvas Arc itself was retained.
+    let same_owners = || {
+        let same_boxes = Arc::ptr_eq(&before.written, &after.written)
+            || (before.written.boxes.len() == after.written.boxes.len()
+                && before.written.boxes.iter().zip(&after.written.boxes)
+                    .all(|(old, new)| old.id == new.id && old.name == new.name));
+        let same_assets = Arc::ptr_eq(&before.lock, &after.lock)
+            || (before.lock.assets.len() == after.lock.assets.len()
+                && before.lock.assets.iter().zip(&after.lock.assets)
+                    .all(|((old_key, old), (new_key, new))| old_key == new_key && old.id == new.id));
+        same_boxes && same_assets
+    };
+    // Exact owner sequences imply the same normalized mapping. A rename or replacement
+    // still needs the complete comparison even when the canvas Arc was retained.
     if !Arc::ptr_eq(&before.canvas, &after.canvas)
-        || ((!Arc::ptr_eq(&before.written, &after.written) || !Arc::ptr_eq(&before.lock, &after.lock)) && identities(before) != identities(after)) {
+        || (!same_owners() && identities(before) != identities(after)) {
         let identities = identities(after);
         let canvas = records(&mut next, "canvas");
         let mut live = BTreeSet::new();
@@ -652,17 +659,33 @@ fn retire<'a>(records: &mut Map<String, Value>, live: impl Iterator<Item=&'a str
     }
 }
 
-fn reconcile_map(doc: &mut AutoCommit, object: &ObjId, before: &Value, after: &Value) -> Result<(), Error> {
+fn reconcile_map(doc: &mut AutoCommit, object: &ObjId, before: &Value, after: &Value, reused: bool) -> Result<(), Error> {
     let Some(wanted) = after.as_object() else {
         return Err(invalid("logical project root is not a map"));
     };
     let old = before.as_object();
-    let keys: Vec<String> = doc.keys(object).collect();
-    for key in keys.iter().filter(|key| !wanted.contains_key(*key)) {
-        doc.delete(object, key.as_str()).map_err(invalid)?;
-    }
-    for (key, value) in wanted {
-        put(doc, object, Prop::Map(key.clone()), old.and_then(|old| old.get(key)), value, false)?;
+    if reused && let Some(old) = old {
+        // The old JSON map is the selected native view of this very object. Sort only
+        // removed keys to keep native map deletion order without cloning every key.
+        let mut removed: Vec<_> = old.keys().filter(|key| !wanted.contains_key(*key)).collect();
+        removed.sort_unstable();
+        for key in removed {
+            doc.delete(object, key.as_str()).map_err(invalid)?;
+        }
+        for (key, value) in wanted {
+            let previous = old.get(key);
+            if previous != Some(value) {
+                put_changed(doc, object, Prop::Map(key.clone()), previous, value, false)?;
+            }
+        }
+    } else {
+        let keys: Vec<String> = doc.keys(object).collect();
+        for key in keys.iter().filter(|key| !wanted.contains_key(*key)) {
+            doc.delete(object, key.as_str()).map_err(invalid)?;
+        }
+        for (key, value) in wanted {
+            put(doc, object, Prop::Map(key.clone()), old.and_then(|old| old.get(key)), value, false)?;
+        }
     }
     Ok(())
 }
@@ -671,22 +694,26 @@ fn put(doc: &mut AutoCommit, parent: &ObjId, prop: Prop, before: Option<&Value>,
     if before == Some(after) && !insert {
         return Ok(());
     }
+    put_changed(doc, parent, prop, before, after, insert)
+}
+
+fn put_changed(doc: &mut AutoCommit, parent: &ObjId, prop: Prop, before: Option<&Value>, after: &Value, insert: bool) -> Result<(), Error> {
     match after {
         Value::Object(_) | Value::Array(_) => {
             let kind = if after.is_object() { ObjType::Map } else { ObjType::List };
-            let held = if insert {
+            let (held, reused) = if insert {
                 let Prop::Seq(index) = prop else {
                     return Err(invalid("map insertion requested for a list"));
                 };
-                doc.insert_object(parent, index, kind).map_err(invalid)?
+                (doc.insert_object(parent, index, kind).map_err(invalid)?, false)
             } else {
                 match doc.get(parent, prop.clone()).map_err(invalid)? {
-                    Some((AmValue::Object(found), held)) if found == kind => held,
-                    _ => doc.put_object(parent, prop.clone(), kind).map_err(invalid)?,
+                    Some((AmValue::Object(found), held)) if found == kind => (held, true),
+                    _ => (doc.put_object(parent, prop.clone(), kind).map_err(invalid)?, false),
                 }
             };
             if after.is_object() {
-                reconcile_map(doc, &held, before.unwrap_or(&Value::Null), after)?;
+                reconcile_map(doc, &held, before.unwrap_or(&Value::Null), after, reused)?;
             } else {
                 let values = after.as_array().expect("array");
                 let old = before.and_then(Value::as_array);
