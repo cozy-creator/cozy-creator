@@ -287,17 +287,11 @@ function linesOf(text, name) {
     return Boolean(rect) && rect.left >= 0 && rect.top >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight;
   }, name);
 
-  // The initial snapshot deliberately animates nothing. Establish a real, applied
-  // replica before measuring an external add, then return to an empty canvas.
-  await project('add', 'text', 'live_readiness', 'text=Ready for live edits', 'at=0,0,260');
-  await shows({ name: 'live_readiness', has: 'Ready for live edits' });
-  await project('delete', 'live_readiness');
-  await shows({ gone: 'live_readiness' });
-  await until('initialized empty live canvas', () => page.locator('.react-flow__node').count(), (count) => count === 0);
+  // The empty hint is published only after the first canonical reconciliation.
+  await page.locator('.empty-canvas').waitFor();
   check('initial_replica_ready', true);
 
   // A command adds it: it shows by itself where it was told, and lands.
-  await page.locator('.empty-canvas').waitFor();
   let place = await spot();
   const added = await timed('add', { name: 'live_a', x: place.x, y: place.y }, () => project('add', 'cozy/edit', 'live_a', `at=${place.x},${place.y},260`, 'description=Words from the CLI'));
   check('add_prints_its_name', added.stdout.trim() === 'live_a', added.stdout);
