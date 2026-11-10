@@ -201,6 +201,11 @@ pub(crate) fn record(ctx: &Context, m: &Machine) -> output::Record {
         if let Some(ssh) = &r.ssh {
             record = record.field("ssh", format!("{ssh} (cozy machine ssh {})", m.name));
         }
+        if let Some(provider) = &r.provider {
+            let at = r.datacenter.as_deref().map_or(String::new(), |d| format!(" {d}"));
+            let drive = if r.nfs_drive { "mounted" } else { "none" };
+            record = record.field("provider", format!("{provider}{at}")).field("nfs drive", drive);
+        }
     }
     if let Some(since) = unreachable_since(m) {
         record = record.note(format!(

@@ -220,8 +220,8 @@ that pair misses takes its own Runtime in its own environment, and the machine's
     (200, or 401 when bearer-only), and hubcheck finds every request and response as the document has it. This is
     the one place in release-gate that speaks HTTP to the Hub by hand: it is the contract test.
   - Through `cozy`, on a throwaway `<account>/ci-hub-<R>`: whoami (balance, buy page), the rental catalog, the
-    rental itself and, with a dev-build cozy only, a rental of `cpu` on each provider (`machine rent --provider runpod|vast`, ended and
-    checked gone: renters never pick one, th-254; a release build has no such flag, so no acquisition path is pinned there); a package locked, published twice, run, yanked (the simple index marks it `data-yanked`),
+    rental itself and, where the config has `dev = true`, a rental of `cpu` on each provider (dev-only `machine rent --provider
+    runpod|vast`, ended and checked gone); a package locked, published twice, run, yanked (the simple index marks it `data-yanked`),
     resolved past, run by exact pin, and un-yanked; a model commit uploaded in a lane, published (listed), downloaded,
     downloaded by pin and lane, deleted (gone). The package's releases are yanked and the model deleted.
   - Before a Hub deploy, the release agent also rehearses its migrations: dump prod (in-pod `pg_dump -Fc`, copied

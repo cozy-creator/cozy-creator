@@ -3,7 +3,7 @@
 #![deny(unreachable_pub)]
 use std::process::ExitCode;
 
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches as _, Parser, Subcommand};
 use api::{
     config,
     error::{Error, Kind},
@@ -14,6 +14,7 @@ mod calcifer_client;
 mod completion;
 mod context;
 mod daemon;
+mod dev;
 mod doctor;
 mod machine;
 mod model;
@@ -99,8 +100,12 @@ enum Command {
 /// Parses the command line, loads the config once, runs the verb and renders its refusal. Exit
 /// codes: `EXITS`.
 pub fn main() -> ExitCode {
-    completion::answer(Cli::command);
-    let cli = match Cli::try_parse() {
+    completion::answer(|| dev::hide(Cli::command()));
+    let matches = match dev::hide(Cli::command()).try_get_matches() {
+        Ok(matches) => matches,
+        Err(error) => return usage(error),
+    };
+    let cli = match Cli::from_arg_matches(&matches) {
         Ok(cli) => cli,
         Err(error) => return usage(error),
     };
@@ -108,6 +113,9 @@ pub fn main() -> ExitCode {
         Ok(loaded) => loaded,
         Err(error) => return output::refuse(cli.json, &error),
     };
+    if let Err(error) = dev::admit(&matches, loaded.config.dev) {
+        return output::refuse(cli.json, &error);
+    }
     let warnings = loaded.warnings.clone();
     let ctx = Context::new(cli.json, cli.full, cli.yes, loaded, output::Term::detect());
     for warning in &warnings {
