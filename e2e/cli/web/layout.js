@@ -304,7 +304,7 @@ function emptyHits({ around, step }) {
 
 /** Each drawn edge on top, as the GPU draws it: its line on all four sides, and nothing of it past the line. Each is pictured with it and
  *  without it, the page held still, and what it draws is where the two differ; `decoder` reads the pictures. */
-async function drawnEdges(page, decoder) {
+async function drawnEdges(page, decoder, label) {
   const frames = await page.evaluate(() => {
     const all = [...document.querySelectorAll('body *')].filter((el) => getComputedStyle(el).borderImageSource !== 'none' && el.checkVisibility({ opacityProperty: true, visibilityProperty: true }));
     const out = [];
@@ -334,6 +334,7 @@ async function drawnEdges(page, decoder) {
     return out;
   });
   const said = [];
+  const proofs = [];
   for (const [i, frame] of frames.entries()) {
     const [left, top, right, bottom] = frame.rect;
     const pad = frame.o + 3;
@@ -344,12 +345,21 @@ async function drawnEdges(page, decoder) {
     await page.evaluate((i) => (document.querySelector(`[data-drawn-edge="${i}"]`).style.visibility = 'hidden'), i);
     const bare = await page.screenshot({ clip });
     await page.evaluate((i) => document.querySelector(`[data-drawn-edge="${i}"]`).style.removeProperty('visibility'), i);
-    for (const { rule, what } of await decoder.evaluate(edgesOf, { shown: shown.toString('base64'), bare: bare.toString('base64'), clip, frame })) said.push({ rule, at: frame.at, what });
+    const found = await decoder.evaluate(edgesOf, { shown: shown.toString('base64'), bare: bare.toString('base64'), clip, frame });
+    for (const { rule, what } of found) said.push({ rule, at: frame.at, what });
+    if (found.length && process.env.SHOT) proofs.push({ i, frame, clip, viewport: { width, height }, shown, bare, found });
   }
   await page.evaluate(() => {
     for (const el of document.querySelectorAll('[data-drawn-edge]')) delete el.dataset.drawnEdge;
     for (const held of window.heldStill) held.play();
   });
+  // Keep the exact comparison inputs after this pass has finished measuring, without another screenshot or DOM read.
+  for (const { i, frame, clip, viewport, shown, bare, found } of proofs) {
+    const path = `${process.env.SHOT}-${label}-edge-${i}`;
+    writeFileSync(`${path}-drawn.png`, shown);
+    writeFileSync(`${path}-bare.png`, bare);
+    writeFileSync(`${path}-frame.json`, JSON.stringify({ label, frame, clip, viewport, findings: found }, null, 2));
+  }
   return said;
 }
 
@@ -789,7 +799,7 @@ ${local ? `  card:
         last = now;
       }
       seen.looks = (seen.looks ?? 0) + 1;
-      const said = await drawnEdges(page, decoder);
+      const said = await drawnEdges(page, decoder, `${size.name}-${state}`);
       for (const finding of said) findings.push({ size: `${size.name} drawn`, state, ...finding });
       if (process.env.SHOT && said.length) {
         const path = `${process.env.SHOT}-${size.name}-drawn-${state}.png`;

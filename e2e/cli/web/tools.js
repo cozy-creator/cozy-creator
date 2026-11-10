@@ -109,7 +109,7 @@ function linesOf(text, name) {
   if (local) execFileSync(COZY, ['--json', 'run', `${fixture}/still`, 'instructions=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, env: { ...process.env, COZY_PROJECT: folder }, stdio: ['ignore', 'pipe', 'inherit'], timeout: FIRST_RUN_MS });
   const tool = await until('the fixture listed', async () => (await api(`/v1/tools?project=${id}`)).body.tools.find((held) => held.local && held.id === `${fixture}/shot`), Boolean, FIRST_RUN_MS);
   // The page reads its list again as that install ends, with no reload.
-  await until('the page lists it', () => page.evaluate(() => Boolean(document.querySelector('.tools li.tool[data-tool$="/boxes.py/shot"]'))), Boolean);
+  await until('the page lists it', () => page.evaluate((id) => Boolean(document.querySelector(`.tools li.tool[data-tool="${CSS.escape(id)}"]`)), tool.id), Boolean);
   // The list is by package (Paul, 11-06): each one a heading in its own words, once, and under it what each of its tools does there.
   const listed = () => page.evaluate(() => [...document.querySelectorAll('.tools .tool-groups section')].map((section) => ({
     package: section.dataset.package,
