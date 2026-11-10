@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import plistlib
+import signal
 from pathlib import Path
 import subprocess
 import sys
@@ -35,7 +36,7 @@ def main():
     result = {'normal': json.loads(normal.stdout.strip().splitlines()[-1])}
     crash = args.artifacts / 'crash'
     with (args.artifacts / 'crash.log').open('w') as log:
-        host = subprocess.Popen([str(args.probe), 'crash-host', str(args.securefs), str(crash)], stdout=log, stderr=log, env=environment)
+        host = subprocess.Popen([str(args.probe), 'crash-host', str(args.securefs), str(crash)], stdout=log, stderr=log, env=environment, **({'start_new_session': True} if os.name != 'nt' else {}))
         ready = crash / 'ready.json'
         try:
             deadline = time.monotonic() + 90
@@ -45,10 +46,15 @@ def main():
                 if time.monotonic() > deadline:
                     raise RuntimeError('crash fixture did not become ready')
                 time.sleep(0.05)
-            view = Path(json.loads(ready.read_text())['view'])
+            recorded = json.loads(ready.read_text())
+            view = Path(recorded['view'])
             target = view / 'private-media-input.bin'
             assert target.is_file(), 'the fixture must be readable before controller death'
-            host.kill()
+            if os.name != 'nt':
+                assert os.getpgid(recorded['supervisor_pid']) != os.getpgid(host.pid), 'guardian must outlive controller process-group cleanup'
+                os.killpg(host.pid, signal.SIGKILL)
+            else:
+                host.kill()
             host.wait(timeout=10)
             deadline = time.monotonic() + 15
             while time.monotonic() < deadline:
@@ -80,7 +86,7 @@ def main():
                 pass
             else:
                 raise AssertionError('controller SIGKILL allowed a plaintext fallback write')
-            result['controller_killed'] = {'result':'pass','view_unmounted':True,'private_reads_refused':True,'fallback_writes_refused':True}
+            result['controller_killed'] = {'result':'pass','view_unmounted':True,'private_reads_refused':True,'fallback_writes_refused':True,'whole_controller_group':os.name != 'nt'}
         finally:
             if host.poll() is None:
                 host.kill()
