@@ -125,7 +125,7 @@ struct Project {
     cutting: Arc<Mutex<()>>,
     /// How far each Edit being rendered here is, 0 to 1.
     rendering: Arc<Mutex<BTreeMap<String, f64>>>,
-    /// Held while its files move to or from its Hub.
+    /// Serializes materialization of files already stored at the Hub.
     moving: tokio::sync::Mutex<()>,
     /// What opening it did to it, for the first to read it.
     said: Mutex<Vec<String>>,
@@ -168,8 +168,6 @@ pub(crate) fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
         .route("/v1/projects/{id}/unpin", post(unpin))
         .route("/v1/projects/{id}/rename", post(rename))
         .route("/v1/projects/{id}/reclaim", post(reclaim))
-        .route("/v1/projects/{id}/push", post(remote::pushed))
-        .route("/v1/projects/{id}/pull", post(remote::pulled))
         .route("/v1/projects/{id}/events", get(events))
         .route("/v1/projects/{id}/yaml", get(yaml).put(save))
         .route("/v1/projects/{id}/assets", post(assets::create))
@@ -1179,9 +1177,8 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>, Query(asked)
             // A render going has its own text: what it owes, and what's wrong with the file, are the answer.
             let queue = queue(&project, &folder.walk_now().map_err(Refusal)?);
             let busy = *project.walking.lock().expect("walking lock");
-            let moving = project.moving.try_lock().is_err();
             let warning = format!("{}: a render going uses the text it was asked with, and a new one is refused until this reads", error.message);
-            return Ok(Json(ProjectState { covered: None, id, path: folder.dir.clone(), assets: vec![], queue, missing: vec![], stale: vec![], orphans: vec![], busy, moving, absent: 0, run_files: 0, cuts: vec![], warnings: vec![ProjectWarning { name: None, message: warning }], next: vec![], board: board_of(&project), unsent: vec![] }));
+            return Ok(Json(ProjectState { covered: None, id, path: folder.dir.clone(), assets: vec![], queue, missing: vec![], stale: vec![], orphans: vec![], busy, absent: 0, run_files: 0, cuts: vec![], warnings: vec![ProjectWarning { name: None, message: warning }], next: vec![], board: board_of(&project), unsent: vec![] }));
         }
     };
     // What a reader now holds is what any change from here is told against.

@@ -1,4 +1,4 @@
-// The web-serves cell's browser (e2e/cli/web.sh): `cozy open --no-open`'s link, opened in a real Chrome once it's up. The page redeems
+// The web-serves cell's browser (e2e/cli/web.sh): `cozy open --print-url`'s link, opened in a real Chrome once it's up. The page redeems
 // its code and clears it, renders under its CSP and opens GET /v1/events. On its session a stream here then sees `hello`, and the
 // `project.changed` of an import the CLI makes. Prints what it saw as JSON, and web.sh judges it: `signed_in` says how long the browser
 // took to launch and the code to be redeemed, and a refusal's code.

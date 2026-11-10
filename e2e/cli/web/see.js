@@ -390,7 +390,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   await page.keyboard.press('f');
   await page.waitForTimeout(400);
 
-  // A file that leaves is on another computer, and when it comes back it shows, with no reload: a pull writes neither file.
+  // A file that leaves is on another computer, and when it comes back it shows, with no reload: restoring it writes neither project record.
   const older = await asset('older_art');
   const olderAt = join(folder, older.path);
   // Out of files/, where any name starting with its hash is it.
@@ -400,7 +400,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   check('wire_absent_per_file', Object.values(absent.files).every((file) => file.absent === true) && (await state()).absent > 0, absent.files);
   await until('it says so', () => element(page, 'older_art').locator('.media-note').textContent(), (text) => text === 'On another computer');
   await open(page, 'older_art');
-  check('pull_offered', (await element(page, 'older_art').locator('.status .act').textContent()) === 'Pull');
+  check('no_manual_pull', (await element(page, 'older_art').getByRole('button', { name: 'Pull', exact: true }).count()) === 0);
   check('no_hash_when_absent', !(await page.evaluate(() => document.body.innerText)).includes(older.sha256.replace('sha256:', '').slice(0, 12)));
   await shot('absent');
   renameSync(olderAway, olderAt);

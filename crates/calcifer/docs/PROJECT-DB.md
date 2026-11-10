@@ -60,7 +60,7 @@ applies its change to what is there when its turn comes.
 | `PUT /yaml` (import) | every box, head and field that changed, the entry |
 | `POST /history/undo`, `/redo` | each change of the entry put back, and its `undone` |
 | `POST /runs` | the ask, its text, the key |
-| `POST /reclaim`, `/cancel`, `push`, `pull` | their rows, no entry |
+| `POST /reclaim`, `/cancel` | their rows, no entry |
 
 ## The op log
 

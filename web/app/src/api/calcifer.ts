@@ -1905,7 +1905,7 @@ export type ProjectEvent = { "type": "board", board: Board, } | { "type": "job",
 /**
  * Its run's execution time.
  */
-execution_ms?: number | null, } | { "type": "said", message: string, name?: string | null, } | { "type": "warning", message: string, name?: string | null, } | { "type": "failed", error: ErrorBody, name?: string | null, run?: number | null, } | { "type": "moved", file?: string | null, bytes: number, } | { "type": "transferred", done?: Transferred | null, error?: ErrorBody | null, } | { "type": "cut", name: string, cut: string, frames: number, fps: number, retimed?: Array<string>, took_s: number, unchanged?: boolean, 
+execution_ms?: number | null, } | { "type": "said", message: string, name?: string | null, } | { "type": "warning", message: string, name?: string | null, } | { "type": "failed", error: ErrorBody, name?: string | null, run?: number | null, } | { "type": "moved", file?: string | null, bytes: number, } | { "type": "cut", name: string, cut: string, frames: number, fps: number, retimed?: Array<string>, took_s: number, unchanged?: boolean, 
 /**
  * What this film was cut without: `<piece>: <why>`.
  */
@@ -1977,11 +1977,7 @@ orphans?: Array<Orphan>,
  */
 busy: boolean, 
 /**
- * Whether a push or pull is going.
- */
-moving: boolean, 
-/**
- * How many files project.lock names are not on this computer (`POST /v1/projects/{id}/pull`).
+ * How many files project.lock names are not on this computer.
  */
 absent: number, 
 /**
@@ -2615,11 +2611,6 @@ export type SignedOut = { email: string | null, everywhere: boolean, hub: string
 status: string, };
 
 /**
- * A file a push or pull left out: its path in the project, and why.
- */
-export type Skipped = { path: string, why: string, };
-
-/**
  * A pickup's frames: `offset + k * every`, from frame `first`.
  */
 export type Snap = { every: number, offset: number, first: number, };
@@ -2993,28 +2984,6 @@ note?: string | null, };
  * One track's clips as they read now.
  */
 export type TrackNow = { clips: Array<ClipNow>, };
-
-/**
- * What a push or pull moved (`POST /v1/projects/{id}/push`, `/pull`). A push sends every file
- * project.lock names that the Hub lacks; a pull fetches every one `files/` lacks.
- */
-export type Transferred = { 
-/**
- * The files project.lock names.
- */
-files: number, 
-/**
- * Those sent or fetched now.
- */
-moved: number, bytes: number, 
-/**
- * The files it could not move, which stopped nothing else.
- */
-skipped?: Array<Skipped>, 
-/**
- * A push's: the private model and commit that keep them at the Hub, until deleted by name.
- */
-kept_in?: string | null, commit?: string | null, };
 
 /**
  * When a history entry was undone, and by whom.

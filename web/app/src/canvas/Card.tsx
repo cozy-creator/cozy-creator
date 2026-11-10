@@ -424,12 +424,6 @@ function usdPerHour(micros: number): string {
   return `$${(micros / 1_000_000).toFixed(2)}/h`
 }
 
-function Pull() {
-  const store = useCanvasStore()
-  const moving = useSignal(store.transferring)
-  return <div className="status">{moving ? "Pulling" : <Act label="Pull" onClick={() => void store.pull()} />}</div>
-}
-
 /** What it says under its media: how far an import or a run is, and what's wrong and what to do about it. Never a hash. */
 function Status({ view, name }: { view: ElementView; name: string }) {
   const store = useCanvasStore()
@@ -458,9 +452,7 @@ function Status({ view, name }: { view: ElementView; name: string }) {
     )
   }
   if (view.queued || view.asked !== undefined) return null
-  // What's at rest says nothing here: a failure is its toast, and a file that isn't here can be pulled.
-  const shown = shownOf(view)
-  if (shown?.absent && !shown.machine) return <Pull />
+  // A failure is its toast; unavailable media is labelled by the media view.
   return null
 }
 

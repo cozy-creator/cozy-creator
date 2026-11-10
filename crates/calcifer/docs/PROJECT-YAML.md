@@ -22,7 +22,7 @@ Calcifer owns all of this. It knows no inputs and no packages by name.
 | `<edit_name>.mp4`, `.otio` | Each edit |
 | `.runs/` | Where a run's outputs land on their way into `files/` |
 
-An export holds what the project says, so it travels, and `files/` with `cozy push` and `cozy pull`. An unknown key warns when it's imported.
+An export holds what the project says. Its media remains in `files/`. An unknown key warns when it's imported.
 
 ## The file
 
@@ -146,7 +146,7 @@ cozy status
 
 `cozy new [directory]` creates a project explicitly. `cozy open`, `cozy run` and `cozy status` use an existing project for the current directory.
 
-Use the browser for asset import, creation, field edits, rendering, approval, history, undo and export. Use `cozy push` and `cozy pull` from the project directory for file synchronization. The browser and other API clients use the project endpoints described in `CALCIFER-API.md`, and edits appear in connected views.
+Use the browser for asset import, creation, field edits, rendering, approval, history, undo and export. The browser and other API clients use the project endpoints described in `CALCIFER-API.md`, and edits appear in connected views.
 
 ## Queueing
 
