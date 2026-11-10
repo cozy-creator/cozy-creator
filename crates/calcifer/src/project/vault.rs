@@ -266,10 +266,11 @@ pub(crate) fn start(api: &Arc<Api>) {
                 }));
                 if needs { let _ = tokio::task::block_in_place(|| {
                     let op = operation(&root); let _guard = op.lock().expect("vault operation");
+                    let still = held(&root).is_some_and(|session| { let session = session.lock().expect("vault session"); session.closing || expired(&session) || !session.mount.is_mounted().unwrap_or(false) });
+                    if !still { return Ok(()); }
                     if let Some(session) = held(&root) { mark_closing(&mut session.lock().expect("vault session")); }
                     let _access = exclusive(&root)?;
-                    let still = held(&root).is_some_and(|session| { let session = session.lock().expect("vault session"); session.closing || expired(&session) || !session.mount.is_mounted().unwrap_or(false) });
-                    if still { close(&api, &root) } else { Ok(()) }
+                    close(&api, &root)
                 }); }
             }
         }
