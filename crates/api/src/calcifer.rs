@@ -911,6 +911,23 @@ pub struct Shown {
     pub projects: Vec<String>,
 }
 
+/// The Readers installed by `PUT /v1/events/{stream}`. IDs not in `held` are not acknowledged;
+/// at most 64 IDs are attempted, and attempted IDs that could not open retain their refusal.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ProjectShowReply {
+    pub held: Vec<String>,
+    pub refused: BTreeMap<String, ProjectShowRefusal>,
+}
+
+/// One requested project's refusal, independent of the other projects on the same stream.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ProjectShowRefusal {
+    pub status: u16,
+    pub error: crate::error::Error,
+}
+
 /// `GET /v1/events`: what a client keeps on screen, on one stream, each thing whole as its route
 /// answers it. No backlog: a client subscribes, then reads what it holds.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

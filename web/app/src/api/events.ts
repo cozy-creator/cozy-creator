@@ -1,6 +1,6 @@
-import type { StreamEvent } from "./calcifer"
+import type { ProjectShowRefusal, ProjectShowReply, StreamEvent } from "./calcifer"
 import { signal } from "../ui/signal"
-import type { Client } from "./client"
+import { ApiError, type Client } from "./client"
 
 export type Health =
   | { state: "connecting" }
@@ -8,11 +8,17 @@ export type Health =
   | { state: "reconnecting"; attempt: number }
   | { state: "signed_out" }
 
+type Presence = { tab: string; project: string | null; revision: number }
+type Acknowledged = Presence & { stream: string; refusal?: ProjectShowRefusal }
+type Waiter = { project: string; done(): void; fail(error: unknown): void }
+type Confirmed = { stream: string; key: string; reply: ProjectShowReply | null }
+
 type Shared =
   | { event: StreamEvent }
-  | { health: Health }
+  | { health: Health; stream: string | null }
   | { ask: true }
-  | { shows: { tab: string; project: string | null } }
+  | { shows: Presence }
+  | { shown: Acknowledged }
   | { who: true }
 
 /** Three missed comments: the connection is dead, whatever the socket says. */
@@ -58,10 +64,15 @@ export class EventStream {
   private alive: Promise<void>
   /** The project this tab shows. */
   private showing: string | null = null
+  private revision = 0
+  private acknowledged: Acknowledged | null = null
+  private waiters = new Set<Waiter>()
+  private epoch: string | null = null
   /** The holding tab's: what each tab shows, by tab, the stream's id, and what Calcifer was last told it shows. */
-  private shown = new Map<string, string | null>()
+  private shown = new Map<string, Presence>()
   private stream: string | null = null
-  private told: string | null = null
+  private following: AbortController | null = null
+  private told: Confirmed | null = null
   private telling = false
 
   constructor(client: Client) {
@@ -69,10 +80,11 @@ export class EventStream {
     this.channel = new BroadcastChannel("cozy-events")
     this.channel.onmessage = ({ data }: MessageEvent<Shared>) => {
       if ("event" in data) this.dispatch(data.event)
-      else if ("health" in data) this.health.set(data.health)
-      else if ("shows" in data) this.heard(data.shows.tab, data.shows.project)
+      else if ("health" in data) this.heardHealth(data.health, data.stream)
+      else if ("shows" in data) this.heard(data.shows)
+      else if ("shown" in data) this.heardAcknowledgement(data.shown)
       else if ("who" in data) this.announce()
-      else if (this.holding) this.channel.postMessage({ health: this.health.get() } satisfies Shared)
+      else if (this.holding) this.channel.postMessage({ health: this.health.get(), stream: this.stream } satisfies Shared)
     }
     this.alive = new Promise((held) => {
       void navigator.locks.request(`cozy-tab:${this.tab}`, () => {
@@ -84,39 +96,116 @@ export class EventStream {
 
   /** This tab shows `project`, or none. */
   show(project: string | null) {
-    this.showing = project
-    if (this.holding) this.heard(this.tab, project)
+    if (project !== this.showing) {
+      const before = this.showing
+      this.showing = project
+      this.revision++
+      this.acknowledged = null
+      for (const waiter of this.waiters) {
+        if (waiter.project === before) waiter.fail(new DOMException("Project is no longer shown", "AbortError"))
+      }
+    }
+    if (this.holding) this.heard(this.presence())
     else this.announce()
   }
 
+  /** Await this tab's held acknowledgement (legacy services confirm completion only). Owns no Reader. */
+  whenShown(project: string, signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted()
+    return new Promise((done, fail) => {
+      const remove = () => {
+        this.waiters.delete(waiter)
+        signal.removeEventListener("abort", aborted)
+      }
+      const waiter: Waiter = {
+        project,
+        done: () => { remove(); done() },
+        fail: (error) => { remove(); fail(error) },
+      }
+      const aborted = () => waiter.fail(signal.reason)
+      this.waiters.add(waiter)
+      signal.addEventListener("abort", aborted, { once: true })
+      this.releaseWaiters()
+    })
+  }
+
+  private presence(): Presence {
+    return { tab: this.tab, project: this.showing, revision: this.revision }
+  }
+
   private announce() {
-    void this.alive.then(() => this.channel.postMessage({ shows: { tab: this.tab, project: this.showing } } satisfies Shared))
+    void this.alive.then(() => this.channel.postMessage({ shows: this.presence() } satisfies Shared))
   }
 
   /** The holding tab hears what `tab` shows, and waits on its lock to hear when it goes. */
-  private heard(tab: string, project: string | null) {
+  private heard(presence: Presence) {
     if (!this.holding) return
+    const { tab } = presence
     if (tab !== this.tab && !this.shown.has(tab)) {
       void navigator.locks.request(`cozy-tab:${tab}`, () => {
         this.shown.delete(tab)
         void this.tell()
       })
     }
-    this.shown.set(tab, project)
+    const before = this.shown.get(tab)
+    if (before && before.revision > presence.revision) return
+    this.shown.set(tab, presence)
     void this.tell()
+  }
+
+  private heardAcknowledgement(acknowledged: Acknowledged) {
+    if (acknowledged.tab !== this.tab || acknowledged.revision !== this.revision || acknowledged.project !== this.showing || acknowledged.stream !== this.epoch) return
+    this.acknowledged = acknowledged
+    this.releaseWaiters()
+  }
+
+  private releaseWaiters() {
+    const ack = this.acknowledged
+    if (!ack || ack.stream !== this.epoch || this.health.get().state !== "live") return
+    for (const waiter of this.waiters) {
+      if (waiter.project !== ack.project) continue
+      if (ack.refusal) waiter.fail(new ApiError(ack.refusal.status, ack.refusal.error))
+      else waiter.done()
+    }
+  }
+
+  private confirm(snapshot: Presence[], confirmed: Confirmed) {
+    for (const presence of snapshot) {
+      const now = this.shown.get(presence.tab)
+      if (!now || now.revision !== presence.revision || now.project !== presence.project) continue
+      const project = presence.project
+      // A legacy204 confirms completion only; a current reply proves which IDs were held.
+      const refusal = project && confirmed.reply && !confirmed.reply.held.includes(project)
+        ? confirmed.reply.refused[project] ?? { status: 503, error: { kind: "unavailable" as const, code: "project_not_shown", message: "Calcifer did not hold this project open", next: [] } }
+        : undefined
+      const shown: Acknowledged = { ...presence, stream: confirmed.stream, refusal: refusal || undefined }
+      this.heardAcknowledgement(shown)
+      this.channel.postMessage({ shown } satisfies Shared)
+    }
   }
 
   /** Calcifer told what the tabs show now, one call at a time. */
   private async tell() {
-    if (this.telling || !this.stream) return
-    const projects = [...new Set([...this.shown.values()].filter((project) => project !== null))].sort()
+    if (this.telling || !this.stream || !this.following || this.following.signal.aborted) return
+    const snapshot = [...this.shown.values()]
+    const projects = [...new Set(snapshot.flatMap(({ project }) => project === null ? [] : [project]))].sort()
     const key = projects.join()
-    if (key === this.told) return
-    this.telling = true
     const stream = this.stream
+    if (this.told?.stream === stream && this.told.key === key) {
+      this.confirm(snapshot, this.told)
+      return
+    }
+    this.telling = true
     try {
-      await this.client.show(stream, projects)
-      if (this.stream === stream) this.told = key
+      const reply = await this.client.show(stream, projects, this.following.signal)
+      if (this.stream === stream) {
+        this.told = { stream, key, reply }
+        this.confirm(snapshot, this.told)
+      }
+    } catch (error) {
+      // The stream's existing reconnect loop owns recovery; a failed show is never an ack.
+      if (this.stream === stream) this.following?.abort(error)
+      return
     } finally {
       this.telling = false
     }
@@ -134,12 +223,25 @@ export class EventStream {
   }
 
   private dispatch(event: StreamEvent) {
+    if (event.type === "hello" && this.epoch !== event.stream) {
+      this.epoch = event.stream
+      this.acknowledged = null
+    }
     for (const listener of this.listeners) listener(event)
   }
 
-  private say(health: Health) {
+  private heardHealth(health: Health, stream: string | null) {
+    if (health.state !== "live" || this.epoch !== stream) this.acknowledged = null
+    this.epoch = health.state === "live" ? stream : null
     this.health.set(health)
-    this.channel.postMessage({ health } satisfies Shared)
+    if (health.state === "signed_out") {
+      for (const waiter of this.waiters) waiter.fail(new ApiError(401, { kind: "credential", code: "unauthenticated", message: "Sign in again", next: ["cozy open"] }))
+    }
+  }
+
+  private say(health: Health) {
+    this.heardHealth(health, this.stream)
+    this.channel.postMessage({ health, stream: this.stream } satisfies Shared)
   }
 
   private publish(event: StreamEvent) {
@@ -150,7 +252,7 @@ export class EventStream {
   /** Holds the lock for as long as this tab lives, unless this computer's Calcifer says it's signed out. */
   private async hold() {
     this.holding = true
-    this.shown.set(this.tab, this.showing)
+    this.shown.set(this.tab, this.presence())
     this.channel.postMessage({ who: true } satisfies Shared)
     for (let attempt = 1; ; attempt++) {
       try {
@@ -167,6 +269,7 @@ export class EventStream {
   /** One connection, until it ends. Whether it ever said `hello`; throws if signed out. */
   private async follow(): Promise<boolean> {
     const connection = new AbortController()
+    this.following = connection
     let last = Date.now()
     const watch = setInterval(() => {
       if (Date.now() - last > SILENT_MS) connection.abort()
@@ -183,10 +286,10 @@ export class EventStream {
           if (!event) return
           if (event.type === "hello") {
             live = true
-            this.say({ state: "live" })
             // A new stream holds nothing open yet.
             this.stream = event.stream ?? null
             this.told = null
+            this.say({ state: "live" })
             void this.tell()
           }
           this.publish(event)
@@ -198,6 +301,9 @@ export class EventStream {
       return live
     } finally {
       this.stream = null
+      this.following = null
+      this.epoch = null
+      this.acknowledged = null
       clearInterval(watch)
     }
   }

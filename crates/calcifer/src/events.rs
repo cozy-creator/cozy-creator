@@ -14,7 +14,7 @@ use axum::{
 };
 use futures_util::Stream;
 use api::{
-    calcifer::{Event, Machine, Shown, StreamEvent},
+    calcifer::{Event, Machine, ProjectShowReply, ProjectShowRefusal, Shown, StreamEvent},
     error::Error,
     ids::RunId,
     calcifer::project::Card,
@@ -215,13 +215,13 @@ impl Drop for Showing {
 }
 
 /// `PUT /v1/events/{stream}` `{projects}`: what the page on `stream` shows now, each project held open while the stream lasts or
-/// until it shows others. One that doesn't open isn't held: the page's own read of it says why. `404 stream_unknown` once the stream
+/// until it shows others. The reply names those held and preserves each attempted ID's refusal. `404 stream_unknown` once the stream
 /// has ended: the next one's `hello` names it.
 pub(crate) async fn show(
     State(api): State<Arc<Api>>,
     axum::extract::Path(stream): axum::extract::Path<String>,
     body: Result<axum::body::Bytes, axum::extract::rejection::BytesRejection>,
-) -> Result<axum::http::StatusCode, crate::api::Refusal> {
+) -> Result<axum::Json<ProjectShowReply>, crate::api::Refusal> {
     let shown: Shown = crate::api::parse(&body?)?;
     let gone = || crate::api::Refusal(Error::new(api::error::Kind::NotFound, "stream_unknown", format!("no stream {stream} is open: it ended")));
     if !SHOWN.lock().expect("shown lock").contains_key(&stream) {
@@ -231,12 +231,24 @@ pub(crate) async fn show(
     ids.sort();
     ids.dedup();
     // What it showed already is held until these are: a project shown before and now isn't closed between.
-    let readers: Vec<project::Reader> = ids.iter().take(SHOWN_MOST).filter_map(|id| api.projects.reader(&api, id).ok()).collect();
+    let mut readers = Vec::new();
+    let mut reply = ProjectShowReply::default();
+    for id in ids.iter().take(SHOWN_MOST) {
+        match api.projects.reader(&api, id) {
+            Ok(reader) => {
+                readers.push(reader);
+                reply.held.push(id.clone());
+            }
+            Err(crate::api::Refusal(error)) => {
+                reply.refused.insert(id.clone(), ProjectShowRefusal { status: error.kind.http_status(), error });
+            }
+        }
+    }
     let was = SHOWN.lock().expect("shown lock").get_mut(&stream).map(|held| std::mem::replace(held, readers));
     match was {
         Some(was) => {
             drop(was);
-            Ok(axum::http::StatusCode::NO_CONTENT)
+            Ok(axum::Json(reply))
         }
         None => Err(gone()),
     }
