@@ -28,7 +28,7 @@ export function useProjectId(): string | null {
 export function useTo() {
   const project = useContext(CurrentProject)
   const id = project?.id
-  const code = project?.code
+  const code = project?.code ?? ""
   return useCallback((rest = "") => id ? projectPath({ id, code }, rest) : `/${rest}`, [id, code])
 }
 

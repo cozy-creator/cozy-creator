@@ -67,6 +67,8 @@ def main() -> None:
         for command in HIDDEN:
             run(f"hidden {command}", [command, "--help"])
         run("nested cancellation", ["run", "cancel", "--help"])
+        run("removed nested help", ["machine", "help"], code=2)
+        run("local port option", ["open", "--port", "8818", "--help"])
         run("bash completion", ["completion", "bash"])
 
         project = case / "film with spaces"
@@ -74,8 +76,13 @@ def main() -> None:
         assert Path(created["path"]).resolve() == project
         assert (project / "project.db").is_file(), "new did not create project.db"
         assert created["created"] is True, "new did not report creating the project"
+        assert re.fullmatch(r"[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{9}", created["code"])
+        assert re.search(r"[A-Z]", created["code"]), "project code has no letter"
         again = json.loads(run("new existing project", ["--json", "new"], project).stdout)
         assert again["created"] is False and again["id"] == created["id"], "repeating new replaced project identity"
+        assert again["code"] == created["code"], "repeating new replaced public project code"
+        friendly = run("friendly existing project", ["new"], project).stdout
+        assert "Project not created." in friendly and created["code"] in friendly
         existing_directory = case / "existing directory"
         existing_directory.mkdir(exist_ok=True)
         initialized = json.loads(run("new current directory", ["--json", "new"], existing_directory).stdout)
@@ -119,7 +126,7 @@ def main() -> None:
         assert set(opened) == {"url", "expires_ms"}, "open includes fields beyond the URL and expiry"
         url = urlsplit(opened["url"])
         assert url.hostname in {"127.0.0.1", "localhost", "::1"}, "open did not print a local URL"
-        assert "code=" in url.fragment and f"to=/projects/{created['id']}" in url.fragment
+        assert url.path == f"/p/{created['code']}" and url.fragment.startswith("code=")
         assert opened["expires_ms"] > 0
         plain_url = run("default project URL", ["open"], project).stdout
         assert not plain_url.lstrip().startswith("{") and "url" in plain_url and "expires_ms" in plain_url

@@ -959,7 +959,7 @@ export type KnownProject = { id: string,
 /**
  * Its stable, nine-character public URL code.
  */
-code?: string, 
+code: string, 
 /**
  * Its name: what `-p` takes.
  */
@@ -1645,7 +1645,7 @@ export type Opened = { id: string,
 /**
  * Its stable, nine-character public URL code.
  */
-code?: string, 
+code: string, 
 /**
  * Where it lives on Calcifer's computer.
  */
@@ -1966,7 +1966,7 @@ export type ProjectState = { id: string,
 /**
  * Its stable, nine-character public URL code.
  */
-code?: string, path: string, assets: Array<Asset>, 
+code: string, path: string, assets: Array<Asset>, 
 /**
  * What is running and what is queued, in the order it goes.
  */

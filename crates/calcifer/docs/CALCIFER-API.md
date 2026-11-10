@@ -164,7 +164,7 @@ media-src 'self' blob:; font-src 'self'; connect-src 'self'; base-uri 'none'; fo
 ### Session
 A browser signs in with a single-use code. `cozy open` prints an authenticated local URL carrying
 that code. The browser exchanges it for a session; the code expires after 60 seconds. The
-fragment may add `&to=<route>`, as `cozy open`'s does in a project (`#code=<code>&to=/projects/<id>`). `state.db` holds sessions' digests; 30 days unused ends one.
+fragment carries `code=<one-use-code>` while the path identifies the project as `/p/<public-code>`. Older `&to=<route>` links are accepted for compatibility. `state.db` holds sessions' digests; 30 days unused ends one.
 - `POST /v1/session-codes` (the lock record's bearer only, else `403 session_code_needs_bearer`):
   `{code, url, expires_ms}`, 32 random bytes in hex, good for 60 s. `url` is `http://<Host>/#code=<code>`.
 - `POST /v1/session` `{code}`, needing no credential: `{token, media}`, new for each code. `400 session_code_invalid`
@@ -616,7 +616,7 @@ The CLI resolves the current directory to an existing project and sends its abso
 | Verb | Calls |
 |---|---|
 | `cozy new [directory]` | `POST /v1/projects` with the selected absolute path |
-| `cozy open` | current directory, `GET /v1/projects/{id}?assets=false` for its id; then `GET /`, `POST /v1/session-codes` |
+| `cozy open [--port PORT]` | current directory, `GET /v1/projects/{id}?assets=false` for its id; then `GET /`, `POST /v1/session-codes` |
 | `cozy status` | project health, warnings and suggested actions from `GET /v1/projects/{id}` |
 | any verb, Calcifer of another version | `POST /v1/down`, then the installed cozy's Calcifer started |
 | `cozy run <target> [inputs] [flags]` | `HEAD`/`PUT /v1/files/sha256:<hex>` for each file and folder it names, and local code's tree, `POST /v1/run-quotes` (`--on new`), `POST /v1/runs` (again after a `preparing` install), then `GET /v1/runs/{id}/events`; `-o DIR`, each output `GET /v1/runs/{id}/outputs/{name}` |
