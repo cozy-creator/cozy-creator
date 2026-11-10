@@ -120,18 +120,22 @@ pub(super) fn head_set(heads: &str) -> Result<BTreeSet<ChangeHash>, Error> {
     heads.into_iter().map(|head| head.parse().map_err(invalid)).collect()
 }
 
-fn load_native(bytes: &[u8], heads: &str) -> Result<AutoCommit, Error> {
+fn load_native(bytes: &[u8], heads: &str, stage: &'static str) -> Result<AutoCommit, Error> {
     // The pinned loader rejects a partial trailing chunk. A complete older prefix is
     // syntactically valid, so also require the transaction's expected native heads.
+    let began = std::time::Instant::now();
     let mut doc = AutoCommit::load(bytes).map_err(invalid)?;
+    super::profile(stage, began, bytes.len());
+    let began = std::time::Instant::now();
     if doc.get_heads().into_iter().collect::<BTreeSet<_>>() != head_set(heads)? {
         return Err(invalid("the native project stream does not match its committed heads"));
     }
+    super::profile("native_head_check", began, 0);
     Ok(doc)
 }
 
 pub(super) fn identity_bytes(bytes: &[u8], heads: &str) -> Option<(String, String)> {
-    let doc = load_native(bytes, heads).ok()?;
+    let doc = load_native(bytes, heads, "native_identity_load").ok()?;
     let (_, identity) = doc.get(ROOT, "identity").ok()??;
     let (id, _) = doc.get(&identity, "id").ok()??;
     let name = doc
@@ -145,9 +149,11 @@ pub(super) fn identity_bytes(bytes: &[u8], heads: &str) -> Option<(String, Strin
 
 impl Document {
     pub(super) fn load(bytes: &[u8], heads: &str, at: &Path) -> Result<Self, Error> {
-        let doc = load_native(bytes, heads)?.with_actor(actor(at));
+        let doc = load_native(bytes, heads, "native_document_load")?.with_actor(actor(at));
         let mut found = Vec::new();
+        let began = std::time::Instant::now();
         let value = materialize(&doc, &ROOT, AmValue::Object(ObjType::Map), "", Some(&mut found))?;
+        super::profile("native_materialize_conflicts", began, bytes.len());
         if value.get("schema").and_then(Value::as_u64) != Some(FORMAT as u64) {
             return Err(invalid(
                 "unsupported logical project schema; update cozy before opening this project",
@@ -172,8 +178,13 @@ impl Document {
     /// independently added entities/versions separate, and scalar conflicts remain multi-value.
     pub(super) fn update(&mut self, value: Value) -> Result<(), Error> {
         let known_empty = self.conflicts.get().is_some_and(Vec::is_empty);
+        let began = std::time::Instant::now();
         reconcile_map(&mut self.doc, &ROOT, &self.value, &value, true)?;
+        super::profile("write_reconcile_total_inclusive", began, 0);
+        let began = std::time::Instant::now();
         self.doc.commit();
+        super::profile("write_am_commit", began, 0);
+        let began = std::time::Instant::now();
         self.value = Arc::new(value);
         // A local observing mutation cannot introduce concurrency. Imported snapshots seed
         // this cache during materialization; existing alternatives invalidate it on mutation.
@@ -182,6 +193,7 @@ impl Document {
             let _ = conflicts.set(Vec::new());
         }
         self.conflicts = Arc::new(conflicts);
+        super::profile("write_update_view", began, 0);
         Ok(())
     }
 
@@ -222,6 +234,7 @@ impl Document {
     }
 
     pub(super) fn stored(&self) -> Result<Stored, Error> {
+        let began = std::time::Instant::now();
         let mut written = Written::default();
         let head = objects(&self.value, "head");
         for key in order(&self.value, "head_order", &head) {
@@ -287,11 +300,15 @@ impl Document {
             let row: CardRow = decode(record["record"].clone())?;
             canvas.insert(text(&record, "key"), row);
         }
+        super::profile("native_typed_decode", began, written.boxes.len());
+        let began = std::time::Instant::now();
+        let crdt = Some(Arc::new(self.clone()));
+        super::profile("native_clone", began, 0);
         Ok(Stored {
             written: Arc::new(written),
             lock: Arc::new(lock),
             canvas: Arc::new(canvas),
-            crdt: Some(Arc::new(self.clone())),
+            crdt,
             ..Default::default()
         })
     }
@@ -535,7 +552,11 @@ pub(super) fn value(stored: &Stored, ops: &[OpRow], previous: &Value, identity: 
 /// Build the next derived view once, retaining unchanged encoded records. The native document
 /// remains authoritative; this only avoids serializing every existing asset/version on an edit.
 pub(super) fn changed_value(before: &Stored, after: &Stored, ops: &[OpRow], previous: &Value, identity: Option<(String, String)>) -> Value {
+    let overall = std::time::Instant::now();
+    let began = std::time::Instant::now();
     let mut next = previous.clone();
+    super::profile("write_value_clone", began, after.written.boxes.len());
+    let began = std::time::Instant::now();
     if !Arc::ptr_eq(&before.written, &after.written) {
         if before.written.head != after.written.head {
             next["head"] = map_of(&after.written.head);
@@ -552,6 +573,8 @@ pub(super) fn changed_value(before: &Stored, after: &Stored, ops: &[OpRow], prev
             }
         }
     }
+    super::profile("write_value_written", began, after.written.boxes.len());
+    let began = std::time::Instant::now();
     if !Arc::ptr_eq(&before.lock, &after.lock) {
         let old: BTreeMap<_, _> = before.lock.assets.iter().map(|(key, held)| (held.id.as_str(), (key, held))).collect();
         let assets = records(&mut next, "assets");
@@ -591,6 +614,8 @@ pub(super) fn changed_value(before: &Stored, after: &Stored, ops: &[OpRow], prev
         if before.lock.reserved != after.lock.reserved { next["reserved"] = encoded(&after.lock.reserved); }
         if before.lock.makes != after.lock.makes { next["makes"] = encoded(&after.lock.makes); }
     }
+    super::profile("write_value_lock", began, after.lock.assets.len());
+    let began = std::time::Instant::now();
     let identities = |stored: &Stored| -> BTreeMap<String, String> {
         stored.written.boxes.iter().map(|held| (name_key(&held.name), held.id.clone()))
             .chain(stored.lock.assets.iter().map(|(key, held)| (key.clone(), held.id.clone()))).collect()
@@ -623,6 +648,8 @@ pub(super) fn changed_value(before: &Stored, after: &Stored, ops: &[OpRow], prev
         }
         retire(canvas, live.iter().map(String::as_str));
     }
+    super::profile("write_value_canvas", began, after.canvas.len());
+    let began = std::time::Instant::now();
     let history = records(&mut next, "history");
     retire(history, ops.iter().map(|row| row.uid.as_str()));
     for row in ops {
@@ -633,6 +660,8 @@ pub(super) fn changed_value(before: &Stored, after: &Stored, ops: &[OpRow], prev
             history.insert(id, json!({"present":true,"record":record}));
         }
     }
+    super::profile("write_value_history", began, ops.len());
+    let began = std::time::Instant::now();
     // Merged replicas can retain equal display orders even when this edit changed
     // another branch. Match the full builder's normalization on every logical commit.
     for (index, held) in after.written.boxes.iter().enumerate() {
@@ -641,9 +670,13 @@ pub(super) fn changed_value(before: &Stored, after: &Stored, ops: &[OpRow], prev
     for (index, row) in after.lock.runs.iter().enumerate() {
         records(&mut next, "runs").get_mut(&row.id).expect("current run")["order"] = json!(index);
     }
+    super::profile("write_value_order", began, after.written.boxes.len());
+    let began = std::time::Instant::now();
     let (id, name) = identity.unwrap_or_else(|| (super::new_key(), String::new()));
     next["schema"] = FORMAT.into();
     next["identity"] = json!({"id":id,"name":name});
+    super::profile("write_value_identity", began, 0);
+    super::profile("write_value_total_inclusive", overall, after.written.boxes.len());
     next
 }
 
@@ -672,10 +705,24 @@ fn reconcile_map(doc: &mut AutoCommit, object: &ObjId, before: &Value, after: &V
         for key in removed {
             doc.delete(object, key.as_str()).map_err(invalid)?;
         }
+        let root = object == &ROOT;
         for (key, value) in wanted {
+            let began = root.then(std::time::Instant::now);
             let previous = old.get(key);
             if previous != Some(value) {
                 put_changed(doc, object, Prop::Map(key.clone()), previous, value, false)?;
+            }
+            if let Some(began) = began {
+                let stage = match key.as_str() {
+                    "boxes" => "write_reconcile_boxes_inclusive",
+                    "assets" => "write_reconcile_assets_inclusive",
+                    "canvas" => "write_reconcile_canvas_inclusive",
+                    "files" => "write_reconcile_files_inclusive",
+                    "history" => "write_reconcile_history_inclusive",
+                    "runs" => "write_reconcile_runs_inclusive",
+                    _ => "write_reconcile_other_inclusive",
+                };
+                super::profile(stage, began, value.as_object().map_or(0, Map::len));
             }
         }
     } else {

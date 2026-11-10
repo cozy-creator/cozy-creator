@@ -328,33 +328,49 @@ impl Client {
         write: bool,
         build: impl Fn(&reqwest::Client, &str) -> RequestBuilder,
     ) -> Result<T, Error> {
+        let profiling = !write && std::env::var_os("COZY_XS160_PROJECT_PROFILE").is_some();
         let mut restarted = false;
         loop {
+            let began = Instant::now();
             let answer = self.send(&build).await?;
+            if profiling {
+                eprintln!("xs160_profile stage=cli_exchange_headers elapsed_ms={:.3} count=0", began.elapsed().as_secs_f64() * 1000.0);
+            }
             let ignored = answer.headers().get(IGNORED_FIELDS).and_then(|v| v.to_str().ok()).map(str::to_owned);
+            let began = Instant::now();
             let lacks = match self.lacks(answer).await? {
-                Ok(body) => match serde_json::from_slice::<T>(&body) {
-                    Ok(value) => {
-                        if let Some(fields) = ignored {
-                            let lacks = format!("does not read {fields}");
-                            self.say(&format!("{}; it carried out the ask without them", self.lacking(&lacks)));
-                            self.restart(&lacks).await?;
+                Ok(body) => {
+                    if profiling {
+                        eprintln!("xs160_profile stage=cli_exchange_body elapsed_ms={:.3} count={}", began.elapsed().as_secs_f64() * 1000.0, body.len());
+                    }
+                    let began = Instant::now();
+                    let decoded = serde_json::from_slice::<T>(&body);
+                    if profiling {
+                        eprintln!("xs160_profile stage=cli_exchange_decode elapsed_ms={:.3} count={}", began.elapsed().as_secs_f64() * 1000.0, body.len());
+                    }
+                    match decoded {
+                        Ok(value) => {
+                            if let Some(fields) = ignored {
+                                let lacks = format!("does not read {fields}");
+                                self.say(&format!("{}; it carried out the ask without them", self.lacking(&lacks)));
+                                self.restart(&lacks).await?;
+                            }
+                            return Ok(value);
                         }
-                        return Ok(value);
+                        Err(e) if self.other_version() && write => {
+                            let lacks = format!("answers without what this cozy reads ({e})");
+                            self.say(&format!("{}; it carried out the ask, which isn't sent again", self.lacking(&lacks)));
+                            self.restart(&lacks).await?;
+                            let said = format!("Calcifer carried this out and answered in a shape this cozy doesn't read: {e}");
+                            return Err(Error::new(Kind::Internal, "answer_unreadable", said));
+                        }
+                        Err(e) if self.other_version() => format!("answers without what this cozy reads ({e})"),
+                        Err(e) => {
+                            let said = format!("Calcifer answered without what this cozy reads: {e}");
+                            return Err(Error::new(Kind::Internal, "answer_unreadable", said));
+                        }
                     }
-                    Err(e) if self.other_version() && write => {
-                        let lacks = format!("answers without what this cozy reads ({e})");
-                        self.say(&format!("{}; it carried out the ask, which isn't sent again", self.lacking(&lacks)));
-                        self.restart(&lacks).await?;
-                        let said = format!("Calcifer carried this out and answered in a shape this cozy doesn't read: {e}");
-                        return Err(Error::new(Kind::Internal, "answer_unreadable", said));
-                    }
-                    Err(e) if self.other_version() => format!("answers without what this cozy reads ({e})"),
-                    Err(e) => {
-                        let said = format!("Calcifer answered without what this cozy reads: {e}");
-                        return Err(Error::new(Kind::Internal, "answer_unreadable", said));
-                    }
-                },
+                }
                 Err(lacks) => lacks,
             };
             if restarted || !self.restart(&lacks).await? {

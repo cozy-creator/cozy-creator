@@ -52,7 +52,14 @@ async fn project_of(api: &Arc<Api>, parts: &mut axum::http::request::Parts) -> O
 /// Around every project route: a write with an `Idempotency-Key` is answered once, and again as it was.
 pub(super) async fn answered(State(api): State<Arc<Api>>, request: Request, next: Next) -> Response {
     if matches!(*request.method(), Method::GET | Method::HEAD | Method::OPTIONS) {
-        return next.run(request).await;
+        let state_read = *request.method() == Method::GET && request.uri().path()
+            .strip_prefix("/v1/projects/").is_some_and(|part| !part.is_empty() && !part.contains('/'));
+        let began = std::time::Instant::now();
+        let response = next.run(request).await;
+        if state_read {
+            super::profile("state_response_ready_inclusive", began, 0);
+        }
+        return response;
     }
     let key = request.headers().get("idempotency-key").and_then(|v| v.to_str().ok()).map(str::trim).filter(|k| !k.is_empty()).map(str::to_owned);
     let Some(key) = key else { return next.run(request).await };
