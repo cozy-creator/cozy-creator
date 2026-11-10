@@ -227,7 +227,7 @@ impl Projects {
         let project = self.open(api, &entry.path).map_err(Refusal)?;
         if project.id != entry.id {
             let said = format!("{named} was in {}, which holds another project now", entry.path.display());
-            return Err(Refusal(Error::new(Kind::NotFound, "project_unknown", said).next("cozy project ls")));
+            return Err(Refusal(Error::new(Kind::NotFound, "project_unknown", said).next("cozy ls")));
         }
         // Opened for a call: used now, which the index lists by.
         api.calcifer.store().project_opened(&project.id, &identity(&project.folder.dir).1, &project.folder.dir, Some(now_ms()))?;
@@ -361,7 +361,7 @@ fn known(api: &Api, text: &str) -> Result<crate::state::KnownProject, Error> {
     }
     let mut named: Vec<_> = indexed.into_iter().filter(|entry| entry.name.eq_ignore_ascii_case(text)).collect();
     match named.len() {
-        0 => Err(Error::new(Kind::NotFound, "project_unknown", format!("this computer knows no project {text}")).next("cozy project ls")),
+        0 => Err(Error::new(Kind::NotFound, "project_unknown", format!("this computer knows no project {text}")).next("cozy ls")),
         1 => Ok(named.remove(0)),
         _ => {
             let ids: Vec<String> = named.iter().map(|entry| format!("{} ({})", entry.id, entry.path.display())).collect();
@@ -468,7 +468,7 @@ impl Holding {
             let Some(path) = self.file(&range.source).await? else { continue };
             let fps = lock.files.get(&range.source).map_or(0.0, |file| file.fps);
             if fps <= 0.0 {
-                return Err(Error::new(Kind::Unavailable, "range_unmeasured", format!("{}: its rate isn't measured, so no range of it can be cut", folder::prefix_of(&range.source))).next("cozy project status"));
+                return Err(Error::new(Kind::Unavailable, "range_unmeasured", format!("{}: its rate isn't measured, so no range of it can be cut", folder::prefix_of(&range.source))).next("cozy status"));
             }
             let seconds = crate::runs::clip::Range { start: f64::from(range.from) / fps, end: range.to.map(|to| f64::from(to) / fps) };
             let mut notes = vec![];
@@ -1012,11 +1012,6 @@ pub(super) fn not_saved(why: &str) -> String {
     format!("Not saved yet: {why}, and what landed goes in as soon as it can")
 }
 
-/// What to run while a project's render goes on.
-fn status_next(folder: &Folder) -> Vec<String> {
-    vec![format!("cozy project -p {} status", identity(&folder.dir).1)]
-}
-
 /// Makes a new project called `name`: in this person's home folder, or at `path`, a folder of this computer's, recorded in the index as
 /// used now.
 async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Bytes, BytesRejection>) -> Result<Json<Opened>, Refusal> {
@@ -1030,9 +1025,11 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Byte
             return Err(Refusal(Error::new(Kind::Usage, "project_path", said)));
         }
         Some(path) => {
+            // First use from separate CLI processes can reach this path together.
+            let _creation = api.projects.made.lock().expect("made lock");
             if Folder::is_project(path) {
                 let said = format!("{} is a project already", path.display());
-                return Err(Refusal(Error::new(Kind::Conflict, "project_exists", said).next(format!("cozy project -p {} status", path.display()))));
+                return Err(Refusal(Error::new(Kind::Conflict, "project_exists", said).next("cozy status")));
             }
             std::fs::create_dir_all(path).map_err(|e| io(path, e))?;
             let name = open.name.clone().unwrap_or_else(|| folder_name(path));
@@ -1071,7 +1068,7 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Byte
     };
     let opened = opened(id, &dir);
     api.calcifer.store().project_opened(&opened.id, &opened.name, &dir, Some(now_ms()))?;
-    let next = vec![format!("cozy project -p {} render all --on <machine>", opened.name)];
+    let next = vec!["cozy render all --on <machine>".into()];
     let said = moved_on.into_iter().chain(said).collect();
     Ok(Json(Opened { next, said, ..opened }))
 }
@@ -1127,7 +1124,7 @@ fn holding(path: &FsPath) -> Result<PathBuf, Error> {
         let said = format!("{} is in no project: no {} there or in a folder above it", path.display(), db::DB);
         Error::new(Kind::NotFound, "project_not_found", said)
             .remedy(format!("name {}", api::calcifer::project::NAMED_BY))
-            .next("cozy project ls")
+            .next("cozy ls")
     };
     let start = platform::durable::canonical(path).map_err(|_| not_found())?;
     (start.ancestors()).find(|dir| Folder::is_project(dir)).map(FsPath::to_owned).ok_or_else(not_found)
@@ -1210,15 +1207,15 @@ fn yes() -> bool {
 
 /// What to run next on a project: its orphans' renames and `reclaim`, then a pull of what isn't here, else a render of what is owed.
 fn next_steps(orphans: &[Orphan], absent: u64, owed: bool) -> Vec<String> {
-    let renames = orphans.iter().map(|orphan| format!("cozy project rename {} {}", orphan.name, orphan.renamed_to.as_deref().unwrap_or("<its new name>")));
+    let renames = orphans.iter().map(|orphan| format!("cozy rename {} {}", orphan.name, orphan.renamed_to.as_deref().unwrap_or("<its new name>")));
     let mut next: Vec<String> = renames.collect();
     if !orphans.is_empty() {
-        next.push("cozy project reclaim".into());
+        next.push("cozy reclaim".into());
     }
     if absent > 0 {
-        next.push("cozy project pull".into());
+        next.push("cozy pull".into());
     } else if owed {
-        next.push("cozy project render all --on <machine>".into());
+        next.push("cozy render all --on <machine>".into());
     }
     next
 }
@@ -1465,7 +1462,7 @@ fn row(reading: &Reading, i: usize) -> Row {
         .map(|sha256| folder::prefix_of(sha256))
         .collect();
     let status = match &standing.state {
-        _ if !gone.is_empty() => format!("not on this computer: {}: cozy project pull", gone.join(", ")),
+        _ if !gone.is_empty() => format!("not on this computer: {}: cozy pull", gone.join(", ")),
         Stand::Pinned { version: None, .. } => "approved".into(),
         Stand::Pinned { version: Some(version), changed } if changed.is_empty() => format!("approved: {noun} {version}"),
         Stand::Pinned { version: Some(version), changed } => format!("approved: {noun} {version}; its inputs changed: {}", changed.join(", ")),
@@ -1621,7 +1618,7 @@ async fn reclaim(
     let going = (api.calcifer.store().runs(&filter).map(|(rows, ..)| rows).unwrap_or_default().iter()).any(|row| row.state != crate::store::State::Settled);
     if asked.yes && (going || *project.walking.lock().expect("walking lock")) {
         let said = "the project is rendering: reclaim once its runs land";
-        return Err(Refusal(Error::new(Kind::Conflict, "project_busy", said).next("cozy project status")));
+        return Err(Refusal(Error::new(Kind::Conflict, "project_busy", said).next("cozy status")));
     }
     let (doc, lock) = (Doc::load(folder).map_err(Refusal)?, folder.lock().map_err(Refusal)?);
     let (orphans, kept) = (orphans(&doc, folder, &lock), kept_files(&doc, &lock));
@@ -1629,7 +1626,7 @@ async fn reclaim(
     let recorded = lock.recorded();
     if let (true, Some(why)) = (asked.yes, &lost) {
         let remedy = format!("put {} back from a backup, or delete what you don't want from files/ by hand", db::DB);
-        return Err(Refusal(Error::new(Kind::Conflict, "project_history_lost", why.clone()).remedy(remedy).next("cozy project status")));
+        return Err(Refusal(Error::new(Kind::Conflict, "project_history_lost", why.clone()).remedy(remedy).next("cozy status")));
     }
     if asked.yes {
         // An orphaned cut's film at the root goes with it.
@@ -1660,7 +1657,7 @@ async fn reclaim(
     if asked.yes {
         canvas::prune(folder, &id, |name| doc.find(name).is_some()).map_err(Refusal)?;
     }
-    let next = (!asked.yes && lost.is_none() && (files > unrecorded || !orphans.is_empty())).then(|| "cozy project reclaim --yes".to_owned()).into_iter().collect();
+    let next = (!asked.yes && lost.is_none() && (files > unrecorded || !orphans.is_empty())).then(|| "cozy reclaim --yes".to_owned()).into_iter().collect();
     Ok(Json(Reclaimed { orphans, files, bytes, unrecorded, deleted: asked.yes, next, lost, unheld }))
 }
 
@@ -1726,7 +1723,7 @@ fn renamed_under(project: &Arc<Project>, id: &str, asked: Rename, follows: bool)
         }
         if old.is_none() && !free && canvas::row(folder, &asked.from)?.is_none() {
             let said = format!("the project keeps no version of {}", asked.from);
-            return Err(Error::new(Kind::NotFound, "asset_unknown", said).next("cozy project status"));
+            return Err(Error::new(Kind::NotFound, "asset_unknown", said).next("cozy status"));
         }
         let to = doc.assets[i].name.clone();
         if old.is_some() && !same && lock.asset(&to).is_some_and(|held| held.on_record().next().is_some()) {
@@ -1977,7 +1974,7 @@ async fn runs(
                 takes.push(Take { key: new_key(), asset: name.clone(), target: target.clone(), approve: false, new: true, pickup: None });
             }
             if approve {
-                say(format!("--approve pins what a run lands: `cozy project approve {name}` pins this once it is made"));
+                say(format!("--approve pins what a run lands: `cozy approve {name}` pins this once it is made"));
             }
             continue;
         }
@@ -2042,7 +2039,7 @@ async fn runs(
     walk(&api, &project);
     sync_jobs(&project, numbered(&api)).map_err(Refusal)?;
     let ask = (!joined || added > 0).then_some(ask.id);
-    Ok((StatusCode::ACCEPTED, Json(Asked { id, ask, path: project.folder.dir.clone(), joined, added, skipped, queued, next: status_next(&project.folder), board: project.jobs.board() })))
+    Ok((StatusCode::ACCEPTED, Json(Asked { id, ask, path: project.folder.dir.clone(), joined, added, skipped, queued, next: vec!["cozy status".into()], board: project.jobs.board() })))
 }
 
 /// A run by its number, as its record says now.
@@ -2189,7 +2186,7 @@ fn held_name(source: &str) -> Result<Option<Digest>, Refusal> {
 fn import_failed(source: &str, why: String) -> Refusal {
     // A hash is no one's to read: a person dropped a file, and is told of it by its name.
     let said = if source.starts_with("sha256:") { why } else { format!("{source}: {why}") };
-    Refusal(Error::new(Kind::Validation, "import_failed", said).remedy("cozy project import takes a picture, video or sound: a file, or an http(s) URL"))
+    Refusal(Error::new(Kind::Validation, "import_failed", said).remedy("cozy import takes a picture, video or sound: a file, or an http(s) URL"))
 }
 
 fn not_held(source: &str) -> Refusal {
@@ -2314,7 +2311,7 @@ async fn approve(
             [file] => file.sha256.clone(),
             [] => {
                 let said = format!("no file of this project's starts with {}", asked.version);
-                return Err(Refusal(Error::new(Kind::Usage, "version_unknown", said).next("cozy project status")));
+                return Err(Refusal(Error::new(Kind::Usage, "version_unknown", said).next("cozy status")));
             }
             several => {
                 let said = format!("{} fits {} files of this project: write more of its hash", asked.version, several.len());
@@ -2328,7 +2325,7 @@ async fn approve(
                     [] => format!("{} has no {noun} yet", asset.name),
                     numbers => format!("{} has no {noun} {wanted}: it has {}", asset.name, numbers.join(", ")),
                 };
-                return Err(Refusal(Error::new(Kind::Usage, "version_unknown", said).next("cozy project status")));
+                return Err(Refusal(Error::new(Kind::Usage, "version_unknown", said).next("cozy status")));
             };
             sha256.clone()
         }
@@ -2367,7 +2364,7 @@ async fn unpin(
     if asset.pin.is_some() {
         if asset.hollow && lock.asset(&name).is_none_or(|held| held.versions.is_empty()) {
             let said = format!("{name} is a constant, nothing but its file: to be rid of it, delete it");
-            return Err(Refusal(Error::new(Kind::Usage, "project_edit", said).next(format!("cozy project delete {name}"))));
+            return Err(Refusal(Error::new(Kind::Usage, "project_edit", said).next(format!("cozy delete {name}"))));
         }
         folder.edit(|written| written.unapproved(&name)).map_err(Refusal)?;
     }
@@ -2487,7 +2484,7 @@ fn yaml_etag(text: &str) -> String {
     format!("\"{}\"", hex::encode(Sha256::digest(text)))
 }
 
-/// `GET /v1/projects/{id}/yaml`: the project as YAML, format 4, as it is this moment (`cozy project export`), and the ETag a `PUT` may name.
+/// `GET /v1/projects/{id}/yaml`: the project as YAML, format 4, as it is this moment (`cozy export`), and the ETag a `PUT` may name.
 async fn yaml(State(api): State<Arc<Api>>, Path(id): Path<String>, headers: HeaderMap) -> Result<Response, Refusal> {
     let project = api.projects.get(&api, &id)?;
     let text = project.folder.text().map_err(Refusal)?;
@@ -2498,7 +2495,7 @@ async fn yaml(State(api): State<Arc<Api>>, Path(id): Path<String>, headers: Head
     Ok(([(header::CONTENT_TYPE, "application/yaml".to_owned()), (header::ETAG, etag)], text).into_response())
 }
 
-/// `PUT /v1/projects/{id}/yaml` (`cozy project import <file>.yaml`): these bytes are the project, each box, field and section that differs
+/// `PUT /v1/projects/{id}/yaml` (`cozy import <file>.yaml`): these bytes are the project, each box, field and section that differs
 /// written in one transaction and one entry, and a box renamed in them keeps its versions. With `If-Match`, only if the export still is
 /// what that read. What doesn't read is refused with its line, and nothing changes. Nothing is rendered, and a render going keeps the text
 /// it was asked with.
@@ -2577,7 +2574,7 @@ async fn cut(
 fn send(path: &FsPath, etag: &str, headers: &HeaderMap) -> Result<Response, Refusal> {
     let missing = |e: std::io::Error| {
         let said = format!("{} is not there: {e}", path.display());
-        Refusal(Error::new(Kind::NotFound, "file_missing", said).next("cozy project render all"))
+        Refusal(Error::new(Kind::NotFound, "file_missing", said).next("cozy render all"))
     };
     let file = std::fs::File::open(path).map_err(missing)?;
     let len = file.metadata().map_err(missing)?.len();
@@ -2756,7 +2753,7 @@ impl Walk {
             false => missed.names.iter().cloned().collect::<Vec<_>>().join(" "),
         };
         let on = missed.on.iter().map(ToString::to_string).collect::<Vec<_>>().join(",");
-        let mut error = Error::new(first.kind, "render_incomplete", said).cause(first.code).next(format!("cozy project render {what} --on {on}"));
+        let mut error = Error::new(first.kind, "render_incomplete", said).cause(first.code).next(format!("cozy render {what} --on {on}"));
         error.next.extend(first.next.into_iter().take(1));
         error
     }
@@ -3763,7 +3760,7 @@ impl Walk {
                     .map(|sha256| folder::prefix_of(sha256))
                     .collect();
                 if !gone.is_empty() {
-                    return Err(cannot(&name, format!("{} of {} is not on this computer: cozy project pull", gone.join(", "), read.name)));
+                    return Err(cannot(&name, format!("{} of {} is not on this computer: cozy pull", gone.join(", "), read.name)));
                 }
             }
             let with = doc.target(i);
@@ -3917,7 +3914,7 @@ impl Walk {
             let file = lock.files.get(&range.source).ok_or_else(|| format!("{} isn't one of the project's files", folder::prefix_of(&range.source)))?;
             let path = self.folder().path(&file.path);
             if !path.is_file() || file.fps <= 0.0 {
-                return Err(format!("{} must be on this computer, and measured, to cut a range of it: cozy project pull", folder::prefix_of(&range.source)));
+                return Err(format!("{} must be on this computer, and measured, to cut a range of it: cozy pull", folder::prefix_of(&range.source)));
             }
             let seconds = crate::runs::clip::Range { start: f64::from(range.from) / file.fps, end: range.to.map(|to| f64::from(to) / file.fps) };
             let mut notes = vec![];
@@ -4012,7 +4009,7 @@ impl Walk {
                 true => file.length,
                 false => {
                     std::fs::metadata(&path)
-                        .map_err(|e| Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", path.display())).next("cozy project pull"))?
+                        .map_err(|e| Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", path.display())).next("cozy pull"))?
                         .len()
                 }
             };
@@ -4460,7 +4457,7 @@ impl Walk {
         pieces.retain(|piece| !without.iter().any(|left| name_key(&left.piece) == name_key(&piece.asset)));
         for piece in skips {
             let (why, said) = match doc.find(&piece) {
-                Some(_) => ("no version yet", format!("which has no version yet: cozy project render {piece} --on {on}")),
+                Some(_) => ("no version yet", format!("which has no version yet: cozy render {piece} --on {on}")),
                 None => ("no longer in the project", "which is no longer in the project".to_owned()),
             };
             self.say(Event::Warning { message: format!("{name} is cut without {piece}, {said}"), name: None });
@@ -4500,7 +4497,7 @@ impl Walk {
         .await;
         self.project.rendering.lock().expect("rendering lock").remove(&asset.name);
         crate::events::project_settled(&folder.dir);
-        let (made, left) = cutting_result.map_err(|e| Error::new(Kind::Internal, "edit_cut", e.to_string()))?.map_err(|e| e.next(format!("cozy project render {} --on {on}", asset.name)))?;
+        let (made, left) = cutting_result.map_err(|e| Error::new(Kind::Internal, "edit_cut", e.to_string()))?.map_err(|e| e.next(format!("cozy render {} --on {on}", asset.name)))?;
         self.leave_out(&name, &on, left, &mut without);
         let Some((made, part)) = made else {
             let stands = if folder.dir.join(&name).is_file() { ": the film that stands stays" } else { "" };
@@ -4541,7 +4538,7 @@ impl Walk {
             if without.iter().any(|held| name_key(&held.piece) == name_key(&piece)) {
                 continue;
             }
-            self.say(Event::Warning { message: format!("{name} is cut without {piece}: {answer}: cozy project render {piece} --on {on}"), name: None });
+            self.say(Event::Warning { message: format!("{name} is cut without {piece}: {answer}: cozy render {piece} --on {on}"), name: None });
             without.push(folder::Without { piece, why, absent: false });
         }
     }
@@ -4624,7 +4621,7 @@ impl Walk {
             let Err(reason) = brought else { continue };
             let answer = changed.then(|| tools::unread(ffprobe, &piece.path)).flatten().map_or(String::new(), |answer| format!(" ({answer})"));
             let piece = piece.asset.clone();
-            self.say(Event::Warning { message: format!("{} is cut without {piece}: {why}{answer}, and it can't be had: {reason}: cozy project render {piece} --on {on}, or cozy project pull", cut_name(&asset.name)), name: None });
+            self.say(Event::Warning { message: format!("{} is cut without {piece}: {why}{answer}, and it can't be had: {reason}: cozy render {piece} --on {on}, or cozy pull", cut_name(&asset.name)), name: None });
             without.push(folder::Without { piece, why: why.into(), absent: !here });
         }
         Ok(without)
@@ -4781,7 +4778,7 @@ fn said_by(run: &Run) -> Vec<String> {
 
 fn find(doc: &Doc, name: &str) -> Result<usize, Error> {
     doc.find(name).ok_or_else(|| {
-        Error::new(Kind::NotFound, "asset_unknown", format!("the project has nothing named {name}")).next("cozy project status")
+        Error::new(Kind::NotFound, "asset_unknown", format!("the project has nothing named {name}")).next("cozy status")
     })
 }
 

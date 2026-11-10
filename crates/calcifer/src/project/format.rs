@@ -20,7 +20,7 @@ use super::{
     graph::{self, Graph, SELF, as_name, can_take, edits, is_name, mentions, mentions_in, mentions_replaced, name_key, version_of},
 };
 
-/// The name `cozy project render all` means.
+/// The name `cozy render all` means.
 pub(crate) const ALL: &str = "all";
 pub(super) const FORMAT: u64 = 4;
 /// What the platform reads of an asset. Any other key is an input.
@@ -59,7 +59,7 @@ fn kind_made_here(plain: &str) -> Option<&'static str> {
 
 /// A new project's project.yaml: a short film that renders as it stands.
 pub(crate) fn starter() -> String {
-    r#"# A short film, ready to render: cozy project render all --on <machine>
+    r#"# A short film, ready to render: cozy render all --on <machine>
 # Change anything. Each box says what makes it; `<name>` in any text reads that box.
 version: 4
 
@@ -324,7 +324,7 @@ impl Doc {
         if version.is_some_and(|version| version != format) || (version.is_none() && top.contains_key("entities")) {
             let said = format!("{} is format {}, and cozy reads format {FORMAT}: it is left as it is", folder::PROJECT, version.unwrap_or(2));
             // Newer is a newer cozy's; older is one this cozy can't move, so a new project.
-            return Err(invalid("project_format", said).next(if version.is_some_and(|version| version > format) { "cozy update" } else { "cozy project new" }));
+            return Err(invalid("project_format", said).next(if version.is_some_and(|version| version > format) { "cozy update" } else { "cozy open" }));
         }
         let mut warnings = vec![];
         if version.is_none() {
@@ -383,7 +383,7 @@ impl Doc {
     fn declare(&mut self, name: &str, written: &Value, defaults: &Map<String, Value>, folder: &Folder, lock: &Lock) {
         let key = name_key(name);
         if key == ALL {
-            self.warn(name, format!("{name} is named `{ALL}`: `cozy project render {ALL}` means everything, and makes it with the rest"));
+            self.warn(name, format!("{name} is named `{ALL}`: `cozy render {ALL}` means everything, and makes it with the rest"));
         }
         let mut body = match written {
             Value::Object(body) => body.clone(),
@@ -405,7 +405,7 @@ impl Doc {
             Some(value) => match file_named(&text_of(Some(value)), lock) {
                 Ok(sha256) => {
                     if !lock.files.get(&sha256).is_some_and(|file| file.here) {
-                        self.warn(name, format!("{name}'s approved: {} is not on this computer: cozy project pull", folder::prefix_of(&sha256)));
+                        self.warn(name, format!("{name}'s approved: {} is not on this computer: cozy pull", folder::prefix_of(&sha256)));
                     }
                     pin = Some(sha256);
                 }
@@ -523,14 +523,14 @@ impl Doc {
         let mut unread = vec![];
         for asset in self.assets.iter().filter(|asset| asset.text.is_some()) {
             if let Some((tool, _)) = self.reserved.iter().find(|(_, tags)| is_tag(tags, &asset.name)) {
-                said.push(Warning::of(&asset.name, format!("{0} is a tag of {tool}, so a text asset can't go by it: cozy project rename {0} <another name>", asset.name)));
+                said.push(Warning::of(&asset.name, format!("{0} is a tag of {tool}, so a text asset can't go by it: cozy rename {0} <another name>", asset.name)));
             }
         }
         for i in 0..n {
             let asset = &self.assets[i];
             let tags = self.tags(i);
             for tag in tags.into_iter().flatten().filter(|tag| self.find(tag).is_some()) {
-                let line = Warning::of(&asset.name, format!("{tag} is also a tag of {}: <{tag}> in its text is that tag, not this: cozy project rename {tag} <another name>", self.target(i)));
+                let line = Warning::of(&asset.name, format!("{tag} is also a tag of {}: <{tag}> in its text is that tag, not this: cozy rename {tag} <another name>", self.target(i)));
                 if !said.contains(&line) {
                     said.push(line);
                 }
@@ -730,7 +730,7 @@ impl Doc {
             let listed: Vec<String> = held.into_iter().flat_map(|held| &held.versions).map(|version| version.number.to_string()).collect();
             let said = &read.said;
             let why = match (deleted, listed.as_slice()) {
-                (true, _) => format!("<{said}> was deleted: `cozy project history` lists it, and `undo <id>` brings {}'s {number} back", of.name),
+                (true, _) => format!("<{said}> was deleted: `cozy history` lists it, and `undo <id>` brings {}'s {number} back", of.name),
                 (_, []) => format!("<{said}>: {} has no versions yet", of.name),
                 (_, listed) => format!("<{said}>: {} has no version {number}, only {}", of.name, listed.join(", ")),
             };
@@ -1169,11 +1169,11 @@ pub(super) fn approved_file(approved: Option<&Value>, lock: &Lock) -> Option<Str
 /// The sha256 a file pin's value names, or how it fails, to follow "{name}'s {field}".
 fn file_named(written: &str, lock: &Lock) -> Result<String, String> {
     if written.is_empty() || !written.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(format!(" is not a hash: {written} is not read: `cozy project import {}` adds it to the project", quoted(written)));
+        return Err(format!(" is not a hash: {written} is not read: `cozy import {}` adds it to the project", quoted(written)));
     }
     match lock.matching(&written.to_ascii_lowercase()).as_slice() {
         [file] => Ok(file.sha256.clone()),
-        [] => Err(format!(": no file's hash starts with {written}: `cozy project import <file>` adds one to the project")),
+        [] => Err(format!(": no file's hash starts with {written}: `cozy import <file>` adds one to the project")),
         several => Err(format!(": {written} fits {} files: write more of its hash", several.len())),
     }
 }
@@ -1217,7 +1217,7 @@ pub(super) fn free_of(holds: impl Fn(&str) -> bool, lock: &Lock, wanted: &str) -
 /// What a person who typed `name` is told when the project has it.
 pub(crate) fn name_taken(doc: &Doc, name: &str) -> Error {
     let there = doc.find(name).map_or(name, |i| doc.assets[i].name.as_str());
-    Error::new(Kind::Conflict, "asset_exists", format!("{there} is in the project already")).remedy(format!("use another name, or change it: cozy project set {there}"))
+    Error::new(Kind::Conflict, "asset_exists", format!("{there} is in the project already")).remedy(format!("use another name, or change it: cozy set {there}"))
 }
 
 /// Whether a text asset can go by `name`: not a tag of a package this project uses.

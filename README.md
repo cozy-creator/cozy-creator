@@ -64,11 +64,10 @@ First-party packages have no owner (`sdxl/generate`); everyone else's are `owner
 `cozy login` signs you up on first use, with a code it emails. On Linux, runs go to this computer's
 machine, which starts when used and stops after 15 minutes idle; without an NVIDIA GPU here, add
 `--on new` to run on a rented one. macOS and Windows don't run models locally yet: add `--on new` to
-rent a Linux GPU, or `--on <machine>` for one you have. A run belongs to a project, as a commit to a
-repository, and its outputs land in that project's `files/`: name it with `-p <name>`, or once for the
-shell with `export COZY_PROJECT=<name>`. The folder you're in names none.
+rent a Linux GPU, or `--on <machine>` for one you have. The current working directory is the project. Its outputs land in `files/`, and Cozy creates its
+project database when you first use a project command.
 
-`cozy --help` and `cozy <verb> --help` are the reference.
+`cozy` lists the commands. `cozy <verb> --help` shows a command's options.
 
 `cozy doctor` diagnoses this computer's cozy (Calcifer, its service, the machine, tools, GPUs) and
 restarts a Calcifer that is stuck or runs an older cozy.
@@ -80,13 +79,12 @@ and the cuts. Everything in the film is an asset, a package's function makes it,
 state. Putting old text back returns the old take with no run, and approving pins a take.
 
 ```sh
-cozy project new garden                    # a short film that renders as it stands, in ~/garden
-export COZY_PROJECT=garden                 # the project the verbs below work in; -p garden says it for one
-cozy project render all --on <machine>
-cozy project render clash -n 3 --on <machine>
-cozy project approve clash 2               # clash holds take 2, as `approved`
-cozy project status
-cozy open garden                           # the canvas, in your browser
+mkdir garden && cd garden                 # this directory is the project
+cozy render all --on <machine>
+cozy render clash -n 3 --on <machine>
+cozy approve clash 2               # clash holds take 2, as `approved`
+cozy status
+cozy open                                  # this directory's canvas, in your browser
 ```
 
 The format and every command: [PROJECT-YAML.md](crates/calcifer/docs/PROJECT-YAML.md).
@@ -136,3 +134,12 @@ The workspace's crates live in `crates/`: `cozy` (the binary), `cli`, `calcifer`
 `tensorfs`, `varena`, `tensorfs-py`, `api` and `platform`.
 `crates/tensorfs` is the Rust library and `tfs` CLI; `crates/tensorfs-py` contains its PyO3 bindings,
 Python package and wheel configuration together. The browser player is `web/player`.
+
+### Local development
+
+On Linux, `scripts/dev-local.sh` watches the checkout with Watchexec, builds incrementally, installs
+successful builds into `~/.cozy/bin/cozy`, and restarts `cozy-calcifer.service`. It needs Watchexec,
+pnpm, binutils, and the pinned Rust toolchain. `scripts/dev-local.sh --once` runs one update.
+
+For browser hot reload, run `pnpm --dir web/app dev --host 127.0.0.1`. Vite uses the local Calcifer
+through the existing development proxy. The watcher also rebuilds the page embedded in the binary.

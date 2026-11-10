@@ -649,7 +649,7 @@ async fn step(State(api): State<Arc<Api>>, Path(id): Path<String>, headers: Head
 /// The entries a step takes, in the order it takes them; `None` when what it names is so already.
 fn chosen(entries: &[Entry], asked: &HistoryStep, way: Way) -> Result<Option<Vec<Entry>>, Error> {
     let stands = |entry: &Entry| entry.undone.is_none() == (way == Way::Back);
-    let unknown = |what: String| Error::new(Kind::NotFound, "history_unknown", format!("this project's history has no {what}: it keeps the last {KEPT} edits")).next("cozy project history");
+    let unknown = |what: String| Error::new(Kind::NotFound, "history_unknown", format!("this project's history has no {what}: it keeps the last {KEPT} edits")).next("cozy history");
     let one = |entry: Option<&Entry>, what: String| match entry {
         None => Err(unknown(what)),
         Some(entry) if stands(entry) => Ok(Some(vec![entry.clone()])),
@@ -685,7 +685,7 @@ fn chosen(entries: &[Entry], asked: &HistoryStep, way: Way) -> Result<Option<Vec
     };
     match head {
         Some(entry) => Ok(Some(vec![entry.clone()])),
-        None => Err(Error::new(Kind::Conflict, "history_empty", format!("nothing to {}", way.verb())).next("cozy project history")),
+        None => Err(Error::new(Kind::Conflict, "history_empty", format!("nothing to {}", way.verb())).next("cozy history")),
     }
 }
 
@@ -701,8 +701,8 @@ fn taken(api: &Arc<Api>, project: &Arc<Project>, id: &str, entry: &Entry, way: W
 fn conflict(book: &Book, entry: &Entry, change: &Change, way: Way, what: &str) -> Refusal {
     // A take `reclaim` cleared has no files: no edit took it, and none brings it back.
     if let Some(what) = what.strip_suffix(CLEARED) {
-        let said = format!("can't {} \"{}\": {what}: `cozy project reclaim --yes` cleared it, so it can't come back", way.verb(), entry.words);
-        return Refusal(Error::new(Kind::Conflict, "history_conflict", said).next(format!("cozy project render {}", change.name())).next("cozy project history"));
+        let said = format!("can't {} \"{}\": {what}: `cozy reclaim --yes` cleared it, so it can't come back", way.verb(), entry.words);
+        return Refusal(Error::new(Kind::Conflict, "history_conflict", said).next(format!("cozy render {}", change.name())).next("cozy history"));
     }
     let entries = book.entries.lock().unwrap_or_else(|e| e.into_inner());
     let later = entries.iter().rev().find(|other| other.id > entry.id && other.undone.is_none() && other.changes.iter().any(|held| held.touches(change.name())));
@@ -710,9 +710,9 @@ fn conflict(book: &Book, entry: &Entry, change: &Change, way: Way, what: &str) -
     let said = format!("can't {verb} \"{}\": {what}", entry.words);
     let error = match later {
         Some(later) => Error::new(Kind::Conflict, "history_conflict", format!("{said}, by \"{}\" ({})", later.words, said_by(&later.by)))
-            .next(format!("cozy project undo {}", later.id))
-            .next(format!("cozy project {verb} {}", entry.id)),
-        None => Error::new(Kind::Conflict, "history_conflict", format!("{said}, by a render or before this history")).next("cozy project history"),
+            .next(format!("cozy undo {}", later.id))
+            .next(format!("cozy {verb} {}", entry.id)),
+        None => Error::new(Kind::Conflict, "history_conflict", format!("{said}, by a render or before this history")).next("cozy history"),
     };
     Refusal(error)
 }

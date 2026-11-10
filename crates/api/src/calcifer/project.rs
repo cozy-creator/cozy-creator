@@ -1,6 +1,6 @@
 //! Calcifer's project API (xs-151, cl-758): the projects this computer knows, a project folder
 //! opened by its path, its assets as they stand and their versions (a video's are takes), the runs
-//! that make them, what happens as they go, and its files and cuts. The CLI's `cozy project` verbs
+//! that make them, what happens as they go, and its files and cuts. The CLI's asset verbs
 //! are one client of it.
 use std::{collections::BTreeMap, path::PathBuf};
 
@@ -46,9 +46,8 @@ pub const NAMED_BY: &str = "a project's name or id, or its folder on Calcifer's 
 
 /// A request in no project, which needs one.
 pub fn unnamed() -> Error {
-    Error::new(crate::error::Kind::Usage, "not_in_a_project", "name the project: -p <name>, or COZY_PROJECT=<name>")
-        .next("cozy project ls")
-        .next("cozy project new <name>")
+    Error::new(crate::error::Kind::Usage, "not_in_a_project", "run this command from a project directory")
+        .next("cozy open")
 }
 
 /// Where a card sits on a project's canvas: one row of `project.canvas.yaml`.

@@ -1,6 +1,6 @@
 # A project as YAML (format 4)
 
-A project's state is its `project.db` (`PROJECT-DB.md`); the page and the CLI change it through Calcifer. YAML is its view: `cozy project export` writes it, for reading, a diff or git, and `cozy project import <file>.yaml` reads one back, each box and field that differs written as one edit. It is never the source of truth, and a comment in it isn't kept. A folder of the files from before `project.db` (format 2, 3 or 4) is imported on its first open. The HTTP API is in `CALCIFER-API.md`, and the reasons in `tracker/design/project-format-ui.md` and `tracker/design/tools.md`.
+A project's state is its `project.db` (`PROJECT-DB.md`); the page and the CLI change it through Calcifer. YAML is its view: `cozy export` writes it, for reading, a diff or git, and `cozy import <file>.yaml` reads one back, each box and field that differs written as one edit. It is never the source of truth, and a comment in it isn't kept. A folder of the files from before `project.db` (format 2, 3 or 4) is imported on its first open. The HTTP API is in `CALCIFER-API.md`, and the reasons in `tracker/design/project-format-ui.md` and `tracker/design/tools.md`.
 
 ## The idea
 
@@ -22,7 +22,7 @@ Calcifer owns all of this. It knows no inputs and no packages by name.
 | `<edit_name>.mp4`, `.otio` | Each edit |
 | `.runs/` | Where a run's outputs land on their way into `files/` |
 
-An export holds what the project says, so it travels, and `files/` with `cozy project push` and `pull`. An unknown key warns when it's imported.
+An export holds what the project says, so it travels, and `files/` with `cozy push` and `pull`. An unknown key warns when it's imported.
 
 ## The file
 
@@ -125,7 +125,7 @@ Every other key is a **field** of its tool: the binder gives it to the function 
 
 An asset that is only a `description`, with no tool and no file, stands as words: what mentions it reads them.
 
-**A box with no tool.** A box is its words, an optional tool, and its versions. With versions and no `tool:` it's a box of pictures: one primary (`approved`, else its newest) and a description, nothing puts it out of date, and `cozy project import <file> --into <name>` adds the next version. Taking a tool off takes its fields with it (Undo puts them back); its versions, numbers, `approved` and `description` stay.
+**A box with no tool.** A box is its words, an optional tool, and its versions. With versions and no `tool:` it's a box of pictures: one primary (`approved`, else its newest) and a description, nothing puts it out of date, and `cozy import <file> --into <name>` adds the next version. Taking a tool off takes its fields with it (Undo puts them back); its versions, numbers, `approved` and `description` stay.
 
 Putting a tool on a text asset moves its `text` to `instructions`. On a picture, the tool starts from the version shown, approved else newest: `<self.N>` in its first required picture slot, else at the start of its first prompt. A tool approves nothing.
 
@@ -181,21 +181,21 @@ An asset has one main file; any other files are what the same run left, such as 
 
 ## Import
 
-`cozy project import ./kyogre.png [name]` is one act: the file in `files/`, a box under its name, its hash never handled. With no name it takes the file's, lower-cased: `Kyogre Art (1).png` is `kyogre_art_1`. A name cozy picks gets `_2` if the project has it. One you typed that the project has is refused, naming what has it. The same file twice is two assets and one file.
+`cozy import ./kyogre.png [name]` is one act: the file in `files/`, a box under its name, its hash never handled. With no name it takes the file's, lower-cased: `Kyogre Art (1).png` is `kyogre_art_1`. A name cozy picks gets `_2` if the project has it. One you typed that the project has is refused, naming what has it. The same file twice is two assets and one file.
 
-**A take lifted out** is the normal way to keep one: `cozy project import 2aee8c40753d amy.smiling --description "Amy, smiling."` is a plain asset, a file and its words, with no `tool` and no link to what made it.
+**A take lifted out** is the normal way to keep one: `cozy import 2aee8c40753d amy.smiling --description "Amy, smiling."` is a plain asset, a file and its words, with no `tool` and no link to what made it.
 
 ## Orphans
 
-An asset no longer named in the project keeps its versions and files until `reclaim`. Deleted from the page or the CLI, or gone from an imported YAML once a render has seen that, its name is free: a later asset of that name starts with no versions, and `cozy project rename` or Undo still finds the old ones. What it made stands.
+An asset no longer named in the project keeps its versions and files until `reclaim`. Deleted from the page or the CLI, or gone from an imported YAML once a render has seen that, its name is free: a later asset of that name starts with no versions, and `cozy rename` or Undo still finds the old ones. What it made stands.
 
 ## Discarded takes
 
-Discarding a take takes it off its asset at once. Nothing runs and no bytes go: it stays on record, discarded, until `reclaim`, and undo brings it back (`cozy project undo <id>`, the line its discard printed; `cozy project history` lists it). Its number is never given again, so a list can have gaps.
+Discarding a take takes it off its asset at once. Nothing runs and no bytes go: it stays on record, discarded, until `reclaim`, and undo brings it back (`cozy undo <id>`, the line its discard printed; `cozy history` lists it). Its number is never given again, so a list can have gaps.
 
 - **The approved take:** its `approved:` goes with it, and the asset stands on its newest take left. Undo brings both back, unless another take has been approved since.
 - **The last take:** the asset stays, with no take, and a render makes it again like anything with no state.
-- **A running take** isn't a take yet: `cozy project cancel <name>` stops it.
+- **A running take** isn't a take yet: `cozy cancel <name>` stops it.
 - **What read it** is out of date only by the usual rule, that what it reads has changed. A take that picked up from this one stands, and still says which take it picked up from.
 - **`reclaim`** ends Undo and deletes the files, except a file another version names, or that a clip of an Edit's version cut.
 
@@ -204,14 +204,14 @@ Discarding a take takes it off its asset at once. Nothing runs and no bytes go: 
 A storyboard is a picture drawn before the video exists:
 
 ```
-cozy project render clash_board -n 4
-cozy project approve clash_board 3
-cozy project render clash
+cozy render clash_board -n 4
+cozy approve clash_board 3
+cozy render clash
 ```
 
 ## Functions
 
-A box is a call of its tool, by one binder, the same for Render, `cozy project render` and `cozy run`. A tool is a function its package declares with `@app.tool`, taking one struct: its fields are the box (`tracker/design/tools.md`). Each written field goes by its type:
+A box is a call of its tool, by one binder, the same for Render, `cozy render` and `cozy run`. A tool is a function its package declares with `@app.tool`, taking one struct: its fields are the box (`tracker/design/tools.md`). Each written field goes by its type:
 
 - **Words** (`str`): as written, each text box in place as its words; a box with a file it mentions goes as its name, with a warning.
 - **A prompt** (`Prompt`, or `Prompt[Image]`): its text as written, each mention spelled as its box spells itself, with the boxes it mentions as its own references, in the order first mentioned. What it doesn't take (a video in a `Prompt[Image]`) goes as its name, with a warning.
@@ -233,10 +233,10 @@ The package `cozy` is reserved: Calcifer runs it itself, free, with no machine, 
 
 ## Runs
 
-`cozy run` belongs to a project, as a commit does to a repository: the folder you're in or the nearest above it with a `project.db`, or `-p <path>`. Elsewhere it refuses.
+`cozy run` uses the current directory, or the nearest project above it. First use creates an empty project when the directory has none.
 
 - **Outputs** land in `files/` by hash, listed as the run's, and the run prints one line per file: `image: 65b436d4f9a3`. There's no memo.
-- **Use one:** `--file image=65b436d4f9a3` names a file by its hash, and `cozy project approve kyogre 65b436d4f9a3` makes it what `kyogre` holds.
+- **Use one:** `--file image=65b436d4f9a3` names a file by its hash, and `cozy approve kyogre 65b436d4f9a3` makes it what `kyogre` holds.
 - **`reclaim`** lists a run's files once nothing names them.
 
 ## Upgrading from format 2

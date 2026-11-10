@@ -105,10 +105,7 @@ pub fn main() -> ExitCode {
     };
     let Some(command) = cli.command else {
         return match Cli::command().print_help() {
-            Ok(()) => {
-                println!();
-                ExitCode::SUCCESS
-            }
+            Ok(()) => ExitCode::SUCCESS,
             Err(error) => output::refuse(cli.json, &Error::new(Kind::Internal, "help", error.to_string())),
         };
     };

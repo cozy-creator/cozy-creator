@@ -40,7 +40,7 @@ pub(crate) struct Boxed {
 }
 
 fn unknown(name: &str) -> Error {
-    Error::new(Kind::Usage, "project_edit", format!("the project has no box {name}")).next("cozy project status")
+    Error::new(Kind::Usage, "project_edit", format!("the project has no box {name}")).next("cozy status")
 }
 
 impl Boxed {

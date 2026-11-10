@@ -32,7 +32,7 @@ fn tool_name(tool: &str) -> Option<String> {
 }
 
 fn own_lines(name: &str) -> Error {
-    Error::new(Kind::Usage, "project_edit", format!("the project has no box {name}")).next("cozy project status")
+    Error::new(Kind::Usage, "project_edit", format!("the project has no box {name}")).next("cozy status")
 }
 
 /// `POST /v1/projects/{id}/assets`: an asset from a tool, its row, and what its drop pushed aside, in one transaction. What the tool makes
@@ -255,7 +255,7 @@ pub(super) async fn delete(State(api): State<Arc<Api>>, Path((id, name)): Path<(
 /// Asset `name` and its row gone, as `DELETE` has it, in one transaction.
 pub(super) fn deleted(api: &Arc<Api>, project: &Arc<Project>, id: &str, name: &str) -> Result<AssetDeleted, Refusal> {
     let folder = &project.folder;
-    let unknown = || Error::new(Kind::NotFound, "asset_unknown", format!("the project has nothing named {name}")).next("cozy project status");
+    let unknown = || Error::new(Kind::NotFound, "asset_unknown", format!("the project has nothing named {name}")).next("cozy status");
     let gone = folder.act(|| {
         // Its name and what it holds approved, from its box alone: a Doc of the whole project took a delete of one of 5,000 boxes 287 ms.
         let held = folder.reading_boxes(|written| written.get(name).map(|held| (held.name.clone(), held.get("approved").cloned())))?;
@@ -347,19 +347,19 @@ fn no_version(lock: &folder::Lock, name: &str, noun: &str, number: u32) -> Error
     let key = name_key(name);
     if lock.pending.values().any(|pending| name_key(&pending.asset) == key && pending.version.number == number) {
         let said = format!("{name}'s {noun} {number} is still being made: canceling stops what it would spend");
-        return Error::new(Kind::Conflict, "version_running", said).next(format!("cozy project cancel {name}"));
+        return Error::new(Kind::Conflict, "version_running", said).next(format!("cozy cancel {name}"));
     }
     let held = lock.asset(name);
     if held.is_some_and(|held| held.discarded.iter().any(|version| version.number == number)) {
         let said = format!("{name}'s {noun} {number} is already discarded");
-        return Error::new(Kind::NotFound, "version_unknown", said).next("cozy project history");
+        return Error::new(Kind::NotFound, "version_unknown", said).next("cozy history");
     }
     let numbers: Vec<String> = held.into_iter().flat_map(|held| &held.versions).map(|version| version.number.to_string()).collect();
     let said = match numbers.as_slice() {
         [] => format!("{name} has no {noun} yet"),
         numbers => format!("{name} has no {noun} {number}: it has {}", numbers.join(", ")),
     };
-    Error::new(Kind::NotFound, "version_unknown", said).next(format!("cozy project status {name}"))
+    Error::new(Kind::NotFound, "version_unknown", said).next(format!("cozy status {name}"))
 }
 
 /// What a version going or coming back left: what's reading `name` looks again, a cut's film follows, and the answer.
@@ -378,7 +378,7 @@ async fn moved(api: &Arc<Api>, project: &Arc<Project>, name: String, number: u32
 }
 
 fn taken(name: &str) -> Error {
-    Error::new(Kind::Conflict, "asset_exists", format!("the project has a {name} again, so this one stays deleted")).remedy("rename that one, then undo again").next(format!("cozy project rename {name} <another name>"))
+    Error::new(Kind::Conflict, "asset_exists", format!("the project has a {name} again, so this one stays deleted")).remedy("rename that one, then undo again").next(format!("cozy rename {name} <another name>"))
 }
 
 /// A box back as `removed` took it, its versions with it, and with `at` its row, in one transaction: its new ETag.

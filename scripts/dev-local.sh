@@ -39,12 +39,13 @@ if [[ ! -f web/app/dist/index.html || ! -f $page_stamp ]] || \
 fi
 
 cargo build --locked --jobs "${COZY_DEV_JOBS:-4}" --package cozy
-binary="$CARGO_TARGET_DIR/debug/cozy"
+binary="$CARGO_TARGET_DIR/cozy"
+strip --strip-all -o "$binary" "$CARGO_TARGET_DIR/debug/cozy"
 installed="$HOME/.cozy/bin/cozy"
 "$binary" --version
 
-# Use the existing machine update path to install, drain the local worker and
-# restart Calcifer. It accepts another build of the same version by file digest.
+# Replace the CLI and restart Calcifer directly, so a model running on the local
+# worker does not delay interactive changes. Existing processes keep their inode.
 install_lock="${COZY_DEV_INSTALL_LOCK:-$HOME/.cozy/dev-local-install.lock}"
 exec 9>"$install_lock"
 flock 9
@@ -52,6 +53,12 @@ if cmp --silent "$binary" "$installed"; then
     printf '%s installed Cozy already matches this build\n' "$(date -Is)"
     exit 0
 fi
-"$installed" --json machine update local --tensord "$binary" --yes
-printf '%s local Cozy updated in %ss\n' "$(date -Is)" "$((SECONDS - started))"
+staged=$(mktemp "$HOME/.cozy/bin/.cozy-dev.XXXXXX")
+trap 'rm -f "$staged"' EXIT
+install -m 755 "$binary" "$staged"
+cp --reflink=auto -p "$installed" "$HOME/.cozy/bin/.cozy-previous"
+mv -f "$staged" "$installed"
+systemctl --user restart cozy-calcifer.service
+"$installed" --json machine ls >/dev/null
+printf '%s local CLI and Calcifer updated in %ss\n' "$(date -Is)" "$((SECONDS - started))"
 "$installed" --version

@@ -415,7 +415,7 @@ async fn transfer(ctx: &Context, at: Option<&String>, verb: &str, moved: &str) -
         }
     }
     let said = format!("Calcifer stopped before the {verb} ended; run it again and it goes on from what landed");
-    Err(Error::new(Kind::Unavailable, "project_events_ended", said).next(format!("cozy{} {verb}", from(at))))
+    Err(Error::new(Kind::Unavailable, "project_events_ended", said).next(format!("cozy {verb}")))
 }
 
 /// `POST /v1/projects/{id}/imports`, and the name it got.
@@ -566,11 +566,11 @@ async fn render(ctx: &Context, at: Option<&String>, mut args: Render) -> Result<
         });
     }
     let events = events.take().expect("following");
-    let status = format!("cozy{} status", from(at));
+    let status = "cozy status";
     if ctx.json {
-        return following_json(ctx, events, &status, asked.ask.as_deref()).await;
+        return following_json(ctx, events, status, asked.ask.as_deref()).await;
     }
-    render::follow(ctx, render::Rendering::new(asked.path.clone(), asked.board, asked.ask), events, &status).await
+    render::follow(ctx, render::Rendering::new(asked.path.clone(), asked.board, asked.ask), events, status).await
 }
 
 /// What this computer would render poorly, in the line the page asks with, said once as a warning: this never asks, and goes on. A
@@ -640,10 +640,10 @@ async fn wait(ctx: &Context, at: Option<&String>) -> Result<ExitCode, Error> {
     // Opened before the read, so nothing between the two is missed.
     let events = calcifer.watch::<Event>(&self::at(&project, &["events"])).await?;
     let state: State = calcifer.get(&self::at(&project, &[])).await?;
-    let status = format!("cozy{} status", from(at));
+    let status = "cozy status";
     match state.board.clone().filter(|_| state.busy) {
-        Some(_) if ctx.json => following_json(ctx, events, &status, None).await,
-        Some(board) => render::follow(ctx, render::Rendering::new(state.path.clone(), board, None), events, &status).await,
+        Some(_) if ctx.json => following_json(ctx, events, status, None).await,
+        Some(board) => render::follow(ctx, render::Rendering::new(state.path.clone(), board, None), events, status).await,
         None => {
             shown(ctx, &state);
             let failed = state.assets.iter().any(|asset| asset.failure.is_some());
@@ -842,14 +842,4 @@ pub(crate) async fn ensure(ctx: &Context, at: Option<&String>) -> Result<String,
 pub(crate) fn at(project: &str, rest: &[&str]) -> String {
     let segments: Vec<&str> = ["v1", "projects", project].into_iter().chain(rest.iter().copied()).collect();
     crate::calcifer_client::path(&segments)
-}
-
-/// Follow-up commands run in the same current directory.
-pub(crate) fn from(_at: Option<&String>) -> String {
-    String::new()
-}
-
-/// The explicit project a caller resolved, or the current directory.
-pub(crate) fn chosen(at: Option<&String>) -> Option<String> {
-    named(at).ok()
 }

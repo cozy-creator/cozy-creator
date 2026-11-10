@@ -750,7 +750,7 @@ impl Lock {
     }
 
     /// Each asset whose name the file has lost and with nothing on its way, set aside under a key no name can be, so that a later asset of that
-    /// name starts with no versions. It stays an orphan until `reclaim`, and `cozy project rename` still finds it.
+    /// name starts with no versions. It stays an orphan until `reclaim`, and `cozy rename` still finds it.
     pub(crate) fn tombstone(&mut self, named: impl Fn(&str) -> bool) {
         let going: BTreeSet<String> = (self.pending.values().map(|pending| name_key(&pending.asset)))
             .chain(self.walk.asks.iter().flat_map(|ask| ask.takes.iter().map(|take| name_key(&take.asset))))
@@ -1074,7 +1074,7 @@ impl Folder {
         let mut reading = self.shared.reading.lock().unwrap_or_else(|e| e.into_inner());
         let conn = match &mut *reading {
             Some(conn) => conn,
-            None if !Self::is_project(&self.dir) => return Err(Error::new(Kind::NotFound, "project_not_found", format!("{} holds no {}", self.dir.display(), db::DB)).next("cozy project new <path>")),
+            None if !Self::is_project(&self.dir) => return Err(Error::new(Kind::NotFound, "project_not_found", format!("{} holds no {}", self.dir.display(), db::DB)).next("cozy open")),
             none => none.insert({
                 // Its files from before, as whatever first reaches it finds them: upgraded to format 4 and imported, once. What that
                 // said waits in project.db for a run landing in it (`upgraded`).

@@ -14,7 +14,7 @@ use api::calcifer::tool::{FieldType, Tools};
 use serde::Serialize;
 use serde_json::{Map, Number, Value};
 
-use super::{at as route, from, named};
+use super::{at as route, named};
 use crate::{Context, calcifer_client::{Client, path}, output, run::mint_key};
 
 /// What `tool=` is: what makes it, not one of its inputs.
@@ -227,13 +227,13 @@ fn version_of(written: &str) -> Option<(&str, u32)> {
 }
 
 /// The command that undoes the newest edit of `name` that stands: the delete or discard just made, as its history lists it.
-async fn undo_of(calcifer: &Client, project: &str, at: Option<&String>, name: &str) -> String {
+async fn undo_of(calcifer: &Client, project: &str, name: &str) -> String {
     let listed = calcifer.get_query::<_, History>(&route(project, &["history"]), &[("limit", 20)]).await.ok();
     let same = |held: &String| held.eq_ignore_ascii_case(name);
     let entry = listed.and_then(|listed| listed.entries.into_iter().find(|entry| entry.undone.is_none() && entry.names.iter().any(same)));
     match entry {
-        Some(entry) => format!("cozy{} undo {}", from(at), entry.id),
-        None => format!("cozy{} undo", from(at)),
+        Some(entry) => format!("cozy undo {}", entry.id),
+        None => "cozy undo".into(),
     }
 }
 
@@ -243,11 +243,11 @@ pub(super) async fn delete(ctx: &Context, at: Option<&String>, names: Vec<String
     let calcifer = ctx.calcifer().await?;
     for written in names {
         if let Some((name, number)) = version_of(&written) {
-            discard(ctx, &calcifer, &project, at, name, number).await?;
+            discard(ctx, &calcifer, &project, name, number).await?;
             continue;
         }
         let deleted: AssetDeleted = calcifer.delete(&route(&project, &["assets", &written])).await?;
-        let back = undo_of(&calcifer, &project, at, &deleted.name).await;
+        let back = undo_of(&calcifer, &project, &deleted.name).await;
         match ctx.json {
             true => output::json(&Deleted { answer: &deleted, next: [back] }),
             false => {
@@ -260,9 +260,9 @@ pub(super) async fn delete(ctx: &Context, at: Option<&String>, names: Vec<String
 }
 
 /// Take or version `number` of `name` discarded, printing the command that brings it back.
-async fn discard(ctx: &Context, calcifer: &Client, project: &str, at: Option<&String>, name: &str, number: u32) -> Result<(), Error> {
+async fn discard(ctx: &Context, calcifer: &Client, project: &str, name: &str, number: u32) -> Result<(), Error> {
     let moved: VersionMoved = calcifer.delete(&route(project, &["assets", name, "versions", &number.to_string()])).await?;
-    let back = undo_of(calcifer, project, at, &moved.name).await;
+    let back = undo_of(calcifer, project, &moved.name).await;
     if ctx.json {
         output::json(&Deleted { answer: &moved, next: [back] });
         return Ok(());
