@@ -226,6 +226,8 @@ async function upload(token, path) {
   const digest = `sha256:${require('crypto').createHash('sha256').update(bytes).digest('hex')}`;
   const answer = await fetch(`${calcifer()}/v1/files/${digest}`, { method: 'PUT', headers: { Authorization: `Bearer ${token}` }, body: bytes });
   if (!answer.ok) throw new Error(`PUT /v1/files/${digest}: ${answer.status} ${await answer.text()}`);
+  const held = await answer.json();
+  if (held.digest !== digest || held.length !== bytes.length) throw new Error(`PUT /v1/files/${digest}: the reply names another file or length`);
   return digest;
 }
 
