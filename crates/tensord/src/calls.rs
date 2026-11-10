@@ -553,12 +553,37 @@ fn cancel(engine: &Engine, child: &Execution) {
     }
 }
 
-/// What an attempt's progress frames told so far: its completed units, and its stage's last step
-/// and the times of its last few after the first (which carries the stage's setup).
+/// What an attempt's progress frames told so far: its completed units, its stage's last step
+/// and the times of its last few after the first (which carries the stage's setup), and once it
+/// runs, when it started and its whole time here (None: no estimate) and the overall share shown.
 #[derive(Default)]
 pub(crate) struct Seen {
     pub completed: u64,
     steps: (String, u64, Vec<f64>),
+    timed: Option<Option<(u64, f64)>>,
+    overall: f64,
+}
+
+/// The overall share short of the run's end: only its end is done.
+const OVERALL_UNDER: f64 = 0.99;
+
+impl Seen {
+    /// Run `id`'s overall share (Paul 11-09, 2a): its time running over its whole time here
+    /// (`estimate::whole_ms`, worked out once), never falling; None without an estimate.
+    fn overall(&mut self, engine: &Engine, id: &str) -> Option<f64> {
+        if self.timed.is_none() {
+            let record = engine.get(id).ok().filter(|record| record.started_at_ms > 0)?;
+            // A retried attempt goes on from the share its run showed.
+            let shown = record.progress.as_deref().and_then(|p| serde_json::from_str::<Value>(p).ok());
+            self.overall = shown.and_then(|p| p["overall_fraction"].as_f64()).unwrap_or(0.0);
+            let whole = crate::estimate::whole_ms(engine, &record).ok().flatten().filter(|ms| *ms > 0.0);
+            self.timed = Some(whole.map(|whole| (record.started_at_ms, whole)));
+        }
+        let (started, whole) = self.timed.flatten()?;
+        let ran = (crate::machine::lifecycle::now_ms() as u64).saturating_sub(started) as f64;
+        self.overall = self.overall.max((ran / whole).min(OVERALL_UNDER));
+        Some(self.overall)
+    }
 }
 
 /// How many of a stage's latest steps its steady pace is the median of.
@@ -595,13 +620,15 @@ pub(crate) fn observe(engine: &Engine, id: &str, seen: &mut Seen, frame: &Frame,
     let mut payload = json!({"stage": frame.stage.chars().take(STAGE_CHARS).collect::<String>(), "step_ms": frame.step_ms.unwrap_or(0.0)});
     for (name, value) in [
         ("stage_fraction", frame.stage_fraction.map(Value::from)),
-        ("overall_fraction", frame.overall_fraction.map(Value::from)),
         ("position", frame.position.map(Value::from)),
         ("total", frame.total.map(Value::from)),
     ] {
         if let Some(value) = value {
             payload[name] = value;
         }
+    }
+    if let Some(overall) = seen.overall(engine, id) {
+        payload["overall_fraction"] = overall.into();
     }
     let call = frame.call_request.as_deref().filter(|call| !call.is_empty());
     match (call, frame.position, frame.step_ms.filter(|ms| *ms > 0.0)) {

@@ -578,7 +578,6 @@ pub struct Frame {
     pub position: Option<u64>,
     pub total: Option<u64>,
     pub stage_fraction: Option<f64>,
-    pub overall_fraction: Option<f64>,
     pub step_ms: Option<f64>,
     pub advance: u64,
     /// `progress`: the child call whose stage a job relays.
