@@ -269,12 +269,7 @@ pub(crate) fn resume_private(runs: &Arc<Runs>, project: &str) -> std::io::Result
 }
 
 fn resume_scope(runs: &Arc<Runs>, project: Option<&str>) -> std::io::Result<()> {
-    for (run, actor, kept) in runs.service.engine.interrupted()? {
-        if let Some(project) = project {
-            if runs.service.engine.is_preparing(&run) { continue }
-            let scope = runs.service.engine.get(&run)?.invocation.local_private;
-            if !scope.as_ref().is_some_and(|scope| scope.project_id == project) { continue }
-        }
+    for (run, actor, kept) in runs.service.engine.interrupted_for(project)? {
         let spec = serde_json::from_slice::<Kept>(&kept)
             .map_err(|e| refused("preparation_interrupted", format!("its kept spec is unreadable: {e}")));
         if spec.as_ref().is_ok_and(|kept| kept.access) {
@@ -282,7 +277,7 @@ fn resume_scope(runs: &Arc<Runs>, project: Option<&str>) -> std::io::Result<()> 
             tracing::info!(run = %runs.service.engine.caller_id(&run), number = %run, "kept across the restart, needs_access: its sender sends its access again");
             continue;
         }
-        let private = runs.service.engine.get(&run).ok().and_then(|record| record.invocation.local_private);
+        let private = runs.service.engine.private_storage(&run)?;
         let spec = spec
             .and_then(|kept| crate::private_io::within(private, || spec_of(kept.spec)))
             .and_then(|(spec, hub)| reach(&actor, spec, hub));

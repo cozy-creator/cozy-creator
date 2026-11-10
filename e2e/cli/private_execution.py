@@ -15,12 +15,12 @@ import time
 import uuid
 
 
-def command(cli: Path, output: Path, name: str, *args: str) -> bytes:
+def command(cli: Path, output: Path, name: str, *args: str, fails: bool = False) -> bytes:
     result = subprocess.run([str(cli), "--json", *args], capture_output=True)
     (output / f"{name}.ndjson").write_bytes(result.stdout)
     (output / f"{name}.stderr").write_bytes(result.stderr)
-    if result.returncode:
-        raise AssertionError(f"{name} failed with exit {result.returncode}; see its captured output")
+    if bool(result.returncode) != fails:
+        raise AssertionError(f"{name} returned unexpected exit {result.returncode}; see its captured output")
     return result.stdout
 
 
@@ -102,6 +102,7 @@ SOURCE = "''' + source_canary + '''"
 class Request(msgspec.Struct, forbid_unknown_fields=True):
     text: str
     source: File
+    fail: bool = False
 class Answer(msgspec.Struct):
     file: File
     text: str
@@ -114,6 +115,8 @@ def probe(payload: Request, out: Outputs) -> Answer:
         scratch_path = Path(scratch.name)
     private = ".vault-machine" in scratch_path.parts and ".vault-machine" in Path.cwd().parts
     print(SOURCE + ":" + payload.text, flush=True)
+    if payload.fail:
+        raise RuntimeError(SOURCE + ":" + payload.text)
     target = out.temporary_file(".txt")
     target.write_bytes(content)
     return Answer(out.save_file(target, media_type="text/plain"), payload.text, private)
@@ -128,6 +131,9 @@ def probe(payload: Request, out: Outputs) -> Answer:
     run = command(args.cli, args.out, "run", "run", "-p", str(project), str(script), "--input", str(request), "--on", "local")
     assert payload_canary.encode() in run, "private run did not return its payload"
     assert b'"scratch_private":true' in run.replace(b" ", b""), "runtime scratch or working directory escaped the private namespace"
+    request.write_text(json.dumps({"text": payload_canary, "source": str(source), "fail": True}))
+    failed = command(args.cli, args.out, "failure", "run", "-p", str(project), str(script), "--input", str(request), "--on", "local", fails=True)
+    assert payload_canary.encode() in failed + (args.out / "failure.stderr").read_bytes(), "private failure did not expose its authorized detail to the caller"
     markers = [value.encode() for value in (source_canary, input_canary, payload_canary)]
     files = [path for path in view.rglob("*") if path.is_file() and not path.is_symlink()]
     assert any(contains(path, markers) for path in files if ".vault-machine" in path.parts), "no protected machine journal/source/result was retained"
@@ -137,7 +143,7 @@ def probe(payload: Request, out: Outputs) -> Answer:
     leaked, checked = scan(roots, exclusions, stamp, markers)
     (args.out / "scan.json").write_text(json.dumps({"checked_new_or_modified_files": checked, "leaked_paths": leaked}, indent=2))
     assert not leaked, "private test markers reached global plaintext storage; see scan.json"
-    (args.out / "receipt.json").write_text(json.dumps({"describe": True, "local_file_execution": True, "protected_scratch": True, "global_plaintext_scan": True, "synthetic_only": True}, indent=2))
+    (args.out / "receipt.json").write_text(json.dumps({"describe": True, "local_file_execution": True, "protected_scratch": True, "private_failure": True, "global_plaintext_scan": True, "synthetic_only": True}, indent=2))
 
 
 if __name__ == "__main__":
