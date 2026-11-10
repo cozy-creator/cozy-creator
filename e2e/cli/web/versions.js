@@ -624,6 +624,9 @@ async function died(why) {
     // A box whose own name has a dot is that box, as Calcifer reads it, not a take of the box before the dot: mentioned with nothing made yet,
     // behind the words it's its blank frame, never another box's picture.
     importYaml(folder, `${yaml().trimEnd()}\n  ada.later:\n    tool: ${tool.id}\n    instructions: Not yet.\n  awaiting:\n    tool: ${tool.id}\n    instructions: <Ada.later> at dawn.\n`);
+    await until('awaiting placed', async () => (await api(`${at}/canvas`)).body?.cards?.awaiting, Boolean);
+    await page.keyboard.press('f');
+    await settled(page);
     await box('awaiting').waitFor();
     await open('awaiting');
     const awaitingHere = page.locator('.card.here[data-asset="awaiting"]');
