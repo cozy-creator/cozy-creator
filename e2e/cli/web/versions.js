@@ -586,8 +586,9 @@ async function died(why) {
     await page.keyboard.press('f');
     await page.waitForTimeout(400);
     await box('framed').waitFor();
+    // Shape follows the content plane; its painted frame can letterbox readable controls around it.
     const shapeOf = async (name) => {
-      const { width, height } = await box(name).locator('.media').first().boundingBox();
+      const { width, height } = await box(name).locator('.media-pixels').first().boundingBox();
       return width / height;
     };
     const shapedAs = (name, ratio) => until(`${name} at ${ratio}`, () => shapeOf(name), (now) => Math.abs(now / ratio - 1) < 0.03).catch(async () => shapeOf(name));
@@ -635,9 +636,9 @@ async function died(why) {
     await shut();
     await page.keyboard.press('f');
     await page.waitForTimeout(400);
-    const picturedWas = { shape: await shapeOf('picked'), width: (await box('picked').locator('.media').first().boundingBox()).width };
+    const picturedWas = { shape: await shapeOf('picked'), width: (await box('picked').locator('.media-pixels').first().boundingBox()).width };
     await pullCorner('picked', 120, -40);
-    const scaled = await until('it scaled', async () => (await box('picked').locator('.media').first().boundingBox()).width, (width) => width > picturedWas.width + 20).catch((why) => String(why));
+    const scaled = await until('it scaled', async () => (await box('picked').locator('.media-pixels').first().boundingBox()).width, (width) => width > picturedWas.width + 20).catch((why) => String(why));
     check('a_picture_only_scales', typeof scaled === 'number' && Math.abs((await shapeOf('picked')) / picturedWas.shape - 1) < 0.03 && !lines('picked').includes('aspect_ratio'), { picturedWas, scaled, now: await shapeOf('picked'), lines: lines('picked') });
     // Open on a take, only its description is under it. Its + writes the next take in the frame, over the pictures its words mention, faded, with its tool
     // and Render under it; a take goes back to looking.
@@ -897,7 +898,7 @@ async function died(why) {
     // Once the page has read its approval: an open made before that shows what it last read.
     await page.locator('.card.here.showing-approved[data-asset="shapes"]').waitFor();
     const frameShape = async () => {
-      const { width, height } = await shapesHere.locator('.media').first().boundingBox();
+      const { width, height } = await shapesHere.locator('.media-pixels').first().boundingBox();
       return width / height;
     };
     const square = await frameShape();
