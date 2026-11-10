@@ -324,14 +324,13 @@ impl Document {
     }
 
     pub(super) fn into_stored(self) -> Result<Stored, Error> {
-        let mut written = Written::default();
-        written.head = ordered(
+        let head = ordered(
             root_value(&self.projection, "head_order"),
             root_value(&self.projection, "head").and_then(Value::as_object),
         )
-            .into_iter()
-            .map(|(key, value)| (key.clone(), value.clone()))
-            .collect();
+        .into_iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
         let mut boxes = Vec::new();
         for (id, record) in record_entries(&self.projection, "boxes").filter(|(_, record)| present(record)) {
             let ordered = ordered(record.get("field_order"), object(record, "fields"))
@@ -349,7 +348,7 @@ impl Document {
             ));
         }
         boxes.sort_by(|(a, first), (b, second)| (a, &first.id).cmp(&(b, &second.id)));
-        written.boxes = boxes.into_iter().map(|(_, held)| held).collect();
+        let written = Written { head, boxes: boxes.into_iter().map(|(_, held)| held).collect() };
         let mut lock = Lock::default();
         for (id, record) in record_entries(&self.projection, "assets").filter(|(_, record)| present(record)) {
             let mut held: Asset = decode(&record["record"])?;
