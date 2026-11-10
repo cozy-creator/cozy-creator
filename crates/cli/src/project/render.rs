@@ -41,8 +41,8 @@ const REASON_SHOWN: usize = 300;
 pub(super) enum Change {
     /// Its board whole: as the stream tells it, or read again, with whether its project is still walking.
     Board { board: Box<Board>, busy: Option<bool> },
-    Job { job: Job, seq: u64 },
-    Ahead(Ahead),
+    Job { job: Box<Job>, seq: u64 },
+    Ahead(Box<Ahead>),
 }
 
 /// A project's render as `GET /v1/events` tells it. A stream that fell behind, or ended as Calcifer restarted, is subscribed to again
@@ -84,8 +84,8 @@ impl Follow {
             let mine = |project: &String| *project == self.project;
             match self.watch.change().await {
                 Some(StreamEvent::BoardUpdated { project, board }) if mine(&project) => return Some(Change::Board { board, busy: None }),
-                Some(StreamEvent::JobUpdated { project, job, seq }) if mine(&project) => return Some(Change::Job { job: *job, seq }),
-                Some(StreamEvent::AheadUpdated { project, ahead }) if mine(&project) => return Some(Change::Ahead(*ahead)),
+                Some(StreamEvent::JobUpdated { project, job, seq }) if mine(&project) => return Some(Change::Job { job, seq }),
+                Some(StreamEvent::AheadUpdated { project, ahead }) if mine(&project) => return Some(Change::Ahead(ahead)),
                 Some(_) => {}
                 None => {
                     let (calcifer, path) = (self.calcifer.clone(), super::at(&self.project, &[]));
@@ -146,8 +146,8 @@ impl Rendering {
             Change::Job { job, seq } if seq >= self.board.seq => {
                 self.board.seq = seq;
                 match self.board.jobs.iter_mut().find(|held| held.id == job.id) {
-                    Some(held) => *held = job,
-                    None => self.board.jobs.push(job),
+                    Some(held) => *held = *job,
+                    None => self.board.jobs.push(*job),
                 }
                 // What has ended first, in the order it did; then what goes; then what waits.
                 self.board.jobs.sort_by_key(|job| match job.state {
@@ -160,8 +160,8 @@ impl Rendering {
             Change::Job { .. } => Fresh::Nothing,
             Change::Ahead(ahead) => {
                 match self.board.ahead.iter_mut().find(|held| held.run == ahead.run) {
-                    Some(held) => *held = ahead,
-                    None => self.board.ahead.push(ahead),
+                    Some(held) => *held = *ahead,
+                    None => self.board.ahead.push(*ahead),
                 }
                 Fresh::Board
             }

@@ -80,7 +80,8 @@ const until = async (page, ask, ms = 120000) => {
           if (!data) continue;
           const m = JSON.parse(data);
           if (m.project !== id) continue;
-          const jobs = m.type === 'board.updated' ? m.board.jobs : m.type === 'job.updated' ? [m.job] : [];
+          // A board with no jobs yet (a walk just begun) leaves `jobs` out.
+          const jobs = m.type === 'board.updated' ? m.board.jobs ?? [] : m.type === 'job.updated' ? [m.job] : [];
           for (const job of jobs) {
             const cut = job.state === 'done' && job.path && !job.path.startsWith('files/') && `cut ${job.path}`;
             if (cut && !window.got.includes(cut)) window.got.push(cut);
