@@ -48,8 +48,8 @@ jobs:
           fi
       - if: steps.scope.outputs.run == 'true'
         uses: actions/checkout@v5
-      # This source cohort still uses the deployed, pre-xs-157 worker protocol. The release
-      # owner's #2583 integration must advance ci/hub-ref with its paired signed-worker cut.
+      # Select the immutable Hub contract paired with this source cohort. The release owner
+      # coordinates publication, worker images and the production protocol cutover separately.
       - if: steps.scope.outputs.run == 'true'
         id: hub_contract
         name: Select the source cohort's Hub contract
