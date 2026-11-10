@@ -4,6 +4,8 @@ import copy
 import gc
 import json
 import os
+from collections.abc import Callable
+from typing import cast
 
 import tensorfs.varena.torch as vt
 from tensorfs.varena import api
@@ -17,11 +19,11 @@ from torch import nn
 
 offload, OffloadError = vt.offload, offload_module.OffloadError
 device = torch.device("cuda", 0)
-passed = []
+passed: list[str] = []
 
 
-def check(name):
-    def wrap(function):
+def check(name: str) -> Callable[[Callable[[], None]], None]:
+    def wrap(function: Callable[[], None]) -> None:
         function()
         passed.append(name)
         print(name, flush=True)
@@ -29,7 +31,7 @@ def check(name):
     return wrap
 
 
-def refuses(action):
+def refuses(action: Callable[[], object]) -> bool:
     try:
         action()
     except OffloadError:
@@ -40,14 +42,14 @@ def refuses(action):
 class Tied(nn.Module):
     _no_split_modules = ["Block"]
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.a, self.b = nn.Linear(4, 4), nn.Linear(4, 4)
         self.b.weight = self.a.weight
         self.own = nn.Parameter(torch.ones(4))
         self.blocks = nn.ModuleList([Block(), Block()])
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.a(x) + self.b(x) + self.own
         for block in self.blocks:
             x = block(x)
@@ -55,31 +57,36 @@ class Tied(nn.Module):
 
 
 class Block(nn.Module):
-    def __init__(self):
+    layer: nn.Linear
+    scale: torch.Tensor  # a buffer
+
+    def __init__(self) -> None:
         super().__init__()
         self.layer = nn.Linear(4, 4)
         self.register_buffer("scale", torch.full((4,), 2.0))
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         self.__dict__["escaped"] = self.layer.weight
-        return self.layer(x) * self.scale
+        out: torch.Tensor = self.layer(x) * self.scale
+        return out
 
 
 class Writer(nn.Module):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.layer = nn.Linear(2, 2)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         self.layer.weight.add_(1.0)
-        return self.layer(x)
+        out: torch.Tensor = self.layer(x)
+        return out
 
 
 x = torch.randn(1, 4)
 
 
 @check("a block too big to pin descends to its children")
-def split():
+def split() -> None:
     template = nn.Sequential(*(nn.Sequential(nn.Linear(7168, 7168), nn.Linear(7168, 7168)) for _ in range(2))).eval()
     y = torch.randn(1, 7168)
     with torch.inference_mode():
@@ -130,7 +137,7 @@ def split():
 
 
 @check("a dropped handle keeps working, identities and ties preserved")
-def dropped():
+def dropped() -> None:
     model = Tied().eval()
     with torch.inference_mode():
         want = model(x).to(device)
@@ -145,7 +152,7 @@ def dropped():
 
 
 @check("direct reads, aliases and copies outside a block")
-def direct():
+def direct() -> None:
     model = nn.Linear(4, 4).eval()
     want = model.weight.detach().clone().to(device)
     offload(model, device=0)
@@ -164,9 +171,9 @@ def direct():
 
 
 @check("an alias that escaped its block stays readable through trim")
-def escaped():
+def escaped() -> None:
     model = Tied().eval()
-    want = model.blocks[0].layer.weight.detach().clone().to(device)
+    want = cast(Block, model.blocks[0]).layer.weight.detach().clone().to(device)  # blocks holds Blocks
     offload(model, device=0)
     with torch.inference_mode():
         model(x.to(device))
@@ -174,11 +181,11 @@ def escaped():
     assert type(alias) is torch.Tensor
     torch.cuda.empty_cache()
     assert torch.equal(alias, want)
-    assert isinstance(model.blocks[0].layer.weight, offload_module._Weight)
+    assert isinstance(cast(Block, model.blocks[0]).layer.weight, offload_module._Weight)
 
 
 @check("the VAE's dtype conversions, identities kept, weights never written")
-def conversion():
+def conversion() -> None:
     torch.manual_seed(1)
     vae = AutoencoderKL(block_out_channels=(4, 8), down_block_types=("DownEncoderBlock2D",) * 2, up_block_types=("UpDecoderBlock2D",) * 2,
                         latent_channels=4, norm_num_groups=2, sample_size=16, force_upcast=True).to(torch.float16).eval()
@@ -208,14 +215,14 @@ def conversion():
 
 
 @check("a write to a weight inside a block is caught")
-def written():
+def written() -> None:
     model = Writer().eval()
     offload(model, device=0)
     assert refuses(lambda: model(torch.ones(1, 2, device=device)))
 
 
 @check("an explicit caller stream is honored; a default-stream thread gets one explicit stream")
-def streams():
+def streams() -> None:
     model = nn.Linear(4, 4).eval()
     want = model(x).detach().to(device)
     offload(model, device=0)
@@ -227,22 +234,26 @@ def streams():
 
 
 class Noisy(nn.Module):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.blocks = nn.Sequential(nn.Linear(4, 4), nn.Linear(4, 4))
 
-    def forward(self, x):
-        return self.blocks(x) + torch.randn_like(x)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out: torch.Tensor = self.blocks(x) + torch.randn_like(x)
+        return out
 
 
 class Counting(Noisy):
-    def forward(self, x):
+    calls: int
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         self.calls = getattr(self, "calls", 0) + 1
-        return self.blocks(x)
+        out: torch.Tensor = self.blocks(x)
+        return out
 
 
 @check("a loop replays and matches eager; effects a replay would lose stay eager")
-def graphs():
+def graphs() -> None:
     y = torch.randn(1, 4)
     plain = nn.Sequential(nn.Linear(4, 4), nn.Linear(4, 4)).eval()
     with torch.inference_mode():
@@ -267,7 +278,7 @@ def graphs():
 
 
 @check("a forked child gets a refusal, not a hang")
-def forked():
+def forked() -> None:
     model = nn.Linear(4, 4).eval()
     offload(model, device=0)
     y = x.to(device)
