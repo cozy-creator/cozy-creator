@@ -4,7 +4,7 @@ import { flushSync } from "react-dom"
 import { Link, Outlet, useLocation, useMatch, useMatches, useNavigate } from "react-router-dom"
 import { TRIES } from "../api/client"
 import { ProjectLocked, vaultKey, vaultQuery } from "../panels/ProjectVault"
-import { protectProjectView, forgetProjectView } from "./view"
+import { protectProjectView, forgetProjectView, privateProject } from "./view"
 import { notes } from "../ui/notes"
 import { projectQuery, projectsQuery } from "../api/queries"
 import { CanvasHost } from "../canvas/CanvasHost"
@@ -253,7 +253,10 @@ export function Shell() {
   // A cached unlocked status is not authority after selecting this project again.
   // The initial empty-canvas import alone already has a fresh ordinary-project reply.
   const freshOrdinary = useRef<string | null>(null)
-  const checked = vault.isSuccess && (vault.isFetchedAfterMount || freshOrdinary.current === id)
+  const freshChecked = vault.isSuccess && (vault.isFetchedAfterMount || freshOrdinary.current === id)
+  // Cached ordinary content stays editable offline; a remembered private project needs fresh verification.
+  const knownPlainCache = Boolean(id && vault.data?.encrypted === false && vault.data.state === "plain" && !privateProject(id))
+  const checked = freshChecked || knownPlainCache
   const allowed = Boolean(vault.data && (vault.data.state === "plain" || vault.data.state === "unlocked"))
   const uncertain = Boolean(vault.data?.encrypted && vault.isError)
   const revoked = Boolean(checked && vault.data?.encrypted && (vault.data.state === "locked" || vault.data.state === "locking"))
@@ -291,7 +294,8 @@ export function Shell() {
 
   useLayoutEffect(() => {
     if (!id || !vault.data) { if (id) setVerified(null); return }
-    protectProjectView(id, vault.data.encrypted)
+    if (vault.data.encrypted) protectProjectView(id, true)
+    else if (freshChecked && vault.data.encrypted === false && vault.data.state === "plain") protectProjectView(id, false)
     if (checked && allowed && !checking && !uncertain) {
       bridge.allowProject(id)
       outbox.allowProject(id)
@@ -317,7 +321,7 @@ export function Shell() {
     void queries.cancelQueries({ predicate: privateData })
     queries.removeQueries({ predicate: privateData })
     notes.set([])
-  }, [id, vault.data, checked, allowed, checking, uncertain, revoked, bridge, outbox, canvases, queries])
+  }, [id, vault.data, freshChecked, checked, allowed, checking, uncertain, revoked, bridge, outbox, canvases, queries])
 
   useEffect(() => {
     if (!id || !vault.data?.encrypted) return
