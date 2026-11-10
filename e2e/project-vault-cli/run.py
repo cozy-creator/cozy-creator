@@ -348,6 +348,12 @@ foreach ($rule in $allowed) {
         assert state == self.command('export', json_output=False)
         for path in sources:
             self.find_media(view, path)
+        for forbidden in [view / 'must-refuse-recursive-export',
+                          self.project / 'project.vault.data' / 'must-refuse-plaintext-export']:
+            self.command('vault', 'export', '--output', forbidden, refusal=True)
+            if forbidden.exists():
+                raise RuntimeError('a refused recursive/backing export created its output directory')
+        self.cell('plaintext_export_refuses_view_and_backing_children')
         exported = self.out / 'plaintext-export'
         self.command('vault', 'export', '--output', exported)
         for path in sources:
