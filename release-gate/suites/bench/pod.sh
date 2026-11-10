@@ -27,36 +27,61 @@ swaps() {  # 1 when this pod can page out: swap on the host and none of its cgro
   done
   echo 1
 }
+inuse() {  # what this pod's cgroup holds that it cannot reclaim without swap: anonymous memory and shmem (v2, else v1)
+  own=$(sed -n 's/^0::\(.*\)/\1/p' /proc/self/cgroup 2>/dev/null)
+  for f in "/sys/fs/cgroup${own:-/-}/memory.stat" /sys/fs/cgroup/memory.stat /sys/fs/cgroup/memory/memory.stat; do
+    [ -r "$f" ] && awk '$1 == "anon" || $1 == "shmem" || $1 == "total_rss" || $1 == "total_shmem" {n += $2} END {printf "%d\n", n}' "$f" && return
+  done
+  echo 0
+}
+room() {  # what a hog may take: MemAvailable, or the cgroup limit less what it already holds, whichever is less
+  avail=$(awk '/^MemAvailable:/{print $2 * 1024}' /proc/meminfo)
+  echo $(( $(limit) - $(inuse) < avail ? $(limit) - $(inuse) : avail ))
+}
+pressure() {  # memory pressure, the share of the last 10 s some task waited on memory (0 where the kernel does not say)
+  awk -F'[ =]' '/^some/ {printf "%d\n", $3; found = 1} END {if (!found) print 0}' /proc/pressure/memory 2>/dev/null || echo 0
+}
 facts() {
   grep -E '^(MemTotal|MemAvailable|SwapTotal|Shmem):' /proc/meminfo
-  echo "limit $(limit) swaps $(swaps)"
+  echo "limit $(limit) inuse $(inuse) room $(room) swaps $(swaps) pressure $(pressure)"
   echo "shm $(df -B1 --output=avail /dev/shm 2>/dev/null | tail -1)"
 }
 case $1 in
   hold)
+    echo "before: $(facts | tr '\n' ' ')"  # first, so a pod that stalls still says what it was
     swap=$(swaps)
     shm=$(df -B1 --output=avail /dev/shm 2>/dev/null | tail -1)
-    hog=$(( ($(limit) - $2) / 67108864 * 67108864 ))
-    mode=none
-    if [ "$hog" -gt 1073741824 ]; then
+    hog=$(( ($(room) - $2) / 2147483648 * 2147483648 ))
+    mode=none held=0 short=
+    if [ "$hog" -gt 2147483648 ]; then
       if [ "$swap" = 0 ] && [ -n "$shm" ] && [ "$shm" -ge $((hog + 1073741824)) ]; then
-        mode=shm; dd if=/dev/zero of=/dev/shm/cozy-bench-hog bs=64M count=$((hog / 67108864)) status=none
+        # 2 GiB at a time: a step that stalls or raises memory pressure is a limit this pod hides; it backs off a step.
+        mode=shm; : > /dev/shm/cozy-bench-hog
+        while [ "$held" -lt "$hog" ]; do
+          t0=$(date +%s)
+          dd if=/dev/zero of=/dev/shm/cozy-bench-hog bs=64M count=32 oflag=append conv=notrunc status=none || { short="dd failed"; break; }
+          held=$((held + 2147483648))
+          if [ $(($(date +%s) - t0)) -gt 20 ] || [ "$(pressure)" -gt 10 ]; then
+            short="a 2 GiB step stalled or raised memory pressure"; held=$((held > 4294967296 ? held - 4294967296 : 0))
+            truncate -s "$held" /dev/shm/cozy-bench-hog; break
+          fi
+        done
       else
         mode=anon; rm -f /var/tmp/bench-hog.ready
         setsid nohup python3 /var/tmp/bench-hog.py "$hog" "$swap" > /var/tmp/bench-hog.out 2>&1 < /dev/null &
         pid=$!
         i=0; while [ ! -s /var/tmp/bench-hog.ready ] && kill -0 "$pid" 2>/dev/null && [ $i -lt 300 ]; do sleep 2; i=$((i + 1)); done
         [ -s /var/tmp/bench-hog.ready ] || { kill "$pid" 2>/dev/null; echo "hog $hog did not stand: $(tail -c 300 /var/tmp/bench-hog.out)"; facts; exit 1; }
-        mode=anon-$(cut -d' ' -f2 /var/tmp/bench-hog.ready)
+        read -r _ state held short < /var/tmp/bench-hog.ready
+        mode=anon-$state
       fi
-    else
-      hog=0
     fi
-    echo "$mode $hog" > /var/tmp/bench-hog.want
+    echo "$mode $held" > /var/tmp/bench-hog.want
     setsid nohup sh -c 'while :; do echo "$(date +%s) $(awk "/^MemAvailable:/{print \$2}" /proc/meminfo)"; sleep 5; done' \
       > /var/tmp/memavail.log 2>&1 < /dev/null &
     echo $! > /var/tmp/memavail.pid
-    echo "hog $mode $hog"; facts ;;
+    [ -z "$short" ] || echo "SHORT of $hog: $short"
+    echo "hog $mode $held"; facts ;;
   check)
     read -r mode want < /var/tmp/bench-hog.want
     case $mode in

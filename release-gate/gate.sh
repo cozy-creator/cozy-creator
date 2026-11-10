@@ -73,7 +73,7 @@ B=$OUT/baseline
 mkdir -p "$B"; cd "$OUT"; : > cells.tsv
 log() { echo "$(date -u +%H:%M:%SZ) $*" | tee -a gate.log; }
 # expect <check> PASS|FAIL <what happened>: a CLI-behaviour check (cells/*.sh); analyze.py fails the gate on a FAIL.
-expect() { printf '%s\t%s\t%s\n' "$1" "$2" "$(tr '\n\t' '  ' <<< "$3" | cut -c1-400)" >> expect.tsv; log "$1: $2 $3"; }
+expect() { printf '%s\t%s\t%s\n' "$1" "$2" "$(tr '\n\t\r' '   ' <<< "$3" | cut -c1-400)" >> expect.tsv; log "$1: $2 $3"; }
 # fetch <file|URL#sha256=hex>: the candidate as a file here, its digest checked.
 fetch() {
   local f
