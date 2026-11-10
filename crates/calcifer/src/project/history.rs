@@ -520,7 +520,7 @@ pub(super) fn imported(dir: &FsPath) -> Vec<db::OpRow> {
         let lines = lines.as_str()?;
         let written = Written::from_yaml(&format!("version: 4\n{lines}")).ok()?;
         let held = written.boxes.into_iter().next()?;
-        Some(Boxed { name: if held.name.is_empty() { name.to_owned() } else { held.name }, fields: held.fields, at: None })
+        Some(Boxed { name: if held.name.is_empty() { name.to_owned() } else { held.name }, fields: held.fields, ..Default::default() })
     };
     let entries = kept.entries.into_iter().filter_map(|mut entry| {
         for change in entry.get_mut("changes")?.as_array_mut()? {

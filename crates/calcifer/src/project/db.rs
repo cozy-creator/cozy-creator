@@ -1,6 +1,6 @@
 //! `project.db` (cl-803, `docs/PROJECT-DB.md`): one SQLite file in a project's folder, WAL, written by this Calcifer alone. `load` reads
-//! all of it into what `Folder` holds; `commit` writes what one transaction changed of it, row by row, with the history and the keys
-//! that go with it.
+//! canonical Automerge state into what `Folder` holds. Relational graph/history rows are disposable query projections; local
+//! execution bookkeeping stays SQL. `commit` saves original CRDT changes and a recoverable snapshot in the same transaction.
 use std::{
     collections::BTreeMap,
     path::Path,
@@ -11,6 +11,7 @@ use api::error::{Error, Kind};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use super::{
+    crdt,
     folder::{Asset, File, Lock, Measured, RunFile, Version, WalkFile},
     graph::name_key,
     written::{Boxed, Written},
@@ -18,7 +19,7 @@ use super::{
 
 pub(crate) const DB: &str = "project.db";
 /// This schema's `user_version`. A database of another isn't read.
-const VERSION: i64 = 1;
+const VERSION: i64 = 2;
 const SCHEMA: &str = "
     CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
     CREATE TABLE head (key TEXT PRIMARY KEY, ord INTEGER NOT NULL, value TEXT NOT NULL) STRICT;
@@ -56,11 +57,25 @@ const SCHEMA: &str = "
         changes TEXT NOT NULL,
         undone TEXT
     ) STRICT;";
+const CRDT_SCHEMA: &str = "
+    CREATE TABLE IF NOT EXISTS crdt_document (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        format INTEGER NOT NULL,
+        snapshot BLOB NOT NULL,
+        heads TEXT NOT NULL
+    ) STRICT;
+    CREATE TABLE IF NOT EXISTS crdt_changes (
+        hash TEXT PRIMARY KEY,
+        seq INTEGER NOT NULL,
+        actor TEXT NOT NULL,
+        bytes BLOB NOT NULL
+    ) STRICT;";
+
 /// How long a request's answer is kept for its retries.
 const KEY_KEPT_MS: i64 = 24 * 60 * 60 * 1000;
 
 /// A box's row on the canvas, and the transaction and client that last wrote it.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct CardRow {
     pub name: String,
     pub card: api::calcifer::project::Card,
@@ -72,6 +87,8 @@ pub(crate) struct CardRow {
 /// transaction copies only what it writes.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Stored {
+    /// The canonical document already decoded while this local project is held open.
+    pub(super) crdt: Option<Arc<crdt::Document>>,
     pub seq: u64,
     pub written: Arc<Written>,
     /// By name key.
@@ -83,7 +100,7 @@ pub(crate) struct Stored {
 }
 
 /// One history entry as its row holds it, each part JSON.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct OpRow {
     pub id: u64,
     pub at_ms: i64,
@@ -153,15 +170,25 @@ pub(crate) fn locked_elsewhere(conn: &Connection) -> bool {
 /// `project.db` in `dir` opened, made with this schema if it's new.
 pub(crate) fn open(path: &Path) -> Result<Connection, Error> {
     let e = |error: rusqlite::Error| sql(path, error);
-    let conn = Connection::open(path).map_err(e)?;
+    let mut conn = Connection::open(path).map_err(e)?;
     conn.busy_timeout(WAIT).map_err(e)?;
     conn.pragma_update(None, "journal_mode", "WAL").map_err(e)?;
-    conn.pragma_update(None, "synchronous", "NORMAL").map_err(e)?;
+    conn.pragma_update(None, "synchronous", "FULL").map_err(e)?;
     // Checkpoints run beside the writes (`checkpoint`), never in a commit: on a busy disk one's fsync takes a second.
     conn.pragma_update(None, "wal_autocheckpoint", 0).map_err(e)?;
     match conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).map_err(e)? {
         0 => {
-            conn.execute_batch(&format!("BEGIN IMMEDIATE; {SCHEMA}; PRAGMA user_version = {VERSION}; INSERT INTO meta VALUES ('seq', '0'); COMMIT;")).map_err(e)?;
+            conn.execute_batch(&format!("BEGIN IMMEDIATE; {SCHEMA}; {CRDT_SCHEMA}; PRAGMA user_version = 1; INSERT INTO meta VALUES ('seq', '0'); COMMIT;")).map_err(e)?;
+            initialize_crdt(&mut conn, path)?;
+        }
+        1 => {
+            // VACUUM includes committed WAL pages and leaves a usable original before migration.
+            // Never overwrite a user's earlier recovery copy.
+            let backup = path.with_file_name(format!("{}.v1", path.file_name().unwrap_or_default().to_string_lossy()));
+            if !backup.exists() {
+                conn.execute("VACUUM INTO ?1", [backup.to_string_lossy().as_ref()]).map_err(e)?;
+            }
+            initialize_crdt(&mut conn, path)?;
         }
         VERSION => {}
         other => return Err(Error::new(Kind::Validation, "project_db_version", format!("{} is of schema {other}, and this cozy reads {VERSION}", path.display())).next("cozy update")),
@@ -181,6 +208,10 @@ pub(crate) fn set_identity(conn: &mut Connection, at: &Path, id: &str, name: &st
     for (key, value) in [("id", id), ("name", name)] {
         tx.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)", [key, value]).map_err(|e| sql(at, e))?;
     }
+    let mut doc = read_document(&tx, at)?;
+    doc.set_identity(id, name)?;
+    let seq = meta(&tx, "seq").and_then(|value| value.parse().ok()).unwrap_or(0);
+    save_document(&tx, at, &mut doc, seq)?;
     tx.commit().map_err(|e| sql(at, e))
 }
 
@@ -218,7 +249,7 @@ pub(crate) fn read(conn: &Connection, at: &Path) -> Result<(i64, Stored), Error>
 }
 
 /// All of it but the history, keys and asked texts.
-pub(crate) fn load(conn: &Connection, at: &Path) -> Result<Stored, Error> {
+fn legacy_load(conn: &Connection, at: &Path) -> Result<Stored, Error> {
     let e = |error: rusqlite::Error| sql(at, error);
     let bad = |what: &str, why: serde_json::Error| err(at, format!("{what}: {why}"));
     let (mut written, mut canvas, mut lock, mut walk, mut measured) = (Written::default(), BTreeMap::new(), Lock::default(), WalkFile::default(), BTreeMap::new());
@@ -232,7 +263,7 @@ pub(crate) fn load(conn: &Connection, at: &Path) -> Result<Stored, Error> {
     let mut rows = conn.prepare("SELECT key, name, ord FROM boxes").map_err(e)?;
     for row in rows.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))).map_err(e)? {
         let (key, name, ord) = row.map_err(e)?;
-        boxes.insert(key, (ord, Boxed { name, fields: vec![], at: None }));
+        boxes.insert(key, (ord, Boxed { name, ..Default::default() }));
     }
     let mut rows = conn.prepare("SELECT box, field, value FROM fields ORDER BY box, ord").map_err(e)?;
     for row in rows.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))).map_err(e)? {
@@ -291,7 +322,61 @@ pub(crate) fn load(conn: &Connection, at: &Path) -> Result<Stored, Error> {
         let (sha256, record) = row.map_err(e)?;
         measured.insert(sha256, serde_json::from_str(&record).map_err(|why| bad("measured", why))?);
     }
-    Ok(Stored { seq, written: Arc::new(written), canvas: Arc::new(canvas), lock: Arc::new(lock), walk: Arc::new(walk), measured: Arc::new(measured) })
+    Ok(Stored { seq, written: Arc::new(written), canvas: Arc::new(canvas), lock: Arc::new(lock), walk: Arc::new(walk), measured: Arc::new(measured), crdt: None })
+}
+
+/// Canonical project state plus machine-local bookkeeping. SQL projection damage never becomes a
+/// new authoritative project edit on read.
+pub(crate) fn load(conn: &Connection, at: &Path) -> Result<Stored, Error> {
+    let doc = read_document(conn, at)?;
+    let mut stored = doc.stored()?;
+    stored.seq = meta(conn, "seq").and_then(|seq| seq.parse().ok()).unwrap_or(0);
+    if let Some(record) = conn.query_row("SELECT record FROM walk WHERE id = 1", [], |row| row.get::<_, String>(0)).optional().map_err(|e| sql(at, e))? {
+        stored.walk = Arc::new(serde_json::from_str(&record).map_err(|e| err(at, e))?);
+    }
+    let mut measured = BTreeMap::new();
+    let mut rows = conn.prepare("SELECT sha256, record FROM measured").map_err(|e| sql(at, e))?;
+    for row in rows.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))).map_err(|e| sql(at, e))? {
+        let (hash, record) = row.map_err(|e| sql(at, e))?;
+        measured.insert(hash, serde_json::from_str(&record).map_err(|e| err(at, e))?);
+    }
+    stored.measured = Arc::new(measured);
+    Ok(stored)
+}
+
+fn read_document(conn: &Connection, at: &Path) -> Result<crdt::Document, Error> {
+    let (format, bytes): (i64, Vec<u8>) = conn.query_row("SELECT format, snapshot FROM crdt_document WHERE id = 1", [], |row| Ok((row.get(0)?, row.get(1)?))).map_err(|e| sql(at, e))?;
+    if format != crdt::FORMAT {
+        return Err(err(at, format!("unknown CRDT storage format {format}; update cozy")));
+    }
+    crdt::Document::load(&bytes, at)
+}
+
+fn save_document(tx: &Transaction<'_>, at: &Path, doc: &mut crdt::Document, seq: u64) -> Result<(), Error> {
+    if let Some(change) = doc.doc.get_last_local_change() {
+        tx.execute("INSERT OR IGNORE INTO crdt_changes (hash, seq, actor, bytes) VALUES (?1, ?2, ?3, ?4)", params![change.hash().to_string(), seq as i64, change.actor_id().to_hex_string(), change.raw_bytes()]).map_err(|e| sql(at, e))?;
+    }
+    let heads: Vec<String> = doc.doc.get_heads().iter().map(ToString::to_string).collect();
+    let bytes = doc.doc.save();
+    tx.execute("INSERT OR REPLACE INTO crdt_document (id, format, snapshot, heads) VALUES (1, ?1, ?2, ?3)", params![crdt::FORMAT, bytes, json(&heads)]).map_err(|e| sql(at, e))?;
+    Ok(())
+}
+
+/// Convert a relational v1 once, preserving a recoverable v1 SQLite snapshot alongside it. The new
+/// canonical snapshot, its immutable change bytes and normalized query projections commit together.
+fn initialize_crdt(conn: &mut Connection, at: &Path) -> Result<(), Error> {
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| sql(at, e))?;
+    tx.execute_batch(CRDT_SCHEMA).map_err(|e| sql(at, e))?;
+    let before = legacy_load(&tx, at)?;
+    let mut after = before.clone();
+    crdt::identify(&before, &mut after);
+    let mut doc = crdt::Document::new(at);
+    let ops = legacy_ops(&tx, at)?;
+    doc.update(crdt::value(&after, &ops, &serde_json::Value::Null, identity(&tx)))?;
+    write(&tx, &before, &after, &Extra::default()).map_err(|e| sql(at, e))?;
+    save_document(&tx, at, &mut doc, after.seq)?;
+    tx.pragma_update(None, "user_version", VERSION).map_err(|e| sql(at, e))?;
+    tx.commit().map_err(|e| sql(at, e))
 }
 
 /// The asset row of the lock, without its versions, which have rows of their own.
@@ -308,6 +393,7 @@ fn file_record(file: &File) -> String {
 /// `locked` runs once it holds the write lock, before it writes: no other connection commits until it does.
 pub(crate) fn commit(conn: &mut Connection, at: &Path, before: &Stored, after: &mut Stored, extra: &Extra, locked: impl FnOnce()) -> Result<Option<u64>, Error> {
     let e = |error: rusqlite::Error| sql(at, error);
+    crdt::identify(before, after);
     if !Arc::ptr_eq(&before.lock, &after.lock) {
         Arc::make_mut(&mut after.lock).mark_rows();
     }
@@ -320,6 +406,19 @@ pub(crate) fn commit(conn: &mut Connection, at: &Path, before: &Stored, after: &
         return Ok(None);
     }
     let seq = before.seq + 1;
+    let mut doc = match &before.crdt {
+        Some(doc) => (**doc).clone(),
+        None => read_document(&tx, at)?,
+    };
+    let old_heads = doc.doc.get_heads();
+    let identity = identity(&tx).or_else(|| doc.identity());
+    let ops = legacy_ops(&tx, at)?;
+    let value = crdt::value(after, &ops, &doc.value, identity);
+    doc.update(value)?;
+    if doc.doc.get_heads() != old_heads {
+        save_document(&tx, at, &mut doc, seq)?;
+    }
+    after.crdt = Some(Arc::new(doc));
     tx.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('seq', ?1)", [seq.to_string()]).map_err(e)?;
     tx.commit().map_err(e)?;
     Ok(Some(seq))
@@ -461,7 +560,7 @@ pub(crate) fn asked(conn: &Connection, digest: &str) -> Option<String> {
 }
 
 /// Every history row, oldest first.
-pub(crate) fn ops(conn: &Connection, at: &Path) -> Result<Vec<OpRow>, Error> {
+fn legacy_ops(conn: &Connection, at: &Path) -> Result<Vec<OpRow>, Error> {
     let e = |error: rusqlite::Error| sql(at, error);
     let mut rows = conn.prepare("SELECT id, at_ms, by, words, edits, changes, undone FROM ops ORDER BY id").map_err(e)?;
     let found = rows
@@ -470,6 +569,11 @@ pub(crate) fn ops(conn: &Connection, at: &Path) -> Result<Vec<OpRow>, Error> {
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(e)?;
     Ok(found)
+}
+
+/// History is part of the logical document, not an independently synchronized SQL table.
+pub(crate) fn ops(conn: &Connection, at: &Path) -> Result<Vec<OpRow>, Error> {
+    read_document(conn, at)?.ops()
 }
 
 /// What the request under `key` asked and answered, if it was kept.
@@ -504,6 +608,7 @@ pub(crate) fn create(path: &Path, stored: &Stored, ops: &[OpRow], asked: &[(Stri
     let mut fresh = stored.clone();
     fresh.seq = 0;
     commit(&mut conn, path, &Stored::default(), &mut fresh, &extra, || ())?;
+    set_meta(&conn, path, "created_complete", Some("1"))?;
     conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").map_err(|e| err(path, e))?;
     drop(conn);
     Ok(())

@@ -8,6 +8,7 @@
 mod assets;
 mod canvas;
 mod db;
+mod crdt;
 mod fit;
 mod folder;
 mod format;

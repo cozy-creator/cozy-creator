@@ -230,6 +230,9 @@ pub(crate) type Files = BTreeMap<String, String>;
 /// One result of a tool: its number, its files and the key it was made under.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Version {
+    /// Stable identity independent of the local display number.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
     /// 1 first, never reused.
     #[serde(default)]
     pub number: u32,
@@ -331,6 +334,9 @@ pub(crate) struct Pending {
 /// kept for the next try on those inputs.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Asset {
+    /// Stable identity shared with the written box; a rename preserves it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
     /// Its name as the file wrote it when it was made.
     #[serde(default)]
     pub name: String,
@@ -398,6 +404,9 @@ impl Asset {
 
     /// `version` on the list in its place, in place of one of that number.
     pub(crate) fn list(&mut self, mut version: Version) {
+        if version.id.is_empty() {
+            version.id = self.version(version.number).filter(|held| !held.id.is_empty()).map_or_else(super::new_key, |held| held.id.clone());
+        }
         let mut texts = self.texts();
         texts.extend(version.text.take().map(|text| (version.number, text)));
         self.versions.retain(|held| held.number != version.number);
@@ -542,6 +551,11 @@ struct KeptBoard {
 
 /// This Calcifer's id, the same across its restarts, once it has said it.
 static CALCIFER: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Local writer identity, held outside the copied project database.
+pub(super) fn writer_identity() -> Option<&'static str> {
+    CALCIFER.get().map(String::as_str)
+}
 
 /// Reads this Calcifer's id from `dir`, or makes it. Before any project is read.
 pub(crate) fn bind_calcifer(dir: &Path) -> Result<(), Error> {
