@@ -216,10 +216,18 @@ pub(crate) async fn request(api: &Arc<Api>, key: &str, ask: RunRequest) -> Resul
             }
             if let Some(project) = project.filter(|_| !submitted.replay) {
                 // What Calcifer holds is in this computer's store.
-                let uploads = files::store().map(|store| store.root().to_owned()).unwrap_or_default();
-                let kept = tokio::task::spawn_blocking(move || crate::project::keep_given(&project, &given, &uploads)).await;
-                let said = kept.map_err(|e| Error::internal("keep_given", e.to_string()))?;
-                notes.extend(said.into_iter().map(|message| Note { level: NoteLevel::Warning, message }));
+                let uploads = match crate::private_io::of_output(&crate::project::landing(&project)) {
+                    Ok(Some(scope)) => Some(scope.storage.view_root.join(".vault-uploads")),
+                    Ok(None) => Some(files::store().map(|store| store.root().to_owned()).unwrap_or_default()),
+                    Err(_) => None,
+                };
+                if let Some(uploads) = uploads {
+                    let kept = tokio::task::spawn_blocking(move || crate::project::keep_given(&project, &given, &uploads)).await;
+                    let said = kept.map_err(|e| Error::internal("keep_given", e.to_string()))?;
+                    notes.extend(said.into_iter().map(|message| Note { level: NoteLevel::Warning, message }));
+                } else {
+                    notes.push(Note { level: NoteLevel::Warning, message: "the run was accepted, but its private inputs could not be added to project history while the view was closing".into() });
+                }
             }
             Ok(Submitted { notes, ..submitted })
         }
@@ -533,6 +541,8 @@ async fn call(
             (call.spec(&bound)?, Some(bound), out)
         }
     };
+    // Even a prepare-only private local-code call needs protected input/journal scope.
+    let out = out.or_else(|| project.as_deref().filter(|project| crate::project::vault::encrypted(&crate::project::vault::logical(project))).map(crate::project::landing));
     let mut submission = call.submission(code.on, hub, &spec, bound.as_ref(), out);
     submission.inputs.extend(code.files.iter().cloned());
     Ok((submission, notes))
