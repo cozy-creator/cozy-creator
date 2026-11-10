@@ -23,9 +23,9 @@ type Shared =
 
 /** Three missed comments: the connection is dead, whatever the socket says. */
 const SILENT_MS = 45_000
-// Stable coordination ABI: an older open page cannot acknowledge Reader ownership.
+// Vault-aware coordination ABI: older pages cannot invalidate cached Reader grants on lock.
 // Keep tab liveness, media/log locks and ordinary storage shared across page generations.
-const COORDINATION = "cozy-events-presence-v1"
+const COORDINATION = "cozy-events-presence-v2"
 
 /** Server-sent events off a `fetch` body, so one parser serves every transport. */
 export async function readEvents(body: ReadableStream<Uint8Array<ArrayBuffer>>, onData: (data: string) => void, onBytes?: () => void) {
