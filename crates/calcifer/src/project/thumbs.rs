@@ -212,8 +212,9 @@ fn strs(args: &[&str]) -> Vec<String> {
 
 /// `source` as ffmpeg's input, which may read nothing else: what a machine made can be a playlist in a picture's name, and a canvas
 /// draws each file unasked.
-fn input(source: &str) -> Vec<String> {
-    strs(&["-protocol_whitelist", "file", "-i", source])
+fn input(source: &str) -> Result<Vec<String>, String> {
+    let options = crate::media::options(FsPath::new(source)).map_err(|error| error.to_string())?;
+    Ok([strs(&options), strs(&["-i", source])].concat())
 }
 
 /// Draws `drawing` as the thumbnail called `name`, whole or not there at all.
@@ -227,7 +228,7 @@ fn draw(ffmpeg: &FsPath, ffprobe: &FsPath, drawing: &Drawing, dir: &FsPath, name
     let wave = || -> Result<(tempfile::NamedTempFile, &str), String> {
         let out = part("png")?;
         let picture = format!("showwavespic=s={width}x{}:colors={WAVE_COLOR}", (width / 4).max(16));
-        run(ffmpeg, &input(&source), &strs(&["-filter_complex", &picture]), out.path())?;
+        run(ffmpeg, &input(&source)?, &strs(&["-filter_complex", &picture]), out.path())?;
         Ok((out, "png"))
     };
     let (out, ext) = match drawing.field {
@@ -253,7 +254,7 @@ fn draw(ffmpeg: &FsPath, ffprobe: &FsPath, drawing: &Drawing, dir: &FsPath, name
         _ => {
             let ext = if tools::has_alpha(ffprobe, &drawing.source) { "png" } else { "jpg" };
             let out = part(ext)?;
-            run(ffmpeg, &input(&source), &strs(&["-vf", &scale, "-q:v", "3"]), out.path())?;
+            run(ffmpeg, &input(&source)?, &strs(&["-vf", &scale, "-q:v", "3"]), out.path())?;
             (out, ext)
         }
     };
@@ -291,7 +292,7 @@ fn poster_at(ffmpeg: &FsPath, source: &str, seconds: f64) -> f64 {
 fn spread(ffmpeg: &FsPath, source: &str, at: f64) -> Option<f64> {
     let before = strs(&["-v", "error", "-nostdin", "-threads", "1", "-ss", &format!("{at:.3}")]);
     let after = strs(&["-map", "0:v:0", "-frames:v", "1", "-vf", "scale=64:36,format=gray", "-f", "rawvideo", "-"]);
-    let done = Command::new(ffmpeg).args(before).args(input(source)).args(after).output().ok()?;
+    let done = Command::new(ffmpeg).args(before).args(input(source).ok()?).args(after).output().ok()?;
     let grey: Vec<f64> = done.stdout.iter().map(|&luma| f64::from(luma)).collect();
     if !done.status.success() || grey.is_empty() {
         return None;
@@ -303,7 +304,7 @@ fn spread(ffmpeg: &FsPath, source: &str, at: f64) -> Option<f64> {
 /// The frame at `at`; the first if that fails, as a length can mislead.
 fn poster(ffmpeg: &FsPath, source: &str, at: f64, scale: &str, out: &FsPath) -> Result<(), String> {
     let after = strs(&["-vf", scale, "-q:v", "3"]);
-    let opening = input(source);
+    let opening = input(source)?;
     if at > 0.0 && run(ffmpeg, &[strs(&["-ss", &format!("{at:.3}")]), opening.clone()].concat(), &after, out).is_ok() {
         return Ok(());
     }
@@ -318,7 +319,7 @@ fn preview(ffmpeg: &FsPath, source: &str, seconds: f64, at: f64, out: &FsPath) -
     let before = strs(&["-threads", "1", "-ss", &format!("{at:.3}")]);
     let encode = strs(&["-t", &format!("{lasts:.3}"), "-map", "0:v:0", "-an", "-sn", "-dn", "-vf", &fit, "-c:v", "libx264", "-preset", "veryfast", "-crf", "28"]);
     let container = strs(&["-threads", "1", "-movflags", "+faststart", "-f", "mp4"]);
-    ran(ffmpeg, &[before, input(source), encode, container].concat(), out)
+    ran(ffmpeg, &[before, input(source)?, encode, container].concat(), out)
 }
 
 /// `frames` evenly through the video, side by side: a seek to each, which leaves a long take cheap. A seek past its last frame gives
@@ -327,7 +328,8 @@ fn preview(ffmpeg: &FsPath, source: &str, seconds: f64, at: f64, out: &FsPath) -
 fn strip(ffmpeg: &FsPath, ffprobe: &FsPath, drawing: &Drawing, source: &str, frames: u32, scale: &str, out: &FsPath) -> Result<(), String> {
     let seconds = seconds(ffprobe, drawing);
     let at = |n: u32| seconds * (f64::from(n) + 0.5) / f64::from(frames);
-    let inputs: Vec<String> = (0..frames).flat_map(|n| [strs(&["-threads", "1", "-ss", &format!("{:.3}", at(n))]), input(source)].concat()).collect();
+    let opening = input(source)?;
+    let inputs: Vec<String> = (0..frames).flat_map(|n| [strs(&["-threads", "1", "-ss", &format!("{:.3}", at(n))]), opening.clone()].concat()).collect();
     let scaled: String = (0..frames).map(|n| format!("[{n}:v:0]{scale},setsar=1[s{n}];")).collect();
     let joined: String = (0..frames).map(|n| format!("[s{n}]")).collect();
     let graph = format!("{scaled}{joined}hstack=inputs={frames}[out]");
@@ -335,7 +337,7 @@ fn strip(ffmpeg: &FsPath, ffprobe: &FsPath, drawing: &Drawing, source: &str, fra
     let after = |graph: &str| strs(&["-filter_complex", graph, "-map", "[out]", "-q:v", "3"]);
     run(ffmpeg, &inputs, &after(&graph), out).or_else(|_| {
         let rate = if seconds > 0.0 { f64::from(frames) / seconds } else { f64::from(frames) };
-        run(ffmpeg, &input(source), &after(&format!("[0:v:0]fps={rate:.6},{scale},setsar=1,tile={frames}x1[out]")), out)
+        run(ffmpeg, &opening, &after(&format!("[0:v:0]fps={rate:.6},{scale},setsar=1,tile={frames}x1[out]")), out)
     })
 }
 

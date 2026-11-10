@@ -160,6 +160,7 @@ fn fails_alone(ffmpeg: &Path, ffprobe: &Path, piece: &Piece, canvas: &Canvas) ->
         command.args(["-loop", "1", "-framerate", &fps.to_string(), "-t", &format!("{:.6}", (end + 1) as f64 / fps)]);
     }
     let done = command
+        .args(crate::media::options(&piece.path)?)
         .arg("-i")
         .arg(&piece.path)
         .args(["-map", "0:v:0", "-map", "0:a:0?", "-vf", &video, "-af", &sound])
@@ -483,7 +484,9 @@ fn cut(
                 if copy {
                     // From the keyframe at `from`: half a frame past it, so the seek lands on it.
                     let at = format!("{:.6}", (from as f64 + 0.5) / probe.rate);
-                    let mut args = os(&["-ss", &at, "-i"]);
+                    let mut args = os(&["-ss", &at]);
+                    args.extend(crate::media::options(&piece.path)?.into_iter().map(std::ffi::OsString::from));
+                    args.push("-i".into());
                     args.push(piece.path.clone().into_os_string());
                     args.extend(os(&["-frames:v", &count, "-map", "0:v:0", "-c", "copy", "-f", "mpegts"]));
                     args.push(part.clone().into_os_string());
@@ -494,7 +497,9 @@ fn cut(
                     let staged = work.path().join(format!("{k}-{n}.ts"));
                     let key = probe.keys.iter().copied().filter(|&key| key <= from).max().unwrap_or(0);
                     let at = format!("{:.6}", (key as f64 + 0.5) / probe.rate);
-                    let mut args = os(&["-noaccurate_seek", "-ss", &at, "-i"]);
+                    let mut args = os(&["-noaccurate_seek", "-ss", &at]);
+                    args.extend(crate::media::options(&piece.path)?.into_iter().map(std::ffi::OsString::from));
+                    args.push("-i".into());
                     args.push(piece.path.clone().into_os_string());
                     let trim = format!("trim=start_frame={},setpts=PTS-STARTPTS", from - key);
                     args.extend(os(&["-map", "0:v:0", "-vf", &trim, "-frames:v", &count, "-c:v", "libx264", "-preset", "veryfast"]));
@@ -537,6 +542,7 @@ fn cut(
                 let held = format!("{:.6}", (end + 1) as f64 / fps);
                 inputs.extend(["-loop", "1", "-framerate", &rate, "-t", &held].map(Into::into));
             }
+            inputs.extend(crate::media::options(&piece.path)?.into_iter().map(std::ffi::OsString::from));
             inputs.extend(["-i".into(), piece.path.clone().into_os_string()]);
             let _ = write!(filter, "[{k}:v]{}[v{k}];", whole_filter(piece.still, native(piece), fps, (*start, *end), (width, height)));
             let _ = write!(joined, "[v{k}]");
@@ -560,6 +566,7 @@ fn cut(
             let lasts = (*end - *start) as f64 / fps;
             match probe.sound {
                 Some(_) => {
+                    inputs.extend(crate::media::options(&piece.path)?.into_iter().map(std::ffi::OsString::from));
                     inputs.extend(["-i".into(), piece.path.clone().into_os_string()]);
                     let _ = write!(filter, "[{k}:a]{},apad=whole_dur={lasts}[a{k}];", sound_filter((*start, *end), fps));
                 }
@@ -765,15 +772,15 @@ pub fn frames_of(ffprobe: &Path, path: &Path) -> Option<u64> {
 
 /// How long the video or sound at `path` lasts, as its container says.
 pub fn seconds_of(ffprobe: &Path, path: &Path) -> Option<f64> {
-    let args = ["-v", "error", "-protocol_whitelist", "file", "-show_entries", "format=duration", "-of", "csv=p=0"];
-    let done = std::process::Command::new(ffprobe).args(args).arg(path).output().ok()?;
+    let args = ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0"];
+    let done = std::process::Command::new(ffprobe).args(crate::media::options(path).ok()?).args(args).arg(path).output().ok()?;
     String::from_utf8_lossy(&done.stdout).trim().parse().ok()
 }
 
 /// Whether the picture at `path` has an alpha channel, or a palette that may.
 pub fn has_alpha(ffprobe: &Path, path: &Path) -> bool {
-    let args = ["-v", "error", "-protocol_whitelist", "file", "-select_streams", "v:0", "-show_entries", "stream=pix_fmt", "-of", "csv=p=0"];
-    let Ok(done) = std::process::Command::new(ffprobe).args(args).arg(path).output() else { return false };
+    let args = ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=pix_fmt", "-of", "csv=p=0"];
+    let Ok(done) = std::process::Command::new(ffprobe).args(match crate::media::options(path) { Ok(options) => options, Err(_) => return false }).args(args).arg(path).output() else { return false };
     let format = String::from_utf8_lossy(&done.stdout);
     ["rgba", "bgra", "argb", "abgr", "ya", "gbrap", "pal8"].iter().any(|alpha| format.contains(alpha))
 }
@@ -783,6 +790,10 @@ fn probe(ffprobe: &Path, path: &Path, keys: bool) -> Result<Probe, Error> {
     let read = |args: &[&str]| -> Result<Vec<u8>, Error> {
         let done = std::process::Command::new(ffprobe)
             .args(["-v", "error"])
+            .args(crate::media::options(path).map_err(|mut error| {
+                error.message = format!("{} holds no video ffprobe reads: {}", path.display(), error.message);
+                error
+            })?)
             .args(args)
             .arg(path)
             .output()
@@ -917,7 +928,9 @@ pub fn files_in(value: &Value, folder: &Folder, lock: &Lock, clips: &HashMap<Str
 
 /// The share of `picture`'s pixels that are fully transparent; none if it can't be read.
 fn transparent_share(ffmpeg: &Path, picture: &Path) -> f64 {
+    let Ok(options) = crate::media::options(picture) else { return 0.0 };
     let read = std::process::Command::new(ffmpeg)
+        .args(options)
         .args(["-v", "error", "-i"])
         .arg(picture)
         .args(["-frames:v", "1", "-vf", "format=rgba,alphaextract", "-f", "rawvideo", "-pix_fmt", "gray", "-"])
@@ -935,9 +948,10 @@ fn transparent_share(ffmpeg: &Path, picture: &Path) -> f64 {
 pub fn frame(ffmpeg: &Path, video: &Path, at: Option<f64>, dir: &Path) -> Result<(tempfile::NamedTempFile, bool), Error> {
     let io = |e: std::io::Error| Error::new(Kind::Unavailable, "project_io", format!("a frame of {}: {e}", video.display()));
     let frame = tempfile::Builder::new().suffix(".png").tempfile_in(dir).map_err(io)?;
+    let options = crate::media::options(video)?;
     let grab = |seek: Vec<String>, once: bool| {
         let mut command = std::process::Command::new(ffmpeg);
-        command.args(["-y", "-v", "error"]).args(seek).arg("-i").arg(video);
+        command.args(["-y", "-v", "error"]).args(seek).args(&options).arg("-i").arg(video);
         command.args(if once { &["-frames:v", "1", "-update", "1"][..] } else { &["-update", "1"][..] }).arg(frame.path());
         let done = command.output();
         let empty = std::fs::metadata(frame.path()).map_or(true, |meta| meta.len() == 0);
@@ -994,4 +1008,57 @@ pub fn shares_bytes(path: &Path) -> bool {
 #[cfg(not(unix))]
 pub fn shares_bytes(_: &Path) -> bool {
     false
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires ffmpeg and ffprobe on PATH"]
+    fn probes_and_cuts_read_single_media_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let ffmpeg = Path::new("ffmpeg");
+        let ffprobe = Path::new("ffprobe");
+        let source = dir.path().join("marker.mp4");
+        let made = std::process::Command::new(ffmpeg)
+            .args(["-v", "error", "-f", "lavfi", "-i", "color=c=blue:s=32x32:r=4", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=8000", "-t", "1", "-c:v", "libx264", "-threads", "1", "-pix_fmt", "yuv420p", "-c:a", "aac"])
+            .arg(&source).output().unwrap();
+        assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
+        let shape = probe(ffprobe, &source, true).unwrap();
+        assert_eq!(shape.size, (32, 32));
+        assert_eq!(shape.frames, 4);
+        let folder = Folder::at(dir.path());
+        let canvas = Canvas { ratio: None, short: None, fps: 4.0 };
+        let mut piece = Piece {
+            asset: "marker".into(), path: source.clone(),
+            digest: format!("sha256:{}", hex::encode(Sha256::digest(std::fs::read(&source).unwrap()))),
+            file: "marker.mp4".into(), shape: Some(Shape { width: 32, height: 32, fps: 4.0, frames: 4 }),
+            still: false, start: 0, end: 4,
+        };
+        for fast in [true, false] {
+            let (_, film) = cut(ffmpeg, ffprobe, &folder, std::slice::from_ref(&piece), &canvas, "film", &dir.path().join("cache"), &|_| {}, fast).unwrap();
+            assert_eq!(probe(ffprobe, &film, false).unwrap().frames, 4);
+        }
+        let picture = dir.path().join("marker.png");
+        let made = std::process::Command::new(ffmpeg)
+            .args(["-v", "error", "-i"]).arg(&source)
+            .args(["-frames:v", "1", "-threads", "1"]).arg(&picture).output().unwrap();
+        assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
+        piece.path = picture;
+        piece.still = true;
+        piece.shape = None;
+        let (_, film) = cut(ffmpeg, ffprobe, &folder, std::slice::from_ref(&piece), &canvas, "still", &dir.path().join("cache"), &|_| {}, false).unwrap();
+        assert_eq!(probe(ffprobe, &film, false).unwrap().frames, 4);
+        assert!(frame(ffmpeg, &source, Some(0.0), dir.path()).is_ok());
+        let disguised = dir.path().join("download.mp4.part");
+        std::fs::write(&disguised, "ffconcat version 1.0\nfile marker.mp4\n").unwrap();
+        assert_eq!(probe(ffprobe, &disguised, true).err().unwrap().code, "media_format_unsupported");
+        piece.path = disguised.clone();
+        let error = cut(ffmpeg, ffprobe, &folder, &[piece], &canvas, "refused", &dir.path().join("cache"), &|_| {}, true).err().unwrap();
+        assert_eq!(error.code, "media_format_unsupported");
+        assert!(!dir.path().join(".refused.part.mp4").exists());
+        assert_eq!(frame(ffmpeg, &disguised, None, dir.path()).unwrap_err().code, "media_format_unsupported");
+        assert!(seconds_of(ffprobe, &disguised).is_none());
+    }
 }

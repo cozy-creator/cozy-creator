@@ -267,8 +267,10 @@ impl Client {
         };
         let answer = self
             .send(&|c: &reqwest::Client, base: &str| {
-                let put = c.put(format!("{base}{path}")).header(header::CONTENT_TYPE, "application/octet-stream");
-                // A whole file goes by its Content-Length, which its body carries; a part names its range.
+                let put = c.put(format!("{base}{path}"))
+                    .header(header::CONTENT_LENGTH, part.len() as u64)
+                    .header(header::CONTENT_TYPE, "application/octet-stream");
+                // A whole file names its length, including zero; a part also names its range.
                 match &range {
                     Some(range) if part.len() as u64 != length => put.header(header::CONTENT_RANGE, range),
                     _ => put,
@@ -1229,3 +1231,7 @@ fn write_key() -> String {
     getrandom::fill(&mut bytes).expect("the OS has randomness");
     format!("cli-{}", hex::encode(bytes))
 }
+
+#[cfg(test)]
+#[path = "calcifer_client_tests.rs"]
+mod tests;

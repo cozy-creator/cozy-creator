@@ -16,6 +16,7 @@
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
 PROBE=$(cd "$(dirname "$0")" && pwd)/probe.py PAGING=$(cd "$(dirname "$0")" && pwd)/paging.py
+GENERATION=$(cd "$(dirname "$0")" && pwd)/generation.py
 
 step install; install_cozy; run_project "$OUT/project" || fail "cozy project new failed"
 user_services
@@ -24,14 +25,11 @@ step candidates; candidates
 
 # import_release <label> <distribution> <version>: the probe in the environment holding that release.
 import_release() {
-  local norm env py
-  norm=$(echo "$2" | tr '.-' '__')
-  env=$(find "$HOME/.cozy" -type d -path '*/site-packages/*' -name "$norm-$3.dist-info" -printf '%T@ %p\n' 2>/dev/null \
-    | sort -rn | head -1 | cut -d' ' -f2- | sed 's|/lib/python[^/]*/site-packages/.*||')
-  py=$env/bin/python
+  local py
+  py=$(python3 -I "$GENERATION" "$HOME/.cozy" "$OUT/install-$1.ndjson" "$2" "$3" 2> "$OUT/generation-$1.err") \
+    || { check "$1: $(cat "$OUT/generation-$1.err")"; return; }
   [ -x "$py" ] || { check "$1: no environment holds $2 $3"; return; }
-  # The environment's own interpreter, isolated (-I) but with its site: a checkout installs editable, through
-  # a .pth that -S would skip.
+  # Keep the generation's env link: its .pth resolves source beside sys.prefix, not beside the shared cache.
   "$py" -I "$PROBE" "$2" > "$OUT/import-$1.log" 2>&1 \
     || check "$1: $(grep -m3 '^FAIL' "$OUT/import-$1.log" | tr '\n' ' ')"
   tail -2 "$OUT/import-$1.log"
