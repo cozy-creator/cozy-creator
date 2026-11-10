@@ -425,6 +425,13 @@ impl Provider {
                     .to_string(),
             )
             .arg(if options.read_only { "1" } else { "0" });
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            // launchd kills a finished job's remaining process group. This owned guardian
+            // must survive that cleanup long enough to close its exact mount/image.
+            command.process_group(0);
+        }
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -726,6 +733,12 @@ impl Mounted {
                 }
             }
             if self.helpers.iter().any(|helper| !helper.ended()) {
+                return Err(Error::StillRunning);
+            }
+            #[cfg(target_os = "linux")]
+            self.provider.cleanup_dead(&self.view, &self.identity);
+            #[cfg(not(target_os = "macos"))]
+            if self.identity.is_some() && self.provider.identity(&self.view)? == self.identity {
                 return Err(Error::StillRunning);
             }
             #[cfg(target_os = "macos")]
