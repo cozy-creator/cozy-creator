@@ -404,9 +404,12 @@ class Broker:
             return self.settled[index]
         for saved in got.get("saved", []):
             self.held[saved["digest"]] = spooled(self.spool, saved["asset_ref"])
+        # Every call is a serving call (`calls.rs` serving_call): its request, and the model choices it passes (`models`),
+        # which a cell's calls leave at their defaults.
         document = cast(dict[str, Json], json.loads(got.get("payload", "{}")))
-        # A call's model choices (`models`) bind its slots; a cell's call takes the defaults.
-        request = {k: v for k, v in document.items() if k != "models"}
+        request = document.get("payload")
+        if not isinstance(request, dict):
+            raise Failed("a child call has no request object")
         files = {path: self.held[digest] for path, digest in digests(request) if digest in self.held}
         child = f"{self.request}-call-{index}"
         reply, spool = self.run(got.get("export", ""), request, files, child)
