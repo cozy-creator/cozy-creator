@@ -66,7 +66,8 @@ refuse conversion rather than risk unrelated data.
 
 Linux/Windows use pinned bundled securefs. Linux encryption needs FUSE2 and glibc 2.34+; ordinary
 CLI requirements remain unchanged. Windows needs WinFsp 2.1 and the Microsoft Visual C++ x64
-runtime; Windows 11 emulates the helper on ARM64. macOS uses built-in encrypted APFS images,
+runtime; Windows 11 emulates the filesystem and ffmpeg/ffprobe helpers on ARM64.
+macOS uses built-in encrypted APFS images,
 without a kernel extension. Logical state/media are portable, but raw APFS backing needs macOS;
 raw securefs backing needs its compatible provider. Cross-format moves currently require an
 explicit decoded transfer. APFS does not claim authenticated per-file encryption semantics.

@@ -347,7 +347,8 @@ pub fn ffmpeg_build() -> &'static [Archive] {
             "c8ed4c4e6978a03c485edbfe4e0a5dc2380f8a30bba5150531b31b094492d924",
             "fcbe839537485eaee7a7a8bc5cbc0f90d53617e80943e8a5b2e31cb851197ea6"
         ),
-        ("windows", "x86_64") => &[Archive {
+        // Windows 11 ARM64 runs these pinned x64 media tools under emulation; Cozy stays native.
+        ("windows", "x86_64" | "aarch64") => &[Archive {
             url: "https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip",
             sha256: "60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba",
             members: &[
