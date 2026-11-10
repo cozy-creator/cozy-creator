@@ -343,6 +343,7 @@ pub(crate) fn named(api: &Api, text: &str) -> Result<PathBuf, Error> {
             let said = format!("{text} is relative, and Calcifer has no folder of a client's to start it from");
             return Err(Error::new(Kind::Usage, "project_path", said).remedy(format!("name {}", api::calcifer::project::NAMED_BY)));
         }
+        vault::recover_conversion(path)?;
         if let Some(root) = path.ancestors().find(|root| vault::encrypted(root)) { return Ok(root.to_owned()); }
         return holding(path);
     }
@@ -355,7 +356,9 @@ pub(crate) fn named(api: &Api, text: &str) -> Result<PathBuf, Error> {
 fn indexed(api: &Api) -> Result<Vec<crate::state::KnownProject>, Error> {
     let store = api.calcifer.store();
     let failed = |e: crate::store::StoreError| Error::internal("calcifer_store", e.to_string());
-    let (here, gone): (Vec<_>, Vec<_>) = store.known_projects().map_err(failed)?.into_iter().partition(|entry| Folder::is_project(&entry.path) || vault::encrypted(&entry.path));
+    let known = store.known_projects().map_err(failed)?;
+    for entry in &known { vault::recover_conversion(&entry.path)?; }
+    let (here, gone): (Vec<_>, Vec<_>) = known.into_iter().partition(|entry| Folder::is_project(&entry.path) || vault::encrypted(&entry.path));
     if !gone.is_empty() {
         store.projects_gone(&gone.into_iter().map(|entry| entry.id).collect::<Vec<_>>()).map_err(failed)?;
     }
