@@ -204,7 +204,7 @@ a spec.
 - `GET /v1/tools/{id}/ui/{hash}/{*file}`: a module of a component as `{module}` named it, `application/javascript`, under the page's CSP, `immutable`, needing no session: `import()` can't send one, and the hash is what `GET /v1/tools/{id}/ui` said. Calcifer holds what it read in memory, so after a restart a page asks again. `404 tool_ui_file_not_found`.
 - `GET /v1/targets?target=&hub=&on=&tree=&at=`: what a run of `target` on that machine calls, resolved as `POST /v1/runs` resolves it; with `tree` and `at`, local code's `code`, `target` its function:
   `{package, function?, release, release_from: asked|installed|latest|local, summary, interface, functions, contract?, request?, next?}`:
-  `interface` is the package's interface document. Local code's is what its machine's Runtime said installing this very source, else read from its source by the Runtime release its uv.lock holds or PyPI's newest, installing nothing: `400 describe_failed` when that Runtime can't read it, with `next` the run that reads it with the machine's own; `functions` `[{function, description}]` is what a
+  `interface` is the package's interface document. Local code's is what its machine's Runtime said installing this very source, else read from its source by the Runtime release its uv.lock holds, the newest within its unconditional `cozy-runtime` version bounds, or PyPI's newest when neither is specified. No package code runs: `400 describe_failed` when that Runtime can't read it, with `next` the run that reads it with the machine's own; `functions` `[{function, description}]` is what a
   person runs of it, with no internal function or recipe. A named function is checked as a run checks it, and `contract` is its contract as people
   read it, `request` its schema. `next` names the functions to describe.
 - `PUT /v1/files/sha256:<hex>`: the one way a client's file reaches Calcifer, for a run, an import, a model or a machine update to name by its digest. Its
@@ -518,8 +518,12 @@ written beside it), keeps the newest 64 a day, and works from that copy: it read
 `with: ./dir/fn` is a folder of Calcifer's computer, read into a copy the same way. Calcifer keeps its manifest under
 `~/.cozy/calcifer/local/` and makes it ready on the machine a call goes to: an install run first when that machine lacks it,
 then the call with its files. Every machine, `local` too, is sent the files by content (only what it lacks); none reads a
-host path. Its interface comes from Runtime's static describer on the Python and cozy-runtime its project locks; nothing runs
-to describe it.
+host path. Its interface comes from Runtime's static describer on the project's Python: the exact cozy-runtime its lock holds,
+else the newest within its unconditional version bounds, else PyPI's newest. Only plain PEP 440 bounds on the normalized
+`cozy-runtime` name select that SDK; extras stay package dependencies. Conditional requirements, direct URLs and unspecified
+versions retain the newest-SDK fallback. Project URLs, paths, git sources and indexes are never forwarded as the SDK requirement.
+Invalid plain bounds return `400 runtime_requirement_invalid` before uv runs. The static reader executes no package code and
+creates no project lock.
 
 The source bundle includes project files, including Git-ignored runtime resources. Known credential
 names (`.env`, `.env.*`, `.envrc`, `.direnv/`, `.aws/`, `.ssh/`, and named key/credential files),

@@ -19,6 +19,7 @@ getrandom.workspace = true
 hex.workspace = true
 infer.workspace = true
 hub-client.workspace = true
+pep440_rs = { version = "0.7.3", default-features = false }
 reqwest.workspace = true
 rusqlite.workspace = true
 serde.workspace = true
