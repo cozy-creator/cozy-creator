@@ -41,7 +41,7 @@ trap cleanup EXIT
 # The store, the database, the Hub.
 log "MinIO $MINIO from source"
 GOBIN=${SKEW_TOOLS:-$OUT/tools} go install "github.com/minio/minio@$MINIO" > minio-build.log 2>&1 || die store "MinIO $MINIO did not build: $(tail -c 300 minio-build.log)"
-MINIO_ROOT_USER=$S3KEY MINIO_ROOT_PASSWORD=$S3SECRET "${SKEW_TOOLS:-$OUT/tools}/minio" server "$OUT/s3" --address 127.0.0.1:9000 --quiet > minio.log 2>&1 & S3PID=$!
+MINIO_ROOT_USER=$S3KEY MINIO_ROOT_PASSWORD=$S3SECRET "${SKEW_TOOLS:-$OUT/tools}/minio" server "$(mktemp -d)" --address 127.0.0.1:9000 --quiet > minio.log 2>&1 & S3PID=$!
 docker run -d --name skew-pg -e POSTGRES_HOST_AUTH_METHOD=trust -p 127.0.0.1:5432:5432 postgres:18-alpine > /dev/null || die store "Postgres did not start"
 for _ in $(seq 60); do curl -sf "$S3/minio/health/live" > /dev/null && docker exec skew-pg pg_isready -q -U postgres && break; sleep 1; done
 for b in repo source; do
@@ -108,16 +108,15 @@ if [ -n "$REFUSE" ]; then
 fi
 [ "$login" = 0 ] && expect "skew login" PASS "signed in: $(tail -c 200 login.out)" || die login "cozy login (exit $login, code ${code:-none logged}): $(tail -c 300 login.out)"
 
-. "$E2E/run.sh"; RUN_CLI=cozy
-run_project "$OUT/project" || die project "cozy project new failed"
-end_it() { :; }
+# The Hub suite's cells, through verbs every supported cozy has (a run's project and flags moved in 0.24.0): the
+# package is installed on the machine from the Hub's index, not run.
 HB=$OUT/hub HUB_URL=$HUB
 . "$HERE/suites/hub/lib.sh"
 hub_account
 [ -n "$WHO" ] || verdict
 hub_do catalog ok package ls --limit 5
 hub_publish
-hub_runs package-newest 0.1.1 "$WHO/$HUB_PKG"
+hub_do package-install ok package install "$WHO/$HUB_PKG" --on local
 hub_models
 hub_cleanup
 grep -q '"status":5[0-9][0-9]' hub.log && expect "skew no 5xx" FAIL "the Hub logged a 5xx: $(grep '"status":5' hub.log | tail -1 | cut -c1-300)"
