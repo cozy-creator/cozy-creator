@@ -91,7 +91,7 @@ for _ in $(seq 240); do
   sleep 0.1
 done
 [ -n "$run" ] && [ "$(cozy --json run show "$run" --once | jq -r .status)" = in_progress ] || { check "cancel/undo: long run did not start"; return; }
-python3 "$here/cancel_undo.py" "$P" "$run" "$OUT" > "$OUT/cancel-undo-proof.json" 2> "$OUT/cancel-undo-proof.err" \
+python3 "$here/cancel_undo.py" "$P" "$run" "$OUT" "$COZY" > "$OUT/cancel-undo-proof.json" 2> "$OUT/cancel-undo-proof.err" \
   || check "cancel/undo: $(cat "$OUT/cancel-undo-proof.json") $(tail -c 300 "$OUT/cancel-undo-proof.err")"
 cat "$OUT/cancel-undo-proof.json"
 }

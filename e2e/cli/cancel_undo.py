@@ -10,11 +10,11 @@ import time
 
 
 def main() -> int:
-    project, run, output = Path(sys.argv[1]), int(sys.argv[2]), Path(sys.argv[3])
+    project, run, output, binary = Path(sys.argv[1]), int(sys.argv[2]), Path(sys.argv[3]), sys.argv[4]
     report: dict = {"run": run}
 
     def cozy(*args: str) -> str:
-        return subprocess.check_output(["cozy", *args], text=True, stderr=subprocess.STDOUT, timeout=40)
+        return subprocess.check_output([binary, *args], text=True, stderr=subprocess.STDOUT, timeout=40)
 
     def status() -> dict:
         return json.loads(cozy("--json", "project", "-p", str(project), "status"))
@@ -28,7 +28,7 @@ def main() -> int:
     report["before_versions"] = next(asset["versions"] for asset in before["assets"] if asset["name"] == "shot")
     lock = sqlite3.connect(project / "project.db", isolation_level=None)
     lock.execute("BEGIN IMMEDIATE")
-    deleted = subprocess.Popen(["cozy", "project", "-p", str(project), "delete", "shot"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    deleted = subprocess.Popen([binary, "project", "-p", str(project), "delete", "shot"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:
         # The real machine must acknowledge cancellation while the project's delete still
         # cannot commit. Read scheduling scalars only; do not modify Calcifer's journal.
