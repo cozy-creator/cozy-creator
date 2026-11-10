@@ -1,6 +1,6 @@
 //! TensorFS: the cozytensors format, its store, fetch and convert, and the read engine.
 
-// Unsafe code lives only in platform, the OS seam.
+// Unsafe code is denied by default and allowed only at the explicit native boundary modules.
 #![deny(unsafe_code)]
 
 #[cfg(feature = "store")]
