@@ -59,10 +59,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let file = view.join("private-media-input.bin");
     let marker = b"COZY_XS160_PRIVATE_FILE_CONTENT";
     let mut content = marker.repeat(36_000);
+    eprintln!("provider fixture: initial file create");
     let mut output = fs::File::create(&file)?;
+    eprintln!("provider fixture: initial file write");
     output.write_all(&content)?;
+    eprintln!("provider fixture: initial file fsync");
     output.sync_all()?;
     drop(output);
+    eprintln!("provider fixture: initial file read");
     assert_eq!(fs::read(&file)?, content);
     let mut seek = fs::File::open(&file)?;
     seek.seek(SeekFrom::Start(123_456))?;
