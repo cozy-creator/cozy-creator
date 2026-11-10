@@ -289,8 +289,9 @@ def clip(frames: int) -> Callable[[Path], Path]:
 
 
 #: A base (untabled) step on the CPU: the executor computes in float32 (Runtime `weights._float32`), so FULL's AdaLN rows
-#: skip the bf16 rounding the stored tables took (on a bf16 GPU both round): 2% of pixels one level apart.
-_UNROUNDED = 0.25
+#: skip the bf16 rounding the stored tables took (on a bf16 GPU both round). Its velocities sit 0.1% from the tabled ones;
+#: two steps and the tiny random decoder make that 2.5/255 on the worst frame.
+_UNROUNDED = 4.0
 
 
 def _full_lane() -> list[Cell]:
