@@ -168,8 +168,8 @@ pub(crate) fn router(api: Arc<Api>) -> Router {
         .route("/v1/tools/{id}/ui", get(crate::tool_ui::find))
         .route(
             "/v1/project-files/{name}",
-            axum::routing::put(crate::runs::files::put)
-                .head(crate::runs::files::head)
+            axum::routing::put(crate::runs::files::project_put)
+                .head(crate::runs::files::project_head)
                 .layer(DefaultBodyLimit::disable()),
         )
         .route(

@@ -219,9 +219,16 @@ fn held_header(ranges: &[(u64, u64)]) -> (axum::http::HeaderName, HeaderValue) {
 
 /// The file `name`: a whole body or one part (`Content-Range`). A part leaves it unnamed: `204`, with what is held in `Cozy-Held`.
 /// The write that completes it answers `201` once its bytes hash to its name, and one that finds it held `200`.
-pub(crate) async fn put(State(api): State<Arc<Api>>, Query(scope): Query<UploadScope>, UrlPath(name): UrlPath<String>, uri: axum::http::Uri, headers: HeaderMap, body: Body) -> Result<Response, Refusal> {
-    if uri.path().starts_with("/v1/project-files/") && scope.project.is_none() { return Err(Refusal(Error::new(Kind::Usage, "project_upload_scope", "a project upload must name its project"))); }
-    let storage = scoped(&api, &scope)?;
+pub(crate) async fn project_put(State(api): State<Arc<Api>>, Query(scope): Query<UploadScope>, UrlPath(name): UrlPath<String>, headers: HeaderMap, body: Body) -> Result<Response, Refusal> {
+    if scope.project.is_none() { return Err(Refusal(Error::new(Kind::Usage, "project_upload_scope", "a project upload must name its project"))); }
+    put_in(scoped(&api, &scope)?, name, headers, body).await
+}
+
+pub(crate) async fn put(UrlPath(name): UrlPath<String>, headers: HeaderMap, body: Body) -> Result<Response, Refusal> {
+    put_in(store().map_err(Refusal)?.clone(), name, headers, body).await
+}
+
+async fn put_in(storage: Arc<Store>, name: String, headers: HeaderMap, body: Body) -> Result<Response, Refusal> {
     let digest = named(&name)?;
     let (start, end, length) = span(&headers)?;
     let answer = |status: StatusCode, path: &Path| -> Result<Response, Refusal> {
@@ -303,9 +310,16 @@ pub(crate) async fn put(State(api): State<Arc<Api>>, Query(scope): Query<UploadS
 }
 
 /// Whether Calcifer holds `name`: `200` with its length and media type, else `404`. `Cozy-Held` says which bytes either way.
-pub(crate) async fn head(State(api): State<Arc<Api>>, Query(scope): Query<UploadScope>, UrlPath(name): UrlPath<String>, uri: axum::http::Uri) -> Result<Response, Refusal> {
-    if uri.path().starts_with("/v1/project-files/") && scope.project.is_none() { return Err(Refusal(Error::new(Kind::Usage, "project_upload_scope", "a project upload must name its project"))); }
-    let storage = scoped(&api, &scope)?;
+pub(crate) async fn project_head(State(api): State<Arc<Api>>, Query(scope): Query<UploadScope>, UrlPath(name): UrlPath<String>) -> Result<Response, Refusal> {
+    if scope.project.is_none() { return Err(Refusal(Error::new(Kind::Usage, "project_upload_scope", "a project upload must name its project"))); }
+    head_in(scoped(&api, &scope)?, name).await
+}
+
+pub(crate) async fn head(UrlPath(name): UrlPath<String>) -> Result<Response, Refusal> {
+    head_in(store().map_err(Refusal)?.clone(), name).await
+}
+
+async fn head_in(storage: Arc<Store>, name: String) -> Result<Response, Refusal> {
     let digest = named(&name)?;
     // One that was cut: what the store kept of it.
     let begun = UPLOADS.lock().expect("uploads lock").get(&(storage.root().to_owned(), digest)).map(|(length, upload)| (*length, upload.upgrade()));
