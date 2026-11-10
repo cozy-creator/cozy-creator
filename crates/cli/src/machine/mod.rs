@@ -76,7 +76,7 @@ enum Verb {
         /// Rental name or ID.
         name: String
     },
-    /// Open an SSH session on a rental, or run a remote command.
+    /// Open a root SSH session on a rental, or run a command.
     Ssh {
         /// Rental name or ID.
         name: String,
@@ -119,7 +119,7 @@ enum Verb {
         fingerprint: Digest,
     },
     // Authorizing a controller makes the machine listen on every interface.
-    /// Allow another controller to use this machine.
+    /// Allow remote access from another controller's public key.
     Authorize {
         // Base64url keys may begin with a dash, so hyphenated values are accepted.
         /// Controller public key from cozy machine show local.
