@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import subprocess
 import time
 import uuid
 
@@ -104,6 +105,23 @@ def main() -> None:
     locked = json.loads(command(args.cli, args.out, "lock", "project", "-p", str(args.project), "lock"))
     assert locked["vault"]["state"] == "locked", "fixture must close its first mounted view"
     target_history(args.cli, args.out, "locked-target-history", proof, locked=True)
+    reader = sqlite3.connect(f"file:{state}?mode=ro", uri=True)
+    try:
+        reader.execute("BEGIN")
+        assert reader.execute("SELECT target FROM runs WHERE id = ?", (run_id,)).fetchone()[0] == proof["target"], "cleanup retry fixture did not pin the legacy target"
+        print("vault proof: unlock with a held legacy SQL snapshot started", flush=True)
+        blocked = subprocess.run([str(args.cli), "--json", "project", "-p", str(args.project), "unlock", "--passphrase-file", str(args.passphrase_file), "--idle", "0"], capture_output=True)
+        print(f"vault proof: unlock with a held legacy SQL snapshot exited {blocked.returncode}", flush=True)
+        assert blocked.returncode != 0 and json.loads(blocked.stdout).get("error", {}).get("code") == "vault_journal_cleanup", "a pinned legacy snapshot did not refuse journal cleanup with its typed error"
+        # The first unlock committed the new slot before its checkpoint failed. Its
+        # ordinary retry must therefore finish cleanup even when no slot changes again.
+        with sqlite3.connect(f"file:{state}?mode=ro", uri=True) as db:
+            target = db.execute("SELECT target FROM runs WHERE id = ?", (run_id,)).fetchone()[0]
+            assert target.encode().startswith(prefix), "the blocked cleanup did not commit its protected target first"
+        legacy_receipt["cleanup_blocked_by_reader"] = True
+    finally:
+        reader.rollback()
+        reader.close()
     unlocked = json.loads(command(args.cli, args.out, "unlock", "project", "-p", str(args.project), "unlock",
                                   "--passphrase-file", str(args.passphrase_file), "--idle", "0"))
     after_view = Path(unlocked["vault"]["view"]).resolve(strict=True)
@@ -115,6 +133,7 @@ def main() -> None:
         target = db.execute("SELECT target FROM runs WHERE id = ?", (run_id,)).fetchone()[0]
         assert target.encode().startswith(prefix), "normal unlock did not protect the legacy target slot"
     legacy_receipt["resealed"] = True
+    legacy_receipt["cleanup_retry"] = True
     (folder / "legacy-target-encoding.json").write_text(json.dumps(legacy_receipt))
     (args.out / "legacy-target-encoding.json").write_text(json.dumps(legacy_receipt))
     assert hashlib.sha256(script.read_bytes()).digest() == hashlib.sha256(source_bytes).digest(), "source bytes changed"
@@ -147,6 +166,7 @@ def main() -> None:
         "actual_private_execution": True, "global_plaintext_scan": True,
         "target_hidden_when_locked": True, "target_filter_pagination": True,
         "legacy_target_migrated": True,
+        "legacy_cleanup_retried": True,
         "synthetic_only": True,
     }, indent=2))
 
