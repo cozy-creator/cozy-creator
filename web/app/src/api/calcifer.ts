@@ -961,10 +961,6 @@ export type KnownProject = { id: string,
  */
 name: string, path: string, used_at_ms: number, 
 /**
- * Its folder holds no project.db any more (moved or deleted).
- */
-missing?: boolean, 
-/**
  * Its runs are being made, or asked and not yet sent.
  */
 busy?: boolean, };

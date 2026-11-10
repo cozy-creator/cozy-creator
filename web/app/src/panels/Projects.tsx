@@ -87,7 +87,7 @@ export function Projects() {
           <li key={project.id} className={at > 0 && first.has(listed[at - 1].id) && !first.has(project.id) ? "tabbed" : undefined}>
             <Link to={`/projects/${project.id}`} title={project.path}>
               <b>{project.name}</b>
-              <small className="project-path">{project.missing ? "Its folder is gone" : project.path}</small>
+              <small className="project-path">{project.path}</small>
             </Link>
           </li>
         ))}

@@ -19,7 +19,7 @@ import { Shell } from "./Shell"
 function Home() {
   const { client } = useConnection()
   const { data } = useQuery(projectsQuery(client))
-  const last = data?.projects.find((project) => !project.missing)
+  const last = data?.projects[0]
   return last ? <Navigate replace to={`/projects/${last.id}`} /> : null
 }
 

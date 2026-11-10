@@ -390,15 +390,33 @@ live_views
 project_index "$P" "$ID"
 }
 
-# The projects Calcifer knows: listed, and a moved folder missing.
+# The projects Calcifer knows: the index lists each whose folder holds it. One whose folder is gone leaves it and frees its name: a new
+# project of that name has it plainly, never `_2`. Moved, it's back by its id once it's opened by its path, under its name unless
+# another took it meanwhile.
 project_index() {
-step "a project: the index, a moved folder missing"
-local P=$1 ID=$2
+step "a project: the index; a folder gone leaves it and frees its name; moved, it's back by its path"
+local P=$1 ID=$2 N=$OUT/index first
 cozy --json project ls > "$OUT/project-ls-1.json" || check "project ls failed"
-J --arg p "$P" '.projects | any(.path == $p and (.missing | not))' "$OUT/project-ls-1.json" || check "project ls does not list $P"
+J --arg p "$P" --arg i "$ID" '.projects | any(.path == $p and .id == $i and .name == "garden")' "$OUT/project-ls-1.json" || check "project ls does not list $P as garden"
 mv "$P" "$OUT/garden-moved"
 cozy --json project ls > "$OUT/project-ls-2.json" || check "project ls after the move failed"
-J --arg i "$ID" '.projects | any(.id == $i and .missing)' "$OUT/project-ls-2.json" || check "a moved project is not missing"
+J --arg i "$ID" '.projects | all(.id != $i and .name != "garden")' "$OUT/project-ls-2.json" || check "index: a moved project is still listed: $(jq -c '[.projects[] | select(.name == "garden")]' "$OUT/project-ls-2.json")"
+mkdir -p "$N"
+cozy --json project new "$N/garden" > "$OUT/index-new.json" 2>&1 || check "index: project new: $(tail -c 300 "$OUT/index-new.json")"
+J '.name == "garden"' "$OUT/index-new.json" || check "index: a gone project kept its name: the new one is $(jq -r .name "$OUT/index-new.json")"
+first=$(jq -r .id "$OUT/index-new.json")
+cozy --json project -p "$OUT/garden-moved" status > /dev/null 2> "$OUT/index-moved.err" || check "index: the moved project by its path: $(tail -c 300 "$OUT/index-moved.err")"
+cozy --json project ls > "$OUT/project-ls-3.json" || check "project ls failed"
+J --arg i "$ID" --arg p "$OUT/garden-moved" '.projects | any(.id == $i and .path == $p and .name == "garden_2")' "$OUT/project-ls-3.json" \
+  || check "index: moved and opened by its path, it isn't back by its id as garden_2: $(jq -c --arg i "$ID" '[.projects[] | select(.id == $i or (.name | startswith("garden")))]' "$OUT/project-ls-3.json")"
+# Deleted, and made again where it was: the plain name, another project, and one row.
+rm -rf "$N/garden"
+cozy --json project new "$N/garden" > "$OUT/index-again.json" 2>&1 || check "index: project new again: $(tail -c 300 "$OUT/index-again.json")"
+J --arg f "$first" '.name == "garden" and .id != $f' "$OUT/index-again.json" || check "index: made again after its folder was deleted: $(jq -c '{name, id}' "$OUT/index-again.json")"
+cozy --json project ls > "$OUT/project-ls-4.json" || check "project ls failed"
+J --arg f "$first" '([.projects[] | select(.name == "garden")] | length) == 1 and (.projects | all(.id != $f))' "$OUT/project-ls-4.json" \
+  || check "index: the deleted project is still listed: $(jq -c '[.projects[] | select(.name | startswith("garden")) | {name, id, path}]' "$OUT/project-ls-4.json")"
+cozy --json project -p garden status > /dev/null 2> "$OUT/index-named.err" || check "index: -p garden: $(tail -c 300 "$OUT/index-named.err")"
 }
 
 # Several runs at once, off a terminal and on one: every line names its asset, a preview is no take, a warning says whose it is, once,
@@ -957,7 +975,7 @@ cozy project -p "$L" reclaim --yes > "$OUT/lost-lock.txt" 2>&1 || check "lost lo
 [ "$(ls "$L/files" | wc -l)" = "$count" ] || check "lost lock: reclaim --yes took what it had no record of: $(ls "$L/files" | wc -l) of $count"
 
 step "a project: a deleted asset is an orphan, its name starts clean, and undo or reclaim settles it"
-local D=$OUT/deleted line
+local D=$OUT/deleted line was code
 mkdir -p "$D"
 yaml_in "$D" <<YAML
 version: 4
@@ -966,14 +984,25 @@ assets:
 YAML
 render "$D" kept || check "deleted: render: $(tail -c 300 "$OUT/render.txt")"
 # What it did, then what undoes it, a line each on stdout.
+was=$(take_file "$D" kept image)
 line=$(cozy project -p "$D" delete kept) || check "deleted: delete"
 line=${line##*$'\n'}
 J '[.orphans[] | select(.name == "kept") | .versions] == [1]' <<< "$(status "$D")" || check "deleted: no orphan: $(status "$D" | jq -c .orphans)"
 printf '  kept: {tool: %s/project/draw.py/draw, instructions: Something else.}\n' "$here" | added "$D"
 [ "$(made "$D" kept)" = 0 ] || check "deleted: a new asset took its name's versions: $(made "$D" kept)"
+# While another box has its name the delete's undo is refused, naming the edit to undo first; nothing changes.
+code=0; cozy --json project -p "$D" undo "${line##* }" > "$OUT/deleted-undo.json" 2> /dev/null || code=$?
+{ [ "$code" != 0 ] && J '.error.code == "history_conflict" and (.error.next[0] | test("undo [0-9]+$"))' "$OUT/deleted-undo.json"; } \
+  || check "deleted: undo while its name is taken (exit $code): $(head -c 400 "$OUT/deleted-undo.json")"
+grep -q 'Something else' <(cozy project -p "$D" export) || check "deleted: a refused undo changed the box that has the name"
+# Added then dropped, the name is free again: undo puts back exactly what was deleted, its text, its version and its file.
 dropped "$D" kept
 eval "$line" > /dev/null || check "deleted: undo: $line"
 [ "$(made "$D" kept)" = 1 ] || check "deleted: undo lost its version: $(made "$D" kept)"
+{ grep -q 'One\.' <(cozy project -p "$D" export) && ! grep -q 'Something else' <(cozy project -p "$D" export); } || check "deleted: undo after an add and a drop of its name: $(cozy project -p "$D" export | tr '\n' ' ')"
+J '.asset.standing == "current"' <<< "$(held "$D" kept)" || check "deleted: put back, it isn't current: $(held "$D" kept | jq -c .asset)"
+{ [ "$(take_file "$D" kept image)" = "$was" ] && [ -n "$(file_at "$D" "$was")" ]; } || check "deleted: put back, its version's file is $(take_file "$D" kept image), not $was"
+J '(.orphans // []) == []' <<< "$(status "$D")" || check "deleted: put back, it's still an orphan: $(status "$D" | jq -c .orphans)"
 cozy project -p "$D" delete kept > /dev/null || check "deleted: delete again"
 cozy project -p "$D" reclaim --yes > "$OUT/deleted.txt" 2>&1 || check "deleted: reclaim: $(tail -c 300 "$OUT/deleted.txt")"
 { J '(.orphans // []) == []' <<< "$(status "$D")" && [ "$(ls "$D/files" | wc -l)" = 0 ]; } || check "deleted: reclaim left: $(ls "$D/files"), $(status "$D" | jq -c .orphans)"
@@ -1026,9 +1055,12 @@ cozy project -p "$T" reclaim --yes > "$OUT/discards.txt" 2>&1 || check "discards
 [ -z "$(file_at "$T" "$third")" ] || check "discards: reclaim left what nothing names"
 [ -n "$(file_at "$T" "$second")" ] || check "discards: reclaim took what another asset names"
 J '(.discarded // []) == [] and [.versions[].number] == [1, 4]' <<< "$(held "$T" hero)" || check "discards: after reclaim: $(held "$T" hero | jq -c '{versions: [.versions[].number], discarded}')"
-# Undoing take 3's discard, reclaimed, is refused: only the exit is judged, as what it says isn't settled.
-code=0; eval "$undo" > "$OUT/discards.txt" 2>&1 || code=$?
-[ "$code" != 0 ] || check "discards: undo after reclaim (exit $code): $(cat "$OUT/discards.txt")"
+# Undoing take 3's discard, reclaimed, is refused: its files are deleted. It says reclaim cleared it, blames no other edit, names what's
+# next (another take), and changes nothing.
+code=0; cozy --json project -p "$T" undo "${undo##* }" > "$OUT/discards-undo.json" 2> /dev/null || code=$?
+{ [ "$code" != 0 ] && J '.error.code == "history_conflict" and (.error.message | test("3 is gone") and contains("reclaim") and (contains(", by ") | not)) and (.error.next[0] | contains("render hero"))' "$OUT/discards-undo.json"; } \
+  || check "discards: undo after reclaim (exit $code): $(head -c 400 "$OUT/discards-undo.json")"
+J '(.discarded // []) == [] and [.versions[].number] == [1, 4]' <<< "$(held "$T" hero)" || check "discards: a refused undo changed hero: $(held "$T" hero | jq -c '{versions: [.versions[].number], discarded}')"
 render "$T" hero -n 1 || check "discards: after reclaim: $(tail -c 300 "$OUT/render.txt")"
 J '[.versions[].number] == [1, 4, 5]' <<< "$(held "$T" hero)" || check "discards: reclaim gave a number again: $(held "$T" hero | jq -c '[.versions[].number]')"
 

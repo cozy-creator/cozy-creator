@@ -143,9 +143,6 @@ pub struct Known {
     pub name: String,
     pub path: PathBuf,
     pub used_at_ms: i64,
-    /// Its folder holds no project.db any more (moved or deleted).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub missing: bool,
     /// Its runs are being made, or asked and not yet sent.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub busy: bool,

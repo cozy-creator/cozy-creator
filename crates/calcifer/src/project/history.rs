@@ -699,6 +699,11 @@ fn taken(api: &Arc<Api>, project: &Arc<Project>, id: &str, entry: &Entry, way: W
 }
 
 fn conflict(book: &Book, entry: &Entry, change: &Change, way: Way, what: &str) -> Refusal {
+    // A take `reclaim` cleared has no files: no edit took it, and none brings it back.
+    if let Some(what) = what.strip_suffix(CLEARED) {
+        let said = format!("can't {} \"{}\": {what}: `cozy project reclaim --yes` cleared it, so it can't come back", way.verb(), entry.words);
+        return Refusal(Error::new(Kind::Conflict, "history_conflict", said).next(format!("cozy project render {}", change.name())).next("cozy project history"));
+    }
     let entries = book.entries.lock().unwrap_or_else(|e| e.into_inner());
     let later = entries.iter().rev().find(|other| other.id > entry.id && other.undone.is_none() && other.changes.iter().any(|held| held.touches(change.name())));
     let verb = way.verb();
@@ -721,6 +726,9 @@ fn said_by(by: &By) -> String {
         _ => "the API".to_owned(),
     }
 }
+
+/// How `moved_one` ends what it says of a take `reclaim` cleared, which `conflict` reads.
+const CLEARED: &str = ": cleared";
 
 /// The first change of `entry` that isn't as it should be before going `way`, and what it finds instead.
 fn moved<'a>(project: &Project, entry: &'a Entry, way: Way) -> Option<(&'a Change, String)> {
@@ -754,7 +762,7 @@ fn moved_one(project: &Project, change: &Change, way: Way) -> Option<String> {
             let now = folder.lock().ok().map_or(Took::Absent, |lock| took(&lock, name, *number));
             let wanted = *found(way, before, after);
             (!now.is(wanted)).then(|| match now {
-                Took::Absent => format!("{name}'s {noun} {number} is gone: `reclaim` cleared it"),
+                Took::Absent => format!("{name}'s {noun} {number} is gone{CLEARED}"),
                 Took::Listed => format!("{name}'s {noun} {number} is back already"),
                 Took::Discarded => format!("{name}'s {noun} {number} is discarded"),
             })

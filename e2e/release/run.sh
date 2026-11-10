@@ -155,6 +155,17 @@ if [ -n "$POD_TENSORD" ]; then
   cozy --json machine update "$M" --tensord "$POD_TENSORD" -y > "$OUT/update-rental.json" 2>&1 \
     || fail "machine update $M --tensord $POD_TENSORD: $(tail -c 400 "$OUT/update-rental.json")"
   echo "$M runs cozy $(cozy --json machine show "$M" | jq -r .status.version)"
+  # The rest of the set, as gate.sh puts it on: an update the candidate TensorD itself carries out (cl-841).
+  if [ -n "$CAND_TFS$CAND_RT" ]; then
+    step "the candidate TensorFS and Runtime on $M"
+    was=$(cozy --json machine show "$M" | jq -c '.status | {version, runtime, tensorfs}')
+    cozy --json machine update "$M" ${CAND_TFS:+--tensorfs "$CAND_TFS"} ${CAND_RT:+--runtime "$CAND_RT"} -y > "$OUT/update-rental-set.json" 2>&1 \
+      || fail "machine update $M --tensorfs --runtime: $(tail -c 400 "$OUT/update-rental-set.json")"
+    now=$(cozy --json machine show "$M" | jq -c '.status | {version, runtime, tensorfs}')
+    jq -en --argjson a "$was" --argjson b "$now" '$a.version == $b.version and $b.runtime != null and $a != $b' > /dev/null \
+      || check "machine update $M --tensorfs --runtime changed nothing, or its TensorD: $was then $now"
+    echo "$M: $was then $now"
+  fi
 fi
 # Where this OS runs no models itself, the throwaway runs on the rental.
 ON=$M
@@ -244,6 +255,14 @@ watched download-private model download "$model@$commit" --on "$M" \
 cozy --json model edit "$model" --family e2e-family --tag 'E2E Tag' --tag nsfw --tag anime --untag nsfw --trigger e2e --strength 0.8 > /dev/null \
   && cozy --json model info "$model" | J '.family == "e2e-family" and .family_from == "owner" and .tags == ["anime", "e2e-tag"] and .trigger == "e2e" and .strength == 0.8' \
   || check "model edit: family, tags, trigger or strength not set"
+# --untag is read as --tag is: any case, spaces around it. One the model doesn't have is removed already: no refusal, nothing else changed.
+cozy --json model edit "$model" --untag ' ANIME ' > /dev/null && cozy --json model info "$model" | J '.tags == ["e2e-tag"]' \
+  || check "model edit --untag ' ANIME ': $(cozy --json model info "$model" | jq -c .tags)"
+cozy --json model edit "$model" --untag 'E2E Tag' --tag anime > /dev/null && cozy --json model info "$model" | J '.tags == ["anime"]' \
+  || check "model edit --untag 'E2E Tag' --tag anime: $(cozy --json model info "$model" | jq -c .tags)"
+cozy --json model edit "$model" --untag never-there > "$OUT/untag-absent.json" 2>&1 && cozy --json model info "$model" | J '.tags == ["anime"] and .family == "e2e-family" and .trigger == "e2e"' \
+  || check "model edit --untag never-there: $(tail -c 300 "$OUT/untag-absent.json") $(cozy --json model info "$model" | jq -c '{tags, family, trigger}')"
+cozy --json model edit "$model" --tag e2e-tag > /dev/null || check "model edit --tag e2e-tag failed"
 cozy --json model edit "$model" --family none --untag e2e-tag --untag anime --trigger '' --strength none > /dev/null \
   && cozy --json model info "$model" | J '.family == null and (.tags // []) == [] and .trigger == null and .strength == null' \
   || check "model edit --family none --untag e2e-tag --untag anime --trigger '' --strength none: not cleared"
@@ -270,6 +289,10 @@ else check "birefnet-yaml: cozy run birefnet/remove_background --input --on $M d
 dog=$(picture dog2.jpg)
 if run_cell "$OUT" birefnet-asset birefnet/remove_background --file "image=$dog" --on "$M"; then
   white_background "$(run_output "$OUT" birefnet-asset webp)" "$dog" || check "birefnet-asset: not a background removal"
+  # Downloaded from the rental, its bytes are what the run's record says it made.
+  got=$(sha256sum "$(run_output "$OUT" birefnet-asset webp)" | cut -c1-64) made=$(run_get "$OUT" birefnet-asset '[.output[].sha256] | join(" ")')
+  [[ " $made " == *" sha256:$got "* ]] || check "birefnet-asset: downloaded from $M it is sha256:$got, and its record says ${made:-nothing}"
+  echo "birefnet-asset: run $(cat "$OUT/birefnet-asset.number") on $M, output $made, downloaded sha256:$got"
 else check "birefnet-asset: cozy run --file --on $M did not complete: $(run_get "$OUT" birefnet-asset '.reason.message' | head -c 300)"; fi
 cozy --json run ls --on "$M" > "$OUT/runs-rental.json" && J --arg m "$M" '(.runs | length > 0) and all(.runs[]; .machine == $m)' "$OUT/runs-rental.json" \
   || check "run ls --on $M: other machines' runs, or none"

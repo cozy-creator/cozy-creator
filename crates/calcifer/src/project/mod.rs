@@ -335,14 +335,26 @@ pub(crate) fn named(api: &Api, text: &str) -> Result<PathBuf, Error> {
     Ok(known(api, text)?.path)
 }
 
-/// The project the index knows by `text`, its id or its name (in any case).
-fn known(api: &Api, text: &str) -> Result<crate::state::KnownProject, Error> {
+/// The index, last used first: each project opened here whose folder still holds it. One whose folder is gone (deleted, moved, on a
+/// drive that isn't there) leaves the index as it's found so, and its name is free. Its `project.db` keeps its id and name: opened
+/// again by its path it is back as it was, or as `<name>_2` if another took the name meanwhile.
+fn indexed(api: &Api) -> Result<Vec<crate::state::KnownProject>, Error> {
     let store = api.calcifer.store();
     let failed = |e: crate::store::StoreError| Error::internal("calcifer_store", e.to_string());
-    if let Some(entry) = store.known_project(text).map_err(failed)? {
-        return Ok(entry);
+    let (here, gone): (Vec<_>, Vec<_>) = store.known_projects().map_err(failed)?.into_iter().partition(|entry| Folder::is_project(&entry.path));
+    if !gone.is_empty() {
+        store.projects_gone(&gone.into_iter().map(|entry| entry.id).collect::<Vec<_>>()).map_err(failed)?;
     }
-    let mut named: Vec<_> = store.known_projects().map_err(failed)?.into_iter().filter(|entry| entry.name.eq_ignore_ascii_case(text)).collect();
+    Ok(here)
+}
+
+/// The project the index knows by `text`, its id or its name (in any case).
+fn known(api: &Api, text: &str) -> Result<crate::state::KnownProject, Error> {
+    let mut indexed = indexed(api)?;
+    if let Some(at) = indexed.iter().position(|entry| entry.id == text) {
+        return Ok(indexed.swap_remove(at));
+    }
+    let mut named: Vec<_> = indexed.into_iter().filter(|entry| entry.name.eq_ignore_ascii_case(text)).collect();
     match named.len() {
         0 => Err(Error::new(Kind::NotFound, "project_unknown", format!("this computer knows no project {text}")).next("cozy project ls")),
         1 => Ok(named.remove(0)),
@@ -597,7 +609,7 @@ fn identify(api: &Api, dir: &FsPath) -> Result<(String, String), Error> {
 
 /// `wanted`, or the first of `wanted_2`, `wanted_3`, … no other project in the index has, in any case: what `-p` names it by.
 fn unique_name(api: &Api, id: &str, wanted: String) -> Result<String, Error> {
-    let known = api.calcifer.store().known_projects().map_err(|e| Error::internal("calcifer_store", e.to_string()))?;
+    let known = indexed(api)?;
     let taken = |name: &str| known.iter().any(|entry| entry.id != id && entry.name.eq_ignore_ascii_case(name));
     let names = std::iter::once(wanted.clone()).chain((2..).map(|n| format!("{wanted}_{n}")));
     Ok(names.into_iter().find(|name| !taken(name)).expect("names go on"))
@@ -1123,10 +1135,9 @@ struct Page {
     before: Option<String>,
 }
 
-/// The index, last used first: each project's name, where it last was and its last use, whether its folder is gone, and whether
-/// it is rendering.
+/// The index, last used first: each project's name, where it is and its last use, and whether it is rendering.
 async fn list(State(api): State<Arc<Api>>, Query(page): Query<Page>) -> Result<Json<Listed>, Refusal> {
-    let mut known = api.calcifer.store().known_projects()?;
+    let mut known = indexed(&api).map_err(Refusal)?;
     if let Some(before) = &page.before {
         let at = known.iter().position(|entry| &entry.id == before).map_or(known.len(), |at| at + 1);
         known.drain(..at);
@@ -1137,7 +1148,6 @@ async fn list(State(api): State<Arc<Api>>, Query(page): Query<Page>) -> Result<J
     let projects = (known.into_iter().take(limit))
         .map(|entry| Known {
             name: entry.name,
-            missing: !Folder::is_project(&entry.path),
             busy: open.get(&entry.id).is_some_and(|project| *project.walking.lock().expect("walking lock")),
             path: entry.path,
             used_at_ms: entry.used_at_ms,

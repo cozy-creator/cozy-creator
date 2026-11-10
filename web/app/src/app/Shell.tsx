@@ -88,7 +88,7 @@ function ProjectTabs({ id, room }: { id: string | null; room: HTMLElement | null
   const to = useTo()
   const { data } = useQuery({ ...projectQuery(client, id ?? ""), enabled: Boolean(id) })
   const { data: list } = useQuery(projectsQuery(client))
-  const order = useOrder((list?.projects ?? []).filter((row) => !row.missing))
+  const order = useOrder(list?.projects ?? [])
   const [count, setCount] = useState(Number.POSITIVE_INFINITY)
   const strip = useRef<HTMLElement>(null)
   const sizes = useRef<HTMLDivElement>(null)

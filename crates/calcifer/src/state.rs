@@ -124,6 +124,17 @@ impl Store {
         })
     }
 
+    /// These left the index: their folders are gone.
+    pub(crate) fn projects_gone(&self, ids: &[String]) -> Result<()> {
+        self.write(|tx| {
+            let mut statement = tx.prepare("DELETE FROM projects WHERE id = ?1")?;
+            for id in ids {
+                statement.execute([id])?;
+            }
+            Ok(())
+        })
+    }
+
     /// `id`, called `name`, in `path`, opened at `used_at_ms` (none: when it was last); whether it was walking stands.
     pub(crate) fn project_opened(&self, id: &str, name: &str, path: &Path, used_at_ms: Option<i64>) -> Result<()> {
         self.write(|tx| {

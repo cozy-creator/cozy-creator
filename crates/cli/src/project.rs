@@ -266,11 +266,7 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             }
             let table = output::Table::new(ctx, ["NAME", "ID", "FOLDER", "USED", "STATE"]);
             let rows = listed.projects.iter().map(|known| {
-                let state = match (known.missing, known.busy) {
-                    (true, _) => "missing",
-                    (false, true) => "rendering",
-                    (false, false) => "-",
-                };
+                let state = if known.busy { "rendering" } else { "-" };
                 let used = format!("{} ago", output::age(known.used_at_ms));
                 [known.name.clone(), known.id.clone(), known.path.display().to_string(), used, state.into()]
             });
