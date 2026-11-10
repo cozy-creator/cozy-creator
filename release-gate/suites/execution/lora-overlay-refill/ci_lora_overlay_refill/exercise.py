@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import time
 from functools import partial
-from typing import Any
+from typing import TYPE_CHECKING, TypedDict, cast
 
 import cozy_runtime
 import tensorfs.varena.torch as vt
@@ -22,9 +22,44 @@ from cozy_runtime.internal import kernel_ready, lora_bake
 
 from . import Inputs, Lightning, Probe, QwenDiT
 
+if TYPE_CHECKING:
+    from cozy_runtime.internal.weights import Placement
+
 GIB = 1 << 30
 #: A warm call equals its reference within this (rel. L2 on the latents); a stale page is far more.
 SAME = 1e-3
+
+
+class CallRow(TypedDict, total=False):
+    """One call: how it served, what it baked and filled, and its latents (`out`, dropped from the report)."""
+    kind: str
+    empty: bool
+    serving: str
+    how: str | None
+    baked: int
+    paging: bool
+    ballast_gib: float
+    block_fills: list[int]
+    store_fills: list[int]
+    resident_at_start: int | None
+    out: torch.Tensor
+    error: float
+    exact: bool
+
+
+class Result(TypedDict):
+    passed: bool
+    runtime: str
+    runtime_commit: str
+    failures: list[str]
+    lora_effect: float
+    bake_error: float
+    references: dict[str, dict[str, object]]
+    warm: list[dict[str, object]]
+    room_gib: float
+    capacity_gib: float
+    trace: bool
+    baked_per_block: int
 
 
 def _rel(a: torch.Tensor, b: torch.Tensor) -> float:
@@ -58,11 +93,11 @@ class _Memory:
         return torch.empty(0, dtype=torch.uint8, device=self.device)
 
 
-def _boundary(placement: Any, device: torch.device, kind: str, paging: bool) -> dict[str, Any]:
+def _boundary(placement: "Placement", device: torch.device, kind: str, paging: bool) -> dict[str, object]:
     """What the device held when an allocation failed: the driver's and Torch's bytes, the weight
     memory's own record, and the scope holds."""
     memory = placement.memory
-    facts: dict[str, Any] = {"kind": kind, "paging": paging}
+    facts: dict[str, object] = {"kind": kind, "paging": paging}
     room, working = vt.room(device), vt.stats(device)
     facts.update(
         free=room["free"],
@@ -83,7 +118,7 @@ def _boundary(placement: Any, device: torch.device, kind: str, paging: bool) -> 
     return facts
 
 
-def _request_trace() -> list[dict[str, Any]] | None:
+def _request_trace() -> list[dict[str, object]] | None:
     """This request's fill trace (Runtime 0.34+), else None."""
     try:
         from cozy_runtime.internal import residency
@@ -95,9 +130,9 @@ def _request_trace() -> list[dict[str, Any]] | None:
 
 def exercise(
     payload: Probe, model: QwenDiT, turbo_lora: Lightning, ctx: Context, tel: Telemetry
-) -> dict[str, Any]:
+) -> Result:
     dit = model.graph.components["transformer"]
-    placement, name = PLACED[dit]
+    placement, name = cast("tuple[Placement, str]", PLACED[dit])  # the Runtime's Residency is its Placement
     bakes = placement.bakes[name]
     device = torch.device(str(model.device))
     gpu = device.index or 0
@@ -135,7 +170,7 @@ def exercise(
     room = int(payload.room_gib * GIB)
     inputs = Inputs(payload.seed, payload.size, payload.steps)
 
-    def call(kind: str, *, empty: bool = False, paging: bool = False) -> dict[str, Any]:
+    def call(kind: str, *, empty: bool = False, paging: bool = False) -> CallRow:
         ctx.raise_if_cancelled()
         torch.cuda.synchronize(device)
         if empty:
@@ -167,7 +202,7 @@ def exercise(
             ) from error
         finally:
             del ballast
-        row: dict[str, Any] = {
+        row: CallRow = {
             "kind": kind,
             "empty": empty,
             "serving": bakes.serving,
@@ -222,11 +257,11 @@ def exercise(
             f"expected) and is {bake_error:.4f} from the per-step LoRA, base {lora_effect:.4f}:"
             " the bake did not apply its factors"
         )
-    rows = []
+    rows: list[dict[str, object]] = []
     for index, row in enumerate(warm):
         error = _rel(row["out"], reference[row["kind"]]["out"])
         row.update(
-            error=round(error, 6), exact=torch.equal(row["out"], reference[row["kind"]]["out"])
+            {"error": round(error, 6), "exact": torch.equal(row["out"], reference[row["kind"]]["out"])}
         )
         if error > SAME:
             failures.append(f"warm call {index} ({row['kind']}) is {error:.4f} from its reference")
@@ -235,7 +270,7 @@ def exercise(
             # What this cell is for: the other overlay's pages resident when a call begins (or it
             # cannot show a stale one), and under the ballast blocks refilled within the call.
             least = 0 if row["empty"] else 1 if row["paging"] else blocks // 2
-            if row["resident_at_start"] < least:
+            if cast(int, row["resident_at_start"]) < least:  # counted: a trace was read
                 failures.append(
                     f"warm call {index}: {row['resident_at_start']} blocks resident at its start, "
                     f"under {least}: it could not show a stale overlay (run where the DiT fits)"

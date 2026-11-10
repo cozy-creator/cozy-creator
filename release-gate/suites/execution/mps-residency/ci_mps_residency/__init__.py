@@ -36,7 +36,7 @@ def gpu(payload: Request, ctx: Context) -> Report:
         "half": (128, 128, torch.float16),
         "empty": (2, 0, torch.float32),
     }
-    models: dict[str, residency.Model]
+    models: "dict[str, residency.Model]"
     modules: dict[str, torch.nn.Linear]
     models, modules = {}, {}
     alias: torch.Tensor | None = None

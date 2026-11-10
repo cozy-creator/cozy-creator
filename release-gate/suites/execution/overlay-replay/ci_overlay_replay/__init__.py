@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import time
 from functools import partial
-from typing import Any
 
 import msgspec
 import torch
@@ -206,7 +205,7 @@ def gpu(payload: Probe, model: QwenDiT, turbo_lora: Lightning, ctx: Context, tel
         base = model.denoise(payload.seed + 2, None)
     finally:
         graphs.BYPASS.reset(eager)
-    checks: dict[str, Any] = {
+    checks: dict[str, bool] = {
         "armed_equals_eager": bool(torch.equal(armed, reference)),
         "lora_changes_it": not torch.equal(reference, base),
     }

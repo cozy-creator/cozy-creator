@@ -34,9 +34,9 @@ def literal_keys(node: ast.expr) -> list[tuple[str, str]] | None:
             else:
                 return None
         elif isinstance(key, ast.Constant) and isinstance(value, ast.Constant):
-            keys.append((key.value, str(value.value)))
+            keys.append((key.value, str(value.value)))  # type: ignore[arg-type]  # a TritonEntry signature's keys are str constants
         elif isinstance(key, ast.Constant):
-            keys.append((key.value, ast.unparse(value).strip("'\"")))
+            keys.append((key.value, ast.unparse(value).strip("'\"")))  # type: ignore[arg-type]  # as above
         else:
             return None
     return keys
