@@ -28,18 +28,28 @@ async fn public_code_fixture() {
     let mut conn = db::open(&path).unwrap();
     let id = folder_id(&dir);
     db::set_identity(&mut conn, &path, &id, "Legacy", None).unwrap();
+    let unsupported = root.join("unsupported");
+    std::fs::create_dir(&unsupported).unwrap();
+    let unsupported_id = folder_id(&unsupported);
+    rusqlite::Connection::open(unsupported.join(db::DB)).unwrap()
+        .pragma_update(None, "user_version", 9999).unwrap();
     api.calcifer.store().write(|tx| {
         tx.execute("INSERT INTO projects (id, name, path, used_at_ms) VALUES (?1, 'Legacy', ?2, 42)", rusqlite::params![id, dir.to_string_lossy()])?;
+        tx.execute("INSERT INTO projects (id, name, path, used_at_ms) VALUES (?1, 'Unsupported', ?2, 43)", rusqlite::params![unsupported_id, unsupported.to_string_lossy()])?;
         Ok(())
     }).unwrap();
 
-    // Listing assigns an old project's code and records it in its project file.
+    // Listing assigns the readable project's code even when a different project's DB is unsupported.
     let listed = indexed(&api).unwrap();
-    assert_eq!(listed.len(), 1);
-    let code = listed[0].code.clone();
+    assert_eq!(listed.len(), 2);
+    let legacy = listed.iter().find(|entry| entry.id == id).unwrap();
+    let code = legacy.code.clone();
     assert_eq!(code::parse(&code), Some(code.clone()));
-    assert_eq!(listed[0].id, id);
-    assert_eq!(listed[0].used_at_ms, 42);
+    assert_eq!(legacy.used_at_ms, 42);
+    assert!(listed.iter().find(|entry| entry.id == unsupported_id).unwrap().code.is_empty());
+    assert_eq!(known(&api, &unsupported_id).unwrap().path, unsupported);
+    let refusal = api.projects.get(&api, &unsupported_id).err().expect("unsupported DB is refused when opened");
+    assert_eq!(refusal.0.code, "project_db_version");
     assert_eq!(db::identity(&conn), Some((id.clone(), "Legacy".into())));
     assert_eq!(db::meta(&conn, "code"), Some(code.clone()));
     assert_eq!(identify(&api, &dir).unwrap(), (id.clone(), "Legacy".into(), code.clone()));

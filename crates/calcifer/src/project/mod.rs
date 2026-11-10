@@ -355,18 +355,26 @@ fn indexed(api: &Api) -> Result<Vec<crate::state::KnownProject>, Error> {
         store.projects_gone(&gone.into_iter().map(|entry| entry.id).collect::<Vec<_>>()).map_err(failed)?;
     }
     for entry in here.iter_mut().filter(|entry| entry.code.is_empty()) {
-        let path = entry.path.join(db::DB);
-        if path.is_file() {
-            let conn = db::open(&path)?;
-            let kept = db::meta(&conn, "code");
-            entry.code = reserve_code(store, &entry.id, &entry.name, &entry.path, kept.as_deref())?;
-            db::set_meta(&conn, &path, "code", Some(&entry.code))?;
-        } else {
-            // Opening upgrades a pre-database project. Listing keeps its current format.
-            entry.code = reserve_code(store, &entry.id, &entry.name, &entry.path, None)?;
+        match backfill_code(store, entry) {
+            Ok(code) => entry.code = code,
+            Err(error) => warn!("keeping the existing project link for {}: {}", entry.path.display(), error.message),
         }
     }
     Ok(here)
+}
+
+/// An older project keeps its existing link if its public code cannot be recorded.
+fn backfill_code(store: &crate::store::Store, entry: &crate::state::KnownProject) -> Result<String, Error> {
+    let path = entry.path.join(db::DB);
+    if !path.is_file() {
+        // Opening upgrades a pre-database project. Listing keeps its current format.
+        return reserve_code(store, &entry.id, &entry.name, &entry.path, None);
+    }
+    let conn = db::open(&path)?;
+    let kept = db::meta(&conn, "code");
+    let code = reserve_code(store, &entry.id, &entry.name, &entry.path, kept.as_deref())?;
+    db::set_meta(&conn, &path, "code", Some(&code))?;
+    Ok(code)
 }
 
 /// The project the index knows by `text`, its id, public code or its name (in any case).
