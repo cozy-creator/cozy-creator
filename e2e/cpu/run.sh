@@ -25,13 +25,16 @@ OUT=$(mkdir -p "$OUT" && cd "$OUT" && pwd) PACKAGES=$(cd "$PACKAGES" && pwd) RUN
 mkdir -p "$ENVS"
 export PACKAGES RUNTIME TENSORFS ENVS OUT RECORD CELLS HERE
 
-# The packages a fixture covers (tiny/<package>.py), or --only's.
+# A package's fixture is tiny/<its name, - and . as _>.py. Every package in the checkout runs, or --only's.
+fixture() { local f=${1//-/_}; echo "$HERE/tiny/${f//./_}.py"; }
+export -f fixture
 if [ -n "$ONLY" ]; then packages=${ONLY//,/ }
-else packages=$(cd "$HERE/tiny" && ls ./*.py | sed 's|^\./||; s|\.py$||'); fi
+else packages=$(cd "$PACKAGES" && for d in */pyproject.toml; do dirname "$d"; done); fi
 
 one() {
   local p=$1 out=$OUT/$1 env=$ENVS/$1 t
   rm -rf "$out"; mkdir -p "$out"
+  if [ ! -f "$(fixture "$p")" ]; then echo "FAIL $p - fixture 0s: no tiny/$(basename "$(fixture "$p")")"; return 1; fi
   t=$SECONDS
   if ! "$HERE/env.sh" "$PACKAGES/$p" "$env" "$RUNTIME" "$TENSORFS" > "$out/env.log" 2>&1; then
     echo "FAIL $p - environment $((SECONDS - t))s: $(grep -m1 -iE 'error|failed' "$out/env.log" || tail -n1 "$out/env.log")"
@@ -41,7 +44,7 @@ one() {
   t=$SECONDS
   # The driver and the package's fixture, strictly typed against the package's own environment.
   if ! nice -n 19 uvx -q mypy@2.4.1 --config-file "$HERE/mypy.ini" --cache-dir "$env/.mypy" --python-executable "$env/bin/python" \
-      "$HERE/drive.py" "$HERE/cell.py" "$HERE/waive/sitecustomize.py" "$HERE/tiny/$p.py" > "$out/mypy.txt" 2>&1; then
+      "$HERE/drive.py" "$HERE/cell.py" "$HERE/waive/sitecustomize.py" "$(fixture "$p")" > "$out/mypy.txt" 2>&1; then
     echo "FAIL $p - typecheck $((SECONDS - t))s: $(grep -m1 'error:' "$out/mypy.txt" || tail -n1 "$out/mypy.txt")"
   else
     echo "PASS $p - typecheck $((SECONDS - t))s"
@@ -55,7 +58,7 @@ one() {
   fi
   echo "PASS $p - conformance $((SECONDS - t))s"
   CUDA_VISIBLE_DEVICES= nice -n 19 "$env/bin/python" "$HERE/drive.py" "$PACKAGES/$p" "$out/interface.json" \
-    "$HERE/tiny/$p.py" "$out" ${CELLS:+--only "$CELLS"} $RECORD 2> "$out/drive.err"
+    "$(fixture "$p")" "$out" ${CELLS:+--only "$CELLS"} $RECORD 2> "$out/drive.err"
 }
 export -f one
 

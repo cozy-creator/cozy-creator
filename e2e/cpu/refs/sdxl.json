@@ -75,7 +75,7 @@
   "result": {
    "height": 1024,
    "image": {
-    "asset_ref": "attempt:generate-hidiffusion-3/image/0001",
+    "asset_ref": "attempt:generate-hidiffusion/image/0001",
     "kind": "image",
     "media_type": "image/webp"
    },
@@ -160,7 +160,7 @@
   "result": {
    "height": 1024,
    "image": {
-    "asset_ref": "attempt:generate-no-cfg-1/image/0001",
+    "asset_ref": "attempt:generate-no-cfg/image/0001",
     "kind": "image",
     "media_type": "image/webp"
    },
@@ -245,7 +245,7 @@
   "result": {
    "height": 1024,
    "image": {
-    "asset_ref": "attempt:generate-text-0/image/0001",
+    "asset_ref": "attempt:generate-text/image/0001",
     "kind": "image",
     "media_type": "image/webp"
    },
@@ -330,7 +330,7 @@
   "result": {
    "height": 768,
    "image": {
-    "asset_ref": "attempt:generate-wide-2/image/0001",
+    "asset_ref": "attempt:generate-wide/image/0001",
     "kind": "image",
     "media_type": "image/webp"
    },
@@ -415,7 +415,7 @@
   "result": {
    "height": 1024,
    "image": {
-    "asset_ref": "attempt:image-tool-4/image/0001",
+    "asset_ref": "attempt:image-tool/image/0001",
     "kind": "image",
     "media_type": "image/webp"
    },

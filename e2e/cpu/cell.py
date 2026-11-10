@@ -33,6 +33,8 @@ class Cell(TypedDict):
     tolerance: NotRequired[float]
     #: why this cell cannot run on the CPU; printed as SKIP
     skip: NotRequired[str]
+    #: outputs (by output id) the function returns empty by design
+    empty: NotRequired[list[str]]
 
 
 class Fixture(Protocol):
@@ -47,7 +49,9 @@ class Fixture(Protocol):
 
 
 class Output(TypedDict):
+    #: its output id, and `.audio` for a video's sound
     name: str
+    #: how many samples it decodes to (its bytes when it is not a picture, video or sound)
     bytes: int
     signature: list[float]
 

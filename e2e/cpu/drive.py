@@ -316,49 +316,87 @@ def bindings(interface: Interface, interface_path: str, entry: Entrypoint, manif
 
 def signature(data: npt.NDArray[np.generic], parts: int = 64) -> list[float]:
     """A coarse picture of an output: the mean of each of `parts` equal runs of its samples."""
-    flat = data.reshape(-1).astype(np.float64)
-    return [round(float(chunk.mean()), 2) if chunk.size else 0.0 for chunk in np.array_split(flat, parts)]
+    flat = data.reshape(-1)
+    return [round(float(chunk.mean(dtype=np.float64)), 2) if chunk.size else 0.0 for chunk in np.array_split(flat, parts)]
 
 
-def samples(path: Path) -> npt.NDArray[np.generic]:
-    """An output's samples as numbers: a decoded picture or video, else its bytes."""
-    if path.suffix in (".png", ".webp", ".jpg", ".jpeg"):
-        from PIL import Image
-
-        with Image.open(path) as image:
-            return np.asarray(image.convert("RGB"))
-    if path.suffix in (".mp4", ".webm", ".mov", ".mkv"):
+def samples(path: Path, media_type: str) -> dict[str, npt.NDArray[np.generic]]:
+    """An output's samples as 0-255 numbers: a picture or a video's frames decoded, a video's sound, else its bytes."""
+    if media_type.startswith("video/"):
         import av
 
+        found: dict[str, npt.NDArray[np.generic]] = {}
         with av.open(str(path)) as container:
             frames = [frame.to_ndarray(format="rgb24") for frame in container.decode(video=0)]
         if not frames:
-            raise Failed(f"output {path.name} holds no video frames")
-        return np.stack(frames)
-    return np.frombuffer(path.read_bytes(), dtype=np.uint8)
+            raise Failed(f"{path.name} holds no video frames")
+        found[""] = np.stack(frames)
+        with av.open(str(path)) as container:
+            if container.streams.audio:
+                sound = [frame.to_ndarray().astype(np.float32).reshape(-1) for frame in container.decode(audio=0)]
+                if sound:
+                    found[".audio"] = (np.clip(np.concatenate(sound), -1, 1) * 127.5 + 127.5).astype(np.uint8)
+        return found
+    if path.suffix != ".raw" and media_type in ("image/png", "image/jpeg", "image/webp"):
+        from PIL import Image
+
+        with Image.open(path) as image:
+            return {"": np.asarray(image.convert("RGB"))}
+    return {"": np.frombuffer(path.read_bytes(), dtype=np.uint8)}
+
+
+def spread(values: npt.NDArray[np.generic]) -> float:
+    """The samples' standard deviation, from at most a million of them."""
+    flat = values.reshape(-1)
+    return float(flat[:: max(1, flat.size // 1_000_000)].astype(np.float64).std())
+
+
+def plain(result: Json) -> Json:
+    """The result document without what names the attempt or the encoder's exact bytes: an output's `asset_ref` keeps
+    its kind and number, and its digest and size go (its samples are judged instead)."""
+    if isinstance(result, list):
+        return [plain(item) for item in result]
+    if not isinstance(result, dict):
+        return result
+    kept = {k: plain(v) for k, v in result.items() if not ("asset_ref" in result and k in ("digest", "size_bytes"))}
+    ref = kept.get("asset_ref")
+    if isinstance(ref, str) and ref.startswith("attempt:"):
+        kept["asset_ref"] = ref.split("/", 1)[1]
+    return kept
 
 
 def judge(cell: Cell, reply: Reply, spool: Path, reference: Seen | None) -> Seen:
-    """The cell's output judged, never only its completion: present, finite, not flat, and the stored reference's."""
+    """The cell's output judged, never only its completion: every declared output present, finite and not flat (or
+    declared empty), the cell's own check, and the stored reference's."""
     outcome = reply.get("outcome", {})
     if not reply.get("ok") or outcome.get("terminal") != "succeeded":
         raise Failed(f"{outcome.get('code') or reply.get('code')}: {first_line(outcome.get('message') or reply.get('detail', ''))}")
     result_file = spool / "result.canonical"
     result = cast(Json, json.loads(result_file.read_bytes())) if result_file.exists() else reply.get("result")
-    seen: Seen = {"result": result, "outputs": []}
-    files = sorted(p for p in spool.iterdir() if p.name != "result.canonical" and p.is_file())
-    if len(files) < len(reply.get("outputs") or []):
-        raise Failed(f"{len(reply.get('outputs') or [])} outputs declared, {len(files)} files in the spool")
-    for path in files:
+    seen: Seen = {"result": plain(result), "outputs": []}
+    empty = set(cell.get("empty", []))
+    files: list[Path] = []
+    for declared in sorted(reply.get("outputs") or [], key=lambda o: str(o.get("output_id"))):
+        output, ref, media_type = (str(declared.get(k, "")) for k in ("output_id", "asset_ref", "media_type"))
+        found = sorted(spool.glob(ref.split("/", 1)[1].replace("/", "-") + "*"))
+        if not found:
+            raise Failed(f"output {output} ({ref}) has no file in the spool")
+        path = found[0]
+        files.append(path)
         if not path.stat().st_size:
-            raise Failed(f"output {path.name} is empty")
-        values = samples(path)
-        spread = float(values.astype(np.float64).std())
-        if not np.isfinite(spread):
-            raise Failed(f"output {path.name} is not finite")
-        if path.suffix not in (".json", ".txt", ".safetensors", ".bin") and spread < 1.0:
-            raise Failed(f"output {path.name} is flat (spread {spread:.3f})")
-        seen["outputs"].append({"name": path.name, "bytes": path.stat().st_size, "signature": signature(values)})
+            if output not in empty:
+                raise Failed(f"output {output} is empty")
+            seen["outputs"].append({"name": output, "bytes": 0, "signature": []})
+            continue
+        for suffix, values in samples(path, media_type).items():
+            width = spread(values)
+            if not np.isfinite(width):
+                raise Failed(f"output {output}{suffix} is not finite")
+            if width < 1.0 and media_type.split("/")[0] in ("image", "video", "audio"):
+                raise Failed(f"output {output}{suffix} is flat (spread {width:.3f})")
+            seen["outputs"].append({"name": output + suffix, "bytes": values.size, "signature": signature(values)})
+    if not seen["outputs"]:
+        raise Failed("the reply declares no outputs")
     check = cell.get("check")
     if check is not None and (problem := check(result, files)):
         raise Failed(problem)
@@ -372,10 +410,10 @@ def compare(seen: Seen, reference: Seen, tolerance: float) -> None:
         return [(o["name"], o["bytes"]) for o in outputs]
 
     want, got = reference["outputs"], seen["outputs"]
-    if [o["name"] for o in want] != [o["name"] for o in got]:
+    if shape(want) != shape(got):
         raise Failed(f"outputs {shape(got)} differ from the reference's {shape(want)}")
     for a, b in zip(want, got, strict=True):
-        worst = max(abs(x - y) for x, y in zip(a["signature"], b["signature"], strict=True))
+        worst = max((abs(x - y) for x, y in zip(a["signature"], b["signature"], strict=True)), default=0.0)
         if worst > tolerance:
             raise Failed(f"output {b['name']} differs from its reference by {worst:.1f}/255 (tolerance {tolerance})")
     if reference["result"] != seen["result"]:
