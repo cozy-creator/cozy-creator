@@ -144,9 +144,7 @@ pub fn requirements() -> &'static str {
         "linux" => {
             "FUSE2 (/dev/fuse and fusermount); the bundled provider also requires glibc 2.34 or newer"
         }
-        "macos" => {
-            "macOS 15.4 or newer and macFUSE 5.5 or newer, enabled in System Settings > General > Login Items & Extensions > By Category > File System Extensions (https://macfuse.github.io/)"
-        }
+        "macos" => "macOS with its built-in hdiutil encrypted APFS support",
         "windows" => "WinFsp and the Microsoft Visual C++ x64 runtime",
         _ => "a supported encrypted filesystem driver",
     }

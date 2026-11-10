@@ -45,7 +45,7 @@ pub(super) fn create(provider: &Provider, backing: &Path, secret: &[u8]) -> Resu
             "-type",
             "SPARSEBUNDLE",
             "-fs",
-            "APFSX",
+            "Case-sensitive APFS",
             "-volname",
             "Cozy Project",
             "-encryption",
