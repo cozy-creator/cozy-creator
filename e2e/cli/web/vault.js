@@ -119,6 +119,9 @@ const cli = (...args) => execFileSync(process.env.COZY, ['--json', ...args], { e
   await page.evaluate(() => { window.__vaultDocument = 'same-document'; });
   await page.goto(`${calcifer()}/#/projects/${other}`);
   await page.waitForFunction(() => document.querySelector('.react-flow') && !document.body.innerText.includes('private_vault_picture'));
+  // Real browser offline mode prevents both status replies and the lock SSE event;
+  // the CLI remains online. Cached unlocked data must still stay hidden on selection.
+  await context.setOffline(true);
   cli('project', '-p', folder, 'lock');
   await page.evaluate((id) => {
     window.__privatePaints = [];
@@ -128,6 +131,10 @@ const cli = (...args) => execFileSync(process.env.COZY, ['--json', ...args], { e
     window.__privateWatch.observe(document.body, { childList: true, subtree: true, characterData: true });
     location.hash = `#/projects/${id}`;
   }, id);
+  await page.waitForFunction(() => document.querySelector('.gate') && !document.querySelector('.react-flow'));
+  await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+  check('offline_reselection_hides_cached_private_data', await page.evaluate(() => window.__privatePaints.length === 0));
+  await context.setOffline(false);
   await page.locator('[data-vault-state="locked"]').waitFor();
   check('project_reselection_verifies_before_paint', await page.evaluate(() => window.__vaultDocument === 'same-document' && window.__privatePaints.length === 0));
   await page.goBack();
