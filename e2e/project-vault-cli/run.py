@@ -353,6 +353,15 @@ foreach ($rule in $allowed) {
         self.cell('ordinary_project_without_encryption')
         self.command('project', 'new', self.project, project=False)
         before = self.command('export', json_output=False)
+        unsafe_backing = self.project / 'unsafe-recovery.txt'
+        refused = self.command('encrypt', '--passphrase-file', initial, '--recovery-out', unsafe_backing,
+                               '--remove-plaintext', '--idle', 0, refusal=True)
+        assert json.loads(refused.stdout)['error']['code'] == 'vault_recovery_location'
+        assert not unsafe_backing.exists()
+        unchanged = self.status()
+        assert unchanged['state'] == 'plain' and not unchanged['encrypted']
+        assert before == self.command('export', json_output=False)
+        self.cell('recovery_output_refuses_backing_before_conversion')
         self.command('encrypt', '--passphrase-file', initial, '--recovery-out', self.recovery('recovery1'),
                      '--remove-plaintext', '--idle', 0)
         self.check_recovery('recovery1')
@@ -372,11 +381,16 @@ foreach ($rule in $allowed) {
         self.ffmpeg('-ss', '1', '-i', saved[1], '-frames:v', '1', '-f', 'null', '-')
         self.ffmpeg('-i', saved[2], '-f', 'null', '-')
         self.cell('encrypted_import_image_video_audio_and_crdt_edit')
+        unsafe_view = view / 'unsafe-recovery.txt'
+        refused = self.command('vault', 'recovery', '--recovery-out', unsafe_view, refusal=True)
+        assert json.loads(refused.stdout)['error']['code'] == 'vault_recovery_location'
+        assert not unsafe_view.exists()
         self.command('lock')
         self.assert_locked(view, saved[0])
         self.command('unlock', '--passphrase-file', wrong, refusal=True)
         self.view(self.command('unlock', '--recovery-file', self.recovery('recovery1'), '--idle', 0))
         assert self.command('export', json_output=False) == state
+        self.cell('recovery_output_refuses_view_without_rotating_recovery')
         self.cell('lock_refusal_and_saved_recovery')
         self.command('vault', 'passphrase', '--passphrase-file', changed)
         self.command('vault', 'recovery', '--recovery-out', self.recovery('recovery2'))

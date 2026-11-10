@@ -27,6 +27,14 @@ projectvault() (
   ffmpeg -v error -f lavfi -i sine=f=440:d=1 "$P/files/audio.wav"
   before=$(sha "$P/files/movie.mp4")
 
+  step "recovery output inside the project refuses before encryption"
+  if cozy --json project -p "$P" encrypt --passphrase-file "$secrets/initial" --recovery-out "$P/unsafe-recovery.txt" --remove-plaintext --idle 0 > "$work/backing-recovery-refused.json" 2> "$work/backing-recovery-refused.err"; then fail "encryption accepted a recovery secret beside its encrypted backing"; fi
+  jq -e '.error.code == "vault_recovery_location"' "$work/backing-recovery-refused.json" > /dev/null || fail "backing recovery output did not return its location refusal"
+  [ ! -e "$P/unsafe-recovery.txt" ] || fail "refused recovery output created a project file"
+  cozy --json project -p "$P" vault status > "$work/backing-refusal-status.json"
+  jq -e '.encrypted == false and .state == "plain"' "$work/backing-refusal-status.json" > /dev/null || fail "recovery location refusal changed project encryption"
+  [ "$(sha "$P/files/movie.mp4")" = "$before" ] || fail "recovery location refusal moved the plaintext source"
+
   step "encrypt the same project and read its mounted view"
   cozy --json project -p "$P" encrypt --passphrase-file "$secrets/initial" --recovery-out "$secrets/recovery1" --remove-plaintext --idle 0 > "$work/encrypted.json"
   view=$(jq -r '.vault.view // empty' "$work/encrypted.json")
@@ -61,6 +69,11 @@ print("\n".join(leaks))
 assert not leaks, "encrypted backing retains readable private file content or names"
 PY_BACKING_SCAN
 
+  step "recovery output inside the unlocked view refuses without replacing recovery"
+  if cozy --json project -p "$P" vault recovery --recovery-out "$view/unsafe-recovery.txt" > "$work/view-recovery-refused.json" 2> "$work/view-recovery-refused.err"; then fail "recovery replacement accepted its own unlocked view"; fi
+  jq -e '.error.code == "vault_recovery_location"' "$work/view-recovery-refused.json" > /dev/null || fail "view recovery output did not return its location refusal"
+  [ ! -e "$view/unsafe-recovery.txt" ] || fail "refused recovery output created an unlocked-view file"
+
   step "locking blocks project reads; wrong credentials do not open it"
   cozy --json project -p "$P" lock > "$work/locked.json"
   jq -e '.vault.state == "locked"' "$work/locked.json" > /dev/null || fail "lock did not complete"
@@ -69,6 +82,7 @@ PY_BACKING_SCAN
   if [ -r "$view/files/private-sentinel.txt" ]; then fail "old mount path stayed readable after lock"; fi
 
   step "saved recovery and passphrase replacement preserve the files"
+  # The refused in-view replacement must leave the original recovery credential valid.
   cozy --json project -p "$P" unlock --recovery-file "$secrets/recovery1" --idle 0 > "$work/recovered.json"
   cozy --json project -p "$P" vault passphrase --passphrase-file "$secrets/changed" > "$work/passphrase.json"
   cozy --json project -p "$P" vault recovery --recovery-out "$secrets/recovery2" > "$work/replacement-recovery.json"
@@ -108,7 +122,7 @@ PY_BACKING_SCAN
   view=$(jq -r '.vault.view // empty' "$work/rekey-recovery.json")
   [ "$(sha "$view/files/movie.mp4")" = "$before" ] || fail "new-generation recovery lost the video"
   cozy --json project -p "$P" lock > "$work/final-lock.json"
-  printf '{"ordinary":true,"mounted_media":true,"lock":true,"recovery":true,"rekey":true,"expiry":true,"synthetic_only":true}\n' > "$work/receipt.json"
+  printf '{"ordinary":true,"mounted_media":true,"lock":true,"recovery":true,"recovery_output_backing_refused":true,"recovery_output_view_refused":true,"rekey":true,"expiry":true,"synthetic_only":true}\n' > "$work/receipt.json"
 )
 
 # Same installed candidate, normal browser, no mock HTTP or account service.
