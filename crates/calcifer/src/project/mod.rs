@@ -111,6 +111,8 @@ struct Project {
     id: String,
     /// Immutable owner. A recycled physical mount path must never choose another project's root.
     root: PathBuf,
+    /// Cache ownership follows the physical mount, not a replaceable viewer authorization.
+    mount_id: Option<vault::MountIdentity>,
     folder: Folder,
     /// What its files say, as last read.
     model: tokio::sync::Mutex<Option<Arc<model::Model>>>,
@@ -252,6 +254,7 @@ impl Projects {
     /// one is owed. It stays open while the answer is held.
     fn open(&self, api: &Arc<Api>, dir: &FsPath) -> Result<Arc<Project>, Error> {
         let root = vault::logical(dir);
+        let mount_id = vault::mount_identity(&root);
         let physical = current_view(&root)?;
         let dir = physical.as_path();
         // Before `project.db`: a format 2 or 3 folder moves to 4, and its files are imported once (cl-803).
@@ -268,7 +271,7 @@ impl Projects {
         // Moved since it opened: the same project, read where it is now, and what reads it where it was goes on reading that. One
         // rendering goes on where it was.
         let moved = self.open.lock().expect("projects lock").get(&id).and_then(Weak::upgrade)
-            .filter(|open| open.root != root || open.folder.dir != dir);
+            .filter(|open| open.root != root || open.mount_id != mount_id || open.folder.dir != dir);
         if let Some(open) = moved {
             if *open.walking.lock().expect("walking lock") {
                 let said = format!("{id} moved from {} while it renders: move it back, or once its runs land", open.folder.dir.display());
@@ -285,13 +288,14 @@ impl Projects {
         crate::events::project_opened(dir);
         let mut open = self.open.lock().expect("projects lock");
         let project = match open.get(&id).and_then(Weak::upgrade)
-            .filter(|project| project.root == root && project.folder.dir == dir) {
+            .filter(|project| project.root == root && project.mount_id == mount_id && project.folder.dir == dir) {
             Some(project) => project,
             None => {
                 let (events, asked) = (broadcast::channel::<Event>(256).0, Notify::new());
                 let project = Arc::new(Project {
                     id: id.clone(),
                     root,
+                    mount_id,
                     folder,
                     jobs: Jobs::new(id.clone(), events.clone()),
                     model: tokio::sync::Mutex::default(),
@@ -978,7 +982,7 @@ fn current_view(root: &FsPath) -> Result<PathBuf, Error> {
 impl Project {
     /// Old references are bound to their original physical view, never a recycled drive.
     fn require_view(&self) -> Result<(), Error> {
-        if current_view(&self.root)? != self.folder.dir {
+        if self.mount_id != vault::mount_identity(&self.root) || current_view(&self.root)? != self.folder.dir {
             return Err(Error::new(Kind::Conflict, "project_view_changed", "the project's mounted view changed; reopen this project"));
         }
         Ok(())
