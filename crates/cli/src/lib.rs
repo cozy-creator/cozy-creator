@@ -155,7 +155,11 @@ fn usage(error: clap::Error) -> ExitCode {
         invocation.push_str(&argument.to_string_lossy());
         command = child.clone().bin_name(invocation.clone());
     }
-    let reference = command.render_long_help().to_string();
+    let reference = command
+        .try_get_matches_from([invocation, "--help".to_owned()])
+        .expect_err("every command supports --help")
+        .render()
+        .to_string();
     output::refuse(json, &Error::new(Kind::Usage, "usage", message).remedy(reference))
 }
 
