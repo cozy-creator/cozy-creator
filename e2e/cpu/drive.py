@@ -897,6 +897,13 @@ def main() -> int:
                 row = entries.get(entry)
                 if row is None:
                     raise Failed(f"the package interface has no entry point {entry}")
+                payload = cast(dict[str, Json], json.loads(json.dumps(cell["payload"])))
+                metadata, granted = inputs(cell, payload, out / "inputs" / request, out / "made")
+                # The request as a person sends it, for cli.sh to bind: its fields and its files by path.
+                (out / "requests").mkdir(exist_ok=True)
+                (out / "requests" / f"{request}.json").write_text(json.dumps({
+                    "entry": entry, "payload": cell["payload"], "files": {f: g["local"] for f, g in granted.items()},
+                    "models": bool(cell.get("models"))}))
                 # A cell may bind a slot to another of the fixture's models (`model=` on a request).
                 chosen = {**manifests, **{path: manifests[ref] for path, ref in cell.get("models", {}).items()}}
                 rows = bindings(interface, str(interface_path), row, chosen, store, f"{package}@{version}", package)
@@ -919,8 +926,6 @@ def main() -> int:
                                   "models": rows or [weightless]}
                     executor.must(load)
                     loaded.add((ranks, construction))
-                payload = cast(dict[str, Json], json.loads(json.dumps(cell["payload"])))
-                metadata, granted = inputs(cell, payload, out / "inputs" / request, out / "made")
                 executor.must({"cmd": "prepare_request", "request_id": request, "entrypoint": entry, "payload": payload,
                                "construction": construction, "input_metadata": metadata})
                 spool = out / "spool" / request

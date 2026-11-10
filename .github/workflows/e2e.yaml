@@ -605,7 +605,8 @@ jobs:
           retention-days: 14
 
   # The free CPU test (e2e/cpu): every package's entry points through the candidate Runtime's real executor with tiny
-  # random weights, one and two ranks, outputs against stored references. No GPU, rental or sign-in.
+  # random weights, one and two ranks, outputs against stored references; each package uploaded, locked and its
+  # requests bound through the candidate cozy. No GPU, rental or sign-in.
   cpu:
     needs: [affected, candidate]
     if: contains(fromJSON(needs.affected.outputs.selection).suites, 'cpu')
@@ -631,16 +632,35 @@ jobs:
           ref: ${{ needs.affected.outputs.ref }}
           build: ${{ env.BUILD }}
           from: artifacts
+          tensord: ${{ inputs.tensord }}
           tensorfs: ${{ inputs.tensorfs }}
           runtime: ${{ inputs.runtime }}
+          release: ${{ inputs.publish_run }}
       # The locked wheels every package's environment takes (CPU torch included), by the locks that name them.
       - uses: actions/cache@v4
         with:
           path: .uv-cache
           key: cpu-uv-${{ hashFiles('.pkgs/*/uv.lock', '.src/*/uv.lock') }}
           restore-keys: cpu-uv-
+      # The CLI cells' cozy (e2e/cpu/cli.sh): installed as a person installs it, the candidate in its place and Calcifer
+      # restarted on it, as the cli suite's candidates step does.
       - name: cpu suite
-        run: bash .creator/e2e/cpu/run.sh --out "$RUNNER_TEMP/e2e" --envs "$RUNNER_TEMP/envs" $CANDIDATES $(case " $CANDIDATES " in (*" --packages "*) ;; (*) echo --packages "$PACKAGES_MASTER" ;; esac) 2>&1 | node .creator/e2e/publish/scrub.js
+        run: |
+          . .creator/e2e/lib.sh
+          parse --out "$RUNNER_TEMP/e2e/cozy" $CANDIDATES
+          install_cozy
+          user_services
+          if [ -f "$CAND_COZY" ]; then
+            cozy --json doctor > "$OUT/doctor.json" || true
+            grep -q "$("$CAND_COZY" --version)," "$OUT/doctor.json" || fail "Calcifer is not the candidate $("$CAND_COZY" --version)"
+          fi
+          cozy --json project new "$RUNNER_TEMP/project" > /dev/null || fail "cozy project new failed"
+          code=0
+          bash .creator/e2e/cpu/run.sh --out "$RUNNER_TEMP/e2e" --envs "$RUNNER_TEMP/envs" $CANDIDATES \
+            $(case " $CANDIDATES " in (*" --packages "*) ;; (*) echo --packages "$PACKAGES_MASTER" ;; esac) \
+            --cozy "$COZY" --project "$RUNNER_TEMP/project" 2>&1 | node .creator/e2e/publish/scrub.js || code=$?
+          finish cpu
+          exit "$code"
       - if: always()
         run: uv cache prune --ci
       - if: always()
