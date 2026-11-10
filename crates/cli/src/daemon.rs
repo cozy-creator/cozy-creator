@@ -32,9 +32,6 @@ pub(crate) async fn status(ctx: &Context, _args: Status) -> Result<ExitCode, Err
     let attention = project.absent > 0 || !project.missing.is_empty() || !project.stale.is_empty()
         || !project.warnings.is_empty() || !project.unsent.is_empty();
     let mut next = Vec::new();
-    if project.absent > 0 {
-        next.push("cozy pull");
-    }
     next.push("cozy open");
     if !attention {
         next.push("cozy run --help");
@@ -47,7 +44,7 @@ pub(crate) async fn status(ctx: &Context, _args: Status) -> Result<ExitCode, Err
             json!({
                 "id": project.id, "path": project.path, "assets": project.assets,
                 "missing": project.missing, "stale": project.stale, "orphans": project.orphans,
-                "absent": project.absent, "run_files": project.run_files, "syncing": project.moving,
+                "absent": project.absent, "run_files": project.run_files,
             })
         } else { json!({"path": project.path}) },
         "health": if attention { "needs_attention" } else { "ready" },

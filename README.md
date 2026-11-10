@@ -70,7 +70,7 @@ rent a Linux GPU, or `--on <machine>` for one you have. Run project commands fro
 
 `cozy` lists the main commands. `cozy <verb> --help` shows a command's options.
 The browser opened by `cozy open` provides asset import, editing, rendering, export and history.
-Use `cozy push` and `cozy pull` to synchronize the current project's files with your account.
+Project sync is planned as an optional per-project Calcifer setting. The trusted project host can run locally or remotely; TensorHub backup stores encrypted data.
 
 `cozy doctor` diagnoses this computer's cozy (Calcifer, its service, the machine, tools, GPUs) and
 restarts a Calcifer that is stuck or runs an older cozy.

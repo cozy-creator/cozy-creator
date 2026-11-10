@@ -67,10 +67,6 @@ enum Command {
     Run(run::Args),
     /// Show the current project's health and warnings.
     Status(daemon::Status),
-    /// Upload the current project's files to your account.
-    Push,
-    /// Download the current project's files from your account.
-    Pull,
     /// Local, rented and added machines.
     Machine(machine::Args),
     /// Find, download, upload and publish models.
@@ -81,9 +77,9 @@ enum Command {
     Update(update::Args),
     /// Diagnose this computer's Cozy installation and machines.
     Doctor(doctor::Args),
-    #[command(hide = true)]
+    /// Sign in to your TensorHub account.
     Login(account::Login),
-    #[command(hide = true)]
+    /// Sign out of your TensorHub account.
     Logout(account::Logout),
     #[command(hide = true)]
     Whoami(account::Whoami),
@@ -169,8 +165,6 @@ async fn dispatch(ctx: &Context, command: Command) -> Result<ExitCode, Error> {
         Command::Model(args) => model::exec(ctx, args).await,
         Command::New(args) => project::create(ctx, args).await,
         Command::Status(args) => daemon::status(ctx, args).await,
-        Command::Push => project::transfer(ctx, "push", "sent").await,
-        Command::Pull => project::transfer(ctx, "pull", "fetched").await,
         Command::Open(args) => open::exec(ctx, args).await,
         Command::Login(args) => account::login(ctx, args).await,
         Command::Logout(args) => account::logout(ctx, args).await,

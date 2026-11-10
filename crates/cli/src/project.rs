@@ -2,7 +2,7 @@
 use std::{path::PathBuf, process::ExitCode};
 
 use api::{
-    calcifer::{hub::At, project::{Event, Open, Opened, State}},
+    calcifer::project::{Open, Opened, State},
     error::{Error, Kind},
 };
 
@@ -51,32 +51,4 @@ pub(crate) async fn create(ctx: &Context, args: New) -> Result<ExitCode, Error> 
         "id": id, "path": path, "created": created,
     }));
     Ok(ExitCode::SUCCESS)
-}
-
-/// Sync the current project's files through its existing transfer API.
-pub(crate) async fn transfer(ctx: &Context, verb: &str, moved: &str) -> Result<ExitCode, Error> {
-    let project = current(ctx).await?;
-    let calcifer = ctx.calcifer().await?;
-    let events_path = crate::calcifer_client::path(&["v1", "projects", &project.id, "events"]);
-    let action_path = crate::calcifer_client::path(&["v1", "projects", &project.id, verb]);
-    let mut events = calcifer.watch::<Event>(&events_path).await?;
-    let ask = At { hub: Some(ctx.hub().to_string()) };
-    let _: Opened = calcifer.post(&action_path, &ask, None).await?;
-    while let Some(event) = events.next().await {
-        match event {
-            Event::Moved { file: Some(file), bytes } => output::say(ctx, &format!("{moved} {file} ({} so far)", output::bytes(bytes))),
-            Event::Moved { file: None, bytes } => output::say(ctx, &format!("{} so far", output::bytes(bytes))),
-            Event::Transferred { error: Some(error), .. } => return Err(error),
-            Event::Transferred { done: Some(done), .. } => {
-                output::document(ctx, &done);
-                for file in &done.skipped {
-                    output::warn(&format!("skipped {}: {}", file.path, file.why));
-                }
-                return Ok(if done.skipped.is_empty() { ExitCode::SUCCESS } else { ExitCode::from(3) });
-            }
-            _ => {}
-        }
-    }
-    let message = format!("Calcifer stopped before the {verb} ended; run it again to continue");
-    Err(Error::new(Kind::Unavailable, "project_events_ended", message).next(format!("cozy {verb}")))
 }
