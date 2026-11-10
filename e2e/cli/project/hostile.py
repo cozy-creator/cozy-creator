@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime>=0.38", "msgspec>=0.19"]
+# dependencies = ["cozy-runtime>=0.38,<0.43.1", "msgspec>=0.19"]
 # ///
 """The project cell's hostile outputs, weightless: a page and a drawing whose script would ask for Calcifer's runs if it ran."""
 
