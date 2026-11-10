@@ -1,6 +1,7 @@
 """Tiny MiniMax H3: the package's own constructors (the AdaLN-pruned dual DiT, the truncated Qwen3-VL conditioner, the
 video and audio VAEs, the PDD turbo overlay) at a few channels, with timestep plans of 2 and 3 evaluations, written as the
-five-root checkpoint and the turbo LoRA by TensorFS's own writer.
+five-root checkpoint and the turbo LoRA by TensorFS's own writer. Beside it, a bf16-full lane (FULL DiTs: the time
+embedder and AdaLN projections) and the pruned lane minimax-h3-tools makes from it.
 
 The release geometry (56 heads x 128, 50 layers, a 5120-wide conditioner) is pinned by `_validate_model_contract`;
 a tiny model cannot meet it, so that one check is waived (WAIVE) and stays GPU-only. The canvas (768 short edge) and the
@@ -21,6 +22,8 @@ import torch
 from cozy_runtime.author import Config
 from diffusers import AutoencoderKLMiniMaxH3Audio, MiniMaxH3Scheduler
 from h3_tables import regenerate as tools_regenerate
+from h3_tables.kernel import H3Topology, precompute_tables
+from h3_tables.plans import parse_plan
 from minimax_h3 import latent_upscaler, official
 from minimax_h3.conditioner import build_text_conditioner
 from minimax_h3.latent_upscaler.architecture import LatentResizer3D
@@ -28,10 +31,12 @@ from minimax_h3.official import Schedule, TimestepPlan, Trunk
 from minimax_h3.vae_tiles import TileBatchedVideoVAE
 from PIL import Image
 
-from cell import Cell, Json, module
+from cell import Cell, Json, Source, module
 
 WAIVE = {"minimax_h3.official:_validate_model_contract": "the release geometry: 56x128 heads, 50 layers, 5120 text width"}
 REGENERATE, UPSCALER = "efficient-large-model/open-h3-regenerate-2k@0.1.0", "lbh-123-ai/h3-latent-upscaler@0.1.0"
+#: The release's bf16-full lane and the bf16 lane minimax-h3-tools derives from it (`_from_full`).
+FULL, FROM_FULL = "minimaxai/minimax-h3@1.0.0-rc.7:bf16-full", "minimaxai/minimax-h3@1.0.0-rc.7:bf16-from-full"
 #: LatentResizer3D's defaults (in_channels, in_blocks, out_blocks, channels, dropout, temporal_every, temporal_kernel):
 #: the release's 12 + 12 blocks of 512 channels (345M) shrunk to 1 + 1 of 32.
 _UPSCALER_DEFAULTS = (24, 1, 1, 32, 0.1, 2, 5)
@@ -50,6 +55,10 @@ DIT: dict[str, Json] = {
     "num_refiner_layers": 2, "patch_size": [1, 2, 2], "qk_norm_eps": 1e-05, "rope_freq_dim": 4, "rope_theta": 10000,
     "text_dim": 64, "time_embed_dim": 32, "time_embed_hidden_dim": 64,
 }
+
+
+#: The tiny DiT's modulation shape, for the producer's table kernel (`H3Topology.from_config` holds the release's).
+_TOPOLOGY = H3Topology(hidden_size=64, num_layers=2, freq_dim=32, time_embed_hidden_dim=64, time_embed_dim=32)
 
 
 def _real() -> dict[str, dict[str, Json]]:
@@ -167,8 +176,42 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
         overlay = module(built.components[_TURBO[trunk]])
         _fill(overlay, seed)
         _write(lora, _TURBO[trunk], overlay, overlays[_TURBO[trunk]], {official.PLAN_ASSET: turbo[trunk].canonical_bytes()})
-    return {"minimaxai/minimax-h3@1.0.0-rc.7": base.commit().id, "alibaba-pai/minimax-h3-turbo-lora@1.0.1": lora.commit().id,
-            REGENERATE: _regenerate(store), UPSCALER: _upscaler(store)}
+    built_models: dict[str, Path | str] = {
+        "minimaxai/minimax-h3@1.0.0-rc.7": base.commit().id, "alibaba-pai/minimax-h3-turbo-lora@1.0.1": lora.commit().id,
+        REGENERATE: _regenerate(store), UPSCALER: _upscaler(store)}
+    shared = {"text_encoder": (text, sections["text_encoder"]), "vae": (vae, sections["vae"]),
+              "audio_vae": (audio, sections["audio_vae"])}
+    built_models[FULL], built_models[FROM_FULL] = _from_full(store, plans, shared)
+    return built_models
+
+
+def _from_full(store: Path, plans: dict[Trunk, TimestepPlan],
+               shared: dict[str, tuple[torch.nn.Module, dict[str, Json]]]) -> tuple[str, str]:
+    """A bf16-full lane (both DiTs FULL, every matrix drawn) and the bf16 lane minimax-h3-tools derives from it: each DiT's
+    tables computed by the producer's own kernel (`precompute_tables`) from the FULL DiT's time embedder and AdaLN
+    projections, every other row the same. Its own random stream, so the models above keep theirs."""
+    full, pruned = tensorfs.Writer(cache_dir=store), tensorfs.Writer(cache_dir=store)
+    for name, (root, config) in shared.items():
+        _write(full, name, root, config, {})
+        _write(pruned, name, root, config, {})
+    with torch.random.fork_rng():
+        torch.manual_seed(10)
+        for seed, trunk in enumerate(_TRUNKS, 10):
+            assets = {official.PLAN_ASSET: plans[trunk].canonical_bytes()}
+            config = {**DIT, "cozy_h3": {"task": trunk, "modulation": "full"}}
+            dit = module(official._build_dit(*official._dit_spec(Config({_DIT[trunk]: config}), trunk)))
+            _fill(dit, seed)
+            _write(full, _DIT[trunk], dit, config, assets)
+            state = dit.state_dict()
+            tables: dict[str, torch.Tensor] = {}
+            precompute_tables(plan=parse_plan(assets[official.PLAN_ASSET], task=trunk), topology=_TOPOLOGY,
+                              read=lambda key, dtype, shape: state[key], write=tables.__setitem__,
+                              progress=lambda done, total: None, device=torch.device("cpu"))
+            config = {**DIT, "cozy_h3": {"task": trunk, "modulation": "adaln-pruned", "table_keys": _keys(plans[trunk])}}
+            twin = module(official._build_dit(*official._dit_spec(Config({_DIT[trunk]: config}), trunk)))
+            twin.load_state_dict({**{key: state[key] for key in twin.state_dict() if key in state}, **tables})
+            _write(pruned, _DIT[trunk], twin, config, assets)
+    return full.commit().id, pruned.commit().id
 
 
 def _regenerate(store: Path) -> str:
@@ -244,6 +287,40 @@ def clip(frames: int) -> Callable[[Path], Path]:
 
     return make
 
+
+#: A base (untabled) step on the CPU: the executor computes in float32 (Runtime `weights._float32`), so FULL's AdaLN rows
+#: skip the bf16 rounding the stored tables took (on a bf16 GPU both round): 2% of pixels one level apart.
+_UNROUNDED = 0.25
+
+
+def _full_lane() -> list[Cell]:
+    """bf16-full beside the pruned lane made from it (se-111), on each path: FULL computes at every step the rows the
+    pruned lane stores, and an overlay's tables (turbo, Regenerate) replace either's, so those pairs are equal to the bit."""
+    turbo: dict[str, Json] = {"steps": None, "turbo": True}
+    reference: dict[str, Source] = {"assets.0.asset": picture("fox", 512, 512)}
+    paths: list[tuple[str, str, dict[str, Json], dict[str, Source], float]] = [
+        ("fl2va_segment", "text", {"payload": _SEGMENT}, {}, _UNROUNDED),
+        ("fl2va_segment", "turbo", {"payload": {**_SEGMENT, **turbo}}, {}, 0.0),
+        ("ref2va_segment", "reference", {"payload": _REF2VA, "assets": [{"label": "fox"}]}, reference, _UNROUNDED),
+        ("ref2va_segment", "turbo", {"payload": {**_REF2VA, **turbo}, "assets": [{"label": "fox"}]}, reference, 0.0),
+        ("regenerate_shot", "native", {"payload": _REGENERATE}, {"payload.video": clip(25)}, 0.0),
+    ]
+    cells: list[Cell] = []
+    for entry, name, payload, files, tolerance in paths:
+        twin: Cell = {"entry": entry, "name": f"from-full-{name}", "payload": payload, "files": files,
+                      "models": {f"{entry}.models.base_model": FROM_FULL}}
+        if entry != "regenerate_shot":
+            twin["empty"] = _EMPTY
+        full: Cell = {**twin, "name": f"full-{name}", "models": {f"{entry}.models.base_model": FULL},
+                      "same_as": f"{entry}/from-full-{name}", "tolerance": tolerance}
+        cells += [twin, full]
+    # FULL across a two-rank group: Diffusers' plan splits its live modulation's rows as it splits the tables'.
+    cells.append({"entry": "fl2va_segment", "name": "full-turbo-2-ranks", "payload": {"payload": {**_SEGMENT, **turbo}},
+                  "models": {"fl2va_segment.models.base_model": FULL}, "ranks": 2, "empty": _EMPTY,
+                  "same_as": "fl2va_segment/full-turbo"})
+    return cells
+
+
 CELLS: list[Cell] = [
     {"entry": "fl2va_segment", "name": "text", "payload": {"payload": _SEGMENT}, "empty": _EMPTY},
     {"entry": "fl2va_segment", "name": "turbo", "payload": {"payload": {**_SEGMENT, "steps": None, "turbo": True}}, "empty": _EMPTY},
@@ -275,4 +352,5 @@ CELLS: list[Cell] = [
     {"entry": "regenerate_shot", "name": "1080p", "payload": {"payload": {**_REGENERATE, "resolution": "1080p",
                                                                           "strength": 0.7}},
      "files": {"payload.video": clip(25)}},
+    *_full_lane(),
 ]
