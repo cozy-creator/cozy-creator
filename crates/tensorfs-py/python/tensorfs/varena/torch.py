@@ -86,7 +86,7 @@ def _device(device: DeviceLike = None) -> int:
     parsed = torch.device(device)
     if parsed.type != "cuda":
         raise ValueError("Varena requires a CUDA device")
-    return torch.cuda.current_device() if parsed.index is None else parsed.index  # type: ignore[redundant-expr]  # torch's stub says index is int; a bare "cuda" has None
+    return torch.cuda.current_device() if parsed.index is None else parsed.index
 
 
 def install(device: _ExplicitDevice = 0) -> None:
@@ -112,7 +112,7 @@ def _activation_device(device: DeviceLike) -> int:
         parsed = torch.device(device)
         if parsed.type != "cuda":
             raise ValueError("Varena requires a CUDA device")
-        index = 0 if parsed.index is None else parsed.index  # type: ignore[redundant-expr]  # torch's stub says index is int; a bare "cuda" has None
+        index = 0 if parsed.index is None else parsed.index
     if index < 0:
         raise ValueError("device must be nonnegative")
     return index
