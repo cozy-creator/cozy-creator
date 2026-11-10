@@ -31,7 +31,7 @@ test = "pr: signed out, logout says so (signed in, it revokes the CI key: none)"
 test = "pr: signed out, whoami says so (release: signed in as fidika, its balance and the buy page)"
 
 [status]
-test = "pr: status, Calcifer and the local machine"
+test = "pr: current-directory assets, a containing project, one asset, and first-use initialization"
 
 [update]
 test = "pr: update, the candidate to the newest release"
@@ -187,21 +187,12 @@ test = "pr: run play, its link serves the output, then expires"
 
 [open]
 test = "pr: web-serves (e2e/cli/web.sh), every OS: its link, redeemed in Chrome; each refusal; Place and a kill -9 in the page"
-"--no-open" = "pr: web-serves; a project's session: its folder, a folder of none, an older format. Opening a browser: manual, a person on a desktop"
+"--no-open" = "pr: web-serves; a project's session from its working directory, first-use initialization, and an older format. Opening a browser: manual, a person on a desktop"
 
-["project new"]
-test = "pr: projects (e2e/cli/project.sh): a folder holding only project.yaml"
-
-["project ls"]
-test = "pr: projects: the index; a folder gone leaves it and frees its name; moved, back by its path"
-
-["project status"]
-test = "pr: projects: by -p from elsewhere; what changed; a rename suggested; orphans with their bytes; by the CLI: one asset"
-
-["project wait"]
+["wait"]
 test = "pr: agent: nothing going says the project, a render followed to its end, a failure exits 1 (gate: a stall exits 4)"
 
-["project render"]
+["render"]
 test = "pr: projects: only what has no state; reverting runs nothing; cuts; a function's inputs; every mention filled; a world-state series"
 "--on" = "pr: projects: --on local"
 "--approve" = "pr: projects: --approve with -n 2 refused before any run"
@@ -209,53 +200,53 @@ test = "pr: projects: only what has no state; reverting runs nothing; cuts; a fu
 "--outdated" = "pr: a pin out of date: skipped by the plain run, re-run at its turn, its pin gone, the version it held kept"
 "--queue" = "pr: projects: three queued, one canceled, the rest land"
 
-["project cancel"]
+["cancel"]
 test = "pr: projects: a queued take dropped; alone or not, what it canceled isn't sent again"
 
-["project import"]
+["import"]
 test = "pr: projects: a path and a URL as real files and named elements, a type refused, one file for two elements; what the page does: parts, by hash, canvas, thumbs; projectdb: a .yaml read back as the project"
 "--description" = "pr: web-live: a file lifted out as its own asset, with its words"
 "--into" = "pr: projects: a file joins a box as its next version, and makes no asset of its own"
 
-["project add"]
+["add"]
 test = "pr: by the CLI: fields, a name, where it sits; web-live: shows on the open canvas within a second"
 
-["project set"]
+["set"]
 test = "pr: by the CLI: a value, JSON, clearing, what makes it, where it sits; web-live: on the open canvas, past what's typed"
 "--input" = "pr: by the CLI: fields from a file, from stdin, a term over them; web-live: an Edit's clips"
 
-["project delete"]
+["delete"]
 test = "pr: by the CLI: prints the undo line; discards: <name>.<n>, a take off its box at once, one or several, each printing its undo line; web-live: gone from the open canvas"
 
-["project export"]
+["export"]
 test = "pr: projectdb: the project as YAML, read back by import unchanged; an edited one imports as one entry"
 "--out" = "pr: projectdb: roundtrip: written to a file (-o)"
 
-["project approve"]
+["approve"]
 test = "pr: projects: its approved set, an edit just before it surviving"
 
-["project unapprove"]
+["unapprove"]
 test = "pr: projects: gives the file back, restoring an input the pin was over"
 
-["project history"]
+["history"]
 test = "pr: web-undo: the history kept across a Calcifer restart, newest first (-n)"
 
-["project undo"]
+["undo"]
 test = "pr: web-undo: the page's edit undone from the CLI, a clobbering undo refused; by the CLI, discards: the line delete printed, an approved take back with its approval, a reclaimed take refused with what's next; deleted: refused while its name is taken, exact after an add and a drop of it; web-live: back where it was"
 "--to" = "pending: every edit back to one; web-undo undoes one at a time"
 
-["project redo"]
+["redo"]
 test = "pr: web-undo: what undo took back done again after a restart"
 "--to" = "pending: every undone edit up to one; web-undo redoes one at a time"
 
-["project rename"]
+["rename"]
 test = "pr: projects: old renamed new, its versions kept, its reader out of date"
 
-["project reclaim"]
+["reclaim"]
 test = "pr: projects: lists, deletes only what nothing else names, refuses while rendering, and with --yes deletes"
 
-["project push"]
+["push"]
 test = "manual: release-gate/sessions/project-remote.sh (pod-session, signed in): nothing moves twice, a killed push goes on"
 
-["project pull"]
+["pull"]
 test = "manual: release-gate/sessions/project-remote.sh: a clone of yaml and lock, signed in as a second home: the same edit.mp4"
