@@ -97,7 +97,7 @@ Nothing reaches users before a recorded PASS. Candidates wait where users don't 
 prerelease assets (tensorfs-publish.yaml `candidate=true`, cozy-runtime runtime-publish.yaml `mode=source`), and packages
 as yanked releases (`task publish`). The release agent picks the suites, runs the gate by hand or from Actions, and
 records the result. `candidate.json` in each gate's output names the exact set: the versions the machine ran and the
-candidate files' digests. `verify.sh <run|dir>...` prints it only when every SKU passed. `promote.sh <run id>` (or
+candidate files' digests. `verify.sh <run|dir>...` prints it only when every supplied SKU passed (or its FAIL was accepted by the lead). Numeric IDs must be completed, repository-owned dispatches of `release-gate.yml`; PR and unrelated-workflow artifacts are rejected before download. Local gate directories remain explicit hand receipts. `promote.sh <run id>` (or
 `--record <URL> <dirs>...` for a hand gate) hands that set to users in one step: the same files to PyPI, the cozy
 prerelease latest plus Homebrew (cozy-promote.yaml), the packages un-yanked (`cozy package yank --undo`) on the Hub. Packages' `task promote` calls it. The worker image and the Hub pin follow, by the release owner.
 
