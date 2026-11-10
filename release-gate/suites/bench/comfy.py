@@ -32,6 +32,7 @@ class Job(TypedDict):
     requests: list[Request]
     length: int | None  # a video's seconds
     cap_gib: int | None  # a capped cell's level: ComfyUI runs beside a holder that leaves this much of the GPU
+    scout_s: float | None  # a matrix cell: Cozy's first warm total; ComfyUI stops after its own when faster (Paul 10-28: scout first)
     record: object  # the cell's cold Cozy record: the kernels and Sol schedule ComfyUI is matched to
 
 
@@ -76,6 +77,11 @@ def request_of(record: dict[str, object]) -> tuple[Request, int | None]:
     return {'prompt': text_of(inp.get('prompt')), 'seed': int(str(seed))}, None
 
 
+def total_s(record: dict[str, object]) -> float | None:
+    a, b = record.get('created_at_ms'), record.get('settled_at_ms')
+    return (b - a) / 1000 if isinstance(a, int) and isinstance(b, int) else None
+
+
 def jobs(gate: str) -> list[Job]:
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
     import bench  # release-gate/bench.py
@@ -86,6 +92,7 @@ def jobs(gate: str) -> list[Job]:
         if cell in defs and defs[cell]['comfyui']:
             by.setdefault(cell, []).append((role, record if os.path.isabs(record) else os.path.join(gate, record + '.json')))
     out: list[Job] = []
+    matrix = '.matrix' in Path(gate, 'bench-group').read_text()
     for cell, runs in by.items():
         records = [cast(dict[str, object], bench.load_json(p)) for _, p in runs if os.path.exists(p)]  # the CLI's run records
         if len(records) != len(runs) or runs[0][0] != 'cold' or any(r.get('status') != 'completed' for r in records):
@@ -93,7 +100,7 @@ def jobs(gate: str) -> list[Job]:
         reqs = [request_of(r) for r in records]
         out.append({'cell': cell, 'key': defs[cell]['comfyui'], 'tiers': ['cold'] + [f'w{i}' for i in range(1, len(runs))],
                     'requests': [q for q, _ in reqs], 'length': reqs[0][1], 'cap_gib': int(defs[cell]['cap']) if defs[cell]['cap'] else None,
-                    'record': records[0]})
+                    'scout_s': total_s(records[1]) if matrix and len(records) > 1 else None, 'record': records[0]})
     return out
 
 
@@ -151,7 +158,14 @@ def run(path: str) -> None:
             s.write(base | {'engine': 'comfy', 'arm': 'matched', 'tier': 'cold', 'status': 'no holder', 'error': f'no {cap} GiB holder', 'e2e_s': None,
                             'phases': {}, 'meters': {}})
             continue
-        rows = bm.comfy_arm(s, m, j['key'], 'matched', j['tiers'], j['requests'], j['length'], bm.served(j['record']), sampler, roots, base)
+        scout = j.get('scout_s')
+
+        def go_on(done: list[dict[str, object]], scout: float | None = scout) -> bool:
+            """A scout's timed request (w1) faster than Cozy's ends the cell there: a loss goes to a fix, not to more requests."""
+            last = done[-1]
+            e2e = last.get('e2e_s')
+            return not (scout is not None and last.get('tier') == 'w1' and isinstance(e2e, (int, float)) and e2e < scout)
+        rows = bm.comfy_arm(s, m, j['key'], 'matched', j['tiers'], j['requests'], j['length'], bm.served(j['record']), sampler, roots, base, go_on)
         if rows and rows[-1]['status'] == 'oom':
             s.say(f"{j['cell']}: out of GPU memory at ComfyUI's own flags: again with --lowvram")
             match = bm.match
@@ -160,7 +174,7 @@ def run(path: str) -> None:
                 mt = match(*a)
                 return mt | {'flags': mt['flags'] + ['--lowvram']}
             setattr(bm, 'match', lowvram)
-            bm.comfy_arm(s, m, j['key'], 'matched', j['tiers'], j['requests'], j['length'], bm.served(j['record']), sampler, roots, base)
+            bm.comfy_arm(s, m, j['key'], 'matched', j['tiers'], j['requests'], j['length'], bm.served(j['record']), sampler, roots, base, go_on)
             setattr(bm, 'match', match)
     holder(None)
     s.say('done')

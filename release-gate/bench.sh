@@ -1,17 +1,18 @@
 #!/bin/bash
 # The fixed benchmark suite in one command (suites/bench/README.md): each group of suites/bench/skus on a fresh pod of its
 # own (gate.sh --suite bench; the groups at once), then every group's table against the stored baseline and ComfyUI.
-#   bench.sh [--groups group,...] [--out DIR] [--comfyui] [gate.sh's candidate flags: --runtime F --tensorfs F --tensord F ...]
+#   bench.sh [--skus FILE] [--groups group,...] [--out DIR] [--comfyui] [gate.sh's candidate flags: --runtime F --tensorfs F --tensord F ...]
 # --comfyui: after a group's cells, ComfyUI on the same pod for the cells with a ComfyUI cell (suites/bench/comfyui.sh; skus
 # sizes each pod's disk and hard stop for it), compared in comfyui.md (bench.py versus). Exit 1 on any FAIL. Each pod is
 # ended by its gate.sh, which reads it back gone.
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 . "$HERE/machines.sh"
-OUT= WANT= COMFY= GATE=()
+OUT= WANT= COMFY= SKUS=$HERE/suites/bench/skus GATE=()
 while [ $# -gt 0 ]; do
   case $1 in
     --out) OUT=$2; shift 2 ;;
+    --skus) SKUS=$(cd "$(dirname "$2")" && pwd)/$(basename "$2"); shift 2 ;;
     --groups) WANT=,$2,; shift 2 ;;
     --comfyui) COMFY=1; shift ;;
     *) GATE+=("$1"); shift ;;
@@ -24,7 +25,8 @@ while read -r g _ disk cap _; do
   [ -n "$g" ] && [ "${g:0:1}" != '#' ] || continue
   [ -z "$WANT" ] || [[ $WANT == *",$g,"* ]] || continue
   base=${g%%.*} more=()
-  if [ -n "$COMFY" ] && awk -F'\t' -v g="$g" '$2 == g && $12 != "-" {found = 1} END {exit !found}' "$HERE/suites/bench/cells.tsv"; then
+  if [ -n "$COMFY" ] && awk -F'\t' -v g="$g" '$12 != "-" && !/^#/ { n = split($2, ps, ","); for (i = 1; i <= n; i++) { p = ps[i]
+      if (p == g || (substr(p, 1, 1) == "*" && substr(g, length(g) - length(p) + 2) == substr(p, 2))) found = 1 } } END {exit !found}' "$HERE/suites/bench/cells.tsv"; then
     more=(--cells "$HERE/suites/bench/comfyui.sh")
   fi
   # The hard stop: gate.sh's TERM trap ends its pod and reads it back gone.
@@ -32,7 +34,7 @@ while read -r g _ disk cap _; do
     --out "$OUT/$g" "${more[@]}" "${GATE[@]}" > "$OUT/$g.log" 2>&1 &
   pids+=($!)
   echo "$g: gate.sh pid $!, $OUT/$g"
-done < "$HERE/suites/bench/skus"
+done < "$SKUS"
 for p in "${pids[@]}"; do wait "$p"; done
 for r in "$OUT"/*/rental; do
   [ -f "$r" ] || continue

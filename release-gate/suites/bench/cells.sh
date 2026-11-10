@@ -3,8 +3,8 @@
 # bench.py judges them (check.py in analyze.py; bench.sh's table across groups).
 BG=${GROUP:-${SKU}x${GPUS:-1}} FX=$HERE/suites/bench/fixtures
 echo "$BG" > bench-group; : > bench.tsv
-read -r _ HOST_GIB _ < <(awk -v g="$BG" '$1 == g' "$HERE/suites/bench/skus")
-[ -n "${HOST_GIB:-}" ] || { expect bench-group FAIL "no group $BG in suites/bench/skus"; return 0; }
+read -r _ HOST_GIB _ < <(cat "$HERE"/suites/bench/*skus | awk -v g="$BG" '$1 == g')  # skus: the release gate's; matrix-skus
+[ -n "${HOST_GIB:-}" ] || { expect bench-group FAIL "no group $BG in suites/bench/*skus"; return 0; }
 BENCH_PY=(nice -n 19 uv run -q --no-project --with numpy python -I "$HERE/bench.py")
 # Never the caller's stdin: inside the cell loop that is cells.tsv, which an ssh would swallow after the first cell (1a, 11-10).
 podsh() { timeout 900 "$CLI" machine ssh "$M" "$1" < /dev/null; }
@@ -44,18 +44,20 @@ fi
 # A capped cell runs on a card of that size, as ComfyUI does: Cozy's executors leave the GPU (one restart), then a holder
 # process takes all but `cap` GiB (vram.py). Each run's row carries the holder's MiB, which bench.py takes off its peak.
 CAPNOW=off HELD=0 LEVEL_OK=1
+# ingroup <cells.tsv group>: this pod's group, or one of its comma-separated `*<suffix>` patterns (bench.py in_group).
+ingroup() { local p; for p in ${1//,/ }; do [ "$p" = "$BG" ] || { [ "${p:0:1}" = '*' ] && [[ $BG == *"${p:1}" ]]; } && return 0; done; return 1; }
 # build: this computer's cozy, the version and the file's digest: the laptop may be rebuilt mid-run (a dev install), and
 # each run says which build sent it, and which the machine ran.
 build() { local f; f=$(readlink -f "$(command -v "$CLI")" 2>/dev/null); echo "$("$CLI" --version 2>/dev/null | awk '{print $2}')@$(sha256sum "$f" 2>/dev/null | cut -c1-12)"; }
-# vary <args> <i>: a ComfyUI-matched cell's warm run i gets its own prompt, the cold run's and a fixed phrase, so neither
-# engine reuses the last request's text encoding (Paul 09-30); comfy.py hands ComfyUI each run's prompt from its record.
+# vary <args> <i>: warm run i gets its own prompt, the cold run's and a fixed phrase, so neither engine reuses the last
+# request's text encoding (Paul 09-30; an LM's question stays as it is); comfy.py hands ComfyUI each run's prompt.
 VARY=("at dawn" "in light rain" "in deep winter" "under a full moon" "in late autumn")
 vary() {
   local v=${VARY[$((($2 - 1) % ${#VARY[@]}))]}
   sed -E "s/prompt=\"([^\"]*)\"/prompt=\"\\1, $v\"/; s/\"description\":\"([^\"]*)\"/\"description\":\"\\1 The scene is set $v.\"/" <<< "$1"
 }
-while IFS=$'\t' read -r name group cap warm seed target args before _ _ _ comfy _; do
-  [ "${name:0:1}" != '#' ] && [ "$group" = "$BG" ] || continue
+while IFS=$'\t' read -r name group cap warm seed target args before _; do
+  [ "${name:0:1}" != '#' ] && ingroup "$group" || continue
   [ -z "$ONLY_ASKED" ] || [[ $ONLY_ASKED == *",$name,"* ]] || continue
   want=off; [ "$cap" = - ] || want=$cap
   if [ "$want" != "$CAPNOW" ]; then
@@ -79,7 +81,7 @@ while IFS=$'\t' read -r name group cap warm seed target args before _ _ _ comfy 
       b=${before%% *}
       eval "cell \"\$name-before-\$i\" \"\$(pkg \${b%/*} \${b##*/})\" ${before#* } seed:=$((RANDOM + 1000000))"
     fi
-    a=$args; [ "$comfy" = - ] || [ "$i" = 0 ] || a=$(vary "$args" "$i")
+    a=$args; [ "$i" = 0 ] || [[ $target == */ask ]] || a=$(vary "$args" "$i")
     b=$(build)
     eval "cell \"\$name-\$i\" \"\$t\" $a $s"
     [ "$(build)" = "$b" ] || b="$b>$(build)"

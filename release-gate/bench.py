@@ -211,6 +211,11 @@ class Verdict:
     ratios: dict[str, tuple[float, float, float]] = field(default_factory=dict)  # raw, scaled, limit
 
 
+def in_group(pattern: str, group: str) -> bool:
+    """A cells.tsv `group`: a group, or comma-separated `*<suffix>` patterns (`*.matrix`: every matrix group)."""
+    return any(p == group or (p.startswith('*') and group.endswith(p[1:])) for p in pattern.split(','))
+
+
 def load_json(path: str) -> object:
     with open(path) as f:
         return cast(object, json.load(f))  # json.load is untyped; each caller narrows what it reads
@@ -441,8 +446,8 @@ def judge_output(d: CellDef, c: Cell, b: Cell | None, others: list[Gate], refs: 
         why += [w for w in media.faults(o['look'], stored['look']) if w not in o['faults']]
         ref = ref_file(refs, stored['asset'])
         why += media.differs(media.pair(ref, o['file'])) if ref else [f"reference output {stored['asset']} is not in {refs} or the {TAG} release"]
-    if d['like'] and any(g['group'] == like_group for g in others):
-        found = [x for g in others if g['group'] == like_group and (y := g['cells'].get(d['like'])) and (x := y['output']) and 'file' in x]
+    if d['like'] and like_group and any(in_group(like_group, g['group']) for g in others):
+        found = [x for g in others if in_group(like_group, g['group']) and (y := g['cells'].get(d['like'])) and (x := y['output']) and 'file' in x]
         if found and found[0]['seed'] != o['seed']:
             why.append(f"{d['like']}'s output is seed {found[0]['seed']}, this one {o['seed']}: cells.tsv must give the two one seed")
         elif found and 'file' in found[0]:
@@ -470,7 +475,7 @@ def judge(defs: list[CellDef], cand: Gate, base: Group | None, version: str | No
             why, notes = judge_output(d, c, b, others, refs, groups.get(d['like']))
             v.why += why
             v.notes += notes
-            if d['like'] and not any(g['group'] == groups.get(d['like']) for g in others):
+            if d['like'] and not any(in_group(groups.get(d['like'], ''), g['group']) for g in others):
                 v.notes.append(f"its output is held against {d['like']}'s by the table of every group")
         w = c['warm']
         if d['cap'] and w.get('vram_mib', 0) > float(d['cap']) * 1024:
@@ -584,7 +589,7 @@ def table(gates: list[Gate], base: Baseline | None, defs: list[CellDef], known: 
     groups = {d['name']: d['group'] for d in defs}
     for g in gates:
         group = base['groups'].get(g['group']) if base else None
-        verdicts = judge([d for d in defs if d['group'] == g['group']], g, group, version, known, gates + (beside or []), refs, groups)
+        verdicts = judge([d for d in defs if in_group(d['group'], g['group'])], g, group, version, known, gates + (beside or []), refs, groups)
         ref = g['reference'].get('before') or {}
         builds = sorted({b for c in g['cells'].values() for b in c.get('builds', [])})
         lines += [f"\n### {g['group']} on {g['pod']}: {g['label']} against {version if group else 'no baseline'}"
