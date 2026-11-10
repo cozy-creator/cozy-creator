@@ -67,6 +67,28 @@ test('PID/start continuity is exact, including adjacent uint64 values above Numb
   }
 });
 
+test('every intermediate phase must have known observations and the same process identity', () => {
+  for (const phase of ['before', 'read', 'open', 'edits', 'fitted', 'closed']) {
+    for (const change of [
+      (value) => { value.native[phase].physical_error = 'sensor failed'; },
+      (value) => { value.native[phase].project_db_open = null; },
+      (value) => { value.native[phase].ownership_error = 'uncertain census'; },
+      (value) => { value.native[phase].heap_error = 'counter unavailable'; },
+      (value) => { value.native[phase].heap_bytes = NaN; },
+      (value) => { value.memory[phase] = NaN; },
+      (value) => { delete value.native[phase]; },
+    ]) {
+      const value = diagnostic(); change(value);
+      assert.equal(closedProjectMemory('darwin', value.memory, value.native, 256), false, phase);
+    }
+  }
+  for (const phase of ['read', 'open', 'edits', 'fitted']) {
+    const value = diagnostic();
+    for (const sample of ['before', 'after']) value.native[phase].physical[sample].start_abstime = '9007199254740993';
+    assert.equal(closedProjectMemory('darwin', value.memory, value.native, 256), false, phase);
+  }
+});
+
 test('typed sensor record rejects malformed, ambiguous or unsafe observations', () => {
   const record = { pid: 2229, start_abstime: '18446744073709551615', physical_bytes: 120 * MiB, resident_bytes: 403 * MiB };
   assert.deepEqual(parseFootprint(JSON.stringify(record) + '\n'), record);
