@@ -11,9 +11,16 @@ import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import ModuleType
+from typing import TYPE_CHECKING, cast
 
 import msgspec
 from cozy_runtime.author import App, Context, Telemetry
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
+
+    from . import _types as t
 
 app = App()
 
@@ -29,16 +36,16 @@ class Report(msgspec.Struct):
     detail: str
 
 
-def selected(key, dtype, shape):
+def selected(key: str, dtype: str, shape: tuple[int, ...]) -> "t.Selected":
     return {"component": "weights", "key": key, "source_dtype": dtype, "shape": list(shape)}
 
 
-def rss_bytes():
+def rss_bytes() -> int:
     # Linux ru_maxrss is KiB, Darwin bytes. It is a process lifetime high-water mark.
     return int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) * (1 if sys.platform == "darwin" else 1024)
 
 
-def timed(call):
+def timed[T](call: "Callable[[], T]") -> "tuple[T, t.Timing]":
     before_rss, before_cpu, started = rss_bytes(), time.process_time(), time.perf_counter()
     value = call()
     return value, {
@@ -49,7 +56,7 @@ def timed(call):
     }
 
 
-def observed(result, expected, values, np):
+def observed(result: "t.Converted", expected: dict[str, float | int], values: "t.F32", np: ModuleType) -> None:
     assert result["relative_frobenius"] == expected["relative_frobenius"] or math.isclose(
         result["relative_frobenius"], expected["relative_frobenius"], rel_tol=2e-13, abs_tol=0
     )
@@ -60,18 +67,18 @@ def observed(result, expected, values, np):
         np.testing.assert_allclose(measured[name], expected[name], rtol=2e-13, atol=0)
 
 
-def normalize(writer, source, selection, tensorfs, *, buffer=64 << 10, allowance=None, control=None):
+def normalize(writer: "t.Writer", source: "t.Checkpoint", selection: "Sequence[t.Selected]", tensorfs: "t.TensorFS", *, buffer: int = 64 << 10, allowance: int | None = None, control: "t.Control | None" = None) -> "t.Normalization":
     if allowance is None:
         allowance = sum(math.prod(row["shape"]) * 2 for row in selection)
-    return writer.normalize_bf16(
+    return cast("t.Normalization", writer.normalize_bf16(  # cast: its result
         source, selection, max_buffer_bytes=buffer, max_new_bytes=allowance,
         control=control if control is not None else tensorfs.ConversionControl(),
-    )
+    ))
 
 
-def quant_selection(key="quant.weight", dtype="F32"):
+def quant_selection(key: str = "quant.weight", dtype: str = "F32") -> "t.Quantize":
     return {
-        **selected(key, "F32", (7, 256)), "dtype": dtype,
+        **selected(key, "F32", (7, 256)), "dtype": dtype,  # type: ignore[typeddict-item]  # a selected() row never carries `fit`
         "encoding": {"scheme": "fp8.rowwise", "params": {}},
         "strategy": "fp8-rowwise-rne/1",
     }
@@ -87,10 +94,11 @@ def run(payload: Request, ctx: Context, tel: Telemetry) -> Report:
     assert payload.mode in ("basic", "cancel")
     with tempfile.TemporaryDirectory(prefix="cozy-bf16-normalize-") as temporary:
         directory = Path(temporary)
+        result: t.Basic | t.Cancel
         if payload.mode == "cancel":
-            result = cancel(directory, payload.seed, tensorfs, np, oracle)
+            result = cancel(directory, payload.seed, cast("t.TensorFS", tensorfs), np, oracle)  # cast: `raw` is missing from tensorfs.__all__
         else:
-            result = basic(directory, payload.seed, tensorfs, np, oracle, ctx, tel, payload.runtime)
+            result = basic(directory, payload.seed, cast("t.TensorFS", tensorfs), np, oracle, ctx, tel, payload.runtime)  # cast: as above
         result.update({
             "mode": payload.mode, "tensorfs": tensorfs.__version__, "numpy": np.__version__,
             "native_sha256": hashlib.sha256(Path(tensorfs._ext.__file__).read_bytes()).hexdigest(),
@@ -102,15 +110,16 @@ def run(payload: Request, ctx: Context, tel: Telemetry) -> Report:
         return Report(True, json.dumps(result, sort_keys=True))
 
 
-def basic(directory, seed, tensorfs, np, oracle, ctx, tel, runtime):
+def basic(directory: Path, seed: int, tensorfs: "t.TensorFS", np: ModuleType, oracle: "t.Oracle", ctx: Context, tel: Telemetry, runtime: bool) -> "t.Basic":
     rng = np.random.default_rng(seed)
     writer = tensorfs.Writer(directory / "source.cozytensors")
     component = writer.component("weights", config={"keep": "source config"})
     component.asset("keep.txt", b"source asset")
     component.put("keep", np.array([17], dtype="<i4"))
-    specifications, cases = [], {}
+    specifications: list[t.Selected] = []
+    cases: dict[str, t.Case] = {}
 
-    def plain(name, dtype, values):
+    def plain(name: str, dtype: str, values: "t.F32") -> None:
         values = np.asarray(values, dtype=np.float32)
         data = oracle.from_f32(values, dtype)
         decoded = oracle.to_f32(data, dtype, list(values.shape))
@@ -180,20 +189,20 @@ def basic(directory, seed, tensorfs, np, oracle, ctx, tel, runtime):
     allowance = sum(len(raw) for raw, _ in expected.values())
     actual_read = sum(item[1] for item in cases.values())
     logical_read = sum(item[2] for item in cases.values())
-    reports = []
+    reports: list[t.Pass] = []
     for buffer_bytes in (16 << 10, 64 << 10):
         output = tensorfs.Writer(directory / f"normalized-{buffer_bytes}.cozytensors", base=source)
         empty = normalize(output, source, [], tensorfs, buffer=buffer_bytes, allowance=0)
         assert empty["converted_keys"] == empty["reused_keys"] == 0
         assert empty["worst_relative_frobenius"] == 0
-        refused = []
-        bad_shape = [dict(row) for row in specifications]
+        refused: list[str] = []
+        bad_shape = cast("list[t.Selected]", [dict(row) for row in specifications])  # cast: copies to spoil
         bad_shape[-1]["shape"] = [rows, cols + 1]
-        bad_dtype = [dict(row) for row in specifications]
+        bad_dtype = cast("list[t.Selected]", [dict(row) for row in specifications])  # cast: copies to spoil
         bad_dtype[-1]["source_dtype"] = "F32" if bad_dtype[-1]["source_dtype"] != "F32" else "F16"
-        bad_key = [dict(row) for row in specifications]
+        bad_key = cast("list[t.Selected]", [dict(row) for row in specifications])  # cast: copies to spoil
         bad_key[-1]["key"] = "missing"
-        extra = [dict(specifications[0], encoding={"scheme": "bf16"})]
+        extra = cast("list[t.Selected]", [dict(specifications[0], encoding={"scheme": "bf16"})])  # cast: deliberately unknown field
         for label, selection, limits in (
             ("output-grant", specifications, {"allowance": allowance - 1}),
             ("workspace-grant", specifications, {"buffer": 1}),
@@ -202,7 +211,7 @@ def basic(directory, seed, tensorfs, np, oracle, ctx, tel, runtime):
         ):
             try:
                 normalize(output, source, selection, tensorfs,
-                          **{"buffer": buffer_bytes, "allowance": allowance, **limits})
+                          **cast("t.Limits", {"buffer": buffer_bytes, "allowance": allowance, **limits}))  # cast: limits override
             except (tensorfs.InvalidError, tensorfs.DiskFullError, tensorfs.NotFoundError):
                 refused.append(label)
             else:
@@ -237,9 +246,9 @@ def basic(directory, seed, tensorfs, np, oracle, ctx, tel, runtime):
         assert checkpoint.verify().ok
         assert checkpoint.components["weights"].config == {"keep": "source config"}
         assert "keep.txt" in checkpoint.components["weights"].assets
-        assert checkpoint.components["weights"].tensors.read("keep").tobytes() == np.array([17], dtype="<i4").tobytes()
+        assert cast("t.ArrayTensor", checkpoint.components["weights"].tensors.read("keep")).tobytes() == np.array([17], dtype="<i4").tobytes()  # cast: plain
         for name, (want, _) in expected.items():
-            value = checkpoint.components["weights"].tensors.read(name)
+            value = cast("t.ArrayTensor", checkpoint.components["weights"].tensors.read(name))  # cast: normalized to plain BF16
             assert value.dtype == "BF16" and value.shape == cases[name][0].shape
             assert value.tobytes() == want, name
         reports.append({"result": result, "timing": timing, "preflight_refusals": refused})
@@ -254,7 +263,7 @@ def basic(directory, seed, tensorfs, np, oracle, ctx, tel, runtime):
             "part_sha256": {name: hashlib.sha256(raw).hexdigest() for name, (raw, _) in expected.items()}}
 
 
-def refusal_sources(directory, tensorfs, np, oracle):
+def refusal_sources(directory: Path, tensorfs: "t.TensorFS", np: ModuleType, oracle: "t.Oracle") -> "list[t.Refused]":
     cases = {
         "nan": ("F32", np.array([np.nan], dtype="<f4")),
         "positive-inf": ("F32", np.array([np.inf], dtype="<f4")),
@@ -263,7 +272,7 @@ def refusal_sources(directory, tensorfs, np, oracle):
         "subnormal-quality": ("F32", np.array([np.nextafter(np.float32(0), np.float32(1))], dtype="<f4")),
         "unsupported-plain-bf16": ("BF16", np.array([1.0], dtype="<f4")),
     }
-    results = []
+    results: list[t.Refused] = []
     for label, (dtype, values) in cases.items():
         writer = tensorfs.Writer(directory / f"refuse-source-{label}.cozytensors")
         writer.component("weights").put("value", oracle.from_f32(values, dtype), dtype=dtype, shape=values.shape)
@@ -303,13 +312,13 @@ def refusal_sources(directory, tensorfs, np, oracle):
     return results
 
 
-def mixed_resume(directory, source, specifications, quant_values, tensorfs, np, oracle):
+def mixed_resume(directory: Path, source: "t.Checkpoint", specifications: "list[t.Selected]", quant_values: "t.F32", tensorfs: "t.TensorFS", np: ModuleType, oracle: "t.Oracle") -> "t.Mixed":
     path = directory / "mixed.cozytensors"
     output = tensorfs.Writer(path, base=source, resume="mixed-bf16-and-quantization")
     norm = normalize(output, source, specifications, tensorfs)
     qspec = [quant_selection()]
-    quant = output.quantize(source, qspec, max_buffer_bytes=16 << 10,
-                            max_new_bytes=7 * (256 + 4), control=tensorfs.ConversionControl())
+    quant = cast("t.Conversion", output.quantize(source, qspec, max_buffer_bytes=16 << 10,  # cast: its result
+                            max_new_bytes=7 * (256 + 4), control=tensorfs.ConversionControl()))
     assert norm["converted_keys"] == len(specifications) and quant["encoded_keys"] == 1
     del output
     gc.collect()
@@ -338,15 +347,15 @@ def mixed_resume(directory, source, specifications, quant_values, tensorfs, np, 
         raise AssertionError("resume accepted changed source checkpoint")
     changed.close()
     # Opposite call order after reopen must remain valid.
-    q_again = output.quantize(source, qspec, max_buffer_bytes=64 << 10,
-                             max_new_bytes=0, control=tensorfs.ConversionControl())
+    q_again = cast("t.Conversion", output.quantize(source, qspec, max_buffer_bytes=64 << 10,  # cast: its result
+                             max_new_bytes=0, control=tensorfs.ConversionControl()))
     n_again = normalize(output, source, specifications, tensorfs, buffer=64 << 10, allowance=0)
     assert q_again["reused_keys"] == 1 and q_again["encoded_keys"] == 0
     assert n_again["reused_keys"] == len(specifications) and n_again["converted_keys"] == 0
     assert norm["identity"] == n_again["identity"] and quant["identity"] == q_again["identity"]
     checkpoint = output.commit()
     assert checkpoint.verify().ok
-    stored = checkpoint.components["weights"].tensors.read("quant.weight")
+    stored = cast("t.EncodedTensor", checkpoint.components["weights"].tensors.read("quant.weight"))  # cast: quantized
     expected = tensorfs.raw.quantize("fp8.rowwise", quant_values.tobytes(), dtype="F32",
                                     shape=quant_values.shape, params={}, strategy="fp8-rowwise-rne/1")
     assert {key: value.tobytes() for key, value in stored.parts.items()} == {
@@ -372,7 +381,7 @@ def mixed_resume(directory, source, specifications, quant_values, tensorfs, np, 
             "resumed_normalization": n_again, "resumed_quantization": q_again}
 
 
-def runtime_adapter(directory, source, specifications, cases, tensorfs, np, ctx, tel):
+def runtime_adapter(directory: Path, source: "t.Checkpoint", specifications: "list[t.Selected]", cases: "dict[str, t.Case]", tensorfs: "t.TensorFS", np: ModuleType, ctx: Context, tel: Telemetry) -> "t.RuntimeReport":
     """Actual Runtime Output and write_bf16; no fake Context, Writer or numerical helper."""
     from cozy_runtime.derive import native_quantization
     from cozy_runtime.derive.quantization import Bf16Plan, Bf16Tensor, write_bf16
@@ -403,7 +412,7 @@ def runtime_adapter(directory, source, specifications, cases, tensorfs, np, ctx,
     assert replayed.source_bytes_read == replayed.stored_source_bytes_read == replayed.new_bytes_written == 0
     assert replayed.worst_relative_frobenius is None
     conversion, pending = output.prepare_quantization(source, [quant_selection()], max_relative_frobenius=None)
-    quant = native_quantization._run_native(conversion, pending, ctx, tel, stage="mixed native producer")
+    quant = cast("t.Conversion", native_quantization._run_native(conversion, pending, ctx, tel, stage="mixed native producer"))  # cast: a quantize result
     assert quant["encoded_keys"] == 1
     checkpoint = output.commit()
     assert checkpoint.verify().ok
@@ -429,7 +438,7 @@ def runtime_adapter(directory, source, specifications, cases, tensorfs, np, ctx,
             "quantization": quant}
 
 
-def cancel(directory, seed, tensorfs, np, oracle):
+def cancel(directory: Path, seed: int, tensorfs: "t.TensorFS", np: ModuleType, oracle: "t.Oracle") -> "t.Cancel":
     # Gate-owned 64MiB F32 source. Write it from a bounded 1MiB fixture window.
     shape = (16384, 1024)
     data_path = directory / "large.f32"
@@ -489,7 +498,7 @@ def cancel(directory, seed, tensorfs, np, oracle):
     checkpoint = output.commit()
     assert checkpoint.verify().ok
     tensors = checkpoint.components["weights"].tensors
-    assert tensors.read("first").tobytes() == oracle.normalize(first)[0]
+    assert cast("t.ArrayTensor", tensors.read("first")).tobytes() == oracle.normalize(first)[0]  # cast: plain BF16
     expected_window = oracle.normalize(np.array([1.00390625, -1.01171875, 0.0, -0.0], dtype="<f4"))[0]
     block = bytearray(1 << 20)
     digest = hashlib.sha256()
@@ -507,15 +516,15 @@ def cancel(directory, seed, tensorfs, np, oracle):
             "resumed": result, "resume_timing": timing, "output_sha256": digest.hexdigest()}
 
 
-def reserved_quant_spec(key, shape):
+def reserved_quant_spec(key: str, shape: tuple[int, ...]) -> "t.Quantize":
     return {
-        **selected(key, "F32", shape), "dtype": "F32",
+        **selected(key, "F32", shape), "dtype": "F32",  # type: ignore[typeddict-item]  # a selected() row never carries `fit`
         "encoding": {"scheme": "fp8.rowwise", "params": {}},
         "strategy": "fp8-rowwise-rne/1",
     }
 
 
-def refuse_reserved(output, source, shape, tensorfs, *, normalization):
+def refuse_reserved(output: "t.Writer", source: "t.Checkpoint", shape: tuple[int, ...], tensorfs: "t.TensorFS", *, normalization: bool) -> "t.Reservation":
     """An unpublished key in the other operation's full plan remains reserved after reopen."""
     control = tensorfs.ConversionControl()
     assert not output.has("weights", "large")
@@ -538,7 +547,7 @@ def refuse_reserved(output, source, shape, tensorfs, *, normalization):
             "detail": detail, "progress": control.progress(), "unwritten_key_absent": True}
 
 
-def cancel_quantization_reservation(directory, source, shape, tensorfs):
+def cancel_quantization_reservation(directory: Path, source: "t.Checkpoint", shape: tuple[int, ...], tensorfs: "t.TensorFS") -> "t.Reversed":
     """The opposite real interruption: FP8 owns A/B, then BF16 cannot take unwritten B."""
     path, resume = directory / "reserved-quant-output.cozytensors", "bf16-gate-quant-reservation"
     output = tensorfs.Writer(path, base=source, resume=resume)
