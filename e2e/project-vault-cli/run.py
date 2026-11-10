@@ -63,7 +63,7 @@ class Proof:
             text = text.replace(value, '[credential redacted]')
         return text
 
-    def command(self, *args, json_output=True, refusal=False, project=True):
+    def command(self, *args, json_output=True, refusal=False, project=True, allow_locking=False):
         command = ['cozy'] + (['--json'] if json_output else [])
         if project:
             command += ['project', '-p', str(self.project)]
@@ -85,6 +85,23 @@ class Proof:
             if completed.returncode == 0:
                 raise RuntimeError(f'{args[0]} unexpectedly succeeded while access should be refused')
             return completed
+        if allow_locking and completed.returncode:
+            try:
+                answer = json.loads(completed.stdout)
+            except ValueError:
+                answer = {}
+            if answer.get('error', {}).get('code') == 'project_busy':
+                state = self.status()['state']
+                if state not in ['locking', 'locked']:
+                    raise RuntimeError('busy first lock did not revoke project viewing')
+                self.receipt['first_manual_lock'] = {'lock_requests': 1, 'response': 'project_busy',
+                                                      'initial_state': state,
+                                                      'completion': 'automatic_close_observed_by_status'}
+                self.flush()
+                self.wait_locked()
+                self.receipt['first_manual_lock']['final_state'] = 'locked'
+                self.flush()
+                return answer
         if completed.returncode:
             detail = completed.stderr[-4096:]
             if not json_output:
@@ -102,6 +119,13 @@ class Proof:
         result = json.loads(completed.stdout)
         if isinstance(result, dict) and result.get('recovery_secret'):
             raise RuntimeError('recovery secret reached stdout despite explicit recovery output')
+        if allow_locking:
+            if result.get('vault', {}).get('state') != 'locked':
+                raise RuntimeError('successful first lock did not acknowledge locked state')
+            self.receipt['first_manual_lock'] = {'lock_requests': 1, 'response': 'locked',
+                                                  'initial_state': 'locked', 'final_state': 'locked',
+                                                  'completion': 'lock_acknowledgement'}
+            self.flush()
         return result
 
     def flush(self):
@@ -385,7 +409,7 @@ foreach ($rule in $allowed) {
         refused = self.command('vault', 'recovery', '--recovery-out', unsafe_view, refusal=True)
         assert json.loads(refused.stdout)['error']['code'] == 'vault_recovery_location'
         assert not unsafe_view.exists()
-        self.command('lock')
+        self.command('lock', allow_locking=True)
         self.assert_locked(view, saved[0])
         self.command('unlock', '--passphrase-file', wrong, refusal=True)
         self.view(self.command('unlock', '--recovery-file', self.recovery('recovery1'), '--idle', 0))
