@@ -554,7 +554,13 @@ impl LocalSources {
 /// includes the selected SDK: the digest alone cannot identify the environment after an update.
 pub(crate) fn alias(publisher: &Publisher, digest: &str) -> String {
     let sdk = &publisher.sdk;
-    let key = serde_json::json!({"manifest": digest, "sdk": sdk.requirements, "links": sdk.find_links, "python": sdk.python, "torch": publisher.torch_pins(None)});
+    let mut key = serde_json::json!({"manifest": digest, "sdk": sdk.requirements, "links": sdk.find_links, "python": sdk.python, "torch": publisher.torch_pins(None)});
+    // Private environments embed their physical interpreter/source paths. A remount at a
+    // different view needs a new cache binding; the old immutable installation remains
+    // available to historical runs. This cache key is not the authored RunSpec digest.
+    if let Some(scope) = crate::private_io::current() {
+        key["private_view"] = serde_json::json!(scope.view_root);
+    }
     format!("local-{}", &tensorfs::sha256::hex_digest(key.to_string().as_bytes())[..32])
 }
 
