@@ -165,7 +165,9 @@ fn encode(
             "-threads",
             THREADS,
         ])
-        .args(["-ss", &decimal(start), "-to", &decimal(end), "-i"])
+        .args(["-ss", &decimal(start), "-to", &decimal(end)])
+        .args(crate::media::options(source)?)
+        .arg("-i")
         .arg(source)
         .args(ENCODE)
         .arg(part.path())
@@ -192,6 +194,7 @@ fn encode(
 /// The container's duration, in seconds.
 fn probe(ffprobe: &Path, source: &Path) -> Result<f64, Error> {
     let out = Command::new(ffprobe)
+        .args(crate::media::options(source)?)
         .args([
             "-v",
             "error",

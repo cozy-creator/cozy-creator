@@ -547,9 +547,15 @@ impl OutputItem {
     }
 }
 
-/// What an output is called as a file, in its run's output directory or where a client downloads it: `<number>-<name>[-<i>]`
-/// and its media type's extension (none for a folder).
+/// A readable name and complete output name/index identity, shared by landing and client downloads.
+/// Sanitizing or truncating the readable part cannot merge distinct outputs; old stored paths stay valid.
 pub fn output_file_name(number: u64, name: &str, index: u32, media_type: &str) -> String {
+    use sha2::{Digest as _, Sha256};
+    let mut identity = Sha256::new();
+    identity.update((name.len() as u64).to_le_bytes());
+    identity.update(name.as_bytes());
+    identity.update(index.to_le_bytes());
+    let identity = hex::encode(identity.finalize());
     let name: String = (name.chars().take(128))
         .map(|c| match c {
             'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '_' | '-' => c,
@@ -577,7 +583,7 @@ pub fn output_file_name(number: u64, name: &str, index: u32, media_type: &str) -
         "text/plain" => ".txt",
         _ => "",
     };
-    stem + extension
+    format!("{stem}-{identity}{extension}")
 }
 
 /// The machine's progress report, as it last sent it.

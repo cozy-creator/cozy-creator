@@ -104,8 +104,9 @@ pub fn stage(path: &Path, memo: Option<&Path>) -> Result<Staged, Error> {
     Ok(Staged { document, files, at, left })
 }
 
-/// The files a package's source is, relative to `root`, sorted: what a publish uploads and local code sends. Credentials,
-/// keys, bytecode, weights and symlinks never go: each is said in `left`.
+/// The files a package's source is, relative to `root`, sorted: what publication and local code send.
+/// Common credential names, keys, weights, bytecode and symlinks stay out and are said in `left`.
+/// This is a filename filter, not secret detection; other runtime resources remain included.
 pub fn source_files(root: &Path, left: &mut Vec<String>) -> Result<Vec<PathBuf>, Error> {
     let mut files = vec![];
     walk(root, Path::new(""), &mut files, left)?;
@@ -116,8 +117,8 @@ pub fn source_files(root: &Path, left: &mut Vec<String>) -> Result<Vec<PathBuf>,
 fn walk(root: &Path, rel: &Path, files: &mut Vec<PathBuf>, left: &mut Vec<String>) -> Result<(), Error> {
     const SKIP: &str = ".git .hg .svn .jj __pycache__ .mypy_cache .ruff_cache .pytest_cache .tox";
     const SKIP_AT_ROOT: &str = ".venv venv node_modules .idea .vscode build dist";
-    const SECRET_DIRS: &str = ".aws .ssh credentials secrets";
-    const SECRET_FILES: &str = ".netrc .npmrc .pypirc credentials.json service-account.json id_ed25519";
+    const SECRET_DIRS: &str = ".aws .ssh .direnv credentials secrets";
+    const SECRET_FILES: &str = ".netrc .npmrc .pypirc .envrc credentials.json service-account.json id_ed25519";
     const REFUSED: &str = ".pyc .pyo .pem .key .p12 .pfx .jks .pickle .pkl .pt .ckpt .safetensors .onnx .gguf";
     let listed = |list: &str, name: &str| list.split(' ').any(|item| item == name);
     let unreadable = |e: std::io::Error| refuse("project_unreadable", e);
