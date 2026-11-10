@@ -255,7 +255,9 @@ export class Client {
 
   /** `true` when held whole, else the ranges held, `[first, last]` inclusive. */
   async held(digest: string, signal: AbortSignal, onAttempt?: (attempt: number) => void, projectId?: string): Promise<true | [number, number][]> {
-    const response = await this.send(projectId === undefined ? `/v1/files/${digest}` : `/v1/project-files/${digest}?project=${encodeURIComponent(projectId)}`, { method: "HEAD", signal }, { accept: [404], onAttempt })
+    const response = projectId === undefined
+      ? await this.send(`/v1/files/${digest}`, { method: "HEAD", signal }, { accept: [404], onAttempt })
+      : await this.send(`/v1/project-files/${digest}?project=${encodeURIComponent(projectId)}`, { method: "HEAD", signal }, { accept: [404], onAttempt })
     if (response.ok) return true
     // A pod's `Cozy-*` headers are hostile too: read as numbers, and a nonsense range is no range.
     const ranges: [number, number][] = []
@@ -278,7 +280,9 @@ export class Client {
   ): Promise<HeldFile | null> {
     const headers: Record<string, string> = { "Content-Type": "application/octet-stream" }
     if (total > 0) headers["Content-Range"] = `bytes ${start}-${start + part.size - 1}/${total}`
-    const response = await this.send(projectId === undefined ? `/v1/files/${digest}` : `/v1/project-files/${digest}?project=${encodeURIComponent(projectId)}`, { method: "PUT", headers, body: part, signal }, { onAttempt })
+    const response = projectId === undefined
+      ? await this.send(`/v1/files/${digest}`, { method: "PUT", headers, body: part, signal }, { onAttempt })
+      : await this.send(`/v1/project-files/${digest}?project=${encodeURIComponent(projectId)}`, { method: "PUT", headers, body: part, signal }, { onAttempt })
     return response.status === 204 ? null : response.json()
   }
 

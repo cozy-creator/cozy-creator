@@ -16,7 +16,7 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Response,
     },
-    routing::{get, post, put, any},
+    routing::{get, post, put},
     Json, Router,
 };
 use api::error::{Envelope, Error};
@@ -58,7 +58,8 @@ pub(super) struct Machine {
 
 pub(super) fn router(identity: Arc<MachineIdentity>, runs: Arc<Runs>) -> Router {
     routes()
-        .route("/v1/local-private/{project_id}/{*rest}", any(private_request))
+        .route(path::PRIVATE_CLOSE, post(private_close_request))
+        .route(path::LOCAL_PRIVATE, get(private_request).post(private_request).put(private_request))
         .with_state(Machine { identity, runs })
 }
 
@@ -81,6 +82,10 @@ fn routes() -> Router<Machine> {
             Refusal(Error::validation("method_not_allowed", "this path takes another method"), Some(StatusCode::METHOD_NOT_ALLOWED))
         })
 
+}
+
+async fn private_close_request(State(m): State<Machine>, Path(project): Path<String>, request: Request<Body>) -> Response {
+    private_request(State(m), Path((project, "close".into())), request).await
 }
 
 /// New privacy namespace: authenticate and verify a live protected-view proof BEFORE
@@ -119,6 +124,13 @@ async fn private_request(State(m): State<Machine>, Path((project, rest)): Path<(
         Ok::<_, Error>(descriptor)
     }.await;
     let descriptor = match selected { Ok(value) => value, Err(error) => return Refusal::from(error).into_response() };
+    if rest == "health" && request.method() == axum::http::Method::GET {
+        return StatusCode::NO_CONTENT.into_response();
+    }
+    if rest == "close" && request.method() == axum::http::Method::POST {
+        let headers = request.headers().clone();
+        return crate::private_io::request(descriptor, close_private(State(m), headers)).await.into_response();
+    }
     // A private scope is data execution, never software updates or global machine log access.
     if rest.starts_with("logs/") || rest == "keepalive" || (rest == "runs" && request.method() != axum::http::Method::GET) {
         return Refusal::from(Error::forbidden("private_storage_operation", "this operation is not part of private project execution")).into_response();
@@ -133,7 +145,7 @@ async fn private_request(State(m): State<Machine>, Path((project, rest)): Path<(
     *request.version_mut() = parts.version;
     *request.headers_mut() = parts.headers;
     *request.uri_mut() = uri;
-    let mut routing = routes().route("/v1/close", post(close_private)).with_state(m);
+    let mut routing = routes().with_state(m);
     crate::private_io::request(descriptor, async move {
         let ready = std::future::poll_fn(|context| <Router as tower_service::Service<Request<Body>>>::poll_ready(&mut routing, context)).await;
         match ready { Ok(()) => {}, Err(never) => match never {} }

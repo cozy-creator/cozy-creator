@@ -1067,6 +1067,7 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Byte
             return Err(Refusal(Error::new(Kind::Usage, "project_path", said)));
         }
         Some(path) => {
+            refuse_encrypted_parent(path).map_err(Refusal)?;
             if Folder::is_project(path) || vault::encrypted(path) {
                 let said = format!("{} is a project already", path.display());
                 return Err(Refusal(Error::new(Kind::Conflict, "project_exists", said).next(format!("cozy project -p {} status", path.display()))));
@@ -1122,6 +1123,7 @@ fn opened(id: String, dir: &FsPath) -> Opened {
 /// there already stays as it is, a folder of anything or another project, and it says so: nothing is made in a folder it didn't make.
 fn named_project(api: &Api, name: &str, starter: bool) -> Result<(PathBuf, Option<String>), Error> {
     let home = &api.machines.user_home;
+    refuse_encrypted_parent(home)?;
     let io = |e: std::io::Error| Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", home.display()));
     let wanted = format::plain_name(name).unwrap_or_else(|| "untitled".to_owned());
     let names = std::iter::once(wanted.clone()).chain((2..).map(|n| format!("{wanted}_{n}")));
@@ -1143,6 +1145,7 @@ fn named_project(api: &Api, name: &str, starter: bool) -> Result<(PathBuf, Optio
 /// A new project called `name` in `dir`, with a new id, holding the starter film or nothing: its `project.db`, made whole and then
 /// named. Its canonical folder.
 fn made_new(api: &Api, dir: &FsPath, name: &str, starter: bool) -> Result<PathBuf, Error> {
+    refuse_encrypted_parent(dir)?;
     let io = |e: platform::Error| Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", dir.display()));
     let written = match starter {
         true => written::Written::from_yaml(&format::starter())?,
@@ -1156,6 +1159,13 @@ fn made_new(api: &Api, dir: &FsPath, name: &str, starter: bool) -> Result<PathBu
     std::fs::rename(&part, dir.join(db::DB)).map_err(|e| Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", dir.display())))?;
     crate::events::project_changed(&canonical);
     Ok(canonical)
+}
+
+fn refuse_encrypted_parent(dir: &FsPath) -> Result<(), Error> {
+    if vault::logical(dir).ancestors().any(vault::encrypted) {
+        return Err(Error::new(Kind::Conflict, "vault_nested_project", "create a separate project outside the encrypted project's storage"));
+    }
+    Ok(())
 }
 
 /// The project folder holding `path`: the nearest, up from it, that is one.

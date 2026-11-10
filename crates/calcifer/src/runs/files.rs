@@ -40,6 +40,18 @@ pub(crate) struct UploadScope { project: Option<String> }
 
 static PRIVATE_STORES: LazyLock<Mutex<HashMap<PathBuf, Arc<Store>>>> = LazyLock::new(Mutex::default);
 
+pub(crate) fn release_private(root: &Path) -> Result<(), Error> {
+    let active = UPLOADS.lock().expect("uploads lock").iter().any(|((path, _), (_, upload))|
+        crate::project::vault::logical(path).starts_with(root) && upload.strong_count() > 0);
+    if active { return Err(Error::new(Kind::Conflict, "project_busy", "a private file upload is still finishing")); }
+    let mut stores = PRIVATE_STORES.lock().expect("private upload stores");
+    let keys: Vec<_> = stores.keys().filter(|path| crate::project::vault::logical(path) == root).cloned().collect();
+    let gone: Vec<_> = keys.into_iter().filter_map(|path| stores.remove(&path)).collect();
+    drop(stores);
+    drop(gone);
+    Ok(())
+}
+
 fn scoped(api: &Arc<Api>, scope: &UploadScope) -> Result<Arc<Store>, Refusal> {
     let Some(project) = &scope.project else { return Ok(store().map_err(Refusal)?.clone()) };
     let Some(root) = crate::project::private_upload_root(api, project).map_err(Refusal)? else { return Ok(store().map_err(Refusal)?.clone()) };
@@ -221,6 +233,7 @@ fn held_header(ranges: &[(u64, u64)]) -> (axum::http::HeaderName, HeaderValue) {
 /// The write that completes it answers `201` once its bytes hash to its name, and one that finds it held `200`.
 pub(crate) async fn project_put(State(api): State<Arc<Api>>, Query(scope): Query<UploadScope>, UrlPath(name): UrlPath<String>, headers: HeaderMap, body: Body) -> Result<Response, Refusal> {
     if scope.project.is_none() { return Err(Refusal(Error::new(Kind::Usage, "project_upload_scope", "a project upload must name its project"))); }
+    let _admission = crate::project::vault::admit_project(&api, scope.project.as_deref().expect("checked scope")).await.map_err(Refusal)?;
     put_in(scoped(&api, &scope)?, name, headers, body).await
 }
 
@@ -312,6 +325,7 @@ async fn put_in(storage: Arc<Store>, name: String, headers: HeaderMap, body: Bod
 /// Whether Calcifer holds `name`: `200` with its length and media type, else `404`. `Cozy-Held` says which bytes either way.
 pub(crate) async fn project_head(State(api): State<Arc<Api>>, Query(scope): Query<UploadScope>, UrlPath(name): UrlPath<String>) -> Result<Response, Refusal> {
     if scope.project.is_none() { return Err(Refusal(Error::new(Kind::Usage, "project_upload_scope", "a project upload must name its project"))); }
+    let _admission = crate::project::vault::admit_project(&api, scope.project.as_deref().expect("checked scope")).await.map_err(Refusal)?;
     head_in(scoped(&api, &scope)?, name).await
 }
 

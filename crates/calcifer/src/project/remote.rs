@@ -244,6 +244,10 @@ async fn send(project: &Project, endpoint: &Endpoint, tally: &Tally, file: folde
 
 /// Sends every file project.lock names that the Hub lacks, then records all it can as a commit.
 async fn push(project: &Project, hub: &Origin, client: &Client, endpoint: &Endpoint) -> Result<Transferred, Error> {
+    if super::vault::encrypted(&super::vault::logical(&project.folder.dir)) {
+        return Err(Error::new(Kind::Conflict, "encrypted_project_push_unavailable", "encrypted project backup is not available yet; the existing push protocol uploads plaintext")
+            .remedy("keep a copy of the encrypted backing, or explicitly export a plaintext copy before using ordinary project push"));
+    }
     let account = client.get_current_account().await.map_err(|e| crate::hub::refusal(hub, e).0)?.name;
     let _held = project.moving.lock().await;
     crate::events::project_settled(&project.folder.dir);

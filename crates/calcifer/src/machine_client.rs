@@ -138,7 +138,8 @@ impl Machine {
     }
 
     pub(crate) async fn close_private(&self) -> Result<(), Error> {
-        send(self.request(Method::POST, "/v1/close", &[])).await.map(|_| ())
+        let scope = self.private.as_ref().ok_or_else(|| Error::Answer("closing private storage requires a selected project".into()))?;
+        send(self.request(Method::POST, path::PRIVATE_CLOSE, &[&scope.storage.project_id])).await.map(|_| ())
     }
 
     fn private_headers(&self, request: RequestBuilder) -> RequestBuilder {
@@ -334,7 +335,8 @@ impl Machine {
         let mut args = args.iter();
         let mut segments = url.path_segments_mut().expect("an https URL has a path");
         segments.clear();
-        let path = if let Some(scope) = &self.private {
+        let selected = self.private.as_ref().filter(|_| !template.starts_with(api::machine::LOCAL_PRIVATE_PREFIX));
+        let path = if let Some(scope) = selected {
             segments.extend(["v1", "local-private", scope.storage.project_id.as_str()]);
             template.strip_prefix("/v1/").unwrap_or(template.trim_start_matches('/'))
         } else { template.trim_start_matches('/') };

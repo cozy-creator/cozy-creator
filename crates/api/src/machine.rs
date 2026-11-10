@@ -49,6 +49,10 @@ impl std::fmt::Debug for LocalPrivateMarker {
 
 /// Routes, as axum templates.
 pub mod path {
+    /// Verified local encrypted-project namespace; forwards GET/POST/PUT to existing data routes.
+    pub const LOCAL_PRIVATE: &str = "/v1/local-private/{project_id}/{*rest}";
+    /// Close only this project's idle local execution namespace before unmount.
+    pub const PRIVATE_CLOSE: &str = "/v1/local-private/{project_id}/close";
     /// `GET` with no credential: 204 while the machine serves.
     pub const HEALTH: &str = "/v1/health";
     /// `GET`: one JSON [`super::StatusFrame`]; SSE `status` frames with `Accept: text/event-stream`.

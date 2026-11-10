@@ -58,11 +58,16 @@ projectvault() (
   cozy --json project -p "$P" unlock --recovery-file "$secrets/recovery2" --idle 0 > "$work/new-recovery.json"
 
   step "full local rekey and explicit plaintext export"
+  if [ -n "$LOCAL" ]; then
+    step "private execution keeps code, inputs, outputs and failure details in protected storage"
+    python3 "$E2E/cli/private_execution.py" --project "$P" --view "$(jq -r '.vault.view' "$work/new-recovery.json")" --out "$work/private-execution" --cli "$COZY"
+  fi
+  cozy project -p "$P" export -o "$work/before-rekey.yaml"
   cozy --json project -p "$P" vault rotate --passphrase-file "$secrets/rekey" --recovery-out "$secrets/recovery3" > "$work/rekey.json"
   view=$(jq -r '.vault.view // empty' "$work/rekey.json")
   [ "$(sha "$view/files/movie.mp4")" = "$before" ] || fail "rekey changed original video bytes"
   cozy project -p "$P" export -o "$work/after-rekey.yaml"
-  cmp "$work/before.yaml" "$work/after-rekey.yaml" || fail "rekey changed logical project history"
+  cmp "$work/before-rekey.yaml" "$work/after-rekey.yaml" || fail "rekey changed logical project history"
   cozy --json project -p "$P" vault export --output "$work/exported" > "$work/export.json"
   [ "$(sha "$work/exported/files/movie.mp4")" = "$before" ] || fail "explicit export changed the video"
   cozy --json project -p "$work/exported" status > "$work/export-status.json" || fail "exported ordinary project does not open"

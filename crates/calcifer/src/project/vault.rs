@@ -80,6 +80,15 @@ fn exclusive(root: &FsPath) -> Result<tokio::sync::OwnedRwLockWriteGuard<()>, Er
     access(root).try_write_owned().map_err(|_| Error::new(Kind::Conflict, "project_busy", "a project request is still running; retry after it finishes"))
 }
 
+/// Upload routes are outside the project router, but must hold the same storage transition
+/// lease through their body and commit. A delayed upload cannot write into a reused drive.
+pub(crate) async fn admit_project(api: &Api, named: &str) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, Error> {
+    let root = location(api, named)?;
+    let guard = access(&root).read_owned().await;
+    view(&root)?;
+    Ok(guard)
+}
+
 pub(crate) fn readable_token(path: &FsPath) -> Option<Arc<AtomicBool>> {
     let path = logical(path);
     let root = path.ancestors().find(|root| encrypted(root))?;
@@ -172,7 +181,9 @@ fn mount(api: &Api, root: &FsPath, keybag: Keybag, secret: ProjectSecret, ask: &
     if KEY_ROOTS.lock().expect("vault project roots").get(&keybag.info().project_id).is_some_and(|known| known != root && held(known).is_some()) {
         return Err(Error::new(Kind::Conflict, "vault_project_copy", "another location of this encrypted project is unlocked"));
     }
-    let runtime = api.machines.hubs.home().calcifer().join("vaults").join(&keybag.info().project_id);
+    // IDs are document data, not filesystem path components (legacy/imported IDs may be arbitrary).
+    let runtime_id = hex::encode(Sha256::digest(keybag.info().project_id.as_bytes()));
+    let runtime = api.machines.hubs.home().calcifer().join("vaults").join(runtime_id);
     fs::create_dir_all(&runtime).map_err(io)?;
     platform::durable::set_mode(&runtime, 0o700).map_err(provider)?;
     let view = project_mount::view_path(&runtime).map_err(provider)?;
@@ -220,6 +231,7 @@ fn close(api: &Arc<Api>, root: &FsPath) -> Result<(), Error> {
     // Existing accepted work may drain while the key is retained, but no new viewing stream can read it.
     forget(api, root)?;
     tokio::runtime::Handle::current().block_on(crate::private_io::close_private_project(api, root))?;
+    crate::runs::files::release_private(root)?;
     if let Some(session) = held(root) {
         let mut session = session.lock().expect("vault session");
         if session.mount.is_mounted().map_err(provider)? { session.mount.try_unmount().map_err(provider)?; }
@@ -431,14 +443,30 @@ fn convert(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret,
     let engine = Provider::discover(&api.machines.hubs.home().tools()).map_err(provider)?;
     secret.with_bytes(|bytes| engine.create(&staged.join(BACKING), bytes)).map_err(provider)?;
     keybag.save(&staged.join(KEYBAG_FILE)).map_err(key)?;
+    // Retire the published old view BEFORE snapshotting an encrypted project. A native editor
+    // must release its old handles (Busy refuses); it cannot change files after we copied them.
+    // The replacement source mount is private to this conversion and is never published to apps.
+    let mut source_mount = None;
+    let source = if let Some(old) = &old_secret {
+        close(api, root)?;
+        let runtime = api.machines.hubs.home().calcifer().join("vaults").join(format!("source-{suffix}"));
+        fs::create_dir_all(&runtime).map_err(io)?;
+        platform::durable::set_mode(&runtime, 0o700).map_err(provider)?;
+        let view = project_mount::view_path(&runtime).map_err(provider)?;
+        let mounted = old.with_bytes(|bytes| engine.mount(&root.join(BACKING), &view, bytes, MountOptions { idle_timeout: None, read_only: !cfg!(windows) })).map_err(provider)?;
+        let path = mounted.view().to_owned();
+        source_mount = Some(mounted);
+        path
+    } else { source };
     let runtime = api.machines.hubs.home().calcifer().join("vaults").join(format!("stage-{suffix}"));
     fs::create_dir_all(&runtime).map_err(io)?;
     platform::durable::set_mode(&runtime, 0o700).map_err(provider)?;
     let view = project_mount::view_path(&runtime).map_err(provider)?;
     let mut target = secret.with_bytes(|bytes| engine.mount(&staged.join(BACKING), &view, bytes, MountOptions { idle_timeout: None, read_only: false })).map_err(provider)?;
-    copy_tree(&source, target.view())?;
+    if source_mount.is_some() { copy_tree_at(&source, target.view(), FsPath::new(""), true)?; }
+    else { copy_tree(&source, target.view())?; }
     target.try_unmount().map_err(provider)?;
-    if encrypted(root) { close(api, root)?; }
+    if let Some(mut source) = source_mount.take() { source.try_unmount().map_err(provider)?; }
     let receipt = Conversion { root: root.to_owned(), staged: staged.clone(), saved: saved.clone(), key_id: target_keybag.info().key_id, remove_source: old_secret.is_some() || ask.remove_plaintext };
     platform::durable::replace(&receipt_path(root), &serde_json::to_vec(&receipt).map_err(|e| error("vault_recovery", e))?, 0o600).map_err(provider)?;
     fs::rename(root, &saved).map_err(io)?;
