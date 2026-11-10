@@ -2,7 +2,7 @@
 //!
 //! The data filesystem belongs to the mount provider. This crate stores only a random
 //! printable filesystem secret, independently wrapped by a human passphrase and by a
-//! high-entropy recovery secret using the standard age file format. Copying the encrypted
+//! high-entropy recovery secret using Argon2id and AES-256-GCM. Copying the encrypted
 //! project and its keybag is enough for offline recovery; no account service is involved.
 //!
 //! Keybags deliberately have no plaintext secret fields. Unlocked values redact Debug,
@@ -20,28 +20,45 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-use age::secrecy::ExposeSecret;
-pub use age::secrecy::SecretString;
+use argon2::{Algorithm, Argon2, Params, Version};
+use aws_lc_rs::aead::{AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
+/// Explicitly owned, redacted and zeroizing credential material.
+#[derive(Clone)]
+pub struct SecretString(Zeroizing<String>);
+impl From<String> for SecretString {
+    fn from(value: String) -> Self {
+        Self(Zeroizing::new(value))
+    }
+}
+impl SecretString {
+    fn expose_secret(&self) -> &str {
+        self.0.as_str()
+    }
+}
+impl fmt::Debug for SecretString {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("SecretString([REDACTED])")
+    }
+}
+
 /// Filename kept beside an encrypted project's backing directory, not inside its mount.
 pub const KEYBAG_FILE: &str = "project.vault.keys.json";
 /// Portable keybag format version.
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 /// The named cipher/encoding suite for the small key envelopes, not the filesystem data.
-pub const ENVELOPE_SUITE: &str = "age-v1-scrypt";
+pub const ENVELOPE_SUITE: &str = "argon2id-v19-aes256gcm-v1";
 /// Maximum size of a portable keybag accepted from disk.
 pub const MAX_KEYBAG_BYTES: u64 = 64 * 1024;
-/// Maximum plaintext size of one private journal field. Media belongs in the data vault.
-pub const MAX_JOURNAL_BYTES: usize = 16 * 1024 * 1024;
-
-// age's scrypt uses r=8, p=1. Fix and cap log2(N) at 18 (256 MiB), so an
-// untrusted envelope cannot request unbounded work. It is not a user tunable.
-const SCRYPT_LOG_N: u8 = 18;
-const MAX_SECRET_PAYLOAD: u64 = 2048;
+// Fixed, validated before KDF work. A received keybag cannot request arbitrary resources.
+const KDF_MEMORY_KIB: u32 = 256 * 1024;
+const KDF_ITERATIONS: u32 = 3;
+const KDF_LANES: u32 = 1;
+const MAX_SECRET_PAYLOAD: usize = 2048;
 const RECOVERY_PREFIX: &str = "cozy1";
 
 /// Errors intentionally never contain credentials, decrypted payloads or secret bytes.
@@ -67,8 +84,6 @@ pub enum Error {
     Random,
     #[error("project key generation is exhausted")]
     GenerationExhausted,
-    #[error("private project journal context or payload is invalid")]
-    Journal,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -80,10 +95,9 @@ pub struct KeybagInfo {
     pub project_id: String,
     pub generation: u64,
     pub key_id: String,
-    pub journal_recipient: String,
 }
 
-/// A portable, encrypted project keybag. All secret-bearing fields are age ciphertext.
+/// A portable encrypted keybag. Only authenticated ciphertext contains the filesystem secret.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Keybag {
@@ -92,9 +106,8 @@ pub struct Keybag {
     project_id: String,
     generation: u64,
     key_id: String,
-    journal_recipient: String,
-    passphrase_envelope: String,
-    recovery_envelope: String,
+    passphrase_envelope: Envelope,
+    recovery_envelope: Envelope,
 }
 
 impl fmt::Debug for Keybag {
@@ -126,7 +139,6 @@ pub struct ProjectSecret {
     generation: u64,
     key_id: String,
     value: SecretString,
-    journal_identity: SecretString,
 }
 
 impl fmt::Debug for ProjectSecret {
@@ -150,7 +162,6 @@ impl ProjectSecret {
             generation: self.generation,
             key_id: self.key_id.clone(),
             value: self.value.clone(),
-            journal_identity: self.journal_identity.clone(),
         }
     }
 
@@ -172,48 +183,6 @@ impl ProjectSecret {
     pub fn write_stdin(&self, output: &mut impl Write) -> io::Result<()> {
         self.with_bytes(|value| output.write_all(value))?;
         output.write_all(b"\n")
-    }
-
-    /// Open an encrypted local run-journal field only while its project is unlocked.
-    /// The context must identify the run and field, preventing ciphertext substitution.
-    pub fn open(&self, context: &str, ciphertext: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
-        validate_context(context)?;
-        if ciphertext.len() > MAX_JOURNAL_BYTES + 64 * 1024 {
-            return Err(Error::Journal);
-        }
-        let identity: age::x25519::Identity = self
-            .journal_identity
-            .expose_secret()
-            .parse()
-            .map_err(|_| Error::Journal)?;
-        let decryptor = age::Decryptor::new(ciphertext).map_err(|_| Error::Journal)?;
-        let stream = decryptor
-            .decrypt(std::iter::once(&identity as &dyn age::Identity))
-            .map_err(|_| Error::Journal)?;
-        let mut bytes = Zeroizing::new(Vec::new());
-        stream
-            .take((MAX_JOURNAL_BYTES + 8193) as u64)
-            .read_to_end(&mut bytes)
-            .map_err(|_| Error::Journal)?;
-        if bytes.len() > MAX_JOURNAL_BYTES + 8192 || bytes.len() < 4 {
-            return Err(Error::Journal);
-        }
-        let header_size =
-            u32::from_be_bytes(bytes[..4].try_into().map_err(|_| Error::Journal)?) as usize;
-        if header_size > 8192 || 4 + header_size > bytes.len() {
-            return Err(Error::Journal);
-        }
-        let header: JournalContext =
-            serde_json::from_slice(&bytes[4..4 + header_size]).map_err(|_| Error::Journal)?;
-        if header.format_version != FORMAT_VERSION
-            || header.project_id != self.project_id
-            || header.generation != self.generation
-            || header.context != context
-            || bytes.len() - 4 - header_size > MAX_JOURNAL_BYTES
-        {
-            return Err(Error::Journal);
-        }
-        Ok(Zeroizing::new(bytes.split_off(4 + header_size)))
     }
 }
 
@@ -288,16 +257,6 @@ struct SecretPayload {
     #[zeroize(skip)]
     generation: u64,
     secret: String,
-    journal_identity: String,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct JournalContext {
-    format_version: u32,
-    project_id: String,
-    generation: u64,
-    context: String,
 }
 
 impl Keybag {
@@ -320,30 +279,29 @@ impl Keybag {
         let value =
             SecretString::from(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&*bytes));
         let key_id = key_fingerprint(value.expose_secret().as_bytes());
-        let journal_identity = age::x25519::Identity::generate();
-        let journal_recipient = journal_identity.to_public().to_string();
         let secret = ProjectSecret {
             project_id: project_id.to_owned(),
             generation,
             key_id: key_id.clone(),
             value,
-            journal_identity: journal_identity.to_string(),
         };
         let recovery_secret = RecoverySecret::generate()?;
         let payload = encode_secret(&secret)?;
-        let keybag = Self {
+        let mut keybag = Self {
             format_version: FORMAT_VERSION,
             envelope_suite: ENVELOPE_SUITE.to_owned(),
             project_id: project_id.to_owned(),
             generation,
             key_id,
-            journal_recipient,
-            passphrase_envelope: wrap(&payload, passphrase)?,
-            recovery_envelope: wrap(
-                &payload,
-                SecretString::from(recovery_secret.expose().to_owned()),
-            )?,
+            passphrase_envelope: Envelope::empty(),
+            recovery_envelope: Envelope::empty(),
         };
+        keybag.passphrase_envelope = keybag.wrap("passphrase", &payload, passphrase)?;
+        keybag.recovery_envelope = keybag.wrap(
+            "recovery",
+            &payload,
+            SecretString::from(recovery_secret.expose().to_owned()),
+        )?;
         Ok(CreatedKeybag {
             keybag,
             secret,
@@ -357,7 +315,6 @@ impl Keybag {
             project_id: self.project_id.clone(),
             generation: self.generation,
             key_id: self.key_id.clone(),
-            journal_recipient: self.journal_recipient.clone(),
         }
     }
 
@@ -372,8 +329,17 @@ impl Keybag {
         if bytes.len() as u64 > MAX_KEYBAG_BYTES {
             return Err(Error::Format("keybag is too large"));
         }
-        let keybag: Self =
+        let document: serde_json::Value =
             serde_json::from_slice(&bytes).map_err(|_| Error::Format("invalid keybag JSON"))?;
+        if document
+            .get("format_version")
+            .and_then(serde_json::Value::as_u64)
+            != Some(u64::from(FORMAT_VERSION))
+        {
+            return Err(Error::Unsupported);
+        }
+        let keybag: Self =
+            serde_json::from_value(document).map_err(|_| Error::Format("invalid keybag JSON"))?;
         keybag.validate()?;
         Ok(keybag)
     }
@@ -405,11 +371,12 @@ impl Keybag {
         let payload = match credential {
             Credential::Passphrase(passphrase) => {
                 check_passphrase(&passphrase)?;
-                unwrap(&self.passphrase_envelope, passphrase)?
+                self.unwrap("passphrase", &self.passphrase_envelope, passphrase)?
             }
             Credential::Recovery(recovery) => {
                 let recovery = RecoverySecret::parse(recovery)?;
-                unwrap(
+                self.unwrap(
+                    "recovery",
                     &self.recovery_envelope,
                     SecretString::from(recovery.expose().to_owned()),
                 )?
@@ -435,49 +402,12 @@ impl Keybag {
         if raw.len() != 32 {
             return Err(Error::Unlock);
         }
-        let journal_identity: age::x25519::Identity = decoded
-            .journal_identity
-            .parse()
-            .map_err(|_| Error::Unlock)?;
-        if journal_identity.to_public().to_string() != self.journal_recipient {
-            return Err(Error::Unlock);
-        }
         Ok(ProjectSecret {
             project_id: self.project_id.clone(),
             generation: self.generation,
             key_id: self.key_id.clone(),
             value: SecretString::from(std::mem::take(&mut decoded.secret)),
-            journal_identity: SecretString::from(std::mem::take(&mut decoded.journal_identity)),
         })
-    }
-
-    /// Seal a private local journal field using only the public project recipient. This
-    /// supports terminal remote output/events arriving while the viewing session is locked.
-    /// Callers pin the verified keybag/recipient when admitting the run rather than trusting
-    /// a mutable recipient supplied by an untrusted peer.
-    pub fn seal(&self, context: &str, plaintext: &[u8]) -> Result<Vec<u8>> {
-        self.validate()?;
-        validate_context(context)?;
-        if plaintext.len() > MAX_JOURNAL_BYTES {
-            return Err(Error::Journal);
-        }
-        let header = JournalContext {
-            format_version: FORMAT_VERSION,
-            project_id: self.project_id.clone(),
-            generation: self.generation,
-            context: context.to_owned(),
-        };
-        let encoded = serde_json::to_vec(&header).map_err(|_| Error::Journal)?;
-        if encoded.len() > 8192 {
-            return Err(Error::Journal);
-        }
-        let mut bytes = Zeroizing::new(Vec::with_capacity(4 + encoded.len() + plaintext.len()));
-        bytes.extend_from_slice(&(encoded.len() as u32).to_be_bytes());
-        bytes.extend_from_slice(&encoded);
-        bytes.extend_from_slice(plaintext);
-        let recipient: age::x25519::Recipient =
-            self.journal_recipient.parse().map_err(|_| Error::Journal)?;
-        age::encrypt(&recipient, &bytes).map_err(|_| Error::Encrypt)
     }
 
     /// Replace only the passphrase slot. This does not re-encrypt files or revoke copied
@@ -490,7 +420,7 @@ impl Keybag {
         self.verify_secret(secret)?;
         check_passphrase(&new_passphrase)?;
         let payload = encode_secret(secret)?;
-        let replacement = wrap(&payload, new_passphrase)?;
+        let replacement = self.wrap("passphrase", &payload, new_passphrase)?;
         self.passphrase_envelope = replacement;
         Ok(())
     }
@@ -501,7 +431,11 @@ impl Keybag {
         self.verify_secret(secret)?;
         let recovery = RecoverySecret::generate()?;
         let payload = encode_secret(secret)?;
-        let replacement = wrap(&payload, SecretString::from(recovery.expose().to_owned()))?;
+        let replacement = self.wrap(
+            "recovery",
+            &payload,
+            SecretString::from(recovery.expose().to_owned()),
+        )?;
         self.recovery_envelope = replacement;
         Ok(recovery)
     }
@@ -528,22 +462,8 @@ impl Keybag {
         {
             return Err(Error::Format("invalid key identity"));
         }
-        for envelope in [&self.passphrase_envelope, &self.recovery_envelope] {
-            if envelope.is_empty() || envelope.len() > 16 * 1024 {
-                return Err(Error::Format("invalid key envelope length"));
-            }
-            let decoded = STANDARD
-                .decode(envelope)
-                .map_err(|_| Error::Format("invalid key envelope encoding"))?;
-            let decryptor = age::Decryptor::new(decoded.as_slice())
-                .map_err(|_| Error::Format("invalid age envelope"))?;
-            if !decryptor.is_scrypt() {
-                return Err(Error::Format("key envelope is not passphrase-protected"));
-            }
-        }
-        self.journal_recipient
-            .parse::<age::x25519::Recipient>()
-            .map_err(|_| Error::Format("invalid journal recipient"))?;
+        self.passphrase_envelope.validate()?;
+        self.recovery_envelope.validate()?;
         Ok(())
     }
 
@@ -551,14 +471,6 @@ impl Keybag {
         if secret.project_id != self.project_id
             || secret.generation != self.generation
             || secret.key_id != self.key_id
-            || secret
-                .journal_identity
-                .expose_secret()
-                .parse::<age::x25519::Identity>()
-                .map_err(|_| Error::WrongProject)?
-                .to_public()
-                .to_string()
-                != self.journal_recipient
         {
             return Err(Error::WrongProject);
         }
@@ -574,6 +486,9 @@ fn validate_project_id(project_id: &str) -> Result<()> {
 }
 
 fn check_passphrase(value: &SecretString) -> Result<()> {
+    if value.expose_secret().len() > 4096 {
+        return Err(Error::Format("credential is too long"));
+    }
     if value.expose_secret().is_empty() {
         Err(Error::EmptyPassphrase)
     } else {
@@ -583,7 +498,7 @@ fn check_passphrase(value: &SecretString) -> Result<()> {
 
 fn key_fingerprint(secret: &[u8]) -> String {
     let mut hash = Sha256::new();
-    hash.update(b"cozy-project-vault-key-v1\0");
+    hash.update(b"cozy-project-vault-key-v2\0");
     hash.update(secret);
     hex::encode(hash.finalize())
 }
@@ -594,45 +509,156 @@ fn encode_secret(secret: &ProjectSecret) -> Result<Zeroizing<Vec<u8>>> {
         project_id: secret.project_id.clone(),
         generation: secret.generation,
         secret: secret.value.expose_secret().to_owned(),
-        journal_identity: secret.journal_identity.expose_secret().to_owned(),
     };
     serde_json::to_vec(&payload)
         .map(Zeroizing::new)
         .map_err(|_| Error::Format("cannot serialize secret payload"))
 }
 
-fn wrap(payload: &[u8], passphrase: SecretString) -> Result<String> {
-    let mut recipient = age::scrypt::Recipient::new(passphrase);
-    recipient.set_work_factor(SCRYPT_LOG_N);
-    let ciphertext = age::encrypt(&recipient, payload).map_err(|_| Error::Encrypt)?;
-    Ok(STANDARD.encode(ciphertext))
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Envelope {
+    memory_kib: u32,
+    iterations: u32,
+    lanes: u32,
+    salt: String,
+    nonce: String,
+    ciphertext: String,
 }
 
-fn validate_context(context: &str) -> Result<()> {
-    if context.is_empty() || context.len() > 4096 || context.chars().any(char::is_control) {
-        Err(Error::Journal)
-    } else {
+impl Envelope {
+    fn empty() -> Self {
+        Self {
+            memory_kib: KDF_MEMORY_KIB,
+            iterations: KDF_ITERATIONS,
+            lanes: KDF_LANES,
+            salt: String::new(),
+            nonce: String::new(),
+            ciphertext: String::new(),
+        }
+    }
+    fn validate(&self) -> Result<()> {
+        if self.memory_kib != KDF_MEMORY_KIB
+            || self.iterations != KDF_ITERATIONS
+            || self.lanes != KDF_LANES
+        {
+            return Err(Error::Format("unsupported password derivation parameters"));
+        }
+        if self.salt.len() != 64
+            || self.nonce.len() != 24
+            || !self
+                .salt
+                .bytes()
+                .chain(self.nonce.bytes())
+                .all(|byte| byte.is_ascii_hexdigit())
+            || self.ciphertext.len() > 4096
+        {
+            return Err(Error::Format("invalid key envelope"));
+        }
+        let cipher = STANDARD
+            .decode(&self.ciphertext)
+            .map_err(|_| Error::Format("invalid envelope encoding"))?;
+        if cipher.len() < 16 || cipher.len() > MAX_SECRET_PAYLOAD + 16 {
+            return Err(Error::Format("invalid envelope length"));
+        }
         Ok(())
     }
 }
 
-fn unwrap(envelope: &str, passphrase: SecretString) -> Result<Zeroizing<Vec<u8>>> {
-    let bytes = STANDARD.decode(envelope).map_err(|_| Error::Unlock)?;
-    let decryptor = age::Decryptor::new(bytes.as_slice()).map_err(|_| Error::Unlock)?;
-    let mut identity = age::scrypt::Identity::new(passphrase);
-    identity.set_max_work_factor(SCRYPT_LOG_N);
-    let stream = decryptor
-        .decrypt(std::iter::once(&identity as &dyn age::Identity))
-        .map_err(|_| Error::Unlock)?;
-    let mut payload = Zeroizing::new(Vec::new());
-    stream
-        .take(MAX_SECRET_PAYLOAD + 1)
-        .read_to_end(&mut payload)
-        .map_err(|_| Error::Unlock)?;
-    if payload.len() as u64 > MAX_SECRET_PAYLOAD {
-        return Err(Error::Unlock);
+impl Keybag {
+    fn aad(&self, slot: &str) -> Result<Vec<u8>> {
+        serde_json::to_vec(&(
+            FORMAT_VERSION,
+            ENVELOPE_SUITE,
+            &self.project_id,
+            self.generation,
+            &self.key_id,
+            slot,
+            KDF_MEMORY_KIB,
+            KDF_ITERATIONS,
+            KDF_LANES,
+        ))
+        .map_err(|_| Error::Encrypt)
     }
-    Ok(payload)
+    fn wrap(&self, slot: &str, payload: &[u8], passphrase: SecretString) -> Result<Envelope> {
+        check_passphrase(&passphrase)?;
+        if payload.len() > MAX_SECRET_PAYLOAD {
+            return Err(Error::Encrypt);
+        }
+        let mut salt = [0u8; 32];
+        let mut nonce = [0u8; 12];
+        getrandom::fill(&mut salt).map_err(|_| Error::Random)?;
+        getrandom::fill(&mut nonce).map_err(|_| Error::Random)?;
+        let key = derive_key(&passphrase, &salt)?;
+        let cipher =
+            LessSafeKey::new(UnboundKey::new(&AES_256_GCM, &*key).map_err(|_| Error::Encrypt)?);
+        let mut body = Zeroizing::new(payload.to_vec());
+        cipher
+            .seal_in_place_append_tag(
+                Nonce::assume_unique_for_key(nonce),
+                Aad::from(self.aad(slot)?),
+                &mut *body,
+            )
+            .map_err(|_| Error::Encrypt)?;
+        Ok(Envelope {
+            salt: hex::encode(salt),
+            nonce: hex::encode(nonce),
+            ciphertext: STANDARD.encode(&*body),
+            ..Envelope::empty()
+        })
+    }
+    fn unwrap(
+        &self,
+        slot: &str,
+        envelope: &Envelope,
+        passphrase: SecretString,
+    ) -> Result<Zeroizing<Vec<u8>>> {
+        envelope.validate()?;
+        check_passphrase(&passphrase)?;
+        let salt = hex::decode(&envelope.salt).map_err(|_| Error::Unlock)?;
+        let nonce: [u8; 12] = hex::decode(&envelope.nonce)
+            .map_err(|_| Error::Unlock)?
+            .try_into()
+            .map_err(|_| Error::Unlock)?;
+        let key = derive_key(&passphrase, &salt)?;
+        let cipher =
+            LessSafeKey::new(UnboundKey::new(&AES_256_GCM, &*key).map_err(|_| Error::Unlock)?);
+        let mut body = Zeroizing::new(
+            STANDARD
+                .decode(&envelope.ciphertext)
+                .map_err(|_| Error::Unlock)?,
+        );
+        let opened = cipher
+            .open_in_place(
+                Nonce::assume_unique_for_key(nonce),
+                Aad::from(self.aad(slot)?),
+                &mut body,
+            )
+            .map_err(|_| Error::Unlock)?;
+        Ok(Zeroizing::new(opened.to_vec()))
+    }
+}
+
+fn derive_key(passphrase: &SecretString, salt: &[u8]) -> Result<Zeroizing<[u8; 32]>> {
+    let params = Params::new(KDF_MEMORY_KIB, KDF_ITERATIONS, KDF_LANES, Some(32))
+        .map_err(|_| Error::Encrypt)?;
+    // Argon2's allocating convenience API does not wipe its arena. Own every block so
+    // intermediate password-derived material is cleared on success and every error path.
+    let mut memory = Zeroizing::new(Vec::<argon2::Block>::new());
+    memory
+        .try_reserve_exact(params.block_count())
+        .map_err(|_| Error::Encrypt)?;
+    memory.resize(params.block_count(), argon2::Block::new());
+    let mut key = Zeroizing::new([0u8; 32]);
+    Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
+        .hash_password_into_with_memory(
+            passphrase.expose_secret().as_bytes(),
+            salt,
+            &mut *key,
+            &mut memory[..],
+        )
+        .map_err(|_| Error::Encrypt)?;
+    Ok(key)
 }
 
 fn recovery_checksum(bytes: &[u8]) -> String {

@@ -1,4 +1,4 @@
-//! Real age envelopes, filesystem persistence and clock deadlines; no mocks or test-only KDF.
+//! Real Argon2id/AES-GCM envelopes, filesystem persistence and clock deadlines; no mocks or test-only KDF.
 //! Run as an e2e fixture, not a replacement for the installed CLI/mount proof.
 use std::{
     fs,
@@ -51,32 +51,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "wrong passphrase refuses",
     );
 
-    let body = b"synthetic-private-prompt-and-output-context";
-    let sealed = bag.seal("run:41:spec", body)?;
-    require(
-        !sealed.windows(body.len()).any(|window| window == body),
-        "journal content is sealed",
-    );
-    require(
-        first.open("run:41:spec", &sealed)?.as_slice() == body,
-        "journal opens with the unlocked project",
-    );
-    require(
-        first.open("run:42:spec", &sealed).is_err(),
-        "journal refuses another run/field context",
-    );
-    let mut corrupt = sealed.clone();
-    *corrupt.last_mut().ok_or("empty ciphertext")? ^= 1;
-    require(
-        first.open("run:41:spec", &corrupt).is_err(),
-        "journal corruption refuses",
-    );
     drop(first);
     drop(recovered);
+    let mut tampered = serde_json::to_value(&bag)?;
+    let bytes = STANDARD.decode(
+        tampered["passphrase_envelope"]["ciphertext"]
+            .as_str()
+            .ok_or("ciphertext absent")?,
+    )?;
+    let mut bytes = bytes;
+    *bytes.last_mut().ok_or("ciphertext empty")? ^= 1;
+    tampered["passphrase_envelope"]["ciphertext"] = STANDARD.encode(bytes).into();
+    let tampered: Keybag = serde_json::from_value(tampered)?;
     require(
-        !bag.seal("run:41:terminal", b"finished while locked")?
-            .is_empty(),
-        "public-recipient seal needs no unlocked project secret",
+        tampered
+            .unlock(Credential::Passphrase(pass("synthetic initial passphrase")))
+            .is_err(),
+        "authenticated envelope corruption refuses",
+    );
+    let mut swapped = serde_json::to_value(&bag)?;
+    swapped["passphrase_envelope"] = swapped["recovery_envelope"].clone();
+    let swapped: Keybag = serde_json::from_value(swapped)?;
+    require(
+        swapped
+            .unlock(Credential::Passphrase(pass(made.recovery_secret.expose())))
+            .is_err(),
+        "recovery ciphertext cannot substitute for the passphrase slot",
     );
 
     let mut source = serde_json::to_value(&bag)?;
@@ -163,11 +163,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "full rekey creates a fresh key generation",
     );
     require(
-        target.keybag.info().journal_recipient != bag.info().journal_recipient
-            && target.secret.open("run:41:spec", &sealed).is_err(),
-        "full rekey also replaces the private journal identity",
-    );
-    require(
         target
             .keybag
             .unlock(Credential::Recovery(pass(target.recovery_secret.expose())))?
@@ -181,35 +176,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "slot update refuses another generation",
     );
 
-    // Modify only the public age scrypt work request; it must be denied before an
-    // untrusted header can allocate an arbitrarily expensive KDF.
+    // Received KDF settings are validated against fixed resource bounds before any derivation.
     let mut excessive = serde_json::to_value(&bag)?;
-    let cipher = STANDARD.decode(
-        excessive["passphrase_envelope"]
-            .as_str()
-            .ok_or("envelope missing")?,
-    )?;
-    let split = cipher
-        .windows(4)
-        .position(|w| w == b"\n---")
-        .ok_or("age header missing")?;
-    let header = std::str::from_utf8(&cipher[..split])?;
-    let changed = header
-        .lines()
-        .map(|line| {
-            if line.starts_with("-> scrypt ") {
-                let mut fields: Vec<_> = line.split_whitespace().collect();
-                fields[3] = "63";
-                fields.join(" ")
-            } else {
-                line.to_owned()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    let mut altered = changed.into_bytes();
-    altered.extend_from_slice(&cipher[split..]);
-    excessive["passphrase_envelope"] = STANDARD.encode(altered).into();
+    excessive["passphrase_envelope"]["memory_kib"] = (1u32 << 30).into();
     let excessive: Keybag = serde_json::from_value(excessive)?;
     require(
         excessive
@@ -252,7 +221,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         maximum.expired() && !maximum.activity(),
         "absolute expiry wins over active interaction",
     );
-    fs::write(dir.join("receipt.json"), b"{\"keybag\":\"pass\",\"journal\":\"pass\",\"rotation\":\"pass\",\"bounds\":\"pass\",\"timeouts\":\"pass\",\"synthetic_data_only\":true}\n")?;
+    fs::write(dir.join("receipt.json"), b"{\"keybag\":\"pass\",\"rotation\":\"pass\",\"bounds\":\"pass\",\"timeouts\":\"pass\",\"synthetic_data_only\":true}\n")?;
     println!(
         "project-vault native engine: passed (actual cryptography; CLI and mount proof remain separate)"
     );

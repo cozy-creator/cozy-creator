@@ -1,46 +1,41 @@
 # Local project key custody
 
-This crate protects the secrets of an **opt-in encrypted project**. Ordinary projects do not
-create a keybag or require a passphrase. The filesystem data format and its mount lifecycle are
-owned by the mount provider; this crate does not implement a second filesystem cipher.
+Encryption is optional per project. Ordinary projects need no keybag, password, account or
+filesystem driver. This crate protects one random 256-bit project filesystem secret, encoded
+as 43 printable bytes for the provider's anonymous stdin pipe. The filesystem provider owns
+file encryption; private state, history and execution blobs live inside that same filesystem.
+There is no second journal key or per-file sharing envelope.
 
-`Keybag::create` generates fresh project material and two independent age wrapping slots:
+`Keybag::create` makes two independent wrapping slots: the user's passphrase and a generated
+256-bit recovery secret with grouping and a transcription checksum. Either opens the same
+project key. Save recovery on another device, in a password manager or on paper. TensorHub
+never receives it. The keybag is `project.vault.keys.json` beside the encrypted backing;
+recovery requires both the saved credential and a copy of the encrypted project/keybag.
 
-- the user's passphrase;
-- a generated 256-bit recovery secret, with grouping and a transcription checksum.
+Keybag format 2 uses [RustCrypto Argon2id](https://docs.rs/argon2/0.6.0/argon2/) version 19,
+256 MiB, three iterations, one lane, and a 32-byte output. Every slot has a fresh random
+32-byte salt and 12-byte nonce. [AWS-LC AES-256-GCM](https://docs.rs/aws-lc-rs/1.18.2/aws_lc_rs/aead/)
+authenticates the envelope; associated data binds format, suite, project ID, generation,
+key identity, slot and fixed KDF costs. The decoded payload repeats its identity. Received
+costs, salt/nonce/ciphertext lengths, credential lengths and the complete keybag size are
+validated before KDF work. The earlier unreleased age prototype format is explicitly refused.
 
-Either slot opens the same project generation. The encrypted payload binds the project ID,
-generation, filesystem secret and internal journal identity. The keybag is portable and stored
-beside the encrypted backing directory as `project.vault.keys.json`, so a copied vault plus its
-saved recovery secret can recover offline. No TensorHub key escrow, recovery email, account
-service or personal-account keyring is required by this initial local implementation.
+Credentials, derived keys and decoded payloads zeroize on drop and redact debug output.
+Project secrets are not serializable; scoped duplication is explicit. Callers must never put
+keys in arguments, environment variables or logs. Recovery disclosure is explicit for local
+copy/download/print/QR. Atomic ciphertext writes use `platform::durable`.
 
-The file-key envelope is the standard [age v1 format](https://age-encryption.org/v1), supplied by
-the maintained Rust `age` crate. Passphrase scrypt work is fixed and capped at log2(N)=18,
-r=8, p=1 (256 MiB). Keybag and decrypted-payload sizes are bounded before use. Atomic writes
-and OS permissions use `platform::durable`.
+Passphrase/recovery replacement changes only its wrapping slot. An older independently copied
+keybag and credential still opens the old material. `new_generation` creates a fresh project
+key; Calcifer must quiesce work, rewrite every retained file/history blob, verify it, durably
+preserve the new keybag, switch storage, and retire the old managed ciphertext. Creating a new
+keybag alone does not complete rekeying. Prior plaintext exports, ordinary shared-cache copies,
+backups, and copies made by external native apps are outside that rewrite.
 
-`ProjectSecret` is not serializable or cloneable, redacts Debug, and zeroizes its owned secrets
-on drop. Its explicit byte closure is only for feeding the helper's anonymous stdin pipe.
-Callers must not put it in process arguments, environment variables or logs. Recovery
-disclosure is explicit through `RecoverySecret::expose` for the local save/print/QR flow.
-
-The same managed generation includes an internal age X25519 journal identity. The keybag
-contains its public recipient so private terminal results/events can be sealed while a
-viewing session is locked. `ProjectSecret::open` requires the private identity and checks the
-project, generation and caller's run/field context before returning zeroizing plaintext.
-The caller pins the verified recipient when accepting work; a mutable unauthenticated peer
-cannot choose a replacement recipient. This internal key is not another user-managed secret
-or a file-sharing permission hierarchy.
-
-Passphrase and recovery replacement only change their wrapping slots. Copied older keybags
-and their credentials remain usable for the old material. `new_generation` creates fresh
-filesystem and journal secrets; the caller must rewrite retained files and private journal
-payloads, verify the replacement, durably preserve its recovery envelope and atomically
-activate it. Creating a new keybag alone is not a completed rekey.
-
-`SessionTimer` tracks explicit viewing activity and a separate optional absolute duration.
-Status polling does not touch it. Expiration is latched and checks both monotonic and wall
-time so a suspend/clock change cannot restore an expired session. It owns no mount or key:
-Calcifer must stop private reads, safely handle writes and actually unmount the provider
-before reporting the project locked.
+`SessionTimer` tracks explicit activity and an optional absolute duration. Polling never renews
+it. Expiration is latched and checks monotonic and wall time. Calcifer revokes new reads and
+streams, then releases private execution and database handles and normally unmounts. Busy
+native applications report locking/busy; a readable native volume is never reported locked.
+Native player I/O does not renew Calcifer's UI/CLI idle clock. Close native apps before
+conversion/rekey, and do not browse intermediate conversion drives on Windows, whose pinned
+provider does not enforce read-only mounts.
