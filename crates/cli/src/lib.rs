@@ -61,7 +61,7 @@ struct Cli {
 enum Command {
     /// Create a project in a new or existing directory.
     New(project::New),
-    /// Open the current project in your browser.
+    /// Print the current project's local browser URL.
     Open(open::Args),
     /// Run a function in the current project.
     Run(run::Args),
