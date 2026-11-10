@@ -212,7 +212,8 @@ jobs:
                 name=${value#artifact:} run=$GITHUB_RUN_ID
                 [[ $name != */* ]] || { run=${name%%/*}; name=${name#*/}; }
                 gh run download "$run" -R "$GITHUB_REPOSITORY" -n "$name" -D "wheels-$flag"
-                f=$(ls "wheels-$flag/$dist"-*manylinux*x86_64*.whl "wheels-$flag/$dist"-*-py3-none-any.whl 2>/dev/null | head -1)
+                # One of the two globs matches: ls exits 2 for the other, which pipefail would make the step's.
+                f=$(ls "wheels-$flag/$dist"-*manylinux*x86_64*.whl "wheels-$flag/$dist"-*-py3-none-any.whl 2>/dev/null | head -1 || true)
                 [ -n "$f" ] || { echo "::error::no $dist x86_64 wheel in artifact $value"; exit 1; }
                 args+=("--$flag" "$PWD/$f") ;;
               *) args+=("--$flag" "$value") ;;
