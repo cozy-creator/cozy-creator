@@ -119,7 +119,7 @@ const UNUSED: Duration = Duration::from_secs(24 * 60 * 60);
 pub(crate) fn copied(home: &Home, code: &LocalCode) -> Result<PathBuf, Error> {
     let dir = copies(home).join(hex(&code.tree));
     if !dir.join("tree").is_dir() {
-        let held = |digest: &Digest| Some(home.calcifer().join("files").join(hex(digest).as_str())).filter(|path| path.is_file());
+        let held = crate::runs::files::held;
         let not_held = |what: String| {
             Error::new(Kind::NotFound, "file_not_held", format!("Calcifer holds no {what}")).remedy("PUT its bytes to /v1/files/sha256:<hex> first")
         };
@@ -132,7 +132,7 @@ pub(crate) fn copied(home: &Home, code: &LocalCode) -> Result<PathBuf, Error> {
         if let Some((name, member)) = members.iter().find(|(_, member)| held(&digest_of(member)).is_none()) {
             return Err(not_held(format!("{name} of local code (sha256:{})", member.sha256)));
         }
-        materialize(home, &code.tree, &members, |digest| held(digest))?;
+        materialize(home, &code.tree, &members, held)?;
     }
     package_in(&dir, &code.at)
 }
