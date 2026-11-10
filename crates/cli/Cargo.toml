@@ -40,9 +40,5 @@ toon-format = { version = "0.7.0", default-features = false }
 rustix = { workspace = true, features = ["termios"] }
 
 
-[features]
-# Dev builds only: the hidden `cozy machine rent --provider`. Never in a release.
-dev = []
-
 [lints]
 workspace = true

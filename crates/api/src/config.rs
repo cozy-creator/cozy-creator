@@ -56,6 +56,8 @@ pub struct Config {
     /// The directory holding one release's files (dist-manifest.json, the archives); absent: GitHub
     /// Releases.
     pub download_url: Option<Url>,
+    /// Shows the CLI's dev-only options and subcommands (crates/cli/DEV.md): a top-level `dev = true`.
+    pub dev: bool,
 }
 
 /// `[calcifer]`: Calcifer's own settings.

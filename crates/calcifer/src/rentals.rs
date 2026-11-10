@@ -1449,6 +1449,8 @@ fn quote_of(quote: &types::RentalQuote) -> Quote {
         expected_total_usd_micros: expected.total_usd_micros,
         agreed: Agreed { usd_micros_per_hour: quote.price_usd_micros_per_hour },
         warnings: quote.warnings.clone(),
+        provider: quote.provider.clone().filter(|p| !p.is_empty()),
+        datacenter: quote.datacenter.clone().filter(|d| !d.is_empty()),
     }
 }
 
@@ -1650,6 +1652,9 @@ fn view(rental: &types::Rental, sku: Option<String>) -> Rental {
         base_worker_image_digest: Some(rental.base_worker_image_digest.clone())
             .filter(|d| !d.is_empty()),
         ssh: rental.ssh_address.clone().filter(|a| !a.is_empty()),
+        provider: rental.provider.clone().filter(|p| !p.is_empty()),
+        datacenter: rental.datacenter.clone().filter(|d| !d.is_empty()),
+        nfs_drive: rental.nfs_drive,
     }
 }
 
@@ -1659,7 +1664,7 @@ pub(crate) struct Shape {
     pub gpus: Option<u32>,
     pub disk_gb: Option<u32>,
     pub image: Option<String>,
-    /// A Hub admin's provider; the Hub refuses anyone else.
+    /// The one provider to buy from: dev-only `--provider`.
     pub provider: Option<String>,
     pub agreed: Option<Agreed>,
     /// Machines the Hub may buy instead, in order, at or below the asked one's price.
