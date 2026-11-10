@@ -10,13 +10,13 @@ import msgspec
 import sdxl
 from sdxl import GenerateInput, SdxlModel
 
-from cozy_runtime.author import Adjustments, App, Context, Outputs, Telemetry, invocable
+from cozy_runtime.author import Adjustments, App, Context, Outputs, Telemetry, call
 from cozy_runtime.image import ImageResult
 
 app = App()
 
 
-@invocable(defaults={"model": "stabilityai/sdxl@1.0.0"})
+@app.entrypoint(private=True, defaults={"model": "stabilityai/sdxl@1.0.0"})
 async def paint(
     ctx: Context, *, prompt: str, seed: int, steps: int = 20, model: SdxlModel, out: Outputs,
     tel: Telemetry, adj: Adjustments,
@@ -25,9 +25,6 @@ async def paint(
     payload = GenerateInput(prompt=prompt, seed=seed, steps=steps)
     generate = sdxl.app._registry["generate"].fn
     return generate(ctx, payload, sdxl.resolve_generate(payload), model, out, tel, adj)
-
-
-app.entrypoint(paint, private=True)
 
 
 class Twice(msgspec.Struct):
@@ -46,7 +43,7 @@ async def twice(ctx: Context, payload: Twice, out: Outputs) -> Done:
         if i:
             await asyncio.sleep(payload.pause_s)
         started = time.monotonic()
-        await paint(prompt=payload.prompt, seed=payload.seed + i)
+        await call(paint, prompt=payload.prompt, seed=payload.seed + i)
         seconds.append(round(time.monotonic() - started, 2))
     return Done(seconds)
 

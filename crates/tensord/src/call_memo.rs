@@ -3,8 +3,8 @@
 //! computation, and starts nothing; a success is held (`Objects::hold_memo`). A computation is
 //! the callable's operation identity (`operation`), the environment it runs in (its lock and
 //! Runtime/TensorFS build), its request as given (files by content), its attention pin and lane
-//! and the models it runs with. An author's condition (`memo_requires`) names the parameters a
-//! request must give for it to be memoizable at all.
+//! and the models it runs with. Its condition (`memo_requires`, its optional `Seed` fields as its
+//! Runtime describes them) names the parameters a request must give for it to be memoizable at all.
 use crate::{stored::ModelChoice, catalog::Generation, gpu_service::Plan, journal::InputFile};
 use serde_json::{json, Value};
 use tensorfs::sha256;
