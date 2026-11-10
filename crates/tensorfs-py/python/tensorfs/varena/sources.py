@@ -11,7 +11,7 @@ import ctypes
 import operator
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     import torch
@@ -162,7 +162,7 @@ class Source:
             dtype=name,
             shape=tensor.shape,
             strides=tensor.stride(),
-            byte_offset=tensor.storage_offset() * tensor.element_size(),
+            byte_offset=cast(int, tensor.storage_offset()) * tensor.element_size(),  # eager: never a SymInt
         )
 
     @property

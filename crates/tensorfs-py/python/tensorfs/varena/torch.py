@@ -20,9 +20,11 @@ from ._facts import EscapeRecord, PhaseMode, PhaseObservation, Room, SplitContex
 PhaseOverlapError = _ext.PhaseOverlapError
 
 if TYPE_CHECKING:
-    from torch import Tensor, UntypedStorage
+    from torch import Tensor, UntypedStorage, nn
     from torch import device as TorchDevice
-    from torch.cuda import CUDAGraph, Stream
+    from torch.cuda import _POOL_HANDLE, CUDAGraph, Stream
+
+    from ._offload import GraphsMode, Offload, Pipeline
 
 DeviceLike: TypeAlias = "int | str | TorchDevice | None"
 _ExplicitDevice: TypeAlias = "int | str | TorchDevice"
@@ -76,7 +78,7 @@ def _device(device: DeviceLike = None) -> int:
     import torch
 
     if device is None:
-        return cast(int, torch.cuda.current_device())
+        return torch.cuda.current_device()
     if isinstance(device, int):
         if device < 0:
             raise ValueError("device must be nonnegative")
@@ -84,7 +86,7 @@ def _device(device: DeviceLike = None) -> int:
     parsed = torch.device(device)
     if parsed.type != "cuda":
         raise ValueError("Varena requires a CUDA device")
-    return cast(int, torch.cuda.current_device() if parsed.index is None else parsed.index)
+    return torch.cuda.current_device() if parsed.index is None else parsed.index  # type: ignore[redundant-expr]  # torch's stub says index is int; a bare "cuda" has None
 
 
 def install(device: _ExplicitDevice = 0) -> None:
@@ -110,7 +112,7 @@ def _activation_device(device: DeviceLike) -> int:
         parsed = torch.device(device)
         if parsed.type != "cuda":
             raise ValueError("Varena requires a CUDA device")
-        index = 0 if parsed.index is None else parsed.index
+        index = 0 if parsed.index is None else parsed.index  # type: ignore[redundant-expr]  # torch's stub says index is int; a bare "cuda" has None
     if index < 0:
         raise ValueError("device must be nonnegative")
     return index
@@ -364,7 +366,7 @@ def phase_forget(device: DeviceLike, key: str) -> bool:
     return _ext._varena_phase_forget(_device(device), key)
 
 
-def prepare_pool(pool: PoolId, bytes: int, device: DeviceLike = 0) -> int:
+def prepare_pool(pool: PoolId, bytes: int, device: _ExplicitDevice = 0) -> int:
     """Begin using this pool: its pages mapped, at least this capacity, at the same addresses
     after any idle release. bytes=0 before a replay and before writing its inputs. A scratch
     pool's contents are undefined between uses: copy every input in again, no check can catch an
@@ -523,7 +525,7 @@ def graph(cuda_graph: CUDAGraph, *, pool: PoolId | None = None, stream: Stream |
     error = None
     with torch.cuda.device(device), torch.cuda.stream(stream):
         try:
-            cuda_graph.capture_begin(pool=pool)
+            cuda_graph.capture_begin(pool=cast("_POOL_HANDLE", pool))  # a PoolId is graph_pool_handle()'s pair
             started = True
             yield cuda_graph
         except BaseException as caught:
@@ -561,7 +563,7 @@ def graph(cuda_graph: CUDAGraph, *, pool: PoolId | None = None, stream: Stream |
             detail = error.args[0][len(_CAPTURE_CAPACITY_PREFIX):]
             raise torch.OutOfMemoryError(detail) from error
         raise error.with_traceback(error.__traceback__)
-    cuda_graph._varena_owner = (_owner, device, cast(PoolId, tuple(pool)))
+    cuda_graph._varena_owner = (_owner, device, cast(PoolId, tuple(pool)))  # type: ignore[attr-defined]  # marks a graph varena captured
 
 
 @contextmanager
@@ -580,7 +582,7 @@ def replay(cuda_graph: CUDAGraph, *, stream: Stream | None = None) -> None:
     _installed()
     import torch
 
-    owner, device, pool = cuda_graph._varena_owner
+    owner, device, pool = cuda_graph._varena_owner  # type: ignore[attr-defined]  # set by graph(); a graph it didn't capture raises here
     if owner != _owner:
         raise RuntimeError("a CUDA graph cannot be replayed after fork")
     stream = torch.cuda.current_stream(device) if stream is None else stream
@@ -599,7 +601,7 @@ def replay(cuda_graph: CUDAGraph, *, stream: Stream | None = None) -> None:
         _ext._varena_working_pool_release(device, pool)
 
 
-def offload(model_or_pipeline, device=0, *, graphs="auto"):
+def offload(model_or_pipeline: nn.Module | Pipeline, device: DeviceLike = 0, *, graphs: GraphsMode = "auto") -> Offload:
     """Adopt immutable CPU weights: blocks bind real tensors, and loops become graphs.
 
     The modules keep the handle alive. See crates/varena/TORCH-OFFLOAD.md.

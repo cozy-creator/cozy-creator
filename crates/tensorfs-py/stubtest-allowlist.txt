@@ -6,6 +6,11 @@ tensorfs.api.DLPack
 tensorfs.api.NormalizeBf16Tensor
 tensorfs.api.QuantizeFit
 tensorfs.api.QuantizeTensor
+tensorfs.api.QuantizeEncoding
+tensorfs.api.FitResult
+tensorfs.api.QuantizedTensor
+tensorfs.api.NormalizationResult
+tensorfs.api.QuantizationResult
 tensorfs.api.StrPath
 tensorfs.api.Token
 tensorfs._ext.ConfigValue

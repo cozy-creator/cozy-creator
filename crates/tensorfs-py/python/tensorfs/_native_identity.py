@@ -108,6 +108,8 @@ def file_identity(path: Path) -> str:
 
 
 def loaded_identity(library: C.CDLL | None, windows: bool = False) -> str:
+    if library is None:
+        raise AttributeError("vr_v1_core_identity: the core's reference was closed")
     symbol = C.cast(library.vr_v1_core_identity, C.c_void_p)
     if windows:
         kernel = C.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined,unused-ignore]  # Windows-only

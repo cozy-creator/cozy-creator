@@ -11,6 +11,10 @@ import sys
 import threading
 from contextlib import ExitStack
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from os import PathLike
 
 _libraries: list[ctypes.CDLL | None] = []
 _directories: list[object] = []
@@ -121,7 +125,7 @@ def _load() -> None:
             distribution = importlib.metadata.distribution("tensorfs")
             for file in distribution.files or ():
                 if file.as_posix().endswith("lib/varena-v1/" + name):
-                    directory = Path(distribution.locate_file(file)).parent
+                    directory = Path(cast("PathLike[str]", distribution.locate_file(file))).parent  # a PathDistribution's is a Path
                     break
         except importlib.metadata.PackageNotFoundError:
             pass
