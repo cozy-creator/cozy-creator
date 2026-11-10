@@ -9,21 +9,38 @@ import json
 import subprocess
 import sys
 from fractions import Fraction
+from typing import TypedDict
 
 import numpy as np
+import numpy.typing as npt
 
 FF, CUT, FPS = sys.argv[1], sys.argv[2], Fraction(sys.argv[3])
 W, H = 96, 54
 
 
-def probe(video):
+class Stream(TypedDict):
+    r_frame_rate: str
+    width: int
+    height: int
+
+
+class Probed(TypedDict):
+    streams: list[Stream]
+
+
+# A video's rate, its frames' md5s, and its frames as small grey pictures (one row each).
+Frames = tuple[Fraction, list[str], npt.NDArray[np.float64]]
+
+
+def probe(video: str) -> tuple[Fraction, int, int]:
     out = subprocess.run([FF.replace("ffmpeg", "ffprobe"), "-v", "error", "-select_streams", "v:0", "-show_entries",
                           "stream=r_frame_rate,width,height", "-of", "json", video], capture_output=True, check=True).stdout
-    s = json.loads(out)["streams"][0]
+    probed: Probed = json.loads(out)
+    s = probed["streams"][0]
     return Fraction(s["r_frame_rate"]), s["width"], s["height"]
 
 
-def frames(video):
+def frames(video: str) -> Frames:
     rate, w, h = probe(video)
     raw = subprocess.run([FF, "-v", "error", "-i", video, "-map", "0:v:0", "-fps_mode", "passthrough", "-pix_fmt", "yuv420p",
                           "-f", "rawvideo", "-"], capture_output=True, check=True).stdout
@@ -37,10 +54,11 @@ def frames(video):
 
 
 cut_rate, cut_hashes, cut_grey = frames(CUT)
-sources, at, ok, exact, total = {}, 0, True, 0, 0
+sources: dict[str, Frames] = {}
+at, ok, exact, total = 0, True, 0, 0
 for spec in sys.argv[4:]:
-    source, start, end = spec.rsplit(":", 2)
-    start, end = int(start), int(end)
+    source, first, last = spec.rsplit(":", 2)
+    start, end = int(first), int(last)
     if source not in sources:
         sources[source] = frames(source)
     rate, hashes, grey = sources[source]
@@ -49,7 +67,7 @@ for spec in sys.argv[4:]:
         mine = cut_grey[at]
         near = [k for k in range(want - 3, want + 4) if 0 <= k < len(grey)]
         errors = {k: float(np.mean((mine - grey[k]) ** 2)) for k in near}
-        best = min(errors, key=errors.get)
+        best = min(errors, key=errors.__getitem__)
         same = cut_hashes[at] == hashes[want]
         exact += same
         total += 1
