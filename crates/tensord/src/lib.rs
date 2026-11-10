@@ -35,6 +35,7 @@ mod output_capacity;
 mod pack;
 use tensorfs::precision;
 mod process;
+pub(crate) mod private_io;
 mod products;
 mod seam;
 mod published;

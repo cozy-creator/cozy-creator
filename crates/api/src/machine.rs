@@ -11,6 +11,42 @@ pub mod capability;
 /// The one DNS name every machine's self-signed leaf carries; clients pin the leaf itself.
 pub const SERVER_NAME: &str = "cozy-worker";
 
+/// An authenticated local controller's protected execution storage. Only the NEW
+/// `/v1/local-private/{project_id}` namespace interprets this descriptor; it is never
+/// an ignored optional privacy switch on the ordinary machine endpoints.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalPrivateStorage {
+    pub project_id: String,
+    pub generation: u64,
+    pub view_root: std::path::PathBuf,
+}
+
+pub const LOCAL_PRIVATE_PREFIX: &str = "/v1/local-private";
+pub const LOCAL_PRIVATE_DESCRIPTOR: &str = "cozy-local-private-storage";
+pub const LOCAL_PRIVATE_TOKEN: &str = "cozy-local-private-token";
+pub const LOCAL_PRIVATE_MARKER: &str = ".vault-local-execution.json";
+
+/// A proof file written only INSIDE the live encrypted mount. Its random token is sent
+/// as a private authentication header, never as RunSpec, URL, log or global journal data.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalPrivateMarker {
+    pub format_version: u32,
+    pub storage: LocalPrivateStorage,
+    pub token: String,
+}
+
+impl std::fmt::Debug for LocalPrivateMarker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LocalPrivateMarker")
+            .field("format_version", &self.format_version)
+            .field("storage", &self.storage)
+            .field("token", &"[REDACTED]")
+            .finish()
+    }
+}
+
 /// Routes, as axum templates.
 pub mod path {
     /// `GET` with no credential: 204 while the machine serves.
