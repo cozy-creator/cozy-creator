@@ -26,6 +26,9 @@ parse "$@"
 start() {
 step install; install_cozy; run_project "$OUT/project" || fail "cozy project new failed"
 user_services
+if [ "$SHARD" = projectdb-scale ] && [ "$RUNNER_OS" = Linux ]; then
+  systemctl --user set-environment COZY_XS160_PROJECT_PROFILE=1
+fi
 step status; cozy --json status | tee "$OUT/status.json"
 [ -z "$LOCAL" ] || { step "the local machine"; machine_ready; }
 [ "$SHARD" != commands ] || version_skew
@@ -275,7 +278,7 @@ case $SHARD in
   projectdb-web) parts="tools_read db_existing_web logs" ;;
   projectdb-cancel) parts="db_cancel_undo logs" ;;
   projectdb-live) parts="tools_read db_existing_web logs"; DB_WEB=live ;;
-  projectdb-scale) parts="tools_read db_existing_web logs"; DB_WEB=scale ;;
+  projectdb-scale) parts="tools_read db_existing_web logs"; DB_WEB=scale; export COZY_XS160_PROJECT_PROFILE=1 ;;
   # Local code and every input by content (cl-817, cl-820): the CLI in a folder Calcifer can't see, edits timed, its quote from its
   # runs (cl-816), a host path refused.
   local-code) parts="unseen local_edits local_quote path_manifest logs" ;;

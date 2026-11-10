@@ -76,6 +76,14 @@ use crate::{
     api::{Api, Refusal, parse},
     placement::{self, Offer},
 };
+
+/// Diagnostic branch only: numeric phase costs, never project names, paths or content.
+fn profile(stage: &'static str, began: Instant, count: usize) {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *ENABLED.get_or_init(|| std::env::var_os("COZY_XS160_PROJECT_PROFILE").is_some()) {
+        tracing::info!(phase = "xs160_profile", stage, elapsed_ms = began.elapsed().as_secs_f64() * 1000.0, count);
+    }
+}
 use folder::{Ask, Coming, Failed, Files, Folder, Lock, Pending, Take, Target, Tried, Version};
 use format::{ALL, Doc, Standing, State as Stand, Tool};
 use graph::name_key;
@@ -257,6 +265,7 @@ impl Projects {
     /// The project in `dir` (canonical), opened if it isn't, given its id and name and recorded in the index; its walk goes on when
     /// one is owed. It stays open while the answer is held.
     fn open(&self, api: &Arc<Api>, dir: &FsPath) -> Result<Arc<Project>, Error> {
+        let overall = Instant::now();
         let root = vault::logical(dir);
         let mount_id = vault::mount_identity(&root);
         let physical = current_view(&root)?;
@@ -267,10 +276,12 @@ impl Projects {
             false => tokio::task::block_in_place(|| upgrade::on_touch(dir))?,
         };
         // A folder from before project.db is imported as it opens, and given its id once it has one.
+        let began = Instant::now();
         let known = match dir.join(db::DB).is_file() {
             true => Some(tokio::task::block_in_place(|| identify(api, dir))?),
             false => None,
         };
+        profile("open_identify", began, 0);
         let id = known.as_ref().map_or_else(|| folder_id(dir), |(id, _)| id.clone());
         // Moved since it opened: the same project, read where it is now, and what reads it where it was goes on reading that. One
         // rendering goes on where it was.
@@ -283,7 +294,9 @@ impl Projects {
             }
             self.open.lock().expect("projects lock").remove(&id);
         }
+        let began = Instant::now();
         let folder = tokio::task::block_in_place(|| Folder::open(dir, api.machines.hubs.home()))?;
+        profile("open_folder", began, 0);
         let (id, name) = match known {
             Some(known) => known,
             None => tokio::task::block_in_place(|| identify(api, dir))?,
@@ -329,6 +342,7 @@ impl Projects {
         if project.folder.lock()?.owes() {
             walk(api, &project);
         }
+        profile("open_total", overall, 0);
         Ok(project)
     }
 
@@ -1261,8 +1275,11 @@ async fn list(State(api): State<Arc<Api>>, Query(page): Query<Page>) -> Result<J
 
 /// Its assets as they stand.
 async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>, Query(asked): Query<Read>) -> Result<Json<ProjectState>, Refusal> {
+    let overall = Instant::now();
     let covered = asked.assets.then(crate::events::snapshot_cursor).flatten();
+    let began = Instant::now();
     let project = api.projects.get(&api, &id)?;
+    profile("state_get", began, 0);
     let id = project.id.clone();
     let folder = &project.folder;
     let model = match model::of(&api, &project).await {
@@ -1282,10 +1299,13 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>, Query(asked)
     };
     // What a reader now holds is what any change from here is told against.
     project.told.lock().expect("told lock").get_or_insert_with(|| model::Told::now(&project, model.clone()));
+    let began = Instant::now();
     let mut state = model.state(&project, asked.assets);
     state.covered = covered;
     state.unsent = project.unsent.lock().expect("unsent lock").clone();
     state.warnings.extend(project.said.lock().expect("said lock").drain(..).map(ProjectWarning::of_file));
+    profile("state_overlay", began, state.assets.len());
+    profile("state_total_before_json", overall, state.assets.len());
     Ok(Json(state))
 }
 

@@ -81,14 +81,24 @@ pub(super) async fn of(api: &Arc<Api>, project: &Arc<Project>) -> Result<Arc<Mod
 
 fn read_model(api: &Arc<Api>, project: &Project, rev: String, heard: u64) -> Result<Model, Error> {
     let folder = &project.folder;
+    let overall = Instant::now();
+    let began = Instant::now();
     let lock = folder.lock()?;
+    super::profile("model_lock", began, lock.assets.len());
+    let began = Instant::now();
     let (doc, etags) = folder.reading_boxes(|written| {
         let etags: HashMap<String, String> = written.boxes.iter().map(|held| (name_key(&held.name), held.etag())).collect();
         Doc::of(folder, written, &lock).map(|doc| (doc, etags))
     })??;
+    super::profile("model_doc_etags", began, doc.assets.len());
+    let began = Instant::now();
     let stand = doc.stand(&lock);
+    super::profile("model_stand", began, doc.assets.len());
     let mut warnings = doc.warnings.clone();
+    let began = Instant::now();
     warnings.extend(folder.crdt_conflicts()?.into_iter().map(api::calcifer::project::Warning::of_file));
+    super::profile("model_conflicts", began, doc.assets.len());
+    let began = Instant::now();
     warnings.extend(doc.said_of_known(&lock));
     let known = known_packages(api, &doc);
     warnings.extend(unmade(&doc, &known, &lock));
@@ -98,8 +108,10 @@ fn read_model(api: &Arc<Api>, project: &Project, rev: String, heard: u64) -> Res
         warnings.extend(made.into_iter().flat_map(|made| made.warnings.iter().map(|message| api::calcifer::project::Warning::of(&doc.assets[i].name, message.clone()))));
     }
     warnings.dedup();
+    super::profile("model_warnings_packages", began, doc.assets.len());
     let (mut missing, mut stale) = (vec![], vec![]);
     let reading = Reading { doc: &doc, folder, lock: &lock, stand: &stand, known: &known };
+    let began = Instant::now();
     let rows: Vec<Row> = (0..doc.assets.len())
         .map(|i| {
             let mut row = row(&reading, i);
@@ -112,6 +124,8 @@ fn read_model(api: &Arc<Api>, project: &Project, rev: String, heard: u64) -> Res
             row
         })
         .collect();
+    super::profile("model_rows", began, rows.len());
+    let began = Instant::now();
     let cuts = cuts_of(&doc, folder, &lock, &stand);
     let absent = lock.files.values().filter(|file| folder.missing(file)).count() as u64;
     let orphans = orphans(&doc, folder, &lock);
@@ -121,6 +135,8 @@ fn read_model(api: &Arc<Api>, project: &Project, rev: String, heard: u64) -> Res
     let failed: std::collections::BTreeSet<&str> = rows.iter().filter_map(|row| Some(row.failure.as_ref()?.message.as_str())).collect();
     warnings.retain(|warning| !failed.contains(warning.message.as_str()));
     let head = ProjectState { covered: None, id: super::project_id(&folder.dir), path: folder.dir.clone(), assets: vec![], queue: vec![], missing, stale, orphans, busy: false, moving: false, absent, run_files, cuts, warnings, next, board: None, unsent: vec![] };
+    super::profile("model_tail", began, rows.len());
+    super::profile("model_total", overall, rows.len());
     Ok(Model { rev, heard, doc, lock, head, rows, stand })
 }
 

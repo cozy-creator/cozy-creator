@@ -233,7 +233,10 @@ fn verify_v1_backup(primary: &Connection, at: &Path) -> Result<(), Error> {
 pub(crate) fn identity(conn: &Connection) -> Option<(String, String)> {
     let current: Option<Vec<u8>> = conn.query_row("SELECT snapshot FROM crdt_document WHERE id = 1", [], |row| row.get(0)).optional().ok().flatten();
     if let Some(bytes) = current {
-        return crdt::identity_bytes(&bytes);
+        let began = std::time::Instant::now();
+        let identity = crdt::identity_bytes(&bytes);
+        super::profile("identity_native_load", began, bytes.len());
+        return identity;
     }
     // Only the first import of a v1 database reads identity from the relational store.
     let value = |key: &str| conn.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get::<_, String>(0)).optional().ok().flatten();

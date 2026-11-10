@@ -245,6 +245,9 @@ async function nativeMemory(base, folder) {
   const project = (...words) => cozy('project', '-p', folder, ...words);
   const status = async (at = folder) => {
     const answer = await cozy('--json', '--full', 'project', '-p', at, 'status');
+    if (process.env.COZY_XS160_PROJECT_PROFILE) {
+      (numbers.cli_profiles ??= []).push({ ms: answer.ms, phases: answer.stderr.split('\n').filter((line) => line.startsWith('xs160_profile ')) });
+    }
     return { state: JSON.parse(answer.stdout), ms: answer.ms };
   };
   const mb = (bytes) => +(bytes / 1048576).toFixed(1);
