@@ -22,9 +22,17 @@ arguments, environment or a keychain-store operation. The format marker is
 The **logical Automerge format is identical on every OS**, but physical storage
 formats differ. A raw APFS vault copy requires macOS. A raw securefs copy needs a
 compatible securefs provider. Wrong-format opens refuse clearly. Cross-OS
-movement uses decoded project export/transfer; future portable logical backup
+movement requires decoded project export/transfer; future portable logical backup
 is independent of the local storage provider. Do not claim a common raw
 ciphertext fixture opens on every OS.
+
+The native backend uses established disk-image encryption; it does not claim
+securefs's authenticated per-file cipher semantics. APFS's unlocked image/key
+attachment lives in the kernel. The supervisor closes it after controller death,
+and a surviving controller calls `Mounted::reconcile()` to close its recorded
+image after unexpected supervisor death. Forcibly killing both processes at once
+can leave an unlocked native image attached until explicitly ejected or the OS
+restarts. No normal lock acknowledges success while that owned image remains.
 
 The executable calls `project_mount::run_supervisor()` before normal CLI parsing.
 An encrypted mount starts that private role in the same executable. It watches
