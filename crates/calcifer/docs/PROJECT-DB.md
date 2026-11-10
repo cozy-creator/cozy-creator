@@ -142,6 +142,11 @@ imports once into native state in one SQLite transaction. The original is never 
 entity IDs too, so redo/undo cannot silently replace the identity of a legacy deleted box. Schema-2 readers refuse unknown versions;
 old readers cannot open schema 2. Recovery copies contain the original data, not edits made after migration.
 
+Before migration, the recovery copy must pass SQLite integrity, schema and readability checks, and any stored project ID must match
+the primary. Its file and directory are flushed before the primary changes. A partial or different-project copy refuses migration
+with `project_recovery_backup`, leaving the schema-1 primary and that copy intact for the user to preserve and move aside. A valid
+existing recovery copy is retained from the first migration attempt, rather than refreshed to an arbitrary later point in time.
+
 `cozy project upgrade` goes: the first open does it, inside Calcifer. `cozy project new` makes `project.db` with the starter boxes. A
 folder is a project when it holds `project.db` (or a `project.yaml` to import).
 
