@@ -1,0 +1,21 @@
+# The type check's environment (scripts/typecheck.sh): mypy and the libraries the creator's Python imports, CPU-only.
+# `scripts/typecheck.sh lock` pins them into typecheck-requirements.txt. TensorFS is checked from crates/tensorfs-py/python;
+# sdxl and birefnet (packages repo) are local stubs under typings/.
+mypy
+cozy-runtime==0.43.1
+msgspec
+numpy
+pillow
+torch @ https://download.pytorch.org/whl/cpu/torch-2.15.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl
+triton
+diffusers
+transformers
+huggingface-hub
+opentimelineio
+cuda-python
+nvidia-ml-py
+tomli-w
+pyyaml
+types-pyyaml
+maturin
+typing-extensions
