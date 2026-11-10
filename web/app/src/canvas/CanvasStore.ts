@@ -1,6 +1,6 @@
 import type { Edge, Node, ReactFlowInstance, Viewport } from "@xyflow/react"
 import { ApiError, type Client, type Write } from "../api/client"
-import { type Action, lost, type Outbox } from "../api/outbox"
+import { type Action, lost, type OutboxPort } from "../api/outbox"
 import type {
   ToolField as BoxField,
   Fit,
@@ -257,7 +257,7 @@ export class CanvasStore {
   private unsentSaid = new Set<string>()
   private runs = new Map<number, Run>()
   /** What a person did, in order, on its way to Calcifer. */
-  readonly outbox: Outbox
+  readonly outbox: OutboxPort
   /** The project's history, and what this page did in it: Undo and Redo. */
   readonly history: PageHistory<Snap[]>
   /** The edit what's typed in a box saves under while it goes on being typed there: one entry for all of it. */
@@ -369,7 +369,7 @@ export class CanvasStore {
   /** More was opened or shut. */
   onMore?: (names: string[]) => void
 
-  constructor(client: Client, outbox: Outbox, projectId: string | null, selected: Iterable<string>, moreOpen: Iterable<string>) {
+  constructor(client: Client, outbox: OutboxPort, projectId: string | null, selected: Iterable<string>, moreOpen: Iterable<string>) {
     this.client = client
     this.outbox = outbox
     this.projectId = projectId

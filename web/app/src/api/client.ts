@@ -69,6 +69,31 @@ import type {
 import type { MachineLogName, Rent } from "../types"
 import type { Transport } from "./transport"
 
+// Same wire shape as the Rust Vault types; replaced by generated imports when the shared type visitor lands.
+export interface VaultStatus {
+  encrypted: boolean
+  state: string
+  path: string
+  view?: string | null
+  expires_at_ms?: number | null
+  idle_timeout_s: number
+  next: string[]
+}
+export interface VaultAsk {
+  action: string
+  passphrase?: string
+  recovery_secret?: string
+  idle_timeout_s?: number
+  max_duration_s?: number
+  remove_plaintext?: boolean
+  output?: string
+}
+export interface VaultChanged {
+  vault: VaultStatus
+  recovery_secret?: string
+  preserved_source?: string
+}
+
 export const TRIES = 5
 
 export class ApiError extends Error {
@@ -284,6 +309,16 @@ export class Client {
 
   newProject(name: string, key: string): Promise<Opened> {
     return this.write("POST", "/v1/projects", { name }, key)
+  }
+
+  vault(id: string, signal?: AbortSignal): Promise<VaultStatus> {
+    return this.json(`${project(id)}/vault`, { signal, cache: "no-store" })
+  }
+
+  /** Credentials and one-time recovery responses never enter an outbox or idempotency cache. */
+  vaultChange(id: string, body: VaultAsk): Promise<VaultChanged> {
+    if (this.transport.channel) return Promise.reject(new ApiError(403, { kind: "forbidden", code: "vault_local_only", message: "Open this project on its computer to enter encryption credentials" }))
+    return this.json(`${project(id)}/vault`, { method: "POST", headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }, body: JSON.stringify(body), cache: "no-store" })
   }
 
   project(id: string, signal?: AbortSignal): Promise<ProjectState> {

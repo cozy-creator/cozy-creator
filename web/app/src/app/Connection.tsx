@@ -38,6 +38,20 @@ class Bridge {
   private runs = new Map<number, Run>()
   private runListeners = new Set<(run: Run) => void>()
   private flushing = false
+  private privateBlocked = new Set<string>()
+  private privacyEpoch = new Map<string, number>()
+
+  allowProject(id: string) { this.privateBlocked.delete(id) }
+
+  forgetProject(id: string) {
+    this.privateBlocked.add(id)
+    this.privacyEpoch.set(id, (this.privacyEpoch.get(id) ?? 0) + 1)
+    const held = this.owed.get(id)
+    if (held?.timer) clearTimeout(held.timer)
+    this.owed.delete(id)
+    this.revs.delete(id)
+    for (const [number, run] of this.runs) if (run.project_id === id) this.runs.delete(number)
+  }
 
   constructor(queries: QueryClient, client: Client) {
     this.queries = queries
@@ -53,6 +67,7 @@ class Bridge {
    * in few reads. One at a time, and one more if it changed during that read. Only what changed is read, whatever else the project holds.
    */
   changed(id: string, change: { assets?: string[] | null; gone?: string[]; head?: boolean }) {
+    if (this.privateBlocked.has(id)) return
     let slot = this.owed.get(id)
     if (!slot) this.owed.set(id, (slot = { read: 0, flying: false, names: new Set(), gone: new Set(), head: false, whole: false }))
     for (const name of change.assets ?? []) slot.names.add(name)
@@ -63,6 +78,7 @@ class Bridge {
   }
 
   private go(id: string, held: Owed) {
+    if (this.privateBlocked.has(id)) return
     if (held.flying || held.timer !== undefined) return
     held.timer = setTimeout(async () => {
       held.timer = undefined
@@ -75,6 +91,8 @@ class Bridge {
   }
 
   private async read(id: string, held: Owed) {
+    if (this.privateBlocked.has(id)) return
+    const epoch = this.privacyEpoch.get(id) ?? 0
     const key = ["project", id]
     const whole = held.whole || held.names.size > MOST_ASSETS
     const [names, gone, head] = [[...held.names], [...held.gone], held.head]
@@ -100,6 +118,7 @@ class Bridge {
         }))),
         head ? this.client.projectHead(id) : undefined,
       ])
+      if (this.privateBlocked.has(id) || (this.privacyEpoch.get(id) ?? 0) !== epoch) return
       const asked = rows.flatMap((row) => row ?? [])
       const left = [...gone, ...names.filter((_, at) => !rows[at])]
       if (asked.length || left.length || said) this.queries.setQueryData<Project>(key, (state) => state && { ...withAssets(state, asked, left, said), began })
@@ -127,7 +146,7 @@ class Bridge {
 
   private flushRuns = () => {
     this.flushing = false
-    const batch = [...this.runs.values()]
+    const batch = [...this.runs.values()].filter((run) => !run.project_id || !this.privateBlocked.has(run.project_id))
     this.runs.clear()
     for (const run of batch) {
       this.queries.setQueryData(["run", run.number], run)
@@ -162,6 +181,7 @@ class Bridge {
         this.readAll(true)
         break
       case "run.updated":
+        if (event.run.project_id && this.privateBlocked.has(event.run.project_id)) break
         this.runs.set(event.run.number, event.run)
         if (!this.flushing) {
           this.flushing = true
