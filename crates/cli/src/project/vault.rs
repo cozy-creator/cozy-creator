@@ -1,5 +1,5 @@
 //! Local encryption credentials are read from a terminal or an explicit file/stdin, never argv or environment variables.
-use std::{fs::OpenOptions, io::{Read as _, Write as _}, path::PathBuf, process::ExitCode};
+use std::{io::{Read as _, Write as _}, path::PathBuf, process::ExitCode};
 use api::{calcifer::project::{VaultAsk, VaultChanged, VaultStatus}, error::{Error, Kind}};
 use crate::{Context, output};
 
@@ -104,11 +104,7 @@ async fn change(ctx: &Context, project: Option<&String>, request: VaultAsk, reco
     // No client idempotency cache for responses containing a recovery secret.
     let mut changed: VaultChanged = ctx.calcifer().await?.post(&path, &request, None).await?;
     if let (Some(path), Some(secret)) = (&recovery_out, &changed.recovery_secret) {
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        { use std::os::unix::fs::OpenOptionsExt as _; options.mode(0o600); }
-        let mut file = options.open(path).map_err(|e| Error::new(Kind::Unavailable, "vault_recovery_save", format!("cannot save the recovery secret to {}: {e}; keep the project unlocked and replace the recovery secret", path.display())))?;
+        let mut file = platform::durable::create_private_new(path).map_err(|e| Error::new(Kind::Unavailable, "vault_recovery_save", format!("cannot save the recovery secret to {}: {e}; keep the project unlocked and replace the recovery secret", path.display())))?;
         writeln!(file, "{secret}").and_then(|()| file.sync_all()).map_err(|e| Error::new(Kind::Unavailable, "vault_recovery_save", format!("cannot save the recovery secret: {e}")))?;
         changed.recovery_secret = None;
         output::say(ctx, &format!("recovery secret saved to {}; keep a copy off this computer", path.display()));
@@ -133,6 +129,7 @@ fn show(ctx: &Context, status: &VaultStatus) {
 }
 
 pub(super) async fn encrypt(ctx: &Context, project: Option<&String>, args: Encrypt) -> Result<ExitCode, Error> {
+    output::warn("Encryption protects this project's folder and future work. Earlier exports, backups, and shared cache copies aren't erased; protect or remove them separately.");
     let mut request = ask("encrypt");
     request.passphrase = Some(credential(args.passphrase_file.as_ref(), "New project passphrase: ", true)?);
     request.idle_timeout_s = Some(args.idle);
