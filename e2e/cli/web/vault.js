@@ -9,6 +9,7 @@ const failures = [], seen = {};
 let browser, context, page, peer, scratch;
 const check = (name, okay) => { seen[name] = !!okay; if (!okay) failures.push(name); };
 const cli = (...args) => execFileSync(process.env.COZY, ['--json', ...args], { encoding: 'utf8', timeout: 180000 });
+const sanitized = (text) => String(text ?? '').replace(/cozy1-[a-z0-9_-]+/gi, '[REDACTED]').replaceAll('synthetic browser passphrase', '[REDACTED]');
 (async () => {
   scratch = mkdtempSync(join(tmpdir(), 'web-vault-'));
   const folder = join(scratch, 'project');
@@ -40,16 +41,34 @@ const cli = (...args) => execFileSync(process.env.COZY, ['--json', ...args], { e
     try {
       const action = JSON.parse(response.request().postData() || '{}').action;
       const answer = await response.json();
-      (seen.vault_replies ??= []).push({ action, status: response.status(), encrypted: answer.vault?.encrypted, state: answer.vault?.state, has_recovery_secret: typeof answer.recovery_secret === 'string' });
+      (seen.vault_replies ??= []).push({ action, status: response.status(), encrypted: answer.vault?.encrypted, state: answer.vault?.state, has_recovery_secret: typeof answer.recovery_secret === 'string', error_code: answer.error?.code, error_kind: answer.error?.kind, error_message: answer.error ? sanitized(answer.error.message) : undefined });
     } catch { /* Failed/offline replies carry no readable evidence. Never retain secret bodies. */ }
   });
   await signIn(page);
   await page.goto(`${calcifer()}/#/projects/${id}/vault`);
   const body = page.locator('.drawer [data-vault-state]');
+  // Import returns before first-use ffprobe preparation and background measurement.
+  // Wait for its actual committed result before asking to replace that plain storage.
+  await until('plain seed media measured before encryption', () => {
+    const state = JSON.parse(cli('project', '-p', folder, 'status'));
+    const movie = state.assets.find((asset) => asset.name === 'private_loop_movie');
+    const picture = state.assets.find((asset) => asset.name === 'private_vault_picture');
+    return { idle: !state.busy && !state.moving, movie: { width: movie?.width, height: movie?.height, duration_ms: movie?.duration_ms }, picture: { width: picture?.width, height: picture?.height } };
+  }, (state) => state.idle && state.movie.width > 0 && state.movie.height > 0 && state.movie.duration_ms > 0 && state.picture.width > 0 && state.picture.height > 0);
+  check('plain_seed_media_measurement_finished', true);
   await body.locator('input[type=password]').nth(0).fill('synthetic browser passphrase');
   await body.locator('input[type=password]').nth(1).fill('synthetic browser passphrase');
   await body.getByLabel('Remove the verified unencrypted source after conversion').check();
+  const encryptionReply = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === `/v1/projects/${id}/vault` && JSON.parse(response.request().postData() || '{}').action === 'encrypt');
   await body.getByRole('button', { name: 'Enable encryption', exact: true }).click();
+  const encrypted = await encryptionReply;
+  if (!encrypted.ok()) {
+    const answer = await encrypted.json();
+    const alert = body.getByRole('alert');
+    await alert.waitFor({ timeout: 5000 }).catch(() => {});
+    seen.encryption_refusal = { status: encrypted.status(), code: answer.error?.code, kind: answer.error?.kind, message: sanitized(answer.error?.message), visible_alert: (await alert.allTextContents()).map(sanitized) };
+    throw new Error(`initial encryption refused: ${encrypted.status()} ${sanitized(answer.error?.code)}`);
+  }
   await page.locator('[aria-label="Save recovery secret"] pre').waitFor();
   const recovery = await page.locator('[aria-label="Save recovery secret"] pre').innerText();
   check('recovery_is_long_and_local', recovery.startsWith('cozy1-') && recovery.length > 70);
@@ -243,7 +262,7 @@ const cli = (...args) => execFileSync(process.env.COZY, ['--json', ...args], { e
   check('secret_actions_skip_idempotency_cache', secretIdempotency.length === 0);
   check('no_page_errors', errors.length === 0);
   seen.page_errors = errors;
-})().catch((error) => { failures.push('browser vault flow'); seen.failure = error.message.replace(/cozy1(?:-[0-9a-f]{8}){9}/gi, '[REDACTED]').replaceAll('synthetic browser passphrase', '[REDACTED]'); process.exitCode = 1; }).finally(async () => {
+})().catch((error) => { failures.push('browser vault flow'); seen.failure = sanitized(error.message); process.exitCode = 1; }).finally(async () => {
   // Never take recovery-code screenshots or emit credentials in the fixture's artifacts.
   if (peer) await peer.close().catch(() => {});
   if (page) await page.close().catch(() => {});
