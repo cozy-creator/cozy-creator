@@ -77,24 +77,12 @@ db_cancel_undo() {
 [ -n "$LOCAL" ] || return
 [ -z "${ALONE:-}" ] || { check "cancel/undo proof requires an owned fresh-runner Calcifer"; return; }
 step "project: a delete held at commit cancels its render, and undo retains its three prior versions"
-local P=$OUT/cancel-undo run i
-cozy project new "$P" > "$OUT/cancel-new.txt" 2>&1 || { check "cancel/undo: new"; return; }
-cozy project -p "$P" add "$here/project/tool.py/slow" shot 'seconds:=0.01' 'instructions=Before cancellation.' > "$OUT/cancel-add.txt" 2>&1 || { check "cancel/undo: add"; return; }
-for i in 1 2 3; do
-  cozy project -p "$P" set shot "instructions=Prior version $i." > "$OUT/cancel-set-$i.txt" 2>&1 || check "cancel/undo: set $i"
-  render "$P" shot || { check "cancel/undo: render $i: $(tail -c 300 "$OUT/render.txt")"; return; }
-done
-[ "$(made "$P" shot)" = 3 ] || { check "cancel/undo: fixture did not make three prior versions"; return; }
-cozy project -p "$P" set shot 'seconds:=60' > "$OUT/cancel-set-long.txt" 2>&1 || check "cancel/undo: set long"
-cozy project -p "$P" render shot --queue --on local > "$OUT/cancel-queue.txt" 2>&1 || { check "cancel/undo: queue"; return; }
-for _ in $(seq 240); do
-  run=$(status "$P" | jq -r '.board.jobs[] | select(.asset == "shot") | .run // empty')
-  [ -z "$run" ] || [ "$(cozy --json run show "$run" --once | jq -r .status)" != in_progress ] || break
-  sleep 0.1
-done
-[ -n "$run" ] && [ "$(cozy --json run show "$run" --once | jq -r .status)" = in_progress ] || { check "cancel/undo: long run did not start"; return; }
-python3 "$here/cancel_undo.py" "$P" "$run" "$OUT" "$COZY" > "$OUT/cancel-undo-proof.json" 2> "$OUT/cancel-undo-proof.err" \
-  || check "cancel/undo: $(cat "$OUT/cancel-undo-proof.json") $(tail -c 300 "$OUT/cancel-undo-proof.err")"
+local P=$OUT/cancel-undo tool=$here/project/tool.py/slow
+cozy --json new "$P" > "$OUT/cancel-new.json" 2> "$OUT/cancel-new.err" || { check "cancel/undo: new"; return; }
+in_project "$P" --json run "$tool" 'seconds:=0.01' 'instructions=Warm up before cancellation.' --on local \
+  > "$OUT/cancel-warm.ndjson" 2> "$OUT/cancel-warm.err" || { check "cancel/undo: local source warmup"; return; }
+python3 "$here/cancel_undo.py" "$P" "$OUT" "$tool" > "$OUT/cancel-undo-proof.json" 2> "$OUT/cancel-undo-proof.err" \
+  || check "cancel/undo: $(cat "$OUT/cancel-undo-proof.json") $(tail -c 500 "$OUT/cancel-undo-proof.err")"
 cat "$OUT/cancel-undo-proof.json"
 }
 
@@ -387,22 +375,36 @@ PY
 db_crdt() {
 step "project CRDT: canonical state, stable identities, v1 migration and native replica convergence"
 local P=$OUT/crdt-project V=$OUT/crdt-v1 before after source
-cozy project new "$P" > "$OUT/crdt-new.txt" 2>&1 || { check "CRDT: project new: $(tail -c 300 "$OUT/crdt-new.txt")"; return; }
+cozy --json new "$P" > "$OUT/crdt-new.json" 2> "$OUT/crdt-new.err" || { check "CRDT: project new: $(tail -c 300 "$OUT/crdt-new.err")"; return; }
+J '.created == true and (.id | length > 0)' "$OUT/crdt-new.json" || check "CRDT: new did not create a project"
 [ "$(sql1 "$P" 'PRAGMA user_version')" = 2 ] || { check "CRDT: project.db is not schema 2"; return; }
 [ "$(sql1 "$P" 'SELECT count(*) FROM crdt_document WHERE format = 1 AND length(snapshot) > 0')" = 1 ] || check "CRDT: no native snapshot"
+project_api "$P" /yaml -X PUT -H 'Content-Type: application/yaml' --data-binary @- <<'YAML' || { check "CRDT: seed the editable graph"; return; }
+version: 4
+assets:
+  kyogre:
+    tool: qwen-image-2/image
+    instructions: A whale.
+  groudon:
+    tool: qwen-image-2/image
+    instructions: On shore with <kyogre>.
+YAML
 tiny "$OUT/crdt-a.png"; cp "$OUT/crdt-a.png" "$OUT/crdt-b.png"; printf 'second' >> "$OUT/crdt-b.png"
-cozy project -p "$P" import "$OUT/crdt-a.png" art > "$OUT/crdt-import.txt" 2>&1 || check "CRDT: import: $(tail -c 300 "$OUT/crdt-import.txt")"
-cozy project -p "$P" import "$OUT/crdt-b.png" --into art > "$OUT/crdt-version.txt" 2>&1 || check "CRDT: version: $(tail -c 300 "$OUT/crdt-version.txt")"
-cozy project -p "$P" set kyogre 'instructions=Before the rename.' > "$OUT/crdt-set.txt" 2>&1 || check "CRDT: set: $(tail -c 300 "$OUT/crdt-set.txt")"
+project_import "$P" "$OUT/crdt-a.png" art > "$OUT/crdt-import.txt" 2>&1 || check "CRDT: import: $(tail -c 300 "$OUT/crdt-import.txt")"
+db_calcifer
+source="sha256:$(sha "$OUT/crdt-b.png")"
+api --fail-with-body -X PUT --data-binary "@$OUT/crdt-b.png" "http://$ADDR/v1/files/$source" > /dev/null || check "CRDT: upload second version"
+project_api "$P" /assets/art/versions -X POST -H 'Content-Type: application/json' -d "$(jq -cn --arg source "$source" '{source:$source}')" > "$OUT/crdt-version.txt" 2>&1 || check "CRDT: version: $(tail -c 300 "$OUT/crdt-version.txt")"
+project_api "$P" /assets/kyogre -X PATCH -H 'Content-Type: application/json' -d '{"fields":{"instructions":"Before the rename."}}' > "$OUT/crdt-set.txt" 2>&1 || check "CRDT: set: $(tail -c 300 "$OUT/crdt-set.txt")"
 python3 - "$P/project.db" "$OUT/crdt-before.am" <<'PY'
 import sqlite3,sys
 with sqlite3.connect(f'file:{sys.argv[1]}?mode=ro',uri=True) as db:
     open(sys.argv[2],'wb').write(db.execute('SELECT snapshot FROM crdt_document WHERE id=1').fetchone()[0])
 PY
-cozy project -p "$P" rename kyogre whale > "$OUT/crdt-rename.txt" 2>&1 || check "CRDT: rename: $(tail -c 300 "$OUT/crdt-rename.txt")"
-cozy project -p "$P" export > "$OUT/crdt-export.yaml" || check "CRDT: export"
+project_api "$P" /rename -X POST -H 'Content-Type: application/json' -d '{"from":"kyogre","to":"whale"}' > "$OUT/crdt-rename.txt" 2>&1 || check "CRDT: rename: $(tail -c 300 "$OUT/crdt-rename.txt")"
+project_api "$P" /yaml > "$OUT/crdt-export.yaml" || check "CRDT: export"
 before=$(sql1 "$P" 'SELECT heads FROM crdt_document WHERE id=1')
-cozy project -p "$P" import "$OUT/crdt-export.yaml" > "$OUT/crdt-roundtrip.txt" 2>&1 || check "CRDT: unchanged import"
+project_api "$P" /yaml -X PUT -H 'Content-Type: application/yaml' --data-binary "@$OUT/crdt-export.yaml" > "$OUT/crdt-roundtrip.txt" 2>&1 || check "CRDT: unchanged import"
 after=$(sql1 "$P" 'SELECT heads FROM crdt_document WHERE id=1')
 [ "$before" = "$after" ] || check "CRDT: unchanged YAML export/import rewrote causal history"
 python3 - "$P/project.db" "$OUT/crdt-renamed.am" "$V" <<'PY'
@@ -417,7 +419,7 @@ PY
 # Deliberately form a v1 fixture from this real project's materialized SQL rows, without modifying
 # its active source. Opening the copy invokes the actual migration and preserves a v1 recovery DB.
 printf 'interrupted VACUUM recovery copy' > "$V/project.db.v1"
-if cozy --json project -p "$V" export > "$OUT/crdt-v1-partial.json" 2> "$OUT/crdt-v1-partial.err"; then
+if project_api "$V" /yaml > "$OUT/crdt-v1-partial.json" 2> "$OUT/crdt-v1-partial.err"; then
   check "CRDT: migrated despite an incomplete recovery copy"
 fi
 grep -q project_recovery_backup "$OUT/crdt-v1-partial.json" "$OUT/crdt-v1-partial.err" || check "CRDT: incomplete recovery copy did not explain its refusal"
@@ -430,38 +432,38 @@ with sqlite3.connect(f'file:{sys.argv[1]}?mode=ro',uri=True) as source, sqlite3.
     source.backup(backup)
     backup.execute("INSERT OR REPLACE INTO meta VALUES ('id', 'another-project')")
 PY
-if cozy --json project -p "$V" export > "$OUT/crdt-v1-foreign.json" 2> "$OUT/crdt-v1-foreign.err"; then
+if project_api "$V" /yaml > "$OUT/crdt-v1-foreign.json" 2> "$OUT/crdt-v1-foreign.err"; then
   check "CRDT: migrated using another project's recovery copy"
 fi
 grep -q project_recovery_backup "$OUT/crdt-v1-foreign.json" "$OUT/crdt-v1-foreign.err" || check "CRDT: different-project recovery copy did not explain its refusal"
 [ "$(sql1 "$V" 'PRAGMA user_version')" = 1 ] || check "CRDT: different-project backup refusal changed the original schema"
 mv "$V/project.db.v1" "$OUT/crdt-v1-foreign-backup"
-cozy project -p "$V" export > "$OUT/crdt-v1-export.yaml" 2> "$OUT/crdt-v1.err" || check "CRDT: v1 migration: $(tail -c 300 "$OUT/crdt-v1.err")"
+project_api "$V" /yaml > "$OUT/crdt-v1-export.yaml" 2> "$OUT/crdt-v1.err" || check "CRDT: v1 migration: $(tail -c 300 "$OUT/crdt-v1.err")"
 diff -u <(sed '/^# cozy-project-base: /d' "$OUT/crdt-export.yaml") <(sed '/^# cozy-project-base: /d' "$OUT/crdt-v1-export.yaml") > "$OUT/crdt-v1-export.diff" || check "CRDT: v1 migration changed logical fields"
 { [ -f "$V/project.db.v1" ] && [ "$(sql1 "$V" 'PRAGMA user_version')" = 2 ]; } || check "CRDT: v1 backup/schema missing"
 [ "$(sql1 "$P" 'SELECT count(*) FROM crdt_changes')" -ge 4 ] || check "CRDT: original change journal absent"
 # Relational graph/history rows are now projections: damaging them must not become a logical
-# project edit when the next real CLI transaction commits.
-db_sql "$P" "UPDATE fields SET value = '"QUERY_CACHE_ONLY"' WHERE box = 'whale' AND field = 'instructions'; UPDATE ops SET words = 'QUERY_CACHE_ONLY';"
-cozy project -p "$P" set groudon 'description=A canonical-store check.' > "$OUT/crdt-cache-set.txt" 2>&1 || check "CRDT: write after projection damage"
-cozy project -p "$P" export > "$OUT/crdt-cache-export.yaml" || check "CRDT: read after projection damage"
-cozy --json project -p "$P" history > "$OUT/crdt-cache-history.json" || check "CRDT: history after projection damage"
+# project edit when the next real HTTP edit commits.
+db_sql "$P" "UPDATE fields SET value = '\"QUERY_CACHE_ONLY\"' WHERE box = 'whale' AND field = 'instructions'; UPDATE ops SET words = 'QUERY_CACHE_ONLY';"
+project_api "$P" /assets/groudon -X PATCH -H 'Content-Type: application/json' -d '{"fields":{"description":"A canonical-store check."}}' > "$OUT/crdt-cache-set.txt" 2>&1 || check "CRDT: write after projection damage"
+project_api "$P" /yaml > "$OUT/crdt-cache-export.yaml" || check "CRDT: read after projection damage"
+project_api "$P" /history > "$OUT/crdt-cache-history.json" || check "CRDT: history after projection damage"
 { ! grep -q QUERY_CACHE_ONLY "$OUT/crdt-cache-export.yaml" && ! grep -q QUERY_CACHE_ONLY "$OUT/crdt-cache-history.json"; } || check "CRDT: a relational projection overrode canonical state/history"
-# An exported edit carries a graph-body base. A subsequent CLI edit must not be overwritten
+# An exported edit carries a graph-body base. A subsequent API edit must not be overwritten
 # by an old file; runtime/canvas-only changes do not participate in that precondition.
-cozy project -p "$P" export > "$OUT/crdt-stale-export.yaml" || check "CRDT: export edit base"
-cozy project -p "$P" set groudon 'description=An intervening CLI edit.' > "$OUT/crdt-intervening-set.txt" 2>&1 || check "CRDT: intervening CLI edit"
-if cozy --json project -p "$P" import "$OUT/crdt-stale-export.yaml" > "$OUT/crdt-stale-import.json" 2> "$OUT/crdt-stale-import.err"; then
-  check "CRDT: stale same-project export overwrote a newer CLI edit"
+project_api "$P" /yaml > "$OUT/crdt-stale-export.yaml" || check "CRDT: export edit base"
+project_api "$P" /assets/groudon -X PATCH -H 'Content-Type: application/json' -d '{"fields":{"description":"An intervening API edit."}}' > "$OUT/crdt-intervening-set.txt" 2>&1 || check "CRDT: intervening API edit"
+if project_api "$P" /yaml -X PUT -H 'Content-Type: application/yaml' --data-binary "@$OUT/crdt-stale-export.yaml" > "$OUT/crdt-stale-import.json" 2> "$OUT/crdt-stale-import.err"; then
+  check "CRDT: stale same-project export overwrote a newer API edit"
 fi
 grep -q project_changed "$OUT/crdt-stale-import.json" "$OUT/crdt-stale-import.err" || check "CRDT: stale import did not explain project_changed"
-cozy project -p "$P" export > "$OUT/crdt-stale-after.yaml" || check "CRDT: export after stale refusal"
-grep -q 'An intervening CLI edit.' "$OUT/crdt-stale-after.yaml" || check "CRDT: stale import erased the intervening edit"
+project_api "$P" /yaml > "$OUT/crdt-stale-after.yaml" || check "CRDT: export after stale refusal"
+grep -q 'An intervening API edit.' "$OUT/crdt-stale-after.yaml" || check "CRDT: stale import erased the intervening edit"
 # Cargo consumes the same published native library as the product. This is a format/merge proof,
 # not another daemon or a substitute project storage implementation.
 CARGO_BUILD_JOBS=1 nice -n 19 cargo run --quiet --locked --manifest-path "$here/crdt/Cargo.toml" -- "$OUT/crdt-before.am" "$OUT/crdt-renamed.am" > "$OUT/crdt-native.json" 2> "$OUT/crdt-native.err" \
   || check "CRDT: native format/replica proof: $(tail -c 400 "$OUT/crdt-native.err")"
-J '.passed and .native_replicas == 3 and .same_number_versions_preserved == 2 and (.prompt_alternatives == ["dawn","dusk","noon"])' "$OUT/crdt-native.json" \
+J '.passed and .native_replicas == 3 and .original_versions == 2 and .same_number_versions_preserved == 2 and (.prompt_alternatives == ["dawn","dusk","noon"])' "$OUT/crdt-native.json" \
   || check "CRDT: native merge report: $(cat "$OUT/crdt-native.json")"
 CARGO_BUILD_JOBS=1 nice -n 19 cargo run --quiet --locked --manifest-path "$here/crdt/Cargo.toml" -- --history-fixture "$OUT/crdt-renamed.am" "$OUT/crdt-history-merged.am" > "$OUT/crdt-history-fixture.json" 2> "$OUT/crdt-history-fixture.err" \
   || { check "CRDT: history merge fixture: $(tail -c 300 "$OUT/crdt-history-fixture.err")"; return; }
@@ -479,13 +481,13 @@ with sqlite3.connect(f'file:{source}/project.db?mode=ro',uri=True) as original:
                    (open(snapshot,'rb').read(),json.dumps(list(reversed(json.load(open(report))['heads'])))))
 PY
 # The product now loads two independently authored history records sharing a display number.
-# Its next real CLI edit must preserve both stable identities, rather than choose by that number.
-cozy --json project -p "$H" status > "$OUT/crdt-peer-before.json" || check "CRDT: read merged native conflicts"
-cozy project -p "$H" set groudon 'description=After an offline history merge.' > "$OUT/crdt-history-set.txt" 2>&1 \
-  || check "CRDT: CLI write after history merge: $(tail -c 300 "$OUT/crdt-history-set.txt")"
-cozy --json project -p "$H" status > "$OUT/crdt-peer-state.json" || check "CRDT: inspect merged conflict state"
-J '[.warnings[]?.message | select(contains("Concurrent project values") and contains("remote dawn") and contains("remote dusk"))] | length > 0' "$OUT/crdt-peer-state.json" || check "CRDT: retained native prompt alternatives are not visible through the CLI"
-python3 - "$OUT/crdt-peer-before.json" "$OUT/crdt-peer-state.json" <<'PY' || check "CRDT: nested conflict alternatives/order changed across CLI edit"
+# Its next real edit must preserve both stable identities, rather than choose by that number.
+project_api "$H" '' > "$OUT/crdt-peer-before.json" || check "CRDT: read merged native conflicts"
+project_api "$H" /assets/groudon -X PATCH -H 'Content-Type: application/json' -d '{"fields":{"description":"After an offline history merge."}}' > "$OUT/crdt-history-set.txt" 2>&1 \
+  || check "CRDT: write after history merge: $(tail -c 300 "$OUT/crdt-history-set.txt")"
+project_api "$H" '' > "$OUT/crdt-peer-state.json" || check "CRDT: inspect merged conflict state"
+J '[.warnings[]?.message | select(contains("Concurrent project values") and contains("remote dawn") and contains("remote dusk"))] | length > 0' "$OUT/crdt-peer-state.json" || check "CRDT: retained native prompt alternatives are not visible in project state"
+python3 - "$OUT/crdt-peer-before.json" "$OUT/crdt-peer-state.json" <<'PY' || check "CRDT: nested conflict alternatives/order changed across API edit"
 import json,sys
 def conflicts(path):
     return [w['message'] for w in json.load(open(path))['warnings'] if 'Concurrent project values' in w['message']]
@@ -495,8 +497,8 @@ for peer in ['a','b']:
     assert any(f'e2e-history-{peer}-left' in message and f'e2e-history-{peer}-right' in message and '/choices/0:' in message for message in after), after
 assert any('/e2e_details:' in message for message in after), after
 PY
-cozy --json project -p "$H" history > "$OUT/crdt-peer-history.json" || check "CRDT: list merged peer history"
-J '[.entries[] | select(.words == "e2e-history-a" or .words == "e2e-history-b")] | length == 2' "$OUT/crdt-peer-history.json" || check "CRDT: merged peer history is not readable through the CLI"
+project_api "$H" /history > "$OUT/crdt-peer-history.json" || check "CRDT: list merged peer history"
+J '[.entries[] | select(.words == "e2e-history-a" or .words == "e2e-history-b")] | length == 2' "$OUT/crdt-peer-history.json" || check "CRDT: merged peer history is not readable through the API"
 python3 - "$H/project.db" "$OUT/crdt-history-after.am" <<'PY'
 import sqlite3,sys
 with sqlite3.connect(f'file:{sys.argv[1]}?mode=ro',uri=True) as db:
@@ -508,22 +510,28 @@ db_crdt_stream "$P" "$H"
 }
 
 
-# Native append is a storage stream, not a new state authority. Each mutation goes through cozy;
-# the outside writer/corrupt copies are explicit fault fixtures against actual CLI-created data.
+# Project edits use Calcifer. The outside writer and corrupt copies test
+# faults against data created through the surviving CLI and project API.
 db_crdt_stream() {
 step "project CRDT: native append, strict restart/corruption and observed-base refusal"
 local P=$1 H=$2 C=$OUT/crdt-canvas-collision
 CARGO_BUILD_JOBS=1 nice -n 19 cargo run --quiet --locked --manifest-path "$here/crdt/Cargo.toml" -- --canvas-collision "$OUT/crdt-renamed.am" "$OUT/crdt-canvas-collision.am" > "$OUT/crdt-canvas-collision.json" 2> "$OUT/crdt-canvas-collision.err" \
   || { check "CRDT: native canvas fixture: $(tail -c 300 "$OUT/crdt-canvas-collision.err")"; return; }
-CARGO_BUILD_JOBS=1 python3 - "$COZY" "$P" "$H" "$C" "$OUT" "$here/crdt/Cargo.toml" <<'STREAM_PROOF' > "$OUT/crdt-stream-proof.json" 2> "$OUT/crdt-stream-proof.err" || check "CRDT: stream/CAS proof: $(tail -c 600 "$OUT/crdt-stream-proof.err")"
-import hashlib,json,os,sqlite3,subprocess,sys,time
+CARGO_BUILD_JOBS=1 python3 - "$here" "$P" "$H" "$C" "$OUT" "$here/crdt/Cargo.toml" <<'STREAM_PROOF' > "$OUT/crdt-stream-proof.json" 2> "$OUT/crdt-stream-proof.err" || check "CRDT: stream/CAS proof: $(tail -c 600 "$OUT/crdt-stream-proof.err")"
+from concurrent.futures import ThreadPoolExecutor
+import json,sqlite3,subprocess,sys,time
 from pathlib import Path
-binary,project,peer,collision,output,manifest=sys.argv[1:]
+here,project,peer,collision,output,manifest=sys.argv[1:]
+sys.path.insert(0,here)
+from project_http import Refused,project_path,request
+
 output=Path(output)
-def cli(*args,ok=True):
-    done=subprocess.run([binary,*map(str,args)],capture_output=True,encoding="utf-8",timeout=40)
-    if ok and done.returncode: raise AssertionError((args,done.stdout,done.stderr))
-    return done
+def project_api(project,suffix="",method="GET",body=None):
+    return request(project_path(project,suffix),method,body)
+def patch(project,**fields):
+    return project_api(project,'/assets/groudon','PATCH',{'fields':fields})
+def rename(project,old,new):
+    return project_api(project,'/rename','POST',{'from':old,'to':new})
 def snapshot(project):
     with sqlite3.connect(f'file:{project}/project.db?mode=ro',uri=True) as db:
         data,heads,kind=db.execute('SELECT snapshot,heads,typeof(snapshot) FROM crdt_document WHERE id=1').fetchone()
@@ -535,11 +543,12 @@ def native(mode,source,target,*extra):
     done=subprocess.run(['nice','-n','19','cargo','run','--quiet','--locked','--manifest-path',manifest,'--',mode,str(source),str(target),*extra],capture_output=True,encoding='utf-8',timeout=60)
     assert done.returncode==0,done.stderr
     return json.loads(done.stdout)
-original_id=json.loads(cli('--json','project','-p',project,'status').stdout)['id']
+original_id=json.loads(project_api(project))['id']
 before,_,_=snapshot(project)
-cli('project','-p',project,'set','groudon','description=Native stream append proof.')
+patch(project,description='Native stream append proof.')
 after,heads,kind=snapshot(project)
 assert kind=='blob' and len(after)>len(before) and after.startswith(before), (kind,len(before),len(after))
+assert json.loads(project_api(project))['id']==original_id, 'append changed the project ID'
 (output/'crdt-stream-before.am').write_bytes(before)
 (output/'crdt-stream-after.am').write_bytes(after)
 # Both parser truncation and a syntactically complete older prefix must refuse. Current
@@ -551,8 +560,12 @@ for label,data in [('partial',after[:-1]),('older-prefix',before),('missing-row'
         kept_id=db.execute("SELECT value FROM meta WHERE key='id'").fetchone()
         if data is None: db.execute('DELETE FROM crdt_document WHERE id=1')
         else: db.execute('UPDATE crdt_document SET snapshot=? WHERE id=1',(data,))
-    refused=cli('--json','project','-p',target,'status',ok=False)
-    assert refused.returncode!=0,(label,refused.stdout)
+    try:
+        project_api(target)
+    except Refused as refused:
+        assert json.loads(refused.payload)['error']['code'] in {'project_crdt','project_db'},(label,refused.payload)
+    else:
+        raise AssertionError(f'{label}: read accepted corrupt native state')
     with sqlite3.connect(target/'project.db') as db:
         assert db.execute("SELECT value FROM meta WHERE key='id'").fetchone()==kept_id,label
         row=db.execute('SELECT snapshot,heads FROM crdt_document WHERE id=1').fetchone()
@@ -563,41 +576,45 @@ clone(project,collision)
 report=json.loads((output/'crdt-canvas-collision.json').read_text())
 with sqlite3.connect(f'{collision}/project.db') as db:
     db.execute('UPDATE crdt_document SET snapshot=?,heads=? WHERE id=1',((output/'crdt-canvas-collision.am').read_bytes(),json.dumps(report['heads'])))
-cli('project','-p',collision,'rename','art','surface')
+rename(collision,'art','surface')
 (output/'crdt-canvas-after.am').write_bytes(snapshot(collision)[0])
 canvas=native('--canvas-check',output/'crdt-canvas-after.am',output/'crdt-canvas-collision.json')
-# Hold the real SQLite writer turn while a real CLI edit reads its old base. Accept the
-# proof ONLY after the append CAS itself reports project_changed; early-start variation
-# may observe the new base, so retry with distinct edits, never treating a sleep as proof.
+# Hold the real SQLite writer turn while an HTTP edit reads its old base. Only
+# the exact append CAS refusal proves this. A request that reads the new base
+# can succeed, in which case retry with a distinct edit.
 observed=False
-for attempt in range(8):
-    source=output/f'crdt-outside-{attempt}-before.am'; source.write_bytes(snapshot(peer)[0])
-    target=output/f'crdt-outside-{attempt}.am'
-    report=native('--outside-edit',source,target)
-    lock=sqlite3.connect(f'{peer}/project.db',timeout=20)
-    lock.execute('BEGIN IMMEDIATE')
-    asked=f'description=STALE_NATIVE_{attempt}'
-    pending=subprocess.Popen([binary,'--json','project','-p',peer,'set','groudon',asked],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
-    try:
-        time.sleep(.8)
-        assert pending.poll() is None,'CLI returned while the owned write lock was held'
-        seq=int(lock.execute("SELECT value FROM meta WHERE key='seq'").fetchone()[0])+1
-        lock.execute('UPDATE crdt_document SET snapshot=?,heads=? WHERE id=1',(target.read_bytes(),json.dumps(report['heads'])))
-        lock.execute('INSERT INTO crdt_changes(hash,seq,actor,bytes) VALUES(?,?,?,?)',(report['hash'],seq,report['actor'],target.with_suffix('.change').read_bytes()))
-        lock.execute("UPDATE meta SET value=? WHERE key='seq'",(str(seq),))
-        lock.commit()
-    finally:
-        lock.close()
-    stdout,stderr=pending.communicate(timeout=40)
-    if pending.returncode:
-        assert 'project_changed' in stdout+stderr and 'while this edit was being committed' in stdout+stderr,(stdout,stderr)
-        exported=cli('project','-p',peer,'export').stdout
-        assert f'STALE_NATIVE_{attempt}' not in exported and f'retained native writer crdt-outside-{attempt}' in exported,exported
-        cli('project','-p',peer,'set','groudon',asked)
-        exported=cli('project','-p',peer,'export').stdout
-        assert f'STALE_NATIVE_{attempt}' in exported and f'retained native writer crdt-outside-{attempt}' in exported,exported
-        observed=True
-        break
+with ThreadPoolExecutor(max_workers=1) as worker:
+    for attempt in range(8):
+        source=output/f'crdt-outside-{attempt}-before.am'; source.write_bytes(snapshot(peer)[0])
+        target=output/f'crdt-outside-{attempt}.am'
+        report=native('--outside-edit',source,target)
+        asked=f'STALE_NATIVE_{attempt}'
+        lock=sqlite3.connect(f'{peer}/project.db',timeout=20)
+        try:
+            lock.execute('BEGIN IMMEDIATE')
+            pending=worker.submit(patch,peer,description=asked)
+            time.sleep(.8)
+            assert not pending.done(),'HTTP edit returned while the owned write lock was held'
+            seq=int(lock.execute("SELECT value FROM meta WHERE key='seq'").fetchone()[0])+1
+            lock.execute('UPDATE crdt_document SET snapshot=?,heads=? WHERE id=1',(target.read_bytes(),json.dumps(report['heads'])))
+            lock.execute('INSERT INTO crdt_changes(hash,seq,actor,bytes) VALUES(?,?,?,?)',(report['hash'],seq,report['actor'],target.with_suffix('.change').read_bytes()))
+            lock.execute("UPDATE meta SET value=? WHERE key='seq'",(str(seq),))
+            lock.commit()
+        finally:
+            lock.close()
+        try:
+            pending.result(timeout=40)
+        except Refused as refused:
+            error=json.loads(refused.payload)['error']
+            assert refused.status==409 and error['code']=='project_changed' and 'while this edit was being committed' in error['message'],refused.payload
+            exported=project_api(peer,'/yaml')
+            retained=f'retained native writer crdt-outside-{attempt}'
+            assert asked not in exported and retained in exported,exported
+            patch(peer,description=asked)
+            exported=project_api(peer,'/yaml')
+            assert asked in exported and retained in exported,exported
+            observed=True
+            break
 assert observed,'no observed stale native base; proof is inconclusive'
 # Install a native peer fixture whose prefix and suffix contain independently
 # selected normalized names. Seed the old projection so ordinal-only updates
@@ -614,20 +631,20 @@ with sqlite3.connect(mixed/'project.db') as db:
 def chosen(project):
     with sqlite3.connect(f'{project}/project.db') as db:
         return [(name,ord,json.loads(value)) for name,ord,value in db.execute("SELECT boxes.name,boxes.ord,fields.value FROM boxes JOIN fields ON fields.box=boxes.key WHERE boxes.key IN ('mixed name','étage a') AND fields.field='text' ORDER BY boxes.ord")]
-cli('project','-p',mixed,'delete','projection_pivot')
+project_api(mixed,'/assets/projection_pivot','DELETE')
 assert chosen(mixed)==[('MIXED-NAME',ord0+2,'last mixed'),('ÉTAGE_A',ord0+3,'last unicode')],chosen(mixed)
-cli('project','-p',mixed,'delete','Mixed_Name')
+project_api(mixed,'/assets/Mixed_Name','DELETE')
 assert chosen(mixed)==[('MIXED-NAME',ord0+1,'last mixed'),('ÉTAGE_A',ord0+2,'last unicode')],chosen(mixed)
-cli('project','-p',mixed,'set','groudon','e2e_keys:={"keep":"kept","new":["same","same"]}','e2e_replace:=["same","same"]')
-cli('project','-p',mixed,'set','groudon','e2e_replace:={"branch":[1,1]}')
+patch(mixed,e2e_keys={'keep':'kept','new':['same','same']},e2e_replace=['same','same'])
+patch(mixed,e2e_replace={'branch':[1,1]})
 scans_after=output/'crdt-scans-after.am';scans_after.write_bytes(snapshot(mixed)[0])
 scans=native('--scan-check',scans_before,scans_after)
 
 # A separate valid graph exercises case-only rename and an arbitrary reorder
-# through the CLI. The native identity reader checks both retained boxes.
+# through the project API. The native identity reader checks both retained boxes.
 control=output/'crdt-case-order';clone(project,control)
 case_before=output/'crdt-case-before.am';case_before.write_bytes(snapshot(control)[0])
-cli('project','-p',control,'rename','groudon','Groudon')
+rename(control,'groudon','Groudon')
 case_after=output/'crdt-case-after.am';case_after.write_bytes(snapshot(control)[0])
 native('--identity',case_before,case_after,'groudon','Groudon')
 with sqlite3.connect(control/'project.db') as db:
@@ -636,7 +653,7 @@ assert set(ordered)=={'Groudon','whale'},ordered
 wanted=list(reversed(ordered))
 reorder=output/'crdt-reordered.yaml'
 reorder.write_text('version: 4\nassets:\n'+''.join(f'  {name}: {{text: Reordered {name}}}\n' for name in wanted),encoding='utf-8')
-cli('project','-p',control,'import',reorder)
+project_api(control,'/yaml','PUT',reorder.read_bytes())
 with sqlite3.connect(control/'project.db') as db:
     projected=db.execute('SELECT name,ord FROM boxes ORDER BY ord').fetchall()
 assert projected==list(zip(wanted,range(2))),projected
@@ -648,9 +665,13 @@ scans.update(mixed_projection=chosen(mixed),case_only_id_retained=True,reordered
 print(json.dumps({'passed':True,'append_type':kind,'prefix_bytes':len(before),'after_bytes':len(after),'project_id':original_id,'partial_and_boundary_truncation_refused':True,'missing_native_row_refused':True,'outside_writer_cas_refused_then_retry':True,'canvas':canvas}))
 STREAM_PROOF
 # The existing suite's real fresh-runner crash/restart path, with no second home or daemon.
-local prior; prior=$(id_of "$P")
+local prior pid
+prior=$(id_of "$P")
+pid=$(jq -r .pid "$HOME/.cozy/calcifer/calcifer.lock.holder")
 kill9
-[ "$(id_of "$P")" = "$prior" ] || check "CRDT: native appended identity changed across daemon restart"
+in_project "$P" --json --full status > "$OUT/crdt-restart.json" 2> "$OUT/crdt-restart.err" || check "CRDT: status did not restart Calcifer"
+J --arg id "$prior" '.id == $id' "$OUT/crdt-restart.json" || check "CRDT: native appended identity changed across daemon restart"
+[ "$(jq -r .pid "$HOME/.cozy/calcifer/calcifer.lock.holder")" != "$pid" ] || check "CRDT: Calcifer PID did not change"
 db_calcifer
 python3 - "$P/project.db" "$OUT/crdt-stream-after.am" <<'STREAM_RESTART' || check "CRDT: native appended stream changed on readonly restart"
 import sqlite3,sys
