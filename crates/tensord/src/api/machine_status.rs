@@ -77,7 +77,7 @@ pub(super) fn identity_frame(identity: &MachineIdentity) -> v1::StatusFrame {
         commit: api::COMMIT.into(),
         dev: identity.updates.dev(),
         workload_key: crate::hub::workload_key().thumbprint().into(),
-        receipt: identity.readiness.envelope().unwrap_or_default(),
+        receipt: identity.readiness.facts().unwrap_or_default(),
         ..Default::default()
     }
 }

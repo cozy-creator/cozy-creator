@@ -23,11 +23,20 @@ pub enum Credential {
     User(Arc<UserSession>),
     /// A fixed Bearer: an enrollment's email-proven token, for the calls only it may make.
     Bearer(String),
-    /// A rental pod's worker capability, on the worker routes.
-    Worker {
-        id: String,
-        token: String,
-    },
+    /// A rental pod's machine, on the worker routes: each request signed by the key of the leaf
+    /// the Hub pinned to its attempt. It holds no Hub secret.
+    Worker { id: String, sign: WorkerSigner },
+}
+
+/// Signs a worker request's [`worker_message`] with the machine's leaf key: ECDSA P-256 SHA-256, ASN.1.
+pub type WorkerSigner = Arc<dyn Fn(&[u8]) -> Result<Vec<u8>, String> + Send + Sync>;
+
+/// The text a worker request signs (Tensorhub `internal/workerauth`): the domain, method, request
+/// URI, worker id, Unix seconds and the body's SHA-256, one per line.
+pub fn worker_message(method: &str, uri: &str, worker: &str, unix: u64, body: &[u8]) -> Vec<u8> {
+    use sha2::Digest;
+    let body = hex::encode(sha2::Sha256::digest(body));
+    ["cozy.worker-request/1", method, uri, worker, &unix.to_string(), &body].join("\n").into_bytes()
 }
 
 /// One Hub, at its origin, and the credential every call speaks as.
@@ -550,13 +559,6 @@ impl Client {
             .await
     }
 
-    pub async fn report_worker_endpoint(&self, report: &WorkerEndpointReport) -> Result<(), Error> {
-        let request = self
-            .at(Method::POST, "/v1/worker/rental/endpoint", &[])
-            .json(report);
-        self.send(request).await.map(drop)
-    }
-
     pub async fn report_worker_speed(&self, report: &WorkerSpeedReport) -> Result<(), Error> {
         let request = self
             .at(Method::POST, "/v1/worker/rental/speed", &[])
@@ -647,13 +649,26 @@ impl Client {
                 )
             }
             Credential::Bearer(token) => (vec![("authorization", format!("Bearer {token}"))], None),
-            Credential::Worker { id, token } => (
-                vec![
+            Credential::Worker { id, sign } => {
+                use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+                let unix = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |since| since.as_secs());
+                let url = request.url();
+                let uri = match url.query() {
+                    Some(query) => format!("{}?{query}", url.path()),
+                    None => url.path().to_owned(),
+                };
+                let body = request.body().and_then(|body| body.as_bytes()).unwrap_or_default();
+                let message = worker_message(request.method().as_str(), &uri, id, unix, body);
+                let signature = sign(&message).map_err(Error::Credential)?;
+                let headers = vec![
                     ("x-cozy-worker-id", id.clone()),
-                    ("x-cozy-worker-token", token.clone()),
-                ],
-                None,
-            ),
+                    ("x-cozy-worker-time", unix.to_string()),
+                    ("x-cozy-worker-signature", URL_SAFE_NO_PAD.encode(signature)),
+                ];
+                (headers, None)
+            }
         };
         for (name, value) in headers {
             let value = HeaderValue::from_str(&value)
