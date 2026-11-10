@@ -25,8 +25,67 @@ pub(super) const FORMAT: i64 = 1;
 #[derive(Clone, Debug)]
 pub(super) struct Document {
     pub(super) doc: AutoCommit,
-    pub(super) value: Arc<Value>,
+    projection: Arc<Projection>,
     conflicts: Arc<OnceLock<Vec<String>>>,
+}
+
+// The selected native view shares unchanged roots and records across a write.
+// Only the native document is persisted.
+type Projection = BTreeMap<String, Group>;
+type Records = BTreeMap<String, Arc<Value>>;
+
+#[derive(Clone, Debug)]
+enum Group {
+    Value(Arc<Value>),
+    Records(Arc<Records>),
+}
+
+fn record_namespace(key: &str) -> bool {
+    matches!(key, "boxes" | "assets" | "files" | "canvas" | "history" | "runs")
+}
+
+impl Group {
+    fn from_value(key: &str, value: Value) -> Self {
+        match value {
+            Value::Object(rows) if record_namespace(key) => {
+                Self::Records(Arc::new(rows.into_iter().map(|(id, row)| (id, Arc::new(row))).collect()))
+            }
+            value => Self::Value(Arc::new(value)),
+        }
+    }
+}
+
+fn root_value<'a>(projection: &'a Projection, key: &str) -> Option<&'a Value> {
+    match projection.get(key) {
+        Some(Group::Value(value)) => Some(value),
+        _ => None,
+    }
+}
+
+fn root_records<'a>(projection: &'a Projection, key: &str) -> Option<&'a Records> {
+    match projection.get(key) {
+        Some(Group::Records(records)) => Some(records),
+        _ => None,
+    }
+}
+
+fn record_entries<'a>(projection: &'a Projection, key: &str) -> impl Iterator<Item = (&'a String, &'a Value)> {
+    root_records(projection, key).into_iter().flatten().map(|(id, row)| (id, row.as_ref()))
+}
+
+fn set_value(projection: &mut Projection, key: &str, value: Value) {
+    if root_value(projection, key) != Some(&value) {
+        projection.insert(key.to_owned(), Group::Value(Arc::new(value)));
+    }
+}
+
+fn records_mut<'a>(projection: &'a mut Projection, key: &str) -> &'a mut Records {
+    let group = projection.entry(key.to_owned()).or_insert_with(|| Group::Records(Arc::default()));
+    if !matches!(group, Group::Records(_)) {
+        *group = Group::Records(Arc::default());
+    }
+    let Group::Records(records) = group else { unreachable!("record namespace") };
+    Arc::make_mut(records)
 }
 
 fn invalid(detail: impl std::fmt::Display) -> Error {
@@ -45,16 +104,11 @@ fn actor(_at: &Path) -> ActorId {
 /// conflicting properties need get_all; their alternative objects are still all inspected.
 fn materialize(doc: &AutoCommit, object: &ObjId, value: AmValue<'_>, path: &str, mut found: Option<&mut Vec<String>>) -> Result<Value, Error> {
     match value {
-        AmValue::Object(ObjType::Map | ObjType::Table) => doc.map_range(object, ..).map(|item| {
-            let child = (item.conflict || matches!(item.value, ValueRef::Object(_))).then(|| item.id());
-            let key = item.key.into_owned();
-            if item.conflict && let Some(found) = found.as_deref_mut() {
-                conflict_at(doc, object, Prop::Map(key.clone()), path, child.as_ref(), true, found);
-            }
-            let at = child.as_ref().map(|_| beneath(path, &key)).unwrap_or_default();
-            let nested = if item.conflict { None } else { found.as_deref_mut() };
-            Ok((key, materialize(doc, child.as_ref().unwrap_or(object), item.value.into_value(), &at, nested)?))
-        }).collect::<Result<Map<_, _>, Error>>().map(Value::Object),
+        AmValue::Object(ObjType::Map | ObjType::Table) => {
+            read_map(doc, object, path, found, |_, child, value, at, nested| {
+                materialize(doc, child, value, at, nested)
+            }).map(Value::Object)
+        }
         AmValue::Object(ObjType::List) => doc.list_range(object, ..).map(|item| {
             let child = (item.conflict || matches!(item.value, ValueRef::Object(_))).then(|| item.id());
             if item.conflict && let Some(found) = found.as_deref_mut() {
@@ -67,6 +121,40 @@ fn materialize(doc: &AutoCommit, object: &ObjId, value: AmValue<'_>, path: &str,
         AmValue::Object(ObjType::Text) => doc.text(object).map(Value::String).map_err(invalid),
         AmValue::Scalar(value) => serde_json::to_value(value).map_err(invalid),
     }
+}
+
+/// Visit selected map values in native order and inspect every retained alternative.
+fn read_map<T, M: FromIterator<(String, T)>>(
+    doc: &AutoCommit,
+    object: &ObjId,
+    path: &str,
+    mut found: Option<&mut Vec<String>>,
+    mut read: impl FnMut(&str, &ObjId, AmValue<'_>, &str, Option<&mut Vec<String>>) -> Result<T, Error>,
+) -> Result<M, Error> {
+    doc.map_range(object, ..).map(|item| {
+        let child = (item.conflict || matches!(item.value, ValueRef::Object(_))).then(|| item.id());
+        let key = item.key.into_owned();
+        if item.conflict && let Some(found) = found.as_deref_mut() {
+            conflict_at(doc, object, Prop::Map(key.clone()), path, child.as_ref(), true, found);
+        }
+        let at = child.as_ref().map(|_| beneath(path, &key)).unwrap_or_default();
+        let nested = if item.conflict { None } else { found.as_deref_mut() };
+        let value = read(&key, child.as_ref().unwrap_or(object), item.value.into_value(), &at, nested)?;
+        Ok((key, value))
+    }).collect()
+}
+
+fn project(doc: &AutoCommit, found: &mut Vec<String>) -> Result<Projection, Error> {
+    read_map(doc, &ROOT, "", Some(found), |key, object, value, path, found| {
+        if record_namespace(key) && matches!(value, AmValue::Object(ObjType::Map | ObjType::Table)) {
+            let rows = read_map(doc, object, path, found, |_, child, value, at, nested| {
+                materialize(doc, child, value, at, nested).map(Arc::new)
+            })?;
+            Ok(Group::Records(Arc::new(rows)))
+        } else {
+            materialize(doc, object, value, path, found).map(|value| Group::from_value(key, value))
+        }
+    })
 }
 
 fn beneath(path: &str, label: &str) -> String {
@@ -147,15 +235,15 @@ impl Document {
     pub(super) fn load(bytes: &[u8], heads: &str, at: &Path) -> Result<Self, Error> {
         let doc = load_native(bytes, heads)?.with_actor(actor(at));
         let mut found = Vec::new();
-        let value = materialize(&doc, &ROOT, AmValue::Object(ObjType::Map), "", Some(&mut found))?;
-        if value.get("schema").and_then(Value::as_u64) != Some(FORMAT as u64) {
+        let projection = project(&doc, &mut found)?;
+        if root_value(&projection, "schema").and_then(Value::as_u64) != Some(FORMAT as u64) {
             return Err(invalid(
                 "unsupported logical project schema; update cozy before opening this project",
             ));
         }
         Ok(Self {
             doc,
-            value: Arc::new(value),
+            projection: Arc::new(projection),
             conflicts: Arc::new(OnceLock::from(found)),
         })
     }
@@ -163,18 +251,32 @@ impl Document {
     pub(super) fn new(at: &Path) -> Self {
         Self {
             doc: AutoCommit::new().with_actor(actor(at)),
-            value: Arc::new(json!({})),
+            projection: Arc::default(),
             conflicts: Arc::new(OnceLock::new()),
         }
     }
 
-    /// A narrow recursive diff, never one opaque serialized project string. Stable-ID maps keep
-    /// independently added entities/versions separate, and scalar conflicts remain multi-value.
-    pub(super) fn update(&mut self, value: Value) -> Result<(), Error> {
+    /// The complete initial state of a freshly created or migrated document.
+    pub(super) fn initialize(&mut self, value: Value) -> Result<(), Error> {
+        let Value::Object(fields) = value else {
+            return Err(invalid("logical project root is not a map"));
+        };
+        self.update_projection(fields.into_iter().map(|(key, value)| {
+            let group = Group::from_value(&key, value);
+            (key, group)
+        }).collect())
+    }
+
+    pub(super) fn update_stored(&mut self, before: &Stored, after: &Stored, ops: &[OpRow]) -> Result<(), Error> {
+        let projection = changed_projection(before, after, ops, &self.projection, self.identity());
+        self.update_projection(projection)
+    }
+
+    fn update_projection(&mut self, projection: Projection) -> Result<(), Error> {
         let known_empty = self.conflicts.get().is_some_and(Vec::is_empty);
-        reconcile_map(&mut self.doc, &ROOT, &self.value, &value, true)?;
+        reconcile_projection(&mut self.doc, &self.projection, &projection)?;
         self.doc.commit();
-        self.value = Arc::new(value);
+        self.projection = Arc::new(projection);
         // A local observing mutation cannot introduce concurrency. Imported snapshots seed
         // this cache during materialization; existing alternatives invalidate it on mutation.
         let conflicts = OnceLock::new();
@@ -197,7 +299,7 @@ impl Document {
     }
 
     pub(super) fn identity(&self) -> Option<(String, String)> {
-        let identity = self.value.get("identity")?;
+        let identity = root_value(&self.projection, "identity")?;
         Some((
             identity.get("id")?.as_str()?.to_owned(),
             identity.get("name")?.as_str().unwrap_or_default().to_owned(),
@@ -205,14 +307,14 @@ impl Document {
     }
 
     pub(super) fn set_identity(&mut self, id: &str, name: &str) -> Result<(), Error> {
-        let mut value = (*self.value).clone();
-        value["identity"] = json!({ "id": id, "name": name });
-        self.update(value)
+        let mut projection = (*self.projection).clone();
+        set_value(&mut projection, "identity", json!({ "id": id, "name": name }));
+        self.update_projection(projection)
     }
 
     pub(super) fn ops(&self) -> Result<Vec<OpRow>, Error> {
         let mut rows = Vec::new();
-        for (uid, record) in entries(&self.value, "history").filter(|(_, record)| present(record)) {
+        for (uid, record) in record_entries(&self.projection, "history").filter(|(_, record)| present(record)) {
             let mut row = decode::<OpRow>(&record["record"])?;
             row.uid.clone_from(uid);
             rows.push(row);
@@ -223,13 +325,16 @@ impl Document {
 
     pub(super) fn into_stored(self) -> Result<Stored, Error> {
         let mut written = Written::default();
-        written.head = ordered(&self.value, "head_order", "head")
+        written.head = ordered(
+            root_value(&self.projection, "head_order"),
+            root_value(&self.projection, "head").and_then(Value::as_object),
+        )
             .into_iter()
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect();
         let mut boxes = Vec::new();
-        for (id, record) in entries(&self.value, "boxes").filter(|(_, record)| present(record)) {
-            let ordered = ordered(record, "field_order", "fields")
+        for (id, record) in record_entries(&self.projection, "boxes").filter(|(_, record)| present(record)) {
+            let ordered = ordered(record.get("field_order"), object(record, "fields"))
                 .into_iter()
                 .map(|(key, value)| (key.clone(), value.clone()))
                 .collect();
@@ -246,7 +351,7 @@ impl Document {
         boxes.sort_by(|(a, first), (b, second)| (a, &first.id).cmp(&(b, &second.id)));
         written.boxes = boxes.into_iter().map(|(_, held)| held).collect();
         let mut lock = Lock::default();
-        for (id, record) in entries(&self.value, "assets").filter(|(_, record)| present(record)) {
+        for (id, record) in record_entries(&self.projection, "assets").filter(|(_, record)| present(record)) {
             let mut held: Asset = decode(&record["record"])?;
             held.id.clone_from(id);
             for (version_id, version) in entries(record, "versions").filter(|(_, record)| present(record)) {
@@ -266,14 +371,14 @@ impl Document {
                 ));
             }
         }
-        lock.files = entries(&self.value, "files")
+        lock.files = record_entries(&self.projection, "files")
             .map(|(hash, value)| decode::<File>(value).map(|file| (hash.clone(), File { row: true, ..file })))
             .collect::<Result<_, _>>()?;
         let empty = json!({});
-        lock.reserved = decode(self.value.get("reserved").unwrap_or(&empty))?;
-        lock.makes = decode(self.value.get("makes").unwrap_or(&empty))?;
+        lock.reserved = decode(root_value(&self.projection, "reserved").unwrap_or(&empty))?;
+        lock.makes = decode(root_value(&self.projection, "makes").unwrap_or(&empty))?;
         let mut runs = Vec::new();
-        for (id, record) in entries(&self.value, "runs").filter(|(_, record)| present(record)) {
+        for (id, record) in record_entries(&self.projection, "runs").filter(|(_, record)| present(record)) {
             let mut run: RunFile = decode(&record["record"])?;
             run.id.clone_from(id);
             runs.push((record["order"].as_u64().unwrap_or_default(), run));
@@ -281,7 +386,7 @@ impl Document {
         runs.sort_by(|(a, first), (b, second)| (a, &first.id).cmp(&(b, &second.id)));
         lock.runs = runs.into_iter().map(|(_, run)| run).collect();
         let mut canvas = BTreeMap::new();
-        for (_, record) in entries(&self.value, "canvas").filter(|(_, record)| present(record)) {
+        for (_, record) in record_entries(&self.projection, "canvas").filter(|(_, record)| present(record)) {
             let row: CardRow = decode(&record["record"])?;
             canvas.insert(text(record, "key"), row);
         }
@@ -313,10 +418,9 @@ fn text(value: &Value, key: &str) -> String {
 fn present(value: &Value) -> bool {
     value.get("present").and_then(Value::as_bool).unwrap_or(true)
 }
-fn ordered<'a>(value: &'a Value, key: &str, field: &str) -> Vec<(&'a String, &'a Value)> {
-    let Some(values) = object(value, field) else { return Vec::new() };
-    let mut rows: Vec<_> = value
-        .get(key)
+fn ordered<'a>(order: Option<&Value>, values: Option<&'a Map<String, Value>>) -> Vec<(&'a String, &'a Value)> {
+    let Some(values) = values else { return Vec::new() };
+    let mut rows: Vec<_> = order
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
@@ -533,34 +637,33 @@ pub(super) fn value(stored: &Stored, ops: &[OpRow], previous: &Value, identity: 
     json!({ "schema": FORMAT, "identity": { "id": id, "name": name }, "head": map_of(&stored.written.head), "head_order": keys_of(&stored.written.head), "boxes": boxes, "assets": assets, "files": files, "canvas": canvas, "history": history, "runs": runs, "reserved": stored.lock.reserved, "makes": stored.lock.makes })
 }
 
-/// Build the next derived view once, retaining unchanged encoded records. The native document
-/// remains authoritative; this only avoids serializing every existing asset/version on an edit.
-pub(super) fn changed_value(before: &Stored, after: &Stored, ops: &[OpRow], previous: &Value, identity: Option<(String, String)>) -> Value {
+/// Share untouched roots and keep the encoded value of each unchanged record.
+fn changed_projection(before: &Stored, after: &Stored, ops: &[OpRow], previous: &Projection, identity: Option<(String, String)>) -> Projection {
     let mut next = previous.clone();
     if !Arc::ptr_eq(&before.written, &after.written) {
         if before.written.head != after.written.head {
-            next["head"] = map_of(&after.written.head);
-            next["head_order"] = keys_of(&after.written.head);
+            set_value(&mut next, "head", map_of(&after.written.head));
+            set_value(&mut next, "head_order", keys_of(&after.written.head));
         }
         let old: BTreeMap<_, _> = before.written.boxes.iter().map(|held| (held.id.as_str(), held)).collect();
-        let boxes = records(&mut next, "boxes");
-        retire(boxes, after.written.boxes.iter().map(|held| held.id.as_str()));
+        let boxes = records_mut(&mut next, "boxes");
+        retire_records(boxes, after.written.boxes.iter().map(|held| held.id.as_str()));
         for (index, held) in after.written.boxes.iter().enumerate() {
             let unchanged = old.get(held.id.as_str()).is_some_and(|old| *old == held)
-                && boxes.get(&held.id).is_some_and(present);
+                && boxes.get(&held.id).is_some_and(|row| present(row));
             if !unchanged {
-                boxes.insert(held.id.clone(), json!({"present":true,"name":held.name,"order":index,"fields":map_of(&held.fields),"field_order":keys_of(&held.fields)}));
+                boxes.insert(held.id.clone(), Arc::new(json!({"present":true,"name":held.name,"order":index,"fields":map_of(&held.fields),"field_order":keys_of(&held.fields)})));
             }
         }
     }
     if !Arc::ptr_eq(&before.lock, &after.lock) {
         let old: BTreeMap<_, _> = before.lock.assets.iter().map(|(key, held)| (held.id.as_str(), (key, held))).collect();
-        let assets = records(&mut next, "assets");
-        retire(assets, after.lock.assets.values().map(|held| held.id.as_str()));
+        let assets = records_mut(&mut next, "assets");
+        retire_records(assets, after.lock.assets.values().map(|held| held.id.as_str()));
         for (key, held) in &after.lock.assets {
             if old.get(held.id.as_str()).is_some_and(|(old_key, old)| *old_key == key && *old == held)
-                && assets.get(&held.id).is_some_and(present) { continue; }
-            let row = assets.entry(held.id.clone()).or_insert_with(|| json!({}));
+                && assets.get(&held.id).is_some_and(|row| present(row)) { continue; }
+            let row = Arc::make_mut(assets.entry(held.id.clone()).or_insert_with(|| Arc::new(json!({}))));
             let old_versions: BTreeMap<_, _> = old.get(held.id.as_str()).into_iter().flat_map(|(_, held)|
                 held.versions.iter().map(|version| (version.id.as_str(), (false, version)))
                     .chain(held.discarded.iter().map(|version| (version.id.as_str(), (true, version))))).collect();
@@ -576,21 +679,34 @@ pub(super) fn changed_value(before: &Stored, after: &Stored, ops: &[OpRow], prev
             row["key"] = key.clone().into();
             row["record"] = encoded(&metadata);
         }
-        let runs = records(&mut next, "runs");
-        retire(runs, after.lock.runs.iter().map(|row| row.id.as_str()));
+        let runs = records_mut(&mut next, "runs");
+        retire_records(runs, after.lock.runs.iter().map(|row| row.id.as_str()));
         let old: BTreeMap<_, _> = before.lock.runs.iter().map(|row| (row.id.as_str(), row)).collect();
         for (index, row) in after.lock.runs.iter().enumerate() {
             let unchanged = old.get(row.id.as_str()).is_some_and(|old| *old == row)
-                && runs.get(&row.id).is_some_and(present);
+                && runs.get(&row.id).is_some_and(|row| present(row));
             if !unchanged {
-                runs.insert(row.id.clone(), json!({"present":true,"order":index,"record":row}));
+                runs.insert(row.id.clone(), Arc::new(json!({"present":true,"order":index,"record":row})));
             }
         }
         if before.lock.files != after.lock.files {
-            next["files"] = Value::Object(after.lock.files.iter().filter(|(_, file)| file.row).map(|(hash, file)| (hash.clone(), encoded(file))).collect());
+            let old = root_records(&next, "files");
+            let files: Records = after.lock.files.iter().filter(|(_, file)| file.row).map(|(hash, file)| {
+                let record = encoded(file);
+                let value = old.and_then(|rows| rows.get(hash)).filter(|old| old.as_ref() == &record)
+                    .cloned().unwrap_or_else(|| Arc::new(record));
+                (hash.clone(), value)
+            }).collect();
+            if old != Some(&files) {
+                next.insert("files".into(), Group::Records(Arc::new(files)));
+            }
         }
-        if before.lock.reserved != after.lock.reserved { next["reserved"] = encoded(&after.lock.reserved); }
-        if before.lock.makes != after.lock.makes { next["makes"] = encoded(&after.lock.makes); }
+        if before.lock.reserved != after.lock.reserved {
+            set_value(&mut next, "reserved", encoded(&after.lock.reserved));
+        }
+        if before.lock.makes != after.lock.makes {
+            set_value(&mut next, "makes", encoded(&after.lock.makes));
+        }
     }
     let identities = |stored: &Stored| -> BTreeMap<String, String> {
         stored.written.boxes.iter().map(|held| (name_key(&held.name), held.id.clone()))
@@ -612,40 +728,53 @@ pub(super) fn changed_value(before: &Stored, after: &Stored, ops: &[OpRow], prev
     if !Arc::ptr_eq(&before.canvas, &after.canvas)
         || (!same_owners() && identities(before) != identities(after)) {
         let identities = identities(after);
-        let canvas = records(&mut next, "canvas");
+        let canvas = records_mut(&mut next, "canvas");
         let mut live = BTreeSet::new();
         for (key, row) in after.canvas.iter() {
             let id = identities.get(key).cloned().or_else(|| canvas.iter().find(|(_, record)| text(record, "key") == *key).map(|(id, _)| id.clone())).unwrap_or_else(super::new_key);
             live.insert(id.clone());
             let record = encoded(row);
             if !canvas.get(&id).is_some_and(|value| present(value) && text(value, "key") == *key && value["record"] == record) {
-                canvas.insert(id, json!({"present":true,"key":key,"record":record}));
+                canvas.insert(id, Arc::new(json!({"present":true,"key":key,"record":record})));
             }
         }
-        retire(canvas, live.iter().map(String::as_str));
+        retire_records(canvas, live.iter().map(String::as_str));
     }
-    let history = records(&mut next, "history");
-    retire(history, ops.iter().map(|row| row.uid.as_str()));
+    let history = records_mut(&mut next, "history");
+    retire_records(history, ops.iter().map(|row| row.uid.as_str()));
     for row in ops {
         let id = if row.uid.is_empty() { super::new_key() } else { row.uid.clone() };
         let mut record = encoded(row);
         record["uid"] = id.clone().into();
         if !history.get(&id).is_some_and(|old| present(old) && old["record"] == record) {
-            history.insert(id, json!({"present":true,"record":record}));
+            history.insert(id, Arc::new(json!({"present":true,"record":record})));
         }
     }
-    // Merged replicas can retain equal display orders even when this edit changed
-    // another branch. Match the full builder's normalization on every logical commit.
-    for (index, held) in after.written.boxes.iter().enumerate() {
-        records(&mut next, "boxes").get_mut(&held.id).expect("current box")["order"] = json!(index);
-    }
-    for (index, row) in after.lock.runs.iter().enumerate() {
-        records(&mut next, "runs").get_mut(&row.id).expect("current run")["order"] = json!(index);
-    }
+    // A peer can leave equal display orders even when this edit changed another
+    // branch. Check every live order and copy only records needing normalization.
+    normalize_orders(&mut next, "boxes", after.written.boxes.iter().map(|held| &held.id));
+    normalize_orders(&mut next, "runs", after.lock.runs.iter().map(|row| &row.id));
     let (id, name) = identity.unwrap_or_else(|| (super::new_key(), String::new()));
-    next["schema"] = FORMAT.into();
-    next["identity"] = json!({"id":id,"name":name});
+    set_value(&mut next, "schema", FORMAT.into());
+    set_value(&mut next, "identity", json!({"id":id,"name":name}));
     next
+}
+
+fn normalize_orders<'a>(projection: &mut Projection, key: &str, ids: impl Iterator<Item = &'a String>) {
+    for (order, id) in ids.enumerate() {
+        let value = root_records(projection, key).and_then(|rows| rows.get(id)).expect("current record");
+        if value["order"].as_u64() != Some(order as u64) {
+            let row = records_mut(projection, key).get_mut(id).expect("current record");
+            Arc::make_mut(row)["order"] = json!(order);
+        }
+    }
+}
+
+fn retire_records<'a>(records: &mut Records, live: impl Iterator<Item = &'a str>) {
+    let live: BTreeSet<_> = live.collect();
+    for (_, row) in records.iter_mut().filter(|(id, row)| !live.contains(id.as_str()) && present(row)) {
+        Arc::make_mut(row)["present"] = false.into();
+    }
 }
 
 fn records<'a>(value: &'a mut Value, field: &str) -> &'a mut Map<String, Value> {
@@ -658,6 +787,63 @@ fn retire<'a>(records: &mut Map<String, Value>, live: impl Iterator<Item=&'a str
     for (_, value) in records.iter_mut().filter(|(id, _)| !live.contains(id.as_str())) {
         value["present"] = false.into();
     }
+}
+
+fn reconcile_projection(doc: &mut AutoCommit, before: &Projection, after: &Projection) -> Result<(), Error> {
+    for key in before.keys().filter(|key| !after.contains_key(*key)) {
+        doc.delete(ROOT, key.as_str()).map_err(invalid)?;
+    }
+    for (key, group) in after {
+        match group {
+            Group::Value(value) => {
+                let previous = match before.get(key) {
+                    Some(Group::Value(old)) => {
+                        if Arc::ptr_eq(old, value) || old.as_ref() == value.as_ref() { continue; }
+                        Some(old.as_ref())
+                    }
+                    _ => None,
+                };
+                put_changed(doc, &ROOT, Prop::Map(key.clone()), previous, value, false)?;
+            }
+            Group::Records(records) => {
+                let old = match before.get(key) {
+                    Some(Group::Records(old)) if Arc::ptr_eq(old, records) => continue,
+                    Some(Group::Records(old)) => Some(old),
+                    _ => None,
+                };
+                let object = match doc.get(ROOT, key.as_str()).map_err(invalid)? {
+                    Some((AmValue::Object(ObjType::Map), object)) => object,
+                    _ => {
+                        // Keep an equal selected value in its original native shape.
+                        if old.is_some_and(|old| old.as_ref() == records.as_ref()) { continue; }
+                        let object = doc.put_object(ROOT, key.as_str(), ObjType::Map).map_err(invalid)?;
+                        for (id, value) in records.iter() {
+                            put_changed(doc, &object, Prop::Map(id.clone()), None, value, false)?;
+                        }
+                        continue;
+                    }
+                };
+                if let Some(old) = old {
+                    for id in old.keys().filter(|id| !records.contains_key(*id)) {
+                        doc.delete(&object, id.as_str()).map_err(invalid)?;
+                    }
+                } else {
+                    let keys: Vec<_> = doc.keys(&object).collect();
+                    for id in keys.iter().filter(|id| !records.contains_key(*id)) {
+                        doc.delete(&object, id.as_str()).map_err(invalid)?;
+                    }
+                }
+                for (id, value) in records.iter() {
+                    let previous = old.and_then(|rows| rows.get(id));
+                    if previous.is_some_and(|row| Arc::ptr_eq(row, value) || row.as_ref() == value.as_ref()) {
+                        continue;
+                    }
+                    put_changed(doc, &object, Prop::Map(id.clone()), previous.map(Arc::as_ref), value, false)?;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn reconcile_map(doc: &mut AutoCommit, object: &ObjId, before: &Value, after: &Value, reused: bool) -> Result<(), Error> {
@@ -713,6 +899,7 @@ fn put_changed(doc: &mut AutoCommit, parent: &ObjId, prop: Prop, before: Option<
                     _ => (doc.put_object(parent, prop.clone(), kind).map_err(invalid)?, false),
                 }
             };
+            let before = if reused { before } else { None };
             if after.is_object() {
                 reconcile_map(doc, &held, before.unwrap_or(&Value::Null), after, reused)?;
             } else {

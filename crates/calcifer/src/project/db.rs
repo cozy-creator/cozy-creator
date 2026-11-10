@@ -433,7 +433,7 @@ fn initialize_crdt(conn: &mut Connection, at: &Path) -> Result<(), Error> {
     let inherited = identity(&tx).unwrap_or_else(|| {
         (super::folder_id(at.parent().unwrap_or_else(|| Path::new("."))), String::new())
     });
-    doc.update(crdt::value(&after, &ops, &serde_json::Value::Null, Some(inherited)))?;
+    doc.initialize(crdt::value(&after, &ops, &serde_json::Value::Null, Some(inherited)))?;
     write(&tx, &before, &after, &Extra { ops:ops.clone(), ..Default::default() }).map_err(|e| sql(at, e))?;
     save_document(&tx, at, &mut doc, after.seq, None)?;
     tx.pragma_update(None, "user_version", VERSION).map_err(|e| sql(at, e))?;
@@ -473,12 +473,10 @@ pub(crate) fn commit(conn: &mut Connection, at: &Path, before: &Stored, after: &
         None => read_document(&tx, at)?,
     };
     let old_heads = doc.doc.get_heads();
-    let identity = doc.identity();
     let mut ops = doc.ops()?;
     ops.retain(|row| !extra.ops_gone.iter().any(|(uid, _)| uid == &row.uid) && !extra.ops.iter().any(|next| next.uid == row.uid));
     ops.extend(extra.ops.iter().cloned());
-    let value = crdt::changed_value(before, after, &ops, &doc.value, identity);
-    doc.update(value)?;
+    doc.update_stored(before, after, &ops)?;
     if doc.doc.get_heads() != old_heads {
         // A fresh staged store's first populated document is its full baseline, not
         // a large change tail on the empty initializer. Normal edits stay incremental.
