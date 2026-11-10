@@ -1061,7 +1061,7 @@ pub(crate) fn describe_with(uv: &Path, dir: &Path, python: &str, runtime: Option
     command.args(["tool", "run", "--no-progress", "--python", python, "--from", from.as_str()]);
     if runtime.is_none() && from != "cozy-runtime@latest" {
         // Refresh within the bounds, ignoring an older installed tool even when it meets them.
-        command.args(["--isolated", "--upgrade-package", "cozy-runtime"]);
+        command.arg("--isolated").args(platform::tools::uv_upgrade(["cozy-runtime"]));
     }
     let said = run(
         command

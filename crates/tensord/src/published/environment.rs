@@ -377,9 +377,7 @@ impl Publisher {
         if let Some(links) = &links {
             args.extend(["--find-links", links]);
         }
-        for name in SDK {
-            args.extend(["--upgrade-package", name]);
-        }
+        args.extend(platform::tools::uv_upgrade(SDK));
         args.extend(requirements.iter().map(String::as_str));
         // What the package's own closure reports already stands (NVIDIA's aarch64 cusparseLt
         // wheel is tagged `sbsa`, so uv flags it on every Linux arm64 machine).

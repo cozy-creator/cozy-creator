@@ -284,6 +284,31 @@ pub fn uv_build() -> Option<Archive> {
     }
 }
 
+/// uv's index answers lag a release (cl-846, cl-858): uv serves a page from its cache for the page's max-age (PyPI's:
+/// 10 minutes), and some of PyPI's CDN edges list an upload minutes late, which no refresh reaches. The arguments
+/// that let each of `packages` move to its newest release, its page read afresh.
+pub fn uv_upgrade<'a>(packages: impl IntoIterator<Item = &'a str>) -> Vec<&'a str> {
+    packages.into_iter().flat_map(|package| ["--upgrade-package", package, "--refresh-package", package]).collect()
+}
+
+/// `attempt` (told whether to read every index page afresh: uv's `--refresh`) until uv no longer refuses for an index
+/// that lists no release meeting a requirement: once more at once, refreshed, then as long as `wait` waits out a pause
+/// for the index to catch up (it answers false to stop). `said` is uv's words in a failure, none for any other.
+pub fn uv_listed<T, E>(mut attempt: impl FnMut(bool) -> Result<T, E>, said: impl Fn(&E) -> Option<&str>, mut wait: impl FnMut() -> bool) -> Result<T, E> {
+    let mut refresh = false;
+    loop {
+        match attempt(refresh) {
+            Err(e) if said(&e).is_some_and(uv_unlisted) && (!refresh || wait()) => refresh = true,
+            done => return done,
+        }
+    }
+}
+
+/// uv's refusal for an index that lists no release meeting a requirement.
+fn uv_unlisted(said: &str) -> bool {
+    said.contains("No solution found") && (said.contains("there is no version of") || said.contains("is available") || said.contains("unsatisfiable"))
+}
+
 /// The pinned uv's directory under `tools`.
 pub fn uv_dir(tools: &Path) -> PathBuf {
     tools.join("uv").join(UV_VERSION)
