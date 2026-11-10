@@ -152,20 +152,22 @@ hub_packages() {
 }
 
 # hub_model_upload <check> <machine> <model>: new weights uploaded by that machine (its run capability: the workload
-# writer's path, as every machine and pod uploads) as a commit in lane f16. Prints the commit.
+# writer's path, as every machine and pod uploads) as a commit in lane f16, which it sets in HUB_COMMIT.
 hub_model_upload() {
   local w=$HB/w-$1
+  HUB_COMMIT=
   hub_weights "$w" || { expect "hub $1" FAIL "no weights to upload: tfs import/export failed"; return 1; }
   HUB_MODELS="$HUB_MODELS $3"
   hub_do "$1" ok model upload "$w" "$3" --lane f16 --on "$2" -y || return 1
-  "$CLI" --json model info "$3" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["commits"][0]["commit"])' 2>/dev/null
+  HUB_COMMIT=$("$CLI" --json model info "$3" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["commits"][0]["commit"])' 2>/dev/null)
+  [ -n "$HUB_COMMIT" ] || { expect "hub $1-commit" FAIL "model info $3 names no commit after the upload"; return 1; }
 }
 # hub_models: on $M, upload a commit (the workload writer), publish it as 0.1.0 (listed), download; the exact pin and
 # lane download; delete → gone, as the Hub serves the model and as `model info` shows it.
 hub_models() {
-  local model=$WHO/$HUB_PKG commit
-  commit=$(hub_model_upload model-upload "$M" "$model") || return 0
-  hub_do model-publish ok model publish "$model" 0.1.0 "$commit"
+  local model=$WHO/$HUB_PKG
+  hub_model_upload model-upload "$M" "$model" || return 0
+  hub_do model-publish ok model publish "$model" 0.1.0 "$HUB_COMMIT"
   hub_listed model-info-published "$model"
   hub_do model-download ok model download "$model" --on "$M" -y
   hub_do model-pinned ok model download "$model@0.1.0" --lane f16 --on "$M" -y
@@ -221,7 +223,7 @@ hub_pod_secrets() {
 # A rental it cannot name from the reply is the one new in `machine ls`; hub_cleanup ends any left. Returns 2 when this
 # cozy refuses the provider option, having failed the cell.
 hub_pod() {
-  local p=$1 m before model=$WHO/$HUB_PKG-$1 commit prov=()
+  local p=$1 m before model=$WHO/$HUB_PKG-$1 prov=()
   [ "$p" = any ] || prov=(--provider "$p")
   before=$(hub_machines)
   [ -s "$HB/pod-ssh.pub" ] || ssh-keygen -q -t ed25519 -N '' -C ci-hub-pod -f "$HB/pod-ssh"
@@ -245,7 +247,7 @@ while (i := t.find("{", i)) >= 0:
     expect "hub rent on $p" FAIL "rented $m on $p, but the reply named no machine: $(tail -c 200 "$HB/rent-$p.out")"
   fi
   hub_runs "run-on-$p" 0.1.1 "$WHO/$HUB_PKG" '' "$m"
-  commit=$(hub_model_upload "upload-from-$p" "$m" "$model") && [ -n "$commit" ] &&
+  hub_model_upload "upload-from-$p" "$m" "$model" &&
     hub_do "upload-from-$p-gone" ok model delete "$model" -y && HUB_MODELS=${HUB_MODELS/ $model/}
   hub_pod_secrets "$p" "$m"
   "$CLI" machine end "$m" -y >"$HB/end-$p.out" 2>&1
