@@ -1,9 +1,5 @@
-// The CLI and the page are one project (Paul, 11-04: "edits to the same project with a CLI will appear almost immediately in the webui; the
-// user should see the canvas being edited live"), in a real browser on a real Calcifer, with the real CLI, and the canvas never reloaded. From
-// each command's return to it showing, or a hand's save: add, text, approve, delete, put back, move, rename. A new box finds a free place on
-// screen and lands. A render from the CLI shows progress on its card and lands, on the fixture tool. What's typed and unsaved stays when the
-// CLI changes that field, and the page shows the conflict. What the page does reads back in the CLI. 200 edits as fast as they go: right at the
-// end, shown as it goes, only what changed read, frames sampled. And the stream made to fall behind for real, so `resync` runs: nothing's lost.
+// A second API client and the page edit one project on a real Calcifer. The canvas is never reloaded.
+// Each request is timed through its appearance, including typing conflicts, renders, and a 200-edit burst.
 //   node live.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $SHOT: where to keep its screenshots; $ALONE: on a shared
 // computer, so it runs nothing; $ARGV_LOG: where each cozy call is logged for coverage. Prints what it saw as JSON and exits 1 if anything failed.
@@ -12,7 +8,7 @@ const { execFile } = require('child_process');
 const { appendFileSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { cozyIn, calcifer, signIn, STEP_MS, boxOf, closeBox, lastLook, lookAt, noStall, openBox, png, until, pointAt, importYaml, yamlOf } = require('./page');
+const { projectAction, projectJson, calcifer, signIn, STEP_MS, boxOf, closeBox, lastLook, lookAt, noStall, openBox, png, until, pointAt, importYaml, yamlOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -237,8 +233,8 @@ function linesOf(text, name) {
       else done({ stdout, stderr, at });
     });
   });
-  const project = (...words) => cozy(...words);
-  const asJson = async (...words) => JSON.parse((await cozy('--json', '--full', ...words)).stdout);
+  const project = (...words) => projectAction(folder, ...words);
+  const asJson = async (...words) => (await project(...words)).value;
   const status = () => asJson('status');
   const rows = async () => (await api(`/v1/projects/${id}/canvas`)).body.cards;
   const held = async (name) => (await status()).assets.find((asset) => asset.name === name);
@@ -291,7 +287,7 @@ function linesOf(text, name) {
   await page.locator('.empty-canvas').waitFor();
   let place = await spot();
   const added = await timed('add', { name: 'live_a', x: place.x, y: place.y }, () => project('add', 'cozy/edit', 'live_a', `at=${place.x},${place.y},260`, 'description=Words from the CLI'));
-  check('add_prints_its_name', added.stdout.trim() === 'live_a', added.stdout);
+  check('add_returns_its_name', added.value.name === 'live_a', added.value);
   check('add_lands', added.landing);
   check('add_in_the_status', (await held('live_a'))?.tool === 'cozy/edit');
 
@@ -302,13 +298,13 @@ function linesOf(text, name) {
   // A picture.
   const picture = join(scratch, 'Live Picture.png');
   writeFileSync(picture, png(77));
-  const imported = await timed('import', { name: 'live_pic' }, () => cozy('--json', 'import', picture, 'live_pic'));
+  const imported = await timed('import', { name: 'live_pic' }, () => project('import', picture, 'live_pic'));
   check('import_lands', imported.landing);
-  const hash = JSON.parse(imported.stdout).sha256.replace('sha256:', '').slice(0, 12);
+  const hash = imported.value.sha256.replace('sha256:', '').slice(0, 12);
 
   // A file of the project's lifted out as an asset of its own, with its description.
   const lifted = await timed('lift_a_file', { name: 'live_lift' }, () => project('import', hash, 'live_lift', '--description', 'Lifted out'));
-  check('lift_prints_its_name', lifted.stdout.trim() === 'live_lift', lifted.stdout);
+  check('lift_returns_its_name', lifted.value.name === 'live_lift', lifted.value);
   check('lift_keeps_its_words', (await held('live_lift'))?.fields?.description === 'Lifted out');
 
   // By hand, in place and by a rename over it, as editors save.
@@ -348,16 +344,16 @@ function linesOf(text, name) {
 
   // Deleted by a command, which prints the command that undoes it. That brings it back where it was.
   const deleted = await timed('delete', { gone: 'live_b' }, () => project('delete', 'live_b'));
-  const back = deleted.stdout.trim().split('\n').at(-1);
-  check('delete_prints_its_undo', back.startsWith('cozy undo ') && /^\d+$/.test(back.split(' ').at(-1)), deleted.stdout);
+  const back = deleted.value.history;
+  check('delete_has_an_undo_entry', Number.isInteger(back), deleted.value);
   check('delete_gone_from_the_status', !(await held('live_b')));
-  await timed('undo', { name: 'live_b', x: place.x, y: place.y, w: 320 }, () => project('undo', back.split(' ').at(-1)));
+  await timed('undo', { name: 'live_b', x: place.x, y: place.y, w: 320 }, () => project('undo', back));
   check('undo_in_the_status', (await held('live_b'))?.fields?.description === 'Hand words two');
 
-  // By hand: a row from the CLI, an asset gone in an edited export, and an export that doesn't read, which is refused and changes nothing.
+  // By hand: a row from the API, an asset gone in an edited export, and an export that doesn't read, which is refused and changes nothing.
   place = await spot();
   await timed('hand_row', { name: 'live_b', x: place.x, y: place.y }, () => saved(() => {
-    cozyIn(folder, ['set', 'live_b', `at=${place.x},${place.y}`], { stdio: 'ignore' });
+    projectJson(folder, 'PATCH', '/canvas', { cards: { 'live_b': { x: place.x, y: place.y } } });
   }));
   await timed('hand_delete', { gone: 'live_auto' }, () => saved(() => importYaml(folder, yaml().replace(`${linesOf(yaml(), 'live_auto').trimEnd()}\n`, ''))));
   const whole = yaml();
@@ -424,7 +420,7 @@ function linesOf(text, name) {
   await until('typed saved under its new name', async () => (await held('live_held'))?.fields?.instructions, (text) => text?.includes('TYPED-FOUR'));
   check('typed_survives_a_rename', true);
 
-  // What the page does, the CLI reads at once.
+  // What the page does, the API reads at once.
   const readsBack = async (label, read, wanted) => {
     const from = Date.now();
     await until(label, read, wanted);
@@ -473,14 +469,14 @@ function linesOf(text, name) {
   // An Edit's tracks and clips from a file, as its timeline's gestures write them: the page shows its clip.
   place = await spot();
   const cutFile = join(scratch, 'cut.yaml');
-  writeFileSync(cutFile, 'description: A cut from a file\ntimeline:\n  tracks:\n    - clips:\n        - {clip: live_pic, frames: 24}\n');
+  writeFileSync(cutFile, JSON.stringify({ description: 'A cut from a file', timeline: { tracks: [{ clips: [{ clip: 'live_pic', frames: 24 }] }] } }));
   await project('add', 'cozy/edit', 'live_cut', `at=${place.x},${place.y},260`);
   await timed('edit_from_a_file', { name: 'live_cut', picture: true }, () => project('set', 'live_cut', '--input', cutFile));
   check('edit_reads_back', (await held('live_cut')).timeline?.tracks?.[0]?.clips?.[0]?.name === 'live_pic', (await held('live_cut')).timeline);
   await project('delete', 'live_cut');
 
   if (local) {
-    // A render from the CLI, on the fixture tool: its progress on its card, moving, with no reload, and it lands. The first one only readies its environment.
+    // A render from the API, on the fixture tool: its progress on its card, moving, with no reload, and it lands. The first one only readies its environment.
     // Read with this machine's Runtime, as a run reads it: a box doesn't wait on PyPI's.
     await cozy('--json', 'run', `${TOOL}/still`, 'prompt=primed', '--on', 'local');
     place = await spot();
@@ -544,7 +540,7 @@ function linesOf(text, name) {
     const stopped = await timed('delete_while_rendering', { gone: 'live_shot' }, () => project('delete', 'live_shot'));
     const going = await until('nothing owed', async () => (await status()).queue ?? [], (queue) => queue.length === 0, 30_000);
     check('delete_stops_its_render', going.length === 0, going);
-    await timed('undo_after_a_render', { name: 'live_shot' }, () => project('undo', stopped.stdout.trim().split(' ').at(-1)));
+    await timed('undo_after_a_render', { name: 'live_shot' }, () => project('undo', stopped.value.history));
     check('undo_keeps_its_takes', (await held('live_shot')).versions === 3, await held('live_shot'));
 
   }

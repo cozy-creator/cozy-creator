@@ -1,18 +1,18 @@
 // Undo and redo (Paul, 11-06): "an undo / redo history button ... helpful if I do something destructive and dumb by mistake". The project keeps
 // the history, whoever edits it: on a real Calcifer, each of a delete, a merge, a tool taken off, words typed, a move, approve and unapprove and
 // a take discarded is undone (Ctrl+Z, the top bar's Undo, a note's Undo) and redone (Ctrl+Shift+Z), shown at once and checked in project.yaml,
-// its canvas rows and takes in project.db after each. The CLI's edit is undone from the page, the page's from the CLI; an undo a later edit would
+// its canvas rows and takes in project.db after each. The API client's edit is undone from the page, the page's from the API; an undo a later edit would
 // clobber is refused, saying which; and with Calcifer stopped, an edit and its undo wait, land in order when it's back, and the history is there
-// after a restart, for `cozy redo`.
+// after a restart, for Redo.
 //   node undo.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $SHOT: where to keep its screenshots; $STOP: a shell command
 // that stops this Calcifer, and $START one that brings it back. Prints what it saw as JSON and exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
-const { execSync, spawnSync } = require('child_process');
-const { appendFileSync, existsSync, mkdtempSync, readFileSync, writeFileSync } = require('fs');
+const { execSync } = require('child_process');
+const { existsSync, mkdtempSync, readFileSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { calcifer, signIn, STEP_MS, boxOf, closeBox, launch, lastLook, lookAt, noStall, openBox, png, pointAt, settled, until, rowsOf, upload, yamlOf } = require('./page');
+const { projectAction, calcifer, signIn, STEP_MS, boxOf, closeBox, launch, lastLook, lookAt, noStall, openBox, png, pointAt, settled, until, rowsOf, upload, yamlOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -56,14 +56,7 @@ function check(name, ok, detail) {
     const [held] = rowsOf(folder, `SELECT x, y FROM canvas WHERE name = '${name}'`);
     return held ? `${Math.round(held[0])},${Math.round(held[1])}` : null;
   };
-  // What the CLI says, on either stream; refused, it throws.
-  const cozy = (...words) => {
-    const argv = [...words];
-    if (process.env.ARGV_LOG) appendFileSync(process.env.ARGV_LOG, `${argv.map((word) => `${word}\x1f`).join('')}\x1e`);
-    const ran = spawnSync(process.env.COZY, argv, { cwd: folder, encoding: 'utf8' });
-    if (ran.status !== 0) throw new Error(`cozy ${words.join(' ')}: ${ran.stderr}`);
-    return `${ran.stdout}${ran.stderr}`;
-  };
+  const edit = async (...words) => (await projectAction(folder, ...words)).value;
   const history = async () => (await api(`${at}/history?limit=50`)).body;
   const box = (name) => boxOf(page, name);
   const shot = (name) => (process.env.SHOT ? page.screenshot({ path: `${process.env.SHOT}-${name}.png` }) : Promise.resolve());
@@ -290,22 +283,22 @@ function check(name, ok, detail) {
   check('discard_undone_again', (await until('back again', takes, (n) => n === had).catch(() => null)) === had);
   await closeBox(page);
 
-  // The CLI's edit, undone from the page's Undo button, which says whose it is.
-  cozy('set', 'words', 'text=the cli was here');
+  // The API client's edit, undone from the page's Undo button, which says whose it is.
+  await edit('set', 'words', 'text=the cli was here');
   await says('cli_edit_written', () => lines('words'), (held) => held?.includes('the cli was here'));
   const button = page.locator('.top .history [aria-label=Undo]');
-  await says('undo_says_the_cli', () => button.getAttribute('title'), (said) => said?.includes('by the CLI'));
+  await says('undo_says_the_api', () => button.getAttribute('title'), (said) => said?.includes('by the API'));
   await button.click();
   await says('cli_edit_undone_from_the_page', () => lines('words'), (held) => held?.includes('a stormy harbour'));
 
-  // The page's edit, undone from the CLI.
+  // The page's edit, undone from the API.
   await away();
   await pointAt(page, box('spare').locator('.nm'));
   await box('spare').locator('.head [aria-label=Delete]').click();
   await says('page_delete_written', () => lines('spare'), (held) => held === null);
   await until('listed', history, (held) => held.entries[0]?.words === 'Deleted spare' && held.entries[0]?.by.via === 'page');
-  const undid = cozy('undo');
-  check('page_edit_undone_from_the_cli', undid.includes('Deleted spare') && (await until('back', () => Promise.resolve(lines('spare')), Boolean).then(() => true, () => false)), undid);
+  const undid = await edit('undo');
+  check('page_edit_undone_from_the_api', undid.entries.some((entry) => entry.words === 'Deleted spare') && (await until('back', () => Promise.resolve(lines('spare')), Boolean).then(() => true, () => false)), undid);
   check('and_shown', await box('spare').waitFor({ timeout: 5000 }).then(() => true, () => false));
 
   // An undo a later edit would clobber is refused, naming that edit, and the file stays as the later edit left it.
@@ -313,8 +306,8 @@ function check(name, ok, detail) {
   await pointAt(page, box('spare').locator('.nm'));
   await box('spare').locator('.head [aria-label=Delete]').click();
   await says('deleted_again', () => lines('spare'), (held) => held === null);
-  cozy('import', picture(60), 'spare');
-  const theirs = await until('the CLI\'s spare', () => asset('spare'), Boolean);
+  await edit('import', picture(60), 'spare');
+  const theirs = await until('the API client\'s spare', () => asset('spare'), Boolean);
   await page.locator('.note:has-text("Deleted spare") button:has-text("Undo")').last().click();
   const refused = await until('refused', notes, (lines) => lines.some((line) => /Couldn't undo/.test(line))).catch(() => null);
   seen.refused = refused?.find((line) => /Couldn't undo/.test(line));
@@ -340,13 +333,13 @@ function check(name, ok, detail) {
   check('offline_file_as_before', held() === before, yaml());
   execSync(process.env.STOP, { shell: 'bash', stdio: 'ignore' });
   execSync(process.env.START, { shell: 'bash', stdio: 'ignore' });
-  const kept = cozy('history', '-n', '3');
-  check('history_survives_a_restart', /Deleted red \(undone/.test(kept), kept);
-  const again = cozy('redo');
-  check('redo_after_a_restart', again.includes('Deleted red') && lines('red') === null, again);
-  check('page_follows_the_cli', await until('red gone', () => box('red').count(), (n) => n === 0).then(() => true, () => false));
+  const kept = await edit('history', '-n', '3');
+  check('history_survives_a_restart', kept.entries.some((entry) => entry.words === 'Deleted red' && entry.undone), kept);
+  const again = await edit('redo');
+  check('redo_after_a_restart', again.entries.some((entry) => entry.words === 'Deleted red') && lines('red') === null, again);
+  check('page_follows_the_api', await until('red gone', () => box('red').count(), (n) => n === 0).then(() => true, () => false));
 
-  // Several back at once from the list, and forward again: the newest two are the CLI's redo of the delete and its import.
+  // Several back at once from the list, and forward again: the newest two are the API client's redo of the delete and its import.
   await away();
   await page.locator('.top .history [aria-label=History]').click();
   const listed = page.locator('.history-list .history-row');

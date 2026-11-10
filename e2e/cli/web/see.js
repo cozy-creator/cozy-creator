@@ -1,5 +1,5 @@
 // See it, in a real browser on a real Calcifer (project-web-ui §4, §8; web-ui.md §2): a project as a live graph. Files from `cozy
-// import` and blocks of an export edited and imported (`cozy import`) show with no reload: elements of every kind, with no edges, each placed once, left
+// import` and blocks of an export edited and imported (the import API) show with no reload: elements of every kind, with no edges, each placed once, left
 // to right of what it reads, its row written. What `GET /v1/projects/{id}` says for it. A video's poster isn't its black first frame; a rest
 // on its box, or on a take, plays its preview, made as it landed, which leaving or a pan stops; playing is Range with ?media=, at most two. A take landing shows with no reload, a failure stays across a reload and is gone when its text changes, a file that
 // leaves is "On another computer" and comes back. Where this computer runs models: versions, looking at one, pin and unpin, on a real
@@ -11,11 +11,11 @@
 // its screenshots; $ALONE: on a shared computer, so no run and no restart; $RESTART, $NO_HUB: shell commands that kill this Calcifer and
 // bring it back, the second on a Hub nothing answers. Prints what it saw as JSON and exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
-const { exec, spawnSync } = require('child_process');
+const { exec } = require('child_process');
 const { existsSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } = require('fs');
 const { homedir, tmpdir } = require('os');
 const { basename, join } = require('path');
-const { newProject, cozyIn, calcifer, signIn, DARK_OPEN, MP4, boxLog, boxOf, closeBox, openBox, STEP_MS, importYaml, lastLook, launch, lookAt, png, noStall, panning, removeGeneratedProject, renderOf, rowsOf, summary, until, watchBoxes, wav, yamlOf } = require('./page');
+const { importFile, projectJson, newProject, calcifer, signIn, DARK_OPEN, MP4, boxLog, boxOf, closeBox, openBox, STEP_MS, importYaml, lastLook, launch, lookAt, png, noStall, panning, removeGeneratedProject, renderOf, rowsOf, summary, until, watchBoxes, wav, yamlOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -147,7 +147,7 @@ async function rest(page, handle) {
   const state = () => api(`/v1/projects/${id}`);
   const folder = (await state()).path;
   seen.project = { id, folder };
-  // The project as `cozy export` writes it; a hand's edit of it goes back by `cozy import` (cl-803: its state is project.db).
+  // The project as the YAML export API writes it; a hand's edit of it goes back by the import API (cl-803: its state is project.db).
   const yaml = () => yamlOf(folder);
   await page.evaluate(() => { window.notReloaded = true; });
   const notReloaded = () => page.evaluate(() => window.notReloaded === true);
@@ -165,7 +165,7 @@ async function rest(page, handle) {
     ['dark_open', 'dark_open.mp4', DARK_OPEN],
   ]) {
     writeFileSync(join(scratch, file), bytes);
-    cozyIn(folder, ['import', join(scratch, file), name], { encoding: 'utf8' });
+    importFile(folder, join(scratch, file), name);
     imported[name] = (await asset(name)).sha256;
   }
   const prefix = imported.hero_art.replace('sha256:', '').slice(0, 12);
@@ -367,8 +367,8 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   await until('its dot', () => needs.locator('.dot.s-failed').count(), (n) => n === 1);
   check('failed_dot', true);
   check('no_line_at_rest', (await needs.locator('.status').count()) === 0, await needs.innerText());
-  const told = spawnSync(COZY, ['status'], { cwd: folder, encoding: 'utf8' });
-  check('terminal_hears_the_failure', `${told.stdout}${told.stderr}`.includes('cannot render'), `${told.stdout}${told.stderr}`.slice(0, 400));
+  const told = projectJson(folder);
+  check('api_hears_the_failure', JSON.stringify(told).includes('cannot render'), told);
   // A box takes its tool's shape once its tool is known, and a box it then lay on moved clear: what stands is the rows as they are now.
   const beforeReload = await cards();
   seen.moved_since_placed = named.filter((name) => beforeReload[name].x !== rows[name].x || beforeReload[name].y !== rows[name].y);
@@ -481,12 +481,12 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   const scalePages = new Set();
   try {
     const big = made.path;
-    for (const [name, file] of [['a_picture', 'older.png'], ['a_video', 'clip.mp4']]) cozyIn(big, ['import', join(scratch, file), name]);
+    for (const [name, file] of [['a_picture', 'older.png'], ['a_video', 'clip.mp4']]) importFile(big, join(scratch, file), name);
     const held = await api(`/v1/projects/${made.id}`);
     const hash = (name) => held.assets.find((row) => row.name === name).sha256.replace('sha256:', '').slice(0, 12);
     const COUNT = 300;
     const perRow = Math.ceil(Math.sqrt(COUNT));
-    // Its boxes by `cozy import`, and each one's place by the canvas's PATCH, as the page moves them.
+    // Its boxes by the import API, and each one's place by the canvas's PATCH, as the page moves them.
     let text = 'version: 4\nassets:\n';
     const placed = {};
     for (let i = 0; i < COUNT; i++) {

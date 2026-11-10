@@ -5,7 +5,7 @@
 //   node serves.js <project id> <project folder> <file to import>
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: Google Chrome; $COZY: the CLI; $HOLDER: Calcifer's lock record. Every browser step is bounded.
 const { chromium } = require(process.env.PLAYWRIGHT);
-const { cozyIn, calcifer, signIn } = require('./page');
+const { importFile, calcifer, signIn } = require('./page');
 const [id, folder, file] = process.argv.slice(2);
 const origin = calcifer();
 const STEP_MS = 60000;
@@ -91,7 +91,7 @@ let [mine, asked] = [false, 0];
     return r.status;
   }, out.session.token));
   await until('hello on the stream', () => window.streamed.some((e) => e.type === 'hello'));
-  out.imported = JSON.parse(cozyIn(folder, ['--json', 'import', file], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }));
+  out.imported = importFile(folder, file);
   await until('project.changed on the stream', (id) => window.streamed.some((e) => e.type === 'project.changed' && e.id === id && e.rev), id);
   out.streamed = await page.evaluate(() => { window.endStream(); return window.streamed; });
   out.violations.push(...await page.evaluate(() => window.__violations));
