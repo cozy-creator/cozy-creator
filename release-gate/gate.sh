@@ -14,7 +14,8 @@
 # --suite runs those suites (suites/<name>/: README.md says what each proves and costs); there is no default, the
 # release agent chooses. A suite's cells.sh runs once the candidate is on, and its check.py in analyze.py; the baseline
 # is gate-<SKU>-<suites>.json.
-# A candidate URL is https://…#sha256=<hex>: fetched here, held by its digest, and sent as a file
+# A candidate is a release by number (0.43.1: the machine fetches it, as on a pod booted from an older worker image), or a
+# URL https://…#sha256=<hex>: fetched here, held by its digest, and sent as a file
 # (`cozy machine update --runtime/--tensorfs/--tensord <path>`).
 # One FRESH rental. The candidate goes on with $CLI's `machine update`, never the candidate binary's: a cozy of another
 # version talking to a shared Calcifer restarts it on a route it lacks. The update fails unless the
@@ -84,14 +85,16 @@ fetch() {
       [ -f "$f" ] || curl -fsSL --retry 5 --retry-all-errors "${1%%#*}" -o "$f" || { log "cannot fetch ${1%%#*}"; return 1; }
       [ "$(sha256sum "$f" | cut -d' ' -f1)" = "${1##*#sha256=}" ] || { log "$f does not hash to ${1##*#sha256=}"; return 1; };;
     *://*) log "$1 names no #sha256="; return 1;;
-    *) f=$1; [ -f "$f" ] || { log "no file $f"; return 1; };;
+    *) f=$1; [ -f "$f" ] || [[ $f =~ ^[0-9]+\.[0-9]+\.[0-9]+([+.-][0-9A-Za-z.+-]*)?$ ]] || { log "no file or release $f"; return 1; };;
   esac
   echo "$f"
 }
 RWF=$(fetch "$RW") && TWF=$(fetch "$TW") && TDF=$(fetch "$TD") || exit 1
-if [ -n "$TDF" ]; then
+if [ -f "$TDF" ]; then
   chmod +x "$TDF"; BIN=$("$TDF" --version | awk '{print $2}')
   [ -n "$BIN" ] || { log "$TD is not a cozy binary"; exit 1; }
+elif [ -n "$TDF" ]; then
+  BIN=$TDF  # a release by number: the machine fetches it (cozy machine update --tensord 0.22.1)
 fi
 [ -z "$RWF" ] || CAND+=(--runtime "$RWF"); [ -z "$TWF" ] || CAND+=(--tensorfs "$TWF"); [ -z "$TDF" ] || CAND+=(--tensord "$TDF")
 BK=$SKU${SUITES:+-${SUITES//,/-}}  # the baseline's name
@@ -442,7 +445,7 @@ expect candidate-installed PASS "$M runs cozy $v, Runtime $rt, TensorFS $tfs"
 # Components with no candidate are not named: a --before FILE may move them on its SKU only.
 LABEL=cozy$v-rt$rt-tfs$tfs${PKGS:+-packages$(git -C "$PKGS" rev-parse --short HEAD)}${PINS:+-pins$(cksum <<< "$PINS" | cut -d' ' -f1)}
 echo "$LABEL" > label; log "gate $LABEL"
-digest() { [ -z "$1" ] || sha256sum "$1" | cut -d' ' -f1; }
+digest() { [ ! -f "$1" ] || sha256sum "$1" | cut -d' ' -f1; }  # a release by number has no file here
 jq -n --arg label "$LABEL" --arg cozy "${TDF:+$v}" --arg runtime "${RWF:+$rt}" --arg tensorfs "${TWF:+$tfs}" --arg cozy_sha256 "$(digest "$TDF")" \
   --arg runtime_wheel "$(basename "${RWF:-}")" --arg runtime_sha256 "$(digest "$RWF")" --arg tensorfs_wheel "$(basename "${TWF:-}")" \
   --arg tensorfs_sha256 "$(digest "$TWF")" --arg pins "${PINS//,/ }" --arg packages_ref "${PKGS:+$(git -C "$PKGS" rev-parse HEAD)}" \
