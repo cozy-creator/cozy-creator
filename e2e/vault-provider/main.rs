@@ -216,7 +216,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             read_only.try_unmount()?;
             "enforced"
         }
-        Err(project_mount::Error::Unsupported(_)) if cfg!(windows) => "unsupported-refused",
+        Err(project_mount::Error::Unsupported(_)) => "unsupported-refused",
         Err(error) => return Err(error.into()),
     };
     eprintln!("provider fixture: idle expiration");

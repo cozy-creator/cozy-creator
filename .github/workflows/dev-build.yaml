@@ -329,6 +329,13 @@ jobs:
           if [[ "$RUNNER_OS" == Windows ]]; then helper=securefs.exe; probe=$probe.exe; fi
           python -c 'import os, pathlib, zipfile; z=zipfile.ZipFile(os.environ["COZY_SECUREFS_ARCHIVE"]); p=pathlib.Path(os.environ["RUNNER_TEMP"])/"vault-provider-bin"; p.mkdir(); z.extractall(p); [f.chmod(0o755) for f in p.iterdir() if f.is_file()]'
           python e2e/vault-provider/run.py --probe "$probe" --securefs "$RUNNER_TEMP/vault-provider-bin/$helper" --artifacts "provider-proof"
+      - name: Keep macOS driver diagnostics
+        if: always() && runner.os == 'macOS'
+        run: |
+          mkdir -p provider-proof
+          /sbin/mount > provider-proof/macos-mounts.log
+          pluginkit -m -A -D -vv -p com.apple.fskit.fsmodule > provider-proof/macos-extensions.log 2>&1 || true
+          sudo /usr/bin/log show --style compact --last 3m --predicate 'process == "fskitd" OR process == "fskit_agent" OR subsystem BEGINSWITH "io.macfuse"' > provider-proof/macos-fskit.log 2>&1 || true
       - name: Collect only proof records
         if: always()
         run: |
@@ -337,7 +344,7 @@ jobs:
           import shutil
           source, target = Path('provider-proof'), Path('provider-evidence')
           target.mkdir(exist_ok=True)
-          for name in ['results.json', 'normal.log', 'crash.log', 'provider.log', 'crash/ready.json']:
+          for name in ['results.json', 'normal.log', 'crash.log', 'provider.log', 'crash/ready.json', 'macos-mounts.log', 'macos-extensions.log', 'macos-fskit.log']:
               item = source / name
               if item.is_file():
                   shutil.copy2(item, target / name.replace('/', '-'))
