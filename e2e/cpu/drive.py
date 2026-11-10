@@ -715,6 +715,9 @@ def compare(seen: Seen, reference: Seen, tolerance: float) -> None:
     if shape(want) != shape(got):
         raise Failed(f"outputs {shape(got)} differ from the reference's {shape(want)}")
     for a, b in zip(want, got, strict=True):
+        if len(a["signature"]) != len(b["signature"]):
+            raise Failed(f"output {b['name']}'s reference is a {len(a['signature'])}-part signature, not this "
+                         f"{len(b['signature'])}-part thumbnail: re-record it (run.sh --record)")
         mean, worst = differ(a["signature"], b["signature"])
         if mean > tolerance or worst > 12 * tolerance:
             raise Failed(f"output {b['name']} differs from its reference by {mean:.2f}/255 on average, {worst:.0f} at most "
