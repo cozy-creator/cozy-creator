@@ -99,8 +99,8 @@ echo "$BK" > "$OUT/baseline-key"  # release-gate.yml's baseline job publishes un
 gh release download "$TAG" -R "$REPO" -D "$B" -p "gate-$BK.json" -p "ref-$SKU.*" -p "ref-$SKU-clip.mp4" 2>/dev/null
 if [ -f "$B/gate-$BK.json" ]; then
   [ -z "$ESTABLISH" ] || { log "$BK already has a baseline; --establish is only for a SKU without one"; exit 1; }
-else
-  [ -n "$ESTABLISH" ] || { log "no baseline for $BK on $REPO@$TAG: --establish starts one"; exit 1; }
+else  # suite bench's numbers are checked in (baselines/), not a release asset
+  [ -n "$ESTABLISH" ] || [ "$SUITES" = bench ] || { log "no baseline for $BK on $REPO@$TAG: --establish starts one"; exit 1; }
 fi
 REF=$(ls "$B/ref-$SKU".* 2>/dev/null | grep -v -- -clip | head -1); REF=${REF:-$HERE/ref/seed.jpg}
 mapfile -t ROWS < <(grep -v '^#' "$HERE/scenarios.tsv")
@@ -285,9 +285,10 @@ PY
 rented() { RID=$("$CLI" --json machine show "$1" 2>/dev/null | jq -r '.rental_id // empty'); [ -z "$RID" ] || echo "$RID" > rental; }
 if [ -z "$ON" ]; then
   # Suite tensorfs's `kill` case kills the rental's TensorD over SSH, suite tensord measures the pod's link over it, and suite
-  # varena's faults run there (faults.sh), with this computer's key, or a new one on a runner. An --only without them rents no SSH.
+  # varena's faults run there (faults.sh), and suite bench holds the host's RAM there (pod.sh), with this computer's key, or a new
+  # one on a runner. An --only without them rents no SSH.
   SSH=
-  if [[ ,$SUITES, == *,tensord,* ]] || { [[ ,$SUITES, == *,tensorfs,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,kill,* ]]; }; } ||
+  if [[ ,$SUITES, == *,tensord,* ]] || [[ ,$SUITES, == *,bench,* ]] || { [[ ,$SUITES, == *,tensorfs,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,kill,* ]]; }; } ||
      { [[ ,$SUITES, == *,varena,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,faults,* ]]; }; }; then
     SSH=1; [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519
   fi
