@@ -23,6 +23,11 @@ use windows_sys::Win32::System::{
 pub struct Scope(OwnedHandle);
 
 impl Scope {
+    /// Windows owns the service's descendants through its stable parent's Job Object.
+    pub fn inherited(_: &str) -> Result<Self> {
+        Err(Error::unsupported(crate::Seam::Containment))
+    }
+
     pub fn create(_: &str) -> Result<Self> {
         Ok(Self(crate::process::job().map_err(Error::os("create a process scope"))?))
     }
