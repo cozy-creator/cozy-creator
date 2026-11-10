@@ -369,8 +369,7 @@ fn legacy_load(conn: &Connection, at: &Path) -> Result<Stored, Error> {
 /// Canonical project state plus machine-local bookkeeping. SQL projection damage never becomes a
 /// new authoritative project edit on read.
 pub(crate) fn load(conn: &Connection, at: &Path) -> Result<Stored, Error> {
-    let doc = read_document(conn, at)?;
-    let mut stored = doc.stored()?;
+    let mut stored = read_document(conn, at)?.into_stored()?;
     stored.seq = meta(conn, "seq").and_then(|seq| seq.parse().ok()).unwrap_or(0);
     if let Some(record) = conn.query_row("SELECT record FROM walk WHERE id = 1", [], |row| row.get::<_, String>(0)).optional().map_err(|e| sql(at, e))? {
         stored.walk = Arc::new(serde_json::from_str(&record).map_err(|e| err(at, e))?);
