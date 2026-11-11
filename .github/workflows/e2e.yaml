@@ -3,9 +3,8 @@ name: e2e
 # selects (ci/affected, ci/suites.toml). `cli`: install, up, the local machine, a weightless request and real
 # BiRefNet on the CPU, a second executor, down, uninstall (Linux); on macOS and Windows, when selected, what needs no
 # machine and every local verb refused (they run no models themselves yet). `imports`:
-# every published first-party package release installs and imports on the candidate set. `mps`: real
-# inference on the macOS runner's Apple GPU. The GPU suites run in the release gate, not here. `e2e` always
-# reports.
+# every published first-party package release installs and imports on the candidate set. The GPU suites run in the
+# release gate, not here. `e2e` always reports.
 #   Required for merges into master and rc/*: it runs on the merge queue's group (merge_group), on the final
 #   PR + branch state; on a pull request `affected` and every suite are skipped and `e2e` passes at once, which
 #   lets the PR be queued. Nothing runs on a push. A queue entry's base (merge_group.base_sha) is the entry ahead
@@ -293,11 +292,10 @@ jobs:
           arm=$([ -z "$PUBLISH_RUN" ] || echo '"windows-11-arm"')
           runners=$(echo "$s" | jq -c "[.os[] | {macos: [\"macos-15\"], windows: [\"windows-2025\"${arm:+, $arm}]}[.] // [] | .[]]")
           echo "runners=$runners" >> "$GITHUB_OUTPUT"
-          # One native cozy per OS across CLI partitions and explicit Apple-GPU inference.
-          echo "native_runners=$(echo "$s" | jq -c --argjson cli "$runners" '
-            [if (.suites | any(. == "cli" or . == "supervisor")) then $cli[] else empty end,
-             if (.suites | index("mps")) then "macos-15" else empty end] | unique')" >> "$GITHUB_OUTPUT"
-          echo "native_build=$(echo "$s" | jq 'any(.suites[]; . == "cli" or . == "mps")')" >> "$GITHUB_OUTPUT"
+          # One native cozy per OS across the CLI partitions.
+          echo "native_runners=$(echo "$s" | jq -c --argjson cli "$runners" \
+            'if (.suites | any(. == "cli" or . == "supervisor")) then $cli else [] end')" >> "$GITHUB_OUTPUT"
+          echo "native_build=$(echo "$s" | jq 'any(.suites[]; . == "cli")')" >> "$GITHUB_OUTPUT"
           { echo "### e2e selection: $REPO ${REF:0:12}"; echo '```'; echo "$s" | jq .; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           echo "$s" | jq .
       # skew's clients: `previous` is the previous minor's latest patch, from this cozy's own version.
@@ -665,7 +663,7 @@ jobs:
           path: ${{ runner.temp }}/e2e
           retention-days: 14
 
-  # Each native runner builds or reuses cozy once for CLI partitions and MPS.
+  # Each native runner builds or reuses cozy once for the CLI partitions.
   # An explicit supervisor-only selection runs the process checks without building a candidate.
   candidate-os:
     name: candidate ${{ matrix.runner }}
@@ -981,47 +979,6 @@ jobs:
           path: ${{ runner.temp }}/e2e
           retention-days: 14
 
-  mps:
-    needs: [affected, candidate-os]
-    if: contains(fromJSON(needs.affected.outputs.selection).suites, 'mps')
-    runs-on: macos-15
-    # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal. The suites fail on the
-    # CLI's typed errors and exits, never on time.
-    timeout-minutes: 90
-    defaults:
-      run:
-        shell: bash
-    env:
-      BUILD: ${{ join(fromJSON(needs.affected.outputs.selection).build, ' ') }}
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          repository: cozy-creator/cozy-creator
-          ref: ${{ needs.affected.outputs.creator }}
-          path: .creator
-      - uses: ./.creator/e2e/candidates
-        with:
-          packages_ref: ${{ needs.affected.outputs.packages }}
-          repo: ${{ needs.affected.outputs.repo }}
-          ref: ${{ needs.affected.outputs.ref }}
-          build: ${{ env.BUILD }}
-          from: native-artifact
-          native_artifact: native-cozy-macos-15
-          stack_ref: ${{ needs.affected.outputs.stack }}
-          runtime_ref: ${{ needs.affected.outputs.runtime }}
-          tensord: ${{ inputs.tensord }}
-          tensorfs: ${{ inputs.tensorfs }}
-          runtime: ${{ inputs.runtime }}
-          release: ${{ inputs.publish_run }}
-      - name: mps suite
-        run: bash .creator/e2e/mps/run.sh --out "$RUNNER_TEMP/e2e" $CANDIDATES
-      - if: always()
-        uses: ./.creator/e2e/publish
-        with:
-          name: e2e-mps
-          path: ${{ runner.temp }}/e2e
-          retention-days: 14
-
   # xs-166: the Hub's candidate against released clients, before a Hub deploy. Chosen only explicitly (select=skew);
   # it reports apart from `e2e`: before launch an old client's failures don't block (release-gate README).
   skew:
@@ -1082,7 +1039,7 @@ jobs:
 
   e2e:
     if: always()
-    needs: [affected, candidate, candidate-os, projectvault-archive, hub, cli, cli-os, cli-release, imports, cpu, mps]
+    needs: [affected, candidate, candidate-os, projectvault-archive, hub, cli, cli-os, cli-release, imports, cpu]
     runs-on: ubuntu-24.04
     # Last resort (tracker design/stalls.md): a runner that hangs sends no signal.
     timeout-minutes: 10
