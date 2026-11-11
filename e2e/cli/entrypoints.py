@@ -76,9 +76,9 @@ def main() -> None:
             run(f"removed {command}", [command, "--help"], code=2)
         run("account help", ["whoami", "--help"])
         run("nested cancellation", ["run", "cancel", "--help"])
-        run("watch help", ["run", "watch", "--help"])
-        run("removed run show", ["run", "show", "--help"], code=2)
-        run("removed run play", ["run", "play", "--help"], code=2)
+        assert "Usage: cozy run watch" in run("watch help", ["run", "watch", "--help"]).stdout
+        run("removed run show", ["run", "show", "1", "--once"], code=2)
+        run("removed run play", ["run", "play", "1", "--expires", "1h"], code=2)
         run("internal controller help", ["calcifer", "--help"])
         run("internal worker help", ["machine", "serve", "--help"])
         run("removed image override", ["machine", "rent", "example", "--image-digest", "sha256:" + "0" * 64], code=2)
