@@ -812,13 +812,13 @@ code {
   color: #fff;
 }
 .orbit-dial {
-  width: calc(34px * var(--text, 1));
-  height: calc(34px * var(--text, 1));
+  width: calc(44px * var(--text, 1));
+  height: calc(44px * var(--text, 1));
 }
 .orbit-dial .ring {
   fill: none;
-  stroke: #fff6;
-  stroke-width: 1.5;
+  stroke: #fffa;
+  stroke-width: 2;
 }
 .orbit-dial .tick {
   stroke: #fffa;
@@ -862,7 +862,7 @@ code {
   bottom: 6px;
   z-index: 2;
   display: flex;
-  padding: 3px;
+  padding: 4px;
   border-radius: 50%;
   background: #000a;
   color: #fff;
