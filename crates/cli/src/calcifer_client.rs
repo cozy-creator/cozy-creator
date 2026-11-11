@@ -1239,3 +1239,7 @@ fn write_key() -> String {
 #[cfg(test)]
 #[path = "calcifer_client_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "calcifer_restart_tests.rs"]
+mod restart_tests;
