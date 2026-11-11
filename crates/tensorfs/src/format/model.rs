@@ -420,8 +420,16 @@ mod compatibility_tests {
 
     #[test]
     fn modern_model_rewrites_preserve_private_history_and_deleted_versions() {
-        let public = crate::format::ObjectRef::of(b"public");
-        let private = crate::format::ObjectRef::of(b"private");
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::Store::open(dir.path()).unwrap();
+        let (mut header, weights, tokenizer) = crate::store::file::tests::fixture();
+        store.put_bytes(&weights).unwrap();
+        store.put_bytes(&tokenizer).unwrap();
+        let header_id = store.put_bytes(&header.to_cbor().unwrap()).unwrap();
+        let public = store.put_tree(&super::Tree::of("fp16", header_id, &Default::default()).unwrap()).unwrap();
+        header.metadata.insert("fixture_state".into(), crate::format::Value::Str("private".into()));
+        let header_id = store.put_bytes(&header.to_cbor().unwrap()).unwrap();
+        let private = store.put_tree(&super::Tree::of("fp16", header_id, &Default::default()).unwrap()).unwrap();
         // Same fields and visibility semantics as the Hub's ModelDoc model/1 fixture.
         let wire = serde_json::json!({"format":"cozytensors.model/1", "name":"fixture/model",
             "checkpoints":[], "deleted":["burnedVersion"], "releases":[
@@ -431,15 +439,13 @@ mod compatibility_tests {
         assert_eq!(model.resolve(None, None).unwrap().2, public);
         assert_eq!(model.resolve(Some("2.0"), None).unwrap().2, private);
         assert!(model.roots().contains(&&private));
-        model.add_checkpoint(crate::format::ObjectRef::of(b"local"));
+        model.add_checkpoint(public.clone());
         let saved: serde_json::Value = serde_json::from_slice(&model.to_json().unwrap()).unwrap();
         assert_eq!(saved["format"], "cozytensors.model/1");
         assert_eq!(saved["releases"], wire["releases"]);
         assert_eq!(saved["deleted"], wire["deleted"]);
         assert!(saved.get("commits").is_none());
 
-        let dir = tempfile::tempdir().unwrap();
-        let store = crate::store::Store::open(dir.path()).unwrap();
         store.update_ref("fixture/model", |_| Some(model)).unwrap();
         let mut model = store.get_ref("fixture/model").unwrap().unwrap();
         model.set_lane("3.0", "fp16", public);

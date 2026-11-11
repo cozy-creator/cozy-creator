@@ -276,7 +276,7 @@ pub(crate) mod tests {
     fn portable_checkpoint_rejects_damage_even_in_warm_store() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("only.cozytensors");
-        let (header, _, _, objects) = complete(&path);
+        let (header, weights, _, objects) = complete(&path);
         let store = Store::open(dir.path().join("store")).unwrap();
         store.admit_file(&path, "f32").unwrap();
         let good = fs::read(&path).unwrap();
@@ -311,10 +311,7 @@ pub(crate) mod tests {
             .to_string()
             .contains("header"));
         // Existing verified CAS bytes remain intact throughout failed admissions.
-        assert_eq!(
-            store.read(&header.chunks[0]).unwrap().len(),
-            header.chunks[0].length as usize
-        );
+        assert_eq!(store.read(&header.chunks[0]).unwrap(), weights);
     }
 
     #[test]
