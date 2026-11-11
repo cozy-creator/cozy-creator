@@ -4,7 +4,7 @@ use std::process::ExitCode;
 
 use clap::Subcommand;
 use api::{
-    calcifer::{Machine, NewMachine, clock},
+    calcifer::{Machine, MachineKind, MachineList, NewMachine, clock},
     error::{Error, Kind},
     ids::Digest,
 };
@@ -271,11 +271,7 @@ async fn add(
 async fn ssh(ctx: &Context, name: &str, command: &[String]) -> Result<ExitCode, Error> {
     let m = machine(ctx, name).await?;
     let Some(login) = &m.ssh else {
-        return Err(match &m.rental {
-            Some(rental) => Error::new(Kind::Usage, "machine_ssh_none", format!("{} has no SSH key; keys must be added when renting", m.name))
-                .next(format!("cozy machine rent {} --ssh", rental.sku)),
-            None => Error::new(Kind::Usage, "machine_ssh_none", format!("{} is not a rental; connect using its owner's SSH details", m.name)),
-        });
+        return Err(no_login(ctx, &m).await);
     };
     let mut ssh = std::process::Command::new(&login.args[0]);
     ssh.args(&login.args[1..]);
@@ -295,6 +291,51 @@ async fn ssh(ctx: &Context, name: &str, command: &[String]) -> Result<ExitCode, 
     {
         let status = ssh.status().map_err(unstarted)?;
         Ok(ExitCode::from(status.code().unwrap_or(1).clamp(0, 255) as u8))
+    }
+}
+
+/// Why `machine ssh` has no login for `m`: not a rental, rented without a key, not ready yet, or
+/// its Hub's word is missing (this computer is signed out there, or it did not answer).
+async fn no_login(ctx: &Context, m: &Machine) -> Error {
+    let name = &m.name;
+    if m.kind != MachineKind::Rental {
+        return Error::new(Kind::Usage, "machine_ssh_none", format!("{name} is not a rental; connect using its owner's SSH details"));
+    }
+    match &m.rental {
+        Some(rental) if rental.ssh_key => {
+            Error::new(Kind::Unavailable, "machine_ssh_booting", format!("{name} is not ready yet: root logs in with your SSH key once it is"))
+                .next(format!("cozy machine show {name}"))
+        }
+        Some(rental) => Error::new(Kind::Usage, "machine_ssh_none", format!("{name} has no SSH key; keys must be added when renting"))
+            .next(format!("cozy machine rent {} --ssh", rental.sku)),
+        None => {
+            let list = match ctx.calcifer().await {
+                Ok(calcifer) => calcifer.get::<MachineList>("/v1/machines?refresh=true").await.ok(),
+                Err(_) => None,
+            };
+            let hub = &m.hub;
+            let signed_out = list.as_ref().is_some_and(|list| list.signed_out.contains(hub));
+            let unanswered = list.as_ref().and_then(|list| list.unanswered.iter().find(|problem| problem.hub == *hub));
+            match (signed_out, unanswered) {
+                (true, _) => Error::credential(
+                    "not_logged_in",
+                    format!("{name}'s SSH login comes from its Hub, and this computer is not signed in to {hub}"),
+                )
+                .next(ctx.config.login(hub)),
+                (false, Some(problem)) => Error::new(
+                    Kind::Unavailable,
+                    "hub_unanswered",
+                    format!("{name}'s SSH login comes from its Hub, which did not answer: {}", problem.message),
+                )
+                .next(format!("cozy machine ssh {name}")),
+                (false, None) => Error::new(
+                    Kind::Unavailable,
+                    "machine_ssh_unheard",
+                    format!("{name}'s Hub has not said how to reach it yet"),
+                )
+                .next(format!("cozy machine show {name}")),
+            }
+        }
     }
 }
 

@@ -341,6 +341,8 @@ A machine is this computer's (`local`, started when used), a rental, or another 
   - An end that fails (this computer is signed out or its key refused, the Hub refuses the release or does not
     know the rental) ended nothing: the machine is back in its state with `end_failed` saying why, and may still
     bill. Only a Hub that does not answer is asked again. Ending it again asks again.
+  - A rental that says it released itself (its idle window) ends the same way: Calcifer asks its Hub to end it,
+    so it is `ended` only on the Hub's word, and a release that never reached the Hub is made.
   - An ending machine takes no new runs (`409 machine_ending`), and `local` is refused.
   - An order its Hub has not answered stops at once (`ending`, no `rental_id`): it buys nothing more, and leaves
     the list once its Hub answers and anything it placed is ending. So does one whose run ended, or that its Hub

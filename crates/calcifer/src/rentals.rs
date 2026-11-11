@@ -337,8 +337,15 @@ impl Machines {
         run: Option<RunId>,
     ) -> Result<(Ask, bool), Error> {
         let origin = config::Origin::parse(hub)?;
-        let intent = serde_json::json!({"hub": origin, "sku": sku, "gpus": shape.gpus,
+        let mut intent = serde_json::json!({"hub": origin, "sku": sku, "gpus": shape.gpus,
             "disk_gb": shape.disk_gb});
+        // Its SSH key and provider are part of what it asks: a rent with another key never joins
+        // or replays an order without it (one rented `--ssh` came up keyless that way).
+        for (field, value) in [("ssh_key", &shape.ssh_key), ("provider", &shape.provider)] {
+            if let Some(value) = value {
+                intent[field] = value.as_str().into();
+            }
+        }
         let digest = hex::encode(Sha256::digest(intent.to_string()));
         if let Some(asked) = self.store().ask(key).map_err(internal)? {
             if !rent_replay_matches(&asked, &intent, &digest) {
@@ -1159,6 +1166,20 @@ impl Machines {
         Ok(asks.into_iter().find(|ask| ask.kind == AskKind::End && ask.machine.as_deref() == Some(name)))
     }
 
+    /// `name` says it released itself: its Hub is asked to end it, the end any `machine end`
+    /// asks, so it ends here only once the Hub affirms it gone, and a release that did not reach
+    /// the Hub is made. An end asked already keeps its course.
+    pub(crate) fn released_itself(self: &Arc<Self>, name: &str) -> Result<(), Error> {
+        let row = self.row(name)?;
+        let Some(id) = row.rental_id.as_deref().filter(|_| row.state != MachineState::Ended) else {
+            return Ok(());
+        };
+        if self.pending_end(name)?.is_some() {
+            return Ok(());
+        }
+        self.ask_end(&end_key(id), &row.hub, id, Some(row.name.clone()), false)
+    }
+
     /// Why the last end asked of a live rental failed: nothing was ended.
     pub(crate) fn failed_end(&self, row: &MachineRow) -> Result<Option<String>, Error> {
         let Some(id) = row.rental_id.as_deref().filter(|_| row.state != MachineState::Ended) else {
@@ -1688,6 +1709,7 @@ fn view(rental: &types::Rental, sku: Option<String>) -> Rental {
         base_worker_image_digest: Some(rental.base_worker_image_digest.clone())
             .filter(|d| !d.is_empty()),
         ssh: rental.ssh_address.clone().filter(|a| !a.is_empty()),
+        ssh_key: rental.development,
         provider: rental.provider.clone().filter(|p| !p.is_empty()),
         datacenter: rental.datacenter.clone().filter(|d| !d.is_empty()),
         nfs_drive: rental.nfs_drive,

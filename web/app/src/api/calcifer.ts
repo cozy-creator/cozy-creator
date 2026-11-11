@@ -2282,6 +2282,10 @@ base_worker_image_digest?: string | null,
  */
 ssh?: string | null,
 /**
+ * It was rented with an SSH key: root logs in at `ssh` once it is ready.
+ */
+ssh_key?: boolean,
+/**
  * Where it runs and whether its pod mounted the datacenter's NFS drive: a Hub admin's read, or
  * a renter's who named the provider (dev-only `--provider`).
  */

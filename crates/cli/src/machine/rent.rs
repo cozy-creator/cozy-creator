@@ -142,7 +142,7 @@ pub(crate) async fn exec(ctx: &Context, rent: Rent) -> Result<ExitCode, Error> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// The OpenSSH public key `--ssh` names (none: the user's own), as one line.
+/// The OpenSSH public key `--ssh` names (none: the user's own), as one line; which file it is, said.
 fn ssh_key(ctx: &Context, file: Option<&std::path::Path>) -> Result<String, Error> {
     let file = match file {
         Some(file) => file.to_path_buf(),
@@ -169,6 +169,7 @@ fn ssh_key(ctx: &Context, file: Option<&std::path::Path>) -> Result<String, Erro
         )
         .remedy("Provide the .pub file with --ssh <file>"));
     }
+    output::say(ctx, &format!("root logs in with {}", file.display()));
     Ok(key.to_owned())
 }
 
