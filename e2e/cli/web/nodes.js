@@ -139,7 +139,7 @@ function linesOf(text, name) {
   await page.mouse.click(600, 900);
   check('menu_shuts', !(await page.locator('.main-menu nav').isVisible()));
 
-  // Tools on the left: searchable, folding away with the canvas where it was.
+  // The two lists fold away with the canvas where it was; the sidebar has no discovery or upload controls.
   const listed = await until('tools or why none', async () => ({ tools: await page.locator('.tools .tool').count(), note: await page.locator('.tools p').allTextContents() }), (now) => now.tools > 0 || now.note.length > 0);
   seen.tools_listed = listed;
   const resting = (await api(`/v1/tools?project=${id}`)).body;
@@ -151,9 +151,7 @@ function linesOf(text, name) {
   check('tools_fold', (await page.locator('.stage').evaluate((stage) => stage.getBoundingClientRect().left)) < 60);
   check('folding_keeps_the_canvas', (await viewport()) === before && (await box('kept_words').count()) === 1);
   await page.click('.tools [aria-label="Show the tools"]');
-  await page.fill('.tools input', 'no-tool-is-called-this-at-all');
-  await until('nothing found', () => page.locator('.tools .tool').count(), (n) => n === 0);
-  await page.fill('.tools input', '');
+  check('sidebar_is_only_nodes_and_tools', JSON.stringify(await page.locator('.tools h4').allTextContents()) === JSON.stringify(['Nodes', 'Tools']) && await page.locator('.tools input, .tools .browse-toggle, .tools .browse, .tools .box-shelf-head').count() === 0 && !(await page.locator('.tools button').allTextContents()).some((word) => /Browse|Checkpoints|Add file/.test(word)));
 
   // A tool dragged out of the list drops a box at that point: what it is comes from what it makes. The Edit is always there, and costs nothing.
   const dragOut = async (row, x, y) => {
@@ -193,7 +191,7 @@ function linesOf(text, name) {
 
   // Basic nodes survive a fresh read without acquiring a model. The fourth type is an intrinsic timeline, not a generative video.
   const basic = page.locator('.tools [data-palette="nodes"] li.tool');
-  check('basic_palette_has_exactly_four_types', JSON.stringify(await basic.locator('b').allTextContents()) === JSON.stringify(['Text', 'Image', 'Video', 'VideoEdit']));
+  check('basic_palette_has_exactly_four_types', JSON.stringify(await basic.locator('b').allTextContents()) === JSON.stringify(['Text', 'Image', 'Video', 'Video Edit']));
   const blanks = {};
   for (const kind of ['text', 'image', 'video', 'video_edit']) {
     await away();
@@ -230,6 +228,7 @@ function linesOf(text, name) {
   await onto(h3, blanks.video.name);
   await until('video takes its compatible model', () => of(blanks.video.name), (held) => held.tool === h3Id);
   check('video_accepts_h3_without_exposing_type_hint', (await of(blanks.video.name)).fields?.node_kind === 'video' && await page.locator('[data-field="node_kind"]').count() === 0);
+  check('opening_model_keeps_the_two_sidebar_lists', JSON.stringify(await page.locator('.tools h4').allTextContents()) === JSON.stringify(['Nodes', 'Tools']) && await page.locator('.tools .box-shelf-head, .tools input, .tools .picks').count() === 0);
   await box(blanks.video.name).locator('button[aria-label^="Take "]').first().click();
   await until('video model removed', () => of(blanks.video.name), (held) => !held.tool);
   check('removing_model_keeps_blank_video_type', (await of(blanks.video.name)).kind === 'video' && (await of(blanks.video.name)).fields?.node_kind === 'video');
