@@ -313,7 +313,7 @@ if [ -z "$ON" ]; then
   # new one on a runner. An --only without them rents no SSH.
   SSH=
   if [[ ,$SUITES, == *,tensord,* || ,$SUITES, == *,bench,* || ,$SUITES, == *,attention-corpus,* ]] || { [[ ,$SUITES, == *,tensorfs,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,kill,* ]]; }; } ||
-     { [[ ,$SUITES, == *,varena,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,faults,* ]]; }; } ||
+     { [[ ,$SUITES, == *,varena,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,faults,* || $ONLY == *,public,* ]]; }; } ||
      { [[ ,$SUITES, == *,execution,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,tensorfs,* ]]; }; }; then
     SSH=1; [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519
   fi

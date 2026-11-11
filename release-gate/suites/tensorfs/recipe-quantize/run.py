@@ -102,8 +102,9 @@ def main() -> None:
     args.out.mkdir(parents=True, exist_ok=True)
 
     # A run belongs to a project.
-    if not (args.out / "project" / "project.yaml").is_file():
-        subprocess.run(["cozy", "project", "new", str(args.out / "project")], check=True, stdout=subprocess.DEVNULL)
+    # cozy 0.24 (xs-174): `cozy new <dir>` makes the project (a project.db), and a run belongs to the project it runs in.
+    if not any((args.out / "project" / name).is_file() for name in ("project.db", "project.yaml")):
+        subprocess.run(["cozy", "new", str(args.out / "project")], check=True, stdout=subprocess.DEVNULL)
 
     def call(name: str, argv: list[str | Path]) -> tuple[Run, list[Line]]:
         with (
@@ -111,7 +112,8 @@ def main() -> None:
             (args.out / f"{name}.err").open("w") as stderr,
         ):
             result = subprocess.run(
-                ["cozy", *map(str, argv), *(["-p", str(args.out / "project")] if argv[0] == "run" else []), "--json"],
+                ["cozy", "--json", *map(str, argv)],
+                cwd=args.out / "project",
                 stdout=stdout,
                 stderr=stderr,
                 check=False,
