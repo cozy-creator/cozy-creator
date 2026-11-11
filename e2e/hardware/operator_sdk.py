@@ -1,4 +1,5 @@
 """Trusted SDK qualification outside any published Runtime author package."""
+from __future__ import annotations
 import argparse
 from array import array
 import csv
@@ -11,10 +12,14 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+from typing import TYPE_CHECKING
 from zipfile import ZipFile
 
+if TYPE_CHECKING:
+    from hardware_types import PayloadFingerprint, ProductResult, SDKReceipt
 
-def wheel_payload(wheel, loaded):
+
+def wheel_payload(wheel: ZipFile, loaded: str | Path) -> PayloadFingerprint:
     """Compare actual loaded bytes against their unique member in the exact wheel ZIP."""
     path = Path(loaded)
     suffix = 'tensorfs/' + path.name
@@ -28,17 +33,24 @@ def wheel_payload(wheel, loaded):
     return {'path': str(path), 'sha256': actual, 'wheel_entry': members[0], 'wheel_sha256': expected}
 
 
-def main():
+class Options(argparse.Namespace):
+    wheel: Path
+    expected_sha: str
+    out: Path
+    gpu_uuid: str
+
+
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--wheel', type=Path, required=True)
     parser.add_argument('--expected-sha', required=True)
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--gpu-uuid', required=True)
-    args = parser.parse_args()
+    args = parser.parse_args(namespace=Options())
     if args.out.exists() and any(args.out.iterdir()):
         raise ValueError('operator SDK proof needs an empty owned output directory')
     args.out.mkdir(parents=True, exist_ok=True)
-    receipt = {'status': 'running', 'python': sys.executable, 'wheel': str(args.wheel),
+    receipt: SDKReceipt = {'status': 'running', 'python': sys.executable, 'wheel': str(args.wheel),
                'wheel_sha256': hashlib.sha256(args.wheel.read_bytes()).hexdigest()}
     try:
         if receipt['wheel_sha256'] != args.expected_sha:
@@ -47,6 +59,7 @@ def main():
         from tensorfs import _ext
         from tensorfs.varena import torch as vt
         import torch
+        from torch.utils.dlpack import from_dlpack
 
         receipt.update({'sdk_version': tensorfs.__version__, 'runtime_version': version('cozy-runtime'),
                         'torch_version': str(torch.__version__)})
@@ -68,14 +81,14 @@ def main():
         gc.collect()
         shutil.rmtree(source)
 
-        def products(device, cache):
+        def products(device: str, cache: Path) -> ProductResult:
             checkpoint = tensorfs.open(artifact, cache_dir=cache, local_files_only=True)
             try:
                 assert checkpoint.id == receipt['revision'] and checkpoint.missing() == []
                 native = checkpoint.components['model'].tensors.read('weight', device=device, decode=True)
-                weight = torch.from_dlpack(native)
+                weight = from_dlpack(native)
                 assert str(weight.device) == device and tuple(weight.shape) == (2, 2)
-                values = (weight @ torch.tensor([2., 3.], dtype=torch.float32, device=device)).cpu().tolist()
+                values: list[float] = (weight @ torch.tensor([2., 3.], dtype=torch.float32, device=device)).cpu().tolist()
                 assert values == [8., 18.], values
                 return {'device': str(weight.device), 'products': values}
             finally:
