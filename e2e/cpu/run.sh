@@ -77,6 +77,10 @@ one() {
     return 1
   fi
   echo "PASS $p - environment $((SECONDS - t))s"
+  if [ -n "$KEEP" ]; then
+    "$env/bin/python" "$HERE/provenance.py" "$out/environment.json" "$RUNTIME" "$TENSORFS" "$(fixture "$p")" \
+      > "$out/provenance.log" 2>&1 || { echo "FAIL $p - environment-provenance 0s: $(tail -n1 "$out/provenance.log")"; return 1; }
+  fi
   # The driver and the package's fixture, strictly typed against the package's own environment, beside its cells (one
   # core for a minute, cold).
   (s=$SECONDS; code=0
