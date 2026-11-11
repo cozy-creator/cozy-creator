@@ -1,19 +1,48 @@
 #!/usr/bin/env python3
 """Run the existing isolated Hub fixture with a private Linux GPU worker home."""
 import argparse
+from array import array
+import codecs
+import fcntl
 import hashlib
 import json
 import os
 from pathlib import Path
 import shutil
+import selectors
 import signal
 import stat
 import subprocess
 import sys
+import termios
 import tempfile
 import time
+from urllib.request import build_opener, ProxyHandler
+from urllib.parse import parse_qs, unquote, urlsplit
 
 HERE = Path(__file__).resolve().parent
+
+
+def materialize_component(value, directory):
+    source = urlsplit(value)
+    if not source.scheme:
+        return value, {'input': value}
+    if source.scheme != 'https':
+        raise ValueError('candidate wheel downloads require HTTPS and sha256')
+    name = Path(unquote(source.path)).name
+    digest = parse_qs(source.fragment).get('sha256', [''])[0]
+    if not name.endswith('.whl') or len(digest) != 64 or any(c not in '0123456789abcdef' for c in digest):
+        raise ValueError('candidate wheel URL needs its exact sha256 fragment')
+    directory.mkdir(parents=True, exist_ok=True)
+    destination = directory / name
+    partial = directory / (name + '.partial')
+    with build_opener(ProxyHandler({})).open(source._replace(fragment='').geturl()) as response, partial.open('wb') as output:
+        shutil.copyfileobj(response, output)
+    actual = hashlib.sha256(partial.read_bytes()).hexdigest()
+    if actual != digest:
+        raise ValueError(f'candidate sha256 mismatch: expected {digest}, got {actual}')
+    partial.replace(destination)
+    return str(destination), {'input': value, 'sha256': digest, 'local_path': str(destination)}
 
 
 def remove_owned_tree(path):
@@ -45,14 +74,43 @@ def remove_owned_tree(path):
 def run_logged(command, environment, output):
     with output.open('w') as log:
         child = subprocess.Popen(command, env=environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                 text=True, errors='replace', bufsize=1, start_new_session=True)
+                                 start_new_session=True)
+        descriptor = child.stdout.fileno()
+        os.set_blocking(descriptor, False)
+        selector = selectors.DefaultSelector()
+        selector.register(descriptor, selectors.EVENT_READ)
+        decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
+        def emit(data, final=False):
+            text = decoder.decode(data, final=final)
+            log.write(text)
+            log.flush()
+            print(text, end='', flush=True)
         try:
-            for line in child.stdout:
-                log.write(line)
-                log.flush()
-                print(line, end='', flush=True)
-            return child.wait()
+            while True:
+                for _, _ in selector.select(.1):
+                    data = os.read(descriptor, 65536)
+                    if data:
+                        emit(data)
+                    else:
+                        selector.unregister(descriptor)
+                status = child.poll()
+                if status is None:
+                    continue
+                # A login watchdog can retain stdout after the fixture exits. Drain only
+                # bytes already queued, rather than waiting for an orphan's eventual EOF.
+                queued = array('i', [0])
+                fcntl.ioctl(descriptor, termios.FIONREAD, queued, True)
+                left = queued[0]
+                while left:
+                    data = os.read(descriptor, min(left, 65536))
+                    if not data:
+                        break
+                    emit(data)
+                    left -= len(data)
+                emit(b'', final=True)
+                return status
         finally:
+            selector.close()
             if child.poll() is None:
                 os.killpg(child.pid, signal.SIGTERM)
                 child.wait()
@@ -210,6 +268,11 @@ def main():
         raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, interrupted)
     try:
+        receipt['requested_components'] = {}
+        for component in ('runtime', 'tensorfs'):
+            value, recorded = materialize_component(getattr(args, component), args.out / 'candidates')
+            command[command.index('--' + component) + 1] = value
+            receipt['requested_components'][component] = recorded
         status = run_logged(command, env, args.out / 'console.log')
     finally:
         receipt['created_container_ids'] = container_ids.read_text().split() if container_ids.exists() else []

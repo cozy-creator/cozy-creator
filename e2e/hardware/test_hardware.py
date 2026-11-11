@@ -1,6 +1,7 @@
 """Isolation regressions for the Linux hardware harness; no Hub or provider calls."""
 import importlib.util
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -25,6 +26,54 @@ def probe_result(device):
 
 
 class Isolation(unittest.TestCase):
+    def test_candidate_url_becomes_verified_owned_local_wheel_for_cli(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            payload = b'the exact candidate wheel payload'
+            digest = hashlib.sha256(payload).hexdigest()
+            url = 'https://example.invalid/tensorfs-0.24.2-cp311-abi3-linux_x86_64.whl#sha256=' + digest
+            with patch.object(runner, 'build_opener') as opener:
+                opener.return_value.open.return_value = io.BytesIO(payload)
+                local, recorded = runner.materialize_component(url, Path(temporary))
+            self.assertTrue(Path(local).is_file(), 'cozy update accepts a local wheel, not this HTTPS URL')
+            self.assertEqual(Path(local).read_bytes(), payload)
+            self.assertTrue(Path(local).is_relative_to(Path(temporary)))
+            self.assertEqual(recorded['input'], url)
+            self.assertEqual(recorded['sha256'], digest)
+
+    def test_candidate_download_rejects_another_payload_before_cli(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            url = 'https://example.invalid/tensorfs-0.24.2-cp311-abi3-linux_x86_64.whl#sha256=' + 'a' * 64
+            with patch.object(runner, 'build_opener') as opener:
+                opener.return_value.open.return_value = io.BytesIO(b'wrong candidate')
+                with self.assertRaisesRegex(ValueError, 'sha256 mismatch'):
+                    runner.materialize_component(url, Path(temporary))
+            self.assertEqual(list(Path(temporary).glob('*.whl')), [])
+
+    def test_main_exit_does_not_wait_for_orphan_stdout_eof(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pidfile = root / 'sleeper.pid'
+            program = ('import pathlib,subprocess,sys; '
+                       'child=subprocess.Popen([sys.executable,"-c","import time; time.sleep(3)"]); '
+                       f'pathlib.Path({str(pidfile)!r}).write_text(str(child.pid)); '
+                       'print("fixture verdict FAIL",flush=True); raise SystemExit(3)')
+            sleeper = None
+            try:
+                with contextlib.redirect_stdout(io.StringIO()) as output:
+                    status = runner.run_logged([sys.executable, '-c', program],
+                        os.environ | {'HOME': temporary}, root / 'console.log')
+                self.assertEqual(status, 3)
+                self.assertIn('fixture verdict FAIL', output.getvalue())
+                sleeper = int(pidfile.read_text())
+                self.assertTrue(runner.owned(runner.processes().get(sleeper, {'home': '', 'state': 'Z'}), root),
+                                'main completion incorrectly waited for its background sleeper to close stdout')
+            finally:
+                if pidfile.exists():
+                    sleeper = int(pidfile.read_text())
+                    record = runner.processes().get(sleeper)
+                    if record and runner.owned(record, root):
+                        os.kill(sleeper, 15)
+
     def test_failing_fixture_verdict_is_live_and_retained(self):
         with tempfile.TemporaryDirectory() as temporary, contextlib.redirect_stdout(io.StringIO()) as console:
             path = Path(temporary) / 'console.log'

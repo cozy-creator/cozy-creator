@@ -47,7 +47,7 @@ installed or restarted: a second HOME has no login service manager.
 
 ```sh
 python3 e2e/hardware/run.py --hub-src /path/to/tensorhub --cozy-bin /path/to/candidate/cozy \
-  --runtime 0.45.0 --tensorfs /path/to/tensorfs-0.24.1-...whl --device GPU-... --out /path/to/empty/receipt
+  --runtime 0.45.0 --tensorfs /path/to/tensorfs-VERSION-...whl --device GPU-... --out /path/to/empty/receipt
 ```
 
 Linux prerequisites are Docker, Go, uv, AWS CLI and an NVIDIA driver. The source checkout and
@@ -56,12 +56,16 @@ Provider keys, proxy settings, production Hub URLs, device credentials and servi
 are excluded. The outer receipt records the binary digest, cohort, device, owned process births,
 container cleanup and preservation of existing Cozy processes. The private HOME is removed;
 scrubbed execution records remain in the output directory. Candidate wheel URLs require their
-SHA256 fragment; the update journal must name that digest and both CPU/GPU measurements must
+SHA256 fragment. They are downloaded and checked into an owned local wheel path before the
+release CLI's `machine update`, which accepts local wheels or versions, not HTTPS references.
+The original URL and expected hash remain in the receipt. The update journal must name that digest and both CPU/GPU measurements must
 name the requested versions. Live output is streamed and saved. Actions stores receipts under
 the durable job workspace, because its temporary directory is erased before a runner listener
 returns. The receipt is written before teardown, including when an owned read-only tree cannot
 be removed. Permission repair touches only directories with this job's UID inside its allocated
 root; symlink targets and public dependency caches are excluded.
+The logging loop ends with the main fixture process and drains only already-buffered output;
+an orphan login watchdog retaining stdout cannot postpone the owned cleanup.
 
 The native SDK cell writes a complete 2x2 F32 checkpoint, deletes its source cache, opens the
 file with a fresh store and `local_files_only=True`, and uses public `tensors.read` plus DLPack
