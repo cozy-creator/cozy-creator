@@ -323,7 +323,7 @@ pub(crate) async fn follow(
         loop {
             for note in notices.fresh(&machine) {
                 if interactive {
-                    status.println(output::shown(note));
+                    status.println(api::names::shown(note));
                 } else {
                     output::say(ctx, note);
                 }
@@ -343,9 +343,9 @@ pub(crate) async fn follow(
                     let same = words(&line) == words(&said);
                     if line != said && (!same || said_at.elapsed().as_secs() >= 10) {
                         if interactive {
-                            status.set_message(output::shown(&line));
+                            status.set_message(api::names::shown(&line));
                         } else {
-                            anstream::eprintln!("{}", output::shown(&line));
+                            anstream::eprintln!("{}", api::names::shown(&line));
                         }
                         (said, said_at) = (line, std::time::Instant::now());
                     }
