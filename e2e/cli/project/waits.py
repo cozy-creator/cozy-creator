@@ -12,6 +12,7 @@ import msgspec
 from cozy_runtime.author import Adjustments, App, ImageFrame, Outputs, Seed
 from cozy_runtime.fields import AspectRatio, Image, Prompt, Range
 from cozy_runtime.image import ImageRequest, ImageResult, Sizes
+from cozy_runtime.media import VideoFile
 
 app = App()
 SIZES = Sizes((0.25, 4.0), (64, 8192), 16, "the still's 0.25-4 MP")
@@ -32,3 +33,17 @@ def wait(payload: Waiting, adj: Adjustments, out: Outputs) -> ImageResult:
     width, height = asked.size(adj, None, SIZES, megapixels=0.25)
     image = out.save_image(ImageFrame(width, height, os.urandom(3) * (width * height)), format="png")
     return ImageResult(image, width, height, payload.seed or 0, payload.instructions.text)
+
+
+class Kept(msgspec.Struct, kw_only=True):
+    video: VideoFile
+
+
+class KeptVideo(msgspec.Struct):
+    video: VideoFile
+
+
+@app.tool(label="Keep the video", named="kept")
+def keep(payload: Kept, out: Outputs) -> KeptVideo:
+    """The video it reads, as it is: a required video slot, as an upscaler has."""
+    return KeptVideo(out.save_bytes(payload.video.read_bytes(), media_type="video/mp4"))

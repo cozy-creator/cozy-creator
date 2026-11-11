@@ -961,6 +961,13 @@ async function died(why) {
     await box('seeded').waitFor();
     await api(`${at}/assets/seeded`, { method: 'PATCH', body: JSON.stringify({ tool: `${fixture}/wait` }) });
     await until('its prompt', () => asset('seeded'), (row) => row?.fields?.instructions === '<self.1>');
+    // A tool with a required video slot on a video reads it there, as an upscaler does (se-115).
+    const clipAt = join(pictures, 'clip.mp4');
+    writeFileSync(clipAt, MP4);
+    await post(`${at}/imports`, { source: await upload(held?.token, clipAt), name: 'clip', exact: true, at: { x: 100, y: 1100 } });
+    await api(`${at}/assets/clip`, { method: 'PATCH', body: JSON.stringify({ tool: `${fixture}/keep` }) });
+    const clip = await until('its video', () => asset('clip'), (row) => row?.fields?.video === '<self.1>').catch(() => null);
+    check('a_video_tool_on_a_video_reads_it', clip?.fields?.video === '<self.1>' && clip?.versions === 1, clip ?? (await asset('clip')));
     importYaml(folder, `${yaml().trimEnd()}\n  second:\n    tool: ${fixture}/wait\n    instructions: <Ada.2> as it was\n`);
     // Placed where there's room, which may be off the view: a box off it isn't drawn.
     await until('second placed', async () => (await api(`${at}/canvas`)).body?.cards?.second, Boolean);
