@@ -354,7 +354,7 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
     cpSync(join(__dirname, '..', 'project', 'boxed'), dir, { recursive: true });
     const uvs = join(homedir(), '.cozy', 'tools', 'uv');
     const uvAt = join(uvs, readdirSync(uvs)[0], 'uv');
-    execFileSync(uvAt, ['lock', '--no-progress'], { ...quiet, encoding: 'utf8', cwd: dir });
+    execFileSync('python3', [join(__dirname, '..', '..', 'package-lock.py'), '--cozy', COZY, dir], quiet);
     execFileSync(uvAt, ['build', '--wheel', '--no-progress', '--out-dir', dist], { ...quiet, cwd: dir });
     const wheelName = readdirSync(dist).find((file) => file.endsWith('.whl'));
     const hub = await standIn(name, '0.1.0', wheelName, readFileSync(join(dist, wheelName)), readFileSync(join(dir, 'pyproject.toml'), 'utf8'), readFileSync(join(dir, 'uv.lock'), 'utf8'), described);
