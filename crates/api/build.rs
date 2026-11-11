@@ -1,7 +1,7 @@
 //! `COZY_COMMIT`: the commit this build is from, which `machine show` reports. A build input
 //! `COZY_COMMIT` wins (a container build without the repository), then git's HEAD, then CI's
 //! `GITHUB_SHA`.
-use std::process::Command;
+use std::{path::Path, process::Command};
 
 fn main() {
     // Any owner: a container build reads a checkout mounted from another user.
@@ -19,7 +19,14 @@ fn main() {
     let branch = git(&["symbolic-ref", "-q", "HEAD"]);
     for name in ["HEAD", "packed-refs"].into_iter().chain(branch.as_deref()) {
         if let Some(path) = git(&["rev-parse", "--git-path", name]) {
-            println!("cargo:rerun-if-changed={path}");
+            // Packed branches have no loose ref file. A missing watched input rebuilds
+            // every time, so watch its existing ancestor for a newly written ref.
+            let path = Path::new(&path);
+            let watched = path
+                .ancestors()
+                .find(|candidate| candidate.exists())
+                .unwrap_or(path);
+            println!("cargo:rerun-if-changed={}", watched.display());
         }
     }
     println!("cargo:rerun-if-env-changed=COZY_COMMIT");
