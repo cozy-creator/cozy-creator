@@ -82,6 +82,18 @@ impl Hubs {
         }
     }
 
+    /// Whether the uv index `index` (`…/simple/`) serves `distribution`, PEP 503 normalized: its page answers (cl-871).
+    pub(crate) async fn serves(&self, index: &str, distribution: &str) -> Result<bool, Error> {
+        let page = format!("{}/{distribution}/", index.trim_end_matches('/'));
+        let unreached = |why: String| Error::new(Kind::Unavailable, "index_unreachable", format!("{page}: {why}"));
+        let status = self.http.get(&page).send().await.map_err(|e| unreached(e.to_string()))?.status();
+        match status {
+            reqwest::StatusCode::NOT_FOUND => Ok(false),
+            status if status.is_success() => Ok(true),
+            status => Err(unreached(format!("answered {status}"))),
+        }
+    }
+
     /// A client for what the Hub tells anyone: its catalog, its stock, its software target.
     pub(crate) fn anonymous(&self, origin: &str) -> Result<Client, Error> {
         config::Origin::parse(origin)?;

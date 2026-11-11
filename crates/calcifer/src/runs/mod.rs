@@ -238,15 +238,20 @@ pub(crate) async fn request(api: &Arc<Api>, key: &str, ask: RunRequest) -> Resul
         }
         crate::project::vault::require_path(&row.out_dir)?;
         let run = calcifer.record(&row).map_err(refused)?;
-        return Ok(Submitted { run, replay: true, notes: vec![], preparing: false });
+        return Ok(Submitted { run, replay: true, notes: vec![], preparing: false, lock: None });
     }
     // Prepared inputs can name files in the mounted view. Keep the view
     // leased until submission takes them and their history is kept.
     let access = project_access(api, ask.project.as_deref()).await?;
-    match prepare(api, key, &ask, For::Run).await? {
+    let prepared = prepare(api, key, &ask, For::Run).await?;
+    let lock = match &ask.code {
+        Some(code) => made_lock(api, &ask, code).await,
+        None => None,
+    };
+    match prepared {
         Prepared::Install(run) => {
             let notes = updating(&run).into_iter().collect();
-            Ok(Submitted { run, replay: false, notes, preparing: true })
+            Ok(Submitted { run, replay: false, notes, preparing: true, lock })
         }
         Prepared::Run { submit, mut notes, offers } => {
             let given = given(&submit);
@@ -274,9 +279,20 @@ pub(crate) async fn request(api: &Arc<Api>, key: &str, ask: RunRequest) -> Resul
                     notes.push(Note { level: NoteLevel::Warning, message: "the run was accepted, but its private inputs could not be added to project history while the view was closing".into() });
                 }
             }
-            Ok(Submitted { notes, ..submitted })
+            Ok(Submitted { notes, lock, ..submitted })
         }
     }
+}
+
+/// The lock Calcifer made for the request's local code as `prepare` locked it, in its project's view: for the client to write
+/// into the package's folder (cl-871).
+async fn made_lock(api: &Arc<Api>, ask: &RunRequest, code: &LocalCode) -> Option<String> {
+    let scope = match ask.project.as_deref() {
+        Some(project) => crate::private_io::of_output(&crate::project::landing(&crate::project::named(api, project).ok()?)).ok()?,
+        None => None,
+    };
+    let origin = api::config::Origin::parse(&hub(api, &ask.hub)).ok()?;
+    crate::private_io::context(scope, async { crate::local_code::made(api.machines.hubs.home(), code, &origin) }).await
 }
 
 /// The files a submission's call is given, with their hashes: not a folder's manifest or its members, nor local code's own.

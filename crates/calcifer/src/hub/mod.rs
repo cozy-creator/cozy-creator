@@ -3,7 +3,7 @@
 //! computer's device key. Every call names its Hub; absent, the configured one. What takes long is a run (`jobs`).
 mod account;
 pub(crate) mod after;
-mod author;
+pub(crate) mod author;
 pub(crate) mod checkpoints;
 pub(crate) mod jobs;
 mod models;

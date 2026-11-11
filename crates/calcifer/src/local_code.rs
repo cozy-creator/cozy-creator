@@ -3,11 +3,11 @@
 //! folder is read into one here. Calcifer works from its copy of the tree, kept by the tree's digest, and reads no client's disk.
 //! A machine installs it from TensorD's `LocalSource`, a manifest naming each source file by its content; the interface its
 //! install answers is kept by the manifest and the Runtime that read it, so the same code on the same Runtime is called at once.
-//! A script is a one-file package, its PEP 723 block its pyproject.toml. Nothing is locked here: a project without a uv.lock is
-//! resolved on the machine. Every machine, this computer's too, is sent the files by content, and Calcifer writes only the bytes
-//! it lacks: no machine reads a host path (cl-817). Every client and Calcifer's projects use this one module (cl-716).
+//! A script is a one-file package, its PEP 723 block its pyproject.toml. A project whose sources name the `tensorhub` index is
+//! locked as `cargo run` locks (`locked`); any other without a uv.lock is resolved on the machine. Every machine, this computer's
+//! too, is sent the files by content, and Calcifer writes only the bytes it lacks: no machine reads a host path (cl-817). Every client and Calcifer's projects use this one module (cl-716).
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fmt::Display,
     fs,
     path::{Path, PathBuf},
@@ -32,8 +32,13 @@ pub(crate) use api::code::source_files;
 
 use crate::{api::Api, rentals::Hubs};
 
-/// The uv index name a project's sources use for its own account's packages.
+/// The uv index name a project's sources use for cozy packages on the Hub: its account's own, else the root's (`bindings`).
 pub(crate) const INDEX: &str = "tensorhub";
+
+/// A distribution name as uv and the Hub's index compare it (PEP 503): `Qwen_Image.2` is `qwen-image-2`.
+pub(crate) fn distribution(name: &str) -> String {
+    name.split(['-', '_', '.']).filter(|part| !part.is_empty()).collect::<Vec<_>>().join("-").to_ascii_lowercase()
+}
 
 pub(crate) fn refuse(code: &str, detail: impl Display) -> Error {
     Error::new(Kind::Validation, code, detail.to_string())
@@ -241,7 +246,8 @@ pub(crate) struct Project {
     /// Whether `version` is written in pyproject.toml, as a release needs.
     pub identified: bool,
     pub requires_python: String,
-    pub account_index: bool,
+    /// The distributions its uv sources take from the `tensorhub` index: cozy packages on the Hub.
+    pub hub_sources: BTreeSet<String>,
     /// A dependency or uv source fetched with git: locking and publishing need git.
     pub git: bool,
 }
@@ -292,14 +298,13 @@ impl Project {
         let sources = field(&["tool", "uv", "sources"]).and_then(toml::Value::as_table);
         let names_index =
             |source: &toml::Value| source.get("index").and_then(|i| i.as_str()) == Some(INDEX);
-        let account_index =
-            sources
-                .into_iter()
-                .flat_map(|s| s.values())
-                .any(|source| match source {
-                    toml::Value::Array(alternatives) => alternatives.iter().any(names_index),
-                    source => names_index(source),
-                });
+        let hub_sources = (sources.into_iter().flat_map(|s| s.iter()))
+            .filter(|(_, source)| match source {
+                toml::Value::Array(alternatives) => alternatives.iter().any(names_index),
+                source => names_index(source),
+            })
+            .map(|(name, _)| distribution(name))
+            .collect();
         let requirements = field(&["project", "dependencies"])
             .and_then(toml::Value::as_array)
             .into_iter()
@@ -322,7 +327,7 @@ impl Project {
             version,
             identified,
             requires_python: text(&["project", "requires-python"]).unwrap_or_default(),
-            account_index,
+            hub_sources,
             git,
         })
     }
@@ -362,8 +367,6 @@ struct Manifest {
     locals: Vec<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     callees: BTreeMap<String, String>,
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    indexes: BTreeMap<String, String>,
     /// Wheels a path source names (`{ path = "dist/x.whl" }`), carried: no index the machine
     /// reaches serves them.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -379,10 +382,10 @@ struct Member {
     executable: bool,
 }
 
-/// `code` as a machine installs it: its manifest and every file of Calcifer's copy, sent by content. A project whose sources name
-/// the `tensorhub` index takes the index its lock was made for (`_` for a first-party checkout), else the signed-in account's at
-/// `hub`, from what `hubs` already know of it: neither reads the Hub on a run's way.
+/// `code` as a machine installs it: its manifest and every file of Calcifer's copy, sent by content, locked for `hub` first when
+/// its sources name the `tensorhub` index (`locked`), so the machine installs what the lock names.
 pub(crate) async fn source(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Origin) -> Result<Source, Error> {
+    locked(home, code, hubs, hub).await?;
     let project_dir = copied(home, code)?;
     let project = Project::read(project_dir.clone())?;
     let locals = shared::path_dependencies(&project_dir)?;
@@ -452,23 +455,6 @@ pub(crate) async fn source(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Ori
             length,
         });
     }
-    let mut indexes = BTreeMap::new();
-    if project.account_index {
-        let url = match locked_index(&project_dir) {
-            Some(url) => url,
-            // Unlocked, its sources are the signed-in account's own.
-            None if matches!(hubs.reader(hub)?.credential(), ::api::hub::Credential::User(_)) => hubs.account_index(hub).await?,
-            None => {
-                return Err(Error::new(
-                    Kind::Credential,
-                    "account_index_unreached",
-                    "its `tensorhub` sources name no index in a uv.lock, so they are this computer's account's: sign in",
-                )
-                .next("cozy login <email>"));
-            }
-        };
-        indexes.insert(INDEX.to_owned(), url);
-    }
     let manifest = Manifest {
         package: format!("local/{}", project.name),
         release: project.version.clone(),
@@ -477,7 +463,6 @@ pub(crate) async fn source(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Ori
         project: relative(&project_dir),
         locals: locals.iter().map(|l| relative(l)).collect(),
         callees: callees(&project_dir)?,
-        indexes,
         wheels,
     };
     let own = match manifest.project.is_empty() {
@@ -496,8 +481,7 @@ pub(crate) async fn source(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Ori
         .chain(&manifest.wheels)
         .map(|m| (m.name.as_str(), m.digest.as_str()))
         .collect();
-    let environment = serde_json::json!({"files": built, "indexes": manifest.indexes,
-        "python": manifest.python_requires});
+    let environment = serde_json::json!({"files": built, "python": manifest.python_requires});
     let environment = Digest::of(environment.to_string().as_bytes());
     let document = serde_json::to_vec(&manifest).map_err(|e| refuse("local_source_invalid", e))?;
     let digest = Digest::of(&document);
@@ -517,7 +501,47 @@ pub(crate) async fn source(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Ori
     })
 }
 
-/// The distributions the lock takes from an account index, as the packages they are
+/// What a lock of `code`'s copy for `hub` leaves beside the copy (`locked`): the lock it made, or nothing when the tree's own stood.
+fn lock_marker(home: &Home, code: &LocalCode, hub: &Origin) -> Result<PathBuf, Error> {
+    let key = Digest::of(format!("{}\n{}", hub.as_str(), code.at).as_bytes());
+    Ok(copies(home)?.join(hex(&code.tree)).join(format!("locked-{}", &hex(&key)[..16])))
+}
+
+/// One lock of a copy at a time: any other waits and takes what it made.
+static LOCKING: LazyLock<Mutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>> = LazyLock::new(Mutex::default);
+
+/// Local code locked as `cargo run` locks (cl-871): a project whose sources name the `tensorhub` index gets the uv.lock uv makes,
+/// or brings up to date keeping the tree's own pins, for `hub` (`hub::author::locked`), before anything describes or installs it.
+/// Its cozy dependencies are then read and called at the releases it names (`callees`). Once per copy and Hub, written into the
+/// copy. The lock when it is not the tree's own: its client writes it into the package's folder (`made`).
+pub(crate) async fn locked(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Origin) -> Result<Option<String>, Error> {
+    let project = Project::read(copied(home, code)?)?;
+    if project.hub_sources.is_empty() {
+        return Ok(None);
+    }
+    let marker = lock_marker(home, code, hub)?;
+    let turn = LOCKING.lock().expect("locking lock").entry(marker.clone()).or_default().clone();
+    let _turn = turn.lock().await;
+    if let Ok(made) = fs::read_to_string(&marker) {
+        return Ok(Some(made).filter(|made| !made.is_empty()));
+    }
+    let say = |line: &str| tracing::info!("{}: {line}", project.name);
+    let made = crate::hub::author::locked(hubs, hub, &project, false, &[], &say).await?;
+    let failed = |e: platform::Error| refuse("code_unwritable", format!("{}: {e}", marker.display()));
+    if made.changed {
+        durable::replace(&project.root.join("uv.lock"), made.lock.as_bytes(), 0o600).map_err(failed)?;
+    }
+    let kept = if made.changed { made.lock.as_str() } else { "" };
+    durable::replace(&marker, kept.as_bytes(), 0o600).map_err(failed)?;
+    Ok(made.changed.then_some(made.lock))
+}
+
+/// The lock `locked` made for `code` at `hub`, when it is not the tree's own: what its client writes into the package's folder.
+pub(crate) fn made(home: &Home, code: &LocalCode, hub: &Origin) -> Option<String> {
+    fs::read_to_string(lock_marker(home, code, hub).ok()?).ok().filter(|made| !made.is_empty())
+}
+
+/// The distributions the lock takes from a Hub index, as the packages they are
 /// (`qwen-image-2` → `fidika/qwen-image-2`): their callables are that package's.
 fn callees(project: &Path) -> Result<BTreeMap<String, String>, Error> {
     #[derive(Deserialize)]
@@ -1051,22 +1075,6 @@ pub(crate) fn locked_runtime(root: &Path) -> Option<String> {
     lock.package.into_iter().find(|p| p.name == "cozy-runtime").map(|p| p.version)
 }
 
-/// The Tensorhub namespace the uv.lock in `root` takes `tensorhub` sources from: the account its
-/// `…/v1/index/<account>/` URLs name (`_`, the root, for first-party packages).
-pub(crate) fn locked_namespace(root: &Path) -> Option<String> {
-    let lock = fs::read_to_string(root.join("uv.lock")).ok()?;
-    let at = lock.find("/v1/index/")? + "/v1/index/".len();
-    let namespace = lock[at..].split(['/', '"']).next()?;
-    (!namespace.is_empty()).then(|| namespace.to_owned())
-}
-
-/// The account index the uv.lock at `root` was made for, as it names it (`…/v1/index/<namespace>/simple/`): what its install reads,
-/// with no Hub to ask.
-pub(crate) fn locked_index(root: &Path) -> Option<String> {
-    let lock = fs::read_to_string(root.join("uv.lock")).ok()?;
-    lock.split('"').find(|text| text.contains("/v1/index/") && text.trim_end_matches('/').ends_with("/simple")).map(|url| format!("{}/", url.trim_end_matches('/')))
-}
-
 /// The SDK is always cozy-runtime: an authoritative lock, else plain unconditional version
 /// bounds. URLs, markers and unspecified versions retain the newest-SDK fallback; extras
 /// belong to the package, not its static reader. Never forward a project's source as the SDK.
@@ -1181,7 +1189,7 @@ pub(crate) async fn describe(api: &Arc<Api>, code: &LocalCode, on: &On, hub: &st
         *held = Some((found.clone(), true));
         return Ok(found);
     }
-    let known = read_interface(api, code, on, runtime).await?;
+    let known = read_interface(api, code, on, hub, runtime).await?;
     *held = Some((known.clone(), false));
     Ok(known)
 }
@@ -1195,9 +1203,13 @@ async fn own_reading(api: &Arc<Api>, local: &LocalCode, hub: &str, runtime: Opti
     Some((code.package.clone(), kept(home, &code.filed(), runtime?)?))
 }
 
-/// Runtime's static reading on the project's Python and locked SDK, declared plain bounds or newest fallback.
-async fn read_interface(api: &Arc<Api>, code: &LocalCode, on: &On, runtime: Option<String>) -> Result<(String, Value), Error> {
-    let home = api.machines.hubs.home();
+/// Runtime's static reading on the project's Python and locked SDK, declared plain bounds or newest fallback, of the copy locked
+/// for `hub` first (`locked`).
+async fn read_interface(api: &Arc<Api>, code: &LocalCode, on: &On, hub: &str, runtime: Option<String>) -> Result<(String, Value), Error> {
+    let hubs = &api.machines.hubs;
+    let home = hubs.home();
+    let origin = Origin::parse(&if hub.is_empty() { hubs.default_origin() } else { hub.to_owned() })?;
+    locked(home, code, hubs, &origin).await?;
     let project = Project::read(copied(home, code)?)?;
     let uv = crate::tools::uv(home, &|line| tracing::info!("{line}")).await?;
     let python = python(&project, &uv)?;

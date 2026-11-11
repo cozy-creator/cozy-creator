@@ -446,6 +446,49 @@ sed -i 's/"msgspec>=0.19"\]/"msgspec>=0.19", "six>=1.16"]/' "$code/pyproject.tom
 if now=$(timed dependency cba); then [ -n "$now" ] && [ "$now" != "$first" ] || check "edit: a new dependency ran on the environment before it ($now)"; fi
 }
 
+# cl-871: local code that calls another cozy package, written as an author writes it: its dependency's source names the
+# `tensorhub` index, and it has no uv.lock. Signed out, the root's index serves it (the minimax-h3-tools stand-in isolated.sh
+# publishes at the root, its `echo`). cozy locks it at the run, as `cargo run` locks: the run calls the dependency's function, and
+# the uv.lock it took, naming the root's index, is written into the package's folder. cozy 0.24.0 refused it unlocked
+# (`account_index_unreached`), and signed in it looked only in the account's own index.
+hub_dependency() {
+step "local code calling a published cozy package, locked at its run (cl-871)"
+[ -n "$LOCAL" ] || return 0
+local dir=$OUT/hub-dependency
+rm -rf "$dir"
+package_at "$dir" e2e_relay '"cozy-runtime>=0.45", "msgspec>=0.19", "minimax-h3-tools"' \
+  "$(printf '\n[tool.uv.sources]\nminimax-h3-tools = { index = "tensorhub" }')" <<'PY'
+import minimax_h3_tools
+import msgspec
+
+from cozy_runtime.author import App, call
+
+app = App()
+
+
+class Relay(msgspec.Struct, forbid_unknown_fields=True):
+    text: str
+
+
+class Relayed(msgspec.Struct):
+    text: str
+    release: str
+
+
+async def relay(payload: Relay) -> Relayed:
+    echoed = await call(minimax_h3_tools.echo, payload=minimax_h3_tools.Text(text=payload.text))
+    return Relayed(text=echoed.text, release=echoed.release)
+
+
+app.entrypoint(relay, accelerator=False)
+PY
+cell hub-dependency "$dir/relay" "text=from the root index" || return 0
+grep -q '"text": *"from the root index"' "$OUT/hub-dependency.ndjson" && grep -q '"release": *"0.1.0"' "$OUT/hub-dependency.ndjson" \
+  || check "hub dependency: the reply is not minimax-h3-tools 0.1.0's echo: $(tail -c 300 "$OUT/hub-dependency.ndjson")"
+grep -q '/v1/index/_/simple/' "$dir/uv.lock" 2> /dev/null \
+  || check "hub dependency: the package's folder holds no uv.lock naming the root's index: $(ls "$dir" | paste -sd' ')"
+}
+
 # cl-820: a signer this machine admits sends TensorD a manifest that names a host path, as only a hand-made one can (no cozy sends
 # one): it is refused, typed, before the run is accepted, so nothing installs from that folder.
 path_manifest() {

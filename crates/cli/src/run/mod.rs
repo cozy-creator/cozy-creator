@@ -207,9 +207,9 @@ async fn run(ctx: &Context, args: RunArgs) -> Result<ExitCode, Error> {
     let written = args.target.clone().unwrap_or_default();
     let sender = Sender::for_project(ctx, &within).await?;
     // Local code goes by content: the target is then the function it names.
-    let (target, code) = match local(ctx, &written, &cwd)? {
-        Some((package, function)) => (function.unwrap_or_default(), Some(sender.code(&package).await?)),
-        None => (written, None),
+    let (target, code, package) = match local(ctx, &written, &cwd)? {
+        Some((package, function)) => (function.unwrap_or_default(), Some(sender.code(&package).await?), Some(package)),
+        None => (written, None, None),
     };
     let inputs = !args.inputs.is_empty() || !args.models.is_empty() || args.input_file.is_some();
     if args.describe && !inputs {
@@ -224,7 +224,7 @@ async fn run(ctx: &Context, args: RunArgs) -> Result<ExitCode, Error> {
         }
     }
     let ask = request(ctx, &args, target.clone(), code.clone(), &cwd, within.clone()).await?;
-    match send(ctx, ask).await {
+    match send(ctx, ask, package.as_deref()).await {
         // A package's functions, when the run names none and gives it nothing.
         Err(e) if e.code == "function_unnamed" && !inputs => functions(ctx, &target, code.as_ref(), args.placement.on.as_deref(), Some(&within)).await,
         Err(e) => Err(e),
@@ -353,11 +353,18 @@ fn read_input(ctx: &Context, file: &Path, cwd: &Path) -> Result<(Map<String, Val
 
 /// Submits `ask` under a key minted for it (its seed derives from it) and follows the run. Local
 /// code not yet ready on its machine is installed first: that run is followed, then the same
-/// request goes again under the same key.
-async fn send(ctx: &Context, ask: RunRequest) -> Result<Run, Error> {
+/// request goes again under the same key. The uv.lock Calcifer made for local code goes into its
+/// `package` folder, as `cargo run` writes Cargo.lock (cl-871).
+async fn send(ctx: &Context, ask: RunRequest, package: Option<&Path>) -> Result<Run, Error> {
     let key = follow::mint_key();
     loop {
         let submitted = follow::submit_request(ctx, &ask, &key).await?;
+        if let (Some(lock), Some(dir)) = (&submitted.lock, package.filter(|package| package.is_dir()))
+            && std::fs::read_to_string(dir.join("uv.lock")).ok().as_deref() != Some(lock.as_str())
+        {
+            let path = crate::package::author::written(dir, lock)?;
+            output::say(ctx, &format!("wrote {}", path.display()));
+        }
         if !submitted.preparing {
             return follow(ctx, submitted.run).await;
         }

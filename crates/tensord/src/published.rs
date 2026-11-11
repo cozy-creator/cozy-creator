@@ -1188,7 +1188,6 @@ impl Publisher {
             wheels: (!files.is_empty()).then_some(wheels.as_path()),
             skip: &locked.git,
             editable: None,
-            indexes: &BTreeMap::new(),
             package,
             label: &label,
             stage,

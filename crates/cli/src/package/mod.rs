@@ -11,7 +11,7 @@ use api::error::{Error, Kind};
 use crate::{Context, output, run::Placement};
 use api::target::Published;
 
-mod author;
+pub(crate) mod author;
 mod catalog;
 pub(crate) mod live;
 pub(crate) mod browse;

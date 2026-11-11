@@ -42,10 +42,6 @@ pub(crate) struct Manifest {
     pub files: Vec<Member>,
     #[serde(default)]
     pub project: String,
-    /// uv indexes the project's sources name without declaring, by name: an authored tree
-    /// names its account's index (`tensorhub`), whose URL depends on who runs it.
-    #[serde(default)]
-    pub indexes: BTreeMap<String, String>,
     /// The local path dependencies its lock installs, as directories or files under the tree:
     /// their code is the environment's, not the project's own.
     #[serde(default)]
@@ -253,7 +249,7 @@ impl LocalSources {
 
     /// The identity of the environment a manifest runs in (`env-<identity[..16]>`): one per lock,
     /// project metadata, local path dependencies, carried wheels, the project's place in its tree,
-    /// indexes, and this machine's interpreter, the SDK pair it takes (`Publisher::pair_key`) and
+    /// and this machine's interpreter, the SDK pair it takes (`Publisher::pair_key`) and
     /// PyTorch. The project's own code is none of it: each generation names its tree.
     fn environment(&self, manifest: &Manifest, locked: Option<&published::Locked>) -> String {
         let own = manifest.own();
@@ -266,7 +262,7 @@ impl LocalSources {
         let key = serde_json::json!({
             "lock": held("uv.lock"), "project": held("pyproject.toml"), "beside": beside, "wheels": carried,
             "own": manifest.project,
-            "indexes": manifest.indexes, "pair": self.publisher.pair_key(locked), "python": self.publisher.sdk.python,
+            "pair": self.publisher.pair_key(locked), "python": self.publisher.sdk.python,
             "torch": self.publisher.torch_pins(None),
             "private_view": crate::private_io::current().map(|scope| scope.view_root),
         });
@@ -336,12 +332,6 @@ impl LocalSources {
         if !project.join("pyproject.toml").is_file() {
             return Err(refused("local_source_invalid", format!("the manifest's files hold no {}pyproject.toml", manifest.own())));
         }
-        for (name, url) in &manifest.indexes {
-            let named = !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b));
-            if !named || !(url.starts_with("https://") || url.starts_with("http://")) || url.contains(char::is_whitespace) {
-                return Err(refused("local_source_invalid", format!("index {name:?} = {url:?} is not a named HTTP(S) index")));
-            }
-        }
         // This machine's PyTorch first (its own, the first time): the environment and alias are keyed on it.
         self.publisher.layer(job, None).map_err(failed)?;
         let alias = alias(&self.publisher, manifest_digest);
@@ -381,7 +371,6 @@ impl LocalSources {
                 wheels: (!manifest.wheels.is_empty()).then_some(carried.as_path()),
                 skip: &[],
                 editable: Some(&tree),
-                indexes: &manifest.indexes,
                 package: &manifest.package,
                 label: &label,
                 stage: &stage,

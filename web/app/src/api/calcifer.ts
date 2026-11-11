@@ -2775,7 +2775,12 @@ notes?: Array<Note>,
  * `run` makes the target ready (local code's install): follow it, then send the same request
  * under the same key again for the call.
  */
-preparing?: boolean, };
+preparing?: boolean,
+/**
+ * The uv.lock Calcifer made for the request's local code when the tree it sent held none or one out of date (cl-871): its
+ * client writes it into the package's folder, as `cargo run` writes Cargo.lock.
+ */
+lock?: string | null, };
 
 /**
  * Bytes make_room took of one class (F, O, S, N, D, W, P).

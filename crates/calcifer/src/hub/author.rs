@@ -2,10 +2,10 @@
 //! (cl-819), with uv, in Calcifer's copy of it. Package code never runs here: the interface comes from
 //! Runtime's static describer.
 //!
-//! The project names no account: `{ index = "tensorhub" }` sources resolve to the account's index
-//! on the Hub, written into a private copy. Torch is the machine's (cl-715): the copy excludes its
-//! layer, so no lock holds it. Nothing is written into the client's folder: a lock answers its
-//! `uv.lock`, which the client writes.
+//! The project names no account: each `{ index = "tensorhub" }` source resolves to the Hub index that
+//! serves its package (`bindings`), written into a private copy. Torch is the machine's (cl-715): the
+//! copy excludes its layer, so no lock holds it. Nothing is written into the client's folder: a lock
+//! answers its `uv.lock`, which the client writes.
 use std::{
     collections::BTreeMap,
     fs,
@@ -15,6 +15,7 @@ use std::{
 };
 
 use futures_util::{StreamExt as _, TryStreamExt as _};
+use platform::paths::Home;
 use ::api::hub::types::{PackageDeclaredFile, PackageFileGrant, PresignedUpload};
 use api::{
     config::Origin,
@@ -26,11 +27,12 @@ use api::{
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 
-use super::{reader, refusal, signed_in};
+use super::{refusal, signed_in};
 use crate::{
     Here,
     api::Api,
-    local_code::{INDEX, Project, account, describe_with, index_url, locked_namespace, python, refuse, run, run_said, source_files, uv},
+    local_code::{INDEX, Project, account, describe_with, distribution, index_url, python, refuse, run, run_said, source_files, uv},
+    rentals::Hubs,
     tools::Say,
 };
 
@@ -45,11 +47,11 @@ fn blocking<T>(f: impl FnOnce() -> T) -> T {
 
 /// The tools locking and publishing `project` need: git when it depends on a git source (refused
 /// with its install named, before uv runs and fails on it), and uv (fetched, pinned).
-async fn tools(api: &Api, project: &Project, say: Say<'_>) -> Result<PathBuf, Error> {
+async fn tools(home: &Home, project: &Project, say: Say<'_>) -> Result<PathBuf, Error> {
     if project.git && platform::tools::on_path("git", &crate::tools::path()).is_none() {
         return Err(git_missing());
     }
-    crate::tools::uv(api.machines.hubs.home(), say).await
+    crate::tools::uv(home, say).await
 }
 
 fn git_missing() -> Error {
@@ -118,11 +120,42 @@ impl Stage {
         Ok(Self { _dir: dir, root, src, uv })
     }
 
-    /// Points the copy's `tensorhub` index at `url`.
-    fn bind(&self, url: &str) -> Result<(), Error> {
+    /// Points each of the copy's `tensorhub` sources at the index `bound` names for its distribution: one uv index per
+    /// namespace, named `tensorhub` itself when every source takes the same one.
+    fn bind(&self, bound: &Bound) -> Result<(), Error> {
+        let mut namespaces: Vec<(&str, &str)> = bound.values().map(|(namespace, url)| (namespace.as_str(), url.as_str())).collect();
+        namespaces.sort_unstable();
+        namespaces.dedup();
+        if namespaces.is_empty() {
+            return Ok(());
+        }
+        let single = namespaces.len() == 1;
+        let name = |namespace: &str| if single { INDEX.to_owned() } else { format!("{INDEX}-{namespace}") };
         let path = self.src.join("pyproject.toml");
-        let mut text = fs::read_to_string(&path).map_err(|e| refuse("stage_unavailable", e))?;
-        text.push_str(&format!("\n[[tool.uv.index]]\nname = \"{INDEX}\"\nurl = \"{url}\"\nexplicit = true\n"));
+        let authored = fs::read_to_string(&path).map_err(|e| refuse("stage_unavailable", e))?;
+        let mut doc: toml_edit::DocumentMut = authored.parse().map_err(|e| refuse("project_invalid", e))?;
+        let sources = (doc.get_mut("tool").and_then(|tool| tool.get_mut("uv")))
+            .and_then(|uv| uv.get_mut("sources"))
+            .and_then(toml_edit::Item::as_table_like_mut);
+        if let Some(sources) = sources.filter(|_| !single) {
+            for (key, source) in sources.iter_mut() {
+                let Some((namespace, _)) = bound.get(&distribution(key.get())) else { continue };
+                let to = name(namespace.as_str());
+                if source.is_array() {
+                    for alternative in source.as_array_mut().into_iter().flat_map(|alternatives| alternatives.iter_mut()) {
+                        if let Some(table) = alternative.as_inline_table_mut() {
+                            named(table, &to);
+                        }
+                    }
+                } else if let Some(table) = source.as_table_like_mut() {
+                    named(table, &to);
+                }
+            }
+        }
+        let mut text = doc.to_string();
+        for &(namespace, url) in &namespaces {
+            text.push_str(&format!("\n[[tool.uv.index]]\nname = \"{}\"\nurl = \"{url}\"\nexplicit = true\n", name(namespace)));
+        }
         fs::write(&path, text).map_err(|e| refuse("stage_unavailable", e))
     }
 
@@ -159,6 +192,70 @@ impl Stage {
         };
         platform::tools::uv_listed(lock, |(_, said)| Some(said.as_str()), || false).map_err(|(error, _)| error)
     }
+}
+
+/// A `tensorhub` source table's index renamed `to`: one of several the copy binds.
+fn named(source: &mut dyn toml_edit::TableLike, to: &str) {
+    if let Some(index) = source.get_mut("index").filter(|index| index.as_str() == Some(INDEX)) {
+        *index = toml_edit::value(to);
+    }
+}
+
+/// Each `tensorhub` source's namespace and that namespace's index on the Hub, by distribution.
+type Bound = BTreeMap<String, (String, String)>;
+
+/// Where each of `project`'s `tensorhub` sources resolves on `hub` (cl-871): with `root` (a first-party publication) the root
+/// namespace; else the namespace `lock` already takes it from; else the signed-in account's, when its index serves that
+/// distribution; else the root's, whose packages are everyone's. Each at the index that namespace has at the origin `hub`
+/// advertises. A package of the account's own wins over a root one of the same name, so nothing published later at the root
+/// moves an account's dependency.
+async fn bindings(hubs: &Hubs, hub: &Origin, project: &Project, root: bool, lock: Option<&str>) -> Result<Bound, Error> {
+    let locked = lock.map(lock_namespaces).unwrap_or_default();
+    let reader = hubs.reader(hub.as_str())?;
+    let account = match !root && matches!(reader.credential(), ::api::hub::Credential::User(_)) {
+        true => Some(account(&reader).await?),
+        false => None,
+    };
+    let (mut urls, mut bound) = (BTreeMap::new(), Bound::new());
+    for name in &project.hub_sources {
+        let namespace = match (root, locked.get(name), &account) {
+            (true, _, _) | (false, None, None) => api::names::ROOT.to_owned(),
+            (false, Some(namespace), _) => namespace.clone(),
+            (false, None, Some(account)) => {
+                let own = index(&mut urls, &reader, hub, account).await?;
+                match hubs.serves(&own, name).await? {
+                    true => account.clone(),
+                    false => api::names::ROOT.to_owned(),
+                }
+            }
+        };
+        let url = index(&mut urls, &reader, hub, &namespace).await?;
+        bound.insert(name.clone(), (namespace, url));
+    }
+    Ok(bound)
+}
+
+/// `namespace`'s index on `hub`, from `urls` once asked.
+async fn index(urls: &mut BTreeMap<String, String>, reader: &::api::hub::Client, hub: &Origin, namespace: &str) -> Result<String, Error> {
+    if let Some(url) = urls.get(namespace) {
+        return Ok(url.clone());
+    }
+    let url = index_url(reader, hub, namespace).await?;
+    urls.insert(namespace.to_owned(), url.clone());
+    Ok(url)
+}
+
+/// The namespace each package `lock` takes from a Hub index (`…/v1/index/<namespace>/simple/`), by distribution.
+fn lock_namespaces(lock: &str) -> BTreeMap<String, String> {
+    let Ok(lock) = toml::from_str::<Lock>(lock) else {
+        return BTreeMap::new();
+    };
+    let namespace = |package: &LockedPackage| {
+        let registry = package.source.get("registry")?.as_str()?;
+        let namespace = registry.split_once("/v1/index/")?.1.trim_end_matches('/').strip_suffix("/simple")?;
+        Some((distribution(&package.name), namespace.to_owned()))
+    };
+    lock.package.iter().filter_map(namespace).collect()
 }
 
 /// A uv.lock, as far as cozy reads it.
@@ -227,36 +324,30 @@ fn sent(api: &Api, code: &api::code::LocalCode) -> Result<Project, Error> {
 pub(super) async fn lock(api: &Arc<Api>, hub: &Origin, code: &LocalCode, ask: &PackageLock, work: &Here) -> Result<Locked, Error> {
     let say = &|message: &str| work.say(message);
     let project = sent(api, code)?;
-    let uv_path = tools(api, &project, say).await?;
-    let stage = blocking(|| Stage::new(&project, uv_path, say))?;
-    // The namespace it is locked for: the root's with `root`, else the one its lock already names,
-    // else the signed-in account's. Only the last needs a sign-in.
-    let account_index = match project.account_index {
-        false => None,
-        true => {
-            let namespace = match ask.root {
-                true => Some(api::names::ROOT.to_owned()),
-                false => locked_namespace(&project.root),
-            };
-            let (client, namespace) = match namespace {
-                Some(namespace) => (reader(api, hub).map_err(|r| r.0)?, namespace),
-                None => {
-                    let client = signed_in(api, hub).map_err(|r| r.0)?;
-                    let account = account(&client).await?;
-                    (client, account)
-                }
-            };
-            let url = index_url(&client, hub, &namespace).await?;
-            stage.bind(&url)?;
-            Some(url)
-        }
+    locked(&api.machines.hubs, hub, &project, ask.root, &ask.upgrade, say).await
+}
+
+/// `project` locked for `hub` by uv in a private copy, its `tensorhub` sources bound where their packages are (`bindings`), each
+/// of `upgrade` free to move to its newest release, and the rest kept at what its own uv.lock pins. A run of local code locks
+/// with this too (`local_code::locked`). `account_index`: the index its own account's packages came from, else the root's.
+pub(crate) async fn locked(hubs: &Hubs, hub: &Origin, project: &Project, root: bool, upgrade: &[String], say: Say<'_>) -> Result<Locked, Error> {
+    let uv_path = tools(hubs.home(), project, say).await?;
+    let stage = blocking(|| Stage::new(project, uv_path, say))?;
+    let own = blocking(|| fs::read_to_string(project.root.join("uv.lock")).ok());
+    let bound = match project.hub_sources.is_empty() {
+        true => Bound::new(),
+        false => bindings(hubs, hub, project, root, own.as_deref()).await?,
     };
+    stage.bind(&bound)?;
+    let account_index = (bound.values().find(|(namespace, _)| namespace != api::names::ROOT))
+        .or_else(|| bound.values().next())
+        .map(|(_, url)| url.clone());
     blocking(|| {
-        let python = python(&project, &stage.uv)?;
-        stage.lock(python.request.as_str(), &ask.upgrade)?;
+        let python = python(project, &stage.uv)?;
+        stage.lock(python.request.as_str(), upgrade)?;
         let locked = fs::read_to_string(stage.src.join("uv.lock")).map_err(|e| refuse("lock_failed", e))?;
         versions(&locked)?;
-        let changed = fs::read_to_string(project.root.join("uv.lock")).ok().as_deref() != Some(locked.as_str());
+        let changed = own.as_deref() != Some(locked.as_str());
         Ok(Locked { lock: locked, account_index, changed })
     })
 }
@@ -316,18 +407,18 @@ pub(super) async fn publish(api: &Arc<Api>, hub: &Origin, code: &LocalCode, ask:
     if locked.changed {
         result.lock = Some(committed.clone());
     }
-    let uv_path = tools(api, &project, say).await?;
+    let uv_path = tools(api.machines.hubs.home(), &project, say).await?;
     let stage = blocking(|| Stage::new(&project, uv_path, say))?;
     fs::write(stage.src.join("uv.lock"), &committed).map_err(|e| refuse("stage_unavailable", e))?;
-    // Locking the copy is a no-op for a lock made for this Hub and account. For another, it moves
-    // the account's packages to this index pinned to the versions the lock holds: a pin this Hub
-    // cannot meet is refused by name, never re-resolved to a newer release.
+    // Locking the copy is a no-op for a lock made for this Hub. For another, it moves each Hub
+    // package to this Hub's index for its namespace, pinned to the versions the lock holds: a pin
+    // this Hub cannot meet is refused by name, never re-resolved to a newer release.
     let python = blocking(|| python(&project, &stage.uv))?;
-    if project.account_index {
-        let url = index_url(&client, hub, &account).await?;
-        stage.bind(&url)?;
+    if !project.hub_sources.is_empty() {
+        let bound = bindings(&api.machines.hubs, hub, &project, ask.root, Some(committed.as_str())).await?;
+        stage.bind(&bound)?;
         let pins = index_pins(&committed)?;
-        if !pins.is_empty() && !committed.contains(&url) {
+        if !pins.is_empty() && bound.values().any(|(_, url)| !committed.contains(url.as_str())) {
             blocking(|| stage.relock_pinned(python.request.as_str(), &pins)).map_err(|e| unmet(e, &pins, &account, hub))?;
         }
     }
