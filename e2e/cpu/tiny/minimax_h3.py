@@ -28,7 +28,7 @@ from minimax_h3.preparation import regenerate as tools_regenerate
 from minimax_h3.vae_tiles import TileBatchedVideoVAE
 from PIL import Image
 
-from _shared import qwen_processor
+from tiny._shared import qwen_processor
 from cell import Cell, Json, module, quantize
 
 WAIVE = {"minimax_h3.official:_validate_model_contract": "the release geometry: 56x128 heads, 50 layers, 5120 text width"}
