@@ -79,8 +79,6 @@ pub(crate) struct Spec {
     /// The main model's lane; empty, and every other slot: the Hub's pick for the hardware. A
     /// model-only upload's commit lane.
     pub lane: String,
-    /// Computed afresh, its children too: the memo neither answers nor keeps it.
-    pub no_memo: bool,
     /// The Hub the run reads, under its signer's newest capability there when its request carried one.
     pub hub: Option<hub::Source>,
     /// Provider tokens for source models, held in memory only.
@@ -94,6 +92,8 @@ pub(crate) struct Spec {
     pub application: String,
     /// The spec's identity (its access excluded): a resubmitted id must carry the same.
     pub digest: String,
+    /// The same request with a retired option in its historical digest.
+    pub legacy_digest: Option<String>,
     /// The spec as sent less its access, kept in the journal while it prepares so a restart
     /// prepares it again; empty for a child run.
     pub journaled: Vec<u8>,
@@ -134,7 +134,6 @@ pub(crate) struct RunContext {
     pub(crate) attention_kernel: String,
     pub(crate) gpus: u32,
     pub(crate) lane: String,
-    pub(crate) no_memo: bool,
     pub(crate) models: Vec<stored::ModelChoice>,
     /// What its weights come under before its call's executor reads them (`Fetch::ahead`).
     pub(crate) ahead: Option<Arc<crate::access::Fetch>>,
@@ -315,10 +314,10 @@ pub(crate) fn upload(
 
 impl Runs {
     /// The run this id already names, if its spec is `digest`; another spec is a conflict.
-    pub(crate) fn existing(&self, actor: &str, id: &str, digest: &str) -> Result<Option<Execution>, Refused> {
+    pub(crate) fn existing(&self, actor: &str, id: &str, digest: &str, legacy_digest: Option<&str>) -> Result<Option<Execution>, Refused> {
         match self.service.engine.get_public(Some(actor), id) {
             Ok(run) if run.canceled_before_acceptance && run.state == crate::journal::State::Canceled => Ok(Some(run)),
-            Ok(run) if run.submission.as_ref().map(|s| s.invocation_digest.as_str()) == Some(digest) => Ok(Some(run)),
+            Ok(run) if run.submission.as_ref().is_some_and(|s| s.invocation_digest == digest || Some(s.invocation_digest.as_str()) == legacy_digest) => Ok(Some(run)),
             Ok(_) => Err(refused("run_id_conflict", "this run id already names another run spec")),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(error.into()),
@@ -387,7 +386,7 @@ impl Runs {
     /// New run `id` as the journal takes it, and the objects it takes custody of, under the
     /// caller's custody guard; or the run the id already names with this spec.
     fn draft(&self, actor: &str, id: &str, spec: &Spec) -> Result<Drafted, Refused> {
-        if let Some(run) = self.existing(actor, id, &spec.digest)? {
+        if let Some(run) = self.existing(actor, id, &spec.digest, spec.legacy_digest.as_deref())? {
             return Ok(Drafted::Held(Box::new(run)));
         }
         if !spec.input.is_object() {
@@ -994,10 +993,6 @@ impl Runs {
             ),
             true => Memo::Off,
         };
-        let memo = match memo {
-            Memo::Key(..) if spec.no_memo => Memo::Unmet("asked afresh (--no-memo)".into()),
-            memo => memo,
-        };
         let (memo, answer) = match memo {
             Memo::Key(computation, basis) => {
                 let answer = self.objects.recall(actor, &computation, id)?;
@@ -1019,7 +1014,6 @@ impl Runs {
                 attention_kernel: spec.attention_kernel.clone(),
                 gpus: spec.gpus,
                 lane: spec.lane.clone(),
-                no_memo: spec.no_memo,
                 models: spec.models.clone(),
                 ahead,
             };
@@ -1376,7 +1370,7 @@ impl Runs {
     ) -> Result<Execution, Refused> {
         let actor = parent.submission.as_ref().map(|s| s.actor.clone()).unwrap_or_default();
         // A call the same attempt made already is its run: nothing prepares.
-        if let Some(existing) = self.existing(&actor, request, intent)? {
+        if let Some(existing) = self.existing(&actor, request, intent, None)? {
             return Ok(existing);
         }
         let spec =
@@ -1458,7 +1452,6 @@ impl Runs {
             // The asked lane follows the main model into the package's own children (long_form's
             // segments); another package's model (qwen-image-2 for references) takes its default.
             lane: if installed.package == caller { context.lane.clone() } else { String::new() },
-            no_memo: context.no_memo,
             hub: context.hub,
             providers: context.providers,
             tensorfs: context.tensorfs,
@@ -1466,6 +1459,7 @@ impl Runs {
             owner: context.owner,
             application: application.into(),
             digest: digest.into(),
+            legacy_digest: None,
             journaled: vec![],
         };
         // Both demand and prefetch overlay the call's choices on the same inherited ones. One

@@ -182,7 +182,7 @@ a spec.
     Hub's newest, which it installs; a yanked one moves to the newest with a warning; `x/y` is root package x's function y, else account x's package y).
     With `code`, local code by content (Local code), `target` is the function of it, empty for none named. A target written as a path is `400 target_by_path`.
   - `on` (`local`, a machine, `any`, `new[:sku]`; absent, Calcifer's to say, and no client picks a default: where a render's job would go, the set the browser sends for automatic placement, on whichever quotes the soonest finish ("Placement")), `hub`, `gpus` (a count the machine honours; absent, the machine chooses), `lane`, `attention_kernel`, `project`, `warm`
-    (a level, instead of running), `agreed` (a `new` run's quote), `no_memo` (dev-only `--no-memo`: no machine memo answers or keeps it).
+    (a level, instead of running), `agreed` (a `new` run's quote).
   - The payload: `input` (an object) or `input_text` (the same as JSON or YAML text); then `terms` override it (`key=value` typed as declared, `key:=<json>`, `model.<slot>=<ref>`, one
     positional value, input files), `loras` (`[slot=]ref[,strength]`), `files` (`{name?, file}`: an input's
     field path, a label, or none for the declared files) and `fidelities`. A file is a held

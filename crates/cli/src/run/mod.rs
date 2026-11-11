@@ -62,9 +62,6 @@ struct RunArgs {
     /// Select an attention kernel for all models or one `[slot/]component`.
     #[arg(long, value_name = "[[SLOT/]COMPONENT=]KERNEL", value_parser = api::calcifer::attention_pin, conflicts_with = "warm")]
     attention_kernel: Option<String>,
-    /// Compute a fresh result without saving it to the result cache.
-    #[arg(long, conflicts_with = "warm")]
-    no_memo: bool,
     /// Read inputs from a JSON or YAML file. Inline inputs override it.
     #[arg(long = "input", value_name = "FILE")]
     input_file: Option<PathBuf>,
@@ -333,7 +330,6 @@ async fn request(ctx: &Context, args: &RunArgs, target: String, code: Option<Loc
         gpus: args.gpus,
         lane: args.lane.clone(),
         attention_kernel: args.attention_kernel.clone(),
-        no_memo: args.no_memo,
         warm: args.warm.map(Warm::level),
         project: within,
         recipes: false,

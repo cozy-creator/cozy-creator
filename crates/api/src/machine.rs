@@ -339,9 +339,6 @@ pub struct RunSpec {
     /// the lane its commit is labelled. The package's own children inherit it; another
     /// package's take none.
     pub lane: String,
-    /// Computed afresh, its children too: the machine memo neither answers nor keeps it.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub no_memo: bool,
 }
 
 /// The caller's provider tokens, for models a run makes from a provider source.

@@ -112,7 +112,7 @@ fn spec_of(mut spec: v1::RunSpec) -> Result<(crate::runs::Spec, Option<v1::HubAc
     let tensorfs = spec.tensorfs.take();
     // What the run is, not how it reaches its sources: a spec re-sent with other access or a
     // reformatted payload names the same run.
-    let identity_digest = {
+    let (identity_digest, legacy_digest) = {
         let mut identity = spec.clone();
         identity.payload = None;
         identity.hub = hub.as_ref().map(|hub| v1::HubAccess {
@@ -134,7 +134,13 @@ fn spec_of(mut spec: v1::RunSpec) -> Result<(crate::runs::Spec, Option<v1::HubAc
         let mut identity = serde_json::to_value(&identity).expect("a run spec serializes");
         identity["payload"] = input.clone();
         let encoded = crate::boundary_json::exact(&identity);
-        format!("sha256:{}", tensorfs::sha256::hex_digest(&encoded))
+        let current = format!("sha256:{}", tensorfs::sha256::hex_digest(&encoded));
+        // Old accepted requests included this retired option in their identity. Comparing
+        // its former spelling preserves retries without restoring cache-bypass behavior.
+        identity["no_memo"] = Value::Bool(true);
+        let encoded = crate::boundary_json::exact(&identity);
+        let legacy = format!("sha256:{}", tensorfs::sha256::hex_digest(&encoded));
+        (current, legacy)
     };
     if hub.as_ref().is_some_and(|hub| !crate::hub::valid_origin(&hub.origin)) {
         return Err(Error::validation("invalid_hub_origin", "the run's Hub origin is invalid"));
@@ -182,7 +188,6 @@ fn spec_of(mut spec: v1::RunSpec) -> Result<(crate::runs::Spec, Option<v1::HubAc
         attention_kernel: spec.attention_kernel,
         gpus: spec.gpus,
         lane: spec.lane,
-        no_memo: spec.no_memo,
         hub: None,
         tensorfs,
         providers: providers
@@ -195,6 +200,7 @@ fn spec_of(mut spec: v1::RunSpec) -> Result<(crate::runs::Spec, Option<v1::HubAc
         owner: spec.owner,
         application: String::new(),
         digest: identity_digest,
+        legacy_digest: Some(legacy_digest),
         journaled,
     }, hub))
 }
@@ -315,5 +321,37 @@ impl Runs {
             .into_iter()
             .map(|(id, admitted)| Ok((admitted.expect("each run answered")?, self.state(actor, &id)?)))
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request(input: &str) -> v1::RunSpec {
+        serde_json::from_value(serde_json::json!({
+            "source": {"installation": "example"},
+            "entrypoint": "generate",
+            "payload": {"text": input},
+        })).unwrap()
+    }
+
+    #[test]
+    fn retired_memo_option_keeps_accepted_request_digests_replayable() {
+        let sent = request("same input");
+        let mut old = serde_json::to_value(&sent).unwrap();
+        old["payload"] = serde_json::json!({"text": "same input"});
+        old["no_memo"] = Value::Bool(true);
+        let old_digest = format!("sha256:{}", tensorfs::sha256::hex_digest(&crate::boundary_json::exact(&old)));
+        old.as_object_mut().unwrap().remove("no_memo");
+        let normal_digest = format!("sha256:{}", tensorfs::sha256::hex_digest(&crate::boundary_json::exact(&old)));
+        let (current, _) = spec_of(sent).unwrap();
+        assert_eq!(current.digest, normal_digest);
+        assert_eq!(current.legacy_digest.as_deref(), Some(old_digest.as_str()));
+        assert_ne!(current.digest, old_digest);
+
+        let (changed, _) = spec_of(request("different input")).unwrap();
+        assert_ne!(changed.digest, old_digest);
+        assert_ne!(changed.legacy_digest.as_deref(), Some(old_digest.as_str()));
     }
 }

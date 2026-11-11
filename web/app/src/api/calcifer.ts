@@ -2565,10 +2565,6 @@ lane?: string | null,
  */
 attention_kernel?: string | null, 
 /**
- * Compute it afresh: no machine memo answers or keeps it (dev-only `--no-memo`).
- */
-no_memo?: boolean, 
-/**
  * Keep the function at this level instead of running it (`off` takes it out).
  */
 warm?: WarmLevel | null, 
