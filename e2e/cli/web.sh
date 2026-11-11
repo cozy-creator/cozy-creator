@@ -232,8 +232,12 @@ answers "ending that session" 204 - -X DELETE -H "Authorization: Bearer $other" 
 answers "no credential" 401 unauthenticated "$base/v1/machines"
 answers "a code asked for with no credential" 401 unauthenticated -X POST "$base/v1/session-codes"
 answers "a code asked for by a session, not the holder" 403 session_code_needs_bearer -X POST -H "Authorization: Bearer $session" "$base/v1/session-codes"
+issued_before=$(date +%s)
 answers "the holder asks for another code" 200 - -X POST -H "Authorization: Bearer $token" "$base/v1/session-codes"
+issued_after=$(date +%s)
 fresh=$(jq -r '.code // empty' "$OUT/web-reply.json") expires=$(jq -r '.expires_ms // 0' "$OUT/web-reply.json")
+issued_at=$(( expires / 1000 - 900 ))
+[ "$issued_at" -ge "$issued_before" ] && [ "$issued_at" -le "$issued_after" ] && [ -n "$fresh" ] || check "web-serves: sign-in code lifetime is not 15 minutes"
 
 file=$(jq -r '.imported.path // empty' "$OUT/web.json"); file=${file##*/}
 if [ -n "$file" ]; then
@@ -251,11 +255,8 @@ answers "ending the session" 204 - -X DELETE -H "Authorization: Bearer $session"
 answers "an ended session" 401 unauthenticated -H "Authorization: Bearer $session" "$base/v1/machines"
 answers "an ended session's ?media=" 401 unauthenticated "$base/v1/projects/$id/files/$file?media=$media"
 
-# A code lives 60 s: this one, kept until then. Last, as nothing else waits on it.
-wait=$(( expires / 1000 - $(date +%s) + 1 ))
-[ "$wait" -le 61 ] && [ -n "$fresh" ] || check "web-serves: a fresh code '$fresh' expires in $wait s, not 60 s"
-[ "$wait" -le 0 ] || sleep "$wait"
-redeem "an expired code" 400 session_code_invalid "$fresh"
+# Expiry boundaries and restart durability are checked without sleeping in sessions::tests.
+
 }
 
 # Alone: this computer's cozy, as it is, in the default home.

@@ -1,12 +1,14 @@
 """Check the small public CLI surface against the installed binary, without running models."""
 
 import argparse
+import html
 import json
 import os
 from pathlib import Path
 from urllib.parse import urlsplit
 import re
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -35,6 +37,15 @@ def main() -> None:
     empty = Path(outside.name)
     records = []
     environment = os.environ.copy()
+    browser_log = case / "browser-opened.txt"
+    if os.name == "posix":
+        browser_bin = case / "browser-bin"
+        browser_bin.mkdir()
+        browser = browser_bin / ("open" if sys.platform == "darwin" else "xdg-open")
+        browser.write_text("#!/bin/sh\nprintf '%s\\n' \"$1\" >> \"$COZY_TEST_BROWSER_LOG\"\n")
+        browser.chmod(0o755)
+        environment["PATH"] = str(browser_bin) + os.pathsep + environment.get("PATH", "")
+        environment["COZY_TEST_BROWSER_LOG"] = str(browser_log)
 
     def run(name: str, words: list[str], directory: Path = empty, code: int = 0) -> subprocess.CompletedProcess[str]:
         if log := environment.get("ARGV_LOG"):
@@ -135,13 +146,35 @@ def main() -> None:
         nested = json.loads(run("containing project", ["--json", "status"], child).stdout)
         assert Path(nested["project"]["path"]).resolve() == project
         opened = json.loads(run("project URL", ["--json", "open"], project).stdout)
-        assert set(opened) == {"url", "expires_ms"}, "open includes fields beyond the URL and expiry"
+        assert set(opened) == {"project", "url"}, "open should show the project name and URL"
+        assert opened["project"] == project.name
         url = urlsplit(opened["url"])
         assert url.hostname in {"127.0.0.1", "localhost", "::1"}, "open did not print a local URL"
         assert url.path == f"/p/{created['code']}" and url.fragment.startswith("code=")
-        assert opened["expires_ms"] > 0
         plain_url = run("default project URL", ["open"], project).stdout
-        assert not plain_url.lstrip().startswith("{") and "url" in plain_url and "expires_ms" in plain_url
+        assert not plain_url.lstrip().startswith("{") and "url" in plain_url and project.name in plain_url
+        assert "expires_ms" not in plain_url
+        if os.name == "posix":
+            until = time.monotonic() + 5
+            while time.monotonic() < until:
+                opened_files = browser_log.read_text().splitlines() if browser_log.exists() else []
+                if len(opened_files) >= 2:
+                    break
+                time.sleep(0.05)
+            assert len(opened_files) >= 2, "open did not launch the default browser"
+            first = Path(opened_files[0])
+            assert opened["url"] in html.unescape(first.read_text()), "browser received a different URL"
+            assert first.stat().st_mode & 0o777 == 0o600, "browser redirect exposes its sign-in code"
+            saved_path = environment["PATH"]
+            empty_path = case / "empty-path"
+            empty_path.mkdir()
+            environment["PATH"] = str(empty_path)
+            try:
+                fallback = run("browser unavailable fallback", ["--json", "open"], project)
+            finally:
+                environment["PATH"] = saved_path
+            assert json.loads(fallback.stdout)["project"] == project.name
+            assert "could not open the browser" in fallback.stderr
         for flag in ("--no-open", "--print-url"):
             run(f"removed open flag {flag}", ["open", flag], project, code=2)
         run("removed run selector", ["run", "-p", str(project), "example/generate", "prompt=test"], project, code=2)
@@ -151,6 +184,9 @@ def main() -> None:
         receipt = json.dumps(records, indent=2) + "\n"
         (case / "results.json").write_text(receipt)
         (out / "results.json").write_text(receipt)
+        if browser_log.exists():
+            for file in browser_log.read_text().splitlines():
+                Path(file).unlink(missing_ok=True)
         outside.cleanup()
 
 

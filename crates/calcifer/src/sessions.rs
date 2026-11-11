@@ -4,7 +4,6 @@
 //! host, and `localStorage` only its own. Only digests are kept, in `state.db`'s `sessions`, so a
 //! session outlives a restart and the store opens nothing.
 use std::{
-    collections::HashMap,
     sync::{Arc, Mutex},
 };
 
@@ -27,16 +26,15 @@ use crate::{
     store::{Store, StoreError, now_ms},
 };
 
-const CODE_LIVES_MS: i64 = 60_000;
+const CODE_LIVES_MS: i64 = 15 * 60 * 1000;
 /// A session unused this long has ended.
 const UNUSED_MS: i64 = 30 * 24 * 3600 * 1000;
 /// How far behind its row's `used_at_ms` may fall: far less than [`UNUSED_MS`], and no write per call.
 const NOTED_EVERY_MS: i64 = 3600 * 1000;
 
-/// The sessions of `state.db`, as Calcifer reads them on every call, and the codes not yet traded, which no restart needs to keep.
+/// Browser sessions cached in memory; unredeemed code digests stay in the store across restarts.
 pub(crate) struct Sessions {
     live: Mutex<Vec<SessionRow>>,
-    codes: Mutex<HashMap<String, i64>>,
 }
 
 fn secret() -> String {
@@ -56,29 +54,28 @@ impl Sessions {
             warn!("{e}; browser sessions start over");
             vec![]
         });
-        Self { live: Mutex::new(live), codes: Mutex::default() }
+        Self { live: Mutex::new(live) }
     }
 
-    fn mint_code(&self) -> (String, i64) {
+    fn mint_code(&self, store: &Store) -> Result<(String, i64), Refusal> {
         let (code, now) = (secret(), now_ms());
-        let mut codes = self.codes.lock().expect("session codes");
-        codes.retain(|_, expires_ms| now < *expires_ms);
-        codes.insert(digest(&code), now + CODE_LIVES_MS);
-        (code, now + CODE_LIVES_MS)
+        let expires_ms = now + CODE_LIVES_MS;
+        store.session_code(&digest(&code), now, expires_ms).map_err(unwritable)?;
+        Ok((code, expires_ms))
     }
 
-    /// `code`, spent whether or not this goes on to succeed.
     fn start(&self, store: &Store, code: &str) -> Result<BrowserSession, Refusal> {
-        let now = now_ms();
-        let expires_ms = self.codes.lock().expect("session codes").remove(&digest(code));
-        if !expires_ms.is_some_and(|expires_ms| now < expires_ms) {
+        self.start_at(store, code, now_ms())
+    }
+
+    fn start_at(&self, store: &Store, code: &str, now: i64) -> Result<BrowserSession, Refusal> {
+        let (token, media) = (secret(), secret());
+        let session = SessionRow { token: digest(&token), media: digest(&media), used_at_ms: now };
+        if !store.session_started(&digest(code), &session, now, now - UNUSED_MS).map_err(unwritable)? {
             let said = "this sign-in code is unknown, used or expired";
             return Err(Refusal(Error::new(Kind::Validation, "session_code_invalid", said).next("cozy open")));
         }
-        let (token, media) = (secret(), secret());
-        let session = SessionRow { token: digest(&token), media: digest(&media), used_at_ms: now };
         let mut live = self.live.lock().expect("sessions");
-        store.session_started(&session, now - UNUSED_MS).map_err(unwritable)?;
         live.retain(|session| now - session.used_at_ms < UNUSED_MS);
         live.push(session);
         Ok(BrowserSession { token, media })
@@ -136,7 +133,7 @@ pub(crate) async fn code(State(api): State<Arc<Api>>, headers: HeaderMap) -> Res
         return Err(Refusal(Error::new(Kind::Forbidden, "session_code_needs_bearer", said).next("cozy open")));
     }
     let host = headers.get(header::HOST).and_then(|host| host.to_str().ok()).unwrap_or_default();
-    let (code, expires_ms) = api.sessions.mint_code();
+    let (code, expires_ms) = api.sessions.mint_code(api.calcifer.store())?;
     Ok(Json(SessionCode { url: format!("http://{host}/#code={code}"), code, expires_ms }))
 }
 
@@ -155,4 +152,48 @@ pub(crate) async fn end(State(api): State<Arc<Api>>, headers: HeaderMap) -> Resu
         api.sessions.end(api.calcifer.store(), token)?;
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sign_in_codes_live_for_fifteen_minutes_and_survive_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("state.db");
+        let store = Store::open(&path).unwrap();
+        let sessions = Sessions::open(&store);
+        let before = now_ms();
+        let (code, expires_ms) = sessions.mint_code(&store).unwrap();
+        assert_eq!(CODE_LIVES_MS, 900_000);
+        assert!((before + CODE_LIVES_MS..=now_ms() + CODE_LIVES_MS).contains(&expires_ms));
+        let kept: String = store.read(|conn| Ok(conn.query_row("SELECT code_sha256 FROM session_codes", [], |row| row.get(0))?)).unwrap();
+        assert_eq!(kept, digest(&code));
+        drop(sessions);
+        drop(store);
+
+        let store = Store::open(&path).unwrap();
+        let sessions = Sessions::open(&store);
+        assert!(sessions.start_at(&store, &code, expires_ms - 1).is_ok());
+        assert!(sessions.start_at(&store, &code, expires_ms - 1).is_err());
+        let (expired, boundary) = sessions.mint_code(&store).unwrap();
+        assert!(sessions.start_at(&store, &expired, boundary).is_err());
+    }
+
+    #[test]
+    fn a_sign_in_code_can_be_redeemed_once_across_concurrent_requests() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(&directory.path().join("state.db")).unwrap());
+        let sessions = Arc::new(Sessions::open(&store));
+        let (code, _) = sessions.mint_code(&store).unwrap();
+        let requests: Vec<_> = (0..2).map(|_| {
+            let store = Arc::clone(&store);
+            let sessions = Arc::clone(&sessions);
+            let code = code.clone();
+            std::thread::spawn(move || sessions.start(&store, &code).is_ok())
+        }).collect();
+        let successes = requests.into_iter().map(|request| request.join().unwrap()).filter(|ok| *ok).count();
+        assert_eq!(successes, 1);
+    }
 }

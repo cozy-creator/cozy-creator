@@ -333,7 +333,7 @@ async function upload(token, path) {
   return digest;
 }
 
-/** Sign the browser in with a fresh session code after it has launched. The code lives 60 seconds. */
+/** Sign the browser in with a fresh session code after it has launched. The code lives 15 minutes. */
 async function signIn(page, options) {
   const holder = JSON.parse(readFileSync(process.env.HOLDER, 'utf8'));
   const response = await fetch(`http://${holder.address}/v1/session-codes`, {

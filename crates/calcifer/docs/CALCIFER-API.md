@@ -163,11 +163,11 @@ media-src 'self' blob:; font-src 'self'; connect-src 'self'; base-uri 'none'; fo
   without asking the Hub (`GET /v1/account` does).
 
 ### Session
-A browser signs in with a single-use code. `cozy open` prints an authenticated local URL carrying
-that code. The browser exchanges it for a session; the code expires after 60 seconds. The
+A browser signs in with a single-use code. `cozy open` launches the browser through a private
+redirect file and prints the project name and authenticated local URL as a fallback. The browser exchanges it for a session; the code expires after 15 minutes and survives Calcifer restarts. The
 fragment carries `code=<one-use-code>` while the path identifies the project as `/p/<public-code>`. Older `&to=<route>` links are accepted for compatibility. `state.db` holds sessions' digests; 30 days unused ends one.
 - `POST /v1/session-codes` (the lock record's bearer only, else `403 session_code_needs_bearer`):
-  `{code, url, expires_ms}`, 32 random bytes in hex, good for 60 s. `url` is `http://<Host>/#code=<code>`.
+  `{code, url, expires_ms}`, 32 random bytes in hex, good for 15 minutes. `url` is `http://<Host>/#code=<code>`.
 - `POST /v1/session` `{code}`, needing no credential: `{token, media}`, new for each code. `400 session_code_invalid`
   when it's unknown, used or expired.
 - `DELETE /v1/session`: `204`, the session whose token this carries has ended.
