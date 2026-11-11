@@ -150,12 +150,16 @@ fn list(store: &Store, seen: &Seen) -> std::io::Result<Listing> {
         if models.last().is_none_or(|m| m.repository != *repository) {
             models.push(v1::Model { repository: repository.clone(), ..Default::default() });
         }
-        let precision = store.checkpoint(header).map(|c| crate::precision::Profile::of(c.header()).family).unwrap_or_default();
+        let (precision, role) = store.checkpoint(header).map(|c| (
+            crate::precision::Profile::of(c.header()).family,
+            c.header().repository_role().to_owned(),
+        )).unwrap_or_else(|_| (String::new(), "unknown".into()));
         models.last_mut().expect("pushed").checkpoints.push(v1::Checkpoint {
             release: release.clone(),
             lane: lane.clone(),
             precision,
             manifest: header.id(),
+            role,
         });
     }
     for objects in closures.values() {

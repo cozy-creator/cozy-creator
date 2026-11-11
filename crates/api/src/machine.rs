@@ -1124,6 +1124,8 @@ pub struct Checkpoint {
     pub precision: String,
     /// `sha256:<hex>` of its header.
     pub manifest: String,
+    /// `model`, `lora`, or `unknown`; empty from older machines.
+    pub role: String,
 }
 
 /// One GPU, as measured at boot: identity, memory, driver and family.
