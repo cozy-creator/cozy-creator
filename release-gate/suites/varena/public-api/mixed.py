@@ -1,4 +1,5 @@
-"""Real mixed-binding client. Default is host-only; --gpu requires owner authorization."""
+"""Real mixed-binding client. Default is host-only; --gpu requires owner authorization. Public API only (xs-174):
+`tensorfs.varena`, `tensorfs.varena.torch`, and the core's own C ABI (`varena.h`) for what Python doesn't surface."""
 
 from __future__ import annotations
 
@@ -36,9 +37,22 @@ def main() -> None:
         return C.CDLL(str(args.c.resolve()), mode=C.RTLD_GLOBAL), C.CDLL(str(args.rust.resolve()), mode=C.RTLD_GLOBAL)
 
     first = load() if args.order == "native-first" else None
+    import tensorfs
     import tensorfs.varena.torch as vt
-    from tensorfs import _ext
-    from tensorfs.varena import api
+    from tensorfs import varena
+
+    # The core, by its public C ABI: the same mapped library the bindings share (one error state per thread).
+    core = C.CDLL(str(Path(tensorfs.__file__).parent / ".native" / "libvarena.so"), mode=C.RTLD_GLOBAL)
+    core.vr_v1_core_identity.restype = C.c_uint64
+    core.vr_v1_last_error.restype = C.c_char_p
+    core.vr_v1_gpu_close.argtypes = [C.c_uint64]
+    core.vr_v1_gpu_open.argtypes = [C.c_int32, C.POINTER(C.c_uint64)]
+
+    class Room(C.Structure):  # varena.h's vr_room_v1
+        _fields_ = [(name, C.c_uint64) for name in ("capacity", "working_live", "pinned", "weights_resident", "free")]
+
+    def fields(room: Room) -> dict[str, int]:
+        return {name: getattr(room, name) for name, _ in Room._fields_}
 
     c, rust = first if first is not None else load()  # python-first: after TensorFS
     for function in [
@@ -49,8 +63,8 @@ def main() -> None:
     identities = [
         c.mixed_c_identity(),
         rust.mixed_rust_identity(),
-        _ext._varena_core_identity(),
-        api.core_identity(),
+        core.vr_v1_core_identity(),
+        varena.core_identity(),
     ]
     assert len(set(identities)) == 1 and identities[0] != 0, identities
     assert c.mixed_c_error() == 1
@@ -58,24 +72,24 @@ def main() -> None:
     assert c.mixed_c_error() == 1
     # The C client set the actual core's thread-local error. Python reads that same
     # TLS slot; calling an independent copy could not observe this failure.
-    assert api._lib.vr_v1_last_error() == b"device must be nonnegative"
+    assert core.vr_v1_last_error() == b"device must be nonnegative"
     assert rust.mixed_rust_error() == 1
-    assert api._lib.vr_v1_last_error() == b"device must be nonnegative"
+    assert core.vr_v1_last_error() == b"device must be nonnegative"
     # Invalid handles, including a double close, are errors rather than C pointer UB.
-    assert api._lib.vr_v1_gpu_close(2**64 - 1) == 5
-    main_error = api._lib.vr_v1_last_error()
+    assert core.vr_v1_gpu_close(2**64 - 1) == 5
+    main_error = core.vr_v1_last_error()
     errors: list[bytes] = []
 
     def other_thread() -> None:
         assert c.mixed_c_error() == 1
-        errors.append(api._lib.vr_v1_last_error())
+        errors.append(core.vr_v1_last_error())
 
     thread = threading.Thread(target=other_thread)
     thread.start()
     thread.join()
     assert (
         errors == [b"device must be nonnegative"]
-        and api._lib.vr_v1_last_error() == main_error
+        and core.vr_v1_last_error() == main_error
     )
     mapped = {
         line.split()[-1]
@@ -104,28 +118,30 @@ def main() -> None:
         torch.cuda.current_stream().synchronize()
         from streams import owned_stream
 
-        with owned_stream(torch, vt) as stream, torch.cuda.stream(stream), api.open() as gpu:
+        handle = C.c_uint64()  # a C client's own handle on the same device (Python's Gpu surfaces none)
+        assert core.vr_v1_gpu_open(0, C.byref(handle)) == 0
+        with owned_stream(torch, vt) as stream, torch.cuda.stream(stream), varena.open() as gpu:
             before = gpu.stats()
             allocation = C.c_uint64()
             c.mixed_c_alloc.argtypes = [C.c_uint64, C.c_uint64, C.c_uint64, C.POINTER(C.c_uint64)]
             rust.mixed_rust_gpu.argtypes = [C.c_uint64]
             c.mixed_c_free.argtypes = [C.c_uint64]
-            assert c.mixed_c_alloc(gpu._handle, 2 << 20, stream.cuda_stream, C.byref(allocation)) == 0
+            assert c.mixed_c_alloc(handle.value, 2 << 20, stream.cuda_stream, C.byref(allocation)) == 0
             after_c = gpu.stats()
             assert after_c["working_live"] - before["working_live"] == 2 << 20
-            native = _ext._varena_working_stats(0)
+            native = vt.stats(0)
             assert native["allocated_bytes"] == after_c["working_live"], native
             value = torch.arange(1024, device="cuda", dtype=torch.int32)
             assert value.sum().item() == 1023 * 1024 // 2
             after_torch = gpu.stats()
             assert after_torch["working_live"] > after_c["working_live"]
             # One room whichever frontend reads it, and it counts the C and Torch bytes.
-            c.mixed_c_room.argtypes = [C.c_uint64, C.POINTER(api._Room)]
-            rust.mixed_rust_room.argtypes = [C.POINTER(api._Room)]
-            from_c, from_rust = api._Room(), api._Room()
-            assert c.mixed_c_room(gpu._handle, C.byref(from_c)) == 0
+            c.mixed_c_room.argtypes = [C.c_uint64, C.POINTER(Room)]
+            rust.mixed_rust_room.argtypes = [C.POINTER(Room)]
+            from_c, from_rust = Room(), Room()
+            assert c.mixed_c_room(handle.value, C.byref(from_c)) == 0
             assert rust.mixed_rust_room(C.byref(from_rust)) == 1
-            rooms = [api._fields(from_c), api._fields(from_rust), gpu.room()]
+            rooms = [fields(from_c), fields(from_rust), gpu.room()]
             for name in ("capacity", "working_live", "pinned", "weights_resident"):
                 assert len({room[name] for room in rooms}) == 1, rooms
             assert rooms[0]["working_live"] == gpu.stats()["working_capacity"], rooms
@@ -135,6 +151,7 @@ def main() -> None:
             del value
             stream.synchronize()
             final = gpu.stats()
+            assert core.vr_v1_gpu_close(handle.value) == 0
             assert final["working_live"] == before["working_live"], (before, final)
             # Free pages stay mapped until something needs them; asked, they all come back.
             deadline = time.monotonic() + 10

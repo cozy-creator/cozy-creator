@@ -1,5 +1,7 @@
-"""The public API through cozy: clients built here against the installed core, each run in a fresh
-process. `pack.sh` makes this package and puts their sources in `tree`."""
+"""varena's public API across bindings (README.md): C, Rust and Python clients built on the pod against the installed
+core, each in a fresh process, on one core. A plain program on the rental (`release-gate/programs.sh`, xs-174), not a
+package: the package contract keeps packages off varena. `pack.sh` lays this directory out with the clients' sources in
+`tree`. One ROW per case: `public-mixed`, `public-engines`, `public-sizing`, `public-priority`."""
 import json
 import os
 import subprocess
@@ -8,11 +10,8 @@ import tempfile
 from pathlib import Path
 from typing import Protocol, TypedDict
 
-import msgspec
 import tensorfs
-from cozy_runtime.author import App, Context
 
-app = App()
 TREE = Path(__file__).with_name("tree")
 SUITE = TREE / "release-gate/suites/varena/public-api"
 EXAMPLES = TREE / "crates/varena/examples"
@@ -32,16 +31,7 @@ if not pathlib.Path({str(CARGO)!r}).exists():
     os.execv(init, [init, "-y", "-q", "--profile", "minimal", "--no-modify-path", "--default-toolchain", "1.99.1"])
 """]
 type JSON = None | bool | int | float | str | list[JSON] | dict[str, JSON]
-
-
-class Request(msgspec.Struct, forbid_unknown_fields=True):
-    case: str = "all"
-    seed: int = 138
-
-
-class Report(msgspec.Struct):
-    passed: bool
-    detail: str
+SEED = 138
 
 
 class Cell(Protocol):
@@ -87,27 +77,22 @@ def cases(seed: int) -> dict[str, list[list[str]]]:
     }
 
 
-def run(argv: list[str], ctx: Context) -> Step:
-    process = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=ENV)
-    assert process.stdout is not None
-    lines: list[str] = []
-    for line in process.stdout:
-        lines.append(line.rstrip())
-        ctx.raise_if_cancelled()
-    code = process.wait()
+def run(argv: list[str]) -> Step:
+    process = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=ENV)
+    lines = process.stdout.splitlines()
     rows = [line for line in lines if line.startswith("{")]
-    return {"step": " ".join(Path(part).name[:40] for part in argv[:3]), "exit": code, "rows": [json.loads(row) for row in rows],
-            "tail": lines[-30:] if code else []}
+    return {"step": " ".join(Path(part).name[:40] for part in argv[:3]), "exit": process.returncode,
+            "rows": [json.loads(row) for row in rows], "tail": lines[-30:] if process.returncode else []}
 
 
-@app.entrypoint(accelerator=True)
-def public(request: Request, ctx: Context) -> Report:
+if __name__ == "__main__":
     WORK.mkdir(exist_ok=True)
-    chosen = cases(request.seed)
-    steps: list[Step] = []
-    for name in chosen if request.case == "all" else [request.case]:
-        for argv in chosen[name]:
-            steps.append(run(argv, ctx))
+    for name, commands in cases(SEED).items():
+        steps: list[Step] = []
+        for argv in commands:
+            steps.append(run(argv))
             if steps[-1]["exit"]:
-                return Report(False, json.dumps(steps))
-    return Report(True, json.dumps(steps))
+                break
+        passed = all(step["exit"] == 0 for step in steps) and len(steps) == len(commands)
+        print("ROW " + json.dumps({"cell": f"public-{name}", "result": "PASS" if passed else "FAIL",
+                                   "detail": steps if not passed else [step["rows"] for step in steps]}), flush=True)
