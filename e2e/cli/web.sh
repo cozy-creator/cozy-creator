@@ -102,7 +102,7 @@ local on_hub=''
 [ -n "${WEB_ALONE:-}" ] || on_hub=$(web_restart "$lock" @HUB@)
 HUB_RESTART=$on_hub web_proof localfit "$chrome" "$pw" "$restart"
 jq -c '{line: .seen.line, placed: .seen.placed}' "$OUT/web-localfit.json" 2> /dev/null || true
-step "web-addons: the checkpoint explorer, a LoRA and a fine-tune dragged onto a box, chips, why one doesn't fit, a hand's file kept"
+step "web-addons: model and adapter parameters, node chips, strength and removal controls, a hand's file kept"
 web_proof addons "$chrome" "$pw" ''
 jq -c '.seen.skipped // empty' "$OUT/web-addons.json" 2> /dev/null || true
 step "web-versions: <name.N> and <self.N>, a tool on and off a box, a picture joining one, a version deleted with Undo, reclaim, a rename during a real render, takes approved by a double tap, a merge, a box's shape, Render while it makes"

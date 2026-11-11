@@ -122,9 +122,10 @@ function linesOf(text, name) {
   seen.listed = atRest.map((one) => `${one.title}: ${one.tools.map((row) => row.label).join(', ')}`);
   check('nodes_and_tools_are_separate', atRest.length === 2 && atRest[0].title === 'Nodes' && atRest[1].title === 'Tools', atRest);
   check('exactly_four_basic_node_types', JSON.stringify(atRest.find((one) => one.section === 'nodes')?.tools.map((row) => row.label)) === JSON.stringify(['Text', 'Image', 'Video', 'Video Edit']), atRest);
+  check('sidebar_has_no_discovery_controls', await page.locator('.tools input, .tools .browse-toggle, .tools .browse, .tools .box-shelf-head, .tools .tool-off').count() === 0 && !(await page.locator('.tools button').allTextContents()).some((word) => /Browse|Checkpoints|Add file/.test(word)));
   check('local_output_capabilities_remain', ours(atRest).length === 2 && ours(atRest).some((row) => row.id === `${fixture}/shot` && row.kind === 'video') && ours(atRest).some((row) => row.id === `${fixture}/still` && row.kind === 'image'), ours(atRest));
   const modelRows = atRest.flatMap((one) => one.tools).filter((row) => row.model);
-  const publishedModels = [...new Set((await api(`/v1/tools?project=${id}`)).body.tools.flatMap((one) => one.model?.default ? [one.model.default.split('@')[0].replace(/^_\//, '')] : []))];
+  const publishedModels = [...new Set((await api(`/v1/tools?project=${id}&palette=true`)).body.tools.flatMap((one) => one.model?.default ? [one.model.default.split('@')[0].replace(/^_\//, '')] : []))];
   check('each_declared_model_once', modelRows.length === publishedModels.length && new Set(modelRows.map((row) => row.model)).size === modelRows.length && publishedModels.every((model) => modelRows.some((row) => row.model === model)), modelRows);
   const h3 = modelRows.find((row) => /\/minimax-h3$/.test(row.model));
   check('minimax_h3_is_a_video_tool', h3?.kind === 'video', h3);
@@ -133,20 +134,6 @@ function linesOf(text, name) {
   const h3Image = modelRows.find((row) => /\/p-h3-image$/.test(row.model));
   check('model_labels_identify_the_model', qwen?.label === 'Qwen Image 2.1' && sdxl?.label === 'SDXL' && /minimax h3/i.test(h3?.label ?? ''), { qwen, h3, sdxl });
   check('h3_image_is_a_separate_model_entry', h3Image?.kind === 'image' && h3Image.entry !== h3?.entry, { video: h3, image: h3Image });
-  const search = page.locator('.tools input[aria-label="Search the tools"]');
-  // Searching a function still finds its model/capability entry without exposing a second helper row.
-  const found = async (q, wanted) => {
-    await search.fill(q);
-    return until(`"${q}" searched`, listed, wanted).catch(() => listed());
-  };
-  const basics = (list) => list.find((one) => one.section === 'nodes')?.tools ?? [];
-  const byPackage = await found('boxes', (list) => ours(list).length === 2 && basics(list).length === 0);
-  check('search_finds_the_package', ours(byPackage).length === 2 && basics(byPackage).length === 0 && ours(byPackage).every((row) => row.label.startsWith('Boxes ')), byPackage);
-  const byLabel = await found('every field', (list) => ours(list).length === 1 && basics(list).length === 0);
-  check('search_finds_the_label', ours(byLabel)[0]?.id === `${fixture}/shot` && basics(byLabel).length === 0, byLabel);
-  const byModel = await found('stabilityai/sdxl', (list) => list.flatMap((one) => one.tools).some((row) => row.model === 'stabilityai/sdxl'));
-  check('search_finds_the_model_reference', byModel.flatMap((one) => one.tools).some((row) => row.label === 'SDXL' && row.model === 'stabilityai/sdxl'), byModel);
-  await found('', (list) => ours(list).length === 2 && basics(list).length === 4);
   // The rest stand beside it, in reach while it's worked on.
   const cards = (await api(`/v1/projects/${id}/canvas`)).body.cards;
   const at = cards.shot;
