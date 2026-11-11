@@ -207,7 +207,7 @@ def run_locked(args, profile):
     env.update(HOME=str(home), TMPDIR=str(profile / "tmp"), XDG_CACHE_HOME=str(profile / "cache"),
                TENSORFS_HOME=str(profile / "tensorfs"), UV_CACHE_DIR=str(profile / "uv-cache"),
                COZY_HUB_URL="http://127.0.0.1:9", HOLDER=str(holder_path), COZY=str(binary),
-               PLAYWRIGHT=str(module), CHROME=str(Path(chrome).resolve()))
+               PLAYWRIGHT=str(module), CHROME=str(Path(chrome).resolve()), COZY_TEST_PROGRESS="1")
     if securefs:
         env["COZY_SECUREFS_PROVIDER"] = str(securefs)
     result = profile / "results" / f"{time.strftime('%Y%m%dT%H%M%S')}-{time.time_ns() % 1_000_000_000:09d}"
@@ -215,6 +215,7 @@ def run_locked(args, profile):
     holder = None
     vite = None
     server = None
+    browser_process = None
     summary = {"binary": str(binary), "version": version, "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
                "fixture": str(fixture), "fixture_sha256": hashlib.sha256(fixture.read_bytes()).hexdigest(),
                "build_seconds": round(build_seconds, 3)}
@@ -246,15 +247,30 @@ def run_locked(args, profile):
                 env.pop("PAGE_ORIGIN", None)
             began = time.monotonic()
             with (result / "vault.json").open("w") as out, (result / "vault.err").open("w") as err:
-                completed = subprocess.run(["node", fixture], cwd=harness, env=env, stdout=out, stderr=err)
-            summary.update(test_seconds=round(time.monotonic() - began, 3), exit_code=completed.returncode)
-            return completed.returncode
+                browser_process = subprocess.Popen(["node", fixture], cwd=harness, env=env, stdout=out,
+                                                   stderr=subprocess.PIPE, text=True, start_new_session=True)
+                for line in browser_process.stderr:
+                    err.write(line)
+                    if line.startswith("[local-vault] "):
+                        print(line.rstrip(), flush=True)
+                code = browser_process.wait()
+            summary.update(test_seconds=round(time.monotonic() - began, 3), exit_code=code)
+            return code
     finally:
         cleanup_errors = []
+        try:
+            if browser_process and browser_process.poll() is None:
+                os.killpg(browser_process.pid, signal.SIGINT)
+                browser_process.wait(timeout=10)
+        except (OSError, subprocess.SubprocessError) as error:
+            cleanup_errors.append(str(error))
         try:
             if vite and vite.poll() is None:
                 vite.terminate()
                 vite.wait(timeout=10)
+        except (OSError, subprocess.SubprocessError) as error:
+            cleanup_errors.append(str(error))
+        try:
             if server:
                 stop(server, holder)
         except (OSError, RuntimeError, subprocess.SubprocessError) as error:

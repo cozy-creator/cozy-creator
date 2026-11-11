@@ -8,6 +8,11 @@ const { calcifer, signIn, launch, png, MP4, until, drop, openCanvas, importFile,
 const failures = [], seen = {};
 let browser, context, page, peer, scratch;
 let stage = 'starting browser';
+let reportedStage;
+const progress = process.env.COZY_TEST_PROGRESS ? setInterval(() => {
+  if (stage !== reportedStage) { reportedStage = stage; console.error(`[local-vault] ${stage}`); }
+}, 250) : undefined;
+progress?.unref();
 const errors = [];
 const check = (name, okay) => { seen[name] = !!okay; if (!okay) failures.push(name); };
 const cli = (...args) => execFileSync(process.env.COZY, ['--json', ...args], { encoding: 'utf8', timeout: 180000 });
@@ -399,6 +404,7 @@ const newPage = async () => {
   }
   process.exitCode = 1;
 }).finally(async () => {
+  clearInterval(progress);
   // Never take recovery-code screenshots or emit credentials in the fixture's artifacts.
   if (peer) await peer.close().catch(() => {});
   if (page) await page.close().catch(() => {});
