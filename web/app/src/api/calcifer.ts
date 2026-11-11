@@ -733,7 +733,11 @@ tags?: Array<string>, };
 /**
  * One package a search found, with its newest release.
  */
-export type FoundPackage = { package: string, latest_release: string | null, created_at: string, };
+export type FoundPackage = { package: string, latest_release: string | null, created_at: string,
+/**
+ * Authoritative update time when the Hub provides it.
+ */
+updated_at?: string | null, };
 
 /**
  * A GEMM kernel; one that served below its lane says what it served, what it wanted and why.
