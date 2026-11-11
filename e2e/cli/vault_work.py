@@ -87,9 +87,9 @@ def locked_within(args: argparse.Namespace, seconds: float) -> float:
     raise AssertionError(f"the vault did not lock within {seconds} s")
 
 
-def start(args: argparse.Namespace, name: str, script: Path, seconds: int, token: str = "") -> tuple[subprocess.Popen[bytes], Path]:
+def start(args: argparse.Namespace, name: str, script: Path, seconds: int, mark: str = "") -> tuple[subprocess.Popen[bytes], Path]:
     stdout = args.out / f"{name}.ndjson"
-    words = [str(args.cli), "--json", "run", str(script), f"seconds:={seconds}", *([f"token={token}"] if token else []), "--on", "local"]
+    words = [str(args.cli), "--json", "run", str(script), f"seconds:={seconds}", *([f"mark={mark}"] if mark else []), "--on", "local"]
     process = subprocess.Popen(words,
                                cwd=args.project, stdout=stdout.open("wb"), stderr=(args.out / f"{name}.stderr").open("wb"))
     return process, stdout
@@ -133,7 +133,7 @@ from cozy_runtime.media import File
 app = App()
 class Request(msgspec.Struct, forbid_unknown_fields=True):
     seconds: int
-    token: str = ""
+    mark: str = ""
 class Answer(msgspec.Struct):
     slept: int
     file: File
@@ -141,7 +141,7 @@ class Answer(msgspec.Struct):
 def vault_work_sleep(payload: Request, out: Outputs) -> Answer:
     time.sleep(payload.seconds)
     target = out.temporary_file(".txt")
-    target.write_text(f"{payload.token} slept {payload.seconds}")
+    target.write_text(f"{payload.mark} slept {payload.seconds}")
     return Answer(payload.seconds, out.save_file(target, media_type="text/plain"))
 ''')
     # Its environment installed first, so the timed run below is the sleep, not an install.
@@ -185,8 +185,9 @@ def vault_work_sleep(payload: Request, out: Outputs) -> Answer:
     cli(args, "lock-before-maximum", "vault", "lock")
     deadline_ms = time.time() * 1000 + MAXIMUM * 1000
     script = unlock(args, "unlock-maximum", 0, MAXIMUM) / "vault-work-proof" / "sleeper.py"
-    token = f"cl882-{time.time_ns()}"
-    process, stdout = start(args, "past-maximum", script, OUTLIVES, token)
+    # Not `token`: TensorD refuses a field of that name as a credential.
+    mark = f"cl882-{time.time_ns()}"
+    process, stdout = start(args, "past-maximum", script, OUTLIVES, mark)
     # Each state as read by then (wall ms, Calcifer's clock too): the vault may lock as soon as the run settles.
     samples: list[tuple[float, str]] = []
     while process.poll() is None:
@@ -205,7 +206,7 @@ def vault_work_sleep(payload: Request, out: Outputs) -> Answer:
     assert landed, f"run {run.get('number')} landed no file: {run.get('output')}"
     max_lock_s = locked_within(args, 30)
     view = unlock(args, "unlock-after-maximum", 0)
-    kept = [path for path in (view / ".runs").rglob("*") if path.is_file() and token.encode() in path.read_bytes()]
+    kept = [path for path in (view / ".runs").rglob("*") if path.is_file() and mark.encode() in path.read_bytes()]
     assert kept, f"run {run.get('number')}'s file is not in the project after the vault locked"
     receipt["outlived_maximum"] = {"run": run.get("number"), "status": run.get("status"), "maximum_s": MAXIMUM,
                                    "unlocked_past_maximum_s": round((settled_ms - deadline_ms) / 1000), "unlocked_reads_past_maximum": len(past),
