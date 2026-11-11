@@ -138,10 +138,10 @@ runs:
         path: ${{ runner.temp }}/candidates
         if-no-files-found: error
         retention-days: 14
-        # cli-os and mps (or cli-release) on one OS in one run build the same cozy.
+        # The same candidate can also be built by a standalone caller in this run.
         overwrite: true
     # Where this OS runs no models, its rental (e2e/release) takes this run's Linux TensorD: the candidate job's build.
-    - if: runner.os != 'Linux' && inputs.from != 'native-artifact' && inputs.tensord == '' && inputs.release == ''
+    - if: runner.os != 'Linux' && inputs.tensord == '' && inputs.release == ''
       continue-on-error: true
       uses: actions/download-artifact@v4
       with:
