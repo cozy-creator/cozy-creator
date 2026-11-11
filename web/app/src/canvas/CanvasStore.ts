@@ -2,6 +2,7 @@ import type { Edge, Node, ReactFlowInstance, Viewport } from "@xyflow/react"
 import { flushSync } from "react-dom"
 import { ApiError, type Client, type Write } from "../api/client"
 import { type Action, lost, type Outbox } from "../api/outbox"
+import { nextProjectOrder } from "../api/projectOrder"
 import type {
   ToolField as BoxField,
   Fit,
@@ -1267,7 +1268,7 @@ export class CanvasStore {
     this.act(key, {
       send: async (served, write) => ((await saved) ? this.client.render(this.projectId!, [served], on, once, also, write.once) : null),
       done: (answer) => {
-        settle(answer ? performance.now() : undefined)
+        settle(answer ? nextProjectOrder() : undefined)
         this.readAfter([id])
       },
       refused: (error) => {
@@ -1325,7 +1326,7 @@ export class CanvasStore {
     this.outbox.add({
       send: async (signal) => ((await Promise.all(saved)).every(Boolean) ? this.client.render(id, ["all"], on, once, {}, signal) : null),
       done: (answer) => {
-        settle(answer ? performance.now() : undefined)
+        settle(answer ? nextProjectOrder() : undefined)
         this.readAfter(going)
       },
       refused: (error) => {
@@ -1406,7 +1407,7 @@ export class CanvasStore {
       send,
       edit,
       done: (answer) => {
-        ask.until = performance.now()
+        ask.until = nextProjectOrder()
         this.readAfter([id])
         // A write of its own: what a typed field began from moves with it, so it's no conflict.
         const held = now()
@@ -2080,7 +2081,7 @@ export class CanvasStore {
       this.outbox.add<AssetDeleted>({
         send: (once, action) => this.client.deleteAsset(this.projectId!, this.served.get(id) ?? name, { once, edit, action }),
         done: () => {
-          if (this.deleting.has(name)) this.deleting.set(name, performance.now())
+          if (this.deleting.has(name)) this.deleting.set(name, nextProjectOrder())
         },
         // Its answer was lost: its first try did it.
         landed: (error) => (error.status === 404 ? { name } : undefined),
@@ -2279,7 +2280,7 @@ export class CanvasStore {
     const names = [...new Set([...snaps.map((snap) => snap.name), ...hidden])]
     return {
       settle: () => {
-        const at = performance.now()
+        const at = nextProjectOrder()
         for (const { ask } of overlays) ask.until = at
         for (const name of hidden) if (this.deleting.has(name)) this.deleting.set(name, at)
         for (const name of back) {
@@ -2292,7 +2293,7 @@ export class CanvasStore {
       },
       release: () => {
         for (const { drop } of overlays) drop()
-        for (const name of back) this.patch(name, { pending: performance.now() })
+        for (const name of back) this.patch(name, { pending: nextProjectOrder() })
         for (const name of hidden) this.deleting.delete(name)
         for (const name of moved) this.masks.delete(name)
         this.readAgain(names)
@@ -2619,7 +2620,7 @@ export class CanvasStore {
         const now = this.namesById.get(node.id)
         if (now) {
           const row = this.views.get(now)?.asset
-          this.patch(now, { ...(answer.etag ? { known: answer.etag, asset: row && { ...row, etag: answer.etag } } : {}), pending: performance.now() })
+          this.patch(now, { ...(answer.etag ? { known: answer.etag, asset: row && { ...row, etag: answer.etag } } : {}), pending: nextProjectOrder() })
           // What it pushed aside goes with its own row, in one write: one entry of the history.
           if (this.pushedFor(by)) this.move(now, this.rows?.get(now) ?? at, undefined, by)
           done?.(now, answer, by)

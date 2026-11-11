@@ -3,6 +3,7 @@ import { createContext, useContext } from "react"
 import { ApiError, Client, type RunFilter } from "../api/client"
 import { EventStream } from "../api/events"
 import { Outbox } from "../api/outbox"
+import { nextProjectOrder } from "../api/projectOrder"
 import { runsAfter, withAssets } from "../api/queries"
 import { sameOrigin } from "../api/transport"
 import type { Machine, MachineList, Run, RunList, StreamEvent, CalciferStatus, ProjectEventCursor } from "../api/calcifer"
@@ -102,7 +103,7 @@ class Bridge {
       await this.queries.refetchQueries({ queryKey: key })
       return
     }
-    const began = performance.now()
+    const began = nextProjectOrder()
     try {
       const [rows, said] = await Promise.all([
         Promise.all(names.map((name) => this.client.asset(id, name).then(({ asset }) => asset, (error) => {
