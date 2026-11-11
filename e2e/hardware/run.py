@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Run the existing isolated Hub fixture with a private Linux GPU worker home."""
+from __future__ import annotations
 import argparse
 from array import array
 import codecs
@@ -8,6 +9,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from collections.abc import Mapping, Sequence
 import shutil
 import selectors
 import signal
@@ -17,13 +19,21 @@ import sys
 import termios
 import tempfile
 import time
+from types import FrameType
+from typing import NoReturn, TYPE_CHECKING
 from urllib.request import build_opener, ProxyHandler
 from urllib.parse import parse_qs, unquote, urlsplit
+
+if TYPE_CHECKING:
+    from hardware_types import (
+        CleanupReceipt, HarnessReceipt, MaterializedComponent, Ownership,
+        ProcessIdentity, ProcessSnapshot,
+    )
 
 HERE = Path(__file__).resolve().parent
 
 
-def materialize_component(value, directory):
+def materialize_component(value: str, directory: Path) -> tuple[str, MaterializedComponent]:
     source = urlsplit(value)
     if not source.scheme:
         return value, {'input': value}
@@ -45,7 +55,7 @@ def materialize_component(value, directory):
     return str(destination), {'input': value, 'sha256': digest, 'local_path': str(destination)}
 
 
-def remove_owned_tree(path):
+def remove_owned_tree(path: Path) -> None:
     """Remove an allocated job tree; repair only its own directories, never link targets."""
     root = Path(path).absolute()
     if not root.exists():
@@ -57,7 +67,7 @@ def remove_owned_tree(path):
     except PermissionError:
         # Sandboxed package trees and uv Python installations deliberately keep read-only
         # directories. Unlinking their files needs write access on those owned directories.
-        def writable(directory):
+        def writable(directory: Path) -> None:
             metadata = directory.lstat()
             if directory.is_symlink() or metadata.st_uid != os.getuid() or not directory.is_relative_to(root):
                 raise PermissionError(f'cannot repair cleanup permissions outside the owned tree: {directory}')
@@ -71,23 +81,25 @@ def remove_owned_tree(path):
         shutil.rmtree(root)
 
 
-def run_logged(command, environment, output):
+def run_logged(command: Sequence[str], environment: Mapping[str, str], output: Path) -> int:
     with output.open('w') as log:
         child = subprocess.Popen(command, env=environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                  start_new_session=True)
-        descriptor = child.stdout.fileno()
+        assert child.stdout is not None
+        stdout = child.stdout
+        descriptor = stdout.fileno()
         os.set_blocking(descriptor, False)
         selector = selectors.DefaultSelector()
         selector.register(descriptor, selectors.EVENT_READ)
         decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
-        def emit(data, final=False):
-            text = decoder.decode(data, final=final)
+        def emit(data: bytes, final: bool = False) -> None:
+            text: str = decoder.decode(data, final=final)
             log.write(text)
             log.flush()
             print(text, end='', flush=True)
         try:
             while True:
-                for _, _ in selector.select(.1):
+                for _event in selector.select(.1):
                     data = os.read(descriptor, 65536)
                     if data:
                         emit(data)
@@ -114,12 +126,12 @@ def run_logged(command, environment, output):
             if child.poll() is None:
                 os.killpg(child.pid, signal.SIGTERM)
                 child.wait()
-            child.stdout.close()
+            stdout.close()
 
 
-def processes():
+def processes() -> ProcessSnapshot:
     """A PID plus its Linux birth, executable and HOME; never a process-name match."""
-    result = {}
+    result: ProcessSnapshot = {}
     for entry in Path('/proc').iterdir():
         if not entry.name.isdecimal():
             continue
@@ -137,24 +149,25 @@ def processes():
     return result
 
 
-def owned(record, home):
+def owned(record: Ownership, home: Path) -> bool:
     # Runtime's contained executor gets a HOME below the machine root. A path boundary
     # includes it while excluding similarly named sibling jobs.
     return bool(record['home']) and Path(record['home']).is_relative_to(home) and record['state'] != 'Z'
 
 
-def same_process(first, second):
-    return second is not None and all(first[key] == second[key] for key in ('birth', 'exe', 'home'))
+def same_process(first: ProcessIdentity, second: ProcessIdentity | None) -> bool:
+    return (second is not None and first['birth'] == second['birth']
+            and first['exe'] == second['exe'] and first['home'] == second['home'])
 
 
-def existing_services(snapshot, user_home):
+def existing_services(snapshot: ProcessSnapshot, user_home: str) -> ProcessSnapshot:
     # Ordinary CLI calls can finish during the job. Preserve the user's serving processes,
     # whose lifetime this harness must not alter, rather than treating completed calls as damage.
     return {pid: p for pid, p in snapshot.items() if p['home'] == user_home and '/.cozy/' in p['exe']
             and (p['args'][1:] == ['calcifer'] or p['args'][1:] == ['machine', 'serve'])}
 
 
-def private_environment(home, shim, device, tools=None):
+def private_environment(home: Path, shim: Path, device: str, tools: Path | None = None) -> dict[str, str]:
     # Do not inherit provider, Hub, proxy, auth, dotenv or user service credentials.
     env = {
         'HOME': str(home), 'PATH': str(shim) + os.pathsep + os.environ.get('PATH', os.defpath),
@@ -166,13 +179,13 @@ def private_environment(home, shim, device, tools=None):
         'CUDA_VISIBLE_DEVICES': device,
         'GOMAXPROCS': '4',
     }
-    if tools:
+    if tools is not None:
         env['SKEW_TOOLS'] = str(tools)
     return env
 
 
-def cleanup(home, docker, owner):
-    captured = {}
+def cleanup(home: Path, docker: str, owner: str) -> CleanupReceipt:
+    captured: ProcessSnapshot = {}
     # Detached Calcifer/TensorD retain this private HOME, including any replacement spawned
     # by a candidate update; contained executors get its descendants. Signal only inspected births.
     for sig in (signal.SIGTERM, signal.SIGKILL):
@@ -181,7 +194,8 @@ def cleanup(home, docker, owner):
             if not owned(record, home):
                 continue
             captured[pid] = record
-            if processes().get(pid, {}).get('birth') == record['birth']:
+            current = processes().get(pid)
+            if current is not None and current['birth'] == record['birth']:
                 try:
                     os.kill(pid, sig)
                 except ProcessLookupError:
@@ -198,7 +212,18 @@ def cleanup(home, docker, owner):
             'remaining_containers': subprocess.check_output(query, text=True).split()}
 
 
-def main():
+class Options(argparse.Namespace):
+    hub_src: Path
+    cozy_bin: Path
+    runtime: str
+    tensorfs: str
+    device: str
+    out: Path
+    tools: Path | None
+    mode: str
+
+
+def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--hub-src', type=Path, required=True)
     parser.add_argument('--cozy-bin', type=Path, required=True)
@@ -208,7 +233,7 @@ def main():
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--tools', type=Path, help='Directory for the skew fixture MinIO build cache')
     parser.add_argument('--mode', choices=['local-gpu', 'provider-sandbox'], default='local-gpu')
-    args = parser.parse_args()
+    args = parser.parse_args(namespace=Options())
     if args.mode == 'provider-sandbox':
         parser.error('provider lifecycle is unqualified: no provider sandbox account, budget or reachable test allocation is configured; local CUDA is not provider qualification')
     if sys.platform != 'linux' or not args.device.startswith('GPU-'):
@@ -247,7 +272,7 @@ def main():
         ' sys.stdout.buffer.write(result.stdout)\n sys.exit(result.returncode)\n'
         'os.execv(cmd,[cmd]+a)\n')
     (shim / 'docker').chmod(0o700)
-    env = private_environment(home, shim, args.device, args.tools.resolve() if args.tools else None)
+    env = private_environment(home, shim, args.device, args.tools.resolve() if args.tools is not None else None)
     # Public compiler/dependency caches are build inputs; user config and credentials stay absent.
     for name, default in [('GOCACHE', Path(original_home) / '.cache/go-build'),
                           ('GOMODCACHE', Path(original_home) / 'go/pkg/mod'),
@@ -257,20 +282,20 @@ def main():
                '--cozy-bin', str(args.cozy_bin.resolve()), '--runtime', args.runtime,
                '--tensorfs', args.tensorfs, '--out', str(args.out / 'hub'),
                '--admin', '--command', str(HERE / 'checks.sh')]
-    receipt = {'mode': args.mode, 'home': str(home), 'owner': owner, 'device': args.device,
+    receipt: HarnessReceipt = {'mode': args.mode, 'home': str(home), 'owner': owner, 'device': args.device,
                'gpu_inventory': inventory.splitlines(), 'command': command,
                'cozy_sha256': hashlib.sha256(args.cozy_bin.read_bytes()).hexdigest(),
                'hub_source_sha': subprocess.check_output(['git', '-C', str(args.hub_src), 'rev-parse', 'HEAD'], text=True).strip(),
                'runtime': args.runtime, 'tensorfs': args.tensorfs,
                'existing_cozy_processes': before}
     status = 1
-    def interrupted(signum, frame):
+    def interrupted(signum: int, frame: FrameType | None) -> NoReturn:
         raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, interrupted)
     try:
         receipt['requested_components'] = {}
-        for component in ('runtime', 'tensorfs'):
-            value, recorded = materialize_component(getattr(args, component), args.out / 'candidates')
+        for component, requested in (('runtime', args.runtime), ('tensorfs', args.tensorfs)):
+            value, recorded = materialize_component(requested, args.out / 'candidates')
             if component == 'tensorfs' and not Path(value).is_file():
                 raise ValueError('native SDK qualification requires the exact local or SHA-pinned candidate wheel')
             command[command.index('--' + component) + 1] = value
@@ -283,7 +308,8 @@ def main():
             receipt['cleanup']['remaining_created_containers'] = [container for container in receipt['created_container_ids']
                 if subprocess.run([docker, 'inspect', container], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0]
         except Exception as error:
-            receipt['cleanup'] = {'error': str(error)}
+            receipt['cleanup'] = {'processes': {}, 'remaining_pids': [], 'containers_removed': [],
+                                  'remaining_containers': [], 'error': str(error)}
         after = processes()
         receipt['existing_cozy_processes_unchanged'] = all(same_process(p, after.get(pid)) for pid, p in before.items())
         receipt['fixture_status'] = status
