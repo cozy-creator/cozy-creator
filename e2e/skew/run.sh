@@ -181,6 +181,12 @@ hub=("$WORK/tensorhub$EXE" --config "$(native "$CONFIG")"
   --set storage.repo_cas.bucket=repo --set storage.package_source.bucket=source
   --set package_release.scratch_root="$(native "$WORK/release")" ${MIN:+--set clients.cozy_min=$MIN})
 "${hub[@]}" migrate > hub-migrate.log 2>&1 || die hub "migrate: $(tail -c 300 hub-migrate.log)"
+# AuthKit refuses a TOTP key that is group or world writable, and Go reads every writable Windows file as 0666: the
+# development key it would write is written here, read-only (0444; readable is a warning only).
+if [ "$OS" = Windows ]; then
+  { mkdir -p "$WORK/authkit" && python3 -c 'import secrets; print(secrets.token_hex(32))' | tr -d '\r' > "$WORK/authkit/totp.key" &&
+    attrib +R "$(native "$WORK/authkit/totp.key")"; } > authkit-key.log 2>&1 || die hub "the read-only TOTP key: $(tail -c 300 authkit-key.log)"
+fi
 "${NICE[@]}" "${hub[@]}" serve > hub.log 2>&1 & HUBPID=$!
 for _ in $(seq 90); do [ "$(curl -s -o /dev/null -w '%{http_code}' $HUB/healthz)" = 204 ] && break; kill -0 $HUBPID 2>/dev/null || break; sleep 1; done
 [ "$(curl -s -o /dev/null -w '%{http_code}' $HUB/healthz)" = 204 ] || die hub "the Hub did not come up: $(tail -c 600 hub.log)"
