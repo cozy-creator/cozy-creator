@@ -24,7 +24,7 @@ pub(crate) struct Listing {
 /// release: a commit by hash). The store's ref of the repository records it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Pulled {
-    pub repository: String,
+    pub model: String,
     pub release: String,
     pub lane: String,
     pub tree: ObjectRef,
@@ -34,13 +34,13 @@ impl Pulled {
     /// Names the pull in the store: `repository`'s ref, a cache TensorFS may expire. The tree
     /// must be here. One the ref already names writes nothing.
     pub(crate) fn record(&self, store: &Store) -> io::Result<()> {
-        let held = store.get_ref(&self.repository).map_err(storage::io_error)?;
+        let held = store.get_ref(&self.model).map_err(storage::io_error)?;
         if held.as_ref().is_some_and(|repo| entries(repo).any(|(release, _, tree)| release == self.release && *tree == self.tree)) {
             return Ok(());
         }
         store
-            .update_ref(&self.repository, |old| {
-                let mut repo = old.unwrap_or_else(|| Repo::new(&self.repository));
+            .update_ref(&self.model, |old| {
+                let mut repo = old.unwrap_or_else(|| Repo::new(&self.model));
                 match self.release.is_empty() {
                     true => repo.add_commit(self.tree.clone()),
                     false => repo.set_lane(&self.release, &self.lane, self.tree.clone()),
@@ -64,8 +64,8 @@ impl Pulled {
                 };
                 if parsed.header().is_ok_and(|(_, h)| h == header) {
                     let lane = lane.map_or(parsed.lane, str::to_owned);
-                    let (repository, release) = (repo.name.clone(), release.to_string());
-                    return Ok(Some(Pulled { repository, release, lane, tree: tree.clone() }));
+                    let (model, release) = (repo.name.clone(), release.to_string());
+                    return Ok(Some(Pulled { model, release, lane, tree: tree.clone() }));
                 }
             }
         }
@@ -160,18 +160,18 @@ fn list(store: &Store, seen: &Seen) -> std::io::Result<Listing> {
     let mut closures: BTreeMap<&str, Vec<ObjectRef>> = BTreeMap::new();
     let mut holders: HashMap<ObjectRef, usize> = HashMap::new();
     let mut models: Vec<v1::Model> = vec![];
-    for (repository, release, lane, header) in seen {
+    for (model, release, lane, header) in seen {
         let closure = store.closure(header).map_err(storage::io_error)?;
         let complete = closure.iter().all(|object| store.holds(object));
         let held: Vec<ObjectRef> = closure.into_iter().filter(|o| store.holds(o)).collect();
-        let entry = closures.entry(repository).or_default();
+        let entry = closures.entry(model).or_default();
         for object in held {
             if !entry.contains(&object) {
                 entry.push(object);
             }
         }
-        if models.last().is_none_or(|m| m.repository != *repository) {
-            models.push(v1::Model { repository: repository.clone(), ..Default::default() });
+        if models.last().is_none_or(|m| m.model != *model) {
+            models.push(v1::Model { model: model.clone(), ..Default::default() });
         }
         let (precision, role) = store.checkpoint(header).map(|c| (
             crate::precision::Profile::of(c.header()).family,
@@ -192,7 +192,7 @@ fn list(store: &Store, seen: &Seen) -> std::io::Result<Listing> {
         }
     }
     for model in &mut models {
-        let objects = &closures[model.repository.as_str()];
+        let objects = &closures[model.model.as_str()];
         model.total_bytes = objects.iter().map(|o| o.length).sum();
         model.unique_bytes = objects.iter().filter(|o| holders[*o] == 1).map(|o| o.length).sum();
     }

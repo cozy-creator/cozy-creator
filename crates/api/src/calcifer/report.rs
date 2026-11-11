@@ -78,7 +78,9 @@ pub struct Steps {
 #[serde(default)]
 pub struct Model {
     pub slot: String,
-    pub repository: String,
+    // The supported machine protocol still names this field repository.
+    #[serde(rename = "repository")]
+    pub model: String,
     pub release: String,
     /// Its hash, for a checkpoint passed by value.
     pub manifest: String,

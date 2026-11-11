@@ -666,7 +666,7 @@ pub(crate) async fn serve(
     if let Some(checkpoint) = &item.checkpoint {
         let message = format!(
             "output {name} of run {number} is a TensorFS checkpoint reference: {}@{}",
-            checkpoint.repo_id, checkpoint.revision
+            checkpoint.model_id, checkpoint.revision
         );
         return Err(api::refuse(
             Kind::Conflict,

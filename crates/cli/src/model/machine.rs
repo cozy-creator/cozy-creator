@@ -7,7 +7,7 @@ use std::process::ExitCode;
 
 use api::calcifer::{Kind as RunKind, MachineModels, Run, Status};
 use api::error::Error;
-use api::calcifer::hub::{Displayed, ModelDownload, ModelUpload, RecordedCommit, job};
+use api::calcifer::hub::{Displayed, ModelDownload, ModelUpload, RecordedCheckpoint, job};
 
 use super::{Download, Upload};
 use crate::Context;
@@ -26,12 +26,12 @@ fn made(ctx: &Context, run: &Run) {
     let mut record = Record::new();
     for key in ["repository", "release", "lane", "precision", "checkpoint", "resolved", "format"] {
         if let Some(value) = text(key) {
-            record = record.field(key, value);
+            record = record.field(if key == "repository" { "model" } else { key }, value);
         }
     }
     // A composition: its base's commit, the components the source took, and what was sent.
-    if let Some(commit) = model["base"]["tree"].as_str() {
-        record = record.field("base", format!("{}@{commit}", model["base"]["repository"].as_str().unwrap_or_default()));
+    if let Some(checkpoint) = model["base"]["tree"].as_str() {
+        record = record.field("base", format!("{}@{checkpoint}", model["base"]["repository"].as_str().unwrap_or_default()));
     }
     for (name, from) in model["components"].as_object().into_iter().flatten() {
         record = record.field(name, from.as_str().unwrap_or_default());
@@ -40,13 +40,13 @@ fn made(ctx: &Context, run: &Run) {
         record = record.field("sent", output::bytes(bytes));
     }
     let published = &model["published"];
-    let (destination, commit) = (published["destination"].as_str(), published["commit"].as_str());
-    if let (Some(destination), Some(commit)) = (destination, commit) {
-        record = record.field("commit", format!("{destination}@{commit}"));
+    let (destination, checkpoint) = (published["destination"].as_str(), published["commit"].as_str());
+    if let (Some(destination), Some(checkpoint)) = (destination, checkpoint) {
+        record = record.field("checkpoint", format!("{destination}@{checkpoint}"));
     }
     record.print(ctx);
-    if let (Some(destination), Some(commit)) = (destination, commit) {
-        output::next(ctx, &[&format!("cozy model publish {destination} <version> {commit}")]);
+    if let (Some(destination), Some(checkpoint)) = (destination, checkpoint) {
+        output::next(ctx, &[&format!("cozy model publish {destination} <version> {checkpoint}")]);
     }
 }
 
@@ -149,13 +149,13 @@ fn display(ctx: &Context, shown: &Displayed) {
 }
 
 /// A Hub commit recorded as a commit of another model: no machine pulled it and no byte uploaded.
-fn recorded(ctx: &Context, made: &RecordedCommit) {
+fn recorded(ctx: &Context, made: &RecordedCheckpoint) {
     made.warnings.iter().for_each(|warning| output::warn(warning));
     if ctx.json {
         output::json(made);
         return;
     }
-    Record::new().field("commit", format!("{}@{}", made.model, made.commit)).field("lane", &made.lane)
+    Record::new().field("checkpoint", format!("{}@{}", made.model, made.checkpoint)).field("lane", &made.lane)
         .field("from", &made.from).note("recorded at the Hub: nothing uploaded").print(ctx);
     output::nexts(ctx, &made.next);
     if let Some(shown) = &made.display {

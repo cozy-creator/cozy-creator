@@ -469,7 +469,9 @@ pub struct ModelChoice {
     /// A root slot parameter or full slot path; in a model-only upload, [`BASE`] names the model
     /// it starts from.
     pub parameter: String,
-    pub repository: String,
+    // The supported machine protocol still names this field repository.
+    #[serde(rename = "repository")]
+    pub model: String,
     pub release: String,
     pub lane: String,
     /// `sha256:<hex>`
@@ -651,7 +653,8 @@ pub struct Progress {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default)]
 pub struct CheckpointRef {
-    pub repo_id: String,
+    #[serde(rename = "repo_id")]
+    pub model_id: String,
     pub revision: String,
     pub lane: String,
 }
@@ -829,8 +832,9 @@ pub struct EstimateJob {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ModelRef {
-    /// `sha256:<hex>`: a commit or header.
-    pub commit: String,
+    /// `sha256:<hex>`: a checkpoint tree or header.
+    #[serde(rename = "commit")]
+    pub checkpoint: String,
     /// Its weights' bytes as the catalog lists them: what a machine that holds none of it fetches.
     pub bytes: u64,
 }
@@ -1103,7 +1107,9 @@ pub struct WebRtc {
 #[serde(default)]
 pub struct Model {
     /// org/name; org "local" is a local alias.
-    pub repository: String,
+    // The supported machine protocol still names this field repository.
+    #[serde(rename = "repository")]
+    pub model: String,
     /// Everything this repository reaches.
     pub total_bytes: u64,
     /// Reached by no other held repository.

@@ -30,8 +30,8 @@ pub(crate) async fn quantize(ctx: &Context, args: Quantize) -> Result<ExitCode, 
     if !ctx.json && run.status == Status::Completed
         && let Some(written) = written(&run, &args.lane)
     {
-        Record::new().field("commit", format!("{}@{}", written.repo_id, written.revision)).field("lane", &written.lane).print(ctx);
-        output::next(ctx, &[&format!("cozy model publish {} <version> {}", written.repo_id, written.revision)]);
+        Record::new().field("commit", format!("{}@{}", written.model_id, written.revision)).field("lane", &written.lane).print(ctx);
+        output::next(ctx, &[&format!("cozy model publish {} <version> {}", written.model_id, written.revision)]);
     }
     Ok(exit_code(&run))
 }

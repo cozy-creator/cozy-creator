@@ -65,7 +65,7 @@ pub(crate) struct LogPage {
 #[serde(default)]
 pub(crate) struct ModelChoice {
     pub parameter: String,
-    pub repository: String,
+    pub model: String,
     pub release: String,
     pub lane: String,
     pub manifest: Option<Ref>,

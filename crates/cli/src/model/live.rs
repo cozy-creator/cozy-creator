@@ -264,23 +264,22 @@ impl Preview {
         if self.metadata_missing { lines.push("Catalog details unavailable; showing the local copy.".into()); }
         if let Some(bytes) = self.local_bytes { lines.push(format!("Local size: {}", output::bytes(bytes))); }
         if let Some(family) = &model.family { lines.push(format!("Family: {family}")); }
-        if model.role.as_deref() == Some("lora") {
-            lines.push("Kind: LoRA".into());
-        } else if let Some(kind) = model.kind {
+        if let Some(kind) = model.model_kind {
             lines.push(format!("Kind: {}", match kind {
-                api::calcifer::hub::ModelKind::Lora => "LoRA",
-                api::calcifer::hub::ModelKind::Weights => "model",
-                api::calcifer::hub::ModelKind::Component => "component",
+                api::model_ref::ModelKind::Base => "base model",
+                api::model_ref::ModelKind::Lora => "LoRA",
             }));
+        } else if model.role.as_deref() == Some("lora") {
+            lines.push("Kind: LoRA".into());
         }
         if !model.tags.is_empty() { lines.push(format!("Tags: {}", model.tags.join(", "))); }
         if let Some(author) = &model.author { lines.push(format!("Publisher: {}", author.name)); }
-        if model.role.as_deref() == Some("lora") || model.kind == Some(api::calcifer::hub::ModelKind::Lora) {
+        if model.role.as_deref() == Some("lora") || model.content_kind == Some(api::calcifer::hub::ModelContentKind::Lora) {
             if let Some(trigger) = &model.trigger { lines.push(format!("Trigger: {trigger}")); }
             if let Some(strength) = model.strength { lines.push(format!("Suggested strength: {strength}")); }
         }
         if let Some(release) = model.releases.first() {
-            lines.push(format!("Release: {}", release.version));
+            lines.push(format!("Release: {}{}", release.version, if release.visibility == api::model_ref::ReleaseVisibility::Private { " (private)" } else { "" }));
             for lane in &release.lanes { lines.push(format!("{}: {}", lane.lane, output::bytes(lane.bytes.max(0) as u64))); }
         } else if !self.metadata_missing {
             lines.push("Private model — no published release".into());
@@ -356,7 +355,7 @@ pub(super) async fn local_inventory(ctx: &Context) -> Option<Vec<HeldModel>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use api::calcifer::hub::{FoundModel, ModelAuthor, ModelKind};
+    use api::calcifer::hub::{FoundModel, ModelAuthor, ModelContentKind};
 
     fn catalog() -> Catalog {
         Catalog::new(Searching { hub: "https://example.test".into(), q: String::new(), family: Some("sdxl".into()), tag: "art".into(), no_tag: "nsfw".into(), role: "model".into(), limit: 2, offset: 2 },
@@ -382,7 +381,7 @@ mod tests {
 
     #[test]
     fn preview_is_concise_and_install_requires_destination_choice() {
-        let preview = Preview { model: ModelDetail { model: "author/one".into(), family: Some("sdxl".into()), kind: Some(ModelKind::Lora), tags: vec!["art".into()], author: Some(ModelAuthor { name: "Artist".into(), ..Default::default() }), ..Default::default() }, local_bytes: Some(1024), metadata_missing: false };
+        let preview = Preview { model: ModelDetail { model: "author/one".into(), family: Some("sdxl".into()), content_kind: Some(ModelContentKind::Lora), tags: vec!["art".into()], author: Some(ModelAuthor { name: "Artist".into(), ..Default::default() }), ..Default::default() }, local_bytes: Some(1024), metadata_missing: false };
         assert_eq!(preview.action(KeyCode::Enter), None);
         assert_eq!(preview.action(KeyCode::Char('i')), Some(Action::Destinations("author/one".into())));
         assert_eq!(preview.action(KeyCode::Char('u')), Some(Action::ConfirmRemove("author/one".into())));

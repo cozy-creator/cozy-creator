@@ -86,7 +86,7 @@ impl Needs {
             .models
             .iter()
             .chain(warm)
-            .filter(|c| !c.repository.starts_with("local/"))
+            .filter(|c| !c.model.starts_with("local/"))
         {
             let adapters = choice.adapters.iter().map(|adapter| &adapter.manifest);
             for manifest in std::iter::once(&choice.manifest).chain(adapters) {

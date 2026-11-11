@@ -229,7 +229,11 @@ pub struct FoundModel {
     pub author: Option<ModelAuthor>,
     /// What its header says it is. None: it couldn't be read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kind: Option<ModelKind>,
+    #[serde(rename = "kind")]
+    pub content_kind: Option<ModelContentKind>,
+    /// Stable model identity kind; absent when an older source cannot classify it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_kind: Option<crate::model_ref::ModelKind>,
     /// Its labels, sorted; `nsfw` among them marks one that makes sexual or nude images.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
@@ -250,7 +254,7 @@ pub enum FamilyFrom {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
-pub enum ModelKind {
+pub enum ModelContentKind {
     /// Only a LoRA's factors: it goes on a model.
     Lora,
     /// A model's weights, its header verified as a family's: it stands in for a model.
@@ -289,7 +293,11 @@ pub struct ModelDetail {
     pub weights_family: Option<String>,
     /// What its header says it is. None: it couldn't be read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kind: Option<ModelKind>,
+    #[serde(rename = "kind")]
+    pub content_kind: Option<ModelContentKind>,
+    /// Stable model identity kind; absent when an older source cannot classify it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_kind: Option<crate::model_ref::ModelKind>,
     pub created_at: String,
     /// The pinned upstream source.
     pub source: Option<String>,
@@ -303,7 +311,8 @@ pub struct ModelDetail {
     /// Newest first.
     pub releases: Vec<ModelRelease>,
     /// Newest first; empty to anyone but the model's members.
-    pub commits: Vec<ModelCommit>,
+    #[serde(alias = "commits")]
+    pub checkpoints: Vec<ModelCheckpoint>,
 }
 
 /// One release of a model: its version, each lane's commit, and whether it is a mirror.
@@ -311,6 +320,8 @@ pub struct ModelDetail {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ModelRelease {
     pub version: String,
+    #[serde(default)]
+    pub visibility: crate::model_ref::ReleaseVisibility,
     pub created_at: String,
     /// Published while its org was parked: not its author's.
     pub mirror: bool,
@@ -325,7 +336,8 @@ pub struct ModelRelease {
 pub struct ModelLane {
     pub lane: String,
     /// `sha256:<hex>`.
-    pub commit: String,
+    #[serde(alias = "commit")]
+    pub checkpoint: String,
     pub bytes: i64,
     /// Its header's schemes and dtypes.
     pub kinds: Vec<String>,
@@ -350,8 +362,9 @@ pub struct Provenance {
 /// One commit of a model: its lane, size and the releases naming it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct ModelCommit {
-    pub commit: String,
+pub struct ModelCheckpoint {
+    #[serde(alias = "commit")]
+    pub checkpoint: String,
     pub lane: String,
     pub bytes: i64,
     /// The releases naming it; none while private.
@@ -416,7 +429,8 @@ pub struct ModelReleaseAsk {
     pub hub: Option<String>,
     pub version: String,
     /// `sha256:<hex>`.
-    pub commits: Vec<String>,
+    #[serde(alias = "commits")]
+    pub checkpoints: Vec<String>,
 }
 
 /// The release a publish made: its version and each lane's commit.
@@ -433,6 +447,16 @@ pub struct ModelReleased {
     pub warnings: Vec<String>,
 }
 
+/// A retained model release whose public availability was withdrawn.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ModelUnpublished {
+    pub model: String,
+    pub release: String,
+    /// Whether this call changed the release's visibility.
+    pub unpublished: bool,
+}
+
 /// `DELETE /v1/models/{org}/{name}[/releases/{version}|/commits/{commit}]`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelDeleted {
@@ -442,7 +466,8 @@ pub struct ModelDeleted {
     pub release: Option<String>,
     /// One commit; absent when the whole model went.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub commit: Option<String>,
+    #[serde(alias = "commit")]
+    pub checkpoint: Option<String>,
 }
 
 /// `GET /v1/packages?q=&limit=`: the Hub's packages the caller can see.
@@ -555,7 +580,7 @@ pub mod job {
     /// `input`: [`super::ModelDownload`]. A warm run that makes a model present in a machine's store.
     pub const MODEL_DOWNLOAD: &str = "cozy/model_download";
     /// `input`: [`super::ModelUpload`]. A warm run that makes the source and uploads it as a private commit; a Hub commit on no
-    /// base is recorded at the Hub by Calcifer, with no machine: its result is a [`super::RecordedCommit`].
+    /// base is recorded at the Hub by Calcifer, with no machine: its result is a [`super::RecordedCheckpoint`].
     pub const MODEL_UPLOAD: &str = "cozy/model_upload";
     /// `input`: [`super::ModelQuantize`]. A run of a package's `quantize`, the request's `code` when it is local code.
     pub const MODEL_QUANTIZE: &str = "cozy/model_quantize";
@@ -631,8 +656,9 @@ pub struct ModelUpload {
 /// A Hub commit recorded as a commit of another model when the caller may read its whole closure: nothing uploaded.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct RecordedCommit {
-    pub commit: String,
+pub struct RecordedCheckpoint {
+    #[serde(alias = "commit")]
+    pub checkpoint: String,
     pub from: String,
     pub lane: String,
     pub model: String,

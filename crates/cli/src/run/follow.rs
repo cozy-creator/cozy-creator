@@ -375,7 +375,7 @@ fn failure_next(run: &Run) -> Vec<String> {
 
 /// A weights output's commit.
 fn checkpoint(reference: &api::machine::CheckpointRef) -> String {
-    let mut shown = format!("commit {}@{}", reference.repo_id, reference.revision);
+    let mut shown = format!("commit {}@{}", reference.model_id, reference.revision);
     if !reference.lane.is_empty() {
         let _ = write!(shown, " ({})", reference.lane);
     }

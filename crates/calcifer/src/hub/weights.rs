@@ -12,7 +12,7 @@ use api::{
     calcifer::{Agreed, Kind as RunKind, On, OutputItem, Run, StagedInput, SubmitRun, Warning},
     config::Origin,
     error::{Error, Kind},
-    calcifer::hub::{ModelDownload, ModelUpload, RecordedCommit},
+    calcifer::hub::{ModelDownload, ModelUpload, RecordedCheckpoint},
     ids::Digest,
     machine::{self as v1, InputFile, ModelChoice},
     model_ref::{self as refs, ModelRef, ModelId},
@@ -47,7 +47,7 @@ impl From<(ModelChoice, Option<StagedInput>)> for Made {
 /// The model a warm run makes present: a reference, or a held `.safetensors` file (`PUT /v1/files`) by its client's `name`.
 fn source(raw: &str, name: Option<&str>) -> Result<(ModelChoice, Option<StagedInput>), Refusal> {
     match raw.starts_with("sha256:") {
-        true => safetensors(raw, name),
+        true => model_file(raw, name),
         false => Ok((ModelRef::parse(raw).map_err(Refusal)?.choice("model"), None)),
     }
 }
@@ -64,17 +64,22 @@ fn held_file(named: &str) -> Result<(PathBuf, Digest), Refusal> {
 
 /// The held file `named` as the model a warm run makes present: one `.safetensors` file by its bytes, named for the object as its
 /// client named it.
-fn safetensors(named: &str, name: Option<&str>) -> Result<(ModelChoice, Option<StagedInput>), Refusal> {
+fn model_file(named: &str, name: Option<&str>) -> Result<(ModelChoice, Option<StagedInput>), Refusal> {
     let (path, digest) = held_file(named)?;
     let shown = name.unwrap_or(named);
     let refused = |why: String| Refusal(Error::new(Kind::Validation, "model_file_refused", why));
     let mut file = std::fs::File::open(&path).map_err(|e| refused(e.to_string()))?;
     let length = file.metadata().map_err(|e| refused(e.to_string()))?.len();
-    let mut head = [0; 9];
-    file.read_exact(&mut head).map_err(|_| refused(format!("{shown} is not a .safetensors file")))?;
-    let header = u64::from_le_bytes(head[..8].try_into().expect("8 bytes"));
-    if head[8] != b'{' || header.saturating_add(8) > length {
-        return Err(refused(format!("{shown} is not a .safetensors file")));
+    // Complete native checkpoints are verified by TensorFS on the worker; they do not go
+    // through a safetensors converter or borrow unstaged bytes from the shared cache.
+    let native = name.and_then(|name| Path::new(name).extension()).is_some_and(|extension| extension.eq_ignore_ascii_case("cozytensors"));
+    if !native {
+        let mut head = [0; 9];
+        file.read_exact(&mut head).map_err(|_| refused(format!("{shown} is not a .safetensors or .cozytensors file")))?;
+        let header = u64::from_le_bytes(head[..8].try_into().expect("8 bytes"));
+        if head[8] != b'{' || header.saturating_add(8) > length {
+            return Err(refused(format!("{shown} is not a .safetensors or .cozytensors file")));
+        }
     }
     let object = name.and_then(|name| Path::new(name).file_name()).map_or_else(|| "model.safetensors".into(), |n| n.to_string_lossy().into_owned());
     let choice = ModelChoice { parameter: "model".into(), source: format!("object://{digest}/{}", escape(&object)), ..Default::default() };
@@ -135,7 +140,7 @@ fn base(raw: &str, lane: &str) -> Result<ModelChoice, Refusal> {
         ModelRef::Provider(_) => return Err(usage("model_base_invalid", format!("--base {model}: name a Hub model or a local/ one"))),
         reference => reference.choice(v1::BASE),
     };
-    if !choice.repository.starts_with("local/") && choice.manifest.is_empty() {
+    if !choice.model.starts_with("local/") && choice.manifest.is_empty() {
         choice.lane = lane.to_owned();
     }
     if let Some(names) = names {
@@ -197,7 +202,7 @@ pub(super) fn download(hub: &Origin, on: On, agreed: Option<Agreed>, ask: ModelD
     }
     if let Some(lane) = ask.lane {
         let lane = refs::label("--lane", &lane).map_err(Refusal)?;
-        if made.0.repository.is_empty() || made.0.repository.starts_with("local/") {
+        if made.0.model.is_empty() || made.0.model.starts_with("local/") {
             said.push("--lane names a lane of a Hub model: ignored".to_owned());
         } else {
             made.0.lane = lane;
@@ -229,17 +234,17 @@ pub(super) async fn upload(api: &Arc<Api>, hub: &Origin, on: On, agreed: Option<
     let destination = ModelId::hub(&ask.destination).map_err(Refusal)?;
     let lane = refs::label("--lane", &ask.lane).map_err(Refusal)?;
     let mirror = ask.mirror.clone().map(|page| Mirror { source: ask.source.clone(), page, to: destination.clone() });
-    if let Ok(ModelRef::Checkpoint { model: from, checkpoint: commit }) = ModelRef::parse(&ask.source)
+    if let Ok(ModelRef::Checkpoint { model: from, checkpoint: checkpoint }) = ModelRef::parse(&ask.source)
         && ask.base.is_none()
     {
-        let target = format!("{from}@{commit} → {destination} ({lane})");
-        let record = Record::read(api, hub, ask, from, commit.to_string(), said, mirror).await?;
+        let target = format!("{from}@{checkpoint} → {destination} ({lane})");
+        let record = Record::read(api, hub, ask, from, checkpoint.to_string(), said, mirror).await?;
         return Ok(Planned::Here { target, work: Work::Record(Box::new(record)) });
     }
     let destination = destination.to_string();
     let warnings: Vec<Warning> = said.into_iter().map(|message| Warning { code: "input_limit".into(), message }).collect();
-    let commit = matches!(ModelRef::parse(&ask.source), Ok(ModelRef::Checkpoint { .. }));
-    let converted = !ask.source.starts_with("run:") && !commit;
+    let checkpoint = matches!(ModelRef::parse(&ask.source), Ok(ModelRef::Checkpoint { .. }));
+    let converted = !ask.source.starts_with("run:") && !checkpoint;
     if ask.trained_on.is_some() && !converted {
         return Err(usage("model_trained_on_unused", "--trained-on is read when a LoRA source is converted; this source already was"));
     }
@@ -290,7 +295,7 @@ pub(super) async fn upload(api: &Arc<Api>, hub: &Origin, on: On, agreed: Option<
     made.choice.trained_on = ask.trained_on.clone().unwrap_or_default();
     // A Hub model by name is copied in that lane, as a download's lane reads it; never the
     // machine's pick under another lane's label.
-    if !made.choice.repository.is_empty() && !made.choice.repository.starts_with("local/") {
+    if !made.choice.model.is_empty() && !made.choice.model.starts_with("local/") {
         made.choice.lane = lane.clone();
     }
     let after = display(true);
@@ -316,7 +321,7 @@ fn from_run(api: &Api, reference: &str, destination: &str, lane: &str) -> Result
     let checkpoint = item.checkpoint.as_ref().expect("a weights output names its checkpoint");
     let model = ModelChoice {
         parameter: item.name.clone(),
-        repository: checkpoint.repo_id.clone(),
+        model: checkpoint.model_id.clone(),
         manifest: checkpoint.revision.clone(),
         ..Default::default()
     };
@@ -401,7 +406,7 @@ impl Mirror {
 pub(super) struct Record {
     ask: ModelUpload,
     from: ModelId,
-    commit: String,
+    checkpoint: String,
     length: i64,
     said: Option<String>,
     mirror: Option<Mirror>,
@@ -409,43 +414,43 @@ pub(super) struct Record {
 
 impl Record {
     /// Commit `commit` of `from`, when this account may read it and it is of the lane `ask` names.
-    async fn read(api: &Api, hub: &Origin, ask: ModelUpload, from: ModelId, commit: String, said: Option<String>, mirror: Option<Mirror>) -> Result<Self, Refusal> {
+    async fn read(api: &Api, hub: &Origin, ask: ModelUpload, from: ModelId, checkpoint: String, said: Option<String>, mirror: Option<Mirror>) -> Result<Self, Refusal> {
         let to = ModelId::hub(&ask.destination).map_err(Refusal)?;
         let client = signed_in(api, hub)?;
         let card = (client.get_model(&from.org, &from.name).await).map_err(|e| refusal(hub, e))?;
-        let lanes = card.releases.iter().flat_map(|r| r.lanes.iter().map(|(lane, l)| (lane.as_str(), l.commit.as_str(), l.length)));
-        let (held, length) = (card.commits.iter().map(|c| (c.lane.as_str(), c.id.as_str(), c.length)))
+        let lanes = card.releases.iter().flat_map(|r| r.lanes.iter().map(|(lane, l)| (lane.as_str(), l.checkpoint.as_str(), l.length)));
+        let (held, length) = (card.checkpoints.iter().map(|c| (c.lane.as_str(), c.id.as_str(), c.length)))
             .chain(lanes)
-            .find(|(_, id, _)| *id == commit)
+            .find(|(_, id, _)| *id == checkpoint)
             .map(|(lane, _, length)| (lane.to_owned(), length))
-            .ok_or_else(|| Refusal(Error::not_found("commit_not_found", format!("{from} has no commit {commit} this account reads"))))?;
+            .ok_or_else(|| Refusal(Error::not_found("commit_not_found", format!("{from} has no commit {checkpoint} this account reads"))))?;
         if held != ask.lane {
             return Err(Refusal(
-                Error::new(Kind::Usage, "commit_lane_mismatch", format!("{from}@{commit} is lane {held}, not {}", ask.lane))
-                    .next(format!("cozy model upload {from}@{commit} {to} --lane {held}")),
+                Error::new(Kind::Usage, "commit_lane_mismatch", format!("{from}@{checkpoint} is lane {held}, not {}", ask.lane))
+                    .next(format!("cozy model upload {from}@{checkpoint} {to} --lane {held}")),
             ));
         }
-        Ok(Self { ask, from, commit, length, said, mirror })
+        Ok(Self { ask, from, checkpoint, length, said, mirror })
     }
 
     /// Records it, the mirror before it, and sets its trigger and strength.
-    pub(super) async fn run(self, api: &Api, hub: &Origin) -> Result<RecordedCommit, Refusal> {
-        let Self { ask, from, commit, length, said, mirror } = self;
+    pub(super) async fn run(self, api: &Api, hub: &Origin) -> Result<RecordedCheckpoint, Refusal> {
+        let Self { ask, from, checkpoint, length, said, mirror } = self;
         let to = ModelId::hub(&ask.destination).map_err(Refusal)?;
         let mut warnings: Vec<String> = said.into_iter().collect();
         if let Some(mirror) = mirror {
             warnings.extend(mirror.record(api, hub).await?);
         }
         let client = signed_in(api, hub)?;
-        let made = (client.create_model_commit(&to.org, &to.name, &commit, length).await).map_err(|e| refusal(hub, e))?;
+        let made = (client.create_model_checkpoint(&to.org, &to.name, &checkpoint, length).await).map_err(|e| refusal(hub, e))?;
         let display = match (ask.trigger, ask.strength) {
             (None, None) => None,
             (trigger, strength) => Some(display(&api.machines, hub, to.to_string(), trigger, strength).await),
         };
-        Ok(RecordedCommit {
+        Ok(RecordedCheckpoint {
             next: vec![format!("cozy model publish {to} <version> {}", made.id)],
-            commit: made.id,
-            from: format!("{from}@{commit}"),
+            checkpoint: made.id,
+            from: format!("{from}@{checkpoint}"),
             lane: made.lane,
             model: to.to_string(),
             display,

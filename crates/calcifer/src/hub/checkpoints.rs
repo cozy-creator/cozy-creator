@@ -13,7 +13,7 @@ use futures_util::{StreamExt as _, stream};
 use ::api::hub::{Client, types};
 use api::{
     config::Origin,
-    calcifer::hub::{FamilyFrom, FoundModel, ModelKind},
+    calcifer::hub::{FamilyFrom, FoundModel, ModelContentKind},
     model_ref::{ModelRef, ModelId},
     calcifer::tool::Tool,
 };
@@ -77,8 +77,8 @@ fn save(api: &Api) {
 
 /// Its newest release's plainest lane, else, to its members, its newest commit.
 fn header_of(card: &types::ModelCard) -> Option<&types::ObjectRef> {
-    let released = card.releases.first().and_then(|release| release.lanes.values().next()).map(|lane| &lane.header);
-    released.or(card.commits.first().map(|commit| &commit.header))
+    let released = card.releases.iter().find(|release| release.visibility == api::model_ref::ReleaseVisibility::Public).and_then(|release| release.lanes.values().next()).map(|lane| &lane.header);
+    released.or(card.checkpoints.first().map(|checkpoint| &checkpoint.header))
 }
 
 /// What `header` is. One that can't be read says nothing, and a later list asks again.
@@ -139,7 +139,7 @@ pub(super) async fn said(api: &Api, hub: &Origin, cards: &[types::ModelCard], mo
     for (row, facts) in models.iter_mut().zip(facts) {
         let weights = facts.as_ref().and_then(|facts| facts.family.as_deref());
         (row.family, row.family_from) = family(row.family.take(), weights);
-        row.kind = facts.as_ref().map(kind);
+        row.content_kind = facts.as_ref().map(content_kind);
     }
 }
 
@@ -205,10 +205,10 @@ pub(crate) async fn families(api: &Api, hub: &str, tools: &mut [Tool]) {
 }
 
 /// What a header's facts say a checkpoint is: a LoRA, else a family's model, else a component.
-pub(crate) fn kind(facts: &Facts) -> ModelKind {
+pub(crate) fn content_kind(facts: &Facts) -> ModelContentKind {
     match (facts.lora, &facts.family) {
-        (true, _) => ModelKind::Lora,
-        (false, Some(_)) => ModelKind::Weights,
-        (false, None) => ModelKind::Component,
+        (true, _) => ModelContentKind::Lora,
+        (false, Some(_)) => ModelContentKind::Weights,
+        (false, None) => ModelContentKind::Component,
     }
 }

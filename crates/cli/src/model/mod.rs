@@ -35,13 +35,15 @@ enum LoraVerb {
     Uninstall(Remove),
     /// Update a LoRA's family, tags, trigger words or recommended strength.
     Edit(LoraEdit),
-    /// Upload a LoRA as a private commit.
+    /// Upload a LoRA as a private checkpoint.
     #[command(hide = true)]
     Upload(LoraUpload),
-    /// Publish commits as a LoRA release.
+    /// Publish checkpoints as a LoRA release.
     #[command(hide = true)]
     Publish(Publish),
-    /// Delete a LoRA, release or commit from TensorHub.
+    /// Make a release private while keeping its checkpoints.
+    Unpublish(Unpublish),
+    /// Delete a LoRA, release or checkpoint from TensorHub.
     Delete(Delete),
 }
 
@@ -62,6 +64,7 @@ pub(crate) async fn lora_exec(ctx: &Context, args: LoraArgs) -> Result<ExitCode,
             machine::upload(ctx, args.upload).await
         }
         LoraVerb::Publish(args) => releases::publish(ctx, args, "lora").await,
+        LoraVerb::Unpublish(args) => releases::unpublish(ctx, args, "lora").await,
         LoraVerb::Delete(args) => releases::delete(ctx, args, "lora").await,
     }
 }
@@ -77,16 +80,18 @@ enum Verb {
     Install(Download),
     /// Uninstall downloaded copies from this machine.
     Uninstall(Remove),
-    /// Upload weights as a private model commit.
+    /// Upload weights as a private model checkpoint.
     #[command(hide = true)]
     Upload(Upload),
-    /// Create a model commit in a package-defined quantization lane.
+    /// Create a model checkpoint in a package-defined quantization lane.
     #[command(hide = true)]
     Quantize(Quantize),
-    /// Publish commits as a model release.
+    /// Publish checkpoints as a model release.
     #[command(hide = true)]
     Publish(Publish),
-    /// Delete a model, release or commit from TensorHub.
+    /// Make a release private while keeping its checkpoints.
+    Unpublish(Unpublish),
+    /// Delete a model, release or checkpoint from TensorHub.
     Delete(Delete),
 }
 
@@ -117,7 +122,7 @@ pub(crate) struct Ls {
 #[derive(clap::Args, Debug)]
 pub(crate) struct Edit {
     /// org/name.
-    #[arg(value_name = "REPO")]
+    #[arg(value_name = "MODEL")]
     model: String,
     /// Set the discovery family. Use none to clear.
     #[arg(long)]
@@ -149,7 +154,7 @@ struct LoraEdit {
 #[derive(clap::Args, Debug)]
 pub(crate) struct Remove {
     /// org/name. Removes all downloaded releases and lanes, keeping the Hub model.
-    #[arg(value_name = "REPO")]
+    #[arg(value_name = "MODEL")]
     model: String,
 }
 
@@ -169,7 +174,7 @@ pub(crate) struct Download {
     /// Storage lane, such as bf16 or fp8. Defaults to the machine's preferred lane.
     #[arg(long, value_parser = api::model_ref::lane)]
     lane: Option<String>,
-    /// Model or commit, hf://…, civitai://…, or an HTTPS URL.
+    /// Model, checkpoint, provider URL, or local weights/checkpoint file.
     #[arg(value_name = "REFERENCE")]
     model: String,
     /// Local name for the downloaded copy. The local/ prefix is optional.
@@ -186,7 +191,7 @@ fn local_alias(text: &str) -> Result<String, String> {
     let text = text.trim();
     let name = match text.split_once('/') {
         Some((org, name)) if org.eq_ignore_ascii_case("local") => name,
-        Some(_) => return Err("Use a local name; downloading does not create a Hub repository".into()),
+        Some(_) => return Err("Use a local name; installing does not create a Hub model".into()),
         None => text,
     };
     let model_id = api::model_ref::ModelId::parse(&format!("local/{name}")).map_err(|error| error.message)?;
@@ -198,8 +203,8 @@ pub(crate) struct Upload {
     /// Weights file, CozyTensors folder, local alias, model source, or run:N[#output].
     #[arg(add = clap_complete::ArgValueCompleter::new(crate::completion::local))]
     source: String,
-    /// Destination repository, org/name.
-    #[arg(value_name = "REPO")]
+    /// Destination model, org/name.
+    #[arg(value_name = "MODEL")]
     destination: String,
     /// Commit lane, such as bf16 or fp8.
     #[arg(long, value_parser = api::model_ref::lane)]
@@ -216,7 +221,7 @@ pub(crate) struct Upload {
     trigger: Option<String>,
     #[arg(skip)]
     strength: Option<f64>,
-    /// Base model or commit. Add :component,… to replace selected parts and keep the rest.
+    /// Base model or checkpoint. Add :component,… to replace selected parts and keep the rest.
     #[arg(long, value_name = "MODEL[:COMPONENT,…]")]
     base: Option<String>,
     #[command(flatten)]
@@ -225,7 +230,7 @@ pub(crate) struct Upload {
 
 #[derive(clap::Args, Debug)]
 pub(crate) struct Quantize {
-    /// Model release or commit to read.
+    /// Model release or checkpoint to read.
     model: String,
     /// Quantization lane declared by the package.
     #[arg(long, value_parser = api::model_ref::lane)]
@@ -241,7 +246,7 @@ pub(crate) struct Quantize {
 struct LoraUpload {
     #[command(flatten)]
     upload: Upload,
-    /// Base model or commit this LoRA was trained on.
+    /// Base model or checkpoint this LoRA was trained on.
     #[arg(long)]
     trained_on: Option<String>,
     /// Override the LoRA's trigger words.
@@ -255,19 +260,26 @@ struct LoraUpload {
 #[derive(clap::Args, Debug)]
 pub(crate) struct Publish {
     /// org/name.
-    #[arg(value_name = "REPO")]
+    #[arg(value_name = "MODEL")]
     model: String,
     /// New, increasing release version (PEP 440).
     version: String,
-    /// Commit hashes, one per lane.
-    #[arg(required = true, value_name = "COMMIT")]
-    commits: Vec<String>,
+    /// Checkpoint hashes, one per lane.
+    #[arg(required = true, value_name = "CHECKPOINT")]
+    checkpoints: Vec<String>,
+}
+
+#[derive(clap::Args, Debug)]
+pub(crate) struct Unpublish {
+    /// Named model release, org/name@version.
+    #[arg(value_name = "MODEL@VERSION")]
+    model: String,
 }
 
 #[derive(clap::Args, Debug)]
 pub(crate) struct Delete {
-    /// org/name, org/name@version, or org/name@sha256:<commit>.
-    #[arg(value_name = "REPO")]
+    /// org/name, org/name@version, or org/name@sha256:<checkpoint>.
+    #[arg(value_name = "MODEL")]
     model: String,
 }
 
@@ -295,6 +307,7 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         Verb::Ls(args) => list(ctx, args, "model").await,
         Verb::Edit(args) => catalog::edit(ctx, args).await,
         Verb::Publish(args) => releases::publish(ctx, args, "model").await,
+        Verb::Unpublish(args) => releases::unpublish(ctx, args, "model").await,
         Verb::Delete(args) => releases::delete(ctx, args, "model").await,
         Verb::Install(args) => machine::download(ctx, args).await,
         Verb::Uninstall(args) => machine::remove(ctx, &args.model).await,
@@ -361,7 +374,7 @@ mod tests {
         let mut cli = crate::dev::hide(crate::Cli::command());
         cli.build();
         let names = |name: &str| cli.find_subcommand(name).unwrap().get_subcommands().filter(|command| !command.is_hide_set()).map(|command| command.get_name().to_owned()).collect::<Vec<_>>();
-        assert_eq!(names("model"), ["ls", "edit", "install", "uninstall", "delete"]);
-        assert_eq!(names("lora"), ["ls", "install", "uninstall", "edit", "delete"]);
+        assert_eq!(names("model"), ["ls", "edit", "install", "uninstall", "unpublish", "delete"]);
+        assert_eq!(names("lora"), ["ls", "install", "uninstall", "edit", "unpublish", "delete"]);
     }
 }

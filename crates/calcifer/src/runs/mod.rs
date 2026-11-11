@@ -291,11 +291,11 @@ fn given(submit: &SubmitRun) -> Vec<(PathBuf, String)> {
 pub(crate) fn asked(row: &crate::store::RunRow) -> Option<api::calcifer::RunAsked> {
     let mut input: serde_json::Map<String, serde_json::Value> = serde_json::from_str(row.spec.payload.as_ref()?.get()).ok()?;
     let seed = input.get("seed").and_then(serde_json::Value::as_i64);
-    let reference = |source: &str, repository: &str, manifest: &str, release: &str| match (source, manifest, release) {
+    let reference = |source: &str, model: &str, manifest: &str, release: &str| match (source, manifest, release) {
         (source, ..) if !source.is_empty() => source.to_owned(),
-        (_, manifest, _) if !manifest.is_empty() => format!("{repository}@{manifest}"),
-        (_, _, release) if !release.is_empty() => format!("{repository}@{release}"),
-        _ => repository.to_owned(),
+        (_, manifest, _) if !manifest.is_empty() => format!("{model}@{manifest}"),
+        (_, _, release) if !release.is_empty() => format!("{model}@{release}"),
+        _ => model.to_owned(),
     };
     let models = row.spec.models.iter().map(|choice| {
         let lora: Vec<_> = (choice.adapters.iter())
@@ -305,8 +305,8 @@ pub(crate) fn asked(row: &crate::store::RunRow) -> Option<api::calcifer::RunAske
         if !lora.is_empty() {
             chosen["lora"] = lora.into();
         }
-        if !choice.repository.is_empty() || !choice.source.is_empty() {
-            chosen["ref"] = reference(&choice.source, &choice.repository, &choice.manifest, &choice.release).into();
+        if !choice.model.is_empty() || !choice.source.is_empty() {
+            chosen["ref"] = reference(&choice.source, &choice.model, &choice.manifest, &choice.release).into();
         }
         (choice.parameter.clone(), chosen)
     });

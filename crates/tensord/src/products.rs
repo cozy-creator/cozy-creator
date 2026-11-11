@@ -255,15 +255,15 @@ pub(crate) fn checkpoint(engine: &Engine, generation: &Generation, id: &str, seq
             return Err(io::Error::new(io::ErrorKind::InvalidInput,
                 format!("{:?} is not a declared weights output", item.output)));
         }
-        if item.repo_id.is_empty() {
+        if item.model_id.is_empty() {
             return Err(storage("a checkpoint reference needs its repository"));
         }
         crate::storage::check_digest("checkpoint revision", &item.revision, true).map_err(storage)?;
-        let (repo_id, revision) = match publish(&item.revision).map_err(|refused| io::Error::other(format!("{}: {}", refused.code, refused.message)))? {
+        let (model_id, revision) = match publish(&item.revision).map_err(|refused| io::Error::other(format!("{}: {}", refused.code, refused.message)))? {
             Some((destination, commit)) => (destination, commit.id()),
-            None => (item.repo_id.clone(), item.revision.clone()),
+            None => (item.model_id.clone(), item.revision.clone()),
         };
-        let reference = api::machine::CheckpointRef { repo_id, revision, lane: item.output.clone() };
+        let reference = api::machine::CheckpointRef { model_id, revision, lane: item.output.clone() };
         let product = stored::RunProduct {
             output: item.output.clone(), checkpoint: Some(reference.clone()),
             op: stored::RunProductOp::Set as i32, ..Default::default()

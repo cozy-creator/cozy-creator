@@ -18,7 +18,7 @@ use api::{
     config::Origin,
     error::{Error, Kind},
     calcifer::hub::{
-        At, Families, FoundModel, ModelAuthor, ModelCommit, ModelDeleted, ModelDetail, ModelEdit, ModelEdited,
+        At, Families, FoundModel, ModelAuthor, ModelCheckpoint, ModelDeleted, ModelDetail, ModelEdit, ModelEdited,
         ModelLane, ModelRelease, ModelReleaseAsk, ModelReleased, ModelSearch, Provenance,
     },
     model_ref::{self as refs, ModelId},
@@ -218,28 +218,35 @@ mod pagination_tests {
     }
 }
 
-/// One search row: the model's newest release and its lanes; for a private model (no release, its
-/// owner's), its commits' lanes.
+/// Adapt the supported catalog role filter from the canonical model kind.
+fn canonical_role(model: &types::ModelSummary) -> Option<String> {
+    model.kind.map(|kind| match kind {
+        api::model_ref::ModelKind::Base => "model".to_owned(),
+        api::model_ref::ModelKind::Lora => "lora".to_owned(),
+    }).or_else(|| model.role.clone())
+}
+
 fn found(card: &types::ModelCard) -> FoundModel {
     // The Hub lists releases newest first.
-    let release = card.releases.first();
+    let release = card.releases.iter().find(|release| release.visibility == api::model_ref::ReleaseVisibility::Public);
     let lanes = match release {
         Some(r) => r.lanes.keys().cloned().collect(),
-        None => (card.commits.iter().map(|c| c.lane.clone()))
+        None => (card.checkpoints.iter().map(|c| c.lane.clone()))
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
             .collect(),
     };
     FoundModel {
         model: shown(&format!("{}/{}", card.model.org, card.model.name)),
-        role: card.model.role.clone(),
+        role: canonical_role(&card.model),
         family: card.model.family.clone().filter(|f| !f.is_empty()),
         family_from: None,
         release: release.map(|r| r.version.clone()),
         lanes,
         private: release.is_none(),
         author: card.model.author.clone().map(author),
-        kind: None,
+        content_kind: None,
+        model_kind: card.model.kind.or_else(|| card.model.role.as_deref().and_then(api::model_ref::ModelKind::from_role)),
         tags: card.model.tags.clone(),
     }
 }
@@ -271,18 +278,20 @@ pub(super) async fn info(
 async fn detail(api: &Api, hub: &Origin, model_id: &ModelId, release: Option<String>) -> Result<ModelDetail, Refusal> {
     let card = (reader(api, hub)?.get_model(&model_id.org, &model_id.name).await).map_err(|e| refusal(hub, e))?;
     let facts = checkpoints::of_card(api, hub, &card).await;
+    let role = canonical_role(&card.model);
     let (family, family_from) = checkpoints::family(card.model.family.clone(), facts.as_ref().and_then(|f| f.family.as_deref()));
     let releases: Vec<ModelRelease> = (card.releases.into_iter())
         .filter(|r| release.as_ref().is_none_or(|s| *s == r.version))
         .map(|r| ModelRelease {
             version: r.version,
+            visibility: r.visibility,
             created_at: r.created_at,
             mirror: r.mirror,
             by_admin: r.by_admin,
             lanes: (r.lanes.into_iter())
                 .map(|(lane, l)| ModelLane {
                     lane,
-                    commit: l.commit,
+                    checkpoint: l.checkpoint,
                     bytes: l.bytes,
                     kinds: l.kinds,
                     provenance: l.provenance.map(provenance),
@@ -296,16 +305,17 @@ async fn detail(api: &Api, hub: &Origin, model_id: &ModelId, release: Option<Str
                 .next(format!("cozy model ls {model_id}")),
         ));
     }
-    let commits = (card.commits.into_iter())
-        .map(|c| ModelCommit { commit: c.id, lane: c.lane, bytes: c.bytes, releases: c.releases, created_at: c.created_at })
+    let checkpoints = (card.checkpoints.into_iter())
+        .map(|c| ModelCheckpoint { checkpoint: c.id, lane: c.lane, bytes: c.bytes, releases: c.releases, created_at: c.created_at })
         .collect();
     Ok(ModelDetail {
         model: model_id.to_string(),
-        role: card.model.role,
+        role,
         family,
         family_from,
         weights_family: facts.as_ref().and_then(|f| f.family.clone()),
-        kind: facts.as_ref().map(super::checkpoints::kind),
+        content_kind: facts.as_ref().map(super::checkpoints::content_kind),
+        model_kind: card.model.kind.or_else(|| card.model.role.as_deref().and_then(api::model_ref::ModelKind::from_role)),
         created_at: card.model.created_at,
         source: card.model.source.filter(|s| !s.is_empty()),
         author: card.model.author.map(author),
@@ -313,7 +323,7 @@ async fn detail(api: &Api, hub: &Origin, model_id: &ModelId, release: Option<Str
         strength: card.model.strength,
         tags: card.model.tags,
         releases,
-        commits,
+        checkpoints,
     })
 }
 
@@ -367,21 +377,35 @@ pub(super) async fn release(
     Path((org, name)): Path<(String, String)>,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Json<ModelReleased>, Refusal> {
-    let ModelReleaseAsk { hub, version, commits } = parse(&body?)?;
+    let ModelReleaseAsk { hub, version, checkpoints } = parse(&body?)?;
     let hub = origin(&api, hub.as_deref())?;
     let model_id = ModelId::hub(&format!("{org}/{name}")).map_err(Refusal)?;
     let version = refs::label("version", &version).map_err(Refusal)?;
-    let commits = (commits.iter().map(|c| refs::commit(c)).collect::<Result<Vec<_>, _>>()).map_err(Refusal)?;
+    let checkpoints = (checkpoints.iter().map(|c| refs::checkpoint(c)).collect::<Result<Vec<_>, _>>()).map_err(Refusal)?;
     let client = signed_in(&api, &hub)?;
-    let release = (client.publish_model_release(&model_id.org, &model_id.name, &version, &commits).await)
+    let release = (client.publish_model_release(&model_id.org, &model_id.name, &version, &checkpoints).await)
         .map_err(|e| refusal(&hub, e))?;
     Ok(Json(ModelReleased {
         model: model_id.to_string(),
         version: release.version,
         created_at: release.created_at,
-        lanes: release.lanes.into_iter().map(|(lane, l)| (lane, l.commit)).collect(),
+        lanes: release.lanes.into_iter().map(|(lane, l)| (lane, l.checkpoint)).collect(),
         warnings: release.warnings,
     }))
+}
+
+/// `POST /v1/models/{org}/{name}/releases/{version}/unpublish`.
+pub(super) async fn unpublish(
+    State(api): State<Arc<Api>>,
+    Path((org, name, version)): Path<(String, String, String)>,
+    body: Result<Bytes, BytesRejection>,
+) -> Result<Json<api::calcifer::hub::ModelUnpublished>, Refusal> {
+    let ask: At = parse(&body?)?;
+    let hub = origin(&api, ask.hub.as_deref())?;
+    let model = ModelId::hub(&format!("{org}/{name}")).map_err(Refusal)?;
+    let version = refs::label("version", &version).map_err(Refusal)?;
+    let result = signed_in(&api, &hub)?.unpublish_model_release(&model.org, &model.name, &version).await.map_err(|error| refusal(&hub, error))?;
+    Ok(Json(result))
 }
 
 /// `DELETE /v1/models/{org}/{name}`: the whole model.
@@ -402,14 +426,14 @@ pub(super) async fn delete_release(
     deleted(&api, query?.0, &org, &name, Some(version), None).await
 }
 
-/// `DELETE /v1/models/{org}/{name}/commits/{commit}`: a commit no release names.
-pub(super) async fn delete_commit(
+/// `DELETE /v1/models/{org}/{name}/commits/{checkpoint}`: a commit no release names.
+pub(super) async fn delete_checkpoint(
     State(api): State<Arc<Api>>,
-    Path((org, name, commit)): Path<(String, String, String)>,
+    Path((org, name, checkpoint)): Path<(String, String, String)>,
     query: Result<Query<At>, QueryRejection>,
 ) -> Result<Json<ModelDeleted>, Refusal> {
-    let commit = refs::commit(&commit).map_err(Refusal)?;
-    deleted(&api, query?.0, &org, &name, None, Some(commit)).await
+    let checkpoint = refs::checkpoint(&checkpoint).map_err(Refusal)?;
+    deleted(&api, query?.0, &org, &name, None, Some(checkpoint)).await
 }
 
 async fn deleted(
@@ -418,16 +442,43 @@ async fn deleted(
     org: &str,
     name: &str,
     release: Option<String>,
-    commit: Option<String>,
+    checkpoint: Option<String>,
 ) -> Result<Json<ModelDeleted>, Refusal> {
     let hub = origin(api, at.hub.as_deref())?;
     let model_id = ModelId::hub(&format!("{org}/{name}")).map_err(Refusal)?;
     let client = signed_in(api, &hub)?;
-    let gone = match (&release, &commit) {
+    let gone = match (&release, &checkpoint) {
         (Some(version), _) => client.delete_model_release(&model_id.org, &model_id.name, version).await,
-        (None, Some(id)) => client.delete_model_commit(&model_id.org, &model_id.name, id).await,
+        (None, Some(id)) => client.delete_model_checkpoint(&model_id.org, &model_id.name, id).await,
         (None, None) => client.delete_model(&model_id.org, &model_id.name).await,
     };
     gone.map_err(|e| refusal(&hub, e))?;
-    Ok(Json(ModelDeleted { model: model_id.to_string(), release, commit }))
+    Ok(Json(ModelDeleted { model: model_id.to_string(), release, checkpoint }))
+}
+
+#[cfg(test)]
+mod model_visibility_tests {
+    use super::*;
+
+    #[test]
+    fn private_owner_history_does_not_become_the_default_public_release() {
+        let card: types::ModelCard = serde_json::from_value(serde_json::json!({
+            "model": {"org": "author", "name": "adapter", "kind": "lora"},
+            "releases": [
+                {"version": "2.0", "visibility": "private", "lanes": {}},
+                {"version": "1.0", "visibility": "public", "lanes": {}}
+            ],
+            "checkpoints": []
+        })).unwrap();
+        let row = found(&card);
+        assert_eq!(row.role.as_deref(), Some("lora"));
+        assert_eq!(row.model_kind, Some(api::model_ref::ModelKind::Lora));
+        assert_eq!(row.release.as_deref(), Some("1.0"));
+        assert!(!row.private);
+        let mut private = card;
+        private.releases.retain(|release| release.visibility == api::model_ref::ReleaseVisibility::Private);
+        let row = found(&private);
+        assert!(row.private);
+        assert!(row.release.is_none());
+    }
 }

@@ -47,6 +47,9 @@ pub struct Client {
     credential: Credential,
 }
 
+/// Explicit model/checkpoint JSON representation; legacy Hubs may ignore this on reads.
+const MODEL_MEDIA_TYPE: &str = "application/vnd.cozy.model+json;version=2";
+
 /// What a path parameter escapes: the `url` crate's path-segment set, so a value stays one segment.
 const SEGMENT: &AsciiSet = &CONTROLS
     .add(b' ')
@@ -234,7 +237,7 @@ impl Client {
     }
 
     pub async fn get_model(&self, org: &str, name: &str) -> Result<ModelCard, Error> {
-        self.json(self.at(Method::GET, "/v1/models/{org}/{name}", &[org, name]))
+        self.json(self.at(Method::GET, "/v1/models/{org}/{name}", &[org, name]).header(reqwest::header::ACCEPT, MODEL_MEDIA_TYPE))
             .await
     }
 
@@ -277,16 +280,16 @@ impl Client {
 
     /// Records commit `sha256:<hex>` (its tree, `length` bytes) as a commit of org/name: the Hub
     /// takes it when the account may read its whole closure, so nothing uploads.
-    pub async fn create_model_commit(
+    pub async fn create_model_checkpoint(
         &self,
         org: &str,
         name: &str,
-        commit: &str,
+        checkpoint: &str,
         length: i64,
-    ) -> Result<ModelCommit, Error> {
-        let request = self.at(Method::POST, "/v1/models/{org}/{name}/commits", &[org, name]);
-        let sha256 = commit.trim_start_matches("sha256:");
-        self.json(request.json(&json!({"commit": {"sha256": sha256, "length": length}}))).await
+    ) -> Result<ModelCheckpoint, Error> {
+        let request = self.at(Method::POST, "/v1/models/{org}/{name}/checkpoints", &[org, name]);
+        let sha256 = checkpoint.trim_start_matches("sha256:");
+        self.json(request.json(&json!({"checkpoint": {"sha256": sha256, "length": length}}))).await
     }
 
     /// Sets an org's display name, links and claim handles (a platform admin); each given field
@@ -324,16 +327,16 @@ impl Client {
             .map(drop)
     }
 
-    pub async fn delete_model_commit(
+    pub async fn delete_model_checkpoint(
         &self,
         org: &str,
         name: &str,
-        commit: &str,
+        checkpoint: &str,
     ) -> Result<(), Error> {
         let request = self.at(
             Method::DELETE,
-            "/v1/models/{org}/{name}/commits/{commit}",
-            &[org, name, commit],
+            "/v1/models/{org}/{name}/checkpoints/{checkpoint}",
+            &[org, name, checkpoint],
         );
         self.send(request).await.map(drop)
     }
@@ -354,14 +357,20 @@ impl Client {
         org: &str,
         name: &str,
         release: &str,
-        commits: &[String],
+        checkpoints: &[String],
     ) -> Result<ModelRelease, Error> {
         let request = self.at(
             Method::PUT,
             "/v1/models/{org}/{name}/releases/{release}",
             &[org, name, release],
         );
-        self.json(request.json(&json!({"commits": commits}))).await
+        self.json(request.header(reqwest::header::ACCEPT, MODEL_MEDIA_TYPE).json(&json!({"checkpoints": checkpoints}))).await
+    }
+
+    /// Withdraw public access while retaining the release and its checkpoints for its owner.
+    pub async fn unpublish_model_release(&self, org: &str, name: &str, release: &str) -> Result<crate::calcifer::hub::ModelUnpublished, Error> {
+        let request = self.at(Method::POST, "/v1/models/{org}/{name}/releases/{release}/unpublish", &[org, name, release]);
+        self.json(request.header(reqwest::header::ACCEPT, MODEL_MEDIA_TYPE)).await
     }
 
     pub async fn search_packages(
@@ -714,6 +723,32 @@ async fn read<T: DeserializeOwned>(response: Response) -> Result<T, Error> {
 
 #[cfg(test)]
 mod catalog_tests {
+    #[tokio::test]
+    async fn model_cards_negotiate_the_canonical_checkpoint_representation() {
+        use std::io::{BufRead as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let received = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut request = String::new();
+            let mut reader = std::io::BufReader::new(socket.try_clone().unwrap());
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap() == 0 || line == "\r\n" { break; }
+                request.push_str(&line);
+            }
+            let body = r#"{"model":{"org":"author","name":"adapter","kind":"lora"},"releases":[],"checkpoints":[]}"#;
+            write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/vnd.cozy.model+json;version=2\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            request
+        });
+        let client = Client::connect(&format!("http://{address}"), reqwest::Client::new(), Credential::Anonymous);
+        let card = client.get_model("author", "adapter").await.unwrap();
+        assert_eq!(card.model.kind, Some(crate::model_ref::ModelKind::Lora));
+        let request = received.join().unwrap().to_ascii_lowercase();
+        assert!(request.starts_with("get /v1/models/author/adapter "));
+        assert!(request.contains("accept: application/vnd.cozy.model+json;version=2"));
+    }
+
     use super::*;
     use std::io::{BufRead as _, Write as _};
 

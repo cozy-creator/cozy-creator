@@ -24,6 +24,7 @@ pub struct ModelId {
 
 /// Whether a named model supplies base weights or an adaptation to another model.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum ModelKind {
     Base,
@@ -39,6 +40,16 @@ impl ModelKind {
             _ => None,
         }
     }
+}
+
+/// Whether a version is available publicly or only to authorized model owners.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum ReleaseVisibility {
+    #[default]
+    Public,
+    Private,
 }
 
 /// The immutable tree identity of a checkpoint, distinct from its header digest.
@@ -213,14 +224,14 @@ impl ModelRef {
         };
         match self {
             ModelRef::Hub { model, release } => {
-                choice.repository = model.to_string();
+                choice.model = model.to_string();
                 choice.release = release.clone().unwrap_or_default();
             }
             ModelRef::Checkpoint { model, checkpoint } => {
-                choice.repository = model.to_string();
+                choice.model = model.to_string();
                 choice.manifest = checkpoint.to_string();
             }
-            ModelRef::Local(alias) => choice.repository = format!("local/{alias}"),
+            ModelRef::Local(alias) => choice.model = format!("local/{alias}"),
             ModelRef::Provider(source) => choice.source = source.clone(),
         }
         choice
@@ -230,7 +241,7 @@ impl ModelRef {
     pub fn adapter(&self, strength: &str) -> Adapter {
         let named = self.choice("");
         Adapter {
-            model: named.repository,
+            model: named.model,
             release: named.release,
             lane: named.lane,
             manifest: named.manifest,
@@ -297,7 +308,7 @@ mod tests {
         assert_eq!(checkpoint.as_str(), digest);
         assert_eq!(reference.to_string(), format!("author/model@{digest}"));
         let choice = reference.choice("weights");
-        assert_eq!(choice.repository, "author/model");
+        assert_eq!(choice.model, "author/model");
         assert_eq!(choice.manifest, digest);
         assert_eq!(ModelId::parse("flux.2").unwrap().to_string(), "_/flux.2");
         assert_eq!(ModelRef::parse("local/adapter").unwrap().to_string(), "local/adapter");
@@ -321,5 +332,26 @@ mod tests {
         assert_eq!(ModelKind::from_role("lora"), Some(ModelKind::Lora));
         assert_eq!(ModelKind::from_role("unknown"), None);
         assert_eq!(serde_json::to_string(&ModelKind::Base).unwrap(), "\"base\"");
+    }
+}
+
+#[cfg(test)]
+mod protocol_names_tests {
+    use super::*;
+
+    #[test]
+    fn renamed_source_fields_keep_the_supported_machine_protocol() {
+        let value = serde_json::to_value(crate::machine::ModelChoice { model: "author/model".into(), ..Default::default() }).unwrap();
+        assert_eq!(value["repository"], "author/model");
+        assert!(value.get("model").is_none());
+        let removed = serde_json::to_value(crate::machine::RemoveModel { model: "author/model".into() }).unwrap();
+        assert_eq!(removed["model"], "author/model");
+        assert!(removed.get("repository").is_none());
+        let reference = crate::machine::CheckpointRef { model_id: "author/model".into(), revision: "sha256:abc".into(), lane: "bf16".into() };
+        let encoded = serde_json::to_value(reference).unwrap();
+        assert_eq!(encoded["repo_id"], "author/model");
+        let legacy = serde_json::json!({"repository": "author/model", "manifest": "sha256:abc"});
+        let read: ModelChoice = serde_json::from_value(legacy).unwrap();
+        assert_eq!(read.model, "author/model");
     }
 }

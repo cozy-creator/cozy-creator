@@ -56,7 +56,7 @@ pub(super) async fn plan(api: &Arc<Api>, key: &str, hub: &Origin, on: On, agreed
         }
         Resolved::Local { local, interface: Some(interface), .. } => (local.package, interface, local.source.manifest),
     };
-    let source = commit(api, hub, &model, &lane).await?;
+    let source = checkpoint(api, hub, &model, &lane).await?;
     let found = recipes(&interface, &lane, &source.components);
     let named = match release.starts_with("sha256:") {
         true => package.clone(),
@@ -117,10 +117,10 @@ fn original(kinds: &[String]) -> bool {
 /// a commit by id, or a release's lane of original weights (its only lane when it has one). A
 /// 4-bit lane is written only from original weights (owner, 2026-10-22): from a commit holding
 /// none it would stack two rounds of 4-bit error.
-async fn commit(api: &Api, hub: &Origin, model: &ModelRef, lane: &str) -> Result<Source, Refusal> {
+async fn checkpoint(api: &Api, hub: &Origin, model: &ModelRef, lane: &str) -> Result<Source, Refusal> {
     let (model_id, release, id) = match model {
         ModelRef::Hub { model: model_id, release } => (model_id, release.as_deref(), None),
-        ModelRef::Checkpoint { model: model_id, checkpoint: commit } => (model_id, None, Some(commit.as_str())),
+        ModelRef::Checkpoint { model: model_id, checkpoint } => (model_id, None, Some(checkpoint.as_str())),
         ModelRef::Local(_) | ModelRef::Provider(_) => {
             return Err(Refusal(
                 Error::new(Kind::Usage, "model_quantize_source", format!("{model} is not on the Hub: quantize reads a Hub model"))
@@ -131,12 +131,12 @@ async fn commit(api: &Api, hub: &Origin, model: &ModelRef, lane: &str) -> Result
     let card: ModelCard = (reader(api, hub)?.get_model(&model_id.org, &model_id.name).await).map_err(|e| refusal(hub, e))?;
     let absent =
         |what: String| Refusal(Error::not_found("model_commit_not_found", what).next(format!("cozy model ls {model_id}")));
-    let (commit, header, kinds) = match id {
+    let (checkpoint, header, kinds) = match id {
         Some(id) => {
-            let found = (card.commits.iter().find(|c| c.id == id))
+            let found = (card.checkpoints.iter().find(|c| c.id == id))
                 .ok_or_else(|| absent(format!("{model_id} has no commit {id} you may read")))?;
-            let commit = ObjectRef { sha256: found.id.trim_start_matches("sha256:").into(), length: found.length as u64 };
-            (commit, found.header.clone(), found.kinds.clone())
+            let checkpoint = ObjectRef { sha256: found.id.trim_start_matches("sha256:").into(), length: found.length as u64 };
+            (checkpoint, found.header.clone(), found.kinds.clone())
         }
         None => {
             let found = match release {
@@ -160,14 +160,14 @@ async fn commit(api: &Api, hub: &Origin, model: &ModelRef, lane: &str) -> Result
                     ));
                 }
             };
-            let commit = ObjectRef { sha256: picked.commit.trim_start_matches("sha256:").into(), length: picked.length as u64 };
-            (commit, picked.header.clone(), picked.kinds.clone())
+            let checkpoint = ObjectRef { sha256: picked.checkpoint.trim_start_matches("sha256:").into(), length: picked.length as u64 };
+            (checkpoint, picked.header.clone(), picked.kinds.clone())
         }
     };
     if matches!(lane, "nvfp4" | "w4a8" | "svdq-nvfp4") && !original(&kinds) {
         let message = format!(
             "{model_id}@{} holds no original weights ({}): a {lane} lane from them stacks two rounds of 4-bit error",
-            commit.id(),
+            checkpoint.id(),
             kinds.join(", ")
         );
         return Err(Refusal(Error::new(Kind::Usage, "model_quantize_source_quantized", message).remedy(format!(
@@ -182,7 +182,7 @@ async fn commit(api: &Api, hub: &Origin, model: &ModelRef, lane: &str) -> Result
         .iter()
         .map(|c| c.name.clone())
         .collect();
-    Ok(Source { spelled: format!("{model_id}@{}", commit.id()), model_id: model_id.clone(), components })
+    Ok(Source { spelled: format!("{model_id}@{}", checkpoint.id()), model_id: model_id.clone(), components })
 }
 
 /// `hub`'s distribution endpoint as this computer's signed-in user.

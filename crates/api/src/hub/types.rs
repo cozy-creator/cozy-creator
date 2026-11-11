@@ -187,6 +187,8 @@ pub struct ModelSummary {
     pub family: Option<String>,
     /// Header-derived repository role: model, lora or unknown. Absent on older Hubs.
     pub role: Option<String>,
+    /// Canonical model kind from model representation v2.
+    pub kind: Option<crate::model_ref::ModelKind>,
     pub created_at: String,
     /// The pinned upstream source (on a card).
     pub source: Option<String>,
@@ -304,7 +306,8 @@ pub struct ModelCard {
     pub releases: Vec<ModelRelease>,
     /// Every commit, newest first, to the model's members; empty to anyone else.
     #[serde(default, deserialize_with = "null_is_empty")]
-    pub commits: Vec<ModelCommit>,
+    #[serde(alias = "commits")]
+    pub checkpoints: Vec<ModelCheckpoint>,
 }
 
 /// A published release of a model: each lane label's commit.
@@ -312,6 +315,8 @@ pub struct ModelCard {
 #[serde(default)]
 pub struct ModelRelease {
     pub version: String,
+    #[serde(default)]
+    pub visibility: crate::model_ref::ReleaseVisibility,
     pub created_at: String,
     /// Published while its org was parked: not its author's.
     pub mirror: bool,
@@ -329,7 +334,8 @@ pub struct ModelRelease {
 pub struct ModelReleaseLane {
     /// `sha256:<hex>`
     #[serde(default)]
-    pub commit: String,
+    #[serde(alias = "commit")]
+    pub checkpoint: String,
     #[serde(default)]
     pub length: i64,
     pub header: ObjectRef,
@@ -343,7 +349,7 @@ pub struct ModelReleaseLane {
 
 /// One commit of a model: its tree, lane, header and closure.
 #[derive(Debug, Deserialize)]
-pub struct ModelCommit {
+pub struct ModelCheckpoint {
     /// `sha256:<hex>` of the commit's tree.
     #[serde(default)]
     pub id: String,
@@ -808,4 +814,33 @@ pub struct ReplannedBoot {
     pub attempt: u32,
     pub ended_at: String,
     pub failure_code: String,
+}
+
+#[cfg(test)]
+mod model_representation_tests {
+    use super::*;
+
+    #[test]
+    fn canonical_and_supported_legacy_cards_preserve_checkpoint_identity() {
+        for (collection, lane_field) in [("checkpoints", "checkpoint"), ("commits", "commit")] {
+            let card = serde_json::json!({
+                "model": {"org": "author", "name": "adapter", "kind": "lora"},
+                "releases": [{"version": "1.0", "visibility": "private", "lanes": {"bf16": {
+                    (lane_field): "sha256:abc", "header": {"sha256": "def", "length": 12}
+                }}}],
+                (collection): [{"id": "sha256:abc", "lane": "bf16", "header": {"sha256": "def", "length": 12}}]
+            });
+            let parsed: ModelCard = serde_json::from_value(card).unwrap();
+            assert_eq!(parsed.model.kind, Some(crate::model_ref::ModelKind::Lora));
+            assert_eq!(parsed.checkpoints[0].id, "sha256:abc");
+            assert_eq!(parsed.releases[0].visibility, crate::model_ref::ReleaseVisibility::Private);
+            assert_eq!(parsed.releases[0].lanes["bf16"].checkpoint, "sha256:abc");
+        }
+    }
+
+    #[test]
+    fn conflicting_new_and_old_checkpoint_fields_are_not_silently_combined() {
+        let value = serde_json::json!({"model": {"org": "author", "name": "adapter"}, "checkpoints": [], "commits": []});
+        assert!(serde_json::from_value::<ModelCard>(value).is_err());
+    }
 }
