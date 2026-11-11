@@ -3,9 +3,9 @@
 //!
 //! `derived/<slot>/<page>` names the object of page `page` of a slot (one block of a component
 //! under one fill identity; each overlay its pages were made under is a page). Its mtime is the
-//! page's last use. The object is cache in its checkpoint's lane, kept by a use named by the page
-//! that also names the checkpoint's header, so it goes when that lane goes; a record whose object
-//! went is removed when it is next read.
+//! page's last use. The object is cache in its checkpoint's lane, kept by the use named by the
+//! checkpoint's header (which a commit's use names too), so it goes when that lane goes; a record
+//! whose object went is removed when it is next read.
 
 use std::fs;
 use std::io;
@@ -74,7 +74,7 @@ impl Store {
             return Ok(None);
         }
         let object = self.put_bytes(bytes)?;
-        self.used(page, [&object, of])?;
+        self.used(&of.sha256, [&object])?;
         // A record never names an object a crash could tear (an ephemeral store syncs once here).
         self.sync()?;
         let record = serde_json::to_vec(&object).map_err(|error| invalid(&path, error))?;

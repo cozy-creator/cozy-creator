@@ -860,6 +860,9 @@ impl Tier {
     /// as what follows it is used later still.
     fn read_each_ahead(&self) {
         while let Some(source) = self.next_ahead() {
+            if source.page().is_some_and(|key| self.holds(key)) {
+                continue; // Its own page is here: nothing it would be made from is wanted.
+            }
             let (key, disk): (String, Option<OnDisk>) = if source.derives() {
                 match (source.slot_page(), source.stored_key()) {
                     (Some(disk), _) => (disk.page.clone(), Some(disk)),
