@@ -165,6 +165,16 @@ def main() -> None:
             first = Path(opened_files[0])
             assert opened["url"] in html.unescape(first.read_text()), "browser received a different URL"
             assert first.stat().st_mode & 0o777 == 0o600, "browser redirect exposes its sign-in code"
+            saved_path = environment["PATH"]
+            empty_path = case / "empty-path"
+            empty_path.mkdir()
+            environment["PATH"] = str(empty_path)
+            try:
+                fallback = run("browser unavailable fallback", ["--json", "open"], project)
+            finally:
+                environment["PATH"] = saved_path
+            assert json.loads(fallback.stdout)["project"] == project.name
+            assert "could not open the browser" in fallback.stderr
         for flag in ("--no-open", "--print-url"):
             run(f"removed open flag {flag}", ["open", flag], project, code=2)
         run("removed run selector", ["run", "-p", str(project), "example/generate", "prompt=test"], project, code=2)
