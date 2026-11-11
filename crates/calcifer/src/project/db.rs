@@ -3,6 +3,7 @@
 //! execution bookkeeping stays SQL. `commit` saves original CRDT changes and a recoverable snapshot in the same transaction.
 use std::{
     collections::BTreeMap,
+    fs::OpenOptions,
     path::Path,
     sync::Arc,
 };
@@ -12,10 +13,14 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use super::{
     crdt,
-    folder::{Asset, File, Lock, Measured, RunFile, Version, WalkFile},
+    folder::{Asset, File, Lock, Measured, Version, WalkFile},
     graph::name_key,
-    written::{Boxed, Written},
+    written::Written,
 };
+
+#[cfg(test)]
+#[path = "db_tests.rs"]
+mod tests;
 
 pub(crate) const DB: &str = "project.db";
 /// This schema's `user_version`. A database of another isn't read.
@@ -58,13 +63,13 @@ const SCHEMA: &str = "
         undone TEXT
     ) STRICT;";
 const CRDT_SCHEMA: &str = "
-    CREATE TABLE IF NOT EXISTS crdt_document (
+    CREATE TABLE crdt_document (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         format INTEGER NOT NULL,
         snapshot BLOB NOT NULL,
         heads TEXT NOT NULL
     ) STRICT;
-    CREATE TABLE IF NOT EXISTS crdt_changes (
+    CREATE TABLE crdt_changes (
         hash TEXT PRIMARY KEY,
         seq INTEGER NOT NULL,
         actor TEXT NOT NULL,
@@ -170,76 +175,47 @@ pub(crate) fn locked_elsewhere(conn: &Connection) -> bool {
     held
 }
 
-/// `project.db` in `dir` opened, made with this schema if it's new.
+/// Open an existing current-format project. Read-only validation precedes every writable pragma.
 pub(crate) fn open(path: &Path) -> Result<Connection, Error> {
-    let e = |error: rusqlite::Error| sql(path, error);
-    let mut conn = Connection::open(path).map_err(e)?;
-    conn.busy_timeout(WAIT).map_err(e)?;
-    conn.pragma_update(None, "journal_mode", "WAL").map_err(e)?;
-    conn.pragma_update(None, "synchronous", "FULL").map_err(e)?;
-    // Checkpoints run beside the writes (`checkpoint`), never in a commit: on a busy disk one's fsync takes a second.
-    conn.pragma_update(None, "wal_autocheckpoint", 0).map_err(e)?;
-    match conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).map_err(e)? {
-        0 => {
-            conn.execute_batch(&format!("BEGIN IMMEDIATE; {SCHEMA}; {CRDT_SCHEMA}; PRAGMA user_version = 1; INSERT INTO meta VALUES ('seq', '0'); COMMIT;")).map_err(e)?;
-            initialize_crdt(&mut conn, path)?;
-        }
-        1 => {
-            // VACUUM includes committed WAL pages and leaves a usable original before migration.
-            // Never overwrite a user's earlier recovery copy.
-            let backup = path.with_file_name(format!("{}.v1", path.file_name().unwrap_or_default().to_string_lossy()));
-            if !backup.exists() {
-                conn.execute("VACUUM INTO ?1", [backup.to_string_lossy().as_ref()]).map_err(e)?;
-            }
-            verify_v1_backup(&conn, &backup)?;
-            initialize_crdt(&mut conn, path)?;
-        }
-        VERSION => {}
-        other => return Err(Error::new(Kind::Validation, "project_db_version", format!("{} is of schema {other}, and this cozy reads {VERSION}", path.display())).next("cozy update")),
-    }
+    let checked = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX)
+        .map_err(|error| sql(path, error))?;
+    checked.busy_timeout(WAIT).map_err(|error| sql(path, error))?;
+    require_current(&checked, path)?;
+    drop(checked);
+    let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::default() & !rusqlite::OpenFlags::SQLITE_OPEN_CREATE)
+        .map_err(|error| sql(path, error))?;
+    conn.busy_timeout(WAIT).map_err(|error| sql(path, error))?;
+    require_current(&conn, path)?;
+    configure(&conn, path)?;
     Ok(conn)
 }
 
-/// A kill can leave VACUUM's output partly written. Never treat its mere existence as a
-/// recovery copy, and make its bytes/name durable before changing the intact v1 primary.
-fn verify_v1_backup(primary: &Connection, at: &Path) -> Result<(), Error> {
-    let checked = || -> Result<(), Error> {
-        let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
-        let copy = Connection::open_with_flags(at, flags).map_err(|e| sql(at, e))?;
-        let version: i64 = copy.pragma_query_value(None, "user_version", |r| r.get(0)).map_err(|e| sql(at, e))?;
-        let integrity: String = copy.query_row("PRAGMA quick_check", [], |r| r.get(0)).map_err(|e| sql(at, e))?;
-        if version != 1 || integrity != "ok" {
-            return Err(err(at, "the migration recovery copy is incomplete or is not schema 1"));
-        }
-        if meta(primary, "id") != meta(&copy, "id") {
-            return Err(err(at, "the migration recovery copy belongs to a different project"));
-        }
-        legacy_load(&copy, at)?;
-        legacy_ops(&copy, at)?;
-        for table in ["asked", "request_keys"] {
-            copy.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get::<_, i64>(0)).map_err(|e| sql(at, e))?;
-        }
-        drop(copy);
-        std::fs::OpenOptions::new().read(true).write(true).open(at).and_then(|file| file.sync_all()).map_err(|e| err(at, e))?;
-        platform::durable::sync_dir(at.parent().unwrap_or_else(|| Path::new("."))).map_err(|e| err(at, e))
-    };
-    checked().map_err(|error| {
-        Error::new(Kind::Unavailable, "project_recovery_backup", format!("{}; the original project remains schema 1", error.message))
-            .remedy("preserve the recovery copy and move it aside before retrying migration")
-    })
+fn require_current(conn: &Connection, path: &Path) -> Result<(), Error> {
+    let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0)).map_err(|error| sql(path, error))?;
+    if version != VERSION {
+        return Err(Error::new(Kind::Validation, "project_db_version", format!("{} has schema {version}; only current CRDT schema {VERSION} is supported", path.display()))
+            .remedy("Preserve this database. Create a new current-format project in a separate empty directory"));
+    }
+    let format: i64 = conn.query_row("SELECT format FROM crdt_document WHERE id = 1", [], |row| row.get(0)).map_err(|error| sql(path, error))?;
+    if format != crdt::FORMAT {
+        return Err(Error::new(Kind::Validation, "project_db_version", format!("{} has CRDT format {format}; only format {} is supported", path.display(), crdt::FORMAT)));
+    }
+    Ok(())
 }
 
-/// The project's id and name, as `meta` keeps them (cl-819); none before it was given one.
+fn configure(conn: &Connection, path: &Path) -> Result<(), Error> {
+    let e = |error| sql(path, error);
+    conn.pragma_update(None, "journal_mode", "WAL").map_err(e)?;
+    conn.pragma_update(None, "synchronous", "FULL").map_err(e)?;
+    // Checkpoints run beside writes, never in a commit.
+    conn.pragma_update(None, "wal_autocheckpoint", 0).map_err(e)
+}
+
+/// Canonical identity only; relational projections never supply a missing native identity.
 pub(crate) fn identity(conn: &Connection) -> Option<(String, String)> {
-    let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0)).ok()?;
-    if version == VERSION {
-        let (format, bytes, heads): (i64, Vec<u8>, String) = conn.query_row("SELECT format, snapshot, heads FROM crdt_document WHERE id = 1", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).ok()?;
-        return (format == crdt::FORMAT).then(|| crdt::identity_bytes(&bytes, &heads)).flatten();
-    }
-    if version != 1 { return None; }
-    // Only the first import of a v1 database reads identity from the relational store.
-    let value = |key: &str| conn.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get::<_, String>(0)).optional().ok().flatten();
-    Some((value("id")?, value("name").unwrap_or_default()))
+    require_current(conn, Path::new(DB)).ok()?;
+    let (bytes, heads): (Vec<u8>, String) = conn.query_row("SELECT snapshot, heads FROM crdt_document WHERE id = 1", [], |row| Ok((row.get(0)?, row.get(1)?))).ok()?;
+    crdt::identity_bytes(&bytes, &heads)
 }
 
 /// Keeps the project's identity and optional public code in one transaction.
@@ -287,83 +263,6 @@ pub(crate) fn read(conn: &Connection, at: &Path) -> Result<(i64, Stored), Error>
     let tx = conn.unchecked_transaction().map_err(|e| sql(at, e))?;
     let stored = load(&tx, at)?;
     Ok((data_version(&tx), stored))
-}
-
-/// All of it but the history, keys and asked texts.
-fn legacy_load(conn: &Connection, at: &Path) -> Result<Stored, Error> {
-    let e = |error: rusqlite::Error| sql(at, error);
-    let bad = |what: &str, why: serde_json::Error| err(at, format!("{what}: {why}"));
-    let (mut written, mut canvas, mut lock, mut walk, mut measured) = (Written::default(), BTreeMap::new(), Lock::default(), WalkFile::default(), BTreeMap::new());
-    let seq = conn.query_row("SELECT value FROM meta WHERE key = 'seq'", [], |r| r.get::<_, String>(0)).optional().map_err(e)?.and_then(|seq| seq.parse().ok()).unwrap_or(0);
-    let mut rows = conn.prepare("SELECT key, value FROM head ORDER BY ord").map_err(e)?;
-    for row in rows.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).map_err(e)? {
-        let (key, value) = row.map_err(e)?;
-        written.head.push((key, serde_json::from_str(&value).map_err(|why| bad("head", why))?));
-    }
-    let mut boxes: BTreeMap<String, (i64, Boxed)> = BTreeMap::new();
-    let mut rows = conn.prepare("SELECT key, name, ord FROM boxes").map_err(e)?;
-    for row in rows.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))).map_err(e)? {
-        let (key, name, ord) = row.map_err(e)?;
-        boxes.insert(key, (ord, Boxed { name, ..Default::default() }));
-    }
-    let mut rows = conn.prepare("SELECT box, field, value FROM fields ORDER BY box, ord").map_err(e)?;
-    for row in rows.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))).map_err(e)? {
-        let (key, field, value) = row.map_err(e)?;
-        if let Some((_, held)) = boxes.get_mut(&key) {
-            held.fields.push((field, serde_json::from_str(&value).map_err(|why| bad("fields", why))?));
-        }
-    }
-    let mut boxes: Vec<(i64, Boxed)> = boxes.into_values().collect();
-    boxes.sort_by_key(|(ord, _)| *ord);
-    written.boxes = boxes.into_iter().map(|(_, held)| held).collect();
-    let mut rows = conn.prepare("SELECT key, name, x, y, w, seq, by FROM canvas").map_err(e)?;
-    for row in rows.query_map([], |r| {
-        let card = api::calcifer::project::Card { x: r.get(2)?, y: r.get(3)?, w: r.get(4)? };
-        Ok((r.get::<_, String>(0)?, CardRow { name: r.get(1)?, card, seq: r.get::<_, i64>(5)? as u64, by: r.get(6)? }))
-    }).map_err(e)? {
-        let (key, row) = row.map_err(e)?;
-        canvas.insert(key, row);
-    }
-    let mut rows = conn.prepare("SELECT key, record FROM lock_assets").map_err(e)?;
-    for row in rows.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).map_err(e)? {
-        let (key, record) = row.map_err(e)?;
-        lock.assets.insert(key, serde_json::from_str(&record).map_err(|why| bad("lock_assets", why))?);
-    }
-    let mut rows = conn.prepare("SELECT key, discarded, record FROM versions ORDER BY key, number").map_err(e)?;
-    for row in rows.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?, r.get::<_, String>(2)?))).map_err(e)? {
-        let (key, discarded, record) = row.map_err(e)?;
-        let version: Version = serde_json::from_str(&record).map_err(|why| bad("versions", why))?;
-        let held = lock.assets.entry(key).or_default();
-        if discarded { held.discarded.push(version) } else { held.versions.push(version) }
-    }
-    let mut rows = conn.prepare("SELECT sha256, record FROM lock_files").map_err(e)?;
-    for row in rows.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).map_err(e)? {
-        let (sha256, record) = row.map_err(e)?;
-        let file = File { row: true, ..serde_json::from_str(&record).map_err(|why| bad("lock_files", why))? };
-        lock.files.insert(sha256, file);
-    }
-    let mut rows = conn.prepare("SELECT run, function, output, sha256 FROM run_files ORDER BY ord").map_err(e)?;
-    for row in rows.query_map([], |r| Ok(RunFile { run: r.get::<_, i64>(0)? as u64, function: r.get(1)?, output: r.get(2)?, sha256: r.get(3)?, ..Default::default() })).map_err(e)? {
-        lock.runs.push(row.map_err(e)?);
-    }
-    let mut rows = conn.prepare("SELECT kind, name, value FROM facts").map_err(e)?;
-    for row in rows.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))).map_err(e)? {
-        let (kind, name, value) = row.map_err(e)?;
-        match kind.as_str() {
-            "reserved" => drop(lock.reserved.insert(name, serde_json::from_str(&value).map_err(|why| bad("facts", why))?)),
-            "makes" => drop(lock.makes.insert(name, value)),
-            _ => {}
-        }
-    }
-    if let Some(record) = conn.query_row("SELECT record FROM walk WHERE id = 1", [], |r| r.get::<_, String>(0)).optional().map_err(e)? {
-        walk = serde_json::from_str(&record).map_err(|why| bad("walk", why))?;
-    }
-    let mut rows = conn.prepare("SELECT sha256, record FROM measured").map_err(e)?;
-    for row in rows.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).map_err(e)? {
-        let (sha256, record) = row.map_err(e)?;
-        measured.insert(sha256, serde_json::from_str(&record).map_err(|why| bad("measured", why))?);
-    }
-    Ok(Stored { seq, written: Arc::new(written), canvas: Arc::new(canvas), lock: Arc::new(lock), walk: Arc::new(walk), measured: Arc::new(measured), crdt: None })
 }
 
 /// Canonical project state plus machine-local bookkeeping. SQL projection damage never becomes a
@@ -416,28 +315,17 @@ fn save_document(tx: &Transaction<'_>, at: &Path, doc: &mut crdt::Document, seq:
     Ok(())
 }
 
-/// Convert a relational v1 once, preserving a recoverable v1 SQLite snapshot alongside it. The new
-/// canonical snapshot, its immutable change bytes and normalized query projections commit together.
-fn initialize_crdt(conn: &mut Connection, at: &Path) -> Result<(), Error> {
-    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| sql(at, e))?;
-    tx.execute_batch(CRDT_SCHEMA).map_err(|e| sql(at, e))?;
-    let before = legacy_load(&tx, at)?;
-    let mut after = before.clone();
-    crdt::identify(&before, &mut after);
+/// The initial current-format schema and native baseline commit atomically for a newly reserved file.
+fn initialize_current(conn: &mut Connection, at: &Path) -> Result<(), Error> {
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|error| sql(at, error))?;
+    tx.execute_batch(SCHEMA).map_err(|error| sql(at, error))?;
+    tx.execute_batch(CRDT_SCHEMA).map_err(|error| sql(at, error))?;
+    tx.execute("INSERT INTO meta VALUES ('seq', '0')", []).map_err(|error| sql(at, error))?;
     let mut doc = crdt::Document::new(at);
-    let mut ops = legacy_ops(&tx, at)?;
-    crdt::identify_history(&after, &mut ops);
-    // Before stored IDs, indexed projects were identified by their canonical folder path.
-    // Preserve that ID on legacy import/restore; new-project creation explicitly replaces
-    // it with its freshly generated UUID after this initializer completes.
-    let inherited = identity(&tx).unwrap_or_else(|| {
-        (super::folder_id(at.parent().unwrap_or_else(|| Path::new("."))), String::new())
-    });
-    doc.initialize(crdt::value(&after, &ops, &serde_json::Value::Null, Some(inherited)))?;
-    write(&tx, &before, &after, &Extra { ops:ops.clone(), ..Default::default() }).map_err(|e| sql(at, e))?;
-    save_document(&tx, at, &mut doc, after.seq, None)?;
-    tx.pragma_update(None, "user_version", VERSION).map_err(|e| sql(at, e))?;
-    tx.commit().map_err(|e| sql(at, e))
+    doc.initialize(crdt::value(&Stored::default(), &[], &serde_json::Value::Null, None))?;
+    save_document(&tx, at, &mut doc, 0, None)?;
+    tx.pragma_update(None, "user_version", VERSION).map_err(|error| sql(at, error))?;
+    tx.commit().map_err(|error| sql(at, error))
 }
 
 /// The asset row of the lock, without its versions, which have rows of their own.
@@ -657,18 +545,6 @@ pub(crate) fn asked(conn: &Connection, digest: &str) -> Option<String> {
     conn.query_row("SELECT text FROM asked WHERE digest = ?1", [digest], |r| r.get(0)).optional().ok().flatten()
 }
 
-/// Every history row, oldest first.
-fn legacy_ops(conn: &Connection, at: &Path) -> Result<Vec<OpRow>, Error> {
-    let e = |error: rusqlite::Error| sql(at, error);
-    let mut rows = conn.prepare("SELECT id, at_ms, by, words, edits, changes, undone FROM ops ORDER BY id").map_err(e)?;
-    let found = rows
-        .query_map([], |r| Ok(OpRow { uid: String::new(), id: r.get::<_, i64>(0)? as u64, at_ms: r.get(1)?, by: r.get(2)?, words: r.get(3)?, edits: r.get(4)?, changes: r.get(5)?, undone: r.get(6)? }))
-        .map_err(e)?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(e)?;
-    Ok(found)
-}
-
 /// What the request under `key` asked and answered, if it was kept.
 pub(crate) fn keyed(conn: &Connection, key: &str) -> Option<Keyed> {
     conn.query_row("SELECT digest, status, content_type, body FROM request_keys WHERE key = ?1", [key], |r| {
@@ -693,10 +569,18 @@ pub(crate) fn keep_answer(conn: &Connection, key: &str, digest: &str, status: u1
     .map(drop)
 }
 
-/// A fresh database at `path` holding `stored`, its history and its asked texts: what a first open imports.
+/// Exclusively create a fresh current database. Existing paths, including incomplete stages, are preserved.
 pub(crate) fn create(path: &Path, stored: &Stored, ops: &[OpRow], asked: &[(String, String)]) -> Result<(), Error> {
-    let _ = std::fs::remove_file(path);
-    let mut conn = open(path)?;
+    OpenOptions::new().write(true).create_new(true).open(path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::AlreadyExists {
+            Error::new(Kind::Conflict, "project_db_exists", format!("{} already exists; preserve it and choose a fresh database path", path.display()))
+        } else { err(path, error) }
+    })?;
+    let mut conn = Connection::open_with_flags(path, rusqlite::OpenFlags::default() & !rusqlite::OpenFlags::SQLITE_OPEN_CREATE)
+        .map_err(|error| sql(path, error))?;
+    conn.busy_timeout(WAIT).map_err(|error| sql(path, error))?;
+    configure(&conn, path)?;
+    initialize_current(&mut conn, path)?;
     let mut fresh = stored.clone();
     crdt::identify(&Stored::default(), &mut fresh);
     let mut ops = ops.to_vec();
@@ -704,7 +588,6 @@ pub(crate) fn create(path: &Path, stored: &Stored, ops: &[OpRow], asked: &[(Stri
     let extra = Extra { asked: asked.iter().map(|(digest, text)| (digest.clone(), Some(text.clone()))).collect(), ops, ..Default::default() };
     fresh.seq = 0;
     commit(&mut conn, path, &Stored::default(), &mut fresh, &extra, || (), || ())?;
-    set_meta(&conn, path, "created_complete", Some("1"))?;
     conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").map_err(|e| err(path, e))?;
     drop(conn);
     Ok(())
@@ -712,7 +595,7 @@ pub(crate) fn create(path: &Path, stored: &Stored, ops: &[OpRow], asked: &[(Stri
 
 /// What the WAL holds moved into the database, from a connection of its own, as far as readers let it: writes go on meanwhile.
 pub(crate) fn checkpoint(path: &Path) {
-    let done = Connection::open(path).and_then(|conn| conn.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(())));
+    let done = open(path).and_then(|conn| conn.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(())).map_err(|error| sql(path, error)));
     if let Err(error) = done {
         tracing::warn!("{}: checkpoint: {error}", path.display());
     }
