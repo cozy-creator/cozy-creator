@@ -124,7 +124,8 @@ pub fn main() -> ExitCode {
     }
 }
 
-/// Release Windows' working-directory lock before any runtime worker starts.
+/// Release Windows' working-directory lock before any runtime worker starts. A worker that parks gives its own freed memory
+/// back (cl-870): what it allocated for a project no other thread can.
 fn runtime(_loaded: &Loaded) -> Result<tokio::runtime::Runtime, Error> {
     #[cfg(windows)]
     {
@@ -134,7 +135,10 @@ fn runtime(_loaded: &Loaded) -> Result<tokio::runtime::Runtime, Error> {
         std::env::set_current_dir(directory)
             .map_err(|e| Error::new(Kind::Internal, "calcifer_working_directory", e.to_string()))?;
     }
-    tokio::runtime::Runtime::new()
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .on_thread_park(platform::heap::parked)
+        .build()
         .map_err(|e| Error::new(Kind::Internal, "calcifer_runtime", e.to_string()))
 }
 
