@@ -1161,6 +1161,7 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Byte
             return Err(Refusal(Error::new(Kind::Usage, "vault_idempotency", "encrypted creation cannot use an Idempotency-Key: its recovery response must not be cached")));
         }
     }
+    let engine = if open.unencrypted { None } else { Some(tokio::task::block_in_place(|| vault::preflight_creation(&api)).map_err(Refusal)?) };
     let io = |at: &FsPath, e: std::io::Error| Refusal(Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", at.display())));
     let mut moved_on = None;
     let (dir, recovery_secret) = match &open.path {
@@ -1178,7 +1179,7 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Byte
             }
             std::fs::create_dir_all(path).map_err(|e| io(path, e))?;
             let name = open.name.clone().unwrap_or_else(|| folder_name(path));
-            tokio::task::block_in_place(|| create_new(&api, path, &name, open.starter, open.passphrase.take())).map_err(Refusal)?
+            tokio::task::block_in_place(|| create_new(&api, path, &name, open.starter, open.passphrase.take(), engine.as_ref())).map_err(Refusal)?
         }
         None => {
             let Some(name) = &open.name else {
@@ -1187,7 +1188,7 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Byte
             match key.and_then(|key| api.projects.made.lock().expect("made lock").get(key).cloned()) {
                 Some(dir) => (dir, None),
                 None => {
-                    let (dir, why, recovery) = tokio::task::block_in_place(|| named_project(&api, name, open.starter, open.passphrase.take())).map_err(Refusal)?;
+                    let (dir, why, recovery) = tokio::task::block_in_place(|| named_project(&api, name, open.starter, open.passphrase.take(), engine.as_ref())).map_err(Refusal)?;
                     moved_on = why;
                     if let Some(key) = key {
                         api.projects.made.lock().expect("made lock").insert(key.to_owned(), dir.clone());
@@ -1229,7 +1230,7 @@ fn opened(id: String, code: String, dir: &FsPath) -> Opened {
 
 /// A new project called `name` in this person's home folder, or the next free name: what it could be called, `_2`, `_3`, …. Whatever is
 /// there already stays as it is, a folder of anything or another project, and it says so: nothing is made in a folder it didn't make.
-fn named_project(api: &Api, name: &str, starter: bool, passphrase: Option<String>) -> Result<(PathBuf, Option<String>, Option<String>), Error> {
+fn named_project(api: &Api, name: &str, starter: bool, passphrase: Option<String>, engine: Option<&project_mount::Provider>) -> Result<(PathBuf, Option<String>, Option<String>), Error> {
     let home = &api.machines.user_home;
     refuse_encrypted_parent(home)?;
     let io = |e: std::io::Error| Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", home.display()));
@@ -1239,7 +1240,7 @@ fn named_project(api: &Api, name: &str, starter: bool, passphrase: Option<String
         let dir = home.join(&name);
         match std::fs::create_dir(&dir) {
             Ok(()) => {
-                let (dir, recovery) = create_new(api, &dir, &name, starter, passphrase)?;
+                let (dir, recovery) = create_new(api, &dir, &name, starter, passphrase, engine)?;
                 let why = (name != wanted).then(|| format!("{} is taken, so this is {name}", home.join(&wanted).display()));
                 return Ok((dir, why, recovery));
             }
@@ -1275,7 +1276,7 @@ fn new_database(dir: &FsPath, id: &str, name: &str, written: written::Written) -
 }
 
 /// Fresh encrypted projects write their first database through the mount, never through a plaintext source folder.
-fn create_new(api: &Api, dir: &FsPath, name: &str, starter: bool, passphrase: Option<String>) -> Result<(PathBuf, Option<String>), Error> {
+fn create_new(api: &Api, dir: &FsPath, name: &str, starter: bool, passphrase: Option<String>, engine: Option<&project_mount::Provider>) -> Result<(PathBuf, Option<String>), Error> {
     let Some(passphrase) = passphrase else { return made_new(api, dir, name, starter).map(|dir| (dir, None)); };
     refuse_encrypted_parent(dir)?;
     if std::fs::read_dir(dir).map_err(|e| Error::new(Kind::Unavailable, "project_io", e.to_string()))?.next().is_some() {
@@ -1285,7 +1286,8 @@ fn create_new(api: &Api, dir: &FsPath, name: &str, starter: bool, passphrase: Op
     let canonical = platform::durable::canonical(dir).map_err(|e| Error::new(Kind::Unavailable, "project_io", e.to_string()))?;
     let (id, name) = (fresh_id(), unique_name(api, "", &canonical, name.to_owned())?);
     let written = if starter { written::Written::from_yaml(&format::starter())? } else { written::Written::blank() };
-    let recovery = vault::create_new(api, &canonical, &id, &name, written, project_vault::SecretString::from(passphrase))?;
+    let engine = engine.ok_or_else(|| Error::internal("vault_provider", "encrypted creation requires the prepared provider"))?;
+    let recovery = vault::create_new(api, &canonical, &id, &name, written, project_vault::SecretString::from(passphrase), engine)?;
     crate::events::project_changed(&canonical);
     Ok((canonical, Some(recovery)))
 }

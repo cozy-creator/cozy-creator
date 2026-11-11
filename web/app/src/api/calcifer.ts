@@ -406,7 +406,11 @@ signed_in: boolean,
  * Bytes Calcifer's code has allocated and not freed: what it holds, which its resident memory also counts with what its
  * allocator keeps of what was freed.
  */
-heap_bytes: number, };
+heap_bytes: number,
+/**
+ * Whether the encrypted-creation protocol is supported. Native driver requirements still apply; older controllers omit this.
+ */
+encrypted_project_creation: boolean, };
 
 /**
  * One settled call of a run (the run's own function or a child call).

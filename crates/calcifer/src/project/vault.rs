@@ -429,9 +429,18 @@ pub(super) fn private(mut response: Response) -> Response {
     response
 }
 
-/// Initialize the first database through encrypted storage. There is no plaintext source to convert or preserve.
-pub(super) fn create_new(api: &Api, root: &FsPath, id: &str, name: &str, written: super::written::Written, passphrase: SecretString) -> Result<String, Error> {
+/// Refuse missing providers/drivers before creating a new project's directory or reserved storage.
+pub(super) fn preflight_creation(api: &Api) -> Result<Provider, Error> {
     let engine = Provider::discover(&api.machines.hubs.home().tools()).map_err(provider)?;
+    engine.check_driver().map_err(provider)?;
+    Ok(engine)
+}
+
+/// Initialize the first database through encrypted storage. There is no plaintext source to convert or preserve.
+pub(super) fn create_new(api: &Api, root: &FsPath, id: &str, name: &str, written: super::written::Written, passphrase: SecretString, engine: &Provider) -> Result<String, Error> {
+    let operation = operation(root);
+    let _operation = operation.lock().expect("vault operation");
+    let _access = exclusive(root)?;
     let created = Keybag::create(id, passphrase).map_err(key)?;
     let recovery = created.recovery_secret.expose().to_owned();
     let outcome = (|| {
@@ -454,8 +463,8 @@ pub(super) fn create_new(api: &Api, root: &FsPath, id: &str, name: &str, written
         mount(api, root, created.keybag, created.secret, &ask)
     })();
     outcome.map_err(|why| {
-        let next = if root.join(KEYBAG_FILE).is_file() { "Its storage is preserved; keep the passphrase to recover it." }
-            else { "No project state was written. The unfinished backing is preserved; resolve it before retrying creation." };
+        let next = if root.join(KEYBAG_FILE).is_file() { "Keep its backing, keybag and passphrase. Setup is unfinished; inspect the retained storage before retrying in a new empty directory." }
+            else { "No project state was written. The unfinished backing is preserved; inspect it before retrying in a new empty directory." };
         error("vault_creation", format!("Encrypted project setup at {} could not finish: {}. {next}", root.display(), why.message))
     })?;
     Ok(recovery)

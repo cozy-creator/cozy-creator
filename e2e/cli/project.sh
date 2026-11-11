@@ -64,6 +64,16 @@ version_skew() {
   cat "$OUT/skew.txt"
   { { [ "$code" = 0 ] || grep -q calcifer_outdated "$OUT/skew.txt"; } && ! grep -qiE 'untyped_answer|answered 404' "$OUT/skew.txt"; } \
     || check "skew: the candidate CLI against $(cozy --version)'s Calcifer neither worked nor said calcifer_outdated (exit $code)"
+  local holder=$HOME/.cozy/calcifer/calcifer.lock.holder address capability fresh=$OUT/skew-new-$RANDOM
+  address=$(jq -r .address "$holder")
+  capability=$(curl -fsS -H "Authorization: Bearer $(jq -r .token "$holder")" "http://$address/v1/status" | jq -r '.encrypted_project_creation // false')
+  if [ "$capability" != true ]; then
+    # The missing file also proves the capability refusal precedes reading a credential.
+    code=0
+    "$CAND_COZY" --json new "$fresh" --passphrase-file "$fresh.missing" > "$OUT/skew-encryption.txt" 2>&1 || code=$?
+    { [ "$code" != 0 ] && grep -q calcifer_outdated "$OUT/skew-encryption.txt" && [ ! -e "$fresh" ]; } \
+      || check "skew: unsupported encrypted creation was not refused before credential read/project creation"
+  fi
 }
 
 # plate <file> <lavfi source> <tone Hz> <video kb/s> [seconds] [size] [rate]: at 24 fps by default, a keyframe a second, constant bitrate;

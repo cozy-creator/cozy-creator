@@ -158,7 +158,7 @@ media-src 'self' blob:; font-src 'self'; connect-src 'self'; base-uri 'none'; fo
 `Referrer-Policy: no-referrer`. A build without the page answers `503 page_not_built`, with how to build it.
 
 ### Status
-- `GET /v1/status`: `{version, os, local_usable, signed_in, heap_bytes}`. `heap_bytes` is what Calcifer's code has allocated and not freed: what it holds, without what its allocator keeps of what was freed, which its resident memory counts too. `os` is `linux`, `macos` or `windows`; `local_usable` is
+- `GET /v1/status`: `{version, os, local_usable, signed_in, heap_bytes, encrypted_project_creation}`. Clients must require `encrypted_project_creation: true` before sending encrypted-creation credentials or requests; older controllers omit it. `heap_bytes` is what Calcifer's code has allocated and not freed: what it holds, without what its allocator keeps of what was freed, which its resident memory counts too. `os` is `linux`, `macos` or `windows`; `local_usable` is
   whether this computer runs models itself; `signed_in` is whether it holds a device key for its Hub, which it answers
   without asking the Hub (`GET /v1/account` does).
 
@@ -562,7 +562,9 @@ read settles and on `approve`, reading each asset's state, else its newest versi
 - `POST /v1/projects` `{name?, path?, starter?, passphrase?, unencrypted?}`: new projects are encrypted by default.
   A nonempty user-supplied `passphrase` is required unless `unencrypted: true` explicitly opts out; opt-out and
   passphrase cannot be combined. Encrypted creation requires a new/empty directory and initializes its first
-  database inside the native encrypted mount. Credentials and the one-time `recovery_secret` response have no
+  database inside the native encrypted mount. The client first checks the encrypted-creation capability from
+  `GET /v1/status`; absent/false refuses before sending credentials or creating files.
+  Credentials and the one-time `recovery_secret` response have no
   Debug representation, outbox or persistent response cache. Encrypted creation refuses `Idempotency-Key` and
   returns `Cache-Control: private, no-store`; ordinary opt-out creation retains the existing idempotency behavior.
   The caller must save recovery off-device and must retain the encrypted backing/keybag too. This creates a

@@ -652,6 +652,58 @@ const newPage = async () => {
   await until('implicit encrypted import lands', () => projectJson(implicit.path).assets.some((asset) => asset.sha256), Boolean, 45000);
   check('implicit_creation_uses_private_uploads', fileWrites.slice(uploadsBeforeSetup).length > 0 && fileWrites.slice(uploadsBeforeSetup).every((write) => write.path.startsWith('/v1/project-files/') && write.project === implicit.id));
   check('implicit_creation_is_encrypted', JSON.parse(vault(implicit.path, 'status')).encrypted && !existsSync(join(implicit.path, 'project.db')));
+
+  const prepareCreation = async (suffix) => {
+    await goto(page, `${origin}/projects`);
+    await page.getByLabel("New project's name", { exact: true }).fill(`web-vault-${suffix}-${Date.now()}`);
+    await page.getByLabel('Passphrase', { exact: true }).fill('synthetic pending project passphrase');
+    await page.getByLabel('Confirm passphrase', { exact: true }).fill('synthetic pending project passphrase');
+  };
+  stage = 'new recovery panel observes external lock';
+  await prepareCreation('lock');
+  const visibleReply = page.waitForResponse((answer) => answer.request().method() === 'POST' && new URL(answer.url()).pathname === '/v1/projects' && answer.ok());
+  await page.getByRole('button', { name: 'Create project', exact: true }).click();
+  const visible = await (await visibleReply).json();
+  delete visible.recovery_secret;
+  createdFolders.push(visible.path);
+  await page.locator('[aria-label="Save recovery secret"] pre').waitFor();
+  requestLock(visible.path);
+  await drainedLock(visible.path);
+  await until('new recovery disappears after lock', () => page.locator('[aria-label="Save recovery secret"]').count(), (count) => count === 0, 45000);
+  check('new_recovery_is_purged_on_lock', true);
+
+  stage = 'late new-project response cannot disclose after lock';
+  await prepareCreation('late');
+  let deliver;
+  const delivery = new Promise((resolve) => { deliver = resolve; });
+  let received;
+  const heldCreate = async (route) => {
+    if (route.request().method() !== 'POST') return route.continue();
+    const answer = await route.fetch();
+    const created = await answer.json();
+    delete created.recovery_secret;
+    if (created.path) createdFolders.push(created.path);
+    received = created;
+    await delivery;
+    await route.fulfill({ response: answer });
+  };
+  await page.route('**/v1/projects', heldCreate);
+  try {
+    await page.getByRole('button', { name: 'Create project', exact: true }).click();
+    await until('real creation response is held', () => received, Boolean, 45000);
+    const late = received;
+    if (!late.path) throw new Error('encrypted creation failed before the held-response check');
+    requestLock(late.path);
+    await drainedLock(late.path);
+    const delivered = page.waitForResponse((answer) => answer.request().method() === 'POST' && new URL(answer.url()).pathname === '/v1/projects' && answer.ok());
+    deliver();
+    await (await delivered).finished();
+    await until('late creation handler settles', () => page.getByRole('button', { name: 'Creating…', exact: true }).count(), (count) => count === 0, 45000);
+    check('late_creation_does_not_disclose_recovery_after_lock', await page.locator('[aria-label="Save recovery secret"]').count() === 0);
+  } finally {
+    deliver();
+    await page.unroute('**/v1/projects', heldCreate);
+  }
   await goto(page, `${origin}/projects`);
   for (const directory of createdFolders) {
     requestLock(directory);

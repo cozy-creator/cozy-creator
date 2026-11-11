@@ -18,10 +18,27 @@ package_details() { python3 "$RUN_PACKAGE_DETAILS" "$1"; }
 # run_project <dir>: <dir> made a project unless it is one, for this script's runs wherever the script goes.
 run_project() {
   mkdir -p "$1" || return 1
-  if [ -f "$1/project.db" ] || [ -f "$1/project.yaml" ]; then
+  if [ -f "$1/project.db" ] || [ -f "$1/project.yaml" ] || [ -f "$1/project.vault.keys.json" ]; then
     (cd "$1" && "$RUN_CLI" --json status > /dev/null) || return 1
   else
-    (cd "$1" && "$RUN_CLI" --json new --unencrypted > /dev/null) || return 1
+    # This helper also runs released CLI binaries without --unencrypted. The existing API
+    # expresses the same explicit opt-out to both old/plain and new/encrypted controllers.
+    "$RUN_CLI" --json machine ls > /dev/null || return 1
+    (cd "$1" && python3 - <<'PY'
+import json
+from pathlib import Path
+import urllib.request
+
+holder = json.loads((Path.home() / '.cozy/calcifer/calcifer.lock.holder').read_text())
+body = json.dumps({'path': str(Path.cwd()), 'unencrypted': True}).encode()
+request = urllib.request.Request('http://' + holder['address'] + '/v1/projects', data=body, method='POST',
+    headers={'Authorization': 'Bearer ' + holder['token'], 'Content-Type': 'application/json'})
+opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+with opener.open(request, timeout=30) as response:
+    if not json.load(response).get('id'):
+        raise RuntimeError('project bootstrap returned no project identity')
+PY
+    ) || return 1
   fi
   RUN_PROJECT=$(cd "$1" && pwd)
 }

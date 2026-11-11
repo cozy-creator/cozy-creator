@@ -71,6 +71,14 @@ pub(crate) async fn create(ctx: &Context, args: New) -> Result<ExitCode, Error> 
         let path = crate::calcifer_client::path(&["v1", "projects", &directory.to_string_lossy(), "address"]);
         Some(client.get::<api::calcifer::project::Address>(&path).await?)
     } else { None };
+    let client = ctx.calcifer().await?;
+    if !args.unencrypted && existing.is_none() {
+        let status: api::calcifer::CalciferStatus = client.get("/v1/status").await?;
+        if !status.encrypted_project_creation {
+            return Err(Error::new(Kind::Unavailable, "calcifer_outdated", "Calcifer cannot create encrypted projects directly; no credential or creation request was sent")
+                .next("cozy doctor"));
+        }
+    }
     let passphrase = if args.unencrypted || existing.is_some() { None } else {
         if args.passphrase_file.is_none() && !std::io::stdin().is_terminal() {
             return Err(Error::new(Kind::Usage, "vault_credential", "new projects are encrypted; a noninteractive caller must supply a passphrase file or explicitly choose unencrypted storage")
@@ -85,7 +93,6 @@ pub(crate) async fn create(ctx: &Context, args: New) -> Result<ExitCode, Error> 
         Some(vault::credential(args.passphrase_file.as_ref(), "New project passphrase: ", true)?)
     };
     let request = Open { path: Some(directory.clone()), unencrypted: args.unencrypted, passphrase, ..Open::default() };
-    let client = ctx.calcifer().await?;
     let key = args.unencrypted.then(mint_key);
     let (id, code, path, created, mut recovery_secret) = if let Some(address) = existing {
         (address.id, address.code, directory.clone(), false, None)
@@ -98,6 +105,20 @@ pub(crate) async fn create(ctx: &Context, args: New) -> Result<ExitCode, Error> 
         }
         Err(error) => return Err(error),
     } };
+    let protection = if created && !args.unencrypted {
+        let unsupported = || Error::new(Kind::Unavailable, "calcifer_outdated", format!("Calcifer did not confirm encrypted creation at {}. Do not add private files yet", path.display()))
+            .remedy("Update or restart Calcifer, then inspect this project's protection before continuing")
+            .next("cozy doctor");
+        if !recovery_secret.as_ref().is_some_and(|secret| !secret.is_empty()) { return Err(unsupported()); }
+        let status_path = crate::calcifer_client::path(&["v1", "projects", &directory.to_string_lossy(), "vault"]);
+        let status: api::calcifer::project::VaultStatus = client.get(&status_path).await?;
+        if !status.encrypted { return Err(unsupported()); }
+        if status.state != "unlocked" {
+            return Err(Error::new(Kind::Conflict, "project_locked", "the new project locked before recovery could be saved; unlock it and replace its recovery secret")
+                .next("cozy vault unlock").next("cozy vault recovery --recovery-out <file>"));
+        }
+        Some(status)
+    } else { None };
     let label = if code.is_empty() { &id } else { &code };
     let message = if created {
         format!("Created project {label} at {}.", path.display())
@@ -110,12 +131,7 @@ pub(crate) async fn create(ctx: &Context, args: New) -> Result<ExitCode, Error> 
         output::say(ctx, &format!("recovery secret saved to {}; keep a copy off this computer", output.display()));
     }
     let mut document = serde_json::json!({ "id": id, "code": code, "path": path, "created": created, "message": message });
-    if created && !args.unencrypted {
-        let status_path = crate::calcifer_client::path(&["v1", "projects", &directory.to_string_lossy(), "vault"]);
-        if let Ok(status) = client.get::<api::calcifer::project::VaultStatus>(&status_path).await {
-            if let Some(view) = status.view { document["view"] = serde_json::json!(view); }
-        }
-    }
+    if let Some(view) = protection.and_then(|status| status.view) { document["view"] = serde_json::json!(view); }
     if ctx.json {
         if let Some(secret) = recovery_secret { document["recovery_secret"] = secret.into(); }
         output::document(ctx, &document);

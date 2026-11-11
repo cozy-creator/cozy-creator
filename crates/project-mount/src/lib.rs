@@ -636,7 +636,8 @@ impl Provider {
         let _ = (view, identity);
     }
 
-    fn check_driver(&self) -> Result<()> {
+    /// Check native driver prerequisites without creating backing storage, mounts or provider processes.
+    pub fn check_driver(&self) -> Result<()> {
         #[cfg(target_os = "macos")]
         if self.native {
             return Ok(());

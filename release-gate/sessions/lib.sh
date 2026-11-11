@@ -49,7 +49,8 @@ trap 'RC=1; exit 1' INT TERM HUP
 # A run belongs to this session's working-directory project.
 RUN_PROJECT=$OUT/project
 # A folder is a project once `cozy new` made it one (0.24: `status` reads one, it makes none).
-mkdir -p "$RUN_PROJECT" && (cd "$RUN_PROJECT" && if [ -f project.db ]; then cozy --json status; else cozy --json new --unencrypted; fi) > "$OUT/project.json" 2>> "$OUT/project.err" \
+. "$(dirname "${BASH_SOURCE[0]}")/../../e2e/run.sh"
+{ run_project "$RUN_PROJECT" && (cd "$RUN_PROJECT" && "$RUN_CLI" --json status); } > "$OUT/project.json" 2>> "$OUT/project.err" \
   || fail "project initialization: $(cat "$OUT/project.err") $(tail -c 300 "$OUT/project.json")"
 step() {
   local n=$1 directory=$PWD; shift

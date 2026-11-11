@@ -861,6 +861,43 @@ foreach ($rule in $allowed) {
                 inspected += 1
         return inspected
 
+    def creation_lock_race(self, password: Path) -> None:
+        directory = self.out / 'creation-lock-race'
+        args = ['cozy', '--json', 'new', str(directory), '--passphrase-file', str(password),
+                '--recovery-out', str(self.recovery('creation-race'))]
+        record: dict[str, object] = {'args': args[1:], 'cwd': str(self.out), 'state': 'running'}
+        self.commands.append(record)
+        self.flush()
+        creation = subprocess.Popen(args, cwd=self.out, env=self.cli_env, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, text=True, encoding='utf-8')
+        try:
+            deadline = time.monotonic() + FIRST_COLD_SECONDS
+            while not (directory / 'project.vault.keys.json').exists() and creation.poll() is None:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError('new project did not reach its creation barrier')
+                time.sleep(0.01)
+            assert (directory / 'project.vault.keys.json').exists(), 'creation did not publish its wrapped key'
+            assert creation.poll() is None, 'creation finished before the concurrent lock was exercised'
+            locked = self.command('vault', '--directory', directory, 'lock', refusal=True)
+            output, stderr = creation.communicate(timeout=FIRST_COLD_SECONDS)
+            record.update(state='complete', exit_code=creation.returncode)
+            if locked.returncode:
+                assert json.loads(locked.stdout)['error']['code'] == 'project_busy'
+            if creation.returncode:
+                assert json.loads(output)['error']['code'] in ('project_locked', 'project_busy'), self.redact(stderr)
+            state = self.command('vault', '--directory', directory, 'status')
+            deadline = time.monotonic() + FIRST_COLD_SECONDS
+            while state['state'] == 'locking' and time.monotonic() < deadline:
+                time.sleep(0.05)
+                state = self.command('vault', '--directory', directory, 'status')
+            assert state['state'] == 'locked' and not state.get('view'), 'creation reopened after the concurrent lock'
+            self.cell('new_project_cannot_reopen_after_lock')
+        finally:
+            if creation.poll() is None:
+                creation.kill()
+                creation.communicate()
+            self.flush()
+
     def run(self) -> None:
         self.receipt['version'] = self.command('--version', json_output=False).strip()
         self.command('vault', 'export', '--help', json_output=False, refusal=True)
@@ -930,6 +967,7 @@ foreach ($rule in $allowed) {
         assert reopened['project']['id'] == new['id']
         self.command('vault', '--directory', fresh, 'lock')
         self.cell('new_project_recovery_reopens_same_identity')
+        self.creation_lock_race(initial)
 
         created = self.command('new', '--unencrypted', self.project)
         assert created['created']
