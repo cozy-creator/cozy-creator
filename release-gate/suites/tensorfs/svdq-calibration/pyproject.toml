@@ -6,7 +6,7 @@ build-backend = "uv_build"
 name = "ci-svdq-calibration"
 version = "0.1.0"
 requires-python = ">=3.12"
-dependencies = ["cozy-runtime>=0.35", "tensorfs>=0.17.13", "msgspec>=0.19", "numpy>=1.26", "torch>=2.14"]
+dependencies = ["cozy-runtime>=0.45", "msgspec>=0.19", "numpy>=1.26", "torch>=2.14"]
 
 [project.entry-points."cozy.application"]
 default = "ci_svdq_calibration:app"

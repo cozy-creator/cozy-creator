@@ -1,4 +1,5 @@
-"""Normal CLI source→calibrate/adopt→upload→held-out model calls; no SDK/rental changes."""
+"""Normal CLI calls: the Runtime's Output reuse and resume (bench.quantize_reuse), then source→calibrate/adopt→upload→
+held-out model calls, whose predict checks the stored parts through its own grant. No SDK or rental changes."""
 
 from __future__ import annotations
 
@@ -39,7 +40,7 @@ class Line(Run, total=False):
     run: Run
 
 
-class Native(TypedDict):
+class Called(TypedDict):
     run: int
     detail: JSON
 
@@ -122,50 +123,11 @@ def main() -> None:
         ]
         return result, args.model + "@" + published["commit"]
 
-    native: dict[str, Native] = {}
-    for mode in ("basic", "cancel"):
-        completed = call(
-            "native-" + mode,
-            [
-                "run",
-                package / "native",
-                f"seed={args.seed}",
-                f"mode={mode}",
-                "--on",
-                args.machine,
-            ],
-        )
-        assert completed["result"]["passed"] is True
-        native[mode] = {
-            "run": completed["number"],
-            "detail": json.loads(completed["result"]["detail"]),
-        }
-
-    components = call(
-        "runtime-components",
-        [
-            "run",
-            package / "runtime_components",
-            f"seed={args.seed}",
-            "--on",
-            args.machine,
-        ],
-    )
-    assert components["result"]["passed"] is True
-    native["runtime_components"] = {
-        "run": components["number"],
-        "detail": json.loads(components["result"]["detail"]),
-    }
-
-    resumed = call(
-        "runtime-resume",
-        ["run", package / "runtime_resume", f"seed={args.seed}", "--on", args.machine],
-    )
-    assert resumed["result"]["passed"] is True
-    native["runtime_resume"] = {
-        "run": resumed["number"],
-        "detail": json.loads(resumed["result"]["detail"]),
-    }
+    reuse: dict[str, Called] = {}
+    for case in ("components", "resume"):
+        done = call(case, ["run", package / case, f"seed={args.seed}", "--on", args.machine])
+        assert done["result"]["passed"] is True
+        reuse[case] = {"run": done["number"], "detail": json.loads(done["result"]["detail"])}
 
     made = call(
         "source", ["run", package / "source", f"seed={args.seed}", "--on", args.machine]
@@ -185,6 +147,7 @@ def main() -> None:
         ],
     )
     assert calibrated["result"]["passed"] is True
+    calibration = json.loads(calibrated["result"]["detail"])
     converted, encoded = upload(
         "upload-svdq", calibrated["number"], "svdq", "svdq-nvfp4"
     )
@@ -197,6 +160,7 @@ def main() -> None:
             f"model.weights={encoded}",
             f"seed={args.seed}",
             f"require_native={'true' if args.require_native else 'false'}",
+            f"conversion={calibration['conversion']}",
             "--on",
             args.machine,
             "--gpus=1",
@@ -205,12 +169,12 @@ def main() -> None:
     assert predicted["result"]["passed"] is True
     proof = {
         "seed": args.seed,
-        "native": native,
+        "reuse": reuse,
         "source_run": made["number"],
         "upload_source_run": uploaded["number"],
         "source_commit": original,
         "calibration_run": calibrated["number"],
-        "calibration": json.loads(calibrated["result"]["detail"]),
+        "calibration": calibration,
         "upload_svdq_run": converted["number"],
         "encoded_commit": encoded,
         "prediction_run": predicted["number"],
