@@ -20,6 +20,7 @@ use crate::ids::{Digest, RunId};
 
 pub mod hub;
 pub mod project;
+pub use crate::machine::{RemoveModel, RemovedModel};
 pub mod report;
 pub mod tool;
 
