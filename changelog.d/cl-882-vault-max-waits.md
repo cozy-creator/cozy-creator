@@ -1,0 +1,1 @@
+An encrypted project's maximum unlock duration (`--max-duration`) no longer cancels the project's runs and renders. Reached while one goes on, the vault stays unlocked until the last ends and has landed its outputs, then locks. Only an explicit lock (`cozy vault lock`, or the page's Lock) ends running work. Before, reaching the maximum canceled a run in progress like a lock.

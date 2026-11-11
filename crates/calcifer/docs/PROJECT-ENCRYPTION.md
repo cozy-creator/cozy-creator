@@ -47,8 +47,9 @@ The old `--remove-plaintext` flag remains accepted but is unnecessary. Existing 
 plaintext inputs/copies remain outside this protection.
 
 Unlock defaults to 30 minutes of UI/CLI inactivity. `--idle SECONDS` changes it (zero disables
-idle expiry); `--max-duration SECONDS` adds an absolute limit. Polling and hover previews never
-renew it. Intentional WebUI playback does; external native players do not.
+idle expiry); `--max-duration SECONDS` adds an absolute limit. A project's runs and renders are
+activity: the vault stays unlocked while any goes on, and a limit reached meanwhile locks it when the
+last ends. Only an explicit lock ends them. Polling and hover previews never renew it. Intentional WebUI playback does; external native players do not.
 
 Lock blocks new WebUI/CLI reads and viewing streams, then drains work and normally unmounts.
 Active work or native handles can leave it **locking/busy**. Finish/cancel work or close native

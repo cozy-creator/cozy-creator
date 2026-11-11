@@ -731,9 +731,9 @@ impl SessionTimer {
         }
     }
 
-    /// Work in progress (`working`: a run or render of the project) holds the session open: its idle
-    /// limit never ends it meanwhile, a suspend included, and the idle clock starts again when the last
-    /// of it ends. The maximum and a backwards clock jump still end it.
+    /// Work in progress (`working`: a run or render of the project) holds the session open: neither its
+    /// idle limit nor its maximum ends it meanwhile, a suspend included. The idle clock starts again when
+    /// the last of it ends, and a maximum reached meanwhile ends it then. A backwards clock jump still ends it.
     pub fn hold(&mut self, working: bool) {
         if self.held && !working {
             self.activity = Instant::now();
@@ -771,7 +771,7 @@ impl SessionTimer {
         let expired = !self.held && self.policy.idle_seconds.is_some_and(|seconds| {
             let limit = Duration::from_secs(seconds);
             self.activity.elapsed() >= limit || activity_wall >= limit
-        }) || self.policy.maximum_seconds.is_some_and(|seconds| {
+        }) || !self.held && self.policy.maximum_seconds.is_some_and(|seconds| {
             let limit = Duration::from_secs(seconds);
             self.opened.elapsed() >= limit || open_wall >= limit
         });
@@ -783,5 +783,10 @@ impl SessionTimer {
 
     pub fn policy(&self) -> SessionPolicy {
         self.policy
+    }
+
+    /// Whether work in progress holds the session open.
+    pub fn held(&self) -> bool {
+        self.held
     }
 }
