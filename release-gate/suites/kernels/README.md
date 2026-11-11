@@ -36,5 +36,4 @@ min of pod time past its 2 min download: `kernels-largest` is about $0.20 on an 
 run`, and a family's big cells need one such card once (A40, RTX PRO 6000, H100).
 
 Not covered: a package's own kernels (minimax-h3 holds its glue against float64 before it serves, `glue.checked`, so every
-H3 render checks it), each package's fused plan beyond the Runtime kernels' own axes, `_execution`'s native graphs
-(`suites/execution/conditional-body`), H3's real group walk (`multi-gpu`).
+H3 render checks it), each package's fused plan beyond the Runtime kernels' own axes, H3's real group walk (`multi-gpu`).

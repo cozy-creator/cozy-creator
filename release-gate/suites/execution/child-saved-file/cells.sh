@@ -1,11 +1,13 @@
-# A parent gives its child a file it saved (cr-251), a labeled copy too (cr-256), and nothing else opens: the child reads the very bytes, and a file of
-# another attempt, an ungranted ref, a lying digest, a claimed tree and a symlink are refused before any child runs. CPU,
-# under a minute. Needs a Runtime and a TensorD with cr-251.
+# A parent gives its child files it saved, a labeled copy of one too, and nothing else opens (cr-251, cr-256): the child
+# reads exactly the parent's bytes; a file of another attempt and an ungranted file are refused. Forged child-call frames
+# (a lying digest, a claimed tree manifest, a spool symlink) are the Runtime's own exerciser, `bench.child_wire` (drive/).
 cell child-saved-file "$HERE/suites/execution/child-saved-file/main"
 if [ -f child-saved-file.json ]; then
   got=$(run_get "$OUT" child-saved-file '.result | [(.saved_picture == .seen_picture.digest), (.seen_picture.width == 64),
-    (.saved_labeled == .seen_labeled.digest), (.seen_labeled.width == 32), (.saved_blob == .seen_blob.digest), .other_attempt, .ungranted, .lying_digest, .claimed_tree, .symlink] | map(tostring) | join(" ")')
-  want="true true true true true foreign_asset child.asset_ungranted child.asset_ungranted child.asset_ungranted child.asset_ungranted"
-  [ "$got" = "$want" ] && expect child-saved-file PASS "the child read both files; refused: $got" \
-    || expect child-saved-file FAIL "got [$got], want [$want]"
+    (.saved_labeled == .seen_labeled.digest), (.seen_labeled.width == 32), (.saved_blob == .seen_blob.digest),
+    (.other_attempt != ""), (.ungranted != "")] | map(tostring) | join(" ")')
+  codes=$(run_get "$OUT" child-saved-file '.result | "other attempt \(.other_attempt), ungranted \(.ungranted), earlier \(.earlier_attempt)"')
+  [ "$got" = "true true true true true true true" ] && expect child-saved-file PASS "the child read all three files; refused: $codes" \
+    || expect child-saved-file FAIL "got [$got], want all true; $codes"
 fi
+cell child-wire "$HERE/suites/execution/drive/child_wire"

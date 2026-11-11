@@ -1,5 +1,5 @@
-"""A child call's own LoRA stack per slot (cl-687): `compare` calls `paint` (sdxl's own generate) once per stack,
-on top of the request's `--lora`. The gate cell reads each call's stack from the record."""
+"""A child call's own LoRA stack per slot (cl-687): `compare` calls sdxl's public `generate`, a dependency's function,
+once per stack, on top of the request's `--lora`. The gate cell reads each call's stack from the record."""
 
 from __future__ import annotations
 
@@ -8,26 +8,13 @@ from typing import cast
 
 import msgspec
 import sdxl
-from sdxl import GenerateInput, SdxlModel
+from sdxl import GenerateInput
 
-from cozy_runtime.author import Adjustments, App, Context, Lora, ModelChoice, Outputs, Seed, Telemetry, call
-from cozy_runtime.image import ImageResult
+from cozy_runtime.author import App, Context, Lora, ModelChoice, Outputs, Seed, call
 from cozy_runtime.media import File
 
 app = App()
 BALLOON, IKEA = "proomptengineer/balloon-lora-sdxl", "ostris/ikea-lora-sdxl"
-
-
-@app.entrypoint(private=True, defaults={"model": "stabilityai/sdxl@1.0.0"}, memoize=True)
-async def paint(
-    ctx: Context, *, prompt: str, seed: int, steps: int = 20, model: SdxlModel, out: Outputs,
-    tel: Telemetry, adj: Adjustments,
-) -> ImageResult:
-    """sdxl's own generate, as this package's GPU call."""
-    payload = GenerateInput(prompt=prompt, seed=cast(Seed, seed), steps=steps)  # cast: Seed is a NewType of int
-    generate = sdxl.app._registry["generate"].fn
-    # cast: a registration's handler is typed `object`; sdxl's generate returns its ImageResult (typings/sdxl)
-    return cast(ImageResult, generate(ctx, payload, sdxl.resolve_generate(payload), model, out, tel, adj))
 
 
 class Compare(msgspec.Struct):
@@ -63,7 +50,8 @@ async def compare(ctx: Context, payload: Compare, out: Outputs) -> Compared:
     images: list[File] = []
     for stack, model, seed in plan:
         started = time.monotonic()
-        result = await call(paint, prompt=payload.prompt, seed=seed, steps=payload.steps, model=model)
+        request = GenerateInput(prompt=payload.prompt, seed=cast(Seed, seed), steps=payload.steps)  # cast: Seed is a NewType of int
+        result = await call(sdxl.generate, payload=request, model=model)
         seconds, digest = round(time.monotonic() - started, 2), result.image.digest
         seen = any(call.digest == digest for call in calls)
         if not seen:
