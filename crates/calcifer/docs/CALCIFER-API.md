@@ -424,9 +424,9 @@ sends it back. A code lives 10 minutes, and a wrong answer leaves it waiting.
   replaces the org's own; an org that does not exist yet is parked.
 
 **Models.** A root model's org is `_`.
-- `GET /v1/models?q=&family=&tag=&no_tag=&limit=&offset=` (limit 1–100, default 20; offset defaults to 0): `ModelSearch {models, total, older}`, each
+- `GET /v1/models?q=&family=&tag=&no_tag=&limit=&offset=&role=` (limit 1–100, default 20; offset defaults to 0): `ModelSearch {models, total, older}`, each
   model's newest release, lanes and `tags`; signed in, also the caller's private ones. `q` matches names
-  and tags, and exactly `org/name` is that model. `tag=` and `no_tag=` (comma-separated) keep models with
+  and tags, and exactly `org/name` is that model. `role=model|lora` uses the Hub's indexed header-derived repository role; an older Hub without role metadata is refused rather than guessed. `tag=` and `no_tag=` (comma-separated) keep models with
   every one, and with none (`no_tag=nsfw` leaves out models that make sexual or nude images). Each says
   what its header says, read once from the Hub and kept, fetching no weights (the Hub doesn't say it yet, tensorhub th-367): `kind` is `lora` (only a LoRA's
   factors), `weights` (a model's: its header verifies as a family) or `component` (weights no family's

@@ -34,6 +34,7 @@ pub(crate) enum Screen {
     Models(model::live::Catalog),
     Model(model::live::Preview),
     ModelDestinations(model::live::Destinations),
+    RemoveLocalModel(String),
 }
 
 impl Screen {
@@ -44,7 +45,7 @@ impl Screen {
             Screen::Machines(view) => view.changed(ctx).await,
             Screen::Machine(view) => view.changed().await,
             Screen::Packages(view) => view.changed(ctx).await,
-            Screen::Models(_) | Screen::Model(_) | Screen::ModelDestinations(_) => std::future::pending().await,
+            Screen::Models(_) | Screen::Model(_) | Screen::ModelDestinations(_) | Screen::RemoveLocalModel(_) => std::future::pending().await,
         }
     }
 
@@ -86,9 +87,10 @@ impl Screen {
                 let lines = view.lines().into_iter().map(Line::from).collect::<Vec<_>>();
                 frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false })
                     .scroll((selected.selected().unwrap_or(0).min(u16::MAX as usize) as u16, 0))
-                    .block(Block::new().title(view.title()).title_bottom("↑/↓ scroll · d download · Esc/q back")), frame.area());
+                    .block(Block::new().title(view.title()).title_bottom(view.hint())), frame.area());
             }
             Screen::ModelDestinations(view) => table_hint(frame, &view.title(), &["machine", "status"], view.rows(), selected, "↑/↓ select · Enter download · Esc/q back"),
+            Screen::RemoveLocalModel(model) => detail(frame, "Remove local copy?", vec![model.clone(), "All downloaded releases and lanes on this machine will be removed.".into(), "The Hub model stays published. Active and shared data stays protected.".into(), "Enter confirms · Esc/q cancels".into()]),
         }
     }
 
@@ -101,6 +103,7 @@ impl Screen {
             Screen::Models(view) => view.rows().len(),
             Screen::Model(view) => view.lines().len(),
             Screen::ModelDestinations(view) => view.rows().len(),
+            Screen::RemoveLocalModel(_) => 0,
         }
     }
 }
@@ -111,7 +114,8 @@ pub(crate) async fn show(ctx: &Context, first: Screen) -> Result<ExitCode, Error
     let shown = live(ctx, &mut terminal, first, EventStream::new()).await;
     ratatui::restore();
     match shown? {
-        Some(choice) => model::live::download(ctx, choice).await,
+        Some(model::live::Operation::Download(choice)) => model::live::download(ctx, choice).await,
+        Some(model::live::Operation::Remove(model)) => model::live::remove(ctx, &model).await,
         None => Ok(ExitCode::SUCCESS),
     }
 }
@@ -122,7 +126,7 @@ pub(crate) async fn live<B: Backend>(
     terminal: &mut Terminal<B>,
     first: Screen,
     mut keys: impl Stream<Item = io::Result<Input>> + Unpin,
-) -> Result<Option<model::live::DownloadChoice>, Error> {
+) -> Result<Option<model::live::Operation>, Error> {
     let mut stack = vec![(first, TableState::default().with_selected(Some(0)))];
     let mut signals = Signals::new()?;
     let drew = |e: B::Error| drawing(io::Error::other(e.to_string()));
@@ -156,6 +160,10 @@ pub(crate) async fn live<B: Backend>(
         let depth = stack.len();
         let (screen, selected) = stack.last_mut().expect("a view");
         let at = selected.selected().unwrap_or(0);
+        if let Screen::RemoveLocalModel(model) = &*screen {
+            if key.code == KeyCode::Enter { return Ok(Some(model::live::Operation::Remove(model.clone()))); }
+        }
+        let local_bytes = match &*screen { Screen::Models(view) => view.rows().get(at).and_then(|row| view.local_bytes(&row[0])), _ => None };
         let action = match &*screen {
             Screen::Models(view) => view.action(key.code, at),
             Screen::Model(view) => view.action(key.code),
@@ -168,9 +176,10 @@ pub(crate) async fn live<B: Backend>(
                     if let Screen::Models(view) = screen { view.page(ctx, offset).await?; }
                     selected.select(Some(0));
                 }
-                model::live::Action::Preview(model) => stack.push((Screen::Model(model::live::Preview::open(ctx, &model).await?), TableState::default())),
+                model::live::Action::Preview(model) => stack.push((Screen::Model(model::live::Preview::open(ctx, &model, local_bytes).await?), TableState::default())),
                 model::live::Action::Destinations(model) => stack.push((Screen::ModelDestinations(model::live::Destinations::open(ctx, model).await?), TableState::default().with_selected(Some(0)))),
-                model::live::Action::Download(choice) => return Ok(Some(choice)),
+                model::live::Action::Download(choice) => return Ok(Some(model::live::Operation::Download(choice))),
+                model::live::Action::ConfirmRemove(model) => stack.push((Screen::RemoveLocalModel(model), TableState::default())),
             }
             continue;
         }

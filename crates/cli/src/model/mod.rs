@@ -31,13 +31,36 @@ enum LoraVerb {
     Ls(Ls),
     /// Download a LoRA to a machine.
     Download(Download),
+    /// Remove downloaded copies from this machine.
+    Remove(Remove),
+    /// Update a LoRA's family, tags, trigger words or recommended strength.
+    Edit(LoraEdit),
+    /// Upload a LoRA as a private commit.
+    Upload(LoraUpload),
+    /// Publish commits as a LoRA release.
+    Publish(Publish),
 }
 
 pub(crate) async fn lora_exec(ctx: &Context, args: LoraArgs) -> Result<ExitCode, Error> {
     match args.verb {
-        LoraVerb::Ls(_args) => Err(Error::new(Kind::Unavailable, "catalog_role_unavailable", "LoRA-only browsing needs role metadata from the Hub")
-            .remedy("The unfiltered catalog is still available").next("cozy model ls")),
+        LoraVerb::Ls(args) => match args.on {
+            Some(_) => Err(Error::new(Kind::Unavailable, "local_role_unavailable", "The local inventory does not classify LoRAs yet").next("cozy model ls --on local")),
+            None => catalog::search(ctx, args, "lora").await,
+        },
         LoraVerb::Download(args) => machine::download(ctx, args).await,
+        LoraVerb::Remove(args) => machine::remove(ctx, &args.model).await,
+        LoraVerb::Edit(mut args) => {
+            args.edit.trigger = args.trigger;
+            args.edit.strength = args.strength;
+            catalog::edit(ctx, args.edit).await
+        }
+        LoraVerb::Upload(mut args) => {
+            args.upload.trained_on = args.trained_on;
+            args.upload.trigger = args.trigger;
+            args.upload.strength = args.strength;
+            machine::upload(ctx, args.upload).await
+        }
+        LoraVerb::Publish(args) => releases::publish(ctx, args).await,
     }
 }
 
@@ -46,10 +69,12 @@ enum Verb {
     /// Search models on the Hub, or list downloaded models with --on.
     #[command(alias = "list")]
     Ls(Ls),
-    /// Update a model's family, tags, trigger words or recommended strength.
+    /// Update a model's family or tags.
     Edit(Edit),
     /// Download a model to a machine.
     Download(Download),
+    /// Remove downloaded copies from this machine.
+    Remove(Remove),
     /// Upload weights as a private model commit.
     Upload(Upload),
     /// Create a model commit in a package-defined quantization lane.
@@ -97,12 +122,28 @@ pub(crate) struct Edit {
     /// Remove a tag. Repeat for multiple tags.
     #[arg(long = "untag", value_name = "TAG")]
     untag: Vec<String>,
+    #[arg(skip)]
+    trigger: Option<String>,
+    #[arg(skip)]
+    strength: Option<Strength>,
+}
+
+#[derive(clap::Args, Debug)]
+struct LoraEdit {
+    #[command(flatten)]
+    edit: Edit,
     /// Set trigger words. An empty value clears them.
     #[arg(long)]
     trigger: Option<String>,
     /// Set recommended strength, or none to clear.
     #[arg(long, value_parser = strength)]
     strength: Option<Strength>,
+}
+
+#[derive(clap::Args, Debug)]
+pub(crate) struct Remove {
+    /// org/name. Removes all downloaded releases and lanes, keeping the Hub model.
+    model: String,
 }
 
 /// `--strength`: a number, or `none`.
@@ -149,14 +190,11 @@ pub(crate) struct Upload {
     /// Mirror an author's model (admins). Optionally set its upstream URL.
     #[arg(long, value_name = "URL", num_args = 0..=1, default_missing_value = "")]
     mirror: Option<String>,
-    /// Base component the LoRA was trained on, if absent from its metadata.
-    #[arg(long = "trained-on", value_name = "COMPONENT")]
+    #[arg(skip)]
     trained_on: Option<String>,
-    /// Override the LoRA's trigger words.
-    #[arg(long)]
+    #[arg(skip)]
     trigger: Option<String>,
-    /// Recommended LoRA strength.
-    #[arg(long, allow_hyphen_values = true)]
+    #[arg(skip)]
     strength: Option<f64>,
     /// Base model or commit. Add :component,… to replace selected parts and keep the rest.
     #[arg(long, value_name = "MODEL[:COMPONENT,…]")]
@@ -177,6 +215,21 @@ pub(crate) struct Quantize {
     package: String,
     #[command(flatten)]
     placement: crate::run::Placement,
+}
+
+#[derive(clap::Args, Debug)]
+struct LoraUpload {
+    #[command(flatten)]
+    upload: Upload,
+    /// Base model or commit this LoRA was trained on.
+    #[arg(long)]
+    trained_on: Option<String>,
+    /// Override the LoRA's trigger words.
+    #[arg(long)]
+    trigger: Option<String>,
+    /// Recommended LoRA strength.
+    #[arg(long, allow_hyphen_values = true)]
+    strength: Option<f64>,
 }
 
 #[derive(clap::Args, Debug)]
@@ -205,12 +258,13 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
                 }
                 machine::list(ctx, (on != "all").then_some(on), &args.query).await
             }
-            None => catalog::search(ctx, args).await,
+            None => catalog::search(ctx, args, "model").await,
         },
         Verb::Edit(args) => catalog::edit(ctx, args).await,
         Verb::Publish(args) => releases::publish(ctx, args).await,
         Verb::Delete(args) => releases::delete(ctx, args).await,
         Verb::Download(args) => machine::download(ctx, args).await,
+        Verb::Remove(args) => machine::remove(ctx, &args.model).await,
         Verb::Upload(args) => machine::upload(ctx, args).await,
         Verb::Quantize(args) => quantize::quantize(ctx, args).await,
     }
@@ -223,6 +277,8 @@ mod tests {
 
     #[derive(Parser)]
     struct ModelCommand { #[command(flatten)] args: Args }
+    #[derive(Parser)]
+    struct LoraCommand { #[command(flatten)] args: LoraArgs }
 
     #[test]
     fn catalog_paging_and_filters_parse_together() {
@@ -235,5 +291,15 @@ mod tests {
         assert_eq!(args.no_tags, ["nsfw"]);
         assert!(ModelCommand::try_parse_from(["model", "info", "author/model"]).is_err());
         assert!(ModelCommand::try_parse_from(["model", "ls", "--offset", "-1"]).is_err());
+    }
+
+    #[test]
+    fn adapter_metadata_is_only_exposed_in_lora_commands() {
+        assert!(ModelCommand::try_parse_from(["model", "edit", "author/model", "--trigger", "word"]).is_err());
+        assert!(ModelCommand::try_parse_from(["model", "upload", "file", "author/model", "--strength", "0.5"]).is_err());
+        assert!(LoraCommand::try_parse_from(["lora", "edit", "author/adapter", "--trigger", "word", "--strength", "0.5"]).is_ok());
+        assert!(LoraCommand::try_parse_from(["lora", "upload", "file", "author/adapter", "--trained-on", "base", "--strength", "0.5"]).is_ok());
+        assert!(ModelCommand::try_parse_from(["model", "remove", "author/model"]).is_ok());
+        assert!(LoraCommand::try_parse_from(["lora", "remove", "author/adapter"]).is_ok());
     }
 }

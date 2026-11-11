@@ -183,6 +183,8 @@ pub struct ModelSummary {
     pub org: String,
     pub name: String,
     pub family: Option<String>,
+    /// Header-derived repository role: model, lora or unknown. Absent on older Hubs.
+    pub role: Option<String>,
     pub created_at: String,
     /// The pinned upstream source (on a card).
     pub source: Option<String>,

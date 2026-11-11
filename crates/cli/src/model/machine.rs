@@ -64,6 +64,25 @@ pub(super) async fn download_to(ctx: &Context, mut ask: ModelDownload, on: Optio
     Ok(crate::run::exit_code(&run))
 }
 
+pub(super) async fn remove(ctx: &Context, model: &str) -> Result<ExitCode, Error> {
+    let repo = api::model_ref::Repo::hub(model)?;
+    let key = crate::run::mint_key();
+    let removed: api::calcifer::RemovedModel = ctx.calcifer().await?.post(
+        "/v1/machines/local/models/remove", &api::calcifer::RemoveModel { model: repo.to_string() }, Some(&key),
+    ).await?;
+    if ctx.json {
+        output::json(&removed);
+    } else if removed.removed {
+        anstream::println!("Removed local copy of {}. Cache bytes removed: {}.", model, output::bytes(removed.cache_bytes_removed));
+        if removed.retained_bytes > 0 {
+            anstream::println!("{} retained because the data is in use or shared.", output::bytes(removed.retained_bytes));
+        }
+    } else {
+        anstream::println!("No local copy of {model} was found.");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 pub(crate) async fn upload(ctx: &Context, args: Upload) -> Result<ExitCode, Error> {
     let on = args.placement.on()?;
     let from_run = args.source.starts_with("run:");

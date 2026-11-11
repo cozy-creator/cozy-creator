@@ -42,6 +42,7 @@ pub(super) struct Search {
     limit: Option<u32>,
     #[serde(default)]
     offset: u32,
+    role: Option<String>,
 }
 
 /// A comma-separated list's items.
@@ -66,6 +67,11 @@ pub(super) async fn search(
     let client = reader(&api, &hub)?;
     let limit = ask.limit.unwrap_or(20).clamp(1, 100);
     let wanted = ask.offset.saturating_add(limit);
+    let role = ask.role.as_deref().map(str::trim).filter(|role| !role.is_empty());
+    if role.is_some_and(|role| !matches!(role, "model" | "lora")) {
+        return Err(Refusal(Error::new(Kind::Usage, "catalog_role_invalid", "role must be model or lora")));
+    }
+    let upstream_paged = role.is_some();
     let q = ask.q.as_deref().map(str::trim).filter(|q| !q.is_empty());
     let family = ask.family.as_deref().map(str::trim).filter(|family| !family.is_empty());
     // One word that is org/name is that model; anything else is search text.
@@ -86,15 +92,18 @@ pub(super) async fn search(
             names.len() - before
         };
         loop {
-            let answer = (client.search_models(q, family, &tags, &no_tags, limit, if family.is_none() { ask.offset } else { names.len() as u32 }).await).map_err(|e| refusal(&hub, e))?;
+            let answer = (client.search_models_by_role(q, family, &tags, &no_tags, limit, if family.is_none() || upstream_paged { ask.offset } else { names.len() as u32 }, role).await).map_err(|e| refusal(&hub, e))?;
+            if role.is_some() && answer.models.iter().any(|model| model.role.as_deref() != role) {
+                return Err(role_unavailable());
+            }
             total = answer.search.total;
             let read = take(&mut names, answer.models);
-            if family.is_none() || read == 0 || names.len() as u32 >= wanted || names.len() as i64 >= total {
+            if upstream_paged || family.is_none() || read == 0 || names.len() as u32 >= wanted || names.len() as i64 >= total {
                 break;
             }
         }
         // Then every other model, the Hub's pages of them, up to READ_AT_MOST: one whose header alone says it has no label to find it by.
-        if family.is_some() {
+        if family.is_some() && !upstream_paged {
             newest = Some(names.len());
             let (mut seen, mut offset) = (BTreeSet::new(), 0);
             while offset < READ_AT_MOST {
@@ -123,8 +132,16 @@ pub(super) async fn search(
         total = 1;
     }
     let mut models: Vec<FoundModel> = cards.iter().map(found).collect();
-    checkpoints::said(&api, &hub, &cards, &mut models).await;
-    if let Some(family) = family {
+    if role.is_none() {
+        checkpoints::said(&api, &hub, &cards, &mut models).await;
+    } else if cards.iter().any(|card| card.model.role.is_none()) {
+        return Err(role_unavailable());
+    }
+    if exact.is_some() && role.is_some() {
+        models.retain(|model| model.role.as_deref() == role);
+        total = models.len() as i64;
+    }
+    if let Some(family) = family.filter(|_| !upstream_paged) {
         let is = |row: &FoundModel| row.family.as_deref().is_some_and(|its| its.eq_ignore_ascii_case(family));
         let labelled = |card: &types::ModelCard| card.model.family.as_deref().is_some_and(|its| its.eq_ignore_ascii_case(family));
         // Of the rest, those its label doesn't already count.
@@ -133,7 +150,12 @@ pub(super) async fn search(
         models.retain(is);
 
     }
-    Ok(Json(page(models, total, ask.offset, limit, family.is_none() && exact.is_none())))
+    Ok(Json(page(models, total, ask.offset, limit, (upstream_paged || family.is_none()) && exact.is_none())))
+}
+
+fn role_unavailable() -> Refusal {
+    Refusal(Error::new(Kind::Unavailable, "catalog_role_unavailable", "This Hub cannot separate models and LoRAs yet")
+        .remedy("Retry after the Hub catalog has been updated"))
 }
 
 fn page(models: Vec<FoundModel>, total: i64, offset: u32, limit: u32, already_paged: bool) -> ModelSearch {
@@ -180,6 +202,7 @@ fn found(card: &types::ModelCard) -> FoundModel {
     };
     FoundModel {
         model: shown(&format!("{}/{}", card.model.org, card.model.name)),
+        role: card.model.role.clone(),
         family: card.model.family.clone().filter(|f| !f.is_empty()),
         family_from: None,
         release: release.map(|r| r.version.clone()),
@@ -240,7 +263,7 @@ async fn detail(api: &Api, hub: &Origin, repo: &Repo, release: Option<String>) -
     if let Some(release) = release.filter(|_| releases.is_empty()) {
         return Err(Refusal(
             Error::not_found("model_release_not_found", format!("{repo} has no release {release:?}"))
-                .next(format!("cozy model info {repo}")),
+                .next(format!("cozy model ls {repo}")),
         ));
     }
     let commits = (card.commits.into_iter())
@@ -248,6 +271,7 @@ async fn detail(api: &Api, hub: &Origin, repo: &Repo, release: Option<String>) -
         .collect();
     Ok(ModelDetail {
         model: repo.to_string(),
+        role: card.model.role,
         family,
         family_from,
         weights_family: facts.as_ref().and_then(|f| f.family.clone()),
@@ -323,6 +347,7 @@ pub(super) async fn release(
         .map_err(|e| refusal(&hub, e))?;
     Ok(Json(ModelReleased {
         model: repo.to_string(),
+        role: card.model.role,
         version: release.version,
         created_at: release.created_at,
         lanes: release.lanes.into_iter().map(|(lane, l)| (lane, l.commit)).collect(),

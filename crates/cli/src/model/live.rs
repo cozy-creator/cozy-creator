@@ -11,8 +11,14 @@ use crate::{Context, output};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DownloadChoice {
-    pub model: String,
-    pub machine: String,
+    pub(crate) model: String,
+    pub(crate) machine: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Operation {
+    Download(DownloadChoice),
+    Remove(String),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -21,6 +27,7 @@ pub(crate) enum Action {
     Preview(String),
     Destinations(String),
     Download(DownloadChoice),
+    ConfirmRemove(String),
 }
 
 pub(crate) struct Catalog {
@@ -45,9 +52,11 @@ impl Catalog {
     }
 
     pub(crate) fn title(&self) -> String {
-        if self.page.models.is_empty() { return "models — no matches".into(); }
-        format!("models {}–{} of {}", self.query.offset + 1, self.query.offset as usize + self.page.models.len(), self.page.total)
+        if self.page.models.is_empty() { return format!("{} — no matches", self.label()); }
+        format!("{} {}–{} of {}", self.label(), self.query.offset + 1, self.query.offset as usize + self.page.models.len(), self.page.total)
     }
+
+    fn label(&self) -> &str { if self.query.role == "lora" { "LoRAs" } else { "models" } }
 
     pub(crate) fn rows(&self) -> Vec<Vec<String>> {
         self.page.models.iter().map(|row| {
@@ -69,28 +78,45 @@ impl Catalog {
             _ => None,
         }
     }
+
+    pub(crate) fn local_bytes(&self, model: &str) -> Option<u64> {
+        self.local.as_ref()?.iter().filter(|held| held.model == model).map(|held| held.bytes).max()
+    }
 }
 
 pub(crate) struct Preview {
     model: ModelDetail,
+    local_bytes: Option<u64>,
 }
 
 impl Preview {
-    pub(crate) async fn open(ctx: &Context, model: &str) -> Result<Self, Error> {
-        Ok(Self { model: catalog::detail(ctx, model).await? })
+    pub(crate) async fn open(ctx: &Context, model: &str, local_bytes: Option<u64>) -> Result<Self, Error> {
+        Ok(Self { model: catalog::detail(ctx, model).await?, local_bytes })
     }
 
     pub(crate) fn title(&self) -> &str { &self.model.model }
 
     pub(crate) fn action(&self, key: KeyCode) -> Option<Action> {
-        (key == KeyCode::Char('d')).then(|| Action::Destinations(self.model.model.clone()))
+        match key {
+            KeyCode::Char('d') => Some(Action::Destinations(self.model.model.clone())),
+            KeyCode::Char('r') if self.local_bytes.is_some() => Some(Action::ConfirmRemove(self.model.model.clone())),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn hint(&self) -> &str {
+        if self.local_bytes.is_some() { "↑/↓ scroll · d download · r remove local copy · Esc/q back" }
+        else { "↑/↓ scroll · d download · Esc/q back" }
     }
 
     pub(crate) fn lines(&self) -> Vec<String> {
         let model = &self.model;
         let mut lines = Vec::new();
+        if let Some(bytes) = self.local_bytes { lines.push(format!("Local disk: {}", output::bytes(bytes))); }
         if let Some(family) = &model.family { lines.push(format!("Family: {family}")); }
-        if let Some(kind) = model.kind {
+        if model.role.as_deref() == Some("lora") {
+            lines.push("Kind: LoRA".into());
+        } else if let Some(kind) = model.kind {
             lines.push(format!("Kind: {}", match kind {
                 api::calcifer::hub::ModelKind::Lora => "LoRA",
                 api::calcifer::hub::ModelKind::Weights => "model",
@@ -99,8 +125,10 @@ impl Preview {
         }
         if !model.tags.is_empty() { lines.push(format!("Tags: {}", model.tags.join(", "))); }
         if let Some(author) = &model.author { lines.push(format!("Publisher: {}", author.name)); }
-        if let Some(trigger) = &model.trigger { lines.push(format!("Trigger: {trigger}")); }
-        if let Some(strength) = model.strength { lines.push(format!("Suggested strength: {strength}")); }
+        if model.role.as_deref() == Some("lora") || model.kind == Some(api::calcifer::hub::ModelKind::Lora) {
+            if let Some(trigger) = &model.trigger { lines.push(format!("Trigger: {trigger}")); }
+            if let Some(strength) = model.strength { lines.push(format!("Suggested strength: {strength}")); }
+        }
         if let Some(release) = model.releases.first() {
             lines.push(format!("Release: {}", release.version));
             for lane in &release.lanes { lines.push(format!("{}: {}", lane.lane, output::bytes(lane.bytes.max(0) as u64))); }
@@ -141,6 +169,10 @@ impl Destinations {
     }
 }
 
+pub(crate) async fn remove(ctx: &Context, model: &str) -> Result<std::process::ExitCode, Error> {
+    super::machine::remove(ctx, model).await
+}
+
 pub(crate) async fn download(ctx: &Context, choice: DownloadChoice) -> Result<std::process::ExitCode, Error> {
     let ask = ModelDownload { model: choice.model, name: None, alias: None, lane: None, source_format: None };
     super::machine::download_to(ctx, ask, Some(On::Machine(choice.machine))).await
@@ -157,7 +189,7 @@ mod tests {
     use api::calcifer::hub::{FoundModel, ModelAuthor, ModelKind};
 
     fn catalog() -> Catalog {
-        Catalog::new(Searching { hub: "https://example.test".into(), q: "fox".into(), family: Some("sdxl".into()), tag: "art".into(), no_tag: "nsfw".into(), limit: 2, offset: 2 },
+        Catalog::new(Searching { hub: "https://example.test".into(), q: "fox".into(), family: Some("sdxl".into()), tag: "art".into(), no_tag: "nsfw".into(), role: "model".into(), limit: 2, offset: 2 },
             ModelSearch { models: vec![FoundModel { model: "author/one".into(), ..Default::default() }, FoundModel { model: "author/two".into(), ..Default::default() }], total: 5, older: 1 },
             Some(vec![HeldModel { model: "author/two".into(), bytes: 1024, ..Default::default() }] ))
     }
@@ -176,9 +208,10 @@ mod tests {
 
     #[test]
     fn preview_is_concise_and_download_requires_destination_choice() {
-        let preview = Preview { model: ModelDetail { model: "author/one".into(), family: Some("sdxl".into()), kind: Some(ModelKind::Lora), tags: vec!["art".into()], author: Some(ModelAuthor { name: "Artist".into(), ..Default::default() }), ..Default::default() } };
+        let preview = Preview { model: ModelDetail { model: "author/one".into(), family: Some("sdxl".into()), kind: Some(ModelKind::Lora), tags: vec!["art".into()], author: Some(ModelAuthor { name: "Artist".into(), ..Default::default() }), ..Default::default() }, local_bytes: Some(1024) };
         assert_eq!(preview.action(KeyCode::Enter), None);
         assert_eq!(preview.action(KeyCode::Char('d')), Some(Action::Destinations("author/one".into())));
+        assert_eq!(preview.action(KeyCode::Char('r')), Some(Action::ConfirmRemove("author/one".into())));
         assert!(preview.lines().contains(&"Publisher: Artist".into()));
         let destinations = Destinations { model: "author/one".into(), machines: vec![("local".into(), "ready".into())] };
         assert_eq!(destinations.action(KeyCode::Down, 0), None);
@@ -198,6 +231,12 @@ mod tests {
         assert!(text.contains("author/two"));
         let screen = crate::tui::Screen::ModelDestinations(Destinations { model: "author/one".into(), machines: vec![("local".into(), "ready".into())] });
         let keys = futures_util::stream::iter([Ok(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)))]);
-        assert_eq!(crate::tui::live(&ctx, &mut terminal, screen, keys).await.unwrap(), Some(DownloadChoice { model: "author/one".into(), machine: "local".into() }));
+        assert_eq!(crate::tui::live(&ctx, &mut terminal, screen, keys).await.unwrap(), Some(Operation::Download(DownloadChoice { model: "author/one".into(), machine: "local".into() })));
+        let screen = crate::tui::Screen::RemoveLocalModel("author/one".into());
+        let keys = futures_util::stream::iter([Ok(Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)))]);
+        assert_eq!(crate::tui::live(&ctx, &mut terminal, screen, keys).await.unwrap(), None);
+        let screen = crate::tui::Screen::RemoveLocalModel("author/one".into());
+        let keys = futures_util::stream::iter([Ok(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)))]);
+        assert_eq!(crate::tui::live(&ctx, &mut terminal, screen, keys).await.unwrap(), Some(Operation::Remove("author/one".into())));
     }
 }

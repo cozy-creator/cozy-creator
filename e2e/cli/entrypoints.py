@@ -91,6 +91,12 @@ def main() -> None:
         run("model catalog pagination", ["model", "ls", "--offset", "20", "--limit", "10", "--help"])
         run("LoRA catalog help", ["lora", "ls", "--help"])
         run("LoRA download help", ["lora", "download", "--help"])
+        run("local model removal help", ["model", "remove", "--help"])
+        run("local LoRA removal help", ["lora", "remove", "--help"])
+        run("LoRA metadata help", ["lora", "edit", "--help"])
+        run("LoRA upload help", ["lora", "upload", "--help"])
+        run("removed model trigger", ["model", "edit", "author/model", "--trigger", "word"], code=2)
+        run("removed model upload strength", ["model", "upload", "file", "author/model", "--strength", "0.5"], code=2)
         for flag in ("--estimate", "--warm"):
             assert flag not in run_help, f"removed run flag {flag} is still in help"
             run(f"removed run flag {flag}", ["run", "example/function", flag], code=2)

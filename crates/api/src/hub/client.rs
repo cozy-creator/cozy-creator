@@ -209,11 +209,24 @@ impl Client {
         limit: u32,
         offset: u32,
     ) -> Result<ModelSearch, Error> {
+        self.search_models_by_role(q, family, tags, no_tags, limit, offset, None).await
+    }
+
+    pub async fn search_models_by_role(
+        &self,
+        q: Option<&str>,
+        family: Option<&str>,
+        tags: &[String],
+        no_tags: &[String],
+        limit: u32,
+        offset: u32,
+        role: Option<&str>,
+    ) -> Result<ModelSearch, Error> {
         let request = self.at(Method::GET, "/v1/models", &[]);
         let tagged = tags.iter().map(|t| ("tag", t.as_str())).chain(no_tags.iter().map(|t| ("no_tag", t.as_str())));
         self.json(
             request
-                .query(&[("q", q), ("family", family)])
+                .query(&[("q", q), ("family", family), ("role", role)])
                 .query(&tagged.collect::<Vec<_>>())
                 .query(&[("limit", limit), ("offset", offset)]),
         )
