@@ -6,6 +6,10 @@ Runs in the release's environment beside probe.py (e2e/imports/run.sh): paging.p
 
 import importlib.metadata as md
 import json
+import os
+from pathlib import Path
+import ssl
+import subprocess
 import sys
 import typing
 
@@ -23,6 +27,15 @@ try:
 except ImportError as missing:  # a Runtime before paging (0.35.7), or a package without Torch
     print(f"paging: skipped ({missing})")
     sys.exit(0)
+if os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS"):
+    # This advisory uses the SDK directly, whose default is independent of COZY_HUB_URL.
+    origin = os.environ["COZY_TEST_HUB_ORIGIN"]
+    subprocess.run([
+        sys.executable, "-I", str(Path(__file__).resolve().parents[1] / "test_hub.py"),
+        "--hub", os.environ["COZY_HUB_URL"], "--expected-origin", origin,
+    ], check=True)
+    tensorfs.configure(endpoint=origin, ca_der=ssl.PEM_cert_to_DER_cert(Path(os.environ["COZY_TEST_HUB_CA"]).read_text()))
+    print(f"paging: isolated endpoint {origin}")
 try:  # fill's Transformers binding reads these when Transformers is installed
     import transformers.conversion_mapping  # noqa: F401
     import transformers.core_model_loading  # noqa: F401
