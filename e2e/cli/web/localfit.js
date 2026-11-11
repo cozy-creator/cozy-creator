@@ -5,8 +5,10 @@
 // a warning, and goes on, with no --on as with --on local. With a rental held nothing asks: release-gate/sessions/render-placement.sh.
 //   node localfit.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT, $CHROME, $COZY, $SHOT as nodes.js; $ALONE: on a shared computer, so it runs nothing. Prints what it saw as JSON, exits 1 if anything failed.
+// $RESTART, $HUB_RESTART: shell commands that bring this Calcifer back, the second on the Hub at @HUB@ (web.sh's web_restart).
 const playwright = require(process.env.PLAYWRIGHT);
-const { execFileSync } = require('child_process');
+const http = require('http');
+const { exec, execFileSync } = require('child_process');
 const { join } = require('path');
 const { projectFromPage, boxOf, calcifer, closeBox, importYaml, launch, lastLook, lookAt, noStall, openBox, renderOf, signIn, STEP_MS, until, watchBoxes, yamlOf } = require('./page');
 
@@ -24,6 +26,55 @@ const finish = (code) => {
   console.log(JSON.stringify({ failures, seen }, null, 2));
   process.exit(code);
 };
+const shell = (command) => new Promise((done, failed) => exec(command, (error) => (error ? failed(error) : done())));
+
+// A Hub that sells no GPU (the isolated test Hub's docker lane offers CPU machines alone: e2e/skew/run.sh) places no GPU tool. For Rent a GPU, a
+// stand-in in front of it sells one card as a provider would: listed in its catalog, and the pick of a placement that found none. Everything else
+// is the Hub's own answer, passed through.
+const CARD = {
+  name: 'rtx-4090', accelerator_model: 'NVIDIA GeForce RTX 4090', base_worker_profile: '', compute_capability: '8.9', vram_gb: 24,
+  python_provisionable_minors: ['3.12'], python_interpreters: [],
+  widths: [{ accelerator_count: 1, price_usd_micros_per_hour: 690_000, container_disk_gb: 100,
+    expected_price: { hours: 1, download_gb: 0, gpu_usd_micros: 690_000, disk_usd_micros: 0, download_usd_micros: 0, total_usd_micros: 690_000 } }],
+};
+function provider(upstream) {
+  const to = new URL(upstream);
+  const stand = { asked: [], origin: '' };
+  stand.server = http.createServer((request, response) => {
+    const { pathname } = new URL(request.url, 'http://hub');
+    const sold = request.method === 'GET' && pathname === '/v1/rental-skus';
+    const placing = request.method === 'POST' && pathname === '/v1/rental-placements';
+    const ask = http.request({ host: to.hostname, port: to.port, method: request.method, path: request.url, headers: { ...request.headers, host: to.host } }, (answer) => {
+      if (!sold && !placing) {
+        response.writeHead(answer.statusCode, answer.headers);
+        return answer.pipe(response);
+      }
+      const chunks = [];
+      answer.on('data', (chunk) => chunks.push(chunk));
+      answer.on('end', () => {
+        let body = {};
+        try { body = JSON.parse(Buffer.concat(chunks).toString() || '{}'); } catch { body = {}; }
+        stand.asked.push(`${request.method} ${pathname} ${answer.statusCode}`);
+        if (sold) body.rental_skus = [...(body.rental_skus ?? []).filter((sku) => sku.name !== CARD.name), CARD];
+        if (placing && !(body.machines ?? []).length) {
+          const width = CARD.widths[0];
+          body = { weight_bytes: 0, accelerator: true, weights: [], excluded: [], warnings: [], ...(answer.statusCode < 300 ? body : {}),
+            machines: [{ name: CARD.name, accelerator_model: CARD.accelerator_model, vram_gb: CARD.vram_gb, accelerator_count: width.accelerator_count,
+              price_usd_micros_per_hour: width.price_usd_micros_per_hour, container_disk_gb: width.container_disk_gb }] };
+        }
+        const text = JSON.stringify(body);
+        response.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
+        response.end(text);
+      });
+    });
+    ask.on('error', (error) => { response.writeHead(502); response.end(String(error)); });
+    request.pipe(ask);
+  });
+  return new Promise((done) => stand.server.listen(0, '127.0.0.1', () => {
+    stand.origin = `http://127.0.0.1:${stand.server.address().port}`;
+    done(stand);
+  }));
+}
 
 (async () => {
   const base = calcifer();
@@ -52,6 +103,17 @@ const finish = (code) => {
     await browser.close();
     return finish(0);
   }
+  // Where the Hub sells no GPU, Calcifer runs this cell on the stand-in, and goes back after (web.sh's web_proof brings it back on a failure).
+  const sells = ((await api('/v1/rental-skus')).body?.rental_skus ?? []).some((sku) => sku.compute_capability);
+  let stand = null;
+  if (!sells && process.env.HUB_RESTART && process.env.RESTART && process.env.COZY_HUB_URL) {
+    stand = await provider(process.env.COZY_HUB_URL);
+    await shell(process.env.HUB_RESTART.replaceAll('@HUB@', stand.origin));
+    await until('Calcifer back on the stand-in', () => api('/v1/status').then((answer) => answer.status === 200, () => false), Boolean);
+    await page.reload();
+    await page.waitForSelector('.top');
+  }
+  seen.stand_in = stand ? stand.origin : false;
 
   await page.goto(`${base}/projects`);
   await page.fill('input[aria-label="New project\'s name"]', `web-localfit-${Date.now()}`);
@@ -173,6 +235,11 @@ const finish = (code) => {
   check('no_page_errors', errors.length === 0, errors);
   check('ran', true);
   await browser.close();
+  if (stand) {
+    seen.stand_in_asked = stand.asked;
+    await shell(process.env.RESTART);
+    stand.server.close();
+  }
   finish(failures.length ? 1 : 0);
 })().catch(died);
 

@@ -98,7 +98,9 @@ fi
 step "web-nodes: the tools, a box's controls, chips, approve, delete and Undo, and Paul's example where this computer runs models"
 web_proof nodes "$chrome" "$pw" ''
 step "web-localfit: a render this computer would do poorly asks on its box first; Render here kept by Calcifer; Rent a GPU chosen; the CLI warns once"
-web_proof localfit "$chrome" "$pw" ''
+local on_hub=''
+[ -n "${WEB_ALONE:-}" ] || on_hub=$(web_restart "$lock" @HUB@)
+HUB_RESTART=$on_hub web_proof localfit "$chrome" "$pw" "$restart"
 jq -c '{line: .seen.line, placed: .seen.placed}' "$OUT/web-localfit.json" 2> /dev/null || true
 step "web-addons: the checkpoint explorer, a LoRA and a fine-tune dragged onto a box, chips, why one doesn't fit, a hand's file kept"
 web_proof addons "$chrome" "$pw" ''
@@ -123,8 +125,6 @@ step "web-closes: twenty projects of 1,000 assets by the CLI and the page, each 
 web_proof closes "$chrome" "$pw" ''
 jq -c '{times: .seen.times, memory: .seen.memory_mb, open: .seen.open_median_s, reopen: .seen.reopen_median_s, render: .seen.render}' "$OUT/web-closes.json" 2> /dev/null || true
 step "web-package-ui: a package's component drawn, its field saved and read back; what can't draw falls back; a release held to its hash"
-local on_hub=''
-[ -n "${WEB_ALONE:-}" ] || on_hub=$(web_restart "$lock" @HUB@)
 HUB_RESTART=$on_hub web_proof package_ui "$chrome" "$pw" "$restart"
 [ -n "${WEB_ALONE:-}" ] || web_engines "$chrome" "$pw"
 web_held "$chrome" "$pw"
