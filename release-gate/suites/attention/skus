@@ -1,0 +1,8 @@
+# One reference card per hardware class (runtime-design §2): the member whose formats include every other member's, so every
+# kernel the class ranks is measured. Siblings (A100, RTX 3090, RTX 5060 Ti, B300) run once, by `-f skus=`.
+l40s 100              # mma.sync: full-rate FP32 accumulate, int8, fp8, int4
+rtx-4090 100          # mma.sync/half: GeForce, half-rate accumulate
+rtx-pro-6000 100      # mma.sync+fp4: block-scaled FP4, full rate
+rtx-5090 100          # mma.sync+fp4/half
+h100-sxm5-80gb 100    # wgmma
+b200 100              # tcgen05

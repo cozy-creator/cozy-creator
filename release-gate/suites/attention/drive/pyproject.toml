@@ -1,0 +1,17 @@
+[build-system]
+requires = ["uv_build>=0.12.7,<0.13"]
+build-backend = "uv_build"
+
+[project]
+name = "attention-drive"
+version = "0.1.0"
+description = "The attention suite's calls of the Runtime's attention bench (cozy_runtime.bench)"
+requires-python = ">=3.12"
+dependencies = ["cozy-runtime>=0.45", "msgspec>=0.19"]
+
+[project.entry-points."cozy.application"]
+default = "attention_drive:app"
+
+[tool.uv.build-backend]
+module-name = "attention_drive"
+module-root = ""
