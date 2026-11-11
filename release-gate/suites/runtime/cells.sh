@@ -28,7 +28,7 @@ source "$HERE/suites/execution/child-saved-file/cells.sh"
 # every weights output failed, `open()` passing TensorFS 0.16 a `revision` it no longer takes.
 if [ -z "$ONLY" ] || [[ $ONLY == *",quantize-sdxl,"* ]]; then
   q=$(pkg sdxl generate); q=${q/\/generate/}
-  src=$(model_details stabilityai/sdxl | jq -r '.releases[0].lanes[] | select(.lane == "bf16") | .commit')
+  src=$(model_details stabilityai/sdxl | jq -r '.releases[0].lanes[] | select(.lane == "bf16") | .checkpoint')
   run_submit "$OUT" quantize-sdxl model quantize "stabilityai/sdxl@$src" --lane int8 --package "$q" --on "$M" > /dev/null; run_wait "$OUT" quantize-sdxl
   s=$(run_get "$OUT" quantize-sdxl .status)
   expect quantize-sdxl-int8 "$([ "$s" = completed ] && echo PASS || echo FAIL)" \

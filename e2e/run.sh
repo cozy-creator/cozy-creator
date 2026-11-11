@@ -43,6 +43,41 @@ PY
   RUN_PROJECT=$(cd "$1" && pwd)
 }
 
+# run_box <name> <file> <description>: the file imported into this script's project as a described box, as the page imports
+# one; prints the box's name, for a function to read by mention (`video=<name>`) with its description. The CLI attaches a
+# file but can't describe it.
+run_box() {
+  python3 - "$RUN_PROJECT" "$@" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
+
+project, name, file, description = sys.argv[1:]
+holder = json.loads((Path.home() / '.cozy/calcifer/calcifer.lock.holder').read_text())
+base, auth = 'http://' + holder['address'], {'Authorization': 'Bearer ' + holder['token']}
+opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+data = Path(file).read_bytes()
+digest = 'sha256:' + hashlib.sha256(data).hexdigest()
+try:
+    opener.open(urllib.request.Request(base + '/v1/files/' + digest, headers=auth, method='HEAD'), timeout=30).close()
+except urllib.error.HTTPError as error:
+    if error.code != 404:
+        raise
+    opener.open(urllib.request.Request(base + '/v1/files/' + digest, data=data, method='PUT',
+        headers={**auth, 'Content-Type': 'application/octet-stream'}), timeout=600).close()
+body = json.dumps({'source': digest, 'name': name, 'description': description}).encode()
+request = urllib.request.Request(base + '/v1/projects/' + urllib.parse.quote(project, safe='') + '/imports', data=body, method='POST',
+    headers={**auth, 'Content-Type': 'application/json', 'Idempotency-Key': str(uuid.uuid4())})
+with opener.open(request, timeout=60) as response:
+    print(json.load(response)['name'])
+PY
+}
+
 # run_submit <dir> <name> <cozy args...>: starts `cozy --json <args>` (a verb that makes a numbered run) in the
 # background and prints the run's number once its events name one; nothing when the command ended without one, or
 # when none came in RUN_NUMBER_S (default 1860 s: local code installs before its call is sent, cold on a new pod). Each doubling wait

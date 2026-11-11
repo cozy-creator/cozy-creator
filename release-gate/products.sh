@@ -35,26 +35,27 @@ refs() {  # refs <cell> <package> <function> <seed> [more args]
 product_minimax_h3() {
   # One fixed request (the Skater row, H3_SEED): quality.py holds its CLIP against the last passed gate's on it. The
   # character picture goes to H3 as given (a project cleans it first).
-  local name who motion p="$SCENE, slow push-in, ambient sound" SAVED=$ONLY r
+  local name who motion p="$SCENE, slow push-in, ambient sound" SAVED=$ONLY r v
   IFS=$'\t' read -r name who motion _ _ <<< "$(grep -m1 $'^Skater\t' "$HERE/scenarios.tsv")"
   [[ $ONLY == *",regen-1440p-15s,"* ]] && ONLY="$ONLY,h3,"
   cell h3 "$(pkg minimax-h3 generate)" references:="[{\"name\": \"$name\", \"kind\": \"character\", \"image\": \"$REF\"}]" \
     prompt="<$name> $motion" seed:=$H3_SEED duration_s:=15
   ONLY=$SAVED
   CLIP=$(output h3 mp4)
-  # Above 768p a video is upscaled whole, by SeedVR2 (the lock's seedvr2) by default, with its soundtrack.
+  # Above 768p a take is re-rendered whole by Regenerate-2K (UPSCALE.md) with its soundtrack, from its frames and the
+  # description of the box it is in.
   [[ $ONLY == *",h3-1080p,"* || $ONLY == *",h3-1440p,"* ]] && ONLY="$ONLY,h3-5s,"
   cell h3-5s "$(pkg minimax-h3 generate)" prompt="$p" seed:=$((R + 16)) duration_s:=5
   ONLY=$SAVED
+  v=$(box h3_5s "$(output h3-5s mp4)" "$p")
   for r in 1080 1440; do
-    cell "h3-${r}p" "$(pkg minimax-h3 upscale)" --file video="$(output h3-5s mp4)" resolution=${r}p seed:=$((R + 17))
+    cell "h3-${r}p" "$(pkg minimax-h3 upscale)" video="$v" to=${r}p
     av "h3-${r}p" $r
   done
   # The largest one forward takes: Regenerate-2K over the whole 15 s shot at 1440p, one window from 24 GB up
   # (`regenerate.windows`). 5 s cells never reach it: whole Q, K and V ran a 32 GB card out of memory on nvfp4 (run 28696,
   # cr-259). About 11 min and $0.22 on a 5090 (run 28788), about 18 min and $0.30 on a 4090, past the shot it starts from.
-  cell regen-1440p-15s "$(pkg minimax-h3 upscale)" --file video="$CLIP" resolution=1440p prompt="$who. $motion" \
-    seed:=$((R + 19)) 'upscale:={"model": "regenerate-2k"}'
+  cell regen-1440p-15s "$(pkg minimax-h3 upscale)" video="$(box h3_15s "$CLIP" "$who. $motion")" to=1440p
   av regen-1440p-15s 1440
   if [ -f "regen-1440p-15s${TWIN:-}.number" ]; then
     r=$(nice -n 19 uv run -q --no-project --with numpy python -I "$HERE/frames.py" regen "$CLIP" "$(output "regen-1440p-15s${TWIN:-}" mp4)" 2>&1 | tail -1)

@@ -237,6 +237,8 @@ pkg() {
   else echo "$1/$2"; fi
 }
 output() { run_output "$OUT" "$1" "$2"; }
+# box <name> <file> <description>: the file as a described box of the gate's project (run_box), its mention; nothing without a file.
+box() { local b; [ -f "$2" ] && b=$(run_box "$@" 2>> box.err) && echo "<$b>"; }
 . "$HERE/products.sh"
 . "$HERE/programs.sh"
 log "gate on $SKU (suites ${SUITES//,/ }): scenario $NAME, seeds from $R, candidate: ${CAND[*]:-released}${PKGS:+ packages $PKGS}${PINS:+ pins ${PINS//,/ }}, cli: $CLI"

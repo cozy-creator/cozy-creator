@@ -25,7 +25,7 @@ trees=("$PACKAGES"/*/)
 [ "${#trees[@]}" = 1 ] && [ -d "${trees[0]}" ] || fail "packages_refs must name one checkout"
 cd "${trees[0]}" || fail "no checkout"
 made() { awk '$1=="commit"{c=$2} END{sub(/.*@/, "", c); print c}' "$OUT/$1.txt"; }
-lane_of() { model_details "$1" 2>/dev/null | jq -r --arg c "$2" '.commits[]? | select(.commit==$c) | .lane'; }
+lane_of() { model_details "$1" 2>/dev/null | jq -r --arg c "$2" '.checkpoints[]? | select(.checkpoint==$c) | .lane'; }
 # call <name> <model ref>: the package's function once, with a fresh seed; passes on a completed run whose
 # answers (texts) each contain EXPECT.
 call() {
