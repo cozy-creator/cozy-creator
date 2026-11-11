@@ -4,12 +4,13 @@
 # placement prefers to this computer, gets none; `--on stand-b` overrides the project's set for one run; `--on stand-a,stand-b`
 # places among them; the page's Run on pins it the same (web/runon.js). With neither stand-in up, `--on stand-a,stand-b` is
 # refused naming both, and nothing runs on another machine.
-# stand_as <name> <cozy args...>: the stand-in's own cozy, in its user's default home.
+# stand_as <name> <cozy args...>: the stand-in's own cozy, in its user's default home. From /: the Calcifer it starts detached (no
+# user manager here) keeps the folder it started in, where its machine's uv would trip over this user's project .venv.
 stand_as() {
   local name=$1
   shift
-  sudo -u "cozy-$name" -H env ${SSL_CERT_FILE:+SSL_CERT_FILE="$SSL_CERT_FILE"} ${COZY_HUB_URL:+COZY_HUB_URL="$COZY_HUB_URL"} \
-    "/opt/cozy-$name/cozy" "$@" < /dev/null 2>> "$OUT/$name.err"
+  (cd / && sudo -u "cozy-$name" -H env ${SSL_CERT_FILE:+SSL_CERT_FILE="$SSL_CERT_FILE"} ${COZY_HUB_URL:+COZY_HUB_URL="$COZY_HUB_URL"} \
+    "/opt/cozy-$name/cozy" "$@" < /dev/null 2>> "$OUT/$name.err")
 }
 
 # stand_in <name>: the machine of a user of this runner, authorized for this controller and added here as <name>.
@@ -29,7 +30,7 @@ stand_in() {
   [ -z "$CAND_TFS" ] || args+=(--tensorfs "$CAND_TFS")
   [ -z "$CAND_RT" ] || args+=(--runtime "$CAND_RT")
   [ ${#args[@]} -eq 0 ] || cozy --json machine update "$name" "${args[@]}" -y > "$OUT/$name-update.json" 2>&1 \
-    || { check "$name: the candidates: $(tail -c 300 "$OUT/$name-update.json")"; return 1; }
+    || { check "$name: the candidates: $(jq -r 'select(.type == "run.failed") | .run.reason.message' "$OUT/$name-update.json" 2> /dev/null | tail -c 400)"; return 1; }
 }
 
 # set_runs <project> <file>: the project's runs of the echo, `number machine status` each.
