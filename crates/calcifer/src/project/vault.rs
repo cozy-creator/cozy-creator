@@ -411,6 +411,9 @@ pub(super) async fn write(State(api): State<Arc<Api>>, Path(named): Path<String>
 }
 
 pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Progress) -> Result<VaultChanged, Error> {
+    if ask.preserve_plaintext && (ask.action != "encrypt" || ask.remove_plaintext) {
+        return Err(Error::new(Kind::Usage, "vault_source_policy", "preserve_plaintext is only valid for encryption and conflicts with remove_plaintext"));
+    }
     progress.phase("waiting");
     let op = operation(&root); let _guard = op.lock().expect("vault operation");
     let mut ended = vec![];
@@ -469,7 +472,7 @@ pub(super) fn create_new(api: &Api, root: &FsPath, id: &str, name: &str, written
         initialized?;
         platform::durable::sync_dir(root).map_err(provider)?;
         let ask = VaultAsk { action: "encrypt".into(), passphrase: None, recovery_secret: None,
-            idle_timeout_s: None, max_duration_s: None, remove_plaintext: false };
+            idle_timeout_s: None, max_duration_s: None, remove_plaintext: false, preserve_plaintext: false };
         mount(api, root, created.keybag, created.secret, &ask)
     })();
     outcome.map_err(|why| {
@@ -497,7 +500,7 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
             recovery_secret = Some(created.recovery_secret.expose().to_owned());
             preserved_source = Some(convert(api, root, created.keybag, created.secret, ask, progress)?);
             drop(project);
-            if ask.remove_plaintext {
+            if !ask.preserve_plaintext {
                 preserved_source = None;
             }
         }
@@ -967,7 +970,7 @@ fn convert(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret,
     progress.phase("verifying");
     target.try_unmount().map_err(provider)?;
     if let Some(mut source) = source_mount.take() { source.try_unmount().map_err(provider)?; }
-    let receipt = Conversion { root: root.to_owned(), staged: staged.clone(), saved: saved.clone(), key_id: target_keybag.info().key_id, remove_source: old_secret.is_some() || ask.remove_plaintext, plain: None };
+    let receipt = Conversion { root: root.to_owned(), staged: staged.clone(), saved: saved.clone(), key_id: target_keybag.info().key_id, remove_source: old_secret.is_some() || !ask.preserve_plaintext, plain: None };
     progress.phase("committing");
     save_conversion(&receipt)?;
     fs::rename(root, &saved).map_err(|why| error("vault_io", format!("preserve the project source before encryption: {why}")))?;

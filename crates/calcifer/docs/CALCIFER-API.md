@@ -654,6 +654,14 @@ recovery secrets and old view paths. These events never go through global SSE,
 history, outboxes or the ordinary response cache. The original JSON
 `POST /v1/projects/{id}/vault` remains supported for older clients.
 
+For `encrypt`, verified source removal is the default even when the request omits
+`remove_plaintext` or sends it as false. Only `preserve_plaintext: true` keeps the
+original plaintext and returns `preserved_source`; it conflicts with `remove_plaintext: true`.
+The legacy removal field remains accepted. New clients also send it as true for default
+encryption so older controllers remove the source. Preservation is not valid for rekey/decrypt;
+rekey continues retiring the obsolete encrypted source after verification. A durable in-flight
+conversion retains its recorded cleanup policy across restart.
+
 Conversion validates its source before copying media. A dangling legacy link
 under `files/` is omitted and returned in `skipped_files`; its project-state
 reference remains missing. Readable external links and unsupported entries

@@ -3147,9 +3147,13 @@ target: string, warnings?: Array<string>, };
  */
 export type VaultAsk = { action: string, passphrase?: string | null, recovery_secret?: string | null, idle_timeout_s?: number | null, max_duration_s?: number | null,
 /**
- * Remove a verified plaintext conversion source, only when explicitly asked.
+ * Legacy removal flag. Verified source removal is now the default; false does not preserve it.
  */
-remove_plaintext: boolean, };
+remove_plaintext: boolean,
+/**
+ * Explicitly keep the original plaintext after a verified encrypt conversion. Not valid for rekey/decrypt.
+ */
+preserve_plaintext?: boolean, };
 
 /**
  * A vault operation can disclose a new recovery secret exactly to the caller. Do not persist this response in request/history caches.

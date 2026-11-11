@@ -283,7 +283,7 @@ async fn follower_reconnects_with_the_same_run_and_durable_cursor() {
 fn vault_ask() -> VaultAsk {
     VaultAsk {
         action: "encrypt".into(), passphrase: Some("request-secret".into()), recovery_secret: None,
-        idle_timeout_s: None, max_duration_s: None, remove_plaintext: false,
+        idle_timeout_s: None, max_duration_s: None, remove_plaintext: false, preserve_plaintext: false,
     }
 }
 

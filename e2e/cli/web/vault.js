@@ -1,7 +1,7 @@
 // The real browser/Calcifer/securefs path. Synthetic project only; no requests are mocked.
 const playwright = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
-const { existsSync, mkdtempSync, rmSync, writeFileSync } = require('fs');
+const { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { dirname, join } = require('path');
 const { calcifer, signIn, launch, png, MP4, until, drop, openCanvas, importFile, projectJson, projectUrl, settled, fitCanvas, pointAt } = require('./page');
@@ -97,6 +97,7 @@ const newPage = async () => {
 (async () => {
   scratch = mkdtempSync(join(tmpdir(), 'web-vault-'));
   const folder = join(scratch, 'project');
+  const sourceFolders = () => readdirSync(scratch).filter((name) => name.startsWith('.cozy-project-source-')).sort();
   const picture = join(scratch, 'private_vault_picture.png');
   writeFileSync(picture, png(23));
   cli('new', '--unencrypted', folder);
@@ -241,7 +242,10 @@ const newPage = async () => {
   check('initial_project_reads_drained', true);
   await body.locator('input[type=password]').nth(0).fill('synthetic browser passphrase');
   await body.locator('input[type=password]').nth(1).fill('synthetic browser passphrase');
-  await body.getByLabel('Remove the verified unencrypted source after conversion').check();
+  const preserveChoice = body.getByLabel('Keep an unencrypted copy after encryption');
+  check('ui_encryption_defaults_to_source_removal', !(await preserveChoice.isChecked()));
+  const sourcesBeforeEncryption = sourceFolders();
+  await preserveChoice.check();
   const encryptionReply = page.waitForResponse((response) => isVaultWrite(response.request()) && new URL(response.url()).pathname.startsWith(`/v1/projects/${id}/vault`) && JSON.parse(response.request().postData() || '{}').action === 'encrypt');
   await body.getByRole('button', { name: 'Enable encryption', exact: true }).click();
   const encrypted = await encryptionReply;
@@ -255,6 +259,8 @@ const newPage = async () => {
   check('vault_receipt_is_streamed', (encrypted.headers()['content-type'] ?? '').startsWith('text/event-stream') && (encrypted.headers()['cache-control'] ?? '').includes('no-store'));
   await page.locator('[aria-label="Save recovery secret"] pre').waitFor();
   const recovery = await page.locator('[aria-label="Save recovery secret"] pre').innerText();
+  const keptSources = sourceFolders().filter((name) => !sourcesBeforeEncryption.includes(name));
+  check('ui_explicit_preservation_keeps_plaintext', keptSources.length === 1 && existsSync(join(scratch, keptSources[0], 'project.db')));
   check('recovery_is_long_and_local', recovery.startsWith('cozy1-') && recovery.length > 70);
   check('qr_is_generated_in_page', await page.locator('[aria-label="Save recovery secret"] svg').count() === 1);
   await page.getByLabel('I saved this somewhere away from this computer').check();
@@ -603,10 +609,13 @@ const newPage = async () => {
   await plainStorageReady('ordinary project storage reads drained before re-encryption');
   await page.locator('.drawer input[type=password]').nth(0).fill('synthetic browser passphrase');
   await page.locator('.drawer input[type=password]').nth(1).fill('synthetic browser passphrase');
-  await page.getByLabel('Remove the verified unencrypted source after conversion').check();
+  check('ui_reencryption_resets_to_source_removal', !(await page.getByLabel('Keep an unencrypted copy after encryption').isChecked()));
+  const sourcesBeforeReencryption = sourceFolders();
   await page.getByRole('button', { name: 'Enable encryption', exact: true }).click();
   await page.locator('[aria-label="Save recovery secret"] pre').waitFor();
   const replacementRecovery = await page.locator('[aria-label="Save recovery secret"] pre').innerText();
+  check('ui_default_reencryption_removes_its_source', JSON.stringify(sourceFolders()) === JSON.stringify(sourcesBeforeReencryption));
+  check('ui_default_reencryption_clears_preservation_warning', await page.getByText('The verified unencrypted source was removed.', { exact: true }).isVisible() && await page.locator('p.warn').filter({ hasText: 'An unencrypted copy was preserved at' }).count() === 0);
   check('decrypted_project_can_be_encrypted_again', projectJson(folder).id === id && JSON.parse(vault(folder, 'status')).encrypted === true);
 
   stage = 'plain recheck observes a later locked generation';

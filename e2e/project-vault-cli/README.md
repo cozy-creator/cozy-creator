@@ -18,16 +18,22 @@ comes from the default controller's holder record and stays in memory.
 The fixture covers an ordinary project, conversion, encrypted image/audio/video
 imports, a CRDT state edit and history, media decoding/seek, lock/read/fallback
 refusal, wrong credentials, recovery/passphrase replacement, full rekey, explicit
-plaintext export, parallel manual locks, idle/absolute expiration, recovery
+in-place decryption, parallel manual locks, idle/absolute expiration, recovery
 of the new generation, and normal shutdown while still unlocked. It stops that
 runner's Calcifer through its real authenticated graceful shutdown API, then
 scans global retained files (CAS, journals, databases and logs included) plus the
 encrypted backing for known synthetic canaries and credential strings. Only
 runtime `view` directories are excluded. A canary scan is a functional privacy
 check, not a cryptographic audit or proof against every possible encoding.
-The fixture opens the intentionally plaintext export with `cozy status` after
+The fixture opens the intentionally decrypted folder with `cozy status` after
 the scan. It then compares the whole graph through the YAML endpoint and
 requires a distinct project identity while the original is locked.
+
+Conversion checks both omitted and legacy-false API removal flags, default CLI
+source deletion, and explicit `--preserve-plaintext` with verified original bytes
+and preservation across a controller restart. Conflicting source policies and
+unsupported links refuse before conversion. Synthetic preserved plaintext is
+deleted after its check; only booleans and command metadata reach the artifacts.
 
 The parallel cell checks two concurrent manual locks. The controller's separate
 qualification owns pending-unlock/lock ordering. Expiration checks a requested
@@ -36,7 +42,7 @@ renew Calcifer activity.
 
 This fixture refuses to run outside an ephemeral GitHub Actions host, with a
 `COZY_HOME` override, or when PATH chooses a different Cozy executable.
-Synthetic inputs and intended plaintext exports live outside `~/.cozy`.
+Synthetic inputs and intentional plaintext copies live outside `~/.cozy`.
 Credentials/recovery files are deleted afterward and are never uploaded. Only
 `receipt.json` and credential-free command and API request metadata are retained
 as artifacts. The Windows ARM64 media cell reads measured metadata and the
