@@ -29,7 +29,7 @@ PRIVATE = re.compile(r"PRIVATE KEY|\"d\"\s*:\s*\"[A-Za-z0-9_-]{40,}")
 
 class Probe(msgspec.Struct, forbid_unknown_fields=True):
     #: The Hub's origin, where the given token is tried directly.
-    hub: str = "https://tensorhub.com"
+    hub: str
     #: The weights' commit (org/name@sha256:<hex>), opened afresh.
     ref: str = ""
     seconds: float = 0

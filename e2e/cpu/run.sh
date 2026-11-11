@@ -2,7 +2,7 @@
 # e2e/cpu/run.sh: every package's entry points through the Runtime's real executor on the CPU, with tiny random
 # weights (README "cpu"). No GPU, no rental, no sign-in.
 #
-#   e2e/cpu/run.sh --out DIR --packages DIR --runtime R --tensorfs T [--cozy BIN --project DIR] [--envs DIR]
+#   e2e/cpu/run.sh --out DIR --packages DIR --runtime R --tensorfs T [--cozy BIN --project DIR --stage-code BIN] [--envs DIR]
 #                  [--only pkg,...] [--cells entry/cell,...] [--jobs N] [--refs DIR] [--helpers pkg,...] [--record] [--keep]
 # R and T: a wheel, a source dir (the Runtime), an exact release version, or `lock` (what each package's lock pins).
 # --cozy: a cozy whose Calcifer is up, and --project a project folder of it: each package's code is also uploaded,
@@ -16,10 +16,11 @@
 set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 OUT='' PACKAGES='' RUNTIME='' TENSORFS='' ENVS=${XDG_CACHE_HOME:-$HOME/.cache}/cozy-e2e-cpu ONLY='' CELLS='' JOBS=2 RECORD='' REFS='' HELPERS='' KEEP='' COZY='' PROJECT=''
+RUN_CODE_STAGE=${RUN_CODE_STAGE:-}
 while [ $# -gt 0 ]; do
   case $1 in
     --out) OUT=$2 ;; --packages) PACKAGES=$2 ;; --runtime) RUNTIME=$2 ;; --tensorfs) TENSORFS=$2 ;;
-    --envs) ENVS=$2 ;; --cozy) COZY=$2 ;; --project) PROJECT=$2 ;; --only) ONLY=$2 ;; --cells) CELLS=$2 ;; --jobs) JOBS=$2 ;; --refs) REFS=$2 ;; --helpers) HELPERS=$2 ;;
+    --envs) ENVS=$2 ;; --cozy) COZY=$2 ;; --project) PROJECT=$2 ;; --stage-code) RUN_CODE_STAGE=$2 ;; --only) ONLY=$2 ;; --cells) CELLS=$2 ;; --jobs) JOBS=$2 ;; --refs) REFS=$2 ;; --helpers) HELPERS=$2 ;;
     --record) RECORD=--record; shift; continue ;;
     --keep) KEEP=1; shift; continue ;;
     --tensord | --pod-tensord | --release) ;;
@@ -32,9 +33,20 @@ done
 [ -z "$COZY" ] || [ -n "$PROJECT" ] || { echo "--cozy needs --project" >&2; exit 2; }
 abs() { if [ -e "$1" ]; then (cd "$(dirname "$1")" && echo "$PWD/$(basename "$1")"); else echo "$1"; fi; }
 OUT=$(mkdir -p "$OUT" && cd "$OUT" && pwd) PACKAGES=$(cd "$PACKAGES" && pwd) RUNTIME=$(abs "$RUNTIME") TENSORFS=$(abs "$TENSORFS")
+if [ -n "$COZY" ]; then
+  . "$HERE/../test-hub.sh"
+  require_ci_test_hub || exit $?
+  if [ -z "$RUN_CODE_STAGE" ]; then
+    cargo build --locked --manifest-path "$HERE/../../Cargo.toml" -p api --example stage-code --target-dir "$OUT/stage-code-build" \
+      > "$OUT/stage-code-build.log" 2>&1 || { cat "$OUT/stage-code-build.log" >&2; exit 1; }
+    RUN_CODE_STAGE=$OUT/stage-code-build/debug/examples/stage-code
+  fi
+  RUN_CODE_STAGE=$(abs "$RUN_CODE_STAGE")
+  [ -x "$RUN_CODE_STAGE" ] || { echo "--stage-code must name the API stage-code executable" >&2; exit 2; }
+fi
 mkdir -p "$ENVS"
 REFS=$(mkdir -p "${REFS:-$HERE/refs}" && cd "${REFS:-$HERE/refs}" && pwd)
-export PACKAGES RUNTIME TENSORFS ENVS OUT RECORD CELLS HERE REFS HELPERS KEEP COZY PROJECT
+export PACKAGES RUNTIME TENSORFS ENVS OUT RECORD CELLS HERE REFS HELPERS KEEP COZY PROJECT RUN_CODE_STAGE
 
 # A package's fixture is tiny/<its name, - and . as _>.py. Every package in the checkout runs, or --only's.
 fixture() { local f=${1//-/_}; echo "$HERE/tiny/${f//./_}.py"; }

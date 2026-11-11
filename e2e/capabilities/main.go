@@ -4,7 +4,7 @@
 //
 //	go run ./e2e/capabilities --out DIR --commit ORG/NAME@sha256:<hex> [--hub ORIGIN] [--rental ID --rental-state live|ended]
 //
-// ORIGIN is the Hub cozy is signed in to (default $COZY_HUB_URL, else https://tensorhub.com); the commit is a private one
+// ORIGIN is the Hub cozy is signed in to (explicit --hub or $COZY_HUB_URL); the commit is a private one
 // of the signed-in account. Checks:
 //   - the capability's token reads its commit, which an anonymous read cannot, and is redeemed again (renewal);
 //   - a copied token is refused without its DPoP key, and a proof is spent once;
@@ -42,7 +42,7 @@ var (
 )
 
 func main() {
-	hub := flag.String("hub", envOr("COZY_HUB_URL", "https://tensorhub.com"), "the Hub cozy is signed in to")
+	hub := flag.String("hub", os.Getenv("COZY_HUB_URL"), "explicit Hub origin cozy is signed in to")
 	commit := flag.String("commit", "", "ORG/NAME@sha256:<hex>, a private commit of the signed-in account")
 	rental := flag.String("rental", "", "a rental of the signed-in account")
 	rentalState := flag.String("rental-state", "live", "live or ended")
@@ -53,6 +53,12 @@ func main() {
 		fmt.Fprintln(os.Stderr, "usage: capabilities --out DIR --commit ORG/NAME@sha256:<hex> [--hub ORIGIN] [--rental ID --rental-state live|ended]")
 		os.Exit(2)
 	}
+	target, err := verificationTarget(*hub, os.Getenv("CI") != "" || os.Getenv("GITHUB_ACTIONS") != "")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	*hub = target.String()
 	org, name, sha := m[1], m[2], m[3]
 	*hub = strings.TrimRight(*hub, "/")
 	must(os.MkdirAll(out, 0o755))
@@ -322,13 +328,6 @@ func nonce() string {
 	b := make([]byte, 16)
 	_, _ = rand.Read(b)
 	return b64.EncodeToString(b)
-}
-
-func envOr(name, fallback string) string {
-	if v := os.Getenv(name); v != "" {
-		return v
-	}
-	return fallback
 }
 
 func must(err error) {

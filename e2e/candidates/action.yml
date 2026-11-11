@@ -56,6 +56,14 @@ runs:
   using: composite
   steps:
     - uses: astral-sh/setup-uv@v7
+    - name: Build private fixture source stager
+      shell: bash
+      run: |
+        set -euo pipefail
+        exe=''
+        [ "$RUNNER_OS" != Windows ] || exe=.exe
+        cargo build --locked --manifest-path "${{ github.action_path }}/../../Cargo.toml" -p api --example stage-code --target-dir "$RUNNER_TEMP/stage-code-build"
+        echo "RUN_CODE_STAGE=$RUNNER_TEMP/stage-code-build/debug/examples/stage-code$exe" >> "$GITHUB_ENV"
     # e2e/hubcheck, which the suites put between cozy and the Hub (lib.sh).
     - uses: actions/setup-go@v5
       with:

@@ -1,5 +1,5 @@
 # cold-start: a package's first request right after its install, on one rental, once per TensorD arm. Each arm puts
-# its TensorD on the pod (the pod's own image for `image`), installs each of its models' packages afresh (remove, then
+# its TensorD on the pod (the pod's own image for `image`), installs each of its models' packages afresh (uninstall, then
 # install), drops the weights from the page cache first, runs one cold request each and counts the environment's
 # bytecode after it; the executor processes' memory is read after the machine starts and after the requests, and the
 # machine's kernel boots at the end. An arm's `wait` says when
@@ -333,7 +333,7 @@ for i in "${!names[@]}"; do
     # an install starts.
     podpy evict > "$OUT/$a-$m-evict.json"; say "$a $m evicted: $(cat "$OUT/$a-$m-evict.json")"
     [ "$(jq -r .files "$OUT/$a-$m-evict.json" 2>/dev/null)" != 0 ] || fail "$a $m: found no weights to evict"
-    step "rm-$a-$m" package remove "$pkg" --on "$NAME" -y
+    step "rm-$a-$m" package uninstall "$pkg" --on "$NAME" -y
     # The release the request names, never the newest: another would install on the request's own path.
     step "in-$a-$m" package install "$pkg@${fn##*@}" --on "$NAME" || fail "$a: install $m"
     installed=$(date +%s)

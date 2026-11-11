@@ -1332,6 +1332,34 @@ impl Pool {
         self.allocations.wake_with(move || if let Some(engine) = engine.upgrade() { engine.notify_activity() });
     }
 
+    /// A stalled disk is named on the log of every run in progress (`disk`).
+    pub(crate) fn watch_disks(self: &Arc<Self>) {
+        let pool = Arc::downgrade(self);
+        let watching = crate::disk::watch(move |stalls| {
+            let Some(pool) = pool.upgrade() else { return false };
+            stalls.iter().for_each(|stall| pool.disk_stalled(stall));
+            true
+        });
+        if let Err(error) = watching {
+            tracing::warn!("disk stalls go unnamed: {error}");
+        }
+    }
+
+    fn disk_stalled(&self, stall: &crate::disk::Stall) {
+        let runs: Vec<String> = self.running.lock().unwrap_or_else(|e| e.into_inner()).keys().cloned().collect();
+        tracing::warn!("{}", stall.warning());
+        self.notes.note(serde_json::json!({"event": "disk_stalled", "device": stall.device,
+            "seconds": stall.seconds, "in_flight": stall.in_flight, "runs": runs}));
+        let Some(engine) = self.engine.get().and_then(Weak::upgrade) else { return };
+        let roots: std::collections::BTreeSet<String> = runs.iter().filter_map(|id| engine.get(id).ok())
+            .map(|run| if run.invocation.root.is_empty() { run.id } else { run.invocation.root }).collect();
+        for root in roots {
+            if let Err(error) = engine.append_log(&root, "warning", &stall.warning()) {
+                tracing::warn!("disk stall unnamed on {root}: {error}");
+            }
+        }
+    }
+
     /// A driver fault on one of its GPUs fails every run with an executor there at once.
     pub(crate) fn watch_faults(self: &Arc<Self>) {
         let pool = Arc::downgrade(self);

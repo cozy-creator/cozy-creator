@@ -122,7 +122,7 @@ step "locked local code runs while the Hub doesn't answer (cl-809)"
 local dir=$OUT/hub-away addr exe=''
 counting | package_at "$dir" hub_away '"cozy-runtime>=0.30", "msgspec>=0.19", "minimax-h3-tools ; sys_platform == '"'"'win32'"'"'"' \
   "$(printf '\n[tool.uv.sources]\nminimax-h3-tools = { index = "tensorhub" }')"
-cozy --json package lock -p "$dir" --root > "$OUT/hub-away-lock.json" 2>&1 || { check "hub away: package lock failed: $(tail -c 300 "$OUT/hub-away-lock.json")"; return; }
+python3 "$here/../package-lock.py" --cozy "$COZY" "$dir" --root > "$OUT/hub-away-lock.json" 2>&1 || { check "hub away: the lock API failed: $(tail -c 300 "$OUT/hub-away-lock.json")"; return; }
 grep -q '/v1/index/_/simple/' "$dir/uv.lock" || { check "hub away: the lock names no tensorhub index"; return; }
 cell hub-away-1 "$dir" "text=one two three" || return 0
 [ -n "$HUB_CHECK" ] || { check "hub away: no hubcheck to stop"; return; }
@@ -135,7 +135,7 @@ fi
 # The Hub back, at the same address, for what follows.
 [ "${RUNNER_OS:-}" != Windows ] || exe=.exe
 mkdir -p "$OUT/hub-again"
-"${RUNNER_TEMP:-$OUT}/hubcheck$exe" --out "$OUT/hub-again" --listen "$addr" > /dev/null 2> "$OUT/hub-again/hubcheck.log" &
+"${RUNNER_TEMP:-$OUT}/hubcheck$exe" --hub "${HUB_CHECK_UPSTREAM:?}" --out "$OUT/hub-again" --listen "$addr" > /dev/null 2> "$OUT/hub-again/hubcheck.log" &
 HUB_CHECK=$!
 for _ in $(seq 30); do curl -sS -m 5 -o /dev/null "http://$addr/openapi.yaml" 2> /dev/null && break; sleep 1; done
 }
@@ -144,7 +144,7 @@ for _ in $(seq 30); do curl -sS -m 5 -o /dev/null "http://$addr/openapi.yaml" 2>
 # holds still locks, named by --upgrade-package, and under a floor raised to it (cl-846).
 lock_refresh() {
 [ "$RUNNER_OS" = Linux ] || return 0
-step "package lock takes a release newer than uv's cached index page (cl-846)"
+step "the lock API takes a release newer than uv's cached index page (cl-846)"
 local dir=$OUT/lock-refresh wheels=$OUT/lock-refresh-wheels name=e2efresh$RANDOM addr='' index
 mkdir -p "$wheels"
 python3 "$here/index.py" wheel "$wheels" "$name" 1.0
@@ -156,7 +156,7 @@ floored() {
     "$(printf '\n[[tool.uv.index]]\nname = "fresh"\nurl = "http://%s/simple"\nexplicit = true\n\n[tool.uv.sources]\n%s = { index = "fresh" }' "$addr" "$name")"
 }
 locked() {
-  cozy --json package lock -p "$dir" "$@" > "$OUT/lock-refresh.json" 2>&1 || return 0
+  python3 "$here/../package-lock.py" --cozy "$COZY" "$dir" "$@" > "$OUT/lock-refresh.json" 2>&1 || return 0
   grep -A1 "^name = \"$name\"" "$dir/uv.lock" | sed -n 's/^version = "\(.*\)"/\1/p'
 }
 floored 1.0

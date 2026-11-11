@@ -735,7 +735,7 @@ fn platform(failure: Failure, label: &str) -> Failure {
         (code, detail) if code == "package_installation_uv_failed" && OUTSIDE.iter().any(|s| detail.contains(s)) => (
             "release_platform_unsupported",
             format!("{label} is not locked for this machine ({}/{}): {detail}\n{}", std::env::consts::OS, std::env::consts::ARCH, match cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-                true => format!("Its author adds this platform and locks again; another release may hold it: `cozy package info {}`", label.split(' ').next().unwrap_or(label)),
+                true => format!("Ask its author to support this platform; browse available packages with `cozy package ls {}`", label.split(' ').next().unwrap_or(label)),
                 false => "`--on new` rents a Linux machine, or its author adds this platform and locks again".to_string(),
             }),
         ),
@@ -836,12 +836,12 @@ fn on_pair(line: &str) -> bool {
 /// How an older pair takes this machine's: update the refusing SDK requirement or its
 /// dependency owner, then re-lock local code; a published package needs a newer release.
 fn relock(project: &Project, ranged: bool) -> String {
-    const LOCK: &str = "`cozy package lock --upgrade-package cozy-runtime`";
+    const LOCK: &str = "`uv lock --upgrade-package cozy-runtime`";
     match (project.package.starts_with("local/"), project.locked.is_some(), ranged) {
         (true, true, false) => format!("re-lock it on this machine's: {LOCK}"),
         (true, true, true) => format!("update the refusing cozy-runtime or tensorfs requirement in pyproject.toml, or upgrade the dependency that declares it, then re-lock it: {LOCK}"),
         (true, false, _) => "update the refusing cozy-runtime or tensorfs requirement in pyproject.toml, or upgrade the dependency that declares it, to admit this machine's pair".into(),
-        (false, ..) => format!("a newer release of it may: `cozy package info {}`", project.package),
+        (false, ..) => format!("try its newest release: `cozy package install {}`", project.package),
     }
 }
 
@@ -882,7 +882,7 @@ fn full(said: &str) -> bool {
 fn floor_remedy(label: &str) -> String {
     let own = "or run it on a Runtime you built: `cozy machine update <machine> --runtime <path>`";
     match label.split(' ').next().filter(|package| !package.starts_with("local/")) {
-        Some(package) => format!("an older release may not need it (`cozy package info {package}` lists them; `cozy run {package}@<release>`), {own}"),
+        Some(package) => format!("try a compatible release with `cozy run {package}@<release>`, {own}"),
         None => format!("lower that bound in its pyproject.toml, {own}"),
     }
 }

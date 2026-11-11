@@ -62,6 +62,8 @@ while [ $# -gt 0 ]; do
     *) echo "unknown argument $1" >&2; exit 2;;
   esac; shift 2
 done
+. "$HERE/../e2e/test-hub.sh"
+require_ci_test_hub || exit 2
 [ -n "$SUITES" ] || { echo "gate.sh needs --suite: $(ls "$HERE/suites" | paste -sd, -) (release-gate/README.md)" >&2; exit 2; }
 for s in ${SUITES//,/ }; do
   [ -f "$HERE/suites/$s/cells.sh" ] || { echo "no suite $s: $(ls "$HERE/suites" | paste -sd, -)" >&2; exit 2; }

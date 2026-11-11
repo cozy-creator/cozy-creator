@@ -25,7 +25,7 @@ trees=("$PACKAGES"/*/)
 [ "${#trees[@]}" = 1 ] && [ -d "${trees[0]}" ] || fail "packages_refs must name one checkout"
 cd "${trees[0]}" || fail "no checkout"
 made() { awk '$1=="commit"{c=$2} END{sub(/.*@/, "", c); print c}' "$OUT/$1.txt"; }
-lane_of() { cozy model info "$1" --json 2>/dev/null | jq -r --arg c "$2" '.commits[]? | select(.commit==$c) | .lane'; }
+lane_of() { model_details "$1" 2>/dev/null | jq -r --arg c "$2" '.commits[]? | select(.commit==$c) | .lane'; }
 # call <name> <model ref>: the package's function once, with a fresh seed; passes on a completed run whose
 # answers (texts) each contain EXPECT.
 call() {
@@ -46,7 +46,7 @@ call() {
 read -ra pairs <<<"$SOURCES"; IFS=, read -ra lanes <<<"$LANES"
 [ "${#pairs[@]}" -gt 0 ] && [ "${#lanes[@]}" -gt 0 ] && [ -n "$VERSION" ] || fail "no sources, lanes or version"
 for p in "${pairs[@]}"; do
-  cozy model info "${p%%=*}" > "$OUT/before-${p%%=*}.txt" 2>&1
+  model_details "${p%%=*}" > "$OUT/before-${p%%=*}.txt" 2>&1
   grep -q model.not_found "$OUT/before-${p%%=*}.txt" || say "${p%%=*} exists on prod: $(head -2 "$OUT/before-${p%%=*}.txt" | paste -sd' ')"
 done
 declare -A BF16 LANE
@@ -110,7 +110,7 @@ for p in "${pairs[@]}"; do
   for lane in "${lanes[@]}"; do commits+=("${LANE[$m/$lane]}"); done
   cozy model publish "$m" "$VERSION" "${commits[@]}" > "$OUT/publish-$m.txt" 2>&1 || fail "publish $m: $(tail -3 "$OUT/publish-$m.txt")"
   sed 's/^/    /' "$OUT/publish-$m.txt" >> "$R"
-  cozy model info "$m" > "$OUT/info-$m.txt" 2>&1
+  model_details "$m" > "$OUT/info-$m.txt" 2>&1
   say "PUBLISHED $m $VERSION"
 done
 for p in "${pairs[@]}"; do m=${p%%=*}; call "release-$m" "$m@$VERSION" || fail "$m@$VERSION did not pass through its release"; done

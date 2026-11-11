@@ -424,9 +424,9 @@ sends it back. A code lives 10 minutes, and a wrong answer leaves it waiting.
   replaces the org's own; an org that does not exist yet is parked.
 
 **Models.** A root model's org is `_`.
-- `GET /v1/models?q=&family=&tag=&no_tag=&limit=` (1–100, 20): `ModelSearch {models, total, older}`, each
+- `GET /v1/models?q=&family=&tag=&no_tag=&limit=&offset=&role=` (limit 1–100, default 20; offset defaults to 0): `ModelSearch {models, total, older}`, each
   model's newest release, lanes and `tags`; signed in, also the caller's private ones. `q` matches names
-  and tags, and exactly `org/name` is that model. `tag=` and `no_tag=` (comma-separated) keep models with
+  and tags, and exactly `org/name` is that model. `role=model|lora` uses the Hub's indexed header-derived repository role; an older Hub without role metadata is refused rather than guessed. `tag=` and `no_tag=` (comma-separated) keep models with
   every one, and with none (`no_tag=nsfw` leaves out models that make sexual or nude images). Each says
   what its header says, read once from the Hub and kept, fetching no weights (the Hub doesn't say it yet, tensorhub th-367): `kind` is `lora` (only a LoRA's
   factors), `weights` (a model's: its header verifies as a family) or `component` (weights no family's
@@ -497,7 +497,7 @@ hand), and one a Calcifer stopped under fails `calcifer_stopped`: asking again i
   (`status: already published` for a version the Hub holds).
 
 **Packages.**
-- `GET /v1/packages?q=&limit=` (1–200, 20): `PackageSearch {packages, total, older}`.
+- `GET /v1/packages?q=&limit=&offset=` (limit 1–200, 20; offset 0): `PackageSearch {packages, total, older}`. Rows retain `created_at`; optional `updated_at` is the Hub's update timestamp, never inferred from creation.
 - `GET /v1/packages/{org}/{name}?release=`: `PackageDetail`, releases newest first; one named comes
   with what its publish warned of, to its owner.
 - `POST /v1/packages/{org}/{name}/releases/{release}/yank` `{hub}`: `PackageYanked`; machines keep it,
@@ -635,7 +635,6 @@ The CLI resolves the current directory to an existing project and sends its abso
 | `cozy org edit` | `PATCH /v1/orgs/{org}` |
 | `cozy model ls [query]` | `GET /v1/models` |
 | `cozy model ls --on` | `GET /v1/machines/{name}/models`; `--on all`: `GET /v1/machines` |
-| `cozy model info` | `GET /v1/models/{org}/{name}` |
 | `cozy model edit` | `PATCH /v1/models/{org}/{name}` |
 | `cozy model publish` | `POST /v1/models/{org}/{name}/releases` |
 | `cozy model delete` | `DELETE /v1/models/{org}/{name}[/releases/{v}\|/commits/{c}]` |
@@ -646,9 +645,8 @@ The CLI resolves the current directory to an existing project and sends its abso
 | `cozy package ls --on` | `GET /v1/machines/{name}`, `GET /v1/machines/{name}/packages?fresh=true`; `--on all`: `GET /v1/machines` |
 | `cozy package info` | `GET /v1/packages/{org}/{name}` |
 | `cozy package install` | local code's tree `PUT`, `POST /v1/runs` of `cozy/package_install` (`POST /v1/run-quotes` first for `new`); `GET /v1/runs/{id}/events` |
-| `cozy package remove` | `POST /v1/runs` of `cozy/package_remove`; `GET /v1/runs/{id}/events` |
+| `cozy package uninstall` | `POST /v1/runs` of `cozy/package_remove`; `GET /v1/runs/{id}/events` |
 | `cozy package yank [--undo]` | `POST` (`DELETE`) `/v1/packages/{org}/{name}/releases/{release}/yank` |
-| `cozy package delete` | `DELETE /v1/packages/{org}/{name}` |
 | `cozy package lock` | the package's tree `PUT`, `POST /v1/runs` of `cozy/package_lock`, `GET /v1/runs/{id}/events`; the CLI writes the `uv.lock` its result holds |
 | `cozy package publish` | the package's tree `PUT`, `POST /v1/runs` of `cozy/package_publish`, `GET /v1/runs/{id}/events`; a `lock` its result holds, the CLI writes |
 <!-- each PR adds its verbs' rows -->

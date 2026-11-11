@@ -15,6 +15,7 @@ mod catalog;
 pub mod config;
 mod child_launcher;
 mod device_executor;
+mod disk;
 mod execution;
 mod gpu_allocation;
 mod gpu_service;
