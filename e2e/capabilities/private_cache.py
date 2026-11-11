@@ -55,6 +55,8 @@ class OAuthMetadata(TypedDict):
 
 
 class MachineDetail(TypedDict):
+    name: str
+    kind: str
     address: str
     fingerprint: str
 
@@ -126,7 +128,11 @@ class Fixture:
         address = machine["address"]
         self.address = urllib.parse.urlsplit(address if "://" in address else "https://" + address)
         host = self.address.hostname
-        assert host and ipaddress.ip_address(host).is_loopback
+        assert machine["name"] == "local" and machine["kind"] == "local" and host
+        bound = ipaddress.ip_address(host)
+        if bound.is_unspecified:
+            host = "::1" if bound.version == 6 else "127.0.0.1"
+        assert ipaddress.ip_address(host).is_loopback
         self.machine_host = host
         self.fingerprint = machine["fingerprint"].removeprefix("sha256:")
         status = cast(MachineStatus, json.loads(self.machine("GET", "/v1/status", authorized=False)))
