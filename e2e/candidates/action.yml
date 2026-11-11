@@ -164,6 +164,14 @@ runs:
         [ "$RUNNER_OS" != Windows ] || exe=.exe
         machine=1
         [ "$RUNNER_OS" = Linux ] || machine=''
+        stage=$out/stage-code$exe
+        if [ -f "$stage" ]; then
+          chmod +x "$stage"
+          echo "RUN_CODE_STAGE=$stage" >> "$GITHUB_ENV"
+        elif [ -n "$machine" ]; then
+          echo "::error::candidate set is missing the native stage-code helper" >&2
+          exit 1
+        fi
         if [ "$FROM" != artifacts ]; then
           creator=.stack runtime=.rt
           [ "$REPO" != cozy-creator ] || creator=.src

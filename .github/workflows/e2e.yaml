@@ -363,6 +363,12 @@ jobs:
         with:
           package-json-file: .build/web/app/package.json
           install: false
+      - if: matrix.what == 'cozy' && (matrix.take != '' || steps.reuse.outputs.name == '')
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .creator -> target
+          key: stage-code
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - id: build
         if: matrix.take == '' && steps.reuse.outputs.name == ''
         env:
@@ -373,6 +379,23 @@ jobs:
         with:
           name: ${{ steps.reuse.outputs.name || steps.build.outputs.name }}
           path: ${{ runner.temp }}/candidates
+          if-no-files-found: error
+          retention-days: 14
+      # A taken cozy still stages local warming fixtures with the immutable harness's native API helper.
+      - name: Build the local source staging helper for a taken cozy
+        if: matrix.what == 'cozy' && matrix.take != ''
+        env:
+          CARGO_INCREMENTAL: "0"
+          COZY_COMMIT: ${{ needs.affected.outputs.creator }}
+        run: |
+          (cd .creator && cargo build --release --locked -p api --example stage-code)
+          mkdir -p "$RUNNER_TEMP/candidates"
+          cp .creator/target/release/examples/stage-code "$RUNNER_TEMP/candidates/stage-code"
+      - if: matrix.what == 'cozy' && matrix.take != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-stage-code-${{ needs.affected.outputs.creator }}
+          path: ${{ runner.temp }}/candidates/stage-code
           if-no-files-found: error
           retention-days: 14
 

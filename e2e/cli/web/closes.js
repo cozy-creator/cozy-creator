@@ -256,34 +256,88 @@ const held = (folder) => projectHeld(folder, HOLDER.pid);
     ids.push(...made);
     await closes(first);
     await closes(second);
-    for (const folder of [first, second]) await projectAction(folder, 'render', 'waits', '--on', 'local', '--queue');
     const busy = async () => {
       const { projects } = await api('/v1/projects?limit=1000');
       return made.map((id) => projects.find((row) => row.id === id)?.busy === true);
     };
     const looks = [];
-    const ending = Date.now() + 5 * STEP_MS;
-    for (;;) {
+    const observe = async () => {
       // Held, read first: a render that was going then and isn't by the list's read had closed nothing yet.
       const holding = [held(first), held(second)];
       const [going, runs] = await Promise.all([busy(), api(`/v1/runs?project=${made[1]}`)]);
       const run = runs.runs?.[0];
-      // Its run waits for the machine as Calcifer's queued, or as the machine's: one CPU slot on a runner of four cores, held by the first's.
       const look = { going, held: holding, second_run: run ? `${run.status}/${run.machine_state ?? ''}` : null };
       looks.push(look);
       seen.looks = looks.length;
-      if (!going.some(Boolean) || Date.now() > ending) break;
-      await new Promise((done) => setTimeout(done, 250));
+      return look;
+    };
+    let update, finished = false;
+    try {
+      await projectAction(first, 'render', 'waits', '--on', 'local', '--queue');
+      const running = await until('the first run executing', async () => (await api(`/v1/runs?project=${made[0]}`)).runs?.[0],
+        (run) => run?.status === 'in_progress' && run.machine_state === 'running', 5 * STEP_MS);
+      // The lifetime suite's update drain holds new roots regardless of CPU parallelism.
+      const started = await api('/v1/machines/local/update', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `closes-update-${stamp}` },
+        body: JSON.stringify({ gpu_memory_limit: 0 }),
+      });
+      update = started.run;
+      if (!update?.id) throw new Error(`queue update was not accepted: ${JSON.stringify(started)}`);
+      const waitingFor = `waiting for run ${running.number} to end`;
+      const drain = await until('the update holding new runs', async () => {
+        const [machine, updating, firstRun] = await Promise.all([
+          api('/v1/machines/local'), api(`/v1/runs/${update.id}`), api(`/v1/runs/${running.id}`),
+        ]);
+        const state = { machine_update: machine.status?.update, update_waiting: updating.waiting, first_status: firstRun.status };
+        seen.render.drain = state;
+        if (firstRun.status !== 'in_progress') throw new Error(`the first run ended before the queue gate: ${JSON.stringify(state)}`);
+        return state;
+      }, (state) => state.machine_update === waitingFor && state.update_waiting?.includes(waitingFor));
+      seen.render.queue_update = { first_run: running.number, update_run: update.number, ...drain };
+      await projectAction(second, 'render', 'waits', '--on', 'local', '--queue');
+      const queued = await until('a queued run with its project held open', async () => {
+        const look = await observe();
+        const updating = await api(`/v1/runs/${update.id}`);
+        if (!updating.waiting?.includes(waitingFor)) throw new Error(`the queue gate ended before its witness: ${JSON.stringify({ look, update_status: updating.status })}`);
+        return look;
+      }, (look) => look.going[1] && look.second_run?.split('/').includes('queued') && look.held[1] !== false);
+      seen.render.queued = queued;
+
+      const ending = Date.now() + 5 * STEP_MS;
+      for (;;) {
+        const look = await observe();
+        if (!look.going.some(Boolean) || Date.now() > ending) break;
+        await new Promise((done) => setTimeout(done, 250));
+      }
+      seen.render.looks = looks.length;
+      seen.render.second_runs = [...new Set(looks.map((look) => look.second_run))];
+      const goingLooks = looks.filter((look) => look.going.some(Boolean));
+      check('a_render_going_keeps_its_project_open', goingLooks.length > 0 && goingLooks.every((look) => look.going.every((going, at) => !going || look.held[at] !== false)), looks.filter((look) => look.going.some((going, at) => going && look.held[at] === false)).slice(0, 4));
+      const waiting = (look) => look.second_run?.split('/').includes('queued');
+      check('one_waiting_for_its_machine_keeps_it_open', looks.some((look) => look.going[1] && waiting(look) && look.held[1] !== false), seen.render.second_runs);
+      check('each_render_lands', !looks.at(-1).going.some(Boolean), looks.at(-1));
+      const updated = await until('the queue update completed', () => api(`/v1/runs/${update.id}`),
+        (run) => ['completed', 'failed', 'canceled'].includes(run.status), 5 * STEP_MS);
+      check('queue_update_completed', updated.status === 'completed', { status: updated.status, reason: updated.reason });
+      await until('local ready after its queue update', () => api('/v1/machines/local'), (machine) => machine.state === 'ready', 5 * STEP_MS);
+      const [firstClosed, secondClosed] = [await closes(first), await closes(second)];
+      check('each_closes_once_its_render_has_landed', firstClosed !== null && secondClosed !== null, { first: firstClosed, second: secondClosed });
+      finished = !looks.at(-1).going.some(Boolean);
+    } finally {
+      if (!finished) {
+        if (update?.id) await api(`/v1/runs/${update.id}/cancel`, { method: 'POST' }).catch(() => {});
+        for (const id of made) {
+          await api(`/v1/projects/${id}/cancel`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ names: ['all'] }),
+          }).catch(() => {});
+        }
+        await until('fixture renders settled after failure', busy, (going) => !going.some(Boolean), 5 * STEP_MS).catch(() => {});
+        if (update?.id) {
+          await until('fixture update settled after failure', () => api(`/v1/runs/${update.id}`),
+            (run) => ['completed', 'failed', 'canceled'].includes(run.status), 5 * STEP_MS).catch(() => {});
+        }
+      }
     }
-    seen.render.looks = looks.length;
-    seen.render.second_runs = [...new Set(looks.map((look) => look.second_run))];
-    const goingLooks = looks.filter((look) => look.going.some(Boolean));
-    check('a_render_going_keeps_its_project_open', goingLooks.length > 0 && goingLooks.every((look) => look.going.every((going, at) => !going || look.held[at] !== false)), looks.filter((look) => look.going.some((going, at) => going && look.held[at] === false)).slice(0, 4));
-    const waiting = (look) => look.second_run?.split('/').includes('queued');
-    check('one_waiting_for_its_machine_keeps_it_open', looks.some((look) => look.going[1] && waiting(look) && look.held[1] !== false), seen.render.second_runs);
-    check('each_render_lands', !looks.at(-1).going.some(Boolean), looks.at(-1));
-    const [firstClosed, secondClosed] = [await closes(first), await closes(second)];
-    check('each_closes_once_its_render_has_landed', firstClosed !== null && secondClosed !== null, { first: firstClosed, second: secondClosed });
   }
 
   check('no_page_errors', errors.length === 0, errors.slice(0, 8));
