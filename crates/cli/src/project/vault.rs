@@ -156,11 +156,24 @@ async fn change(ctx: &Context, path: &str, request: VaultAsk, recovery_out: Opti
         recovery_location(output, &status)?;
     }
     // No client idempotency cache for responses containing a recovery secret.
-    let mut changed: VaultChanged = client.post(path, &request, None).await?;
+    let mut changed: VaultChanged = client.vault(path, &request, |progress| {
+        use crate::calcifer_client::VaultProgress;
+        let message = match progress {
+            VaultProgress::Accepted { action } => format!("vault {action}: accepted"),
+            VaultProgress::Progress { phase, files_done, bytes_done } => {
+                format!("vault {phase}: {files_done} files, {bytes_done} bytes")
+            }
+        };
+        // Progress stays on stderr, including with --json; stdout contains only the final result.
+        output::warned(&message);
+    }).await?;
     if let (Some(path), Some(secret)) = (&recovery_out, &changed.recovery_secret) {
         save_recovery(path, secret)?;
         changed.recovery_secret = None;
         output::say(ctx, &format!("recovery secret saved to {}; keep a copy off this computer", path.display()));
+    }
+    for skipped in &changed.skipped_files {
+        output::warn(&format!("retained-media link skipped: {}; its project reference was preserved", skipped.display()));
     }
     if ctx.json { output::json(&changed); return Ok(ExitCode::SUCCESS); }
     if !changed.ended.is_empty() {

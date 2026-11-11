@@ -22,7 +22,7 @@ use platform::{
     tools,
 };
 use api::{
-    calcifer::{Down, Event, Holder, LogEvent, MachineList, REFUSED, Run, RunList, StreamEvent},
+    calcifer::{Down, Event, Holder, LogEvent, MachineList, REFUSED, Run, RunList, StreamEvent, project::{VaultAsk, VaultChanged, VaultEvent}},
     error::{Envelope, Error, Kind, STOPPING},
     ids::Digest,
     machine::{HELD, LogLines, Ranges, parse_held},
@@ -75,6 +75,13 @@ pub(crate) enum Lock {
 /// One command's connection to Calcifer. Cheap to clone; clones share the connection.
 #[derive(Clone)]
 pub(crate) struct Client(Arc<Inner>);
+
+/// A vault operation's public progress. Its terminal response, which may carry a recovery secret,
+/// is returned separately and never sent to the progress renderer.
+pub(crate) enum VaultProgress<'a> {
+    Accepted { action: &'a str },
+    Progress { phase: &'a str, files_done: u64, bytes_done: u64 },
+}
 
 struct Inner {
     http: reqwest::Client,
@@ -188,6 +195,106 @@ impl Client {
         let key = key.unwrap_or(&minted);
         let body = json_body(body)?;
         self.exchange(ask, |c, base| json(c.post(format!("{base}{path}")), &body).header(KEY, key)).await
+    }
+
+    /// One vault operation ID for the command's lifetime. Reconnecting the same PUT attaches to
+    /// that operation; the server records admission before acknowledging it and never runs it twice.
+    /// A controller without this route gets one legacy POST, whose uncertain result is not retried.
+    pub(crate) async fn vault(
+        &self,
+        path: &str,
+        request: &VaultAsk,
+        mut progress: impl FnMut(VaultProgress<'_>),
+    ) -> Result<VaultChanged, Error> {
+        let body = json_body(request)?;
+        let operation = format!("{path}/operations/{}", write_key());
+        let mut reconnects = Backoff::transfer();
+        let (mut can_use_legacy, mut accepted) = (true, false);
+        let mut last_progress = None;
+        loop {
+            let mut answer = self.send(Ask::Write, |c, base| {
+                json(c.put(format!("{base}{operation}")), &body).header(header::ACCEPT, "text/event-stream")
+            }).await.map_err(vault_uncertain)?;
+            if !answer.status().is_success() {
+                let status = answer.status();
+                let bytes = match answer.bytes().await {
+                    Ok(bytes) => bytes,
+                    Err(_) => {
+                        self.vault_reconnect(&mut reconnects, false, "the refusal was interrupted").await?;
+                        continue;
+                    }
+                };
+                let error = vault_refusal(status, &bytes);
+                if can_use_legacy && status == StatusCode::NOT_FOUND && matches!(error.code.as_str(), "unknown_route" | UNTYPED) {
+                    return self.legacy_vault(path, &body).await;
+                }
+                return Err(error);
+            }
+            // Even without an Accepted event, a successful operation response may have admitted it.
+            // A later missing/expired operation must never turn into a new legacy mutation.
+            can_use_legacy = false;
+            let content_type = answer.headers().get(header::CONTENT_TYPE).and_then(|value| value.to_str().ok())
+                .and_then(|value| value.split(';').next()).map(str::trim).unwrap_or("");
+            if content_type != "text/event-stream" {
+                return Err(vault_interrupted("Calcifer returned an unsupported response type"));
+            }
+            let mut sse = Sse::default();
+            let mut moved = false;
+            let reason = loop {
+                while let Some(data) = sse.next() {
+                    // Parse errors can quote values from the response. Keep credential-bearing
+                    // event data out of both diagnostics and the progress callback.
+                    let event: VaultEvent = serde_json::from_str(&data)
+                        .map_err(|_| vault_interrupted("an event could not be read"))?;
+                    match event {
+                        VaultEvent::Accepted { action } => {
+                            if !accepted { progress(VaultProgress::Accepted { action: &action }); }
+                            accepted = true;
+                        }
+                        VaultEvent::Progress { phase, files_done, bytes_done } => {
+                            let point = (phase, files_done, bytes_done);
+                            if last_progress.as_ref() != Some(&point) {
+                                moved = true;
+                                progress(VaultProgress::Progress { phase: &point.0, files_done, bytes_done });
+                                last_progress = Some(point);
+                            }
+                        }
+                        VaultEvent::Completed { changed } => return Ok(changed),
+                        VaultEvent::Failed { error } => return Err(error),
+                    }
+                }
+                // A healthy stream sends keepalives. Silence reattaches to the same recorded
+                // operation, without a generic watchdog asking the user to restart Calcifer.
+                match tokio::time::timeout(2 * KEEPALIVE, answer.chunk()).await {
+                    Ok(Ok(Some(bytes))) => sse.push(&bytes),
+                    Ok(Ok(None)) => break "the stream closed before its final result",
+                    Ok(Err(_)) => break "the stream was interrupted before its final result",
+                    Err(_) => break "the stream missed two keepalives",
+                }
+            };
+            self.vault_reconnect(&mut reconnects, moved, reason).await?;
+        }
+    }
+
+    async fn vault_reconnect(&self, reconnects: &mut Backoff, moved: bool, reason: &str) -> Result<(), Error> {
+        let why = format!("Vault operation: {reason}; reconnecting to the same operation");
+        let Some((pause, said)) = reconnects.again(&why, moved, None) else {
+            return Err(vault_interrupted(&reconnects.spent(reason)));
+        };
+        self.remember(None);
+        output::warned(&said);
+        tokio::time::sleep(pause).await;
+        Ok(())
+    }
+
+    async fn legacy_vault(&self, path: &str, body: &bytes::Bytes) -> Result<VaultChanged, Error> {
+        let answer = self.send(Ask::Unkeyed, |c, base| {
+            json(c.post(format!("{base}{path}")), body).header(header::ACCEPT, "application/json")
+        }).await.map_err(vault_uncertain)?;
+        let status = answer.status();
+        let body = answer.bytes().await.map_err(|_| vault_interrupted("the legacy response was interrupted"))?;
+        if !status.is_success() { return Err(vault_refusal(status, &body)); }
+        serde_json::from_slice(&body).map_err(|_| vault_interrupted("the legacy response could not be read"))
     }
 
     /// A PUT: idempotent by its path, and under its call's key too.
@@ -1227,6 +1334,22 @@ fn unreachable(error: reqwest::Error) -> Error {
         format!("Calcifer stopped answering: {error}"),
     )
     .remedy("Run the command again")
+}
+
+fn vault_uncertain(error: Error) -> Error {
+    error.remedy("Check the project's vault status before starting another operation")
+}
+
+fn vault_interrupted(reason: &str) -> Error {
+    vault_uncertain(Error::new(Kind::Unavailable, "vault_stream_interrupted", format!("Vault operation: {reason}")))
+}
+
+fn vault_refusal(status: StatusCode, body: &[u8]) -> Error {
+    match serde_json::from_slice::<Envelope>(body) {
+        Ok(envelope) => envelope.error,
+        // An untyped body may contain a recovery secret; never include it in diagnostics.
+        Err(_) => Error::new(Kind::Internal, UNTYPED, format!("Calcifer returned {status} for the vault operation")),
+    }
 }
 
 async fn ok(answer: Response) -> Result<Response, Error> {
