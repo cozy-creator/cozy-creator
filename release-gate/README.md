@@ -251,7 +251,8 @@ that pair misses takes its own Runtime in its own environment, and the machine's
     writes `dev = true` into the home's config; never a `--help` probe): the package run there, new weights uploaded
     from the pod (the workload writer, the path v0.40.33 broke), no process holding a Hub secret in its environment and
     the machine authenticated by its own key (xs-157), ended and gone. A cozy that refuses `--provider` fails both
-    cells, naming why, and the pod cells run once on the Hub's choice.
+    cells, naming why, and the pod cells run once on the Hub's choice. Run it with a published cozy (a release, or the
+    candidate's prerelease): a cozy moves each pod to its own minor first, and an unreleased dev build has none to move to.
   - Any 5xx from the Hub fails its cell, whatever the cell expected.
   - Before a Hub deploy, the release agent also rehearses its migrations: dump prod (in-pod `pg_dump -Fc`, copied
     in sha256-checked chunks, a full `pg_restore -f /dev/null`), restore it into a scratch Postgres, start the
