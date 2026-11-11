@@ -77,3 +77,19 @@ fn native_project_keeps_current_authoring_import_and_rejects_old_text() {
     }
     assert!(!directory.path().join(".cozy-legacy-v1").exists());
 }
+
+#[test]
+fn root_export_replacement_keeps_retained_media_without_edited_sidecopies() {
+    let directory = tempfile::tempdir().unwrap();
+    let retained = directory.path().join("files");
+    std::fs::create_dir(&retained).unwrap();
+    let version = retained.join("selected.mp4");
+    std::fs::write(&version, b"retained selected version").unwrap();
+    let root = directory.path().join("edit.mp4");
+    std::fs::write(&root, b"external root edit").unwrap();
+    tools::publish(&version, &root).unwrap();
+    assert_eq!(std::fs::read(&root).unwrap(), b"retained selected version");
+    assert_eq!(std::fs::read(&version).unwrap(), b"retained selected version");
+    assert_eq!(entries(directory.path()), BTreeSet::from(["edit.mp4".to_owned(), "files".to_owned()]));
+    assert_eq!(entries(&retained), BTreeSet::from(["selected.mp4".to_owned()]));
+}

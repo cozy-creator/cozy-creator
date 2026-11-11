@@ -89,11 +89,11 @@ sha() { { sha256sum "$1" 2> /dev/null || shasum -a 256 "$1"; } | cut -c1-64; }
 J() { jq -e "$@" > /dev/null; }
 # edited <file> <perl s///>: in place, on every OS: a Mac's sed takes neither -i alone nor a newline in what it writes.
 edited() { perl -pi.was -e "$2" "$1"; rm -f "$1.was"; }
-# yaml_in <project>: create current native storage, then import authoring text through the public CLI.
+# yaml_in <project>: create current native storage, then import authoring text through Calcifer.
 # The text is outside the project; physical project.yaml is never canonical fixture storage.
 yaml_in() {
   cat > "$1.in.yaml" || return
-  run_project "$1" && in_project "$1" import "$1.in.yaml" > "$OUT/yaml-in.txt" 2>&1 \
+  run_project "$1" && project_api "$1" /yaml -X PUT -H 'Content-Type: application/yaml' --data-binary "@$1.in.yaml" > "$OUT/yaml-in.txt" 2>&1 \
     || { check "import into $1: $(tail -c 300 "$OUT/yaml-in.txt")"; return 1; }
 }
 # An unsupported folder's complete entry names and bytes, before and after public calls.
@@ -117,10 +117,10 @@ refused_folder() {
   [ "$(retired_tree "$directory")" = "$before" ] || check "$label: refusal changed old entry names or bytes"
 }
 # hand <project> <perl s///>: its export edited and read back, as a hand edits a project now.
-hand() { { in_project "$1" export > "$1.hand.yaml" && edited "$1.hand.yaml" "$2" && yaml_in "$1" < "$1.hand.yaml"; } || check "a hand's edit of $1 failed"; }
+hand() { { project_api "$1" /yaml > "$1.hand.yaml" && edited "$1.hand.yaml" "$2" && yaml_in "$1" < "$1.hand.yaml"; } || check "a hand's edit of $1 failed"; }
 # added <project>: stdin's boxes (lines under `assets:`) added by hand to its export, read back.
 added() {
-  { in_project "$1" export | perl -0pe 's/^assets: \{\}\n?\z/assets:\n/m; $_ .= "assets:\n" unless /^assets:/m' > "$1.hand.yaml" && cat >> "$1.hand.yaml" && yaml_in "$1" < "$1.hand.yaml"; } || check "a hand's addition to $1 failed"
+  { project_api "$1" /yaml | perl -0pe 's/^assets: \{\}\n?\z/assets:\n/m; $_ .= "assets:\n" unless /^assets:/m' > "$1.hand.yaml" && cat >> "$1.hand.yaml" && yaml_in "$1" < "$1.hand.yaml"; } || check "a hand's addition to $1 failed"
 }
 # db_sql <project> <sql>: statements run on its project.db past Calcifer, as another program would.
 db_sql() {
@@ -156,7 +156,7 @@ approved_in() { in_project "$1" export | awk -v box="  $2:" '$0 == box { in_it =
 # dropped <project> <name>…: those boxes taken out of its export by hand, read back.
 dropped() {
   local P=$1; shift
-  { in_project "$P" export | NAMES="$*" perl -ne 'BEGIN { %n = map { $_ => 1 } split / /, $ENV{NAMES} } if (/^  ([^ :]+):/ && $n{$1}) { $in = 1; next } $in = 0 if $in && /^ {0,2}\S/; print unless $in' > "$P.hand.yaml" && yaml_in "$P" < "$P.hand.yaml"; } || check "a hand's deletion from $P failed"
+  { project_api "$P" /yaml | NAMES="$*" perl -ne 'BEGIN { %n = map { $_ => 1 } split / /, $ENV{NAMES} } if (/^  ([^ :]+):/ && $n{$1}) { $in = 1; next } $in = 0 if $in && /^ {0,2}\S/; print unless $in' > "$P.hand.yaml" && yaml_in "$P" < "$P.hand.yaml"; } || check "a hand's deletion from $P failed"
 }
 # prefix <project> <file>: `cozy import`, and what its export writes for it.
 prefix() { (cd "$1" && in_project "$1" --json import "$2" | jq -r '.sha256 | sub("sha256:"; "") | .[:12]') || check "import $2 failed"; }
@@ -579,13 +579,13 @@ step "a project: retired authoring formats are refused without changing the nati
 local O=$OUT/old-authoring code format
 mkdir -p "$O"
 printf 'version: 4\nassets:\n  kept: {text: Current.}\n' | yaml_in "$O"
-in_project "$O" export > "$OUT/old-authoring-before.yaml"
+project_api "$O" /yaml > "$OUT/old-authoring-before.yaml"
 for format in 1 2 3; do
   printf 'version: %s\nassets: {}\n' "$format" > "$OUT/old-authoring-$format.yaml"
-  code=0; in_project "$O" --json import "$OUT/old-authoring-$format.yaml" > "$OUT/old-authoring-$format.json" 2>&1 || code=$?
+  code=0; project_api "$O" /yaml -X PUT -H 'Content-Type: application/yaml' --data-binary "@$OUT/old-authoring-$format.yaml" > "$OUT/old-authoring-$format.json" 2> "$OUT/old-authoring-$format.err" || code=$?
   { [ "$code" != 0 ] && J '.error.code == "project_format"' "$OUT/old-authoring-$format.json"; } \
     || check "authoring: format $format was not refused: $(tail -c 300 "$OUT/old-authoring-$format.json")"
-  cmp -s <(yaml_body "$OUT/old-authoring-before.yaml") <(in_project "$O" export | yaml_body) \
+  cmp -s <(yaml_body "$OUT/old-authoring-before.yaml") <(project_api "$O" /yaml | yaml_body) \
     || check "authoring: format $format changed the native graph"
 done
 }
@@ -654,7 +654,7 @@ local N=$OUT/text-names id code
 mkdir -p "$N"
 run_project "$N" || check "names: native project bootstrap"
 printf 'version: 4\nassets:\n  Amy:\n    description: One.\n  amy:\n    description: Two.\n' > "$OUT/one-name.yaml"
-code=0; in_project "$N" import "$OUT/one-name.yaml" > "$OUT/one-name.txt" 2>&1 || code=$?
+code=0; project_api "$N" /yaml -X PUT -H 'Content-Type: application/yaml' --data-binary "@$OUT/one-name.yaml" > "$OUT/one-name.txt" 2>&1 || code=$?
 { [ "$code" != 0 ] && grep -q 'Amy, on line 3, and amy, on line 5, are one name' "$OUT/one-name.txt"; } || check "names: two keys of one name (exit $code): $(tail -c 300 "$OUT/one-name.txt")"
 printf 'version: 4\nassets: {}\n' | yaml_in "$N"
 [ "$(in_project "$N" add text note text='Some words.')" = note ] || check "names: add text with no name"
@@ -684,14 +684,14 @@ local T=$OUT/first-open before id
 mkdir -p "$T"
 printf 'version: 4\nassets:\n  a: {text: Current native state.}\n' | yaml_in "$T"
 id=$(status "$T" | jq -r .id)
-in_project "$T" export > "$OUT/first-open-before.yaml"
+project_api "$T" /yaml > "$OUT/first-open-before.yaml"
 printf 'version: 2\nassets: {}\n' > "$T/project.yaml"
 printf '{"format":2,"assets":{},"files":{}}\n' > "$T/project.lock"
 before="$(sha "$T/project.yaml") $(sha "$T/project.lock")"
 in_project "$T" status > "$OUT/first-open.txt" 2>&1 || check "first open: $(tail -c 300 "$OUT/first-open.txt")"
 in_project "$T" status > "$OUT/first-open-2.txt" 2>&1 || check "first reopen: $(tail -c 300 "$OUT/first-open-2.txt")"
 [ "$(status "$T" | jq -r .id)" = "$id" ] || check "first open: native identity changed"
-cmp -s <(yaml_body "$OUT/first-open-before.yaml") <(in_project "$T" export | yaml_body) || check "first open: physical files replaced native state"
+cmp -s <(yaml_body "$OUT/first-open-before.yaml") <(project_api "$T" /yaml | yaml_body) || check "first open: physical files replaced native state"
 [ "$(sha "$T/project.yaml") $(sha "$T/project.lock")" = "$before" ] || check "first open: physical authoring files were changed"
 [ ! -e "$T/project.yaml.v2" ] && [ ! -e "$T/project.lock.v2" ] && [ ! -e "$T/project.yaml.v3" ] && [ ! -e "$T/.cozy-legacy-v1" ] \
   || check "first open: created a retired migration archive"
@@ -729,7 +729,7 @@ printf '{"format":2,"assets":{},"files":{}}\n' > "$T/project.lock"
 refused_folder "$T" landing
 before=$(retired_tree "$T")
 runs_before=$(cozy --json run ls --limit 0 | jq '.runs | length')
-code=0; in_project "$T" --json render all --on local > "$OUT/old-landing.json" 2>&1 || code=$?
+code=0; project_api "$T" /runs -X POST -H 'Content-Type: application/json' -d '{"names":["all"],"on":["local"]}' > "$OUT/old-landing.json" 2>&1 || code=$?
 { [ "$code" != 0 ] && grep -q project_format_unsupported "$OUT/old-landing.json"; } || check "old landing: render did not refuse storage: $(tail -c 300 "$OUT/old-landing.json")"
 [ "$(cozy --json run ls --limit 0 | jq '.runs | length')" = "$runs_before" ] || check "old landing: an unsupported project submitted work"
 [ "$(retired_tree "$T")" = "$before" ] || check "old landing: refusal created landing files"
