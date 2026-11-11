@@ -1,6 +1,13 @@
 //! Actual native database/receipt recovery. Driver, media and inference roundtrips
 //! are qualified separately by the installed cross-platform CLI fixture.
 use super::*;
+
+#[test]
+fn rejected_vault_credentials_have_a_specific_error() {
+    let rejected = key(project_vault::Error::Unlock);
+    assert_eq!(rejected.kind, Kind::Credential);
+    assert_eq!(rejected.code, "vault_unlock_failed");
+}
 use super::super::{db, written};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 

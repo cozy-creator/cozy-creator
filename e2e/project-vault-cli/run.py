@@ -1022,7 +1022,8 @@ foreach ($rule in $allowed) {
         self.cell('explicit_preservation_keeps_and_reports_the_original_after_restart')
         shutil.rmtree(preserved)
 
-    def open_in_tty(self, password: str | None, environment: dict[str, str], *options: str) -> tuple[int, str, str]:
+    def open_in_tty(self, passwords: list[str] | None, environment: dict[str, str], *options: str,
+                    command: tuple[str, ...] = ('open',)) -> tuple[int, str, str]:
         # Real console input, not a credential mock. Raw console/session-code output stays in memory.
         import errno
         import fcntl
@@ -1035,8 +1036,8 @@ foreach ($rule in $allowed) {
         def controlling_terminal() -> None:
             os.setsid()
             fcntl.ioctl(0, termios.TIOCSCTTY, 0)
-        arguments = ['cozy', *options, 'open']
-        if '--port' in options:
+        arguments = ['cozy', *options, *command]
+        if command == ('open',) and '--port' in options:
             arguments = ['cozy', 'open', *options]
         record: dict[str, object] = {'args': arguments[1:], 'cwd': str(self.project), 'state': 'running', 'pty': True}
         self.commands.append(record)
@@ -1046,7 +1047,7 @@ foreach ($rule in $allowed) {
                                    preexec_fn=controlling_terminal)
         os.close(slave)
         transcript = bytearray()
-        entered = False
+        entered = 0
         prompt = b'Project passphrase: '
         deadline = time.monotonic() + FIRST_COLD_SECONDS
         try:
@@ -1061,15 +1062,13 @@ foreach ($rule in $allowed) {
                             raise
                         block = b''
                     transcript.extend(block)
-                if transcript.count(prompt) > 1:
-                    raise RuntimeError('open repeated its credential prompt instead of returning the failure')
-                if prompt in transcript and not entered:
-                    if password is None:
-                        raise RuntimeError('JSON open unexpectedly requested a terminal credential')
+                if transcript.count(prompt) > entered:
+                    if passwords is None or entered >= len(passwords):
+                        raise RuntimeError('the CLI requested an unexpected extra credential attempt')
                     # Wait for the actual console echo guard, not a timing sleep, before typing.
                     if not termios.tcgetattr(master)[3] & termios.ECHO:
-                        os.write(master, password.encode('utf-8') + b'\n')
-                        entered = True
+                        os.write(master, passwords[entered].encode('utf-8') + b'\n')
+                        entered += 1
             stdout, _ = process.communicate(timeout=FIRST_COLD_SECONDS)
             while select.select([master], [], [], 0)[0]:
                 try:
@@ -1082,11 +1081,11 @@ foreach ($rule in $allowed) {
                     break
                 transcript.extend(block)
             stderr = transcript.decode('utf-8', errors='replace')
-            if password is not None:
-                assert entered, 'interactive open did not request a hidden credential'
-                assert password not in stdout and password not in stderr, 'interactive open echoed its credential'
+            if passwords is not None:
+                assert entered == len(passwords), 'the CLI did not request all expected hidden credential attempts'
+                assert all(password not in stdout and password not in stderr for password in passwords), 'the CLI echoed a credential'
             assert process.returncode is not None
-            record.update(state='complete', exit_code=process.returncode, hidden_input=entered)
+            record.update(state='complete', exit_code=process.returncode, hidden_input=bool(entered), credential_attempts=entered)
             return process.returncode, stdout, stderr
         finally:
             if process.poll() is None:
@@ -1121,25 +1120,39 @@ foreach ($rule in $allowed) {
         assert code != 0 and json.loads(stdout)['error']['code'] == 'project_locked'
         assert 'Project passphrase:' not in stderr and not browser_log.exists()
         self.cell('open_json_with_a_real_tty_still_never_prompts')
-        code, stdout, _ = self.open_in_tty(wrong.read_text().strip(), environment)
-        assert code != 0 and not browser_log.exists()
+        bad = wrong.read_text().strip()
+        good = password.read_text().strip()
+        code, stdout, stderr = self.open_in_tty([bad, bad, bad], environment)
+        assert code != 0 and 'vault_unlock_failed' in stderr and not browser_log.exists()
+        assert stderr.count('Project passphrase: ') == 3
         self.assert_locked()
-        self.cell('open_wrong_hidden_credential_stays_locked_without_a_browser')
-        code, stdout, _ = self.open_in_tty(password.read_text().strip(), environment)
+        self.cell('open_three_wrong_hidden_credentials_stop_without_a_browser')
+        code, stdout, stderr = self.open_in_tty([bad, bad, good], environment)
         assert code == 0 and 'project:' in stdout and 'url:' in stdout
+        assert stderr.count('Project passphrase: ') == 3
         assert 'readable view:' not in stdout and ': unlocked' not in stdout
         assert self.status()['state'] == 'unlocked' and browser_log.exists()
-        self.cell('open_unlocks_once_and_keeps_only_the_normal_open_response')
+        self.cell('open_retries_two_wrong_credentials_then_opens_once')
         self.vault('lock', allow_locking=True)
         self.assert_locked()
         with socket.socket() as available:
             available.bind(('127.0.0.1', 0))
             port = available.getsockname()[1]
-        code, stdout, _ = self.open_in_tty(password.read_text().strip(), environment, '--port', str(port))
+        code, stdout, _ = self.open_in_tty([good], environment, '--port', str(port))
         assert code == 0 and 'url:' in stdout
         assert self.controller()['address'].endswith(':' + str(port)) and self.status()['state'] == 'unlocked'
         assert len(browser_log.read_text().splitlines()) == 2
         self.cell('open_port_unlocks_the_selected_daemon_without_rollback')
+        self.vault('lock', allow_locking=True)
+        self.assert_locked()
+        code, stdout, stderr = self.open_in_tty(None, environment, '--json', command=('vault', 'unlock'))
+        assert code != 0 and json.loads(stdout)['error']['code'] == 'vault_credential'
+        assert 'Project passphrase:' not in stderr
+        before = browser_log.read_text()
+        code, _, stderr = self.open_in_tty([bad, bad, good], environment, command=('vault', 'unlock'))
+        assert code == 0 and stderr.count('Project passphrase: ') == 3
+        assert self.status()['state'] == 'unlocked' and browser_log.read_text() == before
+        self.cell('explicit_interactive_unlock_retries_but_json_requires_a_credential_file')
         self.vault('lock', allow_locking=True)
         self.assert_locked()
 

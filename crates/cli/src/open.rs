@@ -55,7 +55,7 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// One explicit Open may unlock once. Pipes and JSON never acquire credentials implicitly.
+/// One explicit Open may prompt for an unlock. Pipes and JSON never acquire credentials implicitly.
 async fn current_or_unlock(ctx: &Context) -> Result<State, Error> {
     match project::current(ctx).await {
         Err(error) if error.code == "project_locked" && !ctx.json && io::stdin().is_terminal() && ctx.term.stderr => {

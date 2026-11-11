@@ -1,0 +1,1 @@
+Fix vault history protection when unrelated runs contain valid empty specifications. Wrong vault credentials now have a specific error code, and post-unlock history failures explicitly report that the project is already unlocked.

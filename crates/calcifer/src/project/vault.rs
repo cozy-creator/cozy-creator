@@ -48,7 +48,12 @@ struct Session {
 fn error(code: &'static str, why: impl std::fmt::Display) -> Error { Error::new(Kind::Unavailable, code, why.to_string()) }
 fn io(e: std::io::Error) -> Error { error("vault_io", e) }
 fn provider(e: impl std::fmt::Display) -> Error { error("vault_provider", e) }
-fn key(e: project_vault::Error) -> Error { error("vault_key", e) }
+fn key(e: project_vault::Error) -> Error {
+    match e {
+        rejected @ project_vault::Error::Unlock => Error::new(Kind::Credential, "vault_unlock_failed", rejected.to_string()),
+        other => error("vault_key", other),
+    }
+}
 fn held(root: &FsPath) -> Option<Held> { SESSIONS.lock().expect("vault sessions").get(root).cloned() }
 pub(crate) fn mount_identity(root: &FsPath) -> Option<MountIdentity> { held(root).map(|session| session.lock().expect("vault session").identity.clone()) }
 pub(crate) fn encrypted(root: &FsPath) -> bool { root.join(KEYBAG_FILE).is_file() || SESSIONS.lock().expect("vault sessions").contains_key(root) }
@@ -528,10 +533,13 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
                     mount(api, root, keybag, secret, ask)?;
                 }
             } else { mount(api, root, keybag, secret, ask)?; }
-            api.calcifer.store().protect_project_journal(root).map_err(|e| error("vault_journal", e))?;
+            progress.phase("protecting_history");
+            api.calcifer.store().protect_project_journal(root).map_err(|e| error("vault_journal", format!("the project is unlocked, but protecting its history failed: {e}")))?;
             let completing = receipt_path(root).is_file();
             if completing || journal_cleanup_pending(root)? {
-                api.calcifer.store().cleanup_private_journal().map_err(|e| error("vault_journal_cleanup", e))?;
+                progress.phase("compacting_history");
+                api.calcifer.store().cleanup_private_journal().map_err(|e| error("vault_journal_cleanup", format!("the project is unlocked, but history cleanup is still pending: {e}")))?;
+                progress.phase("cleaning_up");
                 journal_cleanup_done(root)?;
                 if completing { finish_conversion(root)?; }
             }

@@ -51,6 +51,22 @@ fn answer_body(store: &Store, key: &str) -> Vec<u8> {
 }
 
 #[test]
+fn journal_empty_specs_keep_blob_prefix_and_project_scope() {
+    let (directory, store, root) = database();
+    insert_run(&store, 1, &directory.path().join("other-project"), b"");
+    insert_run(&store, 2, &root, b"");
+    let mut calls = Vec::new();
+    assert!(store.rewrite_project_journal(&root, |context, value, protected| {
+        calls.push((context.to_owned(), protected));
+        Ok(rewritten(value))
+    }).unwrap());
+    assert!(calls.contains(&("run:run-2:spec".to_owned(), false)));
+    assert!(!calls.iter().any(|(context, _)| context.starts_with("run:run-1:")));
+    assert_eq!(run_spec(&store, "run-1"), b"");
+    assert_eq!(run_spec(&store, "run-2"), rewritten(b""));
+}
+
+#[test]
 fn journal_scope_keeps_large_unrelated_values_and_stale_path_envelopes() {
     let (dir, store, root) = database();
     // A string-prefix path comparison would accidentally include this sibling.

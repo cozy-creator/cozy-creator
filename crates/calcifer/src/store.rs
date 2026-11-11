@@ -664,7 +664,8 @@ impl Store {
             let all: Vec<(String, String, Vec<u8>)> = {
                 // Keep only the prefix in Rust until the path or an envelope may belong to
                 // this project. Other projects' plaintext specs can be large.
-                let mut rows = tx.prepare("SELECT id, out_dir, substr(spec, 1, ?1) AS spec FROM runs NOT INDEXED")?;
+                // SQLite returns NULL for substr of an empty BLOB, although spec is NOT NULL.
+                let mut rows = tx.prepare("SELECT id, out_dir, coalesce(substr(spec, 1, ?1), x'') AS spec FROM runs NOT INDEXED")?;
                 rows.query_map([vault::PAYLOAD_PREFIX.len() as i64], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
                     .collect::<rusqlite::Result<_>>()?
             };

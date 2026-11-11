@@ -300,6 +300,9 @@ pub struct File {
     /// The machine that keeps them, when one does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub machine: Option<String>,
+    /// What a version's file says of itself beyond its type, as its function declared it or a person set it: `orbit` turns a video.
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    pub metadata: Map<String, Value>,
 }
 
 /// `POST /v1/projects/{id}/imports`, under an `Idempotency-Key`: the file at `source` kept in the project, as one constant more of
@@ -505,6 +508,12 @@ pub struct MainFile {
     /// The machine that keeps them, when one does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub machine: Option<String>,
+    /// A video's frames, measured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frames: Option<u64>,
+    /// What it says of itself beyond its type: `orbit: {degrees, direction, loops}` shows a video turnable, not played.
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    pub metadata: Map<String, Value>,
 }
 
 /// Pick up from here: a take, by mention, and the frame its new part starts at. Never written to project.yaml; the take it makes records it.
@@ -766,6 +775,23 @@ pub struct VersionMoved {
     /// A version held that file already: it's that one, and nothing changed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub already: bool,
+}
+
+/// `PATCH /v1/projects/{id}/assets/{name}/versions/{number}`: its main file's metadata, whole; `{}` clears it. Keys Calcifer doesn't
+/// know are kept as written.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct VersionPatch {
+    pub metadata: Map<String, Value>,
+}
+
+/// What `PATCH …/versions/{number}` left: its main file's metadata now.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct VersionPatched {
+    pub name: String,
+    pub number: u32,
+    pub metadata: Map<String, Value>,
 }
 
 /// `POST /v1/projects/{id}/assets/{name}/versions`: a picture joins it. `source` as an import's.

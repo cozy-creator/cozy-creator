@@ -3,7 +3,7 @@
 # GET /v1/events; and what must be refused is: a foreign Host and Origin, a used or expired code, ?media= past a file route, a
 # call with no holder or session. Then the page as a person uses it: Place (web/place.js), one stream across tabs and a
 # `kill -9` of Calcifer (web/reconnect.js), edits with Calcifer stopped that land when it's back (web/offline.js), undo and redo of the project's history from the page and the CLI (web/undo.js), the Runs and Machines drawers with a real run from the CLI where this computer runs
-# models (web/drawers.js), what each machine is doing (web/activity.js), sign-in through AuthKit's form (web/signin.js), any project as live boxes (web/see.js), zoom from the canvas's corner (web/zoom.js), how every box and what's around the canvas are laid out (web/layout.js), assets as a person works them (web/nodes.js), a render this computer would do poorly asked first (web/localfit.js), checkpoints on boxes (web/addons.js), versions by name and a tool on a box (web/versions.js), a box from its tool's fields (web/tools.js), an Edit rendered (web/timeline.js),
+# models (web/drawers.js), what each machine is doing (web/activity.js), sign-in through AuthKit's form (web/signin.js), any project as live boxes (web/see.js), zoom from the canvas's corner (web/zoom.js), how every box and what's around the canvas are laid out (web/layout.js), assets as a person works them (web/nodes.js), a render this computer would do poorly asked first (web/localfit.js), checkpoints on boxes (web/addons.js), versions by name and a tool on a box (web/versions.js), a box from its tool's fields (web/tools.js), an orbit video turned (web/orbit.js), an Edit rendered (web/timeline.js),
 # the CLI and the open canvas as one project (web/live.js), 5,000 assets (web/scale.js), projects closed once nothing reads them (web/closes.js), a package's own UI (web/package_ui.js), the
 # canvas in a second engine, and a save past project.db held by another program (web/held.js).
 # Alone (`e2e/cli/web.sh --out DIR`) it drives this computer's cozy as it is, in the default home. It runs nothing, and leaves
@@ -109,6 +109,8 @@ step "web-versions: <name.N> and <self.N>, a tool on and off a box, a picture jo
 web_proof versions "$chrome" "$pw" ''
 step "web-tools: a box drawn from its tool's fields by type, groups two deep, slots refusing what doesn't fit, a video's range, previews, Pick up from here"
 web_proof tools "$chrome" "$pw" ''
+step "web-orbit: a function's file declared an orbit, by cozy run and a box's take, into project.db and the page: no play button, a drag turns it and wraps, off and back by Undo, on for a dropped video"
+web_orbit
 step "web-timeline: real clips and a still in an Edit, trims and a reorder, rendered free, frame-exact, read back in its .otio, its versions"
 # Real clips, made and counted by the ffmpeg Calcifer fetched for itself for thumbnails: one on a runner's PATH would keep it from fetching.
 local own; own=$(find "$HOME/.cozy/tools/ffmpeg" -name 'ffprobe*' 2> /dev/null | head -1)
@@ -129,6 +131,20 @@ step "web-package-ui: a package's component drawn, its field saved and read back
 HUB_RESTART=$on_hub web_proof package_ui "$chrome" "$pw" "$restart"
 [ -n "${WEB_ALONE:-}" ] || web_engines "$chrome" "$pw"
 web_held "$chrome" "$pw"
+}
+
+# xs-180, where this computer runs the tool: what a function says of its file rides its run's result, and an orbit's every frame is a
+# keyframe (ffprobe, Calcifer's own). Its box on the page is web/orbit.js.
+web_orbit() {
+[ -n "$LOCAL" ] || return 0
+local probe file keys
+if cell orbit "$here/project/orbit.py/turn" frames:=24; then
+  J '.result.video.metadata.orbit == {"degrees": 360, "direction": "cw", "loops": true}' "$OUT/orbit.json" || check "web-orbit: cozy run's result says no orbit: $(jq -c .result "$OUT/orbit.json" | head -c 300)"
+  probe=$(find "$HOME/.cozy/tools/ffmpeg" -name 'ffprobe*' 2> /dev/null | head -1) file=$(output orbit mp4)
+  keys=$("$probe" -v error -select_streams v:0 -show_entries frame=key_frame -of csv=p=0 "$file" | cut -d, -f1 | sort | uniq -c | tr -s ' ')
+  [ "$keys" = " 24 1" ] || check "web-orbit: not every frame of $file is a keyframe (count key_frame): ${keys:-no frames}"
+fi
+web_proof orbit "$chrome" "$pw" ''
 }
 
 # web-scale's runner speed (web/speed.js), its factor and the bar each timed cell was held to, in the job's log.

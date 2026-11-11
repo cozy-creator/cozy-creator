@@ -18,6 +18,7 @@ import { useSignal } from "../ui/signal"
 import { aspectOf, faceOf, makes, makingRun, type Shown, shownOf, valueIn, valuesOf } from "./shown"
 import { chipWords, clock, lineOf, mentionsIn, withMentions } from "./text"
 import { isSelf } from "./versions"
+import { OrbitView, orbitOf } from "./Orbit"
 
 const STAGE: Record<string, string> = { waiting: "Waiting", reading: "Reading", sending: "Sending", adding: "Adding" }
 const STRIP_FRAMES = 8
@@ -636,6 +637,9 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
   const busy = making || Boolean(view.queued) || view.asked !== undefined
   const run = busy ? makingRun(view) : undefined
   const here = shown && !shown.absent ? shown : null
+  // A video whose file says `orbit` turns, not plays: open, a drag turns it from the file here.
+  const orbit = field === "video" ? orbitOf(shown) : null
+  const turning = open && orbit && here && source && "path" in source && store.projectId ? { path: client.file(store.projectId, source.path), orbit } : null
   // On the canvas: an opened box plays the file itself.
   const { on: previewing, hover } = usePreview(field === "video" && Boolean(here) && !view.here)
   const tools = useSignal(store.tools)
@@ -682,7 +686,13 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
       {madeFrom && <MadeFrom view={view} name={name} run={run} cardWidth={cardWidth} />}
       {placing && <Progress fraction={placing.done} says={stageLine(view) ?? undefined} />}
       {busy && <OnItsWay view={view} name={name} number={run} />}
-      {open && source && field && store.projectId && (
+      {turning && here && <OrbitView key={here.sha256} path={turning.path} shown={here} orbit={turning.orbit} />}
+      {orbit && here && !open && !busy && (
+        <span className="orbit-badge" title="An orbit: open it and drag to turn">
+          <Icon name="orbit" />
+        </span>
+      )}
+      {open && source && field && store.projectId && !turning && (
         <Player
           key={JSON.stringify(source)}
           field={field}

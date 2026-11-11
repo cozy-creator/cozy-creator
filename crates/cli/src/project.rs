@@ -22,11 +22,7 @@ pub(crate) async fn identity(ctx: &Context) -> Result<api::calcifer::project::Ad
     let directory = directory()?;
     let path = crate::calcifer_client::path(&["v1", "projects", &directory, "address"]);
     match ctx.calcifer().await?.get(&path).await {
-        Err(error) if error.code == "project_not_found" => Err(Error::new(
-            Kind::Usage,
-            "not_in_a_project",
-            format!("{directory} is outside a Cozy project"),
-        ).next("cozy new")),
+        Err(error) if error.code == "project_not_found" => Err(not_in_a_project(&directory)),
         answer => answer,
     }
 }
@@ -36,13 +32,16 @@ pub(crate) async fn current(ctx: &Context) -> Result<State, Error> {
     let project = directory()?;
     let path = format!("{}?assets={}", crate::calcifer_client::path(&["v1", "projects", &project]), ctx.full);
     match ctx.calcifer().await?.get::<State>(&path).await {
-        Err(error) if error.code == "project_not_found" => Err(Error::new(
-            Kind::Usage,
-            "not_in_a_project",
-            format!("{project} is outside a Cozy project"),
-        ).next("cozy new")),
+        Err(error) if error.code == "project_not_found" => Err(not_in_a_project(&project)),
         answer => answer,
     }
+}
+
+fn not_in_a_project(directory: &str) -> Error {
+    let name = std::path::Path::new(directory).file_name().and_then(|name| name.to_str()).unwrap_or(directory);
+    Error::new(Kind::Usage, "not_in_a_project", format!("{name:?} is not a Cozy project."))
+        .remedy("Navigate to a project directory, or create one with cozy new.")
+        .next("cozy new")
 }
 
 /// Create a project in the directory named, or in the current directory.
