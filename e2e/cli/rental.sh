@@ -23,7 +23,7 @@ signin() {
     } | cozy --json login "$@" > "$out" 2> "$out.err" && { cat "$out"; return 0; }
     wait=$(jq -r '.error.retry_after_s // empty' "$out" 2> /dev/null || true)
     [ -n "$wait" ] && [ "$try" -lt 3 ] || break
-    echo "signin: the Hub asks for ${wait} s between codes"
+    echo "signin: the Hub asks for ${wait} s between codes" >&2
     sleep $((wait + 1))
   done
   cat "$out" "$out.err"
