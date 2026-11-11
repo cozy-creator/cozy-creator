@@ -1348,7 +1348,8 @@ by: string,
  */
 stages: Array<ReportStage>, models: Array<ReportModel>, components: Array<ReportComponent>,
 /**
- * Every GPU's attention kernels: the one that served, the others and why not.
+ * Every GPU's attention kernels (the one that served, the others and why not), then where each package
+ * Triton set it loaded came from (its `state`: shipped, compiled or store).
  */
 kernels: Array<ReportKernel>,
 /**
@@ -1639,7 +1640,7 @@ export type Moved = { bytes: number, gbps: number | null, ceiling_share: number 
  */
 export type NewAsset = {
 /**
- * A tool's `id`, from `GET /v1/tools`. Empty: a text asset, its words in `fields.text`.
+ * A tool's `id`, from `GET /v1/tools`. Empty: text in `fields.text`, or a blank media container selected by `kind`.
  */
 tool: string, at?: Card | null,
 /**
@@ -1651,7 +1652,7 @@ name?: string | null, fields?: { [key in string]: JsonValue },
  */
 exact?: boolean,
 /**
- * What the tool makes, as its `GET /v1/tools` row said. Absent: Calcifer works it out behind the answer.
+ * What the tool makes, or image/video/audio for an empty-tool container. Calcifer persists this as reserved `fields.node_kind`; intrinsic cozy/edit uses video_edit. Absent: infer the tool or text kind.
  */
 kind?: string | null,
 /**
@@ -2396,7 +2397,8 @@ measured?: Array<Measured>, };
 export type ReportComponent = { component: string, attention: Array<string>, gemm: Array<Gemm>, };
 
 /**
- * One attention kernel on a GPU: its state, whether it served, and its compile.
+ * One kernel on a GPU: an attention kernel's state, whether it served and its compile, or a package Triton
+ * set's source (`shipped`, `compiled` with its compile, `store`).
  */
 export type ReportKernel = {
 /**

@@ -36,6 +36,7 @@ import { copyBoxes, ownCopy } from "./copy"
 import { EntityCard } from "./EntityCard"
 import { HistoryControls } from "./HistoryControls"
 import { Placer } from "./place"
+import type { BasicNodeKind, Operation } from "./palette"
 import { Dots, Sheet } from "./Sheet"
 import { HANG, madeHere, shownOf } from "./shown"
 import { noHash } from "./text"
@@ -490,7 +491,7 @@ function Canvas({
   const machine = machines?.at(-1) ?? null
   const unread = error && !(read && lost(error)) ? error : null
   const readable = unread ? null : projectId
-  const { data: listed } = useQuery({ ...toolsQuery(client, "", machine, readable), enabled: machines !== null })
+  const { data: listed } = useQuery({ ...toolsQuery(client, "", machine, readable, true), enabled: machines !== null })
 
   useEffect(() => {
     // A project opened here for the first time is fitted, once. Either way the viewport is kept, so a reload finds it.
@@ -580,13 +581,18 @@ function Canvas({
 
   // A click puts a box in the middle of what's visible, and `place` keeps it clear of what's there.
   const placeTool = useCallback(
-    (tool: Tool) => {
+    (tool: Tool, operation?: Operation) => {
       const width = tool.fields.some((field) => field.type === "timeline") ? 720 : tool.makes === "video" ? 360 : 300
       const { x, y } = visibleCentre()
-      placer.addTool(tool, { x: x - width / 2 + CARD_WIDTH / 2, y: y - (width * 0.75) / 2 + 16 })
+      placer.addTool(tool, { x: x - width / 2 + CARD_WIDTH / 2, y: y - (width * 0.75) / 2 + 16 }, undefined, operation)
     },
     [placer, visibleCentre],
   )
+  const placeNode = useCallback((kind: BasicNodeKind) => {
+    const width = kind === "video_edit" ? 720 : kind === "video" ? 360 : 300
+    const { x, y } = visibleCentre()
+    placer.addNode(kind, { x: x - width / 2 + CARD_WIDTH / 2, y: y - (width * 0.75) / 2 + 16 })
+  }, [placer, visibleCentre])
 
   const picked = useCallback(
     (event: ChangeEvent<HTMLInputElement>) => {
@@ -613,7 +619,8 @@ function Canvas({
         store.setHot(null)
         return
       }
-      if (load.tool) placer.addTool(load.tool, point, load.fields)
+      if (load.node) placer.addNode(load.node, point)
+      else if (load.tool) placer.addTool(load.tool, point, load.fields, load.operation)
       if (load.take && !(under && store.takePicture(under, load.take))) placer.addFile(load.take, point)
     },
     [placer, flow, store],
@@ -946,8 +953,7 @@ function Canvas({
           saveToolsShut(next)
         }}
         place={placeTool}
-        choose={choose}
-        box={opened}
+        placeNode={placeNode}
       />
       <div
         ref={stage}
@@ -1017,7 +1023,7 @@ function Canvas({
       {active && <Viewer />}
       <input ref={picker} className="picker" type="file" multiple accept={ACCEPT} onChange={picked} aria-label="Add a file" />
       {slot && projectId && createPortal(<RenderAll id={projectId} routing={routing} />, slot)}
-      {history && projectId && createPortal(<HistoryControls />, history)}
+      {history && createPortal(<HistoryControls onAddFiles={choose} />, history)}
       {projectId && <ProjectSync id={projectId} />}
     </CanvasStoreProvider>
   )

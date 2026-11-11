@@ -2644,6 +2644,19 @@ a.tab:hover {
 .tool:hover {
   background: var(--tint);
 }
+.tool[aria-disabled="true"] {
+  color: var(--faint);
+  cursor: default;
+}
+.tool-settings {
+  display: grid;
+  gap: 6px;
+  padding: 8px 0;
+}
+.tool-settings select {
+  min-width: 0;
+  flex: 1;
+}
 .tool:active {
   cursor: grabbing;
 }

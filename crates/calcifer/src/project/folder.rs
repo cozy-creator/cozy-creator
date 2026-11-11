@@ -29,13 +29,12 @@ use super::{
     written::Written,
 };
 
-/// `meta`'s keys for what the upgrade of the files from before said, until a run landing says it, and the board the last render ended on.
-const UPGRADED: &str = "upgraded";
+/// The board the last render ended on.
 const BOARD: &str = "board";
 /// The machines the project's runs go to (cl-873), as a JSON list of names.
 const MACHINES: &str = "machines";
 
-/// What a project was before `project.db`, imported once on its first open and deleted (`legacy`).
+/// Authoring interchange filenames, also recognized to refuse retired file-only folders.
 pub(crate) const PROJECT: &str = "project.yaml";
 pub(crate) const LOCK: &str = "project.lock";
 /// Where every file the project uses is kept, by content: `files/<sha256>.<ext>`.
@@ -1091,8 +1090,7 @@ impl Folder {
         Self { dir: dir.to_owned(), tools: PathBuf::new(), shared: shared(dir), unsaved: Mutex::default() }
     }
 
-    /// The project in `dir`, its files measured with the ffprobe in `home`'s tools (else PATH's). A folder of the files before
-    /// `project.db` is imported now, once, and they're deleted (cl-803).
+    /// The current native project in `dir`, measured with ffprobe from `home`'s tools (else PATH).
     pub(crate) fn open(dir: &Path, home: &Home) -> Result<Self, Error> {
         Self::open_with(dir, home, |_| Ok(())).map(|(folder, ())| folder)
     }
@@ -1103,7 +1101,6 @@ impl Folder {
         let folder = Self { dir: dir.to_owned(), tools: home.tools(), shared: shared(dir), unsaved: Mutex::default() };
         drop(folder.held()?);
         let inspected = inspect(&folder)?;
-        super::legacy::leftovers(dir);
         folder.unbind_elsewhere()?;
         Ok((folder, inspected))
     }
@@ -1126,28 +1123,6 @@ impl Folder {
         db::set_identity(self.writer(&mut turn)?, &self.db(), id, name, Some(code))?;
         *self.shared.held.lock().unwrap_or_else(|e| e.into_inner()) = None;
         Ok(())
-    }
-
-    /// What the first open's upgrade said and nothing has said yet: once. project.db keeps it until then, whatever closes between.
-    /// It's read past every writer first: a landing waits on no write of the project's for it.
-    pub(crate) fn upgraded(&self) -> Vec<String> {
-        if self.reading_db(|conn| db::meta(conn, UPGRADED)).ok().flatten().is_none() {
-            return vec![];
-        }
-        let said = self.write_past(|conn| {
-            let said = db::meta(conn, UPGRADED);
-            if said.is_some() {
-                db::set_meta(conn, &self.db(), UPGRADED, None)?;
-            }
-            Ok(said)
-        });
-        match said {
-            Ok(said) => said.and_then(|said| serde_json::from_str(&said).ok()).unwrap_or_default(),
-            Err(error) => {
-                warn!("{}: {}", self.dir.display(), error.message);
-                vec![]
-            }
-        }
     }
 
     /// The board the last render here ended on, as project.db keeps it. A copy's (its original's render) or another Calcifer's is none:
@@ -1183,9 +1158,24 @@ impl Folder {
         self.writer(&mut turn).ok().map(|conn| db::locked_elsewhere(conn))
     }
 
-    /// The project folder `dir` is, if it is one: `project.db`, or the files a first open imports.
+    /// Recognize native storage or retired markers so a legacy folder receives a precise
+    /// unsupported-format refusal rather than looking like an ordinary non-project directory.
     pub(crate) fn is_project(dir: &Path) -> bool {
-        dir.join(db::DB).is_file() || dir.join(PROJECT).is_file() || super::legacy::pending(dir)
+        dir.join(db::DB).is_file() || Self::legacy_files(dir)
+    }
+
+    pub(crate) fn legacy_files(dir: &Path) -> bool {
+        [PROJECT, LOCK, "project.canvas.yaml", "project.db.new"].iter().any(|name| dir.join(name).exists())
+            || dir.join(".cozy-legacy-v1").exists()
+    }
+
+    pub(crate) fn missing_native(dir: &Path) -> Error {
+        if Self::legacy_files(dir) {
+            Error::new(Kind::Validation, "project_format_unsupported", format!("{} holds retired or incomplete project files; a current native CRDT project.db is required", dir.display()))
+                .remedy("Create a new project directory; import current-format authoring YAML explicitly into that native project")
+        } else {
+            Error::new(Kind::NotFound, "project_not_found", format!("{} holds no {}", dir.display(), db::DB)).next("cozy new")
+        }
     }
 
     fn id(&self) -> usize {
@@ -1204,28 +1194,12 @@ impl Folder {
     /// What's held of `project.db`, read now if it wasn't or another connection wrote it, `files/` filled in again if it moved. It
     /// waits on no writer: a commit holds this only to swap in what it wrote (cl-837).
     fn held(&self) -> Result<MutexGuard<'_, Option<Held>>, Error> {
+        if !self.db().is_file() { return Err(Self::missing_native(&self.dir)); }
         let mut held = self.shared.held.lock().unwrap_or_else(|e| e.into_inner());
         let mut reading = self.shared.reading.lock().unwrap_or_else(|e| e.into_inner());
         let conn = match &mut *reading {
             Some(conn) => conn,
-            None if !Self::is_project(&self.dir) => return Err(Error::new(Kind::NotFound, "project_not_found", format!("{} holds no {}", self.dir.display(), db::DB)).next("cozy new")),
-            none => none.insert({
-                // Its files from before, as whatever first reaches it finds them: upgraded to format 4 and imported, once. What that
-                // said waits in project.db for a run landing in it (`upgraded`).
-                let said = match self.db().is_file() {
-                    true => vec![],
-                    false => {
-                        let said = super::upgrade::on_touch(&self.dir)?;
-                        super::legacy::import(self)?;
-                        said
-                    }
-                };
-                let conn = db::open(&self.db())?;
-                if !said.is_empty() {
-                    db::set_meta(&conn, &self.db(), UPGRADED, Some(&serde_json::to_string(&said).expect("words serialize")))?;
-                }
-                conn
-            }),
+            none => none.insert(db::open(&self.db())?),
         };
         if held.as_ref().is_none_or(|held| db::data_version(conn) != held.seen) {
             let (seen, mut stored) = db::read(conn, &self.db())?;
@@ -1677,6 +1651,7 @@ impl Folder {
     }
     /// `source`, a file a run saved, kept: copied whole before it is named, once per content, and in the lock's table.
     pub(crate) fn keep(&self, source: &Path) -> Result<String, Error> {
+        drop(self.held()?);
         let _held = self.shared.collecting.lock().unwrap_or_else(|e| e.into_inner());
         let sha256 = hash(source)?;
         let path = file_of(&sha256, source);
@@ -1687,6 +1662,7 @@ impl Folder {
     /// A file a run is given, of `sha256`, kept in `files/` unless it's here, and in the lock's table, under what its bytes say it is
     /// else its own extension: a hard link with `link`, else a copy.
     pub(crate) fn keep_given(&self, source: &Path, sha256: &str, link: bool) -> Result<(), Error> {
+        drop(self.held()?);
         let _held = self.shared.collecting.lock().unwrap_or_else(|e| e.into_inner());
         if self.lock()?.files.get(sha256).is_some_and(|file| self.path(&file.path).is_file()) {
             return Ok(());
@@ -1703,6 +1679,7 @@ impl Folder {
 
     /// `source`, a file Calcifer made beside the project, moved into `files/` under its hash, and in the lock's table.
     pub(crate) fn take(&self, source: &Path) -> Result<String, Error> {
+        drop(self.held()?);
         let _held = self.shared.collecting.lock().unwrap_or_else(|e| e.into_inner());
         let sha256 = hash(source)?;
         let path = file_of(&sha256, source);
@@ -1714,10 +1691,11 @@ impl Folder {
 
     /// What a run landed at `dest`, of `digest`, kept in `files/` by hash: a hard link where the filesystem allows. In this order: what's
     /// `measured` of it in project.db, its file in `files/`, then its row as here and its run's listing, in place of what an earlier revision
-    /// of that output was, which goes if nothing else names it. So a file here is a file measured. Answers its path, and why it isn't listed:
-    /// paid-for bytes are kept whatever the project can say of them. One that can't take what's measured (one that can't convert has no
-    /// project.db, so nothing reads it) keeps the file unmeasured and unlisted, and that is why.
+    /// of that output was, which goes if nothing else names it. So a file here is a file measured.
+    /// Unsupported folders are refused before their files are changed; a current project's write
+    /// contention can still leave a measured file awaiting its listing.
     pub(crate) fn adopt(&self, dest: &Path, digest: &str, made: RunFile, measured: Option<&File>) -> Result<(PathBuf, Option<Error>), Error> {
+        drop(self.held()?);
         let (path, old, unlisted) = {
             let _held = self.shared.collecting.lock().unwrap_or_else(|e| e.into_inner());
             let path = file_of(digest, dest);
@@ -2036,24 +2014,6 @@ impl Folder {
             self.update_lock(|lock| lock.files.retain(|sha256, _| !unused.contains(&sha256)))
         })
     }
-}
-
-/// `text` as a `project.lock` of format 3, for the first open's import. A lock of another isn't read.
-pub(super) fn parse_lock(text: &str) -> Result<Lock, Error> {
-    let unreadable = |why: String| Error::new(Kind::Validation, "lock_unreadable", format!("{LOCK}: {why}"));
-    let value = api::yaml::to_json(text).map_err(unreadable)?;
-    match value["format"].as_u64() {
-        Some(format) if format == u64::from(FORMAT) => serde_json::from_value(value).map_err(|e| unreadable(e.to_string())),
-        Some(format) => Err(old_lock(&format.to_string())),
-        None if value.is_object() => Err(old_lock("1")),
-        None => Err(unreadable("it is no mapping".to_owned())),
-    }
-}
-
-/// A lock older than its project.yaml, which `Projects::open` would have moved had the file been old too: nothing here can convert it.
-fn old_lock(format: &str) -> Error {
-    let said = format!("{LOCK} is format {format} and cozy reads format {FORMAT}: it is left as it is, and {PROJECT} is newer than it, so it can't be upgraded");
-    Error::new(Kind::Validation, "lock_format", said).remedy(format!("put back the {LOCK} that goes with this {PROJECT}, from git or a backup"))
 }
 
 /// The file at `url`, public addresses only at every hop, up to `URL_MOST`. Err: why not.

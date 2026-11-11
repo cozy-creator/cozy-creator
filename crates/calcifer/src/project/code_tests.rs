@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn public_codes_preserve_legacy_identity_and_lookup() {
+fn public_codes_preserve_current_identity_and_lookup() {
     let root = tempfile::tempdir().unwrap();
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "project::code_tests::public_code_fixture", "--nocapture"])
@@ -21,20 +21,20 @@ async fn public_code_fixture() {
     let config = api::config::Config { hub_url: api::config::Origin::parse("http://127.0.0.1:9").unwrap(), ..Default::default() };
     let machines = crate::machines::Machines::start(calcifer.clone(), home, &root, &config);
     let api = crate::api::Api::new(calcifer, machines, "project-code-fixture");
-    let dir = root.join("legacy");
+    let dir = root.join("current");
     std::fs::create_dir(&dir).unwrap();
     let path = dir.join(db::DB);
     db::create(&path, &db::Stored { written: written::Written::blank().into(), ..Default::default() }, &[], &[]).unwrap();
     let mut conn = db::open(&path).unwrap();
-    let id = folder_id(&dir);
-    db::set_identity(&mut conn, &path, &id, "Legacy", None).unwrap();
+    let id = "project-native-kept-id".to_owned();
+    db::set_identity(&mut conn, &path, &id, "Current", None).unwrap();
     let unsupported = root.join("unsupported");
     std::fs::create_dir(&unsupported).unwrap();
-    let unsupported_id = folder_id(&unsupported);
+    let unsupported_id = "project-unsupported".to_owned();
     rusqlite::Connection::open(unsupported.join(db::DB)).unwrap()
         .pragma_update(None, "user_version", 9999).unwrap();
     api.calcifer.store().write(|tx| {
-        tx.execute("INSERT INTO projects (id, name, path, used_at_ms) VALUES (?1, 'Legacy', ?2, 42)", rusqlite::params![id, dir.to_string_lossy()])?;
+        tx.execute("INSERT INTO projects (id, name, path, used_at_ms) VALUES (?1, 'Current', ?2, 42)", rusqlite::params![id, dir.to_string_lossy()])?;
         tx.execute("INSERT INTO projects (id, name, path, used_at_ms) VALUES (?1, 'Unsupported', ?2, 43)", rusqlite::params![unsupported_id, unsupported.to_string_lossy()])?;
         Ok(())
     }).unwrap();
@@ -42,23 +42,23 @@ async fn public_code_fixture() {
     // Listing assigns the readable project's code even when a different project's DB is unsupported.
     let listed = indexed(&api).unwrap();
     assert_eq!(listed.len(), 2);
-    let legacy = listed.iter().find(|entry| entry.id == id).unwrap();
-    let code = legacy.code.clone();
+    let current = listed.iter().find(|entry| entry.id == id).unwrap();
+    let code = current.code.clone();
     assert_eq!(code::parse(&code), Some(code.clone()));
-    assert_eq!(legacy.used_at_ms, 42);
+    assert_eq!(current.used_at_ms, 42);
     assert!(listed.iter().find(|entry| entry.id == unsupported_id).unwrap().code.is_empty());
     assert_eq!(known(&api, &unsupported_id).unwrap().path, unsupported);
     let refusal = api.projects.get(&api, &unsupported_id).err().expect("unsupported DB is refused when opened");
     assert_eq!(refusal.0.code, "project_db_version");
-    assert_eq!(db::identity(&conn), Some((id.clone(), "Legacy".into())));
+    assert_eq!(db::identity(&conn), Some((id.clone(), "Current".into())));
     assert_eq!(db::meta(&conn, "code"), Some(code.clone()));
-    assert_eq!(identify(&api, &dir).unwrap(), (id.clone(), "Legacy".into(), code.clone()));
+    assert_eq!(identify(&api, &dir).unwrap(), (id.clone(), "Current".into(), code.clone()));
     assert_eq!(identify(&api, &dir).unwrap().2, code);
     db::set_meta(&conn, &path, "code", None).unwrap();
     assert_eq!(identify(&api, &dir).unwrap().2, code);
     assert_eq!(db::meta(&conn, "code"), Some(code.clone()));
     assert_eq!(known(&api, &code.to_ascii_lowercase()).unwrap().id, id);
-    assert_eq!(known(&api, "legacy").unwrap().id, id);
+    assert_eq!(known(&api, "current").unwrap().id, id);
     assert_eq!(named(&api, dir.to_str().unwrap()).unwrap(), dir);
 
     // A code remains authoritative when another project's display name is identical.
@@ -85,7 +85,7 @@ async fn public_code_fixture() {
     std::fs::create_dir(&copy).unwrap();
     let copy_path = copy.join(db::DB);
     db::create(&copy_path, &db::Stored { written: written::Written::blank().into(), ..Default::default() }, &[], &[]).unwrap();
-    db::set_identity(&mut db::open(&copy_path).unwrap(), &copy_path, &id, "Legacy", Some(&code)).unwrap();
+    db::set_identity(&mut db::open(&copy_path).unwrap(), &copy_path, &id, "Current", Some(&code)).unwrap();
     let (copy_id, _, copy_code) = identify(&api, &copy).unwrap();
     assert_ne!(copy_id, id);
     assert_ne!(copy_code, code);

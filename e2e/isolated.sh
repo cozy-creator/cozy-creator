@@ -2,7 +2,7 @@
 # e2e/skew/run.sh --admin --command: OUT INSTALLED_COZY RUNTIME TENSORFS cli|imports|cpu <that suite's run.sh arguments>.
 # A suite against its own isolated Hub. Signed in as that Hub's admin, it first publishes there what the suite reads
 # from a Hub, as production holds it. The cli suite's shards read, at the root, from run.sh's --packages checkout, the
-# toolbox's defaults (qwen-image-2, minimax-h3) and birefnet, and a stand-in minimax-h3-tools (hub_away locks it from the
+# toolbox's defaults (qwen-image-2, minimax-h3, sdxl) and birefnet, and a stand-in minimax-h3-tools (hub_away locks it from the
 # root index, hub_dependency calls its echo); then the models their cells download: BiRefNet's weights from the Hugging Face
 # revision production mirrors, and random weights for queued_download's two. macOS and Windows run no models and need no
 # weights: their shards take the packages alone. The imports suite installs the checkout's own package directories and
@@ -132,7 +132,7 @@ if [ -n "$needs" ]; then
     sed -e 's/^name = "ci-hub-pkg"/name = "minimax-h3-tools"/' -e 's/ci_hub_pkg/minimax_h3_tools/g' "$tools/$f" > "$tools/$f.next" && mv "$tools/$f.next" "$tools/$f"
   done
   publish "$tools"
-  for p in qwen-image-2 minimax-h3 birefnet; do publish "$packages/$p"; done
+  for p in qwen-image-2 minimax-h3 sdxl birefnet; do publish "$packages/$p"; done
   case $shard in
     local-code | '')
       # Its lock reads the Hub's index, under the Hub's own CA: Calcifer's uv takes the system's bundle once restarted.

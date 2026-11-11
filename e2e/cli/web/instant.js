@@ -93,7 +93,7 @@ async function loseAnswers(page, method, path, times) {
   const count = (name) => yaml().match(new RegExp(`^  ${name}(_\\d+)?:`, 'gm'))?.length ?? 0;
   const box = (name) => boxOf(page, name);
   // A tool by its id: a package's tool can have the same title (minimax-h3/edit is Edit too).
-  const row = (id) => page.locator(`.tools .tool[data-tool="${id}"]`);
+  const row = (id) => page.locator(`.tools [data-palette="nodes"] .tool[data-tool="${id}"]`);
   await page.waitForSelector('.tools .tool');
   await page.waitForSelector('.empty-canvas');
 

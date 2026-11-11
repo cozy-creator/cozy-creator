@@ -1,1 +1,5 @@
 # card (NVML name)	bf16 TFLOPS	GB/s: a healthy pod's calibrate (bench), xs-177. The gate refuses a host below 70% of either.
+NVIDIA GeForce RTX 4060 Ti	43.4	246.7
+NVIDIA GeForce RTX 5060 Ti	49.3	386.5
+NVIDIA GeForce RTX 4090	147.1	919.0
+NVIDIA H100 80GB HBM3	715.8	2995.2

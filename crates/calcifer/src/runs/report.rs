@@ -228,6 +228,16 @@ struct Gpu {
     gpu: Option<i64>,
     arch: String,
     attention: Attention,
+    /// Where each package Triton set it loaded came from: `shipped`, `compiled` (`compile_ms`) or `store`.
+    kernels: Vec<PackageSet>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct PackageSet {
+    kernel: String,
+    source: String,
+    compile_ms: f64,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -436,9 +446,10 @@ fn components(measured: &Measured) -> Vec<report::Component> {
 fn kernels(measured: &Measured) -> Vec<report::Kernel> {
     let mut rows = vec![];
     for gpu in &measured.m.execution.gpus {
+        let at = gpu.gpu.filter(|n| *n >= 0).map(|n| n as u32);
         for kernel in &gpu.attention.kernels {
             rows.push(report::Kernel {
-                gpu: gpu.gpu.filter(|n| *n >= 0).map(|n| n as u32),
+                gpu: at,
                 arch: gpu.arch.clone(),
                 kernel: kernel.kernel.clone(),
                 state: kernel.state.clone(),
@@ -446,6 +457,17 @@ fn kernels(measured: &Measured) -> Vec<report::Kernel> {
                 progress: kernel.progress,
                 compile_ms: kernel.compile_ms,
                 detail: kernel.detail.clone(),
+            });
+        }
+        // A package's Triton sets: their state is where they came from.
+        for set in &gpu.kernels {
+            rows.push(report::Kernel {
+                gpu: at,
+                arch: gpu.arch.clone(),
+                kernel: set.kernel.clone(),
+                state: set.source.clone(),
+                compile_ms: set.compile_ms,
+                ..report::Kernel::default()
             });
         }
     }

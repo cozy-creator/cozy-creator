@@ -1,6 +1,6 @@
 # A project as YAML (format 4)
 
-A project's state is its `project.db` (`PROJECT-DB.md`); the page and the CLI change it through Calcifer. YAML is its view: `GET /v1/projects/{id}/yaml` exports it for reading, a diff or git, and `PUT /v1/projects/{id}/yaml` reads one back, each box and field that differs written as one edit. It is never the source of truth, and a comment in it isn't kept. A folder of the files from before `project.db` (format 2, 3 or 4) is imported on its first open. The HTTP API is in `CALCIFER-API.md`, and the reasons in `tracker/design/project-format-ui.md` and `tracker/design/tools.md`.
+A project's state is its `project.db` (`PROJECT-DB.md`); the page and the CLI change it through Calcifer. YAML is its view: `GET /v1/projects/{id}/yaml` exports it for reading, a diff or git, and `PUT /v1/projects/{id}/yaml` reads one back, each box and field that differs written as one edit. It is never the source of truth, and a comment in it isn't kept. Physical YAML/lock-only folders are unsupported and are never implicitly imported; create native storage first and use the explicit current-format HTTP authoring view. The HTTP API is in `CALCIFER-API.md`, and the reasons in `tracker/design/project-format-ui.md` and `tracker/design/tools.md`.
 
 ## The idea
 
@@ -88,7 +88,7 @@ Every other key is a **field** of its tool: the binder gives it to the function 
 
 ## Defaults
 
-`defaults` is still read, though `upgrade` writes none. It holds `image`, `video` and `audio`, and fills what an asset with a tool doesn't say, by what its tool's interface says it makes, never by what a version is: inputs, `models` and `lora`, and `null` in the asset takes one back. Not its tool, and not what Calcifer makes itself, an edit or a frame. A style edit puts every asset it reaches out of date, a background removal too.
+`defaults` is read by the current authoring view. It holds `image`, `video` and `audio`, and fills what an asset with a tool doesn't say, by what its tool's interface says it makes, never by what a version is: inputs, `models` and `lora`, and `null` in the asset takes one back. Not its tool, and not what Calcifer makes itself, an edit or a frame. A style edit puts every asset it reaches out of date, a background removal too.
 
 ## First-party inputs
 
@@ -220,17 +220,12 @@ The package `cozy` is reserved: Calcifer runs it itself, free, with no machine, 
 - **Use one:** `--file image=65b436d4f9a3` names a file by its hash, and approving that file for `kyogre` in the browser makes it what `kyogre` holds.
 - **`reclaim`** lists a run's files once nothing names them.
 
-## Upgrading from format 2
+## Canonical storage and interchange
 
-A folder of format 2 upgrades itself the first time Calcifer opens it, and says so once, before its files are imported into `project.db`. The old files stay beside as `project.yaml.v2` and `project.lock.v2`. Each asset's state is worked out from the old files as the cozy that reads format 2 did, so what was current stays current and what was out of date stays so. What can't convert is refused, says why and stays as it is: runs on their way, or two names that fold to one. A run that lands in it keeps its output in `files/`, unlisted, and its warning says why. Format 1 isn't moved.
+A project is stored in its current native CRDT `project.db`. Folders stored only as `project.yaml`,
+`project.lock` or migration stages are unsupported and are not upgraded, imported or archived on open.
+Calcifer refuses them without changing their project data.
 
-- Each asset's `render` goes flat, `prompt` as `instructions`, and `with` as `tool`, always a function: H3 is `generate`, with `turbo: false` only where a file said so or where it set `steps`; any other package's `turbo: true` is `generate_turbo`, `turbo: false` `generate`, and with neither what made its newest version. A video with only `video` and `resolution` is `upscale`. `with: cozy` is `cozy/edit`, or `cozy/frame` for a picture. `pieces` become `tracks`, `start` `in` and `end` `out`. A hash in `image`, `video` or `audio` is `approved`, and an input under `# was` is back. `kind` lines go. Comments stay.
-- Each entity folds into its sheet, which takes its name, `description` and `asset_type`. Each form becomes an asset, `<entity>.<form>`, and mentions are rewritten.
-- A description that was in an asset's prompt, and now goes only to what mentions it, is said by name.
-- `defaults` go. A style becomes the text asset `style`, and a second, `video_style`, where the video's differs: `<style>` and the rest of its words, if it extends the first. Each prompt mentions the one it took: in Qwen's `instructions` as `Style: <style>.`, at the front of H3's `summary`, which it starts if there's none, and as `style: <style>` in any other package. A shared `soundscape` becomes a text asset too, mentioned in each shot's. `music: N/A` goes, as an empty field says the same. `aspect_ratio` and the rest go into each asset that took them, and Qwen's `transparent: true` into the words it stood for.
-- Names that fold to one are said, by name, and nothing is written: rename one, and upgrade again.
-- A still a shot wrote, and that something mentions, becomes a file asset. A mention no version wrote and nothing makes is left as it is, and said.
-- A mention whose meaning changes is said, with its asset and lines. A beat writes nothing in format 3, so a mention of what one wrote now names nothing, or a version: `<coast.1>` reads as version 1 of `coast`.
-- **The new key is stamped on each asset's current version**, so nothing goes out of date and nothing runs. Other versions keep their old keys: putting old text back won't find them, and what was out of date stays so.
-
-**Format 3 to 4** (`tracker/design/tools.md`) goes on from there, or alone on a format 3 folder, keeping each box's state as format 3 read it: the new name-blind key is stamped on exactly what stood, so nothing goes out of date and nothing out of date comes back. `qwen-image-2/generate` and `generate_turbo` become `qwen-image-2/image` with `turbo`; a shot with a `plate` becomes `minimax-h3/edit`, its `lora` its `edit` choice and its typed trigger word off its beats; a written `continue_from` goes; a shot's `resolution` and `upscale` go, an upscale box's `resolution` is `to`, and `upscale.model: seedvr2` a `seedvr2/upscale` box; `kind`, `asset_type` and `voice` lines go, with one warning per project naming the boxes; a dotted name becomes `_`, its mentions, lock row and canvas row with it. The old files stay as `project.yaml.v3` and `project.lock.v3`.
+Current-format YAML remains an explicit authoring interchange: export a native project's graph or
+import format 4 text into an already native project. That does not replace its retained versions,
+media or undo history with a file-based project store. Older format 2/3 documents are not converted.

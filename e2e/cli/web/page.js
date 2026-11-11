@@ -616,7 +616,19 @@ function rowsOf(folder, query) {
   return execFileSync(PYTHON, ['-c', script, `${folder}/project.db`, query], { encoding: 'utf8' }).split('\n').filter(Boolean).map((line) => JSON.parse(line));
 }
 
+/** Pick a real implementation inside a node's operation configuration. */
+async function chooseModel(page, name, id, operation) {
+  await openBox(page, name);
+  const card = boxOf(page, name);
+  const tool = card.locator('select[aria-label="Tool"]');
+  if (operation && await tool.inputValue() !== operation) await tool.selectOption(operation);
+  const model = card.locator('select[aria-label="Model"]');
+  await model.locator('option').filter({ hasText: /./ }).first().waitFor({ state: 'attached' });
+  await until(`model ${id} is available`, () => model.locator('option').evaluateAll((options) => options.map((option) => option.value)), (ids) => ids.includes(id));
+  await model.selectOption(id);
+}
+
 /** Python as this OS names it: Windows has no python3 of its own. */
 const PYTHON = process.platform === 'win32' ? 'python' : 'python3';
 
-module.exports = { projectUrl, projectFromPage, projectJson, importFile, projectAction, cozyIn, newProject, BARS, DARK_OPEN, GPU, MP4, PYTHON, STEP_MS, boxLog, boxOf, calcifer, carry, closeBox, openBox, openCanvas, drop, importYaml, lastLook, launch, lookAt, noStall, panning, png, pointAt, removeGeneratedProject, renderOf, rowsOf, settled, fitCanvas, projectHeld, observeResizes, signIn, summary, until, upload, watchBoxes, wav, yamlOf };
+module.exports = { chooseModel, projectUrl, projectFromPage, projectJson, importFile, projectAction, cozyIn, newProject, BARS, DARK_OPEN, GPU, MP4, PYTHON, STEP_MS, boxLog, boxOf, calcifer, carry, closeBox, openBox, openCanvas, drop, importYaml, lastLook, launch, lookAt, noStall, panning, png, pointAt, removeGeneratedProject, renderOf, rowsOf, settled, fitCanvas, projectHeld, observeResizes, signIn, summary, until, upload, watchBoxes, wav, yamlOf };

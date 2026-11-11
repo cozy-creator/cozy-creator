@@ -27,7 +27,8 @@ pub struct Measured {
     pub stages: Vec<Stage>,
     pub models: Vec<Model>,
     pub components: Vec<Component>,
-    /// Every GPU's attention kernels: the one that served, the others and why not.
+    /// Every GPU's attention kernels (the one that served, the others and why not), then where each package
+    /// Triton set it loaded came from (its `state`: shipped, compiled or store).
     pub kernels: Vec<Kernel>,
     /// Each GPU's whole request.
     pub memory: Vec<Memory>,
@@ -132,7 +133,8 @@ pub struct Fallback {
     pub reason: String,
 }
 
-/// One attention kernel on a GPU: its state, whether it served, and its compile.
+/// One kernel on a GPU: an attention kernel's state, whether it served and its compile, or a package Triton
+/// set's source (`shipped`, `compiled` with its compile, `store`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "ReportKernel"))]
 #[serde(default)]
