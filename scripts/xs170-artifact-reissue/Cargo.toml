@@ -1,0 +1,14 @@
+[package]
+name = "xs170-artifact-reissue"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+# A one-off client, not a member of the installed Cozy CLI or SDK.
+[workspace]
+
+[dependencies]
+tensorfs = { path = "../../crates/tensorfs", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
