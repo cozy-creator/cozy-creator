@@ -671,7 +671,7 @@ def versus(gates: list[Gate], defs: list[CellDef]) -> tuple[list[str], list[str]
         ctx = (g['reference'].get('before') or {}).get('ctx_mib')
         lines += [f"\n### {g['group']} on {g['pod']}: {g['label']} against ComfyUI {next(iter(g['comfyui'].values()))['comfyui']}"
                   f" (Cozy's CUDA context {ctx if ctx is not None else '?'} MiB; a cold marked * fetched its weights: no --warm on that build)", '',
-                  '| cell | GPU | warm total s: Cozy / ComfyUI | ComfyUI / Cozy | steady step s: Cozy / ComfyUI | peak VRAM GiB: Cozy / ComfyUI |'
+                  '| cell | GPU | warm total s: Cozy (on the machine) / ComfyUI | ComfyUI / Cozy | steady step s: Cozy / ComfyUI | peak VRAM GiB: Cozy / ComfyUI |'
                   ' cold s: Cozy / ComfyUI | Cozy loses |', '|---|---|---|---|---|---|---|---|']
         for name, x in g['comfyui'].items():
             c = g['cells'].get(name)
@@ -679,6 +679,10 @@ def versus(gates: list[Gate], defs: list[CellDef]) -> tuple[list[str], list[str]
             judged = {'warm total': (sec(w.get('total_ms')), x['total_s'], 's'), 'steady step': (sec(w.get('steady_ms')), x.get('steady_s'), 's'),
                       'peak VRAM': (gib(ours_peak), gib(x.get('peak_mib')), 'GiB')}
             gaps = [f"{k} +{a - b:.3g} {u} ({a / b - 1:+.0%})" for k, (a, b, u) in judged.items() if a is not None and b and a > b]
+            # A run's total is Calcifer's, on this computer: it also counts recording the run here (cl-865).
+            exe = sec(w.get('execution_ms'))
+            if exe is not None and x['total_s'] and gaps and gaps[0].startswith('warm total'):
+                gaps[0] += f" (on the machine {exe:.3g} s: {'faster' if exe < x['total_s'] else 'also slower'})"
             mixed = f" (ran on {len(c['builds'])} machine builds: rerun it)" if c and len(c.get('builds', [])) > 1 else ''
             if not w:
                 gaps = [f"Cozy did not complete: {'; '.join(c['failed'][:1]) if c else 'not run'}"]
@@ -694,7 +698,8 @@ def versus(gates: list[Gate], defs: list[CellDef]) -> tuple[list[str], list[str]
             tot, steady, peak = judged['warm total'], judged['steady step'], judged['peak VRAM']
             speed = f"{tot[1] / tot[0]:.2f}x" if tot[0] and tot[1] else ('ComfyUI failed' if x['status'] != 'ok' else '-')
             dl = '*' if c and c.get('cold_downloaded') else ''
-            lines.append(f"| {name} | {f'{cap[name]} GiB' if cap.get(name) else 'whole'} | {pair(tot[0], tot[1], 2)} | {speed} |"
+            mine = '-' if tot[0] is None else f"{tot[0]:.2f}" + ('' if exe is None else f" ({exe:.2f})")
+            lines.append(f"| {name} | {f'{cap[name]} GiB' if cap.get(name) else 'whole'} | {mine} / {'-' if tot[1] is None else f'{tot[1]:.2f}'} | {speed} |"
                          f" {pair(steady[0], steady[1], 3)} | {pair(peak[0], peak[1], 1)} | {pair(sec(cold), x['cold_s'], 1)}{dl} |"
                          f" {'; '.join(gaps) or ('no: ComfyUI ' + x['status'] if x['status'] != 'ok' else 'no')}{mixed} |")
         for name, x in g['comfyui'].items():
