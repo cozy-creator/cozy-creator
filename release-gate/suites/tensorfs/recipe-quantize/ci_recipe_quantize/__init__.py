@@ -190,7 +190,7 @@ def predict(
                 "inference_max_abs_error": max_error,
                 "output_shape": list(actual.shape),
                 "output_sha256": hashlib.sha256(actual.numpy().tobytes()).hexdigest(),
-                "weight_payload_sha256": hashlib.sha256(parts["weight"][2]).hexdigest(),
+                "weight_payload_sha256": hashlib.sha256(encoded.parts["weight"].tobytes()).hexdigest(),
             },
             sort_keys=True,
         ),
