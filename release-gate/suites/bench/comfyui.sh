@@ -7,8 +7,12 @@ COMFY_PY=(nice -n 19 uv run -q --no-project --with numpy python -I "$HERE/suites
 declare -F retried > /dev/null || retried() { local w=2 t=$SECONDS; until "$@"; do [ $((SECONDS - t)) -lt 300 ] || return 1; sleep $((w + RANDOM % (w + 1))); w=$((w * 2 > 60 ? 60 : w * 2)); done; }
 "${COMFY_PY[@]}" jobs "$OUT" > comfy-jobs.json 2> comfy-jobs.err || { expect comfyui-jobs FAIL "$(tail -c 300 comfy-jobs.err)"; return 0; }
 if [ "$(jq length comfy-jobs.json)" = 0 ]; then log "comfyui: no completed cell of this group names a ComfyUI cell"; return 0; fi
-{ [ -d benchmarks/.git ] || git clone -q --filter=blob:none --no-checkout "$BENCHMARKS" benchmarks; } && git -C benchmarks fetch -q origin "$BENCHMARKS_AT" &&
-  git -C benchmarks archive "$BENCHMARKS_AT" | "$CLI" machine ssh "$M" "rm -rf /var/tmp/bm && mkdir -p /var/tmp/bm && tar -xf - -C /var/tmp/bm" &&
+# The runner is private: CI checks it out with its deploy key (release-gate.yml, BENCHMARKS_DIR); elsewhere this computer's
+# git credentials clone it.
+BM=${BENCHMARKS_DIR:-benchmarks}
+{ [ -d "$BM/.git" ] || git clone -q --filter=blob:none --no-checkout "$BENCHMARKS" "$BM"; } &&
+  { git -C "$BM" cat-file -e "$BENCHMARKS_AT^{commit}" 2> /dev/null || git -C "$BM" fetch -q origin "$BENCHMARKS_AT"; } &&
+  git -C "$BM" archive "$BENCHMARKS_AT" | "$CLI" machine ssh "$M" "rm -rf /var/tmp/bm && mkdir -p /var/tmp/bm && tar -xf - -C /var/tmp/bm" &&
   "$CLI" machine ssh "$M" "cat > /var/tmp/bm/bench_comfy.py" < "$HERE/suites/bench/comfy.py" &&
   "$CLI" machine ssh "$M" "cat > /var/tmp/bm/jobs.json" < comfy-jobs.json ||
   { expect comfyui-setup FAIL "the benchmarks runner at $BENCHMARKS_AT did not reach $M"; return 0; }
@@ -41,5 +45,7 @@ date +%s%3N >> comfy-window
 mkdir -p comfyui
 "$CLI" machine ssh "$M" "tar -cf - -C /var/tmp/bm comfy.log -C results bench-comfy.jsonl bench-comfy" | tar -xf - -C comfyui
 "${COMFY_PY[@]}" rows "$OUT" > comfyui-rows.json
-log "comfyui: $(jq -c 'map_values({total_s, cold_s, status})' comfyui-rows.json)"
+# In CI (a public log) ComfyUI's numbers stay in comfyui-rows.json, which release-gate.yml seals (seal.sh).
+if [ -n "${GITHUB_ACTIONS:-}" ]; then log "comfyui: rows for $(jq -r 'keys | join(", ")' comfyui-rows.json) in comfyui-rows.json"
+else log "comfyui: $(jq -c 'map_values({total_s, cold_s, status})' comfyui-rows.json)"; fi
 podsh "cat /var/tmp/memavail.log" > memavail.log 2>/dev/null
