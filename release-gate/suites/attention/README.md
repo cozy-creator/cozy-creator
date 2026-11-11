@@ -31,6 +31,8 @@ cd <cozy-runtime checkout> && uv run python scripts/attention_table.py generate 
 `collect.py` replaces each measured class's record in the Runtime's `measurements/attention.json` and computes every
 kernel's build identity from the source the pod ran (the wheel's stamped commit). The Runtime's
 `scripts/attention_table.py check` runs in its merge queue: the table must regenerate byte for byte, every listed kernel
-must still be the build that was measured, and every kernel a class runs must have been measured there.
+must still be the build that was measured, and every kernel a class runs must have been measured there. `table.sh` runs
+that check on a candidate wheel against the source it was stamped with, and fails a wheel whose table is not that source's:
+before a cut rents anything (release-gate/README.md, Before renting), and as this suite's first cell (`attention-table`).
 
 Cost: about 40 min a card; L40S $0.8/h, RTX 4090 $1.0, RTX 5090 $1.4, RTX PRO 6000 $4.2, H100 $6.7, B200 $12.9.

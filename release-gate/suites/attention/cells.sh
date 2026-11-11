@@ -3,6 +3,10 @@
 # `cozy_runtime.bench`); drive/ only calls it. collect.py turns the gate directories into the Runtime's
 # measurements/attention.json.
 KD=$HERE/suites/attention/drive
+# The candidate's table against the Runtime source it was built from (table.sh, which a cut also runs before renting).
+attention_table=$("$HERE/suites/attention/table.sh" "${RWF:-}" "$rt" 2>&1) \
+  && expect attention-table PASS "$(tail -n 1 <<< "$attention_table")" \
+  || expect attention-table FAIL "$(grep -h '^FAIL' <<< "$attention_table" | head -3) $(tail -n 1 <<< "$attention_table")"
 cell attention-inventory "$KD/attention_inventory" --gpus=1
 attention_inv=$(run_get "$OUT" attention-inventory .result.detail)
 attention_sets=$(jq -r '.sets[] | join(",")' <<< "$attention_inv" 2>/dev/null)
