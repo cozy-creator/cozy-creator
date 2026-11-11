@@ -486,6 +486,11 @@ impl Client {
         self.watch("/v1/events").await
     }
 
+    /// Run changes only, without machine snapshots or project subscriptions.
+    pub(crate) async fn run_changes(&self) -> Result<Watch<StreamEvent>, Error> {
+        self.watch("/v1/events?scope=runs").await
+    }
+
     /// A stream with no place to resume from, subscribed once this answers.
     pub(crate) async fn watch<T: DeserializeOwned>(&self, path: &str) -> Result<Watch<T>, Error> {
         let answer = self.opened(|c, base| {
