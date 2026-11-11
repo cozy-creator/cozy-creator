@@ -1,0 +1,8 @@
+# xs-171's end-to-end arms (arms.py): one group per hardware class, on its reference card (suites/attention/skus), at the
+# pod's own host RAM. <group> <host GiB> <disk GB> <hard stop min> <class>; bench.sh reads the first four.
+l40sx1.arms 1024 400 300 mma.sync
+rtx-4090x1.arms 1024 400 300 mma.sync/half
+rtx-pro-6000x1.arms 1024 400 240 mma.sync+fp4
+rtx-5090x1.arms 1024 400 240 mma.sync+fp4/half
+h100-sxm5-80gbx1.arms 1024 400 180 wgmma
+b200x1.arms 1024 400 180 tcgen05
