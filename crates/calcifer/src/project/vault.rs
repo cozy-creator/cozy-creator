@@ -533,10 +533,13 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
                     mount(api, root, keybag, secret, ask)?;
                 }
             } else { mount(api, root, keybag, secret, ask)?; }
+            progress.phase("protecting_history");
             api.calcifer.store().protect_project_journal(root).map_err(|e| error("vault_journal", format!("the project is unlocked, but protecting its history failed: {e}")))?;
             let completing = receipt_path(root).is_file();
             if completing || journal_cleanup_pending(root)? {
+                progress.phase("compacting_history");
                 api.calcifer.store().cleanup_private_journal().map_err(|e| error("vault_journal_cleanup", format!("the project is unlocked, but history cleanup is still pending: {e}")))?;
+                progress.phase("cleaning_up");
                 journal_cleanup_done(root)?;
                 if completing { finish_conversion(root)?; }
             }
