@@ -476,6 +476,20 @@ jobs:
           ref: ${{ needs.affected.outputs.ref }}
           stack_ref: ${{ needs.affected.outputs.stack }}
           runtime_ref: ${{ needs.affected.outputs.runtime }}
+      - if: runner.os == 'Windows' && (inputs.tensord != '' || inputs.publish_run != '')
+        uses: actions/checkout@v5
+        with:
+          repository: cozy-creator/cozy-creator
+          ref: ${{ needs.affected.outputs.repo == 'cozy-creator' && needs.affected.outputs.ref || needs.affected.outputs.stack }}
+          path: .native-tests
+      - name: Windows supervisor process tests
+        if: runner.os == 'Windows'
+        env:
+          CREATOR: ${{ (inputs.tensord != '' || inputs.publish_run != '') && '.native-tests' || (needs.affected.outputs.repo == 'cozy-creator' && '.src' || '.stack') }}
+        run: |
+          cd "$CREATOR"
+          cargo test --locked -p platform --lib ipc::windows::tests -- --nocapture
+          cargo test --locked -p tensord --lib machine::supervise::tests -- --nocapture
       - if: inputs.tensord == '' && inputs.publish_run == ''
         env:
           SOURCE: ${{ needs.affected.outputs.repo == 'cozy-creator' && needs.affected.outputs.ref || needs.affected.outputs.stack }}
@@ -536,14 +550,6 @@ jobs:
           tensorfs: ${{ inputs.tensorfs }}
           runtime: ${{ inputs.runtime }}
           release: ${{ inputs.publish_run }}
-      - name: Windows supervisor process tests
-        if: runner.os == 'Windows'
-        env:
-          CREATOR: ${{ needs.affected.outputs.repo == 'cozy-creator' && '.src' || '.stack' }}
-        run: |
-          cd "$CREATOR"
-          cargo test --locked -p platform --lib ipc::windows::tests -- --nocapture
-          cargo test --locked -p tensord --lib machine::supervise::tests -- --nocapture
       - name: cli suite
         env:
           PINS: ${{ inputs.pins }}
