@@ -388,25 +388,19 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
       await fit();
       const before = await toolUi(released);
       check('not_installed_does_not_load', before.status === 404 && before.body.error.code === 'tool_ui_not_installed', before);
-      // Browse: a package of the Hub, on your list with nothing installed, there after a reload, and off it again. A box of it goes on.
+      // The catalog remains an API; sidebar discovery is retired. Add the real published package through that API, without installing it.
       const listRow = page.locator(`.tools [data-tool="${released}"]`);
       await away();
-      await page.locator('.tools button:has-text("Browse")').click();
-      const found = page.locator('.browse .browsed', { hasText: name });
-      await found.waitFor();
-      check('browse_says_what_it_does', (await found.innerText()).includes('One field, shaded.'), await found.innerText());
-      check('browse_has_a_first_page', (await page.locator('.browse .browsed').count()) === 50);
-      await page.locator('.browse button:has-text("More")').click();
-      await page.locator('.browse .browsed', { hasText: 'shelf-59' }).waitFor();
-      check('browse_reads_on', (await page.locator('.browse .browsed').count()) === 61 && (await page.locator('.browse button:has-text("More")').count()) === 0);
-      await page.locator('.tools input[aria-label="Search the tools"]').fill('shelf-59');
-      await until('browse searched', () => page.locator('.browse .browsed').count(), (rows) => rows === 1);
-      await shot('browse');
-      await page.locator('.tools input[aria-label="Search the tools"]').fill('');
-      await found.waitFor();
-      await found.locator('button:has-text("Add")').click();
-      await page.locator('.tools button:has-text("Your tools")').click();
-      await listRow.waitFor();
+      seen.retired_sidebar_ui = ['Browse button', 'package pagination and search controls'];
+      const firstPage = await api('/v1/tools/browse?limit=50');
+      check('catalog_api_says_what_it_does', firstPage.status === 200 && firstPage.body.packages.some((one) => one.package === package_ && one.summary.includes('One field, shaded.')), firstPage);
+      check('catalog_api_has_a_first_page', firstPage.body.packages.length === 50 && firstPage.body.older === 11, firstPage.body.packages.length);
+      const fullPage = await api('/v1/tools/browse?limit=100');
+      check('catalog_api_reads_on', fullPage.status === 200 && fullPage.body.packages.length === 61 && fullPage.body.older === 0, fullPage.body.packages.length);
+      const searched = await api('/v1/tools/browse?q=shelf-59&limit=50');
+      check('catalog_api_searches', searched.status === 200 && searched.body.packages.length === 1 && searched.body.packages[0].package.endsWith('/shelf-59'), searched);
+      const selected = await api('/v1/tools/list', { method: 'POST', body: JSON.stringify({ add: package_ }) });
+      check('catalog_package_selected_without_install', selected.status === 200 && selected.body.packages.includes(package_), selected);
       await page.reload();
       await listRow.waitFor();
       check('added_is_there_after_a_reload', true);
