@@ -1,17 +1,16 @@
 #!/usr/bin/env bash
 # e2e/cpu/cli.sh <cozy> <project> <package dir> <out dir>: one package through cozy's CLI and a Calcifer that is up, as
-# an author and a person use them. Nothing runs, installs or is rented.
+# an author and a person use them. Local code may install; no model function runs and nothing is rented.
 #   upload    its code, with an empty file (0.22.1 refused one: file_length_required), sent by content and described
 #             (`cozy run <package dir> --describe`): the functions and fields the executor's interface has
 #   lock      Calcifer's private lock API leaves the committed uv.lock as it is
 #   bind      every cell's request (drive.py's <out>/requests/<request>.json, its input files) bound by Calcifer's binder
-#             against the published release (`cozy run --estimate`; 0.22.1 refused `aspect_ratio=1:1`), a prompt's
+#             against the staged local code (the private estimate API; 0.22.1 refused `aspect_ratio=1:1`), a prompt's
 #             reference images named as the run's own `references`
 # <project> is a project's folder: a run belongs to the project it is sent from. One line per cell, as run.sh's.
 set -uo pipefail
 COZY=$1 PROJECT=$2 PKG=$3 OUT=$4
 p=$(basename "$PKG") cli=$OUT/cli t=$SECONDS
-name=$(sed -n 's/^name = "\(.*\)"$/\1/p' "$PKG/pyproject.toml" | head -n1)
 line() { echo "$1 $p $2 $3 $((SECONDS - t))s${4:+: $4}"; t=$SECONDS; }
 said() { jq -r '.error.message // .error.code // empty' "$1" 2> /dev/null | head -c 300; }
 
@@ -77,8 +76,8 @@ for request in "$OUT"/requests/*.json; do
   files=()
   while IFS=$'\t' read -r field file; do files+=(--file "${field%.file}=$file"); done \
     < <(jq -r '.files | to_entries[] | select(.key | test("\\.references\\.[0-9]+\\.file$") | not) | "\(.key)\t\(.value)"' "$request")
-  if (cd "$PROJECT" && "$COZY" --json run "$name/$entry" --input "$cli/$entry-$cell.payload" "${files[@]}" \
-      --estimate --on local) > "$cli/$entry-$cell.bound" 2> "$cli/$entry-$cell.bind.err" \
+  if python3 "$(dirname "$0")/../run-estimate.py" "$cli/src/$p/$entry" --cozy "$COZY" --project "$PROJECT" \
+      --input "$cli/$entry-$cell.payload" "${files[@]}" > "$cli/$entry-$cell.bound" 2> "$cli/$entry-$cell.bind.err" \
       && jq -e 'has("error") | not' "$cli/$entry-$cell.bound" > /dev/null; then
     line PASS "$entry" "bind/$cell"
   else
