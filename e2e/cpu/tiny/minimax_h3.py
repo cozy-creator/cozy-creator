@@ -28,9 +28,10 @@ from minimax_h3.preparation import regenerate as tools_regenerate
 from minimax_h3.vae_tiles import TileBatchedVideoVAE
 from PIL import Image
 
-from cell import Cell, Json, module
+from cell import Cell, Json, module, quantize
 
 WAIVE = {"minimax_h3.official:_validate_model_contract": "the release geometry: 56x128 heads, 50 layers, 5120 text width"}
+H3 = "minimaxai/minimax-h3@1.0.0-rc.7"
 REGENERATE, UPSCALER = "efficient-large-model/open-h3-regenerate-2k@0.1.0", "lbh-123-ai/h3-latent-upscaler@0.1.0"
 #: LatentResizer3D's defaults (in_channels, in_blocks, out_blocks, channels, dropout, temporal_every, temporal_kernel):
 #: the release's 12 + 12 blocks of 512 channels (345M) shrunk to 1 + 1 of 32.
@@ -38,6 +39,7 @@ _UPSCALER_DEFAULTS = (24, 1, 1, 32, 0.1, 2, 5)
 PATCH: dict[str, object] = {"minimax_h3.latent_upscaler.architecture:LatentResizer3D.__init__.__defaults__": _UPSCALER_DEFAULTS}
 
 _TRUNKS: tuple[Trunk, Trunk] = ("fl2va", "ref2va")
+_FULL = "takes a full (unpruned) H3 release or upstream adapters; the tiny H3 is AdaLN-pruned"
 _DIT = {"fl2va": "transformer", "ref2va": "transformer_ref"}
 _TURBO = {"fl2va": "fl2va_turbo", "ref2va": "ref2va_turbo"}
 #: Shifts whose turbo grids meet only at the origin (`TurboSchedule`).
@@ -167,7 +169,7 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
         overlay = module(built.components[_TURBO[trunk]])
         _fill(overlay, seed)
         _write(lora, _TURBO[trunk], overlay, overlays[_TURBO[trunk]], {official.PLAN_ASSET: turbo[trunk].canonical_bytes()})
-    return {"minimaxai/minimax-h3@1.0.0-rc.7": base.commit().id, "alibaba-pai/minimax-h3-turbo-lora@1.0.1": lora.commit().id,
+    return {H3: base.commit().id, "alibaba-pai/minimax-h3-turbo-lora@1.0.1": lora.commit().id,
             REGENERATE: _regenerate(store), UPSCALER: _upscaler(store)}
 
 
@@ -244,6 +246,11 @@ def clip(frames: int) -> Callable[[Path], Path]:
 
     return make
 
+#: The preparation jobs a tiny (AdaLN-pruned) H3 cannot feed.
+_FULL_ONLY: list[Cell] = [{"entry": job, "name": "lane", "payload": {}, "skip": _FULL} for job in (
+    "bf16-full", "bf16-pruned", "fp8-pruned", "curve-pruned", "retable", "select-adaln-weights", "compute-adaln-tables",
+    "apply-adaln", "retable-adaln", "turbo-lora", "regenerate-lora")]
+
 CELLS: list[Cell] = [
     {"entry": "fl2va_segment", "name": "text", "payload": _SEGMENT, "empty": _EMPTY},
     {"entry": "fl2va_segment", "name": "turbo", "payload": {**_SEGMENT, "steps": None, "turbo": True}, "empty": _EMPTY},
@@ -274,4 +281,12 @@ CELLS: list[Cell] = [
      "files": {"video": clip(25)}, "ranks": 2, "same_as": "regenerate_shot/native"},
     {"entry": "regenerate_shot", "name": "1080p", "payload": {**_REGENERATE, "resolution": "1080p", "strength": 0.7},
      "files": {"video": clip(25)}},
+    # Its preparation jobs (the H3 tools, folded in): weights jobs over the tiny H3. `vae` and the `bf16` lane run; the
+    # encoded lanes' reviewed plan pins the release's shapes, the lanes that rewrite AdaLN rows take a full (unpruned) H3,
+    # and the LoRA jobs take upstream adapters.
+    {"entry": "vae", "name": "lane", "payload": {}, "sources": {"source": H3}, "weights": {"vae": 1 << 34}},
+    quantize(H3, "bf16", "minimax-h3", "minimax-h3@0.10.0"),
+    {**quantize(H3, "fp8", "minimax-h3", "minimax-h3@0.10.0"),
+     "skip": "the encoded lanes' reviewed DiT plan pins the release's shapes (context_embedder [5376, 5120])"},
+    *_FULL_ONLY,
 ]
