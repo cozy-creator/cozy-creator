@@ -227,13 +227,18 @@ hub_pod() {
   [ "$p" = any ] || prov=(--provider "$p")
   before=$(hub_machines)
   [ -s "$HB/pod-ssh.pub" ] || ssh-keygen -q -t ed25519 -N '' -C ci-hub-pod -f "$HB/pod-ssh"
-  # A provider with no `cpu` right now answers rental.sku_out_of_stock, whose remedy is to ask again: every minute, 10 at most.
-  local code
-  for _ in $(seq 10); do
-    "$CLI" --json machine rent cpu "${prov[@]}" --ssh "$HB/pod-ssh.pub" -y >"$HB/rent-$p.out" 2>&1; code=$?
-    grep -q '"rental.sku_out_of_stock"' "$HB/rent-$p.out" || break
-    log "hub rent on $p: no cpu inventory on $p right now; asking again in 60 s"; sleep 60
+  # A provider with no `cpu` right now answers rental.sku_out_of_stock: ask again each minute, 3 at most, then take its cheapest
+  # GPU of HUB_GPU_FALLBACK in turn (vast went without `cpu` for hours on 11-10, and xs-157's proof must still reach it).
+  local code sku
+  for sku in cpu ${HUB_GPU_FALLBACK:-rtx-3060 rtx-4060-ti rtx-3070 rtx-a4000 rtx-3080 rtx-3090}; do
+    for _ in $( [ "$sku" = cpu ] && seq 3 || echo 1 ); do
+      "$CLI" --json machine rent "$sku" "${prov[@]}" --ssh "$HB/pod-ssh.pub" -y >"$HB/rent-$p.out" 2>&1; code=$?
+      grep -qE '"rental.sku_out_of_stock"|no provider inventory' "$HB/rent-$p.out" || break 2
+      [ "$sku" != cpu ] || { log "hub rent on $p: no cpu inventory on $p right now; asking again in 60 s"; sleep 60; }
+    done
+    log "hub rent on $p: no $sku there; trying the next"
   done
+  echo "$sku" > "$HB/rent-$p.sku"
   if grep -qE "unexpected argument '--provider'|dev_only" "$HB/rent-$p.out"; then
     expect "hub rent on $p" FAIL "this cozy refuses --provider with dev = true (it needs cl-844's switch): $(tail -c 200 "$HB/rent-$p.out")"
     return 2
@@ -244,7 +249,7 @@ while (i := t.find("{", i)) >= 0:
     d, i = dec.raw_decode(t, i)
     if isinstance(d.get("machine"), dict) and d["machine"].get("name"): print(d["machine"]["name"]); break' "$HB/rent-$p.out" 2>/dev/null)
   if [ "$code" != 0 ] && ! grep -q '"machine"' "$HB/rent-$p.out"; then
-    expect "hub rent on $p" FAIL "cozy machine rent cpu ${prov[*]} → exit $code: $(grep -o '"code":"[^"]*","message":"[^"]*"' "$HB/rent-$p.out" | tail -1 || tail -c 300 "$HB/rent-$p.out")"
+    expect "hub rent on $p" FAIL "cozy machine rent $sku ${prov[*]} → exit $code: $(grep -o '"code":"[^"]*","message":"[^"]*"' "$HB/rent-$p.out" | tail -1 || tail -c 300 "$HB/rent-$p.out")"
     return
   fi
   # Only the machine the reply names is ours: another session may rent at the same moment, and its pod is never ended here.
