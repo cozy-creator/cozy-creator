@@ -306,11 +306,18 @@ class Fixture:
 
     def restricted(self) -> None:
         owner = self.credentials()
-        broad: list[Object] = [{"type": "tensorhub_model_read", "model": self.args.model}]
+        model_read: list[Object] = [{"type": "tensorhub_model_read", "model": self.args.model}]
+        broad: list[Object] = [*model_read, {
+            "type": "tensorhub_release_read", "model": self.args.model, "release": self.args.b_version,
+            "checkpoints": [self.args.b_checkpoint],
+        }]
         roots = sorted(set(self.args.a_checkpoints.split(",")))
         assert self.args.b_checkpoint not in roots, "B must be outside A's frozen complete root set"
         frozen: list[Object] = [{"type": "tensorhub_release_read", "model": self.args.model, "release": self.args.a_version,
                    "checkpoints": roots}]
+        newest = self.warm("owner_model_read_newest_B", capability=self.capability(owner, model_read), succeeds=True)
+        newest_models = cast(list[Object], cast(Object, newest["result"])["models"])
+        assert len(newest_models) == 1 and newest_models[0]["tree"] == self.args.b_checkpoint and newest_models[0]["release"] == ""
         self.warm("owner_warms_B_by_name", release=self.args.b_version, capability=self.capability(owner, broad), succeeds=True)
         self.warm("owner_warms_B_by_hash", checkpoint=self.args.b_checkpoint, capability=self.capability(owner, broad), succeeds=True)
         query = urllib.parse.urlencode({"release": self.args.b_version, "lane": "f16"})
@@ -349,8 +356,8 @@ class Fixture:
                     self.admin(other[1]["name"], "revoke")
             assert self.http("/v1/accounts/current", other[0]["bearer"]).get("admin", False) is False
             # Rewarm immediately with the old owner's still-valid key; then change only the signing subject.
-            self.warm("owner_rewarms_B_before_subject_switch", release=self.args.b_version, capability=self.capability(owner, broad), succeeds=True)
-            self.warm("other_subject_same_scope_denied", release=self.args.b_version, capability=self.capability(other, broad),
+            self.warm("owner_rewarms_B_before_subject_switch", capability=self.capability(owner, model_read), succeeds=True)
+            self.warm("other_subject_same_scope_denied", capability=self.capability(other, model_read),
                       succeeds=False, redemption_denied=True)
             self.warm("other_account_own_model_positive", model=other_model,
                       capability=self.capability(other, [{"type": "tensorhub_model_read", "model": other_model}]), succeeds=True)
