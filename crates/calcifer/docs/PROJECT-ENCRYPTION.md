@@ -65,6 +65,9 @@ an output folder. Close other applications and shells using its readable view fi
 Windows, run it from outside the project as shown above. The project no longer locks or needs
 an unlock credential until you enable encryption again.
 
+An independently registered copy of the ordinary folder receives its own project identity when
+the original remains registered. That copy can be encrypted as its own project.
+
 ## Recovery changes and rekey
 
 `vault passphrase` rewraps the passphrase slot. `vault recovery --recovery-out NEWFILE` replaces
@@ -84,8 +87,8 @@ runtime; Windows 11 emulates the filesystem and ffmpeg/ffprobe helpers on ARM64.
 macOS uses built-in encrypted APFS images,
 without a kernel extension. Logical state/media are portable, but raw APFS backing needs macOS;
 raw securefs backing needs its compatible provider. Cross-format moves currently require an
-decoded transfer: decrypt the project, copy its ordinary folder, then enable encryption on
-the destination if wanted. APFS does not claim authenticated per-file encryption semantics.
+decoded transfer: decrypt the project before copying its ordinary folder, then enable encryption
+on the destination if wanted. APFS does not claim authenticated per-file encryption semantics.
 
 Do not browse intermediate Windows conversion drives: this provider does not enforce read-only
 mounts. Forcibly killing both controller and native guardian can leave an APFS image attached
