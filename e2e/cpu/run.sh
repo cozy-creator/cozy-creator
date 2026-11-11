@@ -10,7 +10,7 @@
 # --keep keeps each package's tiny weights, inputs and outputs (else only logs and replies stay);
 # --refs reads (and --record writes) references elsewhere than refs/; --helpers installs those packages from the
 # checkout over the releases the locks pin (a helper not yet published). e2e/lib.sh's other candidate flags are ignored.
-# A lock whose helper comes from the Hub's index, which needs a sign-in, falls back to the checkout's helper and says so.
+# A helper locked to the Hub's index comes from the checkout, before uv can contact production.
 #
 # One line per cell: PASS|FAIL|SKIP <package> <entry> <cell> <seconds>s[: first error line]; the summary last.
 set -euo pipefail
@@ -65,18 +65,13 @@ one() {
   t=$SECONDS
   local helpers=() h
   for h in ${HELPERS//,/ }; do grep -q "^name = \"$h\"$" "$PACKAGES/$p/uv.lock" && helpers+=("$PACKAGES/$h"); done
+  # The same checkout helpers as the former unauthenticated-index fallback, bound before the first uv sync.
+  for h in $(grep -B2 'source = { registry = "https://tensorhub.com' "$PACKAGES/$p/uv.lock" | sed -n 's/^name = "\(.*\)"/\1/p'); do
+    [ -d "$PACKAGES/$h" ] || { echo "FAIL $p - environment 0s: locked Hub helper $h is missing from the package checkout"; return 1; }
+    [[ " ${helpers[*]} " == *" $PACKAGES/$h "* ]] || helpers+=("$PACKAGES/$h")
+  done
   local made=1
   "$HERE/env.sh" "$PACKAGES/$p" "$env" "$RUNTIME" "$TENSORFS" "${helpers[@]}" > "$out/env.log" 2>&1 || made=''
-  if [ -z "$made" ] && grep -qE '401|403|Unauthorized|Forbidden|authenticat' "$out/env.log"; then
-    # The Hub's index refused an anonymous read: its helpers from the checkout, the lock's own unchecked.
-    helpers=()
-    for h in $(grep -B2 'source = { registry = "https://tensorhub.com' "$PACKAGES/$p/uv.lock" | sed -n 's/^name = "\(.*\)"/\1/p'); do
-      [ -d "$PACKAGES/$h" ] && helpers+=("$PACKAGES/$h")
-    done
-    echo "SKIP $p - locked-helpers 0s: the Hub's index needs a sign-in; ran with the checkout's ${helpers[*]##*/}"
-    made=1
-    "$HERE/env.sh" "$PACKAGES/$p" "$env" "$RUNTIME" "$TENSORFS" "${helpers[@]}" > "$out/env.log" 2>&1 || made=''
-  fi
   if [ -z "$made" ]; then
     echo "FAIL $p - environment $((SECONDS - t))s: $(grep -m1 -iE 'error|failed' "$out/env.log" || tail -n1 "$out/env.log")"
     return 1
