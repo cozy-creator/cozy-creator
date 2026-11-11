@@ -23,6 +23,10 @@ on:
   pull_request:
   merge_group:
   workflow_call:
+    secrets:
+      TENSORHUB_READ_KEY:
+        description: Read-only deploy key for the isolated fixture's TensorHub source
+        required: false
     inputs:
       repo:
         description: The repo whose change this is (cozy-creator, cozy-runtime, packages)
@@ -410,12 +414,12 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  # The isolated Hub every cli and imports shard runs against (e2e/skew/run.sh --hub-bin): tensorhub at hub_ref (master,
+  # The isolated Hub every cli, imports and cpu shard runs against (e2e/skew/run.sh --hub-bin): tensorhub at hub_ref (master,
   # as cli-release and skew take it), and MinIO, built once a run and kept in the Actions cache by its commit.
   hub:
     name: isolated Hub
     needs: affected
-    if: ((contains(fromJSON(needs.affected.outputs.selection).suites, 'cli') && inputs.shards != '[]') || contains(fromJSON(needs.affected.outputs.selection).suites, 'imports')) && !(inputs.publish_run != '' && inputs.select == 'cli' && inputs.shards == '["projectvault"]' && needs.affected.outputs.repo == 'cozy-creator')
+    if: ((contains(fromJSON(needs.affected.outputs.selection).suites, 'cli') && inputs.shards != '[]') || contains(fromJSON(needs.affected.outputs.selection).suites, 'imports') || contains(fromJSON(needs.affected.outputs.selection).suites, 'cpu')) && !(inputs.publish_run != '' && inputs.select == 'cli' && inputs.shards == '["projectvault"]' && needs.affected.outputs.repo == 'cozy-creator')
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     defaults:
@@ -915,9 +919,9 @@ jobs:
 
   # The free CPU test (e2e/cpu): every package's entry points through the candidate Runtime's real executor with tiny
   # random weights, one and two ranks, outputs against stored references; each package uploaded, locked and its
-  # requests bound through the candidate cozy. No GPU, rental or sign-in.
+  # requests bound through the candidate cozy and its owned Hub. No GPU or rental.
   cpu:
-    needs: [affected, candidate]
+    needs: [affected, candidate, hub]
     if: contains(fromJSON(needs.affected.outputs.selection).suites, 'cpu')
     runs-on: ubuntu-24.04
     # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal.
@@ -945,6 +949,10 @@ jobs:
           tensorfs: ${{ inputs.tensorfs }}
           runtime: ${{ inputs.runtime }}
           release: ${{ inputs.publish_run }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: fixture-hub
+          path: ${{ runner.temp }}/fixture-hub
       # The locked wheels every package's environment takes (CPU torch included), by the locks that name them.
       - uses: actions/cache@v4
         with:
@@ -955,21 +963,15 @@ jobs:
       # restarted on it, as the cli suite's candidates step does.
       - name: cpu suite
         run: |
-          . .creator/e2e/lib.sh
-          parse --out "$RUNNER_TEMP/e2e/cozy" $CANDIDATES
-          install_cozy
-          user_services
-          if [ -f "$CAND_COZY" ]; then
-            cozy --json doctor > "$OUT/doctor.json" || true
-            grep -q "$("$CAND_COZY" --version)," "$OUT/doctor.json" || fail "Calcifer is not the candidate $("$CAND_COZY" --version)"
-          fi
-          mkdir -p "$RUNNER_TEMP/project" && (cd "$RUNNER_TEMP/project" && cozy --json new > /dev/null) || fail "cozy new failed"
-          code=0
-          bash .creator/e2e/cpu/run.sh --out "$RUNNER_TEMP/e2e" --envs "$RUNNER_TEMP/envs" $CANDIDATES \
-            $(case " $CANDIDATES " in (*" --packages "*) ;; (*) echo --packages "$PACKAGES_MASTER" ;; esac) \
-            --cozy "$COZY" --project "$RUNNER_TEMP/project" 2>&1 | node .creator/e2e/publish/scrub.js || code=$?
-          finish cpu
-          exit "$code"
+          chmod +x "$RUNNER_TEMP/fixture-hub/tensorhub" "$RUNNER_TEMP/fixture-hub/minio"
+          sudo loginctl enable-linger "$(id -un)"
+          export XDG_RUNTIME_DIR=/run/user/$(id -u)
+          until [ -S "$XDG_RUNTIME_DIR/bus" ]; do sleep 1; done
+          export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
+          bash .creator/e2e/skew/run.sh --hub-bin "$RUNNER_TEMP/fixture-hub" --candidates "$CANDIDATES" --admin --out "$RUNNER_TEMP/e2e/hub" \
+            --command .creator/e2e/isolated.sh -- cpu \
+            --out "$RUNNER_TEMP/e2e" --envs "$RUNNER_TEMP/envs" $CANDIDATES \
+            $(case " $CANDIDATES " in (*" --packages "*) ;; (*) echo --packages "$PACKAGES_MASTER" ;; esac) 2>&1 | node .creator/e2e/publish/scrub.js
       - if: always()
         run: uv cache prune --ci
       - if: always()

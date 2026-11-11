@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# e2e/skew/run.sh --admin --command: OUT INSTALLED_COZY RUNTIME TENSORFS cli|imports <that suite's run.sh arguments>.
+# e2e/skew/run.sh --admin --command: OUT INSTALLED_COZY RUNTIME TENSORFS cli|imports|cpu <that suite's run.sh arguments>.
 # A suite against its own isolated Hub. Signed in as that Hub's admin, it first publishes there what the suite reads
 # from a Hub, as production holds it. The cli suite's shards read, at the root, from run.sh's --packages checkout, the
 # toolbox's defaults (qwen-image-2, minimax-h3) and birefnet, and a stand-in minimax-h3-tools (hub_away locks it from the
@@ -8,11 +8,13 @@
 # directories and reads nothing from a Hub. Then this computer's cozy is removed, and the suite starts as on a fresh
 # runner, signed out, in this process's place: nothing of this script is left for the suite's own removal of cozy to find.
 set -euo pipefail
-[ "$#" -ge 5 ] || { echo "usage: isolated.sh OUT INSTALLED_COZY RUNTIME TENSORFS cli|imports <run.sh arguments>" >&2; exit 2; }
+[ "$#" -ge 5 ] || { echo "usage: isolated.sh OUT INSTALLED_COZY RUNTIME TENSORFS cli|imports|cpu <run.sh arguments>" >&2; exit 2; }
 [ "${GITHUB_ACTIONS:-}" = true ] && [ "${RUNNER_OS:-}" = Linux ] || { echo "isolated.sh removes this computer's cozy: a fresh Linux GitHub runner only" >&2; exit 2; }
 seed=$1 cozy_bin=$2 runtime=$3 tensorfs=$4 suite=$5
 shift 5
 here=$(cd "$(dirname "$0")" && pwd) start=$PWD
+. "$here/test-hub.sh"
+require_ci_test_hub
 shard='' packages='' published=''
 args=("$@")
 for ((i = 0; i < ${#args[@]}; i++)); do
@@ -42,7 +44,7 @@ mirror() {
   local name=${2//\//-} commit
   cozy --json model upload "$1" "$2" --lane "$3" --mirror "$5" --on local -y "${@:6}" > "$seed/upload-$name.json" 2>&1 \
     || { echo "uploading $2 failed: $(tail -c 600 "$seed/upload-$name.json")" >&2; return 1; }
-  commit=$(python3 "$here/model-details.py" "$2" | jq -r '.commits[0].commit // empty')
+  commit=$(python3 "$here/model-details.py" "$2" | jq -r '.checkpoints[0].checkpoint // empty')
   [ -n "$commit" ] || { echo "$2 has no commit after its upload" >&2; return 1; }
   cozy --json model publish "$2" "$4" "$commit" -y > "$seed/publish-$name.json" 2>&1 \
     || { echo "publishing $2 $4 failed: $(tail -c 600 "$seed/publish-$name.json")" >&2; return 1; }
@@ -84,8 +86,19 @@ case $suite:$shard in
     # Production's published releases are what --published and --pins ask about, and CI reads no production (xs-169).
     [ -z "$published" ] || { echo "imports $published asks about production's releases: CI runs only on an isolated Hub; the checkout's packages run without it" >&2; exit 2; }
     needs='' ;;
-  *) echo "isolated.sh runs the cli or imports suite, not '$suite'" >&2; exit 2 ;;
+  cpu:*) needs='' ;;
+  *) echo "isolated.sh runs the cli, imports or cpu suite, not '$suite'" >&2; exit 2 ;;
 esac
+
+# CPU's author/binder cells use the already-installed candidate and authenticated fixture.
+# Its ordinary executor cells remain unchanged and use the package checkout and its locks.
+if [ "$suite" = cpu ]; then
+  project=$seed/project
+  mkdir -p "$project"
+  (cd "$project" && cozy --json new > /dev/null)
+  log "the cpu suite starts against its owned Hub with the installed candidate"
+  exec bash "$here/cpu/run.sh" "$@" --cozy "$cozy_bin" --project "$project"
+fi
 
 if [ -n "$needs" ]; then
   [ -n "$packages" ] || { echo "the isolated Hub's first-party packages come from run.sh's --packages checkout" >&2; exit 2; }
