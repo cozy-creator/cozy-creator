@@ -23,6 +23,12 @@ REMOVED = {
 }
 
 
+def public_usage(text: str) -> str:
+    if os.name == "nt":
+        return re.sub(r"(?m)^Usage: cozy\.exe(?= |$)", "Usage: cozy", text)
+    return text
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cozy", required=True)
@@ -52,6 +58,8 @@ def main() -> None:
                 stream.write("\x1f".join(words) + "\x1f\x1e")
         started = time.monotonic()
         result = subprocess.run([binary, *words], cwd=directory, env=environment, capture_output=True, text=True)
+        if "--help" in words:
+            result.stdout = public_usage(result.stdout)
         records.append({"name": name, "exit": result.returncode, "elapsed_ms": round((time.monotonic() - started) * 1000)})
         assert result.returncode == code, f"{name}: expected exit {code}, got {result.returncode}: {result.stdout}{result.stderr}"
         return result
@@ -99,7 +107,7 @@ def main() -> None:
             ["run", "example/function", "ls", "--unknown-option"],
         ):
             error = json.loads(run("usage remedy " + " ".join(words), ["--json", *words], code=2).stdout)["error"]
-            reference = error["remedy"]
+            reference = public_usage(error["remedy"])
             assert "  help " not in reference, "usage remedy advertises removed help command"
             assert "--json" in reference, "usage remedy omitted inherited global flags"
             help_words = ["machine", "rent", "--help"] if words[:2] == ["machine", "rent"] else [words[0], "--help"]
