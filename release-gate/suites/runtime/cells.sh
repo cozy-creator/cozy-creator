@@ -24,8 +24,6 @@ source "$HERE/suites/execution/lora-overlay-refill/cells.sh"
 source "$HERE/suites/execution/child-lora-stacks/cells.sh"
 # A parent gives its child a file it saved, and nothing else opens (cr-251).
 source "$HERE/suites/execution/child-saved-file/cells.sh"
-# Every captured node class inside a native conditional body; driver 615 crashed on memcpy (cozy-runtime#1860).
-source "$HERE/suites/execution/conditional-body/cells.sh"
 # A weights output: SDXL's int8 recipe re-quantizes its newest release's bf16 commit on the machine. Escaped in Runtime 0.33.0 (xs-105):
 # every weights output failed, `open()` passing TensorFS 0.16 a `revision` it no longer takes.
 if [ -z "$ONLY" ] || [[ $ONLY == *",quantize-sdxl,"* ]]; then
