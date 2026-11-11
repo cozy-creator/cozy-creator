@@ -494,20 +494,8 @@ impl Holding {
         let _access = vault::admit_root(&self.dir).await?;
         let physical = vault::resolve_path(&self.dir)?;
         let folder = Folder::at(&physical);
-        // One that doesn't read as this format (an older one moves as the run lands) still takes the run, as written, its mentions unread.
-        let (doc, lock) = match (Doc::load(&folder), folder.lock()) {
-            (Ok(doc), Ok(lock)) => (doc, lock),
-            (Err(why), _) | (_, Err(why)) => {
-                if vault::encrypted(&vault::logical(&self.dir)) { return Err(why); }
-                let mut written = written;
-                for field in callable.request.fields.iter().filter(|field| matches!(field.ty.plain(), api::interface::Type::Prompt(_))) {
-                    if let Some(Value::String(text)) = written.get(&field.name).cloned() {
-                        written.insert(field.name.clone(), json!({"text": text, "references": []}));
-                    }
-                }
-                return Ok((written, vec![], vec![format!("{}: {}, so what the run mentions isn't read", folder::PROJECT, why.message)]));
-            }
-        };
+        let doc = Doc::load(&folder)?;
+        let lock = folder.lock()?;
         let stand = doc.stand(&lock);
         let mut fields = written;
         let picked = callable.request.fields.iter().find(|field| matches!(field.ty.plain(), api::interface::Type::Pickup(_))).and_then(|field| fields.remove(&field.name));
