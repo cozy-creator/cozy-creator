@@ -335,7 +335,8 @@ echo "$M" > machine
 log "${ON:+on }${ON:-rented} $M"
 # A host this gate already found too slow is ended at once: the Hub may offer it again.
 "$CLI" --json machine show "$M" 2>/dev/null | jq -r '.address // empty' | sed 's/:[0-9]*$//' > address
-if [ -z "$ON" ] && [ -s address ] && grep -qsxF -f address slow-*/address; then
+# Suite bench takes its third host and on as it is (cells.sh): a slow host offered again is then run, not refused.
+if [ -z "$ON" ] && [ -s address ] && grep -qsxF -f address slow-*/address && { [ "$SUITES" != bench ] || [ "$HOST" -lt 3 ]; }; then
   echo "host too slow: $M ($(cat address)) was found so earlier in this gate" > host-slow
   printf 'FAIL %s\nVERDICT FAIL (host too slow)\n' "$(cat host-slow)" | tee verdict.txt
   exit 1
