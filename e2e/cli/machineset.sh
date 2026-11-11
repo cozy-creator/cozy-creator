@@ -40,7 +40,7 @@ machine_set() {
 step "machine set (cl-873): a project pinned to local and stand-a, its runs only there; --on a,b; one run's override; none of them up, refused"
 [ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] \
   || { echo "machine set: its stand-in machines are other users of a fresh GitHub runner"; return; }
-local P=$OUT/machine-set echo=minimax-h3-tools/echo before a b
+local P=$OUT/machine-set echo=minimax-h3-tools/echo before a b pids
 cozy --json machine show local > "$OUT/set-local.json" || { check "machine set: machine show local"; return; }
 stand_in stand-a & a=$!
 stand_in stand-b & b=$!
@@ -60,9 +60,10 @@ code=0; in_project "$P" --json machine use nowhere > "$OUT/set-unknown.json" 2>&
 [ "$code" != 0 ] && J '.error.code == "machine_not_found"' "$OUT/set-unknown.json" || check "machine use nowhere: exit $code: $(head -c 300 "$OUT/set-unknown.json")"
 in_project "$P" --json status | J '.project.machines == ["local", "stand-a"]' || check "a refused machine use changed the project's machines"
 
-# Four at once, naming no machine: each on local or stand-a, none on stand-b.
-for i in 1 2 3 4; do (in_project "$P" --json run "$echo" "text=pinned-$i" > "$OUT/set-pinned-$i.ndjson" 2> "$OUT/set-pinned-$i.err") & done
-wait
+# Four at once, naming no machine: each on local or stand-a, none on stand-b. Each waited for by its pid: the suite's shell has others.
+pids=()
+for i in 1 2 3 4; do (in_project "$P" --json run "$echo" "text=pinned-$i" > "$OUT/set-pinned-$i.ndjson" 2> "$OUT/set-pinned-$i.err") & pids+=($!); done
+wait "${pids[@]}"
 set_runs "$P" "$OUT/set-pinned.txt"
 echo "pinned to local,stand-a: $(tr '\n' ';' < "$OUT/set-pinned.txt")"
 [ "$(wc -l < "$OUT/set-pinned.txt")" = 4 ] && ! grep -qv ' \(local\|stand-a\) completed$' "$OUT/set-pinned.txt" \
@@ -76,8 +77,9 @@ grep -q ' stand-b completed$' "$OUT/set-override.txt" || check "run --on stand-b
 
 # --on a,b: among those two.
 before=$(wc -l < "$OUT/set-override.txt")
-for i in 1 2; do (in_project "$P" --json run "$echo" "text=pair-$i" --on stand-a,stand-b > "$OUT/set-pair-$i.ndjson" 2> "$OUT/set-pair-$i.err") & done
-wait
+pids=()
+for i in 1 2; do (in_project "$P" --json run "$echo" "text=pair-$i" --on stand-a,stand-b > "$OUT/set-pair-$i.ndjson" 2> "$OUT/set-pair-$i.err") & pids+=($!); done
+wait "${pids[@]}"
 set_runs "$P" "$OUT/set-pair.txt"
 head -n $(($(wc -l < "$OUT/set-pair.txt") - before)) "$OUT/set-pair.txt" > "$OUT/set-pair-new.txt"
 [ "$(wc -l < "$OUT/set-pair-new.txt")" = 2 ] && ! grep -qv ' stand-[ab] completed$' "$OUT/set-pair-new.txt" \
