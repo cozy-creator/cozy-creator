@@ -505,7 +505,11 @@ jobs:
           workspaces: .native-tests -> target
           save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: Windows supervisor process tests
-        if: runner.os == 'Windows'
+        if: >-
+          runner.os == 'Windows' &&
+          (inputs.native_shards == '' || contains(inputs.native_shards, '"web-core"') ||
+           contains(fromJSON(needs.affected.outputs.selection).suites, 'supervisor') ||
+           contains(fromJSON(needs.affected.outputs.selection).suites, 'cli-release'))
         env:
           CREATOR: ${{ (needs.affected.outputs.native_build != 'true' || inputs.tensord != '' || inputs.publish_run != '') && '.native-tests' || (needs.affected.outputs.repo == 'cozy-creator' && '.src' || '.stack') }}
         run: |
