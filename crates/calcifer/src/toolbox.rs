@@ -53,6 +53,9 @@ pub(crate) struct Asked {
     hub: Option<String>,
     /// A project: the local code its nodes name comes first, and no other local code is listed.
     project: Option<String>,
+    /// The fixed canvas palette also shows factory tools, without changing the caller's saved list.
+    #[serde(default)]
+    palette: bool,
 }
 
 /// `GET /v1/tools`: the Edit and your list, then local code and what's installed, each as it is on that machine, and with `q` the Hub's, each at its newest.
@@ -66,7 +69,14 @@ async fn list_tools(api: &Arc<Api>, asked: Asked) -> Result<Json<Tools>, Refusal
     let hub = runs::hub(api, asked.hub.as_deref().unwrap_or_default());
     let q = asked.q.as_deref().map(str::trim).filter(|q| !q.is_empty());
     let on = On::Machine(asked.on.unwrap_or_else(|| "local".into()));
-    let mine = mine(api)?;
+    let mut mine = mine(api)?;
+    if asked.palette {
+        for package in DEFAULTS {
+            if !mine.packages.iter().any(|held| held == package) {
+                mine.packages.push(package.to_owned());
+            }
+        }
+    }
     let local = match asked.project.as_deref() {
         Some(named) => {
             let root = project::named(api, named).map_err(Refusal)?;
@@ -85,7 +95,8 @@ async fn list_tools(api: &Arc<Api>, asked: Asked) -> Result<Json<Tools>, Refusal
     first.extend(cards);
     first.sort_by_key(place);
     // Taken off the list is off it at rest, and a search still finds it, as what a box of it asks for must.
-    let shows = |tool: &Tool| q.map_or_else(|| !mine.without.contains(&tool.id), |q| says(tool, q));
+    let factory = |tool: &Tool| DEFAULTS.iter().any(|package| shown(package) == tool.package);
+    let shows = |tool: &Tool| q.map_or_else(|| !mine.without.contains(&tool.id) || asked.palette && factory(tool), |q| says(tool, q));
     let mut tools: Vec<Tool> = std::iter::once(tool::edit()).chain(first).chain(local).chain(rest).filter(shows).collect();
     if let Some(q) = q {
         let listed: BTreeSet<String> = tools.iter().map(|tool| tool.package.clone()).collect();
