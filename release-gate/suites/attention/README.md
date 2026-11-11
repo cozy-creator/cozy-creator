@@ -45,7 +45,7 @@ dispatch from the open RC (six pods; about $30):
 ```sh
 gh workflow run release-gate.yml -R cozy-creator/cozy-creator --ref <open rc> -f hub=prod -f suites=attention \
   -f cells=release-gate/suites/attention/calibrate.sh -f runtime_wheel=<the RC's cozy-runtime dev-build run> \
-  -f establish=true -f publish=false
+  -f packages_ref=<open rc> -f establish=true -f publish=false
 ```
 
 `calibrate.sh` runs the bench arms' requests (`suites/bench/cells.tsv`, `a-*`) on the table's kernels and at
