@@ -56,7 +56,10 @@ are excluded. The outer receipt records the binary digest, cohort, device, owned
 container cleanup and preservation of existing Cozy processes. The private HOME is removed;
 scrubbed execution records remain in the output directory.
 
-`hardware-isolated.yaml` selects the dedicated `cozy-isolated-gpu` self-hosted runner label.
+`hardware-isolated.yaml` selects a unique `cozy-isolated-gpu-<16 hex digits>` runner label.
+An operator registers an ephemeral runner without default labels for one trusted dispatch; this
+prevents it consuming the repository's other self-hosted work. PR regression tests use hosted
+Linux runners, and hardware execution runs only on explicit `workflow_dispatch`.
 Its release tag, Hub commit, Runtime/TensorFS versions and reserved GPU UUID are explicit inputs.
 The runner must be preallocated; the workflow creates no paid allocation. This tiny proof is
 physical local CUDA qualification, not inference quality/performance, provider lifecycle, or the

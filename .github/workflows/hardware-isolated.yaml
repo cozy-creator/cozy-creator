@@ -1,5 +1,11 @@
 name: isolated hardware
 on:
+  pull_request:
+    paths:
+      - 'e2e/hardware/**'
+      - 'e2e/test-hub*'
+      - 'e2e/test_hub*'
+      - '.github/workflows/hardware-isolated.yaml'
   workflow_dispatch:
     inputs:
       cozy:
@@ -22,6 +28,10 @@ on:
         description: Reserved idle NVIDIA GPU UUID on the self-hosted runner
         type: string
         required: true
+      runner_label:
+        description: Unique cozy-isolated-gpu- plus 16 lowercase hex digits; ephemeral runner has no default labels
+        type: string
+        required: true
       mode:
         description: Provider lifecycle requires separately configured sandbox infrastructure
         type: choice
@@ -30,11 +40,33 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: isolated-hardware-${{ inputs.device }}
+  group: isolated-hardware-${{ inputs.device || github.ref }}
   cancel-in-progress: false
 jobs:
+  harness:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Fixture isolation and cleanup regressions
+        run: |
+          python3 -m unittest discover -s e2e/hardware -p 'test_*.py' -v
+          python3 -m unittest discover -s e2e -p 'test_hub_test.py' -v
+      - name: Validate dispatch ownership
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          LABEL: ${{ inputs.runner_label }}
+          HUB_REF: ${{ inputs.hub_ref }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          [[ "$LABEL" =~ ^cozy-isolated-gpu-[a-f0-9]{16}$ ]] || { echo '::error::use a unique task-owned ephemeral runner label'; exit 2; }
+          [[ "$HUB_REF" =~ ^[a-f0-9]{40}$ ]] || { echo '::error::hub_ref must be an exact reviewed commit'; exit 2; }
+          [ "$MODE" = local-gpu ] || { echo '::error::provider lifecycle unqualified: no provider sandbox account, budget or reachable test allocation is configured'; exit 2; }
   hardware:
-    runs-on: [self-hosted, Linux, X64, cozy-isolated-gpu]
+    needs: harness
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ${{ inputs.runner_label }}
     timeout-minutes: 60
     steps:
       - name: Require configured hardware mode
