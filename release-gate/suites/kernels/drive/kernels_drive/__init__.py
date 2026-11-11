@@ -4,7 +4,8 @@ Runtime, where its kernels live, and a package can't import its internals."""
 
 import msgspec
 
-from cozy_runtime import bench
+# The pinned typecheck Runtime (0.45.0) predates the bench: drop the ignore when the pin moves past it.
+from cozy_runtime import bench  # type: ignore[attr-defined]
 from cozy_runtime.author import App, Context, call
 
 app = App()

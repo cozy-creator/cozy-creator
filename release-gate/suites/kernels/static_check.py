@@ -81,7 +81,7 @@ def check(path: Path, known: dict[str, list[tuple[str, bool]]]) -> list[str]:
             kernel = name_of(node.args[0])
             if kernel not in known:
                 continue
-            params = known[kernel]  # type: ignore[index]  # in known, so not None
+            params = known[kernel]
             keys = literal_keys(node.args[1]) if len(node.args) > 1 else None
             if keys is not None:
                 names = [k for k, _ in keys]
@@ -101,7 +101,7 @@ def check(path: Path, known: dict[str, list[tuple[str, bool]]]) -> list[str]:
             kernel = name_of(node.args[0])
             if kernel not in known:
                 continue
-            params = known[kernel]  # type: ignore[index]  # in known, so not None
+            params = known[kernel]
             passed = node.args[2:]
             spread = any(isinstance(a, ast.Starred) for a in passed)
             count = sum(not isinstance(a, ast.Starred) for a in passed)

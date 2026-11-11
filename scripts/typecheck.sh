@@ -35,7 +35,7 @@ roots() {  # "<root> <file>…": each root's own files, relative to it (a direct
 mypy_path() {
   local path=$top/crates/tensorfs-py/python:$top/typings
   case $1 in
-    release-gate) path=$top/release-gate/suites:$path ;;  # analyze.py's suites (its `tensorfs` is the suite)
+    release-gate) path=$top/release-gate/suites:$top/release-gate/suites/bench:$path ;;  # analyze.py's suites (its `tensorfs` is the suite), bench.py's media and comfy
     release-gate/suites/varena/core/faults) path=$top/release-gate/suites/varena/native-tensor-export:$top/release-gate/suites/varena/ledger:$path ;;
     release-gate/suites/varena/public-api) path=$top/crates/varena/examples:$path ;;
     e2e/cli/project/probe) path=$top/e2e/cli/project/probe-callee:$path ;;
