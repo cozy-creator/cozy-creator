@@ -469,6 +469,13 @@ jobs:
           tensorfs: ${{ inputs.tensorfs }}
           runtime: ${{ inputs.runtime }}
           release: ${{ inputs.publish_run }}
+      - name: Windows supervisor process tests
+        if: runner.os == 'Windows'
+        env:
+          CREATOR: ${{ needs.affected.outputs.repo == 'cozy-creator' && '.src' || '.stack' }}
+        run: |
+          cd "$CREATOR"
+          cargo test --locked -p tensord --lib machine::supervise::tests -- --nocapture
       - name: cli suite
         env:
           PINS: ${{ inputs.pins }}
