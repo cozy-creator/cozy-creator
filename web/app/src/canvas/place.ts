@@ -124,8 +124,9 @@ export class Placer {
       const owed = this.store.outbox.owing()
       const signal = new AbortController().signal
       const sent = async () => {
+        const projectId = await this.project()
         const digest = await hashFile(file, signal, () => {})
-        if (!this.store.holdsFile(digest.slice("sha256:".length))) await this.reaching(() => sendFile(this.client, file, digest, signal, () => {}, () => {}), signal)
+        if (!this.store.holdsFile(digest.slice("sha256:".length))) await this.reaching(() => sendFile(this.client, file, digest, signal, () => {}, () => {}, projectId), signal)
         return digest
       }
       void inLine(sent)
@@ -227,7 +228,8 @@ export class Placer {
     return digest
   }
 
-  private send(key: string, file: File, digest: string, signal: AbortSignal) {
+  private async send(key: string, file: File, digest: string, signal: AbortSignal) {
+    const projectId = await this.project()
     return this.reaching(() => {
       this.stage(key, "sending", 0)
       return sendFile(
@@ -237,6 +239,7 @@ export class Placer {
         signal,
         (done) => this.stage(key, "sending", done),
         (attempt) => this.store.patchPlacing(key, { attempt: attempt || undefined }),
+        projectId,
       )
     }, signal)
   }

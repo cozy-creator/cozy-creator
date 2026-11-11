@@ -15,6 +15,33 @@ info:
 security: [{cozy_cap: []}]
 
 paths:
+  /v1/local-private/{project_id}/{rest}:
+    parameters:
+      - {name: project_id, in: path, required: true, schema: {type: string}}
+      - {name: rest, in: path, required: true, schema: {type: string}, description: Existing v1 data route suffix including its path parameters}
+      - {name: cozy-local-private-storage, in: header, required: true, schema: {type: string}, description: Base64url descriptor of the active local encrypted view}
+      - {name: cozy-local-private-token, in: header, required: true, schema: {type: string}, description: Secret live-view proof; never log or retain}
+    get:
+      summary: Read within verified local project storage; health answers 204 after verification.
+      description: Local machine-scope authentication and a live owned mount are required. Existing read schemas apply; global machine logs are forbidden. No fallback to public storage.
+      responses: {'200': {description: Existing data response}, '204': {description: Private proof accepted}, '403': {description: Scope or proof refused}, '404': {description: Route or feature unavailable}}
+    post:
+      summary: Submit or prepare within verified local project storage.
+      description: Existing data schemas apply. Software updates and keepalive are forbidden. Old peers refuse this namespace before receiving private bodies.
+      responses: {'200': {description: Existing data response}, '403': {description: Scope or operation refused}, '404': {description: Route or feature unavailable}}
+    put:
+      summary: Upload object bytes only into verified local project storage.
+      description: Uses the existing object Content-Range and held-byte protocol. Public model weights remain separate; private bytes never fall back to global storage.
+      responses: {'200': {description: Object held}, '201': {description: Object committed}, '204': {description: Part accepted}, '403': {description: Scope or proof refused}}
+  /v1/local-private/{project_id}/close:
+    post:
+      summary: Release this project's idle execution handles before normal unmount.
+      description: Requires machine authentication plus the same descriptor and live-view token as other private routes. Active work or held handles return busy; no other project is closed.
+      parameters:
+        - {name: project_id, in: path, required: true, schema: {type: string}}
+        - {name: cozy-local-private-storage, in: header, required: true, schema: {type: string}}
+        - {name: cozy-local-private-token, in: header, required: true, schema: {type: string}}
+      responses: {'204': {description: Private namespace closed}, '403': {description: Scope or proof refused}, '409': {description: Private work or custody remains active}}
   /v1/health:
     get:
       summary: >-

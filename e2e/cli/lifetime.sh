@@ -42,7 +42,7 @@ update_waiting() {
   done
   J --arg w "$said" '.status.update == $w' "$OUT/$1.machine.json" \
     || check "$1: machine show local never said \"$said\": $(jq -c .status.update "$OUT/$1.machine.json")"
-  cozy --json run ls > "$OUT/$1.list.json" || true
+  cozy --json run ls --all --on local > "$OUT/$1.list.json" || true
   J --arg w "$said" 'any(.runs[]; .kind == "update" and ((.waiting // "") | contains($w)))' "$OUT/$1.list.json" \
     || check "$1: run ls shows no update $said: $(jq -c '[.runs[] | select(.kind == "update") | .waiting]' "$OUT/$1.list.json")"
 }

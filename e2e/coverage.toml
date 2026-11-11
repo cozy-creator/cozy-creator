@@ -178,3 +178,44 @@ test = "pr: a run followed, a snapshot, a cancel"
 [open]
 "--port" = "pr: entrypoint parser, loopback listener and preserved config tests"
 test = "pr: entrypoints, local authenticated URL and expiry; web-serves redeems the link in Chrome"
+
+["vault"]
+"--directory" = "pr: projectvault: convert and rekey from outside the backing folder"
+
+["vault encrypt"]
+test = "pr: projectvault: conversion preserves mounted media and logical state"
+"--passphrase-file" = "pr: projectvault: conversion reads its credential file"
+"--recovery-out" = "pr: projectvault: recovery is saved outside storage; unsafe destination refuses"
+"--remove-plaintext" = "pr: projectvault: verified conversion and encrypted backing scan"
+"--idle" = "pr: projectvault: conversion disables idle expiry"
+"--max-duration" = "pr: projectvault: returned absolute expiry is within the submitted clock interval"
+
+["vault lock"]
+test = "pr: projectvault: reads and the old mounted view become inaccessible"
+
+["vault unlock"]
+test = "pr: projectvault: saved credentials reopen media; wrong credentials refuse"
+"--passphrase-file" = "pr: projectvault: wrong and replaced passphrase slots"
+"--recovery-file" = "pr: projectvault: saved recovery and replacement generations"
+"--idle" = "pr: projectvault: recovery sessions disable idle expiry"
+"--max-duration" = "pr: projectvault: polling cannot defeat the absolute unlock deadline"
+
+["vault status"]
+test = "pr: projectvault: ordinary, unlocked and expired storage states"
+
+["vault passphrase"]
+test = "pr: projectvault: new credential reopens files and the old slot refuses"
+"--passphrase-file" = "pr: projectvault: replacement credential comes from a file"
+
+["vault recovery"]
+test = "pr: projectvault: replace recovery and refuse old slots and unsafe destinations"
+"--recovery-out" = "pr: projectvault: replacement is written outside storage"
+
+["vault export"]
+test = "pr: projectvault: plaintext copy opens normally and retains video bytes"
+"--output" = "pr: projectvault: export writes into a new destination"
+
+["vault rotate"]
+test = "pr: projectvault: full rekey preserves logical history and media"
+"--passphrase-file" = "pr: projectvault: new generation uses its new credential file"
+"--recovery-out" = "pr: projectvault: saved recovery reopens the new generation"

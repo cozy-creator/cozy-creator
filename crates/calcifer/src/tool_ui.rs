@@ -99,13 +99,24 @@ pub(crate) async fn find(State(api): State<Arc<Api>>, UrlPath(id): UrlPath<Strin
     let Some((package, function)) = id.rsplit_once('/') else {
         return Err(Refusal(none(&id)));
     };
-    let named = match &asked.project {
-        Some(project) => crate::project::local_code_named(&api, project)?,
-        None => vec![],
+    let (named, encrypted, access) = match &asked.project {
+        Some(project) => {
+            let root = crate::project::named(&api, project).map_err(Refusal)?;
+            let access = crate::project::vault::admit_root(&root).await.map_err(Refusal)?;
+            let named = crate::project::local_code_named(&api, project)?;
+            (named, crate::project::vault::encrypted(&root), Some(access))
+        }
+        None => (vec![], false, None),
     };
     let component = match named.into_iter().find(|(written, _)| written == package) {
-        Some((_, path)) => local(&api, &id, &path, function).await,
-        None => released(&api, &id, package, function).await,
+        // Local modules are served at immutable URLs. An encrypted project uses
+        // the tool's declared controls instead of publishing its code there.
+        Some(_) if encrypted => Err(none(&id)),
+        Some((_, path)) => local(&api, &id, &path, function, access).await,
+        None => {
+            drop(access);
+            released(&api, &id, package, function).await
+        }
     };
     let component = component.map_err(Refusal)?;
     Ok(Json(ToolUi { module: module_url(&component) }))
@@ -300,7 +311,13 @@ pub(crate) fn not_in_wheel(wheel: &Path, interface: &Interface) -> Vec<String> {
 
 /// The component of `function` of the project's local code at `path`, as its files are now. An edit to them makes another hash, so
 /// another URL.
-async fn local(api: &Arc<Api>, id: &str, path: &Path, function: &str) -> Result<Arc<Component>, Error> {
+async fn local(
+    api: &Arc<Api>,
+    id: &str,
+    path: &Path,
+    function: &str,
+    access: Option<tokio::sync::OwnedRwLockReadGuard<()>>,
+) -> Result<Arc<Component>, Error> {
     let hub = runs::hub(api, "");
     let code = local_code::own(api.machines.hubs.home(), path)?;
     let (_, document) = local_code::describe(api, &code, &runs::default_on(api), &hub).await?;
@@ -311,7 +328,10 @@ async fn local(api: &Arc<Api>, id: &str, path: &Path, function: &str) -> Result<
         false => vec![path.to_path_buf(), path.join("src")],
     };
     let (id_owned, entry) = (id.to_owned(), ui.clone());
-    let files = tokio::task::spawn_blocking(move || from_folder(&id_owned, &roots, &module, &ui)).await.map_err(|why| unreadable(id, why))??;
+    let (files, _access) = tokio::task::spawn_blocking(move || {
+        (from_folder(&id_owned, &roots, &module, &ui), access)
+    }).await.map_err(|why| unreadable(id, why))?;
+    let files = files?;
     let mut hash = Sha256::new();
     for (path, bytes) in &files {
         hash.update(path.as_bytes());

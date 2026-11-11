@@ -17,7 +17,7 @@ export interface Dropped {
 let nextId = 0
 
 /** Files by what's dropped or chosen, sent by the one upload path as they arrive, whole or resuming. */
-export function useFiles(start: Dropped[] = []) {
+export function useFiles(start: Dropped[] = [], projectId?: string) {
   const { client } = useConnection()
   const [files, setFiles] = useState<Dropped[]>(start)
   const stops = useRef(new Map<number, AbortController>())
@@ -43,6 +43,7 @@ export function useFiles(start: Dropped[] = []) {
         stop.signal,
         (moving) => patch(row.id, { moving }),
         (attempt) => patch(row.id, { attempt: attempt || undefined }),
+        projectId,
       )
         .then((digest) => {
           patch(row.id, { digest, moving: undefined, attempt: undefined })

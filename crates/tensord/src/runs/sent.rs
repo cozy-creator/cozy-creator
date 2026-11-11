@@ -101,6 +101,8 @@ fn spec_of(mut spec: v1::RunSpec) -> Result<(crate::runs::Spec, Option<v1::HubAc
         v1::RunKind::Remove => (false, true),
         v1::RunKind::Update => return Err(Error::validation("invalid_kind", "an update is not a run of code")),
     };
+    let local_private = crate::private_io::current();
+    // A private request never writes its raw code/payload into a global prepare record.
     let journaled = serde_json::to_vec(&Kept::of(&spec)).unwrap_or_default();
     let input: Value = match &spec.payload {
         None => serde_json::json!({}),
@@ -133,6 +135,7 @@ fn spec_of(mut spec: v1::RunSpec) -> Result<(crate::runs::Spec, Option<v1::HubAc
         // A JSON value's objects are sorted maps and its numbers exact: one spelling per spec.
         let mut identity = serde_json::to_value(&identity).expect("a run spec serializes");
         identity["payload"] = input.clone();
+        if let Some(scope) = &local_private { identity["local_private_project"] = scope.project_id.clone().into(); }
         let encoded = crate::boundary_json::exact(&identity);
         let current = format!("sha256:{}", tensorfs::sha256::hex_digest(&encoded));
         // Old accepted requests included this retired option in their identity. Comparing
@@ -162,10 +165,18 @@ fn spec_of(mut spec: v1::RunSpec) -> Result<(crate::runs::Spec, Option<v1::HubAc
         Some(set) => Some(set.items.into_iter().filter_map(|item| member(item).transpose()).collect::<Result<_, _>>()?),
     };
     let models = choices(spec.models)?;
+    for source in models.iter().flat_map(|choice| std::iter::once(choice.source.as_str()).chain(choice.adapters.iter().map(|adapter| adapter.source.as_str()))) {
+        crate::private_io::check_model_source(source)
+            .map_err(|error| Error::validation("private_model_import_unsupported", error.to_string()))?;
+    }
     if remove && !matches!(source, crate::runs::Source::Release { .. } | crate::runs::Source::Installation(_)) {
         return Err(Error::validation("invalid_source", "a removal names a release or an installation"));
     }
+    if local_private.is_some() && (remove || set.is_some() || (warm && (spec.payload.is_some() || !models.is_empty() || !spec.entrypoint.is_empty()))) {
+        return Err(Error::validation("private_warm_unsupported", "private project warm sets and administrative removal are not supported; ordinary public model warming stays available"));
+    }
     Ok((crate::runs::Spec {
+        local_private,
         warm,
         remove,
         set,
@@ -261,7 +272,15 @@ impl Kept {
 /// spec, waits `needs_access` for its sender when it came with access, or ends FAILED with why
 /// it cannot.
 pub(crate) fn resume(runs: &Arc<crate::runs::Runs>) -> std::io::Result<()> {
-    for (run, actor, kept) in runs.service.engine.interrupted()? {
+    resume_scope(runs, None)
+}
+
+pub(crate) fn resume_private(runs: &Arc<Runs>, project: &str) -> std::io::Result<()> {
+    resume_scope(runs, Some(project))
+}
+
+fn resume_scope(runs: &Arc<Runs>, project: Option<&str>) -> std::io::Result<()> {
+    for (run, actor, kept) in runs.service.engine.interrupted_for(project)? {
         let spec = serde_json::from_slice::<Kept>(&kept)
             .map_err(|e| refused("preparation_interrupted", format!("its kept spec is unreadable: {e}")));
         if spec.as_ref().is_ok_and(|kept| kept.access) {
@@ -269,8 +288,9 @@ pub(crate) fn resume(runs: &Arc<crate::runs::Runs>) -> std::io::Result<()> {
             tracing::info!(run = %runs.service.engine.caller_id(&run), number = %run, "kept across the restart, needs_access: its sender sends its access again");
             continue;
         }
+        let private = runs.service.engine.private_storage(&run)?;
         let spec = spec
-            .and_then(|kept| spec_of(kept.spec))
+            .and_then(|kept| crate::private_io::within(private, || spec_of(kept.spec)))
             .and_then(|(spec, hub)| reach(&actor, spec, hub));
         let failure = match spec {
             Ok(spec) => {

@@ -582,6 +582,7 @@ impl Publisher {
     fn make(&self, source: &str, profiles: &[String], trained_on: &str, providers: &Providers,
         stop: Option<&Stop>, progress: &(dyn Fn(&str, u64, u64) + Sync),
     ) -> Result<Made, Failure> {
+        crate::private_io::check_model_source(source).map_err(|error| ("private_model_import_unsupported", error.to_string()))?;
         let mut sorted = profiles.to_vec();
         sorted.sort();
         let key = json!([source, sorted, trained_on]).to_string();
@@ -1254,7 +1255,7 @@ impl Publisher {
     /// Held shared through one environment build, so `reclaim` removes nothing from the cache
     /// between uv's own per-command holds either.
     pub(super) fn uv_cache_hold(&self) -> io::Result<File> {
-        let cache = self.uv_cache();
+        let cache = crate::private_io::cache_root(self.uv_cache(), "uv-cache")?;
         fs::create_dir_all(&cache)?;
         let lock = File::options()
             .create(true)

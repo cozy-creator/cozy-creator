@@ -154,6 +154,12 @@ impl Exact {
         &self.birth
     }
 
+    /// Windows executable identity read through this exact process handle, never its argv.
+    #[cfg(windows)]
+    pub fn executable(&self) -> Result<std::path::PathBuf> {
+        sys::executable(&self.handle).map_err(Error::os("read a process executable"))
+    }
+
     pub fn scope(&self) -> Option<&Arc<crate::contain::Scope>> {
         self.scope.as_ref()
     }

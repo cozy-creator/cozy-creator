@@ -7,11 +7,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use crate::project::vault;
 use api::{
-    calcifer::{
-        Agreed, Call, Event, ItemStatus, Kind, Machine, MachineKind, MachineState, Memo, OutputItem,
-        Reason, Run, Status, Warning,
-    },
+    calcifer::{Agreed, Call, Event, ItemStatus, Kind, Machine, MachineKind, MachineState, Memo, OutputItem, Reason, Run, Status, Warning},
     config::Origin,
     ids::{Digest, RunId},
     machine as v1,
@@ -121,7 +119,11 @@ const SCHEMA: &str = "
 
 /// A store made before a run said what of it stays gains that column, empty: what it made comes here.
 fn stays_column(writer: &mut Connection) -> Result<()> {
-    let has: bool = writer.query_row("SELECT EXISTS (SELECT 1 FROM pragma_table_info('runs') WHERE name = 'stays')", [], |r| r.get(0))?;
+    let has: bool = writer.query_row(
+        "SELECT EXISTS (SELECT 1 FROM pragma_table_info('runs') WHERE name = 'stays')",
+        [],
+        |r| r.get(0),
+    )?;
     if !has {
         writer.execute_batch("ALTER TABLE runs ADD COLUMN stays TEXT NOT NULL DEFAULT '[]'")?;
     }
@@ -130,7 +132,11 @@ fn stays_column(writer: &mut Connection) -> Result<()> {
 
 /// A store made before runs were sent in batches gains that column, empty: each run its own (cl-816).
 fn batch_column(writer: &mut Connection) -> Result<()> {
-    let has: bool = writer.query_row("SELECT EXISTS (SELECT 1 FROM pragma_table_info('runs') WHERE name = 'batch')", [], |r| r.get(0))?;
+    let has: bool = writer.query_row(
+        "SELECT EXISTS (SELECT 1 FROM pragma_table_info('runs') WHERE name = 'batch')",
+        [],
+        |r| r.get(0),
+    )?;
     if !has {
         writer.execute_batch("ALTER TABLE runs ADD COLUMN batch TEXT NOT NULL DEFAULT ''")?;
     }
@@ -154,7 +160,11 @@ const ANSWER_KEPT_MS: i64 = 24 * 60 * 60 * 1000;
 /// A store made before outputs were measured gains their columns. Its version stands: every statement names its columns, so a
 /// Calcifer that predates them goes on reading it.
 fn measured_columns(writer: &mut Connection) -> Result<()> {
-    let has: bool = writer.query_row("SELECT EXISTS (SELECT 1 FROM pragma_table_info('outputs') WHERE name = 'measured_ms')", [], |r| r.get(0))?;
+    let has: bool = writer.query_row(
+        "SELECT EXISTS (SELECT 1 FROM pragma_table_info('outputs') WHERE name = 'measured_ms')",
+        [],
+        |r| r.get(0),
+    )?;
     if has {
         return Ok(());
     }
@@ -186,11 +196,100 @@ pub(crate) enum StoreError {
     UnknownMachine(String),
     #[error("Calcifer's store holds a row it cannot read: {0}")]
     Corrupt(String),
+    #[error("project is locked: {0}")]
+    Locked(String),
+    #[error("private journal: {0}")]
+    Protected(String),
     #[error("{0}")]
     ProjectCode(String),
 }
 
 pub(crate) type Result<T> = std::result::Result<T, StoreError>;
+
+fn unlocked_rows<T>(rows: Vec<Result<T>>) -> Result<Vec<T>> {
+    let mut open = Vec::new();
+    for row in rows {
+        match row {
+            Ok(row) => open.push(row),
+            Err(StoreError::Locked(_)) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(open)
+}
+fn run_context(id: &str, field: &str) -> String {
+    format!("run:{id}:{field}")
+}
+fn output_context(id: &str, name: &str, index: u32, rev: u64, field: &str) -> String {
+    serde_json::to_string(&("output", id, name, index, rev, field)).expect("context serializes")
+}
+fn log_context(id: &str, seq: u64) -> String {
+    format!("run:{id}:log:{seq}")
+}
+fn private_error(error: api::error::Error) -> StoreError {
+    StoreError::Protected(format!("{}: {}", error.code, error.message))
+}
+fn open_bytes(context: &str, bytes: &[u8]) -> Result<Vec<u8>> {
+    vault::open_payload(context, bytes)
+        .map_err(private_error)?
+        .ok_or_else(|| StoreError::Locked("journal data".into()))
+}
+fn open_text(context: &str, text: &str) -> Result<String> {
+    String::from_utf8(open_bytes(context, text.as_bytes())?).map_err(|_| corrupt("a private text field"))
+}
+fn optional_text(context: &str, text: Option<String>) -> Result<Option<String>> {
+    text.map(|text| open_text(context, &text)).transpose()
+}
+fn sql_private(column: usize, error: StoreError) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(column, rusqlite::types::Type::Text, Box::new(error))
+}
+fn sql_text(row: &Row<'_>, column: usize, context: &str) -> rusqlite::Result<String> {
+    let text: String = row.get(column)?;
+    open_text(context, &text).map_err(|error| sql_private(column, error))
+}
+fn sql_optional_text(row: &Row<'_>, column: usize, context: &str) -> rusqlite::Result<Option<String>> {
+    let text: Option<String> = row.get(column)?;
+    optional_text(context, text).map_err(|error| sql_private(column, error))
+}
+fn sql_optional_path(row: &Row<'_>, column: usize, context: &str) -> rusqlite::Result<Option<PathBuf>> {
+    let encoded: Option<String> = row.get(column)?;
+    encoded.map(|value| {
+        let decoded = open_text(context, &value).map_err(|error| sql_private(column, error))?;
+        vault::payload_path(value.as_bytes(), Path::new(&decoded)).map_err(|error| sql_private(column, private_error(error)))
+    }).transpose()
+}
+
+fn seal_at(path: &Path, context: &str, bytes: &[u8]) -> Result<Vec<u8>> {
+    vault::seal_payload(path, context, bytes).map_err(private_error)
+}
+fn as_text(bytes: Vec<u8>) -> Result<String> {
+    String::from_utf8(bytes).map_err(|_| corrupt("a protected text encoding"))
+}
+fn run_scope(conn: &Connection, id: &str) -> Result<(PathBuf, bool)> {
+    let (path, spec): (String, Vec<u8>) = conn.query_row("SELECT out_dir, spec FROM runs WHERE id = ?1", [id], |row| {
+        Ok((row.get(0)?, row.get(1)?))
+    })?;
+    Ok((PathBuf::from(path), vault::is_payload(&spec)))
+}
+fn seal_run(conn: &Connection, id: &str, context: &str, bytes: &[u8]) -> Result<Vec<u8>> {
+    let (path, protected) = run_scope(conn, id)?;
+    let sealed = seal_at(&path, context, bytes)?;
+    if protected && !vault::is_payload(&sealed) {
+        return Err(StoreError::Locked("journal destination".into()));
+    }
+    Ok(sealed)
+}
+fn seal_run_text(conn: &Connection, id: &str, context: &str, text: &str) -> Result<String> {
+    as_text(seal_run(conn, id, context, text.as_bytes())?)
+}
+fn answer_path(body: &[u8]) -> Option<PathBuf> {
+    let value: serde_json::Value = serde_json::from_slice(body).ok()?;
+    value
+        .get("path")
+        .and_then(serde_json::Value::as_str)
+        .filter(|path| Path::new(path).is_absolute())
+        .map(PathBuf::from)
+}
 
 /// Where a run is between its submission and its end.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -315,11 +414,7 @@ pub(crate) struct Batch {
 
 impl Batch {
     pub(crate) fn is_empty(&self) -> bool {
-        self.cursor == 0
-            && self.logs.is_empty()
-            && self.products.is_empty()
-            && self.machine_state.is_none()
-            && self.started_at_ms.is_none()
+        self.cursor == 0 && self.logs.is_empty() && self.products.is_empty() && self.machine_state.is_none() && self.started_at_ms.is_none()
     }
 }
 
@@ -378,6 +473,7 @@ impl Store {
         let mut writer = Connection::open(path)?;
         writer.pragma_update(None, "journal_mode", "WAL")?;
         writer.pragma_update(None, "synchronous", "FULL")?;
+        writer.pragma_update(None, "secure_delete", "ON")?;
         writer.pragma_update(None, "foreign_keys", "ON")?;
         match writer.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))? {
             0 => {
@@ -426,24 +522,247 @@ impl Store {
         }
     }
 
+    /// Protect already-recorded private content when an ordinary project opts into a vault.
+    /// The caller installs the keybag/public recipient before this atomic journal transaction.
+    pub(crate) fn protect_project_journal(&self, root: &Path) -> Result<()> {
+        self.rewrite_project_journal(root, |context, value, protected| {
+            if protected {
+                // Validate the existing slot; a prefix alone is not proof that it is valid ciphertext.
+                open_bytes(context, value)?;
+                return Ok(value.to_vec());
+            }
+            // A frame may have been sealed after the physical cutover but before this transaction.
+            // Only a verified same-root/context envelope is already protected. A legacy plaintext
+            // log that merely begins with our prefix is still data and must be encrypted.
+            if vault::is_payload(value)
+                && vault::payload_root(value).ok().flatten().as_deref() == Some(root)
+                && matches!(vault::open_payload(context, value), Ok(Some(_)))
+            {
+                return Ok(value.to_vec());
+            }
+            let sealed = seal_at(root, context, value)?;
+            if !vault::is_payload(&sealed) {
+                return Err(StoreError::Protected(
+                    "project encryption is not ready for journal conversion".into(),
+                ));
+            }
+            Ok(sealed)
+        })
+        .map(drop)
+    }
+
+    /// Rewrite every retained protected payload using the owner's verified replacement generation.
+    pub(crate) fn rekey_project_journal(&self, root: &Path, old: &project_vault::ProjectSecret, new: &project_vault::Keybag) -> Result<()> {
+        self.rewrite_project_journal(root, |context, value, protected| {
+            if protected {
+                return vault::rekey_payload(context, value, old, new).map_err(private_error);
+            }
+            // A newly protected slot (target on an older sealed-spec row) can still be
+            // plaintext. Put it in the current protected view rather than carrying it on.
+            let sealed = seal_at(root, context, value)?;
+            if !vault::is_payload(&sealed) {
+                return Err(StoreError::Protected("project encryption is not ready for journal rekey".into()));
+            }
+            Ok(sealed)
+        })
+        .map(drop)
+    }
+
+    fn rewrite_project_journal(&self, root: &Path, mut transform: impl FnMut(&str, &[u8], bool) -> Result<Vec<u8>>) -> Result<bool> {
+        self.write(|tx| {
+            let all: Vec<(String, String, Vec<u8>)> = {
+                let mut rows = tx.prepare("SELECT id, out_dir, spec FROM runs")?;
+                rows.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+                    .collect::<rusqlite::Result<_>>()?
+            };
+            let mut changed = false;
+            for (id, directory, spec) in all {
+                let path = vault::logical(Path::new(&directory));
+                let protected = vault::is_payload(&spec);
+                let scope = vault::payload_root(&spec).map_err(private_error)?;
+                if !path.starts_with(root) && scope.as_deref() != Some(root) {
+                    continue;
+                }
+                if protected { tx.execute("UPDATE runs SET out_dir = ?2 WHERE id = ?1", params![&id, crate::project::landing(root).to_string_lossy()])?; }
+
+                for column in ["spec", "outcome"] {
+                    let value: Option<Vec<u8>> =
+                        tx.query_row(&format!("SELECT {column} FROM runs WHERE id = ?1"), [&id], |row| row.get(0))?;
+                    if let Some(value) = value {
+                        let sealed = transform(&run_context(&id, column), &value, protected)?;
+                        if sealed != value {
+                            tx.execute(&format!("UPDATE runs SET {column} = ?2 WHERE id = ?1"), params![id, sealed])?;
+                            changed = true;
+                        }
+                    }
+                }
+                for column in ["target", "warnings", "inputs", "reason_code", "reason"] {
+                    let value: Option<String> =
+                        tx.query_row(&format!("SELECT {column} FROM runs WHERE id = ?1"), [&id], |row| row.get(0))?;
+                    if let Some(value) = value {
+                        // Earlier private records already sealed their spec, before target
+                        // became a private slot. Its own envelope decides whether to retain
+                        // or seal it; the spec's marker alone is not sufficient.
+                        let protected = protected && (column != "target" || vault::is_payload(value.as_bytes()));
+                        let sealed = as_text(transform(&run_context(&id, column), value.as_bytes(), protected)?)?;
+                        if sealed != value {
+                            tx.execute(&format!("UPDATE runs SET {column} = ?2 WHERE id = ?1"), params![id, sealed])?;
+                            changed = true;
+                        }
+                    }
+                }
+                let outputs: Vec<(String, u32, u64, Option<u64>, Option<u64>)> = {
+                    let mut rows = tx.prepare("SELECT name, idx, rev, exported_rev, failed_rev FROM outputs WHERE run = ?1")?;
+                    rows.query_map([&id], |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get::<_, i64>(1)? as u32,
+                            row.get::<_, i64>(2)? as u64,
+                            row.get::<_, Option<i64>>(3)?.map(|n| n as u64),
+                            row.get::<_, Option<i64>>(4)?.map(|n| n as u64),
+                        ))
+                    })?
+                    .collect::<rusqlite::Result<_>>()?
+                };
+                for (name, index, rev, exported, failed) in outputs {
+                    for (column, revision) in [
+                        ("label", rev),
+                        ("checkpoint", rev),
+                        ("path", exported.unwrap_or(rev)),
+                        ("export_error", failed.unwrap_or(rev)),
+                    ] {
+                        let value: Option<String> = tx.query_row(
+                            &format!("SELECT {column} FROM outputs WHERE run = ?1 AND name = ?2 AND idx = ?3"),
+                            params![id, name, index],
+                            |row| row.get(0),
+                        )?;
+                        if let Some(value) = value {
+                            let sealed = as_text(transform(
+                                &output_context(&id, &name, index, revision, column),
+                                value.as_bytes(),
+                                protected,
+                            )?)?;
+                            if sealed != value {
+                                tx.execute(
+                                    &format!("UPDATE outputs SET {column} = ?4 WHERE run = ?1 AND name = ?2 AND idx = ?3"),
+                                    params![id, name, index, sealed],
+                                )?;
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+                let logs: Vec<(i64, String)> = {
+                    let mut rows = tx.prepare("SELECT seq, text FROM run_logs WHERE run = ?1")?;
+                    rows.query_map([&id], |row| Ok((row.get(0)?, row.get(1)?)))?
+                        .collect::<rusqlite::Result<_>>()?
+                };
+                for (seq, text) in logs {
+                    let sealed = as_text(transform(&log_context(&id, seq as u64), text.as_bytes(), protected)?)?;
+                    if sealed != text {
+                        tx.execute(
+                            "UPDATE run_logs SET text = ?3 WHERE run = ?1 AND seq = ?2",
+                            params![id, seq, sealed],
+                        )?;
+                        changed = true;
+                    }
+                }
+                let asks: Vec<(String, Vec<u8>, Option<String>)> = {
+                    let mut rows = tx.prepare("SELECT key, body, reason FROM asks WHERE run = ?1")?;
+                    rows.query_map([&id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+                        .collect::<rusqlite::Result<_>>()?
+                };
+                for (key, body, reason) in asks {
+                    let sealed = transform(&format!("ask:{key}:body"), &body, protected)?;
+                    let sealed_reason = reason
+                        .as_ref()
+                        .map(|reason| transform(&format!("ask:{key}:reason"), reason.as_bytes(), protected).and_then(as_text))
+                        .transpose()?;
+                    if sealed != body || sealed_reason != reason {
+                        tx.execute(
+                            "UPDATE asks SET body = ?2, reason = ?3 WHERE key = ?1",
+                            params![key, sealed, sealed_reason],
+                        )?;
+                        changed = true;
+                    }
+                }
+            }
+            let answers: Vec<(String, Vec<u8>)> = {
+                let mut rows = tx.prepare("SELECT key, body FROM answers")?;
+                rows.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                    .collect::<rusqlite::Result<_>>()?
+            };
+            for (key, body) in answers {
+                let scope = vault::payload_root(&body).map_err(private_error)?.or_else(|| answer_path(&body));
+                if scope.as_deref().is_none_or(|path| !vault::logical(path).starts_with(root)) {
+                    continue;
+                }
+                let sealed = transform(&format!("answer:{key}:body"), &body, vault::is_payload(&body))?;
+                if sealed != body {
+                    tx.execute("UPDATE answers SET body = ?2 WHERE key = ?1", params![key, sealed])?;
+                    changed = true;
+                }
+            }
+            if changed { vault::mark_journal_cleanup(root).map_err(private_error)?; }
+            Ok(changed)
+        })
+    }
+
+    /// Old plaintext must not remain in our live SQLite freelist or WAL after conversion.
+    /// This cannot erase historical external copies or SSD remnants.
+    pub(crate) fn cleanup_private_journal(&self) -> Result<()> {
+        let writer = self.writer.lock().expect("store writer");
+        let _reader = self.reader.lock().expect("store reader");
+        writer.pragma_update(None, "secure_delete", "ON")?;
+        let checkpoint = |conn: &Connection| -> Result<()> {
+            let busy: i64 = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))?;
+            if busy != 0 {
+                return Err(StoreError::Protected("journal cleanup is waiting for SQLite readers".into()));
+            }
+            Ok(())
+        };
+        checkpoint(&writer)?;
+        writer.execute_batch("VACUUM;")?;
+        checkpoint(&writer)
+    }
+
     /// What the write under `key` answered, if it was kept.
     pub(crate) fn answer(&self, key: &str) -> Result<Option<Answer>> {
         self.read(|conn| {
-            let row = conn.query_row("SELECT digest, status, content_type, body FROM answers WHERE key = ?1", [key], |r| {
-                Ok(Answer { digest: r.get(0)?, status: r.get(1)?, content_type: r.get(2)?, body: r.get(3)? })
-            });
-            Ok(row.optional()?)
+            let row = conn
+                .query_row(
+                    "SELECT digest, status, content_type, body FROM answers WHERE key = ?1",
+                    [key],
+                    |r| {
+                        Ok(Answer {
+                            digest: r.get(0)?,
+                            status: r.get(1)?,
+                            content_type: r.get(2)?,
+                            body: r.get(3)?,
+                        })
+                    },
+                )
+                .optional()?;
+            row.map(|mut answer| {
+                answer.body = open_bytes(&format!("answer:{key}:body"), &answer.body)?;
+                Ok(answer)
+            })
+            .transpose()
         })
     }
 
     /// Keeps what the write under `key` answered; answers older than a day go.
     pub(crate) fn keep_answer(&self, key: &str, answer: &Answer) -> Result<()> {
         let now = now_ms();
+        let body = match answer_path(&answer.body) {
+            Some(path) => seal_at(&path, &format!("answer:{key}:body"), &answer.body)?,
+            None => answer.body.clone(),
+        };
         self.write(|tx| {
             tx.execute("DELETE FROM answers WHERE at_ms < ?1", [now - ANSWER_KEPT_MS])?;
             tx.execute(
                 "INSERT OR REPLACE INTO answers (key, digest, status, content_type, body, at_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![key, answer.digest, answer.status, answer.content_type, answer.body, now],
+                params![key, answer.digest, answer.status, answer.content_type, body, now],
             )?;
             Ok(())
         })
@@ -467,12 +786,8 @@ impl Store {
 
     pub(crate) fn machines(&self) -> Result<Vec<MachineRow>> {
         self.read(|conn| {
-            let mut statement = conn.prepare(&format!(
-                "SELECT {MACHINE_COLUMNS} FROM machines ORDER BY name"
-            ))?;
-            let rows = statement
-                .query_map([], machine_row)?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let mut statement = conn.prepare(&format!("SELECT {MACHINE_COLUMNS} FROM machines ORDER BY name"))?;
+            let rows = statement.query_map([], machine_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
             rows.into_iter().collect()
         })
     }
@@ -486,9 +801,7 @@ impl Store {
                  WHERE name = ?1 COLLATE NOCASE OR alias = ?1 COLLATE NOCASE OR rental_id = ?1 COLLATE NOCASE
                  ORDER BY name = ?1 COLLATE NOCASE DESC, rowid DESC"
             ))?;
-            let rows = statement
-                .query_map([text], machine_row)?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let rows = statement.query_map([text], machine_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
             rows.into_iter().collect()
         })
     }
@@ -497,9 +810,7 @@ impl Store {
     pub(crate) fn alias(&self, name: &str) -> Result<Option<String>> {
         self.read(|conn| {
             Ok(conn
-                .query_row("SELECT alias FROM machines WHERE name = ?1", [name], |r| {
-                    r.get(0)
-                })
+                .query_row("SELECT alias FROM machines WHERE name = ?1", [name], |r| r.get(0))
                 .optional()?
                 .flatten())
         })
@@ -537,13 +848,19 @@ impl Store {
     /// named by its rental id. The row as recorded; none when its rental is recorded already.
     pub(crate) fn adopt(&self, machine: &MachineRow) -> Result<Option<MachineRow>> {
         self.write(|tx| {
-            let known: bool = tx.query_row("SELECT EXISTS (SELECT 1 FROM machines WHERE rental_id = ?1)", [&machine.rental_id], |r| r.get(0))?;
+            let known: bool = tx.query_row(
+                "SELECT EXISTS (SELECT 1 FROM machines WHERE rental_id = ?1)",
+                [&machine.rental_id],
+                |r| r.get(0),
+            )?;
             if known {
                 return Ok(None);
             }
             let mut row = machine.clone();
             let holder: Option<(String, i64)> = tx
-                .query_row("SELECT state, created_at FROM machines WHERE name = ?1", [&row.name], |r| Ok((r.get(0)?, r.get(1)?)))
+                .query_row("SELECT state, created_at FROM machines WHERE name = ?1", [&row.name], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })
                 .optional()?;
             match holder {
                 Some((state, at)) if state == "ended" => move_machine(tx, &row.name, &format!("{}@{at}", row.name), None)?,
@@ -597,10 +914,8 @@ impl Store {
             let mut statement = conn.prepare(&format!(
                 "SELECT {RUN_COLUMNS} FROM runs WHERE state = 'queued' AND machine IS NULL ORDER BY number"
             ))?;
-            let rows = statement
-                .query_map([], run_row)?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            rows.into_iter().collect()
+            let rows = statement.query_map([], run_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
+            unlocked_rows(rows)
         })
     }
 
@@ -615,6 +930,10 @@ impl Store {
                     Err(StoreError::Conflict(ask.key.clone()))
                 };
             }
+            let body = match &ask.run {
+                Some(run) => seal_run(tx, run.as_str(), &format!("ask:{}:body", ask.key), &ask.body)?,
+                None => ask.body.clone(),
+            };
             tx.execute(
                 "INSERT INTO asks (key, hub, digest, body, machine, state, reason, created_at, kind, run)
                  VALUES (?1, ?2, ?3, ?4, ?5, 'pending', NULL, ?6, ?7, ?8)",
@@ -622,7 +941,7 @@ impl Store {
                     ask.key,
                     ask.hub,
                     ask.digest,
-                    ask.body,
+                    body,
                     ask.machine,
                     now_ms(),
                     ask.kind.as_str(),
@@ -649,7 +968,10 @@ impl Store {
     /// Asks a failed ask again.
     pub(crate) fn reopen_ask(&self, key: &str) -> Result<()> {
         self.write(|tx| {
-            tx.execute("UPDATE asks SET state = 'pending', reason = NULL WHERE key = ?1 AND state = 'failed'", [key])?;
+            tx.execute(
+                "UPDATE asks SET state = 'pending', reason = NULL WHERE key = ?1 AND state = 'failed'",
+                [key],
+            )?;
             Ok(())
         })
     }
@@ -660,12 +982,24 @@ impl Store {
 
     /// When the ask under `key` was first made.
     pub(crate) fn ask_made_at(&self, key: &str) -> Result<Option<i64>> {
-        self.read(|conn| Ok(conn.query_row("SELECT created_at FROM asks WHERE key = ?1", [key], |r| r.get(0)).optional()?))
+        self.read(|conn| {
+            Ok(conn
+                .query_row("SELECT created_at FROM asks WHERE key = ?1", [key], |r| r.get(0))
+                .optional()?)
+        })
     }
 
     /// Replaces a pending ask's body: what it is to do, changed by its asker while it waits.
     pub(crate) fn rewrite_ask(&self, key: &str, body: &[u8]) -> Result<()> {
         self.write(|tx| {
+            let run: Option<String> = tx
+                .query_row("SELECT run FROM asks WHERE key = ?1", [key], |row| row.get(0))
+                .optional()?
+                .flatten();
+            let body = match run {
+                Some(run) => seal_run(tx, &run, &format!("ask:{key}:body"), body)?,
+                None => body.to_vec(),
+            };
             tx.execute("UPDATE asks SET body = ?2 WHERE key = ?1 AND state = 'pending'", params![key, body])?;
             Ok(())
         })
@@ -677,20 +1011,14 @@ impl Store {
             let mut statement = conn.prepare(&format!(
                 "SELECT {ASK_COLUMNS} FROM asks WHERE state = 'pending' ORDER BY created_at"
             ))?;
-            let rows = statement
-                .query_map([], ask_row)?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            rows.into_iter().collect()
+            let rows = statement.query_map([], ask_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
+            unlocked_rows(rows)
         })
     }
 
     /// Ends an ask: `done` with the machine it made, or `failed` with why. A rent ask that is
     /// done records its machine in the same transaction.
-    pub(crate) fn settle_ask(
-        &self,
-        key: &str,
-        outcome: std::result::Result<Option<&MachineRow>, &str>,
-    ) -> Result<()> {
+    pub(crate) fn settle_ask(&self, key: &str, outcome: std::result::Result<Option<&MachineRow>, &str>) -> Result<()> {
         self.write(|tx| {
             match outcome {
                 Ok(machine) => {
@@ -703,6 +1031,11 @@ impl Store {
                     )?;
                 }
                 Err(reason) => {
+                    let run: Option<String> = tx.query_row("SELECT run FROM asks WHERE key = ?1", [key], |row| row.get(0))?;
+                    let reason = match run {
+                        Some(run) => seal_run_text(tx, &run, &format!("ask:{key}:reason"), reason)?,
+                        None => reason.to_owned(),
+                    };
                     tx.execute("UPDATE asks SET state = 'failed', reason = ?2 WHERE key = ?1", params![key, reason])?;
                 }
             }
@@ -762,7 +1095,11 @@ impl Store {
                 })
                 .optional()?;
             if let Some((id, recorded)) = recorded {
-                return if recorded == digest { Ok((id, false)) } else { Err(StoreError::Conflict(key.into())) };
+                return if recorded == digest {
+                    Ok((id, false))
+                } else {
+                    Err(StoreError::Conflict(key.into()))
+                };
             }
             // The machine's name, as `Machines::named` resolved what the run named.
             let machine = match &new.machine {
@@ -789,14 +1126,26 @@ impl Store {
                     digest,
                     new.hub.as_deref().unwrap_or_default(),
                     new.kind.as_str(),
-                    new.target,
+                    as_text(seal_at(&new.out_dir, &run_context(new.id.as_str(), "target"), new.target.as_bytes())?)?,
                     machine,
                     new.pinned,
-                    serde_json::to_vec(&new.spec).expect("serializes"),
+                    seal_at(
+                        &new.out_dir,
+                        &run_context(new.id.as_str(), "spec"),
+                        &serde_json::to_vec(&new.spec).expect("serializes")
+                    )?,
                     new.out_dir.to_string_lossy(),
                     now_ms(),
-                    serde_json::to_string(&new.warnings).expect("serializes"),
-                    serde_json::to_string(&new.inputs).expect("serializes"),
+                    as_text(seal_at(
+                        &new.out_dir,
+                        &run_context(new.id.as_str(), "warnings"),
+                        &serde_json::to_vec(&new.warnings).expect("serializes")
+                    )?)?,
+                    as_text(seal_at(
+                        &new.out_dir,
+                        &run_context(new.id.as_str(), "inputs"),
+                        &serde_json::to_vec(&new.inputs).expect("serializes")
+                    )?)?,
                     new.wants,
                     new.agreed.map(|agreed| serde_json::to_string(&agreed).expect("serializes")),
                     serde_json::to_string(&new.stays).expect("serializes"),
@@ -807,9 +1156,7 @@ impl Store {
             )?;
             Ok((new.id.to_string(), true))
         })?;
-        let row = self
-            .run(&id)?
-            .ok_or_else(|| StoreError::Corrupt(format!("run {id} vanished")))?;
+        let row = self.run(&id)?.ok_or_else(|| StoreError::Corrupt(format!("run {id} vanished")))?;
         Ok((row, fresh))
     }
 
@@ -853,6 +1200,9 @@ impl Store {
             AND (?4 IS NULL OR machine = ?4)
             AND (?5 IS NULL OR out_dir = ?5)";
         self.read(|conn| {
+            // Keep classification, counts and the combined page on one read snapshot.
+            let snapshot = conn.unchecked_transaction()?;
+            let conn = &snapshot;
             let status = filter.status.map(|status| match status {
                 Status::Queued => "queued",
                 Status::InProgress => "in_progress",
@@ -861,14 +1211,17 @@ impl Store {
                 Status::Canceled => "canceled",
             });
             let before = filter.before.map_or(i64::MAX, |n| n as i64);
+            let private: bool = conn.query_row(
+                &format!("SELECT EXISTS(SELECT 1 {RUN_LIST_SCOPE} AND {PRIVATE_RUN_TARGET})"),
+                params![before, status, filter.machine, filter.out_dir, vault::PAYLOAD_PREFIX.len() as i64, vault::PAYLOAD_PREFIX],
+                |row| row.get(0),
+            )?;
+            if private {
+                return runs_with_private_targets(conn, filter, before, status);
+            }
             let matching = params![before, status, filter.target, filter.machine, filter.out_dir];
-            let total: i64 =
-                conn.query_row(&format!("SELECT COUNT(*) {MATCHING}"), matching, |r| {
-                    r.get(0)
-                })?;
-            let mut statement = conn.prepare(&format!(
-                "SELECT {RUN_COLUMNS} {MATCHING} ORDER BY number DESC LIMIT ?6"
-            ))?;
+            let total: i64 = conn.query_row(&format!("SELECT COUNT(*) {MATCHING}"), matching, |r| r.get(0))?;
+            let mut statement = conn.prepare(&format!("SELECT {RUN_COLUMNS} {MATCHING} ORDER BY number DESC LIMIT ?6"))?;
             let read = statement.query_map(
                 params![before, status, filter.target, filter.machine, filter.out_dir, filter.limit as i64],
                 |r| Ok((r.get::<_, i64>(1)?, run_row(r))),
@@ -889,8 +1242,7 @@ impl Store {
     /// The machines' runs not yet settled, oldest first: what a starting Calcifer drives.
     pub(crate) fn unsettled(&self) -> Result<Vec<RunId>> {
         self.read(|conn| {
-            let mut statement =
-                conn.prepare("SELECT id FROM runs WHERE state <> 'settled' AND kind <> 'here' ORDER BY number")?;
+            let mut statement = conn.prepare("SELECT id FROM runs WHERE state <> 'settled' AND kind <> 'here' ORDER BY number")?;
             let ids = statement
                 .query_map([], |r| r.get::<_, String>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -904,20 +1256,33 @@ impl Store {
     pub(crate) fn unsettled_here(&self) -> Result<Vec<RunId>> {
         self.read(|conn| {
             let mut statement = conn.prepare("SELECT id FROM runs WHERE state <> 'settled' AND kind = 'here' ORDER BY number")?;
-            let ids = statement.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-            ids.into_iter().map(|id| RunId::try_from(id).map_err(|e| StoreError::Corrupt(e.into()))).collect()
+            let ids = statement
+                .query_map([], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            ids.into_iter()
+                .map(|id| RunId::try_from(id).map_err(|e| StoreError::Corrupt(e.into())))
+                .collect()
         })
     }
 
     /// Whether any unsettled run is written the staged object `digest`.
     pub(crate) fn input_in_use(&self, digest: &Digest) -> Result<bool> {
         self.read(|conn| {
-            Ok(conn.query_row(
-                "SELECT EXISTS (SELECT 1 FROM runs, json_each(runs.inputs)
-                 WHERE runs.state <> 'settled' AND json_extract(json_each.value, '$[0]') = ?1)",
-                [digest.to_string()],
-                |r| r.get(0),
-            )?)
+            let mut statement = conn.prepare("SELECT id, inputs FROM runs WHERE state <> 'settled'")?;
+            let rows = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+            for row in rows {
+                let (id, text) = row?;
+                let plain = match open_text(&run_context(&id, "inputs"), &text) {
+                    Ok(plain) => plain,
+                    Err(StoreError::Locked(_)) => return Ok(true),
+                    Err(error) => return Err(error),
+                };
+                let inputs: Vec<(Digest, u64)> = serde_json::from_str(&plain).map_err(|_| corrupt("a run's inputs"))?;
+                if inputs.iter().any(|(held, _)| held == digest) {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
         })
     }
 
@@ -930,10 +1295,10 @@ impl Store {
                 .as_ref()
                 .and_then(|outcome| outcome.measurements.as_ref())
                 .and_then(|measurements| serde_json::from_str(measurements.get()).ok());
-            let mut statement = conn.prepare(
-                "SELECT text FROM run_logs WHERE run = ?1 AND level = 'call' ORDER BY seq",
-            )?;
-            let calls = statement.query_map([row.id.as_str()], |r| r.get::<_, String>(0))?;
+            let mut statement = conn.prepare("SELECT seq, text FROM run_logs WHERE run = ?1 AND level = 'call' ORDER BY seq")?;
+            let calls = statement.query_map([row.id.as_str()], |r| {
+                sql_text(r, 1, &log_context(row.id.as_str(), r.get::<_, i64>(0)? as u64))
+            })?;
             for call in calls {
                 run.calls.extend(serde_json::from_str::<Call>(&call?).ok());
             }
@@ -953,20 +1318,45 @@ impl Store {
             let Some(through) = next.iter().take_while(|(_, created)| *created < before_ms).last().map(|(n, _)| *n) else {
                 return Ok(None);
             };
-            let ours = params![after, through, before_ms];
-            tx.execute(
-                "UPDATE runs SET outcome = CAST(json_remove(CAST(outcome AS TEXT), '$.measurements') AS BLOB)
-                 WHERE number > ?1 AND number <= ?2 AND settled_at < ?3 AND outcome IS NOT NULL
-                     AND CASE WHEN json_valid(CAST(outcome AS TEXT))
-                         THEN json_type(CAST(outcome AS TEXT), '$.measurements') IS NOT NULL ELSE 0 END",
-                ours,
-            )?;
-            tx.execute(
-                "UPDATE run_logs SET text = json_remove(text, '$.measurements')
-                 WHERE level = 'call' AND run IN (SELECT id FROM runs WHERE number > ?1 AND number <= ?2 AND settled_at < ?3)
-                     AND CASE WHEN json_valid(text) THEN json_type(text, '$.measurements') IS NOT NULL ELSE 0 END",
-                ours,
-            )?;
+            let ids: Vec<String> = {
+                let mut rows = tx.prepare("SELECT id FROM runs WHERE number > ?1 AND number <= ?2 AND settled_at < ?3")?;
+                rows.query_map(params![after, through, before_ms], |row| row.get(0))?
+                    .collect::<rusqlite::Result<_>>()?
+            };
+            for id in ids {
+                let outcome: Option<Vec<u8>> = tx.query_row("SELECT outcome FROM runs WHERE id = ?1", [&id], |row| row.get(0))?;
+                if let Some(bytes) = outcome {
+                    if let Some(plain) = vault::open_payload(&run_context(&id, "outcome"), &bytes).map_err(private_error)? {
+                        if let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&plain) {
+                            if value.as_object_mut().is_some_and(|value| value.remove("measurements").is_some()) {
+                                let bytes = seal_run(
+                                    tx,
+                                    &id,
+                                    &run_context(&id, "outcome"),
+                                    &serde_json::to_vec(&value).expect("serializes"),
+                                )?;
+                                tx.execute("UPDATE runs SET outcome = ?2 WHERE id = ?1", params![id, bytes])?;
+                            }
+                        }
+                    }
+                }
+                let calls: Vec<(i64, String)> = {
+                    let mut rows = tx.prepare("SELECT seq, text FROM run_logs WHERE run = ?1 AND level = 'call'")?;
+                    rows.query_map([&id], |row| Ok((row.get(0)?, row.get(1)?)))?
+                        .collect::<rusqlite::Result<_>>()?
+                };
+                for (seq, text) in calls {
+                    let context = log_context(&id, seq as u64);
+                    if let Some(plain) = vault::open_payload(&context, text.as_bytes()).map_err(private_error)? {
+                        if let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&plain) {
+                            if value.as_object_mut().is_some_and(|value| value.remove("measurements").is_some()) {
+                                let text = seal_run_text(tx, &id, &context, &value.to_string())?;
+                                tx.execute("UPDATE run_logs SET text = ?3 WHERE run = ?1 AND seq = ?2", params![id, seq, text])?;
+                            }
+                        }
+                    }
+                }
+            }
             Ok(Some(through))
         })
     }
@@ -1014,12 +1404,22 @@ impl Store {
                 return Ok(Acceptance::Stale);
             }
             if row.state != State::Sent {
-                return Ok(if row.state == State::Accepted { Acceptance::Again } else { Acceptance::Stale });
+                return Ok(if row.state == State::Accepted {
+                    Acceptance::Again
+                } else {
+                    Acceptance::Stale
+                });
             }
             tx.execute(
                 "UPDATE runs SET state = 'accepted', machine_number = ?2, machine_state = ?3, accepted_at = ?4,
                  started_at = ?5 WHERE id = ?1",
-                params![id, state.number as i64, state.state, now_ms(), (state.started_at_ms > 0).then_some(state.started_at_ms as i64)],
+                params![
+                    id,
+                    state.number as i64,
+                    state.state,
+                    now_ms(),
+                    (state.started_at_ms > 0).then_some(state.started_at_ms as i64)
+                ],
             )?;
             Ok(Acceptance::Fresh(vec![lifecycle(tx, id)?]))
         })
@@ -1036,7 +1436,7 @@ impl Store {
                 let seq = next_seq(tx, id)?;
                 tx.execute(
                     "INSERT INTO run_logs (run, seq, at_ms, level, text) VALUES (?1, ?2, ?3, ?4, ?5)",
-                    params![id, seq as i64, at_ms, level, text],
+                    params![id, seq as i64, at_ms, level, seal_run_text(tx, id, &log_context(id, seq), &text)?],
                 )?;
                 events.push(log_event(seq, at_ms, level, text));
             }
@@ -1050,7 +1450,10 @@ impl Store {
                 tx.execute("UPDATE runs SET machine_state = ?2 WHERE id = ?1", params![id, state])?;
                 events.push(lifecycle(tx, id)?);
             }
-            tx.execute("UPDATE runs SET cursor = MAX(cursor, ?2) WHERE id = ?1", params![id, batch.cursor as i64])?;
+            tx.execute(
+                "UPDATE runs SET cursor = MAX(cursor, ?2) WHERE id = ?1",
+                params![id, batch.cursor as i64],
+            )?;
             events.sort_by_key(Event::sequence_number);
             Ok(events)
         })
@@ -1066,7 +1469,7 @@ impl Store {
             let (seq, at_ms) = (next_seq(tx, id)?, now_ms());
             tx.execute(
                 "INSERT INTO run_logs (run, seq, at_ms, level, text) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![id, seq as i64, at_ms, level, text],
+                params![id, seq as i64, at_ms, level, seal_run_text(tx, id, &log_context(id, seq), &text)?],
             )?;
             Ok(vec![log_event(seq, at_ms, level.to_owned(), text.to_owned())])
         })
@@ -1087,17 +1490,18 @@ impl Store {
                 "canceled" => Status::Canceled,
                 _ => Status::Failed,
             };
-            let reason = outcome
-                .reason
-                .as_ref()
-                .filter(|_| status != Status::Completed)
-                .cloned();
+            let reason = outcome.reason.as_ref().filter(|_| status != Status::Completed).cloned();
             tx.execute(
                 "UPDATE runs SET cursor = MAX(cursor, ?2), outcome = ?3 WHERE id = ?1",
                 params![
                     id,
                     cursor as i64,
-                    serde_json::to_vec(outcome).expect("serializes")
+                    seal_run(
+                        tx,
+                        id,
+                        &run_context(id, "outcome"),
+                        &serde_json::to_vec(outcome).expect("serializes")
+                    )?
                 ],
             )?;
             events.extend(end(tx, id, status, reason)?);
@@ -1112,11 +1516,29 @@ impl Store {
             Some(row) if row.state == State::Settled => Ok(vec![]),
             Some(row) if row.cancel_requested => {
                 let message = format!("canceled; {machine} has no record of the run");
-                end(tx, id, Status::Canceled, Some(Reason { code: "canceled".into(), message, ..Default::default() }))
+                end(
+                    tx,
+                    id,
+                    Status::Canceled,
+                    Some(Reason {
+                        code: "canceled".into(),
+                        message,
+                        ..Default::default()
+                    }),
+                )
             }
             Some(_) => {
                 let message = format!("{machine} has no record of the run, and the run was not retried");
-                end(tx, id, Status::Failed, Some(Reason { code: "machine_lost_run".into(), message, ..Default::default() }))
+                end(
+                    tx,
+                    id,
+                    Status::Failed,
+                    Some(Reason {
+                        code: "machine_lost_run".into(),
+                        message,
+                        ..Default::default()
+                    }),
+                )
             }
             None => Ok(vec![]),
         })
@@ -1128,7 +1550,16 @@ impl Store {
         self.write(|tx| match run_in(tx, id)? {
             Some(row) if row.state != State::Settled && row.cancel_requested => {
                 let message = format!("canceled, though {machine} wouldn't answer: {code}: {message}");
-                end(tx, id, Status::Canceled, Some(Reason { code: "canceled".into(), message, ..Default::default() }))
+                end(
+                    tx,
+                    id,
+                    Status::Canceled,
+                    Some(Reason {
+                        code: "canceled".into(),
+                        message,
+                        ..Default::default()
+                    }),
+                )
             }
             _ => Ok(vec![]),
         })
@@ -1137,9 +1568,7 @@ impl Store {
     /// Ends a run its machine never accepted, with `reason`.
     pub(crate) fn fail(&self, id: &str, reason: Reason) -> Result<Vec<Event>> {
         self.write(|tx| match run_in(tx, id)? {
-            Some(row) if matches!(row.state, State::Queued | State::Sent) => {
-                end(tx, id, Status::Failed, Some(reason))
-            }
+            Some(row) if matches!(row.state, State::Queued | State::Sent) => end(tx, id, Status::Failed, Some(reason)),
             _ => Ok(vec![]),
         })
     }
@@ -1163,7 +1592,7 @@ impl Store {
             let warnings = serde_json::to_string(&row.warnings).expect("serializes");
             tx.execute(
                 "UPDATE runs SET warnings = ?2 WHERE id = ?1",
-                params![id, warnings],
+                params![id, seal_run_text(tx, id, &run_context(id, "warnings"), &warnings)?],
             )?;
             Ok(vec![lifecycle(tx, id)?])
         })
@@ -1262,11 +1691,23 @@ impl Store {
                     continue;
                 }
                 events.push(if item.path.is_some() {
-                    Event::OutputLanded { sequence_number: seq, output_index, item: item.clone() }
+                    Event::OutputLanded {
+                        sequence_number: seq,
+                        output_index,
+                        item: item.clone(),
+                    }
                 } else if item.status != ItemStatus::InProgress {
-                    Event::OutputDone { sequence_number: seq, output_index, item: item.clone() }
+                    Event::OutputDone {
+                        sequence_number: seq,
+                        output_index,
+                        item: item.clone(),
+                    }
                 } else if created > after {
-                    Event::OutputAdded { sequence_number: seq, output_index, item: item.clone() }
+                    Event::OutputAdded {
+                        sequence_number: seq,
+                        output_index,
+                        item: item.clone(),
+                    }
                 } else {
                     Event::OutputDelta {
                         sequence_number: seq,
@@ -1279,10 +1720,14 @@ impl Store {
                     }
                 });
             }
-            let mut statement =
-                conn.prepare("SELECT seq, at_ms, level, text FROM run_logs WHERE run = ?1 AND seq > ?2 ORDER BY seq")?;
+            let mut statement = conn.prepare("SELECT seq, at_ms, level, text FROM run_logs WHERE run = ?1 AND seq > ?2 ORDER BY seq")?;
             let logs = statement.query_map(params![id, after as i64], |r| {
-                Ok(log_event(r.get::<_, i64>(0)? as u64, r.get(1)?, r.get(2)?, r.get(3)?))
+                Ok(log_event(
+                    r.get::<_, i64>(0)? as u64,
+                    r.get(1)?,
+                    r.get(2)?,
+                    sql_text(r, 3, &log_context(id, r.get::<_, i64>(0)? as u64))?,
+                ))
             })?;
             for log in logs {
                 events.push(log?);
@@ -1354,9 +1799,7 @@ impl Store {
             let mut statement = conn.prepare(&format!(
                 "SELECT {OUTPUT_COLUMNS} FROM outputs WHERE run = ?1 AND {OWED} ORDER BY created_seq"
             ))?;
-            Ok(statement
-                .query_map([run], output_row)?
-                .collect::<rusqlite::Result<_>>()?)
+            Ok(statement.query_map([run], output_row)?.collect::<rusqlite::Result<_>>()?)
         })
     }
 
@@ -1390,19 +1833,11 @@ impl Store {
 
     /// Records the output's file at `path` as holding revision `rev`, and what was measured of it; while that is its current
     /// revision, the run's next event says it landed.
-    pub(crate) fn exported(
-        &self,
-        run: &str,
-        name: &str,
-        index: u32,
-        rev: u64,
-        path: &Path,
-        measured: Measured,
-    ) -> Result<Vec<Event>> {
+    pub(crate) fn exported(&self, run: &str, name: &str, index: u32, rev: u64, path: &Path, measured: Measured) -> Result<Vec<Event>> {
         self.write(|tx| {
             tx.execute(
                 "UPDATE outputs SET exported_rev = ?4, path = ?5, width = ?6, height = ?7, measured_ms = ?8 WHERE run = ?1 AND name = ?2 AND idx = ?3",
-                params![run, name, index, rev as i64, path.to_string_lossy(), measured.width, measured.height, measured.duration_ms as i64],
+                params![run, name, index, rev as i64, seal_run_text(tx, run, &output_context(run, name, index, rev, "path"), &vault::logical(path).to_string_lossy())?, measured.width, measured.height, measured.duration_ms as i64],
             )?;
             export_settled(tx, run, name, index, rev, true)
         })
@@ -1410,18 +1845,17 @@ impl Store {
 
     /// Records why revision `rev` of the output will not be exported; while that is its current
     /// revision, the run's next event is the item done again, carrying why.
-    pub(crate) fn export_failed(
-        &self,
-        run: &str,
-        name: &str,
-        index: u32,
-        rev: u64,
-        reason: &str,
-    ) -> Result<Vec<Event>> {
+    pub(crate) fn export_failed(&self, run: &str, name: &str, index: u32, rev: u64, reason: &str) -> Result<Vec<Event>> {
         self.write(|tx| {
             tx.execute(
                 "UPDATE outputs SET failed_rev = ?4, export_error = ?5 WHERE run = ?1 AND name = ?2 AND idx = ?3",
-                params![run, name, index, rev as i64, reason],
+                params![
+                    run,
+                    name,
+                    index,
+                    rev as i64,
+                    seal_run_text(tx, run, &output_context(run, name, index, rev, "export_error"), reason)?
+                ],
             )?;
             export_settled(tx, run, name, index, rev, false)
         })
@@ -1429,14 +1863,7 @@ impl Store {
 }
 
 /// The event of an output's export at `rev` settling, if that is its current revision.
-fn export_settled(
-    tx: &Transaction,
-    run: &str,
-    name: &str,
-    index: u32,
-    rev: u64,
-    landed: bool,
-) -> Result<Vec<Event>> {
+fn export_settled(tx: &Transaction, run: &str, name: &str, index: u32, rev: u64, landed: bool) -> Result<Vec<Event>> {
     let current: Option<i64> = tx
         .query_row(
             "SELECT rev FROM outputs WHERE run = ?1 AND name = ?2 AND idx = ?3",
@@ -1454,10 +1881,7 @@ fn export_settled(
     )?;
     let row = run_in(tx, run)?.ok_or_else(|| StoreError::Corrupt(format!("no run {run}")))?;
     let items = record(tx, &row)?.output.into_iter().enumerate();
-    let Some((output_index, item)) = items
-        .into_iter()
-        .find(|(_, i)| i.name == name && i.index == index)
-    else {
+    let Some((output_index, item)) = items.into_iter().find(|(_, i)| i.name == name && i.index == index) else {
         return Ok(vec![]);
     };
     let (sequence_number, output_index) = (seq, output_index as u32);
@@ -1476,42 +1900,44 @@ fn export_settled(
 }
 
 /// Whether an output stays on its machine (`OutputItem::stays`): its run's result declares it `Latents`, by its name.
-const STAYS: &str = "EXISTS (SELECT 1 FROM runs held, json_each(held.stays) WHERE held.id = outputs.run AND json_each.value = outputs.name)";
+const STAYS: &str =
+    "EXISTS (SELECT 1 FROM runs held, json_each(held.stays) WHERE held.id = outputs.run AND json_each.value = outputs.name)";
 
 /// An output owed to this computer: its newest revision neither landed nor given up, no checkpoint, and none that stays.
 const OWED: &str = "outputs.exported_rev IS NOT outputs.rev AND outputs.failed_rev IS NOT outputs.rev AND outputs.checkpoint IS NULL
     AND NOT EXISTS (SELECT 1 FROM runs held, json_each(held.stays) WHERE held.id = outputs.run AND json_each.value = outputs.name)";
 
 const OUTPUT_COLUMNS: &str = "name, idx, rev, length, digest, media_type, done, path, exported_rev,
-    CASE WHEN failed_rev = rev THEN export_error END, checkpoint";
+    CASE WHEN failed_rev = rev THEN export_error END, checkpoint, run";
 
-fn checkpoint_ref(row: &Row, column: usize) -> rusqlite::Result<Option<v1::CheckpointRef>> {
-    row.get::<_, Option<String>>(column)?
+fn checkpoint_ref(row: &Row, column: usize, context: &str) -> rusqlite::Result<Option<v1::CheckpointRef>> {
+    sql_optional_text(row, column, context)?
         .map(|json| {
-            serde_json::from_str(&json).map_err(|error| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    column,
-                    rusqlite::types::Type::Text,
-                    Box::new(error),
-                )
-            })
+            serde_json::from_str(&json)
+                .map_err(|error| rusqlite::Error::FromSqlConversionFailure(column, rusqlite::types::Type::Text, Box::new(error)))
         })
         .transpose()
 }
 
 fn output_row(r: &Row) -> rusqlite::Result<OutputRow> {
+    let (run, name, index, rev): (String, String, u32, u64) =
+        (r.get(11)?, r.get(0)?, r.get::<_, i64>(1)? as u32, r.get::<_, i64>(2)? as u64);
+    let exported = r.get::<_, Option<i64>>(8)?.map(|rev| rev as u64);
+    let path = sql_optional_path(r, 7, &output_context(&run, &name, index, exported.unwrap_or(rev), "path"))?;
+    let export_error = sql_optional_text(r, 9, &output_context(&run, &name, index, rev, "export_error"))?;
+    let checkpoint = checkpoint_ref(r, 10, &output_context(&run, &name, index, rev, "checkpoint"))?;
     Ok(OutputRow {
-        name: r.get(0)?,
-        index: r.get::<_, i64>(1)? as u32,
-        rev: r.get::<_, i64>(2)? as u64,
+        name,
+        index,
+        rev,
         length: r.get::<_, i64>(3)? as u64,
         digest: r.get(4)?,
         media_type: r.get(5)?,
         done: r.get(6)?,
-        path: r.get::<_, Option<String>>(7)?.map(PathBuf::from),
-        exported_rev: r.get::<_, Option<i64>>(8)?.map(|rev| rev as u64),
-        export_error: r.get(9)?,
-        checkpoint: checkpoint_ref(r, 10)?,
+        path,
+        exported_rev: exported,
+        export_error,
+        checkpoint,
     })
 }
 
@@ -1548,8 +1974,82 @@ const RUN_COLUMNS: &str = "id, number, kind, target, hub, machine, pinned, spec,
     cursor, machine_state, status, reason_code, reason, state_seq, created_at, accepted_at, settled_at, warnings,
     inputs, outcome, wants, agreed, started_at";
 
+const RUN_LIST_SCOPE: &str = "FROM runs WHERE number < ?1
+    AND (?2 IS NULL OR CASE state WHEN 'accepted' THEN 'in_progress' WHEN 'settled' THEN status ELSE 'queued' END = ?2)
+    AND (?3 IS NULL OR machine = ?3) AND (?4 IS NULL OR out_dir = ?4)";
+// Spec also classifies the old sealed-spec/plaintext-target representation. Otherwise a
+// locked legacy row could reveal its target through prefix-filter membership.
+const PRIVATE_RUN_TARGET: &str = "(substr(CAST(target AS BLOB), 1, ?5) = ?6 OR substr(spec, 1, ?5) = ?6)";
+
+/// Only private target slots need opening to choose a page. Ordinary history keeps its
+/// SQL prefix/count/limit path; full specs are decoded only for the requested merged page.
+fn runs_with_private_targets(conn: &Connection, filter: &RunFilter, before: i64, status: Option<&str>) -> Result<(Vec<RunRow>, u64, Vec<String>)> {
+    let prefix = vault::PAYLOAD_PREFIX;
+    let length = prefix.len() as i64;
+    let limit = filter.limit.min(i64::MAX as u64) as i64;
+    let public = format!("{RUN_LIST_SCOPE} AND NOT {PRIVATE_RUN_TARGET}
+        AND target NOT LIKE '%/project-adapter-%' AND (?7 IS NULL OR substr(target, 1, length(?7)) = ?7)");
+    let public_count: u64 = conn.query_row(
+        &format!("SELECT COUNT(*) {public}"),
+        params![before, status, filter.machine, filter.out_dir, length, prefix, filter.target],
+        |row| Ok(row.get::<_, i64>(0)? as u64),
+    )?;
+    let mut candidates: Vec<(u64, String)> = {
+        let mut statement = conn.prepare(&format!("SELECT number, id {public} ORDER BY number DESC LIMIT ?8"))?;
+        statement.query_map(params![before, status, filter.machine, filter.out_dir, length, prefix, filter.target, limit], |row| {
+            Ok((row.get::<_, i64>(0)? as u64, row.get(1)?))
+        })?.collect::<rusqlite::Result<_>>()?
+    };
+    let mut private_count = 0u64;
+    let mut private_page = 0i64;
+    let mut statement = conn.prepare(&format!(
+        "SELECT number, id, target, CASE WHEN substr(CAST(target AS BLOB), 1, ?5) = ?6 THEN NULL ELSE spec END
+         {RUN_LIST_SCOPE} AND {PRIVATE_RUN_TARGET} ORDER BY number DESC"
+    ))?;
+    let targets = statement.query_map(params![before, status, filter.machine, filter.out_dir, length, prefix], |row| {
+        Ok((row.get::<_, i64>(0)? as u64, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, Option<Vec<u8>>>(3)?))
+    })?;
+    for target in targets {
+        let (number, id, target, legacy_spec) = target?;
+        let opened = (|| {
+            if let Some(spec) = legacy_spec {
+                // A legacy target is plaintext, but it still belongs to the protected spec.
+                // Do not use its bytes for matching unless that journal is accessible.
+                open_bytes(&run_context(&id, "spec"), &spec)?;
+            }
+            open_text(&run_context(&id, "target"), &target)
+        })();
+        let matching = match opened {
+            Ok(target) => !target.to_ascii_lowercase().contains("/project-adapter-") && filter.target.as_ref().is_none_or(|prefix| target.starts_with(prefix)),
+            // An unfiltered list may report opaque unreadable run numbers, as before. A
+            // target-filtered list must reveal no matching/nonmatching fact while locked.
+            Err(_) => filter.target.is_none(),
+        };
+        if matching {
+            private_count += 1;
+            if private_page < limit {
+                candidates.push((number, id));
+                private_page += 1;
+            }
+        }
+    }
+    candidates.sort_unstable_by_key(|(number, _)| std::cmp::Reverse(*number));
+    candidates.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
+    let older = public_count.saturating_add(private_count).saturating_sub(candidates.len() as u64);
+    let (mut rows, mut unreadable) = (Vec::new(), Vec::new());
+    for (number, id) in candidates {
+        match run_in(conn, &id) {
+            Ok(Some(row)) => rows.push(row),
+            Ok(None) => return Err(corrupt("a listed run vanished from its read snapshot")),
+            Err(error) => unreadable.push(format!("run {number}: {error}")),
+        }
+    }
+    Ok((rows, older, unreadable))
+}
+
 fn run_row(r: &Row) -> rusqlite::Result<Result<RunRow>> {
     let id: String = r.get(0)?;
+    let target: String = r.get(3)?;
     let kind: String = r.get(2)?;
     let hub: String = r.get(4)?;
     let state: String = r.get(9)?;
@@ -1564,11 +2064,19 @@ fn run_row(r: &Row) -> rusqlite::Result<Result<RunRow>> {
     let wants: Option<String> = r.get(23)?;
     let agreed: Option<String> = r.get(24)?;
     Ok((|| {
+        let out_dir = match vault::payload_root(&spec).map_err(private_error)? { Some(root) => crate::project::landing(&root), None => PathBuf::from(out_dir) };
+        let spec = open_bytes(&run_context(&id, "spec"), &spec)?;
+        let target = open_text(&run_context(&id, "target"), &target)?;
+        let warnings = open_text(&run_context(&id, "warnings"), &warnings)?;
+        let inputs = open_text(&run_context(&id, "inputs"), &inputs)?;
+        let reason_code = optional_text(&run_context(&id, "reason_code"), reason_code)?;
+        let reason = optional_text(&run_context(&id, "reason"), reason)?;
+        let outcome = outcome.map(|bytes| open_bytes(&run_context(&id, "outcome"), &bytes)).transpose()?;
         Ok(RunRow {
             id: RunId::try_from(id).map_err(|_| corrupt("a run id"))?,
             number: r.get::<_, i64>(1)? as u64,
             kind: Kind::parse(&kind).ok_or_else(|| corrupt("a run kind"))?,
-            target: r.get(3)?,
+            target,
             // One spelling, whatever an older Calcifer recorded (`https://tensorhub.com:443`).
             hub: (!hub.is_empty())
                 .then(|| Origin::parse(&hub))
@@ -1581,7 +2089,7 @@ fn run_row(r: &Row) -> rusqlite::Result<Result<RunRow>> {
                 true => v1::RunSpec::default(),
                 false => serde_json::from_slice(&spec).map_err(|_| corrupt("a run's spec"))?,
             },
-            out_dir: PathBuf::from(out_dir),
+            out_dir,
             state: match state.as_str() {
                 "queued" => State::Queued,
                 "sent" => State::Sent,
@@ -1599,9 +2107,11 @@ fn run_row(r: &Row) -> rusqlite::Result<Result<RunRow>> {
                 Some("canceled") => Some(Status::Canceled),
                 Some(_) => return Err(corrupt("a run status")),
             },
-            reason: reason_code
-                .zip(reason)
-                .map(|(code, message)| Reason { code, message, ..Default::default() }),
+            reason: reason_code.zip(reason).map(|(code, message)| Reason {
+                code,
+                message,
+                ..Default::default()
+            }),
             state_seq: r.get::<_, i64>(16)? as u64,
             created_at_ms: r.get(17)?,
             accepted_at_ms: r.get(18)?,
@@ -1610,30 +2120,22 @@ fn run_row(r: &Row) -> rusqlite::Result<Result<RunRow>> {
             warnings: serde_json::from_str(&warnings).map_err(|_| corrupt("a run's warnings"))?,
             inputs: serde_json::from_str(&inputs).map_err(|_| corrupt("a run's inputs"))?,
             outcome: match outcome {
-                Some(bytes) => {
-                    Some(serde_json::from_slice(&bytes).map_err(|_| corrupt("an outcome"))?)
-                }
+                Some(bytes) => Some(serde_json::from_slice(&bytes).map_err(|_| corrupt("an outcome"))?),
                 None => None,
             },
             wants: wants.unwrap_or_else(|| "any".into()),
-            agreed: (agreed.as_deref().map(serde_json::from_str).transpose())
-                .map_err(|_| corrupt("a run's agreed price"))?,
+            agreed: (agreed.as_deref().map(serde_json::from_str).transpose()).map_err(|_| corrupt("a run's agreed price"))?,
         })
     })())
 }
 
 fn run_in(conn: &Connection, id: &str) -> Result<Option<RunRow>> {
-    conn.query_row(
-        &format!("SELECT {RUN_COLUMNS} FROM runs WHERE id = ?1"),
-        [id],
-        run_row,
-    )
-    .optional()?
-    .transpose()
+    conn.query_row(&format!("SELECT {RUN_COLUMNS} FROM runs WHERE id = ?1"), [id], run_row)
+        .optional()?
+        .transpose()
 }
 
-const MACHINE_COLUMNS: &str =
-    "name, kind, hub, rental_id, worker_id, address, pin, key, state, served, reason";
+const MACHINE_COLUMNS: &str = "name, kind, hub, rental_id, worker_id, address, pin, key, state, served, reason";
 
 fn machine_row(r: &Row) -> rusqlite::Result<Result<MachineRow>> {
     let kind: String = r.get(1)?;
@@ -1643,11 +2145,7 @@ fn machine_row(r: &Row) -> rusqlite::Result<Result<MachineRow>> {
     let key: String = r.get(7)?;
     let state: String = r.get(8)?;
     let endpoint = match (worker, address, pin.map(<[u8; 32]>::try_from)) {
-        (Some(worker_id), Some(address), Some(Ok(pin))) => Some(Endpoint {
-            worker_id,
-            address,
-            pin,
-        }),
+        (Some(worker_id), Some(address), Some(Ok(pin))) => Some(Endpoint { worker_id, address, pin }),
         (None, None, None) => None,
         _ => return Ok(Err(StoreError::Corrupt("a machine endpoint".into()))),
     };
@@ -1675,15 +2173,11 @@ fn machine_row(r: &Row) -> rusqlite::Result<Result<MachineRow>> {
 /// Moves a machine to another name, with its runs and asks; `alias` is its former name.
 fn move_machine(tx: &Transaction, from: &str, to: &str, alias: Option<&str>) -> Result<()> {
     // Its unique rental id and alias move with it.
-    let (rental, held): (Option<String>, Option<String>) = tx.query_row(
-        "SELECT rental_id, alias FROM machines WHERE name = ?1",
-        [from],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    )?;
-    tx.execute(
-        "UPDATE machines SET rental_id = NULL, alias = NULL WHERE name = ?1",
-        [from],
-    )?;
+    let (rental, held): (Option<String>, Option<String>) =
+        tx.query_row("SELECT rental_id, alias FROM machines WHERE name = ?1", [from], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })?;
+    tx.execute("UPDATE machines SET rental_id = NULL, alias = NULL WHERE name = ?1", [from])?;
     tx.execute(
         "INSERT INTO machines (name, kind, hub, rental_id, worker_id, address, pin, key, state, served,
              reason, created_at, alias)
@@ -1691,14 +2185,8 @@ fn move_machine(tx: &Transaction, from: &str, to: &str, alias: Option<&str>) -> 
          FROM machines WHERE name = ?1",
         params![from, to, rental, held.as_deref().or(alias)],
     )?;
-    tx.execute(
-        "UPDATE runs SET machine = ?2 WHERE machine = ?1",
-        params![from, to],
-    )?;
-    tx.execute(
-        "UPDATE asks SET machine = ?2 WHERE machine = ?1",
-        params![from, to],
-    )?;
+    tx.execute("UPDATE runs SET machine = ?2 WHERE machine = ?1", params![from, to])?;
+    tx.execute("UPDATE asks SET machine = ?2 WHERE machine = ?1", params![from, to])?;
     tx.execute("DELETE FROM machines WHERE name = ?1", [from])?;
     Ok(())
 }
@@ -1754,20 +2242,21 @@ pub(crate) struct Ask {
 const ASK_COLUMNS: &str = "key, kind, hub, digest, body, machine, run, state, reason";
 
 fn ask_row(r: &Row) -> rusqlite::Result<Result<Ask>> {
+    let key: String = r.get(0)?;
+    let body: Vec<u8> = r.get(4)?;
+    let reason: Option<String> = r.get(8)?;
     let kind: String = r.get(1)?;
     let run: Option<String> = r.get(6)?;
     let state: String = r.get(7)?;
     Ok((|| {
+        let body = open_bytes(&format!("ask:{key}:body"), &body)?;
+        let reason = optional_text(&format!("ask:{key}:reason"), reason)?;
         Ok(Ask {
-            key: r.get(0)?,
-            kind: if kind == "end" {
-                AskKind::End
-            } else {
-                AskKind::Rent
-            },
+            key,
+            kind: if kind == "end" { AskKind::End } else { AskKind::Rent },
             hub: r.get(2)?,
             digest: r.get(3)?,
-            body: r.get(4)?,
+            body,
             machine: r.get(5)?,
             run: run
                 .map(RunId::try_from)
@@ -1778,19 +2267,15 @@ fn ask_row(r: &Row) -> rusqlite::Result<Result<Ask>> {
                 "done" => AskState::Done,
                 _ => AskState::Failed,
             },
-            reason: r.get(8)?,
+            reason,
         })
     })())
 }
 
 fn ask_in(conn: &Connection, key: &str) -> Result<Option<Ask>> {
-    conn.query_row(
-        &format!("SELECT {ASK_COLUMNS} FROM asks WHERE key = ?1"),
-        [key],
-        ask_row,
-    )
-    .optional()?
-    .transpose()
+    conn.query_row(&format!("SELECT {ASK_COLUMNS} FROM asks WHERE key = ?1"), [key], ask_row)
+        .optional()?
+        .transpose()
 }
 
 fn machine_kind(kind: MachineKind) -> &'static str {
@@ -1845,10 +2330,7 @@ impl From<&MachineRow> for Machine {
 /// A recorded log line as its event: a settled call is `run.call`, the rest `run.log`.
 fn log_event(sequence_number: u64, at_ms: i64, level: String, text: String) -> Event {
     match serde_json::from_str::<Call>(&text) {
-        Ok(call) if level == "call" => Event::Call {
-            sequence_number,
-            call,
-        },
+        Ok(call) if level == "call" => Event::Call { sequence_number, call },
         _ => Event::Log {
             sequence_number,
             at_ms,
@@ -1860,20 +2342,17 @@ fn log_event(sequence_number: u64, at_ms: i64, level: String, text: String) -> E
 
 /// The run's next event sequence number.
 fn next_seq(tx: &Transaction, id: &str) -> Result<u64> {
-    Ok(tx.query_row(
-        "UPDATE runs SET seq = seq + 1 WHERE id = ?1 RETURNING seq",
-        [id],
-        |r| r.get::<_, i64>(0),
-    )? as u64)
+    Ok(
+        tx.query_row("UPDATE runs SET seq = seq + 1 WHERE id = ?1 RETURNING seq", [id], |r| {
+            r.get::<_, i64>(0)
+        })? as u64,
+    )
 }
 
 /// A new lifecycle event for the run as it now stands.
 fn lifecycle(tx: &Transaction, id: &str) -> Result<Event> {
     let seq = next_seq(tx, id)?;
-    tx.execute(
-        "UPDATE runs SET state_seq = ?2 WHERE id = ?1",
-        params![id, seq as i64],
-    )?;
+    tx.execute("UPDATE runs SET state_seq = ?2 WHERE id = ?1", params![id, seq as i64])?;
     let row = run_in(tx, id)?.ok_or_else(|| StoreError::Corrupt(format!("no run {id}")))?;
     Ok(Event::lifecycle(seq, record(tx, &row)?, false))
 }
@@ -1882,9 +2361,7 @@ fn lifecycle(tx: &Transaction, id: &str) -> Result<Event> {
 fn end(tx: &Transaction, id: &str, status: Status, reason: Option<Reason>) -> Result<Vec<Event>> {
     let mut events = vec![];
     let open: Vec<(String, i64)> = {
-        let mut statement = tx.prepare(
-            "SELECT name, idx FROM outputs WHERE run = ?1 AND done = 0 ORDER BY created_seq",
-        )?;
+        let mut statement = tx.prepare("SELECT name, idx FROM outputs WHERE run = ?1 AND done = 0 ORDER BY created_seq")?;
         statement
             .query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<rusqlite::Result<_>>()?
@@ -1898,8 +2375,14 @@ fn end(tx: &Transaction, id: &str, status: Status, reason: Option<Reason>) -> Re
                 Status::Canceled => "canceled",
                 _ => "failed",
             },
-            reason.as_ref().map(|r| &r.code),
-            reason.as_ref().map(|r| &r.message),
+            reason
+                .as_ref()
+                .map(|r| seal_run_text(tx, id, &run_context(id, "reason_code"), &r.code))
+                .transpose()?,
+            reason
+                .as_ref()
+                .map(|r| seal_run_text(tx, id, &run_context(id, "reason"), &r.message))
+                .transpose()?,
             now_ms(),
         ],
     )?;
@@ -1946,7 +2429,16 @@ fn put_output(tx: &Transaction, row: &RunRow, product: &v1::Product) -> Result<V
     let checkpoint = product
         .checkpoint
         .as_ref()
-        .map(|c| serde_json::to_string(c).expect("serializes"));
+        .map(|checkpoint| {
+            let text = serde_json::to_string(checkpoint).expect("serializes");
+            seal_run_text(
+                tx,
+                id,
+                &output_context(id, &product.output, product.index, product.rev, "checkpoint"),
+                &text,
+            )
+        })
+        .transpose()?;
     let (length, digest, media_type, duration_us) = match product.checkpoint {
         Some(_) => (0, "", "", 0),
         None => (
@@ -1969,7 +2461,12 @@ fn put_output(tx: &Transaction, row: &RunRow, product: &v1::Product) -> Result<V
             length as i64,
             digest,
             media_type,
-            product.label,
+            seal_run_text(
+                tx,
+                id,
+                &output_context(id, &product.output, product.index, product.rev, "label"),
+                &product.label
+            )?,
             duration_us as i64,
             seq as i64,
             checkpoint,
@@ -2006,7 +2503,9 @@ fn put_output(tx: &Transaction, row: &RunRow, product: &v1::Product) -> Result<V
 /// The API path that serves an output.
 fn output_url(number: u64, name: &str, index: u32) -> String {
     let mut url = url::Url::parse("http://calcifer/").expect("a base URL");
-    url.path_segments_mut().expect("a base URL").extend(["v1", "runs", &number.to_string(), "outputs", name]);
+    url.path_segments_mut()
+        .expect("a base URL")
+        .extend(["v1", "runs", &number.to_string(), "outputs", name]);
     match index {
         0 => url.path().to_owned(),
         index => format!("{}?index={index}", url.path()),
@@ -2027,8 +2526,9 @@ fn record(conn: &Connection, row: &RunRow) -> Result<Run> {
         let index = r.get::<_, i64>(1)? as u32;
         let digest: String = r.get(4)?;
         let done: bool = r.get(7)?;
-        let path: Option<String> = r.get(8)?;
-        let checkpoint = checkpoint_ref(r, 10)?;
+        let rev = r.get::<_, i64>(2)? as u64;
+        let path = sql_optional_path(r, 8, &output_context(row.id.as_str(), &name, index, rev, "path"))?;
+        let checkpoint = checkpoint_ref(r, 10, &output_context(row.id.as_str(), &name, index, rev, "checkpoint"))?;
         let media_type: String = r.get(5)?;
         let url = (path.is_some() && checkpoint.is_none()).then(|| output_url(row.number, &name, index));
         let measured = |column| -> rusqlite::Result<Option<u32>> { Ok(Some(r.get::<_, i64>(column)? as u32).filter(|n| *n > 0)) };
@@ -2042,6 +2542,8 @@ fn record(conn: &Connection, row: &RunRow) -> Result<Run> {
             (true, true) => ItemStatus::Completed,
             (true, false) => ItemStatus::Incomplete,
         };
+        let label = sql_text(r, 6, &output_context(row.id.as_str(), &name, index, rev, "label"))?;
+        let export_error = sql_optional_text(r, 9, &output_context(row.id.as_str(), &name, index, rev, "export_error"))?;
         Ok(OutputItem {
             id,
             name,
@@ -2053,15 +2555,13 @@ fn record(conn: &Connection, row: &RunRow) -> Result<Run> {
             rev: r.get::<_, i64>(2)? as u64,
             length: r.get::<_, i64>(3)? as u64,
             media_type,
-            label: r.get(6)?,
+            label,
             sha256: (status == ItemStatus::Completed && checkpoint.is_none())
                 .then(|| digest.parse().ok())
                 .flatten(),
             status,
-            path: path.filter(|_| checkpoint.is_none()).map(PathBuf::from),
-            export_error: r
-                .get::<_, Option<String>>(9)?
-                .filter(|_| checkpoint.is_none()),
+            path: path.filter(|_| checkpoint.is_none()),
+            export_error: export_error.filter(|_| checkpoint.is_none()),
             checkpoint,
             stays: r.get(11)?,
         })
@@ -2100,21 +2600,13 @@ fn record(conn: &Connection, row: &RunRow) -> Result<Run> {
         progress: None,
         report: None,
         warnings: row.warnings.clone(),
-        adjustments: row
-            .outcome
-            .iter()
-            .flat_map(|outcome| outcome.adjustments.iter().cloned())
-            .collect(),
+        adjustments: row.outcome.iter().flat_map(|outcome| outcome.adjustments.iter().cloned()).collect(),
         result: row
             .outcome
             .as_ref()
             .and_then(|outcome| outcome.result.as_ref())
             .and_then(|result| serde_json::from_str(result.get()).ok()),
-        execution_ms: row
-            .outcome
-            .as_ref()
-            .map(|outcome| outcome.execution_ms)
-            .filter(|ms| *ms > 0),
+        execution_ms: row.outcome.as_ref().map(|outcome| outcome.execution_ms).filter(|ms| *ms > 0),
         memo: (row.outcome.as_ref())
             .filter(|outcome| !outcome.computation_digest.is_empty())
             .map(|outcome| Memo {
@@ -2125,7 +2617,11 @@ fn record(conn: &Connection, row: &RunRow) -> Result<Run> {
         measurements: None,
         stalled: None,
         calls: vec![],
-        gpu: row.outcome.as_ref().map(|outcome| outcome.gpu.clone()).filter(|gpu| !gpu.is_empty()),
+        gpu: row
+            .outcome
+            .as_ref()
+            .map(|outcome| outcome.gpu.clone())
+            .filter(|gpu| !gpu.is_empty()),
     })
 }
 
@@ -2147,7 +2643,5 @@ fn corrupt(what: &str) -> StoreError {
 }
 
 pub(crate) fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as i64)
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
 }

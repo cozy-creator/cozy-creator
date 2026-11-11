@@ -971,9 +971,16 @@ pub enum StreamEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cursor: Option<ProjectEventCursor>,
     },
+    /// Public protection metadata reaches every tab, including tabs showing another project.
+    #[serde(rename = "project.vault")]
+    ProjectVault { id: String, state: String },
     /// The rows of a project's canvas that changed, at revision `seq`; none is a row gone.
     #[serde(rename = "canvas")]
     Canvas { id: String, seq: u64, cards: BTreeMap<String, Option<crate::calcifer::project::Card>> },
+    /// A project's render as it stands now, whole, when more than one job changed: it began or ended, said something, or a machine or
+    /// a shot joined it. `GET /v1/projects/{id}` has it as `board`; a client keeps the one with the highest `seq`.
+    #[serde(rename = "board.updated")]
+    BoardUpdated { project: String, board: Box<crate::calcifer::project::Board> },
     /// One job of a project's render as it stands now, whole; `GET /v1/projects/{id}` has them all under `board`.
     #[serde(rename = "job.updated")]
     JobUpdated { project: String, job: Box<crate::calcifer::project::Job>, seq: u64 },

@@ -102,6 +102,20 @@ pub(super) fn kill(handle: &Handle, _: &Birth) -> io::Result<()> {
     Ok(())
 }
 
+pub(super) fn executable(handle: &Handle) -> io::Result<std::path::PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::System::Threading::QueryFullProcessImageNameW;
+    let mut buffer = vec![0u16; 32768];
+    let mut length = buffer.len() as u32;
+    // SAFETY: an exact process handle with query rights and a buffer of the declared size.
+    if unsafe { QueryFullProcessImageNameW(raw(&handle.0), 0, buffer.as_mut_ptr(), &mut length) }
+        == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(std::ffi::OsString::from_wide(&buffer[..length as usize]).into())
+}
+
 pub(super) fn background_thread() {}
 
 pub(super) fn background_process() {

@@ -283,8 +283,11 @@ function linesOf(text, name) {
     return Boolean(rect) && rect.left >= 0 && rect.top >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight;
   }, name);
 
-  // A command adds it: it shows by itself where it was told, and lands.
+  // The empty hint is published only after the first canonical reconciliation.
   await page.locator('.empty-canvas').waitFor();
+  check('initial_replica_ready', true);
+
+  // A command adds it: it shows by itself where it was told, and lands.
   let place = await spot();
   const added = await timed('add', { name: 'live_a', x: place.x, y: place.y }, () => project('add', 'cozy/edit', 'live_a', `at=${place.x},${place.y},260`, 'description=Words from the CLI'));
   check('add_returns_its_name', added.value.name === 'live_a', added.value);
@@ -328,6 +331,11 @@ function linesOf(text, name) {
   check('add_placed_on_nothing', (await overlaps()).length === 0, await overlaps());
 
   // Approved by a command: it turns into that picture. Unapproved: back. Out of date has no dot now (Paul, 11-05): what shows is the picture.
+  // Its imported picture must be usable before timing state propagation, clear of first-cold media setup.
+  await page.waitForFunction((name) => {
+    const image = window.boxOf(name)?.querySelector('.media img');
+    return image?.complete && image.naturalWidth > 0 && image.naturalHeight > 0;
+  }, 'live_pic', { timeout: FIRST_RUN_MS });
   await timed('approve', { name: 'live_tool', picture: true }, () => project('approve', 'live_tool', hash));
   check('approve_in_the_status', (await held('live_tool')).pinned === true);
   await timed('unapprove', { name: 'live_tool', picture: false }, () => project('unapprove', 'live_tool'));
@@ -480,7 +488,9 @@ function linesOf(text, name) {
     // Read with this machine's Runtime, as a run reads it: a box doesn't wait on PyPI's.
     await cozy('--json', 'run', `${TOOL}/still`, 'prompt=primed', '--on', 'local');
     place = await spot();
-    await project('add', `${TOOL}/slow`, 'live_shot', `at=${place.x},${place.y},260`, 'instructions=A slow still', 'seconds:=0.1');
+    // The machine estimates the overall bar from prior runs of this size.
+    // Match the measured work while priming that estimate, then observe the next run.
+    await project('add', `${TOOL}/slow`, 'live_shot', `at=${place.x},${place.y},260`, 'instructions=A slow still', 'seconds:=14');
     await box('live_shot').waitFor();
     await project('render', 'live_shot', '--on', 'local');
     await timed('a_first_render', { name: 'live_shot', picture: true }, async () => ({ at: Date.now() }));
@@ -500,7 +510,10 @@ function linesOf(text, name) {
     const said = await page.evaluate(() => window.progressSaid);
     seen.render_said = said;
     // The time is Calcifer's for the whole run; its first run here says so until it has steps of its own.
-    check('steps_read_as_denoise_steps', said.some((text) => /^Denoise steps: \d+\/10(, (\d+[smhd](\d+[smh])? left|first run on this machine))?$/.test(text)) && !said.some((text) => /drawing/i.test(text)), said);
+    const isStep = (text) => /\d+\/\d+/.test(text);
+    const denoiseStep = /^Denoise steps: \d+\/10(, (\d+[smhd](\d+[smh])? left|first run on this machine))?$/;
+    const firstStep = said.findIndex(isStep);
+    check('steps_read_as_denoise_steps', firstStep >= 0 && said.filter(isStep).every((text) => denoiseStep.test(text)) && !said.slice(firstStep).some((text) => /drawing/i.test(text)), said);
     const fileAt = await landed;
     times.render_lands = shownAt - fileAt;
     check('render_lands_live', times.render_lands <= LIVE_MS, times.render_lands);

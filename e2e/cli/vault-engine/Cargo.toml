@@ -1,0 +1,12 @@
+[package]
+name = "project-vault-proof"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+project-vault = { path = "../../../crates/project-vault" }
+base64 = "0.23"
+serde_json = "1"

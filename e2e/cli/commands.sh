@@ -278,6 +278,20 @@ done
 for _ in $(seq 60); do [[ $(row "$RUN_PROJECT" hostile_control .duration_ms) =~ ^[0-9]+$ ]] && break; sleep 0.5; done
 sleep 5
 [[ $(row "$RUN_PROJECT" hostile_control .duration_ms) =~ ^[0-9]+$ ]] || check "hostile media: the control clip was never probed: $(tail -c 200 "$OUT/hostile-control.json")"
+if [[ $(uname -s) == Linux ]]; then
+  # A literal questionmark is a valid POSIX project path, not an image sequence pattern.
+  local literal; literal=$(mktemp -d "$RUNNER_TEMP/hostile?image.XXXXXX")
+  ffmpeg -v error -y -f lavfi -i color=c=blue:size=8x8 -frames:v 1 "$dir/image.png"
+  cozy --json new "$literal" > "$OUT/hostile-questionmark-new.json" 2>&1 || check "literal image: project creation failed"
+  project_import "$literal" "$dir/image.png" literal_image > "$OUT/hostile-questionmark-import.json" 2>&1 || check "literal image: import failed"
+  for _ in $(seq 60); do
+    in_project "$literal" --json --full status > "$OUT/hostile-questionmark.json" 2> "$OUT/hostile-questionmark.err" || true
+    J 'any(.project.assets[]; .name == "literal_image" and .width == 8 and .height == 8)' "$OUT/hostile-questionmark.json" && break
+    sleep 0.5
+  done
+  J 'any(.project.assets[]; .name == "literal_image" and .width == 8 and .height == 8)' "$OUT/hostile-questionmark.json" \
+    || check "literal image: the CLI never measured its PNG in the questionmark project: $(tail -c 300 "$OUT/hostile-questionmark.json")"
+fi
 [ ! -e "$dir/opened" ] || check "hostile media: ffmpeg or ffprobe opened a file an imported playlist or concat list names"
 echo "hostile media: playlist $(tail -c 160 "$OUT/hostile-playlist.json"); list $(tail -c 160 "$OUT/hostile-list.json")"
 }
@@ -600,7 +614,7 @@ cozy --json run ls --state canceled > "$OUT/canceled.json" && J --argjson n "${n
 # After `basics`: its model downloads are runs of zhengpeng7/birefnet.
 run_filters() {
 step "run ls filters"
-cozy --json run ls --package zhengpeng7/birefnet > "$OUT/by-package.json" && J '(.runs | length > 0) and all(.runs[]; .target | startswith("zhengpeng7/birefnet"))' "$OUT/by-package.json" \
+cozy --json run ls --all --package zhengpeng7/birefnet > "$OUT/by-package.json" && J '(.runs | length > 0) and all(.runs[]; .target | startswith("zhengpeng7/birefnet"))' "$OUT/by-package.json" \
   || check "run ls --package zhengpeng7/birefnet: none listed, or others listed"
 cozy --json run ls --on local > "$OUT/by-machine.json" && J '(.runs | length > 0) and all(.runs[]; .machine == "local")' "$OUT/by-machine.json" \
   || check "run ls --on local: other machines listed"

@@ -9,7 +9,7 @@
 // back; $SHOT: where to keep its screenshots; $ALONE: on a shared computer, so it runs nothing.
 // Prints what it saw as JSON and exits 1 if anything failed.
 const { chromium } = require(process.env.PLAYWRIGHT);
-const { exec, execFileSync, spawn } = require('child_process');
+const { exec, execFileSync } = require('child_process');
 const { rmSync } = require('fs');
 const { join } = require('path');
 const { projectFromPage, projectJson, PYTHON, calcifer, carry, signIn, STEP_MS, boxOf, closeBox, importYaml, lastLook, lookAt, openBox, renderOf, until, yamlOf } = require('./page');
@@ -27,20 +27,6 @@ const TOOL = join(__dirname, '..', 'project', 'tool.py');
 const FIRST_RUN_MS = 300_000;
 /** What it made besides its own project: its folders gone however it ends. */
 let dropMade = async () => {};
-
-/** Another writer of project.db (argv 1), as fast as a process can be: the moment box argv 2's field argv 3 is argv 4, it's argv 5 instead. */
-const OUTSIDE = `
-import json, sqlite3, sys, time
-at, box, field, written, instead = sys.argv[1:]
-db = sqlite3.connect(at, isolation_level=None, timeout=30)
-print('watching', flush=True)
-end = time.monotonic() + 10
-while time.monotonic() < end:
-    row = db.execute('SELECT value FROM fields WHERE box = ? AND field = ?', (box, field)).fetchone()
-    if row and json.loads(row[0]) == written:
-        db.execute('UPDATE fields SET value = ? WHERE box = ? AND field = ?', (json.dumps(instead), box, field))
-        break
-`;
 
 /** A stand-in for a slow network: each call `match` names waits here until `release`. */
 async function hold(page, method, path) {
@@ -227,14 +213,37 @@ async function loseAnswers(page, method, path, times) {
   await until('mine in the file', () => Promise.resolve(yaml().includes('text: mine')), Boolean);
   await closeBox(page);
 
-  // Another program writing project.db the moment a write commits: the answer is for the write's own fields. Told the other's as its own, the page writes over them with no conflict.
-  const outside = spawn(PYTHON, ['-c', OUTSIDE, join(folder, 'project.db'), 'words', 'text', 'ours', 'outside'], { stdio: ['ignore', 'pipe', 'ignore'] });
-  const landed = new Promise((ended) => outside.once('exit', ended));
-  await new Promise((watching) => outside.stdout.once('data', watching));
-  const wrote = await api(`/v1/projects/${id}/assets/words`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fields: { text: 'ours' } }) });
-  await landed;
-  const nowHeld = (await api(`/v1/projects/${id}`)).body.assets.find((asset) => asset.name === 'words');
-  check('a_write_answers_for_its_own_lines', wrote.status === 200 && wrote.body.etag !== nowHeld.etag && yaml().includes('text: outside'), { wrote, etag: nowHeld.etag });
+  // Another canonical writer commits after ours, before its delayed reply is consumed.
+  // Keep the real response unchanged: its ETag must still describe only our write.
+  during = 'a_write_answers_for_its_own_lines';
+  const path = `${base}/v1/projects/${id}/assets/words`;
+  const canonicalWords = () => projectJson(folder).assets.find((asset) => asset.name === 'words');
+  let oursHeld, nowHeld, writerError;
+  const order = { ours_recorded: false, outside_committed_before_reply: false };
+  const delayReply = async (route) => {
+    if (route.request().method() !== 'PATCH' || route.request().postDataJSON()?.fields?.text !== 'ours') return route.fallback();
+    const response = await route.fetch();
+    try {
+      oursHeld = canonicalWords();
+      order.ours_recorded = oursHeld?.fields?.text === 'ours' && yaml().includes('text: ours');
+      if (!order.ours_recorded) throw new Error('the native PATCH did not commit our canonical text');
+      projectJson(folder, 'PATCH', '/assets/words', { fields: { text: 'outside' } });
+      nowHeld = canonicalWords();
+      order.outside_committed_before_reply = nowHeld?.fields?.text === 'outside' && yaml().includes('text: outside');
+    } catch (error) {
+      writerError = error.message;
+    } finally {
+      await route.fulfill({ response });
+    }
+  };
+  await page.route(path, delayReply);
+  let wrote;
+  try {
+    wrote = await api(`/v1/projects/${id}/assets/words`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fields: { text: 'ours' } }) });
+  } finally {
+    await page.unroute(path, delayReply);
+  }
+  check('a_write_answers_for_its_own_lines', !writerError && order.ours_recorded && order.outside_committed_before_reply && wrote.status === 200 && typeof oursHeld?.etag === 'string' && wrote.body.etag === oursHeld.etag && wrote.body.etag !== nowHeld?.etag && yaml().includes('text: outside'), { wrote, ours_etag: oursHeld?.etag, outside_etag: nowHeld?.etag, order, writerError });
 
   // kill -9 with a box in line: it lands once, when Calcifer's back, with no reload.
   if (process.env.RESTART) {
