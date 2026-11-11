@@ -19,7 +19,19 @@ def main() -> int:
     request = urllib.request.Request(url + "?" + urllib.parse.urlencode(query), headers={"Authorization": "Bearer " + holder["token"]})
     try:
         with urllib.request.urlopen(request) as response:
-            print(response.read().decode())
+            value = json.load(response)
+            # The fixture has one canonical representation while testing supported old CLIs.
+            if "commits" in value:
+                value["checkpoints"] = value.pop("commits")
+            for checkpoint in value.get("checkpoints", []):
+                if "commit" in checkpoint:
+                    checkpoint["checkpoint"] = checkpoint.pop("commit")
+            for released in value.get("releases", []):
+                released.setdefault("visibility", "public")
+                for lane in released.get("lanes", []):
+                    if "commit" in lane:
+                        lane["checkpoint"] = lane.pop("commit")
+            print(json.dumps(value))
     except urllib.error.HTTPError as error:
         print(error.read().decode())
         return 1

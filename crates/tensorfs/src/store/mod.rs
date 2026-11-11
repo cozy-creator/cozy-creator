@@ -5,7 +5,7 @@
 //!
 //! - Objects are trees (commits), cozytensors headers, chunks, assets and repo files. A ref
 //!   records a model's releases and commits. A cozytensors is opened by its header
-//!   ([`Store::checkpoint`]) or its commit ([`Store::at_commit`]); a plain folder enters by
+//!   ([`Store::checkpoint`]) or its commit ([`Store::at_checkpoint`]); a plain folder enters by
 //!   [`Store::admit_folder`] and leaves by [`Store::snapshot`].
 //! - One door admits objects ([`Store::admit`], [`Store::put`]): streamed into `tmp/`, hashed,
 //!   checked, flushed per [`Durability`] and renamed into `blobs/`. An object is verified there
@@ -20,6 +20,7 @@
 //!   next fetch of the object takes them up, and the object's digest judges them with the rest.
 
 mod checkpoint;
+pub(crate) mod file;
 mod folder;
 pub use folder::{copy_checked, files as folder_files};
 mod gc;

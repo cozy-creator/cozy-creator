@@ -248,7 +248,7 @@ fn named(function: &str) -> Result<(&str, &str, &str), Error> {
 /// The bytes of `model` this machine lacks: what its held structure names and its store lacks,
 /// else all the catalog lists.
 fn absent(store: &tensorfs::store::Store, model: &v1::ModelRef) -> u64 {
-    match crate::storage::checkpoint(store, &model.commit) {
+    match crate::storage::checkpoint(store, &model.checkpoint) {
         Ok(checkpoint) => crate::storage::chunks(&checkpoint, &[]).iter().filter(|o| !store.holds(o)).map(|o| o.length).sum(),
         Err(_) => model.bytes,
     }

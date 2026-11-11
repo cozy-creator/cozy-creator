@@ -1,4 +1,4 @@
-//! Refs record models: each model's releases and commits this store holds. Each is one JSON file, changed under its directory's lock and replaced by a
+//! Refs record models: each model's releases and checkpoints this store holds. Each is one JSON file, changed under its directory's lock and replaced by a
 //! temp and a rename: a reader sees the old record or the new.
 //!
 //! The lock is `flock` on an `O_CLOEXEC` descriptor: held by its open file description, waited
@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use platform::lock;
 
 use super::{fail, invalid, platform, Error, Result, Store};
-use crate::format::{repo_name, ObjectRef, Repo};
+use crate::format::{model_name, ObjectRef, Model};
 
 /// ASCII letters, digits, `.`, `_` and `-`, not leading `.`.
 pub(crate) fn is_name(text: &str, max: usize) -> bool {
@@ -72,7 +72,7 @@ impl Store {
         // The format's repository name, as the public Ref takes it; is_name remains the
         // stricter grammar for writer keys.
         match name.split_once('/') {
-            Some((org, model)) if repo_name(name) => Ok(self
+            Some((org, model)) if model_name(name) => Ok(self
                 .root
                 .join("refs")
                 .join(ref_segment(org))
@@ -84,20 +84,20 @@ impl Store {
         }
     }
 
-    fn canonical_ref(path: &Path, name: &str) -> Result<Option<Repo>> {
-        let repo = Self::parse_ref(path)?;
-        if repo
+    fn canonical_ref(path: &Path, name: &str) -> Result<Option<Model>> {
+        let model = Self::parse_ref(path)?;
+        if model
             .as_ref()
-            .is_some_and(|repo| !repo.name.eq_ignore_ascii_case(name))
+            .is_some_and(|model| !model.name.eq_ignore_ascii_case(name))
         {
             return Err(invalid(path, format!("ref does not name {name:?}")));
         }
-        Ok(repo)
+        Ok(model)
     }
 
-    fn parse_ref(path: &Path) -> Result<Option<Repo>> {
+    fn parse_ref(path: &Path) -> Result<Option<Model>> {
         match fs::read(path) {
-            Ok(bytes) => Repo::from_json(&bytes)
+            Ok(bytes) => Model::from_json(&bytes)
                 .map(Some)
                 .map_err(|error| invalid(path, error)),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
@@ -105,7 +105,7 @@ impl Store {
         }
     }
 
-    pub fn get_ref(&self, name: &str) -> Result<Option<Repo>> {
+    pub fn get_ref(&self, name: &str) -> Result<Option<Model>> {
         Self::canonical_ref(&self.ref_path(name)?, name)
     }
 
@@ -114,16 +114,16 @@ impl Store {
     pub fn update_ref(
         &self,
         name: &str,
-        change: impl FnOnce(Option<Repo>) -> Option<Repo>,
-    ) -> Result<Option<Repo>> {
+        change: impl FnOnce(Option<Model>) -> Option<Model>,
+    ) -> Result<Option<Model>> {
         let path = self.ref_path(name)?;
         let _acquisition = super::retention::acquire(self)?;
         let _lock = self.lock("refs")?;
         let old = Self::canonical_ref(&path, name)?;
-        let commits = |repo: &Option<Repo>| -> Vec<ObjectRef> {
-            repo.iter().flat_map(Repo::roots).cloned().collect()
+        let checkpoints = |model: &Option<Model>| -> Vec<ObjectRef> {
+            model.iter().flat_map(Model::roots).cloned().collect()
         };
-        let before = commits(&old);
+        let before = checkpoints(&old);
         let Some(new) = change(old) else {
             self.remove_record(&path)?;
             return Ok(None);
@@ -131,11 +131,11 @@ impl Store {
         if !new.name.eq_ignore_ascii_case(name) {
             return Err(invalid(
                 &path,
-                format!("repo {:?} cannot be ref {name}", new.name),
+                format!("model {:?} cannot be ref {name}", new.name),
             ));
         }
         let bytes = new.to_json().map_err(|error| invalid(&path, error))?;
-        let after = commits(&Some(new.clone()));
+        let after = checkpoints(&Some(new.clone()));
         let reached = self.retain(after.iter().filter(|commit| !before.contains(commit)))?;
         self.commit(&path, &bytes, true)?;
         for (root, closure) in &reached {
@@ -145,7 +145,7 @@ impl Store {
     }
 
     /// Every model record, by name.
-    pub fn refs(&self) -> Result<Vec<Repo>> {
+    pub fn refs(&self) -> Result<Vec<Model>> {
         let dir = self.root.join("refs");
         let mut repos = Vec::new();
         for org in fs::read_dir(&dir).map_err(fail("list", &dir))? {

@@ -15,7 +15,7 @@ use std::{
 };
 
 pub(crate) use tensorfs::store::Store;
-use tensorfs::format::{ObjectRef, Repo, Tree};
+use tensorfs::format::{ObjectRef, Model, Tree};
 
 /// Opens (or creates) the machine store at `root`; one in an older format is refused.
 /// It holds this machine's runs' inputs and outputs with its models: its owner's alone to read.
@@ -143,9 +143,9 @@ pub(crate) struct Local {
     pub header: ObjectRef,
 }
 
-/// The local model `repo` (`local/<name>`): its newest commit; None when the name holds nothing.
-pub(crate) fn local(store: &Store, repo: &str) -> io::Result<Option<Local>> {
-    let Some(tree) = store.get_ref(repo).map_err(io_error)?.and_then(|named| named.commits.last().cloned()) else {
+/// The local model `model` (`local/<name>`): its newest commit; None when the name holds nothing.
+pub(crate) fn local(store: &Store, model: &str) -> io::Result<Option<Local>> {
+    let Some(tree) = store.get_ref(model).map_err(io_error)?.and_then(|named| named.checkpoints.last().cloned()) else {
         return Ok(None);
     };
     let parsed = store.tree(&tree).map_err(io_error)?;
@@ -153,14 +153,14 @@ pub(crate) fn local(store: &Store, repo: &str) -> io::Result<Option<Local>> {
     Ok(Some(Local { tree, lane: parsed.lane, header }))
 }
 
-/// Names `header` (with its source's repo `files`, in lane `lane`) the local model
+/// Names `header` (with its source's model `files`, in lane `lane`) the local model
 /// `local/<name>`: a new commit, replacing what the name held.
 pub(crate) fn set_local(store: &Store, name: &str, header: &ObjectRef, files: &BTreeMap<String, ObjectRef>, lane: &str) -> io::Result<ObjectRef> {
     let tree = Tree::of(lane, header.clone(), files).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?;
     let tree = store.put_tree(&tree).map_err(io_error)?;
-    let repo = format!("local/{name}");
+    let model = format!("local/{name}");
     store
-        .update_ref(&repo, |_| Some(Repo { commits: vec![tree.clone()], ..Repo::new(&repo) }))
+        .update_ref(&model, |_| { let mut model = Model::new(&model); model.add_checkpoint(tree.clone()); Some(model) })
         .map_err(io_error)?;
     Ok(tree)
 }
@@ -241,7 +241,7 @@ pub(crate) fn checkpoint(store: &Store, id: &str) -> io::Result<tensorfs::store:
     }
     let object = held(store, id)?;
     match store.tree(&object) {
-        Ok(_) => store.at_commit(&object),
+        Ok(_) => store.at_checkpoint(&object),
         Err(_) => store.checkpoint(&object),
     }
     .map_err(io_error)

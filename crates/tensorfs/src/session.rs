@@ -32,7 +32,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use crate::failure::{fail, Failure, Kind, Result};
-use crate::format::{is_digest, repo_name, ObjectRef, ROOT_ORG};
+use crate::format::{is_digest, model_name, ObjectRef, ROOT_ORG};
 use crate::store::Store;
 
 /// Locations and an ordinary supplied provider. Credentials are never formatted.
@@ -72,10 +72,10 @@ impl fmt::Debug for Config {
 }
 
 /// A model identity, separate from the location serving it: `[org/]name[@release]` (a release,
-/// or `sha256:<hex>` of one of its commits), or `sha256:<hex>` alone (a commit or a header).
+/// or `sha256:<hex>` of one of its checkpoints), or `sha256:<hex>` alone (a checkpoint or a header).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ref {
-    pub repo_id: String,
+    pub model_id: String,
     pub release: Option<String>,
     pub lane: Option<String>,
     pub endpoint: Option<String>,
@@ -88,8 +88,8 @@ impl FromStr for Ref {
         let (name, release) = text
             .split_once('@')
             .map_or((text, None), |(n, r)| (n, Some(r)));
-        if release.is_some_and(|r| !crate::format::label(r) && !commit_id(r)) {
-            return fail(Kind::Invalid, "a release is a version label or sha256:<64 hex> of a commit");
+        if release.is_some_and(|r| !crate::format::label(r) && !checkpoint_id(r)) {
+            return fail(Kind::Invalid, "a release is a version label or sha256:<64 hex> of a checkpoint");
         }
         let digest = name.strip_prefix("sha256:");
         if digest.is_some_and(|d| !is_digest(d)) {
@@ -103,11 +103,11 @@ impl FromStr for Ref {
             true => name.to_owned(),
             false => format!("{ROOT_ORG}/{name}"),
         };
-        if digest.is_none() && !repo_name(&name) {
-            return fail(Kind::Invalid, "a repository is [<org>/]<name>");
+        if digest.is_none() && !model_name(&name) {
+            return fail(Kind::Invalid, "a model is [<org>/]<name>");
         }
         Ok(Self {
-            repo_id: name,
+            model_id: name,
             release: release.map(str::to_owned),
             lane: None,
             endpoint: None,
@@ -116,7 +116,7 @@ impl FromStr for Ref {
 }
 
 /// `sha256:<64 hex>`.
-pub(crate) fn commit_id(text: &str) -> bool {
+pub(crate) fn checkpoint_id(text: &str) -> bool {
     text.strip_prefix("sha256:").is_some_and(is_digest)
 }
 
@@ -201,7 +201,7 @@ impl Client {
         })
     }
 
-    /// One path for a plain folder, local identity, digest, or remote repository.
+    /// One path for a plain folder, local identity, digest, or remote model.
     /// Lazy opens return metadata only; eager opens await this checkpoint's bytes.
     pub async fn open(&self, name_or_path: &str, options: &Open) -> Result<Checkpoint> {
         let path = Path::new(name_or_path);
@@ -209,6 +209,19 @@ impl Client {
             let path = path
                 .canonicalize()
                 .map_err(|e| io_failure(path.display(), e))?;
+            if path.is_file() {
+                let (file, bytes, header) = crate::store::file::header(&path)?;
+                let length = file.metadata().map_err(|e| io_failure(path.display(), e))?.len();
+                if length > bytes.len() as u64 || header.objects().next().is_none() {
+                    let store = self.store.clone();
+                    let complete = path.clone();
+                    let lane = options.lane.clone().unwrap_or_else(|| "default".into());
+                    let tree = tokio::task::spawn_blocking(move || store.admit_file(&complete, &lane))
+                        .await.map_err(|e| io_failure(path.display(), std::io::Error::other(e)))??;
+                    let raw = self.store.at_checkpoint(&tree)?;
+                    return Checkpoint::managed(raw, None, Some(tree), None, Vec::new(), self.store.clone());
+                }
+            }
             let raw = crate::store::Checkpoint::folder(&path, Some(&self.store))?;
             // A header file is a handle into the cache, rooted where it is opened; the cache's
             // own files are not.
@@ -281,10 +294,10 @@ impl Client {
         source.file(reference, filename, local_dir).await
     }
 
-    /// Uploads the folder (one `.cozytensors` file and its repo files) as a new commit of the
-    /// repository in lane `lane`, private until a release names it. The folder may be thin (its
-    /// header and repo files): a chunk or asset it lacks comes from the store, and a remote
-    /// repository refuses only one the endpoint lacks too. The commit.
+    /// Uploads the folder (one `.cozytensors` file and its ancillary files) as a new checkpoint of the
+    /// model in lane `lane`, private until a release names it. The folder may be thin (its
+    /// header and ancillary files): a chunk or asset it lacks comes from the store, and a remote
+    /// model refuses only one the endpoint lacks too. The checkpoint.
     pub async fn upload_folder(
         &self,
         reference: &Ref,
@@ -296,7 +309,7 @@ impl Client {
             return fail(Kind::Invalid, format!("lane {lane:?}: start alphanumeric, then at most 63 of letters, digits, . _ + ! -"));
         }
         let (tree, absent) = self.store.admit_folder(folder, lane)?;
-        if let (Some(object), true) = (absent.first(), reference.repo_id.starts_with("local/")) {
+        if let (Some(object), true) = (absent.first(), reference.model_id.starts_with("local/")) {
             return fail(
                 Kind::NotFound,
                 format!("{}: in neither the folder nor the store", object.id()),
@@ -311,12 +324,12 @@ impl Client {
         if let Some(report) = progress {
             report(0, total)?;
         }
-        // A local repository's endpoint is this store: one commit path for both.
+        // A local model's endpoint is this store: one commit path for both.
         let source = self.source(reference, false)?;
         let control = crate::fetch::UploadControl { cancelled: &|| false, progress: &|_, _| {}, commit: &|| true };
-        let uploaded = crate::fetch::upload_commit(
+        let uploaded = crate::fetch::upload_checkpoint(
             &source.endpoint.inner,
-            &reference.repo_id,
+            &reference.model_id,
             &tree,
             &self.store,
             &control,
@@ -326,11 +339,11 @@ impl Client {
         if let Some(report) = progress {
             report(total, total)?;
         }
-        Ok(uploaded.commit)
+        Ok(uploaded.checkpoint)
     }
 
     fn source(&self, reference: &Ref, offline: bool) -> Result<remote::Remote> {
-        let url = if reference.repo_id.starts_with("local/") {
+        let url = if reference.model_id.starts_with("local/") {
             "local"
         } else {
             reference
@@ -343,7 +356,7 @@ impl Client {
             store: self.store.clone(),
             endpoint,
             mirror: self.config.mirror.clone(),
-            offline: offline || reference.repo_id.starts_with("local/"),
+            offline: offline || reference.model_id.starts_with("local/"),
         })
     }
 }

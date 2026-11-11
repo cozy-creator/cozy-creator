@@ -11,7 +11,7 @@ use std::{
     sync::{Mutex, atomic::{AtomicU64, Ordering}},
     time::SystemTime,
 };
-use tensorfs::format::{ObjectRef, Repo};
+use tensorfs::format::{ObjectRef, Model};
 
 #[derive(Clone, Default, PartialEq, Debug)]
 pub(crate) struct Listing {
@@ -20,52 +20,52 @@ pub(crate) struct Listing {
     pub bytes: u64,
 }
 
-/// A Hub commit this machine pulled: `tree`, `repository`'s `release` in `lane` (an empty
-/// release: a commit by hash). The store's ref of the repository records it.
+/// A Hub checkpoint this machine pulled: `tree`, `model`'s `release` in `lane` (an empty
+/// release: a checkpoint by hash). The store's ref of the model records it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Pulled {
-    pub repository: String,
+    pub model: String,
     pub release: String,
     pub lane: String,
     pub tree: ObjectRef,
 }
 
 impl Pulled {
-    /// Names the pull in the store: `repository`'s ref, a cache TensorFS may expire. The tree
+    /// Names the pull in the store: `model`'s ref, a cache TensorFS may expire. The tree
     /// must be here. One the ref already names writes nothing.
     pub(crate) fn record(&self, store: &Store) -> io::Result<()> {
-        let held = store.get_ref(&self.repository).map_err(storage::io_error)?;
-        if held.as_ref().is_some_and(|repo| entries(repo).any(|(release, _, tree)| release == self.release && *tree == self.tree)) {
+        let held = store.get_ref(&self.model).map_err(storage::io_error)?;
+        if held.as_ref().is_some_and(|model| entries(model).any(|(release, _, tree)| release == self.release && *tree == self.tree)) {
             return Ok(());
         }
         store
-            .update_ref(&self.repository, |old| {
-                let mut repo = old.unwrap_or_else(|| Repo::new(&self.repository));
+            .update_ref(&self.model, |old| {
+                let mut model = old.unwrap_or_else(|| Model::new(&self.model));
                 match self.release.is_empty() {
-                    true => repo.add_commit(self.tree.clone()),
-                    false => repo.set_lane(&self.release, &self.lane, self.tree.clone()),
+                    true => model.add_checkpoint(self.tree.clone()),
+                    false => model.set_lane(&self.release, &self.lane, self.tree.clone()),
                 }
-                Some(repo)
+                Some(model)
             })
             .map(drop)
             .map_err(storage::io_error)
     }
 
-    /// The Hub commit whose header is `header`, as this machine pulled it; None for one never
+    /// The Hub checkpoint whose header is `header`, as this machine pulled it; None for one never
     /// pulled.
     pub(crate) fn of(store: &Store, header: &ObjectRef) -> io::Result<Option<Pulled>> {
-        for repo in store.refs().map_err(storage::io_error)? {
-            if repo.name.starts_with("local/") {
+        for model in store.refs().map_err(storage::io_error)? {
+            if model.name.starts_with("local/") {
                 continue;
             }
-            for (release, lane, tree) in entries(&repo) {
+            for (release, lane, tree) in entries(&model) {
                 let Ok(parsed) = store.tree(tree) else {
                     continue;
                 };
                 if parsed.header().is_ok_and(|(_, h)| h == header) {
                     let lane = lane.map_or(parsed.lane, str::to_owned);
-                    let (repository, release) = (repo.name.clone(), release.to_string());
-                    return Ok(Some(Pulled { repository, release, lane, tree: tree.clone() }));
+                    let (model, release) = (model.name.clone(), release.to_string());
+                    return Ok(Some(Pulled { model, release, lane, tree: tree.clone() }));
                 }
             }
         }
@@ -73,13 +73,13 @@ impl Pulled {
     }
 }
 
-/// Each commit `repo` records: (its release, empty for none; its lane there; the commit).
-fn entries(repo: &Repo) -> impl Iterator<Item = (&str, Option<&str>, &ObjectRef)> {
-    let released = repo.releases.iter().flat_map(|r| r.lanes.iter().map(|(lane, tree)| (r.version.as_str(), Some(lane.as_str()), tree)));
-    released.chain(repo.commits.iter().map(|tree| ("", None, tree)))
+/// Each checkpoint `model` records: (its release, empty for none; its lane there; the checkpoint).
+fn entries(model: &Model) -> impl Iterator<Item = (&str, Option<&str>, &ObjectRef)> {
+    let released = model.releases.iter().flat_map(|r| r.lanes.iter().map(|(lane, tree)| (r.version.as_str(), Some(lane.as_str()), tree)));
+    released.chain(model.checkpoints.iter().map(|tree| ("", None, tree)))
 }
 
-/// Each model's rows: repository, release, lane, header.
+/// Each model's rows: model, release, lane, header.
 type Seen = Vec<(String, String, String, ObjectRef)>;
 
 #[derive(PartialEq, Eq)]
@@ -140,15 +140,15 @@ pub(crate) fn listing(root: &Path) -> Listing {
 
 fn seen(store: &Store) -> std::io::Result<Seen> {
     let mut seen = Seen::new();
-    for repo in store.refs().map_err(storage::io_error)? {
-        for (release, lane, tree) in entries(&repo) {
+    for model in store.refs().map_err(storage::io_error)? {
+        for (release, lane, tree) in entries(&model) {
             let Ok(tree) = store.tree(tree) else {
                 continue;
             };
             let Ok((_, header)) = tree.header() else { continue };
             if store.holds(header) {
                 let lane = lane.unwrap_or(&tree.lane);
-                seen.push((repo.name.clone(), release.into(), lane.into(), header.clone()));
+                seen.push((model.name.clone(), release.into(), lane.into(), header.clone()));
             }
         }
     }
@@ -160,22 +160,22 @@ fn list(store: &Store, seen: &Seen) -> std::io::Result<Listing> {
     let mut closures: BTreeMap<&str, Vec<ObjectRef>> = BTreeMap::new();
     let mut holders: HashMap<ObjectRef, usize> = HashMap::new();
     let mut models: Vec<v1::Model> = vec![];
-    for (repository, release, lane, header) in seen {
+    for (model, release, lane, header) in seen {
         let closure = store.closure(header).map_err(storage::io_error)?;
         let complete = closure.iter().all(|object| store.holds(object));
         let held: Vec<ObjectRef> = closure.into_iter().filter(|o| store.holds(o)).collect();
-        let entry = closures.entry(repository).or_default();
+        let entry = closures.entry(model).or_default();
         for object in held {
             if !entry.contains(&object) {
                 entry.push(object);
             }
         }
-        if models.last().is_none_or(|m| m.repository != *repository) {
-            models.push(v1::Model { repository: repository.clone(), ..Default::default() });
+        if models.last().is_none_or(|m| m.model != *model) {
+            models.push(v1::Model { model: model.clone(), ..Default::default() });
         }
         let (precision, role) = store.checkpoint(header).map(|c| (
             crate::precision::Profile::of(c.header()).family,
-            c.header().repository_role().to_owned(),
+            c.header().model_role().to_owned(),
         )).unwrap_or_else(|_| (String::new(), "unknown".into()));
         models.last_mut().expect("pushed").checkpoints.push(v1::Checkpoint {
             release: release.clone(),
@@ -192,7 +192,7 @@ fn list(store: &Store, seen: &Seen) -> std::io::Result<Listing> {
         }
     }
     for model in &mut models {
-        let objects = &closures[model.repository.as_str()];
+        let objects = &closures[model.model.as_str()];
         model.total_bytes = objects.iter().map(|o| o.length).sum();
         model.unique_bytes = objects.iter().filter(|o| holders[*o] == 1).map(|o| o.length).sum();
     }
@@ -214,9 +214,9 @@ mod tests {
         let header = store.put_bytes(&header.to_cbor().unwrap()).unwrap();
         let tree = store.put_tree(&Tree::of("bf16", header.clone(), &Default::default()).unwrap()).unwrap();
         store.update_ref("test/model", |_| {
-            let mut repo = Repo::new("test/model");
-            repo.set_lane("1", "bf16", tree.clone());
-            Some(repo)
+            let mut model = Model::new("test/model");
+            model.set_lane("1", "bf16", tree.clone());
+            Some(model)
         }).unwrap();
         let before = listing(root.path());
         assert_eq!(before.models[0].checkpoints[0].complete, Some(false));

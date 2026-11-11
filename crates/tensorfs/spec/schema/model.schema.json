@@ -1,0 +1,100 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "https://github.com/cozy-creator/cozy-creator/crates/tensorfs/spec/schema/model.schema.json",
+ "title": "cozytensors.model/1",
+ "description": "Structure only; byte-length, bounds, duplicate-key and release rules (labels, ascending PEP 440 versions) are in spec/cozytensors.md. Unknown fields are allowed.",
+ "type": "object",
+ "required": [
+  "format",
+  "name"
+ ],
+ "properties": {
+  "format": {
+   "type": "string",
+   "pattern": "^cozytensors\\.model/1(\\.[0-9]+)?$",
+   "not": {
+    "pattern": "[\\r\\n]"
+   }
+  },
+  "name": {
+   "type": "string",
+   "pattern": "^(?!\\.\\.?/)[^/\\\\\\u0000]+/(?!\\.\\.?$)[^/\\\\\\u0000]+$"
+  },
+  "releases": {
+   "type": "array",
+   "description": "Releases, oldest first, with an immutable checkpoint selection per lane and explicit visibility.",
+   "items": {
+    "type": "object",
+    "required": [
+     "version",
+     "lanes",
+     "visibility"
+    ],
+    "properties": {
+     "version": {
+      "$ref": "#/$defs/label"
+     },
+     "lanes": {
+      "type": "object",
+      "propertyNames": {
+       "$ref": "#/$defs/label"
+      },
+      "additionalProperties": {
+       "$ref": "#/$defs/objectRef"
+      }
+     },
+     "visibility": {
+      "type": "string",
+      "enum": [
+       "public",
+       "private"
+      ]
+     }
+    }
+   }
+  },
+  "deleted": {
+   "type": "array",
+   "description": "Versions of deleted releases, in deletion order: never released again.",
+   "items": {
+    "$ref": "#/$defs/label"
+   }
+  },
+  "checkpoints": {
+   "type": "array",
+   "description": "The model's checkpoints not named by releases, newest last.",
+   "items": {
+    "$ref": "#/$defs/objectRef"
+   }
+  }
+ },
+ "$defs": {
+  "label": {
+   "type": "string",
+   "pattern": "^[A-Za-z0-9][A-Za-z0-9._+!-]{0,63}$"
+  },
+  "u64": {
+   "type": "integer",
+   "minimum": 0,
+   "maximum": 18446744073709551615
+  },
+  "objectRef": {
+   "type": "object",
+   "required": [
+    "sha256",
+    "length"
+   ],
+   "properties": {
+    "sha256": {
+     "type": "string",
+     "pattern": "^[0-9a-f]{64}$",
+     "minLength": 64,
+     "maxLength": 64
+    },
+    "length": {
+     "$ref": "#/$defs/u64"
+    }
+   }
+  }
+ }
+}

@@ -10,7 +10,7 @@ pub(super) struct Folder {
     pub store: Store,
     pub tree: ObjectRef,
     pub header: ObjectRef,
-    // Opening the commit retains the complete tree and its present closure during upload.
+    // Opening the checkpoint retains the complete tree and its present closure during upload.
     _checkpoint: Checkpoint,
     _staging: Staging,
 }
@@ -95,7 +95,7 @@ pub(super) fn input<'a>(spec: &'a Spec, choice: &stored::ModelChoice) -> Result<
     if field.is_empty() || !spec.warm || !matches!(&spec.source, Source::Models)
         || spec.remove || spec.set.is_some() || spec.models.len() != 1 || spec.gpus != 0
         || destination.is_empty() || destination.starts_with("local/")
-        || !choice.repository.is_empty() || !choice.release.is_empty() || !choice.lane.is_empty()
+        || !choice.model.is_empty() || !choice.release.is_empty() || !choice.lane.is_empty()
         || choice.manifest.is_some() || !choice.profiles.is_empty() || !choice.adapters.is_empty()
     {
         return Err(invalid());
@@ -144,6 +144,6 @@ pub(super) fn prepare(
     // right to upload them. An unstaged object can only be reused by the endpoint's own HEAD.
     let store = Store::open(staging.root.join("store")).map_err(invalid)?;
     let (tree, _) = store.admit_folder(&folder, &spec.lane).map_err(invalid)?;
-    let checkpoint = store.at_commit(&tree).map_err(invalid)?;
+    let checkpoint = store.at_checkpoint(&tree).map_err(invalid)?;
     Ok(Some(Folder { header: checkpoint.id().clone(), tree, store, _checkpoint: checkpoint, _staging: staging }))
 }

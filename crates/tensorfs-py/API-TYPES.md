@@ -45,7 +45,7 @@ def configure(*, endpoint: str | None=None, cache_dir: StrPath | None=None, toke
 def convert_to_cozytensors(source: str | Sequence[str], *, converter: str | None=None, source_variant: str | None=None, cache_dir: StrPath | None=None, token: Token | None=None, progress: Callable[[str, int, int], object] | None=None) -> Checkpoint:
     ...
 
-def download_file(repo_id: str, filename: str, *, release: str | None=None, lane: str | None=None, cache_dir: StrPath | None=None, local_dir: StrPath | None=None, local_files_only: bool=False, token: Token | None=None, endpoint: str | None=None) -> str:
+def download_file(model_id: str, filename: str, *, release: str | None=None, lane: str | None=None, cache_dir: StrPath | None=None, local_dir: StrPath | None=None, local_files_only: bool=False, token: Token | None=None, endpoint: str | None=None) -> str:
     ...
 
 def open(name_or_path: StrPath, *, release: str | None=None, lane: str | None=None, gpus: Sequence[str] | None=None, endpoint: str | None=None, local_files_only: bool=False, cache_dir: StrPath | None=None, token: Token | None=None, lazy: bool=True) -> Checkpoint:
@@ -54,7 +54,7 @@ def open(name_or_path: StrPath, *, release: str | None=None, lane: str | None=No
 def materialize(source: str | Checkpoint, *, release: str | None=None, lane: str | None=None, components: Sequence[str] | None=None, cache_dir: StrPath | None=None, local_dir: StrPath | None=None, local_files_only: bool=False, token: Token | None=None, endpoint: str | None=None, format: str='cozytensors', decode: bool=False) -> str:
     ...
 
-def upload_folder(*, repo_id: str, folder_path: StrPath, lane: str, token: Token | None=None, endpoint: str | None=None, cache_dir: StrPath | None=None) -> str:
+def upload_folder(*, model_id: str, folder_path: StrPath, lane: str, token: Token | None=None, endpoint: str | None=None, cache_dir: StrPath | None=None) -> str:
     ...
 
 class Error(Exception):
@@ -341,6 +341,9 @@ class Checkpoint:
         """The checkpoint as one read-only, seekable file: its header, then its chunks and assets in header
         order at 4 KiB-aligned offsets, assembled from the store on demand; nothing is written."""
 
+    def write_file(self, path: str | PathLike[str]) -> None:
+        """Atomically write the complete portable checkpoint, including chunks and assets."""
+
     @property
     def id(self) -> str:
         """`sha256:<hex>` of the header."""
@@ -350,7 +353,7 @@ class Checkpoint:
         ...
 
     @property
-    def repo_id(self) -> str | None:
+    def model_id(self) -> str | None:
         ...
 
     @property
@@ -388,7 +391,7 @@ class Endpoint:
     def __init__(self, url: str, token: Token | None=None, *, ca_der: bytes | None=None, cache_dir: StrPath | None=None) -> None:
         ...
 
-    def resolve(self, repo_id: str, *, release: str | None=None, lane: str | None=None, gpus: Sequence[str] | None=None) -> dict[str, object]:
+    def resolve(self, model_id: str, *, release: str | None=None, lane: str | None=None, gpus: Sequence[str] | None=None) -> dict[str, object]:
         """The commit of `release` (none: the newest) in `lane` (none: what `gpus` run best)."""
 
 class ComponentWriter:
@@ -415,11 +418,11 @@ class Writer:
     metadata: dict[str, object]
     local_checkpoint: Checkpoint | None
 
-    def __init__(self, dest: StrPath | None=None, *, base: Checkpoint | None=None, resume: str | None=None, repo_id: str | None=None, lane: str | None=None, endpoint: str | None=None, token: Token | None=None, cache_dir: StrPath | None=None) -> None:
+    def __init__(self, dest: StrPath | None=None, *, base: Checkpoint | None=None, resume: str | None=None, model_id: str | None=None, lane: str | None=None, endpoint: str | None=None, token: Token | None=None, cache_dir: StrPath | None=None) -> None:
         """Write an exact header-file path, or only the shared store when dest=None.
 
         The file is a handle into the shared local store that roots its data while it holds
-        this header; `materialize` makes the portable copy. With `repo_id` and `lane`, commit makes
+        this header; `materialize` makes the portable copy. With `model_id` and `lane`, commit makes
         the header a new commit of that repo in that lane.
         """
 

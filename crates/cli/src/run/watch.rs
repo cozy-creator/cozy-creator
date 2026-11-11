@@ -194,10 +194,10 @@ fn stage_rows(measured: &Measured) -> Vec<Vec<String>> {
 /// by value, and the lane it was resolved in with its header's precision family.
 fn model_rows(measured: &Measured) -> Vec<Vec<String>> {
     let row = |m: &report::Model| {
-        let mut model = match (m.repository.is_empty(), m.release.is_empty()) {
+        let mut model = match (m.model.is_empty(), m.release.is_empty()) {
             (true, _) => m.manifest.chars().take(19).collect(),
-            (false, true) => m.repository.clone(),
-            (false, false) => format!("{}@{}", m.repository, m.release),
+            (false, true) => m.model.clone(),
+            (false, false) => format!("{}@{}", m.model, m.release),
         };
         for a in &m.adapters {
             model += &format!(" + {},{} on {}", a.model, a.strength, a.components.join(", "));

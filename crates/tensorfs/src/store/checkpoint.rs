@@ -72,7 +72,7 @@ impl Store {
     }
 
     /// The cozytensors of commit `tree`.
-    pub fn at_commit(&self, tree: &ObjectRef) -> Result<Checkpoint> {
+    pub fn at_checkpoint(&self, tree: &ObjectRef) -> Result<Checkpoint> {
         let fence = retention::acquire(self)?;
         let parsed = self.tree(tree)?;
         let header = parsed.header()?.1;

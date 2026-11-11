@@ -336,29 +336,29 @@ async fn placed(api: &Api, hub: &str, package: &str, release: &str, function: &s
     placed
 }
 
-/// A checkpoint's bytes in `lane`, else its least: a Hub model's release or commit, by its card, kept a while. None: the Hub doesn't say.
+/// A checkpoint's bytes in `lane`, else its least: a Hub model's release or checkpoint, by its card, kept a while. None: the Hub doesn't say.
 async fn sized(api: &Api, hub: &str, written: &str, lane: Option<&str>) -> Option<u64> {
     checkpoint(api, hub, written, lane).await.map(|(_, bytes)| bytes)
 }
 
-/// The commit and bytes of a checkpoint in `lane`, else its least, as `sized` reads them.
+/// The checkpoint and bytes of a checkpoint in `lane`, else its least, as `sized` reads them.
 async fn checkpoint(api: &Api, hub: &str, written: &str, lane: Option<&str>) -> Option<(String, u64)> {
     let key = format!("{hub}\n{written}\n{}", lane.unwrap_or_default());
     if let Some((_, held)) = SIZED.lock().expect("sized lock").get(&key).filter(|(at, _)| at.elapsed() < KEPT) {
         return held.clone();
     }
-    let (repo, release, commit) = match ModelRef::parse(written).ok()? {
-        ModelRef::Hub { repo, release } => (repo, release, None),
-        ModelRef::Commit { repo, commit } => (repo, None, Some(commit)),
+    let (model_id, release, checkpoint) = match ModelRef::parse(written).ok()? {
+        ModelRef::Hub { model: model_id, release } => (model_id, release, None),
+        ModelRef::Checkpoint { model: model_id, checkpoint } => (model_id, None, Some(checkpoint.to_string())),
         _ => return None,
     };
     let reader = api.machines.hubs.reader(hub).ok()?;
-    let card = tokio::time::timeout(HUB_LATE, reader.get_model(&repo.org, &repo.name)).await.ok()?.ok()?;
-    let found = match (&commit, &release) {
-        (Some(commit), _) => (card.releases.iter().flat_map(|release| release.lanes.values()))
-            .find(|held| &held.commit == commit)
-            .map(|held| (held.commit.clone(), held.bytes))
-            .or_else(|| card.commits.iter().find(|held| &held.id == commit).map(|held| (held.id.clone(), held.bytes))),
+    let card = tokio::time::timeout(HUB_LATE, reader.get_model(&model_id.org, &model_id.name)).await.ok()?.ok()?;
+    let found = match (&checkpoint, &release) {
+        (Some(checkpoint), _) => (card.releases.iter().flat_map(|release| release.lanes.values()))
+            .find(|held| &held.checkpoint == checkpoint)
+            .map(|held| (held.checkpoint.clone(), held.bytes))
+            .or_else(|| card.checkpoints.iter().find(|held| &held.id == checkpoint).map(|held| (held.id.clone(), held.bytes))),
         (None, release) => {
             let release = match release {
                 Some(version) => card.releases.iter().find(|held| &held.version == version),
@@ -366,15 +366,15 @@ async fn checkpoint(api: &Api, hub: &str, written: &str, lane: Option<&str>) -> 
             };
             release
                 .and_then(|release| lane.and_then(|lane| release.lanes.get(lane)).or_else(|| release.lanes.values().filter(|held| held.bytes > 0).min_by_key(|held| held.bytes)))
-                .map(|held| (held.commit.clone(), held.bytes))
+                .map(|held| (held.checkpoint.clone(), held.bytes))
         }
     };
-    let found = found.filter(|(_, bytes)| *bytes > 0).map(|(commit, bytes)| (commit, bytes as u64));
+    let found = found.filter(|(_, bytes)| *bytes > 0).map(|(checkpoint, bytes)| (checkpoint, bytes as u64));
     SIZED.lock().expect("sized lock").insert(key, (Instant::now(), found.clone()));
     found
 }
 
-/// The checkpoints `function` of `package` loads, each by its Hub card's lane commit and bytes: what a machine's estimate counts the
+/// The checkpoints `function` of `package` loads, each by its Hub card's lane checkpoint and bytes: what a machine's estimate counts the
 /// fetch of (cl-816). What the Hub doesn't say in time is left out.
 pub(super) async fn checkpoints(api: &Api, hub: &str, package: &super::Package, function: &str, made: &Map<String, Value>) -> Vec<api::machine::ModelRef> {
     let Some(weights) = Weights::of(package.document(), function, made) else { return vec![] };
@@ -388,8 +388,8 @@ pub(super) async fn checkpoints(api: &Api, hub: &str, package: &super::Package, 
         let Some(written) = weights.on_box.get(param).or(slot.default.as_ref()) else { continue };
         let placed = placed.as_ref().and_then(|placed| placed.slots.iter().find(|(held, ..)| held == param));
         let lane = placed.map(|(_, lane, _)| lane.clone()).or_else(|| slot.lane.clone());
-        if let Some((commit, bytes)) = checkpoint(api, hub, written, lane.as_deref()).await {
-            found.push(api::machine::ModelRef { commit, bytes });
+        if let Some((checkpoint, bytes)) = checkpoint(api, hub, written, lane.as_deref()).await {
+            found.push(api::machine::ModelRef { checkpoint, bytes });
         }
     }
     found

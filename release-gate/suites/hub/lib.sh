@@ -214,7 +214,7 @@ hub_model_upload() {
   hub_weights "$w" || { expect "hub $1" FAIL "no weights to upload: tfs import/export failed"; return 1; }
   HUB_MODELS="$HUB_MODELS $3"
   hub_do "$1" ok model upload "$w" "$3" --lane f16 --on "$2" -y || return 1
-  HUB_COMMIT=$(model_details "$3" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["commits"][0]["commit"])' 2>/dev/null)
+  HUB_COMMIT=$(model_details "$3" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["checkpoints"][0]["checkpoint"])' 2>/dev/null)
   [ -n "$HUB_COMMIT" ] || { expect "hub $1-commit" FAIL "model metadata for $3 names no commit after the upload"; return 1; }
 }
 # Released clients use download; the current CLI shares package install terminology.

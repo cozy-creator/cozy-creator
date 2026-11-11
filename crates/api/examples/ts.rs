@@ -114,10 +114,11 @@ fn main() {
     v.visit::<hub::ModelEdited>();
     v.visit::<hub::ModelReleaseAsk>();
     v.visit::<hub::ModelReleased>();
+    v.visit::<hub::ModelUnpublished>();
     v.visit::<hub::ModelDownload>();
     v.visit::<hub::ModelUpload>();
     v.visit::<hub::ModelQuantize>();
-    v.visit::<hub::RecordedCommit>();
+    v.visit::<hub::RecordedCheckpoint>();
     v.visit::<hub::PackageSearch>();
     v.visit::<hub::PackageDetail>();
     v.visit::<hub::PackageInstall>();

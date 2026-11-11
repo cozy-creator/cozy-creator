@@ -16,7 +16,7 @@ pub(crate) fn choices(sent: Vec<v1::ModelChoice>) -> Result<Vec<stored::ModelCho
         .map(|choice| -> Result<stored::ModelChoice, Error> {
             Ok(stored::ModelChoice {
                 parameter: choice.parameter,
-                repository: choice.repository,
+                model: choice.model,
                 release: choice.release,
                 lane: choice.lane,
                 manifest: if choice.manifest.is_empty() {

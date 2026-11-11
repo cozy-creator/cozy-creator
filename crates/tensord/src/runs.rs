@@ -253,17 +253,17 @@ fn repo_files(store: &tensorfs::store::Store, tree: Option<&ObjectRef>) -> Resul
 /// A named commit (tree) or header already held for an upload; a local one never falls back to a
 /// remote repository or its newest release.
 fn held_tree(store: &crate::storage::Store, choice: &stored::ModelChoice) -> Result<Option<crate::published::Named>, Refused> {
-    let Some(manifest) = choice.manifest.as_ref().filter(|_| !choice.repository.is_empty()) else {
+    let Some(manifest) = choice.manifest.as_ref().filter(|_| !choice.model.is_empty()) else {
         return Ok(None);
     };
     let id = tensorfs::sha256::hex(&manifest.digest);
     let object = match crate::storage::held(store, &id) {
         Ok(object) => object,
-        Err(error) if error.kind() == io::ErrorKind::NotFound && !choice.repository.starts_with("local/") => return Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::NotFound && !choice.model.starts_with("local/") => return Ok(None),
         Err(error) => return Err(refused("checkpoint_absent", format!("held checkpoint sha256:{id}: {error}"))),
     };
     let named = |lane, tree, header| crate::published::Named {
-        repository: choice.repository.clone(), release: choice.release.clone(), lane, tree, header: Some(header), reasons: vec![],
+        model: choice.model.clone(), release: choice.release.clone(), lane, tree, header: Some(header), reasons: vec![],
     };
     let Some(parsed) = crate::storage::tree_or_header(store, &object).map_err(|error| refused("checkpoint_invalid", error.to_string()))? else {
         return Ok(Some(named(choice.lane.clone(), None, object)));
@@ -281,7 +281,7 @@ pub(crate) fn upload(
     header: &ObjectRef, files: &std::collections::BTreeMap<String, ObjectRef>, store: &tensorfs::store::Store,
     control: &tensorfs::fetch::UploadControl<'_>,
 ) -> Result<tensorfs::fetch::Uploaded, Refused> {
-    use tensorfs::fetch::{bearer, upload_commit, Client, Endpoint, SourcePolicy};
+    use tensorfs::fetch::{bearer, upload_checkpoint, Client, Endpoint, SourcePolicy};
     let failed = |error: String| refused("upload_failed", error);
     // A lane the precision table names is the weights' width: never int8 weights labelled bf16.
     let read = store.read(header).map_err(|e| e.to_string())
@@ -310,7 +310,7 @@ pub(crate) fn upload(
         endpoint = endpoint.anonymous();
     }
     let runtime = tensorfs::fetch::runtime().map_err(|error| failed(error.to_string()))?;
-    runtime.block_on(upload_commit(&endpoint, destination, &tree, store, control)).map_err(|error| failed(error.to_string()))
+    runtime.block_on(upload_checkpoint(&endpoint, destination, &tree, store, control)).map_err(|error| failed(error.to_string()))
 }
 
 impl Runs {
@@ -589,10 +589,10 @@ impl Runs {
                 // Its header and tree only: what the composition keeps stays the Hub's objects.
                 let on = self.present(actor, id, spec, base, true, observe, stoppable)?;
                 let record = tensorfs::import::base::Base {
-                    model: base.repository.clone(),
+                    model: base.model.clone(),
                     release: on.row["release"].as_str().unwrap_or_default().to_owned(),
                     lane: on.row["lane"].as_str().unwrap_or_default().to_owned(),
-                    commit: on.tree.as_ref().map(ObjectRef::id).unwrap_or_default(),
+                    checkpoint: on.tree.as_ref().map(ObjectRef::id).unwrap_or_default(),
                     header: on.header.id(),
                 };
                 observe("composing", 0, 0);
@@ -623,7 +623,7 @@ impl Runs {
                         true => refused(crate::published::CANCELED, "the upload was canceled before its commit; admitted objects remain available"),
                         false => error,
                     })?;
-                row["published"] = json!({"destination": destination, "commit": uploaded.commit.id(), "lane": spec.lane,
+                row["published"] = json!({"destination": destination, "commit": uploaded.checkpoint.id(), "lane": spec.lane,
                     "checkpoint": header.id(), "converged": uploaded.converged,
                     "sent": {"objects": uploaded.sent, "bytes": uploaded.bytes}});
             }
@@ -672,19 +672,19 @@ impl Runs {
             drop(import);
             let row = json!({"parameter": choice.parameter, "source": choice.source,
                 "resolved": made.resolved, "profiles": made.profiles, "format": made.format,
-                "trigger": made.trigger.join(", "), "repository": made.repository, "checkpoint": made.header.id()});
-            let tree = crate::storage::local(publisher.store(), &made.repository)?.map(|local| local.tree);
+                "trigger": made.trigger.join(", "), "repository": made.model, "checkpoint": made.header.id()});
+            let tree = crate::storage::local(publisher.store(), &made.model)?.map(|local| local.tree);
             (made.header, tree, row)
-        } else if let (Some(name), None) = (choice.repository.strip_prefix("local/"), &choice.manifest) {
+        } else if let (Some(name), None) = (choice.model.strip_prefix("local/"), &choice.manifest) {
             // A local alias: the model this machine's store holds under that name.
-            let local = crate::storage::local(publisher.store(), &choice.repository)
+            let local = crate::storage::local(publisher.store(), &choice.model)
                 .map_err(|e| refused("checkpoint_absent", e.to_string()))?
                 .filter(|local| publisher.store().holds(&local.header))
                 .ok_or_else(|| refused("checkpoint_absent", format!("this machine holds no local/{name}: `cozy model download <source> local/{name} --on <machine>` puts it there")))?;
             let row = json!({"parameter": choice.parameter,
-                "repository": choice.repository, "checkpoint": local.header.id()});
+                "repository": choice.model, "checkpoint": local.header.id()});
             (local.header, Some(local.tree), row)
-        } else if choice.repository.is_empty() {
+        } else if choice.model.is_empty() {
             // A checkpoint this machine already holds (a run's output), by its header.
             let header = choice.manifest.as_ref().ok_or_else(|| {
                 refused("invalid_request", format!("model choice {:?} names no model", choice.parameter))
@@ -697,12 +697,12 @@ impl Runs {
             (held, None, row)
         } else if let Some(named) = if destination.is_empty() { None } else { held_tree(publisher.store(), choice)? } {
             // A Hub commit held here is the request's to publish only as the Hub serves it to its account.
-            let named = match named.tree.is_some() && !named.repository.starts_with("local/") {
-                true => publisher.commit(&self.service, hub_access()?, named).map_err(|(code, message)| refused(code, message))?,
+            let named = match named.tree.is_some() && !named.model.starts_with("local/") {
+                true => publisher.checkpoint(&self.service, hub_access()?, named).map_err(|(code, message)| refused(code, message))?,
                 false => named,
             };
             let header = named.header().map_err(|(code, message)| refused(code, message))?.clone();
-            let row = json!({"parameter": choice.parameter, "repository": named.repository,
+            let row = json!({"parameter": choice.parameter, "repository": named.model,
                 "lane": named.lane, "tree": named.tree.as_ref().map(ObjectRef::id), "checkpoint": header.id()});
             (header, named.tree, row)
         } else {
@@ -711,8 +711,8 @@ impl Runs {
             let named = crate::published::choose(choice, &choice.parameter)
                 .map_err(|(code, message)| refused(code, message))?;
             let hardware = self.service.gpu().map(|gpu| gpu.hardware(gpu.width() as u32)).unwrap_or_default();
-            let (stage, saving) = (format!("downloading {}", choice.repository), format!("saving {}", choice.repository));
-            let wait = crate::activity::wait(crate::activity::Kind::Download, &choice.repository, &self.service.engine.caller_id(id));
+            let (stage, saving) = (format!("downloading {}", choice.model), format!("saving {}", choice.model));
+            let wait = crate::activity::wait(crate::activity::Kind::Download, &choice.model, &self.service.engine.caller_id(id));
             let (named, landed) = publisher.download(&self.service, hub_access()?, named, &hardware, structure, stop, &|done, total| {
                 // Every byte is here (a total this small is still only the header's): what is left is the disk's,
                 // and a slow one has held a run at 100% for over a minute with no word (tfs-143).
@@ -722,7 +722,7 @@ impl Runs {
             })?;
             drop(wait);
             for reason in &named.reasons {
-                let warning = format!("{}: {reason}", named.repository);
+                let warning = format!("{}: {reason}", named.model);
                 if let Err(error) = self.service.engine.append_warning(id, &warning) {
                     crate::private_io::warning(&self.service.engine, id, format_args!("{warning} ({error})"));
                 }
@@ -733,7 +733,7 @@ impl Runs {
                 .map_err(|e| refused("model_resolution_failed", e))?;
             let profile = crate::precision::Profile::of(&read);
             let tree = named.tree.as_ref().map(ObjectRef::id);
-            let row = json!({"parameter": choice.parameter, "repository": named.repository,
+            let row = json!({"parameter": choice.parameter, "repository": named.model,
                 "release": named.release, "lane": named.lane, "precision": profile.family, "tree": tree,
                 "checkpoint": header.id(), "bytes": {"hub": landed.origin, "volume": landed.volume, "local": landed.local}});
             (header, named.tree, row)
@@ -1491,7 +1491,7 @@ impl Runs {
                 continue;
             };
             let prior = spec.models.iter().position(|prior| prior.parameter == path).map(|at| spec.models.remove(at));
-            let names_model = !choice.repository.is_empty() || choice.manifest.is_some() || !choice.source.is_empty();
+            let names_model = !choice.model.is_empty() || choice.manifest.is_some() || !choice.source.is_empty();
             let mut chosen = match prior {
                 Some(prior) if !names_model => prior,
                 _ => stored::ModelChoice { parameter: path, adapters: vec![], ..choice.clone() },
@@ -1620,7 +1620,7 @@ impl Runs {
         let files = parsed.repo_files().map(|(p, r)| (p.to_owned(), r.clone())).collect();
         let control = tensorfs::fetch::UploadControl { cancelled: &|| false, progress: &|_, _| {}, commit: &|| true };
         let uploaded = upload(&options, hub.as_ref(), &destination, lane, &header, &files, store, &control)?;
-        Ok(Some((destination, uploaded.commit)))
+        Ok(Some((destination, uploaded.checkpoint)))
     }
 
     /// The Hub a run reads and writes: its own access, else the machine's.

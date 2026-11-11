@@ -742,7 +742,9 @@ pub struct Publish {
 #[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
 pub struct CheckpointItem {
     pub output: String,
-    pub repo_id: String,
+    /// Historical executor frame spelling is retained during the supported protocol cohort.
+    #[serde(rename = "repo_id", alias = "model_id")]
+    pub model_id: String,
     /// The commit (its tree id).
     pub revision: String,
     /// The private tag the Runtime moved there.
@@ -1047,9 +1049,17 @@ mod python {
         changes: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<T> {
         let error = |e: &dyn std::fmt::Display| PyValueError::new_err(e.to_string());
+        // The canonical Python name crosses the unchanged supported executor protocol.
+        // Remove this keyword bridge with the TensorFS 0.25 naming cut.
+        if let Some(changes) = changes {
+            if changes.contains("model_id")? && changes.contains("repo_id")? {
+                return Err(PyValueError::new_err("use model_id, not both model_id and repo_id"));
+            }
+        }
         let mut given = vec![];
         for (key, value) in changes.into_iter().flat_map(|d| d.iter()) {
             let (key, value) = (key.extract::<String>()?, json_of(&value)?);
+            let key = if key == "model_id" { "repo_id".to_owned() } else { key };
             fields.insert(key.clone(), value.clone());
             given.push((key, value));
         }
@@ -1243,5 +1253,27 @@ pub mod base64_bytes {
         STANDARD
             .decode(String::deserialize(deserializer)?)
             .map_err(D::Error::custom)
+    }
+}
+
+#[cfg(test)]
+mod checkpoint_name_tests {
+    use super::*;
+
+    #[test]
+    fn checkpoint_identity_source_name_preserves_the_executor_frame() {
+        let modern = serde_json::json!({"output": "model", "model_id": "local/derived-test", "revision": "sha256:abc"});
+        let legacy = serde_json::json!({"output": "model", "repo_id": "local/derived-test", "revision": "sha256:abc"});
+        let new: CheckpointItem = serde_json::from_value(modern).unwrap();
+        let old: CheckpointItem = serde_json::from_value(legacy).unwrap();
+        assert_eq!(new, old);
+        assert_eq!(new.model_id, "local/derived-test");
+        let frame = serde_json::to_value(Request::CheckpointItem(new)).unwrap();
+        assert_eq!(frame["kind"], "checkpoint_item");
+        assert_eq!(frame["repo_id"], "local/derived-test");
+        assert!(frame.get("model_id").is_none());
+        assert!(serde_json::from_value::<CheckpointItem>(serde_json::json!({
+            "output": "model", "model_id": "one/model", "repo_id": "other/model", "revision": "sha256:abc"
+        })).is_err());
     }
 }
