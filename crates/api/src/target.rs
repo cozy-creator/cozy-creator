@@ -59,7 +59,7 @@ impl Published {
                 "target_malformed",
                 format!("{raw:?} is not [org/]package[/function][@release]"),
             )
-            .remedy("omit /function to list the package's functions; ./dir or ./script.py is local code")
+            .remedy("Use cozy run <package> to list functions, or cozy run ./path for local code.")
             .next("cozy package ls <words>")
         };
         if parts.len() == 4 {

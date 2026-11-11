@@ -243,12 +243,12 @@ fn forget(api: &Api, root: &FsPath) -> Result<(), Error> {
     let landing = super::landing(root);
     let active = api.calcifer.store().read(|conn| Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM runs WHERE out_dir = ?1 AND state <> 'settled')", [landing.to_string_lossy().as_ref()], |row| row.get::<_, bool>(0))?))
         .map_err(|e| error("vault_journal", e))?;
-    if active { return Err(Error::new(Kind::Conflict, "project_busy", "the project has active work; finish or cancel it before locking or converting")); }
+    if active { return Err(Error::new(Kind::Conflict, "project_busy", "The project has active work; finish or cancel it before changing storage.").next("cozy run ls").next("cozy run cancel <run>")); }
     let projects = api.projects.now_open();
     for project in projects {
         if project.root != root { continue; }
         if *project.walking.lock().expect("walking lock") || project.moving.try_lock().is_err() || project.cutting.try_lock().is_err() {
-            return Err(Error::new(Kind::Conflict, "project_busy", "the project is rendering, cutting or transferring; finish or cancel it before changing its storage").next("cozy project cancel all"));
+            return Err(Error::new(Kind::Conflict, "project_busy", "The project is rendering, cutting or transferring files.").remedy("Wait for project work to finish, then retry.").next("cozy open"));
         }
         if let Ok(mut model) = project.model.try_lock() { *model = None; }
         *project.told.lock().expect("project told") = None;
