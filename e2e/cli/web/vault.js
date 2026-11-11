@@ -4,9 +4,11 @@ const { execFileSync } = require('child_process');
 const { mkdtempSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { dirname, join } = require('path');
-const { calcifer, signIn, launch, png, MP4, until, drop, openCanvas, importFile, projectJson, projectUrl } = require('./page');
+const { calcifer, signIn, launch, png, MP4, until, drop, openCanvas, importFile, projectJson, projectUrl, settled } = require('./page');
 const failures = [], seen = {};
 let browser, context, page, peer, scratch;
+let stage = 'starting browser';
+const errors = [];
 const check = (name, okay) => { seen[name] = !!okay; if (!okay) failures.push(name); };
 const cli = (...args) => execFileSync(process.env.COZY, ['--json', ...args], { encoding: 'utf8', timeout: 180000 });
 const vault = (directory, ...args) => execFileSync(process.env.COZY, ['--json', 'vault', ...args], { cwd: directory, encoding: 'utf8', timeout: 180000 });
@@ -42,7 +44,7 @@ const newPage = async () => {
   context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
   page = await newPage();
   page.setDefaultTimeout(45000);
-  const errors = [], outbound = [], fileWrites = [], secretIdempotency = [];
+  const outbound = [], fileWrites = [], secretIdempotency = [];
   page.on('pageerror', (error) => errors.push(error.message));
   context.on('request', (request) => {
     const url = new URL(request.url());
@@ -59,6 +61,15 @@ const newPage = async () => {
       const route = path.endsWith('/address') ? 'address' : 'vault';
       (seen.vault_read_statuses ??= {})[route] = response.status();
     }
+    if (method === 'GET' && path === `/v1/projects/${id}` && !new URL(response.url()).searchParams.has('assets')) {
+      const read = { status: response.status() };
+      if (response.ok()) {
+        const state = await response.json().catch(() => null);
+        if (Array.isArray(state?.assets)) read.assets = state.assets.length;
+      }
+      seen.private_project_read = read;
+    }
+    if (method === 'PUT' && /^\/v1\/events\/[^/]+$/.test(path)) seen.project_interest_status = response.status();
     if (method !== 'POST' || !/\/vault$/.test(path)) return;
     try {
       const action = JSON.parse(response.request().postData() || '{}').action;
@@ -102,9 +113,15 @@ const newPage = async () => {
   await page.getByLabel('I saved this somewhere away from this computer').check();
   await page.locator('[aria-label="Save recovery secret"]').getByRole('button', { name: 'Done', exact: true }).click();
   check('one_time_secret_dismissed', await page.locator('[aria-label="Save recovery secret"]').count() === 0);
+  stage = 'encrypted canvas after conversion';
+  const readyCanvas = async () => {
+    await page.getByText('private_vault_picture', { exact: true }).first().waitFor();
+    await settled(page);
+  };
   await page.goto(href);
-  await page.locator('.react-flow').waitFor();
+  await readyCanvas();
   check('unlocked_canvas', await page.getByText('private_vault_picture', { exact: true }).count() > 0);
+  stage = 'initial private upload';
   const privateBytes = Buffer.concat([png(24), require('crypto').randomBytes(32)]);
   const imported = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === `/v1/projects/${id}/imports` && response.ok());
   const importAt = await openCanvas(page);
@@ -157,8 +174,9 @@ const newPage = async () => {
   check('no_private_paint_during_cover', await page.evaluate(() => window.__coverPaints.length === 0));
   await page.evaluate(() => window.__coverWatch.disconnect());
   await peer.close(); peer = null;
+  stage = 'private canvas before navigation upload';
   await page.goto(href);
-  await page.locator('.react-flow').waitFor();
+  await readyCanvas();
 
   // Route changes also retire only the drawn canvas, never an unlocked project's
   // pending upload. Exercise the real private upload/retry path across A -> B -> A.
@@ -185,6 +203,7 @@ const newPage = async () => {
     await route.abort('internetdisconnected').catch(() => {});
   };
   await page.route(navigationFile, pausePut);
+  stage = 'private navigation upload';
   try {
     // Start a real edit while the private canvas is readable. Disconnect only
     // after the actual protected PUT has begun, before it can reach Calcifer.
@@ -202,6 +221,7 @@ const newPage = async () => {
   }
   if (projectJson(folder).assets.some((asset) => asset.name === 'private_navigation_import')) throw new Error('private navigation import committed before the interrupted upload could be retried');
   await until('private upload waits for network', () => page.locator('.top').innerText(), (text) => /1 change/.test(text), 15000);
+  stage = 'offline private route changes';
   await navigate(other);
   await page.locator('.gate').waitFor();
   await navigate(href);
@@ -327,7 +347,20 @@ const newPage = async () => {
   check('secret_actions_skip_idempotency_cache', secretIdempotency.length === 0);
   check('no_page_errors', errors.length === 0);
   seen.page_errors = errors;
-})().catch((error) => { failures.push('browser vault flow'); seen.failure = sanitized(error.message); process.exitCode = 1; }).finally(async () => {
+})().catch(async (error) => {
+  failures.push('browser vault flow');
+  seen.failure = sanitized(error.message);
+  seen.failure_stage = stage;
+  seen.page_errors = errors.map(sanitized);
+  if (page) {
+    seen.canvas_at_failure = await page.evaluate(() => ({
+      covered: Boolean(document.querySelector('.gate')),
+      nodes: document.querySelectorAll('.react-flow__node').length,
+      naming_fields: document.querySelectorAll('.nm-field').length,
+    })).catch(() => null);
+  }
+  process.exitCode = 1;
+}).finally(async () => {
   // Never take recovery-code screenshots or emit credentials in the fixture's artifacts.
   if (peer) await peer.close().catch(() => {});
   if (page) await page.close().catch(() => {});
