@@ -150,8 +150,8 @@ renews its own run capability while its runs live, cl-675). `sessions/<script>.s
 `step`, the guard at `cap` USD and the trap that ends the rental by its own id); its header lists its `params`.
 Without `rent=true` it stops after the $0 pre-flight. Dispatched from `rc/<x>`, or with `runtime_ref`, it has that Runtime's wheel in `RUNTIME_WHEEL`. `model-ingest` puts a first-party model on the root (xs-104);
 `ab` runs cells from `packages_refs` checkouts on one pod and compares their outputs (a refactor's same-bytes proof).
-`tool-functions` (cl-774) takes `qwen-image-2/generate_turbo`, `birefnet/remove_background`, `minimax-h3/generate_turbo` and `minimax-h3/upscale` from dropping the tool to accepting its output on one 4090, a shape like `lab`'s beside them, from a `packages_refs` checkout `pk`, keeping frames to judge.
-`render-placement` (cl-774) is `cozy project render` with no `--on` on a runner with no GPU and one rental: a tie and a model this computer has no GPU for go to the rental, nothing warns, and with the rental busy a weightless still goes here.
+`tool-functions` (cl-774) takes `qwen-image-2/image`, `birefnet/remove_background`, `minimax-h3/generate`, `upscale` and `edit` from dropping the tool to accepting its output on one 4090, as the page does (`e2e/page.py`), a shape like `lab`'s beside them, from a `packages_refs` checkout `pk`, keeping frames to judge.
+`render-placement` (cl-774) is a render with the page's Run on at Automatically (`e2e/page.py render --on auto`) on a runner with no GPU and one rental: a tie and a model this computer has no GPU for go to the rental, nothing warns, and with the rental busy a weightless still goes here.
 `run-no-on` (tools.md) is `cozy run` with no `--on` on a runner with no GPU and one rental: a weightless still and a function that orchestrates a GPU model go to the rental, as a render does, and nothing warns; `e2e/cli/project.sh`'s `run_no_on` is the case with no rental.
 `disk` runs the `disk` suite's cells on one pod under the session's TensorD (its installs only with `installs: yes`);
 `disk-valentino` (cl-774) is a 100 GB 4090 past a full disk: Qwen-Image 2.1 and turbo, then H3, which makes its room by
@@ -161,8 +161,6 @@ ending turbo's idle executor and evicting both, H3 untouched while it renders, H
 the image's TensorD as `local` beside the runner's runs, one pod controls the other by `authorize`/`add`, and the
 previous release and the session's cozy control each other (`-f params='{"old": "0.13.3"}'`). A session that rents
 more than one pod calls `order` per pod, then `ready` per pod; the guard and the trap cover every one.
-`project-remote` (xs-143) proves `cozy project push` and `pull`: a second user on the runner, holding only project.yaml
-and project.lock, pulls and cuts the same `edit.mp4`; kills on both sides resume.
 `group-formation` (cr-263) faults GPU 1's executor of a 2-GPU H3 group over SSH (`fixtures/group-stall.py`): killed
 before it joins, the run fails at once; stopped once joined, it fails `group_unformed` within one attempt and its unwind
 and no GPU stays held; stopped and continued inside the unwind, the group forms on attempt 2 and the run completes. Then

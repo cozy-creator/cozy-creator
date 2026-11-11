@@ -1,9 +1,9 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime[media]>=0.38", "msgspec>=0.19", "numpy>=2"]
+# dependencies = ["cozy-runtime[media]>=0.43.1", "msgspec>=0.19", "numpy>=2"]
 # ///
 """The client-gone session's local renderer: no GPU, no weights. `make` works for `seconds`, then saves a picture of noise `side`
-pixels across, so its landing takes as long as the link it crosses. An asset that mentions a picture is that picture read instead:
+pixels across, so its landing takes as long as the link it crosses. A prompt that mentions a picture is that picture read instead:
 how many bytes it found. `film` is a clip of noise with silence under it, for a cut and a frame."""
 
 import os
@@ -13,21 +13,16 @@ import msgspec
 import numpy as np
 
 from cozy_runtime.author import App, ImageFrame, Outputs
+from cozy_runtime.fields import Image, Prompt
 from cozy_runtime.media import ImageFile, VideoFile
 
 app = App()
 
 
-class Seen(msgspec.Struct, kw_only=True):
-    name: str
-    image: ImageFile | None = None
-
-
 class Make(msgspec.Struct, kw_only=True):
     seconds: float = 0
     side: int = 512
-    prompt: str = ""
-    pictures: list[Seen] = []
+    prompt: Prompt[Image] = Prompt()
 
 
 class Made(msgspec.Struct):
@@ -38,9 +33,9 @@ class Made(msgspec.Struct):
 
 @app.entrypoint()
 def make(payload: Make, out: Outputs) -> Made:
-    picture = next((seen.image for seen in payload.pictures if seen.image is not None), None)
+    picture = next(iter(payload.prompt.references.values()), None)
     if picture is not None:
-        held = picture.read()
+        held = picture.file.read()
         return Made(out.save_image(ImageFrame(8, 8, os.urandom(8 * 8 * 3)), format="png"), 8, held.width * held.height)
     time.sleep(payload.seconds)
     side = payload.side

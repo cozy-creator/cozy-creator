@@ -3,8 +3,7 @@
 # run_no_on holds the case with no rental: this computer. Weightless local code, so where each run lands is all that's measured:
 #   - idle, nothing measured anywhere: a tie, which the rental takes;
 #   - a function that orchestrates a GPU model (e2e's heavy.py) on a runner with no GPU: the rental, with no warning of this computer.
-# One rental of $SKU (any GPU). params:
-#   traffic_gb  GB the provider bills (6)
+# One rental of $SKU (any GPU).
 . "$(dirname "$0")/lib.sh"
 E2E=$(cd "$(dirname "$0")/../../e2e/cli" && pwd)
 for f in project/tool.py web/heavy.py; do [ -f "$E2E/$f" ] || fail "no e2e/cli/$f"; done
@@ -18,7 +17,7 @@ ran() {
 }
 [ -z "$(cozy --json machine ls | jq -r '.machines[] | select(.kind == "local") | .status.gpus[0].name // empty')" ] || fail "this runner has a GPU: heavy wouldn't be done poorly here"
 
-quote "$(param traffic_gb 6)" 900
+quote 900
 rent
 say "the set: $(cozy --json machine ls | jq -c '[.machines[] | select(.state == "ready" or .state == "booting") | {name, kind}]')"
 

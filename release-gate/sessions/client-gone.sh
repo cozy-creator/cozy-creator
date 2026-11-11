@@ -2,6 +2,7 @@
 # on that computer's link. One rental with SSH. A second user on it is the computer that asks: its own home and Calcifer, adding the
 # pod's TensorD over fixtures/client-gone/link.py, a line this session throttles and cuts, with the pod's resolver broken too (as
 # hub-outage does) when it needs that computer to reach nothing. fixtures/client-gone/art.py is its local renderer: no GPU, no weights.
+# What that computer's page asks of its project, e2e/page.py does there, as that user.
 #   a. Cut mid-run: the line down, its CLI and Calcifer killed. The pod counts as busy, and stops counting when the run ends, with nothing
 #      connected. The line back and Calcifer started: the run completed once, its output landed whole.
 #   g. The same with a real model (SDXL), cut as soon as the machine has the run: it fetches its weights and renders with nobody there.
@@ -45,8 +46,10 @@ sh() {
 }
 mend() { sh 'test -f /root/resolv.conf.gone && cat /root/resolv.conf.gone > /etc/resolv.conf; test -f /root/hosts.gone && cat /root/hosts.gone > /etc/hosts; echo up > /tmp/link'; }
 trap 'mend; finish' EXIT
-# c <cozy args>: as the computer that asks, in its project (COZY_PROJECT: the folder you're in names none).
-c() { sh "su client -s /bin/sh -c 'cd \$HOME/\$(cat /tmp/film) 2>/dev/null; COZY_PROJECT=\$HOME/\$(cat /tmp/film) /opt/client/cozy $*'"; }
+# c <cozy args>: as the computer that asks, in its project.
+c() { sh "su client -s /bin/sh -c 'cd \$HOME/\$(cat /tmp/film) 2>/dev/null; /opt/client/cozy $*'"; }
+# page <verb> <args>: what that computer's page asks of its project (e2e/page.py), of the Calcifer a CLI call there started.
+page() { local verb=$1; shift; sh "su client -s /bin/sh -c 'python3 \$HOME/page.py $verb \$HOME/$TAG $*'"; }
 line() { sh "echo $* > /tmp/link"; }
 holder_pid() { sh 'grep -o "\"pid\":[0-9]*" /home/client/.cozy/calcifer/calcifer.lock.holder | cut -d: -f2'; }
 # write <path>: stdin, as the file <path> of the computer that asks.
@@ -57,6 +60,7 @@ sh 'useradd -m client && install -d /opt/client && command -v python3 && command
 cozy machine ssh "$NAME" -- 'cat > /root/link.py' < "$FIX/link.py" 2>> "$OUT/ssh.err" || fail "copy link"
 cozy machine ssh "$NAME" -- 'cat > /root/hole.py' < "$FIX/hole.py" 2>> "$OUT/ssh.err" || fail "copy hole"
 write /home/client/art.py < "$FIX/art.py" || fail "copy art"
+write /home/client/page.py < "$RUN_PAGE" || fail "copy page.py"
 sh 'cp /etc/resolv.conf /root/resolv.conf.gone; cp /etc/hosts /root/hosts.gone'
 
 # Puts the cozy under test on the pod and on the computer that asks, whose machine `box` is the pod over the line.
@@ -73,7 +77,11 @@ put() {
   sh "p=$(holder_pid); [ -z \"\$p\" ] || kill -9 \$p; rm -rf /home/client/.cozy; true"
   sh 'cp "$(command -v cozy)" /opt/client/cozy && chmod 755 /opt/client/cozy'
   sh "echo $tag > /tmp/film"
-  c "project new /home/client/$tag" > "$OUT/new-$tag.txt" 2>&1 || fail "project new: $(tail -3 "$OUT/new-$tag.txt")"
+  # 0.24.0's `cozy new` makes a plain project; rc/0.25.0's makes one with no passphrase only with --unencrypted.
+  local plain=''
+  c "new --help" > "$OUT/new-help-$tag.txt" 2>&1
+  grep -q -- --unencrypted "$OUT/new-help-$tag.txt" && plain=--unencrypted
+  c "new /home/client/$tag $plain" > "$OUT/new-$tag.txt" 2>&1 || fail "cozy new: $(tail -3 "$OUT/new-$tag.txt")"
   sh "cp /home/client/art.py /home/client/$tag/art.py; chown client /home/client/$tag/art.py"
   c "machine add box 127.0.0.1:$LINK --fingerprint $FINGERPRINT" > "$OUT/add-$tag.txt" 2>&1
   key=$(grep -oE 'cozy machine authorize [A-Za-z0-9_-]{43}' "$OUT/add-$tag.txt" | awk '{print $4}' | head -1)
@@ -144,31 +152,32 @@ part_g() {
 
 part_b() {
   say "$TAG b: a reader, with what it reads on a slow line"
-  write "/home/client/$TAG/project.yaml" <<YAML
-version: 3
+  write /home/client/b.yaml <<YAML
+version: 4
 assets:
   still:
     tool: ./art.py/make
     side: 4000
     seconds: 2
-    instructions: noise $RANDOM
+    prompt: noise $RANDOM
   shot:
     tool: ./art.py/make
-    instructions: reads <still> $RANDOM
+    prompt: reads <still> $RANDOM
 YAML
+  page yaml /home/client/b.yaml > "$OUT/b-$TAG-yaml.txt" 2>&1 || wrong "b: project.yaml: $(tail -3 "$OUT/b-$TAG-yaml.txt")"
   line "up 1000000"
-  c "project render still shot --on box --queue" > "$OUT/b-$TAG.txt" 2>&1 || wrong "b: render: $(tail -3 "$OUT/b-$TAG.txt")"
-  local t=0 lock still shot
+  page render --on box --queue still shot > "$OUT/b-$TAG.txt" 2>&1 || wrong "b: render: $(tail -3 "$OUT/b-$TAG.txt")"
+  local t=0 got still shot
   while [ $t -lt 900 ]; do
-    lock=$(lock_now)
-    jq -e '(.assets.still.versions // []) != [] and (.assets.shot.versions // []) != [] and (.pending // {}) == {}' <<<"$lock" > /dev/null 2>&1 && break
+    got=$(page asset still shot)
+    jq -se 'length == 2 and all(.[]; .versions != [] and (.asset.making // []) == [])' <<<"$got" > /dev/null 2>&1 && break
     t=$((t + 3)); sleep 3
   done
-  echo "$lock" > "$OUT/b-$TAG.lock.json"
-  still=$(jq -r '.assets.still.versions[-1].run // empty' <<<"$lock") shot=$(jq -r '.assets.shot.versions[-1].run // empty' <<<"$lock")
-  [ -n "$still" ] && [ -n "$shot" ] || wrong "b: no versions: $(c 'project status')"
+  echo "$got" > "$OUT/b-$TAG.assets.json"
+  still=$(jq -sr '.[0].versions[-1].runs[-1] // empty' <<<"$got") shot=$(jq -sr '.[1].versions[-1].runs[-1] // empty' <<<"$got")
+  [ -n "$still" ] && [ -n "$shot" ] || wrong "b: no versions: $(page board | jq -c '[.jobs[]? | {asset, state, why}]' | cut -c1-300)"
   local sha path began landed t2=0
-  sha=$(jq -r '.assets.still.versions[-1].files.image' <<<"$lock") path=files/${sha#sha256:}.png
+  sha=$(jq -sr '.[0].versions[-1].files.image.sha256' <<<"$got") path=$(jq -sr '.[0].versions[-1].files.image.path' <<<"$got")
   until sh "test -f /home/client/$TAG/$path" > /dev/null || [ $t2 -ge 600 ]; do t2=$((t2 + 3)); sleep 3; done
   [ "sha256:$(sh "sha256sum /home/client/$TAG/$path" | cut -c1-64)" = "$sha" ] || wrong "b: $path is not its hash"
   landed=$(sh "stat -c %Y /home/client/$TAG/$path")000
@@ -182,54 +191,50 @@ YAML
 
 part_c() {
   say "$TAG c: a render asked with no network here"
-  write "/home/client/$TAG/project.yaml" <<YAML
-version: 3
+  write /home/client/c.yaml <<YAML
+version: 4
 assets:
   first:
     tool: ./art.py/make
-    instructions: noise $RANDOM
+    prompt: noise $RANDOM
   second:
     tool: ./art.py/make
-    instructions: more noise $RANDOM
+    prompt: more noise $RANDOM
 YAML
+  page yaml /home/client/c.yaml > "$OUT/c-$TAG-yaml.txt" 2>&1 || wrong "c: project.yaml: $(tail -3 "$OUT/c-$TAG-yaml.txt")"
   line down
   sh 'printf "nameserver 127.0.0.9\n" > /etc/resolv.conf; ! getent hosts tensorhub.com' || fail "c: the resolver did not break"
-  c "project render first second --on box --queue" > "$OUT/c-$TAG.txt" 2>&1 || say "$TAG c: asked: $(tail -2 "$OUT/c-$TAG.txt" | cut -c1-200)"
+  page render --on box --queue first second > "$OUT/c-$TAG.txt" 2>&1 || say "$TAG c: asked: $(tail -2 "$OUT/c-$TAG.txt" | cut -c1-200)"
   sleep 75
-  c "project status" > "$OUT/c-$TAG-away.txt" 2>&1
+  page board > "$OUT/c-$TAG-away.json" 2>&1
   local failed
-  failed=$(grep -ciE 'failed|cannot|not sent' "$OUT/c-$TAG-away.txt")
-  say "$TAG c: after 75 s with no network: $failed lines of failure; $(head -4 "$OUT/c-$TAG-away.txt" | cut -c1-120 | paste -sd'|')"
+  failed=$(jq '[.jobs[]? | select(.state == "failed" or .state == "not_sent")] | length' "$OUT/c-$TAG-away.json" 2> /dev/null)
+  say "$TAG c: after 75 s with no network: ${failed:-?} jobs failed or not sent; $(jq -c '[.jobs[]? | {asset, state, why}]' "$OUT/c-$TAG-away.json" 2> /dev/null | cut -c1-300)"
   sh 'cat /root/resolv.conf.gone > /etc/resolv.conf'
   line up
-  local t=0 lock
+  local t=0 got
   while [ $t -lt 300 ]; do
-    lock=$(lock_now)
-    jq -e '(.assets.first.versions // []) != [] and (.assets.second.versions // []) != []' <<<"$lock" > /dev/null 2>&1 && break
+    got=$(page asset first second)
+    jq -se 'length == 2 and all(.[]; .versions != [])' <<<"$got" > /dev/null 2>&1 && break
     t=$((t + 5)); sleep 5
   done
-  echo "$lock" > "$OUT/c-$TAG.lock.json"
-  jq -e '(.assets.first.versions // []) != [] and (.assets.second.versions // []) != []' <<<"$lock" > /dev/null 2>&1 ||
-    { wrong "c: the network back, first and second weren't made: $(c 'project status' | tail -6 | cut -c1-200 | paste -sd'|')"; return; }
-  c "--json --full project status" > "$OUT/c-$TAG-board.json"
-  [ "$(jq '[.board.jobs[]? | select(.state == "failed")] | length' "$OUT/c-$TAG-board.json")" = 0 ] || wrong "c: a job failed: $(jq -c '[.board.jobs[] | select(.state == "failed") | .error.message]' "$OUT/c-$TAG-board.json" | cut -c1-300)"
+  echo "$got" > "$OUT/c-$TAG.assets.json"
+  jq -se 'length == 2 and all(.[]; .versions != [])' <<<"$got" > /dev/null 2>&1 ||
+    { wrong "c: the network back, first and second weren't made: $(page board | jq -c '[.jobs[]? | {asset, state, why}]' | cut -c1-300)"; return; }
+  page board > "$OUT/c-$TAG-board.json"
+  [ "$(jq '[.jobs[]? | select(.state == "failed")] | length' "$OUT/c-$TAG-board.json")" = 0 ] || wrong "c: a job failed: $(jq -c '[.jobs[] | select(.state == "failed") | .error.message]' "$OUT/c-$TAG-board.json" | cut -c1-300)"
   say "$TAG c: the network back, both made $t s later, nothing failed"
 }
 
-# newest <lock> <asset>: the sha256 of its newest version's main file.
-# project.lock as JSON, which is how this reads it: on disk it's YAML.
-lock_now() { sh "cat /home/client/$TAG/project.lock" | uv run -q --no-project --with pyyaml python -c 'import json, sys, yaml; json.dump(yaml.safe_load(sys.stdin), sys.stdout)'; }
-newest() { jq -r --arg a "$2" '.assets[$a].versions[-1].files | (.video // .image // empty)' <<<"$1"; }
-
 part_v() {
   say "$TAG v: a cut and a frame of a clip still on its way"
-  write "/home/client/$TAG/project.yaml" <<YAML
-version: 3
+  write /home/client/v.yaml <<YAML
+version: 4
 assets:
   clip:
     tool: ./art.py/film
     seconds: 10
-    instructions: noise $RANDOM
+    prompt: noise $RANDOM
   edit:
     tool: cozy/edit
     tracks:
@@ -240,22 +245,23 @@ assets:
     video: <clip>
     at: 1
 YAML
+  page yaml /home/client/v.yaml > "$OUT/v-$TAG-yaml.txt" 2>&1 || wrong "v: project.yaml: $(tail -3 "$OUT/v-$TAG-yaml.txt")"
   line "up 1000000"
-  c "project render all --on box --queue" > "$OUT/v-$TAG.txt" 2>&1 || wrong "v: render: $(tail -3 "$OUT/v-$TAG.txt" | cut -c1-200)"
-  local t=0 lock
+  page render --on box --queue all > "$OUT/v-$TAG.txt" 2>&1 || wrong "v: render: $(tail -3 "$OUT/v-$TAG.txt" | cut -c1-200)"
+  local t=0 got
   while [ $t -lt 900 ]; do
-    lock=$(lock_now)
-    jq -e '[.assets.clip, .assets.edit, .assets.aframe | (.versions // []) | length > 0] | all' <<<"$lock" > /dev/null 2>&1 && break
+    got=$(page asset clip edit aframe)
+    jq -se 'length == 3 and all(.[]; .versions != [])' <<<"$got" > /dev/null 2>&1 && break
     # Its own failure ends the wait: it won't be made.
-    [ "$(c "--json --full project status" | jq '[.board.jobs[]? | select(.state == "failed")] | length')" = 0 ] || break
+    [ "$(page board | jq '[.jobs[]? | select(.state == "failed")] | length')" = 0 ] || break
     t=$((t + 6)); sleep 3
   done
   line up
-  echo "$lock" > "$OUT/v-$TAG.lock.json"
-  jq -e '[.assets.clip, .assets.edit, .assets.aframe | (.versions // []) | length > 0] | all' <<<"$lock" > /dev/null 2>&1 ||
-    { wrong "v: not all made in $t s: $(c 'project status' | cut -c1-160 | head -5 | paste -sd'|')"; return; }
+  echo "$got" > "$OUT/v-$TAG.assets.json"
+  jq -se 'length == 3 and all(.[]; .versions != [])' <<<"$got" > /dev/null 2>&1 ||
+    { wrong "v: not all made in $t s: $(page board | jq -c '[.jobs[]? | {asset, state, why}]' | cut -c1-300)"; return; }
   local clip path
-  clip=$(newest "$lock" clip); path=files/${clip#sha256:}.mp4
+  clip=$(jq -sr '.[0].versions[-1].files.video.sha256' <<<"$got") path=$(jq -sr '.[0].versions[-1].files.video.path' <<<"$got")
   [ "sha256:$(sh "sha256sum /home/client/$TAG/$path" | cut -c1-64)" = "$clip" ] || wrong "v: the clip is not its hash"
   sh "ffprobe -v error -show_entries stream=codec_type,nb_frames -of csv=p=0 /home/client/$TAG/edit.mp4" > "$OUT/v-$TAG-edit.txt" 2>&1
   grep -q video "$OUT/v-$TAG-edit.txt" || wrong "v: no film at edit.mp4: $(head -c 200 "$OUT/v-$TAG-edit.txt")"
@@ -264,35 +270,38 @@ YAML
 
 part_m() {
   say "$TAG m: ffmpeg this computer doesn't have, its download going nowhere"
-  write "/home/client/$TAG/project.yaml" <<YAML
-version: 3
+  write /home/client/m.yaml <<YAML
+version: 4
 assets:
   firstm:
     tool: ./art.py/make
-    instructions: noise $RANDOM
+    prompt: noise $RANDOM
   secondm:
     tool: ./art.py/make
-    instructions: reads <firstm> $RANDOM
+    prompt: reads <firstm> $RANDOM
 YAML
-  # A Calcifer that finds no ffmpeg on its path, and a host that takes its connect and never answers.
+  page yaml /home/client/m.yaml > "$OUT/m-$TAG-yaml.txt" 2>&1 || wrong "m: project.yaml: $(tail -3 "$OUT/m-$TAG-yaml.txt")"
+  # A Calcifer that finds no ffmpeg on its path (started by a CLI with none on its own), and a host that takes its connect and never answers.
   sh "kill -9 $(holder_pid)"
   sh 'nohup python3 /root/hole.py > /dev/null 2>&1 < /dev/null & echo $! > /tmp/hole.pid; echo "127.0.0.1 ffmpeg.martin-riedl.de" >> /etc/hosts'
-  sh "su client -s /bin/sh -c 'cd \$HOME/$TAG; PATH=/opt/client /opt/client/cozy project render firstm secondm --on box --queue'" > "$OUT/m-$TAG.txt" 2>&1
-  local t=0 lock='' asked=$SECONDS
+  sh "su client -s /bin/sh -c 'cd \$HOME/$TAG; PATH=/opt/client /opt/client/cozy status'" > "$OUT/m-$TAG-status.txt" 2>&1
+  page render --on box --queue firstm secondm > "$OUT/m-$TAG.txt" 2>&1
+  local t=0 got='' asked=$SECONDS
   while [ $t -lt 150 ]; do
-    lock=$(lock_now)
-    jq -e '(.assets.secondm.versions // []) != []' <<<"$lock" > /dev/null 2>&1 && break
+    got=$(page asset secondm)
+    jq -e '.versions != []' <<<"$got" > /dev/null 2>&1 && break
     t=$((SECONDS - asked)); sleep 3
   done
-  echo "$lock" > "$OUT/m-$TAG.lock.json"
+  echo "$got" > "$OUT/m-$TAG.assets.json"
   sh 'cat /root/hosts.gone > /etc/hosts; kill $(cat /tmp/hole.pid)'
-  if jq -e '(.assets.secondm.versions // []) != []' <<<"$lock" > /dev/null 2>&1 && [ "$t" -lt 60 ]; then
+  if jq -e '.versions != []' <<<"$got" > /dev/null 2>&1 && [ "$t" -lt 60 ]; then
     say "$TAG m: secondm made $t s after asking, its ffmpeg still to come"
   else
-    wrong "m: secondm not made in 60 s (made: $(jq -c '.assets.secondm.versions // [] | length' <<<"$lock"), after $t s): the walk waited on this computer's download"
+    wrong "m: secondm not made in 60 s (made: $(jq -c '.versions // [] | length' <<<"$got"), after $t s): the walk waited on this computer's download"
   fi
   # The next part's Calcifer has its path back.
   sh "kill -9 $(holder_pid)"
+  c "status" > /dev/null 2>&1
 }
 
 part_s() {
@@ -328,38 +337,39 @@ part_s() {
 
 part_l() {
   say "$TAG l: a file that never comes"
-  write "/home/client/$TAG/project.yaml" <<YAML
-version: 3
+  write /home/client/l.yaml <<YAML
+version: 4
 assets:
   lost:
     tool: ./art.py/make
     side: 4000
-    instructions: noise $RANDOM
+    prompt: noise $RANDOM
 YAML
+  page yaml /home/client/l.yaml > "$OUT/l-$TAG-yaml.txt" 2>&1 || wrong "l: project.yaml: $(tail -3 "$OUT/l-$TAG-yaml.txt")"
   line "up 200000"
-  c "project render lost --on box --queue" > "$OUT/l-$TAG.txt" 2>&1 || wrong "l: render: $(tail -3 "$OUT/l-$TAG.txt" | cut -c1-200)"
-  local t=0 lock
+  page render --on box --queue lost > "$OUT/l-$TAG.txt" 2>&1 || wrong "l: render: $(tail -3 "$OUT/l-$TAG.txt" | cut -c1-200)"
+  local t=0 got
   while [ $t -lt 300 ]; do
-    lock=$(lock_now)
-    jq -e '(.assets.lost.versions // []) != []' <<<"$lock" > /dev/null 2>&1 && break
+    got=$(page asset lost)
+    jq -e '.versions != []' <<<"$got" > /dev/null 2>&1 && break
     t=$((t + 3)); sleep 3
   done
-  jq -e '(.assets.lost.versions // []) != []' <<<"$lock" > /dev/null 2>&1 || { wrong "l: it was never listed ahead of its file"; line up; return; }
+  jq -e '.versions != []' <<<"$got" > /dev/null 2>&1 || { wrong "l: it was never listed ahead of its file"; line up; return; }
   say "$TAG l: listed ahead of its file; its machine removed"
   c "machine end box -y --force" > "$OUT/l-$TAG-end.txt" 2>&1
   line up
   local board failed=''
   t=0
   while [ $t -lt 120 ]; do
-    board=$(c "--json --full project status")
-    failed=$(jq -r '[.board.jobs[]? | select(.asset == "lost" and .state == "failed") | .error.message] | first // ""' <<<"$board")
+    board=$(page board)
+    failed=$(jq -r '[.jobs[]? | select(.asset == "lost" and .state == "failed") | .error.message] | first // ""' <<<"$board")
     [ -n "$failed" ] && break
     t=$((t + 3)); sleep 3
   done
   echo "$board" > "$OUT/l-$TAG-board.json"
-  lock=$(lock_now); echo "$lock" > "$OUT/l-$TAG.lock.json"
-  [ -n "$failed" ] || wrong "l: its job never failed: $(c 'project status' | cut -c1-160 | head -4 | paste -sd'|')"
-  [ "$(jq '.assets.lost.versions // [] | length' <<<"$lock")" = 0 ] || wrong "l: a version with no file stands"
+  got=$(page asset lost); echo "$got" > "$OUT/l-$TAG.assets.json"
+  [ -n "$failed" ] || wrong "l: its job never failed: $(jq -c '[.jobs[]? | {asset, state, why}]' <<<"$board" | cut -c1-300)"
+  [ "$(jq '.versions | length' <<<"$got")" = 0 ] || wrong "l: a version with no file stands"
   say "$TAG l: its version gone, its job failed: ${failed:0:200}"
 }
 
