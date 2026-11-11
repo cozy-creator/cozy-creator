@@ -1047,7 +1047,8 @@ fn walk_tree(source: &FsPath, target: Option<&FsPath>, relative: &FsPath, manage
         if kind.is_symlink() {
             // Legacy media links with no bytes already represent missing media. Keep
             // that project record missing; following a live external link is never implied.
-            if relative.starts_with(super::folder::FILES) && fs::metadata(&from).is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound) {
+            if relative.strip_prefix(super::folder::FILES).is_ok_and(|tail| !tail.as_os_str().is_empty())
+                && fs::metadata(&from).is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound) {
                 progress.skip(&relative);
                 continue;
             }

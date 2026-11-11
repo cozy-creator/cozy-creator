@@ -32,6 +32,12 @@ fn legacy_missing_media_is_skipped_but_live_external_link_is_refused() {
     let error = walk_tree(&source, None, FsPath::new(""), false, false, &mut Progress::quiet()).unwrap_err();
     assert_eq!(error.code, "vault_symlink");
     assert!(error.message.contains("files/external.jpg"));
+
+    let absent_directory = temp.path().join("absent-directory");
+    let invalid_root = temp.path().join("invalid-root");
+    fs::create_dir(&invalid_root).unwrap();
+    symlink(absent_directory, invalid_root.join("files")).unwrap();
+    assert_eq!(walk_tree(&invalid_root, None, FsPath::new(""), false, false, &mut Progress::quiet()).unwrap_err().code, "vault_symlink");
 }
 
 #[test]
