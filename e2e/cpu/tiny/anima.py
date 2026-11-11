@@ -40,6 +40,10 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
     (out / "scheduler").mkdir()
     shutil.copyfile(packages() / "anima" / "configs" / "scheduler.json", out / "scheduler" / "scheduler_config.json")
     shutil.copyfile(packages() / "anima" / "configs" / "modular_model_index.json", out / "modular_model_index.json")
+    # The original tokenizers travel with this source model, independent of package bundles.
+    source = Path(__file__).with_name("assets") / "anima"
+    for name in ("tokenizer", "t5_tokenizer"):
+        shutil.copytree(source / name, out / name)
     return {"circlestone-labs/anima@1.0.0": out}
 
 

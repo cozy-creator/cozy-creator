@@ -28,11 +28,12 @@ from minimax_h3.preparation import regenerate as tools_regenerate
 from minimax_h3.vae_tiles import TileBatchedVideoVAE
 from PIL import Image
 
+from _shared import qwen_processor
 from cell import Cell, Json, module, quantize
 
 WAIVE = {"minimax_h3.official:_validate_model_contract": "the release geometry: 56x128 heads, 50 layers, 5120 text width"}
-H3 = "minimaxai/minimax-h3@1.0.0-rc.7"
-REGENERATE, UPSCALER = "efficient-large-model/open-h3-regenerate-2k@0.1.0", "lbh-123-ai/h3-latent-upscaler@0.1.0"
+H3 = "minimaxai/minimax-h3@1.0.0-rc.8"
+REGENERATE, UPSCALER = "efficient-large-model/open-h3-regenerate-2k@0.1.0", "lbh-123-ai/h3-latent-upscaler@0.1.1"
 #: LatentResizer3D's defaults (in_channels, in_blocks, out_blocks, channels, dropout, temporal_every, temporal_kernel):
 #: the release's 12 + 12 blocks of 512 channels (345M) shrunk to 1 + 1 of 32.
 _UPSCALER_DEFAULTS = (24, 1, 1, 32, 0.1, 2, 5)
@@ -144,7 +145,10 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
     base = tensorfs.Writer(cache_dir=store)
     text = module(build_text_conditioner(sections["text_encoder"]))
     _fill(text, 1)
-    _write(base, "text_encoder", text, sections["text_encoder"], {})
+    processor = root / "h3-processor"
+    qwen_processor(processor)
+    processor_assets = {f"processor/{path.name}": path.read_bytes() for path in sorted(processor.iterdir()) if path.is_file()}
+    _write(base, "text_encoder", text, sections["text_encoder"], processor_assets)
     vae = module(official._apply_video_vae_dtype(TileBatchedVideoVAE.from_config(sections["vae"])))
     _fill(vae, 2)
     _write(base, "vae", vae, sections["vae"], {})
@@ -191,7 +195,10 @@ def _upscaler(store: Path) -> str:
     upscaler = module(LatentResizer3D(*_UPSCALER_DEFAULTS)).bfloat16()
     _fill(upscaler, 9)
     writer = tensorfs.Writer(cache_dir=store)
-    _write(writer, "upscaler", upscaler, {"architecture": latent_upscaler.ARCHITECTURE}, {})
+    source = Path(__file__).with_name("assets") / "minimax_h3" / "latent-upscaler-config.json"
+    normalization = json.loads(source.read_text())["latent_normalization"]
+    _write(writer, "upscaler", upscaler, {"architecture": latent_upscaler.ARCHITECTURE,
+                                        "latent_normalization": normalization}, {})
     return writer.commit().id
 
 

@@ -1,6 +1,7 @@
 """Tiny SDXL: the pipeline's real classes at a few channels, as a Diffusers folder in half precision."""
 
 import json
+import shutil
 from pathlib import Path
 
 import torch
@@ -44,9 +45,17 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
         "num_train_timesteps": 1000, "prediction_type": "epsilon", "sample_max_value": 1.0, "set_alpha_to_one": False,
         "skip_prk_steps": True, "steps_offset": 1, "timestep_spacing": "leading", "trained_betas": None,
         "use_karras_sigmas": False}))
+    # The source model owns both complete CLIP tokenizers, as the real release does.
+    source = Path(__file__).with_name("assets") / "sdxl"
+    for name in ("tokenizer", "tokenizer_2"):
+        folder = out / name
+        folder.mkdir()
+        for original, member in (("clip_vocab.json", "vocab.json"), ("clip_merges.txt", "merges.txt")):
+            shutil.copyfile(source / original, folder / member)
     (out / "model_index.json").write_text(json.dumps({
         "_class_name": "StableDiffusionXLPipeline", "_diffusers_version": "0.40.0",
         "scheduler": ["diffusers", "EulerDiscreteScheduler"], "text_encoder": ["transformers", "CLIPTextModel"],
+        "tokenizer": ["transformers", "CLIPTokenizer"], "tokenizer_2": ["transformers", "CLIPTokenizer"],
         "text_encoder_2": ["transformers", "CLIPTextModelWithProjection"],
         "unet": ["diffusers", "UNet2DConditionModel"], "vae": ["diffusers", "AutoencoderKL"]}))
     return {"stabilityai/sdxl@1.0.0": out}

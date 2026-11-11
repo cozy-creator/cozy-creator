@@ -1,0 +1,63 @@
+{
+  "source_repository": "cozy-creator/packages",
+  "source_commit": "de71b31a32b16e4310a5b1fdb0f7aef6c56485cc",
+  "purpose": "CPU-only real tokenizer and normalization data, unchanged from the former package bundles",
+  "files": [
+    {
+      "path": "e2e/cpu/tiny/assets/anima/tokenizer/tokenizer.json",
+      "source_path": "anima/anima/tokenizer/tokenizer.json",
+      "source_blob": "ad94cf16ef7c66703b4b16b496039fd353a51d7c",
+      "bytes": 5363175,
+      "sha256": "f36e3013e43c57d3e43b8877b32af2d9a3582448e3a766d728bb9abd580d8f7a"
+    },
+    {
+      "path": "e2e/cpu/tiny/assets/anima/tokenizer/tokenizer_config.json",
+      "source_path": "anima/anima/tokenizer/tokenizer_config.json",
+      "source_blob": "69185ab21fab1d98c080feb37c52401938b06ee5",
+      "bytes": 421,
+      "sha256": "6b589ccd67dac34cfd9e274864e34c819309cec98d99bb76aa1e13faf217d03e"
+    },
+    {
+      "path": "e2e/cpu/tiny/assets/anima/tokenizer/chat_template.jinja",
+      "source_path": "anima/anima/tokenizer/chat_template.jinja",
+      "source_blob": "28028c056af412405debd878cdda0171e35fa5d1",
+      "bytes": 2427,
+      "sha256": "44d5f08f3f72b837eaad09f13a54c1f9f4eb58d75240334548b7fd52a5437fa5"
+    },
+    {
+      "path": "e2e/cpu/tiny/assets/anima/t5_tokenizer/tokenizer.json",
+      "source_path": "anima/anima/t5_tokenizer/tokenizer.json",
+      "source_blob": "bc862f830da5bdc5f7da9ff65aaa30ea76dbff65",
+      "bytes": 1389391,
+      "sha256": "35d68e7b16911b6ee06bbdef28577c34eb391905550e8740a48aa6984c2382c5"
+    },
+    {
+      "path": "e2e/cpu/tiny/assets/anima/t5_tokenizer/tokenizer_config.json",
+      "source_path": "anima/anima/t5_tokenizer/tokenizer_config.json",
+      "source_blob": "1409b32976dc4a4f29d1e59f5262e7816bdb9030",
+      "bytes": 2439,
+      "sha256": "3b5e68830ffc0f92ddf95b0e3994991c27926e38ead3575a9a5c0e0d6e90140d"
+    },
+    {
+      "path": "e2e/cpu/tiny/assets/sdxl/clip_vocab.json",
+      "source_path": "sdxl/sdxl/clip_vocab.json",
+      "source_blob": "469be27c5c010538f845f518c4f5e8574c78f7c8",
+      "bytes": 1059962,
+      "sha256": "e089ad92ba36837a0d31433e555c8f45fe601ab5c221d4f607ded32d9f7a4349"
+    },
+    {
+      "path": "e2e/cpu/tiny/assets/sdxl/clip_merges.txt",
+      "source_path": "sdxl/sdxl/clip_merges.txt",
+      "source_blob": "76e821f1b6f0a9709293c3b6b51ed90980b3166b",
+      "bytes": 524619,
+      "sha256": "9fd691f7c8039210e0fced15865466c65820d09b63988b0174bfe25de299051a"
+    },
+    {
+      "path": "e2e/cpu/tiny/assets/minimax_h3/latent-upscaler-config.json",
+      "source_path": "minimax-h3/minimax_h3/latent_upscaler/config.json",
+      "source_blob": "024509b239070886c6ff4a70ae8adbccef00b286",
+      "bytes": 4153,
+      "sha256": "179f13b2653570684cc01b3b5442182c919a0fbf056211a58630f90794f1ce34"
+    }
+  ]
+}
