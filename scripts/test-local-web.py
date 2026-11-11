@@ -185,7 +185,11 @@ def run_locked(args, profile):
     vite = None
     server = None
     summary = {"binary": str(binary), "version": version, "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
-               "fixture": str(fixture), "build_seconds": round(build_seconds, 3)}
+               "fixture": str(fixture), "fixture_sha256": hashlib.sha256(fixture.read_bytes()).hexdigest(),
+               "build_seconds": round(build_seconds, 3)}
+    source = subprocess.run(["git", "rev-parse", "HEAD"], cwd=harness, text=True, capture_output=True)
+    if source.returncode == 0:
+        summary["harness_commit"] = source.stdout.strip()
     try:
         with (result / "calcifer.log").open("w") as log, (result / "vite.log").open("w") as vite_log:
             server = subprocess.Popen([binary, "calcifer"], cwd=home, env=env, stdout=log, stderr=subprocess.STDOUT)
