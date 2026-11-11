@@ -61,6 +61,10 @@ local lock=$HOME/.cozy/calcifer/calcifer.lock.holder pw=$OUT/playwright chrome r
 chrome=$(web_chrome)
 [ -n "$chrome" ] && [ -x "$chrome" ] || { check "web: no Google Chrome (${chrome:-none})"; return; }
 npm install -s --prefix "$(web_path "$pw")" playwright-core@1.55.0 > "$OUT/web-npm.log" 2>&1 || { check "web: npm install playwright-core failed: $(tail -c 300 "$OUT/web-npm.log")"; return; }
+if [ "${ENGINE:-}" = firefox ]; then
+  sudo apt-get install -y -qq libavcodec-extra > "$OUT/web-firefox-codec.log" 2>&1 || { check "web-firefox: no H.264: $(tail -c 300 "$OUT/web-firefox-codec.log")"; return; }
+  node "$pw/node_modules/playwright-core/cli.js" install --with-deps firefox > "$OUT/web-firefox-install.log" 2>&1 || { check "web-firefox: install failed: $(tail -c 300 "$OUT/web-firefox-install.log")"; return; }
+fi
 restart=$(web_restart "$lock")
 for name in ${DB_WEB:-place nodes versions tools live layout undo offline held}; do
   step "web-$name"
