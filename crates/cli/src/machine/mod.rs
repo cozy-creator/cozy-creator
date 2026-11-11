@@ -118,6 +118,12 @@ enum Verb {
         #[arg(long)]
         fingerprint: Digest,
     },
+    /// Pin this project's runs to these machines, each run to whichever finishes first; with none, any machine.
+    Use {
+        /// Machine names, by space or comma (`local,ryuk`).
+        #[arg(value_name = "MACHINE", value_delimiter = ',')]
+        machines: Vec<String>,
+    },
     // Authorizing a controller makes the machine listen on every interface.
     /// Allow remote access from another controller's public key.
     Authorize {
@@ -155,7 +161,27 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             mode,
         } => end::update(ctx, &name, runtime, tensorfs, tensord, gpu_memory_limit, mode).await,
         Verb::Authorize { public_key, remove } => local::authorize(ctx, &public_key, remove).await,
+        Verb::Use { machines } => use_machines(ctx, machines).await,
     }
+}
+
+/// `cozy machine use` (cl-873): the current project's machines, which its runs and renders go to unless a run names its own.
+async fn use_machines(ctx: &Context, machines: Vec<String>) -> Result<ExitCode, Error> {
+    let project = crate::project::identity(ctx).await?;
+    let path = crate::calcifer_client::path(&["v1", "projects", &project.id, "machines"]);
+    let kept: api::calcifer::project::Machines = ctx.calcifer().await?.put(&path, &api::calcifer::project::Machines { machines }).await?;
+    if ctx.json {
+        output::json(&kept);
+        return Ok(ExitCode::SUCCESS);
+    }
+    let said = match kept.machines.as_slice() {
+        [] => "This project's runs go to any machine.".to_owned(),
+        [one] => format!("This project's runs go to {one}."),
+        names => format!("This project's runs go to {}, each to whichever finishes first.", names.join(", ")),
+    };
+    output::say(ctx, &said);
+    output::next(ctx, &["cozy run <[org/]package/function>", "cozy status"]);
+    Ok(ExitCode::SUCCESS)
 }
 
 fn machine_mode(text: &str) -> Result<api::config::MachineMode, String> {

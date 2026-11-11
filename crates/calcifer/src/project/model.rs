@@ -130,7 +130,7 @@ fn read_model(api: &Arc<Api>, project: &Project, rev: String, heard: u64) -> Res
     let next = next_steps(&orphans, absent, !missing.is_empty() || !stale.is_empty());
     let failed: std::collections::BTreeSet<&str> = rows.iter().filter_map(|row| Some(row.failure.as_ref()?.message.as_str())).collect();
     warnings.retain(|warning| !failed.contains(warning.message.as_str()));
-    let head = ProjectState { covered: None, id: project.id.clone(), code: project.code.clone(), path: folder.dir.clone(), assets: vec![], queue: vec![], missing, stale, orphans, busy: false, absent, run_files, cuts, warnings, next, board: None, unsent: vec![] };
+    let head = ProjectState { covered: None, id: project.id.clone(), code: project.code.clone(), path: folder.dir.clone(), assets: vec![], queue: vec![], missing, stale, orphans, busy: false, absent, run_files, cuts, warnings, next, board: None, unsent: vec![], machines: vec![] };
     Ok(Model { rev, heard, doc, lock, head, rows, stand })
 }
 
@@ -164,6 +164,7 @@ impl Model {
             state.warnings.insert(0, api::calcifer::project::Warning::of_file(super::not_saved(&why)));
         }
         state.busy = *project.walking.lock().expect("walking lock");
+        state.machines = project.folder.machines();
         state.board = board_of(project);
         let walk = project.folder.walk_now().unwrap_or_default();
         state.queue = queue(project, &walk);

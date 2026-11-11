@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use api::{
     calcifer::{MachineEstimate, On},
+    error::{Error, Kind},
     machine::{self as v1, Basis, JobSize},
 };
 
@@ -119,6 +120,32 @@ pub(crate) fn soonest(offers: &[Offer], now: i64) -> Option<&Offer> {
     let tied = || fits().filter(|offer| offer.finish_at_ms <= first + tie);
     let rank = |offer: &&Offer| (offer.basis != Basis::Measured, offer.machine.is_local());
     tied().min_by_key(rank)
+}
+
+/// Where a job goes that no machine of `on` quoted a finish for. A run named to one place goes there, which refuses it as it does;
+/// of several machines, the first, a rental before this computer, that can take a run at all (one booting or updating waits there),
+/// else it is refused naming each and why: never another machine (cl-873).
+pub(crate) async fn takes(api: &Arc<Api>, on: &[On], offers: &[Offer]) -> Result<On, Error> {
+    let names: Vec<&str> = on.iter().filter_map(|on| match on {
+        On::Machine(name) => Some(name.as_str()),
+        _ => None,
+    }).collect();
+    if on.len() < 2 || names.len() < on.len() {
+        return Ok(on.iter().find(|machine| !machine.is_local()).or(on.first()).cloned().unwrap_or(On::Any));
+    }
+    let mut why = vec![];
+    for name in names.iter().filter(|name| **name != "local").chain(names.iter().filter(|name| **name == "local")) {
+        let machine = On::Machine((*name).to_owned());
+        match offers.iter().find(|offer| offer.machine == machine) {
+            Some(offer) => why.push(format!("{name} can't run it: {}", offer.refusal.as_ref().map_or("no reason given", |reason| reason.message.as_str()))),
+            None => match api.machines.reach(name).await {
+                Ok(_) => return Ok(machine),
+                Err(e) => why.push(e.message),
+            },
+        }
+    }
+    let said = format!("none of {} can take this run: {}", names.join(", "), why.join("; "));
+    Err(Error::new(Kind::Unavailable, "machines_unavailable", said).remedy("bring one of them back, or name others with --on").next("cozy machine ls"))
 }
 
 /// What `on` says of `jobs`, in their order.

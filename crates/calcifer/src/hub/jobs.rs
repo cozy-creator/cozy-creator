@@ -72,11 +72,15 @@ fn code(ask: &RunRequest) -> Result<LocalCode, Refusal> {
 
 async fn plan(api: &Arc<Api>, key: &str, hub: &Origin, ask: &RunRequest) -> Result<Planned, Refusal> {
     // Unnamed, where it is made present: this computer's machine, else any rental there is.
-    let on = ask.on.clone().unwrap_or_else(|| crate::runs::default_on(api));
+    let on = match ask.on.as_slice() {
+        [] => crate::runs::default_on(api),
+        [on] => on.clone(),
+        _ => return Err(Refusal(Error::new(Kind::Usage, "on_one", format!("{} goes to one machine: name one with --on", ask.target)))),
+    };
     let agreed = ask.agreed;
     // Calcifer's pick is refused as a named machine is, where this OS runs no models itself.
     let usable = || api::calcifer::local_usable(&on.to_string()).map_err(Refusal);
-    if ask.on.is_none() && matches!(ask.target.as_str(), job::MODEL_DOWNLOAD | job::MODEL_QUANTIZE | job::PACKAGE_INSTALL | job::PACKAGE_REMOVE) {
+    if ask.on.is_empty() && matches!(ask.target.as_str(), job::MODEL_DOWNLOAD | job::MODEL_QUANTIZE | job::PACKAGE_INSTALL | job::PACKAGE_REMOVE) {
         usable()?;
     }
     match ask.target.as_str() {

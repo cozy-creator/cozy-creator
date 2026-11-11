@@ -53,8 +53,10 @@ struct RunArgs {
     /// Inputs as `key=value`, `key:=json`, `model.<slot>=<ref>`, or files.
     #[arg(value_name = "INPUT", value_hint = ValueHint::FilePath)]
     inputs: Vec<String>,
-    #[command(flatten)]
-    placement: Placement,
+    /// Run on `local`, a machine, several (`a,b`: whichever finishes first), `any`, or `new[:sku]`. Default: the project's
+    /// machines (`cozy machine use`), else any.
+    #[arg(long = "on", value_name = "MACHINE[,MACHINE]")]
+    on: Option<String>,
     /// Limit GPU use; with --on new, rent this many GPUs. Automatic when omitted.
     #[arg(long, value_name = "N", value_parser = api::calcifer::gpu_count)]
     gpus: Option<u32>,
@@ -105,7 +107,7 @@ fn model_override(raw: &str) -> Result<String, String> {
     Ok(format!("model.{}={}", slot.trim(), reference.trim()))
 }
 
-/// Where a run goes; shared by every verb that submits one.
+/// Where one of Calcifer's jobs goes (an install, a download, a quantization): one place, shared by those verbs.
 #[derive(clap::Args, Debug, Clone)]
 pub(crate) struct Placement {
     /// Run on `local`, a machine name, `any`, or `new[:sku]`.
@@ -210,7 +212,7 @@ async fn run(ctx: &Context, args: RunArgs) -> Result<ExitCode, Error> {
     let inputs = !args.inputs.is_empty() || !args.models.is_empty() || args.input_file.is_some();
     if args.describe && !inputs {
         return match local(ctx, &written, &cwd)? {
-            None => describe(ctx, &written, None, args.placement.on.as_deref(), None).await,
+            None => describe(ctx, &written, None, args.on.as_deref(), None).await,
             Some((package, function)) => {
                 let project = match crate::project::identity(ctx).await {
                     Ok(project) => Some(project.id),
@@ -222,7 +224,7 @@ async fn run(ctx: &Context, args: RunArgs) -> Result<ExitCode, Error> {
                     None => Sender::new(ctx).await?,
                 };
                 let code = sender.code(&package).await?;
-                describe(ctx, &function.unwrap_or_default(), Some(&code), args.placement.on.as_deref(), project.as_deref()).await
+                describe(ctx, &function.unwrap_or_default(), Some(&code), args.on.as_deref(), project.as_deref()).await
             }
         };
     }
@@ -235,7 +237,7 @@ async fn run(ctx: &Context, args: RunArgs) -> Result<ExitCode, Error> {
     };
     // A named function with default inputs still runs; an unnamed package lists its functions.
     if !inputs && args.assets.is_empty() {
-        let described = self::target(ctx, &target, code.as_ref(), args.placement.on.as_deref(), Some(&within)).await?;
+        let described = self::target(ctx, &target, code.as_ref(), args.on.as_deref(), Some(&within)).await?;
         if described.contract.is_none() {
             print_functions(ctx, &described);
             return Ok(ExitCode::SUCCESS);
@@ -244,7 +246,7 @@ async fn run(ctx: &Context, args: RunArgs) -> Result<ExitCode, Error> {
     let ask = request(ctx, &args, target.clone(), code.clone(), &cwd, within.clone()).await?;
     match send(ctx, ask, package.as_deref()).await {
         // A package's functions, when the run names none and gives it nothing.
-        Err(e) if e.code == "function_unnamed" && !inputs => functions(ctx, &target, code.as_ref(), args.placement.on.as_deref(), Some(&within)).await,
+        Err(e) if e.code == "function_unnamed" && !inputs => functions(ctx, &target, code.as_ref(), args.on.as_deref(), Some(&within)).await,
         Err(e) => Err(e),
         Ok(run) => {
             if let Some(dir) = &args.output {
@@ -315,8 +317,8 @@ async fn request(ctx: &Context, args: &RunArgs, target: String, code: Option<Loc
     Ok(RunRequest {
         target,
         code,
-        // None: Calcifer's to say, by what this OS runs and the machines there are (`default_on`).
-        on: args.placement.on.clone().map(On::from),
+        // None: Calcifer's to say, the project's machines, else by what this OS runs and the machines there are.
+        on: args.on.as_deref().map(api::calcifer::on_set).transpose()?.unwrap_or_default(),
         hub: ctx.hub().to_string(),
         input,
         input_text: None,

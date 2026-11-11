@@ -151,7 +151,8 @@ const newPage = async () => {
     await until(label, () => contentReads().filter((request) => !plainCacheBody(request)).length, (count) => count === 0, 45000);
     (seen.plain_storage_readiness ??= []).push({ label, global_cache_bodies: contentReads().filter(plainCacheBody).map(readMetadata) });
   };
-  page.on('pageerror', (error) => errors.push(error.message));
+  const pageError = (error) => errors.push(error.message);
+  page.on('pageerror', pageError);
   context.on('requestfinished', (request) => readEnded('requestfinished', request));
   context.on('requestfailed', (request) => readEnded('requestfailed', request));
   context.on('request', (request) => {
@@ -208,9 +209,17 @@ const newPage = async () => {
     } catch { /* Failed/offline replies carry no readable evidence. Never retain secret bodies. */ }
   });
   await signIn(page);
-  // Code redemption finishes after the document loads. Wait for its signed-in
-  // shell before opening the compact link in another document.
+  // Code redemption finishes after the document loads. The Home page may then
+  // open the latest project asynchronously, so close that document explicitly
+  // before tracking the vault page's current content requests.
   await page.locator('.top').waitFor();
+  const authenticated = page;
+  page = await newPage();
+  page.setDefaultTimeout(45000);
+  authenticated.off('pageerror', pageError);
+  page.on('pageerror', pageError);
+  await authenticated.close();
+  seen.initial_document_isolation = { auth_page_closed: authenticated.isClosed() };
   await goto(page, `${href}/vault`);
   const body = page.locator('.drawer [data-vault-state]');
   await page.locator('.drawer [data-vault-state="plain"]').waitFor();
@@ -543,7 +552,7 @@ const newPage = async () => {
   await until('same project converted to plain', () => JSON.parse(vault(folder, 'status')), (status) => status.encrypted === false && status.state === 'plain', 45000);
   await until('plain event covers old private view', covered, Boolean, 45000);
   check('decrypt_purges_private_canvas_before_status', oldCanvas !== null && !await oldCanvas.evaluate((element) => element.isConnected));
-  check('decrypt_keeps_browser_persistence_private_until_status', await page.evaluate((project) => !['cozy.view:', 'cozy.selection:', 'cozy.more:', 'cozy.machine:'].some((prefix) => localStorage.getItem(prefix + project) !== null), id));
+  check('decrypt_keeps_browser_persistence_private_until_status', await page.evaluate((project) => !['cozy.view:', 'cozy.selection:', 'cozy.more:'].some((prefix) => localStorage.getItem(prefix + project) !== null), id));
   await deliver(oldStatus.route, oldStatus.response);
   await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
   check('pre_decrypt_status_cannot_reopen_private_view', await covered());

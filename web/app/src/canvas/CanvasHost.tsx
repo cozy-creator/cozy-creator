@@ -18,8 +18,9 @@ import { lost } from "../api/outbox"
 import { canvasQuery, machinesQuery, projectQuery, toolsQuery } from "../api/queries"
 import { useTo } from "../app/project"
 import { useConnection } from "../app/Connection"
-import { loadMachine, loadMore, loadSelection, loadToolsShut, loadViewport, saveMachine, saveMore, saveSelection, saveToolsShut, saveViewport } from "../app/view"
+import { loadMore, loadSelection, loadToolsShut, loadViewport, saveMore, saveSelection, saveToolsShut, saveViewport } from "../app/view"
 import type { Tool, Opened } from "../api/calcifer"
+import type { Project } from "../types"
 import { ProjectCreate } from "../panels/ProjectCreate"
 import { Copyable } from "../ui/Copyable"
 import { dismiss, say } from "../ui/notes"
@@ -138,32 +139,90 @@ function ProjectSync({ id }: { id: string }) {
 }
 
 /**
- * Automatic placement considers available machines. An explicit choice restricts model renders
- * to that machine, including while it is unavailable, so it cannot silently fall back elsewhere.
+ * Where model renders go: the project's machines (`cozy machine use`, cl-873), each render to whichever finishes first, one that's
+ * unavailable too, so nothing falls back elsewhere. With none, every machine automatic placement considers.
  */
-function useMachines(store: CanvasStore) {
+function useMachines(store: CanvasStore, pinned: string[]) {
   const { client, status } = useConnection()
+  const queries = useQueryClient()
   const { data, isPending } = useQuery(machinesQuery(client))
-  const [chosen, setChosen] = useState(() => loadMachine(store.projectId))
   const held = (data?.machines ?? []).filter((machine) => machine.ordered !== false && !machine.offline)
   // One still booting takes what's sent to it, which waits for it there.
   const rented = held.filter((machine) => machine.kind === "rental" && (machine.state === "ready" || machine.state === "booting"))
   const up = held.filter((machine) => machine.kind !== "rental" && machine.state === "ready" && !machine.unreachable && (machine.kind !== "local" || status.local_usable))
   const automatic = [...rented, ...up.filter((machine) => machine.kind !== "local"), ...up.filter((machine) => machine.kind === "local")].map((machine) => machine.name)
   const choices = [...new Set([...(status.local_usable ? ["local"] : []), ...held.filter((machine) => machine.kind !== "local").map((machine) => machine.name)])]
-  const names = chosen ? [chosen] : automatic
+  // A choice is shown at once, in the click that made it, until what Calcifer keeps moves: its answer, or the CLI's.
+  const [choosing, setChoosing] = useState<string[] | null>(null)
+  const asked = useRef(0)
+  const kept = pinned.join()
+  // biome-ignore lint/correctness/useExhaustiveDependencies: what Calcifer keeps, as text
+  useEffect(() => setChoosing(null), [kept])
+  const chosen = choosing ?? pinned
+  const names = chosen.length ? chosen : automatic
   const key = names.join()
   // biome-ignore lint/correctness/useExhaustiveDependencies: the names, as text
   useEffect(() => {
     store.machines = () => names
     if (names.length) store.machineUp()
   }, [store, key])
-  const choose = (name: string) => {
-    store.machines = () => name ? [name] : automatic
-    setChosen(name)
-    if (store.projectId) saveMachine(store.projectId, name)
+  // Refused, it's back as Calcifer keeps it.
+  const choose = (next: string[]) => {
+    const id = store.projectId
+    if (!id) return
+    const mine = ++asked.current
+    setChoosing(next)
+    void client.setMachines(id, next).then(
+      ({ machines }) => queries.setQueryData<Project>(["project", id], (state) => state && { ...state, machines }),
+      (error) => {
+        if (asked.current === mine) setChoosing(null)
+        say("Couldn't choose where this project runs", error)
+      },
+    )
   }
   return { machines: isPending ? null : names, choices, chosen, choose }
+}
+
+/** The project's machines, any number of them; none is automatic. */
+function RunOn({ routing }: { routing: ReturnType<typeof useMachines> }) {
+  const held = useRef<HTMLDetailsElement>(null)
+  useEffect(() => {
+    const away = (event: Event) => {
+      if (!held.current?.contains(event.target as globalThis.Node)) held.current?.removeAttribute("open")
+    }
+    window.addEventListener("pointerdown", away)
+    return () => window.removeEventListener("pointerdown", away)
+  }, [])
+  const { chosen, choices, choose } = routing
+  const named = (name: string) => (name === "local" ? "This computer" : name)
+  const listed = [...choices, ...chosen.filter((name) => !choices.includes(name))]
+  return (
+    <details
+      className="run-on"
+      ref={held}
+      onKeyDown={(event) => {
+        // These keys work its checkboxes, not the canvas's pan or take shortcuts.
+        if (event.key === "Enter" || event.key === " ") event.stopPropagation()
+      }}
+    >
+      <summary aria-label="Render machines" title="Machines for model renders, each to whichever finishes first. Edit assembly runs locally.">
+        Run on <b>{chosen.length ? chosen.map(named).join(", ") : "Automatically"}</b>
+      </summary>
+      <div role="group" aria-label="Render machines">
+        <label>
+          <input type="checkbox" checked={!chosen.length} onChange={() => choose([])} />
+          Automatically
+        </label>
+        {listed.map((name) => (
+          <label key={name}>
+            <input type="checkbox" value={name} checked={chosen.includes(name)} onChange={(event) => choose(event.target.checked ? [...chosen, name] : chosen.filter((other) => other !== name))} />
+            {named(name)}
+            {!choices.includes(name) && " (unavailable)"}
+          </label>
+        ))}
+      </div>
+    </details>
+  )
 }
 
 /** Render all, and how many that is. Approved assets stay. */
@@ -175,14 +234,7 @@ function RenderAll({ id, routing }: { id: string; routing: ReturnType<typeof use
   const asking = useSignal(store.allAsking)
   return (
     <span className="render-all">
-      <label>
-        Run on
-        <select className="field" aria-label="Render machine" value={routing.chosen} onChange={(event) => routing.choose(event.target.value)} title="Machine for model renders. Edit assembly runs locally.">
-          <option value="">Automatically</option>
-          {routing.chosen && !routing.choices.includes(routing.chosen) && <option value={routing.chosen}>{routing.chosen} (unavailable)</option>}
-          {routing.choices.map((name) => <option key={name} value={name}>{name === "local" ? "This computer" : name}</option>)}
-        </select>
-      </label>
+      <RunOn routing={routing} />
       {fresh > 0 && <button type="button" className="tb primary" onClick={() => store.runAll()}>
         Render all {fresh}
       </button>}
@@ -430,12 +482,12 @@ function Canvas({
   const picker = useRef<HTMLInputElement>(null)
   const settling = useRef<ReturnType<typeof setTimeout>>(undefined)
   const pointer = useRef<{ x: number; y: number } | null>(null)
-  // Which machine's packages a list leads with. The list waits to know, or it would be asked for twice, each a wait on the Hub.
-  const routing = useMachines(store)
-  const machines = routing.machines
-  const machine = machines?.at(-1) ?? null
   // What can't be read says so on the canvas, and everything around it still works. One already read stays while Calcifer's away.
   const { data: read, error } = useQuery({ ...projectQuery(client, stream, projectId ?? ""), enabled: Boolean(projectId) })
+  // Which machine's packages a list leads with. The list waits to know, or it would be asked for twice, each a wait on the Hub.
+  const routing = useMachines(store, read?.machines ?? [])
+  const machines = routing.machines
+  const machine = machines?.at(-1) ?? null
   const unread = error && !(read && lost(error)) ? error : null
   const readable = unread ? null : projectId
   const { data: listed } = useQuery({ ...toolsQuery(client, "", machine, readable), enabled: machines !== null })

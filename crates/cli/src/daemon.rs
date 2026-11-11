@@ -44,9 +44,9 @@ pub(crate) async fn status(ctx: &Context, _args: Status) -> Result<ExitCode, Err
             json!({
                 "id": project.id, "code": project.code, "path": project.path, "assets": project.assets,
                 "missing": project.missing, "stale": project.stale, "orphans": project.orphans,
-                "absent": project.absent, "run_files": project.run_files,
+                "absent": project.absent, "run_files": project.run_files, "machines": project.machines,
             })
-        } else { json!({"code": project.code, "path": project.path}) },
+        } else { json!({"code": project.code, "path": project.path, "machines": project.machines}) },
         "health": if attention { "needs_attention" } else { "ready" },
         "counts": {
             "unrendered_assets": project.missing.len(),

@@ -48,7 +48,7 @@ use axum::{
     extract::{Path, Query, State, rejection::BytesRejection},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse as _, Response},
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
 };
 use futures_util::{FutureExt as _, StreamExt as _, future::BoxFuture, stream::FuturesUnordered};
 use api::{
@@ -59,7 +59,7 @@ use api::{
     ids::{Digest, RunId},
     machine as v1,
     calcifer::project::{
-        Approve, Approved, Asked, Asset as Row, Cancel, Cancelled, Cut, File as Listing, Import, Imported, Job, JobState, Known, MainFile, Open, Opened,
+        Approve, Approved, Asked, Asset as Row, Cancel, Cancelled, Cut, File as Listing, Import, Imported, Job, JobState, Known, Machines as ProjectMachines, MainFile, Open, Opened,
         Orphan, Projects as Listed, Queued, QueuedNow, Reclaim, Reclaimed, Rename, Renamed, Rendered, Runs, Said, Stale, Standing as RowStanding, State as ProjectState, Unpin, Unpinned,
         VersionPrefix, Warning as ProjectWarning,
     },
@@ -178,6 +178,7 @@ pub(crate) fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
         .route("/v1/projects/{id}/approve", post(approve))
         .route("/v1/projects/{id}/unpin", post(unpin))
         .route("/v1/projects/{id}/rename", post(rename))
+        .route("/v1/projects/{id}/machines", put(machines))
         .route("/v1/projects/{id}/reclaim", post(reclaim))
         .route("/v1/projects/{id}/yaml", get(yaml).put(save))
         .route("/v1/projects/{id}/assets", post(assets::create))
@@ -1374,7 +1375,7 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>, Query(asked)
             let queue = queue(&project, &folder.walk_now().map_err(Refusal)?);
             let busy = *project.walking.lock().expect("walking lock");
             let warning = format!("{}: a render going uses the text it was asked with, and a new one is refused until this reads", error.message);
-            return Ok(Json(ProjectState { covered: None, id, code: project.code.clone(), path: folder.dir.clone(), assets: vec![], queue, missing: vec![], stale: vec![], orphans: vec![], busy, absent: 0, run_files: 0, cuts: vec![], warnings: vec![ProjectWarning { name: None, message: warning }], next: vec![], board: board_of(&project), unsent: vec![] }));
+            return Ok(Json(ProjectState { covered: None, id, code: project.code.clone(), path: folder.dir.clone(), assets: vec![], queue, missing: vec![], stale: vec![], orphans: vec![], busy, absent: 0, run_files: 0, cuts: vec![], warnings: vec![ProjectWarning { name: None, message: warning }], next: vec![], board: board_of(&project), unsent: vec![], machines: project.folder.machines() }));
         }
     };
     // What a reader now holds is what any change from here is told against.
@@ -1857,6 +1858,37 @@ async fn rename(
     let project = api.projects.get(&api, &id)?;
     let id = project.id.clone();
     rename_now(&project, &id, asked).map(Json)
+}
+
+/// `PUT /v1/projects/{id}/machines` (cl-873): the machines its runs go to, each by its name or rental id as `cozy machine ls` lists it;
+/// none: any machine. One offline stays: a run none of them can take says why. Every reader of the project hears it.
+async fn machines(
+    State(api): State<Arc<Api>>,
+    Path(id): Path<String>,
+    body: Result<Bytes, BytesRejection>,
+) -> Result<Json<ProjectMachines>, Refusal> {
+    let asked: ProjectMachines = parse(&body?)?;
+    let project = api.projects.get(&api, &id)?;
+    let mut kept: Vec<String> = vec![];
+    for written in asked.machines.iter().filter(|name| !name.trim().is_empty()) {
+        let name = match On::from(written.clone()) {
+            On::Machine(name) if name == "local" => {
+                api::calcifer::local_usable(&name).map_err(Refusal)?;
+                name
+            }
+            On::Machine(name) => api.machines.named_now(&name).await.map_err(Refusal)?.name,
+            other => {
+                let said = format!("{other} is no machine: a project's runs go to machines by name, or with none to any");
+                return Err(Refusal(Error::new(Kind::Usage, "project_machines", said).next("cozy machine ls")));
+            }
+        };
+        if !kept.contains(&name) {
+            kept.push(name);
+        }
+    }
+    project.folder.set_machines(&kept).map_err(Refusal)?;
+    crate::events::project_settled(&project.folder.dir);
+    Ok(Json(ProjectMachines { machines: kept }))
 }
 
 /// Asset `from` called `to`, as `POST rename` has it, in one transaction.
@@ -3328,10 +3360,10 @@ impl Walk {
     }
 
     /// Of `on`, where job `job` goes, by what its machines quoted last (`pick`).
-    fn chosen(&self, job: &str, on: &[On], hub: &str, package: &Package, renderer: &Renderer, asset: &format::Asset) -> (On, Option<Offer>) {
+    async fn chosen(&self, job: &str, on: &[On], hub: &str, package: &Package, renderer: &Renderer, asset: &format::Asset) -> Result<(On, Option<Offer>), Error> {
         let placed = self.project.walker.lock().expect("walker lock").placed.get(job).cloned();
         let offers: Vec<Offer> = placed.map(|placed| placed.offers).unwrap_or_default().into_iter().filter(|offer| on.contains(&offer.machine)).collect();
-        pick(&self.host.api(), on, &offers, hub, Some(package), &renderer.function, &asset.made)
+        pick(&self.host.api(), on, &offers, hub, Some(package), &renderer.function, &asset.made).await
     }
 
     /// What it fetches ahead for jobs that all went or ended: it needn't go on.
@@ -4197,7 +4229,7 @@ impl Walk {
         }
         // Where it finishes soonest, as its machines quoted, which has its weights coming; a machine holding a file it reads, else.
         let job = pending.job_of(key).to_owned();
-        let (soonest, mut offer) = self.chosen(&job, &on, &hub, package, &renderer, asset);
+        let (soonest, mut offer) = self.chosen(&job, &on, &hub, package, &renderer, asset).await.map_err(named)?;
         let placed = match holder {
             Some(holder) if holder != soonest => {
                 let placed = self.project.walker.lock().expect("walker lock").placed.get(&job).cloned();
@@ -4989,12 +5021,11 @@ fn find(doc: &Doc, name: &str) -> Result<usize, Error> {
 
 /// Of `on`, where a job goes (cl-816): the soonest finish its machines quoted (`offers`), a rental before this computer on a tie, and not
 /// this computer when it would run `function` poorly (`fit`) and no quote of its own runs says it ends it first (Paul, 11-05: a rented
-/// GPU is for using). With no quote, the first of `on`, a rental before this computer.
-fn pick(api: &Arc<Api>, on: &[On], offers: &[Offer], hub: &str, package: Option<&Package>, function: &str, made: &Map<String, Value>) -> (On, Option<Offer>) {
+/// GPU is for using). With no quote that fits, the first of `on` that can take it (`placement::takes`).
+async fn pick(api: &Arc<Api>, on: &[On], offers: &[Offer], hub: &str, package: Option<&Package>, function: &str, made: &Map<String, Value>) -> Result<(On, Option<Offer>), Error> {
     let now = now_ms();
     let Some(soonest) = placement::soonest(offers, now) else {
-        let first = on.iter().find(|machine| !machine.is_local()).or(on.first()).cloned().unwrap_or(On::Any);
-        return (first, None);
+        return Ok((placement::takes(api, on, offers).await?, None));
     };
     let poorly = soonest.machine.is_local()
         && soonest.basis != v1::Basis::Measured
@@ -5004,14 +5035,13 @@ fn pick(api: &Arc<Api>, on: &[On], offers: &[Offer], hub: &str, package: Option<
         true => placement::soonest(&others, now).unwrap_or(soonest),
         false => soonest,
     };
-    (chosen.machine.clone(), Some(chosen.clone()))
+    Ok((chosen.machine.clone(), Some(chosen.clone())))
 }
 
-/// Where `cozy run` of `function` goes with no machine named (Paul, 11-06): as a render's job does (`pick`), among the set a render goes
-/// to, each asked once, for `count` copies of it as if sent at once. Also each copy's offers, and a line for each machine that didn't
-/// answer.
+/// Where `cozy run` of `function` goes among `set` (Paul, 11-06): as a render's job does (`pick`), each machine asked once, for `count`
+/// copies of it as if sent at once. Also each copy's offers, and a line for each machine that didn't answer.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn run_on(api: &Arc<Api>, set: &[On], hub: &str, package: &str, release: &str, function: &str, size: v1::JobSize, gpus: u32, gpu: bool, count: u32, update: bool) -> (On, Vec<Vec<Offer>>, Vec<String>) {
+pub(crate) async fn run_on(api: &Arc<Api>, set: &[On], hub: &str, package: &str, release: &str, function: &str, size: v1::JobSize, gpus: u32, gpu: bool, count: u32, update: bool) -> (Result<On, Error>, Vec<Vec<Offer>>, Vec<String>) {
     let host = Host::new(api);
     let read = host.published(hub, &format!("{package}@{release}"), set.first()).await.ok();
     let models = match &read {
@@ -5023,8 +5053,14 @@ pub(crate) async fn run_on(api: &Arc<Api>, set: &[On], hub: &str, package: &str,
         .map(|copy| placement::Job { key: copy.to_string(), target: named.clone(), function: named.clone(), models: models.clone(), size, gpus, gpu, on: set.to_vec() })
         .collect();
     let (offers, said) = placement::offers(api, &jobs, update).await;
-    let (chosen, _) = pick(api, set, offers.first().map_or(&[][..], Vec::as_slice), hub, read.as_ref(), function, &Map::new());
-    (chosen, offers, said)
+    let chosen = pick(api, set, offers.first().map_or(&[][..], Vec::as_slice), hub, read.as_ref(), function, &Map::new()).await;
+    (chosen.map(|(chosen, _)| chosen), offers, said)
+}
+
+/// The machines the project `named` pins its runs to (cl-873); none: wherever they finish soonest.
+pub(crate) fn machines_of(api: &Arc<Api>, named: &str) -> Result<Vec<On>, Error> {
+    let project = api.projects.get(api, named).map_err(|Refusal(e)| e)?;
+    Ok(project.folder.machines().into_iter().map(On::Machine).collect())
 }
 
 /// Where a file stands in its list: its place in the innermost list holding it, as Runtime orders it (`references.1.file` is 1).

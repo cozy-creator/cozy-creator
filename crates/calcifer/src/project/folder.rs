@@ -32,6 +32,8 @@ use super::{
 /// `meta`'s keys for what the upgrade of the files from before said, until a run landing says it, and the board the last render ended on.
 const UPGRADED: &str = "upgraded";
 const BOARD: &str = "board";
+/// The machines the project's runs go to (cl-873), as a JSON list of names.
+const MACHINES: &str = "machines";
 
 /// What a project was before `project.db`, imported once on its first open and deleted (`legacy`).
 pub(crate) const PROJECT: &str = "project.yaml";
@@ -1144,6 +1146,18 @@ impl Folder {
     pub(crate) fn keep_board(&self, board: &api::calcifer::project::Board) -> Result<(), Error> {
         let kept = KeptBoard { bound: self.bound(), board: board.clone() };
         self.write_past(|conn| db::set_meta(conn, &self.db(), BOARD, Some(&serde_json::to_string(&kept).expect("a board serializes"))))
+    }
+
+    /// The machines its runs go to (cl-873), each by name; none: any machine. A local setting, as its route code is: not the
+    /// project's document, so no history step or export carries it.
+    pub(crate) fn machines(&self) -> Vec<String> {
+        let kept = self.reading_db(|conn| db::meta(conn, MACHINES)).ok().flatten();
+        kept.and_then(|kept| serde_json::from_str(&kept).ok()).unwrap_or_default()
+    }
+
+    pub(crate) fn set_machines(&self, machines: &[String]) -> Result<(), Error> {
+        let kept = (!machines.is_empty()).then(|| serde_json::to_string(machines).expect("names serialize"));
+        self.write_past(|conn| db::set_meta(conn, &self.db(), MACHINES, kept.as_deref()))
     }
 
     /// Whether another program holds project.db's write lock, asked this moment with no wait. None while a write of Calcifer's has the
