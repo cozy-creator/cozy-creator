@@ -558,4 +558,6 @@ jobs:
           ref: ${{ inputs.ref }}
       - uses: Swatinem/rust-cache@v2
       - name: Model content negotiation and catalog protocol regressions
-        run: cargo test --locked -p api --lib hub::client::catalog_tests -- --nocapture
+        run: |
+          cargo test --locked -p api --features hub --lib hub::client::catalog_tests -- --nocapture | tee api-protocol.log
+          grep -q 'model_cards_negotiate_the_canonical_checkpoint_representation .*ok' api-protocol.log
