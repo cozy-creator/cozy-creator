@@ -2,7 +2,7 @@ import type { Asset, Tool } from "../api/calcifer"
 import { addOnsOf, type Carried, modelsOf, takenOff, wordOf } from "./checkpoints"
 import { OWN, startingFields } from "./controls"
 import { madeHere, toolName } from "./shown"
-import { toolFitsNode } from "./palette"
+import { isVideoEdit, toolFitsNode } from "./palette"
 
 // What a tool going on, off or swapped does to a box, worked out here so the box shows it at once. Calcifer does the same to the file (`with_tool`). A tool coming
 // off takes its fields and what they held with it (Paul, 11-06), and Undo puts them back; its pictures, takes, approval and description stay. This holds no state.
@@ -52,7 +52,7 @@ function addOnsOn(fields: Fields, from: Tool | undefined, next: Tool): { kept: F
 }
 
 /** Where a tool going on a picture or a video reads it, as Calcifer writes it (`with_tool`): its first required slot of that kind, else the start of its first prompt. */
-function startsFrom(tool: Tool, kind: string, fields: Fields, own: string): Fields {
+export function startsFrom(tool: Tool, kind: string, fields: Fields, own: string): Fields {
   const slot = tool.fields.find((field) => field.required && field.type === "slot" && field.accept === kind)
   if (slot) return fields[slot.field] === undefined ? { [slot.field]: own } : {}
   const prompt = tool.fields.find((field) => field.type === "prompt")
@@ -110,13 +110,18 @@ export function comingOff(asset: Asset, fields: Fields): ToolStep {
   return { row: { tool: undefined, kind: "text", noun: "version", standing: "current", fields: { ...own, text: words ? fields[words] : "" } }, tool: "", fields: {}, back: { ...back, fields: { ...back.fields, text: null } }, lost: [] }
 }
 
-/** A tool carried: dropped on a box it goes on, or takes the place of the one there, and the box opens (`putTool`). On open canvas it's a new box. */
+/** A tool goes on a box of the kind it makes (Paul, 11-11). On a box holding files of another kind it's a new box beside it that mentions them (tools §9). */
+export const goesBeside = (tool: Tool, asset: Asset) =>
+  holdsPictures(asset) && !toolFitsNode(tool, asset) && !isVideoEdit(asset) && !madeHere(asset.tool) && !madeHere(tool.id) && tool.id !== "text"
+
+/** A tool carried: dropped on a box it goes on, or takes the place of the one there, and the box opens (`putTool`). On open canvas, or on files of
+ *  another kind, it's a new box. */
 export const carryingTool = (tool: Tool): Carried => ({
   canvas: true,
   whyNot(name, view) {
     if (!view?.asset || view.placing) return `${toolName(tool)} can't go on ${name}`
     if (madeHere(view.asset.tool)) return `${name} is made here, so ${toolName(tool)} can't go on it`
-    if (!toolFitsNode(tool, view.asset)) return `${toolName(tool)} makes ${tool.makes}; ${name} is a ${view.asset.kind} node`
+    if (!toolFitsNode(tool, view.asset) && !goesBeside(tool, view.asset)) return `${toolName(tool)} makes ${tool.makes}; ${name} is a ${view.asset.kind} node`
     return view.asset.tool === tool.id ? `${toolName(tool)} is on ${name} already` : null
   },
   put: (store, name) => store.putTool(name, tool),

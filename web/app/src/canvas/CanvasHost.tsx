@@ -339,6 +339,7 @@ function Canvas({
     }),
   }))
   useEffect(() => () => { creating.current?.reject(new Error("Project creation was canceled")); creating.current = null }, [])
+  store.addToolAt = (tool, point, fields, operation) => placer.addTool(tool, point, fields, operation)
   const [openedOn] = useState(projectId)
   const [veil, setVeil] = useState(false)
   const [shut, setShut] = useState(loadToolsShut)
