@@ -150,7 +150,11 @@ again() {
 trap 'end_it; again' EXIT
 trap 'exit 143' TERM INT
 RUN_CLI=$CLI; . "$HERE/../e2e/run.sh"
-run_project "$PWD/project" || { log "cozy project new failed"; exit 1; }
+# The gate's own throwaway project (Paul 11-11: from 0.24 the current folder is the project; never one in a checkout or
+# ~/cozy_v2): under ~/cozy-scratch, linked here as project/ for the cells that read its files.
+P=$HOME/cozy-scratch/release-gate/$(basename "$(dirname "$OUT")")-$(basename "$OUT")-$BEGAN-$HOST
+mkdir -p "$P" && ln -sfn "$P" "$OUT/project" || { log "no project folder $P"; exit 1; }
+run_project "$P" || { log "cozy new $P failed"; exit 1; }
 # one_beat [args...]: H3's call in $BEAT: without `beats`, a text and its length are one beat, which goes to the model as
 # written, and a reference's `kind` is its `asset_type`, or nothing for a clip or a sound, which say what they are by their
 # file. What is already in H3's form passes through.
