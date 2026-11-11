@@ -16,6 +16,8 @@ shift 5
 here=$(cd "$(dirname "$0")" && pwd) start=$PWD
 . "$here/test-hub.sh"
 require_ci_test_hub
+# The SDK has its own endpoint setting; COZY_HUB_URL alone covers only Cozy's clients.
+export TENSORFS_ENDPOINT="${COZY_TEST_HUB_ORIGIN:?}"
 shard='' packages='' published=''
 args=("$@")
 for ((i = 0; i < ${#args[@]}; i++)); do
@@ -120,8 +122,6 @@ fi
 
 if [ "$suite" = imports ]; then
   [ -n "$packages" ] || { echo "imports needs the cohort packages checkout" >&2; exit 2; }
-  # The SDK has its own endpoint setting; COZY_HUB_URL alone covers only Cozy's clients.
-  export TENSORFS_ENDPOINT="${COZY_TEST_HUB_ORIGIN:?}"
   staged=$seed/import-packages report=$seed/imports-fixture.json
   python3 "$here/imports/fixture.py" prepare --source "$packages" --staged "$staged" --report "$report"
   mkdir -p "$seed/project"

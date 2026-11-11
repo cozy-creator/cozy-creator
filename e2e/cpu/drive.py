@@ -260,7 +260,7 @@ class Executor:
         listening.bind(f"/proc/self/fd/{self.fd}/seam")
         listening.listen(1)
         env = {
-            **{k: v for k, v in os.environ.items() if k in ("PATH", "HOME", "LANG", "TMPDIR", "VIRTUAL_ENV")},
+            **{k: v for k, v in os.environ.items() if k in ("PATH", "HOME", "LANG", "TMPDIR", "VIRTUAL_ENV", "TENSORFS_ENDPOINT")},
             "CUDA_VISIBLE_DEVICES": "",
             "TENSORFS_HOME": str(store),
             "OMP_NUM_THREADS": THREADS,
