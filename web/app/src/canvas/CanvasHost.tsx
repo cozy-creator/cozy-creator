@@ -171,7 +171,6 @@ function RenderAll({ id, routing }: { id: string; routing: ReturnType<typeof use
   const { data } = useQuery(projectQuery(client, stream, id))
   const fresh = (data?.assets ?? []).filter((asset) => asset.tool && !madeHere(asset.tool) && !asset.pinned).length
   const asking = useSignal(store.allAsking)
-  if (!fresh) return null
   return (
     <span className="render-all">
       <label>
@@ -182,9 +181,9 @@ function RenderAll({ id, routing }: { id: string; routing: ReturnType<typeof use
           {routing.choices.map((name) => <option key={name} value={name}>{name === "local" ? "This computer" : name}</option>)}
         </select>
       </label>
-      <button type="button" className="tb primary" onClick={() => store.runAll()}>
+      {fresh > 0 && <button type="button" className="tb primary" onClick={() => store.runAll()}>
         Render all {fresh}
-      </button>
+      </button>}
       {asking && <Asking fit={asking.fit} all />}
     </span>
   )
