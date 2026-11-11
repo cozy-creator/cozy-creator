@@ -1,5 +1,7 @@
 # Overlay replay
 
+The exerciser is the Runtime's own built-in (`cozy_runtime.bench`, `internal/bench/qwen_overlay.py`), which `drive/` calls (xs-174).
+
 Qwen-Image-Edit-2511's DiT, whose every LoRA site carries a `lora.Hook`, in a plain step loop, called
 three times in one run: unarmed, unarmed again, then with the Lightning LoRA armed before the loop, as
 Qwen-Image's package arms. The armed latents must equal the same call with graphs bypassed
@@ -11,5 +13,5 @@ replayed unarmed for an armed call and that arming inside the step raised. Runti
 programs.
 
 ```sh
-cozy run "$PWD/release-gate/suites/execution/overlay-replay/gpu" seed:=331 --gpus=1 --lane int8 --on MACHINE --json
+cozy run "$PWD/release-gate/suites/execution/drive/overlay_replay" seed:=331 --gpus=1 --lane int8 --on MACHINE --json
 ```

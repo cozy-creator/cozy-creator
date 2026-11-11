@@ -7,8 +7,8 @@ name = "execution-drive"
 version = "0.1.0"
 description = "The execution suite's calls of the Runtime's own exercisers (cozy_runtime.bench)"
 requires-python = ">=3.12"
-# The exercisers run in this environment.
-dependencies = ["cozy-runtime>=0.45", "msgspec>=0.19", "torch>=2.14"]
+# The exercisers run in this environment: the LoRA overlays construct Diffusers' Qwen-Image DiT.
+dependencies = ["cozy-runtime>=0.45", "diffusers>=0.41,<0.42", "msgspec>=0.19", "torch>=2.14"]
 
 [project.entry-points."cozy.application"]
 default = "execution_drive:app"

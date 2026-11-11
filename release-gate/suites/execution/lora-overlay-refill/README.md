@@ -1,5 +1,7 @@
 # LoRA overlay refill
 
+The exerciser is the Runtime's own built-in (`cozy_runtime.bench`, `internal/bench/qwen_overlay.py`), which `drive/` calls (xs-174).
+
 One executor serves Qwen-Image-Edit-2511's DiT (its int8 lane; 2512's root release is bf16 only)
 and its Lightning LoRA, with no reference image, the LoRA armed by the DiT's
 own forward pre-hook from that forward's `attention_kwargs`, as H3 arms its Turbo overlay. References
@@ -26,7 +28,7 @@ On an RTX 4090 every baked block is refilled every forward, so no stale page can
 40449344821: 0.34.0 and the fix alike).
 
 ```sh
-cozy run "$PWD/release-gate/suites/execution/lora-overlay-refill/gpu" seed:=321 \
+cozy run "$PWD/release-gate/suites/execution/drive/lora_overlay_refill" seed:=321 \
   --gpus=1 --lane int8 --attention-kernel sdpa --on MACHINE --json
 ```
 

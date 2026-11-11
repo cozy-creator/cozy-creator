@@ -26,3 +26,24 @@ async def child_wire(ctx: Context) -> Report:
     """Child calls whose wire lies about what the attempt holds, as a package could send them; fails unless TensorD
     refuses each."""
     return Report((await call(bench.child_wire)).detail)
+
+
+@app.entrypoint(accelerator=False)
+async def overlay_replay(ctx: Context, *, seed: int = 331, variant: str = "replay") -> Report:
+    """Qwen-Image-Edit-2511's DiT with the Lightning LoRA armed as packages arm it, through the Runtime's graphs against
+    graphs bypassed; fails when they differ."""
+    return Report((await call(bench.overlay_replay, payload=bench.OverlayProbe(seed=seed, variant=variant))).detail)
+
+
+@app.entrypoint(accelerator=False)
+async def lora_overlay_refill(ctx: Context, *, seed: int = 4242) -> Report:
+    """The LoRA armed in its DiT's own forward through baked int8 pages under a ballast; fails when a warm call differs
+    from its reference."""
+    return Report((await call(bench.lora_overlay_refill, payload=bench.RefillProbe(seed=seed))).detail)
+
+
+@app.entrypoint(accelerator=False)
+async def mps_residency(ctx: Context, *, seed: int = 103) -> Report:
+    """MPS checkpoint loading, an escaped alias and a refill through the Runtime's residency, on an Apple GPU (no suite
+    runs it while none has an Apple GPU)."""
+    return Report((await call(bench.mps_residency, seed=seed)).detail)

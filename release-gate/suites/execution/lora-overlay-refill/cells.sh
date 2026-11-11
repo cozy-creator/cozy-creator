@@ -4,6 +4,6 @@
 # Sourced by gate.sh (the runtime suite, or --cells); int8 so the LoRA bakes into pages on every SKU.
 # It needs the int8 DiT and its f32 LoRA resident (about 23 GB): a 24 GB card refills every block.
 if [ "$(grep -oE '· [0-9]+ GiB ·' machine.txt | head -1 | grep -oE '[0-9]+')" -ge 30 ] 2>/dev/null; then
-  cell lora-overlay-refill "$HERE/suites/execution/lora-overlay-refill/gpu" \
+  cell lora-overlay-refill "$HERE/suites/execution/drive/lora_overlay_refill" \
     seed:=$((R + 321)) --gpus=1 --lane int8 --attention-kernel sdpa
 fi
