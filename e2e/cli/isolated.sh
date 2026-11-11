@@ -4,9 +4,11 @@
 # from a Hub, as production holds it: at the root, from run.sh's --packages checkout, the toolbox's defaults (qwen-image-2,
 # minimax-h3) and birefnet, and a stand-in minimax-h3-tools (hub_away locks it from the root index); then the models the
 # shard's cells download: BiRefNet's weights from the Hugging Face revision production mirrors, and random weights for
-# queued_download's two. Then this computer's cozy is removed, and run.sh starts as on a fresh runner, signed out.
+# queued_download's two. Then this computer's cozy is removed, and run.sh starts as on a fresh runner, signed out, in
+# this process's place: nothing of this script is left for the suite's own removal of cozy to find.
 set -euo pipefail
 [ "$#" -ge 4 ] || { echo "usage: isolated.sh OUT INSTALLED_COZY RUNTIME TENSORFS <run.sh arguments>" >&2; exit 2; }
+[ "${GITHUB_ACTIONS:-}" = true ] && [ "${RUNNER_OS:-}" = Linux ] || { echo "isolated.sh removes this computer's cozy: a fresh Linux GitHub runner only" >&2; exit 2; }
 seed=$1 cozy_bin=$2 runtime=$3 tensorfs=$4
 shift 4
 here=$(cd "$(dirname "$0")" && pwd) start=$PWD
@@ -114,12 +116,17 @@ cozy --json logout > "$seed/logout.json" 2>&1 || true
 systemctl --user disable --now cozy-calcifer > "$seed/reset.log" 2>&1 || true
 pkill -f "^$HOME/.cozy/" || true
 for _ in $(seq 30); do pgrep -f "^$HOME/.cozy/" > /dev/null || break; sleep 1; done
+# The machine's transient scope (its executors) outlives Calcifer: on a runner every user scope is cozy's.
+for unit in $(systemctl --user list-units --type=scope --no-legend --plain 2> /dev/null | awk '$1 ~ /^run-/ {print $1}'); do
+  systemctl --user stop "$unit" >> "$seed/reset.log" 2>&1 || true
+done
 rm -rf "$HOME/.cozy" "$HOME/.config/cozy" "${TENSORFS_HOME:-$HOME/.cache/tensorfs}"
 # uv (Calcifer's locks, the machine's installs) trusts the Hub's CA as it trusts tensorhub.com's: from the system's bundle,
 # which systemd's user manager hands Calcifer.
 sudo cp "${COZY_TEST_HUB_CA:?}" /usr/local/share/ca-certificates/cozy-test-hub.crt && sudo update-ca-certificates > "$seed/ca.log" 2>&1
 export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 systemctl --user set-environment SSL_CERT_FILE="$SSL_CERT_FILE"
+ps -eo pid,ppid,pcpu,rss,etime,args --sort=-pcpu | head -25 > "$seed/ps-after-reset.txt"
 log "seeded ($needs), this computer's cozy removed; the cli suite${shard:+ $shard} starts"
 unset CLI M R
-bash "$here/run.sh" "$@"
+exec bash "$here/run.sh" "$@"

@@ -105,8 +105,9 @@ if [ ! -x "$TOOLS/minio" ]; then
   log "MinIO $MINIO from source"
   GOBIN=$TOOLS go install "github.com/minio/minio@$MINIO" > minio-build.log 2>&1 || die store "MinIO $MINIO did not build: $(tail -c 300 minio-build.log)"
 fi
-MINIO_ROOT_USER=$S3KEY MINIO_ROOT_PASSWORD=$S3SECRET "$TOOLS/minio" server "$WORK/s3" --address 127.0.0.1:$S3_PORT --quiet > minio.log 2>&1 & S3PID=$!
-docker run -d --name "$PG_NAME" -e POSTGRES_HOST_AUTH_METHOD=trust -p 127.0.0.1::5432 postgres:18-alpine > /dev/null || die store "Postgres did not start"
+# The fixture stands in for services on other computers: it takes only what CPU the suites leave (nice, Postgres's weight).
+MINIO_ROOT_USER=$S3KEY MINIO_ROOT_PASSWORD=$S3SECRET nice -n 19 "$TOOLS/minio" server "$WORK/s3" --address 127.0.0.1:$S3_PORT --quiet > minio.log 2>&1 & S3PID=$!
+docker run -d --name "$PG_NAME" --cpu-shares 64 -e POSTGRES_HOST_AUTH_METHOD=trust -p 127.0.0.1::5432 postgres:18-alpine > /dev/null || die store "Postgres did not start"
 PG_PORT=$(docker port "$PG_NAME" 5432/tcp | sed 's/.*://')
 for _ in $(seq 60); do curl -sf "$S3/minio/health/live" > /dev/null && docker exec "$PG_NAME" pg_isready -q -U postgres && break; sleep 1; done
 for b in repo source; do
@@ -125,7 +126,7 @@ else
 fi
 "$WORK/tensorhub" version | tee hub.version
 go build -o "$WORK/ingress" "$E2E/skew/ingress.go" > ingress-build.log 2>&1 || die ingress "the local ingress did not build"
-"$WORK/ingress" 127.0.0.1:0 "$HUB" "$WORK" > ingress.addr 2> ingress.log & INGRESS=$!
+nice -n 19 "$WORK/ingress" 127.0.0.1:0 "$HUB" "$WORK" > ingress.addr 2> ingress.log & INGRESS=$!
 for _ in $(seq 60); do [ -s ingress.addr ] && break; kill -0 $INGRESS 2>/dev/null || break; sleep 1; done
 ORIGIN=$(head -1 ingress.addr); [ -n "$ORIGIN" ] || die hub "the ingress did not start: $(tail -c 300 ingress.log)"
 hub=("$WORK/tensorhub" --config "$CONFIG"
@@ -138,7 +139,7 @@ hub=("$WORK/tensorhub" --config "$CONFIG"
   --set storage.repo_cas.bucket=repo --set storage.package_source.bucket=source
   --set package_release.scratch_root="$WORK/release" ${MIN:+--set clients.cozy_min=$MIN})
 "${hub[@]}" migrate > hub-migrate.log 2>&1 || die hub "migrate: $(tail -c 300 hub-migrate.log)"
-"${hub[@]}" serve > hub.log 2>&1 & HUBPID=$!
+nice -n 19 "${hub[@]}" serve > hub.log 2>&1 & HUBPID=$!
 for _ in $(seq 90); do [ "$(curl -s -o /dev/null -w '%{http_code}' $HUB/healthz)" = 204 ] && break; kill -0 $HUBPID 2>/dev/null || break; sleep 1; done
 [ "$(curl -s -o /dev/null -w '%{http_code}' $HUB/healthz)" = 204 ] || die hub "the Hub did not come up: $(tail -c 600 hub.log)"
 kill -0 "$HUBPID" 2>/dev/null || die hub "the owned fixture Hub exited during startup"
