@@ -108,14 +108,24 @@ const DESCRIBED_MS = 300_000;
   };
   await openQuick(DESCRIBED_MS);
   await closeBox(page);
-  // Another project, for a tab to go to and come back from while Calcifer's away.
+  // A project as a person reaches it: by its tab, or from "N more" when the bar has no room for its tab (cl-877).
+  const reach = async (path) => {
+    const tab = page.locator('nav.ptabs a.ptab').and(page.getByTitle(path, { exact: true }));
+    if (await tab.count()) await tab.click();
+    else {
+      await page.click('nav.ptabs .ptab.more');
+      await page.locator('.drawer .list a').and(page.getByTitle(path, { exact: true })).click();
+    }
+    await page.locator('.ptab.on').and(page.getByTitle(path, { exact: true })).waitFor();
+  };
+  // Another project, to go to and come back from while Calcifer's away.
   const other = (await api('/v1/projects', { method: 'POST', body: JSON.stringify({ name: `web-offline-other-${Date.now()}`, unencrypted: true }), headers: { 'Idempotency-Key': `other-${Date.now()}` } })).body;
   dropOther = async () => rmSync(other.path, { recursive: true, force: true });
   // Read again, as the tabs list what's read at the start.
   await page.goto(await projectUrl(other.id));
   await page.reload();
   await page.locator('.ptab.on').and(page.getByTitle(other.path, { exact: true })).waitFor();
-  await page.getByTitle(folder, { exact: true }).click();
+  await reach(folder);
   await box('quick').waitFor();
   const was = await asset('shot');
   const approve = was.pinned && was.approved === 2 ? 1 : 2;
@@ -167,9 +177,8 @@ const DESCRIBED_MS = 300_000;
   check('drop_shows_at_once', (await box('late').count()) === 1);
   const shown = async () => ({ boxes: (await page.locator('.card[data-asset]').evaluateAll((cards) => cards.map((card) => card.dataset.asset))).sort().join(), shot: await place('shot') });
   const left = await shown();
-  await page.getByTitle(other.path, { exact: true }).click();
-  await page.locator('.ptab.on').and(page.getByTitle(other.path, { exact: true })).waitFor();
-  await page.getByTitle(folder, { exact: true }).click();
+  await reach(other.path);
+  await reach(folder);
   await box('quick').waitFor();
   await page.waitForTimeout(500);
   const back = await shown();
