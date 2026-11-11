@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import OrderedDict
-from typing import TYPE_CHECKING, cast
+from typing import cast
 
 import msgspec
 import numpy as np
@@ -24,9 +24,6 @@ from cozy_runtime.author import (
     uses_components,
 )
 from cozy_runtime.weights_store import Derivation
-
-if TYPE_CHECKING:
-    from tensorfs import Array, Encoded
 
 app = App()
 
@@ -145,32 +142,19 @@ class Report(msgspec.Struct):
 def predict(
     payload: Predict, model: LinearModel, weights: Weights[LinearModel], ctx: Context
 ) -> Report:
-    from tensorfs import raw
-
     assert payload.encoding in ("int8.convrot", "nvfp4")
     checkpoint = ctx.tensorfs_source(weights)
     held = checkpoint.components["net"].tensors
-    encoded = cast("Encoded", held.read("proj.weight"))  # cast: a recipe lane's weight is encoded
+    encoded = held.read("proj.weight")  # a recipe lane's weight is encoded
     assert encoded.scheme == payload.encoding, encoded.scheme
-    parts = {
-        name: (part.dtype, part.shape, part.tobytes())
-        for name, part in encoded.parts.items()
-    }
-    decoded = np.empty((16, 256), dtype=np.float32)
-    raw.decode_into(
-        encoded.scheme,
-        parts,
-        decoded,
-        dtype="F32",
-        shape=decoded.shape,
-        params=encoded.params,
-    )
+    # Decoded by the checkpoint itself, to its logical BF16: no TensorFS import (xs-174, the package contract).
+    decoded = torch.from_dlpack(held.read("proj.weight", decode=True)).float()
     original, original_bias = source_values(payload.seed)
     bias = torch.frombuffer(
-        bytearray(cast("Array", held.read("proj.bias")).tobytes()), dtype=torch.bfloat16  # cast: the bias stays plain
+        bytearray(held.read("proj.bias").tobytes()), dtype=torch.bfloat16  # the bias stays plain
     ).float()
     assert torch.equal(bias, original_bias.float())
-    reference_weight = torch.from_numpy(decoded)
+    reference_weight = decoded
     relative_weight = float(
         torch.linalg.vector_norm(reference_weight - original.float())
         / torch.linalg.vector_norm(original.float())

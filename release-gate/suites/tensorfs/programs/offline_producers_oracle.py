@@ -7,7 +7,10 @@ from __future__ import annotations
 from collections.abc import Iterator
 from typing import NamedTuple
 import numpy as np
-from cozy_runtime.author import UnsupportedInput
+
+
+class UnsupportedInput(ValueError):
+    """What the reference refuses."""
 
 # fmt: off
 def row_chunks(rows: int, cols: int, budget_elements: int = 1 << 22) -> Iterator[slice]:

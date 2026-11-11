@@ -8,7 +8,10 @@ No imports of current production converters or model-value decoders.
 from __future__ import annotations
 import math
 import numpy as np
-from cozy_runtime.author import UnsupportedInput
+
+
+class UnsupportedInput(ValueError):
+    """What the reference refuses."""
 
 # fmt: off
 def numel(shape: list[int]) -> int:

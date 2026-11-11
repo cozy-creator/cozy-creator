@@ -1,2 +1,0 @@
-[application]
-object = "ci_rowwise_quantize:app"

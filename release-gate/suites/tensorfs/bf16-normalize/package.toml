@@ -1,2 +1,0 @@
-[application]
-object = "ci_bf16_normalize:app"

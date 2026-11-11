@@ -12,13 +12,9 @@ done
 
 proof_seed=$((R + 400))
 proof() { local name=$1 target=$2; shift 2; proof_seed=$((proof_seed + 1)); cell "$name" "$target" seed:=$proof_seed "$@"; }
-proof bf16-normalize "$TFS_DIR/bf16-normalize/run" mode=basic --gpus=1
-proof bf16-normalize-cancel "$TFS_DIR/bf16-normalize/run" mode=cancel --gpus=1
-proof rowwise-quantize "$TFS_DIR/rowwise-quantize/run"
-proof rowwise-quantize-cancel "$TFS_DIR/rowwise-quantize/run" mode=cancel
-proof offline-producers "$TFS_DIR/offline-producers/run" mode=basic --gpus=1
-proof offline-producers-cancel-fp8 "$TFS_DIR/offline-producers/run" mode=cancel-fp8 --gpus=1
-proof offline-producers-cancel-w4a8 "$TFS_DIR/offline-producers/run" mode=cancel-w4a8 --gpus=1
+
+# The Runtime's FP8 rowwise and W4A8 producers (derive.microscale) against the references TensorFS's own are held to.
+proof derive-adapters "$EXEC_DIR/derive-adapters/microscale_adapters"
 
 # A controller of its own through the ordinary CLI: its exit is its verdict.
 controller() {
@@ -45,4 +41,5 @@ controller model-qualification "$EXEC_DIR/model-qualification/run.py" --target "
   --seeds $((R + 441)) $((R + 442)) $((R + 443)) $((R + 444)) --steps 30 --expect-size 1024x1024 --output "$OUT/model-qualification"
 # TensorFS's own encoders and resident decode: programs on the pod against its public API, not packages (xs-174). Last:
 # they restart the machine so no executor holds the card.
-programs tensorfs "$TFS_DIR/programs" resident_nvfp4.py nvfp4_encode.py convrot_encode.py checkpoint_quantize.py
+programs tensorfs "$TFS_DIR/programs" resident_nvfp4.py nvfp4_encode.py convrot_encode.py checkpoint_quantize.py \
+  bf16_normalize.py rowwise_quantize.py offline_producers.py

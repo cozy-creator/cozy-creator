@@ -1,0 +1,2 @@
+[application]
+object = "ci_derive_adapters:app"
