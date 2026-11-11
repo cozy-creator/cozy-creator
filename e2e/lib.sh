@@ -25,7 +25,7 @@
 #   --shard S             one part of the suite, on its own runner (cli: a name; imports: K/N, every Nth package)
 #   --model               the cli suite's real inference on the CPU too (BiRefNet's forward pass; ci/affected's `model`)
 #
-# Installed by the suite, cozy reaches tensorhub.com through e2e/hubcheck (config.toml's hub_url and $COZY_HUB_URL),
+# Installed by the suite, cozy reaches the selected Hub through e2e/hubcheck (config.toml's hub_url and $COZY_HUB_URL),
 # which holds every request and response to the API document the Hub serves; `finish` fails on any mismatch.
 
 set -euo pipefail
@@ -104,16 +104,19 @@ coverage() {
 # over it while its Calcifer runs, reading the archives from a loopback server (COZY_DOWNLOAD_URL, which `cozy update`
 # reads too), and `cozy doctor` restarts Calcifer on it.
 install_cozy() {
-  local want ps=powershell
-  if [ -n "${CI:-}${GITHUB_ACTIONS:-}" ]; then
-    echo "Use e2e/skew/run.sh with a candidate CLI: the live installer discovers releases on production." >&2
+  local want ps=powershell ci=${CI:-}${GITHUB_ACTIONS:-}
+  if [ -n "$ci" ] && [ -z "$RELEASE" ] && [ ! -f "$CAND_COZY" ]; then
+    echo "CI installation requires local --release archives or a --tensord file." >&2
     return 2
   fi
   hub_check
   # Windows PowerShell under the runner's x64 shell says X64 on an Arm64 runner; PowerShell 7 says Arm64, as Windows
   # PowerShell does in a person's own terminal on Windows 11.
   [ "${RUNNER_ARCH:-}" != ARM64 ] || ps=pwsh
-  if [ "$RUNNER_OS" = Windows ]; then
+  if [ -n "$ci" ]; then
+    echo "Installing the supplied local candidate for isolated CI."
+    export PATH="$(dirname "$COZY"):$PATH"
+  elif [ "$RUNNER_OS" = Windows ]; then
     $ps -NoProfile -ExecutionPolicy Bypass -c 'irm https://tensorhub.com/install.ps1 | iex' || fail "the installer failed"
     found=$(powershell -NoProfile -c '[Environment]::GetEnvironmentVariable("Path", "User")' | tr ';' '\n' | tr -d '\r' | grep -Fix "$(cygpath -w "$(dirname "$COZY")")" || true)
     [ -n "$found" ] || fail "the user's PATH does not hold $(dirname "$COZY")"
@@ -122,7 +125,7 @@ install_cozy() {
     found=$(env -i HOME="$HOME" PATH=/usr/bin:/bin sh -lc 'command -v cozy' || true)
     [ "$found" = "$COZY" ] || fail "a login shell finds '$found', not $COZY"
   fi
-  cozy --version
+  [ -n "$ci" ] || cozy --version
   # A source candidate's cozy goes in place of the released one.
   if [ -f "$CAND_COZY" ]; then
     install_candidate_binary
@@ -131,7 +134,9 @@ install_cozy() {
   fi
   [ -n "$RELEASE" ] || return 0
   serve_release
-  cozy --json machine ls > /dev/null || check "the installed cozy's Calcifer did not start"
+  if [ -x "$COZY" ]; then
+    cozy --json machine ls > /dev/null || check "the installed cozy's Calcifer did not start"
+  fi
   want="cozy $(sed -n 's/^APP_VERSION="\(.*\)"$/\1/p' "$RELEASE/cozy-installer.sh")"
   if [ "$RUNNER_OS" = Windows ]; then
     $ps -NoProfile -ExecutionPolicy Bypass -c "& '$(cygpath -w "$RELEASE")\cozy-installer.ps1'" || fail "the release's installer failed over a running cozy"
@@ -257,7 +262,10 @@ candidates() {
 install_candidate_binary() {
   local dir
   dir=$(dirname "$COZY")
-  [ "${RUNNER_OS:-}" != Windows ] || mv -f "$COZY" "$dir/.cozy-replaced-$RANDOM.exe"
+  mkdir -p "$dir"
+  if [ "${RUNNER_OS:-}" = Windows ] && [ -f "$COZY" ]; then
+    mv -f "$COZY" "$dir/.cozy-replaced-$RANDOM.exe"
+  fi
   cp "$CAND_COZY" "$COZY.new" && chmod +x "$COZY.new" && mv -f "$COZY.new" "$COZY" || fail "installing the candidate cozy failed"
 }
 
