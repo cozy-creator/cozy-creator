@@ -841,8 +841,14 @@ fn relock(project: &Project, ranged: bool) -> String {
         (true, true, false) => format!("re-lock it on this machine's: {LOCK}"),
         (true, true, true) => format!("update the refusing cozy-runtime or tensorfs requirement in pyproject.toml, or upgrade the dependency that declares it, then re-lock it: {LOCK}"),
         (true, false, _) => "update the refusing cozy-runtime or tensorfs requirement in pyproject.toml, or upgrade the dependency that declares it, to admit this machine's pair".into(),
-        (false, ..) => format!("try its newest release: `cozy package install {}`", project.package),
+        (false, ..) => newest_hint(project.package),
     }
+}
+
+/// A published release's next where nothing better is known: its newest. Its install names the one that speaks this
+/// machine's protocol in its place (`Publisher::onward`).
+pub(crate) fn newest_hint(package: &str) -> String {
+    format!("try its newest release: `cozy package install {package}`")
 }
 
 /// `name` at the newest release of `locked`'s series: `cozy-runtime>=0.41.0,==0.41.*`.
