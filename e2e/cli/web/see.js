@@ -630,11 +630,28 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
     tab.setDefaultTimeout(STEP_MS);
     const snap = (name) => (process.env.SHOT ? tab.screenshot({ path: `${process.env.SHOT}-${name}.png` }) : Promise.resolve());
     await tab.setViewportSize({ width: 1000, height: 800 });
+    // The bar once the page has loaded: the canvas's controls, the machines and the fonts arrive after the first tab, and the tabs fit what
+    // they leave (cl-874). Loaded: its `parts` there, its fonts in, and nothing in the bar changing size for three looks 100 ms apart.
+    const loaded = async (...parts) => {
+      for (const part of parts) await tab.waitForSelector(part);
+      const look = () => tab.evaluate(async () => {
+        await document.fonts.ready;
+        return [...document.querySelectorAll('.top > *, nav.ptabs > *')].map((held) => held.getBoundingClientRect().width.toFixed(1)).join();
+      });
+      const deadline = Date.now() + STEP_MS;
+      for (let last = await look(), still = 0; still < 3; ) {
+        if (Date.now() > deadline) throw new Error(`the top bar still changing after ${STEP_MS} ms: ${last}`);
+        await tab.waitForTimeout(100);
+        const now = await look();
+        still = now === last ? still + 1 : 0;
+        last = now;
+      }
+    };
     // By name: an earlier pass's forest is deleted, so its names are free (cl-842).
     const selected = ours.find((row) => row.name === 'spruce');
     const spruce = await projectUrl(selected.id);
     await tab.goto(spruce);
-    await tab.waitForSelector('nav.ptabs a.ptab.on');
+    await loaded('nav.ptabs a.ptab.on', '.top .history', '.top .render-all');
     // What the bar is as each frame is painted: a ResizeObserver made after the page's hears of a resize after the page has answered it.
     await tab.evaluate(() => {
       window.frames_seen = [];
@@ -683,12 +700,12 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
 
     // With no project open its "untitled" tab is measured too, so what has a tab keeps its width.
     await tab.goto(`${base}/projects`);
-    await tab.waitForSelector('nav.ptabs span.ptab.on');
+    await loaded('nav.ptabs span.ptab.on');
     const untitled = await tab.evaluate(() => [...document.querySelectorAll('nav.ptabs a.ptab:not(.more):not(.new)')].map((link) => ({ code: link.getAttribute('href').split('/').pop(), width: link.getBoundingClientRect().width })));
     const squeezed = untitled.filter((one) => first.has(one.code) && !first.get(one.code).on && Math.abs(first.get(one.code).width - one.width) > 0.5);
     check('tabs_untitled_measured', untitled.length > 0 && squeezed.length === 0, { untitled, squeezed });
     await tab.goto(spruce);
-    await tab.waitForSelector('nav.ptabs a.ptab.on');
+    await loaded('nav.ptabs a.ptab.on', '.top .history', '.top .render-all');
 
     // "N more": All projects, those with no tab first.
     await tab.click('nav.ptabs .ptab.more');
