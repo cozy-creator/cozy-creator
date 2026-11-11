@@ -163,6 +163,9 @@ async fn change(ctx: &Context, path: &str, request: VaultAsk, recovery_out: Opti
         changed.recovery_secret = None;
         output::say(ctx, &format!("recovery secret saved to {}; keep a copy off this computer", path.display()));
     }
+    for skipped in &changed.skipped_files {
+        output::warn(&format!("retained-media link skipped: {}; its project reference was preserved", skipped.display()));
+    }
     if ctx.json { output::json(&changed); return Ok(ExitCode::SUCCESS); }
     if !changed.ended.is_empty() {
         let runs: Vec<String> = changed.ended.iter().map(u64::to_string).collect();

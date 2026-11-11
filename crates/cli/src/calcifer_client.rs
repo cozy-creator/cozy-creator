@@ -235,19 +235,8 @@ impl Client {
             can_use_legacy = false;
             let content_type = answer.headers().get(header::CONTENT_TYPE).and_then(|value| value.to_str().ok())
                 .and_then(|value| value.split(';').next()).map(str::trim).unwrap_or("");
-            match content_type {
-                "application/json" => {
-                    let bytes = match answer.bytes().await {
-                        Ok(bytes) => bytes,
-                        Err(_) => {
-                            self.vault_reconnect(&mut reconnects, false, "the final response was interrupted").await?;
-                            continue;
-                        }
-                    };
-                    return serde_json::from_slice(&bytes).map_err(|_| vault_interrupted("the final response could not be read"));
-                }
-                "text/event-stream" => {}
-                _ => return Err(vault_interrupted("Calcifer returned an unsupported response type")),
+            if content_type != "text/event-stream" {
+                return Err(vault_interrupted("Calcifer returned an unsupported response type"));
             }
             let mut sse = Sse::default();
             let mut moved = false;
