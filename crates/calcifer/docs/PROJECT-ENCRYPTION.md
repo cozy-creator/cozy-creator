@@ -81,6 +81,8 @@ mounts. Forcibly killing both controller and native guardian can leave an APFS i
 until ejected or the OS restarts. Normal lock verifies complete cleanup.
 
 Private local execution protects source, inputs, outputs, logs, caches and temporary files.
+Encrypted projects use the declared controls for local tools. Published tool components still
+use the normal browser module path.
 Only kernel IPC sockets use an owner-protected temporary endpoint: the encrypted regular-file
 provider cannot host them, and their message bytes are not stored in the socket inode.
 Unsupported private local model-file imports and warm sets refuse shared-cache operations.
