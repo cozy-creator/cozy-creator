@@ -695,33 +695,43 @@ include its exact values and byte digest. Conformance cases should include indep
 invalid inputs. These requirements describe the format; they do not require a particular implementation language
 or source-tree layout.
 
-## 7. Repo, store and origin
+<a id="7-repo-store-and-origin"></a>
+## 7. Models, store and origin
 
 ```
-{format: "cozytensors.repo/1", name: "<org>/<name>", releases: [{version, lanes: {lane: object-ref}}], commits: [object-ref], deleted: [version]}
+{format: "cozytensors.model/1", name: "<org>/<name>", releases: [{version, lanes: {lane: object-ref}, visibility: "public" | "private"}], checkpoints: [object-ref], deleted: [version]}
 ```
 
-A repo is a model's commits and releases:
+A model document records one named model's checkpoints and releases:
 
-- A **commit** (§3) is a tree; its id is the tree's object ref, `sha256:<hex>`. Every upload makes one. `commits`
-  lists the repo's commits no release names, newest last.
-- A **release** names one commit per lane under a version: a PEP 440 version higher than every earlier release's,
-  deleted or not. `releases` lists them oldest first. A release is public until its owner deletes it; a commit no
-  release names is private, readable only by members of the repo's organization (distribution.md §5).
-- `deleted` (optional) lists the versions of deleted releases, in deletion order. A deleted version is burned: it is
-  never released again, so no cache or lock sees two contents under one version.
-- Repo names are case-insensitive: `Acme/SDXL` and `acme/sdxl` are one repo. Keys and paths use the name with ASCII
-  `A`–`Z` lowered (`refs/acme/sdxl.json`); the document's `name` keeps the writer's spelling.
-- **Roots.** Every commit a repo names is a referenced root until its owner deletes it; keeping a complete copy of
-  the repo requires keeping their closures.
-- A **store** or **static origin** is a directory, bucket or HTTP prefix holding `refs/<org>/<name>.json` and
-  `blobs/…` (§1). A store's repo records what it holds: a machine's own model (`local/<name>`) is its newest commit.
+- A **checkpoint** (§3) is a tree; its id is the tree's object ref, `sha256:<hex>`. Every upload
+  creates one. `checkpoints` lists saved states not named by a release, newest last.
+- A **release** selects one checkpoint per lane under a version. `releases` lists versions oldest
+  first. Every `model/1` release MUST declare `visibility` as `public` or `private`; missing or
+  unknown visibility is a refusal. Unpublishing retains a private release and its immutable lane
+  selection. Public discovery and default newest resolution skip private releases. An authorized
+  owner can explicitly select a private version; local readers can select a private version whose
+  data they already hold. A checkpoint without a public release remains private.
+- `deleted` (optional) lists deleted versions in deletion order. Deleted versions are burned and
+  cannot be published again. Unpublishing does not burn a version.
+- Model names are case-insensitive: `Acme/SDXL` and `acme/sdxl` identify one model. Paths use ASCII
+  lowercase (`refs/acme/sdxl.json`); the document preserves the writer's spelling.
+- Every referenced checkpoint is a root, including retained private releases. Keeping a complete
+  copy of a model requires retaining these closures. Public visibility is not a GC decision.
+- A **store** or **static origin** holds `refs/<org>/<name>.json` and `blobs/…` (§1). A machine's
+  local model (`local/<name>`) can resolve its newest saved checkpoint when it has no releases.
 
-**Resolution.** A consumer names a repo and gets one commit: a commit by id; else a release (none: the newest) and,
-within it, a lane label (that commit, else not found) or, without one, its hardware. The Hub picks for the hardware
-(distribution.md §2): of the release's commits, by each header's actual kinds and bytes, what the hardware runs and
-fits, by [`selection.json`](selection.json), which the Hub vendors byte for byte. A static origin's release names its
-one lane, or the consumer names it.
+**Legacy documents.** Readers also accept `cozytensors.repo/1`, with `commits` instead of
+`checkpoints` and releases implicitly public when visibility is absent. A legacy-loaded model
+can retain its old encoded spelling; a loaded `model/1` document MUST stay modern on rewrite,
+preserving private releases, explicit visibility and deleted versions. Introducing a private
+release requires modern encoding. Old readers reject the new document kind. This mutable-document
+transition does not change immutable tree, header or chunk bytes or identities.
+
+**Resolution.** A consumer selects a model checkpoint by id, or a release (default: newest public)
+and one lane. The Hub selects a lane by actual stored kinds and byte sizes, hardware support and
+fit (distribution.md §2), following [`selection.json`](selection.json). A static origin uses its
+only offered lane or the caller's explicit lane.
 
 **Closure.** A header's closure is the header and every object it cites, its `chunks` and each component's assets. A
 tree's closure is the tree, every object its `files` cite, and its header's closure. A copy is complete when its whole
@@ -809,11 +819,10 @@ construction order. A reference can be applied structurally:
 - a child the reference does not hold, or every key of a class without a reference, keeps the source's data order
   after the known children, and is reported.
 
-## 11. Logical file
+## 11. Complete portable file and logical view
 
-A `.cozytensors` file holds only its header (§4); nothing packs a checkpoint into one stored file. A checkpoint's
-**logical file** is all of its bytes as one read-only byte string, for a consumer that wants a single file. A reader
-assembles it from the objects on demand:
+A complete portable `.cozytensors` file contains its header (§4) and every object the header cites. Its layout is
+also the checkpoint's **logical file**, which a reader can assemble from CAS objects on demand:
 
 - offset 0: the header's bytes;
 - then each object of `chunks` in order, then every component's assets (components in header order, each
@@ -822,6 +831,25 @@ assembles it from the objects on demand:
 - gaps are zero bytes, and the file ends where its last object ends.
 
 The layout depends only on the header, so every object's offset follows from it.
+
+The first definite-length CBOR item frames the header; no prefix, trailer or rewritten header is added. A complete
+file's length MUST equal the last object's end (the header's end when there are no objects). Admission MUST check
+every occurrence's declared length and SHA-256, including repeated references and objects already present in a
+cache, and MUST refuse truncation, trailing data, nonzero alignment gaps and conflicting lengths for one digest.
+Offsets and lengths use checked 64-bit arithmetic. Copying and verification stream bounded buffers; they do not
+read the whole checkpoint into memory. Only verified objects enter the existing CAS, and the header and tree are
+published after all payload checks pass. Header and object identities are unchanged by export and admission.
+
+A legacy **thin header** is exactly the header bytes and requires an external object source. Store snapshots and
+plain folders can still use thin headers with `chunks/` or a configured store. A header with cited objects is never
+a complete portable file by itself; the explicit complete-file admission operation refuses it. A header with no
+objects is already complete. `Client::open` accepts complete files and legacy thin headers; `Checkpoint::write_file`
+and a Writer's file destination produce complete files. Range reads after admission use the ordinary CAS reader.
+
+This proves closure of declared model data, not an arbitrary model's loading contract. Importers and compatible
+packages must retain and require the construction config, tokenizer assets and adapter parameters their model
+needs. Ancillary documentation and previews remain outside that closure; executable implementation remains in
+the installed package and Runtime.
 
 ## Appendix A. Fixed tables
 

@@ -776,7 +776,7 @@ fn model_choices(
             (Value::String(raw), Value::Null) => ModelRef::parse(raw).map_err(invalid)?.choice(&parameter),
             (Value::Object(_) | Value::Null, Value::String(digest)) => api::machine::ModelChoice {
                 parameter,
-                manifest: model_ref::commit(digest).map_err(invalid)?,
+                manifest: model_ref::checkpoint(digest).map_err(invalid)?,
                 ..Default::default()
             },
             (Value::Null, Value::Null) => api::machine::ModelChoice { parameter, ..Default::default() },

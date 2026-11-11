@@ -1,6 +1,6 @@
 use std::{fs, os::unix::fs::PermissionsExt, path::Path};
 
-use super::{describe_with, locked_runtime};
+use super::{describe_with, locked_runtime, run_said};
 
 fn capture(project: &Path, runtime: Option<&str>) -> Vec<String> {
     let uv = project.join("uv");
@@ -123,4 +123,83 @@ fn source_describer_refuses_invalid_bounds_before_invoking_uv() {
     )
     .unwrap_err();
     assert_eq!(error.code, "runtime_requirement_invalid");
+}
+
+fn failed_tool(stderr: &str) -> (api::error::Error, String) {
+    let mut command = std::process::Command::new("sh");
+    command.args(["-c", "printf '%s' \"$TOOL_DIAGNOSTIC\" >&2; exit 3"]).env("TOOL_DIAGNOSTIC", stderr);
+    run_said(&mut command, "describe_failed", "cozy-runtime describe").unwrap_err()
+}
+
+#[test]
+fn source_describer_keeps_structured_recovery_without_expanding_detail_lines() {
+    let record = serde_json::json!({
+        "error": {"name":"validation", "code":3,
+            "message":"package_contract: app.py:2: internal_import (and 1 more)\n  app.py:3: internal_import",
+            "remedy":"Use the public author APIs"},
+        "next":["cozy run --help"]
+    });
+    let stderr = format!("warning: preparing Runtime\n{}\n", serde_json::to_string_pretty(&record).unwrap());
+    let (error, kept) = failed_tool(&stderr);
+    assert_eq!(kept, stderr);
+    assert_eq!(error.kind, api::error::Kind::Validation);
+    assert_eq!(error.code, "describe_failed");
+    assert_eq!(error.message, "cozy-runtime describe exited with code 3: package_contract: app.py:2: internal_import (and 1 more)");
+    assert_eq!(error.remedy.as_deref(), Some("Use the public author APIs"));
+    assert_eq!(error.next, ["cozy run --help"]);
+    let envelope = serde_json::to_value(api::error::Envelope { error }).unwrap();
+    assert!(!envelope["error"]["message"].as_str().unwrap().contains('\\'));
+}
+
+#[test]
+fn source_describer_preserves_plain_errors_and_ignores_malformed_records() {
+    for stderr in [
+        "error: dependency versions do not resolve\nhint: pin a compatible version\n",
+        "{\"error\": invalid}\nerror: dependency versions do not resolve\n",
+    ] {
+        let (error, kept) = failed_tool(stderr);
+        assert_eq!(kept, stderr);
+        assert!(error.message.ends_with("error: dependency versions do not resolve"));
+        assert!(error.remedy.is_none());
+        assert_eq!(error.next, ["cozy machine logs local calcifer"]);
+    }
+}
+
+#[test]
+#[ignore = "requires uv and the published Runtime; hosted cli-describe-errors workflow runs it explicitly"]
+fn source_describer_reports_the_published_runtime_diagnostic_and_remedy() {
+    let project = tempfile::tempdir().unwrap();
+    fs::create_dir(project.path().join("invalid_app")).unwrap();
+    fs::write(project.path().join("pyproject.toml"), r#"
+[project]
+name = "invalid-app"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = ["cozy-runtime==0.45.0"]
+[project.entry-points."cozy.application"]
+default = "invalid_app:app"
+[tool.uv.build-backend]
+module-name = "invalid_app"
+module-root = ""
+"#).unwrap();
+    fs::write(project.path().join("invalid_app/__init__.py"), r#"from cozy_runtime.author import App
+import tensorfs
+from tensorfs import _ext
+
+app = App()
+
+@app.entrypoint(accelerator=False)
+def echo(value: int) -> int:
+    return value
+"#).unwrap();
+    let error = describe_with(Path::new("uv"), project.path(), "3.12", Some("0.45.0")).unwrap_err();
+    println!("{}", serde_json::to_string(&api::error::Envelope { error: error.clone() }).unwrap());
+    assert_eq!(error.kind, api::error::Kind::Validation);
+    assert_eq!(error.code, "describe_failed");
+    assert!(error.message.contains("internal_import: import tensorfs"), "{}", error.message);
+    assert_eq!(error.message.lines().count(), 1);
+    assert!(error.remedy.as_deref().is_some_and(|remedy| remedy.contains("surface must be valid")));
+    let encoded = serde_json::to_value(api::error::Envelope { error: error.clone() }).unwrap();
+    assert_eq!(encoded["error"]["message"], error.message);
+    assert!(!encoded["error"]["message"].as_str().unwrap().contains("\"error\""));
 }

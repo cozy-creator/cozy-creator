@@ -506,9 +506,7 @@ fn list_in(spec: &Spec, access: &Scope<'_>) -> Result<Listing> {
                 page = next;
             }
             let exact = members.iter().any(|m| &m.path == path);
-            members.retain(|m| {
-                path.is_empty() || &m.path == path || m.path.starts_with(&format!("{path}/"))
-            });
+            members.retain(|m| exact || path.is_empty() || m.path.starts_with(&format!("{path}/")));
             if members.is_empty() {
                 return refuse(
                     Code::MISSING_TENSOR,
@@ -525,7 +523,7 @@ fn list_in(spec: &Spec, access: &Scope<'_>) -> Result<Listing> {
             );
             Ok(Listing {
                 pinned,
-                root: if exact { String::new() } else { path.clone() },
+                root: path.clone(),
                 exact,
                 members,
                 trigger: vec![],
@@ -615,24 +613,34 @@ fn list_in(spec: &Spec, access: &Scope<'_>) -> Result<Listing> {
                 .map_err(|e| crate::err::classify_io(format!("open {}", path.display()), e))?;
             let mut members = Vec::new();
             let exact = path.is_file();
+            let mut root = String::new();
             if exact {
                 let name = path
                     .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("source")
                     .to_string();
-                members.push(Member {
+                let parent = path.parent().expect("a canonical file has a parent");
+                // A file inside a declared model directory keeps that directory's loading
+                // data and any indexed shards. An arbitrary loose file remains a lone input.
+                let context = ["config.json", "adapter_config.json", "model_index.json"].iter().any(|name| parent.join(name).is_file())
+                    || std::fs::read_dir(parent).map_err(|e| crate::err::classify_io("list source context", e))?
+                        .filter_map(std::result::Result::ok).any(|entry| entry.file_name().to_string_lossy().contains(".safetensors.index"));
+                if context {
+                    root = name;
+                    walk(parent, parent, &mut members)?;
+                } else { members.push(Member {
                     path: name,
                     at: At::Local(path.clone()),
                     length: None,
                     sha256: None,
-                });
+                }); }
             } else {
                 walk(&path, &path, &mut members)?;
             }
             Ok(Listing {
                 pinned: path.display().to_string(),
-                root: String::new(),
+                root,
                 exact,
                 members,
                 trigger: vec![],
@@ -696,6 +704,8 @@ pub(crate) fn weights(path: &str) -> bool {
 /// Other serializations of the weights, and their indexes (`pytorch_model.bin.index.json`).
 fn other_weights(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
+    // Tokenizer binary assets are model data rather than another weight serialization.
+    if lower.rsplit('/').next().is_some_and(|n| n.starts_with("tokenizer") && n.ends_with(".bin")) { return false; }
     (OTHER_WEIGHTS.iter()).any(|e| lower.ends_with(e) || lower.contains(&format!("{e}.index")))
 }
 
@@ -703,10 +713,7 @@ fn other_weights(path: &str) -> bool {
 fn config(path: &str) -> bool {
     let name = path.rsplit('/').next().unwrap_or(path);
     let lower = name.to_ascii_lowercase();
-    [".json", ".txt", ".model", ".jinja", ".tiktoken"]
-        .iter()
-        .any(|e| lower.ends_with(e))
-        || lower.starts_with("license")
+    super::run_data(path) || lower.starts_with("license")
 }
 
 /// What `select` keeps besides the weights.
@@ -840,7 +847,23 @@ pub(crate) fn select(
     read: &dyn Fn(&Member) -> Result<Vec<u8>>,
 ) -> Result<Vec<Member>> {
     if listing.exact {
-        return Ok(listing.members);
+        if listing.root.is_empty() { return Ok(listing.members); }
+        let selected = listing.root.as_str();
+        let parent = folder(selected);
+        let mut required = std::collections::BTreeSet::from([selected.to_owned()]);
+        // Selecting an index or one indexed shard selects that entire checkpoint, never a
+        // truncated shard. Other loose weight files in the collection stay unselected.
+        for index in listing.members.iter().filter(|m| folder(&m.path) == parent && m.path.contains(".safetensors.index") && m.path.ends_with(".json")) {
+            let doc: serde_json::Value = serde_json::from_slice(&read(index)?).map_err(|e| Refusal { code: Code::MALFORMED_JSON, detail: format!("{}: {e}", index.path) })?;
+            let shards: Vec<_> = doc.get("weight_map").and_then(serde_json::Value::as_object).into_iter().flat_map(|m| m.values())
+                .filter_map(serde_json::Value::as_str).map(|p| if parent.is_empty() { p.to_owned() } else { format!("{parent}/{p}") }).collect();
+            if index.path == selected || shards.iter().any(|p| p == selected) {
+                required.insert(index.path.clone());
+                required.extend(shards);
+            }
+        }
+        return Ok(listing.members.into_iter().filter(|m| required.contains(&m.path)
+            || ((parent.is_empty() || m.path.starts_with(&format!("{parent}/"))) && !weights(&m.path) && !other_weights(&m.path) && config(&m.path))).collect());
     }
     let root = listing.root.as_str();
     let under = |p: &str| {
@@ -1013,6 +1036,40 @@ pub(crate) fn read_range(m: &Member, from: u64, to: u64, access: &Access) -> Res
         },
     )?;
     Ok(out)
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+
+    fn member(path: &str) -> Member {
+        Member { path: path.into(), at: At::Local(PathBuf::from(path)), length: None, sha256: None }
+    }
+
+    #[test]
+    fn exact_lora_selection_keeps_its_data_and_excludes_eleven_other_weights() {
+        let mut members: Vec<_> = (0..12).map(|i| member(&format!("adapter-{i}.safetensors"))).collect();
+        members.extend([member("adapter_config.json"), member("tokenizer/custom.vocab"), member("tokenizer.bin"), member("README.md")]);
+        let listing = Listing { pinned: "hf://fixture/adapters@0000000000000000000000000000000000000000/adapter-7.safetensors".into(), root: "adapter-7.safetensors".into(), exact: true, members, trigger: vec![] };
+        let selected = select(listing, None, Files::All, &|_| unreachable!()).unwrap();
+        let paths: Vec<_> = selected.iter().map(|m| m.path.as_str()).collect();
+        assert_eq!(paths.iter().filter(|p| p.ends_with(".safetensors")).copied().collect::<Vec<_>>(), ["adapter-7.safetensors"]);
+        assert!(paths.contains(&"adapter_config.json"));
+        assert!(paths.contains(&"tokenizer/custom.vocab"));
+        assert!(paths.contains(&"tokenizer.bin"));
+    }
+
+    #[test]
+    fn exact_index_or_shard_selects_the_complete_indexed_checkpoint() {
+        let index = br#"{"weight_map":{"a":"model-00001-of-00002.safetensors","b":"model-00002-of-00002.safetensors"}}"#;
+        for chosen in ["model.safetensors.index.json", "model-00001-of-00002.safetensors"] {
+            let listing = Listing { pinned: "fixture".into(), root: chosen.into(), exact: true,
+                members: ["model.safetensors.index.json", "model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors", "unrelated.safetensors", "config.json", "tokenizer.json"].into_iter().map(member).collect(), trigger: vec![] };
+            let selected = select(listing, None, Files::All, &|_| Ok(index.to_vec())).unwrap();
+            assert_eq!(selected.len(), 5);
+            assert!(!selected.iter().any(|m| m.path == "unrelated.safetensors"));
+        }
+    }
 }
 
 fn read_small_in(m: &Member, access: &Scope<'_>) -> Result<Vec<u8>> {

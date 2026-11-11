@@ -1708,7 +1708,7 @@ fn status(frame: &v1::StatusFrame, hubs: &Hubs) -> MachineStatus {
             .models
             .iter()
             .map(|model| wire::Model {
-                repository: model.repository.clone(),
+                model: model.model.clone(),
                 total_bytes: model.total_bytes,
                 unique_bytes: model.unique_bytes,
                 checkpoints: model

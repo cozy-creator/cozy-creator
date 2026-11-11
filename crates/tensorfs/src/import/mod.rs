@@ -154,7 +154,7 @@ pub(crate) struct Layout {
     pub pipeline: Option<Pipeline>,
     /// Header order: components with tensors in construction order, then the rest by name.
     pub components: Vec<Folder>,
-    /// Repo files by path, byte-exact; never inside the cozytensors.
+    /// Model files by path, byte-exact; never inside the cozytensors.
     pub files: BTreeMap<String, Vec<u8>>,
 }
 
@@ -632,13 +632,14 @@ pub(crate) fn layout(
     let rest: BTreeSet<&String> = listed.keys().chain(&modular).filter(|n| !tensored.contains(n)).collect();
     names.extend(rest.into_iter().cloned());
     let root_config = !files.contains_key(MODULAR_INDEX) && CONFIGS.iter().any(|c| files.contains_key(*c));
-    let root = pipeline.is_none()
-        && (names.is_empty() || names.iter().any(|n| n == ROOT_COMPONENT) || root_config)
+    let root_data = files.keys().any(|p| run_data(p) && !names.iter().any(|n| p.starts_with(&format!("{n}/"))));
+    let root = (names.is_empty() || names.iter().any(|n| n == ROOT_COMPONENT) || root_config || root_data)
         && !files.keys().any(|p| p.starts_with("model/"));
     if root && !names.iter().any(|n| n == ROOT_COMPONENT) {
         names.push(ROOT_COMPONENT.into());
     }
     let mut components = Vec::new();
+    let owners = names.clone();
     for name in names {
         let at = if root && name == ROOT_COMPONENT {
             ""
@@ -646,7 +647,7 @@ pub(crate) fn layout(
             name.as_str()
         };
         let inside = |p: &str| match at {
-            "" => Some(p.to_owned()).filter(|p| !p.contains('/')),
+            "" => Some(p.to_owned()).filter(|p| !owners.iter().any(|other| other != ROOT_COMPONENT && p.starts_with(&format!("{other}/")))),
             f => (p.strip_prefix(f)?.strip_prefix('/')).map(str::to_owned),
         };
         let mine: Vec<(String, String)> = (files.keys())
@@ -747,9 +748,41 @@ fn run_data(path: &str) -> bool {
     let lower = name(path).to_ascii_lowercase();
     let doc = ["readme", "license", "licence", "notice", "copying"];
     !doc.iter().any(|d| lower.starts_with(d))
-        && [".json", ".txt", ".model", ".jinja", ".tiktoken"]
+        && ![PIPELINE_FILE, MODULAR_INDEX].contains(&lower.as_str())
+        && !lower.starts_with('.')
+        && ![".md", ".rst", ".pdf", ".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".mp4", ".mp3", ".wav",
+            ".py", ".pyc", ".so", ".dll", ".dylib", ".sh", ".js", ".ts", ".html", ".css"]
             .iter()
             .any(|e| lower.ends_with(e))
+}
+
+/// A source collection is not a model identity. Shards already form one group; multiple
+/// groups need a pipeline's explicit component relationship, and independent adapters need
+/// an individual selection even when their architectures and tensor keys are identical.
+fn one_model(set: &source::SourceSet) -> Result<()> {
+    if set.groups.len() <= 1 { return Ok(()) }
+    let labels = || set.groups.iter().map(source::Group::label).collect::<Vec<_>>().join(", ");
+    let adapters = set.groups.iter().filter(|g| g.tensors.keys().any(|key|
+        lora::peft_key(key).is_some_and(|key| key.contains(".lora_A")) || key.contains(".lora_down"))).count();
+    let indexes: Vec<_> = set.plain.iter().filter(|p| [PIPELINE_FILE, MODULAR_INDEX].contains(&name(&p.path))).collect();
+    let mut relationship = false;
+    for index in indexes {
+        let folders = remote::index_folders(&set.read_plain(index)?)?;
+        let base = folder(&index.path);
+        let mut seen = BTreeSet::new();
+        if set.groups.iter().all(|g| {
+            let relative = if base.is_empty() { Some(g.folder.as_str()) } else { g.folder.strip_prefix(&format!("{base}/")) };
+            relative.is_some_and(|relative| folders.iter().any(|f| f == relative)) && seen.insert(&g.folder)
+        }) {
+            relationship = true;
+            break;
+        }
+    }
+    if adapters > 1 || !relationship {
+        return refuse(Code::MISSING_FIELD, format!(
+            "source has multiple model selections: {}. Select one weight file or indexed checkpoint by its path; independent models and LoRAs need separate destination models", labels()));
+    }
+    Ok(())
 }
 
 /// A config file as structured JSON: floats and `null` kept.
@@ -778,6 +811,46 @@ fn config_class(file: &str, config: &Config) -> ClassRef {
 /// Imports `req` into a committed cozytensors in `store`: (its header, the source's repo files). With
 /// `key`, an interrupted import resumes: the tensors its journal holds are not converted again.
 pub fn into_store(store: &crate::store::Store, req: &Request, key: Option<&str>) -> Result<(crate::format::ObjectRef, std::collections::BTreeMap<String, crate::format::ObjectRef>)> {
+    if req.sources.len() != 1 && req.sources.iter().any(|s| s.split(['?', '#']).next().is_some_and(|s| s.ends_with(".cozytensors"))) {
+        return refuse(Code::MISSING_FIELD, "select exactly one native .cozytensors checkpoint; combining native artifacts requires an explicit composition");
+    }
+    if let [source] = req.sources {
+        let spec = remote::parse(source)?;
+        let native = match &spec {
+            remote::Spec::Local(path) => path.is_file() && path.extension().is_some_and(|e| e == "cozytensors"),
+            remote::Spec::Hf { path, .. } => path.ends_with(".cozytensors"),
+            remote::Spec::Url(url) => url.split(['?', '#']).next().is_some_and(|p| p.ends_with(".cozytensors")),
+            _ => false,
+        };
+        if native {
+            if req.converter.is_some() || req.source_variant.is_some() || req.trained_on.is_some() {
+                return refuse(Code::MISSING_FIELD, "a native .cozytensors checkpoint is admitted unchanged; converter, source variant and trained-on options do not apply");
+            }
+            let access = remote::Scope::new(req.access, req.stop);
+            access.check()?;
+            let (path, downloaded, _lock) = match &spec {
+                remote::Spec::Local(path) => (path.clone(), false, None),
+                _ => {
+                    let listing = access.list(&spec)?;
+                    let mut selected = listing.members.iter().filter(|m| m.path.ends_with(".cozytensors") && (listing.root.is_empty() || listing.root == m.path));
+                    let Some(member) = selected.next().filter(|_| selected.next().is_none()) else {
+                        return refuse(Code::MISSING_FIELD, "select one complete .cozytensors file by its source path");
+                    };
+                    let dest = req.tmp.join("checkpoint-files").join(format!("{}.cozytensors", digest(&[&listing.pinned, &member.path])));
+                    std::fs::create_dir_all(dest.parent().expect("staging directory")).map_err(|e| crate::err::classify_io("create native checkpoint staging", e))?;
+                    let lock = platform::lock::LockFile::new(dest.with_extension("lock")).lock(platform::lock::Kind::Exclusive)
+                        .map_err(|e| crate::err::classify_io("lock native checkpoint staging", std::io::Error::other(e.to_string())))?;
+                    let mut progress = |done| (req.progress)("downloading checkpoint", done, member.length.unwrap_or(0));
+                    (access.land(member, &dest, &mut progress)?, true, Some(lock))
+                }
+            };
+            let tree = store.admit_file(&path, "model").map_err(Error::refusal)?;
+            access.check()?;
+            let header = store.tree(&tree).map_err(Error::refusal)?.header().map_err(|e| Error::Format(e).refusal())?.1.clone();
+            if downloaded { std::fs::remove_file(&path).map_err(|e| crate::err::classify_io("remove native checkpoint staging", e))?; }
+            return Ok((header, BTreeMap::new()));
+        }
+    }
     let mut writer = crate::writer(store, None, key).map_err(crate::store::Error::refusal)?;
     convert(req, &mut writer)?;
     let header = writer.committed().cloned().expect("an import commits");
@@ -834,6 +907,7 @@ pub(crate) fn convert(req: &Request, sink: &mut dyn Sink) -> Result<Imported> {
     stopped(req)?;
     let mut set = source::SourceSet::scan(&heads)?;
     set.access = Some(req.access.clone());
+    one_model(&set)?;
     // What folding and normalizing read of a file only its header is here holds: small integer
     // tensors (markers, stated shapes) and scalars (LoRA alphas).
     let small = |t: &source::Tensor| t.len <= 64 << 10;
@@ -1122,10 +1196,12 @@ mod tests {
     struct Collected {
         bytes: Vec<u8>,
         committed: bool,
+        layout: Option<Layout>,
     }
 
     impl Sink for Collected {
-        fn begin(&mut self, _: &Layout) -> Result<()> {
+        fn begin(&mut self, layout: &Layout) -> Result<()> {
+            self.layout = Some(layout.clone());
             Ok(())
         }
 
@@ -1148,6 +1224,132 @@ mod tests {
             self.committed = true;
             Ok(())
         }
+    }
+
+    fn weights(path: &std::path::Path, keys: &[&str], value: u8) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let head: std::collections::BTreeMap<_, _> = keys.iter().enumerate().map(|(i, key)| (*key,
+            serde_json::json!({"dtype":"U8", "shape":[1], "data_offsets":[i,i+1]}))).collect();
+        let head = serde_json::to_vec(&head).unwrap();
+        let mut file = std::fs::File::create(path).unwrap();
+        file.write_all(&(head.len() as u64).to_le_bytes()).unwrap();
+        file.write_all(&head).unwrap();
+        file.write_all(&vec![value; keys.len()]).unwrap();
+    }
+
+    fn import_local(path: &std::path::Path, sink: &mut Collected) -> Result<super::Imported> {
+        let tmp = tempfile::tempdir().unwrap();
+        convert(&Request {
+            sources: &[path.display().to_string()], converter: Some(AS_IS), source_variant: None,
+            trained_on: None, access: &Access::default(), tmp: tmp.path(), progress: &|_, _, _| {}, stop: None,
+        }, sink)
+    }
+
+    #[test]
+    fn model_selection_refuses_twelve_independent_loras_and_imports_only_one() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..12 { weights(&dir.path().join(format!("adapter-{i}.safetensors")), &["layer.lora_A.weight", "layer.lora_B.weight"], i); }
+        let mut sink = Collected::default();
+        let error = import_local(dir.path(), &mut sink).unwrap_err();
+        assert!(error.detail.contains("multiple model selections"));
+        assert!(error.detail.contains("adapter-11"));
+        assert!(!sink.committed);
+        assert!(sink.bytes.is_empty());
+        import_local(&dir.path().join("adapter-7.safetensors"), &mut sink).unwrap();
+        assert_eq!(sink.bytes, [7,7]);
+        assert_eq!(sink.layout.unwrap().components.iter().filter(|c| c.name == "model").count(), 1);
+    }
+
+    #[test]
+    fn model_selection_keeps_pipeline_and_indexed_shards_together() {
+        let pipeline = tempfile::tempdir().unwrap();
+        weights(&pipeline.path().join("transformer/model.safetensors"), &["w"], 7);
+        weights(&pipeline.path().join("vae/model.safetensors"), &["w"], 9);
+        std::fs::write(pipeline.path().join("model_index.json"), br#"{"_class_name":"FixturePipeline","transformer":["fixture","Transformer"],"vae":["fixture","VAE"]}"#).unwrap();
+        let mut sink = Collected::default();
+        import_local(pipeline.path(), &mut sink).unwrap();
+        assert_eq!(sink.bytes, [7,9]);
+        assert_eq!(sink.layout.unwrap().components.len(), 2);
+
+        let shards = tempfile::tempdir().unwrap();
+        weights(&shards.path().join("model-00001-of-00002.safetensors"), &["a"], 3);
+        weights(&shards.path().join("model-00002-of-00002.safetensors"), &["b"], 4);
+        std::fs::write(shards.path().join("model.safetensors.index.json"), br#"{"weight_map":{"a":"model-00001-of-00002.safetensors","b":"model-00002-of-00002.safetensors"}}"#).unwrap();
+        let mut sink = Collected::default();
+        import_local(shards.path(), &mut sink).unwrap();
+        assert_eq!(sink.bytes, [3,4]);
+        assert_eq!(sink.layout.unwrap().components.len(), 1);
+    }
+
+    #[test]
+    fn model_selection_accepts_alternative_pipeline_indexes_for_the_selected_components() {
+        let pipeline = tempfile::tempdir().unwrap();
+        weights(&pipeline.path().join("transformer/model.safetensors"), &["w"], 7);
+        weights(&pipeline.path().join("vae/model.safetensors"), &["w"], 9);
+        let index = br#"{"_class_name":"FixturePipeline","transformer":["fixture","Transformer"],"vae":["fixture","VAE"]}"#;
+        std::fs::write(pipeline.path().join("model_index.json"), index).unwrap();
+        std::fs::write(pipeline.path().join("modular_model_index.json"), index).unwrap();
+        std::fs::create_dir(pipeline.path().join("FL2VA")).unwrap();
+        std::fs::write(pipeline.path().join("FL2VA/model_index.json"), br#"{"transformer":["fixture","OtherView"]}"#).unwrap();
+        let mut sink = Collected::default();
+        import_local(pipeline.path(), &mut sink).unwrap();
+        assert_eq!(sink.bytes, [7, 9]);
+        let layout = sink.layout.unwrap();
+        assert_eq!(layout.components.iter().map(|component| component.name.as_str()).collect::<Vec<_>>(), ["transformer", "vae"]);
+    }
+
+    #[test]
+    fn model_data_keeps_nested_tokenizers_and_unfamiliar_assets_in_header() {
+        let files = std::collections::BTreeMap::from([
+            ("config.json".into(), br#"{"architectures":["Fixture"],"width":2}"#.to_vec()),
+            ("tokenizer/custom.vocab".into(), b"hello 0".to_vec()),
+            ("tokenizer/spiece.spm".into(), vec![0,1,2]),
+            ("tokenizer/template.custom".into(), b"{{input}}".to_vec()),
+            ("README.md".into(), b"docs".to_vec()),
+            ("LICENSE".into(), b"attribution".to_vec()),
+            ("preview.webp".into(), b"preview".to_vec()),
+        ]);
+        let layout = super::layout(files, &["model".into()], &Default::default()).unwrap();
+        let model = &layout.components[0];
+        assert_eq!(model.config["width"].as_u64(), Some(2));
+        assert_eq!(model.assets["tokenizer/custom.vocab"], b"hello 0");
+        assert_eq!(model.assets["tokenizer/spiece.spm"], [0,1,2]);
+        assert_eq!(model.assets["tokenizer/template.custom"], b"{{input}}");
+        assert_eq!(layout.files.len(), 3);
+    }
+
+    #[test]
+    fn latent_upscaler_import_carries_its_learned_normalization() {
+        let table = super::tables().iter().find(|table| table.name == "h3.latent_upscaler").unwrap();
+        let files = table.files.iter().map(|(path, config)| (path.clone(), serde_json::to_vec(config).unwrap())).collect();
+        let layout = super::layout(files, &["upscaler".into()], &Default::default()).unwrap();
+        let root = layout.components.iter().find(|component| component.name == "model").unwrap();
+        let normalization = root.config["latent_normalization"].as_object().unwrap();
+        assert_eq!(normalization["enabled"].as_bool(), Some(true));
+        let mean = normalization["mean"].as_array().unwrap();
+        let std = normalization["std"].as_array().unwrap();
+        assert_eq!(mean.len(), 24);
+        assert_eq!(std.len(), 24);
+        assert!(mean.iter().all(|value| value.as_f64().is_some_and(f64::is_finite)));
+        assert!(std.iter().all(|value| value.as_f64().is_some_and(|value| value.is_finite() && value > 0.0)));
+    }
+
+    #[test]
+    fn native_checkpoint_import_preserves_identity_without_conversion_or_source_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("native.cozytensors");
+        let (header, weights, tokenizer, _) = crate::store::file::tests::complete(&path);
+        let store = crate::store::Store::open(dir.path().join("fresh-store")).unwrap();
+        let sources = [path.display().to_string()];
+        let request = Request { sources: &sources, converter: None, source_variant: None, trained_on: None,
+            access: &Access::default(), tmp: &dir.path().join("staging"), progress: &|_, _, _| {}, stop: None };
+        let (id, ancillary) = super::into_store(&store, &request, Some("native-import")).unwrap();
+        assert_eq!(id, crate::format::ObjectRef::of(&header.to_cbor().unwrap()));
+        assert!(ancillary.is_empty());
+        std::fs::remove_file(path).unwrap();
+        let checkpoint = store.checkpoint(&id).unwrap();
+        assert_eq!(checkpoint.read("model", "weight").unwrap(), weights);
+        assert_eq!(checkpoint.asset("model", "tokenizer.json").unwrap(), tokenizer);
     }
 
     #[test]

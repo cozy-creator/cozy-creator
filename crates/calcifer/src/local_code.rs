@@ -969,30 +969,58 @@ pub(crate) fn run_said(command: &mut Command, code: &str, what: &str) -> Result<
     let said = String::from_utf8_lossy(&out.stderr).into_owned();
     let (ended, killed) = platform::process::ended(&out.status);
     tracing::warn!(code, "{what} {ended}; its stderr ends:\n{}", platform::process::tail(&said, 40));
-    let message = match (last_words(&said), killed) {
+    let refusal = runtime_refusal(&said);
+    let words = refusal.as_ref().map(|refusal| refusal.error.message.clone())
+        .or_else(|| platform::process::last_line(&said));
+    let message = match (words, killed) {
         (Some(words), _) => format!("{what} {ended}: {words}"),
         (None, true) => format!("{what} {ended} before it answered"),
         (None, false) => format!("{what} {ended} and gave no reason on stderr"),
     };
     let kind = if killed { Kind::Unavailable } else { Kind::Validation };
-    Err((Error::new(kind, code, message).next("cozy machine logs local calcifer"), said))
-}
-
-/// A failed tool's last meaningful words on stderr, as one line: a JSON refusal's message (`cozy-runtime --json`), else its
-/// last line that is no hint or warning (`platform::process::last_line`).
-fn last_words(said: &str) -> Option<String> {
-    let lines: Vec<&str> = said.lines().collect();
-    for at in (0..lines.len()).rev().filter(|&at| lines[at].starts_with('{')) {
-        let rest = lines[at..].join("\n");
-        let Some(Ok(doc)) = serde_json::Deserializer::from_str(&rest).into_iter::<Value>().next() else { continue };
-        if let Some(message) = doc["error"]["message"].as_str() {
-            return Some(match doc["error"]["name"].as_str() {
-                Some(name) => format!("{name}: {message}"),
-                None => message.to_owned(),
-            });
+    let mut error = Error::new(kind, code, message);
+    if let Some(refusal) = refusal {
+        error.remedy = refusal.error.remedy.filter(|remedy| !remedy.trim().is_empty());
+        for next in refusal.next.into_iter().filter(|next| !next.trim().is_empty()) {
+            error = error.next(next);
         }
     }
-    platform::process::last_line(said)
+    if error.next.is_empty() {
+        error = error.next("cozy machine logs local calcifer");
+    }
+    Err((error, said))
+}
+
+#[derive(Deserialize)]
+struct RuntimeRefusal {
+    error: RuntimeDiagnostic,
+    #[serde(default)]
+    next: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct RuntimeDiagnostic {
+    #[serde(rename = "name")]
+    _name: String,
+    #[serde(rename = "code")]
+    _code: i32,
+    message: String,
+    #[serde(default)]
+    remedy: Option<String>,
+}
+
+/// Runtime's typed refusal may follow uv's progress output. Keep its first diagnostic
+/// line and recovery advice; the full record is already retained in the Calcifer log.
+fn runtime_refusal(said: &str) -> Option<RuntimeRefusal> {
+    let lines: Vec<&str> = said.lines().collect();
+    for at in (0..lines.len()).rev().filter(|&at| lines[at].trim_start().starts_with('{')) {
+        let rest = lines[at..].join("\n");
+        let Some(Ok(mut refusal)) = serde_json::Deserializer::from_str(&rest).into_iter::<RuntimeRefusal>().next() else { continue };
+        let Some(message) = refusal.error.message.lines().map(str::trim).find(|line| !line.is_empty()) else { continue };
+        refusal.error.message = message.to_owned();
+        return Some(refusal);
+    }
+    None
 }
 
 /// The Python a release of `project` runs on: `.python-version`, else requires-python's floor;
@@ -1235,9 +1263,13 @@ async fn read_interface(api: &Arc<Api>, code: &LocalCode, on: &On, hub: &str, ru
         .map_err(|why| refuse("describe_failed", why))?;
     let described = described.map_err(|error| match (&runtime, &locked, on) {
         // A describer killed (`Kind::Unavailable`) refused nothing.
-        (Some(runtime), None, On::Machine(name)) if error.code == "describe_failed" && error.kind != Kind::Unavailable => error
-            .remedy(format!("The Runtime describing this source refused it, and {name} runs {runtime}: a run there reads it with that one, and this then answers what it read"))
-            .next(format!("cozy run <its folder> --on {name}")),
+        (Some(runtime), None, On::Machine(name)) if error.code == "describe_failed" && error.kind != Kind::Unavailable => {
+            let mut error = error;
+            if error.remedy.is_none() {
+                error.remedy = Some(format!("The Runtime describing this source refused it, and {name} runs {runtime}: a run there reads it with that one, and this then answers what it read"));
+            }
+            error.next(format!("cozy run <its folder> --on {name}"))
+        }
         _ => error,
     });
     Ok((format!("local/{}", project.name), described?.1))

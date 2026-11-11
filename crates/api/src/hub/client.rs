@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
-use reqwest::header::{ACCEPT, HeaderName, HeaderValue};
+use reqwest::header::{ACCEPT, HeaderMap, HeaderName, HeaderValue};
 use reqwest::{Method, Request, RequestBuilder, Response, StatusCode};
 use serde::de::DeserializeOwned;
 use serde_json::json;
@@ -46,6 +46,9 @@ pub struct Client {
     http: reqwest::Client,
     credential: Credential,
 }
+
+/// Explicit model/checkpoint JSON representation; legacy Hubs may ignore this on reads.
+const MODEL_MEDIA_TYPE: &str = "application/vnd.cozy.model+json;version=2";
 
 /// What a path parameter escapes: the `url` crate's path-segment set, so a value stays one segment.
 const SEGMENT: &AsciiSet = &CONTROLS
@@ -234,7 +237,7 @@ impl Client {
     }
 
     pub async fn get_model(&self, org: &str, name: &str) -> Result<ModelCard, Error> {
-        self.json(self.at(Method::GET, "/v1/models/{org}/{name}", &[org, name]))
+        self.json(model_media(self.at(Method::GET, "/v1/models/{org}/{name}", &[org, name])))
             .await
     }
 
@@ -275,18 +278,18 @@ impl Client {
         self.json(request.json(&json!({"source": source}))).await
     }
 
-    /// Records commit `sha256:<hex>` (its tree, `length` bytes) as a commit of org/name: the Hub
+    /// Records checkpoint `sha256:<hex>` (its tree, `length` bytes) as a checkpoint of org/name: the Hub
     /// takes it when the account may read its whole closure, so nothing uploads.
-    pub async fn create_model_commit(
+    pub async fn create_model_checkpoint(
         &self,
         org: &str,
         name: &str,
-        commit: &str,
+        checkpoint: &str,
         length: i64,
-    ) -> Result<ModelCommit, Error> {
-        let request = self.at(Method::POST, "/v1/models/{org}/{name}/commits", &[org, name]);
-        let sha256 = commit.trim_start_matches("sha256:");
-        self.json(request.json(&json!({"commit": {"sha256": sha256, "length": length}}))).await
+    ) -> Result<ModelCheckpoint, Error> {
+        let request = self.at(Method::POST, "/v1/models/{org}/{name}/checkpoints", &[org, name]);
+        let sha256 = checkpoint.trim_start_matches("sha256:");
+        self.json(request.json(&json!({"checkpoint": {"sha256": sha256, "length": length}}))).await
     }
 
     /// Sets an org's display name, links and claim handles (a platform admin); each given field
@@ -324,16 +327,16 @@ impl Client {
             .map(drop)
     }
 
-    pub async fn delete_model_commit(
+    pub async fn delete_model_checkpoint(
         &self,
         org: &str,
         name: &str,
-        commit: &str,
+        checkpoint: &str,
     ) -> Result<(), Error> {
         let request = self.at(
             Method::DELETE,
-            "/v1/models/{org}/{name}/commits/{commit}",
-            &[org, name, commit],
+            "/v1/models/{org}/{name}/checkpoints/{checkpoint}",
+            &[org, name, checkpoint],
         );
         self.send(request).await.map(drop)
     }
@@ -348,20 +351,26 @@ impl Client {
         self.send(request).await.map(drop)
     }
 
-    /// Releases `commits` (one per lane) as `release`, public until deleted.
+    /// Publish a release with one checkpoint per lane. Owners may unpublish it later.
     pub async fn publish_model_release(
         &self,
         org: &str,
         name: &str,
         release: &str,
-        commits: &[String],
+        checkpoints: &[String],
     ) -> Result<ModelRelease, Error> {
         let request = self.at(
             Method::PUT,
             "/v1/models/{org}/{name}/releases/{release}",
             &[org, name, release],
         );
-        self.json(request.json(&json!({"commits": commits}))).await
+        self.json(model_media(request).json(&json!({"checkpoints": checkpoints}))).await
+    }
+
+    /// Withdraw public access while retaining the release and its checkpoints for its owner.
+    pub async fn unpublish_model_release(&self, org: &str, name: &str, release: &str) -> Result<crate::calcifer::hub::ModelUnpublished, Error> {
+        let request = self.at(Method::POST, "/v1/models/{org}/{name}/releases/{release}/unpublish", &[org, name, release]);
+        self.json(model_media(request)).await
     }
 
     pub async fn search_packages(
@@ -698,6 +707,12 @@ impl Client {
     }
 }
 
+/// Replace the generic JSON preference; appending another Accept value leaves the
+/// first value authoritative to a server using Header.Get.
+fn model_media(request: RequestBuilder) -> RequestBuilder {
+    request.headers(HeaderMap::from_iter([(ACCEPT, HeaderValue::from_static(MODEL_MEDIA_TYPE))]))
+}
+
 /// An answer's body as `T`; a shape it cannot read names its field (`lanes.bf16.bytes: …`).
 async fn read<T: DeserializeOwned>(response: Response) -> Result<T, Error> {
     let body = response.bytes().await.map_err(|e| Error::unanswered(&e))?;
@@ -714,6 +729,37 @@ async fn read<T: DeserializeOwned>(response: Response) -> Result<T, Error> {
 
 #[cfg(test)]
 mod catalog_tests {
+    #[tokio::test]
+    async fn model_cards_negotiate_the_canonical_checkpoint_representation() {
+        use std::io::{BufRead as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let received = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut request = String::new();
+            let mut reader = std::io::BufReader::new(socket.try_clone().unwrap());
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap() == 0 || line == "\r\n" { break; }
+                request.push_str(&line);
+            }
+            let accept = request.lines().find_map(|line| line.split_once(':').filter(|(name, _)| name.eq_ignore_ascii_case("accept")).map(|(_, value)| value.trim()));
+            let body = match accept {
+                Some(MODEL_MEDIA_TYPE) => r#"{"model":{"org":"author","name":"adapter","kind":"lora"},"releases":[],"checkpoints":[]}"#,
+                _ => r#"{"model":{"org":"author","name":"adapter","role":"lora"},"releases":[],"commits":[]}"#,
+            };
+            write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/vnd.cozy.model+json;version=2\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            request
+        });
+        let client = Client::connect(&format!("http://{address}"), reqwest::Client::new(), Credential::Anonymous);
+        let card = client.get_model("author", "adapter").await.unwrap();
+        assert_eq!(card.model.kind, Some(crate::model_ref::ModelKind::Lora));
+        let request = received.join().unwrap().to_ascii_lowercase();
+        assert!(request.starts_with("get /v1/models/author/adapter "));
+        assert!(request.contains("accept: application/vnd.cozy.model+json;version=2"));
+        assert_eq!(request.lines().filter(|line| line.starts_with("accept:")).count(), 1);
+    }
+
     use super::*;
     use std::io::{BufRead as _, Write as _};
 

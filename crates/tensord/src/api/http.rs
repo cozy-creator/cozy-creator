@@ -328,7 +328,7 @@ async fn remove_model(State(m): State<Machine>, headers: HeaderMap, body: Bytes)
     let asked: v1::RemoveModel = serde_json::from_slice(&body)
         .map_err(|e| Error::validation("invalid_request", format!("Cannot read model removal request: {e}")))?;
     let model = asked.model.trim().to_owned();
-    if !tensorfs::format::repo_name(&model) || model.contains('@') {
+    if !tensorfs::format::model_name(&model) || model.contains('@') {
         return Err(Error::validation("model_ref_invalid", "Specify a model repository as org/name, without a release or lane").into());
     }
     let admitted = m.admit()?;

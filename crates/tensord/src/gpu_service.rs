@@ -49,7 +49,7 @@ fn view(binding: &Binding) -> Option<executor_api::View> {
 pub(crate) struct ModelGrant {
     pub package: String,
     pub slot: String,
-    pub repository: String,
+    pub model: String,
     pub release: String,
     pub lane: String,
     pub manifest: String,
@@ -62,7 +62,7 @@ pub(crate) struct ModelGrant {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Adapted {
     /// The base model the view adapts (org/name).
-    pub repository: String,
+    pub model: String,
     pub adapters: Vec<Applied>,
 }
 
@@ -182,7 +182,7 @@ pub(crate) struct PlanSource {
     pub manifest: String,
     pub length: u64,
     #[serde(default)]
-    pub repository: String,
+    pub model: String,
     #[serde(default)]
     pub release: String,
     #[serde(default)]
@@ -292,12 +292,12 @@ impl Plan {
             let model = s.binding.model.rsplit_once('@').unwrap_or_default();
             let mut row = row(&s.binding.model_parameter_name, model, (&s.lane, &s.precision), &s.binding.snapshot);
             if let Some(adapted) = &s.adapted {
-                row["repository"] = adapted.repository.clone().into();
+                row["repository"] = adapted.model.clone().into();
                 row["adapters"] = serde_json::json!(adapted.adapters);
             }
             row
         });
-        let raw = self.sources.iter().map(|s| row(&s.parameter, (&s.repository, &s.release), (&s.lane, &s.precision), &s.manifest));
+        let raw = self.sources.iter().map(|s| row(&s.parameter, (&s.model, &s.release), (&s.lane, &s.precision), &s.manifest));
         constructed.chain(raw).collect()
     }
     /// What a call reads before its function runs: every slot's components but an on-demand
@@ -2049,7 +2049,7 @@ impl Pool {
                     parameter: parameter.clone(),
                     manifest: grant.manifest.clone(),
                     length,
-                    repository: grant.repository.clone(),
+                    model: grant.model.clone(),
                     release: grant.release.clone(),
                     lane: grant.lane.clone(),
                     precision: precision(&self.store, &grant.manifest),
@@ -2093,7 +2093,7 @@ impl Pool {
                 .collect();
             let missing: Vec<&str> = wanted.iter().filter(|c| !components.contains(c)).map(String::as_str).collect();
             if components.is_empty() || !missing.is_empty() {
-                let model = if grant.repository.is_empty() { grant.manifest.clone() } else { grant.repository.clone() };
+                let model = if grant.model.is_empty() { grant.manifest.clone() } else { grant.model.clone() };
                 return Err(io::Error::new(
                     io::ErrorKind::PermissionDenied,
                     format!(
@@ -2122,7 +2122,7 @@ impl Pool {
                 snapshot: grant.manifest.clone(),
                 release: format!("{}@{}", installed.package, installed.release),
                 package: installed.package.clone(),
-                model: format!("{}@{}", grant.repository, grant.release),
+                model: format!("{}@{}", grant.model, grant.release),
                 ..Default::default()
             };
             let placeable = model.get("placeable").and_then(serde_json::Value::as_array).into_iter().flatten()

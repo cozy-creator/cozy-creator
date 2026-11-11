@@ -1346,7 +1346,9 @@ fn unlimited(bytes: &u64) -> bool {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Model {
-    pub repository: String,
+    // The supported machine protocol still names this field repository.
+    #[serde(rename = "repository")]
+    pub model: String,
     pub total_bytes: u64,
     pub unique_bytes: u64,
     #[serde(default)]
@@ -1483,7 +1485,7 @@ impl Machine {
         for model in &status.models {
             let row = |release: &str, lane: &str, precision: &str, checkpoint: &str, role: &str, complete| HeldModel {
                 machine: self.name.clone(),
-                model: model.repository.clone(),
+                model: model.model.clone(),
                 release: release.into(),
                 lane: lane.into(),
                 precision: precision.into(),

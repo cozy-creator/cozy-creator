@@ -1,5 +1,5 @@
 //! The run output log's products: what a run has made so far, as it makes it (wire 65).
-//! `Outputs.publish` commits the asset's bytes into the machine's store, binds them to the run's
+//! `Outputs.publish` stores the asset's bytes on the machine, binds them to the run's
 //! actor and journals one `product` on the run's log, in that order, so every product a
 //! client reads can be fetched with ReadByteTreeObject. A single output's product is replaced
 //! by each publish (SET); a list output grows (APPEND). The returned result publishes only
@@ -244,8 +244,8 @@ fn declared(engine: &Engine, generation: &Generation, id: &str) -> io::Result<(c
     Ok((context, entry))
 }
 
-/// Record the commit the Runtime wrote for a weights output, in lane `item.output`; with a Hub
-/// destination, `publish` uploads it and the output names the destination's commit instead.
+/// Record the checkpoint the Runtime wrote for a weights output, in lane `item.output`; with a Hub
+/// destination, `publish` uploads it and the output names the destination's checkpoint instead.
 #[allow(clippy::type_complexity)]
 pub(crate) fn checkpoint(engine: &Engine, generation: &Generation, id: &str, seq: u64, item: &CheckpointItem,
     publish: &dyn Fn(&str) -> Result<Option<(String, tensorfs::format::ObjectRef)>, crate::objects::Refused>) -> Answer {
@@ -255,15 +255,15 @@ pub(crate) fn checkpoint(engine: &Engine, generation: &Generation, id: &str, seq
             return Err(io::Error::new(io::ErrorKind::InvalidInput,
                 format!("{:?} is not a declared weights output", item.output)));
         }
-        if item.repo_id.is_empty() {
-            return Err(storage("a checkpoint reference needs its repository"));
+        if item.model_id.is_empty() {
+            return Err(storage("A checkpoint reference needs a model name"));
         }
         crate::storage::check_digest("checkpoint revision", &item.revision, true).map_err(storage)?;
-        let (repo_id, revision) = match publish(&item.revision).map_err(|refused| io::Error::other(format!("{}: {}", refused.code, refused.message)))? {
-            Some((destination, commit)) => (destination, commit.id()),
-            None => (item.repo_id.clone(), item.revision.clone()),
+        let (model_id, revision) = match publish(&item.revision).map_err(|refused| io::Error::other(format!("{}: {}", refused.code, refused.message)))? {
+            Some((destination, checkpoint)) => (destination, checkpoint.id()),
+            None => (item.model_id.clone(), item.revision.clone()),
         };
-        let reference = api::machine::CheckpointRef { repo_id, revision, lane: item.output.clone() };
+        let reference = api::machine::CheckpointRef { model_id, revision, lane: item.output.clone() };
         let product = stored::RunProduct {
             output: item.output.clone(), checkpoint: Some(reference.clone()),
             op: stored::RunProductOp::Set as i32, ..Default::default()

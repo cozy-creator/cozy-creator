@@ -11,7 +11,7 @@ use api::{
     calcifer::hub::{AfterRun, Displayed, Retired},
     ids::RunId,
     machine::{self as v1, Source},
-    model_ref::Repo,
+    model_ref::ModelId,
 };
 use serde::{Deserialize, Serialize};
 use tracing::warn;
@@ -115,10 +115,10 @@ pub(super) async fn display(
 ) -> Displayed {
     let mut shown = Displayed { model, trigger, strength, error: None };
     let set = async {
-        let repo = Repo::hub(&shown.model)?;
+        let model_id = ModelId::hub(&shown.model)?;
         let origin = Origin::parse(hub)?;
         let client = machines.hubs.client(&origin)?;
-        let answer = client.set_model_display(&repo.org, &repo.name, shown.trigger.as_deref(), shown.strength.map(Some)).await;
+        let answer = client.set_model_display(&model_id.org, &model_id.name, shown.trigger.as_deref(), shown.strength.map(Some)).await;
         answer.map(drop).map_err(|e| e.refusal(|| crate::rentals::login(hub)))
     };
     if let Err(e) = set.await {

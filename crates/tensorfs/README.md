@@ -230,7 +230,7 @@ two practical benefits:
   unchanged chunks and writes new chunks only where the stored bytes differ. For example,
   changing the UNet does not require saving another copy of unchanged text encoders or the
   VAE. Uploads and downloads transfer only chunks missing from the destination store.
-- **Lightweight checkpoint references.** A small `.cozytensors` file holds the metadata and
+- **Lightweight internal checkpoint references.** A thin header holds the metadata and
   content references; the weight bytes remain in the shared store. Another checkpoint can
   reference those same bytes without creating a full model folder or copying its payload.
   Missing chunks can be fetched when needed.
@@ -320,14 +320,16 @@ through their DLPack entry point. DLPack is the memory-sharing protocol, not a s
 array library to install. `component.config` is structured JSON, `component.asset(name)` reads an asset,
 and explicit `component.export_files(directory)` is only a compatibility convenience for legacy path-only loaders.
 
-## Checkpoints and repositories
+## Models and checkpoints
 
 A cozytensors checkpoint is one header plus the chunks and assets it names. Its identity is the header's object ref.
 The header contains a pipeline class/config and named components with class/config, tensors and assets. Run data
-is self-contained; README, LICENSE, images and code remain ordinary repository files.
+belongs to the checkpoint closure; README, LICENSE and previews remain ancillary files. A compatible
+installed package and Runtime provide the executable implementation. A portable `.cozytensors` file
+includes the whole declared closure and can be opened offline in a fresh store.
 
 ```text
-repo → release → lane → commit (a cozytensors.tree/1)
+model → release → lane → checkpoint (a cozytensors.tree/1)
                           ├─ model.cozytensors → header → chunks and assets
                           └─ README.md, LICENSE, …
 ```
@@ -363,16 +365,16 @@ tensorfs.materialize(checkpoint, local_dir="./portable", format="cozytensors")
 
 tensorfs.upload_folder(repo_id="local/example", folder_path="./portable", lane="f32")
 tensorfs.upload_folder(
-    repo_id="acme/example", folder_path="./portable", lane="f32", endpoint=Path("./origin").resolve().as_uri(),
+    model_id="acme/example", folder_path="./portable", lane="f32", endpoint=Path("./origin").resolve().as_uri(),
 )
 ```
 
-A normal save writes one .cozytensors header file, with its tensors and supporting-file bytes retained in
-the shared store. The file contains content hashes, not physical store paths. `Writer()` without a destination
-keeps the checkpoint in the store without writing a user-visible header file. An explicit native portable export
-writes `model.cozytensors` plus complete `chunks/<sha256>` objects. `base=` reuses unchanged
-tensors and `resume=` journals local work. `Writer(repo_id=…, lane=…, endpoint=…, token=…)` streams new objects
-and records an unreleased commit. Its successful checkpoint carries the exact published tree; an upload failure keeps
+A file destination writes one complete `.cozytensors` checkpoint, including tensors and component assets.
+`checkpoint.write_file(path)` exports the same portable form from an open checkpoint. Admission verifies
+embedded objects into the shared CAS; internal snapshots can retain thin headers and deduplicated chunks.
+`Writer()` without a destination keeps the checkpoint in the store. `base=` reuses unchanged
+tensors and `resume=` journals local work. `Writer(model_id=…, lane=…, endpoint=…, token=…)` streams new objects
+and records an unreleased checkpoint. Its successful checkpoint carries the exact published tree; an upload failure keeps
 `writer.local_checkpoint` and remains an error.
 
 The default endpoint is `https://tensorhub.com`; `configure(endpoint=…)` or `TENSORFS_ENDPOINT` changes it.

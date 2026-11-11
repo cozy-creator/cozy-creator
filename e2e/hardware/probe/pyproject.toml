@@ -1,0 +1,17 @@
+[build-system]
+requires = ["uv_build>=0.12.7,<0.13"]
+build-backend = "uv_build"
+
+[project]
+name = "ci-hardware-probe"
+version = "0.1.0"
+description = "Owned CI Runtime/Torch CPU and CUDA arithmetic proof"
+requires-python = ">=3.12"
+dependencies = ["cozy-runtime>=0.45", "msgspec>=0.19", "torch>=2.14"]
+
+[project.entry-points."cozy.application"]
+default = "ci_hardware_probe:app"
+
+[tool.uv.build-backend]
+module-name = "ci_hardware_probe"
+module-root = ""

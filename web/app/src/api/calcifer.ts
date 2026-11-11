@@ -714,7 +714,7 @@ export type FoundModel = { model: string, role?: string | null,
  */
 family: string | null, family_from?: FamilyFrom | null, release: string | null,
 /**
- * The newest release's lanes; a private model's commits' lanes.
+ * The newest release's lanes; a private model's checkpoints' lanes.
  */
 lanes: Array<string>, private: boolean,
 /**
@@ -724,7 +724,11 @@ author: ModelAuthor | null,
 /**
  * What its header says it is. None: it couldn't be read.
  */
-kind?: ModelKind | null,
+kind?: ModelContentKind | null,
+/**
+ * Stable model identity kind; absent when an older source cannot classify it.
+ */
+model_kind?: ModelKind | null,
 /**
  * Its labels, sorted; `nsfw` among them marks one that makes sexual or nude images.
  */
@@ -1383,17 +1387,22 @@ parked: boolean,
 reserved: string | null, };
 
 /**
- * One commit of a model: its lane, size and the releases naming it.
+ * One checkpoint of a model: its lane, size and the releases naming it.
  */
-export type ModelCommit = { commit: string, lane: string, bytes: number,
+export type ModelCheckpoint = { checkpoint: string, lane: string, bytes: number,
 /**
  * The releases naming it; none while private.
  */
 releases: Array<string>, created_at: string, };
 
 /**
+ * What a checkpoint is.
+ */
+export type ModelContentKind = "lora" | "weights" | "component";
+
+/**
  * `GET /v1/models/{org}/{name}?release=`: a model's releases (one, when named) and, to its org's
- * members, every commit.
+ * members, every checkpoint.
  */
 export type ModelDetail = { model: string, role?: string | null,
 /**
@@ -1407,7 +1416,11 @@ weights_family?: string | null,
 /**
  * What its header says it is. None: it couldn't be read.
  */
-kind?: ModelKind | null, created_at: string,
+kind?: ModelContentKind | null,
+/**
+ * Stable model identity kind; absent when an older source cannot classify it.
+ */
+model_kind?: ModelKind | null, created_at: string,
 /**
  * The pinned upstream source.
  */
@@ -1427,15 +1440,15 @@ releases: Array<ModelRelease>,
 /**
  * Newest first; empty to anyone but the model's members.
  */
-commits: Array<ModelCommit>, };
+checkpoints: Array<ModelCheckpoint>, };
 
 /**
  * `cozy/model_download`'s input.
  */
 export type ModelDownload = {
 /**
- * `org/name[@release]`, `org/name@sha256:<commit>`, `hf://…`, `civitai://…`, `https://…`, or
- * a held `.safetensors` file's `sha256:<hex>` (`PUT /v1/files`).
+ * `org/name[@release]`, `org/name@sha256:<checkpoint>`, `hf://…`, `civitai://…`, `https://…`, or
+ * a held `.safetensors` or complete `.cozytensors` file's `sha256:<hex>` (`PUT /v1/files`).
  */
 model: string,
 /**
@@ -1468,18 +1481,18 @@ export type ModelEdit = { hub?: string | null, family?: string | null, trigger?:
 export type ModelEdited = { model: ModelDetail, warnings?: Array<string>, };
 
 /**
- * What a checkpoint is.
+ * Whether a named model supplies base weights or an adaptation to another model.
  */
-export type ModelKind = "lora" | "weights" | "component";
+export type ModelKind = "base" | "lora";
 
 /**
- * One lane of a release: its commit, size, header kinds and provenance.
+ * One lane of a release: its checkpoint, size, header kinds and provenance.
  */
 export type ModelLane = { lane: string,
 /**
  * `sha256:<hex>`.
  */
-commit: string, bytes: number,
+checkpoint: string, bytes: number,
 /**
  * Its header's schemes and dtypes.
  */
@@ -1490,13 +1503,13 @@ kinds: Array<string>,
 provenance: Provenance | null, };
 
 /**
- * `cozy/model_quantize`'s input: a new commit of `model` in `lane`, written from a commit (or a release's original weights) by
+ * `cozy/model_quantize`'s input: a new checkpoint of `model` in `lane`, written from a checkpoint (or a release's original weights) by
  * the recipe the package declares for that lane, as a run of its `quantize` on the machine, which uploads it. The package is
  * `package`, or the request's `code`.
  */
 export type ModelQuantize = {
 /**
- * `org/name@sha256:<commit>`, or `org/name[@release]` (none: the newest).
+ * `org/name@sha256:<checkpoint>`, or `org/name[@release]` (none: the newest).
  */
 model: string,
 /**
@@ -1509,9 +1522,9 @@ lane: string,
 package?: string, };
 
 /**
- * One release of a model: its version, each lane's commit, and whether it is a mirror.
+ * One release of a model: its version, each lane's checkpoint, and whether it is a mirror.
  */
-export type ModelRelease = { version: string, created_at: string,
+export type ModelRelease = { version: string, visibility: ReleaseVisibility, created_at: string,
 /**
  * Published while its org was parked: not its author's.
  */
@@ -1522,21 +1535,20 @@ mirror: boolean,
 by_admin: boolean, lanes: Array<ModelLane>, };
 
 /**
- * `POST /v1/models/{org}/{name}/releases`: one commit per lane, under a version higher than every
- * earlier one; the Hub never reuses a version, which makes a retry safe.
+ * `POST /v1/models/{org}/{name}/releases`: one checkpoint per lane under an immutable version.
  */
 export type ModelReleaseAsk = { hub?: string | null, version: string,
 /**
  * `sha256:<hex>`.
  */
-commits: Array<string>, };
+checkpoints: Array<string>, };
 
 /**
- * The release a publish made: its version and each lane's commit.
+ * The release a publish made: its version and each lane's checkpoint.
  */
 export type ModelReleased = { model: string, version: string, created_at: string,
 /**
- * Each lane's commit.
+ * Each lane's checkpoint.
  */
 lanes: Array<[string, string]>,
 /**
@@ -1560,13 +1572,22 @@ total: number,
 older: number, };
 
 /**
+ * A retained model release whose public availability was withdrawn.
+ */
+export type ModelUnpublished = { model: string, release: string,
+/**
+ * Whether this call changed the release's visibility.
+ */
+unpublished: boolean, };
+
+/**
  * `cozy/model_upload`'s input. Its trigger and strength are set at the Hub once it completes (`result.after.display`).
  */
 export type ModelUpload = {
 /**
  * A provider source, `local/<alias>`, a Hub model, a held file's `sha256:<hex>` (`PUT /v1/files`): a `.safetensors` file, or a
  * CozyTensors folder's tree document, its files held too, or `run:N[#output]`: a run's weights output, uploaded from the
- * machine that holds it. A Hub commit uploads only on a `base`; else it is recorded, and no machine runs.
+ * machine that holds it. A Hub checkpoint uploads only on a `base`; else it is recorded, and no machine runs.
  */
 source: string,
 /**
@@ -2047,7 +2068,7 @@ older: number, };
 export type Proven = { "purpose": "sign_in" } & Account | { "purpose": "export" } & ExportedKey | { "purpose": "sign_out_everywhere" } & SignedOut;
 
 /**
- * The recipe that wrote a commit: its header's `metadata.provenance`.
+ * The recipe that wrote a checkpoint: its header's `metadata.provenance`.
  */
 export type Provenance = { package: string, release: string, recipe: string,
 /**
@@ -2133,9 +2154,9 @@ detail?: string,
 next?: Array<string>, };
 
 /**
- * A Hub commit recorded as a commit of another model when the caller may read its whole closure: nothing uploaded.
+ * A Hub checkpoint recorded as a checkpoint of another model when the caller may read its whole closure: nothing uploaded.
  */
-export type RecordedCommit = { commit: string, from: string, lane: string, model: string, display?: Displayed | null,
+export type RecordedCheckpoint = { checkpoint: string, from: string, lane: string, model: string, display?: Displayed | null,
 /**
  * Commands to run next.
  */
@@ -2145,6 +2166,11 @@ next?: Array<string>, warnings?: Array<string>, };
  * Why a run binds and runs the release it does.
  */
 export type ReleaseFrom = "asked" | "installed" | "latest" | "local";
+
+/**
+ * Whether a version is available publicly or only to authorized model owners.
+ */
+export type ReleaseVisibility = "public" | "private";
 
 /**
  * Remove all locally cached releases and lanes of one model repository.

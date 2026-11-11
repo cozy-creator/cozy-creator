@@ -1,8 +1,8 @@
-//! `cozy/model_quantize`: a new commit in a lane, written from a commit (or a release's
+//! `cozy/model_quantize`: a new checkpoint in a lane, written from a checkpoint (or a release's
 //! original weights) by the recipe a named package declares for that lane. The package is always
 //! named, a release or local code: packages that serve the same model can each declare a recipe
 //! for it. Its `quantize` (the Runtime's) runs on the machine, which uploads the output as a
-//! commit of the model in that lane.
+//! checkpoint of the model in that lane.
 use std::sync::Arc;
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -14,7 +14,7 @@ use api::{
     error::{Error, Kind},
     calcifer::hub::ModelQuantize,
     interface::{Interface, RECIPES, Recipe},
-    model_ref::{self as refs, ModelRef, Repo},
+    model_ref::{self as refs, ModelRef, ModelId},
     target::Published,
 };
 use tensorfs::{
@@ -31,16 +31,16 @@ use crate::{
 /// Legacy spellings, besides TensorFS's canonical BF16/F16/F32 dtype names.
 const ORIGINAL: [&str; 3] = ["bf16", "fp16", "f32"];
 
-/// The commit a quantize reads: spelled for the run, its repository, and the components its
+/// The checkpoint a quantize reads: spelled for the run, its model, and the components its
 /// header holds.
 struct Source {
     spelled: String,
-    repo: Repo,
+    model_id: ModelId,
     components: Vec<String>,
 }
 
-/// The run of `package`'s `quantize` that writes `lane` from the commit `model` names into the
-/// commit's own model, with each calibration model it builds bound to that commit.
+/// The run of `package`'s `quantize` that writes `lane` from the checkpoint `model` names into the
+/// checkpoint's own model, with each calibration model it builds bound to that checkpoint.
 pub(super) async fn plan(api: &Arc<Api>, key: &str, hub: &Origin, on: On, agreed: Option<Agreed>, code: Option<LocalCode>, ask: ModelQuantize) -> Result<Planned, Refusal> {
     let lane = refs::label("--lane", &ask.lane).map_err(Refusal)?;
     let model = ModelRef::parse(&ask.model).map_err(Refusal)?;
@@ -56,7 +56,7 @@ pub(super) async fn plan(api: &Arc<Api>, key: &str, hub: &Origin, on: On, agreed
         }
         Resolved::Local { local, interface: Some(interface), .. } => (local.package, interface, local.source.manifest),
     };
-    let source = commit(api, hub, &model, &lane).await?;
+    let source = checkpoint(api, hub, &model, &lane).await?;
     let found = recipes(&interface, &lane, &source.components);
     let named = match release.starts_with("sha256:") {
         true => package.clone(),
@@ -71,11 +71,11 @@ pub(super) async fn plan(api: &Arc<Api>, key: &str, hub: &Origin, on: On, agreed
             .remedy(declared(&interface)),
         ));
     }
-    // The commit goes to the source's own model, in the lane; local code's records its package as
+    // The checkpoint goes to the source's own model, in the lane; local code's records its package as
     // `local/<name>` and its release as the source's commit: an unpublished recipe, exactly.
     let mut terms = vec![
         source.spelled.clone(),
-        source.repo.to_string(),
+        source.model_id.to_string(),
         format!("lane={lane}"),
         format!("package={package}"),
         format!("release={release}"),
@@ -113,14 +113,14 @@ fn original(kinds: &[String]) -> bool {
     kinds.iter().any(float) && kinds.iter().all(|kind| float(kind) || index(kind))
 }
 
-/// The commit `model` names, as the model's card lists it (its org's members see every commit):
-/// a commit by id, or a release's lane of original weights (its only lane when it has one). A
-/// 4-bit lane is written only from original weights (owner, 2026-10-22): from a commit holding
+/// The checkpoint `model` names, as the model's card lists it (its org's members see every checkpoint):
+/// a checkpoint by id, or a release's lane of original weights (its only lane when it has one). A
+/// 4-bit lane is written only from original weights (owner, 2026-10-22): from a checkpoint holding
 /// none it would stack two rounds of 4-bit error.
-async fn commit(api: &Api, hub: &Origin, model: &ModelRef, lane: &str) -> Result<Source, Refusal> {
-    let (repo, release, id) = match model {
-        ModelRef::Hub { repo, release } => (repo, release.as_deref(), None),
-        ModelRef::Commit { repo, commit } => (repo, None, Some(commit.as_str())),
+async fn checkpoint(api: &Api, hub: &Origin, model: &ModelRef, lane: &str) -> Result<Source, Refusal> {
+    let (model_id, release, id) = match model {
+        ModelRef::Hub { model: model_id, release } => (model_id, release.as_deref(), None),
+        ModelRef::Checkpoint { model: model_id, checkpoint } => (model_id, None, Some(checkpoint.as_str())),
         ModelRef::Local(_) | ModelRef::Provider(_) => {
             return Err(Refusal(
                 Error::new(Kind::Usage, "model_quantize_source", format!("{model} is not on the Hub: quantize reads a Hub model"))
@@ -128,22 +128,22 @@ async fn commit(api: &Api, hub: &Origin, model: &ModelRef, lane: &str) -> Result
             ));
         }
     };
-    let card: ModelCard = (reader(api, hub)?.get_model(&repo.org, &repo.name).await).map_err(|e| refusal(hub, e))?;
+    let card: ModelCard = (reader(api, hub)?.get_model(&model_id.org, &model_id.name).await).map_err(|e| refusal(hub, e))?;
     let absent =
-        |what: String| Refusal(Error::not_found("model_commit_not_found", what).next(format!("cozy model ls {repo}")));
-    let (commit, header, kinds) = match id {
+        |what: String| Refusal(Error::not_found("model_commit_not_found", what).next(format!("cozy model ls {model_id}")));
+    let (checkpoint, header, kinds) = match id {
         Some(id) => {
-            let found = (card.commits.iter().find(|c| c.id == id))
-                .ok_or_else(|| absent(format!("{repo} has no commit {id} you may read")))?;
-            let commit = ObjectRef { sha256: found.id.trim_start_matches("sha256:").into(), length: found.length as u64 };
-            (commit, found.header.clone(), found.kinds.clone())
+            let found = (card.checkpoints.iter().find(|c| c.id == id))
+                .ok_or_else(|| absent(format!("Checkpoint {id} is unavailable in {model_id}")))?;
+            let checkpoint = ObjectRef { sha256: found.id.trim_start_matches("sha256:").into(), length: found.length as u64 };
+            (checkpoint, found.header.clone(), found.kinds.clone())
         }
         None => {
             let found = match release {
                 Some(version) => card.releases.iter().find(|r| r.version == version),
                 None => card.releases.first(),
             };
-            let found = found.ok_or_else(|| absent(format!("{repo} has no release {}", release.unwrap_or("yet"))))?;
+            let found = found.ok_or_else(|| absent(format!("{model_id} has no release {}", release.unwrap_or("yet"))))?;
             let originals: Vec<_> = found.lanes.values().filter(|l| original(&l.kinds)).collect();
             let picked = match (originals.as_slice(), found.lanes.len()) {
                 ([one], _) => *one,
@@ -154,24 +154,24 @@ async fn commit(api: &Api, hub: &Origin, model: &ModelRef, lane: &str) -> Result
                         Error::new(
                             Kind::Usage,
                             "model_quantize_source",
-                            format!("{repo}@{} has lanes {lanes:?}: name the commit to quantize", found.version),
+                            format!("{model_id}@{} has lanes {lanes:?}: choose a checkpoint to quantize", found.version),
                         )
-                        .next(format!("cozy model quantize {repo}@<commit> --lane {lane} --package <package>")),
+                        .next(format!("cozy model quantize {model_id}@<checkpoint> --lane {lane} --package <package>")),
                     ));
                 }
             };
-            let commit = ObjectRef { sha256: picked.commit.trim_start_matches("sha256:").into(), length: picked.length as u64 };
-            (commit, picked.header.clone(), picked.kinds.clone())
+            let checkpoint = ObjectRef { sha256: picked.checkpoint.trim_start_matches("sha256:").into(), length: picked.length as u64 };
+            (checkpoint, picked.header.clone(), picked.kinds.clone())
         }
     };
     if matches!(lane, "nvfp4" | "w4a8" | "svdq-nvfp4") && !original(&kinds) {
         let message = format!(
-            "{repo}@{} holds no original weights ({}): a {lane} lane from them stacks two rounds of 4-bit error",
-            commit.id(),
+            "{model_id}@{} holds no original weights ({}): a {lane} lane from them stacks two rounds of 4-bit error",
+            checkpoint.id(),
             kinds.join(", ")
         );
         return Err(Refusal(Error::new(Kind::Usage, "model_quantize_source_quantized", message).remedy(format!(
-            "upload the original weights (cozy model upload <path> {repo} --lane bf16) and quantize those"
+            "upload the original weights (cozy model upload <path> {model_id} --lane bf16) and quantize those"
         ))));
     }
     let header = ObjectRef { sha256: header.sha256, length: header.length as u64 };
@@ -182,7 +182,7 @@ async fn commit(api: &Api, hub: &Origin, model: &ModelRef, lane: &str) -> Result
         .iter()
         .map(|c| c.name.clone())
         .collect();
-    Ok(Source { spelled: format!("{repo}@{}", commit.id()), repo: repo.clone(), components })
+    Ok(Source { spelled: format!("{model_id}@{}", checkpoint.id()), model_id: model_id.clone(), components })
 }
 
 /// `hub`'s distribution endpoint as this computer's signed-in user.
@@ -201,7 +201,7 @@ pub(super) async fn distribution(client: &::api::hub::Client, hub: &Origin) -> R
     Endpoint::with_config(hub.as_str(), &config).map_err(|f| Refusal(Error::validation("endpoint_invalid", f.detail)))
 }
 
-/// The recipes of `lane` that read a commit holding `components`.
+/// The recipes of `lane` that read a checkpoint holding `components`.
 fn recipes<'i>(interface: &'i Interface, lane: &str, components: &[String]) -> Vec<&'i Recipe> {
     (interface.recipes.iter()).filter(|r| r.lane == lane && r.reads(components)).collect()
 }

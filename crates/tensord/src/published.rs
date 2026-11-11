@@ -1,7 +1,7 @@
 //! Published packages and their models, prepared from a Hub by name (th-245) and reused: a
 //! run whose installation and model resolution are held reads nothing from the Hub. Port of the
 //! Python worker's release-root preparation (package set from the release's locked
-//! requirements with uv; each model's commit as the Hub resolves it for the machine's hardware,
+//! requirements with uv; each model's checkpoint as the Hub resolves it for the machine's hardware,
 //! then a TensorFS download) with its `release_root_preparing` progress answers.
 pub(crate) mod environment;
 pub(crate) mod layer;
@@ -132,19 +132,19 @@ impl Request {
     }
 }
 
-/// A Hub commit as a run names it (th-245): `repository` at `release` (empty: the newest) in
-/// `lane` (empty: the Hub's pick for the hardware), or by hash (`tree` and no release): a commit,
-/// or a bare header (no tree). Resolved, it carries the release, lane and commit the Hub named,
-/// that commit's header (the checkpoint's id on this machine), and why a better lane was passed
+/// A Hub checkpoint as a run names it (th-245): `model` at `release` (empty: the newest) in
+/// `lane` (empty: the Hub's pick for the hardware), or by hash (`tree` and no release): a checkpoint,
+/// or a bare header (no tree). Resolved, it carries the release, lane and checkpoint the Hub named,
+/// that checkpoint's header (the checkpoint's id on this machine), and why a better lane was passed
 /// over.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Named {
-    pub repository: String,
+    pub model: String,
     pub release: String,
     pub lane: String,
-    /// The commit; a run's hash names one before it resolves (its length 0 when unsaid).
+    /// The checkpoint; a run's hash names one before it resolves (its length 0 when unsaid).
     pub tree: Option<ObjectRef>,
-    /// The commit's cozytensors header, once resolved.
+    /// The checkpoint's cozytensors header, once resolved.
     pub header: Option<ObjectRef>,
     pub reasons: Vec<String>,
 }
@@ -158,14 +158,14 @@ impl Named {
         self.header.as_ref().ok_or_else(|| unresolved(self))
     }
 
-    /// `repository@release lane`, or `repository@sha256:… lane` for a commit by hash.
+    /// `model@release lane`, or `model@sha256:… lane` for a checkpoint by hash.
     fn shown(&self) -> String {
         let at = match (&self.release, &self.tree) {
             (release, _) if !release.is_empty() => release.clone(),
             (_, Some(tree)) => tree.id(),
             _ => "newest".into(),
         };
-        format!("{}@{at} {}", self.repository, self.lane).trim_end().to_owned()
+        format!("{}@{at} {}", self.model, self.lane).trim_end().to_owned()
     }
 }
 
@@ -325,16 +325,17 @@ const FRESH: Duration = Duration::from_secs(10 * 60);
 struct Answer {
     release: String,
     lane: String,
-    commit: ObjectRef,
+    #[serde(rename = "commit")]
+    checkpoint: ObjectRef,
     header: ObjectRef,
     reasons: Vec<String>,
     hardware: Hardware,
 }
 impl Answer {
     fn ask(machine: &Machine, source: &hub::Source, named: &Named, hardware: &Hardware) -> Result<Self, Failure> {
-        let r = origin::resolve(machine, source, &named.repository, &named.release, &named.lane, hardware)
+        let r = origin::resolve(machine, source, &named.model, &named.release, &named.lane, hardware)
             .map_err(|e| unsigned(source, refused("model_resolution_failed", e.clone()), &e))?;
-        Ok(Self { release: r.release, lane: r.lane, commit: r.commit, header: r.header, reasons: r.reasons, hardware: hardware.clone() })
+        Ok(Self { release: r.release, lane: r.lane, checkpoint: r.checkpoint, header: r.header, reasons: r.reasons, hardware: hardware.clone() })
     }
 }
 
@@ -485,7 +486,7 @@ impl Publisher {
     }
 
     /// A slot's model made from its provider source (TensorFS `source_model`), kept as the
-    /// local repository named by the source and its profiles.
+    /// local model named by the source and its profiles.
     fn source_grant(
         &self,
         installation: &Installation,
@@ -494,7 +495,7 @@ impl Publisher {
         providers: &Providers,
         job: &Job,
     ) -> Result<ModelGrant, Failure> {
-        if !choice.repository.is_empty() || choice.manifest.is_some() {
+        if !choice.model.is_empty() || choice.manifest.is_some() {
             return Err((
                 "model_override_invalid",
                 format!("{path} names a source and a catalog checkpoint"),
@@ -510,7 +511,7 @@ impl Publisher {
         Ok(ModelGrant {
             package: installation.package.clone(),
             slot: path.to_string(),
-            repository: made.repository,
+            model: made.model,
             release: String::new(),
             lane: String::new(),
             manifest: made.header.id(),
@@ -533,7 +534,7 @@ impl Publisher {
         Ok(ModelGrant {
             package: installation.package.clone(),
             slot: path.to_string(),
-            repository: String::new(),
+            model: String::new(),
             release: String::new(),
             lane: String::new(),
             components: checkpoint.header().components().iter().map(|c| c.name.clone()).collect(),
@@ -542,16 +543,16 @@ impl Publisher {
         })
     }
 
-    /// A checkpoint held here, named by its header: a Hub commit pulled by hash is the request's
-    /// only as `commit` serves it; a release, or one made here, is anyone's.
+    /// A checkpoint held here, named by its header: a Hub checkpoint pulled by hash is the request's
+    /// only as `checkpoint` serves it; a release, or one made here, is anyone's.
     pub(crate) fn held_for(&self, service: &Service, source: Option<&hub::Source>, header: &ObjectRef) -> Result<(), Failure> {
         let Some(pulled) = Pulled::of(&self.store, header).map_err(io_failure)?.filter(|p| p.release.is_empty()) else {
             return Ok(());
         };
-        let named = Named { repository: pulled.repository, lane: pulled.lane, tree: Some(pulled.tree), ..Named::default() };
+        let named = Named { model: pulled.model, lane: pulled.lane, tree: Some(pulled.tree), ..Named::default() };
         match source {
-            Some(source) => self.commit(service, source, named).map(drop),
-            None => Err(("model_resolution_failed", format!("{} is private, or no such commit: this run carries no Hub access; `cozy login <email>` on the computer that sent it", named.shown()))),
+            Some(source) => self.checkpoint(service, source, named).map(drop),
+            None => Err(("model_resolution_failed", format!("Checkpoint {} is unavailable without Hub access. Sign in with cozy login <email> on the computer that sent this run", named.shown()))),
         }
     }
 
@@ -637,10 +638,10 @@ impl Publisher {
                 header.id(), tree.id(), pulled.objects, source.origin);
             storage::transport(&self.store, "pull", &subject, &detail);
         };
-        let pulled = Pulled { repository: named.repository.clone(), release: named.release.clone(), lane: named.lane.clone(), tree: tree.clone() };
+        let pulled = Pulled { model: named.model.clone(), release: named.release.clone(), lane: named.lane.clone(), tree: tree.clone() };
         pulled.record(&self.store).map_err(io_failure)?;
-        // Held open while it lands: the store never evicts a commit a pull is fetching.
-        let _held = self.store.at_commit(&tree).map_err(|e| io_failure(storage::io_error(e)))?;
+        // Held open while it lands: the store never evicts a checkpoint a pull is fetching.
+        let _held = self.store.at_checkpoint(&tree).map_err(|e| io_failure(storage::io_error(e)))?;
         if components == Some(&[]) {
             logged(&structure);
             return Ok(structure.landed);
@@ -666,7 +667,7 @@ impl Publisher {
     /// pulled (local).
     fn pulled(&self, header: &ObjectRef) -> io::Result<Option<Named>> {
         Ok(Pulled::of(&self.store, header)?.map(|p| Named {
-            repository: p.repository,
+            model: p.model,
             release: p.release,
             lane: p.lane,
             tree: Some(p.tree),
@@ -689,16 +690,16 @@ impl Publisher {
         Ok(())
     }
 
-    /// The commit `named` is: one by hash as given, a name as the Hub resolves its release and
-    /// lane (or, with no lane, `hardware`); then that commit's header. Journaled per GPUs so a
+    /// The checkpoint `named` is: one by hash as given, a name as the Hub resolves its release and
+    /// lane (or, with no lane, `hardware`); then that checkpoint's header. Journaled per GPUs so a
     /// warm run, across restarts too, asks the Hub nothing (th-245); an answer older than `FRESH`
     /// is read again behind it (`refresh`).
     pub(crate) fn resolve(&self, service: &Service, source: &hub::Source, named: Named, hardware: &Hardware) -> Result<Named, Failure> {
         if named.tree.is_some() {
-            return self.commit(service, source, named);
+            return self.checkpoint(service, source, named);
         }
         let origin = hub::origin_key(&source.origin).unwrap_or_default();
-        let name = json!(["resolve-v4", origin, named.repository, named.release, named.lane, hardware.gpus, hardware.plain]).to_string();
+        let name = json!(["resolve-v4", origin, named.model, named.release, named.lane, hardware.gpus, hardware.plain]).to_string();
         let held = service.engine.with_journal(|j| j.named(&name)).map_err(io_failure)?;
         let answer = match held.and_then(|(answer, read)| Some((serde_json::from_str::<Answer>(&answer).ok()?, read))) {
             Some((answer, read)) => {
@@ -714,7 +715,7 @@ impl Publisher {
                 answer
             }
         };
-        Ok(Named { release: answer.release, lane: answer.lane, tree: Some(answer.commit), header: Some(answer.header), reasons: answer.reasons, ..named })
+        Ok(Named { release: answer.release, lane: answer.lane, tree: Some(answer.checkpoint), header: Some(answer.header), reasons: answer.reasons, ..named })
     }
 
     /// Reads held name `name` again at its Hub on a thread of its own, once at a time. An answer
@@ -733,7 +734,7 @@ impl Publisher {
                 let moved = j.named(&name)?.is_none_or(|(held, _)| held != kept);
                 j.bind_named(&name, &kept)?;
                 if moved {
-                    tracing::info!(repository = %named.repository, release = %named.release, lane = %answer.lane, "a held model name resolves anew");
+                    tracing::info!(model = %named.model, release = %named.release, lane = %answer.lane, "a held model name resolves anew");
                     j.move_catalog()?;
                 }
                 Ok(())
@@ -751,14 +752,14 @@ impl Publisher {
         }
     }
 
-    /// A commit (or a bare header) named by its hash, with what a hash alone does not say: its
-    /// length and format; a commit resolves to its header and lane. A hash may name a private
-    /// commit, so what this machine holds of it serves a request only as its account, or a request
+    /// A checkpoint (or a bare header) named by its hash, with what a hash alone does not say: its
+    /// length and format; a checkpoint resolves to its header and lane. A hash may name a private
+    /// checkpoint, so what this machine holds of it serves a request only as its account, or a request
     /// with no sign-in only once the Hub served it to one: the readers journaled with it, across
     /// restarts like the store. Any other request asks the Hub once, as itself (its capability's
     /// account, as the Hub named it when it redeemed it); what the Hub serves it is its account's
     /// here too. The bytes held are reused, and the same account's warm runs ask the Hub nothing.
-    pub(crate) fn commit(&self, service: &Service, source: &hub::Source, named: Named) -> Result<Named, Failure> {
+    pub(crate) fn checkpoint(&self, service: &Service, source: &hub::Source, named: Named) -> Result<Named, Failure> {
         #[derive(serde::Deserialize, serde::Serialize)]
         struct Held {
             tree: Option<ObjectRef>,
@@ -768,7 +769,7 @@ impl Publisher {
             readers: BTreeSet<String>,
         }
         let tree = named.tree()?.clone();
-        let key = json!(["commit-v1", hub::origin_key(&source.origin).unwrap_or_default(), named.repository, tree.id()]).to_string();
+        let key = json!(["commit-v1", hub::origin_key(&source.origin).unwrap_or_default(), named.model, tree.id()]).to_string();
         let held: Option<Held> = service.engine.with_journal(|j| j.named(&key)).map_err(io_failure)?
             .and_then(|(held, _)| serde_json::from_str(&held).ok());
         let reader = match &source.capability {
@@ -779,7 +780,7 @@ impl Publisher {
         if let Some(held) = held.as_ref().filter(|held| served(held)) {
             return Ok(Named { tree: held.tree.clone(), lane: held.lane.clone(), header: Some(held.header.clone()), ..named });
         }
-        tracing::info!(repository = %named.repository, commit = %tree.id(), reader = reader.as_deref().unwrap_or("-"),
+        tracing::info!(model = %named.model, checkpoint = %tree.id(), reader = reader.as_deref().unwrap_or("-"),
             "a commit asked of the Hub as the request's own reader");
         let failed = |e: Refusal| private(source, &named, refused("model_resolution_failed", e.clone()), &e);
         let object = origin::object(&self.machine, source, &tree.sha256).map_err(failed)?;
@@ -789,9 +790,9 @@ impl Publisher {
                 let remote = origin::remote(&self.machine, source).map_err(failed)?;
                 self.machine.objects(&remote, std::slice::from_ref(&object), priority::NOW, &Stop::default()).map_err(failed)?;
                 match storage::tree_or_header(&self.store, &object).map_err(|e| ("model_resolution_failed", e.to_string()))? {
-                    Some(commit) => {
-                        let header = commit.header().map_err(|e| ("model_resolution_failed", format!("{}: {e}", object.id())))?.1.clone();
-                        Held { tree: Some(object), lane: commit.lane, header, readers: BTreeSet::new() }
+                    Some(checkpoint) => {
+                        let header = checkpoint.header().map_err(|e| ("model_resolution_failed", format!("{}: {e}", object.id())))?.1.clone();
+                        Held { tree: Some(object), lane: checkpoint.lane, header, readers: BTreeSet::new() }
                     }
                     None => Held { tree: None, lane: named.lane.clone(), header: object, readers: BTreeSet::new() },
                 }
@@ -894,7 +895,7 @@ impl Publisher {
             .map(|c| {
                 json!([
                     c.parameter,
-                    c.repository,
+                    c.model,
                     c.release,
                     c.lane,
                     c.manifest
@@ -1346,7 +1347,7 @@ impl Publisher {
             let parameter = path.rsplit('.').next().unwrap_or_default().to_string();
             job.stage(format!("choosing the model for {path}"));
             let asked = request.choices.iter().find(|c| c.parameter == path || c.parameter == parameter)
-                .filter(|c| !c.repository.is_empty() || c.manifest.is_some() || !c.source.is_empty());
+                .filter(|c| !c.model.is_empty() || c.manifest.is_some() || !c.source.is_empty());
             let declared = default_choice(slot, &path);
             let choice = asked.or(declared.as_ref()).ok_or_else(|| choice_absent(&path, &installation.package))?;
             if !choice.source.is_empty() {
@@ -1354,7 +1355,7 @@ impl Publisher {
             }
             if let (Some(reference), true) = (
                 choice.manifest.as_ref().filter(|m| m.digest.len() == 32),
-                choice.repository.is_empty(),
+                choice.model.is_empty(),
             ) {
                 // A model passed by value (a ModelArtifact a run here produced): held here.
                 let grant = self.held_grant(installation, &path, reference)?;
@@ -1362,11 +1363,11 @@ impl Publisher {
                 self.held_for(service, request.source.as_ref(), &header)?;
                 return Ok((grant, None, vec![]));
             }
-            if choice.repository.starts_with("local/") && choice.manifest.is_none() {
-                let local = held_local(&self.store, &choice.repository)?;
+            if choice.model.starts_with("local/") && choice.manifest.is_none() {
+                let local = held_local(&self.store, &choice.model)?;
                 let header = local.header.id();
                 return Ok((ModelGrant {
-                    package: installation.package.clone(), slot: path, repository: choice.repository.clone(),
+                    package: installation.package.clone(), slot: path, model: choice.model.clone(),
                     release: String::new(), lane: local.lane,
                     components: self.components(&header)?, manifest: header, adapted: None,
                 }, None, vec![]));
@@ -1380,18 +1381,18 @@ impl Publisher {
             let plain = slot["encoded_leaves"] != "accept" || slot["weights"] == true;
             let hardware = tensorfs::fetch::Hardware { plain, ..hardware.clone() };
             let named = self.resolve(service, request.hub(&format!("the model for {path}"))?, named, &hardware)?;
-            let warnings = named.reasons.iter().map(|why| format!("{}: {why}", named.repository)).collect();
+            let warnings = named.reasons.iter().map(|why| format!("{}: {why}", named.model)).collect();
             let grant = ModelGrant {
                 package: installation.package.clone(),
                 slot: path,
-                repository: named.repository.clone(),
+                model: named.model.clone(),
                 release: named.release.clone(),
                 lane: named.lane.clone(),
                 manifest: named.header()?.id(),
                 components: vec![],
                 adapted: None,
             };
-            Ok((grant, (!named.repository.starts_with("local/")).then_some(named), warnings))
+            Ok((grant, (!named.model.starts_with("local/")).then_some(named), warnings))
         };
         // Each checkpoint lands as its structure: what of it comes, and when, its calls direct.
         // Only a Hub names a checkpoint here (`pick` refused it without the run's access).
@@ -1409,7 +1410,7 @@ impl Publisher {
             grants.push(grant);
             warnings.extend(said);
         }
-        for grant in grants.iter_mut().filter(|g| g.components.is_empty() && !g.repository.is_empty()) {
+        for grant in grants.iter_mut().filter(|g| g.components.is_empty() && !g.model.is_empty()) {
             grant.components = self.components(&grant.manifest)?;
         }
         for grant in &mut grants {
@@ -1501,21 +1502,21 @@ fn warnings_key(resolution: &str) -> String {
     json!(["warnings", resolution]).to_string()
 }
 
-/// A Hub model slot's commit as its choice names it (th-245): by hash, else `repository` at
+/// A Hub model slot's checkpoint as its choice names it (th-245): by hash, else `model` at
 /// `release` in the choice's lane; no lane is the Hub's pick (`resolve`).
 pub(crate) fn choose(choice: &stored::ModelChoice, path: &str) -> Result<Named, Failure> {
-    if choice.repository.is_empty() {
-        return Err(("model_choice_absent", format!("{path}'s choice names no model repository")));
+    if choice.model.is_empty() {
+        return Err(("model_choice_absent", format!("Choose a model for {path}")));
     }
     let tree = choice.manifest.as_ref().map(|m| ObjectRef { sha256: sha256::hex(&m.digest), length: m.length });
-    Ok(Named { repository: choice.repository.clone(), release: choice.release.clone(), lane: choice.lane.clone(), tree, ..Named::default() })
+    Ok(Named { model: choice.model.clone(), release: choice.release.clone(), lane: choice.lane.clone(), tree, ..Named::default() })
 }
 
 /// A provider source made into a local model.
 #[derive(Clone, Debug)]
 pub(crate) struct Made {
     /// `local/source-<hash>`, named by the source's pinned spelling and converter.
-    pub repository: String,
+    pub model: String,
     pub header: ObjectRef,
     /// The pinned source the provider resolved.
     pub resolved: String,
@@ -1563,7 +1564,7 @@ fn make_source(
         let format = (read.as_ref()).and_then(|h| tensorfs::import::SourceFormat::read(&h.metadata)).map(|f| f.to_string()).unwrap_or_default();
         let family = read.and_then(|h| tensorfs::family::summary(&h.metadata));
         Made {
-            repository: format!("local/{name}"),
+            model: format!("local/{name}"),
             format: family.map_or(format.clone(), |f| format!("{format}; {f}")),
             header,
             resolved: listed.pinned.clone(),
@@ -1631,11 +1632,11 @@ fn unsigned(source: &hub::Source, failure: Failure, refusal: &tensorfs::err::Ref
     }
 }
 
-/// `failure` of `named`, a commit by hash, read with no sign-in: it is private (or absent).
+/// `failure` of `named`, a checkpoint by hash, read with no sign-in: it is private (or absent).
 fn private(source: &hub::Source, named: &Named, failure: Failure, refusal: &tensorfs::err::Refusal) -> Failure {
     // An origin that only said "not now" said nothing about who may read it.
     match source.capability.is_none() && failure.0 != UNREACHABLE && refusal.code != tensorfs::err::Code::ORIGIN_REFUSED {
-        true => (failure.0, format!("{} is private, or no such commit: this run carried no sign-in; `cozy login <email>` on the computer that sent it reads it as its account ({})", named.shown(), refusal)),
+        true => (failure.0, format!("Checkpoint {} is unavailable without a sign-in. Run cozy login <email> on the computer that sent this run ({refusal})", named.shown())),
         false => unsigned(source, failure, refusal),
     }
 }
@@ -1654,13 +1655,13 @@ fn refused(code: &'static str, refusal: tensorfs::err::Refusal) -> Failure {
     }
 }
 
-/// The model `repository` (`local/<name>`) as this machine holds it. Absent, the reason says that
+/// A local model (`local/<name>`) as this machine holds it. Absent, the reason says that
 /// a `local/` name lives on the machine that runs it, and how to put it there.
-fn held_local(store: &Store, repository: &str) -> Result<storage::Local, Failure> {
-    let held = storage::local(store, repository).map_err(io_failure)?.filter(|local| store.holds(&local.header));
+fn held_local(store: &Store, model: &str) -> Result<storage::Local, Failure> {
+    let held = storage::local(store, model).map_err(io_failure)?.filter(|local| store.holds(&local.header));
     held.ok_or_else(|| ("checkpoint_absent", format!(
-        "this machine holds no {repository}: a local/ name is a model downloaded to the machine that runs it; \
-         download it there first (`cozy model download <source> {repository} --on <machine>`)")))
+        "this machine holds no {model}: a local/ name is a model downloaded to the machine that runs it; \
+         download it there first (`cozy model download <source> {model} --on <machine>`)")))
 }
 
 /// The oldest Runtime and TensorFS whose executors open an adapter view from Load's bytes
@@ -1725,7 +1726,7 @@ fn apply_adapters(
             let source = source.ok_or_else(|| ("hub_access_absent",
                 format!("an adapter of {} names a Hub model, and this run carries no Hub access: `cozy login <email>` on the computer that sent it, then run it again", grant.slot)))?;
             let named = resolve(source, Named {
-                repository: adapter.model.clone(),
+                model: adapter.model.clone(),
                 release: adapter.release.clone(),
                 lane: adapter.lane.clone(),
                 tree,
@@ -1786,8 +1787,8 @@ fn apply_adapters(
             said.iter().map(move |w| format!("{named}: {w}"))
         })
         .collect();
-    let base = std::mem::replace(&mut grant.repository, composed.name);
-    grant.adapted = Some(crate::gpu_service::Adapted { repository: base, adapters });
+    let base = std::mem::replace(&mut grant.model, composed.name);
+    grant.adapted = Some(crate::gpu_service::Adapted { model: base, adapters });
     grant.manifest = composed.checkpoint.id().id();
     Ok(warnings)
 }
@@ -1945,12 +1946,12 @@ pub(crate) fn default_choice(slot: &Value, path: &str) -> Option<stored::ModelCh
         Some(named) => named,
         None => (default.starts_with("local/").then_some(default)?, ""),
     };
-    let repository = match model.contains('/') {
+    let model = match model.contains('/') {
         true => model.into(),
         false => format!("{}/{model}", api::names::ROOT),
     };
     let lane = slot.get("lane").and_then(Value::as_str).unwrap_or_default().into();
-    Some(stored::ModelChoice { parameter: path.into(), repository, release: release.into(), lane, ..Default::default() })
+    Some(stored::ModelChoice { parameter: path.into(), model, release: release.into(), lane, ..Default::default() })
 }
 
 fn local_aliases(installation: &Installation, request: &Request) -> io::Result<bool> {
@@ -1959,10 +1960,10 @@ fn local_aliases(installation: &Installation, request: &Request) -> io::Result<b
         let path = slot["path"].as_str().unwrap_or_default();
         let parameter = path.rsplit('.').next().unwrap_or_default();
         let asked = request.choices.iter().find(|c| c.parameter == path || c.parameter == parameter)
-            .filter(|c| !c.repository.is_empty() || c.manifest.is_some() || !c.source.is_empty());
+            .filter(|c| !c.model.is_empty() || c.manifest.is_some() || !c.source.is_empty());
         let declared = default_choice(slot, path);
         asked.or(declared.as_ref()).is_some_and(|choice| choice.source.is_empty()
-            && choice.manifest.is_none() && choice.repository.starts_with("local/"))
+            && choice.manifest.is_none() && choice.model.starts_with("local/"))
     }))
 }
 

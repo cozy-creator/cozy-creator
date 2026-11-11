@@ -547,3 +547,17 @@ jobs:
           path: product-vault-evidence
           if-no-files-found: warn
           retention-days: 14
+
+  api-protocol:
+    if: contains(inputs.build, 'api-protocol')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Model content negotiation and catalog protocol regressions
+        run: |
+          cargo test --locked -p api --features hub --lib hub::client::catalog_tests -- --nocapture | tee api-protocol.log
+          grep -q 'model_cards_negotiate_the_canonical_checkpoint_representation .*ok' api-protocol.log

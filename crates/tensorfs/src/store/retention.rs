@@ -4,7 +4,7 @@
 //!   digests it holds, under its holder's `flock`; a dead holder's file is reaped);
 //! - a header file a Writer wrote or `open(path)` opened, while that file still holds that header
 //!   (`files/<sha256 of the path>`);
-//! - a `local/` repo ref.
+//! - a `local/` model ref.
 //!
 //! Everything else is cache. A use (`uses/<name>`: the digests it keeps, its mtime the last use)
 //! keeps them and `snapshots/<name>/` for [`TTL`]; a use a live hold names is in use now. On a low
@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 
 use super::gc::Collected;
 use super::{fail, invalid, is_digest, platform, Result, Store};
-use crate::format::{Header, ObjectRef, Repo};
+use crate::format::{Header, ObjectRef, Model};
 
 /// How long a use keeps what it names.
 pub(crate) const TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
@@ -237,8 +237,8 @@ impl Store {
                 None => drop(self.remove_record(&record)?),
             }
         }
-        for repo in self.refs()?.iter().filter(|r| local(r) && removed_ref.is_none_or(|name| !r.name.eq_ignore_ascii_case(name))) {
-            for tree in repo.roots() {
+        for model in self.refs()?.iter().filter(|r| local(r) && removed_ref.is_none_or(|name| !r.name.eq_ignore_ascii_case(name))) {
+            for tree in model.roots() {
                 self.closure(tree)?.into_iter().for_each(|o| root(o.sha256, 0));
             }
         }
@@ -427,8 +427,8 @@ impl Room {
 }
 
 /// `local/` repos are never evicted.
-fn local(repo: &Repo) -> bool {
-    repo.name.get(..6).is_some_and(|p| p.eq_ignore_ascii_case("local/"))
+fn local(model: &Model) -> bool {
+    model.name.get(..6).is_some_and(|p| p.eq_ignore_ascii_case("local/"))
 }
 
 /// Bytes missing for `incoming` and a reserve of 2% of the disk, within 1 to 10 GiB.

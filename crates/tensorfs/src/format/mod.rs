@@ -10,7 +10,7 @@ pub mod encode;
 mod json;
 pub use json::config_json;
 pub mod layout;
-mod repo;
+mod model;
 mod role;
 mod value;
 
@@ -19,16 +19,17 @@ pub use doc::{
     Body, ClassRef, Component, Encoding, Header, Location, Metadata, ObjectRef, Part, Provenance,
     Span, Tensor,
 };
-pub use repo::{label, newest_by, Release, Repo, Tree, CHUNKS_DIR, ROOT_ORG};
+pub use model::{label, newest_by, Release, ReleaseVisibility, Model, Tree, CHUNKS_DIR, ROOT_ORG};
 pub use doc::{is_digest, segment};
-pub use repo::{check_file, repo_name};
+pub use model::{check_file, model_name};
 pub use dtype::Dtype;
 pub use encode::{GlobalScale, NibbleOrder};
 pub use doc::{Pipeline, CONFIG_FILE};
 pub use value::{Config, ConfigValue, Value};
 
 pub(crate) const HEADER_FORMAT: &str = "cozytensors/1";
-pub(crate) const REPO_FORMAT: &str = "cozytensors.repo/1";
+pub(crate) const MODEL_FORMAT: &str = "cozytensors.model/1";
+pub(crate) const LEGACY_MODEL_FORMAT: &str = "cozytensors.repo/1";
 /// The path a writer gives a commit's header.
 pub const HEADER_PATH: &str = "model.cozytensors";
 /// A commit: `{format, lane, files: {path: object}}`.

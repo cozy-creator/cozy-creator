@@ -6,7 +6,7 @@ use api::error::{Error, Kind};
 use api::calcifer::hub::{ModelDetail, ModelEdit, ModelEdited, ModelSearch};
 use serde::Serialize;
 
-use api::model_ref::Repo;
+use api::model_ref::ModelId;
 use super::{Edit, Ls};
 use crate::Context;
 use crate::calcifer_client::path;
@@ -76,12 +76,12 @@ pub(super) async fn read(ctx: &Context, ask: &Searching) -> Result<ModelSearch, 
 }
 
 pub(super) async fn detail(ctx: &Context, model: &str) -> Result<ModelDetail, Error> {
-    let repo = Repo::hub(model)?;
-    ctx.calcifer().await?.get_query(&path(&["v1", "models", &repo.org, &repo.name]), &[("hub", ctx.hub().to_string())]).await
+    let model_id = ModelId::hub(model)?;
+    ctx.calcifer().await?.get_query(&path(&["v1", "models", &model_id.org, &model_id.name]), &[("hub", ctx.hub().to_string())]).await
 }
 
 pub(crate) async fn edit(ctx: &Context, args: Edit) -> Result<ExitCode, Error> {
-    let repo = Repo::hub(&args.model)?;
+    let model_id = ModelId::hub(&args.model)?;
     let ask = ModelEdit {
         hub: Some(ctx.hub().to_string()),
         family: args.family,
@@ -94,7 +94,7 @@ pub(crate) async fn edit(ctx: &Context, args: Edit) -> Result<ExitCode, Error> {
         return Err(Error::new(Kind::Usage, "model_edit_empty", "No model changes specified")
             .next("cozy model edit --help"));
     }
-    let edited: ModelEdited = ctx.calcifer().await?.patch(&path(&["v1", "models", &repo.org, &repo.name]), &ask).await?;
+    let edited: ModelEdited = ctx.calcifer().await?.patch(&path(&["v1", "models", &model_id.org, &model_id.name]), &ask).await?;
     if ctx.json {
         output::json(&edited);
         return Ok(ExitCode::SUCCESS);
@@ -102,6 +102,6 @@ pub(crate) async fn edit(ctx: &Context, args: Edit) -> Result<ExitCode, Error> {
     for warning in &edited.warnings {
         output::warn(warning);
     }
-    anstream::println!("Updated {}.", api::names::shown(&repo.to_string()));
+    anstream::println!("Updated {}.", api::names::shown(&model_id.to_string()));
     Ok(ExitCode::SUCCESS)
 }

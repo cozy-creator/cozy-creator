@@ -35,6 +35,7 @@ import type {
   ModelEdit,
   ModelEdited,
   ModelReleased,
+  ModelUnpublished,
   ModelSearch,
   NewAsset,
   Opened,
@@ -616,8 +617,12 @@ export class Client {
   }
 
   /** The Hub never reuses a version, so asking again is safe and takes no key. */
-  modelPublish(name: string, version: string, commits: string[]): Promise<ModelReleased> {
-    return this.write("POST", `${model(name)}/releases`, { version, commits })
+  modelPublish(name: string, version: string, checkpoints: string[]): Promise<ModelReleased> {
+    return this.write("POST", `${model(name)}/releases`, { version, checkpoints })
+  }
+
+  modelUnpublish(name: string, version: string): Promise<ModelUnpublished> {
+    return this.write("POST", `${model(name)}/releases/${encodeURIComponent(version)}/unpublish`, {})
   }
 
   deleteModel(name: string): Promise<unknown> {
@@ -628,8 +633,8 @@ export class Client {
     return this.json(`${model(name)}/releases/${encodeURIComponent(version)}`, { method: "DELETE" })
   }
 
-  deleteModelCommit(name: string, commit: string): Promise<unknown> {
-    return this.json(`${model(name)}/commits/${encodeURIComponent(commit)}`, { method: "DELETE" })
+  deleteModelCheckpoint(name: string, checkpoint: string): Promise<unknown> {
+    return this.json(`${model(name)}/checkpoints/${encodeURIComponent(checkpoint)}`, { method: "DELETE" })
   }
 
   // Account

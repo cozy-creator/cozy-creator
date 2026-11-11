@@ -78,20 +78,17 @@ let saved = writer.commit().await?;
 println!("saved {}", saved.id().id());
 ```
 
-A `.cozytensors` file is a small handle into the shared local store, not a self-contained
-file: `dest` gets only the header, and the tensor and asset bytes stay in the store. The
-store keeps them while that file exists and holds this header; opening a header file by path
-holds its data the same way, so a moved or copied file is held once it is opened. Otherwise
-local copies expire 7 days after their last use, least recently used first when the disk runs
-low. Open checkpoints keep their bytes in the meantime. To copy a checkpoint to another machine,
-write the portable form with `saved.materialize(dir, Format::Cozytensors, false)`.
+`dest` receives a complete portable `.cozytensors` checkpoint, including the header, chunks
+and component assets. Copying only that file into a fresh store supplies its declared data;
+opening verifies those objects into the ordinary CAS. Legacy thin headers remain small handles
+into an external object source. To export an already open checkpoint, use `saved.write_file(path)`.
 
-`dest` is the exact filename; TensorFS does not create a directory. `dest` and `repo_id` exclude
-each other. A `repo_id` upload names its commit's `lane`. With no destination, the writer keeps
+`dest` is the exact filename; TensorFS does not create a directory. `dest` and `model_id` exclude
+each other. A `model_id` upload names its checkpoint's `lane`. With no destination, the writer keeps
 the checkpoint in the shared store as a cache entry.
 
-A standalone header identifies one checkpoint. It does not contain its enclosing tree,
-release label, README or LICENSE; repository context is available only when separately known.
+A checkpoint file does not contain its enclosing catalog tree, release label, README or LICENSE;
+model catalog context is available only when separately known.
 
 The component borrows its writer while being filled. `commit(&mut self)` is async for both
 local and remote writes. After an upload failure, `writer.committed()` can return the strong
@@ -154,14 +151,14 @@ below; normal model consumers do not need it.
 | Type | Fields / use |
 |---|---|
 | `Config` | `endpoint: String`, `cache_dir: PathBuf`, `mirror: Option<PathBuf>`, `token: Option<Arc<dyn TokenProvider>>`, `ca_der: Option<Vec<u8>>` (a private CA trusted on top of the system roots, for every operation of the client). `Config::from_env()` returns configuration; `Client::new` validates it. Debug output redacts access material. |
-| `Ref` | `repo_id`, optional `release` (or `sha256:<hex>` of a commit), `lane`, `endpoint`; implements `FromStr` for `org/name[@release]`. |
+| `Ref` | `model_id`, optional `release` (or `sha256:<hex>` of a commit), `lane`, `endpoint`; implements `FromStr` for `org/name[@release]`. |
 | `Open` | Optional `release`, `lane`, `gpus`, `endpoint`, plus `local_files_only` and `lazy`; defaults to `lazy: true`. |
 | `Selection` | `All`, `Components(Vec<String>)`, `Tensors { component, keys }`, `Part { component, key, role: Option<String>, range: Option<Range<u64>> }`, or `Assets { component, names: Option<Vec<String>> }`. Part ranges are stored byte ranges; absent asset names selects all assets. |
 | `Download` | `selection`, `priority: u64`, optional borrowed progress callback; defaults to all. |
 | `Fetched` | Byte counts `local`, `volume`, `origin`. |
 | `VerificationReport` | Separate `missing` and `corrupt` object-reference vectors; `is_ok()` checks both are empty. |
 | `Convert` | Optional `converter`, `variant`, borrowed conversion-progress callback. |
-| `WriterOptions` | Optional `dest`, `base`, `resume`, `repo_id`, `lane` (with `repo_id`), `endpoint`, `token`; implements `Default`. |
+| `WriterOptions` | Optional `dest`, `base`, `resume`, `model_id`, `lane` (with `model_id`), `endpoint`, `token`; implements `Default`. |
 | `ReadInto` | `role: Option<&str>`, `decode: bool`, `offset: u64` for `Component::read_into`; implements `Default`. |
 | `Format` | `Safetensors` or native portable `Cozytensors` export. |
 
@@ -194,6 +191,11 @@ worker-permission mechanism.
 | `download(&Download).await` | `Result<Fetched>`. |
 | `materialize(directory, Format, decode).await` | `Result<PathBuf>` for the complete checkpoint folder. |
 | `open_file()` | `Result<CheckpointFile>`: the checkpoint as one read-only, seekable file (`Read + Seek`, `len()`): its header, then its chunks and assets in header order at 4 KiB-aligned offsets (spec §11), assembled from the store on demand; nothing is written. It holds what it may read until dropped, and fetches what it lacks when the checkpoint may fetch, so read it outside an async context. |
+| `write_file(path)` | `Result<()>`: atomically stream the complete portable `.cozytensors` file, including every chunk and component asset. Read outside an async context, as for `open_file()`. |
+
+`Client::open` accepts a complete checkpoint file and verifies its embedded objects into the configured CAS before
+opening it. `store::Store::admit_file(path, lane)` exposes the same admission and returns its tree id. A legacy
+header-only input remains a thin handle requiring its object source; explicit complete-file admission refuses it.
 
 `download` completes when the selected chunks and supporting files are verified and locally
 available; the open checkpoint retains them. `missing` is optional availability inspection.
@@ -226,13 +228,14 @@ return `Result`.
 Selections control exactly which component/tensor/part/asset bytes are fetched, including
 when other model data happens to be present in the cache.
 
-### Advanced repository and authorization use
+### Advanced model and authorization use
 
 `Endpoint::new(url, token)` constructs a reference client; `Endpoint::with_config(url,
-&Config)` also supplies explicit cache/CA/provider configuration. `repo(repo_id).await`
-returns `Result<Option<(Repo, String)>>`, containing the document and ETag.
-`update_repo(repo_id, change).await` returns `Result<Repo>` and can retry the change callback
-on a conflict. `Endpoint::new("local", ...)` addresses local repository references.
+&Config)` also supplies explicit cache/CA/provider configuration. `resolve(model_id, release,
+lane, hardware).await` returns the resolved checkpoint, header and lane-selection reasons.
+`Endpoint::new("local", ...)` addresses local model references. Mutable `format::Model`
+documents read both legacy `cozytensors.repo/1` and visibility-aware `cozytensors.model/1`;
+rewrites preserve the loaded modern format, private releases and deleted version names.
 
 `bearer(token)` returns `Arc<dyn TokenProvider>`. A custom provider implements
 `headers(&Request).await -> Result<Vec<(String, String)>>`; optional

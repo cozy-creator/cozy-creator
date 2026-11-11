@@ -4,7 +4,7 @@
 //! - **Reads.** Objects as Fetcher locations, whose redirects the client follows without
 //!   credentials across origins; [`Endpoint::resolve`] names a model's commit.
 //! - **Uploads.** Per object HEAD → PUT (to the HEAD's `Location`, else here) → HEAD; `412` means
-//!   present. [`upload_commit`] sends chunks, assets and repo files, then the header, then the
+//!   present. [`upload_checkpoint`] sends chunks, assets and repo files, then the header, then the
 //!   tree, then records the commit as the model's ([`Endpoint::commit`]).
 //! - **A directory** writes through a store over it: objects verified, temp and rename; its
 //!   records under the store's record lock.
@@ -28,7 +28,7 @@ use super::origin::{Boxed, Location, Origin};
 use super::policy::is_loopback_origin;
 use super::token::{default_for, s3_base, Request, TokenProvider};
 use crate::err::{refuse, Code, Refusal, Result};
-use crate::format::{is_digest, repo_name, Header, ObjectRef, Repo, Tree};
+use crate::format::{is_digest, model_name, Header, ObjectRef, Model, Tree};
 use crate::sha256::hex_digest;
 use crate::store::{self, Checkpoint, Store};
 use crate::writer::{Upload, Writer};
@@ -65,10 +65,10 @@ pub enum Payload {
     Part(fs::File, u64),
 }
 
-/// What [`upload_commit`] did: the commit, the closure's objects, and those it sent.
+/// What [`upload_checkpoint`] did: the commit, the closure's objects, and those it sent.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Uploaded {
-    pub commit: ObjectRef,
+    pub checkpoint: ObjectRef,
     pub objects: usize,
     pub sent: usize,
     pub bytes: u64,
@@ -95,7 +95,8 @@ pub struct Resolved {
     pub release: String,
     #[serde(default)]
     pub lane: String,
-    pub commit: ObjectRef,
+    #[serde(rename = "commit", alias = "checkpoint")]
+    pub checkpoint: ObjectRef,
     pub header: ObjectRef,
     #[serde(default)]
     pub reasons: Vec<String>,
@@ -171,20 +172,20 @@ impl Endpoint {
     /// one `hardware` runs best (the Hub's choice; a directory's release has one lane, or its
     /// model no releases: its newest commit).
     pub async fn resolve(&self, name: &str, release: Option<&str>, lane: Option<&str>, hardware: &Hardware) -> Result<Resolved> {
-        check_repo_name(name)?;
+        check_model_name(name)?;
         let base = match &self.at {
             At::Http(base) => base,
             At::Dir(..) => {
                 // The store's own record of the model: the one way refs are read and written.
-                let Some(repo) = self.store()?.get_ref(name).map_err(crate::store::Error::refusal)? else {
+                let Some(model) = self.store()?.get_ref(name).map_err(crate::store::Error::refusal)? else {
                     return refuse(Code::REF_NOT_FOUND, format!("no model {name} at {}", self.url));
                 };
                 let unread = |e: crate::format::Error| Refusal { code: Code::UNKNOWN_FORMAT, detail: format!("{name}: {e}") };
-                let (release, lane, commit) = repo.resolve(release, lane)
+                let (release, lane, commit) = model.resolve(release, lane)
                     .map_err(|e| Refusal { code: Code::REF_NOT_FOUND, detail: e.to_string() })?;
                 let tree = Tree::from_json(&self.document(&commit).await?).map_err(unread)?;
                 let header = tree.header().map_err(unread)?.1.clone();
-                return Ok(Resolved { release, lane: lane.unwrap_or(tree.lane), commit, header, reasons: vec![] });
+                return Ok(Resolved { release, lane: lane.unwrap_or(tree.lane), checkpoint: commit, header, reasons: vec![] });
             }
         };
         let mut url = format!("{}?", repo_url(base, &format!("v1/models/{}/resolve", name.to_ascii_lowercase())));
@@ -209,7 +210,7 @@ impl Endpoint {
     /// Records the uploaded tree `commit` (its closure already here) as one of model `name`'s
     /// commits: true when the model had it already.
     pub async fn commit(&self, name: &str, commit: &ObjectRef) -> Result<bool> {
-        check_repo_name(name)?;
+        check_model_name(name)?;
         let base = match &self.at {
             At::Http(base) => base,
             At::Dir(..) => {
@@ -219,10 +220,10 @@ impl Endpoint {
                     tree.header().map_err(crate::store::Error::Format)?;
                     let mut had = false;
                     store.update_ref(&name, |old| {
-                        let mut repo = old.unwrap_or_else(|| Repo::new(&name));
-                        had = repo.commits.last() == Some(&commit);
-                        repo.add_commit(commit.clone());
-                        Some(repo)
+                        let mut model = old.unwrap_or_else(|| Model::new(&name));
+                        had = model.checkpoints.last() == Some(&commit);
+                        model.add_checkpoint(commit.clone());
+                        Some(model)
                     })?;
                     Ok::<_, crate::store::Error>(had)
                 });
@@ -575,7 +576,7 @@ pub struct UploadControl<'a> {
 /// Sends what `endpoint` lacks of commit `tree`'s closure in `store` (chunks, assets and repo
 /// files, then the header, then the tree), then records it as model `name`'s
 /// ([`Endpoint::commit`]).
-pub async fn upload_commit(endpoint: &Endpoint, name: &str, tree: &ObjectRef, store: &Store, control: &UploadControl<'_>) -> Result<Uploaded> {
+pub async fn upload_checkpoint(endpoint: &Endpoint, name: &str, tree: &ObjectRef, store: &Store, control: &UploadControl<'_>) -> Result<Uploaded> {
     let stopped = || Refusal { code: Code::TRANSFER_FAILED, detail: "upload stopped before its commit; admitted objects remain available".into() };
     if (control.cancelled)() {
         return Err(stopped());
@@ -636,10 +637,10 @@ pub async fn upload_commit(endpoint: &Endpoint, name: &str, tree: &ObjectRef, st
         return Err(stopped());
     }
     let converged = endpoint.commit(name, tree).await?;
-    Ok(Uploaded { commit: tree.clone(), objects, sent, bytes, converged })
+    Ok(Uploaded { checkpoint: tree.clone(), objects, sent, bytes, converged })
 }
 
-/// A writer's objects on their way to an endpoint (`Writer(repo_id=…)`): each is sent (HEAD →
+/// A writer's objects on their way to an endpoint (`Writer(model_id=…)`): each is sent (HEAD →
 /// PUT → HEAD) as soon as it is sealed while the writer goes on, at most [`IN_FLIGHT`] at once;
 /// at commit the header, then the tree, then the commit recorded.
 /// File-backed objects queue without blocking the caller's runtime. Byte-backed puts and
@@ -753,8 +754,8 @@ impl Drop for Stream {
 }
 
 // Generic endpoints use format segments, independent of a Hub's catalog name policy.
-fn check_repo_name(name: &str) -> Result<()> {
-    match repo_name(name) {
+fn check_model_name(name: &str) -> Result<()> {
+    match model_name(name) {
         true => Ok(()),
         false => refuse(Code::KEY_GRAMMAR, format!("{name:?} is not <org>/<name>")),
     }
@@ -858,4 +859,22 @@ pub(crate) fn streaming_writer(store: &Store, stream: Arc<Stream>, name: &str, l
     let mut writer = crate::writer(store, base, key)?;
     writer.uploading(Arc::new(Streamed { stream, name: name.to_owned(), lane: lane.to_owned() }));
     Ok(writer)
+}
+
+#[cfg(test)]
+mod checkpoint_wire_tests {
+    #[test]
+    fn resolved_checkpoint_reads_both_names_and_emits_the_supported_wire_field() {
+        let object = crate::format::ObjectRef::of(b"fixture");
+        let legacy = serde_json::json!({"commit":object,"header":object});
+        let canonical = serde_json::json!({"checkpoint":object,"header":object});
+        let resolved: super::Resolved = serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(serde_json::from_value::<super::Resolved>(canonical).unwrap(), resolved);
+        let wire = serde_json::to_value(&resolved).unwrap();
+        assert!(wire.get("commit").is_some());
+        assert!(wire.get("checkpoint").is_none());
+        let mut ambiguous = legacy;
+        ambiguous["checkpoint"] = serde_json::to_value(object).unwrap();
+        assert!(serde_json::from_value::<super::Resolved>(ambiguous).is_err());
+    }
 }

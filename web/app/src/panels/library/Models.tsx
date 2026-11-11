@@ -3,7 +3,7 @@ import { useDeferredValue, useState } from "react"
 import { Link, useNavigate, useParams } from "react-router-dom"
 import { useConnection } from "../../app/Connection"
 import { useTo } from "../../app/Shell"
-import type { ModelCommit, ModelDetail, ModelEdit, Submitted } from "../../api/calcifer"
+import type { ModelCheckpoint, ModelDetail, ModelEdit, Submitted } from "../../api/calcifer"
 import { say } from "../../ui/notes"
 import { NSFW, ShowNsfw, Tags, isNsfw, useShowNsfw } from "../../ui/Tags"
 import { Confirm, Failure, Section, useAsk, useSignedIn } from "../common"
@@ -12,14 +12,14 @@ import { bytes, shown } from "../format"
 import { OnMachine } from "../machines/OnMachine"
 import { LibraryFrame } from "./Library"
 
-/** Follows the run the ask became. A Hub commit is only recorded there: Calcifer's own run, on no machine. */
+/** Follows the run the ask became. A Hub checkpoint is only recorded there: Calcifer's own run, on no machine. */
 function useFollowRun() {
   const navigate = useNavigate()
   const to = useTo()
   return ({ run }: Submitted) => navigate(to(`runs/${run.number}`))
 }
 
-/** A dropped file becomes a private commit of a model, on a machine that makes and uploads it. */
+/** A dropped file becomes a private checkpoint of a model, on a machine that makes and uploads it. */
 function Upload({ destination }: { destination?: string }) {
   const { client } = useConnection()
   const follow = useFollowRun()
@@ -104,37 +104,37 @@ export function Models() {
   )
 }
 
-function Publish({ name, commits, onDone }: { name: string; commits: ModelCommit[]; onDone: () => void }) {
+function Publish({ name, checkpoints, onDone }: { name: string; checkpoints: ModelCheckpoint[]; onDone: () => void }) {
   const { client } = useConnection()
   const ask = useAsk()
   const [version, setVersion] = useState("")
   const [chosen, setChosen] = useState<Set<string>>(new Set())
   return (
     <>
-      <p className="muted">One commit per lane, under a version higher than every earlier one. A release is public for good.</p>
+      <p className="muted">Choose one checkpoint per lane for the public release.</p>
       <table className="grid">
         <tbody>
-          {commits.map((commit) => (
-            <tr key={commit.commit}>
+          {checkpoints.map((checkpoint) => (
+            <tr key={checkpoint.checkpoint}>
               <td>
                 <input
                   type="checkbox"
-                  aria-label={`Publish the ${commit.lane} commit of ${commit.created_at}`}
-                  checked={chosen.has(commit.commit)}
+                  aria-label={`Publish the ${checkpoint.lane} checkpoint of ${checkpoint.created_at}`}
+                  checked={chosen.has(checkpoint.checkpoint)}
                   onChange={(event) => {
                     const next = new Set(chosen)
-                    if (event.target.checked) next.add(commit.commit)
-                    else next.delete(commit.commit)
+                    if (event.target.checked) next.add(checkpoint.checkpoint)
+                    else next.delete(checkpoint.checkpoint)
                     setChosen(next)
                   }}
                 />
               </td>
-              <td className="nm">{commit.lane}</td>
-              <td>{bytes(commit.bytes)}</td>
-              <td>{commit.created_at}</td>
-              <td>{commit.releases.length ? commit.releases.join(", ") : "private"}</td>
+              <td className="nm">{checkpoint.lane}</td>
+              <td>{bytes(checkpoint.bytes)}</td>
+              <td>{checkpoint.created_at}</td>
+              <td>{checkpoint.releases.length ? checkpoint.releases.join(", ") : "private"}</td>
               <td className="end">
-                <DeleteCommit name={name} commit={commit} onDone={onDone} />
+                <DeleteCheckpoint name={name} checkpoint={checkpoint} onDone={onDone} />
               </td>
             </tr>
           ))}
@@ -146,7 +146,7 @@ function Publish({ name, commits, onDone }: { name: string; commits: ModelCommit
           label="Publish"
           danger={false}
           disabled={ask.busy || !version.trim() || !chosen.size}
-          says={`Publish ${shown(name)} ${version.trim()} with ${chosen.size} ${chosen.size === 1 ? "lane" : "lanes"}? It's public for good, and the Hub never uses that version again.`}
+          says={`Publish ${shown(name)} ${version.trim()} with ${chosen.size} ${chosen.size === 1 ? "lane" : "lanes"}? Its checkpoint mapping stays fixed; you can make the release private later.`}
           yes="Publish it"
           onYes={() =>
             void ask.run(async () => {
@@ -164,20 +164,20 @@ function Publish({ name, commits, onDone }: { name: string; commits: ModelCommit
   )
 }
 
-function DeleteCommit({ name, commit, onDone }: { name: string; commit: ModelCommit; onDone: () => void }) {
+function DeleteCheckpoint({ name, checkpoint, onDone }: { name: string; checkpoint: ModelCheckpoint; onDone: () => void }) {
   const { client } = useConnection()
   const ask = useAsk()
-  if (commit.releases.length) return null
+  if (checkpoint.releases.length) return null
   return (
     <>
       <Confirm
         label="Delete"
         disabled={ask.busy}
-        says={`Delete this private ${commit.lane} commit of ${shown(name)}? No release names it, and the Hub reclaims what nothing else uses. It can't be undone.`}
+        says={`Delete this private ${checkpoint.lane} checkpoint of ${shown(name)}? No release names it, and the Hub reclaims what nothing else uses. It can't be undone.`}
         yes="Delete it"
         onYes={() =>
           void ask.run(async () => {
-            await client.deleteModelCommit(name, commit.commit)
+            await client.deleteModelCheckpoint(name, checkpoint.checkpoint)
             onDone()
           })
         }
@@ -265,17 +265,29 @@ function Releases({ detail, signedIn, onDone }: { detail: ModelDetail; signedIn:
           {detail.releases.flatMap((release) =>
             release.lanes.map((lane, at) => (
               <tr key={`${release.version}:${lane.lane}`}>
-                <td className="nm">{at === 0 ? release.version : ""}</td>
+                <td className="nm">{at === 0 ? `${release.version}${release.visibility === "private" ? " (private)" : ""}` : ""}</td>
                 <td className="nm">{lane.lane}</td>
                 <td>{bytes(lane.bytes)}</td>
                 <td>{lane.kinds?.join(", ")}</td>
                 <td>{at === 0 ? release.created_at : ""}</td>
                 <td className="end">
-                  {at === 0 && signedIn && detail.commits.length > 0 && (
+                  {at === 0 && signedIn && detail.checkpoints.length > 0 && release.visibility === "public" && (
+                    <Confirm
+                      label="Unpublish"
+                      disabled={ask.busy}
+                      says={`Make ${shown(detail.model)}@${release.version} private? Existing installed copies remain.`}
+                      yes="Make private"
+                      onYes={() => void ask.run(async () => {
+                        await client.modelUnpublish(detail.model, release.version)
+                        onDone()
+                      })}
+                    />
+                  )}
+                  {at === 0 && signedIn && detail.checkpoints.length > 0 && (
                     <Confirm
                       label="Delete"
                       disabled={ask.busy}
-                      says={`Delete release ${release.version} of ${shown(detail.model)}? That version is never published again, and what only it released is private again.`}
+                      says={`Delete release ${release.version} of ${shown(detail.model)}? The version cannot be reused; its checkpoints remain with the model.`}
                       yes="Delete it"
                       onYes={() =>
                         void ask.run(async () => {
@@ -292,7 +304,7 @@ function Releases({ detail, signedIn, onDone }: { detail: ModelDetail; signedIn:
         </tbody>
       </table>
       {!detail.releases.length && <p className="muted">No release yet: it's private.</p>}
-      <Failure error={ask.error} lead="Couldn't delete it" />
+      <Failure error={ask.error} lead="Couldn't change the release" />
     </>
   )
 }
@@ -312,7 +324,7 @@ export function ModelDrawer() {
   const [quantizeLane, setQuantizeLane] = useState("")
   const [quantizePackage, setQuantizePackage] = useState("")
   const remove = useAsk()
-  const member = Boolean(data?.commits.length)
+  const member = Boolean(data?.checkpoints.length)
   const lanes = [...new Set(data?.releases.flatMap((row) => row.lanes.map((held) => held.lane)))]
   const model = release ? `${name}@${release}` : name
 
@@ -390,14 +402,14 @@ export function ModelDrawer() {
           {member && data && (
             <details className="sect" open>
               <summary>Commits and publish</summary>
-              <Publish name={name} commits={data.commits} onDone={again} />
+              <Publish name={name} checkpoints={data.checkpoints} onDone={again} />
             </details>
           )}
           <Section title="Delete">
             <Confirm
               label={`Delete ${shown(name)}`}
               disabled={remove.busy}
-              says={`Delete ${shown(name)} from the Hub, with every release and commit? The Hub reclaims what nothing else uses, and it can't be undone. Machines keep what they hold.`}
+              says={`Delete ${shown(name)} from the Hub, with every release and checkpoint? The Hub reclaims what nothing else uses, and it can't be undone. Machines keep what they hold.`}
               yes="Delete it for good"
               onYes={() =>
                 void remove.run(async () => {
@@ -408,7 +420,7 @@ export function ModelDrawer() {
                 })
               }
             />
-            <Failure error={remove.error} lead="Couldn't delete it" />
+            <Failure error={remove.error} lead="Couldn't delete the model" />
           </Section>
         </>
       )}

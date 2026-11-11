@@ -63,6 +63,31 @@ pub(crate) fn peft_key(key: &str) -> Option<String> {
     None
 }
 
+/// Ordinary tensors explicitly named by PEFT's modules_to_save belong to this adapter.
+fn saved_key(key: &str, config: &Config) -> Option<String> {
+    let key = key.strip_prefix(PEFT_PREFIX).unwrap_or(key);
+    let canonical = match key.split_once(".modules_to_save.") {
+        Some((module, tail)) => format!("{module}.{}", tail.split_once('.')?.1),
+        None => key.to_owned(),
+    };
+    let module = canonical.rsplit_once('.')?.0;
+    config.get("modules_to_save")?.as_array()?.iter().filter_map(Json::as_str)
+        .any(|name| module == name || module.ends_with(&format!(".{name}")))
+        .then_some(canonical)
+}
+
+#[cfg(test)]
+mod saved_tests {
+    #[test]
+    fn ordinary_saved_tensors_are_part_of_the_declared_adapter() {
+        let config = serde_json::from_str(r#"{"modules_to_save":["head"]}"#).unwrap();
+        for key in ["base_model.model.head.weight", "base_model.model.head.modules_to_save.default.weight"] {
+            assert_eq!(super::saved_key(key, &config).as_deref(), Some("head.weight"));
+        }
+        assert!(super::saved_key("base_model.model.unrelated.weight", &config).is_none());
+    }
+}
+
 /// PEFT's `adapter_config.json` for LoRA `modules` (module, rank): `source`'s fields where it
 /// states them (its patterns as they are: a caller that folds them into `.alpha` empties them),
 /// else `r` the commonest rank, `target_modules` the modules, `lora_alpha` `r` when every rank is
@@ -133,12 +158,24 @@ pub(crate) fn normalize(
         if (mine.iter().map(|i| &planned[*i].key)).any(|k| KOHYA.iter().any(|p| k.starts_with(p))) {
             continue;
         }
+        let path = super::join(&group.folder, ADAPTER_CONFIG);
+        let source = match (files.get(&path), group.metadata.get(DIFFUSERS_CONFIG)) {
+            (Some(bytes), _) => {
+                read.insert(path.clone());
+                Some(parse(&path, bytes)?)
+            }
+            (None, Some(text)) => Some(unpacked(component, parse(DIFFUSERS_CONFIG, text.as_bytes())?)),
+            (None, None) => None,
+        };
         let mut seen = BTreeSet::new();
         let (mut modules, mut kept, mut magnitudes, mut strays) = (BTreeMap::new(), BTreeSet::new(), BTreeSet::new(), vec![]);
         for i in &mine {
             let p = &mut planned[*i];
             match peft_key(&p.key) {
                 Some(key) => p.key = key,
+                None if source.as_ref().and_then(|config| saved_key(&p.key, config)).is_some() => {
+                    p.key = saved_key(&p.key, source.as_ref().expect("checked")).expect("checked");
+                }
                 None if !tabled.contains(component) => strays.push(p.key.clone()),
                 None => {}
             }
@@ -167,15 +204,6 @@ pub(crate) fn normalize(
         if let Some(m) = magnitudes.iter().find(|m| !modules.contains_key(*m)) {
             return refuse(Code::UNPLACED_KEYS, format!("{component}: {m}{MAGNITUDE} has no A and B factor pair to apply"));
         }
-        let path = super::join(&group.folder, ADAPTER_CONFIG);
-        let source = match (files.get(&path), group.metadata.get(DIFFUSERS_CONFIG)) {
-            (Some(bytes), _) => {
-                read.insert(path.clone());
-                Some(parse(&path, bytes)?)
-            }
-            (None, Some(text)) => Some(unpacked(component, parse(DIFFUSERS_CONFIG, text.as_bytes())?)),
-            (None, None) => None,
-        };
         // Each `.alpha` the source holds, as the F32 scalar its loaders read.
         let mut stated: BTreeMap<String, f64> = BTreeMap::new();
         for i in &mine {

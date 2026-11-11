@@ -231,7 +231,7 @@ async fn run(args: &Args) -> Done {
             let reference: Ref = reference.parse()?;
             let Some(lane) = args.get("lane") else { return fail(Kind::Invalid, "upload names its commit's --lane") };
             let commit = client.upload_folder(&reference, Path::new(folder), lane, None).await?;
-            let human = format!("uploaded {}@sha256:{} ({lane})", reference.repo_id, commit.sha256);
+            let human = format!("uploaded {}@sha256:{} ({lane})", reference.model_id, commit.sha256);
             Ok(Some((json!({"commit": object(&commit), "lane": lane}), human)))
         }
         ["export", reference, dir] => {
@@ -304,13 +304,13 @@ async fn run(args: &Args) -> Done {
 /// endpoint: the one commit path. The commit.
 async fn name_locally(root: &Path, store: &Store, name: &str, tree: &ObjectRef) -> Result<ObjectRef> {
     let named: Ref = name.parse()?;
-    if !named.repo_id.starts_with("local/") || named.release.is_some() {
+    if !named.model_id.starts_with("local/") || named.release.is_some() {
         return fail(Kind::Invalid, format!("--name {name:?}: a local name is local/<name>"));
     }
     let root = std::path::absolute(root).map_err(Failure::from)?;
     let local = fetch::Endpoint::new(&fetch::Client::new(fetch::SourcePolicy::default()), &root.to_string_lossy(), None)?;
     let control = fetch::UploadControl { cancelled: &|| false, progress: &|_, _| {}, retrying: &|_| {}, commit: &|| true };
-    Ok(fetch::upload_commit(&local, &named.repo_id, tree, store, &control).await?.commit)
+    Ok(fetch::upload_checkpoint(&local, &named.model_id, tree, store, &control).await?.checkpoint)
 }
 
 fn listing(dir: &Path) -> Result<Vec<String>> {

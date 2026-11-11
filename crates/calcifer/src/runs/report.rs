@@ -282,7 +282,7 @@ struct Fields {
 #[serde(default)]
 struct Model {
     slot: String,
-    repository: String,
+    model: String,
     release: String,
     lane: String,
     /// The header's precision family (`int8`, …), shown beside the lane.
@@ -390,7 +390,7 @@ fn stages(measured: &Measured) -> Vec<report::Stage> {
 fn models(measured: &Measured) -> Vec<report::Model> {
     let model = |m: &Model| report::Model {
         slot: m.slot.clone(),
-        repository: m.repository.clone(),
+        model: m.model.clone(),
         release: m.release.clone(),
         manifest: m.manifest.clone(),
         lane: m.lane.clone(),

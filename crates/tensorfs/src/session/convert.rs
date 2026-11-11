@@ -189,15 +189,9 @@ impl Client {
                 progress: &report,
                 stop: Some(&stopped),
             };
-            let mut writer = crate::writer(&store, None, None)?;
-            import::convert(&request, &mut writer).map_err(provider::from_native)?;
+            let (header, files) = import::into_store(&store, &request, None).map_err(provider::from_native)?;
             worker_control.check()?;
-            let header = writer.committed().ok_or_else(|| Failure {
-                kind: Kind::Integrity,
-                detail: "conversion sealed no checkpoint".into(),
-            })?;
-            // Acquire the checkpoint before releasing the Writer's strong native owner.
-            let raw = store.checkpoint(header)?;
+            let raw = store.checkpoint(&header)?;
             let lane = import::main_lane(raw.header().tensors().map(|(_, tensor)| {
                 let (encoding, length) = match &tensor.body {
                     Body::Data(at) => (None, at.length),
@@ -207,11 +201,11 @@ impl Client {
                 };
                 (&tensor.dtype, encoding, length)
             }));
-            let parsed = Tree::of(&lane, header.clone(), writer.repo_files())?;
+            let parsed = Tree::of(&lane, header.clone(), &files)?;
             worker_control.check()?;
             let tree = store.put_tree(&parsed)?;
             let extra = std::iter::once(tree.clone())
-                .chain(writer.repo_files().values().cloned())
+                .chain(files.values().cloned())
                 .collect();
             let checkpoint = Checkpoint::managed(
                 raw,
@@ -221,7 +215,7 @@ impl Client {
                 extra,
                 store.clone(),
             )?;
-            store.used(&tree.sha256, std::iter::once(&tree).chain(writer.repo_files().values()))?;
+            store.used(&tree.sha256, std::iter::once(&tree).chain(files.values()))?;
             Ok(checkpoint)
         })
         .await

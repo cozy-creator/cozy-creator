@@ -141,7 +141,7 @@ pub(crate) struct Fetch {
 /// A checkpoint not all here when it was wanted: its repository and where it comes from, the bytes it had to fetch and those it held
 /// already, and its objects still absent.
 struct Arriving {
-    repository: String,
+    model: String,
     remote: Remote,
     fetch: u64,
     here: u64,
@@ -150,8 +150,8 @@ struct Arriving {
 
 /// A repository's checkpoints arriving: the bytes fetched of those to fetch, those that were here, and whether any is still absent.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct Repository {
-    pub repository: String,
+pub(crate) struct ModelTransfer {
+    pub model: String,
     pub done: u64,
     pub total: u64,
     pub here: u64,
@@ -388,7 +388,7 @@ impl Fetch {
                 continue;
             }
             let pulled = Pulled::of(self.store(), checkpoint.id())?;
-            let repository = pulled.as_ref().map_or_else(|| header.clone(), |p| p.repository.clone());
+            let model = pulled.as_ref().map_or_else(|| header.clone(), |p| p.model.clone());
             let (mut absent_all, mut here_all) = (vec![], 0);
             for component in components {
                 let objects = storage::chunks(&checkpoint, std::slice::from_ref(component));
@@ -401,12 +401,12 @@ impl Fetch {
                     continue;
                 }
                 absent_all.extend(absent.iter().cloned());
-                wanted.push(Wanted { bytes, remote: remote.clone(), objects: absent, label: format!("{repository} {component}") });
+                wanted.push(Wanted { bytes, remote: remote.clone(), objects: absent, label: format!("{model} {component}") });
             }
             if let (false, Some(pulled)) = (absent_all.is_empty(), pulled) {
                 // What it has to fetch, never what was here already (shared with another model, or an earlier pull's).
                 let fetch = absent_all.iter().map(|o| o.length).sum();
-                self.arriving.lock().unwrap().push(Arriving { repository: pulled.repository, remote: remote.clone(), fetch, here: here_all, absent: absent_all });
+                self.arriving.lock().unwrap().push(Arriving { model: pulled.model, remote: remote.clone(), fetch, here: here_all, absent: absent_all });
             }
             self.held.lock().unwrap().push(checkpoint);
         }
@@ -464,17 +464,17 @@ impl Fetch {
 
     /// The weights its run waits on that are not all here yet, while any are not; and each
     /// repository of them.
-    pub(crate) fn arriving(&self) -> (Option<Weights>, Vec<Repository>) {
+    pub(crate) fn arriving(&self) -> (Option<Weights>, Vec<ModelTransfer>) {
         let waited = self.each(&self.arriving);
         (counted(&waited), waited.into_iter().filter(|each| each.absent).collect())
     }
 
     /// Each of `list`'s repositories, its bytes fetched (an object still arriving counted to the byte it reached) of those it
     /// found absent. An object here stays: its checkpoint is held.
-    fn each(&self, list: &Mutex<Vec<Arriving>>) -> Vec<Repository> {
+    fn each(&self, list: &Mutex<Vec<Arriving>>) -> Vec<ModelTransfer> {
         let mut arriving = list.lock().unwrap();
-        let mut each: Vec<Repository> = vec![];
-        for Arriving { repository, remote, fetch, here, absent } in arriving.iter_mut() {
+        let mut each: Vec<ModelTransfer> = vec![];
+        for Arriving { model, remote, fetch, here, absent } in arriving.iter_mut() {
             // Each download as it stands, read before the store: one landing meanwhile counts whole.
             let mut states = self.machine.fetching(remote, absent).into_iter();
             let mut missing = 0;
@@ -486,10 +486,10 @@ impl Fetch {
                 }
                 !held
             });
-            let at = match each.iter().position(|seen| seen.repository == *repository) {
+            let at = match each.iter().position(|seen| seen.model == *model) {
                 Some(at) => at,
                 None => {
-                    each.push(Repository { repository: repository.clone(), ..Repository::default() });
+                    each.push(ModelTransfer { model: model.clone(), ..ModelTransfer::default() });
                     each.len() - 1
                 }
             };
@@ -519,8 +519,8 @@ impl Fetch {
 }
 
 /// The repositories of `each` not all here, and the bytes fetched of all they had to fetch.
-fn counted(each: &[Repository]) -> Option<Weights> {
-    let models: Vec<&str> = each.iter().filter(|each| each.absent).map(|each| each.repository.as_str()).collect();
+fn counted(each: &[ModelTransfer]) -> Option<Weights> {
+    let models: Vec<&str> = each.iter().filter(|each| each.absent).map(|each| each.model.as_str()).collect();
     let (done, total) = each.iter().fold((0, 0), |(done, total), each| (done + each.done, total + each.total));
     (!models.is_empty()).then(|| Weights { models: models.join(" and "), done, total })
 }
@@ -544,9 +544,9 @@ pub(crate) fn meter(engine: Arc<Engine>, id: String, fetch: &Arc<Fetch>) {
         loop {
             let live = fetch.upgrade().filter(|f| !f.ended());
             let (weights, waited) = live.as_ref().map(|f| f.arriving()).unwrap_or_default();
-            waits.retain(|repository, _| waited.iter().any(|each| each.repository == *repository));
+            waits.retain(|model, _| waited.iter().any(|each| each.model == *model));
             for each in &waited {
-                let wait = waits.entry(each.repository.clone()).or_insert_with(|| crate::activity::wait(crate::activity::Kind::Download, &each.repository, &caller));
+                let wait = waits.entry(each.model.clone()).or_insert_with(|| crate::activity::wait(crate::activity::Kind::Download, &each.model, &caller));
                 wait.here(each.here);
                 wait.moved("", each.done, each.total);
             }

@@ -32,15 +32,15 @@ def materialize(source: str | Checkpoint, *, local_dir: StrPath | None = None,
                 components: Sequence[str] | None = None, cache_dir: StrPath | None = None,
                 local_files_only: bool = False, token: Token | None = None,
                 endpoint: str | None = None) -> str: ...
-def download_file(repo_id: str, filename: str, *, release: str | None = None, lane: str | None = None,
+def download_file(model_id: str | None = None, filename: str | None = None, *, repo_id: str | None = None, release: str | None = None, lane: str | None = None,
                  cache_dir: StrPath | None = None, local_dir: StrPath | None = None,
                  local_files_only: bool = False, token: Token | None = None,
                  endpoint: str | None = None) -> str: ...
-def upload_folder(*, repo_id: str, folder_path: StrPath, lane: str,
+def upload_folder(*, model_id: str | None = None, repo_id: str | None = None, folder_path: StrPath, lane: str,
                   token: Token | None = None, endpoint: str | None = None,
                   cache_dir: StrPath | None = None) -> str:
-    """Uploads the folder (one `.cozytensors` file and its repo files) as a new commit of
-    `repo_id` in lane `lane`, private until a release names it. The commit's id,
+    """Uploads the folder (one `.cozytensors` file and its ancillary files) as a new checkpoint of
+    `model_id` in lane `lane`, private until a release names it. The checkpoint's id,
     `sha256:<tree hex>`."""
 def convert_to_cozytensors(source: str | Sequence[str], *, converter: str | None = None, source_variant: str | None = None,
             cache_dir: StrPath | None = None, token: Token | None = None,
@@ -59,10 +59,10 @@ class CheckpointFile(io.RawIOBase):
 
 class Endpoint:
     def __init__(self, url: str, token: Token | None = None, *, ca_der: bytes | None = None, cache_dir: StrPath | None = None) -> None: ...
-    def resolve(self, repo_id: str, *, release: str | None = None, lane: str | None = None,
+    def resolve(self, model_id: str | None = None, *, repo_id: str | None = None, release: str | None = None, lane: str | None = None,
                 gpus: Sequence[str] | None = None, plain: bool = False) -> _Resolved:
-        """The commit of `release` (none: the newest) in `lane` (none: what `gpus` run best; none:
-        the CPU): `{release, lane, commit, header, reasons}`."""
+        """The checkpoint of `release` (none: the newest) in `lane` (none: what `gpus` run best; none:
+        the CPU): `{release, lane, checkpoint, header, reasons}`."""
 
 class ComponentWriter:
     def __init__(self, native: _ext.ComponentWriter) -> None: ...
@@ -149,12 +149,12 @@ class Writer:
     metadata: dict[str, MetadataInput]
     local_checkpoint: Checkpoint | None
     def __init__(self, dest: StrPath | None = None, *, base: Checkpoint | None = None,
-                 resume: str | None = None, repo_id: str | None = None, lane: str | None = None,
+                 resume: str | None = None, model_id: str | None = None, lane: str | None = None, repo_id: str | None = None,
                  endpoint: str | None = None, token: Token | None = None,
                  cache_dir: StrPath | None = None) -> None:
-        """`dest` is a header file, a handle into the shared local store that roots its data while
-        it holds this header; `materialize` makes the portable copy. With `repo_id` and `lane`,
-        `commit()` makes the header (and its repo files) a new commit of that repo in `lane`."""
+        """`dest` is a complete portable checkpoint file. With `model_id` and `lane`,
+        `commit()` saves a new checkpoint under that model. The legacy repo_id keyword is a
+        finite compatibility bridge with planned removal at the 0.25.0 consumer cut."""
     def __enter__(self) -> Writer: ...
     def __exit__(self, exc_type: type[BaseException] | None, exc: BaseException | None,
                  traceback: TracebackType | None) -> None: ...
