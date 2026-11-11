@@ -169,7 +169,9 @@ impl Catalog {
 
     fn fields(&self, row: &FoundModel) -> Vec<String> {
         let (local, bytes) = local_state(self.local.as_deref(), &row.model);
-        vec![row.model.clone(), row.family.clone().unwrap_or_else(|| "—".into()), bytes.map_or_else(|| "—".into(), output::bytes), local.into()]
+        // An unreleased model reads only to its owner, its org and admins (xs-173).
+        let model = if row.private { format!("{} (private)", row.model) } else { row.model.clone() };
+        vec![model, row.family.clone().unwrap_or_else(|| "—".into()), bytes.map_or_else(|| "—".into(), output::bytes), local.into()]
     }
 
     fn entries(&self) -> Vec<CatalogRow> {

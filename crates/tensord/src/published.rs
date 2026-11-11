@@ -698,19 +698,47 @@ impl Publisher {
             return self.commit(service, source, named);
         }
         let origin = hub::origin_key(&source.origin).unwrap_or_default();
-        let name = json!(["resolve-v4", origin, named.repository, named.release, named.lane, hardware.gpus, hardware.plain]).to_string();
-        let held = service.engine.with_journal(|j| j.named(&name)).map_err(io_failure)?;
-        let answer = match held.and_then(|(answer, read)| Some((serde_json::from_str::<Answer>(&answer).ok()?, read))) {
-            Some((answer, read)) => {
+        let public = json!(["resolve-v4", origin, named.repository, named.release, named.lane, hardware.gpus, hardware.plain]).to_string();
+        // A model with no release resolves for a reader of its commits to its newest (xs-173): that
+        // answer, release "", is its reader's alone, held under its account. A public one held is
+        // read without waiting on the capability's token.
+        let private = |account: String| json!(["resolve-v4", origin, named.repository, named.release, named.lane, hardware.gpus, hardware.plain, account]).to_string();
+        let read = |name: &String| -> Result<Option<(String, Answer, i64)>, Failure> {
+            let held = service.engine.with_journal(|j| j.named(name)).map_err(io_failure)?;
+            Ok(held.and_then(|(answer, read)| Some((name.clone(), serde_json::from_str::<Answer>(&answer).ok()?, read))))
+        };
+        let capability = source.capability.as_ref();
+        let mut reader = capability.and_then(|c| c.account_now()).map(private);
+        let mut held = match &reader {
+            Some(name) => read(name)?,
+            None => None,
+        };
+        if held.is_none() {
+            held = read(&public)?;
+        }
+        if held.is_none() && reader.is_none() {
+            reader = capability.and_then(|c| c.account()).map(private);
+            if let Some(name) = &reader {
+                held = read(name)?;
+            }
+        }
+        let private = reader;
+        let answer = match held {
+            Some((name, answer, read)) => {
                 if stale(read) {
-                    self.refresh(service, source, &named, name, answer.hardware.clone());
+                    let shared = name == public;
+                    self.refresh(service, source, &named, name, shared, answer.hardware.clone());
                 }
                 answer
             }
             None => {
                 let answer = Answer::ask(&self.machine, source, &named, hardware)?;
                 let kept = serde_json::to_string(&answer).map_err(|e| io_failure(io::Error::other(e)))?;
-                service.engine.with_journal(|j| j.bind_named(&name, &kept)).map_err(io_failure)?;
+                let name = match (&private, answer.release.is_empty()) {
+                    (Some(private), true) => private,
+                    _ => &public,
+                };
+                service.engine.with_journal(|j| j.bind_named(name, &kept)).map_err(io_failure)?;
                 answer
             }
         };
@@ -719,8 +747,9 @@ impl Publisher {
 
     /// Reads held name `name` again at its Hub on a thread of its own, once at a time. An answer
     /// that moved is kept and moves this machine's catalog: the preparations made under the old
-    /// one are made again. A Hub that does not answer leaves the held answer standing.
-    fn refresh(&self, service: &Service, source: &hub::Source, named: &Named, name: String, hardware: Hardware) {
+    /// one are made again. A Hub that does not answer leaves the held answer standing, as does a
+    /// reader's own (no release) for a `public` name.
+    fn refresh(&self, service: &Service, source: &hub::Source, named: &Named, name: String, public: bool, hardware: Hardware) {
         if !self.refreshing.lock().unwrap().insert(name.clone()) {
             return;
         }
@@ -728,6 +757,9 @@ impl Publisher {
         let (source, named, done, unspawned) = (source.clone(), named.clone(), name.clone(), name.clone());
         let read = move || -> Result<(), String> {
             let answer = Answer::ask(&machine, &source, &named, &hardware).map_err(|(_, why)| why)?;
+            if public && answer.release.is_empty() {
+                return Err("it has no release now, and its reader's own answer is not every reader's".into());
+            }
             let kept = serde_json::to_string(&answer).map_err(|e| e.to_string())?;
             engine.with_journal(|j| {
                 let moved = j.named(&name)?.is_none_or(|(held, _)| held != kept);
