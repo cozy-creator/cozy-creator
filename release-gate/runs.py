@@ -430,6 +430,19 @@ class Run:
         return sum(((m.get('attribution') or {}).get('stages') or {}).get(name, {}).get('total_ms') or 0 for m in self.measurements)
 
     @property
+    def legs(self) -> dict[str, float]:
+        """Its executors' start legs (`execution.executor` and `construction` `legs_ms`), the largest of each, in ms: a host's CPU
+        shows in fork, cuda_init and package_import (euclase 11-10: 2-4x a normal 4090 host's)."""
+        out: dict[str, float] = {}
+        for m in self.measurements:
+            ex = m.get('execution') or {}
+            for part in (ex.get('executor') or {}, ex.get('construction') or {}):
+                for leg, v in (part.get('legs_ms') or {}).items():
+                    if v:
+                        out[leg] = max(out.get(leg, 0.0), float(v))
+        return out
+
+    @property
     def executor_started_ms(self) -> float | None:
         """When the executor that ran it started: one value for every run it served."""
         return ((self.measurements[0].get('execution') or {}).get('executor') or {}).get('started_unix_ms')

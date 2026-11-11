@@ -5,16 +5,18 @@
 #   gate.sh <SKU> --suite name,... [--gpus N] [--out DIR] [--establish] [--publish] [--runtime F|URL] [--tensorfs F|URL]
 #           [--tensord BIN|URL] [--packages DIR] [--pins name@release,...] [--only cell,cell] [--before FILE]...
 #           [--cells FILE]... [--first pkg,...] [--cli BIN] [--disk GB] [--on MACHINE] [--stall MIN]
-#           [--cap MIN] [--hub prod|isolated]
+#           [--cap MIN] [--group NAME] [--hub prod|isolated]
 # --hub: in CI, the Hub this gate rents on (e2e/test-hub.sh require_ci_rental_hub): prod, tensorhub.com, or a verified isolated one.
 # --on runs on that machine as it is (a dev proof on `local`): no rental, no --before, nothing ended.
+# --group: suite bench's group (suites/bench/skus) when it is not <SKU>x<GPUS>: two pods of one SKU split its cells.
 # --stall: how long no run on the machine may stand still before the gate calls its cell hung (`hold`; default 15 minutes).
 # --cap: the job's hard stop in minutes from the gate's start (the workflow's cap_minutes; 300). A download that can't land
 # before it, at the rate it has kept, fails the host as too slow (`hold`), and another host is rented (th-364).
 # --suite runs those suites (suites/<name>/: README.md says what each proves and costs); there is no default, the
 # release agent chooses. A suite's cells.sh runs once the candidate is on, and its check.py in analyze.py; the baseline
 # is gate-<SKU>-<suites>.json.
-# A candidate URL is https://…#sha256=<hex>: fetched here, held by its digest, and sent as a file
+# A candidate is a release by number (0.43.1: the machine fetches it, as on a pod booted from an older worker image), or a
+# URL https://…#sha256=<hex>: fetched here, held by its digest, and sent as a file
 # (`cozy machine update --runtime/--tensorfs/--tensord <path>`).
 # One FRESH rental. The candidate goes on with $CLI's `machine update`, never the candidate binary's: a cozy of another
 # version talking to a shared Calcifer restarts it on a route it lacks. The update fails unless the
@@ -36,7 +38,7 @@ HERE=$2 BEGAN=$3 HOST=$4 BEGUN_IN=$PWD; shift 4; ARGS=("$@")
 . "$HERE/machines.sh"
 REPO=cozy-creator/cozy-creator TAG=release-gate-baselines
 SKU=$1; shift; CAND=() ONLY= EXTRA=() BEFORE=() CLI=cozy DISK=400 OUT= PKGS= ESTABLISH= PUBLISH= PINS= SUITES= K= CLIP= GPUS= FIRST= ON= STALL=15 STALL_STAGE=30 SEEDS= SCENARIO=
-BIN= RW= TW= TD= CAP=300 HOSTS=5 HUB_TARGET=isolated
+BIN= RW= TW= TD= CAP=300 HOSTS=5 GROUP= HUB_TARGET=isolated
 while [ $# -gt 0 ]; do
   case $1 in
     --establish) ESTABLISH=1; shift; continue;;
@@ -51,6 +53,7 @@ while [ $# -gt 0 ]; do
     --cli) CLI=$2;;
     --disk) DISK=$2;;
     --on) ON=$2;;
+    --group) GROUP=$2;;
     --stall) STALL=$2;;
     --cap) CAP=$2;;
     --hub) HUB_TARGET=$2;;
@@ -80,7 +83,7 @@ if [ -n "$PKGS" ]; then
   RUN_CODE_STAGE=$PWD/stage-code-build/debug/examples/stage-code
 fi
 # expect <check> PASS|FAIL <what happened>: a CLI-behaviour check (cells/*.sh); analyze.py fails the gate on a FAIL.
-expect() { printf '%s\t%s\t%s\n' "$1" "$2" "$(tr '\n\t' '  ' <<< "$3" | cut -c1-400)" >> expect.tsv; log "$1: $2 $3"; }
+expect() { printf '%s\t%s\t%s\n' "$1" "$2" "$(tr '\n\t\r' '   ' <<< "$3" | cut -c1-400)" >> expect.tsv; log "$1: $2 $3"; }
 # fetch <file|URL#sha256=hex>: the candidate as a file here, its digest checked.
 fetch() {
   local f
@@ -91,14 +94,16 @@ fetch() {
       [ -f "$f" ] || curl -fsSL --retry 5 --retry-all-errors "${1%%#*}" -o "$f" || { log "cannot fetch ${1%%#*}"; return 1; }
       [ "$(sha256sum "$f" | cut -d' ' -f1)" = "${1##*#sha256=}" ] || { log "$f does not hash to ${1##*#sha256=}"; return 1; };;
     *://*) log "$1 names no #sha256="; return 1;;
-    *) f=$1; [ -f "$f" ] || { log "no file $f"; return 1; };;
+    *) f=$1; [ -f "$f" ] || [[ $f =~ ^[0-9]+\.[0-9]+\.[0-9]+([+.-][0-9A-Za-z.+-]*)?$ ]] || { log "no file or release $f"; return 1; };;
   esac
   echo "$f"
 }
 RWF=$(fetch "$RW") && TWF=$(fetch "$TW") && TDF=$(fetch "$TD") || exit 1
-if [ -n "$TDF" ]; then
+if [ -f "$TDF" ]; then
   chmod +x "$TDF"; BIN=$("$TDF" --version | awk '{print $2}')
   [ -n "$BIN" ] || { log "$TD is not a cozy binary"; exit 1; }
+elif [ -n "$TDF" ]; then
+  BIN=$TDF  # a release by number: the machine fetches it (cozy machine update --tensord 0.22.1)
 fi
 [ -z "$RWF" ] || CAND+=(--runtime "$RWF"); [ -z "$TWF" ] || CAND+=(--tensorfs "$TWF"); [ -z "$TDF" ] || CAND+=(--tensord "$TDF")
 BK=$SKU${SUITES:+-${SUITES//,/-}}  # the baseline's name
@@ -106,8 +111,8 @@ echo "$BK" > "$OUT/baseline-key"  # release-gate.yml's baseline job publishes un
 gh release download "$TAG" -R "$REPO" -D "$B" -p "gate-$BK.json" -p "ref-$SKU.*" -p "ref-$SKU-clip.mp4" 2>/dev/null
 if [ -f "$B/gate-$BK.json" ]; then
   [ -z "$ESTABLISH" ] || { log "$BK already has a baseline; --establish is only for a SKU without one"; exit 1; }
-else
-  [ -n "$ESTABLISH" ] || { log "no baseline for $BK on $REPO@$TAG: --establish starts one"; exit 1; }
+else  # suite bench's numbers are checked in (baselines/), not a release asset
+  [ -n "$ESTABLISH" ] || [ "$SUITES" = bench ] || { log "no baseline for $BK on $REPO@$TAG: --establish starts one"; exit 1; }
 fi
 REF=$(ls "$B/ref-$SKU".* 2>/dev/null | grep -v -- -clip | head -1); REF=${REF:-$HERE/ref/seed.jpg}
 mapfile -t ROWS < <(grep -v '^#' "$HERE/scenarios.tsv")
@@ -152,7 +157,11 @@ again() {
 trap 'end_it; again' EXIT
 trap 'exit 143' TERM INT
 RUN_CLI=$CLI; . "$HERE/../e2e/run.sh"
-run_project "$PWD/project" || { log "cozy project new failed"; exit 1; }
+# The gate's own throwaway project (Paul 11-11: from 0.24 the current folder is the project; never one in a checkout or
+# ~/cozy_v2): under ~/cozy-scratch, linked here as project/ for the cells that read its files.
+P=$HOME/cozy-scratch/release-gate/$(basename "$(dirname "$OUT")")-$(basename "$OUT")-$BEGAN-$HOST
+mkdir -p "$P" && ln -sfn "$P" "$OUT/project" || { log "no project folder $P"; exit 1; }
+run_project "$P" || { log "cozy new $P failed"; exit 1; }
 # one_beat [args...]: H3's call in $BEAT: without `beats`, a text and its length are one beat, which goes to the model as
 # written, and a reference's `kind` is its `asset_type`, or nothing for a clip or a sound, which say what they are by their
 # file. What is already in H3's form passes through.
@@ -185,6 +194,9 @@ ahead() {
   key="$target ${want[*]}"
   [ -z "${AHEAD[$key]:-}" ] || return 0
   AHEAD[$key]=1
+  # Local code warms through the staging helper, built only for --packages; without it (suite bench's calibrate) the
+  # cell's first run installs it, as the run of any untimed cell would.
+  [[ $target != .* && $target != /* ]] || [ -n "${RUN_CODE_STAGE:-}" ] || return 0
   run_warm_cell "$OUT" "$name-weights" "$target" downloaded --on "$M" "${want[@]}" ||
     expect "$name-weights" FAIL "run $(cat "$name-weights.number") $(run_get "$OUT" "$name-weights" .status): $(run_get "$OUT" "$name-weights" '.reason.message')"
   run_warm_cell "$OUT" "$name-weights-off" "$target" off --on "$M" > "$name-weights-off.log" 2>&1 || log "$name: API warming off: $(tail -c 300 "$name-weights-off.log")"
@@ -292,9 +304,10 @@ PY
 rented() { RID=$("$CLI" --json machine show "$1" 2>/dev/null | jq -r '.rental_id // empty'); [ -z "$RID" ] || echo "$RID" > rental; }
 if [ -z "$ON" ]; then
   # Suite tensorfs's `kill` case kills the rental's TensorD over SSH, suite tensord measures the pod's link over it, and suite
-  # varena's faults run there (faults.sh), with this computer's key, or a new one on a runner. An --only without them rents no SSH.
+  # varena's faults run there (faults.sh), and suite bench holds the host's RAM there (pod.sh), with this computer's key, or a new
+  # one on a runner. An --only without them rents no SSH.
   SSH=
-  if [[ ,$SUITES, == *,tensord,* ]] || { [[ ,$SUITES, == *,tensorfs,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,kill,* ]]; }; } ||
+  if [[ ,$SUITES, == *,tensord,* ]] || [[ ,$SUITES, == *,bench,* ]] || { [[ ,$SUITES, == *,tensorfs,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,kill,* ]]; }; } ||
      { [[ ,$SUITES, == *,varena,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,faults,* ]]; }; }; then
     SSH=1; [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519
   fi
@@ -336,7 +349,8 @@ echo "$M" > machine
 log "${ON:+on }${ON:-rented} $M"
 # A host this gate already found too slow is ended at once: the Hub may offer it again.
 "$CLI" --json machine show "$M" 2>/dev/null | jq -r '.address // empty' | sed 's/:[0-9]*$//' > address
-if [ -z "$ON" ] && [ -s address ] && grep -qsxF -f address slow-*/address; then
+# Suite bench takes its third host and on as it is (cells.sh): a slow host offered again is then run, not refused.
+if [ -z "$ON" ] && [ -s address ] && grep -qsxF -f address slow-*/address && { [ "$SUITES" != bench ] || [ "$HOST" -lt 3 ]; }; then
   echo "host too slow: $M ($(cat address)) was found so earlier in this gate" > host-slow
   printf 'FAIL %s\nVERDICT FAIL (host too slow)\n' "$(cat host-slow)" | tee verdict.txt
   exit 1
@@ -436,7 +450,12 @@ notinstalled() {
 }
 # cozy's `machine update` fails (update_unapplied) unless the machine then runs what it was sent.
 if [ ${#CAND[@]} -gt 0 ]; then
-  "$CLI" --json machine update "$M" "${CAND[@]}" -y >update.json 2>update.log; code=$?
+  # file_not_held: another gate's update of the same file was still landing it (cl-864); the CLI sends it again.
+  for try in 1 2 3; do
+    "$CLI" --json machine update "$M" "${CAND[@]}" -y >update.json 2>update.log; code=$?
+    [ "$code" != 0 ] && grep -q '"file_not_held"' update.json && [ "$try" -lt 3 ] || break
+    log "candidate on $M: file_not_held, sending again in 30 s"; sleep 30
+  done
   log "candidate on $M: exit $code $(jq -c 'select(.machine and .tensord)' update.json 2>/dev/null)"
   [ "$code" = 0 ] || notinstalled "cozy machine update exit $code: $(jq -r 'select(.error) | "\(.error.code): \(.error.message)"' update.json 2>/dev/null) $(tail -c 300 update.log | tr '\n' ' ')"
 fi
@@ -448,7 +467,7 @@ expect candidate-installed PASS "$M runs cozy $v, Runtime $rt, TensorFS $tfs"
 # Components with no candidate are not named: a --before FILE may move them on its SKU only.
 LABEL=cozy$v-rt$rt-tfs$tfs${PKGS:+-packages$(git -C "$PKGS" rev-parse --short HEAD)}${PINS:+-pins$(cksum <<< "$PINS" | cut -d' ' -f1)}
 echo "$LABEL" > label; log "gate $LABEL"
-digest() { [ -z "$1" ] || sha256sum "$1" | cut -d' ' -f1; }
+digest() { [ ! -f "$1" ] || sha256sum "$1" | cut -d' ' -f1; }  # a release by number has no file here
 jq -n --arg label "$LABEL" --arg cozy "${TDF:+$v}" --arg runtime "${RWF:+$rt}" --arg tensorfs "${TWF:+$tfs}" --arg cozy_sha256 "$(digest "$TDF")" \
   --arg runtime_wheel "$(basename "${RWF:-}")" --arg runtime_sha256 "$(digest "$RWF")" --arg tensorfs_wheel "$(basename "${TWF:-}")" \
   --arg tensorfs_sha256 "$(digest "$TWF")" --arg pins "${PINS//,/ }" --arg packages_ref "${PKGS:+$(git -C "$PKGS" rev-parse HEAD)}" \

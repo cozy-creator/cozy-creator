@@ -68,6 +68,10 @@ on:
         description: "Optional existing --cells hook: a .sh or .tsv file under release-gate/ in this checkout"
         type: string
         default: ''
+      group:
+        description: "Suite bench's group (suites/bench/skus, matrix-skus) when it is not <sku>x<gpus>, e.g. rtx-4090x1.matrixh3"
+        type: string
+        default: ''
       establish:
         description: "Start the baseline of a SKU that has none"
         type: boolean
@@ -335,11 +339,24 @@ jobs:
           cozy login --key "$RUNNER_TEMP/key.json"; code=$?
           rm -f "$RUNNER_TEMP/key.json"
           exit $code
+      # Suite bench's ComfyUI column: the private benchmarks runner at the commit comfyui.sh pins, by its deploy key.
+      - id: benchmarks
+        if: ${{ contains(inputs.cells, 'comfyui.sh') }}
+        run: echo "at=$(sed -n 's/.*BENCHMARKS_AT=\([0-9a-f]\{40\}\).*/\1/p' creator/release-gate/suites/bench/comfyui.sh)" >> "$GITHUB_OUTPUT"
+      - if: ${{ contains(inputs.cells, 'comfyui.sh') }}
+        uses: actions/checkout@v5
+        with:
+          repository: cozy-creator/benchmarks
+          ref: ${{ steps.benchmarks.outputs.at }}
+          ssh-key: ${{ secrets.BENCHMARKS_READ_KEY }}
+          path: benchmarks
       - name: Gate ${{ matrix.sku }} (${{ matrix.suite }})
         env:
           ARGS: ${{ steps.candidate.outputs.args }}
           ONLY: ${{ inputs.only }}
           CELLS: ${{ inputs.cells }}
+          GROUP: ${{ inputs.group }}
+          BENCHMARKS_DIR: ${{ github.workspace }}/benchmarks
           ESTABLISH: ${{ inputs.establish }}
           PACKAGES: ${{ inputs.packages_ref != '' && 'packages' || '' }}
           PINS: ${{ inputs.pins }}
@@ -352,6 +369,7 @@ jobs:
           read -ra args <<< "$ARGS"
           [ -z "$ONLY" ] || args+=(--only "$ONLY")
           [ -z "$CELLS" ] || args+=(--cells "$PWD/creator/$CELLS")
+          [ -z "$GROUP" ] || args+=(--group "$GROUP")
           [ -z "$PINS" ] || args+=(--pins "$PINS")
           [ -z "$PACKAGES" ] || args+=(--packages "$PACKAGES")
           [ "$ESTABLISH" != true ] || args+=(--establish)
@@ -364,6 +382,13 @@ jobs:
             export COZY_E2E_LOG=$OUT/argv.log COZY_E2E_BIN=$HOME/.cozy/bin/cozy
           fi
           creator/release-gate/gate.sh "${{ matrix.sku }}" --suite "${{ matrix.suite }}" --hub "$HUB" --out "$OUT" --cap "$CAP" "${args[@]}"
+      # Suite bench's ComfyUI column against Cozy's, then sealed for the owner with every file holding ComfyUI's numbers
+      # (seal.sh: a public repo's artifacts are public, Paul 11-10).
+      - if: ${{ always() && contains(inputs.cells, 'comfyui.sh') }}
+        run: |
+          [ -d "$OUT" ] || exit 0
+          [ ! -f "$OUT/comfyui-rows.json" ] || uv run -q --no-project --with numpy python -I creator/release-gate/bench.py versus "$OUT" > "$OUT/comfyui.md" 2>&1 || true
+          bash creator/release-gate/suites/bench/seal.sh "$OUT"
       # Every gate-tier command and flag ran (e2e/coverage.py), in the gate that ran the cli suite.
       - if: ${{ !cancelled() && contains(format(',{0},', matrix.suite), ',cli,') }}
         run: uv run -q --no-project python -I creator/e2e/coverage.py check "$HOME/.cozy/bin/cozy" creator/e2e/coverage.toml --tiers gate --log "$OUT/argv.log" --source creator/crates/cli/src
