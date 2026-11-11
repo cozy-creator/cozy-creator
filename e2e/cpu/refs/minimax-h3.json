@@ -202,6 +202,21 @@
    ]
   }
  },
+ "quantize/bf16": {
+  "outputs": [],
+  "result": {
+   "checkpoint": "sha256:*",
+   "output_slot": "bf16",
+   "producer_request_id": "quantize-bf16",
+   "transaction": "sha256:*"
+  },
+  "weights": {
+   "bf16": {
+    "encoded": 0,
+    "tensors": 1902
+   }
+  }
+ },
  "ref2va_segment/reference": {
   "outputs": [
    {
@@ -328,6 +343,21 @@
    "warnings": [
     "the 320x180 video was cover-scaled to 1344x768 for the refine"
    ]
+  }
+ },
+ "vae/lane": {
+  "outputs": [],
+  "result": {
+   "checkpoint": "sha256:*",
+   "output_slot": "vae",
+   "producer_request_id": "vae-lane",
+   "transaction": "sha256:*"
+  },
+  "weights": {
+   "vae": {
+    "encoded": 0,
+    "tensors": 91
+   }
   }
  }
 }

@@ -7,6 +7,7 @@ from __future__ import annotations
 import shutil
 from collections.abc import Callable
 from pathlib import Path
+from types import ModuleType
 
 import av
 import numpy as np
@@ -37,7 +38,7 @@ def config() -> Qwen3_5Config:
     )
 
 
-def write(folder: Path, model: torch.nn.Module, space: object = modeling_qwen3_5) -> Path:
+def write(folder: Path, model: torch.nn.Module, space: ModuleType = modeling_qwen3_5) -> Path:
     """The checkpoint as Qwen's release lays it out: the model with its multi-token-prediction head (`mtp.*`, which
     Transformers does not build; the Runtime drafts with it), its tokenizer and its processors' settings."""
     save(model.to(torch.bfloat16), folder)

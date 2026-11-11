@@ -101,6 +101,14 @@ impl Written {
         Ok(&mut self.boxes[at])
     }
 
+    /// Each mapping inside a value in key order, as project.db's document reads it back, so a project read again exports the same.
+    /// The sections and each box's fields keep the order they were written.
+    pub(crate) fn in_stored_order(&mut self) {
+        for (_, value) in self.boxes.iter_mut().flat_map(|held| held.fields.iter_mut()).chain(self.head.iter_mut()) {
+            value.sort_all_objects();
+        }
+    }
+
     /// Every box's name key.
     pub(crate) fn names(&self) -> std::collections::HashSet<String> {
         self.boxes.iter().map(|held| name_key(&held.name)).collect()

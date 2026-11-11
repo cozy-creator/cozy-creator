@@ -16,6 +16,7 @@ progress?.unref();
 const errors = [];
 const projectReads = new Set();
 const responseStatuses = new WeakMap();
+const responseCachePolicies = new WeakMap();
 const readIds = new WeakMap();
 const readStarts = new WeakMap();
 const readEndings = [];
@@ -29,6 +30,8 @@ const readMetadata = (request) => {
   return {
     request_id: readIds.get(request) ?? null, method: request.method(), path: new URL(request.url()).pathname,
     resource_type: request.resourceType(), response_status: responseStatuses.get(request) ?? null,
+    response_immutable: responseCachePolicies.get(request)?.immutable ?? null,
+    response_no_store: responseCachePolicies.get(request)?.noStore ?? null,
     age_ms: timing.startTime > 0 ? Math.round(Date.now() - timing.startTime) : null,
     observed_age_ms: source ? Date.now() - source.at : null,
     creation_phase: source?.phase ?? null, owner: source?.owner ?? null,
@@ -127,6 +130,21 @@ const newPage = async () => {
     const path = new URL(request.url()).pathname;
     return path !== `/v1/projects/${id}/vault` && path !== `/v1/projects/${id}/address`;
   });
+  const plainCacheBody = (request) => {
+    const url = new URL(request.url()), policy = responseCachePolicies.get(request);
+    return request.method() === 'GET' && url.origin === new URL(calcifer()).origin &&
+      url.pathname.startsWith(`/v1/projects/${id}/thumbs/`) && responseStatuses.get(request) === 200 &&
+      policy?.immutable === true && policy.noStore === false;
+  };
+  const plainStorageReady = async (label) => {
+    const status = JSON.parse(vault(folder, 'status'));
+    if (status.encrypted !== false || status.state !== 'plain') throw new Error('plain-storage readiness requires an actually plain project');
+    // A plain immutable thumbnail has released Project/ACCESS before its headers.
+    // Its remaining global-cache body is not part of the project storage cutover.
+    // Private no-store thumbnails and every other content request still drain.
+    await until(label, () => contentReads().filter((request) => !plainCacheBody(request)).length, (count) => count === 0, 45000);
+    (seen.plain_storage_readiness ??= []).push({ label, global_cache_bodies: contentReads().filter(plainCacheBody).map(readMetadata) });
+  };
   page.on('pageerror', (error) => errors.push(error.message));
   context.on('requestfinished', (request) => readEnded('requestfinished', request));
   context.on('requestfailed', (request) => readEnded('requestfailed', request));
@@ -152,6 +170,8 @@ const newPage = async () => {
   });
   context.on('response', async (response) => {
     responseStatuses.set(response.request(), response.status());
+    const cache = (response.headers()['cache-control'] ?? '').toLowerCase().split(',').map((part) => part.trim());
+    responseCachePolicies.set(response.request(), { immutable: cache.includes('immutable'), noStore: cache.includes('no-store') });
     const path = new URL(response.url()).pathname;
     const method = response.request().method();
     if (method === 'GET' && /^\/v1\/projects\/[^/]+\/(address|vault)$/.test(path)) {
@@ -190,7 +210,7 @@ const newPage = async () => {
     return { idle: !state.busy && !state.moving, movie: { width: movie?.width, height: movie?.height, duration_ms: movie?.duration_ms }, picture: { width: picture?.width, height: picture?.height } };
   }, (state) => state.idle && state.movie.width > 0 && state.movie.height > 0 && state.movie.duration_ms > 0 && state.picture.width > 0 && state.picture.height > 0);
   check('plain_seed_media_measurement_finished', true);
-  await until('initial project content reads finished before conversion', () => contentReads().length, (count) => count === 0, 45000);
+  await plainStorageReady('initial project storage reads finished before conversion');
   check('initial_project_reads_drained', true);
   await body.locator('input[type=password]').nth(0).fill('synthetic browser passphrase');
   await body.locator('input[type=password]').nth(1).fill('synthetic browser passphrase');
@@ -509,7 +529,7 @@ const newPage = async () => {
   await until('same project converted to plain', () => JSON.parse(vault(folder, 'status')), (status) => status.encrypted === false && status.state === 'plain', 45000);
   await until('plain event covers old private view', covered, Boolean, 45000);
   check('decrypt_purges_private_canvas_before_status', oldCanvas !== null && !await oldCanvas.evaluate((element) => element.isConnected));
-  check('decrypt_keeps_browser_persistence_private_until_status', await page.evaluate((project) => !['cozy.view:', 'cozy.selection:', 'cozy.more:'].some((prefix) => localStorage.getItem(prefix + project) !== null), id));
+  check('decrypt_keeps_browser_persistence_private_until_status', await page.evaluate((project) => !['cozy.view:', 'cozy.selection:', 'cozy.more:', 'cozy.machine:'].some((prefix) => localStorage.getItem(prefix + project) !== null), id));
   await deliver(oldStatus.route, oldStatus.response);
   await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
   check('pre_decrypt_status_cannot_reopen_private_view', await covered());
@@ -552,7 +572,7 @@ const newPage = async () => {
     const state = projectJson(folder);
     return !state.busy && !state.moving && state.assets.find((asset) => asset.name === 'after_decrypt_plain')?.width > 0;
   }, Boolean, 45000);
-  await until('ordinary content reads drained before re-encryption', () => contentReads().length, (count) => count === 0, 45000);
+  await plainStorageReady('ordinary project storage reads drained before re-encryption');
   await page.locator('.drawer input[type=password]').nth(0).fill('synthetic browser passphrase');
   await page.locator('.drawer input[type=password]').nth(1).fill('synthetic browser passphrase');
   await page.getByLabel('Remove the verified unencrypted source after conversion').check();
