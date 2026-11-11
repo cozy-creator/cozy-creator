@@ -734,7 +734,7 @@ ${local ? `  card:
   names = ['hero_art', 'wide_art', 'tall_art', LONG, 'sea_sound', 'clip', 'clip_b', 'style', 'still', 'edit', 'odd', ...(local ? ['card', 'posed', 'shot', 'broken', 'making'] : [])];
   await placed();
   const render = async (asset, wait = true) => {
-    try { return await projectAction(folder, 'render', asset, ...(local ? ['--on', 'local'] : []), ...(wait ? [] : ['--queue'])); }
+    try { return await projectAction(folder, 'render', asset, '--on', 'local', ...(wait ? [] : ['--queue'])); }
     catch (error) { if (asset !== 'broken') throw error; }
   };
   // Takes: the frame thrice, the Edit once, and where this computer runs, many of the picture tool's, the shot's two and a failure.
