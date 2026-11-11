@@ -438,6 +438,7 @@ jobs:
           cargo test --release --locked -p cli --lib download_progress_reports_written_bytes
           cargo test --release --locked -p calcifer --lib project::vault_operation::tests
           cargo test --release --locked -p calcifer --lib vault_inventory_matches_copied_file_and_byte_totals
+          cargo test --release --locked -p calcifer --lib rejected_vault_credentials_have_a_specific_error
           cargo test --release --locked -p calcifer --lib encrypted_cleanup_preserves_good_sources_and_recorded_policy
           cargo test --release --locked -p calcifer --lib store::journal_tests
           cargo test --release --locked -p calcifer --lib project::db::tests
@@ -545,11 +546,15 @@ jobs:
           path: .vault-fixture
           persist-credentials: false
       - name: Exercise real optional project encryption through the installed CLI
+        id: vault_proof
         run: |
           fixture=.
           if [ -d .vault-fixture ]; then fixture=.vault-fixture; fi
           git -C "$fixture" rev-parse HEAD > "$RUNNER_TEMP/vault-fixture-source.txt"
           python "$fixture/e2e/project-vault-cli/run.py" --source "$(git rev-parse HEAD)" --artifacts "$RUNNER_TEMP/project-vault-cli"
+      - name: Native proof ${{ steps.vault_proof.outputs.result || 'unavailable' }} ${{ steps.vault_proof.outputs.exception }} ${{ steps.vault_proof.outputs.where }} ${{ steps.vault_proof.outputs.action }} cells=${{ steps.vault_proof.outputs.cells }}
+        if: always()
+        run: ':'
       - name: Keep only product proof records
         if: always()
         run: |
