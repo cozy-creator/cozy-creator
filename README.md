@@ -70,7 +70,7 @@ rent a Linux GPU, or `--on <machine>` for one you have. Run project commands fro
 
 `cozy` lists the main commands. `cozy <verb> --help` shows a command's options.
 `cozy open` uses local port 8818 by default. `cozy open --port 9000` selects and remembers another loopback port. Project links use `/p/` followed by a stable nine-character uppercase code.
-`cozy open` prints an authenticated local URL. Open it in a browser for asset import, editing, rendering, export and history.
+`cozy open` launches your browser and prints the project name and local URL as a fallback.
 Project synchronization is planned as an optional per-project Calcifer setting.
 
 `cozy doctor` diagnoses this computer's cozy (Calcifer, its service, the machine, tools, GPUs) and
