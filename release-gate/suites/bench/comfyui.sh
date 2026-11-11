@@ -3,6 +3,8 @@
 # seeds. Its rows go to comfyui-rows.json, which bench.py judges beside the cells and puts in the next baseline.
 BENCHMARKS=https://github.com/cozy-creator/benchmarks.git BENCHMARKS_AT=72a02800719b963f1fa96ab9d0fbdab9acc7310f
 COMFY_PY=(nice -n 19 uv run -q --no-project --with numpy python -I "$HERE/suites/bench/comfy.py")
+# cells.sh's retried, for a gate that sourced an older cells.sh.
+declare -F retried > /dev/null || retried() { local w=2 t=$SECONDS; until "$@"; do [ $((SECONDS - t)) -lt 300 ] || return 1; sleep $((w + RANDOM % (w + 1))); w=$((w * 2 > 60 ? 60 : w * 2)); done; }
 "${COMFY_PY[@]}" jobs "$OUT" > comfy-jobs.json 2> comfy-jobs.err || { expect comfyui-jobs FAIL "$(tail -c 300 comfy-jobs.err)"; return 0; }
 if [ "$(jq length comfy-jobs.json)" = 0 ]; then log "comfyui: no completed cell of this group names a ComfyUI cell"; return 0; fi
 { [ -d benchmarks/.git ] || git clone -q --filter=blob:none --no-checkout "$BENCHMARKS" benchmarks; } && git -C benchmarks fetch -q origin "$BENCHMARKS_AT" &&
