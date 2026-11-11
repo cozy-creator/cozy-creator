@@ -363,6 +363,12 @@ jobs:
         with:
           package-json-file: .build/web/app/package.json
           install: false
+      - if: matrix.what == 'cozy' && (matrix.take != '' || steps.reuse.outputs.name == '')
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .creator -> target
+          key: stage-code
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - id: build
         if: matrix.take == '' && steps.reuse.outputs.name == ''
         env:
@@ -376,12 +382,6 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       # A taken cozy still stages local warming fixtures with the immutable harness's native API helper.
-      - if: matrix.what == 'cozy' && matrix.take != ''
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: .creator -> target
-          key: stage-code
-          save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: Build the local source staging helper for a taken cozy
         if: matrix.what == 'cozy' && matrix.take != ''
         env:
