@@ -1,5 +1,5 @@
 //! Local encryption credentials are read from a terminal or an explicit file/stdin, never argv or environment variables.
-use std::{io::{Read as _, Write as _}, path::{Path, PathBuf}, process::ExitCode};
+use std::{io::{IsTerminal as _, Read as _, Write as _}, path::{Path, PathBuf}, process::ExitCode};
 use api::{calcifer::project::{VaultAsk, VaultChanged, VaultStatus}, error::{Error, Kind}};
 use crate::{Context, output};
 
@@ -186,8 +186,35 @@ async fn change(ctx: &Context, path: &str, request: VaultAsk, recovery_out: Opti
     Ok(ExitCode::SUCCESS)
 }
 
-/// The private stream and progress renderer are shared without command result/status output.
+/// Prompted unlocks allow three credential attempts; explicit files/stdin and other errors never repeat.
 async fn request_vault(ctx: &Context, client: &crate::calcifer_client::Client, path: &str, request: &VaultAsk) -> Result<VaultChanged, Error> {
+    if request.action != "unlock" || request.passphrase.is_some() || request.recovery_secret.is_some() {
+        return request_once(ctx, client, path, request).await;
+    }
+    if ctx.json || !std::io::stdin().is_terminal() || !ctx.term.stderr {
+        return Err(Error::new(Kind::Usage, "vault_credential", "unlocking with --json or without an interactive terminal requires a credential file")
+            .next("cozy vault unlock --passphrase-file <file>")
+            .next("cozy vault unlock --recovery-file <file>"));
+    }
+    let mut prompted = request.clone();
+    for attempt in 1..=3 {
+        prompted.passphrase = Some(credential(None, "Project passphrase: ", false)?);
+        let result = request_once(ctx, client, path, &prompted).await;
+        prompted.passphrase = None;
+        match result {
+            Err(error) if error.kind == Kind::Credential && error.code == "vault_unlock_failed" && attempt < 3 => {
+                let remaining = 3 - attempt;
+                let noun = if remaining == 1 { "attempt" } else { "attempts" };
+                output::warn(&format!("The passphrase did not unlock this project. Try again ({remaining} {noun} remaining)."));
+            }
+            result => return result,
+        }
+    }
+    unreachable!("the final credential attempt returns its result")
+}
+
+/// The private stream and progress renderer are shared without command result/status output.
+async fn request_once(ctx: &Context, client: &crate::calcifer_client::Client, path: &str, request: &VaultAsk) -> Result<VaultChanged, Error> {
     // No client idempotency cache for responses containing a recovery secret.
     let meter = crate::progress::Transfer::stderr(ctx.term.stderr, format!("vault {}", request.action));
     let result = client.vault(path, request, |progress| {
@@ -214,8 +241,7 @@ async fn request_vault(ctx: &Context, client: &crate::calcifer_client::Client, p
 /// Called only after Open verified an interactive terminal. No status or secret preamble reaches stdout.
 pub(crate) async fn unlock_for_open(ctx: &Context) -> Result<(), Error> {
     let path = vault_path(None)?;
-    let mut request = ask("unlock");
-    request.passphrase = Some(credential(None, "Project passphrase: ", false)?);
+    let request = ask("unlock");
     let client = ctx.calcifer().await?;
     let changed = request_vault(ctx, &client, &path, &request).await?;
     if !changed.vault.encrypted || changed.vault.state != "unlocked" {
@@ -248,7 +274,7 @@ async fn encrypt(ctx: &Context, path: &str, args: Encrypt) -> Result<ExitCode, E
 async fn unlock(ctx: &Context, path: &str, args: Unlock) -> Result<ExitCode, Error> {
     let mut request = ask("unlock");
     if let Some(path) = &args.recovery_file { request.recovery_secret = Some(credential(Some(path), "Recovery secret: ", false)?); }
-    else { request.passphrase = Some(credential(args.passphrase_file.as_ref(), "Project passphrase: ", false)?); }
+    else if let Some(path) = &args.passphrase_file { request.passphrase = Some(credential(Some(path), "Project passphrase: ", false)?); }
     request.idle_timeout_s = Some(args.idle);
     request.max_duration_s = Some(args.max_duration);
     change(ctx, path, request, None).await
