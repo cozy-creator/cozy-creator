@@ -436,11 +436,19 @@ impl Inner {
             .map(drop).map_err(|error| error.to_string())
     }
 
-    /// The derive's bytes into a page the tier keeps, and that page.
-    fn keep(&self, key: &str, py: Python<'_>, view: &Bound<'_, PyAny>) -> PyResult<Option<Arc<Page>>> {
+    /// The derive's bytes into a page the tier keeps, and that page: `spare` (its stored bytes'
+    /// page, read ahead and served) when there is one, as no page is registered or let go on the
+    /// fill's thread then; else one the tier admits.
+    fn keep(&self, key: &str, py: Python<'_>, view: &Bound<'_, PyAny>, spare: Option<Page>) -> PyResult<Option<Arc<Page>>> {
         let began = Instant::now();
-        let page = py.detach(|| self.tier.reserve(key, &self.set, self.bytes, false))?;
-        self.tier.reserve_ns.fetch_add(began.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        let page = match spare {
+            Some(page) => Some(page),
+            None => {
+                let page = py.detach(|| self.tier.reserve(key, &self.set, self.bytes, false))?;
+                self.tier.reserve_ns.fetch_add(began.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                page
+            }
+        };
         let Some(page) = page else { return Ok(None) };
         // SAFETY: the memoryview ends with this call's objects, which the blocking copy outlives.
         let host = unsafe {
@@ -459,10 +467,15 @@ impl Inner {
         Ok(Some(page))
     }
 
-    /// The derive on this thread, which holds no lock, with the bytes so far as a Tensor.
-    fn derive(&self, derive: &Py<PyAny>, fill: varena::Fill, consumer: u64, this: Weak<Inner>) -> varena::Result<varena::Pin> {
+    /// The derive on this thread, which holds no lock, with the bytes so far as a Tensor. `spare`:
+    /// the page its stored bytes were read ahead into, which keeps what it makes (or, when it
+    /// makes nothing, its stored bytes).
+    fn derive(
+        &self, derive: &Py<PyAny>, fill: varena::Fill, consumer: u64, this: Weak<Inner>, spare: Option<Page>,
+    ) -> varena::Result<varena::Pin> {
         let device = fill.device();
         let region = Arc::downgrade(fill.target());
+        let mut spare = spare;
         Python::attach(|py| {
             let done = (|| -> PyResult<(bool, varena::Pin)> {
                 let consumers = Consumers::new(device);
@@ -472,7 +485,7 @@ impl Inner {
                 let changed = derive.call1(py, (&view,))?.is_truthy(py)?;
                 if changed || self.stored.is_none() {
                     if let Some(key) = &self.page {
-                        let kept = self.keep(key, py, &view)?;
+                        let kept = self.keep(key, py, &view, spare.take())?;
                         if let (Some(page), Some(slot), Some(stored), true) = (kept, &self.slot, &self.stored, changed) {
                             self.tier.persist(stored.checkpoint.clone(), slot.clone(), key.clone(), page, this.clone());
                         }
@@ -487,7 +500,11 @@ impl Inner {
                         self.plain.store(true, Ordering::Release);
                         if let Some(key) = &self.page {
                             py.detach(|| self.tier.unreserve(key));
-                            self.tier.want(key, &self.set, this, region);
+                            match spare.take() {
+                                // Its stored bytes, read ahead, are its page.
+                                Some(page) => drop(self.tier.insert(key, &self.set, page)),
+                                None => self.tier.want(key, &self.set, this, region),
+                            }
                         }
                     }
                     Ok(pin)
@@ -584,21 +601,25 @@ impl varena::Source for PageSource {
                 }
             }
         }
-        if let (Some(key), Some(_)) = (&this.page, derive) {
+        // A derive's stored bytes the tier read ahead (`Tier::read_ahead`), else the store's.
+        let staged = derive.and(this.stored_key())
+            .and_then(|key| this.tier.take(&key, &this.set, fill.len(), false).map(|page| (key, page)));
+        if let (Some(key), Some(_), None) = (&this.page, derive, &staged) {
             this.tier.expect(key.clone(), this);
         }
+        let mut spare = None;
         if let Some(stored) = &this.stored {
-            // A derive's stored bytes the tier read ahead (`Tier::read_ahead`), else the store's.
-            let staged = derive.and(this.stored_key())
-                .and_then(|key| this.tier.take(&key, &this.set, fill.len(), false).map(|page| (key, page)));
             let read: Result<(), tensorfs::io::source::Error> = match staged {
                 Some((key, page)) => {
                     let read = this.from_page(&fill, &page).map_err(tensorfs::io::source::Error::from);
                     if read.is_ok() {
                         this.row(page.len() as u64, "host", ahead, began);
+                        // Out of the tier, its page keeps what the derive makes.
+                        spare = this.tier.take_out(&key, page);
+                    } else {
+                        drop(page);
+                        this.tier.let_go(&key, "served");
                     }
-                    drop(page);
-                    this.tier.let_go(&key, "served");
                     read
                 }
                 None => this.read(stored, &fill, ahead),
@@ -610,7 +631,7 @@ impl varena::Source for PageSource {
         }
         let weak = Arc::downgrade(this);
         if let (Some(derive), Some(consumer)) = (derive, consumer) {
-            return this.derive(derive, fill, consumer, weak).map(Some);
+            return this.derive(derive, fill, consumer, weak, spare).map(Some);
         }
         if let Some(key) = &this.page {
             this.tier.want(key, &this.set, weak, Arc::downgrade(fill.target()));

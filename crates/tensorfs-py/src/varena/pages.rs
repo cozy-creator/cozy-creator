@@ -683,6 +683,23 @@ impl Tier {
         drop(gone); // Unregistering waits on the device: never under the lock.
     }
 
+    /// `key`'s page out of the tier, still registered, for the caller to fill and `insert` again:
+    /// `page` is the one `take` gave. None while anything else holds it (it goes when that ends).
+    /// No unregistering on a fill's thread, which waits on the device.
+    pub(super) fn take_out(&self, key: &str, page: Arc<Page>) -> Option<Page> {
+        let kept = {
+            let mut state = self.state();
+            let same = state.kept.get(key).is_some_and(|kept| Arc::ptr_eq(&kept.page, &page));
+            let kept = if same { state.kept.remove(key) } else { None };
+            if let Some(kept) = &kept {
+                state.bytes -= kept.page.len as u64;
+            }
+            kept
+        };
+        drop(kept);
+        Arc::try_unwrap(page).ok()
+    }
+
     /// A page with bytes the caller is about to write for `key`, admitted and registered (faulted
     /// in first if `populate`), or None: `insert` it once they are written. One registered ahead if
     /// there is, or will be soon.
