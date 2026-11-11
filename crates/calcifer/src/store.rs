@@ -502,8 +502,14 @@ impl Store {
         })
     }
 
+    /// Waiting for another reader, loading rows and opening private records may block on I/O.
+    /// Hand the async worker back before taking the lock, as writes do before their commit.
     pub(crate) fn read<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
-        f(&self.reader.lock().unwrap_or_else(|e| e.into_inner()))
+        let read = || f(&self.reader.lock().unwrap_or_else(|e| e.into_inner()));
+        match tokio::runtime::Handle::try_current().map(|h| h.runtime_flavor()) {
+            Ok(tokio::runtime::RuntimeFlavor::MultiThread) => tokio::task::block_in_place(read),
+            _ => read(),
+        }
     }
 
     /// One transaction. A commit can wait seconds on a busy disk's write-back: on a multi-thread
