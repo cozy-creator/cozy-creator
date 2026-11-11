@@ -47,12 +47,12 @@ refuses, as with minimax-h3 on Runtime 0.40.0. A cut runs it before anything els
 
 ## What a gate does
 
-Local-package (`--packages`) timing cells currently refuse before execution because the warming fixture requires a published target. Use published or pinned candidates to retain download-only preparation.
+Local-package (`--packages`) gates build a small source-staging helper from this checkout before renting. It uses the CLI's source selection and sends that content through the API for download-only preparation.
 
 1. Rents one fresh machine of the SKU.
 2. Puts the candidate on it: `--runtime`, `--tensorfs`, `--tensord` (a cozy binary; each a file or `URL#sha256=`), `--pins`
-   (exact package releases, `sdxl@0.1.1,…`: a package candidate is published and yanked, and installs only by its pin).
-   Unpinned cells run the root package users get.
+   (exact package releases, `sdxl@0.1.1,…`: a package candidate is published and yanked, and installs only by its pin),
+   or `--packages` (a packages checkout whose directories run). Unpinned cells run the root package users get.
    This computer's cozy puts it on (a cozy of another version would restart a shared Calcifer); `machine update` fails unless the machine then runs it.
 3. Runs the chosen suites' cells, each once, with new prompts and seeds. Before a function's first cell, API warming to `downloaded`
    puts all its weights on the disk, its on-demand models' too (an upsampler), and `off` takes it out of the warm

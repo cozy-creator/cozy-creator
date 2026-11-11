@@ -62,8 +62,10 @@ run_start() {
 
 # API warming stays available to fixtures after the public CLI option is removed.
 run_warm_submit() {
-  local dir=$1 name=$2; shift 2
-  run_start "$dir" "$name" python3 "$RUN_WARM_API" --cozy "${COZY:-$RUN_CLI}" "$@"
+  local dir=$1 name=$2 target=$3 stage=(); shift 3
+  [[ $target != .* ]] || target="$PWD/$target"
+  [ -z "${RUN_CODE_STAGE:-}" ] || stage=(--stage-code "$RUN_CODE_STAGE")
+  run_start "$dir" "$name" python3 "$RUN_WARM_API" --cozy "${COZY:-$RUN_CLI}" "${stage[@]}" "$target" "$@"
 }
 
 run_warm_cell() {

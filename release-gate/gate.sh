@@ -62,7 +62,6 @@ while [ $# -gt 0 ]; do
     *) echo "unknown argument $1" >&2; exit 2;;
   esac; shift 2
 done
-[ -z "$PKGS" ] || { echo "--packages needs local-source warming support; use a published or pinned candidate for this gate" >&2; exit 2; }
 [ -n "$SUITES" ] || { echo "gate.sh needs --suite: $(ls "$HERE/suites" | paste -sd, -) (release-gate/README.md)" >&2; exit 2; }
 for s in ${SUITES//,/ }; do
   [ -f "$HERE/suites/$s/cells.sh" ] || { echo "no suite $s: $(ls "$HERE/suites" | paste -sd, -)" >&2; exit 2; }
@@ -71,6 +70,11 @@ OUT=${OUT:-$PWD/gate-$SKU-$(date -u +%Y%m%dT%H%MZ)}
 B=$OUT/baseline
 mkdir -p "$B"; cd "$OUT"; : > cells.tsv
 log() { echo "$(date -u +%H:%M:%SZ) $*" | tee -a gate.log; }
+if [ -n "$PKGS" ]; then
+  cargo build --quiet --locked --manifest-path "$HERE/../Cargo.toml" -p api --example stage-code --target-dir "$PWD/stage-code-build" > stage-code-build.log 2>&1 \
+    || { log "could not build local-source staging helper: $(tail -c 500 stage-code-build.log)"; exit 1; }
+  RUN_CODE_STAGE=$PWD/stage-code-build/debug/examples/stage-code
+fi
 # expect <check> PASS|FAIL <what happened>: a CLI-behaviour check (cells/*.sh); analyze.py fails the gate on a FAIL.
 expect() { printf '%s\t%s\t%s\n' "$1" "$2" "$(tr '\n\t' '  ' <<< "$3" | cut -c1-400)" >> expect.tsv; log "$1: $2 $3"; }
 # fetch <file|URL#sha256=hex>: the candidate as a file here, its digest checked.
@@ -176,10 +180,6 @@ ahead() {
   done
   key="$target ${want[*]}"
   [ -z "${AHEAD[$key]:-}" ] || return 0
-  if [[ $target = .* || $target = /* || -e $target || -e ${target%/*} ]]; then
-    log "local-package preparation needs a content-stage API; use a published or pinned candidate for this gate"
-    exit 2
-  fi
   AHEAD[$key]=1
   run_warm_cell "$OUT" "$name-weights" "$target" downloaded --on "$M" "${want[@]}" ||
     expect "$name-weights" FAIL "run $(cat "$name-weights.number") $(run_get "$OUT" "$name-weights" .status): $(run_get "$OUT" "$name-weights" '.reason.message')"
