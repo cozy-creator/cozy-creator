@@ -4,10 +4,14 @@ them: Qwen-Image's text and edit transformers, then its two Lightning LoRAs (TFS
 Each cell must complete (a failed one already fails the gate), and every cell of a group must have run on the executor
 its first cell started, or the check proves nothing.
     check(gate) -> (fails, notes)"""
+from runs import GateRuns
+
 GROUPS = (('qwen-image', 'qwen-image-edit', 'qwen-image-t2i'), ('qwen-image-turbo', 'qwen-image-turbo-edit'))
 
 
-def check(gate):
+def check(gate: GateRuns) -> tuple[list[str], list[str]]:
+    fails: list[str]
+    notes: list[str]
     fails, notes = [], []
     for group in GROUPS:
         runs = {n: gate['runs'][n] for n in group if n in gate['runs']}

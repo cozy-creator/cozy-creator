@@ -106,7 +106,8 @@ fn credential(path: Option<&PathBuf>, prompt: &str, confirm: bool) -> Result<Str
 }
 
 fn recovery_location(output: &Path, status: &VaultStatus) -> Result<(), Error> {
-    let refuse = |why: &str| Error::new(Kind::Usage, "vault_recovery_location", format!("{why}; save recovery outside the project and keep a copy off this device"));
+    let refuse = |why: &str| Error::new(Kind::Usage, "vault_recovery_location", why)
+        .remedy("Save the recovery secret outside the project, with a copy on another device");
     let name = output.file_name().ok_or_else(|| refuse("recovery output must name a new file"))?;
     let parent = output.parent().filter(|path| !path.as_os_str().is_empty()).unwrap_or(Path::new("."));
     let parent = platform::durable::canonical(parent).map_err(|_| refuse("the recovery output parent must already exist locally"))?;
@@ -117,7 +118,7 @@ fn recovery_location(output: &Path, status: &VaultStatus) -> Result<(), Error> {
         if let Ok(root) = platform::durable::canonical(root)
             && destination.starts_with(root)
         {
-            return Err(refuse("a recovery secret cannot be saved inside its project backing or unlocked view"));
+            return Err(refuse("The recovery secret cannot be saved inside the project or its unlocked view"));
         }
     }
     Ok(())
@@ -147,8 +148,11 @@ async fn change(ctx: &Context, path: &str, request: VaultAsk, recovery_out: Opti
     // No client idempotency cache for responses containing a recovery secret.
     let mut changed: VaultChanged = client.post(path, &request, None).await?;
     if let (Some(path), Some(secret)) = (&recovery_out, &changed.recovery_secret) {
-        let mut file = platform::durable::create_private_new(path).map_err(|e| Error::new(Kind::Unavailable, "vault_recovery_save", format!("cannot save the recovery secret to {}: {e}; keep the project unlocked and replace the recovery secret", path.display())))?;
-        writeln!(file, "{secret}").and_then(|()| file.sync_all()).map_err(|e| Error::new(Kind::Unavailable, "vault_recovery_save", format!("cannot save the recovery secret: {e}")))?;
+        let failed = |e: String| Error::new(Kind::Unavailable, "vault_recovery_save", format!("Cannot save the recovery secret to {}: {e}", path.display()))
+            .remedy("Keep the project unlocked and replace its recovery secret")
+            .next("cozy vault recovery --recovery-out <file>");
+        let mut file = platform::durable::create_private_new(path).map_err(|e| failed(e.to_string()))?;
+        writeln!(file, "{secret}").and_then(|()| file.sync_all()).map_err(|e| failed(e.to_string()))?;
         changed.recovery_secret = None;
         output::say(ctx, &format!("recovery secret saved to {}; keep a copy off this computer", path.display()));
     }
@@ -172,7 +176,7 @@ fn show(ctx: &Context, status: &VaultStatus) {
 }
 
 async fn encrypt(ctx: &Context, path: &str, args: Encrypt) -> Result<ExitCode, Error> {
-    output::warn("Encryption protects this project's folder and future work. Earlier exports, backups, and shared cache copies aren't erased; protect or remove them separately.");
+    output::warn("Encryption does not erase earlier exports, backups or shared cache copies. Protect or remove them separately.");
     let mut request = ask("encrypt");
     request.passphrase = Some(credential(args.passphrase_file.as_ref(), "New project passphrase: ", true)?);
     request.idle_timeout_s = Some(args.idle);

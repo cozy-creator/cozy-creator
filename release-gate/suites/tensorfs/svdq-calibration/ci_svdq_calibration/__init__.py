@@ -8,13 +8,14 @@ import json
 import resource
 import time
 from collections import OrderedDict
-from typing import Any
+from typing import TYPE_CHECKING, TypedDict, cast
 
 import msgspec
 import numpy as np
 import torch
 from cozy_runtime.author import (
     App,
+    Config,
     Context,
     Loader,
     Model,
@@ -26,6 +27,11 @@ from cozy_runtime.author import (
     uses_components,
 )
 from cozy_runtime.weights_store import Derivation
+
+if TYPE_CHECKING:
+    from cozy_runtime.derive.svdq import Calibration
+
+    from ._types import Parts
 
 app = App()
 ROWS, COLS, RANK = 128, 256, 32
@@ -62,7 +68,7 @@ def operands(seed: int, held_out: bool = False) -> list[torch.Tensor]:
 
 
 class Pipeline:
-    def __init__(self, config: Any) -> None:
+    def __init__(self, config: Config) -> None:
         self.components = {
             "net": torch.nn.Sequential(
                 OrderedDict(
@@ -81,7 +87,7 @@ class Pipeline:
         }
 
 
-def build(config: Any) -> Pipeline:
+def build(config: Config) -> Pipeline:
     return Pipeline(config)
 
 
@@ -94,7 +100,7 @@ class LinearModel(Model[Pipeline]):
     @uses_components("net")
     def predict(self, value: torch.Tensor) -> tuple[torch.Tensor, str, str]:
         net = self.pipe.components["net"]
-        layer = net.proj
+        layer = cast(torch.nn.Linear, net.proj)  # cast: the Linear the Pipeline built
         with torch.inference_mode():
             result = net(value.to(device=layer.bias.device, dtype=torch.bfloat16))
         return (
@@ -104,7 +110,7 @@ class LinearModel(Model[Pipeline]):
         )
 
     @uses_components("net")
-    def record(self, batches: list[torch.Tensor]) -> Any:
+    def record(self, batches: list[torch.Tensor]) -> Calibration:
         from cozy_runtime.derive.svdq import Calibration
 
         with Calibration(
@@ -157,7 +163,7 @@ def source(payload: Request, ctx: Context) -> ModelArtifact:
         return ctx.adopt_model(output)
 
 
-def tensor(raw: bytes, dtype: Any, shape: tuple[int, ...], device: Any = "cpu") -> Any:
+def tensor(raw: bytes, dtype: torch.dtype, shape: tuple[int, ...], device: str | torch.device = "cpu") -> torch.Tensor:
     return torch.frombuffer(bytearray(raw), dtype=dtype).reshape(shape).to(device)
 
 
@@ -289,7 +295,7 @@ def calibrate(
         assert isinstance(inherited_bias, tensorfs.Array)
         assert inherited_bias.tobytes() == bias.view(torch.uint8).numpy().tobytes()
         assert committed.verify().ok
-        detail.update(
+        cast("dict[str, object]", detail).update(  # cast: the report grows the run's own keys
             seed=payload.seed,
             checkpoint=committed.id,
             calibration_checkpoint=calibration_id,
@@ -325,7 +331,7 @@ def calibrate(
     return Converted(True, artifact, json.dumps(detail, sort_keys=True))
 
 
-def decoded_weight(parts: dict[str, Any]) -> torch.Tensor:
+def decoded_weight(parts: Parts) -> torch.Tensor:
     """Independent exact stored-value law, not the production TensorFS/SVDQ decoder."""
     from .oracle import E2M1_DECODE32, E4M3_MAG32
 
@@ -431,7 +437,14 @@ def predict(
 from . import native as native
 
 
-def _working() -> dict[str, int]:
+class _Peaks(TypedDict):
+    """The working allocator's figures this cell reads (of varena's `WorkingStats`)."""
+
+    allocated_peak: int
+    mapped_peak: int
+
+
+def _working() -> _Peaks:
     """The working allocator's own figures (varena's): Torch's readers are sealed."""
     import tensorfs.varena.torch as vt
 

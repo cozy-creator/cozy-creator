@@ -278,7 +278,7 @@ jobs:
           else s=$(cd src && ../.creator/ci/affected "$REPO" "$BASE" "$REF" --json); fi
           echo "selection=$s" >> "$GITHUB_OUTPUT"
           # A Linux suite takes the candidate jobs' set.
-          echo "linux=$(echo "$s" | jq 'any(.suites[]; . == "cli" or . == "imports" or . == "cli-release")')" >> "$GITHUB_OUTPUT"
+          echo "linux=$(echo "$s" | jq 'any(.suites[]; . == "cli" or . == "imports" or . == "cli-release" or . == "cpu")')" >> "$GITHUB_OUTPUT"
           # The cli suite's other runners: macOS arm64 (Intel Macs aren't supported), Windows x64; a release run's installer
           # on Windows arm64 too.
           arm=$([ -z "$PUBLISH_RUN" ] || echo '"windows-11-arm"')
@@ -632,6 +632,72 @@ jobs:
           path: ${{ runner.temp }}/e2e
           retention-days: 14
 
+  # The free CPU test (e2e/cpu): every package's entry points through the candidate Runtime's real executor with tiny
+  # random weights, one and two ranks, outputs against stored references; each package uploaded, locked and its
+  # requests bound through the candidate cozy. No GPU, rental or sign-in.
+  cpu:
+    needs: [affected, candidate]
+    if: contains(fromJSON(needs.affected.outputs.selection).suites, 'cpu')
+    runs-on: ubuntu-24.04
+    # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal.
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    env:
+      BUILD: ${{ join(fromJSON(needs.affected.outputs.selection).build, ' ') }}
+      UV_CACHE_DIR: ${{ github.workspace }}/.uv-cache
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: cozy-creator/cozy-creator
+          ref: ${{ needs.affected.outputs.creator }}
+          path: .creator
+      - uses: ./.creator/e2e/candidates
+        with:
+          packages_ref: ${{ needs.affected.outputs.packages }}
+          repo: ${{ needs.affected.outputs.repo }}
+          ref: ${{ needs.affected.outputs.ref }}
+          build: ${{ env.BUILD }}
+          from: artifacts
+          tensord: ${{ inputs.tensord }}
+          tensorfs: ${{ inputs.tensorfs }}
+          runtime: ${{ inputs.runtime }}
+          release: ${{ inputs.publish_run }}
+      # The locked wheels every package's environment takes (CPU torch included), by the locks that name them.
+      - uses: actions/cache@v4
+        with:
+          path: .uv-cache
+          key: cpu-uv-${{ hashFiles('.pkgs/*/uv.lock', '.src/*/uv.lock') }}
+          restore-keys: cpu-uv-
+      # The CLI cells' cozy (e2e/cpu/cli.sh): installed as a person installs it, the candidate in its place and Calcifer
+      # restarted on it, as the cli suite's candidates step does.
+      - name: cpu suite
+        run: |
+          . .creator/e2e/lib.sh
+          parse --out "$RUNNER_TEMP/e2e/cozy" $CANDIDATES
+          install_cozy
+          user_services
+          if [ -f "$CAND_COZY" ]; then
+            cozy --json doctor > "$OUT/doctor.json" || true
+            grep -q "$("$CAND_COZY" --version)," "$OUT/doctor.json" || fail "Calcifer is not the candidate $("$CAND_COZY" --version)"
+          fi
+          mkdir -p "$RUNNER_TEMP/project" && (cd "$RUNNER_TEMP/project" && cozy --json new > /dev/null) || fail "cozy new failed"
+          code=0
+          bash .creator/e2e/cpu/run.sh --out "$RUNNER_TEMP/e2e" --envs "$RUNNER_TEMP/envs" $CANDIDATES \
+            $(case " $CANDIDATES " in (*" --packages "*) ;; (*) echo --packages "$PACKAGES_MASTER" ;; esac) \
+            --cozy "$COZY" --project "$RUNNER_TEMP/project" 2>&1 | node .creator/e2e/publish/scrub.js || code=$?
+          finish cpu
+          exit "$code"
+      - if: always()
+        run: uv cache prune --ci
+      - if: always()
+        uses: ./.creator/e2e/publish
+        with:
+          name: e2e-cpu
+          path: ${{ runner.temp }}/e2e
+          retention-days: 14
+
   mps:
     needs: affected
     if: contains(fromJSON(needs.affected.outputs.selection).suites, 'mps')
@@ -725,7 +791,7 @@ jobs:
 
   e2e:
     if: always()
-    needs: [affected, candidate, cli, cli-os, cli-release, imports, mps]
+    needs: [affected, candidate, cli, cli-os, cli-release, imports, cpu, mps]
     runs-on: ubuntu-24.04
     # Last resort (tracker design/stalls.md): a runner that hangs sends no signal.
     timeout-minutes: 10

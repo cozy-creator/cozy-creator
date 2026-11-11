@@ -41,13 +41,13 @@ pub(crate) async fn delete(ctx: &Context, args: Delete) -> Result<ExitCode, Erro
     let (repo, release, commit) = match ModelRef::parse(&args.model)? {
         ModelRef::Hub { repo, release } => (repo, release, None),
         ModelRef::Commit { repo, commit } => (repo, None, Some(commit)),
-        _ => return Err(usage("model_ref_invalid", format!(
-            "{:?}: delete takes [org/]name, [org/]name@<version> or [org/]name@sha256:<commit>", args.model))),
+        _ => return Err(usage("model_ref_invalid", format!("Invalid model reference: {:?}", args.model))
+            .next("cozy model delete --help")),
     };
     let hub = ctx.hub();
     if !ctx.yes {
         return Err(usage("model_delete_unconfirmed", format!("deleting {} from {} cannot be undone", args.model, hub))
-            .remedy("run it again with --yes"));
+            .next(format!("cozy model delete {} --yes", args.model)));
     }
     let mut at = vec!["v1", "models", repo.org.as_str(), repo.name.as_str()];
     let note = match (&release, &commit) {

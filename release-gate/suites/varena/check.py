@@ -13,10 +13,12 @@ kernels, time and VRAM against the last pass.
     say that a model stopped using graphs: SDXL's steady step went from 0.08 s to 0.27 s with every rule and fault passing.
     check.py <gate dir> <SKU>     the same verdict alone"""
 import json, os, re, subprocess, sys
+from collections.abc import Iterator
+from typing import Literal, TypeAlias, TypedDict, cast, overload
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
 import record  # noqa: E402  (release-gate/record.py: varena's own figures, 0.30's and 0.32's alike)
-from runs import Run  # noqa: E402
+from runs import Baseline, GateHistory, GateRuns, KnownFailing, Memory, Run  # noqa: E402
 
 GIB = 1 << 30
 CHURN = 0.25
@@ -24,20 +26,48 @@ WARM = 'warm-sdxl',  # a warm call whose model has graphs on every card; known-f
 FLOOR, KEEP = 0.8, 5
 CELL = re.compile(r's(\d+)-([a-z0-9]+)(?:-(\d+))?')
 HERE = os.path.dirname(os.path.abspath(__file__))
+Verdict: TypeAlias = tuple[list[str], list[str]]  # (fails, notes)
+Ceiling: TypeAlias = dict[str, float]  # ceiling.py's document: disk_gbps, h2d_gbps when measured
 
 
-def kernels(run):
+class HostCap(TypedDict):  # host-cap.py's document
+    cap: int | None
+    mem_total: int | None
+    swap_total: int | None
+
+
+class VarenaGate(GateHistory, GateRuns):  # what check() reads of analyze.py's gate
+    pass
+
+
+class ShowGpu(TypedDict, total=False):  # `cozy machine show --json`: status.gpus[]
+    memory_limit_bytes: int
+
+
+class ShowStatus(TypedDict):
+    gpus: list[ShowGpu]
+
+
+class MachineShow(TypedDict):
+    status: ShowStatus
+
+
+def kernels(run: Run) -> tuple[list[list[str]], list[str]]:
     return run.gemm, run.attention
 
 
-def memories(run):
+def memories(run: Run) -> list[Memory]:
     """The run's and its calls' memory records (H3 keeps its rows in its calls)."""
-    return [m['memory'] for m in run.measurements if m.get('memory')]
+    return [memory for m in run.measurements if (memory := m.get('memory'))]
 
 
-def result(run, key):
+@overload
+def result(run: Run | None, key: Literal['disk_gbps']) -> Ceiling | None: ...
+@overload
+def result(run: Run | None, key: Literal['cap']) -> HostCap | None: ...
+def result(run: Run | None, key: str) -> Ceiling | HostCap | None:
     """The JSON document a script cell returned (a string field holding `key`)."""
-    def walk(o):
+    def walk(o: object) -> Iterator[object]:
         if isinstance(o, dict):
             for v in o.values():
                 yield from walk(v)
@@ -49,16 +79,17 @@ def result(run, key):
     return next((json.loads(v) for v in walk(run and run.result) if isinstance(v, str) and f'"{key}"' in v), None)
 
 
-def bandwidth(recs, base):
-    fails, notes = [], []
+def bandwidth(recs: dict[str, Run], base: Baseline) -> Verdict:
+    fails: list[str] = []
+    notes: list[str] = []
     ceiling = result(recs.get('ceiling'), 'disk_gbps')
     if not ceiling:
         return fails, notes
     notes.append(f'ceiling: disk {ceiling["disk_gbps"]} GB/s' + (f', host to device {ceiling["h2d_gbps"]} GB/s' if ceiling.get('h2d_gbps') else ' (host to device unmeasured)'))
     hist = base.setdefault('varena', [])
-    now = {}
+    now: dict[str, float] = {}
     for name, run in recs.items():
-        moved = {}
+        moved: dict[str, tuple[float, float]] = {}
         for m in memories(run):
             for kind, (b, s) in record.copies(m).items():
                 mb, ms = moved.get(kind, (0, 0.0))
@@ -80,40 +111,44 @@ def bandwidth(recs, base):
     return fails, notes
 
 
-def host(recs):
-    fails, notes = [], []
+def host(recs: dict[str, Run]) -> Verdict:
+    fails: list[str] = []
+    notes: list[str] = []
     cells = [n for n in recs if n.startswith('host-') and n != 'host-cap']
     if not cells and 'host-cap' not in recs:
         return fails, notes
     cap = result(recs.get('host-cap'), 'cap')
-    if not cap or not cap.get('cap') or not cap.get('mem_total') or cap['cap'] >= cap['mem_total']:
+    # cast: past `not cap.get('cap') or not cap.get('mem_total')`, neither is None
+    if not cap or not cap.get('cap') or not cap.get('mem_total') or cast(int, cap['cap']) >= cast(int, cap['mem_total']):
         return [f'host-cap: no host cap below the host RAM ({cap}): the host cells prove nothing here'], notes
-    notes.append(f'host cap {cap["cap"] / GIB:.1f} GiB of {cap["mem_total"] / GIB:.1f} GiB RAM, swap {(cap.get("swap_total") or 0) / GIB:.1f} GiB')
+    notes.append(f'host cap {cast(int, cap["cap"]) / GIB:.1f} GiB of {cast(int, cap["mem_total"]) / GIB:.1f} GiB RAM, swap {(cap.get("swap_total") or 0) / GIB:.1f} GiB')
     for name in cells:
         mems = memories(recs[name])
         moved = sum(record.paged(m) for m in mems)
         anon = max((h for m in mems if (h := record.host(m))), default=None)
         line = f'{name}: paged/spilled {moved / GIB:.1f} GiB' + (f', anonymous host high-water {anon / GIB:.1f} GiB' if anon else '')
-        if anon and anon > cap['cap']:
-            fails.append(line + f' over the {cap["cap"] / GIB:.1f} GiB cap')
+        if anon and anon > cast(int, cap['cap']):
+            fails.append(line + f' over the {cast(int, cap["cap"]) / GIB:.1f} GiB cap')
         else:
             notes.append(line)
     return fails, notes
 
 
-def caps(out, recs):
-    fails, notes = [], []
+def caps(out: str, recs: dict[str, Run]) -> Verdict:
+    fails: list[str] = []
+    notes: list[str] = []
     capped = [(n, int(m.group(1)), m.group(2), m.group(3)) for n in recs for m in [CELL.fullmatch(n)] if m]
     for gib in sorted({c[1] for c in capped}, reverse=True):
         show = os.path.join(out, f'cap-{gib}GiB.show.json')
         try:
-            limits = [gpu.get('memory_limit_bytes', 0) for gpu in json.load(open(show))['status']['gpus']]
+            shown: MachineShow = json.load(open(show))
+            limits = [gpu.get('memory_limit_bytes', 0) for gpu in shown['status']['gpus']]
         except (OSError, ValueError, KeyError) as error:
             fails.append(f'cap {gib} GiB: no machine show to read ({error})')
             continue
         if not limits or any(limit != gib * GIB for limit in limits):
             fails.append(f'cap {gib} GiB: machine show reports {limits}')
-    execs = {}
+    execs: dict[str, int | None] = {}
     for name, gib, model, i in capped:
         run, mems = recs[name], memories(recs[name])
         moved = sum(record.paged(m) for m in mems)
@@ -128,15 +163,16 @@ def caps(out, recs):
             fails.append(f'{name}: kernels {kernels(run)} under {gib} GiB; cold-{model} served {kernels(ref)}')
         execs[name] = run.execution_ms
     for model in sorted({m for _, _, m, i in capped if i and m != 'h3'}):
-        runs = [execs[n] for n, _, m, i in sorted(capped, key=lambda c: int(c[3] or 0)) if m == model and i and execs.get(n)]
+        runs = [cast(int, execs[n]) for n, _, m, i in sorted(capped, key=lambda c: int(c[3] or 0)) if m == model and i and execs.get(n)]  # execs.get(n) leaves no None
         if len(runs) >= 3:
             line = f'{model} alternation: ' + ' / '.join(f'{x / 1000:.1f}' for x in runs) + ' s'
             (fails if runs[2] > runs[1] * (1 + CHURN) + 5000 else notes).append(line)
     return fails, notes
 
 
-def videos(recs):
-    fails, notes = [], []
+def videos(recs: dict[str, Run]) -> Verdict:
+    fails: list[str] = []
+    notes: list[str] = []
     for name, run in recs.items():
         if not re.search(r'(^|-)h3(-15)?$', name):
             continue
@@ -151,8 +187,8 @@ def videos(recs):
     return fails, notes
 
 
-def unowned(recs):
-    fails = []
+def unowned(recs: dict[str, Run]) -> Verdict:
+    fails: list[str] = []
     for name, run in recs.items():
         left = sum(record.unowned(m) for m in memories(run))
         if left:
@@ -160,8 +196,9 @@ def unowned(recs):
     return fails, []
 
 
-def warm(recs):
-    fails, notes = [], []
+def warm(recs: dict[str, Run]) -> Verdict:
+    fails: list[str] = []
+    notes: list[str] = []
     for name in WARM:
         run = recs.get(name)
         if run is None:  # analyze.py fails a cell that ran and didn't complete; check.py has no such cell to read
@@ -174,14 +211,15 @@ def warm(recs):
     return fails, notes
 
 
-def check(gate):
+def check(gate: VarenaGate) -> Verdict:
     recs, sku = gate['runs'], gate.get('sku', '')
-    fails, notes = [], []
+    fails: list[str] = []
+    notes: list[str] = []
     for f, n in (bandwidth(recs, gate.setdefault('baseline', {})), caps(gate['out'], recs), host(recs), videos(recs),
                  unowned(recs), warm(recs)):
         fails += f; notes += n
-    parked = [c for k in json.load(open(os.path.join(HERE, '..', '..', 'known-failing.json')))
-              if k['sku'] in (sku, '*') for c in k.get('cells', [])]
+    known: list[KnownFailing] = json.load(open(os.path.join(HERE, '..', '..', 'known-failing.json')))
+    parked = [c for k in known if k['sku'] in (sku, '*') for c in k.get('cells', [])]
     if parked:
         notes.append(f'varena: parked on {sku}: {", ".join(parked)}')
     return fails, notes
@@ -189,7 +227,7 @@ def check(gate):
 
 if __name__ == '__main__':
     out, sku = sys.argv[1].rstrip('/'), sys.argv[2]
-    runs = {}
+    runs: dict[str, Run] = {}
     for line in open(os.path.join(out, 'cells.tsv')):
         name = line.split('\t')[0]
         run = Run.read(os.path.join(out, name + '.json'))

@@ -7,7 +7,7 @@
 use std::process::ExitCode;
 
 use api::{
-    calcifer::{Event, Run},
+    calcifer::{Event, Run, Status},
     error::Error,
     calcifer::report::{self, Measured},
 };
@@ -40,6 +40,10 @@ pub(crate) async fn exec(ctx: &Context, id: &str, once: bool, download: Option<&
     }
     if ctx.json {
         output::json(&run);
+        return Ok(follow::exit_code(&run));
+    }
+    if !ctx.full && matches!(run.status, Status::Failed | Status::Canceled) {
+        follow::record(ctx, &run);
         return Ok(follow::exit_code(&run));
     }
     let measured = run.report.as_ref().map_or(&[][..], |report| &report.measured);

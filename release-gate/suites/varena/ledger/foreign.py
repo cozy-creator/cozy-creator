@@ -17,7 +17,7 @@ assert cu.cuInit(0) == 0 and cu.cuDeviceGet(ctypes.byref(dev), 0) == 0
 assert cu.cuDevicePrimaryCtxRetain(ctypes.byref(ctx), dev) == 0 and cu.cuCtxSetCurrent(ctx) == 0
 
 
-def info():
+def info() -> tuple[int, int]:
     free, total = ctypes.c_size_t(), ctypes.c_size_t()
     cu.cuMemGetInfo_v2(ctypes.byref(free), ctypes.byref(total))
     return free.value, total.value
@@ -25,11 +25,13 @@ def info():
 
 free0, total = info()
 reserve = max(total // 16, 512 << 20)
-held, waits, began = [], [], time.monotonic()
+held: list[int] = []
+waits: list[float] = []
+began = time.monotonic()
 for _ in range(int((free0 + EXTRA) // BLOCK)):
     start = time.monotonic()
-    pointer = ctypes.c_uint64()
-    while cu.cuMemAlloc_v2(ctypes.byref(pointer), ctypes.c_size_t(BLOCK)) != 0:
+    pointer: ctypes.c_uint64 | None = ctypes.c_uint64()
+    while cu.cuMemAlloc_v2(ctypes.byref(pointer), ctypes.c_size_t(BLOCK)) != 0:  # type: ignore[arg-type]  # None only after the loop's break
         if time.monotonic() - start > GIVE_UP:
             pointer = None
             break
@@ -39,7 +41,7 @@ for _ in range(int((free0 + EXTRA) // BLOCK)):
     held.append(pointer.value)
     waits.append(round(time.monotonic() - start, 3))
 ramp = time.monotonic() - began
-free_held = []
+free_held: list[int] = []
 until = time.monotonic() + HOLD
 while time.monotonic() < until:
     free_held.append(info()[0])
@@ -49,5 +51,5 @@ print(json.dumps({
     "blocks": len(held), "taken_gib": len(held) * BLOCK / 2**30, "gave_up": bool(waits) and len(held) < int((free0 + EXTRA) // BLOCK),
     "ramp_s": round(ramp, 2), "longest_wait_s": max(waits, default=0), "waited_blocks": sum(w > 0.01 for w in waits),
     "free_min_held_gib": min(free_held, default=0) / 2**30, "free_end_held_gib": (free_held or [0])[-1] / 2**30, "waits": waits}))
-for pointer in held:
-    cu.cuMemFree_v2(ctypes.c_uint64(pointer))
+for address in held:
+    cu.cuMemFree_v2(ctypes.c_uint64(address))

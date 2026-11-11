@@ -80,10 +80,10 @@ pub(crate) fn document<T: Serialize + ?Sized>(ctx: &Context, value: &T) {
 }
 
 fn toon<T: Serialize + ?Sized>(value: &T) {
-    let text = toon_format::encode_default(&value).unwrap_or_else(|_| {
-        toon_format::encode_default(&encoding_error()).expect("a fixed error envelope encodes")
-    });
-    anstream::println!("{text}");
+    match toon_format::encode_default(&value) {
+        Ok(text) => anstream::println!("{text}"),
+        Err(_) => { refuse(false, &encoding_error().error); }
+    }
 }
 
 fn encoding_error() -> Envelope {
@@ -100,7 +100,7 @@ pub(crate) fn view<T: Serialize + ?Sized>(ctx: &Context, value: &T, paths: &[&st
     }
     let value = match serde_json::to_value(value) {
         Ok(value) => value,
-        Err(_) => return document(ctx, &encoding_error()),
+        Err(_) => { refuse(ctx.json, &encoding_error().error); return; }
     };
     let mut value = pick(value, paths);
     truncate(&mut value, None);
@@ -193,29 +193,61 @@ pub(crate) fn ndjson<T: Serialize + ?Sized>(event: &T) {
     let _ = writeln!(out, "{line}").and_then(|()| out.flush());
 }
 
-/// Prints a refusal on stdout (the envelope with `--json`) and answers its exit code.
+/// Prints a human refusal on stderr, or a JSON envelope on stdout, and answers its exit code.
 pub(crate) fn refusal(ctx: &Context, error: &Error) -> ExitCode {
     refuse(ctx.json, error)
 }
 
 pub(crate) fn refuse(json: bool, error: &Error) -> ExitCode {
-    let envelope = Envelope { error: error.clone() };
     if json {
-        self::json(&envelope);
+        self::json(&Envelope { error: error.clone() });
     } else {
-        toon(&envelope);
+        anstream::eprint!("{}", human_error(error));
     }
     ExitCode::from(error.exit_code() as u8)
+}
+
+fn human_error(error: &Error) -> String {
+    let mut text = String::new();
+    error_line(&mut text, &format!("error[{}]: ", error.code), &error.message);
+    if let Some(cause) = &error.cause {
+        if cause != &error.code {
+            error_line(&mut text, "cause: ", cause);
+        }
+    }
+    if let Some(seconds) = error.retry_after_s {
+        error_line(&mut text, "hint: ", &format!("try again after {seconds} seconds"));
+    }
+    if let Some(remedy) = &error.remedy {
+        let command = remedy.trim().starts_with("cozy ") && remedy.trim().lines().count() == 1;
+        error_line(&mut text, if command { "next: " } else { "hint: " }, remedy);
+    }
+    for next in &error.next {
+        if error.remedy.as_deref().map(str::trim) != Some(next.trim()) {
+            error_line(&mut text, "next: ", next);
+        }
+    }
+    text
+}
+
+fn error_line(out: &mut String, prefix: &str, value: &str) {
+    for (index, line) in shown(value).trim().lines().enumerate() {
+        out.push_str(if index == 0 { prefix } else { "  " });
+        out.push_str(line);
+        out.push('\n');
+    }
 }
 
 pub(crate) fn failure(ctx: &Context, message: &str, next: &[String]) {
     if ctx.json {
         return;
     }
-    anstream::println!("{}", shown(message));
+    let mut text = String::new();
+    error_line(&mut text, "", message);
     for next in next {
-        anstream::println!("  {DIM}next:{DIM:#} {}", shown(next));
+        error_line(&mut text, "next: ", next);
     }
+    anstream::eprint!("{text}");
 }
 
 /// What the command is doing, for a person on stderr; silent with `--json`.
@@ -438,7 +470,8 @@ impl Table {
 
 #[cfg(test)]
 mod tests {
-    use super::{TEXT, pick, truncate};
+    use super::{TEXT, human_error, pick, truncate};
+    use api::error::{Envelope, Error};
     use serde_json::{Value, json};
 
     #[test]
@@ -475,5 +508,44 @@ mod tests {
         let decoded: Value = toon_format::decode_default(&encoded).unwrap();
         assert_eq!(decoded, selected);
         assert!(encoded.starts_with("runs[2]{id,state,message}:"));
+    }
+
+    #[test]
+    fn runtime_errors_render_multiline_remedies_without_escaping() {
+        let mut error = Error::unavailable("machine_offline", "The machine is offline.\nConnection refused.")
+            .remedy("Start its service.\nThen retry this request.")
+            .next("cozy machine ls")
+            .next("cozy doctor");
+        error.cause = Some("connection_refused".into());
+        error.retry_after_s = Some(5);
+        let text = human_error(&error);
+        assert_eq!(text, "error[machine_offline]: The machine is offline.\n  Connection refused.\ncause: connection_refused\nhint: try again after 5 seconds\nhint: Start its service.\n  Then retry this request.\nnext: cozy machine ls\nnext: cozy doctor\n");
+        assert!(!text.contains("\\n"));
+        assert_eq!(error.exit_code(), 1);
+    }
+
+    #[test]
+    fn help_remedies_are_commands_and_duplicate_next_lines_are_omitted() {
+        let error = Error::new(api::error::Kind::Usage, "usage", "unrecognized subcommand 'ls'")
+            .remedy("cozy --help")
+            .next("cozy --help");
+        assert_eq!(human_error(&error), "error[usage]: unrecognized subcommand 'ls'\nnext: cozy --help\n");
+        assert_eq!(error.exit_code(), 2);
+    }
+
+    #[test]
+    fn structured_errors_keep_multiline_remedies_and_backend_details() {
+        let mut error = Error::unavailable("machine_offline", "The machine is offline.\nConnection refused.")
+            .remedy("Start its service.\nThen retry this request.")
+            .next("cozy machine ls");
+        error.cause = Some("connection_refused".into());
+        error.retry_after_s = Some(5);
+        error.metadata = Some(json!({"machine": "test", "detail": "first\nsecond"}));
+        let envelope = Envelope { error: error.clone() };
+        let serialized = serde_json::to_string(&envelope).unwrap();
+        let restored: Envelope = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(restored.error, error);
+        assert!(serialized.contains("\\n"));
+        assert!(!human_error(&error).contains("metadata"));
     }
 }

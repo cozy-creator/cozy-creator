@@ -8,6 +8,7 @@ name: build
 # PR + branch state; on a pull request it is skipped, which lets the PR be queued. A docs-only entry (its diff from
 # the entry ahead) passes without building; ALLGREEN keeps it from vouching for the entries ahead (e2e.yaml).
 # The memory-safety step (scripts/memory-safety.sh) runs only when its inputs change.
+# The Python type check (scripts/typecheck.sh: mypy --strict per import root) and executor.pyi's freshness.
 on:
   pull_request:
   merge_group:
@@ -78,6 +79,22 @@ jobs:
         run: scripts/machine-routes.sh
       - if: steps.scope.outputs.run == 'true'
         run: scripts/web-routes.sh
+      # The type check (mypy --strict, scripts/typecheck.sh): new errors fail, .mypy-baseline.txt holds the known ones.
+      # executor.pyi is generated from executor-api's structs: `pyi.py --check` fails when it is stale.
+      - if: steps.scope.outputs.run == 'true'
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - if: steps.scope.outputs.run == 'true'
+        uses: actions/cache@v5
+        with:
+          path: |
+            .venv-typecheck
+            .mypy_cache
+          key: typecheck-${{ runner.os }}-${{ hashFiles('scripts/typecheck-requirements.txt') }}-${{ github.sha }}
+          restore-keys: typecheck-${{ runner.os }}-${{ hashFiles('scripts/typecheck-requirements.txt') }}-
+      - if: steps.scope.outputs.run == 'true'
+        run: python3 crates/executor-api/scripts/pyi.py --check && scripts/typecheck.sh
       - if: steps.scope.outputs.run == 'true'
         uses: actions/setup-node@v4
         with:

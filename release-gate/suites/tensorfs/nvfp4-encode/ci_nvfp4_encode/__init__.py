@@ -5,9 +5,13 @@ import inspect
 import json
 import tempfile
 from pathlib import Path
+from typing import TYPE_CHECKING, Unpack, cast
 
 import msgspec
 from cozy_runtime.author import App, Context
+
+if TYPE_CHECKING:
+    from ._types import F32, CaseRecord, Options, Overrides, Parts, Refusal, Stats
 
 app = App()
 
@@ -38,17 +42,17 @@ def run(payload: Request, ctx: Context) -> Report:
         "scale_layout": "row_major",
     }
 
-    measured_calls = []
+    measured_calls: list[Stats] = []
 
-    def encode(values, maximum, dtype="F32", **overrides):
-        options = {
+    def encode(values: "F32", maximum: float | None, dtype: str = "F32", **overrides: "Unpack[Overrides]") -> "tensorfs.Encoded":
+        options: Options = {
             "dtype": dtype,
             "shape": values.shape,
             "strategy": "nvfp4-min-sse/1",
             "params": params,
             "tensor_amax": maximum,
         }
-        options.update(overrides)
+        options.update(overrides)  # type: ignore[typeddict-item]  # overrides: a partial Options without dtype
         data = values.astype("<f4").tobytes()
         try:
             original = raw.quantize("nvfp4", data, **options)
@@ -76,7 +80,7 @@ def run(payload: Request, ctx: Context) -> Report:
         measured_calls.append(stats)
         return original
 
-    def stored(encoded):
+    def stored(encoded: "tensorfs.Encoded") -> "Parts":
         return {
             role: (part.dtype, part.shape, part.tobytes())
             for role, part in encoded.parts.items()
@@ -89,7 +93,7 @@ def run(payload: Request, ctx: Context) -> Report:
         (3, 32), np.nextafter(np.float32(0), np.float32(1)), dtype=np.float32
     )
     small[-1, -1] = 1.0
-    cases = {
+    cases: dict[str, F32] = {
         "zeros": np.zeros((3, 32), dtype=np.float32),
         "negative_zero": np.full((2, 16), -0.0, dtype=np.float32),
         "ties": np.tile(
@@ -131,12 +135,13 @@ def run(payload: Request, ctx: Context) -> Report:
             (3, 8),
         ),
     }
-    records = []
+    records: list[CaseRecord] = []
     with tempfile.TemporaryDirectory(prefix="cozy-nvfp4-encode-") as directory:
         with tensorfs.Writer(Path(directory) / "encoded.cozytensors") as writer:
             writer.metadata["quantizer"] = "nvfp4-min-sse/1"
             component = writer.component("weights")
-            references = {}
+            references: dict[str, Parts] = {}
+            maximum: float | None
             for name, values in cases.items():
                 maximum = float(np.abs(values).max())
                 with np.errstate(all="ignore"):
@@ -191,16 +196,16 @@ def run(payload: Request, ctx: Context) -> Report:
                         "tensor_amax": maximum,
                         "part_sha256": {
                             role: hashlib.sha256(part[2]).hexdigest()
-                            for role, part in parts.items()
+                            for role, part in parts.items()  # type: ignore[possibly-undefined]  # the dtype loop always runs
                         },
                     }
                 )
             checkpoint = writer.commit()
         for key, expected in references.items():
-            result = checkpoint.components["weights"].tensors.read(key)
+            result = cast("tensorfs.Encoded", checkpoint.components["weights"].tensors.read(key))  # cast: put encoded
             assert stored(result) == expected, key
         for name, values in cases.items():
-            result = checkpoint.components["weights"].tensors.read(f"{name}.F32")
+            result = cast("tensorfs.Encoded", checkpoint.components["weights"].tensors.read(f"{name}.F32"))  # cast: put encoded
             out = np.empty(values.shape, dtype=np.float32)
             raw.decode_into(
                 result.scheme,
@@ -224,7 +229,7 @@ def run(payload: Request, ctx: Context) -> Report:
         old_underflow = encode_nvfp4("underflow", tiny)
     assert np.frombuffer(old_underflow.companions[1].raw, dtype="<f4")[0] == 0.0
     good = cases["ties"]
-    refused = [
+    refused: list[tuple[F32, float | None, Refusal]] = [
         (good, None, {}),
         (good, -1.0, {}),
         (good, float("nan"), {}),

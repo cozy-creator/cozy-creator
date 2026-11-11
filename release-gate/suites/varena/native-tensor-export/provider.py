@@ -11,10 +11,13 @@ import ctypes as C
 import operator
 import threading
 from pathlib import Path
+from typing import TypeAlias
 
 from tensorfs.varena import api
 
 _MODES = {"ordering": 0, "partial": 1, "prepare_error": 2}
+# What a helper call takes: an integer, a handle, or a byref() out-parameter.
+CArg: TypeAlias = "int | C.c_void_p | C._CArgObject"
 # An intentional native quarantine can outlive every local Python fixture name.
 # Keep its callback code/control rooted independently of a collectable cycle.
 _RETAINED: list[Provider] = []
@@ -92,7 +95,7 @@ class Provider:
         # keeps the helper's code loaded through any native callback/quarantine.
         self._fixtures: list[Fixture] = []
 
-    def _call(self, name: str, *args) -> None:
+    def _call(self, name: str, *args: CArg) -> None:
         status = getattr(self._library, "te_" + name)(*args)
         if status:
             detail = self._library.te_last_error()
@@ -163,7 +166,7 @@ class Fixture:
         self.region = region
         self.mode = mode
 
-    def _call(self, name: str, *args) -> None:
+    def _call(self, name: str, *args: CArg) -> None:
         if not self._pointer.value:
             raise api.Invalid("Source test fixture is closed")
         self._provider._call(name, self._pointer, *args)

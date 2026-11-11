@@ -137,7 +137,8 @@ impl PackageRef {
     /// A package target without a function (`run::target`'s grammar): `x/y` is account x's
     /// package y.
     pub(crate) fn parse(text: &str) -> Result<Self, Error> {
-        let invalid = || Error::new(Kind::Usage, "package_ref_invalid", format!("{text:?} is not [org/]name[@release]")).next("cozy package ls");
+        let invalid = || Error::new(Kind::Usage, "package_ref_invalid", format!("Invalid package reference: {text:?}"))
+            .remedy("Use [org/]name[@release]").next("cozy package ls");
         let (package, release) = match Published::parse(text.trim()).map_err(|_| invalid())? {
             Published { package, function: None, release, .. } => (package, release),
             Published { owned: Some(owned), release, .. } => (owned, release),
@@ -166,7 +167,8 @@ pub(crate) fn local(ctx: &Context, text: &str) -> Result<Option<PathBuf>, Error>
     let cwd = std::env::current_dir().map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
     match crate::run::local(ctx, text, &cwd)? {
         Some((package, None)) => Ok(Some(package)),
-        Some((_, Some(function))) => Err(Error::new(Kind::Usage, "package_ref_invalid", format!("{text} names a function, {function}: a package is its folder or script"))),
+        Some((_, Some(function))) => Err(Error::new(Kind::Usage, "package_ref_invalid", format!("{text} selects function {function}; use the package directory or script"))
+            .next("cozy package --help")),
         None => Ok(None),
     }
 }

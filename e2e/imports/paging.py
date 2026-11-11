@@ -28,6 +28,8 @@ try:  # fill's Transformers binding reads these when Transformers is installed
     import transformers.core_model_loading  # noqa: F401
 except ImportError:
     pass
+if typing.TYPE_CHECKING:
+    from cozy_runtime.author._app import Registration
 
 GIB, WARN = 1 << 30, 1 << 30
 
@@ -40,12 +42,12 @@ class Built(Exception):
 class Loader:
     """Model.load's loader on a header-only checkpoint: `construct` builds on the meta device and ends the load."""
 
-    def __init__(self, config: Config, ck: object) -> None:
+    def __init__(self, config: Config, ck: tensorfs.Checkpoint) -> None:
         self.config, self.ck = config, ck
 
     @property
     def assets(self) -> ModelAssets:
-        values = {}
+        values: dict[str, bytes] = {}
         for component, held in self.ck.components.items():
             prefix = "" if self.ck.pipeline is None and component == ROOT_COMPONENT else f"{component}/"
             if held.config:
@@ -62,7 +64,7 @@ class Loader:
         raise RuntimeError(f"load used loader.{name} before construct")
 
 
-def checkpoint(ref: str) -> tuple[object, str]:
+def checkpoint(ref: str) -> tuple[tensorfs.Checkpoint, str]:
     name, _, release = ref.partition("@")
     failure: Exception | None = None
     for lane in ("int8", "bf16", None):  # the 8-bit default lane, else the 16-bit one, else the model's only
@@ -70,18 +72,19 @@ def checkpoint(ref: str) -> tuple[object, str]:
             return tensorfs.open(name, release=release or None, lane=lane, lazy=True), lane or "its"
         except Exception as exc:  # noqa: BLE001  (a lane this model lacks)
             failure = exc
-    raise failure  # type: ignore[misc]
+    assert failure is not None
+    raise failure
 
 
-def rows(cls: type, ref: str) -> list[str]:
+def rows(cls: type[Model[object]], ref: str) -> list[str]:
     ck, lane = checkpoint(ref)
     configs = {n: dict(c.config) for n, c in ck.components.items() if c.config}
     try:
-        cls.load(cls.__new__(cls), Loader(Config(canonical.parse_canonical(model_config.construction_config(configs)), "model.config"), ck))
+        cls.load(cls.__new__(cls), Loader(Config(canonical.parse_canonical(model_config.construction_config(configs)), "model.config"), ck))  # type: ignore[arg-type]  # duck-typed: this Loader builds on meta and ends the load
         raise RuntimeError("load constructed nothing")
     except Built as built:
         graph = built.obj
-    out = []
+    out: list[str] = []
     for name, root in _members(graph):
         held = ck.components.get(name)
         if not isinstance(root, nn.Module) or held is None or not held.tensors:
@@ -108,8 +111,9 @@ def rows(cls: type, ref: str) -> list[str]:
 
 name = sys.argv[1]
 app = next((p.load() for p in md.distribution(name).entry_points if p.group == "cozy.application"), None)
-seen: set[tuple[str, type]] = set()
-for registration in getattr(app, "_registry", {}).values():
+seen: set[tuple[str, type[Model[object]]]] = set()
+registry: "dict[str, Registration]" = getattr(app, "_registry", {})
+for registration in registry.values():
     hints = typing.get_type_hints(registration.fn)
     classes = {k: v for k, v in hints.items() if isinstance(v, type) and issubclass(v, Model)} | dict(registration.model_classes)
     for slot, ref in registration.model_defaults.items():

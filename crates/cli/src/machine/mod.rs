@@ -246,9 +246,9 @@ async fn ssh(ctx: &Context, name: &str, command: &[String]) -> Result<ExitCode, 
     let m = machine(ctx, name).await?;
     let Some(login) = &m.ssh else {
         return Err(match &m.rental {
-            Some(rental) => Error::new(Kind::Usage, "machine_ssh_none", format!("{} was rented without an SSH key, and a rental can't take one later", m.name))
+            Some(rental) => Error::new(Kind::Usage, "machine_ssh_none", format!("{} has no SSH key; keys must be added when renting", m.name))
                 .next(format!("cozy machine rent {} --ssh", rental.sku)),
-            None => Error::new(Kind::Usage, "machine_ssh_none", format!("{} is not a rental: SSH there as its owner does", m.name)),
+            None => Error::new(Kind::Usage, "machine_ssh_none", format!("{} is not a rental; connect using its owner's SSH details", m.name)),
         });
     };
     let mut ssh = std::process::Command::new(&login.args[0]);

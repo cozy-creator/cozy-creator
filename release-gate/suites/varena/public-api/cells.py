@@ -8,6 +8,8 @@ import ctypes as C
 import json
 import subprocess
 import sys
+from collections.abc import Callable
+from typing import TypedDict
 
 import tensorfs.varena.torch as vt
 import torch
@@ -21,7 +23,36 @@ KV = 384 * MIB
 OVER = 64 * MIB
 
 
-def cap(managed):
+class Args(argparse.Namespace):
+    run: Callable[["Args"], None]
+    seed: int
+    engine: str  # sizing
+    mode: str  # priority: high, normal or peer
+
+
+# sized_engine.c's report. A row's `pass` is a keyword, so its rows are spelled the functional way.
+SizedRow = TypedDict("SizedRow", {"key": str, "pass": int, "level": int, "counted": int, "peak": int, "budget": int,
+                                  "pieces": int, "measured": bool, "bytes": int, "estimate": int})
+
+
+class Sized(TypedDict):
+    rows: list[SizedRow]
+    job: int
+    capacity: int
+    peak: int
+    mapped: int
+    resident: int
+    driver_ooms: int
+
+
+class SceneRow(TypedDict):
+    step: str
+    resident: int
+    kv_live: int
+    asks: int
+
+
+def cap(managed: int) -> None:
     """Leave this much for our own bytes, the core's slack on top."""
     vt.install(0)
     free, total = torch.cuda.mem_get_info(0)
@@ -31,13 +62,13 @@ def cap(managed):
     vt.set_limit(0, managed + max(total - free - owned, 0) + 128 * MIB + reserved)
 
 
-def sizing(args):
+def sizing(args: Args) -> None:
     cap(CAP)
     engine = C.CDLL(args.engine)
     engine.sized_engine.argtypes = [C.c_uint64, C.c_char_p, C.c_size_t]
     report = C.create_string_buffer(1 << 16)
     assert engine.sized_engine(args.seed, report, len(report)) == 0, report.value
-    result = json.loads(report.value)
+    result: Sized = json.loads(report.value)
     rows = {(row["key"], row["pass"]): row for row in result["rows"]}
     job, capacity = result["job"], result["capacity"]
     assert abs(capacity - CAP) < 256 * MIB, result
@@ -63,7 +94,9 @@ def sizing(args):
 class Scene:
     """Two Regions and a KV Cache, all resident. `shrink` drops KV pages unless `decline` is set."""
 
-    def __init__(self, gpu, stream, seed):
+    asked: list[int]  # each `requested` shrink was asked for
+
+    def __init__(self, gpu: varena.Gpu, stream: Stream, seed: int) -> None:
         self.gpu, self.stream, self.asked, self.decline, self.taken = gpu, stream, [], False, 0
         self.fill = seed % 200 + 1
         self.keep = bytes([self.fill]) * REGION
@@ -80,7 +113,7 @@ class Scene:
                 stream.finish()
         assert self.resident() == 2 * REGION
 
-    def shrink(self, cache, requested):
+    def shrink(self, cache: varena.CacheView, requested: int) -> bool:
         self.asked.append(requested)
         if self.decline:
             return False
@@ -89,27 +122,27 @@ class Scene:
         self.taken += bytes_
         return True
 
-    def resident(self):
+    def resident(self) -> int:
         return self.gpu.stats()["weights_resident"]
 
-    def live(self):
+    def live(self) -> int:
         return self.cache.info()["live"]
 
-    def press(self):
+    def press(self) -> varena.Allocation:
         """Ask for OVER more than is free: something must go."""
         return self.gpu.alloc(self.gpu.room()["free"] + OVER, self.stream.handle)
 
-    def row(self, step):
+    def row(self, step: str) -> SceneRow:
         return {"step": step, "resident": self.resident(), "kv_live": self.live(), "asks": len(self.asked)}
 
-    def check_kv(self):
+    def check_kv(self) -> None:
         assert self.stream.read(self.base + KV - self.page, self.page) == bytes([self.fill]) * self.page
 
-    def check_high(self):
+    def check_high(self) -> None:
         with self.gpu.use([self.high], self.stream.handle) as used:
             assert self.stream.read(used.ptr(), REGION) == self.keep
 
-    def close(self, held):
+    def close(self, held: list[varena.Allocation]) -> None:
         for allocation in held:
             allocation.close()
         self.check_high()
@@ -126,7 +159,7 @@ class Scene:
         self.high.close()
 
 
-def priority(args):
+def priority(args: Args) -> None:
     high = args.mode != "normal"
     cuda = C.CDLL("libcuda.so.1")
     if args.mode == "peer":
@@ -158,7 +191,7 @@ def priority(args):
         print(json.dumps({"priority": args.mode, "rows": rows, "room": gpu.room()}))
 
 
-def peer(args, cuda):
+def peer(args: Args, cuda: C.CDLL) -> None:
     """An idle process holds a high Region and a KV that declines; another takes the card's free memory."""
     with primary(cuda), Stream(cuda) as stream, varena.open() as gpu:
         scene = Scene(gpu, stream, args.seed)
@@ -173,7 +206,7 @@ def peer(args, cuda):
         print(json.dumps({"priority": "peer", "row": row, "taken": json.loads(ask.stdout)}))
 
 
-def take(_):
+def take(_: Args) -> None:
     cuda = C.CDLL("libcuda.so.1")
     with primary(cuda), Stream(cuda) as stream, varena.open() as gpu:
         room = gpu.room()
@@ -192,5 +225,5 @@ if __name__ == "__main__":
     command.set_defaults(run=priority)
     commands.add_parser("take").set_defaults(run=take)
     parser.add_argument("--seed", type=int, default=138)
-    args = parser.parse_args()
+    args = parser.parse_args(namespace=Args())
     args.run(args)

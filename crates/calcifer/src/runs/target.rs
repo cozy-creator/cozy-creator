@@ -62,10 +62,11 @@ fn local(api: &Api, text: &str, code: Option<&LocalCode>, cwd: Option<&Path>) ->
     }
 }
 
-/// A client's local code named by its path, which Calcifer can't read.
+/// A client's local code named by its path, which Calcifer can't read. API clients upload
+/// the tree's files with `PUT /v1/files` and send its `code` reference (see `api::code`).
 pub(crate) fn by_path(text: &str) -> Error {
-    Error::new(Kind::Usage, "target_by_path", format!("{} is a path, and Calcifer reads no client's folder", text.trim()))
-        .remedy("send local code by content: its tree's files by PUT /v1/files, and `code` naming the tree (cozy does)")
+    Error::new(Kind::Usage, "target_by_path", format!("Local code was not uploaded: {}", text.trim()))
+        .remedy("Run local code with cozy run ./path, which uploads it automatically.")
 }
 
 /// `text` resolved for a run `on` its machine: local code made ready there (or its install sent
