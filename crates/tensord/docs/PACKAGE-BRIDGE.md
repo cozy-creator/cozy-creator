@@ -61,9 +61,10 @@ calls use the callee's source digest.
 
 A local-source manifest may carry an optional `callees` map from normalized distribution names
 to package identities. It names the project's files (or, on this computer, its directory) and
-the wheels it carries. A published release's map is its lock: every row its Hub publishes is
-`<release org>/<row name>` (a Hub lock pins only its own org). A wheel's URL never names a
-package; anything unmapped, and older records without a package identity, read as
+the wheels it carries. A published release's map is its own files (`<release org>/<name>`) and its lock:
+every row from a Hub index is `<namespace>/<row name>`, the namespace that index names
+(`…/v1/index/<namespace>/simple/`: the release's own org, or the root's, `_`, for a first-party package it
+calls). A wheel's URL never names a package; anything unmapped, and older records without a package identity, read as
 `local/<normalized-distribution>`. Description
 reads metadata and AST inside the environment without importing package code.
 

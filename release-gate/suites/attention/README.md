@@ -39,13 +39,23 @@ Cost: about 40 min a card; L40S $0.8/h, RTX 4090 $1.0, RTX 5090 $1.4, RTX PRO 60
 
 ## Calibration (xs-171 F)
 
-Once, before the first measured table, and again only if Paul asks: every class's round plus the end-to-end arms, one
-dispatch from the open RC (six pods; about $30):
+Once, before the first measured table, and again only if Paul asks: two dispatches from the open RC. First the corpus,
+captured once on an RTX 4090 (the Q/K/V are the model's, not the card's):
+
+```sh
+gh workflow run release-gate.yml -R cozy-creator/cozy-creator --ref <open rc> -f hub=prod -f suites=attention-corpus \
+  -f packages_ref=<open rc> -f cozy=<RC dev-build run> -f tensorfs_wheel=artifact:<RC dev-build run>/tensorfs-wheel-<sha> \
+  -f runtime_wheel=<the RC's cozy-runtime dev-build run> -f establish=true -f publish=false
+```
+
+Then every class's round on that corpus plus the end-to-end arms (six pods; about $30). Each gate pushes the first run's
+`corpus/` to its pod over SSH before its bench runs; the quality cells and the sparse speed points read it, and dense speed
+stays synthetic:
 
 ```sh
 gh workflow run release-gate.yml -R cozy-creator/cozy-creator --ref <open rc> -f hub=prod -f suites=attention \
-  -f cells=release-gate/suites/attention/calibrate.sh -f runtime_wheel=<the RC's cozy-runtime dev-build run> \
-  -f packages_ref=<open rc> -f establish=true -f publish=false
+  -f corpus=<the first run's id> -f cells=release-gate/suites/attention/calibrate.sh -f packages_ref=<open rc> \
+  -f runtime_wheel=<the RC's cozy-runtime dev-build run> -f establish=true -f publish=false
 ```
 
 `calibrate.sh` renders the bench arms' requests (`suites/bench/cells.tsv`, `a-*`) at `--attention-kernel exact` (the 16-bit
@@ -58,7 +68,7 @@ directories:
 release-gate/suites/attention/signoff.py ~/cozy_v2/outputs/kernel-tables/signoff <gate dir>...
 ```
 
-writes the outputs per class and `manifest.json`: the proposed bars (micro: worst-head error at most 0.01 at 16 bits and
-0.04 at 8; end to end: S_8/E_8, today's choice's worst distance from 16 bits), every kernel's verdict per class, and one
+writes the outputs per class and `manifest.json`: the proposed bars (micro: worst-head error on the corpus at most 0.01 at
+16 bits and 0.04 at 8, the synthetic sites' beside it; end to end: S_8/E_8, today's choice's worst distance from 16 bits), every kernel's verdict per class, and one
 row per output {class, model, kernel, level, seed, metrics, pass}. Paul signs the bars, which go in their own commit to the
 Runtime's `measurements/rules.toml`.

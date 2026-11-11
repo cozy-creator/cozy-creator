@@ -1,0 +1,20 @@
+[build-system]
+requires = ["uv_build>=0.12.7,<0.13"]
+build-backend = "uv_build"
+
+[project]
+name = "e2e-relay"
+version = "0.1.0"
+description = "An account's package that calls a root package's function (hub_published, cl-872)"
+requires-python = ">=3.12"
+dependencies = ["cozy-runtime>=0.45", "msgspec>=0.19", "minimax-h3-tools"]
+
+[project.entry-points."cozy.application"]
+default = "e2e_relay:app"
+
+[tool.uv.build-backend]
+module-name = "e2e_relay"
+module-root = ""
+
+[tool.uv.sources]
+minimax-h3-tools = { index = "tensorhub" }

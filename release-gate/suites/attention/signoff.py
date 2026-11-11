@@ -5,8 +5,8 @@
 
 OUT gets each class's outputs (`<class>/<cell>-<arm>.png|mp4`) and manifest.json: the proposed bars, every kernel's
 verdict per class, and one row per output {class, model, kernel, level, seed, metrics, pass}. The bars:
-- micro: a kernel's worst-head relative L2 against FP32 over the quality cells' sites, at most 0.01 at 16 bits and 0.04
-  at 8 (measurement-design §3.2's starting bars);
+- micro: a kernel's worst-head relative L2 against FP32 over the quality cells' captured sites (the corpus; the synthetic
+  sites' worst is shown beside it), at most 0.01 at 16 bits and 0.04 at 8 (measurement-design §3.2's starting bars);
 - end to end: S_8, the lowest layout SSIM against 16 bits over today's choice's pictures (the table arm), rounded down to
   0.005, and E_8, the largest worst eighth over its videos, rounded up to 0.005 (§3.4: no worse than what has shipped).
 A pinned kernel passes when every output of it is within S_8/E_8 and its micro error is within its level's bar."""
@@ -43,10 +43,15 @@ class Row(TypedDict):
 
 
 class Micro(TypedDict):
+    """A kernel's worst head: on the captured corpus (`kind: "captured"` sites) where it has one, which the bar judges, and
+    on the synthetic sites beside it."""
     level: int
     worst: float | None
-    site: str
-    corpus: str
+    basis: str  # captured, else synthetic
+    captured_worst: float | None
+    captured_site: str
+    synthetic_worst: float | None
+    synthetic_site: str
     finite: bool
 
 
@@ -58,15 +63,21 @@ def detail(path: Path) -> dict[str, object]:
         return {}
 
 
+def worst(errors: list[dict[str, object]]) -> tuple[float | None, str]:
+    top = max(errors, key=lambda e: cast(float, e.get('worst') or 0.0), default=None)
+    return (cast(float, top['worst']), str(top.get('site', ''))) if top else (None, '')
+
+
 def micro(gate: Path) -> dict[str, Micro]:
-    """Each kernel's worst head over its quality cell's sites."""
+    """Each kernel's worst head over its quality cell's sites, captured and synthetic apart."""
     found: dict[str, Micro] = {}
     for path in sorted(gate.glob('attention-quality-*.json')):
         d = detail(path)
         errors = cast(list[dict[str, object]], d.get('errors') or [])
-        worst = max(errors, key=lambda e: cast(float, e.get('worst') or 0.0), default=None)
-        found[str(d.get('kernel'))] = {'level': cast(int, d.get('level') or 0), 'worst': cast(float, worst['worst']) if worst else None,
-                                       'site': str(worst.get('site', '')) if worst else '', 'corpus': str(d.get('corpus', '')),
+        (cw, cs), (sw, ss) = worst([e for e in errors if e.get('kind') == 'captured']), worst([e for e in errors if e.get('kind') != 'captured'])
+        found[str(d.get('kernel'))] = {'level': cast(int, d.get('level') or 0), 'worst': cw if cw is not None else sw,
+                                       'basis': 'captured' if cw is not None else 'synthetic', 'captured_worst': cw,
+                                       'captured_site': cs, 'synthetic_worst': sw, 'synthetic_site': ss,
                                        'finite': all(bool(e.get('finite')) for e in errors)}
     return found
 
@@ -127,8 +138,8 @@ def main(argv: list[str]) -> int:
     kernels: dict[str, dict[str, dict[str, object]]] = {}
     for klass, found in micros.items():
         for kernel, m in found.items():
-            bar, worst = MICRO.get(m['level']), m['worst']
-            micro_ok = None if bar is None or worst is None else m['finite'] and worst <= bar
+            bar, w = MICRO.get(m['level']), m['worst']
+            micro_ok = None if bar is None or w is None else m['finite'] and w <= bar
             e2e = e2e_ok.get((klass, kernel))
             kernels.setdefault(klass, {})[kernel] = {'level': m['level'], 'micro': m, 'micro_bar': bar, 'micro_pass': micro_ok,
                                                      'end_to_end_pass': e2e,
@@ -136,7 +147,8 @@ def main(argv: list[str]) -> int:
     manifest = {'bars': {'micro_worst_head_rel_l2': {str(k): v for k, v in MICRO.items()},
                          'S_8_min_layout_ssim': s8, 'E_8_max_worst_eighth': e8,
                          'how': "S_8/E_8: today's choice's worst distance from 16 bits, rounded outward to 0.005; micro: "
-                                "measurement-design §3.2's starting bars, on the quality cells' corpus (see each kernel's)"},
+                                "measurement-design §3.2's starting bars on the captured corpus (each kernel's basis says "
+                                "whether it had one), the synthetic sites' worst beside it"},
                 'kernels': kernels, 'outputs': outputs}
     (out / 'manifest.json').write_text(json.dumps(manifest, indent=1, sort_keys=True) + '\n')
     print(f"{len(outputs)} outputs, {sum(len(k) for k in kernels.values())} kernels in {len(kernels)} classes; S_8 {s8}, E_8 {e8}")

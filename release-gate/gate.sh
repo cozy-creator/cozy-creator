@@ -5,10 +5,11 @@
 #   gate.sh <SKU> --suite name,... [--gpus N] [--out DIR] [--establish] [--publish] [--runtime F|URL] [--tensorfs F|URL]
 #           [--tensord BIN|URL] [--packages DIR] [--pins name@release,...] [--only cell,cell] [--before FILE]...
 #           [--cells FILE]... [--first pkg,...] [--cli BIN] [--disk GB] [--on MACHINE] [--stall MIN]
-#           [--cap MIN] [--group NAME] [--hub prod|isolated]
+#           [--cap MIN] [--group NAME] [--corpus RUN] [--hub prod|isolated]
 # --hub: in CI, the Hub this gate rents on (e2e/test-hub.sh require_ci_rental_hub): prod, tensorhub.com, or a verified isolated one.
 # --on runs on that machine as it is (a dev proof on `local`): no rental, no --before, nothing ended.
 # --group: suite bench's group (suites/bench/skus) when it is not <SKU>x<GPUS>: two pods of one SKU split its cells.
+# --corpus: suite attention's captured Q/K/V, the release-gate run whose attention-corpus gate made them (its artifact).
 # --stall: how long no run on the machine may stand still before the gate calls its cell hung (`hold`; default 15 minutes).
 # --cap: the job's hard stop in minutes from the gate's start (the workflow's cap_minutes; 300). A download that can't land
 # before it, at the rate it has kept, fails the host as too slow (`hold`), and another host is rented (th-364).
@@ -38,7 +39,7 @@ HERE=$2 BEGAN=$3 HOST=$4 BEGUN_IN=$PWD; shift 4; ARGS=("$@")
 . "$HERE/machines.sh"
 REPO=cozy-creator/cozy-creator TAG=release-gate-baselines
 SKU=$1; shift; CAND=() ONLY= EXTRA=() BEFORE=() CLI=cozy DISK=400 OUT= PKGS= ESTABLISH= PUBLISH= PINS= SUITES= K= CLIP= GPUS= FIRST= ON= STALL=15 STALL_STAGE=30 SEEDS= SCENARIO=
-BIN= RW= TW= TD= CAP=300 HOSTS=5 GROUP= HUB_TARGET=isolated
+BIN= RW= TW= TD= CAP=300 HOSTS=5 GROUP= CORPUS= HUB_TARGET=isolated
 while [ $# -gt 0 ]; do
   case $1 in
     --establish) ESTABLISH=1; shift; continue;;
@@ -54,6 +55,7 @@ while [ $# -gt 0 ]; do
     --disk) DISK=$2;;
     --on) ON=$2;;
     --group) GROUP=$2;;
+    --corpus) CORPUS=$2;;
     --stall) STALL=$2;;
     --cap) CAP=$2;;
     --hub) HUB_TARGET=$2;;
@@ -309,10 +311,10 @@ rented() { RID=$("$CLI" --json machine show "$1" 2>/dev/null | jq -r '.rental_id
 if [ -z "$ON" ]; then
   # Suite tensorfs's `kill` case kills the rental's TensorD over SSH, suite tensord measures the pod's link over it, suite
   # varena's faults run there (faults.sh), suite bench holds the host's RAM there (pod.sh), and suite attention-corpus fetches
-  # its captures over it, and suite execution's library programs run there (programs.sh), with this computer's key, or a
-  # new one on a runner. An --only without them rents no SSH.
+  # its captures over it, suite attention pushes a --corpus to the pod over it, and suite execution's library programs run
+  # there (programs.sh), with this computer's key, or a new one on a runner. An --only without them rents no SSH.
   SSH=
-  if [[ ,$SUITES, == *,tensord,* || ,$SUITES, == *,bench,* || ,$SUITES, == *,attention-corpus,* ]] || { [[ ,$SUITES, == *,tensorfs,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,kill,* ]]; }; } ||
+  if [[ -n $CORPUS && ,$SUITES, == *,attention,* ]] || [[ ,$SUITES, == *,tensord,* || ,$SUITES, == *,bench,* || ,$SUITES, == *,attention-corpus,* ]] || { [[ ,$SUITES, == *,tensorfs,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,kill,* ]]; }; } ||
      { [[ ,$SUITES, == *,varena,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,faults,* || $ONLY == *,public,* || $ONLY == *,core,* || $ONLY == *,offload,* ]]; }; } ||
      { [[ ,$SUITES, == *,execution,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,tensorfs,* ]]; }; }; then
     SSH=1; [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519

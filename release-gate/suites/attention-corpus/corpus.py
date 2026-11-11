@@ -5,11 +5,11 @@
     corpus.py check CORPUS           every capture against its census row, and one short site's BF16 SDPA against FP32
     corpus.py summary CORPUS         per model: calls, sites, shapes, captures and bytes (markdown)
 
-Sites: the first, middle and last of each block family (a site path with its block numbers taken out), and every site
-whose calls differ from its family's usual site (other kernels, another number of calls, or other layout phases: H3's
-exact paths, which also run dense through the sparse steps). Calls: the first and last of each layout phase (dense,
-sparse) of those sites, or the first, middle and last when they have none. A pick over BUDGET keeps 2 heads, then only
-each phase's first call, then 1 head. CORPUS holds one directory per model, the capture run's `<request id>/` beneath it
+Sites and calls: what the judging needs, small enough to hand to every class's pod (about 768 MiB a model at most). One
+site per (block family, level, layout phase): a family is a site path with its block numbers taken out, the level the one
+the site runs at (the Runtime's census row), the phase dense or sparse. Its first and last call in that phase; over the
+budget, only the first. Two heads each: the Runtime keeps the head whose keys have the largest max/RMS (the outlier an
+8-bit kernel can break on) and a typical one, and records which in the capture's facts. CORPUS holds one directory per model, the capture run's `<request id>/` beneath it
 (cozy_runtime's attention_capture.py)."""
 
 from __future__ import annotations
@@ -27,7 +27,8 @@ if TYPE_CHECKING:  # pick and summary run on any python3; check under `uv run --
     import numpy as np
     import numpy.typing as npt
 
-BUDGET = 2 << 30  # bytes a model's capture may write (four models must fit a runner's disk)
+BUDGET = 768 << 20  # bytes a model's capture may write: the corpus goes to every class's pod
+HEADS = 2  # the outlier head and a typical one (attention_capture.py chooses them)
 
 
 class Layout(TypedDict, total=False):
@@ -71,38 +72,27 @@ def size(r: Row, heads: int) -> int:
 
 
 def pick(where: str, census: list[Row]) -> dict[str, object]:
-    by_site: dict[str, list[Row]] = {}
+    groups: dict[tuple[str, object, object], dict[str, list[int]]] = {}  # (family, level, phase) -> site -> its calls
     for r in census:
         if r.get('site'):
-            by_site.setdefault(r['site'], []).append(r)
-    families: dict[str, list[str]] = {}
-    for site in by_site:
-        families.setdefault(family(site)[0], []).append(site)
-    def calls_of(site: str) -> tuple[tuple[str, ...], int, tuple[str, ...]]:
-        """What a site's calls look like: its kernels, how many, and its layout phases."""
-        rs = by_site[site]
-        return tuple(sorted({r.get('backend', '') for r in rs})), len(rs), tuple(sorted({str(phase(r)) for r in rs}))
-
-    chosen: set[str] = set()
-    for sites in families.values():
-        sites.sort(key=lambda s: family(s)[1])
-        chosen |= {sites[0], sites[len(sites) // 2], sites[-1]}
-        usual = Counter(calls_of(s) for s in sites).most_common(1)[0][0]
-        chosen |= {s for s in sites if calls_of(s) != usual}
-    phases: dict[bool | None, set[int]] = {}
-    for site in chosen:
-        for r in by_site[site]:
-            phases.setdefault(phase(r), set()).add(r['call'])
-    ends = {o for ordinals in phases.values() for o in (min(ordinals), max(ordinals))}
-    calls = ends | ({sorted(phases[None])[len(phases[None]) // 2]} if list(phases) == [None] else set())
-    firsts = {min(ordinals) for ordinals in phases.values()}
-    heads, keep, total = 4, calls, 0
-    for heads, keep in ((4, calls), (2, calls), (2, firsts), (1, firsts)):
-        total = sum(size(r, heads) for s in chosen for r in by_site[s] if r['call'] in keep)
+            key = (family(r['site'])[0], r.get('level'), phase(r))
+            groups.setdefault(key, {}).setdefault(r['site'], []).append(r['call'])
+    chosen: dict[str, list[int]] = {}  # site -> the calls it is chosen for
+    for sites in groups.values():
+        first = min(sites, key=lambda s: family(s)[1])
+        chosen.setdefault(first, []).extend((min(sites[first]), max(sites[first])))
+    rows = {(r['site'], r['call']): r for r in census if r.get('site')}
+    keep: set[int] = set()
+    total = 0
+    for stride in (1, 2):  # first and last of each phase, then the first only
+        keep = {o for c in chosen.values() for o in c[::stride]}
+        # The spec's calls hold for every chosen site: each captures at every kept call it makes.
+        total = sum(size(r, HEADS) for (site, call), r in rows.items() if site in chosen and call in keep)
         if total <= BUDGET:
             break
-    print(f'{len(chosen)} sites of {len(by_site)}, calls {sorted(keep)}, {heads} heads: {total / 2**30:.2f} GiB', file=sys.stderr)
-    return {'dir': where, 'sites': sorted(chosen), 'calls': sorted(keep), 'heads': heads, 'seed': 171}
+    print(f'{len(chosen)} sites of {len({r.get("site") for r in census})}, {len(groups)} (family, level, phase) groups, '
+          f'calls {sorted(keep)}, {HEADS} heads: {total / 2**20:.0f} MiB', file=sys.stderr)
+    return {'dir': where, 'sites': sorted(chosen), 'calls': sorted(keep), 'heads': HEADS, 'seed': 171}
 
 
 def tensors(path: Path) -> tuple[dict[str, str], dict[str, npt.NDArray[np.float32]]]:
