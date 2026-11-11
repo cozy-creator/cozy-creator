@@ -1308,7 +1308,15 @@ absent?: boolean,
 /**
  * The machine that keeps them, when one does.
  */
-machine?: string | null, };
+machine?: string | null,
+/**
+ * A video's frames, measured.
+ */
+frames?: number | null,
+/**
+ * What it says of itself beyond its type: `orbit: {degrees, direction, loops}` shows a video turnable, not played.
+ */
+metadata?: { [key in string]: JsonValue }, };
 
 /**
  * One make_room that took bytes: its step, what asked, what it needed and freed, and its waits.
@@ -1980,7 +1988,11 @@ absent?: boolean,
 /**
  * The machine that keeps them, when one does.
  */
-machine?: string | null, };
+machine?: string | null,
+/**
+ * What a version's file says of itself beyond its type, as its function declared it or a person set it: `orbit` turns a video.
+ */
+metadata?: { [key in string]: JsonValue }, };
 
 /**
  * `PUT /v1/projects/{id}/machines` (cl-873): the machines the project's runs and renders go to, each to the one of them that finishes
@@ -3240,6 +3252,17 @@ read_by?: Array<string>,
  * A version held that file already: it's that one, and nothing changed.
  */
 already?: boolean, };
+
+/**
+ * `PATCH /v1/projects/{id}/assets/{name}/versions/{number}`: its main file's metadata, whole; `{}` clears it. Keys Calcifer doesn't
+ * know are kept as written.
+ */
+export type VersionPatch = { metadata: { [key in string]: JsonValue }, };
+
+/**
+ * What `PATCH …/versions/{number}` left: its main file's metadata now.
+ */
+export type VersionPatched = { name: string, number: number, metadata: { [key in string]: JsonValue }, };
 
 /**
  * A version's number and the hash prefix project.yaml can name its file by.

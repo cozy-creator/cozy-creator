@@ -228,6 +228,8 @@ impl File {
 
 /// A version's files: by output name, each one's sha256.
 pub(crate) type Files = BTreeMap<String, String>;
+/// A file's metadata, by its output name as in `Files`: what its function declared, or a person set (`orbit`).
+pub(crate) type Metadata = BTreeMap<String, serde_json::Map<String, serde_json::Value>>;
 
 /// One result of a tool: its number, its files and the key it was made under.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -243,6 +245,8 @@ pub(crate) struct Version {
     pub inputs: String,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub files: Files,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: Metadata,
     /// The seed Calcifer drew. None: its function takes no seed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seed: Option<u64>,
@@ -280,6 +284,18 @@ impl Version {
     /// The file people mean by it: its video, else its picture, else its sound, else its first.
     pub(crate) fn main(&self) -> Option<&String> {
         main_of(&self.files)
+    }
+
+    /// The output name of that file.
+    pub(crate) fn main_output(&self) -> Option<&String> {
+        let main = self.main()?;
+        self.files.iter().find(|(_, sha256)| *sha256 == main).map(|(output, _)| output)
+    }
+
+    /// What the file `sha256` of it says of itself; empty when nothing.
+    pub(crate) fn metadata_of(&self, sha256: &str) -> serde_json::Map<String, serde_json::Value> {
+        let output = self.files.iter().find(|(_, held)| *held == sha256).map(|(output, _)| output);
+        output.and_then(|output| self.metadata.get(output)).cloned().unwrap_or_default()
     }
 }
 
