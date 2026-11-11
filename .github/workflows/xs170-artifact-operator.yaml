@@ -1,0 +1,69 @@
+name: XS170 artifact operator
+run-name: XS170 operator ${{ inputs.ref }} ${{ inputs.prepare && 'prepare' || 'verify' }}
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Exact source commit
+        type: string
+        required: true
+      prepare:
+        description: Only prepare the one-off lockfile and formatting for adoption
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  operator:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target/xs170-artifact-operator
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_BUILD_JOBS: '4'
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: scripts/xs170-artifact-reissue -> ../../target/xs170-artifact-operator
+      - name: Record source
+        id: source
+        run: |
+          git rev-parse HEAD | tee xs170-source.txt
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Prepare formatting and lockfile
+        if: inputs.prepare
+        run: |
+          cargo fmt --manifest-path scripts/xs170-artifact-reissue/Cargo.toml
+          cargo generate-lockfile --manifest-path scripts/xs170-artifact-reissue/Cargo.toml
+      - name: Check source formatting
+        if: ${{ !inputs.prepare }}
+        run: cargo fmt --manifest-path scripts/xs170-artifact-reissue/Cargo.toml --check
+      - name: Compile and run isolated protocol fixtures
+        if: ${{ !inputs.prepare }}
+        run: |
+          cargo test --locked --manifest-path scripts/xs170-artifact-reissue/Cargo.toml --features operator --bins -- --nocapture
+          cargo clippy --locked --manifest-path scripts/xs170-artifact-reissue/Cargo.toml --features operator --all-targets -- -D warnings
+          cargo build --locked --manifest-path scripts/xs170-artifact-reissue/Cargo.toml --features operator --bin xs170-artifact-operator
+          sha256sum "$CARGO_TARGET_DIR/debug/xs170-artifact-operator" | tee xs170-operator-sha256.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xs170-operator-${{ steps.source.outputs.sha }}-${{ inputs.prepare && 'prepared-source' || 'qualified' }}
+          retention-days: 14
+          if-no-files-found: error
+          path: |
+            xs170-source.txt
+            xs170-operator-sha256.txt
+            scripts/xs170-artifact-reissue/Cargo.lock
+            scripts/xs170-artifact-reissue/src/operator.rs
+            scripts/xs170-artifact-reissue/src/operator/tests.rs
+            scripts/xs170-artifact-reissue/src/bin/operator.rs
+            target/xs170-artifact-operator/debug/xs170-artifact-operator
