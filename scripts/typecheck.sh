@@ -5,8 +5,9 @@
 #   scripts/typecheck.sh          check
 #   scripts/typecheck.sh prune    drop fixed errors from the baseline (it never grows)
 #   scripts/typecheck.sh lock     re-pin typecheck-requirements.txt from typecheck-requirements.in
-# A root is a file's nearest ancestor without an __init__.py. Its run sees what its scripts put on sys.path themselves,
-# TensorFS from this tree (crates/tensorfs-py/python) and the stubs in typings/.
+# A root is a file's nearest ancestor without an __init__.py, and mypy takes it as a package base (--explicit-package-bases),
+# so a root under a package (suites/tensorfs/programs) isn't named into it. Its run sees what its scripts put on sys.path
+# themselves, TensorFS from this tree (crates/tensorfs-py/python) and the stubs in typings/.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 top=$PWD
@@ -52,7 +53,7 @@ while read -r root files; do
   # shellcheck disable=SC2086  # file names hold no spaces
   (cd "$root" && MYPYPATH=$(mypy_path "$root") "$top/$venv/bin/mypy" --config-file "$top/mypy.ini" \
     --cache-dir "$top/.mypy_cache" --python-executable "$top/$venv/bin/python" --no-error-summary --no-pretty \
-    --show-error-codes $files) > "$out.root" || status=$?
+    --show-error-codes --explicit-package-bases $files) > "$out.root" || status=$?
   if [ "$status" -gt 1 ]; then cat "$out.root" >&2; echo "typecheck: mypy could not run in $root" >&2; exit "$status"; fi
   sed "s|^|$root/|" "$out.root" >> "$out"
 done < <(roots)
