@@ -34,6 +34,10 @@ on:
         description: "project-vault-cli only: take the exact archives from a successful cozy-publish run instead of rebuilding"
         type: string
         default: ''
+      fixture_ref:
+        description: "project-vault-cli only: optional test-script revision; ref still selects the exact product binary"
+        type: string
+        default: ''
       nonce:
         description: Caller's id, shown in the run name so the caller can find its run
         type: string
@@ -525,8 +529,19 @@ jobs:
           with open(os.environ['GITHUB_PATH'], 'a', encoding='utf-8') as output:
               output.write(str(binary.parent) + '\n')
           PY_INSTALL_VAULT
+      - name: Read separately versioned vault test scripts
+        if: inputs.fixture_ref != ''
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.fixture_ref }}
+          path: .vault-fixture
+          persist-credentials: false
       - name: Exercise real optional project encryption through the installed CLI
-        run: python e2e/project-vault-cli/run.py --source "$(git rev-parse HEAD)" --artifacts "$RUNNER_TEMP/project-vault-cli"
+        run: |
+          fixture=.
+          if [ -d .vault-fixture ]; then fixture=.vault-fixture; fi
+          git -C "$fixture" rev-parse HEAD > "$RUNNER_TEMP/vault-fixture-source.txt"
+          python "$fixture/e2e/project-vault-cli/run.py" --source "$(git rev-parse HEAD)" --artifacts "$RUNNER_TEMP/project-vault-cli"
       - name: Keep only product proof records
         if: always()
         run: |
@@ -537,6 +552,9 @@ jobs:
           source = Path(os.environ['RUNNER_TEMP']) / 'project-vault-cli'
           target = Path('product-vault-evidence')
           target.mkdir(exist_ok=True)
+          fixture = Path(os.environ['RUNNER_TEMP']) / 'vault-fixture-source.txt'
+          if fixture.is_file():
+              shutil.copy2(fixture, target / fixture.name)
           for name in ['receipt.json', 'commands.json']:
               path = source / name
               if path.is_file():
