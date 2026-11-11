@@ -172,6 +172,7 @@ if [ -n "$COMMAND" ]; then
   command_status=$?
   if [ "$command_status" = 0 ]; then expect "fixture command" PASS "the focused suite completed"
   else expect "fixture command" FAIL "the focused suite exited $command_status"; fi
+  grep -q '"status":5[0-9][0-9]' hub.log && expect "skew no 5xx" FAIL "the Hub logged a 5xx: $(grep '"status":5' hub.log | tail -1 | cut -c1-300)"
   verdict
 fi
 
