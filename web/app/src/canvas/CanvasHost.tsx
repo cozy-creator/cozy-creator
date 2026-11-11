@@ -954,7 +954,6 @@ function Canvas({
         }}
         place={placeTool}
         placeNode={placeNode}
-        choose={choose}
         box={opened}
       />
       <div

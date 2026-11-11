@@ -1602,7 +1602,7 @@ export class CanvasStore {
     this.openHere(key)
   }
 
-  /** Its tool's X: the tool and its fields go. A box of no pictures is its words, and a note offers Undo for a while. */
+  /** Its tool's X leaves a typed container and its words. A note offers Undo for a while. */
   takeToolOff(name: string) {
     const key = this.resolveName(name)
     const view = this.views.get(key)
@@ -1611,7 +1611,7 @@ export class CanvasStore {
     void this.save(key)
     const known = this.tools.get().get(view.asset.tool ?? "")
     const word = known ? toolName(known) : "Its tool"
-    const words = holdsPictures(view.asset) ? `Its pictures stay.` : `It's a text box now.`
+    const words = holdsPictures(view.asset) ? `Its pictures stay.` : `It stays a ${view.asset.kind} node.`
     this.retool(key, comingOff(view.asset, { ...view.asset.fields, ...view.sent, ...view.drafts }), `${word} is off ${name}. ${words}`)
   }
 

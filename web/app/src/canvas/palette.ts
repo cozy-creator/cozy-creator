@@ -28,16 +28,22 @@ const title = (name: string) => name.split(/[-_]+/).filter(Boolean).map((word) =
 export function paletteEntries(tools: Tool[]): PaletteEntry[] {
   const groups = new Map<string, Tool[]>()
   const byPackage = new Map<string, Set<string>>()
+  const localKinds = new Map<string, Set<string>>()
   for (const tool of tools) {
     if (madeHere(tool.id)) continue
     const model = modelOf(tool)
-    const key = model ? `model:${model}` : `package:${tool.package}`
+    const key = model ? `model:${model}` : `package:${tool.package}:${tool.makes}`
     const group = groups.get(key) ?? []
     group.push(tool)
     groups.set(key, group)
     const keys = byPackage.get(tool.package) ?? new Set<string>()
     keys.add(key)
     byPackage.set(tool.package, keys)
+    if (!model) {
+      const kinds = localKinds.get(tool.package) ?? new Set<string>()
+      kinds.add(tool.makes)
+      localKinds.set(tool.package, kinds)
+    }
   }
   return [...groups].map(([key, variants]) => {
     variants.sort(order)
@@ -46,8 +52,10 @@ export function paletteEntries(tools: Tool[]): PaletteEntry[] {
     const name = model?.split("/").at(-1)
     const own = tool.package.split("/").at(-1) ?? tool.package
     const related = Boolean(name?.toLowerCase().startsWith(own.toLowerCase()))
-    const label = name && ((related && name !== own) || (!related && (byPackage.get(tool.package)?.size ?? 0) > 1))
-      ? title(name) : tool.package_title || title(own)
+    const label = !model && (localKinds.get(tool.package)?.size ?? 0) > 1
+      ? `${tool.package_title || title(own)} ${title(tool.makes)}`
+      : name && ((related && name !== own) || (!related && (byPackage.get(tool.package)?.size ?? 0) > 1))
+        ? title(name) : tool.package_title || title(own)
     return { key, label, model, tool, variants }
   }).sort((a, b) => a.label.localeCompare(b.label))
 }

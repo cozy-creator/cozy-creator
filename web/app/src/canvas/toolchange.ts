@@ -27,7 +27,7 @@ const said = (value: unknown) => typeof value === "string" && value.trim() !== "
 const wordsIn = (fields: Fields) => WORDS.find((field) => said(fields[field]))
 const nounOf = (kind: string) => (kind === "video" ? "take" : "version")
 
-/** A box with no pictures and no tool is a text box. */
+/** Whether the container already holds a file or a version. */
 export const holdsPictures = (asset: Asset) => Boolean(asset.prefixes?.length || asset.sha256)
 
 function rowBack(asset: Asset): Partial<Asset> {
@@ -98,14 +98,14 @@ export function goingOn(asset: Asset, fields: Fields, from: Tool | undefined, to
   return { row: { ...row, fields: shown }, tool: tool.id, fields: send, back, lost }
 }
 
-/** Its tool coming off, and its fields with it: the box's own words stay, and a box of no pictures keeps its first words as its text. */
+/** Removing a model leaves the node's media kind and its own words. */
 export function comingOff(asset: Asset, fields: Fields): ToolStep {
-  const own = { ...Object.fromEntries(Object.entries(fields).filter(([field]) => OWN.includes(field))), node_kind: asset.kind }
+  const own = { ...Object.fromEntries(Object.entries(fields).filter(([field]) => OWN.includes(field) || (asset.kind !== "text" && WORDS.includes(field)))), node_kind: asset.kind }
   const gone = Object.keys(fields).filter((field) => !OWN.includes(field))
   const back = { row: rowBack(asset), tool: asset.tool ?? "", fields: { ...Object.fromEntries(gone.map((field) => [field, fields[field]])), node_kind: fields.node_kind ?? null } }
   if (holdsPictures(asset)) return { row: { tool: undefined, standing: "current", fields: own }, tool: "", fields: { node_kind: asset.kind }, back, lost: [] }
   const words = wordsIn(fields)
-  if (asset.kind !== "text") return { row: { tool: undefined, kind: asset.kind, noun: asset.noun, standing: "missing", fields: { ...own, instructions: words ? fields[words] : "" } }, tool: "", fields: { node_kind: asset.kind }, back, lost: [] }
+  if (asset.kind !== "text") return { row: { tool: undefined, kind: asset.kind, noun: asset.noun, standing: "missing", fields: own }, tool: "", fields: { node_kind: asset.kind }, back, lost: [] }
   return { row: { tool: undefined, kind: "text", noun: "version", standing: "current", fields: { ...own, text: words ? fields[words] : "" } }, tool: "", fields: {}, back: { ...back, fields: { ...back.fields, text: null } }, lost: [] }
 }
 

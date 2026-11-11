@@ -46,7 +46,7 @@ function ToolRow({ entry, place, yours }: { entry: PaletteEntry; place: (tool: T
   const remove = useRemove()
   const tool = entry.tool
   return (
-    <li className="tool" title={tool.description || entry.model || tool.id} data-kind={tool.makes} data-tool={tool.id} data-model={entry.model ?? undefined} onClick={() => place(tool)}>
+    <li className="tool" title={tool.description || entry.model || tool.id} data-kind={tool.makes} data-tool={tool.id} data-entry={entry.key} data-model={entry.model ?? undefined} data-local={tool.local || undefined} data-package={tool.package} onClick={() => place(tool)}>
       <b>{entry.label}</b>
       {yours && !tool.local && !madeHere(tool.id) && (
         <button
@@ -66,10 +66,10 @@ function ToolRow({ entry, place, yours }: { entry: PaletteEntry; place: (tool: T
   )
 }
 
-/** What can be dropped on the canvas, by package (Paul, 11-06: "the key point is the package, not the model"), and it folds away. The canvas stays
+/** Basic node types and model tools, folded away together. The canvas stays
  *  where it is under it. While a box whose tool runs a model is open, it's what goes on that box instead (Paul, 11-06); leaving the box, the tools
  *  are back as they were, searched and scrolled as they were. */
-export function ToolPanel({ project, machine, waiting, shut, setShut, place, placeNode, choose, box }: { project: string | null; machine: string | null; waiting: boolean; shut: boolean; setShut: (shut: boolean) => void; place: (tool: Tool) => void; placeNode: (kind: BasicNodeKind) => void; choose: () => void; box?: string }) {
+export function ToolPanel({ project, machine, waiting, shut, setShut, place, placeNode, box }: { project: string | null; machine: string | null; waiting: boolean; shut: boolean; setShut: (shut: boolean) => void; place: (tool: Tool) => void; placeNode: (kind: BasicNodeKind) => void; box?: string }) {
   const { client } = useConnection()
   const store = useCanvasStore()
   const runs = useOfElement(box ?? "", (view) => view?.asset?.tool ?? undefined)
@@ -112,10 +112,6 @@ export function ToolPanel({ project, machine, waiting, shut, setShut, place, pla
   return (
     <aside className="tools" aria-label="Tools">
       <div className="row center">
-        <button type="button" className="tb add" onClick={choose}>
-          <Icon name="plus" />
-          Add file
-        </button>
         <button type="button" className="iconb" aria-label="Hide the tools" title="Hide the tools" onClick={() => setShut(true)}>
           <Icon name="back" />
         </button>
@@ -139,18 +135,18 @@ export function ToolPanel({ project, machine, waiting, shut, setShut, place, pla
             <ul>{nodes.map((node) => <li key={node.kind} className="tool" data-node={node.kind} data-kind={node.kind === "video_edit" ? "video" : node.kind} data-tool={node.kind === "text" ? "text" : node.kind === "video_edit" ? "cozy/edit" : undefined} onClick={() => placeNode(node.kind)}><b>{node.label}</b></li>)}</ul>
           </section>
           <section data-palette="tools">
-          <h4>Tools</h4>
-          {error ? <p className="warn">{error instanceof Error ? error.message : String(error)}</p> : null}
-          {isPending && !error && (
-            <ul aria-hidden="true">
-              {Array.from({ length: 8 }, (_, i) => (
-                <li key={i} className="tool-ghost" />
-              ))}
-            </ul>
-          )}
-          <ul>{entries.map((entry) => <ToolRow key={entry.key} entry={entry} place={place} yours={!q} />)}</ul>
-          {data && !entries.length && !isPlaceholderData && <p className="muted">{q ? `No tools match "${q}"` : "No tools added"}</p>}
-          {data?.note && <p className="muted">{data.note}</p>}
+            <h4>Tools</h4>
+            {error ? <p className="warn">{error instanceof Error ? error.message : String(error)}</p> : null}
+            {isPending && !error && (
+              <ul aria-hidden="true">
+                {Array.from({ length: 8 }, (_, i) => (
+                  <li key={i} className="tool-ghost" />
+                ))}
+              </ul>
+            )}
+            <ul>{entries.map((entry) => <ToolRow key={entry.key} entry={entry} place={place} yours={!q} />)}</ul>
+            {data && !entries.length && !isPlaceholderData && <p className="muted">{q ? `No tools match "${q}"` : "No tools added"}</p>}
+            {data?.note && <p className="muted">{data.note}</p>}
           </section>
         </div>
       </div>
