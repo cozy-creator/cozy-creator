@@ -16,6 +16,10 @@ use api::{
 };
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params};
 
+#[cfg(test)]
+#[path = "store_listing_tests.rs"]
+mod listing_tests;
+
 /// The store's version (`PRAGMA user_version`), and the schema a new store is made with. A store
 /// at another version is not read.
 pub(crate) const VERSION: i64 = 7;
