@@ -1,0 +1,5 @@
+# One pod at a time (-f skus=<one>): a card per class the rule was fitted on, and a small sibling for the per-card question.
+rtx-4060-ti 100       # mma.sync/half, the 4090's small sibling
+rtx-4090 100          # mma.sync/half
+rtx-5090 100          # mma.sync+fp4/half
+h100-sxm5-80gb 400    # wgmma; h3-split.sh's H3 lanes need the disk
