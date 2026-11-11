@@ -255,6 +255,35 @@ fi
   || check "own references: <Nobody> was not refused with the command that makes it a box (exit $code): $(tail -c 300 "$OUT/own-refs-nothing.json")"
 }
 
+# cl-883: an orbit mentioned by angle. A dropped video, turned to an orbit as its box's Orbit switch does (PATCH its version's
+# metadata), reaches a function as the frame at an angle, a picture, and as the frames turned between two, a clip:
+# `floor(angle / 360 × 48)`, wrapping past 360° and across 0°. Its frames are greys, frame n at 5n, so the function says which
+# it got. An angle of a video that isn't an orbit is refused before any run, naming Orbit.
+orbit_angles() {
+step "an orbit mentioned by angle: a frame as a picture, a turn as a clip"
+local dir=$OUT/angles before code=0 turned='[range(12; 24)], [range(40; 48), range(0; 8)]'
+mkdir -p "$dir"
+ffmpeg -v error -y -f lavfi -i "nullsrc=s=64x64:r=24:d=2,format=gray,geq=lum='N*5'" -c:v libx264 -crf 10 -g 1 -pix_fmt yuv420p "$dir/spin.mp4"
+ffmpeg -v error -y -f lavfi -i testsrc2=size=64x64:rate=24:duration=1 -c:v libx264 -pix_fmt yuv420p "$dir/plain.mp4"
+for name in spin plain; do
+  [ -n "$(row "$RUN_PROJECT" "angles_$name" .name)" ] || project_import "$RUN_PROJECT" "$dir/$name.mp4" "angles_$name" > /dev/null || check "angles: import $name"
+done
+for _ in $(seq 60); do [[ $(row "$RUN_PROJECT" angles_spin .duration_ms) =~ ^[0-9]+$ ]] && break; sleep 0.5; done
+project_api "$RUN_PROJECT" /assets/angles_spin/versions/0 -X PATCH -H 'Content-Type: application/json' \
+  -d '{"metadata": {"orbit": {"degrees": 360, "direction": "cw", "loops": true}}}' > "$OUT/angles-orbit.json" \
+  || check "angles: Orbit not turned on: $(head -c 300 "$OUT/angles-orbit.json")"
+if cell angles "$here/project/angles.py/angles" 'pictures:=["<angles_spin:120deg>", "<angles_spin:370deg>"]' \
+  'clips:=["<angles_spin:90deg-180deg>", "<angles_spin:300deg-60deg>"]' 'prompt=<angles_spin:120deg> turns through <angles_spin:90deg-180deg>'; then
+  J ".result | .pictures == [16, 1] and .clips == [$turned] and .keys == [\"angles_spin:120deg\", \"angles_spin:90deg-180deg\"] and .kinds == [\"image\", \"video\"]" "$OUT/angles.json" \
+    || check "angles: not frames 16 and 1, frames 12-23 and 40-47 + 0-7, keyed by angle: $(jq -c .result "$OUT/angles.json" | head -c 600)"
+fi
+before=$(cozy --json run ls --limit 0 | jq '.runs | length')
+in_project "$RUN_PROJECT" --json run "$here/project/angles.py/angles" 'pictures:=["<angles_plain:120deg>"]' --on local > "$OUT/angles-plain.json" 2>&1 || code=$?
+{ [ "$code" != 0 ] && grep -q mention_not_orbit "$OUT/angles-plain.json" && grep -q 'turn on Orbit' "$OUT/angles-plain.json" \
+  && [ "$(cozy --json run ls --limit 0 | jq '.runs | length')" = "$before" ]; } \
+  || check "angles: an angle of a video that isn't an orbit was not refused mention_not_orbit before any run (exit $code): $(tail -c 300 "$OUT/angles-plain.json")"
+}
+
 # cl-854: a lock on Runtime 0.43 can't speak a 0.23 machine's executor protocol. One whose range takes the machine's
 # Runtime runs on it, its install saying to re-lock; one whose range refuses it installs nothing, refused in one line
 # naming the re-lock. Both locks are PyPI's 0.43.1 and TensorFS 0.22.1.
