@@ -201,6 +201,7 @@ ahead() {
   for a in "${ALL_ARGS[@]}"; do
     case $a in
       seed:=*) ;;
+      prompt=\{*) args+=("${a/\"high_level_description\":\"/\"high_level_description\":\"Warm-up. }") ;;
       prompt=*) args+=("$a, warm-up") ;;
       beats:=*) args+=("${a//\"description\":\"/\"description\":\"Warm-up. }") ;;
       *) args+=("$a") ;;

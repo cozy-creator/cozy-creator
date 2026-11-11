@@ -70,7 +70,7 @@ build() { local f; f=$(readlink -f "$(command -v "$CLI")" 2>/dev/null); echo "$(
 VARY=("at dawn" "in light rain" "in deep winter" "under a full moon" "in late autumn")
 vary() {
   local v=${VARY[$((($2 - 1) % ${#VARY[@]}))]}
-  sed -E "s/prompt=\"([^\"]*)\"/prompt=\"\\1, $v\"/; s/\"description\":\"([^\"]*)\"/\"description\":\"\\1 The scene is set $v.\"/" <<< "$1"
+  sed -E "s/prompt=\"([^\"]*)\"/prompt=\"\\1, $v\"/; s/\"description\":\"([^\"]*)\"/\"description\":\"\\1 The scene is set $v.\"/; s/\"high_level_description\":\"([^\"]*)\"/\"high_level_description\":\"\\1, $v\"/" <<< "$1"
 }
 while IFS=$'\t' read -r name group cap warm seed target args before _; do
   [ "${name:0:1}" != '#' ] && ingroup "$group" || continue
