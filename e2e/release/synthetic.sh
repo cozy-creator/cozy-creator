@@ -2,7 +2,8 @@
 # Sourced only by e2e/skew/run.sh --checks, after its isolated Hub sign-in.
 # All repository writes and their cleanup stay in that disposable environment.
 release_synthetic_checks() (
-  local here E2E=${E2E:?} ROOT_OUT=${OUT:?} COZY=${COZY_BIN:-${COZY:-}}
+  local here scope=${1:-all} E2E=${E2E:?} ROOT_OUT=${OUT:?} COZY=${COZY_BIN:-${COZY:-}}
+  case $scope in all | authority) ;; *) echo "unknown publication scope $scope" >&2; return 2;; esac
   [ -n "$COZY" ] || COZY=$(type -P "${CLI:-cozy}") || return 1
   here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
   . "$E2E/test-hub.sh"
@@ -232,6 +233,7 @@ uv run -q --no-project --with cryptography==50.0.2 python -I "$here/../capabilit
   || check "public cache and legacy quarantine regression failed"
 cozy --json model delete "$model" -y > "$OUT/model-delete.json" || check "model delete failed"
 ! model_details "$model" > /dev/null 2>&1 || check "model delete: $model still answers"
+[ "$scope" != authority ] || return 0
 
 
 step "the content store on $M: a held output across a TensorD restart, a cut upload resumed"
@@ -259,4 +261,4 @@ hub_slow_upload
 
 
 )
-release_synthetic_checks
+release_synthetic_checks "$@"

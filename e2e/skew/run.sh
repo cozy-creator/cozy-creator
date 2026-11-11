@@ -298,7 +298,7 @@ log "package publish, then install on the machine (its first environment: slow o
 hub_do package-install ok package install "$WHO/$HUB_PKG" --on local
 if ! older "$CLIENT" 0.24.0; then hub_packages; fi
 if [ -n "$CHECKS" ]; then
-  . "$CHECKS"
+  . "$CHECKS" "${COMMAND_ARGS[@]}"
   checks_status=$?
   [ "$checks_status" = 0 ] || expect "fixture extension" FAIL "additional synthetic checks failed (exit $checks_status)"
 fi

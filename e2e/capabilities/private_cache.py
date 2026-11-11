@@ -122,7 +122,9 @@ class Fixture:
         self.machine_public = self.key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
         self.cli("machine", "authorize", b64(self.machine_public))
         machine = cast(MachineDetail, json.loads(self.cli("machine", "show", "local")))
-        self.address = urllib.parse.urlsplit(machine["address"])
+        (self.out / "machine-endpoint.json").write_text(json.dumps(machine, indent=2) + "\n")
+        address = machine["address"]
+        self.address = urllib.parse.urlsplit(address if "://" in address else "https://" + address)
         host = self.address.hostname
         assert host and ipaddress.ip_address(host).is_loopback
         self.machine_host = host

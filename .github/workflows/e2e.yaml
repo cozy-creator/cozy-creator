@@ -96,6 +96,10 @@ on:
         description: Native CLI partitions as a JSON list; empty uses the full native matrix
         type: string
         default: ''
+      publication_scope:
+        description: Owned publication checks to run (all or authority)
+        type: string
+        default: all
   workflow_dispatch:
     inputs:
       repo:
@@ -158,6 +162,11 @@ on:
         description: CPU packages to run, comma-separated; empty runs every package
         type: string
         default: ''
+      publication_scope:
+        description: Owned publication checks to run
+        type: choice
+        options: [all, authority]
+        default: all
       cpu_cells:
         description: CPU entry/cell pairs to run, comma-separated; empty runs every cell
         type: string
@@ -928,12 +937,18 @@ jobs:
         env:
           SKEW_TOOLS: ${{ runner.temp }}/skew-tools
         run: |
+          checks=()
+          case '${{ inputs.publication_scope || 'all' }}' in
+            all) ;;
+            authority) checks=(-- authority) ;;
+            *) echo "unknown publication scope" >&2; exit 2 ;;
+          esac
           sudo loginctl enable-linger "$(id -un)"
           export XDG_RUNTIME_DIR=/run/user/$(id -u)
           until [ -S "$XDG_RUNTIME_DIR/bus" ]; do sleep 1; done
           export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
           bash .creator/e2e/skew/run.sh --hub-src .tensorhub --candidates "$CANDIDATES" \
-            --checks .creator/e2e/release/synthetic.sh --publication-log "$RUNNER_TEMP/e2e/argv.log" --out "$RUNNER_TEMP/e2e"
+            --checks .creator/e2e/release/synthetic.sh --publication-log "$RUNNER_TEMP/e2e/argv.log" --out "$RUNNER_TEMP/e2e" "${checks[@]}"
       - if: always()
         uses: ./.creator/e2e/publish
         with:
