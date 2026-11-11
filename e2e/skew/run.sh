@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # e2e/skew/run.sh (--hub-src DIR | --hub-bin DIR) (--client VERSION | --cozy-bin FILE | --candidates SET) --out DIR
 #   [--checks FILE | --command FILE [-- ARGS...]] [--admin] [--cozy-min X.Y.Z]: a cozy against a Hub built from
-# source (--hub-bin: one built already, DIR holding `tensorhub`, its config.local.yaml and `minio`), on a fresh Linux runner with Docker and Go (xs-166; e2e.yaml's `skew`, by hand on a computer that is yours to
-# replace). The Hub serves on a throwaway Postgres and a MinIO built from its last source, whose SigV4 check is R2's: a
+# source (--hub-bin: one built already, DIR holding `tensorhub`, its config.local.yaml and `minio`, built for this OS), on a fresh
+# GitHub runner with Go (xs-166; e2e.yaml's `skew`, by hand on a computer that is yours to replace). Postgres is Docker's on
+# Linux, Homebrew's postgresql@17 on macOS and the runner image's on Windows. The Hub serves on that throwaway Postgres and
+# a MinIO built from its last source, whose SigV4 check is R2's: a
 # key's reserved characters are percent-encoded in the canonical request, so v0.40.33-35's bare ':' in a workload's
 # proof key fails here as it failed on R2. It runs as a development Hub (sign-in codes in its log): cozy dials it on
 # loopback, and machines at its https public origin, an ingress under a fresh CA the Hub hands them (ingress.go; a Hub
-# hands a CA only beside its docker provider, which rents nothing here).
+# hands a CA only beside its docker provider, which rents nothing here; macOS and Windows have no Docker Engine, so no
+# provider and no machines: their cozy runs no models).
 # The client is installed by its own release's installer into this computer's default home, signed in with the code
 # the Hub logs, and runs the Hub suite's cells (release-gate/suites/hub/lib.sh) on its local machine: account, the
 # catalog, package publish, install and run, new weights uploaded by the machine (the workload writer, as pods
@@ -57,6 +60,12 @@ fi
 [ -z "$COMMAND" ] || { [ -n "$BIN" ] && [ -z "$CHECKS" ] && [ -f "$COMMAND" ]; } \
   || { echo "--command requires --cozy-bin and a script file, and cannot be combined with --checks" >&2; exit 2; }
 [ -z "$BIN" ] || { [ -x "$BIN" ] && CLIENT=$("$BIN" --version | awk '{print $2}'); } || exit 2
+OS=${RUNNER_OS:-Linux} EXE=''
+[ "$OS" != Windows ] || EXE=.exe
+# A path as a program that isn't this shell's reads it: Windows's own spelling, which Go's filepath.Clean leaves as it is.
+native() { if [ "$OS" = Windows ]; then cygpath -w "$1"; else echo "$1"; fi; }
+NICE=(nice -n 19)
+[ "$OS" != Windows ] || NICE=()
 mkdir -p "$OUT" && OUT=$(cd "$OUT" && pwd) && cd "$OUT" || exit 2
 : > expect.tsv
 log() { echo "$(date -u +%H:%M:%SZ) $*" | tee -a gate.log; }
@@ -64,7 +73,7 @@ expect() { printf '%s\t%s\t%s\n' "$1" "$2" "$(tr '\n\t' '  ' <<< "$3" | cut -c1-
 die() { expect "skew $1" FAIL "$2"; verdict; }
 verdict() {
   local fails passes
-  [ -n "$CLIENT_READY" ] && command -v cozy > /dev/null && for l in tensord calcifer; do timeout 30 cozy machine logs local $l -n 0 > machine-$l.log 2>&1; done
+  [ -n "$CLIENT_READY" ] && [ "$OS" = Linux ] && command -v cozy > /dev/null && for l in tensord calcifer; do timeout 30 cozy machine logs local $l -n 0 > machine-$l.log 2>&1; done
   fails=$(grep -c $'\tFAIL\t' expect.tsv) passes=$(grep -c $'\tPASS\t' expect.tsv)
   grep $'\tFAIL\t' expect.tsv | cut -f1,3 | sed 's/^/FAIL /' | tee verdict.txt
   if [ "$fails" = 0 ] && [ "$passes" -gt 0 ]; then echo "VERDICT PASS: cozy $CLIENT × the Hub at $(cat hub.version 2>/dev/null) ($passes cells)" | tee -a verdict.txt; exit 0; fi
@@ -72,25 +81,26 @@ verdict() {
 }
 # older <a> <b>: release a is older than b (X.Y.Z; a pre-release or build suffix ignored).
 older() { local a=${1%%[-+]*} b=${2%%[-+]*}; [ "$a" != "$b" ] && [ "$(printf '%s\n%s\n' "$a" "$b" | sort -V | head -1)" = "$a" ]; }
-read -r HUB_PORT S3_PORT < <(python3 - <<'PY'
+read -r HUB_PORT S3_PORT PG_PORT < <(python3 - <<'PY'
 import socket
-with socket.socket() as hub, socket.socket() as store:
-    hub.bind(("127.0.0.1", 0))
-    store.bind(("127.0.0.1", 0))
-    print(hub.getsockname()[1], store.getsockname()[1])
+with socket.socket() as hub, socket.socket() as store, socket.socket() as db:
+    for s in (hub, store, db):
+        s.bind(("127.0.0.1", 0))
+    print(hub.getsockname()[1], store.getsockname()[1], db.getsockname()[1])
 PY
 )
 HUB=http://127.0.0.1:$HUB_PORT S3=http://127.0.0.1:$S3_PORT S3KEY=skew S3SECRET=skew-$RANDOM$RANDOM$RANDOM
 MINIO=RELEASE.2025-09-07T16-13-09Z  # the archived repository's last release; its source still builds
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/cozy-hub-fixture.XXXXXX") || exit 1
-PG_NAME=cozy-skew-pg-$$-$RANDOM
+# Canonical: the Hub refuses a scratch path that isn't clean, and macOS's $TMPDIR ends in a slash.
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/cozy-hub-fixture.XXXXXX") && WORK=$(cd "$WORK" && pwd -P) || exit 1
+PG_NAME=cozy-skew-pg-$$-$RANDOM PG_BIN=''
 cleanup() {
   local status=$?
   for pid in "${HUBPID:-}" "${S3PID:-}" "${INGRESS:-}"; do
     [ -z "$pid" ] || { kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; }
   done
-  docker rm -f "$PG_NAME" >/dev/null 2>&1 || true
-  rm -f "$OUT/login.in"
+  if [ "$OS" = Linux ]; then docker rm -f "$PG_NAME" >/dev/null 2>&1 || true
+  elif [ -n "$PG_BIN" ]; then "$PG_BIN/pg_ctl" -D "$(native "$WORK/pg")" -m immediate stop >/dev/null 2>&1 || true; fi
   rm -rf "$WORK"
   return "$status"
 }
@@ -101,45 +111,71 @@ trap 'exit 143' TERM
 # The store, the database, the Hub.
 TOOLS=${SKEW_TOOLS:-$OUT/tools}
 [ -z "$HUB_BIN" ] || TOOLS=$HUB_BIN
-if [ ! -x "$TOOLS/minio" ]; then
+if [ ! -x "$TOOLS/minio$EXE" ]; then
   log "MinIO $MINIO from source"
   GOBIN=$TOOLS go install "github.com/minio/minio@$MINIO" > minio-build.log 2>&1 || die store "MinIO $MINIO did not build: $(tail -c 300 minio-build.log)"
 fi
 # The fixture stands in for services on other computers: it takes only what CPU the suites leave (nice, Postgres's weight).
-MINIO_ROOT_USER=$S3KEY MINIO_ROOT_PASSWORD=$S3SECRET nice -n 19 "$TOOLS/minio" server "$WORK/s3" --address 127.0.0.1:$S3_PORT --quiet > minio.log 2>&1 & S3PID=$!
-docker run -d --name "$PG_NAME" --cpu-shares 64 -e POSTGRES_HOST_AUTH_METHOD=trust -p 127.0.0.1::5432 postgres:18-alpine > /dev/null || die store "Postgres did not start"
-PG_PORT=$(docker port "$PG_NAME" 5432/tcp | sed 's/.*://')
-for _ in $(seq 60); do curl -sf "$S3/minio/health/live" > /dev/null && docker exec "$PG_NAME" pg_isready -q -U postgres && break; sleep 1; done
+MINIO_ROOT_USER=$S3KEY MINIO_ROOT_PASSWORD=$S3SECRET "${NICE[@]}" "$TOOLS/minio$EXE" server "$(native "$WORK/s3")" --address 127.0.0.1:$S3_PORT --quiet > minio.log 2>&1 & S3PID=$!
+case $OS in
+  Linux)
+    docker run -d --name "$PG_NAME" --cpu-shares 64 -e POSTGRES_HOST_AUTH_METHOD=trust -p 127.0.0.1::5432 postgres:18-alpine > /dev/null || die store "Postgres did not start"
+    PG_PORT=$(docker port "$PG_NAME" 5432/tcp | sed 's/.*://')
+    pg_ready() { docker exec "$PG_NAME" pg_isready -q -U postgres; } ;;
+  *)
+    # No Docker for Linux images here: the OS's own Postgres, in a cluster of this run's.
+    if [ "$OS" = macOS ]; then
+      HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK=1 brew install -q postgresql@17 > postgres-install.log 2>&1 \
+        || die store "brew install postgresql@17: $(tail -c 300 postgres-install.log)"
+      PG_BIN=$(brew --prefix postgresql@17)/bin pg_options="-p $PG_PORT -c listen_addresses=127.0.0.1 -k $WORK"
+    else
+      [ -n "${PGBIN:-}" ] || die store "this Windows runner names no Postgres (PGBIN)"
+      PG_BIN=$(cygpath -u "$PGBIN") pg_options="-p $PG_PORT -c listen_addresses=127.0.0.1"
+    fi
+    "$PG_BIN/initdb" -D "$(native "$WORK/pg")" -U postgres -A trust -E UTF8 --no-locale > postgres-init.log 2>&1 || die store "initdb: $(tail -c 300 postgres-init.log)"
+    "$PG_BIN/pg_ctl" -D "$(native "$WORK/pg")" -l "$(native "$OUT/postgres.log")" -o "$pg_options" -w start > postgres-start.log 2>&1 \
+      || die store "Postgres did not start: $(tail -c 300 postgres-start.log) $(tail -c 300 postgres.log 2>/dev/null)"
+    pg_ready() { "$PG_BIN/pg_isready" -q -h 127.0.0.1 -p "$PG_PORT" -U postgres; } ;;
+esac
+for _ in $(seq 60); do curl -sf "$S3/minio/health/live" > /dev/null && pg_ready && break; sleep 1; done
 for b in repo source; do
   AWS_ACCESS_KEY_ID=$S3KEY AWS_SECRET_ACCESS_KEY=$S3SECRET aws --endpoint-url "$S3" --region us-east-1 s3api create-bucket --bucket "$b" > /dev/null 2>> s3.log ||
     die store "bucket $b: $(tail -c 300 s3.log)"
 done
 # The store is R2's strictness, checked before the Hub uses it: a key holding ':' signed bare is refused, %3A answers.
-go run "$E2E/skew/sigv4.go" "$S3" "$S3KEY" "$S3SECRET" repo > store-check.txt 2>&1 &&
-  expect "skew store strict" PASS "$(cat store-check.txt)" || die store "the store is not R2's strictness: $(cat store-check.txt)"
+# NTFS holds no ':' name, so MinIO on Windows can't store the key; such keys are workload proofs, and that Hub rents nothing.
+if [ "$OS" = Windows ]; then
+  log "skew store strict: not checked on Windows (NTFS holds no ':' key; this Hub rents nothing, so it writes no workload proof)"
+else
+  go run "$E2E/skew/sigv4.go" "$S3" "$S3KEY" "$S3SECRET" repo > store-check.txt 2>&1 &&
+    expect "skew store strict" PASS "$(cat store-check.txt)" || die store "the store is not R2's strictness: $(cat store-check.txt)"
+fi
 
 if [ -n "$HUB_BIN" ]; then
-  cp "$HUB_BIN/tensorhub" "$WORK/tensorhub" && CONFIG=$HUB_BIN/config.local.yaml || die hub "no built Hub in $HUB_BIN"
+  cp "$HUB_BIN/tensorhub$EXE" "$WORK/tensorhub$EXE" && CONFIG=$HUB_BIN/config.local.yaml || die hub "no built Hub in $HUB_BIN"
 else
-  (cd "$SRC" && nice -n 19 go build -o "$WORK/tensorhub" .) > hub-build.log 2>&1 || die hub "the Hub did not build: $(tail -c 300 hub-build.log)"
+  (cd "$SRC" && "${NICE[@]}" go build -o "$WORK/tensorhub$EXE" .) > hub-build.log 2>&1 || die hub "the Hub did not build: $(tail -c 300 hub-build.log)"
   CONFIG=$SRC/config.local.yaml
 fi
-"$WORK/tensorhub" version | tee hub.version
-go build -o "$WORK/ingress" "$E2E/skew/ingress.go" > ingress-build.log 2>&1 || die ingress "the local ingress did not build"
-nice -n 19 "$WORK/ingress" 127.0.0.1:0 "$HUB" "$WORK" > ingress.addr 2> ingress.log & INGRESS=$!
+"$WORK/tensorhub$EXE" version | tee hub.version
+go build -o "$(native "$WORK/ingress$EXE")" "$(native "$E2E/skew/ingress.go")" > ingress-build.log 2>&1 || die ingress "the local ingress did not build: $(tail -c 300 ingress-build.log)"
+"${NICE[@]}" "$WORK/ingress$EXE" 127.0.0.1:0 "$HUB" "$(native "$WORK")" > ingress.addr 2> ingress.log & INGRESS=$!
 for _ in $(seq 60); do [ -s ingress.addr ] && break; kill -0 $INGRESS 2>/dev/null || break; sleep 1; done
-ORIGIN=$(head -1 ingress.addr); [ -n "$ORIGIN" ] || die hub "the ingress did not start: $(tail -c 300 ingress.log)"
-hub=("$WORK/tensorhub" --config "$CONFIG"
+ORIGIN=$(head -1 ingress.addr | tr -d '\r'); [ -n "$ORIGIN" ] || die hub "the ingress did not start: $(tail -c 300 ingress.log)"
+# Machines rent from the docker provider, which hands them the ingress's CA. With no Docker Engine there are none to rent.
+provider=(--set rental.hub_ca_path="$(native "$WORK/ca.pem")" --set provider.kind=docker)
+[ "$OS" = Linux ] || provider=(--set provider.kind=runpod)
+hub=("$WORK/tensorhub$EXE" --config "$(native "$CONFIG")"
   --set env.name=development --set server.host=127.0.0.1 --set server.http_port=$HUB_PORT --set server.public_origin=$ORIGIN
-  --set auth.issuer=$ORIGIN/v1/auth --set rental.hub_ca_path="$WORK/ca.pem" --set provider.kind=docker
-  --set auth.keys_path="$WORK/authkit" --set auth.trusted_proxies=
+  --set auth.issuer=$ORIGIN/v1/auth "${provider[@]}"
+  --set auth.keys_path="$(native "$WORK/authkit")" --set auth.trusted_proxies=
   --set database.url="postgres://postgres@127.0.0.1:$PG_PORT/postgres?sslmode=disable"
   --set storage.backend.kind=s3 --set storage.backend.endpoint_url=$S3 --set storage.backend.region=us-east-1
   --set storage.backend.access_key_id=$S3KEY --set storage.backend.secret_access_key=$S3SECRET
   --set storage.repo_cas.bucket=repo --set storage.package_source.bucket=source
-  --set package_release.scratch_root="$WORK/release" ${MIN:+--set clients.cozy_min=$MIN})
+  --set package_release.scratch_root="$(native "$WORK/release")" ${MIN:+--set clients.cozy_min=$MIN})
 "${hub[@]}" migrate > hub-migrate.log 2>&1 || die hub "migrate: $(tail -c 300 hub-migrate.log)"
-nice -n 19 "${hub[@]}" serve > hub.log 2>&1 & HUBPID=$!
+"${NICE[@]}" "${hub[@]}" serve > hub.log 2>&1 & HUBPID=$!
 for _ in $(seq 90); do [ "$(curl -s -o /dev/null -w '%{http_code}' $HUB/healthz)" = 204 ] && break; kill -0 $HUBPID 2>/dev/null || break; sleep 1; done
 [ "$(curl -s -o /dev/null -w '%{http_code}' $HUB/healthz)" = 204 ] || die hub "the Hub did not come up: $(tail -c 600 hub.log)"
 kill -0 "$HUBPID" 2>/dev/null || die hub "the owned fixture Hub exited during startup"
@@ -153,13 +189,13 @@ export COZY_TEST_HUB_CA=$WORK/ca.pem
 mkdir -p ~/.cozy && printf 'hub_url = "%s"\n' "$HUB" >> ~/.cozy/config.toml
 export COZY_HUB_URL=$HUB
 if [ -n "$BIN" ]; then
-  mkdir -p "$HOME/.cozy/bin" && install -m 0755 "$BIN" "$HOME/.cozy/bin/cozy" || die client "could not install the candidate CLI"
+  mkdir -p "$HOME/.cozy/bin" && install -m 0755 "$BIN" "$HOME/.cozy/bin/cozy$EXE" || die client "could not install the candidate CLI"
 else
   curl -LsSf --retry 3 --retry-all-errors "https://github.com/cozy-creator/cozy-creator/releases/download/v$CLIENT/cozy-installer.sh" -o installer.sh &&
     sh installer.sh > install.log 2>&1 || die client "cozy $CLIENT's installer failed: $(tail -c 300 install.log)"
 fi
-export PATH=$HOME/.cozy/bin:$PATH CLI=cozy M=local R=$(( $(date +%s%N) / 1000 % 4000000000 ))
-COZY_BIN=$HOME/.cozy/bin/cozy
+export PATH=$HOME/.cozy/bin:$PATH CLI=cozy M=local R=$(( ($(date +%s) % 4000000) * 1000 + RANDOM % 1000 ))
+COZY_BIN=$HOME/.cozy/bin/cozy$EXE
 if [ -n "$PUBLICATION_LOG" ]; then mkdir -p "${PUBLICATION_LOG%/*}"; fi
 cozy() {
   if [ -n "$PUBLICATION_LOG" ]; then printf '%s\x1f' "$@" >> "$PUBLICATION_LOG"; printf '\x1e' >> "$PUBLICATION_LOG"; fi
@@ -181,17 +217,18 @@ skew_refused() {
 }
 # Sign-in: the email's code, as the Hub logs it, typed into `cozy login` on stdin; then the account's name.
 log "cozy login ci@skew.test: the code from the Hub's log, typed on stdin"
-mkfifo login.in; exec 5<> login.in
-cozy --json login ci@skew.test < login.in > login.out 2>&1 & LOGIN=$!
-( sleep 300; kill $LOGIN 2>/dev/null ) & WATCH=$!  # a question this harness doesn't answer must not hang the job
-code=; for _ in $(seq 120); do
-  code=$(grep -h 'development device enrollment code' hub.log | grep -o '"code":"[^"]*"' | tail -1 | cut -d'"' -f4)
-  [ -n "$code" ] && break
-  kill -0 $LOGIN 2>/dev/null || break
-  sleep 1
-done
-if [ -n "$code" ]; then printf '%s\nciskew%s\n' "$code" "$RANDOM" >&5; else kill $LOGIN 2>/dev/null; fi
-wait $LOGIN; login=$?; exec 5>&-; kill $WATCH 2>/dev/null
+# Its stdin a pipe, written once the Hub has logged the code (or not, after two minutes): an ended pipe is an answer, so a
+# question this harness doesn't answer can't hang the job.
+{
+  for _ in $(seq 120); do
+    code=$(grep -h 'development device enrollment code' hub.log | grep -o '"code":"[^"]*"' | tail -1 | cut -d'"' -f4)
+    [ -z "$code" ] || { printf '%s\nciskew%s\n' "$code" "$RANDOM"; break; }
+    grep -q '"error"' login.out 2>/dev/null && break  # refused before a code: nothing to type
+    sleep 1
+  done
+} | cozy --json login ci@skew.test > login.out 2>&1
+login=${PIPESTATUS[1]}
+code=$(grep -h 'development device enrollment code' hub.log | grep -o '"code":"[^"]*"' | tail -1 | cut -d'"' -f4)
 if [ -n "$REFUSE" ]; then
   [ "$login" != 0 ] && grep -q '"client_too_old"' login.out && grep -q 'cozy update' login.out &&
     expect "skew login" PASS "cozy $CLIENT < clients.cozy_min $MIN: login refused, client_too_old" ||
