@@ -89,6 +89,10 @@ on:
         description: cli-release stops at the rental's quote and rents nothing (its $0 pre-flight)
         type: boolean
         default: false
+      native_shards:
+        description: Native CLI partitions as a JSON list; empty uses the full native matrix
+        type: string
+        default: ''
   workflow_dispatch:
     inputs:
       repo:
@@ -143,6 +147,10 @@ on:
       shards:
         type: string
         default: ''
+      native_shards:
+        description: Native CLI partitions as a JSON list; empty uses the full native matrix
+        type: string
+        default: ''
       # skew (select it: `select=skew`): released cozy versions × a Hub built from tensorhub at hub_ref (e2e/skew/run.sh).
       hub_ref:
         description: "skew: the tensorhub ref the Hub is built from (the candidate)"
@@ -178,7 +186,8 @@ jobs:
       selection: ${{ steps.select.outputs.selection }}
       linux: ${{ steps.select.outputs.linux }}
       runners: ${{ steps.select.outputs.runners }}
-      release_runners: ${{ steps.select.outputs.release_runners }}
+      native_runners: ${{ steps.select.outputs.native_runners }}
+      native_build: ${{ steps.select.outputs.native_build }}
       repo: ${{ steps.what.outputs.repo }}
       ref: ${{ steps.pin.outputs.ref }}
       creator: ${{ steps.pin.outputs.creator }}
@@ -282,9 +291,13 @@ jobs:
           # The cli suite's other runners: macOS arm64 (Intel Macs aren't supported), Windows x64; a release run's installer
           # on Windows arm64 too.
           arm=$([ -z "$PUBLISH_RUN" ] || echo '"windows-11-arm"')
-          echo "runners=$(echo "$s" | jq -c "[.os[] | {macos: [\"macos-15\"], windows: [\"windows-2025\"${arm:+, $arm}]}[.] // [] | .[]]")" >> "$GITHUB_OUTPUT"
-          # cli-release's, each renting one machine: Linux, and one macOS and one Windows runner when selected.
-          echo "release_runners=$(echo "$s" | jq -c '[.os[] | {linux: "ubuntu-24.04", macos: "macos-15", windows: "windows-2025"}[.] // empty]')" >> "$GITHUB_OUTPUT"
+          runners=$(echo "$s" | jq -c "[.os[] | {macos: [\"macos-15\"], windows: [\"windows-2025\"${arm:+, $arm}]}[.] // [] | .[]]")
+          echo "runners=$runners" >> "$GITHUB_OUTPUT"
+          # One native cozy per OS across CLI partitions and explicit Apple-GPU inference.
+          echo "native_runners=$(echo "$s" | jq -c --argjson cli "$runners" '
+            [if (.suites | any(. == "cli" or . == "supervisor")) then $cli[] else empty end,
+             if (.suites | index("mps")) then "macos-15" else empty end] | unique')" >> "$GITHUB_OUTPUT"
+          echo "native_build=$(echo "$s" | jq 'any(.suites[]; . == "cli" or . == "mps")')" >> "$GITHUB_OUTPUT"
           { echo "### e2e selection: $REPO ${REF:0:12}"; echo '```'; echo "$s" | jq .; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           echo "$s" | jq .
       # skew's clients: `previous` is the previous minor's latest patch, from this cozy's own version.
@@ -380,12 +393,13 @@ jobs:
   cli:
     name: cli ${{ matrix.shard }}
     needs: [affected, candidate]
-    if: contains(fromJSON(needs.affected.outputs.selection).suites, 'cli')
+    if: contains(fromJSON(needs.affected.outputs.selection).suites, 'cli') && inputs.shards != '[]'
     strategy:
       fail-fast: false
       matrix:
-        # projectdb*: project.db (cl-803), e2e/cli/projectdb.sh; projectdb also state.db (cl-818), e2e/cli/statedb.sh. local-code: local code by content (cl-817, cl-820).
-        shard: ${{ fromJSON(inputs.shards || '["runs","executors","commands","follow","web","projectdb","projectdb-latency","projectdb-existing","projectdb-web","projectvault","local-code"]') }}
+        # projectdb covers project.db and state.db; the older projectdb-* aliases repeat its calls.
+        # Web behavior and the layout viewport partitions run separately. Manual shard selections remain available.
+        shard: ${{ fromJSON(inputs.shards || '["runs","executors","commands","follow","web-core","web-layout-1280","web-layout-1600","web-layout-2560","projectdb","projectvault","local-code"]') }}
     runs-on: ubuntu-24.04
     # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal. The suites fail on the
     # CLI's typed errors and exits, never on time.
@@ -413,7 +427,7 @@ jobs:
           runtime: ${{ inputs.runtime }}
           release: ${{ inputs.publish_run }}
       # The project part's fixtures and probes (e2e/cli/project.sh); Calcifer, a service, fetches its own.
-      - if: matrix.shard == 'commands' || matrix.shard == 'web' || matrix.shard == 'local-code' || matrix.shard == 'control' || matrix.shard == 'projectvault' || startsWith(matrix.shard, 'projectdb') || startsWith(matrix.shard, 'project-stream')
+      - if: matrix.shard == 'commands' || matrix.shard == 'web' || startsWith(matrix.shard, 'web-') || matrix.shard == 'local-code' || matrix.shard == 'control' || matrix.shard == 'projectvault' || startsWith(matrix.shard, 'projectdb') || startsWith(matrix.shard, 'project-stream')
         uses: AnimMouse/setup-ffmpeg@v1
       - name: Install the optional project-encryption filesystem driver
         if: matrix.shard == 'projectvault'
@@ -438,17 +452,89 @@ jobs:
           path: ${{ runner.temp }}/e2e
           retention-days: 14
 
-  # `supervisor os:windows` runs only the process regressions, without candidates or CLI suites.
-  # macOS (arm64) and Windows, when selected: the whole suite on each runner, its cozy built there. These OSes run
-  # no models themselves (platform::Os::local_inference): what needs no machine, and every local verb refused.
-  cli-os:
-    name: cli ${{ matrix.runner }}
+  # Each native runner builds or reuses cozy once for CLI partitions and MPS.
+  # An explicit supervisor-only selection runs the process checks without building a candidate.
+  candidate-os:
+    name: candidate ${{ matrix.runner }}
     needs: affected
-    if: (contains(fromJSON(needs.affected.outputs.selection).suites, 'cli') || contains(fromJSON(needs.affected.outputs.selection).suites, 'supervisor')) && needs.affected.outputs.runners != '[]'
+    if: needs.affected.outputs.native_runners != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: ${{ fromJSON(needs.affected.outputs.native_runners) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: cozy-creator/cozy-creator
+          ref: ${{ needs.affected.outputs.creator }}
+          path: .creator
+      - id: native
+        if: needs.affected.outputs.native_build == 'true' && inputs.tensord == '' && inputs.publish_run == ''
+        uses: ./.creator/e2e/candidates
+        with:
+          packages_ref: ${{ needs.affected.outputs.packages }}
+          repo: ${{ needs.affected.outputs.repo }}
+          ref: ${{ needs.affected.outputs.ref }}
+          stack_ref: ${{ needs.affected.outputs.stack }}
+          runtime_ref: ${{ needs.affected.outputs.runtime }}
+      - if: runner.os == 'Windows' && (needs.affected.outputs.native_build != 'true' || inputs.tensord != '' || inputs.publish_run != '')
+        uses: actions/checkout@v5
+        with:
+          repository: cozy-creator/cozy-creator
+          ref: ${{ needs.affected.outputs.repo == 'cozy-creator' && needs.affected.outputs.ref || needs.affected.outputs.stack }}
+          path: .native-tests
+      - if: runner.os == 'Windows' && (needs.affected.outputs.native_build != 'true' || inputs.tensord != '' || inputs.publish_run != '')
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .native-tests -> target
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+      - name: Windows supervisor process tests
+        if: >-
+          runner.os == 'Windows' &&
+          (inputs.native_shards == '' ||
+           contains(fromJSON(needs.affected.outputs.selection).suites, 'supervisor'))
+        env:
+          CREATOR: ${{ (needs.affected.outputs.native_build != 'true' || inputs.tensord != '' || inputs.publish_run != '') && '.native-tests' || (needs.affected.outputs.repo == 'cozy-creator' && '.src' || '.stack') }}
+        run: |
+          cd "$CREATOR"
+          cargo test --release --locked -p platform --lib ipc::windows::tests -- --nocapture
+          cargo test --release --locked -p tensord --lib machine::supervise::tests -- --nocapture
+      - if: needs.affected.outputs.native_build == 'true' && inputs.tensord == '' && inputs.publish_run == ''
+        env:
+          SOURCE: ${{ needs.affected.outputs.repo == 'cozy-creator' && needs.affected.outputs.ref || needs.affected.outputs.stack }}
+          ARTIFACT: ${{ steps.native.outputs.cozy_artifact }}
+        run: |
+          exe=''; [ "$RUNNER_OS" != Windows ] || exe=.exe
+          version=$("$RUNNER_TEMP/candidates/cozy$exe" --version)
+          jq -n --arg source "$SOURCE" --arg os "$RUNNER_OS" --arg arch "$RUNNER_ARCH" \
+            --arg artifact "$ARTIFACT" --arg version "$version" \
+            '{source: $source, os: $os, arch: $arch, artifact: $artifact, version: $version}' \
+            > "$RUNNER_TEMP/candidates/native-candidate.json"
+      - if: needs.affected.outputs.native_build == 'true' && inputs.tensord == '' && inputs.publish_run == ''
+        uses: actions/upload-artifact@v4
+        with:
+          # Outside candidate-*: Linux suites download that set whole.
+          name: native-cozy-${{ matrix.runner }}
+          path: ${{ runner.temp }}/candidates
+          if-no-files-found: error
+          retention-days: 14
+
+  # macOS (arm64) and Windows: native file/restart/browser paths plus three layout viewport partitions.
+  # Generic browser journeys run on Linux; an explicit native `web` shard still runs the full suite.
+  cli-os:
+    name: cli ${{ matrix.runner }} ${{ matrix.shard }}
+    needs: [affected, candidate-os]
+    if: contains(fromJSON(needs.affected.outputs.selection).suites, 'cli') && needs.affected.outputs.runners != '[]' && inputs.native_shards != '[]'
     strategy:
       fail-fast: false
       matrix:
         runner: ${{ fromJSON(needs.affected.outputs.runners) }}
+        shard: ${{ fromJSON(inputs.native_shards || '["web-core","web-layout-1280","web-layout-1600","web-layout-2560"]') }}
     runs-on: ${{ matrix.runner }}
     # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal. The suites fail on the
     # CLI's typed errors and exits, never on time.
@@ -465,47 +551,28 @@ jobs:
           ref: ${{ needs.affected.outputs.creator }}
           path: .creator
       - uses: ./.creator/e2e/candidates
-        if: contains(fromJSON(needs.affected.outputs.selection).suites, 'cli')
         with:
           packages_ref: ${{ needs.affected.outputs.packages }}
           repo: ${{ needs.affected.outputs.repo }}
           ref: ${{ needs.affected.outputs.ref }}
           build: ${{ env.BUILD }}
+          from: native-artifact
+          native_artifact: native-cozy-${{ matrix.runner }}
           stack_ref: ${{ needs.affected.outputs.stack }}
           runtime_ref: ${{ needs.affected.outputs.runtime }}
           tensord: ${{ inputs.tensord }}
           tensorfs: ${{ inputs.tensorfs }}
           runtime: ${{ inputs.runtime }}
           release: ${{ inputs.publish_run }}
-      - uses: actions/checkout@v5
-        if: contains(fromJSON(needs.affected.outputs.selection).suites, 'supervisor') && !contains(fromJSON(needs.affected.outputs.selection).suites, 'cli')
-        with:
-          repository: cozy-creator/cozy-creator
-          ref: ${{ needs.affected.outputs.repo == 'cozy-creator' && needs.affected.outputs.ref || needs.affected.outputs.stack }}
-          path: ${{ needs.affected.outputs.repo == 'cozy-creator' && '.src' || '.stack' }}
-      - uses: Swatinem/rust-cache@v2
-        if: contains(fromJSON(needs.affected.outputs.selection).suites, 'supervisor') && !contains(fromJSON(needs.affected.outputs.selection).suites, 'cli')
-        with:
-          workspaces: ${{ needs.affected.outputs.repo == 'cozy-creator' && '.src' || '.stack' }} -> target
-          save-if: ${{ github.ref == 'refs/heads/master' }}
-      - name: Windows supervisor process tests
-        if: runner.os == 'Windows'
-        env:
-          CREATOR: ${{ needs.affected.outputs.repo == 'cozy-creator' && '.src' || '.stack' }}
-        run: |
-          cd "$CREATOR"
-          cargo test --release --locked -p platform --lib ipc::windows::tests -- --nocapture
-          cargo test --release --locked -p tensord --lib machine::supervise::tests -- --nocapture
       - name: cli suite
-        if: contains(fromJSON(needs.affected.outputs.selection).suites, 'cli')
         env:
           PINS: ${{ inputs.pins }}
           GH_TOKEN: ${{ github.token }}
-        run: bash .creator/e2e/cli/run.sh --out "$RUNNER_TEMP/e2e" $CANDIDATES ${PINS:+--pins "$PINS"} $(case " $CANDIDATES " in (*" --packages "*) ;; (*) echo ${PACKAGES_MASTER:+--packages "$PACKAGES_MASTER"} ;; esac) 2>&1 | node .creator/e2e/publish/scrub.js
-      - if: always() && contains(fromJSON(needs.affected.outputs.selection).suites, 'cli')
+        run: bash .creator/e2e/cli/run.sh --out "$RUNNER_TEMP/e2e" --shard ${{ matrix.shard }} $CANDIDATES ${PINS:+--pins "$PINS"} $(case " $CANDIDATES " in (*" --packages "*) ;; (*) echo ${PACKAGES_MASTER:+--packages "$PACKAGES_MASTER"} ;; esac) 2>&1 | node .creator/e2e/publish/scrub.js
+      - if: always()
         uses: ./.creator/e2e/publish
         with:
-          name: e2e-cli-${{ matrix.runner }}
+          name: e2e-cli-${{ matrix.runner }}-${{ matrix.shard }}
           path: ${{ runner.temp }}/e2e
           retention-days: 14
 
@@ -709,7 +776,7 @@ jobs:
           retention-days: 14
 
   mps:
-    needs: affected
+    needs: [affected, candidate-os]
     if: contains(fromJSON(needs.affected.outputs.selection).suites, 'mps')
     runs-on: macos-15
     # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal. The suites fail on the
@@ -732,6 +799,8 @@ jobs:
           repo: ${{ needs.affected.outputs.repo }}
           ref: ${{ needs.affected.outputs.ref }}
           build: ${{ env.BUILD }}
+          from: native-artifact
+          native_artifact: native-cozy-macos-15
           stack_ref: ${{ needs.affected.outputs.stack }}
           runtime_ref: ${{ needs.affected.outputs.runtime }}
           tensord: ${{ inputs.tensord }}
@@ -807,7 +876,7 @@ jobs:
 
   e2e:
     if: always()
-    needs: [affected, candidate, cli, cli-os, cli-release, imports, cpu, mps]
+    needs: [affected, candidate, candidate-os, cli, cli-os, cli-release, imports, cpu, mps]
     runs-on: ubuntu-24.04
     # Last resort (tracker design/stalls.md): a runner that hangs sends no signal.
     timeout-minutes: 10

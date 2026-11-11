@@ -220,66 +220,73 @@ async fn watch(
         return Ok((run, true));
     }
     loop {
-        tokio::select! {
-            _ = tick.tick() => view.tick(),
-            next = next_of(&mut placing, &calcifer), if placing.is_some() => match next {
-                Ok(Some(machine)) if !placed(&view, &machine, &mut notices) => {}
-                _ => placing = None,
-            },
-            _ = &mut interrupt => {
-                view.done();
-                let run = calcifer.run(id.as_str()).await?;
-                let n = run.name();
-                output::say(ctx, &match settled(&run) {
-                    true => format!("stopped following: run {n} ended and its outputs are still being saved; `cozy run watch {n}` follows them"),
-                    false => format!("stopped following: run {n} keeps running; `cozy run watch {n}` follows it again, `cozy run cancel {n}` cancels it"),
-                });
-                return Ok((run, true));
+        // One read of the stream, kept going across the view's ticks: a reconnect's pause and retries carry on.
+        let event = {
+            let mut reading = std::pin::pin!(events.next());
+            loop {
+                tokio::select! {
+                    _ = tick.tick() => view.tick(),
+                    next = next_of(&mut placing, &calcifer), if placing.is_some() => match next {
+                        Ok(Some(machine)) if !placed(&view, &machine, &mut notices) => {}
+                        _ => placing = None,
+                    },
+                    _ = &mut interrupt => {
+                        view.done();
+                        let run = calcifer.run(id.as_str()).await?;
+                        let n = run.name();
+                        output::say(ctx, &match settled(&run) {
+                            true => format!("stopped following: run {n} ended and its outputs are still being saved; `cozy run watch {n}` follows them"),
+                            false => format!("stopped following: run {n} keeps running; `cozy run watch {n}` follows it again, `cozy run cancel {n}` cancels it"),
+                        });
+                        return Ok((run, true));
+                    }
+                    event = &mut reading => break event,
+                }
             }
-            event = events.next() => match event {
-                None => {
-                    let run = calcifer.run(id.as_str()).await?;
-                    // Its Calcifer stopped with an output still owed: wait on the next one.
-                    if settled(&run) && owed(&run) {
-                        events.again();
-                        continue;
-                    }
-                    view.done();
-                    if let Some(sequence_number) = terminal {
-                        output::ndjson(&Event::lifecycle(sequence_number, run.clone(), false));
-                    }
-                    return Ok((run, false));
+        };
+        match event {
+            None => {
+                let run = calcifer.run(id.as_str()).await?;
+                // Its Calcifer stopped with an output still owed: wait on the next one.
+                if settled(&run) && owed(&run) {
+                    events.again();
+                    continue;
                 }
-                Some(Err(error)) => {
-                    view.done();
-                    return Err(error);
+                view.done();
+                if let Some(sequence_number) = terminal {
+                    output::ndjson(&Event::lifecycle(sequence_number, run.clone(), false));
                 }
-                Some(Ok(event)) if stalls(&event) => {
-                    match events_out {
-                        true => output::ndjson(&event),
-                        false => view.on(&event),
-                    }
-                    view.done();
-                    return Ok((calcifer.run(id.as_str()).await?, true));
+                return Ok((run, false));
+            }
+            Some(Err(error)) => {
+                view.done();
+                return Err(error);
+            }
+            Some(Ok(event)) if stalls(&event) => {
+                match events_out {
+                    true => output::ndjson(&event),
+                    false => view.on(&event),
                 }
-                Some(Ok(event)) if events.restarted() && !events_out => {
-                    view.line(&format!("  Calcifer restarted; following run {} again", view.number));
-                    let before = view.machine.clone();
-                    view.on(&event);
-                    if let Some(name) = view.machine.as_deref().filter(|_| view.machine != before) {
-                        placing = follow_placement(&calcifer, &view, name, &mut notices).await;
-                    }
+                view.done();
+                return Ok((calcifer.run(id.as_str()).await?, true));
+            }
+            Some(Ok(event)) if events.restarted() && !events_out => {
+                view.line(&format!("  Calcifer restarted; following run {} again", view.number));
+                let before = view.machine.clone();
+                view.on(&event);
+                if let Some(name) = view.machine.as_deref().filter(|_| view.machine != before) {
+                    placing = follow_placement(&calcifer, &view, name, &mut notices).await;
                 }
-                Some(Ok(event)) if events_out && event.is_terminal() => {
-                    terminal = event.sequence_number();
-                }
-                Some(Ok(event)) if events_out => output::ndjson(&event),
-                Some(Ok(event)) => {
-                    let before = view.machine.clone();
-                    view.on(&event);
-                    if let Some(name) = view.machine.as_deref().filter(|_| view.machine != before) {
-                        placing = follow_placement(&calcifer, &view, name, &mut notices).await;
-                    }
+            }
+            Some(Ok(event)) if events_out && event.is_terminal() => {
+                terminal = event.sequence_number();
+            }
+            Some(Ok(event)) if events_out => output::ndjson(&event),
+            Some(Ok(event)) => {
+                let before = view.machine.clone();
+                view.on(&event);
+                if let Some(name) = view.machine.as_deref().filter(|_| view.machine != before) {
+                    placing = follow_placement(&calcifer, &view, name, &mut notices).await;
                 }
             }
         }

@@ -151,6 +151,32 @@ paths:
         '507':
           description: '`machine_disk_full`'
           content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
+  /v1/models/remove:
+    post:
+      summary: Remove a repository's locally cached model copies.
+      description: >-
+        Requires machine scope and the ordinary local cache. Removes cached releases and lanes while
+        preserving active readers and content shared with other models. The origin is unchanged.
+      operationId: remove_model
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/RemoveModel'}}}
+      responses:
+        '200':
+          description: The local removal result
+          content: {application/json: {schema: {$ref: '#/components/schemas/RemovedModel'}}}
+        '400':
+          description: '`invalid_request` or `model_ref_invalid`'
+          content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
+        '403':
+          description: '`capability_scope` or `model_remove_local_only`'
+          content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
+        '500':
+          description: '`model_remove_failed`'
+          content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
+        '503':
+          description: '`machine_updating` or `machine_released`'
+          content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
   /v1/runs:
     get:
       summary: >-
@@ -666,6 +692,25 @@ components:
           format: int64
           description: Reached by no other held repository.
           minimum: 0
+    RemoveModel:
+      type: object
+      required: [model]
+      properties:
+        model: {type: string, description: Repository as org/name without a release or lane}
+    RemovedModel:
+      type: object
+      required: [model, removed, cache_bytes_removed, retained_bytes]
+      properties:
+        model: {type: string}
+        removed: {type: boolean}
+        cache_bytes_removed:
+          type: integer
+          minimum: 0
+          description: Bytes removed from cache object paths
+        retained_bytes:
+          type: integer
+          minimum: 0
+          description: Candidate bytes retained because they are in use, shared or unsafe to remove
     ModelChoice:
       type: object
       description: >-

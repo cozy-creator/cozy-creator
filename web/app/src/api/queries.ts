@@ -3,6 +3,7 @@ import type { Asset, Run, RunList, CalciferStatus, ProjectState, ProjectWarning 
 import type { Project } from "../types"
 import type { Client, RunFilter } from "./client"
 import type { EventStream } from "./events"
+import { nextProjectOrder } from "./projectOrder"
 
 /** Keyed by name, so an asset that didn't change keeps its identity whatever moved around it. */
 function keepAssets(old: unknown, next: unknown): unknown {
@@ -55,7 +56,7 @@ export const projectQuery = (client: Client, stream: EventStream, id: string) =>
     queryFn: async ({ client: queries, signal }) => {
       await stream.whenShown(id, signal)
       signal.throwIfAborted()
-      const began = performance.now()
+      const began = nextProjectOrder()
       const state = await client.project(id, signal)
       signal.throwIfAborted()
       const key = openingWarningsKey(id)

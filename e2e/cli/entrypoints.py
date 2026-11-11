@@ -23,6 +23,12 @@ REMOVED = {
 }
 
 
+def public_usage(text: str) -> str:
+    if os.name == "nt":
+        return re.sub(r"(?m)^(Usage: | {7})cozy\.exe(?= |$)", r"\1cozy", text)
+    return text
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cozy", required=True)
@@ -52,7 +58,12 @@ def main() -> None:
                 stream.write("\x1f".join(words) + "\x1f\x1e")
         started = time.monotonic()
         result = subprocess.run([binary, *words], cwd=directory, env=environment, capture_output=True, text=True)
-        records.append({"name": name, "exit": result.returncode, "elapsed_ms": round((time.monotonic() - started) * 1000)})
+        record = {"name": name, "exit": result.returncode, "elapsed_ms": round((time.monotonic() - started) * 1000)}
+        if not words or "--help" in words:
+            record.update(stdout=result.stdout, stderr=result.stderr)
+        records.append(record)
+        if "--help" in words:
+            result.stdout = public_usage(result.stdout)
         assert result.returncode == code, f"{name}: expected exit {code}, got {result.returncode}: {result.stdout}{result.stderr}"
         return result
 

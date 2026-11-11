@@ -569,16 +569,37 @@ function linesOf(text, name) {
   // Clear of everything so far, and all of it fitted on the screen. A row apart by more than an Edit at rest and the room it keeps under it
   // for its add-ons and the name of a box below (e139a61c6, shown.ts): about 460 at 260 wide. Closer, the page moves one off the other.
   const ROW = 500;
-  await Promise.all(fixed.map((name, i) => project('add', 'cozy/edit', name, `at=${260 + (i % 4) * 300},${2000 + Math.floor(i / 4) * ROW},260`, 'description=start')));
+  const addedBurst = await Promise.all(fixed.map((name, i) => project('add', 'cozy/edit', name, `at=${260 + (i % 4) * 300},${2000 + Math.floor(i / 4) * ROW},260`, 'description=start')));
   // Fitted to all of them: a box that comes after a fit is drawn for a moment, then not, off the screen (macOS, 41955999465).
-  await until('the boxes for the burst', async () => {
-    await page.keyboard.press('f');
-    await page.waitForTimeout(250);
-    return page.evaluate((names) => names.every((name) => {
-      const at = window.boxOf(name)?.getBoundingClientRect();
-      return at && at.bottom <= innerHeight && at.right <= innerWidth;
-    }), fixed);
-  }, Boolean);
+  try {
+    await until('the boxes for the burst', async () => {
+      await page.keyboard.press('f');
+      await page.waitForTimeout(250);
+      return page.evaluate((names) => names.every((name) => {
+        const at = window.boxOf(name)?.getBoundingClientRect();
+        return at && at.bottom <= innerHeight && at.right <= innerWidth;
+      }), fixed);
+    }, Boolean);
+  } catch (error) {
+    const state = await status();
+    const cards = await rows();
+    seen.burst_setup = {
+      requested: fixed,
+      replies: addedBurst.map(({ at, value }) => ({ at, name: value?.name })),
+      backend: state.assets.filter((asset) => asset.name.startsWith('burst_')).map(({ name, kind }) => ({ name, kind })),
+      rows: Object.fromEntries(Object.entries(cards).filter(([name]) => name.startsWith('burst_'))),
+      page: await page.evaluate((names) => ({
+        focused: document.activeElement?.tagName,
+        viewport: document.querySelector('.react-flow__viewport')?.style.transform,
+        boxes: names.map((name) => {
+          const node = window.boxOf(name);
+          const rect = node?.getBoundingClientRect();
+          return { name, id: node?.getAttribute('data-id'), transform: node?.style.transform, rect: rect && { x: rect.x, y: rect.y, width: rect.width, height: rect.height } };
+        }),
+      }), fixed),
+    };
+    throw error;
+  }
   const lanes = Array.from({ length: 8 }, () => []);
   const last = new Map();
   const targets = fixed.map((name, i) => ({ name, x: 260 + (i % 4) * 300, y: 2000 + Math.floor(i / 4) * ROW }));
