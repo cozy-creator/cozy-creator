@@ -194,6 +194,25 @@ async fn persistent_503_stops_after_five_attempts() {
 }
 
 #[tokio::test]
+async fn vault_private_creation_omits_the_response_cache_key() {
+    let fixture = Fixture::new(|_, _, _| Some(Reply::json(serde_json::json!({"created":true}))));
+    let result: serde_json::Value = fixture.client.private_post("/v1/projects", &serde_json::json!({"passphrase":"synthetic"})).await.unwrap();
+    assert_eq!(result["created"], true);
+    let requests = fixture.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(!requests[0].headers.contains_key("idempotency-key"));
+}
+
+#[tokio::test]
+async fn vault_private_creation_does_not_replay_a_lost_reply() {
+    let fixture = Fixture::new(|_, _, _| None);
+    assert!(fixture.client.private_post::<_, serde_json::Value>("/v1/projects", &serde_json::json!({"passphrase":"synthetic"})).await.is_err());
+    let requests = fixture.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(!requests[0].headers.contains_key("idempotency-key"));
+}
+
+#[tokio::test]
 async fn credentials_are_refreshed_only_when_the_holder_changed() {
     for rotate in [false, true] {
         let mut attempt = 0;

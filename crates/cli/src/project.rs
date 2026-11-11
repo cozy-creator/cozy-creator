@@ -96,7 +96,11 @@ pub(crate) async fn create(ctx: &Context, args: New) -> Result<ExitCode, Error> 
     let key = args.unencrypted.then(mint_key);
     let (id, code, path, created, mut recovery_secret) = if let Some(address) = existing {
         (address.id, address.code, directory.clone(), false, None)
-    } else { match client.post::<_, Opened>("/v1/projects", &request, key.as_deref()).await {
+    } else { match if args.unencrypted {
+        client.post::<_, Opened>("/v1/projects", &request, key.as_deref()).await
+    } else {
+        client.private_post::<_, Opened>("/v1/projects", &request).await
+    } {
         Ok(opened) => (opened.id, opened.code, opened.path, true, opened.recovery_secret),
         Err(error) if error.code == "project_exists" => {
             let path = crate::calcifer_client::path(&["v1", "projects", &directory.to_string_lossy()]);

@@ -197,6 +197,13 @@ impl Client {
         self.exchange(ask, |c, base| json(c.post(format!("{base}{path}")), &body).header(KEY, key)).await
     }
 
+    /// A secret-bearing reply must not enter the ordinary idempotency cache.
+    /// Retry only when the server certainly did not carry out this unkeyed request.
+    pub(crate) async fn private_post<B: Serialize + ?Sized, T: DeserializeOwned>(&self, path: &str, body: &B) -> Result<T, Error> {
+        let body = json_body(body)?;
+        self.exchange(Ask::Unkeyed, |c, base| json(c.post(format!("{base}{path}")), &body)).await
+    }
+
     /// One vault operation ID for the command's lifetime. Reconnecting the same PUT attaches to
     /// that operation; the server acknowledges receipt immediately and records admission before
     /// changing storage, so an accepted operation is never run twice.
