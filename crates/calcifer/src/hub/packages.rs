@@ -96,7 +96,7 @@ pub(super) async fn info(
         if releases.is_empty() {
             return Err(Refusal(
                 Error::not_found("release_not_found", format!("{package} has no release {release} on {hub}"))
-                    .next(format!("cozy package info {package}")),
+                    .next(format!("cozy package ls {package}")),
             ));
         }
         warnings = warned(&api, &hub, &org, &name, release).await?;

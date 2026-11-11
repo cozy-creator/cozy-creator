@@ -81,18 +81,12 @@ test = "pr: packages"
 "--limit" = "pr: packages"
 "--offset" = "pr: packages"
 "--on" = "pr: packages"
-["package info"]
-test = "pr: packages"
 ["package install"]
 test = "pr: packages (gate: tensord unversioned-installed, an installed package moved to its newest)"
 "--on" = "pr: packages"
 ["package uninstall"]
 test = "pr: packages"
 "--on" = "pr: packages"
-["package lock"]
-test = "release: throwaway package, locked"
-"--upgrade-package" = "release: throwaway package, locked"
-"--root" = "manual: first-party releases only (packages' task publish), never a throwaway at the root"
 ["package publish"]
 test = "release: throwaway package, published"
 "--root" = "manual: first-party releases only (packages' task publish), never a throwaway at the root"

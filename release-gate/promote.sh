@@ -25,7 +25,7 @@ run() { echo "+ $*"; [ -n "$DRY" ] || "$@"; }
 field() { jq -r ".$1 // empty" <<< "$set_"; }
 undo=()
 for p in $(jq -r '.pins[]?' <<< "$set_"); do
-  info=$(cozy --json package info "${p%@*}") || { echo "cozy package info ${p%@*} failed: nothing promoted" >&2; exit 1; }
+  info=$(python3 "$HERE/../e2e/package-details.py" "${p%@*}") || { echo "package metadata for ${p%@*} is unavailable: nothing promoted" >&2; exit 1; }
   jq -e --arg v "${p#*@}" 'any(.releases[]; .release == $v)' <<< "$info" > /dev/null \
     || { echo "the Hub does not hold $p: nothing promoted" >&2; exit 1; }
   undo+=("$p")

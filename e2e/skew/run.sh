@@ -177,6 +177,9 @@ TWF=$TF
 if [ -n "$TF" ] && [ ! -f "$TF" ] && [[ $TF != *://* ]]; then TWF="tensorfs==$TF"; fi
 log "account and catalog"; hub_account
 [ -n "$WHO" ] || verdict
+require_test_hub "$HUB" || die isolation "the publication account requires the owned fixture Hub"
+"${hub[@]}" admin grant "$WHO" > fixture-admin.log 2>&1 \
+  || die account "could not authorize the isolated fixture publisher: $(tail -c 300 fixture-admin.log)"
 hub_do catalog ok package ls --limit 5
 log "model upload by the machine, publish, download, delete"; hub_models
 log "package publish, then install on the machine (its first environment: slow on a fresh runner)"; hub_publish

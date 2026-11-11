@@ -33,7 +33,7 @@ get() {
 until_status() { run_wait "$T" "$(nm "$1")" "${2#terminal}"; }
 envs() { "$CLI" --json machine show "$M" 2>/dev/null | jq -r '[.status.environments[] | (.package | split("/") | last) + "@" + .release] | sort | join(" ")'; }
 released() {  # released <package>: the newest release users get (not yanked), then the one before it (an exact pin installs a yanked one)
-  "$CLI" package info "$1" --json 2>/dev/null | jq -r '[.releases[].release] as $a | ([.releases[] | select(.yanked | not) | .release][0]) as $n
+  package_details "$1" 2>/dev/null | jq -r '[.releases[].release] as $a | ([.releases[] | select(.yanked | not) | .release][0]) as $n
     | [$n, $a[($a | index($n)) + 1]] | map(select(. != null)) | join(" ")'; }
 NGPU=$("$CLI" --json machine show "$M" 2>/dev/null | jq '.status.gpus | length')
 

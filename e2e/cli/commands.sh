@@ -47,8 +47,8 @@ if [ "$(jq '.total' "$OUT/packages-first-page.json")" -gt 1 ]; then
   [ "$(jq -r '.packages[0].package' "$OUT/packages-first-page.json")" != "$(jq -r '.packages[0].package' "$OUT/packages-second-page.json")" ] \
     || check "package offset repeated the first page"
 fi
-cozy --json package info birefnet > "$OUT/package-info.json" && J '(.latest_release | length > 0) and (.releases | length > 0)' "$OUT/package-info.json" \
-  || check "package info birefnet: no releases"
+package_details birefnet > "$OUT/package-info.json" && J '(.latest_release | length > 0) and (.releases | length > 0)' "$OUT/package-info.json" \
+  || check "package details birefnet: no releases"
 cozy --json run birefnet/remove_background --describe > "$OUT/describe-published.json" 2> "$OUT/describe-published.err" \
   && grep -Eq '(^|[[:space:]"])image("|:)' "$OUT/describe-published.json" || check "run birefnet/remove_background --describe: no image input"
 cozy run birefnet > "$OUT/functions.txt" 2>&1 && grep -q remove_background "$OUT/functions.txt" || check "run birefnet: remove_background is not listed"
@@ -262,11 +262,11 @@ old_runtime() {
 step "a lock on an older executor protocol: the machine's pair where its range takes it, else one line naming the re-lock"
 local code=0
 if cell old-runtime "$here/old-runtime/takes/echo" text=old; then
-  grep -q "can't speak this machine's executor protocol.*cozy package lock --upgrade-package cozy-runtime" "$OUT/old-runtime.err" \
+  grep -q "can't speak this machine's executor protocol.*uv lock --upgrade-package cozy-runtime" "$OUT/old-runtime.err" \
     || check "old runtime: its install doesn't say it runs on the machine's pair, or how to re-lock: $(grep -m1 warning "$OUT/old-runtime.err" | head -c 400)"
 fi
 in_project "$RUN_PROJECT" --json run "$here/old-runtime/refuses/echo" text=old --on local > "$OUT/old-runtime-refused.json" 2>&1 || code=$?
-[ "$code" != 0 ] && grep -q runtime_protocol_unspoken "$OUT/old-runtime-refused.json" && grep -q 'cozy package lock --upgrade-package cozy-runtime' "$OUT/old-runtime-refused.json" \
+[ "$code" != 0 ] && grep -q runtime_protocol_unspoken "$OUT/old-runtime-refused.json" && grep -q 'uv lock --upgrade-package cozy-runtime' "$OUT/old-runtime-refused.json" \
   || check "old runtime: a range refusing the machine's Runtime wasn't refused naming the re-lock (exit $code): $(tail -c 400 "$OUT/old-runtime-refused.json")"
 }
 
@@ -338,16 +338,26 @@ docker pull -q "$image" > /dev/null || { check "unseen: docker pull $image"; ret
 # line, then runs there, its words on stderr. Its stdout is unseen-<name>.out, its stderr unseen-<name>.err. $REFUSED: its
 # failure is the caller's to judge.
 inside() {
-  local name=$1; shift
-  printf '%s\x1f' "$@" >> "$OUT/argv.log"; printf '\x1e' >> "$OUT/argv.log"  # docker runs the binary itself
+  local name=$1 container=$image; shift
+  local extra=()
+  if [ -n "${LOCK_FIXTURE:-}" ]; then
+    [ -x "${RUN_CODE_STAGE:-}" ] || { check "unseen lock: RUN_CODE_STAGE must name the API stage-code executable"; return 1; }
+    container=python:3.12-slim-trixie
+    extra=(-v "$here/..:/e2e:ro" -v "$RUN_CODE_STAGE:/usr/local/bin/stage-code:ro")
+  else
+    printf '%s\x1f' "$@" >> "$OUT/argv.log"; printf '\x1e' >> "$OUT/argv.log"  # docker runs the binary itself
+  fi
   cp "$HOME/.cozy/calcifer/calcifer.lock.holder" "$HOME/.cozy/config.toml" "$seen/"
   docker run --rm --network host --pid host -u "$(id -u):$(id -g)" -e HOME=/home/cli -e COZY_HUB_URL="${COZY_HUB_URL:-}" \
-    -e PROJECT_DIRECTORY="$seen/project" -e AFTER="${AFTER:-}" -e DIR="${DIR:-.}" \
+    -e PROJECT_DIRECTORY="$seen/project" -e AFTER="${AFTER:-}" -e DIR="${DIR:-.}" -e LOCK_FIXTURE="${LOCK_FIXTURE:-}" \
+    -e CI="${CI:-}" -e GITHUB_ACTIONS="${GITHUB_ACTIONS:-}" -e COZY_TEST_HUB_ORIGIN="${COZY_TEST_HUB_ORIGIN:-}" \
     --tmpfs "/home/cli:rw,exec,uid=$(id -u),gid=$(id -g),mode=0700" --tmpfs "$seen/project:rw,exec,uid=$(id -u),gid=$(id -g),mode=0700" \
     -v "$seen:/seen:ro" -v "$COZY:/usr/local/bin/cozy:ro" -v "$src:/src:ro" -v /etc/ssl/certs:/etc/ssl/certs:ro \
-    ${CAND_RT:+-v "$(dirname "$CAND_RT"):/wheels:ro"} -w "$seen/project" "$image" \
+    "${extra[@]}" ${CAND_RT:+-v "$(dirname "$CAND_RT"):/wheels:ro"} -w "$seen/project" "$container" \
     sh -c 'mkdir -p ~/.cozy/calcifer && cp /seen/calcifer.lock.holder ~/.cozy/calcifer/ && cp /seen/config.toml ~/.cozy/ \
-      && cp -r /src/. "$PROJECT_DIRECTORY" && cd "$PROJECT_DIRECTORY/$DIR" && cozy "$@" && { [ -z "$AFTER" ] || sh -c "$AFTER" >&2; }' sh "$@" \
+      && cp -r /src/. "$PROJECT_DIRECTORY" && cd "$PROJECT_DIRECTORY/$DIR" \
+      && { if [ -n "$LOCK_FIXTURE" ]; then python3 /e2e/package-lock.py --stage-code /usr/local/bin/stage-code . "$@"; else cozy "$@"; fi; } \
+      && { [ -z "$AFTER" ] || sh -c "$AFTER" >&2; }' sh "$@" \
     > "$OUT/unseen-$name.out" 2> "$OUT/unseen-$name.err" && return 0
   [ -n "${REFUSED:-}" ] || check "unseen $name: cozy $*: $(tail -c 400 "$OUT/unseen-$name.err") $(tail -c 300 "$OUT/unseen-$name.out")"
   return 1
@@ -385,7 +395,7 @@ inside install --json package install ./weightless --on local && J '.run.status 
 # Its recipes read from Calcifer's copy, then refused only at the model's header, which a sign-in reads: from a path it couldn't
 # see, the package was refused first (`target_not_found`).
 refused_inside quantize not_logged_in model quantize zhengpeng7/birefnet --lane int8 --package ./weightless --on local
-AFTER='grep -c "name = \"e2e-weightless\"" uv.lock' DIR=weightless inside lock --json package lock && grep -qx 1 "$OUT/unseen-lock.err" \
+AFTER='grep -c "name = \"e2e-weightless\"" uv.lock' DIR=weightless LOCK_FIXTURE=1 inside lock && grep -qx 1 "$OUT/unseen-lock.err" \
   || check "unseen lock: no uv.lock written in /work: $(tail -c 300 "$OUT/unseen-lock.err")"
 # Locked in Calcifer's copy of the tree, which it holds by the tree's digest.
 ls -d "$HOME"/.cozy/calcifer/code/*/tree/e2e_weightless > /dev/null 2>&1 || check "unseen lock: Calcifer holds no copy of the package: $(ls "$HOME/.cozy/calcifer/code" 2> /dev/null | head -3)"

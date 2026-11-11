@@ -1,7 +1,7 @@
 //! `cozy package`: find packages on a Hub, keep them on machines, and publish your own.
 //!
 //! Install, update and uninstall are runs on a machine through Calcifer; the machine resolves and
-//! installs releases. `lock` and `publish` send the package by content: Calcifer locks and builds
+//! installs releases. Publishing sends the package by content: Calcifer locks and builds
 //! its copy with uv, never running package code, and a lock comes back for the CLI to write.
 use std::{path::PathBuf, process::ExitCode};
 
@@ -40,11 +40,6 @@ enum Command {
         #[arg(long, value_name = "MACHINE")]
         on: Option<String>,
     },
-    /// Show a package's releases.
-    Info {
-        /// [org/]name[@release]
-        package: String,
-    },
     /// Install a package, directory or script on a machine.
     Install {
         /// Package reference, ./directory or script.py.
@@ -60,18 +55,6 @@ enum Command {
         packages: Vec<String>,
         #[command(flatten)]
         placement: Placement,
-    },
-    /// Resolve package dependencies and write uv.lock.
-    Lock {
-        /// Package directory. Defaults to the current directory.
-        #[arg(short = 'p', value_name = "PATH")]
-        path: Option<PathBuf>,
-        /// Upgrade this dependency to its newest compatible release. Repeat as needed.
-        #[arg(long = "upgrade-package", value_name = "PACKAGE")]
-        upgrade: Vec<String>,
-        /// Use the first-party root namespace (Hub admins only).
-        #[arg(long)]
-        root: bool,
     },
     /// Publish the package in the current directory.
     #[command(hide = true)]
@@ -104,7 +87,6 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             Some(on) => machine::list(ctx, (on != "all").then(|| on.into()), &query).await,
             None => catalog::search(ctx, &query.join(" "), output::at_most("--limit", limit, 200), offset).await,
         },
-        Command::Info { package } => catalog::info(ctx, &PackageRef::parse(&package)?).await,
         Command::Install { package, placement } => match local(ctx, &package)? {
             Some(path) => {
                 let on = placement.on()?;
@@ -120,7 +102,6 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             packages,
             placement,
         } => machine::uninstall(ctx, &names(&packages)?, placement.on()?).await,
-        Command::Lock { path, upgrade, root } => author::lock(ctx, path, &upgrade, root).await,
         Command::Publish { root, yanked } => author::publish(ctx, root, yanked).await,
         Command::Delete { package } => author::delete(ctx, &PackageRef::parse(&package)?).await,
         Command::Yank { release, undo } => {
@@ -214,5 +195,7 @@ mod tests {
         assert!(!command.get_subcommands().any(|command| command.get_name() == "remove"));
         assert_eq!(Cli::try_parse_from(["package", "remove", "local/example"]).unwrap_err().kind(), clap::error::ErrorKind::InvalidSubcommand);
         assert!(Cli::try_parse_from(["package", "delete", "example"]).is_ok());
+        assert!(Cli::try_parse_from(["package", "lock", "--help"]).is_err());
+        assert!(Cli::try_parse_from(["package", "info", "example"]).is_err());
     }
 }

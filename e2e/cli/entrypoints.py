@@ -106,6 +106,8 @@ def main() -> None:
         run("package uninstall help", ["package", "uninstall", "--help"])
         run("removed package remove", ["package", "remove", "--help"], code=2)
         run("package delete help", ["package", "delete", "--help"])
+        run("removed package lock", ["package", "lock", "--help"], code=2)
+        run("removed package info", ["package", "info", "--help"], code=2)
         run("package pagination help", ["package", "ls", "--offset", "20", "--limit", "10", "--help"])
         run("LoRA metadata help", ["lora", "edit", "--help"])
         run("LoRA upload help", ["lora", "upload", "--help"])

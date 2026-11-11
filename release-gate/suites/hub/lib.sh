@@ -62,14 +62,14 @@ hub_release() {
   rm -rf "$dir" && cp -r "$HERE/suites/hub/pkg" "$dir"
   sed -i "s/^name = \"ci-hub-pkg\"/name = \"$HUB_PKG\"/; s/^version = \"0.1.0\"/version = \"$1\"/" "$dir/pyproject.toml"
   sed -i "s/^RELEASE = \"0.1.0\"/RELEASE = \"$1\"/" "$dir/ci_hub_pkg/__init__.py"
-  (cd "$dir" && hub_do "package-lock-$1" ok package lock && hub_do "package-publish-$1" ok package publish -y "${@:2}")
+  (cd "$dir" && hub_do "package-publish-$1" ok package publish -y "${@:2}" && test -s uv.lock)
 }
 # hub_candidate <version>: published yanked while the Hub's newest is read throughout: no read names it (cl-732).
 hub_candidate() {
   hub_test_target || return 2
   local seen=$HB/package-candidate-newest.txt poller
   : >"$seen"
-  ( while :; do "$CLI" --json package info "$WHO/$HUB_PKG" 2>/dev/null |
+  ( while :; do package_details "$WHO/$HUB_PKG" 2>/dev/null |
       python3 -I -c 'import json,sys; print(json.load(sys.stdin)["latest_release"])' >>"$seen" 2>/dev/null; sleep 0.2; done ) &
   poller=$!
   hub_release "$1" --yanked && HUB_LIVE="$HUB_LIVE $1"
@@ -185,7 +185,7 @@ hub_publish() {
   hub_test_target || return 2
   hub_release 0.1.0 && HUB_LIVE="0.1.0"
   hub_release 0.1.1 && HUB_LIVE="0.1.0 0.1.1"
-  hub_do package-info ok package info "$WHO/$HUB_PKG"
+  package_details "$WHO/$HUB_PKG" > "$HB/package-detail.out" || expect "hub package detail" FAIL "package metadata is unavailable"
   hub_do package-ls ok package ls "$WHO/$HUB_PKG"
 }
 hub_packages() {

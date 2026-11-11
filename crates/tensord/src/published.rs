@@ -1646,7 +1646,7 @@ fn opens_views(service: &Service, installation: &Installation, choice: &stored::
     }
     let runs: Vec<String> = pair.iter().map(|(label, _, version)| format!("{label} {}", if version.is_empty() { "none" } else { version })).collect();
     Err(("model_adapter_refused", format!(
-        "LoRAs need Runtime {0} and TensorFS {1} or newer, and {2} {3} runs on {4}: a newer release of it may (`cozy package info {2}`)",
+        "LoRAs need Runtime {0} and TensorFS {1} or newer, and {2} {3} runs on {4}: try its newest release with `cozy package install {2}`",
         VIEWS[0].2, VIEWS[1].2, installation.package, installation.release, runs.join(" / "))))
 }
 
@@ -1809,7 +1809,7 @@ fn hub_card(catalog: &Catalog, package: &str, release: &str, python: &str) -> Re
     let (org, name) = package.split_once('/').unwrap_or_default();
     let read = format!("the install plan of {package}@{release} at {}", catalog.origin());
     let plan = catalog.install_plan(org, name, release, None).map_err(|e| absent(e, "release_absent", &read, || {
-        format!("{package} has no release {release} at {}: `cozy package info {package}` lists its releases", catalog.origin())
+        format!("{package} has no release {release} at {}: browse packages with `cozy package ls {package}`", catalog.origin())
     }))?;
     if plan.release != release {
         return Err(("catalog_read_failed", format!("{package}@{release} named another release")));
@@ -1853,11 +1853,11 @@ fn newest_release(catalog: &Catalog, org: &str, name: &str) -> Result<String, Fa
     let card = catalog
         .package(org, name)
         .map_err(|e| absent(e, "package_absent", &format!("the releases of {org}/{name} at {}", catalog.origin()),
-            || format!("{org}/{name} is not published at {}, or is private: `cozy package ls {name}` lists what you can see", catalog.origin())))?;
+            || format!("{org}/{name} is not published at {}: `cozy package ls {name}` lists what you can see", catalog.origin())))?;
     let open = card.releases.iter().filter(|row| row.yanked != Some(true) && row.yanked_at.as_deref().is_none_or(str::is_empty));
     tensorfs::format::newest_by(open, |row| row.release.as_str())
         .map(|row| row.release.clone())
-        .ok_or(("release_absent", format!("{org}/{name} has no release that is not yanked: `cozy package info {org}/{name}` lists them")))
+        .ok_or(("release_absent", format!("{org}/{name} has no release that is not yanked: browse packages with `cozy package ls {org}/{name}`")))
 }
 
 /// A wheel the run's Hub hosts, downloaded by its digest (`fetch_hub`) and installed from disk.
