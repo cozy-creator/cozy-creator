@@ -91,10 +91,10 @@ else
   # A package is a directory whose pyproject declares a cozy.application entry point.
   for toml in $(grep -l 'cozy.application' "$PACKAGES"/*/pyproject.toml); do
     i=$((i + 1)); mine $i || continue
-    dir=$(dirname "$toml") name=$(sed -n 's/^name = "\(.*\)"/\1/p' "$toml" | head -1)
+    dir=$(cd "$(dirname "$toml")" && pwd) name=$(sed -n 's/^name = "\(.*\)"/\1/p' "$toml" | head -1)
     version=$(sed -n 's/^version = "\(.*\)"/\1/p' "$toml" | head -1)
     echo "::group::$name $version (checkout)"
-    if install "checkout-$name" "./$dir"; then
+    if install "checkout-$name" "$dir"; then
       import_release "checkout-$name" "$name" "$version"
     elif [[ " ${COZY_IMPORTS_REQUIRED:-} " == *" $name "* ]]; then
       check "$name: the fixture-bound package must install and import, not skip"
