@@ -34,7 +34,6 @@ Real runs of `cozy` on GitHub's runners, chosen by what a change touches (CI v2:
   `--cozy` uses the API `stage-code` example, supplied by candidates or built once when not supplied.
   a fixture's `WAIVE` names the release-geometry checks a tiny model cannot meet, and `PATCH` the geometry constants it
   shrinks; both stay GPU-only.
-- `mps/run.sh`: BiRefNet and SDXL on a Mac's GPU. It can't pass today: macOS answers `local_unavailable` ("local runs aren't available on macOS yet"), so it fails at once if selected. It runs only on an explicit `select`, so nothing else waits on it; it starts to mean something when macOS runs models itself.
 - `capabilities/run.sh`: a run capability (AuthKit's workload grant) reads its private commit and nothing else: signed and
   redeemed as Calcifer and TensorD do, renewed, a copied token refused without its DPoP key, refused for another repository,
   a release, a delete, rentals, another account's repository, an altered or expired capability and, with `--rental`, once the

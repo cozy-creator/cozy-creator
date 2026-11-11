@@ -4,7 +4,7 @@
 # `unmapped` (everything). `also` rules add their tokens to whatever else a path takes. Globs: `*` stays
 # inside one directory, `**` spans directories.
 # Tokens:
-#   cli, imports, mps, gpu, gpu-datacenter   suites
+#   cli, imports, gpu, gpu-datacenter        suites
 #   cpu                                     every package through the candidate Runtime's executor on the CPU, tiny
 #                                           random weights, and uploaded, locked and bound through the candidate cozy
 #                                           (e2e/cpu): what the Runtime, TensorFS, varena, TensorD's frames, Calcifer's
@@ -22,10 +22,7 @@
 #   everything                              every suite and package, on Linux
 #   release                                 everything on every OS (the release's `--tokens release`)
 #
-# `mps` is chosen only explicitly (a dispatch's or the release gate's `select`) until it can pass: macOS runs no
-# models itself yet (platform::Os::local_inference, cl-665), cozy reports no Apple GPU before cr-021 (`gpus: []` on
-# Apple silicon) and every package's uv.lock is Linux-only. It joins `everything`, `platform` and the BiRefNet/SDXL
-# extras when all land.
+# No suite runs models on a Mac's GPU: MPS returns as a varena backend, and its suite with it (cl-870).
 
 everything = ["cli", "imports", "cpu", "model", "gpu", "gpu-datacenter", "varena", "pkg:*"]
 release = ["everything", "os:macos", "os:windows", "cli-release"]
