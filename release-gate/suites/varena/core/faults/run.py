@@ -20,23 +20,45 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import TypeAlias, TypedDict, cast
 
 HERE = Path(__file__).resolve().parent
 PROBLEM_OUTCOMES = {"corrupt", "device_fault", "untyped", "wrong_refusal"}
 STALL = 45.0
 # The cells whose point is a page fault: the rest of the suite fails on any Xid.
 FAULTS = {"tool_guard": {31}}
+JSON: TypeAlias = str | int | float | bool | None | list["JSON"] | dict[str, "JSON"]
+Step: TypeAlias = dict[str, JSON]  # one JSON line a role printed (cells.py's `say`)
+Cell: TypeAlias = Callable[["Context"], None]
+
+
+class CellResult(TypedDict):
+    cell: str
+    result: str  # PASS, FAIL or N/A
+    problems: list[str]
+    xids: list[int]
+    seconds: float
+    outcomes: dict[str, JSON]
+    notes: dict[str, JSON]
+
+
+class Args(argparse.Namespace):
+    out: Path
+    cells: list[str]
 
 
 class Nvml:
     """Xid events and used memory, with no kernel log. Rentals have none."""
 
     class Event(ctypes.Structure):
+        data: int
         _fields_ = [("device", ctypes.c_void_p), ("type", ctypes.c_ulonglong), ("data", ctypes.c_ulonglong),
                     ("gi", ctypes.c_uint), ("ci", ctypes.c_uint)]
 
     class Memory(ctypes.Structure):
+        used: int
         _fields_ = [("total", ctypes.c_ulonglong), ("free", ctypes.c_ulonglong), ("used", ctypes.c_ulonglong)]
 
     def __init__(self) -> None:
@@ -68,7 +90,7 @@ class Child:
         self.ctx, self.role = ctx, role
         self.err = (ctx.dir / f"{role}.err").open("w")
         self.log = (ctx.dir / f"{role}.out").open("w")
-        self.steps: list[dict] = []
+        self.steps: list[Step] = []
         self.last = time.monotonic()
         self.killed = False
         self.process = subprocess.Popen(
@@ -78,6 +100,7 @@ class Child:
         self.reader.start()
 
     def _read(self) -> None:
+        assert self.process.stdout is not None
         for line in self.process.stdout:
             self.log.write(line)
             self.log.flush()
@@ -90,7 +113,7 @@ class Child:
     def alive(self) -> bool:
         return self.process.poll() is None
 
-    def step(self, name: str, stall: float = STALL) -> dict | None:
+    def step(self, name: str, stall: float = STALL) -> Step | None:
         """The named step, or None once the role stops making progress or ends without it."""
         while True:
             for step in self.steps:
@@ -109,7 +132,7 @@ class Child:
             time.sleep(0.002)
 
     def last_step(self) -> str:
-        return self.steps[-1].get("step", "?") if self.steps else "none"
+        return cast(str, self.steps[-1].get("step", "?")) if self.steps else "none"  # `say` names each step
 
     def kill(self) -> None:
         self.killed = True
@@ -117,7 +140,7 @@ class Child:
             os.killpg(self.process.pid, signal.SIGKILL)
         self.process.wait()
 
-    def finish(self, stall: float = STALL) -> dict | None:
+    def finish(self, stall: float = STALL) -> Step | None:
         """Wait for it to end, watching progress, then read its verdict."""
         while self.alive():
             if time.monotonic() - self.last > stall:
@@ -136,7 +159,7 @@ class Context:
         self.dir = root / cell
         self.dir.mkdir(parents=True, exist_ok=True)
         self.problems: list[str] = []
-        self.notes: dict[str, object] = {}
+        self.notes: dict[str, JSON] = {}
         self.children: list[Child] = []
         self.env = {"FAULT_DIR": str(self.dir)}
 
@@ -151,7 +174,7 @@ class Context:
     def touch(self, name: str) -> None:
         (self.dir / name).touch()
 
-    def judged(self, child: Child, stall: float = STALL) -> dict | None:
+    def judged(self, child: Child, stall: float = STALL) -> Step | None:
         """A role's verdict, with anything wrong recorded."""
         result = child.finish(stall)
         if result is None:
@@ -173,7 +196,7 @@ def main_only(ctx: Context) -> None:
     ctx.judged(ctx.child("main"))
 
 
-def killed_during(delay: float = 0.0, **env: str):
+def killed_during(delay: float = 0.0, **env: str) -> Cell:
     """A peer keeps working while this executor dies at its `kill_me` step; a new one then joins."""
 
     def cell(ctx: Context) -> None:
@@ -200,7 +223,7 @@ def killed_during(delay: float = 0.0, **env: str):
         time.sleep(5)
         ctx.touch("stop")
         result = ctx.judged(peer)
-        if result and pid in result.get("ledger_pids", ()):
+        if result and pid in cast(Sequence[int], result.get("ledger_pids", ())):  # survivor's verdict: its ledger's pids
             ctx.problem("the killed executor still has a ledger row")
 
     return cell
@@ -280,7 +303,7 @@ def foreign_grab(ctx: Context) -> None:
     ctx.judged(worker)
 
 
-CELLS = {
+CELLS: dict[str, Cell] = {
     "kill_capture": killed_during(),
     "kill_replay": killed_during(delay=0.5),
     "kill_fill": killed_during(delay=0.2),
@@ -324,7 +347,7 @@ def compute_apps() -> str:
                           capture_output=True, text=True).stdout.strip()
 
 
-def run_cell(cell: str, root: Path, nvml: Nvml, baseline: int) -> dict:
+def run_cell(cell: str, root: Path, nvml: Nvml, baseline: int) -> CellResult:
     ctx = Context(cell, root, nvml)
     began = time.monotonic()
     try:
@@ -360,12 +383,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("cells", nargs="*")
-    args = parser.parse_args()
+    args = parser.parse_args(namespace=Args())
     args.out.mkdir(parents=True, exist_ok=True)
     nvml = Nvml()
     assert not compute_apps(), "the GPU is in use"
     baseline = nvml.used()
-    results = []
+    results: list[CellResult] = []
     for cell in args.cells or CELLS:
         result = run_cell(cell, args.out, nvml, baseline)
         results.append(result)

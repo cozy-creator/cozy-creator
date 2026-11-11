@@ -179,7 +179,7 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             let project = if all {
                 None
             } else {
-                Some(crate::project::current(ctx).await?.id)
+                Some(crate::project::identity(ctx).await?.id)
             };
             let query = list::Query { status: state, package, machine: on, project, before: None, limit };
             list::exec(ctx, query).await
@@ -200,7 +200,7 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
 
 
 async fn run(ctx: &Context, args: RunArgs) -> Result<ExitCode, Error> {
-    let project = crate::project::current(ctx).await?;
+    let project = crate::project::identity(ctx).await?;
     let within = project.id;
     let cwd = std::env::current_dir()
         .map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
@@ -270,7 +270,7 @@ pub(crate) fn paste(ctx: &Context, run: &Run) {
 pub(crate) fn local(ctx: &Context, raw: &str, cwd: &Path) -> Result<Option<(PathBuf, Option<String>)>, Error> {
     let Some(path) = api::target::local(raw, cwd, &ctx.user_home) else { return Ok(None) };
     let found = api::code::split(&path).ok_or_else(|| {
-        Error::new(Kind::NotFound, "target_not_found", format!("{raw} is not a package directory or a script here"))
+        Error::new(Kind::NotFound, "target_not_found", format!("Package directory or script not found: {raw}"))
     })?;
     Ok(Some(found))
 }
@@ -337,7 +337,7 @@ fn read_input(ctx: &Context, file: &Path, cwd: &Path) -> Result<(Map<String, Val
     let path = api::target::spelled(&file.to_string_lossy(), cwd, &ctx.user_home);
     let what = format!("--input {}", file.display());
     let text = std::fs::read_to_string(&path).map_err(|e| {
-        Error::new(Kind::NotFound, "input_unreadable", format!("{what}: {e}")).remedy("--input takes one JSON or YAML file holding the whole payload")
+        Error::new(Kind::NotFound, "input_unreadable", format!("Cannot read {what}: {e}"))
     })?;
     let yaml = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("yaml") || e.eq_ignore_ascii_case("yml"));
     let loaded = match serde_json::from_str(&text) {
@@ -345,7 +345,8 @@ fn read_input(ctx: &Context, file: &Path, cwd: &Path) -> Result<(Map<String, Val
         _ => api::yaml::to_json(&text).map_err(|e| Error::new(Kind::Validation, "input_invalid", format!("{what}: {e}")))?,
     };
     let Value::Object(loaded) = loaded else {
-        return Err(Error::new(Kind::Validation, "input_invalid", format!("{what} does not hold one object")));
+        return Err(Error::new(Kind::Validation, "input_invalid", format!("{what} must contain a JSON or YAML object"))
+            .next("cozy run --help"));
     };
     Ok((loaded, path.parent().map_or_else(|| cwd.to_owned(), Path::to_owned)))
 }

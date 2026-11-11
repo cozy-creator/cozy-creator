@@ -78,6 +78,27 @@ pub mod path {
     pub const OBJECTS_HELD: &str = "/v1/objects/held";
     /// `POST` an [`super::EstimateRequest`]: when each job would finish here; a quote, not a reservation.
     pub const ESTIMATE: &str = "/v1/estimate";
+    /// Remove one repository's locally cached model copies; never changes its origin.
+    pub const MODELS_REMOVE: &str = "/v1/models/remove";
+}
+
+/// Remove all locally cached releases and lanes of one model repository.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct RemoveModel {
+    pub model: String,
+}
+
+/// Local removal leaves active readers and content shared with other models intact.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct RemovedModel {
+    pub model: String,
+    pub removed: bool,
+    /// Bytes removed from cache object paths, not a measurement of freed filesystem blocks.
+    pub cache_bytes_removed: u64,
+    /// Candidate bytes kept because they are in use, shared, or could not safely be removed.
+    pub retained_bytes: u64,
 }
 
 /// The header naming the byte ranges of an object the machine holds: `0-1048575,2097152-4194303`
@@ -1103,6 +1124,8 @@ pub struct Checkpoint {
     pub precision: String,
     /// `sha256:<hex>` of its header.
     pub manifest: String,
+    /// `model`, `lora`, or `unknown`; empty from older machines.
+    pub role: String,
 }
 
 /// One GPU, as measured at boot: identity, memory, driver and family.

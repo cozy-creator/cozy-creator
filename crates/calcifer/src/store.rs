@@ -16,6 +16,10 @@ use api::{
 };
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params};
 
+#[cfg(test)]
+#[path = "store_listing_tests.rs"]
+mod listing_tests;
+
 /// The store's version (`PRAGMA user_version`), and the schema a new store is made with. A store
 /// at another version is not read.
 pub(crate) const VERSION: i64 = 7;
@@ -489,6 +493,7 @@ impl Store {
             }
             other => return Err(StoreError::Version(other)),
         }
+        run_list_indexes(&writer)?;
         writer.execute_batch(ANSWERS)?;
         writer.execute_batch(crate::state::TABLES)?;
         crate::state::project_names(&writer)?;
@@ -502,8 +507,14 @@ impl Store {
         })
     }
 
+    /// Waiting for another reader, loading rows and opening private records may block on I/O.
+    /// Hand the async worker back before taking the lock, as writes do before their commit.
     pub(crate) fn read<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
-        f(&self.reader.lock().unwrap_or_else(|e| e.into_inner()))
+        let read = || f(&self.reader.lock().unwrap_or_else(|e| e.into_inner()));
+        match tokio::runtime::Handle::try_current().map(|h| h.runtime_flavor()) {
+            Ok(tokio::runtime::RuntimeFlavor::MultiThread) => tokio::task::block_in_place(read),
+            _ => read(),
+        }
     }
 
     /// One transaction. A commit can wait seconds on a busy disk's write-back: on a multi-thread
@@ -1211,13 +1222,14 @@ impl Store {
                 Status::Canceled => "canceled",
             });
             let before = filter.before.map_or(i64::MAX, |n| n as i64);
+            let private_target = private_run_target();
             let private: bool = conn.query_row(
-                &format!("SELECT EXISTS(SELECT 1 {RUN_LIST_SCOPE} AND {PRIVATE_RUN_TARGET})"),
-                params![before, status, filter.machine, filter.out_dir, vault::PAYLOAD_PREFIX.len() as i64, vault::PAYLOAD_PREFIX],
+                &format!("SELECT EXISTS(SELECT 1 {RUN_LIST_SCOPE} AND {private_target})"),
+                params![before, status, filter.machine, filter.out_dir],
                 |row| row.get(0),
             )?;
             if private {
-                return runs_with_private_targets(conn, filter, before, status);
+                return runs_with_private_targets(conn, filter, before, status, &private_target);
             }
             let matching = params![before, status, filter.target, filter.machine, filter.out_dir];
             let total: i64 = conn.query_row(&format!("SELECT COUNT(*) {MATCHING}"), matching, |r| r.get(0))?;
@@ -1979,24 +1991,40 @@ const RUN_LIST_SCOPE: &str = "FROM runs WHERE number < ?1
     AND (?3 IS NULL OR machine = ?3) AND (?4 IS NULL OR out_dir = ?4)";
 // Spec also classifies the old sealed-spec/plaintext-target representation. Otherwise a
 // locked legacy row could reveal its target through prefix-filter membership.
-const PRIVATE_RUN_TARGET: &str = "(substr(CAST(target AS BLOB), 1, ?5) = ?6 OR substr(spec, 1, ?5) = ?6)";
+// Literals let SQLite match the expression and partial indexes; bind parameters cannot.
+fn private_run_target() -> String {
+    let length = vault::PAYLOAD_PREFIX.len();
+    let prefix = hex::encode(vault::PAYLOAD_PREFIX);
+    format!("(substr(CAST(target AS BLOB),1,{length})=X'{prefix}' OR substr(spec,1,{length})=X'{prefix}')")
+}
+
+fn run_list_indexes(conn: &Connection) -> Result<()> {
+    let private = private_run_target();
+    conn.execute_batch(&format!(
+        "CREATE INDEX IF NOT EXISTS runs_private_targets ON runs(number) WHERE {private};
+         CREATE INDEX IF NOT EXISTS runs_list_metadata ON runs(number,target,state,status,machine,out_dir,id,{private});"
+    ))?;
+    Ok(())
+}
 
 /// Only private target slots need opening to choose a page. Ordinary history keeps its
 /// SQL prefix/count/limit path; full specs are decoded only for the requested merged page.
-fn runs_with_private_targets(conn: &Connection, filter: &RunFilter, before: i64, status: Option<&str>) -> Result<(Vec<RunRow>, u64, Vec<String>)> {
+fn runs_with_private_targets(conn: &Connection, filter: &RunFilter, before: i64, status: Option<&str>, private_target: &str) -> Result<(Vec<RunRow>, u64, Vec<String>)> {
     let prefix = vault::PAYLOAD_PREFIX;
     let length = prefix.len() as i64;
     let limit = filter.limit.min(i64::MAX as u64) as i64;
-    let public = format!("{RUN_LIST_SCOPE} AND NOT {PRIVATE_RUN_TARGET}
-        AND target NOT LIKE '%/project-adapter-%' AND (?7 IS NULL OR substr(target, 1, length(?7)) = ?7)");
+    // = 0 preserves NOT's NULL result for an empty legacy spec, while SQLite can read
+    // the indexed OR expression instead of rewriting NOT into two blob reads.
+    let public = format!("{RUN_LIST_SCOPE} AND {private_target} = 0
+        AND target NOT LIKE '%/project-adapter-%' AND (?5 IS NULL OR substr(target, 1, length(?5)) = ?5)");
     let public_count: u64 = conn.query_row(
         &format!("SELECT COUNT(*) {public}"),
-        params![before, status, filter.machine, filter.out_dir, length, prefix, filter.target],
+        params![before, status, filter.machine, filter.out_dir, filter.target],
         |row| Ok(row.get::<_, i64>(0)? as u64),
     )?;
     let mut candidates: Vec<(u64, String)> = {
-        let mut statement = conn.prepare(&format!("SELECT number, id {public} ORDER BY number DESC LIMIT ?8"))?;
-        statement.query_map(params![before, status, filter.machine, filter.out_dir, length, prefix, filter.target, limit], |row| {
+        let mut statement = conn.prepare(&format!("SELECT number, id {public} ORDER BY number DESC LIMIT ?6"))?;
+        statement.query_map(params![before, status, filter.machine, filter.out_dir, filter.target, limit], |row| {
             Ok((row.get::<_, i64>(0)? as u64, row.get(1)?))
         })?.collect::<rusqlite::Result<_>>()?
     };
@@ -2004,7 +2032,7 @@ fn runs_with_private_targets(conn: &Connection, filter: &RunFilter, before: i64,
     let mut private_page = 0i64;
     let mut statement = conn.prepare(&format!(
         "SELECT number, id, target, CASE WHEN substr(CAST(target AS BLOB), 1, ?5) = ?6 THEN NULL ELSE spec END
-         {RUN_LIST_SCOPE} AND {PRIVATE_RUN_TARGET} ORDER BY number DESC"
+         {RUN_LIST_SCOPE} AND {private_target} ORDER BY number DESC"
     ))?;
     let targets = statement.query_map(params![before, status, filter.machine, filter.out_dir, length, prefix], |row| {
         Ok((row.get::<_, i64>(0)? as u64, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, Option<Vec<u8>>>(3)?))
@@ -2645,3 +2673,7 @@ fn corrupt(what: &str) -> StoreError {
 pub(crate) fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
 }
+
+#[cfg(test)]
+#[path = "store_tests.rs"]
+mod tests;

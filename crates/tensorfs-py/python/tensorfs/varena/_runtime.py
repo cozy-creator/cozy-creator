@@ -9,12 +9,13 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from .. import _ext
+from ._facts import CacheOwnerFacts, DeviceStats, PagesStats, PhaseControllerFacts, PlanFacts
 if TYPE_CHECKING:
     from torch import Tensor
-    from typing_extensions import Buffer
+    from typing_extensions import Buffer, CapsuleType
 
 
 def activate(device: int, *, shared: bool) -> None:
@@ -71,7 +72,7 @@ class CacheOwner:
     def suspend(self) -> None:
         self._native.suspend()
 
-    def facts(self) -> dict[str, object]:
+    def facts(self) -> CacheOwnerFacts:
         return self._native.facts()
 
     def defer_close(self) -> None:
@@ -103,7 +104,7 @@ class Device:
         """A Region of `bytes` from `source`: address space only, until it is used."""
         return Region(self._native.region(bytes, source._native))
 
-    def stats(self) -> dict[str, int]:
+    def stats(self) -> DeviceStats:
         return self._native.stats()
 
 
@@ -125,7 +126,7 @@ class Plan:
     def deactivate(self) -> None:
         self._native.deactivate()
 
-    def facts(self) -> dict[str, Any]:
+    def facts(self) -> PlanFacts:
         return self._native.facts()
 
 
@@ -135,11 +136,13 @@ class PhaseController:
     def __init__(self, device: Device) -> None:
         self._native = _ext._VarenaPhaseController(device._native)
 
-    def wrap(self, capsule, key: str | None, regions: Sequence[Region], *, execution_key: str | None = None):
+    def wrap(
+        self, capsule: CapsuleType, key: str | None, regions: Sequence[Region], *, execution_key: str | None = None
+    ) -> CapsuleType:
         """Decorate native completion; key=None observes without entering a phase."""
         return self._native.wrap(capsule, key, [region._native for region in regions], execution_key=execution_key)
 
-    def facts(self) -> dict[str, object]:
+    def facts(self) -> PhaseControllerFacts:
         return self._native.facts()
 
 
@@ -185,7 +188,7 @@ class Pages:
         """The fills since the last call: (set, block, bytes, origin, ahead, ns, unix ms)."""
         return self._native.drain()
 
-    def stats(self) -> dict[str, Any]:
+    def stats(self) -> PagesStats:
         return self._native.stats()
 
 
@@ -316,10 +319,10 @@ class Use:
     native Pin owner, and Storage references survive this Python object."""
 
     def __init__(self, native: _ext._VarenaUse) -> None:
-        import torch
+        from torch.utils.dlpack import from_dlpack
 
         self._native = native
-        self.tensor = torch.from_dlpack(native)
+        self.tensor = from_dlpack(native)
 
     def consume_on(self, stream: int) -> None:
         """Declare a CUDA stream (``torch.cuda.Stream.cuda_stream``) that uses this storage.

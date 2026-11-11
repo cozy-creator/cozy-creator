@@ -1,12 +1,23 @@
 """Physical format operations; ordinary reads use Component.tensors."""
 
 from collections.abc import Mapping, Sequence
-from typing import TypedDict
+from typing import TypedDict, final
 
 from typing_extensions import Buffer
 
 from ._ext import Checkpoint, Encoded
 from .api import DLPack
+
+__all__ = [
+    "Part",
+    "QuantizationStats",
+    "decode_into",
+    "parts",
+    "quantize",
+    "quantize_measured",
+    "quantization_implementation",
+    "normalization_implementation",
+]
 
 class QuantizationStats(TypedDict):
     """Native F64 acceptance statistics over the supplied original F32 values."""
@@ -17,6 +28,7 @@ class QuantizationStats(TypedDict):
     energy: float
     saturated: int
 
+@final
 class Part:
     """One stored part: a plain tensor's data (role `""`) or an encoded tensor's part."""
 

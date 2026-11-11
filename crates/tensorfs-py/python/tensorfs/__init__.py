@@ -80,6 +80,7 @@ __all__ = [
     "UnsupportedError",
     "VerificationReport",
     "Writer",
+    "raw",
     "__version__",
     "ceiling",
     "configure",

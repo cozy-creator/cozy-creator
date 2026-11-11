@@ -674,7 +674,7 @@ impl Binder<'_> {
                 (None, Some(Sent::Tree(_))) => return Err(invalid("asset_not_a_file", format!("{field}: {named} is a folder, not a file"))),
                 (None, Some(Sent::File(_))) | (None, None) if named.starts_with("sha256:") || self.terms.sent(&named).is_some() => {
                     return Err(Error::new(Kind::NotFound, "file_not_held", format!("{field}: Calcifer holds no file {named}"))
-                        .remedy("PUT its bytes to /v1/files/sha256:<hex> first"));
+                        .remedy(format!("Attach the file again with --file {field}=<path>, then retry.")));
                 }
                 (None, _) => return Err(not_sent(&field, &named)),
             };
@@ -755,7 +755,7 @@ impl Binder<'_> {
                 (None, Err(_)) => return Err(not_sent(&field, &source)),
             };
             let not_held = |what: String| {
-                Error::new(Kind::NotFound, "file_not_held", format!("{field}: Calcifer holds no {what}")).remedy("PUT its bytes to /v1/files/sha256:<hex> first")
+                Error::new(Kind::NotFound, "file_not_held", format!("{field}: Calcifer holds no {what}")).remedy(format!("Attach the folder again with {field}=./path, then retry."))
             };
             let path = self.terms.held(&digest).ok_or_else(|| not_held(format!("tree document {digest}")))?;
             let document = std::fs::read(&path).map_err(|e| Error::new(Kind::Internal, "tree_unreadable", format!("{field}: {e}")))?;
@@ -1812,8 +1812,8 @@ pub(crate) fn sniff(path: &Path) -> Result<Sniffed, Error> {
 
 /// `what` names a path the request sent nothing under: Calcifer reads no client's disk.
 fn not_sent(what: &str, path: &str) -> Error {
-    Error::new(Kind::NotFound, "input_file_absent", format!("{what}: no file {path} came with the request"))
-        .remedy("name a file that exists; a client sends each by content (PUT /v1/files) and names it in `paths`")
+    Error::new(Kind::NotFound, "input_file_absent", format!("{what}: {path} was not attached"))
+        .remedy("Check that the path exists, then retry. Attach file inputs with --file <field>=<path>.")
 }
 
 /// A slot's or callable's name.

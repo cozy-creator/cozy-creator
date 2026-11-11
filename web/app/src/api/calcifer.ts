@@ -449,7 +449,11 @@ export type Card = { x: number, y: number, w?: number | null, };
 /**
  * One checkpoint of a held model: its release, lane, precision and header.
  */
-export type Checkpoint = { release: string, lane: string, precision?: string, manifest: string, };
+export type Checkpoint = { release: string, lane: string, precision?: string, manifest: string,
+/**
+ * `model`, `lora`, or `unknown`; empty from older machines.
+ */
+role?: string, };
 
 /**
  * A weights output's commit: `revision` (`sha256:<tree>`) of `repo_id`, in `lane`.
@@ -753,7 +757,11 @@ export type HeldModel = { machine: string, model: string, release: string, lane:
 /**
  * Its header's precision lane (`int8`, …).
  */
-precision: string, checkpoint: string, bytes: number,
+precision: string, checkpoint: string,
+/**
+ * `model`, `lora`, or `unknown`; empty from older machines.
+ */
+role?: string, bytes: number,
 /**
  * The repository's bytes other held models share.
  */
@@ -1917,7 +1925,7 @@ eta_confidence?: number | null,
 eta_basis?: EtaBasis | null, };
 
 /**
- * `GET /v1/projects/{id}/address`: the indexed identity used to open a browser route.
+ * `GET /v1/projects/{id}/address`: project identity without evaluating its assets; accepts a containing directory.
  */
 export type ProjectAddress = { id: string, code: string, };
 
@@ -2125,6 +2133,24 @@ next?: Array<string>, warnings?: Array<string>, };
  * Why a run binds and runs the release it does.
  */
 export type ReleaseFrom = "asked" | "installed" | "latest" | "local";
+
+/**
+ * Remove all locally cached releases and lanes of one model repository.
+ */
+export type RemoveModel = { model: string, };
+
+/**
+ * Local removal leaves active readers and content shared with other models intact.
+ */
+export type RemovedModel = { model: string, removed: boolean,
+/**
+ * Bytes removed from cache object paths, not a measurement of freed filesystem blocks.
+ */
+cache_bytes_removed: number,
+/**
+ * Candidate bytes kept because they are in use, shared, or could not safely be removed.
+ */
+retained_bytes: number, };
 
 /**
  * One release a machine no longer holds.

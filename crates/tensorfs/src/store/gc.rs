@@ -19,6 +19,16 @@ use super::retention::{list, Use};
 use super::{fail, invalid, is_digest, same_family, Result, Store};
 use crate::format::{self, is_header, Header, ObjectRef, Tree, HEADER_FORMAT, TREE_FORMAT};
 
+/// What removing one local repository reference did to its cached objects.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RemovedModel {
+    pub removed: bool,
+    /// Logical bytes unlinked from cache object paths; hardlinks may retain their storage.
+    pub cache_bytes_removed: u64,
+    /// Candidate bytes still held by readers, other references/uses, or file locks.
+    pub retained_bytes: u64,
+}
+
 /// Documents bigger than this are never read as trees or headers.
 const MAX_DOCUMENT: u64 = 256 << 20;
 
@@ -112,6 +122,73 @@ enum Document {
 }
 
 impl Store {
+    /// Removes one model's ref and its direct checkpoint uses, then only its unshared cached
+    /// objects. Live holds, external header files, other refs and other uses keep their bytes.
+    /// A missing ref is a no-op. Origin stores cannot be changed through this operation.
+    pub fn remove_cached_model(&self, name: &str) -> Result<RemovedModel> {
+        if !self.cache {
+            return Err(invalid(self.root(), "local removal requires a cache store"));
+        }
+        let mut collections = self.collections.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fence = super::retention::fence_file(self)?;
+        fence.lock().map_err(fail("lock", self.root()))?;
+        let _refs = self.lock("refs")?;
+        self.restore_trash()?;
+        let Some(repo) = self.get_ref(name)? else { return Ok(RemovedModel::default()) };
+        let mut candidates = BTreeSet::new();
+        let mut own_uses = BTreeSet::new();
+        for object in repo.roots() {
+            own_uses.insert(object.sha256.clone());
+            if let Some(Document::Tree(tree)) = self.document(object)? {
+                own_uses.extend(tree.files.iter().filter(|(path, _)| is_header(path)).map(|(_, header)| header.sha256.clone()));
+            }
+            candidates.extend(self.closure(object)?);
+        }
+        // Read every keeper before changing metadata: an unreadable retention source fails
+        // closed. Cached refs count here too, even though ordinary pressure GC may evict them.
+        let mut keep: BTreeSet<String> = self.holders_except(Some(&repo.name))?.into_keys().collect();
+        let mut other_models = BTreeSet::new();
+        for other in self.refs()?.into_iter().filter(|other| !other.name.eq_ignore_ascii_case(&repo.name)) {
+            for object in other.roots() {
+                other_models.extend(self.closure(object)?.into_iter().map(|object| object.sha256));
+            }
+        }
+        keep.extend(other_models.iter().cloned());
+        let uses = self.uses(&keep)?;
+        let mut remove_uses = Vec::new();
+        for used in uses {
+            if own_uses.contains(&used.name) && !other_models.contains(&used.name) {
+                remove_uses.push(used.name);
+            } else {
+                keep.insert(used.name);
+                keep.extend(used.digests);
+            }
+        }
+        self.remove_record(&self.ref_path(&repo.name)?)?;
+        for name in remove_uses {
+            self.remove_record(&self.root.join("uses").join(name))?;
+        }
+        let mut removed = RemovedModel { removed: true, ..Default::default() };
+        let before = SystemTime::now();
+        for object in candidates {
+            let path = self.path(&object)?;
+            let length = match fs::symlink_metadata(&path) {
+                Ok(metadata) if metadata.is_file() => metadata.len(),
+                Ok(_) => continue,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(fail("stat", &path)(error)),
+            };
+            let discarded = if keep.contains(&object.sha256) { None } else { self.discard(&object.sha256, before)? };
+            match discarded {
+                Some(bytes) => removed.cache_bytes_removed += bytes,
+                None => removed.retained_bytes += length,
+            }
+        }
+        self.stamp_eviction()?;
+        *collections += 1;
+        Ok(removed)
+    }
+
     /// What `root` keeps alive, each once: `root`, and for a tree its files and its header's
     /// chunks and assets; for a header, its chunks and assets.
     pub fn closure(&self, root: &ObjectRef) -> Result<Vec<ObjectRef>> {
@@ -442,6 +519,10 @@ fn exclusive(path: &std::path::Path) -> Result<Option<File>> {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "removal_tests.rs"]
+mod removal_tests;
 
 /// Bytes for people: MiB to a tenth below a GiB, else GiB to a hundredth.
 fn size(bytes: u64) -> String {

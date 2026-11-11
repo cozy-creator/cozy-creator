@@ -86,8 +86,8 @@ pub(crate) async fn yank(ctx: &Context, package: &PackageRef, undo: bool) -> Res
         return Err(Error::new(
             Kind::Usage,
             "yank_release_required",
-            "name the release to yank: [org/]name@release",
-        ));
+            "Specify a release to yank",
+        ).next(format!("cozy package yank {package}@<release>")));
     };
     let hub = At { hub: Some(ctx.hub().to_string()) };
     let at = path(&["v1", "packages", &package.org, &package.name, "releases", release, "yank"]);
@@ -137,9 +137,9 @@ pub(crate) async fn delete(ctx: &Context, package: &PackageRef) -> Result<ExitCo
         return Err(Error::new(
             Kind::Usage,
             "package_release_not_taken",
-            format!("{package} names a release; delete takes the whole package, [org/]name"),
+            format!("Delete removes an entire package; {package} selects one release"),
         )
-        .remedy(format!("cozy package yank {package}")));
+        .next(format!("cozy package yank {package}")));
     }
     let hub = ctx.hub();
     if !ctx.yes {
@@ -151,7 +151,7 @@ pub(crate) async fn delete(ctx: &Context, package: &PackageRef) -> Result<ExitCo
                 hub
             ),
         )
-        .remedy("run it again with --yes"));
+        .next(format!("cozy package delete {package} --yes")));
     }
     let at = path(&["v1", "packages", &package.org, &package.name]);
     let result: PackageDeleted = ctx.calcifer().await?.delete_query(&at, &At { hub: Some(hub.to_string()) }).await?;

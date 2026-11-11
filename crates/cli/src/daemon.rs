@@ -119,7 +119,7 @@ pub(crate) async fn machine_log(
             return Err(Error::new(
                 Kind::Usage,
                 "log_not_kept",
-                format!("{name} keeps no Calcifer log: Calcifer is this computer's"),
+                format!("Calcifer logs are local; {name} has none"),
             )
             .next("cozy machine logs local calcifer"));
         }
@@ -185,7 +185,7 @@ async fn calcifer_log(ctx: &Context, q: &LogQuery) -> Result<ExitCode, Error> {
             Kind::NotFound,
             "log_not_found",
             format!(
-                "no Calcifer has run here: {} does not exist",
+                "Calcifer log not found: {}",
                 path.display()
             ),
         )

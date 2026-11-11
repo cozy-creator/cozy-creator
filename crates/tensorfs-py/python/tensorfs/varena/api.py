@@ -12,13 +12,33 @@ import ctypes as C
 import operator
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
-from typing import TYPE_CHECKING, Literal
+from types import TracebackType
+from typing import TYPE_CHECKING, Literal, TypedDict
 
 from .. import _ext
-from .sources import Source, dtype_descriptor
+from .sources import Source as Source
+from .sources import dtype_descriptor
 
 if TYPE_CHECKING:
     import torch
+    from _ctypes import _CDataType
+    from ctypes import _CArgObject, _NamedFuncPointer
+
+    from typing_extensions import Self
+
+    #: What a declared native call takes: a ctypes value, a `byref`, or a Python int/bytes it converts.
+    _Arg = _CDataType | _CArgObject | int | bytes | None
+
+
+class SplitSelection(TypedDict):
+    """`Gpu.split_select`'s choice: pass it to `Plan.split`."""
+
+    index: int
+    bytes: int
+    measured: int
+    budget: int
+    generation: int
+    id: str
 
 
 class Error(RuntimeError):
@@ -151,8 +171,8 @@ class _HostPart(C.Structure):
 _lib = C.CDLL(_ext.__file__)
 
 
-def _declare(name: str, args: list, result=C.c_int32):
-    function = getattr(_lib, "vr_v1_" + name)
+def _declare(name: str, args: list[type[_CDataType]], result: type[_CDataType] = C.c_int32) -> _NamedFuncPointer:
+    function: _NamedFuncPointer = getattr(_lib, "vr_v1_" + name)
     function.argtypes = args
     function.restype = result
     return function
@@ -163,7 +183,7 @@ _declare("core_identity", [], _u)
 _declare("last_error", [], C.c_char_p)
 _declare("error_requested_bytes", [], _u)
 _declare("retirement_stats", [C.POINTER(_RetirementStats), C.c_size_t])
-for _name, _args in {
+_abi: dict[str, list[type[_CDataType]]] = {
     "defer_close": [_u],
     "gpu_open": [C.c_int32, _h],
     "gpu_close": [_u],
@@ -196,7 +216,8 @@ for _name, _args in {
     "split_select": [_u, C.c_char_p, C.POINTER(_SplitChoice), C.c_size_t, _u, C.POINTER(_SplitSelection), C.c_size_t],
     "split_begin": [_u, C.c_char_p, C.c_char_p, _u, _u, _h],
     "split_end": [_u, _u, C.c_int32, C.POINTER(_SplitEnd), C.c_size_t],
-}.items():
+}
+for _name, _args in _abi.items():
     _declare(_name, _args)
 
 if (
@@ -209,7 +230,7 @@ if (
 
 
 def core_identity() -> int:
-    return _lib.vr_v1_core_identity()
+    return int(_lib.vr_v1_core_identity())
 
 
 def retirement_stats() -> dict[str, int]:
@@ -219,7 +240,7 @@ def retirement_stats() -> dict[str, int]:
     return _fields(value)
 
 
-def _call(name: str, *args) -> None:
+def _call(name: str, *args: _Arg) -> None:
     code = getattr(_lib, "vr_v1_" + name)(*args)
     if code:
         message = _lib.vr_v1_last_error().decode("utf-8", "replace")
@@ -239,14 +260,14 @@ def _text(value: str) -> bytes:
     return value.encode("utf-8")
 
 
-def _new(name: str, *args) -> int:
+def _new(name: str, *args: _Arg) -> int:
     out = _u()
     _call(name, *args, C.byref(out))
     return out.value
 
 
 def _fields(value: C.Structure) -> dict[str, int]:
-    return {name: getattr(value, name) for name, _ in value._fields_}
+    return {field[0]: getattr(value, field[0]) for field in value._fields_}
 
 
 class _Owned:
@@ -265,12 +286,14 @@ class _Owned:
             _call("defer_close", self._handle)
             self._handle = 0
 
-    def __enter__(self):
+    def __enter__(self) -> Self:
         if not self._handle:
             raise Invalid("handle is closed")
         return self
 
-    def __exit__(self, *exc) -> None:
+    def __exit__(
+        self, kind: type[BaseException] | None, error: BaseException | None, traceback: TracebackType | None
+    ) -> None:
         self.close()
 
     def __del__(self) -> None:
@@ -290,9 +313,9 @@ class Gpu(_Owned):
         self.device = device
 
     def region(self, data: Source | bytes | bytearray | memoryview) -> Region:
-        data = data.data if isinstance(data, Source) else bytes(data)
-        region = Region(_new("region_from_host", self._handle, data, len(data)), self)
-        region.nbytes = len(data)
+        host = data.data if isinstance(data, Source) else bytes(data)
+        region = Region(_new("region_from_host", self._handle, host, len(host)), self)
+        region.nbytes = len(host)
         return region
 
     def region_parts(self, parts: Sequence[tuple[int, int]], keep: object) -> tuple[Region, tuple[int, ...]]:
@@ -367,14 +390,17 @@ class Gpu(_Owned):
         _call("room", self._handle, C.byref(value), C.sizeof(value))
         return _fields(value)
 
-    def split_select(self, key: str, choices: Sequence[tuple[str, int]], stream: int) -> dict[str, int | str]:
+    def split_select(self, key: str, choices: Sequence[tuple[str, int]], stream: int) -> SplitSelection:
         """Legal levels, largest first, as (id, estimated full bytes). The core picks the largest
         under its budget, reported with its `id`; pass the result to `Plan.split`. Nothing is reserved.
         """
         menu = (_SplitChoice * len(choices))(*(_SplitChoice(_text(id), _uint(bytes)) for id, bytes in choices))
         value = _SplitSelection()
         _call("split_select", self._handle, _text(key), menu, len(menu), _uint(stream), C.byref(value), C.sizeof(value))
-        return {**_fields(value), "id": choices[value.index][0]}
+        return SplitSelection(
+            index=value.index, bytes=value.bytes, measured=value.measured, budget=value.budget,
+            generation=value.generation, id=choices[value.index][0],
+        )
 
 
 def open(device: int = 0) -> Gpu:
@@ -383,6 +409,8 @@ def open(device: int = 0) -> Gpu:
 
 class Region(_Owned):
     _close = "region_close"
+    #: The bytes it covers, set by the Gpu call that made it.
+    nbytes: int
 
     def __init__(self, handle: int, gpu: Gpu) -> None:
         super().__init__(handle)
@@ -430,7 +458,9 @@ class Split:
     def __enter__(self) -> Split:
         return self
 
-    def __exit__(self, kind, *_) -> None:
+    def __exit__(
+        self, kind: type[BaseException] | None, error: BaseException | None, traceback: TracebackType | None
+    ) -> None:
         value = _SplitEnd()
         _call("split_end", self.plan._handle, self.handle, int(kind is None), C.byref(value), C.sizeof(value))
         self.peak, self.counted = value.peak, value.counted
@@ -534,8 +564,8 @@ class Cache(_Owned, CacheView):
     def __init__(self, handle: int, gpu: Gpu) -> None:
         _Owned.__init__(self, handle)
         self.gpu = gpu
-        self._callback = None
-        self._owner = None
+        self._callback: Callable[[int], bool] | None = None
+        self._owner: _ext._VarenaCacheOwner | None = None
 
     def close(self) -> None:
         # The ABI Cache retains/drains the same native weak callback owner, including
@@ -574,7 +604,7 @@ class Plan(_Owned):
         else:
             _call("phase_leave", self._handle, 1)
 
-    def split(self, key: str, selection: Mapping[str, int | str], stream: int) -> Split:
+    def split(self, key: str, selection: SplitSelection, stream: int) -> Split:
         """Inside a phase: measure the level `Gpu.split_select` chose. Allocate it all on `stream`."""
         handle = _new("split_begin", self._handle, _text(key), _text(selection["id"]), _uint(stream), selection["generation"])
         return Split(self, handle)

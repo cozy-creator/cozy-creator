@@ -1232,6 +1232,22 @@ pub(crate) async fn models(
     Ok(Json(asked(&api, &name, query).await?.0.models()))
 }
 
+/// Removes cached releases and lanes only from this computer, never from a Hub or rental.
+pub(crate) async fn remove_model(
+    State(api): State<Arc<Api>>,
+    UrlPath(name): UrlPath<String>,
+    body: Result<Bytes, axum::extract::rejection::BytesRejection>,
+) -> Result<Json<wire::RemovedModel>, Refusal> {
+    if !name.eq_ignore_ascii_case("local") {
+        return Err(Refusal(Error::new(Kind::Usage, "model_remove_local_only", "Model removal is available only on local")));
+    }
+    let asked: wire::RemoveModel = crate::api::parse(&body?)?;
+    api.machines.local_up().await.map_err(Refusal)?;
+    let (row, link) = api.machines.linked("local").map_err(Refusal)?;
+    let removed = link.remove_model(&asked).await.map_err(|error| Refusal(refusal(&row.name, error)))?;
+    Ok(Json(removed))
+}
+
 /// One of Calcifer's machines with the Status frame it answered now, recorded as its latest:
 /// one that cannot answer is `machine_unavailable`, never its last picture.
 pub(crate) async fn fresh(machines: &Arc<Machines>, text: &str) -> Result<Machine, Error> {
@@ -1703,6 +1719,7 @@ fn status(frame: &v1::StatusFrame, hubs: &Hubs) -> MachineStatus {
                         lane: c.lane.clone(),
                         precision: c.precision.clone(),
                         manifest: c.manifest.clone(),
+                        role: c.role.clone(),
                     })
                     .collect(),
             })

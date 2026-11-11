@@ -11,6 +11,7 @@ mod json;
 pub use json::config_json;
 pub mod layout;
 mod repo;
+mod role;
 mod value;
 
 pub use decode::{check, decode, grid::ScaleLayout, PartBytes, SCHEMES};

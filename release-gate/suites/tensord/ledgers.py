@@ -5,7 +5,7 @@ import os
 import struct
 
 HEADER, ROW, ROWS = 3, 9, 32
-tables = {}
+tables: dict[str, list[dict[str, int]]] = {}
 for path in glob.glob("/dev/shm/cozy-varena-*/v6-*"):
     words = struct.unpack("<512Q", open(path, "rb").read(4096))
     rows = (words[HEADER + i * ROW : HEADER + (i + 1) * ROW] for i in range(ROWS))

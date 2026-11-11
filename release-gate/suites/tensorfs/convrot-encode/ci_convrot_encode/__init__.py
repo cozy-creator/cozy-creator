@@ -5,9 +5,13 @@ import inspect
 import json
 import tempfile
 from pathlib import Path
+from typing import TYPE_CHECKING, Unpack, cast
 
 import msgspec
 from cozy_runtime.author import App, Context
+
+if TYPE_CHECKING:
+    from ._types import F32, CaseRecord, Options, Overrides, Parts, Refusal, Stats
 
 app = App()
 
@@ -33,16 +37,16 @@ def run(payload: Request, ctx: Context) -> Report:
 
     params = {"rotation": "kron_regular_h4", "rotation_size": 256}
 
-    measured_calls = []
+    measured_calls: list[Stats] = []
 
-    def encode(values, dtype="F32", **overrides):
-        options = {
+    def encode(values: "F32", dtype: str = "F32", **overrides: "Unpack[Overrides]") -> "tensorfs.Encoded":
+        options: Options = {
             "dtype": dtype,
             "shape": values.shape,
             "strategy": "int8-convrot256/1",
             "params": params,
         }
-        options.update(overrides)
+        options.update(overrides)  # type: ignore[typeddict-item]  # overrides: a partial Options without dtype
         data = values.astype("<f4").tobytes()
         try:
             original = raw.quantize("int8.convrot", data, **options)
@@ -70,7 +74,7 @@ def run(payload: Request, ctx: Context) -> Report:
         measured_calls.append(stats)
         return original
 
-    def stored(encoded):
+    def stored(encoded: "tensorfs.Encoded") -> "Parts":
         return {
             role: (part.dtype, part.shape, part.tobytes())
             for role, part in encoded.parts.items()
@@ -81,7 +85,7 @@ def run(payload: Request, ctx: Context) -> Report:
     outliers[:, 259] = 1e6
     ties = np.zeros((3, 256), dtype=np.float64)
     ties[:, :9] = [127, 0.5, 1.5, 2.5, 3.5, -0.5, -1.5, -2.5, -3.5]
-    cases = {
+    cases: dict[str, F32] = {
         "zeros": np.zeros((3, 256), dtype=np.float32),
         "negative_zero": np.full((2, 256), -0.0, dtype=np.float32),
         "outliers": outliers,
@@ -94,12 +98,12 @@ def run(payload: Request, ctx: Context) -> Report:
             rng.normal(size=(17, 768)) * np.exp2(rng.integers(-90, 90, size=(17, 768)))
         ).astype(np.float32),
     }
-    records = []
+    records: list[CaseRecord] = []
     with tempfile.TemporaryDirectory(prefix="cozy-convrot-encode-") as directory:
         with tensorfs.Writer(Path(directory) / "encoded.cozytensors") as writer:
             writer.metadata["quantizer"] = "int8-convrot256/1"
             component = writer.component("weights")
-            references = {}
+            references: dict[str, Parts] = {}
             for name, values in cases.items():
                 reference = encode_int8_convrot256(name, values)
                 for dtype in ("F32", "F16", "BF16"):
@@ -149,11 +153,11 @@ def run(payload: Request, ctx: Context) -> Report:
                 )
             checkpoint = writer.commit()
         for key, expected in references.items():
-            result = checkpoint.components["weights"].tensors.read(key)
+            result = cast("tensorfs.Encoded", checkpoint.components["weights"].tensors.read(key))  # cast: put encoded
             assert stored(result) == expected, key
         # F32 readback must agree with the same bytes decoded through the resident API.
         for name, values in cases.items():
-            result = checkpoint.components["weights"].tensors.read(f"{name}.F32")
+            result = cast("tensorfs.Encoded", checkpoint.components["weights"].tensors.read(f"{name}.F32"))  # cast: put encoded
             out = np.empty(values.shape, dtype=np.float32)
             raw.decode_into(
                 result.scheme,
@@ -171,7 +175,7 @@ def run(payload: Request, ctx: Context) -> Report:
         checkpoint.close()
 
     good = cases["zeros"]
-    refused = [
+    refused: list[tuple[F32, Refusal]] = [
         (good, {"tensor_amax": 0.0}),
         (good, {"strategy": "int8-convrot256/999"}),
         (good, {"params": {**params, "rotation_size": 64}}),

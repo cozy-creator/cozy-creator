@@ -110,12 +110,11 @@ def main() -> None:
             ["run", "example/function", "ls", "--unknown-option"],
         ):
             error = json.loads(run("usage remedy " + " ".join(words), ["--json", *words], code=2).stdout)["error"]
-            reference = public_usage(error["remedy"])
-            assert "  help " not in reference, "usage remedy advertises removed help command"
-            assert "--json" in reference, "usage remedy omitted inherited global flags"
+            reference = error["remedy"]
             help_words = ["machine", "rent", "--help"] if words[:2] == ["machine", "rent"] else [words[0], "--help"]
-            expected = run("reference " + " ".join(help_words), help_words).stdout
-            assert reference.strip() == expected.strip(), "usage remedy differs from command help"
+            expected = "cozy " + " ".join(help_words)
+            assert reference == expected, "usage remedy must name a concise help command"
+            run("reference " + " ".join(help_words), help_words)
         run("removed nested help", ["machine", "help"], code=2)
         run("local port option", ["open", "--port", "8818", "--help"])
         run("bash completion", ["completion", "bash"])
@@ -156,6 +155,8 @@ def main() -> None:
         assert "not_in_a_project" in refusal_text and "cozy new" in refusal_text
 
         status = json.loads(run("project status", ["--json", "status"], project).stdout)
+        listed = json.loads(run("empty project runs", ["--json", "run", "ls"], project).stdout)
+        assert listed["runs"] == [], "a new project has unexpected runs"
         assert Path(status["project"]["path"]).resolve() == project
         assert status["health"] == "ready" and status["warnings"] == []
         for field in ("unrendered_assets", "outdated_assets", "missing_files", "warnings"):
@@ -205,6 +206,11 @@ def main() -> None:
             run(f"removed open flag {flag}", ["open", flag], project, code=2)
         run("removed run selector", ["run", "-p", str(project), "example/generate", "prompt=test"], project, code=2)
         run("removed open selector", ["open", str(project)], project, code=2)
+        readable_errors = subprocess.run(
+            [sys.executable, str(Path(__file__).with_name("errors.py")), "--cozy", binary],
+            capture_output=True, text=True,
+        )
+        assert readable_errors.returncode == 0, readable_errors.stdout + readable_errors.stderr
         print(f"entrypoints: {len(records)} checks passed")
     finally:
         receipt = json.dumps(records, indent=2) + "\n"

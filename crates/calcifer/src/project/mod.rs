@@ -1309,6 +1309,10 @@ async fn list(State(api): State<Arc<Api>>, Query(page): Query<Page>) -> Result<J
 
 /// A compact link can reach the unlock UI using only the index, while content stays locked.
 async fn address(State(api): State<Arc<Api>>, Path(reference): Path<String>) -> Result<Json<api::calcifer::project::Address>, Refusal> {
+    if api::target::written_as_path(reference.trim()) {
+        let project = api.projects.get(&api, &reference)?;
+        return Ok(Json(api::calcifer::project::Address { id: project.id.clone(), code: project.code.clone() }));
+    }
     let entry = known(&api, &reference).map_err(Refusal)?;
     Ok(Json(api::calcifer::project::Address { id: entry.id, code: entry.code }))
 }

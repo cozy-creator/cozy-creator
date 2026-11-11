@@ -23,6 +23,7 @@ mod checkpoint;
 mod folder;
 pub use folder::{copy_checked, files as folder_files};
 mod gc;
+pub use gc::RemovedModel;
 mod records;
 pub mod retention;
 
