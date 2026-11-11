@@ -120,13 +120,13 @@ stands, and is answered in `kept` as it is. This is checked in the transaction, 
 
 ## Export and import
 
-YAML is a view. `cozy project export [-o file]` writes the project as format-4 YAML (`GET /v1/projects/{id}/yaml`), for reading, diffs or
+YAML is a view. `GET /v1/projects/{id}/yaml` writes the project as format-4 YAML, for reading, diffs or
 git. An export-only comment records the project's ID and canonical graph-body base hash. Importing an edited export into that same
 project refuses with `project_changed` if the graph changed since export, preserving intervening edits; canvas/runtime changes do not
 invalidate the base. Legacy/unstamped YAML and another project's exported YAML remain explicit imports. No file watcher treats YAML as
-another authority. `cozy project import <file>.yaml` reads one back (`PUT …/yaml`): each box, head and field that differs is written, in one
-transaction and one entry, and what it doesn't read is refused with the line, changing nothing. A media file to `import` stays an
-asset import. No `project.lock` is exported: versions, takes and files stay in the database.
+another authority. `PUT /v1/projects/{id}/yaml` reads one back: each box, head and field that differs is written, in one
+transaction and one entry, and what it doesn't read is refused with the line, changing nothing. Media files use the separate
+asset import API. No `project.lock` is exported: versions, takes and files stay in the database.
 
 ## First open
 
@@ -147,12 +147,12 @@ the primary. Its file and directory are flushed before the primary changes. A pa
 with `project_recovery_backup`, leaving the schema-1 primary and that copy intact for the user to preserve and move aside. A valid
 existing recovery copy is retained from the first migration attempt, rather than refreshed to an arbitrary later point in time.
 
-`cozy project upgrade` goes: the first open does it, inside Calcifer. `cozy project new` makes `project.db` with the starter boxes. A
+The first open performs upgrades inside Calcifer. `cozy new [directory]` makes `project.db` in the named or current directory. A
 folder is a project when it holds `project.db` (or a `project.yaml` to import).
 
 ## Open for Paul
 
-1. `cozy project import x.yaml` reads a project; any other file is an asset, as before. Recommended over a new verb.
+1. `PUT /v1/projects/{id}/yaml` imports project YAML; `POST /v1/projects/{id}/imports` imports media assets.
 2. Identity is canonical `identity.id` (also projected in `meta`, cl-819): 128 random bits for a new project, the path hash it had for one from before. Calcifer's index
    (`state.db`) maps it to its name and where it last was; a moved folder is the same project, and a copy of one another folder still
    holds takes a new id when it opens, so its walk's paid work doesn't go on there.

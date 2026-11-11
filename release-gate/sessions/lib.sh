@@ -3,11 +3,11 @@
 # `rent` once per pod (or `order` each, then `ready` each, to boot them together), and works on $NAME; the EXIT trap
 # ends every rental by its own rental id and checks each is gone. RENT_ARGS: more `machine rent` flags (`--ssh`).
 # From the workflow: OUT, SKU, DISK, CAP (USD, all in), RENT, PARAMS (a JSON object), PACKAGES (packages/<name>
-# checkouts), REF (release-gate/ref).
+# checkouts), REF (release-gate/ref), HUB (prod or isolated: e2e/test-hub.sh require_ci_rental_hub).
 # Every failure is handled here (the trap ends the rental), not by bash -e.
 set +e -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/../../e2e/test-hub.sh"
-require_ci_test_hub || exit 2
+require_ci_rental_hub "${HUB:-isolated}" || exit 2
 MODEL_DETAILS=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../e2e" && pwd)/model-details.py
 model_details() { python3 "$MODEL_DETAILS" "$1"; }
 mkdir -p "$OUT"; OUT=$(cd "$OUT" && pwd); R=$OUT/results.txt
@@ -48,7 +48,9 @@ trap 'RC=1; exit 1' INT TERM HUP
 # stops growing for 15 min cancels it.
 # A run belongs to this session's working-directory project.
 RUN_PROJECT=$OUT/project
-mkdir -p "$RUN_PROJECT" && (cd "$RUN_PROJECT" && cozy --json status) > /dev/null 2>> "$OUT/project.err" || fail "project initialization: $(cat "$OUT/project.err")"
+# A folder is a project once `cozy new` made it one (0.24: `status` reads one, it makes none).
+mkdir -p "$RUN_PROJECT" && (cd "$RUN_PROJECT" && if [ -f project.db ]; then cozy --json status; else cozy --json new; fi) > "$OUT/project.json" 2>> "$OUT/project.err" \
+  || fail "project initialization: $(cat "$OUT/project.err") $(tail -c 300 "$OUT/project.json")"
 step() {
   local n=$1 directory=$PWD; shift
   local words=("$@")
