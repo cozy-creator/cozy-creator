@@ -38,7 +38,7 @@ struct Unlock {
 
 #[derive(clap::Args, Debug)]
 pub(crate) struct Args {
-    /// A project directory when working from elsewhere. On Windows, leave the project directory before encrypting or rotating.
+    /// A project directory when working from elsewhere. On Windows, leave the project directory before encrypting, decrypting or rotating.
     #[arg(long, value_name = "DIRECTORY", value_hint = clap::ValueHint::DirPath)]
     directory: Option<PathBuf>,
     #[command(subcommand)]
@@ -53,6 +53,8 @@ enum Command {
     Unlock(Unlock),
     /// Lock the current project and unmount its readable view.
     Lock,
+    /// Decrypt the unlocked project in place, returning it to ordinary local storage.
+    Decrypt,
     /// Encryption status and the readable mount path, if unlocked.
     Status,
     /// Change the passphrase of an unlocked project without rewriting its files.
@@ -65,11 +67,6 @@ enum Command {
         #[arg(long, value_name = "FILE")]
         recovery_out: Option<PathBuf>,
     },
-    /// Explicitly export a plaintext copy to a new folder. The source remains encrypted.
-    Export {
-        #[arg(long, value_name = "DIRECTORY")]
-        output: PathBuf,
-    },
     /// Re-encrypt all retained local content using a fresh key. Requires the project to be unlocked.
     Rotate {
         #[arg(long, value_name = "FILE")]
@@ -80,7 +77,7 @@ enum Command {
 }
 
 fn ask(action: &str) -> VaultAsk {
-    VaultAsk { action: action.into(), passphrase: None, recovery_secret: None, idle_timeout_s: None, max_duration_s: None, remove_plaintext: false, output: None }
+    VaultAsk { action: action.into(), passphrase: None, recovery_secret: None, idle_timeout_s: None, max_duration_s: None, remove_plaintext: false }
 }
 
 fn credential(path: Option<&PathBuf>, prompt: &str, confirm: bool) -> Result<String, Error> {
@@ -176,7 +173,7 @@ fn show(ctx: &Context, status: &VaultStatus) {
 }
 
 async fn encrypt(ctx: &Context, path: &str, args: Encrypt) -> Result<ExitCode, Error> {
-    output::warn("Encryption does not erase earlier exports, backups or shared cache copies. Protect or remove them separately.");
+    output::warn("Encryption does not erase earlier plaintext copies, backups or shared cache copies. Protect or remove them separately.");
     let mut request = ask("encrypt");
     request.passphrase = Some(credential(args.passphrase_file.as_ref(), "New project passphrase: ", true)?);
     request.idle_timeout_s = Some(args.idle);
@@ -200,6 +197,7 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         Command::Encrypt(args) => encrypt(ctx, &path, args).await,
         Command::Unlock(args) => unlock(ctx, &path, args).await,
         Command::Lock => change(ctx, &path, ask("lock"), None).await,
+        Command::Decrypt => change(ctx, &path, ask("decrypt"), None).await,
         Command::Status => {
                 let status: VaultStatus = ctx.calcifer().await?.get(&path).await?;
             if ctx.json { output::json(&status); } else { show(ctx, &status); }
@@ -211,7 +209,6 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             change(ctx, &path, request, None).await
         }
         Command::Recovery { recovery_out } => change(ctx, &path, ask("recovery"), recovery_out).await,
-        Command::Export { output } => { let mut request = ask("export"); request.output = Some(output); change(ctx, &path, request, None).await }
         Command::Rotate { passphrase_file, recovery_out } => {
             let mut request = ask("rotate");
             request.passphrase = Some(credential(passphrase_file.as_ref(), "Passphrase for the new key generation: ", true)?);
