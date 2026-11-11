@@ -115,7 +115,7 @@ def main() -> int:
             raise RuntimeError(f"run {run} has not completed with retained test results")
         jobs = api(f"actions/runs/{run}/jobs?per_page=100")
         affected = next(job for job in jobs["jobs"] if job["name"] == "affected")
-        text = subprocess.check_output(["gh", "api", f"repos/{REPOSITORY}/actions/jobs/{affected['id']}/logs"], text=True)
+        text = subprocess.check_output(["gh", "api", "--allow-escape-sequences", f"repos/{REPOSITORY}/actions/jobs/{affected['id']}/logs"], text=True)
         sources = re.findall(r"Z ref=([0-9a-f]{40})\s*$", text, re.MULTILINE)
         if sources != [args.source]:
             raise RuntimeError(f"run {run} did not test the requested product source")
@@ -145,7 +145,7 @@ def main() -> int:
         raise RuntimeError("candidate artifact is not from the primary source run")
     archive_path = args.out / "candidate.zip"
     with archive_path.open("wb") as output:
-        subprocess.run(["gh", "api", f"repos/{REPOSITORY}/actions/artifacts/{args.candidate}/zip"], stdout=output, check=True)
+        subprocess.run(["gh", "api", "--allow-escape-sequences", f"repos/{REPOSITORY}/actions/artifacts/{args.candidate}/zip"], stdout=output, check=True)
     archive_bytes = archive_path.read_bytes()
     if candidate.get("digest") != "sha256:" + digest(archive_bytes):
         raise RuntimeError("candidate archive differs from its Actions digest")
