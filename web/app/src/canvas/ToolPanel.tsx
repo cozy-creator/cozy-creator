@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query"
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { toolsQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
 import type { Tool, Tools } from "../api/calcifer"
@@ -85,10 +85,20 @@ export function ToolPanel({ project, machine, waiting, shut, setShut, place, pla
     return () => clearTimeout(timer)
   }, [typed])
   const { data, error, isPending, isPlaceholderData } = useQuery({ ...toolsQuery(client, "", machine, project), enabled: !waiting })
+  const searching = shelf === "tools" && q !== ""
+  const found = useQuery({ ...toolsQuery(client, q, machine, project), enabled: !waiting && searching })
+  // Keep local model-name matches while the existing search also discovers published package interfaces.
+  const tools = useMemo(() => {
+    const byId = new Map<string, Tool>()
+    if (searching && !found.isPlaceholderData) for (const tool of found.data?.tools ?? []) byId.set(tool.id, tool)
+    for (const tool of data?.tools ?? []) byId.set(tool.id, tool)
+    return [...byId.values()]
+  }, [data, found.data, found.isPlaceholderData, searching])
   useEffect(() => {
-    store.addTools(data && !isPlaceholderData ? [TEXT_TOOL, VIDEO_EDIT_TOOL, ...data.tools] : [TEXT_TOOL, VIDEO_EDIT_TOOL])
-  }, [store, data, isPlaceholderData])
-  const tools = data?.tools ?? []
+    store.addTools(!isPlaceholderData ? [TEXT_TOOL, VIDEO_EDIT_TOOL, ...tools] : [TEXT_TOOL, VIDEO_EDIT_TOOL])
+  }, [store, tools, isPlaceholderData])
+  const failure = error ?? (searching ? found.error : null)
+  const looking = searching && found.isFetching
   const entries = paletteEntries(tools).filter((entry) => says(entry, q))
   const nodes = BASIC_NODES.filter((node) => q.toLowerCase().split(/\s+/).every((word) => node.label.toLowerCase().includes(word)))
   const list = useDragScroll({
@@ -136,7 +146,7 @@ export function ToolPanel({ project, machine, waiting, shut, setShut, place, pla
           </section>
           <section data-palette="tools">
             <h4>Tools</h4>
-            {error ? <p className="warn">{error instanceof Error ? error.message : String(error)}</p> : null}
+            {failure ? <p className="warn">{failure instanceof Error ? failure.message : String(failure)}</p> : null}
             {isPending && !error && (
               <ul aria-hidden="true">
                 {Array.from({ length: 8 }, (_, i) => (
@@ -145,8 +155,10 @@ export function ToolPanel({ project, machine, waiting, shut, setShut, place, pla
               </ul>
             )}
             <ul>{entries.map((entry) => <ToolRow key={entry.key} entry={entry} place={place} yours={!q} />)}</ul>
-            {data && !entries.length && !isPlaceholderData && <p className="muted">{q ? `No tools match "${q}"` : "No tools added"}</p>}
+            {looking && <p className="muted">Looking</p>}
+            {data && !entries.length && !isPlaceholderData && !looking && <p className="muted">{q ? `No tools match "${q}"` : "No tools added"}</p>}
             {data?.note && <p className="muted">{data.note}</p>}
+            {searching && found.data?.note && found.data.note !== data?.note && <p className="muted">{found.data.note}</p>}
           </section>
         </div>
       </div>

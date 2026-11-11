@@ -16,7 +16,7 @@ PY
 state1() { state "$1" | head -1 | jq -r '.[0] // empty'; }
 digest() { printf %s "$1" | sha256sum | cut -c1-64; }
 # The tools Your list starts with.
-DEFAULT_TOOLS='["_/qwen-image-2","_/minimax-h3"]'
+DEFAULT_TOOLS='["_/qwen-image-2","_/minimax-h3","_/sdxl"]'
 
 statedb() {
 state_crash

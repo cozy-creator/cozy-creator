@@ -128,6 +128,11 @@ function linesOf(text, name) {
   check('each_declared_model_once', modelRows.length === publishedModels.length && new Set(modelRows.map((row) => row.model)).size === modelRows.length && publishedModels.every((model) => modelRows.some((row) => row.model === model)), modelRows);
   const h3 = modelRows.find((row) => /\/minimax-h3$/.test(row.model));
   check('minimax_h3_is_a_video_tool', h3?.kind === 'video', h3);
+  const qwen = modelRows.find((row) => /\/qwen-image-2\.1$/.test(row.model));
+  const sdxl = modelRows.find((row) => /\/sdxl$/.test(row.model));
+  const h3Image = modelRows.find((row) => /\/p-h3-image$/.test(row.model));
+  check('model_labels_identify_the_model', qwen?.label === 'Qwen Image 2.1' && sdxl?.label === 'SDXL' && /minimax h3/i.test(h3?.label ?? ''), { qwen, h3, sdxl });
+  check('h3_image_is_a_separate_model_entry', h3Image?.kind === 'image' && h3Image.entry !== h3?.entry, { video: h3, image: h3Image });
   const search = page.locator('.tools input[aria-label="Search the tools"]');
   // Searching a function still finds its model/capability entry without exposing a second helper row.
   const found = async (q, wanted) => {
@@ -139,6 +144,8 @@ function linesOf(text, name) {
   check('search_finds_the_package', ours(byPackage).length === 2 && basics(byPackage).length === 0 && ours(byPackage).every((row) => row.label.startsWith('Boxes ')), byPackage);
   const byLabel = await found('every field', (list) => ours(list).length === 1 && basics(list).length === 0);
   check('search_finds_the_label', ours(byLabel)[0]?.id === `${fixture}/shot` && basics(byLabel).length === 0, byLabel);
+  const byModel = await found('stabilityai/sdxl', (list) => list.flatMap((one) => one.tools).some((row) => row.model === 'stabilityai/sdxl'));
+  check('search_finds_the_model_reference', byModel.flatMap((one) => one.tools).some((row) => row.label === 'SDXL' && row.model === 'stabilityai/sdxl'), byModel);
   await found('', (list) => ours(list).length === 2 && basics(list).length === 4);
   // The rest stand beside it, in reach while it's worked on.
   const cards = (await api(`/v1/projects/${id}/canvas`)).body.cards;

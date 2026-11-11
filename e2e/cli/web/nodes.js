@@ -143,7 +143,7 @@ function linesOf(text, name) {
   const listed = await until('tools or why none', async () => ({ tools: await page.locator('.tools .tool').count(), note: await page.locator('.tools p').allTextContents() }), (now) => now.tools > 0 || now.note.length > 0);
   seen.tools_listed = listed;
   const resting = (await api(`/v1/tools?project=${id}`)).body;
-  check('defaults_always_listed', ['cozy', 'qwen-image-2', 'minimax-h3'].every((name) => resting.tools.some((tool) => tool.package === name)), { note: resting.note, tools: resting.tools.map((tool) => tool.id) });
+  check('defaults_always_listed', ['cozy', 'qwen-image-2', 'minimax-h3', 'sdxl'].every((name) => resting.tools.some((tool) => tool.package === name)), { note: resting.note, tools: resting.tools.map((tool) => tool.id) });
   const viewport = () => page.evaluate(() => getComputedStyle(document.querySelector('.react-flow__viewport')).transform);
   const before = await viewport();
   await page.click('.tools [aria-label="Hide the tools"]');
