@@ -20,11 +20,11 @@ import tensorfs
 import torch
 from cozy_runtime.author import Config
 from diffusers import AutoencoderKLMiniMaxH3Audio, MiniMaxH3Scheduler
-from h3_tables import regenerate as tools_regenerate
 from minimax_h3 import latent_upscaler, official
 from minimax_h3.conditioner import build_text_conditioner
 from minimax_h3.latent_upscaler.architecture import LatentResizer3D
 from minimax_h3.official import Schedule, TimestepPlan, Trunk
+from minimax_h3.preparation import regenerate as tools_regenerate
 from minimax_h3.vae_tiles import TileBatchedVideoVAE
 from PIL import Image
 
@@ -53,8 +53,8 @@ DIT: dict[str, Json] = {
 
 
 def _real() -> dict[str, dict[str, Json]]:
-    """The release's own five sections (minimax-h3-tools' `model-config.json`), shrunk below."""
-    document: dict[str, dict[str, Json]] = json.loads(files("h3_tables").joinpath("assets/model-config.json").read_text())
+    """The release's own five sections (minimax-h3's preparation `model-config.json`), shrunk below."""
+    document: dict[str, dict[str, Json]] = json.loads(files("minimax_h3.preparation").joinpath("assets/model-config.json").read_text())
     return document
 
 
@@ -173,7 +173,7 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
 
 def _regenerate(store: Path) -> str:
     """Open-H3-Regenerate-2K's rank-576 refine overlay over the tiny FL2VA DiT, with the refine plan the tools write
-    (`h3_tables.regenerate.plan`: its three starts)."""
+    (`minimax_h3.preparation.regenerate.plan`: its three starts)."""
     plan = official.timestep_plan(tools_regenerate.plan().canonical_bytes, "fl2va")
     config: dict[str, Json] = {**DIT, "cozy_h3": {"task": "fl2va", "modulation": "adaln-pruned", "distillation": "regenerate",
                                                   "lora_rank": 576, "lora_alpha": 576.0, "table_keys": _keys(plan)}}
