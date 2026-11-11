@@ -208,6 +208,8 @@ that pair misses takes its own Runtime in its own environment, and the machine's
 
 - **Cells:** `--cells FILE` adds rows of `name<TAB>target<TAB>args`. The args are expanded in gate.sh, which defines
   `$SCENE`, `$CHAR`, `$R`, `$K`, `$M` and `$CLI`. A FILE ending in `.sh` is sourced after the last product cell.
+  `released.sh` runs every cell of a `--packages` checkout again from the release the Hub serves, on the same pod,
+  twice in turn: a candidate's same-pod A/B (each pair's execution, steady step and output, in the notes).
 - **One release, two checkpoints** (`swap.py`): Qwen-Image text → edit → text and its two Lightning LoRAs in turn, each group on one executor with no restart (run 15744: TFS 0.15.0's `{release}/{component}` set names collided). No first-party SDXL LoRA exists to swap.
 - **LM coverage** (`lm.py`, every gate): Fibo's and Klein's prompt upsamplers and H3's reference describer ran their
   greedy token loops (H3's cell gives a character reference, which BiRefNet cleans and Qwen3.5 describes).

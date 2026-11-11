@@ -35,7 +35,7 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, BENCH)
 import media  # noqa: E402  (suites/bench/media.py)
 from comfy import Row as Comfy, Tier  # noqa: E402  (suites/bench/comfy.py: ComfyUI's row for a cell)
-from runs import GateDir, Run  # noqa: E402
+from runs import GateDir, Run, landed  # noqa: E402
 
 # The owner's bar: a judged time more than 5% over its baseline fails, unless the cell's own measured noise is wider.
 BAR = 0.05
@@ -310,7 +310,7 @@ def output_of(d: str, run: Run, judged: bool) -> Output | None:
     digest, seed = outs[0].get('sha256', '').split(':')[-1], run.seed
     if not judged:
         return {'sha256': digest, 'seed': seed, 'faults': []}
-    files = [f for sub in ('project/files', 'proj/files', '../proj/files', '../project/files') for f in glob.glob(os.path.join(d, sub, digest + '.*'))]
+    files = landed(d, digest)
     if not files:
         return {'sha256': digest, 'seed': seed, 'faults': ["its output is not among the gate's files"]}
     look = media.alone(files[0])

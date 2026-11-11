@@ -215,6 +215,22 @@ if a and b:
         fails.append(f'sdxl-p2: second executor serves {b["gemm"]} / {b["attention"]}, first {a["gemm"]} / {a["attention"]}')
 
 # Against the last known-good numbers.
+
+
+def against(mine: int | None, theirs: int | None) -> str:
+    return f'{mine} ms vs {theirs} ms ({(mine - theirs) / theirs:+.1%})' if mine and theirs else 'not measured'
+
+
+# released.sh's pairs: a checkout cell and the same request and seed from the release the Hub serves, on the same pod.
+for name in [n for n in summary if n.endswith(('-released', '-released-again'))]:
+    mine = name.replace('-released', '', 1)
+    if mine not in summary:
+        continue
+    a, b = summary[mine], summary[name]
+    digests = [sorted(o.get('sha256', '') for o in runs[n].record.get('output') or []) for n in (mine, name)]
+    notes.append(f'{mine} vs the release ({name}): execution {against(a["execution_ms"], b["execution_ms"])}, steady'
+                 f' {against(a["steady_ms"], b["steady_ms"])}, output {"identical" if digests[0] == digests[1] else "differs"}')
+
 base: Baseline = json.load(open(BASE)) if os.path.exists(BASE) else {'sku': sku, 'cells': {}}
 known: list[KnownBlocking] = json.load(open(KNOWN_BLOCKING)) if os.path.exists(KNOWN_BLOCKING) else []
 mid: Callable[[list[float]], float] = lambda xs: sorted(xs)[len(xs) // 2]

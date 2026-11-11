@@ -204,7 +204,7 @@ ahead() {
     expect "$name-weights" FAIL "run $(cat "$name-weights.number") $(run_get "$OUT" "$name-weights" .status): $(run_get "$OUT" "$name-weights" '.reason.message')"
   run_warm_cell "$OUT" "$name-weights-off" "$target" off --on "$M" > "$name-weights-off.log" 2>&1 || log "$name: API warming off: $(tail -c 300 "$name-weights-off.log")"
 }
-# cell <name> <target> [args...]: one run on $M (e2e/run.sh's run_cell): its record <name>.json, its outputs <name>/.
+# cell <name> <target> [args...]: one run on $M (e2e/run.sh's run_cell): its record <name>.json; its files land in project/.
 # --only names cells or packages. $TWIN, when a suite sets it, names a second run (<name>$TWIN) of the cells $TWINS lists.
 # A cell another suite already ran, or one known-failing.json parks on this SKU ("cells"; sku "*" is every SKU), does
 # not run.
