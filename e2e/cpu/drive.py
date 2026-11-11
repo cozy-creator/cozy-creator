@@ -34,7 +34,7 @@ from typing import Literal, NotRequired, TypedDict, cast
 import numpy as np
 import numpy.typing as npt
 
-from cell import Cell, Fixture, Json, Output, Seen
+from cell import Cell, Fixture, Json, Output, Seen, Source
 
 HERE = Path(__file__).resolve().parent
 THREADS = os.environ.get("CPU_E2E_THREADS", "2")
@@ -107,6 +107,9 @@ class InputFile(TypedDict):
     digest: str
     length: int
     order: int
+
+
+type InputHistory = dict[str, dict[str, InputFile] | None]
 
 
 class CallRow(TypedDict):
@@ -729,12 +732,22 @@ MEDIA = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".web
          ".wav": "audio/wav", ".flac": "audio/flac", ".mp3": "audio/mpeg", ".json": "application/json"}
 
 
-def inputs(cell: Cell, payload: dict[str, Json], work: Path, made: Path) -> tuple[dict[str, InputMetadata], dict[str, InputFile]]:
+def inputs(cell: Cell, payload: dict[str, Json], work: Path, made: Path,
+           shared: InputHistory) -> tuple[dict[str, InputMetadata], dict[str, InputFile]]:
     """The cell's input files as the machine grants them: its bytes in the attempt's own directory, the payload's field
     holding the reference, `PrepareRequest.input_metadata` and `Invoke.inputs` keyed by the field path (`asset_inputs`)."""
     metadata: dict[str, InputMetadata] = {}
     granted: dict[str, InputFile] = {}
-    for field, source in cell.get("files", {}).items():
+    files: Mapping[str, Source] = cell.get("files", {})
+    same_as = cell.get("same_as")
+    reference = shared.get(same_as) if same_as else None
+    if same_as and files and reference is None:
+        raise Failed(f"file inputs for {same_as} are unavailable: include that reference cell")
+    if reference is not None:
+        if set(files) != set(reference):
+            raise Failed(f"file fields differ from the comparison cell {same_as}")
+        files = {field: Path(file["local"]) for field, file in reference.items()}
+    for field, source in files.items():
         if callable(source):
             made.mkdir(parents=True, exist_ok=True)
             source = source(made)
@@ -765,6 +778,19 @@ def inputs(cell: Cell, payload: dict[str, Json], work: Path, made: Path) -> tupl
                            "order": order}
         granted[field] = {"local": str(local), "media_type": MEDIA[source.suffix], "digest": digest, "length": len(data),
                           "order": order}
+    if reference is not None and {k: v["digest"] for k, v in granted.items()} != {k: v["digest"] for k, v in reference.items()}:
+        raise Failed(f"input bytes differ from the comparison cell {same_as}")
+    key = f"{cell['entry']}/{cell['name']}"
+    if key in shared:
+        frozen: dict[str, InputFile] = {}
+        for field, file in granted.items():
+            # Snapshot before the model runs. A model only receives its per-cell copy.
+            source_path = Path(file["local"])
+            cache = work.parent / ".shared" / (file["digest"].removeprefix("sha256:") + source_path.suffix)
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source_path, cache)
+            frozen[field] = {**file, "local": str(cache)}
+        shared[key] = frozen
     return metadata, granted
 
 
@@ -892,6 +918,7 @@ def main() -> int:
     ran: dict[str, Seen] = {}
     #: and its output files, for a twin compared sample by sample
     kept: dict[str, Files] = {}
+    shared_inputs: InputHistory = {cell["same_as"]: None for cell in cells if "same_as" in cell}
     try:
         for cell in cells:
             entry, name, ranks = cell["entry"], cell["name"], cell.get("ranks", 1)
@@ -905,7 +932,7 @@ def main() -> int:
                 if row is None:
                     raise Failed(f"the package interface has no entry point {entry}")
                 payload = cast(dict[str, Json], json.loads(json.dumps(cell["payload"])))
-                metadata, granted = inputs(cell, payload, out / "inputs" / request, out / "made")
+                metadata, granted = inputs(cell, payload, out / "inputs" / request, out / "made", shared_inputs)
                 # The request as a person sends it, for cli.sh to bind: its fields and its files by path.
                 (out / "requests").mkdir(exist_ok=True)
                 (out / "requests" / f"{request}.json").write_text(json.dumps({

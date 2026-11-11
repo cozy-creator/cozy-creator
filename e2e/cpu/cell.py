@@ -32,8 +32,8 @@ class Cell(TypedDict):
     models: NotRequired[dict[str, str]]
     #: ranks of a CPU (gloo) group; 1 when absent
     ranks: NotRequired[int]
-    #: judged against another cell's output (`entry/name`; that cell's run here, else its reference): a group's output
-    #: equals one rank's
+    #: Judged against another cell's output (`entry/name`; that cell's run here, else its reference).
+    #: File inputs reuse its resolved bytes through separate per-cell copies; a file-bearing reference must run first.
     same_as: NotRequired[str]
     #: the mean difference allowed, of 255: an output's thumbnail from its reference's (default 1), and a `same_as`
     #: cell's worst frame from its twin's, sample by sample (default 0.5)

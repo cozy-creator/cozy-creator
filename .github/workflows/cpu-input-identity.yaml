@@ -1,0 +1,23 @@
+name: CPU comparison inputs
+
+on:
+  pull_request:
+    paths:
+      - e2e/cpu/cell.py
+      - e2e/cpu/drive.py
+      - e2e/cpu/input_identity.py
+      - .github/workflows/cpu-input-identity.yaml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inputs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+      - name: Source bytes, separate grants and pre-invoke identity checks
+        run: uv run --no-project --python 3.12 --with numpy==2.5.2 python e2e/cpu/input_identity.py
