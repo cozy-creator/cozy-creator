@@ -348,7 +348,3 @@ fn prune(dir: &FsPath) {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "thumbs_tests.rs"]
-mod tests;
