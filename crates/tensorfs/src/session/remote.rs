@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use crate::failure::{fail, Failure, Kind, Result};
 use crate::fetch::{self, Fetcher, Hardware, Origin, VolumeOrigin, Want};
-use crate::format::{Header, ObjectRef, Repo, Tree};
+use crate::format::{Header, ObjectRef, Model, Tree};
 use crate::store::Store;
 
 use super::provider::from_native;
@@ -97,12 +97,12 @@ impl Remote {
         Ok(result)
     }
 
-    /// What `reference` names: a bare object (`sha256:` repo id), a commit by id, or its release
+    /// What `reference` names: a bare object (`sha256:` model id), a commit by id, or its release
     /// and lane resolved once by the endpoint, for `hardware` when it names no lane (spec §7).
     /// Offline, or when the endpoint cannot be reached, the store's record of what it resolved.
     async fn root(&self, reference: &Ref, hardware: &Hardware) -> Result<Root> {
         let bare = |object| Root { object, release: String::new(), lane: String::new() };
-        if let Some(hex) = reference.repo_id.strip_prefix("sha256:") {
+        if let Some(hex) = reference.model_id.strip_prefix("sha256:") {
             return Ok(bare(self.object(hex).await?));
         }
         let (release, lane) = (reference.release.as_deref(), reference.lane.as_deref());
@@ -110,14 +110,14 @@ impl Remote {
             return Ok(bare(self.object(hex).await?));
         }
         let recorded = || -> Result<Option<Root>> {
-            let Some(repo) = self.store.get_ref(&reference.repo_id)? else { return Ok(None) };
-            Ok(repo.resolve(release, lane).ok().map(|(release, lane, object)| Root { object, release, lane: lane.unwrap_or_default() }))
+            let Some(model) = self.store.get_ref(&reference.model_id)? else { return Ok(None) };
+            Ok(model.resolve(release, lane).ok().map(|(release, lane, object)| Root { object, release, lane: lane.unwrap_or_default() }))
         };
         let local;
         let endpoint = match self.offline {
             false => &self.endpoint,
             true if self.mirror.is_none() => {
-                return recorded()?.ok_or_else(|| Failure { kind: Kind::NotFound, detail: format!("{} is not cached", reference.repo_id) });
+                return recorded()?.ok_or_else(|| Failure { kind: Kind::NotFound, detail: format!("{} is not cached", reference.model_id) });
             }
             true => {
                 // An absolute directory cannot be interpreted as an HTTP endpoint, and carries no
@@ -132,12 +132,12 @@ impl Remote {
                 &local
             }
         };
-        match endpoint.inner.resolve(&reference.repo_id, release, lane, hardware).await.map_err(from_native) {
+        match endpoint.inner.resolve(&reference.model_id, release, lane, hardware).await.map_err(from_native) {
             Ok(resolved) => {
                 for reason in &resolved.reasons {
                     tracing::warn!("{reason}");
                 }
-                Ok(Root { object: resolved.commit, release: resolved.release, lane: resolved.lane })
+                Ok(Root { object: resolved.checkpoint, release: resolved.release, lane: resolved.lane })
             }
             Err(error) if error.kind == Kind::Network => match recorded()? {
                 Some(found) if self.store.reuse(&found.object)? => Ok(found),
@@ -170,16 +170,16 @@ impl Remote {
 
     /// Records what a remote resolution named, so the store resolves it again offline.
     fn remember(&self, reference: &Ref, root: &Root) -> Result<()> {
-        if reference.repo_id.starts_with("local/") || reference.repo_id.starts_with("sha256:") {
+        if reference.model_id.starts_with("local/") || reference.model_id.starts_with("sha256:") {
             return Ok(());
         }
-        self.store.update_ref(&reference.repo_id, |old| {
-            let mut repo = old.unwrap_or_else(|| Repo::new(&reference.repo_id));
+        self.store.update_ref(&reference.model_id, |old| {
+            let mut model = old.unwrap_or_else(|| Model::new(&reference.model_id));
             match root.release.is_empty() || root.lane.is_empty() {
-                true => repo.add_commit(root.object.clone()),
-                false => repo.set_lane(&root.release, &root.lane, root.object.clone()),
+                true => model.add_checkpoint(root.object.clone()),
+                false => model.set_lane(&root.release, &root.lane, root.object.clone()),
             }
-            Some(repo)
+            Some(model)
         })?;
         Ok(())
     }
@@ -207,17 +207,17 @@ impl Remote {
             Some(tree) => {
                 self.remember(&reference, &root)?;
                 extra.push(tree.clone());
-                self.store.at_commit(tree)?
+                self.store.at_checkpoint(tree)?
             }
             None => self.store.checkpoint(&header)?,
         };
         reference.release = (!root.release.is_empty()).then_some(root.release).or(reference.release);
         reference.lane = lane.filter(|l| !l.is_empty()).or(reference.lane);
-        let named = (!reference.repo_id.starts_with("sha256:")).then_some(reference);
+        let named = (!reference.model_id.starts_with("sha256:")).then_some(reference);
         Checkpoint::managed(raw, named, tree, Some(self.clone()), extra, self.store.clone())
     }
 
-    /// The commit `reference` names as a plain folder: its repo files and header, and the
+    /// The commit `reference` names as a plain folder: its model files and header, and the
     /// objects `want` selects.
     pub(crate) async fn snapshot(&self, reference: &Ref, want: &Download<'_>, local_dir: Option<&Path>) -> Result<PathBuf> {
         let root = self.root(reference, &Hardware::default()).await?;
@@ -263,7 +263,7 @@ impl Remote {
         let tree = self.store.tree(&commit)?;
         let object = tree.files.get(filename).ok_or_else(|| Failure {
             kind: Kind::NotFound,
-            detail: format!("no repo file {filename:?}"),
+            detail: format!("no model file {filename:?}"),
         })?;
         let _object_hold = self.store.hold(std::slice::from_ref(object))?;
         self.fetch(std::slice::from_ref(object), &Download::default())

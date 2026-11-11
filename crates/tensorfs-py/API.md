@@ -265,7 +265,7 @@ Additional checkpoint properties and operations:
 |---|---|
 | `id` | Header identity, a `sha256:…` string. |
 | `tree` | Commit identity (the repository tree), a `sha256:…` string, when known. |
-| `repo_id` | Repository name, when known. |
+| `model_id` | Repository name, when known. |
 | `release` | The release it was resolved through, when known. |
 | `lane` | Its commit's lane, when known. A standalone header does not store this label. |
 | `pipeline`, `components` | Pipeline description and ordered component mapping. |
@@ -461,6 +461,12 @@ separate work.
 
 ### Save a checkpoint file
 
+Model operations use `model_id` for the named model; `Checkpoint.model_id` reports that identity when present.
+For the current Runtime 0.45 and existing package locks, Python temporarily accepts the old `repo_id` keyword and
+checkpoint property. Supplying both keywords refuses even when equal. Removal is planned for TensorFS 0.25.0
+after the minimum supported Runtime and package consumers have migrated; this is a compatibility cut target,
+not a published-release promise. New code uses `model_id`.
+
 `Writer` writes the cozytensors format. To create Safetensors files, first commit the
 checkpoint and then use `tensorfs.materialize(..., format="safetensors")`. This writes
 weight files plus the separate configuration and supporting files required by that layout.
@@ -519,17 +525,17 @@ label or repository README/LICENSE files; those remain available on a checkpoint
 through its repository.
 
 `Writer(dest=None, ...)` keeps the checkpoint in the shared store as a cache entry, without a
-header file. `dest` is a literal file path, not a directory. A `repo_id` upload names its
+header file. `dest` is a literal file path, not a directory. A `model_id` upload names its
 commit's `lane`.
 
 Its options and members are:
 
 | Option or member | Use |
 |---|---|
-| `lane` | The uploaded commit's lane; with `repo_id`. |
+| `lane` | The uploaded commit's lane; with `model_id`. |
 | `base` | Start from an existing checkpoint and reuse unchanged data. |
 | `resume` | Resume keyed local write state. |
-| `repo_id`, `endpoint`, `token` | Stream the new checkpoint to a repository using supplied access. |
+| `model_id`, `endpoint`, `token` | Stream the new checkpoint to a repository using supplied access. |
 | `cache_dir` | Choose the local store/cache. |
 | `metadata` | Mutable loading/provenance metadata dictionary. |
 | `local_checkpoint` | A committed local result retained after an upload failure, if one exists. |
@@ -677,7 +683,7 @@ needed.
 
 ```python
 license_path = tensorfs.download_file("me/model", "LICENSE")
-commit = tensorfs.upload_folder(repo_id="me/model", folder_path="./portable", lane="bf16", token=my_token)
+commit = tensorfs.upload_folder(model_id="me/model", folder_path="./portable", lane="bf16", token=my_token)
 ```
 
 `download_file` returns one file path and accepts release, lane, location and authentication
@@ -693,7 +699,7 @@ endpoint = tensorfs.Endpoint("https://tensorhub.com", token=my_token)
 resolved = endpoint.resolve("me/model", release="1.0", gpus=["8.9"])
 ```
 
-`Endpoint(url, token=None, ca_der=None, cache_dir=None)` provides `resolve(repo_id, release=,
+`Endpoint(url, token=None, ca_der=None, cache_dir=None)` provides `resolve(model_id, release=,
 lane=, gpus=)`: `{release, lane, commit, header, reasons}`, without opening or caching it.
 
 ### All Python entry points at a glance

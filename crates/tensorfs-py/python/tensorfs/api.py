@@ -67,15 +67,15 @@ def materialize(source: str | _ext.Checkpoint, *, local_dir=None, format="cozyte
         raise ValueError("decode requires format='safetensors'")
     if isinstance(source, _ext.Checkpoint):
         if components is not None:
-            raise ValueError("components selection requires a repository source in cozytensors format")
+            raise ValueError("components selection requires a model source in cozytensors format")
         if local_dir is None:
             raise ValueError("a checkpoint requires an explicit local_dir")
         if local_files_only or any(value is not None for value in
                                    (release, lane, cache_dir, token, endpoint)):
-            raise ValueError("repository and client options do not apply to a checkpoint")
+            raise ValueError("model and client options do not apply to a checkpoint")
         return str(_ext._materialize(source, local_dir, format=format, decode=decode))
     if not isinstance(source, str):
-        raise TypeError("source must be a repository reference or Checkpoint")
+        raise TypeError("source must be a model reference or Checkpoint")
     if format == "cozytensors":
         return str(_client(cache_dir, endpoint, token).materialize(
             (source, release, lane), components=components,
@@ -94,14 +94,27 @@ def materialize(source: str | _ext.Checkpoint, *, local_dir=None, format="cozyte
         checkpoint.close()
 
 
-def download_file(repo_id: str, filename: str, *, release=None, lane=None, cache_dir=None, local_dir=None, local_files_only=False, token=None, endpoint=None) -> str:
+def _model_id(model_id, repo_id, *, required=True):
+    # Compatibility for Runtime 0.45 and existing package locks; planned removal in 0.25.0
+    # after the supported Runtime/package floor uses model_id.
+    if model_id is not None and repo_id is not None:
+        raise TypeError("use model_id; model_id and legacy repo_id cannot both be supplied")
+    selected = model_id if model_id is not None else repo_id
+    if required and selected is None:
+        raise TypeError("model_id is required")
+    return selected
+
+
+def download_file(model_id=None, filename=None, *, repo_id=None, release=None, lane=None, cache_dir=None, local_dir=None, local_files_only=False, token=None, endpoint=None) -> str:
+    model_id = _model_id(model_id, repo_id)
     return str(_client(cache_dir, endpoint, token).download_file(
-        repo_id, filename, release=release, lane=lane, local_dir=local_dir, local_files_only=local_files_only,
+        model_id, filename, release=release, lane=lane, local_dir=local_dir, local_files_only=local_files_only,
     ))
 
 
-def upload_folder(*, repo_id: str, folder_path, lane: str, token=None, endpoint=None, cache_dir=None) -> str:
-    return _client(cache_dir, endpoint, token).upload_folder(Path(folder_path), repo_id, lane)
+def upload_folder(*, model_id=None, folder_path, lane: str, repo_id=None, token=None, endpoint=None, cache_dir=None) -> str:
+    model_id = _model_id(model_id, repo_id)
+    return _client(cache_dir, endpoint, token).upload_folder(Path(folder_path), model_id, lane)
 
 
 def convert_to_cozytensors(source: str | Sequence[str], *, converter=None, source_variant=None, cache_dir=None, token=None, progress=None):
@@ -142,8 +155,8 @@ class Endpoint:
     def __init__(self, url, token=None, *, ca_der=None, cache_dir=None):
         self._native = _ext.Endpoint(url, token, ca_der=ca_der, cache_dir=_cache(cache_dir))
 
-    def resolve(self, repo_id, *, release=None, lane=None, gpus=None, plain=False):
-        return self._native.resolve(repo_id, release=release, lane=lane, gpus=gpus, plain=plain)
+    def resolve(self, model_id=None, *, repo_id=None, release=None, lane=None, gpus=None, plain=False):
+        return self._native.resolve(_model_id(model_id, repo_id), release=release, lane=lane, gpus=gpus, plain=plain)
 
 
 class ComponentWriter:
@@ -170,8 +183,8 @@ class ComponentWriter:
 
 
 class Writer:
-    def __init__(self, dest=None, *, base=None, resume=None, repo_id=None, lane=None, endpoint=None, token=None, cache_dir=None):
-        self._native = _ext.Writer(dest, base=base, resume=resume, cache_dir=_cache(cache_dir), repo_id=repo_id, lane=lane, endpoint=_endpoint(endpoint), token=token if token is not None else _settings.get("token"), ca_der=_settings.get("ca_der"))
+    def __init__(self, dest=None, *, base=None, resume=None, model_id=None, lane=None, repo_id=None, endpoint=None, token=None, cache_dir=None):
+        self._native = _ext.Writer(dest, base=base, resume=resume, cache_dir=_cache(cache_dir), model_id=_model_id(model_id, repo_id, required=False), lane=lane, endpoint=_endpoint(endpoint), token=token if token is not None else _settings.get("token"), ca_der=_settings.get("ca_der"))
         self._resume = resume
         self._committed = None
         self.local_checkpoint = None

@@ -119,7 +119,12 @@ impl Store {
         if actual != length {
             return Err(invalid(path, format!("complete checkpoint needs {length} bytes, has {actual} (thin, truncated or trailing data)")));
         }
-        let _hold = self.hold(&header.objects().cloned().collect::<Vec<_>>())?;
+        let header_id = ObjectRef::of(&bytes);
+        let _hold = self.hold(
+            &std::iter::once(header_id.clone())
+                .chain(header.objects().cloned())
+                .collect::<Vec<_>>(),
+        )?;
         let mut cursor = bytes.len() as u64;
         let mut buffer = vec![0; 1 << 20];
         for (start, object) in layout {
@@ -148,7 +153,12 @@ impl Store {
         }
         // Publish metadata only after all embedded bytes have passed verification.
         self.put_bytes(&bytes)?;
-        self.put_tree(&tree)
+        let tree_id = self.put_tree(&tree)?;
+        self.used(
+            &tree_id.sha256,
+            [&tree_id, &header_id].into_iter().chain(header.objects()),
+        )?;
+        Ok(tree_id)
     }
 }
 
@@ -199,7 +209,7 @@ pub(crate) mod tests {
         )
     }
 
-    fn complete(path: &Path) -> (Header, Vec<u8>, Vec<u8>, Vec<(u64, ObjectRef)>) {
+    pub(crate) fn complete(path: &Path) -> (Header, Vec<u8>, Vec<u8>, Vec<(u64, ObjectRef)>) {
         let (header, weights, tokenizer) = fixture();
         let bytes = header.to_cbor().unwrap();
         let (objects, _) = layout(&header, bytes.len() as u64).unwrap();
@@ -228,7 +238,7 @@ pub(crate) mod tests {
         let tree = store.admit_file(&path, "f32").unwrap();
         // The admitted checkpoint remains usable when its sole input file is removed.
         fs::remove_file(path).unwrap();
-        let checkpoint = store.at_commit(&tree).unwrap();
+        let checkpoint = store.at_checkpoint(&tree).unwrap();
         assert_eq!(checkpoint.id(), &ObjectRef::of(&header.to_cbor().unwrap()));
         assert_eq!(
             checkpoint.asset("model", "tokenizer.json").unwrap(),
@@ -312,6 +322,10 @@ pub(crate) mod tests {
         let store = Store::open(dir.path().join("store")).unwrap();
         store.admit_file(&path, "empty").unwrap();
         let (mut header, _, _) = fixture();
+        header.chunks[0].length = (1u64 << 33) + 17;
+        let (objects, length) = layout(&header, 32).unwrap();
+        assert!(objects[1].0 > u32::MAX as u64);
+        assert!(length > 1u64 << 33);
         header.chunks[0].length = u64::MAX;
         assert!(layout(&header, 32)
             .unwrap_err()

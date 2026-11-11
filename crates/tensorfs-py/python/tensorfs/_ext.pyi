@@ -64,7 +64,8 @@ class _ObjectRef(TypedDict):
 class _Resolved(TypedDict):
     release: str
     lane: str
-    commit: _ObjectRef
+    checkpoint: _ObjectRef
+    commit: _ObjectRef  # Deprecated compatibility key; planned removal at 0.25.0.
     header: _ObjectRef
     reasons: list[str]
 
@@ -302,7 +303,10 @@ class Checkpoint:
     def tree(self) -> str | None:
         """`sha256:<hex>` of the repository tree, when known."""
     @property
-    def repo_id(self) -> str | None: ...
+    def model_id(self) -> str | None: ...
+    @property
+    def repo_id(self) -> str | None:
+        """Deprecated compatibility property; planned removal at 0.25.0."""
     @property
     def release(self) -> str | None:
         """The release this checkpoint was resolved through, when known."""
@@ -374,8 +378,8 @@ class ConversionControl:
 class Writer:
     def __new__(cls, dest: StrPath | None = None, *, base: Checkpoint | None = None,
                  resume: str | None = None, cache_dir: StrPath | None = None,
-                 repo_id: str | None = None, lane: str | None = None,
-                 endpoint: str | None = None, token: _Token | None = None, ca_der: bytes | None = None) -> Writer: ...
+                 model_id: str | None = None, lane: str | None = None,
+                 repo_id: str | None = None, endpoint: str | None = None, token: _Token | None = None, ca_der: bytes | None = None) -> Writer: ...
     def pipeline(self, cls: ClassRef | tuple[str, str, str] | Literal[""] | None, config: Mapping[str, ConfigInput]) -> None: ...
     def component(
         self, name: str, cls: ClassRef | tuple[str, str, str] | Literal[""] | None = None, config: Mapping[str, ConfigInput] | None = None,
@@ -408,9 +412,9 @@ class _Client:
     def materialize(self, identity: tuple[str, str | None, str | None], *,
                           components: Sequence[str] | None = None,
                           local_dir: StrPath | None = None, local_files_only: bool = False) -> str: ...
-    def download_file(self, repo_id: str, filename: str, *, release: str | None = None, lane: str | None = None,
+    def download_file(self, model_id: str, filename: str, *, release: str | None = None, lane: str | None = None,
                      local_dir: StrPath | None = None, local_files_only: bool = False) -> str: ...
-    def upload_folder(self, folder_path: StrPath, repo_id: str, lane: str) -> str: ...
+    def upload_folder(self, folder_path: StrPath, model_id: str, lane: str) -> str: ...
     def convert_to_cozytensors(self, source: str | Sequence[str], *, converter: str | None = None,
                 source_variant: str | None = None,
                 progress: Callable[[str, int, int], object] | None = None) -> Checkpoint: ...
@@ -425,7 +429,7 @@ class TokenProvider(Protocol):
 class Endpoint:
     def __new__(cls, url: str, token: _Token | None = None, *, ca_der: bytes | None = None,
                  cache_dir: StrPath | None = None) -> Endpoint: ...
-    def resolve(self, repo_id: str, *, release: str | None = None, lane: str | None = None,
+    def resolve(self, model_id: str, *, release: str | None = None, lane: str | None = None,
                 gpus: Sequence[str] | None = None, plain: bool = False) -> _Resolved: ...
 
 _Token = str | TokenProvider | Callable[[str, str, Mapping[str, str], str | None], Mapping[str, str]]

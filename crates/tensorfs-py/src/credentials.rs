@@ -152,14 +152,14 @@ impl PyEndpoint {
         })
     }
 
-    /// The commit of `repo_id` at `release` (none: the newest) in `lane` (none: what `gpus`
+    /// The commit of `model_id` at `release` (none: the newest) in `lane` (none: what `gpus`
     /// run best, of plain lanes only with `plain`; none: the CPU): `{release, lane, commit,
     /// header, reasons}`.
-    #[pyo3(signature = (repo_id, *, release = None, lane = None, gpus = None, plain = false))]
+    #[pyo3(signature = (model_id, *, release = None, lane = None, gpus = None, plain = false))]
     fn resolve<'py>(
         &self,
         py: Python<'py>,
-        repo_id: &str,
+        model_id: &str,
         release: Option<String>,
         lane: Option<String>,
         gpus: Option<Vec<String>>,
@@ -167,9 +167,13 @@ impl PyEndpoint {
     ) -> PyResult<Bound<'py, PyAny>> {
         let hardware = tensorfs::fetch::Hardware { gpus: gpus.unwrap_or_default(), free_vram: None, plain };
         let resolved = py
-            .detach(|| block_on(self.endpoint.resolve(repo_id, release.as_deref(), lane.as_deref(), &hardware)))
+            .detach(|| block_on(self.endpoint.resolve(model_id, release.as_deref(), lane.as_deref(), &hardware)))
             .or_raise(py)?;
-        config_to_py(py, &serde_json::to_value(resolved).expect("Resolved is serializable"))
+        let mut value = serde_json::to_value(&resolved).expect("Resolved is serializable");
+        // Finite Python compatibility key for Runtime 0.45/package locks, removed with the
+        // model_id bridge at the planned 0.25.0 supported-consumer cut.
+        value.as_object_mut().expect("Resolved is an object").insert("checkpoint".into(), serde_json::to_value(&resolved.checkpoint).expect("ObjectRef is serializable"));
+        config_to_py(py, &value)
     }
 }
 
