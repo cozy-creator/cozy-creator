@@ -27,7 +27,8 @@ use tensorfs::format::newest_by;
 
 use crate::{
     api::{Api, Refusal, parse},
-    local_code,
+    local_code, private_io,
+    project::{self, vault},
     runs::{self, target},
 };
 
@@ -60,11 +61,19 @@ pub(crate) async fn list(State(api): State<Arc<Api>>, query: Result<Query<Asked>
     let q = asked.q.as_deref().map(str::trim).filter(|q| !q.is_empty());
     let on = On::Machine(asked.on.unwrap_or_else(|| "local".into()));
     let mine = mine(&api)?;
-    let mut named = match &asked.project {
-        Some(project) => crate::project::local_code_named(&api, project)?,
-        None => vec![],
+    let (local, project_access) = match asked.project.as_deref() {
+        Some(named) => {
+            let access = vault::admit_project(&api, named).await.map_err(Refusal)?;
+            let root = project::named(&api, named).map_err(Refusal)?;
+            let scope = private_io::of_output(&project::landing(&root)).map_err(Refusal)?;
+            let tools = private_io::context(scope, async {
+                let named = project::local_code_named(&api, named)?;
+                Ok::<_, Refusal>(read_local(&api, &hub, named, &on).await)
+            }).await?;
+            (tools, Some((root, access)))
+        }
+        None => (vec![], None),
     };
-    let local = read_local(&api, &hub, named, &on).await;
     let held = held(&api, &hub, &on).await;
     let (cards, mut note) = on_your_list(&api, &hub, &mine, &held).await;
     let place = |tool: &Tool| mine.packages.iter().position(|package| shown(package) == tool.package);
@@ -84,6 +93,9 @@ pub(crate) async fn list(State(api): State<Arc<Api>>, query: Result<Query<Asked>
     }
     // A Hub that's late leaves them unsaid, and a later list says what's been read by then.
     let _ = tokio::time::timeout(HUB_LATE, crate::hub::checkpoints::families(&api, &hub, &mut tools)).await;
+    if let Some((root, _)) = &project_access {
+        vault::require_path(root).map_err(Refusal)?;
+    }
     Ok(Json(Tools { tools, note }))
 }
 
@@ -180,6 +192,7 @@ async fn on_your_list(api: &Arc<Api>, hub: &str, mine: &ToolList, held: &[Tool])
 /// The tools of each local package `named`, by its path as it's written, and saying they're local: what a project's nodes name, and what's on
 /// your list. One that can't be read is left out, and a render says why.
 async fn read_local(api: &Arc<Api>, hub: &str, named: Vec<(String, PathBuf)>, on: &On) -> Vec<Tool> {
+    let private = private_io::current().is_some();
     let mut tools = vec![];
     for (written, path) in named {
         let described = match local_code::own(api.machines.hubs.home(), &path) {
@@ -189,7 +202,7 @@ async fn read_local(api: &Arc<Api>, hub: &str, named: Vec<(String, PathBuf)>, on
         let (package, document) = match described {
             Ok(described) => described,
             Err(why) => {
-                tracing::warn!("{written} isn't listed: {}", why.message);
+                if !private { tracing::warn!("{written} isn't listed: {}", why.message); }
                 continue;
             }
         };
