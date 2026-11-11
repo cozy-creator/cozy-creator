@@ -3,7 +3,10 @@
 //! here: transitions, outputs at their newest revision, and log lines. Never progress.
 use std::{
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{
+        Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -206,6 +209,8 @@ pub(crate) enum StoreError {
     Protected(String),
     #[error("{0}")]
     ProjectCode(String),
+    #[error("Calcifer's store could not flush its journal: {0}")]
+    Flush(std::io::Error),
 }
 
 pub(crate) type Result<T> = std::result::Result<T, StoreError>;
@@ -462,11 +467,53 @@ pub(crate) struct OutputRow {
     pub checkpoint: Option<v1::CheckpointRef>,
 }
 
-/// The store: writes on one connection, one at a time, each commit durable; reads on their own,
-/// which WAL lets go on while a commit waits on the disk, so a slow flush never holds up a read.
+/// The store: writes on one connection, one at a time, each durable before it returns; reads on
+/// their own, which WAL lets go on while a write waits on the disk.
 pub(crate) struct Store {
     writer: Mutex<Connection>,
     reader: Mutex<Connection>,
+    durable: Durable,
+}
+
+/// Group commit. A commit only writes the WAL, under the writer lock; one flush of the WAL then
+/// makes every commit before it durable. Writes waiting together share a flush, so on a disk
+/// whose flush takes seconds a write waits one or two of them, not one per write queued ahead.
+struct Durable {
+    /// None: SQLite syncs each commit itself (not in WAL mode).
+    wal: Option<PathBuf>,
+    committed: AtomicU64,
+    /// The newest commit a flush covers; held while flushing, so one flush runs at a time.
+    flushed: Mutex<u64>,
+}
+
+impl Durable {
+    fn sqlite() -> Self {
+        Self { wal: None, committed: AtomicU64::new(0), flushed: Mutex::new(0) }
+    }
+
+    /// Numbers a commit just made, under the writer lock.
+    fn committed(&self) -> u64 {
+        self.committed.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    /// Returns once `commit` is on disk: covered by a flush already made, or by one made now of
+    /// every commit numbered so far.
+    fn wait(&self, commit: u64) -> Result<()> {
+        let Some(wal) = &self.wal else { return Ok(()) };
+        let mut flushed = self.flushed.lock().unwrap_or_else(|e| e.into_inner());
+        if *flushed >= commit {
+            return Ok(());
+        }
+        let covers = self.committed.load(Ordering::Acquire);
+        match std::fs::OpenOptions::new().write(true).open(wal) {
+            Ok(file) => file.sync_data().map_err(StoreError::Flush)?,
+            // No WAL: a checkpoint moved every commit into the database and synced it.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(StoreError::Flush(e)),
+        }
+        *flushed = covers;
+        Ok(())
+    }
 }
 
 impl Store {
@@ -475,8 +522,10 @@ impl Store {
             std::fs::create_dir_all(parent).map_err(|e| StoreError::Corrupt(e.to_string()))?;
         }
         let mut writer = Connection::open(path)?;
-        writer.pragma_update(None, "journal_mode", "WAL")?;
-        writer.pragma_update(None, "synchronous", "FULL")?;
+        let mode: String = writer.pragma_update_and_check(None, "journal_mode", "WAL", |r| r.get(0))?;
+        let wal = mode.eq_ignore_ascii_case("wal");
+        // In WAL mode a commit doesn't sync: `write` flushes for it (`Durable`).
+        writer.pragma_update(None, "synchronous", if wal { "NORMAL" } else { "FULL" })?;
         writer.pragma_update(None, "secure_delete", "ON")?;
         writer.pragma_update(None, "foreign_keys", "ON")?;
         match writer.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))? {
@@ -501,9 +550,12 @@ impl Store {
         private(path);
         let reader = Connection::open(path)?;
         reader.pragma_update(None, "query_only", "ON")?;
+        let mut journal = path.as_os_str().to_owned();
+        journal.push("-wal");
         Ok(Self {
             writer: Mutex::new(writer),
             reader: Mutex::new(reader),
+            durable: Durable { wal: wal.then(|| journal.into()), ..Durable::sqlite() },
         })
     }
 
@@ -517,14 +569,19 @@ impl Store {
         }
     }
 
-    /// One transaction. A commit can wait seconds on a busy disk's write-back: on a multi-thread
-    /// runtime the worker says so first, so its other tasks (the API's among them) move on.
+    /// One transaction, durable when it returns. Its flush can wait seconds on a busy disk's
+    /// write-back: on a multi-thread runtime the worker says so first, so its other tasks (the
+    /// API's among them) move on. The flush runs outside the writer lock: others commit meanwhile.
     pub(crate) fn write<T>(&self, f: impl FnOnce(&Transaction) -> Result<T>) -> Result<T> {
         let commit = || {
-            let mut conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
-            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let value = f(&tx)?;
-            tx.commit()?;
+            let (value, commit) = {
+                let mut conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+                let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+                let value = f(&tx)?;
+                tx.commit()?;
+                (value, self.durable.committed())
+            };
+            self.durable.wait(commit)?;
             Ok(value)
         };
         match tokio::runtime::Handle::try_current().map(|h| h.runtime_flavor()) {

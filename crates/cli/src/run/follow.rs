@@ -414,8 +414,16 @@ pub(super) fn fields(ctx: &Context, run: &Run) -> output::Record {
     if let Some(stalled) = run.stalled.as_ref().filter(|_| !settled(run)) {
         record = record.field("stalled", format!("{}. It keeps running until you end it", stalled_words(stalled)));
     }
-    if let Some(ms) = run.execution_ms {
-        record = record.field("execution", format!("{:.1}s", ms as f64 / 1000.0));
+    // All of its time: until its machine started it, executing there, and recording it here after.
+    let s = |ms: i64| format!("{:.1}s", ms.max(0) as f64 / 1000.0);
+    match (run.execution_ms, run.started_at_ms, run.settled_at_ms) {
+        (Some(ms), Some(started), Some(settled)) => {
+            let (ms, created) = (ms as i64, run.created_at_ms);
+            let parts = format!("{} to start + {} executing + {} to record", s(started - created), s(ms), s(settled - started - ms));
+            record = record.field("time", format!("{} = {parts}", s(settled - created)));
+        }
+        (Some(ms), ..) => record = record.field("execution", s(ms as i64)),
+        _ => {}
     }
     if let Some(memo) = &run.memo {
         let done = match memo.memoized {
