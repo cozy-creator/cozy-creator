@@ -20,7 +20,7 @@ def main():
     (args.out / 'accepted.stderr').write_text(accepted.stderr)
     assert accepted.returncode == 0, accepted.stdout + accepted.stderr
     interface = json.loads(accepted.stdout)
-    modes = {entry['name']: entry['accelerator'] for entry in interface['entrypoints']}
+    modes = {entry['name']: entry.get('accelerator', True) for entry in interface['entrypoints']}
     assert modes == {'cpu': False, 'gpu': True}, modes
     with tempfile.TemporaryDirectory() as temporary:
         invalid = Path(temporary) / 'probe'
