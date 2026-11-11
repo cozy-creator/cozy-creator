@@ -45,7 +45,7 @@ fn staged(root: &FsPath, name: &str, bag: &Keybag) -> Conversion {
         root: directory.clone(), staged: stage.clone(), saved: root.join(format!(".cozy-project-source-{suffix}")),
         key_id: bag.info().key_id, remove_source: true,
         plain: Some(PlainConversion { project_id: bag.info().project_id, generation: bag.info().generation,
-            ready: false, source_id: directory_id(&directory).unwrap(), staged_id: directory_id(&stage).unwrap() }),
+            ready: false, source_id: directory_id(&directory).unwrap(), staged_id: directory_id(&stage).unwrap(), cleanup_started: false }),
     }
 }
 
@@ -139,6 +139,21 @@ async fn native_plain_recovery_fixture() {
     installed.plain.as_mut().unwrap().source_id[1] ^= 1;
     save_conversion(&installed).unwrap(); recover_conversion(&installed.root).unwrap();
 
+    // Deletion may have removed the old keybag before a crash. Its durable
+    // cleanup authorization and original directory ID make this retry safe.
+    let mut cleanup = staged(&root, "partial-cleanup", &created.keybag);
+    cleanup.plain.as_mut().unwrap().ready = true;
+    save_conversion(&cleanup).unwrap();
+    fs::rename(&cleanup.root, &cleanup.saved).unwrap();
+    fs::rename(&cleanup.staged, &cleanup.root).unwrap();
+    cleanup.plain.as_mut().unwrap().cleanup_started = true;
+    save_conversion(&cleanup).unwrap();
+    fs::remove_file(cleanup.saved.join(KEYBAG_FILE)).unwrap();
+    assert!(cleanup.saved.join(BACKING).exists());
+    recover_conversion(&cleanup.root).unwrap();
+    assert!(cleanup.root.join("retained.txt").is_file() && !cleanup.saved.exists());
+    assert!(!receipt_path(&cleanup.root).exists());
+
     // Rebinding an older pre-move pointer is reconstructed from the real index
     // and native ID in a FRESH process, not by keeping this test's static map.
     let mut pointer = PAYLOAD_PREFIX.to_vec();
@@ -158,8 +173,13 @@ async fn native_plain_recovery_fixture() {
 
     // A normal copied document receives its own ID. Its inherited old marker
     // cannot grant the original namespace, but its ordinary identity stays usable.
-    let copy = root.join("foreign-copy"); native_project(&copy, "new-copy-id");
-    fs::copy(ready.root.join(api::machine::LOCAL_PRIVATE_MARKER), copy.join(api::machine::LOCAL_PRIVATE_MARKER)).unwrap();
+    let copy = root.join("foreign-copy"); fs::create_dir(&copy).unwrap();
+    copy_tree_at(&ready.root, &copy, FsPath::new(""), false, false).unwrap();
+    {
+        let at = copy.join(db::DB); let mut conn = db::open(&at).unwrap();
+        db::set_identity(&mut conn, &at, "new-copy-id", "Copy", Some("Copy1234")).unwrap();
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;").unwrap();
+    }
     KEY_ROOTS.lock().unwrap().insert(id.clone(), copy.clone());
     register_plain_root(&copy, "new-copy-id").unwrap();
     assert_ne!(KEY_ROOTS.lock().unwrap().get(&id), Some(&copy));
@@ -167,10 +187,26 @@ async fn native_plain_recovery_fixture() {
     assert!(crate::private_io::retained_view(&copy, &id).is_err());
     assert_eq!(plain_project_id(&copy).as_deref(), Some("new-copy-id"));
     let copied_db = hash(&copy.join(db::DB)).unwrap();
-    let refusal = plain_scope_for_encrypt(&copy, "new-copy-id").err().expect("foreign copied namespace must refuse before encryption");
-    assert_eq!(refusal.code, "vault_retained_project_mismatch");
+    assert_eq!(plain_generation_for_encrypt(&copy, "new-copy-id").unwrap(), 1);
     assert_eq!(hash(&copy.join(db::DB)).unwrap(), copied_db);
     assert!(!copy.join(KEYBAG_FILE).exists());
+    let fresh_stage = root.join("fresh-copy-stage"); fs::create_dir(&fresh_stage).unwrap();
+    copy_tree(&copy, &fresh_stage).unwrap();
+    assert_eq!(plain_project_id(&fresh_stage).as_deref(), Some("new-copy-id"));
+    assert_eq!(fs::read(fresh_stage.join(".vault-machine/objects/source")).unwrap(), b"original immutable source");
+    assert_eq!(fs::read_dir(fresh_stage.join(JOURNAL_DIR)).unwrap().count(), 1);
+    assert!(!fresh_stage.join(api::machine::LOCAL_PRIVATE_MARKER).exists());
+    assert!(!fresh_stage.join(".vault-machine/generations").exists());
+    let fresh_scope = crate::private_io::descriptor_for_mounted(&fresh_stage, "new-copy-id", 1).unwrap();
+    assert_eq!(fresh_scope.storage.project_id, "new-copy-id");
+    assert_eq!(fresh_scope.storage.generation, 1);
+    assert_ne!(KEY_ROOTS.lock().unwrap().get(&id), Some(&fresh_stage));
+    let marker_path = copy.join(api::machine::LOCAL_PRIVATE_MARKER);
+    let marker_bytes = fs::read(&marker_path).unwrap(); fs::write(&marker_path, b"{}").unwrap();
+    assert!(plain_generation_for_encrypt(&copy, "new-copy-id").is_err());
+    assert_eq!(fs::read(&marker_path).unwrap(), b"{}");
+    assert_eq!(hash(&copy.join(db::DB)).unwrap(), copied_db);
+    fs::write(&marker_path, marker_bytes).unwrap();
 
     // The original list predicate is demonstrably false between the renames.
     // The real indexed/named functions must retain the ID throughout that gap,
@@ -190,7 +226,8 @@ async fn native_plain_recovery_fixture() {
     assert!(super::super::indexed(&api).unwrap().iter().any(|project| project.id == id));
     assert_eq!(super::super::named(&api, &id).unwrap(), copying.root);
     let mut reading = Box::pin(read(State(api.clone()), Path(id.clone())));
-    assert!(futures_util::poll!(&mut reading).is_pending(), "GET answered a transient plaintext status during the rename gap");
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    assert!(std::future::Future::poll(reading.as_mut(), &mut context).is_pending(), "GET answered a transient plaintext status during the rename gap");
     fs::rename(&gap, &copying.root).unwrap();
     drop(converting); drop(writer);
     let response = reading.await.unwrap();
@@ -200,7 +237,7 @@ async fn native_plain_recovery_fixture() {
     api.down().await.unwrap();
 
     #[cfg(windows)]
-    for directory in [&ready.root, &next] {
+    for directory in [&ready.root, &next, &copy, &fresh_stage] {
         let path = directory.join("readonly.txt");
         let mut permissions = fs::metadata(&path).unwrap().permissions(); permissions.set_readonly(false);
         fs::set_permissions(path, permissions).unwrap();
@@ -208,7 +245,8 @@ async fn native_plain_recovery_fixture() {
     println!("{}", serde_json::json!({"copying_rollback":true,"ready_rename_recovery":true,"installed_recovery":true,
         "changed_file_ids_refused":true,"escaped_path_preserved":true,"readonly_bytes_and_permissions":true,
         "retained_source_preserved_caches_rebuilt":true,"foreign_copy_marker_denied":true,
-        "foreign_copy_encrypt_refused_without_mutation":true,"encryption_finisher_preserves_plain_intent":true,
+        "foreign_copy_fresh_staging_preserves_retained_bytes":true,"malformed_marker_refused_without_mutation":true,
+        "partial_cipher_cleanup_retry":true,"encryption_finisher_preserves_plain_intent":true,
         "original_gap_predicate_false":true,"index_and_named_survive_rename_gap":true,"status_waits_for_transition":true}));
 }
 

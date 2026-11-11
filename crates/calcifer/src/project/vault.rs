@@ -181,7 +181,7 @@ pub(crate) fn require_path(path: &FsPath) -> Result<(), Error> {
     Ok(())
 }
 
-fn locked(root: &FsPath) -> Error {
+fn locked(_root: &FsPath) -> Error {
     Error::new(Kind::Conflict, "project_locked", "the project is locked")
         .next("cozy vault unlock")
 }
@@ -414,9 +414,7 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk) -> Result<VaultChan
             let project = api.projects.open(api, root)?;
             let id = project.id.clone();
             drop(project);
-            let generation = plain_scope_for_encrypt(root, &id)?.map(|scope| scope.storage.generation)
-                .map(|generation| generation.checked_add(1).ok_or_else(|| error("vault_key", "project key generations are exhausted")))
-                .transpose()?.unwrap_or(1);
+            let generation = plain_generation_for_encrypt(root, &id)?;
             let created = Keybag::create_generation(&id, generation, new_passphrase(ask)?).map_err(key)?;
             recovery_secret = Some(created.recovery_secret.expose().to_owned());
             preserved_source = Some(convert(api, root, created.keybag, created.secret, ask)?);
@@ -491,20 +489,22 @@ impl Drop for Converting { fn drop(&mut self) { CONVERTING.lock().expect("vault 
 
 /// Only paths created by this conversion are ever recovered or retired. This receipt is durable
 /// before either rename, so losing Calcifer between them cannot lose the registered project path.
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct Conversion {
     root: PathBuf, staged: PathBuf, saved: PathBuf, key_id: String, remove_source: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     plain: Option<PlainConversion>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct PlainConversion {
     project_id: String,
     generation: u64,
     ready: bool,
     source_id: [u64; 2],
     staged_id: [u64; 2],
+    #[serde(default)]
+    cleanup_started: bool,
 }
 
 fn directory_id(path: &FsPath) -> Result<[u64; 2], Error> {
@@ -619,8 +619,11 @@ fn recover_plain(record: &Conversion) -> Result<(), Error> {
 fn finish_plain(record: &Conversion) -> Result<(), Error> {
     let plain = record.plain.as_ref().expect("plaintext conversion");
     if !plain.ready || !plain_target(record, &record.root)? { return Err(error("vault_recovery", "the plaintext replacement did not verify")); }
-    if exists(&record.saved)? && !original_plain_source(record, &record.saved)? {
-        return Err(error("vault_recovery", "the preserved encrypted source was replaced; cleanup refused"));
+    if exists(&record.saved)? {
+        if directory_id(&record.saved)? != plain.source_id
+            || (!plain.cleanup_started && !original_plain_source(record, &record.saved)?) {
+            return Err(error("vault_recovery", "the preserved encrypted source was replaced; cleanup refused"));
+        }
     }
     let scope = crate::private_io::retained_scope(&record.root, &plain.project_id)?;
     match scope {
@@ -630,6 +633,12 @@ fn finish_plain(record: &Conversion) -> Result<(), Error> {
     }
     register_plain_root(&record.root, &plain.project_id)?;
     if exists(&record.saved)? {
+        if !plain.cleanup_started {
+            let mut cleaning = record.clone();
+            cleaning.plain.as_mut().expect("plaintext conversion").cleanup_started = true;
+            save_conversion(&cleaning)?;
+        }
+        if directory_id(&record.saved)? != plain.source_id { return Err(error("vault_recovery", "the preserved source changed before cleanup")); }
         fs::remove_dir_all(&record.saved).map_err(|why| error("vault_cleanup_pending", format!("plaintext replacement verified, but old encrypted source cleanup is pending at {}: {why}; retry decrypt", record.saved.display())))?;
         platform::durable::sync_dir(record.root.parent().expect("validated conversion parent")).map_err(provider)?;
     }
@@ -695,7 +704,7 @@ fn decrypt(api: &Arc<Api>, root: &FsPath) -> Result<(), Error> {
         root: root.to_owned(), staged: staged.clone(), saved: parent.join(format!(".cozy-project-source-{suffix}")),
         key_id: info.key_id, remove_source: true,
         plain: Some(PlainConversion { project_id: info.project_id.clone(), generation: info.generation, ready: false,
-            source_id: directory_id(root)?, staged_id: directory_id(&staged)? }),
+            source_id: directory_id(root)?, staged_id: directory_id(&staged)?, cleanup_started: false }),
     };
     if let Err(why) = save_conversion(&record) {
         return match fs::remove_dir(&staged) {
@@ -750,7 +759,9 @@ fn convert(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret,
     // its live storage as an incidental part of converting its parent.
     no_nested(api, root)?;
     let old_secret = held(root).map(|session| session.lock().expect("vault session").secret.duplicate());
-    if old_secret.is_none() { plain_scope_for_encrypt(root, &keybag.info().project_id)?; }
+    if old_secret.is_none() && plain_generation_for_encrypt(root, &keybag.info().project_id)? != keybag.info().generation {
+        return Err(error("vault_key", "the plaintext execution generation changed before encryption"));
+    }
     let target_keybag = keybag.clone();
     if !CONVERTING.lock().expect("vault conversions").insert(root.to_owned()) { return Err(error("vault_busy", "the project is already being converted")); }
     let _converting = Converting(root.to_owned());
@@ -813,13 +824,14 @@ fn convert(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret,
     Ok(saved)
 }
 
-fn plain_scope_for_encrypt(root: &FsPath, id: &str) -> Result<Option<crate::private_io::Scope>, Error> {
-    if !exists(&root.join(api::machine::LOCAL_PRIVATE_MARKER))? { return Ok(None); }
-    crate::private_io::retained_scope(root, id)?.map(Some).ok_or_else(|| {
-        Error::new(Kind::Conflict, "vault_retained_project_mismatch",
-            "this copied project's retained execution storage belongs to its source project; encryption was not started")
-            .remedy("keep this copy unencrypted; its files and history have been preserved")
-    })
+fn plain_generation_for_encrypt(root: &FsPath, id: &str) -> Result<u64, Error> {
+    match crate::private_io::retained_copy_storage(root)? {
+        Some(storage) if storage.project_id == id => storage.generation.checked_add(1)
+            .ok_or_else(|| error("vault_key", "project key generations are exhausted")),
+        // A copied native document already has a new identity. Its old retained
+        // records stay inert; the replacement mount creates a fresh namespace.
+        _ => Ok(1),
+    }
 }
 
 fn copy_tree(source: &FsPath, target: &FsPath) -> Result<(), Error> {
@@ -834,7 +846,7 @@ fn copy_tree(source: &FsPath, target: &FsPath) -> Result<(), Error> {
             .is_some_and(|marker| marker.format_version == 1 && marker.storage.project_id == id
                 && marker.storage.generation > 0 && generation.is_none_or(|generation| marker.storage.generation == generation)
                 && platform::durable::canonical(source).is_ok_and(|path| path == marker.storage.view_root))
-    });
+    }) || (plain_project_id(source).is_some() && crate::private_io::retained_copy_storage(source)?.is_some());
     copy_tree_at(source, target, FsPath::new(""), managed, false)
 }
 

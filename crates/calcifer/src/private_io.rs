@@ -150,12 +150,26 @@ pub(crate) fn retained_scope(root: &Path, project_id: &str) -> Result<Option<Sco
 }
 
 fn validate_retained(marker: &LocalPrivateMarker, project_id: &str) -> Result<(), Error> {
-    if marker.format_version != 1 || marker.storage.project_id != project_id
+    if project_id.is_empty() || project_id.len() > 256 || project_id.chars().any(char::is_control)
+        || marker.format_version != 1 || marker.storage.project_id != project_id || !marker.storage.view_root.is_absolute()
         || marker.storage.generation == 0 || marker.token.len() != 64
         || !marker.token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(error("the retained execution marker does not match this project"));
     }
     Ok(())
+}
+
+/// Classification only: a copied framework marker may identify retained files
+/// and disposable caches without granting its original execution namespace.
+pub(crate) fn retained_copy_storage(root: &Path) -> Result<Option<LocalPrivateStorage>, Error> {
+    match fs::symlink_metadata(root.join(LOCAL_PRIVATE_MARKER)) {
+        Err(why) if why.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(error("the retained execution marker is unavailable")),
+        Ok(_) => {},
+    }
+    let marker = read_marker(root)?;
+    validate_retained(&marker, &marker.storage.project_id)?;
+    Ok(Some(marker.storage))
 }
 
 /// Journal reads use an existing native-ID-validated root binding; they do not
