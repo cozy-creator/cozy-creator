@@ -89,6 +89,27 @@ paths:
         '503':
           description: '`log_follow_unsupported`: this machine''s OS cannot follow'
           content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
+  /v1/models/remove:
+    post:
+      summary: Remove a repository from this computer's ordinary local model cache.
+      description: >-
+        Requires machine scope on a local machine. Private project storage and rented machines refuse
+        this operation. Active readers and content shared with other repositories remain intact;
+        the model's origin is unchanged.
+      operationId: remove_model
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/RemoveModel'}}}
+      responses:
+        '200':
+          description: The normalized repository name and the cache removal result.
+          content: {application/json: {schema: {$ref: '#/components/schemas/RemovedModel'}}}
+        '400':
+          description: '`invalid_request` or `model_ref_invalid`'
+          content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
+        '403':
+          description: '`capability_scope` or `model_remove_local_only`'
+          content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
   /v1/objects/held:
     post:
       summary: >-
@@ -651,6 +672,27 @@ components:
           description: >-
             The place after them, also the event's id: a follow resumed there goes on with the next line.
         text: {type: string}
+    RemoveModel:
+      type: object
+      required: [model]
+      properties:
+        model: {type: string, description: Repository as org/name, without a release or lane.}
+    RemovedModel:
+      type: object
+      required: [model, removed, cache_bytes_removed, retained_bytes]
+      properties:
+        model: {type: string}
+        removed: {type: boolean}
+        cache_bytes_removed:
+          type: integer
+          minimum: 0
+          maximum: 18446744073709551615
+          description: Bytes removed from cache object paths.
+        retained_bytes:
+          type: integer
+          minimum: 0
+          maximum: 18446744073709551615
+          description: Candidate bytes kept because they are in use, shared or could not safely be removed.
     Model:
       type: object
       properties:
