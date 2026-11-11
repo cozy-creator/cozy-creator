@@ -12,9 +12,6 @@ done
 
 proof_seed=$((R + 400))
 proof() { local name=$1 target=$2; shift 2; proof_seed=$((proof_seed + 1)); cell "$name" "$target" seed:=$proof_seed "$@"; }
-proof resident-nvfp4 "$TFS_DIR/resident-nvfp4/run" --gpus=1
-proof nvfp4-encode "$TFS_DIR/nvfp4-encode/run"
-proof convrot-encode "$TFS_DIR/convrot-encode/run"
 proof bf16-normalize "$TFS_DIR/bf16-normalize/run" mode=basic --gpus=1
 proof bf16-normalize-cancel "$TFS_DIR/bf16-normalize/run" mode=cancel --gpus=1
 proof checkpoint-quantize "$TFS_DIR/checkpoint-quantize/run" mode=basic
@@ -49,3 +46,6 @@ quantize_proof recipe-quantize 432
 controller model-qualification "$EXEC_DIR/model-qualification/run.py" --target "$(pkg sdxl generate)" \
   --input "$EXEC_DIR/model-qualification/sdxl-request.json" --machine "$M" --lane int8 \
   --seeds $((R + 441)) $((R + 442)) $((R + 443)) $((R + 444)) --steps 30 --expect-size 1024x1024 --output "$OUT/model-qualification"
+# TensorFS's own encoders and resident decode: programs on the pod against its public API, not packages (xs-174). Last:
+# they restart the machine so no executor holds the card.
+programs tensorfs "$TFS_DIR/programs" resident_nvfp4.py nvfp4_encode.py convrot_encode.py

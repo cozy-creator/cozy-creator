@@ -16,5 +16,11 @@ default = "ci_child_lora_stacks:app"
 module-name = "ci_child_lora_stacks"
 module-root = ""
 
+# The Hub's root-package index, which the machine's install resolves sdxl from (a lock would name the same URL).
+[[tool.uv.index]]
+name = "tensorhub"
+url = "https://tensorhub.com/v1/index/_/simple/"
+explicit = true
+
 [tool.uv.sources]
 sdxl = { index = "tensorhub" }

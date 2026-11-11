@@ -11,7 +11,10 @@ from collections.abc import Iterator
 from typing import NamedTuple
 
 import numpy as np
-from cozy_runtime.author import UnsupportedInput
+
+
+class UnsupportedInput(ValueError):
+    """What the reference refuses to encode."""
 
 
 # fmt: off

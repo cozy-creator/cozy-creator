@@ -236,6 +236,7 @@ pkg() {
 }
 output() { run_output "$OUT" "$1" "$2"; }
 . "$HERE/products.sh"
+. "$HERE/programs.sh"
 log "gate on $SKU (suites ${SUITES//,/ }): scenario $NAME, seeds from $R, candidate: ${CAND[*]:-released}${PKGS:+ packages $PKGS}${PINS:+ pins ${PINS//,/ }}, cli: $CLI"
 [ "$HOST" = 1 ] || log "host $HOST of $HOSTS: $(cat slow-*/host-slow | paste -sd';')"
 [ -z "$ON" ] || { M=$ON; BEFORE=(); }
