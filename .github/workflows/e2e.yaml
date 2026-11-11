@@ -432,6 +432,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y fuse libfuse2t64
           sudo modprobe fuse || test -e /dev/fuse
+      - name: Build the local-code staging helper for warming checks
+        if: matrix.shard == 'runs'
+        run: |
+          cargo build --quiet --locked --manifest-path .creator/Cargo.toml \
+            --target-dir "$RUNNER_TEMP/api-stage-code" -p api --example stage-code
+          echo "RUN_CODE_STAGE=$RUNNER_TEMP/api-stage-code/debug/examples/stage-code" >> "$GITHUB_ENV"
       - name: cli suite
         env:
           PINS: ${{ inputs.pins }}
