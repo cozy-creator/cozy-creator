@@ -694,10 +694,7 @@ jobs:
         uses: AnimMouse/setup-ffmpeg@v1
       - name: Install the optional project-encryption filesystem driver
         if: matrix.shard == 'projectvault'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y fuse libfuse2t64
-          sudo modprobe fuse || test -e /dev/fuse
+        run: bash .creator/e2e/cli/install-vault-driver.sh
       - uses: actions/download-artifact@v4
         with:
           name: fixture-hub
