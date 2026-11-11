@@ -4,5 +4,17 @@
 #   e2e/capabilities/run.sh --out DIR --commit ORG/NAME@sha256:<hex> [--hub ORIGIN] [--rental ID --rental-state live|ended]
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
-COZY_HUB_URL=${COZY_HUB_URL:-https://tensorhub.com} cozy --json whoami > /dev/null
+. "$here/../test-hub.sh"
+target=${COZY_HUB_URL:-}
+args=("$@")
+for ((i=0; i<${#args[@]}; i++)); do
+  case ${args[$i]} in
+    --hub) target=${args[$((i+1))]:-};;
+    --hub=*) target=${args[$i]#--hub=};;
+  esac
+done
+[ -n "$target" ] || { echo "capabilities: --hub or COZY_HUB_URL is required" >&2; exit 2; }
+export COZY_HUB_URL=$target
+require_ci_test_hub "$target" || exit 2
+cozy --json whoami > /dev/null
 cd "$here" && GOWORK=off go run . "$@"

@@ -60,6 +60,21 @@ cozy machine rent            # what is for rent; then cozy machine rent <sku>
 cozy model ls sdxl
 ```
 
+On a terminal, `cozy model ls` opens a keyboard browser. Use ↑/↓ to select, Enter for a short
+preview, and PgUp/PgDn (or p/n) for pages. `cozy lora ls` browses adapters separately.
+The list shows local availability and stored size. Local is yes only for a complete checkpoint, partial for an incomplete download, and cached when an older worker has not reported completeness.
+Press i in a preview, then choose a machine and confirm with Enter to install. Esc or q goes back.
+For a cached model, u opens a local-uninstall confirmation. This removes its cached lanes
+and releases from this machine, while protecting active/shared data and leaving the Hub unchanged.
+The default view always includes all matching local copies, including external installs absent from the Hub page.
+Unclassified copies have a separate section. Hub rows already shown locally appear once.
+Use `--on local` for a local-only paginated view.
+After an action, the browser refreshes and returns to the same page and selection.
+`--limit` and `--offset` select the Hub page in the default view; local copies are not capped.
+The name query filters local copies; family and tag filters apply only to Hub rows.
+JSON keeps `models`, `total` and `older` as the Hub page and adds `local_models` and `unclassified_local`.
+A null local inventory means it was unavailable, rather than empty.
+
 First-party packages have no owner (`sdxl/generate`); everyone else's are `owner/name`
 (`you/my-pack/generate`). Models live in their authors' orgs (`stabilityai/sdxl`).
 

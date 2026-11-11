@@ -1362,6 +1362,9 @@ pub struct Checkpoint {
     /// `model`, `lora`, or `unknown`; empty from older machines.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub role: String,
+    /// Whether every object in the header's closure is cached. None from older machines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub complete: Option<bool>,
 }
 
 /// `ssh` into a rental, as root, trusting its host key the first time, in a known-hosts file of that rental's own.
@@ -1434,6 +1437,9 @@ pub struct HeldModel {
     /// `model`, `lora`, or `unknown`; empty from older machines.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub role: String,
+    /// Whether every object in this checkpoint is cached. None from older machines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub complete: Option<bool>,
     pub bytes: u64,
     /// The repository's bytes other held models share.
     pub shared_bytes: u64,
@@ -1471,7 +1477,7 @@ impl Machine {
         let Some(status) = &self.status else { return held };
         (held.repositories, held.bytes, held.stored_bytes) = (status.models.len() as u64, status.models_bytes, status.disk_models_bytes);
         for model in &status.models {
-            let row = |release: &str, lane: &str, precision: &str, checkpoint: &str, role: &str| HeldModel {
+            let row = |release: &str, lane: &str, precision: &str, checkpoint: &str, role: &str, complete| HeldModel {
                 machine: self.name.clone(),
                 model: model.repository.clone(),
                 release: release.into(),
@@ -1479,13 +1485,14 @@ impl Machine {
                 precision: precision.into(),
                 checkpoint: checkpoint.into(),
                 role: role.into(),
+                complete,
                 bytes: model.total_bytes,
                 shared_bytes: model.total_bytes.saturating_sub(model.unique_bytes),
             };
             if model.checkpoints.is_empty() {
-                held.models.push(row("", "", "", "", "unknown"));
+                held.models.push(row("", "", "", "", "unknown", None));
             }
-            held.models.extend(model.checkpoints.iter().map(|c| row(&c.release, &c.lane, &c.precision, &c.manifest, &c.role)));
+            held.models.extend(model.checkpoints.iter().map(|c| row(&c.release, &c.lane, &c.precision, &c.manifest, &c.role, c.complete)));
         }
         held
     }

@@ -72,9 +72,11 @@ enum Command {
     Vault(project::vault::Args),
     /// Local, rented and added machines.
     Machine(machine::Args),
-    /// Find, download, upload and publish models.
+    /// Browse and install models.
     Model(model::Args),
-    /// Find, install and publish packages.
+    /// Browse and install LoRAs.
+    Lora(model::LoraArgs),
+    /// Browse and install packages.
     Package(package::Args),
     /// Replace this binary with the newest release.
     Update(update::Args),
@@ -171,6 +173,7 @@ async fn dispatch(ctx: &Context, command: Command) -> Result<ExitCode, Error> {
         Command::Machine(args) => machine::exec(ctx, args).await,
         Command::Package(args) => package::exec(ctx, args).await,
         Command::Model(args) => model::exec(ctx, args).await,
+        Command::Lora(args) => model::lora_exec(ctx, args).await,
         Command::New(args) => project::create(ctx, args).await,
         Command::Status(args) => daemon::status(ctx, args).await,
         Command::Vault(args) => project::vault::exec(ctx, args).await,

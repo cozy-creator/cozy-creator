@@ -406,7 +406,7 @@ impl LocalSources {
                 let python = platform::paths::venv_python(&env);
                 let stop = job.stop.as_ref();
                 // Its lock's Runtime too old for its code: re-locked in its folder.
-                let unread = |failure: published::Failure| built.unread(failure, &env, &manifest.package, "cozy package lock --upgrade-package cozy-runtime");
+                let unread = |failure: published::Failure| built.unread(failure, &env, &manifest.package, "uv lock --upgrade-package cozy-runtime");
                 let (interface, closures) = environment::describe_project(&python, &project, stop).map_err(unread)?;
                 let callees = callees(&environment, &python, &distribution, &manifest.callees, stop).map_err(unread)?;
                 let described = environment::Described { source_digest: manifest.source_digest(), callees, closures };

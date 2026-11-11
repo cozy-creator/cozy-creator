@@ -5,7 +5,7 @@
 // `x-raw-body` (pages, redirects, bytes) has its status checked, not its body. Object fields follow the document's
 // additionalProperties policy. <out>/hub-calls.json counts the calls of each operation.
 //
-//	hubcheck --hub https://tensorhub.com --out DIR [--listen 127.0.0.1:0] [--spec FILE]
+//	hubcheck --hub http://127.0.0.1:8819 --out DIR [--listen 127.0.0.1:0] [--spec FILE]
 //
 // It prints the address it listens on, then serves until it is ended.
 package main
@@ -54,7 +54,7 @@ type checker struct {
 }
 
 func main() {
-	hub := flag.String("hub", "https://tensorhub.com", "the Hub")
+	hub := flag.String("hub", os.Getenv("COZY_HUB_URL"), "explicit Hub origin")
 	out := flag.String("out", "", "where mismatches and call counts go")
 	listen := flag.String("listen", "127.0.0.1:0", "the address cozy calls instead of the Hub")
 	spec := flag.String("spec", "", "an API document file instead of the Hub's own GET /openapi.yaml")
@@ -62,7 +62,7 @@ func main() {
 	if *out == "" {
 		fail(errors.New("--out is required"))
 	}
-	upstream, err := url.Parse(strings.TrimRight(*hub, "/"))
+	upstream, err := verificationTarget(*hub, os.Getenv("CI") != "" || os.Getenv("GITHUB_ACTIONS") != "")
 	if err != nil {
 		fail(err)
 	}

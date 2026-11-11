@@ -323,7 +323,7 @@ pub(super) async fn publish(api: &Arc<Api>, hub: &Origin, code: &LocalCode, ask:
             lock.clone()
         }
         None => fs::read_to_string(project.root.join("uv.lock")).map_err(|_| {
-            Error::new(Kind::Validation, "package_unlocked", "this project has no uv.lock").next("cozy package lock")
+            Error::new(Kind::Validation, "package_unlocked", "The package lock could not be read; publish again to regenerate it").next("cozy package publish")
         })?,
     };
     // Locking the copy is a no-op for a lock made for this Hub and account. For another, it moves
@@ -406,7 +406,7 @@ fn built(
             format!("uv.lock does not hold for {package} on {}: {detail}", hub.as_str()),
         )
         .remedy("publish the locked versions of your own dependencies to this Hub first, or relock")
-        .next("cozy package lock"));
+        .next("uv lock"));
     }
     let dist = stage.root.join("dist");
     run(
@@ -454,7 +454,7 @@ fn unmet(error: Error, pins: &BTreeMap<String, String>, account: &str, hub: &Ori
             format!("uv.lock pins {account}/{name} {version}, which {} does not publish", hub.as_str()),
         )
         .remedy(format!("publish {name} {version} to this Hub as {account} first, or relock against it"))
-        .next("cozy package lock"),
+        .next("uv lock"),
         None => error,
     }
 }

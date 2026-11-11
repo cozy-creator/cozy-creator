@@ -878,7 +878,7 @@ pub(crate) fn advice(path: &Path, missing: u64) -> String {
     });
     let gb = (disk.capacity.saturating_sub(disk.available) + missing + disk.reserve()).div_ceil(10_000_000_000) * 10;
     format!(
-        " (the disk holds {held}{} of {} free: `cozy package ls --on <machine>` and `cozy package remove <package> --on <machine>` free some; \
+        " (the disk holds {held}{} of {} free: `cozy package ls --on <machine>` and `cozy package uninstall <package> --on <machine>` free some; \
          `cozy machine rent <sku> --disk-gb {gb}` holds this call)",
         size(disk.available), size(disk.capacity)
     )

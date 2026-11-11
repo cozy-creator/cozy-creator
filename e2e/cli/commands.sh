@@ -41,8 +41,14 @@ cozy --json logout > "$OUT/logout.json" || check "logout while signed out failed
 step packages
 cozy --json package ls birefnet --limit 1 > "$OUT/search.json" && J '(.packages | length) == 1 and .packages[0].package == "birefnet"' "$OUT/search.json" \
   || check "package ls --limit 1: not exactly birefnet"
-cozy --json package info birefnet > "$OUT/package-info.json" && J '(.latest_release | length > 0) and (.releases | length > 0)' "$OUT/package-info.json" \
-  || check "package info birefnet: no releases"
+cozy --json package ls --limit 1 > "$OUT/packages-first-page.json" || check "package first page failed"
+cozy --json package ls --limit 1 --offset 1 > "$OUT/packages-second-page.json" || check "package second page failed"
+if [ "$(jq '.total' "$OUT/packages-first-page.json")" -gt 1 ]; then
+  [ "$(jq -r '.packages[0].package' "$OUT/packages-first-page.json")" != "$(jq -r '.packages[0].package' "$OUT/packages-second-page.json")" ] \
+    || check "package offset repeated the first page"
+fi
+package_details birefnet > "$OUT/package-info.json" && J '(.latest_release | length > 0) and (.releases | length > 0)' "$OUT/package-info.json" \
+  || check "package details birefnet: no releases"
 cozy --json run birefnet/remove_background --describe > "$OUT/describe-published.json" 2> "$OUT/describe-published.err" \
   && grep -Eq '(^|[[:space:]"])image("|:)' "$OUT/describe-published.json" || check "run birefnet/remove_background --describe: no image input"
 cozy run birefnet > "$OUT/functions.txt" 2>&1 && grep -q remove_background "$OUT/functions.txt" || check "run birefnet: remove_background is not listed"
@@ -64,7 +70,12 @@ cozy --json model ls --no-tag nsfw --limit 100 > "$OUT/no-nsfw.json" && J 'all(.
   || check "model ls --no-tag nsfw: a model tagged nsfw listed"
 cozy --json model ls --tag nsfw --limit 100 > "$OUT/nsfw.json" && J 'all(.models[]; (.tags // []) | index("nsfw"))' "$OUT/nsfw.json" \
   || check "model ls --tag nsfw: a model without the tag listed"
-cozy --json model info zhengpeng7/birefnet > "$OUT/model-info.json" && J '.releases[0].lanes | length > 0' "$OUT/model-info.json" || check "model info zhengpeng7/birefnet: no lanes"
+cozy --json model ls --limit 1 > "$OUT/models-first-page.json" || check "model first page failed"
+cozy --json model ls --limit 1 --offset 1 > "$OUT/models-second-page.json" || check "model second page failed"
+if [ "$(jq '.total' "$OUT/models-first-page.json")" -gt 1 ]; then
+  [ "$(jq -r '.models[0].model' "$OUT/models-first-page.json")" != "$(jq -r '.models[0].model' "$OUT/models-second-page.json")" ] || check "model offset repeated the first page"
+fi
+model_details zhengpeng7/birefnet > "$OUT/model-info.json" && J '.releases[0].lanes | length > 0' "$OUT/model-info.json" || check "model metadata zhengpeng7/birefnet: no lanes"
 lane=$(jq -r '.releases[0].lanes[0].lane' "$OUT/model-info.json") || true
 
 step "renting, signed out"
@@ -88,17 +99,17 @@ step "packages on local"
 cozy --json package install "$here/weightless" --on local > "$OUT/install.ndjson" \
   || check "package install ./weightless --on local failed: $(grep -oE '"message": *"[^"]*"' "$OUT/install.ndjson" | tail -1)"
 cozy --json package ls --on local > "$OUT/packages.json" && grep -q 'e2e-weightless' "$OUT/packages.json" || check "package ls --on local: no local/e2e-weightless"
-cozy --json package remove local/e2e-weightless --on local > "$OUT/remove.ndjson" || check "package remove local/e2e-weightless --on local failed"
+cozy --json package uninstall local/e2e-weightless --on local > "$OUT/remove.ndjson" || check "package uninstall local/e2e-weightless --on local failed"
 cozy --json package ls --on local > "$OUT/packages-after.json" && ! grep -q 'e2e-weightless' "$OUT/packages-after.json" \
-  || check "package remove: local/e2e-weightless is still installed"
+  || check "package uninstall: local/e2e-weightless is still installed"
 
 step "models on local"
-cozy --json model download zhengpeng7/birefnet --lane "$lane" --on local > "$OUT/download.ndjson" || check "model download --lane $lane failed"
-cozy --json model download zhengpeng7/birefnet local/e2e-birefnet > "$OUT/download-alias.ndjson" || check "model download zhengpeng7/birefnet local/e2e-birefnet failed"
+cozy --json model install zhengpeng7/birefnet --lane "$lane" --on local > "$OUT/download.ndjson" || check "model install --lane $lane failed"
+cozy --json model install zhengpeng7/birefnet local/e2e-birefnet > "$OUT/download-alias.ndjson" || check "model install zhengpeng7/birefnet local/e2e-birefnet failed"
 # A local .safetensors file, made into a model the machine keeps by name: the file is written to the machine
 # and made from its object (object://sha256:…/<name>). No format knows its one key `w`, so it is kept as-is.
 safetensors_file "$OUT/tiny.safetensors"
-cozy --json model download "$OUT/tiny.safetensors" local/e2e-tiny --source-format as-is > "$OUT/download-file.ndjson" || check "model download ./tiny.safetensors local/e2e-tiny failed: $(grep -oE '"message": *"[^"]*"' "$OUT/download-file.ndjson" | tail -1)"
+cozy --json model install "$OUT/tiny.safetensors" local/e2e-tiny --source-format as-is > "$OUT/download-file.ndjson" || check "model install ./tiny.safetensors local/e2e-tiny failed: $(grep -oE '"message": *"[^"]*"' "$OUT/download-file.ndjson" | tail -1)"
 cozy --json model ls --on local > "$OUT/models.json" || check "model ls --on local failed"
 grep -q e2e-tiny "$OUT/models.json" || check "model ls --on local: the local file's local/e2e-tiny is not listed"
 J --arg lane "$lane" 'any(.models[]; .model == "zhengpeng7/birefnet" and .lane == $lane)' "$OUT/models.json" || check "model ls --on local: no zhengpeng7/birefnet in lane $lane after --lane $lane"
@@ -138,8 +149,8 @@ refused run-on-local run birefnet/remove_background --input "$OUT/refused.yaml" 
   || check "cozy run ./weightless/reverse --describe: $(tail -c 300 "$OUT/describe-code.json") $(tail -c 200 "$OUT/describe-code.err")"
 refused install package install birefnet
 refused install-code package install "$here/weightless"
-refused remove package remove birefnet
-refused download model download zhengpeng7/birefnet
+refused remove package uninstall birefnet
+refused download model install zhengpeng7/birefnet
 refused upload model upload "$OUT/refused.safetensors" fidika/e2e-refused --lane f16
 refused quantize model quantize circlestone-labs/anima --lane int8 --package anima
 refused update machine update local --runtime 0.30.0 -y
@@ -251,11 +262,11 @@ old_runtime() {
 step "a lock on an older executor protocol: the machine's pair where its range takes it, else one line naming the re-lock"
 local code=0
 if cell old-runtime "$here/old-runtime/takes/echo" text=old; then
-  grep -q "can't speak this machine's executor protocol.*cozy package lock --upgrade-package cozy-runtime" "$OUT/old-runtime.err" \
+  grep -q "can't speak this machine's executor protocol.*uv lock --upgrade-package cozy-runtime" "$OUT/old-runtime.err" \
     || check "old runtime: its install doesn't say it runs on the machine's pair, or how to re-lock: $(grep -m1 warning "$OUT/old-runtime.err" | head -c 400)"
 fi
 in_project "$RUN_PROJECT" --json run "$here/old-runtime/refuses/echo" text=old --on local > "$OUT/old-runtime-refused.json" 2>&1 || code=$?
-[ "$code" != 0 ] && grep -q runtime_protocol_unspoken "$OUT/old-runtime-refused.json" && grep -q 'cozy package lock --upgrade-package cozy-runtime' "$OUT/old-runtime-refused.json" \
+[ "$code" != 0 ] && grep -q runtime_protocol_unspoken "$OUT/old-runtime-refused.json" && grep -q 'uv lock --upgrade-package cozy-runtime' "$OUT/old-runtime-refused.json" \
   || check "old runtime: a range refusing the machine's Runtime wasn't refused naming the re-lock (exit $code): $(tail -c 400 "$OUT/old-runtime-refused.json")"
 }
 
@@ -327,16 +338,26 @@ docker pull -q "$image" > /dev/null || { check "unseen: docker pull $image"; ret
 # line, then runs there, its words on stderr. Its stdout is unseen-<name>.out, its stderr unseen-<name>.err. $REFUSED: its
 # failure is the caller's to judge.
 inside() {
-  local name=$1; shift
-  printf '%s\x1f' "$@" >> "$OUT/argv.log"; printf '\x1e' >> "$OUT/argv.log"  # docker runs the binary itself
+  local name=$1 container=$image; shift
+  local extra=()
+  if [ -n "${LOCK_FIXTURE:-}" ]; then
+    [ -x "${RUN_CODE_STAGE:-}" ] || { check "unseen lock: RUN_CODE_STAGE must name the API stage-code executable"; return 1; }
+    container=python:3.12-slim-trixie
+    extra=(-v "$here/..:/e2e:ro" -v "$RUN_CODE_STAGE:/usr/local/bin/stage-code:ro")
+  else
+    printf '%s\x1f' "$@" >> "$OUT/argv.log"; printf '\x1e' >> "$OUT/argv.log"  # docker runs the binary itself
+  fi
   cp "$HOME/.cozy/calcifer/calcifer.lock.holder" "$HOME/.cozy/config.toml" "$seen/"
   docker run --rm --network host --pid host -u "$(id -u):$(id -g)" -e HOME=/home/cli -e COZY_HUB_URL="${COZY_HUB_URL:-}" \
-    -e PROJECT_DIRECTORY="$seen/project" -e AFTER="${AFTER:-}" -e DIR="${DIR:-.}" \
+    -e PROJECT_DIRECTORY="$seen/project" -e AFTER="${AFTER:-}" -e DIR="${DIR:-.}" -e LOCK_FIXTURE="${LOCK_FIXTURE:-}" \
+    -e CI="${CI:-}" -e GITHUB_ACTIONS="${GITHUB_ACTIONS:-}" -e COZY_TEST_HUB_ORIGIN="${COZY_TEST_HUB_ORIGIN:-}" \
     --tmpfs "/home/cli:rw,exec,uid=$(id -u),gid=$(id -g),mode=0700" --tmpfs "$seen/project:rw,exec,uid=$(id -u),gid=$(id -g),mode=0700" \
     -v "$seen:/seen:ro" -v "$COZY:/usr/local/bin/cozy:ro" -v "$src:/src:ro" -v /etc/ssl/certs:/etc/ssl/certs:ro \
-    ${CAND_RT:+-v "$(dirname "$CAND_RT"):/wheels:ro"} -w "$seen/project" "$image" \
+    "${extra[@]}" ${CAND_RT:+-v "$(dirname "$CAND_RT"):/wheels:ro"} -w "$seen/project" "$container" \
     sh -c 'mkdir -p ~/.cozy/calcifer && cp /seen/calcifer.lock.holder ~/.cozy/calcifer/ && cp /seen/config.toml ~/.cozy/ \
-      && cp -r /src/. "$PROJECT_DIRECTORY" && cd "$PROJECT_DIRECTORY/$DIR" && cozy "$@" && { [ -z "$AFTER" ] || sh -c "$AFTER" >&2; }' sh "$@" \
+      && cp -r /src/. "$PROJECT_DIRECTORY" && cd "$PROJECT_DIRECTORY/$DIR" \
+      && { if [ -n "$LOCK_FIXTURE" ]; then python3 /e2e/package-lock.py --stage-code /usr/local/bin/stage-code . "$@"; else cozy "$@"; fi; } \
+      && { [ -z "$AFTER" ] || sh -c "$AFTER" >&2; }' sh "$@" \
     > "$OUT/unseen-$name.out" 2> "$OUT/unseen-$name.err" && return 0
   [ -n "${REFUSED:-}" ] || check "unseen $name: cozy $*: $(tail -c 400 "$OUT/unseen-$name.err") $(tail -c 300 "$OUT/unseen-$name.out")"
   return 1
@@ -374,12 +395,12 @@ inside install --json package install ./weightless --on local && J '.run.status 
 # Its recipes read from Calcifer's copy, then refused only at the model's header, which a sign-in reads: from a path it couldn't
 # see, the package was refused first (`target_not_found`).
 refused_inside quantize not_logged_in model quantize zhengpeng7/birefnet --lane int8 --package ./weightless --on local
-AFTER='grep -c "name = \"e2e-weightless\"" uv.lock' DIR=weightless inside lock --json package lock && grep -qx 1 "$OUT/unseen-lock.err" \
+AFTER='grep -c "name = \"e2e-weightless\"" uv.lock' DIR=weightless LOCK_FIXTURE=1 inside lock && grep -qx 1 "$OUT/unseen-lock.err" \
   || check "unseen lock: no uv.lock written in /work: $(tail -c 300 "$OUT/unseen-lock.err")"
 # Locked in Calcifer's copy of the tree, which it holds by the tree's digest.
 ls -d "$HOME"/.cozy/calcifer/code/*/tree/e2e_weightless > /dev/null 2>&1 || check "unseen lock: Calcifer holds no copy of the package: $(ls "$HOME/.cozy/calcifer/code" 2> /dev/null | head -3)"
 DIR=weightless refused_inside publish not_logged_in package publish
-inside model --json model download ./tiny.safetensors local/e2e-unseen --source-format as-is --on local \
+inside model --json model install ./tiny.safetensors local/e2e-unseen --source-format as-is --on local \
   && cozy --json model ls --on local | grep -q e2e-unseen || check "unseen model: local/e2e-unseen is not on local"
 if [ -f "${CAND_RT:-}" ]; then
   inside runtime --json machine update local --runtime "/wheels/$(basename "$CAND_RT")" -y || true
@@ -588,7 +609,7 @@ cozy --json run ls --state canceled > "$OUT/canceled.json" && J --argjson n "${n
   || check "run ls --state canceled: wrong runs"
 }
 
-# After `basics`: its model downloads are runs of zhengpeng7/birefnet.
+# After `basics`: its model installs are runs of zhengpeng7/birefnet.
 run_filters() {
 step "run ls filters"
 cozy --json run ls --all --package zhengpeng7/birefnet > "$OUT/by-package.json" && J '(.runs | length > 0) and all(.runs[]; .target | startswith("zhengpeng7/birefnet"))' "$OUT/by-package.json" \

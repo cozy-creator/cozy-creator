@@ -197,7 +197,7 @@ pub struct OrgProof {
     pub r#where: String,
 }
 
-/// `GET /v1/models?q=&family=&limit=`: the Hub's models the caller can see, one row each with its
+/// `GET /v1/models?q=&family=&limit=&offset=`: the Hub's models the caller can see, one row each with its
 /// newest release; signed in, also its own and its orgs' while private (no release yet). `q` that
 /// is exactly `org/name` is that one model.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -215,6 +215,8 @@ pub struct ModelSearch {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct FoundModel {
     pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
     /// The label its owner gave it, else what its header verifies as.
     pub family: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -276,6 +278,8 @@ pub struct ModelAuthor {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ModelDetail {
     pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
     /// The label its owner gave it, else what its header verifies as.
     pub family: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -458,6 +462,9 @@ pub struct FoundPackage {
     pub package: String,
     pub latest_release: Option<String>,
     pub created_at: String,
+    /// Authoritative update time when the Hub provides it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
 }
 
 /// `GET /v1/packages/{org}/{name}?release=`: a package's releases newest first, or the one named
@@ -517,7 +524,7 @@ pub struct AfterRun {
     pub retired: Vec<Retired>,
 }
 
-/// A model's display metadata as set at the Hub: shown by `cozy model info`, never applied (a
+/// A model's display metadata as set at the Hub: shown in the model browser, never applied (a
 /// run's LoRA strength stays 1.0).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
