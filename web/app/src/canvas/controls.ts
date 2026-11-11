@@ -5,6 +5,8 @@ import { type Row, rowsIn } from "./text"
 
 /** Words with a name, which whatever mentions them reads: in the tool list, and no function of any package. */
 export const TEXT_TOOL: Tool = { id: "text", package: "cozy", package_title: "Cozy", function: "", release: "", name: "text", label: "Text", makes: "text", fields: [] }
+/** The existing local timeline engine; it is a basic node, never a model attachment. */
+export const VIDEO_EDIT_TOOL: Tool = { id: "cozy/edit", package: "cozy", package_title: "Cozy", function: "edit", release: "", name: "Edit", label: "VideoEdit", makes: "video", fields: [{ field: "timeline", type: "timeline", label: "Edit" }] }
 
 /** A row's members, from what rows hold: what says the most, and each number, the first adding up. What else a row holds stays, unseen. */
 function membersOf(rows: Row[]): ToolField[] {
@@ -38,7 +40,7 @@ function fromFields(fields: Record<string, unknown>): ToolField[] {
 }
 
 /** The platform's words on any box, whatever made it: no tool asks for them. */
-export const OWN = ["description", "models", "lora"]
+export const OWN = ["description", "models", "lora", "node_kind"]
 
 /** What a box asks for: its tool's fields, or what its fields hold. Nothing here knows any function. */
 export function fieldsOf(asset: Asset, tools: Map<string, Tool>): ToolField[] {

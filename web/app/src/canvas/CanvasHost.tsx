@@ -36,6 +36,7 @@ import { copyBoxes, ownCopy } from "./copy"
 import { EntityCard } from "./EntityCard"
 import { HistoryControls } from "./HistoryControls"
 import { Placer } from "./place"
+import type { BasicNodeKind } from "./palette"
 import { Dots, Sheet } from "./Sheet"
 import { HANG, madeHere, shownOf } from "./shown"
 import { noHash } from "./text"
@@ -587,6 +588,11 @@ function Canvas({
     },
     [placer, visibleCentre],
   )
+  const placeNode = useCallback((kind: BasicNodeKind) => {
+    const width = kind === "video_edit" ? 720 : kind === "video" ? 360 : 300
+    const { x, y } = visibleCentre()
+    placer.addNode(kind, { x: x - width / 2 + CARD_WIDTH / 2, y: y - (width * 0.75) / 2 + 16 })
+  }, [placer, visibleCentre])
 
   const picked = useCallback(
     (event: ChangeEvent<HTMLInputElement>) => {
@@ -613,7 +619,8 @@ function Canvas({
         store.setHot(null)
         return
       }
-      if (load.tool) placer.addTool(load.tool, point, load.fields)
+      if (load.node) placer.addNode(load.node, point)
+      else if (load.tool) placer.addTool(load.tool, point, load.fields)
       if (load.take && !(under && store.takePicture(under, load.take))) placer.addFile(load.take, point)
     },
     [placer, flow, store],
@@ -946,7 +953,7 @@ function Canvas({
           saveToolsShut(next)
         }}
         place={placeTool}
-        choose={choose}
+        placeNode={placeNode}
         box={opened}
       />
       <div

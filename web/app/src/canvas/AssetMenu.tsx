@@ -5,6 +5,7 @@ import { useSignal } from "../ui/signal"
 import { useCanvasStore, useElement } from "./context"
 import { makes, toolName } from "./shown"
 import { retimed } from "./timeline/model"
+import { toolFitsNode } from "./palette"
 
 type Open = "menu" | "tool"
 
@@ -83,7 +84,7 @@ function Menu({ name, x, y }: { name: string; x: number; y: number }) {
   }, [store])
   const asset = view?.asset
   const tool = asset?.tool
-  const sameKind: Tool[] = [...tools.values()].filter((other) => other.makes === asset?.kind && other.id !== tool)
+  const sameKind: Tool[] = asset ? [...tools.values()].filter((other) => toolFitsNode(other, asset) && other.id !== tool) : []
   const edit = Boolean(asset?.timeline)
   const rendered = makes(view) && !edit
   const left = Math.min(x, window.innerWidth - 300)

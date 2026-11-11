@@ -406,7 +406,7 @@ async function died(why) {
   await shut();
 
   // A tool on and off. Any image tool the list has: what it does here makes nothing.
-  const listed = page.locator('.tools li.tool[data-kind="image"]');
+  const listed = page.locator('.tools [data-palette="tools"] li.tool[data-kind="image"][data-tool]');
   await listed.first().waitFor({ timeout: 20_000 }).catch(() => {});
   if (await listed.count()) {
     const row = listed.first();
@@ -445,18 +445,14 @@ async function died(why) {
     }
     await shut();
 
-    // On a text box its words are the prompt, at once, and the box opens.
-    // After the reload the canvas is where it was before the dropped tool's box opened, which shows words.
+    // A model cannot silently change a Text node into Image. The refused drop is consumed, with no new canvas node.
     await box('words').waitFor();
+    const beforeWrongKind = (await state()).assets.map((held) => held.name);
     await carry('words');
-    await box('words').locator('.add-on').first().waitFor({ timeout: 1000 });
-    check('a_dropped_tool_opens_its_box', await page.locator('.card.here[data-asset="words"]').waitFor({ timeout: 2000 }).then(() => true, (why) => String(why)) === true);
-    await until('the file', () => Promise.resolve(lines('words')), (text) => text.includes(`tool: ${tool.id}`) && text.includes('instructions: |'));
-    check('words_are_the_prompt', lines('words').includes('Two lines,') && !lines('words').includes('text:'), lines('words'));
-    await box('words').locator(`button[aria-label^="Take"]`).first().click();
-    await until('the file', () => Promise.resolve(lines('words')), (text) => !text.includes('tool:') && text.includes('text: |'));
-    check('x_on_a_box_of_no_pictures_leaves_text', (await asset('words')).kind === 'text' && comments.every((line) => yaml().includes(line)), lines('words'));
-    await shot('text-again');
+    check('incompatible_tool_drop_explains_why', (await toast('words is a text node')) === true);
+    const afterWrongKind = await state();
+    check('incompatible_tool_drop_keeps_text_and_creates_nothing', (await asset('words')).kind === 'text' && !(await asset('words')).tool && comments.every((line) => yaml().includes(line)) && JSON.stringify(afterWrongKind.assets.map((held) => held.name)) === JSON.stringify(beforeWrongKind), lines('words'));
+    await shot('text-refuses-image-tool');
 
     // On a picture: its first version, approved, and the prompt starts with it.
     await carry('other');
@@ -489,10 +485,9 @@ async function died(why) {
     await page.waitForTimeout(400);
     await box('other').locator(`button[aria-label^="Take"]`).first().click();
     await until('the tool gone', () => Promise.resolve(lines('other')), (text) => !text.includes('tool:'));
-    // Its X takes the tool and its fields with it: its pictures, number and approval stay.
+    // Its X takes model parameters with it; the typed node, prompt, pictures, number and approval stay.
     const off = await asset('other');
-    // Its fields go with it (Paul, 11-06), and its pictures, takes and description stay.
-    check('x_on_pictures_takes_its_fields', off.versions === 1 && off.approved === 1 && !off.fields?.instructions && !lines('other').includes('instructions') && off.standing === 'current' && !off.tool, { off, lines: lines('other') });
+    check('x_on_pictures_keeps_type_and_prompt', off.versions === 1 && off.approved === 1 && off.kind === 'image' && off.fields?.node_kind === 'image' && off.fields?.instructions === '<self.1>' && off.standing === 'current' && !off.tool, { off, lines: lines('other') });
     check('x_says_with_undo', (await toast('Its pictures stay')) === true);
     await undoIn('Its pictures stay').click();
     await until('the tool back', () => Promise.resolve(lines('other')), (text) => text.includes(`tool: ${tool.id}`) && text.includes('<self.1>'));

@@ -34,7 +34,7 @@ use crate::{
 };
 
 /// Your list until you change it.
-const DEFAULTS: [&str; 2] = ["_/qwen-image-2", "_/minimax-h3"];
+const DEFAULTS: [&str; 3] = ["_/qwen-image-2", "_/minimax-h3", "_/sdxl"];
 /// The most `browse` reads of the Hub.
 const MOST_BROWSED: u32 = 200;
 /// How many packages one list reads of the Hub.

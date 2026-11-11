@@ -10,7 +10,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
 const { existsSync, readFileSync, readdirSync, renameSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { projectFromPage, projectAction, projectJson, calcifer, carry, signIn, MP4, boxLog, boxOf, closeBox, openBox, openCanvas, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, renderOf, rowsOf, settled, until, watchBoxes, importYaml, yamlOf } = require('./page');
+const { projectFromPage, projectAction, projectJson, calcifer, carry, signIn, MP4, boxLog, boxOf, closeBox, openBox, openCanvas, fitCanvas, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, renderOf, rowsOf, settled, until, watchBoxes, importYaml, yamlOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -143,7 +143,7 @@ function linesOf(text, name) {
   const listed = await until('tools or why none', async () => ({ tools: await page.locator('.tools .tool').count(), note: await page.locator('.tools p').allTextContents() }), (now) => now.tools > 0 || now.note.length > 0);
   seen.tools_listed = listed;
   const resting = (await api(`/v1/tools?project=${id}`)).body;
-  check('defaults_always_listed', ['cozy', 'qwen-image-2', 'minimax-h3'].every((name) => resting.tools.some((tool) => tool.package === name)), { note: resting.note, tools: resting.tools.map((tool) => tool.id) });
+  check('defaults_always_listed', ['cozy', 'qwen-image-2', 'minimax-h3', 'sdxl'].every((name) => resting.tools.some((tool) => tool.package === name)), { note: resting.note, tools: resting.tools.map((tool) => tool.id) });
   const viewport = () => page.evaluate(() => getComputedStyle(document.querySelector('.react-flow__viewport')).transform);
   const before = await viewport();
   await page.click('.tools [aria-label="Hide the tools"]');
@@ -162,7 +162,7 @@ function linesOf(text, name) {
     return until('a box from the tool', async () => (await state()).assets.find((held) => !namesBefore.includes(held.name)), Boolean);
   };
   await until('the list back', () => page.locator('.tools .tool').count(), (n) => n > 0);
-  const firstTool = page.locator('.tools .tool:not([data-kind=text])').first();
+  const firstTool = page.locator('.tools [data-palette="tools"] .tool:not([data-kind=text])').first();
   const kind = await firstTool.getAttribute('data-kind');
   // A box is called what its tool's published node says, `image_1` for Qwen Image 2, else its package's word, numbered up from there.
   const dragged = await firstTool.getAttribute('data-tool');
@@ -191,8 +191,53 @@ function linesOf(text, name) {
   await until('that box gone', () => box(made.name).count(), (n) => n === 0);
   check('list_keeps_words', /\n  kept_words:\n    description: \|\n      Written\n      by hand\.\n/.test(yaml()), yaml());
 
+  // Basic nodes survive a fresh read without acquiring a model. The fourth type is an intrinsic timeline, not a generative video.
+  const basic = page.locator('.tools [data-palette="nodes"] li.tool');
+  check('basic_palette_has_exactly_four_types', JSON.stringify(await basic.locator('b').allTextContents()) === JSON.stringify(['Text', 'Image', 'Video', 'VideoEdit']));
+  const blanks = {};
+  for (const kind of ['text', 'image', 'video', 'video_edit']) {
+    await away();
+    const point = await openCanvas(page);
+    blanks[kind] = await dragOut(page.locator(`.tools [data-palette="nodes"] li.tool[data-node="${kind}"]`), point.x, point.y);
+  }
+  await away();
+  await page.reload();
+  await page.locator('.react-flow').waitFor();
+  const afterReload = await state();
+  const blank = (kind) => afterReload.assets.find((held) => held.name === blanks[kind].name);
+  check('blank_media_types_persist_without_models', ['image', 'video'].every((kind) => blank(kind)?.kind === kind && blank(kind)?.fields?.node_kind === kind && !blank(kind)?.tool && !('text' in (blank(kind)?.fields ?? {}))), { image: blank('image'), video: blank('video') });
+  check('text_and_videoedit_keep_intrinsic_behavior', blank('text')?.kind === 'text' && !blank('text')?.tool && blank('video_edit')?.tool === 'cozy/edit' && blank('video_edit')?.fields?.node_kind === 'video_edit' && Boolean(blank('video_edit')?.timeline), { text: blank('text'), videoEdit: blank('video_edit') });
+  const h3 = page.locator('.tools [data-palette="tools"] .tool[data-model$="/minimax-h3"]');
+  await h3.waitFor();
+  check('h3_primary_is_video', await h3.getAttribute('data-kind') === 'video');
+  const h3Id = await h3.getAttribute('data-tool');
+  const onto = async (row, name) => {
+    await away();
+    await fitCanvas(page);
+    await box(name).waitFor();
+    await row.scrollIntoViewIfNeeded();
+    const target = await box(name).locator('.card').boundingBox();
+    await carry(page, row, { x: target.x + target.width / 2, y: target.y + target.height / 2 });
+  };
+  const allBefore = (await state()).assets.map((held) => held.name).sort();
+  for (const kind of ['image', 'video_edit']) {
+    const name = blanks[kind].name;
+    await onto(h3, name);
+    await until('incompatible drop explained', () => page.locator('.notes, .note-list, [role=status]').allInnerTexts(), (notes) => notes.some((text) => text.includes(name) && (text.includes("can't go on") || text.includes('node'))));
+    const now = await of(name);
+    check(`h3_rejected_by_${kind}_without_extra_node`, now.tool === blank(kind).tool && now.kind === blank(kind).kind && JSON.stringify((await state()).assets.map((held) => held.name).sort()) === JSON.stringify(allBefore), now);
+  }
+  await onto(h3, blanks.video.name);
+  await until('video takes its compatible model', () => of(blanks.video.name), (held) => held.tool === h3Id);
+  check('video_accepts_h3_without_exposing_type_hint', (await of(blanks.video.name)).fields?.node_kind === 'video' && await page.locator('[data-field="node_kind"]').count() === 0);
+  await box(blanks.video.name).locator('button[aria-label^="Take "]').first().click();
+  await until('video model removed', () => of(blanks.video.name), (held) => !held.tool);
+  check('removing_model_keeps_blank_video_type', (await of(blanks.video.name)).kind === 'video' && (await of(blanks.video.name)).fields?.node_kind === 'video');
+  await away();
+  for (const held of Object.values(blanks)) await api(`/v1/projects/${id}/assets/${encodeURIComponent(held.name)}`, { method: 'DELETE' });
+
   // Local code is listed, and says so: the box Paul's example uses comes from here, dragged like any tool, and called what a person calls it.
-  const fromTheList = page.locator('.tools section[data-local] .tool').first();
+  const fromTheList = page.locator('.tools [data-palette="tools"] .tool[data-local]').first();
   const dropBox = async (name, x, y) => {
     await until('nothing being rendered, so it can be named', () => state(), (now) => !now.busy, FIRST_RUN_MS);
     const fresh = await dragOut(fromTheList, x, y);
@@ -211,7 +256,7 @@ function linesOf(text, name) {
     const wire = (await api(`/v1/tools?project=${id}`)).body.tools.find((held) => held.local);
     tool = wire.id;
     check('local_tool_says_so', wire.local && !wire.label.includes('(local)') && wire.id.startsWith(drawer), wire);
-    check('local_tools_are_editable', (await page.locator(`.tools section[data-local][data-package="${wire.package}"] .tool`).count()) > 0);
+    check('local_tools_are_editable', (await page.locator(`.tools [data-palette="tools"] .tool[data-local][data-package="${wire.package}"]`).count()) > 0);
     // A retry of a new asset makes no `_2`, on the wire. Calcifer keeps a key a day whatever the project (cl-812): each pass, its own.
     const body = JSON.stringify({ tool, at: { x: 0, y: 0, w: 300 }, name: 'Twice' });
     const twice = `nodes-twice-${id}`;
