@@ -125,6 +125,7 @@ class Cell(TypedDict):
     stages: dict[str, float]  # the warm runs' median of each stage, ms
     series: list[float]  # the warm runs' median of each step, ms
     builds: list[str]  # every build its runs went out on
+    cold_downloaded: bool  # its weights step made no run (a cozy without --warm), so its cold run fetched them
 
 
 class Reference(TypedDict, total=False):
@@ -329,7 +330,7 @@ def summary(cold: Metrics | None, warm: list[Metrics]) -> Cell:
                        if (v := [m['stages'][k] for m in done if k in m.get('stages', {})])},
             'series': [statistics.median(v) for i in range(max((len(m.get('series', [])) for m in done), default=0))
                        if (v := [m['series'][i] for m in done if len(m.get('series', [])) > i])],
-            'builds': sorted({m['build'] for m in runs if m.get('build')})}
+            'builds': sorted({m['build'] for m in runs if m.get('build')}), 'cold_downloaded': False}
 
 
 def text(d: str, name: str) -> str | None:
@@ -403,7 +404,8 @@ def read_gate(d: str, judged: bool = True) -> Gate:
     rows = os.path.join(d, 'comfyui-rows.json')
     return {'dir': d, 'group': text(d, 'bench-group') or '?', 'pod': text(d, 'machine'), 'label': text(d, 'label'), 'host': text(d, 'host-ram'), 'reference': reference,
             'invalid': text(d, 'invalid'),
-            'cells': {name: summary(cold[0] if cold else None, warm) for name, (cold, warm) in by.items()},
+            'cells': {name: summary(cold[0] if cold else None, warm) | {'cold_downloaded': text(d, f'{name}-0-weights.number') == 'none'}
+                      for name, (cold, warm) in by.items()},
             'comfyui': cast(dict[str, Comfy], load_json(rows)) if os.path.exists(rows) else {}}  # comfy.py rows wrote it
 
 
@@ -664,7 +666,7 @@ def versus(gates: list[Gate], defs: list[CellDef]) -> tuple[list[str], list[str]
             continue
         ctx = (g['reference'].get('before') or {}).get('ctx_mib')
         lines += [f"\n### {g['group']} on {g['pod']}: {g['label']} against ComfyUI {next(iter(g['comfyui'].values()))['comfyui']}"
-                  f" (Cozy's CUDA context {ctx if ctx is not None else '?'} MiB)", '',
+                  f" (Cozy's CUDA context {ctx if ctx is not None else '?'} MiB; a cold marked * fetched its weights: no --warm on that build)", '',
                   '| cell | GPU | warm total s: Cozy / ComfyUI | ComfyUI / Cozy | steady step s: Cozy / ComfyUI | peak VRAM GiB: Cozy / ComfyUI |'
                   ' cold s: Cozy / ComfyUI | Cozy loses |', '|---|---|---|---|---|---|---|---|']
         for name, x in g['comfyui'].items():
@@ -687,8 +689,9 @@ def versus(gates: list[Gate], defs: list[CellDef]) -> tuple[list[str], list[str]
                 return f'{f(a)} / {f(b)}'
             tot, steady, peak = judged['warm total'], judged['steady step'], judged['peak VRAM']
             speed = f"{tot[1] / tot[0]:.2f}x" if tot[0] and tot[1] else ('ComfyUI failed' if x['status'] != 'ok' else '-')
+            dl = '*' if c and c.get('cold_downloaded') else ''
             lines.append(f"| {name} | {f'{cap[name]} GiB' if cap.get(name) else 'whole'} | {pair(tot[0], tot[1], 2)} | {speed} |"
-                         f" {pair(steady[0], steady[1], 3)} | {pair(peak[0], peak[1], 1)} | {pair(sec(cold), x['cold_s'], 1)} |"
+                         f" {pair(steady[0], steady[1], 3)} | {pair(peak[0], peak[1], 1)} | {pair(sec(cold), x['cold_s'], 1)}{dl} |"
                          f" {'; '.join(gaps) or ('no: ComfyUI ' + x['status'] if x['status'] != 'ok' else 'no')}{mixed} |")
         for name, x in g['comfyui'].items():
             if next((d['comfyui'] for d in defs if d['name'] == name), '').startswith('h3'):

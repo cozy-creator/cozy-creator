@@ -175,7 +175,8 @@ one_beat() {
 # arguments that choose its weights.
 declare -A AHEAD
 ahead() {
-  local name=$1 target=$2 want=() key; shift 2
+  local name=$1 target=$2 want=() key ALL_ARGS; shift 2
+  ALL_ARGS=("$@")
   while [ $# -gt 0 ]; do
     case $1 in model.*=*|--lane=*|--lora=*) want+=("$1") ;; --lane|--lora) want+=("$1" "${2:-}"); shift ;; esac
     shift
@@ -183,9 +184,19 @@ ahead() {
   key="$target ${want[*]}"
   [ -z "${AHEAD[$key]:-}" ] || return 0
   AHEAD[$key]=1
-  run_cell "$OUT" "$name-weights" "$target" --on "$M" --warm downloaded "${want[@]}" ||
+  if "$CLI" run --help 2> /dev/null | grep -q -- '--warm'; then
+    run_cell "$OUT" "$name-weights" "$target" --on "$M" --warm downloaded "${want[@]}" ||
+      expect "$name-weights" FAIL "run $(cat "$name-weights.number") $(run_get "$OUT" "$name-weights" .status): $(run_get "$OUT" "$name-weights" '.reason.message')"
+    "$CLI" run "$target" --on "$M" --warm off > "$name-weights-off.log" 2>&1 || log "$name: --warm off: $(tail -c 300 "$name-weights-off.log")"
+    return 0
+  fi
+  # A cozy with no --warm (0.24's RC): the cell's own request once, on another seed, untimed, brings every weight it reads to
+  # the machine; then the machine restarts (its executors leave), so the timed cold run starts from weights on disk.
+  local args=() a
+  for a in "${ALL_ARGS[@]}"; do [[ $a == seed:=* ]] || args+=("$a"); done
+  run_cell "$OUT" "$name-weights" "$target" --on "$M" "${args[@]}" seed:=$((RANDOM + 2000000)) ||
     expect "$name-weights" FAIL "run $(cat "$name-weights.number") $(run_get "$OUT" "$name-weights" .status): $(run_get "$OUT" "$name-weights" '.reason.message')"
-  "$CLI" run "$target" --on "$M" --warm off > "$name-weights-off.log" 2>&1 || log "$name: --warm off: $(tail -c 300 "$name-weights-off.log")"
+  "$CLI" machine update "$M" --gpu-memory-limit off -y > "$name-weights-off.log" 2>&1 || log "$name: restart: $(tail -c 300 "$name-weights-off.log")"
 }
 # cell <name> <target> [args...]: one run on $M (e2e/run.sh's run_cell): its record <name>.json, its outputs <name>/.
 # --only names cells or packages. $TWIN, when a suite sets it, names a second run (<name>$TWIN) of the cells $TWINS lists.
