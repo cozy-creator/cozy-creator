@@ -19,7 +19,7 @@ pub(crate) const HEADERS: [&str; 11] = [
 /// What `--json` keeps of a machine in a list (`--full`: all of it): the table's facts, by the record's names.
 pub(crate) const FIELDS: &[&str] = &[
     "rentals", "unanswered", "signed_out", "machines.name", "machines.kind", "machines.state", "machines.hub", "machines.rental_id",
-    "machines.ordered", "machines.unverified", "machines.offline", "machines.unreachable", "machines.boot", "machines.reason",
+    "machines.ordered", "machines.unverified", "machines.offline", "machines.unreachable", "machines.boot", "machines.reason", "machines.end_failed",
     "machines.running", "machines.queued", "machines.rental.sku", "machines.rental.accelerator", "machines.rental.gpus",
     "machines.rental.usd_micros_per_hour", "machines.rental.spend_usd_micros", "machines.rental.spend_basis",
     "machines.rental.rented_at_ms", "machines.status.version", "machines.status.phase", "machines.status.gpus.index",
@@ -91,6 +91,9 @@ pub(crate) fn print(ctx: &Context, list: &MachineList) {
         println!("{note}");
     }
     for note in live().filter_map(offline) {
+        println!("{note}");
+    }
+    for note in live().filter_map(end_failed) {
         println!("{note}");
     }
     for m in live() {
@@ -247,6 +250,9 @@ pub(crate) fn record(ctx: &Context, m: &Machine) -> output::Record {
         None => {}
     }
     if let Some(note) = offline(m) {
+        record = record.note(note);
+    }
+    if let Some(note) = end_failed(m) {
         record = record.note(note);
     }
     record
@@ -523,6 +529,13 @@ fn ends_cell(m: &Machine) -> String {
 fn unreachable_since(m: &Machine) -> Option<i64> {
     let since = m.rental.as_ref()?.unreachable_since_ms?;
     (m.state == MachineState::Ready).then_some(since)
+}
+
+/// A machine whose end failed: why, and that it was not ended.
+fn end_failed(m: &Machine) -> Option<String> {
+    let why = m.end_failed.as_deref()?;
+    let billing = if m.kind == MachineKind::Rental { " and may still be billing" } else { "" };
+    Some(format!("{} was not shut down{billing}: {why}. `cozy machine end {}` asks again.", m.name, m.name))
 }
 
 /// What an offline machine's owner can do: it is kept, never replaced, and refuses runs meanwhile.

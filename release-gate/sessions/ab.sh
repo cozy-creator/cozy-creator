@@ -9,7 +9,8 @@
 #   cells      [{"name", "tree" (a packages_refs name; absent, `target` is a published `<package>/<function>[@release]`,
 #              run from the packages directory: an unchanged release on a candidate Runtime), "target"
 #              ("<package>/<function>"), "args" ([inputs and flags]),
-#              "update" (optional: {"runtime", "tensorfs"}, each a wheel URL or, for runtime, a cozy-runtime dev-build
+#              "update" (optional: {"runtime", "tensorfs"}, each a wheel URL, `artifact:<run id>/<name>` of a
+#              cozy-creator run (a dev-build's tensorfs-wheel-<sha>) or, for runtime, a cozy-runtime dev-build
 #              run id, and "gpu_memory_limit" (`10GiB`, `off`: the development VRAM cap); the pod's `machine update`
 #              before this cell, so cells before and after compare two pairs)}];
 #              "expect" (optional: the status the cell must end in, `completed` by default; `failed` for a refusal it proves);
@@ -39,6 +40,7 @@ wheel() {
   local d=$OUT/wheels/$1-$2; mkdir -p "$d"
   case $3 in
     https://*) curl -fsSL --retry 5 -o "$d/${3##*/}" "$3" || return 1 ;;
+    artifact:*/*) local a=${3#artifact:}; gh run download "${a%%/*}" -R cozy-creator/cozy-creator -n "${a#*/}" -D "$d" >/dev/null 2>&1 || return 1 ;;
     *) gh run download "$3" -R cozy-creator/cozy-runtime -p 'cozy-runtime-*' -D "$d" >/dev/null 2>&1 || return 1 ;;
   esac
   find "$d" -name '*manylinux*x86_64*.whl' | head -1

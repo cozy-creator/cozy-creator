@@ -129,7 +129,8 @@ function Details({ machine, now }: { machine: Machine; now: number }) {
         ["Add it at", machine.reach],
         ["Placed", rental?.placement_note],
         ["Failure", rental?.failure],
-        ["Reason", machine.reason === "release_unconfirmed" ? "" : machine.reason],
+        ["Reason", machine.reason],
+        ["End failed", machine.end_failed],
       ]}
       />
       {machine.ssh && (

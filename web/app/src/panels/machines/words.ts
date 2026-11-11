@@ -39,7 +39,7 @@ export function stateWords(machine: Machine, now: number): string {
 }
 
 export const stateClass = (machine: Machine) =>
-  machine.offline || machine.reason === "release_unconfirmed"
+  machine.offline || machine.end_failed
     ? "s-bad"
     : machine.state === "ready"
       ? "s-current"

@@ -142,8 +142,8 @@ pub(crate) struct Logout {
     everywhere: bool,
 }
 
-/// Erases this computer's key at the Hub, asking the Hub to revoke it first. The key is erased
-/// whatever the Hub answers.
+/// Erases this computer's key, whatever the Hub answers: one this computer enrolled is revoked at
+/// the Hub first, one installed with `--key` only forgotten here (another computer may use it).
 pub(crate) async fn logout(ctx: &Context, args: Logout) -> Result<ExitCode, Error> {
     let hub = ctx.hub();
     let calcifer = ctx.calcifer().await?;

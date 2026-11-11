@@ -71,23 +71,23 @@ struct Stage {
 }
 
 impl Stage {
-    /// The copy to lock and publish, with Torch left to the machine (`TORCH_LAYER`): its lock
-    /// holds no Torch, and an author's cap or exact pin on Torch is said once.
-    fn new(project: &Project, uv: PathBuf, say: Say<'_>) -> Result<Self, Error> {
+    /// The copy to lock and publish: Calcifer's copy `within` of the tree the client sent, so the path
+    /// dependencies its sources name (`{ path = "../x" }`) are where they say (cl-878), with Torch left
+    /// to the machine (`TORCH_LAYER`): its lock holds no Torch, and an author's cap or exact pin on
+    /// Torch is said once.
+    fn new(project: &Project, within: &Path, uv: PathBuf, say: Say<'_>) -> Result<Self, Error> {
         let dir = tempfile::tempdir().map_err(|e| refuse("stage_unavailable", e))?;
         let root = dir.path().to_path_buf();
-        let src = root.join("src");
+        let at = project.root.strip_prefix(within).map_err(|_| {
+            refuse("stage_unavailable", format!("{} is outside its copy {}", project.root.display(), within.display()))
+        })?;
+        let src = root.join("copy").join(at);
         let mut left = vec![];
-        let files = source_files(&project.root, &mut left)?;
+        source_files(&project.root, &mut left)?;
         if !left.is_empty() {
             say(&format!("left out of the package: {}", left.join(", ")));
         }
-        for file in files {
-            let to = src.join(&file);
-            fs::create_dir_all(to.parent().unwrap_or(&src))
-                .and_then(|()| fs::copy(project.root.join(&file), &to))
-                .map_err(|e| refuse("stage_unavailable", e))?;
-        }
+        crate::local_code::copy_tree(within, &root.join("copy"))?;
         let path = src.join("pyproject.toml");
         let authored = fs::read_to_string(&path).map_err(|e| refuse("stage_unavailable", e))?;
         let mut doc: toml_edit::DocumentMut = authored.parse().map_err(|e| refuse("project_invalid", e))?;
@@ -312,24 +312,29 @@ async fn publisher(client: &::api::hub::Client, root: bool) -> Result<String, Er
     }
 }
 
-/// The package `code` names, in Calcifer's copy.
-fn sent(api: &Api, code: &api::code::LocalCode) -> Result<Project, Error> {
-    blocking(|| Project::read(crate::local_code::copied(api.machines.hubs.home(), code)?))
+/// The package `code` names, in Calcifer's copy, and that copy.
+fn sent(api: &Api, code: &api::code::LocalCode) -> Result<(Project, PathBuf), Error> {
+    let home = api.machines.hubs.home();
+    blocking(|| Ok((Project::read(crate::local_code::copied(home, code)?)?, crate::local_code::copy_of(home, code)?)))
 }
 
-/// Locks the package `code` is for the Hub and account it publishes to, and answers its lock.
+/// Locks the package `code` is for the Hub and account it publishes to, and answers its lock: one a release can carry.
 pub(super) async fn lock(api: &Arc<Api>, hub: &Origin, code: &LocalCode, ask: &PackageLock, work: &Here) -> Result<Locked, Error> {
     let say = &|message: &str| work.say(message);
-    let project = sent(api, code)?;
-    locked(&api.machines.hubs, hub, &project, ask.root, &ask.upgrade, say).await
+    let (project, within) = sent(api, code)?;
+    let locked = locked(&api.machines.hubs, hub, &project, &within, ask.root, &ask.upgrade, say).await?;
+    versions(&locked.lock)?;
+    Ok(locked)
 }
 
 /// `project` locked for `hub` by uv in a private copy, its `tensorhub` sources bound where their packages are (`bindings`), each
 /// of `upgrade` free to move to its newest release, and the rest kept at what its own uv.lock pins. A run of local code locks
-/// with this too (`local_code::locked`). `account_index`: the index its own account's packages came from, else the root's.
-pub(crate) async fn locked(hubs: &Hubs, hub: &Origin, project: &Project, root: bool, upgrade: &[String], say: Say<'_>) -> Result<Locked, Error> {
+/// with this too (`local_code::locked`), its path dependencies included. `within`: Calcifer's copy of the tree it is in.
+/// `account_index`: the index its own account's packages came from, else the root's.
+pub(crate) async fn locked(hubs: &Hubs, hub: &Origin, project: &Project, within: &Path, root: bool, upgrade: &[String], say: Say<'_>)
+    -> Result<Locked, Error> {
     let uv_path = tools(hubs.home(), project, say).await?;
-    let stage = blocking(|| Stage::new(project, uv_path, say))?;
+    let stage = blocking(|| Stage::new(project, within, uv_path, say))?;
     let own = blocking(|| fs::read_to_string(project.root.join("uv.lock")).ok());
     let bound = match project.hub_sources.is_empty() {
         true => Bound::new(),
@@ -343,7 +348,6 @@ pub(crate) async fn locked(hubs: &Hubs, hub: &Origin, project: &Project, root: b
         let python = python(project, &stage.uv)?;
         stage.lock(python.request.as_str(), upgrade)?;
         let locked = fs::read_to_string(stage.src.join("uv.lock")).map_err(|e| refuse("lock_failed", e))?;
-        versions(&locked)?;
         let changed = own.as_deref() != Some(locked.as_str());
         Ok(Locked { lock: locked, account_index, changed })
     })
@@ -374,7 +378,7 @@ impl File {
 pub(super) async fn publish(api: &Arc<Api>, hub: &Origin, code: &LocalCode, ask: &PackagePublish, work: &Here) -> Result<Published, Error> {
     let say = &|message: &str| work.say(message);
     let hub_error = |e| refusal(hub, e).0;
-    let project = sent(api, code)?;
+    let (project, within) = sent(api, code)?;
     if !project.identified {
         return Err(refuse("project_identity_missing", "a release needs a literal version in pyproject.toml's [project]"));
     }
@@ -405,7 +409,7 @@ pub(super) async fn publish(api: &Arc<Api>, hub: &Origin, code: &LocalCode, ask:
         result.lock = Some(committed.clone());
     }
     let uv_path = tools(api.machines.hubs.home(), &project, say).await?;
-    let stage = blocking(|| Stage::new(&project, uv_path, say))?;
+    let stage = blocking(|| Stage::new(&project, &within, uv_path, say))?;
     fs::write(stage.src.join("uv.lock"), &committed).map_err(|e| refuse("stage_unavailable", e))?;
     // Locking the copy is a no-op for a lock made for this Hub. For another, it moves each Hub
     // package to this Hub's index for its namespace, pinned to the versions the lock holds: a pin

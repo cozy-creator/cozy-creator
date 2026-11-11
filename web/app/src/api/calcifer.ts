@@ -1132,7 +1132,12 @@ reach?: string | null,
  * What an ending machine waits for before its end is carried out: its runs' outputs to land
  * here. None once its end is under way, or when nothing holds it.
  */
-ending?: string | null, };
+ending?: string | null,
+/**
+ * Why its last end failed (this computer's sign-in, or the Hub's refusal): nothing was ended,
+ * and a rental may still bill. Ending it again asks again.
+ */
+end_failed?: string | null, };
 
 /**
  * What a machine is to Calcifer: this computer's, a rental, or another computer's added by address.

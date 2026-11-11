@@ -338,6 +338,9 @@ A machine is this computer's (`local`, started when used), a rental, or another 
     machine's runs have landed here, and `machine.ending` says what it waits for.
   - `force` ends it now; `abandoned` names the outputs given up. Asked again with `force`, it stops the wait.
   - A rental is `ending` until its Hub affirms the pod gone, then `ended`. An added machine is removed.
+  - An end that fails (this computer is signed out or its key refused, the Hub refuses the release or does not
+    know the rental) ended nothing: the machine is back in its state with `end_failed` saying why, and may still
+    bill. Only a Hub that does not answer is asked again. Ending it again asks again.
   - An ending machine takes no new runs (`409 machine_ending`), and `local` is refused.
   - An order its Hub has not answered stops at once (`ending`, no `rental_id`): it buys nothing more, and leaves
     the list once its Hub answers and anything it placed is ending. So does one whose run ended, or that its Hub
@@ -414,9 +417,10 @@ sends it back. A code lives 10 minutes, and a wrong answer leaves it waiting.
   `404 code_not_found` when no code of `id`'s waits on a step.
 - `PUT /v1/account/name` `{hub, name}`: names a new account; ask again on `account.name_unavailable`
   or `account.name_invalid`.
-- `PUT /v1/account/key` `{hub, key}`: an exported key's text becomes this computer's key.
-- `DELETE /v1/account?hub=`: `SignedOut`. The key is revoked at the Hub and erased here, whatever the
-  Hub answered (`notes` say when it did not confirm).
+- `PUT /v1/account/key` `{hub, key}`: an exported key's text becomes this computer's key, kept as installed.
+- `DELETE /v1/account?hub=`: `SignedOut`. The key is erased here, whatever the Hub answered. A key this
+  computer enrolled is revoked at the Hub first (`notes` say when it did not confirm); an installed one may
+  sign in on other computers too, so it is not revoked (`notes` say so). `sign_out_everywhere` revokes it.
 
 **Orgs.**
 - `POST /v1/orgs/{org}/claim` `{hub}`: `OrgClaim`, the code and where to post it, until a handle the

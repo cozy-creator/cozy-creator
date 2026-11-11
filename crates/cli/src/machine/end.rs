@@ -16,7 +16,8 @@ use crate::{Context, calcifer_client::Client, output};
 /// Ends a rental, returning once its Hub affirms the pod gone, or removes an added machine
 /// (`DELETE /v1/machines/{name}`). Calcifer carries the end out once the outputs of its runs have
 /// landed here, unless `force`; this follows it on the machine's stream. Ctrl-C stops following,
-/// never the end.
+/// never the end. Anything short of `ended` is an error: nothing says a pod is gone that its Hub
+/// has not affirmed gone.
 pub(crate) async fn end(ctx: &Context, name: &str, force: bool) -> Result<ExitCode, Error> {
     let calcifer = ctx.calcifer().await?;
     let path = route(name)?;
@@ -25,7 +26,7 @@ pub(crate) async fn end(ctx: &Context, name: &str, force: bool) -> Result<ExitCo
         false => path.clone(),
     };
     let Ended {
-        mut machine,
+        machine,
         changed,
         abandoned,
     } = calcifer.delete(&asked).await?;
@@ -37,15 +38,10 @@ pub(crate) async fn end(ctx: &Context, name: &str, force: bool) -> Result<ExitCo
     }
     // An order the Hub has not answered: stopped now, whatever becomes of the Hub.
     let order = machine.kind == MachineKind::Rental && machine.rental_id.is_none();
-    if machine.state == MachineState::Ending && !order {
-        // Followed by its rental id: the name is the Hub's and an alias may be what was typed.
-        let id = machine
-            .rental_id
-            .clone()
-            .unwrap_or_else(|| machine.name.clone());
-        let (following, now) = Following::open(&calcifer, &id).await?;
-        machine = ended(ctx, &calcifer, following, now, &route(&id)?).await?;
-    }
+    let machine = match order {
+        true => machine,
+        false => confirmed(ctx, &calcifer, machine).await?,
+    };
     if ctx.json {
         output::json(&Ended {
             machine,
@@ -79,8 +75,43 @@ pub(crate) async fn end(ctx: &Context, name: &str, force: bool) -> Result<ExitCo
     Ok(ExitCode::SUCCESS)
 }
 
-/// Follows an ending machine until it has ended: while its end waits for its runs' outputs to
-/// land, what it waits for; then its release, until its Hub affirms the pod gone.
+/// The machine an end was asked of, once it has ended: followed while it ends, and an error for
+/// anything else (its end failed, or it is not ending), naming why.
+pub(crate) async fn confirmed(ctx: &Context, calcifer: &Client, mut machine: Machine) -> Result<Machine, Error> {
+    if machine.state == MachineState::Ending {
+        // Followed by its rental id: the name is the Hub's and an alias may be what was typed.
+        let id = machine
+            .rental_id
+            .clone()
+            .unwrap_or_else(|| machine.name.clone());
+        let (following, now) = Following::open(calcifer, &id).await?;
+        machine = ended(ctx, calcifer, following, now, &route(&id)?).await?;
+    }
+    match machine.state {
+        MachineState::Ended => Ok(machine),
+        _ => Err(not_ended(&machine)),
+    }
+}
+
+/// An end that ended nothing: Calcifer's reason when its end failed (this computer's sign-in, the
+/// Hub's refusal), else the state it is in.
+fn not_ended(m: &Machine) -> Error {
+    let name = &m.name;
+    let why = match &m.end_failed {
+        Some(why) => why.clone(),
+        None => format!("it is {}, not ended", super::list::state_cell(m)),
+    };
+    let billing = match m.kind {
+        MachineKind::Rental => "Nothing was ended, and it may still be billing",
+        _ => "Nothing was ended",
+    };
+    Error::new(Kind::Conflict, "end_failed", format!("{name} was not shut down: {why}"))
+        .remedy(billing)
+        .next(format!("cozy machine end {name}"))
+}
+
+/// Follows an ending machine while it ends: while its end waits for its runs' outputs to land,
+/// what it waits for; then its release, until its Hub affirms the pod gone or the end fails.
 async fn ended(
     ctx: &Context,
     calcifer: &Client,
@@ -90,18 +121,6 @@ async fn ended(
 ) -> Result<Machine, Error> {
     let (mut waited, mut releasing) = (String::new(), false);
     while machine.state == MachineState::Ending {
-        if machine.reason.as_deref() == Some("release_unconfirmed") {
-            return Err(Error::new(
-                Kind::Conflict,
-                "release_unconfirmed",
-                format!(
-                    "Shutdown of {} is not confirmed; billing may continue",
-                    machine.name
-                ),
-            )
-            .remedy("Calcifer will keep checking")
-            .next(format!("cozy machine show {}", machine.name)));
-        }
         match &machine.ending {
             Some(waits) if *waits != waited => {
                 output::say(ctx, &format!("Waiting to end {}: {waits}", machine.name));
