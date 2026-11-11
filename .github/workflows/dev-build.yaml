@@ -441,6 +441,7 @@ jobs:
           cargo test --release --locked -p calcifer --lib rejected_vault_credentials_have_a_specific_error
           cargo test --release --locked -p calcifer --lib encrypted_cleanup_preserves_good_sources_and_recorded_policy
           cargo test --release --locked -p calcifer --lib store::journal_tests
+          cargo test --release --locked -p calcifer --lib project::assets::tests
           cargo test --release --locked -p calcifer --lib legacy_missing_media_is_skipped
       - name: Take the exact published native archive
         if: inputs.publish_run != ''
