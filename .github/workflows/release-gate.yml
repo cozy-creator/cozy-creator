@@ -4,15 +4,21 @@ name: release-gate
 # release agent dispatches it, with the suites it chose for the candidate set, and its passing run id is what a
 # promotion requires (cozy-promote.yaml, tensorfs-publish.yaml, cozy-runtime runtime-publish.yaml, packages
 # `task promote`). No workflow calls it.
-#   gh workflow run release-gate.yml -R cozy-creator/cozy-creator -f suites=runtime,packages -f cozy=v0.12.0 -f runtime_wheel=https://…#sha256=… -f pins=…
-# CI verification requires an isolated Hub. Hardware gates remain blocked until their runner
-# provisions an isolated qualification environment; they never borrow the production owner account.
+#   gh workflow run release-gate.yml -R cozy-creator/cozy-creator -f hub=prod -f suites=runtime,packages -f cozy=v0.12.0 -f runtime_wheel=https://…#sha256=… -f pins=…
+# Every dispatch names its Hub (`hub`): `prod`, where real pods rent (Paul, 11-11: two Hubs, production and the laptop's), signed in
+# with the CI device key (environment release-gate, which only master, rc/*, tensorfs-v* and release/* may use), or `isolated`,
+# a verified test Hub (vars.COZY_TEST_HUB_URL). Synthetic publication always runs on its own disposable Hub (hub-fixture).
 on:
   workflow_dispatch:
     inputs:
       suites:
         description: "Comma-separated suites (release-gate/README.md): the release agent picks them; there is no default"
         type: string
+        required: true
+      hub:
+        description: "The Hub the gates rent on: prod (tensorhub.com, the CI device key) or isolated (a verified test Hub)"
+        type: choice
+        options: [prod, isolated]
         required: true
       cozy:
         description: "cozy on the runner and the machine: released (the Hub's target), a release tag (v0.12.0) or a dev-build run id"
@@ -82,7 +88,7 @@ on:
         description: "Caller's id, shown in the run name"
         type: string
         default: ''
-run-name: release-gate ${{ inputs.cozy }} ${{ inputs.runtime_wheel }} ${{ inputs.tensorfs_wheel }} ${{ inputs.packages_ref }} ${{ inputs.pins }} ${{ inputs.nonce }}
+run-name: release-gate ${{ inputs.hub }} ${{ inputs.cozy }} ${{ inputs.runtime_wheel }} ${{ inputs.tensorfs_wheel }} ${{ inputs.packages_ref }} ${{ inputs.pins }} ${{ inputs.nonce }}
 
 # Only the baseline job writes (contents: write).
 jobs:
@@ -227,6 +233,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.select.outputs.matrix) }}
     runs-on: ubuntu-24.04
+    environment: release-gate
     permissions:
       contents: read
       actions: read  # a dev-build cozy, a wheel artifact of this run
@@ -246,18 +253,20 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       OUT: ${{ github.workspace }}/gate
-      COZY_HUB_URL: ${{ vars.COZY_TEST_HUB_URL }}
-      COZY_TEST_HUB_ORIGIN: ${{ vars.COZY_TEST_HUB_ORIGIN }}
+      HUB: ${{ inputs.hub }}
+      COZY_HUB_URL: ${{ inputs.hub == 'isolated' && vars.COZY_TEST_HUB_URL || '' }}
+      COZY_TEST_HUB_ORIGIN: ${{ inputs.hub == 'isolated' && vars.COZY_TEST_HUB_ORIGIN || '' }}
     steps:
       - uses: actions/checkout@v5
         with:
           repository: cozy-creator/cozy-creator
           ref: ${{ github.repository == 'cozy-creator/cozy-creator' && github.sha || 'master' }}
           path: creator
-      - name: Require isolated qualification environment
+      - name: The Hub this gate rents on
         run: |
           . creator/e2e/test-hub.sh
-          require_ci_test_hub || { echo "::error::hardware CI needs an isolated Hub and preallocated test machines; production is forbidden"; exit 2; }
+          require_ci_rental_hub "$HUB" || exit 2
+          echo "### Hub: $HUB (${COZY_HUB_URL:-https://tensorhub.com})" >> "$GITHUB_STEP_SUMMARY"
       - if: ${{ inputs.packages_ref != '' }}
         uses: actions/checkout@v5
         with:
@@ -310,12 +319,22 @@ jobs:
           "$bin/cozy" --version
           echo "args=${args[*]}" >> "$GITHUB_OUTPUT"
       - name: Prepare local service session
+        env:
+          KEY: ${{ inputs.hub == 'prod' && secrets.COZY_CI_DEVICE_KEY || '' }}
         run: |
           sudo loginctl enable-linger "$(id -un)"
           echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
           export XDG_RUNTIME_DIR=/run/user/$(id -u)
           until [ -S "$XDG_RUNTIME_DIR/bus" ]; do sleep 1; done
           echo "DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus" >> "$GITHUB_ENV"
+          [ "$HUB" = prod ] || exit 0
+          # Production: the CI account, by its device key (release-gate/README.md, CI sign-in).
+          export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
+          [ -n "$KEY" ] || { echo "::error::the release-gate environment has no COZY_CI_DEVICE_KEY"; exit 1; }
+          umask 077; printf '%s' "$KEY" > "$RUNNER_TEMP/key.json"
+          cozy login --key "$RUNNER_TEMP/key.json"; code=$?
+          rm -f "$RUNNER_TEMP/key.json"
+          exit $code
       - name: Gate ${{ matrix.sku }} (${{ matrix.suite }})
         env:
           ARGS: ${{ steps.candidate.outputs.args }}
@@ -344,7 +363,7 @@ jobs:
             args+=(--cli "$PWD/creator/e2e/bin/cozy")
             export COZY_E2E_LOG=$OUT/argv.log COZY_E2E_BIN=$HOME/.cozy/bin/cozy
           fi
-          creator/release-gate/gate.sh "${{ matrix.sku }}" --suite "${{ matrix.suite }}" --out "$OUT" --cap "$CAP" "${args[@]}"
+          creator/release-gate/gate.sh "${{ matrix.sku }}" --suite "${{ matrix.suite }}" --hub "$HUB" --out "$OUT" --cap "$CAP" "${args[@]}"
       # Every gate-tier command and flag ran (e2e/coverage.py), in the gate that ran the cli suite.
       - if: ${{ !cancelled() && contains(format(',{0},', matrix.suite), ',cli,') }}
         run: uv run -q --no-project python -I creator/e2e/coverage.py check "$HOME/.cozy/bin/cozy" creator/e2e/coverage.toml --tiers gate --log "$OUT/argv.log" --source creator/crates/cli/src
@@ -354,7 +373,7 @@ jobs:
         run: |
           r=$(cat "$OUT/rental" 2>/dev/null) || exit 0
           . creator/e2e/test-hub.sh
-          require_ci_test_hub || exit 2
+          require_ci_rental_hub "$HUB" || exit 2
           . creator/release-gate/machines.sh
           # A cap ends the job with its cell still running, and the pod's logs leave with the pod.
           if listed "$r"; then

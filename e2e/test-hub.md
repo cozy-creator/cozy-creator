@@ -14,13 +14,10 @@ Before any synthetic write, `require_test_hub` checks the loopback destination a
 A localhost proxy to `tensorhub.com` fails this check, as does an unset or production target.
 Redirects are not followed. This guard belongs to test helpers; normal user publication is unchanged.
 
-The gate and session entrypoints call `require_ci_test_hub` before any Hub data request. Production
-device keys are absent from their CI jobs. A hardware job without its own verified Hub fails;
-it does not report a skipped GPU check as a pass. Public dependency and release-artifact downloads
-are normal build inputs and remain allowed.
-
-Manual operator qualification outside CI is separate and may use an explicitly authorized account.
-See [the hardware CI follow-up](../release-gate/ISOLATED-HARDWARE-CI.md) for the remaining runner requirements.
+The CLI e2e shards call `require_ci_test_hub`: they run only against an isolated Hub (`e2e/cli/isolated.sh`).
+Release-gate and pod-session jobs rent real machines, which only production can place: they call
+`require_ci_rental_hub` with their dispatch's `hub=prod` or `hub=isolated`, and none has a default.
+Public dependency and release-artifact downloads are normal build inputs and remain allowed.
 
 Run the guard regression checks without a Hub or credentials:
 
