@@ -67,9 +67,11 @@ elif [ "$what" = cozy ]; then
     uv run -q --no-project python -c 'import re,sys; p="Cargo.toml"; s=open(p).read(); open(p,"w").write(re.sub(r"(?m)^version = \"([^\"]+)\"$", lambda m: f"version = \"{m[1]}+dev.g{sys.argv[1][:8]}\"", s, count=1))' "$sha"
     cargo update -w --offline
     COZY_COMMIT=$sha cargo build --release --locked --offline -p cozy --bin cozy
+    COZY_COMMIT=$sha cargo build --release --locked --offline -p api --example stage-code
     git checkout -- Cargo.toml Cargo.lock)
   # cozy is one file (00e565d72): varena is the TensorFS wheel's.
   cp "$src/target/release/cozy$exe" "$out/cozy$exe"
+  cp "$src/target/release/examples/stage-code$exe" "$out/stage-code$exe"
 elif [ "$what" = tensorfs ]; then
   # Staged as the release wheel is (backend/stage_cli.py, as dev-build): `tfs` with the extension's features, so TensorFS
   # and every dependency compile once for both, and on Linux the Torch allocator shims, without which the candidate runs
