@@ -2,12 +2,13 @@
 use std::process::ExitCode;
 
 use clap::Subcommand;
-use api::error::Error;
+use api::error::{Error, Kind};
 
 use crate::{Context, output};
 
 mod catalog;
 mod machine;
+pub(crate) mod live;
 mod quantize;
 mod releases;
 
@@ -17,13 +18,34 @@ pub(crate) struct Args {
     verb: Verb,
 }
 
+#[derive(clap::Args, Debug)]
+pub(crate) struct LoraArgs {
+    #[command(subcommand)]
+    verb: LoraVerb,
+}
+
+#[derive(Subcommand, Debug)]
+enum LoraVerb {
+    /// Browse LoRAs from the model catalog.
+    #[command(alias = "list")]
+    Ls(Ls),
+    /// Download a LoRA to a machine.
+    Download(Download),
+}
+
+pub(crate) async fn lora_exec(ctx: &Context, args: LoraArgs) -> Result<ExitCode, Error> {
+    match args.verb {
+        LoraVerb::Ls(_args) => Err(Error::new(Kind::Unavailable, "catalog_role_unavailable", "LoRA-only browsing needs role metadata from the Hub")
+            .remedy("The unfiltered catalog is still available").next("cozy model ls")),
+        LoraVerb::Download(args) => machine::download(ctx, args).await,
+    }
+}
+
 #[derive(Subcommand, Debug)]
 enum Verb {
     /// Search models on the Hub, or list downloaded models with --on.
     #[command(alias = "list")]
     Ls(Ls),
-    /// Show a model's releases, lanes and metadata.
-    Info(Info),
     /// Update a model's family, tags, trigger words or recommended strength.
     Edit(Edit),
     /// Download a model to a machine.
@@ -51,18 +73,15 @@ pub(crate) struct Ls {
     /// Exclude this tag. Repeat for multiple tags.
     #[arg(long = "no-tag", value_name = "TAG")]
     no_tags: Vec<String>,
-    /// Maximum models to show.
+    /// Models per page (1–100).
     #[arg(long, default_value_t = 20)]
     limit: u32,
+    /// Skip this many matching models.
+    #[arg(long, default_value_t = 0, conflicts_with = "on")]
+    offset: u32,
     /// List downloaded models on local, a named machine, or all machines.
     #[arg(long, value_name = "MACHINE")]
     on: Option<String>,
-}
-
-#[derive(clap::Args, Debug)]
-pub(crate) struct Info {
-    /// org/name or org/name@release.
-    model: String,
 }
 
 #[derive(clap::Args, Debug)]
@@ -188,12 +207,33 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             }
             None => catalog::search(ctx, args).await,
         },
-        Verb::Info(args) => catalog::info(ctx, args).await,
         Verb::Edit(args) => catalog::edit(ctx, args).await,
         Verb::Publish(args) => releases::publish(ctx, args).await,
         Verb::Delete(args) => releases::delete(ctx, args).await,
         Verb::Download(args) => machine::download(ctx, args).await,
         Verb::Upload(args) => machine::upload(ctx, args).await,
         Verb::Quantize(args) => quantize::quantize(ctx, args).await,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct ModelCommand { #[command(flatten)] args: Args }
+
+    #[test]
+    fn catalog_paging_and_filters_parse_together() {
+        let parsed = ModelCommand::try_parse_from(["model", "ls", "fox", "--family", "sdxl", "--tag", "art", "--no-tag", "nsfw", "--offset", "20", "--limit", "10"]).unwrap();
+        let Verb::Ls(args) = parsed.args.verb else { panic!("expected catalog") };
+        assert_eq!((args.offset, args.limit), (20, 10));
+        assert_eq!(args.query, ["fox"]);
+        assert_eq!(args.family.as_deref(), Some("sdxl"));
+        assert_eq!(args.tags, ["art"]);
+        assert_eq!(args.no_tags, ["nsfw"]);
+        assert!(ModelCommand::try_parse_from(["model", "info", "author/model"]).is_err());
+        assert!(ModelCommand::try_parse_from(["model", "ls", "--offset", "-1"]).is_err());
     }
 }

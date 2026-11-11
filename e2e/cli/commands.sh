@@ -64,7 +64,12 @@ cozy --json model ls --no-tag nsfw --limit 100 > "$OUT/no-nsfw.json" && J 'all(.
   || check "model ls --no-tag nsfw: a model tagged nsfw listed"
 cozy --json model ls --tag nsfw --limit 100 > "$OUT/nsfw.json" && J 'all(.models[]; (.tags // []) | index("nsfw"))' "$OUT/nsfw.json" \
   || check "model ls --tag nsfw: a model without the tag listed"
-cozy --json model info zhengpeng7/birefnet > "$OUT/model-info.json" && J '.releases[0].lanes | length > 0' "$OUT/model-info.json" || check "model info zhengpeng7/birefnet: no lanes"
+cozy --json model ls --limit 1 > "$OUT/models-first-page.json" || check "model first page failed"
+cozy --json model ls --limit 1 --offset 1 > "$OUT/models-second-page.json" || check "model second page failed"
+if [ "$(jq '.total' "$OUT/models-first-page.json")" -gt 1 ]; then
+  [ "$(jq -r '.models[0].model' "$OUT/models-first-page.json")" != "$(jq -r '.models[0].model' "$OUT/models-second-page.json")" ] || check "model offset repeated the first page"
+fi
+model_details zhengpeng7/birefnet > "$OUT/model-info.json" && J '.releases[0].lanes | length > 0' "$OUT/model-info.json" || check "model metadata zhengpeng7/birefnet: no lanes"
 lane=$(jq -r '.releases[0].lanes[0].lane' "$OUT/model-info.json") || true
 
 step "renting, signed out"

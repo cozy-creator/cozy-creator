@@ -1,14 +1,14 @@
 //! `cozy model ls|info|edit`: the Hub's model catalog, through Calcifer (CALCIFER-API.md
 //! "Models"). Signed in, `ls` also lists the user's own unreleased (private) models and `info` lists
 //! the commits of a model of the user's org.
-use std::process::ExitCode;
+use std::{io::IsTerminal as _, process::ExitCode};
 
 use api::error::{Error, Kind};
 use api::calcifer::hub::{FamilyFrom, ModelAuthor, ModelDetail, ModelEdit, ModelEdited, ModelSearch};
 use serde::Serialize;
 
-use api::model_ref::{ModelRef, Repo};
-use super::{Edit, Info, Ls};
+use api::model_ref::Repo;
+use super::{Edit, Ls};
 use crate::Context;
 use crate::calcifer_client::path;
 use crate::output::{self, Record, Table};
@@ -21,106 +21,55 @@ fn by(author: &ModelAuthor) -> String {
     }
 }
 
-#[derive(Serialize)]
-struct Searching<'a> {
-    hub: &'a str,
-    #[serde(skip_serializing_if = "str::is_empty")]
-    q: &'a str,
+#[derive(Clone, Serialize)]
+pub(super) struct Searching {
+    pub hub: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub q: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    family: Option<&'a str>,
+    pub family: Option<String>,
     #[serde(skip_serializing_if = "String::is_empty")]
-    tag: String,
+    pub tag: String,
     #[serde(skip_serializing_if = "String::is_empty")]
-    no_tag: String,
-    limit: u32,
+    pub no_tag: String,
+    pub limit: u32,
+    pub offset: u32,
 }
 
 pub(crate) async fn search(ctx: &Context, args: Ls) -> Result<ExitCode, Error> {
     let query = args.query.join(" ");
     let ask = Searching {
-        hub: ctx.hub(),
-        q: &query,
-        family: args.family.as_deref(),
+        hub: ctx.hub().to_string(),
+        q: query,
+        family: args.family,
         tag: args.tags.join(","),
         no_tag: args.no_tags.join(","),
         limit: output::at_most("--limit", args.limit, 100),
+        offset: args.offset,
     };
-    let view: ModelSearch = ctx.calcifer().await?.get_query("/v1/models", &ask).await?;
-    let total = view.total;
+    let view = read(ctx, &ask).await?;
+
     if ctx.json {
         output::json(&view);
         return Ok(ExitCode::SUCCESS);
     }
-    let mut table = Table::new(ctx, ["model", "family", "tags", "release", "lanes", "by"]);
-    for row in &view.models {
-        let lanes = row.lanes.join(", ");
-        let family = row.family.as_deref().unwrap_or("-");
-        let tags = if row.tags.is_empty() { "-".to_owned() } else { row.tags.join(", ") };
-        let release = match row.private {
-            true => "private",
-            false => row.release.as_deref().unwrap_or("-"),
-        };
-        let author = row.author.as_ref().map_or_else(|| "-".to_owned(), by);
-        table = table.row([row.model.as_str(), family, &tags, release, &lanes, &author]);
+    let browser = super::live::Catalog::new(ask.clone(), view, super::live::local_inventory(ctx).await);
+    if ctx.term.stdout && std::io::stdin().is_terminal() {
+        return crate::tui::show(ctx, crate::tui::Screen::Models(browser)).await;
     }
-    let shown = view.models.len() as i64;
-    if total > shown {
-        table = table.note(format!("{shown} of {total} matching models: raise --limit or narrow the search"));
-    }
-    table.print();
-    match view.models.first() {
-        Some(first) => output::next(ctx, &[&format!("cozy model info {}", first.model)]),
-        None => output::next(ctx, &["cozy model ls"]),
-    }
+    let mut table = Table::new(ctx, ["model", "family", "disk", "local"]);
+    for row in browser.rows() { table = table.row(row); }
+    table.note(browser.title()).print();
     Ok(ExitCode::SUCCESS)
 }
 
-pub(crate) async fn info(ctx: &Context, args: Info) -> Result<ExitCode, Error> {
-    let (repo, selected) = match ModelRef::parse(&args.model)? {
-        ModelRef::Hub { repo, release } => (repo, release),
-        _ => {
-            return Err(Error::new(Kind::Usage, "model_ref_invalid", format!("Expected a Hub model name, received {:?}", args.model))
-                .remedy("Use org/name[@release]").next("cozy model ls"));
-        }
-    };
-    let mut query = vec![("hub", ctx.hub().to_string())];
-    query.extend(selected.map(|release| ("release", release)));
-    let at = path(&["v1", "models", &repo.org, &repo.name]);
-    let view: ModelDetail = ctx.calcifer().await?.get_query(&at, &query).await?;
-    if ctx.json {
-        output::json(&view);
-        return Ok(ExitCode::SUCCESS);
-    }
-    let shown = api::names::shown(&repo.to_string());
-    said(&view, &repo).print(ctx);
-    for release in &view.releases {
-        let mirror = match (release.mirror, release.by_admin) {
-            (true, _) => " (mirror)",
-            (false, true) => " (uploaded by Tensorhub admin)",
-            _ => "",
-        };
-        anstream::println!("\n{shown}@{}{mirror}", release.version);
-        let mut table = Table::new(ctx, ["lane", "kinds", "bytes", "commit", "recipe"]);
-        for lane in &release.lanes {
-            let recipe = lane.provenance.as_ref().map_or_else(|| "-".into(), |p| format!("{}@{} {}", api::names::shown(&p.package), p.release, p.recipe));
-            table = table.row([lane.lane.clone(), lane.kinds.join("+"), output::bytes(lane.bytes as u64), lane.commit.clone(), recipe]);
-        }
-        // A recipe is its fingerprint: the digest of the plan the lane was written by.
-        for (lane, made) in release.lanes.iter().filter_map(|l| Some((l, l.provenance.as_ref()?))) {
-            table = table.note(format!("{}: recipe {}, from {}", lane.lane, made.fingerprint, made.source));
-        }
-        table.print();
-    }
-    if !view.commits.is_empty() {
-        anstream::println!("\n{shown} commits");
-        let mut table = Table::new(ctx, ["commit", "lane", "bytes", "releases", "created"]);
-        for c in &view.commits {
-            let releases = if c.releases.is_empty() { "private".to_owned() } else { c.releases.join(", ") };
-            table = table.row([c.commit.clone(), c.lane.clone(), output::bytes(c.bytes as u64), releases, c.created_at.clone()]);
-        }
-        table.print();
-    }
-    Ok(ExitCode::SUCCESS)
+pub(super) async fn read(ctx: &Context, ask: &Searching) -> Result<ModelSearch, Error> {
+    ctx.calcifer().await?.get_query("/v1/models", ask).await
+}
+
+pub(super) async fn detail(ctx: &Context, model: &str) -> Result<ModelDetail, Error> {
+    let repo = Repo::hub(model)?;
+    ctx.calcifer().await?.get_query(&path(&["v1", "models", &repo.org, &repo.name]), &[("hub", ctx.hub().to_string())]).await
 }
 
 /// A model's family as a person reads it: where it comes from, and what its weights say when its owner's label differs.

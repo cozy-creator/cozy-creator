@@ -32,7 +32,7 @@ pub(crate) async fn publish(ctx: &Context, args: Publish) -> Result<ExitCode, Er
         table = table.row([lane.as_str(), commit.as_str()]);
     }
     table.print();
-    output::next(ctx, &[&format!("cozy model info {}@{}", view.model, view.version)]);
+    output::next(ctx, &[&format!("cozy model ls {}", view.model)]);
     Ok(ExitCode::SUCCESS)
 }
 

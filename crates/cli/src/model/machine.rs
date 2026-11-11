@@ -52,7 +52,11 @@ fn made(ctx: &Context, run: &Run) {
 
 pub(crate) async fn download(ctx: &Context, args: Download) -> Result<ExitCode, Error> {
     let on = args.placement.on()?;
-    let mut ask = ModelDownload { model: args.model.clone(), name: None, alias: args.alias, lane: args.lane, source_format: args.format };
+    let ask = ModelDownload { model: args.model.clone(), name: None, alias: args.alias, lane: args.lane, source_format: args.format };
+    download_to(ctx, ask, on).await
+}
+
+pub(super) async fn download_to(ctx: &Context, mut ask: ModelDownload, on: Option<api::calcifer::On>) -> Result<ExitCode, Error> {
     crate::send::held(ctx, &mut ask.model, &mut ask.name, false).await?;
     let run = crate::run::job(ctx, job::MODEL_DOWNLOAD, &ask, on, None).await?;
     let run = crate::run::follow(ctx, run).await?;

@@ -1,0 +1,203 @@
+//! Keyboard browsing of one catalog page, with an explicit download destination.
+use api::{
+    calcifer::{HeldModel, MachineList, MachineModels, MachineState, On},
+    calcifer::hub::{ModelDetail, ModelDownload, ModelSearch},
+    error::Error,
+};
+use crossterm::event::KeyCode;
+
+use super::catalog::{self, Searching};
+use crate::{Context, output};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DownloadChoice {
+    pub model: String,
+    pub machine: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Action {
+    Page(u32),
+    Preview(String),
+    Destinations(String),
+    Download(DownloadChoice),
+}
+
+pub(crate) struct Catalog {
+    query: Searching,
+    page: ModelSearch,
+    local: Option<Vec<HeldModel>>,
+}
+
+impl Catalog {
+    pub(super) fn new(query: Searching, page: ModelSearch, local: Option<Vec<HeldModel>>) -> Self {
+        Self { query, page, local }
+    }
+
+    pub(crate) async fn page(&mut self, ctx: &Context, offset: u32) -> Result<(), Error> {
+        let mut query = self.query.clone();
+        query.offset = offset;
+        let page = catalog::read(ctx, &query).await?;
+        self.query = query;
+        self.page = page;
+        self.local = local_inventory(ctx).await;
+        Ok(())
+    }
+
+    pub(crate) fn title(&self) -> String {
+        if self.page.models.is_empty() { return "models — no matches".into(); }
+        format!("models {}–{} of {}", self.query.offset + 1, self.query.offset as usize + self.page.models.len(), self.page.total)
+    }
+
+    pub(crate) fn rows(&self) -> Vec<Vec<String>> {
+        self.page.models.iter().map(|row| {
+            let held = self.local.as_ref().map(|models| models.iter().filter(|held| held.model == row.model).map(|held| held.bytes).max());
+            let (local, size) = match held {
+                Some(Some(bytes)) => ("yes", output::bytes(bytes)),
+                Some(None) => ("no", "—".into()),
+                None => ("unknown", "—".into()),
+            };
+            vec![row.model.clone(), row.family.clone().unwrap_or_else(|| "—".into()), size, local.into()]
+        }).collect()
+    }
+
+    pub(crate) fn action(&self, key: KeyCode, selected: usize) -> Option<Action> {
+        match key {
+            KeyCode::Enter => self.page.models.get(selected).map(|row| Action::Preview(row.model.clone())),
+            KeyCode::PageDown | KeyCode::Char('n') if self.page.older > 0 => Some(Action::Page(self.query.offset.saturating_add(self.query.limit))),
+            KeyCode::PageUp | KeyCode::Char('p') if self.query.offset > 0 => Some(Action::Page(self.query.offset.saturating_sub(self.query.limit))),
+            _ => None,
+        }
+    }
+}
+
+pub(crate) struct Preview {
+    model: ModelDetail,
+}
+
+impl Preview {
+    pub(crate) async fn open(ctx: &Context, model: &str) -> Result<Self, Error> {
+        Ok(Self { model: catalog::detail(ctx, model).await? })
+    }
+
+    pub(crate) fn title(&self) -> &str { &self.model.model }
+
+    pub(crate) fn action(&self, key: KeyCode) -> Option<Action> {
+        (key == KeyCode::Char('d')).then(|| Action::Destinations(self.model.model.clone()))
+    }
+
+    pub(crate) fn lines(&self) -> Vec<String> {
+        let model = &self.model;
+        let mut lines = Vec::new();
+        if let Some(family) = &model.family { lines.push(format!("Family: {family}")); }
+        if let Some(kind) = model.kind {
+            lines.push(format!("Kind: {}", match kind {
+                api::calcifer::hub::ModelKind::Lora => "LoRA",
+                api::calcifer::hub::ModelKind::Weights => "model",
+                api::calcifer::hub::ModelKind::Component => "component",
+            }));
+        }
+        if !model.tags.is_empty() { lines.push(format!("Tags: {}", model.tags.join(", "))); }
+        if let Some(author) = &model.author { lines.push(format!("Publisher: {}", author.name)); }
+        if let Some(trigger) = &model.trigger { lines.push(format!("Trigger: {trigger}")); }
+        if let Some(strength) = model.strength { lines.push(format!("Suggested strength: {strength}")); }
+        if let Some(release) = model.releases.first() {
+            lines.push(format!("Release: {}", release.version));
+            for lane in &release.lanes { lines.push(format!("{}: {}", lane.lane, output::bytes(lane.bytes.max(0) as u64))); }
+        } else {
+            lines.push("Private model — no published release".into());
+        }
+        lines
+    }
+}
+
+pub(crate) struct Destinations {
+    model: String,
+    machines: Vec<(String, String)>,
+}
+
+impl Destinations {
+    pub(crate) async fn open(ctx: &Context, model: String) -> Result<Self, Error> {
+        let list: MachineList = ctx.calcifer().await?.get("/v1/machines").await?;
+        let machines = list.machines.into_iter()
+            .filter(|machine| matches!(machine.state, MachineState::Ready | MachineState::Stopped))
+            .map(|machine| (machine.name, if machine.state == MachineState::Stopped { "starts on download".into() } else { "ready".into() }))
+            .collect();
+        Ok(Self { model, machines })
+    }
+
+    pub(crate) fn title(&self) -> String {
+        if self.machines.is_empty() { return "No available machines — use cozy machine --help".into(); }
+        format!("Download {} to", self.model)
+    }
+
+    pub(crate) fn rows(&self) -> Vec<Vec<String>> {
+        self.machines.iter().map(|(name, state)| vec![name.clone(), state.clone()]).collect()
+    }
+
+    pub(crate) fn action(&self, key: KeyCode, selected: usize) -> Option<Action> {
+        if key != KeyCode::Enter { return None; }
+        self.machines.get(selected).map(|(machine, _)| Action::Download(DownloadChoice { model: self.model.clone(), machine: machine.clone() }))
+    }
+}
+
+pub(crate) async fn download(ctx: &Context, choice: DownloadChoice) -> Result<std::process::ExitCode, Error> {
+    let ask = ModelDownload { model: choice.model, name: None, alias: None, lane: None, source_format: None };
+    super::machine::download_to(ctx, ask, Some(On::Machine(choice.machine))).await
+}
+
+pub(super) async fn local_inventory(ctx: &Context) -> Option<Vec<HeldModel>> {
+    let inventory: MachineModels = ctx.calcifer().await.ok()?.get("/v1/machines/local/models").await.ok()?;
+    Some(inventory.models)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use api::calcifer::hub::{FoundModel, ModelAuthor, ModelKind};
+
+    fn catalog() -> Catalog {
+        Catalog::new(Searching { hub: "https://example.test".into(), q: "fox".into(), family: Some("sdxl".into()), tag: "art".into(), no_tag: "nsfw".into(), limit: 2, offset: 2 },
+            ModelSearch { models: vec![FoundModel { model: "author/one".into(), ..Default::default() }, FoundModel { model: "author/two".into(), ..Default::default() }], total: 5, older: 1 },
+            Some(vec![HeldModel { model: "author/two".into(), bytes: 1024, ..Default::default() }] ))
+    }
+
+    #[test]
+    fn browsing_and_paging_never_request_a_download() {
+        let catalog = catalog();
+        assert_eq!(catalog.action(KeyCode::Enter, 1), Some(Action::Preview("author/two".into())));
+        assert_eq!(catalog.action(KeyCode::PageDown, 0), Some(Action::Page(4)));
+        assert_eq!(catalog.action(KeyCode::PageUp, 0), Some(Action::Page(0)));
+        assert_eq!(catalog.action(KeyCode::Down, 0), None);
+        assert_eq!(catalog.rows()[0][3], "no");
+        assert_eq!(catalog.rows()[1][3], "yes");
+        assert_eq!(catalog.rows()[1][2], output::bytes(1024));
+    }
+
+    #[test]
+    fn preview_is_concise_and_download_requires_destination_choice() {
+        let preview = Preview { model: ModelDetail { model: "author/one".into(), family: Some("sdxl".into()), kind: Some(ModelKind::Lora), tags: vec!["art".into()], author: Some(ModelAuthor { name: "Artist".into(), ..Default::default() }), ..Default::default() } };
+        assert_eq!(preview.action(KeyCode::Enter), None);
+        assert_eq!(preview.action(KeyCode::Char('d')), Some(Action::Destinations("author/one".into())));
+        assert!(preview.lines().contains(&"Publisher: Artist".into()));
+        let destinations = Destinations { model: "author/one".into(), machines: vec![("local".into(), "ready".into())] };
+        assert_eq!(destinations.action(KeyCode::Down, 0), None);
+        assert_eq!(destinations.action(KeyCode::Enter, 0), Some(Action::Download(DownloadChoice { model: "author/one".into(), machine: "local".into() })));
+    }
+
+    #[tokio::test]
+    async fn terminal_navigation_and_explicit_download_use_fixtures_only() {
+        use crossterm::event::{Event, KeyEvent, KeyModifiers};
+        use ratatui::{Terminal, backend::TestBackend};
+        let home = tempfile::tempdir().unwrap();
+        let ctx = Context::new(false, false, false, api::config::Loaded { config: Default::default(), home: platform::paths::Home::under(home.path()), user_home: home.path().into(), warnings: vec![] }, output::Term::detect());
+        let mut terminal = Terminal::new(TestBackend::new(90, 12)).unwrap();
+        let keys = futures_util::stream::iter([KeyCode::Down, KeyCode::Char('q')].map(|code| Ok(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)))));
+        assert_eq!(crate::tui::live(&ctx, &mut terminal, crate::tui::Screen::Models(catalog()), keys).await.unwrap(), None);
+        let text = terminal.backend().buffer().content.iter().map(|cell| cell.symbol()).collect::<String>();
+        assert!(text.contains("author/two"));
+        let screen = crate::tui::Screen::ModelDestinations(Destinations { model: "author/one".into(), machines: vec![("local".into(), "ready".into())] });
+        let keys = futures_util::stream::iter([Ok(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)))]);
+        assert_eq!(crate::tui::live(&ctx, &mut terminal, screen, keys).await.unwrap(), Some(DownloadChoice { model: "author/one".into(), machine: "local".into() }));
+    }
+}

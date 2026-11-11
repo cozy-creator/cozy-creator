@@ -52,12 +52,12 @@ hub_candidate() {
   [ "$reads" -gt 0 ] && [ "$named" = 0 ] && expect "hub package-candidate-never-newest" PASS "$reads reads of the Hub's newest during the publish, none named $1" ||
     expect "hub package-candidate-never-newest" FAIL "$reads reads of the Hub's newest during the publish, $named named $1"
 }
-# hub_listed <check> <model>: `cozy model info` lists the model's release 0.1.0 with its one lane, f16.
+# hub_listed <check> <model>: the model metadata API lists the model's release 0.1.0 with its one lane, f16.
 hub_listed() {
-  "$CLI" --json model info "$2" >"$HB/$1.out" 2>&1
+  model_details "$2" >"$HB/$1.out" 2>&1
   python3 -I -c 'import json,sys; r=[x for x in json.load(open(sys.argv[1])).get("releases") or [] if x.get("version")=="0.1.0"]; sys.exit(0 if r and [l["lane"] for l in r[0]["lanes"]]==["f16"] else 1)' "$HB/$1.out" &&
-    expect "hub $1" PASS "model info lists 0.1.0 with lane f16" ||
-    expect "hub $1" FAIL "model info does not list 0.1.0 with lane f16: $(tail -c 300 "$HB/$1.out")"
+    expect "hub $1" PASS "model metadata lists 0.1.0 with lane f16" ||
+    expect "hub $1" FAIL "model metadata does not list 0.1.0 with lane f16: $(tail -c 300 "$HB/$1.out")"
 }
 # hub_weights <dir>: 8 MiB of new random weights as a CozyTensors folder (new blobs, so an upload sends every one).
 hub_weights() {
@@ -159,11 +159,11 @@ hub_model_upload() {
   hub_weights "$w" || { expect "hub $1" FAIL "no weights to upload: tfs import/export failed"; return 1; }
   HUB_MODELS="$HUB_MODELS $3"
   hub_do "$1" ok model upload "$w" "$3" --lane f16 --on "$2" -y || return 1
-  HUB_COMMIT=$("$CLI" --json model info "$3" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["commits"][0]["commit"])' 2>/dev/null)
-  [ -n "$HUB_COMMIT" ] || { expect "hub $1-commit" FAIL "model info $3 names no commit after the upload"; return 1; }
+  HUB_COMMIT=$(model_details "$3" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["commits"][0]["commit"])' 2>/dev/null)
+  [ -n "$HUB_COMMIT" ] || { expect "hub $1-commit" FAIL "model metadata for $3 names no commit after the upload"; return 1; }
 }
 # hub_models: on $M, upload a commit (the workload writer), publish it as 0.1.0 (listed), download; the exact pin and
-# lane download; delete → gone, as the Hub serves the model and as `model info` shows it.
+# lane download; delete → gone, as the Hub serves the model and as the model metadata API shows it.
 hub_models() {
   local model=$WHO/$HUB_PKG
   hub_model_upload model-upload "$M" "$model" || return 0
@@ -172,7 +172,13 @@ hub_models() {
   hub_do model-download ok model download "$model" --on "$M" -y
   hub_do model-pinned ok model download "$model@0.1.0" --lane f16 --on "$M" -y
   hub_do model-delete ok model delete "$model" -y && HUB_MODELS=${HUB_MODELS/ $model/}
-  hub_do model-gone refused model info "$model"
+  if model_details "$model" > "$HB/model-gone.out" 2>&1; then
+    expect "hub model-gone" FAIL "deleted model still answers"
+  elif hub_5xx "$HB/model-gone.out"; then
+    expect "hub model-gone" FAIL "model lookup returned a server failure"
+  else
+    expect "hub model-gone" PASS "deleted model is absent"
+  fi
 }
 
 # hub_dev: `dev = true` in this home's cozy config, which turns on dev-only options (cl-844: hidden from --help,

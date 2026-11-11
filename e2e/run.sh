@@ -10,6 +10,8 @@
 # (<name>.err). Only a run that never gets its number ends its follower (`run_submit`).
 RUN_CLI=${RUN_CLI:-cozy}
 RUN_WARM_API=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/warm.py
+RUN_MODEL_DETAILS=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/model-details.py
+model_details() { python3 "$RUN_MODEL_DETAILS" "$1"; }
 
 # run_project <dir>: <dir> made a project unless it is one, for this script's runs wherever the script goes.
 run_project() {

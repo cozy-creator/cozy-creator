@@ -40,6 +40,8 @@ pub(super) struct Search {
     no_tag: Option<String>,
     /// 1–100; 20 when absent.
     limit: Option<u32>,
+    #[serde(default)]
+    offset: u32,
 }
 
 /// A comma-separated list's items.
@@ -63,6 +65,7 @@ pub(super) async fn search(
     let hub = origin(&api, ask.hub.as_deref())?;
     let client = reader(&api, &hub)?;
     let limit = ask.limit.unwrap_or(20).clamp(1, 100);
+    let wanted = ask.offset.saturating_add(limit);
     let q = ask.q.as_deref().map(str::trim).filter(|q| !q.is_empty());
     let family = ask.family.as_deref().map(str::trim).filter(|family| !family.is_empty());
     // One word that is org/name is that model; anything else is search text.
@@ -83,10 +86,10 @@ pub(super) async fn search(
             names.len() - before
         };
         loop {
-            let answer = (client.search_models(q, family, &tags, &no_tags, limit, names.len() as u32).await).map_err(|e| refusal(&hub, e))?;
+            let answer = (client.search_models(q, family, &tags, &no_tags, limit, if family.is_none() { ask.offset } else { names.len() as u32 }).await).map_err(|e| refusal(&hub, e))?;
             total = answer.search.total;
             let read = take(&mut names, answer.models);
-            if family.is_none() || read == 0 || names.len() as u32 >= limit || names.len() as i64 >= total {
+            if family.is_none() || read == 0 || names.len() as u32 >= wanted || names.len() as i64 >= total {
                 break;
             }
         }
@@ -128,10 +131,39 @@ pub(super) async fn search(
         let from = newest.unwrap_or(cards.len());
         total += cards[from..].iter().zip(&models[from..]).filter(|(card, row)| is(*row) && !labelled(*card)).count() as i64;
         models.retain(is);
-        models.truncate(limit as usize);
+
     }
-    let older = (total - models.len() as i64).max(0);
-    Ok(Json(ModelSearch { models, total, older }))
+    Ok(Json(page(models, total, ask.offset, limit, family.is_none() && exact.is_none())))
+}
+
+fn page(models: Vec<FoundModel>, total: i64, offset: u32, limit: u32, already_paged: bool) -> ModelSearch {
+    let models = if already_paged { models } else { models.into_iter().skip(offset as usize).take(limit as usize).collect() };
+    let older = (total - offset as i64 - models.len() as i64).max(0);
+    ModelSearch { models, total, older }
+}
+
+#[cfg(test)]
+mod pagination_tests {
+    use super::*;
+
+    fn rows(names: &[&str]) -> Vec<FoundModel> {
+        names.iter().map(|name| FoundModel { model: (*name).into(), ..Default::default() }).collect()
+    }
+
+    #[test]
+    fn hub_pages_are_not_offset_twice() {
+        let page = page(rows(&["second", "third"]), 4, 1, 2, true);
+        assert_eq!(page.models[0].model, "second");
+        assert_eq!((page.total, page.older), (4, 1));
+    }
+
+    #[test]
+    fn resolved_family_and_exact_matches_apply_offset() {
+        let page = page(rows(&["first", "second", "third"]), 3, 1, 1, false);
+        assert_eq!(page.models[0].model, "second");
+        assert_eq!(page.older, 1);
+        assert!(super::page(rows(&["exact"]), 1, 1, 20, false).models.is_empty());
+    }
 }
 
 /// One search row: the model's newest release and its lanes; for a private model (no release, its

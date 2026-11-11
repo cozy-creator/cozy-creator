@@ -29,7 +29,7 @@ listed() { cozy --json machine ls | J --arg m "$1" '.machines | any(.name == $m 
 # The throwaways the suite failed to delete itself, while hubcheck still answers (finish stops it, then the trap runs).
 leftovers() {
   ! cozy --json package info "fidika/$pkg" > /dev/null 2>&1 || cozy --json package delete "fidika/$pkg" -y > /dev/null 2>&1
-  for m in "$model" "$model-copy" "$model-store"; do ! cozy --json model info "$m" > /dev/null 2>&1 || cozy --json model delete "$m" -y > /dev/null 2>&1; done
+  for m in "$model" "$model-copy" "$model-store"; do ! model_details "$m" > /dev/null 2>&1 || cozy --json model delete "$m" -y > /dev/null 2>&1; done
   return 0
 }
 cleanup() {
@@ -265,25 +265,25 @@ PATH="$(dirname "$COZY"):$PATH" "$here/../capabilities/run.sh" --out "$OUT/capab
 watched download-private model download "$model@$commit" --on "$M" \
   || check "model download $model@$commit --on $M: the rental did not read the private commit: $(run_get "$OUT" download-private '.reason.message' | head -c 300)"
 cozy --json model edit "$model" --family e2e-family --tag 'E2E Tag' --tag nsfw --tag anime --untag nsfw --trigger e2e --strength 0.8 > /dev/null \
-  && cozy --json model info "$model" | J '.family == "e2e-family" and .family_from == "owner" and .tags == ["anime", "e2e-tag"] and .trigger == "e2e" and .strength == 0.8' \
+  && model_details "$model" | J '.family == "e2e-family" and .family_from == "owner" and .tags == ["anime", "e2e-tag"] and .trigger == "e2e" and .strength == 0.8' \
   || check "model edit: family, tags, trigger or strength not set"
 # --untag is read as --tag is: any case, spaces around it. One the model doesn't have is removed already: no refusal, nothing else changed.
-cozy --json model edit "$model" --untag ' ANIME ' > /dev/null && cozy --json model info "$model" | J '.tags == ["e2e-tag"]' \
-  || check "model edit --untag ' ANIME ': $(cozy --json model info "$model" | jq -c .tags)"
-cozy --json model edit "$model" --untag 'E2E Tag' --tag anime > /dev/null && cozy --json model info "$model" | J '.tags == ["anime"]' \
-  || check "model edit --untag 'E2E Tag' --tag anime: $(cozy --json model info "$model" | jq -c .tags)"
-cozy --json model edit "$model" --untag never-there > "$OUT/untag-absent.json" 2>&1 && cozy --json model info "$model" | J '.tags == ["anime"] and .family == "e2e-family" and .trigger == "e2e"' \
-  || check "model edit --untag never-there: $(tail -c 300 "$OUT/untag-absent.json") $(cozy --json model info "$model" | jq -c '{tags, family, trigger}')"
+cozy --json model edit "$model" --untag ' ANIME ' > /dev/null && model_details "$model" | J '.tags == ["e2e-tag"]' \
+  || check "model edit --untag ' ANIME ': $(model_details "$model" | jq -c .tags)"
+cozy --json model edit "$model" --untag 'E2E Tag' --tag anime > /dev/null && model_details "$model" | J '.tags == ["anime"]' \
+  || check "model edit --untag 'E2E Tag' --tag anime: $(model_details "$model" | jq -c .tags)"
+cozy --json model edit "$model" --untag never-there > "$OUT/untag-absent.json" 2>&1 && model_details "$model" | J '.tags == ["anime"] and .family == "e2e-family" and .trigger == "e2e"' \
+  || check "model edit --untag never-there: $(tail -c 300 "$OUT/untag-absent.json") $(model_details "$model" | jq -c '{tags, family, trigger}')"
 cozy --json model edit "$model" --tag e2e-tag > /dev/null || check "model edit --tag e2e-tag failed"
 cozy --json model edit "$model" --family none --untag e2e-tag --untag anime --trigger '' --strength none > /dev/null \
-  && cozy --json model info "$model" | J '.family == null and (.tags // []) == [] and .trigger == null and .strength == null' \
+  && model_details "$model" | J '.family == null and (.tags // []) == [] and .trigger == null and .strength == null' \
   || check "model edit --family none --untag e2e-tag --untag anime --trigger '' --strength none: not cleared"
 cozy --json model publish "$model" 0.1.0 "$commit" "$commit_b" > "$OUT/model-publish.json" || check "model publish failed"
-cozy --json model info "$model" > "$OUT/model-info.json" \
+model_details "$model" > "$OUT/model-info.json" \
   && J '.releases | any(.version == "0.1.0" and ([.lanes[].lane] | sort) == ["f16", "f32"])' "$OUT/model-info.json" \
   || check "model publish: no 0.1.0 with lanes f16 and f32"
 cozy --json model delete "$model" -y > "$OUT/model-delete.json" || check "model delete failed"
-! cozy --json model info "$model" > /dev/null 2>&1 || check "model delete: $model still answers"
+! model_details "$model" > /dev/null 2>&1 || check "model delete: $model still answers"
 
 step "BiRefNet on $M"
 watched install-birefnet package install "$(pinned birefnet)" --on "$M" \

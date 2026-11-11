@@ -197,7 +197,7 @@ pub struct OrgProof {
     pub r#where: String,
 }
 
-/// `GET /v1/models?q=&family=&limit=`: the Hub's models the caller can see, one row each with its
+/// `GET /v1/models?q=&family=&limit=&offset=`: the Hub's models the caller can see, one row each with its
 /// newest release; signed in, also its own and its orgs' while private (no release yet). `q` that
 /// is exactly `org/name` is that one model.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
