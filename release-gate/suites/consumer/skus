@@ -1,3 +1,4 @@
-# The 12 GB card most consumers own: real memory pressure, which a software cap on a larger card never makes (a capped
-# card never fills). SKU, then its disk in GB.
+# The 12 GB and 8 GB cards most consumers own: real memory pressure, which a software cap on a larger card never makes (a
+# capped card never fills). SKU, then its disk in GB (H3's 52 GB of weights land on the 8 GB card).
 rtx-3060 100
+rtx-4060 150
