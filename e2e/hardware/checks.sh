@@ -26,6 +26,19 @@ log 'running CPU arithmetic'
 run_cell "$OUT" cpu "$WHO/$package/cpu" value:=19 --on local
 log 'running physical CUDA arithmetic'
 run_cell "$OUT" gpu "$WHO/$package/gpu" value:=19 --on local
+log 'running separate operator SDK qualification in the exact installed environment'
+operator_python=$(python3 - "$COZY_MACHINE_ROOT" <<'PY'
+from pathlib import Path
+import sys
+root = Path(sys.argv[1]) / 'var/lib/cozy/tensord/generations'
+interpreters = sorted(path for path in root.glob('*/env/bin/python') if path.is_file())
+assert len(interpreters) == 1, f'expected the sole owned probe environment, got {interpreters}'
+print(interpreters[0])
+PY
+)
+sdk_sha=$(jq -r 'select(.type == "run.completed") | .run.result.to.tensorfs_sha256 // empty' "$OUT/candidate-update.ndjson" | tail -1)
+"$operator_python" -I "$E2E/hardware/operator_sdk.py" --wheel "$TENSORFS" --expected-sha "$sdk_sha" \
+  --out "$OUT/operator-sdk" --gpu-uuid "${CUDA_VISIBLE_DEVICES:?}"
 python3 "$E2E/hardware/verify.py" "$OUT" "$RUNTIME" "$TENSORFS"
 cozy --json package delete "$WHO/$package" -y > "$OUT/delete.json"
-log 'PASS exact candidate software, CPU and real CUDA arithmetic/output verified'
+log 'PASS exact candidate CLI/Runtime arithmetic and separate native SDK CUDA qualification'

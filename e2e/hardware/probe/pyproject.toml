@@ -5,7 +5,7 @@ build-backend = "uv_build"
 [project]
 name = "ci-hardware-probe"
 version = "0.1.0"
-description = "Owned CI native TensorFS CPU/CUDA proof with a tiny checkpoint"
+description = "Owned CI Runtime/Torch CPU and CUDA arithmetic proof"
 requires-python = ">=3.12"
 dependencies = ["cozy-runtime>=0.45", "msgspec>=0.19", "torch>=2.14"]
 

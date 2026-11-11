@@ -15,6 +15,10 @@ environment, never inside the published author package. The SDK check writes a c
 2x2 F32 checkpoint, deletes its source cache, opens fresh local-only stores, and checks
 matrix products `[8, 18]` on CPU/CUDA. Loaded native extension and Torch shim bytes must
 match the actual candidate wheel ZIP entries, as well as the whole-wheel SHA256.
+The focused fixture requires the sole owned probe generation, and invokes its Python
+directly with the operator script. It does not disable or modify Runtime author checks.
+Hosted CI runs the real published Runtime.describe against the author package, and a
+negative control proves that adding a direct TensorFS import is still refused.
 
 ```sh
 python3 e2e/hardware/run.py --hub-src /path/to/tensorhub --cozy-bin /path/to/candidate/cozy \
@@ -27,6 +31,8 @@ URLs require an exact SHA256 fragment and are materialized into verified local f
 before the release CLI update. The original URL/hash remains in the receipt. Public
 build caches may live outside the disposable authentication HOME; fixture/model data
 does not share that cache.
+The SDK qualification leg requires the actual wheel file for native ZIP-entry validation,
+so a release version label alone cannot satisfy this lane.
 
 Live output is retained under the durable job workspace. Logging ends with the main
 fixture process, even if an orphan watchdog retains stdout. Receipts are written before

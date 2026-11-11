@@ -39,16 +39,20 @@ for name in ('cpu', 'gpu'):
     output = record['result']
     results[name] = output
     assert output['result'] == 368 and output['device'] == ('cuda:0' if name == 'gpu' else 'cpu'), (name, output)
-    assert output['tensorfs_products'] == [8., 18.], (name, output)
-    assert re.fullmatch('[a-f0-9]{64}', output['tensorfs_native_sha256']), output
-    assert output['tensorfs_revision'].startswith('sha256:'), output
     for component, expected in requested.items():
         assert record['measurements']['software'][component] == expected['version'], (name, component, record['measurements']['software'])
     if name == 'gpu':
-        assert re.fullmatch('[a-f0-9]{64}', output['torch_shim_sha256']), output
         gpus = record['measurements']['execution']['gpus']
         assert any(gpu['uuid'] == os.environ['CUDA_VISIBLE_DEVICES'] for gpu in gpus), gpus
-assert results['cpu']['tensorfs_native_sha256'] == results['gpu']['tensorfs_native_sha256'], results
+sdk = json.loads((proof / 'operator-sdk/verified.json').read_text())
+assert sdk['status'] == 'passed' and sdk['gpu_uuid'] == os.environ['CUDA_VISIBLE_DEVICES'], sdk
+assert sdk['sdk_version'] == requested['tensorfs']['version'] and sdk['runtime_version'] == requested['runtime']['version'], sdk
+assert sdk['wheel_sha256'] == installed['tensorfs_sha256'], sdk
+assert sdk['cpu'] == {'device': 'cpu', 'products': [8., 18.]}, sdk
+assert sdk['gpu'] == {'device': 'cuda:0', 'products': [8., 18.]}, sdk
+for name in ('extension', 'torch_shim'):
+    payload = sdk['native_payloads'][name]
+    assert re.fullmatch('[a-f0-9]{64}', payload['sha256']) and payload['sha256'] == payload['wheel_sha256'], payload
 (proof / 'verified.json').write_text(json.dumps({'cpu': results['cpu'], 'gpu': results['gpu'], 'requested': requested, 'installed': installed,
-    'qualification': 'local physical CUDA execution; no provider lifecycle qualification'}, indent=2) + '\n')
-print('verified physical CUDA and exact candidate cohort: ' + json.dumps(installed, sort_keys=True))
+    'operator_sdk': sdk, 'qualification': 'CLI/Runtime CUDA and separate operator SDK CUDA; no provider lifecycle qualification'}, indent=2) + '\n')
+print('verified CLI/Runtime CUDA, separate SDK CUDA and exact wheel payloads: ' + json.dumps(installed, sort_keys=True))

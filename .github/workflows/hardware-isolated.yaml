@@ -17,7 +17,7 @@ on:
         type: string
         required: true
       tensorfs:
-        description: Exact TensorFS version or candidate wheel URL with sha256 fragment
+        description: Exact TensorFS candidate wheel URL with sha256 fragment
         type: string
         required: true
       hub_ref:

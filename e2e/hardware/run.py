@@ -271,6 +271,8 @@ def main():
         receipt['requested_components'] = {}
         for component in ('runtime', 'tensorfs'):
             value, recorded = materialize_component(getattr(args, component), args.out / 'candidates')
+            if component == 'tensorfs' and not Path(value).is_file():
+                raise ValueError('native SDK qualification requires the exact local or SHA-pinned candidate wheel')
             command[command.index('--' + component) + 1] = value
             receipt['requested_components'][component] = recorded
         status = run_logged(command, env, args.out / 'console.log')

@@ -12,20 +12,48 @@ import tempfile
 import time
 import unittest
 from unittest.mock import patch
+from zipfile import ZipFile
 
 HERE = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location('hardware_run', HERE / 'run.py')
 runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
+sdk_spec = importlib.util.spec_from_file_location('operator_sdk', HERE / 'operator_sdk.py')
+sdk_operator = importlib.util.module_from_spec(sdk_spec)
+sdk_spec.loader.exec_module(sdk_operator)
 
 
 def probe_result(device):
-    return {'result': 368, 'device': device, 'tensorfs_products': [8., 18.],
-            'tensorfs_revision': 'sha256:' + 'c' * 64, 'tensorfs_native_sha256': 'd' * 64,
-            'torch_shim_sha256': 'e' * 64 if device.startswith('cuda:') else ''}
+    return {'result': 368, 'device': device}
+
+
+def write_sdk_result(proof, software, digest):
+    directory = proof / 'operator-sdk'
+    directory.mkdir(exist_ok=True)
+    record = {'status': 'passed', 'gpu_uuid': 'GPU-owned', 'sdk_version': software['tensorfs'],
+              'runtime_version': software['runtime'], 'wheel_sha256': digest,
+              'cpu': {'device': 'cpu', 'products': [8., 18.]},
+              'gpu': {'device': 'cuda:0', 'products': [8., 18.]},
+              'native_payloads': {'extension': {'sha256': 'd' * 64, 'wheel_sha256': 'd' * 64},
+                                  'torch_shim': {'sha256': 'e' * 64, 'wheel_sha256': 'e' * 64}}}
+    (directory / 'verified.json').write_text(json.dumps(record))
+    return record
 
 
 class Isolation(unittest.TestCase):
+    def test_operator_compares_loaded_native_bytes_with_actual_wheel_member(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            payload, archive = root / '_ext.abi3.so', root / 'candidate.whl'
+            payload.write_bytes(b'the exact native payload')
+            with ZipFile(archive, 'w') as wheel:
+                wheel.writestr('tensorfs/_ext.abi3.so', payload.read_bytes())
+            with ZipFile(archive) as wheel:
+                matched = sdk_operator.wheel_payload(wheel, payload)
+                self.assertEqual(matched['sha256'], matched['wheel_sha256'])
+                payload.write_bytes(b'other native payload with the same package version')
+                with self.assertRaisesRegex(ValueError, 'does not match'):
+                    sdk_operator.wheel_payload(wheel, payload)
     def test_candidate_url_becomes_verified_owned_local_wheel_for_cli(self):
         with tempfile.TemporaryDirectory() as temporary:
             payload = b'the exact candidate wheel payload'
@@ -170,7 +198,9 @@ class Isolation(unittest.TestCase):
             gpu = {'status': 'completed', 'result': probe_result('cuda:0'),
                    'measurements': {'software': software, 'execution': {'gpus': [{'uuid': 'GPU-owned'}]}}}
             (proof / 'cpu.json').write_text(json.dumps(cpu))
-            (proof / 'candidate-update.ndjson').write_text(json.dumps({'type': 'run.completed', 'run': {'result': {'to': software}}}) + '\n')
+            installed = software | {'tensorfs_sha256': 'a' * 64}
+            (proof / 'candidate-update.ndjson').write_text(json.dumps({'type': 'run.completed', 'run': {'result': {'to': installed}}}) + '\n')
+            sdk = write_sdk_result(proof, software, 'a' * 64)
             def verify():
                 (proof / 'gpu.json').write_text(json.dumps(gpu))
                 return subprocess.run([sys.executable, str(HERE / 'verify.py'), tmp, '0.45.0', '0.24.1'],
@@ -184,7 +214,8 @@ class Isolation(unittest.TestCase):
             gpu['measurements']['execution']['gpus'] = [{'uuid': 'GPU-other'}]
             self.assertNotEqual(verify(), 0)
             gpu['measurements']['execution']['gpus'] = [{'uuid': 'GPU-owned'}]
-            gpu['result']['tensorfs_products'] = [8., 19.]
+            sdk['gpu']['products'] = [8., 19.]
+            (proof / 'operator-sdk/verified.json').write_text(json.dumps(sdk))
             self.assertNotEqual(verify(), 0)
 
     def test_gpu_proof_rejects_old_sdk_even_when_numeric_result_matches(self):
@@ -214,6 +245,7 @@ class Isolation(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             installed['tensorfs_sha256'] = 'a' * 64
             (proof / 'candidate-update.ndjson').write_text(json.dumps({'type': 'run.completed', 'run': {'result': {'to': installed}}}) + '\n')
+            write_sdk_result(proof, {'runtime': '0.45.0', 'tensorfs': '0.24.1'}, 'a' * 64)
             result = subprocess.run([sys.executable, str(HERE / 'verify.py'), temporary, '0.45.0', candidate],
                 env=os.environ | {'CUDA_VISIBLE_DEVICES': 'GPU-owned'}, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr.decode())
