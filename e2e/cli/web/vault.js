@@ -151,7 +151,8 @@ const newPage = async () => {
     await until(label, () => contentReads().filter((request) => !plainCacheBody(request)).length, (count) => count === 0, 45000);
     (seen.plain_storage_readiness ??= []).push({ label, global_cache_bodies: contentReads().filter(plainCacheBody).map(readMetadata) });
   };
-  page.on('pageerror', (error) => errors.push(error.message));
+  const pageError = (error) => errors.push(error.message);
+  page.on('pageerror', pageError);
   context.on('requestfinished', (request) => readEnded('requestfinished', request));
   context.on('requestfailed', (request) => readEnded('requestfailed', request));
   context.on('request', (request) => {
@@ -208,9 +209,17 @@ const newPage = async () => {
     } catch { /* Failed/offline replies carry no readable evidence. Never retain secret bodies. */ }
   });
   await signIn(page);
-  // Code redemption finishes after the document loads. Wait for its signed-in
-  // shell before opening the compact link in another document.
+  // Code redemption finishes after the document loads. The Home page may then
+  // open the latest project asynchronously, so close that document explicitly
+  // before tracking the vault page's current content requests.
   await page.locator('.top').waitFor();
+  const authenticated = page;
+  page = await newPage();
+  page.setDefaultTimeout(45000);
+  authenticated.off('pageerror', pageError);
+  page.on('pageerror', pageError);
+  await authenticated.close();
+  seen.initial_document_isolation = { auth_page_closed: authenticated.isClosed() };
   await goto(page, `${href}/vault`);
   const body = page.locator('.drawer [data-vault-state]');
   await page.locator('.drawer [data-vault-state="plain"]').waitFor();
