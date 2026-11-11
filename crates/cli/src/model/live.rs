@@ -95,11 +95,13 @@ impl Catalog {
 
     pub(crate) fn title(&self) -> String {
         if !self.local_only {
-            let local = self.local_models(&self.local_records(false).unwrap_or_default()).len();
-            let unknown = self.local_models(&self.local_records(true).unwrap_or_default()).len();
+            let known = self.local_models(&self.local_records(false).unwrap_or_default());
+            let local = known.len();
+            let unknown = self.local_models(&self.local_records(true).unwrap_or_default()).iter()
+                .filter(|row| !known.iter().any(|held| same_model(&held.model, &row.model))).count();
             let local_count = if self.local.is_some() { local.to_string() } else { "unknown".into() };
             let first = if self.page.models.is_empty() { 0 } else { self.query.offset as usize + 1 };
-            let last = self.query.offset as usize + self.page.models.len();
+            let last = if self.page.models.is_empty() { 0 } else { self.query.offset as usize + self.page.models.len() };
             let page = format!("{} · Local {local_count} (+{unknown} unclassified) · Hub {first}–{last} of {}", self.label(), self.page.total);
             return self.notice.as_ref().map_or_else(|| page.clone(), |notice| format!("{page} · {notice}"));
         }
@@ -117,8 +119,12 @@ impl Catalog {
     pub(crate) fn hint(&self) -> &str {
         if self.local_only && self.query.role != "unknown" && self.local.as_ref().is_some_and(|rows| rows.iter().any(|row| !matches!(row.role.as_str(), "model" | "lora"))) {
             "↑/↓ select · Enter preview · p/n pages · u unclassified copies · q back"
+        } else if !self.local_only && (self.query.family.is_some() || !self.query.tag.is_empty() || !self.query.no_tag.is_empty()) {
+            "↑/↓ · Enter preview · p/n Hub pages · family/tags filter Hub only · q back"
+        } else if !self.local_only {
+            "↑/↓ select · Enter preview · p/n Hub pages · q back"
         } else {
-            "↑/↓ select · Enter preview · PgUp/PgDn or p/n pages · q back"
+            "↑/↓ select · Enter preview · p/n local pages · q back"
         }
     }
 
@@ -293,21 +299,12 @@ impl Destinations {
         let list: MachineList = ctx.calcifer().await?.get("/v1/machines").await?;
         let machines = list.machines.into_iter()
             .filter(|machine| matches!(machine.state, MachineState::Ready | MachineState::Stopped))
-            .map(|machine| (machine.name, if machine.state == MachineState::Stopped { "starts on download".into() } else { "ready".into() }))
+            .map(|machine| (machine.name, if machine.state == MachineState::Stopped { "starts on install".into() } else { "ready".into() }))
             .collect();
         Ok(Self { model, machines })
     }
 
     pub(crate) fn title(&self) -> String {
-        if !self.local_only {
-            let local = self.local_models(&self.local_records(false).unwrap_or_default()).len();
-            let unknown = self.local_models(&self.local_records(true).unwrap_or_default()).len();
-            let local_count = if self.local.is_some() { local.to_string() } else { "unknown".into() };
-            let first = if self.page.models.is_empty() { 0 } else { self.query.offset as usize + 1 };
-            let last = self.query.offset as usize + self.page.models.len();
-            let page = format!("{} · Local {local_count} (+{unknown} unclassified) · Hub {first}–{last} of {}", self.label(), self.page.total);
-            return self.notice.as_ref().map_or_else(|| page.clone(), |notice| format!("{page} · {notice}"));
-        }
         if self.machines.is_empty() { return "No available machines — use cozy machine --help".into(); }
         format!("Install {} on", self.model)
     }
