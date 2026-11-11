@@ -55,6 +55,40 @@ if executor_reaped; then
 fi
 }
 
+# By hand, CPU only: the bench gate's unchanged local calibration target must prepare through
+# the retained API even when model packages are published pins. Warming never calls measure.
+bench_calibration_warm() {
+step "bench calibration: local source warming, no kernel call"
+local fixture=$here/../../release-gate/suites/bench/calibrate
+[ -x "${RUN_CODE_STAGE:-}" ] || fail "bench calibration: the candidate API stage-code helper is absent"
+ln -sfn "$fixture" "$OUT/bench-calibrate"
+sha256sum "$RUN_CODE_STAGE" "$fixture/pyproject.toml" "$fixture/package.toml" "$fixture/bench_calibrate/__init__.py" > "$OUT/bench-calibration-inputs.sha256"
+cozy --json machine show local > "$OUT/bench-calibration-before.json"
+J '(.status.gpus | length) == 0 and (.status.warm | length) == 0' "$OUT/bench-calibration-before.json" \
+  || fail "bench calibration: this focused proof needs an empty CPU-only machine"
+if (cd "$OUT" && run_warm_cell "$OUT" calibrate-before-weights ./bench-calibrate/measure downloaded --on local); then
+  J '.kind == "warm" and .machine == "local" and .status == "completed" and (.output | length) == 0 and (.calls | length) == 0
+    and (.result.set | length) == 1 and .result.set[0].entrypoint == "measure"
+    and .result.set[0].level == "installed" and (.result.set[0].held_back | length) > 0' "$OUT/calibrate-before-weights.json" \
+    || check "bench calibration: downloaded did not complete as a non-executing CPU warm request"
+else
+  check "bench calibration: downloaded failed: $(tail -c 400 "$OUT/calibrate-before-weights.err")"
+fi
+cozy --json machine show local > "$OUT/bench-calibration-downloaded.json"
+J '.status.warm | any(.entrypoint == "measure" and .level == "downloaded" and .holds == "installed" and (.held_back | length) > 0)' "$OUT/bench-calibration-downloaded.json" \
+  || check "bench calibration: the requested downloaded member or its CPU held-back reason is absent"
+# Off is an actual API request too, using the same local source and installation.
+if (cd "$OUT" && run_warm_cell "$OUT" calibrate-before-weights-off ./bench-calibrate/measure off --on local); then
+  J '.kind == "warm" and .machine == "local" and .status == "completed" and (.output | length) == 0 and (.calls | length) == 0
+    and (.result.set | length) == 0' "$OUT/calibrate-before-weights-off.json" \
+    || check "bench calibration: off did not complete as an empty non-executing warm set"
+else
+  check "bench calibration: off failed: $(tail -c 400 "$OUT/calibrate-before-weights-off.err")"
+fi
+cozy --json machine show local > "$OUT/bench-calibration-off.json"
+J '(.status.warm | length) == 0' "$OUT/bench-calibration-off.json" || check "bench calibration: off left a warm member"
+}
+
 # A script is an ordinary one-file package (xs-099): it and the same file in a package folder describe alike but for
 # their names, both run on the CPU, and its function's `accelerator=True` is taken (the GPU when there is one).
 script_package() {
@@ -262,6 +296,7 @@ case $SHARD in
   '') parts="entrypoints weightless script_package one_name_two_paths image_ratio describe first_run second_executor lifetime kept_preparing catalog basics yaml_requests run_flags run_follow time_left broken_answers run_filters run_playback hub_away lock_refresh bound_runs own_references old_runtime hostile_media unseen local_edits path_manifest machine_show_runs writes_once project_stream web_serves page_resend queued_download machines completions calcifer_faults calcifer_restarts update remove" ;;
   runs) parts="weightless describe first_run run_flags run_playback hub_away lock_refresh logs" ;;
   executors) parts="second_executor lifetime kept_preparing update remove" ;;
+  bench-calibration-warm) parts="bench_calibration_warm logs" ;;
   entrypoints) parts="entrypoints" ;;
   commands) parts="entrypoints catalog basics yaml_requests run_filters bound_runs own_references old_runtime hostile_media machine_show_runs writes_once project_stream logs" ;;
   # Its own runner: under `set -e` a cell that dies ends its shard, and a page's proofs shouldn't go with it.

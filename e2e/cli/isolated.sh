@@ -73,7 +73,7 @@ PY
 }
 
 case $shard in
-  entrypoints | executors | projectdb-cancel) needs='' ;;
+  entrypoints | executors | projectdb-cancel | bench-calibration-warm) needs='' ;;
   runs | commands | local-code) needs='packages birefnet' ;;
   follow) needs='packages downloads' ;;
   '') needs='packages birefnet downloads' ;;
