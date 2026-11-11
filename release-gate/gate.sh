@@ -459,7 +459,12 @@ notinstalled() {
 }
 # cozy's `machine update` fails (update_unapplied) unless the machine then runs what it was sent.
 if [ ${#CAND[@]} -gt 0 ]; then
-  "$CLI" --json machine update "$M" "${CAND[@]}" -y >update.json 2>update.log; code=$?
+  # file_not_held: another gate's update of the same file was still landing it (cl-864); the CLI sends it again.
+  for try in 1 2 3; do
+    "$CLI" --json machine update "$M" "${CAND[@]}" -y >update.json 2>update.log; code=$?
+    [ "$code" != 0 ] && grep -q '"file_not_held"' update.json && [ "$try" -lt 3 ] || break
+    log "candidate on $M: file_not_held, sending again in 30 s"; sleep 30
+  done
   log "candidate on $M: exit $code $(jq -c 'select(.machine and .tensord)' update.json 2>/dev/null)"
   [ "$code" = 0 ] || notinstalled "cozy machine update exit $code: $(jq -r 'select(.error) | "\(.error.code): \(.error.message)"' update.json 2>/dev/null) $(tail -c 300 update.log | tr '\n' ' ')"
 fi
