@@ -95,7 +95,8 @@ def main() -> None:
         target.write(secret + "\n")
         target.flush()
         os.fsync(target.fileno())
-    connection = sqlite3.connect(f"file:{Path.home()}/.cozy/calcifer/state.db?mode=ro", uri=True)
+    database = Path.home() / ".cozy/calcifer/state.db"
+    connection = sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)
     rows = connection.execute("SELECT id,binding,state FROM vault_operations WHERE id=?", (operation,)).fetchall()
     assert len(rows) == 1 and rows[0][2] == "completed"
     assert secret not in json.dumps(rows)
