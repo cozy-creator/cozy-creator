@@ -91,7 +91,7 @@ impl Store {
 /// A new, unique temp file beside `dest`, its directory made.
 fn temp_beside(dest: &Path) -> Result<(PathBuf, File)> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
-    let parent = dest.parent().expect("a file has a directory");
+    let parent = dest.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
     fs::create_dir_all(parent).map_err(fail("create", parent))?;
     loop {
         let temp = parent.join(format!(".tensorfs-{}-{}.tmp", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
@@ -112,7 +112,7 @@ fn same_bytes(file: &mut File, object: &ObjectRef) -> bool {
 
 /// `from` copied to `dest` by a unique temp, flushed and renamed in, its directory synced; with
 /// `expected`, the bytes are checked against it first.
-pub fn copy_checked(from: &mut File, dest: &Path, expected: Option<&ObjectRef>) -> Result<()> {
+pub fn copy_checked(from: &mut dyn Read, dest: &Path, expected: Option<&ObjectRef>) -> Result<()> {
     let (temp, mut out) = temp_beside(dest)?;
     let mut source = Hashing { source: from, hash: crate::sha256::Sha256::new() };
     let copied = io::copy(&mut source, &mut out).map_err(fail("copy", &temp)).and_then(|length| {
@@ -132,7 +132,7 @@ pub fn copy_checked(from: &mut File, dest: &Path, expected: Option<&ObjectRef>) 
 }
 
 struct Hashing<'a> {
-    source: &'a mut File,
+    source: &'a mut dyn Read,
     hash: crate::sha256::Sha256,
 }
 

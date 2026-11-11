@@ -20,6 +20,7 @@
 //!   next fetch of the object takes them up, and the object's digest judges them with the rest.
 
 mod checkpoint;
+pub(crate) mod file;
 mod folder;
 pub use folder::{copy_checked, files as folder_files};
 mod gc;

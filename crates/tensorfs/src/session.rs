@@ -209,6 +209,19 @@ impl Client {
             let path = path
                 .canonicalize()
                 .map_err(|e| io_failure(path.display(), e))?;
+            if path.is_file() {
+                let (file, bytes, header) = crate::store::file::header(&path)?;
+                let length = file.metadata().map_err(|e| io_failure(path.display(), e))?.len();
+                if length > bytes.len() as u64 || header.objects().next().is_none() {
+                    let store = self.store.clone();
+                    let complete = path.clone();
+                    let lane = options.lane.clone().unwrap_or_else(|| "default".into());
+                    let tree = tokio::task::spawn_blocking(move || store.admit_file(&complete, &lane))
+                        .await.map_err(|e| io_failure(path.display(), std::io::Error::other(e)))??;
+                    let raw = self.store.at_commit(&tree)?;
+                    return Checkpoint::managed(raw, None, Some(tree), None, Vec::new(), self.store.clone());
+                }
+            }
             let raw = crate::store::Checkpoint::folder(&path, Some(&self.store))?;
             // A header file is a handle into the cache, rooted where it is opened; the cache's
             // own files are not.
