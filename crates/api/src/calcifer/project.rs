@@ -156,7 +156,7 @@ pub struct Known {
     pub busy: bool,
 }
 
-/// `GET /v1/projects/{id}/address`: the indexed identity used to open a browser route.
+/// `GET /v1/projects/{id}/address`: project identity without evaluating its assets; accepts a containing directory.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "ProjectAddress"))]
 pub struct Address {

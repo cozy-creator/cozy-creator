@@ -144,6 +144,8 @@ def main() -> None:
         assert "not_in_a_project" in refusal_text and "cozy new" in refusal_text
 
         status = json.loads(run("project status", ["--json", "status"], project).stdout)
+        listed = json.loads(run("empty project runs", ["--json", "run", "ls"], project).stdout)
+        assert listed["runs"] == [], "a new project has unexpected runs"
         assert Path(status["project"]["path"]).resolve() == project
         assert status["health"] == "ready" and status["warnings"] == []
         for field in ("unrendered_assets", "outdated_assets", "missing_files", "warnings"):

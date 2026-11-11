@@ -179,7 +179,7 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             let project = if all {
                 None
             } else {
-                Some(crate::project::current(ctx).await?.id)
+                Some(crate::project::identity(ctx).await?.id)
             };
             let query = list::Query { status: state, package, machine: on, project, before: None, limit };
             list::exec(ctx, query).await
@@ -200,7 +200,7 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
 
 
 async fn run(ctx: &Context, args: RunArgs) -> Result<ExitCode, Error> {
-    let project = crate::project::current(ctx).await?;
+    let project = crate::project::identity(ctx).await?;
     let within = project.id;
     let cwd = std::env::current_dir()
         .map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
