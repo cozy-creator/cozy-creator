@@ -1335,7 +1335,11 @@ impl Pool {
     /// A stalled disk is named on the log of every run in progress (`disk`).
     pub(crate) fn watch_disks(self: &Arc<Self>) {
         let pool = Arc::downgrade(self);
-        let watching = crate::disk::watch(move |stall| pool.upgrade().map(|pool| pool.disk_stalled(&stall)).is_some());
+        let watching = crate::disk::watch(move |stalls| {
+            let Some(pool) = pool.upgrade() else { return false };
+            stalls.iter().for_each(|stall| pool.disk_stalled(stall));
+            true
+        });
         if let Err(error) = watching {
             tracing::warn!("disk stalls go unnamed: {error}");
         }

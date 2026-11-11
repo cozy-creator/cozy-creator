@@ -89,14 +89,14 @@ impl Disks {
     }
 }
 
-/// Watches every `LOOK` until `stalled` returns false (its owner is gone).
-pub(crate) fn watch(mut stalled: impl FnMut(Stall) -> bool + Send + 'static) -> std::io::Result<()> {
+/// Hands each look's ended stalls to `ended` every `LOOK`, until it returns false (its owner is gone).
+pub(crate) fn watch(mut ended: impl FnMut(Vec<Stall>) -> bool + Send + 'static) -> std::io::Result<()> {
     std::thread::Builder::new().name("disk-stalls".into()).spawn(move || {
         let mut disks = Disks::default();
         loop {
             std::thread::sleep(LOOK);
             let Ok(stats) = std::fs::read_to_string("/proc/diskstats") else { return };
-            if !disks.look(&stats, Instant::now()).into_iter().all(&mut stalled) {
+            if !ended(disks.look(&stats, Instant::now())) {
                 return;
             }
         }
