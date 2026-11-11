@@ -178,7 +178,7 @@ interface, cuts and stages its files and builds the machine's spec (`crates/calc
 a spec.
 
 - `POST /v1/runs` (`Idempotency-Key`): a `RunRequest`. A run needs a `project`, its id or name, or the folder on this computer holding one: without it `400 not_in_a_project`, an unknown one `404 project_unknown`, and its outputs land in that project's `files/`, listed as its runs'; a file it's given joins `files/` at submit, so it can be asked again once what held it is gone. Answers `202` (`200` when the key had made it) with
-  `Submitted {run, replay, notes, preparing}`:
+  `Submitted {run, replay, notes, preparing, lock?}`:
   - `target`: one of Calcifer's own jobs, `cozy/…` ("Jobs"), which needs no project; else `[org/]pkg/fn[@release]` (no `@`: the newest release its machine holds that isn't yanked, else the
     Hub's newest, which it installs; a yanked one moves to the newest with a warning; `x/y` is root package x's function y, else account x's package y).
     With `code`, local code by content (Local code), `target` is the function of it, empty for none named. A target written as a path is `400 target_by_path`.
@@ -200,6 +200,7 @@ a spec.
     `adjustments`, and a list of files is cut here, before they go, with a warning.
   - `notes` are what binding said, in order (`info`: a clip cut; `warning`: fields dropped, a list of files cut,
     a machine with no GPU). `preparing`: the run is local code's install; follow it, then send the same request under the same key.
+    `lock`: the uv.lock Calcifer made for its local code (Local code), for the client to write into the package's folder.
   - A package of one public function runs it when the request gives it something to run with. Refusals name
     the field: `function_unnamed` (with the commands that name one), `callable_unknown`,
     `callable_recipe`, `request_payload_invalid`, `asset_media_type`, `input_segment_invalid`, …. `local_unavailable`
@@ -487,7 +488,8 @@ hand), and one a Calcifer stopped under fails `calcifer_stopped`: asking again i
   does not complete fails it `package_remove_incomplete`, saying what went.
 - `cozy/package_lock` `{root, upgrade}`, of `code`: Calcifer's own run. It locks local code a client sent (Local code) with uv
   (fetched when missing), in its copy, never running its code, for the Hub and account it publishes to (`root`: the root
-  namespace), and writes nothing into the client's folder; its copy leaves Torch to the machine (`exclude-dependencies`: torch,
+  namespace), and writes nothing into the client's folder. Each `{ index = "tensorhub" }` source takes the namespace its lock
+  names, else the signed-in account's when its index serves that package, else the root's (signed out: the root's); its copy leaves Torch to the machine (`exclude-dependencies`: torch,
   torchvision, torchaudio, triton; a cap or exact pin on one is a notice). Its result is `Locked {lock, account_index, changed}`,
   `lock` the new `uv.lock`'s text, which the client writes into the package's folder (`changed`: it differs from the one sent).
 - `cozy/package_publish` `{root, yanked}`, of `code`: Calcifer's own run. It locks first when it has no `uv.lock`, answering that
@@ -514,13 +516,15 @@ left out. Calcifer copies the tree once from what it holds, into `~/.cozy/calcif
 written beside it), keeps the newest 64 a day, and works from that copy: it reads no client's folder. A project's own
 `with: ./dir/fn` is a folder of Calcifer's computer, read into a copy the same way. Calcifer keeps its manifest under
 `~/.cozy/calcifer/local/` and makes it ready on the machine a call goes to: an install run first when that machine lacks it,
-then the call with its files. Every machine, `local` too, is sent the files by content (only what it lacks); none reads a
+then the call with its files. A project whose sources name the `tensorhub` index is locked first, as `cargo run` locks (cl-871):
+uv makes its lock, or brings the one it sent up to date keeping its pins, in the copy, once per copy and Hub, as
+`cozy/package_lock` binds it; a run's `Submitted.lock` is that lock when it differs from the one sent, and the CLI writes it into
+the package's folder. Every machine, `local` too, is sent the files by content (only what it lacks); none reads a
 host path. Its interface comes from Runtime's static describer on the project's Python: the exact cozy-runtime its lock holds,
 else the newest within its unconditional version bounds, else PyPI's newest. Only plain PEP 440 bounds on the normalized
 `cozy-runtime` name select that SDK; extras stay package dependencies. Conditional requirements, direct URLs and unspecified
 versions retain the newest-SDK fallback. Project URLs, paths, git sources and indexes are never forwarded as the SDK requirement.
-Invalid plain bounds return `400 runtime_requirement_invalid` before the static reader command runs. The static reader executes no package code and
-creates no project lock.
+Invalid plain bounds return `400 runtime_requirement_invalid` before the static reader command runs. The static reader executes no package code.
 
 The source bundle includes project files, including Git-ignored runtime resources. Known credential
 names (`.env`, `.env.*`, `.envrc`, `.direnv/`, `.aws/`, `.ssh/`, and named key/credential files),

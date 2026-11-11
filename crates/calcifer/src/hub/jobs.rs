@@ -99,11 +99,11 @@ pub(crate) async fn request(api: &Arc<Api>, key: &str, digest: &str, ask: RunReq
     // Recorded as this very ask: answered as it is. A quantization is recorded as the call it plans, which answers for itself.
     if let Some((row, _)) = calcifer.store().recorded(key).map_err(store)?.filter(|(_, recorded)| recorded == digest) {
         let run = calcifer.record(&row).map_err(crate::runs::refused)?;
-        return Ok(Submitted { run, replay: true, notes: vec![], preparing: false });
+        return Ok(Submitted { run, replay: true, notes: vec![], preparing: false, lock: None });
     }
     let hub = origin(api, Some(&ask.hub)).map_err(|Refusal(e)| e)?;
     match plan(api, key, &hub, &ask).await.map_err(|Refusal(e)| e)? {
-        Planned::Preparing(run) => Ok(Submitted { run: *run, replay: false, notes: vec![], preparing: true }),
+        Planned::Preparing(run) => Ok(Submitted { run: *run, replay: false, notes: vec![], preparing: true, lock: None }),
         Planned::Request(request) => Box::pin(crate::runs::request(api, key, *request)).await,
         Planned::Run { submit, after, mut notes, mirror } => {
             if let Some(mirror) = mirror {

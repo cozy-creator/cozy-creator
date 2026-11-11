@@ -241,13 +241,6 @@ impl Hubs {
         })
     }
 
-    /// The signed-in account's own index at `origin`: its `resource`, then `/v1/index/<account>/simple/`. From its facts, so a
-    /// run of local code reads no Hub.
-    pub(crate) async fn account_index(&self, origin: &Origin) -> Result<String, Error> {
-        let facts = self.facts_of(origin).await?;
-        Ok(format!("{}/v1/index/{}/simple/", facts.resource.trim_end_matches('/'), facts.account))
-    }
-
     /// `facts`, refused in the Hub's own words.
     async fn facts_of(&self, origin: &Origin) -> Result<Facts, Error> {
         let client = self.client(origin)?;

@@ -19,7 +19,7 @@ async fn sent(ctx: &Context) -> Result<(std::path::PathBuf, api::code::LocalCode
 }
 
 /// The `uv.lock` Calcifer made, written into the package's folder `dir` whole: its path.
-fn written(dir: &std::path::Path, lock: &str) -> Result<std::path::PathBuf, Error> {
+pub(crate) fn written(dir: &std::path::Path, lock: &str) -> Result<std::path::PathBuf, Error> {
     let path = dir.join("uv.lock");
     platform::durable::replace(&path, lock.as_bytes(), 0o644)
         .map_err(|e| Error::new(Kind::Unavailable, "lock_unwritable", format!("{}: {e}", path.display())))?;

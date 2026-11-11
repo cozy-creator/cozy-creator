@@ -348,6 +348,10 @@ pub struct Submitted {
     /// under the same key again for the call.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub preparing: bool,
+    /// The uv.lock Calcifer made for the request's local code when the tree it sent held none or one out of date (cl-871): its
+    /// client writes it into the package's folder, as `cargo run` writes Cargo.lock.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lock: Option<String>,
 }
 
 /// Something a request's handling said.

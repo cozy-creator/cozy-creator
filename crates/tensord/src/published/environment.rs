@@ -32,8 +32,6 @@ pub(crate) struct Project<'a> {
     /// Local code: the project installed editable from this tree (its directory or one above it),
     /// which each generation links as its own `SOURCE`: one environment runs every tree built on it.
     pub editable: Option<&'a Path>,
-    /// Indexes an unlocked project's sources name without declaring (name → URL).
-    pub indexes: &'a BTreeMap<String, String>,
     /// Its package, which the machine lists installing (`activity`).
     pub package: &'a str,
     /// `{package} {release}`, as a person reads it.
@@ -180,8 +178,6 @@ impl Publisher {
                 if let Some(wheels) = project.wheels {
                     args.extend(["--find-links", wheels.to_str().unwrap_or_default()]);
                 }
-                let named: Vec<String> = project.indexes.iter().map(|(name, url)| format!("--index={name}={url}")).collect();
-                args.extend(named.iter().map(String::as_str));
                 args.extend(["--editable", &dir]);
                 // The pair's wheels are offered where the project's bounds admit them: PyPI's may
                 // not install here (no macOS TensorFS wheel).

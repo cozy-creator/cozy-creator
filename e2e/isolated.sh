@@ -3,7 +3,7 @@
 # A suite against its own isolated Hub. Signed in as that Hub's admin, it first publishes there what the suite reads
 # from a Hub, as production holds it. The cli suite's shards read, at the root, from run.sh's --packages checkout, the
 # toolbox's defaults (qwen-image-2, minimax-h3) and birefnet, and a stand-in minimax-h3-tools (hub_away locks it from the
-# root index); then the models their cells download: BiRefNet's weights from the Hugging Face revision production
+# root index, hub_dependency calls its echo); then the models their cells download: BiRefNet's weights from the Hugging Face revision production
 # mirrors, and random weights for queued_download's two. The imports suite installs the checkout's own package
 # directories and reads nothing from a Hub. Then this computer's cozy is removed, and the suite starts as on a fresh
 # runner, signed out, in this process's place: nothing of this script is left for the suite's own removal of cozy to find.
@@ -95,6 +95,9 @@ if [ -n "$needs" ]; then
   tools=$seed/minimax-h3-tools
   rm -rf "$tools" && cp -r "$here/../release-gate/suites/hub/pkg" "$tools"
   sed -i 's/^name = "ci-hub-pkg"/name = "minimax-h3-tools"/' "$tools/pyproject.toml"
+  # Its module by its name, as a package's is: local code imports it (hub_dependency, cl-871).
+  mv "$tools/ci_hub_pkg" "$tools/minimax_h3_tools"
+  sed -i 's/ci_hub_pkg/minimax_h3_tools/g' "$tools/pyproject.toml" "$tools/package.toml"
   publish "$tools"
   for p in qwen-image-2 minimax-h3 birefnet; do publish "$packages/$p"; done
   if [[ " $needs " == *" birefnet "* || " $needs " == *" downloads "* ]]; then

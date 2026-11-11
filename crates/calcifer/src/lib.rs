@@ -286,7 +286,7 @@ impl Calcifer {
             self.publish(&row.id, self.store.events_after(row.id.as_str(), 0)?);
             self.start_here(row.id.clone(), work);
         }
-        Ok(Submitted { run: self.record(&row)?, replay: !fresh, notes: vec![], preparing: false })
+        Ok(Submitted { run: self.record(&row)?, replay: !fresh, notes: vec![], preparing: false, lock: None })
     }
 
     /// Carries out Calcifer's own run `id` again, as an earlier Calcifer left it (`hub::jobs::resume`): said in its log.
@@ -522,6 +522,7 @@ impl Calcifer {
             replay: !fresh,
             notes: vec![],
             preparing: false,
+            lock: None,
         };
         Ok((submitted, fresh.then(|| row.id.clone())))
     }
