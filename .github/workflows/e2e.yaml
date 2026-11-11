@@ -432,12 +432,13 @@ jobs:
           path: ${{ runner.temp }}/e2e
           retention-days: 14
 
+  # `supervisor os:windows` runs only the process regressions, without candidates or CLI suites.
   # macOS (arm64) and Windows, when selected: the whole suite on each runner, its cozy built there. These OSes run
   # no models themselves (platform::Os::local_inference): what needs no machine, and every local verb refused.
   cli-os:
     name: cli ${{ matrix.runner }}
     needs: affected
-    if: contains(fromJSON(needs.affected.outputs.selection).suites, 'cli') && needs.affected.outputs.runners != '[]'
+    if: (contains(fromJSON(needs.affected.outputs.selection).suites, 'cli') || contains(fromJSON(needs.affected.outputs.selection).suites, 'supervisor')) && needs.affected.outputs.runners != '[]'
     strategy:
       fail-fast: false
       matrix:
@@ -458,6 +459,7 @@ jobs:
           ref: ${{ needs.affected.outputs.creator }}
           path: .creator
       - uses: ./.creator/e2e/candidates
+        if: contains(fromJSON(needs.affected.outputs.selection).suites, 'cli')
         with:
           packages_ref: ${{ needs.affected.outputs.packages }}
           repo: ${{ needs.affected.outputs.repo }}
@@ -469,20 +471,32 @@ jobs:
           tensorfs: ${{ inputs.tensorfs }}
           runtime: ${{ inputs.runtime }}
           release: ${{ inputs.publish_run }}
+      - uses: actions/checkout@v5
+        if: contains(fromJSON(needs.affected.outputs.selection).suites, 'supervisor') && !contains(fromJSON(needs.affected.outputs.selection).suites, 'cli')
+        with:
+          repository: cozy-creator/cozy-creator
+          ref: ${{ needs.affected.outputs.repo == 'cozy-creator' && needs.affected.outputs.ref || needs.affected.outputs.stack }}
+          path: ${{ needs.affected.outputs.repo == 'cozy-creator' && '.src' || '.stack' }}
+      - uses: Swatinem/rust-cache@v2
+        if: contains(fromJSON(needs.affected.outputs.selection).suites, 'supervisor') && !contains(fromJSON(needs.affected.outputs.selection).suites, 'cli')
+        with:
+          workspaces: ${{ needs.affected.outputs.repo == 'cozy-creator' && '.src' || '.stack' }} -> target
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: Windows supervisor process tests
         if: runner.os == 'Windows'
         env:
           CREATOR: ${{ needs.affected.outputs.repo == 'cozy-creator' && '.src' || '.stack' }}
         run: |
           cd "$CREATOR"
-          cargo test --locked -p platform --lib ipc::windows::tests -- --nocapture
-          cargo test --locked -p tensord --lib machine::supervise::tests -- --nocapture
+          cargo test --release --locked -p platform --lib ipc::windows::tests -- --nocapture
+          cargo test --release --locked -p tensord --lib machine::supervise::tests -- --nocapture
       - name: cli suite
+        if: contains(fromJSON(needs.affected.outputs.selection).suites, 'cli')
         env:
           PINS: ${{ inputs.pins }}
           GH_TOKEN: ${{ github.token }}
         run: bash .creator/e2e/cli/run.sh --out "$RUNNER_TEMP/e2e" $CANDIDATES ${PINS:+--pins "$PINS"} $(case " $CANDIDATES " in (*" --packages "*) ;; (*) echo ${PACKAGES_MASTER:+--packages "$PACKAGES_MASTER"} ;; esac) 2>&1 | node .creator/e2e/publish/scrub.js
-      - if: always()
+      - if: always() && contains(fromJSON(needs.affected.outputs.selection).suites, 'cli')
         uses: ./.creator/e2e/publish
         with:
           name: e2e-cli-${{ matrix.runner }}
