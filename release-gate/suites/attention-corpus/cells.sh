@@ -3,6 +3,11 @@
 # site, shape, band and kernel), then the capture of the sites and calls corpus.py picks from it, same request and seed. The
 # captures come back over SSH into corpus/ (this gate's artifact), and corpus.py checks each against its census row.
 AC=$HERE/suites/attention-corpus AC_DIR=/tmp/attention-corpus
+# The capture is cozy 0.25's: an earlier cozy has no such option, so the suite has nothing to run on it.
+if "$CLI" run --attention-capture '{}' 2>&1 | grep -q "unexpected argument '--attention-capture'"; then
+  expect attention-corpus SKIP "cozy $("$CLI" --version | awk '{print $2}') has no \`cozy run --attention-capture\` (0.25 and later): nothing captured"
+  return 0
+fi
 # A dev-only option needs `dev = true` at the top of this home's config (a runner signed in by key has no config yet, so
 # no `cat` of it may stop the write: release gate 43019157186).
 ac_cfg=$HOME/.cozy/config.toml

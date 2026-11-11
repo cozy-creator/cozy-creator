@@ -10,6 +10,7 @@
 # (<name>.err). Only a run that never gets its number ends its follower (`run_submit`).
 RUN_CLI=${RUN_CLI:-cozy}
 RUN_WARM_API=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/warm.py
+RUN_PAGE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/page.py
 RUN_MODEL_DETAILS=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/model-details.py
 model_details() { python3 "$RUN_MODEL_DETAILS" "$1"; }
 RUN_PACKAGE_DETAILS=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/package-details.py
@@ -43,40 +44,11 @@ PY
   RUN_PROJECT=$(cd "$1" && pwd)
 }
 
-# run_box <name> <file> <description>: the file imported into this script's project as a described box, as the page imports
-# one; prints the box's name, for a function to read by mention (`video=<name>`) with its description. The CLI attaches a
-# file but can't describe it.
-run_box() {
-  python3 - "$RUN_PROJECT" "$@" <<'PY'
-import hashlib
-import json
-from pathlib import Path
-import sys
-import urllib.error
-import urllib.parse
-import urllib.request
-import uuid
-
-project, name, file, description = sys.argv[1:]
-holder = json.loads((Path.home() / '.cozy/calcifer/calcifer.lock.holder').read_text())
-base, auth = 'http://' + holder['address'], {'Authorization': 'Bearer ' + holder['token']}
-opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-data = Path(file).read_bytes()
-digest = 'sha256:' + hashlib.sha256(data).hexdigest()
-try:
-    opener.open(urllib.request.Request(base + '/v1/files/' + digest, headers=auth, method='HEAD'), timeout=30).close()
-except urllib.error.HTTPError as error:
-    if error.code != 404:
-        raise
-    opener.open(urllib.request.Request(base + '/v1/files/' + digest, data=data, method='PUT',
-        headers={**auth, 'Content-Type': 'application/octet-stream'}), timeout=600).close()
-body = json.dumps({'source': digest, 'name': name, 'description': description}).encode()
-request = urllib.request.Request(base + '/v1/projects/' + urllib.parse.quote(project, safe='') + '/imports', data=body, method='POST',
-    headers={**auth, 'Content-Type': 'application/json', 'Idempotency-Key': str(uuid.uuid4())})
-with opener.open(request, timeout=60) as response:
-    print(json.load(response)['name'])
-PY
-}
+# run_page <verb> <args…>: what the page asks of this script's project that no CLI verb does (e2e/page.py: import, yaml, render, asset).
+run_page() { local verb=$1; shift; python3 "$RUN_PAGE" "$verb" "$RUN_PROJECT" "$@"; }
+# run_box <name> <file> <description>: the file a described box of this script's project; prints its name, for a function to read by
+# mention (`video=<name>`) with its description. The CLI attaches a file but can't describe it.
+run_box() { run_page import "$2" --name "$1" --description "$3" | jq -r .name; }
 
 # run_submit <dir> <name> <cozy args...>: starts `cozy --json <args>` (a verb that makes a numbered run) in the
 # background and prints the run's number once its events name one; nothing when the command ended without one, or

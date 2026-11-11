@@ -87,7 +87,7 @@ if [ -n "$PKGS" ] || [ ${#GATE_PKGS[@]} -gt 0 ]; then
     || { log "could not build local-source staging helper: $(tail -c 500 stage-code-build.log)"; exit 1; }
   RUN_CODE_STAGE=$PWD/stage-code-build/debug/examples/stage-code
 fi
-# expect <check> PASS|FAIL <what happened>: a CLI-behaviour check (cells/*.sh); analyze.py fails the gate on a FAIL.
+# expect <check> PASS|FAIL|SKIP <what happened>: a CLI-behaviour check (cells/*.sh); analyze.py fails the gate on a FAIL.
 expect() { printf '%s\t%s\t%s\n' "$1" "$2" "$(tr '\n\t\r' '   ' <<< "$3" | cut -c1-400)" >> expect.tsv; log "$1: $2 $3"; }
 # fetch <file|URL#sha256=hex>: the candidate as a file here, its digest checked.
 fetch() {
