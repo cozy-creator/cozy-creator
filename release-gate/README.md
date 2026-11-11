@@ -163,6 +163,10 @@ previous release and the session's cozy control each other (`-f params='{"old": 
 more than one pod calls `order` per pod, then `ready` per pod; the guard and the trap cover every one.
 `project-remote` (xs-143) proves `cozy project push` and `pull`: a second user on the runner, holding only project.yaml
 and project.lock, pulls and cuts the same `edit.mp4`; kills on both sides resume.
+`group-formation` (cr-263) faults GPU 1's executor of a 2-GPU H3 group over SSH (`fixtures/group-stall.py`): killed
+before it joins, the run fails at once; stopped once joined, it fails `group_unformed` within one attempt and its unwind
+and no GPU stays held; stopped and continued inside the unwind, the group forms on attempt 2 and the run completes. Then
+H3 untouched renders 362 frames. `-f params='{"machine": "<name>"}'` uses a rental already up.
 `h3-8gb` is the 8 GB tier: H3 Turbo 15 s on one RTX 3070 must complete, 362 frames, under its time bar.
 `upload-proofs` uploads twice in a row on one pod, then once while a download of a private commit runs there and a second
 download waits on it; each must complete under the pod's own DPoP proofs, signed in the Hub's time, and its record has the
