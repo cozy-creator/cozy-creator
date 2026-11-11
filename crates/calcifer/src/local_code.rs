@@ -918,28 +918,57 @@ pub(crate) fn uv(uv: &Path, dir: &Path) -> Command {
     command
 }
 
-/// Runs `command`; a failure is refused as `code` with the tool's own last words.
-pub(crate) fn run(command: &mut Command, code: &str) -> Result<String, Error> {
-    let out = command.output().map_err(|e| match e.kind() {
-        std::io::ErrorKind::NotFound => Error::new(
-            Kind::Unavailable,
-            "uv_unavailable",
-            format!("{} is gone", command.get_program().to_string_lossy()),
-        )
-        .remedy("run it again: cozy fetches uv when it is missing")
-        .next("cozy doctor"),
-        _ => refuse(code, e),
+/// Runs `command`, which a person knows as `what` (`uv lock`): its stdout. A failure is refused as `code` in one line, how
+/// it ended and its last words on stderr; the rest of its stderr goes to Calcifer's log.
+pub(crate) fn run(command: &mut Command, code: &str, what: &str) -> Result<String, Error> {
+    run_said(command, code, what).map_err(|(error, _)| error)
+}
+
+/// `run`, a failure with the tool's whole stderr beside its refusal (what `uv_listed` reads).
+pub(crate) fn run_said(command: &mut Command, code: &str, what: &str) -> Result<String, (Error, String)> {
+    let out = command.output().map_err(|e| {
+        let error = match e.kind() {
+            std::io::ErrorKind::NotFound => Error::new(
+                Kind::Unavailable,
+                "uv_unavailable",
+                format!("{} is gone", command.get_program().to_string_lossy()),
+            )
+            .remedy("run it again: cozy fetches uv when it is missing")
+            .next("cozy doctor"),
+            _ => refuse(code, format!("{what} did not start: {e}")),
+        };
+        (error, String::new())
     })?;
-    if !out.status.success() {
-        let said = [&out.stderr[..], &out.stdout[..]].concat();
-        let said = String::from_utf8_lossy(&said);
-        let tail: Vec<&str> = said.lines().filter(|l| !l.trim().is_empty()).collect();
-        return Err(refuse(
-            code,
-            tail[tail.len().saturating_sub(12)..].join("\n"),
-        ));
+    if out.status.success() {
+        return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
     }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    let said = String::from_utf8_lossy(&out.stderr).into_owned();
+    let (ended, killed) = platform::process::ended(&out.status);
+    tracing::warn!(code, "{what} {ended}; its stderr ends:\n{}", platform::process::tail(&said, 40));
+    let message = match (last_words(&said), killed) {
+        (Some(words), _) => format!("{what} {ended}: {words}"),
+        (None, true) => format!("{what} {ended} before it answered"),
+        (None, false) => format!("{what} {ended} and gave no reason on stderr"),
+    };
+    let kind = if killed { Kind::Unavailable } else { Kind::Validation };
+    Err((Error::new(kind, code, message).next("cozy machine logs local calcifer"), said))
+}
+
+/// A failed tool's last meaningful words on stderr, as one line: a JSON refusal's message (`cozy-runtime --json`), else its
+/// last line that is no hint or warning (`platform::process::last_line`).
+fn last_words(said: &str) -> Option<String> {
+    let lines: Vec<&str> = said.lines().collect();
+    for at in (0..lines.len()).rev().filter(|&at| lines[at].starts_with('{')) {
+        let rest = lines[at..].join("\n");
+        let Some(Ok(doc)) = serde_json::Deserializer::from_str(&rest).into_iter::<Value>().next() else { continue };
+        if let Some(message) = doc["error"]["message"].as_str() {
+            return Some(match doc["error"]["name"].as_str() {
+                Some(name) => format!("{name}: {message}"),
+                None => message.to_owned(),
+            });
+        }
+    }
+    platform::process::last_line(said)
 }
 
 /// The Python a release of `project` runs on: `.python-version`, else requires-python's floor;
@@ -977,6 +1006,7 @@ pub(crate) fn python(project: &Project, uv: &Path) -> Result<Python, Error> {
                     request.as_str(),
                 ]),
                 "python_not_found",
+                "uv python find",
             )
         };
         let full = match find() {
@@ -985,6 +1015,7 @@ pub(crate) fn python(project: &Project, uv: &Path) -> Result<Python, Error> {
                 run(
                     self::uv(uv, &project.root).args(["python", "install", request.as_str()]),
                     "python_install_failed",
+                    "uv python install",
                 )?;
                 find()?
             }
@@ -1099,8 +1130,9 @@ pub(crate) fn describe_with(uv: &Path, dir: &Path, python: &str, runtime: Option
             .arg(dir)
             .arg("describe"),
         "describe_failed",
+        "cozy-runtime describe",
     )?;
-    let document: Value = serde_json::from_str(&said).map_err(|e| refuse("describe_failed", e))?;
+    let document: Value = serde_json::from_str(&said).map_err(|e| refuse("describe_failed", format!("cozy-runtime describe answered no interface: {e}")))?;
     if !interface(&document) {
         return Err(refuse("package_interface_invalid", "the describer's answer is not a package interface"));
     }
@@ -1190,7 +1222,8 @@ async fn read_interface(api: &Arc<Api>, code: &LocalCode, on: &On, runtime: Opti
         .await
         .map_err(|why| refuse("describe_failed", why))?;
     let described = described.map_err(|error| match (&runtime, &locked, on) {
-        (Some(runtime), None, On::Machine(name)) if error.code == "describe_failed" => error
+        // A describer killed (`Kind::Unavailable`) refused nothing.
+        (Some(runtime), None, On::Machine(name)) if error.code == "describe_failed" && error.kind != Kind::Unavailable => error
             .remedy(format!("The Runtime describing this source refused it, and {name} runs {runtime}: a run there reads it with that one, and this then answers what it read"))
             .next(format!("cozy run <its folder> --on {name}")),
         _ => error,

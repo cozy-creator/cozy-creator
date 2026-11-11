@@ -573,7 +573,7 @@ fn ask_runtime(python: &Path, request: &Value, stop: Option<&crate::stop::Stop>)
         sys.argv=['cozy-runtime','machine-describe'];runpy.run_module('cozy_runtime.cli.main',run_name='__main__')";
     let failed = |why: String| ("package_prepare_description_failed", why);
     let mut command = Command::new(python);
-    command.args(["-I", "-B", "-S", "-c", BOOTSTRAP]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
+    command.args(["-I", "-B", "-S", "-c", BOOTSTRAP]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     if crate::private_io::protect_command(&mut command).map_err(io_failure)? {
         command.stderr(Stdio::null());
     }
@@ -581,26 +581,47 @@ fn ask_runtime(python: &Path, request: &Value, stop: Option<&crate::stop::Stop>)
     let mut child = command.spawn().map_err(io_failure)?;
     // Its own exit says why, should it stop before reading the request.
     let _ = child.stdin.take().expect("piped").write_all(request.to_string().as_bytes());
-    let mut stdout = child.stdout.take().expect("piped");
+    let (mut stdout, stderr) = (child.stdout.take().expect("piped"), child.stderr.take());
     // Supervised, as uv is: a cancel ends it, so a description that does not end holds no install.
-    let (ended, read) = std::thread::scope(|scope| {
+    let (ended, read, said) = std::thread::scope(|scope| {
         let drained = scope.spawn(move || {
             let mut kept = Vec::new();
             let _ = stdout.read_to_end(&mut kept);
             kept
         });
+        let told = scope.spawn(move || {
+            let mut kept = Vec::new();
+            if let Some(mut stderr) = stderr {
+                let _ = stderr.read_to_end(&mut kept);
+            }
+            String::from_utf8_lossy(&kept).into_owned()
+        });
         let ended = crate::process::supervise(&mut child, stop, &|_| ());
-        (ended, drained.join().unwrap_or_default())
+        (ended, drained.join().unwrap_or_default(), told.join().unwrap_or_default())
     });
     let status = match ended.map_err(io_failure)? {
         Supervised::Exited(status) => status,
         Supervised::Canceled => return Err(canceled()),
     };
-    let reply: Value = serde_json::from_slice(&read).map_err(|e| failed(format!("the description failed: {e}")))?;
+    // How it ended comes before what it printed: one that died answers nothing to read (cl-867). Its stderr is the machine
+    // log's, which `cozy machine logs` keeps.
+    let (how, _) = platform::process::ended(&status);
+    if !status.success() && !said.trim().is_empty() {
+        tracing::warn!("the describer {how}; its stderr ends:\n{}", platform::process::tail(&said, 40));
+    }
+    let died = || failed(match platform::process::last_line(&said) {
+        Some(words) => format!("the describer {how}: {words}"),
+        None => format!("the describer {how} before it answered"),
+    });
+    let reply: Value = match serde_json::from_slice(&read) {
+        Ok(reply) => reply,
+        Err(_) if !status.success() => return Err(died()),
+        Err(e) => return Err(failed(format!("the describer answered no reply: {e}"))),
+    };
     match reply["kind"].as_str() {
         Some("describe_failed") => Err(failed(format!("{}: {}", reply["code"].as_str().unwrap_or_default(), reply["detail"].as_str().unwrap_or_default()))),
         Some(_) if status.success() => Ok(reply),
-        _ => Err(failed("the description did not complete".into())),
+        _ => Err(died()),
     }
 }
 
