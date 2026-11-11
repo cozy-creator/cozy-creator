@@ -92,6 +92,11 @@ pub(crate) async fn create(ctx: &Context, args: New) -> Result<ExitCode, Error> 
         }
         Some(vault::credential(args.passphrase_file.as_ref(), "New project passphrase: ", true)?)
     };
+    let creating = (!args.unencrypted && existing.is_none()).then(|| {
+        let meter = crate::progress::Transfer::stderr(ctx.term.stderr, "Creating encrypted project");
+        meter.finalizing("Preparing encrypted storage");
+        meter
+    });
     let request = Open { path: Some(directory.clone()), unencrypted: args.unencrypted, passphrase, ..Open::default() };
     let key = args.unencrypted.then(mint_key);
     let (id, code, path, created, mut recovery_secret) = if let Some(address) = existing {
@@ -110,6 +115,7 @@ pub(crate) async fn create(ctx: &Context, args: New) -> Result<ExitCode, Error> 
         Err(error) => return Err(error),
     } };
     let protection = if created && !args.unencrypted {
+        if let Some(meter) = &creating { meter.finalizing("Checking project protection"); }
         let unsupported = || Error::new(Kind::Unavailable, "calcifer_outdated", format!("Calcifer did not confirm encrypted creation at {}. Do not add private files yet", path.display()))
             .remedy("Update or restart Calcifer, then inspect this project's protection before continuing")
             .next("cozy doctor");
@@ -123,6 +129,7 @@ pub(crate) async fn create(ctx: &Context, args: New) -> Result<ExitCode, Error> 
         }
         Some(status)
     } else { None };
+    if let Some(meter) = &creating { meter.finish_and_clear(); }
     let label = if code.is_empty() { &id } else { &code };
     let message = if created {
         format!("Created project {label} at {}.", path.display())
