@@ -126,7 +126,7 @@ class Cell(TypedDict):
     series: list[float]  # the warm runs' median of each step, ms
     builds: list[str]  # every machine build (cozy, Runtime, TensorFS) its runs ran on
     senders: list[str]  # every build of this computer's cozy that sent them (the RC laptop rebuilds live)
-    cold_downloaded: bool  # its weights step made no run (a cozy without --warm), so its cold run fetched them
+    cold_downloaded: bool  # its weights step made no run, so its cold run fetched them
 
 
 class Reference(TypedDict, total=False):
@@ -671,7 +671,7 @@ def versus(gates: list[Gate], defs: list[CellDef]) -> tuple[list[str], list[str]
             continue
         ctx = (g['reference'].get('before') or {}).get('ctx_mib')
         lines += [f"\n### {g['group']} on {g['pod']}: {g['label']} against ComfyUI {next(iter(g['comfyui'].values()))['comfyui']}"
-                  f" (Cozy's CUDA context {ctx if ctx is not None else '?'} MiB; a cold marked * fetched its weights: no --warm on that build)", '',
+                  f" (Cozy's CUDA context {ctx if ctx is not None else '?'} MiB; a cold marked * fetched its weights: its warm-up made no run)", '',
                   '| cell | GPU | warm total s: Cozy (on the machine) / ComfyUI | ComfyUI / Cozy | steady step s: Cozy / ComfyUI | peak VRAM GiB: Cozy / ComfyUI |'
                   ' cold s: Cozy / ComfyUI | Cozy loses |', '|---|---|---|---|---|---|---|---|']
         for name, x in g['comfyui'].items():
