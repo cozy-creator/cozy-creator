@@ -68,6 +68,7 @@ fn fixture_bundle(root: &Path) -> (PathBuf, PathBuf, String) {
             body: TensorBody::Data(Location {
                 chunk: 0,
                 offset: 0,
+                length: 4,
             }),
         });
         if model == UPSCALER {
@@ -97,7 +98,7 @@ fn fixture_bundle(root: &Path) -> (PathBuf, PathBuf, String) {
         .unwrap();
         let old_tree_bytes = old_tree.to_json().unwrap();
         let old_checkpoint = ObjectRef::of(&old_tree_bytes);
-        let stem = format!("{}-{lane}", model.replace('/', '-'));
+        let stem = format!("{}-{lane}", model.replace('/', "-"));
         let header_path = inputs.join(format!("{stem}.header"));
         fs::write(&header_path, old_bytes).unwrap();
         let tree_path = inputs.join(format!("{stem}.tree"));
@@ -553,7 +554,7 @@ async fn seventeen_objects_six_admissions_and_explicit_publications_use_only_rev
     assert!(!calls.iter().any(|call| call.starts_with("GET /blobs/")));
     for model in [H3, UPSCALER] {
         let mut journal = fixture.journal(
-            &format!("publish-{}", model.replace('/', '-')),
+            &format!("publish-{}", model.replace('/', "-")),
             Phase::Publish,
             Some(model),
         );

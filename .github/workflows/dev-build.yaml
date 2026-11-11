@@ -571,6 +571,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: scripts/xs170-artifact-reissue -> ../../target/xs170-artifact-operator
+          cache-on-failure: true
       - name: Record source
         id: source
         run: |
