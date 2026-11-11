@@ -10,6 +10,7 @@
     bench.py admit <gate dir> [--baseline FILE]
         the pod's reference workload against its GPU type's stored one; exit 1 when out of range
     bench.py noise <gate dir>...     each cell's run-to-run spread over its warm runs
+    bench.py chart <gate dir>... [--out FILE] [--title T]   the ComfyUI comparison as an SVG grid (model x GPU)
 A gate dir is gate.sh's --out after suite `bench` (suites/bench/cells.sh): bench.tsv names each cell's runs
 (cell, cold|warm, record, the VRAM holder's MiB), bench-group its group (<sku>x<gpus>), calibrate-{before,after}.json the reference workload.
 Outputs are judged with numpy and ffmpeg: uv run -q --no-project --with numpy python -I bench.py ..."""
@@ -731,6 +732,79 @@ def stage_lines(name: str, g: Gate, x: Comfy) -> list[str]:
     return out
 
 
+MODEL_NAMES = {'h3_turbo': 'H3 Turbo 15 s', 'h3_full': 'H3 30-step 15 s', 'sdxl': 'SDXL 1024²', 'sdxl_4k': 'SDXL 4096² HiDiffusion',
+               'anima': 'Anima 1536²', 'moss': 'MOSS-Image 4 MP', 'qwen': 'Qwen-Image 2.1 4 MP', 'krea2': 'Krea 2 Turbo 4 MP',
+               'flux2': 'FLUX.2 [dev] 1024²', 'qwen_image': 'Qwen-Image-2512', 'ideogram4': 'Ideogram 4'}
+# Diverging, blue (Cozy faster) to red (slower) about a gray "within noise" (dataviz reference palette: blue ramp, red
+# from its categorical step, the gray midpoint); the printed ratio carries the sign, so color never stands alone. Light
+# hexes are the marks' own attributes (any renderer); dark mode overrides them by class.
+FILLS = {'w1': ('#cde2fb', '#184f95'), 'w2': ('#9ec5f4', '#1c5cab'), 'w3': ('#6da7ec', '#256abf'), 'mid': ('#f0efec', '#383835'),
+         'l1': ('#f9d3d2', '#6b2a29'), 'l2': ('#f2a6a5', '#8f3534'), 'l3': ('#e34948', '#b8403f'), 'none': ('#fcfcfb', '#1a1a19')}
+INK = {'bg': ('#fcfcfb', '#1a1a19'), 'ink': ('#0b0b0b', '#f0efec'), 'muted': ('#52514e', '#c3c2b7')}
+_DARK = ' '.join(f'.{k} {{ fill: {d}; }}' for k, (_, d) in {**FILLS, **INK}.items())
+CHART_CSS = f"""
+text {{ font: 13px system-ui, sans-serif; }} .h {{ font-weight: 600; }} .sm {{ font-size: 12px; }} rect.cell {{ stroke-width: 2; }}
+@media (prefers-color-scheme: dark) {{ :root:where(:not([data-theme="light"])) {{ {_DARK} rect.cell {{ stroke: #1a1a19; }} }} }}
+:root[data-theme="dark"] {{ {_DARK} rect.cell {{ stroke: #1a1a19; }} }}
+"""
+
+
+def chart(gates: list[Gate], defs: list[CellDef], title: str) -> str:
+    """The ComfyUI comparison as an SVG grid: a row per model and GPU memory, a column per GPU, each cell ComfyUI's warm
+    total over Cozy's (above 1: Cozy faster), filled by it; a failed ComfyUI is Cozy's (a completion win)."""
+    import html
+    key = {d['name']: (d['comfyui'], d['cap']) for d in defs}
+    grid: dict[str, dict[str, tuple[str, str, str]]] = {}  # row -> GPU -> (text, fill, tooltip)
+    gpus: list[str] = []
+    for g in gates:
+        base = g['group'].split('.')[0]
+        sku, n = base.rsplit('x', 1)
+        gpu = sku.upper().replace('RTX-', 'RTX ').replace('-', ' ') + (f' x{n}' if n != '1' else '')
+        for name, x in g['comfyui'].items():
+            k, cap = key.get(name, ('', ''))
+            if not k or (g['group'].endswith('.matrix2') and name.endswith('-g2')):
+                continue
+            row = MODEL_NAMES.get(k, k) + (f' at {cap} GiB' if cap else '')
+            c = g['cells'].get(name)
+            ours = c['warm'].get('total_ms', 0.0) / 1000 if c and c['n'] else None
+            theirs = x['total_s']
+            if ours is None:
+                cell = ('Cozy failed', 'l3', f'{name}: Cozy did not complete')
+            elif theirs is None:
+                cell = ('ComfyUI failed', 'w3', f"{name}: ComfyUI {x['status'][:80]}; Cozy {ours:.1f} s")
+            else:
+                r = theirs / ours
+                fill = ('w3' if r >= 1.6 else 'w2' if r >= 1.25 else 'w1' if r >= 1.03
+                        else 'mid' if r > 0.97 else 'l1' if r > 0.8 else 'l2' if r > 0.625 else 'l3')
+                cell = (f'{r:.2f}x', fill, f'{name} on {gpu}: Cozy {ours:.1f} s, ComfyUI {theirs:.1f} s warm')
+            grid.setdefault(row, {})[gpu] = cell
+            if gpu not in gpus:
+                gpus.append(gpu)
+    rows = [r for r in [MODEL_NAMES[k] + suffix for k in MODEL_NAMES for suffix in ('', ' at 8 GiB', ' at 6 GiB')] if r in grid]
+    rows += [r for r in grid if r not in rows]
+    lw, cw, rh, top = 230, 112, 30, 64
+    width, height = max(lw + cw * len(gpus) + 16, 760), top + rh * len(rows) + 48
+    ink, muted = INK['ink'][0], INK['muted'][0]
+    out = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img"'
+           f' aria-label="{html.escape(title)}"><style>{CHART_CSS}</style><rect class="bg" width="100%" height="100%" fill="{INK["bg"][0]}"/>',
+           f'<text class="h ink" x="8" y="22" fill="{ink}">{html.escape(title)}</text>',
+           f'<text class="sm muted" x="8" y="42" fill="{muted}">ComfyUI warm time / Cozy warm time, same pod: above 1x Cozy is faster; gray is within 3%</text>']
+    for j, gpu in enumerate(gpus):
+        out.append(f'<text class="h ink" x="{lw + cw * j + cw / 2}" y="{top - 6}" text-anchor="middle" fill="{ink}">{html.escape(gpu)}</text>')
+    for i, row in enumerate(rows):
+        y = top + rh * i
+        out.append(f'<text class="ink" x="8" y="{y + rh / 2 + 5}" fill="{ink}">{html.escape(row)}</text>')
+        for j, gpu in enumerate(gpus):
+            t, k, tip = grid[row].get(gpu, ('', 'none', 'not run'))
+            x0 = lw + cw * j
+            out.append(f'<g><title>{html.escape(tip)}</title><rect class="cell {k}" x="{x0}" y="{y}" width="{cw}" height="{rh}" rx="4"'
+                       f' fill="{FILLS[k][0]}" stroke="{INK["bg"][0]}"/><text class="ink" x="{x0 + cw / 2}" y="{y + rh / 2 + 5}"'
+                       f' text-anchor="middle" fill="{ink}">{html.escape(t or "-")}</text></g>')
+    out.append(f'<text class="sm muted" x="8" y="{height - 18}" fill="{muted}">Raw rows: each pod\'s gate dir (bench.tsv, comfyui-rows.json);'
+               ' bench.py versus for steady step, peak VRAM and cold.</text>')
+    return '\n'.join(out + ['</svg>'])
+
+
 def baseline(version: str, gates: list[Gate], refs: str) -> Baseline:
     """The gates as a release's stored numbers, Cozy's only; each cell's judged output copied into `refs` under its asset name."""
     os.makedirs(refs, exist_ok=True)
@@ -773,7 +847,7 @@ def check(gate: dict[str, object]) -> tuple[list[str], list[str]]:
 
 
 def main(argv: list[str]) -> int:
-    flags = ('--baseline', '--cells', '--known', '--comfyui', '--comfyui-out', '--refs', '--out')
+    flags = ('--baseline', '--cells', '--known', '--comfyui', '--comfyui-out', '--refs', '--out', '--title')
     opt = {f: argv[argv.index(f) + 1] for f in flags if f in argv}
     skip = {i for f in opt for i in (argv.index(f), argv.index(f) + 1)}
     args = [a for i, a in enumerate(argv) if i not in skip and not a.startswith('--')]
@@ -799,6 +873,11 @@ def main(argv: list[str]) -> int:
         print('\n' + '\n'.join(f'FAIL {f}' for f in fails) if fails else '')
         print(f"VERDICT {'FAIL' if fails else 'PASS'} ({len(fails)} failing cells)")
         return 1 if fails else 0
+    if verb == 'chart':
+        svg = chart([read_gate(d, judged=False) for d in rest], defs, opt.get('--title', 'Cozy against ComfyUI'))
+        with open(opt.get('--out', 'chart.svg'), 'w') as f:
+            f.write(svg)
+        return 0
     if verb == 'versus':
         lines, losses = versus([read_gate(d, judged=False) for d in rest], defs)
         print('\n'.join(lines))
