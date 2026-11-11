@@ -10,7 +10,7 @@ import urllib.request
 import zipfile
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--target', required=True)
     parser.add_argument('--out-dir', type=Path, required=True)

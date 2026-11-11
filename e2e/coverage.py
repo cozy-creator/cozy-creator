@@ -21,6 +21,7 @@ import subprocess
 import sys
 import tomllib
 from dataclasses import dataclass, field
+from typing import cast
 
 TIERS = {"pr", "release", "gate", "manual", "none", "pending"}
 # Tiers no run requires: listed and shown, each with its why.
@@ -166,7 +167,8 @@ def hidden_in_source(src: str) -> set[str]:
             if line.lstrip().startswith("#[arg"):
                 names.add("--" + (named.group(1) if named else field.split(":")[0].strip().replace("_", "-")))
             else:
-                variant = re.match(r"(\w+)", field.removeprefix("pub ")).group(1)
+                # cast: a hidden #[command] attribute precedes its enum variant, a name
+                variant = cast(re.Match[str], re.match(r"(\w+)", field.removeprefix("pub "))).group(1)
                 names.add(re.sub(r"(?<!^)(?=[A-Z])", "-", variant).lower())
     return names
 

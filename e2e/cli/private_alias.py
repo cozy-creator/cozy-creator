@@ -76,7 +76,7 @@ def main() -> None:
     assert source_canary, "first run the owned synthetic private_execution.py fixture"
     before = installations(home, project_id)
     assert before, "private local-code installation was not retained before remount"
-    def snapshot(rows):
+    def snapshot(rows: set[tuple[str, str, str, str]]) -> list[dict[str, object]]:
         return [{"journal": path, "actor": actor, "alias": alias, "record": json.loads(record)}
                 for path, actor, alias, record in sorted(rows)]
     # These are protected references and public cache identities, not decrypted source,

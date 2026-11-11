@@ -12,10 +12,34 @@ import os
 from pathlib import Path
 import subprocess
 import time
+from typing import TypedDict, cast
 import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+
+
+class Run(TypedDict):
+    """A private run as the CLI and Calcifer list it: the fields this proof reads."""
+
+    id: str
+    number: int
+    target: str
+
+
+class RunsPage(TypedDict):
+    runs: list[Run]
+    older: int
+
+
+class TargetProof(TypedDict):
+    """target-proof.json: the private target, its runs, and the project generation they ran in."""
+
+    target: str
+    function: str
+    ids: list[str]
+    project_id: str
+    generation: int
 
 
 def command(cli: Path, output: Path, name: str, *args: str, fails: bool = False, cwd: Path | None = None) -> bytes:
@@ -88,18 +112,18 @@ def scan(roots: list[Path], exclusions: list[Path], since_ns: int, markers: list
     return leaked, checked
 
 
-def observed_run(body: bytes) -> dict:
+def observed_run(body: bytes) -> Run:
     for line in reversed(body.splitlines()):
         try:
             row = json.loads(line).get("run", {})
         except (ValueError, AttributeError):
             continue
         if isinstance(row, dict) and row.get("id") and row.get("number") and row.get("target"):
-            return {key: row[key] for key in ("id", "number", "target")}
+            return cast(Run, {key: row[key] for key in ("id", "number", "target")})  # cast: the run's three fields, checked present
     raise AssertionError("the real CLI returned no identifiable private run")
 
 
-def runs_page(prefix: str, before: int | None = None) -> dict:
+def runs_page(prefix: str, before: int | None = None) -> RunsPage:
     # Use the installed Calcifer's ordinary authenticated API. Never save its bearer
     # or a complete private response in the proof's artifacts.
     holder = json.loads((Path.home() / ".cozy/calcifer/calcifer.lock.holder").read_text())
@@ -112,14 +136,14 @@ def runs_page(prefix: str, before: int | None = None) -> dict:
     )
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
-            return json.load(response)
+            return cast(RunsPage, json.load(response))  # cast: the runs route's JSON
     except urllib.error.HTTPError as error:
         raise AssertionError(f"the authenticated private history query returned HTTP {error.code}") from None
     except urllib.error.URLError:
         raise AssertionError("the authenticated private history query could not reach Calcifer") from None
 
 
-def target_history(cli: Path, output: Path, label: str, proof: dict, *, locked: bool = False) -> list[str]:
+def target_history(cli: Path, output: Path, label: str, proof: TargetProof, *, locked: bool = False) -> list[str]:
     target = proof["target"]
     # An actual partial function prefix, rather than an exact-target shortcut.
     prefix = target[:-8]
@@ -225,7 +249,7 @@ def ''' + target_canary + '''(payload: Request, out: Outputs) -> Answer:
     completed, failed_run = observed_run(run), observed_run(failed)
     assert completed["target"].endswith(f"/{target_canary}") and failed_run["target"] == completed["target"], "authorized private target was not preserved"
     marker = json.loads((view / ".vault-local-execution.json").read_text())["storage"]
-    proof = {"target": completed["target"], "function": target_canary, "ids": [completed["id"], failed_run["id"]], "project_id": marker["project_id"], "generation": marker["generation"]}
+    proof: TargetProof = {"target": completed["target"], "function": target_canary, "ids": [completed["id"], failed_run["id"]], "project_id": marker["project_id"], "generation": marker["generation"]}
     proof["ids"] = target_history(args.cli, args.out, "target-history", proof)
     (folder / "target-proof.json").write_text(json.dumps(proof))
     markers = [value.encode() for value in (source_canary, input_canary, payload_canary, target_canary)]

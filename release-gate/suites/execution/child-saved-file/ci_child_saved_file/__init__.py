@@ -7,7 +7,8 @@ import hashlib
 import io
 import os
 from collections.abc import Awaitable, Callable
-from typing import Annotated
+from pathlib import Path
+from typing import Annotated, cast
 
 import msgspec
 from PIL import Image
@@ -15,9 +16,9 @@ from PIL import Image
 from cozy_runtime.author import App, Context, Outputs, call
 from cozy_runtime.fields import FileBound
 from cozy_runtime.media import File, ImageFile
-from cozy_runtime.author._calls import ChildCallError, _current
+from cozy_runtime.author._calls import ChildCallError, _Broker, _current
 from cozy_runtime.author._errors import CapabilityError
-from cozy_runtime.author._executor_requests import CallState, ChildCall, SavedFile
+from tensorfs.executor import ChildCall, SavedFile
 
 app = App()
 TREE = "application/vnd.cozy.tree-manifest"
@@ -87,8 +88,9 @@ async def code_of(call: Callable[[], Awaitable[Seen]]) -> str:
 
 def wire_code(saved: SavedFile) -> str:
     """The call a package could send itself: TensorD alone stands between it and the file."""
-    answer = _current.get().exchange(
-        ChildCall(call_index=900, module=__name__, export="see_blob", payload="{}", saved=(saved,)), CallState
+    # cast: a broker is set for the attempt this entrypoint runs in
+    answer = cast(_Broker, _current.get()).exchange(
+        ChildCall(call_index=900, module=__name__, export="see_blob", payload="{}", saved=(saved,))
     )
     return "" if answer.ok else answer.code
 
@@ -107,16 +109,16 @@ async def main(ctx: Context, payload: Nothing, out: Outputs) -> Result:
                    local=blob._local, attempt="elsewhere")
     earlier = EARLIER[-1] if EARLIER else None
     EARLIER.append(blob)
-    spool = blob._local.parent
+    spool = cast(Path, blob._local).parent  # cast: a saved file's bytes are in the spool
     (spool / "file-link").symlink_to("/etc/hostname")
     (spool / "file-tree").write_bytes(b"a tree's manifest names other objects")
     with open("/etc/hostname", "rb") as secret:
         hostname = sha(secret.read())
     return Result(
         image=image,
-        saved_picture=sha(image._local.read_bytes()),
+        saved_picture=sha(cast(Path, image._local).read_bytes()),  # cast: saved, so in the spool
         seen_picture=seen_picture,
-        saved_labeled=sha(labeled._local.read_bytes()),
+        saved_labeled=sha(cast(Path, labeled._local).read_bytes()),  # cast: saved, so in the spool
         seen_labeled=seen_labeled,
         saved_blob=sha(data),
         seen_blob=seen_blob,

@@ -5,7 +5,7 @@ sparse site's walk at each level (its sparse cells at that level and above, the 
 import json
 import math
 import statistics
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from functools import partial
 from typing import TYPE_CHECKING, TypeAlias, TypedDict, cast
 
@@ -159,16 +159,16 @@ def _attend(ready: "dict[str, attention.Ready]", shape: tuple[int, ...]) -> Row:
 
 
 def _sol_built(q: torch.Tensor) -> None:
-    """Upstream Sol's CuTe object and preprocess kernels for this length, waited for: until they
-    land, a sparse step serves its dense reference (`attention_sol._ready`, `_preprocessed`)."""
+    """Upstream Sol's CuTe object for this length and its preprocess kernels for this card, waited
+    for: until they land, a sparse step serves its dense reference (`attention_sol._ready`, `_preprocessed`)."""
     card, store, index = attention_sol._capability(q.device), kernel_cache.configured(), q.device.index or 0
     if card is None or store is None:
         return
-    tokens, heads, found = q.shape[1], q.shape[2], attention_sol._job_for(q.shape[1], card)
+    found = attention_sol._job_for(q.shape[1], card)
     kernel_ready.wait(f"{attention_sol.KERNEL} {found.key.digest[:16]}",
                       partial(attention_sol._open, store, found, card))  # fmt: skip
-    kernel_ready.wait(f"{attention_sol.KERNEL} preprocess {tokens}x{heads} cuda:{index}",
-                      partial(attention_sol._warm, index, tokens, heads))  # fmt: skip
+    kernel_ready.wait(f"{attention_sol.KERNEL} preprocess cuda:{index}",
+                      partial(attention_sol._warm, index))  # fmt: skip
 
 
 def _sparse(row: arch.Row, ready: "dict[str, attention.Ready]", shape: tuple[int, ...]) -> Row:
@@ -240,6 +240,8 @@ def gpu(payload: Probe, ctx: Context) -> Report:
                         continue
                     measure = partial(_gemm, gemm, f.fp8, m, n, k, props.L2_cache_size)
                     gemms.append({**row, **_measured(row["shape"], measure)})
+    names: Sequence[str]  # a dense cell's, then the sparse walk's
+    shape: tuple[int, ...]  # ATTENTION's, then SPARSE's
     for level, names in attention.DENSE.get(arch.row(device.sm).family, {}).items():
         ready: "dict[str, attention.Ready]"
         refused: dict[str, str]

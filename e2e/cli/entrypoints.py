@@ -210,6 +210,7 @@ def main() -> None:
         assert "expires_ms" not in plain_url
         if os.name == "posix":
             until = time.monotonic() + 5
+            opened_files: list[str]  # the loop runs at least once: its deadline is ahead
             while time.monotonic() < until:
                 opened_files = browser_log.read_text().splitlines() if browser_log.exists() else []
                 if len(opened_files) >= 2:
