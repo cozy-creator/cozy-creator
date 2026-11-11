@@ -445,10 +445,10 @@ impl Checkpoint {
         Ok(Some((derived, source)))
     }
 
-    /// Keeps `bytes` as page `page` of `slot`, cached in this checkpoint's lane
-    /// (`Store::keep_derived`). None: the disk has no room for it.
-    pub fn keep_derived(&self, slot: &str, page: &str, bytes: &[u8]) -> Result<Option<crate::store::Derived>> {
-        Ok(self.data.store.keep_derived(slot, page, self.id(), bytes)?)
+    /// Keeps each `(slot, page, bytes)`, cached in this checkpoint's lane (`Store::keep_derived`):
+    /// each one's object, or None where the disk had no room for it.
+    pub fn keep_derived(&self, pages: &[(&str, &str, &[u8])]) -> Result<Vec<Option<ObjectRef>>> {
+        Ok(self.data.store.keep_derived(self.id(), pages)?)
     }
 
     fn view(&self) -> crate::io::view::View {

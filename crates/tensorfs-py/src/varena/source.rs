@@ -15,7 +15,7 @@ use pyo3::{exceptions::PyRuntimeError, ffi, prelude::*};
 use tensorfs::io::source::{IoTally, Item, ItemSource, Mode, Placement, Source as Store};
 use tensorfs::io::{self, Dst, ObjectRange, ReadControl, ReadOpts, Src};
 
-use super::pages::{self, Held, Page, PyPages, Row, Tier, WINDOW};
+use super::pages::{self, Held, Page, Persisting, PyPages, Row, Tier, WINDOW};
 use super::{Consumers, PyUse};
 use crate::store::PyCheckpoint;
 
@@ -486,8 +486,11 @@ impl Inner {
                 if changed || self.stored.is_none() {
                     if let Some(key) = &self.page {
                         let kept = self.keep(key, py, &view, spare.take())?;
-                        if let (Some(page), Some(slot), Some(stored), true) = (kept, &self.slot, &self.stored, changed) {
-                            self.tier.persist(stored.checkpoint.clone(), slot.clone(), key.clone(), page, this.clone());
+                        if let (Some(_), Some(slot), Some(stored), true) = (kept, &self.slot, &self.stored, changed) {
+                            self.tier.persist(Persisting {
+                                checkpoint: stored.checkpoint.clone(), slot: slot.clone(), key: key.clone(),
+                                set: self.set.clone(), len: self.bytes, source: this.clone(),
+                            });
                         }
                     }
                 }

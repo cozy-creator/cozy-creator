@@ -63,22 +63,32 @@ impl Store {
         Ok(None)
     }
 
-    /// Keeps `bytes` as page `page` of `slot`, made from the checkpoint whose header is `of`:
-    /// cached in that checkpoint's lane. None: the disk has no room for it, and nothing is kept.
-    pub fn keep_derived(&self, slot: &str, page: &str, of: &ObjectRef, bytes: &[u8]) -> Result<Option<Derived>> {
-        let path = self.root.join("derived").join(slot).join(page);
-        if !is_digest(slot) || !is_digest(page) {
-            return Err(invalid(&path, "a derived page and its slot are named by digests"));
+    /// Keeps each `(slot, page, bytes)` as that page of its slot, made from the checkpoint whose
+    /// header is `of`: cached in that checkpoint's lane. One sync covers them all before any is
+    /// named. Each one's object, or None where the disk had no room for it (nothing kept).
+    pub fn keep_derived(&self, of: &ObjectRef, pages: &[(&str, &str, &[u8])]) -> Result<Vec<Option<ObjectRef>>> {
+        let mut kept = Vec::with_capacity(pages.len());
+        for &(slot, page, bytes) in pages {
+            if !is_digest(slot) || !is_digest(page) {
+                let path = self.root.join("derived").join(slot).join(page);
+                return Err(invalid(&path, "a derived page and its slot are named by digests"));
+            }
+            if !self.maintain(bytes.len() as u64)? {
+                kept.push(None);
+                continue;
+            }
+            let object = self.put_bytes(bytes)?;
+            self.used(&of.sha256, [&object])?;
+            kept.push(Some(object));
         }
-        if !self.maintain(bytes.len() as u64)? {
-            return Ok(None);
-        }
-        let object = self.put_bytes(bytes)?;
-        self.used(&of.sha256, [&object])?;
-        // A record never names an object a crash could tear (an ephemeral store syncs once here).
+        // A record never names an object a crash could tear (an ephemeral store syncs here).
         self.sync()?;
-        let record = serde_json::to_vec(&object).map_err(|error| invalid(&path, error))?;
-        self.commit(&path, &record, false)?;
-        Ok(Some(Derived { page: page.to_owned(), object }))
+        for (&(slot, page, _), object) in pages.iter().zip(&kept) {
+            let Some(object) = object else { continue };
+            let path = self.root.join("derived").join(slot).join(page);
+            let record = serde_json::to_vec(object).map_err(|error| invalid(&path, error))?;
+            self.commit(&path, &record, false)?;
+        }
+        Ok(kept)
     }
 }
