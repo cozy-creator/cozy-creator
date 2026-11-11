@@ -309,7 +309,7 @@ async fn name_locally(root: &Path, store: &Store, name: &str, tree: &ObjectRef) 
     }
     let root = std::path::absolute(root).map_err(Failure::from)?;
     let local = fetch::Endpoint::new(&fetch::Client::new(fetch::SourcePolicy::default()), &root.to_string_lossy(), None)?;
-    let control = fetch::UploadControl { cancelled: &|| false, progress: &|_, _| {}, commit: &|| true };
+    let control = fetch::UploadControl { cancelled: &|| false, progress: &|_, _| {}, retrying: &|_| {}, commit: &|| true };
     Ok(fetch::upload_commit(&local, &named.repo_id, tree, store, &control).await?.commit)
 }
 

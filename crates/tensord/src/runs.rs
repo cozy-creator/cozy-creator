@@ -616,6 +616,7 @@ impl Runs {
                 let control = tensorfs::fetch::UploadControl {
                     cancelled: &|| stoppable.stop.is_cancelled(),
                     progress: &|done, total| observe(&stage, done, total),
+                    retrying: &|line| observe(&format!("{stage}: {line}"), 0, 0),
                     commit: &|| stoppable.commit(),
                 };
                 let uploaded = upload(options, hub.as_ref(), destination, &spec.lane, &header, &files, upload_store, &control)
@@ -1618,7 +1619,7 @@ impl Runs {
         let parsed = store.tree(&tree).map_err(|e| refused("checkpoint_invalid", e.to_string()))?;
         let header = parsed.header().map_err(|e| refused("checkpoint_invalid", e.to_string()))?.1.clone();
         let files = parsed.repo_files().map(|(p, r)| (p.to_owned(), r.clone())).collect();
-        let control = tensorfs::fetch::UploadControl { cancelled: &|| false, progress: &|_, _| {}, commit: &|| true };
+        let control = tensorfs::fetch::UploadControl { cancelled: &|| false, progress: &|_, _| {}, retrying: &|_| {}, commit: &|| true };
         let uploaded = upload(&options, hub.as_ref(), &destination, lane, &header, &files, store, &control)?;
         Ok(Some((destination, uploaded.commit)))
     }
