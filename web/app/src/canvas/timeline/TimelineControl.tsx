@@ -145,6 +145,7 @@ function Monitor({ preview, layout, aspect, empty }: { preview: Preview; layout:
   const still = useRef<HTMLCanvasElement>(null)
   const showing = useSignal(preview.showing)
   const live = useSignal(preview.live)
+  const ready = useSignal(preview.ready)
   const kept = useSignal(preview.kept)
   const failed = useSignal(preview.failed)
   const playing = useSignal(preview.playing)
@@ -156,17 +157,22 @@ function Monitor({ preview, layout, aspect, empty }: { preview: Preview; layout:
   const place = layout.placed[showing ?? -1]
   const clip = place?.clip
   const moving = clip && !isStill(clip) && clip.path
-  const drawn = moving && !live && kept?.path === clip.path
+  const drawn = Boolean(kept && (!live || !ready))
+  const videoReady = moving && live && ready
+  const pictureReady = () => {
+    const image = holder.current?.parentElement?.querySelector("img")
+    if (place && clip?.sha256 && image) preview.picture(place.index, clip.sha256, image)
+  }
   // Until it's sought, the nearest of a strip's frames: a trimmed clip doesn't open on its take's first.
   const tile = place && clip?.holds ? Math.min(POSTER_FRAMES - 1, Math.floor(((place.in + (frame - place.at)) / clip.holds) * POSTER_FRAMES)) : 0
   return (
     <div className="tl-monitor" style={{ aspectRatio: aspect }} data-clip={clip ? (clip.name ?? named(clip)) : undefined} data-live={live ? "" : undefined}>
-      {clip?.sha256 && !clip.missing && (isStill(clip) || !(live || drawn)) && store.projectId && (
-        moving && tile > 0 ? <Thumb sha256={clip.sha256} cardWidth={512} strip={POSTER_FRAMES} exact frame={tile} className="tl-poster" /> : <Thumb sha256={clip.sha256} cardWidth={1024} />
+      {clip?.sha256 && !clip.missing && (isStill(clip) || !(videoReady || drawn)) && store.projectId && (
+        moving && tile > 0 ? <Thumb sha256={clip.sha256} cardWidth={512} strip={POSTER_FRAMES} exact frame={tile} className="tl-poster" /> : <Thumb sha256={clip.sha256} cardWidth={1024} onSize={pictureReady} />
       )}
       <canvas ref={still} className={drawn ? "" : "off"} />
       {/* One for the box, there only while it holds its slot: what plays is whatever it holds now. */}
-      <div ref={holder} className={`tl-video ${moving && live ? "" : "off"}`} />
+      <div ref={holder} className={`tl-video ${videoReady ? "" : "off"}`} />
       {empty && <p className="tl-empty">Drag videos and stills here</p>}
       {failed && <p className="tl-empty">{failed}</p>}
       {!empty && (
