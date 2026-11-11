@@ -806,7 +806,13 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
     store = out / "store"
     interface = cast(Interface, json.loads(interface_path.read_text()))
-    fixture = load_fixture(fixture_path, package)
+    try:
+        fixture = load_fixture(fixture_path, package)
+    except Exception as exc:  # a fixture that can't import (a helper the Runtime refuses) is the package's failure
+        with open(out / "fixture.err", "w") as err:
+            traceback.print_exc(file=err)
+        print(f"FAIL {package} - fixture 0.0s: {type(exc).__name__}: {first_line(exc)}", flush=True)
+        return 1
     waive = cast(dict[str, str], getattr(fixture, "WAIVE", {}))
     #: `module:NAME` -> the literal it takes in the executor (a release geometry shrunk)
     patch = {k: repr(v) for k, v in cast(dict[str, object], getattr(fixture, "PATCH", {})).items()}

@@ -95,6 +95,8 @@ one() {
   echo "PASS $p - describe $((SECONDS - t))s"
   CUDA_VISIBLE_DEVICES= nice -n 19 "$env/bin/python" "$HERE/drive.py" "$PACKAGES/$p" "$out/interface.json" \
     "$(fixture "$p")" "$out" --refs "$REFS" ${CELLS:+--only "$CELLS"} $RECORD 2> "$out/drive.err" || true
+  # The driver catches each cell's failure; a traceback of its own is one it did not, and every cell after it is lost.
+  ! grep -q '^Traceback' "$out/drive.err" || echo "FAIL $p - drive 0s: $(grep -v '^\s*$' "$out/drive.err" | tail -n1 | cut -c1-300)"
   [ -z "$COZY" ] || "$HERE/cli.sh" "$COZY" "$PROJECT" "$PACKAGES/$p" "$out"
   typed
   [ -n "$KEEP" ] || rm -rf "$out"/{store,source,spool,made,inputs,cli/src}
