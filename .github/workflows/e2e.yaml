@@ -388,7 +388,7 @@ jobs:
           CARGO_INCREMENTAL: "0"
           COZY_COMMIT: ${{ needs.affected.outputs.creator }}
         run: |
-          cargo build --release --locked --manifest-path .creator/Cargo.toml -p api --example stage-code
+          (cd .creator && cargo build --release --locked -p api --example stage-code)
           mkdir -p "$RUNNER_TEMP/candidates"
           cp .creator/target/release/examples/stage-code "$RUNNER_TEMP/candidates/stage-code"
       - if: matrix.what == 'cozy' && matrix.take != ''
