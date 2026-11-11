@@ -46,6 +46,13 @@ qualification owns pending-unlock/lock ordering. Expiration checks a requested
 two-second policy with status polling; desktop file reads do not automatically
 renew Calcifer activity.
 
+On UNIX the fixture also holds a real native media file descriptor and working
+directory across manual down and main-only SIGTERM (systemd mixed-mode semantics).
+Manual down must report Busy without closing mutation admission. SIGTERM must
+retain its stop intent, keep the provider alive until that reader releases it,
+then exit gracefully and reopen byte-identical media. No provider is mocked or
+force-unmounted; the owned reader exits through its normal stdin control.
+
 This fixture refuses to run outside an ephemeral GitHub Actions host, with a
 `COZY_HOME` override, or when PATH chooses a different Cozy executable.
 Synthetic inputs and intentional plaintext copies live outside `~/.cozy`.
