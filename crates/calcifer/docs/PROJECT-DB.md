@@ -28,7 +28,7 @@ an `edited-*` side copy. The retained version's media and timeline stay in `file
 |---|---|---|
 | `crdt_document(id, format, snapshot, heads)` | The complete native Automerge snapshot and causal heads; logical schema 1 | new canonical state |
 | `crdt_changes(hash, seq, actor, bytes)` | Original immutable native changes, keyed by native change hash | new canonical journal |
-| `meta(key, value)` | `seq`: the revision, one more per committed transaction; `format`: 1; `id` and `name`, the project's identity (cl-819); `board`: the board its last render ended on, and whose (a copy's or another Calcifer's isn't shown); `upgraded`: what upgrading its files from before said, until a run landing in it says it | file stats, its path |
+| `meta(key, value)` | `seq`: the revision, one more per committed transaction; `format`: 1; `id` and `name`, the project's identity (cl-819); `board`: the board its last render ended on, and whose (a copy's or another Calcifer's isn't shown) | file stats, its path |
 | `head(key, value)` | A top-level section other than `assets` (`version`, `defaults`), as JSON | project.yaml |
 | `boxes(key, name, ord)` | One box: its name key, its name as written, its place in the list | project.yaml |
 | `fields(box, ord, field, value)` | One field of a box, as JSON (`tool`, `approved`, `description`, `models`, `lora`, every input) | project.yaml |

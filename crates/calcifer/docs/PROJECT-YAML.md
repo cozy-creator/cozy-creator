@@ -1,6 +1,6 @@
 # A project as YAML (format 4)
 
-A project's state is its `project.db` (`PROJECT-DB.md`); the page and the CLI change it through Calcifer. YAML is its view: `GET /v1/projects/{id}/yaml` exports it for reading, a diff or git, and `PUT /v1/projects/{id}/yaml` reads one back, each box and field that differs written as one edit. It is never the source of truth, and a comment in it isn't kept. A folder of the files from before `project.db` (format 2, 3 or 4) is imported on its first open. The HTTP API is in `CALCIFER-API.md`, and the reasons in `tracker/design/project-format-ui.md` and `tracker/design/tools.md`.
+A project's state is its `project.db` (`PROJECT-DB.md`); the page and the CLI change it through Calcifer. YAML is its view: `GET /v1/projects/{id}/yaml` exports it for reading, a diff or git, and `PUT /v1/projects/{id}/yaml` reads one back, each box and field that differs written as one edit. It is never the source of truth, and a comment in it isn't kept. Physical YAML/lock-only folders are unsupported and are never implicitly imported; create native storage first and use the explicit current-format HTTP authoring view. The HTTP API is in `CALCIFER-API.md`, and the reasons in `tracker/design/project-format-ui.md` and `tracker/design/tools.md`.
 
 ## The idea
 
@@ -88,7 +88,7 @@ Every other key is a **field** of its tool: the binder gives it to the function 
 
 ## Defaults
 
-`defaults` is still read, though `upgrade` writes none. It holds `image`, `video` and `audio`, and fills what an asset with a tool doesn't say, by what its tool's interface says it makes, never by what a version is: inputs, `models` and `lora`, and `null` in the asset takes one back. Not its tool, and not what Calcifer makes itself, an edit or a frame. A style edit puts every asset it reaches out of date, a background removal too.
+`defaults` is read by the current authoring view. It holds `image`, `video` and `audio`, and fills what an asset with a tool doesn't say, by what its tool's interface says it makes, never by what a version is: inputs, `models` and `lora`, and `null` in the asset takes one back. Not its tool, and not what Calcifer makes itself, an edit or a frame. A style edit puts every asset it reaches out of date, a background removal too.
 
 ## First-party inputs
 
