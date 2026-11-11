@@ -177,8 +177,8 @@ async function placedInView(page, expected) {
   check('thumbnails', thumbs.up === 3, thumbs);
   if (process.env.SHOT) await page.screenshot({ path: `${process.env.SHOT}-dropped.png` });
 
-  // One chosen from the selector, in the tools' button: its field is focused with the stem selected; a name shows as it will be.
-  const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.click('.tools button:has-text("Add file")')]);
+  // The top-bar plus opens the existing native selector and uploads the chosen file.
+  const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.locator('.top .history [aria-label="Add files"]').click()]);
   check('selector_accepts_media', (await chooser.element().getAttribute('accept')) === 'image/*,video/*,audio/*');
   await chooser.setFiles({ name: 'Hero Shot.png', mimeType: 'image/png', buffer: png(120) });
   await page.waitForSelector('.nm-field');

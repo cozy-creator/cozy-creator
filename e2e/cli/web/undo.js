@@ -340,18 +340,17 @@ function check(name, ok, detail) {
   check('redo_after_a_restart', again.entries.some((entry) => entry.words === 'Deleted red') && lines('red') === null, again);
   check('page_follows_the_api', await until('red gone', () => box('red').count(), (n) => n === 0).then(() => true, () => false));
 
-  // Several back at once from the list, and forward again: the newest two are the API client's redo of the delete and its import.
+  // The same two history entries remain accessible through the unchanged Undo/Redo controls.
   await away();
-  await page.locator('.top .history [aria-label=History]').click();
-  const listed = page.locator('.history-list .history-row');
-  await until('the list', () => listed.locator('.history-words').allInnerTexts(), (words) => words[0] === 'Deleted red' && words[1] === 'Added spare');
-  seen.list = (await listed.locator('.history-words').allInnerTexts()).slice(0, 6);
-  await shot('history-list');
-  await listed.nth(1).click();
-  await says('list_jumps_back_two', () => [lines('red'), lines('spare')], ([red, spare]) => Boolean(red) && spare === null);
-  check('list_strikes_them_through', await until('struck through', () => page.locator('.history-list .history-row.undone').count(), (n) => n >= 2).then(() => true, () => false));
-  await listed.nth(0).click();
-  await says('list_goes_forward_again', () => [lines('red'), (lines('spare') ?? '').includes(theirs.sha256.slice(7, 19))], ([red, spare]) => red === null && spare);
+  check('history_list_button_replaced_by_add_files', await page.locator('.top .history [aria-label="History"]').count() === 0 && await page.locator('.top .history [aria-label="Add files"]').count() === 1);
+  await page.locator('.top .history [aria-label="Undo"]').click();
+  await says('toolbar_undo_restores_red', () => lines('red'), Boolean);
+  await page.locator('.top .history [aria-label="Undo"]').click();
+  await says('toolbar_undo_removes_spare', () => lines('spare'), (spare) => spare === null);
+  await page.locator('.top .history [aria-label="Redo"]').click();
+  await says('toolbar_redo_restores_spare', () => lines('spare') ?? '', (spare) => spare.includes(theirs.sha256.slice(7, 19)));
+  await page.locator('.top .history [aria-label="Redo"]').click();
+  await says('toolbar_redo_deletes_red', () => lines('red'), (red) => red === null);
   check('history_in_project_db', rowsOf(folder, 'SELECT count(*) FROM ops')[0][0] > 0 && !existsSync(join(folder, '.history.json')) && !/history|undone/.test(yaml()));
   check('no_page_errors', errors.length === 0, errors);
   console.log(JSON.stringify({ failures, seen }, null, 2));

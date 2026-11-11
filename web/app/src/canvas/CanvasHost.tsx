@@ -1024,7 +1024,7 @@ function Canvas({
       {active && <Viewer />}
       <input ref={picker} className="picker" type="file" multiple accept={ACCEPT} onChange={picked} aria-label="Add a file" />
       {slot && projectId && createPortal(<RenderAll id={projectId} routing={routing} />, slot)}
-      {history && projectId && createPortal(<HistoryControls />, history)}
+      {history && createPortal(<HistoryControls onAddFiles={choose} />, history)}
       {projectId && <ProjectSync id={projectId} />}
     </CanvasStoreProvider>
   )
