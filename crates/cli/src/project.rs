@@ -87,7 +87,7 @@ pub(crate) async fn create(ctx: &Context, args: New) -> Result<ExitCode, Error> 
         if let Some(output) = &args.recovery_out {
             if output.exists() { return Err(Error::new(Kind::Conflict, "vault_recovery_exists", "the recovery output file already exists; choose a new path")); }
             let status = api::calcifer::project::VaultStatus { encrypted: true, state: "new".into(), path: directory.clone(), view: None,
-                expires_at_ms: None, idle_timeout_s: 900, next: vec![] };
+                expires_at_ms: None, idle_timeout_s: api::calcifer::project::DEFAULT_VAULT_IDLE_SECONDS, next: vec![] };
             vault::recovery_location(output, &status)?;
         }
         Some(vault::credential(args.passphrase_file.as_ref(), "New project passphrase: ", true)?)

@@ -105,7 +105,7 @@ function VaultBody({ id }: { id: string }) {
   const [sourceRemoved, setSourceRemoved] = useState(false)
   const [ended, setEnded] = useState<number[]>([])
   const [preservePlaintext, setPreservePlaintext] = useState(false)
-  const [idle, setIdle] = useState("900")
+  const [idle, setIdle] = useState("1800")
   const [maximum, setMaximum] = useState("0")
   const mounted = useRef(false)
   const request = useRef<AbortController | null>(null)

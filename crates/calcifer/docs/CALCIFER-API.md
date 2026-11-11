@@ -654,6 +654,10 @@ recovery secrets and old view paths. These events never go through global SSE,
 history, outboxes or the ordinary response cache. The original JSON
 `POST /v1/projects/{id}/vault` remains supported for older clients.
 
+Omitting `idle_timeout_s` uses 1800 seconds (30 minutes) for creation/unlock.
+An explicit zero disables idle expiry; explicit durations and the separate absolute
+maximum remain unchanged. Existing unlocked sessions retain their current policy.
+
 For `encrypt`, verified source removal is the default even when the request omits
 `remove_plaintext` or sends it as false. Only `preserve_plaintext: true` keeps the
 original plaintext and returns `preserved_source`; it conflicts with `remove_plaintext: true`.
