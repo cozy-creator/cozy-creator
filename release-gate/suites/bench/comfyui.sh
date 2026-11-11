@@ -24,7 +24,10 @@ elif [ -s "$HF_FILE" ]; then "$CLI" machine ssh "$M" "umask 077 && cat > /var/tm
 else log "comfyui: no HF token here: gated ComfyUI files (Klein) cannot download"; fi
 # One restart: Cozy's executors leave the GPU to ComfyUI.
 retried "$CLI" machine update "$M" --gpu-memory-limit off -y > comfy-free.log 2>&1 || log "comfyui: freeing the GPU: $(tail -c 300 comfy-free.log)"
-podsh "cd /var/tmp/bm && setsid nohup python3 bench_comfy.py run jobs.json > comfy.log 2>&1 < /dev/null & echo \$! > /var/tmp/bm/comfy.pid" > /dev/null
+# The machine's restart above can leave its SSH unreachable for a few minutes (a PRO 6000, 43039533939: "Connection timed
+# out", and the pass never started): the runner's start is retried until its pid file is there.
+started() { podsh "test -s /var/tmp/bm/comfy.pid || { cd /var/tmp/bm && setsid nohup python3 bench_comfy.py run jobs.json > comfy.log 2>&1 < /dev/null & echo \$! > /var/tmp/bm/comfy.pid; }; test -s /var/tmp/bm/comfy.pid" > /dev/null 2>&1; }
+retried started || { expect comfyui-start FAIL "the benchmarks runner did not start on $M (its SSH did not answer for 5 minutes)"; return 0; }
 log "comfyui: $(jq -r 'map(.cell + " as " + .key) | join(", ")' comfy-jobs.json) on $M"
 date +%s%3N > comfy-window  # its start and end: bench.py sets the pass aside when another controller's run overlapped it
 # No Cozy run moves meanwhile, so gate.sh's hold loop renews nothing: this loop keeps the rental, and stops ComfyUI if its log
