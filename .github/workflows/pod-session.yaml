@@ -1,16 +1,22 @@
 name: pod-session
 # Rentals driven from a runner, so no laptop has to stay up for them: release-gate/sessions/<script>.sh rents its
 # machines on tensorhub.com, does its work there and ends them (sessions/lib.sh; README.md: Sessions).
-# The runner must provision an isolated qualification Hub; production credentials are not used. The pod renews its own run
+# Its dispatch names the Hub (`hub`): prod, tensorhub.com, signed in with the CI device key (environment release-gate), or isolated, a
+# verified test Hub (e2e/test-hub.sh require_ci_rental_hub). The pod renews its own run
 # capability while its runs live (cl-675). A guard ends the pod at `cap` USD, all in. Without `rent`, the $0 pre-flight only:
 # install, sign-in, the script's own checks, the quote and the guard. Dispatches never wait on or cancel each other:
 # each session rents and ends its own pod. Dispatched from `rc/<x>`, or with `runtime_ref`, a session has that Runtime as a wheel in
 # RUNTIME_WHEEL, as e2e builds it, for what no release knows yet.
-#   gh workflow run pod-session.yaml -R cozy-creator/cozy-creator -f script=model-ingest -f packages_refs=pk=<sha> \
+#   gh workflow run pod-session.yaml -R cozy-creator/cozy-creator -f hub=prod -f script=model-ingest -f packages_refs=pk=<sha> \
 #     -f sku=a40 -f disk=500 -f cap=6 -f params='{"package": "qwen3.6", "sources": "…", "lanes": "int8", "version": "0.1.0"}'
 on:
   workflow_dispatch:
     inputs:
+      hub:
+        description: "The Hub the session rents on: prod (tensorhub.com, the CI device key) or isolated (a verified test Hub)"
+        type: choice
+        options: [prod, isolated]
+        required: true
       script:
         description: "A session in release-gate/sessions/, without .sh (its header lists its params)"
         type: string
@@ -46,11 +52,12 @@ on:
         description: "Rent and run; without it, the $0 pre-flight only"
         type: boolean
         default: false
-run-name: pod-session ${{ inputs.script }} ${{ inputs.sku }}${{ inputs.rent && ' rent' || ' pre-flight' }}
+run-name: pod-session ${{ inputs.hub }} ${{ inputs.script }} ${{ inputs.sku }}${{ inputs.rent && ' rent' || ' pre-flight' }}
 
 jobs:
   session:
     runs-on: ubuntu-24.04
+    environment: release-gate
     permissions:
       contents: read
       actions: read  # a dev-build cozy
@@ -60,8 +67,9 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       OUT: ${{ github.workspace }}/session
-      COZY_HUB_URL: ${{ vars.COZY_TEST_HUB_URL }}
-      COZY_TEST_HUB_ORIGIN: ${{ vars.COZY_TEST_HUB_ORIGIN }}
+      HUB: ${{ inputs.hub }}
+      COZY_HUB_URL: ${{ inputs.hub == 'isolated' && vars.COZY_TEST_HUB_URL || '' }}
+      COZY_TEST_HUB_ORIGIN: ${{ inputs.hub == 'isolated' && vars.COZY_TEST_HUB_ORIGIN || '' }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -77,10 +85,11 @@ jobs:
             e2e/publish
             e2e/cli/project/boxed
           path: creator
-      - name: Require isolated qualification environment
+      - name: The Hub this session rents on
         run: |
           . creator/e2e/test-hub.sh
-          require_ci_test_hub || { echo "::error::pod-session CI needs an isolated Hub and preallocated test machines; production is forbidden"; exit 2; }
+          require_ci_rental_hub "$HUB" || exit 2
+          echo "### Hub: $HUB (${COZY_HUB_URL:-https://tensorhub.com})" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@v5
         if: inputs.packages_refs != ''
         with:
@@ -140,12 +149,21 @@ jobs:
       - if: steps.runtime.outputs.ref != ''
         run: echo "RUNTIME_WHEEL=$(bash creator/e2e/candidates/build.sh runtime runtime.src "$RUNNER_TEMP/candidates")" >> "$GITHUB_ENV"
       - name: Prepare local service session
+        env:
+          KEY: ${{ inputs.hub == 'prod' && secrets.COZY_CI_DEVICE_KEY || '' }}
         run: |
           sudo loginctl enable-linger "$(id -un)"
           echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
           export XDG_RUNTIME_DIR=/run/user/$(id -u)
           until [ -S "$XDG_RUNTIME_DIR/bus" ]; do sleep 1; done
           echo "DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus" >> "$GITHUB_ENV"
+          [ "$HUB" = prod ] || exit 0
+          export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
+          [ -n "$KEY" ] || { echo "::error::the release-gate environment has no COZY_CI_DEVICE_KEY"; exit 1; }
+          umask 077; printf '%s' "$KEY" > "$RUNNER_TEMP/key.json"
+          cozy login --key "$RUNNER_TEMP/key.json"; code=$?
+          rm -f "$RUNNER_TEMP/key.json"
+          exit $code
       - name: Session
         env:
           SCRIPT: ${{ inputs.script }}
@@ -168,7 +186,7 @@ jobs:
         run: |
           [ -f "$OUT/rental" ] || exit 0
           . creator/e2e/test-hub.sh
-          require_ci_test_hub || exit 2
+          require_ci_rental_hub "$HUB" || exit 2
           . creator/release-gate/machines.sh
           left=0
           while read -r rid; do

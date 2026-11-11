@@ -17,7 +17,7 @@ same SKU and suites; any FAIL blocks the promotion. Design: tracker `design/ci-v
 | `varena` | the memory manager: cold load, co-residency, reload, 8/6/3 GiB caps, a real 8 GB card, host RAM, no backing left without a page (below), a warm call served by graphs, real models repeating byte for byte warm, capped, with memory unmapped and perturbed, and with a kept graph's weights gone or no room for them, and with graphs off (`differential/`), the memory authority's rules (`core`), `vt.offload` beside stock SDXL (`offload-*`) and deliberate faults over SSH (`fault-*`, `faults`); with it, run the `vram-yield` session: a game started next to cozy has its memory within 2 s, idle and mid-call, and the call completes (Sessions) | its `skus`; the session one rtx-3070 | session ~$0.5 · ~45 min | a varena, memory, TensorD or Runtime memory change |
 | `tensord` | the machine agent through `cozy`: a package generation installed, updated and rolled back, the Runtime back and forward; a run queued, canceled queued and running, its outputs landed whole; models stacked until the describer must fit (idle executors end); a new executor after a restart; a restart mid-run never re-executes; an API-warmed `gpu` member kept and its executor reused; two runs at once on two GPUs; output landing against this computer's download speed; distinct LoRA'd calls add nothing to the disk (cl-683) | rtx-5060-ti ×2 | ~$0.60 · ~60 min | a TensorD or cozy change |
 | `tensorfs` | downloads as fast as the last pass (Hub and datacenter cache), nothing from the Hub again, resume after a cut (a private model no cache holds: from the Hub); uploads of new weights, dedup of a re-upload, resume after a cut; a recipe that encodes each component in its own call writes every component; a straggler re-asked, not waited out; a LoRA's scale never taken from training metadata; a source that is no form of its family refused before it downloads (below) | cpu | ~$0.3 · ~40 min | a TensorFS, download, upload or quantize change |
-| `hub` | isolated contract/account/publication checks; provider qualification requires isolated hardware infrastructure | cpu, plus one `cpu` pod per provider | ~$0.4 · ~40 min | every Hub deploy |
+| `hub` | the Hub's contract, the account and one `cpu` pod per provider on production (`hub=prod`); publication in the isolated fixture | cpu, plus one `cpu` pod per provider | ~$0.4 · ~40 min | every Hub deploy |
 | `skew` | candidate Hub in a disposable Postgres/MinIO fixture with current and supported released clients; package/model publication, install and cleanup | none | $0 · ~15 min | every Hub release |
 | `h3` | minimax-h3's generate and upscale at their edges: Regenerate-2K at 1080p, 1440p and 2160p against the 768p shot it starts from (resolution, A/V sync, PSNR/SSIM, `frames.py`), SeedVR2 at 2160p, a synthetic plate as long as the shot, shorter, longer, at 30 fps and at 9:16 (frame-by-frame follow, coherence, length, canvas), first and last keyframes (`frames.py still`), and three reference-then-text-only shot switches whose executor the host rule ends as the next call starts, each placed within 30 s (cl-697), an upscale from a shot's own latents (#762: strength 0.7, no video encode) and `preset: fast` against a `balanced` run of the same request made just before it (#751: one dense step, denoise ≤ 0.90×: with #764's cheaper int4-QK dense steps the floor is near 0.85× even with no disk reads, and se-091's A/B with the residency fix measured 0.875×, runs 25377/25406), a video continued from its latents to 10 s (`continue_from`: its head kept, the join smooth), the full model at 30 steps, and h3-shot-moves-on. Prompts in MiniMax's own form used as written, each cut where the text says (`h3-own-shots`, `h3-own-sections`). `regen-2160p-15s` (three windows on 24 GB, ~1 h) only by `--only` | rtx-4090 | ~$2.5 · ~85 min | a minimax-h3 release |
 | `disk` | a 100 GB machine past a full disk (tfs-140, cl-709, tatara): three packages installed and updated, `machine show`'s disk by kind; a CPU SDXL call never evicted while H3 int8 and Qwen land; H3, Qwen, SDXL, more of H3's lanes until the store evicts and H3 again all land, each eviction logged | cpu (`--disk 100`) | ~$0.3 · ~45 min | a TensorFS store, reclaim or install change |
@@ -82,7 +82,7 @@ A SKU and suites with no baseline need `--establish` once.
 - **By hand:** `release-gate/gate.sh rtx-4090 --suite runtime --runtime <url#sha256=…> --publish`, through the
   default `~/.cozy`, signed in as you. `--on local` runs the cells on this computer's machine as it is (a dev proof:
   no rental, no `--before`).
-- **From Actions:** `gh workflow run release-gate.yml -R cozy-creator/cozy-creator -f suites=runtime,packages -f pins=…`.
+- **From Actions:** `gh workflow run release-gate.yml -R cozy-creator/cozy-creator --ref rc/<x> -f hub=prod -f suites=runtime,packages -f pins=…`.
   The suites' `skus` pick the rentals; `skus` overrides them, `only` narrows the cells.
   Testing is manual (Paul 10-24): only the release agent dispatches it, with the suites it chose; no workflow calls it.
   Dispatch from `master`, `rc/*` or `release/*`: the `release-gate` environment refuses any other branch before a runner
@@ -117,10 +117,9 @@ The Hub is one deployment, while clients update independently. Every Hub release
    The fixture validates its local resource/issuer before signing in, and destroys its state on exit.
 2. **Previous clients:** the same isolated fixture runs with `--client VERSION` through the `skew`
    CI job. Unsupported clients must receive the typed `client_too_old` response; any 5xx fails.
-3. **Hardware qualification:** CI must provide its own isolated Hub and workers before running
-   provider or GPU suites. Missing infrastructure fails the job before any Hub read or rental;
-   production is not a fallback. Manual operator qualification outside CI remains separate.
-   See [isolated hardware CI](ISOLATED-HARDWARE-CI.md).
+3. **Hardware qualification:** real pods rent on production, the one Hub with providers (Paul, 11-11:
+   two Hubs, production and the laptop's). Every `release-gate.yml` and `pod-session.yaml` dispatch names its
+   Hub, `hub=prod` or `hub=isolated` (`e2e/test-hub.sh` `require_ci_rental_hub`); no default.
 
 The former `hubgate --swap` path is retired: tests must not mutate a persistent developer Hub.
 See [isolated publication tests](../e2e/test-hub.md) for candidate/cohort options and the target guard.
@@ -129,13 +128,10 @@ The supported range is the Hub's `clients.cozy_min`: raise it only after the new
 
 ## CI sign-in
 
-CI uses the development account created by its disposable Hub. Verification jobs do not receive
-or use the production owner device key. Hardware jobs require a locally provisioned test Hub and
-workers; until available they fail explicitly. Public installer and dependency downloads remain
-ordinary build inputs.
-
-Manual operator qualification may use the operator's own `cozy login` outside CI. It is not a
-substitute for the isolated CI receipt.
+The CLI e2e shards and synthetic publication use the development account their disposable Hub creates.
+A `hub=prod` gate or session signs in with the CI device key (`COZY_CI_DEVICE_KEY` in the `release-gate`
+environment, which only master, rc/*, tensorfs-v* and release/* may use): dispatch proofs from rc/* after merge.
+It rents and runs there, and writes no repository: every synthetic write still requires the fixture.
 
 ## Sessions
 
@@ -240,7 +236,7 @@ that pair misses takes its own Runtime in its own environment, and the machine's
     Comfy-Org's ComfyUI H3 Ref2VA DiT forced as `h3.native` fails the layout probe (`LAYOUT_MISMATCH`, at most
     512 MiB): its contiguous Q/K/V is not where the official rows are. Nothing reaches the Hub.
   - `--only` picks cases (`probe`, `download`, `upload`, `family`, `multi-conversion`, `straggler`, `lora-alpha`); `check.py` judges only those.
-- **hub** (`suites/hub`): CI runs against its isolated Hub; manual operator qualification is separate (Clients and the Hub, above). It shows the
+- **hub** (`suites/hub`): on production (`hub=prod`), with publication in the isolated fixture (Clients and the Hub, above). It shows the
   API contract (tensorhub `api/openapi.yaml`, as the Hub serves it at `/openapi.yaml`) holds as cozy uses it:
   - `contract.py`: each path no verb reaches, called anonymously through `e2e/hubcheck`, answers as its contract says
     (200, or 401 when bearer-only), and hubcheck finds every request and response as the document has it. This is
