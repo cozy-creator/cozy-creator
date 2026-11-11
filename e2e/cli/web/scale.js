@@ -16,6 +16,9 @@ const { join } = require('path');
 const { projectUrl, projectAction, calcifer, signIn, STEP_MS, lastLook, lookAt, png, noStall, closeBox, openBox, renderOf, until, projectHeld } = require('./page');
 const { readFootprint, closedProjectMemory } = require('./native-memory');
 const { runnerSpeed } = require('./speed');
+const { prepareCurrentSeed, seedCurrentProject } = require('./current-seed');
+// Compilation is setup, before runner calibration, resident-memory or timed reads.
+prepareCurrentSeed();
 
 const failures = [];
 const seen = {};
@@ -76,8 +79,8 @@ const BAR = { ...BARS, ...Object.fromEntries(TIMED.map((name) => [name, +(BARS[n
 
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
-/** The project as the files from before: pictures approved as they are, and shots of them, each with two versions. `inputs`, once known, makes them
- *  current. Its first open imports them into project.db and deletes them. With no `takes`, the shots have none: what's read for their keys. */
+/** A fully populated current native project, with the same synthetic files and two versions per shot.
+ * `inputs`, once known, makes them current. With no `takes`, shots have none: what's read for their keys. */
 function generated(folder, inputs, assetCount = ASSETS, pictures = PICTURES, takes = true) {
   mkdirSync(join(folder, 'files'), { recursive: true });
   // A picture is square; a shot's take is the 16:9 it asks for, as a render makes it, so a box showing one is that shape.
@@ -123,31 +126,25 @@ function generated(folder, inputs, assetCount = ASSETS, pictures = PICTURES, tak
     });
     assets[`shot ${i}`] = { name, kind: 'image', versions, numbered: 2 };
   }
-  replaceFile(join(folder, '.measured.json'), JSON.stringify(measured));
-  replaceFile(join(folder, 'project.yaml'), `${lines.join('\n')}\n`);
-  replaceFile(join(folder, 'project.lock'), JSON.stringify({ format: 3, assets, makes: { [tool]: 'image' } }));
   // A grid, each where it'd sit if a person had placed it.
   const side = Math.ceil(Math.sqrt(assetCount));
-  const rows = ['# Where cards sit. Only the page reads this. Nothing here is an input.', 'version: 1', 'cards:'];
+  const cards = {};
   // A place left empty near the top: a grid has no other room, and a box that lands on another is moved off it.
   const hole = side * HOLE.row + HOLE.col;
   const card = (name, at) => {
     const place = at < hole ? at : at + 1;
-    rows.push(`  ${name}: {x: ${(place % side) * 300}, y: ${Math.floor(place / side) * 320}, w: 260}`);
+    cards[name] = { x: (place % side) * 300, y: Math.floor(place / side) * 320, w: 260 };
   };
   for (let i = 0; i < assetCount - pictures; i++) card(`shot_${i}`, i);
   for (let i = 0; i < pictures; i++) card(`pic_${i}`, assetCount - pictures + i);
-  replaceFile(join(folder, 'project.canvas.yaml'), `${rows.join('\n')}\n`);
+  const seeded = seedCurrentProject(folder, { authored: `${lines.join('\n')}\n`, assets, makes: { [tool]: 'image' }, measured, cards,
+    expected_assets: assetCount, expected_versions: takes ? (assetCount - pictures) * 2 : 0 });
   for (const shape of Object.keys(seeds)) rmSync(seedOf(shape));
+  return seeded;
 }
 
 /** A wait that ends, so a cell that can't see what it waits for says so. */
 const within = (what, waiting, ms = STEP_MS) => Promise.race([waiting, new Promise((_, fail) => { setTimeout(() => fail(new Error(`${what}: not within ${ms} ms`)), ms).unref(); })]);
-
-function replaceFile(at, text) {
-  writeFileSync(`${at}.part`, text);
-  renameSync(`${at}.part`, at);
-}
 
 /** What a plain flush costs on the disk under `dir`, the middle of 20: 4 KB, and as many bytes as `like`. Nothing of cozy's is in it. */
 function flushed(dir, like) {
@@ -286,10 +283,10 @@ async function nativeMemory(base, folder) {
   numbers.calcifer_mappings = { before: residentByMapping() };
   numbers.calcifer_native = { before: await nativeMemory(base, folder) };
   const generating = Date.now();
-  generated(keying, null, ASSETS, PICTURES, false);
+  seen.native_seed = { keying: generated(keying, null, ASSETS, PICTURES, false) };
   numbers.generate_s = seconds(Date.now() - generating);
 
-  // The first read of it, its first open importing it; then a folder with each shot's real key, so they stand as a person's would. Where this
+  // The first read opens current native storage; then each shot gets its real key, so they stand as a person's would. Where this
   // computer runs models its tool is read by this machine's Runtime, from a run of it there, as tools.js primes its fixture.
   let keyed = await status(keying);
   numbers.status_first_s = seconds(keyed.ms);
@@ -301,11 +298,11 @@ async function nativeMemory(base, folder) {
   const inputs = Object.fromEntries(keyed.state.assets.filter((asset) => asset.name.startsWith('shot_')).map((asset) => [asset.name, asset.inputs]));
   // Its folder goes at the end, with the small one.
   seen.keyed = Object.keys(inputs).length;
-  generated(folder, inputs);
+  seen.native_seed.main = generated(folder, inputs);
   const first = await status();
   numbers.status_import_s = seconds(first.ms);
   check('all_are_there', first.state.assets.length === ASSETS, first.state.assets.length);
-  check('its_files_are_imported', ['project.yaml', 'project.lock', 'project.canvas.yaml', '.measured.json'].every((name) => { try { statSync(join(folder, name)); return false; } catch { return true; } }));
+  check('its_storage_is_current_native', seen.native_seed.main.schema === 2 && seen.native_seed.main.assets === ASSETS && seen.native_seed.main.versions === (ASSETS - PICTURES) * 2 && ['project.yaml', 'project.lock', 'project.canvas.yaml', '.measured.json'].every((name) => { try { statSync(join(folder, name)); return false; } catch { return true; } }));
   seen.project = { id: first.state.id, folder };
   const id = first.state.id;
   const read = await status();
