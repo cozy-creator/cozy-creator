@@ -63,7 +63,7 @@ pub(crate) fn made_here(tool: &str) -> bool {
 }
 
 /// What `plain` makes, if Calcifer makes it: `cozy/edit` a video, `cozy/frame` a picture.
-fn kind_made_here(plain: &str) -> Option<&'static str> {
+pub(super) fn kind_made_here(plain: &str) -> Option<&'static str> {
     match plain {
         EDIT => Some("video"),
         FRAME => Some("image"),
