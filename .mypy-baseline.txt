@@ -286,11 +286,6 @@ e2e/vault-provider/run.py: [call-overload] No overload variant of "Popen" matche
 e2e/vault-provider/run.py: [no-untyped-call] Call to untyped function "main" in typed context
 e2e/vault-provider/run.py: [no-untyped-def] Function is missing a return type annotation
 e2e/vault-provider/run.py: [possibly-undefined] Name "mounted" may be undefined
-e2e/warm.py: [no-untyped-call] Call to untyped function "main" in typed context
-e2e/warm.py: [no-untyped-call] Call to untyped function "upload" in typed context
-e2e/warm.py: [no-untyped-call] Call to untyped function "upload" in typed context
-e2e/warm.py: [no-untyped-def] Function is missing a return type annotation
-e2e/warm.py: [no-untyped-def] Function is missing a type annotation
 release-gate/sessions/fixtures/pause-twice/ci_pause_twice/__init__.py: [arg-type] Argument "seed" to "GenerateInput" has incompatible type "int"; expected "Seed | None"
 release-gate/sessions/fixtures/pause-twice/ci_pause_twice/__init__.py: [return-value] Incompatible return value type (got "object", expected "ImageResult")
 release-gate/suites/execution/child-lora-stacks/ci_child_lora_stacks/__init__.py: [arg-type] Argument "seed" to "GenerateInput" has incompatible type "int"; expected "Seed | None"

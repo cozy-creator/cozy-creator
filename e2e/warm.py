@@ -6,7 +6,6 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-from typing import Any
 import urllib.error
 import urllib.request
 import uuid
@@ -29,7 +28,7 @@ def main() -> int:
     holder = json.loads((Path.home() / ".cozy/calcifer/calcifer.lock.holder").read_text())
     base = "http://" + holder["address"]
     headers = {"Authorization": "Bearer " + holder["token"]}
-    request: dict[str, Any] = {"target": args.target, "warm": args.level, "on": args.on, "terms": args.terms, "loras": args.lora}
+    request: dict[str, object] = {"target": args.target, "warm": args.level, "on": args.on, "terms": args.terms, "loras": args.lora}
     target = Path(args.target).expanduser()
     if args.target.startswith((".", "/", "~")) or target.exists() or target.parent.exists():
         if args.stage_code is None:
