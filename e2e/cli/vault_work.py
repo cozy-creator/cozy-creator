@@ -205,12 +205,16 @@ def vault_work_sleep(payload: Request, out: Outputs) -> Answer:
     landed = [item for item in run.get("output", []) if item.get("status") == "completed"]
     assert landed, f"run {run.get('number')} landed no file: {run.get('output')}"
     max_lock_s = locked_within(args, 30)
-    view = unlock(args, "unlock-after-maximum", 0)
-    kept = [path for path in (view / ".runs").rglob("*") if path.is_file() and mark.encode() in path.read_bytes()]
-    assert kept, f"run {run.get('number')}'s file is not in the project after the vault locked"
+    unlock(args, "unlock-after-maximum", 0)
+    # Its file comes back from the project as a person fetches it, the vault locked and unlocked since.
+    fetched = args.out / "past-maximum.out"
+    done = subprocess.run([str(args.cli), "run", "watch", str(run.get("number")), "--once", "-o", str(fetched)], cwd=args.project, capture_output=True)
+    (args.out / "past-maximum.fetch.stderr").write_bytes(done.stderr)
+    kept = [path for path in fetched.rglob("*") if path.is_file() and mark.encode() in path.read_bytes()]
+    assert kept, f"run {run.get('number')}'s file did not come back from the project: exit {done.returncode} {done.stderr[-600:]!r}"
     receipt["outlived_maximum"] = {"run": run.get("number"), "status": run.get("status"), "maximum_s": MAXIMUM,
                                    "unlocked_past_maximum_s": round((settled_ms - deadline_ms) / 1000), "unlocked_reads_past_maximum": len(past),
-                                   "locked_after_end_s": round(max_lock_s, 1), "landed": str(kept[0].relative_to(view))}
+                                   "locked_after_end_s": round(max_lock_s, 1), "fetched": kept[0].name}
     receipt["synthetic_only"] = True
     (args.out / "receipt.json").write_text(json.dumps(receipt, indent=2))
     print(f"vault work: {json.dumps(receipt)}", flush=True)
