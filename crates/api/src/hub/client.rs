@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
-use reqwest::header::{ACCEPT, HeaderName, HeaderValue};
+use reqwest::header::{ACCEPT, HeaderMap, HeaderName, HeaderValue};
 use reqwest::{Method, Request, RequestBuilder, Response, StatusCode};
 use serde::de::DeserializeOwned;
 use serde_json::json;
@@ -237,7 +237,7 @@ impl Client {
     }
 
     pub async fn get_model(&self, org: &str, name: &str) -> Result<ModelCard, Error> {
-        self.json(self.at(Method::GET, "/v1/models/{org}/{name}", &[org, name]).header(reqwest::header::ACCEPT, MODEL_MEDIA_TYPE))
+        self.json(model_media(self.at(Method::GET, "/v1/models/{org}/{name}", &[org, name])))
             .await
     }
 
@@ -364,13 +364,13 @@ impl Client {
             "/v1/models/{org}/{name}/releases/{release}",
             &[org, name, release],
         );
-        self.json(request.header(reqwest::header::ACCEPT, MODEL_MEDIA_TYPE).json(&json!({"checkpoints": checkpoints}))).await
+        self.json(model_media(request).json(&json!({"checkpoints": checkpoints}))).await
     }
 
     /// Withdraw public access while retaining the release and its checkpoints for its owner.
     pub async fn unpublish_model_release(&self, org: &str, name: &str, release: &str) -> Result<crate::calcifer::hub::ModelUnpublished, Error> {
         let request = self.at(Method::POST, "/v1/models/{org}/{name}/releases/{release}/unpublish", &[org, name, release]);
-        self.json(request.header(reqwest::header::ACCEPT, MODEL_MEDIA_TYPE)).await
+        self.json(model_media(request)).await
     }
 
     pub async fn search_packages(
@@ -707,6 +707,12 @@ impl Client {
     }
 }
 
+/// Replace the generic JSON preference; appending another Accept value leaves the
+/// first value authoritative to a server using Header.Get.
+fn model_media(request: RequestBuilder) -> RequestBuilder {
+    request.headers(HeaderMap::from_iter([(ACCEPT, HeaderValue::from_static(MODEL_MEDIA_TYPE))]))
+}
+
 /// An answer's body as `T`; a shape it cannot read names its field (`lanes.bf16.bytes: …`).
 async fn read<T: DeserializeOwned>(response: Response) -> Result<T, Error> {
     let body = response.bytes().await.map_err(|e| Error::unanswered(&e))?;
@@ -737,7 +743,11 @@ mod catalog_tests {
                 if reader.read_line(&mut line).unwrap() == 0 || line == "\r\n" { break; }
                 request.push_str(&line);
             }
-            let body = r#"{"model":{"org":"author","name":"adapter","kind":"lora"},"releases":[],"checkpoints":[]}"#;
+            let accept = request.lines().find_map(|line| line.split_once(':').filter(|(name, _)| name.eq_ignore_ascii_case("accept")).map(|(_, value)| value.trim()));
+            let body = match accept {
+                Some(MODEL_MEDIA_TYPE) => r#"{"model":{"org":"author","name":"adapter","kind":"lora"},"releases":[],"checkpoints":[]}"#,
+                _ => r#"{"model":{"org":"author","name":"adapter","role":"lora"},"releases":[],"commits":[]}"#,
+            };
             write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/vnd.cozy.model+json;version=2\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
             request
         });
@@ -747,6 +757,7 @@ mod catalog_tests {
         let request = received.join().unwrap().to_ascii_lowercase();
         assert!(request.starts_with("get /v1/models/author/adapter "));
         assert!(request.contains("accept: application/vnd.cozy.model+json;version=2"));
+        assert_eq!(request.lines().filter(|line| line.starts_with("accept:")).count(), 1);
     }
 
     use super::*;
