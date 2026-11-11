@@ -1344,7 +1344,8 @@ by: string,
  */
 stages: Array<ReportStage>, models: Array<ReportModel>, components: Array<ReportComponent>,
 /**
- * Every GPU's attention kernels: the one that served, the others and why not.
+ * Every GPU's attention kernels (the one that served, the others and why not), then where each package
+ * Triton set it loaded came from (its `state`: shipped, compiled or store).
  */
 kernels: Array<ReportKernel>,
 /**
@@ -2370,7 +2371,8 @@ measured?: Array<Measured>, };
 export type ReportComponent = { component: string, attention: Array<string>, gemm: Array<Gemm>, };
 
 /**
- * One attention kernel on a GPU: its state, whether it served, and its compile.
+ * One kernel on a GPU: an attention kernel's state, whether it served and its compile, or a package Triton
+ * set's source (`shipped`, `compiled` with its compile, `store`).
  */
 export type ReportKernel = {
 /**

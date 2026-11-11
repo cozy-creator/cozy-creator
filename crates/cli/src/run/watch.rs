@@ -228,7 +228,8 @@ fn component_rows(measured: &Measured) -> Vec<Vec<String>> {
     measured.components.iter().map(row).collect()
 }
 
-/// Every GPU's attention kernels: the one that served, and the others with why not.
+/// Every GPU's attention kernels (the one that served, and the others with why not) and where each package
+/// Triton set came from.
 fn gpu_rows(measured: &Measured) -> Vec<Vec<String>> {
     let row = |k: &report::Kernel| {
         let state = match (k.served, k.progress) {
