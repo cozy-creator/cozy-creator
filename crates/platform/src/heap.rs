@@ -47,25 +47,14 @@ unsafe extern "C" {
     );
 }
 
-/// Gives the OS back what the allocators keep of freed memory: mimalloc's empty pages of this thread and every arena's freed
-/// pages, at once, and glibc's free pages, where C code (SQLite) allocates. Left alone, mimalloc purges a second after a free
-/// and only when some thread next allocates, and glibc never trims its threads' arenas, so an idle process stays as large as
-/// its last peak (cl-870). For when much was just freed.
+/// Gives the OS back what mimalloc keeps of freed memory: this thread's empty pages, and every arena's freed pages at once. Left
+/// alone, mimalloc purges those a second after they're freed and only when some thread next allocates, so an idle process stays
+/// as large as its last peak (cl-870). For when much was just freed; each thread's own pages go back as it parks (`parked`).
 #[cfg(feature = "allocator")]
 pub fn give_back() {
     // SAFETY: takes no pointer; any thread may call it.
     unsafe { mi_collect(true) }
-    trim();
 }
-
-/// glibc's free pages back to the OS, from every arena.
-#[cfg(all(feature = "allocator", target_os = "linux", target_env = "gnu"))]
-fn trim() {
-    // SAFETY: takes no pointer; any thread may call it.
-    unsafe { libc::malloc_trim(0) };
-}
-#[cfg(all(feature = "allocator", not(all(target_os = "linux", target_env = "gnu"))))]
-fn trim() {}
 
 /// For a thread going idle (a tokio worker parking): its own freed pages back, which no other thread can collect for it, at
 /// most once a second, so a busy runtime parking thousands of times a second pays a clock read (cl-870).
