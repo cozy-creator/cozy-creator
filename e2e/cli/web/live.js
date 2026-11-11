@@ -488,7 +488,9 @@ function linesOf(text, name) {
     // Read with this machine's Runtime, as a run reads it: a box doesn't wait on PyPI's.
     await cozy('--json', 'run', `${TOOL}/still`, 'prompt=primed', '--on', 'local');
     place = await spot();
-    await project('add', `${TOOL}/slow`, 'live_shot', `at=${place.x},${place.y},260`, 'instructions=A slow still', 'seconds:=0.1');
+    // The machine estimates the overall bar from prior runs of this size.
+    // Match the measured work while priming that estimate, then observe the next run.
+    await project('add', `${TOOL}/slow`, 'live_shot', `at=${place.x},${place.y},260`, 'instructions=A slow still', 'seconds:=14');
     await box('live_shot').waitFor();
     await project('render', 'live_shot', '--on', 'local');
     await timed('a_first_render', { name: 'live_shot', picture: true }, async () => ({ at: Date.now() }));
