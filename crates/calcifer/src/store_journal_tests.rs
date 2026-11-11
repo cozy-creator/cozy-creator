@@ -68,8 +68,8 @@ fn journal_scope_keeps_large_unrelated_values_and_stale_path_envelopes() {
     insert_run(&store, 50, &other, &lookalike);
     store.write(|tx| {
         tx.execute("UPDATE runs SET outcome=?1,warnings='warning',inputs='input',reason_code='code',reason='reason' WHERE id='run-20'", [b"outcome".as_slice()])?;
-        tx.execute("INSERT INTO outputs (run,name,idx,rev,length,digest,media_type,label,path,checkpoint,export_error,exported_rev,failed_rev)
-                    VALUES ('run-20','clip',2,7,0,'','text/plain','label','path','checkpoint','export-error',5,6)", [])?;
+        tx.execute("INSERT INTO outputs (run,name,idx,rev,length,digest,media_type,label,path,checkpoint,export_error,exported_rev,failed_rev,created_seq,seq)
+                    VALUES ('run-20','clip',2,7,0,'','text/plain','label','path','checkpoint','export-error',5,6,1,2)", [])?;
         tx.execute("INSERT INTO run_logs (run,seq,at_ms,level,text) VALUES ('run-20',2,0,'info','second'),('run-20',1,0,'info','first')", [])?;
         tx.execute("INSERT INTO asks (key,hub,digest,body,state,reason,created_at,run) VALUES ('fixture-ask','','',?1,'done','ask-reason',0,'run-20')", [b"ask-body".as_slice()])?;
         Ok(())
