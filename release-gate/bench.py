@@ -225,6 +225,15 @@ def in_group(pattern: str, group: str) -> bool:
     return any(p == group or (p.startswith('*') and group.endswith(p[1:])) for p in pattern.split(','))
 
 
+def record_id(path: str) -> str | None:
+    """A run record's id, or None for any other file (or one half written)."""
+    try:
+        r = load_json(path)
+    except (OSError, ValueError):
+        return None
+    return str(r['id']) if isinstance(r, dict) and isinstance(r.get('id'), str) else None
+
+
 def load_json(path: str) -> object:
     with open(path) as f:
         return cast(object, json.load(f))  # json.load is untyped; each caller narrows what it reads
@@ -386,7 +395,11 @@ def read_gate(d: str, judged: bool = True) -> Gate:
             memavail.append((int(parts[0]), int(parts[1])))
     # cells.sh's poller: each run the machine held that this controller had no record of (another of the account's
     # controllers placed it), every 20 s. A timed run or ComfyUI pass it overlaps did not have the pod to itself.
-    foreign = [(int(f[0]), f[1]) for line in (text(d, 'foreign.tsv') or '').splitlines() if len(f := line.split('\t')) >= 2 and f[0].isdigit()]
+    # The machine lists each call as `<run id>/<call>` with no record attached, this gate's own included: a run is
+    # another controller's only when its id is none of the gate's records'.
+    own = {i for f in glob.glob(os.path.join(d, '*.json')) if (i := record_id(f))}
+    foreign = [(int(f[0]), f[1]) for line in (text(d, 'foreign.tsv') or '').splitlines()
+               if len(f := line.split('\t')) >= 2 and f[0].isdigit() and f[1].split('/')[0] not in own]
 
     def shared(began: int | None, ended: int | None) -> list[str]:
         if not began or not ended:
