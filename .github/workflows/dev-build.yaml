@@ -434,7 +434,12 @@ jobs:
         if: inputs.publish_run == ''
         run: |
           cargo test --release --locked -p cli --lib vault_
+          cargo test --release --locked -p cli --lib progress::transfer_tests
+          cargo test --release --locked -p cli --lib download_progress_reports_written_bytes
           cargo test --release --locked -p calcifer --lib project::vault_operation::tests
+          cargo test --release --locked -p calcifer --lib vault_inventory_matches_copied_file_and_byte_totals
+          cargo test --release --locked -p calcifer --lib encrypted_cleanup_preserves_good_sources_and_recorded_policy
+          cargo test --release --locked -p calcifer --lib store::journal_tests
           cargo test --release --locked -p calcifer --lib legacy_missing_media_is_skipped
       - name: Take the exact published native archive
         if: inputs.publish_run != ''

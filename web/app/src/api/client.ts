@@ -70,6 +70,7 @@ import type {
   Unpinned,
   Updating,
   VersionMoved,
+  VersionPatched,
   VaultAsk,
   VaultStatus,
   VaultChanged,
@@ -388,7 +389,9 @@ export class Client {
                     break
                   case "progress": {
                     if (typeof event.phase !== "string" || !Number.isFinite(event.files_done) || event.files_done < 0 || !Number.isFinite(event.bytes_done) || event.bytes_done < 0) throw invalid()
-                    const update: VaultProgress = { type: "progress", phase: event.phase, files_done: event.files_done, bytes_done: event.bytes_done }
+                    const files_total = event.files_total ?? 0, bytes_total = event.bytes_total ?? 0
+                    if (!Number.isFinite(files_total) || files_total < 0 || !Number.isFinite(bytes_total) || bytes_total < 0) throw invalid()
+                    const update: VaultProgress = { type: "progress", phase: event.phase, files_done: event.files_done, bytes_done: event.bytes_done, files_total, bytes_total }
                     const current = JSON.stringify(update)
                     if (current !== progress) onProgress?.(update)
                     progress = current
@@ -529,6 +532,11 @@ export class Client {
   /** One take or version off its box. Its number is kept, and its file until `reclaim`. */
   discardVersion(id: string, name: string, number: number, write: Write = {}): Promise<VersionMoved> {
     return this.write("DELETE", `${project(id)}/assets/${encodeURIComponent(name)}/versions/${number}`, {}, undefined, write)
+  }
+
+  /** What a version's main file says of itself, whole: `orbit` turns a video. `{}` clears it. */
+  patchVersion(id: string, name: string, number: number, metadata: Record<string, unknown>, write: Write = {}): Promise<VersionPatched> {
+    return this.write("PATCH", `${project(id)}/assets/${encodeURIComponent(name)}/versions/${number}`, { metadata }, undefined, write)
   }
 
   /** The project's history, newest first. */

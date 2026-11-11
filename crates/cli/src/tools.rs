@@ -8,7 +8,7 @@ use std::{
 use platform::tools::{self, Class, Found, Side, TOOLS, install_hint};
 use serde::Serialize;
 
-use crate::{Context, output};
+use crate::Context;
 
 /// One tool as `cozy doctor` shows it.
 #[derive(Serialize)]
@@ -84,19 +84,47 @@ fn path() -> Vec<PathBuf> {
 }
 
 /// Downloads `url` into `part` (`tensorfs::fetch::get_pinned_into`), showing the bytes moved on a terminal.
-pub(crate) async fn download(ctx: &Context, url: &str, part: &Path) -> Result<(File, String), String> {
-    let bar = crate::progress::Line::stderr(!ctx.json && ctx.term.stderr, None, |s| {
-        format!("{} {} at {}", s.spinner(), s.bytes(), s.bytes_per_sec())
+pub(crate) async fn download(
+    ctx: &Context,
+    url: &str,
+    part: &Path,
+) -> Result<(File, String), String> {
+    use crate::progress::{Transfer, TransferCounts};
+    let bar = Transfer::stderr(ctx.term.stderr, "Downloading Cozy");
+    let mut initial = None;
+    let mut position = 0;
+    bar.update(TransferCounts {
+        files_done: 0,
+        files_total: Some(1),
+        bytes_done: 0,
+        bytes_total: None,
+        bytes_moved: 0,
     });
-    let mut first = true;
-    let shown = bar.clone();
+    bar.phase("Downloading and checking archive");
     let answer = tensorfs::fetch::get_pinned_into(url, part, &mut |at| {
-        if std::mem::take(&mut first) && at > 0 {
-            shown.println(format!("resuming at {}", output::bytes(at)));
+        let start = initial.get_or_insert(at);
+        if at < *start {
+            *start = 0;
         }
-        shown.set_position(at);
+        position = at;
+        bar.update(TransferCounts {
+            files_done: 0,
+            files_total: Some(1),
+            bytes_done: at,
+            bytes_total: None,
+            bytes_moved: at.saturating_sub(*start),
+        });
     })
     .await;
+    if answer.is_ok() {
+        bar.update(TransferCounts {
+            files_done: 1,
+            files_total: Some(1),
+            bytes_done: position,
+            bytes_total: Some(position),
+            bytes_moved: position.saturating_sub(initial.unwrap_or(0)),
+        });
+    }
     bar.finish_and_clear();
     answer
 }

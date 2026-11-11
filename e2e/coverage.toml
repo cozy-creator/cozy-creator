@@ -70,9 +70,9 @@ test = "pr: local, refused (release: a rental; session multi-machine: an added p
 test = "pr: rental_end, the isolated Hub's docker cpu (release: a GPU rental)"
 "--disk-gb" = "release: rental, its disk"
 "--gpus" = "release: rental, more GPUs than the SKU has is refused before buying"
-"--ssh" = "pr: renting, signed out, a private key file refused before any ask (release-gate session multi-machine rents and logs in with it)"
+"--ssh" = "pr: renting, signed out, a private key file refused before any ask; rental_end: no path, the default key (release-gate session multi-machine rents and logs in with it)"
 ["machine ssh"]
-test = "pr: local, refused as no rental (release-gate session multi-machine runs every shell step through it)"
+test = "pr: local, refused as no rental; rental_end: a rental not ready yet, and signed out (release-gate session multi-machine runs every shell step through it)"
 ["machine use"]
 test = "pr: machine set, a project pinned to local and a stand-in machine, its runs only there, an unknown machine refused, then any again"
 ["machine keepalive"]
@@ -225,7 +225,8 @@ test = "pr: entrypoints, local authenticated URL and expiry; web-serves redeems 
 test = "pr: projectvault: conversion preserves mounted media and logical state"
 "--passphrase-file" = "pr: projectvault: conversion reads its credential file"
 "--recovery-out" = "pr: projectvault: recovery is saved outside storage; unsafe destination refuses"
-"--remove-plaintext" = "pr: projectvault: verified conversion and encrypted backing scan"
+"--remove-plaintext" = "pr: projectvault: deprecated removal flag remains compatible; removal is the default"
+"--preserve-plaintext" = "pr: projectvault: explicit opt-out retains and reports the verified original"
 "--idle" = "pr: projectvault: conversion disables idle expiry"
 "--max-duration" = "pr: projectvault: returned absolute expiry is within the submitted clock interval"
 

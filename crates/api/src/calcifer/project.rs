@@ -300,6 +300,9 @@ pub struct File {
     /// The machine that keeps them, when one does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub machine: Option<String>,
+    /// What a version's file says of itself beyond its type, as its function declared it or a person set it: `orbit` turns a video.
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    pub metadata: Map<String, Value>,
 }
 
 /// `POST /v1/projects/{id}/imports`, under an `Idempotency-Key`: the file at `source` kept in the project, as one constant more of
@@ -505,6 +508,12 @@ pub struct MainFile {
     /// The machine that keeps them, when one does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub machine: Option<String>,
+    /// A video's frames, measured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frames: Option<u64>,
+    /// What it says of itself beyond its type: `orbit: {degrees, direction, loops}` shows a video turnable, not played.
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    pub metadata: Map<String, Value>,
 }
 
 /// Pick up from here: a take, by mention, and the frame its new part starts at. Never written to project.yaml; the take it makes records it.
@@ -766,6 +775,23 @@ pub struct VersionMoved {
     /// A version held that file already: it's that one, and nothing changed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub already: bool,
+}
+
+/// `PATCH /v1/projects/{id}/assets/{name}/versions/{number}`: its main file's metadata, whole; `{}` clears it. Keys Calcifer doesn't
+/// know are kept as written.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct VersionPatch {
+    pub metadata: Map<String, Value>,
+}
+
+/// What `PATCH …/versions/{number}` left: its main file's metadata now.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct VersionPatched {
+    pub name: String,
+    pub number: u32,
+    pub metadata: Map<String, Value>,
 }
 
 /// `POST /v1/projects/{id}/assets/{name}/versions`: a picture joins it. `source` as an import's.
@@ -1300,11 +1326,15 @@ pub struct VaultStatus {
     pub view: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at_ms: Option<i64>,
-    #[serde(default)]
+    #[serde(default = "default_vault_idle_seconds")]
     pub idle_timeout_s: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub next: Vec<String>,
 }
+
+/// The default local project unlock window; explicit zero still disables idle expiry.
+pub const DEFAULT_VAULT_IDLE_SECONDS: u64 = 1800;
+fn default_vault_idle_seconds() -> u64 { DEFAULT_VAULT_IDLE_SECONDS }
 
 /// POST /v1/projects/{id}/vault. Credentials are deliberately not Debug; neither the request nor its response is cached in history.
 #[derive(Clone, Serialize, Deserialize)]
@@ -1319,9 +1349,12 @@ pub struct VaultAsk {
     pub idle_timeout_s: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_duration_s: Option<u64>,
-    /// Remove a verified plaintext conversion source, only when explicitly asked.
+    /// Legacy removal flag. Verified source removal is now the default; false does not preserve it.
     #[serde(default)]
     pub remove_plaintext: bool,
+    /// Explicitly keep the original plaintext after a verified encrypt conversion. Not valid for rekey/decrypt.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub preserve_plaintext: bool,
 }
 
 /// A vault operation can disclose a new recovery secret exactly to the caller. Do not persist this response in request/history caches.
@@ -1348,7 +1381,15 @@ pub struct VaultChanged {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum VaultEvent {
     Accepted { action: String },
-    Progress { phase: String, files_done: u64, bytes_done: u64 },
+    Progress {
+        phase: String,
+        files_done: u64,
+        bytes_done: u64,
+        #[serde(default)]
+        files_total: u64,
+        #[serde(default)]
+        bytes_total: u64,
+    },
     Completed { changed: VaultChanged },
     Failed { error: Error },
 }

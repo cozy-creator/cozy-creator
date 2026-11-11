@@ -11,11 +11,14 @@ struct Encrypt {
     /// Save the new recovery secret to a new, owner-only file. Otherwise it is shown once.
     #[arg(long, value_name = "FILE")]
     recovery_out: Option<PathBuf>,
-    /// Remove the verified plaintext source after conversion. Without this it is preserved and named.
-    #[arg(long)]
+    /// Deprecated compatibility flag: verified source removal is already the default.
+    #[arg(long, hide = true, conflicts_with = "preserve_plaintext")]
     remove_plaintext: bool,
+    /// Explicitly keep an unencrypted copy after verification. Its location is reported after encryption.
+    #[arg(long)]
+    preserve_plaintext: bool,
     /// Lock after this many seconds without activity; the project's runs and renders are activity. 0 disables idle expiry.
-    #[arg(long, default_value_t = 900)]
+    #[arg(long, default_value_t = api::calcifer::project::DEFAULT_VAULT_IDLE_SECONDS)]
     idle: u64,
     /// Maximum unlock duration in seconds, even while active; reaching it ends the project's runs, as a lock does. 0 disables the maximum.
     #[arg(long, default_value_t = 0)]
@@ -30,7 +33,7 @@ struct Unlock {
     /// Use a saved recovery secret from this file. Use - for stdin.
     #[arg(long, value_name = "FILE")]
     recovery_file: Option<PathBuf>,
-    #[arg(long, default_value_t = 900)]
+    #[arg(long, default_value_t = api::calcifer::project::DEFAULT_VAULT_IDLE_SECONDS)]
     idle: u64,
     #[arg(long, default_value_t = 0)]
     max_duration: u64,
@@ -77,7 +80,7 @@ enum Command {
 }
 
 fn ask(action: &str) -> VaultAsk {
-    VaultAsk { action: action.into(), passphrase: None, recovery_secret: None, idle_timeout_s: None, max_duration_s: None, remove_plaintext: false }
+    VaultAsk { action: action.into(), passphrase: None, recovery_secret: None, idle_timeout_s: None, max_duration_s: None, remove_plaintext: false, preserve_plaintext: false }
 }
 
 pub(super) fn credential(path: Option<&PathBuf>, prompt: &str, confirm: bool) -> Result<String, Error> {
@@ -155,18 +158,7 @@ async fn change(ctx: &Context, path: &str, request: VaultAsk, recovery_out: Opti
         let status: VaultStatus = client.get(path).await?;
         recovery_location(output, &status)?;
     }
-    // No client idempotency cache for responses containing a recovery secret.
-    let mut changed: VaultChanged = client.vault(path, &request, |progress| {
-        use crate::calcifer_client::VaultProgress;
-        let message = match progress {
-            VaultProgress::Accepted { action } => format!("vault {action}: accepted"),
-            VaultProgress::Progress { phase, files_done, bytes_done } => {
-                format!("vault {phase}: {files_done} files, {bytes_done} bytes")
-            }
-        };
-        // Progress stays on stderr, including with --json; stdout contains only the final result.
-        output::warned(&message);
-    }).await?;
+    let mut changed = request_vault(ctx, &client, path, &request).await?;
     if let (Some(path), Some(secret)) = (&recovery_out, &changed.recovery_secret) {
         save_recovery(path, secret)?;
         changed.recovery_secret = None;
@@ -181,6 +173,9 @@ async fn change(ctx: &Context, path: &str, request: VaultAsk, recovery_out: Opti
         output::say(ctx, &format!("ended the project's runs {} before locking", runs.join(", ")));
     }
     show(ctx, &changed.vault);
+    if request.action == "encrypt" && changed.preserved_source.is_none() {
+        output::say(ctx, "The verified unencrypted source was removed.");
+    }
     if let Some(source) = changed.preserved_source {
         let protection = if request.action == "encrypt" { "this source is still plaintext" } else { "its original protection is unchanged" };
         output::warn(&format!("source preserved at {}; {protection}", source.display()));
@@ -191,19 +186,62 @@ async fn change(ctx: &Context, path: &str, request: VaultAsk, recovery_out: Opti
     Ok(ExitCode::SUCCESS)
 }
 
+/// The private stream and progress renderer are shared without command result/status output.
+async fn request_vault(ctx: &Context, client: &crate::calcifer_client::Client, path: &str, request: &VaultAsk) -> Result<VaultChanged, Error> {
+    // No client idempotency cache for responses containing a recovery secret.
+    let meter = crate::progress::Transfer::stderr(ctx.term.stderr, format!("vault {}", request.action));
+    let result = client.vault(path, request, |progress| {
+        use crate::calcifer_client::VaultProgress;
+        match progress {
+            VaultProgress::Accepted { .. } => meter.finalizing("accepted"),
+            VaultProgress::Notice { message } => meter.println(message),
+            VaultProgress::Progress { phase, files_done, bytes_done, files_total, bytes_total } => {
+                meter.update(crate::progress::TransferCounts {
+                    files_done, files_total: (files_total > 0).then_some(files_total),
+                    bytes_done, bytes_total: (bytes_total > 0).then_some(bytes_total), bytes_moved: bytes_done,
+                });
+                match phase {
+                    "copying" | "verifying" => meter.phase(phase),
+                    _ => meter.finalizing(phase),
+                }
+            }
+        }
+    }).await;
+    meter.finish_and_clear();
+    result
+}
+
+/// Called only after Open verified an interactive terminal. No status or secret preamble reaches stdout.
+pub(crate) async fn unlock_for_open(ctx: &Context) -> Result<(), Error> {
+    let path = vault_path(None)?;
+    let mut request = ask("unlock");
+    request.passphrase = Some(credential(None, "Project passphrase: ", false)?);
+    let client = ctx.calcifer().await?;
+    let changed = request_vault(ctx, &client, &path, &request).await?;
+    if !changed.vault.encrypted || changed.vault.state != "unlocked" {
+        return Err(Error::new(Kind::Conflict, "project_locked", "the project did not remain unlocked; try unlocking it again")
+            .next("cozy vault unlock"));
+    }
+    Ok(())
+}
+
 fn show(ctx: &Context, status: &VaultStatus) {
     output::say(ctx, &format!("{}: {}", status.path.display(), status.state));
-    if let Some(view) = &status.view { output::say(ctx, &format!("readable view: {}", view.display())); }
+    if let Some(view) = &status.view { output::say(ctx, &format!("readable view: {}", output::link(ctx, view))); }
     output::nexts(ctx, &status.next);
 }
 
 async fn encrypt(ctx: &Context, path: &str, args: Encrypt) -> Result<ExitCode, Error> {
-    output::warn("Encryption does not erase earlier plaintext copies, backups or shared cache copies. Protect or remove them separately.");
+    output::warn("Earlier independent plaintext copies, backups and shared cache copies are not erased. Protect or remove them separately.");
+    if args.preserve_plaintext { output::warn("An unencrypted copy of this project will be kept after encryption."); }
+    else { output::say(ctx, "The verified unencrypted source will be removed after encryption succeeds."); }
     let mut request = ask("encrypt");
     request.passphrase = Some(credential(args.passphrase_file.as_ref(), "New project passphrase: ", true)?);
     request.idle_timeout_s = Some(args.idle);
     request.max_duration_s = Some(args.max_duration);
-    request.remove_plaintext = args.remove_plaintext;
+    request.preserve_plaintext = args.preserve_plaintext;
+    // Older controllers only know the removal flag and otherwise preserve the source.
+    request.remove_plaintext = args.remove_plaintext || !args.preserve_plaintext;
     change(ctx, path, request, args.recovery_out).await
 }
 

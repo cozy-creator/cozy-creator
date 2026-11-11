@@ -121,6 +121,31 @@ impl Drop for Fixture {
 }
 
 #[tokio::test]
+async fn download_progress_reports_written_bytes_and_total_including_empty_files() {
+    let fixture = Fixture::new(|request, _, _| Some(Reply {
+        status: "200 OK",
+        body: if request.path == "/v1/empty" { String::new() } else { "abcdé".into() },
+        content_type: "application/octet-stream",
+        headers: vec![],
+    }));
+    for (path, expected) in [("/v1/file", "abcdé".as_bytes()), ("/v1/empty", b"".as_slice())] {
+        let destination = fixture._home.path().join("download");
+        let observed = Mutex::new(Vec::new());
+        let written = fixture.client.download_progress(path, &destination, &|done, total| {
+            observed.lock().unwrap().push((done, total));
+        }).await.unwrap();
+        let count = expected.len() as u64;
+        assert_eq!(written, count);
+        assert_eq!(std::fs::read(destination).unwrap(), expected);
+        let observed = observed.into_inner().unwrap();
+        assert_eq!(observed.first(), Some(&(0, Some(count))));
+        assert_eq!(observed.last(), Some(&(count, Some(count))));
+        assert!(observed.iter().all(|(_, total)| *total == Some(count)));
+        assert!(observed.windows(2).all(|pair| pair[0].0 <= pair[1].0));
+    }
+}
+
+#[tokio::test]
 async fn raw_503_retries_and_reads_the_rotated_holder_token() {
     let mut attempt = 0;
     let fixture = Fixture::new(move |_, claim, original| {
@@ -258,7 +283,7 @@ async fn follower_reconnects_with_the_same_run_and_durable_cursor() {
 fn vault_ask() -> VaultAsk {
     VaultAsk {
         action: "encrypt".into(), passphrase: Some("request-secret".into()), recovery_secret: None,
-        idle_timeout_s: None, max_duration_s: None, remove_plaintext: false,
+        idle_timeout_s: None, max_duration_s: None, remove_plaintext: false, preserve_plaintext: false,
     }
 }
 
@@ -273,17 +298,18 @@ fn vault_changed() -> serde_json::Value {
 async fn vault_stream_keeps_progress_separate_from_the_final_secret() {
     let fixture = Fixture::new(|_, _, _| Some(Reply {
         status: "200 OK", content_type: "text/event-stream; charset=utf-8", headers: vec![],
-        body: format!("data: {{\"type\":\"accepted\",\"action\":\"encrypt\"}}\n\n: keepalive\n\ndata: {{\"type\":\"progress\",\"phase\":\"copying\",\"files_done\":2,\"bytes_done\":128}}\n\ndata: {}\n\n",
+        body: format!("data: {{\"type\":\"accepted\",\"action\":\"encrypt\"}}\n\n: keepalive\n\ndata: {{\"type\":\"progress\",\"phase\":\"copying\",\"files_done\":2,\"bytes_done\":128}}\n\ndata: {{\"type\":\"progress\",\"phase\":\"copying\",\"files_done\":2,\"bytes_done\":128,\"files_total\":4,\"bytes_total\":1000000}}\n\ndata: {}\n\n",
             serde_json::json!({"type":"completed", "changed":vault_changed()})),
     }));
     let mut progress = Vec::new();
     let changed = fixture.client.vault("/v1/projects/project/vault", &vault_ask(), |event| {
         progress.push(match event {
             VaultProgress::Accepted { action } => format!("accepted {action}"),
-            VaultProgress::Progress { phase, files_done, bytes_done } => format!("{phase} {files_done} {bytes_done}"),
+            VaultProgress::Notice { message } => format!("notice {message}"),
+            VaultProgress::Progress { phase, files_done, bytes_done, files_total, bytes_total } => format!("{phase} {files_done}/{files_total} {bytes_done}/{bytes_total}"),
         });
     }).await.unwrap();
-    assert_eq!(progress, ["accepted encrypt", "copying 2 128"]);
+    assert_eq!(progress, ["accepted encrypt", "copying 2/0 128/0", "copying 2/4 128/1000000"]);
     assert_eq!(changed.recovery_secret.as_deref(), Some("terminal-secret"));
     let requests = fixture.requests();
     assert_eq!(requests.len(), 1);

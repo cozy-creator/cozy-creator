@@ -1,7 +1,7 @@
 // The real browser/Calcifer/securefs path. Synthetic project only; no requests are mocked.
 const playwright = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
-const { existsSync, mkdtempSync, rmSync, writeFileSync } = require('fs');
+const { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { dirname, join } = require('path');
 const { calcifer, signIn, launch, png, MP4, until, drop, openCanvas, importFile, projectJson, projectUrl, settled, fitCanvas, pointAt } = require('./page');
@@ -97,6 +97,7 @@ const newPage = async () => {
 (async () => {
   scratch = mkdtempSync(join(tmpdir(), 'web-vault-'));
   const folder = join(scratch, 'project');
+  const sourceFolders = () => readdirSync(scratch).filter((name) => name.startsWith('.cozy-project-source-')).sort();
   const picture = join(scratch, 'private_vault_picture.png');
   writeFileSync(picture, png(23));
   cli('new', '--unencrypted', folder);
@@ -241,7 +242,12 @@ const newPage = async () => {
   check('initial_project_reads_drained', true);
   await body.locator('input[type=password]').nth(0).fill('synthetic browser passphrase');
   await body.locator('input[type=password]').nth(1).fill('synthetic browser passphrase');
-  await body.getByLabel('Remove the verified unencrypted source after conversion').check();
+  const preserveChoice = body.getByLabel('Keep an unencrypted copy after encryption');
+  await body.getByText('Lock timing', { exact: true }).click();
+  check('ui_default_idle_is_thirty_minutes', await body.getByLabel('Lock after inactivity (seconds; 0 disables)').inputValue() === '1800');
+  check('ui_encryption_defaults_to_source_removal', !(await preserveChoice.isChecked()));
+  const sourcesBeforeEncryption = sourceFolders();
+  await preserveChoice.check();
   const encryptionReply = page.waitForResponse((response) => isVaultWrite(response.request()) && new URL(response.url()).pathname.startsWith(`/v1/projects/${id}/vault`) && JSON.parse(response.request().postData() || '{}').action === 'encrypt');
   await body.getByRole('button', { name: 'Enable encryption', exact: true }).click();
   const encrypted = await encryptionReply;
@@ -255,6 +261,8 @@ const newPage = async () => {
   check('vault_receipt_is_streamed', (encrypted.headers()['content-type'] ?? '').startsWith('text/event-stream') && (encrypted.headers()['cache-control'] ?? '').includes('no-store'));
   await page.locator('[aria-label="Save recovery secret"] pre').waitFor();
   const recovery = await page.locator('[aria-label="Save recovery secret"] pre').innerText();
+  const keptSources = sourceFolders().filter((name) => !sourcesBeforeEncryption.includes(name));
+  check('ui_explicit_preservation_keeps_plaintext', keptSources.length === 1 && existsSync(join(scratch, keptSources[0], 'project.db')));
   check('recovery_is_long_and_local', recovery.startsWith('cozy1-') && recovery.length > 70);
   check('qr_is_generated_in_page', await page.locator('[aria-label="Save recovery secret"] svg').count() === 1);
   await page.getByLabel('I saved this somewhere away from this computer').check();
@@ -603,10 +611,13 @@ const newPage = async () => {
   await plainStorageReady('ordinary project storage reads drained before re-encryption');
   await page.locator('.drawer input[type=password]').nth(0).fill('synthetic browser passphrase');
   await page.locator('.drawer input[type=password]').nth(1).fill('synthetic browser passphrase');
-  await page.getByLabel('Remove the verified unencrypted source after conversion').check();
+  check('ui_reencryption_resets_to_source_removal', !(await page.getByLabel('Keep an unencrypted copy after encryption').isChecked()));
+  const sourcesBeforeReencryption = sourceFolders();
   await page.getByRole('button', { name: 'Enable encryption', exact: true }).click();
   await page.locator('[aria-label="Save recovery secret"] pre').waitFor();
   const replacementRecovery = await page.locator('[aria-label="Save recovery secret"] pre').innerText();
+  check('ui_default_reencryption_removes_its_source', JSON.stringify(sourceFolders()) === JSON.stringify(sourcesBeforeReencryption));
+  check('ui_default_reencryption_clears_preservation_warning', await page.getByText('The verified unencrypted source was removed.', { exact: true }).isVisible() && await page.locator('p.warn').filter({ hasText: 'An unencrypted copy was preserved at' }).count() === 0);
   check('decrypted_project_can_be_encrypted_again', projectJson(folder).id === id && JSON.parse(vault(folder, 'status')).encrypted === true);
 
   stage = 'plain recheck observes a later locked generation';
@@ -629,15 +640,11 @@ const newPage = async () => {
   await page.unroute(statusPath, statusRoute);
   stage = 'default encrypted project creation';
   const origin = new URL(href).origin;
-  const saveCreationRecovery = async (closeProjects = false) => {
+  const saveCreationRecovery = async (suffix = '') => {
     await page.locator('[aria-label="Save recovery secret"] pre').waitFor();
     await page.getByLabel('I saved this somewhere away from this computer').check();
     await page.getByRole('button', { name: 'Done', exact: true }).click();
-    if (closeProjects) {
-      await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}\/projects$/);
-      await page.locator('.drawer').getByRole('link', { name: 'Close', exact: true }).click();
-    }
-    await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
+    await page.waitForURL(new RegExp(`/p/[0-9A-HJKMNP-TV-Z]{9}${suffix}$`));
   };
   await goto(page, `${origin}/projects`);
   check('new_form_defaults_to_encryption', !(await page.getByLabel('Create without encryption', { exact: true }).isChecked()));
@@ -656,15 +663,15 @@ const newPage = async () => {
   check('new_creation_discloses_recovery_locally', Boolean(newRecovery) && await page.locator('[aria-label="Save recovery secret"] pre').innerText() === newRecovery);
   await saveCreationRecovery();
   check('new_creation_has_no_plaintext_database', !existsSync(join(newlyCreated.path, 'project.db')) && JSON.parse(vault(newlyCreated.path, 'status')).encrypted);
+  check('new_creation_default_idle_is_thirty_minutes', JSON.parse(vault(newlyCreated.path, 'status')).idle_timeout_s === 1800);
   const persisted = await page.evaluate(() => JSON.stringify(localStorage));
   check('new_creation_credentials_are_not_browser_storage', !persisted.includes(newRecovery) && !persisted.includes('synthetic new project passphrase'));
 
   stage = 'implicit canvas creation waits for secure setup';
-  // Home resumes a known project. Projects exposes the real unowned canvas behind its drawer.
-  await goto(page, `${origin}/projects`);
-  await page.locator('.react-flow').waitFor();
-  check('implicit_creation_starts_on_empty_canvas', (await page.locator('.react-flow__node').count()) === 0
-    && (await page.locator('nav.ptabs a[aria-current="page"]').count()) === 0);
+  // Home intentionally reopens the latest project. This global route keeps an
+  // unowned canvas behind its drawer, so this actually exercises first-drop setup.
+  await goto(page, `${origin}/runs`);
+  await page.locator('.empty-canvas').waitFor();
   const uploadsBeforeSetup = fileWrites.length;
   const emptyAt = await openCanvas(page);
   await drop(page, [{ name: 'new_private_drop.png', type: 'image/png', bytes: png(109) }], emptyAt.x, emptyAt.y);
@@ -680,10 +687,42 @@ const newPage = async () => {
   createdFolders.push(implicit.path);
   await page.locator('[aria-label="Save recovery secret"] pre').waitFor();
   check('implicit_creation_waits_for_saved_recovery', fileWrites.length === uploadsBeforeSetup);
-  await saveCreationRecovery(true);
-  // Closing the drawer moved focus to its link; accept the pending name in its actual field.
-  await page.locator('.nm-field').press('Enter');
-  await until('implicit encrypted import lands', () => projectJson(implicit.path).assets.some((asset) => asset.sha256), Boolean, 45000);
+  // Recovery acknowledgement still verifies the real status on the global route.
+  // Hold only the selected project's subsequent refresh, after adoption, without
+  // fabricating any status reply. The pending draft must remain private in RAM.
+  const adoptionStatus = `**/v1/projects/${implicit.id}/vault`;
+  let releaseAdoption;
+  const adoptionGate = new Promise((resolve) => { releaseAdoption = resolve; });
+  let adoptionReads = 0;
+  const holdAdoption = async (route) => {
+    if (route.request().method() !== 'GET' || !new URL(page.url()).pathname.startsWith(`/p/${implicit.code}/`)) return route.continue();
+    adoptionReads++;
+    await adoptionGate;
+    await route.continue();
+  };
+  await page.route(adoptionStatus, holdAdoption);
+  try {
+    await saveCreationRecovery('/runs');
+    await until('adopted project awaits its fresh protection reply', () => adoptionReads, (count) => count > 0, 45000);
+    check('implicit_adoption_covers_the_retained_private_draft', await page.locator('.gate').isVisible() && await page.locator('.nm-field').count() === 1 && !(await page.locator('.nm-field').isVisible()));
+    const adoptionStored = await page.evaluate((project) => ['cozy.view:', 'cozy.selection:', 'cozy.more:'].some((prefix) => localStorage.getItem(prefix + project) !== null), implicit.id);
+    check('implicit_adoption_cannot_persist_as_plain_before_refresh', !adoptionStored);
+  } finally {
+    releaseAdoption();
+    await page.unroute(adoptionStatus, holdAdoption);
+  }
+  const importedName = page.getByRole('textbox', { name: 'Name', exact: true });
+  await importedName.waitFor();
+  await importedName.fill('new_private_drop');
+  await importedName.press('Enter');
+  await until('implicit encrypted import lands', () => projectJson(implicit.path).assets.some((asset) => asset.name === 'new_private_drop' && asset.sha256), Boolean, 45000);
+  const privatePan = await openCanvas(page);
+  await page.mouse.move(privatePan.x, privatePan.y);
+  await page.mouse.down();
+  await page.mouse.move(privatePan.x + 24, privatePan.y + 16, { steps: 4 });
+  await page.mouse.up();
+  await settled(page);
+  check('implicit_project_stays_private_after_fresh_refresh', !(await page.evaluate((project) => ['cozy.view:', 'cozy.selection:', 'cozy.more:'].some((prefix) => localStorage.getItem(prefix + project) !== null), implicit.id)));
   check('implicit_creation_uses_private_uploads', fileWrites.slice(uploadsBeforeSetup).length > 0 && fileWrites.slice(uploadsBeforeSetup).every((write) => write.path.startsWith('/v1/project-files/') && write.project === implicit.id));
   check('implicit_creation_is_encrypted', JSON.parse(vault(implicit.path, 'status')).encrypted && !existsSync(join(implicit.path, 'project.db')));
 

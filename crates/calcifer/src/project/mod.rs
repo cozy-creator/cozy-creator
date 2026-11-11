@@ -184,7 +184,7 @@ pub(crate) fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
         .route("/v1/projects/{id}/assets", post(assets::create))
         .route("/v1/projects/{id}/assets/{name}", get(assets::read).patch(assets::patch).delete(assets::delete))
         .route("/v1/projects/{id}/assets/{name}/versions", post(assets::join))
-        .route("/v1/projects/{id}/assets/{name}/versions/{number}", delete(assets::discard))
+        .route("/v1/projects/{id}/assets/{name}/versions/{number}", delete(assets::discard).patch(assets::patch_version))
         .route("/v1/projects/{id}/files/{file}", get(file))
         .route("/v1/projects/{id}/cuts/{cut}", get(cut))
         .route("/v1/projects/{id}/history", get(history::list))
@@ -1577,7 +1577,7 @@ fn listed(lock: &Lock, files: &Files) -> BTreeMap<String, Listing> {
         .filter_map(|(name, sha256)| {
             let file = lock.files.get(sha256)?;
             let (absent, machine) = whereabouts(file);
-            Some((name.clone(), Listing { path: file.path.clone(), sha256: sha256.clone(), absent, machine }))
+            Some((name.clone(), Listing { path: file.path.clone(), sha256: sha256.clone(), absent, machine, metadata: Map::new() }))
         })
         .collect()
 }
@@ -1589,10 +1589,11 @@ fn whereabouts(file: &folder::File) -> (bool, Option<String>) {
 }
 
 /// The file people mean by `files`, as a version lists it.
-fn main_file(lock: &Lock, files: &Files) -> Option<MainFile> {
-    let sha256 = folder::main_of(files)?;
+fn main_file(lock: &Lock, version: &Version) -> Option<MainFile> {
+    let sha256 = version.main()?;
     let file = lock.files.get(sha256)?;
-    let output = files.iter().find(|(_, held)| *held == sha256)?.0.clone();
+    let output = version.main_output()?.clone();
+    let metadata = version.metadata.get(&output).cloned().unwrap_or_default();
     let (absent, machine) = whereabouts(file);
     let measured = |number: u64| (number > 0).then_some(number);
     Some(MainFile {
@@ -1607,7 +1608,35 @@ fn main_file(lock: &Lock, files: &Files) -> Option<MainFile> {
         alpha: file.alpha > 0.0,
         absent,
         machine,
+        frames: measured(file.frames),
+        metadata,
     })
+}
+
+/// The most metadata a file keeps, as its Runtime bounds it.
+pub(super) const METADATA_MAX: usize = 4096;
+
+/// What a run's `result` says of the file it returned at output `name` (`pair.thumb`, `takes[2].video`), a list's item `index` (1 first):
+/// the `metadata` its function declared on it (`File.with_metadata`).
+fn declared(result: Option<&Value>, name: &str, index: u32) -> Result<Map<String, Value>, String> {
+    let mut at = result;
+    for part in name.split('.') {
+        let (field, item) = part.split_once('[').map_or((part, None), |(field, rest)| (field, rest.trim_end_matches(']').parse::<usize>().ok()));
+        at = at.and_then(|value| value.get(field));
+        if let Some(item) = item {
+            at = at.and_then(|value| value.get(item));
+        }
+    }
+    if index > 0 && at.is_some_and(Value::is_array) {
+        at = at.and_then(|value| value.get(index as usize - 1));
+    }
+    let Some(said) = at.and_then(|node| node.get("metadata")) else { return Ok(Map::new()) };
+    let said = said.as_object().ok_or("is not a map")?;
+    let length = serde_json::to_vec(said).map_or(usize::MAX, |bytes| bytes.len());
+    if length > METADATA_MAX {
+        return Err(format!("is {length} bytes, over {METADATA_MAX}"));
+    }
+    Ok(said.clone())
 }
 
 /// The path of the file people mean by `files`.
@@ -1689,7 +1718,7 @@ fn row(reading: &Reading, i: usize) -> Row {
                     latents: version.files.get("latents").and_then(|sha256| lock.files.get(sha256)).filter(|file| file.stays()).map(|file| file.machine.clone()),
                     execution_ms: (version.execution_ms > 0).then_some(version.execution_ms),
                     run: version.run,
-                    main: main_file(lock, &version.files),
+                    main: main_file(lock, version),
                     from: cut_from(lock, version),
                     without: version.without.iter().map(folder::Without::said).collect(),
                     timeline: (!version.clips.is_empty()).then(|| {
@@ -4493,12 +4522,20 @@ impl Walk {
         }
         // Every file the run saved, by its output's name (a list's items as `<name>-<n>`).
         let (mut saved, mut stayed, mut coming, mut away) = (Files::new(), Files::new(), false, vec![]);
+        let mut metadata = folder::Metadata::new();
         for output in &run.output {
             // The first of a list goes by its name, so a reader that takes one takes it.
             let file = match output.index {
                 0 | 1 => output.name.clone(),
                 n => format!("{}-{n}", output.name),
             };
+            match declared(run.result.as_ref(), &output.name, output.index) {
+                Ok(said) if said.is_empty() => {}
+                Ok(said) => {
+                    metadata.insert(file.clone(), said);
+                }
+                Err(why) => version.warnings.push(format!("{name}: {file}'s metadata {why}, so it was left off")),
+            }
             // What stays on its machine is listed with who holds it, and no file.
             if output.stays && output.path.as_ref().is_none_or(|path| !path.is_file()) {
                 if let (Some(sha256), Some(machine)) = (&output.sha256, &run.machine) {
@@ -4527,6 +4564,8 @@ impl Walk {
         }
         saved.append(&mut stayed);
         version.files.extend(saved.clone());
+        metadata.retain(|file, _| saved.contains_key(file));
+        version.metadata.extend(metadata);
         // On its way, its version is listed: a restart follows it from here.
         let on_its_way = coming.then(|| Coming { name: name.clone(), number: version.number, take: version.files.contains_key("video") });
         let list_away = |lock: &mut Lock| {

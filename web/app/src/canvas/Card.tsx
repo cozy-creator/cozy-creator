@@ -19,6 +19,7 @@ import { useDragScroll } from "./dragScroll"
 import { Media, Preview, preload, Thumb, usePreview, WalkedFrames } from "./Media"
 import { MentionText } from "./MentionText"
 import { NameField } from "./NameField"
+import { ORBIT, orbitOf } from "./Orbit"
 import { FPS, framesIn, timecode } from "./ranges"
 import { aspectOf, faceOf, madeHere, makes, NARROWEST, paints, reshapes, shownOf, valuesOf, watched } from "./shown"
 import { chipWords, noHash, piecesOf, rowsIn, took } from "./text"
@@ -324,6 +325,28 @@ function PickUp({ view, name }: { view: ElementView; name: string }) {
       )}
       {gone && <div className="status ood">This take's latents went with {gone}: the join may show</div>}
     </div>
+  )
+}
+
+/** Orbit viewing for the take shown, as its file says or as a person turns it on (Paul, 11-11): on, a drag turns the video and no play
+ *  button plays it. It's what the file says of itself, kept with the take, so it's undone like any edit and puts nothing out of date. */
+function OrbitToggle({ view, name }: { view: ElementView; name: string }) {
+  const store = useCanvasStore()
+  const shown = shownOf(view)
+  if (!shown || shown.field !== "video" || view.hereWords || !view.asset) return null
+  const on = Boolean(orbitOf(shown))
+  const which = shown.number === undefined ? name : `${view.asset.noun} ${shown.number} of ${name}`
+  const flip = (want: boolean) => {
+    const rest = Object.fromEntries(Object.entries(shown.metadata ?? {}).filter(([key]) => key !== "orbit"))
+    const metadata = want ? { ...rest, orbit: ORBIT } : rest
+    store.setMetadata(name, shown.number, metadata, `Turned ${want ? "on" : "off"} orbit viewing for ${which}`)
+  }
+  return (
+    <label className="row orbit-toggle">
+      <input className="nodrag" type="checkbox" role="switch" aria-label="Orbit: drag to turn" checked={on} onChange={(event) => flip(event.target.checked)} />
+      <span>Orbit</span>
+      <span className="muted">{on ? "Drag to turn" : "Plays"}</span>
+    </label>
   )
 }
 
@@ -785,6 +808,7 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
           <div className="here-all">
             {asset.timeline && <Takes view={view} name={name} width={width} />}
             {!asset.timeline && (!view.hereWords || view.pickingUp) && <PickUp view={view} name={name} />}
+            {!asset.timeline && <OrbitToggle view={view} name={name} />}
             {!editing && <Bar view={view} name={name} />}
             {/* Looking at a take an image tool made, only its description: its tool and words are the next take's, behind its +. */}
             {!looking && (

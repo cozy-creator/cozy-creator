@@ -37,6 +37,8 @@ use super::{
 };
 use crate::api::{Api, Refusal, parse};
 
+/// The metadata key that turns a video.
+const ORBIT: &str = "orbit";
 /// How many entries a project keeps.
 const KEPT: usize = 200;
 /// How many `GET` lists with no `limit`.
@@ -68,13 +70,15 @@ pub(super) enum Change {
     Fields { name: String, fields: BTreeMap<String, (Value, Value)> },
     Card { name: String, before: Option<Card>, after: Option<Card> },
     Take { name: String, number: u32, noun: String, before: Took, after: Took },
+    /// What a version's file `output` says of itself (`orbit`), as it was and is.
+    Metadata { name: String, number: u32, noun: String, output: String, before: Map<String, Value>, after: Map<String, Value> },
     Renamed { from: String, to: String },
 }
 
 impl Change {
     fn name(&self) -> &str {
         match self {
-            Change::Asset { name, .. } | Change::Fields { name, .. } | Change::Card { name, .. } | Change::Take { name, .. } => name,
+            Change::Asset { name, .. } | Change::Fields { name, .. } | Change::Card { name, .. } | Change::Take { name, .. } | Change::Metadata { name, .. } => name,
             Change::Renamed { to, .. } => to,
         }
     }
@@ -215,10 +219,14 @@ fn push(changes: &mut Vec<Change>, next: Change) {
         Change::Fields { .. } | Change::Asset { .. } => last(|change| matches!(change, Change::Asset { .. } | Change::Fields { .. })),
         Change::Card { .. } => last(|change| matches!(change, Change::Card { .. })),
         Change::Take { number, .. } => changes.iter().rposition(|change| matches!(change, Change::Take { name, number: n, .. } if name_key(name) == key && n == number)),
+        Change::Metadata { number, output, .. } => changes.iter().rposition(|change| matches!(change, Change::Metadata { name, number: n, output: o, .. } if name_key(name) == key && n == number && o == output)),
         Change::Renamed { .. } => None,
     };
     let Some(at) = at else {
-        if !matches!(&next, Change::Card { before, after, .. } if before == after) && !matches!(&next, Change::Take { before, after, .. } if before == after) {
+        let still = matches!(&next, Change::Card { before, after, .. } if before == after)
+            || matches!(&next, Change::Take { before, after, .. } if before == after)
+            || matches!(&next, Change::Metadata { before, after, .. } if before == after);
+        if !still {
             changes.push(next);
         }
         return;
@@ -247,6 +255,10 @@ fn push(changes: &mut Vec<Change>, next: Change) {
             if before == held { Then::Drop } else { Then::Keep }
         }
         (Change::Take { before, after: held, .. }, Change::Take { after, .. }) => {
+            *held = after;
+            if before == held { Then::Drop } else { Then::Keep }
+        }
+        (Change::Metadata { before, after: held, .. }, Change::Metadata { after, .. }) => {
             *held = after;
             if before == held { Then::Drop } else { Then::Keep }
         }
@@ -348,6 +360,13 @@ fn words(changes: &[Change], lock: Option<&Lock>) -> String {
             _ => format!("Switched {name} to {}", tool_word(after)),
         };
     }
+    if let Some(Change::Metadata { name, number, noun, before, after, .. }) = changes.iter().find(|change| matches!(change, Change::Metadata { .. })) {
+        return match (before.contains_key(ORBIT), after.contains_key(ORBIT)) {
+            (false, true) => format!("Turned on orbit viewing for {noun} {number} of {name}"),
+            (true, false) => format!("Turned off orbit viewing for {noun} {number} of {name}"),
+            _ => format!("Set what {noun} {number} of {name} says of itself"),
+        };
+    }
     if let Some(Change::Take { name, number, noun, before, after }) = changes.iter().find(|change| matches!(change, Change::Take { .. })) {
         return match (before, after) {
             (_, Took::Discarded) | (_, Took::Absent) => format!("Discarded {noun} {number} of {name}"),
@@ -414,6 +433,11 @@ pub(super) fn quiet() {
     let _ = EDITING.try_with(|editing| editing.borrow_mut().quiet = true);
 }
 
+/// What version `number` of `name` says of its file `output` went from `before` to `after`.
+pub(super) fn metadata(folder: &Folder, name: &str, number: u32, noun: &str, output: &str, before: Map<String, Value>, after: Map<String, Value>) {
+    folder.made(|| Made::Change(Change::Metadata { name: name.to_owned(), number, noun: noun.to_owned(), output: output.to_owned(), before, after }));
+}
+
 /// Take `number` of `name` went from `before` to `after`.
 pub(super) fn take(folder: &Folder, name: &str, number: u32, noun: &str, before: Took, after: Took) {
     folder.made(|| Made::Change(Change::Take { name: name.to_owned(), number, noun: noun.to_owned(), before, after }));
@@ -448,7 +472,7 @@ fn kept(method: &Method, path: &str) -> bool {
         ("POST", ["imports" | "assets" | "approve" | "unpin" | "rename"]) => true,
         ("POST", ["assets", _, "versions"]) => true,
         ("PATCH" | "DELETE", ["assets", _]) => true,
-        ("DELETE", ["assets", _, "versions", _]) => true,
+        ("PATCH" | "DELETE", ["assets", _, "versions", _]) => true,
         ("PATCH", ["canvas"]) | ("PUT", ["yaml"]) => true,
         _ => false,
     }
@@ -770,6 +794,12 @@ fn moved_one(project: &Project, change: &Change, way: Way) -> Option<String> {
                 Took::Discarded => format!("{name}'s {noun} {number} is discarded"),
             })
         }
+        Change::Metadata { name, number, noun, output, before, after } => {
+            let lock = folder.lock().ok()?;
+            let Some(version) = lock.asset(name).and_then(|held| held.version(*number)) else { return Some(format!("{name}'s {noun} {number} is gone")) };
+            let now = version.metadata.get(output).cloned().unwrap_or_default();
+            (now != *found(way, before, after)).then(|| format!("what {name}'s {noun} {number} says of itself changed since"))
+        }
         Change::Renamed { from, to } => {
             let (there, free) = if way == Way::Back { (to, from) } else { (from, to) };
             if written.get(there).is_none() {
@@ -828,6 +858,10 @@ fn put(api: &Arc<Api>, project: &Arc<Project>, id: &str, change: &Change, way: W
                     Took::Absent | Took::Discarded => lock.asset_mut(name, "").discard(*number),
                 })
                 .map_err(Refusal)
+        }
+        Change::Metadata { name, number, output, before, after, .. } => {
+            let wanted = wanted(way, before, after).clone();
+            folder.update_lock(|lock| super::assets::set_metadata(lock, name, *number, output, wanted)).map_err(Refusal)
         }
         Change::Renamed { from, to } => {
             let (from, to) = if way == Way::Back { (to, from) } else { (from, to) };

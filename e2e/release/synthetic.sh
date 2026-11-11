@@ -33,7 +33,7 @@ release_synthetic_checks() (
     local status=$?
     step cleanup
     python3 "$E2E/delete-test-package.py" "$WHO/$pkg" > /dev/null || check "package fixture cleanup failed"
-    for model_name in "$model" "$model-copy" "$model-store" "$model-lora"; do
+    for model_name in "$model" "$model-copy" "$model-store" "$model-lora" "$model-h3-lora"; do
       if model_details "$model_name" > /dev/null 2>&1; then
         cozy --json model delete "$model_name" -y > /dev/null || check "cleanup failed for $model_name"
       fi
@@ -196,6 +196,30 @@ if cozy --json lora delete "$model-lora@$lora_checkpoint" -y > "$OUT/referenced-
   check "a retained private release did not protect its checkpoint from deletion"
 fi
 cozy --json lora delete "$model-lora" -y > /dev/null || check "LoRA fixture cleanup failed"
+# se-116: an H3 LoRA as upstream musubi-tuner writes it (one fused QKV module, f8a1b037's metadata) records the DiT its
+# --task trained, never the h3.lora table's `transformer` (matlowai/orb360 was trained on Ref2VA and read as FL2VA).
+uv run -q --no-project python -I - "$OUT/tiny-h3-lora.safetensors" <<'PYH3'
+import json, struct, sys
+stem, rank = "lora_unet_blocks_0_attn_qkv_proj", 1
+shapes = {f"{stem}.lora_down.weight": [rank, 5376], f"{stem}.lora_up.weight": [3 * 7168, rank]}
+header, data, at = {}, b"", 0
+for key, shape in shapes.items():
+    size = 2 * shape[0] * shape[1]
+    header[key] = {"dtype": "F16", "shape": shape, "data_offsets": [at, at + size]}
+    data, at = data + b"\x00\x3c" * (size // 2), at + size
+header[f"{stem}.alpha"] = {"dtype": "F32", "shape": [], "data_offsets": [at, at + 4]}
+data += struct.pack("<f", 1.0)
+header["__metadata__"] = {"ss_network_module": "networks.lora_minimax_h3", "ss_minimax_h3_task": "ref2va",
+                          "ss_minimax_h3_base_family": "ref2va"}
+raw = json.dumps(header).encode()
+raw += b" " * (-len(raw) % 8)
+open(sys.argv[1], "wb").write(struct.pack("<Q", len(raw)) + raw + data)
+PYH3
+watched upload-h3-lora lora upload "$OUT/tiny-h3-lora.safetensors" "$model-h3-lora" --lane f16 --on "$ON" \
+  && run_get "$OUT" upload-h3-lora '.result.models[0].format' \
+    | grep -qF 'trained on transformer_ref (musubi-tuner ss_minimax_h3_base_family=ref2va)' \
+  || check "H3 LoRA trained on Ref2VA: $(run_get "$OUT" upload-h3-lora '.result.models[0].format' 2>&1 | tail -c 300)"
+cozy --json lora delete "$model-h3-lora" -y > /dev/null || check "H3 LoRA fixture cleanup failed"
 cozy --json model publish "$model" 0.1.0 "$commit" "$commit_b" > "$OUT/model-publish.json" || check "model publish failed"
 model_details "$model" > "$OUT/model-info.json" \
   && J '.releases | any(.version == "0.1.0" and ([.lanes[].lane] | sort) == ["f16", "f32"])' "$OUT/model-info.json" \

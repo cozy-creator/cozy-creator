@@ -1,0 +1,3 @@
+Files carry metadata beside their type. What a function declares on its output file (`File.with_metadata`, Runtime) rides its run's result and is stored with the take or version in `project.db`; a mention of it sends it to the function reading it, as `Image`, `Video` and `Audio`'s `metadata`. The page reads it on each version's main file, and `PATCH /v1/projects/{id}/assets/{name}/versions/{number}` sets it, with Undo.
+
+An orbit video turns instead of playing: a video box whose take says `orbit: {degrees, direction, loops}` has no play button when open; a drag across it turns it (a width is a whole turn), wrapping past 0° when it loops, with arrows, Spin and Front. Its Orbit switch turns orbit viewing on or off for any video, a dropped one included.

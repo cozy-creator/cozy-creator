@@ -1192,6 +1192,9 @@ pub struct Rental {
     /// `host:port` of its sshd, when it was rented with an SSH key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ssh: Option<String>,
+    /// It was rented with an SSH key: root logs in at `ssh` once it is ready.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ssh_key: bool,
     /// Where it runs and whether its pod mounted the datacenter's NFS drive: a Hub admin's read, or
     /// a renter's who named the provider (dev-only `--provider`).
     #[serde(default, skip_serializing_if = "Option::is_none")]

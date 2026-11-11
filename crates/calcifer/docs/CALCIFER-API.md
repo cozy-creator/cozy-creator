@@ -341,6 +341,8 @@ A machine is this computer's (`local`, started when used), a rental, or another 
   - An end that fails (this computer is signed out or its key refused, the Hub refuses the release or does not
     know the rental) ended nothing: the machine is back in its state with `end_failed` saying why, and may still
     bill. Only a Hub that does not answer is asked again. Ending it again asks again.
+  - A rental that says it released itself (its idle window) ends the same way: Calcifer asks its Hub to end it,
+    so it is `ended` only on the Hub's word, and a release that never reached the Hub is made.
   - An ending machine takes no new runs (`409 machine_ending`), and `local` is refused.
   - An order its Hub has not answered stops at once (`ending`, no `rental_id`): it buys nothing more, and leaves
     the list once its Hub answers and anything it placed is ending. So does one whose run ended, or that its Hub
@@ -636,7 +638,10 @@ operation ID and reuses it when reconnecting. Events are `VaultEvent` values:
 `accepted`, `progress`, then exactly one `completed` or `failed`. `accepted` means
 the request was received; it is not a successful conversion. The worker durably
 records its ID and metadata binding before changing storage. It sends phases and
-copied-file/byte counts while working; ordinary SSE comments keep the connection alive.
+copied-file/byte counts and total file/byte counts while working. Totals are zero
+until the source inventory is complete, then exclude skipped media and SQLite
+WAL/SHM files. Metadata-protection and compaction phases remain explicit after
+file copying finishes; ordinary SSE comments keep the connection alive.
 
 Repeating that PUT attaches to the same operation instead of executing it again.
 Only the ID, metadata digest and terminal state are durable; no credential,
@@ -650,6 +655,18 @@ discarded sooner with `DELETE` on the operation URL. Locking revokes their
 recovery secrets and old view paths. These events never go through global SSE,
 history, outboxes or the ordinary response cache. The original JSON
 `POST /v1/projects/{id}/vault` remains supported for older clients.
+
+Omitting `idle_timeout_s` uses 1800 seconds (30 minutes) for creation/unlock.
+An explicit zero disables idle expiry; explicit durations and the separate absolute
+maximum remain unchanged. Existing unlocked sessions retain their current policy.
+
+For `encrypt`, verified source removal is the default even when the request omits
+`remove_plaintext` or sends it as false. Only `preserve_plaintext: true` keeps the
+original plaintext and returns `preserved_source`; it conflicts with `remove_plaintext: true`.
+The legacy removal field remains accepted. New clients also send it as true for default
+encryption so older controllers remove the source. Preservation is not valid for rekey/decrypt;
+rekey continues retiring the obsolete encrypted source after verification. A durable in-flight
+conversion retains its recorded cleanup policy across restart.
 
 Conversion validates its source before copying media. A dangling legacy link
 under `files/` is omitted and returned in `skipped_files`; its project-state

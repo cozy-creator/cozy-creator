@@ -1,10 +1,12 @@
-# e2e/cli/rental.sh: a rental on the isolated Hub's docker provider (a container on this runner, no real pod), and
-# sign-in by the code that development Hub logs instead of emailing (e2e/isolated.sh exports its log and email). Linux.
+# e2e/cli/rental.sh: a rental on the isolated Hub's docker provider (a container on this runner, no real pod; it never
+# gets ready, as this Hub's ingress is on loopback), and sign-in by the code that development Hub logs instead of
+# emailing (e2e/isolated.sh exports its log and email). Linux.
 #   rental_end   cl-875: `machine end` says a rental is shut down only once its Hub affirms it ended. Signed out, or
 #                holding a key the Hub revoked (11-11: another computer's `logout` revoked a copied key), it exits non-zero
-#                naming why, and the rental is still there; signed in again, it ends it. `logout` revokes a key this
-#                computer enrolled, never one installed with `login --key`, which another computer may hold; a pod
-#                signs in with a key of its own (`login --export`).
+#                naming why, and the rental is still there; signed in again, it ends it. `rent --ssh` with no path takes
+#                the default key, and `machine ssh` says what stands in the way: not ready yet, or signed out (not "not
+#                a rental"). `logout` revokes a key this computer enrolled, never one installed with `login --key`,
+#                which another computer may hold; a pod signs in with a key of its own (`login --export`).
 
 # signin <cozy login args...>: `cozy login`, answered with the newest code the Hub logs after it starts. The Hub spaces
 # enrollments to one email 30 s apart: refused that, it waits as told and asks again.
@@ -43,9 +45,10 @@ key=$(find "$keys" -name 'device-*.json' ! -name '*.bearer.json' | head -1)
 # What the 11-11 agent copied to a pod: this computer's own key file.
 cp "$key" "$held/laptop-key.json"
 
-# The order stands once its Hub accepts it; its machine never gets ready (this Hub's ingress is on loopback), which an
-# end does not need. The follower is killed outright, as a closed terminal kills it: it ends nothing.
-cozy --json machine rent cpu -y > "$OUT/rental-rent.ndjson" 2> "$OUT/rental-rent.err" & pid=$!
+# `--ssh` with no path: the default key. The order stands once its Hub accepts it, which an end needs, not a ready
+# machine. The follower is killed outright, as a closed terminal kills it: it ends nothing.
+[ -f "$HOME/.ssh/id_ed25519.pub" ] || ssh-keygen -q -t ed25519 -N '' -f "$HOME/.ssh/id_ed25519"
+cozy --json machine rent cpu --ssh -y > "$OUT/rental-rent.ndjson" 2> "$OUT/rental-rent.err" & pid=$!
 for _ in $(seq 180); do
   rental=$(jq -r 'select(.type? == "rental.accepted") | .rental_id // empty' "$OUT/rental-rent.ndjson" 2> /dev/null | tail -1 || true)
   [ -n "$rental" ] || ! kill -0 "$pid" 2> /dev/null || { sleep 1; continue; }
@@ -55,6 +58,21 @@ kill -KILL "$pid" 2> /dev/null || true
 wait "$pid" 2> /dev/null || true
 [ -n "$rental" ] || { check "rental_end: machine rent cpu: no rental accepted: $(tail -c 400 "$OUT/rental-rent.ndjson") $(tail -c 300 "$OUT/rental-rent.err")"; cozy --json logout > /dev/null 2>&1 || true; return; }
 echo "rented $rental"
+
+step "machine ssh: rented with the default key, not ready yet"
+# Its Hub's word names the key at once; its SSH address comes once it is ready.
+for _ in $(seq 60); do
+  cozy --json machine show "$rental" > "$OUT/rental-show-ssh.json" 2> /dev/null && J '.rental != null' "$OUT/rental-show-ssh.json" && break
+  sleep 1
+done
+J '.rental.ssh_key == true' "$OUT/rental-show-ssh.json" || check "rent --ssh with no path: the rental was not rented with a key: $(head -c 400 "$OUT/rental-show-ssh.json")"
+if J '.rental.ssh == null' "$OUT/rental-show-ssh.json"; then
+  code=0; cozy --json machine ssh "$rental" > "$OUT/rental-ssh-booting.json" 2> "$OUT/rental-ssh-booting.err" || code=$?
+  [ "$code" != 0 ] && J '.error.code == "machine_ssh_booting"' "$OUT/rental-ssh-booting.json" \
+    || check "machine ssh while it boots: exit $code, not 'not ready yet': $(head -c 300 "$OUT/rental-ssh-booting.json")"
+else
+  echo "it was ready before machine ssh was asked: $(jq -r .rental.ssh "$OUT/rental-show-ssh.json")"
+fi
 
 # end_refused <case> <words>: `machine end` exits non-zero, `end_failed` naming why (<words>), and the rental is still
 # listed and not ended, its end failure shown.
@@ -68,10 +86,16 @@ end_refused() {
     || check "machine show after the refused end ($1): not live with its end failure: $(tail -c 400 "$OUT/rental-show-$1.json")"
 }
 
-step "machine end, signed out"
+step "machine end and machine ssh, signed out"
 # This computer's key, enrolled here, is revoked at the Hub by its logout.
 cozy --json logout > "$OUT/rental-logout.json" 2> "$OUT/rental-logout.err" || check "logout failed: $(tail -c 300 "$OUT/rental-logout.json")"
 end_refused signed-out 'not signed in'
+# Calcifer started again, signed out, holds no word from the Hub about it: `machine ssh` says why (cl-875: it said
+# "not a rental").
+systemctl --user restart cozy-calcifer || check "rental_end: systemctl --user restart cozy-calcifer failed"
+code=0; cozy --json machine ssh "$rental" > "$OUT/rental-ssh-signed-out.json" 2> "$OUT/rental-ssh-signed-out.err" || code=$?
+[ "$code" != 0 ] && J '.error.code == "not_logged_in" and (.error.message | test("not signed in"))' "$OUT/rental-ssh-signed-out.json" \
+  || check "machine ssh signed out: exit $code, not 'not signed in': $(head -c 300 "$OUT/rental-ssh-signed-out.json")"
 
 step "machine end, holding a key the Hub revoked"
 # The laptop on 11-11: it still holds its key, which another computer's logout revoked.

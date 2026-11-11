@@ -1312,7 +1312,15 @@ absent?: boolean,
 /**
  * The machine that keeps them, when one does.
  */
-machine?: string | null, };
+machine?: string | null,
+/**
+ * A video's frames, measured.
+ */
+frames?: number | null,
+/**
+ * What it says of itself beyond its type: `orbit: {degrees, direction, loops}` shows a video turnable, not played.
+ */
+metadata?: { [key in string]: JsonValue }, };
 
 /**
  * One make_room that took bytes: its step, what asked, what it needed and freed, and its waits.
@@ -2001,7 +2009,11 @@ absent?: boolean,
 /**
  * The machine that keeps them, when one does.
  */
-machine?: string | null, };
+machine?: string | null,
+/**
+ * What a version's file says of itself beyond its type, as its function declared it or a person set it: `orbit` turns a video.
+ */
+metadata?: { [key in string]: JsonValue }, };
 
 /**
  * `PUT /v1/projects/{id}/machines` (cl-873): the machines the project's runs and renders go to, each to the one of them that finishes
@@ -2307,6 +2319,10 @@ base_worker_image_digest?: string | null,
  * `host:port` of its sshd, when it was rented with an SSH key.
  */
 ssh?: string | null,
+/**
+ * It was rented with an SSH key: root logs in at `ssh` once it is ready.
+ */
+ssh_key?: boolean,
 /**
  * Where it runs and whether its pod mounted the datacenter's NFS drive: a Hub admin's read, or
  * a renter's who named the provider (dev-only `--provider`).
@@ -3173,9 +3189,13 @@ target: string, warnings?: Array<string>, };
  */
 export type VaultAsk = { action: string, passphrase?: string | null, recovery_secret?: string | null, idle_timeout_s?: number | null, max_duration_s?: number | null,
 /**
- * Remove a verified plaintext conversion source, only when explicitly asked.
+ * Legacy removal flag. Verified source removal is now the default; false does not preserve it.
  */
-remove_plaintext: boolean, };
+remove_plaintext: boolean,
+/**
+ * Explicitly keep the original plaintext after a verified encrypt conversion. Not valid for rekey/decrypt.
+ */
+preserve_plaintext?: boolean, };
 
 /**
  * A vault operation can disclose a new recovery secret exactly to the caller. Do not persist this response in request/history caches.
@@ -3194,7 +3214,7 @@ skipped_files?: Array<string>, };
  * A private vault-operation stream. Progress counts copied bytes and completed files, not an estimated percentage.
  * Only the terminal reply can contain a recovery secret; never record these events in history or shared event streams.
  */
-export type VaultEvent = { "type": "accepted", action: string, } | { "type": "progress", phase: string, files_done: number, bytes_done: number, } | { "type": "completed", changed: VaultChanged, } | { "type": "failed", error: ErrorBody, };
+export type VaultEvent = { "type": "accepted", action: string, } | { "type": "progress", phase: string, files_done: number, bytes_done: number, files_total: number, bytes_total: number, } | { "type": "completed", changed: VaultChanged, } | { "type": "failed", error: ErrorBody, };
 
 /**
  * Local project encryption. Plain projects never need a mount provider or credentials.
@@ -3266,6 +3286,17 @@ read_by?: Array<string>,
  * A version held that file already: it's that one, and nothing changed.
  */
 already?: boolean, };
+
+/**
+ * `PATCH /v1/projects/{id}/assets/{name}/versions/{number}`: its main file's metadata, whole; `{}` clears it. Keys Calcifer doesn't
+ * know are kept as written.
+ */
+export type VersionPatch = { metadata: { [key in string]: JsonValue }, };
+
+/**
+ * What `PATCH …/versions/{number}` left: its main file's metadata now.
+ */
+export type VersionPatched = { name: string, number: number, metadata: { [key in string]: JsonValue }, };
 
 /**
  * A version's number and the hash prefix project.yaml can name its file by.

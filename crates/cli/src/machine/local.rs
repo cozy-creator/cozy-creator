@@ -62,9 +62,18 @@ pub(crate) async fn authorize(ctx: &Context, key: &str, remove: bool) -> Result<
     };
     // An idle machine moves to every interface at once; a busy one once its runs end.
     let began = std::time::Instant::now();
-    while !remove && answer.machine.reach.is_none() && !answer.image && began.elapsed() < std::time::Duration::from_secs(30) {
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        answer.machine = calcifer.get("/v1/machines/local").await?;
+    if !remove && answer.machine.reach.is_none() && !answer.image {
+        let waiting = crate::progress::Transfer::stderr(ctx.term.stderr, "Waiting for local worker");
+        waiting.phase("Waiting for its connection address");
+        let readiness = async {
+            while !remove && answer.machine.reach.is_none() && !answer.image && began.elapsed() < std::time::Duration::from_secs(30) {
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                answer.machine = calcifer.get("/v1/machines/local").await?;
+            }
+            Ok::<(), Error>(())
+        }.await;
+        waiting.finish_and_clear();
+        readiness?;
     }
     let verb = if remove { "removed" } else { "authorized" };
     if ctx.json {

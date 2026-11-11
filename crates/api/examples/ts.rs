@@ -86,6 +86,8 @@ fn main() {
     v.visit::<project::AssetPatched>();
     v.visit::<project::AssetDeleted>();
     v.visit::<project::VersionMoved>();
+    v.visit::<project::VersionPatch>();
+    v.visit::<project::VersionPatched>();
     v.visit::<project::Approve>();
     v.visit::<project::Approved>();
     v.visit::<project::Unpin>();

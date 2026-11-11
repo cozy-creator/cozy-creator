@@ -13,7 +13,7 @@ use super::vault_operation::{self, Progress};
 mod decrypt_tests;
 
 pub(super) const BACKING: &str = "project.vault.data";
-const DEFAULT_IDLE: u64 = 900;
+const DEFAULT_IDLE: u64 = api::calcifer::project::DEFAULT_VAULT_IDLE_SECONDS;
 type Held = Arc<Mutex<Session>>;
 
 /// In-memory identity of one physical mount. It survives reauthorization of that mount,
@@ -210,7 +210,7 @@ pub(super) fn location(api: &Api, named: &str) -> Result<PathBuf, Error> {
 
 fn status(root: &FsPath) -> VaultStatus {
     let mut state = if encrypted(root) { "locked" } else { "plain" };
-    let (mut view, mut expires, mut idle) = (None, None, 0);
+    let (mut view, mut expires, mut idle) = (None, None, DEFAULT_IDLE);
     if let Some(session) = held(root) {
         let mut session = session.lock().expect("vault session");
         if session.mount.reconcile().is_err() { mark_closing(&mut session); }
@@ -411,6 +411,9 @@ pub(super) async fn write(State(api): State<Arc<Api>>, Path(named): Path<String>
 }
 
 pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Progress) -> Result<VaultChanged, Error> {
+    if ask.preserve_plaintext && (ask.action != "encrypt" || ask.remove_plaintext) {
+        return Err(Error::new(Kind::Usage, "vault_source_policy", "preserve_plaintext is only valid for encryption and conflicts with remove_plaintext"));
+    }
     progress.phase("waiting");
     let op = operation(&root); let _guard = op.lock().expect("vault operation");
     let mut ended = vec![];
@@ -469,7 +472,7 @@ pub(super) fn create_new(api: &Api, root: &FsPath, id: &str, name: &str, written
         initialized?;
         platform::durable::sync_dir(root).map_err(provider)?;
         let ask = VaultAsk { action: "encrypt".into(), passphrase: None, recovery_secret: None,
-            idle_timeout_s: None, max_duration_s: None, remove_plaintext: false };
+            idle_timeout_s: None, max_duration_s: None, remove_plaintext: false, preserve_plaintext: false };
         mount(api, root, created.keybag, created.secret, &ask)
     })();
     outcome.map_err(|why| {
@@ -497,7 +500,7 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
             recovery_secret = Some(created.recovery_secret.expose().to_owned());
             preserved_source = Some(convert(api, root, created.keybag, created.secret, ask, progress)?);
             drop(project);
-            if ask.remove_plaintext {
+            if !ask.preserve_plaintext {
                 preserved_source = None;
             }
         }
@@ -865,7 +868,9 @@ fn decrypt(api: &Arc<Api>, root: &FsPath, progress: &mut Progress) -> Result<(),
         let mut source = secret.with_bytes(|bytes| engine.mount(&root.join(BACKING), &source_view, bytes,
             MountOptions { idle_timeout: None, read_only: !cfg!(windows) })).map_err(provider)?;
         progress.phase("validating");
+        progress.begin_inventory();
         walk_tree(source.view(), None, FsPath::new(""), true, !cfg!(windows), progress)?;
+        progress.inventory_done();
         progress.phase("copying");
         walk_tree(source.view(), Some(&staged), FsPath::new(""), true, !cfg!(windows), progress)?;
         progress.phase("verifying");
@@ -912,7 +917,6 @@ fn convert(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret,
     no_nested(api, root)?;
     progress.phase("validating");
     let managed = managed_tree(&source)?;
-    walk_tree(&source, None, FsPath::new(""), managed, false, progress)?;
     let old_secret = held(root).map(|session| session.lock().expect("vault session").secret.duplicate());
     if old_secret.is_none() && plain_generation_for_encrypt(root, &keybag.info().project_id)? != keybag.info().generation {
         return Err(error("vault_key", "the plaintext execution generation changed before encryption"));
@@ -925,6 +929,11 @@ fn convert(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret,
         tokio::runtime::Handle::current().block_on(crate::private_io::close_private_project(api, root))?;
         crate::runs::files::release_private(root)?;
     }
+    // Checkpoint before measuring: the source DB's file length must include
+    // committed WAL pages, and the inventory must match what the copy retains.
+    progress.begin_inventory();
+    walk_tree(&source, None, FsPath::new(""), managed, false, progress)?;
+    progress.inventory_done();
     let parent = root.parent().ok_or_else(|| Error::new(Kind::Usage, "vault_root", "cannot convert a filesystem root"))?;
     let suffix = fresh();
     let staged = parent.join(format!(".cozy-vault-stage-{suffix}"));
@@ -961,7 +970,7 @@ fn convert(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret,
     progress.phase("verifying");
     target.try_unmount().map_err(provider)?;
     if let Some(mut source) = source_mount.take() { source.try_unmount().map_err(provider)?; }
-    let receipt = Conversion { root: root.to_owned(), staged: staged.clone(), saved: saved.clone(), key_id: target_keybag.info().key_id, remove_source: old_secret.is_some() || ask.remove_plaintext, plain: None };
+    let receipt = Conversion { root: root.to_owned(), staged: staged.clone(), saved: saved.clone(), key_id: target_keybag.info().key_id, remove_source: old_secret.is_some() || !ask.preserve_plaintext, plain: None };
     progress.phase("committing");
     save_conversion(&receipt)?;
     fs::rename(root, &saved).map_err(|why| error("vault_io", format!("preserve the project source before encryption: {why}")))?;
@@ -972,13 +981,15 @@ fn convert(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret,
     progress.phase("opening");
     mount(api, root, keybag, secret, ask)?;
     drop(_converting);
-    progress.phase("cleaning_up");
+    progress.phase("protecting_history");
     let journal = match old_secret {
         Some(old) => api.calcifer.store().rekey_project_journal(root, &old, &target_keybag),
         None => api.calcifer.store().protect_project_journal(root),
     };
     journal.map_err(|e| error("vault_journal", format!("encrypted files are in place; source preserved at {}; journal conversion needs recovery: {e}", saved.display())))?;
+    progress.phase("compacting_history");
     api.calcifer.store().cleanup_private_journal().map_err(|e| error("vault_journal_cleanup", format!("encrypted data is in place; source preserved at {}; journal cleanup is pending: {e}", saved.display())))?;
+    progress.phase("cleaning_up");
     journal_cleanup_done(root)?;
     finish_conversion(root)?;
     Ok(saved)
@@ -1055,8 +1066,10 @@ fn walk_tree(source: &FsPath, target: Option<&FsPath>, relative: &FsPath, manage
             return Err(Error::new(Kind::Usage, "vault_symlink", format!("storage conversion cannot copy symbolic link {}; import its contents into the project first", relative.display())));
         }
         if !kind.is_dir() && !kind.is_file() { return Err(Error::new(Kind::Usage, "vault_file_type", format!("storage conversion accepts ordinary files and directories only: {}", relative.display()))); }
+        if kind.is_file() && (entry.file_name() == "project.db-wal" || entry.file_name() == "project.db-shm") { continue; }
         let Some(target) = target else {
             if kind.is_dir() { walk_tree(&from, None, &relative, managed, frozen, progress)?; }
+            else { progress.plan_file(entry.metadata().map_err(io)?.len()); }
             continue;
         };
         let to = target.join(entry.file_name());
@@ -1070,7 +1083,6 @@ fn walk_tree(source: &FsPath, target: Option<&FsPath>, relative: &FsPath, manage
             walk_tree(&from, Some(&to), &relative, managed, frozen, progress)?;
         }
         else if kind.is_file() {
-            if entry.file_name() == "project.db-wal" || entry.file_name() == "project.db-shm" { continue; }
             if entry.file_name() == "project.db" {
                 if frozen {
                     if fs::metadata(from.with_file_name("project.db-wal")).is_ok_and(|meta| meta.len() > 0) { return Err(error("vault_database", "read-only project snapshot was not fully checkpointed")); }

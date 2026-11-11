@@ -69,6 +69,8 @@ class Payload(TypedDict, total=False):
     id: str
     project: Project
     recovery_secret: str | None
+    preserved_source: str | None
+    idle_timeout_s: int
     warnings: list[Warning]
     stopping: bool
     digest: str
@@ -870,6 +872,185 @@ foreach ($rule in $allowed) {
                 inspected += 1
         return inspected
 
+    def preservation_policy(self, password: Path) -> None:
+        directory = self.out / 'explicit-preservation'
+        made = self.command('new', '--unencrypted', directory)
+        payload = directory / 'retained-source.txt'
+        payload.write_bytes(b'Synthetic verified preservation payload')
+        digest = self.digest(payload)
+        refused = self.command('vault', '--directory', directory, 'encrypt', '--passphrase-file', password,
+                               '--preserve-plaintext', '--remove-plaintext', refusal=True)
+        assert refused.returncode != 0 and payload.is_file()
+        status = self.command('vault', '--directory', directory, 'status')
+        assert status['state'] == 'plain' and not status['encrypted']
+        self.cell('conflicting_source_flags_refuse_before_conversion')
+        try:
+            self.request('POST', '/v1/projects/' + made['id'] + '/vault',
+                         body={'action': 'encrypt', 'passphrase': password.read_text().strip(),
+                               'remove_plaintext': True, 'preserve_plaintext': True})
+        except RuntimeError as error:
+            assert 'vault_source_policy' in str(error)
+        else:
+            raise AssertionError('conflicting API source policies changed storage')
+        assert self.digest(payload) == digest and not (directory / 'project.vault.keys.json').exists()
+        self.cell('conflicting_api_source_policy_keeps_plaintext')
+        if os.name != 'nt':
+            outside = self.out / 'unrelated-source.txt'
+            outside.write_bytes(b'Synthetic unrelated file')
+            link = directory / 'external-source.txt'
+            link.symlink_to(outside)
+            try:
+                failed = self.command('vault', '--directory', directory, 'encrypt', '--passphrase-file', password,
+                                      '--recovery-out', self.recovery('refused-source'), refusal=True)
+                assert json.loads(failed.stdout)['error']['code'] == 'vault_symlink'
+                assert self.digest(payload) == digest and outside.read_bytes() == b'Synthetic unrelated file'
+                assert not (directory / 'project.vault.keys.json').exists()
+                assert not self.recovery('refused-source').exists()
+                self.cell('failed_conversion_keeps_the_good_plaintext_source')
+            finally:
+                link.unlink()
+                outside.unlink()
+        before = set(self.out.glob('.cozy-project-source-*'))
+        kept = self.command('vault', '--directory', directory, 'encrypt', '--passphrase-file', password,
+                            '--recovery-out', self.recovery('preserved-source'), '--preserve-plaintext', '--idle', 0)
+        self.check_recovery('preserved-source')
+        source = kept.get('preserved_source')
+        assert source
+        preserved = Path(source)
+        added = set(self.out.glob('.cozy-project-source-*')) - before
+        assert len(added) == 1 and preserved.samefile(next(iter(added)))
+        assert self.digest(preserved / payload.name) == digest
+        assert self.digest(self.view(kept) / payload.name) == digest
+        assert not payload.exists()
+        self.command('vault', '--directory', directory, 'lock')
+        self.shutdown()
+        status = self.command('vault', '--directory', directory, 'status')
+        assert status['encrypted'] and status['state'] == 'locked'
+        assert self.digest(preserved / payload.name) == digest
+        self.cell('explicit_preservation_keeps_and_reports_the_original_after_restart')
+        shutil.rmtree(preserved)
+
+    def open_in_tty(self, password: str | None, environment: dict[str, str], *options: str) -> tuple[int, str, str]:
+        # Real console input, not a credential mock. Raw console/session-code output stays in memory.
+        import errno
+        import fcntl
+        import pty
+        import select
+        import termios
+
+        master, slave = pty.openpty()
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 100, 0, 0))
+        def controlling_terminal() -> None:
+            os.setsid()
+            fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+        arguments = ['cozy', *options, 'open']
+        if '--port' in options:
+            arguments = ['cozy', 'open', *options]
+        record: dict[str, object] = {'args': arguments[1:], 'cwd': str(self.project), 'state': 'running', 'pty': True}
+        self.commands.append(record)
+        self.flush()
+        process = subprocess.Popen(arguments, cwd=self.project, env=environment, stdin=slave,
+                                   stdout=subprocess.PIPE, stderr=slave, text=True, encoding='utf-8',
+                                   preexec_fn=controlling_terminal)
+        os.close(slave)
+        transcript = bytearray()
+        entered = False
+        prompt = b'Project passphrase: '
+        deadline = time.monotonic() + FIRST_COLD_SECONDS
+        try:
+            while process.poll() is None:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError('interactive open did not finish within its native CLI deadline')
+                if select.select([master], [], [], 0.05)[0]:
+                    try:
+                        block = os.read(master, 65536)
+                    except OSError as error:
+                        if error.errno != errno.EIO:
+                            raise
+                        block = b''
+                    transcript.extend(block)
+                if transcript.count(prompt) > 1:
+                    raise RuntimeError('open repeated its credential prompt instead of returning the failure')
+                if prompt in transcript and not entered:
+                    if password is None:
+                        raise RuntimeError('JSON open unexpectedly requested a terminal credential')
+                    # Wait for the actual console echo guard, not a timing sleep, before typing.
+                    if not termios.tcgetattr(master)[3] & termios.ECHO:
+                        os.write(master, password.encode('utf-8') + b'\n')
+                        entered = True
+            stdout, _ = process.communicate(timeout=FIRST_COLD_SECONDS)
+            while select.select([master], [], [], 0)[0]:
+                try:
+                    block = os.read(master, 65536)
+                except OSError as error:
+                    if error.errno == errno.EIO:
+                        break
+                    raise
+                if not block:
+                    break
+                transcript.extend(block)
+            stderr = transcript.decode('utf-8', errors='replace')
+            if password is not None:
+                assert entered, 'interactive open did not request a hidden credential'
+                assert password not in stdout and password not in stderr, 'interactive open echoed its credential'
+            assert process.returncode is not None
+            record.update(state='complete', exit_code=process.returncode, hidden_input=entered)
+            return process.returncode, stdout, stderr
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.communicate()
+            os.close(master)
+            self.flush()
+
+    def open_unlocks_locked_project(self, password: Path, wrong: Path) -> None:
+        refused = self.command('open', cwd=self.project, refusal=True)
+        assert json.loads(refused.stdout)['error']['code'] == 'project_locked'
+        assert 'Project passphrase:' not in refused.stdout + refused.stderr
+        plain = self.command('open', cwd=self.project, refusal=True, json_output=False)
+        assert 'cozy vault unlock' in plain.stdout + plain.stderr
+        assert 'Project passphrase:' not in plain.stdout + plain.stderr
+        self.assert_locked()
+        self.cell('open_noninteractive_and_json_keep_unlock_guidance')
+        if os.name != 'posix':
+            return  # POSIX PTY below; Windows still qualifies the noninteractive guard above.
+        import socket
+
+        browser_bin = self.out / 'open-browser-bin'
+        browser_bin.mkdir()
+        browser_log = self.out / 'open-browser-argv.txt'
+        browser = browser_bin / ('open' if sys.platform == 'darwin' else 'xdg-open')
+        browser.write_text('#!/bin/sh\nprintf \'%s\\n\' "$1" >> "$COZY_TEST_BROWSER_LOG"\n')
+        browser.chmod(0o755)
+        environment = dict(os.environ if self.cli_env is None else self.cli_env)
+        environment['PATH'] = str(browser_bin) + os.pathsep + environment.get('PATH', '')
+        environment['COZY_TEST_BROWSER_LOG'] = str(browser_log)
+        code, stdout, stderr = self.open_in_tty(None, environment, '--json')
+        assert code != 0 and json.loads(stdout)['error']['code'] == 'project_locked'
+        assert 'Project passphrase:' not in stderr and not browser_log.exists()
+        self.cell('open_json_with_a_real_tty_still_never_prompts')
+        code, stdout, _ = self.open_in_tty(wrong.read_text().strip(), environment)
+        assert code != 0 and not browser_log.exists()
+        self.assert_locked()
+        self.cell('open_wrong_hidden_credential_stays_locked_without_a_browser')
+        code, stdout, _ = self.open_in_tty(password.read_text().strip(), environment)
+        assert code == 0 and 'project:' in stdout and 'url:' in stdout
+        assert 'readable view:' not in stdout and ': unlocked' not in stdout
+        assert self.status()['state'] == 'unlocked' and browser_log.exists()
+        self.cell('open_unlocks_once_and_keeps_only_the_normal_open_response')
+        self.vault('lock', allow_locking=True)
+        self.assert_locked()
+        with socket.socket() as available:
+            available.bind(('127.0.0.1', 0))
+            port = available.getsockname()[1]
+        code, stdout, _ = self.open_in_tty(password.read_text().strip(), environment, '--port', str(port))
+        assert code == 0 and 'url:' in stdout
+        assert self.controller()['address'].endswith(':' + str(port)) and self.status()['state'] == 'unlocked'
+        assert len(browser_log.read_text().splitlines()) == 2
+        self.cell('open_port_unlocks_the_selected_daemon_without_rollback')
+        self.vault('lock', allow_locking=True)
+        self.assert_locked()
+
     def creation_lock_race(self, password: Path) -> None:
         directory = self.out / 'creation-lock-race'
         args = ['cozy', '--json', 'new', str(directory), '--passphrase-file', str(password),
@@ -965,6 +1146,7 @@ foreach ($rule in $allowed) {
         self.check_recovery('new-project')
         protected = self.command('vault', '--directory', fresh, 'status')
         assert protected['encrypted'] and protected['state'] == 'unlocked'
+        assert protected['idle_timeout_s'] == 1800
         created_view = protected['view']
         assert created_view is not None
         assert (Path(created_view) / 'project.db').is_file()
@@ -974,7 +1156,8 @@ foreach ($rule in $allowed) {
         assert not existing['created'] and existing['id'] == new['id']
         self.cell('new_project_starts_in_encrypted_storage')
         self.command('vault', '--directory', fresh, 'lock')
-        self.command('vault', '--directory', fresh, 'unlock', '--recovery-file', self.recovery('new-project'))
+        default_unlock = self.command('vault', '--directory', fresh, 'unlock', '--recovery-file', self.recovery('new-project'))
+        assert default_unlock['vault']['idle_timeout_s'] == 1800
         created_reopened = self.command('status', cwd=fresh, full=True)
         assert created_reopened['project']['id'] == new['id']
         self.command('vault', '--directory', fresh, 'lock')
@@ -994,6 +1177,7 @@ foreach ($rule in $allowed) {
         assert not unsafe_backing.exists()
         unchanged = self.status()
         assert unchanged['state'] == 'plain' and not unchanged['encrypted']
+        assert unchanged['idle_timeout_s'] == 1800
         assert before == self.yaml()
         self.cell('recovery_output_refuses_backing_before_conversion')
         self.project.joinpath('files').mkdir(exist_ok=True)
@@ -1003,6 +1187,7 @@ foreach ($rule in $allowed) {
         if streamed.returncode:
             raise AssertionError(self.redact(streamed.stdout + streamed.stderr))
         self.cell('vault_acknowledgment_reattach_and_missing_media')
+        assert self.status()['idle_timeout_s'] == 0
         self.check_recovery('recovery1')
         assert before == self.yaml()
         self.cell('convert_without_changing_logical_state')
@@ -1027,6 +1212,7 @@ foreach ($rule in $allowed) {
         assert not unsafe_view.exists()
         self.vault('lock', allow_locking=True)
         self.assert_locked(view, saved[0])
+        self.open_unlocks_locked_project(initial, wrong)
         self.vault('unlock', '--passphrase-file', wrong, refusal=True)
         self.view(self.vault('unlock', '--recovery-file', self.recovery('recovery1'), '--idle', 0))
         assert self.yaml() == state
@@ -1145,9 +1331,14 @@ foreach ($rule in $allowed) {
         if original_id == copied_id:
             raise RuntimeError('the independent folder copy reused the registered project identity')
         self.cell('decrypted_folder_copy_opens_with_its_own_identity')
-        copied_encrypted = self.command('vault', '--directory', copied_path, 'encrypt',
-                                        '--passphrase-file', rekey, '--recovery-out', self.recovery('copy-recovery'),
-                                        '--remove-plaintext', '--idle', 0)
+        sources_before = set(self.out.glob('.cozy-project-source-*'))
+        copied_encrypted = self.request('POST', '/v1/projects/' + copied['id'] + '/vault',
+                                       body={'action': 'encrypt', 'passphrase': rekey.read_text().strip(),
+                                             'remove_plaintext': False, 'idle_timeout_s': 0})
+        copied_encrypted.pop('recovery_secret', None)
+        assert not copied_encrypted.get('preserved_source')
+        assert set(self.out.glob('.cozy-project-source-*')) == sources_before
+        self.cell('legacy_false_removes_verified_plaintext')
         copied_view = self.view(copied_encrypted)
         assert self.command('status', cwd=copied_path, full=True)['project']['id'] == copied['id']
         assert self.yaml(copied['id']) == copied_state
@@ -1159,7 +1350,11 @@ foreach ($rule in $allowed) {
         self.command('vault', '--directory', copied_path, 'lock')
         self.cell('decrypted_folder_copy_encrypts_with_its_own_namespace')
         reencrypted = self.vault('encrypt', '--passphrase-file', rekey,
-                                 '--recovery-out', self.recovery('recovery4'), '--remove-plaintext', '--idle', 0)
+                                 '--recovery-out', self.recovery('recovery4'))
+        assert reencrypted['vault']['idle_timeout_s'] == 1800
+        self.cell('default_idle_is_thirty_minutes_and_explicit_zero_is_preserved')
+        assert not reencrypted.get('preserved_source')
+        assert set(self.out.glob('.cozy-project-source-*')) == sources_before
         self.check_recovery('recovery4')
         view = self.view(reencrypted)
         assert self.yaml() == state
@@ -1171,6 +1366,7 @@ foreach ($rule in $allowed) {
         assert file_modes['reencrypted'] == write_mode
         self.cell('file_permissions_survive_decrypt_and_reencrypt')
         self.vault('lock', allow_locking=True)
+        self.preservation_policy(rekey)
         self.shutdown()
         self.receipt['reencrypted_files_scanned'] = self.scan(self.project)
         self.receipt['reencrypted_global_files_scanned'] = self.scan(self.home, credentials=True)

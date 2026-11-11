@@ -66,6 +66,7 @@ assert isinstance(deadline,int) and before+86400000 <= deadline <= after+8640000
 print(json.dumps({'requested_seconds':86400,'before_ms':before,'after_ms':after,'expires_at_ms':deadline,'passed':True}))
 PY_ENCRYPT_DEADLINE
   view=$(jq -r '.vault.view // empty' "$work/encrypted.json")
+  jq -e '.preserved_source == null and .stream_proof.default_source_removed' "$work/encrypted.json" > /dev/null || fail "default API encryption left a plaintext source"
   [ -n "$view" ] && [ -d "$view" ] || fail "encrypted project has no mounted readable view"
   grep -q SYNTHETIC_PRIVATE_VAULT_CONTENT_1762838400 "$view/files/private-sentinel.txt" || fail "mounted file changed"
   [ "$(sha "$view/files/movie.mp4")" = "$before" ] || fail "mounted video changed"
@@ -175,7 +176,9 @@ PY_BACKING_SCAN
   fi
 
   step "encrypt the decrypted project again"
-  in_project "$P" --json vault encrypt --passphrase-file "$secrets/rekey" --recovery-out "$secrets/recovery4" --remove-plaintext --idle 0 > "$work/reencrypted.json"
+  in_project "$P" --json vault encrypt --passphrase-file "$secrets/rekey" --recovery-out "$secrets/recovery4" --idle 0 > "$work/reencrypted.json"
+  jq -e '.preserved_source == null' "$work/reencrypted.json" > /dev/null || fail "default CLI encryption preserved plaintext"
+  [ -z "$(find "$work" -maxdepth 1 -name '.cozy-project-source-*' -print -quit)" ] || fail "default CLI encryption left a source folder"
   view=$(jq -r '.vault.view // empty' "$work/reencrypted.json")
   [ "$(sha "$view/files/movie.mp4")" = "$before" ] || fail "re-encryption changed the video"
   if [ -n "$LOCAL" ]; then
