@@ -108,12 +108,18 @@ if [ -n "$needs" ]; then
   cd "$start"
 fi
 
-# This computer as a fresh runner: signed out, Calcifer and its machine ended, ~/.cozy gone.
+# This computer as a fresh runner: signed out, Calcifer and its machine ended, ~/.cozy and the TensorFS store the
+# uploads filled gone.
 cozy --json logout > "$seed/logout.json" 2>&1 || true
 systemctl --user disable --now cozy-calcifer > "$seed/reset.log" 2>&1 || true
 pkill -f "^$HOME/.cozy/" || true
 for _ in $(seq 30); do pgrep -f "^$HOME/.cozy/" > /dev/null || break; sleep 1; done
-rm -rf "$HOME/.cozy" "$HOME/.config/cozy"
+rm -rf "$HOME/.cozy" "$HOME/.config/cozy" "${TENSORFS_HOME:-$HOME/.cache/tensorfs}"
+# uv (Calcifer's locks, the machine's installs) trusts the Hub's CA as it trusts tensorhub.com's: from the system's bundle,
+# which systemd's user manager hands Calcifer.
+sudo cp "${COZY_TEST_HUB_CA:?}" /usr/local/share/ca-certificates/cozy-test-hub.crt && sudo update-ca-certificates > "$seed/ca.log" 2>&1
+export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+systemctl --user set-environment SSL_CERT_FILE="$SSL_CERT_FILE"
 log "seeded ($needs), this computer's cozy removed; the cli suite${shard:+ $shard} starts"
 unset CLI M R
 bash "$here/run.sh" "$@"
