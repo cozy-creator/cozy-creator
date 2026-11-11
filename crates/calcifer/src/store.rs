@@ -658,13 +658,21 @@ impl Store {
     fn rewrite_project_journal(&self, root: &Path, mut transform: impl FnMut(&str, &[u8], bool) -> Result<Vec<u8>>) -> Result<bool> {
         self.write(|tx| {
             let all: Vec<(String, String, Vec<u8>)> = {
-                let mut rows = tx.prepare("SELECT id, out_dir, spec FROM runs")?;
-                rows.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+                // Keep only the prefix in Rust until the path or an envelope may belong to
+                // this project. Other projects' plaintext specs can be large.
+                let mut rows = tx.prepare("SELECT id, out_dir, substr(spec, 1, ?1) AS spec FROM runs NOT INDEXED")?;
+                rows.query_map([vault::PAYLOAD_PREFIX.len() as i64], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
                     .collect::<rusqlite::Result<_>>()?
             };
             let mut changed = false;
-            for (id, directory, spec) in all {
+            for (id, directory, probe) in all {
                 let path = vault::logical(Path::new(&directory));
+                if !path.starts_with(root) && !vault::is_payload(&probe) {
+                    continue;
+                }
+                // Every protected prefix is still fully parsed, including malformed or
+                // relocated envelopes whose out_dir no longer identifies their owner.
+                let spec: Vec<u8> = tx.query_row("SELECT spec FROM runs WHERE id = ?1", [&id], |row| row.get(0))?;
                 let protected = vault::is_payload(&spec);
                 let scope = vault::payload_root(&spec).map_err(private_error)?;
                 if !path.starts_with(root) && scope.as_deref() != Some(root) {
@@ -774,12 +782,14 @@ impl Store {
                     }
                 }
             }
-            let answers: Vec<(String, Vec<u8>)> = {
-                let mut rows = tx.prepare("SELECT key, body FROM answers")?;
-                rows.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            let answers: Vec<String> = {
+                // Preserve the old table-scan order rather than using the key index.
+                let mut rows = tx.prepare("SELECT key FROM answers NOT INDEXED")?;
+                rows.query_map([], |row| row.get(0))?
                     .collect::<rusqlite::Result<_>>()?
             };
-            for (key, body) in answers {
+            for key in answers {
+                let body: Vec<u8> = tx.query_row("SELECT body FROM answers WHERE key = ?1", [&key], |row| row.get(0))?;
                 let scope = vault::payload_root(&body).map_err(private_error)?.or_else(|| answer_path(&body));
                 if scope.as_deref().is_none_or(|path| !vault::logical(path).starts_with(root)) {
                     continue;
