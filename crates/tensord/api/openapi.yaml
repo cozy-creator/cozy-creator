@@ -93,9 +93,8 @@ paths:
     post:
       summary: Remove a repository from this computer's ordinary local model cache.
       description: >-
-        Requires machine scope on a local machine. Private project storage and rented machines refuse
-        this operation. Active readers and content shared with other repositories remain intact;
-        the model's origin is unchanged.
+        Requires machine-scoped access on a local machine. Removes unreferenced cached objects
+        for the requested repository.
       operationId: remove_model
       requestBody:
         required: true
@@ -676,7 +675,7 @@ components:
       type: object
       required: [model]
       properties:
-        model: {type: string, description: Repository as org/name, without a release or lane.}
+        model: {type: string, description: Repository name in org/name format.}
     RemovedModel:
       type: object
       required: [model, removed, cache_bytes_removed, retained_bytes]
@@ -692,7 +691,7 @@ components:
           type: integer
           minimum: 0
           maximum: 18446744073709551615
-          description: Candidate bytes kept because they are in use, shared or could not safely be removed.
+          description: Bytes retained for active readers, shared objects, or failed removals.
     Model:
       type: object
       properties:
