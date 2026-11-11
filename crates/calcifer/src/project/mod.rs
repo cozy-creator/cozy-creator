@@ -1593,6 +1593,7 @@ fn main_file(lock: &Lock, version: &Version) -> Option<MainFile> {
     let sha256 = version.main()?;
     let file = lock.files.get(sha256)?;
     let output = version.main_output()?.clone();
+    let metadata = version.metadata.get(&output).cloned().unwrap_or_default();
     let (absent, machine) = whereabouts(file);
     let measured = |number: u64| (number > 0).then_some(number);
     Some(MainFile {
@@ -1608,7 +1609,7 @@ fn main_file(lock: &Lock, version: &Version) -> Option<MainFile> {
         absent,
         machine,
         frames: measured(file.frames),
-        metadata: version.metadata.get(&output).cloned().unwrap_or_default(),
+        metadata,
     })
 }
 
