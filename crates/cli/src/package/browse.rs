@@ -9,6 +9,14 @@ use crate::output;
 
 pub(crate) const HEADERS: [&str; 4] = ["PACKAGE", "LATEST", "INSTALLED", "UPDATED"];
 
+fn display_package(package: &str) -> &str {
+    match package {
+        "flux-2" | "_/flux-2" => "flux.2",
+        "flux-3-klein" | "_/flux-3-klein" => "flux.3-klein",
+        _ => package,
+    }
+}
+
 #[derive(Clone, Serialize)]
 pub(super) struct Searching {
     pub hub: String,
@@ -72,7 +80,7 @@ impl Catalog {
     }
 
     pub(crate) fn rows(&self) -> Vec<Vec<String>> {
-        self.page.packages.iter().map(|row| vec![row.package.clone(), row.latest_release.clone().unwrap_or_else(|| "—".into()),
+        self.page.packages.iter().map(|row| vec![display_package(&row.package).into(), row.latest_release.clone().unwrap_or_else(|| "—".into()),
             match self.installed(&row.package) { Some(true) => "yes", Some(false) => "no", None => "unknown" }.into(), date(row.updated_at.as_deref())]).collect()
     }
 
@@ -106,7 +114,7 @@ pub(crate) struct Preview {
 }
 
 impl Preview {
-    pub(crate) fn title(&self) -> &str { &self.row.package }
+    pub(crate) fn title(&self) -> &str { display_package(&self.row.package) }
     pub(crate) fn lines(&self) -> Vec<String> {
         vec![format!("Latest: {}", self.row.latest_release.as_deref().unwrap_or("no published release")),
             format!("Installed on local: {}", match self.installed { Some(true) => "yes", Some(false) => "no", None => "unknown" }),
@@ -141,7 +149,7 @@ impl Destinations {
     }
     pub(crate) fn title(&self) -> String {
         if self.machines.is_empty() { "No available machines — use cozy machine --help".into() }
-        else { format!("Install {} on", self.package) }
+        else { format!("Install {} on", display_package(&self.package)) }
     }
     pub(crate) fn rows(&self) -> Vec<Vec<String>> { self.machines.iter().map(|(name, state)| vec![name.clone(), state.clone()]).collect() }
     pub(crate) fn action(&self, key: KeyCode, selected: usize) -> Option<Action> {
@@ -155,13 +163,13 @@ pub(crate) async fn perform(ctx: &Context, operation: Operation) -> Result<(Exit
         Operation::Install { package, machine } => {
             let named = super::PackageRef::parse(&package)?;
             let status = super::machine::install(ctx, named.package(), None, None, Some(On::Machine(machine.clone()))).await?;
-            let notice = if status == ExitCode::SUCCESS { format!("Installed {package} on {machine}") } else { "Installation stopped or failed".into() };
+            let notice = if status == ExitCode::SUCCESS { format!("Installed {} on {machine}", display_package(&package)) } else { "Installation stopped or failed".into() };
             Ok((status, notice))
         }
         Operation::Uninstall(package) => {
             let named = super::PackageRef::parse(&package)?;
             let status = super::machine::uninstall(ctx, &[named.package()], Some(On::Machine("local".into()))).await?;
-            Ok((status, format!("Uninstalled {package} from local")))
+            Ok((status, format!("Uninstalled {} from local", display_package(&package))))
         }
     }
 }
@@ -208,6 +216,28 @@ mod tests {
         assert_eq!(query["q"], "image");
         assert_eq!(query["offset"], 2);
         assert_eq!(catalog.selection_after(Some("author/second"), 0), 1);
+    }
+
+    #[test]
+    fn dotted_flux_labels_keep_repository_and_action_identity() {
+        let mut catalog = catalog();
+        catalog.page.packages = ["flux-2", "_/flux-3-klein", "author/flux-2", "local/flux-3-klein", "flux-unknown"].into_iter()
+            .map(|package| FoundPackage { package: package.into(), latest_release: Some("1.0".into()), created_at: "2026-11-10T00:00:00Z".into(), updated_at: None }).collect();
+        catalog.local = Some(vec![HeldPackage { package: "_/flux-2".into(), ..Default::default() }]);
+        let labels: Vec<_> = catalog.rows().into_iter().map(|row| row[0].clone()).collect();
+        assert_eq!(labels, ["flux.2", "flux.3-klein", "author/flux-2", "local/flux-3-klein", "flux-unknown"]);
+        assert_eq!(catalog.package_at(0), Some("flux-2"));
+        assert_eq!(catalog.action(KeyCode::Char('i'), 0), Some(Action::Destinations("flux-2".into())));
+        assert_eq!(catalog.action(KeyCode::Char('u'), 0), Some(Action::ConfirmUninstall("flux-2".into())));
+        let Some(Action::Preview(preview)) = catalog.action(KeyCode::Enter, 1) else { panic!("preview") };
+        assert_eq!(preview.title(), "flux.3-klein");
+        assert_eq!(preview.action(KeyCode::Char('i')), Some(Action::Destinations("_/flux-3-klein".into())));
+        let destinations = Destinations { package: "_/flux-3-klein".into(), machines: vec![("local".into(), "ready".into())] };
+        assert_eq!(destinations.title(), "Install flux.3-klein on");
+        assert_eq!(destinations.action(KeyCode::Enter, 0), Some(Action::Install { package: "_/flux-3-klein".into(), machine: "local".into() }));
+        let json = serde_json::to_value(&catalog.page).unwrap();
+        assert_eq!(json["packages"][0]["package"], "flux-2");
+        assert_eq!(json["packages"][1]["package"], "_/flux-3-klein");
     }
 
     #[tokio::test]

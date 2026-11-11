@@ -1,9 +1,11 @@
 //! The CLI's client of Calcifer: loopback HTTP/1.1 with the bearer from Calcifer's lock record,
 //! typed refusals from its envelope, and a run's event stream. Any call starts Calcifer when none
 //! runs, from the home's installed `cozy` only: as this user's service where a service manager
-//! answers, else as a detached `cozy calcifer`. Nothing here gives up because time passed: a start
-//! is waited on until Calcifer publishes its record or its refusal, and a long wait is reported. A
-//! request or stream Calcifer leaves unanswered says so, naming its process and what it is doing.
+//! answers, else as a detached `cozy calcifer`. A start is waited on until Calcifer publishes its
+//! record or its refusal, and a long wait is reported. Every request goes by the one retry rule
+//! (`Client::send`): a restart is waited out, what may answer next time is asked again within a
+//! minute, each attempt said. A request or stream Calcifer leaves unanswered says so, naming its
+//! process and what it is doing.
 use std::{
     fs::OpenOptions,
     io::{self, Write as _},
@@ -21,19 +23,22 @@ use platform::{
 };
 use api::{
     calcifer::{Down, Event, Holder, LogEvent, MachineList, REFUSED, Run, RunList, StreamEvent},
-    error::{Envelope, Error, Kind},
+    error::{Envelope, Error, Kind, STOPPING},
     ids::Digest,
     machine::{HELD, LogLines, Ranges, parse_held},
 };
 use reqwest::{RequestBuilder, Response, StatusCode, header};
+use serde::{Serialize, de::DeserializeOwned};
+use tensorfs::fetch::Backoff;
 
 /// `calcifer::api::IGNORED_FIELDS`: the request fields Calcifer did not read.
 const IGNORED_FIELDS: &str = "cozy-ignored-fields";
 /// What a write is asked under: every send of one call is the same ask, done once (cl-812).
 const KEY: &str = "Idempotency-Key";
-/// A machine that answers no connect.
-const UNREACHABLE: &str = "machine_unreachable";
-use serde::{Serialize, de::DeserializeOwned};
+/// An answer that is not a typed refusal.
+const UNTYPED: &str = "untyped_answer";
+/// Said of each attempt while Calcifer restarts.
+const RESTARTING: &str = "Calcifer restarting";
 
 use crate::{Context, output};
 
@@ -44,9 +49,17 @@ const REPORT: Duration = Duration::from_secs(5);
 /// Calcifer's streams carry a keepalive this often (axum's default): one silent for two is a Calcifer
 /// that does not answer.
 const KEEPALIVE: Duration = Duration::from_secs(15);
-/// Calcifer stopping under a call, or a stream closing with nothing in it, this many times in a
-/// row is a Calcifer that is not going to answer.
-const AGAIN: u32 = 3;
+
+/// What a request is to the retry rule.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Ask {
+    /// Changes nothing.
+    Read,
+    /// Done once however often it is sent: idempotent by its method, or under a key its route keeps.
+    Write,
+    /// Done again if sent again: sent again only when Calcifer certainly did not carry it out.
+    Unkeyed,
+}
 
 /// This home's Calcifer lock as `cozy doctor` reads it.
 pub(crate) enum Lock {
@@ -148,7 +161,7 @@ impl Client {
     }
 
     pub(crate) async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, Error> {
-        self.asked_again(transient, || self.exchange(false, |c, base| c.get(format!("{base}{path}")))).await
+        self.exchange(Ask::Read, |c, base| c.get(format!("{base}{path}"))).await
     }
 
     pub(crate) async fn get_query<Q, T>(&self, path: &str, query: &Q) -> Result<T, Error>
@@ -156,56 +169,25 @@ impl Client {
         Q: Serialize + ?Sized,
         T: DeserializeOwned,
     {
-        self.asked_again(transient, || self.exchange(false, |c, base| c.get(format!("{base}{path}")).query(query))).await
+        self.exchange(Ask::Read, |c, base| c.get(format!("{base}{path}")).query(query)).await
     }
 
-    /// A POST; `key` is its `Idempotency-Key`, so a retry is the same ask, as a quote is one that buys
-    /// nothing. A machine that answers no connect, or a Hub that doesn't answer, records nothing and is
-    /// asked again under that key, each attempt said (Paul, 11-03); one its Hub says stopped or ended
-    /// is refused otherwise, and at once.
+    /// A POST under `key`, its `Idempotency-Key`: a route that keeps keys does it once however often it
+    /// is sent, and a quote buys nothing, so either is asked again by the retry rule. Without one it goes
+    /// under the call's own key, and is sent again only when Calcifer certainly did not carry it out.
     pub(crate) async fn post<B, T>(&self, path: &str, body: &B, key: Option<&str>) -> Result<T, Error>
     where
         B: Serialize + ?Sized,
         T: DeserializeOwned,
     {
-        let again = key.is_some() || path.ends_with("-quotes");
-        // Unnamed, the call's own: what it sends again of itself (a dropped answer, a restarted Calcifer) is the same ask.
+        let ask = match key.is_some() || path.ends_with("-quotes") {
+            true => Ask::Write,
+            false => Ask::Unkeyed,
+        };
         let minted = write_key();
         let key = key.unwrap_or(&minted);
         let body = json_body(body)?;
-        match again {
-            true => self.asked_again(|e| e.code == UNREACHABLE || transient(e), || self.posted(path, &body, key)).await,
-            false => self.posted(path, &body, key).await.map_err(|error| {
-                if local_transient(&error) {
-                    error.remedy("Not retried; check whether the operation completed before repeating it")
-                } else { error }
-            }),
-        }
-    }
-
-    /// `ask`, and again while its refusal is `again`, each attempt said, at the wait the answer stated if it did.
-    async fn asked_again<T, F: Future<Output = Result<T, Error>>>(&self, again: impl Fn(&Error) -> bool, ask: impl Fn() -> F) -> Result<T, Error> {
-        let mut backoff = tensorfs::fetch::Backoff::call();
-        loop {
-            match ask().await {
-                Err(e) if again(&e) => match backoff.again(&e.message, false, e.retry_after_s.map(Duration::from_secs)) {
-                    Some((wait, said)) => {
-                        if local_transient(&e) { self.remember(None); }
-                        output::warn(&said);
-                        tokio::time::sleep(wait).await;
-                    }
-                    None => return Err(Error { message: backoff.spent(&e.message), ..e }),
-                },
-                answer => return answer,
-            }
-        }
-    }
-
-    async fn posted<T>(&self, path: &str, body: &bytes::Bytes, key: &str) -> Result<T, Error>
-    where
-        T: DeserializeOwned,
-    {
-        self.exchange(true, |c, base| c.post(format!("{base}{path}")).header(header::CONTENT_TYPE, "application/json").body(body.clone()).header(KEY, key)).await
+        self.exchange(ask, |c, base| json(c.post(format!("{base}{path}")), &body).header(KEY, key)).await
     }
 
     /// A PUT: idempotent by its path, and under its call's key too.
@@ -214,14 +196,13 @@ impl Client {
         B: Serialize + ?Sized,
         T: DeserializeOwned,
     {
-        let key = write_key();
-        let body = json_body(body)?;
-        self.asked_again(transient, || self.exchange(true, |c, base| c.put(format!("{base}{path}")).header(header::CONTENT_TYPE, "application/json").body(body.clone()).header(KEY, &key))).await
+        let (key, body) = (write_key(), json_body(body)?);
+        self.exchange(Ask::Write, |c, base| json(c.put(format!("{base}{path}")), &body).header(KEY, &key)).await
     }
 
     pub(crate) async fn delete<T: DeserializeOwned>(&self, path: &str) -> Result<T, Error> {
         let key = write_key();
-        self.asked_again(transient, || self.exchange(true, |c, base| c.delete(format!("{base}{path}")).header(KEY, &key))).await
+        self.exchange(Ask::Write, |c, base| c.delete(format!("{base}{path}")).header(KEY, &key)).await
     }
 
     pub(crate) async fn delete_query<Q, T>(&self, path: &str, query: &Q) -> Result<T, Error>
@@ -230,24 +211,23 @@ impl Client {
         T: DeserializeOwned,
     {
         let key = write_key();
-        self.asked_again(transient, || self.exchange(true, |c, base| c.delete(format!("{base}{path}")).query(query).header(KEY, &key))).await
+        self.exchange(Ask::Write, |c, base| c.delete(format!("{base}{path}")).query(query).header(KEY, &key)).await
     }
 
-    /// A PATCH: the fields `body` names, changed, under its call's key.
+    /// A PATCH: sets the fields `body` names, under its call's key.
     pub(crate) async fn patch<B, T>(&self, path: &str, body: &B) -> Result<T, Error>
     where
         B: Serialize + ?Sized,
         T: DeserializeOwned,
     {
-        let key = write_key();
-        let body = json_body(body)?;
-        self.asked_again(transient, || self.exchange(true, |c, base| c.patch(format!("{base}{path}")).header(header::CONTENT_TYPE, "application/json").body(body.clone()).header(KEY, &key))).await
+        let (key, body) = (write_key(), json_body(body)?);
+        self.exchange(Ask::Write, |c, base| json(c.patch(format!("{base}{path}")), &body).header(KEY, &key)).await
     }
 
     /// What Calcifer holds of the file `digest` names: all of it (`None`), else the ranges held.
     pub(crate) async fn held_for(&self, digest: &Digest, project: Option<&str>) -> Result<Option<Ranges>, Error> {
         let path = match project { Some(_) => format!("/v1/project-files/{digest}"), None => format!("/v1/files/{digest}") };
-        let answer = self.sent_again(&|c: &reqwest::Client, base: &str| {
+        let answer = self.send(Ask::Read, &|c: &reqwest::Client, base: &str| {
             let request = c.head(format!("{base}{path}"));
             match project { Some(project) => request.query(&[("project", project)]), None => request }
         }).await?;
@@ -274,7 +254,7 @@ impl Client {
             false => Some(format!("bytes {start}-{}/{length}", start + part.len() as u64 - 1)),
         };
         let answer = self
-            .sent_again(&|c: &reqwest::Client, base: &str| {
+            .send(Ask::Write, &|c: &reqwest::Client, base: &str| {
                 let put = c.put(format!("{base}{path}")).header(header::CONTENT_TYPE, "application/octet-stream");
                 let put = match project { Some(project) => put.query(&[("project", project)]), None => put };
                 // A whole file goes by its Content-Length, stated: an empty body carries none of its own.
@@ -290,28 +270,57 @@ impl Client {
 
     /// A plain-text answer, such as a log.
     pub(crate) async fn text(&self, path: &str) -> Result<String, Error> {
-        self.asked_again(transient, || async {
-            let answer = self.opened_once(|c, base| c.get(format!("{base}{path}"))).await?;
-            answer.text().await.map_err(unreachable)
-        }).await
+        self.read_whole(|| async {
+            let answer = self.opened(|c, base| c.get(format!("{base}{path}"))).await?;
+            Ok(answer.text().await.map_err(unreachable))
+        })
+        .await
     }
 
     /// A file Calcifer serves (an output, one file of a folder output), written to `to` as it comes: what it wrote.
     pub(crate) async fn download(&self, path: &str, to: &std::path::Path) -> Result<u64, Error> {
-        self.asked_again(transient, || self.download_once(path, to)).await
+        self.read_whole(|| async {
+            let mut answer = self.opened(|c, base| c.get(format!("{base}{path}"))).await?;
+            let unwritable = |e: std::io::Error| Error::new(Kind::Unavailable, "download_unwritable", format!("{}: {e}", to.display()));
+            let mut file = std::fs::File::create(to).map_err(unwritable)?;
+            let mut written = 0;
+            loop {
+                match answer.chunk().await {
+                    Ok(Some(chunk)) => {
+                        file.write_all(&chunk).map_err(unwritable)?;
+                        written += chunk.len() as u64;
+                    }
+                    Ok(None) => break,
+                    Err(e) => return Ok(Err(unreachable(e))),
+                }
+            }
+            file.sync_all().map_err(unwritable)?;
+            Ok(Ok(written))
+        })
+        .await
     }
 
-    async fn download_once(&self, path: &str, to: &std::path::Path) -> Result<u64, Error> {
-        let mut answer = self.opened_once(|c, base| c.get(format!("{base}{path}"))).await?;
-        let unwritable = |e: std::io::Error| Error::new(Kind::Unavailable, "download_unwritable", format!("{}: {e}", to.display()));
-        let mut file = std::fs::File::create(to).map_err(unwritable)?;
-        let mut written = 0;
-        while let Some(chunk) = answer.chunk().await.map_err(unreachable)? {
-            file.write_all(&chunk).map_err(unwritable)?;
-            written += chunk.len() as u64;
+    /// A read whose body was cut off (`Ok(Err)`: Calcifer stopped under it), read again from the start by
+    /// the retry rule; what came before its answer `send` already waited out.
+    async fn read_whole<T, F>(&self, read: impl Fn() -> F) -> Result<T, Error>
+    where
+        F: Future<Output = Result<Result<T, Error>, Error>>,
+    {
+        let mut backoff = Backoff::call();
+        loop {
+            let cut = match read().await? {
+                Ok(read) => return Ok(read),
+                Err(cut) => cut,
+            };
+            self.remember(None);
+            match backoff.again(&cut.message, false, None) {
+                Some((wait, said)) => {
+                    output::warn(&said);
+                    tokio::time::sleep(wait).await;
+                }
+                None => return Err(Error { message: backoff.spent(&cut.message), ..cut }),
+            }
         }
-        file.sync_all().map_err(unwritable)?;
-        Ok(written)
     }
 
     /// One request whose answer is read as `T`. An answer showing this Calcifer is older than this
@@ -322,12 +331,13 @@ impl Client {
     /// One that still lacks it is refused as outdated, never as a bare 404.
     async fn exchange<T: DeserializeOwned>(
         &self,
-        write: bool,
+        ask: Ask,
         build: impl Fn(&reqwest::Client, &str) -> RequestBuilder,
     ) -> Result<T, Error> {
+        let write = ask != Ask::Read;
         let mut restarted = false;
         loop {
-            let answer = self.send(&build).await?;
+            let answer = self.send(ask, &build).await?;
             let ignored = answer.headers().get(IGNORED_FIELDS).and_then(|v| v.to_str().ok()).map(str::to_owned);
             let lacks = match self.lacks(answer).await? {
                 Ok(body) => match serde_json::from_slice::<T>(&body) {
@@ -364,13 +374,9 @@ impl Client {
     /// One request whose answer is read as it comes (a stream, text): a route this Calcifer does
     /// not serve restarts it once and asks again, as `exchange` does.
     async fn opened(&self, build: impl Fn(&reqwest::Client, &str) -> RequestBuilder) -> Result<Response, Error> {
-        self.asked_again(transient, || self.opened_once(&build)).await
-    }
-
-    async fn opened_once(&self, build: impl Fn(&reqwest::Client, &str) -> RequestBuilder) -> Result<Response, Error> {
         let mut restarted = false;
         loop {
-            let answer = self.send(&build).await?;
+            let answer = self.send(Ask::Read, &build).await?;
             if answer.status() != StatusCode::NOT_FOUND {
                 return ok(answer).await;
             }
@@ -466,7 +472,7 @@ impl Client {
             stream: None,
             sse: Sse::default(),
             received: false,
-            empty: 0,
+            reconnects: Backoff::transfer(),
         }
     }
 
@@ -479,7 +485,7 @@ impl Client {
             stream: None,
             sse: Sse::default(),
             received: false,
-            empty: 0,
+            reconnects: Backoff::transfer(),
             opened_on: None,
             restarted: false,
             landing: false,
@@ -728,45 +734,76 @@ impl Client {
         }
     }
 
-    /// Safe HEAD and file-part PUT calls use the same restart retry policy as typed requests.
-    async fn sent_again(&self, build: impl Fn(&reqwest::Client, &str) -> RequestBuilder) -> Result<Response, Error> {
-        self.asked_again(transient, || self.send(&build)).await
-    }
-
-    /// Sends one attempt. The caller decides whether replay is safe; only a rejected stale
-    /// credential is refreshed here, before the request could have been accepted.
+    /// Sends one request by the one retry rule (Paul, 11-09), starting Calcifer when it is gone. A
+    /// restart (a refused connection, or Calcifer refusing while it stops) is waited out for any ask:
+    /// nothing was carried out. A dropped exchange, 408, 429, 502, 503 or 504 that is not a typed
+    /// refusal, or one saying a machine or the Hub did not answer, is asked again only when `ask` is
+    /// safe to repeat; an unsafe one says it was not. Each attempt reads Calcifer's record again and is
+    /// said, after an exponential backoff with jitter or the wait the answer states, within one deadline
+    /// ([`Backoff::call`]); then it fails with its last reason. Any other refusal among those statuses
+    /// is the error at once; every other answer is returned.
     async fn send(
         &self,
+        ask: Ask,
         build: impl Fn(&reqwest::Client, &str) -> RequestBuilder,
     ) -> Result<Response, Error> {
-        let mut refreshed = false;
+        let (mut backoff, mut refreshed) = (Backoff::call(), false);
+        let repeats = ask != Ask::Unkeyed;
+        let unsent = |error: Error| match repeats {
+            true => error,
+            false => error.remedy("Not retried; check whether the operation completed before repeating it"),
+        };
         loop {
             let holder = self.endpoint().await?;
             let base = format!("http://{}", holder.address);
             let request = build(&self.0.http, &base).bearer_auth(&holder.token);
-            let replayable = request.try_clone().is_some();
             let sent = self.heard(holder.pid, Instant::now(), REPORT, request.send()).await;
-            let answer = sent.map_err(unreachable)?;
-            // A rejected credential can be resent only when the published holder changed.
-            // An unchanged 401 is a real refusal, not a reason to restart or repeat the call.
-            if answer.status() == StatusCode::UNAUTHORIZED && !refreshed && replayable {
-                if let Some(now) = self.record().filter(|now| now != &holder) {
-                    refreshed = true;
-                    self.remember(Some(now));
-                    continue;
+            let (error, stated, restarting) = match sent {
+                // A restart minted a new token: asked again once under the record it published. The same
+                // record refused is a refusal.
+                Ok(answer) if answer.status() == StatusCode::UNAUTHORIZED && !refreshed => match self.record().filter(|now| now != &holder) {
+                    Some(now) => {
+                        refreshed = true;
+                        self.remember(Some(now));
+                        continue;
+                    }
+                    None => return Ok(answer),
+                },
+                Ok(answer) if !weather(answer.status()) => return Ok(answer),
+                Ok(answer) => {
+                    let stated = answer.headers().get(header::RETRY_AFTER).and_then(|v| v.to_str().ok()?.parse().ok());
+                    // Not a typed refusal (a HEAD's carries no body): not now.
+                    let refusal = match envelope(answer).await {
+                        untyped if untyped.code == UNTYPED => Error::new(Kind::Unavailable, "calcifer_unavailable", untyped.message),
+                        refusal => refusal,
+                    };
+                    let restarting = refusal.code == STOPPING;
+                    let transient = refusal.code == "calcifer_unavailable" || refusal.transient();
+                    if !(restarting || repeats && transient) {
+                        return Err(if transient { unsent(refusal) } else { refusal });
+                    }
+                    let stated = stated.or(refusal.retry_after_s).map(Duration::from_secs);
+                    (refusal, stated, restarting)
+                }
+                // Nobody took the connection: Calcifer is gone or restarting.
+                Err(e) if e.is_builder() => return Err(unreachable(e)),
+                Err(e) if e.is_connect() => (unreachable(e), None, true),
+                Err(e) if repeats => (unreachable(e), None, false),
+                Err(e) => return Err(unsent(unreachable(e))),
+            };
+            // The next attempt reads Calcifer's record again: a restart publishes a new one.
+            self.remember(None);
+            let why = if restarting { RESTARTING } else { error.message.as_str() };
+            match backoff.again(why, false, stated) {
+                Some((wait, said)) => {
+                    output::warn(&said);
+                    tokio::time::sleep(wait).await;
+                }
+                None => {
+                    let message = backoff.spent(why);
+                    return Err(Error { message, ..error });
                 }
             }
-            if answer.status() != StatusCode::SERVICE_UNAVAILABLE {
-                return Ok(answer);
-            }
-            let retry_after = answer.headers().get(header::RETRY_AFTER).and_then(|value| value.to_str().ok()?.parse().ok());
-            let refusal = envelope(answer).await;
-            if !matches!(refusal.code.as_str(), "calcifer_stopping" | "untyped_answer") {
-                return Err(refusal);
-            }
-            return Err(Error { retry_after_s: retry_after.or(refusal.retry_after_s), ..Error::new(
-                Kind::Unavailable, "calcifer_unavailable", "Calcifer returned 503 Service Unavailable",
-            ) });
         }
     }
 
@@ -842,8 +879,9 @@ pub(crate) struct Events {
     sse: Sse,
     /// Whether this connection has carried an event.
     received: bool,
-    /// Connections in a row to one Calcifer that closed carrying none.
-    empty: u32,
+    /// The pauses before reconnecting: connections in a row to one Calcifer that closed carrying no
+    /// event end it.
+    reconnects: Backoff,
     /// The Calcifer (its pid) the last connection was opened on.
     opened_on: Option<u32>,
     /// A reconnect found another Calcifer: the one followed restarted.
@@ -869,8 +907,8 @@ impl Events {
     }
 
     /// The next event; `None` after the terminal one, or for a landing stream once Calcifer ends
-    /// it after that. Cancel-safe: a dropped call loses nothing
-    /// a later one would not read again.
+    /// it after that. A dropped call loses no event, but a reconnect's pause and retries start
+    /// over: a caller keeps one call going.
     pub(crate) async fn next(&mut self) -> Option<Result<Event, Error>> {
         while !self.done {
             if let Some(event) = self.parsed() {
@@ -878,7 +916,6 @@ impl Events {
                     self.cursor = self.cursor.max(n);
                 }
                 self.received = true;
-                self.empty = 0;
                 self.ended |= event.is_terminal();
                 self.done = self.ended && !self.landing;
                 return Some(Ok(event));
@@ -889,7 +926,7 @@ impl Events {
                         // A restart closed the last connection, not a stream with nothing to say.
                         let on = self.client.pid();
                         if self.opened_on.is_some_and(|before| before != on) {
-                            (self.restarted, self.empty) = (true, 0);
+                            (self.restarted, self.reconnects) = (true, Backoff::transfer());
                         }
                         self.opened_on = Some(on);
                         self.stream = Some(stream);
@@ -908,24 +945,18 @@ impl Events {
                     self.stream = None;
                     self.done = true;
                 }
-                // A close is not a verdict: reconnect from the cursor.
+                // A close is not a verdict: reconnect from the cursor, after a pause by the retry rule.
                 Ok(None) | Err(_) => {
-                    self.stream = None;
-                    self.sse = Sse::default();
-                    if !std::mem::take(&mut self.received) {
-                        self.empty += 1;
-                    }
-                    if self.empty > AGAIN {
-                        self.done = true;
-                        return Some(Err(Error::new(
-                            Kind::Unavailable,
-                            "events_closed",
-                            format!(
-                                "Lost the run's event stream after {} reconnects; the run is still recorded",
-                                self.empty
-                            ),
-                        )
-                        .next("cozy run ls")));
+                    (self.stream, self.sse) = (None, Sse::default());
+                    let moved = std::mem::take(&mut self.received);
+                    match self.reconnects.after(moved, None) {
+                        Some(pause) => tokio::time::sleep(pause).await,
+                        None => {
+                            self.done = true;
+                            let n = self.reconnects.attempts();
+                            let said = format!("The run's event stream closed {n} times in a row without an event; the run goes on");
+                            return Some(Err(Error::new(Kind::Unavailable, "events_closed", said).next("cozy run ls")));
+                        }
                     }
                 }
             }
@@ -935,11 +966,12 @@ impl Events {
 
     async fn open(&self) -> Result<Response, Error> {
         let cursor = self.cursor;
-        self.client.opened(|c, base| {
+        let answer = self.client.send(Ask::Read, |c, base| {
             c.get(format!("{base}{}", self.path))
                 .query(&[("starting_after", cursor)])
                 .header(header::ACCEPT, "text/event-stream")
-        }).await
+        });
+        ok(answer.await?).await
     }
 
     /// The next event this build reads; event types it does not know are skipped.
@@ -1030,8 +1062,8 @@ pub(crate) struct LogFollow {
     sse: Sse,
     /// Whether this connection has carried lines.
     received: bool,
-    /// Connections in a row that closed carrying none.
-    empty: u32,
+    /// The pauses before reconnecting: connections in a row that closed carrying no line end it.
+    reconnects: Backoff,
 }
 
 impl LogFollow {
@@ -1040,7 +1072,7 @@ impl LogFollow {
             if let Some(data) = self.sse.next() {
                 if let Ok(LogEvent::Lines { after, text }) = serde_json::from_str(&data) {
                     self.after = Some(after.clone());
-                    (self.received, self.empty) = (true, 0);
+                    self.received = true;
                     return Ok(LogLines { after, text });
                 }
                 continue;
@@ -1053,15 +1085,13 @@ impl LogFollow {
                 Ok(Some(bytes)) => self.sse.push(&bytes),
                 Ok(None) | Err(_) => {
                     (self.stream, self.sse) = (None, Sse::default());
-                    if !std::mem::take(&mut self.received) {
-                        self.empty += 1;
-                    }
-                    if self.empty > AGAIN {
-                        return Err(Error::new(
-                            Kind::Unavailable,
-                            "log_closed",
-                            format!("the log stream closed {} times without a line", self.empty),
-                        ));
+                    let moved = std::mem::take(&mut self.received);
+                    match self.reconnects.after(moved, None) {
+                        Some(pause) => tokio::time::sleep(pause).await,
+                        None => {
+                            let n = self.reconnects.attempts();
+                            return Err(Error::new(Kind::Unavailable, "log_closed", format!("the log stream closed {n} times in a row without a line")));
+                        }
                     }
                 }
             }
@@ -1069,7 +1099,7 @@ impl LogFollow {
     }
 
     async fn open(&self) -> Result<Response, Error> {
-        let answer = self.client.send(|c, base| {
+        let answer = self.client.send(Ask::Read, |c, base| {
             let request = c
                 .get(format!("{base}{}", self.path))
                 .header(header::ACCEPT, "text/event-stream");
@@ -1172,17 +1202,19 @@ fn refusal(path: &Path) -> Option<Error> {
         .map(|e| e.error)
 }
 
+/// An answer that means "not now": a timeout, a rate limit, or a gateway or server that isn't serving.
+fn weather(status: StatusCode) -> bool {
+    matches!(status.as_u16(), 408 | 429 | 502 | 503 | 504)
+}
+
+/// `body` as JSON, encoded once: every send of a call is the same bytes under its key.
 fn json_body(body: &(impl Serialize + ?Sized)) -> Result<bytes::Bytes, Error> {
-    serde_json::to_vec(body).map(bytes::Bytes::from)
-        .map_err(|error| Error::new(Kind::Validation, "body_invalid", format!("Cannot encode the request: {error}")))
+    let encoded = serde_json::to_vec(body).map_err(|e| Error::new(Kind::Validation, "body_invalid", format!("Cannot encode the request: {e}")))?;
+    Ok(encoded.into())
 }
 
-fn local_transient(error: &Error) -> bool {
-    matches!(error.code.as_str(), "calcifer_unreachable" | "calcifer_unavailable")
-}
-
-fn transient(error: &Error) -> bool {
-    local_transient(error) || error.hub_transient()
+fn json(request: RequestBuilder, body: &bytes::Bytes) -> RequestBuilder {
+    request.header(header::CONTENT_TYPE, "application/json").body(body.clone())
 }
 
 fn unreachable(error: reqwest::Error) -> Error {
@@ -1210,11 +1242,7 @@ async fn decode<T: DeserializeOwned>(answer: Response) -> Result<T, Error> {
     let answer = ok(answer).await?;
     let body = answer.bytes().await.map_err(unreachable)?;
     serde_json::from_slice(&body).map_err(|e| {
-        Error::new(
-            Kind::Internal,
-            "untyped_answer",
-            format!("Cannot read Calcifer's response: {e}"),
-        )
+        Error::new(Kind::Internal, UNTYPED, format!("Cannot read Calcifer's response: {e}"))
     })
 }
 
@@ -1226,14 +1254,11 @@ async fn envelope(answer: Response) -> Error {
         Ok(envelope) => envelope.error,
         Err(_) => {
             let text = String::from_utf8_lossy(&body);
-            Error::new(
-                Kind::Internal,
-                "untyped_answer",
-                format!(
-                    "Calcifer returned {status}: {}",
-                    text.trim()
-                ),
-            )
+            let message = match text.trim() {
+                "" => format!("Calcifer returned {status}"),
+                text => format!("Calcifer returned {status}: {text}"),
+            };
+            Error::new(Kind::Internal, UNTYPED, message)
         }
     }
 }
