@@ -203,6 +203,10 @@ impl Link {
         Ok(self.machine.keepalive().await?)
     }
 
+    pub(crate) async fn remove_model(&self, asked: &v1::RemoveModel) -> Result<v1::RemovedModel, LinkError> {
+        Ok(self.machine.remove_model(asked).await?)
+    }
+
     /// The identity frame the machine at `address` gives anyone who reaches it: its worker id,
     /// boot and version.
     pub(crate) async fn identity(address: &str, pin: [u8; 32]) -> Result<v1::StatusFrame, LinkError> {

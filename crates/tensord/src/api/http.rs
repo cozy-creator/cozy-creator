@@ -76,6 +76,7 @@ fn routes() -> Router<Machine> {
         .route(path::OBJECT, put(put_object).get(follow_object))
         .route(path::OBJECTS_HELD, post(held_objects).layer(DefaultBodyLimit::max(16 << 20)))
         .route(path::ESTIMATE, post(estimate))
+        .route(path::MODELS_REMOVE, post(remove_model))
         .route(path::HEALTH, get(health))
         .fallback(|| async { Refusal::from(Error::not_found("route_not_found", "this machine serves no such path")) })
         .method_not_allowed_fallback(|| async {
@@ -315,6 +316,34 @@ async fn keepalive(State(m): State<Machine>, headers: HeaderMap) -> Answer {
     m.call(move |_| lifecycle.renew()).await?;
     let frame = super::machine_status::frame(&m.identity, &m.runs, caller.actor).await?;
     Ok(json(StatusCode::OK, &frame))
+}
+
+/// Removes a local cached repository without stopping any work or changing its origin.
+async fn remove_model(State(m): State<Machine>, headers: HeaderMap, body: Bytes) -> Answer {
+    let caller = m.caller(&headers)?;
+    caller.machine()?;
+    if !m.identity.lifecycle.is_local() || crate::private_io::current().is_some() {
+        return Err(Error::forbidden("model_remove_local_only", "Model removal is available only in this computer's ordinary local cache").into());
+    }
+    let asked: v1::RemoveModel = serde_json::from_slice(&body)
+        .map_err(|e| Error::validation("invalid_request", format!("Cannot read model removal request: {e}")))?;
+    let model = asked.model.trim().to_owned();
+    if !tensorfs::format::repo_name(&model) || model.contains('@') {
+        return Err(Error::validation("model_ref_invalid", "Specify a model repository as org/name, without a release or lane").into());
+    }
+    let admitted = m.admit()?;
+    let removed = m.call(move |runs| {
+        let result = runs.service.engine.store.remove_cached_model(&model)
+            .map_err(|e| Error::internal("model_remove_failed", e.to_string()))?;
+        if result.removed {
+            runs.service.engine.with_journal(|journal| journal.move_catalog())
+                .map_err(|e| Error::internal("model_remove_failed", e.to_string()))?;
+            runs.service.engine.notify_activity();
+        }
+        Ok(v1::RemovedModel { model, removed: result.removed, cache_bytes_removed: result.cache_bytes_removed, retained_bytes: result.retained_bytes })
+    }).await?;
+    drop(admitted);
+    Ok(json(StatusCode::OK, &removed))
 }
 
 fn run_id(id: &str) -> Result<(), Error> {
