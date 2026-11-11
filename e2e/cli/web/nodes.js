@@ -209,7 +209,7 @@ function linesOf(text, name) {
   await videoTool.waitFor();
   check('video_operation_outputs_video', await videoTool.getAttribute('data-kind') === 'video');
   const videoToolId = await videoTool.getAttribute('data-tool');
-  const onto = async (row, name) => {
+  const toolOnto = async (row, name) => {
     await away();
     await fitCanvas(page);
     await box(name).waitFor();
@@ -220,12 +220,12 @@ function linesOf(text, name) {
   const allBefore = (await state()).assets.map((held) => held.name).sort();
   for (const kind of ['image', 'audio', 'text', 'video_edit']) {
     const name = blanks[kind].name;
-    await onto(videoTool, name);
+    await toolOnto(videoTool, name);
     await until('incompatible drop explained', () => page.locator('.notes, .note-list, [role=status]').allInnerTexts(), (notes) => notes.some((text) => text.includes(name) && (text.includes("can't go on") || text.includes('node'))));
     const now = await of(name);
     check(`video_rejected_by_${kind}_without_extra_node`, now.tool === blank(kind).tool && now.kind === blank(kind).kind && JSON.stringify((await state()).assets.map((held) => held.name).sort()) === JSON.stringify(allBefore), now);
   }
-  await onto(videoTool, blanks.video.name);
+  await toolOnto(videoTool, blanks.video.name);
   await until('video takes its compatible model', () => of(blanks.video.name), (held) => held.tool === videoToolId);
   check('video_accepts_operation_without_exposing_type_hint', (await of(blanks.video.name)).fields?.node_kind === 'video' && await page.locator('[data-field="node_kind"]').count() === 0);
   check('opening_model_keeps_the_two_sidebar_lists', JSON.stringify(await page.locator('.tools h4').allTextContents()) === JSON.stringify(['Nodes', 'Tools']) && await page.locator('.tools .box-shelf-head, .tools input, .tools .picks').count() === 0);
