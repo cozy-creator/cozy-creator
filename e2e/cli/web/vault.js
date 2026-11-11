@@ -629,11 +629,11 @@ const newPage = async () => {
   await page.unroute(statusPath, statusRoute);
   stage = 'default encrypted project creation';
   const origin = new URL(href).origin;
-  const saveCreationRecovery = async () => {
+  const saveCreationRecovery = async (suffix = '') => {
     await page.locator('[aria-label="Save recovery secret"] pre').waitFor();
     await page.getByLabel('I saved this somewhere away from this computer').check();
     await page.getByRole('button', { name: 'Done', exact: true }).click();
-    await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
+    await page.waitForURL(new RegExp(`/p/[0-9A-HJKMNP-TV-Z]{9}${suffix}$`));
   };
   await goto(page, `${origin}/projects`);
   check('new_form_defaults_to_encryption', !(await page.getByLabel('Create without encryption', { exact: true }).isChecked()));
@@ -675,7 +675,7 @@ const newPage = async () => {
   createdFolders.push(implicit.path);
   await page.locator('[aria-label="Save recovery secret"] pre').waitFor();
   check('implicit_creation_waits_for_saved_recovery', fileWrites.length === uploadsBeforeSetup);
-  await saveCreationRecovery();
+  await saveCreationRecovery('/runs');
   await page.locator('.nm-field').waitFor();
   await page.keyboard.press('Enter');
   await until('implicit encrypted import lands', () => projectJson(implicit.path).assets.some((asset) => asset.sha256), Boolean, 45000);
