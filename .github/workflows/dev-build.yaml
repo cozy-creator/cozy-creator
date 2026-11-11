@@ -14,9 +14,13 @@ on:
         type: string
         default: master
       build:
-        description: "cozy: dev binary; tensord: manylinux binary; tensorfs: wheel; kernels: CUDA AOT; check: native Rust compilation; vault-provider: filesystem proof; project-vault-cli: full default-home encryption CLI proof (comma-separate several)"
+        description: "cozy: dev binary; tensord: manylinux binary; tensorfs: wheel; kernels: CUDA AOT; check: native Rust compilation; calcifer-tests: focused library tests; vault-provider: filesystem proof; project-vault-cli: full default-home encryption CLI proof (comma-separate several)"
         type: string
         default: cozy
+      test_filter:
+        description: "calcifer-tests only: required Rust test/module filter, for example project::assets::tests"
+        type: string
+        default: ''
       features:
         description: "Cargo features of the cozy and tensord builds"
         type: string
@@ -249,13 +253,22 @@ jobs:
           retention-days: 7
 
   check:
-    if: contains(inputs.build, 'check')
+    if: contains(inputs.build, 'check') || contains(inputs.build, 'calcifer-tests')
     runs-on: ${{ inputs.billed_runner || inputs.runner }}
     defaults:
       run:
         shell: bash
     timeout-minutes: 60
     steps:
+      - name: Validate focused Calcifer test filter
+        if: contains(inputs.build, 'calcifer-tests')
+        env:
+          TEST_FILTER: ${{ inputs.test_filter }}
+        run: |
+          if [[ ! $TEST_FILTER =~ ^[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)*$ ]]; then
+            echo '::error::calcifer-tests requires a nonempty Rust test/module filter (identifiers separated by ::)'
+            exit 2
+          fi
       - if: ${{ inputs.billed_runner != '' }}
         env:
           RUNNER: ${{ inputs.billed_runner }}
@@ -270,11 +283,18 @@ jobs:
         with:
           python-version: '3.12'
       - name: Check native memory and TensorFS compilation
+        if: contains(inputs.build, 'check')
         env:
           CARGO_BUILD_JOBS: '2'
         run: |
           cargo check --locked -p varena -p tensorfs -p tensorfs-py
           cargo check --locked -p tensorfs --no-default-features
+      - name: Run focused Calcifer library tests
+        if: contains(inputs.build, 'calcifer-tests')
+        env:
+          CARGO_BUILD_JOBS: '2'
+          TEST_FILTER: ${{ inputs.test_filter }}
+        run: cargo test --release --locked -p calcifer --lib "$TEST_FILTER"
 
   # Manual platform proof of the actual encrypted filesystem, no account/rental/daemon.
   vault-provider:
