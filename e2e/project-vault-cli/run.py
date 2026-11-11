@@ -1388,6 +1388,42 @@ foreach ($rule in $allowed) {
         self.flush()
 
 
+def step_result(proof: Proof, error: Exception | None = None) -> None:
+    """Only fixed labels and numeric source locations may leave the proof via step metadata."""
+    output = os.environ.get('GITHUB_OUTPUT')
+    if not output:
+        return
+    values = {'result': 'failed' if error is not None else 'passed'}
+    if error is None:
+        values['cells'] = str(len(proof.receipt.get('cells', {})))
+    else:
+        kind = type(error).__name__
+        values['exception'] = kind if re.fullmatch(r'[A-Za-z_][A-Za-z_0-9]{0,63}', kind) else 'Exception'
+        frames = traceback.extract_tb(error.__traceback__)
+        line = next((frame.lineno for frame in reversed(frames)
+                     if os.path.abspath(frame.filename) == os.path.abspath(__file__)), 0)
+        values['where'] = f'run.py:{line}'
+        record = proof.commands[-1] if proof.commands else {}
+        raw = record.get('args')
+        words = [word for word in raw if isinstance(word, str)] if isinstance(raw, list) else []
+        while words and words[0] in ('--json', '--full', '--yes', '-y'):
+            words.pop(0)
+        action = words[0] if words else ''
+        if action == 'vault':
+            tail = words[3:] if words[1:2] == ['--directory'] else words[1:]
+            action = 'vault_' + tail[0] if tail and tail[0] in ('encrypt', 'decrypt', 'lock', 'unlock', 'status', 'rotate', 'recovery', 'passphrase', 'export') else 'vault_other'
+        allowed = {'new', 'open', 'status', 'machine', 'run', 'doctor', '--version',
+                   'vault_encrypt', 'vault_decrypt', 'vault_lock', 'vault_unlock', 'vault_status',
+                   'vault_rotate', 'vault_recovery', 'vault_passphrase', 'vault_export', 'vault_other'}
+        method = record.get('method')
+        values['action'] = action if action in allowed else ('http_' + method.lower() if isinstance(method, str) and method in ('GET', 'POST', 'PUT', 'PATCH', 'DELETE') else 'other')
+    try:
+        with Path(output).open('a', encoding='utf-8') as stream:
+            stream.writelines(f'{key}={value}\n' for key, value in values.items())
+    except OSError:
+        print('Native proof step metadata could not be written', file=sys.stderr)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--artifacts', type=Path, required=True)
@@ -1396,7 +1432,9 @@ def main() -> None:
     proof = Proof(args.artifacts, args.source)
     try:
         proof.run()
+        step_result(proof)
     except Exception as error:
+        step_result(proof, error)
         failed = traceback.extract_tb(error.__traceback__)[-1]
         detail = proof.redact(f'{type(error).__name__} in {failed.name}:{failed.lineno}: {error}')
         proof.receipt.update({'result': 'failed', 'error': detail})

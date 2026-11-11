@@ -542,11 +542,15 @@ jobs:
           path: .vault-fixture
           persist-credentials: false
       - name: Exercise real optional project encryption through the installed CLI
+        id: vault_proof
         run: |
           fixture=.
           if [ -d .vault-fixture ]; then fixture=.vault-fixture; fi
           git -C "$fixture" rev-parse HEAD > "$RUNNER_TEMP/vault-fixture-source.txt"
           python "$fixture/e2e/project-vault-cli/run.py" --source "$(git rev-parse HEAD)" --artifacts "$RUNNER_TEMP/project-vault-cli"
+      - name: Native proof ${{ steps.vault_proof.outputs.result || 'unavailable' }} ${{ steps.vault_proof.outputs.exception }} ${{ steps.vault_proof.outputs.where }} ${{ steps.vault_proof.outputs.action }} cells=${{ steps.vault_proof.outputs.cells }}
+        if: always()
+        run: ':'
       - name: Keep only product proof records
         if: always()
         run: |
