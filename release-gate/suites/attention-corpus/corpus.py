@@ -8,7 +8,7 @@
 Sites and calls: what the judging needs, small enough to hand to every class's pod (about 768 MiB a model at most). One
 site per (block family, level, exact path, layout phase): a family is a site path with its block numbers taken out, the level the one
 the site runs at (the Runtime's census row), the phase dense or sparse. Its first and last call in that phase; over the
-budget, only the first. Two heads each: the Runtime keeps the head whose keys have the largest max/RMS (the outlier an
+budget, one: a dense phase's first, a sparse phase's last. Two heads each: the Runtime keeps the head whose keys have the largest max/RMS (the outlier an
 8-bit kernel can break on) and a typical one, and records which in the capture's facts. CORPUS holds one directory per model, the capture run's `<request id>/` beneath it
 (cozy_runtime's attention_capture.py)."""
 
@@ -81,15 +81,21 @@ def pick(where: str, census: list[Row]) -> dict[str, object]:
         if r.get('site'):
             key = (family(r['site'])[0], r.get('level'), bool(r.get('exact')), phase(r))
             groups.setdefault(key, {}).setdefault(r['site'], []).append(r['call'])
-    chosen: dict[str, list[int]] = {}  # site -> the calls it is chosen for
-    for sites in groups.values():
+    # site -> (the calls it is chosen for, the one call kept over the budget). A capture run numbers a site's calls as
+    # the census did only roughly (release gate 43059118947: H3 block 0's first sparse call was 14 in its census and
+    # dense in its capture), so a sparse phase keeps its last call, which every run makes in its last sparse step.
+    chosen: dict[str, tuple[list[int], list[int]]] = {}
+    for (_, _, _, sparse), sites in groups.items():
         first = min(sites, key=lambda s: family(s)[1])
-        chosen.setdefault(first, []).extend((min(sites[first]), max(sites[first])))
+        lo, hi = min(sites[first]), max(sites[first])
+        both, one = chosen.setdefault(first, ([], []))
+        both.extend((lo, hi))
+        one.append(hi if sparse else lo)
     rows = {(r['site'], r['call']): r for r in census if r.get('site')}
     keep: set[int] = set()
     total = 0
-    for stride in (1, 2):  # first and last of each phase, then the first only
-        keep = {o for c in chosen.values() for o in c[::stride]}
+    for reduced in (False, True):  # first and last of each phase, then one call a phase
+        keep = {o for both, one in chosen.values() for o in (one if reduced else both)}
         # The spec's calls hold for every chosen site: each captures at every kept call it makes.
         total = sum(size(r, HEADS) for (site, call), r in rows.items() if site in chosen and call in keep)
         if total <= BUDGET:
@@ -137,6 +143,8 @@ def check(corpus: Path) -> int:
         if not kept:
             print(f'{model}: no capture in {run.name} ({len(census)} calls in its census)')
             continue
+        if any(phase(r) for r in census) and not any(phase(r) for r in kept):
+            fails.append(f'{model}: its census has sparse calls and no capture is of one')
         for r in kept:
             meta, t = tensors(run / r['file'])
             heads = len(json.loads(meta['facts'])['heads'])
