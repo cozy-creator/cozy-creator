@@ -73,7 +73,7 @@ select = ["imports", "model", "cpu"]
 # Model-execution checks follow the controller paths that describe, bind and dispatch models.
 # Canvas, thumbnails and other CLI/Calcifer changes keep their functional CLI coverage.
 [[cozy-creator.also]]
-paths = ["crates/cli/src/run/**", "crates/calcifer/src/local_code.rs", "crates/calcifer/src/runs/bind.rs", "crates/calcifer/src/runs/target.rs", "crates/calcifer/src/runs/mod.rs", "crates/calcifer/src/project/jobs.rs", "crates/calcifer/src/project/mod.rs", "crates/calcifer/src/toolbox.rs", "crates/calcifer/src/tools.rs"]
+paths = ["crates/cli/src/run/**", "crates/calcifer/src/local_code.rs", "crates/calcifer/src/runs/bind.rs", "crates/calcifer/src/runs/spec.rs", "crates/calcifer/src/runs/target.rs", "crates/calcifer/src/runs/mod.rs", "crates/calcifer/src/project/jobs.rs", "crates/calcifer/src/project/mod.rs", "crates/calcifer/src/toolbox.rs", "crates/calcifer/src/tools.rs"]
 select = ["cpu"]
 
 # A crate's own change selects its tokens here, and also the tokens of every crate that depends on
