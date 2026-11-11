@@ -953,9 +953,9 @@ foreach ($rule in $allowed) {
         self.check_recovery('new-project')
         protected = self.command('vault', '--directory', fresh, 'status')
         assert protected['encrypted'] and protected['state'] == 'unlocked'
-        view = protected['view']
-        assert view is not None
-        assert (Path(view) / 'project.db').is_file()
+        created_view = protected['view']
+        assert created_view is not None
+        assert (Path(created_view) / 'project.db').is_file()
         assert not (fresh / 'project.db').exists() and not (fresh / 'project.db.new').exists()
         assert set(self.out.glob('.cozy-project-source-*')) == preserved_before
         existing = self.command('new', fresh)
@@ -963,8 +963,8 @@ foreach ($rule in $allowed) {
         self.cell('new_project_starts_in_encrypted_storage')
         self.command('vault', '--directory', fresh, 'lock')
         self.command('vault', '--directory', fresh, 'unlock', '--recovery-file', self.recovery('new-project'))
-        reopened = self.command('status', cwd=fresh, full=True)
-        assert reopened['project']['id'] == new['id']
+        created_reopened = self.command('status', cwd=fresh, full=True)
+        assert created_reopened['project']['id'] == new['id']
         self.command('vault', '--directory', fresh, 'lock')
         self.cell('new_project_recovery_reopens_same_identity')
         self.creation_lock_race(initial)
