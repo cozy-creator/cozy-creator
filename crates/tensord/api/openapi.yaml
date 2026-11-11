@@ -1007,6 +1007,9 @@ components:
     RunSpec:
       type: object
       properties:
+        attention_capture:
+          type: string
+          description: 'Dev-only: the Runtime''s attention capture spec (JSON); its run and every child always run.'
         attention_kernel: {type: string}
         entrypoint: {type: string}
         gpus:

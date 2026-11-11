@@ -64,6 +64,10 @@ struct RunArgs {
     /// Select an attention kernel for all models or one `[slot/]component`.
     #[arg(long, value_name = "[[SLOT/]COMPONENT=]KERNEL", value_parser = api::calcifer::attention_pin)]
     attention_kernel: Option<String>,
+    // Dev-only (xs-171). The Runtime writes what attention kernels receive on the machine.
+    /// Capture attention Q/K/V and every call's shape: a JSON spec or `@FILE`.
+    #[arg(long, value_name = "SPEC")]
+    attention_capture: Option<String>,
     /// Read inputs from a JSON or YAML file. Inline inputs override it.
     #[arg(long = "input", value_name = "FILE")]
     input_file: Option<PathBuf>,
@@ -310,6 +314,7 @@ async fn request(ctx: &Context, args: &RunArgs, target: String, code: Option<Loc
         gpus: args.gpus,
         lane: args.lane.clone(),
         attention_kernel: args.attention_kernel.clone(),
+        attention_capture: args.attention_capture.as_deref().map(|spec| capture(ctx, spec, cwd)).transpose()?,
         warm: None,
         project: Some(project),
         recipes: false,
@@ -349,6 +354,20 @@ fn read_input(ctx: &Context, file: &Path, cwd: &Path) -> Result<(Map<String, Val
             .next("cozy run --help"));
     };
     Ok((loaded, path.parent().map_or_else(|| cwd.to_owned(), Path::to_owned)))
+}
+
+/// `--attention-capture`'s spec (dev-only): JSON, inline or `@FILE`, sent compact; the Runtime judges its fields.
+fn capture(ctx: &Context, spec: &str, cwd: &Path) -> Result<String, Error> {
+    let text = match spec.strip_prefix('@') {
+        Some(file) => std::fs::read_to_string(api::target::spelled(file, cwd, &ctx.user_home)).map_err(|e| {
+            Error::new(Kind::NotFound, "attention_capture_unreadable", format!("Cannot read --attention-capture {spec}: {e}"))
+        })?,
+        None => spec.to_owned(),
+    };
+    match serde_json::from_str::<Value>(&text) {
+        Ok(value @ Value::Object(_)) => Ok(value.to_string()),
+        _ => Err(Error::new(Kind::Validation, "attention_capture_invalid", "--attention-capture takes a JSON object or @FILE")),
+    }
 }
 
 /// Submits `ask` under a key minted for it (its seed derives from it) and follows the run. Local
