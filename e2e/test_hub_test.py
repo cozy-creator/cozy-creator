@@ -7,11 +7,11 @@ import tempfile
 import threading
 import unittest
 
-from test_hub import IsolationError, metadata, require_test_hub
+from test_hub import IsolationError, metadata, require_ci_test_hub, require_test_hub
 
 
 class IsolationTests(unittest.TestCase):
-    def test_production_suite_keeps_provider_checks_without_synthetic_writes(self) -> None:
+    def test_manual_production_suite_keeps_provider_checks_without_synthetic_writes(self) -> None:
         root = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory(prefix="hub-suite-flow-") as directory:
             scratch = Path(directory)
@@ -22,13 +22,46 @@ class IsolationTests(unittest.TestCase):
             library.write_text("WHO=fixture\n" + "\n".join(stubs) + "\n")
             log = scratch / "calls"
             script = 'HERE="$1"; OUT="$1/out"; ON=local; HUB_PROVIDERS=fixture; end_it() { :; }; . "$2"'
+            environment = {key: value for key, value in os.environ.items() if key not in {"CI", "GITHUB_ACTIONS"}}
             result = subprocess.run(["bash", "-c", script, "suite-test", str(scratch), str(root / "release-gate/suites/hub/cells.sh")],
-                env={**os.environ, "CALL_LOG": str(log)}, capture_output=True, text=True)
+                env={**environment, "CALL_LOG": str(log)}, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             called = log.read_text().splitlines()
             self.assertIn("hub_pod", called)
             self.assertIn("hub_contract", called)
             self.assertFalse({"hub_publish", "hub_packages", "hub_models"} & set(called))
+
+    def test_ci_guard_also_blocks_production_reads(self) -> None:
+        def no_network(_: str) -> dict[str, object]:
+            self.fail("CI contacted production")
+        require_ci_test_hub("https://tensorhub.com", environment={}, fetch=no_network)
+        for environment in [{"CI": "true"}, {"GITHUB_ACTIONS": "true"}]:
+            with self.subTest(environment=environment), self.assertRaises(IsolationError):
+                require_ci_test_hub("https://tensorhub.com", environment=environment, fetch=no_network)
+
+    def test_ci_entrypoints_stop_before_any_cli_data_request(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory(prefix="ci-hub-read-guard-") as directory:
+            scratch = Path(directory)
+            bin_dir = scratch / "bin"
+            bin_dir.mkdir()
+            cli = bin_dir / "cozy"
+            cli.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$TEST_CLI_LOG"\n')
+            cli.chmod(0o755)
+            log = scratch / "calls"
+            environment = {**os.environ, "CI": "true", "GITHUB_ACTIONS": "true", "COZY_HUB_URL": "https://tensorhub.com", "COZY_TEST_HUB_ORIGIN": "https://127.0.0.1:8443", "TEST_CLI_LOG": str(log), "PATH": str(bin_dir) + os.pathsep + os.environ.get("PATH", ""), "OUT": str(scratch / "out")}
+            commands = [
+                ["bash", str(root / "release-gate/gate.sh"), "--copy", str(root / "release-gate"), "0", "1", "cpu", "--suite", "hub"],
+                ["bash", str(root / "release-gate/hubgate.sh"), "--suite", "hub", "--hub", "https://tensorhub.com"],
+                ["bash", "-c", '. "$1/release-gate/sessions/lib.sh"', "session-test", str(root)],
+                ["bash", str(root / "e2e/capabilities/run.sh")],
+            ]
+            for command in commands:
+                with self.subTest(command=command):
+                    result = subprocess.run(command, env=environment, capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertIn("test Hub required", result.stderr)
+                    self.assertFalse(log.exists(), "a CI data request reached the CLI")
 
     def test_publication_helper_refuses_production_before_running_cli(self) -> None:
         root = Path(__file__).resolve().parents[1]

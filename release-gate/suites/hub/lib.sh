@@ -5,6 +5,7 @@
 # machine on each call.
 export COZY_HUB_URL=$HUB_URL
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../e2e" && pwd)/test-hub.sh"
+require_ci_test_hub "$HUB_URL" || return 2
 hub_test_target() {
   if ! require_test_hub "$HUB_URL"; then
     expect "hub isolation" FAIL "synthetic checks require the isolated fixture Hub"

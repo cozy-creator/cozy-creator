@@ -6,6 +6,8 @@
 # checkouts), REF (release-gate/ref).
 # Every failure is handled here (the trap ends the rental), not by bash -e.
 set +e -uo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/../../e2e/test-hub.sh"
+require_ci_test_hub || exit 2
 MODEL_DETAILS=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../e2e" && pwd)/model-details.py
 model_details() { python3 "$MODEL_DETAILS" "$1"; }
 mkdir -p "$OUT"; OUT=$(cd "$OUT" && pwd); R=$OUT/results.txt

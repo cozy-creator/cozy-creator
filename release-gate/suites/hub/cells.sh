@@ -1,4 +1,4 @@
-# Production read/provider checks after a Hub deploy. Synthetic repository writes run in the companion
+# Manual provider checks, or CI checks against a verified isolated Hub. Synthetic repository writes run in the companion
 # isolated fixture job (e2e/skew/run.sh), never through this production account.
 # The provider path still rents, runs a weightless local package by content, checks credentials/auth,
 # and ends each owned rental. No package or model repository is created here.

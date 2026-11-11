@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 import http.client
 import ipaddress
 import json
@@ -31,7 +31,7 @@ def _origin(value: str, label: str, *, issuer: bool = False) -> tuple[str, str, 
     except ValueError:
         loopback = False
     if not loopback:
-        raise IsolationError(f"{label} is not loopback; synthetic tests must never publish to production")
+        raise IsolationError(f"{label} is not loopback; CI verification and synthetic tests must not use production")
     if parsed.query or parsed.fragment or (not issuer and parsed.path not in {"", "/"}):
         raise IsolationError(f"{label} must not contain a path, query or fragment")
     return parsed.scheme, host, port
@@ -76,6 +76,17 @@ def require_test_hub(
     for issuer in issuers:
         if not isinstance(issuer, str) or _origin(issuer, "Hub authorization server", issuer=True) != expected:
             raise IsolationError("Hub authorization server differs from the isolated fixture origin")
+
+
+def require_ci_test_hub(
+    hub: str,
+    expected_origin: str | None = None,
+    environment: Mapping[str, str] | None = None,
+    fetch: Callable[[str], dict[str, object]] = metadata,
+) -> None:
+    env = os.environ if environment is None else environment
+    if env.get("CI") or env.get("GITHUB_ACTIONS"):
+        require_test_hub(hub, expected_origin if expected_origin is not None else env.get("COZY_TEST_HUB_ORIGIN", ""), fetch)
 
 
 def main() -> int:

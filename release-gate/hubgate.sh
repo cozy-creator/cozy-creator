@@ -1,6 +1,6 @@
 #!/bin/bash
 # hubgate.sh --suite hub|skew [--hub URL] [--on MACHINE] [--out DIR].
-# hub: read-only production contracts plus real provider qualification, with no synthetic publication.
+# hub: manual operator/provider qualification; CI requires a verified isolated Hub.
 # skew: an already-running isolated fixture; normally use e2e/skew/run.sh to create and clean it.
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -11,6 +11,8 @@ while [ $# -gt 0 ]; do
     *) echo "unknown argument $1" >&2; exit 2;;
   esac; shift 2
 done
+. "$HERE/../e2e/test-hub.sh"
+require_ci_test_hub "${HUB_URL:-${COZY_HUB_URL:-}}" || exit 2
 [ -f "$HERE/suites/$SUITE/cells.sh" ] || { echo "hubgate.sh needs --suite skew or hub" >&2; exit 2; }
 OUT=$(realpath -m "${OUT:-$PWD/hubgate-$SUITE-$(date -u +%Y%m%dT%H%MZ)}"); mkdir -p "$OUT"; cd "$OUT" || exit 2
 : > expect.tsv

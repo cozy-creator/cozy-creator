@@ -3,3 +3,9 @@ TEST_HUB_GUARD=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test_hub.py
 require_test_hub() {
   python3 "$TEST_HUB_GUARD" --hub "$1" --expected-origin "${COZY_TEST_HUB_ORIGIN:-}"
 }
+
+# Manual operator commands remain explicit; CI verification always needs its own Hub.
+require_ci_test_hub() {
+  [ -n "${CI:-}${GITHUB_ACTIONS:-}" ] || return 0
+  require_test_hub "${1:-${COZY_HUB_URL:-${HUB_URL:-}}}"
+}

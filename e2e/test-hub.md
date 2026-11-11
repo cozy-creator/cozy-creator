@@ -1,6 +1,6 @@
 # Isolated publication tests
 
-Synthetic package/model publication runs only against the disposable Hub in `e2e/skew/run.sh`.
+All CI verification reads and writes run only against a disposable local Hub such as `e2e/skew/run.sh`.
 It owns a fresh Postgres container, MinIO store, Hub process and development account, and removes
 the container/store when it exits. It receives no production device key.
 
@@ -14,10 +14,13 @@ Before any synthetic write, `require_test_hub` checks the loopback destination a
 A localhost proxy to `tensorhub.com` fails this check, as does an unset or production target.
 Redirects are not followed. This guard belongs to test helpers; normal user publication is unchanged.
 
-Production `release-gate` provider checks still rent, send the weightless fixture by content,
-verify worker authentication and end the rental. They create no synthetic Hub repository.
-Selecting the `hub` suite also runs the isolated publication job, whose success is required before
-the gate can publish a baseline.
+The gate and session entrypoints call `require_ci_test_hub` before any Hub data request. Production
+device keys are absent from their CI jobs. A hardware job without its own verified Hub fails;
+it does not report a skipped GPU check as a pass. Public dependency and release-artifact downloads
+are normal build inputs and remain allowed.
+
+Manual operator qualification outside CI is separate and may use an explicitly authorized account.
+See [the hardware CI follow-up](../release-gate/ISOLATED-HARDWARE-CI.md) for the remaining runner requirements.
 
 Run the guard regression checks without a Hub or credentials:
 

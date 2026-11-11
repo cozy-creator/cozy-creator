@@ -121,6 +121,6 @@ extra = { birefnet = ["cli", "model"] }
 [tensorhub]
 unmapped = []
 rules = [
-  # No suite drives a candidate Hub yet: every suite rents and runs through tensorhub.com (CI v2 P4).
+  # Hub verification uses an isolated fixture; hardware suites require isolated worker infrastructure.
   { paths = ["**"], select = [] },
 ]
