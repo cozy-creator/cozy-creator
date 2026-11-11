@@ -60,6 +60,11 @@ jobs:
         run: |
           python3 -m unittest discover -s e2e/hardware -p 'test_*.py' -v
           python3 -m unittest discover -s e2e -p 'test_hub_test.py' -v
+      - name: Source syntax and frozen helper provenance
+        run: |
+          python3 -m py_compile e2e/hardware/*.py e2e/hardware/probe/ci_hardware_probe/__init__.py
+          bash -n e2e/hardware/checks.sh
+          sha256sum e2e/hardware/run.py e2e/hardware/operator_sdk.py
       - name: Validate dispatch ownership
         if: github.event_name == 'workflow_dispatch'
         env:
