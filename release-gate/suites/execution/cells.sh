@@ -41,4 +41,4 @@ controller model-qualification "$EXEC_DIR/model-qualification/run.py" --target "
 # TensorFS's own encoders and resident decode: programs on the pod against its public API, not packages (xs-174). Last:
 # they restart the machine so no executor holds the card.
 programs tensorfs "$TFS_DIR/programs" resident_nvfp4.py nvfp4_encode.py convrot_encode.py checkpoint_quantize.py \
-  bf16_normalize.py rowwise_quantize.py offline_producers.py
+  bf16_normalize.py rowwise_quantize.py offline_producers.py svdq_native.py

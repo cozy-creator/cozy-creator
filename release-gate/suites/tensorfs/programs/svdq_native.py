@@ -1,4 +1,9 @@
-"""Actual stored-checkpoint native fitting, independent arithmetic and lifetime gates."""
+"""svdq-native, TensorFS's own native SVDQ fitting (public API only), modes basic, cancel and empty-dlpack: `Writer.quantize`
+with `svdq-nvfp4-r32-faer/1` on stored checkpoints, every selected residual packed exactly as the independent NVFP4
+reference packs it (`nvfp4_encode_oracle.py`), refusals, a real cancel inside a fit and resume, and empty NumPy DLPack
+imports. Was the TensorFS half of the gate package `tensorfs/svdq-calibration` (xs-174: a package can't import
+TensorFS); run by `release-gate/programs.sh`. The Runtime half (calibration through a model's hooks, the public Output
+conversion, a held-out GPU consumer) stays that package."""
 
 from __future__ import annotations
 
@@ -16,23 +21,18 @@ import tempfile
 import threading
 import time
 import zlib
-from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING, Unpack, cast
 
-import msgspec
 import numpy as np
+import tensorfs
 import torch
-from cozy_runtime.author import Context, ModelArtifact, Telemetry, WeightsOutput
 
-from . import Report, Request, app
-from .oracle import E2M1_DECODE32, E4M3_MAG32, encode_nvfp4
+from nvfp4_encode_oracle import E2M1_DECODE32, E4M3_MAG32, encode_nvfp4
 
 if TYPE_CHECKING:
-    from cozy_runtime.derive.native_quantization import QuantizationStats
-
-    from ._types import (
+    from svdq_native_types import (
         F32,
         ArrayTensor,
         Budget,
@@ -51,9 +51,10 @@ if TYPE_CHECKING:
         Run,
         Selection,
         Served,
-        TensorFS,
     )
 
+MODES = ("basic", "cancel", "empty-dlpack")
+SEED = 256001
 STRATEGY = "svdq-nvfp4-r32-faer/1"
 WORKSPACE = 64 << 20
 # What the cancellation cell's conversion reads: its two weights, and each one's 64 calibration rows and maxima.
@@ -156,12 +157,25 @@ def stored_values(parts: Parts, shape: tuple[int, int]) -> F32:
     return values
 
 
+def _fake(xs: torch.Tensor, g: torch.Tensor) -> torch.Tensor:
+    """The frozen serving law's activation fake-quantization (`svdq-calibration`'s `historical_svdq._fake`)."""
+    blocks = xs.view(xs.shape[0], -1, 16)
+    amax = blocks.abs().amax(-1)
+    scale = (amax / (6.0 * g)).clamp(2.0**-9, 448.0).to(torch.float8_e4m3fn)
+    a = (blocks / (scale.float() * g).unsqueeze(-1)).abs()
+    code = cast("torch.Tensor", sum(  # cast: seven Tensor terms, never the empty sum's 0
+        ((a >= t) if odd else (a > t)).to(torch.uint8)
+        for t, odd in ((0.25, 0), (0.75, 1), (1.25, 0), (1.75, 1), (2.5, 0), (3.5, 1), (5.0, 0))
+    ))
+    code = code + (blocks < 0).to(torch.uint8) * 8
+    table = torch.tensor(E2M1_DECODE32, dtype=torch.float32, device=xs.device)
+    return (table[code.int()] * scale.float().unsqueeze(-1) * g.float().reshape(())).view(xs.shape)
+
+
 def served_score(
     parts: Parts, weight: F32, calibration: F32
 ) -> Served:
     """Independent frozen serving law uses rows*stored_pre, never rows/reconstructed_s."""
-    from .historical_svdq import _fake
-
     rows = torch.from_numpy(calibration.copy()).float()
     pre = torch.from_numpy(f32(parts["pre_quant_scale"]).copy())
     down = torch.from_numpy(f32(parts["lowrank_down"]).copy())
@@ -170,7 +184,7 @@ def served_score(
     decoded = torch.from_numpy(residual_values(parts, weight.shape, np.float32))
     scaled = (rows * pre).bfloat16().float()
     alternate = (rows / (1.0 / pre)).bfloat16().float()
-    prediction = _fake(torch, scaled, gx) @ decoded.t()
+    prediction = _fake(scaled, gx) @ decoded.t()
     prediction += (rows @ down.t()).bfloat16().float() @ up.t()
     reference = rows @ torch.from_numpy(weight).t()
     difference = (prediction - reference).double()
@@ -285,7 +299,6 @@ def put_source(component: ComponentWriter, key: str, weight: F32, dtype: str) ->
 
 
 def calibration_writer(
-    tensorfs: TensorFS,
     path: Path,
     cases: dict[str, F32],
     rows: dict[str, F32],
@@ -305,7 +318,6 @@ def calibration_writer(
 
 
 def refused(
-    tensorfs: TensorFS,
     directory: Path,
     label: str,
     source: Checkpoint,
@@ -331,10 +343,8 @@ def refused(
     raise AssertionError(label + " unexpectedly published")
 
 
-def basic(payload: Request) -> dict[str, object]:
-    import tensorfs
-
-    rng = np.random.default_rng(payload.seed)
+def basic(seed: int) -> dict[str, object]:
+    rng = np.random.default_rng(seed)
     with tempfile.TemporaryDirectory(prefix="cozy-native-svdq-") as temporary:
         directory = Path(temporary)
         writer = tensorfs.Writer(directory / "source.cozytensors")
@@ -366,7 +376,7 @@ def basic(payload: Request) -> dict[str, object]:
             ).astype("<f4")
         source = writer.commit()
         calibration = calibration_writer(
-            tensorfs, directory / "calibration.cozytensors", cases, samples
+            directory / "calibration.cozytensors", cases, samples
         )
         allowance = sum(encoded_bytes(w.shape) for w in cases.values())
         controls: list[Control] = []
@@ -447,31 +457,9 @@ def basic(payload: Request) -> dict[str, object]:
             )
             checkpoint.close()
 
-        # Independent frozen Torch fitter is a quality baseline, never a fallback or byte oracle.
-        from .historical_svdq import Stats, fit
-
-        old = fit(
-            torch,
-            "f32",
-            cases["f32"],
-            Stats(
-                torch.from_numpy(np.abs(samples["f32"]).max(0)),
-                torch.from_numpy(samples["f32"]),
-            ),
-            "cpu",
-        )
-        new = reports[0]["facts"]["f32"]["fit"]
-        assert new["calibration_error"] <= old.error * 1.25 + 0.02, (new, old.error)
-        historical = {
-            "calibration_error": old.error,
-            "plain_nvfp4_error": old.nvfp4_error,
-            "alpha": old.alpha,
-            "whole_weight_relative": (old.sse / old.energy) ** 0.5,
-        }
         one = specs[:1]
         refusals = {
             "unknown_component": refused(
-                tensorfs,
                 directory,
                 "unknown-component",
                 source,
@@ -480,7 +468,6 @@ def basic(payload: Request) -> dict[str, object]:
                 component="missing",
             ),
             "workspace": refused(
-                tensorfs,
                 directory,
                 "workspace",
                 source,
@@ -489,10 +476,9 @@ def basic(payload: Request) -> dict[str, object]:
                 max_buffer_bytes=1,
             ),
             "output": refused(
-                tensorfs, directory, "output", source, one, calibration, max_new_bytes=1
+                directory, "output", source, one, calibration, max_new_bytes=1
             ),
             "quality": refused(
-                tensorfs,
                 directory,
                 "quality",
                 source,
@@ -501,29 +487,29 @@ def basic(payload: Request) -> dict[str, object]:
                 max_relative_frobenius=0,
             ),
             "missing_calibration": refused(
-                tensorfs, directory, "missing-calibration", source, one, None
+                directory, "missing-calibration", source, one, None
             ),
         }
         before = tensorfs.ConversionControl()
         before.cancel()
         refusals["pre_cancel"] = refused(
-            tensorfs, directory, "pre-cancel", source, one, calibration, control=before
+            directory, "pre-cancel", source, one, calibration, control=before
         )
         assert before.progress() == (0, 0, 0)
         changed = copy.deepcopy(one)
         cast("list[int]", changed[0]["shape"])[1] -= 1  # cast: selection() builds it a list
         refusals["shape"] = refused(
-            tensorfs, directory, "shape", source, changed, calibration
+            directory, "shape", source, changed, calibration
         )
         changed = copy.deepcopy(one)
         changed[0]["strategy"] = "svdq-nvfp4-r32-faer/unknown"
         refusals["strategy"] = refused(
-            tensorfs, directory, "strategy", source, changed, calibration
+            directory, "strategy", source, changed, calibration
         )
         changed = copy.deepcopy(one)
         changed[0]["fit"]["rows"] = "f32.xmax"
         refusals["role_shape"] = refused(
-            tensorfs, directory, "role-shape", source, changed, calibration
+            directory, "role-shape", source, changed, calibration
         )
         for label, which, value in (
             ("nan_weight", "weight", np.nan),
@@ -550,7 +536,7 @@ def basic(payload: Request) -> dict[str, object]:
             c.put("f32.rows", r)
             bad_calibration = w.commit()
             refusals[label] = refused(
-                tensorfs, directory, label, bad_source, one, bad_calibration
+                directory, label, bad_source, one, bad_calibration
             )
             bad_source.close()
             bad_calibration.close()
@@ -565,14 +551,13 @@ def basic(payload: Request) -> dict[str, object]:
             c.put("f32.rows", np.ones(shape, dtype="<f4"))
             bad = w.commit()
             assert tuple(bad.components["weights"].tensors["f32.rows"].shape) == shape
-            refusals[label] = refused(tensorfs, directory, label, source, one, bad)
+            refusals[label] = refused(directory, label, source, one, bad)
             assert "SVDQ calibration rows must be nonempty and match the weight columns" in refusals[label]
             bad.close()
         source.close()
         calibration.close()
         return {
             "reports": reports,
-            "historical_reference": historical,
             "refusals": refusals,
             "implementation": tensorfs.raw.quantization_implementation(),
             "tensorfs": tensorfs.__version__,
@@ -580,17 +565,15 @@ def basic(payload: Request) -> dict[str, object]:
         }
 
 
-def cancel(payload: Request) -> dict[str, object]:
+def cancel(seed: int) -> dict[str, object]:
     """Cancels a real conversion inside its native fit, every time: the fit can end before a poll here
     sees its window (gates 41911483592, 41939634423), so the conversion runs in a worker that this
     process holds with SIGSTOP once the worker's progress shows the first tensor written and every
     read of the second done, and only then tells it to cancel. No timing is tuned: the worker is
     stopped where the fit is, and its conversion threads run at nice 19 under its monitor."""
-    package = str(Path(__file__).resolve().parent.parent)
-    code = f"import sys; sys.path.insert(0, {package!r}); from ci_svdq_calibration.native import cancel_worker; cancel_worker()"
     with tempfile.TemporaryFile("w+") as errors:
         worker = subprocess.Popen(
-            [sys.executable, "-c", code, str(payload.seed)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors, text=True
+            [sys.executable, "-s", "-E", str(Path(__file__).resolve()), "cancel-worker", str(seed)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors, text=True
         )
         watchdog = threading.Timer(300, worker.kill)
         watchdog.start()
@@ -626,11 +609,8 @@ def cancel(payload: Request) -> dict[str, object]:
                 worker.wait()
 
 
-def cancel_worker() -> None:
+def cancel_worker(seed: int) -> None:
     """The cancellation cell's conversion, in a process `cancel` holds from outside: see there."""
-    import tensorfs
-
-    seed = int(sys.argv[1])
     rng = np.random.default_rng(seed)
     with tempfile.TemporaryDirectory(prefix="cozy-native-svdq-cancel-") as temporary:
         directory = Path(temporary)
@@ -648,10 +628,10 @@ def cancel_worker() -> None:
             c.put(key, values)
         source = w.commit()
         calibration = calibration_writer(
-            tensorfs, directory / "calibration.cozytensors", cases, samples
+            directory / "calibration.cozytensors", cases, samples
         )
         changed_calibration = calibration_writer(
-            tensorfs, directory / "changed.cozytensors", cases, samples, change=True
+            directory / "changed.cozytensors", cases, samples, change=True
         )
         specs = [selection(key, "F32", values.shape) for key, values in cases.items()]
         allowance = sum(encoded_bytes(value.shape) for value in cases.values())
@@ -768,24 +748,8 @@ def cancel_worker() -> None:
         }), flush=True)
 
 
-@app.entrypoint(accelerator=False)
-def native(payload: Request) -> Report:
-    assert payload.mode in ("basic", "cancel")
-    began = time.perf_counter()
-    rss_before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
-    result = basic(payload) if payload.mode == "basic" else cancel(payload)
-    result["gate_wall_seconds"] = time.perf_counter() - began
-    result["process_peak_rss_bytes"] = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
-    result["process_peak_rss_before_bytes"] = rss_before
-    result["memory_scope"] = "Linux process high-water RSS including imports and independent references; not fitter-only peak"
-    return Report(True, json.dumps(result, sort_keys=True))
-
-
-@app.entrypoint(accelerator=False)
-def empty_dlpack(payload: Request) -> Report:
+def empty_dlpack() -> dict[str, object]:
     """Real Writer imports of empty NumPy DLPack arrays, plus nonempty stride refusals."""
-    import tensorfs
-
     observations: list[Observation] = []
     with tempfile.TemporaryDirectory(prefix="cozy-empty-dlpack-") as temporary:
         writer = tensorfs.Writer(Path(temporary) / "empty.cozytensors")
@@ -810,483 +774,32 @@ def empty_dlpack(payload: Request) -> Report:
             assert tuple(value.shape) == tuple(row["shape"])
             assert value.tobytes() == np.ones(row["shape"], dtype="<f4").tobytes()
         checkpoint.close()
-    return Report(True, json.dumps({"arrays": observations, "nonempty_strided_refused": True,
-                                   "tensorfs": tensorfs.__version__}, sort_keys=True))
+    return {"arrays": observations, "nonempty_strided_refused": True, "tensorfs": tensorfs.__version__}
 
 
-class ComponentsConverted(msgspec.Struct):
-    passed: bool
-    model: ModelArtifact
-    rowwise: ModelArtifact
-    detail: str
+def run(mode: str, seed: int) -> dict[str, object]:
+    began = time.perf_counter()
+    rss_before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
+    result = basic(seed) if mode == "basic" else cancel(seed) if mode == "cancel" else empty_dlpack()
+    result["gate_wall_seconds"] = time.perf_counter() - began
+    result["process_peak_rss_bytes"] = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
+    result["process_peak_rss_before_bytes"] = rss_before
+    result["memory_scope"] = "Linux process high-water RSS including imports and independent references; not fitter-only peak"
+    return result
 
 
-@app.entrypoint(
-    accelerator=False,
-    weights=(WeightsOutput("components", 2 << 20), WeightsOutput("rowwise", 2 << 20)),
-)
-def runtime_components(
-    payload: Request, ctx: Context, tel: Telemetry
-) -> ComponentsConverted:
-    """Two real component calls share full identity and publish only their own scope."""
-    import tensorfs
-    from cozy_runtime.author import UnsupportedInput
-    from cozy_runtime.author._errors import CapabilityError
-    from cozy_runtime.derive import native_quantization
-    from cozy_runtime.derive.quantization import (
-        ArtifactQuantizationPlan,
-        ArtifactQuantizationRequest,
-        QuantizationTensor,
-        quantize_component_into,
-    )
-    from cozy_runtime.derive.svdq import Calibration
-    from cozy_runtime.weights_store import Derivation, Output
+if __name__ == "__main__":
+    import traceback
 
-    rng = np.random.default_rng(payload.seed)
-    with tempfile.TemporaryDirectory(prefix="cozy-svdq-components-") as temporary:
-        directory = Path(temporary)
-        writer = tensorfs.Writer(directory / "source.cozytensors")
-        modules: dict[str, torch.nn.Sequential] = {}
-        values: dict[str, F32] = {}
-        for name in ("a", "b"):
-            weight = torch.from_numpy(
-                rng.normal(0, 0.0625, (64, 256)).astype("<f4")
-            ).bfloat16()
-            modules[name] = torch.nn.Sequential(
-                OrderedDict(
-                    [
-                        (
-                            "proj",
-                            torch.nn.Linear(256, 64, bias=False, dtype=torch.bfloat16),
-                        )
-                    ]
-                )
-            )
-            with torch.no_grad():
-                cast(torch.nn.Linear, modules[name].proj).weight.copy_(weight)  # cast: the Linear built above
-            writer.component(name).put(
-                "proj.weight",
-                weight.view(torch.uint8).numpy().tobytes(),
-                dtype="BF16",
-                shape=[64, 256],
-            )
-            values[name] = weight.float().numpy()
-        source = writer.commit()
-        plan = ArtifactQuantizationPlan(
-            ["a", "b"],
-            [(name, "proj.weight") for name in ("a", "b")],
-            [
-                QuantizationTensor(name, "proj.weight", "bf16", (64, 256))
-                for name in ("a", "b")
-            ],
-        )
-
-        def collect() -> Calibration:
-            calibration = Calibration(
-                torch, modules, ("a.proj.weight", "b.proj.weight")
-            )
-            with calibration, torch.inference_mode():
-                for _ in range(2):
-                    for module in modules.values():
-                        inputs = torch.from_numpy(
-                            rng.normal(0, 0.125, (16, 256)).astype("<f4")
-                        ).bfloat16()
-                        module(inputs)
-            return calibration
-
-        calibration = collect()
-        rows = native_quantization.resolved(
-            source, plan, "svdq.nvfp4", lambda row: row.logical_dtype
-        )
-        request = ArtifactQuantizationRequest(fit_workspace_bytes=WORKSPACE)
-        with native_quantization.snapshot(
-            source, plan, "svdq.nvfp4", calibration, ctx
-        ) as snapshot:
-            assert snapshot is not None
-            work = Derivation(
-                base=source,
-                sources=(snapshot,),
-                order=plan.order,
-                provenance=native_quantization.provenance(source, rows, snapshot),
-            )
-            with ctx.output("components", work) as output:
-                assert not output.has("a", "proj.weight") and not output.has(
-                    "b", "proj.weight"
-                )
-                try:
-                    quantize_component_into(
-                        source,
-                        output,
-                        ctx,
-                        request,
-                        tel,
-                        encoding="svdq.nvfp4",
-                        plan=plan,
-                        component="missing",
-                        logical_dtype=lambda row: row.logical_dtype,
-                        calibration=calibration,
-                    )
-                except UnsupportedInput:
-                    assert output.written == 0
-                else:
-                    raise AssertionError(
-                        "unknown component did not refuse before writes"
-                    )
-                made: list[QuantizationStats] = []
-                for name in ("a", "b"):
-                    measured = quantize_component_into(
-                        source,
-                        output,
-                        ctx,
-                        request,
-                        tel,
-                        encoding="svdq.nvfp4",
-                        plan=plan,
-                        component=name,
-                        logical_dtype=lambda row: row.logical_dtype,
-                        calibration=calibration,
-                    )
-                    assert measured.encoded_keys == 1 and measured.reused_keys == 0
-                    assert measured.source_bytes_read == 64 * 256 * 2
-                    assert measured.new_bytes_written == encoded_bytes((64, 256))
-                    assert (
-                        len(measured.tensors) == 1
-                        and measured.tensors[0]["component"] == name
-                    )
-                    assert output.has(name, "proj.weight")
-                    if name == "a":
-                        assert not output.has("b", "proj.weight"), (
-                            "A call wrote future component B"
-                        )
-                        assert output.written == encoded_bytes((64, 256))
-                    made.append(measured)
-                assert output.written == 2 * encoded_bytes((64, 256))
-                artifact = ctx.adopt_model(output)
-                store, slot, transaction = output.store, output.slot, output.transaction
-            # Actual finished Output reuse must validate the same complete plan and scope.
-            with Output(store, slot, transaction, work, 2 << 20) as reopened:
-                assert reopened.done is not None
-                for name in ("a", "b"):
-                    reused = quantize_component_into(
-                        source,
-                        reopened,
-                        ctx,
-                        request,
-                        tel,
-                        encoding="svdq.nvfp4",
-                        plan=plan,
-                        component=name,
-                        logical_dtype=lambda row: row.logical_dtype,
-                        calibration=calibration,
-                    )
-                    assert reused.encoded_keys == 0 and reused.reused_keys == 1
-                    assert (
-                        reused.source_bytes_read == 0 and reused.new_bytes_written == 0
-                    )
-                    assert reused.worst_relative_frobenius is None
-                changed = collect()
-                try:
-                    quantize_component_into(
-                        source,
-                        reopened,
-                        ctx,
-                        request,
-                        tel,
-                        encoding="svdq.nvfp4",
-                        plan=plan,
-                        component="a",
-                        logical_dtype=lambda row: row.logical_dtype,
-                        calibration=changed,
-                    )
-                except CapabilityError as error:
-                    assert error.code == "quantization_identity"
-                    changed_refusal = str(error)
-                else:
-                    raise AssertionError(
-                        "finished Output reused a different calibration"
-                    )
-        # Noncalibrated native outputs bind the same complete producer identity.
-        plain_rows = native_quantization.resolved(
-            source, plan, "fp8.rowwise", lambda row: row.logical_dtype
-        )
-        plain_work = Derivation(
-            base=source,
-            order=plan.order,
-            provenance=native_quantization.provenance(source, plain_rows, None),
-        )
-        with ctx.output("rowwise", plain_work) as plain_output:
-            for name in ("a", "b"):
-                plain = quantize_component_into(
-                    source,
-                    plain_output,
-                    ctx,
-                    request,
-                    tel,
-                    encoding="fp8.rowwise",
-                    plan=plan,
-                    component=name,
-                    logical_dtype=lambda row: row.logical_dtype,
-                )
-                assert plain.encoded_keys == 1 and plain.reused_keys == 0
-                assert plain.source_bytes_read == 64 * 256 * 2
-                assert plain.new_bytes_written == 64 * (256 + 4)
-                assert len(plain.tensors) == 1 and plain.tensors[0]["component"] == name
-                if name == "a":
-                    assert not plain_output.has("b", "proj.weight")
-            rowwise = ctx.adopt_model(plain_output)
-            plain_store, plain_slot, plain_transaction = (
-                plain_output.store,
-                plain_output.slot,
-                plain_output.transaction,
-            )
-        nonfit_refusals: list[str] = []
-        with Output(
-            plain_store, plain_slot, plain_transaction, plain_work, 2 << 20
-        ) as reopened:
-            for name in ("a", "b"):
-                again = quantize_component_into(
-                    source,
-                    reopened,
-                    ctx,
-                    request,
-                    tel,
-                    encoding="fp8.rowwise",
-                    plan=plan,
-                    component=name,
-                    logical_dtype=lambda row: row.logical_dtype,
-                )
-                assert again.encoded_keys == 0 and again.reused_keys == 1
-                assert again.source_bytes_read == 0 and again.new_bytes_written == 0
-                assert again.worst_relative_frobenius is None
-            reduced = ArtifactQuantizationPlan(
-                ["a"], [("a", "proj.weight")], plan.tensors[:1]
-            )
-            for changed_plan, changed_encoding in (
-                (plan, "int8.convrot"),
-                (reduced, "fp8.rowwise"),
-            ):
-                try:
-                    quantize_component_into(
-                        source,
-                        reopened,
-                        ctx,
-                        request,
-                        tel,
-                        encoding=changed_encoding,
-                        plan=changed_plan,
-                        component="a",
-                        logical_dtype=lambda row: row.logical_dtype,
-                    )
-                except CapabilityError as error:
-                    assert error.code == "quantization_identity"
-                    nonfit_refusals.append(str(error))
-                else:
-                    raise AssertionError(
-                        "public helper reused changed nonfit native work"
-                    )
-        committed = tensorfs.open(artifact.checkpoint, local_files_only=True)
+    if sys.argv[1:2] == ["cancel-worker"]:
+        cancel_worker(int(sys.argv[2]))
+        sys.exit(0)
+    seed = SEED
+    for mode in MODES:
+        cell = "svdq-native" if mode == MODES[0] else f"svdq-native-{mode}"
         try:
-            facts: dict[str, Facts] = {}
-            for name, measured in zip(("a", "b"), made, strict=True):
-                item = cast("EncodedTensor", committed.components[name].tensors.read("proj.weight"))  # cast: quantized
-                facts[name] = check_selected(
-                    item,
-                    values[name],
-                    measured.tensors[0],
-                    calibration=calibration.stats(name, "proj.weight")
-                    .rows.float()
-                    .numpy(),
-                )
-            assert committed.verify().ok
-        finally:
-            committed.close()
-            source.close()
-    return ComponentsConverted(
-        True,
-        artifact,
-        rowwise,
-        json.dumps(
-            {
-                "components": facts,
-                "different_finished_calibration_refused": changed_refusal,
-                "nonfit_identity_refusals": nonfit_refusals,
-                "full_plan_single_identity": True,
-                "future_component_not_written": True,
-            },
-            sort_keys=True,
-        ),
-    )
-
-
-@app.entrypoint(accelerator=False)
-def runtime_resume(payload: Request, ctx: Context, tel: Telemetry) -> Report:
-    """Actual public component conversion across an unfinished Output's close/reopen."""
-    import tensorfs
-    from cozy_runtime.author._errors import CapabilityError
-    from cozy_runtime.derive.quantization import (
-        ArtifactQuantizationPlan,
-        ArtifactQuantizationRequest,
-        QuantizationTensor,
-        quantize_component_into,
-    )
-    from cozy_runtime.weights_store import Derivation, Output
-
-    rng = np.random.default_rng(payload.seed)
-    with tempfile.TemporaryDirectory(
-        prefix="cozy-runtime-component-resume-"
-    ) as temporary:
-        directory = Path(temporary)
-        store = directory / "store"
-        writer = tensorfs.Writer(directory / "source.cozytensors", cache_dir=store)
-        values: dict[str, F32] = {}
-        for name in ("a", "b"):
-            values[name] = rng.normal(0, 0.0625, (64, 256)).astype("<f4")
-            writer.component(name).put(
-                "weight", values[name], dtype="F32", shape=[64, 256]
-            )
-        source = writer.commit()
-        plan = ArtifactQuantizationPlan(
-            ["a", "b"],
-            [(name, "weight") for name in ("a", "b")],
-            [
-                QuantizationTensor(name, "weight", "f32", (64, 256))
-                for name in ("a", "b")
-            ],
-        )
-        work = Derivation(base=source, order=plan.order)
-
-        def args(label: str) -> tuple[Path, str, str, Derivation, int]:
-            transaction = (
-                "sha256:"
-                + hashlib.sha256((ctx.request_id + ":" + label).encode()).hexdigest()
-            )
-            return (store, label, transaction, work, 2 << 20)
-
-        def convert(output: Output, component: str, bound: float = 0.2) -> QuantizationStats:
-            return quantize_component_into(
-                source,
-                output,
-                ctx,
-                ArtifactQuantizationRequest(max_relative_frobenius=bound),
-                tel,
-                encoding="fp8.rowwise",
-                plan=plan,
-                component=component,
-                logical_dtype=lambda row: row.logical_dtype,
-            )
-
-        def rejected(output: Output, component: str, bound: float = 0.2) -> str:
-            try:
-                convert(output, component, bound)
-            except CapabilityError as error:
-                assert error.code == "quantization_identity"
-                return str(error)
-            raise AssertionError(
-                "finished scope without matching acceptance was reused"
-            )
-
-        resumed_args = args("resumed")
-        with Output(*resumed_args) as first:
-            a = convert(first, "a")
-            assert a.encoded_keys == 1 and a.reused_keys == 0
-            assert first.has("a", "weight") and not first.has("b", "weight")
-        # First Output and its native helper really ended. Deliberately never call A again
-        # on this unfinished writer: only B gets a conversion/validation call after reopen.
-        with Output(*resumed_args) as resumed:
-            assert resumed.done is None and resumed.has("a", "weight")
-            assert not resumed.has("b", "weight")
-            b = convert(resumed, "b")
-            assert b.encoded_keys == 1 and b.reused_keys == 0
-            assert b.source_bytes_read == 64 * 256 * 4
-            assert b.new_bytes_written == 64 * (256 + 4)
-            assert len(b.tensors) == 1 and b.tensors[0]["component"] == "b"
-            completed = resumed.commit()
-        with Output(*resumed_args) as finished:
-            assert finished.done is not None
-            again = convert(finished, "a")
-            assert again.encoded_keys == 0 and again.reused_keys == 1
-            assert again.source_bytes_read == again.new_bytes_written == 0
-            assert again.worst_relative_frobenius is None
-            changed_finished = [rejected(finished, "a", bound) for bound in (0.0, 0.4)]
-        assert completed.verify().ok
-        finished_id = completed.id
-        completed.close()
-
-        policy_args = args("changed-policy")
-        with Output(*policy_args) as first:
-            convert(first, "a")
-        with Output(*policy_args) as resumed:
-            for bound in (0.0, 0.4):
-                try:
-                    convert(resumed, "a", bound)
-                except tensorfs.InvalidError as error:
-                    assert (
-                        "selected by another conversion"
-                        in str(error)
-                    )
-                else:
-                    raise AssertionError(
-                        "native resume accepted a changed quality policy"
-                    )
-            assert resumed.has("a", "weight") and not resumed.has("b", "weight")
-
-        controls: dict[str, dict[str, str | int]] = {}
-        for label, manual in (
-            ("manual-before-binding", True),
-            ("inherited-base", False),
-        ):
-            control_args = args(label)
-            with Output(*control_args) as output:
-                if manual:
-                    output.put("a", "weight", "F32", (64, 256), values["a"])
-                assert output.has("a", "weight") is manual
-                if manual:
-                    try:
-                        convert(output, "b")
-                    except tensorfs.InvalidError as error:
-                        assert (
-                            "selected tensor was written without this quantization identity"
-                            in str(error)
-                        )
-                        controls[label] = {"native_refusal": str(error)}
-                    else:
-                        raise AssertionError(
-                            "manual A was admitted by the first native binding"
-                        )
-                    assert not output.has("b", "weight")
-                else:
-                    only_b = convert(output, "b")
-                    assert only_b.encoded_keys == 1 and not output.has("a", "weight")
-                    controls[label] = {"only_b_encoded": only_b.encoded_keys}
-                committed = output.commit()
-            with Output(*control_args) as finished:
-                controls[label]["finished_a_refused"] = rejected(finished, "a")
-            committed.close()
-        source.close()
-    return Report(
-        True,
-        json.dumps(
-            {
-                "checkpoint": finished_id,
-                "a_encoded": a.encoded_keys,
-                "b_after_reopen": {
-                    "encoded": b.encoded_keys,
-                    "reused": b.reused_keys,
-                    "read_bytes": b.source_bytes_read,
-                    "new_bytes": b.new_bytes_written,
-                },
-                "a_finished_reuse": {
-                    "encoded": again.encoded_keys,
-                    "reused": again.reused_keys,
-                    "read_bytes": again.source_bytes_read,
-                    "new_bytes": again.new_bytes_written,
-                    "worst_relative_frobenius": again.worst_relative_frobenius,
-                },
-                "changed_finished_policy_refusals": changed_finished,
-                "changed_unfinished_policy_refusals": [0.0, 0.4],
-                "controls": controls,
-                "scope": "Real public component helper, native Writer journal and finished Output; CPU only",
-            },
-            sort_keys=True,
-        ),
-    )
+            row = {"cell": cell, "result": "PASS", "detail": json.dumps({"seed": seed, **run(mode, seed)}, sort_keys=True, default=str)}
+        except Exception as error:  # noqa: BLE001 - any failure is this mode's verdict
+            row = {"cell": cell, "result": "FAIL", "detail": f"seed {seed}: {type(error).__name__}: {error}"[:600]}
+            traceback.print_exc()
+        print("ROW " + json.dumps(row, sort_keys=True, default=str), flush=True)

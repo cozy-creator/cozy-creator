@@ -1,4 +1,6 @@
-"""Actual SVDQ calibration, public checkpoint adoption and held-out encoded consumption."""
+"""Actual SVDQ calibration, public checkpoint adoption and held-out encoded consumption, on the Runtime's public API.
+The Runtime's Output reuse and resume are its built-in `bench.quantize_reuse`; TensorFS's own fitting is the program
+`programs/svdq_native.py` (xs-174)."""
 
 from __future__ import annotations
 
@@ -8,11 +10,15 @@ import json
 import resource
 import time
 from collections import OrderedDict
-from typing import TYPE_CHECKING, TypedDict, cast
+from typing import TYPE_CHECKING, cast
 
+import cozy_runtime
 import msgspec
 import numpy as np
 import torch
+
+# The pinned typecheck Runtime (0.45.0) predates the bench: drop the ignore when the pin moves past it.
+from cozy_runtime import bench  # type: ignore[attr-defined]
 from cozy_runtime.author import (
     App,
     Config,
@@ -24,6 +30,7 @@ from cozy_runtime.author import (
     UnsupportedInput,
     Weights,
     WeightsOutput,
+    call,
     uses_components,
 )
 from cozy_runtime.weights_store import Derivation
@@ -31,7 +38,7 @@ from cozy_runtime.weights_store import Derivation
 if TYPE_CHECKING:
     from cozy_runtime.derive.svdq import Calibration
 
-    from ._types import Parts
+    from ._types import ArrayTensor, Converted as Row, EncodedTensor, Parts
 
 app = App()
 ROWS, COLS, RANK = 128, 256, 32
@@ -129,6 +136,8 @@ class Request(msgspec.Struct, forbid_unknown_fields=True):
 class Prediction(msgspec.Struct, forbid_unknown_fields=True):
     seed: int = 156
     require_native: bool = False
+    #: calibrate's `conversion` (JSON): the fit's row and the bytes it wrote, checked against the stored parts
+    conversion: str = ""
 
 
 class Converted(msgspec.Struct):
@@ -167,6 +176,18 @@ def tensor(raw: bytes, dtype: torch.dtype, shape: tuple[int, ...], device: str |
     return torch.frombuffer(bytearray(raw), dtype=dtype).reshape(shape).to(device)
 
 
+def plain(item: object) -> ArrayTensor:
+    """A stored tensor with no encoding: its bytes, no scheme or parts."""
+    assert callable(getattr(item, "tobytes", None)) and not hasattr(item, "parts"), type(item).__name__
+    return cast("ArrayTensor", item)  # cast: checked above
+
+
+def encoded(item: object) -> EncodedTensor:
+    """A stored tensor with an encoding: its scheme and parts."""
+    assert hasattr(item, "scheme") and hasattr(item, "parts"), type(item).__name__
+    return cast("EncodedTensor", item)  # cast: checked above
+
+
 @app.entrypoint(
     accelerator=True,
     weights=(WeightsOutput("svdq", 1 << 20), WeightsOutput("uncalibrated", 1 << 20)),
@@ -178,8 +199,6 @@ def calibrate(
     ctx: Context,
     tel: Telemetry,
 ) -> Converted:
-    import tensorfs
-    from cozy_runtime._build_provenance import COMMIT
     from cozy_runtime.derive import native_quantization
     from cozy_runtime.derive.quantization import (
         ArtifactQuantizationRequest,
@@ -187,16 +206,15 @@ def calibrate(
         quantize_component_into,
     )
 
+    from .checks import WORKSPACE
     from .historical_svdq import fit as historical_fit
-    from .native import WORKSPACE, check_selected
 
     assert ctx.device.type == "cuda"
     checkpoint = ctx.tensorfs_source(weights)
     stored = checkpoint.components["net"].tensors
-    original, bias = source_values(payload.seed)
+    original = source_values(payload.seed)[0]
     assert stored["proj.weight"].encoding is None
-    source_weight = stored.read("proj.weight")
-    assert isinstance(source_weight, tensorfs.Array)
+    source_weight = plain(stored.read("proj.weight"))
     assert source_weight.tobytes() == original.view(torch.uint8).numpy().tobytes()
     batches = operands(payload.seed)
     calibration_began = time.perf_counter()
@@ -227,8 +245,8 @@ def calibrate(
             provenance={
                 "gate": "svdq-calibration/native-faer-1",
                 "seed": payload.seed,
-                "runtime_commit": COMMIT,
-                "tensorfs": tensorfs.__version__,
+                "runtime": cozy_runtime.__version__,
+                "tensorfs": importlib.metadata.version("tensorfs"),
                 **native_quantization.provenance(checkpoint, resolved, snapshot),
             },
         )
@@ -269,66 +287,41 @@ def calibrate(
             artifact = ctx.adopt_model(output)
             adoption_seconds = time.perf_counter() - adoption_began
         calibration_id = snapshot.id
-    committed = tensorfs.open(artifact.checkpoint, local_files_only=True)
-    try:
-        item = committed.components["net"].tensors.read("proj.weight")
-        assert isinstance(item, tensorfs.Encoded)
-        assert (
-            item.scheme == "svdq.nvfp4"
-            and item.shape == (ROWS, COLS)
-            and item.dtype == "BF16"
-        )
-        assert measured.encoded_keys == 1 and measured.reused_keys == 0
-        assert measured.source_bytes_read == ROWS * COLS * 2
-        assert measured.new_bytes_written == sum(
-            len(part.tobytes()) for part in item.parts.values()
-        )
-        (row,) = measured.tensors
-        detail = check_selected(
-            item, values, row, calibration=stats.rows.float().numpy()
-        )
-        fit = row["fit"]
-        assert fit["calibration_bytes_read"] == COLS * 4 + 128 * COLS * 2
-        assert fit["calibration_error"] <= old.error * 1.25 + 0.02, (fit, old.error)
-        assert fit["calibration_error"] < fit["plain_nvfp4_error"], fit
-        inherited_bias = committed.components["net"].tensors.read("proj.bias")
-        assert isinstance(inherited_bias, tensorfs.Array)
-        assert inherited_bias.tobytes() == bias.view(torch.uint8).numpy().tobytes()
-        assert committed.verify().ok
-        cast("dict[str, object]", detail).update(  # cast: the report grows the run's own keys
-            seed=payload.seed,
-            checkpoint=committed.id,
-            calibration_checkpoint=calibration_id,
-            runtime_commit=COMMIT,
-            runtime=importlib.metadata.version("cozy-runtime"),
-            tensorfs=tensorfs.__version__,
-            implementation=tensorfs.raw.quantization_implementation(),
-            torch=str(torch.__version__),
-            device=torch.cuda.get_device_name(),
-            calibration_rows=stats.rows.shape[0],
-            calibration_channels=stats.xmax.numel(),
-            measured=msgspec.to_builtins(measured),
-            missing_calibration_refused=True,
-            timing={"model_calibration_seconds": calibration_seconds,
-                    "historical_reference_fit_seconds": historical_fit_seconds,
-                    "native_snapshot_fit_pack_write_seconds": conversion_seconds,
-                    "checkpoint_adoption_seconds": adoption_seconds},
-            memory={"process_peak_rss_bytes": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024,
-                    "torch_peak_allocated_bytes": _working()["allocated_peak"],
-                    "torch_peak_reserved_bytes": _working()["mapped_peak"],
-                    "scope": "whole invocation including model calibration and frozen GPU reference; not native-fit-only"},
-            historical_reference={
-                "producer": "torch-svdq-frozen/1",
-                "alpha": old.alpha,
-                "calibration_error": old.error,
-                "plain_nvfp4_error": old.nvfp4_error,
-                "whole_weight_sse": old.sse,
-                "whole_weight_energy": old.energy,
-            },
-        )
-    finally:
-        committed.close()
-    return Converted(True, artifact, json.dumps(detail, sort_keys=True))
+    # The stored parts are predict's to check, through its own grant of this artifact (ctx.tensorfs_source).
+    assert measured.encoded_keys == 1 and measured.reused_keys == 0
+    assert measured.source_bytes_read == ROWS * COLS * 2
+    (row,) = measured.tensors
+    fit = row["fit"]
+    assert fit["calibration_bytes_read"] == COLS * 4 + 128 * COLS * 2
+    assert fit["calibration_error"] <= old.error * 1.25 + 0.02, (fit, old.error)
+    assert fit["calibration_error"] < fit["plain_nvfp4_error"], fit
+    detail = {
+        "seed": payload.seed,
+        "conversion": json.dumps({"row": row, "new_bytes_written": measured.new_bytes_written}, sort_keys=True),
+        "calibration_checkpoint": calibration_id,
+        "runtime": cozy_runtime.__version__,
+        "tensorfs": importlib.metadata.version("tensorfs"),
+        "torch": str(torch.__version__),
+        "device": torch.cuda.get_device_name(),
+        "calibration_rows": stats.rows.shape[0],
+        "calibration_channels": stats.xmax.numel(),
+        "measured": msgspec.to_builtins(measured),
+        "missing_calibration_refused": True,
+        "timing": {"model_calibration_seconds": calibration_seconds,
+                   "historical_reference_fit_seconds": historical_fit_seconds,
+                   "native_snapshot_fit_pack_write_seconds": conversion_seconds,
+                   "checkpoint_adoption_seconds": adoption_seconds},
+        "process_peak_rss_bytes": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024,
+        "historical_reference": {
+            "producer": "torch-svdq-frozen/1",
+            "alpha": old.alpha,
+            "calibration_error": old.error,
+            "plain_nvfp4_error": old.nvfp4_error,
+            "whole_weight_sse": old.sse,
+            "whole_weight_energy": old.energy,
+        },
+    }
+    return Converted(True, artifact, json.dumps(detail, sort_keys=True, default=str))
 
 
 def decoded_weight(parts: Parts) -> torch.Tensor:
@@ -364,19 +357,22 @@ def predict(
     weights: Weights[LinearModel],
     ctx: Context,
 ) -> Report:
-    import tensorfs
+    from .checks import check_selected
 
     assert ctx.device.type == "cuda"
+    assert payload.conversion, "calibrate's conversion row is required (run.py passes it)"
+    conversion = json.loads(payload.conversion)
+    row: Row = conversion["row"]
     checkpoint = ctx.tensorfs_source(weights)
     held = checkpoint.components["net"].tensors
-    encoded = held.read("proj.weight")
-    assert isinstance(encoded, tensorfs.Encoded)
-    assert encoded.scheme == "svdq.nvfp4" and encoded.shape == (ROWS, COLS)
-    reference = decoded_weight(encoded.parts)
+    weight = encoded(held.read("proj.weight"))
+    assert weight.scheme == "svdq.nvfp4" and weight.shape == (ROWS, COLS) and weight.dtype == "BF16"
     original, original_bias = source_values(payload.seed)
-    inherited_bias = held.read("proj.bias")
-    assert isinstance(inherited_bias, tensorfs.Array)
-    bias = tensor(inherited_bias.tobytes(), torch.bfloat16, (ROWS,))
+    # The parts the public conversion wrote are exactly the selected fit's: the frozen reference packs its residual.
+    assert conversion["new_bytes_written"] == sum(len(part.tobytes()) for part in weight.parts.values())
+    facts = check_selected(weight, original.float().numpy(), row)
+    reference = decoded_weight(weight.parts)
+    bias = tensor(plain(held.read("proj.bias")).tobytes(), torch.bfloat16, (ROWS,))
     assert torch.equal(bias, original_bias)
     rows = []
     for value in operands(payload.seed, held_out=True):
@@ -426,6 +422,7 @@ def predict(
                 "seed": payload.seed,
                 "checkpoint": checkpoint.id,
                 "device": torch.cuda.get_device_name(),
+                "stored": facts,
                 "cases": rows,
             },
             sort_keys=True,
@@ -433,19 +430,20 @@ def predict(
     )
 
 
-# Register the real CPU Writer proof in this same ordinary release-gate package.
-from . import native as native
+class Reuse(msgspec.Struct, forbid_unknown_fields=True):
+    seed: int = 156
 
 
-class _Peaks(TypedDict):
-    """The working allocator's figures this cell reads (of varena's `WorkingStats`)."""
+@app.entrypoint(accelerator=False)
+async def components(payload: Reuse, ctx: Context) -> Report:
+    """Two components converted one call each under one plan identity, then reused and refused from a finished Output:
+    the Runtime's built-in `bench.quantize_reuse` (it reopens the Runtime's own Outputs)."""
+    found = await call(bench.quantize_reuse, case="components", seed=payload.seed)
+    return Report(True, found.detail)
 
-    allocated_peak: int
-    mapped_peak: int
 
-
-def _working() -> _Peaks:
-    """The working allocator's own figures (varena's): Torch's readers are sealed."""
-    import tensorfs.varena.torch as vt
-
-    return vt.stats(torch.cuda.current_device())
+@app.entrypoint(accelerator=False)
+async def resume(payload: Reuse, ctx: Context) -> Report:
+    """An unfinished Output's close and reopen, finished reuse and identity refusals: `bench.quantize_reuse`."""
+    found = await call(bench.quantize_reuse, case="resume", seed=payload.seed)
+    return Report(True, found.detail)
