@@ -18,10 +18,59 @@ use api::{
 use serde_json::Value;
 use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
 
-use crate::{Context, calcifer_client::Client};
+use crate::{
+    Context,
+    calcifer_client::Client,
+    progress::{Transfer, TransferCounts},
+};
 
 /// The most of a file one PUT carries.
 const PART: u64 = 64 << 20;
+
+struct Sending {
+    line: Transfer,
+    counts: TransferCounts,
+}
+
+impl Sending {
+    fn new(ctx: &Context) -> Self {
+        let line = Transfer::stderr(ctx.term.stderr, "Sending files");
+        let counts = TransferCounts {
+            files_done: 0,
+            files_total: None,
+            bytes_done: 0,
+            bytes_total: None,
+            bytes_moved: 0,
+        };
+        line.update(counts);
+        Self { line, counts }
+    }
+
+    fn totals(&mut self, files: u64, bytes: u64) {
+        self.counts.files_total = Some(files);
+        self.counts.bytes_total = Some(bytes);
+        self.line.update(self.counts);
+    }
+
+    fn position(&self, file_done: u64) {
+        self.line.update(TransferCounts {
+            bytes_done: self.counts.bytes_done.saturating_add(file_done),
+            ..self.counts
+        });
+    }
+
+    fn finished(&mut self, length: u64) {
+        self.counts.files_done += 1;
+        self.counts.bytes_done = self.counts.bytes_done.saturating_add(length);
+        self.line.update(self.counts);
+    }
+}
+
+impl Drop for Sending {
+    fn drop(&mut self) {
+        self.line.finish_and_clear();
+    }
+}
 
 pub(crate) struct Sender<'a> {
     ctx: &'a Context,
@@ -31,11 +80,19 @@ pub(crate) struct Sender<'a> {
 
 impl<'a> Sender<'a> {
     pub(crate) async fn new(ctx: &'a Context) -> Result<Self, Error> {
-        Ok(Self { ctx, calcifer: ctx.calcifer().await?, project: None })
+        Ok(Self {
+            ctx,
+            calcifer: ctx.calcifer().await?,
+            project: None,
+        })
     }
 
     pub(crate) async fn for_project(ctx: &'a Context, project: &str) -> Result<Self, Error> {
-        Ok(Self { ctx, calcifer: ctx.calcifer().await?, project: Some(project.to_owned()) })
+        Ok(Self {
+            ctx,
+            calcifer: ctx.calcifer().await?,
+            project: Some(project.to_owned()),
+        })
     }
 
     fn memo(&self) -> PathBuf {
@@ -44,93 +101,199 @@ impl<'a> Sender<'a> {
 
     /// The file at `path`, held by Calcifer: its digest.
     pub(crate) async fn file(&self, path: &Path) -> Result<Digest, Error> {
+        let mut progress = Sending::new(self.ctx);
+        progress.line.phase("Checking file");
         let (at, memo) = (path.to_owned(), self.project.is_none().then(|| self.memo()));
         let digest = tokio::task::spawn_blocking(move || api::digests::of(memo.as_deref(), &at))
             .await
             .map_err(|e| Error::internal("digest", e.to_string()))??;
-        let length = std::fs::metadata(path).map_err(|e| unreadable(path, e))?.len();
-        self.bytes(path, digest, length).await?;
+        let length = std::fs::metadata(path)
+            .map_err(|e| unreadable(path, e))?
+            .len();
+        progress.totals(1, length);
+        self.bytes(path, digest, length, &mut progress).await?;
         Ok(digest)
     }
 
     /// The folder at `root`, each file and then its tree document held by Calcifer: the document's digest.
     pub(crate) async fn tree(&self, root: &Path) -> Result<Digest, Error> {
+        let mut progress = Sending::new(self.ctx);
+        progress.line.phase("Checking folder");
         let (at, memo) = (root.to_owned(), self.project.is_none().then(|| self.memo()));
         let staged = tokio::task::spawn_blocking(move || api::stage::stage(&at, memo.as_deref()))
             .await
             .map_err(|e| Error::internal("stage", e.to_string()))??;
-        for file in &staged.files {
-            self.bytes(&file.path, file.digest, file.length).await?;
-        }
         let digest = Digest::of(&staged.document);
         let length = staged.document.len() as u64;
-        if self.calcifer.held_for(&digest, self.project.as_deref()).await?.is_some() {
-            self.calcifer.put_part_for(&digest, staged.document.into(), 0, length, self.project.as_deref()).await?;
+        progress.totals(
+            staged.files.len() as u64 + 1,
+            staged
+                .files
+                .iter()
+                .map(|file| file.length)
+                .sum::<u64>()
+                .saturating_add(length),
+        );
+        for file in &staged.files {
+            self.bytes(&file.path, file.digest, file.length, &mut progress)
+                .await?;
         }
+        progress.line.phase("Sending folder manifest");
+        if self
+            .calcifer
+            .held_for(&digest, self.project.as_deref())
+            .await?
+            .is_some()
+        {
+            self.calcifer
+                .put_part_for(
+                    &digest,
+                    staged.document.into(),
+                    0,
+                    length,
+                    self.project.as_deref(),
+                )
+                .await?;
+            progress.counts.bytes_moved = progress.counts.bytes_moved.saturating_add(length);
+        }
+        progress.finished(length);
         Ok(digest)
     }
 
     /// The package at `path` (a folder or a script) as local code: its tree, each file and then the document held by Calcifer
     /// (`api::code`). What never goes is said.
     pub(crate) async fn code(&self, path: &Path) -> Result<LocalCode, Error> {
+        let mut progress = Sending::new(self.ctx);
+        progress.line.phase("Checking local code");
         let (at, memo) = (path.to_owned(), self.project.is_none().then(|| self.memo()));
         let staged = tokio::task::spawn_blocking(move || api::code::stage(&at, memo.as_deref()))
             .await
             .map_err(|e| Error::internal("stage", e.to_string()))??;
         if !staged.left.is_empty() {
-            crate::output::warn(&format!("left out of the code it sends: {}", staged.left.join(", ")));
-        }
-        for file in &staged.files {
-            self.bytes(&file.path, file.digest, file.length).await?;
+            crate::output::warn(&format!(
+                "left out of the code it sends: {}",
+                staged.left.join(", ")
+            ));
         }
         let code = staged.code();
         let length = staged.document.len() as u64;
-        if self.calcifer.held_for(&code.tree, self.project.as_deref()).await?.is_some() {
-            self.calcifer.put_part_for(&code.tree, staged.document.into(), 0, length, self.project.as_deref()).await?;
+        progress.totals(
+            staged.files.len() as u64 + 1,
+            staged
+                .files
+                .iter()
+                .map(|file| file.length)
+                .sum::<u64>()
+                .saturating_add(length),
+        );
+        for file in &staged.files {
+            self.bytes(&file.path, file.digest, file.length, &mut progress)
+                .await?;
         }
+        progress.line.phase("Sending code manifest");
+        if self
+            .calcifer
+            .held_for(&code.tree, self.project.as_deref())
+            .await?
+            .is_some()
+        {
+            self.calcifer
+                .put_part_for(
+                    &code.tree,
+                    staged.document.into(),
+                    0,
+                    length,
+                    self.project.as_deref(),
+                )
+                .await?;
+            progress.counts.bytes_moved = progress.counts.bytes_moved.saturating_add(length);
+        }
+        progress.finished(length);
         Ok(code)
     }
 
     /// `path`'s `length` bytes under `digest`, but what Calcifer holds of them, until Calcifer holds the file whole: another sender of
     /// the same file can hold ranges this one skipped and not finish them (cl-864).
-    async fn bytes(&self, path: &Path, digest: Digest, length: u64) -> Result<(), Error> {
+    async fn bytes(
+        &self,
+        path: &Path,
+        digest: Digest,
+        length: u64,
+        progress: &mut Sending,
+    ) -> Result<(), Error> {
+        progress.line.phase(&format!(
+            "Sending {}",
+            crate::output::shown(
+                &path
+                    .file_name()
+                    .map(|name| name.to_string_lossy())
+                    .unwrap_or_default()
+            )
+        ));
         for _ in 0..3 {
-            let Some(held) = self.calcifer.held_for(&digest, self.project.as_deref()).await? else { return Ok(()) };
-            if self.missing(path, digest, length, &held).await? {
+            let Some(held) = self
+                .calcifer
+                .held_for(&digest, self.project.as_deref())
+                .await?
+            else {
+                progress.finished(length);
+                return Ok(());
+            };
+            if self.missing(path, digest, length, &held, progress).await? {
+                progress.finished(length);
                 return Ok(());
             }
         }
-        let said = format!("Calcifer holds only part of {} after three sends", path.display());
+        let said = format!(
+            "Calcifer holds only part of {} after three sends",
+            path.display()
+        );
         Err(Error::new(Kind::Unavailable, "file_incomplete", said).next("cozy doctor"))
     }
 
     /// The bytes of `path` Calcifer doesn't hold (`held`), sent: whether that made the file whole.
-    async fn missing(&self, path: &Path, digest: Digest, length: u64, held: &[(u64, u64)]) -> Result<bool, Error> {
+    async fn missing(
+        &self,
+        path: &Path,
+        digest: Digest,
+        length: u64,
+        held: &[(u64, u64)],
+        progress: &mut Sending,
+    ) -> Result<bool, Error> {
         if length == 0 {
-            return self.calcifer.put_part_for(&digest, bytes::Bytes::new(), 0, 0, self.project.as_deref()).await;
+            return self
+                .calcifer
+                .put_part_for(&digest, bytes::Bytes::new(), 0, 0, self.project.as_deref())
+                .await;
         }
         let gaps = missing(held, length);
-        let shown = !self.ctx.json && self.ctx.term.stderr && length > PART;
-        let bar = crate::progress::Line::stderr(shown, Some(length), |s| {
-            format!("sending {}: {}/{} at {}", s.msg(), s.bytes(), s.total_bytes(), s.bytes_per_sec())
-        });
-        bar.set_message(path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
-        bar.set_position(length - gaps.iter().map(|(start, end)| end - start).sum::<u64>());
-        let mut file = tokio::fs::File::open(path).await.map_err(|e| unreadable(path, e))?;
+        let mut file_done = length - gaps.iter().map(|(start, end)| end - start).sum::<u64>();
+        progress.position(file_done);
+        let mut file = tokio::fs::File::open(path)
+            .await
+            .map_err(|e| unreadable(path, e))?;
         let mut whole = false;
         for (start, end) in gaps {
             let mut at = start;
-            file.seek(SeekFrom::Start(at)).await.map_err(|e| unreadable(path, e))?;
+            file.seek(SeekFrom::Start(at))
+                .await
+                .map_err(|e| unreadable(path, e))?;
             while at < end {
                 let mut part = vec![0; (end - at).min(PART) as usize];
-                file.read_exact(&mut part).await.map_err(|e| unreadable(path, e))?;
+                file.read_exact(&mut part)
+                    .await
+                    .map_err(|e| unreadable(path, e))?;
                 let n = part.len() as u64;
-                whole = self.calcifer.put_part_for(&digest, part.into(), at, length, self.project.as_deref()).await?;
+                whole = self
+                    .calcifer
+                    .put_part_for(&digest, part.into(), at, length, self.project.as_deref())
+                    .await?;
                 at += n;
-                bar.inc(n);
+                progress.counts.bytes_moved = progress.counts.bytes_moved.saturating_add(n);
+                file_done += n;
+                progress.position(file_done);
             }
         }
-        bar.finish_and_clear();
         Ok(whole)
     }
 
