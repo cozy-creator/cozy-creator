@@ -134,7 +134,8 @@ export function Thumb({
 }) {
   const { client } = useConnection()
   const store = useCanvasStore()
-  const [image, setImage] = useState<{ path: string; src: string; complete: () => void; live: () => boolean }>()
+  const [image, setImage] = useState<{ path: string; src: string; request: number; complete: () => void; live: () => boolean }>()
+  const nextRequest = useRef(0)
   const [failedPath, setFailedPath] = useState<string>()
   const projectId = store.projectId
   const zoom = useSignal(store.sharpness)
@@ -143,9 +144,12 @@ export function Thumb({
   useEffect(() => {
     if (!path) return
     let live = true
+    const request = ++nextRequest.current
     const leave = thumbLine(path, (complete) => {
       void client.transport.src(path).then((src) => {
-        if (live) setImage({ path, src, complete, live: () => live })
+        if (!live) return
+        setFailedPath(undefined)
+        setImage({ path, src, request, complete, live: () => live })
       }, () => {
         if (!live) return
         leave()
@@ -162,7 +166,7 @@ export function Thumb({
   if (!image || failedPath === image.path) return null
   return (
     <img
-      key={image.src}
+      key={image.request}
       src={image.src}
       alt=""
       className={`${className ?? ""} ${arrived.has(`${sha256}:${width}`) ? "" : "arrives"}`}
