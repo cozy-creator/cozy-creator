@@ -4,7 +4,8 @@
 # captures come back over SSH into corpus/ (this gate's artifact), and corpus.py checks each against its census row.
 AC=$HERE/suites/attention-corpus AC_DIR=/tmp/attention-corpus
 # The capture is cozy 0.25's: an earlier cozy has no such option, so the suite has nothing to run on it.
-if "$CLI" run --attention-capture '{}' 2>&1 | grep -q "unexpected argument '--attention-capture'"; then
+# (Its refusal is read whole: under gate.sh's pipefail, a pipe from cozy's failing exit never matches.)
+if grep -q "unexpected argument '--attention-capture'" <<< "$("$CLI" run --attention-capture '{}' 2>&1)"; then
   expect attention-corpus SKIP "cozy $("$CLI" --version | awk '{print $2}') has no \`cozy run --attention-capture\` (0.25 and later): nothing captured"
   return 0
 fi
