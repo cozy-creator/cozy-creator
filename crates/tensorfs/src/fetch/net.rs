@@ -174,6 +174,8 @@ impl From<Body> for reqwest::Body {
 pub struct Client {
     inner: reqwest::Client,
     policy: SourcePolicy,
+    /// The CA certificates it trusts beyond the webpki roots (DER).
+    roots: Arc<[Vec<u8>]>,
 }
 
 impl Client {
@@ -196,11 +198,18 @@ impl Client {
             .dns_resolver(Arc::new(Checked(policy.clone())))
             .build()
             .expect("reqwest builds with a rustls config");
-        Ok(Client { inner, policy })
+        Ok(Client { inner, policy, roots: extra.iter().map(|root| root.to_vec()).collect() })
     }
 
     pub(crate) fn policy(&self) -> &SourcePolicy {
         &self.policy
+    }
+
+    /// Whether `other` reaches the same hosts the same way: its policy and its roots.
+    pub(crate) fn same(&self, other: &Client) -> bool {
+        let (a, b) = (&self.policy, &other.policy);
+        (a.any_host, a.allow_local, a.plaintext, a.max_redirects, &a.allowed_hosts, &self.roots)
+            == (b.any_host, b.allow_local, b.plaintext, b.max_redirects, &b.allowed_hosts, &other.roots)
     }
 
     /// GET `url`, following the redirects the policy allows. Credentials go only to the origin they

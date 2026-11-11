@@ -438,6 +438,14 @@ impl Store {
         synced.map_err(fail("syncfs", &self.root))
     }
 
+    /// What `other`, a handle on this root, admitted and has not synced counts as this one's too:
+    /// its next record syncs it.
+    pub(crate) fn adopt(&self, other: &Store) {
+        if other.unsynced.load(Ordering::SeqCst) {
+            self.unsynced.store(true, Ordering::SeqCst);
+        }
+    }
+
     pub(crate) fn flushes(&self) -> bool {
         self.durability == Durability::Durable
     }

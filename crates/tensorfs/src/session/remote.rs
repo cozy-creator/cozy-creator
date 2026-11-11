@@ -50,7 +50,6 @@ impl Remote {
                 ..Fetched::default()
             });
         }
-        let store = Arc::new(self.store.clone());
         let mirror = self
             .mirror
             .as_ref()
@@ -63,14 +62,9 @@ impl Remote {
         } else {
             (self.endpoint.inner.clone(), mirror)
         };
-        // Constructing/dropping this fetcher scopes cancellation to this operation.
-        // All network tasks run on the caller's Tokio runtime, never a nested one.
-        let fetcher = Fetcher::new(
-            store,
-            self.endpoint.transport.clone(),
-            volume,
-            fetch::Config::default(),
-        );
+        // The process's one downloader (tfs-148). Dropping this call drops its waiters, and what
+        // nothing else wants stops.
+        let fetcher = Fetcher::shared(&self.store, &self.endpoint.transport, volume).map_err(from_native)?;
         let progress = fetch::Progress::default();
         let selected = Want {
             priority: want.priority,
@@ -90,7 +84,7 @@ impl Remote {
                 }
             }
         };
-        fetcher.settled().await;
+        self.store.adopt(fetcher.store());
         if let Some(report) = want.progress {
             report(total, total)?;
         }

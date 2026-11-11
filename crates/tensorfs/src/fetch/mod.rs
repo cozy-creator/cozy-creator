@@ -271,8 +271,33 @@ impl Fetcher {
         Fetcher { shared }
     }
 
+    /// The process's downloader into `store`'s root over a client like `client`, reading `volume` first:
+    /// made on the process runtime ([`runtime`]) on first use and kept, so every fetch shares one
+    /// queue, one ramp of requests in flight and one connection pool.
+    pub(crate) fn shared(store: &crate::store::Store, client: &Client, volume: Option<VolumeOrigin>) -> Result<Arc<Fetcher>> {
+        let process = process()?;
+        let mut fetchers = process.fetchers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let same = |fetcher: &&Arc<Fetcher>| {
+            let shared = &fetcher.shared;
+            shared.store.root() == store.root()
+                && shared.client.same(client)
+                && shared.volume.as_ref().map(VolumeOrigin::root) == volume.as_ref().map(VolumeOrigin::root)
+        };
+        if let Some(fetcher) = fetchers.iter().find(same) {
+            return Ok(Arc::clone(fetcher));
+        }
+        let _entered = process.runtime.enter();
+        let fetcher = Arc::new(Fetcher::new(Arc::new(store.clone()), client.clone(), volume, Config::default()));
+        fetchers.push(Arc::clone(&fetcher));
+        Ok(fetcher)
+    }
+
     pub fn client(&self) -> &Client {
         &self.shared.client
+    }
+
+    pub(crate) fn store(&self) -> &crate::store::Store {
+        &self.shared.store
     }
 
     pub fn stats(&self) -> Stats {
@@ -421,11 +446,23 @@ pub fn wanted(header: &Header, components: Option<&[String]>) -> Result<Vec<Obje
 
 /// A runtime for callers without one (a CLI, Python): two threads for sockets and timers.
 pub fn runtime() -> Result<Arc<tokio::runtime::Runtime>> {
+    Ok(process()?.runtime)
+}
+
+/// What this process's network work shares: its runtime, and its downloaders ([`Fetcher::shared`]).
+/// A fork child starts its own.
+#[derive(Clone)]
+struct Process {
+    runtime: Arc<tokio::runtime::Runtime>,
+    fetchers: Arc<Mutex<Vec<Arc<Fetcher>>>>,
+}
+
+fn process() -> Result<Process> {
     let mut held = runtime_slot()?
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(runtime) = held.as_ref() {
-        return Ok(Arc::clone(runtime));
+    if let Some(process) = held.as_ref() {
+        return Ok(process.clone());
     }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -436,10 +473,10 @@ pub fn runtime() -> Result<Arc<tokio::runtime::Runtime>> {
             code: Code::TRANSFER_FAILED,
             detail: format!("the fetch runtime could not start: {error}"),
         })?;
-    Ok(Arc::clone(held.insert(Arc::new(runtime))))
+    Ok(held.insert(Process { runtime: Arc::new(runtime), fetchers: Arc::default() }).clone())
 }
 
-type RuntimeSlot = Mutex<Option<Arc<tokio::runtime::Runtime>>>;
+type RuntimeSlot = Mutex<Option<Process>>;
 
 #[cfg(not(unix))]
 fn runtime_slot() -> Result<&'static RuntimeSlot> {
