@@ -6,10 +6,10 @@ starts that number."""
 import json, os, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from runs import Run  # noqa: E402
+from runs import Baseline, Run  # noqa: E402
 
 base_path, dirs = sys.argv[1], sys.argv[2:]
-base = json.load(open(base_path))
+base: Baseline = json.load(open(base_path))
 filled = 0
 for d in dirs:
     label = open(os.path.join(d, 'label')).read().strip()

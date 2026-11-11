@@ -3,8 +3,12 @@ gate, not skipped or memoized: Fibo's and Klein's prompt upsamplers, and 0.1.x H
     check(gate) -> (fails, notes)"""
 import json
 
+from runs import GateRuns
 
-def check(gate):
+
+def check(gate: GateRuns) -> tuple[list[str], list[str]]:
+    fails: list[str]
+    notes: list[str]
     fails, notes = [], []
     for name in ('fibo', 'klein'):
         run = gate['runs'].get(name)

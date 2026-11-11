@@ -7,9 +7,21 @@ import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
 import msgspec
 from cozy_runtime.author import App, Context
+
+if TYPE_CHECKING:
+    from ._types import (
+        F32,
+        ArrayTensor,
+        Budget,
+        Conversion,
+        EncodedTensor,
+        Parts,
+        Selection,
+    )
 
 app = App()
 
@@ -24,7 +36,7 @@ class Report(msgspec.Struct):
     detail: str
 
 
-def selection(key, dtype, shape, scheme):
+def selection(key: str, dtype: str, shape: tuple[int, ...], scheme: str) -> "Selection":
     nvfp4 = scheme == "nvfp4"
     return {
         "component": "weights",
@@ -49,11 +61,11 @@ def selection(key, dtype, shape, scheme):
     }
 
 
-def parts(encoded):
+def parts(encoded: "EncodedTensor") -> "Parts":
     return {k: (v.dtype, v.shape, v.tobytes()) for k, v in encoded.parts.items()}
 
 
-def expected_bytes(row):
+def expected_bytes(row: "Selection") -> int:
     n, k = row["shape"]
     return (
         n * k + n * 4
@@ -77,42 +89,43 @@ def run(payload: Request, ctx: Context) -> Report:
         component = writer.component("weights", config={"keep": "unchanged"})
         component.asset("label.txt", b"inherited asset")
         component.put("keep", b"\x00\x00\x80?", dtype="F32", shape=[1])
-        selected, values = [], {}
+        selected: list[Selection] = []
+        values: dict[str, F32] = {}
         if payload.mode.startswith("cancel"):
             for key, shape in [("first", (1, 256)), ("large", (16384, 1024))]:
-                source = rng.normal(size=shape).astype("<f4")
-                component.put(key, source)
+                weight = rng.normal(size=shape).astype("<f4")
+                component.put(key, weight)
                 selected.append(selection(key, "F32", shape, "int8.convrot"))
         else:
             for dtype in ("F32", "F16", "BF16"):
-                source = rng.normal(size=(9, 512)).astype("<f4")
-                source[-1, -1] = (
+                weight = rng.normal(size=(9, 512)).astype("<f4")
+                weight[-1, -1] = (
                     32.0  # Whole-tensor maximum is outside the first chunk.
                 )
                 if dtype == "F16":
-                    stored = source.astype("<f2").tobytes()
-                    source = (
+                    stored = weight.astype("<f2").tobytes()
+                    weight = (
                         np.frombuffer(stored, dtype="<f2")
                         .astype("<f4")
-                        .reshape(source.shape)
+                        .reshape(weight.shape)
                     )
                 elif dtype == "BF16":
-                    stored = (source.view("<u4") >> 16).astype("<u2").tobytes()
-                    source = (
+                    stored = (weight.view("<u4") >> 16).astype("<u2").tobytes()
+                    weight = (
                         (np.frombuffer(stored, dtype="<u2").astype("<u4") << 16)
                         .view("<f4")
-                        .reshape(source.shape)
+                        .reshape(weight.shape)
                     )
                 else:
-                    stored = source.tobytes()
+                    stored = weight.tobytes()
                 for scheme in ("int8.convrot", "nvfp4"):
                     key = f"{dtype}.{scheme}"
-                    component.put(key, stored, dtype=dtype, shape=source.shape)
-                    selected.append(selection(key, dtype, source.shape, scheme))
-                    values[key] = source
+                    component.put(key, stored, dtype=dtype, shape=weight.shape)
+                    selected.append(selection(key, dtype, weight.shape, scheme))
+                    values[key] = weight
         source = writer.commit()
         allowance = sum(expected_bytes(row) for row in selected)
-        reports = []
+        reports: list[Conversion] = []
         if payload.mode.startswith("cancel"):
             output = tensorfs.Writer(
                 directory / "cancel.cozytensors",
@@ -169,7 +182,7 @@ def run(payload: Request, ctx: Context) -> Report:
                     output  # A failed part write must also be retryable without reopen.
                 )
             # An altered recipe cannot trust the first completed entry.
-            changed = [dict(row) for row in selected]
+            changed = cast("list[Selection]", [dict(row) for row in selected])  # cast: copies to alter
             changed[0]["dtype"] = "BF16"
             try:
                 reopened.quantize(
@@ -214,7 +227,7 @@ def run(payload: Request, ctx: Context) -> Report:
                 directory / f"encoded-{buffer_bytes}.cozytensors", base=source
             )
             # Invalid budget/shape/selection refuses before any selected entry is written.
-            bad = [dict(row) for row in selected]
+            bad = cast("list[Selection]", [dict(row) for row in selected])  # cast: copies to spoil
             bad[-1]["shape"] = [9, 256]
             for rows, limits in [
                 (selected, {"max_new_bytes": allowance - 1}),
@@ -222,11 +235,11 @@ def run(payload: Request, ctx: Context) -> Report:
                 (bad, {}),
                 (selected + selected[:1], {}),
             ]:
-                options = {
+                options = cast("Budget", {  # cast: limits override
                     "max_new_bytes": allowance,
                     "max_buffer_bytes": buffer_bytes,
                     **limits,
-                }
+                })
                 try:
                     output.quantize(
                         source, rows, control=tensorfs.ConversionControl(), **options
@@ -253,7 +266,7 @@ def run(payload: Request, ctx: Context) -> Report:
             else:
                 raise AssertionError("pre-canceled conversion ran")
             assert before.progress() == (0, 0, 0)
-            stats = output.quantize(
+            stats: "Conversion" = output.quantize(
                 source,
                 selected,
                 max_buffer_bytes=buffer_bytes,
@@ -281,7 +294,7 @@ def run(payload: Request, ctx: Context) -> Report:
             checkpoint = output.commit()
             assert checkpoint.components["weights"].config == {"keep": "unchanged"}
             assert (
-                checkpoint.components["weights"].tensors.read("keep").tobytes()
+                cast("ArrayTensor", checkpoint.components["weights"].tensors.read("keep")).tobytes()  # cast: plain
                 == b"\x00\x00\x80?"
             )
             assert "label.txt" in checkpoint.components["weights"].assets
@@ -294,10 +307,10 @@ def run(payload: Request, ctx: Context) -> Report:
                     if row["encoding"]["scheme"] == "nvfp4"
                     else encode_int8_convrot256
                 )(key, values[key])
-                stored = parts(checkpoint.components["weights"].tensors.read(key))
-                assert stored["weight"][2] == reference.payload
+                held = parts(cast("EncodedTensor", checkpoint.components["weights"].tensors.read(key)))  # cast: put encoded
+                assert held["weight"][2] == reference.payload
                 for name, companion in zip(("scale", "scale_2"), reference.companions):
-                    assert stored[name][2] == companion.raw
+                    assert held[name][2] == companion.raw
                 measured = by_key[key]["measured"]
                 assert measured["saturated"] == reference.saturated
                 assert measured["max_abs_error"] == reference.max_abs_err

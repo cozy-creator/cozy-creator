@@ -3,24 +3,46 @@
     check(gate) -> (fails, notes)"""
 import json
 import os
+from typing import TypedDict, cast
+
+from runs import GateRuns, Run
 
 
-def _detail(run):
+class Inventory(TypedDict, total=False):
+    """`kernels-inventory`'s `result.detail`: what this card declares (ci_kernels.inventory)."""
+    names: list[str]
+    row: str
+    entries: dict[str, list[str]]  # per kernels set
+    jits: dict[str, list[str]]  # per module
+
+
+class Launched(TypedDict, total=False):
+    """A kernel cell's `result.detail`: its verdict and what it launched (ci_kernels.gpu)."""
+    passed: bool
+    detail: str
+    entries: list[str]
+    jits: list[str]
+
+
+def _detail(run: Run) -> Inventory | Launched:
     try:
-        return json.loads((run.result or {}).get('detail') or '{}')
+        # A result that is not an object, or a detail that is not text, raises: caught below. The detail is cells.sh's document.
+        return json.loads((run.result or {}).get('detail') or '{}')  # type: ignore[union-attr, arg-type, no-any-return]
     except (TypeError, ValueError, AttributeError):
         return {}
 
 
-def check(gate):
+def check(gate: GateRuns) -> tuple[list[str], list[str]]:
+    fails: list[str]
+    notes: list[str]
     fails, notes, runs = [], [], gate['runs']
     if 'kernels-inventory' not in runs:
         return fails, notes
-    found = _detail(runs['kernels-inventory'])
+    found = cast(Inventory, _detail(runs['kernels-inventory']))  # the inventory cell's document
     if not found.get('names'):
         fails.append('kernels-inventory: no inventory')
         return fails, notes
-    cells = {name: _detail(run) for name, run in runs.items() if name.startswith(('kernel-', 'kernel1-'))}
+    cells = {name: cast(Launched, _detail(run)) for name, run in runs.items() if name.startswith(('kernel-', 'kernel1-'))}
     try:
         chosen = {line.strip() for line in open(os.path.join(gate['out'], 'only')) if line.strip()}
     except OSError:

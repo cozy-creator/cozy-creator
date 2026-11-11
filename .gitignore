@@ -14,3 +14,5 @@ crates/tensorfs/kernels/aot/
 .task-owner*.md
 .worktree-owner*.md
 .owner-agent/
+.venv-typecheck/
+.mypy_cache/

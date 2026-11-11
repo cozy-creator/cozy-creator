@@ -2,15 +2,19 @@
     check(gate) -> (fails, notes)"""
 import os
 
+from runs import Gate, Run
+
 GIB = 1 << 30
 
 
-def reserved_mib(run):
+def reserved_mib(run: Run) -> int:
     """Torch's reservations plus native backing at their fullest (`memory.peak_reserved_bytes`), in MiB."""
     return round(max((m.get('memory') or {}).get('peak_reserved_bytes') or 0 for m in run.measurements) / 2**20)
 
 
-def check(gate):
+def check(gate: Gate) -> tuple[list[str], list[str]]:
+    fails: list[str]
+    notes: list[str]
     fails, notes, runs, summary = [], [], gate['runs'], gate['summary']
     if not any(n.startswith('cli-') for n in summary) and not os.path.exists(os.path.join(gate['out'], 'cli-fails.txt')):
         return fails, notes
