@@ -151,6 +151,8 @@ test = "release: adapter weights uploaded without inference"
 "--base" = "manual: shared model upload handler"
 ["lora publish"]
 test = "pending: shared model publish handler"
+["lora delete"]
+test = "release: LoRA fixture cleanup through the shared model deletion handler"
 ["model edit"]
 test = "release: throwaway model, family and tags set and cleared"
 "--family" = "release: throwaway model, family set and cleared (none)"

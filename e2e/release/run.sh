@@ -291,7 +291,7 @@ cozy --json lora edit "$model-lora" --family e2e-family --tag e2e-lora --trigger
   || check "LoRA metadata was not set"
 cozy --json lora edit "$model-lora" --trigger '' --strength none > /dev/null \
   && model_details "$model-lora" | J '.trigger == null and .strength == null' || check "LoRA metadata was not cleared"
-cozy --json model delete "$model-lora" -y > /dev/null || check "LoRA fixture cleanup failed"
+cozy --json lora delete "$model-lora" -y > /dev/null || check "LoRA fixture cleanup failed"
 cozy --json model publish "$model" 0.1.0 "$commit" "$commit_b" > "$OUT/model-publish.json" || check "model publish failed"
 model_details "$model" > "$OUT/model-info.json" \
   && J '.releases | any(.version == "0.1.0" and ([.lanes[].lane] | sort) == ["f16", "f32"])' "$OUT/model-info.json" \

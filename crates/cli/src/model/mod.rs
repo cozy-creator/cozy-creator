@@ -39,6 +39,8 @@ enum LoraVerb {
     Upload(LoraUpload),
     /// Publish commits as a LoRA release.
     Publish(Publish),
+    /// Delete a LoRA, release or commit from TensorHub.
+    Delete(Delete),
 }
 
 pub(crate) async fn lora_exec(ctx: &Context, args: LoraArgs) -> Result<ExitCode, Error> {
@@ -58,6 +60,7 @@ pub(crate) async fn lora_exec(ctx: &Context, args: LoraArgs) -> Result<ExitCode,
             machine::upload(ctx, args.upload).await
         }
         LoraVerb::Publish(args) => releases::publish(ctx, args).await,
+        LoraVerb::Delete(args) => releases::delete(ctx, args).await,
     }
 }
 
@@ -78,7 +81,7 @@ enum Verb {
     Quantize(Quantize),
     /// Publish commits as a model release.
     Publish(Publish),
-    /// Delete a model, release or unpublished commit.
+    /// Delete a model, release or commit from TensorHub.
     Delete(Delete),
 }
 
@@ -324,6 +327,6 @@ mod tests {
         cli.build();
         let names = |name: &str| cli.find_subcommand(name).unwrap().get_subcommands().map(|command| command.get_name().to_owned()).collect::<Vec<_>>();
         assert_eq!(names("model"), ["ls", "edit", "download", "remove", "upload", "quantize", "publish", "delete"]);
-        assert_eq!(names("lora"), ["ls", "download", "remove", "edit", "upload", "publish"]);
+        assert_eq!(names("lora"), ["ls", "download", "remove", "edit", "upload", "publish", "delete"]);
     }
 }

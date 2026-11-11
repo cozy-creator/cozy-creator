@@ -95,6 +95,7 @@ def main() -> None:
         run("local LoRA removal help", ["lora", "remove", "--help"])
         run("LoRA metadata help", ["lora", "edit", "--help"])
         run("LoRA upload help", ["lora", "upload", "--help"])
+        run("LoRA cloud deletion help", ["lora", "delete", "--help"])
         run("removed model trigger", ["model", "edit", "author/model", "--trigger", "word"], code=2)
         run("removed model upload strength", ["model", "upload", "file", "author/model", "--lane", "bf16", "--strength", "0.5"], code=2)
         for flag in ("--estimate", "--warm"):
