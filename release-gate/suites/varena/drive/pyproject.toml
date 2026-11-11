@@ -1,0 +1,18 @@
+[build-system]
+requires = ["uv_build>=0.12.7,<0.13"]
+build-backend = "uv_build"
+
+[project]
+name = "varena-drive"
+version = "0.1.0"
+description = "The varena suite's calls of the Runtime's own varena exercisers (cozy_runtime.bench)"
+requires-python = ">=3.12"
+# The exercisers run in this environment: they need torch and the Runtime's TensorFS.
+dependencies = ["cozy-runtime>=0.45", "msgspec>=0.19", "torch>=2.14"]
+
+[project.entry-points."cozy.application"]
+default = "varena_drive:app"
+
+[tool.uv.build-backend]
+module-name = "varena_drive"
+module-root = ""
