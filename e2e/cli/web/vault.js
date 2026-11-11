@@ -80,6 +80,11 @@ const newPage = async () => {
     }
     if (request.method() === 'PUT' && /^\/v1\/(project-)?files\//.test(url.pathname)) fileWrites.push({ path: url.pathname, project: url.searchParams.get('project') });
     if (request.method() === 'POST' && /\/vault$/.test(url.pathname) && request.headers()['idempotency-key']) secretIdempotency.push(url.pathname);
+    if (request.method() === 'POST' && url.pathname === `/v1/projects/${id}/vault` && JSON.parse(request.postData() || '{}').action === 'encrypt') {
+      (seen.reads_at_encrypt_submit ??= []).push([...projectReads].map((read) => ({
+        method: read.method(), path: new URL(read.url()).pathname, response_status: responseStatuses.get(read) ?? null,
+      })));
+    }
     let text = `${request.url()} ${request.postData() || ''}`;
     try { text += ` ${decodeURIComponent(text)}`; } catch { /* a binary or malformed URL is still checked as sent */ }
     if (url.origin !== new URL(calcifer()).origin && /cozy1-|synthetic browser passphrase/.test(text)) outbound.push('secret-bearing external request');
