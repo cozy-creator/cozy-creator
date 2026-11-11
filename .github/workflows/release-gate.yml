@@ -29,7 +29,7 @@ on:
         type: string
         default: master
       runtime_wheel:
-        description: "Candidate Runtime wheel: https://…/<wheel>#sha256=<hex>, or artifact:[<run id>/]<name>, of this run or another of this repo's (empty: the Hub's target)"
+        description: "Candidate Runtime wheel: https://…/<wheel>#sha256=<hex>, artifact:[<run id>/]<name> of this run or another of this repo's, or a cozy-runtime dev-build run id (empty: the Hub's target)"
         type: string
         default: ''
       tensorfs_wheel:
@@ -201,7 +201,11 @@ jobs:
           for item in "runtime|$RUNTIME_WHEEL|cozy_runtime" "tensorfs|$TENSORFS_WHEEL|tensorfs"; do
             IFS='|' read -r flag value distribution <<< "$item"
             [ -n "$value" ] || continue
-            if [[ "$value" == artifact:* ]]; then
+            if [ "$flag" = runtime ] && [[ "$value" =~ ^[0-9]+$ ]]; then  # a cozy-runtime dev-build run: its x86_64 wheel
+              gh run download "$value" -R cozy-creator/cozy-runtime -p 'cozy-runtime-*' -D "wheel-$flag"
+              value=$(find "$PWD/wheel-$flag" -type f -name "$distribution-*manylinux*x86_64*.whl" -print -quit)
+              [ -n "$value" ] || { echo "::error::cozy-runtime dev-build $RUNTIME_WHEEL has no x86_64 wheel"; exit 1; }
+            elif [[ "$value" == artifact:* ]]; then
               artifact=${value#artifact:}; run=$GITHUB_RUN_ID
               if [[ "$artifact" == */* ]]; then run=${artifact%%/*}; artifact=${artifact#*/}; fi
               gh run download "$run" -R "$GITHUB_REPOSITORY" -n "$artifact" -D "wheel-$flag"
@@ -303,12 +307,19 @@ jobs:
             gh run download "$COZY" -R cozy-creator/cozy-creator -p 'cozy-*' -D dev
             install -m 0755 dev/cozy-*/cozy-linux-x86_64 "$bin/cozy"; args+=(--tensord "$bin/cozy")
           fi
-          # A wheel is a URL#sha256 the gate fetches and checks, or an artifact of this run or of another run of this repo
-          # (e2e's candidate-runtime-*, dev-build's tensorfs-wheel-*): artifact:<run id>/<name>.
+          # A wheel is a URL#sha256 the gate fetches and checks, an artifact of this run or of another run of this repo
+          # (e2e's candidate-runtime-*, dev-build's tensorfs-wheel-*): artifact:<run id>/<name>, or for the Runtime a
+          # cozy-runtime dev-build run id (its release files, kernels built: cozy-runtime-<sha>).
           for w in "runtime-wheel|$RUNTIME_WHEEL|cozy_runtime" "tensorfs-wheel|$TENSORFS_WHEEL|tensorfs"; do
             IFS="|" read -r flag value dist <<< "$w"
+            [[ $flag != runtime-wheel || ! $value =~ ^[0-9]+$ ]] || value=dev-build:$value
             case $value in
               '') ;;
+              dev-build:*)
+                gh run download "${value#dev-build:}" -R cozy-creator/cozy-runtime -p 'cozy-runtime-*' -D "wheels-$flag"
+                f=$(find "wheels-$flag" -type f -name "$dist-*manylinux*x86_64*.whl" -print -quit)
+                [ -n "$f" ] || { echo "::error::cozy-runtime dev-build ${value#dev-build:} has no x86_64 wheel"; exit 1; }
+                args+=("--$flag" "$PWD/$f") ;;
               artifact:*)
                 name=${value#artifact:} run=$GITHUB_RUN_ID
                 [[ $name != */* ]] || { run=${name%%/*}; name=${name#*/}; }

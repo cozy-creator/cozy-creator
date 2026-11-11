@@ -77,7 +77,10 @@ OUT=${OUT:-$PWD/gate-$SKU-$(date -u +%Y%m%dT%H%MZ)}
 B=$OUT/baseline
 mkdir -p "$B"; cd "$OUT"; : > cells.tsv
 log() { echo "$(date -u +%H:%M:%SZ) $*" | tee -a gate.log; }
-if [ -n "$PKGS" ]; then
+# The chosen suites' own packages: described on the machine's Runtime once it reports one (`gate-packages`, below).
+mapfile -t GATE_PKGS < <(for s in ${SUITES//,/ }; do find "$HERE/suites/$s" -name pyproject.toml -not -path '*/.venv/*' -printf '%h\n'; done | sort -u)
+# Local code, a --packages checkout's or the suites' own, warms through this helper (e2e/warm.py --stage-code).
+if [ -n "$PKGS" ] || [ ${#GATE_PKGS[@]} -gt 0 ]; then
   cargo build --quiet --locked --manifest-path "$HERE/../Cargo.toml" -p api --example stage-code --target-dir "$PWD/stage-code-build" > stage-code-build.log 2>&1 \
     || { log "could not build local-source staging helper: $(tail -c 500 stage-code-build.log)"; exit 1; }
   RUN_CODE_STAGE=$PWD/stage-code-build/debug/examples/stage-code
@@ -463,6 +466,19 @@ fi
 reported
 [ -n "$v" ] && [ -n "$rt" ] && [ -n "$tfs" ] || notinstalled "$M reports no cozy, Runtime and TensorFS (cozy ${v:-?}, Runtime ${rt:-?}, TensorFS ${tfs:-?})"
 expect candidate-installed PASS "$M runs cozy $v, Runtime $rt, TensorFS $tfs"
+# The chosen suites' own packages, described as this machine describes them, on the Runtime it runs: one the package
+# contract refuses fails here by name, whatever its cells do (22 of 25 were refused from 0.43.1 to 0.45.0, unseen: xs-174).
+# Judged by its package lines (`ok   <suite>/<package>:`, `FAIL <suite>/<package>:`), each package's own verdict.
+if [ ${#GATE_PKGS[@]} -gt 0 ]; then
+  "$HERE/interfaces.sh" --runtime "${RWF:-$rt}" ${TWF:+--tensorfs "$TWF"} "${GATE_PKGS[@]}" > gate-packages.txt 2>&1
+  gate_refused=$(grep -E '^FAIL [^ :]+/[^ :]+:' gate-packages.txt | cut -c1-160 | paste -sd';')
+  gate_read=$(grep -cE '^ok   [^ :]+/[^ :]+:' gate-packages.txt)
+  if [ -z "$gate_refused" ] && [ "$gate_read" = "${#GATE_PKGS[@]}" ]; then
+    expect gate-packages PASS "$gate_read of ${#GATE_PKGS[@]} described on Runtime $rt"
+  else
+    expect gate-packages FAIL "${gate_refused:-$gate_read of ${#GATE_PKGS[@]} described: $(tail -n 2 gate-packages.txt | paste -sd' ')}"
+  fi
+fi
 # The set the verdict is for (verify.sh, promote.sh): each candidate's version, as the machine reports it, and digest.
 # Components with no candidate are not named: a --before FILE may move them on its SKU only.
 LABEL=cozy$v-rt$rt-tfs$tfs${PKGS:+-packages$(git -C "$PKGS" rev-parse --short HEAD)}${PINS:+-pins$(cksum <<< "$PINS" | cut -d' ' -f1)}

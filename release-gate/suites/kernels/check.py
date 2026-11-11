@@ -9,7 +9,7 @@ from runs import GateRuns, Run
 
 
 class Inventory(TypedDict, total=False):
-    """`kernels-inventory`'s `result.detail`: what this card declares (ci_kernels.inventory)."""
+    """`kernels-inventory`'s `result.detail`: what this card declares (the Runtime's `bench.kernels_inventory`)."""
     names: list[str]
     row: str
     entries: dict[str, list[str]]  # per kernels set
@@ -17,7 +17,7 @@ class Inventory(TypedDict, total=False):
 
 
 class Launched(TypedDict, total=False):
-    """A kernel cell's `result.detail`: its verdict and what it launched (ci_kernels.gpu)."""
+    """A kernel cell's `result.detail`: its verdict and what it launched (the Runtime's `bench.kernel_check`)."""
     passed: bool
     detail: str
     entries: list[str]
