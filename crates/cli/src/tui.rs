@@ -137,8 +137,10 @@ pub(crate) async fn show(ctx: &Context, first: Screen) -> Result<ExitCode, Error
         let Some(at) = stack.iter().rposition(|(screen, _)| matches!(screen, Screen::Models(_))) else { return Ok(status) };
         stack.truncate(at + 1);
         if let Some((Screen::Models(view), selected)) = stack.last_mut() {
+            let previous = selected.selected().unwrap_or(0);
+            let model = view.model_at(previous).map(str::to_owned);
             view.refresh(ctx, notice).await?;
-            selected.select(Some(selected.selected().unwrap_or(0).min(view.rows().len().saturating_sub(1))));
+            selected.select(Some(view.selection_after(model.as_deref(), previous)));
         }
     }
 }

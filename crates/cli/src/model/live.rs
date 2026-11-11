@@ -139,6 +139,15 @@ impl Catalog {
     pub(crate) fn local_bytes(&self, model: &str) -> Option<u64> {
         self.local.as_ref()?.iter().filter(|held| same_model(&held.model, model)).map(|held| held.bytes).max()
     }
+
+    pub(crate) fn model_at(&self, index: usize) -> Option<&str> {
+        self.page.models.get(index).map(|model| model.model.as_str())
+    }
+
+    pub(crate) fn selection_after(&self, model: Option<&str>, previous: usize) -> usize {
+        model.and_then(|name| self.page.models.iter().position(|row| same_model(&row.model, name)))
+            .unwrap_or_else(|| previous.min(self.page.models.len().saturating_sub(1)))
+    }
 }
 
 pub(crate) struct Preview {
@@ -325,5 +334,15 @@ mod tests {
         let loras = Catalog::from_local(query, local);
         assert_eq!(loras.rows()[0][0], "local/adapter");
         assert_eq!(loras.local_bytes("local/adapter"), Some(20));
+    }
+
+    #[test]
+    fn refresh_preserves_selected_model_when_rows_are_inserted() {
+        let mut catalog = catalog();
+        let selected = catalog.model_at(1).unwrap().to_owned();
+        catalog.page.models.insert(0, FoundModel { model: "author/new".into(), ..Default::default() });
+        assert_eq!(catalog.selection_after(Some(&selected), 1), 2);
+        catalog.page.models.pop();
+        assert_eq!(catalog.selection_after(Some(&selected), 2), 1);
     }
 }
