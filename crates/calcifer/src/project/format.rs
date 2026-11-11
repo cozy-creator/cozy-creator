@@ -38,7 +38,7 @@ pub(super) fn node_kind(value: Option<&Value>) -> Result<Option<&str>, Error> {
     match value {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(kind)) if matches!(kind.as_str(), "text" | "image" | "video" | "audio" | "video_edit") => Ok(Some(kind)),
-        _ => Err(invalid("node_kind", "node_kind must be text, image, video, audio or video_edit")),
+        _ => Err(invalid("node_kind", "node_kind must be text, image, video, audio or video_edit".into())),
     }
 }
 
