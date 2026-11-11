@@ -184,12 +184,14 @@ model_details "$model" > "$OUT/model-info.json" \
   || check "model publish: no 0.1.0 with lanes f16 and f32"
 # Ordinary owners can withdraw and keep using an explicit private version; publication
 # stays gated by live admin permission. All account changes are in this disposable Hub.
+model_details "$model" > "$OUT/model-before-unpublish.json" || check "could not read the model before unpublish"
 "${hub[@]}" admin revoke "$WHO" > "$OUT/owner-admin-revoke.log" 2>&1 || check "could not revoke the fixture publisher's admin role"
 cozy --json model unpublish "$model@0.1.0" > "$OUT/model-unpublish.json" || check "owner model unpublish failed"
 model_details "$model" > "$OUT/private-model.json" \
-  && J '.checkpoints | length == 2' "$OUT/private-model.json" \
+  && J --slurpfile before "$OUT/model-before-unpublish.json" \
+    '(.checkpoints | map({checkpoint,lane,bytes}) | sort_by(.checkpoint)) == ($before[0].checkpoints | map({checkpoint,lane,bytes}) | sort_by(.checkpoint))' "$OUT/private-model.json" \
   && J '.releases | any(.version == "0.1.0" and .visibility == "private")' "$OUT/private-model.json" \
-  || check "unpublish did not retain both checkpoints and the private version"
+  || check "unpublish changed the model's checkpoints or lost its private version"
 status=$(curl -sS -o "$OUT/private-public-card.json" -w '%{http_code}' "$COZY_HUB_URL/v1/models/$model")
 [ "$status" = 404 ] || check "unpublished model remained publicly visible (HTTP $status)"
 watched install-private-version model install "$model@0.1.0" --lane f16 --on "$ON" \
