@@ -854,13 +854,19 @@ jobs:
           SKEW_TOOLS: ${{ runner.temp }}/skew-tools
           CLIENT: ${{ matrix.client }}
           MIN: ${{ inputs.cozy_min }}
+          RUNTIME: ${{ inputs.runtime }}
+          TENSORFS: ${{ inputs.tensorfs }}
         run: |
           # Calcifer and the local machine run as user services, as on a desktop login.
           sudo loginctl enable-linger "$(id -un)"
           export XDG_RUNTIME_DIR=/run/user/$(id -u)
           until [ -S "$XDG_RUNTIME_DIR/bus" ]; do sleep 1; done
           export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
-          bash .creator/e2e/skew/run.sh --hub-src .tensorhub --client "$CLIENT" --cozy-min "$MIN" --out "$RUNNER_TEMP/e2e"
+          sdk=()
+          [ -z "$RUNTIME" ] || sdk+=(--runtime "$RUNTIME")
+          [ -z "$TENSORFS" ] || sdk+=(--tensorfs "$TENSORFS")
+          bash .creator/e2e/skew/run.sh --hub-src .tensorhub --client "$CLIENT" --cozy-min "$MIN" \
+            "${sdk[@]}" --out "$RUNNER_TEMP/e2e"
       - if: always()
         uses: ./.creator/e2e/publish
         with:
