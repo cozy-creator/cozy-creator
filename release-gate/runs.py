@@ -1,5 +1,6 @@
 """A run's record as `cozy run watch <n> --once --json --full` prints it (e2e/run.sh keeps it as <name>.json), read once into the
 summary analyze.py and every check use. Its VRAM is the driver's (`vram`); varena's own figures are record.py's."""
+import glob
 import json
 import os
 from collections.abc import Iterator
@@ -250,7 +251,7 @@ class Call(TypedDict, total=False):
 
 
 class OutputFile(TypedDict, total=False):
-    path: str
+    name: str
     media_type: str
     sha256: str
 
@@ -284,6 +285,17 @@ class RunRecord(TypedDict, total=False):
     request: Request | None
 
 
+# Where a run's files land: the CLI names no path (xs-159), only each output's digest, and the project keeps the file as
+# files/<digest>.<ext>. gate.sh links its project as project/; bench's runs keep theirs in proj/, beside or above.
+PROJECT_FILES = ('project/files', 'proj/files', '../proj/files', '../project/files')
+
+
+def landed(d: str, sha256: str) -> list[str]:
+    """The file of the output with this digest (`sha256:<hex>` or `<hex>`) among the project files under d."""
+    digest = sha256.split(':')[-1]
+    return sorted(f for sub in PROJECT_FILES for f in glob.glob(os.path.join(d, sub, digest + '.*'))) if digest else []
+
+
 class Vram(TypedDict):
     peak: int
     added: int
@@ -298,16 +310,17 @@ class Run:
     target: str
     execution_ms: int | None
     result: JSON
-    outputs: tuple[str, ...]  # output[].path, sorted
+    outputs: tuple[str, ...]  # each output's file among the gate's project files (`landed`), sorted
     measurements: tuple[Measurements, ...]  # the run's, then each call's
 
     @staticmethod
-    def of(rec: RunRecord) -> 'Run':
+    def of(rec: RunRecord, d: str) -> 'Run':
+        """The record, its outputs' files found under the gate directory d."""
         why = rec.get('reason')
         return Run(record=rec, number=rec.get('number'), status=rec.get('status') or '',
                    reason=f"{why.get('code')}: {why.get('message')}" if isinstance(why, dict) else str(why or ''),
                    target=rec.get('target') or '', execution_ms=rec.get('execution_ms'), result=rec.get('result'),
-                   outputs=tuple(sorted(o['path'] for o in rec.get('output') or [] if isinstance(o, dict) and o.get('path'))),
+                   outputs=tuple(sorted(f for o in rec.get('output') or [] if isinstance(o, dict) for f in landed(d, o.get('sha256') or ''))),
                    measurements=tuple([rec.get('measurements') or {}] + [c.get('measurements') or {} for c in rec.get('calls') or []]))
 
     @staticmethod
@@ -316,7 +329,7 @@ class Run:
         if not os.path.exists(path):
             return None
         with open(path) as f:
-            return Run.of(cast(RunRecord, json.load(f)))  # the CLI's JSON, read as the fields above
+            return Run.of(cast(RunRecord, json.load(f)), os.path.dirname(path))  # the CLI's JSON, read as the fields above
 
     @property
     def observations(self) -> list[Observation]:
