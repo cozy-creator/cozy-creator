@@ -13,7 +13,7 @@ import { useCanvasStore, useElement } from "./context"
 import { atDefault, fieldsOf, fieldWords, fullRows, heldBeyond, newRow, onFace, optionWord, totalOf, WANTED } from "./controls"
 import { Ghosts, Thumb } from "./Media"
 import { MentionText } from "./MentionText"
-import { baseOf, FPS, framesIn, rangeOf, ranged, timecode } from "./ranges"
+import { angleOf, baseOf, degrees, FPS, framesIn, rangeOf, ranged, timecode } from "./ranges"
 import { makes } from "./shown"
 import { mentionsIn, type Row, rowsIn } from "./text"
 import { ToolBox } from "./ToolBox"
@@ -307,6 +307,7 @@ function Held({ name, mention, label, wrong, onRange, onOff }: { name: string; m
   useElement(said?.name ?? "")
   const file = store.fileOf(mention, name)
   const range = rangeOf(mention)
+  const angled = angleOf(mention)
   const missing = !said || said.gone
   const fps = file?.fps ?? FPS
   const frames = framesIn(file?.duration_ms, fps)
@@ -315,6 +316,7 @@ function Held({ name, mention, label, wrong, onRange, onOff }: { name: string; m
       <span className={`chip ${wrong && !missing ? "refused" : ""}`} title={wrong && !missing ? `${wrong}: a render leaves it out` : mention} data-mention={mention}>
         {baseOf(mention)}
         {range && ` ${timecode(range.from, fps)}–${timecode(range.to ?? frames, fps)}`}
+        {angled && ` ${degrees(angled)}`}
         <button type="button" className="nodrag" aria-label={`Take ${baseOf(mention)} out of ${label}`} onClick={onOff}>
           ×
         </button>
@@ -324,7 +326,7 @@ function Held({ name, mention, label, wrong, onRange, onOff }: { name: string; m
           <Thumb sha256={file.sha256} cardWidth={120} />
         </span>
       )}
-      {file && !file.absent && file.field === "video" && (
+      {file && !file.absent && file.field === "video" && !angled && (
         <ClipRange
           sha256={file.sha256}
           frames={frames}
@@ -438,7 +440,7 @@ function spanOf(store: CanvasStore, name: string, field: ToolField, mention: str
   const rows = rowsIn(siblings ? siblings[field.spans] : store.valueOf(name, field.spans))
   const total = group && totalOf(group, fullRows(group, rows))
   const file = store.fileOf(mention, name)
-  if (!total || !file?.duration_ms) return null
+  if (!total || !file?.duration_ms || angleOf(mention)) return null
   const fps = file.fps ?? FPS
   const range = rangeOf(mention)
   const frames = (range?.to ?? framesIn(file.duration_ms, fps)) - (range?.from ?? 0)

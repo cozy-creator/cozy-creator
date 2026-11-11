@@ -1,0 +1,3 @@
+An orbit is mentioned by angle: `<cat:120deg>` is the frame at 120° as a picture, and `<cat:90deg-180deg>` that part of the turn as a clip, keyed as written (`cat:120deg`). The frame is `floor(angle / degrees × frames) mod frames`, as the page shows it. A looping orbit's angles wrap (370° is 10°) and its turn may cross 0° (`300deg-60deg`); another's are held to its turn, with a warning. An angle of a video that isn't an orbit fails before any machine, naming the fix: turn on Orbit, or name frames. The chip says the angle (120°).
+
+A mention's frame range (`<walk:48-120>`) is now cut frame-exact: a start that wasn't a whole millisecond could begin a frame late.

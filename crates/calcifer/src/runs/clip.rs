@@ -1,4 +1,4 @@
-//! A range of a video a mention names (`<take3@48-336>`): cut once with ffmpeg into
+//! A part of a video a mention names (`<take3:48-336>`, an orbit's `<cat:120deg>`): cut once with ffmpeg into
 //! its project's clip cache, frame-accurate, and sent in its source's place. Calcifer cuts it, with
 //! cozy's ffmpeg (`crate::tools::ffmpeg`, fetched on first need).
 use std::{
@@ -21,10 +21,13 @@ const THREADS: &str = "4";
 /// Re-encoded at the source's size and rate. Part of each clip's key.
 #[rustfmt::skip]
 const ENCODE: &[&str] = &[
-    "-map", "0:v:0", "-map", "0:a:0?", "-map_metadata", "-1", "-map_chapters", "-1",
+    "-map_metadata", "-1", "-map_chapters", "-1",
     "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p",
     "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", "-threads", THREADS, "-f", "mp4",
 ];
+/// A frame, as a picture. Part of each picture's key.
+#[rustfmt::skip]
+const STILL: &[&str] = &["-map", "0:v:0", "-frames:v", "1", "-map_metadata", "-1", "-c:v", "png", "-f", "image2", "-update", "1"];
 /// A clip not sent for this long goes the next time one is cut.
 const UNUSED: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
@@ -35,11 +38,15 @@ pub(crate) struct Clips {
     pub home: platform::paths::Home,
 }
 
-/// Seconds into the source; no end: the source's.
+/// What's cut of a video, in its own frames.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct Range {
-    pub start: f64,
-    pub end: Option<f64>,
+pub(crate) enum Range {
+    /// Frames `from` to `to` (not counting it), or to its end, as a clip.
+    Frames { from: u32, to: Option<u32> },
+    /// Frames `from` to its end and on from its first to `to`, as one clip: an orbit's turn across 0°. It has no sound.
+    Wrapped { from: u32, to: u32 },
+    /// One frame, as a picture.
+    Frame(u32),
 }
 
 /// A clip sent in its source's place.
@@ -53,8 +60,33 @@ pub(crate) struct Cut {
 
 impl fmt::Display for Range {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let end = self.end.map_or_else(|| "the end".into(), clock);
-        write!(f, "{} to {end}", clock(self.start))
+        match *self {
+            Self::Frames { from, to } => write!(f, "frames {from}-{}", to.map_or_else(String::new, |to| to.to_string())),
+            Self::Wrapped { from, to } => write!(f, "frames {from}- and 0-{to}"),
+            Self::Frame(at) => write!(f, "frame {at}"),
+        }
+    }
+}
+
+impl Range {
+    /// Where ffmpeg starts reading at `fps`, half a frame before the first, so that one is the first it keeps.
+    fn start(from: u32, fps: f64) -> f64 {
+        (f64::from(from) - 0.5).max(0.0) / fps
+    }
+
+    /// Where it stops reading before frame `to`, half a frame before it, so the frame before it is the last it keeps.
+    fn end(to: u32, fps: f64) -> f64 {
+        (f64::from(to) - 0.5) / fps
+    }
+
+    /// When it is in its source, at `fps`.
+    fn timed(self, fps: f64) -> String {
+        let at = |frame: u32| clock(f64::from(frame) / fps);
+        match self {
+            Self::Frames { from, to } => format!("{} to {}", at(from), to.map_or_else(|| "the end".into(), at)),
+            Self::Wrapped { from, to } => format!("{} to the end and 0:00 to {}", at(from), at(to)),
+            Self::Frame(frame) => at(frame),
+        }
     }
 }
 
@@ -72,20 +104,21 @@ impl fmt::Display for Cut {
 }
 
 impl Clips {
-    /// `range` of `source` as a clip: the one cut before for this version of the file, else cut
-    /// now. What it did is said in `notes`.
-    pub(crate) async fn cut(&self, field: &str, source: &Path, range: Range, notes: &mut Vec<Note>, access: OwnedRwLockReadGuard<()>) -> Result<Cut, Error> {
+    /// `range` of `source`, whose rate is `fps`, as a clip or a picture: the one cut before for this version of the file, else
+    /// cut now. What it did is said in `notes`.
+    pub(crate) async fn cut(&self, field: &str, source: &Path, range: Range, fps: f64, notes: &mut Vec<Note>, access: OwnedRwLockReadGuard<()>) -> Result<Cut, Error> {
         fn say(notes: &mut Vec<Note>, message: String) {
             notes.push(Note { level: NoteLevel::Info, message });
         }
-        let key = key(source, range).ok_or_else(|| {
+        let key = key(source, range, fps).ok_or_else(|| {
             Error::new(
                 Kind::NotFound,
                 "input_file_unreadable",
                 format!("input file {}", source.display()),
             )
         })?;
-        let clip = self.dir.join(format!("{}.{key}.mp4", stem(source)));
+        let extension = if matches!(range, Range::Frame(_)) { "png" } else { "mp4" };
+        let clip = self.dir.join(format!("{}.{key}.{extension}", stem(source)));
         let cut = Cut {
             field: field.into(),
             source: source.into(),
@@ -97,20 +130,20 @@ impl Clips {
                 .write(true)
                 .open(&clip)
                 .and_then(|f| f.set_times(FileTimes::new().set_accessed(SystemTime::now())));
-            say(notes, format!("{field}: {range} of {}, cut before: {}", source.display(), clip.display()));
+            say(notes, format!("{field}: {} of {}, cut before: {}", range.timed(fps), source.display(), clip.display()));
             return Ok(cut);
         }
         let ffmpeg = crate::tools::ffmpeg(&self.home, &|line| tracing::info!("{line}")).await?;
-        let (end, past) = within(&ffmpeg, field, source, range)?;
-        if past {
-            notes.push(Note { level: NoteLevel::Warning, message: format!("{field}: {range} runs past the end of {}: cut to its end, {}", source.display(), clock(end)) });
+        let past = within(&ffmpeg, field, source, range, fps)?;
+        if let Some(end) = past {
+            notes.push(Note { level: NoteLevel::Warning, message: format!("{field}: {} runs past the end of {}: cut to its end, {}", range.timed(fps), source.display(), clock(end)) });
         }
-        say(notes, format!("{field}: cutting {range} of {}", source.display()));
+        say(notes, format!("{field}: cutting {} of {}", range.timed(fps), source.display()));
         let began = Instant::now();
         let (source, dir) = (source.to_owned(), self.dir.clone());
         let (encoded, _access) = tokio::task::spawn_blocking(move || {
             // The encoder can finish after its async caller has been canceled.
-            (encode(&ffmpeg, &source, range.start, end, &dir, &clip), access)
+            (encode(&ffmpeg, &source, range, fps, past.is_some(), &dir, &clip), access)
         })
         .await
         .map_err(|e| Error::new(Kind::Internal, "clip_cut", e.to_string()))?;
@@ -120,31 +153,23 @@ impl Clips {
     }
 }
 
-/// The range's end, held to the source's duration, and whether that moved it.
-fn within(ffmpeg: &crate::tools::Ffmpeg, at: &str, source: &Path, range: Range) -> Result<(f64, bool), Error> {
+/// Whether `range` starts inside the source; Some(its duration) when it runs past its end.
+fn within(ffmpeg: &crate::tools::Ffmpeg, at: &str, source: &Path, range: Range, fps: f64) -> Result<Option<f64>, Error> {
     let duration = probe(&ffmpeg.ffprobe, source)?;
-    if range.start >= duration {
-        return Err(invalid(format!(
-            "{at}: start {} is past the end of {} ({})",
-            clock(range.start),
-            source.display(),
-            clock(duration)
-        )));
+    let (first, last) = match range {
+        Range::Frames { from, to } => (from, to),
+        Range::Wrapped { from, to } => (from.max(to), None),
+        Range::Frame(at) => (at, None),
+    };
+    let start = f64::from(first) / fps;
+    if start >= duration {
+        return Err(invalid(format!("{at}: frame {first} at {} is past the end of {} ({})", clock(start), source.display(), clock(duration))));
     }
-    let end = range.end.unwrap_or(duration);
-    let past = end > duration + 0.0005;
-    Ok((if past { duration } else { end }, past))
+    Ok(last.filter(|&to| Range::end(to, fps) > duration + 0.0005).map(|_| duration))
 }
 
-/// `start..end` of `source`, encoded into `clip` whole or not at all.
-fn encode(
-    ffmpeg: &crate::tools::Ffmpeg,
-    source: &Path,
-    start: f64,
-    end: f64,
-    dir: &Path,
-    clip: &Path,
-) -> Result<(), Error> {
+/// `range` of `source`, encoded into `clip` whole or not at all: to its end when it runs `past` it.
+fn encode(ffmpeg: &crate::tools::Ffmpeg, source: &Path, range: Range, fps: f64, past: bool, dir: &Path, clip: &Path) -> Result<(), Error> {
     let failed = |e: std::io::Error| {
         Error::new(
             Kind::Internal,
@@ -154,27 +179,38 @@ fn encode(
     };
     fs::create_dir_all(dir).map_err(failed)?;
     sweep(dir);
+    let suffix = clip.extension().map_or_else(String::new, |extension| format!(".{}", extension.to_string_lossy()));
     let part = tempfile::Builder::new()
         .prefix(".cut-")
-        .suffix(".mp4")
+        .suffix(&suffix)
         .tempfile_in(dir)
         .map_err(failed)?;
-    let out = Media::niced(&ffmpeg.ffmpeg)
-        .args([
-            "-hide_banner",
-            "-nostdin",
-            "-loglevel",
-            "error",
-            "-y",
-            "-threads",
-            THREADS,
-        ])
-        .args(["-ss", &decimal(start), "-to", &decimal(end)])
-        .input(source)
-        .args(ENCODE)
-        .arg(part.path())
-        .output()
-        .map_err(failed)?;
+    let mut command = Media::niced(&ffmpeg.ffmpeg);
+    command.args(["-hide_banner", "-nostdin", "-loglevel", "error", "-y", "-threads", THREADS]);
+    // Each read starts and stops half a frame from a frame, so a time rounded to the millisecond can't take a frame more or
+    // less, and a count holds the clip to its frames.
+    match range {
+        Range::Frames { from, to } => {
+            command.args(["-ss", &decimal(Range::start(from, fps))]);
+            if let Some(to) = to.filter(|_| !past) {
+                command.args(["-to", &decimal(Range::end(to, fps))]);
+            }
+            command.input(source).args(["-map", "0:v:0", "-map", "0:a:0?"]);
+            if let Some(to) = to.filter(|_| !past) {
+                command.args(["-frames:v", &(to - from).to_string()]);
+            }
+            command.args(ENCODE);
+        }
+        Range::Wrapped { from, to } => {
+            command.args(["-ss", &decimal(Range::start(from, fps))]).input(source);
+            command.args(["-to", &decimal(Range::end(to, fps))]).input(source);
+            command.args(["-filter_complex", "[0:v:0][1:v:0]concat=n=2:v=1:a=0[v]", "-map", "[v]"]).args(ENCODE);
+        }
+        Range::Frame(at) => {
+            command.args(["-ss", &decimal(Range::start(at, fps))]).input(source).args(STILL);
+        }
+    }
+    let out = command.arg(part.path()).output().map_err(failed)?;
     if !out.status.success() {
         let said = String::from_utf8_lossy(&out.stderr);
         let lines: Vec<&str> = said.lines().collect();
@@ -188,6 +224,9 @@ fn encode(
                 tail.join(" | ")
             ),
         ));
+    }
+    if part.as_file().metadata().map_err(failed)?.len() == 0 {
+        return Err(invalid(format!("{range} of {} holds no frame", source.display())));
     }
     part.persist(clip).map_err(|e| failed(e.error))?;
     Ok(())
@@ -226,8 +265,8 @@ fn probe(ffprobe: &Path, source: &Path) -> Result<f64, Error> {
         })
 }
 
-/// Names one version of the source (path, length, modification time), the range and the encode.
-fn key(source: &Path, range: Range) -> Option<String> {
+/// Names one version of the source (path, length, modification time), the range at its rate and the encode.
+fn key(source: &Path, range: Range, fps: f64) -> Option<String> {
     let path = fs::canonicalize(source).ok()?;
     let meta = fs::metadata(&path).ok()?;
     let modified = meta
@@ -236,14 +275,12 @@ fn key(source: &Path, range: Range) -> Option<String> {
         .duration_since(UNIX_EPOCH)
         .ok()?
         .as_nanos();
-    let end = range.end.map_or_else(|| "end".into(), decimal);
-    let named = format!(
-        "{}\0{}\0{modified}\0{}\0{end}\0{}",
-        path.display(),
-        meta.len(),
-        decimal(range.start),
-        ENCODE.join(" ")
-    );
+    let (cut, encode) = match range {
+        Range::Frames { from, to } => (format!("{from}\0{}", to.map_or_else(|| "end".into(), |to| to.to_string())), ENCODE),
+        Range::Wrapped { from, to } => (format!("{from}\0wraps\0{to}"), ENCODE),
+        Range::Frame(at) => (format!("{at}\0frame"), STILL),
+    };
+    let named = format!("{}\0{}\0{modified}\0{cut}\0{fps}\0{}", path.display(), meta.len(), encode.join(" "));
     Some(hex::encode(Sha256::digest(named.as_bytes()))[..16].to_owned())
 }
 
