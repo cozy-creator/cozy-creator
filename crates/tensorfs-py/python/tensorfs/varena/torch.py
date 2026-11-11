@@ -367,10 +367,11 @@ def phase_forget(device: DeviceLike, key: str) -> bool:
 
 
 def prepare_pool(pool: PoolId, bytes: int, device: _ExplicitDevice = 0) -> int:
-    """Begin using this pool: its pages mapped, at least this capacity, at the same addresses
-    after any idle release. bytes=0 before a replay and before writing its inputs. A scratch
-    pool's contents are undefined between uses: copy every input in again, no check can catch an
-    owner that skips it. The previous pool survives failure. record_pool_stream ends the use."""
+    """Begin using this pool: its pages mapped, with one free run of at least `bytes` for a
+    capture (a block never spans the pool's segments), at the same addresses after any idle
+    release. bytes=0 before a replay and before writing its inputs. A scratch pool's contents are
+    undefined between uses: copy every input in again, no check can catch an owner that skips it.
+    The previous pool survives failure. record_pool_stream ends the use."""
     initialize(device)
     return _ext._varena_working_pool_reserve(_device(device), cast(PoolId, tuple(pool)), bytes)
 
