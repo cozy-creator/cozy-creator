@@ -209,11 +209,24 @@ impl Client {
         limit: u32,
         offset: u32,
     ) -> Result<ModelSearch, Error> {
+        self.search_models_by_role(q, family, tags, no_tags, limit, offset, None).await
+    }
+
+    pub async fn search_models_by_role(
+        &self,
+        q: Option<&str>,
+        family: Option<&str>,
+        tags: &[String],
+        no_tags: &[String],
+        limit: u32,
+        offset: u32,
+        role: Option<&str>,
+    ) -> Result<ModelSearch, Error> {
         let request = self.at(Method::GET, "/v1/models", &[]);
         let tagged = tags.iter().map(|t| ("tag", t.as_str())).chain(no_tags.iter().map(|t| ("no_tag", t.as_str())));
         self.json(
             request
-                .query(&[("q", q), ("family", family)])
+                .query(&[("q", q), ("family", family), ("role", role)])
                 .query(&tagged.collect::<Vec<_>>())
                 .query(&[("limit", limit), ("offset", offset)]),
         )
@@ -693,4 +706,39 @@ async fn read<T: DeserializeOwned>(response: Response) -> Result<T, Error> {
     });
     read.and_then(|answer| json.end().map(|()| answer).map_err(|e| e.to_string()))
         .map_err(Error::Answer)
+}
+
+#[cfg(test)]
+mod catalog_tests {
+    use super::*;
+    use std::io::{BufRead as _, Write as _};
+
+    #[tokio::test]
+    async fn role_and_offset_are_sent_to_the_hub_before_paging() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let received = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut request = String::new();
+            let mut reader = std::io::BufReader::new(socket.try_clone().unwrap());
+            reader.read_line(&mut request).unwrap();
+            let body = r#"{"models":[],"search":{"total":0,"role":"lora"}}"#;
+            write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            request
+        });
+        let client = Client::connect(&format!("http://{address}"), reqwest::Client::new(), Credential::Anonymous);
+        let answer = client.search_models_by_role(Some("fox"), Some("sdxl"), &["art".into()], &["nsfw".into()], 10, 20, Some("lora")).await.unwrap();
+        assert_eq!(answer.search.role.as_deref(), Some("lora"));
+        let request = received.join().unwrap();
+        let path = request.split_whitespace().nth(1).unwrap();
+        let url = url::Url::parse(&format!("http://{address}{path}")).unwrap();
+        let query: std::collections::BTreeMap<_, _> = url.query_pairs().into_owned().collect();
+        assert_eq!(query["role"], "lora");
+        assert_eq!(query["offset"], "20");
+        assert_eq!(query["limit"], "10");
+        assert_eq!(query["q"], "fox");
+        assert_eq!(query["family"], "sdxl");
+        assert_eq!(query["tag"], "art");
+        assert_eq!(query["no_tag"], "nsfw");
+    }
 }

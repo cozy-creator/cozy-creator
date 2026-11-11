@@ -74,6 +74,8 @@ enum Command {
     Machine(machine::Args),
     /// Find, download, upload and publish models.
     Model(model::Args),
+    /// Browse and download LoRAs.
+    Lora(model::LoraArgs),
     /// Find, install and publish packages.
     Package(package::Args),
     /// Replace this binary with the newest release.
@@ -171,6 +173,7 @@ async fn dispatch(ctx: &Context, command: Command) -> Result<ExitCode, Error> {
         Command::Machine(args) => machine::exec(ctx, args).await,
         Command::Package(args) => package::exec(ctx, args).await,
         Command::Model(args) => model::exec(ctx, args).await,
+        Command::Lora(args) => model::lora_exec(ctx, args).await,
         Command::New(args) => project::create(ctx, args).await,
         Command::Status(args) => daemon::status(ctx, args).await,
         Command::Vault(args) => project::vault::exec(ctx, args).await,

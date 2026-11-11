@@ -3,7 +3,7 @@
 //! row's own view (a run as `cozy run watch` follows it, a machine as `cozy machine show` draws
 //! it), Esc or q goes back to the list as it was left, and q there quits. The terminal is restored
 //! on every way out: q, Ctrl-C, a signal, an error, and (ratatui's hook) a panic.
-use std::io;
+use std::{io, process::ExitCode};
 
 use api::error::{Error, Kind};
 use crossterm::{
@@ -18,12 +18,12 @@ use ratatui::{
     layout::Constraint,
     style::{Modifier, Style},
     text::Line,
-    widgets::{Block, Paragraph, Row, Table, TableState},
+    widgets::{Block, Paragraph, Row, Table, TableState, Wrap},
 };
 #[cfg(unix)]
 use rustix::termios::{OptionalActions, OutputModes, tcgetattr, tcsetattr};
 
-use crate::{Context, machine, output, package, run};
+use crate::{Context, machine, model, output, package, run};
 
 /// One live view.
 pub(crate) enum Screen {
@@ -31,6 +31,10 @@ pub(crate) enum Screen {
     Machines(machine::live::Machines),
     Machine(Box<machine::live::Shown>),
     Packages(package::live::Packages),
+    Models(model::live::Catalog),
+    Model(model::live::Preview),
+    ModelDestinations(model::live::Destinations),
+    RemoveLocalModel(String),
 }
 
 impl Screen {
@@ -41,6 +45,7 @@ impl Screen {
             Screen::Machines(view) => view.changed(ctx).await,
             Screen::Machine(view) => view.changed().await,
             Screen::Packages(view) => view.changed(ctx).await,
+            Screen::Models(_) | Screen::Model(_) | Screen::ModelDestinations(_) | Screen::RemoveLocalModel(_) => std::future::pending().await,
         }
     }
 
@@ -77,6 +82,15 @@ impl Screen {
                 selected,
             ),
             Screen::Machine(view) => detail(frame, &view.title(), view.lines(ctx)),
+            Screen::Models(view) => table_hint(frame, &view.title(), &["model", "family", "size", "local"], view.rows(), selected, view.hint()),
+            Screen::Model(view) => {
+                let lines = view.lines().into_iter().map(Line::from).collect::<Vec<_>>();
+                frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false })
+                    .scroll((selected.selected().unwrap_or(0).min(u16::MAX as usize) as u16, 0))
+                    .block(Block::new().title(view.title()).title_bottom(view.hint())), frame.area());
+            }
+            Screen::ModelDestinations(view) => table_hint(frame, &view.title(), &["machine", "status"], view.rows(), selected, "↑/↓ select · Enter download · Esc/q back"),
+            Screen::RemoveLocalModel(model) => detail(frame, "Remove local copy?", vec![model.clone(), "All downloaded releases and lanes on this machine will be removed.".into(), "The Hub is unchanged. Active and shared data stays protected.".into(), "Enter confirms · Esc/q cancels".into()]),
         }
     }
 
@@ -86,27 +100,71 @@ impl Screen {
             Screen::Machines(view) => view.rows(ctx).len(),
             Screen::Packages(view) => view.rows(ctx).len(),
             Screen::Machine(_) => 0,
+            Screen::Models(view) => view.rows().len(),
+            Screen::Model(view) => view.lines().len(),
+            Screen::ModelDestinations(view) => view.rows().len(),
+            Screen::RemoveLocalModel(_) => 0,
         }
     }
 }
 
 /// Shows `first` until the person quits. Only for a terminal: a caller off one prints once.
-pub(crate) async fn show(ctx: &Context, first: Screen) -> Result<(), Error> {
-    let mut terminal = ratatui::try_init().map_err(drawing)?;
-    let shown = live(ctx, &mut terminal, first, EventStream::new()).await;
-    ratatui::restore();
-    shown
+pub(crate) async fn show(ctx: &Context, first: Screen) -> Result<ExitCode, Error> {
+    let mut stack = vec![(first, TableState::default().with_selected(Some(0)))];
+    let mut keys = EventStream::new();
+    let mut signals = Signals::new()?;
+    let mut status = ExitCode::SUCCESS;
+    loop {
+        let mut terminal = ratatui::try_init().map_err(drawing)?;
+        let shown = drive(ctx, &mut terminal, &mut stack, &mut keys, &mut signals).await;
+        ratatui::restore();
+        let notice = match shown? {
+            Some(model::live::Operation::Download(choice)) => {
+                status = model::live::download(ctx, choice).await?;
+                if status == ExitCode::SUCCESS { "Download complete".into() } else { "Download stopped or failed".into() }
+            }
+            Some(model::live::Operation::Remove(model)) => {
+                let removed = model::live::remove(ctx, &model).await?;
+                status = ExitCode::SUCCESS;
+                if removed.removed {
+                    format!("Cache {} removed · {} retained", output::bytes(removed.cache_bytes_removed), output::bytes(removed.retained_bytes))
+                } else {
+                    "Local copy already absent".into()
+                }
+            }
+            None => return Ok(status),
+        };
+        let Some(at) = stack.iter().rposition(|(screen, _)| matches!(screen, Screen::Models(_))) else { return Ok(status) };
+        stack.truncate(at + 1);
+        if let Some((Screen::Models(view), selected)) = stack.last_mut() {
+            let previous = selected.selected().unwrap_or(0);
+            let model = view.model_at(previous).map(str::to_owned);
+            view.refresh(ctx, notice).await?;
+            selected.select(Some(view.selection_after(model.as_deref(), previous)));
+        }
+    }
 }
 
 /// The views on `terminal`, read from `keys`, until q, Ctrl-C or a signal.
+#[cfg(test)]
 pub(crate) async fn live<B: Backend>(
     ctx: &Context,
     terminal: &mut Terminal<B>,
     first: Screen,
     mut keys: impl Stream<Item = io::Result<Input>> + Unpin,
-) -> Result<(), Error> {
+) -> Result<Option<model::live::Operation>, Error> {
     let mut stack = vec![(first, TableState::default().with_selected(Some(0)))];
     let mut signals = Signals::new()?;
+    drive(ctx, terminal, &mut stack, &mut keys, &mut signals).await
+}
+
+async fn drive<B: Backend>(
+    ctx: &Context,
+    terminal: &mut Terminal<B>,
+    stack: &mut Vec<(Screen, TableState)>,
+    keys: &mut (impl Stream<Item = io::Result<Input>> + Unpin),
+    signals: &mut Signals,
+) -> Result<Option<model::live::Operation>, Error> {
     let drew = |e: B::Error| drawing(io::Error::other(e.to_string()));
     loop {
         let (screen, selected) = stack.last_mut().expect("a view");
@@ -126,8 +184,8 @@ pub(crate) async fn live<B: Backend>(
                 changed?;
                 continue;
             }
-            Next::Quit => return Ok(()),
-            Next::Input(None) => return Ok(()),
+            Next::Quit => return Ok(None),
+            Next::Input(None) => return Ok(None),
             Next::Input(Some(input)) => match input.map_err(drawing)? {
                 Input::Key(key) if key.kind == KeyEventKind::Press => key,
                 _ => continue,
@@ -138,18 +196,45 @@ pub(crate) async fn live<B: Backend>(
         let depth = stack.len();
         let (screen, selected) = stack.last_mut().expect("a view");
         let at = selected.selected().unwrap_or(0);
+        if let Screen::RemoveLocalModel(model) = &*screen {
+            if key.code == KeyCode::Enter { return Ok(Some(model::live::Operation::Remove(model.clone()))); }
+        }
+        let local_bytes = match &*screen { Screen::Models(view) => view.rows().get(at).and_then(|row| view.local_bytes(&row[0])), _ => None };
+        let action = match &*screen {
+            Screen::Models(view) => view.action(key.code, at),
+            Screen::Model(view) => view.action(key.code),
+            Screen::ModelDestinations(view) => view.action(key.code, at),
+            _ => None,
+        };
+        if let Some(action) = action {
+            match action {
+                model::live::Action::Page(offset) => {
+                    if let Screen::Models(view) = screen { view.page(ctx, offset).await?; }
+                    selected.select(Some(0));
+                }
+                model::live::Action::Preview(model) => stack.push((Screen::Model(model::live::Preview::open(ctx, &model, local_bytes).await?), TableState::default())),
+                model::live::Action::Destinations(model) => stack.push((Screen::ModelDestinations(model::live::Destinations::open(ctx, model).await?), TableState::default().with_selected(Some(0)))),
+                model::live::Action::Download(choice) => return Ok(Some(model::live::Operation::Download(choice))),
+                model::live::Action::ConfirmRemove(model) => stack.push((Screen::RemoveLocalModel(model), TableState::default())),
+                model::live::Action::Unclassified => {
+                    let opened = match &*screen { Screen::Models(view) => Some(view.unclassified()), _ => None };
+                    if let Some(opened) = opened { stack.push((Screen::Models(opened), TableState::default().with_selected(Some(0)))); }
+                }
+            }
+            continue;
+        }
         match key.code {
-            _ if ctrl_c => return Ok(()),
+            _ if ctrl_c => return Ok(None),
             KeyCode::Esc | KeyCode::Char('q') if depth > 1 => drop(stack.pop()),
-            KeyCode::Esc | KeyCode::Char('q') => return Ok(()),
+            KeyCode::Esc | KeyCode::Char('q') => return Ok(None),
             KeyCode::Up | KeyCode::Char('k') => selected.select(Some(at.saturating_sub(1))),
             KeyCode::Down | KeyCode::Char('j') if rows > 0 => {
                 selected.select(Some((at + 1).min(rows - 1)))
             }
             KeyCode::Enter if let Screen::Runs(view) = &*screen => {
                 if let Some(id) = view.id(at) {
-                    if watch(ctx, &id, &mut keys, &mut signals).await? {
-                        return Ok(());
+                    if watch(ctx, &id, keys, signals).await? {
+                        return Ok(None);
                     }
                     // Drawn whole again: a resize forgets the screen without asking the
                     // terminal where its cursor is, as `clear` would.
@@ -248,6 +333,10 @@ fn table(
     rows: Vec<Vec<String>>,
     selected: &mut TableState,
 ) {
+    table_hint(frame, title, headers, rows, selected, "↑/↓ select · Enter opens · q quits");
+}
+
+fn table_hint(frame: &mut Frame, title: &str, headers: &[&str], rows: Vec<Vec<String>>, selected: &mut TableState, hint: &str) {
     let widths: Vec<Constraint> = (0..headers.len())
         .map(|i| {
             let widest = rows
@@ -265,7 +354,7 @@ fn table(
         .header(Row::new(headers.to_vec()).style(Style::new().add_modifier(Modifier::BOLD)))
         .row_highlight_style(Style::new().add_modifier(Modifier::REVERSED))
         .column_spacing(2)
-        .block(Block::new().title(format!("{title}  (↑/↓, Enter opens, q quits)")));
+        .block(Block::new().title(title).title_bottom(hint));
     frame.render_stateful_widget(table, frame.area(), selected);
 }
 
@@ -304,4 +393,25 @@ impl Signals {
 
 fn drawing(e: io::Error) -> Error {
     Error::new(Kind::Internal, "terminal", format!("the terminal: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::KeyEvent;
+    use ratatui::backend::TestBackend;
+
+    #[tokio::test]
+    async fn confirmed_action_consumes_enter_before_browser_resumes() {
+        let home = tempfile::tempdir().unwrap();
+        let ctx = Context::new(false, false, false, api::config::Loaded {
+            config: Default::default(), home: platform::paths::Home::under(home.path()), user_home: home.path().into(), warnings: vec![],
+        }, output::Term::detect());
+        let mut terminal = Terminal::new(TestBackend::new(90, 12)).unwrap();
+        let mut stack = vec![(Screen::RemoveLocalModel("local/example".into()), TableState::default())];
+        let mut keys = futures_util::stream::iter([KeyCode::Enter, KeyCode::Char('q')].map(|code| Ok(Input::Key(KeyEvent::new(code, KeyModifiers::NONE)))));
+        let mut signals = Signals::new().unwrap();
+        assert_eq!(drive(&ctx, &mut terminal, &mut stack, &mut keys, &mut signals).await.unwrap(), Some(model::live::Operation::Remove("local/example".into())));
+        assert_eq!(drive(&ctx, &mut terminal, &mut stack, &mut keys, &mut signals).await.unwrap(), None);
+    }
 }

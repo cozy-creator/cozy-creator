@@ -14,7 +14,7 @@ import time
 
 
 PUBLIC = {
-    "new", "open", "run", "status", "vault", "machine", "model", "package", "update", "doctor", "completion", "login", "logout", "whoami",
+    "new", "open", "run", "status", "vault", "machine", "model", "lora", "package", "update", "doctor", "completion", "login", "logout", "whoami",
 }
 REMOVED = {
     "help",
@@ -87,6 +87,17 @@ def main() -> None:
         run("removed worker bootstrap flag", ["machine", "serve", "--service-ready", "1"], code=2)
         run("removed image override", ["machine", "rent", "example", "--image-digest", "sha256:" + "0" * 64], code=2)
         run("removed memo bypass", ["run", "example/function", "--no-memo"], code=2)
+        run("removed model info", ["model", "info", "--help"], code=2)
+        run("model catalog pagination", ["model", "ls", "--offset", "20", "--limit", "10", "--help"])
+        run("LoRA catalog help", ["lora", "ls", "--help"])
+        run("LoRA download help", ["lora", "download", "--help"])
+        run("local model removal help", ["model", "remove", "--help"])
+        run("local LoRA removal help", ["lora", "remove", "--help"])
+        run("LoRA metadata help", ["lora", "edit", "--help"])
+        run("LoRA upload help", ["lora", "upload", "--help"])
+        run("LoRA cloud deletion help", ["lora", "delete", "--help"])
+        run("removed model trigger", ["model", "edit", "author/model", "--trigger", "word"], code=2)
+        run("removed model upload strength", ["model", "upload", "file", "author/model", "--lane", "bf16", "--strength", "0.5"], code=2)
         for flag in ("--estimate", "--warm"):
             assert flag not in run_help, f"removed run flag {flag} is still in help"
             run(f"removed run flag {flag}", ["run", "example/function", flag], code=2)

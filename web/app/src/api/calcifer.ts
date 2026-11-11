@@ -704,7 +704,7 @@ export type FitAsk = { names: Array<string>, outdated?: boolean, };
 /**
  * One model a search found, with its newest release, lanes, author and kind.
  */
-export type FoundModel = { model: string,
+export type FoundModel = { model: string, role?: string | null,
 /**
  * The label its owner gave it, else what its header verifies as.
  */
@@ -1383,7 +1383,7 @@ releases: Array<string>, created_at: string, };
  * `GET /v1/models/{org}/{name}?release=`: a model's releases (one, when named) and, to its org's
  * members, every commit.
  */
-export type ModelDetail = { model: string,
+export type ModelDetail = { model: string, role?: string | null,
 /**
  * The label its owner gave it, else what its header verifies as.
  */

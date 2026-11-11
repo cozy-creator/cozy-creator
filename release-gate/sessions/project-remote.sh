@@ -84,7 +84,7 @@ J --argjson t "$TOTAL" --argjson f "$FILES" '.files == $f and .moved > 0 and .mo
 in_project "$P" --json push > "$OUT/push-3.json" 2> "$OUT/push-3.err" || fail "third push: $(tail -3 "$OUT/push-3.err")"
 say "push a third time: $(jq -c . "$OUT/push-3.json")"
 J --arg c "$COMMIT" --argjson f "$FILES" '.files == $f and .moved == 0 and .bytes == 0 and .commit == $c' "$OUT/push-3.json" || fail "the third push moved something, or made another commit"
-step model-info model info "$MODEL" || say "model info: $(tail -3 "$OUT/model-info.txt")"
+model_details "$MODEL" > "$OUT/model-info.txt" || say "model metadata: $(tail -3 "$OUT/model-info.txt")"
 step model-ls model ls "$MODEL" || say "model ls: $(tail -3 "$OUT/model-ls.txt")"
 
 say "a second computer, holding only project.yaml and project.lock"

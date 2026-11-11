@@ -60,6 +60,16 @@ cozy machine rent            # what is for rent; then cozy machine rent <sku>
 cozy model ls sdxl
 ```
 
+On a terminal, `cozy model ls` opens a keyboard browser. Use ↑/↓ to select, Enter for a short
+preview, and PgUp/PgDn (or p/n) for pages. `cozy lora ls` browses adapters separately.
+The list shows local availability and stored size.
+Press d in a preview, then choose a machine and confirm with Enter to download. Esc or q goes back.
+For a downloaded model, r opens a local-removal confirmation. This removes its downloaded lanes
+and releases from this machine, while protecting active/shared data and leaving the Hub unchanged.
+Use `--on local` for downloaded copies; u shows any that have not yet been classified.
+After an action, the browser refreshes and returns to the same page and selection.
+Pipes and `--json` print one page; use `--limit` and `--offset` to choose it.
+
 First-party packages have no owner (`sdxl/generate`); everyone else's are `owner/name`
 (`you/my-pack/generate`). Models live in their authors' orgs (`stabilityai/sdxl`).
 

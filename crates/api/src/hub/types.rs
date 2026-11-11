@@ -174,6 +174,8 @@ pub struct ModelSearch {
 #[serde(default)]
 pub struct SearchMeta {
     pub total: i64,
+    /// Echoed by a Hub that applied authoritative repository-role filtering.
+    pub role: Option<String>,
 }
 
 /// A model's row in a search, or the head of its card.
@@ -183,6 +185,8 @@ pub struct ModelSummary {
     pub org: String,
     pub name: String,
     pub family: Option<String>,
+    /// Header-derived repository role: model, lora or unknown. Absent on older Hubs.
+    pub role: Option<String>,
     pub created_at: String,
     /// The pinned upstream source (on a card).
     pub source: Option<String>,
