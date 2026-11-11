@@ -155,18 +155,7 @@ async fn change(ctx: &Context, path: &str, request: VaultAsk, recovery_out: Opti
         let status: VaultStatus = client.get(path).await?;
         recovery_location(output, &status)?;
     }
-    // No client idempotency cache for responses containing a recovery secret.
-    let mut changed: VaultChanged = client.vault(path, &request, |progress| {
-        use crate::calcifer_client::VaultProgress;
-        let message = match progress {
-            VaultProgress::Accepted { action } => format!("vault {action}: accepted"),
-            VaultProgress::Progress { phase, files_done, bytes_done } => {
-                format!("vault {phase}: {files_done} files, {bytes_done} bytes")
-            }
-        };
-        // Progress stays on stderr, including with --json; stdout contains only the final result.
-        output::warned(&message);
-    }).await?;
+    let mut changed = request_vault(&client, path, &request).await?;
     if let (Some(path), Some(secret)) = (&recovery_out, &changed.recovery_secret) {
         save_recovery(path, secret)?;
         changed.recovery_secret = None;
@@ -191,9 +180,39 @@ async fn change(ctx: &Context, path: &str, request: VaultAsk, recovery_out: Opti
     Ok(ExitCode::SUCCESS)
 }
 
+/// The private stream and progress renderer are shared without command result/status output.
+async fn request_vault(client: &crate::calcifer_client::Client, path: &str, request: &VaultAsk) -> Result<VaultChanged, Error> {
+    // No client idempotency cache for responses containing a recovery secret.
+    client.vault(path, request, |progress| {
+        use crate::calcifer_client::VaultProgress;
+        let message = match progress {
+            VaultProgress::Accepted { action } => format!("vault {action}: accepted"),
+            VaultProgress::Progress { phase, files_done, bytes_done } => {
+                format!("vault {phase}: {files_done} files, {bytes_done} bytes")
+            }
+        };
+        // Progress stays on stderr, including with --json; stdout contains only the final result.
+        output::warned(&message);
+    }).await
+}
+
+/// Called only after Open verified an interactive terminal. No status or secret preamble reaches stdout.
+pub(crate) async fn unlock_for_open(ctx: &Context) -> Result<(), Error> {
+    let path = vault_path(None)?;
+    let mut request = ask("unlock");
+    request.passphrase = Some(credential(None, "Project passphrase: ", false)?);
+    let client = ctx.calcifer().await?;
+    let changed = request_vault(&client, &path, &request).await?;
+    if !changed.vault.encrypted || changed.vault.state != "unlocked" {
+        return Err(Error::new(Kind::Conflict, "project_locked", "the project did not remain unlocked; try unlocking it again")
+            .next("cozy vault unlock"));
+    }
+    Ok(())
+}
+
 fn show(ctx: &Context, status: &VaultStatus) {
     output::say(ctx, &format!("{}: {}", status.path.display(), status.state));
-    if let Some(view) = &status.view { output::say(ctx, &format!("readable view: {}", view.display())); }
+    if let Some(view) = &status.view { output::say(ctx, &format!("readable view: {}", output::link(ctx, view))); }
     output::nexts(ctx, &status.next);
 }
 
