@@ -294,7 +294,8 @@ case $SHARD in
 esac
 if [ -z "$LOCAL" ]; then
   case $SHARD in
-    entrypoints | projectvault | web-layout-* | web-scale) ;;
+    entrypoints | projectvault) ;;
+    web-layout-* | web-scale) parts="db_existing_web logs" ;;
     web-core) parts="entrypoints catalog refusals web_core completions homebrew calcifer_faults update remove" ;;
     *) parts="entrypoints catalog refusals web_serves completions homebrew calcifer_faults update remove" ;;
   esac

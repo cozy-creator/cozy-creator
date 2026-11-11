@@ -89,6 +89,10 @@ on:
         description: cli-release stops at the rental's quote and rents nothing (its $0 pre-flight)
         type: boolean
         default: false
+      native_shards:
+        description: Native CLI partitions as a JSON list; empty uses the full native matrix
+        type: string
+        default: ''
   workflow_dispatch:
     inputs:
       repo:
@@ -141,6 +145,10 @@ on:
         default: false
       # The cli shards to run, a JSON list (`["executors","commands"]`); empty: all. Reruns only what failed.
       shards:
+        type: string
+        default: ''
+      native_shards:
+        description: Native CLI partitions as a JSON list; empty uses the full native matrix
         type: string
         default: ''
       # skew (select it: `select=skew`): released cozy versions × a Hub built from tensorhub at hub_ref (e2e/skew/run.sh).
@@ -390,7 +398,7 @@ jobs:
   cli:
     name: cli ${{ matrix.shard }}
     needs: [affected, candidate]
-    if: contains(fromJSON(needs.affected.outputs.selection).suites, 'cli')
+    if: contains(fromJSON(needs.affected.outputs.selection).suites, 'cli') && inputs.shards != '[]'
     strategy:
       fail-fast: false
       matrix:
@@ -529,12 +537,12 @@ jobs:
   cli-os:
     name: cli ${{ matrix.runner }} ${{ matrix.shard }}
     needs: [affected, candidate-os]
-    if: contains(fromJSON(needs.affected.outputs.selection).suites, 'cli') && needs.affected.outputs.runners != '[]'
+    if: contains(fromJSON(needs.affected.outputs.selection).suites, 'cli') && needs.affected.outputs.runners != '[]' && inputs.native_shards != '[]'
     strategy:
       fail-fast: false
       matrix:
         runner: ${{ fromJSON(needs.affected.outputs.runners) }}
-        shard: [web-core, web-layout-1280, web-layout-1600, web-layout-2560]
+        shard: ${{ fromJSON(inputs.native_shards || '["web-core","web-layout-1280","web-layout-1600","web-layout-2560"]') }}
     runs-on: ${{ matrix.runner }}
     # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal. The suites fail on the
     # CLI's typed errors and exits, never on time.
