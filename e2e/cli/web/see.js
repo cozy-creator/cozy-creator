@@ -636,6 +636,31 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
     await tab.waitForSelector('nav.ptabs a.ptab.on');
     // What the bar is as each frame is painted: a ResizeObserver made after the page's hears of a resize after the page has answered it.
     await tab.evaluate(() => {
+      window.tabMetrics = () => {
+        const measure = (element) => {
+          const style = getComputedStyle(element), rect = element.getBoundingClientRect();
+          const canvas = document.createElement('canvas'), context = canvas.getContext('2d');
+          context.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+          return {
+            text: element.textContent, code: element.getAttribute('href')?.split('/').pop() ?? null,
+            on: element.classList.contains('on'), x: rect.x, width: rect.width,
+            font: style.font, font_family: style.fontFamily, font_size: style.fontSize, font_weight: style.fontWeight,
+            letter_spacing: style.letterSpacing, text_width: context.measureText(element.textContent ?? '').width, measured_font: context.font,
+            padding_left: style.paddingLeft, padding_right: style.paddingRight, flex_shrink: style.flexShrink, flex_basis: style.flexBasis,
+          };
+        };
+        const strip = document.querySelector('nav.ptabs'), room = document.querySelector('.top > .gap'), top = document.querySelector('.top').getBoundingClientRect();
+        return {
+          at: performance.now(), viewport: innerWidth, fonts_status: document.fonts.status,
+          font_faces: [...document.fonts].map((face) => ({ family: face.family, weight: face.weight, style: face.style, status: face.status, display: face.display })),
+          font_checks: { normal: document.fonts.check('400 20px "M PLUS Rounded 1c"'), bold: document.fonts.check('700 20px "M PLUS Rounded 1c"') },
+          strip: { ...measure(strip), gap: getComputedStyle(strip).columnGap, max_width: getComputedStyle(strip).maxWidth },
+          bar: { x: top.x, width: top.width },
+          room: { x: room.getBoundingClientRect().x, width: room.getBoundingClientRect().width },
+          tabs: [...strip.querySelectorAll('.ptab')].map(measure),
+          ghosts: [...document.querySelectorAll('.ptabs-ghost > span')].map(measure),
+        };
+      };
       window.frames_seen = [];
       new ResizeObserver(() => window.frames_seen.push([...document.querySelectorAll('nav.ptabs a.ptab:not(.more):not(.new)')].map((link) => {
         const { x, width } = link.getBoundingClientRect();
@@ -643,12 +668,15 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
       }))).observe(document.querySelector('.top'));
     });
     const frame = () => tab.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
-    const bar = () => tab.evaluate(() => ({
-      tabs: [...document.querySelectorAll('nav.ptabs a.ptab:not(.more):not(.new)')].map((link) => link.getAttribute('href').split('/').pop()),
-      selected: document.querySelector('nav.ptabs a.ptab[aria-current="page"]')?.getAttribute('href').split('/').pop() ?? null,
-      more: document.querySelector('nav.ptabs .ptab.more')?.textContent ?? null,
-    }));
-    const narrow = await bar();
+    const bar = (record = false) => tab.evaluate((record) => {
+      if (record) window.tabMetricsBefore = window.tabMetrics();
+      return {
+        tabs: [...document.querySelectorAll('nav.ptabs a.ptab:not(.more):not(.new)')].map((link) => link.getAttribute('href').split('/').pop()),
+        selected: document.querySelector('nav.ptabs a.ptab[aria-current="page"]')?.getAttribute('href').split('/').pop() ?? null,
+        more: document.querySelector('nav.ptabs .ptab.more')?.textContent ?? null,
+      };
+    }, record);
+    const narrow = await bar(true);
     const all = await listed();
     check('tab_codes_match_projects', all.every((row) => /^[0-9A-HJKMNP-TV-Z]{9}$/.test(row.code)) && new Set(all.map((row) => row.code)).size === all.length, all.map((row) => ({ id: row.id, code: row.code })));
     const hidden = all.map((row) => row.code).filter((held) => !narrow.tabs.includes(held));
@@ -670,7 +698,8 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
       await tab.setViewportSize({ width, height: 800 });
       await frame();
     }
-    const frames = await tab.evaluate(() => window.frames_seen);
+    const { frames, metrics } = await tab.evaluate(() => ({ frames: window.frames_seen, metrics: { before: window.tabMetricsBefore, after: window.tabMetrics() } }));
+    seen.tabs_metrics = metrics;
     const first = new Map();
     const moved = [];
     for (const seen of frames) for (const one of seen) {
