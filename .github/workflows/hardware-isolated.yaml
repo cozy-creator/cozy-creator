@@ -49,6 +49,13 @@ jobs:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+      - name: Published probe Runtime.describe author contract
+        run: |
+          set -euo pipefail
+          uv venv --python 3.12 "$RUNNER_TEMP/author-contract"
+          uv pip install --python "$RUNNER_TEMP/author-contract/bin/python" 'cozy-runtime==0.45.0'
+          python3 e2e/hardware/contract_test.py --runtime-cli "$RUNNER_TEMP/author-contract/bin/cozy-runtime" --out "$RUNNER_TEMP/author-contract-results"
       - name: Fixture isolation and cleanup regressions
         run: |
           python3 -m unittest discover -s e2e/hardware -p 'test_*.py' -v
@@ -63,6 +70,12 @@ jobs:
           [[ "$LABEL" =~ ^cozy-isolated-gpu-[a-f0-9]{16}$ ]] || { echo '::error::use a unique task-owned ephemeral runner label'; exit 2; }
           [[ "$HUB_REF" =~ ^[a-f0-9]{40}$ ]] || { echo '::error::hub_ref must be an exact reviewed commit'; exit 2; }
           [ "$MODE" = local-gpu ] || { echo '::error::provider lifecycle unqualified: no provider sandbox account, budget or reachable test allocation is configured'; exit 2; }
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: author-contract-results
+          path: ${{ runner.temp }}/author-contract-results
+          retention-days: 3
   hardware:
     needs: harness
     if: github.event_name == 'workflow_dispatch'
