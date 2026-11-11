@@ -76,7 +76,7 @@ test = "pr: local, refused as no rental; rental_end: a rental not ready yet, and
 ["machine use"]
 test = "pr: machine set, a project pinned to local and a stand-in machine, its runs only there, an unknown machine refused, then any again"
 ["machine keepalive"]
-test = "release: rental, keepalive moves its idle deadline"
+test = "pr: pod_release, a docker rental's idle window started again (release: rental, keepalive moves its idle deadline)"
 
 ["package ls"]
 test = "pr: packages"
