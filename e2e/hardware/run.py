@@ -23,11 +23,11 @@ def processes():
             continue
         try:
             stat = (entry / 'stat').read_text().rsplit(')', 1)[1].split()
-            env = dict(item.split(b'=', 1) for item in (entry / 'environ').read_bytes().split(b'\0') if b'=' in item)
+            home = next((item[5:] for item in (entry / 'environ').read_bytes().split(b'\0') if item.startswith(b'HOME=')), b'')
             result[int(entry.name)] = {
                 'birth': stat[19], 'state': stat[0],
                 'exe': os.readlink(entry / 'exe'),
-                'home': os.fsdecode(env.get(b'HOME', b'')),
+                'home': os.fsdecode(home),
                 'args': [os.fsdecode(arg) for arg in (entry / 'cmdline').read_bytes().split(b'\0') if arg],
             }
         except (OSError, ValueError):
@@ -129,9 +129,15 @@ def main():
         directory.mkdir(mode=0o700)
     # Tag only this fixture's Docker launches. Cleanup and independent readback use this
     # exact random owner label, so another running fixture can never be selected.
-    (shim / 'docker').write_text('#!/usr/bin/env python3\nimport os,sys\na=sys.argv[1:]\n'
+    container_ids = home / 'container-ids'
+    (shim / 'docker').write_text('#!/usr/bin/env python3\nimport os,re,subprocess,sys\na=sys.argv[1:]\n'
         f'cmd={docker!r}\n'
-        f'if a and a[0]=="run": a=["run","--label",{("cozy.hardware.owner=" + owner)!r}]+a[1:]\n'
+        'if a and a[0]=="run":\n'
+        f' a=["run","--label",{("cozy.hardware.owner=" + owner)!r}]+a[1:]\n'
+        ' result=subprocess.run([cmd]+a,stdout=subprocess.PIPE)\n'
+        ' value=result.stdout.decode().strip()\n'
+        f' if result.returncode==0 and re.fullmatch("[a-f0-9]{{64}}",value):\n  with open({str(container_ids)!r},"a") as log: log.write(value+"\\n")\n'
+        ' sys.stdout.buffer.write(result.stdout)\n sys.exit(result.returncode)\n'
         'os.execv(cmd,[cmd]+a)\n')
     (shim / 'docker').chmod(0o700)
     env = private_environment(home, shim, args.device, args.tools.resolve() if args.tools else None)
@@ -163,8 +169,11 @@ def main():
                 os.killpg(child.pid, signal.SIGTERM)
                 status = child.wait()
     finally:
+        receipt['created_container_ids'] = container_ids.read_text().split() if container_ids.exists() else []
         try:
             receipt['cleanup'] = cleanup(home, docker, owner)
+            receipt['cleanup']['remaining_created_containers'] = [container for container in receipt['created_container_ids']
+                if subprocess.run([docker, 'inspect', container], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0]
         except Exception as error:
             receipt['cleanup'] = {'error': str(error)}
         after = processes()
@@ -175,7 +184,8 @@ def main():
         receipt['private_home_removed'] = not home.exists()
         (args.out / 'receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
     safe = (receipt['existing_cozy_processes_unchanged'] and not receipt['cleanup'].get('error')
-            and not receipt['cleanup'].get('remaining_pids') and not receipt['cleanup'].get('remaining_containers'))
+            and not receipt['cleanup'].get('remaining_pids') and not receipt['cleanup'].get('remaining_containers')
+            and not receipt['cleanup'].get('remaining_created_containers'))
     return status if safe else 1
 
 
