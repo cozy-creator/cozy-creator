@@ -4,7 +4,8 @@
 # replace). The Hub serves on a throwaway Postgres and a MinIO built from its last source, whose SigV4 check is R2's: a
 # key's reserved characters are percent-encoded in the canonical request, so v0.40.33-35's bare ':' in a workload's
 # proof key fails here as it failed on R2. It runs as a development Hub (sign-in codes in its log): cozy dials it on
-# loopback, and machines at its https public origin, an ingress under a fresh CA the Hub hands them (ingress.go).
+# loopback, and machines at its https public origin, an ingress under a fresh CA the Hub hands them (ingress.go; a Hub
+# hands a CA only beside its docker provider, which rents nothing here).
 # The client is installed by its own release's installer into this computer's default home, signed in with the code
 # the Hub logs, and runs the Hub suite's cells (release-gate/suites/hub/lib.sh) on its local machine: account, the
 # catalog, package publish, install and run, new weights uploaded by the machine (the workload writer, as pods
@@ -62,7 +63,8 @@ for _ in $(seq 60); do [ -s ingress.addr ] && break; kill -0 $INGRESS 2>/dev/nul
 ORIGIN=$(head -1 ingress.addr); [ -n "$ORIGIN" ] || die hub "the ingress did not start: $(tail -c 300 ingress.log)"
 hub=("$WORK/tensorhub" --config "$SRC/config.local.yaml"
   --set env.name=development --set server.host=127.0.0.1 --set server.http_port=8819 --set server.public_origin=$ORIGIN
-  --set auth.issuer=$ORIGIN/v1/auth --set rental.hub_ca_path="$WORK/ca.pem" --set auth.keys_path="$WORK/authkit" --set auth.trusted_proxies=
+  --set auth.issuer=$ORIGIN/v1/auth --set rental.hub_ca_path="$WORK/ca.pem" --set provider.kind=docker
+  --set auth.keys_path="$WORK/authkit" --set auth.trusted_proxies=
   --set database.url="postgres://postgres@127.0.0.1:5432/postgres?sslmode=disable"
   --set storage.backend.kind=s3 --set storage.backend.endpoint_url=$S3 --set storage.backend.region=us-east-1
   --set storage.backend.access_key_id=$S3KEY --set storage.backend.secret_access_key=$S3SECRET
