@@ -198,7 +198,8 @@ impl Client {
     }
 
     /// One vault operation ID for the command's lifetime. Reconnecting the same PUT attaches to
-    /// that operation; the server records admission before acknowledging it and never runs it twice.
+    /// that operation; the server acknowledges receipt immediately and records admission before
+    /// changing storage, so an accepted operation is never run twice.
     /// A controller without this route gets one legacy POST, whose uncertain result is not retried.
     pub(crate) async fn vault(
         &self,
@@ -971,7 +972,7 @@ pub(crate) fn unanswered(pid: u32, waited: Duration) -> String {
         },
     };
     format!(
-        "waiting on Calcifer (pid {pid}{doing}): no answer for {}s; `cozy doctor` restarts a stuck one",
+        "waiting on Calcifer (pid {pid}{doing}): no response yet after {}s",
         waited.as_secs()
     )
 }
