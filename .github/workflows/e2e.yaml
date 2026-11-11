@@ -412,8 +412,8 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  # The isolated Hub every cli shard runs against (e2e/skew/run.sh --hub-bin): tensorhub at ci/hub-ref, and MinIO, built
-  # once a run and kept in the Actions cache by that ref.
+  # The isolated Hub every cli shard runs against (e2e/skew/run.sh --hub-bin): tensorhub at hub_ref (master, as
+  # cli-release and skew take it), and MinIO, built once a run and kept in the Actions cache by its commit.
   hub:
     name: isolated Hub
     needs: affected
@@ -426,26 +426,25 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          repository: cozy-creator/cozy-creator
-          ref: ${{ needs.affected.outputs.creator }}
-          path: .creator
-          sparse-checkout: ci
+          repository: cozy-creator/tensorhub
+          ref: ${{ inputs.hub_ref || 'master' }}
+          ssh-key: ${{ secrets.TENSORHUB_READ_KEY }}
+          persist-credentials: false
+          path: .tensorhub
       - id: ref
-        run: echo "hub_ref=$(tr -d '\r\n' < .creator/ci/hub-ref)" >> "$GITHUB_OUTPUT"
+        run: echo "hub=$(git -C .tensorhub rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - id: cache
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/fixture-hub
-          key: fixture-hub-${{ steps.ref.outputs.hub_ref }}-minio-RELEASE.2025-09-07T16-13-09Z
-      - if: steps.cache.outputs.cache-hit != 'true'
-        uses: actions/checkout@v5
+          key: fixture-hub-${{ steps.ref.outputs.hub }}
+      # The skew jobs' MinIO.
+      - id: minio
+        uses: actions/cache@v4
         with:
-          repository: cozy-creator/tensorhub
-          ref: ${{ steps.ref.outputs.hub_ref }}
-          ssh-key: ${{ secrets.TENSORHUB_READ_KEY }}
-          persist-credentials: false
-          path: .tensorhub
-      - if: steps.cache.outputs.cache-hit != 'true'
+          path: ${{ runner.temp }}/skew-tools
+          key: skew-minio-RELEASE.2025-09-07T16-13-09Z
+      - if: steps.cache.outputs.cache-hit != 'true' || steps.minio.outputs.cache-hit != 'true'
         uses: actions/setup-go@v5
         with:
           go-version-file: .tensorhub/go.mod
@@ -455,7 +454,9 @@ jobs:
           mkdir -p "$RUNNER_TEMP/fixture-hub"
           (cd .tensorhub && go build -o "$RUNNER_TEMP/fixture-hub/tensorhub" .)
           cp .tensorhub/config.local.yaml "$RUNNER_TEMP/fixture-hub/"
-          GOBIN=$RUNNER_TEMP/fixture-hub go install github.com/minio/minio@RELEASE.2025-09-07T16-13-09Z
+      - if: steps.minio.outputs.cache-hit != 'true'
+        run: GOBIN=$RUNNER_TEMP/skew-tools go install github.com/minio/minio@RELEASE.2025-09-07T16-13-09Z
+      - run: cp "$RUNNER_TEMP/skew-tools/minio" "$RUNNER_TEMP/fixture-hub/"
       - uses: actions/upload-artifact@v4
         with:
           name: fixture-hub
