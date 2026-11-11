@@ -467,6 +467,8 @@ fi
 reported
 [ -n "$v" ] && [ -n "$rt" ] && [ -n "$tfs" ] || notinstalled "$M reports no cozy, Runtime and TensorFS (cozy ${v:-?}, Runtime ${rt:-?}, TensorFS ${tfs:-?})"
 expect candidate-installed PASS "$M runs cozy $v, Runtime $rt, TensorFS $tfs"
+# The candidate's attention table: served.py holds every unpinned cell's kernels to it (xs-171).
+[ -z "$RWF" ] || unzip -p "$RWF" cozy_runtime/internal/attention_table.json > attention-table.json 2>/dev/null || rm -f attention-table.json
 # The set the verdict is for (verify.sh, promote.sh): each candidate's version, as the machine reports it, and digest.
 # Components with no candidate are not named: a --before FILE may move them on its SKU only.
 LABEL=cozy$v-rt$rt-tfs$tfs${PKGS:+-packages$(git -C "$PKGS" rev-parse --short HEAD)}${PINS:+-pins$(cksum <<< "$PINS" | cut -d' ' -f1)}

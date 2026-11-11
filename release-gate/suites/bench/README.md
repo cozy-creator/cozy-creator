@@ -56,3 +56,12 @@ A cell FAILs when
 
 `../../baselines/<version>.json`: per group the pod, its reference workload, each cell's medians and spread (Cozy only). Reference outputs are assets of the `release-gate-baselines` release (`bench-<version>-<group>-<cell>.<ext>`), fetched
 into `baselines/refs/` (untracked).
+
+## End-to-end arms (xs-171)
+
+A new attention table that moves an 8- or 4-bit head gets an end-to-end check: `arms.py OLD NEW` names each class it moved
+on and prints the `bench.sh` line for that class's reference card (`arms-skus`). Each quantized model (H3 15 s, Qwen-Image
+2.1 4 MP, MOSS 4 MP, Klein; two prompts and seeds each) runs on the table's own kernels (`a-*`, no pin) beside the same request
+and seed at `--attention-kernel exact` (`a-*-exact`), whose output must look like its pair's (`like`: the same-request bars
+above, until xs-171's calibration sets each level's own). analyze.py's `served.py` holds every unpinned cell's kernels to
+the candidate's table.
