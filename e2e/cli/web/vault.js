@@ -681,8 +681,8 @@ const newPage = async () => {
   await page.locator('[aria-label="Save recovery secret"] pre').waitFor();
   check('implicit_creation_waits_for_saved_recovery', fileWrites.length === uploadsBeforeSetup);
   await saveCreationRecovery(true);
-  await page.locator('.nm-field').waitFor();
-  await page.keyboard.press('Enter');
+  // Closing the drawer moved focus to its link; accept the pending name in its actual field.
+  await page.locator('.nm-field').press('Enter');
   await until('implicit encrypted import lands', () => projectJson(implicit.path).assets.some((asset) => asset.sha256), Boolean, 45000);
   check('implicit_creation_uses_private_uploads', fileWrites.slice(uploadsBeforeSetup).length > 0 && fileWrites.slice(uploadsBeforeSetup).every((write) => write.path.startsWith('/v1/project-files/') && write.project === implicit.id));
   check('implicit_creation_is_encrypted', JSON.parse(vault(implicit.path, 'status')).encrypted && !existsSync(join(implicit.path, 'project.db')));
