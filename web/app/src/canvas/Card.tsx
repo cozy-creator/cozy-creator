@@ -808,25 +808,25 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
         <div className="here-under nodrag nopan nowheel">
           <div className="here-all">
             {!looking && <ToolSettings name={name} asset={asset} selected={view.operation} />}
-            {asset.timeline && <Takes view={view} name={name} width={width} />}
-            {!asset.timeline && (!view.hereWords || view.pickingUp) && <PickUp view={view} name={name} />}
-            {!asset.timeline && <OrbitToggle view={view} name={name} />}
-            {!editing && <Bar view={view} name={name} />}
-            {/* Looking at a take an image tool made, only its description: its tool and words are the next take's, behind its +. */}
-            {!looking && (asset.kind !== "text" || asset.tool) && (
-              <AssetEdit name={name} view={view} editing={editing} head={<Stack name={name} />} actions={editing && <RenderButton name={name} view={view} />} />
-            )}
-            {!view.hereWords && <TakeName view={view} />}
-            {/* Writing an image tool's next take, its description isn't asked: it's for what's looked at. */}
-            {!(view.hereWords && paints(view, tools)) && <Description name={name} view={view} rule={Boolean(asset.tool) && !looking} />}
-            {view.warned && warned ? (
-              <div className="warned-lines">
-                {view.warnings!.map((warning) => (
-                  <p key={warning}>{noHash(warning)}</p>
-                ))}
-              </div>
-            ) : null}
-            {!looking && <Status view={view} name={name} />}
+            {(asset.kind !== "text" || asset.tool) && <>
+              {asset.timeline && <Takes view={view} name={name} width={width} />}
+              {!asset.timeline && (!view.hereWords || view.pickingUp) && <PickUp view={view} name={name} />}
+              {!asset.timeline && <OrbitToggle view={view} name={name} />}
+              {!editing && <Bar view={view} name={name} />}
+              {/* Looking at a take an image tool made, only its description: its tool and words are the next take's, behind its +. */}
+              {!looking && <AssetEdit name={name} view={view} editing={editing} head={<Stack name={name} />} actions={editing && <RenderButton name={name} view={view} />} />}
+              {!view.hereWords && <TakeName view={view} />}
+              {/* Writing an image tool's next take, its description isn't asked: it's for what's looked at. */}
+              {!(view.hereWords && paints(view, tools)) && <Description name={name} view={view} rule={Boolean(asset.tool) && !looking} />}
+              {view.warned && warned ? (
+                <div className="warned-lines">
+                  {view.warnings!.map((warning) => (
+                    <p key={warning}>{noHash(warning)}</p>
+                  ))}
+                </div>
+              ) : null}
+              {!looking && <Status view={view} name={name} />}
+            </>}
           </div>
         </div>
       )}
