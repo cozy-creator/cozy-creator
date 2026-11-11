@@ -1,7 +1,8 @@
 // Thousands of assets (Paul expects them): a generated 5,000-asset project, a real Calcifer, a real Chrome. How long a project API read takes, opening it in the page, one edit to show, what's read for it, a box let go on the crowd by hand, a render landing, panning, memory.
 // It's generated as a folder of the files from before project.db (cl-803), 4,000 shots rendered twice each, which Calcifer's first open imports, as it
 // imports a person's: nothing else makes that many rendered takes short of rendering them. From there it's project.db's, and only the page and Calcifer's HTTP API touch it.
-// The bars are what a person would feel, in BARS. What each took is seen.scale.
+// The bars are what a person would feel, in BARS, on the fast hosted runners: each time bar is held times this runner's
+// measured speed against those (speed.js), and seen.bars has what each was held to. What each took is seen.scale.
 //   node scale.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $SHOT: where to keep its screenshots; $ALONE: on a shared
 // computer, so it runs nothing; $HOLDER: Calcifer's lock file, which names its process; $ARGV_LOG: where each cozy call is logged for coverage.
@@ -14,6 +15,7 @@ const { homedir } = require('os');
 const { join } = require('path');
 const { projectUrl, projectAction, calcifer, signIn, STEP_MS, lastLook, lookAt, png, noStall, closeBox, openBox, renderOf, until, projectHeld } = require('./page');
 const { readFootprint, closedProjectMemory } = require('./native-memory');
+const { runnerSpeed } = require('./speed');
 
 const failures = [];
 const seen = {};
@@ -30,7 +32,7 @@ const HOLE = { col: 3, row: 1 };
 const PAN_MS = 3000;
 const REST_MS = 2000;
 const PICTURES = 1000;
-/** How long after its project is closed Calcifer's memory is read. */
+/** How long after its project is closed Calcifer's memory is read, on a fast runner. */
 const CLOSED_MS = 10_000;
 const COZY = process.env.COZY;
 const TOOL = join(__dirname, '..', 'project', 'tool.py');
@@ -65,6 +67,12 @@ const BARS = {
   calcifer_kept_mb: 256,
   page_heap_mb: 512,
 };
+
+// The bars that are times: each is held times this runner's speed factor. The memory bars and the pan's ratio stay.
+const TIMED = ['status_s', 'status_again_s', 'command_s', 'open_boxes_s', 'open_settled_s', 'edit_shows_ms', 'drop_ms', 'write_ms', 'landing_shows_ms', 'pan_work_slack_ms', 'rest_ms_per_s', 'fit_all_s', 'asks_status_s'];
+// Measured first, before this script or Calcifer has anything of the project to do.
+const SPEED = runnerSpeed();
+const BAR = { ...BARS, ...Object.fromEntries(TIMED.map((name) => [name, +(BARS[name] * SPEED.factor).toFixed(3)])) };
 
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
@@ -229,7 +237,9 @@ async function nativeMemory(base, folder) {
   mkdirSync(folder, { recursive: true });
   const numbers = {};
   seen.scale = numbers;
-  seen.bars = BARS;
+  seen.runner = SPEED;
+  seen.bars = BAR;
+  seen.bars_on_a_fast_runner = BARS;
 
   const cozyAt = (at, ...words) => new Promise((done, fail) => {
     if (process.env.ARGV_LOG) appendFileSync(process.env.ARGV_LOG, `${words.map((word) => `${word}\x1f`).join('')}\x1e`);
@@ -284,10 +294,10 @@ async function nativeMemory(base, folder) {
   const standing = read.state.assets.reduce((held, asset) => ({ ...held, [asset.standing]: (held[asset.standing] ?? 0) + 1 }), {});
   numbers.standing = standing;
   check('they_stand_as_a_persons_would', standing.current === ASSETS, standing);
-  check('status_is_quick', numbers.status_s <= BARS.status_s, numbers.status_s);
+  check('status_is_quick', numbers.status_s <= BAR.status_s, { s: numbers.status_s, bar: BAR.status_s });
   const again = await status();
   numbers.status_again_s = seconds(again.ms);
-  check('status_again_is_quicker', numbers.status_again_s <= BARS.status_again_s, numbers.status_again_s);
+  check('status_again_is_quicker', numbers.status_again_s <= BAR.status_again_s, { s: numbers.status_again_s, bar: BAR.status_again_s });
   const memory = { before: startMb, read: calciferMb() };
   numbers.calcifer_memory_mb = memory;
   numbers.calcifer_native.read = await nativeMemory(base, folder);
@@ -467,22 +477,22 @@ async function nativeMemory(base, folder) {
   await page.goto(await projectUrl(id));
   await page.waitForSelector('.nm:text-is("shot_0")', { timeout: 120_000 });
   numbers.open_boxes_s = seconds(Date.now() - opening);
-  check('it_opens_quickly', numbers.open_boxes_s <= BARS.open_boxes_s, numbers.open_boxes_s);
+  check('it_opens_quickly', numbers.open_boxes_s <= BAR.open_boxes_s, { s: numbers.open_boxes_s, bar: BAR.open_boxes_s });
   // The deliberate project navigation created this document. Watch its interactions from here.
   await page.evaluate(() => { window.notReloaded = true; });
   await until('its frames short', shortFrames, (p95) => p95 < 100, 180_000);
   numbers.open_settled_s = seconds(Date.now() - opening);
-  check('it_settles_quickly', numbers.open_settled_s <= BARS.open_settled_s, numbers.open_settled_s);
+  check('it_settles_quickly', numbers.open_settled_s <= BAR.open_settled_s, { s: numbers.open_settled_s, bar: BAR.open_settled_s });
   memory.open = calciferMb();
   numbers.calcifer_native.open = await nativeMemory(base, folder);
   numbers.mounted_boxes = await page.locator('.react-flow__node').count();
   numbers.pan_big = await measuredPan();
-  const allowed = numbers.pan_small.added_ms_per_frame * BARS.pan_work_times_small + BARS.pan_work_slack_ms;
+  const allowed = numbers.pan_small.added_ms_per_frame * BARS.pan_work_times_small + BAR.pan_work_slack_ms;
   check('size_adds_nothing_to_a_pan', numbers.pan_big.added_ms_per_frame <= allowed, { allowed, small: numbers.pan_small, big: numbers.pan_big });
   // Over the bar it says what's spending it, then and there.
-  const quiet = numbers.pan_big.rest_ms_per_s <= BARS.rest_ms_per_s;
+  const quiet = numbers.pan_big.rest_ms_per_s <= BAR.rest_ms_per_s;
   if (!quiet) numbers.rest_profile = await profiled(REST_MS);
-  check('a_page_at_rest_is_quiet', quiet, { bar: BARS.rest_ms_per_s, big: numbers.pan_big.rest_ms_per_s, kinds: numbers.pan_big.rest_kinds, small: numbers.pan_small.rest_ms_per_s, profile: numbers.rest_profile });
+  check('a_page_at_rest_is_quiet', quiet, { bar: BAR.rest_ms_per_s, big: numbers.pan_big.rest_ms_per_s, kinds: numbers.pan_big.rest_kinds, small: numbers.pan_small.rest_ms_per_s, profile: numbers.rest_profile });
   numbers.page_heap_open_mb = await page.evaluate(() => Math.round(performance.memory.usedJSHeapSize / 1048576));
   numbers.whole_read_mb = +(reads.whole_bytes / 1048576).toFixed(1);
   await shot('open');
@@ -514,7 +524,7 @@ async function nativeMemory(base, folder) {
   const shownEdit = says(edited, 'ONE EDIT FROM THE CLI');
   const edit = await project('set', edited, 'instructions=ONE EDIT FROM THE CLI');
   numbers.edit_shows_ms = (await shownEdit) - edit.at;
-  check('one_edit_shows_live', numbers.edit_shows_ms <= BARS.edit_shows_ms, numbers.edit_shows_ms);
+  check('one_edit_shows_live', numbers.edit_shows_ms <= BAR.edit_shows_ms, { ms: numbers.edit_shows_ms, bar: BAR.edit_shows_ms });
   await page.waitForTimeout(600);
   numbers.edit_reads = { whole: reads.whole - before.whole, heads: reads.heads - before.heads, assets: reads.assets - before.assets };
   check('one_edit_reads_only_it', numbers.edit_reads.whole === 0 && numbers.edit_reads.assets >= 1 && numbers.edit_reads.assets <= 3, numbers.edit_reads);
@@ -524,7 +534,7 @@ async function nativeMemory(base, folder) {
   for (let turn = 1; turn < 5; turn++) sets.push((await project('set', edited, `instructions=EDIT ${turn} FROM THE CLI`)).ms);
   numbers.set_commands_s = sets.map(seconds);
   numbers.set_command_s = seconds([...sets].sort((a, b) => a - b)[2]);
-  check('a_command_is_quick', numbers.set_command_s <= BARS.command_s, numbers.set_commands_s);
+  check('a_command_is_quick', numbers.set_command_s <= BAR.command_s, { s: numbers.set_commands_s, bar: BAR.command_s });
 
   // A hand's save, the same way: its export edited and imported (cl-803).
   const byHand = onScreen[1] ?? edited;
@@ -552,7 +562,7 @@ async function nativeMemory(base, folder) {
     handObservation.gets = [...handReads.requests.values()];
     handReads = undefined;
   }
-  check('a_hand_shows_live', numbers.hand_shows_ms <= BARS.edit_shows_ms, numbers.hand_shows_ms);
+  check('a_hand_shows_live', numbers.hand_shows_ms <= BAR.edit_shows_ms, { ms: numbers.hand_shows_ms, bar: BAR.edit_shows_ms });
   await resting();
   await until('its frames short again', shortFrames, (p95) => p95 < 100, 60_000);
 
@@ -567,7 +577,7 @@ async function nativeMemory(base, folder) {
   const move = await project('set', edited, `at=${movedX},${movedY}`);
   numbers.move_command_s = seconds(move.ms);
   numbers.move_shows_ms = (await shownMove) - move.at;
-  check('a_move_shows_live', numbers.move_shows_ms <= BARS.edit_shows_ms, numbers.move_shows_ms);
+  check('a_move_shows_live', numbers.move_shows_ms <= BAR.edit_shows_ms, { ms: numbers.move_shows_ms, bar: BAR.edit_shows_ms });
   check('a_move_reads_nothing', reads.whole === moving.whole && reads.assets === moving.assets, { moving, reads });
 
   // A box let go by hand on the crowd, its middle in the gutter between two and on both (Paul, 11-06): nothing near has room, even shrunk,
@@ -606,7 +616,7 @@ async function nativeMemory(base, folder) {
     }, crowd.carried);
     await page.mouse.up();
     numbers.drop_ms = +(await within('it gave way', page.evaluate(() => window.gaveWay))).toFixed(1);
-    check('a_drop_on_a_crowd_gives_way_at_once', numbers.drop_ms <= BARS.drop_ms, numbers.drop_ms);
+    check('a_drop_on_a_crowd_gives_way_at_once', numbers.drop_ms <= BAR.drop_ms, { ms: numbers.drop_ms, bar: BAR.drop_ms });
     await page.waitForTimeout(400);
     const lying = await page.evaluate((name) => {
       const mine = window.boxOf(name).querySelector('.card').getBoundingClientRect();
@@ -629,7 +639,7 @@ async function nativeMemory(base, folder) {
   const rightAt = await until('the burst read through', () => burstOn.map((name) => readAlone.get(name)), (now) => burstOn.every((name, at) => now[at]?.words === `BURST ${name} 9 END`));
   numbers.burst = { edits: burstOn.length * 10, seconds: seconds(ended - started), right_after_ms: Math.max(...rightAt.map((row) => row.at)) - ended, whole: reads.whole - startBurst.whole, assets: reads.assets - startBurst.assets };
   check('a_burst_is_few_reads', numbers.burst.whole === 0 && numbers.burst.assets <= 40, numbers.burst);
-  check('a_burst_right_in_a_second', numbers.burst.right_after_ms <= BARS.edit_shows_ms, numbers.burst);
+  check('a_burst_right_in_a_second', numbers.burst.right_after_ms <= BAR.edit_shows_ms, { ...numbers.burst, bar: BAR.edit_shows_ms });
 
   memory.edits = calciferMb();
   numbers.calcifer_native.edits = await nativeMemory(base, folder);
@@ -652,7 +662,7 @@ async function nativeMemory(base, folder) {
   numbers.write_disk = flushed(folder, join(folder, 'project.db'));
   // Hosted Windows prints these and isn't held to them: on one runner image and one write path a POST read 57 to 195 ms and a plain replace 11 to 142.
   // A slower write shows on Linux and macOS, which share that path, and `numbers` keeps what Windows read.
-  if (process.env.RUNNER_OS !== 'Windows') check('a_write_is_under_the_bar', Object.values(numbers.write_ms).every((ms) => ms <= BARS.write_ms), { bar: BARS.write_ms, ...numbers.write_ms, ...numbers.write_disk });
+  if (process.env.RUNNER_OS !== 'Windows') check('a_write_is_under_the_bar', Object.values(numbers.write_ms).every((ms) => ms <= BAR.write_ms), { bar: BAR.write_ms, ...numbers.write_ms, ...numbers.write_disk });
   check('writes_leave_the_project_whole', (await status()).state.assets.length === ASSETS, 'assets count changed');
 
   // A render from the API, on the fixture tool, landing on the open canvas.
@@ -664,7 +674,7 @@ async function nativeMemory(base, folder) {
     const render = await project('render', 'scale_shot', '--on', 'local');
     numbers.render_command_s = seconds(render.ms);
     numbers.landing_shows_ms = (await landing) - render.at;
-    check('a_landing_shows_live', numbers.landing_shows_ms <= BARS.landing_shows_ms, numbers.landing_shows_ms);
+    check('a_landing_shows_live', numbers.landing_shows_ms <= BAR.landing_shows_ms, { ms: numbers.landing_shows_ms, bar: BAR.landing_shows_ms });
 
     // Ten renders asked at once, each its own ask, with the project this size: what a read costs while they're owed.
     const names = Array.from({ length: 10 }, (_, at) => `queued_${at}`);
@@ -672,7 +682,7 @@ async function nativeMemory(base, folder) {
     for (const name of names) await project('render', name, '--on', 'local', '--queue');
     const owed = await status();
     numbers.asks = { status_s: seconds(owed.ms), queue: owed.state.queue?.length ?? 0, db_mb: dbMb() };
-    check('a_read_with_asks_owed_is_quick', numbers.asks.status_s <= BARS.asks_status_s, numbers.asks);
+    check('a_read_with_asks_owed_is_quick', numbers.asks.status_s <= BAR.asks_status_s, { ...numbers.asks, bar: BAR.asks_status_s });
     const cancelling = await project('cancel', ...names);
     numbers.asks.cancel_s = seconds(cancelling.ms);
     memory.renders = calciferMb();
@@ -686,10 +696,10 @@ async function nativeMemory(base, folder) {
   numbers.fit_all_s = seconds(Date.now() - fitting);
   const fitted = await worked();
   numbers.fit_work_ms = Object.fromEntries(['TaskDuration', 'ScriptDuration', 'LayoutDuration', 'RecalcStyleDuration'].map((kind) => [kind.replace('Duration', '').toLowerCase(), Math.round(fitted[kind] - unfitted[kind])]));
-  check('the_whole_of_it_fits', numbers.fit_all_s <= BARS.fit_all_s, { s: numbers.fit_all_s, page_thread_ms: numbers.fit_work_ms });
+  check('the_whole_of_it_fits', numbers.fit_all_s <= BAR.fit_all_s, { s: numbers.fit_all_s, bar: BAR.fit_all_s, page_thread_ms: numbers.fit_work_ms });
   numbers.mounted_fitted = await page.locator('.react-flow__node').count();
   numbers.pan_fitted = summary(await panning(3000));
-  if (numbers.fit_all_s > BARS.fit_all_s) numbers.fitted_profile = await profiled(2000);
+  if (numbers.fit_all_s > BAR.fit_all_s) numbers.fitted_profile = await profiled(2000);
   await shot('fitted');
 
   memory.fitted = calciferMb();
@@ -708,14 +718,18 @@ async function nativeMemory(base, folder) {
   check('no_page_errors', errors.length === 0, errors.slice(0, 8));
   await browser.close();
 
-  // Closed once nothing reads it, the browser gone: what Calcifer built and dropped for 5,000 assets goes back.
-  await new Promise((done) => setTimeout(done, CLOSED_MS));
+  // Closed once nothing reads it, the browser gone: what Calcifer built and dropped for 5,000 assets goes back, in a wait
+  // as long for this runner as CLOSED_MS is for a fast one.
+  numbers.closed_wait_ms = Math.round(CLOSED_MS * SPEED.factor);
+  await new Promise((done) => setTimeout(done, numbers.closed_wait_ms));
   memory.closed = calciferMb();
   numbers.calcifer_native.closed = await nativeMemory(base, folder);
   const closedMetric = process.platform === 'darwin' ? 'physical_footprint' : 'rss';
   numbers.calcifer_closed_memory_metric = closedMetric;
   check('calcifer_gives_back_a_closed_project', closedProjectMemory(process.platform, memory, numbers.calcifer_native, BARS.calcifer_kept_mb),
     process.platform === 'darwin' ? { metric: closedMetric, budget_mb: BARS.calcifer_kept_mb, rss_mb: memory, before: numbers.calcifer_native.before, closed: numbers.calcifer_native.closed } : memory);
+  // Again at the end: how steady the runner's speed held.
+  seen.runner_after = runnerSpeed();
   console.log(JSON.stringify({ failures, seen }, null, 2));
   process.exit(failures.length ? 1 : 0);
 })().catch(died);
