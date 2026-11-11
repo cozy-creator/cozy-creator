@@ -234,7 +234,7 @@ pub(super) async fn upload(api: &Arc<Api>, hub: &Origin, on: On, agreed: Option<
     let destination = ModelId::hub(&ask.destination).map_err(Refusal)?;
     let lane = refs::label("--lane", &ask.lane).map_err(Refusal)?;
     let mirror = ask.mirror.clone().map(|page| Mirror { source: ask.source.clone(), page, to: destination.clone() });
-    if let Ok(ModelRef::Checkpoint { model: from, checkpoint: checkpoint }) = ModelRef::parse(&ask.source)
+    if let Ok(ModelRef::Checkpoint { model: from, checkpoint }) = ModelRef::parse(&ask.source)
         && ask.base.is_none()
     {
         let target = format!("{from}@{checkpoint} → {destination} ({lane})");

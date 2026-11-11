@@ -101,6 +101,8 @@ def main() -> None:
         run("removed model info", ["model", "info", "--help"], code=2)
         run("model catalog pagination", ["model", "ls", "--offset", "20", "--limit", "10", "--help"])
         run("LoRA catalog help", ["lora", "ls", "--help"])
+        run("model unpublish help", ["model", "unpublish", "--help"])
+        run("LoRA unpublish help", ["lora", "unpublish", "--help"])
         run("LoRA download help", ["lora", "install", "--help"])
         run("local model removal help", ["model", "uninstall", "--help"])
         run("local LoRA removal help", ["lora", "uninstall", "--help"])

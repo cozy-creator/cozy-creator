@@ -123,6 +123,10 @@ test = "pending: same download handler as model install"
 "--lane" = "pending: same download handler as model install"
 "--on" = "pending: same download handler as model install"
 "--source-format" = "pending: same download handler as model install"
+["model unpublish"]
+test = "release: owner release visibility and scoped private-version install"
+["lora unpublish"]
+test = "release: retained LoRA release visibility and checkpoint-reference protection"
 ["model uninstall"]
 test = "pending: local model removal backend fixture"
 ["lora uninstall"]

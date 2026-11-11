@@ -170,11 +170,35 @@ cozy --json lora edit "$model-lora" --family e2e-family --tag e2e-lora --trigger
   || check "LoRA metadata was not set"
 cozy --json lora edit "$model-lora" --trigger '' --strength none > /dev/null \
   && model_details "$model-lora" | J '.trigger == null and .strength == null' || check "LoRA metadata was not cleared"
+lora_checkpoint=$(jq -r '.. | objects | .commit? // empty' "$OUT/upload-lora.ndjson" | tail -1)
+cozy --json lora publish "$model-lora" 0.1.0 "$lora_checkpoint" > "$OUT/lora-publish.json" || check "LoRA publish failed"
+cozy --json lora unpublish "$model-lora@0.1.0" > "$OUT/lora-unpublish.json" || check "LoRA unpublish failed"
+model_details "$model-lora" | J '.releases | any(.version == "0.1.0" and .visibility == "private")' || check "LoRA unpublish did not retain its private version"
+if cozy --json lora delete "$model-lora@$lora_checkpoint" -y > "$OUT/referenced-lora-delete.json" 2>&1; then
+  check "a retained private release did not protect its checkpoint from deletion"
+fi
 cozy --json lora delete "$model-lora" -y > /dev/null || check "LoRA fixture cleanup failed"
 cozy --json model publish "$model" 0.1.0 "$commit" "$commit_b" > "$OUT/model-publish.json" || check "model publish failed"
 model_details "$model" > "$OUT/model-info.json" \
   && J '.releases | any(.version == "0.1.0" and ([.lanes[].lane] | sort) == ["f16", "f32"])' "$OUT/model-info.json" \
   || check "model publish: no 0.1.0 with lanes f16 and f32"
+# Ordinary owners can withdraw and keep using an explicit private version; publication
+# stays gated by live admin permission. All account changes are in this disposable Hub.
+"${hub[@]}" admin revoke "$WHO" > "$OUT/owner-admin-revoke.log" 2>&1 || check "could not revoke the fixture publisher's admin role"
+cozy --json model unpublish "$model@0.1.0" > "$OUT/model-unpublish.json" || check "owner model unpublish failed"
+model_details "$model" > "$OUT/private-model.json" \
+  && J '.checkpoints | length == 2' "$OUT/private-model.json" \
+  && J '.releases | any(.version == "0.1.0" and .visibility == "private")' "$OUT/private-model.json" \
+  || check "unpublish did not retain both checkpoints and the private version"
+status=$(curl -sS -o "$OUT/private-public-card.json" -w '%{http_code}' "$COZY_HUB_URL/v1/models/$model")
+[ "$status" = 404 ] || check "unpublished model remained publicly visible (HTTP $status)"
+watched install-private-version model install "$model@0.1.0" --lane f16 --on "$ON" \
+  || check "owner private-version install failed: $(run_get "$OUT" install-private-version '.reason.message')"
+cozy --json model unpublish "$model@0.1.0" > "$OUT/model-unpublish-again.json" \
+  && J '.unpublished == false' "$OUT/model-unpublish-again.json" || check "unpublish was not idempotent"
+"${hub[@]}" admin grant "$WHO" > "$OUT/owner-admin-grant.log" 2>&1 || check "could not restore the isolated fixture publisher"
+cozy --json model publish "$model" 0.1.0 "$commit" "$commit_b" > "$OUT/model-republish.json" || check "identical release republish failed"
+model_details "$model" | J '.releases | any(.version == "0.1.0" and .visibility == "public")' || check "republish did not restore public availability"
 cozy --json model delete "$model" -y > "$OUT/model-delete.json" || check "model delete failed"
 ! model_details "$model" > /dev/null 2>&1 || check "model delete: $model still answers"
 

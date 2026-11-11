@@ -8,7 +8,7 @@
 //! only public releases carries none. Signed out, a run reads public releases at its Hub's origin; a
 //! run that publishes needs the sign-in.
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -73,6 +73,16 @@ pub(crate) struct Facts {
 pub(crate) struct Needs {
     reads: BTreeSet<String>,
     writes: BTreeSet<String>,
+    named_releases: BTreeSet<(String, String)>,
+    release_reads: BTreeSet<ReleaseRead>,
+}
+
+/// The immutable release roots a machine may resolve, never an org-wide credential.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct ReleaseRead {
+    model: String,
+    release: String,
+    checkpoints: Vec<String>,
 }
 
 impl Needs {
@@ -88,6 +98,10 @@ impl Needs {
             .chain(warm)
             .filter(|c| !c.model.starts_with("local/"))
         {
+            self.named_release(&choice.model, &choice.release, &choice.manifest, &choice.source);
+            for adapter in &choice.adapters {
+                self.named_release(&adapter.model, &adapter.release, &adapter.manifest, &adapter.source);
+            }
             let adapters = choice.adapters.iter().map(|adapter| &adapter.manifest);
             for manifest in std::iter::once(&choice.manifest).chain(adapters) {
                 if is_digest(manifest) {
@@ -101,14 +115,55 @@ impl Needs {
     }
 
     fn is_empty(&self) -> bool {
-        self.reads.is_empty() && self.writes.is_empty()
+        self.reads.is_empty() && self.writes.is_empty() && self.release_reads.is_empty()
+    }
+
+    fn named_release(&mut self, model: &str, release: &str, checkpoint: &str, source: &str) {
+        if !checkpoint.is_empty() || !source.is_empty() || release.is_empty() || release.eq_ignore_ascii_case("latest") { return; }
+        if let Ok(model) = api::model_ref::ModelId::parse(model) && model.org != "local" {
+            self.named_releases.insert((model.to_string(), release.to_owned()));
+        }
+    }
+
+    /// Public pinned versions retain their anonymous machine-side resolution path. Only
+    /// an owner's explicitly private version needs a frozen release-read authorization.
+    async fn private_releases(&mut self, client: &::api::hub::Client, origin: &Origin) -> Result<(), Denied> {
+        let mut requested: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for (model, release) in &self.named_releases { requested.entry(model).or_default().push(release); }
+        let failure = |error| {
+            let error = hub_refusal(origin, error);
+            if error.kind == Kind::Unavailable { Denied::Unreachable(error.message) } else { refused(error) }
+        };
+        for (model, versions) in requested {
+            let id = api::model_ref::ModelId::parse(model).map_err(refused)?;
+            let public = match client.anonymous().get_model(&id.org, &id.name).await {
+                Ok(card) => Some(card),
+                Err(::api::hub::Error::Hub { status: 404, .. }) => None,
+                Err(error) => return Err(failure(error)),
+            };
+            let missing: Vec<_> = versions.into_iter().filter(|version| public.as_ref().is_none_or(|card|
+                !card.releases.iter().any(|release| release.visibility == api::model_ref::ReleaseVisibility::Public && same_version(&release.version, version)))).collect();
+            if missing.is_empty() { continue; }
+            let owner = client.get_model(&id.org, &id.name).await.map_err(failure)?;
+            for version in missing {
+                if let Some(release) = owner.releases.iter().find(|release| release.visibility == api::model_ref::ReleaseVisibility::Private && same_version(&release.version, version)) {
+                    let canonical = api::model_ref::ModelId::parse(&format!("{}/{}", owner.model.org, owner.model.name)).map_err(refused)?;
+                    self.release_reads.insert(ReleaseRead::of(&canonical.to_string(), release).map_err(refused)?);
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Their RFC 9396 `authorization_details`, in one order: the same needs sign the same.
     fn details(&self) -> serde_json::Value {
         let reads = self.reads.iter().map(|commit| json!({"type": "tensorhub_read", "commit": commit}));
         let writes = self.writes.iter().map(|model| json!({"type": "tensorhub_write", "model": model}));
-        reads.chain(writes).collect()
+        let releases = self.release_reads.iter().map(|release| json!({
+            "type": "tensorhub_release_read", "model": release.model,
+            "release": release.release, "checkpoints": release.checkpoints,
+        }));
+        reads.chain(releases).chain(writes).collect()
     }
 }
 
@@ -159,11 +214,12 @@ impl Machines {
     ) -> Result<String, Denied> {
         let mut needs = self.needs(origin, machine, Some(run));
         needs.add(spec);
+        let client = self.hubs.client(origin).map_err(refused)?;
+        needs.private_releases(&client, origin).await?;
         if needs.is_empty() {
             return Ok(String::new());
         }
         let key = self.workload_key(machine).await?;
-        let client = self.hubs.client(origin).map_err(refused)?;
         let Credential::User(session) = client.credential() else {
             unreachable!("a signed-in client speaks as its user")
         };
@@ -345,4 +401,47 @@ fn destination(spec: &v1::RunSpec) -> &str {
 
 fn refused(error: Error) -> Denied {
     Denied::Refused(reason(error))
+}
+
+fn same_version(left: &str, right: &str) -> bool {
+    left == right || left.parse::<pep440_rs::Version>().ok().zip(right.parse::<pep440_rs::Version>().ok()).is_some_and(|(left, right)| left == right)
+}
+
+impl ReleaseRead {
+    fn of(model: &str, release: &::api::hub::types::ModelRelease) -> Result<Self, Error> {
+        let checkpoints: BTreeSet<_> = release.lanes.values().map(|lane| lane.checkpoint.clone()).collect();
+        if checkpoints.is_empty() || checkpoints.iter().any(|id| !is_digest(id)) {
+            return Err(Error::new(Kind::Validation, "private_release_incomplete", format!("{model}@{} has no complete checkpoint mapping", release.version)));
+        }
+        Ok(Self { model: model.to_owned(), release: release.version.clone(), checkpoints: checkpoints.into_iter().collect() })
+    }
+}
+
+#[cfg(test)]
+mod release_read_tests {
+    use super::*;
+
+    #[test]
+    fn private_release_authorization_freezes_all_lanes_without_granting_a_namespace() {
+        let id = format!("sha256:{}", "a".repeat(64));
+        let release: ::api::hub::types::ModelRelease = serde_json::from_value(json!({"version":"1.0.0", "visibility":"private", "lanes":{
+            "f16":{"checkpoint":id,"header":{"sha256":"header","length":1}},
+            "bf16":{"checkpoint":id,"header":{"sha256":"header","length":1}}
+        }})).unwrap();
+        let mut needs = Needs::default();
+        needs.release_reads.insert(ReleaseRead::of("author/model", &release).unwrap());
+        assert_eq!(needs.details(), json!([{"type":"tensorhub_release_read", "model":"author/model", "release":"1.0.0", "checkpoints":[id]}]));
+        assert!(needs.reads.is_empty());
+        assert!(needs.writes.is_empty());
+        assert!(same_version("1.0", "1.0.0"));
+    }
+
+    #[test]
+    fn exact_checkpoints_local_names_and_provider_sources_need_no_named_release_scope() {
+        let mut needs = Needs::default();
+        needs.named_release("author/model", "1", "sha256:already-exact", "");
+        needs.named_release("local/model", "1", "", "");
+        needs.named_release("author/model", "1", "", "hf://author/model");
+        assert!(needs.named_releases.is_empty());
+    }
 }
