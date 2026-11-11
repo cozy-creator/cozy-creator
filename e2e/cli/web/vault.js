@@ -686,8 +686,8 @@ const newPage = async () => {
 
   stage = 'late new-project response cannot disclose after lock';
   await prepareCreation('late');
-  let deliver;
-  const delivery = new Promise((resolve) => { deliver = resolve; });
+  let releaseCreation;
+  const delivery = new Promise((resolve) => { releaseCreation = resolve; });
   let received;
   const heldCreate = async (route) => {
     if (route.request().method() !== 'POST') return route.continue();
@@ -708,12 +708,12 @@ const newPage = async () => {
     requestLock(late.path);
     await drainedLock(late.path);
     const delivered = page.waitForResponse((answer) => answer.request().method() === 'POST' && new URL(answer.url()).pathname === '/v1/projects' && answer.ok());
-    deliver();
+    releaseCreation();
     await (await delivered).finished();
     await until('late creation handler settles', () => page.getByRole('button', { name: 'Creating…', exact: true }).count(), (count) => count === 0, 45000);
     check('late_creation_does_not_disclose_recovery_after_lock', await page.locator('[aria-label="Save recovery secret"]').count() === 0);
   } finally {
-    deliver();
+    releaseCreation();
     await page.unroute('**/v1/projects', heldCreate);
   }
   await goto(page, `${origin}/projects`);
