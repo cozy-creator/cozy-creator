@@ -77,7 +77,7 @@ function Remove({ name }: { name: string }) {
           if (asked.current?.on !== on) asked.current = { on, key: `remove-${crypto.randomUUID()}` }
           const { key } = asked.current
           void ask.run(async () => {
-            const { run } = await client.job("cozy/package_remove", { packages: [name], on }, key)
+            const { run } = await client.job("cozy/package_remove", { packages: [name], on: [on] }, key)
             asked.current = null
             navigate(to(`runs/${run.number}`))
           })

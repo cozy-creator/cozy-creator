@@ -486,7 +486,7 @@ impl Machines {
 
     /// `named`, after the Hubs' word now when nothing here has the name: a rental another client of
     /// this account ordered since is recorded by that listing. `local` starts for it.
-    async fn named_now(self: &Arc<Self>, text: &str) -> Result<MachineRow, Error> {
+    pub(crate) async fn named_now(self: &Arc<Self>, text: &str) -> Result<MachineRow, Error> {
         if text.eq_ignore_ascii_case("local") {
             self.local_row()?;
             self.local_up().await?;
@@ -945,7 +945,7 @@ impl Machines {
 
     /// The name of the machine a run's `--on` names (`named`), refused before anything is
     /// recorded when the run could not reach it.
-    async fn reach(self: &Arc<Self>, text: &str) -> Result<String, Error> {
+    pub(crate) async fn reach(self: &Arc<Self>, text: &str) -> Result<String, Error> {
         // This computer's machine starts for the run.
         if text.eq_ignore_ascii_case("local") {
             return self.local_row().map(|_| "local".to_owned());

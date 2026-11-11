@@ -171,8 +171,21 @@ fn sanitize(event: &mut VaultEvent, operation: &Operation) {
         *event = expired_result();
         return;
     }
-    if matches!(event, VaultEvent::Failed { .. }) && operation.locked.load(Ordering::Acquire) {
-        *event = VaultEvent::Failed { error: Error::new(Kind::Conflict, "project_locked", "the project was locked before its private result was read").next("cozy vault unlock") };
+    if let VaultEvent::Failed { error } = event
+        && operation.locked.load(Ordering::Acquire)
+    {
+        // A storage transition can revoke its own old view before discovering
+        // that a native reader is still using it. Preserve the public error
+        // category (especially Busy); redact only its private details.
+        error.message = match error.code.as_str() {
+            "project_busy" => "Close applications using the project, then retry the storage change.",
+            "project_locked" => "The project is locked.",
+            _ => "The vault operation could not finish after project access changed; check its protection state before retrying.",
+        }.into();
+        error.remedy = None;
+        error.next = vec!["cozy vault status".into()];
+        error.cause = None;
+        error.metadata = None;
         return;
     }
     if let VaultEvent::Completed { changed } = event

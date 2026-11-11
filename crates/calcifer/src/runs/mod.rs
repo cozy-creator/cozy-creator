@@ -89,7 +89,7 @@ async fn priced_scoped(api: &Arc<Api>, ask: RunRequest) -> Result<Option<RunQuot
     let bound = match &ask.code {
         // Local code rents with its install, which the call then follows to its machine.
         Some(code) => {
-            let on = ask.on.clone().unwrap_or_else(|| default_on(api));
+            let on = ask.on.first().cloned().unwrap_or_else(|| default_on(api));
             let hub = hub(api, &ask.hub);
             let home = api.machines.hubs.home();
             let origin = api::config::Origin::parse(&hub)?;
@@ -166,7 +166,7 @@ pub(crate) struct Asked {
     target: String,
     #[serde(default)]
     hub: Option<String>,
-    /// The machine a run would go to.
+    /// The machines a run would go to, as `--on` names them.
     #[serde(default)]
     on: Option<String>,
     /// Local code by content: its tree, and where its package is in it.
@@ -188,7 +188,13 @@ pub(crate) async fn describe(
 
 async fn describe_asked(api: &Arc<Api>, asked: Asked) -> Result<Json<api::calcifer::Target>, Refusal> {
     let hub = hub(api, asked.hub.as_deref().unwrap_or_default());
-    let on = asked.on.map_or_else(|| default_on(api), On::from);
+    // Of several (named, else its project's), the first: what it calls is the same on each.
+    let pinned = match (&asked.on, asked.project.as_deref()) {
+        (Some(on), _) => on.split(',').map(str::trim).find(|word| !word.is_empty()).map(|first| On::from(first.to_owned())),
+        (None, Some(project)) => crate::project::machines_of(api, project).map_err(Refusal)?.into_iter().next(),
+        (None, None) => None,
+    };
+    let on = pinned.unwrap_or_else(|| default_on(api));
     let code = match (asked.tree, asked.at) {
         (Some(tree), at) => Some(LocalCode { tree, at: at.unwrap_or_default() }),
         (None, _) => None,
@@ -383,11 +389,8 @@ async fn prepare(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: For) -> R
 }
 
 async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: For) -> Result<Prepared, Error> {
-    // Named, it goes there; else where a render's job would (Paul, 11-06), resolved first on the first of that set.
-    let set = match &ask.on {
-        Some(on) => vec![on.clone()],
-        None => api.machines.list(false).await.map_or_else(|_| vec![On::Machine("local".into())], |list| list.render_set()),
-    };
+    // Resolved first on the first of its set.
+    let set = run_set(api, ask).await?;
     let mut on = set.first().cloned().unwrap_or_else(|| default_on(api));
     // Only to a machine on this cozy's minor: one on another is updated first, which the client follows, then asks again. Before
     // anything is resolved there, local code's install too. Of several, placement does this for each.
@@ -470,7 +473,12 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
             let (chosen, offered, said) = crate::project::run_on(api, &set, &hub, package, &card.release, &callable.name, size, gpus, needs_gpu, count, !estimates).await;
             notes.extend(said.into_iter().map(|message| Note { level: NoteLevel::Warning, message }));
             if set.len() > 1 {
-                on = chosen;
+                on = match chosen {
+                    Ok(chosen) => chosen,
+                    // An estimate shows each machine's refusal; a run none of them can take is refused, naming them.
+                    Err(_) if estimates => on,
+                    Err(e) => return Err(e),
+                };
             }
             offers = offered;
         }
@@ -505,6 +513,21 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
         notes.push(Note { level: NoteLevel::Warning, message: moved.clone() });
     }
     Ok(Prepared::Run { submit, notes, offers })
+}
+
+/// Where a run goes (cl-873): the machines it names, else its project's, else where a render's job would (Paul, 11-06).
+async fn run_set(api: &Arc<Api>, ask: &RunRequest) -> Result<Vec<On>, Error> {
+    api::calcifer::machine_set(&ask.on)?;
+    if !ask.on.is_empty() {
+        return Ok(ask.on.clone());
+    }
+    if let Some(project) = ask.project.as_deref() {
+        let pinned = crate::project::machines_of(api, project)?;
+        if !pinned.is_empty() {
+            return Ok(pinned);
+        }
+    }
+    Ok(api.machines.list(false).await.map_or_else(|_| vec![On::Machine("local".into())], |list| list.render_set()))
 }
 
 /// Where a run that names no machine is resolved and described: this computer's, on an OS that runs models itself; on another, a

@@ -1,11 +1,11 @@
 # calibrated <drive dir>: the host before any number of it is kept (xs-177). The Runtime's bench measures the pod's
-# sustained bf16 GEMM TFLOPS and memory GB/s (`calibrate`); either below FLOOR of its card's reference
+# sustained bf16 GEMM TFLOPS and memory GB/s (`host_calibrate`); either below FLOOR of its card's reference
 # (calibration.tsv) refuses the host: it is ended and another rented (gate.sh `again`), as a host too slow to download
 # is. An H100 that ran every kernel ~3x slow (release gate 43061813774) is what it stops. A card with no reference
 # passes and says so. Any suite can source this and call it first.
 calibrated() {
   local floor=0.7 detail card tflops gbps ref why
-  ONLY=${ONLY:+$ONLY,host-calibrate,} cell host-calibrate "$1/calibrate" --gpus=1
+  ONLY=${ONLY:+$ONLY,host-calibrate,} cell host-calibrate "$1/host_calibrate" --gpus=1
   detail=$(run_get "$OUT" host-calibrate .result.detail)
   card=$(jq -r '.inventory.card // empty' <<< "$detail" 2>/dev/null)
   tflops=$(jq -r '.tflops // empty' <<< "$detail" 2>/dev/null) gbps=$(jq -r '.gbps // empty' <<< "$detail" 2>/dev/null)

@@ -33,7 +33,7 @@ use crate::{
 pub(crate) async fn submit_request(ctx: &Context, ask: &RunRequest, key: &str) -> Result<Submitted, Error> {
     let calcifer = ctx.calcifer().await?;
     let mut ask = ask.clone();
-    if matches!(ask.on, Some(On::New(_))) && ask.agreed.is_none() {
+    if matches!(ask.on.as_slice(), [On::New(_)]) && ask.agreed.is_none() {
         // None: it rents nothing, as what Calcifer does itself.
         let quoted: Option<RunQuote> = calcifer.post("/v1/run-quotes", &ask, None).await?;
         if let Some(quoted) = quoted {

@@ -45,6 +45,7 @@ import type {
   PackageSearch,
   Play,
   ProjectAddress,
+  ProjectMachines,
   ProjectState,
   ProjectShowReply,
   Projects,
@@ -479,6 +480,11 @@ export class Client {
   /** A new version of each of `names`, on these machines. A `pickup` goes with this one render of one box; `outdated`, with `all`, re-runs pins that are. */
   render(id: string, names: string[], on: string[], key: string, also: Pick<Runs, "pickup" | "outdated"> = {}, once?: AbortSignal): Promise<Asked> {
     return this.write("POST", `${project(id)}/runs`, { names, on, ...also }, key, { once })
+  }
+
+  /** The machines the project's runs and renders go to, each to whichever finishes first; none: any. */
+  setMachines(id: string, machines: string[]): Promise<ProjectMachines> {
+    return this.write("PUT", `${project(id)}/machines`, { machines })
   }
 
   /** What a render of `names` on this computer alone would do poorly, a line a tool. */

@@ -81,7 +81,7 @@ pub(super) async fn plan(api: &Arc<Api>, key: &str, hub: &Origin, on: On, agreed
         format!("release={release}"),
     ];
     terms.extend(calibration(&interface, &found, &source.spelled));
-    Ok(Planned::Request(Box::new(RunRequest { target, code, on: Some(on), hub: hub.to_string(), terms, recipes: true, agreed, ..Default::default() })))
+    Ok(Planned::Request(Box::new(RunRequest { target, code, on: vec![on], hub: hub.to_string(), terms, recipes: true, agreed, ..Default::default() })))
 }
 
 /// `org/name[@release]` as the target of its `quantize`.

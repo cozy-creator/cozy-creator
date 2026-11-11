@@ -1999,6 +1999,12 @@ absent?: boolean,
 machine?: string | null, };
 
 /**
+ * `PUT /v1/projects/{id}/machines` (cl-873): the machines the project's runs and renders go to, each to the one of them that finishes
+ * it soonest, unless a run names its own; none: any machine. Answered as kept: each by its name, once.
+ */
+export type ProjectMachines = { machines: Array<string>, };
+
+/**
  * One requested project's refusal, independent of the other projects on the same stream.
  */
 export type ProjectShowRefusal = { status: number, error: ErrorBody, };
@@ -2062,7 +2068,11 @@ board?: Board | null,
 /**
  * What kept its last render from reaching a machine, each once, until another is asked.
  */
-unsent?: Array<ErrorBody>, covered?: ProjectEventCursor | null, };
+unsent?: Array<ErrorBody>,
+/**
+ * The machines its runs go to, each to the one of them that finishes it soonest; none: any machine (`ProjectMachines`).
+ */
+machines?: Array<string>, covered?: ProjectEventCursor | null, };
 
 /**
  * What reading a project said: of the asset or entity `name`, or of the file as a whole.
@@ -2602,10 +2612,11 @@ target: string,
  */
 code?: LocalCode | null,
 /**
- * `local`, a machine's name, `any`, or `new[:sku]`. Absent, Calcifer's to say: a call goes where it finishes soonest, and a
- * job that makes something present on a machine to this computer's, else any rental it has.
+ * `local`, a machine's name, several machines (the one of them that finishes it soonest), `any`, or `new[:sku]`. None,
+ * Calcifer's to say: a call goes to its project's machines (cl-873), else where it finishes soonest, and a job that makes
+ * something present on a machine to this computer's, else any rental it has.
  */
-on?: On | null,
+on?: Array<On>,
 /**
  * The Tensorhub origin; empty: Calcifer's.
  */
