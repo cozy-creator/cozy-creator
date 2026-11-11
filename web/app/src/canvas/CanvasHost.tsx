@@ -158,6 +158,7 @@ function useMachines(store: CanvasStore) {
     if (names.length) store.machineUp()
   }, [store, key])
   const choose = (name: string) => {
+    store.machines = () => name ? [name] : automatic
     setChosen(name)
     if (store.projectId) saveMachine(store.projectId, name)
   }
