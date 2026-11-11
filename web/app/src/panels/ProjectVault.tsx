@@ -76,12 +76,11 @@ function VaultBody({ id }: { id: string }) {
   const [removePlaintext, setRemovePlaintext] = useState(false)
   const [idle, setIdle] = useState("900")
   const [maximum, setMaximum] = useState("0")
-  const [output, setOutput] = useState("")
   const mounted = useRef(false)
   useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
 
   useEffect(() => {
-    if (status?.encrypted && status.state !== "unlocked") {
+    if (status?.state === "plain" || (status?.encrypted && status.state !== "unlocked")) {
       setPassphrase(""); setConfirmation(""); setRecovery(""); setNewRecovery(null)
     }
   }, [status?.encrypted, status?.state])
@@ -91,6 +90,15 @@ function VaultBody({ id }: { id: string }) {
     const epoch = bridge.projectEpoch(id)
     const answer = await client.vaultChange(id, { action, ...fields })
     if (!mounted.current) { delete answer.recovery_secret; return answer.vault }
+    if (action === "decrypt") {
+      // The mutation reply cannot reopen a view: a concurrent conversion or lock
+      // may already have superseded it. The status query verifies current storage.
+      setNewRecovery(null)
+      delete answer.recovery_secret
+      await queries.invalidateQueries({ queryKey: vaultKey(id) })
+      await queries.invalidateQueries({ queryKey: ["projects"] })
+      return answer.vault
+    }
     if (bridge.projectEpoch(id) !== epoch) {
       // Conversion/rekey can briefly close their own view. Recheck that completed
       // project before showing its secret; an unrelated lock suppresses late replies.
@@ -140,10 +148,10 @@ function VaultBody({ id }: { id: string }) {
       <p>{!status.encrypted ? "Encryption is off. This project uses ordinary local storage." : unlocked ? "This project is unlocked." : status.state === "locking" ? "Locking: another application is still using a file. Close it and try again." : "This project is locked."}</p>
       <Failure error={ask.error} plain />
       {preserved && <p className="warn">An unencrypted copy was preserved at {preserved}. That copy is not protected.</p>}
-      {newRecovery && <Recovery secret={newRecovery} onDone={() => setNewRecovery(null)} />}
+      {newRecovery && status.encrypted && unlocked && <Recovery secret={newRecovery} onDone={() => setNewRecovery(null)} />}
       {!status.encrypted ? (
         <form className="stack" onSubmit={(event) => submit(event, "encrypt")}>
-          <p className="warn">Encryption protects this project's folder and future work. Earlier exports, backups, and shared cache copies aren't erased; protect or remove them separately. For a new project, enable encryption before creating or importing files.</p>
+          <p className="warn">Encryption protects this project's folder and future work. Earlier plaintext copies, backups, and shared cache copies aren't erased; protect or remove them separately. For a new project, enable encryption before creating or importing files.</p>
           {passwordControls}
           {timeoutControls}
           <label><input type="checkbox" checked={removePlaintext} onChange={(event) => setRemovePlaintext(event.target.checked)} /> Remove the verified unencrypted source after conversion</label>
@@ -168,7 +176,7 @@ function VaultBody({ id }: { id: string }) {
           <button className="tb" type="button" disabled={ask.busy || pending.count > 0} onClick={() => void change("lock")}>Lock project</button>
           <details className="sect"><summary>Change passphrase</summary><form className="stack" onSubmit={(event) => submit(event, "passphrase")}>{passwordControls}<button className="tb" type="submit" disabled={ask.busy || !passphrase || passphrase !== confirmation}>Save passphrase</button></form></details>
           <details className="sect"><summary>Replace recovery secret</summary><p>The old secret may still open previously copied keybags.</p><button className="tb" type="button" disabled={ask.busy} onClick={() => void change("recovery")}>Create replacement recovery secret</button></details>
-          <details className="sect"><summary>Export an unencrypted copy</summary><form className="stack" onSubmit={(event) => { event.preventDefault(); void change("export", { output }) }}><label>New folder on this computer<input className="field" value={output} onChange={(event) => setOutput(event.target.value)} /></label><p>This deliberately creates an ordinary readable copy. The encrypted source remains.</p><button className="tb" type="submit" disabled={ask.busy || !output}>Export unencrypted copy</button></form></details>
+          <details className="sect"><summary>Decrypt project</summary><p>Convert this project folder to ordinary, unencrypted storage. Its files and history stay in the same project. Close files and shells using the readable folder first.</p><button className="tb" type="button" disabled={ask.busy || pending.count > 0} onClick={() => void change("decrypt")}>Decrypt project</button></details>
           <details className="sect"><summary>Rotate project key</summary><p>Re-encrypt all retained files and history. This can take time and temporary disk space.</p><form className="stack" onSubmit={(event) => submit(event, "rotate")}>{passwordControls}<button className="tb" type="submit" disabled={ask.busy || !passphrase || passphrase !== confirmation || pending.count > 0}>Re-encrypt project</button></form></details>
         </>
       )}

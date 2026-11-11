@@ -29,7 +29,7 @@ Passphrase/recovery replacement changes only its wrapping slot. An older indepen
 keybag and credential still opens the old material. `new_generation` creates a fresh project
 key; Calcifer must quiesce work, rewrite every retained file/history blob, verify it, durably
 preserve the new keybag, switch storage, and retire the old managed ciphertext. Creating a new
-keybag alone does not complete rekeying. Prior plaintext exports, ordinary shared-cache copies,
+keybag alone does not complete rekeying. Earlier plaintext copies, ordinary shared-cache copies,
 backups, and copies made by external native apps are outside that rewrite.
 
 `SessionTimer` tracks explicit activity and an optional absolute duration. Polling never renews

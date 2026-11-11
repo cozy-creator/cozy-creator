@@ -18,7 +18,7 @@ cozy vault unlock
 ```
 
 The vault commands use the current project directory unless you give `--directory`.
-On Windows, run encryption and full rekey from outside the project with `--directory`;
+On Windows, run encryption, decryption and full rekey from outside the project with `--directory`;
 close other applications and shells that are holding the project directory.
 
 The CLI prompts for a passphrase. Automation uses `--passphrase-file FILE` or stdin (`-`),
@@ -43,17 +43,27 @@ Active work or native handles can leave it **locking/busy**. Finish/cancel work 
 apps and retry. A readable owned mount is never acknowledged as locked. Normal Calcifer
 shutdown also closes views and refuses while they are busy.
 
-Earlier exports, backups, source inputs, ordinary shared-cache copies and external apps' caches
+Earlier plaintext copies, backups, source inputs, ordinary shared-cache copies and external apps' caches
 are not erased. Without `--remove-plaintext`, conversion preserves the verified original and
-reports its path. For an explicit plaintext copy, choose a new directory outside both backing
-and readable view:
-
-```sh
-cozy vault export --output /absolute/path/PlainCopy
-```
+reports its path.
 
 Hosted encrypted backup is not implemented in this local phase. Copy the backing and keybag
 while locked when you need a ciphertext backup.
+
+## Turning encryption off
+
+Unlock the project, then decrypt it in place:
+
+```sh
+cozy vault --directory /absolute/path/MyProject unlock
+cozy vault --directory /absolute/path/MyProject decrypt
+```
+
+`decrypt` returns the existing project folder to ordinary, unencrypted storage. It keeps the
+same project identity, state, history and media; it does not create another project or ask for
+an output folder. Close other applications and shells using its readable view first. On
+Windows, run it from outside the project as shown above. The project no longer locks or needs
+an unlock credential until you enable encryption again.
 
 ## Recovery changes and rekey
 
@@ -74,7 +84,8 @@ runtime; Windows 11 emulates the filesystem and ffmpeg/ffprobe helpers on ARM64.
 macOS uses built-in encrypted APFS images,
 without a kernel extension. Logical state/media are portable, but raw APFS backing needs macOS;
 raw securefs backing needs its compatible provider. Cross-format moves currently require an
-explicit decoded transfer. APFS does not claim authenticated per-file encryption semantics.
+decoded transfer: decrypt the project, copy its ordinary folder, then enable encryption on
+the destination if wanted. APFS does not claim authenticated per-file encryption semantics.
 
 Do not browse intermediate Windows conversion drives: this provider does not enforce read-only
 mounts. Forcibly killing both controller and native guardian can leave an APFS image attached

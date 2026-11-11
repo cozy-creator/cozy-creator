@@ -220,6 +220,14 @@ class Bridge {
         this.machines((machines) => machines.filter((machine) => machine.name !== event.name))
         break
       case "project.vault": {
+        if (event.state === "plain") {
+          this.forgetProject(event.id)
+          // Discard old status work before the purge rerenders Shell. Only its
+          // fresh status reply can release private read and persistence guards.
+          this.queries.removeQueries({ queryKey: ["project-vault", event.id], exact: true })
+          this.vaultChanged(event.id, event.state)
+          break
+        }
         if (event.state === "unlocked") this.allowProject(event.id)
         else this.forgetProject(event.id)
         this.queries.setQueryData(["project-vault", event.id], (held: import("../api/calcifer").VaultStatus | undefined) => ({
