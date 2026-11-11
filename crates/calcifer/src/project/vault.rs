@@ -410,6 +410,7 @@ fn private(mut response: Response) -> Response {
 
 fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk) -> Result<VaultChanged, Error> {
     recover_under_guards(root)?;
+    require_transition_ready(root, &ask.action)?;
     let (mut recovery_secret, mut preserved_source) = (None, None);
     match ask.action.as_str() {
         "encrypt" => {
@@ -485,6 +486,15 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk) -> Result<VaultChan
         _ => return Err(Error::new(Kind::Usage, "vault_action", "unknown local vault action")),
     }
     Ok(VaultChanged { vault: status(root), recovery_secret, preserved_source })
+}
+
+fn require_transition_ready(root: &FsPath, action: &str) -> Result<(), Error> {
+    if matches!(action, "encrypt" | "rotate" | "decrypt") && conversion(root)?.is_some() {
+        return Err(Error::new(Kind::Conflict, "vault_cleanup_pending", "finish the previous storage conversion before starting another")
+            .remedy("unlock the project again to complete its pending journal and source cleanup")
+            .next("cozy vault unlock"));
+    }
+    Ok(())
 }
 
 struct Converting(PathBuf);
