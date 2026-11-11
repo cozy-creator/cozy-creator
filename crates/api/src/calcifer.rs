@@ -192,9 +192,6 @@ pub struct RunRequest {
     /// `KERNEL` or `[SLOT/]COMPONENT=KERNEL`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attention_kernel: Option<String>,
-    /// Compute it afresh: no machine memo answers or keeps it (dev-only `--no-memo`).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub no_memo: bool,
     /// Keep the function at this level instead of running it (`off` takes it out).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warm: Option<crate::machine::WarmLevel>,
@@ -974,9 +971,16 @@ pub enum StreamEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cursor: Option<ProjectEventCursor>,
     },
+    /// Public protection metadata reaches every tab, including tabs showing another project.
+    #[serde(rename = "project.vault")]
+    ProjectVault { id: String, state: String },
     /// The rows of a project's canvas that changed, at revision `seq`; none is a row gone.
     #[serde(rename = "canvas")]
     Canvas { id: String, seq: u64, cards: BTreeMap<String, Option<crate::calcifer::project::Card>> },
+    /// A project's render as it stands now, whole, when more than one job changed: it began or ended, said something, or a machine or
+    /// a shot joined it. `GET /v1/projects/{id}` has it as `board`; a client keeps the one with the highest `seq`.
+    #[serde(rename = "board.updated")]
+    BoardUpdated { project: String, board: Box<crate::calcifer::project::Board> },
     /// One job of a project's render as it stands now, whole; `GET /v1/projects/{id}` has them all under `board`.
     #[serde(rename = "job.updated")]
     JobUpdated { project: String, job: Box<crate::calcifer::project::Job>, seq: u64 },
@@ -1715,10 +1719,6 @@ pub enum NewMachine {
         gpus: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         disk_gb: Option<u32>,
-        /// A Hub admin's worker image, `sha256:<hex>`, in place of the machine kind's current
-        /// one; the Hub refuses anyone else.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        image: Option<String>,
         /// The one provider to buy from (`runpod`, `vast`): dev-only `--provider`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider: Option<String>,

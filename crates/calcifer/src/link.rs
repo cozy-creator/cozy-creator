@@ -119,6 +119,18 @@ impl Link {
         })
     }
 
+    pub(crate) fn with_private(&self, scope: crate::private_io::Scope) -> Self {
+        Self { machine: self.machine.with_private(scope), lanes: Arc::new(Mutex::new(vec![None; LANES])) }
+    }
+
+    pub(crate) async fn probe_private(&self) -> Result<(), LinkError> {
+        self.machine.probe_private().await.map_err(LinkError::from)
+    }
+
+    pub(crate) async fn close_private(&self) -> Result<(), LinkError> {
+        self.machine.close_private().await.map_err(LinkError::from)
+    }
+
     /// Bulk lane `i`, connected again when `fresh`.
     pub(crate) fn lane(&self, i: usize, fresh: bool) -> Option<Bulk> {
         let mut lanes = self.lanes.lock().unwrap_or_else(|e| e.into_inner());

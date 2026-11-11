@@ -328,15 +328,11 @@ impl Machines {
         run: Option<RunId>,
     ) -> Result<(Ask, bool), Error> {
         let origin = config::Origin::parse(hub)?;
-        let mut intent = serde_json::json!({"hub": origin, "sku": sku, "gpus": shape.gpus,
+        let intent = serde_json::json!({"hub": origin, "sku": sku, "gpus": shape.gpus,
             "disk_gb": shape.disk_gb});
-        // Only an image joins the intent, so a key asked before images keeps its digest.
-        if let Some(image) = &shape.image {
-            intent["image"] = image.as_str().into();
-        }
         let digest = hex::encode(Sha256::digest(intent.to_string()));
         if let Some(asked) = self.store().ask(key).map_err(internal)? {
-            if asked.digest != digest || asked.kind != AskKind::Rent {
+            if !rent_replay_matches(&asked, &intent, &digest) {
                 return Err(Error::new(
                     Kind::Conflict,
                     "idempotency_conflict",
@@ -1395,6 +1391,21 @@ fn alternatives(machines: &[types::RentalPlacementMachine]) -> Vec<Alternative> 
         .collect()
 }
 
+/// A removed image override still identifies an already-recorded rental retry.
+fn rent_replay_matches(ask: &Ask, intent: &serde_json::Value, digest: &str) -> bool {
+    if ask.kind != AskKind::Rent {
+        return false;
+    }
+    if ask.digest == digest {
+        return true;
+    }
+    let Ok(recorded) = serde_json::from_slice::<serde_json::Value>(&ask.body) else { return false };
+    let Some(image) = recorded.pointer("/request/image").filter(|image| image.is_string()) else { return false };
+    let mut legacy = intent.clone();
+    legacy["image"] = image.clone();
+    ask.digest == hex::encode(Sha256::digest(legacy.to_string()))
+}
+
 /// A rent ask as recorded: the exact request the Hub gets, and the quote it is held to.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct RentBody {
@@ -1663,7 +1674,6 @@ fn view(rental: &types::Rental, sku: Option<String>) -> Rental {
 pub(crate) struct Shape {
     pub gpus: Option<u32>,
     pub disk_gb: Option<u32>,
-    pub image: Option<String>,
     /// The one provider to buy from: dev-only `--provider`.
     pub provider: Option<String>,
     pub agreed: Option<Agreed>,
@@ -1684,7 +1694,7 @@ fn request(sku: &str, shape: Shape) -> (types::RentalRequest, String, SigningKey
         container_disk_gb: shape.disk_gb.map(i64::from),
         creator_public_key: URL_SAFE_NO_PAD.encode(signer.verifying_key().to_bytes()),
         fallbacks: shape.fallbacks,
-        image: shape.image,
+        legacy_image: None,
         // The Hub holds a media plane's token hash; machines serve bytes over Read instead.
         media_token_sha256: hex::encode(Sha256::digest(&random[4..36])),
         name: alias.clone(),
@@ -1759,4 +1769,31 @@ fn sku_refusal(sku: &str, gpus: u32, status: &types::RentalSkuStatus) -> Error {
 /// An RFC 3339 time of the Hub's, in unix milliseconds.
 fn ms(at: &str) -> Option<i64> {
     at.parse::<jiff::Timestamp>().ok().map(|at| at.as_millisecond())
+}
+
+#[cfg(test)]
+mod retired_image_tests {
+    use super::*;
+
+    #[test]
+    fn recorded_image_requests_replay_without_restoring_the_override() {
+        let intent = serde_json::json!({"hub": "https://tensorhub.com", "sku": "gpu", "gpus": 1, "disk_gb": 100});
+        let digest = hex::encode(Sha256::digest(intent.to_string()));
+        let mut legacy = intent.clone();
+        legacy["image"] = "sha256:old-image".into();
+        let ask = Ask {
+            key: "prior-request".into(), kind: AskKind::Rent, hub: "https://tensorhub.com".into(),
+            digest: hex::encode(Sha256::digest(legacy.to_string())),
+            body: serde_json::to_vec(&serde_json::json!({"request": {"image": "sha256:old-image"}})).unwrap(),
+            machine: None, run: None, state: AskState::Pending, reason: None,
+        };
+        assert!(rent_replay_matches(&ask, &intent, &digest));
+        let mut changed = intent;
+        changed["sku"] = "another-gpu".into();
+        let changed_digest = hex::encode(Sha256::digest(changed.to_string()));
+        assert!(!rent_replay_matches(&ask, &changed, &changed_digest));
+        let request: types::RentalRequest = serde_json::from_value(serde_json::json!({"image": "sha256:old-image"})).unwrap();
+        assert_eq!(serde_json::to_value(request).unwrap()["image"], "sha256:old-image");
+        assert!(serde_json::to_value(types::RentalRequest::default()).unwrap().get("image").is_none());
+    }
 }

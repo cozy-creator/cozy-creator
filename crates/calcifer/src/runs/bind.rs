@@ -59,7 +59,10 @@ pub(crate) struct Terms {
 impl Terms {
     /// The file Calcifer holds under `digest`.
     fn held(&self, digest: &Digest) -> Option<PathBuf> {
-        super::files::held(digest)
+        match crate::private_io::current() {
+            Some(scope) => super::files::held_for(&scope.storage.view_root, digest),
+            None => super::files::held(digest),
+        }
     }
 
     /// What the client sent under the path `text`.
@@ -212,7 +215,7 @@ pub(crate) async fn warm_choices(
         }
         notes.push(Note {
             level: NoteLevel::Warning,
-            message: "--warm keeps a function ready and takes no inputs, only model.<slot>= and --lora choices: they are ignored".into(),
+            message: "warming keeps a function ready and takes only model and LoRA choices; other inputs are ignored".into(),
         });
     }
     Ok((binder.choices.into_choices(), None))

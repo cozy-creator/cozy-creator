@@ -46,7 +46,7 @@ accept() {
   step "approve-$1" project -p "$P" approve "$1" "$n" || fail "approve $1: $(tail -c 300 "$OUT/approve-$1.txt")"
   J --arg n "$1" '.assets[] | select(.name == $n) | .pinned' <<< "$(cozy --json project -p "$P" status)" || fail "$1 isn't accepted"
 }
-call() { cozy --json --full run show "$(cozy --json project -p "$P" status "$1" | jq -r '.versions[-1].runs[-1]')" --once | jq -c .request; }
+call() { cozy --json --full run watch "$(cozy --json project -p "$P" status "$1" | jq -r '.versions[-1].runs[-1]')" --once | jq -c .request; }
 file_of() { cozy --json project -p "$P" status "$1" | jq -r --arg f "$2" --arg P "$P" '$P + "/" + .versions[-1].files[$f].path'; }
 size() { ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0:s=x "$1"; }
 seconds() { ffprobe -v error -show_entries format=duration -of csv=p=0 "$1"; }
@@ -111,7 +111,7 @@ say "minimax-h3/generate: first and last frames, nothing said of its sound, so N
 drop framed "$PK/minimax-h3/generate" '{"beats": [{"description": "The subject turns slowly toward the camera while soft light moves across the wall.", "duration": 5}], "first_frame": "<clean>", "last_frame": "<two>"}' video
 accept framed
 J '.input | (.first_frame | startswith("sha256:")) and (.last_frame | startswith("sha256:")) and (has("soundscape") | not) and (has("music") | not)' <<< "$(call framed)" || fail "framed's call: $(call framed)"
-cozy run show "$(cozy --json project -p "$P" show framed | jq -r '.versions[-1].runs[-1]')" --once > "$OUT/framed-log.txt" 2>&1 || fail "framed's log"
+cozy run watch "$(cozy --json project -p "$P" show framed | jq -r '.versions[-1].runs[-1]')" --once > "$OUT/framed-log.txt" 2>&1 || fail "framed's log"
 grep -q 'h3 segment prompt' "$OUT/framed-log.txt" || fail "framed's log has no prompt"
 grep -q 'N/A' "$OUT/framed-log.txt" || fail "a silent shot's text doesn't say N/A: $(grep -m1 'h3 segment prompt' "$OUT/framed-log.txt" | cut -c1-600)"
 ! grep -q 'reads as silence' "$OUT/framed-log.txt" || fail "a silent shot is warned of"
@@ -120,7 +120,7 @@ vid=$(file_of framed video); keep_frames framed "$vid"; say "framed: $(size "$vi
 say "minimax-h3/generate: one beat, no summary, as written: MiniMax's own form reaches the model untouched"
 drop asis "$PK/minimax-h3/generate" '{"beats": [{"description": "[Shot 1] A paper boat drifts down a rain gutter.\nAt 00:03.000, it tips over a grate.", "duration": 6}]}' video
 accept asis
-cozy run show "$(cozy --json project -p "$P" show asis | jq -r '.versions[-1].runs[-1]')" --once > "$OUT/asis-log.txt" 2>&1 || fail "asis's log"
+cozy run watch "$(cozy --json project -p "$P" show asis | jq -r '.versions[-1].runs[-1]')" --once > "$OUT/asis-log.txt" 2>&1 || fail "asis's log"
 grep -q 'A paper boat drifts' "$OUT/asis-log.txt" || fail "as written: $(grep -m1 'h3 segment prompt' "$OUT/asis-log.txt" | cut -c1-600)"
 vid=$(file_of asis video); keep_frames asis "$vid"; say "as written: $(size "$vid"), $(seconds "$vid") s"
 
@@ -170,7 +170,7 @@ step take-long project -p "$P" render long --take 1 --in 6 --on "$NAME" || fail 
 J '.input.continue_from | .at_s == 6 and (.video | startswith("sha256:")) and (.latents | startswith("sha256:"))' <<< "$(call long)" || fail "the kept call: $(call long)"
 vid=$(file_of long video); keep_frames take "$vid"; say "kept: $(size "$vid"), $(seconds "$vid") s"
 run=$(cozy --json project -p "$P" status long | jq -r '.versions[-1].runs[-1]')
-kept_s=$(cozy --json run show "$run" --once | jq -r '.result.kept_s // empty')
+kept_s=$(cozy --json run watch "$run" --once | jq -r '.result.kept_s // empty')
 [ -n "$kept_s" ] || fail "run $run says no kept_s: it didn't resume from the latents"
 held "$kept" "$vid" "$(awk -v s="$kept_s" 'BEGIN { printf "%d", s * 24 + 0.5 }')"
 

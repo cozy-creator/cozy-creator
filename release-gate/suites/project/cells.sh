@@ -106,7 +106,7 @@ YAML
       h=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$P/$u")
       expect project-upscale "$([ "$h" = 1080 ] && [ "$(near "$(aspect "$P/$u")" "$(aspect "$P/$f")")" = PASS ] && echo PASS || echo FAIL)" \
         "upscale $(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$P/$u"), shot $(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$P/$f")"
-      "$CLI" --json --full run show "$("$CLI" --json project -p "$P" status mural_upscale | jq -r '.versions[-1].runs[-1]')" --once | jq -r '.request.input.latents // ""' | grep -q sha256 \
+      "$CLI" --json --full run watch "$("$CLI" --json project -p "$P" status mural_upscale | jq -r '.versions[-1].runs[-1]')" --once | jq -r '.request.input.latents // ""' | grep -q sha256 \
         || expect project-upscale-latents FAIL "the upscale was not sent the shot's latents"
       e=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$P/edit.mp4" 2>/dev/null)
       expect project-edit "$([ "$e" = 1920,1080 ] && echo PASS || echo FAIL)" "edit.mp4 ${e:-missing}"
@@ -151,8 +151,8 @@ YAML
     render project-segments-$cf "$P" walk || expect project-segments-$cf FAIL "render: $(tail -c 300 project-segments-$cf.log)"
     v=$(approved "$P" walk); f=$(made "$P" walk); n=$(jq -r '.run // empty' <<< "$v")
     if [ -z "$f" ] || [ -z "$n" ]; then expect project-segments-$cf FAIL "no version of walk: $(tail -c 300 project-segments-$cf.log)"; continue; fi
-    labels=$("$CLI" --json --full run show "$n" | jq -c '[.calls[]? | {label, status}]')
-    given=$("$CLI" --json --full run show "$(jq -r .run <<< "$v")" --once | jq -c '[.request.input.context_frames]')
+    labels=$("$CLI" --json --full run watch "$n" | jq -c '[.calls[]? | {label, status}]')
+    given=$("$CLI" --json --full run watch "$(jq -r .run <<< "$v")" --once | jq -c '[.request.input.context_frames]')
     expect project-segments-$cf "$(jq -r 'if ([.[] | select(.status == "succeeded")] | length) == 2 and (.[1].label == "Segment 2 of 2") then "PASS" else "FAIL" end' <<< "$labels" 2>/dev/null || echo FAIL)" "calls $labels, context_frames $given, want $cf"
     r=$("${FR[@]}" seams "$P/$f" --at "$(awk 'BEGIN { for (i = -4; i <= 4; i++) printf "%s%g", (i > -4 ? "," : ""), 10 + i / 8 }')" 2>&1 | tail -1)
     expect project-segments-$cf-seam "$(jq -r 'if ([.boundaries[].ratio] | max) < 3 then "PASS" else "FAIL" end' <<< "$r" 2>/dev/null || echo FAIL)" "no cut within half a second of the join at 10 s: $r"
@@ -269,7 +269,7 @@ YAML
   render project-voice "$P" hello
   v=$(approved "$P" hello); f=$(made "$P" hello)
   # Sent: a piece's logged references name the character's voice (H3 attaches it as "<name>'s voice").
-  sent=$([ -n "$f" ] && "$CLI" run show --full "$(jq -r .run <<< "$v")" --once 2>/dev/null | grep -o "references=\"[^\"]*host's voice[^\"]*\"" | head -1)
+  sent=$([ -n "$f" ] && "$CLI" run watch --full "$(jq -r .run <<< "$v")" --once 2>/dev/null | grep -o "references=\"[^\"]*host's voice[^\"]*\"" | head -1)
   a=$([ -n "$f" ] && ffprobe -v error -select_streams a:0 -show_entries stream=duration -of csv=p=0 "$P/$f")
   expect project-voice "$([ -n "$sent" ] && [ -n "$a" ] && echo PASS || echo FAIL)" \
     "voice ${sent:-not sent}, sound ${a:-none} s${f:+ (run $(jq -r .run <<< "$v"))}"

@@ -29,7 +29,7 @@ step restart0 machine update "$NAME" --gpu-memory-limit off -y || fail "restart"
 step mode run "$FIX/game.py" --on "$NAME" op=mode cfg='{"mode": "shared"}' || fail "mode"
 step restart machine update "$NAME" --gpu-memory-limit "$(param cap $((20 << 30)))" -y || fail "restart"
 [ "$(cozy machine show "$NAME" --json | jq -r .status.mode)" = shared ] || fail "the machine is not in shared mode"
-show() { cozy run show "$(runno "$1")" --once --json --full > "$OUT/$1.json" 2>&1; }
+show() { cozy run watch "$(runno "$1")" --once --json --full > "$OUT/$1.json" 2>&1; }
 
 # Its two pictures, made here: a lighthouse on rocks and a teapot, 1 MP each (and the model warm).
 for p in photo:"a white lighthouse on dark sea rocks under a grey sky, photo" teapot:"a glazed blue teapot on a white table, photo"; do
@@ -47,7 +47,7 @@ edit warm; step warm run "$T" --on "$NAME" --lane int8 --input "$OUT/warm.req.js
 # The pressure call: the game's launcher is written first, so its start is one ssh once step 2 is done.
 step game-write run "$FIX/game.py" --on "$NAME" op=write \
   cfg="{\"name\": \"pressure\", \"gb\": $(param game_gb 18), \"trigger\": \"now\", \"give_up_s\": 90, \"hold_s\": 120, \"wait_s\": 0}" || fail "game write"
-cozy run show "$(runno game-write)" --once --json > "$OUT/game-write.json" 2>&1
+cozy run watch "$(runno game-write)" --once --json > "$OUT/game-write.json" 2>&1
 # A function's value is its JSON text.
 value=$(jq -c '.result.value | if type == "string" then fromjson else . end' "$OUT/game-write.json" 2> /dev/null)
 launch=$(jq -r '.launch // empty' <<< "$value" 2> /dev/null) st=$(jq -r '.state // empty' <<< "$value" 2> /dev/null)
@@ -63,7 +63,7 @@ while kill -0 "$RUNP" 2> /dev/null; do
   sleep 0.2
 done
 N=$(jq -r 'select(.run.number) | .run.number' "$OUT/pressure.ndjson" | head -1)
-cozy run show "$N" --once --json --full > "$OUT/pressure.json" 2>&1
+cozy run watch "$N" --once --json --full > "$OUT/pressure.json" 2>&1
 cozy machine ssh "$NAME" "cat $st" > "$OUT/game.json" 2>&1
 say "game: $(jq -c '{phase, alloc_s, reached, fails, held_mib, at_trigger: .nvml_at_trigger}' "$OUT/game.json" 2> /dev/null)"
 say "run $N: $(jq -c '{status, ms: .execution_ms, ooms: .measurements.memory.stats.varena[0].stats.working_allocator.ooms,

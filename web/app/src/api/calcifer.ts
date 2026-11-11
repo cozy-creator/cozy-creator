@@ -4,27 +4,27 @@
  * `GET /v1/account`: who this computer signs in as at a Hub, as that Hub says. Credit is read
  * only here; an account a sign-in answers carries none.
  */
-export type Account = { 
+export type Account = {
 /**
  * None until it is named, and while signed out.
  */
-account: string | null, 
+account: string | null,
 /**
  * None where the Hub does not meter it.
  */
-balance_usd_micros: number | null, 
+balance_usd_micros: number | null,
 /**
  * `metered` or `unmetered`; None for an unnamed account.
  */
-billing: string | null, 
+billing: string | null,
 /**
  * The Hub's page to buy credit.
  */
-buy_credits: string | null, device_key: string | null, email: string | null, 
+buy_credits: string | null, device_key: string | null, email: string | null,
 /**
  * This computer holds a key the Hub no longer accepts (revoked from another computer).
  */
-key_refused?: boolean, 
+key_refused?: boolean,
 /**
  * The Hub accepts this computer's key.
  */
@@ -38,15 +38,15 @@ export type Adapter = { model: string, strength: number, components: Array<strin
 /**
  * One request field served other than as sent.
  */
-export type Adjustment = { 
+export type Adjustment = {
 /**
  * Its path in the request: `steps`, `assets.2.asset`.
  */
-field: string, 
+field: string,
 /**
  * `adjusted`, `clamp` or `warn`.
  */
-kind: string, requested: string, applied: string, reason: string, 
+kind: string, requested: string, applied: string, reason: string,
 /**
  * `handler`, or what the Runtime applied: `policy`, `checkpoint:…`, `adapter:…`.
  */
@@ -61,23 +61,23 @@ export type Agreed = { usd_micros_per_hour: number, };
  * One function's code and weights a machine is fetching ahead of jobs that will need them. It is no job of anyone's: wrong, it costs
  * bytes, and its job's run fetches what it needs.
  */
-export type Ahead = { 
+export type Ahead = {
 /**
  * `org/package/function`.
  */
-function: string, machine: string, 
+function: string, machine: string,
 /**
  * Its run, kept out of the list people read.
  */
-run: number, 
+run: number,
 /**
  * `installing it`, `downloading its weights`, …; none once it ended.
  */
-stage?: string | null, done: number, total: number, 
+stage?: string | null, done: number, total: number,
 /**
  * It's all there.
  */
-ready?: boolean, 
+ready?: boolean,
 /**
  * Why it stopped short: the disk has no room, or it was canceled.
  */
@@ -98,162 +98,166 @@ export type Approve = { name: string, version: string, };
 /**
  * What an approve pinned: the asset's version and files, and what that put out of date.
  */
-export type Approved = { name: string, noun: string, 
+export type Approved = { name: string, noun: string,
 /**
  * The version it is; 0 for a file that is none of its versions.
  */
-number: number, files: { [key in string]: ProjectFile }, 
+number: number, files: { [key in string]: ProjectFile },
 /**
  * The file people mean by it.
  */
-path: string, 
+path: string,
 /**
  * What this put out of date.
  */
-stale: Array<string>, warnings?: Array<string>, 
+stale: Array<string>, warnings?: Array<string>,
 /**
  * What `If-Match` names from here on.
  */
 etag?: string | null, };
 
 /**
- * `POST /v1/projects/{id}/runs`: what the ask found. `/events` opens with the runs already going.
+ * `POST /v1/projects/{id}/runs`: what the ask found. `GET /v1/events` tells its board's changes from here.
  */
-export type Asked = { id: string, 
+export type Asked = { id: string,
 /**
  * This render, which the `ended` that names it ends. None when it joined one going and added nothing: that one's end is its own.
  */
-ask?: string | null, path: string, 
+ask?: string | null, path: string,
 /**
  * A render was going already: this ask joined it.
  */
-joined?: boolean, 
+joined?: boolean,
 /**
  * What it added to the walk; 0 with `joined` is no new work.
  */
-added: number, 
+added: number,
 /**
  * Pinned assets it was asked of by no name of their own: left as they are.
  */
-skipped?: Array<string>, 
+skipped?: Array<string>,
 /**
  * What it added, each with what is ahead of it.
  */
-queued?: Array<QueuedNow>, 
+queued?: Array<QueuedNow>,
+/**
+ * What the ask found of what it names, each line once: what it skips and why, a flag it ignores.
+ */
+said?: Array<Said>,
 /**
  * Commands to run next.
  */
-next?: Array<string>, 
+next?: Array<string>,
 /**
- * The render as this ask left it: `/events` says each change from here.
+ * The render as this ask left it: `board.updated` and `job.updated` on `GET /v1/events` say each change from here.
  */
 board: Board, };
 
 /**
  * An asset: a stable name holding a set of files.
  */
-export type Asset = { name: string, standing: Standing, 
+export type Asset = { name: string, standing: Standing,
 /**
  * The runs making a version of it now (`GET /v1/runs/{id}` says how far).
  */
-making?: Array<number>, 
+making?: Array<number>,
 /**
  * Its file's type: `image`, `video` or `audio`.
  */
-kind: string, 
+kind: string,
 /**
  * What its alternatives are called: `take` (one that holds a video) or `version`.
  */
-noun: string, 
+noun: string,
 /**
  * The tool that makes it. None for a file.
  */
-tool?: string | null, 
+tool?: string | null,
 /**
  * How many it has.
  */
-versions: number, 
+versions: number,
 /**
  * Each one's hash prefix, to name it in project.yaml.
  */
-prefixes?: Array<VersionPrefix>, 
+prefixes?: Array<VersionPrefix>,
 /**
  * The version that is its state.
  */
-version?: number | null, 
+version?: number | null,
 /**
  * The number (1 first, never reused) of the version `approve` or `--approve` pinned. Its state until `unpin`.
  */
-approved?: number | null, 
+approved?: number | null,
 /**
  * Its state is a file project.yaml names: nothing is made.
  */
-pinned?: boolean, 
+pinned?: boolean,
 /**
  * Its memo key's inputs now; None while something it reads has no state.
  */
-inputs?: string | null, 
+inputs?: string | null,
 /**
  * Its state by output name (`video`, `image`, `latents`).
  */
-files?: { [key in string]: ProjectFile }, 
+files?: { [key in string]: ProjectFile },
 /**
  * The file people mean by it, for people who want it.
  */
-path?: string | null, 
+path?: string | null,
 /**
  * The hash of that file, the field that names one of its type, and what is measured of it.
  */
-sha256?: string | null, field?: string | null, width?: number | null, height?: number | null, duration_ms?: number | null, 
+sha256?: string | null, field?: string | null, width?: number | null, height?: number | null, duration_ms?: number | null,
 /**
  * Part of that file is fully transparent.
  */
-alpha?: boolean, 
+alpha?: boolean,
 /**
  * That file's bytes aren't on this computer.
  */
-absent?: boolean, 
+absent?: boolean,
 /**
  * The machine that keeps them, when one does.
  */
-machine?: string | null, 
+machine?: string | null,
 /**
  * The function that made its state, `org/package/function@release`.
  */
-made_by?: string | null, 
+made_by?: string | null,
 /**
  * For people, in its own noun: current, no take yet, out of date and why, making (run N), …
  */
-status: string, 
+status: string,
 /**
  * What it reads by a mention, in the order its text says them.
  */
-reads?: Array<Read>, 
+reads?: Array<Read>,
 /**
  * Its inputs, flat, each by a control's `field`: what `PATCH /v1/projects/{id}/assets/{name}` sets, as it applies now.
  */
-fields?: { [key in string]: JsonValue }, 
+fields?: { [key in string]: JsonValue },
 /**
  * Names what a write of its fields read: `If-Match` on `PATCH`. An edit of another node doesn't move it. None for what has no lines of its own.
  */
-etag?: string | null, 
+etag?: string | null,
 /**
  * What stopped its last try: until a version lands, it's tried again, or its inputs change.
  */
-failure?: ErrorBody | null, 
+failure?: ErrorBody | null,
 /**
  * A pin's: what changed since the version it holds was made. It stands, out of date, until it is run or moved.
  */
-changed?: Array<string>, 
+changed?: Array<string>,
 /**
  * The names its text reads that are nothing in the project, as far as its package's tags are known: it can't run until they are.
  * A pin lists them too, for its text: it stands, and only fails if it is run again.
  */
-missing?: Array<string>, 
+missing?: Array<string>,
 /**
  * An Edit's: its clips as they read now.
  */
-timeline?: TimelineNow | null, 
+timeline?: TimelineNow | null,
 /**
  * An Edit being rendered here: how far, 0 to 1. It runs on no machine, so it has no run to ask.
  */
@@ -267,7 +271,7 @@ export type AssetDeleted = { name: string, at?: Card | null, };
 /**
  * What a write of an asset answers: its name, and what `If-Match` names from here on.
  */
-export type AssetMade = { name: string, etag: string, 
+export type AssetMade = { name: string, etag: string,
 /**
  * Each of its `moves` another wrote since, left as it is: its row now (null: none).
  */
@@ -287,11 +291,11 @@ export type AssetPatched = { name: string, etag: string, was: string, warnings?:
 /**
  * `GET /v1/projects/{id}/assets/{name}`: an asset and each of its versions, 1 first.
  */
-export type AssetVersions = { asset: Asset, versions: Array<Version>, 
+export type AssetVersions = { asset: Asset, versions: Array<Version>,
 /**
  * The numbers discarded that `PUT` can still bring back: `reclaim` ends that.
  */
-discarded?: Array<number>, 
+discarded?: Array<number>,
 /**
  * With `?call=true`: the call its binder would send now, as `cozy run --input` takes it, and what binding it said.
  */
@@ -302,7 +306,7 @@ call?: JsonValue | null, call_warnings?: Array<string>, };
  * ambiguous while its create is answered, booting, or replanning between attempts. Times are
  * the Hub's clock (unix ms).
  */
-export type Attempt = { number: number, state: string, started_at_ms?: number | null, last_progress_at_ms?: number | null, observed_at_ms: number, 
+export type Attempt = { number: number, state: string, started_at_ms?: number | null, last_progress_at_ms?: number | null, observed_at_ms: number,
 /**
  * The attempt this one replaced: its number, why it failed, and when.
  */
@@ -312,32 +316,44 @@ replaced?: Replaced | null, };
  * A render as a view draws it: everything it covers, what has ended first, then what is going, then what waits. It is
  * the whole of what a client needs to show how a render goes, so a client follows no run of its own.
  */
-export type Board = { 
+export type Board = {
 /**
  * Goes up with each change, across a Calcifer restart: a client keeps the highest it heard.
  */
-seq: number, 
+seq: number,
 /**
  * The machines it may go to.
  */
-on?: Array<string>, began_at_ms: number, 
+on?: Array<string>, began_at_ms: number,
 /**
  * How long it took, once its walk ended.
  */
-elapsed_ms?: number | null, 
+elapsed_ms?: number | null,
 /**
  * How many shots it will make, what's queued too: what a job's `shot` counts up to. It grows only as another render joins.
  */
-shots: number, jobs?: Array<Job>, 
+shots: number, jobs?: Array<Job>,
 /**
  * What machines are fetching ahead of what's queued, one per function.
  */
-ahead?: Array<Ahead>, };
+ahead?: Array<Ahead>,
+/**
+ * What it said as it went, each line once, in order.
+ */
+said?: Array<Said>,
+/**
+ * What failed of no one asset, each once; what does not read it goes on. A job's failure is its own `error`.
+ */
+errors?: Array<ErrorBody>,
+/**
+ * How its walk ended, once it has.
+ */
+ended?: RenderEnded | null, };
 
 /**
  * `GET /v1/tools/browse`: a page of the Hub's packages that make media.
  */
-export type Browsed = { packages: Array<BrowsedPackage>, 
+export type Browsed = { packages: Array<BrowsedPackage>,
 /**
  * How many more a bigger `limit` reads.
  */
@@ -346,11 +362,11 @@ older: number, };
 /**
  * One row of `GET /v1/tools/browse`: a package of the Hub that makes media.
  */
-export type BrowsedPackage = { package: string, 
+export type BrowsedPackage = { package: string,
 /**
  * What it does, in a line.
  */
-summary?: string, 
+summary?: string,
 /**
  * The `id`s of its tools.
  */
@@ -364,7 +380,7 @@ export type BrowserSession = { token: string, media: string, };
 /**
  * Who made a change to a project: the page (`client` names its tab), the CLI, a hand in project.yaml, or another client of the API.
  */
-export type By = { 
+export type By = {
 /**
  * `page`, `cli`, `file` or `api`.
  */
@@ -373,19 +389,19 @@ via: string, client?: string | null, };
 /**
  * `GET /v1/status`: this Calcifer at a glance. It never waits on a Hub.
  */
-export type CalciferStatus = { version: string, 
+export type CalciferStatus = { version: string,
 /**
  * `linux`, `macos` or `windows`.
  */
-os: string, 
+os: string,
 /**
  * Whether this computer runs models itself ([`local_usable`]).
  */
-local_usable: boolean, 
+local_usable: boolean,
 /**
  * Whether this computer holds a device key for its Hub. `GET /v1/account` asks the Hub whether it still counts.
  */
-signed_in: boolean, 
+signed_in: boolean,
 /**
  * Bytes Calcifer's code has allocated and not freed: what it holds, which its resident memory also counts with what its
  * allocator keeps of what was freed.
@@ -395,7 +411,7 @@ heap_bytes: number, };
 /**
  * One settled call of a run (the run's own function or a child call).
  */
-export type Call = { run: string, index: number, function: string, label?: string, status: string, called_at_ms: number, finished_at_ms: number, measurements?: JsonValue | null, reason?: Reason | null, memoized: boolean, 
+export type Call = { run: string, index: number, function: string, label?: string, status: string, called_at_ms: number, finished_at_ms: number, measurements?: JsonValue | null, reason?: Reason | null, memoized: boolean,
 /**
  * What keyed a memoizable call's code (`Memo::basis`).
  */
@@ -404,7 +420,7 @@ memo_basis?: string, };
 /**
  * `GET /v1/projects/{id}/canvas`: each element's row, by name. A name with no row isn't listed, and the page places it.
  */
-export type Canvas = { 
+export type Canvas = {
 /**
  * The project's revision these rows are of.
  */
@@ -419,7 +435,7 @@ export type CanvasPatch = { cards: { [key in string]: Card | null }, placed?: { 
 /**
  * What a canvas patch left: the new revision and the `placed` rows it kept.
  */
-export type CanvasPatched = { seq: number, 
+export type CanvasPatched = { seq: number,
 /**
  * Each of `placed` another wrote since, left as it is: its row now (null: none).
  */
@@ -443,23 +459,23 @@ export type CheckpointRef = { repo_id: string, revision: string, lane: string, }
 /**
  * A clip: an asset, and the part of it. Its place in the list is its place on the track, with no gaps. Points are frames at the Edit's rate.
  */
-export type Clip = { 
+export type Clip = {
 /**
  * `<name>`.
  */
-clip: string, 
+clip: string,
 /**
  * A video's in point, from 0.
  */
-in?: number | null, 
+in?: number | null,
 /**
  * A video's out point, exclusive. None: its end.
  */
-out?: number | null, 
+out?: number | null,
 /**
  * A still's duration. None: 3 s.
  */
-frames?: number | null, 
+frames?: number | null,
 /**
  * On a version's clip: the file it cut.
  */
@@ -468,35 +484,35 @@ sha256?: string | null, };
 /**
  * A clip and what it reads.
  */
-export type ClipNow = { name: string, 
+export type ClipNow = { name: string,
 /**
  * `video` or `image`.
  */
-field?: string | null, path?: string | null, 
+field?: string | null, path?: string | null,
 /**
  * How many frames a video holds at the Edit's rate.
  */
-holds?: number | null, width?: number | null, height?: number | null, 
+holds?: number | null, width?: number | null, height?: number | null,
 /**
  * Why a render goes on without it: it has no file to read here.
  */
-missing?: string | null, 
+missing?: string | null,
 /**
  * `<name>`.
  */
-clip: string, 
+clip: string,
 /**
  * A video's in point, from 0.
  */
-in?: number | null, 
+in?: number | null,
 /**
  * A video's out point, exclusive. None: its end.
  */
-out?: number | null, 
+out?: number | null,
 /**
  * A still's duration. None: 3 s.
  */
-frames?: number | null, 
+frames?: number | null,
 /**
  * On a version's clip: the file it cut.
  */
@@ -505,7 +521,7 @@ sha256?: string | null, };
 /**
  * A code on its way: `POST /v1/account/codes/{id}` with what arrived finishes it, once.
  */
-export type Code = { id: string, email: string, 
+export type Code = { id: string, email: string,
 /**
  * Asked again too soon: `id` is the code already out, and the Hub sends another after this.
  */
@@ -534,7 +550,7 @@ export type Component = { "version": string } | { "file": DevBuild };
  * (None: not yet), the takes it retimed to that rate (`<asset> (<fps> fps)`), and what it cuts that
  * has nothing made yet, which it skips.
  */
-export type Cut = { cut: string, path: string, fps: number, cut_at_ms?: number | null, frames?: number | null, retimed?: Array<string>, skips?: Array<string>, 
+export type Cut = { cut: string, path: string, fps: number, cut_at_ms?: number | null, frames?: number | null, retimed?: Array<string>, skips?: Array<string>,
 /**
  * The film that stands was cut without these: `<piece>: <why>`.
  */
@@ -555,7 +571,7 @@ export type Digest = string;
  * A model's display metadata as set at the Hub: shown by `cozy model info`, never applied (a
  * run's LoRA strength stays 1.0).
  */
-export type Displayed = { model: string, trigger: string | null, strength: number | null, 
+export type Displayed = { model: string, trigger: string | null, strength: number | null,
 /**
  * Why the Hub did not take them; the upload stands.
  */
@@ -565,7 +581,7 @@ error?: string | null, };
  * `DELETE /v1/machines/{name}[?force=true]`: `changed` is false when it had ended already. While
  * its runs' outputs have not landed it is refused `outputs_exporting`, unless `force`.
  */
-export type Ended = { machine: Machine, changed: boolean, 
+export type Ended = { machine: Machine, changed: boolean,
 /**
  * Outputs of its runs that had not landed when `force` ended it, given up: `run 12 big`.
  */
@@ -579,15 +595,15 @@ export type Envelope = { error: ErrorBody, };
 /**
  * A package environment the machine holds for this controller.
  */
-export type Environment = { installation: string, package: string, release: string, hub: string, 
+export type Environment = { installation: string, package: string, release: string, hub: string,
 /**
  * The cozy-runtime installed in it: the machine's, or a newer one its package needs.
  */
-runtime: string, 
+runtime: string,
 /**
  * What it holds now: `installed`, `downloaded`, `imported`, `host` or `gpu`.
  */
-level: string, 
+level: string,
 /**
  * What its runs are told of the Runtime pair it holds (one of the machine's it did not take,
  * and why); empty for nothing.
@@ -597,19 +613,19 @@ warning: string, };
 /**
  * A typed refusal: its class, stable code and message, with an optional remedy and next commands.
  */
-export type ErrorBody = { kind: ErrorKind, code: string, message: string, remedy?: string | null, 
+export type ErrorBody = { kind: ErrorKind, code: string, message: string, remedy?: string | null,
 /**
  * Commands to try next; at most two.
  */
-next?: Array<string>, 
+next?: Array<string>,
 /**
  * The originating component's own stable code (a machine's or the Hub's), when not ours.
  */
-cause?: string | null, 
+cause?: string | null,
 /**
  * How long the one refusing said to wait before asking again, in seconds.
  */
-retry_after_s?: number | null, 
+retry_after_s?: number | null,
 /**
  * The originating component's own details of its refusal, verbatim (a Hub's `metadata`).
  */
@@ -628,7 +644,7 @@ export type EtaBasis = "machine" | "gpu" | "steps" | "first_run";
 /**
  * A key for another computer: its file, which the client writes owner-only.
  */
-export type ExportedKey = { email: string, device_key: string, 
+export type ExportedKey = { email: string, device_key: string,
 /**
  * The key file's text (`cozy login --key` installs it).
  */
@@ -637,7 +653,7 @@ key: string, };
 /**
  * A GEMM kernel that served below its lane: what served, what was wanted, and why.
  */
-export type Fallback = { 
+export type Fallback = {
 /**
  * What served instead, when it was not the kernel itself.
  */
@@ -669,7 +685,7 @@ export type FileTerm = { name?: string | null, file: string, };
  * How this computer would do what a render asks: each tool it would do poorly, and the GPU to rent instead. Empty: well enough, or
  * nothing says otherwise.
  */
-export type Fit = { tools: Array<ToolFit>, 
+export type Fit = { tools: Array<ToolFit>,
 /**
  * What the Hub places them all on.
  */
@@ -684,23 +700,23 @@ export type FitAsk = { names: Array<string>, outdated?: boolean, };
 /**
  * One model a search found, with its newest release, lanes, author and kind.
  */
-export type FoundModel = { model: string, 
+export type FoundModel = { model: string,
 /**
  * The label its owner gave it, else what its header verifies as.
  */
-family: string | null, family_from?: FamilyFrom | null, release: string | null, 
+family: string | null, family_from?: FamilyFrom | null, release: string | null,
 /**
  * The newest release's lanes; a private model's commits' lanes.
  */
-lanes: Array<string>, private: boolean, 
+lanes: Array<string>, private: boolean,
 /**
  * Who made it: the org it credits, or the parked org it mirrors into.
  */
-author: ModelAuthor | null, 
+author: ModelAuthor | null,
 /**
  * What its header says it is. None: it couldn't be read.
  */
-kind?: ModelKind | null, 
+kind?: ModelKind | null,
 /**
  * Its labels, sorted; `nsfw` among them marks one that makes sexual or nude images.
  */
@@ -719,7 +735,7 @@ export type Gemm = { kernel: string, format: string, fallback?: Fallback | null,
 /**
  * One of a machine's GPUs: its name, memory, driver and family.
  */
-export type Gpu = { index: number, name: string, memory_bytes: number, driver: string, family?: string | null, memory_class?: string | null, 
+export type Gpu = { index: number, name: string, memory_bytes: number, driver: string, family?: string | null, memory_class?: string | null,
 /**
  * The most of `memory_bytes` the machine uses; 0: all of it.
  */
@@ -733,11 +749,11 @@ export type HeldFile = { digest: Digest, length: number, media_type: string, };
 /**
  * One checkpoint a machine holds, and its repository's bytes there.
  */
-export type HeldModel = { machine: string, model: string, release: string, lane: string, 
+export type HeldModel = { machine: string, model: string, release: string, lane: string,
 /**
  * Its header's precision lane (`int8`, …).
  */
-precision: string, checkpoint: string, bytes: number, 
+precision: string, checkpoint: string, bytes: number,
 /**
  * The repository's bytes other held models share.
  */
@@ -746,15 +762,15 @@ shared_bytes: number, };
 /**
  * One package a machine holds.
  */
-export type HeldPackage = { machine: string, package: string, release: string, 
+export type HeldPackage = { machine: string, package: string, release: string,
 /**
  * The cozy-runtime in its environment.
  */
-runtime: string, level: string, hub: string, 
+runtime: string, level: string, hub: string,
 /**
  * `local`, `hub`, or another Hub's URL.
  */
-source: string, 
+source: string,
 /**
  * What its runs are told of the Runtime pair it holds (one of the machine's it did not take,
  * and why); empty for nothing.
@@ -769,11 +785,11 @@ export type History = { entries: Array<HistoryEntry>, undo?: number | null, redo
 /**
  * One edit of a project as its history keeps it: what it did in plain words, and whether it's undone.
  */
-export type HistoryEntry = { id: number, at_ms: number, by: By, words: string, 
+export type HistoryEntry = { id: number, at_ms: number, by: By, words: string,
 /**
  * The assets it touched.
  */
-names?: Array<string>, 
+names?: Array<string>,
 /**
  * The page's own ids for the edit (`Cozy-Edit`), which undo and redo take as well as `id`.
  */
@@ -788,7 +804,7 @@ export type HistoryStep = { entry?: number | null, edit?: string | null, to?: nu
 /**
  * What a step undid or redid, in the order it did them; `already` when the entry asked was so already.
  */
-export type HistoryStepped = { entries: Array<HistoryEntry>, already?: boolean, 
+export type HistoryStepped = { entries: Array<HistoryEntry>, already?: boolean,
 /**
  * What refused the next of a `to`, short of it.
  */
@@ -809,19 +825,19 @@ export type HubProblem = { hub: string, code: string, message: string, };
  * project.yaml, with `at` a card on its canvas. `source` is a held file (`sha256:<hex>`, moved rather than copied), a file of the project's
  * by its hash or the start of it, or an `http(s)` URL.
  */
-export type Import = { source: string, 
+export type Import = { source: string,
 /**
  * What to call it, through `as_name` with `.` as `_`; a taken name gets `_2`. Absent: the stem of a path or URL, lower-cased, else `file`.
  */
-name?: string | null, at?: Card | null, 
+name?: string | null, at?: Card | null,
 /**
  * The words for whatever mentions it.
  */
-description?: string | null, 
+description?: string | null,
 /**
  * A person typed `name`: refused if the project has it, not numbered.
  */
-exact?: boolean, 
+exact?: boolean,
 /**
  * What its drop pushed aside, written with it, each only if no other client wrote it after the revision in `placed`.
  */
@@ -830,11 +846,11 @@ moves?: { [key in string]: Card }, placed?: { [key in string]: number }, };
 /**
  * What an import made: the element's name, its file's hash, the field that names one of its type (`image`, `video`, `audio`), and its path in the project.
  */
-export type Imported = { name: string, sha256: string, field: string, path: string, 
+export type Imported = { name: string, sha256: string, field: string, path: string,
 /**
  * Its bytes were in `files/` already, so nothing was copied.
  */
-already?: boolean, 
+already?: boolean,
 /**
  * Each of its `moves` another wrote since, left as it is: its row now (null: none).
  */
@@ -848,79 +864,79 @@ export type ItemStatus = "in_progress" | "completed" | "incomplete";
 /**
  * One version of one asset being made.
  */
-export type Job = { 
+export type Job = {
 /**
  * The same for as long as the render goes, whatever it does: what `job.updated` names it by.
  */
-id: string, asset: string, state: JobState, 
+id: string, asset: string, state: JobState,
 /**
  * What its alternatives are called: `take` or `version`.
  */
-noun: string, 
+noun: string,
 /**
  * Its take or version, once one is reserved for it. None for a file that comes with another's take.
  */
-number?: number | null, 
+number?: number | null,
 /**
  * Which of the render's shots it makes, 1 first, for the whole render: a `kind: video` its package makes. None for a cut or a still.
  */
-shot?: number | null, 
+shot?: number | null,
 /**
  * The assets it waits for, by name.
  */
-needs?: Array<string>, 
+needs?: Array<string>,
 /**
  * How many GPUs it is planned on.
  */
-gpus?: number | null, 
+gpus?: number | null,
 /**
  * When it should start and end, as the walker works it out from what has run here: to the nearest 10 s, as a guess.
  */
-starts_at_ms?: number | null, ends_at_ms?: number | null, 
+starts_at_ms?: number | null, ends_at_ms?: number | null,
 /**
  * A sentence: what it waits for (`after a, b`, `comes with c`, `waiting for a GPU, held by d`), or what came of it.
  */
-why?: string | null, 
+why?: string | null,
 /**
  * The run making it now, or that last did.
  */
-run?: number | null, machine?: string | null, 
+run?: number | null, machine?: string | null,
 /**
  * When its machine began it. Its time counts from here, never its queue's.
  */
-started_at_ms?: number | null, 
+started_at_ms?: number | null,
 /**
  * How long its runs executed, once they ended.
  */
-took_ms?: number | null, 
+took_ms?: number | null,
 /**
  * Where it is, in words: `segment 2/2, denoise`.
  */
-stage?: string | null, 
+stage?: string | null,
 /**
  * How far through that: `14/30`, `12 GiB/52 GiB`.
  */
-detail?: string | null, 
+detail?: string | null,
 /**
  * How far through the whole run, 0 to 1.
  */
-fraction?: number | null, 
+fraction?: number | null,
 /**
  * It has stopped moving.
  */
-stalled?: Stalled | null, 
+stalled?: Stalled | null,
 /**
  * What it has shown so far while it goes on: never the take or version itself.
  */
-preview?: Preview | null, 
+preview?: Preview | null,
 /**
  * Its file in the project, once done: `files/<sha256>.<ext>`, or a cut's film.
  */
-path?: string | null, 
+path?: string | null,
 /**
  * A cut's length.
  */
-seconds?: number | null, 
+seconds?: number | null,
 /**
  * Why it failed, and what to run next.
  */
@@ -936,7 +952,7 @@ export type JsonValue = unknown
 /**
  * `POST /v1/machines/{name}/keepalive`, once the machine acknowledged it.
  */
-export type Keepalive = { acknowledged_at_ms: number, 
+export type Keepalive = { acknowledged_at_ms: number,
 /**
  * None while a job is queued or running there.
  */
@@ -946,7 +962,7 @@ idle_deadline_ms?: number | null, };
  * One kernel's verification on this machine (the Runtime's `verify_op`), keyed by its
  * artifact, the card's architecture and the driver.
  */
-export type KernelVerdict = { kernel: string, artifact: string, sm: number, driver: string, ok: boolean, 
+export type KernelVerdict = { kernel: string, artifact: string, sm: number, driver: string, ok: boolean,
 /**
  * What was measured, or why it failed.
  */
@@ -955,15 +971,15 @@ detail: string, };
 /**
  * One project in the index.
  */
-export type KnownProject = { id: string, 
+export type KnownProject = { id: string,
 /**
  * Its stable, nine-character public URL code.
  */
-code: string, 
+code: string,
 /**
  * Its name: what `-p` takes.
  */
-name: string, path: string, used_at_ms: number, 
+name: string, path: string, used_at_ms: number,
 /**
  * Its runs are being made, or asked and not yet sent.
  */
@@ -977,16 +993,16 @@ export type Leg = { name: string, ms: number, };
 /**
  * Live rentals summed: how many, what they cost an hour now, and what they accrued so far.
  */
-export type LiveRentals = { count: number, usd_micros_per_hour: number, 
+export type LiveRentals = { count: number, usd_micros_per_hour: number,
 /**
  * Over the rentals whose Hub said what they cost; none when none did.
  */
-accrued_usd_micros?: number | null, 
+accrued_usd_micros?: number | null,
 /**
  * The weakest basis among them: `charged`, `unmetered`, or `estimate` (also when a rental's
  * Hub said nothing, and the sum is then `accrued_floor`).
  */
-accrued_basis?: string | null, 
+accrued_basis?: string | null,
 /**
  * Some rental's Hub said nothing of its cost: the sum is at least this.
  */
@@ -995,15 +1011,15 @@ accrued_floor: boolean, };
 /**
  * A run a machine holds for this controller, beside this controller's record of it.
  */
-export type LiveRun = { id: string, 
+export type LiveRun = { id: string,
 /**
  * The machine's word for it: queued, preparing or running.
  */
-state: string, 
+state: string,
 /**
  * Why it waits there.
  */
-waiting?: string, 
+waiting?: string,
 /**
  * None when this controller keeps no record of it; a settled one was left behind.
  */
@@ -1013,7 +1029,7 @@ run?: Run | null, };
  * Local code by content: its tree document's digest, each file and then the document sent first (`PUT /v1/files`), and
  * where the package is in the tree.
  */
-export type LocalCode = { tree: Digest, 
+export type LocalCode = { tree: Digest,
 /**
  * The package's folder or script in the tree, `/`-separated; empty: the tree itself.
  */
@@ -1022,72 +1038,72 @@ at?: string, };
 /**
  * One machine as Calcifer knows it: its kind, state, address, rental, latest status and runs.
  */
-export type Machine = { name: string, kind: MachineKind, state: MachineState, hub?: string, rental_id?: string | null, 
+export type Machine = { name: string, kind: MachineKind, state: MachineState, hub?: string, rental_id?: string | null,
 /**
  * The name it had before its Hub named it; it keeps resolving.
  */
-alias?: string | null, address?: string | null, 
+alias?: string | null, address?: string | null,
 /**
  * The sha256 of its pinned TLS leaf: what `cozy machine add … --fingerprint` takes.
  */
-fingerprint?: Digest | null, 
+fingerprint?: Digest | null,
 /**
  * Why it ended.
  */
-reason?: string | null, 
+reason?: string | null,
 /**
  * Why a ready machine is offline, by its Hub's word (its provider stopped it, or its Hub is
  * ending it), while it does not answer: runs to it are refused. Its state stays `ready`,
  * which is what a reader that predates this field shows.
  */
-offline?: string | null, 
+offline?: string | null,
 /**
  * The Hub's word, for a rental.
  */
-rental?: Rental | null, 
+rental?: Rental | null,
 /**
  * How to log in, for a rental rented with an SSH key.
  */
-ssh?: Ssh | null, 
+ssh?: Ssh | null,
 /**
  * The machine's own latest Status, once it answered.
  */
-status?: MachineStatus | null, 
+status?: MachineStatus | null,
 /**
  * Why its Status cannot be read now (`status` is then the last it read), and since when.
  */
-unreachable?: string | null, unreachable_since_ms?: number | null, 
+unreachable?: string | null, unreachable_since_ms?: number | null,
 /**
  * A booting rental's phase, as its Hub says it.
  */
-boot?: string | null, 
+boot?: string | null,
 /**
  * A booting rental's acquisition attempt, as its Hub says it.
  */
-attempt?: Attempt | null, 
+attempt?: Attempt | null,
 /**
  * Calcifer's runs on it.
  */
-running: number, queued: number, 
+running: number, queued: number,
 /**
  * False: a rental another client of this account ordered. This controller reaches it as its
  * own (the Hub grants it every device the account signed in on), but places no run on it unasked.
  */
-ordered: boolean, 
+ordered: boolean,
 /**
  * Its Hub did not answer the last listing.
  */
-unverified: boolean, 
+unverified: boolean,
 /**
  * On `local`: this controller's public key, what another computer's `cozy machine authorize`
  * takes to let this one use its machine.
  */
-controller_key?: string | null, 
+controller_key?: string | null,
 /**
  * On `local`: where other computers reach it, what their `cozy machine add` takes (a pod's
  * public address; this computer's LAN address while it listens for authorized controllers).
  */
-reach?: string | null, 
+reach?: string | null,
 /**
  * What an ending machine waits for before its end is carried out: its runs' outputs to land
  * here. None once its end is under way, or when nothing holds it.
@@ -1102,19 +1118,19 @@ export type MachineKind = "local" | "rental" | "added";
 /**
  * `GET /v1/machines` (`?refresh=true` lists every Hub again first).
  */
-export type MachineList = { machines: Array<Machine>, 
+export type MachineList = { machines: Array<Machine>,
 /**
  * When each Hub last answered a listing.
  */
-hubs: Array<HubListing>, 
+hubs: Array<HubListing>,
 /**
  * Hubs whose last listing failed: their rows are `unverified`.
  */
-unanswered: Array<HubProblem>, 
+unanswered: Array<HubProblem>,
 /**
  * Hubs this computer holds no login for.
  */
-signed_out: Array<string>, 
+signed_out: Array<string>,
 /**
  * The live rentals listed, summed.
  */
@@ -1133,15 +1149,15 @@ export type MachineMode = "shared" | "dedicated";
 /**
  * `GET /v1/machines/{name}/models`: the models a machine holds. Its store's total counts shared content once.
  */
-export type MachineModels = { machine: string, models: Array<HeldModel>, 
+export type MachineModels = { machine: string, models: Array<HeldModel>,
 /**
  * It has reported no Status yet, so nothing is known of what it holds.
  */
-silent?: boolean, 
+silent?: boolean,
 /**
  * The repositories in its store, and their bytes.
  */
-repositories: number, bytes: number, 
+repositories: number, bytes: number,
 /**
  * Everything its store takes on the disk, models or not (cut downloads, objects no model
  * names any more); 0 from a machine that does not measure it.
@@ -1161,60 +1177,60 @@ export type MachineState = "booting" | "ready" | "ending" | "ended" | "stopped" 
 /**
  * A machine's `Status`, as it last sent it.
  */
-export type MachineStatus = { worker_id: string, version: string, 
+export type MachineStatus = { worker_id: string, version: string,
 /**
  * The commit its `cozy` binary was built from.
  */
-commit: string, 
+commit: string,
 /**
  * Its binary arrived by a dev update, not a release.
  */
-dev: boolean, platform: string, 
+dev: boolean, platform: string,
 /**
  * `booting`, `ready` or `releasing`.
  */
-phase: string, 
+phase: string,
 /**
  * An update in progress there: what it waits for, else its state.
  */
-update?: string, runtime: string, tensorfs: string, 
+update?: string, runtime: string, tensorfs: string,
 /**
  * The PyTorch its packages use; empty from an older machine (`v1::StatusFrame::torch`).
  */
-torch: string, started_at_ms: number, 
+torch: string, started_at_ms: number,
 /**
  * When a rental releases itself, or this computer's machine exits, if it stays idle; none
  * while it works or is kept up.
  */
-idle_deadline_ms?: number | null, gpus: Array<Gpu>, disk_total_bytes: number, disk_free_bytes: number, 
+idle_deadline_ms?: number | null, gpus: Array<Gpu>, disk_total_bytes: number, disk_free_bytes: number,
 /**
  * What fills the disk, by kind (`machine::Disk`); 0 from an older machine.
  */
-disk_models_bytes: number, disk_environments_bytes: number, disk_runtime_bytes: number, disk_runs_bytes: number, 
+disk_models_bytes: number, disk_environments_bytes: number, disk_runtime_bytes: number, disk_runs_bytes: number,
 /**
  * This controller's queued, preparing or running runs there, as the machine says.
  */
-runs: Array<LiveRun>, models: Array<Model>, models_bytes: number, environments: Array<Environment>, warm: Array<WarmItem>, 
+runs: Array<LiveRun>, models: Array<Model>, models_bytes: number, environments: Array<Environment>, warm: Array<WarmItem>,
 /**
  * `shared` or `dedicated` (`machine.mode`); empty from an older machine.
  */
-mode?: string, 
+mode?: string,
 /**
  * The oldest NVIDIA driver its kernels run on; empty: no GPU stack.
  */
-driver_floor?: string, 
+driver_floor?: string,
 /**
  * Why a GPU of that computer is not among `gpus`.
  */
-gpu_problems?: Array<string>, 
+gpu_problems?: Array<string>,
 /**
  * Its build toolchain.
  */
-toolchain?: Toolchain | null, kernels?: Array<KernelVerdict>, 
+toolchain?: Toolchain | null, kernels?: Array<KernelVerdict>,
 /**
  * Killed processes stuck in the kernel there.
  */
-stuck?: Array<StuckProcess>, 
+stuck?: Array<StuckProcess>,
 /**
  * What it does for this controller's runs besides their own work, each once however many wait on it.
  */
@@ -1226,11 +1242,11 @@ activity?: Array<Operation>, };
  * on this computer (a dev build: a wheel, or a `cozy` binary). With none named, each moves to its
  * Hub's target.
  */
-export type MachineUpdate = { runtime?: Component | null, tensorfs?: Component | null, tensord?: Component | null, 
+export type MachineUpdate = { runtime?: Component | null, tensorfs?: Component | null, tensord?: Component | null,
 /**
  * Development only: the most of each GPU's memory the machine uses, in bytes; 0 lifts it.
  */
-gpu_memory_limit?: number | null, 
+gpu_memory_limit?: number | null,
 /**
  * Shared/Dedicated category, applied after the ordinary drain and restart.
  */
@@ -1239,27 +1255,27 @@ mode?: MachineMode | null, };
 /**
  * The file people mean by a version, and what is measured of it so far.
  */
-export type MainFile = { 
+export type MainFile = {
 /**
  * Its output's name in the version, which `GET /v1/runs/{id}/play` takes.
  */
-output: string, path: string, sha256: string, 
+output: string, path: string, sha256: string,
 /**
  * The field that names one of its type: `image`, `video`, `audio`.
  */
-field: string, width?: number | null, height?: number | null, duration_ms?: number | null, 
+field: string, width?: number | null, height?: number | null, duration_ms?: number | null,
 /**
  * A video's frames per second, for timecode.
  */
-fps?: number | null, 
+fps?: number | null,
 /**
  * Part of it is fully transparent.
  */
-alpha?: boolean, 
+alpha?: boolean,
 /**
  * Its bytes aren't on this computer.
  */
-absent?: boolean, 
+absent?: boolean,
 /**
  * The machine that keeps them, when one does.
  */
@@ -1268,11 +1284,11 @@ machine?: string | null, };
 /**
  * One make_room that took bytes: its step, what asked, what it needed and freed, and its waits.
  */
-export type MakeRoom = { gpu: number, step: number, 
+export type MakeRoom = { gpu: number, step: number,
 /**
  * What asked.
  */
-trigger: string, need: number, freed: number, 
+trigger: string, need: number, freed: number,
 /**
  * The release events it waited on.
  */
@@ -1281,27 +1297,27 @@ waited: number, };
 /**
  * One executor's measurements.
  */
-export type Measured = { 
+export type Measured = {
 /**
  * `run`, or the call's index.
  */
-by: string, 
+by: string,
 /**
  * Where its span's time went, in the order it ran; last, what no measurement covers.
  */
-stages: Array<ReportStage>, models: Array<ReportModel>, components: Array<ReportComponent>, 
+stages: Array<ReportStage>, models: Array<ReportModel>, components: Array<ReportComponent>,
 /**
  * Every GPU's attention kernels: the one that served, the others and why not.
  */
-kernels: Array<ReportKernel>, 
+kernels: Array<ReportKernel>,
 /**
  * Each GPU's whole request.
  */
-memory: Array<ReportMemory>, 
+memory: Array<ReportMemory>,
 /**
  * Each GPU's plan steps.
  */
-steps: Array<Step>, 
+steps: Array<Step>,
 /**
  * Each make_room that had to take bytes.
  */
@@ -1310,15 +1326,15 @@ make_room: Array<MakeRoom>, };
 /**
  * A memoizable run's or call's computation.
  */
-export type Memo = { 
+export type Memo = {
 /**
  * `sha256:<hex>`.
  */
-computation: string, 
+computation: string,
 /**
  * Answered from a result its machine held: nothing ran.
  */
-memoized: boolean, 
+memoized: boolean,
 /**
  * What keyed its code (`machine::Outcome::memo_basis`); empty from a machine that predates it.
  */
@@ -1332,15 +1348,15 @@ export type Model = { repository: string, total_bytes: number, unique_bytes: num
 /**
  * Who made a model: the org it credits, and whether that org is parked.
  */
-export type ModelAuthor = { org: string, 
+export type ModelAuthor = { org: string,
 /**
  * The author's display name.
  */
-name: string, 
+name: string,
 /**
  * True until the author claims the org.
  */
-parked: boolean, 
+parked: boolean,
 /**
  * A parked org's line.
  */
@@ -1349,7 +1365,7 @@ reserved: string | null, };
 /**
  * One commit of a model: its lane, size and the releases naming it.
  */
-export type ModelCommit = { commit: string, lane: string, bytes: number, 
+export type ModelCommit = { commit: string, lane: string, bytes: number,
 /**
  * The releases naming it; none while private.
  */
@@ -1359,35 +1375,35 @@ releases: Array<string>, created_at: string, };
  * `GET /v1/models/{org}/{name}?release=`: a model's releases (one, when named) and, to its org's
  * members, every commit.
  */
-export type ModelDetail = { model: string, 
+export type ModelDetail = { model: string,
 /**
  * The label its owner gave it, else what its header verifies as.
  */
-family: string | null, family_from?: FamilyFrom | null, 
+family: string | null, family_from?: FamilyFrom | null,
 /**
  * What its header verifies as, whatever its label.
  */
-weights_family?: string | null, 
+weights_family?: string | null,
 /**
  * What its header says it is. None: it couldn't be read.
  */
-kind?: ModelKind | null, created_at: string, 
+kind?: ModelKind | null, created_at: string,
 /**
  * The pinned upstream source.
  */
-source: string | null, author: ModelAuthor | null, 
+source: string | null, author: ModelAuthor | null,
 /**
  * Words a LoRA's prompt uses, and its recommended strength (a run's default stays 1.0).
  */
-trigger: string | null, strength: number | null, 
+trigger: string | null, strength: number | null,
 /**
  * Its labels, sorted: filled once from its source, then its owner's.
  */
-tags?: Array<string>, 
+tags?: Array<string>,
 /**
  * Newest first.
  */
-releases: Array<ModelRelease>, 
+releases: Array<ModelRelease>,
 /**
  * Newest first; empty to anyone but the model's members.
  */
@@ -1396,24 +1412,24 @@ commits: Array<ModelCommit>, };
 /**
  * `cozy/model_download`'s input.
  */
-export type ModelDownload = { 
+export type ModelDownload = {
 /**
  * `org/name[@release]`, `org/name@sha256:<commit>`, `hf://…`, `civitai://…`, `https://…`, or
  * a held `.safetensors` file's `sha256:<hex>` (`PUT /v1/files`).
  */
-model: string, 
+model: string,
 /**
  * A held file's name where its client has it: the object's name, and its alias's when none is given.
  */
-name?: string | null, 
+name?: string | null,
 /**
  * `local/<alias>`: the name the machine keeps it under (required for a file).
  */
-alias?: string | null, 
+alias?: string | null,
 /**
  * A Hub model's lane; absent, the Hub picks what the machine runs best.
  */
-lane?: string | null, 
+lane?: string | null,
 /**
  * The source's convention, a reviewed TensorFS format (`h3.lora`); usually detected.
  */
@@ -1439,15 +1455,15 @@ export type ModelKind = "lora" | "weights" | "component";
 /**
  * One lane of a release: its commit, size, header kinds and provenance.
  */
-export type ModelLane = { lane: string, 
+export type ModelLane = { lane: string,
 /**
  * `sha256:<hex>`.
  */
-commit: string, bytes: number, 
+commit: string, bytes: number,
 /**
  * Its header's schemes and dtypes.
  */
-kinds: Array<string>, 
+kinds: Array<string>,
 /**
  * The recipe that wrote it, as its header records.
  */
@@ -1458,15 +1474,15 @@ provenance: Provenance | null, };
  * the recipe the package declares for that lane, as a run of its `quantize` on the machine, which uploads it. The package is
  * `package`, or the request's `code`.
  */
-export type ModelQuantize = { 
+export type ModelQuantize = {
 /**
  * `org/name@sha256:<commit>`, or `org/name[@release]` (none: the newest).
  */
-model: string, 
+model: string,
 /**
  * The lane to write: a recipe the package declares for this model.
  */
-lane: string, 
+lane: string,
 /**
  * `org/name[@release]`; empty with `code`.
  */
@@ -1475,11 +1491,11 @@ package?: string, };
 /**
  * One release of a model: its version, each lane's commit, and whether it is a mirror.
  */
-export type ModelRelease = { version: string, created_at: string, 
+export type ModelRelease = { version: string, created_at: string,
 /**
  * Published while its org was parked: not its author's.
  */
-mirror: boolean, 
+mirror: boolean,
 /**
  * Published by a platform admin where it is no member.
  */
@@ -1489,7 +1505,7 @@ by_admin: boolean, lanes: Array<ModelLane>, };
  * `POST /v1/models/{org}/{name}/releases`: one commit per lane, under a version higher than every
  * earlier one; the Hub never reuses a version, which makes a retry safe.
  */
-export type ModelReleaseAsk = { hub?: string | null, version: string, 
+export type ModelReleaseAsk = { hub?: string | null, version: string,
 /**
  * `sha256:<hex>`.
  */
@@ -1498,11 +1514,11 @@ commits: Array<string>, };
 /**
  * The release a publish made: its version and each lane's commit.
  */
-export type ModelReleased = { model: string, version: string, created_at: string, 
+export type ModelReleased = { model: string, version: string, created_at: string,
 /**
  * Each lane's commit.
  */
-lanes: Array<[string, string]>, 
+lanes: Array<[string, string]>,
 /**
  * What the Hub tells its publisher; the release stands regardless.
  */
@@ -1513,11 +1529,11 @@ warnings?: Array<string>, };
  * newest release; signed in, also its own and its orgs' while private (no release yet). `q` that
  * is exactly `org/name` is that one model.
  */
-export type ModelSearch = { models: Array<FoundModel>, 
+export type ModelSearch = { models: Array<FoundModel>,
 /**
  * How many models matched, shown or not.
  */
-total: number, 
+total: number,
 /**
  * How many matched beyond those shown.
  */
@@ -1526,30 +1542,30 @@ older: number, };
 /**
  * `cozy/model_upload`'s input. Its trigger and strength are set at the Hub once it completes (`result.after.display`).
  */
-export type ModelUpload = { 
+export type ModelUpload = {
 /**
  * A provider source, `local/<alias>`, a Hub model, a held file's `sha256:<hex>` (`PUT /v1/files`): a `.safetensors` file, or a
  * CozyTensors folder's tree document, its files held too, or `run:N[#output]`: a run's weights output, uploaded from the
  * machine that holds it. A Hub commit uploads only on a `base`; else it is recorded, and no machine runs.
  */
-source: string, 
+source: string,
 /**
  * A held source's name where its client has it.
  */
-name?: string | null, 
+name?: string | null,
 /**
  * `org/name`.
  */
-destination: string, lane: string, source_format?: string | null, 
+destination: string, lane: string, source_format?: string | null,
 /**
  * It mirrors its author's model (admins): the upstream page; empty, the hf:// or civitai://
  * source itself.
  */
-mirror?: string | null, 
+mirror?: string | null,
 /**
  * The base component a LoRA was trained on, when its file does not declare it.
  */
-trained_on?: string | null, trigger?: string | null, strength?: number | null, 
+trained_on?: string | null, trigger?: string | null, strength?: number | null,
 /**
  * `MODEL[:COMPONENT,…]`: start from this model, the source's components in place of its own.
  */
@@ -1563,23 +1579,23 @@ export type Moved = { bytes: number, gbps: number | null, ceiling_share: number 
 /**
  * `POST /v1/projects/{id}/assets`: a tool dropped on the canvas. Under an `Idempotency-Key`, a retry makes no `_2`.
  */
-export type NewAsset = { 
+export type NewAsset = {
 /**
  * A tool's `id`, from `GET /v1/tools`. Empty: a text asset, its words in `fields.text`.
  */
-tool: string, at?: Card | null, 
+tool: string, at?: Card | null,
 /**
  * What to call it, through `as_name` with `.` as `_`; a taken name gets `_2`. Absent: the tool's.
  */
-name?: string | null, fields?: { [key in string]: JsonValue }, 
+name?: string | null, fields?: { [key in string]: JsonValue },
 /**
  * A person typed `name`: refused if the project has it, not numbered.
  */
-exact?: boolean, 
+exact?: boolean,
 /**
  * What the tool makes, as its `GET /v1/tools` row said. Absent: Calcifer works it out behind the answer.
  */
-kind?: string | null, 
+kind?: string | null,
 /**
  * What its drop pushed aside, written with it, each only if no other client wrote it after the revision in `placed`.
  */
@@ -1589,28 +1605,23 @@ moves?: { [key in string]: Card }, placed?: { [key in string]: number }, };
  * `POST /v1/machines`: rent one (with an `Idempotency-Key`), add another computer's, or record
  * this computer's.
  */
-export type NewMachine = { "kind": "rent", sku: string, 
+export type NewMachine = { "kind": "rent", sku: string,
 /**
  * Empty: Calcifer's configured Hub.
  */
-hub?: string, gpus?: number | null, disk_gb?: number | null, 
-/**
- * A Hub admin's worker image, `sha256:<hex>`, in place of the machine kind's current
- * one; the Hub refuses anyone else.
- */
-image?: string | null, 
+hub?: string, gpus?: number | null, disk_gb?: number | null,
 /**
  * The one provider to buy from (`runpod`, `vast`): dev-only `--provider`.
  */
-provider?: string | null, 
+provider?: string | null,
 /**
  * The quote the renter agreed to (`POST /v1/rental-quotes`): a dearer one rents nothing.
  */
-agreed?: Agreed | null, 
+agreed?: Agreed | null,
 /**
  * An OpenSSH public key root logs in with (`cozy machine ssh`).
  */
-ssh_key?: string | null, } | { "kind": "add", name: string, address: string, 
+ssh_key?: string | null, } | { "kind": "add", name: string, address: string,
 /**
  * `sha256:<hex>` of the machine's TLS leaf.
  */
@@ -1641,23 +1652,23 @@ export type Open = { name?: string | null, path?: string | null, starter?: boole
 /**
  * The project `POST /v1/projects` made: its id, folder and name.
  */
-export type Opened = { id: string, 
+export type Opened = { id: string,
 /**
  * Its stable, nine-character public URL code.
  */
-code: string, 
+code: string,
 /**
  * Where it lives on Calcifer's computer.
  */
-path: string, 
+path: string,
 /**
  * Its name, unique among the projects Calcifer knows: what `-p` takes.
  */
-name: string, 
+name: string,
 /**
  * Commands to run next.
  */
-next?: Array<string>, 
+next?: Array<string>,
 /**
  * What opening it did to it, said once.
  */
@@ -1666,39 +1677,39 @@ said?: Array<string>, };
 /**
  * Weights arriving or a package's environment built on a machine (`machine::Operation`), and the runs waiting on it.
  */
-export type Operation = { 
+export type Operation = {
 /**
  * The same for as long as it lasts.
  */
-id: string, 
+id: string,
 /**
  * `download` or `install`.
  */
-kind: string, 
+kind: string,
 /**
  * The model's repository (or provider source), or the package.
  */
-subject: string, 
+subject: string,
 /**
  * Where it is, in words.
  */
-stage?: string, 
+stage?: string,
 /**
  * Bytes fetched of those it has to fetch (0: unknown), never what was here already.
  */
-bytes_done: number, bytes_total: number, 
+bytes_done: number, bytes_total: number,
 /**
  * What of it was here already (shared with another model, or pulled before).
  */
-bytes_here: number, 
+bytes_here: number,
 /**
  * Its bytes a second over its last 10 s, once a second of them is seen.
  */
-bytes_per_s?: number | null, 
+bytes_per_s?: number | null,
 /**
  * The seconds its bytes still take at that rate.
  */
-eta_s?: number | null, started_at_ms: number, 
+eta_s?: number | null, started_at_ms: number,
 /**
  * The runs waiting on it, by number.
  */
@@ -1726,39 +1737,39 @@ export type Orphan = { name: string, kind: string, versions: number, bytes: numb
 /**
  * One output of a run at its newest revision, rewritten in place.
  */
-export type OutputItem = { 
+export type OutputItem = {
 /**
  * `<number>/<name>`, or `<number>/<name>/<i>` for a list's item `i`.
  */
-id: string, name: string, 
+id: string, name: string,
 /**
  * A list item's 1-based index; 0 for a single output.
  */
-index: number, rev: number, length: number, media_type: string, label?: string, status: ItemStatus, 
+index: number, rev: number, length: number, media_type: string, label?: string, status: ItemStatus,
 /**
  * The final bytes' digest, once done.
  */
-sha256?: Digest | null, 
+sha256?: Digest | null,
 /**
  * Where Calcifer serves those bytes once they landed, an API path; a folder's is its tree document.
  */
-url?: string | null, 
+url?: string | null,
 /**
  * A picture's or video's size, measured as this revision landed.
  */
-width?: number | null, height?: number | null, 
+width?: number | null, height?: number | null,
 /**
  * A video's or sound's length: measured as this revision landed, else its machine's word.
  */
-duration_ms?: number | null, 
+duration_ms?: number | null,
 /**
  * Why this revision's bytes will not land (its machine ended, or holds them no more).
  */
-export_error?: string | null, 
+export_error?: string | null,
 /**
  * A checkpoint already written to TensorFS; it has no output bytes to export here.
  */
-checkpoint?: CheckpointRef | null, 
+checkpoint?: CheckpointRef | null,
 /**
  * Untyped bytes, such as a model's latents, of a run that made something else: its machine keeps them, they aren't
  * brought here unless something needs them, and nothing waits for them. A person isn't told of them.
@@ -1769,7 +1780,7 @@ stays?: boolean, };
  * `GET /v1/packages/{org}/{name}?release=`: a package's releases newest first, or the one named
  * with what its publish warned of (its owner sees the warnings).
  */
-export type PackageDetail = { 
+export type PackageDetail = {
 /**
  * As published: the Hub finds `qwen3-5` for `qwen3.5`.
  */
@@ -1779,7 +1790,7 @@ package: string, latest_release: string | null, releases: Array<PackageRelease>,
  * `cozy/package_install`'s input: the Hub's newest release when none is named. A published package's older releases on its
  * machine go once it is in (`result.after.retired`). With the request's `code`, local code, and `package` is empty.
  */
-export type PackageInstall = { 
+export type PackageInstall = {
 /**
  * `org/name`; empty with `code`.
  */
@@ -1793,7 +1804,7 @@ export type PackageRelease = { release: string, published: string | null, yanked
 /**
  * `cozy/package_remove`'s input: every release of each package off the machine the request's `on` names.
  */
-export type PackageRemove = { 
+export type PackageRemove = {
 /**
  * `org/name`, or `local/name`.
  */
@@ -1802,7 +1813,7 @@ packages: Array<string>, };
 /**
  * `GET /v1/packages?q=&limit=`: the Hub's packages the caller can see.
  */
-export type PackageSearch = { packages: Array<FoundPackage>, total: number, 
+export type PackageSearch = { packages: Array<FoundPackage>, total: number,
 /**
  * How many matched beyond those shown.
  */
@@ -1811,11 +1822,11 @@ older: number, };
 /**
  * `cozy/package_remove`'s result: what left the machine, what that freed, and what did not go.
  */
-export type PackagesRemoved = { machine: string, removed: Array<RemovedRelease>, reclaimed_bytes: number, 
+export type PackagesRemoved = { machine: string, removed: Array<RemovedRelease>, reclaimed_bytes: number,
 /**
  * Files a running executor still uses stay until it ends.
  */
-retained?: boolean, 
+retained?: boolean,
 /**
  * Each remove run that did not complete, as `package: machine: reason (code)`.
  */
@@ -1824,11 +1835,11 @@ failed?: Array<string>, };
 /**
  * Pick up from here: a take, by mention, and the frame its new part starts at. Never written to project.yaml; the take it makes records it.
  */
-export type Pickup = { 
+export type Pickup = {
 /**
  * `<shot_1.3>`: one of the box's own takes, or another box's.
  */
-take: string, out_frame: number, 
+take: string, out_frame: number,
 /**
  * Seconds into the box's beats where the new part starts. Absent: the tool's choice.
  */
@@ -1838,93 +1849,77 @@ beats_from?: number | null, };
  * `GET /v1/runs/{id}/play?output=<name[/i]>&expires_s=N`: how a browser plays one run output
  * straight from its machine over WebRTC.
  */
-export type Play = { 
+export type Play = {
 /**
  * `host:port` the browser dials.
  */
-address: string, 
+address: string,
 /**
  * SHA-256 hex of the certificate the machine's DTLS presents.
  */
-fingerprint: string, 
+fingerprint: string,
 /**
  * A Cozy-Cap for that run output alone.
  */
-token: string, 
+token: string,
 /**
  * The hosted player's link, with all of the above in its fragment.
  */
-url: string, 
+url: string,
 /**
  * How long `token` and `url` work, from now.
  */
 expires_s: number, };
 
 /**
- * A file a run showed before it ended: its package's word for it, in a sentence (`segment 1/2`), and its path in the project.
+ * A file a run watched before it ended: its package's word for it, in a sentence (`segment 1/2`), and its path in the project.
  */
 export type Preview = { label: string, path: string, };
 
 /**
  * The machine's progress report, as it last sent it.
  */
-export type Progress = { stage: string, fraction?: number | null, 
+export type Progress = { stage: string, fraction?: number | null,
 /**
  * How far this stage is, when it says.
  */
-stage_fraction?: number | null, completed: number, total: number, bytes_done: number, bytes_total: number, step_ms: number, 
+stage_fraction?: number | null, completed: number, total: number, bytes_done: number, bytes_total: number, step_ms: number,
 /**
  * The stage's steady step time: the median of its last five steps after the first; 0 before
  * its second.
  */
-step_steady_ms: number, 
+step_steady_ms: number,
 /**
  * When the machine last saw it move (Unix ms; 0: unknown): how long a run has not.
  */
-at_ms: number, 
+at_ms: number,
 /**
  * How far the run is, as Calcifer reads it: its own fraction, else its stage's, else its
  * steps', else its bytes'.
  */
-done_fraction?: number | null, 
+done_fraction?: number | null,
 /**
  * The stage's bytes a second over its last 10 s, once a second of them is seen.
  */
-bytes_per_s?: number | null, 
+bytes_per_s?: number | null,
 /**
  * The seconds the run has left, all of it, as Calcifer estimates them (CALCIFER-API.md "Time
  * left"): what runs like it took before, and its own steps as they come. None: no basis yet.
  */
-eta_s?: number | null, 
+eta_s?: number | null,
 /**
  * How far to trust `eta_s`, 0 to 1: higher with closer history and more of the run done.
  */
-eta_confidence?: number | null, 
+eta_confidence?: number | null,
 /**
  * What `eta_s` stands on; `first_run` with none: nothing like it ran on this machine or its GPU.
  */
 eta_basis?: EtaBasis | null, };
 
 /**
- * `GET /v1/projects/{id}/events`: what the project's runs do, as they do it.
+ * `GET /v1/projects/{id}/address`: the indexed identity used to open a browser route.
  */
-export type ProjectEvent = { "type": "board", board: Board, } | { "type": "job", job: Job, seq: number, } | { "type": "ahead", ahead: Ahead, } | { "type": "started", name: string, run: string, number: number, } | { "type": "landed", name: string, noun: string, number: number, files: { [key in string]: ProjectFile }, path: string, 
-/**
- * Its run's execution time.
- */
-execution_ms?: number | null, } | { "type": "said", message: string, name?: string | null, } | { "type": "warning", message: string, name?: string | null, } | { "type": "failed", error: ErrorBody, name?: string | null, run?: number | null, } | { "type": "moved", file?: string | null, bytes: number, } | { "type": "cut", name: string, cut: string, frames: number, fps: number, retimed?: Array<string>, took_s: number, unchanged?: boolean, 
-/**
- * What this film was cut without: `<piece>: <why>`.
- */
-without?: Array<string>, } | { "type": "ended", error?: ErrorBody | null, 
-/**
- * What this walk landed, if it landed anything.
- */
-rendered?: Rendered | null, 
-/**
- * The renders it ended, by `Asked::ask`: an ask made as another walk ends is the next one's.
- */
-asks?: Array<string>, };
+export type ProjectAddress = { id: string, code: string, };
 
 /**
  * A project event's position in one controller process. Generations never compare across
@@ -1936,11 +1931,11 @@ export type ProjectEventCursor = { generation: string, sequence: number, };
  * A file the project uses: its path in the project (`files/<sha256>.<ext>`, `GET
  * /v1/projects/{id}/files/{sha256}.{ext}`) and its sha256.
  */
-export type ProjectFile = { path: string, sha256: string, 
+export type ProjectFile = { path: string, sha256: string,
 /**
  * Its bytes aren't on this computer.
  */
-absent?: boolean, 
+absent?: boolean,
 /**
  * The machine that keeps them, when one does.
  */
@@ -1962,51 +1957,51 @@ export type ProjectShowReply = { held: Array<string>, refused: { [key in string]
  * Optional `covered` describes only a successful full snapshot: project-event emissions
  * before its read began. Head-only and partial/error-derived states do not claim coverage.
  */
-export type ProjectState = { id: string, 
+export type ProjectState = { id: string,
 /**
  * Its stable, nine-character public URL code.
  */
-code: string, path: string, assets: Array<Asset>, 
+code: string, path: string, assets: Array<Asset>,
 /**
  * What is running and what is queued, in the order it goes.
  */
-queue?: Array<Queued>, 
+queue?: Array<Queued>,
 /**
  * Assets with no state and no version yet.
  */
-missing?: Array<string>, 
+missing?: Array<string>,
 /**
  * Assets out of date, and why.
  */
-stale?: Array<Stale>, 
+stale?: Array<Stale>,
 /**
  * Assets project.lock keeps versions of that project.yaml no longer names.
  */
-orphans?: Array<Orphan>, 
+orphans?: Array<Orphan>,
 /**
  * Whether its walk is going: runs being made, or asked and not yet sent.
  */
-busy: boolean, 
+busy: boolean,
 /**
  * How many files project.lock names are not on this computer.
  */
-absent: number, 
+absent: number,
 /**
  * How many files `cozy run`s left here, that belong to no asset.
  */
-run_files: number, 
+run_files: number,
 /**
  * What its `cozy/cut` assets made.
  */
-cuts?: Array<Cut>, warnings?: Array<ProjectWarning>, 
+cuts?: Array<Cut>, warnings?: Array<ProjectWarning>,
 /**
  * Commands to run next, given what it holds and lacks.
  */
-next?: Array<string>, 
+next?: Array<string>,
 /**
  * Its render going, or its last since Calcifer started.
  */
-board?: Board | null, 
+board?: Board | null,
 /**
  * What kept its last render from reaching a machine, each once, until another is asked.
  */
@@ -2020,7 +2015,7 @@ export type ProjectWarning = { name?: string | null, message: string, };
 /**
  * `GET /v1/projects`: the projects this computer's Calcifer has opened, last used first.
  */
-export type Projects = { projects: Array<KnownProject>, 
+export type Projects = { projects: Array<KnownProject>,
 /**
  * How many more are older than this page.
  */
@@ -2034,11 +2029,11 @@ export type Proven = { "purpose": "sign_in" } & Account | { "purpose": "export" 
 /**
  * The recipe that wrote a commit: its header's `metadata.provenance`.
  */
-export type Provenance = { package: string, release: string, recipe: string, 
+export type Provenance = { package: string, release: string, recipe: string,
 /**
  * The digest of the recipe's canonical plan.
  */
-fingerprint: string, 
+fingerprint: string,
 /**
  * The header digest of the checkpoint it was written from.
  */
@@ -2063,19 +2058,19 @@ export type QueuedNow = { name: string, ahead?: Array<string>, };
  * The Hub's price for the exact rental asked (`POST /v1/rental-quotes`): one price an hour, the
  * machine with its disk and traffic, and what an hour plus its download is expected to cost.
  */
-export type Quote = { 
+export type Quote = {
 /**
  * What a person is shown and charged.
  */
-usd_micros_per_hour: number, disk_gb: number, expected_hours: number, expected_download_gb: number, expected_total_usd_micros: number, 
+usd_micros_per_hour: number, disk_gb: number, expected_hours: number, expected_download_gb: number, expected_total_usd_micros: number,
 /**
  * The order's cap, which a renter sends back as it came: the Hub rents nothing dearer.
  */
-agreed: Agreed, 
+agreed: Agreed,
 /**
  * What the Hub changed of the ask to quote it.
  */
-warnings?: Array<string>, 
+warnings?: Array<string>,
 /**
  * Where the quoted offer is, for an ask that named its provider or a Hub admin's.
  */
@@ -2084,15 +2079,15 @@ provider?: string | null, datacenter?: string | null, };
 /**
  * A `<mention>` an asset's text makes that names something: an asset, an entity, a sub-entity, or a link of one, as the file names it.
  */
-export type Read = { name: string, 
+export type Read = { name: string,
 /**
  * The one version of it the text fixes: `<name.2>`, `<self.2>`.
  */
-version?: number | null, 
+version?: number | null,
 /**
  * Where its text says so: `summary`, `beats.0.description`, `tracks.0.clips.1`, `style` for what defaults gave it.
  */
-at?: Array<string>, 
+at?: Array<string>,
 /**
  * What it sends now, as twelve hex digits: its version's files and its box's description, or a text box's words. It moves as what's read
  * does, and only then. None while it has no state.
@@ -2102,16 +2097,16 @@ key?: string | null, };
 /**
  * Why a run or call did not succeed: a stable code, message and origin, with detail and next commands.
  */
-export type Reason = { code: string, message: string, 
+export type Reason = { code: string, message: string,
 /**
  * request, runtime, author, machine
  */
-origin: string, 
+origin: string,
 /**
  * A failed call's traceback, else its executor's stderr: the last lines, secrets masked.
  * It explains the failure after its machine is gone.
  */
-detail?: string, 
+detail?: string,
 /**
  * The exact commands to run next, when a refusal leaves one; at most two.
  */
@@ -2120,7 +2115,7 @@ next?: Array<string>, };
 /**
  * A Hub commit recorded as a commit of another model when the caller may read its whole closure: nothing uploaded.
  */
-export type RecordedCommit = { commit: string, from: string, lane: string, model: string, display?: Displayed | null, 
+export type RecordedCommit = { commit: string, from: string, lane: string, model: string, display?: Displayed | null,
 /**
  * Commands to run next.
  */
@@ -2134,7 +2129,7 @@ export type ReleaseFrom = "asked" | "installed" | "latest" | "local";
 /**
  * One release a machine no longer holds.
  */
-export type RemovedRelease = { package: string, release: string, 
+export type RemovedRelease = { package: string, release: string,
 /**
  * The Hub it was installed from; empty for local code.
  */
@@ -2152,6 +2147,21 @@ export type Rename = { from: string, to: string, };
 export type Renamed = { from: string, to: string, versions: number, };
 
 /**
+ * How a render's walk ended: nothing it was asked is left to send or follow, and every take it made is whole here. `error` is the
+ * first thing that failed, or when more than that was asked, `render_incomplete`: how far it got, that failure, and the command for
+ * the rest.
+ */
+export type RenderEnded = { error?: ErrorBody | null,
+/**
+ * What it landed, if it landed anything.
+ */
+rendered?: Rendered | null,
+/**
+ * The renders it ended, by `Asked::ask`: an ask made as another walk ends is the next one's.
+ */
+asks?: Array<string>, };
+
+/**
  * What a walk landed: how many takes and versions, how long it took, and its runs' execution time summed, which is more
  * than that when they ran at once.
  */
@@ -2160,11 +2170,11 @@ export type Rendered = { takes: number, versions: number, elapsed_ms: number, ex
 /**
  * A GPU to rent for it, as `POST /v1/machines` `{kind: rent}` names one.
  */
-export type RentFor = { sku: string, gpus: number, 
+export type RentFor = { sku: string, gpus: number,
 /**
  * The card, in a person's words: `RTX 4090`.
  */
-card: string, vram_gb: number, usd_micros_per_hour: number, 
+card: string, vram_gb: number, usd_micros_per_hour: number,
 /**
  * What renting it does for these, in a line.
  */
@@ -2173,35 +2183,35 @@ line: string, };
 /**
  * A rental as its Hub says it.
  */
-export type Rental = { 
+export type Rental = {
 /**
  * The product asked for, or the card when another client rented it.
  */
-sku: string, accelerator: string, gpus: number, usd_micros_per_hour: number, spend_usd_micros?: number | null, 
+sku: string, accelerator: string, gpus: number, usd_micros_per_hour: number, spend_usd_micros?: number | null,
 /**
  * `charged`, `unmetered` or `estimate`.
  */
-spend_basis?: string | null, rented_at_ms: number, ended_at_ms?: number | null, disk_gb: number, 
+spend_basis?: string | null, rented_at_ms: number, ended_at_ms?: number | null, disk_gb: number,
 /**
  * The Hub's failure code, for a rental that failed.
  */
-failure?: string | null, 
+failure?: string | null,
 /**
  * Why it runs off the requester's continent: nothing nearer fit.
  */
-placement_note?: string | null, 
+placement_note?: string | null,
 /**
  * Since when the Hub cannot reach it, though its provider reports it running.
  */
-unreachable_since_ms?: number | null, 
+unreachable_since_ms?: number | null,
 /**
  * The worker image it boots, by digest.
  */
-base_worker_image_digest?: string | null, 
+base_worker_image_digest?: string | null,
 /**
  * `host:port` of its sshd, when it was rented with an SSH key.
  */
-ssh?: string | null, 
+ssh?: string | null,
 /**
  * Where it runs and whether its pod mounted the datacenter's NFS drive: a Hub admin's read, or
  * a renter's who named the provider (dev-only `--provider`).
@@ -2221,11 +2231,11 @@ export type RentalPythonInterpreter = { version: string, abi: string, };
 /**
  * One product (a GPU card, or the CPU machine) with the widths buyable now.
  */
-export type RentalSku = { name: string, accelerator_model: string, base_worker_profile: string, 
+export type RentalSku = { name: string, accelerator_model: string, base_worker_profile: string,
 /**
  * major.minor; empty for the CPU product.
  */
-compute_capability: string, cpu_arch?: string | null, memory_class?: string | null, vram_gb: number, python_provisionable_minors: Array<string>, python_interpreters: Array<RentalPythonInterpreter>, 
+compute_capability: string, cpu_arch?: string | null, memory_class?: string | null, vram_gb: number, python_provisionable_minors: Array<string>, python_interpreters: Array<RentalPythonInterpreter>,
 /**
  * The GPU counts buyable now, ascending.
  */
@@ -2245,7 +2255,7 @@ export type RentalSkus = { rental_skus: Array<RentalSku>, };
 /**
  * `POST /v1/machines` with `Rent`: 202, or 200 when the key had asked already (`replay`).
  */
-export type Rented = { machine: Machine, 
+export type Rented = { machine: Machine,
 /**
  * The Hub's quote the order was placed at.
  */
@@ -2259,11 +2269,11 @@ export type Replaced = { number: number, failure: string, ended_at_ms: number, }
 /**
  * What a run's machine measured: the attention kernels it pinned and each executor's measurements.
  */
-export type Report = { 
+export type Report = {
 /**
  * The attention kernels the run pinned, as its executors recorded them.
  */
-attention_pins?: Array<string>, 
+attention_pins?: Array<string>,
 /**
  * Each executor's measurements: the run's own, then each call's.
  */
@@ -2277,11 +2287,11 @@ export type ReportComponent = { component: string, attention: Array<string>, gem
 /**
  * One attention kernel on a GPU: its state, whether it served, and its compile.
  */
-export type ReportKernel = { 
+export type ReportKernel = {
 /**
  * None: the executor did not say.
  */
-gpu: number | null, arch: string, kernel: string, state: string, served: boolean, 
+gpu: number | null, arch: string, kernel: string, state: string, served: boolean,
 /**
  * How far its compile is.
  */
@@ -2290,24 +2300,24 @@ progress: number | null, compile_ms: number, detail: string, };
 /**
  * One GPU's memory over the request: bytes moved by source, stall, peaks, what make_room took and what was left.
  */
-export type ReportMemory = { gpu: number, 
+export type ReportMemory = { gpu: number,
 /**
  * What its allocator figures cover: `request`, or the process.
  */
-scope: string, 
+scope: string,
 /**
  * Bytes kept from the manager's retention, leased and filled, read from the store, and
  * refilled from a derived entry.
  */
-kept: Moved, leased: Moved, store: Moved, derived: Moved, stall_ms: number, 
+kept: Moved, leased: Moved, store: Moved, derived: Moved, stall_ms: number,
 /**
  * The most it held: pages and torch's bytes.
  */
-peak: number | null, torch_peak: number | null, compute: number | null, 
+peak: number | null, torch_peak: number | null, compute: number | null,
 /**
  * What make_room took, by class.
  */
-evicted: Array<Taken>, 
+evicted: Array<Taken>,
 /**
  * What it still held at the end.
  */
@@ -2316,11 +2326,11 @@ leftover: number | null, };
 /**
  * A model slot's checkpoint as its machine resolved it.
  */
-export type ReportModel = { slot: string, repository: string, release: string, 
+export type ReportModel = { slot: string, repository: string, release: string,
 /**
  * Its hash, for a checkpoint passed by value.
  */
-manifest: string, lane: string, 
+manifest: string, lane: string,
 /**
  * The header's precision family (`int8`, …).
  */
@@ -2329,19 +2339,19 @@ precision: string, adapters: Array<Adapter>, };
 /**
  * Where part of an executor's span went: a stage's time, its longest legs and its steps.
  */
-export type ReportStage = { 
+export type ReportStage = {
 /**
  * The stage, `executor start`, `construction`, `loading <slot>`, or `unaccounted`.
  */
-name: string, ms: number, 
+name: string, ms: number,
 /**
  * An executor's or a construction's three longest legs.
  */
-legs?: Array<Leg>, 
+legs?: Array<Leg>,
 /**
  * Its steps: how many, and each one's mean.
  */
-steps?: Steps | null, 
+steps?: Steps | null,
 /**
  * The span's time no measurement covers.
  */
@@ -2350,85 +2360,85 @@ unaccounted?: boolean, };
 /**
  * One run as Calcifer holds it.
  */
-export type Run = { 
+export type Run = {
 /**
  * Its id; `<machine>/<number>` for one another client of this account sent.
  */
-id: RunId, 
+id: RunId,
 /**
  * This controller's number for it; 0 for one another client sent.
  */
-number: number, 
+number: number,
 /**
  * One another client of this account sent, as the machine it runs on numbers it: read there,
  * never held here.
  */
-machine_number?: number | null, kind: RunKind, target: string, hub: string, machine: string | null, 
+machine_number?: number | null, kind: RunKind, target: string, hub: string, machine: string | null,
 /**
  * The name of the project its outputs land in; none for what is no person's run.
  */
-project?: string | null, 
+project?: string | null,
 /**
  * That project's id.
  */
-project_id?: string | null, status: RunStatus, cancel_requested: boolean, 
+project_id?: string | null, status: RunStatus, cancel_requested: boolean,
 /**
  * The machine's own word for the run: `preparing`, `queued`, `running`, ….
  */
-machine_state?: string | null, 
+machine_state?: string | null,
 /**
  * Why a run that did not succeed ended.
  */
-reason?: Reason | null, output: Array<OutputItem>, created_at_ms: number, accepted_at_ms?: number | null, 
+reason?: Reason | null, output: Array<OutputItem>, created_at_ms: number, accepted_at_ms?: number | null,
 /**
  * When its machine began executing it; its time counts from here, never its queue's.
  */
-started_at_ms?: number | null, settled_at_ms?: number | null, 
+started_at_ms?: number | null, settled_at_ms?: number | null,
 /**
  * Live: why a queued run waits, from Calcifer's memory.
  */
-waiting?: string | null, 
+waiting?: string | null,
 /**
  * Live: the machine's latest progress.
  */
-progress?: Progress | null, 
+progress?: Progress | null,
 /**
  * A run waiting for its turn: its place in its machine's line (1 is next: only the work
  * running is ahead of it), or among the runs waiting for a machine to be chosen.
  */
-queue_position?: number | null, warnings?: Array<Warning>, 
+queue_position?: number | null, warnings?: Array<Warning>,
 /**
  * How its machine served the request other than as sent, once settled.
  */
-adjustments?: Array<Adjustment>, 
+adjustments?: Array<Adjustment>,
 /**
  * The result's canonical JSON, once settled.
  */
-result?: JsonValue | null, execution_ms?: number | null, 
+result?: JsonValue | null, execution_ms?: number | null,
 /**
  * A memoizable run's computation, once settled.
  */
-memo?: Memo | null, 
+memo?: Memo | null,
 /**
  * With `?detail=full`: what the machine measured (stages, steps, GPUs, attention).
  */
-measurements?: JsonValue | null, 
+measurements?: JsonValue | null,
 /**
  * It has made no progress for a while. Shown and said once, never acted on.
  */
-stalled?: Stalled | null, 
+stalled?: Stalled | null,
 /**
  * With `?detail=full`: the run's settled calls, in the order they ended.
  */
-calls?: Array<Call>, 
+calls?: Array<Call>,
 /**
  * With `?detail=full`: its measurements and its calls', worked out.
  */
-report?: Report | null, 
+report?: Report | null,
 /**
  * With `?detail=full`: what was asked of it, to show and to ask again.
  */
-request?: RunAsked | null, 
+request?: RunAsked | null,
 /**
  * The GPU it ran on, by name, once settled.
  */
@@ -2437,11 +2447,11 @@ gpu?: string | null, };
 /**
  * What a run was asked, as it was bound. Read-only: asking it again is a new `POST /v1/runs`.
  */
-export type RunAsked = { target: string, 
+export type RunAsked = { target: string,
 /**
  * Its payload, each file by its `sha256:`, and `models` for the models and LoRAs it chose: what `input` takes.
  */
-input: { [key in string]: JsonValue }, 
+input: { [key in string]: JsonValue },
 /**
  * Its integer seed, given or derived from its key.
  */
@@ -2467,19 +2477,19 @@ export type RunKind = "call" | "warm" | "update" | "remove" | "here";
 /**
  * `GET /v1/runs`, newest first.
  */
-export type RunList = { runs: Array<Run>, 
+export type RunList = { runs: Array<Run>,
 /**
  * How many more runs match beyond the limit.
  */
-older: number, 
+older: number,
 /**
  * The machine `?machine=` named, by its name.
  */
-machine?: string | null, 
+machine?: string | null,
 /**
  * Matching runs the store cannot read, each as `run N: why`, left out of `runs`.
  */
-unreadable?: Array<string>, 
+unreadable?: Array<string>,
 /**
  * With `?machine=`, newest first: its runs other clients of this account sent, as it reports
  * them now (`Run::machine_number`).
@@ -2490,7 +2500,7 @@ others?: Array<Run>, };
  * `POST /v1/run-quotes`: what a `new` run would rent, and its price; when the Hub placed it, why,
  * and two other machines it would rent instead. `null` for a run that rents nothing: one Calcifer carries out itself.
  */
-export type RunQuote = { sku: string, gpus?: number | null, quote: Quote, why?: string | null, alternatives?: Array<Alternative>, 
+export type RunQuote = { sku: string, gpus?: number | null, quote: Quote, why?: string | null, alternatives?: Array<Alternative>,
 /**
  * What the Hub's placement wants its asker to know.
  */
@@ -2501,85 +2511,81 @@ warnings?: Array<string>, };
  * binds against its function's interface. Under one `Idempotency-Key` it is one run, whose integer
  * `seed`, when the request omits one, derives from the key.
  */
-export type RunRequest = { 
+export type RunRequest = {
 /**
  * `[org/]pkg/fn[@release]`; with `code`, the function of it (empty: none named). Or one of Calcifer's own jobs
  * (`hub::job`, `cozy/…`), its fields in `input`.
  */
-target: string, 
+target: string,
 /**
  * Local code, sent by content (cl-819): Calcifer reads no client's folder.
  */
-code?: LocalCode | null, 
+code?: LocalCode | null,
 /**
  * `local`, a machine's name, `any`, or `new[:sku]`. Absent, Calcifer's to say: a call goes where it finishes soonest, and a
  * job that makes something present on a machine to this computer's, else any rental it has.
  */
-on?: On | null, 
+on?: On | null,
 /**
  * The Tensorhub origin; empty: Calcifer's.
  */
-hub?: string, 
+hub?: string,
 /**
  * The payload as an object; `terms` override it. A file field holds an uploaded file's
  * `sha256:<hex>`, a hash prefix of a file of its project's, or a key of `paths`.
  */
-input?: { [key in string]: JsonValue } | null, 
+input?: { [key in string]: JsonValue } | null,
 /**
  * The payload as JSON or YAML text, its files named as `input`'s are.
  */
-input_text?: string | null, 
+input_text?: string | null,
 /**
  * `key=value` (typed as the field is declared), `key:=<json>`, `model.<slot>=<ref>`, one
  * positional value, and input files.
  */
-terms?: Array<string>, 
+terms?: Array<string>,
 /**
  * Attached files, each into a named input, a labelled occurrence of the declared files, or
  * those files.
  */
-files?: Array<FileTerm>, 
+files?: Array<FileTerm>,
 /**
  * `label-or-index=auto|low|medium|high`.
  */
-fidelities?: Array<string>, 
+fidelities?: Array<string>,
 /**
  * `[slot=]ref[,strength]`, in order.
  */
-loras?: Array<string>, 
+loras?: Array<string>,
 /**
  * The client's files and folders the request names by a path, each as written there, sent
  * first by content (`PUT /v1/files`). Calcifer reads no client's disk: a path not here names no file.
  */
-paths?: { [key in string]: Sent }, 
+paths?: { [key in string]: Sent },
 /**
  * At most this many GPUs; absent: every GPU its slots support.
  */
-gpus?: number | null, 
+gpus?: number | null,
 /**
  * The main model's lane; absent: the Hub's pick for the machine.
  */
-lane?: string | null, 
+lane?: string | null,
 /**
  * `KERNEL` or `[SLOT/]COMPONENT=KERNEL`.
  */
-attention_kernel?: string | null, 
-/**
- * Compute it afresh: no machine memo answers or keeps it (dev-only `--no-memo`).
- */
-no_memo?: boolean, 
+attention_kernel?: string | null,
 /**
  * Keep the function at this level instead of running it (`off` takes it out).
  */
-warm?: WarmLevel | null, 
+warm?: WarmLevel | null,
 /**
  * The project it belongs to: its id or name, or its folder on Calcifer's computer by its absolute path. A run needs one.
  */
-project?: string | null, 
+project?: string | null,
 /**
  * Calls a package's `quantize`, which `cozy run` refuses: `cozy model quantize` runs it.
  */
-recipes?: boolean, 
+recipes?: boolean,
 /**
  * The quote a `new` run's renter agreed to (`POST /v1/run-quotes`).
  */
@@ -2595,28 +2601,34 @@ export type RunStatus = "queued" | "in_progress" | "completed" | "failed" | "can
  * only if that has no state. With `all`, of everything not pinned. It joins the project's walk, which sends each once what it reads
  * is settled; `on` lists the machines they may go to.
  */
-export type Runs = { names: Array<string>, n: number, on: Array<On>, 
+export type Runs = { names: Array<string>, n: number, on: Array<On>,
 /**
  * The Hub its functions are read from and its runs belong to. Absent: Calcifer's configured Hub.
  */
-hub?: string, 
+hub?: string,
 /**
  * The new version is approved when it lands; only with `n` 1.
  */
-approve?: boolean, 
+approve?: boolean,
 /**
  * Make only what has no state, rather than a new version.
  */
-missing?: boolean, 
+missing?: boolean,
 /**
  * With `all`: also make a new version of each pin that is out of date when its turn comes in reading order, which goes when that
  * lands. The version it held stays, to be approved again.
  */
-outdated?: boolean, 
+outdated?: boolean,
 /**
  * Pick up from here: one box's new take goes on from this take's frame.
  */
 pickup?: Pickup | null, };
+
+/**
+ * A line a render said, once however often it came: of the assets `names` (a warning's are those whose runs gave it), or of the
+ * render.
+ */
+export type Said = { level: NoteLevel, message: string, names?: Array<string>, };
 
 /**
  * A file or folder a client sent by content (`PUT /v1/files`): a file's digest, or a folder's
@@ -2628,7 +2640,7 @@ export type Sent = { "file": Digest } | { "tree": Digest };
  * `DELETE /v1/account`, or a finished `SignOutEverywhere`: this computer's key is erased,
  * whatever the Hub answered its revocation (`notes` say when it did not confirm).
  */
-export type SignedOut = { email: string | null, everywhere: boolean, hub: string, notes: Array<string>, 
+export type SignedOut = { email: string | null, everywhere: boolean, hub: string, notes: Array<string>,
 /**
  * `signed out`, or `not signed in`.
  */
@@ -2642,11 +2654,11 @@ export type Snap = { every: number, offset: number, first: number, };
 /**
  * `ssh` into a rental, as root, trusting its host key the first time, in a known-hosts file of that rental's own.
  */
-export type Ssh = { 
+export type Ssh = {
 /**
  * The command and its arguments, for what runs it.
  */
-args: Array<string>, 
+args: Array<string>,
 /**
  * The same as one line to paste.
  */
@@ -2684,29 +2696,29 @@ export type Steps = { count: number, each_ms: number, };
  * `GET /v1/events`: what a client keeps on screen, on one stream, each thing whole as its route
  * answers it. No backlog: a client subscribes, then reads what it holds.
  */
-export type StreamEvent = { "type": "hello", version: string, stream: string, } | { "type": "run.updated", run: Run, } | { "type": "machine.updated", machine: Machine, } | { "type": "machine.removed", name: string, } | { "type": "project.changed", id: string, rev: string, 
+export type StreamEvent = { "type": "hello", version: string, stream: string, } | { "type": "run.updated", run: Run, } | { "type": "machine.updated", machine: Machine, } | { "type": "machine.removed", name: string, } | { "type": "project.changed", id: string, rev: string,
 /**
  * The assets whose row is another now, each to read by `GET /v1/projects/{id}/assets/{name}`. Absent: read the whole project.
  */
-assets?: Array<string> | null, 
+assets?: Array<string> | null,
 /**
  * Those gone from it.
  */
-gone?: Array<string>, 
+gone?: Array<string>,
 /**
  * What's said of the project besides its assets changed: `GET /v1/projects/{id}?assets=false`.
  */
-head?: boolean, cursor?: ProjectEventCursor | null, } | { "type": "canvas", id: string, seq: number, cards: { [key in string]: Card | null }, } | { "type": "job.updated", project: string, job: Job, seq: number, } | { "type": "ahead.updated", project: string, ahead: Ahead, } | { "type": "history", id: string, undo?: HistoryEntry | null, redo?: HistoryEntry | null, } | { "type": "resync" };
+head?: boolean, cursor?: ProjectEventCursor | null, } | { "type": "project.vault", id: string, state: string, } | { "type": "canvas", id: string, seq: number, cards: { [key in string]: Card | null }, } | { "type": "board.updated", project: string, board: Board, } | { "type": "job.updated", project: string, job: Job, seq: number, } | { "type": "ahead.updated", project: string, ahead: Ahead, } | { "type": "history", id: string, undo?: HistoryEntry | null, redo?: HistoryEntry | null, } | { "type": "resync" };
 
 /**
  * A killed process in uninterruptible sleep (`D`: a driver after an Xid, a hung network
  * filesystem): it exits once that wait ends.
  */
-export type StuckProcess = { pid: number, command: string, 
+export type StuckProcess = { pid: number, command: string,
 /**
  * The kernel function it sleeps in; empty when the kernel hides it.
  */
-wchan: string, 
+wchan: string,
 /**
  * When the machine found it stuck.
  */
@@ -2715,12 +2727,12 @@ since_unix_ms: number, };
 /**
  * The answer to a submit: 202 when this call recorded the run, 200 (`replay`) when the key had.
  */
-export type Submitted = { run: Run, replay: boolean, 
+export type Submitted = { run: Run, replay: boolean,
 /**
  * What resolving and binding the request said, in order (dropped fields, cut clips, a machine
  * without a GPU), for its client to show.
  */
-notes?: Array<Note>, 
+notes?: Array<Note>,
 /**
  * `run` makes the target ready (local code's install): follow it, then send the same request
  * under the same key again for the call.
@@ -2735,39 +2747,39 @@ export type Taken = { class: string, bytes: number, };
 /**
  * `GET /v1/targets?target=`: what a run of `target` calls, resolved as `POST /v1/runs` resolves it.
  */
-export type Target = { 
+export type Target = {
 /**
  * `org/pkg`, or local code's `local/<name>`.
  */
-package: string, 
+package: string,
 /**
  * The function, as the interface spells it; absent: the target names none.
  */
-function?: string | null, 
+function?: string | null,
 /**
  * The release, or local code's source digest.
  */
-release: string, release_from: ReleaseFrom, 
+release: string, release_from: ReleaseFrom,
 /**
  * What the package does, in a line.
  */
-summary?: string, 
+summary?: string,
 /**
  * The package's interface document (`cozy.package.interface/1`).
  */
-interface: JsonValue, 
+interface: JsonValue,
 /**
  * What a person runs of it, in the order offered: no internal function or recipe.
  */
-functions?: Array<TargetFunction>, 
+functions?: Array<TargetFunction>,
 /**
  * The named function's contract as people read it (`cozy run … --describe`).
  */
-contract?: string | null, 
+contract?: string | null,
 /**
  * The named function's request schema (`--describe --json`), with the release and why when it is a published one.
  */
-request?: JsonValue | null, 
+request?: JsonValue | null,
 /**
  * Commands to run next.
  */
@@ -2786,51 +2798,51 @@ export type TimelineNow = { fps: number, tracks: Array<TrackNow>, };
 /**
  * One tool, as `GET /v1/tools` lists it: what it makes and what its box asks for.
  */
-export type Tool = { 
+export type Tool = {
 /**
  * What a box names as its `tool`: `qwen-image-2/image`, `acme/sketchlab/draw`.
  */
-id: string, package: string, function: string, 
+id: string, package: string, function: string,
 /**
  * The release this box was read from: the one its machine holds, else the Hub's newest.
  */
-release: string, 
+release: string,
 /**
  * What a new box of it is called: `shot_1`, counting up as it's taken.
  */
-name: string, 
+name: string,
 /**
  * What it does within its package: `Image`, `Edit`, `Upscale`.
  */
-label: string, 
+label: string,
 /**
  * Its package in words, as the tool list heads its tools: `Qwen Image 2`, `SDXL`.
  */
-package_title: string, 
+package_title: string,
 /**
  * What a box of it is: `image`, `video`, `audio` or `text`, by its result's first such field.
  */
-makes: string, description?: string, 
+makes: string, description?: string,
 /**
  * Local code, named by a box of the project asked about.
  */
-local?: boolean, 
+local?: boolean,
 /**
  * The package a machine installs, where `package` is local code's path: its own name (`local/<name>`).
  */
-installs?: string | null, 
+installs?: string | null,
 /**
  * What its box asks for, in its struct's order.
  */
-fields: Array<ToolField>, 
+fields: Array<ToolField>,
 /**
  * The path in its package of a component that draws its box, where it ships one.
  */
-ui?: string | null, 
+ui?: string | null,
 /**
  * It takes a pickup, which Pick up from here fills: the frames one may land on.
  */
-pickup?: Snap | null, 
+pickup?: Snap | null,
 /**
  * What a checkpoint dropped on its box goes on: the one model its function runs.
  */
@@ -2839,71 +2851,71 @@ model?: ToolModel | null, };
 /**
  * One thing a box asks for: a field of its tool's struct.
  */
-export type ToolField = { 
+export type ToolField = {
 /**
  * Its key in the box's fields.
  */
-field: string, type: FieldType, label: string, required?: boolean, default?: JsonValue | null, 
+field: string, type: FieldType, label: string, required?: boolean, default?: JsonValue | null,
 /**
  * `| None`: unset is Auto, the tool's choice.
  */
-auto?: boolean, placeholder?: string | null, 
+auto?: boolean, placeholder?: string | null,
 /**
  * `Advanced()`: drawn in a collapsed Advanced section under More.
  */
-advanced?: boolean, 
+advanced?: boolean,
 /**
  * A prompt that takes only these kinds of file.
  */
-takes?: Array<string> | null, 
+takes?: Array<string> | null,
 /**
  * A number's and a shape's ends.
  */
-min?: number | null, max?: number | null, step?: number | null, 
+min?: number | null, max?: number | null, step?: number | null,
 /**
  * What a number counts: `s`.
  */
-unit?: string | null, integer?: boolean, 
+unit?: string | null, integer?: boolean,
 /**
  * A number in a list of rows whose sum the box shows.
  */
-total?: boolean, 
+total?: boolean,
 /**
  * A choice's values.
  */
-options?: Array<JsonValue> | null, 
+options?: Array<JsonValue> | null,
 /**
  * A choice's own words for its values, by value.
  */
-words?: { [key in string]: string } | null, 
+words?: { [key in string]: string } | null,
 /**
  * What each of `options` does, by value: drawn as a menu.
  */
-descriptions?: { [key in string]: string } | null, 
+descriptions?: { [key in string]: string } | null,
 /**
  * A shape that allows only these.
  */
-ratios?: Array<JsonValue> | null, 
+ratios?: Array<JsonValue> | null,
 /**
  * A slot: `image`, `video` or `audio`.
  */
-accept?: string | null, 
+accept?: string | null,
 /**
  * A slot that takes the file's description with it.
  */
-described?: boolean, 
+described?: boolean,
 /**
  * A slot of several, in order.
  */
-multiple?: boolean, 
+multiple?: boolean,
 /**
  * A video slot whose length is this list's timeline: `beats`.
  */
-spans?: string | null, 
+spans?: string | null,
 /**
  * A group's fields.
  */
-members?: Array<ToolField>, 
+members?: Array<ToolField>,
 /**
  * A group of rows rather than one block.
  */
@@ -2912,19 +2924,19 @@ list?: boolean, min_items?: number | null, max_items?: number | null, };
 /**
  * One tool this computer would run poorly.
  */
-export type ToolFit = { tool: string, label: string, 
+export type ToolFit = { tool: string, label: string,
 /**
  * The assets of it the render makes.
  */
-names: Array<string>, 
+names: Array<string>,
 /**
  * How it would go here, in a line.
  */
-line: string, 
+line: string,
 /**
  * Its weights' bytes, as its machine would load them; 0: unknown.
  */
-bytes: number, 
+bytes: number,
 /**
  * Render here was said of it on this computer, for weights as big: nothing asks again.
  */
@@ -2943,15 +2955,15 @@ export type ToolListChange = { add?: string | null, remove?: Array<string>, };
 /**
  * The model a tool runs.
  */
-export type ToolModel = { 
+export type ToolModel = {
 /**
  * Its key in a node's `models`.
  */
-slot: string, 
+slot: string,
 /**
  * What its package loads unless told otherwise: `[org/]model@release`.
  */
-default?: string | null, 
+default?: string | null,
 /**
  * That checkpoint's family, as its header says.
  */
@@ -2960,7 +2972,7 @@ family?: string | null, };
 /**
  * `GET /v1/tools/{id}/ui`: a tool's component, ready for the page to import.
  */
-export type ToolUi = { 
+export type ToolUi = {
 /**
  * Its entry module on this computer's Calcifer, named by its hash.
  */
@@ -2969,27 +2981,27 @@ module: string, };
 /**
  * The machine's build toolchain: CUDA's compiler and a host C/C++ compiler.
  */
-export type Toolchain = { 
+export type Toolchain = {
 /**
  * ready, absent, installing, failed
  */
-state: string, 
+state: string,
 /**
  * `nvcc --version`'s release line; empty: none found.
  */
-nvcc: string, 
+nvcc: string,
 /**
  * The host compiler's first version line; empty: none found.
  */
-host_compiler: string, 
+host_compiler: string,
 /**
  * What it lacks: `nvcc`, `cc`, `ninja`.
  */
-missing: Array<string>, 
+missing: Array<string>,
 /**
  * The OS's own command for a missing host compiler; empty when none is missing or known.
  */
-install: string, 
+install: string,
 /**
  * Why the last install failed.
  */
@@ -2998,7 +3010,7 @@ detail: string, };
 /**
  * `GET /v1/tools`.
  */
-export type Tools = { tools: Array<Tool>, 
+export type Tools = { tools: Array<Tool>,
 /**
  * Why the list holds only what's installed: the Hub didn't answer.
  */
@@ -3022,15 +3034,19 @@ export type Unpin = { name: string, };
 /**
  * What an unpin left: the version it had pinned and what that put out of date.
  */
-export type Unpinned = { name: string, 
+export type Unpinned = { name: string,
 /**
  * The version it had pinned.
  */
-version?: number | null, 
+version?: number | null,
 /**
  * What this put out of date, itself too.
  */
-stale: Array<string>, 
+stale: Array<string>,
+/**
+ * What making the tools that read it now said.
+ */
+warnings?: Array<string>,
 /**
  * What `If-Match` names from here on.
  */
@@ -3041,40 +3057,63 @@ etag?: string | null, };
  * run; `200` with none when the machine runs its Hub's target already. An update run that
  * completes without the machine running what it asked for fails `update_unapplied`.
  */
-export type Updating = { machine: Machine, run?: Run | null, 
+export type Updating = { machine: Machine, run?: Run | null,
 /**
  * What it asks for, in words: `runtime 0.33.1 (prerelease), cozy 0.16.2 (installed)`.
  */
 target: string, warnings?: Array<string>, };
 
 /**
+ * POST /v1/projects/{id}/vault. Credentials are deliberately not Debug; neither the request nor its response is cached in history.
+ */
+export type VaultAsk = { action: string, passphrase?: string | null, recovery_secret?: string | null, idle_timeout_s?: number | null, max_duration_s?: number | null,
+/**
+ * Remove a verified plaintext conversion source, only when explicitly asked.
+ */
+remove_plaintext: boolean, output?: string | null, };
+
+/**
+ * A vault operation can disclose a new recovery secret exactly to the caller. Do not persist this response in request/history caches.
+ */
+export type VaultChanged = { vault: VaultStatus, recovery_secret?: string | null, preserved_source?: string | null, };
+
+/**
+ * Local project encryption. Plain projects never need a mount provider or credentials.
+ */
+export type VaultStatus = { encrypted: boolean,
+/**
+ * plain, locked, unlocked, or locking (a native application still holds the mount).
+ */
+state: string, path: string, view?: string | null, expires_at_ms?: number | null, idle_timeout_s: number, next?: Array<string>, };
+
+/**
  * One version (a take, if it holds a video).
  */
-export type Version = { number: number, 
+export type Version = { number: number,
 /**
  * By output name.
  */
-files: { [key in string]: ProjectFile }, made_by?: string | null, 
+files: { [key in string]: ProjectFile }, made_by?: string | null,
 /**
  * The seed Calcifer drew for it.
  */
-seed?: number | null, 
+seed?: number | null,
 /**
  * The runs that made it.
  */
-runs?: Array<number>, approved?: boolean, 
+runs?: Array<number>, approved?: boolean,
 /**
  * What its function said of it, and what was left out of its request.
  */
-warnings?: Array<string>, 
+warnings?: Array<string>,
 /**
  * The take it picked up from.
  */
-pickup?: Pickup | null, 
+pickup?: Pickup | null,
 /**
  * How long its runs took.
  */
-execution_ms?: number | null, 
+execution_ms?: number | null,
 /**
  * The words it was made from.
  */
@@ -3083,27 +3122,27 @@ text?: string | null, };
 /**
  * `DELETE /v1/projects/{id}/assets/{name}/versions/{number}` and `POST …/versions`: a version discarded, or joined.
  */
-export type VersionMoved = { name: string, number: number, 
+export type VersionMoved = { name: string, number: number,
 /**
  * `take` or `version`.
  */
-noun: string, 
+noun: string,
 /**
  * It was the approved one: `approved:` went with it.
  */
-approved?: boolean, 
+approved?: boolean,
 /**
  * What the asset stands on now, else its newest. None: it has none left.
  */
-stands?: number | null, 
+stands?: number | null,
 /**
  * What is out of date now and wasn't.
  */
-stale?: Array<string>, 
+stale?: Array<string>,
 /**
  * What names this version in its text: `<name.2>`. Gone, a render of them fails until it's back.
  */
-read_by?: Array<string>, 
+read_by?: Array<string>,
 /**
  * A version held that file already: it's that one, and nothing changed.
  */
@@ -3112,35 +3151,35 @@ already?: boolean, };
 /**
  * A version's number and the hash prefix project.yaml can name its file by.
  */
-export type VersionPrefix = { number: number, prefix: string, 
+export type VersionPrefix = { number: number, prefix: string,
 /**
  * The take it picked up from.
  */
-pickup?: Pickup | null, 
+pickup?: Pickup | null,
 /**
  * The machine keeping its latents, when one does: the box warns before a pickup if that machine is gone.
  */
-latents?: string | null, 
+latents?: string | null,
 /**
  * How long its runs took.
  */
-execution_ms?: number | null, 
+execution_ms?: number | null,
 /**
  * The last run that made it.
  */
-run?: number | null, 
+run?: number | null,
 /**
  * Its main file.
  */
-main?: MainFile | null, 
+main?: MainFile | null,
 /**
  * A cut's: what it was cut from, `<asset> <version>` each.
  */
-from?: Array<string>, 
+from?: Array<string>,
 /**
  * A cut's: what it was cut without, `<piece>: <why>` each.
  */
-without?: Array<string>, 
+without?: Array<string>,
 /**
  * An Edit's: the clips that made this version, which an edit can carry on from.
  */
@@ -3149,11 +3188,11 @@ timeline?: TimelineNow | null, };
 /**
  * One member of this controller's warm set on the machine.
  */
-export type WarmItem = { 
+export type WarmItem = {
 /**
  * `org/name[@release]`, or an installation id.
  */
-source: string, entrypoint: string, 
+source: string, entrypoint: string,
 /**
  * The level asked for, and the one it holds now.
  */

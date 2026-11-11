@@ -68,7 +68,7 @@ parse() {
   [ -z "$INSTALLED" ] || [ ! -f "$CAND_COZY" ] || { COZY=$CAND_COZY; CAND_COZY=''; }
   mkdir -p "$OUT"
   OUT=$(cd "$OUT" && pwd)
-  # Made up, and here so each published run shows its scrub ran (e2e/publish): in its log and this file it reads `Bearer [scrubbed]`.
+  # Made up, and here so each published run watchs its scrub ran (e2e/publish): in its log and this file it reads `Bearer [scrubbed]`.
   echo 'scrub canary: authorization: Bearer 0000-made-up-0000' | tee "$OUT/canary.err"
 }
 
@@ -437,7 +437,7 @@ machine_ready() {
 }
 
 # cell <name> <target> [inputs...]: one `cozy run` on local (e2e/run.sh's run_cell), followed to its end. Its
-# events go to $OUT/<name>.ndjson, its record (`cozy run show`) to $OUT/<name>.json, its number to
+# events go to $OUT/<name>.ndjson, its record (`cozy run watch`) to $OUT/<name>.json, its number to
 # $OUT/<name>.number, its outputs in the script's project. A run that does not complete is a recorded failure
 # (`check`), unless ALLOW names a code its refusal carries: then $OUT/<name>.refused holds that code. Returns 1
 # when the run neither completed nor was refused as allowed.
@@ -498,7 +498,7 @@ pinned() {
 # The BiRefNet target: a pinned release, the packages checkout's directory, or the published release.
 birefnet() {
   if [ -z "$PACKAGES" ] || [[ $(pinned birefnet) == *@* ]]; then pinned birefnet remove_background
-  else echo "./$PACKAGES/birefnet/remove_background"; fi
+  else (cd "$PACKAGES" && printf '%s/birefnet/remove_background\n' "$PWD"); fi
 }
 
 echo "::group::start"

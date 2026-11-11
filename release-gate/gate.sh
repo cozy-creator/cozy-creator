@@ -4,9 +4,8 @@
 # .github/workflows/release-gate.yaml on a runner signed in with `cozy login --key`.
 #   gate.sh <SKU> --suite name,... [--gpus N] [--out DIR] [--establish] [--publish] [--runtime F|URL] [--tensorfs F|URL]
 #           [--tensord BIN|URL] [--packages DIR] [--pins name@release,...] [--only cell,cell] [--before FILE]...
-#           [--cells FILE]... [--first pkg,...] [--cli BIN] [--disk GB] [--on MACHINE] [--image sha256:HEX] [--stall MIN]
+#           [--cells FILE]... [--first pkg,...] [--cli BIN] [--disk GB] [--on MACHINE] [--stall MIN]
 #           [--cap MIN]
-# --image boots that worker image (a staged candidate's digest; a Hub admin's choice) in place of the Hub's current one.
 # --on runs on that machine as it is (a dev proof on `local`): no rental, no --before, nothing ended.
 # --stall: how long no run on the machine may stand still before the gate calls its cell hung (`hold`; default 15 minutes).
 # --cap: the job's hard stop in minutes from the gate's start (the workflow's cap_minutes; 300). A download that can't land
@@ -35,7 +34,7 @@ fi
 HERE=$2 BEGAN=$3 HOST=$4 BEGUN_IN=$PWD; shift 4; ARGS=("$@")
 . "$HERE/machines.sh"
 REPO=cozy-creator/cozy-creator TAG=release-gate-baselines
-SKU=$1; shift; CAND=() ONLY= EXTRA=() BEFORE=() CLI=cozy DISK=400 OUT= PKGS= ESTABLISH= PUBLISH= PINS= SUITES= K= CLIP= GPUS= FIRST= ON= IMAGE= STALL=15 STALL_STAGE=30 SEEDS= SCENARIO=
+SKU=$1; shift; CAND=() ONLY= EXTRA=() BEFORE=() CLI=cozy DISK=400 OUT= PKGS= ESTABLISH= PUBLISH= PINS= SUITES= K= CLIP= GPUS= FIRST= ON= STALL=15 STALL_STAGE=30 SEEDS= SCENARIO=
 BIN= RW= TW= TD= CAP=300 HOSTS=5
 while [ $# -gt 0 ]; do
   case $1 in
@@ -51,7 +50,6 @@ while [ $# -gt 0 ]; do
     --cli) CLI=$2;;
     --disk) DISK=$2;;
     --on) ON=$2;;
-    --image) IMAGE=$2;;
     --stall) STALL=$2;;
     --cap) CAP=$2;;
     --packages) PKGS=$(cd "$2" && pwd);;
@@ -72,6 +70,11 @@ OUT=${OUT:-$PWD/gate-$SKU-$(date -u +%Y%m%dT%H%MZ)}
 B=$OUT/baseline
 mkdir -p "$B"; cd "$OUT"; : > cells.tsv
 log() { echo "$(date -u +%H:%M:%SZ) $*" | tee -a gate.log; }
+if [ -n "$PKGS" ]; then
+  cargo build --quiet --locked --manifest-path "$HERE/../Cargo.toml" -p api --example stage-code --target-dir "$PWD/stage-code-build" > stage-code-build.log 2>&1 \
+    || { log "could not build local-source staging helper: $(tail -c 500 stage-code-build.log)"; exit 1; }
+  RUN_CODE_STAGE=$PWD/stage-code-build/debug/examples/stage-code
+fi
 # expect <check> PASS|FAIL <what happened>: a CLI-behaviour check (cells/*.sh); analyze.py fails the gate on a FAIL.
 expect() { printf '%s\t%s\t%s\n' "$1" "$2" "$(tr '\n\t' '  ' <<< "$3" | cut -c1-400)" >> expect.tsv; log "$1: $2 $3"; }
 # fetch <file|URL#sha256=hex>: the candidate as a file here, its digest checked.
@@ -165,8 +168,8 @@ one_beat() {
 }
 # ahead <name> <target> [args...]: the function's weights on $M's disk before its first timed call, its on-demand models'
 # too (cl-790), as a user who has used it has them: TensorD admits a call on its up-front models and fetches on-demand ones
-# behind it, so a cold upsampler's download was timed as Klein's execution. `--warm downloaded` ends once they're here, and
-# `--warm off` takes the function out of the warm set, so nothing stays held from eviction. Once per function and the
+# behind it, so a cold upsampler's download was timed as Klein's execution. API warming to `downloaded` ends once they're here, and
+# `off` takes the function out of the warm set, so nothing stays held from eviction. Once per function and the
 # arguments that choose its weights.
 declare -A AHEAD
 ahead() {
@@ -178,9 +181,9 @@ ahead() {
   key="$target ${want[*]}"
   [ -z "${AHEAD[$key]:-}" ] || return 0
   AHEAD[$key]=1
-  run_cell "$OUT" "$name-weights" "$target" --on "$M" --warm downloaded "${want[@]}" ||
+  run_warm_cell "$OUT" "$name-weights" "$target" downloaded --on "$M" "${want[@]}" ||
     expect "$name-weights" FAIL "run $(cat "$name-weights.number") $(run_get "$OUT" "$name-weights" .status): $(run_get "$OUT" "$name-weights" '.reason.message')"
-  "$CLI" run "$target" --on "$M" --warm off > "$name-weights-off.log" 2>&1 || log "$name: --warm off: $(tail -c 300 "$name-weights-off.log")"
+  run_warm_cell "$OUT" "$name-weights-off" "$target" off --on "$M" > "$name-weights-off.log" 2>&1 || log "$name: API warming off: $(tail -c 300 "$name-weights-off.log")"
 }
 # cell <name> <target> [args...]: one run on $M (e2e/run.sh's run_cell): its record <name>.json, its outputs <name>/.
 # --only names cells or packages. $TWIN, when a suite sets it, names a second run (<name>$TWIN) of the cells $TWINS lists.
@@ -295,7 +298,7 @@ if [ -z "$ON" ]; then
   RENT_BEGAN=$SECONDS
   for ((order = 1; order <= REORDERS; order++)); do
     : > rent.err
-    "$CLI" machine rent "$SKU" ${GPUS:+--gpus "$GPUS"} ${IMAGE:+--image-digest "$IMAGE"} ${SSH:+--ssh} --disk-gb "$DISK" -y >rent.out 2>rent.err & RP=$!
+    "$CLI" machine rent "$SKU" ${GPUS:+--gpus "$GPUS"} ${SSH:+--ssh} --disk-gb "$DISK" -y >rent.out 2>rent.err & RP=$!
     until first=$(grep -m1 -oE '^[a-z0-9][a-z0-9-]*: (booting|ready|offline)' rent.err | cut -d: -f1); [ -n "$first" ] || ! kill -0 "$RP" 2>/dev/null; do
       sleep 2
     done

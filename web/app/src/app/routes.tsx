@@ -8,6 +8,7 @@ import { MachineDrawer } from "../panels/machines/MachineDrawer"
 import { Machines } from "../panels/machines/Machines"
 import { NewRun } from "../panels/newrun/NewRun"
 import { Projects } from "../panels/Projects"
+import { ProjectVault } from "../panels/ProjectVault"
 import { RunDrawer } from "../panels/runs/RunDrawer"
 import { Runs } from "../panels/runs/Runs"
 import { Stub } from "../panels/Stub"
@@ -77,6 +78,7 @@ export const theRouter = () =>
             drawer("new", <NewRun />),
             drawer("files", <Stub title="Files" />),
             drawer("yaml", <Yaml />),
+            drawer("vault", <ProjectVault />),
           ],
         })),
         { path: "*", element: <Navigate replace to="/" /> },

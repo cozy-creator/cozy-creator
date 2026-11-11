@@ -589,11 +589,11 @@ def main() -> None:
                     row["run"] for row in events if isinstance(row.get("run"), dict)
                 ]
                 assert recorded, f"no admitted run; CLI exit {status}, see {directory}"
-                run = cast(RunRecord, read_snapshot(  # run show
+                run = cast(RunRecord, read_snapshot(  # run watch
                     cozy,
                     directory,
                     "run",
-                    ["run", "show", recorded[-1]["id"], "--once"],
+                    ["run", "watch", recorded[-1]["id"], "--once"],
                 ))
             if status or run["status"] != "completed":
                 report["runs"].append(

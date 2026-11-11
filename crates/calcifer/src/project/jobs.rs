@@ -1,5 +1,5 @@
-//! What a project's render is doing, asset by asset: the `Board` that `/events` and `GET /v1/projects/{id}` give a view to draw. It
-//! decides nothing. `sync` reads what the walk owes, and `told` and `ran` fold what the walk and its runs say.
+//! What a project's render is doing, asset by asset: the `Board` that `GET /v1/projects/{id}` gives a view to draw, each change told
+//! on `GET /v1/events`. It decides nothing. `sync` reads what the walk owes, and `told` and `ran` fold what the walk and its runs say.
 use std::{
     collections::{HashMap, HashSet},
     path::Path,
@@ -7,11 +7,11 @@ use std::{
 };
 
 use api::{
-    calcifer::{Event as RunEvent, Progress, Run, Status},
+    calcifer::{Event as RunEvent, NoteLevel, Progress, Run, Status},
+    error::Error,
     ids::RunId,
-    calcifer::project::{Ahead, Board, Event, Job, JobState, Preview},
+    calcifer::project::{Ahead, Board, Ended, Job, JobState, Preview, Said},
 };
-use tokio::sync::{broadcast, watch};
 
 use super::graph::name_key;
 
@@ -33,18 +33,35 @@ pub(crate) struct Going {
     pub gpus: Option<u32>,
 }
 
+/// What a walk tells its board.
+pub(crate) enum Told {
+    /// `name`'s version `number` (its `noun`) was made: the file people mean by it, and its run's execution time.
+    Landed { name: String, noun: String, number: u32, path: String, execution_ms: Option<u64> },
+    /// A line of the render's, of the asset `name` if it is of one.
+    Said { message: String, name: Option<String> },
+    /// A warning, of the asset `name` whose run gave it; with none, it names its asset itself, if it is of one.
+    Warning { message: String, name: Option<String> },
+    /// Something asked could not be made; the walk goes on with what does not read it. `name`, the asset, and `run`, the run that
+    /// failed, when it is of one: its row's `failure` holds this for later readers.
+    Failed { error: Error, name: Option<String>, run: Option<u64> },
+    /// Asset `name`'s cut (`edit.mp4`, and its `.otio`) was made here, in `took_s`: `frames` long at `fps`, the takes in `retimed`
+    /// retimed to it. `unchanged`: what it holds did not change, so it was left. `without`: what it was cut without, `<piece>: <why>`.
+    Cut { name: String, cut: String, frames: u64, fps: f64, retimed: Vec<String>, took_s: f64, unchanged: bool, without: Vec<String> },
+}
+
 pub(crate) struct Jobs {
     held: Mutex<Held>,
-    /// The board. A client hears of it when it begins and ends, and of each job as that one changes.
-    board: watch::Sender<Board>,
-    /// The project's id, and its stream.
+    /// The project's id, which its events name.
     project: String,
-    events: broadcast::Sender<Event>,
 }
 
 #[derive(Default)]
 struct Held {
+    /// The board as last told: a client hears it whole when more than a job changed, else each job that did.
+    board: Board,
     seq: u64,
+    /// The sequence of the active walk's first board.
+    active: Option<u64>,
     on: Vec<String>,
     began_at_ms: i64,
     elapsed_ms: Option<u64>,
@@ -63,6 +80,10 @@ struct Held {
     told: HashMap<String, Job>,
     /// What machines are fetching ahead, the run each is, and what it's for as the text names it.
     ahead: Vec<(RunId, String, Ahead)>,
+    said: Vec<Said>,
+    errors: Vec<Error>,
+    /// How the walk ended, once it has.
+    end: Option<Ended>,
 }
 
 /// A job with a run.
@@ -79,38 +100,42 @@ struct Live {
 }
 
 impl Jobs {
-    pub(crate) fn new(project: String, events: broadcast::Sender<Event>) -> Self {
-        Self { held: Mutex::default(), board: watch::Sender::new(Board::default()), project, events }
+    pub(crate) fn new(project: String) -> Self {
+        Self { held: Mutex::default(), project }
     }
 
     pub(crate) fn board(&self) -> Board {
-        let mut board = self.board.borrow().clone();
-        board.ahead = self.held.lock().expect("jobs lock").ahead.iter().map(|(.., row)| row.clone()).collect();
-        board
+        let held = self.held.lock().expect("jobs lock");
+        Board { ahead: held.ahead.iter().map(|(.., row)| row.clone()).collect(), ..held.board.clone() }
     }
 
-    pub(crate) fn subscribe(&self) -> watch::Receiver<Board> {
-        self.board.subscribe()
+    pub(crate) fn active(&self) -> Option<u64> {
+        self.held.lock().expect("jobs lock").active
     }
 
     /// The board an earlier walk ended on, as project.db kept it: what this shows until a walk begins.
     pub(crate) fn ended_on(&self, board: Board) {
         let mut held = self.held.lock().expect("jobs lock");
         held.seq = held.seq.max(board.seq);
-        self.board.send_replace(board);
+        held.board = board;
     }
 
     /// A walk begins: the board starts empty, its `seq` still rising.
-    pub(crate) fn begin(&self) {
+    pub(crate) fn begin(&self) -> u64 {
         let mut held = self.held.lock().expect("jobs lock");
         *held = Held { seq: held.seq, began_at_ms: crate::store::now_ms(), ..Held::default() };
         self.publish(&mut held);
+        held.active = Some(held.seq);
+        held.seq
     }
 
-    /// The walk is over: nothing more changes. A cut no version of it came with is what a render ends on: the film that stands.
-    pub(crate) fn end(&self, elapsed_ms: u64) {
+    /// The walk is over, as `ended` says: nothing more changes. A cut no version of it came with is what a render ends on: the film
+    /// that stands.
+    pub(crate) fn end(&self, elapsed_ms: u64, ended: Ended) -> Board {
         let mut held = self.held.lock().expect("jobs lock");
+        held.active = None;
         held.elapsed_ms = Some(elapsed_ms);
+        held.end = Some(ended);
         // What it fetched ahead goes no further: nothing here hears of it now.
         for (.., row) in held.ahead.iter_mut().filter(|(.., row)| row.stage.is_some()) {
             row.stage = None;
@@ -125,12 +150,16 @@ impl Jobs {
             }
         }
         self.publish(&mut held);
+        held.board.clone()
     }
 
     /// The board as project.lock stands: what it sends and what it still owes, each `coming` with whether it makes a shot. A run it
-    /// holds no row of is read by `run`.
-    pub(crate) fn sync(&self, on: Vec<String>, going: Vec<Going>, coming: Vec<(Job, bool)>, run: impl Fn(u64) -> Option<Run>) {
+    /// holds no row of is read by `run`. The data is read outside this lock and may belong to a walk that has ended.
+    pub(crate) fn sync(&self, active: u64, on: Vec<String>, going: Vec<Going>, coming: Vec<(Job, bool)>, run: impl Fn(u64) -> Option<Run>) {
         let mut held = self.held.lock().expect("jobs lock");
+        if held.active != Some(active) {
+            return;
+        }
         for machine in on {
             if !held.on.contains(&machine) {
                 held.on.push(machine);
@@ -163,28 +192,45 @@ impl Jobs {
     }
 
     /// What the walk said.
-    pub(crate) fn told(&self, event: &Event) {
+    pub(crate) fn told(&self, told: Told) {
         let mut held = self.held.lock().expect("jobs lock");
-        match event {
-            Event::Landed { name, noun, number, path, execution_ms, .. } => {
-                let mut job = held.take(name, Some(*number), None).unwrap_or_default();
-                job = Job { id: job.id, asset: name.clone(), state: JobState::Done, noun: noun.clone(), number: Some(*number), shot: job.shot, took_ms: *execution_ms, path: Some(path.clone()), run: job.run, machine: job.machine, ..Job::default() };
-                if let Some(at) = held.cuts.iter().position(|cut| cut.asset == *name) {
+        match told {
+            Told::Said { message, name } => {
+                if held.said.iter().any(|said| said.message == message) {
+                    return;
+                }
+                held.said.push(Said { level: NoteLevel::Info, message, names: name.into_iter().collect() });
+            }
+            Told::Warning { message, name } => {
+                if !held.warn(message, name) {
+                    return;
+                }
+            }
+            Told::Failed { error, name: None, .. } => {
+                if held.errors.iter().any(|told| told.message == error.message) {
+                    return;
+                }
+                held.errors.push(error);
+            }
+            Told::Landed { name, noun, number, path, execution_ms } => {
+                let mut job = held.take(&name, Some(number), None).unwrap_or_default();
+                job = Job { id: job.id, asset: name.clone(), state: JobState::Done, noun, number: Some(number), shot: job.shot, took_ms: execution_ms, path: Some(path), run: job.run, machine: job.machine, ..Job::default() };
+                if let Some(at) = held.cuts.iter().position(|cut| cut.asset == name) {
                     let cut = held.cuts.remove(at);
                     job = Job { path: cut.path, seconds: cut.seconds, why: cut.why, took_ms: cut.took_ms, ..job };
                 }
                 held.ended.push(job);
             }
-            Event::Failed { error, name: Some(name), run } => {
+            Told::Failed { error, name: Some(name), run } => {
                 let canceled = run.and_then(|run| held.live.iter().find(|live| live.job.run == Some(run))).is_some_and(|live| live.settled && live.job.why.as_deref() == Some(CANCELED));
-                let job = held.take(name, None, *run).unwrap_or_default();
+                let job = held.take(&name, None, run).unwrap_or_default();
                 let state = if canceled { JobState::Canceled } else { JobState::Failed };
-                let job = Job { id: job.id, asset: name.clone(), state, noun: job.noun, number: job.number, shot: job.shot, run: job.run, machine: job.machine, took_ms: job.took_ms, error: Some(error.clone()), ..Job::default() };
+                let job = Job { id: job.id, asset: name, state, noun: job.noun, number: job.number, shot: job.shot, run: job.run, machine: job.machine, took_ms: job.took_ms, error: Some(error), ..Job::default() };
                 held.ended.push(job);
             }
-            Event::Cut { name, cut, frames, fps, retimed, took_s, unchanged, without } => {
+            Told::Cut { name, cut, frames, fps, retimed, took_s, unchanged, without } => {
                 let mut why = vec![];
-                match (*unchanged, retimed.as_slice()) {
+                match (unchanged, retimed.as_slice()) {
                     (true, _) => why.push("(unchanged)".to_owned()),
                     (false, []) => {}
                     (false, takes) => why.push(format!("it retimes {} to {fps} fps", takes.join(", "))),
@@ -192,20 +238,19 @@ impl Jobs {
                 if !without.is_empty() {
                     why.push(format!("(without {})", without.join("; ")));
                 }
+                held.cuts.retain(|held| held.asset != name);
                 let job = Job {
-                    asset: name.clone(),
+                    asset: name,
                     state: JobState::Done,
                     noun: "version".into(),
-                    path: Some(cut.clone()),
-                    seconds: Some(*frames as f64 / fps),
-                    took_ms: (*took_s > 0.0).then_some((took_s * 1000.0) as u64),
+                    path: Some(cut),
+                    seconds: Some(frames as f64 / fps),
+                    took_ms: (took_s > 0.0).then_some((took_s * 1000.0) as u64),
                     why: (!why.is_empty()).then(|| why.join(" ")),
                     ..Job::default()
                 };
-                held.cuts.retain(|cut| cut.asset != *name);
                 held.cuts.push(job);
             }
-            _ => return,
         }
         self.publish(&mut held);
     }
@@ -286,7 +331,6 @@ impl Jobs {
         let mut held = self.held.lock().expect("jobs lock");
         let row = Ahead { function, machine, run, stage: Some("asked".into()), ..Ahead::default() };
         crate::events::ahead_updated(&self.project, &row);
-        let _ = self.events.send(Event::Ahead { ahead: row.clone() });
         held.ahead.push((id, with, row));
         self.publish(&mut held);
     }
@@ -314,9 +358,7 @@ impl Jobs {
             _ => {}
         }
         if *row != was {
-            let row = row.clone();
-            crate::events::ahead_updated(&self.project, &row);
-            let _ = self.events.send(Event::Ahead { ahead: row });
+            crate::events::ahead_updated(&self.project, row);
         }
         true
     }
@@ -327,13 +369,16 @@ impl Jobs {
         held.ahead.iter().filter(|(.., row)| row.stage.is_some()).map(|(id, with, row)| (with.clone(), row.machine.clone(), id.clone())).collect()
     }
 
-    /// What run `id` did, when it is one of this board's, under `dir`; `Some`: a warning it gave for the first time, and whose it is.
-    pub(crate) fn ran(&self, id: &RunId, event: &RunEvent, dir: &Path) -> Option<(String, String)> {
+    /// What run `id` did, when it is one of this board's, under `dir`: a warning it gave is said once, as its asset's.
+    pub(crate) fn ran(&self, active: u64, id: &RunId, event: &RunEvent, dir: &Path) {
         let mut held = self.held.lock().expect("jobs lock");
-        if self.ahead_ran(&mut held, id, event) {
-            return None;
+        if held.active != Some(active) {
+            return;
         }
-        let live = held.live.iter_mut().find(|live| live.id == *id)?;
+        if self.ahead_ran(&mut held, id, event) {
+            return;
+        }
+        let Some(live) = held.live.iter_mut().find(|live| live.id == *id) else { return };
         match event {
             RunEvent::Created { run, .. }
             | RunEvent::Queued { run, .. }
@@ -344,27 +389,26 @@ impl Jobs {
             RunEvent::Progress { progress } => live.progress(progress),
             RunEvent::Waiting { reason } => live.job.why = Some(reason.clone()).filter(|reason| !reason.is_empty()),
             RunEvent::OutputLanded { item, .. } => {
-                if live.settled || item.stays {
-                    return None;
-                }
-                let path = item.path.as_ref()?;
+                let Some(path) = item.path.as_ref().filter(|_| !live.settled && !item.stays) else { return };
                 let path = path.strip_prefix(dir).unwrap_or(path).display().to_string();
                 let label = words(if item.label.is_empty() { &item.name } else { &item.label });
                 live.landed = Some((Preview { label, path }, (live.job.stage.clone(), live.job.detail.clone())));
-                return None;
+                return;
             }
             // A stage shows in its row, and an input reused needn't show at all.
             RunEvent::Log { level, text, .. } if !matches!(level.as_str(), "info" | "debug" | "stage" | "inputs") => {
                 let asset = live.job.asset.clone();
-                return held.warned.insert((asset.clone(), text.clone())).then(|| (asset, text.clone()));
+                if !held.warned.insert((asset.clone(), text.clone())) || !held.warn(text.clone(), Some(asset)) {
+                    return;
+                }
             }
-            _ => return None,
+            _ => return,
         }
         self.publish(&mut held);
-        None
     }
 
-    /// The board now, told if it changed. `seq` rises across a restart, being at least the clock.
+    /// The board now, told if it changed: whole when more than its jobs did, else each job that changed. `seq` rises across a restart,
+    /// being at least the clock.
     fn publish(&self, held: &mut Held) {
         let mut going: Vec<Job> = held.live.iter().map(|live| live.job.clone()).chain(held.sending.iter().cloned()).collect();
         going.sort_by_key(|job| job.state != JobState::Running);
@@ -385,26 +429,32 @@ impl Jobs {
             .map(|was| Job { state: JobState::Canceled, ..was.clone() })
             .collect();
         let shots = held.shots.len() as u32;
-        let stands = self.board.borrow();
-        let same_head = stands.seq > 0 && stands.shots == shots && stands.on == held.on && stands.elapsed_ms == held.elapsed_ms && stands.began_at_ms == held.began_at_ms;
-        let same = same_head && changed.is_empty() && left.is_empty();
-        drop(stands);
-        if same {
+        let stands = &held.board;
+        let same_head = stands.seq > 0
+            && stands.shots == shots
+            && stands.on == held.on
+            && stands.elapsed_ms == held.elapsed_ms
+            && stands.began_at_ms == held.began_at_ms
+            && stands.said == held.said
+            && stands.errors == held.errors
+            && stands.ended == held.end;
+        if same_head && changed.is_empty() && left.is_empty() {
             return;
         }
         held.seq = (held.seq + 1).max(crate::store::now_ms() as u64);
         let seq = held.seq;
-        for job in changed.iter().copied().chain(&left) {
-            crate::events::job_updated(&self.project, job, seq);
-            let _ = self.events.send(Event::Job { job: job.clone(), seq });
+        if same_head {
+            for job in changed.iter().copied().chain(&left) {
+                crate::events::job_updated(&self.project, job, seq);
+            }
         }
         held.told = jobs.iter().map(|job| (job.id.clone(), job.clone())).collect();
-        let board = Board { seq, on: held.on.clone(), began_at_ms: held.began_at_ms, elapsed_ms: held.elapsed_ms, shots, jobs, ahead: held.ahead.iter().map(|(.., row)| row.clone()).collect() };
-        // A client that keeps the board hears only when more than a job changed: its jobs it hears one by one.
-        self.board.send_if_modified(|stands| {
-            *stands = board;
-            !same_head
-        });
+        let ahead = held.ahead.iter().map(|(.., row)| row.clone()).collect();
+        let (said, errors, ended) = (held.said.clone(), held.errors.clone(), held.end.clone());
+        held.board = Board { seq, on: held.on.clone(), began_at_ms: held.began_at_ms, elapsed_ms: held.elapsed_ms, shots, jobs, ahead, said, errors, ended };
+        if !same_head {
+            crate::events::board_updated(&self.project, &held.board);
+        }
     }
 }
 
@@ -415,6 +465,23 @@ pub(crate) const STANDS: &str = "it stands";
 const CANCELED: &str = "canceled";
 
 impl Held {
+    /// `message` said once, naming each asset whose it is: whether that changed what's said.
+    fn warn(&mut self, message: String, name: Option<String>) -> bool {
+        match self.said.iter_mut().find(|said| said.level == NoteLevel::Warning && said.message == message) {
+            Some(said) => match name.filter(|name| !said.names.contains(name)) {
+                Some(name) => {
+                    said.names.push(name);
+                    true
+                }
+                None => false,
+            },
+            None => {
+                self.said.push(Said { level: NoteLevel::Warning, message, names: name.into_iter().collect() });
+                true
+            }
+        }
+    }
+
     /// The number of the shot of `asset`: its place among the shots seen, a new one at the end.
     fn shot(&mut self, asset: &str) -> u32 {
         let key = name_key(asset);

@@ -705,7 +705,7 @@ function linesOf(text, name) {
     await projectAction(folder, 'render', 'mentioning', '--on', 'local');
     // A project's status counts an asset's versions; one asset's status lists them.
     const madeBy = projectJson(folder, 'GET', '/assets/mentioning').versions.at(-1).runs.at(-1);
-    const sent = JSON.parse(execFileSync(COZY, ['--json', '--full', 'run', 'show', String(madeBy), '--once'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] })).request.input;
+    const sent = JSON.parse(execFileSync(COZY, ['--json', '--full', 'run', 'watch', String(madeBy), '--once'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] })).request.input;
     check('a_mention_is_no_keyframe', !('first_frame' in sent) && !('last_frame' in sent), sent);
     check('a_mention_is_a_reference', sent.summary?.references?.length === 2 && sent.aspect_ratio === '16:9', sent);
 

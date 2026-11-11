@@ -34,7 +34,7 @@ args=(--tensord "$(param tensord "$(command -v cozy)")")
 [ -z "$(param tensorfs)" ] || args+=(--tensorfs "$(param tensorfs)")
 step update machine update "$NAME" "${args[@]}" -y || fail "update"
 cd "$FIX" || fail "no fixtures"
-value() { cozy run show "$(runno "$1")" --once --json --full > "$OUT/$1.json" 2>&1; jq -r '.result.value // empty' "$OUT/$1.json"; }
+value() { cozy run watch "$(runno "$1")" --once --json --full > "$OUT/$1.json" 2>&1; jq -r '.result.value // empty' "$OUT/$1.json"; }
 status() { jq -r '.status // empty' "$OUT/$1.json"; }
 run() { local n=$1; shift; step "$n" run "$@" --on "$NAME" || fail "$n"; value "$n" > "$OUT/$n.value"; }
 # game <name> <cfg json>: the stand-in game, started by a root shell; waits up to its wait_s for it to have all of it.

@@ -31,7 +31,7 @@ if [ -n "$LOCAL" ] && (cd "$here" && COZY_HUB_URL=http://127.0.0.1:9 cell other-
   n=$(cat "$OUT/other-hub.number")
   cozy --json --full run ls --limit 0 | J --argjson n "$n" 'any(.runs[]; .number == $n and .hub == "http://127.0.0.1:9")' \
     || check "run ls: run $n, made at another Hub, is not listed"
-  cozy --json run show "$n" --once | J '.hub == "http://127.0.0.1:9" and .status == "completed"' || check "run show $n: not its record at the other Hub"
+  cozy --json run watch "$n" --once | J '.hub == "http://127.0.0.1:9" and .status == "completed"' || check "run watch $n: not its record at the other Hub"
 fi
 
 step "signed out"
@@ -131,7 +131,6 @@ refused() {  # refused <name> <cozy args...>
 }
 refused run run birefnet/remove_background --file "image=$dog"
 refused run-on-local run birefnet/remove_background --input "$OUT/refused.yaml" --on local
-refused run-warm run birefnet/remove_background --warm installed
 (refused run-code run "$here/weightless/reverse" text=refused)
 # Describing local code reads its source here and uses no machine: it works where none runs.
 (in_project "$RUN_PROJECT" --json run "$here/weightless/reverse" --describe > "$OUT/describe-code.json" 2> "$OUT/describe-code.err") \
@@ -278,6 +277,20 @@ done
 for _ in $(seq 60); do [[ $(row "$RUN_PROJECT" hostile_control .duration_ms) =~ ^[0-9]+$ ]] && break; sleep 0.5; done
 sleep 5
 [[ $(row "$RUN_PROJECT" hostile_control .duration_ms) =~ ^[0-9]+$ ]] || check "hostile media: the control clip was never probed: $(tail -c 200 "$OUT/hostile-control.json")"
+if [[ $(uname -s) == Linux ]]; then
+  # A literal questionmark is a valid POSIX project path, not an image sequence pattern.
+  local literal; literal=$(mktemp -d "$RUNNER_TEMP/hostile?image.XXXXXX")
+  ffmpeg -v error -y -f lavfi -i color=c=blue:size=8x8 -frames:v 1 "$dir/image.png"
+  cozy --json new "$literal" > "$OUT/hostile-questionmark-new.json" 2>&1 || check "literal image: project creation failed"
+  project_import "$literal" "$dir/image.png" literal_image > "$OUT/hostile-questionmark-import.json" 2>&1 || check "literal image: import failed"
+  for _ in $(seq 60); do
+    in_project "$literal" --json --full status > "$OUT/hostile-questionmark.json" 2> "$OUT/hostile-questionmark.err" || true
+    J 'any(.project.assets[]; .name == "literal_image" and .width == 8 and .height == 8)' "$OUT/hostile-questionmark.json" && break
+    sleep 0.5
+  done
+  J 'any(.project.assets[]; .name == "literal_image" and .width == 8 and .height == 8)' "$OUT/hostile-questionmark.json" \
+    || check "literal image: the CLI never measured its PNG in the questionmark project: $(tail -c 300 "$OUT/hostile-questionmark.json")"
+fi
 [ ! -e "$dir/opened" ] || check "hostile media: ffmpeg or ffprobe opened a file an imported playlist or concat list names"
 echo "hostile media: playlist $(tail -c 160 "$OUT/hostile-playlist.json"); list $(tail -c 160 "$OUT/hostile-list.json")"
 }
@@ -349,8 +362,8 @@ if AFTER='sha256sum out/*' inside script --json run ./draw.py/draw instructions=
   hex=$(tail -1 "$OUT/unseen-script.out" | jq -r '.run.output[0].sha256 // empty' | sed 's/^sha256://')
   { [ -n "$hex" ] && grep -q "^$hex  out/" "$OUT/unseen-script.err"; } || check "unseen script: out/ holds $(grep '  out/' "$OUT/unseen-script.err"), not sha256:$hex"
   n=$(tail -1 "$OUT/unseen-script.out" | jq -r '.run.number // empty')
-  AFTER='sha256sum again/*' inside show run show "$n" -o again && grep -q "^$hex  again/" "$OUT/unseen-show.err" \
-    || check "unseen show: run show $n -o again: $(tail -c 300 "$OUT/unseen-show.err")"
+  AFTER='sha256sum again/*' inside show run watch "$n" -o again && grep -q "^$hex  again/" "$OUT/unseen-show.err" \
+    || check "unseen show: run watch $n -o again: $(tail -c 300 "$OUT/unseen-show.err")"
 fi
 inside install --json package install ./weightless --on local && J '.run.status == "completed"' <(tail -1 "$OUT/unseen-install.out") \
   || check "unseen install: $(tail -c 300 "$OUT/unseen-install.out")"
@@ -406,36 +419,6 @@ sed -i 's/ + "!edited"//' "$module"
 if now=$(timed back cba); then [ "$now" = "$first" ] || check "edit back: another environment than the first's ($first, then $now)"; fi
 sed -i 's/"msgspec>=0.19"\]/"msgspec>=0.19", "six>=1.16"]/' "$code/pyproject.toml"
 if now=$(timed dependency cba); then [ -n "$now" ] && [ "$now" != "$first" ] || check "edit: a new dependency ran on the environment before it ($now)"; fi
-}
-
-# cl-816: the machine quotes local code from its own runs of it, by the installation it holds, not by a manifest object a run
-# ended with. Quoted after its install, before any run, it stands on nothing; after one run, on that run (`measured`), its run
-# time that run's, nothing to prepare. The second run is timed beside the quote.
-local_quote() {
-step "local code is quoted from its runs"
-[ -n "$LOCAL" ] || return 0
-local code=$OUT/quoted/e2e-quoted first quoted
-rm -rf "$code" && mkdir -p "$OUT/quoted" && cp -r "$here/weightless" "$code"
-sed -i 's/^name = "e2e-weightless"/name = "e2e-quoted"/' "$code/pyproject.toml"
-estimate() {  # estimate <name>: the local machine's quote of one run, in <name>.json
-  in_project "$RUN_PROJECT" --json run "$code/reverse" text=abc --estimate --on local > "$OUT/$1-all.json" 2> "$OUT/$1.err" \
-    || { check "$1: cozy run --estimate failed: $(tail -c 300 "$OUT/$1.err")"; return 1; }
-  jq '.machines[] | select(.machine == "local")' "$OUT/$1-all.json" > "$OUT/$1.json"
-  jq -c '{basis, width, start_ms, finish_ms, prepare_ms}' "$OUT/$1.json" | sed "s/^/$1: /" | tee -a "$OUT/quoted.txt"
-}
-: > "$OUT/quoted.txt"
-estimate quote-unrun || return 0
-jq -e '.basis != "measured"' "$OUT/quote-unrun.json" > /dev/null || check "local quote: measured before any run of it"
-cell quote-first "$code/reverse" text=abc || return 0
-estimate quote-run || return 0
-first=$(run_get "$OUT" quote-first .execution_ms)
-quoted=$(jq '.finish_ms - .start_ms' "$OUT/quote-run.json")
-echo "first run ${first:-?} ms; quoted ${quoted} ms" | tee -a "$OUT/quoted.txt"
-J '.basis == "measured"' "$OUT/quote-run.json" || check "local quote: after a run, not measured: $(jq -c . "$OUT/quote-run.json")"
-J '.prepare_ms == 0' "$OUT/quote-run.json" || check "local quote: its installation not found, $(jq .prepare_ms "$OUT/quote-run.json") ms to prepare"
-[ -n "$first" ] && jq -en --argjson q "$quoted" --argjson f "$first" '($q - $f | fabs) <= ([0.2 * $f, 100] | max)' > /dev/null \
-  || check "local quote: its run time ${quoted} ms, the run's ${first:-?} ms"
-cell quote-second "$code/reverse" text=abc && echo "second run $(run_get "$OUT" quote-second .execution_ms) ms" | tee -a "$OUT/quoted.txt"
 }
 
 # cl-820: a signer this machine admits sends TensorD a manifest that names a host path, as only a hand-made one can (no cozy sends
@@ -516,26 +499,30 @@ if cell birefnet-yaml "$(birefnet)" --input "$OUT/birefnet.yaml" --lane "$lane";
 fi
 }
 
-# After a BiRefNet run: the warm levels find it installed.
+# Run options and the retained warming API.
 run_flags() {
 step "run flags"
 before=$(cozy --json run ls --limit 0 | jq '.runs | length') || true
 (in_project "$RUN_PROJECT" --json run "$here/weightless/reverse" --describe) > "$OUT/describe.json" || check "run --describe failed"
 J '.fields | any(.name == "text")' "$OUT/describe.json" || check "run --describe: no text field"
 [ "$(cozy --json run ls --limit 0 | jq '.runs | length')" = "$before" ] || check "run --describe started a run"
+if in_project "$RUN_PROJECT" --json run "$here/weightless/reverse" text=test --model missing=owner/example > "$OUT/model-slot.json" 2> "$OUT/model-slot.err"; then
+  check "--model accepted a slot the function does not declare"
+fi
+J '.error.code == "model_slot_unknown"' "$OUT/model-slot.json" || check "--model did not reach slot validation: $(cat "$OUT/model-slot.json")"
 note=$OUT/inputs/note.txt; mkdir -p "$OUT/inputs"; echo "an asset" > "$note"
 if (cd "$here" && cell fidelity ./weightless/fidelities --file "notes=$note" --file-fidelity notes=high); then
   grep -q 'notes=high' "$OUT/fidelity.ndjson" || check "--file-fidelity notes=high: the executor saw $(grep -o '"assets":\[[^]]*\]' "$OUT/fidelity.ndjson")"
 fi
 for level in installed downloaded imported host; do
-  cozy --json run "$(birefnet)" --warm "$level" --on local > "$OUT/warm-$level.ndjson" || check "run --warm $level failed"
+  run_warm_cell "$OUT" "warm-$level" "$(birefnet)" "$level" --on local || check "warming API at $level failed"
   cozy --json machine show local > "$OUT/warm-$level.json" || true
   # The warm set holds the level asked, or says why it holds less (a CPU binds no model on a GPU).
   J --arg l "$level" '.status.warm | any(.entrypoint == "remove_background" and .level == $l and (.holds == $l or (.held_back | length > 0)))' "$OUT/warm-$level.json" \
-    || check "--warm $level: the warm set does not hold birefnet at $level: $(jq -c '.status.warm' "$OUT/warm-$level.json")"
+    || check "warming API at $level: the warm set does not hold birefnet at $level: $(jq -c '.status.warm' "$OUT/warm-$level.json")"
 done
-cozy --json run "$(birefnet)" --warm off --on local > "$OUT/warm-off.ndjson" || check "run --warm off failed"
-cozy --json machine show local | J '.status.warm | all(.entrypoint != "remove_background")' || check "--warm off: birefnet is still in the warm set"
+run_warm_cell "$OUT" warm-off "$(birefnet)" off --on local || check "warming API at off failed"
+cozy --json machine show local | J '.status.warm | all(.entrypoint != "remove_background")' || check "warming API at off: birefnet is still in the warm set"
 }
 
 # Calcifer's time left, on a weightless run whose stages and steps time it as a model's do (tool.py's `stepped`, its first step slow as a
@@ -578,17 +565,17 @@ waiting=$!
 until n=$(run_number "$OUT/wait.ndjson"); [ -n "$n" ] || ! kill -0 "$waiting" 2> /dev/null; do sleep 0.2; done
 if [ -z "$n" ]; then check "the waiting run never got a number"; else
   until run_reached "$OUT/wait.ndjson" in_progress || ! kill -0 "$waiting" 2> /dev/null; do sleep 0.2; done
-  cozy --json run show "$n" --once > "$OUT/snapshot.json" || true
-  J '.status == "in_progress"' "$OUT/snapshot.json" || check "run show --once: run $n is $(jq -r .status "$OUT/snapshot.json"), not in_progress"
-  cozy --json run show "$n" > "$OUT/followed.ndjson" &
+  cozy --json run watch "$n" --once > "$OUT/snapshot.json" || true
+  J '.status == "in_progress"' "$OUT/snapshot.json" || check "run watch --once: run $n is $(jq -r .status "$OUT/snapshot.json"), not in_progress"
+  cozy --json run watch "$n" > "$OUT/followed.ndjson" &
   following=$!
   sleep 3
-  kill -0 "$following" 2> /dev/null || check "run show $n stopped before the run settled (it should follow it)"
+  kill -0 "$following" 2> /dev/null || check "run watch $n stopped before the run settled (it should follow it)"
   cozy --json run cancel "$n" > "$OUT/cancel.json" || check "run cancel $n failed"
   wait "$following" || true
   wait "$waiting" || true
-  grep -qE '"status": *"canceled"' "$OUT/followed.ndjson" || check "run show $n did not follow it to canceled"
-  cozy --json run show "$n" --once > "$OUT/canceled.json" || true
+  grep -qE '"status": *"canceled"' "$OUT/followed.ndjson" || check "run watch $n did not follow it to canceled"
+  cozy --json run watch "$n" --once > "$OUT/canceled.json" || true
   J '.status == "canceled"' "$OUT/canceled.json" || check "run cancel: run $n is $(jq -r '.status, .reason.code? // empty' "$OUT/canceled.json" | paste -sd' ' -), not canceled"
 fi
 
@@ -600,17 +587,19 @@ cozy --json run ls --state canceled > "$OUT/canceled.json" && J --argjson n "${n
 # After `basics`: its model downloads are runs of zhengpeng7/birefnet.
 run_filters() {
 step "run ls filters"
-cozy --json run ls --package zhengpeng7/birefnet > "$OUT/by-package.json" && J '(.runs | length > 0) and all(.runs[]; .target | startswith("zhengpeng7/birefnet"))' "$OUT/by-package.json" \
+cozy --json run ls --all --package zhengpeng7/birefnet > "$OUT/by-package.json" && J '(.runs | length > 0) and all(.runs[]; .target | startswith("zhengpeng7/birefnet"))' "$OUT/by-package.json" \
   || check "run ls --package zhengpeng7/birefnet: none listed, or others listed"
 cozy --json run ls --on local > "$OUT/by-machine.json" && J '(.runs | length > 0) and all(.runs[]; .machine == "local")' "$OUT/by-machine.json" \
   || check "run ls --on local: other machines listed"
 cozy --json run ls --limit 1 > "$OUT/limit.json" && J '(.runs | length) == 1' "$OUT/limit.json" || check "run ls --limit 1: not one run"
 }
 
-run_play() {
-step "run play"
+run_playback() {
+step "run playback API"
 # The link opens the browser player (GitHub Pages) with this machine, the output and a token in its fragment; the
-# token's expiry is --expires from now. The output: a weightless still (the project cell's renderer).
+# token's expiry comes from the API query. The output is a weightless still.
+local holder=$HOME/.cozy/calcifer/calcifer.lock.holder base id
+base="http://$(jq -r .address "$holder")"
 (cd "$here" && cell play-still ./project/draw.py/draw "instructions=play $RANDOM") || true
 first=$(cat "$OUT/play-still.number")
 name=$(jq -r '.output[0].name // empty' "$OUT/play-still.json") || true
@@ -619,13 +608,16 @@ expiry() {  # the token's expiry (unix s), from the link's fragment (unpadded ba
   while (( ${#t} % 4 )); do t+==; done
   base64 -d <<< "$t" 2> /dev/null | jq -r '.e // empty' 2> /dev/null || true
 }
-if [ "$first" = none ] || [ -z "$name" ]; then check "run play: no still to play"; else
+if [ "$first" = none ] || [ -z "$name" ]; then check "run playback API: no still to play"; else
+  id=$(cozy --json run watch "$first" --once | jq -r .id)
   for expires in 30s 2h; do
-    url=$(cozy --json run play "$first" --output "$name" --expires "$expires" | tee "$OUT/play-$expires.json" | jq -r '.link // empty') || true
-    curl -fsS -o /dev/null "${url%%#*}" || check "run play: its player page ${url%%#*} does not answer"
-    [[ $url == *"o=$name"* && $url == *"a="* ]] || check "run play: the link names no machine or not output $name: $url"
+    url=$(curl --fail-with-body -sS -G -H "Authorization: Bearer $(jq -r .token "$holder")" \
+      --data-urlencode "output=$name" --data-urlencode "expires=$expires" "$base/v1/runs/$id/play" \
+      | tee "$OUT/play-$expires.json" | jq -r '.url // empty') || true
+    curl -fsS -o /dev/null "${url%%#*}" || check "run playback API: its player page ${url%%#*} does not answer"
+    [[ $url == *"o=$name"* && $url == *"a="* ]] || check "run playback API: the link names no machine or not output $name: $url"
     want=$(( $(date +%s) + ${expires%[sh]} * $([ "${expires: -1}" = h ] && echo 3600 || echo 1) )) e=$(expiry "$url")
-    [ -n "$e" ] && [ $(( e - want )) -le 10 ] && [ $(( want - e )) -le 10 ] || check "run play --expires $expires: the token expires at ${e:-?}, not about $want"
+    [ -n "$e" ] && [ $(( e - want )) -le 10 ] && [ $(( want - e )) -le 10 ] || check "run playback API expires $expires: the token expires at ${e:-?}, not about $want"
   done
 fi
 }

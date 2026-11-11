@@ -4,7 +4,7 @@
 //! against its digest) or failed, but for what stays on its machine; an output not saved fails the follow.
 //! `--output` downloads them here (`fetch`). Ctrl-C (Esc or q in
 //! `cozy run ls`) stops following and never cancels: the run is Calcifer's, and `cozy run
-//! show` reattaches.
+//! watch` reattaches.
 use std::{
     collections::HashSet,
     fmt::Write as _,
@@ -75,7 +75,7 @@ pub(crate) async fn job(ctx: &Context, target: &str, input: &impl serde::Seriali
 /// One of Calcifer's own runs (`Kind::Here`), followed quietly to its end: its result, or the refusal it ended with, whole.
 pub(crate) async fn done<T: serde::de::DeserializeOwned>(ctx: &Context, run: Run) -> Result<T, Error> {
     let run = settle(ctx, run).await?;
-    let show = format!("cozy run show {}", run.name());
+    let show = format!("cozy run watch {}", run.name());
     let result = run.result.clone().unwrap_or_default();
     match run.status {
         Status::Completed => serde_json::from_value(result).map_err(|e| Error::new(Kind::Internal, "untyped_answer", format!("run {}'s result: {e}", run.name()))),
@@ -114,7 +114,7 @@ pub(crate) fn exit_code(run: &Run) -> ExitCode {
         Status::Failed | Status::Canceled => ExitCode::FAILURE,
         _ if let Some(stalled) = run.stalled.as_ref().filter(|_| !settled(run)) => {
             let n = run.name();
-            output::warned(&format!("run {n}: {}. It keeps running: `cozy run show {n}` follows it", stalled_words(stalled)));
+            output::warned(&format!("run {n}: {}. It keeps running: `cozy run watch {n}` follows it", stalled_words(stalled)));
             ExitCode::from(output::STALLED)
         }
         _ => ExitCode::SUCCESS,
@@ -133,7 +133,7 @@ pub(crate) async fn follow(ctx: &Context, run: Run) -> Result<Run, Error> {
     follow_until(ctx, run, interrupt()).await
 }
 
-/// `cozy run show` until `stop`, which never cancels the run: the live view, then the record.
+/// `cozy run watch` until `stop`, which never cancels the run: the live view, then the record.
 pub(crate) async fn follow_until(
     ctx: &Context,
     run: Run,
@@ -173,7 +173,7 @@ fn saved(run: Run) -> Result<Run, Error> {
     if lost.is_empty() || !settled(&run) {
         return Ok(run);
     }
-    let show = format!("cozy run show {}", run.name());
+    let show = format!("cozy run watch {}", run.name());
     Err(Error::new(
         Kind::Unavailable,
         "output_not_saved",
@@ -185,7 +185,7 @@ fn saved(run: Run) -> Result<Run, Error> {
         ),
     )
     .remedy(format!(
-        "`cozy run show {}` saves what its machine still holds",
+        "`cozy run watch {}` saves what its machine still holds",
         run.number
     ))
     .next(&show))
@@ -234,8 +234,8 @@ async fn watch(
                 let run = calcifer.run(id.as_str()).await?;
                 let n = run.name();
                 output::say(ctx, &match settled(&run) {
-                    true => format!("stopped following: run {n} ended and its outputs are still being saved; `cozy run show {n}` follows them"),
-                    false => format!("stopped following: run {n} keeps running; `cozy run show {n}` follows it again, `cozy run cancel {n}` cancels it"),
+                    true => format!("stopped following: run {n} ended and its outputs are still being saved; `cozy run watch {n}` follows them"),
+                    false => format!("stopped following: run {n} keeps running; `cozy run watch {n}` follows it again, `cozy run cancel {n}` cancels it"),
                 });
                 return Ok((run, true));
             }
@@ -339,7 +339,7 @@ pub(crate) fn record(ctx: &Context, run: &Run) {
     }
     if let (Status::Failed | Status::Canceled, Some(reason)) = (run.status, &run.reason) {
         let line = format!("{}: {}: {}", run.target, status_word(run.status), reason.message);
-        let next: Vec<String> = reason.next.iter().cloned().chain([format!("cozy run show {}", run.name())]).take(2).collect();
+        let next: Vec<String> = reason.next.iter().cloned().chain([format!("cozy run watch {}", run.name())]).take(2).collect();
         return output::failure(ctx, &line, &next);
     }
     fields(ctx, run).print(ctx);
@@ -457,8 +457,8 @@ fn adjustment(row: &Adjustment) -> String {
 
 /// What to do next with `run`: follow it while it goes on, show it when it did not succeed.
 pub(super) fn next(ctx: &Context, run: &Run) {
-    let watch = format!("cozy run show {}", run.name());
-    let show = format!("cozy run show {}", run.name());
+    let watch = format!("cozy run watch {}", run.name());
+    let show = format!("cozy run watch {}", run.name());
     match run.status {
         Status::Completed => {}
         Status::Failed | Status::Canceled => output::next(ctx, &[&show]),
@@ -625,7 +625,7 @@ impl View {
                     self.line(&format!("  {level}: {text}"));
                 }
             }
-            // A call that failed is told by its run's reason, or by `cozy run show` when its run went on.
+            // A call that failed is told by its run's reason, or by `cozy run watch` when its run went on.
             Event::Call { call, .. } if call.reason.is_none() => {
                 let mut line = format!("  call {}", call.function);
                 if !call.label.is_empty() {

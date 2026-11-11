@@ -15,7 +15,7 @@ same SKU and suites; any FAIL blocks the promotion. Design: tracker `design/ci-v
 | `runtime` | every first-party package's default call (H3 15 s with a described reference, SeedVR2, SDXL, Klein, Qwen, Anima, BiRefNet, the Qwen3.5 describer, Fibo, HiDream, MOSS, Qwen-Image and its one-release swap), then SDXL in a second executor, SDXL cold then two warm calls after each of three restarts and a loop step no capture records (cr-227), six SDXL child calls each with its own LoRA stack (cl-687) and an SDXL int8 quantize (a weights output), and Regenerate-2K over the whole 15 s shot at 1440p, the largest one forward takes (cr-259): kernels, times, VRAM, quality, LM coverage | rtx-4090, rtx-5090 | ~$6.5 · ~95 min, in parallel | a Runtime, TensorFS, varena or TensorD change; any rewrite |
 | `packages` | the packages `--pins` (or `--only`) names, plus the SDXL smoke | rtx-4090, rtx-5090 | ~$1–3 · 15–30 min | a package bump |
 | `varena` | the memory manager: cold load, co-residency, reload, 8/6/3 GiB caps, a real 8 GB card, host RAM, no backing left without a page (below), a warm call served by graphs, real models repeating byte for byte warm, capped, with memory unmapped and perturbed, and with a kept graph's weights gone or no room for them, and with graphs off (`differential/`), the memory authority's rules (`core`), `vt.offload` beside stock SDXL (`offload-*`) and deliberate faults over SSH (`fault-*`, `faults`); with it, run the `vram-yield` session: a game started next to cozy has its memory within 2 s, idle and mid-call, and the call completes (Sessions) | its `skus`; the session one rtx-3070 | session ~$0.5 · ~45 min | a varena, memory, TensorD or Runtime memory change |
-| `tensord` | the machine agent through `cozy`: a package generation installed, updated and rolled back, the Runtime back and forward; a run queued, canceled queued and running, its outputs landed whole; models stacked until the describer must fit (idle executors end); a new executor after a restart; a restart mid-run never re-executes; a `--warm gpu` member kept and its executor reused; two runs at once on two GPUs; output landing against this computer's download speed; distinct LoRA'd calls add nothing to the disk (cl-683) | rtx-5060-ti ×2 | ~$0.60 · ~60 min | a TensorD or cozy change |
+| `tensord` | the machine agent through `cozy`: a package generation installed, updated and rolled back, the Runtime back and forward; a run queued, canceled queued and running, its outputs landed whole; models stacked until the describer must fit (idle executors end); a new executor after a restart; a restart mid-run never re-executes; an API-warmed `gpu` member kept and its executor reused; two runs at once on two GPUs; output landing against this computer's download speed; distinct LoRA'd calls add nothing to the disk (cl-683) | rtx-5060-ti ×2 | ~$0.60 · ~60 min | a TensorD or cozy change |
 | `tensorfs` | downloads as fast as the last pass (Hub and datacenter cache), nothing from the Hub again, resume after a cut (a private model no cache holds: from the Hub); uploads of new weights, dedup of a re-upload, resume after a cut; a recipe that encodes each component in its own call writes every component; a straggler re-asked, not waited out; a LoRA's scale never taken from training metadata; a source that is no form of its family refused before it downloads (below) | cpu | ~$0.3 · ~40 min | a TensorFS, download, upload or quantize change |
 | `hub` | production right after a Hub deploy, before any client promotion: the API contract (`api/openapi.yaml`), account, package publish/yank/pin/un-yank and model upload/publish/delete through `cozy`, and the real-pod cells on each provider (RunPod, vast): rent, run, upload from the pod, pod auth, no secret in the pod's environment (below) | cpu, plus one `cpu` pod a provider | ~$0.4 · ~40 min | every Hub deploy |
 | `skew` | before a Hub deploy: this computer's cozy × the candidate Hub on the laptop's R2-backed 8819 (`hubgate.sh --swap`): contract, account, package publish/install/run/yank, model upload by the machine (the workload writer) | none | $0 · ~15 min | every Hub release |
@@ -47,13 +47,15 @@ refuses, as with minimax-h3 on Runtime 0.40.0. A cut runs it before anything els
 
 ## What a gate does
 
+Local-package (`--packages`) gates build a small source-staging helper from this checkout before renting. It uses the CLI's source selection and sends that content through the API for download-only preparation.
+
 1. Rents one fresh machine of the SKU.
 2. Puts the candidate on it: `--runtime`, `--tensorfs`, `--tensord` (a cozy binary; each a file or `URL#sha256=`), `--pins`
    (exact package releases, `sdxl@0.1.1,…`: a package candidate is published and yanked, and installs only by its pin),
    or `--packages` (a packages checkout whose directories run). Unpinned cells run the root package users get.
    This computer's cozy puts it on (a cozy of another version would restart a shared Calcifer); `machine update` fails unless the machine then runs it.
-3. Runs the chosen suites' cells, each once, with new prompts and seeds. Before a function's first cell, `--warm downloaded`
-   puts all its weights on the disk, its on-demand models' too (an upsampler), and `--warm off` takes it out of the warm
+3. Runs the chosen suites' cells, each once, with new prompts and seeds. Before a function's first cell, API warming to `downloaded`
+   puts all its weights on the disk, its on-demand models' too (an upsampler), and `off` takes it out of the warm
    set: a cell times what a user who has used the function sees, never a download (cl-790). A slow run goes on; a hung one
    stops: when no run on the machine moves for `--stall` minutes by the runs' own progress clock (15; the longest quiet in
    786 real cells was 7.2), the gate cancels them, fails and ends the rental. It renews the rental's idle clock only while
@@ -184,7 +186,7 @@ bytecode, evicts their weights and runs one cold request each, now or once the i
 its kernel compiles are up; it reads the executors' memory after each machine start.
 `warming` (xs-132) covers several measurements on one pod.
 - An environment's import with its files evicted from the page cache vs cached, and with its import pages read back first (SDXL, H3).
-- `--warm gpu` held and reused.
+- API warming to `gpu` held and reused.
 - A request queued behind another package's run. With a dev TensorD (`tensord`), item `4b` runs this in shared mode (via the pod's config.toml) and then dedicated; its pipeline is the `fixtures/xs132-pipeline` orchestrator.
 `one-executor` (xs-113) runs `suites/tensord/idle-entrypoints.sh` once per TensorD arm on one pod (1 GPU or a
 `gpus` group): two constructions of one package on the same processes, then a cancel and a clean successor, with the

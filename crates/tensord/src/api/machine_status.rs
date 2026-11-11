@@ -20,6 +20,7 @@ pub(super) fn watch(
     runs: Arc<Runs>,
     actor: VerifiedActor,
 ) -> impl Stream<Item = Result<v1::StatusFrame, Error>> + Send {
+    let private = crate::private_io::current();
     let mut tick = tokio::time::interval(Duration::from_secs(1));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut last: Option<v1::StatusFrame> = None;
@@ -27,7 +28,13 @@ pub(super) fn watch(
     futures_util::stream::poll_fn(move |cx| tick.poll_tick(cx).map(Some))
         .then(move |_| {
             let (identity, runs, read) = (identity.clone(), runs.clone(), read.clone());
-            async move {
+            let private = private.clone();
+            async move { crate::private_io::request_optional(private, async move {
+                if let Some(scope) = crate::private_io::current() {
+                    tokio::task::spawn_blocking(move || crate::private_io::resolve(&scope)).await
+                        .map_err(|_| Error::unavailable("private_storage_stopped", "private workspace verification stopped"))?
+                        .map_err(|_| Error::forbidden("private_storage_locked", "the private project is locked"))?;
+                }
                 // Read before the records: activity meanwhile is read again at the next tick.
                 let epoch = runs.service.engine.activity_epoch();
                 let kept = read.lock().unwrap().clone();
@@ -40,7 +47,7 @@ pub(super) fn watch(
                     }
                 };
                 pictured(identity, &runs, held).await
-            }
+            }).await }
         })
         .filter_map(move |next| {
             ready(match next {

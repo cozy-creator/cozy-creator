@@ -374,7 +374,9 @@ function linesOf(text, name) {
     await until('a picked-up take', () => versions('shot'), (n) => n === 2, FIRST_RUN_MS);
     const picked = await given('shot');
     check('pickup_reaches_the_function', picked.pickup?.out_frame === 2 && picked.pickup.take?.file?.file === 'VideoFile', picked.pickup);
-    check('pickup_writes_nothing', linesOf(yaml(), 'shot') === typed && !yaml().includes('pickup'), linesOf(yaml(), 'shot'));
+    const afterPickup = yaml();
+    const pickedLines = linesOf(afterPickup, 'shot');
+    check('pickup_writes_nothing', pickedLines === typed && !afterPickup.includes('pickup'), { before: typed, after: pickedLines, hasPickup: afterPickup.includes('pickup') });
 
     // Another box's take let go on it: from that take, at a frame chosen on it.
     importYaml(folder, `${yaml().trimEnd()}\n  other:\n    tool: ${fixture}/shot\n    plate: <walk>\n`);

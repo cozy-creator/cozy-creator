@@ -17,7 +17,7 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::{
-        CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER,
+        CloseHandle, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER,
         FILETIME, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation, WAIT_OBJECT_0,
         WAIT_TIMEOUT,
     },
@@ -100,6 +100,20 @@ pub(super) fn kill(handle: &Handle, _: &Birth) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+pub(super) fn executable(handle: &Handle) -> io::Result<std::path::PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::System::Threading::QueryFullProcessImageNameW;
+    let mut buffer = vec![0u16; 32768];
+    let mut length = buffer.len() as u32;
+    // SAFETY: an exact process handle with query rights and a buffer of the declared size.
+    if unsafe { QueryFullProcessImageNameW(raw(&handle.0), 0, buffer.as_mut_ptr(), &mut length) }
+        == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(std::ffi::OsString::from_wide(&buffer[..length as usize]).into())
 }
 
 pub(super) fn background_thread() {}
@@ -463,33 +477,6 @@ pub(super) fn boot_id() -> io::Result<String> {
         )));
     }
     Ok(format!("{}", info[0] / 10_000_000))
-}
-
-/// Marks `handle` inheritable: std hands a child every inheritable handle.
-pub(super) fn hand_on(handle: &impl AsRawHandle) -> io::Result<u64> {
-    // SAFETY: a live handle the caller owns.
-    if unsafe { SetHandleInformation(handle.as_raw_handle(), HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(handle.as_raw_handle() as usize as u64)
-}
-
-/// A copy of a handle this process inherited; neither is inheritable, so it goes no further.
-/// The inherited handle is left open: a copy needs no promise that nothing else owns it.
-pub(super) fn take_handed(value: u64) -> io::Result<OwnedHandle> {
-    use windows_sys::Win32::System::Threading::GetCurrentProcess;
-    let inherited = value as usize as HANDLE;
-    // SAFETY: a flag change on a handle value; an invalid one fails.
-    if unsafe { SetHandleInformation(inherited, HANDLE_FLAG_INHERIT, 0) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let mut copy: HANDLE = ptr::null_mut();
-    // SAFETY: duplicates a live handle into `copy`, a new handle only this function holds.
-    if unsafe { DuplicateHandle(GetCurrentProcess(), inherited, GetCurrentProcess(), &mut copy, 0, 0, DUPLICATE_SAME_ACCESS) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: DuplicateHandle made `copy` for this process alone.
-    Ok(unsafe { OwnedHandle::from_raw_handle(copy) })
 }
 
 pub(super) fn parent_of(pid: u32) -> io::Result<u32> {

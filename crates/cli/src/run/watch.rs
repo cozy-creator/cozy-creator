@@ -1,4 +1,4 @@
-//! `cozy run show`: one run: what it ran, how it ended, its outputs and its result. With `--full`, all
+//! `cozy run watch`: one run: what it ran, how it ended, its outputs and its result. With `--full`, all
 //! its machine measured of it and of each call it made: where its execution time went (executor start, construction, each stage and its steps,
 //! and what no measurement covers), the models it ran as resolved (release and lane), each
 //! component's attention and GEMM kernels, every GPU's attention kernels (the one that served,
@@ -52,7 +52,7 @@ pub(crate) async fn exec(ctx: &Context, id: &str, once: bool, download: Option<&
         if !follow::settled(&run) {
             follow::next(ctx, &run);
         }
-        println!("its stages, memory, calls and log: cozy run show {} --full", run.name());
+        println!("its stages, memory, calls and log: cozy run watch {} --full", run.name());
         return Ok(follow::exit_code(&run));
     }
     grid(&["STAGE", "TIME", "DETAIL"], measured, stage_rows).print(ctx, "stages");

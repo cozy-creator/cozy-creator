@@ -214,7 +214,7 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
         tokio::spawn(async move {
             term.recv().await;
             info!("SIGTERM: stopping as down does");
-            stopping.down().await;
+            if let Err(error) = stopping.down().await { warn!(code = %error.code, "Calcifer remains running until its encrypted views can close"); }
         });
     }
     let app = api::router(api.clone()).into_make_service_with_connect_info::<SocketAddr>();
@@ -256,6 +256,7 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     crate::project::resume(&api);
 
     api.stopped().await;
+    tokio::task::block_in_place(|| crate::project::vault::close_all(&api)).map_err(failed)?;
     if let Ok(Err(e)) = server.await {
         warn!("the API server ended: {e}");
     }
@@ -276,7 +277,7 @@ impl Steps {
     }
 }
 
-/// How long a settled run keeps its measurements, the timing `cozy run show` breaks down. They are
+/// How long a settled run keeps its measurements, the timing `cozy run watch` breaks down. They are
 /// most of what a run stores, about 70 MB a day on a busy computer. Nothing else of a run is ever
 /// dropped: its row, result, reason, outputs, logs and calls stay for good.
 const MEASURED_FOR: Duration = Duration::from_secs(30 * 24 * 3600);

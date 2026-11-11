@@ -274,7 +274,7 @@ request() {
     python3 -u -c 'import sys,time; t0=float(sys.argv[1]); [print(f"{time.time()-t0:.3f} {l}", end="", flush=True) for l in sys.stdin]' "$t0" > "$OUT/$label.ndjson"
   local n; n=$(grep -o '"number":[0-9]*' "$OUT/$label.ndjson" | head -1 | cut -d: -f2)
   [ -n "$n" ] || { say "$label: no run"; return 1; }
-  cozy run show "$n" --once --json --full > "$OUT/$label.json" 2>&1
+  cozy run watch "$n" --once --json --full > "$OUT/$label.json" 2>&1
   say "$label: run $n $(jq -r .status "$OUT/$label.json"), landed $(grep output_item.landed "$OUT/$label.ndjson" | tail -1 | cut -d' ' -f1) s; legs $(jq -c '.measurements.execution.executor.legs_ms' "$OUT/$label.json")"
 }
 declare -A FN=([sdxl]=$SDXL [anima]=$ANIMA [qwen]=$QWEN) PKG=([sdxl]=sdxl [anima]=anima [qwen]=qwen-image-2)

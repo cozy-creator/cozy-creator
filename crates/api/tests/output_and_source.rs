@@ -50,3 +50,18 @@ fn source_bundle_excludes_direnv_credentials_and_keeps_project_resources() {
     assert!(left.iter().any(|name| name == ".envrc"));
     assert!(left.iter().any(|name| name.starts_with(".direnv")));
 }
+
+#[test]
+fn retired_run_options_remain_readable_without_being_serialized() {
+    let request: api::calcifer::RunRequest = serde_json::from_value(serde_json::json!({
+        "target": "example/generate", "no_memo": true,
+    })).unwrap();
+    assert_eq!(request.target, "example/generate");
+    assert!(serde_json::to_value(request).unwrap().get("no_memo").is_none());
+
+    let spec: api::machine::RunSpec = serde_json::from_value(serde_json::json!({
+        "entrypoint": "generate", "no_memo": true,
+    })).unwrap();
+    assert_eq!(spec.entrypoint, "generate");
+    assert!(serde_json::to_value(spec).unwrap().get("no_memo").is_none());
+}

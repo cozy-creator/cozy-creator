@@ -1,5 +1,5 @@
 //! A range of a video a mention names (`<take3@48-336>`): cut once with ffmpeg into
-//! `~/.cozy/cache/clips`, frame-accurate, and sent in its source's place. Calcifer cuts it, with
+//! its project's clip cache, frame-accurate, and sent in its source's place. Calcifer cuts it, with
 //! cozy's ffmpeg (`crate::tools::ffmpeg`, fetched on first need).
 use std::{
     fmt,
@@ -13,6 +13,7 @@ use api::{
     error::{Error, Kind},
 };
 use sha2::{Digest as _, Sha256};
+use tokio::sync::OwnedRwLockReadGuard;
 
 use crate::tools::Media;
 
@@ -73,7 +74,7 @@ impl fmt::Display for Cut {
 impl Clips {
     /// `range` of `source` as a clip: the one cut before for this version of the file, else cut
     /// now. What it did is said in `notes`.
-    pub(crate) async fn cut(&self, field: &str, source: &Path, range: Range, notes: &mut Vec<Note>) -> Result<Cut, Error> {
+    pub(crate) async fn cut(&self, field: &str, source: &Path, range: Range, notes: &mut Vec<Note>, access: OwnedRwLockReadGuard<()>) -> Result<Cut, Error> {
         fn say(notes: &mut Vec<Note>, message: String) {
             notes.push(Note { level: NoteLevel::Info, message });
         }
@@ -107,11 +108,13 @@ impl Clips {
         say(notes, format!("{field}: cutting {range} of {}", source.display()));
         let began = Instant::now();
         let (source, dir) = (source.to_owned(), self.dir.clone());
-        tokio::task::spawn_blocking(move || {
-            encode(&ffmpeg, &source, range.start, end, &dir, &clip)
+        let (encoded, _access) = tokio::task::spawn_blocking(move || {
+            // The encoder can finish after its async caller has been canceled.
+            (encode(&ffmpeg, &source, range.start, end, &dir, &clip), access)
         })
         .await
-        .map_err(|e| Error::new(Kind::Internal, "clip_cut", e.to_string()))??;
+        .map_err(|e| Error::new(Kind::Internal, "clip_cut", e.to_string()))?;
+        encoded?;
         say(notes, format!("{field}: cut in {:.1} s: {}", began.elapsed().as_secs_f64(), cut.clip.display()));
         Ok(cut)
     }

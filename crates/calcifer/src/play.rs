@@ -99,7 +99,7 @@ pub(crate) async fn play(
         ));
     }
     let number = row.number;
-    let unavailable = |message| Refusal(Error::new(Kind::Unavailable, "machine_unavailable", message).next(format!("cozy run show {number}")));
+    let unavailable = |message| Refusal(Error::new(Kind::Unavailable, "machine_unavailable", message).next(format!("cozy run watch {number}")));
     let name = row
         .machine
         .clone()

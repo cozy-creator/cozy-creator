@@ -6,7 +6,7 @@ import { Failure } from "../common"
 import { follow, followingLine, type Following } from "../follow"
 import { span } from "../format"
 
-/** The most a drawer keeps: what scrolls past this is in `cozy run show`. */
+/** The most a drawer keeps: what scrolls past this is in `cozy run watch`. */
 const KEPT = 5000
 
 const LIFECYCLE: Record<string, string> = {
@@ -58,7 +58,7 @@ export function RunLog({ run }: { run: Run }) {
     // A settled run replays its whole log in one go: the page redraws for it ten times a second, not once a line.
     const flush = () => {
       timer = undefined
-      setText((dropped ? [`(${dropped} earlier lines: cozy run show ${run.number})`, ...lines] : lines).join("\n"))
+      setText((dropped ? [`(${dropped} earlier lines: cozy run watch ${run.number})`, ...lines] : lines).join("\n"))
     }
     setText("")
     void follow(

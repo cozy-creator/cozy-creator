@@ -249,8 +249,8 @@ curl -sS -X POST -H "Authorization: Bearer $token" -H "Idempotency-Key: held-$ru
   -d "$(jq -n --arg s "sha256:$held" --arg d "$model" --arg o "$ON" '{target: "cozy/model_upload", on: $o, input: {source: $s, destination: $d, lane: "f16", source_format: "as-is"}}')" "http://$addr/v1/runs" > "$OUT/upload-held.json"
 held_run=$(jq -r '.run.number // empty' "$OUT/upload-held.json")
 if [ -n "$held_run" ]; then
-  cozy --json run show "$held_run" > /dev/null 2>&1 || true
-  cozy --json run show "$held_run" 2> /dev/null | J '.status == "completed"' || check "model upload of a held file: run $held_run did not complete"
+  cozy --json run watch "$held_run" > /dev/null 2>&1 || true
+  cozy --json run watch "$held_run" 2> /dev/null | J '.status == "completed"' || check "model upload of a held file: run $held_run did not complete"
 else check "model upload of a held file: $(head -c 300 "$OUT/upload-held.json")"; fi
 # And a Hub commit, recorded with nothing uploaded.
 cozy --json model upload "$model@$commit" "$model-copy" --lane f16 > "$OUT/upload-recorded.json" 2> "$OUT/upload-recorded.err" \
@@ -352,11 +352,11 @@ J --argjson d "${deadline:-0}" '.acknowledged_at_ms > 0 and (.idle_deadline_ms =
   || check "a run on $M: no reply"
 n=$(cd "$here/../cli" && run_submit "$OUT" cancel-wait run ./weightless/wait seconds:=300 --on "$M")
 if [ -z "$n" ] || ! run_wait "$OUT" cancel-wait in_progress; then check "the waiting run on $M never ran"; else
-  cozy --json run show "$n" > "$OUT/cancel-followed.ndjson" &
+  cozy --json run watch "$n" > "$OUT/cancel-followed.ndjson" &
   following=$!
   cozy --json run cancel "$n" > "$OUT/cancel.json" || check "run cancel $n failed"
   wait "$following" || true
-  grep -qE '"status": *"canceled"' "$OUT/cancel-followed.ndjson" || check "run show $n did not follow it to canceled"
+  grep -qE '"status": *"canceled"' "$OUT/cancel-followed.ndjson" || check "run watch $n did not follow it to canceled"
 fi
 run_wait "$OUT" cancel-wait || true
 

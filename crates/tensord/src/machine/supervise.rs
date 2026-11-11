@@ -8,7 +8,7 @@
 //! the parent then running: a binary by renaming the previous one back and exec'ing it.
 //!
 //! Windows forks nothing: the stable parent starts the service from the launch path, with its
-//! arguments and `--service-ready`, the inherited pipe the service reports readiness on. An
+//! arguments. A private local pipe identifies the service and carries its readiness report. An
 //! activated or restored binary is simply the next service it starts. The service's Job Object
 //! ends its tree with the parent; Windows has no orphans to reap.
 #[cfg(unix)]
@@ -20,25 +20,38 @@ use rustix::{
 };
 #[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
-use std::{
-    fs::File,
-    io::{self, Read, Write},
-};
+use std::io::{self, Read, Write};
+
+#[cfg(unix)]
+use std::fs::File;
+#[cfg(windows)]
+use platform::{ipc::{LocalListener, LocalStream}, process::{Birth, Exact}};
 
 use super::{provider::ProviderSelf, update::Recovered};
 
-/// Returns only in the service, with the pipe it reports readiness on: `service_ready`, the
-/// handle its stable parent handed it. Without one this is the parent, which starts the service
-/// and exits with its final status. Windows rents nothing, so it hands on no provider credential.
+/// A child connects to its parent's private pipe. A new parent listens before starting
+/// the service and retains the existing restart and rollback behavior.
 #[cfg(windows)]
 pub(crate) fn supervise(
     paths: &super::update::Paths,
     _provider: Option<ProviderSelf>,
-    service_ready: Option<u64>,
 ) -> io::Result<Ready> {
-    if let Some(handle) = service_ready {
-        let pipe = platform::process::take_handed(handle)?;
-        return Ok(Ready(Some(File::from(pipe))));
+    let parent = platform::process::parent_of(std::process::id())?;
+    match LocalStream::connect(&service_pipe(paths, parent)).map_err(io::Error::from) {
+        Ok(pipe) => {
+            if platform::handles::peer(&pipe)?.pid != parent {
+                return Err(io::Error::new(io::ErrorKind::PermissionDenied, "readiness pipe belongs to another process"));
+            }
+            let mut pipe = pipe;
+            let mut acknowledged = [0];
+            pipe.read_exact(&mut acknowledged)?;
+            if acknowledged != [b'a'] {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid supervisor acknowledgment"));
+            }
+            return Ok(Ready(Some(pipe)));
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
     }
     let program = std::env::current_exe()?;
     let arguments: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
@@ -47,18 +60,37 @@ pub(crate) fn supervise(
         // A published binary activation needs nothing more here: the service starts from the
         // launch path, which holds it.
         super::update::recover_activation(paths)?;
-        let (mut read, write) = std::io::pipe()?;
+        let listener = LocalListener::bind(&service_pipe(paths, std::process::id()))?;
         let mut command = std::process::Command::new(&program);
-        command
-            .args(&arguments)
-            .arg("--service-ready")
-            .arg(platform::process::hand_on(&write)?.to_string());
+        command.args(&arguments);
         let mut service = platform::process::spawn(command)?;
-        drop(write);
+        #[cfg(test)]
+        if tests::wait_before_open() {
+            service.wait()?;
+        }
+        let mut pipe = match Exact::open(&Birth::of(service.pid())?)? {
+            Some(process) => loop {
+                let Some(pipe) = listener.accept_unless(&process)? else { break None };
+                match platform::handles::peer(&pipe) {
+                    Ok(peer) if peer.pid == service.pid() => {
+                        let mut pipe = pipe;
+                        match pipe.write_all(b"a") {
+                            Ok(()) => break Some(pipe),
+                            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {}
+                            Err(error) => return Err(error),
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {}
+                    Err(error) => return Err(error),
+                }
+            },
+            None => None,
+        };
         let code = service.wait()?.code().unwrap_or(1);
         // What the service left running ends with it.
         drop(service);
-        let ready = read.read(&mut [0u8; 1]).unwrap_or(0) == 1;
+        let ready = pipe.as_mut().is_some_and(|pipe| pipe.read(&mut [0u8; 1]).unwrap_or(0) == 1);
         if code == 0 {
             std::process::exit(0);
         }
@@ -81,6 +113,11 @@ pub(crate) fn supervise(
         }
         tracing::warn!("the service exited ({code}); starting it again");
     }
+}
+
+#[cfg(windows)]
+fn service_pipe(paths: &super::update::Paths, parent: u32) -> std::path::PathBuf {
+    paths.update(&format!("service-{parent}.pipe"))
 }
 
 /// Forks the service. Returns only in the service child, with the pipe it reports readiness
@@ -203,8 +240,13 @@ fn wait_service(child: Pid, signals: &SupervisorSignals) -> io::Result<(WaitStat
     }
 }
 
-/// The service's readiness report to its parent: written once, when this boot has proved itself.
-pub(crate) struct Ready(Option<File>);
+#[cfg(unix)]
+type ReadyPipe = File;
+#[cfg(windows)]
+type ReadyPipe = LocalStream;
+
+/// The service's readiness report to its parent, written once this boot is ready.
+pub(crate) struct Ready(Option<ReadyPipe>);
 impl Ready {
     pub(crate) fn report(&mut self) {
         if let Some(mut pipe) = self.0.take() {
@@ -218,4 +260,146 @@ impl Ready {
 pub(crate) fn cloexec_pipe() -> io::Result<(std::os::fd::OwnedFd, std::os::fd::OwnedFd)> {
     let (read, write) = std::io::pipe()?;
     Ok((read.into(), write.into()))
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+    use std::{path::Path, process::{Command, Stdio}};
+
+    fn command(root: &Path, case: &str) -> Command {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command.args(["--exact", "machine::supervise::tests::service_fixture", "--nocapture"])
+            .env("COZY_SUPERVISOR_TEST_ROOT", root)
+            .env("COZY_SUPERVISOR_TEST_CASE", case);
+        command
+    }
+
+    fn run_case(case: &str, exit: i32, starts: u32) -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        let output = command(root.path(), case).output().unwrap();
+        assert_eq!(output.status.code(), Some(exit), "{}", String::from_utf8_lossy(&output.stderr));
+        assert_eq!(std::fs::read_to_string(root.path().join("starts")).unwrap(), starts.to_string());
+        root
+    }
+
+    // Force the first child to leave a closed pipe before its parent can open Exact.
+    // This hook is absent from production builds.
+    pub(super) fn wait_before_open() -> bool {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static FIRST: AtomicBool = AtomicBool::new(true);
+        matches!(std::env::var("COZY_SUPERVISOR_TEST_CASE").as_deref(), Ok("exited-before-open"))
+            && FIRST.swap(false, Ordering::Relaxed)
+    }
+
+    #[test]
+    fn readiness_survives_service_exit_and_resets_early_failures() {
+        run_case("ready-restart", 0, 3);
+    }
+
+    #[test]
+    fn two_early_exits_stop_the_supervisor() {
+        run_case("early-exit", 7, 2);
+    }
+
+    #[test]
+    fn a_child_that_connects_then_exits_is_counted_as_unready() {
+        run_case("connect-exit", 7, 2);
+    }
+
+    #[test]
+    fn a_child_exited_before_open_does_not_poison_its_successor() {
+        run_case("exited-before-open", 0, 3);
+    }
+
+    #[test]
+    fn requested_restart_uses_the_same_private_handoff() {
+        run_case("updated", 0, 2);
+    }
+
+    #[test]
+    fn two_early_exits_roll_back_pending_activation() {
+        let root = run_case("rollback", 0, 3);
+        let status: super::super::update::Status = serde_json::from_slice(
+            &std::fs::read(root.path().join("engine/update/status.json")).unwrap(),
+        ).unwrap();
+        assert_eq!(status.state, "rolled_back");
+        assert!(!root.path().join("engine/update/pending.json").exists());
+    }
+
+    #[test]
+    fn parent_exit_ends_the_service_job() {
+        let root = tempfile::tempdir().unwrap();
+        let mut parent = command(root.path(), "parent-exit").stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+        let file = root.path().join("service-pid");
+        let pid: u32 = loop {
+            if let Ok(text) = std::fs::read_to_string(&file) {
+                if let Ok(pid) = text.parse() {
+                    break pid;
+                }
+            }
+            assert!(parent.try_wait().unwrap().is_none(), "supervisor exited before its service was ready");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        let service = Exact::open(&Birth::of(pid).unwrap()).unwrap().unwrap();
+        parent.kill().unwrap();
+        parent.wait().unwrap();
+        service.wait().unwrap();
+        assert!(service.ended());
+    }
+
+    #[test]
+    fn service_fixture() {
+        let Some(root) = std::env::var_os("COZY_SUPERVISOR_TEST_ROOT").map(std::path::PathBuf::from) else { return };
+        let case = std::env::var("COZY_SUPERVISOR_TEST_CASE").unwrap();
+        let paths = super::super::update::Paths::new(&root.join("engine"), &root);
+        std::fs::create_dir_all(paths.update("")).unwrap();
+        if case == "connect-exit" || (case == "exited-before-open" && !root.join("starts").exists()) {
+            let parent = platform::process::parent_of(std::process::id()).unwrap();
+            match LocalStream::connect(&service_pipe(&paths, parent)).map_err(io::Error::from) {
+                Ok(pipe) => {
+                    let starts = root.join("starts");
+                    let count = std::fs::read_to_string(&starts).ok().and_then(|text| text.parse::<u32>().ok()).unwrap_or(0) + 1;
+                    std::fs::write(starts, count.to_string()).unwrap();
+                    drop(pipe);
+                    std::process::exit(7);
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => panic!("{error}"),
+            }
+        }
+        let mut ready = supervise(&paths, None).unwrap();
+        let starts = root.join("starts");
+        let count = std::fs::read_to_string(&starts).ok().and_then(|text| text.parse::<u32>().ok()).unwrap_or(0) + 1;
+        std::fs::write(&starts, count.to_string()).unwrap();
+        match case.as_str() {
+            "early-exit" => std::process::exit(7),
+            "ready-restart" | "exited-before-open" => {
+                ready.report();
+                std::process::exit(if count < 3 { 7 } else { 0 });
+            }
+            "updated" => {
+                ready.report();
+                std::process::exit(if count == 1 { super::super::update::REPLACE_EXIT } else { 0 });
+            }
+            "rollback" if count < 3 => {
+                if count == 1 {
+                    let status = super::super::update::Status { state: "starting".into(), ..Default::default() };
+                    let pending = serde_json::json!({"status": status, "sdk_before": null, "binary": null});
+                    std::fs::write(paths.update("pending.json"), serde_json::to_vec(&pending).unwrap()).unwrap();
+                }
+                std::process::exit(7);
+            }
+            "rollback" => {
+                ready.report();
+                std::process::exit(0);
+            }
+            "parent-exit" => {
+                ready.report();
+                std::fs::write(root.join("service-pid"), std::process::id().to_string()).unwrap();
+                loop { std::thread::park(); }
+            }
+            _ => panic!("unknown supervisor fixture {case}"),
+        }
+    }
 }

@@ -14,9 +14,8 @@ import time
 
 
 PUBLIC = {
-    "new", "open", "run", "status", "machine", "model", "package", "update", "doctor", "completion", "login", "logout",
+    "new", "open", "run", "status", "vault", "machine", "model", "package", "update", "doctor", "completion", "login", "logout", "whoami",
 }
-HIDDEN = {"whoami"}
 REMOVED = {
     "help",
     "push", "pull", "org", "project", "import", "export", "add", "set", "delete", "render", "approve", "unapprove", "cancel",
@@ -65,19 +64,35 @@ def main() -> None:
         commands = set(re.findall(r"^  ([a-z][a-z-]*)\s", section, re.MULTILINE))
         assert commands == PUBLIC, f"public commands: {sorted(commands)}"
         assert "Exit codes:" not in help_text, "the removed exit-code footer is still shown"
-        assert "--full" not in help_text and "--yes" not in help_text, "advanced root flags are visible"
+        assert "--full" in help_text and "--yes" in help_text, "global options are missing from help"
         assert 'next: cozy new "<directory>"' in help_text
         assert "next: cozy open" in help_text
         assert "next: cozy run --help" in help_text
-        run("hidden full flag", ["--full", "--help"])
-        run("hidden yes flag", ["-y", "--help"])
+        run("full flag", ["--full", "--help"])
+        run("yes flag", ["-y", "--help"])
         assert not (empty / "project.db").exists(), "a status or help read created a project"
 
         for command in REMOVED:
             run(f"removed {command}", [command, "--help"], code=2)
-        for command in HIDDEN:
-            run(f"hidden {command}", [command, "--help"])
+        run("account help", ["whoami", "--help"])
+        run_help = run("run help", ["run", "--help"]).stdout
+        assert "cozy run <ls|watch|cancel>" in run_help, "run usage does not name its subcommands"
+        assert "<COMMAND>" not in run_help, "run usage still uses the unexplained COMMAND placeholder"
         run("nested cancellation", ["run", "cancel", "--help"])
+        assert "Usage: cozy run watch" in run("watch help", ["run", "watch", "--help"]).stdout
+        run("removed run show", ["run", "show", "1", "--once"], code=2)
+        run("removed run play", ["run", "play", "1", "--expires", "1h"], code=2)
+        run("internal controller help", ["calcifer", "--help"])
+        run("internal worker help", ["machine", "serve", "--help"])
+        run("removed worker bootstrap flag", ["machine", "serve", "--service-ready", "1"], code=2)
+        run("removed image override", ["machine", "rent", "example", "--image-digest", "sha256:" + "0" * 64], code=2)
+        run("removed memo bypass", ["run", "example/function", "--no-memo"], code=2)
+        for flag in ("--estimate", "--warm"):
+            assert flag not in run_help, f"removed run flag {flag} is still in help"
+            run(f"removed run flag {flag}", ["run", "example/function", flag], code=2)
+        assert "--model <SLOT=REF>" in run_help
+        for value in ("slot", "=ref", "slot=", " =ref", "slot= "):
+            run(f"invalid model override {value!r}", ["run", "example/function", "--model", value], code=2)
         for words in (
             ["machine", "help"],
             ["machine", "rent", "--unknown-option"],

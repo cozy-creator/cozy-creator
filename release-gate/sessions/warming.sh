@@ -1,12 +1,12 @@
 # warming (xs-132 items 3-5), on one rental of the pod's own image (the current release). Nothing here compares: the
 # run records, the pod's process and page-cache readings and the stamped event streams are the evidence.
 #   3  page cache: an environment's import with its files evicted from the page cache vs cached. Through
-#      `cozy run <sdxl> --warm imported` after a TensorD restart (no process left), and as the import-only parent's
+#      API warming to `imported` after a TensorD restart (no process left), and as the import-only parent's
 #      imports run directly in each environment's Python (SDXL, H3: H3's `imported` downloads its weights first).
 #      Each trial: seconds per stage, bytes read from storage, major faults; the pages an import touched.
 #   4  warm on intent: a request queued behind another package's run; when its import-only parent starts.
-#   5  `--warm gpu`: it loads, stays loaded, is listed at its level, the next request starts warm vs a cold one, and
-#      `--warm off` takes it out of the set.
+#   5  API warming to `gpu`: it loads, stays loaded, is listed at its level, the next request starts warm vs a cold one, and
+#      API warming to `off` takes it out of the set.
 # params:
 #   sdxl        the SDXL function (sdxl/generate@0.1.4)
 #   h3          the H3 package release (minimax-h3@0.1.8)
@@ -22,6 +22,7 @@
 #               the next request's record), each after the environment's files are evicted
 #   need_s      seconds the guard must buy (3600)
 . "$(dirname "$0")/lib.sh"
+WARM_API=$(cd "$(dirname "$0")/../../e2e" && pwd)/warm.py
 SDXL=$(param sdxl sdxl/generate@0.1.4) H3=$(param h3 minimax-h3@0.1.8) QUEUED=$(param queued birefnet/remove_background@0.1.0)
 TRIALS=$(param trials 3) HOLD=$(param hold_s 180) ITEMS=$(param items "3 4 5") BUILD=$(param tensord)
 DEV=''
@@ -290,14 +291,22 @@ podpy host > "$OUT/host.json"; say "host $(cat "$OUT/host.json")"
 # runrec <label> <cozy run args…>: one run on $NAME followed to its end, its events stamped with the runner's clock
 # (<label>.ndjson), its record in <label>.json and its number in <label>.n.
 runrec() {
+  local label=$1; shift
+  record_run "$label" cozy run "$@" --on "$NAME" --json
+}
+warmrec() {
+  local label=$1; shift
+  record_run "$label" python3 "$WARM_API" "$@" --on "$NAME"
+}
+record_run() {
   local label=$1; shift; local t0 n
   t0=$(date +%s.%N)
-  cozy run -p "$RUN_PROJECT" "$@" --on "$NAME" --json 2> "$OUT/$label.err" < /dev/null |
+  (cd "$RUN_PROJECT" && "$@") 2> "$OUT/$label.err" < /dev/null |
     python3 -u -c 'import sys,time; t0=float(sys.argv[1]); [print(f"{time.time()-t0:.3f} {l}", end="", flush=True) for l in sys.stdin]' "$t0" > "$OUT/$label.ndjson"
-  n=$(grep -o '"number":[0-9]*' "$OUT/$label.ndjson" | head -1 | cut -d: -f2)
+  n=$(grep -o '"number": *[0-9]*' "$OUT/$label.ndjson" | head -1 | sed 's/.*: *//')
   [ -n "$n" ] || { say "$label: no run: $(tail -c 300 "$OUT/$label.err")"; return 1; }
   echo "$n" > "$OUT/$label.n"
-  cozy run show "$n" --once --json --full > "$OUT/$label.json" 2>&1
+  cozy run watch "$n" --once --json --full > "$OUT/$label.json" 2>&1
   say "$label: run $n $(jq -r '"\(.status), accepted→settled \(((.settled_at_ms // 0) - (.accepted_at_ms // 0)) / 1000) s"' "$OUT/$label.json")"
 }
 # quiet <label>: no kernel compile child is running (each would import torch beside the trial).
@@ -338,8 +347,8 @@ sdxl_input() {  # sdxl_input <file> <steps>: a request with its own prompt and s
 gpu_parent() { jq -r '[.[] | select(.kind == "executor" and .nvidia_fds == 0)] | .[0].pid // empty' "$1"; }
 
 item3() {
-  runrec i3-prime "$SDXL" --warm imported || fail "sdxl --warm imported"
-  runrec i3-prime-off "$SDXL" --warm off
+  warmrec i3-prime "$SDXL" imported || fail "sdxl warming at imported"
+  warmrec i3-prime-off "$SDXL" off
   local t c label pid
   for t in $(seq 1 "$TRIALS"); do
     for c in cold warm; do
@@ -347,11 +356,11 @@ item3() {
       restart "$label"
       [ -z "$(gpu_parent "$OUT/ps-restart-$label.json")" ] || say "$label: a parent is up after the restart (this TensorD imports at start)"
       if [ "$c" = cold ]; then podpy evict sdxl > "$OUT/$label-evict.json"; say "$label evicted: $(cat "$OUT/$label-evict.json")"; fi
-      runrec "$label" "$SDXL" --warm imported
+      warmrec "$label" "$SDXL" imported
       podpy ps > "$OUT/$label-ps.json"; pid=$(gpu_parent "$OUT/$label-ps.json")
       podpy resident sdxl > "$OUT/$label-resident.json"
       say "$label: parent $(jq -c --arg p "${pid:-0}" '[.[] | select(.pid == ($p | tonumber)) | {pid, rss_mib, read_mb, age_s}]' "$OUT/$label-ps.json"), resident $(jq -c .by_kind "$OUT/$label-resident.json")"
-      runrec "$label-off" "$SDXL" --warm off
+      warmrec "$label-off" "$SDXL" off
     done
   done
   step i3-in-h3 package install "$H3" --on "$NAME" -y || fail "install $H3"
@@ -381,15 +390,15 @@ item3() {
 item4() {
   local pkg=${QUEUED%%/*} release=${QUEUED##*@}
   step i4-in package install "$pkg@$release" --on "$NAME" -y || fail "install $pkg@$release"
-  runrec i4-prime "$QUEUED" --warm downloaded || fail "$QUEUED --warm downloaded"
-  runrec i4-prime-off "$QUEUED" --warm off
+  warmrec i4-prime "$QUEUED" downloaded || fail "$QUEUED warming at downloaded"
+  warmrec i4-prime-off "$QUEUED" off
   restart i4
   sdxl_input "$OUT/i4-a.yaml" 60
   runrec i4-a "$SDXL" --input "$OUT/i4-a.yaml" & local pa=$!
   local na='' i
   for i in $(seq 1 120); do
     na=$(grep -o '"number":[0-9]*' "$OUT/i4-a.ndjson" 2>/dev/null | head -1 | cut -d: -f2)
-    [ -n "$na" ] && [ "$(cozy run show "$na" --once --json --full 2>/dev/null | jq -r .status)" = in_progress ] && break
+    [ -n "$na" ] && [ "$(cozy run watch "$na" --once --json --full 2>/dev/null | jq -r .status)" = in_progress ] && break
     sleep 1
   done
   say "i4: A run ${na:-?} in progress"
@@ -404,13 +413,13 @@ item4() {
 }
 
 item5() {
-  runrec i5-clear "$SDXL" --warm off
+  warmrec i5-clear "$SDXL" off
   restart i5-cold
   sdxl_input "$OUT/i5-cold.yaml" 20
   runrec i5-cold "$SDXL" --input "$OUT/i5-cold.yaml" || fail "cold request"
   restart i5-warm
-  runrec i5-warm-gpu "$SDXL" --warm gpu || fail "--warm gpu"
-  say "i5: --warm gpu result $(jq -c .result "$OUT/i5-warm-gpu.json")"
+  warmrec i5-warm-gpu "$SDXL" gpu || fail "warming at gpu"
+  say "i5: warming at gpu result $(jq -c .result "$OUT/i5-warm-gpu.json")"
   cozy machine show "$NAME" > "$OUT/i5-show-loaded.txt" 2>&1; cozy machine show "$NAME" --json > "$OUT/i5-show-loaded.json" 2>&1
   say "i5: loaded: $(grep '^warm ' "$OUT/i5-show-loaded.txt" | paste -sd';'); GPU $(smi)"
   sleep "$HOLD"
@@ -419,9 +428,9 @@ item5() {
   say "i5: after ${HOLD} s: $(grep '^warm ' "$OUT/i5-show-held.txt" | paste -sd';'); GPU $(smi); executors $(jq -c '[.[] | select(.kind == "executor") | {pid, nvidia_fds, age_s}]' "$OUT/i5-ps-held.json")"
   sdxl_input "$OUT/i5-warm.yaml" 20
   runrec i5-warm "$SDXL" --input "$OUT/i5-warm.yaml" || fail "warm request"
-  runrec i5-off "$SDXL" --warm off
+  warmrec i5-off "$SDXL" off
   cozy machine show "$NAME" > "$OUT/i5-show-off.txt" 2>&1; cozy machine show "$NAME" --json > "$OUT/i5-show-off.json" 2>&1
-  say "i5: after --warm off: warm lines $(grep -c '^warm ' "$OUT/i5-show-off.txt"); GPU $(smi)"
+  say "i5: after warming at off: warm lines $(grep -c '^warm ' "$OUT/i5-show-off.txt"); GPU $(smi)"
   local r
   for r in cold warm; do
     say "i5 $r: $(jq -c '{status, ms: ((.settled_at_ms // 0) - (.accepted_at_ms // 0)), execution_ms, executor: .measurements.execution.executor.started_unix_ms, accepted_at_ms}' "$OUT/i5-$r.json")"
@@ -432,8 +441,8 @@ item3b() {
   step i3b-update machine update "$NAME" --tensord "$DEV" -y || fail "update to $BUILD"
   local v; v=$(cozy machine show "$NAME" --json | jq -r .status.version); say "3b: pod TensorD $v"
   [ "$v" = "$("$DEV" --version | awk '{print $2}')" ] || fail "3b: the pod runs TensorD $v"
-  runrec i3b-prime "$SDXL" --warm imported || fail "3b: --warm imported"
-  runrec i3b-prime-off "$SDXL" --warm off
+  warmrec i3b-prime "$SDXL" imported || fail "3b: warming at imported"
+  warmrec i3b-prime-off "$SDXL" off
   local t a l i
   for i in $(seq 1 30); do
     podpy pages sdxl > "$OUT/i3b-pages.json"; jq -e .mb "$OUT/i3b-pages.json" >/dev/null 2>&1 && break; sleep 2
@@ -477,7 +486,7 @@ queue4b() {
   runrec "$l-a" "$SDXL" --input "$OUT/$l-a.yaml" & local pa=$!
   for i in $(seq 1 240); do
     n=$(grep -o '"number":[0-9]*' "$OUT/$l-a.ndjson" 2>/dev/null | head -1 | cut -d: -f2)
-    [ -n "$n" ] && [ -n "$(cozy run show "$n" --once --json --full 2>/dev/null | jq -r '.started_at_ms // empty')" ] && break
+    [ -n "$n" ] && [ -n "$(cozy run watch "$n" --once --json --full 2>/dev/null | jq -r '.started_at_ms // empty')" ] && break
     sleep 0.5
   done
   say "$l: SDXL run ${n:-?} executing"
@@ -500,7 +509,7 @@ item4b() {
   step i4b-in-sdxl package install "${SDXL%%/*}@${SDXL##*@}" --on "$NAME" -y || fail "install sdxl"
   step i4b-in-queued package install "${QUEUED%%/*}@${QUEUED##*@}" --on "$NAME" -y || fail "install $QUEUED"
   step i4b-in-pipe package install "$PIPE" --on "$NAME" -y || fail "install the pipeline fixture"
-  runrec i4b-prime "$QUEUED" --warm downloaded; runrec i4b-prime-off "$QUEUED" --warm off
+  warmrec i4b-prime "$QUEUED" downloaded; warmrec i4b-prime-off "$QUEUED" off
   podpy machine-mode shared > "$OUT/i4b-mode.json"; say "4b: $(cat "$OUT/i4b-mode.json")"
   queue4b i4b-shared
   say "4b shared: machine says mode $("$DEV" machine show "$NAME" --json 2>/dev/null | jq -r '.status.mode // "?"')"

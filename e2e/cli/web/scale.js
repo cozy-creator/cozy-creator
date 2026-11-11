@@ -375,7 +375,6 @@ async function nativeMemory(base, folder) {
   await signIn(page);
   await page.waitForSelector('.top');
   const { token } = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session')));
-  await page.evaluate(() => { window.notReloaded = true; });
 
   // The 95th percentile of half a second's frames. None in that half second is one longer than all of it: not short yet (macOS, 42022159182).
   const shortFrames = async () => {
@@ -459,7 +458,9 @@ async function nativeMemory(base, folder) {
   const small = (await projectAction(smallFolder, 'status')).value;
   await page.goto(await projectUrl(small.id));
   await page.waitForSelector('.react-flow__node .nm');
+  await page.evaluate(() => { window.notReloaded = true; });
   numbers.pan_small = await measuredPan();
+  check('small_pan_keeps_document', await page.evaluate(() => window.notReloaded === true));
 
   // Opening it: boxes on screen, then the page settled, its frames short.
   const opening = Date.now();
@@ -467,6 +468,8 @@ async function nativeMemory(base, folder) {
   await page.waitForSelector('.nm:text-is("shot_0")', { timeout: 120_000 });
   numbers.open_boxes_s = seconds(Date.now() - opening);
   check('it_opens_quickly', numbers.open_boxes_s <= BARS.open_boxes_s, numbers.open_boxes_s);
+  // The deliberate project navigation created this document. Watch its interactions from here.
+  await page.evaluate(() => { window.notReloaded = true; });
   await until('its frames short', shortFrames, (p95) => p95 < 100, 180_000);
   numbers.open_settled_s = seconds(Date.now() - opening);
   check('it_settles_quickly', numbers.open_settled_s <= BARS.open_settled_s, numbers.open_settled_s);

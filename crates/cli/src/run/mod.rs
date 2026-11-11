@@ -8,10 +8,9 @@ use std::{
 use clap::ValueHint;
 use clap_complete::ArgValueCompleter;
 use api::{
-    calcifer::{FileTerm, On, ReleaseFrom, Run, RunEstimate, RunRequest, Target},
+    calcifer::{FileTerm, On, ReleaseFrom, Run, RunRequest, Target},
     code::LocalCode,
     error::{Error, Kind},
-    machine::{Basis, WarmLevel},
 };
 use serde_json::{Map, Value};
 
@@ -25,17 +24,20 @@ pub(crate) mod fetch;
 mod follow;
 pub(crate) mod list;
 pub(crate) mod live;
-mod play;
-mod show;
+mod watch;
 
 /// `cozy run --help`'s examples: a YAML request file first, inline inputs as overrides.
 const EXAMPLES: &str = "Examples
   cozy run sdxl/generate --input request.yaml
+  cozy run sdxl/generate --input request.yaml --model model=stabilityai/sdxl@1.0.0
   cozy run sdxl/generate prompt='a fox in fresh snow' --on local
-  cozy run birefnet/remove_background --file image=./character.png";
+  cozy run birefnet/remove_background --file image=./character.png
+
+Repeat --model for multiple slots. For the same slot, the last flag overrides earlier flags,
+model.<slot>= inputs and the request file.";
 
 #[derive(clap::Args, Debug)]
-#[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true, arg_required_else_help = true, after_help = EXAMPLES)]
+#[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true, arg_required_else_help = true, subcommand_value_name = "ls|watch|cancel", after_help = EXAMPLES)]
 pub(crate) struct Args {
     #[command(subcommand)]
     verb: Option<Verb>,
@@ -53,42 +55,50 @@ struct RunArgs {
     inputs: Vec<String>,
     #[command(flatten)]
     placement: Placement,
-    /// Use at most N GPUs for the run and its calls.
+    /// Limit GPU use; with --on new, rent this many GPUs. Automatic when omitted.
     #[arg(long, value_name = "N", value_parser = api::calcifer::gpu_count)]
     gpus: Option<u32>,
     /// Main model precision lane (bf16, fp8 or int8). Auto-selected when omitted.
     #[arg(long, value_parser = api::model_ref::lane)]
     lane: Option<String>,
     /// Select an attention kernel for all models or one `[slot/]component`.
-    #[arg(long, value_name = "[[SLOT/]COMPONENT=]KERNEL", value_parser = api::calcifer::attention_pin, conflicts_with = "warm")]
+    #[arg(long, value_name = "[[SLOT/]COMPONENT=]KERNEL", value_parser = api::calcifer::attention_pin)]
     attention_kernel: Option<String>,
-    /// Compute a fresh result without saving it to the result cache.
-    #[arg(long, conflicts_with = "warm")]
-    no_memo: bool,
     /// Read inputs from a JSON or YAML file. Inline inputs override it.
     #[arg(long = "input", value_name = "FILE")]
     input_file: Option<PathBuf>,
     /// Attach files with `[NAME=]FILE` or `field.path=FILE`.
     #[arg(long = "file", value_name = "[NAME=]FILE", value_hint = ValueHint::FilePath)]
     assets: Vec<String>,
-    /// Set file fidelity with `label-or-index=auto|low|medium|high`.
+    /// Set reference-image detail: `label-or-index=auto|low|medium|high`.
     #[arg(long = "file-fidelity", value_name = "FILE=FIDELITY", value_parser = api::calcifer::fidelity)]
     fidelities: Vec<String>,
+    /// Override a model slot. Use --describe to list slots.
+    #[arg(long = "model", value_name = "SLOT=REF", value_parser = model_override)]
+    models: Vec<String>,
     /// Apply a LoRA using `[SLOT=]REF[,STRENGTH]`. Default strength is 1.
     #[arg(long = "lora", value_name = "[SLOT=]REF[,STRENGTH]")]
     loras: Vec<String>,
-    /// Keep the function ready at the selected level.
-    #[arg(long, value_enum, ignore_case = true, value_name = "LEVEL")]
-    warm: Option<Warm>,
     /// Show the function's inputs and outputs.
     #[arg(long)]
     describe: bool,
     /// Download outputs to this directory.
     #[arg(short = 'o', long = "output", value_name = "DIR", value_hint = ValueHint::DirPath)]
     output: Option<PathBuf>,
-    /// Estimate machine finish times for N simultaneous runs.
-    #[arg(long, value_name = "N", num_args = 0..=1, default_missing_value = "1", conflicts_with_all = ["warm", "describe"])]
-    estimate: Option<u32>,
+}
+
+impl RunArgs {
+    fn terms(&self) -> Vec<String> {
+        self.inputs.iter().chain(&self.models).cloned().collect()
+    }
+}
+
+fn model_override(raw: &str) -> Result<String, String> {
+    let (slot, reference) = raw.split_once('=').ok_or("use SLOT=REF")?;
+    if slot.trim().is_empty() || reference.trim().is_empty() {
+        return Err("SLOT and REF must both be nonempty; use SLOT=REF".to_owned());
+    }
+    Ok(format!("model.{}={}", slot.trim(), reference.trim()))
 }
 
 /// Where a run goes; shared by every verb that submits one.
@@ -106,17 +116,6 @@ impl Placement {
         api::calcifer::local_usable(on)?;
         Ok(Some(On::from(on.clone())))
     }
-}
-
-#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
-enum Warm {
-    Installed,
-    Downloaded,
-    Imported,
-    Host,
-    Gpu,
-    /// Stop keeping the function ready.
-    Off,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -140,8 +139,8 @@ enum Verb {
         #[arg(long)]
         all: bool,
     },
-    /// Show a run's result, outputs and logs. Follow it while it is running.
-    Show {
+    /// Watch a run's progress, result, outputs and logs.
+    Watch {
         /// The run's number or id.
         run: String,
         /// Show the current state and exit.
@@ -155,17 +154,6 @@ enum Verb {
     Cancel {
         /// The run's number or id.
         run: String,
-    },
-    /// Create a browser link to a run's output.
-    Play {
-        /// The run's number or id.
-        run: String,
-        /// Output name or `name/index` for a list item.
-        #[arg(long, default_value = "video")]
-        output: String,
-        /// Link lifetime. Anyone with the link can view it until it expires.
-        #[arg(long, default_value = "24h")]
-        expires: String,
     },
 }
 
@@ -196,7 +184,7 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             let query = list::Query { status: state, package, machine: on, project, before: None, limit };
             list::exec(ctx, query).await
         }
-        Some(Verb::Show { run, once, output }) => show::exec(ctx, &run, once, output.as_deref()).await,
+        Some(Verb::Watch { run, once, output }) => watch::exec(ctx, &run, once, output.as_deref()).await,
         Some(Verb::Cancel { run }) => {
             let calcifer = ctx.calcifer().await?;
             let mut run = calcifer.run(&run).await?;
@@ -206,11 +194,6 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             follow::record(ctx, &run);
             Ok(ExitCode::SUCCESS)
         }
-        Some(Verb::Play {
-            run,
-            output,
-            expires,
-        }) => play::exec(ctx, &run, &output, &expires).await,
         None => run(ctx, *args.run).await,
     }
 }
@@ -218,38 +201,32 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
 
 async fn run(ctx: &Context, args: RunArgs) -> Result<ExitCode, Error> {
     let project = crate::project::current(ctx).await?;
+    let within = project.id;
     let cwd = std::env::current_dir()
         .map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
     let written = args.target.clone().unwrap_or_default();
+    let sender = Sender::for_project(ctx, &within).await?;
     // Local code goes by content: the target is then the function it names.
     let (target, code) = match local(ctx, &written, &cwd)? {
-        Some((package, function)) => (function.unwrap_or_default(), Some(Sender::new(ctx).await?.code(&package).await?)),
+        Some((package, function)) => (function.unwrap_or_default(), Some(sender.code(&package).await?)),
         None => (written, None),
     };
-    let inputs = !args.inputs.is_empty() || args.input_file.is_some();
+    let inputs = !args.inputs.is_empty() || !args.models.is_empty() || args.input_file.is_some();
     if args.describe && !inputs {
-        return describe(ctx, &target, code.as_ref(), args.placement.on.as_deref()).await;
+        return describe(ctx, &target, code.as_ref(), args.placement.on.as_deref(), Some(&within)).await;
     }
-    // Listing a package's functions needs no project on disk. A named function with
-    // default inputs still runs, and a local package can name its one function.
-    if !inputs && args.assets.is_empty() && args.warm.is_none() {
-        let described = self::target(ctx, &target, code.as_ref(), args.placement.on.as_deref()).await?;
+    // A named function with default inputs still runs; an unnamed package lists its functions.
+    if !inputs && args.assets.is_empty() {
+        let described = self::target(ctx, &target, code.as_ref(), args.placement.on.as_deref(), Some(&within)).await?;
         if described.contract.is_none() {
             print_functions(ctx, &described);
             return Ok(ExitCode::SUCCESS);
         }
     }
-    let within = match args.warm {
-        Some(_) => None,
-        None => Some(project.id),
-    };
-    let ask = request(ctx, &args, target.clone(), code.clone(), &cwd, within).await?;
-    if let Some(count) = args.estimate {
-        return estimate(ctx, ask, count).await;
-    }
+    let ask = request(ctx, &args, target.clone(), code.clone(), &cwd, within.clone()).await?;
     match send(ctx, ask).await {
         // A package's functions, when the run names none and gives it nothing.
-        Err(e) if e.code == "function_unnamed" && !inputs => functions(ctx, &target, code.as_ref(), args.placement.on.as_deref()).await,
+        Err(e) if e.code == "function_unnamed" && !inputs => functions(ctx, &target, code.as_ref(), args.placement.on.as_deref(), Some(&within)).await,
         Err(e) => Err(e),
         Ok(run) => {
             if let Some(dir) = &args.output {
@@ -299,8 +276,8 @@ pub(crate) fn local(ctx: &Context, raw: &str, cwd: &Path) -> Result<Option<(Path
 }
 
 /// The request `args` make of `target` (of `code`, when it's local), with every file and folder it names here sent first.
-async fn request(ctx: &Context, args: &RunArgs, target: String, code: Option<LocalCode>, cwd: &Path, within: Option<String>) -> Result<RunRequest, Error> {
-    let sender = Sender::new(ctx).await?;
+async fn request(ctx: &Context, args: &RunArgs, target: String, code: Option<LocalCode>, cwd: &Path, project: String) -> Result<RunRequest, Error> {
+    let sender = Sender::for_project(ctx, &project).await?;
     let mut paths = Paths::new(&sender);
     for term in &args.inputs {
         term_paths(&mut paths, term, cwd).await?;
@@ -325,7 +302,7 @@ async fn request(ctx: &Context, args: &RunArgs, target: String, code: Option<Loc
         hub: ctx.hub().to_string(),
         input,
         input_text: None,
-        terms: args.inputs.clone(),
+        terms: args.terms(),
         files,
         fidelities: args.fidelities.clone(),
         loras: args.loras.clone(),
@@ -333,9 +310,8 @@ async fn request(ctx: &Context, args: &RunArgs, target: String, code: Option<Loc
         gpus: args.gpus,
         lane: args.lane.clone(),
         attention_kernel: args.attention_kernel.clone(),
-        no_memo: args.no_memo,
-        warm: args.warm.map(Warm::level),
-        project: within,
+        warm: None,
+        project: Some(project),
         recipes: false,
         agreed: None,
     })
@@ -392,67 +368,9 @@ async fn send(ctx: &Context, ask: RunRequest) -> Result<Run, Error> {
     }
 }
 
-/// `POST /v1/run-estimates`: each machine's quote for the run, the soonest finish first; nothing is sent. Local code not yet ready
-/// on its machine is installed first, then asked again under the same key.
-async fn estimate(ctx: &Context, ask: RunRequest, count: u32) -> Result<ExitCode, Error> {
-    let key = follow::mint_key();
-    let calcifer = ctx.calcifer().await?;
-    let estimate = loop {
-        let estimate: RunEstimate = calcifer.post(&format!("/v1/run-estimates?count={count}"), &ask, Some(&key)).await?;
-        let Some(install) = estimate.preparing else { break estimate };
-        let install = follow::settle(ctx, *install).await?;
-        if !settled(&install) {
-            return Ok(exit_code(&install));
-        }
-    };
-    for note in &estimate.notes {
-        output::warn(&note.message);
-    }
-    if ctx.json {
-        output::json(&estimate);
-        return Ok(ExitCode::SUCCESS);
-    }
-    let copies = estimate.machines.iter().any(|machine| machine.job > 0);
-    let header = ["MACHINE", "GPUS", "START", "FINISH", "PREPARE", "QUEUE", "BASIS"];
-    let table = output::Table::new(ctx, copies.then_some("JOB").into_iter().chain(header));
-    let rows = estimate.machines.iter().map(|machine| {
-        let mut name = machine.machine.clone();
-        if estimate.soonest.as_ref() == Some(&machine.machine) {
-            name += " *";
-        }
-        let basis = match machine.basis {
-            Basis::Measured => "measured",
-            Basis::Prior => "prior",
-            Basis::None => "none",
-        };
-        let basis = match &machine.refusal {
-            Some(refusal) => refusal.message.clone(),
-            None => basis.to_owned(),
-        };
-        let shown = |ms: Option<u64>| ms.map_or_else(|| "-".to_owned(), seconds);
-        let width = if machine.fits { machine.width.to_string() } else { "-".to_owned() };
-        let prepare = if machine.fits { seconds(machine.prepare_ms) } else { "-".to_owned() };
-        let cells = [name, width, shown(machine.start_ms), shown(machine.finish_ms), prepare, machine.queue_position.to_string(), basis];
-        copies.then(|| (machine.job + 1).to_string()).into_iter().chain(cells).collect::<Vec<_>>()
-    });
-    rows.fold(table, output::Table::row).print();
-    if let Some(soonest) = &estimate.soonest {
-        output::say(ctx, &format!("* where it would go: {soonest}"));
-    }
-    Ok(ExitCode::SUCCESS)
-}
-
-/// `41.2s`, `3m12s`.
-fn seconds(ms: u64) -> String {
-    match ms / 1000 {
-        0..60 => format!("{:.1}s", ms as f64 / 1000.0),
-        s => format!("{}m{:02}s", s / 60, s % 60),
-    }
-}
-
 /// `GET /v1/targets`: the target's function's contract, or its package's functions.
-async fn describe(ctx: &Context, raw: &str, code: Option<&LocalCode>, on: Option<&str>) -> Result<ExitCode, Error> {
-    let target = target(ctx, raw, code, on).await?;
+async fn describe(ctx: &Context, raw: &str, code: Option<&LocalCode>, on: Option<&str>, project: Option<&str>) -> Result<ExitCode, Error> {
+    let target = target(ctx, raw, code, on, project).await?;
     match (&target.contract, &target.request) {
         (Some(_), Some(request)) if ctx.json => output::json(request),
         (Some(contract), _) => anstream::print!("{contract}"),
@@ -462,18 +380,20 @@ async fn describe(ctx: &Context, raw: &str, code: Option<&LocalCode>, on: Option
 }
 
 /// `cozy run [org/]pkg`: the package's public functions.
-async fn functions(ctx: &Context, raw: &str, code: Option<&LocalCode>, on: Option<&str>) -> Result<ExitCode, Error> {
-    print_functions(ctx, &target(ctx, raw, code, on).await?);
+async fn functions(ctx: &Context, raw: &str, code: Option<&LocalCode>, on: Option<&str>, project: Option<&str>) -> Result<ExitCode, Error> {
+    print_functions(ctx, &target(ctx, raw, code, on, project).await?);
     Ok(ExitCode::SUCCESS)
 }
 
-async fn target(ctx: &Context, raw: &str, code: Option<&LocalCode>, on: Option<&str>) -> Result<Target, Error> {
+async fn target(ctx: &Context, raw: &str, code: Option<&LocalCode>, on: Option<&str>, project: Option<&str>) -> Result<Target, Error> {
     let tree = code.map(|code| code.tree.to_string());
     let mut query = vec![("target", raw), ("hub", ctx.hub().as_str())];
     query.extend(on.map(|on| ("on", on)));
     query.extend(tree.as_deref().map(|tree| ("tree", tree)));
     query.extend(code.map(|code| ("at", code.at.as_str())).filter(|(_, at)| !at.is_empty()));
-    ctx.calcifer().await?.get_query("/v1/targets", &query).await
+    query.extend(project.map(|project| ("project", project)));
+    let path = if project.is_some() { "/v1/project-targets" } else { "/v1/targets" };
+    ctx.calcifer().await?.get_query(path, &query).await
 }
 
 /// A package's functions, and what each does. Its recipes are not functions: `cozy model
@@ -504,15 +424,43 @@ fn print_functions(ctx: &Context, target: &Target) {
     output::next(ctx, &target.next.iter().map(String::as_str).collect::<Vec<_>>());
 }
 
-impl Warm {
-    fn level(self) -> WarmLevel {
-        match self {
-            Warm::Installed => WarmLevel::Installed,
-            Warm::Downloaded => WarmLevel::Downloaded,
-            Warm::Imported => WarmLevel::Imported,
-            Warm::Host => WarmLevel::Host,
-            Warm::Gpu => WarmLevel::Gpu,
-            Warm::Off => WarmLevel::Off,
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser, Debug)]
+    struct Command {
+        #[command(flatten)]
+        args: Args,
+    }
+
+    #[test]
+    fn model_flags_follow_legacy_terms_and_keep_order() {
+        let parsed = Command::try_parse_from([
+            "run", "sdxl/generate", "--input", "request.yaml", "model.model=legacy",
+            "--model", "model=first", "--model", "decoder=other", "--model", "model=last",
+        ]).unwrap();
+        assert_eq!(parsed.args.run.input_file.as_deref(), Some(Path::new("request.yaml")));
+        assert_eq!(parsed.args.run.terms(), [
+            "model.model=legacy", "model.model=first", "model.decoder=other", "model.model=last",
+        ]);
+    }
+
+    #[test]
+    fn model_flags_require_a_slot_and_reference() {
+        for invalid in ["model", "=ref", "model=", " =ref", "model= "] {
+            let error = Command::try_parse_from(["run", "sdxl/generate", "--model", invalid]).unwrap_err();
+            assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+        }
+        assert_eq!(model_override(" called.model = owner/model@1.0 ").unwrap(), "model.called.model=owner/model@1.0");
+    }
+
+    #[test]
+    fn retired_run_flags_are_rejected() {
+        for flag in ["--estimate", "--warm"] {
+            let error = Command::try_parse_from(["run", "sdxl/generate", flag]).unwrap_err();
+            assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
         }
     }
 }

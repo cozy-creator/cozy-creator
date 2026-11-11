@@ -15,7 +15,7 @@ FIX=$(cd "$(dirname "$0")/fixtures" && pwd)
 quote 3600
 rent
 
-value() { cozy run show "$(runno "$1")" --once --json --full > "$OUT/$1.json" 2>&1; }
+value() { cozy run watch "$(runno "$1")" --once --json --full > "$OUT/$1.json" 2>&1; }
 status() { jq -r '.status // empty' "$OUT/$1.json"; }
 run() { local n=$1; shift; step "$n" run "$@" --on "$NAME" || fail "$n"; value "$n"; }
 memlines() { cozy machine logs "$NAME" memory -n 0 2>/dev/null | wc -l; }

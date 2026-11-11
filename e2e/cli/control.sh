@@ -180,7 +180,7 @@ journal_table() { python3 -c 'import sqlite3, sys; c = sqlite3.connect(sys.argv[
 launch broken silent seconds:=10 || return 0
 journal_table run_measurements run_measurements_away || { check "broken: the journal's table couldn't be moved"; return; }
 for _ in $(seq 400); do
-  cozy --json run show "$n" --once > "$OUT/broken.show.json" 2> /dev/null || true
+  cozy --json run watch "$n" --once > "$OUT/broken.show.json" 2> /dev/null || true
   status=$(jq -r .status "$OUT/broken.show.json")
   [ "$status" = in_progress ] || break
   if [ "$since" = 0 ] && jq -e '.waiting // "" | test("fails when asked")' "$OUT/broken.show.json" > /dev/null; then

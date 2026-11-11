@@ -7,7 +7,7 @@
 #   qwen        the Qwen-Image function (default qwen-image-2/generate@0.1.1, the release that ran out)
 . "$(dirname "$0")/lib.sh"
 QWEN=$(param qwen qwen-image-2/generate@0.1.1)
-status() { cozy run show "$(runno "$1")" --once --json --full > "$OUT/$1.json" 2>&1; jq -r '.status // empty' "$OUT/$1.json"; }
+status() { cozy run watch "$(runno "$1")" --once --json --full > "$OUT/$1.json" 2>&1; jq -r '.status // empty' "$OUT/$1.json"; }
 peak_mib() { jq -r '[.. | objects | select(has("peak_bytes")) | .peak_bytes] | max // 0 | . / 1048576 | floor' "$OUT/$1.json"; }
 [ -f "$REF/seed.jpg" ] || fail "no reference image"
 quote 2400

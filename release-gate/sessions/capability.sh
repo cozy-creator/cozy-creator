@@ -73,7 +73,7 @@ sleep "$OFF_S"
 say "the runner's Calcifer stayed stopped ${OFF_S}s"
 systemctl --user start cozy-calcifer; say "the runner's Calcifer: $(systemctl --user is-active cozy-calcifer) again"
 # The run's record: all of the output when it had settled, else the last line after the events it followed.
-cozy --json --full run show "$N" > "$OUT/probe-show.json" 2> "$OUT/probe-show.err"
+cozy --json --full run watch "$N" > "$OUT/probe-show.json" 2> "$OUT/probe-show.err"
 P=$(jq -sc --argjson n "$N" 'map(select(.number? == $n)) | last' "$OUT/probe-show.json")
 say "probe: $(jq -c '{status, result, reason}' <<<"$P")"
 cozy machine logs "$NAME" -n 0 > "$OUT/tensord.log" 2>&1

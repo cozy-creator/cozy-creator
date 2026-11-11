@@ -35,7 +35,7 @@ for _ in $(seq 120); do RUN=$(awk '$1=="run" && $2 ~ /^[0-9]+$/ && /\/pieces/ {p
 seen=0 mended=0 t0=$(date +%s)
 while kill -0 "$follower" 2>/dev/null; do
   t=$(( $(date +%s) - t0 ))
-  said=$(cozy run show "$RUN" --once --json --full 2>/dev/null | jq -r '[.waiting, .progress.stage] | map(select(. != null)) | join(" | ")')
+  said=$(cozy run watch "$RUN" --once --json --full 2>/dev/null | jq -r '[.waiting, .progress.stage] | map(select(. != null)) | join(" | ")')
   printf '%s\t%s\n' "$t" "$said" >> "$OUT/timeline.tsv"
   [ "$seen" != 0 ] || ! grep -q retrying <<<"$said" || { seen=$t; say "t=$t the run says: ${said:0:160}"; }
   if [ "$mended" = 0 ] && { { [ "$seen" != 0 ] && [ $((t - seen)) -ge "$OUTAGE" ]; } || [ "$t" -ge 300 ]; }; then
@@ -45,7 +45,7 @@ while kill -0 "$follower" 2>/dev/null; do
   sleep 2
 done
 mend
-cozy run show "$RUN" --once --json --full > "$OUT/run.json" 2>&1
+cozy run watch "$RUN" --once --json --full > "$OUT/run.json" 2>&1
 cozy machine logs "$NAME" tensord -n 0 2>/dev/null | grep 'unreachable, retrying' > "$OUT/retries.log"
 verdict=$(python3 -I - "$OUT/run.json" "$seen" "$MODEL" <<'PY'
 import json, sys

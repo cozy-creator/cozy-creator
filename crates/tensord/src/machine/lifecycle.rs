@@ -6,7 +6,7 @@
 //! so restarts and updates neither shorten nor lose it. This computer's machine counts the same clock from its start: after 5 minutes its
 //! executors outside the warm sets exit and give back every byte they held, after 15 it exits
 //! itself (Calcifer starts it again when something uses it), unless another computer's controller
-//! is authorized to use it or a warm set keeps a member in memory (`cozy run <fn> --warm`). A client following a run or a log, reading an output or uploading an object, holds either
+//! is authorized to use it or a warm set keeps a member in memory (a warming API request). A client following a run or a log, reading an output or uploading an object, holds either
 //! clock. Also the Hub lease of authorized keys.
 use super::hub::{Hub, Refusal};
 use crate::api::auth::Keys;
@@ -129,6 +129,8 @@ pub(crate) fn now_ms() -> i64 {
 }
 
 impl Lifecycle {
+    pub(crate) fn is_local(&self) -> bool { !self.rental }
+
     /// `fresh` starts this root's first idle clock; a rental's restart keeps the persisted
     /// ledger. Each start of this computer's machine is a use: its clock starts again, and an
     /// exit it took is over.
