@@ -812,6 +812,15 @@ impl Machines {
             if !offline {
                 let error = match self.status_frames(&name, &mut pause).await {
                     Ok(()) if kind == MachineKind::Local => return self.local_exited(),
+                    // A rental's word that it released itself is not its end: its Hub's is, as for
+                    // any end. Until the Hub affirms it gone it is `ending`, and if this computer
+                    // can't ask, it shows why and that it may still bill (`end_failed`).
+                    Ok(()) if kind == MachineKind::Rental => {
+                        if let Err(e) = self.released_itself(&name) {
+                            warn!(machine = name, "confirming its release with its Hub: {}", e.message);
+                        }
+                        return;
+                    }
                     Ok(()) => {
                         self.ended(&name, "released_by_pod");
                         return;
