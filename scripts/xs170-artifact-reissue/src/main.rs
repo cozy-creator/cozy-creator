@@ -196,8 +196,7 @@ fn prepare(
     let header_path = header_path.to_owned();
     let mut components = old_header.components().to_vec();
     let mut added = BTreeSet::new();
-    let next_release;
-    match input.model.as_str() {
+    let next_release = match input.model.as_str() {
         "minimaxai/minimax-h3" => {
             check(
                 input.release == "1.0.0-rc.7",
@@ -220,7 +219,7 @@ fn prepare(
                 encoder.assets.insert(name.clone(), object.clone());
                 added.insert(object);
             }
-            next_release = "1.0.0-rc.8";
+            "1.0.0-rc.8"
         }
         "lbh-123-ai/h3-latent-upscaler" => {
             check(
@@ -247,10 +246,10 @@ fn prepare(
             model
                 .config
                 .insert("latent_normalization".into(), norm.clone());
-            next_release = "0.1.1";
+            "0.1.1"
         }
         _ => return Err("this client only prepares the two reviewed H3 models".into()),
-    }
+    };
     let new_header = rebuilt(&old_header, components)?;
     let new_header_bytes = new_header.to_cbor()?;
     check(
