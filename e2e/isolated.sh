@@ -3,13 +3,14 @@
 # A suite against its own isolated Hub. Signed in as that Hub's admin, it first publishes there what the suite reads
 # from a Hub, as production holds it. The cli suite's shards read, at the root, from run.sh's --packages checkout, the
 # toolbox's defaults (qwen-image-2, minimax-h3) and birefnet, and a stand-in minimax-h3-tools (hub_away locks it from the
-# root index, hub_dependency calls its echo); then the models their cells download: BiRefNet's weights from the Hugging Face revision production
-# mirrors, and random weights for queued_download's two. The imports suite installs the checkout's own package
-# directories and reads nothing from a Hub. Then this computer's cozy is removed, and the suite starts as on a fresh
-# runner, signed out, in this process's place: nothing of this script is left for the suite's own removal of cozy to find.
+# root index, hub_dependency calls its echo); then the models their cells download: BiRefNet's weights from the Hugging Face
+# revision production mirrors, and random weights for queued_download's two. macOS and Windows run no models and need no
+# weights: their shards take the packages alone. The imports suite installs the checkout's own package directories and
+# reads nothing from a Hub. Then this computer's cozy is removed, and the suite starts as on a fresh runner, signed out, in
+# this process's place: nothing of this script is left for the suite's own removal of cozy to find.
 set -euo pipefail
 [ "$#" -ge 5 ] || { echo "usage: isolated.sh OUT INSTALLED_COZY RUNTIME TENSORFS cli|imports|cpu <run.sh arguments>" >&2; exit 2; }
-[ "${GITHUB_ACTIONS:-}" = true ] && [ "${RUNNER_OS:-}" = Linux ] || { echo "isolated.sh removes this computer's cozy: a fresh Linux GitHub runner only" >&2; exit 2; }
+[ "${GITHUB_ACTIONS:-}" = true ] || { echo "isolated.sh removes this computer's cozy: a fresh GitHub runner only" >&2; exit 2; }
 seed=$1 cozy_bin=$2 runtime=$3 tensorfs=$4 suite=$5
 shift 5
 here=$(cd "$(dirname "$0")" && pwd) start=$PWD
@@ -107,10 +108,12 @@ if [ -n "$needs" ]; then
   # A stand-in for the root index's minimax-h3-tools, which the packages no longer hold (combined into minimax-h3).
   tools=$seed/minimax-h3-tools
   rm -rf "$tools" && cp -r "$here/../release-gate/suites/hub/pkg" "$tools"
-  sed -i 's/^name = "ci-hub-pkg"/name = "minimax-h3-tools"/' "$tools/pyproject.toml"
-  # Its module by its name, as a package's is: local code imports it (hub_dependency, cl-871).
+  # Its module by its name, as a package's is: local code imports it (hub_dependency, cl-871). sed without -i: BSD's
+  # (macOS) takes a suffix there.
   mv "$tools/ci_hub_pkg" "$tools/minimax_h3_tools"
-  sed -i 's/ci_hub_pkg/minimax_h3_tools/g' "$tools/pyproject.toml" "$tools/package.toml"
+  for f in pyproject.toml package.toml; do
+    sed -e 's/^name = "ci-hub-pkg"/name = "minimax-h3-tools"/' -e 's/ci_hub_pkg/minimax_h3_tools/g' "$tools/$f" > "$tools/$f.next" && mv "$tools/$f.next" "$tools/$f"
+  done
   publish "$tools"
   for p in qwen-image-2 minimax-h3 birefnet; do publish "$packages/$p"; done
   if [[ " $needs " == *" birefnet "* || " $needs " == *" downloads "* ]]; then
@@ -133,23 +136,33 @@ if [ -n "$needs" ]; then
   cd "$start"
 fi
 
-# This computer as a fresh runner: signed out, Calcifer and its machine ended, ~/.cozy and the TensorFS store the
-# uploads filled gone.
+# This computer as a fresh runner: signed out, Calcifer (and on Linux its machine) ended as each OS's service manager
+# ends it, ~/.cozy and the TensorFS store the uploads filled gone.
 cozy --json logout > "$seed/logout.json" 2>&1 || true
-systemctl --user disable --now cozy-calcifer > "$seed/reset.log" 2>&1 || true
-pkill -f "^$HOME/.cozy/" || true
-for _ in $(seq 30); do pgrep -f "^$HOME/.cozy/" > /dev/null || break; sleep 1; done
-# The machine's transient scope (its executors) outlives Calcifer: on a runner every user scope is cozy's.
-for unit in $(systemctl --user list-units --type=scope --no-legend --plain 2> /dev/null | awk '$1 ~ /^run-/ {print $1}'); do
-  systemctl --user stop "$unit" >> "$seed/reset.log" 2>&1 || true
-done
-rm -rf "$HOME/.cozy" "$HOME/.config/cozy" "${TENSORFS_HOME:-$HOME/.cache/tensorfs}"
-# uv (Calcifer's locks, the machine's installs) trusts the Hub's CA as it trusts tensorhub.com's: from the system's bundle,
-# which systemd's user manager hands Calcifer.
-sudo cp "${COZY_TEST_HUB_CA:?}" /usr/local/share/ca-certificates/cozy-test-hub.crt && sudo update-ca-certificates > "$seed/ca.log" 2>&1
-export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
-systemctl --user set-environment SSL_CERT_FILE="$SSL_CERT_FILE"
-ps -eo pid,ppid,pcpu,rss,etime,args --sort=-pcpu | head -25 > "$seed/ps-after-reset.txt"
+case ${RUNNER_OS:-Linux} in
+  Linux)
+    systemctl --user disable --now cozy-calcifer > "$seed/reset.log" 2>&1 || true
+    pkill -f "^$HOME/.cozy/" || true
+    for _ in $(seq 30); do pgrep -f "^$HOME/.cozy/" > /dev/null || break; sleep 1; done
+    # The machine's transient scope (its executors) outlives Calcifer: on a runner every user scope is cozy's.
+    for unit in $(systemctl --user list-units --type=scope --no-legend --plain 2> /dev/null | awk '$1 ~ /^run-/ {print $1}'); do
+      systemctl --user stop "$unit" >> "$seed/reset.log" 2>&1 || true
+    done
+    rm -rf "$HOME/.cozy" "$HOME/.config/cozy" "${TENSORFS_HOME:-$HOME/.cache/tensorfs}"
+    # uv (Calcifer's locks, the machine's installs) trusts the Hub's CA as it trusts tensorhub.com's: from the system's
+    # bundle, which systemd's user manager hands Calcifer.
+    sudo cp "${COZY_TEST_HUB_CA:?}" /usr/local/share/ca-certificates/cozy-test-hub.crt && sudo update-ca-certificates > "$seed/ca.log" 2>&1
+    export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+    systemctl --user set-environment SSL_CERT_FILE="$SSL_CERT_FILE"
+    ps -eo pid,ppid,pcpu,rss,etime,args --sort=-pcpu | head -25 > "$seed/ps-after-reset.txt" ;;
+  macOS)
+    launchctl bootout "gui/$(id -u)/com.cozy-creator.calcifer" > "$seed/reset.log" 2>&1 || true
+    pkill -f "^$HOME/.cozy/" || true
+    for _ in $(seq 30); do pgrep -f "^$HOME/.cozy/" > /dev/null || break; sleep 1; done
+    rm -rf "$HOME/.cozy" "$HOME/.config/cozy" "$HOME"/Library/LaunchAgents/com.cozy-creator.*.plist ;;
+  Windows)
+    powershell -NoProfile -c 'Remove-ItemProperty HKCU:\Software\Microsoft\Windows\CurrentVersion\Run cozy-calcifer -ErrorAction SilentlyContinue; Get-Process cozy -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep 2; Remove-Item -Recurse -Force ~\.cozy, $env:LOCALAPPDATA\cozy -ErrorAction SilentlyContinue' > "$seed/reset.log" 2>&1 || true ;;
+esac
 log "seeded (${needs:-nothing}), this computer's cozy removed; the $suite suite${shard:+ $shard} starts"
 unset CLI M R
 exec bash "$here/$suite/run.sh" "$@"

@@ -414,12 +414,12 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  # The isolated Hub every cli, imports and cpu shard runs against (e2e/skew/run.sh --hub-bin): tensorhub at hub_ref (master,
-  # as cli-release and skew take it), and MinIO, built once a run and kept in the Actions cache by its commit.
+  # The isolated Hub every cli, imports and cpu shard runs against (e2e/skew/run.sh --hub-bin): tensorhub at hub_ref
+  # and MinIO, built once a run and cached by commit. Native cli runners take fixture-hub-<runner> for their OS.
   hub:
     name: isolated Hub
     needs: affected
-    if: ((contains(fromJSON(needs.affected.outputs.selection).suites, 'cli') && inputs.shards != '[]') || contains(fromJSON(needs.affected.outputs.selection).suites, 'imports') || contains(fromJSON(needs.affected.outputs.selection).suites, 'cpu')) && !(inputs.publish_run != '' && inputs.select == 'cli' && inputs.shards == '["projectvault"]' && needs.affected.outputs.repo == 'cozy-creator')
+    if: ((contains(fromJSON(needs.affected.outputs.selection).suites, 'cli') && (inputs.shards != '[]' || (needs.affected.outputs.runners != '[]' && inputs.native_shards != '[]'))) || contains(fromJSON(needs.affected.outputs.selection).suites, 'imports') || contains(fromJSON(needs.affected.outputs.selection).suites, 'cpu')) && !(inputs.publish_run != '' && inputs.select == 'cli' && inputs.shards == '["projectvault"]' && needs.affected.outputs.repo == 'cozy-creator')
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     defaults:
@@ -434,19 +434,30 @@ jobs:
           persist-credentials: false
           path: .tensorhub
       - id: ref
-        run: echo "hub=$(git -C .tensorhub rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+        env:
+          RUNNERS: ${{ contains(fromJSON(needs.affected.outputs.selection).suites, 'cli') && inputs.native_shards != '[]' && needs.affected.outputs.runners || '[]' }}
+        run: |
+          echo "hub=$(git -C .tensorhub rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "native=$RUNNERS" >> "$GITHUB_OUTPUT"
+          echo "native_key=$(jq -r 'join("-")' <<< "$RUNNERS")" >> "$GITHUB_OUTPUT"
       - id: cache
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/fixture-hub
           key: fixture-hub-${{ steps.ref.outputs.hub }}
+      - id: native
+        if: steps.ref.outputs.native != '[]'
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/fixture-hub-native
+          key: fixture-hub-native-${{ steps.ref.outputs.hub }}-RELEASE.2025-09-07T16-13-09Z-${{ steps.ref.outputs.native_key }}
       # The skew jobs' MinIO.
       - id: minio
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/skew-tools
           key: skew-minio-RELEASE.2025-09-07T16-13-09Z
-      - if: steps.cache.outputs.cache-hit != 'true' || steps.minio.outputs.cache-hit != 'true'
+      - if: steps.cache.outputs.cache-hit != 'true' || steps.minio.outputs.cache-hit != 'true' || (steps.ref.outputs.native != '[]' && steps.native.outputs.cache-hit != 'true')
         uses: actions/setup-go@v5
         with:
           go-version-file: .tensorhub/go.mod
@@ -459,10 +470,52 @@ jobs:
       - if: steps.minio.outputs.cache-hit != 'true'
         run: GOBIN=$RUNNER_TEMP/skew-tools go install github.com/minio/minio@RELEASE.2025-09-07T16-13-09Z
       - run: cp "$RUNNER_TEMP/skew-tools/minio" "$RUNNER_TEMP/fixture-hub/"
+      # tensorhub and MinIO are pure Go: each native runner's, built here for its OS.
+      - if: steps.ref.outputs.native != '[]' && steps.native.outputs.cache-hit != 'true'
+        env:
+          RUNNERS: ${{ steps.ref.outputs.native }}
+          MINIO: RELEASE.2025-09-07T16-13-09Z
+        run: |
+          for runner in $(jq -r '.[]' <<< "$RUNNERS"); do
+            case $runner in
+              macos-*) goos=darwin goarch=arm64 exe='' ;;
+              windows-11-arm) goos=windows goarch=arm64 exe=.exe ;;
+              windows-*) goos=windows goarch=amd64 exe=.exe ;;
+              *) echo "::error::no Hub build for $runner"; exit 1 ;;
+            esac
+            out=$RUNNER_TEMP/fixture-hub-native/$runner
+            mkdir -p "$out"
+            (cd .tensorhub && CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch go build -o "$out/tensorhub$exe" .)
+            cp .tensorhub/config.local.yaml "$out/"
+            env -u GOBIN CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch go install "github.com/minio/minio@$MINIO"
+            cp "$(go env GOPATH)/bin/${goos}_${goarch}/minio$exe" "$out/"
+          done
+          ls -la "$RUNNER_TEMP"/fixture-hub-native/*
       - uses: actions/upload-artifact@v4
         with:
           name: fixture-hub
           path: ${{ runner.temp }}/fixture-hub
+          if-no-files-found: error
+          retention-days: 3
+      - if: contains(fromJSON(steps.ref.outputs.native), 'macos-15')
+        uses: actions/upload-artifact@v4
+        with:
+          name: fixture-hub-macos-15
+          path: ${{ runner.temp }}/fixture-hub-native/macos-15
+          if-no-files-found: error
+          retention-days: 3
+      - if: contains(fromJSON(steps.ref.outputs.native), 'windows-2025')
+        uses: actions/upload-artifact@v4
+        with:
+          name: fixture-hub-windows-2025
+          path: ${{ runner.temp }}/fixture-hub-native/windows-2025
+          if-no-files-found: error
+          retention-days: 3
+      - if: contains(fromJSON(steps.ref.outputs.native), 'windows-11-arm')
+        uses: actions/upload-artifact@v4
+        with:
+          name: fixture-hub-windows-11-arm
+          path: ${{ runner.temp }}/fixture-hub-native/windows-11-arm
           if-no-files-found: error
           retention-days: 3
 
@@ -739,11 +792,12 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  # macOS (arm64) and Windows: native file/restart/browser paths plus three layout viewport partitions.
-  # Generic browser journeys run on Linux; an explicit native `web` shard still runs the full suite.
+  # macOS (arm64) and Windows: native file/restart/browser paths plus three layout viewport partitions, each against its
+  # own isolated Hub with only packages published (e2e/isolated.sh). Generic browser journeys and the catalog of
+  # published weights run on Linux; an explicit native `web` shard still runs the full suite.
   cli-os:
     name: cli ${{ matrix.runner }} ${{ matrix.shard }}
-    needs: [affected, candidate-os]
+    needs: [affected, candidate-os, hub]
     if: contains(fromJSON(needs.affected.outputs.selection).suites, 'cli') && needs.affected.outputs.runners != '[]' && inputs.native_shards != '[]' && !(inputs.publish_run != '' && inputs.select == 'cli' && inputs.shards == '["projectvault"]' && needs.affected.outputs.repo == 'cozy-creator')
     strategy:
       fail-fast: false
@@ -779,11 +833,19 @@ jobs:
           tensorfs: ${{ inputs.tensorfs }}
           runtime: ${{ inputs.runtime }}
           release: ${{ inputs.publish_run }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: fixture-hub-${{ matrix.runner }}
+          path: ${{ runner.temp }}/fixture-hub
       - name: cli suite
         env:
           PINS: ${{ inputs.pins }}
           GH_TOKEN: ${{ github.token }}
-        run: bash .creator/e2e/cli/run.sh --out "$RUNNER_TEMP/e2e" --shard ${{ matrix.shard }} $CANDIDATES ${PINS:+--pins "$PINS"} $(case " $CANDIDATES " in (*" --packages "*) ;; (*) echo ${PACKAGES_MASTER:+--packages "$PACKAGES_MASTER"} ;; esac) 2>&1 | node .creator/e2e/publish/scrub.js
+        run: |
+          [ "$RUNNER_OS" = Windows ] || chmod +x "$RUNNER_TEMP/fixture-hub/tensorhub" "$RUNNER_TEMP/fixture-hub/minio"
+          bash .creator/e2e/skew/run.sh --hub-bin "$RUNNER_TEMP/fixture-hub" --candidates "$CANDIDATES" --admin --out "$RUNNER_TEMP/e2e/hub" \
+            --command .creator/e2e/isolated.sh -- cli \
+            --out "$RUNNER_TEMP/e2e" --shard ${{ matrix.shard }} $CANDIDATES ${PINS:+--pins "$PINS"} $(case " $CANDIDATES " in (*" --packages "*) ;; (*) echo ${PACKAGES_MASTER:+--packages "$PACKAGES_MASTER"} ;; esac) 2>&1 | node .creator/e2e/publish/scrub.js
       - if: always()
         uses: ./.creator/e2e/publish
         with:
