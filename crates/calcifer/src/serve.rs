@@ -70,7 +70,8 @@ fn configuration() -> Result<Loaded, Error> {
         ("COZY_TENSORFS_CACHE", &mut loaded.config.machine.cache),
     ] {
         if let Some(path) = path {
-            *path = std::path::absolute(&*path).map_err(failed)?;
+            let directory = if path.as_os_str().is_empty() { std::path::Path::new(".") } else { path.as_path() };
+            *path = std::path::absolute(directory).map_err(failed)?;
             process::set_environment(std::ffi::OsStr::new(name), path.as_os_str());
         }
     }
