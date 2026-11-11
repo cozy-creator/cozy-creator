@@ -227,10 +227,13 @@ FAMILIES: list[Spec] = [
         # served tables, never a weight.
         "sites": {"transformer": [(f"transformer_blocks.{n}.adaln_curve", [96768, 8]) for n in range(50)]},
         "probe": {"component": "transformer", "keys": H3_PROBED, "variants": {"transformer": "transformer", "transformer_ref": "transformer_ref"}},
-        # musubi-tuner (AkaneTendo25@0499c2f8 minimax_h3_train_network.py `extra_metadata`): the
-        # mode picks the DiT it trains. ai-toolkit (ostris@b69b9831 minimax_h3.py): only the
-        # ref2va classes are decisive; arch `minimax_h3` trains either partition.
+        # musubi-tuner: kohya-ss@f8a1b037 minimax_h3_train_network.py:1146 names the DiT its --task trains
+        # (`ref2va` for ref2va, else `fl2va`); AkaneTendo25@0499c2f8's `extra_metadata` names the mode.
+        # ai-toolkit (ostris@b69b9831 minimax_h3.py): only the ref2va classes are decisive; arch
+        # `minimax_h3` trains either partition.
         "trained_on": [
+            {"producer": "musubi-tuner", "field": "ss_minimax_h3_base_family",
+             "values": {"fl2va": "transformer", "ref2va": "transformer_ref"}},
             {"producer": "musubi-tuner", "field": "ss_h3_training_mode",
              "values": {"fl2va": "transformer", "ref2va": "transformer_ref", "ref2va_omni": "transformer_ref"}},
             {"producer": "ai-toolkit", "field": "ss_base_model_version",
