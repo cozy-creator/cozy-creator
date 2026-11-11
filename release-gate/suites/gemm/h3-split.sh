@@ -6,7 +6,7 @@ H3_ARGS=(beats:='[{"description":"[Shot 1]\nA slow bank of fog crosses the bay. 
   soundscape="Wind and ocean surf, with waves splashing against the rocks." turbo:=true seed:=20261301 --gpus=1)
 cell h3s-8bit "$H3" "${H3_ARGS[@]}" --lane int8 --attention-kernel transformer=kitchen-sol
 cell h3s-default "$H3" "${H3_ARGS[@]}"
-h3s_lanes() { run_get "$OUT" "$1" '[.measurements[]?.models[]?.lane] | unique | join(",")'; }
+h3s_lanes() { run_get "$OUT" "$1" '[.calls[]?.measurements.models[]? | select(.slot == "base_model") | .lane] | unique | join(",")'; }
 h3s_default=$(h3s_lanes h3s-default)
 log "h3s lanes: default ${h3s_default:-?}, 8-bit $(h3s_lanes h3s-8bit)"
 [ -n "$h3s_default" ] && [ "$h3s_default" = "$(h3s_lanes h3s-8bit)" ] || cell h3s-int8 "$H3" "${H3_ARGS[@]}" --lane int8
