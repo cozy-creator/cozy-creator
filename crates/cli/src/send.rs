@@ -171,7 +171,7 @@ impl<'a> Sender<'a> {
             .map_err(|e| Error::internal("stage", e.to_string()))??;
         if !staged.left.is_empty() {
             let warning = format!("left out of the code it sends: {}", staged.left.join(", "));
-            progress.line.println(format!("warning: {}", crate::output::shown(&warning)));
+            progress.line.println(format!("warning: {warning}"));
         }
         let code = staged.code();
         let length = staged.document.len() as u64;
@@ -221,12 +221,7 @@ impl<'a> Sender<'a> {
     ) -> Result<(), Error> {
         progress.line.phase(&format!(
             "Sending {}",
-            crate::output::shown(
-                &path
-                    .file_name()
-                    .map(|name| name.to_string_lossy())
-                    .unwrap_or_default()
-            )
+            path.file_name().map(|name| name.to_string_lossy()).unwrap_or_default()
         ));
         for _ in 0..3 {
             let Some(held) = self

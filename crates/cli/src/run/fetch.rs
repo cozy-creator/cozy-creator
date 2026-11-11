@@ -61,11 +61,7 @@ impl Downloading {
     ) -> Result<u64, Error> {
         self.line.phase(&format!(
             "Downloading {}",
-            crate::output::shown(
-                &to.file_name()
-                    .map(|name| name.to_string_lossy())
-                    .unwrap_or_default()
-            )
+            to.file_name().map(|name| name.to_string_lossy()).unwrap_or_default()
         ));
         // No body chunks to display for an empty file; keep the original read wrapper.
         if expected == 0 {
