@@ -13,7 +13,7 @@ import time
 from urllib.parse import quote, urlencode
 import uuid
 
-from private_execution import observed_run
+from private_execution import contains, observed_run
 
 
 def digest(path):
@@ -71,7 +71,7 @@ def exercise(args, home, receipt):
     host, port = holder['address'].rsplit(':', 1)
     assert host in ('127.0.0.1', '[::1]'), 'the fixture needs the default loopback controller'
 
-    def api(method, path, body=None, headers=None):
+    def api(method, path, body=None, headers=None, expected=None):
         fields = {'Authorization': 'Bearer ' + holder['token'], **(headers or {})}
         if isinstance(body, dict):
             body = json.dumps(body).encode('utf-8')
@@ -83,7 +83,8 @@ def exercise(args, home, receipt):
             connection.request(method, path, body=body, headers=fields)
             reply = connection.getresponse()
             receipt['last_http_status'] = reply.status
-            assert 200 <= reply.status < 300, 'the controller refused the range fixture request'
+            accepted = reply.status == expected if expected is not None else 200 <= reply.status < 300
+            assert accepted, 'the controller answered with an unexpected status for the range fixture'
             return json.loads(reply.read())
         finally:
             connection.close()
@@ -107,8 +108,17 @@ def exercise(args, home, receipt):
 
     receipt['stage'] = 'prepare_ranges'
     script = view / 'need.py'
-    with script.open('xb') as target, (Path(__file__).parent / 'project/tool.py').open('rb') as original:
-        shutil.copyfileobj(original, target)
+    fixture = Path(__file__).parent / 'project'
+    source = (fixture / 'tool.py').read_text(encoding='utf-8')
+    decorator = '@app.tool(label="Keep a video")'
+    assert source.count(decorator) == 1, 'the range tool fixture changed its declaration'
+    source = source.replace(decorator, '@app.tool(label="Keep a video", ui="ui/private.js")')
+    marker = f'XS160_TOOL_DISCOVERY_{uuid.uuid4().hex}'
+    with script.open('x', encoding='utf-8') as target:
+        target.write(source + f'\n# {marker}\n')
+    module = view / 'ui/private.js'
+    module.parent.mkdir()
+    shutil.copyfile(fixture / 'boxed/e2e_boxed/ui/shade.js', module)
     tool = str(script) + '/need'
     private_cache = view / '.vault-calcifer/clips'
     global_cache = home / 'cache/clips'
@@ -143,9 +153,22 @@ def exercise(args, home, receipt):
     receipt['stage'] = 'canvas_range'
     before_private = clips(private_cache)
     asset = 'vault_range_render'
-    made = api('POST', route + '/assets', {'tool': tool, 'name': asset, 'exact': True,
+    made = api('POST', route + '/assets', {'tool': tool, 'name': asset, 'kind': 'video', 'exact': True,
                                          'fields': {'video': '<vault_range_source:0-24>'}})
     assert made['name'] == asset, 'the render fixture asset was not created'
+    receipt['stage'] = 'cold_private_tool_discovery'
+    tools = api('GET', '/v1/tools?' + urlencode({'project': project_id}))['tools']
+    assert any(row['id'] == tool and row.get('local') and row.get('ui') for row in tools), 'cold discovery did not return the private tool and its declared UI'
+    copies = view / '.vault-calcifer/code'
+    shared_code = home / 'calcifer/code'
+    markers = [marker.encode()]
+    assert any(contains(path, markers) for path in copies.rglob('*.py')), 'private discovery did not stage the tool in its vault'
+    assert not any(contains(path, markers) for path in shared_code.rglob('*.py')), 'private discovery copied source into the shared code cache'
+    module_route = '/v1/tools/' + quote(tool, safe='') + '/ui?' + urlencode({'project': project_id})
+    refused = api('GET', module_route, expected=404)
+    assert refused.get('error', {}).get('code') == 'tool_ui_none', 'the private tool module did not select the declared-control fallback'
+    receipt['private_tool_discovery'] = {'staged_in_vault': True, 'shared_code_unchanged': True, 'module_refused': True}
+    receipt['stage'] = 'canvas_range'
     asked = api('POST', route + '/runs', {'names': [asset], 'on': ['local']})
     assert asked['id'] == project_id and asked['added'] == 1, 'the canvas did not queue one render'
 
