@@ -72,7 +72,8 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
   importYaml(folder, `${yamlOf(folder).trimEnd()}\n  spin:\n    tool: ${fixture}/turn\n    frames: ${FRAMES}\n`);
   await until('spin placed', async () => (await api(`${at}/canvas`)).body?.cards?.spin, Boolean);
   await api(`${at}/runs`, { method: 'POST', body: JSON.stringify({ names: ['spin'], on: ['local'] }), headers: { 'Idempotency-Key': `orbit-${Date.now()}` } });
-  const landed = await until('its take', () => asset('spin'), (row) => shown(row)?.metadata || row?.failure, 5 * STEP_MS);
+  // Its file here and measured, as a take landed is once its bytes come.
+  const landed = await until('its take', () => asset('spin'), (row) => (shown(row)?.metadata && !shown(row).absent && shown(row).frames) || row?.failure, 5 * STEP_MS);
   seen.take = { failure: landed.failure, main: shown(landed) };
   check('take_says_orbit', same(shown(landed)?.metadata?.orbit, ORBIT), shown(landed));
   check('take_counts_its_frames', shown(landed)?.frames === FRAMES, shown(landed)?.frames);

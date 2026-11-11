@@ -156,7 +156,8 @@ export function OrbitView({ path, shown, orbit }: { path: string; shown: Shown; 
   const move = (event: PointerEvent<HTMLDivElement>) => {
     const held = drag.current
     if (!held) return
-    const width = event.currentTarget.clientWidth || 1
+    // As seen: the canvas's zoom scales the stage, and the pointer moves in the screen's pixels.
+    const width = event.currentTarget.getBoundingClientRect().width || 1
     const now = performance.now()
     turn(held.from + ((sign * (event.clientX - held.x)) / width) * PER_WIDTH)
     held.v = (((sign * (event.clientX - held.last)) / width) * PER_WIDTH) / Math.max(1, now - held.t)

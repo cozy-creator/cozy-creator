@@ -141,8 +141,8 @@ local probe file keys
 if cell orbit "$here/project/orbit.py/turn" frames:=24; then
   J '.result.video.metadata.orbit == {"degrees": 360, "direction": "cw", "loops": true}' "$OUT/orbit.json" || check "web-orbit: cozy run's result says no orbit: $(jq -c .result "$OUT/orbit.json" | head -c 300)"
   probe=$(find "$HOME/.cozy/tools/ffmpeg" -name 'ffprobe*' 2> /dev/null | head -1) file=$(output orbit mp4)
-  keys=$("$probe" -v error -select_streams v:0 -show_entries frame=key_frame -of csv=p=0 "$file" | sort | uniq -c | tr -s ' ')
-  [ "$keys" = " 24 1" ] || check "web-orbit: not every frame of $file is a keyframe: ${keys:-no frames}"
+  keys=$("$probe" -v error -select_streams v:0 -show_entries frame=key_frame -of csv=p=0 "$file" | cut -d, -f1 | sort | uniq -c | tr -s ' ')
+  [ "$keys" = " 24 1" ] || check "web-orbit: not every frame of $file is a keyframe (count key_frame): ${keys:-no frames}"
 fi
 web_proof orbit "$chrome" "$pw" ''
 }

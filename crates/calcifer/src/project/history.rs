@@ -472,7 +472,7 @@ fn kept(method: &Method, path: &str) -> bool {
         ("POST", ["imports" | "assets" | "approve" | "unpin" | "rename"]) => true,
         ("POST", ["assets", _, "versions"]) => true,
         ("PATCH" | "DELETE", ["assets", _]) => true,
-        ("DELETE", ["assets", _, "versions", _]) => true,
+        ("PATCH" | "DELETE", ["assets", _, "versions", _]) => true,
         ("PATCH", ["canvas"]) | ("PUT", ["yaml"]) => true,
         _ => false,
     }
