@@ -513,6 +513,92 @@ echo "hub published: $E2E_RELAY's environment names its callee ${callee:-nothing
 [ "$callee" = _/minimax-h3-tools ] || check "hub published: $E2E_RELAY's environment names its callee ${callee:-nothing}, not _/minimax-h3-tools"
 }
 
+# cr-276: a package calling another package's function whose result holds a `Latents` field, as orbit calls minimax-h3's
+# `generate` for its `ShotResult`: the callee, a path dependency, fills the field with a file it saved. The caller gets that
+# field as a `Latents` holding the callee's bytes, and the `File` beside it as a `File`. Runtime 0.45.0 failed the call in the
+# caller: `child_result_invalid`, "Expected `Latents`, got `File` - at `$.latents`". The caller is locked first, as orbit was:
+# cozy locks only local code whose sources name the `tensorhub` index, and a cozy package it imports must be in its uv.lock
+# (`unlocked_dependency`).
+child_latents() {
+step "a child result holding Latents, in another package's caller (cr-276)"
+[ -n "$LOCAL" ] || return 0
+local dir=$OUT/child-latents
+rm -rf "$dir"
+package_at "$dir/maker" e2e_latents_maker '"cozy-runtime>=0.45", "msgspec>=0.19"' <<'PY'
+import hashlib
+from typing import cast
+
+import msgspec
+
+from cozy_runtime.author import App, Outputs
+from cozy_runtime.media import File, Latents
+
+app = App()
+
+
+class Ask(msgspec.Struct, forbid_unknown_fields=True):
+    text: str
+
+
+class Shot(msgspec.Struct):
+    clip: File
+    latents: Latents | None = None
+    sha256: str = ""
+
+
+@app.entrypoint(accelerator=False)
+def shot(payload: Ask, out: Outputs) -> Shot:
+    data = (payload.text * 64).encode()
+    clip = out.save_bytes(b"clip " + data, media_type="application/octet-stream")
+    kept = out.save_bytes(data, media_type="application/octet-stream")  # a saved file fills a Latents field
+    return Shot(clip=clip, latents=cast(Latents, kept), sha256=f"sha256:{hashlib.sha256(data).hexdigest()}")
+PY
+package_at "$dir/caller" e2e_latents_caller '"cozy-runtime>=0.45", "msgspec>=0.19", "e2e-latents-maker"' \
+  "$(printf '\n[tool.uv.sources]\ne2e-latents-maker = { path = "../maker" }')" <<'PY'
+import hashlib
+from importlib.metadata import version
+
+import e2e_latents_maker
+import msgspec
+
+from cozy_runtime.author import App, call
+
+app = App()
+
+
+class Ask(msgspec.Struct, forbid_unknown_fields=True):
+    text: str
+
+
+class Got(msgspec.Struct):
+    latents: str
+    clip: str
+    same_bytes: bool
+    runtime: str
+
+
+async def relay(payload: Ask) -> Got:
+    shot = await call(e2e_latents_maker.shot, payload=e2e_latents_maker.Ask(text=payload.text))
+    data = b"" if shot.latents is None else shot.latents.read_bytes()
+    return Got(
+        latents=type(shot.latents).__name__,
+        clip=type(shot.clip).__name__,
+        same_bytes=f"sha256:{hashlib.sha256(data).hexdigest()}" == shot.sha256,
+        runtime=version("cozy-runtime"),
+    )
+
+
+app.entrypoint(relay, accelerator=False)
+PY
+(cd "$dir/caller" && uv lock -q) > "$OUT/child-latents-lock.log" 2>&1 \
+  || { check "child latents: uv lock failed: $(tail -c 300 "$OUT/child-latents-lock.log")"; return; }
+cell child-latents "$dir/caller/relay" "text=latents" || return 0
+echo "child latents: $(grep -oE '"(latents|clip|same_bytes|runtime)": *("[^"]*"|true|false)' "$OUT/child-latents.ndjson" | sort -u | paste -sd' ')"
+grep -q '"latents": *"Latents"' "$OUT/child-latents.ndjson" && grep -q '"clip": *"File"' "$OUT/child-latents.ndjson" \
+  && grep -q '"same_bytes": *true' "$OUT/child-latents.ndjson" \
+  || check "child latents: the caller did not get the callee's Latents and File: $(tail -c 300 "$OUT/child-latents.ndjson")"
+}
+
 # cl-820: a signer this machine admits sends TensorD a manifest that names a host path, as only a hand-made one can (no cozy sends
 # one): it is refused, typed, before the run is accepted, so nothing installs from that folder.
 path_manifest() {
