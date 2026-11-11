@@ -19,6 +19,8 @@ export class Preview {
   readonly showing = signal<number | null>(null)
   /** A `<video>` holds a slot. */
   readonly live = signal(false)
+  /** The selected clip has a decoded frame, rather than only a slot or metadata. */
+  readonly ready = signal(false)
   /** What the canvas holds: which file, at which second. */
   readonly kept = signal<{ path: string; at: number } | null>(null)
   readonly failed = signal<string | null>(null)
@@ -57,12 +59,16 @@ export class Preview {
     const video = document.createElement("video")
     video.preload = "auto"
     video.playsInline = true
-    video.onseeked = this.seeked
+    video.onseeked = () => this.seeked(video)
+    video.onloadeddata = () => this.seeked(video)
+    video.onplaying = () => this.seeked(video)
     video.onended = () => {
+      if (video !== this.video) return
       const place = this.place()
       if (this.playing.get() && place) this.after(place)
     }
     video.onerror = () => {
+      if (video !== this.video) return
       // Bytes this browser can't decode, it can't. Bytes that didn't come are Calcifer's to fix by coming back.
       if (video.getAttribute("src") && video.error?.code !== MediaError.MEDIA_ERR_NETWORK) this.failed.set("This browser can't play it")
     }
@@ -86,6 +92,10 @@ export class Preview {
   /** Shows this frame exactly, the playhead there at once. */
   seek(frame: number) {
     if (this.playing.get()) this.pause()
+    this.keep()
+    this.ready.set(false)
+    const turn = ++this.turn
+    this.wanted = null
     const at = Math.max(0, Math.min(Math.max(0, this.layout.frames - 1), frame))
     this.frame.set(at)
     const place = clipAt(this.layout, at)
@@ -93,11 +103,10 @@ export class Preview {
     this.failed.set(null)
     clearTimeout(this.letting)
     if (!place?.clip.path || isStill(place.clip)) return this.letGoSoon()
-    const turn = ++this.turn
+    this.wanted = timeOf(place, at, this.fps)
     void this.load(place.clip.path).then((ready) => {
       if (!ready || turn !== this.turn) return
-      this.wanted = timeOf(place, at, this.fps)
-      if (this.video && !this.video.seeking) this.video.currentTime = this.wanted
+      if (this.video && !this.video.seeking && this.wanted !== null) this.video.currentTime = this.wanted
     })
   }
 
@@ -129,21 +138,26 @@ export class Preview {
 
   /** The clip's frame, then on from there. A picture has only time to count. */
   private enter(place: Placed, frame: number) {
+    // Replacing a video's source clears its drawable frame. Preserve it before
+    // changing clips, including when the incoming clip needs network or a seek.
+    this.keep()
+    this.ready.set(false)
     const turn = ++this.turn
     this.showing.set(place.index)
     this.frame.set(frame)
     cancelAnimationFrame(this.raf)
     if (isStill(place.clip) || !place.clip.path) {
       this.video?.pause()
+      this.wanted = null
       this.began = performance.now() - ((frame - place.at) / this.fps) * 1000
       this.raf = requestAnimationFrame(this.tick)
       return
     }
+    this.wanted = timeOf(place, frame, this.fps)
     void this.load(place.clip.path).then((ready) => {
       const video = this.video
       if (!ready || !video || turn !== this.turn) return
-      this.wanted = null
-      video.currentTime = timeOf(place, frame, this.fps)
+      if (this.wanted !== null) video.currentTime = this.wanted
       video.play().catch(() => {})
       this.raf = requestAnimationFrame(this.tick)
     })
@@ -222,27 +236,42 @@ export class Preview {
     })
   }
 
-  private seeked = () => {
-    const video = this.video
-    if (!video) return
+  private seeked(video: HTMLVideoElement) {
+    if (video !== this.video || !this.holder || video.seeking || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return
+    const place = this.place()
+    if (!place || isStill(place.clip) || place.clip.path !== this.loaded) return
     if (this.wanted !== null && Math.abs(video.currentTime - this.wanted) > 1e-3) {
       video.currentTime = this.wanted
       return
     }
     this.wanted = null
-    if (this.playing.get()) return
+    this.ready.set(true)
     this.keep()
-    this.letGoSoon()
+    if (!this.playing.get()) this.letGoSoon()
   }
 
   private keep() {
     const { video, still, loaded } = this
     const context = still?.getContext("2d")
-    if (!video || !still || !context || !loaded || !video.videoWidth) return
+    const place = this.place()
+    if (!this.ready.get() || !place || isStill(place.clip) || place.clip.path !== loaded || !video || !still || !context || !loaded || !video.videoWidth || video.seeking || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return
     still.width = video.videoWidth
     still.height = video.videoHeight
     context.drawImage(video, 0, 0)
     this.kept.set({ path: loaded, at: video.currentTime })
+  }
+
+  /** A still arrived: retain its real pixels for a later clip's handoff too. */
+  picture(index: number, sha256: string, image: HTMLImageElement) {
+    const place = this.place()
+    const still = this.still
+    const context = still?.getContext("2d")
+    if (!this.holder || !still || !context || place?.index !== index || place.clip.sha256 !== sha256 || !isStill(place.clip) || !image.complete || !image.naturalWidth) return
+    still.width = image.naturalWidth
+    still.height = image.naturalHeight
+    context.drawImage(image, 0, 0)
+    this.kept.set({ path: place.clip.path ?? place.clip.sha256 ?? "", at: 0 })
+    this.ready.set(true)
   }
 
   private letGoSoon() {
@@ -271,6 +300,7 @@ export class Preview {
     this.release?.()
     this.release = null
     this.live.set(false)
+    this.ready.set(false)
     const at = playingHere.indexOf(this.stop)
     if (at >= 0) playingHere.splice(at, 1)
   }
