@@ -154,14 +154,16 @@ def prepare_profile(profile):
     cozy_home = home / ".cozy"
     cozy_home.mkdir(exist_ok=True, mode=0o700)
     holder_path = cozy_home / "calcifer/calcifer.lock.holder"
-    if holder_path.is_file():
+    for record in (holder_path, cozy_home / "machine/var/lib/cozy/machine/agent.lock.holder"):
+        if not record.is_file():
+            continue
         try:
-            prior = json.loads(holder_path.read_text())
+            prior = json.loads(record.read_text())
             os.kill(prior["pid"], 0)
         except (OSError, ValueError, KeyError):
             pass
         else:
-            raise RuntimeError("this test profile already has a running Calcifer")
+            raise RuntimeError("this test profile already has a running process from an earlier test")
     (cozy_home / "config.toml").write_text(f'hub_url = "http://127.0.0.1:9"\n[calcifer]\nport = {port()}\n')
     return home, holder_path
 
@@ -214,6 +216,7 @@ def run_locked(args, profile):
     version = subprocess.check_output([binary, "--version"], text=True).strip()
     if subprocess.run([binary, "vault", "--help"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode:
         raise RuntimeError("this binary does not contain the vault feature")
+    (home / ".cozy/installed").write_text(str(binary) + "\n")
     build_seconds = time.monotonic() - started
 
     driver = profile / "driver"

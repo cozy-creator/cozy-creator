@@ -25,3 +25,12 @@ Use `--securefs /absolute/path/to/securefs` for an explicitly prepared helper. `
 Each run writes its result, binary digest, timings and logs under `target/local-web/results`. Cleanup asks the owned Calcifer to close its views and stop, then stops any TensorD supervisor started for that test profile. A process that cannot drain leaves its profile and diagnostics available for inspection.
 
 This runner exercises the real Rust service and real Chromium vault flow. The cross-platform release jobs remain the qualification for installed Windows and macOS behavior. Other browser cases that execute functions also need an explicitly prepared local worker and matching Runtime environment.
+
+The focused native HTTP and browser-client contract test also creates and removes its own profile. It can share the test build cache.
+
+```sh
+pnpm --dir web/app install --frozen-lockfile
+CARGO_TARGET_DIR="$PWD/target/dev-tests" CARGO_PROFILE_TEST_DEBUG=0 CARGO_INCREMENTAL=1 \
+COZY_PRESENCE_CLIENT_FIXTURE="$PWD/web/app/tests/project-presence.mjs" \
+cargo test --locked -p calcifer --lib project::presence_tests::native_presence_orders_and_client_contract -- --exact --nocapture
+```
