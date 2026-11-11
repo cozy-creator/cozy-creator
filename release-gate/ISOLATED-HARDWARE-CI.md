@@ -34,3 +34,34 @@ Current verification paths
 
 The pre-existing `ci-tfs-*` transfer/performance cells must use the isolated hardware setup when
 run in CI. Their manual performance boundary has not been replaced by a mock or local-only timing.
+
+## Preallocated local GPU fixture
+
+`e2e/hardware/run.py` reuses `e2e/skew/run.sh` with a fresh private HOME, machine root,
+TensorFS store and sanitized environment. The same owned PostgreSQL/MinIO/development Hub
+first runs its existing publication checks, then seeds a tiny package into its own catalog and
+runs CPU and CUDA arithmetic through the selected CLI/Runtime/TensorFS. It requires an explicit
+idle NVIDIA GPU UUID and fails when another compute process is using it. No user service is
+installed or restarted: a second HOME has no login service manager.
+
+```sh
+python3 e2e/hardware/run.py --hub-src /path/to/tensorhub --cozy-bin /path/to/candidate/cozy \
+  --runtime 0.45.0 --tensorfs 0.24.0 --device GPU-... --out /path/to/empty/receipt
+```
+
+Linux prerequisites are Docker, Go, uv, AWS CLI and an NVIDIA driver. The source checkout and
+candidate CLI are explicit; public dependency/compiler caches are reusable build inputs.
+Provider keys, proxy settings, production Hub URLs, device credentials and service environment
+are excluded. The outer receipt records the binary digest, cohort, device, owned process births,
+container cleanup and preservation of existing Cozy processes. The private HOME is removed;
+scrubbed execution records remain in the output directory.
+
+`hardware-isolated.yaml` selects the dedicated `cozy-isolated-gpu` self-hosted runner label.
+Its release tag, Hub commit, Runtime/TensorFS versions and reserved GPU UUID are explicit inputs.
+The runner must be preallocated; the workflow creates no paid allocation. This tiny proof is
+physical local CUDA qualification, not inference quality/performance, provider lifecycle, or the
+full release-gate suite. Existing release/provider gates remain red without their own hardware.
+
+`--mode provider-sandbox` deliberately fails before fixture startup: no provider sandbox account,
+budget or reachable test allocation is currently configured. It has no production-credential
+fallback. A Docker provider control-plane pass or local CUDA pass cannot satisfy that gate.
