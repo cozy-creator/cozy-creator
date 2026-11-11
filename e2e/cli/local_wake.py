@@ -153,9 +153,9 @@ class Proof:
             time.sleep(0.025)
         raise ValueError("the actual worker did not finish its controller rebind")
 
-    def terminal(self, reply: Reply, label: str) -> tuple[str, str, int]:
+    def terminal(self, reply: Reply, label: str) -> tuple[str, str, int, int | None]:
         if reply.status not in (200, 202):
-            return "refused", reply.error(), 0
+            return "refused", reply.error(), 0, None
         run = row(row(reply.body).get("run"))
         number = run.get("number")
         if not isinstance(number, int) or number == 0:
@@ -172,7 +172,7 @@ class Proof:
             raise ValueError("the followed request was not a software update")
         reason = run.get("reason")
         code = text(reason.get("code", "")) if isinstance(reason, dict) else ""
-        return text(run.get("status", "")), code, number
+        return text(run.get("status", "")), code, number, watched.returncode
 
     def episode(self, index: int, key: str, update: Row) -> None:
         path = "/v1/machines/local/authorized-keys/" + quote(key, safe="")
@@ -220,11 +220,11 @@ class Proof:
             statuses = pool.submit(status_calls)
             authorized = self.call("PUT", path, {})
             reply = updating.result()
-            state, code, number = self.terminal(reply, f"episode-{index}-update")
+            state, code, number, watch_exit = self.terminal(reply, f"episode-{index}-update")
             status_results = statuses.result()
         after = self.wait_ready(True)
         installed = hashlib.sha256(self.installed.read_bytes()).hexdigest()
-        completed_here = (state == "completed" and after.get("version") == self.expected_version
+        completed_here = (state == "completed" and watch_exit == 0 and after.get("version") == self.expected_version
                           and after.get("commit") == self.expected_commit and installed == self.candidate_sha
                           and after.get("started_at_ms") != before.get("started_at_ms"))
         starts: list[Json] = [int(match[1]) for match in START.finditer(self.log.read_bytes()[offset:].decode(errors="replace"))]
@@ -235,6 +235,7 @@ class Proof:
         self.exact_failure |= observed
         self.episodes.append({"episode": index, "authorized_http": authorized.status, "update_http": reply.status,
                               "update_run": number, "update_state": state, "update_error": code,
+                              "run_watch_exit": watch_exit,
                               "status_replies": status_results, "start_pids": starts, "root_owner_refusals": errors,
                               "ready_root_owner_pid": owner_pid,
                               "before_started_at_ms": before.get("started_at_ms"), "after_started_at_ms": after.get("started_at_ms"),
@@ -242,11 +243,11 @@ class Proof:
                               "version": after.get("version"), "commit": after.get("commit"),
                               "actual_update_completed_on_candidate": completed_here, "exact_observed_failure": observed})
         if not completed_here or code or authorized.status != 200:
-            self.failures.append({"stage": "update", "episode": index, "state": state, "code": code})
+            self.failures.append({"stage": "update", "episode": index, "state": state, "code": code, "watch_exit": watch_exit})
         if errors or not starts:
             self.failures.append({"stage": "single_start", "episode": index, "starts": len(starts), "owner_refusals": len(errors)})
-        if any(isinstance(value, dict) and value.get("code") == "machine_start_failed" for value in status_results):
-            self.failures.append({"stage": "status_start", "episode": index})
+        if any(not isinstance(value, dict) or value.get("http") != 200 or value.get("code") != "" for value in status_results):
+            self.failures.append({"stage": "status_call", "episode": index})
 
     def run(self) -> int:
         initial = row(self.call("GET", "/v1/machines/local").body)
