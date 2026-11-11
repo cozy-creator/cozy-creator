@@ -748,6 +748,7 @@ fn run_data(path: &str) -> bool {
     let lower = name(path).to_ascii_lowercase();
     let doc = ["readme", "license", "licence", "notice", "copying"];
     !doc.iter().any(|d| lower.starts_with(d))
+        && ![PIPELINE_FILE, MODULAR_INDEX].contains(&lower.as_str())
         && !lower.starts_with('.')
         && ![".md", ".rst", ".pdf", ".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".mp4", ".mp3", ".wav",
             ".py", ".pyc", ".so", ".dll", ".dylib", ".sh", ".js", ".ts", ".html", ".css"]
@@ -764,18 +765,22 @@ fn one_model(set: &source::SourceSet) -> Result<()> {
     let adapters = set.groups.iter().filter(|g| g.tensors.keys().any(|key|
         lora::peft_key(key).is_some_and(|key| key.contains(".lora_A")) || key.contains(".lora_down"))).count();
     let indexes: Vec<_> = set.plain.iter().filter(|p| [PIPELINE_FILE, MODULAR_INDEX].contains(&name(&p.path))).collect();
-    let relationship = if let [index] = indexes.as_slice() {
+    let mut relationship = false;
+    for index in indexes {
         let folders = remote::index_folders(&set.read_plain(index)?)?;
         let base = folder(&index.path);
         let mut seen = BTreeSet::new();
-        set.groups.iter().all(|g| {
+        if set.groups.iter().all(|g| {
             let relative = if base.is_empty() { Some(g.folder.as_str()) } else { g.folder.strip_prefix(&format!("{base}/")) };
             relative.is_some_and(|relative| folders.iter().any(|f| f == relative)) && seen.insert(&g.folder)
-        })
-    } else { false };
+        }) {
+            relationship = true;
+            break;
+        }
+    }
     if adapters > 1 || !relationship {
         return refuse(Code::MISSING_FIELD, format!(
-            "source has multiple model selections: {}. Select one weight file or indexed checkpoint by its path; independent models and LoRAs need separate destination models. Cooperating components require one pipeline index", labels()));
+            "source has multiple model selections: {}. Select one weight file or indexed checkpoint by its path; independent models and LoRAs need separate destination models", labels()));
     }
     Ok(())
 }
@@ -1277,6 +1282,23 @@ mod tests {
     }
 
     #[test]
+    fn model_selection_accepts_alternative_pipeline_indexes_for_the_selected_components() {
+        let pipeline = tempfile::tempdir().unwrap();
+        weights(&pipeline.path().join("transformer/model.safetensors"), &["w"], 7);
+        weights(&pipeline.path().join("vae/model.safetensors"), &["w"], 9);
+        let index = br#"{"_class_name":"FixturePipeline","transformer":["fixture","Transformer"],"vae":["fixture","VAE"]}"#;
+        std::fs::write(pipeline.path().join("model_index.json"), index).unwrap();
+        std::fs::write(pipeline.path().join("modular_model_index.json"), index).unwrap();
+        std::fs::create_dir(pipeline.path().join("FL2VA")).unwrap();
+        std::fs::write(pipeline.path().join("FL2VA/model_index.json"), br#"{"transformer":["fixture","OtherView"]}"#).unwrap();
+        let mut sink = Collected::default();
+        import_local(pipeline.path(), &mut sink).unwrap();
+        assert_eq!(sink.bytes, [7, 9]);
+        let layout = sink.layout.unwrap();
+        assert_eq!(layout.components.iter().map(|component| component.name.as_str()).collect::<Vec<_>>(), ["transformer", "vae"]);
+    }
+
+    #[test]
     fn model_data_keeps_nested_tokenizers_and_unfamiliar_assets_in_header() {
         let files = std::collections::BTreeMap::from([
             ("config.json".into(), br#"{"architectures":["Fixture"],"width":2}"#.to_vec()),
@@ -1294,6 +1316,22 @@ mod tests {
         assert_eq!(model.assets["tokenizer/spiece.spm"], [0,1,2]);
         assert_eq!(model.assets["tokenizer/template.custom"], b"{{input}}");
         assert_eq!(layout.files.len(), 3);
+    }
+
+    #[test]
+    fn latent_upscaler_import_carries_its_learned_normalization() {
+        let table = super::tables().iter().find(|table| table.name == "h3.latent_upscaler").unwrap();
+        let files = table.files.iter().map(|(path, config)| (path.clone(), serde_json::to_vec(config).unwrap())).collect();
+        let layout = super::layout(files, &["upscaler".into()], &Default::default()).unwrap();
+        let root = layout.components.iter().find(|component| component.name == "model").unwrap();
+        let normalization = root.config["latent_normalization"].as_object().unwrap();
+        assert_eq!(normalization["enabled"].as_bool(), Some(true));
+        let mean = normalization["mean"].as_array().unwrap();
+        let std = normalization["std"].as_array().unwrap();
+        assert_eq!(mean.len(), 24);
+        assert_eq!(std.len(), 24);
+        assert!(mean.iter().all(|value| value.as_f64().is_some_and(f64::is_finite)));
+        assert!(std.iter().all(|value| value.as_f64().is_some_and(|value| value.is_finite() && value > 0.0)));
     }
 
     #[test]
