@@ -1313,4 +1313,7 @@ pub struct VaultChanged {
     pub recovery_secret: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preserved_source: Option<PathBuf>,
+    /// The project's runs a lock canceled first, by number.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ended: Vec<u64>,
 }

@@ -14,10 +14,10 @@ struct Encrypt {
     /// Remove the verified plaintext source after conversion. Without this it is preserved and named.
     #[arg(long)]
     remove_plaintext: bool,
-    /// Lock after this many seconds without activity. 0 disables idle expiry.
+    /// Lock after this many seconds without activity; the project's runs and renders are activity. 0 disables idle expiry.
     #[arg(long, default_value_t = 900)]
     idle: u64,
-    /// Maximum unlock duration in seconds, even while active. 0 disables the maximum.
+    /// Maximum unlock duration in seconds, even while active; reaching it ends the project's runs, as a lock does. 0 disables the maximum.
     #[arg(long, default_value_t = 0)]
     max_duration: u64,
 }
@@ -51,7 +51,7 @@ enum Command {
     Encrypt(Encrypt),
     /// Unlock with a passphrase or saved recovery secret.
     Unlock(Unlock),
-    /// Lock the current project and unmount its readable view.
+    /// Lock the current project and unmount its readable view, ending its runs and renders first.
     Lock,
     /// Decrypt the unlocked project in place, returning it to ordinary local storage.
     Decrypt,
@@ -154,6 +154,10 @@ async fn change(ctx: &Context, path: &str, request: VaultAsk, recovery_out: Opti
         output::say(ctx, &format!("recovery secret saved to {}; keep a copy off this computer", path.display()));
     }
     if ctx.json { output::json(&changed); return Ok(ExitCode::SUCCESS); }
+    if !changed.ended.is_empty() {
+        let runs: Vec<String> = changed.ended.iter().map(u64::to_string).collect();
+        output::say(ctx, &format!("ended the project's runs {} before locking", runs.join(", ")));
+    }
     show(ctx, &changed.vault);
     if let Some(source) = changed.preserved_source {
         let protection = if request.action == "encrypt" { "this source is still plaintext" } else { "its original protection is unchanged" };

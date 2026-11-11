@@ -312,7 +312,7 @@ hub_pod() {
   done
   echo "$sku" > "$HB/rent-$p.sku"
   if grep -qE "unexpected argument '--provider'|dev_only" "$HB/rent-$p.out"; then
-    expect "hub rent on $p" FAIL "this cozy refuses --provider with dev = true (it needs cl-844's switch): $(tail -c 200 "$HB/rent-$p.out")"
+    expect "hub rent on $p" FAIL "this cozy refuses --provider with dev = true (it needs cl-844's switch): $(tail -c 200 "$HB/rent-$p.out"); $(command -v "$CLI") $("$CLI" --version 2>&1) read $HOME/.cozy/config.toml, which begins: $(head -c 120 "$HOME/.cozy/config.toml" 2>&1 | tr '\n' '|')"
     return 2
   fi
   m=$(python3 -c 'import json,sys
