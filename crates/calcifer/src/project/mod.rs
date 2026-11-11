@@ -715,6 +715,7 @@ fn identify_with(api: &Api, dir: &FsPath, kept: Option<(String, String)>, kept_c
     if kept.as_ref() != Some(&(id.clone(), name.clone())) || kept_code.as_deref() != Some(&code) {
         keep(&id, &name, &code)?;
     }
+    vault::register_plain_root(&logical, &id)?;
     Ok((id, name, code))
 }
 

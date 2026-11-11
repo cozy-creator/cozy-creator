@@ -56,6 +56,38 @@ pub(super) fn project_id(root: &FsPath) -> Option<String> {
     Keybag::load(&root.join(KEYBAG_FILE)).ok().map(|keybag| keybag.info().project_id)
 }
 
+pub(crate) fn plain_project_id(root: &FsPath) -> Option<String> {
+    if encrypted(root) { return None; }
+    let metadata = fs::symlink_metadata(root.join(super::db::DB)).ok()?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() { return None; }
+    super::kept_identity(root).map(|(id, _)| id)
+}
+
+/// Rehydrate only the existing location index's native-ID-validated retained roots.
+/// A moved, missing or stale copy never prevents ordinary controller startup.
+pub(crate) fn restore_plain_roots(store: &crate::store::Store) {
+    let Ok(projects) = store.known_projects() else { return };
+    for project in projects {
+        if recover_conversion(&project.path).is_err() || encrypted(&project.path)
+            || !project.path.join(api::machine::LOCAL_PRIVATE_MARKER).exists() { continue; }
+        if plain_project_id(&project.path).as_deref() == Some(&project.id) {
+            let _ = register_plain_root(&project.path, &project.id);
+        }
+    }
+}
+
+/// Identity is already committed before a retained plaintext namespace can be granted.
+pub(crate) fn register_plain_root(root: &FsPath, id: &str) -> Result<(), Error> {
+    if encrypted(root) { return Ok(()); }
+    KEY_ROOTS.lock().expect("vault project roots").retain(|_, known| known != root);
+    if !root.join(api::machine::LOCAL_PRIVATE_MARKER).exists() { return Ok(()); }
+    if plain_project_id(root).as_deref() != Some(id) { return Ok(()); }
+    if let Some(scope) = crate::private_io::retained_scope(root, id)? {
+        KEY_ROOTS.lock().expect("vault project roots").insert(id.to_owned(), scope.storage.view_root);
+    }
+    Ok(())
+}
+
 /// Logical registered path of an unlocked mount, including any relative subpath.
 pub(crate) fn logical(path: &FsPath) -> PathBuf {
     for (view, root) in ROOTS.lock().expect("vault roots").iter() {
@@ -368,7 +400,10 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk) -> Result<VaultChan
             let project = api.projects.open(api, root)?;
             let id = project.id.clone();
             drop(project);
-            let created = Keybag::create(&id, new_passphrase(ask)?).map_err(key)?;
+            let generation = crate::private_io::retained_scope(root, &id)?.map(|scope| scope.storage.generation)
+                .map(|generation| generation.checked_add(1).ok_or_else(|| error("vault_key", "project key generations are exhausted")))
+                .transpose()?.unwrap_or(1);
+            let created = Keybag::create_generation(&id, generation, new_passphrase(ask)?).map_err(key)?;
             recovery_secret = Some(created.recovery_secret.expose().to_owned());
             preserved_source = Some(convert(api, root, created.keybag, created.secret, ask)?);
             if ask.remove_plaintext {
@@ -425,19 +460,7 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk) -> Result<VaultChan
             session.keybag = keybag;
             if session.timer.activity() { session.active_ms = super::now_ms(); }
         }
-        "export" => {
-            let source = view(root)?;
-            let output = ask.output.as_ref().filter(|path| path.is_absolute()).ok_or_else(|| Error::new(Kind::Usage, "vault_export_path", "plaintext export needs a new absolute output directory"))?;
-            if output.exists() { return Err(Error::new(Kind::Conflict, "vault_export_exists", "plaintext export destination already exists")); }
-            let (Some(parent), Some(name)) = (output.parent(), output.file_name()) else { return Err(Error::new(Kind::Usage, "vault_export_path", "choose a new export folder outside the project")); };
-            let output = platform::durable::canonical(parent).map_err(provider)?.join(name);
-            let backing_root = platform::durable::canonical(root).map_err(provider)?;
-            if output.starts_with(&source) || output.starts_with(backing_root) {
-                return Err(Error::new(Kind::Usage, "vault_export_path", "plaintext export must be outside the encrypted backing and unlocked view"));
-            }
-            fs::create_dir(&output).map_err(io)?;
-            copy_tree(&source, &output)?;
-        }
+        "decrypt" => decrypt(api, root)?,
         "rotate" => {
             let session = held(root).ok_or_else(|| locked(root))?;
             let created = session.lock().expect("vault session").keybag.new_generation(new_passphrase(ask)?).map_err(key)?;
@@ -455,7 +478,31 @@ impl Drop for Converting { fn drop(&mut self) { CONVERTING.lock().expect("vault 
 /// Only paths created by this conversion are ever recovered or retired. This receipt is durable
 /// before either rename, so losing Calcifer between them cannot lose the registered project path.
 #[derive(serde::Serialize, serde::Deserialize)]
-struct Conversion { root: PathBuf, staged: PathBuf, saved: PathBuf, key_id: String, remove_source: bool }
+struct Conversion {
+    root: PathBuf, staged: PathBuf, saved: PathBuf, key_id: String, remove_source: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    plain: Option<PlainConversion>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PlainConversion {
+    project_id: String,
+    generation: u64,
+    ready: bool,
+    source_id: [u64; 2],
+    staged_id: [u64; 2],
+}
+
+fn directory_id(path: &FsPath) -> Result<[u64; 2], Error> {
+    let metadata = fs::symlink_metadata(path).map_err(io)?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() { return Err(error("vault_recovery", "a conversion directory was replaced")); }
+    let id = platform::durable::FileId::at(path).map_err(provider)?;
+    Ok([id.dev, id.ino])
+}
+
+fn save_conversion(record: &Conversion) -> Result<(), Error> {
+    platform::durable::replace(&receipt_path(&record.root), &serde_json::to_vec(record).map_err(|e| error("vault_recovery", e))?, 0o600).map_err(provider)
+}
 
 fn receipt_path(root: &FsPath) -> PathBuf {
     let name = hex::encode(Sha256::digest(root.to_string_lossy().as_bytes()));
@@ -480,6 +527,7 @@ fn conversion(root: &FsPath) -> Result<Option<Conversion>, Error> {
 pub(super) fn recover_conversion(root: &FsPath) -> Result<(), Error> {
     if CONVERTING.lock().expect("vault conversions").contains(root) { return Ok(()); }
     let Some(record) = conversion(root)? else { return Ok(()); };
+    if record.plain.is_some() { return recover_plain(&record); }
     let target = |path: &FsPath| Keybag::load(&path.join(KEYBAG_FILE)).is_ok_and(|bag| bag.info().key_id == record.key_id);
     if target(root) { return Ok(()); } // Unlock completes the private journal transaction and cleanup.
     if root.exists() && !record.saved.exists() && target(&record.staged) {
@@ -502,21 +550,177 @@ fn finish_conversion(root: &FsPath) -> Result<(), Error> {
     platform::durable::sync_dir(root.parent().ok_or_else(|| error("vault_root", "project has no parent"))?).map_err(provider)
 }
 
+fn exists(path: &FsPath) -> Result<bool, Error> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(why) if why.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(why) => Err(io(why)),
+    }
+}
+
+fn original_plain_source(record: &Conversion, path: &FsPath) -> Result<bool, Error> {
+    let plain = record.plain.as_ref().expect("plaintext conversion");
+    if !exists(path)? { return Ok(false); }
+    if directory_id(path)? != plain.source_id { return Ok(false); }
+    let bag = Keybag::load(&path.join(KEYBAG_FILE)).map_err(key)?.info();
+    Ok(bag.key_id == record.key_id && bag.project_id == plain.project_id && bag.generation == plain.generation)
+}
+
+fn plain_target(record: &Conversion, path: &FsPath) -> Result<bool, Error> {
+    let plain = record.plain.as_ref().expect("plaintext conversion");
+    if !exists(path)? { return Ok(false); }
+    Ok(directory_id(path)? == plain.staged_id && !exists(&path.join(KEYBAG_FILE))?
+        && plain_project_id(path).as_deref() == Some(&plain.project_id))
+}
+
+fn clear_conversion(record: &Conversion) -> Result<(), Error> {
+    fs::remove_file(receipt_path(&record.root)).map_err(io)?;
+    platform::durable::sync_dir(record.root.parent().ok_or_else(|| error("vault_root", "project has no parent"))?).map_err(provider)
+}
+
+/// The original encrypted directory remains authoritative until both renames commit.
+/// A durable copying intent also owns an incomplete stage, so ordinary failures can
+/// immediately remove partial plaintext rather than leaving it until the next launch.
+fn recover_plain(record: &Conversion) -> Result<(), Error> {
+    let plain = record.plain.as_ref().expect("plaintext conversion");
+    if plain.generation == 0 || plain.project_id.is_empty() { return Err(error("vault_recovery", "invalid plaintext conversion identity")); }
+    if original_plain_source(record, &record.root)? && !exists(&record.saved)? {
+        if exists(&record.staged)? {
+            if directory_id(&record.staged)? != plain.staged_id { return Err(error("vault_recovery", "the plaintext stage was replaced; preserve it before retrying")); }
+            fs::remove_dir_all(&record.staged).map_err(|why| error("vault_cleanup_pending", format!("partial plaintext cleanup is pending at {}: {why}; retry decrypt", record.staged.display())))?;
+        }
+        return clear_conversion(record);
+    }
+    if plain.ready && !exists(&record.root)? && original_plain_source(record, &record.saved)? && plain_target(record, &record.staged)? {
+        fs::rename(&record.staged, &record.root).map_err(io)?;
+        platform::durable::sync_dir(record.root.parent().expect("validated conversion parent")).map_err(provider)?;
+    }
+    if !plain.ready || !plain_target(record, &record.root)? {
+        return Err(error("vault_recovery", format!("plaintext conversion needs recovery; preserved source: {}; stage: {}", record.saved.display(), record.staged.display())));
+    }
+    finish_plain(record)
+}
+
+fn finish_plain(record: &Conversion) -> Result<(), Error> {
+    let plain = record.plain.as_ref().expect("plaintext conversion");
+    if !plain.ready || !plain_target(record, &record.root)? { return Err(error("vault_recovery", "the plaintext replacement did not verify")); }
+    if exists(&record.saved)? && !original_plain_source(record, &record.saved)? {
+        return Err(error("vault_recovery", "the preserved encrypted source was replaced; cleanup refused"));
+    }
+    let scope = crate::private_io::retained_scope(&record.root, &plain.project_id)?;
+    match scope {
+        Some(scope) if scope.storage.generation == plain.generation => {},
+        Some(_) => return Err(error("vault_recovery", "the plaintext execution generation changed")),
+        None => { crate::private_io::descriptor_for_mounted(&record.root, &plain.project_id, plain.generation)?; },
+    }
+    register_plain_root(&record.root, &plain.project_id)?;
+    if exists(&record.saved)? {
+        fs::remove_dir_all(&record.saved).map_err(|why| error("vault_cleanup_pending", format!("plaintext replacement verified, but old encrypted source cleanup is pending at {}: {why}; retry decrypt", record.saved.display())))?;
+        platform::durable::sync_dir(record.root.parent().expect("validated conversion parent")).map_err(provider)?;
+    }
+    clear_conversion(record)
+}
+
+fn sync_tree(path: &FsPath) -> Result<(), Error> {
+    for entry in fs::read_dir(path).map_err(io)? {
+        let entry = entry.map_err(io)?;
+        let kind = entry.file_type().map_err(io)?;
+        if kind.is_dir() { sync_tree(&entry.path())?; }
+        else if kind.is_file() { fs::OpenOptions::new().read(true).write(true).open(entry.path()).and_then(|file| file.sync_all()).map_err(io)?; }
+        else { return Err(error("vault_file_type", "plaintext staging accepts ordinary files and directories only")); }
+    }
+    platform::durable::sync_dir(path).map_err(provider)
+}
+
+fn decrypt(api: &Arc<Api>, root: &FsPath) -> Result<(), Error> {
+    // This makes a retry after a completed or recovered switch harmless.
+    if !encrypted(root) { return Ok(()); }
+    let published = view(root)?;
+    let session = held(root).ok_or_else(|| locked(root))?;
+    let (secret, info) = {
+        let session = session.lock().expect("vault session");
+        (session.secret.duplicate(), session.keybag.info())
+    };
+    if super::kept_identity(&published).as_ref().is_none_or(|(id, _)| id != &info.project_id) {
+        return Err(error("vault_identity", "the unlocked project does not match its keybag"));
+    }
+    no_nested(api, root)?;
+    let engine = Provider::discover(&api.machines.hubs.home().tools()).map_err(provider)?;
+    if !CONVERTING.lock().expect("vault conversions").insert(root.to_owned()) { return Err(error("vault_busy", "the project is already being converted")); }
+    let converting = Converting(root.to_owned());
+    close(api, root)?;
+    let parent = root.parent().ok_or_else(|| error("vault_root", "cannot decrypt a filesystem root"))?;
+    let suffix = fresh();
+    let staged = parent.join(format!(".cozy-vault-stage-{suffix}"));
+    fs::create_dir(&staged).map_err(io)?;
+    platform::durable::set_mode(&staged, 0o700).map_err(provider)?;
+    let mut record = Conversion {
+        root: root.to_owned(), staged: staged.clone(), saved: parent.join(format!(".cozy-project-source-{suffix}")),
+        key_id: info.key_id, remove_source: true,
+        plain: Some(PlainConversion { project_id: info.project_id.clone(), generation: info.generation, ready: false,
+            source_id: directory_id(root)?, staged_id: directory_id(&staged)? }),
+    };
+    if let Err(why) = save_conversion(&record) {
+        return match fs::remove_dir(&staged) {
+            Ok(()) => Err(why),
+            Err(cleanup) => Err(error("vault_cleanup_pending", format!("{why}; remove the empty owned stage {} before retrying: {cleanup}", staged.display()))),
+        };
+    }
+    let outcome = (|| {
+        let runtime = api.machines.hubs.home().calcifer().join("vaults").join(format!("decrypt-{suffix}"));
+        fs::create_dir_all(&runtime).map_err(io)?;
+        platform::durable::set_mode(&runtime, 0o700).map_err(provider)?;
+        let source_view = project_mount::view_path(&runtime).map_err(provider)?;
+        let mut source = secret.with_bytes(|bytes| engine.mount(&root.join(BACKING), &source_view, bytes,
+            MountOptions { idle_timeout: None, read_only: !cfg!(windows) })).map_err(provider)?;
+        copy_tree_at(source.view(), &staged, FsPath::new(""), true, !cfg!(windows))?;
+        sync_tree(&staged)?;
+        if !plain_target(&record, &staged)? { return Err(error("vault_identity", "the plaintext snapshot did not retain the project identity")); }
+        source.try_unmount().map_err(provider)?;
+        record.plain.as_mut().expect("plaintext conversion").ready = true;
+        save_conversion(&record)?;
+        if !original_plain_source(&record, root)? || exists(&record.saved)? { return Err(error("vault_recovery", "the encrypted source changed before cutover")); }
+        fs::rename(root, &record.saved).map_err(io)?;
+        platform::durable::sync_dir(parent).map_err(provider)?;
+        fs::rename(&staged, root).map_err(io)?;
+        platform::durable::sync_dir(parent).map_err(provider)?;
+        finish_plain(&record)
+    })();
+    drop(converting);
+    if let Err(why) = outcome {
+        if let Err(recovery) = recover_conversion(root) {
+            return Err(error("vault_recovery", format!("{why}; {recovery}; retry decrypt after resolving the preserved source/stage")));
+        }
+        if encrypted(root) { return Err(why); }
+    }
+    crate::events::release_project_readers(&info.project_id);
+    crate::events::project_vault(&info.project_id, "plain");
+    Ok(())
+}
+
+fn no_nested(api: &Api, root: &FsPath) -> Result<(), Error> {
+    let nested = api.calcifer.store().known_projects().map_err(|e| error("vault_journal", e))?
+        .into_iter().any(|project| project.path != root && project.path.starts_with(root) && project.path.exists());
+    if nested || api.projects.now_open().iter().any(|project| project.root != root && project.root.starts_with(root)) {
+        return Err(Error::new(Kind::Conflict, "vault_nested_project", "move nested projects outside this project before converting its storage"));
+    }
+    Ok(())
+}
+
 fn convert(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret, ask: &VaultAsk) -> Result<PathBuf, Error> {
     let source = view(root)?;
     // A child project has its own activity, connections and transition gate. Never move/delete
     // its live storage as an incidental part of converting its parent.
-    let nested = api.calcifer.store().known_projects().map_err(|e| error("vault_journal", e))?
-        .into_iter().any(|project| project.path != root && project.path.starts_with(root) && project.path.exists());
-    if nested || api.projects.now_open().iter().any(|project| {
-        let path = &project.root;
-        path != root && path.starts_with(root)
-    }) { return Err(Error::new(Kind::Conflict, "vault_nested_project", "move nested projects outside this project before converting its storage")); }
+    no_nested(api, root)?;
     let old_secret = held(root).map(|session| session.lock().expect("vault session").secret.duplicate());
     let target_keybag = keybag.clone();
     if !CONVERTING.lock().expect("vault conversions").insert(root.to_owned()) { return Err(error("vault_busy", "the project is already being converted")); }
     let _converting = Converting(root.to_owned());
     forget(api, root)?;
+    if old_secret.is_none() {
+        tokio::runtime::Handle::current().block_on(crate::private_io::close_private_project(api, root))?;
+        crate::runs::files::release_private(root)?;
+    }
     let parent = root.parent().ok_or_else(|| Error::new(Kind::Usage, "vault_root", "cannot convert a filesystem root"))?;
     let suffix = fresh();
     let staged = parent.join(format!(".cozy-vault-stage-{suffix}"));
@@ -551,8 +755,8 @@ fn convert(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret,
     else { copy_tree(&source, target.view())?; }
     target.try_unmount().map_err(provider)?;
     if let Some(mut source) = source_mount.take() { source.try_unmount().map_err(provider)?; }
-    let receipt = Conversion { root: root.to_owned(), staged: staged.clone(), saved: saved.clone(), key_id: target_keybag.info().key_id, remove_source: old_secret.is_some() || ask.remove_plaintext };
-    platform::durable::replace(&receipt_path(root), &serde_json::to_vec(&receipt).map_err(|e| error("vault_recovery", e))?, 0o600).map_err(provider)?;
+    let receipt = Conversion { root: root.to_owned(), staged: staged.clone(), saved: saved.clone(), key_id: target_keybag.info().key_id, remove_source: old_secret.is_some() || ask.remove_plaintext, plain: None };
+    save_conversion(&receipt)?;
     fs::rename(root, &saved).map_err(io)?;
     platform::durable::sync_dir(parent).map_err(provider)?;
     if let Err(e) = fs::rename(&staged, root) { return Err(error("vault_recovery", format!("source preserved at {}; retry opening the project to complete conversion: {e}", saved.display()))); }
@@ -575,11 +779,13 @@ fn copy_tree(source: &FsPath, target: &FsPath) -> Result<(), Error> {
     // Executable environments contain interpreter symlinks. They are reproducible caches,
     // not retained content. Only omit them for a verified managed view, never a plain user folder.
     let logical = logical(source);
-    let managed = Keybag::load(&logical.join(KEYBAG_FILE)).ok().is_some_and(|bag| {
+    let identity = Keybag::load(&logical.join(KEYBAG_FILE)).ok().map(|bag| (bag.info().project_id, Some(bag.info().generation)))
+        .or_else(|| plain_project_id(source).map(|id| (id, None)));
+    let managed = identity.is_some_and(|(id, generation)| {
         fs::read(source.join(api::machine::LOCAL_PRIVATE_MARKER)).ok()
             .and_then(|bytes| serde_json::from_slice::<api::machine::LocalPrivateMarker>(&bytes).ok())
-            .is_some_and(|marker| marker.format_version == 1 && marker.storage.project_id == bag.info().project_id
-                && marker.storage.generation == bag.info().generation
+            .is_some_and(|marker| marker.format_version == 1 && marker.storage.project_id == id
+                && marker.storage.generation > 0 && generation.is_none_or(|generation| marker.storage.generation == generation)
                 && platform::durable::canonical(source).is_ok_and(|path| path == marker.storage.view_root))
     });
     copy_tree_at(source, target, FsPath::new(""), managed, false)
@@ -768,13 +974,16 @@ pub(crate) fn open_payload(context: &str, value: &[u8]) -> Result<Option<Vec<u8>
     let Some(reference) = payload(value)? else { return Ok(Some(value.to_vec())) };
     if reference.context != context { return Err(error("vault_journal", "private journal context mismatch")); }
     let root = current_root(&reference);
-    let Some(session) = held(&root) else { return Ok(None) };
-    let mut session = session.lock().expect("vault session");
-    if session.secret.project_id() != reference.project_id { return Err(error("vault_journal", "private journal project mismatch")); }
-    session.mount.reconcile().map_err(provider)?;
-    if !session.mount.is_mounted().map_err(provider)? { return Err(locked(&root)); }
-    let view = session.mount.view().to_owned();
-    drop(session);
+    let view = if let Some(session) = held(&root) {
+        let mut session = session.lock().expect("vault session");
+        if session.secret.project_id() != reference.project_id { return Err(error("vault_journal", "private journal project mismatch")); }
+        session.mount.reconcile().map_err(provider)?;
+        if !session.mount.is_mounted().map_err(provider)? { return Err(locked(&root)); }
+        session.mount.view().to_owned()
+    } else {
+        if encrypted(&root) || KEY_ROOTS.lock().expect("vault project roots").get(&reference.project_id) != Some(&root) { return Ok(None); }
+        crate::private_io::retained_view(&root, &reference.project_id)?
+    };
     let at = view.join(JOURNAL_DIR).join(&reference.object);
     if fs::symlink_metadata(&at).map_err(io)?.file_type().is_symlink() { return Err(error("vault_journal", "private journal objects cannot be symlinks")); }
     if !platform::durable::canonical(&at).map_err(provider)?.starts_with(platform::durable::canonical(&view).map_err(provider)?) { return Err(error("vault_journal", "private journal object escapes its mounted project")); }
