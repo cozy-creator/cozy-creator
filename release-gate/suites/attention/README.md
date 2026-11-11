@@ -48,8 +48,17 @@ gh workflow run release-gate.yml -R cozy-creator/cozy-creator --ref <open rc> -f
   -f packages_ref=<open rc> -f establish=true -f publish=false
 ```
 
-`calibrate.sh` runs the bench arms' requests (`suites/bench/cells.tsv`, `a-*`) on the table's kernels and at
-`--attention-kernel exact` on each class that has 8-bit models to judge (H3 on the 4090, 5090, H100 and B200; Klein,
-Qwen-Image 2.1 and MOSS on the 4090 and 5090), and writes `calibration.jsonl`, `calibration.md` and both outputs of each pair
-to `calibration/`. The bars (measurement-design §3.4) are set from these numbers and the quality cells' worst-head errors, in
-their own commit to the Runtime's `measurements/rules.toml`, which Paul signs.
+`calibrate.sh` renders the bench arms' requests (`suites/bench/cells.tsv`, `a-*`) at `--attention-kernel exact` (the 16-bit
+reference), on the table's own kernels, and pinned to each 8-bit kernel the class runs, on each class with 8-bit models to
+judge (H3 on the 4090, 5090, H100 and B200; Klein, Qwen-Image 2.1 and MOSS on the 4090 and 5090). Each output goes to
+`signoff/` (PNG, or H.264 at CRF 18) with its distance from the reference in `signoff/signoff.jsonl`. Then, on the six gate
+directories:
+
+```sh
+release-gate/suites/attention/signoff.py ~/cozy_v2/outputs/kernel-tables/signoff <gate dir>...
+```
+
+writes the outputs per class and `manifest.json`: the proposed bars (micro: worst-head error at most 0.01 at 16 bits and
+0.04 at 8; end to end: S_8/E_8, today's choice's worst distance from 16 bits), every kernel's verdict per class, and one
+row per output {class, model, kernel, level, seed, metrics, pass}. Paul signs the bars, which go in their own commit to the
+Runtime's `measurements/rules.toml`.
