@@ -199,11 +199,15 @@ cozy --json model publish "$model" 0.1.0 "$commit" "$commit_b" > "$OUT/model-pub
 model_details "$model" > "$OUT/model-info.json" \
   && J '.releases | any(.version == "0.1.0" and ([.lanes[].lane] | sort) == ["f16", "f32"])' "$OUT/model-info.json" \
   || check "model publish: no 0.1.0 with lanes f16 and f32"
+checkpoint_c=$(model_details "$model" | jq -r --arg a "$commit" '.checkpoints[] | select(.lane == "f16" and .checkpoint != $a) | .checkpoint' | head -1)
+[ -n "$checkpoint_c" ] && cozy --json model publish "$model" 0.2.0 "$checkpoint_c" > "$OUT/cache-version-b.json" \
+  || check "could not publish a distinct cache-scope B checkpoint"
 # Ordinary owners can withdraw and keep using an explicit private version; publication
 # stays gated by live admin permission. All account changes are in this disposable Hub.
 model_details "$model" > "$OUT/model-before-unpublish.json" || check "could not read the model before unpublish"
 "${hub[@]}" admin revoke "$WHO" > "$OUT/owner-admin-revoke.log" 2>&1 || check "could not revoke the fixture publisher's admin role"
 cozy --json model unpublish "$model@0.1.0" > "$OUT/model-unpublish.json" || check "owner model unpublish failed"
+cozy --json model unpublish "$model@0.2.0" > "$OUT/cache-version-b-private.json" || check "owner cache-scope B unpublish failed"
 model_details "$model" > "$OUT/private-model.json" \
   && J --slurpfile before "$OUT/model-before-unpublish.json" \
     '(.checkpoints | map({checkpoint,lane,bytes}) | sort_by(.checkpoint)) == ($before[0].checkpoints | map({checkpoint,lane,bytes}) | sort_by(.checkpoint))' "$OUT/private-model.json" \
@@ -213,11 +217,19 @@ status=$(curl -sS -o "$OUT/private-public-card.json" -w '%{http_code}' "$COZY_HU
 [ "$status" = 404 ] || check "unpublished model remained publicly visible (HTTP $status)"
 watched install-private-version model install "$model@0.1.0" --lane f16 --on "$ON" \
   || check "owner private-version install failed: $(run_get "$OUT" install-private-version '.reason.message')"
+uv run -q --no-project --with cryptography python -I "$here/../capabilities/private_cache.py" \
+  --cozy "$COZY" --out "$OUT/private-cache" --hub-log "$ROOT_OUT/hub.log" --hub-source "$(git -C "$SRC" rev-parse HEAD)" --model "$model" \
+  --a-version 0.1.0 --b-version 0.2.0 --a-checkpoints "$commit,$commit_b" --b-checkpoint "$checkpoint_c" \
+  || check "private cache authority regression failed"
 cozy --json model unpublish "$model@0.1.0" > "$OUT/model-unpublish-again.json" \
   && J '.unpublished == false' "$OUT/model-unpublish-again.json" || check "unpublish was not idempotent"
 "${hub[@]}" admin grant "$WHO" > "$OUT/owner-admin-grant.log" 2>&1 || check "could not restore the isolated fixture publisher"
 cozy --json model publish "$model" 0.1.0 "$commit" "$commit_b" > "$OUT/model-republish.json" || check "identical release republish failed"
 model_details "$model" | J '.releases | any(.version == "0.1.0" and .visibility == "public")' || check "republish did not restore public availability"
+uv run -q --no-project --with cryptography python -I "$here/../capabilities/private_cache.py" --public \
+  --cozy "$COZY" --out "$OUT/private-cache-public" --hub-log "$ROOT_OUT/hub.log" --hub-source "$(git -C "$SRC" rev-parse HEAD)" --model "$model" \
+  --a-version 0.1.0 --b-version 0.2.0 --a-checkpoints "$commit,$commit_b" --b-checkpoint "$checkpoint_c" \
+  || check "public cache and legacy quarantine regression failed"
 cozy --json model delete "$model" -y > "$OUT/model-delete.json" || check "model delete failed"
 ! model_details "$model" > /dev/null 2>&1 || check "model delete: $model still answers"
 

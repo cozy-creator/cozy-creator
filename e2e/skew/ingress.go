@@ -12,6 +12,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"log"
@@ -22,6 +23,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -61,6 +63,19 @@ func main() {
 	}
 	target, _ := url.Parse(hub)
 	proxy := httputil.NewSingleHostReverseProxy(target)
+	trace, err := os.OpenFile(filepath.Join(dir, "requests.jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		log.Fatal(err)
+	}
+	var traceMu sync.Mutex
+	proxy.ModifyResponse = func(response *http.Response) error {
+		traceMu.Lock()
+		defer traceMu.Unlock()
+		// Evidence of scoped origin reads without credentials, bodies or query strings.
+		return json.NewEncoder(trace).Encode(map[string]any{
+			"method": response.Request.Method, "path": response.Request.URL.EscapedPath(), "status": response.StatusCode,
+		})
+	}
 	server := &http.Server{Handler: proxy, TLSConfig: &tls.Config{
 		Certificates: []tls.Certificate{{Certificate: [][]byte{leafDER}, PrivateKey: leafKey}}}}
 	fmt.Println("https://" + listener.Addr().String())

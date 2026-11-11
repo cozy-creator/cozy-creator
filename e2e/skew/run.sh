@@ -103,6 +103,7 @@ cleanup() {
   done
   if [ "$OS" = Linux ]; then docker rm -f "$PG_NAME" >/dev/null 2>&1 || true
   elif [ -n "$PG_BIN" ]; then "$PG_BIN/pg_ctl" -D "$(native "$WORK/pg")" -m immediate stop >/dev/null 2>&1 || true; fi
+  [ ! -f "$WORK/requests.jsonl" ] || cp "$WORK/requests.jsonl" "$OUT/hub-requests.jsonl"
   rm -rf "$WORK"
   return "$status"
 }
@@ -180,6 +181,8 @@ hub=("$WORK/tensorhub$EXE" --config "$(native "$CONFIG")"
   --set storage.backend.access_key_id=$S3KEY --set storage.backend.secret_access_key=$S3SECRET
   --set storage.repo_cas.bucket=repo --set storage.package_source.bucket=source
   --set package_release.scratch_root="$(native "$WORK/release")" ${MIN:+--set clients.cozy_min=$MIN})
+(umask 077; printf '%s\0' "${hub[@]}" > "$WORK/hub-command.argv")
+export COZY_TEST_HUB_COMMAND_FILE=$WORK/hub-command.argv
 "${hub[@]}" migrate > hub-migrate.log 2>&1 || die hub "migrate: $(tail -c 300 hub-migrate.log)"
 # AuthKit refuses a TOTP key that is group or world writable, and Go reads every writable Windows file as 0666: the
 # development key it would write is written here, read-only (0444; readable is a warning only).
@@ -196,6 +199,7 @@ log "Hub $(cat hub.version) on $HUB, machines at $ORIGIN${MIN:+, clients.cozy_mi
 export COZY_TEST_HUB_ORIGIN=$ORIGIN
 require_test_hub "$HUB" || die isolation "the fixture Hub did not verify as local"
 export COZY_TEST_HUB_CA=$WORK/ca.pem
+export COZY_TEST_HUB_REQUEST_LOG=$WORK/requests.jsonl
 
 # The client, as its release installs it; every cozy process reads config.toml's hub_url.
 mkdir -p ~/.cozy && printf 'hub_url = "%s"\n' "$HUB" >> ~/.cozy/config.toml
