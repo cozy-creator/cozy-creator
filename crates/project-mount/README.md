@@ -22,9 +22,10 @@ arguments, environment or a keychain-store operation. The format marker is
 The **logical Automerge format is identical on every OS**, but physical storage
 formats differ. A raw APFS vault copy requires macOS. A raw securefs copy needs a
 compatible securefs provider. Wrong-format opens refuse clearly. Cross-OS
-movement requires decrypting to ordinary storage before transfer, then enabling encryption
-on the destination if wanted; future portable logical backup
-is independent of the local storage provider. Do not claim a common raw
+movement requires decrypting to ordinary storage before transfer. A copied plain project with
+a new identity and retained private history cannot currently be encrypted again; Calcifer refuses
+it before conversion. The original decrypted project can be encrypted again. Future portable
+logical backup is independent of the local storage provider. Do not claim a common raw
 ciphertext fixture opens on every OS.
 
 The native backend uses established disk-image encryption; it does not claim
