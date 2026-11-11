@@ -25,6 +25,8 @@ pub struct Account {
     /// The orgs it is a member of.
     #[serde(deserialize_with = "null_is_empty")]
     pub orgs: Vec<String>,
+    /// A platform admin, whose runs read every model's commits (a Hub before xs-173 says nothing).
+    pub admin: bool,
 }
 
 /// `GET /v1/credit` answered: the caller's credit.
@@ -49,6 +51,9 @@ pub struct ProtectedResource {
     pub resource: String,
     /// The issuers whose tokens it takes.
     pub authorization_servers: Vec<String>,
+    /// The run capability's operations it grants (`tensorhub_model_read` from xs-173's Hub).
+    #[serde(deserialize_with = "null_is_empty")]
+    pub authorization_details_types_supported: Vec<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]

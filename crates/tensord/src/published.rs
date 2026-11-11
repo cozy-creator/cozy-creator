@@ -691,28 +691,34 @@ impl Publisher {
     }
 
     /// The checkpoint `named` is: one by hash as given, a name as the Hub resolves its release and
-    /// lane (or, with no lane, `hardware`); then that checkpoint's header. Journaled per GPUs so a
-    /// warm run, across restarts too, asks the Hub nothing (th-245); an answer older than `FRESH`
-    /// is read again behind it (`refresh`).
+    /// lane (or, with no lane, `hardware`); then that checkpoint's header. Anonymous answers are
+    /// journaled per GPUs; an answer older than `FRESH` is read again behind it (`refresh`).
+    /// A capability's frozen roots are checked at the origin before local bytes are reused.
     pub(crate) fn resolve(&self, service: &Service, source: &hub::Source, named: Named, hardware: &Hardware) -> Result<Named, Failure> {
         if named.tree.is_some() {
             return self.checkpoint(service, source, named);
         }
-        let origin = hub::origin_key(&source.origin).unwrap_or_default();
-        let name = json!(["resolve-v4", origin, named.model, named.release, named.lane, hardware.gpus, hardware.plain]).to_string();
-        let held = service.engine.with_journal(|j| j.named(&name)).map_err(io_failure)?;
-        let answer = match held.and_then(|(answer, read)| Some((serde_json::from_str::<Answer>(&answer).ok()?, read))) {
-            Some((answer, read)) => {
-                if stale(read) {
-                    self.refresh(service, source, &named, name, answer.hardware.clone());
+        let answer = if source.capability.is_some() {
+            // An account's earlier read does not authorize this capability's frozen root set.
+            Answer::ask(&self.machine, source, &named, hardware)?
+        } else {
+            let origin = hub::origin_key(&source.origin).unwrap_or_default();
+            // v4 could hold a private version under a public key. Only anonymous reads fill v5.
+            let name = json!(["resolve-v5", origin, named.model, named.release, named.lane, hardware.gpus, hardware.plain]).to_string();
+            let held = service.engine.with_journal(|j| j.named(&name)).map_err(io_failure)?;
+            match held.and_then(|(answer, read)| Some((serde_json::from_str::<Answer>(&answer).ok()?, read))) {
+                Some((answer, read)) => {
+                    if stale(read) {
+                        self.refresh(service, source, &named, name, answer.hardware.clone());
+                    }
+                    answer
                 }
-                answer
-            }
-            None => {
-                let answer = Answer::ask(&self.machine, source, &named, hardware)?;
-                let kept = serde_json::to_string(&answer).map_err(|e| io_failure(io::Error::other(e)))?;
-                service.engine.with_journal(|j| j.bind_named(&name, &kept)).map_err(io_failure)?;
-                answer
+                None => {
+                    let answer = Answer::ask(&self.machine, source, &named, hardware)?;
+                    let kept = serde_json::to_string(&answer).map_err(|e| io_failure(io::Error::other(e)))?;
+                    service.engine.with_journal(|j| j.bind_named(&name, &kept)).map_err(io_failure)?;
+                    answer
+                }
             }
         };
         Ok(Named { release: answer.release, lane: answer.lane, tree: Some(answer.checkpoint), header: Some(answer.header), reasons: answer.reasons, ..named })
@@ -726,9 +732,13 @@ impl Publisher {
             return;
         }
         let (machine, engine, refreshing) = (self.machine.clone(), service.engine.clone(), self.refreshing.clone());
-        let (source, named, done, unspawned) = (source.clone(), named.clone(), name.clone(), name.clone());
+        let (mut source, named, done, unspawned) = (source.clone(), named.clone(), name.clone(), name.clone());
+        source.capability = None;
         let read = move || -> Result<(), String> {
             let answer = Answer::ask(&machine, &source, &named, &hardware).map_err(|(_, why)| why)?;
+            if answer.release.is_empty() {
+                return Err("it has no release now, and its reader's own answer is not every reader's".into());
+            }
             let kept = serde_json::to_string(&answer).map_err(|e| e.to_string())?;
             engine.with_journal(|j| {
                 let moved = j.named(&name)?.is_none_or(|(held, _)| held != kept);
@@ -754,11 +764,8 @@ impl Publisher {
 
     /// A checkpoint (or a bare header) named by its hash, with what a hash alone does not say: its
     /// length and format; a checkpoint resolves to its header and lane. A hash may name a private
-    /// checkpoint, so what this machine holds of it serves a request only as its account, or a request
-    /// with no sign-in only once the Hub served it to one: the readers journaled with it, across
-    /// restarts like the store. Any other request asks the Hub once, as itself (its capability's
-    /// account, as the Hub named it when it redeemed it); what the Hub serves it is its account's
-    /// here too. The bytes held are reused, and the same account's warm runs ask the Hub nothing.
+    /// checkpoint, so only a prior anonymous read serves an anonymous request from the journal.
+    /// A capability checks its current frozen root authority at the origin before held bytes are reused.
     pub(crate) fn checkpoint(&self, service: &Service, source: &hub::Source, named: Named) -> Result<Named, Failure> {
         #[derive(serde::Deserialize, serde::Serialize)]
         struct Held {
@@ -776,7 +783,7 @@ impl Publisher {
             Some(capability) => capability.account(),
             None => Some(PUBLIC.to_string()),
         };
-        let served = |held: &Held| held.readers.contains(PUBLIC) || reader.as_ref().is_some_and(|r| held.readers.contains(r));
+        let served = |held: &Held| source.capability.is_none() && held.readers.contains(PUBLIC);
         if let Some(held) = held.as_ref().filter(|held| served(held)) {
             return Ok(Named { tree: held.tree.clone(), lane: held.lane.clone(), header: Some(held.header.clone()), ..named });
         }

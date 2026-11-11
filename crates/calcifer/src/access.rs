@@ -1,7 +1,8 @@
 //! What a run's send carries for its Hub: where its machine reads the Hub (the Hub's own word,
 //! kept per Hub: in a dev or CI Hub it is not the origin this computer dials) and, signed in, a run
 //! capability (cl-675) this computer's device key signs offline for the machine's workload key:
-//! the checkpoints its unsettled runs name, their private releases, the models they publish into,
+//! the checkpoints its unsettled runs name, their private releases, unversioned models it may read,
+//! the models they publish into,
 //! and the rental the machine is, for at most a day. The machine redeems it at the
 //! Hub itself (AuthKit's jwt-bearer grant), again while its runs need it, and the Hub decides each
 //! time, so nothing more comes from this computer and its sign-in never leaves it. A run that reads
@@ -65,12 +66,28 @@ pub(crate) struct Facts {
     names: Vec<Origin>,
     /// The CA a machine trusts for the Hub when a private one signs it (a test Hub).
     ca_der: Vec<u8>,
+    /// The orgs the account is a member of, and whether it is a platform admin: whose models' private
+    /// commits it reads.
+    orgs: Vec<String>,
+    admin: bool,
+    /// The Hub grants model reads (`tensorhub_model_read`, xs-173); one before it refuses a
+    /// capability naming them.
+    model_reads: bool,
 }
 
-/// The checkpoints and private releases runs read, and the models they publish into.
+impl Facts {
+    /// Whether the account may hold private checkpoints of model `org/name`.
+    fn reads_privately(&self, model: &str) -> bool {
+        let org = model.split('/').next().unwrap_or_default();
+        self.model_reads && (self.admin || org == self.account || self.orgs.iter().any(|o| o == org))
+    }
+}
+
+/// The checkpoints, private releases and unversioned models runs read, and the models they publish into.
 #[derive(Default)]
 pub(crate) struct Needs {
     reads: BTreeSet<String>,
+    models: BTreeSet<String>,
     writes: BTreeSet<String>,
     named_releases: BTreeSet<(String, String)>,
     release_reads: BTreeSet<ReleaseRead>,
@@ -109,12 +126,16 @@ impl Needs {
             let adapters = choice
                 .adapters
                 .iter()
-                .map(|adapter| (&adapter.model, &adapter.manifest));
-            for (model, manifest) in
-                std::iter::once((&choice.model, &choice.manifest)).chain(adapters)
+                .map(|adapter| (&adapter.model, &adapter.release, &adapter.manifest, &adapter.source));
+            for (model, release, manifest, source) in
+                std::iter::once((&choice.model, &choice.release, &choice.manifest, &choice.source)).chain(adapters)
             {
                 if !model.starts_with("local/") && is_digest(manifest) {
                     self.reads.insert(manifest.clone());
+                } else if release.is_empty() && manifest.is_empty() && source.is_empty()
+                    && let Some(model) = model_name(model)
+                {
+                    self.models.insert(model);
                 }
             }
         }
@@ -124,7 +145,7 @@ impl Needs {
     }
 
     fn is_empty(&self) -> bool {
-        self.reads.is_empty() && self.writes.is_empty() && self.release_reads.is_empty()
+        self.reads.is_empty() && self.models.is_empty() && self.writes.is_empty() && self.release_reads.is_empty()
     }
 
     fn named_release(&mut self, model: &str, release: &str, checkpoint: &str, source: &str) {
@@ -218,7 +239,8 @@ impl Needs {
                 "release": release.release, "checkpoints": release.checkpoints,
             })
         });
-        reads.chain(releases).chain(writes).collect()
+        let models = self.models.iter().map(|model| json!({"type": "tensorhub_model_read", "model": model}));
+        reads.chain(releases).chain(models).chain(writes).collect()
     }
 }
 
@@ -269,6 +291,7 @@ impl Machines {
     ) -> Result<String, Denied> {
         let mut needs = self.needs(origin, machine, Some(run));
         needs.add(spec);
+        needs.models.retain(|model| facts.reads_privately(model));
         let client = self.hubs.client(origin).map_err(refused)?;
         needs.private_releases(&client, origin).await?;
         if needs.is_empty() {
@@ -345,6 +368,15 @@ fn now_s() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+/// A Hub model's one spelling (`org/name`, `_/name` for a first-party one, lowercase) as a
+/// capability names it; none for a `local/` alias or a name the Hub would not read.
+fn model_name(text: &str) -> Option<String> {
+    let text = text.to_ascii_lowercase();
+    let (org, name) = text.split_once('/').unwrap_or(("_", &text));
+    let slug = |s: &str| (1..=64).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b));
+    (org != "local" && (org == "_" || slug(org)) && slug(name)).then(|| format!("{org}/{name}"))
+}
+
 fn is_digest(text: &str) -> bool {
     text.strip_prefix("sha256:").is_some_and(|hex| {
         hex.len() == 64 && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
@@ -383,11 +415,11 @@ impl Hubs {
             .await
             .map_err(hub)?
             .environment;
-        let resource = client
+        let metadata = client
             .get_protected_resource_metadata()
             .await
-            .map_err(hub)?
-            .resource;
+            .map_err(hub)?;
+        let model_reads = metadata.authorization_details_types_supported.iter().any(|t| t == "tensorhub_model_read");
         let names = [
             &environment.tensorhub_origin,
             &environment.tensorhub_public_origin,
@@ -396,7 +428,10 @@ impl Hubs {
             key,
             account: account.name,
             user: account.user_id,
-            resource,
+            resource: metadata.resource,
+            orgs: account.orgs,
+            admin: account.admin,
+            model_reads,
             names: names.iter().filter_map(|o| Origin::parse(o).ok()).collect(),
             reads: environment.tensorhub_origin,
             ca_der: environment

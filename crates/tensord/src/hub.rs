@@ -219,7 +219,7 @@ fn claims(capability: &str) -> Option<Claims> {
     Some(Claims {
         issued: claims["iat"].as_i64()?,
         key: claims["cnf"]["jkt"].as_str()?.to_owned(),
-        grants: serde_json::json!([claims["authorization_details"], claims["rental"]]).to_string(),
+        grants: serde_json::json!([claims["sub"], claims["aud"], claims["authorization_details"], claims["rental"]]).to_string(),
     })
 }
 
@@ -294,11 +294,7 @@ impl Capability {
     /// capability for (never the capability's own claims), waited for while a renewal runs; none
     /// once the Hub refused it or no run renews it.
     pub(crate) fn account(&self) -> Option<String> {
-        let token = block(self.current())?;
-        let payload = token.split('.').nth(1)?;
-        let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload).ok()?;
-        let claims: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-        claims[ACCOUNT_CLAIM].as_str().filter(|account| !account.is_empty()).map(str::to_owned)
+        token_account(&block(self.current())?)
     }
 
     /// It serves run `run` of `engine` too, from before the run is accepted (its preparation reads
@@ -429,6 +425,7 @@ impl Capability {
         match (&held.refused, held.expires_unix_ms) {
             (Some(refused), _) => format!("the Hub refused the run's capability: {refused}: `cozy login <email>` on the computer that sent it, then run it again"),
             (None, 0) => "the run's capability was never redeemed: `cozy login <email>` on the computer that sent it, then run it again".into(),
+            (None, at) if at > now_ms() => "the Hub refused the run's live capability token (401): run it again".into(),
             (None, at) => format!("the run's capability token expired at {}, and no run of its signer here renews it: run it again", utc(at)),
         }
     }
@@ -451,6 +448,14 @@ impl Capability {
 
 /// The claim naming the account a workload token reads as (the Hub's `AccountClaim`).
 const ACCOUNT_CLAIM: &str = "https://tensorhub.com/claims/account";
+
+/// The account workload token `token` reads as, as the Hub named it.
+fn token_account(token: &str) -> Option<String> {
+    let payload = token.split('.').nth(1)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload).ok()?;
+    let claims: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    claims[ACCOUNT_CLAIM].as_str().filter(|account| !account.is_empty()).map(str::to_owned)
+}
 
 /// Each signer's capability at each Hub, for the life of the process.
 static HELD: Mutex<BTreeMap<(String, String), Arc<Capability>>> = Mutex::new(BTreeMap::new());
