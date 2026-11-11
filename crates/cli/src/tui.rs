@@ -127,7 +127,11 @@ pub(crate) async fn show(ctx: &Context, first: Screen) -> Result<ExitCode, Error
             Some(model::live::Operation::Remove(model)) => {
                 let removed = model::live::remove(ctx, &model).await?;
                 status = ExitCode::SUCCESS;
-                format!("Local removal: {} cache bytes removed, {} retained (in use/shared)", output::bytes(removed.cache_bytes_removed), output::bytes(removed.retained_bytes))
+                if removed.removed {
+                    format!("Local removal: {} cache bytes removed, {} retained (in use/shared)", output::bytes(removed.cache_bytes_removed), output::bytes(removed.retained_bytes))
+                } else {
+                    "Local copy already absent".into()
+                }
             }
             None => return Ok(status),
         };

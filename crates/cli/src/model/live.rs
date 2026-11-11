@@ -90,7 +90,8 @@ impl Catalog {
     pub(crate) fn title(&self) -> String {
         if self.page.models.is_empty() {
             let unknown = self.local.as_ref().map_or(0, |rows| rows.iter().filter(|row| !matches!(row.role.as_str(), "model" | "lora")).count());
-            return if self.local_only && unknown > 0 { format!("{} — no matches; {unknown} unclassified local entries", self.label()) } else { format!("{} — no matches", self.label()) };
+            let page = if self.local_only && unknown > 0 { format!("{} — no matches; {unknown} unclassified local entries", self.label()) } else { format!("{} — no matches", self.label()) };
+            return self.notice.as_ref().map_or_else(|| page.clone(), |notice| format!("{page} · {notice}"));
         }
         let page = format!("{} {}–{} of {}", self.label(), self.query.offset + 1, self.query.offset as usize + self.page.models.len(), self.page.total);
         self.notice.as_ref().map_or_else(|| page.clone(), |notice| format!("{page} · {notice}"))
