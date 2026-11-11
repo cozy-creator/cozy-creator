@@ -724,7 +724,11 @@ author: ModelAuthor | null,
 /**
  * What its header says it is. None: it couldn't be read.
  */
-kind?: ModelKind | null,
+kind?: ModelContentKind | null,
+/**
+ * Stable model identity kind; absent when an older source cannot classify it.
+ */
+model_kind?: ModelKind | null,
 /**
  * Its labels, sorted; `nsfw` among them marks one that makes sexual or nude images.
  */
@@ -1385,11 +1389,16 @@ reserved: string | null, };
 /**
  * One commit of a model: its lane, size and the releases naming it.
  */
-export type ModelCommit = { commit: string, lane: string, bytes: number,
+export type ModelCheckpoint = { checkpoint: string, lane: string, bytes: number,
 /**
  * The releases naming it; none while private.
  */
 releases: Array<string>, created_at: string, };
+
+/**
+ * What a checkpoint is.
+ */
+export type ModelContentKind = "lora" | "weights" | "component";
 
 /**
  * `GET /v1/models/{org}/{name}?release=`: a model's releases (one, when named) and, to its org's
@@ -1407,7 +1416,11 @@ weights_family?: string | null,
 /**
  * What its header says it is. None: it couldn't be read.
  */
-kind?: ModelKind | null, created_at: string,
+kind?: ModelContentKind | null,
+/**
+ * Stable model identity kind; absent when an older source cannot classify it.
+ */
+model_kind?: ModelKind | null, created_at: string,
 /**
  * The pinned upstream source.
  */
@@ -1427,7 +1440,7 @@ releases: Array<ModelRelease>,
 /**
  * Newest first; empty to anyone but the model's members.
  */
-commits: Array<ModelCommit>, };
+checkpoints: Array<ModelCheckpoint>, };
 
 /**
  * `cozy/model_download`'s input.
@@ -1468,9 +1481,9 @@ export type ModelEdit = { hub?: string | null, family?: string | null, trigger?:
 export type ModelEdited = { model: ModelDetail, warnings?: Array<string>, };
 
 /**
- * What a checkpoint is.
+ * Whether a named model supplies base weights or an adaptation to another model.
  */
-export type ModelKind = "lora" | "weights" | "component";
+export type ModelKind = "base" | "lora";
 
 /**
  * One lane of a release: its commit, size, header kinds and provenance.
@@ -1479,7 +1492,7 @@ export type ModelLane = { lane: string,
 /**
  * `sha256:<hex>`.
  */
-commit: string, bytes: number,
+checkpoint: string, bytes: number,
 /**
  * Its header's schemes and dtypes.
  */
@@ -1511,7 +1524,7 @@ package?: string, };
 /**
  * One release of a model: its version, each lane's commit, and whether it is a mirror.
  */
-export type ModelRelease = { version: string, created_at: string,
+export type ModelRelease = { version: string, visibility: ReleaseVisibility, created_at: string,
 /**
  * Published while its org was parked: not its author's.
  */
@@ -1529,7 +1542,7 @@ export type ModelReleaseAsk = { hub?: string | null, version: string,
 /**
  * `sha256:<hex>`.
  */
-commits: Array<string>, };
+checkpoints: Array<string>, };
 
 /**
  * The release a publish made: its version and each lane's commit.
@@ -1558,6 +1571,15 @@ total: number,
  * How many matched beyond those shown.
  */
 older: number, };
+
+/**
+ * A retained model release whose public availability was withdrawn.
+ */
+export type ModelUnpublished = { model: string, release: string,
+/**
+ * Whether this call changed the release's visibility.
+ */
+unpublished: boolean, };
 
 /**
  * `cozy/model_upload`'s input. Its trigger and strength are set at the Hub once it completes (`result.after.display`).
@@ -2135,7 +2157,7 @@ next?: Array<string>, };
 /**
  * A Hub commit recorded as a commit of another model when the caller may read its whole closure: nothing uploaded.
  */
-export type RecordedCommit = { commit: string, from: string, lane: string, model: string, display?: Displayed | null,
+export type RecordedCheckpoint = { checkpoint: string, from: string, lane: string, model: string, display?: Displayed | null,
 /**
  * Commands to run next.
  */
@@ -2145,6 +2167,11 @@ next?: Array<string>, warnings?: Array<string>, };
  * Why a run binds and runs the release it does.
  */
 export type ReleaseFrom = "asked" | "installed" | "latest" | "local";
+
+/**
+ * Whether a version is available publicly or only to authorized model owners.
+ */
+export type ReleaseVisibility = "public" | "private";
 
 /**
  * Remove all locally cached releases and lanes of one model repository.
