@@ -180,6 +180,7 @@ jobs:
       runners: ${{ steps.select.outputs.runners }}
       release_runners: ${{ steps.select.outputs.release_runners }}
       native_runners: ${{ steps.select.outputs.native_runners }}
+      native_build: ${{ steps.select.outputs.native_build }}
       repo: ${{ steps.what.outputs.repo }}
       ref: ${{ steps.pin.outputs.ref }}
       creator: ${{ steps.pin.outputs.creator }}
@@ -290,9 +291,10 @@ jobs:
           echo "release_runners=$release_runners" >> "$GITHUB_OUTPUT"
           # One native cozy per OS across CLI partitions, signed-in release tests, and explicit Apple-GPU inference.
           echo "native_runners=$(echo "$s" | jq -c --argjson cli "$runners" --argjson release "$release_runners" '
-            [if (.suites | index("cli")) then $cli[] else empty end,
+            [if (.suites | any(. == "cli" or . == "supervisor")) then $cli[] else empty end,
              if (.suites | index("cli-release")) then $release[] | select(. != "ubuntu-24.04") else empty end,
              if (.suites | index("mps")) then "macos-15" else empty end] | unique')" >> "$GITHUB_OUTPUT"
+          echo "native_build=$(echo "$s" | jq 'any(.suites[]; . == "cli" or . == "cli-release" or . == "mps")')" >> "$GITHUB_OUTPUT"
           { echo "### e2e selection: $REPO ${REF:0:12}"; echo '```'; echo "$s" | jq .; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           echo "$s" | jq .
       # skew's clients: `previous` is the previous minor's latest patch, from this cozy's own version.
@@ -448,6 +450,7 @@ jobs:
           retention-days: 14
 
   # Each native runner builds or reuses cozy once for CLI partitions, cli-release, and MPS.
+  # An explicit supervisor-only selection runs the process checks without building a candidate.
   candidate-os:
     name: candidate ${{ matrix.runner }}
     needs: affected
@@ -468,7 +471,7 @@ jobs:
           ref: ${{ needs.affected.outputs.creator }}
           path: .creator
       - id: native
-        if: inputs.tensord == '' && inputs.publish_run == ''
+        if: needs.affected.outputs.native_build == 'true' && inputs.tensord == '' && inputs.publish_run == ''
         uses: ./.creator/e2e/candidates
         with:
           packages_ref: ${{ needs.affected.outputs.packages }}
@@ -476,21 +479,26 @@ jobs:
           ref: ${{ needs.affected.outputs.ref }}
           stack_ref: ${{ needs.affected.outputs.stack }}
           runtime_ref: ${{ needs.affected.outputs.runtime }}
-      - if: runner.os == 'Windows' && (inputs.tensord != '' || inputs.publish_run != '')
+      - if: runner.os == 'Windows' && (needs.affected.outputs.native_build != 'true' || inputs.tensord != '' || inputs.publish_run != '')
         uses: actions/checkout@v5
         with:
           repository: cozy-creator/cozy-creator
           ref: ${{ needs.affected.outputs.repo == 'cozy-creator' && needs.affected.outputs.ref || needs.affected.outputs.stack }}
           path: .native-tests
+      - if: runner.os == 'Windows' && (needs.affected.outputs.native_build != 'true' || inputs.tensord != '' || inputs.publish_run != '')
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .native-tests -> target
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: Windows supervisor process tests
         if: runner.os == 'Windows'
         env:
-          CREATOR: ${{ (inputs.tensord != '' || inputs.publish_run != '') && '.native-tests' || (needs.affected.outputs.repo == 'cozy-creator' && '.src' || '.stack') }}
+          CREATOR: ${{ (needs.affected.outputs.native_build != 'true' || inputs.tensord != '' || inputs.publish_run != '') && '.native-tests' || (needs.affected.outputs.repo == 'cozy-creator' && '.src' || '.stack') }}
         run: |
           cd "$CREATOR"
-          cargo test --locked -p platform --lib ipc::windows::tests -- --nocapture
-          cargo test --locked -p tensord --lib machine::supervise::tests -- --nocapture
-      - if: inputs.tensord == '' && inputs.publish_run == ''
+          cargo test --release --locked -p platform --lib ipc::windows::tests -- --nocapture
+          cargo test --release --locked -p tensord --lib machine::supervise::tests -- --nocapture
+      - if: needs.affected.outputs.native_build == 'true' && inputs.tensord == '' && inputs.publish_run == ''
         env:
           SOURCE: ${{ needs.affected.outputs.repo == 'cozy-creator' && needs.affected.outputs.ref || needs.affected.outputs.stack }}
           ARTIFACT: ${{ steps.native.outputs.cozy_artifact }}
@@ -501,7 +509,7 @@ jobs:
             --arg artifact "$ARTIFACT" --arg version "$version" \
             '{source: $source, os: $os, arch: $arch, artifact: $artifact, version: $version}' \
             > "$RUNNER_TEMP/candidates/native-candidate.json"
-      - if: inputs.tensord == '' && inputs.publish_run == ''
+      - if: needs.affected.outputs.native_build == 'true' && inputs.tensord == '' && inputs.publish_run == ''
         uses: actions/upload-artifact@v4
         with:
           # Outside candidate-*: Linux suites download that set whole.
