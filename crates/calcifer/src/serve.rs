@@ -53,7 +53,7 @@ pub fn main() -> ExitCode {
         warn!("{e}");
     }
     let served = match config::load() {
-        Ok(loaded) => match tokio::runtime::Runtime::new() {
+        Ok(loaded) => match runtime(&loaded) {
             // Stopped, Calcifer exits now: nothing left on the runtime holds the process (or its
             // service) past `down`.
             Ok(runtime) => {
@@ -61,10 +61,7 @@ pub fn main() -> ExitCode {
                 runtime.shutdown_background();
                 served
             }
-            Err(e) => Err(refuse(
-                &loaded.home,
-                Error::new(Kind::Internal, "calcifer_runtime", e.to_string()),
-            )),
+            Err(error) => Err(refuse(&loaded.home, error)),
         },
         Err(error) => match std::env::home_dir() {
             Some(user_home) => Err(refuse(&Home::under(&user_home), error)),
@@ -75,6 +72,18 @@ pub fn main() -> ExitCode {
         Ok(_) => ExitCode::SUCCESS,
         Err(_) => ExitCode::FAILURE,
     }
+}
+
+/// Release the launching shell's directory before any runtime worker starts.
+/// Windows keeps the process working directory locked for its lifetime.
+fn runtime(loaded: &Loaded) -> Result<tokio::runtime::Runtime, Error> {
+    let directory = loaded.home.calcifer();
+    durable::private_dir(&directory)
+        .map_err(|e| Error::new(Kind::Internal, "calcifer_home", e.to_string()))?;
+    std::env::set_current_dir(directory)
+        .map_err(|e| Error::new(Kind::Internal, "calcifer_working_directory", e.to_string()))?;
+    tokio::runtime::Runtime::new()
+        .map_err(|e| Error::new(Kind::Internal, "calcifer_runtime", e.to_string()))
 }
 
 /// Logs why Calcifer cannot start and leaves it in `<home>/calcifer/refused.json` for the CLI.

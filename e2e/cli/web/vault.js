@@ -8,7 +8,49 @@ const { calcifer, signIn, launch, png, MP4, until, drop, openCanvas, importFile,
 const failures = [], seen = {};
 let browser, context, page, peer, scratch;
 let stage = 'starting browser';
+let reportedStage;
+const progress = process.env.COZY_TEST_PROGRESS ? setInterval(() => {
+  if (stage !== reportedStage) { reportedStage = stage; console.error(`[local-vault] ${stage}`); }
+}, 250) : undefined;
+progress?.unref();
 const errors = [];
+const projectReads = new Set();
+const responseStatuses = new WeakMap();
+const readIds = new WeakMap();
+const readStarts = new WeakMap();
+const readEndings = [];
+const retiredReads = [];
+let nextReadId = 0;
+let cleaningUp = false;
+const readMetadata = (request) => {
+  const timing = request.timing();
+  const failure = request.failure();
+  const source = readStarts.get(request);
+  return {
+    request_id: readIds.get(request) ?? null, method: request.method(), path: new URL(request.url()).pathname,
+    resource_type: request.resourceType(), response_status: responseStatuses.get(request) ?? null,
+    age_ms: timing.startTime > 0 ? Math.round(Date.now() - timing.startTime) : null,
+    observed_age_ms: source ? Date.now() - source.at : null,
+    creation_phase: source?.phase ?? null, owner: source?.owner ?? null,
+    owner_closed: source?.page?.isClosed() ?? null, frame_detached: source?.frame?.isDetached() ?? null,
+    response_start_ms: timing.responseStart, response_end_ms: timing.responseEnd,
+    failure: failure ? failure.errorText.match(/^(?:net::)?[A-Z_0-9]+$/)?.[0] ?? 'failed' : null,
+  };
+};
+const retireRead = (request, reason) => {
+  if (!projectReads.delete(request)) return;
+  retiredReads.push({ reason, during_cleanup: cleaningUp, retired_phase: stage, ...readMetadata(request) });
+  if (retiredReads.length > 32) retiredReads.shift();
+  seen.retired_project_reads = retiredReads;
+};
+const goto = async (tab, url) => {
+  const old = [...projectReads].filter((request) => readStarts.get(request)?.page === tab);
+  const response = await tab.goto(url);
+  // Only requests owned by the successfully replaced document are retired.
+  // Requests created by the new document during navigation remain tracked.
+  for (const request of old) retireRead(request, 'document_replaced');
+  return response;
+};
 const check = (name, okay) => { seen[name] = !!okay; if (!okay) failures.push(name); };
 const cli = (...args) => execFileSync(process.env.COZY, ['--json', ...args], { encoding: 'utf8', timeout: 180000 });
 const vault = (directory, ...args) => execFileSync(process.env.COZY, ['--json', 'vault', ...args], { cwd: directory, encoding: 'utf8', timeout: 180000 });
@@ -32,6 +74,11 @@ const drainedLock = (directory) => until('external lock drained', () => JSON.par
 const sanitized = (text) => String(text ?? '').replace(/cozy1-[a-z0-9_-]+/gi, '[REDACTED]').replaceAll('synthetic browser passphrase', '[REDACTED]');
 const newPage = async () => {
   const tab = await context.newPage();
+  tab.on('close', () => {
+    for (const request of projectReads) {
+      if (readStarts.get(request)?.page === tab) retireRead(request, 'owner_page_closed');
+    }
+  });
   if (!process.env.ENGINE || process.env.ENGINE === 'chromium') {
     const version = require(join(dirname(require.resolve(process.env.PLAYWRIGHT)), 'package.json')).version;
     // playwright-core@1.55.0/lib/server/chromium/crPage.js forces every tab visible.
@@ -62,23 +109,49 @@ const newPage = async () => {
   page = await newPage();
   page.setDefaultTimeout(45000);
   const outbound = [], fileWrites = [], secretIdempotency = [];
-  const projectReads = new Set();
+  const isProjectRead = (request) => {
+    const url = new URL(request.url());
+    return (request.method() === 'GET' || request.method() === 'HEAD') &&
+      (url.pathname.startsWith(`/v1/projects/${id}`) || url.searchParams.get('project') === id);
+  };
+  const readEnded = (event, request) => {
+    const tracked = projectReads.delete(request);
+    if (readIds.has(request) || isProjectRead(request)) {
+      readEndings.push({ event, tracked, during_cleanup: cleaningUp, ...readMetadata(request) });
+      if (readEndings.length > 64) readEndings.shift();
+    }
+  };
+  // Lifecycle polling continues while the controls are open. Drain content
+  // requests while retaining every request in the diagnostics.
+  const contentReads = () => [...projectReads].filter((request) => {
+    const path = new URL(request.url()).pathname;
+    return path !== `/v1/projects/${id}/vault` && path !== `/v1/projects/${id}/address`;
+  });
   page.on('pageerror', (error) => errors.push(error.message));
-  context.on('requestfinished', (request) => projectReads.delete(request));
-  context.on('requestfailed', (request) => projectReads.delete(request));
+  context.on('requestfinished', (request) => readEnded('requestfinished', request));
+  context.on('requestfailed', (request) => readEnded('requestfailed', request));
   context.on('request', (request) => {
     const url = new URL(request.url());
-    if ((request.method() === 'GET' || request.method() === 'HEAD') &&
-        (url.pathname.startsWith(`/v1/projects/${id}`) || url.searchParams.get('project') === id)) {
+    if (isProjectRead(request)) {
+      if (!readIds.has(request)) {
+        readIds.set(request, ++nextReadId);
+        let frame, owner;
+        try { frame = request.frame(); owner = frame.page(); } catch { /* retain unknown owners */ }
+        readStarts.set(request, { at: Date.now(), phase: stage, page: owner, frame, owner: owner === page ? 'main' : owner === peer ? 'peer' : 'unknown' });
+      }
       projectReads.add(request);
     }
     if (request.method() === 'PUT' && /^\/v1\/(project-)?files\//.test(url.pathname)) fileWrites.push({ path: url.pathname, project: url.searchParams.get('project') });
     if (request.method() === 'POST' && /\/vault$/.test(url.pathname) && request.headers()['idempotency-key']) secretIdempotency.push(url.pathname);
+    if (request.method() === 'POST' && url.pathname === `/v1/projects/${id}/vault` && JSON.parse(request.postData() || '{}').action === 'encrypt') {
+      (seen.reads_at_encrypt_submit ??= []).push([...projectReads].map(readMetadata));
+    }
     let text = `${request.url()} ${request.postData() || ''}`;
     try { text += ` ${decodeURIComponent(text)}`; } catch { /* a binary or malformed URL is still checked as sent */ }
     if (url.origin !== new URL(calcifer()).origin && /cozy1-|synthetic browser passphrase/.test(text)) outbound.push('secret-bearing external request');
   });
   context.on('response', async (response) => {
+    responseStatuses.set(response.request(), response.status());
     const path = new URL(response.url()).pathname;
     const method = response.request().method();
     if (method === 'GET' && /^\/v1\/projects\/[^/]+\/(address|vault)$/.test(path)) {
@@ -105,7 +178,7 @@ const newPage = async () => {
   // Code redemption finishes after the document loads. Wait for its signed-in
   // shell before opening the compact link in another document.
   await page.locator('.top').waitFor();
-  await page.goto(`${href}/vault`);
+  await goto(page, `${href}/vault`);
   const body = page.locator('.drawer [data-vault-state]');
   await page.locator('.drawer [data-vault-state="plain"]').waitFor();
   // Import returns before first-use ffprobe preparation and background measurement.
@@ -117,7 +190,7 @@ const newPage = async () => {
     return { idle: !state.busy && !state.moving, movie: { width: movie?.width, height: movie?.height, duration_ms: movie?.duration_ms }, picture: { width: picture?.width, height: picture?.height } };
   }, (state) => state.idle && state.movie.width > 0 && state.movie.height > 0 && state.movie.duration_ms > 0 && state.picture.width > 0 && state.picture.height > 0);
   check('plain_seed_media_measurement_finished', true);
-  await until('initial project reads finished before conversion', () => projectReads.size, (count) => count === 0, 45000);
+  await until('initial project content reads finished before conversion', () => contentReads().length, (count) => count === 0, 45000);
   check('initial_project_reads_drained', true);
   await body.locator('input[type=password]').nth(0).fill('synthetic browser passphrase');
   await body.locator('input[type=password]').nth(1).fill('synthetic browser passphrase');
@@ -144,7 +217,7 @@ const newPage = async () => {
     await page.getByText('private_vault_picture', { exact: true }).first().waitFor();
     await settled(page);
   };
-  await page.goto(href);
+  await goto(page, href);
   await readyCanvas();
   check('unlocked_canvas', await page.getByText('private_vault_picture', { exact: true }).count() > 0);
   stage = 'initial private upload';
@@ -164,7 +237,7 @@ const newPage = async () => {
   // Real browser network loss must cover private content without destroying its
   // in-memory pending edit. Hiding and showing the same tab adds no lock authority.
   projectJson(folder, 'POST', '/assets', { tool: '', name: 'private_pending_words', exact: true, fields: { text: 'before interruption' } });
-  await page.goto(`${href}/assets/private_pending_words`);
+  await goto(page, `${href}/assets/private_pending_words`);
   const pendingWords = page.locator('.card.here[data-asset="private_pending_words"] .mention-text[data-field="text"]');
   await pendingWords.waitFor();
   await pendingWords.click();
@@ -183,7 +256,7 @@ const newPage = async () => {
   await until('encrypted edit waits for network', () => page.locator('.top').innerText(), (text) => /1 change/.test(text), 15000);
   // Offline queries pause; the real visibility transition triggers the privacy cover.
   peer = await newPage();
-  await peer.goto('about:blank');
+  await goto(peer, 'about:blank');
   await peer.bringToFront();
   await until('pending private tab hidden', () => page.evaluate(() => document.visibilityState), (state) => state === 'hidden', 10000);
   await page.locator('.gate').waitFor();
@@ -201,7 +274,7 @@ const newPage = async () => {
   await page.evaluate(() => window.__coverWatch.disconnect());
   await peer.close(); peer = null;
   stage = 'private canvas before navigation upload';
-  await page.goto(href);
+  await goto(page, href);
   await readyCanvas();
 
   // Route changes also retire only the drawn canvas, never an unlocked project's
@@ -283,7 +356,7 @@ const newPage = async () => {
   // conceal both pages without relying on the active tab's one-second status poll.
   peer = await newPage();
   peer.on('pageerror', (error) => errors.push(error.message));
-  await peer.goto(href);
+  await goto(peer, href);
   await peer.locator('.react-flow').waitFor();
   requestLock(folder);
   for (const tab of [page, peer]) {
@@ -293,7 +366,7 @@ const newPage = async () => {
   await drainedLock(folder);
   // A fresh document has no remembered address. The compact link must still
   // open the unlock UI without exposing or opening the private project.
-  await peer.goto(href);
+  await goto(peer, href);
   await peer.locator('[data-vault-state="locked"]').waitFor();
   check('locked_compact_link_opens_unlock', await peer.locator('.react-flow').count() === 0 && !(await peer.locator('body').innerText()).includes('private_vault_picture'));
   await peer.close(); peer = null;
@@ -307,7 +380,7 @@ const newPage = async () => {
   if (!process.env.ENGINE || process.env.ENGINE === 'chromium') {
     const lifecycle = await context.newCDPSession(page);
     peer = await newPage();
-    await peer.goto('about:blank');
+    await goto(peer, 'about:blank');
     await peer.bringToFront();
     await until('private tab hidden', () => page.evaluate(() => document.visibilityState), (state) => state === 'hidden', 10000);
     await lifecycle.send('Page.setWebLifecycleState', { state: 'frozen' });
@@ -360,7 +433,7 @@ const newPage = async () => {
   await page.getByRole('button', { name: 'Unlock project', exact: true }).click();
   await page.locator('.react-flow').waitFor();
 
-  await page.goto(`${href}/vault`);
+  await goto(page, `${href}/vault`);
   await page.getByRole('button', { name: 'Lock project', exact: true }).click();
   await until('vault locked', () => page.locator('.drawer [data-vault-state]').getAttribute('data-vault-state'), (state) => state === 'locked', 20000);
   check('locked_canvas_is_removed', await page.locator('.react-flow').count() === 0);
@@ -381,6 +454,131 @@ const newPage = async () => {
   await until('timed unlock', () => page.locator('.drawer [data-vault-state]').getAttribute('data-vault-state'), (state) => state === 'unlocked', 45000);
   await until('absolute lock', () => page.locator('.drawer [data-vault-state]').getAttribute('data-vault-state'), (state) => state === 'locked', 20000);
   check('polling_does_not_extend_unlock', true);
+
+  stage = 'decrypt waits for fresh plain status';
+  const openSection = async (name) => {
+    const summary = page.locator('summary').filter({ hasText: new RegExp(`^${name}$`) });
+    if (!await summary.evaluate((element) => element.parentElement.open)) await summary.click();
+  };
+  await page.getByLabel('Unlock with').selectOption('recovery');
+  await page.getByLabel('Recovery secret', { exact: true }).fill(recovery);
+  await openSection('Lock timing');
+  await page.getByLabel('Lock after inactivity (seconds; 0 disables)').fill('0');
+  await page.getByLabel('Maximum unlock duration (seconds; 0 disables)').fill('0');
+  await page.getByRole('button', { name: 'Unlock project', exact: true }).click();
+  await until('unlocked before decryption', () => page.locator('.drawer [data-vault-state]').getAttribute('data-vault-state'), (state) => state === 'unlocked', 45000);
+  await page.locator('.react-flow').waitFor();
+  const beforeDecrypt = projectJson(folder);
+  const assetDigests = (project) => project.assets.map((asset) => [asset.name, asset.sha256]).sort(([left], [right]) => left.localeCompare(right));
+  const oldCanvas = await page.locator('.react-flow').elementHandle();
+  // Delay transport of real responses only. No status body or production handler is replaced.
+  const statusPath = (url) => url.pathname === `/v1/projects/${id}/vault`;
+  const heldStatuses = [];
+  let holdStatus = true, captureOldStatus = true, oldStatus, statusTransportError;
+  const statusRoute = async (route) => {
+    if (route.request().method() !== 'GET' || !holdStatus) return route.continue();
+    if (captureOldStatus) {
+      captureOldStatus = false;
+      try {
+        const response = await route.fetch();
+        oldStatus = { route, response, state: (await response.json()).state };
+      } catch (error) { statusTransportError = error; }
+    } else heldStatuses.push(route);
+  };
+  const liveStatuses = () => heldStatuses.filter((route) => !route.request().failure());
+  const deliver = async (route, response) => {
+    try {
+      if (response) await route.fulfill({ response });
+      else await route.continue();
+    } catch (error) {
+      if (!route.request().failure()) throw error;
+    }
+  };
+  const resumeStatus = async () => {
+    holdStatus = false;
+    for (const route of heldStatuses.splice(0)) await deliver(route);
+  };
+  const covered = () => page.evaluate(() => Boolean(document.querySelector('.gate')) && !document.querySelector('.react-flow') && !/private_vault_picture|private_after_encryption/.test(document.body.innerText));
+  await page.route(statusPath, statusRoute);
+  await until('actual old unlocked status held', () => {
+    if (statusTransportError) throw statusTransportError;
+    return oldStatus?.state;
+  }, (state) => state === 'unlocked', 45000);
+  await openSection('Decrypt project');
+  await page.getByRole('button', { name: 'Decrypt project', exact: true }).click();
+  await until('same project converted to plain', () => JSON.parse(vault(folder, 'status')), (status) => status.encrypted === false && status.state === 'plain', 45000);
+  await until('plain event covers old private view', covered, Boolean, 45000);
+  check('decrypt_purges_private_canvas_before_status', oldCanvas !== null && !await oldCanvas.evaluate((element) => element.isConnected));
+  check('decrypt_keeps_browser_persistence_private_until_status', await page.evaluate((project) => !['cozy.view:', 'cozy.selection:', 'cozy.more:'].some((prefix) => localStorage.getItem(prefix + project) !== null), id));
+  await deliver(oldStatus.route, oldStatus.response);
+  await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+  check('pre_decrypt_status_cannot_reopen_private_view', await covered());
+  await until('fresh status request held', () => liveStatuses().length, (count) => count > 0, 45000);
+  const failedStatus = liveStatuses()[0];
+  heldStatuses.splice(heldStatuses.indexOf(failedStatus), 1);
+  await failedStatus.abort('failed');
+  await until('fresh status network error observed', () => failedStatus.request().failure(), Boolean, 45000);
+  await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+  check('failed_plain_status_recheck_keeps_view_covered', await covered());
+  await resumeStatus();
+  await until('fresh plain status reveals project', () => page.locator('.drawer [data-vault-state]').getAttribute('data-vault-state'), (state) => state === 'plain', 45000);
+  await page.locator('.react-flow').waitFor();
+  const decrypted = projectJson(folder);
+  check('decrypt_preserves_project_identity_and_assets', decrypted.id === id && JSON.stringify(assetDigests(decrypted)) === JSON.stringify(assetDigests(beforeDecrypt)));
+  await oldCanvas.dispose();
+  await page.unroute(statusPath, statusRoute);
+  await goto(page, href);
+  await readyCanvas();
+  const plainAt = await openCanvas(page);
+  await page.mouse.move(plainAt.x, plainAt.y);
+  await page.mouse.down();
+  await page.mouse.move(plainAt.x + 24, plainAt.y + 16, { steps: 4 });
+  await page.mouse.up();
+  await until('ordinary viewport persists after fresh plain status', () => page.evaluate((project) => localStorage.getItem(`cozy.view:${project}`) !== null, id), Boolean, 45000);
+  check('fresh_plain_status_allows_browser_persistence', true);
+  const plainImported = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === `/v1/projects/${id}/imports` && response.ok());
+  const plainImportAt = await openCanvas(page);
+  await drop(page, [{ name: 'after_decrypt_plain.png', type: 'image/png', bytes: png(97) }], plainImportAt.x, plainImportAt.y);
+  await page.locator('.nm-field').waitFor();
+  await page.keyboard.press('Enter');
+  await plainImported;
+  await until('ordinary edit lands after decryption', () => projectJson(folder).assets.some((asset) => asset.name === 'after_decrypt_plain' && asset.sha256), Boolean, 45000);
+  check('fresh_plain_status_allows_editing', true);
+
+  stage = 'UI encryption after in-place decryption';
+  await goto(page, `${href}/vault`);
+  await page.locator('.drawer [data-vault-state="plain"]').waitFor();
+  await until('ordinary imported media ready for encryption', () => {
+    const state = projectJson(folder);
+    return !state.busy && !state.moving && state.assets.find((asset) => asset.name === 'after_decrypt_plain')?.width > 0;
+  }, Boolean, 45000);
+  await until('ordinary content reads drained before re-encryption', () => contentReads().length, (count) => count === 0, 45000);
+  await page.locator('.drawer input[type=password]').nth(0).fill('synthetic browser passphrase');
+  await page.locator('.drawer input[type=password]').nth(1).fill('synthetic browser passphrase');
+  await page.getByLabel('Remove the verified unencrypted source after conversion').check();
+  await page.getByRole('button', { name: 'Enable encryption', exact: true }).click();
+  await page.locator('[aria-label="Save recovery secret"] pre').waitFor();
+  const replacementRecovery = await page.locator('[aria-label="Save recovery secret"] pre').innerText();
+  check('decrypted_project_can_be_encrypted_again', projectJson(folder).id === id && JSON.parse(vault(folder, 'status')).encrypted === true);
+
+  stage = 'plain recheck observes a later locked generation';
+  holdStatus = true; captureOldStatus = false;
+  await page.route(statusPath, statusRoute);
+  await openSection('Decrypt project');
+  await page.getByRole('button', { name: 'Decrypt project', exact: true }).click();
+  await until('second in-place decryption complete', () => JSON.parse(vault(folder, 'status')), (status) => status.encrypted === false && status.state === 'plain', 45000);
+  await until('second plain transition awaits status', covered, Boolean, 45000);
+  check('decrypt_removes_one_time_recovery_disclosure', await page.locator('[aria-label="Save recovery secret"]').count() === 0 && !(await page.locator('body').innerText()).includes(replacementRecovery));
+  const competing = JSON.parse(execFileSync(process.env.COZY, ['--json', 'vault', '--directory', folder, 'encrypt', '--passphrase-file', '-', '--remove-plaintext', '--idle', '0'], { cwd: scratch, input: 'synthetic browser passphrase\n', encoding: 'utf8', timeout: 180000 }));
+  if (!competing.vault.encrypted || competing.vault.state !== 'unlocked') throw new Error('competing encryption did not finish unlocked');
+  delete competing.recovery_secret;
+  requestLock(folder);
+  await drainedLock(folder);
+  await until('new encrypted generation concealed', covered, Boolean, 45000);
+  await resumeStatus();
+  await until('fresh status confirms current generation locked', () => page.locator('[data-vault-state="locked"]').count(), (count) => count > 0, 45000);
+  check('plain_recheck_respects_current_locked_generation', await covered() && await page.locator('[aria-label="Save recovery secret"]').count() === 0);
+  await page.unroute(statusPath, statusRoute);
   check('no_external_secret_delivery', outbound.length === 0);
   check('secret_actions_skip_idempotency_cache', secretIdempotency.length === 0);
   check('no_page_errors', errors.length === 0);
@@ -390,6 +588,8 @@ const newPage = async () => {
   seen.failure = sanitized(error.message);
   seen.failure_stage = stage;
   seen.page_errors = errors.map(sanitized);
+  seen.pending_project_reads = [...projectReads].map(readMetadata);
+  seen.project_read_endings = readEndings;
   if (page) {
     seen.canvas_at_failure = await page.evaluate(() => ({
       covered: Boolean(document.querySelector('.gate')),
@@ -399,6 +599,8 @@ const newPage = async () => {
   }
   process.exitCode = 1;
 }).finally(async () => {
+  cleaningUp = true;
+  clearInterval(progress);
   // Never take recovery-code screenshots or emit credentials in the fixture's artifacts.
   if (peer) await peer.close().catch(() => {});
   if (page) await page.close().catch(() => {});

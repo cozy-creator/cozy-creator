@@ -115,6 +115,10 @@ webpki-roots = "1"
 windows-sys = "0.61"
 zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 
+# Keep the vault's memory-hard key derivation usable in local development builds.
+[profile.dev.package.argon2]
+opt-level = 3
+
 # No LTO, 16 codegen units: half the build time of fat LTO, whose binary measured the same on startup and runs
 # and 3-5% less CPU on a TensorFS download (cl-669).
 [profile.release]

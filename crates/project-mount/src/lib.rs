@@ -764,7 +764,15 @@ impl Mounted {
             self.provider.unmount(&self.view)?;
         }
         self.input.take();
-        let deadline = Instant::now() + Duration::from_secs(10);
+        #[cfg(target_os = "macos")]
+        let acknowledgement = if self.provider.native {
+            apfs::SHUTDOWN_ACK
+        } else {
+            CONTROL_ACK
+        };
+        #[cfg(not(target_os = "macos"))]
+        let acknowledgement = CONTROL_ACK;
+        let deadline = Instant::now() + acknowledgement;
         while self
             .child
             .try_wait()

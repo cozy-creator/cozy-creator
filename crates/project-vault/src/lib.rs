@@ -264,7 +264,9 @@ impl Keybag {
         Self::create_generation(project_id, 1, passphrase)
     }
 
-    fn create_generation(
+    /// Create fresh material after a plaintext interval while preserving the monotonically
+    /// increasing generation used by retained project-local execution records.
+    pub fn create_generation(
         project_id: &str,
         generation: u64,
         passphrase: SecretString,

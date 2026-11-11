@@ -364,7 +364,7 @@ fn indexed(api: &Api) -> Result<Vec<crate::state::KnownProject>, Error> {
     let failed = |e: crate::store::StoreError| Error::internal("calcifer_store", e.to_string());
     let known = store.known_projects().map_err(failed)?;
     for entry in &known { vault::recover_conversion(&entry.path)?; }
-    let (mut here, gone): (Vec<_>, Vec<_>) = known.into_iter().partition(|entry| Folder::is_project(&entry.path) || vault::encrypted(&entry.path));
+    let (mut here, gone): (Vec<_>, Vec<_>) = known.into_iter().partition(|entry| vault::keeps_index(&entry.path));
     if !gone.is_empty() {
         store.projects_gone(&gone.into_iter().map(|entry| entry.id).collect::<Vec<_>>()).map_err(failed)?;
     }
@@ -715,6 +715,7 @@ fn identify_with(api: &Api, dir: &FsPath, kept: Option<(String, String)>, kept_c
     if kept.as_ref() != Some(&(id.clone(), name.clone())) || kept_code.as_deref() != Some(&code) {
         keep(&id, &name, &code)?;
     }
+    vault::register_plain_root(&logical, &id)?;
     Ok((id, name, code))
 }
 

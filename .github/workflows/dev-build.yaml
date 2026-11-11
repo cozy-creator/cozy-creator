@@ -30,6 +30,10 @@ on:
         description: "A larger runner, named on purpose in place of runner. Never free (linux-x64-16core: $0.042/min, $2.52 a 60-min job) and the budget is about $10/day per org"
         type: string
         default: ''
+      publish_run:
+        description: "project-vault-cli only: take the exact archives from a successful cozy-publish run instead of rebuilding"
+        type: string
+        default: ''
       nonce:
         description: Caller's id, shown in the run name so the caller can find its run
         type: string
@@ -38,6 +42,7 @@ run-name: dev-build ${{ inputs.ref }} ${{ inputs.build }} ${{ inputs.nonce }}
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   # cozy and tensord: one manylinux_2_28 build, dist's, so both run on every pod.
@@ -390,10 +395,12 @@ jobs:
           npm install --global --ignore-scripts --prefix "$RUNNER_TEMP/pnpm-js" "$manager"
           echo "$RUNNER_TEMP/pnpm-js/bin" >> "$GITHUB_PATH"
       - uses: Swatinem/rust-cache@v2
+        if: inputs.publish_run == ''
         with:
           key: project-vault-cli-${{ runner.os }}-${{ runner.arch }}
           cache-on-failure: true
       - name: Install pinned Rust
+        if: inputs.publish_run == ''
         run: rustup toolchain install 1.99.1 --profile minimal
       - name: Install optional Linux encryption driver and real media tools
         if: runner.os == 'Linux'
@@ -415,15 +422,85 @@ jobs:
           if ($installed.ExitCode -notin @(0, 3010)) { throw "WinFsp install failed: $($installed.ExitCode)" }
           choco install ffmpeg --no-progress -y
       - name: Build the actual candidate with its embedded page and provider
+        if: inputs.publish_run == ''
         env:
           CARGO_INCREMENTAL: '0'
         run: bash e2e/candidates/build.sh cozy . "$RUNNER_TEMP/project-vault-candidate"
+      - name: Take the exact published native archive
+        if: inputs.publish_run != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLISH_RUN: ${{ inputs.publish_run }}
+        run: |
+          set -euo pipefail
+          [[ $PUBLISH_RUN =~ ^[0-9]+$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PUBLISH_RUN" > "$RUNNER_TEMP/native-producer.json"
+          case "$RUNNER_OS/$RUNNER_ARCH" in
+            Linux/X64) target=x86_64-unknown-linux-gnu ;;
+            Linux/ARM64) target=aarch64-unknown-linux-gnu ;;
+            macOS/ARM64) target=aarch64-apple-darwin ;;
+            Windows/X64) target=x86_64-pc-windows-msvc ;;
+            Windows/ARM64) target=aarch64-pc-windows-msvc ;;
+            *) echo 'no published archive for this native proof runner' >&2; exit 1 ;;
+          esac
+          export NATIVE_TARGET=$target
+          export NATIVE_SOURCE=$(git rev-parse HEAD)
+          gh run download "$PUBLISH_RUN" -R "$GITHUB_REPOSITORY" -n "artifacts-build-local-$target" -D "$RUNNER_TEMP/native-published"
+          python - <<'PY_PUBLISHED_NATIVE'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import tarfile
+          import zipfile
+          temporary = Path(os.environ['RUNNER_TEMP'])
+          producer = json.loads((temporary / 'native-producer.json').read_text())
+          source = os.environ['NATIVE_SOURCE']
+          repository = os.environ['GITHUB_REPOSITORY']
+          assert producer['repository']['full_name'] == repository
+          assert producer['head_repository']['full_name'] == repository
+          assert producer['event'] == 'workflow_dispatch'
+          assert producer['path'] == '.github/workflows/cozy-publish.yaml'
+          assert producer['status'] == 'completed' and producer['conclusion'] == 'success'
+          assert producer['head_sha'] == source, 'native fixture checkout must match published product source'
+          target = os.environ['NATIVE_TARGET']
+          extension = '.zip' if os.name == 'nt' else '.tar.gz'
+          name = f'cozy-{target}{extension}'
+          archives = list((temporary / 'native-published').rglob(name))
+          assert len(archives) == 1
+          archive = archives[0]
+          checksum = archive.with_name(name + '.sha256').read_text().split()[0]
+          archive_sha = hashlib.file_digest(archive.open('rb'), 'sha256').hexdigest()
+          assert archive_sha == checksum
+          executable = 'cozy.exe' if os.name == 'nt' else 'cozy'
+          if extension == '.zip':
+              with zipfile.ZipFile(archive) as zipped:
+                  members = [member for member in zipped.namelist() if member.rsplit('/', 1)[-1] == executable]
+                  assert len(members) == 1
+                  data = zipped.read(members[0])
+          else:
+              with tarfile.open(archive, 'r:gz') as tar:
+                  members = [member for member in tar.getmembers() if member.isfile() and member.name.rsplit('/', 1)[-1] == executable]
+                  assert len(members) == 1
+                  data = tar.extractfile(members[0]).read()
+          candidate = temporary / 'project-vault-candidate'
+          candidate.mkdir(exist_ok=True)
+          binary = candidate / executable
+          binary.write_bytes(data)
+          binary.chmod(0o700)
+          proof = {'publish_run': int(os.environ['PUBLISH_RUN']), 'source': source,
+                   'archive': name, 'archive_sha256': archive_sha,
+                   'binary_sha256': hashlib.sha256(data).hexdigest()}
+          (candidate / 'published-candidate.json').write_text(json.dumps(proof, indent=2) + '\n')
+          PY_PUBLISHED_NATIVE
       - name: Install the candidate at the ordinary user path
         run: |
           python - <<'PY_INSTALL_VAULT'
           import os
           from pathlib import Path
           import shutil
+          import hashlib
+          import json
           home = Path.home() / '.cozy'
           if home.exists():
               raise SystemExit('the product proof requires a fresh default Cozy home')
@@ -432,6 +509,13 @@ jobs:
           source = Path(os.environ['RUNNER_TEMP']) / 'project-vault-candidate' / binary.name
           shutil.copy2(source, binary)
           binary.chmod(0o700)
+          record = source.parent / 'published-candidate.json'
+          if record.is_file():
+              proof = json.loads(record.read_text())
+              installed = hashlib.file_digest(binary.open('rb'), 'sha256').hexdigest()
+              assert installed == proof['binary_sha256']
+              proof['installed_binary_sha256'] = installed
+              record.write_text(json.dumps(proof, indent=2) + '\n')
           with open(os.environ['GITHUB_PATH'], 'a', encoding='utf-8') as output:
               output.write(str(binary.parent) + '\n')
           PY_INSTALL_VAULT
@@ -451,6 +535,9 @@ jobs:
               path = source / name
               if path.is_file():
                   shutil.copy2(path, target / name)
+          published = Path(os.environ['RUNNER_TEMP']) / 'project-vault-candidate' / 'published-candidate.json'
+          if published.is_file():
+              shutil.copy2(published, target / published.name)
           PY_VAULT_EVIDENCE
       - name: Publish synthetic product proof records
         if: always()

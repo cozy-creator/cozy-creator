@@ -17,7 +17,7 @@ import subprocess
 import sys
 import time
 import traceback
-from typing import IO, TYPE_CHECKING, Literal, NoReturn, NotRequired, TypedDict, Unpack, cast, overload
+from typing import IO, Callable, Literal, NoReturn, Protocol, TypedDict, Unpack, cast, overload
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -26,117 +26,113 @@ import zlib
 FIRST_COLD_SECONDS = 300
 
 
-class Holder(TypedDict):
-    """The default controller's holder record: its loopback address and bearer, checked when read."""
+Arg = str | Path | int
 
+
+class Holder(TypedDict):
     address: str
     token: str
 
 
-class VaultStatus(TypedDict, total=False):
-    """`cozy --json vault status`, and the vault an unlock or rotate answers with."""
-
-    state: str
-    encrypted: bool
-    view: str
-
-
-class VaultAnswer(TypedDict, total=False):
-    """An unlock or rotate answer: its vault, or the vault's own fields."""
-
-    state: str
-    encrypted: bool
-    view: str
-    vault: VaultStatus
+class WindowsVersion(Protocol):
+    build: int
 
 
 class Asset(TypedDict, total=False):
     name: str
-    path: str
-    sha256: str
     field: str
     absent: bool
-    width: int
-    height: int
-    duration_ms: int
+    path: str | None
+    sha256: str | None
+    width: int | None
+    height: int | None
+    duration_ms: int | None
 
 
 class Project(TypedDict):
     id: str
+    path: str
     assets: list[Asset]
-    path: NotRequired[str]
 
 
-class Notice(TypedDict, total=False):
+class Warning(TypedDict, total=False):
     message: str
 
 
-class FullStatus(TypedDict):
-    """`cozy --json --full status`: the fields this reads."""
-
-    project: Project
-    warnings: NotRequired[list[Notice]]
-
-
-class Created(TypedDict):
+class Payload(TypedDict, total=False):
+    vault: "Payload"
+    state: str
+    encrypted: bool
+    path: str
+    view: str | None
     created: bool
     id: str
-
-
-class Held(TypedDict):
+    project: Project
+    recovery_secret: str | None
+    warnings: list[Warning]
+    stopping: bool
     digest: str
     length: int
-
-
-class Imported(TypedDict):
     name: str
     sha256: str
-
-
-class History(TypedDict):
     entries: list[object]
+    error: dict[str, str]
 
 
-class Down(TypedDict, total=False):
-    stopping: bool
-
-
-class VaultOptions(TypedDict, total=False):
-    refusal: bool
+class CommandBase(TypedDict, total=False):
+    cwd: Path | None
     allow_locking: bool
+    full: bool
+    timeout: float | None
 
 
-class MediaDiagnostic(TypedDict, total=False):
-    """The Windows ARM media failure's evidence: paths, sizes and redacted tool output."""
+class CommandOptions(CommandBase, total=False):
+    json_output: bool
+    refusal: bool
 
-    budget_seconds: int
-    helpers: list[dict[str, object]]
-    png_diagnostic_error: str
-    partial_downloads: list[dict[str, object]]
-    media_log: list[str]
-    seconds: float
-    original_source_png: dict[str, object]
-    imported_png_in_unlocked_encrypted_view: dict[str, object]
-    canonical_input_kind: dict[str, bool]
-    canonical_png_default: dict[str, object]
-    canonical_png_forced_single_image: dict[str, object]
-    original_imported_digest_equal: bool
-    image_measured_row: dict[str, object]
+
+class Receipt(TypedDict, total=False):
+    result: str
+    source: str
+    os: str
+    default_home: str
+    installed_binary: str
+    synthetic_only: bool
+    cells: dict[str, bool]
+    version: str
+    first_manual_lock: dict[str, str | int]
+    windows_arm_media: dict[str, object]
+    linux_mount_diagnostic: dict[str, object]
+    error: str
+    media_diagnostic_error: str
+    global_files_scanned: int
+    encrypted_files_scanned: int
+    reencrypted_files_scanned: int
+    reencrypted_global_files_scanned: int
+    decrypt_with_open_reader: str
+    file_write_modes: dict[str, int]
+
+
+class Args(argparse.Namespace):
+    artifacts: Path
+    source: str
 
 
 class LocalOnly(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, request: urllib.request.Request, fp: IO[bytes], code: int, message: str,
-                         headers: HTTPMessage, url: str) -> None:
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: IO[bytes],
+        code: int,
+        msg: str,
+        headers: HTTPMessage,
+        newurl: str,
+    ) -> None:
         # The bearer belongs to this exact controller. A redirect is a failed fixture call.
         return None
 
 
 class Proof:
-    #: The proof project's canonical ID, once `run` creates it.
-    project_id: str
-    #: The Windows ARM image row's path and digest, once its media is measured.
-    winarm_image: dict[str, object]
-
     def __init__(self, artifacts: Path, source: str) -> None:
         if os.environ.get('GITHUB_ACTIONS') != 'true':
             raise RuntimeError('run this default-home proof only in an ephemeral GitHub runner')
@@ -164,7 +160,7 @@ class Proof:
         self.fixture_ffmpeg = 'ffmpeg'
         self.cli_env: dict[str, str] | None = None
         if self.winarm:
-            self.fixture_ffmpeg = cast(str, shutil.which('ffmpeg'))  # cast: None is refused just below
+            self.fixture_ffmpeg = cast(str, shutil.which('ffmpeg'))
             if not self.fixture_ffmpeg:
                 raise RuntimeError('fixture generation requires its existing system ffmpeg')
             self.cli_env = dict(os.environ)
@@ -177,7 +173,7 @@ class Proof:
                 raise RuntimeError('the controller test environment still exposes system media tools')
             if (self.home / 'tools' / 'ffmpeg' / '9.0.2').exists():
                 raise RuntimeError('the fresh media proof must start without a cached pin')
-        self.receipt: dict[str, object] = {'result': 'running', 'source': source, 'os': sys.platform,
+        self.receipt: Receipt = {'result': 'running', 'source': source, 'os': sys.platform,
                         'default_home': str(self.home), 'installed_binary': str(self.binary),
                         'synthetic_only': True, 'cells': {}}
 
@@ -199,22 +195,60 @@ class Proof:
             text = text.replace(value, '[credential redacted]')
         return text.replace(self.canary, '[synthetic canary redacted]')
 
-    if TYPE_CHECKING:
-        @overload
-        def command(self, *args: object, json_output: Literal[False], refusal: Literal[False] = ...,
-                    cwd: Path | None = ..., allow_locking: bool = ..., full: bool = ...,
-                    timeout: float | None = ...) -> str: ...
-        @overload
-        def command(self, *args: object, json_output: bool = ..., refusal: Literal[True], cwd: Path | None = ...,
-                    allow_locking: bool = ..., full: bool = ...,
-                    timeout: float | None = ...) -> subprocess.CompletedProcess[str]: ...
-        @overload
-        def command(self, *args: object, json_output: bool = ..., refusal: bool = ..., cwd: Path | None = ...,
-                    allow_locking: bool = ..., full: bool = ..., timeout: float | None = ...) -> object: ...
-
-    def command(self, *args: object, json_output: bool = True, refusal: bool = False, cwd: Path | None = None,
-                allow_locking: bool = False, full: bool = False, timeout: float | None = None) -> object:
-        """The CLI's answer: its text without --json, the refused process with `refusal`, else its JSON."""
+    @overload
+    def command(
+        self,
+        *args: Arg,
+        json_output: bool = True,
+        refusal: Literal[True],
+        cwd: Path | None = None,
+        allow_locking: bool = False,
+        full: bool = False,
+        timeout: float | None = None,
+    ) -> subprocess.CompletedProcess[str]: ...
+    @overload
+    def command(
+        self,
+        *args: Arg,
+        json_output: Literal[False],
+        refusal: Literal[False] = False,
+        cwd: Path | None = None,
+        allow_locking: bool = False,
+        full: bool = False,
+        timeout: float | None = None,
+    ) -> str: ...
+    @overload
+    def command(
+        self,
+        *args: Arg,
+        json_output: Literal[True] = True,
+        refusal: Literal[False] = False,
+        cwd: Path | None = None,
+        allow_locking: bool = False,
+        full: bool = False,
+        timeout: float | None = None,
+    ) -> Payload: ...
+    @overload
+    def command(
+        self,
+        *args: Arg,
+        json_output: bool = True,
+        refusal: bool = False,
+        cwd: Path | None = None,
+        allow_locking: bool = False,
+        full: bool = False,
+        timeout: float | None = None,
+    ) -> Payload | str | subprocess.CompletedProcess[str]: ...
+    def command(
+        self,
+        *args: Arg,
+        json_output: bool = True,
+        refusal: bool = False,
+        cwd: Path | None = None,
+        allow_locking: bool = False,
+        full: bool = False,
+        timeout: float | None = None,
+    ) -> Payload | str | subprocess.CompletedProcess[str]:
         command = ['cozy'] + (['--json'] if json_output else [])
         if full:
             command += ['--full']
@@ -225,11 +259,11 @@ class Proof:
         self.commands.append(record)
         self.flush()
         print(f'project vault CLI command: {args[0]}', flush=True)
-        # cast: run() captures bytes; the two lines below decode them in place, so callers get text
-        completed = cast('subprocess.CompletedProcess[str]', subprocess.run(command, capture_output=True, cwd=directory,
-                                   env=self.cli_env, timeout=timeout))
-        completed.stdout = cast(bytes, completed.stdout).decode('utf-8')  # cast: still run()'s bytes
-        completed.stderr = cast(bytes, completed.stderr).decode('utf-8', errors='replace')  # cast: still run()'s bytes
+        raw = subprocess.run(command, capture_output=True, cwd=directory,
+                             env=self.cli_env, timeout=timeout)
+        completed = subprocess.CompletedProcess(raw.args, raw.returncode,
+                                                raw.stdout.decode('utf-8'),
+                                                raw.stderr.decode('utf-8', errors='replace'))
         record.update(state='complete', exit_code=completed.returncode,
                       seconds=round(time.monotonic() - began, 3))
         self.flush()
@@ -239,7 +273,7 @@ class Proof:
             return completed
         if allow_locking and completed.returncode:
             try:
-                answer = json.loads(completed.stdout)
+                answer: Payload = json.loads(completed.stdout)
             except ValueError:
                 answer = {}
             if answer.get('error', {}).get('code') == 'project_busy':
@@ -251,7 +285,7 @@ class Proof:
                                                       'completion': 'automatic_close_observed_by_status'}
                 self.flush()
                 self.wait_locked('a manual lock did not finish draining accepted requests')
-                cast(dict[str, object], self.receipt['first_manual_lock'])['final_state'] = 'locked'  # cast: set above
+                self.receipt['first_manual_lock']['final_state'] = 'locked'
                 self.flush()
                 return answer
         if completed.returncode:
@@ -268,7 +302,7 @@ class Proof:
                                + self.redact(detail))
         if not json_output:
             return completed.stdout
-        result = json.loads(completed.stdout)
+        result: Payload = json.loads(completed.stdout)
         if isinstance(result, dict) and result.get('recovery_secret'):
             raise RuntimeError('recovery secret reached stdout despite explicit recovery output')
         if allow_locking:
@@ -280,19 +314,36 @@ class Proof:
             self.flush()
         return result
 
-    if TYPE_CHECKING:
-        @overload
-        def vault(self, *args: object, refusal: Literal[True]) -> subprocess.CompletedProcess[str]: ...
-        @overload
-        def vault(self, *args: object, refusal: Literal[False] = ..., allow_locking: bool = ...) -> object: ...
-
-    def vault(self, *args: object, **options: Unpack[VaultOptions]) -> object:
+    @overload
+    def vault(
+        self,
+        *args: Arg,
+        json_output: bool = True,
+        refusal: Literal[True],
+        **options: Unpack[CommandBase],
+    ) -> subprocess.CompletedProcess[str]: ...
+    @overload
+    def vault(
+        self,
+        *args: Arg,
+        json_output: Literal[False],
+        refusal: Literal[False] = False,
+        **options: Unpack[CommandBase],
+    ) -> str: ...
+    @overload
+    def vault(
+        self,
+        *args: Arg,
+        json_output: Literal[True] = True,
+        refusal: Literal[False] = False,
+        **options: Unpack[CommandBase],
+    ) -> Payload: ...
+    def vault(self, *args: Arg, **options: Unpack[CommandOptions]) -> Payload | str | subprocess.CompletedProcess[str]:
         # Windows needs the invoking process outside the backing directory during a rename.
         return self.command('vault', '--directory', self.project, *args, **options)
 
     def controller(self) -> Holder:
-        # cast: the holder record; its address and token are checked below
-        holder = cast(Holder, json.loads(self.holder_file.read_text(encoding='utf-8')))
+        holder: Holder = json.loads(self.holder_file.read_text(encoding='utf-8'))
         address = holder['address']
         if not re.fullmatch(r'(?:127\.0\.0\.1|\[::1\]):[0-9]{1,5}', address):
             raise RuntimeError('the default controller must have a loopback address')
@@ -303,19 +354,38 @@ class Proof:
             self.secret_values.append(token)
         return holder
 
-    if TYPE_CHECKING:
-        @overload
-        def request(self, method: str, route: str, *, body: dict[str, object] | bytes | None = ...,
-                    headers: dict[str, str] | None = ..., json_output: Literal[False],
-                    holder: Holder | None = ...) -> str: ...
-        @overload
-        def request(self, method: str, route: str, *, body: dict[str, object] | bytes | None = ...,
-                    headers: dict[str, str] | None = ..., json_output: Literal[True] = ...,
-                    holder: Holder | None = ...) -> object: ...
-
-    def request(self, method: str, route: str, *, body: dict[str, object] | bytes | None = None,
-                headers: dict[str, str] | None = None, json_output: bool = True,
-                holder: Holder | None = None) -> object:
+    @overload
+    def request(
+        self,
+        method: str,
+        route: str,
+        *,
+        body: bytes | dict[str, object] | None = None,
+        headers: dict[str, str] | None = None,
+        json_output: Literal[False],
+        holder: Holder | None = None,
+    ) -> str: ...
+    @overload
+    def request(
+        self,
+        method: str,
+        route: str,
+        *,
+        body: bytes | dict[str, object] | None = None,
+        headers: dict[str, str] | None = None,
+        json_output: Literal[True] = True,
+        holder: Holder | None = None,
+    ) -> Payload: ...
+    def request(
+        self,
+        method: str,
+        route: str,
+        *,
+        body: bytes | dict[str, object] | None = None,
+        headers: dict[str, str] | None = None,
+        json_output: bool = True,
+        holder: Holder | None = None,
+    ) -> Payload | str:
         if holder is None:
             holder = self.controller()
         fields = {'Authorization': 'Bearer ' + holder['token'], **(headers or {})}
@@ -343,7 +413,7 @@ class Proof:
         finally:
             record['seconds'] = round(time.monotonic() - began, 3)
             self.flush()
-        return json.loads(data) if json_output else data.decode('utf-8')
+        return cast(Payload, json.loads(data)) if json_output else data.decode('utf-8')
 
     def project_route(self, project_id: str | None = None) -> str:
         project = self.project_id if project_id is None else project_id
@@ -357,14 +427,14 @@ class Proof:
         digest = 'sha256:' + hashlib.sha256(data).hexdigest()
         upload = '/v1/project-files/' + urllib.parse.quote(digest, safe='')
         upload += '?' + urllib.parse.urlencode({'project': self.project_id})
-        held = cast(Held, self.request('PUT', upload, body=data, headers={
+        held = self.request('PUT', upload, body=data, headers={
             'Content-Type': 'application/octet-stream',
             'Content-Range': f'bytes 0-{len(data) - 1}/{len(data)}',
-        }))  # cast: the upload's JSON
+        })
         assert held['digest'] == digest and held['length'] == len(data)
-        imported = cast(Imported, self.request('POST', self.project_route() + '/imports',
+        imported = self.request('POST', self.project_route() + '/imports',
                                 body={'source': digest, 'name': name, 'exact': True},
-                                headers={'Idempotency-Key': secrets.token_hex(16)}))  # cast: the import's JSON
+                                headers={'Idempotency-Key': secrets.token_hex(16)})
         assert imported['name'] == name and imported['sha256'] == digest
 
     def flush(self) -> None:
@@ -376,11 +446,11 @@ class Proof:
         if not sys.platform.startswith('linux'):
             return
         prefix = str(self.home / 'calcifer' / 'vaults') + '/'
-        holders: list[dict[str, object]] = []
+        holders = []
         for process in Path('/proc').iterdir():
             if not process.name.isdecimal():
                 continue
-            paths: list[dict[str, str]] = []
+            paths = []
             for kind in ['cwd', 'root']:
                 try:
                     target = os.readlink(process / kind)
@@ -413,7 +483,7 @@ class Proof:
         self.receipt['linux_mount_diagnostic'] = {'holders': holders, 'mountinfo': mounts}
 
     def cell(self, name: str) -> None:
-        cast(dict[str, bool], self.receipt['cells'])[name] = True  # cast: __init__'s cells
+        self.receipt['cells'][name] = True
         self.flush()
         print(f'project vault CLI: {name}', flush=True)
 
@@ -448,15 +518,15 @@ foreach ($rule in $allowed) {
             raise RuntimeError('recovery output permits group or other-user access')
         self.redact('')
 
-    def status(self, timeout: float | None = None) -> VaultStatus:
-        return cast(VaultStatus, self.command('vault', 'status', cwd=self.project, timeout=timeout))  # cast: its JSON
+    def status(self, timeout: float | None = None) -> Payload:
+        return self.command('vault', 'status', cwd=self.project, timeout=timeout)
 
-    def view(self, changed: object) -> Path:
-        # cast: an unlock or rotate answer, which holds its vault, or a vault status itself
-        value = cast(VaultAnswer, changed).get('vault', cast(VaultStatus, changed))
-        if value.get('state') != 'unlocked' or not value.get('view'):
+    def view(self, changed: Payload) -> Path:
+        value = changed.get('vault', changed)
+        view = value.get('view')
+        if value.get('state') != 'unlocked' or not view:
             raise RuntimeError('successful unlock did not publish a readable view')
-        return Path(value['view'])
+        return Path(view)
 
     def assert_locked(self, old_view: Path | None = None, old_file: Path | None = None) -> None:
         if self.status()['state'] != 'locked':
@@ -499,7 +569,7 @@ foreach ($rule in $allowed) {
         if self.controller() != holder:
             raise RuntimeError('the default controller changed before graceful shutdown')
         print('project vault CLI lifecycle: graceful shutdown of discovered controller', flush=True)
-        if cast(Down, self.request('POST', '/v1/down', body={}, holder=holder)).get('stopping') is not True:  # cast: its JSON
+        if self.request('POST', '/v1/down', body={}, holder=holder).get('stopping') is not True:
             raise RuntimeError('the default controller did not acknowledge graceful shutdown')
         deadline = time.monotonic() + 30
         while self.holder_file.exists():
@@ -527,7 +597,7 @@ foreach ($rule in $allowed) {
                 raise RuntimeError('the real media fixture did not retain its content canary')
         return [image, video, audio]
 
-    def ffmpeg(self, *args: object) -> None:
+    def ffmpeg(self, *args: Arg) -> None:
         subprocess.run([self.fixture_ffmpeg, '-v', 'error', '-nostdin', *map(str, args)], check=True)
 
     @staticmethod
@@ -541,10 +611,11 @@ foreach ($rule in $allowed) {
             header = handle.read(6)
         if header[:4] != b'PE\0\0':
             raise RuntimeError('invalid PE header in the Windows media proof')
-        return cast(int, struct.unpack('<H', header[4:])[0])  # cast: '<H' unpacks one int
+        return cast(int, struct.unpack('<H', header[4:])[0])
 
     def pinned_winarm_media(self) -> None:
-        if sys.getwindowsversion().build < 22000:  # type: ignore[attr-defined]  # Windows only (winarm); mypy checks as Linux
+        getwindowsversion = cast(Callable[[], WindowsVersion], getattr(sys, 'getwindowsversion'))
+        if getwindowsversion().build < 22000:
             raise RuntimeError('x64 media helper emulation requires Windows 11')
         if self.pe_machine(self.binary) != 0xaa64:
             raise RuntimeError('the Cozy executable must remain native ARM64')
@@ -561,12 +632,13 @@ foreach ($rule in $allowed) {
             return budget
 
         while True:
-            state = cast(FullStatus, self.command('status', cwd=self.project, full=True, timeout=remaining()))  # cast: its JSON
+            state = self.command('status', cwd=self.project, full=True, timeout=remaining())
             project = state['project']
             assert project['id'] == self.project_id
             assets = {asset['name']: asset for asset in project['assets']}
-            measured = {name: {key: assets.get(name, {}).get(key)
-                               for key in ['width', 'height', 'duration_ms']}
+            measured = {name: {'width': assets.get(name, {}).get('width'),
+                               'height': assets.get(name, {}).get('height'),
+                               'duration_ms': assets.get(name, {}).get('duration_ms')}
                         for name in ['proof_image', 'proof_video', 'proof_audio']}
             image = assets.get('proof_image', {})
             self.winarm_image = {key: image.get(key) for key in ['path', 'sha256']}
@@ -583,12 +655,11 @@ foreach ($rule in $allowed) {
             if (measured['proof_image']['width'] == 8 and measured['proof_image']['height'] == 8
                     and measured['proof_video']['width'] == 320
                     and measured['proof_video']['height'] == 180
-                    # cast: Asset's duration_ms
-                    and (cast(int | None, measured['proof_video']['duration_ms']) or 0) > 0
-                    and (cast(int | None, measured['proof_audio']['duration_ms']) or 0) > 0):
+                    and (measured['proof_video']['duration_ms'] or 0) > 0
+                    and (measured['proof_audio']['duration_ms'] or 0) > 0):
                 break
             time.sleep(min(0.25, remaining()))
-        helpers: list[dict[str, object]] = []
+        helpers = []
         for name in ['ffmpeg', 'ffprobe']:
             path = self.home / 'tools' / 'ffmpeg' / '9.0.2' / f'{name}.exe'
             if not path.is_file() or self.pe_machine(path) != 0x8664:
@@ -610,9 +681,10 @@ foreach ($rule in $allowed) {
     def diagnose_winarm_media(self) -> None:
         # Failure evidence has its own short bound and can never satisfy the runtime cell.
         deadline = time.monotonic() + 10
-        evidence = cast(dict[str, object], self.receipt.setdefault('windows_arm_media', {}))  # cast: a dict when set
-        # cast: this literal is one; a chained assignment gives it no type context
-        diagnostic = evidence['failure_diagnostic'] = cast(MediaDiagnostic, {'budget_seconds': 10, 'helpers': []})
+        evidence = self.receipt.setdefault('windows_arm_media', {})
+        helpers: list[dict[str, object]] = []
+        diagnostic: dict[str, object] = {'budget_seconds': 10, 'helpers': helpers}
+        evidence['failure_diagnostic'] = diagnostic
         try:
             with self.holder_file.open('rb') as handle:
                 token = json.loads(handle.read(16384)).get('token')
@@ -624,7 +696,7 @@ foreach ($rule in $allowed) {
         for name in ['ffmpeg', 'ffprobe']:
             path = cache / f'{name}.exe'
             helper: dict[str, object] = {'path': str(path), 'present': path.is_file()}
-            diagnostic['helpers'].append(helper)
+            helpers.append(helper)
             if not helper['present']:
                 continue
             try:
@@ -659,7 +731,7 @@ foreach ($rule in $allowed) {
         diagnostic['seconds'] = round(time.monotonic() - (deadline - 10), 3)
         self.flush()
 
-    def diagnose_winarm_png(self, diagnostic: MediaDiagnostic, ffprobe: Path, deadline: float) -> None:
+    def diagnose_winarm_png(self, diagnostic: dict[str, object], ffprobe: Path, deadline: float) -> None:
         def remaining() -> float:
             value = deadline - time.monotonic()
             if value <= 0:
@@ -697,7 +769,7 @@ foreach ($rule in $allowed) {
 
         original = self.out / 'inputs' / 'image.png'
         diagnostic['original_source_png'] = probe_file(original)
-        selected = getattr(self, 'winarm_image', {})
+        selected: dict[str, str | None] = getattr(self, 'winarm_image', {})
         relative = Path(selected.get('path') or '')
         if relative.is_absolute() or relative.drive or relative.parts[:1] != ('files',) or '..' in relative.parts:
             raise RuntimeError('the image row did not select a project files path')
@@ -767,9 +839,8 @@ foreach ($rule in $allowed) {
         def scan_error(error: OSError) -> NoReturn:
             raise error
 
-        folder: str | Path  # os.walk's, then as a Path
-        for folder, directories, files in os.walk(root, followlinks=False, onerror=scan_error):
-            folder = Path(folder)
+        for folder_name, directories, files in os.walk(root, followlinks=False, onerror=scan_error):
+            folder = Path(folder_name)
             # Sealed empty views are deliberately unreadable; actual unlocked views are not
             # ciphertext. Exclude only the named view, keeping runtime descriptors in scope.
             directories[:] = [name for name in directories
@@ -792,23 +863,25 @@ foreach ($rule in $allowed) {
 
     def run(self) -> None:
         self.receipt['version'] = self.command('--version', json_output=False).strip()
+        self.command('vault', 'export', '--help', json_output=False, refusal=True)
+        self.cell('removed_vault_export_command')
         initial = self.private_file('initial', secrets.token_urlsafe(32))
         changed = self.private_file('changed', secrets.token_urlsafe(32))
         rekey = self.private_file('rekey', secrets.token_urlsafe(32))
         wrong = self.private_file('wrong', secrets.token_urlsafe(32))
         plain = self.out / 'ordinary'
-        created = cast(Created, self.command('new', plain))  # cast: its JSON
+        created = self.command('new', plain)
         assert created['created']
-        plain_status = cast(FullStatus, self.command('status', cwd=plain, full=True))  # cast: its JSON
+        plain_status = self.command('status', cwd=plain, full=True)
         assert plain_status['project']['id'] == created['id']
-        ordinary = cast(VaultStatus, self.command('vault', 'status', cwd=plain))  # cast: its JSON
+        ordinary = self.command('vault', 'status', cwd=plain)
         assert ordinary['state'] == 'plain' and not ordinary['encrypted']
         self.cell('ordinary_project_without_encryption')
-        created = cast(Created, self.command('new', self.project))  # cast: its JSON
+        created = self.command('new', self.project)
         assert created['created']
         # The compact code is for display. Project routes and upload scope use the canonical ID.
         self.project_id = created['id']
-        assert cast(FullStatus, self.command('status', cwd=self.project, full=True))['project']['id'] == self.project_id  # cast: its JSON
+        assert self.command('status', cwd=self.project, full=True)['project']['id'] == self.project_id
         before = self.yaml()
         unsafe_backing = self.project / 'unsafe-recovery.txt'
         refused = self.vault('encrypt', '--passphrase-file', initial, '--recovery-out', unsafe_backing,
@@ -833,7 +906,7 @@ foreach ($rule in $allowed) {
                      body={'fields': {'description': self.canary}})
         state = self.yaml()
         assert self.canary in state
-        assert cast(History, self.request('GET', self.project_route() + '/history'))['entries']  # cast: its JSON
+        assert self.request('GET', self.project_route() + '/history')['entries']
         view = self.view(self.status())
         saved = [self.find_media(view, path) for path in sources]
         self.ffmpeg('-ss', '1', '-i', saved[1], '-frames:v', '1', '-f', 'null', '-')
@@ -865,18 +938,7 @@ foreach ($rule in $allowed) {
         assert state == self.yaml()
         for path in sources:
             self.find_media(view, path)
-        for forbidden in [view / 'must-refuse-recursive-export',
-                          self.project / 'project.vault.data' / 'must-refuse-plaintext-export']:
-            self.vault('export', '--output', forbidden, refusal=True)
-            if forbidden.exists():
-                raise RuntimeError('a refused recursive/backing export created its output directory')
-        self.cell('plaintext_export_refuses_view_and_backing_children')
-        exported = self.out / 'plaintext-export'
-        self.vault('export', '--output', exported)
-        for path in sources:
-            self.find_media(exported, path)
-        assert (exported / 'project.db').is_file()
-        self.cell('full_rekey_and_explicit_plaintext_export_bytes')
+        self.cell('full_rekey_preserves_media_bytes')
         # Two normal clients lock the same unlocked project; both acknowledgements must
         # agree on the locked state. Pending-unlock ordering has separate controller coverage.
         processes = [subprocess.Popen(['cozy', '--json', 'vault', '--directory', str(self.project), 'lock'],
@@ -909,9 +971,59 @@ foreach ($rule in $allowed) {
         self.receipt['global_files_scanned'] = self.scan(self.home, credentials=True)
         self.receipt['encrypted_files_scanned'] = self.scan(self.project)
         self.cell('no_known_private_canary_in_global_caches_or_backing')
-        # Opening the intentionally plaintext copy is an ordinary-project operation and
-        # may legitimately populate ordinary caches. Do it after the encrypted-only scan.
-        copied = cast(FullStatus, self.command('status', cwd=exported, full=True))['project']  # cast: its JSON
+        refused = self.vault('decrypt', refusal=True)
+        assert json.loads(refused.stdout)['error']['code'] == 'project_locked'
+        self.cell('decrypt_refuses_locked_project')
+        view = self.view(self.vault('unlock', '--recovery-file', self.recovery('recovery3'), '--idle', 0))
+        readonly = view / 'readonly-retained.txt'
+        readonly.write_text(self.canary)
+        readonly.chmod(0o444)
+        # Securefs 2.0 on Windows acknowledges chmod without changing attributes.
+        # Preserve what the mounted source actually exposes through both conversions.
+        write_mode = readonly.stat().st_mode & 0o222
+        if os.name != 'nt':
+            assert write_mode == 0
+        file_modes = self.receipt['file_write_modes'] = {'source': write_mode}
+        held_media = self.find_media(view, sources[0])
+        decrypted: Payload | None = None
+        with held_media.open('rb'):
+            attempted = subprocess.run(
+                ['cozy', '--json', 'vault', '--directory', str(self.project), 'decrypt'],
+                capture_output=True, cwd=self.out, env=self.cli_env,
+            )
+            answer: Payload = json.loads(attempted.stdout)
+            if attempted.returncode == 0:
+                decrypted = answer['vault']
+                assert decrypted['state'] == 'plain' and not decrypted['encrypted']
+                self.receipt['decrypt_with_open_reader'] = 'completed_native_unmount'
+            else:
+                assert answer.get('error', {}).get('code') == 'project_busy'
+                assert self.status()['encrypted'] and (self.project / 'project.vault.keys.json').is_file()
+                self.receipt['decrypt_with_open_reader'] = 'busy_source_preserved'
+        if decrypted is None:
+            view = self.view(self.vault('unlock', '--recovery-file', self.recovery('recovery3'), '--idle', 0))
+            decrypted = self.vault('decrypt')['vault']
+        self.cell('decrypt_open_reader_has_a_safe_outcome')
+        assert decrypted['state'] == 'plain' and not decrypted['encrypted']
+        assert not (self.project / 'project.vault.keys.json').exists()
+        assert not (self.project / 'project.vault.data').exists()
+        self.assert_inaccessible(view)
+        for path in sources:
+            self.find_media(self.project, path)
+        assert (self.project / readonly.name).read_text() == self.canary
+        file_modes['decrypted'] = (self.project / readonly.name).stat().st_mode & 0o222
+        assert file_modes['decrypted'] == write_mode
+        assert self.yaml() == state
+        assert self.command('status', cwd=self.project, full=True)['project']['id'] == self.project_id
+        assert self.vault('decrypt')['vault']['state'] == 'plain'
+        self.cell('decrypt_in_place_preserves_identity_graph_and_media')
+        self.shutdown()
+        copied_path = self.out / 'plain-folder-copy'
+        shutil.copytree(self.project, copied_path)
+        reopened = self.command('status', cwd=self.project, full=True)['project']
+        assert reopened['id'] == self.project_id and self.yaml() == state
+        self.cell('decrypted_project_reopens_after_controller_restart')
+        copied = self.command('status', cwd=copied_path, full=True)['project']
         copied_state = self.yaml(copied['id'])
         original_id, original_graph = self.graph_export(state)
         copied_id, copied_graph = self.graph_export(copied_state)
@@ -919,12 +1031,41 @@ foreach ($rule in $allowed) {
         # A plain folder copy intentionally receives a new project identity when the original
         # remains registered. Compare the entire graph body, not that anti-stale-edit marker.
         if original_graph != copied_graph:
-            difference = ''.join(difflib.unified_diff(original_graph.splitlines(True), copied_graph.splitlines(True), fromfile='original graph', tofile='exported graph'))
-            raise RuntimeError('plaintext export graph changed: ' + self.redact(difference[:16384]))
+            difference = ''.join(difflib.unified_diff(original_graph.splitlines(True), copied_graph.splitlines(True), fromfile='original graph', tofile='copied graph'))
+            raise RuntimeError('plaintext folder copy graph changed: ' + self.redact(difference[:16384]))
         if original_id == copied_id:
             raise RuntimeError('the independent folder copy reused the registered project identity')
+        self.cell('decrypted_folder_copy_opens_with_its_own_identity')
+        copied_encrypted = self.command('vault', '--directory', copied_path, 'encrypt',
+                                        '--passphrase-file', rekey, '--recovery-out', self.recovery('copy-recovery'),
+                                        '--remove-plaintext', '--idle', 0)
+        copied_view = self.view(copied_encrypted)
+        assert self.command('status', cwd=copied_path, full=True)['project']['id'] == copied['id']
+        assert self.yaml(copied['id']) == copied_state
+        marker = json.loads((copied_view / '.vault-local-execution.json').read_text())
+        assert marker['storage']['project_id'] == copied['id']
+        assert marker['storage']['project_id'] != self.project_id
+        for path in sources:
+            self.find_media(copied_view, path)
+        self.command('vault', '--directory', copied_path, 'lock')
+        self.cell('decrypted_folder_copy_encrypts_with_its_own_namespace')
+        reencrypted = self.vault('encrypt', '--passphrase-file', rekey,
+                                 '--recovery-out', self.recovery('recovery4'), '--remove-plaintext', '--idle', 0)
+        self.check_recovery('recovery4')
+        view = self.view(reencrypted)
+        assert self.yaml() == state
+        assert self.command('status', cwd=self.project, full=True)['project']['id'] == self.project_id
+        for path in sources:
+            self.find_media(view, path)
+        assert (view / readonly.name).read_text() == self.canary
+        file_modes['reencrypted'] = (view / readonly.name).stat().st_mode & 0o222
+        assert file_modes['reencrypted'] == write_mode
+        self.cell('file_permissions_survive_decrypt_and_reencrypt')
+        self.vault('lock', allow_locking=True)
         self.shutdown()
-        self.cell('plaintext_export_opens_independently_after_lock')
+        self.receipt['reencrypted_files_scanned'] = self.scan(self.project)
+        self.receipt['reencrypted_global_files_scanned'] = self.scan(self.home, credentials=True)
+        self.cell('reencrypt_decrypted_project_and_restore_locked_storage')
         self.receipt['result'] = 'pass'
         self.flush()
 
@@ -933,14 +1074,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--artifacts', type=Path, required=True)
     parser.add_argument('--source', required=True)
-    args = parser.parse_args()
+    args = parser.parse_args(namespace=Args())
     proof = Proof(args.artifacts, args.source)
     try:
         proof.run()
     except Exception as error:
         failed = traceback.extract_tb(error.__traceback__)[-1]
         detail = proof.redact(f'{type(error).__name__} in {failed.name}:{failed.lineno}: {error}')
-        proof.receipt.update(result='failed', error=detail)
+        proof.receipt.update({'result': 'failed', 'error': detail})
         if proof.winarm:
             try:
                 proof.diagnose_winarm_media()

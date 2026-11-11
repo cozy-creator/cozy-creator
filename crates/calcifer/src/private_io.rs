@@ -23,7 +23,7 @@ pub(crate) fn current() -> Option<Scope> {
 
 pub(crate) fn of_path(path: &Path) -> Result<Option<Scope>, Error> {
     let logical = crate::project::vault::logical(path);
-    let Some(root) = logical.ancestors().find(|root| crate::project::vault::encrypted(root)) else {
+    let Some(root) = logical.ancestors().find(|root| crate::project::vault::encrypted(root) || root.join(LOCAL_PRIVATE_MARKER).is_file()) else {
         return Ok(None);
     };
     of_output(&crate::project::landing(root))
@@ -133,13 +133,64 @@ fn read_marker(view: &Path) -> Result<LocalPrivateMarker, Error> {
     serde_json::from_slice(&bytes).map_err(|_| error("the private execution marker is invalid"))
 }
 
+/// A decrypted project retains its execution closure and namespace. The caller first
+/// obtains `project_id` from its canonical document, never from the marker itself.
+pub(crate) fn retained_scope(root: &Path, project_id: &str) -> Result<Option<Scope>, Error> {
+    if !root.join(LOCAL_PRIVATE_MARKER).exists() { return Ok(None); }
+    let marker = read_marker(root)?;
+    if marker.storage.project_id != project_id { return Ok(None); }
+    validate_retained(&marker, project_id)?;
+    let view = platform::durable::canonical(root).map_err(|_| error("the retained project is unavailable"))?;
+    if marker.storage.view_root != view {
+        return descriptor_for_mounted(&view, project_id, marker.storage.generation).map(Some);
+    }
+    let scope = Scope { storage: marker.storage, token: marker.token };
+    SCOPES.lock().unwrap().insert(view, scope.clone());
+    Ok(Some(scope))
+}
+
+fn validate_retained(marker: &LocalPrivateMarker, project_id: &str) -> Result<(), Error> {
+    if project_id.is_empty() || project_id.len() > 256 || project_id.chars().any(char::is_control)
+        || marker.format_version != 1 || marker.storage.project_id != project_id || !marker.storage.view_root.is_absolute()
+        || marker.storage.generation == 0 || marker.token.len() != 64
+        || !marker.token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(error("the retained execution marker does not match this project"));
+    }
+    Ok(())
+}
+
+/// Classification only: a copied framework marker may identify retained files
+/// and disposable caches without granting its original execution namespace.
+pub(crate) fn retained_copy_storage(root: &Path) -> Result<Option<LocalPrivateStorage>, Error> {
+    match fs::symlink_metadata(root.join(LOCAL_PRIVATE_MARKER)) {
+        Err(why) if why.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(error("the retained execution marker is unavailable")),
+        Ok(_) => {},
+    }
+    let marker = read_marker(root)?;
+    validate_retained(&marker, &marker.storage.project_id)?;
+    Ok(Some(marker.storage))
+}
+
+/// Journal reads use an existing native-ID-validated root binding; they do not
+/// reload the entire Automerge document for each private journal column.
+pub(crate) fn retained_view(root: &Path, project_id: &str) -> Result<PathBuf, Error> {
+    let marker = read_marker(root)?;
+    validate_retained(&marker, project_id)?;
+    let view = platform::durable::canonical(root).map_err(|_| error("the retained project is unavailable"))?;
+    if marker.storage.view_root != view { return Err(error("the retained execution marker names another project location")); }
+    Ok(view)
+}
+
 pub(crate) fn of_output(out_dir: &Path) -> Result<Option<Scope>, Error> {
     let Some(project) = crate::project::of_landing(out_dir) else {
         return Ok(None);
     };
     let logical = crate::project::vault::logical(project);
     if !crate::project::vault::encrypted(&logical) {
-        return Ok(None);
+        if !logical.join(LOCAL_PRIVATE_MARKER).exists() { return Ok(None); }
+        let Some(id) = crate::project::vault::plain_project_id(&logical) else { return Ok(None) };
+        return retained_scope(&logical, &id);
     }
     let view = crate::project::vault::resolve_path(&logical)?;
     let info = Keybag::load(&logical.join(KEYBAG_FILE))

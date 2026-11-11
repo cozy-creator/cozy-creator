@@ -326,7 +326,7 @@ jobs:
   candidate:
     name: candidate ${{ matrix.what }}
     needs: affected
-    if: needs.affected.outputs.linux == 'true'
+    if: needs.affected.outputs.linux == 'true' && !(inputs.publish_run != '' && inputs.select == 'cli' && inputs.shards == '["projectvault"]' && needs.affected.outputs.repo == 'cozy-creator')
     strategy:
       matrix:
         include:
@@ -376,6 +376,12 @@ jobs:
         with:
           package-json-file: .build/web/app/package.json
           install: false
+      - if: matrix.what == 'cozy' && (matrix.take != '' || steps.reuse.outputs.name == '')
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .creator -> target
+          key: stage-code
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - id: build
         if: matrix.take == '' && steps.reuse.outputs.name == ''
         env:
@@ -388,12 +394,153 @@ jobs:
           path: ${{ runner.temp }}/candidates
           if-no-files-found: error
           retention-days: 14
+      # A taken cozy still stages local warming fixtures with the immutable harness's native API helper.
+      - name: Build the local source staging helper for a taken cozy
+        if: matrix.what == 'cozy' && matrix.take != ''
+        env:
+          CARGO_INCREMENTAL: "0"
+          COZY_COMMIT: ${{ needs.affected.outputs.creator }}
+        run: |
+          (cd .creator && cargo build --release --locked -p api --example stage-code)
+          mkdir -p "$RUNNER_TEMP/candidates"
+          cp .creator/target/release/examples/stage-code "$RUNNER_TEMP/candidates/stage-code"
+      - if: matrix.what == 'cozy' && matrix.take != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-stage-code-${{ needs.affected.outputs.creator }}
+          path: ${{ runner.temp }}/candidates/stage-code
+          if-no-files-found: error
+          retention-days: 14
 
   # Linux, in shards (e2e/cli/run.sh --shard) on the candidate jobs' set; `e2e` checks coverage over all of them.
+  # The exact published-vault focus uses its producer's archives and the real isolated Hub,
+  # without rebuilding Creator or a staging helper that this suite never calls.
+  projectvault-archive:
+    name: published projectvault Linux
+    needs: affected
+    if: inputs.publish_run != '' && inputs.select == 'cli' && inputs.shards == '["projectvault"]' && needs.affected.outputs.repo == 'cozy-creator'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.affected.outputs.creator }}
+          path: .creator
+          persist-credentials: false
+      - name: Verify and extract the exact published producer
+        id: archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRODUCER: ${{ inputs.publish_run }}
+          SOURCE: ${{ needs.affected.outputs.ref }}
+          STACK: ${{ needs.affected.outputs.stack }}
+          HARNESS: ${{ needs.affected.outputs.creator }}
+          RUNTIME_REF: ${{ needs.affected.outputs.runtime }}
+          PACKAGES_REF: ${{ needs.affected.outputs.packages }}
+          RUNTIME: ${{ inputs.runtime }}
+          TENSORFS: ${{ inputs.tensorfs }}
+        run: |
+          set -euo pipefail
+          [[ $PRODUCER =~ ^[0-9]+$ && $SOURCE =~ ^[0-9a-f]{40}$ && $STACK == "$SOURCE" ]]
+          [[ $RUNTIME =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ && $TENSORFS =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]
+          mkdir -p "$RUNNER_TEMP/e2e/provenance" "$RUNNER_TEMP/vault-release" "$RUNNER_TEMP/vault-manifest"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PRODUCER" > "$RUNNER_TEMP/e2e/provenance/producer.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PRODUCER/artifacts" > "$RUNNER_TEMP/e2e/provenance/artifacts.json"
+          jq -e --arg source "$SOURCE" '.head_sha == $source and .status == "completed" and .conclusion == "success" and .event == "workflow_dispatch" and (.path | split("@")[0]) == ".github/workflows/cozy-publish.yaml"' "$RUNNER_TEMP/e2e/provenance/producer.json"
+          gh run download "$PRODUCER" -R "$GITHUB_REPOSITORY" -n artifacts-build-local-x86_64-unknown-linux-gnu -D "$RUNNER_TEMP/vault-release"
+          gh run download "$PRODUCER" -R "$GITHUB_REPOSITORY" -n artifacts-build-global -D "$RUNNER_TEMP/vault-release"
+          gh run download "$PRODUCER" -R "$GITHUB_REPOSITORY" -n artifacts-dist-manifest -D "$RUNNER_TEMP/vault-manifest"
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess, tarfile
+          root = pathlib.Path(os.environ['RUNNER_TEMP'])
+          manifest = json.loads((root/'vault-manifest/dist-manifest.json').read_text())
+          name = 'cozy-x86_64-unknown-linux-gnu.tar.gz'
+          archive = root/'vault-release'/name
+          digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+          assert digest == manifest['artifacts'][name]['checksums']['sha256']
+          assert (root/'vault-release'/(name+'.sha256')).read_text().split()[0] == digest
+          client = root/'vault-client'; client.mkdir()
+          with tarfile.open(archive) as source:
+              source.extractall(client, filter='data')
+          binaries = [p for p in client.rglob('cozy') if p.is_file() and not p.is_symlink()]
+          assert len(binaries) == 1
+          binary = binaries[0]; binary.chmod(0o755)
+          binary_sha = hashlib.sha256(binary.read_bytes()).hexdigest()
+          version = subprocess.check_output([str(binary), '--version'], text=True).strip()
+          release = next(r for r in manifest['releases'] if r['app_name'] == 'cozy')
+          assert version == 'cozy '+release['app_version']
+          record = dict(producer=os.environ['PRODUCER'], source=os.environ['SOURCE'], harness=os.environ['HARNESS'],
+              requested_runtime_ref=os.environ['RUNTIME_REF'], requested_packages_ref=os.environ['PACKAGES_REF'], uses_packages_checkout=False,
+              runtime=os.environ['RUNTIME'], tensorfs=os.environ['TENSORFS'], archive=name, archive_sha256=digest,
+              binary_sha256=binary_sha, version=version, boundary='archive binary; installer is a separate gate')
+          (root/'e2e/provenance/cohort.json').write_text(json.dumps(record, indent=2)+'\n')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('binary='+str(binary)+'\n')
+              output.write('binary_sha256='+binary_sha+'\n')
+          PY
+          cp "$RUNNER_TEMP/vault-manifest/dist-manifest.json" "$RUNNER_TEMP/e2e/provenance/dist-manifest.json"
+          pin=$(tr -d '\r\n' < .creator/ci/hub-ref)
+          [ -n "$pin" ]
+          echo "hub_ref=$pin" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v5
+        with:
+          repository: cozy-creator/tensorhub
+          ref: ${{ steps.archive.outputs.hub_ref }}
+          ssh-key: ${{ secrets.TENSORHUB_READ_KEY }}
+          persist-credentials: false
+          path: .tensorhub
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: .tensorhub/go.mod
+          cache-dependency-path: .tensorhub/go.sum
+      - uses: astral-sh/setup-uv@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: AnimMouse/setup-ffmpeg@v1
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/skew-tools
+          key: skew-minio-RELEASE.2025-09-07T16-13-09Z
+      - name: Native filesystem driver and real isolated Hub vault proof
+        env:
+          BINARY: ${{ steps.archive.outputs.binary }}
+          RUNTIME: ${{ inputs.runtime }}
+          TENSORFS: ${{ inputs.tensorfs }}
+          SKEW_TOOLS: ${{ runner.temp }}/skew-tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y fuse libfuse2t64
+          sudo modprobe fuse || test -e /dev/fuse
+          sudo loginctl enable-linger "$(id -un)"
+          export XDG_RUNTIME_DIR=/run/user/$(id -u)
+          until [ -S "$XDG_RUNTIME_DIR/bus" ]; do sleep 1; done
+          export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
+          git -C .tensorhub rev-parse HEAD > "$RUNNER_TEMP/e2e/provenance/hub-source.txt"
+          bash .creator/e2e/skew/run.sh --hub-src .tensorhub --cozy-bin "$BINARY" \
+            --runtime "$RUNTIME" --tensorfs "$TENSORFS" --out "$RUNNER_TEMP/e2e" \
+            --command .creator/e2e/cli/projectvault-isolated.sh 2>&1 | node .creator/e2e/publish/scrub.js
+      - name: The installed proof used the exact archive binary
+        if: always() && steps.archive.outputs.binary_sha256 != ''
+        env:
+          EXPECTED: ${{ steps.archive.outputs.binary_sha256 }}
+        run: |
+          jq -e --arg sha "$EXPECTED" '.sha256 == $sha' "$RUNNER_TEMP/e2e/command/cohort.json"
+      - if: always()
+        uses: ./.creator/e2e/publish
+        with:
+          name: e2e-cli-linux-projectvault
+          path: ${{ runner.temp }}/e2e
+          retention-days: 14
+
   cli:
     name: cli ${{ matrix.shard }}
     needs: [affected, candidate]
-    if: contains(fromJSON(needs.affected.outputs.selection).suites, 'cli') && inputs.shards != '[]'
+    if: contains(fromJSON(needs.affected.outputs.selection).suites, 'cli') && inputs.shards != '[]' && !(inputs.publish_run != '' && inputs.select == 'cli' && inputs.shards == '["projectvault"]' && needs.affected.outputs.repo == 'cozy-creator')
     strategy:
       fail-fast: false
       matrix:
@@ -457,7 +604,7 @@ jobs:
   candidate-os:
     name: candidate ${{ matrix.runner }}
     needs: affected
-    if: needs.affected.outputs.native_runners != '[]'
+    if: needs.affected.outputs.native_runners != '[]' && !(inputs.publish_run != '' && inputs.select == 'cli' && inputs.shards == '["projectvault"]' && needs.affected.outputs.repo == 'cozy-creator')
     strategy:
       fail-fast: false
       matrix:
@@ -529,7 +676,7 @@ jobs:
   cli-os:
     name: cli ${{ matrix.runner }} ${{ matrix.shard }}
     needs: [affected, candidate-os]
-    if: contains(fromJSON(needs.affected.outputs.selection).suites, 'cli') && needs.affected.outputs.runners != '[]' && inputs.native_shards != '[]'
+    if: contains(fromJSON(needs.affected.outputs.selection).suites, 'cli') && needs.affected.outputs.runners != '[]' && inputs.native_shards != '[]' && !(inputs.publish_run != '' && inputs.select == 'cli' && inputs.shards == '["projectvault"]' && needs.affected.outputs.repo == 'cozy-creator')
     strategy:
       fail-fast: false
       matrix:
@@ -876,7 +1023,7 @@ jobs:
 
   e2e:
     if: always()
-    needs: [affected, candidate, candidate-os, cli, cli-os, cli-release, imports, cpu, mps]
+    needs: [affected, candidate, candidate-os, projectvault-archive, cli, cli-os, cli-release, imports, cpu, mps]
     runs-on: ubuntu-24.04
     # Last resort (tracker design/stalls.md): a runner that hangs sends no signal.
     timeout-minutes: 10

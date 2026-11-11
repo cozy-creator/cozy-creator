@@ -243,9 +243,8 @@ test = "pr: projectvault: new credential reopens files and the old slot refuses"
 test = "pr: projectvault: replace recovery and refuse old slots and unsafe destinations"
 "--recovery-out" = "pr: projectvault: replacement is written outside storage"
 
-["vault export"]
-test = "pr: projectvault: plaintext copy opens normally and retains video bytes"
-"--output" = "pr: projectvault: export writes into a new destination"
+["vault decrypt"]
+test = "pr: projectvault: in-place decryption preserves identity, logical history and media"
 
 ["vault rotate"]
 test = "pr: projectvault: full rekey preserves logical history and media"

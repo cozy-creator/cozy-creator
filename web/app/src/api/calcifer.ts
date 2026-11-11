@@ -3108,7 +3108,7 @@ export type VaultAsk = { action: string, passphrase?: string | null, recovery_se
 /**
  * Remove a verified plaintext conversion source, only when explicitly asked.
  */
-remove_plaintext: boolean, output?: string | null, };
+remove_plaintext: boolean, };
 
 /**
  * A vault operation can disclose a new recovery secret exactly to the caller. Do not persist this response in request/history caches.
