@@ -227,7 +227,8 @@ fn status(root: &FsPath) -> VaultStatus {
             state = if session.closing || expired(&session) { "locking" } else { "unlocked" };
             if state == "unlocked" { view = Some(session.mount.view().to_owned()); }
             let idle_at = (session.idle > 0).then(|| session.active_ms.saturating_add(milliseconds(session.idle)));
-            let max_at = (session.maximum > 0).then(|| session.began_ms.saturating_add(milliseconds(session.maximum)));
+            // Work in progress defers the maximum until it ends.
+            let max_at = (session.maximum > 0 && !session.timer.held()).then(|| session.began_ms.saturating_add(milliseconds(session.maximum)));
             expires = match (idle_at, max_at) { (Some(a), Some(b)) => Some(a.min(b)), (a,b) => a.or(b) };
         }
     }
@@ -378,22 +379,17 @@ pub(crate) fn start(api: &Arc<Api>) {
                     let op = operation(&root);
                     let Ok(_operation) = op.try_lock() else { return; };
                     let working = working(&api, &root);
-                    let (needs, capped) = held(&root).map_or((false, false), |session| {
+                    let needs = held(&root).is_some_and(|session| {
                         let mut session = session.lock().expect("vault session");
                         if session.mount.reconcile().is_err() { mark_closing(&mut session); }
-                        // Work in progress holds it open: the idle clock starts when the last of it ends.
+                        // Work in progress holds it open, its maximum included: the clocks go on when the last of it
+                        // ends. Only an explicit lock ends work (owner 11-11: "runs count as activity").
                         session.timer.hold(working);
                         if working && !session.closing { session.active_ms = super::now_ms(); }
-                        let expired = expired(&session);
-                        // Expired while working is its maximum, a limit the user set: it ends the work, as a lock does.
-                        let capped = working && expired && !session.closing;
-                        (session.closing || expired || !session.mount.is_mounted().unwrap_or(false), capped)
+                        session.closing || expired(&session) || !session.mount.is_mounted().unwrap_or(false)
                     });
                     if !needs { return; }
                     if let Some(session) = held(&root) { mark_closing(&mut session.lock().expect("vault session")); }
-                    if capped {
-                        let _ = end_work(&api, &root);
-                    }
                     let Ok(_access) = exclusive(&root) else { return; };
                     let _ = close(&api, &root);
                 });
@@ -585,8 +581,8 @@ fn working(api: &Api, root: &FsPath) -> bool {
     })
 }
 
-/// Ends the project's work in progress, as an explicit lock does: what its renders still owe dropped, and each of its
-/// runs not settled canceled. The runs it canceled, by number.
+/// An explicit lock ends the project's work in progress: what its renders still owe dropped, and each of its runs not
+/// settled canceled. The runs it canceled, by number.
 fn end_work(api: &Arc<Api>, root: &FsPath) -> Result<Vec<u64>, Error> {
     let mut ended = BTreeSet::new();
     let all = [super::format::ALL.to_owned()];

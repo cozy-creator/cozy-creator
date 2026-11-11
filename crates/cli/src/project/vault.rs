@@ -20,7 +20,7 @@ struct Encrypt {
     /// Lock after this many seconds without activity; the project's runs and renders are activity. 0 disables idle expiry.
     #[arg(long, default_value_t = api::calcifer::project::DEFAULT_VAULT_IDLE_SECONDS)]
     idle: u64,
-    /// Maximum unlock duration in seconds, even while active; reaching it ends the project's runs, as a lock does. 0 disables the maximum.
+    /// Maximum unlock duration in seconds, even while active; reached while the project's runs or renders go on, it locks when they end. 0 disables the maximum.
     #[arg(long, default_value_t = 0)]
     max_duration: u64,
 }
