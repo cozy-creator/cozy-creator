@@ -109,31 +109,38 @@ function linesOf(text, name) {
   await box('shot').waitFor();
   if (local) execFileSync(COZY, ['--json', 'run', `${fixture}/still`, 'instructions=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, stdio: ['ignore', 'pipe', 'inherit'], timeout: FIRST_RUN_MS });
   const tool = await until('the fixture listed', async () => (await api(`/v1/tools?project=${id}`)).body.tools.find((held) => held.local && held.id === `${fixture}/shot`), Boolean, FIRST_RUN_MS);
-  // The page reads its list again as that install ends, with no reload.
-  await until('the page lists it', () => page.evaluate((id) => Boolean(document.querySelector(`.tools li.tool[data-tool="${CSS.escape(id)}"]`)), tool.id), Boolean);
-  // Four basic node types, then model entries. A local package without a declared model retains each output capability.
+  // The sidebar names operations only; model implementations stay inside each node's configuration.
   const listed = () => page.evaluate(() => [...document.querySelectorAll('.tools .tool-groups section')].map((section) => ({
     section: section.dataset.palette,
     title: section.querySelector('h4').textContent,
-    tools: [...section.querySelectorAll('li.tool')].map((row) => ({ id: row.dataset.tool, entry: row.dataset.entry, model: row.dataset.model, kind: row.dataset.kind, label: row.querySelector('b').textContent })),
+    tools: [...section.querySelectorAll('li.tool')].map((row) => ({ operation: row.dataset.operation, model: row.dataset.model, kind: row.dataset.kind, label: row.querySelector('b').textContent })),
   })));
-  const ours = (list) => list.flatMap((one) => one.tools).filter((row) => row.id?.startsWith(fixture));
+  await until('the seven operations listed', () => listed(), (rows) => rows.find((one) => one.section === 'tools')?.tools.length === 7);
   const atRest = await listed();
   seen.listed = atRest.map((one) => `${one.title}: ${one.tools.map((row) => row.label).join(', ')}`);
   check('nodes_and_tools_are_separate', atRest.length === 2 && atRest[0].title === 'Nodes' && atRest[1].title === 'Tools', atRest);
-  check('exactly_four_basic_node_types', JSON.stringify(atRest.find((one) => one.section === 'nodes')?.tools.map((row) => row.label)) === JSON.stringify(['Text', 'Image', 'Video', 'Video Edit']), atRest);
+  check('exactly_five_basic_node_types', JSON.stringify(atRest.find((one) => one.section === 'nodes')?.tools.map((row) => row.label)) === JSON.stringify(['Image', 'Video', 'Video Editor', 'Audio', 'Text']), atRest);
+  const operations = atRest.find((one) => one.section === 'tools')?.tools ?? [];
+  check('exactly_seven_operation_categories', JSON.stringify(operations.map((row) => row.label)) === JSON.stringify(['Image', 'Edit Image', 'Upscale Image', 'Video', 'Edit Video', 'Upscale Video', 'LLM']), operations);
+  check('operation_output_types', JSON.stringify(operations.map((row) => row.kind)) === JSON.stringify(['image', 'image', 'image', 'video', 'video', 'video', 'text']), operations);
+  check('sidebar_has_no_model_rows', operations.every((row) => !row.model), operations);
   check('sidebar_has_no_discovery_controls', await page.locator('.tools input, .tools .browse-toggle, .tools .browse, .tools .box-shelf-head, .tools .tool-off').count() === 0 && !(await page.locator('.tools button').allTextContents()).some((word) => /Browse|Checkpoints|Add file/.test(word)));
-  check('local_output_capabilities_remain', ours(atRest).length === 2 && ours(atRest).some((row) => row.id === `${fixture}/shot` && row.kind === 'video') && ours(atRest).some((row) => row.id === `${fixture}/still` && row.kind === 'image'), ours(atRest));
-  const modelRows = atRest.flatMap((one) => one.tools).filter((row) => row.model);
-  const publishedModels = [...new Set((await api(`/v1/tools?project=${id}&palette=true`)).body.tools.flatMap((one) => one.model?.default ? [one.model.default.split('@')[0].replace(/^_\//, '')] : []))];
-  check('each_declared_model_once', modelRows.length === publishedModels.length && new Set(modelRows.map((row) => row.model)).size === modelRows.length && publishedModels.every((model) => modelRows.some((row) => row.model === model)), modelRows);
-  const h3 = modelRows.find((row) => /\/minimax-h3$/.test(row.model));
-  check('minimax_h3_is_a_video_tool', h3?.kind === 'video', h3);
-  const qwen = modelRows.find((row) => /\/qwen-image-2\.1$/.test(row.model));
-  const sdxl = modelRows.find((row) => /\/sdxl$/.test(row.model));
-  const h3Image = modelRows.find((row) => /\/p-h3-image$/.test(row.model));
-  check('model_labels_identify_the_model', qwen?.label === 'Qwen Image 2.1' && sdxl?.label === 'SDXL' && /minimax h3/i.test(h3?.label ?? ''), { qwen, h3, sdxl });
-  check('h3_image_is_a_separate_model_entry', h3Image?.kind === 'image' && h3Image.entry !== h3?.entry, { video: h3, image: h3Image });
+  const metadata = (await api(`/v1/tools?project=${id}&palette=true`)).body.tools;
+  check('local_output_capabilities_remain', metadata.some((row) => row.id === `${fixture}/shot` && row.makes === 'video') && metadata.some((row) => row.id === `${fixture}/still` && row.makes === 'image'), metadata.filter((row) => row.id.startsWith(fixture)).map((row) => ({ id: row.id, makes: row.makes })));
+  const namesBefore = (await state()).assets.map((asset) => asset.name);
+  await page.locator('.tools [data-palette="nodes"] [data-node="image"]').click();
+  const choosing = await until('image node for model choices', async () => (await state()).assets.find((asset) => !namesBefore.includes(asset.name)), Boolean);
+  await open(choosing.name);
+  const modelOptions = () => box(choosing.name).locator('select[aria-label="Model"] option').evaluateAll((options) => options.map((option) => ({ id: option.value, label: option.textContent })));
+  const hasModel = (options, ref) => options.some((option) => metadata.find((one) => one.id === option.id)?.model?.default?.startsWith(`${ref}@`));
+  const models = await until('Qwen and SDXL offered inside Image', modelOptions, (options) => hasModel(options, 'qwen/qwen-image-2.1') && hasModel(options, 'stabilityai/sdxl'));
+  check('image_models_are_node_configuration_choices', hasModel(models, 'qwen/qwen-image-2.1') && hasModel(models, 'stabilityai/sdxl'), models);
+  const hasTextModel = metadata.some((one) => one.makes === 'text' && one.id !== 'text');
+  check('llm_availability_matches_real_text_tools', await page.locator('.tools [data-operation="llm"]').getAttribute('aria-disabled') === String(!hasTextModel));
+  check('model_choice_does_not_expand_sidebar', JSON.stringify(await listed()) === JSON.stringify(atRest));
+  await closeBox(page);
+  await api(`/v1/projects/${id}/assets/${encodeURIComponent(choosing.name)}`, { method: 'DELETE' });
+  await until('model-choice node removed', () => box(choosing.name).count(), (count) => count === 0);
   // The rest stand beside it, in reach while it's worked on.
   const cards = (await api(`/v1/projects/${id}/canvas`)).body.cards;
   const at = cards.shot;

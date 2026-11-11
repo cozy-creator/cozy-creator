@@ -389,7 +389,7 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
       const before = await toolUi(released);
       check('not_installed_does_not_load', before.status === 404 && before.body.error.code === 'tool_ui_not_installed', before);
       // The catalog remains an API; sidebar discovery is retired. Add the real published package through that API, without installing it.
-      const listRow = page.locator(`.tools [data-tool="${released}"]`);
+      const operationRows = page.locator('.tools [data-palette="tools"] li.tool');
       await away();
       seen.retired_sidebar_ui = ['Browse button', 'package pagination and search controls'];
       const firstPage = await api('/v1/tools/browse?limit=50');
@@ -402,8 +402,10 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
       const selected = await api('/v1/tools/list', { method: 'POST', body: JSON.stringify({ add: package_ }) });
       check('catalog_package_selected_without_install', selected.status === 200 && selected.body.packages.includes(package_), selected);
       await page.reload();
-      await listRow.waitFor();
-      check('added_is_there_after_a_reload', true);
+      await more('from_the_hub');
+      await until('selected package available in node configuration', () => box('from_the_hub').locator('select[aria-label="Model"] option').evaluateAll((options) => options.map((option) => option.value)), (ids) => ids.includes(released));
+      check('added_model_is_in_node_configuration_after_reload', await box('from_the_hub').locator('select[aria-label="Model"]').inputValue() === released);
+      check('adding_package_keeps_seven_operations', await operationRows.count() === 7);
       const unheldStill = await toolUi(released);
       check('adding_installs_nothing', unheldStill.status === 404 && unheldStill.body.error.code === 'tool_ui_not_installed' && !hub.asked.some((line) => line.includes('/download') || line.includes('/wheels/')), { unheldStill, asked: hub.asked });
       await shot('your-list');
@@ -413,7 +415,7 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
       await until('off the list on the wire', async () => (await api('/v1/tools?on=local')).body.tools.some((tool) => tool.id === released), (held) => !held);
       await page.reload();
       await page.waitForSelector('.tools .tool');
-      check('legacy_custom_tool_remains_off_after_reload', (await listRow.count()) === 0);
+      check('legacy_custom_tool_remains_off_after_reload', !(await api('/v1/tools?on=local')).body.tools.some((tool) => tool.id === released) && await operationRows.count() === 7);
       const offWire = (await api('/v1/tools/list', { method: 'POST', body: JSON.stringify({ remove: ['minimax-h3/one_field'] }) })).body;
       check('a_default_comes_off', offWire.without?.includes('minimax-h3/one_field'), offWire);
       check('a_default_is_off', !(await api('/v1/tools?on=local')).body.tools.some((tool) => tool.id === 'minimax-h3/one_field'));
