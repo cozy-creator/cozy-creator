@@ -90,6 +90,7 @@ fn main() {
     v.visit::<project::Approved>();
     v.visit::<project::Unpin>();
     v.visit::<project::Unpinned>();
+    v.visit::<project::Machines>();
     v.visit::<project::Rename>();
     v.visit::<project::Renamed>();
     v.visit::<project::Clip>();

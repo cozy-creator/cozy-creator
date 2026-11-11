@@ -12,7 +12,7 @@ import { gpusWords } from "./words"
 
 export interface Placed {
   /** Absent: Calcifer says where. */
-  on?: string
+  on?: string[]
   agreed?: Agreed
   gpus?: number
 }
@@ -51,7 +51,7 @@ export function OnMachine<Body extends object, Answer>({
   const [on, setChosen] = useState("")
   const [gpus, setGpus] = useState<number | undefined>()
 
-  const placed = (agreed?: Agreed): Body & Placed => ({ ...body, ...(on ? { on } : {}), ...(gpus ? { gpus } : {}), ...(agreed ? { agreed } : {}) })
+  const placed = (agreed?: Agreed): Body & Placed => ({ ...body, ...(on ? { on: [on] } : {}), ...(gpus ? { gpus } : {}), ...(agreed ? { agreed } : {}) })
   const asked = JSON.stringify(placed())
   const pricing = useAsk()
   const sending = useAsk()

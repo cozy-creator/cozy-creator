@@ -73,6 +73,8 @@ test = "release: rental"
 "--ssh" = "pr: renting, signed out, a private key file refused before any ask (release-gate session multi-machine rents and logs in with it)"
 ["machine ssh"]
 test = "pr: local, refused as no rental (release-gate session multi-machine runs every shell step through it)"
+["machine use"]
+test = "pr: machine set, a project pinned to local and a stand-in machine, its runs only there, an unknown machine refused, then any again"
 ["machine keepalive"]
 test = "release: rental, keepalive moves its idle deadline"
 
@@ -176,7 +178,7 @@ test = "pr: a weightless request; BiRefNet on the CPU"
 "--file" = "pr: BiRefNet on the CPU"
 "--file-fidelity" = "pr: run flags"
 "--describe" = "pr: run flags, the contract and no run"
-"--on" = "pr: BiRefNet on the CPU"
+"--on" = "pr: BiRefNet on the CPU; machine set, one machine over the project's and two by `a,b`"
 "--lane" = "pr: run flags"
 "--model" = "pr: entrypoints rejects malformed model overrides; run flags forwards a model slot"
 "--gpus" = "gate: cli cells"
