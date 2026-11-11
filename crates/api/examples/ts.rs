@@ -43,6 +43,8 @@ fn main() {
     v.visit::<interface::Snap>();
     v.visit::<calcifer::BrowserSession>();
     v.visit::<calcifer::CalciferStatus>();
+    v.visit::<calcifer::RemoveModel>();
+    v.visit::<calcifer::RemovedModel>();
     v.visit::<calcifer::ProjectShowReply>();
     v.visit::<calcifer::StreamEvent>();
     v.visit::<calcifer::Event>();
