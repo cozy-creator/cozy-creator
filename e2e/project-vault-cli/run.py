@@ -878,7 +878,10 @@ foreach ($rule in $allowed) {
                 time.sleep(0.01)
             assert (directory / 'project.vault.keys.json').exists(), 'creation did not publish its wrapped key'
             assert creation.poll() is None, 'creation finished before the concurrent lock was exercised'
-            locked = self.command('vault', '--directory', directory, 'lock', refusal=True)
+            lock_args = ['cozy', '--json', 'vault', '--directory', str(directory), 'lock']
+            locked = subprocess.run(lock_args, cwd=self.out, env=self.cli_env, capture_output=True,
+                                    text=True, encoding='utf-8', timeout=FIRST_COLD_SECONDS)
+            self.commands.append({'args': lock_args[1:], 'cwd': str(self.out), 'state': 'complete', 'exit_code': locked.returncode})
             output, stderr = creation.communicate(timeout=FIRST_COLD_SECONDS)
             record.update(state='complete', exit_code=creation.returncode)
             if locked.returncode:

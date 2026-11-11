@@ -243,6 +243,14 @@ jobs:
           repository: cozy-creator/cozy-creator
           ref: ${{ steps.what.outputs.creator }}
           path: .creator
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Check browser fixture syntax before building candidates
+        run: |
+          for file in .creator/e2e/cli/web/*.js; do
+            if [ -f "$file" ]; then node --check "$file"; fi
+          done
       # Each ref resolves once, here, to the commit every job checks out: a branch that moves mid-run never mixes two
       # commits in one run (one master's coverage.toml against another's candidate cozy, cozy-runtime 40887117045).
       - id: pin
