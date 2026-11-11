@@ -53,6 +53,7 @@ COLD_NOTE = 0.25  # a cold total this far over its baseline's is noted: one samp
 # 7%. Host CPU: normal 4090 hosts (canute, lieri, kesshouban, crystal) span fork 117-149 ms, cuda_init 0.79-0.88 s, package
 # import 2.0-2.2 s, tokenize 1.4-1.7 ms; the slow class (euclase, eleonora, norgalle, 11-10) is 2-4x, and steps eager SDXL at
 # 193 ms against 120 (capped-sdxl.md).
+H2D_FLOOR_GBPS = 10  # every healthy 4090 host measured 13-27 GB/s; cooro's 3.33 cost Cozy's H3 about 24 s (xs-176)
 POD_RANGE = {'attention_ms': 0.12, 'conv_ms': 0.12, 'gemm_ms': 0.12, 'h2d_gbps': 0.35, 'disk_gbps': 0.6,
              'python_ms': 0.5, 'launch_us': 0.5, 'tokenize_ms': 0.5, 'exec_fork_ms': 0.75, 'cuda_init_ms': 0.5}
 # Whatever is stored: a host whose executor took this long is the slow class (its record's legs, TensorD's own reads).
@@ -606,6 +607,8 @@ def pod_check(cand: Gate, stored: Reference | None) -> tuple[list[str], list[str
     gpus = int(m.group(1)) if (m := re.search(r'x(\d+)(\.|$)', cand['group'])) else 1  # <sku>x<gpus>[.<part>]
     if (stall := before.get('disk_stall_s')) is not None and stall >= DISK_STALL_S:
         out.append(f"disk stalled {stall:.1f} s (requests in flight, none completed)")
+    if (h2d := before.get('h2d_gbps')) is not None and h2d < H2D_FLOOR_GBPS:
+        out.append(f"host-to-GPU {h2d:.2f} GB/s: under {H2D_FLOOR_GBPS} (a narrow link slows every paged weight; cooro, 11-11: 3.33)")
     for k, most in HOST_CEILING.items():
         most += CUDA_INIT_PER_GPU * (gpus - 1) if k == 'cuda_init_ms' else 0
         now = cast(float | None, before.get(k))

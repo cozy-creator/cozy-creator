@@ -21,7 +21,7 @@
 #   need_s     seconds the cap must buy (3600)
 . "$(dirname "$0")/lib.sh"
 CELLS=$(param cells '[]') COMPARE=$(param compare '[]')
-command -v ffmpeg >/dev/null || sudo apt-get install -y -qq ffmpeg >/dev/null 2>&1 || fail "no ffmpeg"
+command -v ffmpeg > /dev/null || fail "no ffmpeg (pod-session.yaml installs it from the tool cache)"
 mapfile -t names < <(jq -r '.[].name' <<<"$CELLS")
 [ "${#names[@]}" -gt 0 ] || fail "no cells"
 for k in "${names[@]}"; do

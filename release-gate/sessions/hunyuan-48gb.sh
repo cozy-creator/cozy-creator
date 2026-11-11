@@ -19,7 +19,7 @@ if [ -n "$URL" ]; then
   curl -fsSL --retry 5 --retry-all-errors "${URL%%#*}" -o "$W" || fail "cannot fetch the runtime wheel"
   [ "$(sha256sum "$W" | cut -c1-64)" = "${URL##*sha256=}" ] || fail "runtime wheel sha256"
 fi
-command -v ffprobe >/dev/null || sudo apt-get install -y -qq ffmpeg >/dev/null 2>&1 || fail "no ffmpeg"
+command -v ffprobe > /dev/null || fail "no ffprobe (pod-session.yaml installs it from the tool cache)"
 PROMPTS=(
   "一只橘猫趴在窗台上晒太阳，水彩画"
   "A lighthouse keeper in a yellow oilskin coat on wet rocks at dusk, photo"
