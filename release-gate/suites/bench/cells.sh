@@ -22,6 +22,16 @@ else
   expect bench-host FAIL "host RAM not held, the cells run on the pod's own: $(cat host-ram)"
 fi
 podsh "sh /var/tmp/bench-pod.sh gpu" > pod-facts.txt 2> /dev/null || log "no GPU facts: $(tail -c 200 pod-facts.txt)"
+# The pod's disk under a direct read (pod.sh disk): one that holds requests and completes none for 10 s or more poisons every
+# cold read and paged weight (jeanne 11-11), so it is refused whatever host this is.
+podsh "sh /var/tmp/bench-pod.sh disk" >> pod-facts.txt 2> /dev/null
+stall=$(sed -n 's/^disk_stall_s=//p' pod-facts.txt)
+log "disk: stall ${stall:-?} s on $(sed -n 's/^disk_device=//p' pod-facts.txt), read $(sed -n 's/^disk_read_gbps=//p' pod-facts.txt) GB/s"
+if [ -z "$ON" ] && awk -v s="${stall:-0}" 'BEGIN {exit !(s >= 10)}'; then
+  echo "disk stalled ${stall} s (requests in flight, none completed)" > host-slow
+  expect bench-disk FAIL "$(cat host-slow)"
+  exit 1
+fi
 # refs <args>: the pictures a cell's prompts mention (<still>, <lead>, <photo>, <teapot>), as the run's own references.
 refs() {
   local nf out=()

@@ -59,6 +59,7 @@ POD_RANGE = {'attention_ms': 0.12, 'conv_ms': 0.12, 'gemm_ms': 0.12, 'h2d_gbps':
 # CUDA init grows with the GPUs it opens: five 2x 4090 hosts in a row read 1545-1616 ms (11-10), the 1x slow class 1.7-2.6 s.
 HOST_CEILING = {'exec_fork_ms': 220.0, 'cuda_init_ms': 1300.0}
 CUDA_INIT_PER_GPU = 400.0
+DISK_STALL_S = 10.0  # pod.sh disk: jeanne's NVMe completed nothing for 25-30 s at a time (11-11)
 SLOW_LEG = 1.5  # a cell whose executor's package import or CUDA init is this much over its baseline's: noted
 DRIFT = 0.03  # the reference workload after the cells against before them
 REPO, TAG = 'cozy-creator/cozy-creator', 'release-gate-baselines'
@@ -143,6 +144,8 @@ class Reference(TypedDict, total=False):
     ctx_mib: float  # an executor's CUDA context: the calibrate call's driver peak less its process's, alone on the GPU
     host_gib: float
     limit_gib: float | None
+    disk_stall_s: float  # pod.sh disk: the longest any disk held requests in flight and completed none
+    disk_read_gbps: float
     clock_mhz: float  # TensorD's reads of the calibrate call: its SM clock and hottest temperature
     temperature_c: float
     attention_ms: float
@@ -161,6 +164,7 @@ class Gate(TypedDict):
     reference: dict[str, Reference]  # before, after
     cells: dict[str, Cell]
     comfyui: dict[str, Comfy]  # measured on this pod after the cells (comfyui.sh), when it ran
+    invalid: str | None  # a gate dir's `invalid` file: why its numbers don't count (a pod fault found after it ran)
 
 
 class Group(TypedDict):
@@ -362,6 +366,9 @@ def reference_of(run: Run | None, facts: str | None = None) -> Reference | None:
         ref['pcie'] = said['pcie']
     if re.fullmatch(r'[0-9.]+', said.get('power_limit_w', '')):
         ref['power_limit_w'] = float(said['power_limit_w'])
+    for k in ('disk_stall_s', 'disk_read_gbps'):  # pod.sh disk
+        if re.fullmatch(r'[0-9.]+', said.get(k, '')):
+            ref[k] = float(said[k])
     return ref
 
 
@@ -395,6 +402,7 @@ def read_gate(d: str, judged: bool = True) -> Gate:
     reference = {w: r for w in ('before', 'after') if (r := reference_of(Run.read(os.path.join(d, f'calibrate-{w}.json')), text(d, 'pod-facts.txt'))) is not None}
     rows = os.path.join(d, 'comfyui-rows.json')
     return {'dir': d, 'group': text(d, 'bench-group') or '?', 'pod': text(d, 'machine'), 'label': text(d, 'label'), 'host': text(d, 'host-ram'), 'reference': reference,
+            'invalid': text(d, 'invalid'),
             'cells': {name: summary(cold[0] if cold else None, warm) for name, (cold, warm) in by.items()},
             'comfyui': cast(dict[str, Comfy], load_json(rows)) if os.path.exists(rows) else {}}  # comfy.py rows wrote it
 
@@ -555,6 +563,8 @@ def pod_check(cand: Gate, stored: Reference | None) -> tuple[list[str], list[str
     if not before:
         return ['no reference workload on this pod'], []
     gpus = int(m.group(1)) if (m := re.search(r'x(\d+)(\.|$)', cand['group'])) else 1  # <sku>x<gpus>[.<part>]
+    if (stall := before.get('disk_stall_s')) is not None and stall >= DISK_STALL_S:
+        out.append(f"disk stalled {stall:.1f} s (requests in flight, none completed)")
     for k, most in HOST_CEILING.items():
         most += CUDA_INIT_PER_GPU * (gpus - 1) if k == 'cuda_init_ms' else 0
         now = cast(float | None, before.get(k))
@@ -590,6 +600,9 @@ def table(gates: list[Gate], base: Baseline | None, defs: list[CellDef], known: 
     version = base['version'] if base else None
     groups = {d['name']: d['group'] for d in defs}
     for g in gates:
+        if g['invalid']:
+            lines += [f"\n### {g['group']} on {g['pod']}: INVALID, not judged: {g['invalid']}"]
+            continue
         group = base['groups'].get(g['group']) if base else None
         verdicts = judge([d for d in defs if in_group(d['group'], g['group'])], g, group, version, known, gates + (beside or []), refs, groups)
         ref = g['reference'].get('before') or {}
@@ -599,7 +612,8 @@ def table(gates: list[Gate], base: Baseline | None, defs: list[CellDef], known: 
                   f"{' (' + str(group['pod']) + ')' if group else ''}",
                   f"pod: {ref.get('gpu', '?')}, driver {ref.get('driver', '?')}, PCIe {ref.get('pcie', '?')}, CPU {ref.get('cpu', '?')} x{ref.get('cores', '?')}"
                   f" (python {ref.get('python_ms', '?')} ms, launch {ref.get('launch_us', '?')} us, fork {ref.get('exec_fork_ms', '?')} ms,"
-                  f" cuda_init {ref.get('cuda_init_ms', '?')} ms), host {ref.get('host_gib', '?')} GiB"
+                  f" cuda_init {ref.get('cuda_init_ms', '?')} ms), disk stall {ref.get('disk_stall_s', '?')} s at {ref.get('disk_read_gbps', '?')} GB/s,"
+                  f" h2d {ref.get('h2d_gbps', '?')} GB/s, host {ref.get('host_gib', '?')} GiB"
                   f" (limit {ref.get('limit_gib', '-')}), {ref.get('temperature_c', '?')} C at start",
                   f"host RAM: {g['host'] or '?'}", '',
                   '| cell | baseline: steady s / warm total s / cold total s / peak GiB | candidate | steady x | total x | ComfyUI s | verdict |',
@@ -646,7 +660,7 @@ def versus(gates: list[Gate], defs: list[CellDef]) -> tuple[list[str], list[str]
         return w, peak, cold
 
     for g in gates:
-        if not g['comfyui']:
+        if not g['comfyui'] or g['invalid']:
             continue
         ctx = (g['reference'].get('before') or {}).get('ctx_mib')
         lines += [f"\n### {g['group']} on {g['pod']}: {g['label']} against ComfyUI {next(iter(g['comfyui'].values()))['comfyui']}"
@@ -758,6 +772,8 @@ def chart(gates: list[Gate], defs: list[CellDef], title: str) -> str:
     grid: dict[str, dict[str, tuple[str, str, str]]] = {}  # row -> GPU -> (text, fill, tooltip)
     gpus: list[str] = []
     for g in gates:
+        if g['invalid']:
+            continue
         base = g['group'].split('.')[0]
         sku, n = base.rsplit('x', 1)
         gpu = sku.upper().replace('RTX-', 'RTX ').replace('-', ' ') + (f' x{n}' if n != '1' else '')
@@ -821,7 +837,7 @@ def scaling(gates: list[Gate], defs: list[CellDef]) -> list[str]:
         return '-' if v is None else f'{v:.{d}f}'
     for g in gates:
         for d in defs:
-            if not d['beats'] or not in_group(d['group'], g['group']):
+            if g['invalid'] or not d['beats'] or not in_group(d['group'], g['group']):
                 continue
             many, one = g['cells'].get(d['name']), g['cells'].get(d['beats'])
             if not many or not one:

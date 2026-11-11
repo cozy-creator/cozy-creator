@@ -7,6 +7,7 @@
 #                  print the facts. Exit 1, saying why, when the hog does not stand.
 #   check          the bytes held now, and what hold was asked to hold
 #   gpu            GPU 0's name, driver, PCIe link and power limit, one key=value a line (bench.py: the pod's facts)
+#   disk [MiB]     a direct read of a file of that size (4096): disk_stall_s, the longest any disk held requests and completed none
 #   vram <bytes|off>  GPU 0 as a card of <bytes> for every other process (vram.py): the previous holder ended first;
 #                  prints '<pid> <held> <free> <total> <others>'; off ends it
 #   release        drop the hog and the VRAM holder; stop the log
@@ -93,6 +94,35 @@ case $1 in
   gpu)
     nvidia-smi -i 0 --query-gpu=name,driver_version,pcie.link.gen.max,pcie.link.width.max,power.limit --format=csv,noheader,nounits |
       awk -F', *' '{print "gpu=" $1; print "driver=" $2; print "pcie=gen" $3 " x" $4; print "power_limit_w=" $5}' ;;
+  disk)
+    # A short direct read of a large file, every disk's /proc/diskstats sampled each 0.5 s: the longest time any device had
+    # requests in flight and completed none (jeanne 11-11: an NVMe completing nothing for 25-30 s at a time, each slow read
+    # exactly its 30 s io_timeout, H3's warm text encode 158-614 s). Prints disk_stall_s, disk_read_gbps, disk_device.
+    f=/var/tmp/bench-disk-probe; mib=${2:-4096}
+    dd if=/dev/zero of=$f bs=16M count=$((mib / 16)) oflag=direct status=none 2>/dev/null || dd if=/dev/zero of=$f bs=16M count=$((mib / 16)) status=none
+    sync; (echo 3 > /proc/sys/vm/drop_caches) 2>/dev/null
+    t0=$(date +%s.%N)
+    dd if=$f of=/dev/null bs=16M iflag=direct status=none 2>/dev/null || dd if=$f of=/dev/null bs=16M status=none &
+    pid=$!
+    awk -v pid="$pid" 'BEGIN {
+      while (1) {
+        cmd = "kill -0 " pid " 2>/dev/null"; alive = (system(cmd) == 0)
+        while ((getline line < "/proc/diskstats") > 0) {
+          split(line, f, " "); d = f[3]
+          if (d !~ /^(nvme[0-9]+n[0-9]+|sd[a-z]+|vd[a-z]+|xvd[a-z]+|md[0-9]+|dm-[0-9]+)$/) continue
+          if (d in done && f[4] == done[d] && f[12] > 0) { stuck[d] += 0.5; if (stuck[d] > worst) { worst = stuck[d]; dev = d } }
+          else stuck[d] = 0
+          done[d] = f[4]
+        }
+        close("/proc/diskstats")
+        if (!alive) break
+        system("sleep 0.5")
+      }
+      printf "disk_stall_s=%.1f\ndisk_device=%s\n", worst, dev
+    }'
+    wait $pid
+    printf 'disk_read_gbps=%s\n' "$(awk -v t0="$t0" -v t1="$(date +%s.%N)" -v mib="$mib" 'BEGIN {printf "%.2f", mib / 1024 * 1.073741824 / (t1 - t0)}')"
+    rm -f $f ;;
   vram)
     if [ -s /var/tmp/bench-vram.ready ]; then
       pid=$(cut -d' ' -f1 /var/tmp/bench-vram.ready); kill "$pid" 2>/dev/null
