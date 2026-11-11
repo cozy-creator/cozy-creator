@@ -575,7 +575,7 @@ def pod_check(cand: Gate, stored: Reference | None) -> tuple[list[str], list[str
         most += CUDA_INIT_PER_GPU * (gpus - 1) if k == 'cuda_init_ms' else 0
         now = cast(float | None, before.get(k))
         if now and now > most:
-            out.append(f"{k} {now:.0f} ms: a slow host CPU (a normal 4090 host is under {most:.0f})")
+            out.append(f"{k} {now:.0f} ms: a slow host CPU (a normal host is under {most:.0f})")
     for k, by in POD_RANGE.items():
         now, was = cast(float | None, before.get(k)), cast(float | None, (stored or {}).get(k))
         if now and was and (1 - now / was > by if k.endswith('_gbps') else now / was - 1 > by):
