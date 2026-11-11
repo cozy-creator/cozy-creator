@@ -1,5 +1,6 @@
 use super::*;
 use super::super::written::Boxed;
+use automerge::transaction::Transactable;
 
 fn current(path: &Path) -> Connection {
     let mut written = Written::blank();
@@ -126,6 +127,13 @@ fn native_corruption_and_missing_identity_never_fall_back_to_sql() {
     let fresh = temp.path().join("unidentified.db");
     create(&fresh, &Stored::default(), &[], &[]).unwrap();
     let fresh_conn = open(&fresh).unwrap();
+    assert!(identity(&fresh_conn).is_some(), "fresh initialization supplies a native identity");
+    let mut native = read_document(&fresh_conn, &fresh).unwrap();
+    native.doc.delete(automerge::ROOT, "identity").unwrap();
+    let tx = fresh_conn.unchecked_transaction().unwrap();
+    save_document(&tx, &fresh, &mut native, 0, None).unwrap();
+    tx.commit().unwrap();
     set_meta(&fresh_conn, &fresh, "id", Some("sql-only")).unwrap();
+    assert!(load(&fresh_conn, &fresh).is_ok(), "the native stream and its recorded heads still match");
     assert!(identity(&fresh_conn).is_none());
 }
