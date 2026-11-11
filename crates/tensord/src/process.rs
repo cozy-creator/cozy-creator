@@ -152,3 +152,75 @@ pub(crate) fn tail_from(path: &std::path::Path, from: u64, limit: u64) -> String
     let _ = file.read_to_end(&mut bytes);
     String::from_utf8_lossy(&bytes).trim().to_string()
 }
+
+/// Where executor cores land (cr-275): `core_pattern`'s directory and the name each core starts with.
+#[cfg(target_os = "linux")]
+static CORES: std::sync::OnceLock<(std::path::PathBuf, String)> = std::sync::OnceLock::new();
+
+/// Executor cores kept, once at start. A pod's `core_pattern` may name a directory its container lacks
+/// (vast's /var/lib/vastai_kaalia/data/), which loses every core: it is made. Each core is capped at
+/// half the disk free now, at most 32 GiB: the soft RLIMIT_CORE, which every executor inherits, is only
+/// ever lowered, so a computer that keeps no cores keeps none.
+pub(crate) fn keep_cores() {
+    #[cfg(target_os = "linux")]
+    {
+        use rustix::process::{Resource, getrlimit, setrlimit};
+        let pattern = std::fs::read_to_string("/proc/sys/kernel/core_pattern").unwrap_or_default();
+        let target = std::path::Path::new(pattern.trim());
+        let place = target.parent().zip(target.file_name()).filter(|(dir, _)| {
+            target.is_absolute() && !dir.to_string_lossy().contains('%')
+        });
+        let mut free = None;
+        if let Some((dir, name)) = place {
+            match std::fs::create_dir_all(dir) {
+                Ok(()) => {
+                    free = rustix::fs::statvfs(dir).ok().map(|disk| disk.f_bavail * disk.f_frsize);
+                    let prefix = name.to_string_lossy().split('%').next().unwrap_or_default().to_string();
+                    let _ = CORES.set((dir.to_path_buf(), prefix));
+                }
+                Err(error) => tracing::info!("executor cores: {} not made: {error}", dir.display()),
+            }
+        }
+        let cap: u64 = free.map_or(32 << 30, |free| (free / 2).min(32 << 30));
+        let mut limit = getrlimit(Resource::Core);
+        if limit.current.is_none_or(|current| current > cap) {
+            limit.current = Some(cap);
+            let _ = setrlimit(Resource::Core, limit);
+        }
+        tracing::info!(
+            "executor cores: core_pattern {}, at most {} MiB each",
+            pattern.trim(),
+            getrlimit(Resource::Core).current.map_or(u64::MAX, |bytes| bytes >> 20)
+        );
+    }
+}
+
+/// After an executor died by a fatal signal: when it left a core, the older ones go and the machine's
+/// log names the one kept.
+pub(crate) fn kept_core(status: &ExitStatus) {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if !status.core_dumped() {
+            return;
+        }
+        let Some((dir, prefix)) = CORES.get().filter(|(_, prefix)| !prefix.is_empty()) else {
+            return tracing::warn!("an executor left a core where core_pattern sends it");
+        };
+        let mut cores: Vec<(std::time::SystemTime, std::path::PathBuf)> = std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with(prefix.as_str()))
+            .filter_map(|entry| Some((entry.metadata().ok()?.modified().ok()?, entry.path())))
+            .collect();
+        cores.sort();
+        let Some((_, newest)) = cores.pop() else { return };
+        for (_, old) in cores {
+            let _ = std::fs::remove_file(old);
+        }
+        tracing::warn!("an executor left its core at {} (the newest only is kept)", newest.display());
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = status;
+}
