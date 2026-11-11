@@ -40,7 +40,8 @@ fn predicate() -> String {
 fn plan(store: &Store, sql: &str, values: &[&dyn rusqlite::ToSql]) -> Vec<String> {
     store.read(|conn| {
         let mut statement = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))?;
-        Ok(statement.query_map(values, |row| row.get(3))?.collect::<rusqlite::Result<_>>()?)
+        let rows = statement.query_map(values, |row| row.get(3))?.collect::<rusqlite::Result<_>>()?;
+        Ok(rows)
     }).unwrap()
 }
 
