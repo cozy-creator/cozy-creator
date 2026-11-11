@@ -498,8 +498,8 @@ class Publish:
     def json(self) -> str: ...
     def replace(self, /, **changes: Unpack[_PublishChanges]) -> Self: ...
 
-_CheckpointItemFields = TypedDict("_CheckpointItemFields", {'output': str, 'repo_id': str, 'revision': str, 'tag': NotRequired[str], 'variant': NotRequired[str]})
-_CheckpointItemChanges = TypedDict("_CheckpointItemChanges", {'output': str, 'repo_id': str, 'revision': str, 'tag': str, 'variant': str}, total=False)
+_CheckpointItemFields = TypedDict("_CheckpointItemFields", {'output': str, 'revision': str, 'tag': NotRequired[str], 'variant': NotRequired[str], 'model_id': NotRequired[str], 'repo_id': NotRequired[str]})
+_CheckpointItemChanges = TypedDict("_CheckpointItemChanges", {'output': str, 'revision': str, 'tag': str, 'variant': str, 'model_id': str, 'repo_id': str}, total=False)
 
 @final
 class CheckpointItem:
