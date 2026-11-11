@@ -133,6 +133,8 @@ pub(super) async fn search(
         total = 1;
     }
     let mut models: Vec<FoundModel> = cards.iter().map(found).collect();
+    // A model named exactly is shown whatever its role: `model ls` of a LoRA's name finds it.
+    let role = role.filter(|_| exact.is_none());
     if role.is_some() && cards.iter().any(|card| card.model.role.is_none()) {
         return Err(role_unavailable());
     }
