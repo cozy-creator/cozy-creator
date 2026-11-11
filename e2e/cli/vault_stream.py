@@ -29,6 +29,7 @@ class Changed(TypedDict, total=False):
     vault: VaultStatus
     skipped_files: list[str]
     recovery_secret: str
+    preserved_source: str | None
 
 
 class VaultEvent(TypedDict, total=False):
@@ -85,8 +86,10 @@ def main() -> None:
     holder = json.loads((Path.home() / ".cozy/calcifer/calcifer.lock.holder").read_text())
     operation = uuid.uuid4().hex
     url = f"http://{holder['address']}/v1/projects/{urllib.parse.quote(str(project.resolve()), safe='')}/vault/operations/{operation}"
+    # An old client omits both policy fields. The new server must still remove plaintext.
+    sources_before = set(project.parent.glob(".cozy-project-source-*"))
     body = json.dumps({"action": "encrypt", "passphrase": credential.read_text().strip(),
-                       "remove_plaintext": True, "idle_timeout_s": 0, "max_duration_s": 86400}).encode()
+                       "idle_timeout_s": 0, "max_duration_s": 86400}).encode()
     headers = {"Authorization": f"Bearer {holder['token']}", "Content-Type": "application/json", "Accept": "text/event-stream"}
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -119,6 +122,9 @@ def main() -> None:
     assert kinds[0] == "accepted"
     assert changed is not None
     assert changed["vault"]["encrypted"] and changed["vault"]["state"] == "unlocked"
+    assert not changed.get("preserved_source")
+    assert set(project.parent.glob(".cozy-project-source-*")) == sources_before
+    assert not (project / "project.db").exists()
     if os.name != "nt":
         assert "files/missing-legacy-image.jpg" in changed["skipped_files"]
         assert not (Path(changed["vault"]["view"]) / "files/missing-legacy-image.jpg").exists()
@@ -131,7 +137,7 @@ def main() -> None:
     assert secret not in json.dumps(rows)
     assert hashlib.sha256(secret.encode()).hexdigest() != rows[0][1]
     connection.close()
-    print(json.dumps({**changed, "stream_proof": {"reattached": True, "admissions": 1, "events": kinds}}))
+    print(json.dumps({**changed, "stream_proof": {"reattached": True, "admissions": 1, "events": kinds, "default_source_removed": True}}))
 
 
 if __name__ == "__main__":

@@ -63,6 +63,56 @@ fn native_project(path: &FsPath, id: &str) {
     conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;").unwrap();
 }
 
+#[test]
+fn encrypted_cleanup_preserves_good_sources_and_recorded_policy() {
+    // Real keybags, native SQLite and durable directory receipts. Installed CLI
+    // tests separately exercise the actual mount/copy/verify provider path.
+    let temp = tempfile::tempdir().unwrap();
+    let id = format!("source-policy-{}", fresh());
+    let created = Keybag::create(&id, SecretString::from("synthetic source policy".to_owned())).unwrap();
+    for (name, remove_source) in [("legacy-keep", false), ("default-remove", true)] {
+        let root = temp.path().join(name);
+        fs::create_dir(&root).unwrap();
+        created.keybag.save(&root.join(KEYBAG_FILE)).unwrap();
+        fs::create_dir(root.join(BACKING)).unwrap();
+        let saved = temp.path().join(format!(".cozy-project-source-{name}"));
+        native_project(&saved, &id);
+        fs::write(saved.join("retained.txt"), b"sole good original").unwrap();
+        let record = Conversion { root: root.clone(), staged: temp.path().join(format!(".cozy-vault-stage-{name}")),
+            saved: saved.clone(), key_id: created.keybag.info().key_id, remove_source, plain: None };
+        let mut wrong = record.clone();
+        wrong.key_id.push_str("-mismatch");
+        save_conversion(&wrong).unwrap();
+        assert!(finish_conversion(&root).is_err());
+        assert!(recover_conversion(&root).is_err());
+        assert_eq!(fs::read(saved.join("retained.txt")).unwrap(), b"sole good original");
+        save_conversion(&record).unwrap();
+        // Restart sees a replacement, but may not delete the original before an
+        // authorized reopen finishes its private journal/verification sequence.
+        recover_conversion(&root).unwrap();
+        assert!(Keybag::load(&root.join(KEYBAG_FILE)).unwrap()
+            .unlock(Credential::Passphrase(SecretString::from("incorrect synthetic passphrase".to_owned()))).is_err());
+        assert!(saved.join("retained.txt").is_file() && receipt_path(&root).is_file());
+        finish_conversion(&root).unwrap();
+        assert_eq!(saved.exists(), !remove_source);
+        assert!(!receipt_path(&root).exists());
+    }
+    // A cancelled copy before the first rename removes only its owned stage,
+    // even when its already-recorded policy requests eventual source removal.
+    let root = temp.path().join("cancelled-copy");
+    native_project(&root, &id);
+    let before = hash(&root.join(db::DB)).unwrap();
+    let staged = temp.path().join(".cozy-vault-stage-cancelled");
+    fs::create_dir(&staged).unwrap();
+    created.keybag.save(&staged.join(KEYBAG_FILE)).unwrap();
+    fs::create_dir(staged.join(BACKING)).unwrap();
+    save_conversion(&Conversion { root: root.clone(), staged: staged.clone(), saved: temp.path().join(".cozy-project-source-cancelled"),
+        key_id: created.keybag.info().key_id, remove_source: true, plain: None }).unwrap();
+    recover_conversion(&root).unwrap();
+    assert_eq!(hash(&root.join(db::DB)).unwrap(), before);
+    assert!(!staged.exists() && !receipt_path(&root).exists());
+}
+
 fn staged(root: &FsPath, name: &str, bag: &Keybag) -> Conversion {
     let directory = root.join(name);
     fs::create_dir(&directory).unwrap();

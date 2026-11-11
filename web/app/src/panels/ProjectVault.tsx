@@ -127,7 +127,7 @@ function VaultBody({ id }: { id: string }) {
   }, [status?.encrypted, status?.state, error])
 
   const change = (action: string, fields: Partial<VaultAsk> = {}) => ask.run(async () => {
-    if (action === "encrypt") setSourceRemoved(false)
+    if (action === "encrypt") { setSourceRemoved(false); setPreserved(null) }
     setPassphrase(""); setConfirmation(""); setRecovery("")
     setSkipped([])
     setOperation({ action, event: null })
@@ -169,7 +169,7 @@ function VaultBody({ id }: { id: string }) {
       queries.setQueryData(vaultKey(id), answer.vault)
       if (answer.recovery_secret) setNewRecovery(answer.recovery_secret)
       if (answer.preserved_source) setPreserved(answer.preserved_source)
-      if (action === "encrypt") setSourceRemoved(!answer.preserved_source)
+      if (action === "encrypt") { setSourceRemoved(!answer.preserved_source); if (!answer.preserved_source) setPreserved(null) }
       if (answer.skipped_files?.length) setSkipped(answer.skipped_files)
       delete answer.recovery_secret
       await queries.invalidateQueries({ queryKey: ["projects"] })
@@ -185,7 +185,7 @@ function VaultBody({ id }: { id: string }) {
     event.preventDefault()
     const fields = action === "unlock"
       ? credential === "recovery" ? { recovery_secret: recovery, ...timeout() } : { passphrase, ...timeout() }
-      : { passphrase, ...(action === "encrypt" ? { preserve_plaintext: preservePlaintext, remove_plaintext: !preservePlaintext } : {}), ...timeout() }
+      : { passphrase, ...(action === "encrypt" ? { ...(preservePlaintext ? { preserve_plaintext: true } : {}), remove_plaintext: !preservePlaintext } : {}), ...timeout() }
     void change(action, fields)
   }
   const timeoutControls = (
