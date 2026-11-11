@@ -55,6 +55,7 @@ type checker struct {
 
 func main() {
 	hub := flag.String("hub", os.Getenv("COZY_HUB_URL"), "explicit Hub origin")
+	production := flag.Bool("production", false, "the Hub is https://tensorhub.com, named so in CI (a release gate that rents there)")
 	out := flag.String("out", "", "where mismatches and call counts go")
 	listen := flag.String("listen", "127.0.0.1:0", "the address cozy calls instead of the Hub")
 	spec := flag.String("spec", "", "an API document file instead of the Hub's own GET /openapi.yaml")
@@ -62,7 +63,7 @@ func main() {
 	if *out == "" {
 		fail(errors.New("--out is required"))
 	}
-	upstream, err := verificationTarget(*hub, os.Getenv("CI") != "" || os.Getenv("GITHUB_ACTIONS") != "")
+	upstream, err := verificationTarget(*hub, os.Getenv("CI") != "" || os.Getenv("GITHUB_ACTIONS") != "", *production)
 	if err != nil {
 		fail(err)
 	}

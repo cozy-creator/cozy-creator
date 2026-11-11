@@ -6,8 +6,8 @@ record or database is not a test fixture.
 
 | Entry point | Previous path | Current boundary |
 | --- | --- | --- |
-| `release-gate.yml` / `gate.sh` | Production device key, account/catalog reads and rentals | No production key; early verified-fixture guard; missing hardware infrastructure fails |
-| `pod-session.yaml` / `sessions/lib.sh` | Production owner login and provider sessions | No production key; guard runs before any session data request |
+| `release-gate.yml` / `gate.sh` | Production device key, account/catalog reads and rentals | Explicit `hub=prod` (CI key, environment release-gate) or `hub=isolated`; no default (Paul 11-11: real pods rent on production) |
+| `pod-session.yaml` / `sessions/lib.sh` | Production owner login and provider sessions | As release-gate.yml |
 | `hubgate.sh` / Hub suite | Production-default read checks and synthetic repositories | CI guard; synthetic writes always require the fixture; manual provider flow remains separate |
 | `e2e/skew/run.sh` | Local disposable Hub for released-client skew | Same fixture, now also accepts current binaries/cohorts and synthetic extension checks |
 | Capability and hubcheck tools | Implicit production target | Explicit target required; direct Go entrypoints reject non-loopback CI targets; outer guard verifies proxy resource/issuer |
@@ -17,9 +17,7 @@ The main `e2e.yaml`, `e2e/lib.sh` and release-suite split are coordinated in the
 Their control-plane fixture must not be reported as real GPU qualification. The same early guard
 covers inherited CLI/import/CPU/MPS paths before they can fall back to production.
 
-Hardware follow-up is explicit in [ISOLATED-HARDWARE-CI.md](ISOLATED-HARDWARE-CI.md). Until private
-GPU/provider fixtures exist, a selected hardware CI job must fail instead of using production or
-claiming a skipped run passed. No public staging deployment is needed.
+Hardware jobs rent on production by an explicit `hub=prod` (Paul, 11-11): only production has providers.
 
 Verification used local unit fixtures only. It did not rent machines, run models, publish packages,
 or call production data APIs.

@@ -5,7 +5,8 @@
 #   gate.sh <SKU> --suite name,... [--gpus N] [--out DIR] [--establish] [--publish] [--runtime F|URL] [--tensorfs F|URL]
 #           [--tensord BIN|URL] [--packages DIR] [--pins name@release,...] [--only cell,cell] [--before FILE]...
 #           [--cells FILE]... [--first pkg,...] [--cli BIN] [--disk GB] [--on MACHINE] [--stall MIN]
-#           [--cap MIN]
+#           [--cap MIN] [--hub prod|isolated]
+# --hub: in CI, the Hub this gate rents on (e2e/test-hub.sh require_ci_rental_hub): prod, tensorhub.com, or a verified isolated one.
 # --on runs on that machine as it is (a dev proof on `local`): no rental, no --before, nothing ended.
 # --stall: how long no run on the machine may stand still before the gate calls its cell hung (`hold`; default 15 minutes).
 # --cap: the job's hard stop in minutes from the gate's start (the workflow's cap_minutes; 300). A download that can't land
@@ -35,7 +36,7 @@ HERE=$2 BEGAN=$3 HOST=$4 BEGUN_IN=$PWD; shift 4; ARGS=("$@")
 . "$HERE/machines.sh"
 REPO=cozy-creator/cozy-creator TAG=release-gate-baselines
 SKU=$1; shift; CAND=() ONLY= EXTRA=() BEFORE=() CLI=cozy DISK=400 OUT= PKGS= ESTABLISH= PUBLISH= PINS= SUITES= K= CLIP= GPUS= FIRST= ON= STALL=15 STALL_STAGE=30 SEEDS= SCENARIO=
-BIN= RW= TW= TD= CAP=300 HOSTS=5
+BIN= RW= TW= TD= CAP=300 HOSTS=5 HUB_TARGET=isolated
 while [ $# -gt 0 ]; do
   case $1 in
     --establish) ESTABLISH=1; shift; continue;;
@@ -52,6 +53,7 @@ while [ $# -gt 0 ]; do
     --on) ON=$2;;
     --stall) STALL=$2;;
     --cap) CAP=$2;;
+    --hub) HUB_TARGET=$2;;
     --packages) PKGS=$(cd "$2" && pwd);;
     --pins) PINS=",$2,";;
     --runtime|--runtime-wheel) RW=$2;;
@@ -63,7 +65,7 @@ while [ $# -gt 0 ]; do
   esac; shift 2
 done
 . "$HERE/../e2e/test-hub.sh"
-require_ci_test_hub || exit 2
+require_ci_rental_hub "$HUB_TARGET" || exit 2
 [ -n "$SUITES" ] || { echo "gate.sh needs --suite: $(ls "$HERE/suites" | paste -sd, -) (release-gate/README.md)" >&2; exit 2; }
 for s in ${SUITES//,/ }; do
   [ -f "$HERE/suites/$s/cells.sh" ] || { echo "no suite $s: $(ls "$HERE/suites" | paste -sd, -)" >&2; exit 2; }
