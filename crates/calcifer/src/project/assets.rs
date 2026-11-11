@@ -40,6 +40,18 @@ fn own_lines(name: &str) -> Error {
     Error::new(Kind::Usage, "project_edit", format!("the project has no box {name}")).next("cozy status")
 }
 
+/// What `tool` makes, as the project last read it, else as reading it now says: none when it can't be read, which refuses nothing.
+async fn made_by(api: &Arc<Api>, folder: &folder::Folder, tool: &str) -> Option<String> {
+    let plain = format::plain_tool(tool, folder);
+    if let Some(kind) = format::kind_made_here(&plain) {
+        return Some(kind.to_owned());
+    }
+    if let Ok(Some(kind)) = folder.reading_lock(|lock| lock.makes.get(&plain).cloned()) {
+        return Some(kind);
+    }
+    crate::toolbox::read(api, tool, &folder.dir).await.ok().map(|(kind, _)| kind)
+}
+
 /// `POST /v1/projects/{id}/assets`: an asset from a tool, its row, and what its drop pushed aside, in one transaction. What the tool makes
 /// comes with the ask or is held already, so a page waits on no read. A client that says nothing has the tool read, which refuses what can't
 /// be one; a Hub that's away refuses nothing, and a render says.
@@ -187,6 +199,11 @@ pub(super) async fn patch(
         Some(tool) => Some(pictures(folder, &name, tool, false).map_err(Refusal)?),
         None => None,
     };
+    // A tool goes on a box of the kind it makes (owner 11-11), whether or not this project has read it yet.
+    let incoming = match asked.tool.as_deref().filter(|tool| !tool.is_empty()) {
+        Some(tool) => made_by(&api, folder, tool).await,
+        None => None,
+    };
     // A tool going on a picture or a video starts from it: in its first required slot of that kind, else at the start of its first prompt.
     let start = match (&asked.tool, &holds) {
         (Some(tool), Some(Some((_, kind)))) if !tool.is_empty() => crate::toolbox::fields_of(&api, tool, &folder.dir).await.and_then(|fields| {
@@ -223,11 +240,11 @@ pub(super) async fn patch(
                 return Err(Error::new(Kind::Validation, "asset_tool_kind", "Video Edit uses its built-in editor")
                     .remedy("Keep the built-in editor for a Video Edit node; choose a matching model for an Image or Video node"));
             }
-            let incoming = format::kind_made_here(&plain).map(str::to_owned)
-                .or_else(|| folder.reading_lock(|lock| lock.makes.get(&plain).cloned()).ok().flatten());
-            if !tool.is_empty() && incoming.as_deref().is_some_and(|kind| kind != format::node_media(next)) {
-                return Err(Error::new(Kind::Validation, "asset_tool_kind", format!("this {next} node cannot use a model that produces {}", incoming.as_deref().unwrap_or_default()))
-                    .remedy("Choose a model that matches the node's media type"));
+            if let Some(makes) = incoming.as_deref().filter(|kind| *kind != format::node_media(next)) {
+                let mut refused = Error::new(Kind::Validation, "asset_tool_kind", format!("this {next} node cannot use a model that produces {makes}"))
+                    .remedy(format!("Choose a model that matches the node's media type, or put {tool} on a new {makes} node that mentions <{name}>"));
+                refused.metadata = Some(serde_json::json!({ "makes": makes, "node": next }));
+                return Err(refused);
             }
             fields.insert(format::NODE_KIND.to_owned(), Value::String(next.to_owned()));
             written.with_tool(&name, tool, *holds, start.clone(), &mut fields)?;

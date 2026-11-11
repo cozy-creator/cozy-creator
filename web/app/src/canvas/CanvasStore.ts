@@ -36,7 +36,7 @@ import { faceOf, heightFor, madeHere, makes, NARROWEST, paints, ratioOf, refusal
 import { mentionsIn, rowsIn, textsIn } from "./text"
 import { clipOf, wire } from "./timeline/model"
 import { PageHistory, type Target } from "./history"
-import { comingOff, goingOn, holdsPictures, type ToolStep } from "./toolchange"
+import { comingOff, goesBeside, goingOn, holdsPictures, startsFrom, type ToolStep } from "./toolchange"
 import { isVideoEdit, toolFitsNode, type Operation } from "./palette"
 import { isSelf, mentionFrom, numbersOf, SELF, versionIn, versionOf } from "./versions"
 
@@ -202,6 +202,8 @@ const NOT_YET = Number.POSITIVE_INFINITY
 export const UNDO_MS = 10_000
 const TYPING_PAUSE_MS = 800
 const CLEAR_OF_FRAME = 24
+/** The gap between a box and one made beside it. */
+const BESIDE = 32
 
 /** A picture its words mention, faded behind them: its file, or with none yet its frame's shape and whether it's being made. */
 export interface Ghost {
@@ -307,6 +309,8 @@ export class CanvasStore {
   leaveHere: () => void = () => {}
   /** Opens a box where it stands, as a click on it does. */
   openHere: (name: string) => void = () => {}
+  /** A new box of `tool` at a point, starting with `fields`, as a tool dropped there makes. */
+  addToolAt: (tool: Tool, point: { x: number; y: number }, fields?: Record<string, unknown>, operation?: Operation) => void = () => {}
   /** The box to open on its next take's words: an image tool was just put on its pictures. */
   writeOnOpen: string | null = null
   /** Fits the canvas to the box being worked on, and all around it. `only`: only if something no longer fits. */
@@ -1588,20 +1592,32 @@ export class CanvasStore {
 
   // What makes a box
 
-  /** `tool` goes on it, or takes the place of the one there. What it can't take is said, with Undo. */
-  putTool(name: string, tool: Tool) {
+  /** `tool` goes on it, or takes the place of the one there. What it can't take is said, with Undo. On files of another kind it's a new box beside
+   *  them that mentions them (tools §9). `operation`: the palette's row it came from. */
+  putTool(name: string, tool: Tool, operation?: Operation) {
     const key = this.resolveName(name)
     const view = this.views.get(key)
     if (!view?.asset || view.asset.tool === tool.id) return
+    if (goesBeside(tool, view.asset)) return this.toolBeside(key, view.asset, tool, view.viewed, operation)
     if (!toolFitsNode(tool, view.asset)) return void say(`${toolName(tool)} makes ${tool.makes}; it cannot attach to this ${isVideoEdit(view.asset) ? "Video Edit" : view.asset.kind} node`)
     void this.save(key)
     const step = goingOn(view.asset, { ...view.asset.fields, ...view.sent, ...view.drafts }, this.tools.get().get(view.asset.tool ?? ""), tool, view.viewed)
     this.retool(key, step, step.lost.length ? `${name} runs ${toolName(tool)} now, which can't take ${step.lost.join(" or ")}` : undefined)
+    if (operation) this.patch(key, { operation })
     // On pictures, an image tool opens on its next take's words; anything else opens as it is.
     if (tool.makes !== "image" || !holdsPictures(view.asset)) return this.openHere(key)
     if (this.inPlace?.name === key) return this.writeNext(key, true)
     this.writeOnOpen = key
     this.openHere(key)
+  }
+
+  /** A box of `tool` beside `key`, mentioning the version looked at there, else the box, where the tool reads that kind, else first in its prompt. */
+  private toolBeside(key: string, asset: Asset, tool: Tool, looked?: number, operation?: Operation) {
+    const box = this.boxOf(key, true)
+    if (!box) return
+    const mention = `<${looked ? `${key}.${looked}` : key}>`
+    this.addToolAt(tool, { x: box.x + box.w + BESIDE + CARD_WIDTH / 2, y: box.y + 16 }, startsFrom(tool, asset.kind, {}, mention), operation)
+    say(`${toolName(tool)} makes ${tool.makes === "image" ? "an image" : tool.makes}, so it's a new box that reads ${key}`)
   }
 
   /** Its tool's X leaves a typed container and its words. A note offers Undo for a while. */
