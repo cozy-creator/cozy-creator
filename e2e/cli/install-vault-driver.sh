@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 # The optional filesystem driver on a fresh Ubuntu 24.04 runner, without its failing Azure mirror.
 set -euo pipefail
+for host in archive.ubuntu.com security.ubuntu.com github.com mirrors.kernel.org; do
+  printf 'DNS before vault setup: %s\n' "$host"
+  if addresses=$(timeout 10s sudo getent ahosts "$host"); then
+    awk '!seen[$1]++ { print $1 }' <<< "$addresses"
+  else
+    printf 'DNS lookup failed: %s (exit %s)\n' "$host" "$?"
+  fi
+done
+[ "${1:-}" != --dns-only ] || exit 0
 apt_root=${RUNNER_TEMP:?}/cozy-vault-apt
 mkdir -p "$apt_root"/{sources,lists/partial,cache/archives/partial}
 cat > "$apt_root/noble.list" <<'SOURCES'
