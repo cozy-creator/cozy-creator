@@ -11,6 +11,7 @@
         the pod's reference workload against its GPU type's stored one; exit 1 when out of range
     bench.py noise <gate dir>...     each cell's run-to-run spread over its warm runs
     bench.py chart <gate dir>... [--out FILE] [--title T]   the ComfyUI comparison as an SVG grid (model x GPU)
+    bench.py scaling <gate dir>...   each multi-GPU cell against its one-GPU cell: transport, dense and sparse steps, speed-up
 A gate dir is gate.sh's --out after suite `bench` (suites/bench/cells.sh): bench.tsv names each cell's runs
 (cell, cold|warm, record, the VRAM holder's MiB), bench-group its group (<sku>x<gpus>), calibrate-{before,after}.json the reference workload.
 Outputs are judged with numpy and ffmpeg: uv run -q --no-project --with numpy python -I bench.py ..."""
@@ -676,7 +677,7 @@ def versus(gates: list[Gate], defs: list[CellDef]) -> tuple[list[str], list[str]
                          f" {pair(steady[0], steady[1], 3)} | {pair(peak[0], peak[1], 1)} | {pair(sec(cold), x['cold_s'], 1)} |"
                          f" {'; '.join(gaps) or ('no: ComfyUI ' + x['status'] if x['status'] != 'ok' else 'no')}{mixed} |")
         for name, x in g['comfyui'].items():
-            if name.startswith('h3'):
+            if next((d['comfyui'] for d in defs if d['name'] == name), '').startswith('h3'):
                 lines += stage_lines(name, g, x)
     return lines, losses
 
@@ -805,6 +806,36 @@ def chart(gates: list[Gate], defs: list[CellDef], title: str) -> str:
     return '\n'.join(out + ['</svg>'])
 
 
+def scaling(gates: list[Gate], defs: list[CellDef]) -> list[str]:
+    """Each multi-GPU cell against the one-GPU cell it must beat (`beats`), on the same pod: the transport its group used
+    (route, degree, mapped/exact), warm total and denoise, the steps by half (H3 Turbo: four dense, then four sparse), and
+    the speed-up."""
+    out = ['| pod | cells | transport | warm total s: 1 GPU / N | speed-up | denoise s: 1 / N | dense step s: 1 / N | sparse step s: 1 / N |',
+           '|---|---|---|---|---|---|---|---|']
+
+    def half(series: list[float], which: int) -> float | None:
+        part = series[: len(series) // 2] if which == 0 else series[len(series) // 2:]
+        return sum(part) / len(part) / 1000 if part else None
+
+    def f(v: float | None, d: int = 1) -> str:
+        return '-' if v is None else f'{v:.{d}f}'
+    for g in gates:
+        for d in defs:
+            if not d['beats'] or not in_group(d['group'], g['group']):
+                continue
+            many, one = g['cells'].get(d['name']), g['cells'].get(d['beats'])
+            if not many or not one:
+                continue
+            t = many['transport']
+            route = f"{t['route']} x{t['degree']} mapped={t['mapped']} exact={t['exact']}" if t else 'none recorded'
+            a, b = one['warm'].get('total_ms'), many['warm'].get('total_ms')
+            da, db = one['warm'].get('denoise_ms'), many['warm'].get('denoise_ms')
+            out.append(f"| {g['group']} on {g['pod']} | {d['beats']} / {d['name']} | {route} | {f(a and a / 1000)} / {f(b and b / 1000)} |"
+                       f" {f(a / b if a and b else None, 2)}x | {f(da and da / 1000)} / {f(db and db / 1000)} |"
+                       f" {f(half(one['series'], 0), 2)} / {f(half(many['series'], 0), 2)} | {f(half(one['series'], 1), 2)} / {f(half(many['series'], 1), 2)} |")
+    return out
+
+
 def baseline(version: str, gates: list[Gate], refs: str) -> Baseline:
     """The gates as a release's stored numbers, Cozy's only; each cell's judged output copied into `refs` under its asset name."""
     os.makedirs(refs, exist_ok=True)
@@ -873,6 +904,9 @@ def main(argv: list[str]) -> int:
         print('\n' + '\n'.join(f'FAIL {f}' for f in fails) if fails else '')
         print(f"VERDICT {'FAIL' if fails else 'PASS'} ({len(fails)} failing cells)")
         return 1 if fails else 0
+    if verb == 'scaling':
+        print('\n'.join(scaling([read_gate(d, judged=False) for d in rest], defs)))
+        return 0
     if verb == 'chart':
         svg = chart([read_gate(d, judged=False) for d in rest], defs, opt.get('--title', 'Cozy against ComfyUI'))
         with open(opt.get('--out', 'chart.svg'), 'w') as f:

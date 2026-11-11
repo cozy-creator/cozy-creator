@@ -6,7 +6,9 @@ comfyui.sh, which runs this).
     comfy.py rows <gate dir>      here: comfyui/bench-comfy.jsonl as the group's ComfyUI rows (bench.py's Comfy)
 A capped cell's job runs beside the suite's VRAM holder at the cell's level (pod.sh vram), the holder Cozy's run had."""
 import argparse
+import copy
 import importlib
+import re
 import json
 import os
 import statistics
@@ -33,6 +35,8 @@ class Job(TypedDict):
     length: int | None  # a video's seconds
     cap_gib: int | None  # a capped cell's level: ComfyUI runs beside a holder that leaves this much of the GPU
     scout_s: float | None  # a matrix cell: Cozy's first warm total; ComfyUI stops after its own when faster (Paul 10-28: scout first)
+    gpus: int  # the cell's --gpus: ComfyUI splits over as many (MultiStream), exchanging as Cozy's group did
+    exchange: str  # p2p where Cozy's group went peer to peer (nccl, copy-engine), else host
     record: object  # the cell's cold Cozy record: the kernels and Sol schedule ComfyUI is matched to
 
 
@@ -77,6 +81,14 @@ def request_of(record: dict[str, object]) -> tuple[Request, int | None]:
     return {'prompt': text_of(inp.get('prompt')), 'seed': int(str(seed))}, None
 
 
+def exchange_of(records: list[dict[str, object]]) -> str:
+    """MultiStream's exchange for what Cozy's group used: p2p where its transport mapped peer memory, else host."""
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
+    import bench  # release-gate/bench.py
+    t = next((t for r in records if (t := bench.transport_of(r)) is not None), None)
+    return 'p2p' if t and t['route'] in ('nccl', 'copy-engine') else 'host'
+
+
 def total_s(record: dict[str, object]) -> float | None:
     a, b = record.get('created_at_ms'), record.get('settled_at_ms')
     return (b - a) / 1000 if isinstance(a, int) and isinstance(b, int) else None
@@ -100,7 +112,9 @@ def jobs(gate: str) -> list[Job]:
         reqs = [request_of(r) for r in records]
         out.append({'cell': cell, 'key': defs[cell]['comfyui'], 'tiers': ['cold'] + [f'w{i}' for i in range(1, len(runs))],
                     'requests': [q for q, _ in reqs], 'length': reqs[0][1], 'cap_gib': int(defs[cell]['cap']) if defs[cell]['cap'] else None,
-                    'scout_s': total_s(records[1]) if matrix and len(records) > 1 else None, 'record': records[0]})
+                    'scout_s': total_s(records[1]) if matrix and len(records) > 1 else None,
+                    'gpus': int(m.group(1)) if (m := re.search(r'--gpus=(\d+)', defs[cell]['args'])) else 1,
+                    'exchange': exchange_of(records), 'record': records[0]})
     return out
 
 
@@ -147,6 +161,12 @@ def run(path: str) -> None:
     held = 0
     for j in todo:
         m = bm.CELLS['models'][j['key']]
+        if j.get('gpus', 1) > 1:  # the cell's GPUs and exchange, into this cell's own copy of the runner's model
+            m = copy.deepcopy(m)
+            n = j['gpus']
+            m['comfy']['values'] |= {'ngpus': n, 'ms_gpus': ','.join(str(i) for i in range(n)), 'exchange': j.get('exchange', 'host')}
+            if 'matched' in m['comfy'].get('arms', {}):
+                m['comfy']['arms']['matched'] = dict(m['comfy']['arms']['matched'], values=dict(m['comfy']['arms']['matched'].get('values', {}), ngpus=n))
         pin = bm.PINS['comfyui']
         if j['cap_gib'] != cap:
             cap, held = j['cap_gib'], holder(j['cap_gib'])
