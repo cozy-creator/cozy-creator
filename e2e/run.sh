@@ -26,8 +26,9 @@ run_project() {
 # when none came in RUN_NUMBER_S (default 1860 s: local code installs before its call is sent, cold on a new pod). Each doubling wait
 # without one is said on stderr (attempt k/5, with the follower's last line); after the fifth the follower is ended,
 # never a run.
-# run_transient <err file>: the CLI could not reach Calcifer (restarting, 503, refused or no answer): try again, not a failure.
-run_transient() { grep -qiE '503 Service Unavailable|connection refused|no answer for|error sending request|Calcifer (is )?(not running|unreachable|restart)' "$1" 2> /dev/null; }
+# run_transient <err file>: the CLI could not reach Calcifer (restarting, 503, refused or no answer), said on stderr or, with
+# --json, as the error line beside it: try again, not a failure.
+run_transient() { grep -qiE '503 Service Unavailable|connection refused|no answer for|error sending request|Calcifer (is )?(not running|unreachable|restart)' "$1" "${1%.err}.ndjson" 2> /dev/null; }
 
 # run_submit: as run_submit1, again with backoff and jitter while Calcifer is unreachable and no run was made (a restart of
 # this computer's cozy: its runs keep going on their machines, but a call sent meanwhile is refused), for about 5 minutes.
