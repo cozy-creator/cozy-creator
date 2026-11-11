@@ -269,6 +269,7 @@ case $SHARD in
   project-stream) parts="project_stream logs" ;;
   project-stream-web) DB_WEB="drawers activity versions timeline"; parts="tools_read db_existing_web logs" ;;
   web-core) parts="tools_read web_core page_resend logs" ;;
+  web-firefox) parts="tools_read web_firefox logs" ;;
   web-scale) export DB_WEB=scale; parts="tools_read db_existing_web logs" ;;
   web-layout-1280) export DB_WEB=layout SIZES=1280x720; parts="tools_read db_existing_web logs" ;;
   web-layout-1600) export DB_WEB=layout SIZES=1600x1000,1600x1000@1.25; parts="tools_read db_existing_web logs" ;;

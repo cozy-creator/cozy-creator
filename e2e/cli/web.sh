@@ -35,6 +35,7 @@ redeem() { answers "$1" "$2" "$3" -X POST -H 'Content-Type: application/json' -d
 # The merge check keeps functional journeys here; layout runs in parallel and scale is an explicit benchmark.
 web_core() { web_serves core; }
 web_native() { web_serves native; }
+web_firefox() { web_serves firefox; }
 
 web_serves() {
 step "web-serves: sign in, the page under its CSP, an event, and what is refused"
@@ -50,6 +51,10 @@ addr=$(jq -r .address < "$lock") token=$(jq -r .token < "$lock") base=http://$ad
 # One red pixel.
 base64 -d > "$pic" <<< 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg=='
 web_signed_in
+if [ "$scope" = firefox ]; then
+  web_engines "$chrome" "$pw" place
+  return
+fi
 step "web-place: dropped and chosen files on the canvas, a rename, a move, a reload"
 web_proof place "$chrome" "$pw" ''
 step "web-reconnect: one stream across tabs, and kill -9 of Calcifer with no reload"
@@ -166,7 +171,7 @@ web_engines() {
   step "web-$ENGINE: place, see and nodes, in Playwright's $ENGINE"
   node "$pw/node_modules/playwright-core/cli.js" install "$ENGINE" > "$OUT/web-$ENGINE-install.log" 2>&1 \
     || { check "web-$ENGINE: install failed: $(tail -c 300 "$OUT/web-$ENGINE-install.log")"; return; }
-  for cell in place see nodes; do web_proof "$cell" "$chrome" "$pw" ''; done
+  for cell in ${3:-place see nodes}; do web_proof "$cell" "$chrome" "$pw" ''; done
 }
 
 # A command that kills this Calcifer and brings it back, as the page finds it: at its own port, its sessions kept. `cozy status` only
