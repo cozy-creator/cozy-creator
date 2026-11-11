@@ -9,9 +9,10 @@
 #   cells      [{"name", "tree" (a packages_refs name; absent, `target` is a published `<package>/<function>[@release]`,
 #              run from the packages directory: an unchanged release on a candidate Runtime), "target"
 #              ("<package>/<function>"), "args" ([inputs and flags]),
-#              "update" (optional: {"runtime", "tensorfs"}, each a wheel URL or, for runtime, a cozy-runtime dev-build
-#              run id, and "gpu_memory_limit" (`10GiB`, `off`: the development VRAM cap); the pod's `machine update`
-#              before this cell, so cells before and after compare two pairs)}];
+#              "update" (optional: {"runtime", "tensorfs", "tensord"}: a release version (`0.45.0`), or for runtime and
+#              tensorfs a wheel URL, or for runtime a cozy-runtime dev-build run id; and "gpu_memory_limit" (`10GiB`,
+#              `off`: the development VRAM cap); the pod's `machine update` before this cell, so cells before and after
+#              compare two pairs)}];
 #              "expect" (optional: the status the cell must end in, `completed` by default; `failed` for a refusal it proves);
 #              "download" (optional: [[model ref, `cozy model download` flags…], …] made present on the pod first, so
 #              the cell's run starts with its weights on disk, as a machine whose package was installed earlier does);
@@ -38,6 +39,7 @@ jq -e --argjson n "$(jq -c 'map(.name)' <<<"$CELLS")" 'all(.[]; length == 2 and 
 wheel() {
   local d=$OUT/wheels/$1-$2; mkdir -p "$d"
   case $3 in
+    [0-9]*.[0-9]*.[0-9]*) echo "$3"; return 0 ;;  # a release: the machine fetches it itself
     https://*) curl -fsSL --retry 5 -o "$d/${3##*/}" "$3" || return 1 ;;
     *) gh run download "$3" -R cozy-creator/cozy-runtime -p 'cozy-runtime-*' -D "$d" >/dev/null 2>&1 || return 1 ;;
   esac
@@ -46,8 +48,9 @@ wheel() {
 declare -A UPDATE=()
 for k in "${names[@]}"; do
   w=()
-  for kind in runtime tensorfs; do
+  for kind in tensord runtime tensorfs; do
     src=$(jq -r --arg k "$k" --arg t "$kind" 'map(select(.name==$k)) | first | .update[$t] // empty' <<<"$CELLS"); [ -n "$src" ] || continue
+    [[ $kind != tensord || $src =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "cell $k: tensord takes a release version, not $src"
     f=$(wheel "$k" "$kind" "$src") && [ -n "$f" ] || fail "cell $k: no $kind wheel from $src"
     say "cell $k: updates $kind to ${f##*/}"; w+=("--$kind" "$f")
   done
