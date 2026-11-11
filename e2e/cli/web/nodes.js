@@ -10,7 +10,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
 const { existsSync, readFileSync, readdirSync, renameSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { projectFromPage, projectAction, projectJson, calcifer, carry, signIn, MP4, boxLog, boxOf, closeBox, openBox, openCanvas, fitCanvas, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, renderOf, rowsOf, settled, until, watchBoxes, importYaml, yamlOf } = require('./page');
+const { chooseModel, projectFromPage, projectAction, projectJson, calcifer, carry, signIn, MP4, boxLog, boxOf, closeBox, openBox, openCanvas, fitCanvas, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, renderOf, rowsOf, settled, until, watchBoxes, importYaml, yamlOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -160,7 +160,7 @@ function linesOf(text, name) {
     return until('a box from the tool', async () => (await state()).assets.find((held) => !namesBefore.includes(held.name)), Boolean);
   };
   await until('the list back', () => page.locator('.tools .tool').count(), (n) => n > 0);
-  const firstTool = page.locator('.tools [data-palette="tools"] .tool:not([data-kind=text])').first();
+  const firstTool = page.locator('.tools [data-palette="tools"] .tool[data-operation="image"]');
   const kind = await firstTool.getAttribute('data-kind');
   // A box is called what its tool's published node says, `image_1` for Qwen Image 2, else its package's word, numbered up from there.
   const dragged = await firstTool.getAttribute('data-tool');
@@ -189,11 +189,11 @@ function linesOf(text, name) {
   await until('that box gone', () => box(made.name).count(), (n) => n === 0);
   check('list_keeps_words', /\n  kept_words:\n    description: \|\n      Written\n      by hand\.\n/.test(yaml()), yaml());
 
-  // Basic nodes survive a fresh read without acquiring a model. The fourth type is an intrinsic timeline, not a generative video.
+  // Basic nodes survive a fresh read without acquiring a model. The editor is an intrinsic timeline, distinct from generative video.
   const basic = page.locator('.tools [data-palette="nodes"] li.tool');
-  check('basic_palette_has_exactly_four_types', JSON.stringify(await basic.locator('b').allTextContents()) === JSON.stringify(['Text', 'Image', 'Video', 'Video Edit']));
+  check('basic_palette_has_exactly_five_types', JSON.stringify(await basic.locator('b').allTextContents()) === JSON.stringify(['Image', 'Video', 'Video Editor', 'Audio', 'Text']));
   const blanks = {};
-  for (const kind of ['text', 'image', 'video', 'video_edit']) {
+  for (const kind of ['image', 'video', 'video_edit', 'audio', 'text']) {
     await away();
     const point = await openCanvas(page);
     blanks[kind] = await dragOut(page.locator(`.tools [data-palette="nodes"] li.tool[data-node="${kind}"]`), point.x, point.y);
@@ -203,12 +203,12 @@ function linesOf(text, name) {
   await page.locator('.react-flow').waitFor();
   const afterReload = await state();
   const blank = (kind) => afterReload.assets.find((held) => held.name === blanks[kind].name);
-  check('blank_media_types_persist_without_models', ['image', 'video'].every((kind) => blank(kind)?.kind === kind && blank(kind)?.fields?.node_kind === kind && !blank(kind)?.tool && !('text' in (blank(kind)?.fields ?? {}))), { image: blank('image'), video: blank('video') });
+  check('blank_media_types_persist_without_models', ['image', 'video', 'audio'].every((kind) => blank(kind)?.kind === kind && blank(kind)?.fields?.node_kind === kind && !blank(kind)?.tool && !('text' in (blank(kind)?.fields ?? {}))), { image: blank('image'), video: blank('video'), audio: blank('audio') });
   check('text_and_videoedit_keep_intrinsic_behavior', blank('text')?.kind === 'text' && !blank('text')?.tool && blank('video_edit')?.tool === 'cozy/edit' && blank('video_edit')?.fields?.node_kind === 'video_edit' && Boolean(blank('video_edit')?.timeline), { text: blank('text'), videoEdit: blank('video_edit') });
-  const h3 = page.locator('.tools [data-palette="tools"] .tool[data-model$="/minimax-h3"]');
-  await h3.waitFor();
-  check('h3_primary_is_video', await h3.getAttribute('data-kind') === 'video');
-  const h3Id = await h3.getAttribute('data-tool');
+  const videoTool = page.locator('.tools [data-palette="tools"] .tool[data-operation="video"]');
+  await videoTool.waitFor();
+  check('video_operation_outputs_video', await videoTool.getAttribute('data-kind') === 'video');
+  const videoToolId = await videoTool.getAttribute('data-tool');
   const onto = async (row, name) => {
     await away();
     await fitCanvas(page);
@@ -218,16 +218,16 @@ function linesOf(text, name) {
     await carry(page, row, { x: target.x + target.width / 2, y: target.y + target.height / 2 });
   };
   const allBefore = (await state()).assets.map((held) => held.name).sort();
-  for (const kind of ['image', 'video_edit']) {
+  for (const kind of ['image', 'audio', 'text', 'video_edit']) {
     const name = blanks[kind].name;
-    await onto(h3, name);
+    await onto(videoTool, name);
     await until('incompatible drop explained', () => page.locator('.notes, .note-list, [role=status]').allInnerTexts(), (notes) => notes.some((text) => text.includes(name) && (text.includes("can't go on") || text.includes('node'))));
     const now = await of(name);
-    check(`h3_rejected_by_${kind}_without_extra_node`, now.tool === blank(kind).tool && now.kind === blank(kind).kind && JSON.stringify((await state()).assets.map((held) => held.name).sort()) === JSON.stringify(allBefore), now);
+    check(`video_rejected_by_${kind}_without_extra_node`, now.tool === blank(kind).tool && now.kind === blank(kind).kind && JSON.stringify((await state()).assets.map((held) => held.name).sort()) === JSON.stringify(allBefore), now);
   }
-  await onto(h3, blanks.video.name);
-  await until('video takes its compatible model', () => of(blanks.video.name), (held) => held.tool === h3Id);
-  check('video_accepts_h3_without_exposing_type_hint', (await of(blanks.video.name)).fields?.node_kind === 'video' && await page.locator('[data-field="node_kind"]').count() === 0);
+  await onto(videoTool, blanks.video.name);
+  await until('video takes its compatible model', () => of(blanks.video.name), (held) => held.tool === videoToolId);
+  check('video_accepts_operation_without_exposing_type_hint', (await of(blanks.video.name)).fields?.node_kind === 'video' && await page.locator('[data-field="node_kind"]').count() === 0);
   check('opening_model_keeps_the_two_sidebar_lists', JSON.stringify(await page.locator('.tools h4').allTextContents()) === JSON.stringify(['Nodes', 'Tools']) && await page.locator('.tools .box-shelf-head, .tools input, .tools .picks').count() === 0);
   await box(blanks.video.name).locator('button[aria-label^="Take "]').first().click();
   await until('video model removed', () => of(blanks.video.name), (held) => !held.tool);
@@ -235,12 +235,13 @@ function linesOf(text, name) {
   await away();
   for (const held of Object.values(blanks)) await api(`/v1/projects/${id}/assets/${encodeURIComponent(held.name)}`, { method: 'DELETE' });
 
-  // Local code is listed, and says so: the box Paul's example uses comes from here, dragged like any tool, and called what a person calls it.
-  const fromTheList = page.locator('.tools [data-palette="tools"] .tool[data-local]').first();
+  // Local implementations are chosen inside the Image operation, then named on their node.
+  const fromTheList = page.locator('.tools [data-palette="tools"] .tool[data-operation="image"]');
   const dropBox = async (name, x, y) => {
     await until('nothing being rendered, so it can be named', () => state(), (now) => !now.busy, FIRST_RUN_MS);
     const fresh = await dragOut(fromTheList, x, y);
-    await open(fresh.name);
+    await chooseModel(page, fresh.name, tool, "image");
+    await until("local model selected", () => of(fresh.name), (held) => held.tool === tool);
     await box(fresh.name).locator('.nm').dblclick();
     await page.waitForSelector('.nm-field');
     await page.keyboard.type(name);
@@ -252,10 +253,10 @@ function linesOf(text, name) {
   let tool = 'no-such-package-here';
   if (local) {
     await fromTheList.waitFor({ timeout: FIRST_RUN_MS });
-    const wire = (await api(`/v1/tools?project=${id}`)).body.tools.find((held) => held.local);
+    const wire = (await api(`/v1/tools?project=${id}`)).body.tools.find((held) => held.local && held.id === `${drawer}/draw`);
     tool = wire.id;
     check('local_tool_says_so', wire.local && !wire.label.includes('(local)') && wire.id.startsWith(drawer), wire);
-    check('local_tools_are_editable', (await page.locator(`.tools [data-palette="tools"] .tool[data-local][data-package="${wire.package}"]`).count()) > 0);
+    check("local_tool_remains_available_in_metadata", Boolean(wire) && wire.makes === "image", wire);
     // A retry of a new asset makes no `_2`, on the wire. Calcifer keeps a key a day whatever the project (cl-812): each pass, its own.
     const body = JSON.stringify({ tool, at: { x: 0, y: 0, w: 300 }, name: 'Twice' });
     const twice = `nodes-twice-${id}`;
@@ -561,7 +562,7 @@ function linesOf(text, name) {
     // Read with this machine's Runtime, as a run reads it: PyPI's can't, and this may be the first run of it here.
     execFileSync(COZY, ['--json', 'run', `${fixture}/still`, 'prompt=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, stdio: ['ignore', 'pipe', 'inherit'], timeout: FIRST_RUN_MS });
     const wire = await until('its functions listed', async () => (await api(`/v1/tools?project=${id}`)).body.tools.filter((held) => held.local && held.id.startsWith(fixture)), (held) => held.length > 0, FIRST_RUN_MS);
-    const labelOf = (name) => wire.find((held) => held.function === name).label;
+    const implementationOf = (name) => wire.find((held) => held.function === name);
     const reload = async () => {
       await page.reload();
       await page.waitForSelector('.react-flow__node');
@@ -572,7 +573,14 @@ function linesOf(text, name) {
     await reload();
     const place = async (name) => {
       await away();
-      await page.locator('.tools li.tool', { has: page.locator(`b:text-is("${labelOf(name)}")`) }).click();
+      const point = await openCanvas(page);
+      const fresh = await dragOut(page.locator('.tools [data-operation="image"]'), point.x, point.y);
+      await chooseModel(page, fresh.name, implementationOf(name).id, 'image');
+      await until('the selected implementation lands', () => of(fresh.name), (held) => held.tool === implementationOf(name).id);
+      await box(fresh.name).locator('.nm').dblclick();
+      await page.waitForSelector('.nm-field');
+      await page.keyboard.type(`${name}_1`);
+      await page.keyboard.press('Enter');
       await box(`${name}_1`).waitFor();
       await open(`${name}_1`);
     };
@@ -580,7 +588,7 @@ function linesOf(text, name) {
     await place('still');
     const still = box('still_1');
     await until('one prompt', () => still.locator('.mention-text:not([data-field=description])').count(), (n) => n === 1);
-    check('fresh_box_is_its_prompt', (await still.locator('.in-frame .mention-text[data-field=instructions]').count()) === 1 && (await still.locator('.here-all input, .here-all select, .beat, .edit-more').count()) === 0, await still.innerText());
+    check('fresh_box_is_its_prompt', (await still.locator('.in-frame .mention-text[data-field=instructions]').count()) === 1 && (await still.locator('.here-all input, .here-all select, .beat, .edit-more').evaluateAll((elements) => elements.filter((element) => !element.closest('[data-tool-settings]')).length)) === 0, await still.innerText());
     check('fresh_box_marks_nothing', (await still.locator('.more-marks').count()) === 0 && (await still.locator('.more-toggle').innerText()).trim() === 'More', await still.innerText());
     await shot('fresh-prompt');
     await more('still_1');
@@ -755,7 +763,7 @@ function linesOf(text, name) {
     check('a_mention_is_a_reference', sent.summary?.references?.length === 2 && sent.aspect_ratio === '16:9', sent);
 
     // Text: a name for some words. It's on the list before any function, its box is only its words, with nothing to render, and a mention of it is a chip like any other.
-    const textRow = page.locator('aside.tools li.tool[data-kind=text]');
+    const textRow = page.locator('aside.tools [data-palette="nodes"] li.tool[data-node="text"]');
     check('text_is_on_the_list', (await textRow.count()) === 1, await page.locator('aside.tools').innerText());
     await away();
     await textRow.click();
