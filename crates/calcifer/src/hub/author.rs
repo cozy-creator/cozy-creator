@@ -309,23 +309,16 @@ pub(super) async fn publish(api: &Arc<Api>, hub: &Origin, code: &LocalCode, ask:
             e => return Err(e),
         },
     }
-    // Locked first, its lock is answered for the client to write, and the release holds it.
-    if !project.root.join("uv.lock").is_file() {
-        say("this project has no uv.lock: locking it first");
-        let locked = lock(api, hub, code, &PackageLock { root: ask.root, upgrade: vec![] }, work).await?;
-        result.lock = Some(locked.lock);
+    // Refresh the root version and authored constraints without upgrading unchanged dependency pins.
+    // The client receives the new lock only when publishing succeeds.
+    let locked = lock(api, hub, code, &PackageLock { root: ask.root, upgrade: vec![] }, work).await?;
+    let committed = locked.lock;
+    if locked.changed {
+        result.lock = Some(committed.clone());
     }
     let uv_path = tools(api, &project, say).await?;
     let stage = blocking(|| Stage::new(&project, uv_path, say))?;
-    let committed = match &result.lock {
-        Some(lock) => {
-            fs::write(stage.src.join("uv.lock"), lock).map_err(|e| refuse("stage_unavailable", e))?;
-            lock.clone()
-        }
-        None => fs::read_to_string(project.root.join("uv.lock")).map_err(|_| {
-            Error::new(Kind::Validation, "package_unlocked", "The package lock could not be read; publish again to regenerate it").next("cozy package publish")
-        })?,
-    };
+    fs::write(stage.src.join("uv.lock"), &committed).map_err(|e| refuse("stage_unavailable", e))?;
     // Locking the copy is a no-op for a lock made for this Hub and account. For another, it moves
     // the account's packages to this index pinned to the versions the lock holds: a pin this Hub
     // cannot meet is refused by name, never re-resolved to a newer release.

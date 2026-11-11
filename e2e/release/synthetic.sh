@@ -58,8 +58,20 @@ sed -i.orig -e "s/^name = \"e2e-weightless\"/name = \"$pkg\"/" "$dir/pyproject.t
 [ ! -e "$dir/uv.lock" ] || check "the package fixture already has a uv.lock"
 (cd "$dir" && cozy --json package publish > "$OUT/publish-1.json") && [ -s "$dir/uv.lock" ] \
   || check "package publish 0.1.0 failed or did not create uv.lock"
+cp "$dir/uv.lock" "$OUT/lock-before-bump.toml"
 sed -i.orig 's/^version = "0.1.0"/version = "0.2.0"/' "$dir/pyproject.toml" && rm -f "$dir/pyproject.toml.orig"
 (cd "$dir" && cozy --json package publish > "$OUT/publish-2.json") || check "package publish 0.2.0 failed"
+uv run -q --no-project python -I - "$dir/uv.lock" "$pkg" "$OUT/lock-before-bump.toml" <<'PYLOCK' || check "package publish did not refresh the root version while preserving dependency pins"
+import sys, tomllib
+with open(sys.argv[1], "rb") as file:
+    packages = tomllib.load(file)["package"]
+assert any(package["name"] == sys.argv[2] and package["version"] == "0.2.0" for package in packages), "published lock has a stale root version"
+with open(sys.argv[3], "rb") as file:
+    before = tomllib.load(file)["package"]
+def pins(packages):
+    return {package["name"]: (package["version"], package["source"]) for package in packages if package["name"] != sys.argv[2]}
+assert pins(before) == pins(packages), "unchanged dependencies moved during the version bump"
+PYLOCK
 package_details "$WHO/$pkg" > "$OUT/pkg-info.json" && J '[.releases[].release] | index("0.1.0") and index("0.2.0")' "$OUT/pkg-info.json" \
   || check "package details: not both releases"
 resolves() {  # the release an unversioned run of the throwaway takes

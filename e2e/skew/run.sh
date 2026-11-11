@@ -106,6 +106,7 @@ log "Hub $(cat hub.version) on $HUB, machines at $ORIGIN${MIN:+, clients.cozy_mi
 . "$E2E/test-hub.sh"
 export COZY_TEST_HUB_ORIGIN=$ORIGIN
 require_test_hub "$HUB" || die isolation "the fixture Hub did not verify as local"
+export COZY_TEST_HUB_CA=$WORK/ca.pem
 
 # The client, as its release installs it; every cozy process reads config.toml's hub_url.
 mkdir -p ~/.cozy && printf 'hub_url = "%s"\n' "$HUB" >> ~/.cozy/config.toml
