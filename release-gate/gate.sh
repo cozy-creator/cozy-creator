@@ -77,7 +77,8 @@ OUT=${OUT:-$PWD/gate-$SKU-$(date -u +%Y%m%dT%H%MZ)}
 B=$OUT/baseline
 mkdir -p "$B"; cd "$OUT"; : > cells.tsv
 log() { echo "$(date -u +%H:%M:%SZ) $*" | tee -a gate.log; }
-if [ -n "$PKGS" ]; then
+# Bench calibration is local code even when the model packages are published releases.
+if [ -n "$PKGS" ] || [[ ,$SUITES, == *,bench,* ]]; then
   cargo build --quiet --locked --manifest-path "$HERE/../Cargo.toml" -p api --example stage-code --target-dir "$PWD/stage-code-build" > stage-code-build.log 2>&1 \
     || { log "could not build local-source staging helper: $(tail -c 500 stage-code-build.log)"; exit 1; }
   RUN_CODE_STAGE=$PWD/stage-code-build/debug/examples/stage-code
