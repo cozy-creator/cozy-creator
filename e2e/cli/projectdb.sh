@@ -70,6 +70,7 @@ for name in ${DB_WEB:-place nodes versions tools live layout undo offline held};
     held) web_held "$chrome" "$pw" ;;
     *) web_proof "$name" "$chrome" "$pw" '' ;;
   esac
+  [ "$name" != scale ] || web_scale_said
 done
 }
 

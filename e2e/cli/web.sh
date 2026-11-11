@@ -120,6 +120,7 @@ if [ "$scope" = full ]; then
   step "web-scale: 5,000 assets: status, opening it, one edit, a landing, panning, memory"
   web_proof scale "$chrome" "$pw" ''
   jq -c '{scale: .seen.scale}' "$OUT/web-scale.json" 2> /dev/null || true
+  web_scale_said
 fi
 step "web-closes: twenty projects of 1,000 assets by the CLI and the page, each closed once nothing reads it, memory back, a reopen as quick, a render holding its own"
 web_proof closes "$chrome" "$pw" ''
@@ -128,6 +129,11 @@ step "web-package-ui: a package's component drawn, its field saved and read back
 HUB_RESTART=$on_hub web_proof package_ui "$chrome" "$pw" "$restart"
 [ -n "${WEB_ALONE:-}" ] || web_engines "$chrome" "$pw"
 web_held "$chrome" "$pw"
+}
+
+# web-scale's runner speed (web/speed.js), its factor and the bar each timed cell was held to, in the job's log.
+web_scale_said() {
+  jq -r '.seen | "web-scale: runner \(.runner.cpu) x\(.runner.cores): \(.runner.median_ms) ms (\(.runner_after.median_ms // "?") ms at the end) against \(.runner.reference_ms) ms on a fast runner, factor \(.runner.factor); bars \(.bars | tostring)"' "$OUT/web-scale.json" 2> /dev/null || true
 }
 
 # A save past project.db's write lock, held by another program longer than Calcifer waits, from the page (web/held.js).
