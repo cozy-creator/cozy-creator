@@ -93,7 +93,7 @@ PY
 }
 
 case $suite:$shard in
-  cli:entrypoints | cli:executors | cli:projectdb-cancel) needs='' ;;
+  cli:entrypoints | cli:executors | cli:projectdb-cancel | cli:local-wake) needs='' ;;
   cli:runs | cli:commands | cli:local-code) needs='packages birefnet' ;;
   cli:follow) needs='packages downloads' ;;
   cli:) needs='packages birefnet downloads' ;;
