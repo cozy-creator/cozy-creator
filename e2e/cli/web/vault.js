@@ -12,6 +12,23 @@ const errors = [];
 const check = (name, okay) => { seen[name] = !!okay; if (!okay) failures.push(name); };
 const cli = (...args) => execFileSync(process.env.COZY, ['--json', ...args], { encoding: 'utf8', timeout: 180000 });
 const vault = (directory, ...args) => execFileSync(process.env.COZY, ['--json', 'vault', ...args], { cwd: directory, encoding: 'utf8', timeout: 180000 });
+const requestLock = (directory) => {
+  let answer;
+  try {
+    answer = JSON.parse(vault(directory, 'lock'));
+  } catch (error) {
+    let refusal;
+    try { refusal = JSON.parse(String(error.stdout ?? '')).error; } catch { /* retain only typed error metadata */ }
+    if (refusal?.code !== 'project_busy') throw new Error(`external vault lock refused: ${refusal?.code ?? 'unreadable_cli_error'}`);
+    const state = JSON.parse(vault(directory, 'status')).state;
+    if (state !== 'locking' && state !== 'locked') throw new Error('busy external lock did not revoke the view');
+    (seen.external_lock_replies ??= []).push({ code: refusal.code, state });
+    return;
+  }
+  if (answer.vault?.state !== 'locked') throw new Error('external lock did not acknowledge locked');
+  (seen.external_lock_replies ??= []).push({ code: 'success', state: 'locked' });
+};
+const drainedLock = (directory) => until('external lock drained', () => JSON.parse(vault(directory, 'status')).state, (state) => state === 'locked', 45000);
 const sanitized = (text) => String(text ?? '').replace(/cozy1-[a-z0-9_-]+/gi, '[REDACTED]').replaceAll('synthetic browser passphrase', '[REDACTED]');
 const newPage = async () => {
   const tab = await context.newPage();
@@ -259,11 +276,12 @@ const newPage = async () => {
   peer.on('pageerror', (error) => errors.push(error.message));
   await peer.goto(href);
   await peer.locator('.react-flow').waitFor();
-  vault(folder, 'lock');
+  requestLock(folder);
   for (const tab of [page, peer]) {
     await until('external lock concealed a tab', () => tab.locator('body').innerText(), (text) => !text.includes('private_vault_picture') && !text.includes('private_after_encryption'), 20000);
     check(`external_lock_tab_${tab === page ? 'first' : 'second'}`, await tab.locator('.react-flow').count() === 0);
   }
+  await drainedLock(folder);
   // A fresh document has no remembered address. The compact link must still
   // open the unlock UI without exposing or opening the private project.
   await peer.goto(href);
@@ -284,11 +302,12 @@ const newPage = async () => {
     await peer.bringToFront();
     await until('private tab hidden', () => page.evaluate(() => document.visibilityState), (state) => state === 'hidden', 10000);
     await lifecycle.send('Page.setWebLifecycleState', { state: 'frozen' });
-    try { vault(folder, 'lock'); }
+    try { requestLock(folder); }
     finally { await lifecycle.send('Page.setWebLifecycleState', { state: 'active' }); }
     await page.bringToFront();
     await page.locator('[data-vault-state="locked"]').waitFor();
     check('frozen_tab_resume_keeps_locked_data_hidden', await page.locator('.react-flow').count() === 0 && !(await page.locator('body').innerText()).includes('private_vault_picture'));
+    await drainedLock(folder);
     await lifecycle.detach();
     await peer.close(); peer = null;
     await page.getByLabel('Unlock with').selectOption('recovery');
@@ -305,7 +324,7 @@ const newPage = async () => {
   // Real browser offline mode prevents both status replies and the lock SSE event;
   // the CLI remains online. Cached unlocked data must still stay hidden on selection.
   await context.setOffline(true);
-  vault(folder, 'lock');
+  requestLock(folder);
   await page.evaluate((pathname) => {
     window.__privatePaints = [];
     window.__privateWatch = new MutationObserver(() => {
@@ -320,6 +339,7 @@ const newPage = async () => {
   await context.setOffline(false);
   await page.locator('[data-vault-state="locked"]').waitFor();
   check('project_reselection_verifies_before_paint', await page.evaluate(() => window.__vaultDocument === 'same-document' && window.__privatePaints.length === 0));
+  await drainedLock(folder);
   await page.goBack();
   await until('ordinary project canvas visible', () => page.evaluate(() => Boolean(document.querySelector('.react-flow')) && !document.body.innerText.includes('private_vault_picture')), Boolean, 45000);
   await page.goForward();
@@ -377,7 +397,10 @@ const newPage = async () => {
   if (scratch) {
     try {
       const folder = join(scratch, 'project');
-      if (JSON.parse(vault(folder, 'status')).encrypted) vault(folder, 'lock');
+      if (JSON.parse(vault(folder, 'status')).encrypted) {
+        requestLock(folder);
+        await drainedLock(folder);
+      }
       rmSync(scratch, { recursive: true, force: true });
     } catch {
       seen.cleanup_pending = 'fixture backing retained because its lock did not complete';
