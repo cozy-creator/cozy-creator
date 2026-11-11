@@ -1,4 +1,5 @@
-"""Real bounded checkpoint conversion, exact production bytes and Writer resume."""
+"""checkpoint-quantize, TensorFS's own (public API only), modes basic, cancel, cancel-write. Was the gate package `tensorfs/checkpoint-quantize` (xs-174:
+a package can't import TensorFS); run by `release-gate/programs.sh`."""
 
 import gc
 import hashlib
@@ -9,11 +10,9 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-import msgspec
-from cozy_runtime.author import App, Context
 
 if TYPE_CHECKING:
-    from ._types import (
+    from checkpoint_quantize_types import (
         F32,
         ArrayTensor,
         Budget,
@@ -22,18 +21,6 @@ if TYPE_CHECKING:
         Parts,
         Selection,
     )
-
-app = App()
-
-
-class Request(msgspec.Struct, forbid_unknown_fields=True):
-    seed: int = 103
-    mode: str = "basic"
-
-
-class Report(msgspec.Struct):
-    passed: bool
-    detail: str
 
 
 def selection(key: str, dtype: str, shape: tuple[int, ...], scheme: str) -> "Selection":
@@ -73,16 +60,24 @@ def expected_bytes(row: "Selection") -> int:
         else n * k // 2 + n * k // 16 + 4
     )
 
+SEED = 103
+MODES = ['basic', 'cancel', 'cancel-write']
 
-@app.entrypoint(accelerator=False)
-def run(payload: Request, ctx: Context) -> Report:
+
+def Report(passed: bool, *fields: object) -> dict[str, object]:  # noqa: N802 - the verdict the package returned
+    """A mode's verdict: the last field is its JSON detail."""
+    detail = fields[-1]
+    return {"passed": passed, "detail": json.loads(detail) if isinstance(detail, str) else detail}
+
+
+def run(mode: str) -> dict[str, object]:
     import numpy as np
     import tensorfs
 
-    from .oracle import encode_int8_convrot256, encode_nvfp4
+    from checkpoint_quantize_oracle import encode_int8_convrot256, encode_nvfp4
 
-    assert payload.mode in ("basic", "cancel", "cancel-write")
-    rng = np.random.default_rng(payload.seed)
+    assert mode in ("basic", "cancel", "cancel-write")
+    rng = np.random.default_rng(SEED)
     with tempfile.TemporaryDirectory(prefix="cozy-checkpoint-quantize-") as temporary:
         directory = Path(temporary)
         writer = tensorfs.Writer(directory / "source.cozytensors")
@@ -91,7 +86,7 @@ def run(payload: Request, ctx: Context) -> Report:
         component.put("keep", b"\x00\x00\x80?", dtype="F32", shape=[1])
         selected: list[Selection] = []
         values: dict[str, F32] = {}
-        if payload.mode.startswith("cancel"):
+        if mode.startswith("cancel"):
             for key, shape in [("first", (1, 256)), ("large", (16384, 1024))]:
                 weight = rng.normal(size=shape).astype("<f4")
                 component.put(key, weight)
@@ -126,11 +121,11 @@ def run(payload: Request, ctx: Context) -> Report:
         source = writer.commit()
         allowance = sum(expected_bytes(row) for row in selected)
         reports: list[Conversion] = []
-        if payload.mode.startswith("cancel"):
+        if mode.startswith("cancel"):
             output = tensorfs.Writer(
                 directory / "cancel.cozytensors",
                 base=source,
-                resume=f"cancel-{payload.seed}",
+                resume=f"cancel-{SEED}",
             )
             control = tensorfs.ConversionControl()
             with ThreadPoolExecutor(max_workers=1) as pool:
@@ -145,7 +140,7 @@ def run(payload: Request, ctx: Context) -> Report:
                 until = time.monotonic() + 20
                 while control.progress()[1] < 1 or (
                     control.progress()[2] <= expected_bytes(selected[0])
-                    if payload.mode == "cancel-write"
+                    if mode == "cancel-write"
                     else control.progress()[0] <= 1024
                 ):
                     assert not future.done(), (
@@ -169,13 +164,13 @@ def run(payload: Request, ctx: Context) -> Report:
                     raise AssertionError("conversion completed before cancellation")
             assert output.has("weights", "first") and not output.has("weights", "large")
             del operation, future
-            if payload.mode == "cancel":
+            if mode == "cancel":
                 del output
                 gc.collect()
                 reopened = tensorfs.Writer(
                     directory / "cancel.cozytensors",
                     base=source,
-                    resume=f"cancel-{payload.seed}",
+                    resume=f"cancel-{SEED}",
                 )
             else:
                 reopened = (
@@ -213,7 +208,7 @@ def run(payload: Request, ctx: Context) -> Report:
                 True,
                 json.dumps(
                     {
-                        "mode": payload.mode,
+                        "mode": mode,
                         "resumed": resumed,
                         "cancel_progress": control.progress(),
                         "tensorfs": tensorfs.__version__,
@@ -347,10 +342,21 @@ def run(payload: Request, ctx: Context) -> Report:
                     "mode": "basic",
                     "tensorfs": tensorfs.__version__,
                     "reports": reports,
-                    "native_sha256": hashlib.sha256(
-                        Path(tensorfs._ext.__file__).read_bytes()
-                    ).hexdigest(),
                 },
                 sort_keys=True,
             ),
         )
+
+
+if __name__ == "__main__":
+    import traceback
+
+    for mode in MODES:
+        cell = "checkpoint-quantize" if mode == MODES[0] else f"checkpoint-quantize-{mode}"
+        try:
+            found = run(mode)
+            row = {"cell": cell, "result": "PASS" if found["passed"] else "FAIL", "detail": found["detail"]}
+        except Exception as error:  # noqa: BLE001 - any failure is this mode's verdict
+            row = {"cell": cell, "result": "FAIL", "detail": f"{type(error).__name__}: {error}"[:600]}
+            traceback.print_exc()
+        print("ROW " + json.dumps(row, sort_keys=True, default=str), flush=True)
