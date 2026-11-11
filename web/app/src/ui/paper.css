@@ -32,7 +32,7 @@
   .tb,
   .mtabs,
   .zoom,
-  .render-all label {
+  .run-on > summary {
     background: none;
     border-color: transparent;
     border-image: var(--frame-control) 12 fill / 12px / 4px stretch;

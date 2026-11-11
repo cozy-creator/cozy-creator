@@ -219,6 +219,9 @@ pub struct State {
     /// What kept its last render from reaching a machine, each once, until another is asked.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unsent: Vec<Error>,
+    /// The machines its runs go to, each to the one of them that finishes it soonest; none: any machine (`ProjectMachines`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub machines: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub covered: Option<super::ProjectEventCursor>,
 }
@@ -941,6 +944,14 @@ pub struct Unpinned {
     /// What `If-Match` names from here on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub etag: Option<String>,
+}
+
+/// `PUT /v1/projects/{id}/machines` (cl-873): the machines the project's runs and renders go to, each to the one of them that finishes
+/// it soonest, unless a run names its own; none: any machine. Answered as kept: each by its name, once.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "ProjectMachines"))]
+pub struct Machines {
+    pub machines: Vec<String>,
 }
 
 /// `POST /v1/projects/{id}/rename`: what project.lock keeps of `from` kept as `to`, an asset project.yaml names now with no

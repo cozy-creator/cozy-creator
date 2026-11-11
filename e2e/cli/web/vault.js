@@ -531,7 +531,7 @@ const newPage = async () => {
   await until('same project converted to plain', () => JSON.parse(vault(folder, 'status')), (status) => status.encrypted === false && status.state === 'plain', 45000);
   await until('plain event covers old private view', covered, Boolean, 45000);
   check('decrypt_purges_private_canvas_before_status', oldCanvas !== null && !await oldCanvas.evaluate((element) => element.isConnected));
-  check('decrypt_keeps_browser_persistence_private_until_status', await page.evaluate((project) => !['cozy.view:', 'cozy.selection:', 'cozy.more:', 'cozy.machine:'].some((prefix) => localStorage.getItem(prefix + project) !== null), id));
+  check('decrypt_keeps_browser_persistence_private_until_status', await page.evaluate((project) => !['cozy.view:', 'cozy.selection:', 'cozy.more:'].some((prefix) => localStorage.getItem(prefix + project) !== null), id));
   await deliver(oldStatus.route, oldStatus.response);
   await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
   check('pre_decrypt_status_cannot_reopen_private_view', await covered());

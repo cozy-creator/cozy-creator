@@ -152,10 +152,11 @@ pub struct RunRequest {
     /// Local code, sent by content (cl-819): Calcifer reads no client's folder.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<crate::code::LocalCode>,
-    /// `local`, a machine's name, `any`, or `new[:sku]`. Absent, Calcifer's to say: a call goes where it finishes soonest, and a
-    /// job that makes something present on a machine to this computer's, else any rental it has.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on: Option<On>,
+    /// `local`, a machine's name, several machines (the one of them that finishes it soonest), `any`, or `new[:sku]`. None,
+    /// Calcifer's to say: a call goes to its project's machines (cl-873), else where it finishes soonest, and a job that makes
+    /// something present on a machine to this computer's, else any rental it has.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub on: Vec<On>,
     /// The Tensorhub origin; empty: Calcifer's.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub hub: String,
@@ -217,7 +218,7 @@ impl RunRequest {
             Ok(serde_json::Value::Object(input)) => Some(input),
             _ => None,
         };
-        Self { target: target.to_owned(), input, on, hub, code, ..Self::default() }
+        Self { target: target.to_owned(), input, on: on.into_iter().collect(), hub, code, ..Self::default() }
     }
 }
 
@@ -2097,6 +2098,28 @@ pub fn local_usable(machine: &str) -> Result<(), crate::error::Error> {
     Err(crate::error::Error::new(crate::error::Kind::Unavailable, "local_unavailable", message)
         .remedy("add `--on new` to rent a Linux GPU, or `--on <machine>` for one you have")
         .next("cozy machine rent"))
+}
+
+/// `--on`'s grammar: one place, or several machines by name, `a,b`, each refused as `local_usable` refuses it.
+pub fn on_set(text: &str) -> Result<Vec<On>, crate::error::Error> {
+    let mut set: Vec<On> = vec![];
+    for on in text.split(',').map(str::trim).filter(|word| !word.is_empty()).map(|word| On::from(word.to_owned())) {
+        local_usable(&on.to_string())?;
+        if !set.contains(&on) {
+            set.push(on);
+        }
+    }
+    machine_set(&set)?;
+    Ok(set)
+}
+
+/// Several places are machines: `any` and `new` stand alone.
+pub fn machine_set(set: &[On]) -> Result<(), crate::error::Error> {
+    if set.len() < 2 || set.iter().all(|on| matches!(on, On::Machine(_))) {
+        return Ok(());
+    }
+    let said = format!("{} names machines: `any` and `new` stand alone", set.iter().map(On::to_string).collect::<Vec<_>>().join(","));
+    Err(crate::error::Error::new(crate::error::Kind::Usage, "on_set", said).next("cozy machine ls"))
 }
 
 impl On {
