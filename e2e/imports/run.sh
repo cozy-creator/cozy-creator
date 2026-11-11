@@ -94,7 +94,11 @@ else
     dir=$(dirname "$toml") name=$(sed -n 's/^name = "\(.*\)"/\1/p' "$toml" | head -1)
     version=$(sed -n 's/^version = "\(.*\)"/\1/p' "$toml" | head -1)
     echo "::group::$name $version (checkout)"
-    if install "checkout-$name" "./$dir"; then import_release "checkout-$name" "$name" "$version"; fi
+    if install "checkout-$name" "./$dir"; then
+      import_release "checkout-$name" "$name" "$version"
+    elif [[ " ${COZY_IMPORTS_REQUIRED:-} " == *" $name "* ]]; then
+      check "$name: the fixture-bound package must install and import, not skip"
+    fi
     echo "::endgroup::"
     count=$((count + 1))
   done

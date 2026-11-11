@@ -1,20 +1,25 @@
 """Stage and verify only fixture-owned Hub dependency locks for the imports suite."""
 
 import argparse
+from collections.abc import Iterator
 import hashlib
 import json
 from pathlib import Path
 import re
 import shutil
 import tomllib
+from typing import Any
 from urllib.parse import urlsplit
+
+# Standard-library TOML/JSON documents at this fixture's file boundary.
+type Document = dict[str, Any]
 
 
 def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def strings(value):
+def strings(value: object) -> Iterator[str]:
     if isinstance(value, str):
         yield value
     elif isinstance(value, list):
@@ -26,8 +31,12 @@ def strings(value):
 
 
 def production(value: str) -> bool:
-    host = urlsplit(value).hostname if value.startswith(("https://", "http://")) else None
-    return host == "tensorhub.com" or bool(host and host.endswith(".tensorhub.com"))
+    # A PEP508 dependency can contain its URL after `name @`, rather than start with it.
+    for url in re.findall(r"https?://[^\s<>\"']+", value):
+        host = urlsplit(url).hostname
+        if host == "tensorhub.com" or (host and host.endswith(".tensorhub.com")):
+            return True
+    return False
 
 
 def hub_registry(value: str) -> bool:
@@ -38,7 +47,7 @@ def name(value: str) -> str:
     return re.sub(r"[-_.]+", "-", value).lower()
 
 
-def load(path: Path) -> dict:
+def load(path: Path) -> Document:
     return tomllib.loads(path.read_text())
 
 
@@ -46,7 +55,7 @@ def snapshot(root: Path, pattern: str) -> dict[str, str]:
     return {str(path.relative_to(root)): digest(path) for path in sorted(root.glob(pattern))}
 
 
-def resolver_values(project: dict):
+def resolver_values(project: Document) -> Iterator[str]:
     uv = project.get("tool", {}).get("uv", {})
     yield from strings(uv.get("index", []))
     yield from strings(uv.get("sources", {}))
@@ -55,10 +64,13 @@ def resolver_values(project: dict):
     yield from strings(project.get("dependency-groups", {}))
 
 
-def guard(root: Path) -> None:
+def guard(root: Path, origin: str | None = None) -> None:
     for path in root.rglob("uv.lock"):
-        if any(production(value) for value in strings(load(path))):
-            raise ValueError(f"production URL remains in staged {path.relative_to(root)}")
+        for value in strings(load(path)):
+            if production(value):
+                raise ValueError(f"production URL remains in staged {path.relative_to(root)}")
+            if hub_registry(value) and (origin is None or not value.startswith(origin.rstrip("/") + "/v1/index/")):
+                raise ValueError(f"unbound Hub URL remains in staged {path.relative_to(root)}")
     for path in root.glob("*/pyproject.toml"):
         if any(production(value) for value in resolver_values(load(path))):
             raise ValueError(f"production resolver URL in staged {path.relative_to(root)}")
@@ -92,11 +104,11 @@ def prepare(source: Path, staged: Path, report: Path) -> None:
             if versions and versions != {version}:
                 raise ValueError(f"{directory}: locked {dependency} {versions} differs from cohort {version}")
             dependencies[dependency] = {"directory": folder, "name": dependency, "version": version}
-        targets.append({"directory": directory, "dependencies": sorted(hub_names)})
+        targets.append({"directory": directory, "name": project["project"]["name"], "dependencies": sorted(hub_names)})
     if any(item["directory"] in {target["directory"] for target in targets} for item in dependencies.values()):
         raise ValueError("a fixture dependency itself needs a Hub lock; publish ordering must be explicit")
     manifest = {"source": str(source), "staged": str(staged.resolve()),
-                "original_locks": snapshot(source, "*/uv.lock"),
+                "original_locks": snapshot(source, "**/uv.lock"),
                 "original_projects": snapshot(source, "*/pyproject.toml"),
                 "dependencies": list(dependencies.values()), "relock": targets}
     shutil.copytree(source, staged, ignore=shutil.ignore_patterns(".git", ".venv", "__pycache__"))
@@ -111,9 +123,9 @@ def prepare(source: Path, staged: Path, report: Path) -> None:
 def verify(report: Path, origin: str) -> None:
     manifest = json.loads(report.read_text())
     source, staged = Path(manifest["source"]), Path(manifest["staged"])
-    if snapshot(source, "*/uv.lock") != manifest["original_locks"] or snapshot(source, "*/pyproject.toml") != manifest["original_projects"]:
+    if snapshot(source, "**/uv.lock") != manifest["original_locks"] or snapshot(source, "*/pyproject.toml") != manifest["original_projects"]:
         raise ValueError("the authoritative packages checkout changed during fixture staging")
-    guard(staged)
+    guard(staged, origin)
     changed = {target["directory"] + "/uv.lock" for target in manifest["relock"]}
     for path, expected in manifest["original_locks"].items():
         if path not in changed and digest(staged / path) != expected:

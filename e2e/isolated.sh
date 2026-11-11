@@ -138,6 +138,8 @@ if [ "$suite" = imports ]; then
       2> "$seed/imports-lock-$package.err"
   done < <(jq -r '.relock[].directory' "$report")
   python3 "$here/imports/fixture.py" verify --report "$report" --origin "${COZY_TEST_HUB_ORIGIN:?}"
+  COZY_IMPORTS_REQUIRED=$(jq -r '[.relock[].name] | join(" ")' "$report")
+  export COZY_IMPORTS_REQUIRED
   for ((i = 0; i < ${#args[@]}; i++)); do
     [ "${args[i]}" != --packages ] || args[i + 1]=$staged
   done
