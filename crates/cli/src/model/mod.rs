@@ -59,8 +59,8 @@ pub(crate) async fn lora_exec(ctx: &Context, args: LoraArgs) -> Result<ExitCode,
             args.upload.strength = args.strength;
             machine::upload(ctx, args.upload).await
         }
-        LoraVerb::Publish(args) => releases::publish(ctx, args).await,
-        LoraVerb::Delete(args) => releases::delete(ctx, args).await,
+        LoraVerb::Publish(args) => releases::publish(ctx, args, "lora").await,
+        LoraVerb::Delete(args) => releases::delete(ctx, args, "lora").await,
     }
 }
 
@@ -272,8 +272,8 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     match args.verb {
         Verb::Ls(args) => list(ctx, args, "model").await,
         Verb::Edit(args) => catalog::edit(ctx, args).await,
-        Verb::Publish(args) => releases::publish(ctx, args).await,
-        Verb::Delete(args) => releases::delete(ctx, args).await,
+        Verb::Publish(args) => releases::publish(ctx, args, "model").await,
+        Verb::Delete(args) => releases::delete(ctx, args, "model").await,
         Verb::Download(args) => machine::download(ctx, args).await,
         Verb::Remove(args) => machine::remove(ctx, &args.model).await,
         Verb::Upload(args) => machine::upload(ctx, args).await,
