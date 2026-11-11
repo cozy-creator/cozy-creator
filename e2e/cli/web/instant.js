@@ -197,7 +197,7 @@ async function loseAnswers(page, method, path, times) {
   await box('words').waitFor();
   await page.waitForTimeout(400);
   await openBox(page, 'words');
-  await box('words').locator('.mention-text').click();
+  await box('words').locator('.mention-text[data-field="text"]').click();
   const patches = await hold(page, 'PATCH', '**/v1/projects/*/assets/*');
   await page.keyboard.press('ControlOrMeta+a');
   await page.keyboard.type('mine');
@@ -209,7 +209,7 @@ async function loseAnswers(page, method, path, times) {
   await patches.release();
   await openBox(page, 'words');
   await until('the conflict line', () => box('words').getByRole('button', { name: 'Keep mine' }).count(), (n) => n > 0);
-  check('conflict_keeps_both', yaml().includes('text: theirs') && (await box('words').locator('.mention-text').allInnerTexts()).join(' ').includes('mine'), await box('words').innerText());
+  check('conflict_keeps_both', yaml().includes('text: theirs') && (await box('words').locator('.mention-text[data-field="text"]').allInnerTexts()).join(' ').includes('mine'), await box('words').innerText());
   await box('words').getByRole('button', { name: 'Keep mine' }).click();
   await until('mine in the file', () => Promise.resolve(yaml().includes('text: mine')), Boolean);
   await closeBox(page);
