@@ -467,6 +467,7 @@ const newPage = async () => {
   await oldCanvas.dispose();
   await page.unroute(statusPath, statusRoute);
   await page.goto(href);
+  await readyCanvas();
   const plainAt = await openCanvas(page);
   await page.mouse.move(plainAt.x, plainAt.y);
   await page.mouse.down();
