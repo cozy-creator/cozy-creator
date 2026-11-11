@@ -28,6 +28,6 @@ async def gemm_tiles(ctx: Context, *, seed: int = 177) -> Measured:
 
 
 @app.entrypoint(accelerator=False)
-async def calibrate(ctx: Context) -> Measured:
+async def host_calibrate(ctx: Context) -> Measured:
     """This pod's sustained bf16 GEMM TFLOPS and memory GB/s, held against its card's reference (calibrate.sh)."""
-    return Measured((await call(bench.calibrate)).detail)
+    return Measured((await call(bench.host_calibrate)).detail)
