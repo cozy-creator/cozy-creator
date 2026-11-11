@@ -91,7 +91,6 @@ pub(crate) async fn download(
 ) -> Result<(File, String), String> {
     use crate::progress::{Transfer, TransferCounts};
     let bar = Transfer::stderr(ctx.term.stderr, "Downloading Cozy");
-    bar.phase("Downloading and checking archive");
     let mut initial = None;
     let mut position = 0;
     bar.update(TransferCounts {
@@ -101,6 +100,7 @@ pub(crate) async fn download(
         bytes_total: None,
         bytes_moved: 0,
     });
+    bar.phase("Downloading and checking archive");
     let answer = tensorfs::fetch::get_pinned_into(url, part, &mut |at| {
         let start = initial.get_or_insert(at);
         if at < *start {

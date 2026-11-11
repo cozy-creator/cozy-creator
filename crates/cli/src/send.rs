@@ -170,10 +170,8 @@ impl<'a> Sender<'a> {
             .await
             .map_err(|e| Error::internal("stage", e.to_string()))??;
         if !staged.left.is_empty() {
-            crate::output::warn(&format!(
-                "left out of the code it sends: {}",
-                staged.left.join(", ")
-            ));
+            let warning = format!("left out of the code it sends: {}", staged.left.join(", "));
+            progress.line.println(format!("warning: {}", crate::output::shown(&warning)));
         }
         let code = staged.code();
         let length = staged.document.len() as u64;
