@@ -36,3 +36,20 @@ that check on a candidate wheel against the source it was stamped with, and fail
 before a cut rents anything (release-gate/README.md, Before renting), and as this suite's first cell (`attention-table`).
 
 Cost: about 40 min a card; L40S $0.8/h, RTX 4090 $1.0, RTX 5090 $1.4, RTX PRO 6000 $4.2, H100 $6.7, B200 $12.9.
+
+## Calibration (xs-171 F)
+
+Once, before the first measured table, and again only if Paul asks: every class's round plus the end-to-end arms, one
+dispatch from the open RC (six pods; about $30):
+
+```sh
+gh workflow run release-gate.yml -R cozy-creator/cozy-creator --ref <open rc> -f hub=prod -f suites=attention \
+  -f cells=release-gate/suites/attention/calibrate.sh -f runtime_wheel=<the RC's cozy-runtime dev-build run> \
+  -f establish=true -f publish=false
+```
+
+`calibrate.sh` runs the bench arms' requests (`suites/bench/cells.tsv`, `a-*`) on the table's kernels and at
+`--attention-kernel exact` on each class that has 8-bit models to judge (H3 on the 4090, 5090, H100 and B200; Klein,
+Qwen-Image 2.1 and MOSS on the 4090 and 5090), and writes `calibration.jsonl`, `calibration.md` and both outputs of each pair
+to `calibration/`. The bars (measurement-design §3.4) are set from these numbers and the quality cells' worst-head errors, in
+their own commit to the Runtime's `measurements/rules.toml`, which Paul signs.
