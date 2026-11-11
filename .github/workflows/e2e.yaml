@@ -96,10 +96,6 @@ on:
         description: Native CLI partitions as a JSON list; empty uses the full native matrix
         type: string
         default: ''
-      publication_scope:
-        description: Owned publication checks to run (all or authority)
-        type: string
-        default: all
   workflow_dispatch:
     inputs:
       repo:
@@ -150,7 +146,7 @@ on:
       quote:
         type: boolean
         default: false
-      # The cli shards to run, a JSON list (`["executors","commands"]`); empty: all. Reruns only what failed.
+      # CLI shards as JSON; ["authority"] selects the owned publication authority checks.
       shards:
         type: string
         default: ''
@@ -162,11 +158,6 @@ on:
         description: CPU packages to run, comma-separated; empty runs every package
         type: string
         default: ''
-      publication_scope:
-        description: Owned publication checks to run
-        type: choice
-        options: [all, authority]
-        default: all
       cpu_cells:
         description: CPU entry/cell pairs to run, comma-separated; empty runs every cell
         type: string
@@ -938,9 +929,9 @@ jobs:
           SKEW_TOOLS: ${{ runner.temp }}/skew-tools
         run: |
           checks=()
-          case '${{ inputs.publication_scope || 'all' }}' in
-            all) ;;
-            authority) checks=(-- authority) ;;
+          case '${{ inputs.shards }}' in
+            '' | '[]') ;;
+            '["authority"]') checks=(-- authority) ;;
             *) echo "unknown publication scope" >&2; exit 2 ;;
           esac
           sudo loginctl enable-linger "$(id -un)"
