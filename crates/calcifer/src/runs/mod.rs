@@ -172,6 +172,7 @@ pub(crate) async fn describe(
     query: Result<Query<Asked>, axum::extract::rejection::QueryRejection>,
 ) -> Result<Json<api::calcifer::Target>, Refusal> {
     let Query(asked) = query?;
+    let _access = project_access(&api, asked.project.as_deref()).await.map_err(Refusal)?;
     let hub = hub(&api, asked.hub.as_deref().unwrap_or_default());
     let on = asked.on.map_or_else(|| default_on(&api), On::from);
     let code = match (asked.tree, asked.at) {
