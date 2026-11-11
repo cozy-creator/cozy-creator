@@ -564,7 +564,10 @@ pub(crate) fn prefetch_room(device: i32, bytes: usize, group: &BTreeSet<u64>) ->
 /// `want` bytes for a fill ahead from `AHEAD`'s regions, in demand's order, waiting for the GPU to
 /// finish with the first still in use. False: stopped, or nothing left to take.
 fn room_ahead(device: i32, want: usize, group: &BTreeSet<u64>) -> Result<bool> {
-    let protect = Protect { regions: Some(group), keep_working: true, into: group.first().copied(), ..Default::default() };
+    // Nor another fill ahead that took room: it ranks as its demand would.
+    let mut kept = crate::gpu(device)?.lock()?.took.clone();
+    kept.extend(group);
+    let protect = Protect { regions: Some(&kept), keep_working: true, into: group.first().copied(), ..Default::default() };
     let mut sequence = Sequence::new(device, usize::MAX, Wait::No, protect, ReclaimReason::Allocator)?;
     // A region used again while this waits is no longer idle: a few rounds settle it either way.
     for _ in 0..8 {

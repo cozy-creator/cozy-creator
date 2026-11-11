@@ -106,7 +106,8 @@ other fill ahead and nothing this pass has yet to use. In a loop that does not f
 the region just used, the one needed furthest ahead (Belady), so the next block's copy runs
 beside this one's compute. The worker waits for the GPU to finish with it; a stop ends the wait.
 It makes room for one Region ahead, and the small ones beside it, never two; none in a pass where
-one it made room for was evicted unused. What it filled and nobody used is evicted first. A
+one it made room for was evicted unused. A fill that took room ranks as its demand fill would;
+any other fill ahead that nobody used is evicted first. A
 phase with no measure yet prefetches only into room already free beside the `C/4` floor, and
 evicts nothing.
 

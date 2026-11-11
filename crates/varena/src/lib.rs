@@ -391,7 +391,8 @@ impl State {
         if entry.high {
             return (reclaim::HIGH, entry.last_use);
         }
-        if entry.prefetched {
+        // A fill ahead that took room is the next Region's demand fill, done early: it ranks as that.
+        if entry.prefetched && !self.took.contains(&id) {
             // Of unused fills, what the plan needs last goes first: the nearest is about to be used.
             let next = order.next_use(id).map_or(0, |(phases, position)| phases << 32 | position);
             return (reclaim::PREFETCHED, u64::MAX - next);
