@@ -5,8 +5,8 @@
 # toolbox's defaults (qwen-image-2, minimax-h3, sdxl) and birefnet, and a stand-in minimax-h3-tools (hub_away locks it from the
 # root index, hub_dependency calls its echo); then the models their cells download: BiRefNet's weights from the Hugging Face
 # revision production mirrors, and random weights for queued_download's two. macOS and Windows run no models and need no
-# weights: their shards take the packages alone. The imports suite installs the checkout's own package directories and
-# reads nothing from a Hub. Then this computer's cozy is removed, and the suite starts as on a fresh runner, signed out, in
+# weights: their shards take the packages alone. Imports stages Hub-dependent locks against its own published dependencies.
+# Then this computer's cozy is removed, and the suite starts as on a fresh runner, signed out, in
 # this process's place: nothing of this script is left for the suite's own removal of cozy to find.
 set -euo pipefail
 [ "$#" -ge 5 ] || { echo "usage: isolated.sh OUT INSTALLED_COZY RUNTIME TENSORFS cli|imports|cpu <run.sh arguments>" >&2; exit 2; }
@@ -118,6 +118,33 @@ if [ "$suite" = cpu ]; then
   exec bash "$here/cpu/run.sh" "$@" --cozy "$cozy_bin" --project "$project"
 fi
 
+if [ "$suite" = imports ]; then
+  [ -n "$packages" ] || { echo "imports needs the cohort packages checkout" >&2; exit 2; }
+  staged=$seed/import-packages report=$seed/imports-fixture.json
+  python3 "$here/imports/fixture.py" prepare --source "$packages" --staged "$staged" --report "$report"
+  mkdir -p "$seed/project"
+  (cd "$seed/project" && cozy --json new --unencrypted > /dev/null)
+  # Calcifer's private lock operation and its uv must trust the fixture during regeneration too.
+  sudo cp "${COZY_TEST_HUB_CA:?}" /usr/local/share/ca-certificates/cozy-test-hub.crt
+  sudo update-ca-certificates > "$seed/imports-ca.log" 2>&1
+  export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+  systemctl --user set-environment SSL_CERT_FILE="$SSL_CERT_FILE"
+  systemctl --user restart cozy-calcifer > "$seed/imports-calcifer-restart.log" 2>&1
+  while IFS= read -r dependency; do
+    publish "$staged/$dependency"
+  done < <(jq -r '.dependencies[].directory' "$report")
+  while IFS= read -r package; do
+    python3 "$here/package-lock.py" --cozy "$cozy_bin" --root "$staged/$package" > "$seed/imports-lock-$package.json" \
+      2> "$seed/imports-lock-$package.err"
+  done < <(jq -r '.relock[].directory' "$report")
+  python3 "$here/imports/fixture.py" verify --report "$report" --origin "${COZY_TEST_HUB_ORIGIN:?}"
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    [ "${args[i]}" != --packages ] || args[i + 1]=$staged
+  done
+  packages=$staged
+  log "imports locks verified against the owned Hub; authoritative checkout unchanged"
+fi
+
 if [ -n "$needs" ]; then
   [ -n "$packages" ] || { echo "the isolated Hub's first-party packages come from run.sh's --packages checkout" >&2; exit 2; }
   mkdir -p "$seed/project"
@@ -194,4 +221,4 @@ case ${RUNNER_OS:-Linux} in
 esac
 log "seeded (${needs:-nothing}), this computer's cozy removed; the $suite suite${shard:+ $shard} starts"
 unset CLI M R
-exec bash "$here/$suite/run.sh" "$@"
+exec bash "$here/$suite/run.sh" "${args[@]}"
