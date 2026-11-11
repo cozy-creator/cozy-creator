@@ -24,6 +24,15 @@ use sys as tree;
 #[cfg(unix)]
 use unix as tree;
 
+/// Set a process environment value on Windows, whose OS environment operations
+/// are thread-safe. This interface is deliberately unavailable on Unix.
+#[cfg(windows)]
+pub fn set_environment(name: &std::ffi::OsStr, value: &std::ffi::OsStr) {
+    // SAFETY: std::env::set_var permits concurrent environment access on Windows;
+    // cfg(windows) excludes platforms where the caller must exclude other threads.
+    unsafe { std::env::set_var(name, value) }
+}
+
 /// One process incarnation: no other process ever has the same birth. The field names are
 /// TensorD's journal `ProcessBirth`, so a machine reads its journal across an update.
 /// `start_ticks` is the OS's start stamp: clock ticks since boot (Linux), microseconds since the
