@@ -59,6 +59,9 @@ pub(crate) async fn search(ctx: &Context, args: Ls, role: &str) -> Result<ExitCo
 pub(super) async fn local(ctx: &Context, args: Ls, role: &str) -> Result<ExitCode, Error> {
     let query = Searching { hub: ctx.hub().to_string(), q: args.query.join(" "), family: None, tag: String::new(), no_tag: String::new(), limit: output::at_most("--limit", args.limit, 100), offset: args.offset, role: role.into() };
     let inventory: api::calcifer::MachineModels = ctx.calcifer().await?.get("/v1/machines/local/models").await?;
+    if inventory.silent {
+        return Err(Error::new(Kind::Unavailable, "local_inventory_unavailable", "The local machine has not reported its model inventory yet").next("cozy machine ls"));
+    }
     crate::tui::show(ctx, crate::tui::Screen::Models(super::live::Catalog::from_local(query, inventory.models))).await
 }
 

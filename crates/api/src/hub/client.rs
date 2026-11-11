@@ -722,12 +722,13 @@ mod catalog_tests {
             let mut request = String::new();
             let mut reader = std::io::BufReader::new(socket.try_clone().unwrap());
             reader.read_line(&mut request).unwrap();
-            let body = r#"{"models":[],"search":{"total":0}}"#;
+            let body = r#"{"models":[],"search":{"total":0,"role":"lora"}}"#;
             write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
             request
         });
         let client = Client::connect(&format!("http://{address}"), reqwest::Client::new(), Credential::Anonymous);
-        client.search_models_by_role(Some("fox"), Some("sdxl"), &["art".into()], &["nsfw".into()], 10, 20, Some("lora")).await.unwrap();
+        let answer = client.search_models_by_role(Some("fox"), Some("sdxl"), &["art".into()], &["nsfw".into()], 10, 20, Some("lora")).await.unwrap();
+        assert_eq!(answer.search.role.as_deref(), Some("lora"));
         let request = received.join().unwrap();
         let path = request.split_whitespace().nth(1).unwrap();
         let url = url::Url::parse(&format!("http://{address}{path}")).unwrap();

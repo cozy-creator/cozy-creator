@@ -303,11 +303,16 @@ mod tests {
 
     #[test]
     fn adapter_metadata_is_only_exposed_in_lora_commands() {
-        assert!(ModelCommand::try_parse_from(["model", "edit", "author/model", "--trigger", "word"]).is_err());
-        assert!(ModelCommand::try_parse_from(["model", "upload", "file", "author/model", "--strength", "0.5"]).is_err());
+        for (flag, value) in [("--trigger", "word"), ("--strength", "0.5")] {
+            assert!(ModelCommand::try_parse_from(["model", "edit", "author/model", flag, value]).is_err());
+        }
+        for (flag, value) in [("--trigger", "word"), ("--strength", "0.5"), ("--trained-on", "author/base")] {
+            assert!(ModelCommand::try_parse_from(["model", "upload", "file", "author/model", flag, value]).is_err());
+        }
         assert!(LoraCommand::try_parse_from(["lora", "edit", "author/adapter", "--trigger", "word", "--strength", "0.5"]).is_ok());
         assert!(LoraCommand::try_parse_from(["lora", "upload", "file", "author/adapter", "--trained-on", "base", "--strength", "0.5"]).is_ok());
         assert!(ModelCommand::try_parse_from(["model", "remove", "author/model"]).is_ok());
         assert!(LoraCommand::try_parse_from(["lora", "remove", "author/adapter"]).is_ok());
+        assert!(LoraCommand::try_parse_from(["lora", "info", "author/adapter"]).is_err());
     }
 }

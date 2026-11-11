@@ -174,6 +174,8 @@ pub struct ModelSearch {
 #[serde(default)]
 pub struct SearchMeta {
     pub total: i64,
+    /// Echoed by a Hub that applied authoritative repository-role filtering.
+    pub role: Option<String>,
 }
 
 /// A model's row in a search, or the head of its card.

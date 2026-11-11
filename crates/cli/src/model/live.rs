@@ -28,6 +28,7 @@ pub(crate) enum Action {
     Destinations(String),
     Download(DownloadChoice),
     ConfirmRemove(String),
+    Unclassified,
 }
 
 pub(crate) struct Catalog {
@@ -35,17 +36,19 @@ pub(crate) struct Catalog {
     page: ModelSearch,
     local: Option<Vec<HeldModel>>,
     local_only: bool,
+    notice: Option<String>,
 }
 
 impl Catalog {
     pub(super) fn new(query: Searching, page: ModelSearch, local: Option<Vec<HeldModel>>) -> Self {
-        Self { query, page, local, local_only: false }
+        Self { query, page, local, local_only: false, notice: None }
     }
 
     pub(super) fn from_local(query: Searching, local: Vec<HeldModel>) -> Self {
         let mut named = std::collections::BTreeMap::new();
         for held in &local {
-            if held.role != query.role || !output::names(&held.model, &query.q.split_whitespace().map(str::to_owned).collect::<Vec<_>>()) { continue; }
+            let matches_role = if query.role == "unknown" { !matches!(held.role.as_str(), "model" | "lora") } else { held.role == query.role };
+            if !matches_role || !output::names(&held.model, &query.q.split_whitespace().map(str::to_owned).collect::<Vec<_>>()) { continue; }
             named.entry(held.model.clone()).or_insert_with(|| api::calcifer::hub::FoundModel {
                 model: held.model.clone(), role: Some(held.role.clone()), release: Some(held.release.clone()), lanes: vec![held.lane.clone()], ..Default::default()
             });
@@ -53,7 +56,7 @@ impl Catalog {
         let total = named.len() as i64;
         let models: Vec<_> = named.into_values().skip(query.offset as usize).take(query.limit as usize).collect();
         let older = (total - query.offset as i64 - models.len() as i64).max(0);
-        Self { query, page: ModelSearch { models, total, older }, local: Some(local), local_only: true }
+        Self { query, page: ModelSearch { models, total, older }, local: Some(local), local_only: true, notice: None }
     }
 
     pub(crate) async fn page(&mut self, ctx: &Context, offset: u32) -> Result<(), Error> {
@@ -61,6 +64,9 @@ impl Catalog {
         query.offset = offset;
         if self.local_only {
             let inventory: MachineModels = ctx.calcifer().await?.get("/v1/machines/local/models").await?;
+            if inventory.silent {
+                return Err(Error::unavailable("local_inventory_unavailable", "The local machine has not reported its model inventory yet").next("cozy machine ls"));
+            }
             *self = Self::from_local(query, inventory.models);
         } else {
             let page = catalog::read(ctx, &query).await?;
@@ -71,15 +77,41 @@ impl Catalog {
         Ok(())
     }
 
+    pub(crate) async fn refresh(&mut self, ctx: &Context, notice: String) -> Result<(), Error> {
+        self.page(ctx, self.query.offset).await?;
+        if self.page.models.is_empty() && self.query.offset > 0 {
+            let offset = self.query.offset.saturating_sub(self.query.limit);
+            self.page(ctx, offset).await?;
+        }
+        self.notice = Some(notice);
+        Ok(())
+    }
+
     pub(crate) fn title(&self) -> String {
         if self.page.models.is_empty() {
             let unknown = self.local.as_ref().map_or(0, |rows| rows.iter().filter(|row| !matches!(row.role.as_str(), "model" | "lora")).count());
             return if self.local_only && unknown > 0 { format!("{} — no matches; {unknown} unclassified local entries", self.label()) } else { format!("{} — no matches", self.label()) };
         }
-        format!("{} {}–{} of {}", self.label(), self.query.offset + 1, self.query.offset as usize + self.page.models.len(), self.page.total)
+        let page = format!("{} {}–{} of {}", self.label(), self.query.offset + 1, self.query.offset as usize + self.page.models.len(), self.page.total);
+        self.notice.as_ref().map_or_else(|| page.clone(), |notice| format!("{page} · {notice}"))
     }
 
-    fn label(&self) -> &str { if self.local_only { if self.query.role == "lora" { "local LoRAs" } else { "local models" } } else if self.query.role == "lora" { "LoRAs" } else { "models" } }
+    fn label(&self) -> &str { if self.local_only { if self.query.role == "unknown" { "unclassified local copies" } else if self.query.role == "lora" { "local LoRAs" } else { "local models" } } else if self.query.role == "lora" { "LoRAs" } else { "models" } }
+
+    pub(crate) fn hint(&self) -> &str {
+        if self.local_only && self.query.role != "unknown" && self.local.as_ref().is_some_and(|rows| rows.iter().any(|row| !matches!(row.role.as_str(), "model" | "lora"))) {
+            "↑/↓ select · Enter preview · p/n pages · u unclassified copies · q back"
+        } else {
+            "↑/↓ select · Enter preview · PgUp/PgDn or p/n pages · q back"
+        }
+    }
+
+    pub(crate) fn unclassified(&self) -> Self {
+        let mut query = self.query.clone();
+        query.role = "unknown".into();
+        query.offset = 0;
+        Self::from_local(query, self.local.clone().unwrap_or_default())
+    }
 
     pub(crate) fn rows(&self) -> Vec<Vec<String>> {
         self.page.models.iter().map(|row| {
@@ -98,6 +130,7 @@ impl Catalog {
             KeyCode::Enter => self.page.models.get(selected).map(|row| Action::Preview(row.model.clone())),
             KeyCode::PageDown | KeyCode::Char('n') if self.page.older > 0 => Some(Action::Page(self.query.offset.saturating_add(self.query.limit))),
             KeyCode::PageUp | KeyCode::Char('p') if self.query.offset > 0 => Some(Action::Page(self.query.offset.saturating_sub(self.query.limit))),
+            KeyCode::Char('u') if self.local_only && self.query.role != "unknown" => Some(Action::Unclassified),
             _ => None,
         }
     }
@@ -199,8 +232,8 @@ impl Destinations {
     }
 }
 
-pub(crate) async fn remove(ctx: &Context, model: &str) -> Result<std::process::ExitCode, Error> {
-    super::machine::remove(ctx, model).await
+pub(crate) async fn remove(ctx: &Context, model: &str) -> Result<api::calcifer::RemovedModel, Error> {
+    super::machine::remove_local(ctx, model).await
 }
 
 pub(crate) async fn download(ctx: &Context, choice: DownloadChoice) -> Result<std::process::ExitCode, Error> {

@@ -66,6 +66,8 @@ The list shows local availability and disk use.
 Press d in a preview, then choose a machine and confirm with Enter to download. Esc or q goes back.
 For a downloaded model, r opens a local-removal confirmation. This removes its downloaded lanes
 and releases from this machine, while protecting active/shared data and leaving the Hub unchanged.
+Use `--on local` for downloaded copies; u shows any that have not yet been classified.
+After an action, the browser refreshes and returns to the same page and selection.
 Pipes and `--json` print one page; use `--limit` and `--offset` to choose it.
 
 First-party packages have no owner (`sdxl/generate`); everyone else's are `owner/name`

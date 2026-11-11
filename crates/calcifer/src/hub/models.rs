@@ -93,7 +93,7 @@ pub(super) async fn search(
         };
         loop {
             let answer = (client.search_models_by_role(q, family, &tags, &no_tags, limit, if family.is_none() || upstream_paged { ask.offset } else { names.len() as u32 }, role).await).map_err(|e| refusal(&hub, e))?;
-            if role.is_some() && answer.models.iter().any(|model| model.role.as_deref() != role) {
+            if !role_page_matches(&answer, role) {
                 return Err(role_unavailable());
             }
             total = answer.search.total;
@@ -158,6 +158,10 @@ fn role_unavailable() -> Refusal {
         .remedy("Retry after the Hub catalog has been updated"))
 }
 
+fn role_page_matches(answer: &types::ModelSearch, role: Option<&str>) -> bool {
+    role.is_none() || (answer.search.role.as_deref() == role && answer.models.iter().all(|model| model.role.as_deref() == role))
+}
+
 fn page(models: Vec<FoundModel>, total: i64, offset: u32, limit: u32, already_paged: bool) -> ModelSearch {
     let models = if already_paged { models } else { models.into_iter().skip(offset as usize).take(limit as usize).collect() };
     let older = (total - offset as i64 - models.len() as i64).max(0);
@@ -185,6 +189,16 @@ mod pagination_tests {
         assert_eq!(page.models[0].model, "second");
         assert_eq!(page.older, 1);
         assert!(super::page(rows(&["exact"]), 1, 1, 20, false).models.is_empty());
+    }
+
+    #[test]
+    fn empty_pages_need_the_hubs_role_acknowledgment() {
+        let old: types::ModelSearch = serde_json::from_value(serde_json::json!({"models": [], "search": {"total": 5}})).unwrap();
+        assert!(!role_page_matches(&old, Some("lora")));
+        let current: types::ModelSearch = serde_json::from_value(serde_json::json!({"models": [], "search": {"total": 0, "role": "lora"}})).unwrap();
+        assert!(role_page_matches(&current, Some("lora")));
+        assert!(!role_page_matches(&current, Some("model")));
+        assert!(role_page_matches(&old, None));
     }
 }
 
