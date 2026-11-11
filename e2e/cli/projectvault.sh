@@ -139,7 +139,23 @@ PY_BACKING_SCAN
     step "private media ranges stay in the mounted project for both binders"
     python3 "$E2E/cli/private_ranges.py" --project "$P" --view "$view" --out "$work/private-ranges.json" --cli "$COZY"
   fi
-  in_project "$P" --json vault lock > "$work/final-lock.json"
+  code=0
+  in_project "$P" --json vault lock > "$work/final-lock.json" || code=$?
+  if [ "$code" = 0 ]; then
+    jq -e '.vault.state == "locked"' "$work/final-lock.json" > /dev/null || fail "final lock did not acknowledge locked"
+  else
+    jq -e '.error.code == "project_busy"' "$work/final-lock.json" > /dev/null || fail "final lock failed without its typed busy response"
+    in_project "$P" --json vault status > "$work/final-lock-status.json"
+    jq -e '.state == "locking" or .state == "locked"' "$work/final-lock-status.json" > /dev/null || fail "busy final lock did not revoke the view"
+    for _ in $(seq 1 80); do
+      [ "$(jq -r .state "$work/final-lock-status.json")" != locked ] || break
+      sleep 0.25
+      in_project "$P" --json vault status > "$work/final-lock-status.json"
+    done
+    jq -e '.state == "locked"' "$work/final-lock-status.json" > /dev/null || fail "the final lock did not finish draining admitted work"
+  fi
+  trap - EXIT
+  rm -rf -- "$secrets"
   printf '{"ordinary":true,"mounted_media":true,"lock":true,"recovery":true,"recovery_output_backing_refused":true,"recovery_output_view_refused":true,"rekey":true,"expiry":true,"synthetic_only":true}\n' > "$work/receipt.json"
 )
 
