@@ -115,7 +115,9 @@ def jobs(gate: str) -> list[Job]:
                     'scout_s': total_s(records[1]) if matrix and len(records) > 1 else None,
                     'gpus': int(m.group(1)) if (m := re.search(r'--gpus=(\d+)', defs[cell]['args'])) else 1,
                     'exchange': exchange_of(records), 'record': records[0]})
-    return out
+    # H3 last: on a pod with little host RAM ComfyUI's H3 can be killed, and the runner with it (a 3090 with 32 GB,
+    # 43027199393); the image models are measured first.
+    return sorted(out, key=lambda j: j['key'].startswith('h3'))
 
 
 def holder(cap_gib: int | None) -> int:
@@ -239,6 +241,13 @@ def rows(gate: str) -> dict[str, Row]:
                      'comfyui': str(next((d.get('comfyui') for d in tiers.values()), '')),
                      'differences': [str(x) for x in (config.get('differences') or [])] if isinstance(config, dict) else [],
                      'source': str(path)}
+    # A job the runner never reported (it ended mid-pass, as a host OOM kill does) is ComfyUI's failure, said as one.
+    asked = Path(gate, 'comfy-jobs.json')
+    for j in cast(list[Job], json.loads(asked.read_text())) if asked.exists() else []:
+        if j['cell'] not in out:
+            out[j['cell']] = {'total_s': None, 'cold_s': None, 'steady_s': None, 'step1_s': None, 'peak_mib': None, 'held_mib': 0,
+                              'tiers': {}, 'status': 'no result: the runner ended before this job reported (a host OOM kill ends it so)',
+                              'comfyui': '', 'differences': [], 'source': str(path)}
     return out
 
 
