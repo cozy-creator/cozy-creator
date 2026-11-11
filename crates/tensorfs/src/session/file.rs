@@ -11,9 +11,6 @@ use crate::io::{Copy, Dst, ReadOpts, Src};
 
 use super::{Checkpoint, Download};
 
-/// Where each object starts in a [`CheckpointFile`]: the next multiple of this.
-const FILE_ALIGN: u64 = 4096;
-
 /// The checkpoint as one read-only, seekable file: its header, then its chunks and assets in
 /// header order at 4 KiB-aligned offsets, assembled from the store on demand; nothing is
 /// written. It holds what it may read until dropped. A read fetches the objects it lacks when
@@ -32,24 +29,8 @@ pub struct CheckpointFile {
 impl Checkpoint {
     /// This checkpoint as a [`CheckpointFile`].
     pub fn open_file(&self) -> Result<CheckpointFile> {
-        let header = self.header();
-        let mut objects: Vec<&ObjectRef> = header.chunks.iter().collect();
-        for c in header.components() {
-            let mut assets: Vec<_> = c.assets.iter().collect();
-            // The header's map order: by encoded key, so shorter names first.
-            assets.sort_by_key(|(name, _)| (name.len(), name.as_bytes()));
-            objects.extend(assets.into_iter().map(|(_, object)| object));
-        }
         let bytes = self.header_bytes();
-        let mut len = bytes.len() as u64;
-        let layout = objects
-            .into_iter()
-            .map(|object| {
-                let start = len.next_multiple_of(FILE_ALIGN);
-                len = start + object.length;
-                (start, object.clone())
-            })
-            .collect();
+        let (layout, len) = crate::store::file::layout(self.header(), bytes.len() as u64)?;
         Ok(CheckpointFile {
             checkpoint: self.clone(),
             header: bytes,
@@ -58,6 +39,13 @@ impl Checkpoint {
             len,
             pos: 0,
         })
+    }
+
+    /// Atomically write the complete portable checkpoint. Only the header and a bounded
+    /// copy buffer are held in memory. Read outside an async context, as for `open_file`.
+    pub fn write_file(&self, dest: &std::path::Path) -> Result<()> {
+        crate::store::copy_checked(&mut self.open_file()?, dest, None)?;
+        Ok(())
     }
 }
 
