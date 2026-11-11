@@ -290,9 +290,6 @@ release-gate/sessions/fixtures/pause-twice/ci_pause_twice/__init__.py: [arg-type
 release-gate/sessions/fixtures/pause-twice/ci_pause_twice/__init__.py: [return-value] Incompatible return value type (got "object", expected "ImageResult")
 release-gate/suites/execution/child-lora-stacks/ci_child_lora_stacks/__init__.py: [arg-type] Argument "seed" to "GenerateInput" has incompatible type "int"; expected "Seed | None"
 release-gate/suites/execution/child-lora-stacks/ci_child_lora_stacks/__init__.py: [return-value] Incompatible return value type (got "object", expected "ImageResult")
-release-gate/suites/execution/child-saved-file/ci_child_saved_file/__init__.py: [call-arg] Too many arguments
-release-gate/suites/execution/child-saved-file/ci_child_saved_file/__init__.py: [import-not-found] Cannot find implementation or library stub for module named "cozy_runtime.author._executor_requests"
-release-gate/suites/execution/child-saved-file/ci_child_saved_file/__init__.py: [no-any-unimported] Argument 1 to "wire_code" becomes "Any" due to an unfollowed import
 release-gate/suites/execution/child-saved-file/ci_child_saved_file/__init__.py: [union-attr] Item "None" of "Path | None" has no attribute "parent"
 release-gate/suites/execution/child-saved-file/ci_child_saved_file/__init__.py: [union-attr] Item "None" of "Path | None" has no attribute "read_bytes"
 release-gate/suites/execution/child-saved-file/ci_child_saved_file/__init__.py: [union-attr] Item "None" of "Path | None" has no attribute "read_bytes"

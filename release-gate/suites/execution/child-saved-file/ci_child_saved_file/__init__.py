@@ -17,7 +17,7 @@ from cozy_runtime.fields import FileBound
 from cozy_runtime.media import File, ImageFile
 from cozy_runtime.author._calls import ChildCallError, _current
 from cozy_runtime.author._errors import CapabilityError
-from cozy_runtime.author._executor_requests import CallState, ChildCall, SavedFile
+from tensorfs.executor import ChildCall, SavedFile
 
 app = App()
 TREE = "application/vnd.cozy.tree-manifest"
@@ -88,7 +88,7 @@ async def code_of(call: Callable[[], Awaitable[Seen]]) -> str:
 def wire_code(saved: SavedFile) -> str:
     """The call a package could send itself: TensorD alone stands between it and the file."""
     answer = _current.get().exchange(
-        ChildCall(call_index=900, module=__name__, export="see_blob", payload="{}", saved=(saved,)), CallState
+        ChildCall(call_index=900, module=__name__, export="see_blob", payload="{}", saved=(saved,))
     )
     return "" if answer.ok else answer.code
 
