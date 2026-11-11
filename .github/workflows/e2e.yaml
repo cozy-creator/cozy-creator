@@ -536,8 +536,8 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  # macOS (arm64) and Windows: the full native suite without layout, plus three layout viewport partitions.
-  # These OSes run no models themselves: what needs no machine, and every local verb refused.
+  # macOS (arm64) and Windows: native file/restart/browser paths plus three layout viewport partitions.
+  # Generic browser journeys run on Linux; an explicit native `web` shard still runs the full suite.
   cli-os:
     name: cli ${{ matrix.runner }} ${{ matrix.shard }}
     needs: [affected, candidate-os]

@@ -34,6 +34,7 @@ redeem() { answers "$1" "$2" "$3" -X POST -H 'Content-Type: application/json' -d
 
 # The merge check keeps functional journeys here; layout runs in parallel and scale is an explicit benchmark.
 web_core() { web_serves core; }
+web_native() { web_serves native; }
 
 web_serves() {
 step "web-serves: sign in, the page under its CSP, an event, and what is refused"
@@ -65,6 +66,13 @@ if [ -n "$restart" ]; then
   step "web-undo: a delete, a merge, a tool off, words, a move, approve and unapprove, a take discarded, each undone and redone; the CLI's undone from the page and the page's from the CLI; a clobbering undo refused; undo offline, then a restart"
   STOP=$(web_halt "$lock") START=$(web_start) web_proof undo "$chrome" "$pw" "$restart"
   jq -c '{refused: .seen.refused, list: .seen.list}' "$OUT/web-undo.json" 2> /dev/null || true
+fi
+if [ "$scope" = native ]; then
+  # Keep native file and process paths here. The surrounding CLI shard checks local-execution refusal.
+  local no_hub=''
+  [ -n "${WEB_ALONE:-}" ] || no_hub=$(web_restart "$lock" http://127.0.0.1:9)
+  NO_HUB=$no_hub web_proof see "$chrome" "$pw" "$restart"
+  return
 fi
 step "web-drawers: a real run live to its end and a cancel, one log stream across tabs, the machines"
 web_proof drawers "$chrome" "$pw" ''
