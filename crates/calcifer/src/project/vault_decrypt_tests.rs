@@ -156,6 +156,68 @@ async fn native_plain_recovery_fixture() {
     assert!(!receipt_path(&cleanup.root).exists());
     assert!(recover_pending_plain(&cleanup.root).is_err(), "a missing receipt must not mask an earlier durability error");
 
+    // An overlapping public recovery skips an owned operation instead of
+    // capturing its old receipt. A second intent at the SAME path survives.
+    let serial = staged(&root, "serialized", &created.keybag); save_conversion(&serial).unwrap();
+    let op = operation(&serial.root); let operation_guard = op.lock().unwrap();
+    let writer = exclusive(&serial.root).unwrap();
+    let before = fs::read(receipt_path(&serial.root)).unwrap();
+    let contender = std::thread::spawn({ let path = serial.root.clone(); move || recover_conversion(&path) });
+    contender.join().unwrap().unwrap();
+    assert_eq!(fs::read(receipt_path(&serial.root)).unwrap(), before);
+    assert!(serial.staged.join("retained.txt").exists());
+    recover_under_guards(&serial.root).unwrap();
+    assert!(!receipt_path(&serial.root).exists());
+    let mut next_intent = serial.clone(); let suffix = fresh();
+    next_intent.staged = root.join(format!(".cozy-vault-stage-{suffix}"));
+    next_intent.saved = root.join(format!(".cozy-project-source-{suffix}"));
+    fs::create_dir(&next_intent.staged).unwrap();
+    next_intent.plain.as_mut().unwrap().staged_id = directory_id(&next_intent.staged).unwrap();
+    save_conversion(&next_intent).unwrap();
+    let next_bytes = fs::read(receipt_path(&serial.root)).unwrap();
+    drop(operation_guard);
+    let contender = std::thread::spawn({ let path = serial.root.clone(); move || recover_conversion(&path) });
+    contender.join().unwrap().unwrap();
+    assert_eq!(fs::read(receipt_path(&serial.root)).unwrap(), next_bytes);
+    drop(writer);
+    recover_conversion(&serial.root).unwrap();
+    assert!(!next_intent.staged.exists() && serial.root.join(KEYBAG_FILE).exists());
+
+    // A read lease prevents recovery writes. Pending plaintext never becomes
+    // an ordinary fallback, including when the receipt path is a directory.
+    let mut read_held = staged(&root, "read-held", &created.keybag);
+    read_held.plain.as_mut().unwrap().ready = true; save_conversion(&read_held).unwrap();
+    fs::rename(&read_held.root, &read_held.saved).unwrap();
+    fs::rename(&read_held.staged, &read_held.root).unwrap();
+    let reader = access(&read_held.root).read_owned().await;
+    recover_conversion(&read_held.root).unwrap();
+    assert!(receipt_path(&read_held.root).is_file());
+    assert!(view(&read_held.root).is_err());
+    let bytes = fs::read(receipt_path(&read_held.root)).unwrap();
+    fs::remove_file(receipt_path(&read_held.root)).unwrap();
+    fs::create_dir(receipt_path(&read_held.root)).unwrap();
+    assert!(view(&read_held.root).is_err());
+    fs::remove_dir(receipt_path(&read_held.root)).unwrap();
+    fs::write(receipt_path(&read_held.root), bytes).unwrap();
+    drop(reader);
+    recover_conversion(&read_held.root).unwrap();
+    assert_eq!(view(&read_held.root).unwrap(), read_held.root);
+
+    // An installed encrypted transaction still awaits unlock's journal/source
+    // cleanup. A new storage action cannot overwrite that durable intent.
+    let mut unfinished = staged(&root, "unfinished-encrypted", &created.keybag);
+    unfinished.plain = None; save_conversion(&unfinished).unwrap();
+    let op = operation(&unfinished.root); let operation_guard = op.lock().unwrap();
+    let custody = exclusive(&unfinished.root).unwrap();
+    recover_under_guards(&unfinished.root).unwrap();
+    let before = fs::read(receipt_path(&unfinished.root)).unwrap();
+    for action in ["encrypt", "rotate", "decrypt"] {
+        assert_eq!(require_transition_ready(&unfinished.root, action).unwrap_err().code, "vault_cleanup_pending");
+        assert_eq!(fs::read(receipt_path(&unfinished.root)).unwrap(), before);
+    }
+    for action in ["lock", "activity", "passphrase", "recovery"] { require_transition_ready(&unfinished.root, action).unwrap(); }
+    drop(custody); drop(operation_guard);
+
     // Rebinding an older pre-move pointer is reconstructed from the real index
     // and native ID in a FRESH process, not by keeping this test's static map.
     let mut pointer = PAYLOAD_PREFIX.to_vec();
@@ -249,6 +311,8 @@ async fn native_plain_recovery_fixture() {
         "retained_source_preserved_caches_rebuilt":true,"foreign_copy_marker_denied":true,
         "foreign_copy_fresh_staging_preserves_retained_bytes":true,"malformed_marker_refused_without_mutation":true,
         "partial_cipher_cleanup_retry":true,"encryption_finisher_preserves_plain_intent":true,
+        "contended_recovery_skips_without_old_snapshot":true,"replacement_receipt_survives_contention":true,
+        "own_read_pending_plain_refused":true,"non_file_receipt_fails_closed":true,"unfinished_encrypted_intent_preserved":true,
         "original_gap_predicate_false":true,"index_and_named_survive_rename_gap":true,"status_waits_for_transition":true}));
 }
 
