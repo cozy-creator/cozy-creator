@@ -23,7 +23,7 @@ use base64::engine::{general_purpose::STANDARD, Engine as _};
 use serde_json::Value;
 
 use super::ask::{self, Backoff};
-use super::net::{join, same_origin, shown, Body, Client, GetError, HeaderMap};
+use super::net::{join, same_origin, shown, Body, Client, GetError, HeaderMap, Pulse};
 use super::origin::{Boxed, Location, Origin};
 use super::policy::is_loopback_origin;
 use super::token::{default_for, s3_base, Request, TokenProvider};
@@ -47,6 +47,9 @@ pub struct Endpoint {
     /// Bytes of file bodies that landed or are on their way ([`Endpoint::sent`]): an upload's
     /// progress while its objects are on their way.
     sent: Arc<AtomicU64>,
+    /// When any of its requests last sent a byte: a request is cut for silence only when all of them are
+    /// silent, so the streams of one upload on a slow link never cut each other's starved ones.
+    pulse: Arc<Pulse>,
 }
 
 enum At {
@@ -151,7 +154,7 @@ impl Endpoint {
             At::Http(_) => token.or_else(|| default_for(&url)),
             At::Dir(..) => None,
         };
-        Ok(Endpoint { url, at, client: client.clone(), token, sent: Arc::default() })
+        Ok(Endpoint { url, at, client: client.clone(), token, sent: Arc::default(), pulse: Pulse::new() })
     }
 
     pub fn url(&self) -> &str {
@@ -516,7 +519,7 @@ impl Endpoint {
     }
 
     async fn round_trip(&self, method: &str, url: &str, headers: &[(String, String)], body: Option<Body>) -> Result<Reply> {
-        let mut answer = self.client.send(method, url, headers, body).await?;
+        let mut answer = self.client.send(method, url, headers, body, Some(&self.pulse)).await?;
         let (status, headers) = (answer.status(), answer.response.headers().clone());
         let mut body = Vec::new();
         while let Some(frame) = answer.frame().await? {

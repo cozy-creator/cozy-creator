@@ -28,7 +28,8 @@ PY
     > "$HB/slow-upload-requests.txt" &
   HUB_MODELS="$HUB_MODELS $model"
   t0=$(date +%s)
-  "$CLI" --json model upload "$w" "$model" --lane f16 --on "$M" -y > "$HB/slow-upload.out" 2>&1; code=$?
+  # 704 MiB at 8 Mbit/s is about 12 minutes; 40 is the cell's last resort, so a broken upload leaves the suite its time.
+  timeout 2400 "$CLI" --json model upload "$w" "$model" --lane f16 --on "$M" -y > "$HB/slow-upload.out" 2>&1; code=$?
   t1=$(date +%s)
   sudo tc qdisc del dev lo root
   sleep 2; sudo pkill -f "tcpdump -i lo -l -nn -tttt" 2> /dev/null

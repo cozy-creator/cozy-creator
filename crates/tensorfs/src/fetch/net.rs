@@ -1,9 +1,11 @@
 //! The one HTTP stack. [`http`] starts every outbound client cozy makes: its name, 5 s to connect, a dead
 //! peer found by TCP keepalive, and rustls over the webpki roots. [`Client`] is the one that moves
-//! bytes: a request that moves nothing either way for [`STALL`] fails ([`Pulse`]: each piece of body
-//! sent or read restarts it; reqwest's `read_timeout` counts from the request's start until its
-//! answer, so it ended every PUT that took longer to send), no proxy, and every address is the egress
-//! policy's before it is dialed ([`SourcePolicy`]). Redirects are followed here, not by reqwest: credentials go only to the origin
+//! bytes: a request fails once nothing has moved for [`STALL`] ([`Pulse`]: each piece of body sent
+//! restarts it; requests that share one, as one upload's do, are judged together, so a connection the
+//! others starve on a slow link is not cut while they move; reqwest's `read_timeout` counted from a
+//! request's start until its answer and ended every PUT that took longer to send), a body read gets
+//! [`STALL`] per piece, no proxy, and every address is the egress policy's before it is dialed
+//! ([`SourcePolicy`]). Redirects are followed here, not by reqwest: credentials go only to the origin
 //! they were given for, and reqwest's own list (Authorization, Cookie) would carry a DPoP proof or
 //! SigV4 headers on.
 
@@ -187,15 +189,15 @@ impl Body {
     }
 }
 
-/// When a request last moved a byte: what its stall is counted from.
-struct Pulse {
+/// When requests last moved a byte: what their silence is judged by. One upload's requests share one.
+pub(crate) struct Pulse {
     began: Instant,
     /// Milliseconds after `began`.
     last: AtomicU64,
 }
 
 impl Pulse {
-    fn new() -> Arc<Pulse> {
+    pub(crate) fn new() -> Arc<Pulse> {
         Arc::new(Pulse { began: Instant::now(), last: AtomicU64::new(0) })
     }
 
@@ -203,10 +205,14 @@ impl Pulse {
         self.last.store(self.began.elapsed().as_millis() as u64, Ordering::Relaxed);
     }
 
-    /// Ready once nothing has moved for [`STALL`].
-    async fn stalled(&self) {
+    fn quiet(&self) -> Duration {
+        self.began.elapsed().saturating_sub(Duration::from_millis(self.last.load(Ordering::Relaxed)))
+    }
+
+    /// Ready once nothing under it has moved for [`STALL`], and never sooner than that after `since`.
+    async fn stalled(&self, since: Instant) {
         loop {
-            let quiet = self.began.elapsed().saturating_sub(Duration::from_millis(self.last.load(Ordering::Relaxed)));
+            let quiet = since.elapsed().min(self.quiet());
             if quiet >= STALL {
                 return;
             }
@@ -257,7 +263,7 @@ impl Client {
             if let Some(provider) = provider {
                 presented.extend(provider.headers(&Presented { method: "GET", url: &url, headers: &headers, payload: None }).await.map_err(GetError::Caller)?);
             }
-            let mut answer = self.send("GET", &url, &presented, None).await?;
+            let mut answer = self.send("GET", &url, &presented, None, None).await?;
             let status = answer.status();
             if let Some(provider) = provider {
                 let sent = Presented { method: "GET", url: &url, headers: &presented, payload: None };
@@ -294,8 +300,8 @@ impl Client {
     }
 
     /// One request, redirects not followed: `body` (none: empty) with `headers`, until its answer's
-    /// headers; nothing sent or received for [`STALL`] fails it.
-    pub(crate) async fn send(&self, method: &str, url: &str, headers: &[(String, String)], body: Option<Body>) -> Result<Answer> {
+    /// headers; nothing moved for [`STALL`] under `group` (none: this request alone) fails it.
+    pub(crate) async fn send(&self, method: &str, url: &str, headers: &[(String, String)], body: Option<Body>, group: Option<&Arc<Pulse>>) -> Result<Answer> {
         // The scheme, the allowlist and an address literal: a named host is checked as it resolves.
         let (policy, checking) = (self.policy.clone(), url.to_owned());
         tokio::task::spawn_blocking(move || policy.check(&checking))
@@ -307,13 +313,13 @@ impl Client {
         for (name, value) in headers {
             request = request.header(name.as_str(), value.as_str());
         }
-        let pulse = Pulse::new();
+        let (pulse, began) = (group.cloned().unwrap_or_else(Pulse::new), Instant::now());
         if let Some(body) = body {
             request = request.body(body.sending(Arc::clone(&pulse)));
         }
         let sent = tokio::select! {
             sent = request.send() => sent,
-            () = pulse.stalled() => return refuse(Code::TRANSFER_FAILED, format!("{}: nothing moved for {} s", shown(url), STALL.as_secs())),
+            () = pulse.stalled(began) => return refuse(Code::TRANSFER_FAILED, format!("{}: nothing moved for {} s", shown(url), STALL.as_secs())),
         };
         match sent {
             Ok(response) => Ok(Answer { url: url.to_owned(), response, until: None }),
