@@ -281,7 +281,7 @@ pub(crate) fn upload(
     header: &ObjectRef, files: &std::collections::BTreeMap<String, ObjectRef>, store: &tensorfs::store::Store,
     control: &tensorfs::fetch::UploadControl<'_>,
 ) -> Result<tensorfs::fetch::Uploaded, Refused> {
-    use tensorfs::fetch::{bearer, upload_commit, Client, Endpoint, SourcePolicy};
+    use tensorfs::fetch::{bearer, upload_checkpoint, Client, Endpoint, SourcePolicy};
     let failed = |error: String| refused("upload_failed", error);
     // A lane the precision table names is the weights' width: never int8 weights labelled bf16.
     let read = store.read(header).map_err(|e| e.to_string())
@@ -310,7 +310,7 @@ pub(crate) fn upload(
         endpoint = endpoint.anonymous();
     }
     let runtime = tensorfs::fetch::runtime().map_err(|error| failed(error.to_string()))?;
-    runtime.block_on(upload_commit(&endpoint, destination, &tree, store, control)).map_err(|error| failed(error.to_string()))
+    runtime.block_on(upload_checkpoint(&endpoint, destination, &tree, store, control)).map_err(|error| failed(error.to_string()))
 }
 
 impl Runs {
@@ -592,7 +592,7 @@ impl Runs {
                     model: base.model.clone(),
                     release: on.row["release"].as_str().unwrap_or_default().to_owned(),
                     lane: on.row["lane"].as_str().unwrap_or_default().to_owned(),
-                    commit: on.tree.as_ref().map(ObjectRef::id).unwrap_or_default(),
+                    checkpoint: on.tree.as_ref().map(ObjectRef::id).unwrap_or_default(),
                     header: on.header.id(),
                 };
                 observe("composing", 0, 0);
@@ -623,7 +623,7 @@ impl Runs {
                         true => refused(crate::published::CANCELED, "the upload was canceled before its commit; admitted objects remain available"),
                         false => error,
                     })?;
-                row["published"] = json!({"destination": destination, "commit": uploaded.commit.id(), "lane": spec.lane,
+                row["published"] = json!({"destination": destination, "commit": uploaded.checkpoint.id(), "lane": spec.lane,
                     "checkpoint": header.id(), "converged": uploaded.converged,
                     "sent": {"objects": uploaded.sent, "bytes": uploaded.bytes}});
             }
@@ -698,7 +698,7 @@ impl Runs {
         } else if let Some(named) = if destination.is_empty() { None } else { held_tree(publisher.store(), choice)? } {
             // A Hub commit held here is the request's to publish only as the Hub serves it to its account.
             let named = match named.tree.is_some() && !named.model.starts_with("local/") {
-                true => publisher.commit(&self.service, hub_access()?, named).map_err(|(code, message)| refused(code, message))?,
+                true => publisher.checkpoint(&self.service, hub_access()?, named).map_err(|(code, message)| refused(code, message))?,
                 false => named,
             };
             let header = named.header().map_err(|(code, message)| refused(code, message))?.clone();
@@ -1620,7 +1620,7 @@ impl Runs {
         let files = parsed.repo_files().map(|(p, r)| (p.to_owned(), r.clone())).collect();
         let control = tensorfs::fetch::UploadControl { cancelled: &|| false, progress: &|_, _| {}, commit: &|| true };
         let uploaded = upload(&options, hub.as_ref(), &destination, lane, &header, &files, store, &control)?;
-        Ok(Some((destination, uploaded.commit)))
+        Ok(Some((destination, uploaded.checkpoint)))
     }
 
     /// The Hub a run reads and writes: its own access, else the machine's.

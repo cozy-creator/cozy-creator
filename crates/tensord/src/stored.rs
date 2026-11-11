@@ -65,6 +65,8 @@ pub(crate) struct LogPage {
 #[serde(default)]
 pub(crate) struct ModelChoice {
     pub parameter: String,
+    // The journal and supported machine frame use their historical spelling.
+    #[serde(rename = "repository")]
     pub model: String,
     pub release: String,
     pub lane: String,
@@ -141,5 +143,21 @@ mod b64 {
     pub(crate) fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
         let text = std::borrow::Cow::<str>::deserialize(deserializer)?;
         STANDARD.decode(text.as_bytes()).map_err(serde::de::Error::custom)
+    }
+}
+
+#[cfg(test)]
+mod model_name_tests {
+    use super::*;
+
+    #[test]
+    fn journal_model_identity_survives_the_source_rename() {
+        let historic = br#"{"parameter":"weights","repository":"author/model","release":"1.0","lane":"bf16"}"#;
+        let choice: ModelChoice = decode(historic).unwrap();
+        assert_eq!(choice.model, "author/model");
+        assert_eq!(choice.release, "1.0");
+        let stored: serde_json::Value = serde_json::from_slice(&encode(&choice)).unwrap();
+        assert_eq!(stored["repository"], "author/model");
+        assert!(stored.get("model").is_none());
     }
 }

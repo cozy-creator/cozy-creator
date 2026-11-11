@@ -325,7 +325,8 @@ const FRESH: Duration = Duration::from_secs(10 * 60);
 struct Answer {
     release: String,
     lane: String,
-    commit: ObjectRef,
+    #[serde(rename = "commit")]
+    checkpoint: ObjectRef,
     header: ObjectRef,
     reasons: Vec<String>,
     hardware: Hardware,
@@ -334,7 +335,7 @@ impl Answer {
     fn ask(machine: &Machine, source: &hub::Source, named: &Named, hardware: &Hardware) -> Result<Self, Failure> {
         let r = origin::resolve(machine, source, &named.model, &named.release, &named.lane, hardware)
             .map_err(|e| unsigned(source, refused("model_resolution_failed", e.clone()), &e))?;
-        Ok(Self { release: r.release, lane: r.lane, commit: r.commit, header: r.header, reasons: r.reasons, hardware: hardware.clone() })
+        Ok(Self { release: r.release, lane: r.lane, checkpoint: r.checkpoint, header: r.header, reasons: r.reasons, hardware: hardware.clone() })
     }
 }
 
@@ -550,7 +551,7 @@ impl Publisher {
         };
         let named = Named { model: pulled.model, lane: pulled.lane, tree: Some(pulled.tree), ..Named::default() };
         match source {
-            Some(source) => self.commit(service, source, named).map(drop),
+            Some(source) => self.checkpoint(service, source, named).map(drop),
             None => Err(("model_resolution_failed", format!("{} is private, or no such commit: this run carries no Hub access; `cozy login <email>` on the computer that sent it", named.shown()))),
         }
     }
@@ -640,7 +641,7 @@ impl Publisher {
         let pulled = Pulled { model: named.model.clone(), release: named.release.clone(), lane: named.lane.clone(), tree: tree.clone() };
         pulled.record(&self.store).map_err(io_failure)?;
         // Held open while it lands: the store never evicts a commit a pull is fetching.
-        let _held = self.store.at_commit(&tree).map_err(|e| io_failure(storage::io_error(e)))?;
+        let _held = self.store.at_checkpoint(&tree).map_err(|e| io_failure(storage::io_error(e)))?;
         if components == Some(&[]) {
             logged(&structure);
             return Ok(structure.landed);
@@ -695,7 +696,7 @@ impl Publisher {
     /// is read again behind it (`refresh`).
     pub(crate) fn resolve(&self, service: &Service, source: &hub::Source, named: Named, hardware: &Hardware) -> Result<Named, Failure> {
         if named.tree.is_some() {
-            return self.commit(service, source, named);
+            return self.checkpoint(service, source, named);
         }
         let origin = hub::origin_key(&source.origin).unwrap_or_default();
         let name = json!(["resolve-v4", origin, named.model, named.release, named.lane, hardware.gpus, hardware.plain]).to_string();
@@ -714,7 +715,7 @@ impl Publisher {
                 answer
             }
         };
-        Ok(Named { release: answer.release, lane: answer.lane, tree: Some(answer.commit), header: Some(answer.header), reasons: answer.reasons, ..named })
+        Ok(Named { release: answer.release, lane: answer.lane, tree: Some(answer.checkpoint), header: Some(answer.header), reasons: answer.reasons, ..named })
     }
 
     /// Reads held name `name` again at its Hub on a thread of its own, once at a time. An answer
@@ -758,7 +759,7 @@ impl Publisher {
     /// restarts like the store. Any other request asks the Hub once, as itself (its capability's
     /// account, as the Hub named it when it redeemed it); what the Hub serves it is its account's
     /// here too. The bytes held are reused, and the same account's warm runs ask the Hub nothing.
-    pub(crate) fn commit(&self, service: &Service, source: &hub::Source, named: Named) -> Result<Named, Failure> {
+    pub(crate) fn checkpoint(&self, service: &Service, source: &hub::Source, named: Named) -> Result<Named, Failure> {
         #[derive(serde::Deserialize, serde::Serialize)]
         struct Held {
             tree: Option<ObjectRef>,
@@ -779,7 +780,7 @@ impl Publisher {
         if let Some(held) = held.as_ref().filter(|held| served(held)) {
             return Ok(Named { tree: held.tree.clone(), lane: held.lane.clone(), header: Some(held.header.clone()), ..named });
         }
-        tracing::info!(model = %named.model, commit = %tree.id(), reader = reader.as_deref().unwrap_or("-"),
+        tracing::info!(model = %named.model, checkpoint = %tree.id(), reader = reader.as_deref().unwrap_or("-"),
             "a commit asked of the Hub as the request's own reader");
         let failed = |e: Refusal| private(source, &named, refused("model_resolution_failed", e.clone()), &e);
         let object = origin::object(&self.machine, source, &tree.sha256).map_err(failed)?;
@@ -789,9 +790,9 @@ impl Publisher {
                 let remote = origin::remote(&self.machine, source).map_err(failed)?;
                 self.machine.objects(&remote, std::slice::from_ref(&object), priority::NOW, &Stop::default()).map_err(failed)?;
                 match storage::tree_or_header(&self.store, &object).map_err(|e| ("model_resolution_failed", e.to_string()))? {
-                    Some(commit) => {
-                        let header = commit.header().map_err(|e| ("model_resolution_failed", format!("{}: {e}", object.id())))?.1.clone();
-                        Held { tree: Some(object), lane: commit.lane, header, readers: BTreeSet::new() }
+                    Some(checkpoint) => {
+                        let header = checkpoint.header().map_err(|e| ("model_resolution_failed", format!("{}: {e}", object.id())))?.1.clone();
+                        Held { tree: Some(object), lane: checkpoint.lane, header, readers: BTreeSet::new() }
                     }
                     None => Held { tree: None, lane: named.lane.clone(), header: object, readers: BTreeSet::new() },
                 }
