@@ -203,6 +203,7 @@ impl Service {
         *current = Some(pool.clone());
         drop(current);
         pool.wake_on_freed(&self.engine);
+        pool.watch_disks();
         if pool.width() > 0 {
             pool.watch_faults();
             // The current image may prepare ahead. Historical environments stay cold;
