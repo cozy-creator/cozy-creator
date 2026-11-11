@@ -85,6 +85,14 @@ summary() { jq -r '"exec \((.execution_ms // 0) / 1000 | floor)s" + ([.calls[]? 
   + "gemm \([$m.observations[]? | select(.name == "gemm.selected") | .value] | unique | join(",")), "
   + "ready \([$m.observations[]? | select(.name == "kernel.ready") | .value] | unique | join(",")), "
   + "plan \([$m.execution.plan_reports[]? | to_entries[] | "\(.key)=\(.value.applied)\(if (.value.code // "") != "" then "(\(.value.code))" else "" end)"] | join(" "))"] | join(""))' "$OUT/$1.json" 2>/dev/null; }
+# weights <name>: each GPU call's text encode, the pod's disk and host-to-GPU ceilings, its LoRA bakes, where its weight fills
+# came from (GB/fills/s by origin), and its host tier's reads ahead and derived pages written (cr-277).
+weights() { jq -r '[.calls[]? | select(.measurements.memory.stats.varena? != null) | .measurements as $m
+  | $m.memory.stats.varena[0] as $v | ($v.stats.baked_pages // {}) as $t | "\(.function): text \(($m.attribution.stages.condition_text.total_ms // 0) / 100 | floor / 10)s, "
+  + "disk \(($v.ceiling.disk_gbps // 0) * 10 | floor / 10) h2d \(($v.ceiling.h2d_gbps // 0) * 10 | floor / 10) GB/s, bake \($v.stats.moved.bake.blocks // 0), fills "
+  + ([$v.stats.moved | to_entries[] | select(.key != "bake") | "\(.key) \((.value.bytes // 0) / 1e8 | floor / 10)/\(.value.fills // 0)/\((.value.ns // 0) / 1e8 | floor / 10)s"] | join(" "))
+  + ", read ahead \($t.read_ahead // "-") \(($t.read_ahead_bytes // 0) / 1e8 | floor / 10) GB refused \($t.read_ahead_refused // "-"), persisted \($t.persisted // "-") "
+  + "\(($t.persisted_bytes // 0) / 1e8 | floor / 10) GB skipped \($t.persist_skipped // "-") failed \($t.persist_failed // "-")"] | join("; ")' "$OUT/$1.json" 2>/dev/null; }
 fails=0
 declare -A MADE=()
 for k in "${names[@]}"; do
@@ -118,6 +126,7 @@ for k in "${names[@]}"; do
   st=$(jq -r '.status // "none"' "$OUT/$k.json" 2>/dev/null); st=${st:-none}
   MADE[$k]=$(ls "$OUT/$k.out"/* 2> /dev/null | grep -E '[.](png|webp|jpg|mp4)$' | sort | head -1)
   say "$k run ${N:-none} ${st:-none} (exit $code): $(summary "$k")"
+  say "$k weights: $(weights "$k")"
   want=$(jq -r '.expect // "completed"' <<<"$c")
   if [ "$st" != completed ]; then
     why=$(jq -r '.reason.message // .reason // empty' "$OUT/$k.json" 2>/dev/null)
