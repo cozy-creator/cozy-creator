@@ -42,6 +42,12 @@ pub(crate) fn supervise(
             if platform::handles::peer(&pipe)?.pid != parent {
                 return Err(io::Error::new(io::ErrorKind::PermissionDenied, "readiness pipe belongs to another process"));
             }
+            let mut pipe = pipe;
+            let mut acknowledged = [0];
+            pipe.read_exact(&mut acknowledged)?;
+            if acknowledged != [b'a'] {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid supervisor acknowledgment"));
+            }
             return Ok(Ready(Some(pipe)));
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -61,8 +67,18 @@ pub(crate) fn supervise(
         let mut pipe = match Exact::open(&Birth::of(service.pid())?)? {
             Some(process) => loop {
                 let Some(pipe) = listener.accept_unless(&process)? else { break None };
-                if platform::handles::peer(&pipe)?.pid == service.pid() {
-                    break Some(pipe);
+                match platform::handles::peer(&pipe) {
+                    Ok(peer) if peer.pid == service.pid() => {
+                        let mut pipe = pipe;
+                        match pipe.write_all(b"a") {
+                            Ok(()) => break Some(pipe),
+                            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {}
+                            Err(error) => return Err(error),
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {}
+                    Err(error) => return Err(error),
                 }
             },
             None => None,
@@ -274,6 +290,11 @@ mod tests {
     }
 
     #[test]
+    fn a_child_that_connects_then_exits_is_counted_as_unready() {
+        run_case("connect-exit", 7, 2);
+    }
+
+    #[test]
     fn requested_restart_uses_the_same_private_handoff() {
         run_case("updated", 0, 2);
     }
@@ -315,6 +336,20 @@ mod tests {
         let case = std::env::var("COZY_SUPERVISOR_TEST_CASE").unwrap();
         let paths = super::super::update::Paths::new(&root.join("engine"), &root);
         std::fs::create_dir_all(paths.update("")).unwrap();
+        if case == "connect-exit" {
+            let parent = platform::process::parent_of(std::process::id()).unwrap();
+            match LocalStream::connect(&service_pipe(&paths, parent)).map_err(io::Error::from) {
+                Ok(pipe) => {
+                    let starts = root.join("starts");
+                    let count = std::fs::read_to_string(&starts).ok().and_then(|text| text.parse::<u32>().ok()).unwrap_or(0) + 1;
+                    std::fs::write(starts, count.to_string()).unwrap();
+                    drop(pipe);
+                    std::process::exit(7);
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => panic!("{error}"),
+            }
+        }
         let mut ready = supervise(&paths, None).unwrap();
         let starts = root.join("starts");
         let count = std::fs::read_to_string(&starts).ok().and_then(|text| text.parse::<u32>().ok()).unwrap_or(0) + 1;
