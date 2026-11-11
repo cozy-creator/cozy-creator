@@ -2781,6 +2781,11 @@ a.tab:hover {
 }
 .run-on {
   position: relative;
+  pointer-events: none;
+}
+.run-on > summary,
+.run-on > div {
+  pointer-events: auto;
 }
 .run-on > summary {
   list-style: none;

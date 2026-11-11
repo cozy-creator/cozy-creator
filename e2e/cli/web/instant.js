@@ -92,8 +92,8 @@ async function loseAnswers(page, method, path, times) {
   const hasAsset = (name) => new RegExp(`^  ${name}:`, 'm').test(yaml());
   const count = (name) => yaml().match(new RegExp(`^  ${name}(_\\d+)?:`, 'gm'))?.length ?? 0;
   const box = (name) => boxOf(page, name);
-  // A tool by its id: a package's tool can have the same title (minimax-h3/edit is Edit too).
-  const row = (id) => page.locator(`.tools [data-palette="nodes"] .tool[data-tool="${id}"]`);
+  // The composition node, independent of any generative Edit Video operation.
+  const editor = () => page.locator('.tools [data-palette="nodes"] .tool[data-node="video_edit"]');
   await page.waitForSelector('.tools .tool');
   await page.waitForSelector('.empty-canvas');
 
@@ -115,7 +115,7 @@ async function loseAnswers(page, method, path, times) {
     if (request.method() === 'GET' && pathname.startsWith(`/v1/projects/${id}`)) reads.push(`${pathname.slice(`/v1/projects/${id}`.length) || '/'}${search}`);
   });
   const posts = await hold(page, 'POST', '**/v1/projects/*/assets');
-  await carry(page, row('cozy/edit'), { x: 1100, y: 800 });
+  await carry(page, editor(), { x: 1100, y: 800 });
   await until('the frame after the drop', () => page.evaluate(() => window.dropped.frame), Boolean);
   const dropped = await page.evaluate(() => window.dropped);
   seen.drop = { frame_ms: dropped.frame - dropped.drop, boxes: [dropped.boxes, dropped.after] };
@@ -146,7 +146,7 @@ async function loseAnswers(page, method, path, times) {
 
   // An answer lost: the same key again, and one asset.
   const lost = await loseAnswers(page, 'POST', '**/v1/projects/*/assets', 2);
-  await carry(page, row('cozy/edit'), { x: 400, y: 900 });
+  await carry(page, editor(), { x: 400, y: 900 });
   const second = `${name}_2`;
   await box(second).waitFor();
   await until('its answer came at last', () => Promise.resolve(lost.keys.length), (n) => n >= 3);
@@ -158,7 +158,7 @@ async function loseAnswers(page, method, path, times) {
 
   // Another writer takes the name while this one's asked: the box takes what it got, and the other shows.
   const stalled = await hold(page, 'POST', '**/v1/projects/*/assets');
-  await carry(page, row('cozy/edit'), { x: 400, y: 200 });
+  await carry(page, editor(), { x: 400, y: 200 });
   const third = `${name}_3`;
   await box(third).waitFor();
   projectJson(folder, 'POST', '/assets', { tool: 'cozy/edit', name: third, exact: true, fields: {} });
@@ -197,7 +197,7 @@ async function loseAnswers(page, method, path, times) {
   await box('words').waitFor();
   await page.waitForTimeout(400);
   await openBox(page, 'words');
-  await box('words').locator('.mention-text').click();
+  await box('words').locator('.mention-text[data-field="text"]').click();
   const patches = await hold(page, 'PATCH', '**/v1/projects/*/assets/*');
   await page.keyboard.press('ControlOrMeta+a');
   await page.keyboard.type('mine');
@@ -209,7 +209,7 @@ async function loseAnswers(page, method, path, times) {
   await patches.release();
   await openBox(page, 'words');
   await until('the conflict line', () => box('words').getByRole('button', { name: 'Keep mine' }).count(), (n) => n > 0);
-  check('conflict_keeps_both', yaml().includes('text: theirs') && (await box('words').locator('.mention-text').allInnerTexts()).join(' ').includes('mine'), await box('words').innerText());
+  check('conflict_keeps_both', yaml().includes('text: theirs') && (await box('words').locator('.mention-text[data-field="text"]').allInnerTexts()).join(' ').includes('mine'), await box('words').innerText());
   await box('words').getByRole('button', { name: 'Keep mine' }).click();
   await until('mine in the file', () => Promise.resolve(yaml().includes('text: mine')), Boolean);
   await closeBox(page);
@@ -249,7 +249,7 @@ async function loseAnswers(page, method, path, times) {
   // kill -9 with a box in line: it lands once, when Calcifer's back, with no reload.
   if (process.env.RESTART) {
     const waits = await hold(page, 'POST', '**/v1/projects/*/assets');
-    await carry(page, row('cozy/edit'), { x: 1100, y: 200 });
+    await carry(page, editor(), { x: 1100, y: 200 });
     const fifth = `${name}_5`;
     await box(fifth).waitFor();
     const restarted = new Promise((done, fail) => exec(process.env.RESTART, { shell: 'bash' }, (error) => (error ? fail(error) : done())));
@@ -332,10 +332,11 @@ async function loseAnswers(page, method, path, times) {
     await tab(old).click();
     const unread = page.locator('.unread');
     await unread.waitFor();
-    check('what_cant_be_read_says_why', /schema 99/.test(await unread.innerText()) && /cozy update/.test(await unread.innerText()) && (await page.locator('.empty-canvas').count()) === 0, await unread.innerText());
-    await until('the tools still there', () => row('cozy/edit').count(), (n) => n === 1);
-    await carry(page, row('cozy/edit'), { x: 1200, y: 300 });
-    await until('what was dropped on it came back', async () => (await notes()).filter((line) => /Couldn't place Edit/.test(line)).length, (n) => n === 1);
+    const refusal = await unread.innerText();
+    check('what_cant_be_read_says_why', /schema 99/.test(refusal) && /only current CRDT schema 2 is supported/.test(refusal) && /Preserve this database/.test(refusal) && /new current-format project in a separate empty directory/.test(refusal) && (await page.locator('.empty-canvas').count()) === 0, refusal);
+    await until('the editor node still there', () => editor().count(), (n) => n === 1);
+    await carry(page, editor(), { x: 1200, y: 300 });
+    await until('what was dropped on it came back', async () => (await notes()).filter((line) => /Couldn't place Video Editor/.test(line)).length, (n) => n === 1);
     check('a_drop_on_what_cant_be_read_rolls_back', (await page.locator('.card[data-asset]').count()) === 0);
     await page.getByTitle(folder, { exact: true }).click();
     await box(name).waitFor();
