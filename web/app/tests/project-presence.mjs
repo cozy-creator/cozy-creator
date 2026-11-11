@@ -592,6 +592,7 @@ try {
   assert.ok(oldAck)
   const reconnected = holdShow(late.id)
   const recheckFrom = vaultChanges.length
+  const reconnectRead = reads.mark()
   connection.abort()
   connection = new AbortController()
   await reconnected.entered.promise
@@ -601,6 +602,13 @@ try {
   await waitRequest(() => getRequests.slice(requested).includes(`/v1/projects/${late.id}`))
   assert.equal(owner.health.get().state, "live")
   assert.ok(vaultChanges.slice(recheckFrom).some(({ id, state }) => id === "" && state === "recheck"), "new hello did not request vault recheck")
+  console.log(JSON.stringify({ reconnect_teardown_boundary: { bridge_reads_started: reads.mark() - reconnectRead, fetching_queries: queries.isFetching(), project_fetch_status: queries.getQueryState(key)?.fetchStatus } }))
+  // The last-Reader assertion assumes no accepted read still owns Project.
+  // Starting the refresh is not its completion; do not cancel it at teardown.
+  await reads.done(reconnectRead)
+  await Promise.all(queries.getQueryCache().getAll().flatMap((query) => query.promise ? [query.promise] : []))
+  assert.equal(queries.isFetching(), 0, "project refreshes are still active before hide")
+  console.log(JSON.stringify({ reconnect_reads_completed_before_hide: true, fetching_queries: queries.isFetching() }))
   stop(); yStop(); unsubscribe(); queries.clear()
   await clear(owner, follower)
   for (const id of owned) assert.equal(await open(id), false, `Reader retained after hide: ${id}`)
