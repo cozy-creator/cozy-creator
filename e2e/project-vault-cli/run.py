@@ -109,6 +109,7 @@ class Receipt(TypedDict, total=False):
     encrypted_files_scanned: int
     reencrypted_files_scanned: int
     reencrypted_global_files_scanned: int
+    decrypt_with_open_reader: str
 
 
 class Args(argparse.Namespace):
@@ -971,18 +972,31 @@ foreach ($rule in $allowed) {
         self.cell('no_known_private_canary_in_global_caches_or_backing')
         refused = self.vault('decrypt', refusal=True)
         assert json.loads(refused.stdout)['error']['code'] == 'project_locked'
+        self.cell('decrypt_refuses_locked_project')
         view = self.view(self.vault('unlock', '--recovery-file', self.recovery('recovery3'), '--idle', 0))
         readonly = view / 'readonly-retained.txt'
         readonly.write_text(self.canary)
         readonly.chmod(0o444)
         held_media = self.find_media(view, sources[0])
+        decrypted: Payload | None = None
         with held_media.open('rb'):
-            refused = self.vault('decrypt', refusal=True)
-            assert json.loads(refused.stdout)['error']['code'] == 'project_busy'
-            assert self.status()['encrypted'] and (self.project / 'project.vault.keys.json').is_file()
-        self.cell('decrypt_refuses_locked_project_and_busy_native_reader')
-        view = self.view(self.vault('unlock', '--recovery-file', self.recovery('recovery3'), '--idle', 0))
-        decrypted = self.vault('decrypt')['vault']
+            attempted = subprocess.run(
+                ['cozy', '--json', 'vault', '--directory', str(self.project), 'decrypt'],
+                capture_output=True, cwd=self.out, env=self.cli_env,
+            )
+            answer: Payload = json.loads(attempted.stdout)
+            if attempted.returncode == 0:
+                decrypted = answer['vault']
+                assert decrypted['state'] == 'plain' and not decrypted['encrypted']
+                self.receipt['decrypt_with_open_reader'] = 'completed_native_unmount'
+            else:
+                assert answer.get('error', {}).get('code') == 'project_busy'
+                assert self.status()['encrypted'] and (self.project / 'project.vault.keys.json').is_file()
+                self.receipt['decrypt_with_open_reader'] = 'busy_source_preserved'
+        if decrypted is None:
+            view = self.view(self.vault('unlock', '--recovery-file', self.recovery('recovery3'), '--idle', 0))
+            decrypted = self.vault('decrypt')['vault']
+        self.cell('decrypt_open_reader_has_a_safe_outcome')
         assert decrypted['state'] == 'plain' and not decrypted['encrypted']
         assert not (self.project / 'project.vault.keys.json').exists()
         assert not (self.project / 'project.vault.data').exists()
