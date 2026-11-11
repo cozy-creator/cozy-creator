@@ -228,12 +228,12 @@ hub_model_install() {
 }
 
 # hub_unreleased <model>: xs-173, the owner's model with no release named by name on $M: a cozy that signs model reads
-# (0.24.0 on) at a Hub that grants them installs its newest commit; an older cozy, or a Hub before them, is refused, typed
-# (hub_do fails a 5xx).
+# (0.25.0 on, or a dev build) at a Hub that grants them installs its newest commit; an older cozy, or a Hub before them,
+# is refused, typed (hub_do fails a 5xx).
 hub_unreleased() {
-  local want=refused verb=install version
-  version=$("$CLI" --version | awk '{print $2}'); version=${version%%[-+]*}
-  if [ "$(printf '%s\n0.24.0\n' "$version" | sort -V | head -1)" = 0.24.0 ] &&
+  local want=refused verb=install version base
+  version=$("$CLI" --version | awk '{print $2}'); base=${version%%[-+]*}
+  if { [[ $version == *+dev* ]] || [ "$(printf '%s\n0.25.0\n' "$base" | sort -V | head -1)" = 0.25.0 ]; } &&
     curl -fsS "$HUB_URL/.well-known/oauth-protected-resource" | grep -q '"tensorhub_model_read"'; then want=ok; fi
   "$CLI" model install --help > /dev/null 2>&1 || verb=download
   hub_do model-unreleased "$want" model "$verb" "$1" --on "$M" -y
