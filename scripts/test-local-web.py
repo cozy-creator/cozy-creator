@@ -233,8 +233,13 @@ def run_locked(args, profile):
 
     # HOME here is the child process's actual test home, never the invoking shell's home.
     env = os.environ.copy()
+    for name in ("ENGINE", "COZY_TENSORFS_CACHE", "COZY_LISTEN_HOST", "COZY_WORKER_ID",
+                 "COZY_WORKER_INTERNAL_PORT", "COZY_WEBRTC_INTERNAL_PORT", "COZY_SSH_PUBLIC_KEY",
+                 "TENSORHUB_ORIGIN", "TENSORHUB_CA_DER_B64URL", "TENSORHUB_OBJECT_STORAGE_HOSTS"):
+        env.pop(name, None)
     env.update(HOME=str(home), TMPDIR=str(profile / "tmp"), XDG_CACHE_HOME=str(profile / "cache"),
                TENSORFS_HOME=str(profile / "tensorfs"), UV_CACHE_DIR=str(profile / "uv-cache"),
+               COZY_MACHINE_ROOT=str(home / ".cozy/machine"), COZY_TENSORFS_ROOT=str(profile / "tensorfs"),
                COZY_HUB_URL="http://127.0.0.1:9", HOLDER=str(holder_path), COZY=str(binary),
                PLAYWRIGHT=str(module), CHROME=str(Path(chrome).resolve()), COZY_TEST_PROGRESS="1")
     if securefs:
@@ -253,7 +258,8 @@ def run_locked(args, profile):
         summary["harness_commit"] = source.stdout.strip()
     try:
         with (result / "calcifer.log").open("w") as log, (result / "vite.log").open("w") as vite_log:
-            server = subprocess.Popen([binary, "calcifer"], cwd=home, env=env, stdout=log, stderr=subprocess.STDOUT)
+            server = subprocess.Popen([binary, "calcifer"], cwd=home, env=env, stdout=log,
+                                      stderr=subprocess.STDOUT, start_new_session=True)
             holder, status = ready(server, holder_path)
             summary.update(calcifer_pid=server.pid, calcifer_version=status["version"], address=holder["address"])
             if args.vite:
@@ -346,7 +352,12 @@ def main():
     return run(args)
 
 
+def interrupted(_signum, _frame):
+    raise KeyboardInterrupt
+
+
 if __name__ == "__main__":
+    signal.signal(signal.SIGTERM, interrupted)
     try:
         sys.exit(main())
     except KeyboardInterrupt:
