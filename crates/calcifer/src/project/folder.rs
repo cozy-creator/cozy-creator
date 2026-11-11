@@ -1432,7 +1432,11 @@ impl Folder {
     pub(crate) fn edit<R>(&self, change: impl FnOnce(&mut Written) -> Result<R, Error>) -> Result<R, Error> {
         self.act(|| {
             let before = self.written()?;
-            let answer = self.writing_written(change)?;
+            let answer = self.writing_written(|written| {
+                let answer = change(written)?;
+                written.in_stored_order();
+                Ok(answer)
+            })?;
             let after = self.written()?;
             if before != after {
                 self.made(|| Made::Written(before, after));

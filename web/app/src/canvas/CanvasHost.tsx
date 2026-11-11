@@ -383,6 +383,8 @@ function Canvas({
     store.patch(held.name, { here: undefined, hereWords: undefined, pickingUp: undefined })
     store.view(held.name)
     returning.current = { view: held.back, until: performance.now() + HERE_MS }
+    // A reload while it goes back finds where it was, not where the box was.
+    if (store.projectId) saveViewport(store.projectId, held.back)
     if (folded.current) {
       folded.current = false
       setShut(false)
@@ -578,7 +580,10 @@ function Canvas({
 
   const moved = useCallback(
     (_: unknown, viewport: Viewport) => {
-      if (store.projectId && !store.inPlace) saveViewport(store.projectId, viewport)
+      if (!store.projectId || store.inPlace) return
+      // A draw-in cut short by leaving the box ends here part way: what's kept is where it's going back to.
+      const going = returning.current
+      saveViewport(store.projectId, going && performance.now() < going.until ? going.view : viewport)
     },
     [store],
   )
@@ -754,6 +759,8 @@ function Canvas({
   const moveStarted = useCallback(
     (event: unknown) => {
       if (event && store.inPlace) store.inPlace.moved = true
+      // Moved by hand on its way back: it stays where it's moved to.
+      if (event) returning.current = null
     },
     [store],
   )
