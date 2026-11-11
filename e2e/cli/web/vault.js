@@ -16,6 +16,20 @@ progress?.unref();
 const errors = [];
 const projectReads = new Set();
 const responseStatuses = new WeakMap();
+const readIds = new WeakMap();
+const readEndings = [];
+let nextReadId = 0;
+const readMetadata = (request) => {
+  const timing = request.timing();
+  const failure = request.failure();
+  return {
+    request_id: readIds.get(request) ?? null, method: request.method(), path: new URL(request.url()).pathname,
+    resource_type: request.resourceType(), response_status: responseStatuses.get(request) ?? null,
+    age_ms: timing.startTime > 0 ? Math.round(Date.now() - timing.startTime) : null,
+    response_start_ms: timing.responseStart, response_end_ms: timing.responseEnd,
+    failure: failure ? failure.errorText.match(/^(?:net::)?[A-Z_0-9]+$/)?.[0] ?? 'failed' : null,
+  };
+};
 const check = (name, okay) => { seen[name] = !!okay; if (!okay) failures.push(name); };
 const cli = (...args) => execFileSync(process.env.COZY, ['--json', ...args], { encoding: 'utf8', timeout: 180000 });
 const vault = (directory, ...args) => execFileSync(process.env.COZY, ['--json', 'vault', ...args], { cwd: directory, encoding: 'utf8', timeout: 180000 });
@@ -69,21 +83,37 @@ const newPage = async () => {
   page = await newPage();
   page.setDefaultTimeout(45000);
   const outbound = [], fileWrites = [], secretIdempotency = [];
+  const isProjectRead = (request) => {
+    const url = new URL(request.url());
+    return (request.method() === 'GET' || request.method() === 'HEAD') &&
+      (url.pathname.startsWith(`/v1/projects/${id}`) || url.searchParams.get('project') === id);
+  };
+  const readEnded = (event, request) => {
+    const tracked = projectReads.delete(request);
+    if (readIds.has(request) || isProjectRead(request)) {
+      readEndings.push({ event, tracked, ...readMetadata(request) });
+      if (readEndings.length > 64) readEndings.shift();
+    }
+  };
+  // Lifecycle polling continues while the controls are open. Drain content, not
+  // vault/address requests; retain those requests in diagnostics without granting authority.
+  const contentReads = () => [...projectReads].filter((request) => {
+    const path = new URL(request.url()).pathname;
+    return path !== `/v1/projects/${id}/vault` && path !== `/v1/projects/${id}/address`;
+  });
   page.on('pageerror', (error) => errors.push(error.message));
-  context.on('requestfinished', (request) => projectReads.delete(request));
-  context.on('requestfailed', (request) => projectReads.delete(request));
+  context.on('requestfinished', (request) => readEnded('requestfinished', request));
+  context.on('requestfailed', (request) => readEnded('requestfailed', request));
   context.on('request', (request) => {
     const url = new URL(request.url());
-    if ((request.method() === 'GET' || request.method() === 'HEAD') &&
-        (url.pathname.startsWith(`/v1/projects/${id}`) || url.searchParams.get('project') === id)) {
+    if (isProjectRead(request)) {
+      if (!readIds.has(request)) readIds.set(request, ++nextReadId);
       projectReads.add(request);
     }
     if (request.method() === 'PUT' && /^\/v1\/(project-)?files\//.test(url.pathname)) fileWrites.push({ path: url.pathname, project: url.searchParams.get('project') });
     if (request.method() === 'POST' && /\/vault$/.test(url.pathname) && request.headers()['idempotency-key']) secretIdempotency.push(url.pathname);
     if (request.method() === 'POST' && url.pathname === `/v1/projects/${id}/vault` && JSON.parse(request.postData() || '{}').action === 'encrypt') {
-      (seen.reads_at_encrypt_submit ??= []).push([...projectReads].map((read) => ({
-        method: read.method(), path: new URL(read.url()).pathname, response_status: responseStatuses.get(read) ?? null,
-      })));
+      (seen.reads_at_encrypt_submit ??= []).push([...projectReads].map(readMetadata));
     }
     let text = `${request.url()} ${request.postData() || ''}`;
     try { text += ` ${decodeURIComponent(text)}`; } catch { /* a binary or malformed URL is still checked as sent */ }
@@ -129,7 +159,7 @@ const newPage = async () => {
     return { idle: !state.busy && !state.moving, movie: { width: movie?.width, height: movie?.height, duration_ms: movie?.duration_ms }, picture: { width: picture?.width, height: picture?.height } };
   }, (state) => state.idle && state.movie.width > 0 && state.movie.height > 0 && state.movie.duration_ms > 0 && state.picture.width > 0 && state.picture.height > 0);
   check('plain_seed_media_measurement_finished', true);
-  await until('initial project reads finished before conversion', () => projectReads.size, (count) => count === 0, 45000);
+  await until('initial project content reads finished before conversion', () => contentReads().length, (count) => count === 0, 45000);
   check('initial_project_reads_drained', true);
   await body.locator('input[type=password]').nth(0).fill('synthetic browser passphrase');
   await body.locator('input[type=password]').nth(1).fill('synthetic browser passphrase');
@@ -491,7 +521,7 @@ const newPage = async () => {
     const state = projectJson(folder);
     return !state.busy && !state.moving && state.assets.find((asset) => asset.name === 'after_decrypt_plain')?.width > 0;
   }, Boolean, 45000);
-  await until('ordinary reads drained before re-encryption', () => projectReads.size, (count) => count === 0, 45000);
+  await until('ordinary content reads drained before re-encryption', () => contentReads().length, (count) => count === 0, 45000);
   await page.locator('.drawer input[type=password]').nth(0).fill('synthetic browser passphrase');
   await page.locator('.drawer input[type=password]').nth(1).fill('synthetic browser passphrase');
   await page.getByLabel('Remove the verified unencrypted source after conversion').check();
@@ -527,10 +557,8 @@ const newPage = async () => {
   seen.failure = sanitized(error.message);
   seen.failure_stage = stage;
   seen.page_errors = errors.map(sanitized);
-  seen.pending_project_reads = [...projectReads].map((request) => ({
-    method: request.method(), path: new URL(request.url()).pathname,
-    resource_type: request.resourceType(), response_status: responseStatuses.get(request) ?? null,
-  }));
+  seen.pending_project_reads = [...projectReads].map(readMetadata);
+  seen.project_read_endings = readEndings;
   if (page) {
     seen.canvas_at_failure = await page.evaluate(() => ({
       covered: Boolean(document.querySelector('.gate')),
