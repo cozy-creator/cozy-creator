@@ -401,9 +401,30 @@ impl Client {
 
     /// A file Calcifer serves (an output, one file of a folder output), written to `to` as it comes: what it wrote.
     pub(crate) async fn download(&self, path: &str, to: &std::path::Path) -> Result<u64, Error> {
+        self.download_progress(path, to, &|_, _| {}).await
+    }
+
+    /// The same checked read, reporting this attempt's written bytes and Content-Length.
+    /// A restarted body reports zero again; callers keep logical completion separate from wire bytes.
+    pub(crate) async fn download_progress(
+        &self,
+        path: &str,
+        to: &std::path::Path,
+        moved: &(dyn Fn(u64, Option<u64>) + Send + Sync),
+    ) -> Result<u64, Error> {
         self.read_whole(|| async {
-            let mut answer = self.opened(|c, base| c.get(format!("{base}{path}"))).await?;
-            let unwritable = |e: std::io::Error| Error::new(Kind::Unavailable, "download_unwritable", format!("{}: {e}", to.display()));
+            let mut answer = self
+                .opened(|c, base| c.get(format!("{base}{path}")))
+                .await?;
+            let total = answer.content_length();
+            moved(0, total);
+            let unwritable = |e: std::io::Error| {
+                Error::new(
+                    Kind::Unavailable,
+                    "download_unwritable",
+                    format!("{}: {e}", to.display()),
+                )
+            };
             let mut file = std::fs::File::create(to).map_err(unwritable)?;
             let mut written = 0;
             loop {
@@ -411,6 +432,7 @@ impl Client {
                     Ok(Some(chunk)) => {
                         file.write_all(&chunk).map_err(unwritable)?;
                         written += chunk.len() as u64;
+                        moved(written, total);
                     }
                     Ok(None) => break,
                     Err(e) => return Ok(Err(unreachable(e))),

@@ -291,7 +291,10 @@ pub(crate) async fn follow(
     booting: Machine,
     mut notices: Notices,
 ) -> Result<Followed, Error> {
-    let id = booting.rental_id.clone().unwrap_or_else(|| booting.name.clone());
+    let id = booting
+        .rental_id
+        .clone()
+        .unwrap_or_else(|| booting.name.clone());
     let mut machine = booting;
     let stop = stopped();
     tokio::pin!(stop);
@@ -310,40 +313,62 @@ pub(crate) async fn follow(
         }
         Err(e) => return Ok(unfollowed(ctx, &machine, Some(e))),
     };
-    let (mut said, mut said_at) = (String::new(), std::time::Instant::now());
-    loop {
-        for note in notices.fresh(&machine) {
-            output::say(ctx, note);
-        }
-        match machine.state {
-            MachineState::Ready | MachineState::Stopped => return Ok(Followed::Ready(machine)),
-            MachineState::Ended => return Err(ended(&machine)),
-            // Ending lives until its Hub affirms the end; Unknown is a newer Calcifer's word.
-            MachineState::Booting | MachineState::Ending | MachineState::Unknown => {
-                let line = format!("{}: {}", machine.name, state_cell(&machine));
-                // A pull's numbers move at each read: a line for them every 10 s is enough.
-                let words = |text: &str| text.chars().filter(|c| !c.is_ascii_digit()).collect::<String>();
-                let same = words(&line) == words(&said);
-                if line != said && (!same || said_at.elapsed().as_secs() >= 10) {
-                    output::say(ctx, &line);
-                    (said, said_at) = (line, std::time::Instant::now());
+    let interactive = ctx.term.stderr;
+    let status = crate::progress::Line::stderr(interactive, None, |s| {
+        format!("{} {} · {}", s.spinner(), s.msg(), s.elapsed())
+    });
+    status.steady(std::time::Duration::from_millis(120));
+    let outcome = async {
+        let (mut said, mut said_at) = (String::new(), std::time::Instant::now());
+        loop {
+            for note in notices.fresh(&machine) {
+                if interactive {
+                    status.println(output::shown(note));
+                } else {
+                    output::say(ctx, note);
                 }
             }
-        }
-        let next = tokio::select! {
-            next = following.next(&calcifer) => next,
-            _ = &mut stop => return stopped_waiting(ctx, &calcifer, &machine).await,
-        };
-        machine = match next {
-            Ok(Some(next)) => next,
-            // It left the list, which shows no ended machine: its record says where it stands.
-            Ok(None) => match calcifer.get(&super::route(&id)?).await {
-                Ok(now) => now,
+            match machine.state {
+                MachineState::Ready | MachineState::Stopped => return Ok(Followed::Ready(machine)),
+                MachineState::Ended => return Err(ended(&machine)),
+                // Ending lives until its Hub affirms the end; Unknown is a newer Calcifer's word.
+                MachineState::Booting | MachineState::Ending | MachineState::Unknown => {
+                    let line = format!("{}: {}", machine.name, state_cell(&machine));
+                    // A terminal redraws one live line; pipes retain the existing sparse status log.
+                    let words = |text: &str| {
+                        text.chars()
+                            .filter(|c| !c.is_ascii_digit())
+                            .collect::<String>()
+                    };
+                    let same = words(&line) == words(&said);
+                    if line != said && (!same || said_at.elapsed().as_secs() >= 10) {
+                        if interactive {
+                            status.set_message(output::shown(&line));
+                        } else {
+                            anstream::eprintln!("{}", output::shown(&line));
+                        }
+                        (said, said_at) = (line, std::time::Instant::now());
+                    }
+                }
+            }
+            let next = tokio::select! {
+                next = following.next(&calcifer) => next,
+                _ = &mut stop => return stopped_waiting(ctx, &calcifer, &machine).await,
+            };
+            machine = match next {
+                Ok(Some(next)) => next,
+                // It left the list, which shows no ended machine: its record says where it stands.
+                Ok(None) => match calcifer.get(&super::route(&id)?).await {
+                    Ok(now) => now,
+                    Err(e) => return Ok(unfollowed(ctx, &machine, Some(e))),
+                },
                 Err(e) => return Ok(unfollowed(ctx, &machine, Some(e))),
-            },
-            Err(e) => return Ok(unfollowed(ctx, &machine, Some(e))),
-        };
+            };
+        }
     }
+    .await;
+    status.finish_and_clear();
+    outcome
 }
 
 /// The renter stopped waiting. An order the Hub has found no pod for, with no run queued on it, ends
