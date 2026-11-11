@@ -14,7 +14,7 @@ Before any synthetic write, `require_test_hub` checks the loopback destination a
 A localhost proxy to `tensorhub.com` fails this check, as does an unset or production target.
 Redirects are not followed. This guard belongs to test helpers; normal user publication is unchanged.
 
-The CLI e2e shards call `require_ci_test_hub`: they run only against an isolated Hub (`e2e/cli/isolated.sh`).
+The cli and imports e2e shards call `require_ci_test_hub`: they run only against an isolated Hub (`e2e/isolated.sh`).
 Release-gate and pod-session jobs rent real machines, which only production can place: they call
 `require_ci_rental_hub` with their dispatch's `hub=prod` or `hub=isolated`, and none has a default.
 Public dependency and release-artifact downloads are normal build inputs and remain allowed.
