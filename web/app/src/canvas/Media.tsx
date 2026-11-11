@@ -31,7 +31,7 @@ const PREVIEW_AFTER_MS = 250
  */
 function line(limit: number) {
   type Start = (complete: () => void) => void
-  type Load = { path: string; starts: Set<Start>; running: boolean }
+  type Load = { path: string; subscribers: Set<() => void>; running: boolean }
   const loads = new Map<string, Load>()
   const waiting = new Set<Load>()
   let running = 0
@@ -39,7 +39,7 @@ function line(limit: number) {
   const complete = (load: Load) => {
     if (loads.get(load.path) !== load) return
     loads.delete(load.path)
-    load.starts.clear()
+    load.subscribers.clear()
     if (load.running) running -= 1
     else waiting.delete(load)
     next()
@@ -48,8 +48,7 @@ function line(limit: number) {
     waiting.delete(load)
     load.running = true
     running += 1
-    const done = () => complete(load)
-    for (const start of load.starts) start(done)
+    for (const start of load.subscribers) start()
   }
   const next = () => {
     for (const load of waiting) {
@@ -61,19 +60,22 @@ function line(limit: number) {
   return (path: string, start: Start, now = false): (() => void) => {
     let load = loads.get(path)
     if (!load) {
-      load = { path, starts: new Set(), running: false }
+      load = { path, subscribers: new Set(), running: false }
       loads.set(path, load)
       waiting.add(load)
     }
     const joined = load
-    joined.starts.add(start)
-    if (joined.running) start(() => complete(joined))
+    const ready = () => start(() => {
+      if (joined.subscribers.has(ready)) complete(joined)
+    })
+    joined.subscribers.add(ready)
+    if (joined.running) ready()
     else if (now) begin(joined)
     next()
 
     return () => {
-      joined.starts.delete(start)
-      if (!joined.starts.size) complete(joined)
+      joined.subscribers.delete(ready)
+      if (!joined.subscribers.size) complete(joined)
     }
   }
 }
@@ -132,32 +134,32 @@ export function Thumb({
 }) {
   const { client } = useConnection()
   const store = useCanvasStore()
-  const [image, setImage] = useState<{ src: string; complete: () => void }>()
-  const [failed, setFailed] = useState(false)
+  const [image, setImage] = useState<{ path: string; src: string; complete: () => void; live: () => boolean }>()
+  const [failedPath, setFailedPath] = useState<string>()
   const projectId = store.projectId
   const zoom = useSignal(store.sharpness)
   const width = exact ? cardWidth : Math.max(thumbWidth(cardWidth, zoom), strip ? 0 : (widest.get(sha256) ?? 0))
+  const path = projectId ? client.thumb(projectId, sha256, width, strip) : undefined
   useEffect(() => {
-    if (!projectId) return
+    if (!path) return
     let live = true
-    const path = client.thumb(projectId, sha256, width, strip)
     const leave = thumbLine(path, (complete) => {
       void client.transport.src(path).then((src) => {
-        if (live) setImage({ src, complete })
+        if (live) setImage({ path, src, complete, live: () => live })
       }, () => {
         if (!live) return
         leave()
-        setFailed(true)
+        setFailedPath(path)
       })
     }, now)
     return () => {
       live = false
       leave()
     }
-  }, [client, projectId, sha256, width, strip])
+  }, [client, path])
   // A strip that can't be made leaves the poster under it as it was.
-  if (failed) return strip ? null : <span className="media-note">No preview</span>
-  if (!image) return null
+  if (path && failedPath === path) return strip ? null : <span className="media-note">No preview</span>
+  if (!image || failedPath === image.path) return null
   return (
     <img
       key={image.src}
@@ -167,10 +169,12 @@ export function Thumb({
       draggable={false}
       style={frame === undefined ? undefined : { transform: `translateX(${(-frame * 100) / (strip ?? 1)}%)` }}
       onError={() => {
+        if (image.path !== path || !image.live()) return
         image.complete()
-        setFailed(true)
+        setFailedPath(image.path)
       }}
       onLoad={(event) => {
+        if (image.path !== path || !image.live()) return
         image.complete()
         const { naturalWidth, naturalHeight } = event.currentTarget
         if (naturalWidth && naturalHeight) onSize?.(naturalWidth / naturalHeight)
