@@ -113,6 +113,11 @@ const newPage = async () => {
   page = await newPage();
   page.setDefaultTimeout(45000);
   const outbound = [], fileWrites = [], secretIdempotency = [];
+  const isVaultWrite = (request) => {
+    const path = new URL(request.url()).pathname;
+    return (request.method() === 'POST' && /\/vault$/.test(path)) ||
+      (request.method() === 'PUT' && /\/vault\/operations\/[^/]+$/.test(path));
+  };
   const isProjectRead = (request) => {
     const url = new URL(request.url());
     return (request.method() === 'GET' || request.method() === 'HEAD') &&
@@ -162,8 +167,8 @@ const newPage = async () => {
     }
     if (request.method() === 'PUT' && /^\/v1\/(project-)?files\//.test(url.pathname)) fileWrites.push({ path: url.pathname, project: url.searchParams.get('project') });
     const secretCreation = url.pathname === '/v1/projects' && !JSON.parse(request.postData() || '{}').unencrypted;
-    if (request.method() === 'POST' && (/\/vault$/.test(url.pathname) || secretCreation) && request.headers()['idempotency-key']) secretIdempotency.push(url.pathname);
-    if (request.method() === 'POST' && url.pathname === `/v1/projects/${id}/vault` && JSON.parse(request.postData() || '{}').action === 'encrypt') {
+    if ((isVaultWrite(request) || (request.method() === 'POST' && secretCreation)) && request.headers()['idempotency-key']) secretIdempotency.push(url.pathname);
+    if (isVaultWrite(request) && url.pathname.startsWith(`/v1/projects/${id}/vault`) && JSON.parse(request.postData() || '{}').action === 'encrypt') {
       (seen.reads_at_encrypt_submit ??= []).push([...projectReads].map(readMetadata));
     }
     let text = `${request.url()} ${request.postData() || ''}`;
@@ -189,9 +194,15 @@ const newPage = async () => {
       seen.private_project_read = read;
     }
     if (method === 'PUT' && /^\/v1\/events\/[^/]+$/.test(path)) seen.project_interest_status = response.status();
-    if (method !== 'POST' || !/\/vault$/.test(path)) return;
+    if (!isVaultWrite(response.request())) return;
     try {
       const action = JSON.parse(response.request().postData() || '{}').action;
+      if ((response.headers()['content-type'] ?? '').startsWith('text/event-stream')) {
+        // The page consumes and aborts this stream after its terminal event. Do
+        // not clone or retain a second copy of its recovery-bearing body.
+        (seen.vault_replies ??= []).push({ action, status: response.status(), stream: true, no_store: cache.includes('no-store') });
+        return;
+      }
       const answer = await response.json();
       (seen.vault_replies ??= []).push({ action, status: response.status(), encrypted: answer.vault?.encrypted, state: answer.vault?.state, has_recovery_secret: typeof answer.recovery_secret === 'string', error_code: answer.error?.code, error_kind: answer.error?.kind, error_message: answer.error ? sanitized(answer.error.message) : undefined });
     } catch { /* Failed/offline replies carry no readable evidence. Never retain secret bodies. */ }
@@ -217,7 +228,7 @@ const newPage = async () => {
   await body.locator('input[type=password]').nth(0).fill('synthetic browser passphrase');
   await body.locator('input[type=password]').nth(1).fill('synthetic browser passphrase');
   await body.getByLabel('Remove the verified unencrypted source after conversion').check();
-  const encryptionReply = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === `/v1/projects/${id}/vault` && JSON.parse(response.request().postData() || '{}').action === 'encrypt');
+  const encryptionReply = page.waitForResponse((response) => isVaultWrite(response.request()) && new URL(response.url()).pathname.startsWith(`/v1/projects/${id}/vault`) && JSON.parse(response.request().postData() || '{}').action === 'encrypt');
   await body.getByRole('button', { name: 'Enable encryption', exact: true }).click();
   const encrypted = await encryptionReply;
   if (!encrypted.ok()) {
@@ -227,6 +238,7 @@ const newPage = async () => {
     seen.encryption_refusal = { status: encrypted.status(), code: answer.error?.code, kind: answer.error?.kind, message: sanitized(answer.error?.message), visible_alert: (await alert.allTextContents()).map(sanitized) };
     throw new Error(`initial encryption refused: ${encrypted.status()} ${sanitized(answer.error?.code)}`);
   }
+  check('vault_receipt_is_streamed', (encrypted.headers()['content-type'] ?? '').startsWith('text/event-stream') && (encrypted.headers()['cache-control'] ?? '').includes('no-store'));
   await page.locator('[aria-label="Save recovery secret"] pre').waitFor();
   const recovery = await page.locator('[aria-label="Save recovery secret"] pre').innerText();
   check('recovery_is_long_and_local', recovery.startsWith('cozy1-') && recovery.length > 70);
