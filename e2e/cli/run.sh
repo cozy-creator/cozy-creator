@@ -283,6 +283,7 @@ case $SHARD in
   projectdb-latency) parts="db_latency logs" ;;
   projectdb-existing) parts="db_existing logs" ;;
   projectdb-web) parts="tools_read db_existing_web logs" ;;
+  projectdb-palette) parts="tools_read db_existing_web logs"; DB_WEB="nodes tools" ;;
   projectdb-cancel) parts="db_cancel_undo logs" ;;
   projectdb-live) parts="tools_read db_existing_web logs"; DB_WEB=live ;;
   projectdb-instant) parts="tools_read db_existing_web logs"; DB_WEB=instant ;;
