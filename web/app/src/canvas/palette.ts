@@ -7,7 +7,7 @@ export const BASIC_NODES: ReadonlyArray<{ kind: BasicNodeKind; label: string }> 
   { kind: "text", label: "Text" },
   { kind: "image", label: "Image" },
   { kind: "video", label: "Video" },
-  { kind: "video_edit", label: "VideoEdit" },
+  { kind: "video_edit", label: "Video Edit" },
 ]
 
 export interface PaletteEntry {

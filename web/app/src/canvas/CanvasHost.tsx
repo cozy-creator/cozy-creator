@@ -954,7 +954,6 @@ function Canvas({
         }}
         place={placeTool}
         placeNode={placeNode}
-        box={opened}
       />
       <div
         ref={stage}

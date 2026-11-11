@@ -6,7 +6,7 @@ import { type Row, rowsIn } from "./text"
 /** Words with a name, which whatever mentions them reads: in the tool list, and no function of any package. */
 export const TEXT_TOOL: Tool = { id: "text", package: "cozy", package_title: "Cozy", function: "", release: "", name: "text", label: "Text", makes: "text", fields: [] }
 /** The existing local timeline engine; it is a basic node, never a model attachment. */
-export const VIDEO_EDIT_TOOL: Tool = { id: "cozy/edit", package: "cozy", package_title: "Cozy", function: "edit", release: "", name: "Edit", label: "VideoEdit", makes: "video", fields: [{ field: "timeline", type: "timeline", label: "Edit" }] }
+export const VIDEO_EDIT_TOOL: Tool = { id: "cozy/edit", package: "cozy", package_title: "Cozy", function: "edit", release: "", name: "Edit", label: "Video Edit", makes: "video", fields: [{ field: "timeline", type: "timeline", label: "Edit" }] }
 
 /** A row's members, from what rows hold: what says the most, and each number, the first adding up. What else a row holds stays, unseen. */
 function membersOf(rows: Row[]): ToolField[] {
