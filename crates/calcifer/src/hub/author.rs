@@ -340,7 +340,8 @@ pub(super) async fn publish(api: &Arc<Api>, hub: &Origin, code: &LocalCode, ask:
         .collect();
     let (org, name, release) = (&account, &project.name, &project.version);
     let grants = client.begin_package_release(org, name, release, &declared).await.map_err(hub_error)?;
-    result.uploaded_bytes = upload(&files, &grants.files, say).await?;
+    let declaration = Declaration { hub, client: &client, org, name, release, files: &declared };
+    result.uploaded_bytes = upload(&files, &grants.files, &declaration, say).await?;
     let mut state = (client.finalize_package_release(org, name, release, &grants.publication_id, &python.full, ask.yanked).await)
         .map_err(hub_error)?;
     // Finalization re-hashes every file on the Hub; its state ends the wait.
@@ -453,9 +454,31 @@ fn unmet(error: Error, pins: &BTreeMap<String, String>, account: &str, hub: &Ori
     }
 }
 
+/// A release's file declaration, which the Hub answers with a grant for each file it lacks: declared
+/// again (the same declaration is the same publication), it grants anew.
+struct Declaration<'a> {
+    hub: &'a Origin,
+    client: &'a ::api::hub::Client,
+    org: &'a str,
+    name: &'a str,
+    release: &'a str,
+    files: &'a [PackageDeclaredFile],
+}
+
+impl Declaration<'_> {
+    /// A new grant for the file at `path`; none once the Hub holds its bytes.
+    async fn regrant(&self, path: &str) -> Result<Option<PresignedUpload>, Error> {
+        let grants = (self.client.begin_package_release(self.org, self.name, self.release, self.files).await)
+            .map_err(|e| refusal(self.hub, e).0)?;
+        let grant = grants.files.into_iter().find(|g| g.path == path)
+            .ok_or_else(|| refuse("release_grant_invalid", format!("the Hub granted nothing for {path}")))?;
+        Ok(grant.upload.filter(|_| !grant.present))
+    }
+}
+
 /// Sends each file the Hub does not hold to its grant, once per digest, sixteen at once; the bytes
 /// sent.
-async fn upload(files: &[File], grants: &[PackageFileGrant], say: Say<'_>) -> Result<u64, Error> {
+async fn upload(files: &[File], grants: &[PackageFileGrant], declaration: &Declaration<'_>, say: Say<'_>) -> Result<u64, Error> {
     let http = tensorfs::fetch::http(&[]).expect("the webpki roots alone").build().map_err(|e| refuse("release_upload_failed", e))?;
     let mut digests = std::collections::BTreeSet::new();
     let mut owed = vec![];
@@ -470,7 +493,7 @@ async fn upload(files: &[File], grants: &[PackageFileGrant], say: Say<'_>) -> Re
     }
     let sends = owed.into_iter().map(|(path, local, target)| {
         let http = http.clone();
-        async move { put(&http, &path, &local, &target, say).await }
+        async move { put(&http, &path, &local, target, declaration, say).await }
     });
     futures_util::stream::iter(sends)
         .buffer_unordered(16)
@@ -482,13 +505,16 @@ async fn upload(files: &[File], grants: &[PackageFileGrant], say: Say<'_>) -> Re
 /// makes a re-send safe. A send that ends with no answer, or with the store's 5xx (transient by
 /// design, as S3's SlowDown), goes again by the one retry rule (`tensorfs::fetch::Backoff`): the
 /// count starts over whenever a send carries the body further than any before, and it gives up
-/// only when a whole run of attempts got no further: the store took nothing more.
+/// only when a whole run of attempts got no further: the store took nothing more. A grant has a
+/// lifetime and waits its turn behind other files: the store refusing it (R2's `403 ExpiredRequest`)
+/// asks the Hub for a new one, and the send goes again.
 /// Another 4xx is final, and 412 is the object already there (0 bytes sent).
 async fn put(
     http: &reqwest::Client,
     path: &str,
     local: &Path,
-    target: &PresignedUpload,
+    mut target: PresignedUpload,
+    declaration: &Declaration<'_>,
     say: Say<'_>,
 ) -> Result<u64, Error> {
     let failed = |message: String| Error::new(Kind::Unavailable, "release_upload_failed", message);
@@ -502,14 +528,15 @@ async fn put(
         for (name, value) in &target.required_headers {
             request = request.header(name, value);
         }
-        let why = match request.send().await {
+        let (why, regrant) = match request.send().await {
             Ok(answer) => match answer.status().as_u16() {
                 200..=299 => return Ok(length),
                 412 => return Ok(0),
-                status @ (408 | 429 | 500 | 502..=504) => format!("the store answered HTTP {status}"),
+                status @ (401 | 403) => (format!("the store refused its grant: HTTP {status} {}", said(answer).await), true),
+                status @ (408 | 429 | 500 | 502..=504) => (format!("the store answered HTTP {status}"), false),
                 status => return Err(failed(format!("{path}: the store answered HTTP {status}"))),
             },
-            Err(e) => chain(&e),
+            Err(e) => (chain(&e), false),
         };
         let reached = carried.load(std::sync::atomic::Ordering::Relaxed).min(length);
         let further = reached > furthest;
@@ -520,6 +547,21 @@ async fn put(
         };
         say(&said);
         tokio::time::sleep(pause).await;
+        if regrant {
+            match declaration.regrant(path).await? {
+                Some(granted) => target = granted,
+                None => return Ok(0),
+            }
+        }
+    }
+}
+
+/// What a refusing store said: its error code, as S3's `<Code>ExpiredRequest</Code>`.
+async fn said(answer: reqwest::Response) -> String {
+    let body = answer.text().await.unwrap_or_default();
+    match body.split_once("<Code>").and_then(|(_, rest)| rest.split_once("</Code>")) {
+        Some((code, _)) => code.to_owned(),
+        None => body.split_whitespace().take(12).collect::<Vec<_>>().join(" "),
     }
 }
 

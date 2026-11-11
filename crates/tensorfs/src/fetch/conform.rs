@@ -84,7 +84,7 @@ pub async fn endpoint(endpoint: Arc<Endpoint>, client: &Client, write: bool, scr
 }
 
 async fn write_side(endpoint: &Arc<Endpoint>, store: &Store, tree: &ObjectRef, nonce: &str, cases: &mut Cases) -> Result<bool> {
-    let control = UploadControl { cancelled: &|| false, progress: &|_, _| {}, commit: &|| true };
+    let control = UploadControl { cancelled: &|| false, progress: &|_, _| {}, retrying: &|_| {}, commit: &|| true };
     let up = upload_commit(endpoint, FIXTURE, tree, store, &control).await.map(drop).map_err(|e| e.to_string());
     if !cases.record("upload: HEAD 404 → PUT → HEAD 200, then the commit recorded", true, Some(up)) {
         return Ok(false);

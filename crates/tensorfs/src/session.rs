@@ -313,7 +313,7 @@ impl Client {
         }
         // A local repository's endpoint is this store: one commit path for both.
         let source = self.source(reference, false)?;
-        let control = crate::fetch::UploadControl { cancelled: &|| false, progress: &|_, _| {}, commit: &|| true };
+        let control = crate::fetch::UploadControl { cancelled: &|| false, progress: &|_, _| {}, retrying: &|_| {}, commit: &|| true };
         let uploaded = crate::fetch::upload_commit(
             &source.endpoint.inner,
             &reference.repo_id,

@@ -1,7 +1,10 @@
 //! The one HTTP stack. [`http`] starts every outbound client cozy makes: its name, 5 s to connect, a dead
 //! peer found by TCP keepalive, and rustls over the webpki roots. [`Client`] is the one that moves
-//! bytes: a request that receives nothing for [`STALL`] fails (`read_timeout`, which restarts with
-//! every read), no proxy, and every address is the egress policy's before it is dialed
+//! bytes: a request fails once nothing has moved for [`STALL`] ([`Pulse`]: each piece of body sent
+//! restarts it; requests that share one, as one upload's do, are judged together, so a connection the
+//! others starve on a slow link is not cut while they move; reqwest's `read_timeout` counted from a
+//! request's start until its answer and ended every PUT that took longer to send), a body read gets
+//! [`STALL`] per piece, no proxy, and every address is the egress policy's before it is dialed
 //! ([`SourcePolicy`]). Redirects are followed here, not by reqwest: credentials go only to the origin
 //! they were given for, and reqwest's own list (Authorization, Cookie) would carry a DPoP proof or
 //! SigV4 headers on.
@@ -11,6 +14,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
+use futures_util::StreamExt as _;
 pub use reqwest::header::HeaderMap;
 pub(crate) use reqwest::Url;
 use rustls::pki_types::CertificateDer;
@@ -21,8 +25,11 @@ use super::token::{Request as Presented, TokenProvider};
 use crate::err::{refuse, Code, Refusal, Result};
 
 const CONNECT: Duration = Duration::from_secs(5);
-/// No bytes for this long fails a request (CRT's and Ollama's stall rule).
+/// No bytes either way for this long fails a request (CRT's and Ollama's stall rule).
 pub const STALL: Duration = Duration::from_secs(30);
+/// The most a request body hands its connection at once: small enough that a stream sharing a slow link with
+/// others still moves one within [`STALL`] (16 streams on 1 MB/s: about 4 s each).
+const FRAME: usize = 256 << 10;
 /// A silent connection is probed this often, six times, after six of these with nothing on it.
 const PROBE: Duration = Duration::from_secs(5);
 
@@ -115,9 +122,12 @@ impl Answer {
         Some((first, total))
     }
 
-    /// The next piece of body, `None` at the end.
+    /// The next piece of body, `None` at the end; none for [`STALL`] fails it.
     pub(crate) async fn frame(&mut self) -> Result<Option<Bytes>> {
-        self.response.chunk().await.map_err(|error| Refusal { code: Code::TRANSFER_FAILED, detail: format!("the body failed: {}", chain(&error)) })
+        match tokio::time::timeout(STALL, self.response.chunk()).await {
+            Ok(frame) => frame.map_err(|error| Refusal { code: Code::TRANSFER_FAILED, detail: format!("the body failed: {}", chain(&error)) }),
+            Err(_) => refuse(Code::TRANSFER_FAILED, format!("the body failed: nothing for {} s", STALL.as_secs())),
+        }
     }
 
     /// The start of the body, its whitespace collapsed: what the server said.
@@ -134,30 +144,40 @@ impl Answer {
     }
 }
 
-/// A request body: bytes, or the first `length` bytes of a file, counted into `sent`.
+/// A request body: bytes, or the first `length` bytes of a file, each piece of the file counted into
+/// every one of `sent`.
 pub(crate) enum Body {
     Bytes(Bytes),
-    File { file: std::fs::File, length: u64, sent: Arc<AtomicU64> },
+    File { file: std::fs::File, length: u64, sent: Vec<Arc<AtomicU64>> },
 }
 
-impl From<Body> for reqwest::Body {
-    fn from(body: Body) -> reqwest::Body {
-        let (file, length, sent) = match body {
-            Body::Bytes(bytes) => return bytes.into(),
+impl Body {
+    /// The body as its connection takes it, at most [`FRAME`] at a time, each piece a beat of `pulse`.
+    fn sending(self, pulse: Arc<Pulse>) -> reqwest::Body {
+        let (file, length, sent) = match self {
+            Body::Bytes(bytes) if bytes.len() <= FRAME => return bytes.into(),
+            Body::Bytes(bytes) => {
+                let pieces = futures_util::stream::iter((0..bytes.len()).step_by(FRAME)).map(move |at| {
+                    pulse.beat();
+                    Ok::<_, std::io::Error>(bytes.slice(at..(at + FRAME).min(bytes.len())))
+                });
+                return reqwest::Body::wrap_stream(pieces);
+            }
             Body::File { file, length, sent } => (tokio::fs::File::from_std(file), length, sent),
         };
         let frames = futures_util::stream::unfold((file, length), move |(mut file, left)| {
-            let sent = sent.clone();
+            let (sent, pulse) = (sent.clone(), Arc::clone(&pulse));
             async move {
                 if left == 0 {
                     return None;
                 }
-                let mut buf = vec![0; left.min(1 << 20) as usize];
+                let mut buf = vec![0; left.min(FRAME as u64) as usize];
                 let (frame, left) = match file.read(&mut buf).await {
                     Ok(0) => (Err(std::io::ErrorKind::UnexpectedEof.into()), 0),
                     Ok(n) => {
                         buf.truncate(n);
-                        sent.fetch_add(n as u64, Ordering::Relaxed);
+                        sent.iter().for_each(|sent| _ = sent.fetch_add(n as u64, Ordering::Relaxed));
+                        pulse.beat();
                         (Ok(Bytes::from(buf)), left - n as u64)
                     }
                     Err(error) => (Err::<Bytes, std::io::Error>(error), 0),
@@ -166,6 +186,38 @@ impl From<Body> for reqwest::Body {
             }
         });
         reqwest::Body::wrap_stream(frames)
+    }
+}
+
+/// When requests last moved a byte: what their silence is judged by. One upload's requests share one.
+pub(crate) struct Pulse {
+    began: Instant,
+    /// Milliseconds after `began`.
+    last: AtomicU64,
+}
+
+impl Pulse {
+    pub(crate) fn new() -> Arc<Pulse> {
+        Arc::new(Pulse { began: Instant::now(), last: AtomicU64::new(0) })
+    }
+
+    fn beat(&self) {
+        self.last.store(self.began.elapsed().as_millis() as u64, Ordering::Relaxed);
+    }
+
+    fn quiet(&self) -> Duration {
+        self.began.elapsed().saturating_sub(Duration::from_millis(self.last.load(Ordering::Relaxed)))
+    }
+
+    /// Ready once nothing under it has moved for [`STALL`], and never sooner than that after `since`.
+    async fn stalled(&self, since: Instant) {
+        loop {
+            let quiet = since.elapsed().min(self.quiet());
+            if quiet >= STALL {
+                return;
+            }
+            tokio::time::sleep(STALL - quiet).await;
+        }
     }
 }
 
@@ -192,7 +244,6 @@ impl Client {
         let inner = http(extra)?
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
-            .read_timeout(STALL)
             .dns_resolver(Arc::new(Checked(policy.clone())))
             .build()
             .expect("reqwest builds with a rustls config");
@@ -212,7 +263,7 @@ impl Client {
             if let Some(provider) = provider {
                 presented.extend(provider.headers(&Presented { method: "GET", url: &url, headers: &headers, payload: None }).await.map_err(GetError::Caller)?);
             }
-            let mut answer = self.send("GET", &url, &presented, None).await?;
+            let mut answer = self.send("GET", &url, &presented, None, None).await?;
             let status = answer.status();
             if let Some(provider) = provider {
                 let sent = Presented { method: "GET", url: &url, headers: &presented, payload: None };
@@ -248,8 +299,9 @@ impl Client {
         Err(GetError::Exchange(Refusal { code: Code::REDIRECT_REFUSED, detail: format!("{}: redirected past the policy's {} hops", shown(&url), self.policy.max_redirects) }))
     }
 
-    /// One request, redirects not followed: `body` (none: empty) with `headers`.
-    pub(crate) async fn send(&self, method: &str, url: &str, headers: &[(String, String)], body: Option<Body>) -> Result<Answer> {
+    /// One request, redirects not followed: `body` (none: empty) with `headers`, until its answer's
+    /// headers; nothing moved for [`STALL`] under `group` (none: this request alone) fails it.
+    pub(crate) async fn send(&self, method: &str, url: &str, headers: &[(String, String)], body: Option<Body>, group: Option<&Arc<Pulse>>) -> Result<Answer> {
         // The scheme, the allowlist and an address literal: a named host is checked as it resolves.
         let (policy, checking) = (self.policy.clone(), url.to_owned());
         tokio::task::spawn_blocking(move || policy.check(&checking))
@@ -261,10 +313,15 @@ impl Client {
         for (name, value) in headers {
             request = request.header(name.as_str(), value.as_str());
         }
+        let (pulse, began) = (group.cloned().unwrap_or_else(Pulse::new), Instant::now());
         if let Some(body) = body {
-            request = request.body(reqwest::Body::from(body));
+            request = request.body(body.sending(Arc::clone(&pulse)));
         }
-        match request.send().await {
+        let sent = tokio::select! {
+            sent = request.send() => sent,
+            () = pulse.stalled(began) => return refuse(Code::TRANSFER_FAILED, format!("{}: nothing moved for {} s", shown(url), STALL.as_secs())),
+        };
+        match sent {
             Ok(response) => Ok(Answer { url: url.to_owned(), response, until: None }),
             Err(error) => {
                 if error.is_connect() {

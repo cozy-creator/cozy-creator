@@ -22,8 +22,8 @@ use futures_util::StreamExt;
 use base64::engine::{general_purpose::STANDARD, Engine as _};
 use serde_json::Value;
 
-use super::ask::{self, Backoff, ATTEMPTS};
-use super::net::{join, same_origin, shown, Body, Client, GetError, HeaderMap};
+use super::ask::{self, Backoff};
+use super::net::{join, same_origin, shown, Body, Client, GetError, HeaderMap, Pulse};
 use super::origin::{Boxed, Location, Origin};
 use super::policy::is_loopback_origin;
 use super::token::{default_for, s3_base, Request, TokenProvider};
@@ -44,8 +44,12 @@ pub struct Endpoint {
     at: At,
     client: Client,
     token: Option<Arc<dyn TokenProvider>>,
-    /// Bytes of file bodies sent, ever: an upload's progress while its objects are on their way.
+    /// Bytes of file bodies that landed or are on their way ([`Endpoint::sent`]): an upload's
+    /// progress while its objects are on their way.
     sent: Arc<AtomicU64>,
+    /// When any of its requests last sent a byte: a request is cut for silence only when all of them are
+    /// silent, so the streams of one upload on a slow link never cut each other's starved ones.
+    pulse: Arc<Pulse>,
 }
 
 enum At {
@@ -150,7 +154,7 @@ impl Endpoint {
             At::Http(_) => token.or_else(|| default_for(&url)),
             At::Dir(..) => None,
         };
-        Ok(Endpoint { url, at, client: client.clone(), token, sent: Arc::default() })
+        Ok(Endpoint { url, at, client: client.clone(), token, sent: Arc::default(), pulse: Pulse::new() })
     }
 
     pub fn url(&self) -> &str {
@@ -316,7 +320,7 @@ impl Endpoint {
         }
     }
 
-    /// The bytes of file bodies sent, ever.
+    /// The bytes of file bodies sent that landed or are on their way: a failed attempt's are given back.
     pub fn sent(&self) -> u64 {
         self.sent.load(Ordering::Relaxed)
     }
@@ -340,6 +344,16 @@ impl Endpoint {
     /// Sends `object` unless the endpoint holds it: true when it sent it. `payload` gives its
     /// bytes, only when they are needed (once per attempt).
     pub async fn upload(&self, object: &ObjectRef, payload: &(dyn Fn() -> Result<Payload> + Send + Sync)) -> Result<bool> {
+        self.upload_noted(object, payload, &|_| {}).await
+    }
+
+    /// [`Endpoint::upload`], each attempt asked again said to `note` (`<why>; attempt 2/10 in 3 s`).
+    ///
+    /// A HEAD of an absent object may answer where to PUT it: a presigned URL, a grant with a
+    /// lifetime. Each PUT spends the grant the HEAD just before it minted, and a PUT asked again asks
+    /// for a new one, so no transfer, however slow or retried, outlives its grant; storage refusing
+    /// the grant (R2's `403 ExpiredRequest`) is asked again the same way.
+    pub(crate) async fn upload_noted(&self, object: &ObjectRef, payload: &(dyn Fn() -> Result<Payload> + Send + Sync), note: &(dyn Fn(&str) + Sync)) -> Result<bool> {
         let base = match &self.at {
             At::Http(base) => base,
             At::Dir(..) => {
@@ -364,13 +378,13 @@ impl Endpoint {
         // server verifies what it was sent) may name another place, as when another account's
         // copy landed first and this writer proves it holds the bytes: they go there too.
         let mut sent: Vec<String> = vec![];
+        let mut backoff = Backoff::transfer();
         loop {
             match reply.status {
                 200 => return held(&reply, object).map(|()| !sent.is_empty()),
                 404 | 410 => {}
                 _ => return Err(refusal(&reply, if sent.is_empty() { "HEAD" } else { "the confirming HEAD" })),
             }
-            // A writer's HEAD of an absent object may say where to PUT it (a presigned URL).
             let target = reply.header("location").and_then(|at| join(&url, at)).unwrap_or_else(|| url.clone());
             let place = target.split('?').next().unwrap_or_default().to_owned();
             if sent.contains(&place) {
@@ -382,13 +396,30 @@ impl Endpoint {
                 ("x-amz-checksum-sha256".to_owned(), checksum),
                 ("if-none-match".to_owned(), "*".to_owned()),
             ];
+            // A presigned target carries its own authority; the endpoint's credential stays with it.
             let auth = same_origin(&target, &url);
             let ask = Ask { method: "PUT", url: &target, headers, body: Some(payload), payload: Some(&object.sha256), auth };
-            let put = self.exchange(ask).await?;
-            if !matches!(put.status, 200 | 201 | 204 | 412) {
-                return Err(refusal(&put, "PUT"));
-            }
-            sent.push(place);
+            let (why, wait) = match self.challenged(&ask).await {
+                Ok(put) if matches!(put.status, 200 | 201 | 204 | 412) => {
+                    sent.push(place);
+                    reply = self.exchange(head()).await?;
+                    continue;
+                }
+                Ok(put) if ask::weather(put.status) || !auth && matches!(put.status, 401 | 403) => {
+                    let wait = put.header("retry-after").and_then(|s| s.trim().parse().ok()).map(std::time::Duration::from_secs);
+                    (refusal(&put, "PUT"), wait)
+                }
+                Ok(put) => return Err(refusal(&put, "PUT")),
+                Err(GetError::Exchange(refusal)) if ask::transient(&refusal) => (refusal, None),
+                Err(error) => return Err(error.refusal()),
+            };
+            // Bytes a failed PUT sent are not kept: it never moved the upload on.
+            let Some((pause, line)) = backoff.again(&why.detail, false, wait) else {
+                return Err(Refusal { code: why.code, detail: backoff.spent(&why.detail) });
+            };
+            tracing::info!(object = %object.id(), "{line}");
+            note(&line);
+            tokio::time::sleep(pause).await;
             reply = self.exchange(head()).await?;
         }
     }
@@ -424,37 +455,37 @@ impl Endpoint {
         }
     }
 
-    /// One exchange, its answer read whole, asked again by the one rule ([`ask`]); the provider
-    /// may ask once more (a nonce, a refresh). Bytes of a body sent are progress.
+    /// One exchange, its answer read whole, asked again by the one rule ([`ask`]). Nothing an
+    /// exchange sends or reads is kept from a failed attempt, so each counts toward [`Backoff::transfer`]'s.
     async fn exchange(&self, ask: Ask<'_>) -> Result<Reply> {
-        let (mut backoff, mut challenged) = (Backoff::transfer(), false);
+        let mut backoff = Backoff::transfer();
         loop {
-            let sent = self.sent.load(Ordering::Relaxed);
-            let (why, wait) = match self.attempt(&ask).await {
+            let (why, wait) = match self.challenged(&ask).await {
+                Ok(reply) if !ask::weather(reply.status) => return Ok(reply),
                 Ok(reply) => {
-                    let presented = Request { method: ask.method, url: ask.url, headers: &reply.presented, payload: ask.payload };
-                    let again = match (ask.auth, &self.token) {
-                        (true, Some(token)) => token.retry(&presented, reply.status, &reply.headers)?,
-                        _ => false,
-                    };
-                    if again && !challenged {
-                        challenged = true;
-                        continue;
-                    }
-                    if !ask::weather(reply.status) {
-                        return Ok(reply);
-                    }
-                    tracing::warn!(method = ask.method, url = %shown(ask.url), status = reply.status, "answer not 2xx");
                     let wait = reply.header("retry-after").and_then(|s| s.trim().parse().ok()).map(std::time::Duration::from_secs);
                     (format!("{} {}: {}", ask.method, shown(ask.url), reply.status), wait)
                 }
                 Err(GetError::Exchange(refusal)) if ask::transient(&refusal) => (refusal.detail, None),
                 Err(error) => return Err(error.refusal()),
             };
-            match backoff.after(self.sent.load(Ordering::Relaxed) > sent, wait) {
-                Some(pause) => tokio::time::sleep(pause).await,
-                None => return refuse(Code::HUB_UNREACHABLE, format!("{why}; {ATTEMPTS} attempts in a row moved nothing")),
+            match backoff.again(&why, false, wait) {
+                Some((pause, line)) => {
+                    tracing::info!("{line}");
+                    tokio::time::sleep(pause).await;
+                }
+                None => return refuse(Code::HUB_UNREACHABLE, backoff.spent(&why)),
             }
+        }
+    }
+
+    /// One attempt, made once more when the provider asks to (a nonce, a refresh).
+    async fn challenged(&self, ask: &Ask<'_>) -> std::result::Result<Reply, GetError> {
+        let reply = self.attempt(ask).await?;
+        let presented = Request { method: ask.method, url: ask.url, headers: &reply.presented, payload: ask.payload };
+        match (ask.auth, &self.token) {
+            (true, Some(token)) if token.retry(&presented, reply.status, &reply.headers).map_err(GetError::Caller)? => self.attempt(ask).await,
+            _ => Ok(reply),
         }
     }
 
@@ -464,24 +495,31 @@ impl Endpoint {
             // A provider's failure is the caller's verdict, not failed network traffic.
             headers.extend(self.authorize(ask.method, ask.url, &ask.headers, ask.payload).await.map_err(GetError::Caller)?);
         }
+        // This attempt's bytes, given back when it fails: what is on its way or landed, never twice.
+        let mine = Arc::new(AtomicU64::new(0));
+        let sent = || vec![Arc::clone(&self.sent), Arc::clone(&mine)];
         let body = match ask.body {
             Some(make) => Some(match make()? {
                 Payload::Bytes(bytes) => Body::Bytes(bytes),
                 Payload::File(file) => {
                     let length = file.metadata().map_err(|e| crate::err::classify_io(ask.url, e))?.len();
-                    Body::File { file, length, sent: Arc::clone(&self.sent) }
+                    Body::File { file, length, sent: sent() }
                 }
-                Payload::Part(file, length) => Body::File { file, length, sent: Arc::clone(&self.sent) },
+                Payload::Part(file, length) => Body::File { file, length, sent: sent() },
             }),
             None => None,
         };
-        let mut reply = self.round_trip(ask.method, ask.url, &headers, body).await?;
+        let reply = self.round_trip(ask.method, ask.url, &headers, body).await;
+        if !reply.as_ref().is_ok_and(|reply| matches!(reply.status, 200..=299 | 412)) {
+            self.sent.fetch_sub(mine.load(Ordering::Relaxed), Ordering::Relaxed);
+        }
+        let mut reply = reply?;
         reply.presented = headers;
         Ok(reply)
     }
 
     async fn round_trip(&self, method: &str, url: &str, headers: &[(String, String)], body: Option<Body>) -> Result<Reply> {
-        let mut answer = self.client.send(method, url, headers, body).await?;
+        let mut answer = self.client.send(method, url, headers, body, Some(&self.pulse)).await?;
         let (status, headers) = (answer.status(), answer.response.headers().clone());
         let mut body = Vec::new();
         while let Some(frame) = answer.frame().await? {
@@ -525,10 +563,12 @@ impl Endpoint {
 
 /// Cooperative control of one upload. `commit` is called once after the objects land, before
 /// the commit is recorded; once it accepts, cancellation no longer interrupts. Progress counts
-/// verified bytes, including objects the endpoint already holds.
+/// verified bytes, including objects the endpoint already holds. `retrying` hears each object asked
+/// again (`<why>; attempt 2/10 in 3 s`).
 pub struct UploadControl<'a> {
     pub cancelled: &'a (dyn Fn() -> bool + Sync),
     pub progress: &'a (dyn Fn(u64, u64) + Sync),
+    pub retrying: &'a (dyn Fn(&str) + Sync),
     pub commit: &'a (dyn Fn() -> bool + Sync),
 }
 
@@ -569,7 +609,7 @@ pub async fn upload_commit(endpoint: &Endpoint, name: &str, tree: &ObjectRef, st
             .map(|object| async move {
                 let (from, at) = (store.clone(), object.clone());
                 let payload = move || from.file(&at).map(Payload::File).map_err(crate::store::Error::refusal);
-                endpoint.upload(&object, &payload).await.map(|s| (s, object.length))
+                endpoint.upload_noted(&object, &payload, control.retrying).await.map(|s| (s, object.length))
             })
             .buffer_unordered(STREAMS);
         loop {

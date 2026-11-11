@@ -198,6 +198,10 @@ fi
 # A cut upload resumes: release-gate/suites/tensord/pod-cells.sh (pc-resume) cuts one by killing Calcifer. A cancel never cuts
 # one: the canceled run's upload goes on and the next run of the file waits for it (kept so: dedup, 11-09).
 
+step "a model upload by $M over an 8 Mbit/s link to the store (xs-172)"
+. "$here/../../release-gate/suites/hub/slow-upload.sh"
+hub_slow_upload
+
 
 )
 release_synthetic_checks

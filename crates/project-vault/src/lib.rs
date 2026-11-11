@@ -712,6 +712,8 @@ pub struct SessionTimer {
     activity: Instant,
     activity_wall: SystemTime,
     expired: AtomicBool,
+    /// Work in progress holds the session open ([`SessionTimer::hold`]).
+    held: bool,
 }
 
 impl SessionTimer {
@@ -725,7 +727,19 @@ impl SessionTimer {
             activity: now,
             activity_wall: wall,
             expired: AtomicBool::new(false),
+            held: false,
         }
+    }
+
+    /// Work in progress (`working`: a run or render of the project) holds the session open: its idle
+    /// limit never ends it meanwhile, a suspend included, and the idle clock starts again when the last
+    /// of it ends. The maximum and a backwards clock jump still end it.
+    pub fn hold(&mut self, working: bool) {
+        if self.held && !working {
+            self.activity = Instant::now();
+            self.activity_wall = SystemTime::now();
+        }
+        self.held = working;
     }
 
     /// An expired timer cannot be revived by delayed interaction or a heartbeat.
@@ -754,7 +768,7 @@ impl SessionTimer {
             self.expired.store(true, Ordering::Relaxed);
             return true;
         };
-        let expired = self.policy.idle_seconds.is_some_and(|seconds| {
+        let expired = !self.held && self.policy.idle_seconds.is_some_and(|seconds| {
             let limit = Duration::from_secs(seconds);
             self.activity.elapsed() >= limit || activity_wall >= limit
         }) || self.policy.maximum_seconds.is_some_and(|seconds| {
