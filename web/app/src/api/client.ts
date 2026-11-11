@@ -554,11 +554,12 @@ export class Client {
   }
 
   /** What can be dropped on a canvas: the Edit, the local code `project` names, what `on` has installed, then the Hub's. */
-  tools(q: string, on: string | null, project: string | null, signal?: AbortSignal): Promise<Tools> {
+  tools(q: string, on: string | null, project: string | null, signal?: AbortSignal, palette = false): Promise<Tools> {
     const asked = new URLSearchParams()
     if (q) asked.set("q", q)
     if (on) asked.set("on", on)
     if (project) asked.set("project", project)
+    if (palette) asked.set("palette", "true")
     return this.json(`/v1/tools?${asked}`, { signal })
   }
 

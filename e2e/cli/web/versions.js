@@ -11,7 +11,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, readFileSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFromPage, projectUrl, calcifer, carry: carryTo, signIn, MP4, STEP_MS, boxOf, drop, lastLook, launch, lookAt, noStall, openCanvas, png, renderOf, settled, fitCanvas, until, importYaml, upload, yamlOf, rowsOf } = require('./page');
+const { chooseModel, projectFromPage, projectUrl, calcifer, carry: carryTo, signIn, MP4, STEP_MS, boxOf, drop, lastLook, launch, lookAt, noStall, openCanvas, png, renderOf, settled, fitCanvas, until, importYaml, upload, yamlOf, rowsOf } = require('./page');
 
 const fixture = join(__dirname, '..', 'project', 'waits.py');
 const failures = [];
@@ -406,7 +406,7 @@ async function died(why) {
   await shut();
 
   // A tool on and off. Any image tool the list has: what it does here makes nothing.
-  const listed = page.locator('.tools li.tool[data-kind="image"]');
+  const listed = page.locator('.tools [data-palette="tools"] li.tool[data-operation="image"][data-tool]');
   await listed.first().waitFor({ timeout: 20_000 }).catch(() => {});
   if (await listed.count()) {
     const row = listed.first();
@@ -439,24 +439,21 @@ async function died(why) {
     const caretOnIt = await until('the caret in its words', () => droppedOpen.locator('.in-frame .mention-text').evaluate((el) => el.contains(document.activeElement)).catch(() => false), Boolean).catch(() => false);
     const droppedShape = await droppedOpen.locator('.ratio-rest').innerText().then((text) => text.trim(), () => null);
     check('a_dropped_tool_opens_on_its_words', Boolean(dropped) && caretOnIt === true && droppedShape === 'Auto' && (await page.locator('.nm-field').count()) === 0, { dropped: dropped?.name, caretOnIt, droppedShape });
+    const imageModelIds = dropped ? await droppedOpen.locator('select[aria-label="Model"] option').evaluateAll((options) => options.map((option) => option.value)) : [];
     if (dropped) {
       await api(`${at}/assets/${encodeURIComponent(dropped.name)}`, { method: 'DELETE' });
       await until('that box gone', () => box(dropped.name).count(), (n) => n === 0);
     }
     await shut();
 
-    // On a text box its words are the prompt, at once, and the box opens.
-    // After the reload the canvas is where it was before the dropped tool's box opened, which shows words.
+    // A model cannot silently change a Text node into Image. The refused drop is consumed, with no new canvas node.
     await box('words').waitFor();
+    const beforeWrongKind = (await state()).assets.map((held) => held.name);
     await carry('words');
-    await box('words').locator('.add-on').first().waitFor({ timeout: 1000 });
-    check('a_dropped_tool_opens_its_box', await page.locator('.card.here[data-asset="words"]').waitFor({ timeout: 2000 }).then(() => true, (why) => String(why)) === true);
-    await until('the file', () => Promise.resolve(lines('words')), (text) => text.includes(`tool: ${tool.id}`) && text.includes('instructions: |'));
-    check('words_are_the_prompt', lines('words').includes('Two lines,') && !lines('words').includes('text:'), lines('words'));
-    await box('words').locator(`button[aria-label^="Take"]`).first().click();
-    await until('the file', () => Promise.resolve(lines('words')), (text) => !text.includes('tool:') && text.includes('text: |'));
-    check('x_on_a_box_of_no_pictures_leaves_text', (await asset('words')).kind === 'text' && comments.every((line) => yaml().includes(line)), lines('words'));
-    await shot('text-again');
+    check('incompatible_tool_drop_explains_why', (await toast('words is a text node')) === true);
+    const afterWrongKind = await state();
+    check('incompatible_tool_drop_keeps_text_and_creates_nothing', (await asset('words')).kind === 'text' && !(await asset('words')).tool && comments.every((line) => yaml().includes(line)) && JSON.stringify(afterWrongKind.assets.map((held) => held.name)) === JSON.stringify(beforeWrongKind), lines('words'));
+    await shot('text-refuses-image-tool');
 
     // On a picture: its first version, approved, and the prompt starts with it.
     await carry('other');
@@ -489,10 +486,9 @@ async function died(why) {
     await page.waitForTimeout(400);
     await box('other').locator(`button[aria-label^="Take"]`).first().click();
     await until('the tool gone', () => Promise.resolve(lines('other')), (text) => !text.includes('tool:'));
-    // Its X takes the tool and its fields with it: its pictures, number and approval stay.
+    // Its X takes model parameters with it; the typed node, prompt, pictures, number and approval stay.
     const off = await asset('other');
-    // Its fields go with it (Paul, 11-06), and its pictures, takes and description stay.
-    check('x_on_pictures_takes_its_fields', off.versions === 1 && off.approved === 1 && !off.fields?.instructions && !lines('other').includes('instructions') && off.standing === 'current' && !off.tool, { off, lines: lines('other') });
+    check('x_on_pictures_keeps_type_and_prompt', off.versions === 1 && off.approved === 1 && off.kind === 'image' && off.fields?.node_kind === 'image' && off.fields?.instructions === '<self.1>' && off.standing === 'current' && !off.tool, { off, lines: lines('other') });
     check('x_says_with_undo', (await toast('Its pictures stay')) === true);
     await undoIn('Its pictures stay').click();
     await until('the tool back', () => Promise.resolve(lines('other')), (text) => text.includes(`tool: ${tool.id}`) && text.includes('<self.1>'));
@@ -700,24 +696,13 @@ async function died(why) {
       await shut();
     }
 
-    // A swap across families: what it can't take goes, in words, with Undo. Two tools of different families, where the list has them.
-    const onPanel = await page.locator('.tools li.tool').evaluateAll((rows) => rows.map((held) => held.dataset.tool));
-    const families = (await api(`/v1/tools?project=${id}`)).body.tools.filter((one) => one.model?.family && one.makes === 'image' && onPanel.includes(one.id));
+    // A swap across image-model families through node configuration keeps words, removes incompatible LoRAs, and is undoable.
+    const families = (await api(`/v1/tools?project=${id}&palette=true`)).body.tools.filter((one) => one.model?.family && one.makes === 'image' && imageModelIds.includes(one.id));
     const first = families[0];
     const otherFamily = families.find((one) => one.model.family !== first?.model.family);
     seen.swapping = [first?.id, otherFamily?.id];
     if (first && otherFamily) {
-      const dragIn = async (one, name) => {
-        const line = page.locator(`.tools li.tool[data-tool="${one.id}"]`).first();
-        await line.scrollIntoViewIfNeeded();
-        const from = await line.boundingBox();
-        await page.mouse.move(from.x + 20, from.y + 8);
-        await page.mouse.down();
-        await page.mouse.move(from.x + 40, from.y + 20, { steps: 4 });
-        const to = await box(name).locator('.card').boundingBox();
-        await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 12 });
-        await page.mouse.up();
-      };
+      const choose = (one, name) => chooseModel(page, name, one.id, 'image');
       importYaml(folder, `${yaml().trimEnd()}
   swapped:
     tool: ${first.id}
@@ -735,14 +720,14 @@ async function died(why) {
       const list = await box('swapped').locator('.add-ons').boundingBox();
       check('stack_is_under_at_its_left', list.y >= card.y + card.height - 1 && Math.abs(list.x - card.x) < 3 && (await box('swapped').locator('.add-on').count()) === 3, { card, list });
       await shot('stack');
-      await dragIn(otherFamily, 'swapped');
+      await choose(otherFamily, 'swapped');
       check('a_swap_names_what_it_drops', (await toast('first-lora')) === true);
       await until('the file', () => Promise.resolve(lines('swapped')), (held) => held.includes(`tool: ${otherFamily.id}`) && !held.includes('lora'));
       check('a_swap_keeps_its_words', lines('swapped').includes('A wave.'), lines('swapped'));
       await undoIn('first-lora').click();
       await until('the file', () => Promise.resolve(lines('swapped')), (held) => held.includes(`tool: ${first.id}`) && held.includes('first-lora'));
       check('undo_puts_the_swap_back', lines('swapped').includes('second-lora'), lines('swapped'));
-    } else seen.skipped_swap = 'no two families on the panel';
+    } else seen.skipped_swap = 'no two image families in node configuration';
   } else seen.skipped_tools = 'nothing on the list makes a picture';
 
   // A rename during a real render: at once, nothing lost, and what reads it reads on.

@@ -26,6 +26,10 @@ use super::{
 };
 use crate::api::{Api, Refusal, parse};
 
+#[cfg(test)]
+#[path = "assets_tests.rs"]
+mod tests;
+
 /// What to call an asset with no name asked when its tool can't be read: its package's word, numbered, with no release.
 fn tool_name(tool: &str) -> Option<String> {
     let (package, _) = tool.rsplit_once('/')?;
@@ -44,20 +48,26 @@ pub(super) async fn create(
     Path(id): Path<String>,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<(StatusCode, Json<AssetMade>), Refusal> {
-    let asked: NewAsset = parse(&body?)?;
+    let mut asked: NewAsset = parse(&body?)?;
+    let hint = format::node_kind(asked.fields.get(format::NODE_KIND)).map_err(Refusal)?.map(str::to_owned);
+    if asked.kind.as_deref().is_some_and(|kind| !format::KINDS.contains(&kind) && kind != format::TEXT) {
+        return Err(Refusal(Error::new(Kind::Validation, "asset_kind", "kind must be text, image, video or audio")));
+    }
     if let Some(name) = asked.name.as_deref().filter(|_| asked.exact) {
         format::new_name(name).map_err(Refusal)?;
     }
     let project = api.projects.get(&api, &id)?;
     let id = project.id.clone();
     let folder = &project.folder;
-    // With no tool, it's a text asset.
-    let text_asset = asked.tool.is_empty();
+    let no_tool = asked.tool.is_empty();
+    let declared = asked.kind.clone().or_else(|| hint.as_deref().map(format::node_media).map(str::to_owned));
+    let text_asset = no_tool && declared.as_deref().is_none_or(|kind| kind == format::TEXT);
     if text_asset && !asked.fields.contains_key(format::TEXT) {
-        return Err(Refusal(Error::new(Kind::Validation, "asset_says_nothing", "an asset needs a tool, or a text").remedy("name a tool from GET /v1/tools, or set `fields.text`")));
+        return Err(Refusal(Error::new(Kind::Validation, "asset_says_nothing", "an asset needs a tool, text, or a media kind").remedy("name a tool, set `fields.text`, or choose kind image, video or audio")));
     }
-    let plain = (!text_asset).then(|| format::plain_tool(&asked.tool, folder));
-    let said = asked.kind.as_ref().filter(|kind| format::KINDS.contains(&kind.as_str())).cloned().or_else(|| (asked.tool == tool::EDIT).then(|| tool::edit().makes));
+    let plain = (!no_tool).then(|| format::plain_tool(&asked.tool, folder));
+    let intrinsic_edit = plain.as_deref() == Some(tool::EDIT);
+    let said = if intrinsic_edit { Some(tool::edit().makes) } else { declared };
     let unsaid = said.is_none() && !plain.as_ref().is_some_and(|plain| folder.reading_lock(|lock| lock.makes.contains_key(plain)).unwrap_or(false));
     let read = if plain.is_some() && (unsaid || asked.name.is_none()) {
         match crate::toolbox::read(&api, &asked.tool, &folder.dir).await {
@@ -69,8 +79,10 @@ pub(super) async fn create(
         None
     };
     let (read_kind, read_name) = read.unzip();
-    let said = said.or(read_kind);
-    let wanted = asked.name.as_deref().and_then(format::plain_name).or_else(|| read_name.as_deref().and_then(format::plain_name)).or_else(|| tool_name(&asked.tool)).unwrap_or_else(|| if text_asset { format::TEXT } else { "asset" }.to_owned());
+    let said = said.or(read_kind).or_else(|| plain.as_ref().and_then(|plain| folder.reading_lock(|lock| lock.makes.get(plain).cloned()).ok().flatten()));
+    let kind = if intrinsic_edit { Some("video_edit") } else if text_asset { Some(format::TEXT) } else { said.as_deref() };
+    if let Some(kind) = kind { asked.fields.insert(format::NODE_KIND.to_owned(), Value::String(kind.to_owned())); }
+    let wanted = asked.name.as_deref().and_then(format::plain_name).or_else(|| read_name.as_deref().and_then(format::plain_name)).or_else(|| tool_name(&asked.tool)).unwrap_or_else(|| if text_asset { format::TEXT } else { said.as_deref().unwrap_or("asset") }.to_owned());
     let made = folder.act(|| {
         // Chosen in the transaction that writes it: no other write comes between.
         let names = folder.reading_boxes(Written::names)?;
@@ -168,6 +180,7 @@ pub(super) async fn patch(
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Json<AssetPatched>, Refusal> {
     let asked: AssetPatch = parse(&body?)?;
+    format::node_kind(asked.fields.get(format::NODE_KIND)).map_err(Refusal)?;
     let project = api.projects.get(&api, &id)?;
     let folder = &project.folder;
     let holds = match &asked.tool {
@@ -193,7 +206,33 @@ pub(super) async fn patch(
         let was = written.get(&name).ok_or_else(|| own_lines(&name))?.etag();
         let mut fields = asked.fields.clone();
         if let (Some(tool), Some(holds)) = (&asked.tool, &holds) {
+            let held = written.get(&name).ok_or_else(|| own_lines(&name))?;
+            let intrinsic = held.get("tool").and_then(Value::as_str).is_some_and(|target| format::plain_tool(target, folder) == tool::EDIT);
+            let current = if intrinsic { "video_edit".to_owned() }
+                else if let Some(kind) = format::node_kind(held.get(format::NODE_KIND))? { kind.to_owned() }
+                else {
+                    let doc = Doc::load(folder)?;
+                    let i = doc.find(&name).ok_or_else(|| own_lines(&name))?;
+                    doc.assets[i].kind.clone()
+                };
+            // A different explicit hint is an intentional conversion. Merely assigning/removing
+            // a model preserves the current container, including when its output is not cached yet.
+            let next = format::node_kind(asked.fields.get(format::NODE_KIND))?.unwrap_or(&current);
+            let plain = format::plain_tool(tool, folder);
+            if (plain == tool::EDIT) != (next == "video_edit") {
+                return Err(Error::new(Kind::Validation, "asset_tool_kind", "Video Edit uses its built-in editor")
+                    .remedy("Keep the built-in editor for a Video Edit node; choose a matching model for an Image or Video node"));
+            }
+            let incoming = format::kind_made_here(&plain).map(str::to_owned)
+                .or_else(|| folder.reading_lock(|lock| lock.makes.get(&plain).cloned()).ok().flatten());
+            if !tool.is_empty() && incoming.as_deref().is_some_and(|kind| kind != format::node_media(next)) {
+                return Err(Error::new(Kind::Validation, "asset_tool_kind", format!("this {next} node cannot use a model that produces {}", incoming.as_deref().unwrap_or_default()))
+                    .remedy("Choose a model that matches the node's media type"));
+            }
+            fields.insert(format::NODE_KIND.to_owned(), Value::String(next.to_owned()));
             written.with_tool(&name, tool, *holds, start.clone(), &mut fields)?;
+        } else if written.get(&name).and_then(|held| held.get("tool")).and_then(Value::as_str).is_some_and(|target| format::plain_tool(target, folder) == tool::EDIT) {
+            fields.insert(format::NODE_KIND.to_owned(), Value::String("video_edit".to_owned()));
         }
         let mut edited = written.clone();
         let warnings = edited.set(&name, &fields)?;

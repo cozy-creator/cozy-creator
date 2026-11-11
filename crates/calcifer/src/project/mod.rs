@@ -13,9 +13,14 @@ mod crdt;
 mod fit;
 mod folder;
 mod format;
-mod format2;
 pub(crate) mod graph;
 mod history;
+
+#[cfg(test)]
+#[path = "retired_storage_tests.rs"]
+mod retired_storage_tests;
+#[cfg(test)]
+mod web_seed_tests;
 pub(crate) mod host;
 mod jobs;
 mod keyed;
@@ -25,10 +30,8 @@ mod thumbs;
 mod binder;
 pub(crate) use binder::Inline;
 mod tools;
-mod upgrade;
 mod walker;
 mod written;
-mod legacy;
 pub(crate) mod vault;
 pub(crate) mod vault_operation;
 
@@ -262,11 +265,6 @@ impl Projects {
         let mount_id = vault::mount_identity(&root);
         let physical = current_view(&root)?;
         let dir = physical.as_path();
-        // Before `project.db`: a format 2 or 3 folder moves to 4, and its files are imported once (cl-803).
-        let said = match dir.join(db::DB).is_file() {
-            true => vec![],
-            false => tokio::task::block_in_place(|| upgrade::on_touch(dir))?,
-        };
         let (folder, (id, name, code)) = tokio::task::block_in_place(|| Folder::open_with(dir, api.machines.hubs.home(), |folder| {
             let (id, name, code) = identify_loaded(api, dir, folder)?;
             // Validate a move before inherited local work can be unbound or resumed. A
@@ -318,7 +316,6 @@ impl Projects {
         };
         drop(open);
         project.require_view()?;
-        project.said.lock().expect("said lock").extend(said);
         if project.folder.lock()?.owes() {
             walk(api, &project);
         }
@@ -386,11 +383,11 @@ fn indexed(api: &Api) -> Result<Vec<crate::state::KnownProject>, Error> {
 /// An older project keeps its existing link if its public code cannot be recorded.
 fn backfill_code(store: &crate::store::Store, entry: &crate::state::KnownProject) -> Result<String, Error> {
     let path = entry.path.join(db::DB);
-    if !path.is_file() {
-        // Opening upgrades a pre-database project. Listing keeps its current format.
-        return reserve_code(store, &entry.id, &entry.name, &entry.path, None);
-    }
+    if !path.is_file() { return Err(Folder::missing_native(&entry.path)); }
     let conn = db::open(&path)?;
+    if db::identity(&conn).is_none() {
+        return Err(Error::new(Kind::Validation, "project_identity", format!("{} has no native CRDT project identity", path.display())));
+    }
     let kept = db::meta(&conn, "code");
     let code = reserve_code(store, &entry.id, &entry.name, &entry.path, kept.as_deref())?;
     db::set_meta(&conn, &path, "code", Some(&code))?;
@@ -497,20 +494,8 @@ impl Holding {
         let _access = vault::admit_root(&self.dir).await?;
         let physical = vault::resolve_path(&self.dir)?;
         let folder = Folder::at(&physical);
-        // One that doesn't read as this format (an older one moves as the run lands) still takes the run, as written, its mentions unread.
-        let (doc, lock) = match (Doc::load(&folder), folder.lock()) {
-            (Ok(doc), Ok(lock)) => (doc, lock),
-            (Err(why), _) | (_, Err(why)) => {
-                if vault::encrypted(&vault::logical(&self.dir)) { return Err(why); }
-                let mut written = written;
-                for field in callable.request.fields.iter().filter(|field| matches!(field.ty.plain(), api::interface::Type::Prompt(_))) {
-                    if let Some(Value::String(text)) = written.get(&field.name).cloned() {
-                        written.insert(field.name.clone(), json!({"text": text, "references": []}));
-                    }
-                }
-                return Ok((written, vec![], vec![format!("{}: {}, so what the run mentions isn't read", folder::PROJECT, why.message)]));
-            }
-        };
+        let doc = Doc::load(&folder)?;
+        let lock = folder.lock()?;
         let stand = doc.stand(&lock);
         let mut fields = written;
         let picked = callable.request.fields.iter().find(|field| matches!(field.ty.plain(), api::interface::Type::Pickup(_))).and_then(|field| fields.remove(&field.name));
@@ -594,24 +579,15 @@ pub(crate) fn landed(project: &FsPath, made: &Landed, dest: &FsPath) -> Result<(
         n => format!("{}-{n}", made.output),
     };
     let row = folder::RunFile { run: made.run, run_id: Some(made.run_id.clone()), function: made.target.to_owned(), output, sha256: made.digest.to_owned(), ..Default::default() };
-    // A folder from before project.db moves to format 4 here, said once, and its first read imports it. One a read moved as the run
-    // was sent (it binds to the project) is said here too.
     let folder = Folder::at(project);
-    let (upgraded, refused) = match project.join(db::DB).is_file() {
-        true => (folder.upgraded(), None),
-        false => match upgrade::on_touch(project) {
-            Ok(said) => (said, None),
-            Err(why) => (vec![], Some(why)),
-        },
-    };
     let (kept, unlisted) = folder.adopt(dest, made.digest, row, made.measured).map_err(|e| e.message)?;
     // The file is in `files/` now. An output that grows reads its next revision whole, with nothing here to extend.
     let _ = std::fs::remove_file(dest);
-    let said = unlisted.map(|why| refused.unwrap_or(why)).map(|why| match why.next.first() {
+    let said = unlisted.map(|why| match why.next.first() {
         Some(next) => format!("{} is in files/, and its project can't list it: {}: {next}", made.output, why.message),
         None => format!("{} is in files/, and its project can't list it: {}", made.output, why.message),
     });
-    Ok((kept, said.or_else(|| (!upgraded.is_empty()).then(|| upgraded.join("\n")))))
+    Ok((kept, said))
 }
 
 /// An output its machine keeps, in its project's lock.
@@ -628,7 +604,8 @@ pub(crate) fn project_id(dir: &FsPath) -> String {
     identity(dir).0
 }
 
-/// The project in `dir`: its id and name as its `project.db` keeps them. One given none yet goes by its folder's until it opens.
+/// Best-effort identity for event correlation. Opening a native project separately requires
+/// its persisted canonical identity; this fallback never repairs or initializes a project.
 pub(crate) fn identity(dir: &FsPath) -> (String, String) {
     if let Some(known) = IDENTITIES.lock().expect("identities lock").get(dir) {
         return known.clone();
@@ -649,7 +626,8 @@ fn kept_identity(dir: &FsPath) -> Option<(String, String)> {
     db::identity(&rusqlite::Connection::open_with_flags(dir.join(db::DB), flags).ok()?)
 }
 
-/// The id a folder from before cl-819 takes at its first open: its path's, as it was known by then, so links to it stand.
+/// Best-effort event correlation for a path without a loaded identity. This is never persisted
+/// as the identity of a native project.
 fn folder_id(dir: &FsPath) -> String {
     let dir = vault::logical(dir);
     format!("project-{}", &hex::encode(Sha256::digest(dir.to_string_lossy().as_bytes()))[..16])
@@ -666,13 +644,12 @@ fn folder_name(dir: &FsPath) -> String {
     dir.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_else(|| "untitled".into())
 }
 
-/// The project in `dir`, its id and name kept in its `project.db` (which it never makes: a folder from before has one once it's
-/// imported) and recorded in the index. One from before cl-819 keeps the id
-/// its path gave it; a copy of a project another folder still holds takes a new id; a name another project has takes `_2`.
+/// The current native project in `dir`, its canonical identity recorded in the index. A copy
+/// another folder still holds takes a new id; a name another project has takes `_2`.
 fn identify(api: &Api, dir: &FsPath) -> Result<(String, String, String), Error> {
     let path = dir.join(db::DB);
     if !path.is_file() {
-        return Err(Error::new(Kind::NotFound, "project_not_found", format!("{} holds no {}", dir.display(), db::DB)));
+        return Err(Folder::missing_native(dir));
     }
     let mut conn = db::open(&path)?;
     let kept = db::identity(&conn);
@@ -710,7 +687,7 @@ fn identify_with(api: &Api, dir: &FsPath, kept: Option<(String, String)>, kept_c
     let (id, name) = match &kept {
         Some((id, name)) if !copied(id) => (id.clone(), name.clone()),
         Some((_, name)) => (fresh_id(), name.clone()),
-        None => (folder_id(dir), String::new()),
+        None => return Err(Error::new(Kind::Validation, "project_identity", format!("{} has no native CRDT project identity", dir.join(db::DB).display()))),
     };
     let name = unique_name(api, &id, dir, if name.is_empty() { folder_name(dir) } else { name })?;
     let kept_code = kept.as_ref().filter(|(held, _)| held == &id).and(kept_code);
@@ -1150,6 +1127,11 @@ pub(super) fn not_saved(why: &str) -> String {
 /// used now.
 async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Bytes, BytesRejection>) -> Result<Response, Refusal> {
     let mut open: Open = parse(&body?)?;
+    if let Some(path) = open.path.as_ref().filter(|path| path.is_absolute())
+        && !path.join(db::DB).is_file() && Folder::legacy_files(path)
+    {
+        return Err(Refusal(Folder::missing_native(path)));
+    }
     let key = headers.get("idempotency-key").and_then(|key| key.to_str().ok());
     if open.unencrypted {
         if open.passphrase.is_some() {
@@ -4779,7 +4761,6 @@ impl Walk {
         let path = folder.lock()?.files.get(&sha256).map(|file| folder.path(&file.path));
         let mut film = folder.dir.join(&name);
         if let Some(path) = path {
-            self.keep_aside(&asset.name, &film, &now);
             // The version is in `files/`: a film at the root that can't be replaced costs it nothing.
             if let Err(e) = tools::publish(&path, &film) {
                 self.film_stays(&name, &e);
@@ -4811,19 +4792,6 @@ impl Walk {
         }
     }
 
-    /// A file at `at`, where a film goes, that is no version of `asset`: someone made it there. It is kept beside it, and said.
-    fn keep_aside(&self, asset: &str, at: &FsPath, lock: &Lock) {
-        let Ok(got) = tokio::task::block_in_place(|| folder::hash(at)) else { return };
-        if lock.asset(asset).is_some_and(|held| held.versions.iter().any(|version| version.main() == Some(&got))) {
-            return;
-        }
-        let stem = at.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default();
-        let aside = at.with_file_name(format!("{stem}.edited-{}.mp4", folder::prefix_of(&got)));
-        if std::fs::rename(at, &aside).is_ok() {
-            self.say(Told::Warning { message: format!("{} isn't a version of {asset}: it is kept as {}", at.display(), aside.display()), name: None });
-        }
-    }
-
     /// Said once of a film at the root that couldn't be replaced: its version stands, and `film_follows` puts it there the next time it can.
     fn film_stays(&self, name: &str, error: &std::io::Error) {
         if !self.stays.lock().expect("stays lock").insert(name.to_owned()) {
@@ -4850,7 +4818,6 @@ impl Walk {
         }
         let same = !tools::shares_bytes(&at) && tokio::task::block_in_place(|| folder::hash(&at)).is_ok_and(|got| got == file.sha256);
         if !same {
-            self.keep_aside(&doc.assets[i].name, &at, lock);
             if let Err(e) = tools::publish(&from, &at) {
                 self.film_stays(&cut_name(&doc.assets[i].name), &e);
             }

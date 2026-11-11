@@ -1,4 +1,4 @@
-//! Inspect snapshots produced by real `cozy project` operations and exercise their actual CRDT
+//! Inspect snapshots produced by real current-format CLI/project API operations and exercise their actual CRDT
 //! format across offline native replicas. No daemon, mock project store or media merge is involved.
 use std::{collections::BTreeSet, fs, path::Path};
 
@@ -413,7 +413,7 @@ fn main() {
             let id = named(&value(&before), name)?;
             require(
                 named(&value(&after), after_name)? == id,
-                "redo/undo changed restored legacy entity identity",
+                "redo/undo changed restored entity identity",
             )?;
             Ok(json!({"passed":true,"restored_entity_id":id}))
         })();

@@ -109,31 +109,48 @@ function linesOf(text, name) {
   await box('shot').waitFor();
   if (local) execFileSync(COZY, ['--json', 'run', `${fixture}/still`, 'instructions=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, stdio: ['ignore', 'pipe', 'inherit'], timeout: FIRST_RUN_MS });
   const tool = await until('the fixture listed', async () => (await api(`/v1/tools?project=${id}`)).body.tools.find((held) => held.local && held.id === `${fixture}/shot`), Boolean, FIRST_RUN_MS);
-  // The page reads its list again as that install ends, with no reload.
-  await until('the page lists it', () => page.evaluate((id) => Boolean(document.querySelector(`.tools li.tool[data-tool="${CSS.escape(id)}"]`)), tool.id), Boolean);
-  // The list is by package (Paul, 11-06): each one a heading in its own words, once, and under it what each of its tools does there.
+  // The sidebar names operations only; model implementations stay inside each node's configuration.
   const listed = () => page.evaluate(() => [...document.querySelectorAll('.tools .tool-groups section')].map((section) => ({
-    package: section.dataset.package,
+    section: section.dataset.palette,
     title: section.querySelector('h4').textContent,
-    tools: [...section.querySelectorAll('li.tool')].map((row) => ({ id: row.dataset.tool, label: row.querySelector('b').textContent })),
+    tools: [...section.querySelectorAll('li.tool')].map((row) => ({ operation: row.dataset.operation, model: row.dataset.model, kind: row.dataset.kind, label: row.querySelector('b').textContent })),
   })));
-  const ours = (list) => list.filter((one) => one.tools.some((row) => row.id.startsWith(fixture)));
+  await until('the seven operations listed', () => listed(), (rows) => rows.find((one) => one.section === 'tools')?.tools.length === 7);
   const atRest = await listed();
   seen.listed = atRest.map((one) => `${one.title}: ${one.tools.map((row) => row.label).join(', ')}`);
-  check('a_package_heads_its_tools', ours(atRest).length === 1 && ours(atRest)[0].title === 'Boxes' && tool.package_title === 'Boxes' && ['Every field', 'A still'].every((label) => ours(atRest)[0].tools.some((row) => row.label === label)), atRest);
-  check('each_package_once', new Set(atRest.map((one) => one.package)).size === atRest.length && atRest.every((one) => one.tools.length > 0), seen.listed);
-  const search = page.locator('.tools input[aria-label="Search the tools"]');
-  // Searched, once the list is the search's: Text and the Edit are Cozy's, which neither search names.
-  const found = async (q, wanted) => {
-    await search.fill(q);
-    return until(`"${q}" searched`, listed, wanted).catch(() => listed());
-  };
-  const cozyListed = (list) => list.some((one) => one.package === 'cozy');
-  const byPackage = await found('boxes', (list) => ours(list)[0]?.tools.length === 2 && !cozyListed(list));
-  check('search_finds_the_package', ours(byPackage)[0]?.title === 'Boxes' && !cozyListed(byPackage) && byPackage.every((one) => `${one.package} ${one.title}`.toLowerCase().includes('boxes') || one.tools.every((row) => row.label.toLowerCase().includes('boxes'))), byPackage);
-  const byLabel = await found('every field', (list) => ours(list)[0]?.tools.length === 1 && !cozyListed(list));
-  check('search_finds_the_label', ours(byLabel)[0]?.tools[0].id === `${fixture}/shot` && ours(byLabel)[0].title === 'Boxes' && !cozyListed(byLabel), byLabel);
-  await found('', (list) => ours(list)[0]?.tools.length === 2 && cozyListed(list));
+  check('nodes_and_tools_are_separate', atRest.length === 2 && atRest[0].title === 'Nodes' && atRest[1].title === 'Tools', atRest);
+  check('exactly_five_basic_node_types', JSON.stringify(atRest.find((one) => one.section === 'nodes')?.tools.map((row) => row.label)) === JSON.stringify(['Image', 'Video', 'Video Editor', 'Audio', 'Text']), atRest);
+  const operations = atRest.find((one) => one.section === 'tools')?.tools ?? [];
+  check('exactly_seven_operation_categories', JSON.stringify(operations.map((row) => row.label)) === JSON.stringify(['Image', 'Edit Image', 'Upscale Image', 'Video', 'Edit Video', 'Upscale Video', 'LLM']), operations);
+  check('operation_output_types', JSON.stringify(operations.map((row) => row.kind)) === JSON.stringify(['image', 'image', 'image', 'video', 'video', 'video', 'text']), operations);
+  check('sidebar_has_no_model_rows', operations.every((row) => !row.model), operations);
+  check('sidebar_has_no_discovery_controls', await page.locator('.tools input, .tools .browse-toggle, .tools .browse, .tools .box-shelf-head, .tools .tool-off').count() === 0 && !(await page.locator('.tools button').allTextContents()).some((word) => /Browse|Checkpoints|Add file/.test(word)));
+  const metadata = (await api(`/v1/tools?project=${id}&palette=true`)).body.tools;
+  check('local_output_capabilities_remain', metadata.some((row) => row.id === `${fixture}/shot` && row.makes === 'video') && metadata.some((row) => row.id === `${fixture}/still` && row.makes === 'image'), metadata.filter((row) => row.id.startsWith(fixture)).map((row) => ({ id: row.id, makes: row.makes })));
+  const namesBefore = (await state()).assets.map((asset) => asset.name);
+  await page.locator('.tools [data-palette="nodes"] [data-node="image"]').click();
+  const choosing = await until('image node for model choices', async () => (await state()).assets.find((asset) => !namesBefore.includes(asset.name)), Boolean);
+  await open(choosing.name);
+  const modelOptions = () => box(choosing.name).locator('select[aria-label="Model"] option').evaluateAll((options) => options.map((option) => ({ id: option.value, label: option.textContent })));
+  const hasModel = (options, ref) => options.some((option) => metadata.find((one) => one.id === option.id)?.model?.default?.startsWith(`${ref}@`));
+  const models = await until('Image models include the installed local fixture', modelOptions, (options) => options.some((option) => option.id === `${fixture}/still`) && hasModel(options, 'qwen/qwen-image-2.1') && hasModel(options, 'stabilityai/sdxl'));
+  check('image_models_are_node_configuration_choices', hasModel(models, 'qwen/qwen-image-2.1') && hasModel(models, 'stabilityai/sdxl'), models);
+  const hasTextModel = metadata.some((one) => one.makes === 'text' && one.id !== 'text');
+  check('llm_availability_matches_real_text_tools', await page.locator('.tools [data-operation="llm"]').getAttribute('aria-disabled') === String(!hasTextModel));
+  const availability = await page.locator('.tools [data-palette="tools"] li.tool').evaluateAll((rows) => rows.map((row) => ({ operation: row.dataset.operation, kind: row.dataset.kind, disabled: row.getAttribute('aria-disabled') === 'true' })));
+  const toolOptions = await box(choosing.name).locator('select[aria-label="Tool"] option').evaluateAll((options) => options.map((option) => ({ operation: option.value, disabled: option.disabled })));
+  check('unavailable_image_operations_are_disabled_in_node_configuration', availability.filter((row) => row.kind === 'image' && row.disabled).every((row) => toolOptions.some((option) => option.operation === row.operation && option.disabled)), { availability, toolOptions });
+  check('edit_image_available_for_reference_capable_models', availability.some((row) => row.operation === 'edit_image' && !row.disabled), availability);
+  await box(choosing.name).locator('select[aria-label="Tool"]').selectOption('edit_image');
+  const editModels = await until('Qwen also offered for Edit Image', modelOptions, (options) => hasModel(options, 'qwen/qwen-image-2.1'));
+  const qwen = editModels.find((option) => metadata.find((one) => one.id === option.id)?.model?.default?.startsWith('qwen/qwen-image-2.1@'));
+  await box(choosing.name).locator('select[aria-label="Model"]').selectOption(qwen.id);
+  await until('edit model selected', () => of(choosing.name), (asset) => asset.tool === qwen.id);
+  check('reference_capable_image_model_retains_edit_operation', await box(choosing.name).locator('select[aria-label="Tool"]').inputValue() === 'edit_image' && models.some((option) => option.id === qwen.id), { imageModels: models, editModels });
+  check('model_choice_does_not_expand_sidebar', JSON.stringify(await listed()) === JSON.stringify(atRest));
+  await closeBox(page);
+  await api(`/v1/projects/${id}/assets/${encodeURIComponent(choosing.name)}`, { method: 'DELETE' });
+  await until('model-choice node removed', () => box(choosing.name).count(), (count) => count === 0);
   // The rest stand beside it, in reach while it's worked on.
   const cards = (await api(`/v1/projects/${id}/canvas`)).body.cards;
   const at = cards.shot;

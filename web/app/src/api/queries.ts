@@ -69,10 +69,10 @@ export const projectQuery = (client: Client, stream: EventStream, id: string) =>
   })
 
 /** A list a late Hub left short is asked for again: what it read of the Hub so far is kept there, so it gets further each time. */
-export const toolsQuery = (client: Client, q: string, on: string | null, project: string | null) =>
+export const toolsQuery = (client: Client, q: string, on: string | null, project: string | null, palette = false) =>
   queryOptions({
-    queryKey: ["tools", q, on, project],
-    queryFn: ({ signal }) => client.tools(q, on, project, signal),
+    queryKey: ["tools", q, on, project, ...(palette ? ["palette"] : [])],
+    queryFn: ({ signal }) => client.tools(q, on, project, signal, palette),
     staleTime: 60_000,
     placeholderData: keepPreviousData,
     refetchInterval: (query) => (query.state.data?.note ? 10_000 : false),
