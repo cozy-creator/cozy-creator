@@ -194,6 +194,11 @@ worker-permission mechanism.
 | `download(&Download).await` | `Result<Fetched>`. |
 | `materialize(directory, Format, decode).await` | `Result<PathBuf>` for the complete checkpoint folder. |
 | `open_file()` | `Result<CheckpointFile>`: the checkpoint as one read-only, seekable file (`Read + Seek`, `len()`): its header, then its chunks and assets in header order at 4 KiB-aligned offsets (spec §11), assembled from the store on demand; nothing is written. It holds what it may read until dropped, and fetches what it lacks when the checkpoint may fetch, so read it outside an async context. |
+| `write_file(path)` | `Result<()>`: atomically stream the complete portable `.cozytensors` file, including every chunk and component asset. Read outside an async context, as for `open_file()`. |
+
+`Client::open` accepts a complete checkpoint file and verifies its embedded objects into the configured CAS before
+opening it. `store::Store::admit_file(path, lane)` exposes the same admission and returns its tree id. A legacy
+header-only input remains a thin handle requiring its object source; explicit complete-file admission refuses it.
 
 `download` completes when the selected chunks and supporting files are verified and locally
 available; the open checkpoint retains them. `missing` is optional availability inspection.

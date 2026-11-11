@@ -485,12 +485,21 @@ The context commits on normal exit. `commit()` returns a `Checkpoint` and return
 result on later successful calls. A raw Python buffer needs explicit `dtype` and `shape`;
 a DLPack input supplies them, and contradictory explicit values are refused.
 
-A `.cozytensors` file is a small handle into the shared local store, not a self-contained
-file. The destination gets only the header; tensor and supporting-file bytes are admitted
-once into the store:
+A Writer's `.cozytensors` file destination is a complete portable checkpoint, including its
+header, weights and component assets. Copying that file into a fresh store supplies its declared
+model data for offline use. To export an already open checkpoint, use:
+
+```python
+checkpoint.write_file("./portable.cozytensors")
+copied = tensorfs.open("./portable.cozytensors", local_files_only=True)
+```
+
+Opening verifies embedded objects into the shared CAS, retaining deduplication and ordinary
+range reads internally. The file carries no executable package or Runtime. Legacy thin headers
+remain accepted and require their external objects:
 
 ```text
-./model.cozytensors          # binary metadata and content-hash references
+./legacy-thin.cozytensors    # binary metadata and content-hash references
 $TENSORFS_HOME/blobs/...     # shared tensor and supporting-file bytes
 ```
 

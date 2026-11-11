@@ -6,7 +6,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 use super::{fail, invalid, Result, Store};
-use crate::format::{Header, ObjectRef, Tree, HEADER_PATH};
+use crate::format::{Header, ObjectRef, Tree};
 
 /// Read only the first CBOR item. Its definite lengths frame the header independently of payload.
 pub(crate) fn header(path: &Path) -> Result<(File, Vec<u8>, Header)> {
@@ -114,6 +114,7 @@ impl Store {
     pub fn admit_file(&self, path: &Path, lane: &str) -> Result<ObjectRef> {
         let (mut file, bytes, header) = header(path)?;
         let (layout, length) = layout(&header, bytes.len() as u64)?;
+        let tree = Tree::of(lane, ObjectRef::of(&bytes), &BTreeMap::new())?;
         let actual = file.metadata().map_err(fail("stat", path))?.len();
         if actual != length {
             return Err(invalid(path, format!("complete checkpoint needs {length} bytes, has {actual} (thin, truncated or trailing data)")));
@@ -146,22 +147,19 @@ impl Store {
             cursor = start + object.length;
         }
         // Publish metadata only after all embedded bytes have passed verification.
-        let header = self.put_bytes(&bytes)?;
-        self.put_tree(&Tree {
-            lane: lane.into(),
-            files: BTreeMap::from([(HEADER_PATH.into(), header)]),
-        })
+        self.put_bytes(&bytes)?;
+        self.put_tree(&tree)
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::format::{Body, ClassRef, Component, Dtype, Location, Tensor};
     use std::fs;
     use std::io::Write;
 
-    pub(super) fn fixture() -> (Header, Vec<u8>, Vec<u8>) {
+    pub(crate) fn fixture() -> (Header, Vec<u8>, Vec<u8>) {
         let weights = [1f32, 2., 3., 4.]
             .into_iter()
             .flat_map(f32::to_le_bytes)

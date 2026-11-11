@@ -326,6 +326,8 @@ class Checkpoint:
         """The checkpoint as one read-only, seekable file: its header, then its chunks and assets
         in header order at 4 KiB-aligned offsets, assembled from the store on demand; nothing is
         written."""
+    def write_file(self, path: str | PathLike[str]) -> None:
+        """Atomically write a complete portable `.cozytensors` file, including chunks and assets."""
     def missing(self, components: Sequence[str] | None = None) -> list[tuple[str, int]]:
         """The chunks and assets of `components` (all when None) not here."""
     def download(self, components: Sequence[str] | None = None, *, priority: int = 0,
