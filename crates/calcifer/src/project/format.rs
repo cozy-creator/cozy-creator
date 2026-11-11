@@ -218,20 +218,9 @@ pub(crate) struct Doc {
     unread: Vec<(usize, String)>,
     /// The project's folder, which says what is on this computer.
     dir: PathBuf,
-    /// Read as format 3, only for the upgrade: what each box's state was then (`key_three`).
-    three: Option<Three>,
     /// Boxes written with a dotted name, read as their `_` form: by the dotted name's key, as a mention may still say it.
     dotted: HashMap<String, usize>,
 }
-
-/// What format 3 read that format 4 doesn't: each box's `asset_type`, by its index.
-#[derive(Default)]
-struct Three {
-    asset_types: Vec<String>,
-}
-
-/// What format 3 read as the platform's, not inputs.
-const THREE_ONLY: [&str; 3] = ["asset_type", "voice", "kind"];
 
 /// Why an asset has the state it has, or none.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -299,32 +288,25 @@ impl Doc {
     /// The project `written` says, of the files and tags `lock` holds.
     pub(super) fn of(folder: &Folder, written: &Written, lock: &Lock) -> Result<Self, Error> {
         let (value, listed) = written.reading();
-        Self::of_format(folder, value, listed, "", lock, FORMAT)
+        Self::of_format(folder, value, listed, "", lock)
     }
 
     /// The project `text` says, as YAML, of the files and tags `lock` holds.
     pub(super) fn of_text(folder: &Folder, text: &str, lock: &Lock) -> Result<Self, Error> {
         let (value, listed) = parsed(text)?;
-        Self::of_format(folder, value, listed, text, lock, FORMAT)
+        Self::of_format(folder, value, listed, text, lock)
     }
 
-    /// A format 3 file as format 3 read it, with its keys: what was current then, so the upgrade carries that over and nothing else.
-    pub(super) fn of_three(folder: &Folder, text: &str, lock: &Lock) -> Result<Self, Error> {
-        let (value, listed) = parsed(text)?;
-        Self::of_format(folder, value, listed, text, lock, 3)
-    }
-
-    fn of_format(folder: &Folder, value: Value, listed: Vec<String>, text: &str, lock: &Lock, format: u64) -> Result<Self, Error> {
+    fn of_format(folder: &Folder, value: Value, listed: Vec<String>, text: &str, lock: &Lock) -> Result<Self, Error> {
         let top = match value {
             Value::Object(top) => top,
             Value::Null => Map::new(),
             _ => return Err(invalid("project_yaml", format!("{} is no mapping of sections", folder::PROJECT))),
         };
         let version = top.get("version").and_then(Value::as_u64);
-        if version.is_some_and(|version| version != format) || (version.is_none() && top.contains_key("entities")) {
+        if version.is_some_and(|version| version != FORMAT) || (version.is_none() && top.contains_key("entities")) {
             let said = format!("{} is format {}, and cozy reads format {FORMAT}: it is left as it is", folder::PROJECT, version.unwrap_or(2));
-            // Newer is a newer cozy's; older is one this cozy can't move, so a new project.
-            return Err(invalid("project_format", said).next(if version.is_some_and(|version| version > format) { "cozy update" } else { "cozy open" }));
+            return Err(invalid("project_format", said).remedy(format!("Explicit authoring import reads format {FORMAT}; older project formats are not converted")));
         }
         let mut warnings = vec![];
         if version.is_none() {
@@ -348,8 +330,8 @@ impl Doc {
         }
         let declared = top.get("assets").and_then(Value::as_object).unwrap_or(&empty);
         // A name holds no `.` (decision 4): one written with one reads as its `_` form, said.
-        let read_as = |name: &String| if format == FORMAT && name.contains('.') { name.replace('.', "_") } else { name.clone() };
-        for name in listed.iter().filter(|_| format == FORMAT) {
+        let read_as = |name: &String| if name.contains('.') { name.replace('.', "_") } else { name.clone() };
+        for name in &listed {
             named(&read_as(name))?;
         }
         let mut seen: HashMap<String, String> = HashMap::new();
@@ -358,7 +340,7 @@ impl Doc {
                 return Err(one_name_twice(text, &first, name));
             }
         }
-        let mut doc = Self { assets: vec![], upstream: vec![], order: vec![], warnings, index: HashMap::new(), reserved: lock.reserved.clone(), makes: lock.makes.clone(), unread: vec![], dir: folder.dir.clone(), three: (format == 3).then(Three::default), dotted: HashMap::new() };
+        let mut doc = Self { assets: vec![], upstream: vec![], order: vec![], warnings, index: HashMap::new(), reserved: lock.reserved.clone(), makes: lock.makes.clone(), unread: vec![], dir: folder.dir.clone(), dotted: HashMap::new() };
         for name in &listed {
             let Some(written) = declared.get(name) else { continue };
             let shown = read_as(name);
@@ -393,10 +375,6 @@ impl Doc {
                 Map::new()
             }
         };
-        if let Some(three) = &mut self.three {
-            three.asset_types.push(text_of(body.get("asset_type")));
-            body.retain(|key, _| !THREE_ONLY.contains(&key.as_str()));
-        }
         let target = text_of(body.get("tool")).trim().to_owned();
         let tool = (!target.is_empty()).then(|| plain_tool(&target, folder));
         let mut pin = None;
@@ -591,7 +569,7 @@ impl Doc {
 
     /// What `mention` in asset `i`'s text names: a box, and a version of it.
     fn mentioned(&self, i: usize, mention: &str) -> Option<(usize, Option<u32>)> {
-        if let Some(j) = self.find(mention).filter(|_| self.three.is_some()).or_else(|| self.dotted_box(mention)) {
+        if let Some(j) = self.dotted_box(mention) {
             return Some((j, None));
         }
         let read = graph::mention(mention)?;
@@ -925,9 +903,6 @@ impl Doc {
     /// Its key, blind to names: eight hex digits of what makes it and its written fields, each box they mention numbered by first mention,
     /// then twelve for each of those boxes in that order (`parts`). So a rename puts nothing out of date.
     fn key(&self, i: usize, reads: &[ReadNow]) -> String {
-        if let Some(three) = &self.three {
-            return self.key_three(three, i, reads);
-        }
         let asset = &self.assets[i];
         let mut own = asset.made.clone();
         if let Some(tool) = &asset.tool {
@@ -946,35 +921,6 @@ impl Doc {
         own.insert("inputs".into(), inputs);
         let parts: String = self.parts(i, reads, &mut order).into_iter().map(|(_, part)| part).collect();
         format!("{}{parts}", &digest(&Value::Object(own))[..OWN_PART])
-    }
-
-    /// Format 3's key: eight hex digits of what makes it and its inputs, then four of each read's name and eight of what it gave, in name
-    /// order. Only the upgrade reads it.
-    fn key_three(&self, three: &Three, i: usize, reads: &[ReadNow]) -> String {
-        let asset = &self.assets[i];
-        let mut own = asset.made.clone();
-        if let Some(tool) = &asset.tool {
-            own.insert("tool".into(), json!(tool));
-        }
-        let tool = self.tool(i).is_some();
-        let inputs: Map<String, Value> = (asset.written.as_ref().unwrap_or(&asset.inputs).iter())
-            .filter(|(field, _)| !tool || TOOL_INPUTS.contains(&field.as_str()))
-            .map(|(field, value)| (field.clone(), value.clone()))
-            .collect();
-        own.insert("inputs".into(), Value::Object(inputs));
-        let part = |name: &str, held: &Value| format!("{}{}", &digest(&json!(name_key(name)))[..4], &digest(held)[..8]);
-        let read = reads.iter().map(|read| {
-            let files: Vec<_> = read.files.values().collect();
-            let held = match tool || read.number.is_some() {
-                true => json!({"files": files}),
-                false => json!({"asset_type": three.asset_types.get(read.asset).cloned().unwrap_or_default(), "description": self.assets[read.asset].description, "files": files}),
-            };
-            (read.name.clone(), part(&read.name, &held))
-        });
-        let text = asset.inlined.iter().map(|&j| &self.assets[j]).map(|of| (of.name.clone(), part(&of.name, &json!({"text": of.text}))));
-        let mut parts: Vec<(String, String)> = read.chain(text).collect();
-        parts.sort();
-        format!("{}{}", &digest(&Value::Object(own))[..OWN_PART], parts.into_iter().map(|(_, part)| part).collect::<String>())
     }
 
     /// Each mention under `value` with its box by number, first mentioned first, as `order` holds them: `<Amy.2>` is `<#0.2>`. A mention of

@@ -510,40 +510,6 @@ fn tell(folder: &Folder, book: &Book) {
     crate::events::history(&project_id(&folder.dir), entry(now.undo), entry(now.redo));
 }
 
-/// `.history.json`, from before `project.db`, as rows: each box's lines read into fields, so undo and redo go on across the cut.
-pub(super) fn imported(dir: &FsPath) -> Vec<db::OpRow> {
-    #[derive(Deserialize)]
-    struct Kept {
-        #[serde(default)]
-        entries: Vec<Value>,
-    }
-    let Ok(bytes) = std::fs::read(dir.join(".history.json")) else { return vec![] };
-    let Ok(kept) = serde_json::from_slice::<Kept>(&bytes) else { return vec![] };
-    let lines = |lines: &Value, name: &str| -> Option<Boxed> {
-        let lines = lines.as_str()?;
-        let written = Written::from_yaml(&format!("version: 4\n{lines}")).ok()?;
-        let held = written.boxes.into_iter().next()?;
-        Some(Boxed { name: if held.name.is_empty() { name.to_owned() } else { held.name }, fields: held.fields, ..Default::default() })
-    };
-    let entries = kept.entries.into_iter().filter_map(|mut entry| {
-        for change in entry.get_mut("changes")?.as_array_mut()? {
-            if change.get("kind").and_then(Value::as_str) != Some("asset") {
-                continue;
-            }
-            let name = change.get("name").and_then(Value::as_str).unwrap_or_default().to_owned();
-            for side in ["before", "after"] {
-                let held = change.get(side).filter(|value| !value.is_null()).and_then(|value| lines(value, &name));
-                change[side] = serde_json::to_value(held).ok()?;
-            }
-        }
-        serde_json::from_value::<Entry>(entry).ok()
-    });
-    let mut rows: Vec<Entry> = entries.collect();
-    let over = rows.len().saturating_sub(KEPT);
-    rows.drain(..over);
-    rows.iter().map(Entry::row).collect()
-}
-
 // The routes
 
 #[derive(Deserialize)]
