@@ -7,7 +7,7 @@ name = "ci-child-lora-stacks"
 version = "0.1.0"
 description = "A child call's own LoRA stack per slot, over the request's --lora (cl-687)"
 requires-python = ">=3.12"
-dependencies = ["cozy-runtime[adapters,media]>=0.45", "msgspec>=0.19", "sdxl>=0.8.1,<0.9", "torch>=2.14"]
+dependencies = ["cozy-runtime[adapters,media]>=0.45", "msgspec>=0.19", "sdxl", "torch>=2.14"]
 
 [project.entry-points."cozy.application"]
 default = "ci_child_lora_stacks:app"
@@ -16,11 +16,7 @@ default = "ci_child_lora_stacks:app"
 module-name = "ci_child_lora_stacks"
 module-root = ""
 
-# The Hub's root-package index, which the machine's install resolves sdxl from (a lock would name the same URL).
-[[tool.uv.index]]
-name = "tensorhub"
-url = "https://tensorhub.com/v1/index/_/simple/"
-explicit = true
-
+# sdxl 0.8.1 from the Hub's root-package index, by its wheel: `{ index = "tensorhub" }` resolves to the signed-in account's
+# index, which holds no root package, and cozy 0.24 writes no lock.
 [tool.uv.sources]
-sdxl = { index = "tensorhub" }
+sdxl = { url = "https://tensorhub.com/v1/index/_/sdxl/0.8.1/sdxl-0.8.1-py3-none-any.whl" }
