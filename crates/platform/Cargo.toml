@@ -54,5 +54,8 @@ windows-sys = { workspace = true, features = [
     "Win32_UI_Shell",
 ] }
 
+[target.'cfg(windows)'.dev-dependencies]
+tempfile.workspace = true
+
 [lints]
 workspace = true
