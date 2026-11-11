@@ -133,7 +133,7 @@ pub(super) async fn search(
         total = 1;
     }
     let mut models: Vec<FoundModel> = cards.iter().map(found).collect();
-    if role.is_some() && cards.iter().any(|card| card.model.role.is_none()) {
+    if role.is_some() && cards.iter().any(|card| canonical_role(&card.model).is_none()) {
         return Err(role_unavailable());
     }
     if role.is_none() || family.is_some() {
@@ -164,7 +164,7 @@ fn role_unavailable() -> Refusal {
 }
 
 fn role_page_matches(answer: &types::ModelSearch, role: Option<&str>) -> bool {
-    role.is_none() || (answer.search.role.as_deref() == role && answer.models.iter().all(|model| model.role.as_deref() == role))
+    role.is_none() || (answer.search.role.as_deref() == role && answer.models.iter().all(|model| canonical_role(model).as_deref() == role))
 }
 
 fn page(models: Vec<FoundModel>, total: i64, offset: u32, limit: u32, already_paged: bool) -> ModelSearch {
@@ -215,6 +215,31 @@ mod pagination_tests {
         assert!(role_page_matches(&current, Some("lora")));
         assert!(!role_page_matches(&current, Some("model")));
         assert!(role_page_matches(&old, None));
+    }
+
+    #[test]
+    fn canonical_kind_only_cards_and_pages_preserve_role_filters() {
+        for (kind, role, other) in [("base", "model", "lora"), ("lora", "lora", "model")] {
+            let model = serde_json::json!({"org": "author", "name": "weights", "kind": kind});
+            let card: types::ModelCard = serde_json::from_value(serde_json::json!({"model": model})).unwrap();
+            assert!(card.model.role.is_none());
+            assert_eq!(canonical_role(&card.model).as_deref(), Some(role));
+            let answer: types::ModelSearch = serde_json::from_value(serde_json::json!({
+                "models": [model], "search": {"total": 1, "role": role}
+            })).unwrap();
+            assert!(role_page_matches(&answer, Some(role)));
+            assert!(!role_page_matches(&answer, Some(other)));
+            let mut models = vec![found(&card)];
+            retain_role(&mut models, Some(role));
+            assert_eq!(models.len(), 1);
+            assert_eq!(models[0].role.as_deref(), Some(role));
+        }
+        let unknown: types::ModelSearch = serde_json::from_value(serde_json::json!({
+            "models": [{"org": "author", "name": "unknown"}], "search": {"total": 1, "role": "model"}
+        })).unwrap();
+        assert!(!role_page_matches(&unknown, Some("model")));
+        let legacy: types::ModelSummary = serde_json::from_value(serde_json::json!({"role": "model"})).unwrap();
+        assert_eq!(canonical_role(&legacy).as_deref(), Some("model"));
     }
 }
 

@@ -5,6 +5,7 @@ on:
     paths:
       - crates/calcifer/src/local_code.rs
       - crates/calcifer/src/local_code_tests.rs
+      - crates/calcifer/src/hub/models.rs
       - .github/workflows/cli-describe-errors.yaml
   workflow_dispatch:
 
@@ -21,7 +22,8 @@ jobs:
         with:
           enable-cache: true
       - uses: Swatinem/rust-cache@v2
-      - name: Actual Runtime refusals through Calcifer and CLI rendering regressions
+      - name: Actual Runtime refusals, catalog filters and CLI rendering regressions
         run: |
           cargo test --locked -p calcifer --lib local_code::tests::source_describer_ -- --include-ignored --nocapture
+          cargo test --locked -p calcifer --lib hub::models::pagination_tests -- --nocapture
           cargo test --locked -p cli --lib output::tests -- --nocapture
