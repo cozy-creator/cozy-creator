@@ -11,7 +11,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, readFileSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFromPage, projectUrl, calcifer, carry: carryTo, signIn, MP4, STEP_MS, boxOf, drop, lastLook, launch, lookAt, noStall, openCanvas, png, renderOf, settled, until, importYaml, upload, yamlOf, rowsOf } = require('./page');
+const { projectFromPage, projectUrl, calcifer, carry: carryTo, signIn, MP4, STEP_MS, boxOf, drop, lastLook, launch, lookAt, noStall, openCanvas, png, renderOf, settled, fitCanvas, until, importYaml, upload, yamlOf, rowsOf } = require('./page');
 
 const fixture = join(__dirname, '..', 'project', 'waits.py');
 const failures = [];
@@ -412,13 +412,13 @@ async function died(why) {
     const tool = { id: await row.getAttribute('data-tool') };
     seen.tool = tool.id;
     const carry = async (name) => {
-      // F fits the box worked on (447b9127b): at rest, it fits them all.
+      // Fit reveals the target before waiting for its virtualized canvas node.
       if (await page.locator('.card.here').count()) {
         await page.keyboard.press('Escape');
         await page.locator('.card.here').waitFor({ state: 'detached' });
       }
-      await page.keyboard.press('f');
-      await page.waitForTimeout(400);
+      await fitCanvas(page);
+      await box(name).waitFor();
       await row.scrollIntoViewIfNeeded();
       const from = await row.boundingBox();
       await page.mouse.move(from.x + 20, from.y + 8);
@@ -445,7 +445,6 @@ async function died(why) {
     await shut();
 
     // On a text box its words are the prompt, at once, and the box opens.
-    await box('words').waitFor();
     await carry('words');
     await box('words').locator('.add-on').first().waitFor({ timeout: 1000 });
     check('a_dropped_tool_opens_its_box', await page.locator('.card.here[data-asset="words"]').waitFor({ timeout: 2000 }).then(() => true, (why) => String(why)) === true);
