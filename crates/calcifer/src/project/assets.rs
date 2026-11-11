@@ -210,6 +210,10 @@ pub(super) async fn patch(
         let written = folder.written()?;
         let was = written.get(&name).ok_or_else(|| own_lines(&name))?.etag();
         let mut fields = asked.fields.clone();
+        let target = asked.tool.as_deref().or_else(|| written.get(&name).and_then(|held| held.get("tool")).and_then(Value::as_str));
+        if target.is_some_and(|target| format::plain_tool(target, folder) == tool::EDIT) {
+            fields.insert(format::NODE_KIND.to_owned(), Value::String("video_edit".to_owned()));
+        }
         if let (Some(tool), Some(holds)) = (&asked.tool, &holds) {
             if tool.is_empty() {
                 let doc = Doc::load(folder)?;

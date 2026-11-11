@@ -416,9 +416,10 @@ impl Doc {
             three.asset_types.push(text_of(body.get("asset_type")));
             body.retain(|key, _| !THREE_ONLY.contains(&key.as_str()));
         }
-        let node_kind = node_kind(body.get(NODE_KIND)).expect("node kind was validated").map(str::to_owned);
         let target = text_of(body.get("tool")).trim().to_owned();
         let tool = (!target.is_empty()).then(|| plain_tool(&target, folder));
+        let node_kind = if tool.as_deref() == Some(EDIT) { Some("video_edit".to_owned()) }
+            else { node_kind(body.get(NODE_KIND)).expect("node kind was validated").map(str::to_owned) };
         let mut pin = None;
         match body.get("approved") {
             None | Some(Value::Null) => {}

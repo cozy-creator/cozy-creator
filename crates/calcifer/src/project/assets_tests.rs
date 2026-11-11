@@ -61,6 +61,8 @@ async fn typed_nodes_fixture() {
     assert!(!doc.inputs_of(i).contains_key(format::NODE_KIND));
     assert!(!doc.assets[i].own.contains(format::NODE_KIND));
     assert_eq!(doc.flat_fields(i).get(format::NODE_KIND), Some(&json!("video_edit")));
+    edit(&api, &id, "edit", json!({"fields":{"node_kind":"image"}})).await;
+    assert_eq!(project.folder.written().unwrap().get("edit").unwrap().get(format::NODE_KIND), Some(&json!("video_edit")));
     let note = doc.find("note").unwrap();
     assert_eq!(doc.assets[note].kind, "text");
     assert_eq!(doc.assets[note].text.as_deref(), Some("Some words."));
