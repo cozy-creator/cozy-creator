@@ -73,6 +73,7 @@ function VaultBody({ id }: { id: string }) {
   const [credential, setCredential] = useState<"passphrase" | "recovery">("passphrase")
   const [newRecovery, setNewRecovery] = useState<string | null>(null)
   const [preserved, setPreserved] = useState<string | null>(null)
+  const [ended, setEnded] = useState<number[]>([])
   const [removePlaintext, setRemovePlaintext] = useState(false)
   const [idle, setIdle] = useState("900")
   const [maximum, setMaximum] = useState("0")
@@ -90,6 +91,7 @@ function VaultBody({ id }: { id: string }) {
     const epoch = bridge.projectEpoch(id)
     const answer = await client.vaultChange(id, { action, ...fields })
     if (!mounted.current) { delete answer.recovery_secret; return answer.vault }
+    setEnded(answer.ended ?? [])
     if (action === "decrypt") {
       // The mutation reply cannot reopen a view: a concurrent conversion or lock
       // may already have superseded it. The status query verifies current storage.
@@ -148,6 +150,7 @@ function VaultBody({ id }: { id: string }) {
       <p>{!status.encrypted ? "Encryption is off. This project uses ordinary local storage." : unlocked ? "This project is unlocked." : status.state === "locking" ? "Locking: another application is still using a file. Close it and try again." : "This project is locked."}</p>
       <Failure error={ask.error} plain />
       {preserved && <p className="warn">An unencrypted copy was preserved at {preserved}. That copy is not protected.</p>}
+      {ended.length > 0 && <p className="muted">Locking ended the project's runs {ended.join(", ")}.</p>}
       {newRecovery && status.encrypted && unlocked && <Recovery secret={newRecovery} onDone={() => setNewRecovery(null)} />}
       {!status.encrypted ? (
         <form className="stack" onSubmit={(event) => submit(event, "encrypt")}>
