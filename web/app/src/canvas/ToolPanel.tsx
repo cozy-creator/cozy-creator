@@ -18,17 +18,17 @@ const toolLoad = (tool: Tool): Load => ({ tool, box: tool === TEXT_TOOL || madeH
 function ToolRow({ entry, place }: { entry: PaletteEntry; place: (tool: Tool) => void }) {
   const tool = entry.tool
   return (
-    <li className="tool" title={tool.description || entry.model || tool.id} data-kind={tool.makes} data-tool={tool.id} data-entry={entry.key} data-model={entry.model ?? undefined} data-local={tool.local || undefined} data-package={tool.package} onClick={() => place(tool)}>
+    <li className="tool" title={tool ? `${entry.label} — choose a model in the node` : `No ${entry.label} model available`} aria-disabled={!tool} data-kind={entry.makes} data-operation={entry.key} data-tool={tool?.id} onClick={() => tool && place(tool)}>
       <b>{entry.label}</b>
     </li>
   )
 }
 
-/** The sidebar contains only basic node types and model tools, whether a node is open or closed. */
+/** The sidebar contains only node types and operations, whether a node is open or closed. */
 export function ToolPanel({ project, machine, waiting, shut, setShut, place, placeNode }: { project: string | null; machine: string | null; waiting: boolean; shut: boolean; setShut: (shut: boolean) => void; place: (tool: Tool) => void; placeNode: (kind: BasicNodeKind) => void }) {
   const { client } = useConnection()
   const store = useCanvasStore()
-  const { data, error, isPending, isPlaceholderData } = useQuery({ ...toolsQuery(client, "", machine, project, true), enabled: !waiting })
+  const { data, error, isPlaceholderData } = useQuery({ ...toolsQuery(client, "", machine, project, true), enabled: !waiting })
   useEffect(() => {
     store.addTools(data && !isPlaceholderData ? [TEXT_TOOL, VIDEO_EDIT_TOOL, ...data.tools] : [TEXT_TOOL, VIDEO_EDIT_TOOL])
   }, [store, data, isPlaceholderData])
@@ -39,7 +39,7 @@ export function ToolPanel({ project, machine, waiting, shut, setShut, place, pla
       const from = pressed.closest<HTMLElement>("li.tool")
       const node = BASIC_NODES.find((node) => node.kind === from?.dataset.node)
       if (node && from) return { load: { node: node.kind }, from }
-      const tool = from && [TEXT_TOOL, ...tools].find((one) => one.id === from.dataset.tool)
+      const tool = from && entries.find((entry) => entry.key === from.dataset.operation)?.tool
       return tool ? { load: toolLoad(tool), from } : null
     },
   })
@@ -68,15 +68,7 @@ export function ToolPanel({ project, machine, waiting, shut, setShut, place, pla
           <section data-palette="tools">
             <h4>Tools</h4>
             {error ? <p className="warn">{error instanceof Error ? error.message : String(error)}</p> : null}
-            {isPending && !error && (
-              <ul aria-hidden="true">
-                {Array.from({ length: 8 }, (_, i) => (
-                  <li key={i} className="tool-ghost" />
-                ))}
-              </ul>
-            )}
             <ul>{entries.map((entry) => <ToolRow key={entry.key} entry={entry} place={place} />)}</ul>
-            {data && !entries.length && !isPlaceholderData && <p className="muted">No tools available</p>}
             {data?.note && <p className="muted">{data.note}</p>}
           </section>
         </div>

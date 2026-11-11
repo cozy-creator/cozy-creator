@@ -25,6 +25,7 @@ import { aspectOf, faceOf, madeHere, makes, NARROWEST, paints, reshapes, shownOf
 import { chipWords, noHash, piecesOf, rowsIn, took } from "./text"
 import { TimelineControl } from "./timeline/TimelineControl"
 import { AddOns, Stack } from "./AddOns"
+import { ToolSettings } from "./ToolSettings"
 import { Asking } from "./Asking"
 import { readableSurface } from "./readableSurface"
 import type { Box } from "./graph"
@@ -782,7 +783,7 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
         <TimelineControl name={name} />
       ) : (
         <Media view={view} name={name} cardWidth={here ? HERE_THUMB : width} restWidth={width}>
-          {here && (asset?.kind === "text" ? <TextAsset name={name} view={view} /> : <InFrame name={name} view={view} />)}
+          {here && (asset?.kind === "text" && !asset.tool ? <TextAsset name={name} view={view} /> : <InFrame name={name} view={view} />)}
           {here && !view.hereWords && asset && shownVersion?.main && (
             <div
               className="take-out nodrag nopan"
@@ -803,15 +804,16 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
         </div>
       )}
       {here && asset && asset.kind !== "text" && !asset.timeline && <Takes view={view} name={name} width={width} side />}
-      {here && asset && asset.kind !== "text" && (
+      {here && asset && (
         <div className="here-under nodrag nopan nowheel">
           <div className="here-all">
+            {!looking && <ToolSettings key={asset.tool ?? "none"} name={name} asset={asset} />}
             {asset.timeline && <Takes view={view} name={name} width={width} />}
             {!asset.timeline && (!view.hereWords || view.pickingUp) && <PickUp view={view} name={name} />}
             {!asset.timeline && <OrbitToggle view={view} name={name} />}
             {!editing && <Bar view={view} name={name} />}
             {/* Looking at a take an image tool made, only its description: its tool and words are the next take's, behind its +. */}
-            {!looking && (
+            {!looking && (asset.kind !== "text" || asset.tool) && (
               <AssetEdit name={name} view={view} editing={editing} head={<Stack name={name} />} actions={editing && <RenderButton name={name} view={view} />} />
             )}
             {!view.hereWords && <TakeName view={view} />}

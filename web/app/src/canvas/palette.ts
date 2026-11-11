@@ -1,63 +1,62 @@
 import type { Asset, Tool, ToolField } from "../api/calcifer"
 import { madeHere } from "./shown"
 
-export type BasicNodeKind = "text" | "image" | "video" | "video_edit"
+export type BasicNodeKind = "text" | "image" | "video" | "video_edit" | "audio"
 
 export const BASIC_NODES: ReadonlyArray<{ kind: BasicNodeKind; label: string }> = [
-  { kind: "text", label: "Text" },
   { kind: "image", label: "Image" },
   { kind: "video", label: "Video" },
-  { kind: "video_edit", label: "Video Edit" },
+  { kind: "video_edit", label: "Video Editor" },
+  { kind: "audio", label: "Audio" },
+  { kind: "text", label: "Text" },
 ]
 
+export const OPERATIONS = [
+  { key: "image", label: "Image", makes: "image" },
+  { key: "edit_image", label: "Edit Image", makes: "image" },
+  { key: "upscale_image", label: "Upscale Image", makes: "image" },
+  { key: "video", label: "Video", makes: "video" },
+  { key: "edit_video", label: "Edit Video", makes: "video" },
+  { key: "upscale_video", label: "Upscale Video", makes: "video" },
+  { key: "llm", label: "LLM", makes: "text" },
+] as const
+
+export type Operation = typeof OPERATIONS[number]["key"]
 export interface PaletteEntry {
-  key: string
+  key: Operation
   label: string
-  model: string | null
-  tool: Tool
+  makes: string
+  tool?: Tool
   variants: Tool[]
 }
 
-const modelOf = (tool: Tool) => tool.model?.default?.split("@")[0]?.replace(/^_\//, "") || null
-const mediaRequired = (fields: ToolField[]): number => fields.reduce((sum, field) => sum + (field.type === "slot" && field.required ? 1 : field.type === "group" && field.required ? mediaRequired(field.members ?? []) : 0), 0)
-const hasPrompt = (fields: ToolField[]): boolean => fields.some((field) => field.type === "prompt" || (field.type === "group" && hasPrompt(field.members ?? [])))
-const order = (a: Tool, b: Tool) => mediaRequired(a.fields) - mediaRequired(b.fields) || Number(Boolean(a.local)) - Number(Boolean(b.local)) || Number(!hasPrompt(a.fields)) - Number(!hasPrompt(b.fields)) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
-const title = (name: string) => name.split(/[-_]+/).filter(Boolean).map((word) => !/[aeiou]/i.test(word) ? word.toUpperCase() : word[0].toUpperCase() + word.slice(1)).join(" ")
+const hasSource = (fields: ToolField[], kind: string): boolean => fields.some((field) =>
+  (field.type === "slot" && field.required && field.accept === kind) ||
+  (field.type === "group" && field.required && hasSource(field.members ?? [], kind)))
 
-/** One model, not every function of its package. Signature-required media keeps edit/upscale helpers behind the generator. */
+/** Operations describe the result. Image input on a VLM never makes it an image tool. */
+export function operationOf(tool: Tool): Operation | null {
+  if (madeHere(tool.id) || tool.id === "text") return null
+  if (tool.makes === "text") return "llm"
+  if (tool.makes !== "image" && tool.makes !== "video") return null
+  const name = `${tool.function} ${tool.label}`.toLowerCase()
+  if (/upscale|super.?resolution/.test(name)) return tool.makes === "image" ? "upscale_image" : "upscale_video"
+  if (/edit|inpaint|outpaint|img2img|vid2vid/.test(name) || hasSource(tool.fields, tool.makes)) return tool.makes === "image" ? "edit_image" : "edit_video"
+  return tool.makes
+}
+
+export const modelLabel = (tool: Tool) => {
+  const model = tool.model?.default?.split("@")[0]?.replace(/^_\//, "")
+  return model ? `${tool.package_title || model} (${model})` : `${tool.package_title || tool.package} · ${tool.label}`
+}
+
+/** Stable operation rows; executable choices live in the node's model control. */
 export function paletteEntries(tools: Tool[]): PaletteEntry[] {
-  const groups = new Map<string, Tool[]>()
-  const byPackage = new Map<string, Set<string>>()
-  const localKinds = new Map<string, Set<string>>()
-  for (const tool of tools) {
-    if (madeHere(tool.id)) continue
-    const model = modelOf(tool)
-    const key = model ? `model:${model}` : `package:${tool.package}:${tool.makes}`
-    const group = groups.get(key) ?? []
-    group.push(tool)
-    groups.set(key, group)
-    const keys = byPackage.get(tool.package) ?? new Set<string>()
-    keys.add(key)
-    byPackage.set(tool.package, keys)
-    if (!model) {
-      const kinds = localKinds.get(tool.package) ?? new Set<string>()
-      kinds.add(tool.makes)
-      localKinds.set(tool.package, kinds)
-    }
-  }
-  return [...groups].map(([key, variants]) => {
-    variants.sort(order)
-    const tool = variants[0]
-    const model = modelOf(tool)
-    const name = model?.split("/").at(-1)
-    const own = tool.package.split("/").at(-1) ?? tool.package
-    const related = Boolean(name?.toLowerCase().startsWith(own.toLowerCase()))
-    const label = !model && (localKinds.get(tool.package)?.size ?? 0) > 1
-      ? `${tool.package_title || title(own)} ${title(tool.makes)}`
-      : name && ((related && name !== own) || (!related && (byPackage.get(tool.package)?.size ?? 0) > 1))
-        ? title(name) : tool.package_title || title(own)
-    return { key, label, model, tool, variants }
-  }).sort((a, b) => a.label.localeCompare(b.label))
+  return OPERATIONS.map((operation) => {
+    const variants = tools.filter((tool) => operationOf(tool) === operation.key)
+      .sort((a, b) => Number(Boolean(a.local)) - Number(Boolean(b.local)) || a.id.localeCompare(b.id))
+    return { ...operation, tool: variants[0], variants }
+  })
 }
 
 export const isVideoEdit = (asset: Asset) => asset.tool === "cozy/edit" || asset.fields?.node_kind === "video_edit"
