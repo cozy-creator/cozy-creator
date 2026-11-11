@@ -882,7 +882,8 @@ def main() -> int:
         executor.broker = Broker(child, spool, run_child)
         executor.broker.held |= {rows_in[field][1]["digest"]: path for field, path in files.items()}
         reply = executor.ask({"cmd": "invoke", "request_id": child, "entrypoint": export, "spool": str(spool),
-                              "construction": construction, "deadline_s": 1800, "inputs": {k: v[1] for k, v in rows_in.items()}})
+                              "construction": construction, "deadline_s": 1800, "inputs": {k: v[1] for k, v in rows_in.items()}},
+                             timeout=1860)
         executor.broker = None
         (out / f"{child}.reply.json").write_text(json.dumps(reply, indent=1))
         return reply, spool
@@ -945,7 +946,8 @@ def main() -> int:
                 # TensorD answers every attempt's durable requests: a call, a GPU release, a stage memo.
                 executor.broker = Broker(request, spool, run_child)
                 executor.broker.held |= {g["digest"]: Path(g["local"]) for g in granted.values()}  # it may pass them on
-                reply = executor.ask(invoke)
+                # As long as the deadline it gave the attempt: a busy computer's 1080p decode outlasts 900 s.
+                reply = executor.ask(invoke, timeout=invoke["deadline_s"] + 60)
                 executor.broker = None
                 (out / f"{request}.reply.json").write_text(json.dumps(reply, indent=1))
                 key = f"{entry}/{name}"
