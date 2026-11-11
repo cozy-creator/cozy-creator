@@ -164,10 +164,11 @@ web_engines() {
 # suite's: config.toml's, since a service hears nothing of a caller's environment, and it starts before that verb asks.
 # The Hub goes in config.toml before the kill: a service manager starts a Calcifer killed so at once, reading it then.
 web_restart() { echo "$(web_hub "${2:-}")$(web_stop "$1"); sleep 1; $(web_start "${2:-}")"; }
-# config.toml names the Hub $1, else this suite's, for the next Calcifer to start.
+# config.toml names the Hub $1, else this suite's, for the next Calcifer to start: first, as a top-level key (after a [table] it
+# would be that table's, ignored, and Calcifer would fall back to tensorhub.com).
 web_hub() {
   local config=$HOME/.cozy/config.toml hub=${1:-${COZY_HUB_URL:-}}
-  [ -z "$hub" ] || echo "{ grep -v '^hub_url' '$config'; echo 'hub_url = \"$hub\"'; } > '$config.next'; mv '$config.next' '$config'; "
+  [ -z "$hub" ] || echo "{ echo 'hub_url = \"$hub\"'; grep -v '^hub_url' '$config'; } > '$config.next'; mv '$config.next' '$config'; "
 }
 web_stop() {
   if [ "${RUNNER_OS:-}" = Windows ]; then echo "taskkill //F //PID \$(jq -r .pid < '$1') > /dev/null"; else echo "kill -9 \$(jq -r .pid < '$1')"; fi
