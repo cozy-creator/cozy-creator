@@ -48,6 +48,25 @@ fn unsupported_schema_refuses_before_writable_setup_or_backup() {
 }
 
 #[test]
+fn unsupported_native_format_preserves_existing_backup_and_stage() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join(DB);
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch("CREATE TABLE crdt_document(id INTEGER PRIMARY KEY,format INTEGER,snapshot BLOB,heads TEXT); INSERT INTO crdt_document VALUES(1,999,X'00','[]'); PRAGMA user_version=2;").unwrap();
+    drop(conn);
+    let backup = temp.path().join("project.db.v1");
+    let stage = temp.path().join("project.db.new");
+    std::fs::write(&backup, b"owner's existing backup").unwrap();
+    std::fs::write(&stage, b"owner's existing stage").unwrap();
+    let before = std::fs::read(&path).unwrap();
+    assert_eq!(open(&path).err().unwrap().code, "project_db_version");
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert_eq!(std::fs::read(backup).unwrap(), b"owner's existing backup");
+    assert_eq!(std::fs::read(stage).unwrap(), b"owner's existing stage");
+    assert!(!temp.path().join("project.db-wal").exists());
+}
+
+#[test]
 fn unsupported_committed_wal_version_does_not_change_database_or_wal() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join(DB);

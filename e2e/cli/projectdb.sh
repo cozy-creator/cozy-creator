@@ -1,6 +1,6 @@
 # e2e/cli/projectdb.sh: a project's state is one SQLite database, project.db (cl-803), each cell through the CLI and Calcifer's HTTP
 # as the page calls it, no machine or model needed.
-#   db_first_open   a folder of the files from before (format 4, history, canvas, versions) imports once, its files deleted, undo goes on
+#   db_first_open   current creation/reopen and stable undo identity; old physical project formats are refused
 #   db_concurrent   the CLI and the page write at once, one box's fields, new boxes and rows: no write is lost
 #   db_crash        Calcifer killed (kill -9) amid writes of a box, its row and its push-aside: each whole or absent; a resend is done once
 #   db_restart      undo and redo across Calcifer killed
@@ -98,82 +98,42 @@ db_latency
 }
 
 db_first_open() {
-step "project.db: a folder of the files from before imports once on first open, its original bytes archived, its history going on"
-local F=$OUT/db-legacy a b answer
-mkdir -p "$F/files"
-ffmpeg -v error -y -f lavfi -i "color=c=teal:size=64x64" -frames:v 1 "$OUT/db-a.png"
-ffmpeg -v error -y -f lavfi -i "color=c=olive:size=64x64" -frames:v 1 "$OUT/db-b.png"
-a=$(sha "$OUT/db-a.png") b=$(sha "$OUT/db-b.png")
-cp "$OUT/db-a.png" "$F/files/$a.png"; cp "$OUT/db-b.png" "$F/files/$b.png"
-cat > "$F/project.yaml" <<YAML
-version: 4
-# A hand's comment: the database holds values, so it isn't kept.
-assets:
-  art:
-    approved: ${a:0:12}
-    description: The art.
-  shot:
-    description: <art> at dusk, its takes.
-    aspect_ratio: "16:9"
-  mood:
-    text: Quiet.
-YAML
-cat > "$F/project.lock" <<YAML
-format: 3
-files: {}
-assets:
-  shot:
-    name: shot
-    kind: image
-    numbered: 3
-    versions:
-      - {number: 1, inputs: "0000000000000001", files: {image: "sha256:$b"}, seed: 7}
-      - {number: 2, inputs: "0000000000000002", files: {image: "sha256:$a"}, seed: 8}
-    discarded:
-      - {number: 3, inputs: "0000000000000003", files: {image: "sha256:$b"}}
-YAML
-printf '# Where cards sit. Only the page reads this. Nothing here is an input.\nversion: 1\ncards:\n  art: {x: 10, y: 20}\n  shot: {x: 400, y: 20, w: 360}\n' > "$F/project.canvas.yaml"
-cat > "$F/.history.json" <<'JSON'
-{"next": 2, "entries": [
-  {"id": 1, "at_ms": 1794000000000, "by": {"via": "cli"}, "words": "Deleted sky", "changes": [{"kind": "asset", "name": "sky", "before": "assets:\n  sky:\n    text: A blue sky.\n", "after": null}]},
-  {"id": 2, "at_ms": 1794000001000, "by": {"via": "page", "client": "tab1"}, "words": "Set aspect_ratio on shot", "changes": [{"kind": "fields", "name": "shot", "fields": {"aspect_ratio": ["1:1", "16:9"]}}]}]}
-JSON
-printf '{}' > "$F/.measured.json"; printf '{}' > "$F/.keys.json"
-project_api "$F" '' > "$OUT/db-legacy.txt" 2>&1 || check "first open: status: $(tail -c 300 "$OUT/db-legacy.txt")"
-local left; left=$(cd "$F" && ls -A | grep -vxE 'files|\.cozy-legacy-v1|project\.db(-wal|-shm)?' | tr '\n' ' ' || true)
-echo "first open: the folder now holds $(cd "$F" && ls -A | tr '\n' ' ')"
-[ -f "$F/project.db" ] && [ -f "$F/.cozy-legacy-v1/project.yaml" ] && [ -f "$F/.cozy-legacy-v1/project.lock" ] && [ -z "$left" ] || check "first open: project.db made and the files gone, but it holds: ${left:-no project.db}"
-J '[.versions[].number] == [1, 2] and .discarded == [3]' <<< "$(held "$F" shot)" || check "first open: shot's takes: $(held "$F" shot | jq -c '{v: [.versions[].number], d: .discarded}')"
-[ "$(sql "$F" "SELECT name, x, y, w FROM canvas ORDER BY name" | tr -d '\n')" = '["art", 10.0, 20.0, null]["shot", 400.0, 20.0, 360.0]' ] || check "first open: the rows: $(sql "$F" 'SELECT name, x, y, w FROM canvas')"
-project_api "$F" /history > "$OUT/db-legacy-history.json" || check "first open: history"
-J '[.entries[].words] == ["Set aspect_ratio on shot", "Deleted sky"]' "$OUT/db-legacy-history.json" || check "first open: its history: $(jq -c '[.entries[].words]' "$OUT/db-legacy-history.json")"
-# Undo goes on across the cut: entry 1 put back from the lines .history.json kept.
-project_api "$F" /history/undo -X POST -H 'Content-Type: application/json' -d '{"entry":1}' > "$OUT/db-legacy-undo.txt" 2>&1 || check "first open: undo 1: $(tail -c 300 "$OUT/db-legacy-undo.txt")"
-J '.assets | any(.name == "sky")' <<< "$(status "$F")" || check "first open: sky not back after undo 1"
-answer=$(project_api "$F" /yaml)
-grep -q 'text: A blue sky.' <<< "$answer" || grep -q 'text: "A blue sky."' <<< "$answer" || check "first open: sky's words: $answer"
-grep -q 'comment' <<< "$answer" && check "first open: a comment came through: $answer"
-# The ID assigned to a deleted legacy box belongs to that history, not to each undo attempt.
+step "project.db: current creation/reopen and stable undo identities; old physical formats are refused"
+local F=$OUT/db-current before entry
+run_project "$F" || { check "current open: create"; return; }
+project_api "$F" /assets -X POST -H 'Content-Type: application/json' -d '{"tool":"","name":"sky","fields":{"text":"A blue sky."}}' > "$OUT/db-current-create.json" || check "current open: create text asset"
+project_api "$F" /assets/sky -X PATCH -H 'Content-Type: application/json' -d '{"fields":{"text":"An evening sky."}}' > /dev/null || check "current open: edit"
+project_api "$F" /assets/sky -X DELETE > /dev/null || check "current open: delete"
+project_api "$F" /history > "$OUT/db-current-history.json" || check "current open: history"
+entry=$(jq -r '.entries[0].id' "$OUT/db-current-history.json")
+project_history_step "$F" undo "$entry" > /dev/null || check "current open: undo delete"
 python3 - "$F/project.db" "$OUT/crdt-sky-before.am" <<'PYSKY'
 import sqlite3,sys
 with sqlite3.connect(f'file:{sys.argv[1]}?mode=ro',uri=True) as db:
     open(sys.argv[2],'wb').write(db.execute('SELECT snapshot FROM crdt_document WHERE id=1').fetchone()[0])
 PYSKY
-project_history_step "$F" redo 1 > /dev/null 2>&1 || check "first open: redo 1"
-project_history_step "$F" undo 1 > /dev/null 2>&1 || check "first open: repeat undo 1"
+project_history_step "$F" redo "$entry" > /dev/null || check "current open: redo delete"
+project_history_step "$F" undo "$entry" > /dev/null || check "current open: repeat undo"
 python3 - "$F/project.db" "$OUT/crdt-sky-after.am" <<'PYSKY'
 import sqlite3,sys
 with sqlite3.connect(f'file:{sys.argv[1]}?mode=ro',uri=True) as db:
     open(sys.argv[2],'wb').write(db.execute('SELECT snapshot FROM crdt_document WHERE id=1').fetchone()[0])
 PYSKY
-CARGO_BUILD_JOBS=1 nice -n 19 cargo run --quiet --locked --manifest-path "$here/crdt/Cargo.toml" -- --identity "$OUT/crdt-sky-before.am" "$OUT/crdt-sky-after.am" sky > "$OUT/crdt-legacy-identity.json" 2> "$OUT/crdt-legacy-identity.err" || check "first open: stable legacy identity: $(tail -c 300 "$OUT/crdt-legacy-identity.err")"
-project_history_step "$F" undo 2 > /dev/null 2>&1 || check "first open: undo 2"
-project_api "$F" /yaml | grep -q 'aspect_ratio: "1:1"' || check "first open: undo 2 didn't put 1:1 back"
-# Opened again, nothing more happens.
-local before; before=$(sql1 "$F" "SELECT value FROM meta WHERE key = 'seq'")
-project_api "$F" '' > /dev/null 2>&1 || check "first open: second open"
-[ "$(sql1 "$F" "SELECT value FROM meta WHERE key = 'seq'")" = "$before" ] || check "first open: a second open wrote"
-echo "first open: $(held "$F" shot | jq -c '{takes: [.versions[].number], discarded}'), history $(jq -c '[.entries[].id]' "$OUT/db-legacy-history.json"), undo across the cut ok"
+CARGO_BUILD_JOBS=1 nice -n 19 cargo run --quiet --locked --manifest-path "$here/crdt/Cargo.toml" -- --identity "$OUT/crdt-sky-before.am" "$OUT/crdt-sky-after.am" sky > "$OUT/crdt-current-identity.json" 2> "$OUT/crdt-current-identity.err" || check "current open: undo changed stable identity"
+J '.assets | any(.name == "sky" and .fields.text == "An evening sky.")' <<< "$(status "$F")" || check "current open: undo lost current field values"
+before=$(sql1 "$F" "SELECT value FROM meta WHERE key = 'seq'")
+project_api "$F" '' > /dev/null || check "current open: reopen"
+[ "$(sql1 "$F" "SELECT value FROM meta WHERE key = 'seq'")" = "$before" ] || check "current open: reopen wrote state"
+local old file digest
+for file in project.yaml project.lock project.db.new; do
+  old=$OUT/refused-${file//./-}
+  mkdir -p "$old"
+  printf 'version: 4\nassets: {}\n' > "$old/$file"
+  digest=$(sha "$old/$file")
+  if (cd "$old" && cozy --json status) > "$old/refusal.json" 2> "$old/refusal.err"; then check "old format $file was accepted"; fi
+  grep -q project_format_unsupported "$old/refusal.json" "$old/refusal.err" || check "old format $file did not explain current-format requirement"
+  [ "$(sha "$old/$file")" = "$digest" ] && [ ! -e "$old/project.db" ] && [ ! -e "$old/.cozy-legacy-v1" ] && [ ! -e "$old/project.db.v1" ] || check "old format $file was changed/imported"
+done
 }
 
 db_concurrent() {
@@ -374,7 +334,7 @@ PY
 # The persisted representation is an actual native CRDT, not a serialized JSON facade. Every
 # project operation here goes through cozy; the native reader only inspects the resulting bytes.
 db_crdt() {
-step "project CRDT: canonical state, stable identities, v1 migration and native replica convergence"
+step "project CRDT: canonical state, stable identities, old-schema refusal and native replica convergence"
 local P=$OUT/crdt-project V=$OUT/crdt-v1 before after source
 cozy --json new --unencrypted "$P" > "$OUT/crdt-new.json" 2> "$OUT/crdt-new.err" || { check "CRDT: project new: $(tail -c 300 "$OUT/crdt-new.err")"; return; }
 J '.created == true and (.id | length > 0)' "$OUT/crdt-new.json" || check "CRDT: new did not create a project"
@@ -417,31 +377,14 @@ with sqlite3.connect(f'file:{sys.argv[1]}?mode=ro',uri=True) as db:
         db.backup(old)
         old.executescript('DROP TABLE crdt_document; DROP TABLE crdt_changes; PRAGMA user_version=1;')
 PY
-# Deliberately form a v1 fixture from this real project's materialized SQL rows, without modifying
-# its active source. Opening the copy invokes the actual migration and preserves a v1 recovery DB.
-printf 'interrupted VACUUM recovery copy' > "$V/project.db.v1"
-if project_api "$V" /yaml > "$OUT/crdt-v1-partial.json" 2> "$OUT/crdt-v1-partial.err"; then
-  check "CRDT: migrated despite an incomplete recovery copy"
+# This deliberately unsupported relational copy is never migrated or backed up by the product.
+local old_digest; old_digest=$(sha "$V/project.db")
+if (cd "$V" && cozy --json status) > "$OUT/crdt-v1-refusal.json" 2> "$OUT/crdt-v1-refusal.err"; then
+  check "CRDT: relational schema 1 was accepted"
 fi
-grep -q project_recovery_backup "$OUT/crdt-v1-partial.json" "$OUT/crdt-v1-partial.err" || check "CRDT: incomplete recovery copy did not explain its refusal"
-[ "$(sql1 "$V" 'PRAGMA user_version')" = 1 ] || check "CRDT: incomplete backup refusal changed the original schema"
-[ "$(cat "$V/project.db.v1")" = 'interrupted VACUUM recovery copy' ] || check "CRDT: incomplete recovery copy was overwritten"
-mv "$V/project.db.v1" "$OUT/crdt-v1-interrupted-backup"
-python3 - "$V/project.db" "$V/project.db.v1" <<'PY'
-import sqlite3,sys
-with sqlite3.connect(f'file:{sys.argv[1]}?mode=ro',uri=True) as source, sqlite3.connect(sys.argv[2]) as backup:
-    source.backup(backup)
-    backup.execute("INSERT OR REPLACE INTO meta VALUES ('id', 'another-project')")
-PY
-if project_api "$V" /yaml > "$OUT/crdt-v1-foreign.json" 2> "$OUT/crdt-v1-foreign.err"; then
-  check "CRDT: migrated using another project's recovery copy"
-fi
-grep -q project_recovery_backup "$OUT/crdt-v1-foreign.json" "$OUT/crdt-v1-foreign.err" || check "CRDT: different-project recovery copy did not explain its refusal"
-[ "$(sql1 "$V" 'PRAGMA user_version')" = 1 ] || check "CRDT: different-project backup refusal changed the original schema"
-mv "$V/project.db.v1" "$OUT/crdt-v1-foreign-backup"
-project_api "$V" /yaml > "$OUT/crdt-v1-export.yaml" 2> "$OUT/crdt-v1.err" || check "CRDT: v1 migration: $(tail -c 300 "$OUT/crdt-v1.err")"
-diff -u <(sed '/^# cozy-project-base: /d' "$OUT/crdt-export.yaml") <(sed '/^# cozy-project-base: /d' "$OUT/crdt-v1-export.yaml") > "$OUT/crdt-v1-export.diff" || check "CRDT: v1 migration changed logical fields"
-{ [ -f "$V/project.db.v1" ] && [ "$(sql1 "$V" 'PRAGMA user_version')" = 2 ]; } || check "CRDT: v1 backup/schema missing"
+grep -q project_db_version "$OUT/crdt-v1-refusal.json" "$OUT/crdt-v1-refusal.err" || check "CRDT: schema 1 did not explain current native requirement"
+[ "$(sha "$V/project.db")" = "$old_digest" ] && [ "$(sql1 "$V" 'PRAGMA user_version')" = 1 ] || check "CRDT: refusal changed schema 1 data"
+[ ! -e "$V/project.db.v1" ] && [ ! -e "$V/project.db.new" ] || check "CRDT: refusal made a migration backup/stage"
 [ "$(sql1 "$P" 'SELECT count(*) FROM crdt_changes')" -ge 4 ] || check "CRDT: original change journal absent"
 # Relational graph/history rows are now projections: damaging them must not become a logical
 # project edit when the next real HTTP edit commits.

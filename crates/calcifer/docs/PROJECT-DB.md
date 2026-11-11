@@ -97,8 +97,8 @@ An entry is a native history-map record with a permanent `uid`; `id` is a local 
 The writes record their changes as they're made; the act composes them (consecutive changes of one thing fold, a rename is all its
 own) and writes the entry in the same transaction. A request sharing a `Cozy-Edit` with a standing entry joins it. Undo and redo check
 each change is as the entry left it ("`name`'s `field` changed since", naming the later entry) and put it back, all in one
-transaction: refused part way, nothing moved. The last 200 entries are kept. First open converts `.history.json` (each `asset` change's
-lines read into fields), so undo and redo go on across the cut.
+transaction: refused part way, nothing moved. The last 200 entries are kept. History is loaded only from
+the current native CRDT document; physical `.history.json` files are never imported.
 
 ## Keys
 
@@ -135,27 +135,25 @@ another authority. `PUT /v1/projects/{id}/yaml` reads one back: each box, head a
 transaction and one entry, and what it doesn't read is refused with the line, changing nothing. Media files use the separate
 asset import API. No `project.lock` is exported: versions, takes and files stay in the database.
 
-## First open
+## Current-format opening
 
-A folder with `project.yaml` and no `project.db` is imported once, when Calcifer first opens it:
-1. a format 2 or 3 file is upgraded as before (`upgrade::on_touch`, its `.v2`/`.v3` backups stay);
-2. `project.yaml`, `project.lock`, `project.canvas.yaml`, `.measured.json`, `.keys.json`, `.history.json`, `.runs/walk.json` and
-   `.runs/asked/` are read into `project.db.new`, committed and renamed to `project.db`;
-3. those original files move to `.cozy-legacy-v1/`, retaining their exact bytes. Interrupted completion resumes on the next open;
-   an incomplete staging database never replaces the originals.
+Only schema-2 databases containing the current native Automerge storage format are supported.
+`db::open` opens an existing file only. Read-only SQLite inspection validates schema and native
+storage format before any writable connection setup, pragmas or DDL. Schema 1, unversioned/empty
+existing databases and unsupported versions are refused; no migration, recovery backup, stage,
+relational load or SQL identity fallback runs. Normal SQLite read-only WAL coordination may
+create necessary sidecar metadata; committed current WAL contents remain readable. Refusal
+preserves the primary data/schema/history and any existing backup/stage files.
 
-An existing schema-1 `project.db` first receives a recoverable `project.db.v1` SQLite snapshot (including committed WAL pages), then
-imports once into native state in one SQLite transaction. The original is never overwritten. History payloads receive permanent
-entity IDs too, so redo/undo cannot silently replace the identity of a legacy deleted box. Schema-2 readers refuse unknown versions;
-old readers cannot open schema 2. Recovery copies contain the original data, not edits made after migration.
+New project creation exclusively reserves a new database path, initializes schema 2 and its
+canonical native document, then sets project identity before publishing it. An existing path,
+including a zero-byte or interrupted `.new` file, is never removed/truncated by creation.
+A missing database is not recreated by opening a folder. Current append/CAS, transaction,
+corruption checks and relational query projections retain their ordinary roles.
 
-Before migration, the recovery copy must pass SQLite integrity, schema and readability checks, and any stored project ID must match
-the primary. Its file and directory are flushed before the primary changes. A partial or different-project copy refuses migration
-with `project_recovery_backup`, leaving the schema-1 primary and that copy intact for the user to preserve and move aside. A valid
-existing recovery copy is retained from the first migration attempt, rather than refreshed to an arbitrary later point in time.
-
-The first open performs upgrades inside Calcifer. `cozy new [directory]` makes `project.db` in the named or current directory. A
-folder is a project when it holds `project.db` (or a `project.yaml` to import).
+Physical `project.yaml`/lock folders and incomplete legacy stages are unsupported, rather than
+implicitly imported. Create a separate current-format project; explicit current authoring views
+remain separate from storage authority. Existing old files are preserved for their owner.
 
 ## Open for Paul
 
