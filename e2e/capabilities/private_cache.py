@@ -43,6 +43,7 @@ class DeviceKey(TypedDict):
 
 class Device(DeviceKey):
     bearer: str
+    document: str
 
 
 class HubMetadata(TypedDict):
@@ -164,9 +165,10 @@ class Fixture:
 
     def credentials(self) -> tuple[Device, Account]:
         prefix = Path.home() / ".cozy/keys" / ("device-" + hashlib.sha256(self.hub.encode()).hexdigest())
-        key = cast(DeviceKey, json.loads(Path(str(prefix) + ".json").read_text()))
+        document = Path(str(prefix) + ".json").read_text()
+        key = cast(DeviceKey, json.loads(document))
         bearer = cast(dict[str, str], json.loads(Path(str(prefix) + ".bearer.json").read_text()))["token"]
-        device = Device(device_key_id=key["device_key_id"], private_key=key["private_key"], bearer=bearer)
+        device = Device(device_key_id=key["device_key_id"], private_key=key["private_key"], bearer=bearer, document=document)
         return device, cast(Account, self.http("/v1/accounts/current", bearer))
 
     def capability(self, credentials: tuple[Device, Account], details: list[Object]) -> str:
@@ -366,7 +368,12 @@ class Fixture:
                 if other_model:
                     self.cli("model", "delete", other_model, "-y")
             finally:
-                self.login(self.args.owner_email)
+                with tempfile.TemporaryDirectory() as temp:
+                    key_file = Path(temp) / "owner-key.json"
+                    key_file.write_text(owner[0]["document"])
+                    key_file.chmod(0o600)
+                    self.cli("login", "--key", str(key_file))
+                assert self.credentials()[1]["user_id"] == owner[1]["user_id"], "fixture owner was not restored"
 
     def local_positive(self, capability: str) -> None:
         alias = "local/cache-bare-" + uuid.uuid4().hex[:12]
