@@ -193,7 +193,7 @@ function linesOf(text, name) {
 
   // Basic nodes survive a fresh read without acquiring a model. The fourth type is an intrinsic timeline, not a generative video.
   const basic = page.locator('.tools [data-palette="nodes"] li.tool');
-  check('basic_palette_has_exactly_four_types', JSON.stringify(await basic.locator('b').allTextContents()) === JSON.stringify(['Text', 'Image', 'Video', 'VideoEdit']));
+  check('basic_palette_has_exactly_four_types', JSON.stringify(await basic.locator('b').allTextContents()) === JSON.stringify(['Text', 'Image', 'Video', 'Video Edit']));
   const blanks = {};
   for (const kind of ['text', 'image', 'video', 'video_edit']) {
     await away();

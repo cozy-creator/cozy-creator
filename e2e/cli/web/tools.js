@@ -121,7 +121,7 @@ function linesOf(text, name) {
   const atRest = await listed();
   seen.listed = atRest.map((one) => `${one.title}: ${one.tools.map((row) => row.label).join(', ')}`);
   check('nodes_and_tools_are_separate', atRest.length === 2 && atRest[0].title === 'Nodes' && atRest[1].title === 'Tools', atRest);
-  check('exactly_four_basic_node_types', JSON.stringify(atRest.find((one) => one.section === 'nodes')?.tools.map((row) => row.label)) === JSON.stringify(['Text', 'Image', 'Video', 'VideoEdit']), atRest);
+  check('exactly_four_basic_node_types', JSON.stringify(atRest.find((one) => one.section === 'nodes')?.tools.map((row) => row.label)) === JSON.stringify(['Text', 'Image', 'Video', 'Video Edit']), atRest);
   check('local_output_capabilities_remain', ours(atRest).length === 2 && ours(atRest).some((row) => row.id === `${fixture}/shot` && row.kind === 'video') && ours(atRest).some((row) => row.id === `${fixture}/still` && row.kind === 'image'), ours(atRest));
   const modelRows = atRest.flatMap((one) => one.tools).filter((row) => row.model);
   const publishedModels = [...new Set((await api(`/v1/tools?project=${id}`)).body.tools.flatMap((one) => one.model?.default ? [one.model.default.split('@')[0].replace(/^_\//, '')] : []))];

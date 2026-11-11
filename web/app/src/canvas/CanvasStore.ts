@@ -1591,7 +1591,7 @@ export class CanvasStore {
     const key = this.resolveName(name)
     const view = this.views.get(key)
     if (!view?.asset || view.asset.tool === tool.id) return
-    if (!toolFitsNode(tool, view.asset)) return void say(`${toolName(tool)} makes ${tool.makes}; ${name} is a ${isVideoEdit(view.asset) ? "VideoEdit" : view.asset.kind} node`)
+    if (!toolFitsNode(tool, view.asset)) return void say(`${toolName(tool)} makes ${tool.makes}; it cannot attach to this ${isVideoEdit(view.asset) ? "Video Edit" : view.asset.kind} node`)
     void this.save(key)
     const step = goingOn(view.asset, { ...view.asset.fields, ...view.sent, ...view.drafts }, this.tools.get().get(view.asset.tool ?? ""), tool, view.viewed)
     this.retool(key, step, step.lost.length ? `${name} runs ${toolName(tool)} now, which can't take ${step.lost.join(" or ")}` : undefined)
@@ -1607,7 +1607,7 @@ export class CanvasStore {
     const key = this.resolveName(name)
     const view = this.views.get(key)
     if (!view?.asset) return
-    if (isVideoEdit(view.asset)) return void say("VideoEdit keeps its built-in timeline engine")
+    if (isVideoEdit(view.asset)) return void say("Video Edit keeps its built-in timeline engine")
     void this.save(key)
     const known = this.tools.get().get(view.asset.tool ?? "")
     const word = known ? toolName(known) : "Its tool"
