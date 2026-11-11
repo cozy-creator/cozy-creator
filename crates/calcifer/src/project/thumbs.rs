@@ -157,7 +157,12 @@ async fn made(host: Host, drawing: Drawing, dir: PathBuf, name: String) -> Resul
             let _turn = turn.lock().await;
             make(host, drawing, dir, name.clone()).await
         };
-        MAKING.lock().expect("making lock").remove(&name);
+        // Keep the same turn for requests already waiting to draw this name.
+        let mut making = MAKING.lock().expect("making lock");
+        drop(turn);
+        if making.get(&name).is_some_and(|turn| Arc::strong_count(turn) == 1) {
+            making.remove(&name);
+        }
         answer
     });
     let answer = making.await.map_err(|e| Refusal(Error::new(Kind::Internal, "thumb_failed", e.to_string())))?;
