@@ -341,6 +341,9 @@ class Checkpoint:
         """The checkpoint as one read-only, seekable file: its header, then its chunks and assets in header
         order at 4 KiB-aligned offsets, assembled from the store on demand; nothing is written."""
 
+    def write_file(self, path: str | PathLike[str]) -> None:
+        """Atomically write the complete portable checkpoint, including chunks and assets."""
+
     @property
     def id(self) -> str:
         """`sha256:<hex>` of the header."""

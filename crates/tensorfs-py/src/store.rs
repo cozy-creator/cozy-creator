@@ -872,6 +872,12 @@ impl PyCheckpoint {
         crate::file::open(py, self.core(py)?)
     }
 
+    /// Atomically write this checkpoint's complete portable `.cozytensors` file.
+    fn write_file(&self, py: Python<'_>, path: PathBuf) -> PyResult<()> {
+        let checkpoint = self.core(py)?;
+        py.detach(move || checkpoint.write_file(&path)).or_raise(py)
+    }
+
     /// The header's chunks, in order: `(sha256, length)`.
     #[getter]
     fn chunks(&self) -> Vec<(String, u64)> {

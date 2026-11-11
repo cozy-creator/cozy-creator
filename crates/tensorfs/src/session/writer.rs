@@ -159,7 +159,7 @@ impl Context {
         // First acquire the native header owner, then build its repository context.
         let raw = self.store.checkpoint(header)?;
         if self.dest.is_some() {
-            // A literal header contains run data only. Its returned handle has the same
+            // A literal checkpoint contains run data only. Its returned handle has the same
             // metadata as reopening that file, without inventing a repository context.
             return Checkpoint::managed(
                 raw,
@@ -200,19 +200,10 @@ impl Context {
         Ok(checkpoint)
     }
 
-    /// The file is a handle into the store: its data stays rooted while the file holds this
-    /// header. Until the root lands, the live checkpoint holds the bytes.
+    /// Publish a standalone checkpoint; the live handle holds its CAS objects during export.
     fn publish_file(&self, checkpoint: &Checkpoint) -> Result<()> {
         if let Some(dest) = &self.dest {
-            let header = checkpoint.id();
-            let bytes = self.store.read(header)?;
-            if let Some(parent) = dest.parent() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| super::io_failure(parent.display(), e))?;
-            }
-            platform::durable::replace(dest, &bytes, 0o644)
-                .map_err(|e| super::io_failure(dest.display(), e.into()))?;
-            self.store.root_file(dest, header)?;
+            checkpoint.write_file(dest)?;
         }
         Ok(())
     }

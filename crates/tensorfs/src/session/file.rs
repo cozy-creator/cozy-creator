@@ -264,3 +264,67 @@ impl Drop for Map {
         unsafe { libc::munmap(self.ptr, self.len) };
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Client, Config, Open, Selection};
+
+    fn client(cache_dir: std::path::PathBuf) -> Client {
+        Client::new(Config { cache_dir, endpoint: "http://127.0.0.1:1".into(), mirror: None, token: None, ca_der: None }).unwrap()
+    }
+
+    #[test]
+    fn portable_checkpoint_write_open_and_seek() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = client(dir.path().join("source-store"));
+        let (header, weights, tokenizer) = crate::store::file::tests::fixture();
+        source.store.put_bytes(&weights).unwrap();
+        source.store.put_bytes(&tokenizer).unwrap();
+        let id = source.store.put_bytes(&header.to_cbor().unwrap()).unwrap();
+        let raw = source.store.checkpoint(&id).unwrap();
+        let checkpoint = Checkpoint::managed(raw, None, None, None, Vec::new(), source.store.clone()).unwrap();
+        let path = dir.path().join("only.cozytensors");
+        checkpoint.write_file(&path).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let mut logical = checkpoint.open_file().unwrap();
+        assert_eq!(bytes.len() as u64, logical.len());
+        for at in [0, 10, id.length - 1, 4095, 4096, 4100, logical.len() - 1, logical.len(), logical.len() + 1] {
+            logical.seek(SeekFrom::Start(at)).unwrap();
+            let mut actual = [0; 37];
+            let n = logical.read(&mut actual).unwrap();
+            let start = bytes.len().min(at as usize);
+            assert_eq!(&actual[..n], &bytes[start..bytes.len().min(start + actual.len())]);
+        }
+        drop(logical);
+        drop(checkpoint);
+        drop(source);
+        std::fs::remove_dir_all(dir.path().join("source-store")).unwrap();
+        let fresh = client(dir.path().join("fresh-store"));
+        let checkpoint = crate::raw::runtime().unwrap().block_on(fresh.open(path.to_str().unwrap(), &Open { local_files_only: true, ..Open::default() })).unwrap();
+        assert_eq!(checkpoint.id(), &id);
+        assert!(checkpoint.missing(&Selection::All).unwrap().is_empty());
+        assert_eq!(checkpoint.component("model").unwrap().read_decoded("weight").unwrap(), weights);
+        assert_eq!(checkpoint.component("model").unwrap().asset("tokenizer.json").unwrap(), tokenizer);
+        assert!(checkpoint.component("model").unwrap().asset("missing-tokenizer.model").unwrap_err().to_string().contains("missing-tokenizer.model"));
+        let second = dir.path().join("again.cozytensors");
+        checkpoint.write_file(&second).unwrap();
+        assert_eq!(std::fs::read(second).unwrap(), bytes);
+    }
+
+    #[test]
+    fn portable_checkpoint_thin_is_explicit_and_failed_export_is_atomic() {
+        let dir = tempfile::tempdir().unwrap();
+        let client = client(dir.path().join("store"));
+        let (header, _, _) = crate::store::file::tests::fixture();
+        let thin = dir.path().join("thin.cozytensors");
+        std::fs::write(&thin, header.to_cbor().unwrap()).unwrap();
+        let options = Open { local_files_only: true, lazy: true, ..Open::default() };
+        let checkpoint = crate::raw::runtime().unwrap().block_on(client.open(thin.to_str().unwrap(), &options)).unwrap();
+        assert!(!checkpoint.missing(&Selection::All).unwrap().is_empty());
+        let dest = dir.path().join("preserved.cozytensors");
+        std::fs::write(&dest, b"previous complete export").unwrap();
+        assert!(checkpoint.write_file(&dest).is_err());
+        assert_eq!(std::fs::read(dest).unwrap(), b"previous complete export");
+    }
+}

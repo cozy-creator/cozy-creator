@@ -121,6 +121,7 @@ impl Checkpoint {
     pub async fn materialize(&self, dir: &Path, format: Format, decode: bool) -> Result<PathBuf>;
     // Header, then chunks and assets in header order at 4 KiB-aligned offsets (spec §11).
     pub fn open_file(&self) -> Result<CheckpointFile>;
+    pub fn write_file(&self, dest: &Path) -> Result<()>;
 }
 // Read + Seek over the logical file; holds what it may read until dropped.
 pub struct CheckpointFile;

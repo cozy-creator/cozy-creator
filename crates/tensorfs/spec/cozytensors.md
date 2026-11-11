@@ -809,11 +809,10 @@ construction order. A reference can be applied structurally:
 - a child the reference does not hold, or every key of a class without a reference, keeps the source's data order
   after the known children, and is reported.
 
-## 11. Logical file
+## 11. Complete portable file and logical view
 
-A `.cozytensors` file holds only its header (§4); nothing packs a checkpoint into one stored file. A checkpoint's
-**logical file** is all of its bytes as one read-only byte string, for a consumer that wants a single file. A reader
-assembles it from the objects on demand:
+A complete portable `.cozytensors` file contains its header (§4) and every object the header cites. Its layout is
+also the checkpoint's **logical file**, which a reader can assemble from CAS objects on demand:
 
 - offset 0: the header's bytes;
 - then each object of `chunks` in order, then every component's assets (components in header order, each
@@ -822,6 +821,25 @@ assembles it from the objects on demand:
 - gaps are zero bytes, and the file ends where its last object ends.
 
 The layout depends only on the header, so every object's offset follows from it.
+
+The first definite-length CBOR item frames the header; no prefix, trailer or rewritten header is added. A complete
+file's length MUST equal the last object's end (the header's end when there are no objects). Admission MUST check
+every occurrence's declared length and SHA-256, including repeated references and objects already present in a
+cache, and MUST refuse truncation, trailing data, nonzero alignment gaps and conflicting lengths for one digest.
+Offsets and lengths use checked 64-bit arithmetic. Copying and verification stream bounded buffers; they do not
+read the whole checkpoint into memory. Only verified objects enter the existing CAS, and the header and tree are
+published after all payload checks pass. Header and object identities are unchanged by export and admission.
+
+A legacy **thin header** is exactly the header bytes and requires an external object source. Store snapshots and
+plain folders can still use thin headers with `chunks/` or a configured store. A header with cited objects is never
+a complete portable file by itself; the explicit complete-file admission operation refuses it. A header with no
+objects is already complete. `Client::open` accepts complete files and legacy thin headers; `Checkpoint::write_file`
+and a Writer's file destination produce complete files. Range reads after admission use the ordinary CAS reader.
+
+This proves closure of declared model data, not an arbitrary model's loading contract. Importers and compatible
+packages must retain and require the construction config, tokenizer assets and adapter parameters their model
+needs. Ancillary documentation and previews remain outside that closure; executable implementation remains in
+the installed package and Runtime.
 
 ## Appendix A. Fixed tables
 
