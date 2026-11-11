@@ -102,7 +102,10 @@ pub(crate) fn logical(path: &FsPath) -> PathBuf {
 pub(super) fn view(root: &FsPath) -> Result<PathBuf, Error> {
     recover_conversion(root)?;
     if CONVERTING.lock().expect("vault conversions").contains(root) { return Err(error("vault_busy", "the project's storage is being converted")); }
-    if !encrypted(root) { return Ok(root.to_owned()); }
+    if !encrypted(root) {
+        if receipt_path(root).is_file() { return Err(error("vault_recovery", "the project's storage transition needs recovery; retry after active requests finish")); }
+        return Ok(root.to_owned());
+    }
     let Some(session) = held(root) else { return Err(locked(root)); };
     let mut session = session.lock().expect("vault session");
     if session.mount.reconcile().is_err() { mark_closing(&mut session); }
@@ -406,7 +409,7 @@ fn private(mut response: Response) -> Response {
 }
 
 fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk) -> Result<VaultChanged, Error> {
-    recover_conversion(root)?;
+    recover_under_guards(root)?;
     let (mut recovery_secret, mut preserved_source) = (None, None);
     match ask.action.as_str() {
         "encrypt" => {
@@ -525,7 +528,7 @@ fn receipt_path(root: &FsPath) -> PathBuf {
 
 fn conversion(root: &FsPath) -> Result<Option<Conversion>, Error> {
     let path = receipt_path(root);
-    if !path.exists() { return Ok(None); }
+    if !exists(&path)? { return Ok(None); }
     if fs::symlink_metadata(&path).map_err(io)?.file_type().is_symlink() { return Err(error("vault_recovery", "conversion receipt cannot be a symlink")); }
     let bytes = fs::read(path).map_err(io)?;
     let record: Conversion = serde_json::from_slice(&bytes).map_err(|_| error("vault_recovery", "invalid conversion receipt"))?;
@@ -539,8 +542,23 @@ fn conversion(root: &FsPath) -> Result<Option<Conversion>, Error> {
 }
 
 pub(super) fn recover_conversion(root: &FsPath) -> Result<(), Error> {
-    if CONVERTING.lock().expect("vault conversions").contains(root) { return Ok(()); }
+    if !exists(&receipt_path(root))? { return Ok(()); }
+    let op = operation(root);
+    let attempt = op.try_lock();
+    if matches!(attempt, Err(std::sync::TryLockError::WouldBlock)) { return Ok(()); }
+    let _operation = attempt.expect("vault operation");
+    let Ok(_access) = exclusive(root) else { return Ok(()) };
+    recover_under_guards(root)
+}
+
+/// Called only while this root's operation mutex and exclusive ACCESS are owned.
+/// Reloading under those guards prevents a delayed recovery from retiring a newer receipt.
+fn recover_under_guards(root: &FsPath) -> Result<(), Error> {
     let Some(record) = conversion(root)? else { return Ok(()); };
+    if !CONVERTING.lock().expect("vault conversions").insert(root.to_owned()) {
+        return Err(error("vault_busy", "the project's storage transition is already active"));
+    }
+    let _converting = Converting(root.to_owned());
     if record.plain.is_some() { return recover_plain(&record); }
     let target = |path: &FsPath| Keybag::load(&path.join(KEYBAG_FILE)).is_ok_and(|bag| bag.info().key_id == record.key_id);
     if target(root) { return Ok(()); } // Unlock completes the private journal transaction and cleanup.
