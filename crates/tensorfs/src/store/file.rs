@@ -20,6 +20,9 @@ pub(crate) fn header(path: &Path) -> Result<(File, Vec<u8>, Header)> {
         let mut first = [0];
         file.read_exact(&mut first)?;
         let (major, info) = (first[0] >> 5, first[0] & 31);
+        if depth == 0 && major != 4 {
+            return Err(bad("checkpoint header must be a CBOR array"));
+        }
         let wide = match info {
             0..=23 => 0,
             24 => 1,
