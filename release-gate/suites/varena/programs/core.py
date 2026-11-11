@@ -58,8 +58,16 @@ def give_back() -> None:
     vt.set_limit(0, None)
 
 
-def delta(before: "dict[str, int]", after: "dict[str, int]") -> dict[str, int]:
-    return {key: after[key] - before[key] for key in COST}
+def delta(before: "Mapping[str, object]", after: "Mapping[str, object]") -> dict[str, int]:
+    """The change in each of COST's counters: `vt.stats`'s rows are a TypedDict of ints, which mypy reads as objects."""
+
+    def count(stats: "Mapping[str, object]", key: str) -> int:
+        value = stats[key]
+        if not isinstance(value, int):
+            raise TypeError(f"vt.stats {key!r} is {value!r}, not a count")
+        return value
+
+    return {key: count(after, key) - count(before, key) for key in COST}
 
 
 def settle() -> None:

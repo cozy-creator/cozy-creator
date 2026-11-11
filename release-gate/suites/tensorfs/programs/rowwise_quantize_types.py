@@ -16,9 +16,6 @@ if TYPE_CHECKING:
 
     type Selection = QuantizeTensor
 
-    class Ext(Protocol):
-        __file__: str
-
     class TensorFS(Protocol):
         """The parts of the `tensorfs` module `cancel_rowwise` is handed."""
 
@@ -28,8 +25,6 @@ if TYPE_CHECKING:
         def ConversionControl(self) -> type[tensorfs.ConversionControl]: ...
         @property
         def NetworkError(self) -> type[tensorfs.NetworkError]: ...
-        @property
-        def _ext(self) -> Ext: ...
 
 type F32 = npt.NDArray[np.float32]
 

@@ -48,11 +48,13 @@ def main() -> None:
     core.vr_v1_gpu_close.argtypes = [C.c_uint64]
     core.vr_v1_gpu_open.argtypes = [C.c_int32, C.POINTER(C.c_uint64)]
 
+    names = ("capacity", "working_live", "pinned", "weights_resident", "free")
+
     class Room(C.Structure):  # varena.h's vr_room_v1
-        _fields_ = [(name, C.c_uint64) for name in ("capacity", "working_live", "pinned", "weights_resident", "free")]
+        _fields_ = [(name, C.c_uint64) for name in names]
 
     def fields(room: Room) -> dict[str, int]:
-        return {name: getattr(room, name) for name, _ in Room._fields_}
+        return {name: getattr(room, name) for name in names}
 
     c, rust = first if first is not None else load()  # python-first: after TensorFS
     for function in [
