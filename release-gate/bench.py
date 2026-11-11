@@ -450,9 +450,10 @@ def judge_output(d: CellDef, c: Cell, b: Cell | None, others: list[Gate], refs: 
     """Why a cell's judged output fails, and notes: against its stored reference, and against `like`'s of the same request
     and seed when `like`'s group ran beside this one."""
     why: list[str] = []
+    notes: list[str] = []
     o = c['output']
     if not o or 'file' not in o or 'look' not in o:
-        return why, []
+        return why, notes
     stored = b['output'] if b else None
     if stored and stored['seed'] != o['seed']:
         return why, [f"its stored output is seed {stored['seed']}, this one {o['seed']}: not compared"]
@@ -464,11 +465,15 @@ def judge_output(d: CellDef, c: Cell, b: Cell | None, others: list[Gate], refs: 
         found = [x for g in others if in_group(like_group, g['group']) and (y := g['cells'].get(d['like'])) and (x := y['output']) and 'file' in x]
         if found and found[0]['seed'] != o['seed']:
             why.append(f"{d['like']}'s output is seed {found[0]['seed']}, this one {o['seed']}: cells.tsv must give the two one seed")
+        elif found and 'file' in found[0] and d['group'].endswith('.arms'):
+            # xs-171's 16-bit arm: another attention precision moves a picture more than another build does (Klein at
+            # 8 against 16 bits, 11-11: SSIM 0.71), so it is held to its level's calibrated bar (xs-171 F), numbers until then.
+            notes.append(f"16-bit arm against {d['like']}: {json.dumps(media.pair(found[0]['file'], o['file']))} (no calibrated bar yet)")
         elif found and 'file' in found[0]:
             why += media.differs(media.pair(found[0]['file'], o['file']), f"{d['like']}'s output (same request and seed)")
         else:
             why.append(f"no {d['like']} output of this candidate to hold it against")
-    return why, []
+    return why, notes
 
 
 def judge(defs: list[CellDef], cand: Gate, base: Group | None, version: str | None, known: list[Known], others: list[Gate],
