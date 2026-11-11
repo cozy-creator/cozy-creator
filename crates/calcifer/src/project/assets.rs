@@ -170,10 +170,10 @@ pub(super) async fn patch(
         Some(tool) => Some(pictures(folder, &name, tool, false).map_err(Refusal)?),
         None => None,
     };
-    // A tool going on a picture starts from it: in its first required picture slot, else at the start of its first prompt.
+    // A tool going on a picture or a video starts from it: in its first required slot of that kind, else at the start of its first prompt.
     let start = match (&asked.tool, &holds) {
-        (Some(tool), Some(Some(_))) if !tool.is_empty() => crate::toolbox::fields_of(&api, tool, &folder.dir).await.and_then(|fields| {
-            let slot = fields.iter().find(|field| field.required && field.ty == FieldType::Slot && field.accept.as_deref() == Some("image"));
+        (Some(tool), Some(Some((_, kind)))) if !tool.is_empty() => crate::toolbox::fields_of(&api, tool, &folder.dir).await.and_then(|fields| {
+            let slot = fields.iter().find(|field| field.required && field.ty == FieldType::Slot && field.accept.as_deref() == Some(kind.as_str()));
             let prompt = || fields.iter().find(|field| field.ty == FieldType::Prompt);
             slot.map(|field| Start::Slot(field.field.clone())).or_else(|| prompt().map(|field| Start::Prompt(field.field.clone())))
         }),
@@ -182,7 +182,7 @@ pub(super) async fn patch(
     let read = headers.get(header::IF_MATCH).and_then(|value| value.to_str().ok()).map(str::to_owned);
     let patched = folder.act(|| {
         let holds = match &asked.tool {
-            Some(tool) => Some(pictures(folder, &name, tool, true)?),
+            Some(tool) => Some(pictures(folder, &name, tool, true)?.map(|(number, _)| number)),
             None => None,
         };
         let written = folder.written()?;
@@ -209,24 +209,25 @@ pub(super) async fn patch(
 
 /// What a change of `tool` needs of the pictures asset `name` holds: `None` with none. A tool going on a picture nothing numbers makes it a version, as if that
 /// tool had made it, and answers the one a new prompt starts from: what's approved, else its newest. Going off, or swapped, nothing moves, and any number will do.
-/// With `write` unset, nothing is numbered, and what would be is 0.
-fn pictures(folder: &folder::Folder, name: &str, tool: &str, write: bool) -> Result<Option<u32>, Error> {
+/// With `write` unset, nothing is numbered, and what would be is 0. Each number comes with the asset's kind.
+fn pictures(folder: &folder::Folder, name: &str, tool: &str, write: bool) -> Result<Option<(u32, String)>, Error> {
     let (doc, lock) = (Doc::load(folder)?, folder.lock()?);
     let Some(i) = doc.find(name) else { return Ok(None) };
     let asset = &doc.assets[i];
+    let kinded = |number: Option<u32>| Ok(number.map(|number| (number, asset.kind.clone())));
     let newest = lock.asset(&asset.name).and_then(|held| held.versions.last()).map(|version| version.number);
-    let Some(pin) = &asset.pin else { return Ok(newest) };
+    let Some(pin) = &asset.pin else { return kinded(newest) };
     let number = |lock: &folder::Lock| lock.asset(&asset.name).and_then(|held| held.versions.iter().rev().find(|version| version.main() == Some(pin))).map(|version| version.number);
     if let Some(number) = number(&lock) {
-        return Ok(Some(number));
+        return kinded(Some(number));
     }
     if tool.is_empty() || asset.tool.is_some() {
-        return Ok(newest.or(Some(0)));
+        return kinded(newest.or(Some(0)));
     }
     if !write {
-        return Ok(Some(0));
+        return kinded(Some(0));
     }
-    Ok(Some(constant_numbered(folder, asset, pin)?))
+    kinded(Some(constant_numbered(folder, asset, pin)?))
 }
 
 /// The file asset holds with no version saying so, made its next version.

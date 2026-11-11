@@ -148,6 +148,8 @@ jobs:
         if: steps.runtime.outputs.ref != ''
       - if: steps.runtime.outputs.ref != ''
         run: echo "RUNTIME_WHEEL=$(bash creator/e2e/candidates/build.sh runtime runtime.src "$RUNNER_TEMP/candidates")" >> "$GITHUB_ENV"
+      # ffmpeg and ffprobe from the tool cache: `sudo apt-get install ffmpeg` hung three times on GitHub's runners.
+      - uses: AnimMouse/setup-ffmpeg@v1
       - name: Prepare local service session
         env:
           KEY: ${{ inputs.hub == 'prod' && secrets.COZY_CI_DEVICE_KEY || '' }}

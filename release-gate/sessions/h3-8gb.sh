@@ -24,7 +24,7 @@ if [ -n "$URL" ]; then
   curl -fsSL --retry 5 --retry-all-errors "${URL%%#*}" -o "$W" || fail "cannot fetch the runtime wheel"
   [ "$(sha256sum "$W" | cut -c1-64)" = "${URL##*sha256=}" ] || fail "runtime wheel sha256"
 fi
-command -v ffprobe >/dev/null || sudo apt-get install -y -qq ffmpeg >/dev/null 2>&1 || fail "no ffmpeg"
+command -v ffprobe > /dev/null || fail "no ffprobe (pod-session.yaml installs it from the tool cache)"
 jq -n --arg p "$PROMPT" --argjson s "$RANDOM$RANDOM" '{beats: [{description: $p, duration: 15}], seed: $s}' > "$OUT/request.json"
 quote 3600
 rent

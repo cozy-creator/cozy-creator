@@ -50,6 +50,16 @@ function addOnsOn(fields: Fields, from: Tool | undefined, next: Tool): { kept: F
   return { kept: { lora: lora ?? null, models: models ?? null }, lost }
 }
 
+/** Where a tool going on a picture or a video reads it, as Calcifer writes it (`with_tool`): its first required slot of that kind, else the start of its first prompt. */
+function startsFrom(tool: Tool, kind: string, fields: Fields, own: string): Fields {
+  const slot = tool.fields.find((field) => field.required && field.type === "slot" && field.accept === kind)
+  if (slot) return fields[slot.field] === undefined ? { [slot.field]: own } : {}
+  const prompt = tool.fields.find((field) => field.type === "prompt")
+  if (!prompt) return {}
+  const words = typeof fields[prompt.field] === "string" ? (fields[prompt.field] as string) : ""
+  return words.includes(own) ? {} : { [prompt.field]: words ? `${own} ${words}` : own }
+}
+
 /** `tool` going on `asset`, whatever it holds now. `fields` is what it says, what's typed included, and `looked` the version being looked at. */
 export function goingOn(asset: Asset, fields: Fields, from: Tool | undefined, tool: Tool, looked?: number): ToolStep {
   const back = { row: rowBack(asset), tool: asset.tool ?? "", fields: {} as Fields }
@@ -65,8 +75,8 @@ export function goingOn(asset: Asset, fields: Fields, from: Tool | undefined, to
     const number = first ?? looked ?? asset.version ?? asset.prefixes?.at(-1)?.number
     const main = first && asset.sha256 && asset.path && asset.field ? { output: asset.field, path: asset.path, sha256: asset.sha256, field: asset.field, width: asset.width, height: asset.height, duration_ms: asset.duration_ms, alpha: asset.alpha } : undefined
     const numbered: Partial<Asset> = main ? { prefixes: [{ number: 1, prefix: main.sha256.slice(0, 12), main }], versions: 1, version: 1, ...(asset.pinned ? { approved: 1 } : {}) } : {}
-    const words = fields.instructions === undefined ? { instructions: `<self.${number}>` } : {}
-    back.fields = "instructions" in words ? { instructions: null } : {}
+    const words = startsFrom(tool, asset.kind, fields, `<self.${number}>`)
+    back.fields = Object.fromEntries(Object.keys(words).map((field) => [field, fields[field] ?? null]))
     return { row: { ...row, ...numbered, fields: { ...fields, ...words } }, tool: tool.id, fields: {}, back, lost: [] }
   }
   // A swap: what the new tool asks of keeps, and so do its words, in the field it reads them from.

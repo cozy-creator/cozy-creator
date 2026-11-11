@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query"
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
+import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { flushSync } from "react-dom"
 import { Link, Outlet, useLocation, useMatches, useNavigate } from "react-router-dom"
 import { TRIES } from "../api/client"
@@ -61,12 +61,17 @@ function Connectivity() {
   )
 }
 
-/** Projects in the order they took their tabs, each staying where it is so a tab doesn't jump from under the pointer. What's new takes the end. */
-function useOrder(rows: KnownProject[]): KnownProject[] {
+/** Projects in the order they took their tabs, each staying where it is so a tab doesn't jump from under the pointer. What's new takes the end.
+ *  The open project past the `count` that fit takes the last one's place, and keeps it once another is open. */
+function useOrder(rows: KnownProject[], id: string | null, count: number): KnownProject[] {
   const order = useRef<string[]>([])
   const known = new Map(rows.map((row) => [row.id, row]))
-  order.current = [...order.current.filter((held) => known.has(held)), ...rows.map((row) => row.id).filter((held) => !order.current.includes(held))]
-  return order.current.flatMap((held) => known.get(held) ?? [])
+  const held = [...order.current.filter((one) => known.has(one)), ...rows.map((row) => row.id).filter((one) => !order.current.includes(one))]
+  const at = id === null ? -1 : held.indexOf(id)
+  const last = Math.max(count, 1) - 1
+  if (Number.isFinite(count) && at > last) held.splice(last, 0, ...held.splice(at, 1))
+  order.current = held
+  return held.flatMap((one) => known.get(one) ?? [])
 }
 
 /** The first `count`, with the open project in the last place if it isn't one of them. */
@@ -77,16 +82,20 @@ function tabsOf(order: KnownProject[], id: string | null, count: number): KnownP
   return shown
 }
 
-/** As many tabs as fit the bar, the rest behind "N more". `room` is the bar's free space past them; a hidden copy of every tab says what each takes. */
-function ProjectTabs({ id, room, readable }: { id: string | null; room: HTMLElement | null; readable: boolean }) {
+/** As many tabs as fit their room, the rest behind "N more", and what's said beside them. The room is the bar's free space, whatever its
+ *  tabs, so a refit moves nothing it watches: whatever changes (the window, what else is in the bar, the fonts, a word beside them), the
+ *  tabs are refit in that frame and none is drawn squeezed. A hidden copy of every tab says what each takes. */
+function ProjectTabs({ id, readable, children }: { id: string | null; readable: boolean; children: ReactNode }) {
   const { client, stream } = useConnection()
   const to = useTo()
   const { data: heldProject } = useQuery({ ...projectQuery(client, stream, id ?? ""), enabled: Boolean(id) && readable })
   const data = readable ? heldProject : undefined
   const { data: list } = useQuery(projectsQuery(client))
-  const order = useOrder(list?.projects ?? [])
   const [count, setCount] = useState(Number.POSITIVE_INFINITY)
+  const order = useOrder(list?.projects ?? [], id, count)
+  const room = useRef<HTMLDivElement>(null)
   const strip = useRef<HTMLElement>(null)
+  const beside = useRef<HTMLSpanElement>(null)
   const sizes = useRef<HTMLDivElement>(null)
   const tabs = tabsOf(order, id, count)
   const hidden = order.filter((row) => !tabs.includes(row))
@@ -95,14 +104,17 @@ function ProjectTabs({ id, room, readable }: { id: string | null; room: HTMLElem
   // The open project before the list has it, or none.
   const lone = order.some((row) => row.id === id) ? null : (name ?? (id ? "…" : "untitled"))
   const named = `${id} ${lone} ${order.map((row) => `${row.id}:${row.name}`).join(" ")}`
+  const fit = useRef(() => count)
 
   useLayoutEffect(() => {
-    const held = strip.current
-    const ghost = sizes.current
-    if (!held || !ghost || !room) return
-    const fit = () => {
+    fit.current = () => {
+      const [area, held, said, ghost] = [room.current, strip.current, beside.current, sizes.current]
+      if (!area || !held || !said || !ghost) return count
       const style = getComputedStyle(held)
-      const space = Math.min(held.getBoundingClientRect().width + room.getBoundingClientRect().width, Number.parseFloat(style.maxWidth) || Number.POSITIVE_INFINITY)
+      const space = Math.min(
+        area.getBoundingClientRect().width - said.getBoundingClientRect().width - (Number.parseFloat(getComputedStyle(area).columnGap) || 0),
+        Number.parseFloat(style.maxWidth) || Number.POSITIVE_INFINITY,
+      )
       const gap = Number.parseFloat(style.columnGap) || 0
       const widths = [...ghost.children].map((child) => child.getBoundingClientRect().width)
       const alone = lone === null ? [] : [widths.pop() ?? 0]
@@ -119,21 +131,17 @@ function ProjectTabs({ id, room, readable }: { id: string | null; room: HTMLElem
       while (n < order.length - 1 && fits(n + 1)) n++
       return n
     }
-    setCount(fit())
-    // The window resizing: in its own frame, so no tab is squeezed before it goes. What else moves in the bar waits a frame, as two
-    // resizes of one element in one frame are a loop to ResizeObserver.
-    const bar = held.parentElement ?? held
-    const watch = new ResizeObserver((seen) => {
-      if (seen.some((one) => one.target === bar)) flushSync(() => setCount(fit()))
-      else setCount(fit())
-    })
-    watch.observe(bar)
-    watch.observe(room)
+  })
+  useLayoutEffect(() => setCount(fit.current()), [named])
+  // Made once, before anything else can watch the bar: what watches it later sees the tabs already refit.
+  useLayoutEffect(() => {
+    const watch = new ResizeObserver(() => flushSync(() => setCount(fit.current())))
+    for (const held of [room.current, beside.current, sizes.current]) if (held) watch.observe(held)
     return () => watch.disconnect()
-  }, [named, room])
+  }, [])
 
   return (
-    <>
+    <div className="ptabs-room" ref={room}>
       <nav className="ptabs" aria-label="Projects" ref={strip}>
         {tabs.map((tab) => (
           <Link key={tab.id} className={`ptab ${tab.id === id ? "on" : ""}`} to={projectPath(tab)} title={tab.path} aria-current={tab.id === id ? "page" : undefined}>
@@ -150,21 +158,26 @@ function ProjectTabs({ id, room, readable }: { id: string | null; room: HTMLElem
           <Icon name="plus" />
         </Link>
       </nav>
-      <div className="ptabs-ghost" ref={sizes} aria-hidden>
-        {order.map((row) => (
-          <span key={row.id} className={row.id === id ? "on" : undefined}>
-            {row.name}
-          </span>
-        ))}
-        <span>{order.length} more</span>
-        {lone !== null && <span className="on">{lone}</span>}
+      <span className="ptabs-said" ref={beside}>
+        {saidOfFile.length > 0 && (
+          <Link className="sum ood" to={to("yaml")} title={noHash(saidOfFile.join("\n"))}>
+            !
+          </Link>
+        )}
+        {children}
+      </span>
+      <div className="ptabs-ghost" aria-hidden>
+        <div ref={sizes}>
+          {order.map((row) => (
+            <span key={row.id} className={row.id === id ? "on" : undefined}>
+              {row.name}
+            </span>
+          ))}
+          <span>{order.length} more</span>
+          {lone !== null && <span className="on">{lone}</span>}
+        </div>
       </div>
-      {saidOfFile.length > 0 && (
-        <Link className="sum ood" to={to("yaml")} title={noHash(saidOfFile.join("\n"))}>
-          !
-        </Link>
-      )}
-    </>
+    </div>
   )
 }
 
@@ -278,7 +291,6 @@ export function Shell() {
   const matches = useMatches()
   const [slot, setSlot] = useState<HTMLElement | null>(null)
   const [history, setHistory] = useState<HTMLElement | null>(null)
-  const [room, setRoom] = useState<HTMLElement | null>(null)
   // The first import on an empty canvas makes a project: the same canvas stays mounted, so nothing on it is lost.
   const adopted = useRef(new Map<string, string>())
   const hostKey = (id && adopted.current.get(id)) ?? id ?? "empty"
@@ -393,9 +405,9 @@ export function Shell() {
     <div className="shell" data-drawer={handle?.drawer ?? "none"}>
       <header className="top">
         <span className="history-controls" ref={setHistory} />
-        <ProjectTabs id={id} room={room} readable={readable} />
-        <Connectivity />
-        <span className="gap" ref={setRoom} />
+        <ProjectTabs id={id} readable={readable}>
+          <Connectivity />
+        </ProjectTabs>
         <MachineTabs to={to} projectId={id} />
         <span className="canvas-controls" ref={setSlot} />
         <MainMenu id={id} />

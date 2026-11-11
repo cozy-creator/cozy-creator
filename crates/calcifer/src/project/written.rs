@@ -303,7 +303,7 @@ impl Written {
     }
 }
 
-/// Where a tool going on a picture starts from it: its first required picture slot, else the start of its first prompt.
+/// Where a tool going on a picture or a video starts from it: its first required slot of that kind, else the start of its first prompt.
 #[derive(Clone)]
 pub(crate) enum Start {
     Slot(String),
