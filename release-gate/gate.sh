@@ -306,11 +306,11 @@ PY
 # rented <machine>: its rental id into RID and `rental`, which end_it and the workflow's cleanup end.
 rented() { RID=$("$CLI" --json machine show "$1" 2>/dev/null | jq -r '.rental_id // empty'); [ -z "$RID" ] || echo "$RID" > rental; }
 if [ -z "$ON" ]; then
-  # Suite tensorfs's `kill` case kills the rental's TensorD over SSH, suite tensord measures the pod's link over it, and suite
-  # varena's faults run there (faults.sh), and suite bench holds the host's RAM there (pod.sh), with this computer's key, or a new
-  # one on a runner. An --only without them rents no SSH.
+  # Suite tensorfs's `kill` case kills the rental's TensorD over SSH, suite tensord measures the pod's link over it, suite
+  # varena's faults run there (faults.sh), suite bench holds the host's RAM there (pod.sh), and suite attention-corpus fetches
+  # its captures over it, with this computer's key, or a new one on a runner. An --only without them rents no SSH.
   SSH=
-  if [[ ,$SUITES, == *,tensord,* ]] || [[ ,$SUITES, == *,bench,* ]] || { [[ ,$SUITES, == *,tensorfs,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,kill,* ]]; }; } ||
+  if [[ ,$SUITES, == *,tensord,* || ,$SUITES, == *,bench,* || ,$SUITES, == *,attention-corpus,* ]] || { [[ ,$SUITES, == *,tensorfs,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,kill,* ]]; }; } ||
      { [[ ,$SUITES, == *,varena,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,faults,* ]]; }; }; then
     SSH=1; [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519
   fi
