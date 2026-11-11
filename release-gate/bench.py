@@ -167,6 +167,7 @@ class Gate(TypedDict):
     cells: dict[str, Cell]
     comfyui: dict[str, Comfy]  # measured on this pod after the cells (comfyui.sh), when it ran
     invalid: str | None  # a gate dir's `invalid` file: why its numbers don't count (a pod fault found after it ran)
+    only: list[str]  # the cells its --only chose (gate.sh's `only`); empty: every cell of its group
 
 
 class Group(TypedDict):
@@ -405,7 +406,7 @@ def read_gate(d: str, judged: bool = True) -> Gate:
     reference = {w: r for w in ('before', 'after') if (r := reference_of(Run.read(os.path.join(d, f'calibrate-{w}.json')), text(d, 'pod-facts.txt'))) is not None}
     rows = os.path.join(d, 'comfyui-rows.json')
     return {'dir': d, 'group': text(d, 'bench-group') or '?', 'pod': text(d, 'machine'), 'label': text(d, 'label'), 'host': text(d, 'host-ram'), 'reference': reference,
-            'invalid': text(d, 'invalid'),
+            'invalid': text(d, 'invalid'), 'only': (text(d, 'only') or '').split(),
             'cells': {name: summary(cold[0] if cold else None, warm) | {'cold_downloaded': text(d, f'{name}-0-weights.number') == 'none'}
                       for name, (cold, warm) in by.items()},
             'comfyui': cast(dict[str, Comfy], load_json(rows)) if os.path.exists(rows) else {}}  # comfy.py rows wrote it
@@ -610,7 +611,7 @@ def table(gates: list[Gate], base: Baseline | None, defs: list[CellDef], known: 
             lines += [f"\n### {g['group']} on {g['pod']}: INVALID, not judged: {g['invalid']}"]
             continue
         group = base['groups'].get(g['group']) if base else None
-        verdicts = judge([d for d in defs if in_group(d['group'], g['group'])], g, group, version, known, gates + (beside or []), refs, groups)
+        verdicts = judge([d for d in defs if in_group(d['group'], g['group']) and (not g['only'] or d['name'] in g['only'])], g, group, version, known, gates + (beside or []), refs, groups)
         ref = g['reference'].get('before') or {}
         builds = sorted({b for c in g['cells'].values() for b in c.get('builds', [])})
         lines += [f"\n### {g['group']} on {g['pod']}: {g['label']} against {version if group else 'no baseline'}"
