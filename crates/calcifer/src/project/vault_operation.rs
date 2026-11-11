@@ -52,7 +52,7 @@ fn valid_id(id: &str) -> bool {
 
 fn binding(named: &str, ask: &VaultAsk) -> String {
     // Do not hash a low-entropy passphrase into a durable offline guessing target.
-    let input = serde_json::to_vec(&(named, &ask.action, ask.idle_timeout_s, ask.max_duration_s, ask.remove_plaintext))
+    let input = serde_json::to_vec(&(named, &ask.action, ask.idle_timeout_s, ask.max_duration_s, ask.remove_plaintext, ask.preserve_plaintext))
         .expect("vault operation metadata serializes");
     hex::encode(Sha256::digest(input))
 }

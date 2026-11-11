@@ -3,7 +3,7 @@ use super::*;
 
 fn ask(secret: &str) -> VaultAsk {
     VaultAsk { action: "encrypt".into(), passphrase: Some(secret.into()), recovery_secret: None,
-        idle_timeout_s: Some(900), max_duration_s: None, remove_plaintext: false }
+        idle_timeout_s: Some(900), max_duration_s: None, remove_plaintext: false, preserve_plaintext: false }
 }
 
 #[test]
@@ -12,6 +12,9 @@ fn retry_binding_excludes_credentials_but_binds_project_and_options() {
     assert_ne!(binding("/project", &ask("one")), binding("/different", &ask("one")));
     let mut other = ask("one");
     other.remove_plaintext = true;
+    assert_ne!(binding("/project", &ask("one")), binding("/project", &other));
+    other = ask("one");
+    other.preserve_plaintext = true;
     assert_ne!(binding("/project", &ask("one")), binding("/project", &other));
 }
 
