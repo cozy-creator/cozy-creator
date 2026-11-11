@@ -62,9 +62,16 @@ const newPage = async () => {
   page = await newPage();
   page.setDefaultTimeout(45000);
   const outbound = [], fileWrites = [], secretIdempotency = [];
+  const projectReads = new Set();
   page.on('pageerror', (error) => errors.push(error.message));
+  context.on('requestfinished', (request) => projectReads.delete(request));
+  context.on('requestfailed', (request) => projectReads.delete(request));
   context.on('request', (request) => {
     const url = new URL(request.url());
+    if ((request.method() === 'GET' || request.method() === 'HEAD') &&
+        (url.pathname.startsWith(`/v1/projects/${id}`) || url.searchParams.get('project') === id)) {
+      projectReads.add(request);
+    }
     if (request.method() === 'PUT' && /^\/v1\/(project-)?files\//.test(url.pathname)) fileWrites.push({ path: url.pathname, project: url.searchParams.get('project') });
     if (request.method() === 'POST' && /\/vault$/.test(url.pathname) && request.headers()['idempotency-key']) secretIdempotency.push(url.pathname);
     let text = `${request.url()} ${request.postData() || ''}`;
@@ -110,6 +117,8 @@ const newPage = async () => {
     return { idle: !state.busy && !state.moving, movie: { width: movie?.width, height: movie?.height, duration_ms: movie?.duration_ms }, picture: { width: picture?.width, height: picture?.height } };
   }, (state) => state.idle && state.movie.width > 0 && state.movie.height > 0 && state.movie.duration_ms > 0 && state.picture.width > 0 && state.picture.height > 0);
   check('plain_seed_media_measurement_finished', true);
+  await until('initial project reads finished before conversion', () => projectReads.size, (count) => count === 0, 45000);
+  check('initial_project_reads_drained', true);
   await body.locator('input[type=password]').nth(0).fill('synthetic browser passphrase');
   await body.locator('input[type=password]').nth(1).fill('synthetic browser passphrase');
   await body.getByLabel('Remove the verified unencrypted source after conversion').check();
