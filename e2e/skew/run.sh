@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# e2e/skew/run.sh --hub-src DIR (--client VERSION | --cozy-bin FILE) --out DIR [--checks FILE] [--cozy-min X.Y.Z]: a cozy against a Hub built from
+# e2e/skew/run.sh --hub-src DIR (--client VERSION | --cozy-bin FILE) --out DIR [--checks FILE | --command FILE] [--cozy-min X.Y.Z]: a cozy against a Hub built from
 # source, on a fresh Linux runner with Docker and Go (xs-166; e2e.yaml's `skew`, by hand on a computer that is yours to
 # replace). The Hub serves on a throwaway Postgres and a MinIO built from its last source, whose SigV4 check is R2's: a
 # key's reserved characters are percent-encoded in the canonical request, so v0.40.33-35's bare ':' in a workload's
@@ -13,19 +13,22 @@
 # 0.23.0) must instead be refused at every step with the typed client_too_old naming `cozy update`. Any 5xx fails.
 set -uo pipefail
 E2E=$(cd "$(dirname "$0")/.." && pwd) HERE=$(cd "$(dirname "$0")/../../release-gate" && pwd)
-SRC= CLIENT= BIN= CHECKS= OUT= MIN= RT= TF= PUBLICATION_LOG= CLIENT_READY=
+SRC= CLIENT= BIN= CHECKS= COMMAND= OUT= MIN= RT= TF= PUBLICATION_LOG= CLIENT_READY=
 while [ $# -gt 0 ]; do
   case $1 in
     --hub-src) SRC=$(cd "$2" && pwd) || exit 2;; --client) CLIENT=${2#v};; --cozy-bin) BIN=$(realpath "$2") || exit 2;; --checks) CHECKS=$(realpath "$2") || exit 2;; --out) OUT=$2;; --cozy-min) MIN=$2;;
     --runtime) RT=$2; if [ -f "$RT" ]; then RT=$(realpath "$RT"); fi;;
     --tensorfs) TF=$2; if [ -f "$TF" ]; then TF=$(realpath "$TF"); fi;;
     --publication-log) PUBLICATION_LOG=$(realpath -m "$2");;
+    --command) COMMAND=$(realpath "$2") || exit 2;;
     *) echo "unknown argument $1" >&2; exit 2;;
   esac; shift 2
 done
 [ -n "$SRC" ] && [ -n "$OUT" ] && { [ -n "$CLIENT" ] || [ -n "$BIN" ]; } \
-  || { echo "usage: run.sh --hub-src DIR (--client VERSION | --cozy-bin FILE) --out DIR [--checks FILE] [--cozy-min X.Y.Z]" >&2; exit 2; }
+  || { echo "usage: run.sh --hub-src DIR (--client VERSION | --cozy-bin FILE) --out DIR [--checks FILE | --command FILE] [--cozy-min X.Y.Z]" >&2; exit 2; }
 [ -z "$CLIENT" ] || [ -z "$BIN" ] || { echo "choose --client or --cozy-bin" >&2; exit 2; }
+[ -z "$COMMAND" ] || { [ -n "$BIN" ] && [ -z "$CHECKS" ] && [ -f "$COMMAND" ]; } \
+  || { echo "--command requires --cozy-bin and a script file, and cannot be combined with --checks" >&2; exit 2; }
 [ -z "$BIN" ] || { [ -x "$BIN" ] && CLIENT=$("$BIN" --version | awk '{print $2}'); } || exit 2
 mkdir -p "$OUT" && OUT=$(cd "$OUT" && pwd) && cd "$OUT" || exit 2
 : > expect.tsv
@@ -161,6 +164,16 @@ if [ -n "$REFUSE" ]; then
   verdict
 fi
 [ "$login" = 0 ] && expect "skew login" PASS "signed in: $(tail -c 200 login.out)" || die login "cozy login (exit $login, code ${code:-none logged}): $(tail -c 300 login.out)"
+
+# A focused suite inherits the real isolated Hub, OAuth key and default home,
+# but its shell variables/traps cannot alter this runner's cleanup ownership.
+if [ -n "$COMMAND" ]; then
+  bash "$COMMAND" "$OUT/command" "$COZY_BIN" "$RT" "$TF"
+  command_status=$?
+  if [ "$command_status" = 0 ]; then expect "fixture command" PASS "the focused suite completed"
+  else expect "fixture command" FAIL "the focused suite exited $command_status"; fi
+  verdict
+fi
 
 # The Hub suite's cells, through verbs every supported cozy has (a run's project and flags moved in 0.24.0): the
 # package is installed on the machine from the Hub's index, not run.
