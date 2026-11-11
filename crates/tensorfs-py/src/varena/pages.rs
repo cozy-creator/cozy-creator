@@ -8,6 +8,12 @@
 //! as reclaimable. Every executor's tiers share the host through its ledger page (`host`): idle
 //! ones give pages back to a call that is short. On a person's computer nothing pins while the
 //! host stalls on memory, and the headroom doubles.
+//!
+//! Two jobs run beside the fills on the tier's own threads. Reading ahead (`read_ahead`) reads the
+//! pages a request will use next into the tier, in its order, within free room: a slot's derived
+//! page on disk, else its stored bytes for its derive to read, else a plain page's stored bytes.
+//! Persisting (`persist`) writes a derived page the tier keeps to the store, so a later process
+//! reads it.
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
@@ -20,7 +26,7 @@ use pyo3::{exceptions::PyRuntimeError, prelude::*, types::PyDict};
 use tensorfs::io::cuda::HostPin;
 use tensorfs::io::source::{Item, ItemSource, Source as Store};
 
-use super::source::Inner;
+use super::source::{Inner, OnDisk};
 
 /// How stale a reading of host RAM may be.
 const LOOK: Duration = Duration::from_millis(100);
@@ -32,6 +38,10 @@ pub(super) const WINDOW: usize = 64 << 20;
 /// memory at 3 GB/s, one page at a time, touched memory at 28, and faulting in ran at 10.5 GB/s on
 /// four threads.
 const FAULTERS: usize = 4;
+/// Readers a page is read ahead with: demand fills keep the larger share of the disk.
+const AHEAD_READERS: usize = 2;
+/// Derived pages written under one sync, at most.
+const PERSIST_BATCH: usize = 16;
 
 /// Host bytes, page aligned, registered once filled: registering touched memory runs at about
 /// twice the rate of untouched memory. A window at a time, and no copy spans two: CUDA refuses it.
@@ -230,6 +240,14 @@ struct State {
     spare: Vec<(Page, bool)>,
     /// Staging bytes this process owns (`staging`): held, never given back.
     staging: u64,
+    /// Sources whose pages are read ahead, in the order of use (`read_ahead`), and the keys being
+    /// read now.
+    to_read: VecDeque<Weak<Inner>>,
+    reading_ahead: HashSet<String>,
+    /// Pages and bytes read ahead, and reads ahead that found no free room.
+    read_ahead_pages: u64,
+    read_ahead_bytes: u64,
+    read_ahead_refused: u64,
 }
 
 pub(super) struct Tier {
@@ -256,6 +274,36 @@ pub(super) struct Tier {
     /// offset in their bytes. Content-addressed, so two sets sharing objects (a LoRA view and its
     /// base, two releases' text encoder) find each other's bytes.
     objects: Mutex<HashMap<String, Ranges>>,
+    reader: OnceLock<()>,
+    /// Derived pages on their way to disk (`persist`), and the writes' outcomes.
+    persists: OnceLock<Mutex<std::sync::mpsc::Sender<Persisting>>>,
+    persisted: AtomicU64,
+    persisted_bytes: AtomicU64,
+    persist_skipped: AtomicU64,
+    persist_failed: AtomicU64,
+}
+
+/// A derived page the tier keeps, `len` bytes of `set`, to write to disk as page `key` of `slot`.
+pub(super) struct Persisting {
+    pub(super) checkpoint: tensorfs::Checkpoint,
+    pub(super) slot: String,
+    pub(super) key: String,
+    pub(super) set: String,
+    pub(super) len: usize,
+    pub(super) source: Weak<Inner>,
+}
+
+/// A key being read ahead: no longer once this drops, however the read ended.
+struct Reading<'a> {
+    tier: &'a Tier,
+    key: String,
+}
+
+impl Drop for Reading<'_> {
+    fn drop(&mut self) {
+        self.tier.state().reading_ahead.remove(&self.key);
+        self.tier.reserving.notify_all();
+    }
 }
 
 /// An object's ranges (offset, length) -> each Source placing it, and where in its bytes.
@@ -315,7 +363,9 @@ impl Tier {
             device, cap, shared, state: Mutex::new(State { room: -1, ..State::default() }),
             reserving: Condvar::new(), reservers: OnceLock::new(), canceled: AtomicU64::new(0), failed: AtomicU64::new(0),
             keep_ns: AtomicU64::new(0), reserve_ns: AtomicU64::new(0), making: Arc::default(), freeing: Arc::default(),
-            stores: Mutex::default(), objects: Mutex::default(),
+            stores: Mutex::default(), objects: Mutex::default(), reader: OnceLock::new(), persists: OnceLock::new(),
+            persisted: AtomicU64::new(0), persisted_bytes: AtomicU64::new(0),
+            persist_skipped: AtomicU64::new(0), persist_failed: AtomicU64::new(0),
         });
         tier.look(&mut tier.state(), &budget());
         super::host::join(Arc::downgrade(&tier));
@@ -593,11 +643,14 @@ impl Tier {
         (Some(Moving::new(&self.making, bytes)), gone)
     }
 
-    /// `key`'s page of `len` bytes. A GPU `refill` counts whichever way it is served, in the pass
-    /// of `set` it is in.
+    /// `key`'s page of `len` bytes, waited for while it is read ahead. A GPU `refill` counts
+    /// whichever way it is served, in the pass of `set` it is in.
     pub(super) fn take(&self, key: &str, set: &str, len: usize, refill: bool) -> Option<Arc<Page>> {
         let (page, gone) = {
             let mut state = self.state();
+            while state.reading_ahead.contains(key) {
+                state = self.reserving.wait(state).unwrap_or_else(|error| error.into_inner());
+            }
             if refill {
                 state.count(key, set);
             }
@@ -618,13 +671,39 @@ impl Tier {
         self.state().count(key, set);
     }
 
+    /// Whether `key`'s page is kept, or being read ahead.
     pub(super) fn holds(&self, key: &str) -> bool {
-        self.state().kept.contains_key(key)
+        let state = self.state();
+        state.kept.contains_key(key) || state.reading_ahead.contains(key)
     }
 
-    /// A page with bytes the caller is about to write for `key`, admitted and registered, or
-    /// None: `insert` it once they are written. One registered ahead if there is, or will be soon.
-    pub(super) fn reserve(&self, key: &str, set: &str, len: usize) -> PyResult<Option<Page>> {
+    /// `key`'s page goes now, for `why`: a page read ahead for one fill, once served.
+    pub(super) fn let_go(&self, key: &str, why: &'static str) {
+        let gone = self.state().remove(key, why);
+        drop(gone); // Unregistering waits on the device: never under the lock.
+    }
+
+    /// `key`'s page out of the tier, still registered, for the caller to fill and `insert` again:
+    /// `page` is the one `take` gave. None while anything else holds it (it goes when that ends).
+    /// No unregistering on a fill's thread, which waits on the device.
+    pub(super) fn take_out(&self, key: &str, page: Arc<Page>) -> Option<Page> {
+        let kept = {
+            let mut state = self.state();
+            let same = state.kept.get(key).is_some_and(|kept| Arc::ptr_eq(&kept.page, &page));
+            let kept = if same { state.kept.remove(key) } else { None };
+            if let Some(kept) = &kept {
+                state.bytes -= kept.page.len as u64;
+            }
+            kept
+        };
+        drop(kept);
+        Arc::try_unwrap(page).ok()
+    }
+
+    /// A page with bytes the caller is about to write for `key`, admitted and registered (faulted
+    /// in first if `populate`), or None: `insert` it once they are written. One registered ahead if
+    /// there is, or will be soon.
+    pub(super) fn reserve(&self, key: &str, set: &str, len: usize, populate: bool) -> PyResult<Option<Page>> {
         let (making, gone) = {
             let mut state = self.state();
             while state.reserving.contains(key) {
@@ -643,7 +722,7 @@ impl Tier {
         };
         drop(gone);
         let Some(making) = making else { return Ok(None) };
-        let page = self.registered(len, false);
+        let page = self.registered(len, populate);
         drop(making);
         page
     }
@@ -741,19 +820,192 @@ impl Tier {
         drop(reserved);
     }
 
-    pub(super) fn insert(&self, key: &str, set: &str, page: Page) {
-        let replaced = {
-            let mut state = self.state();
-            let tick = state.tick();
-            state.bytes += page.len as u64;
-            let kept = Kept { page: Arc::new(page), set: set.to_owned(), last: tick };
-            let replaced = state.kept.insert(key.to_owned(), kept);
-            if let Some(replaced) = &replaced {
-                state.bytes -= replaced.page.len as u64;
+    /// Keep `page` as `key`'s: the kept page.
+    pub(super) fn insert(&self, key: &str, set: &str, page: Page) -> Arc<Page> {
+        let (page, replaced) = Self::kept_as(&mut self.state(), key, set, page);
+        drop(replaced); // Unregistering waits on the device: never under the lock.
+        page
+    }
+
+    fn kept_as(state: &mut State, key: &str, set: &str, page: Page) -> (Arc<Page>, Option<Kept>) {
+        let tick = state.tick();
+        state.bytes += page.len as u64;
+        let page = Arc::new(page);
+        let kept = Kept { page: Arc::clone(&page), set: set.to_owned(), last: tick };
+        let replaced = state.kept.insert(key.to_owned(), kept);
+        if let Some(replaced) = &replaced {
+            state.bytes -= replaced.page.len as u64;
+        }
+        (page, replaced)
+    }
+
+    /// Read `sources`' pages ahead of their use, in this order, in place of what was queued: the
+    /// tier's thread reads each into a page within free room (`read_each_ahead`).
+    pub(super) fn read_ahead(self: &Arc<Self>, sources: &[Arc<Inner>]) {
+        self.state().to_read = sources.iter().map(Arc::downgrade).collect();
+        self.reserving.notify_all();
+        self.reader.get_or_init(|| {
+            let tier = Arc::clone(self);
+            let spawned = std::thread::Builder::new().name("tensorfs-ahead".into()).spawn(move || tier.read_each_ahead());
+            if let Err(error) = spawned {
+                tracing::warn!("host pages are not read ahead: {error}");
             }
-            replaced
-        };
-        drop(replaced);
+        });
+    }
+
+    /// The next Source to read ahead, waited for.
+    fn next_ahead(&self) -> Option<Arc<Inner>> {
+        let mut state = self.state();
+        loop {
+            if state.off.is_some() {
+                return None;
+            }
+            match state.to_read.pop_front() {
+                Some(source) => {
+                    if let Some(source) = source.upgrade() {
+                        return Some(source);
+                    }
+                }
+                None => state = self.reserving.wait(state).unwrap_or_else(|error| error.into_inner()),
+            }
+        }
+    }
+
+    /// Read each queued Source's page: a derived page on disk under its own key (a block's slot
+    /// names it whatever overlay asks), else a derive's stored bytes under its stored key, else a
+    /// plain page's stored bytes. Only into free room: the first that does not fit ends the queue,
+    /// as what follows it is used later still.
+    fn read_each_ahead(&self) {
+        while let Some(source) = self.next_ahead() {
+            if source.page().is_some_and(|key| self.holds(key)) {
+                continue; // Its own page is here: nothing it would be made from is wanted.
+            }
+            let (key, disk): (String, Option<OnDisk>) = if source.derives() {
+                match (source.slot_page(), source.stored_key()) {
+                    (Some(disk), _) => (disk.page.clone(), Some(disk)),
+                    (None, Some(key)) => (key, None),
+                    (None, None) => continue,
+                }
+            } else {
+                match source.page() {
+                    Some(key) if source.stored_bytes() => (key.to_owned(), None),
+                    _ => continue,
+                }
+            };
+            let bytes = source.bytes();
+            let (admitted, gone) = {
+                let mut state = self.state();
+                if state.kept.contains_key(&key) || state.reading_ahead.contains(&key) || state.reserving.contains(&key) {
+                    (None, Gone::new(self))
+                } else {
+                    let gone = self.trim(&mut state);
+                    if state.off.is_some() || !self.fits(&state, bytes as i64) {
+                        state.to_read.clear();
+                        state.read_ahead_refused += 1;
+                        (None, gone)
+                    } else {
+                        state.room -= bytes as i64;
+                        state.reading_ahead.insert(key.clone());
+                        (Some((Moving::new(&self.making, bytes as i64), state.forgets)), gone)
+                    }
+                }
+            };
+            drop(gone); // Unregistering waits on the device: never under the lock.
+            let Some((making, forgets)) = admitted else { continue };
+            let reading = Reading { tier: self, key };
+            let page = self.registered(bytes, true).ok().flatten();
+            let read = page.as_ref().map(|page| match &disk {
+                Some(disk) => disk.read(tensorfs::io::Dst::Host { ptr: page.ptr(), len: bytes }, AHEAD_READERS)
+                    .map(drop).map_err(|error| error.to_string()),
+                None => source.read_stored(page.ptr(), AHEAD_READERS),
+            });
+            drop(making);
+            let unused = {
+                let mut state = self.state();
+                match (page, read) {
+                    (Some(page), Some(Ok(()))) if state.forgets == forgets => {
+                        state.read_ahead_pages += 1;
+                        state.read_ahead_bytes += bytes as u64;
+                        Self::kept_as(&mut state, &reading.key, source.set(), page).1
+                    }
+                    (page, read) => {
+                        if let Some(Err(error)) = read {
+                            tracing::warn!("a page was not read ahead: {error}");
+                        }
+                        page.map(|page| Kept { page: Arc::new(page), set: String::new(), last: 0 })
+                    }
+                }
+            };
+            drop(reading);
+            drop(unused); // Unregistering waits on the device: never under the lock.
+        }
+    }
+
+    /// Write a derived page the tier keeps to disk behind the fills: a later process reads it
+    /// there (`Checkpoint::keep_derived`). The writer takes it from the tier when its turn comes;
+    /// one the tier let go by then is made again, and written then.
+    pub(super) fn persist(self: &Arc<Self>, job: Persisting) {
+        let sender = self.persists.get_or_init(|| {
+            let (sender, jobs) = std::sync::mpsc::channel::<Persisting>();
+            let tier = Arc::clone(self);
+            let spawned = std::thread::Builder::new().name("tensorfs-persist".into()).spawn(move || tier.persist_behind(jobs));
+            if let Err(error) = spawned {
+                tracing::warn!("derived pages stay in this process: {error}");
+            }
+            Mutex::new(sender)
+        });
+        if sender.lock().unwrap_or_else(|error| error.into_inner()).send(job).is_err() {
+            self.persist_skipped.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// The writer: what is queued, up to `PERSIST_BATCH` pages under one sync, a checkpoint's at a time.
+    fn persist_behind(&self, jobs: std::sync::mpsc::Receiver<Persisting>) {
+        while let Ok(first) = jobs.recv() {
+            let mut batch = vec![first];
+            while batch.len() < PERSIST_BATCH {
+                let Ok(job) = jobs.try_recv() else { break };
+                batch.push(job);
+            }
+            let mut groups: Vec<(tensorfs::Checkpoint, Vec<(Persisting, Arc<Page>)>)> = Vec::new();
+            for job in batch {
+                let Some(page) = self.take(&job.key, &job.set, job.len, false) else {
+                    self.persist_skipped.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                };
+                match groups.iter_mut().find(|(checkpoint, _)| checkpoint.id() == job.checkpoint.id()) {
+                    Some((_, pages)) => pages.push((job, page)),
+                    None => groups.push((job.checkpoint.clone(), vec![(job, page)])),
+                }
+            }
+            for (checkpoint, pages) in groups {
+                let written: Vec<(&str, &str, &[u8])> = pages.iter().map(|(job, page)| {
+                    // SAFETY: a kept page's bytes were written before it was shared, and `pages` holds it.
+                    let bytes = unsafe { std::slice::from_raw_parts(page.ptr.cast_const(), page.len) };
+                    (job.slot.as_str(), job.key.as_str(), bytes)
+                }).collect();
+                match checkpoint.keep_derived(&written) {
+                    Ok(kept) => {
+                        for ((job, page), object) in pages.iter().zip(kept) {
+                            if object.is_none() {
+                                self.persist_skipped.fetch_add(1, Ordering::Relaxed);
+                                continue;
+                            }
+                            self.persisted.fetch_add(1, Ordering::Relaxed);
+                            self.persisted_bytes.fetch_add(page.len as u64, Ordering::Relaxed);
+                            if let Some(source) = job.source.upgrade() {
+                                source.persisted();
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        if self.persist_failed.fetch_add(pages.len() as u64, Ordering::Relaxed) == 0 {
+                            tracing::warn!("derived pages were not written to disk: {error}");
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// A store read of `key` completed.
@@ -767,6 +1019,7 @@ impl Tier {
     /// A request ended: its refills become each page's worth.
     pub(super) fn request_ended(&self) {
         let mut state = self.state();
+        state.to_read.clear();
         state.rate = std::mem::take(&mut state.refills);
         state.passes.clear();
         state.taken.clear();
@@ -968,6 +1221,7 @@ impl Tier {
             };
             state.forgets += 1;
             state.ahead.retain(|(_, source)| set.is_some_and(|set| source.upgrade().is_some_and(|source| source.set() != set)));
+            state.to_read.retain(|source| set.is_some_and(|set| source.upgrade().is_some_and(|source| source.set() != set)));
             let reserved: Vec<_> = state.reserved.iter().filter(|(_, reserved)| set.is_none_or(|set| reserved.set == set))
                 .map(|(key, _)| key.clone()).collect();
             let reserved: Vec<_> = reserved.iter().filter_map(|key| state.reserved.remove(key)).collect();
@@ -1006,6 +1260,11 @@ impl PyPages {
     fn request_ended(&self, py: Python<'_>) {
         py.detach(|| self.tier.request_ended());
     }
+    /// Read these Sources' pages ahead of their use, in this order: see `Tier::read_ahead`.
+    fn read_ahead(&self, py: Python<'_>, sources: Vec<PyRef<'_, super::source::PySource>>) {
+        let sources: Vec<_> = sources.iter().map(|source| Arc::clone(&source.inner)).collect();
+        py.detach(|| self.tier.read_ahead(&sources));
+    }
     /// Host bytes retained regions may take now: see `Tier::retained_room`.
     fn retained_room(&self, py: Python<'_>) -> i64 {
         py.detach(|| self.tier.retained_room())
@@ -1025,6 +1284,10 @@ impl PyPages {
             (state.kept.len(), state.bytes, state.room, state.wanted.len(), state.pin_failed, state.off.clone(),
                 state.headroom, state.pressed, state.reserved.len(), state.reserved_ahead, state.last_reads.clone(),
                 state.let_go.clone())
+        };
+        let (read_ahead_pages, read_ahead_bytes, read_ahead_refused) = {
+            let state = self.tier.state();
+            (state.read_ahead_pages, state.read_ahead_bytes, state.read_ahead_refused)
         };
         let row = PyDict::new(py);
         row.set_item("scope", "the host tier: every streamed page's bytes, pinned")?;
@@ -1050,6 +1313,15 @@ impl PyPages {
         row.set_item("freeing", self.tier.freeing.load(Ordering::Relaxed))?;
         row.set_item("store_reads_scope", "the last request's store reads: set, block, O_DIRECT bytes, cached bytes, ns")?;
         row.set_item("store_reads", reads)?;
+        row.set_item("read_ahead_scope", "pages read ahead of their use this process, and reads short of free room")?;
+        row.set_item("read_ahead", read_ahead_pages)?;
+        row.set_item("read_ahead_bytes", read_ahead_bytes)?;
+        row.set_item("read_ahead_refused", read_ahead_refused)?;
+        row.set_item("persisted_scope", "derived pages written to disk this process, skipped, failed")?;
+        row.set_item("persisted", self.tier.persisted.load(Ordering::Relaxed))?;
+        row.set_item("persisted_bytes", self.tier.persisted_bytes.load(Ordering::Relaxed))?;
+        row.set_item("persist_skipped", self.tier.persist_skipped.load(Ordering::Relaxed))?;
+        row.set_item("persist_failed", self.tier.persist_failed.load(Ordering::Relaxed))?;
         Ok(row)
     }
 }

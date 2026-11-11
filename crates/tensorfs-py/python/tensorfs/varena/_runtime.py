@@ -173,6 +173,12 @@ class Pages:
     def request_ended(self) -> None:
         self._native.request_ended()
 
+    def read_ahead(self, sources: Sequence[Source]) -> None:
+        """Read `sources`' pages ahead of their use, in this order, in place of what was queued:
+        a slot's derived page on disk, else a derive's stored bytes, else a plain page's stored
+        bytes, each into pinned host RAM within free room. The first that does not fit ends it."""
+        self._native.read_ahead([source._native for source in sources])
+
     def retained_room(self) -> int:
         """Host bytes retained regions may take now: available beyond the headroom, this tier's
         own pages included, which yield to them."""
@@ -230,7 +236,10 @@ class Source:
     as a U8 Tensor, stored bytes in it and gaps zeroed, and returns whether they are now different.
 
     parts: (component/key#role, destination offset, stored length). `page` names it in the tier;
-    None: never kept. `set` and `block` name its fills in the record.
+    None: never kept. `set` and `block` name its fills in the record. `slot` (a sha256 digest, with
+    `page` one too) names its block under its fill identity whatever the overlay: a derive's kept
+    page is written to the store under it, and a later process reads it from disk instead of the
+    store and its derive.
     """
 
     def __init__(
@@ -244,10 +253,11 @@ class Source:
         parts: Sequence[tuple[str, int, int]] = (),
         page: str | None = None,
         derive: Callable[[Tensor], object] | None = None,
+        slot: str | None = None,
     ) -> None:
         self._native = _ext._VarenaSource(
             pages._native, set, block, bytes,
-            checkpoint=checkpoint, parts=list(parts), page=page, derive=derive,
+            checkpoint=checkpoint, parts=list(parts), page=page, derive=derive, slot=slot,
         )
 
     def read_host(self, out: Buffer, *, stored: bool = False) -> None:

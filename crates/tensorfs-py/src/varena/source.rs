@@ -1,8 +1,10 @@
-//! TensorFS as varena's Source: a Region's bytes from its host page, else each stored object
-//! range from where it already is (another set's resident Region on this GPU, or that set's kept
-//! page), else the store (fetched if a caller is waiting), then its derive on the thread that
-//! called `use`. A worker running ahead of demand never sees Python: what needs a derive declines
-//! there.
+//! TensorFS as varena's Source: a Region's bytes from its host page, else its derived page on disk
+//! (a derive made it in an earlier process: `Store::derived`), else each stored object range from
+//! where it already is (another set's resident Region on this GPU, that set's kept page, or its
+//! own bytes the tier read ahead), else the store (fetched if a caller is waiting), then its
+//! derive on the thread that called `use`. A worker running ahead of demand never sees Python:
+//! what needs a derive declines there. A derive's kept page is also written to disk, behind the
+//! fill (`persist`), when its Source names a slot.
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,7 +15,7 @@ use pyo3::{exceptions::PyRuntimeError, ffi, prelude::*};
 use tensorfs::io::source::{IoTally, Item, ItemSource, Mode, Placement, Source as Store};
 use tensorfs::io::{self, Dst, ObjectRange, ReadControl, ReadOpts, Src};
 
-use super::pages::{self, Held, Page, PyPages, Row, Tier, WINDOW};
+use super::pages::{self, Held, Page, Persisting, PyPages, Row, Tier, WINDOW};
 use super::{Consumers, PyUse};
 use crate::store::PyCheckpoint;
 
@@ -40,12 +42,38 @@ struct Stored {
     local: Arc<Store>,
     /// Fetches what it lacks, for a caller who is waiting.
     fetching: Arc<Store>,
+    checkpoint: tensorfs::Checkpoint,
+}
+
+/// A derived page on disk: its key, and its object as a read-engine source.
+pub(super) struct OnDisk {
+    pub(super) page: String,
+    items: Vec<Item>,
+    source: Store,
+}
+
+impl OnDisk {
+    /// Its bytes into `dst`, which holds the whole page.
+    pub(super) fn read(&self, dst: Dst, threads: usize) -> Result<tensorfs::io::ReadStats, tensorfs::io::source::Error> {
+        // SAFETY: the caller's destination is exclusive and holds the page; the items tile it.
+        unsafe { self.source.read_items(&self.items, 0, dst, threads, Mode::Cache, &IoTally::default()) }
+    }
+}
+
+/// Where a Source's derived page is: not looked for yet, not on disk, or there.
+enum Disk {
+    Unknown,
+    Absent,
+    Here(Arc<OnDisk>),
 }
 
 pub(super) struct Inner {
     tier: Arc<Tier>,
     /// Its name in the tier. None: it is never kept.
     page: Option<String>,
+    /// Its block under its fill identity, whatever the overlay (a digest): names its derived pages
+    /// on disk (`Store::derived`). None: its derive's bytes never leave the process.
+    slot: Option<String>,
     set: String,
     block: u32,
     bytes: usize,
@@ -53,6 +81,7 @@ pub(super) struct Inner {
     derive: Option<Py<PyAny>>,
     /// Its derive wrote nothing: the stored bytes are the page.
     plain: AtomicBool,
+    disk: Mutex<Disk>,
     reading: Mutex<Option<Arc<ReadControl>>>,
     region: Mutex<Weak<varena::Region>>,
 }
@@ -133,6 +162,114 @@ impl Inner {
     }
     pub(super) fn region(&self) -> Weak<varena::Region> {
         self.region.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+    pub(super) fn derives(&self) -> bool {
+        self.derive.is_some() && !self.plain.load(Ordering::Acquire)
+    }
+    pub(super) fn page(&self) -> Option<&str> {
+        self.page.as_deref()
+    }
+
+    /// Its slot's page `page` on disk, or with none the one used last, under whatever overlay.
+    fn derived_page(&self, page: Option<&str>) -> Option<OnDisk> {
+        let (slot, stored) = (self.slot.as_ref()?, self.stored.as_ref()?);
+        let found = stored.checkpoint.derived(slot, page, true);
+        let (derived, source) = found.inspect_err(|error| tracing::warn!("a derived page could not be looked up: {error}")).ok()??;
+        if derived.object.length != self.bytes as u64 {
+            return None;
+        }
+        let items = vec![Item {
+            offset: 0,
+            len: derived.object.length,
+            source: ItemSource::Object(ObjectRange { off: 0, len: derived.object.length, obj: derived.object }),
+            part_end: true,
+        }];
+        Some(OnDisk { page: derived.page, items, source })
+    }
+
+    /// The page its slot's block was derived as last, under whatever overlay: what a read ahead
+    /// reads for it before its use's overlay is known.
+    pub(super) fn slot_page(&self) -> Option<OnDisk> {
+        self.derived_page(None)
+    }
+
+    /// Its own derived page on disk, made in an earlier process: what a fill reads instead of
+    /// the store and its derive. Looked for once.
+    fn on_disk(&self) -> Option<Arc<OnDisk>> {
+        if self.derive.is_none() || self.page.is_none() {
+            return None;
+        }
+        let mut disk = self.disk.lock().unwrap_or_else(|e| e.into_inner());
+        if let Disk::Unknown = *disk {
+            *disk = match self.derived_page(self.page.as_deref()) {
+                Some(found) => Disk::Here(Arc::new(found)),
+                None => Disk::Absent,
+            };
+        }
+        match &*disk {
+            Disk::Here(found) => Some(found.clone()),
+            _ => None,
+        }
+    }
+
+    /// Its derived page was written: the next look finds it.
+    pub(super) fn persisted(&self) {
+        *self.disk.lock().unwrap_or_else(|e| e.into_inner()) = Disk::Unknown;
+    }
+
+    /// The tier's name for its stored bytes read ahead (`Tier::read_ahead`), when they are not its page:
+    /// a derive makes the page from them. Every overlay of its block shares it.
+    pub(super) fn stored_key(&self) -> Option<String> {
+        self.slot.as_ref().filter(|_| self.stored.is_some()).map(|slot| format!("stored:{slot}"))
+    }
+
+    /// Its stored bytes into `page` (a host page of its size), gaps zeroed.
+    pub(super) fn read_stored(&self, page: *mut u8, threads: usize) -> Result<(), String> {
+        let stored = self.stored.as_ref().ok_or("a page with no stored bytes")?;
+        let dst = Dst::Host { ptr: page, len: self.bytes };
+        // SAFETY: the tier's unshared page holds `bytes` bytes, which the items tile.
+        unsafe { stored.local.read_items(&stored.items, 0, dst, threads, Mode::Cache, &IoTally::default()) }
+            .map(drop).map_err(|error| error.to_string())
+    }
+
+    /// Its derived page from disk: read into a page the tier keeps, then one DMA; straight onto the
+    /// card when the tier has no room.
+    fn from_disk(&self, disk: &OnDisk, fill: &varena::Fill, ahead: bool) -> Result<(), tensorfs::io::source::Error> {
+        let began = Instant::now();
+        let key = self.page.as_ref().expect("a derived page is kept by its key");
+        let page = self.tier.reserve(key, &self.set, self.bytes, true).ok().flatten();
+        if let Some(page) = page {
+            disk.read(Dst::Host { ptr: page.ptr(), len: self.bytes }, READERS)?;
+            let page = self.tier.insert(key, &self.set, page);
+            self.from_page(fill, &page)?;
+            self.row(self.bytes as u64, "derived", ahead, began);
+            return Ok(());
+        }
+        let control = Arc::new(ReadControl::default());
+        *self.reading.lock().unwrap_or_else(|e| e.into_inner()) = Some(control.clone());
+        let dst = Dst::Device { device: fill.device(), ptr: fill.ptr(), len: fill.len(), stream: 0 };
+        let placements = [Placement { items: &disk.items, origin: 0, dst }];
+        // SAFETY: the Fill is exclusive; `abort` drains before a failed fill's pages are released.
+        let read = unsafe { disk.source.read_placements_cancelable(&placements, READERS, Mode::Cache, &IoTally::default(), &control) };
+        *self.reading.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        read?;
+        self.row(self.bytes as u64, "derived", ahead, began);
+        Ok(())
+    }
+
+    /// A failed read: canceled, it declines; else it aborts, its failure kept for `use` to raise.
+    fn failed(&self, fill: varena::Fill, error: varena::Error, failed: Option<Failed>, ahead: bool) -> varena::Error {
+        if matches!(error, varena::Error::Busy) {
+            self.tier.canceled();
+            decline(fill); // A canceled read joined what it had submitted.
+            return error;
+        }
+        if ahead {
+            self.tier.failed();
+        } else {
+            FAILED.with_borrow_mut(|slot| *slot = failed);
+        }
+        abort(fill, error)
     }
 
     fn row(&self, bytes: u64, origin: &'static str, ahead: bool, began: Instant) {
@@ -299,11 +436,20 @@ impl Inner {
             .map(drop).map_err(|error| error.to_string())
     }
 
-    fn keep(&self, key: &str, py: Python<'_>, view: &Bound<'_, PyAny>) -> PyResult<()> {
+    /// The derive's bytes into a page the tier keeps, and that page: `spare` (its stored bytes'
+    /// page, read ahead and served) when there is one, as no page is registered or let go on the
+    /// fill's thread then; else one the tier admits.
+    fn keep(&self, key: &str, py: Python<'_>, view: &Bound<'_, PyAny>, spare: Option<Page>) -> PyResult<Option<Arc<Page>>> {
         let began = Instant::now();
-        let page = py.detach(|| self.tier.reserve(key, &self.set, self.bytes))?;
-        self.tier.reserve_ns.fetch_add(began.elapsed().as_nanos() as u64, Ordering::Relaxed);
-        let Some(page) = page else { return Ok(()) };
+        let page = match spare {
+            Some(page) => Some(page),
+            None => {
+                let page = py.detach(|| self.tier.reserve(key, &self.set, self.bytes, false))?;
+                self.tier.reserve_ns.fetch_add(began.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                page
+            }
+        };
+        let Some(page) = page else { return Ok(None) };
         // SAFETY: the memoryview ends with this call's objects, which the blocking copy outlives.
         let host = unsafe {
             Bound::from_owned_ptr_or_err(py, ffi::PyMemoryView_FromMemory(page.ptr().cast(), self.bytes as isize, ffi::PyBUF_WRITE))
@@ -316,15 +462,20 @@ impl Inner {
             let window = pyo3::types::PySlice::new(py, at as isize, (at + len) as isize, 1);
             kept.get_item(&window)?.call_method1("copy_", (view.get_item(&window)?,))?;
         }
-        self.tier.insert(key, &self.set, page);
+        let page = self.tier.insert(key, &self.set, page);
         self.tier.keep_ns.fetch_add(began.elapsed().as_nanos() as u64, Ordering::Relaxed);
-        Ok(())
+        Ok(Some(page))
     }
 
-    /// The derive on this thread, which holds no lock, with the bytes so far as a Tensor.
-    fn derive(&self, derive: &Py<PyAny>, fill: varena::Fill, consumer: u64, this: Weak<Inner>) -> varena::Result<varena::Pin> {
+    /// The derive on this thread, which holds no lock, with the bytes so far as a Tensor. `spare`:
+    /// the page its stored bytes were read ahead into, which keeps what it makes (or, when it
+    /// makes nothing, its stored bytes).
+    fn derive(
+        &self, derive: &Py<PyAny>, fill: varena::Fill, consumer: u64, this: Weak<Inner>, spare: Option<Page>,
+    ) -> varena::Result<varena::Pin> {
         let device = fill.device();
         let region = Arc::downgrade(fill.target());
+        let mut spare = spare;
         Python::attach(|py| {
             let done = (|| -> PyResult<(bool, varena::Pin)> {
                 let consumers = Consumers::new(device);
@@ -334,7 +485,13 @@ impl Inner {
                 let changed = derive.call1(py, (&view,))?.is_truthy(py)?;
                 if changed || self.stored.is_none() {
                     if let Some(key) = &self.page {
-                        self.keep(key, py, &view)?;
+                        let kept = self.keep(key, py, &view, spare.take())?;
+                        if let (Some(_), Some(slot), Some(stored), true) = (kept, &self.slot, &self.stored, changed) {
+                            self.tier.persist(Persisting {
+                                checkpoint: stored.checkpoint.clone(), slot: slot.clone(), key: key.clone(),
+                                set: self.set.clone(), len: self.bytes, source: this.clone(),
+                            });
+                        }
                     }
                 }
                 let pin = used.borrow(py).finish(py)?;
@@ -346,7 +503,11 @@ impl Inner {
                         self.plain.store(true, Ordering::Release);
                         if let Some(key) = &self.page {
                             py.detach(|| self.tier.unreserve(key));
-                            self.tier.want(key, &self.set, this, region);
+                            match spare.take() {
+                                // Its stored bytes, read ahead, are its page.
+                                Some(page) => drop(self.tier.insert(key, &self.set, page)),
+                                None => self.tier.want(key, &self.set, this, region),
+                            }
                         }
                     }
                     Ok(pin)
@@ -394,6 +555,7 @@ impl varena::Source for PageSource {
         let this = &self.0;
         this.page.as_ref().is_some_and(|key| this.tier.holds(key))
             || (this.stored.is_some() && (this.derive.is_none() || this.plain.load(Ordering::Acquire)))
+            || this.on_disk().is_some()
     }
 
     fn stop(&self) {
@@ -422,36 +584,57 @@ impl varena::Source for PageSource {
             return publish(fill, consumer);
         }
         let derive = this.derive.as_ref().filter(|_| !this.plain.load(Ordering::Acquire));
-        if ahead && (derive.is_some() || this.stored.is_none()) {
+        let disk = derive.and_then(|_| this.on_disk());
+        if ahead && ((derive.is_some() && disk.is_none()) || this.stored.is_none()) {
             decline(fill); // Its page went since the core asked: this one needs its caller.
             return Err(varena::Error::Busy);
         }
         count();
-        if let (Some(key), Some(_)) = (&this.page, derive) {
-            this.tier.expect(key.clone(), this);
-        }
-        if let Some(stored) = &this.stored {
-            match this.read(stored, &fill, ahead) {
-                Ok(()) => {}
+        if let Some(disk) = disk {
+            match this.from_disk(&disk, &fill, ahead) {
+                Ok(()) => return publish(fill, consumer),
                 Err(error) => {
                     let (error, failed) = storage(error);
-                    if matches!(error, varena::Error::Busy) {
-                        this.tier.canceled();
-                        decline(fill); // A canceled read joined what it had submitted.
-                        return Err(error);
+                    // A page gone from disk, or unreadable, is made again: never a failed request.
+                    if ahead || !matches!(error, varena::Error::Callback(_)) || io::drain(fill.device()).is_err() {
+                        return Err(this.failed(fill, error, failed, ahead));
                     }
-                    if ahead {
-                        this.tier.failed();
-                    } else {
-                        FAILED.with_borrow_mut(|slot| *slot = failed);
-                    }
-                    return Err(abort(fill, error));
+                    tracing::warn!("a derived page is made again: {error}");
+                    *this.disk.lock().unwrap_or_else(|e| e.into_inner()) = Disk::Absent;
                 }
+            }
+        }
+        // A derive's stored bytes the tier read ahead (`Tier::read_ahead`), else the store's.
+        let staged = derive.and(this.stored_key())
+            .and_then(|key| this.tier.take(&key, &this.set, fill.len(), false).map(|page| (key, page)));
+        if let (Some(key), Some(_), None) = (&this.page, derive, &staged) {
+            this.tier.expect(key.clone(), this);
+        }
+        let mut spare = None;
+        if let Some(stored) = &this.stored {
+            let read: Result<(), tensorfs::io::source::Error> = match staged {
+                Some((key, page)) => {
+                    let read = this.from_page(&fill, &page).map_err(tensorfs::io::source::Error::from);
+                    if read.is_ok() {
+                        this.row(page.len() as u64, "host", ahead, began);
+                        // Out of the tier, its page keeps what the derive makes.
+                        spare = this.tier.take_out(&key, page);
+                    } else {
+                        drop(page);
+                        this.tier.let_go(&key, "served");
+                    }
+                    read
+                }
+                None => this.read(stored, &fill, ahead),
+            };
+            if let Err(error) = read {
+                let (error, failed) = storage(error);
+                return Err(this.failed(fill, error, failed, ahead));
             }
         }
         let weak = Arc::downgrade(this);
         if let (Some(derive), Some(consumer)) = (derive, consumer) {
-            return this.derive(derive, fill, consumer, weak).map(Some);
+            return this.derive(derive, fill, consumer, weak, spare).map(Some);
         }
         if let Some(key) = &this.page {
             this.tier.want(key, &this.set, weak, Arc::downgrade(fill.target()));
@@ -495,8 +678,10 @@ pub(super) struct PySource {
 impl PySource {
     /// `parts` are (component/key#role, offset, length). `page` names it in the tier. `derive`
     /// runs on `use`'s thread after any stored bytes land; true: its bytes are not the stored ones.
+    /// `slot` (a digest, and `page` one too) names its block whatever the overlay: a derive's kept
+    /// page is written to disk under it, and read from there by a later process.
     #[new]
-    #[pyo3(signature = (pages, set, block, bytes, *, checkpoint = None, parts = Vec::new(), page = None, derive = None))]
+    #[pyo3(signature = (pages, set, block, bytes, *, checkpoint = None, parts = Vec::new(), page = None, derive = None, slot = None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
@@ -508,19 +693,25 @@ impl PySource {
         parts: Vec<(String, usize, usize)>,
         page: Option<String>,
         derive: Option<Py<PyAny>>,
+        slot: Option<String>,
     ) -> PyResult<Self> {
         let stored = match checkpoint {
             Some(checkpoint) if !parts.is_empty() => {
                 let core = checkpoint.core(py)?;
                 let items = items_of(&core, parts, bytes)?;
                 let (local, fetching) = pages.tier.stores(&core);
-                Some(Stored { items, local, fetching })
+                Some(Stored { items, local, fetching, checkpoint: core })
             }
             _ => None,
         };
+        let digest = |name: &Option<String>| name.as_deref().is_none_or(tensorfs::format::is_digest);
+        if slot.is_some() && !(digest(&slot) && digest(&page) && page.is_some()) {
+            return Err(PyRuntimeError::new_err("a Source's slot and page are sha256 digests"));
+        }
         let inner = Arc::new(Inner {
-            tier: pages.tier.clone(), page, set, block, bytes, stored, derive,
-            plain: AtomicBool::new(false), reading: Mutex::new(None), region: Mutex::new(Weak::new()),
+            tier: pages.tier.clone(), page, slot, set, block, bytes, stored, derive,
+            plain: AtomicBool::new(false), disk: Mutex::new(Disk::Unknown), reading: Mutex::new(None),
+            region: Mutex::new(Weak::new()),
         });
         if let Some(stored) = &inner.stored {
             pages.tier.place(&inner, &stored.items);

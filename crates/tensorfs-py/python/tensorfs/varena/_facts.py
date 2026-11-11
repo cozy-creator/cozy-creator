@@ -53,6 +53,15 @@ class PagesStats(TypedDict):
     store_reads_scope: str
     #: (set, block, O_DIRECT bytes, cached bytes, ns)
     store_reads: list[tuple[str, int, int, int, int]]
+    read_ahead_scope: str
+    read_ahead: int
+    read_ahead_bytes: int
+    read_ahead_refused: int
+    persisted_scope: str
+    persisted: int
+    persisted_bytes: int
+    persist_skipped: int
+    persist_failed: int
 
 
 class PlanPhase(TypedDict):
