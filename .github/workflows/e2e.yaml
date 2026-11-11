@@ -686,9 +686,6 @@ jobs:
           repository: cozy-creator/cozy-creator
           ref: ${{ needs.affected.outputs.creator }}
           path: .creator
-      - name: Runner DNS before candidate setup
-        if: matrix.shard == 'projectvault'
-        run: bash .creator/e2e/cli/install-vault-driver.sh --dns-only
       - uses: ./.creator/e2e/candidates
         with:
           packages_ref: ${{ needs.affected.outputs.packages }}
