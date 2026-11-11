@@ -137,7 +137,8 @@ def vault_work_sleep(payload: Request, out: Outputs) -> Answer:
     lock_s = locked_within(args, 120)
     process.wait(timeout=120)
     unlock(args, "unlock-after", 0)
-    watched = cli(args, "ended-run", "run", "watch", str(number))
+    # `cozy run watch` exits 1 for a canceled run.
+    watched = cli(args, "ended-run", "run", "watch", str(number), fails=True)
     assert watched.get("status") == "canceled", f"run {number} is {watched.get('status')} after the lock ended it"
     receipt["lock_ended"] = {"run": number, "ended": lock["ended"], "state": lock["vault"]["state"], "locked_s": round(lock_s, 1), "run_status": watched["status"]}
     receipt["synthetic_only"] = True
