@@ -300,7 +300,7 @@ settled() {
 }
 for m in $(jq -r '[.[].models // ["sdxl", "anima"] | .[]] | unique | .[]' <<<"$ARMS"); do
   [ -n "${FN[$m]:-}" ] || fail "no model $m"
-  step "dl-$m" model download "${WEIGHTS[$m]}" --on "$NAME" || fail "$m weights"
+  step "dl-$m" model install "${WEIGHTS[$m]}" --on "$NAME" || fail "$m weights"
 done
 PROMPTS=("a lighthouse keeper's desk at dawn, watercolor" "a night market under paper lanterns, film photo" "a fox asleep in a library window, gouache"
   "a desert observatory under the milky way, matte painting" "a tram crossing a snowy bridge, ukiyo-e" "a greenhouse of carnivorous plants, macro photo"

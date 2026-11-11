@@ -47,11 +47,11 @@ for i in 1 2; do
 done
 
 # 3. An upload while one download runs and another waits on it.
-cozy --json model download "$MD@$CD" --on "$NAME" > "$OUT/download-1.ndjson" 2> "$OUT/download-1.err" & D1=$!
+cozy --json model install "$MD@$CD" --on "$NAME" > "$OUT/download-1.ndjson" 2> "$OUT/download-1.err" & D1=$!
 until records download-1.ndjson | jq -e 'select(.progress.stage? | strings | startswith("downloading"))' > /dev/null 2>&1; do
   kill -0 $D1 2> /dev/null || fail "download 1 ended before it downloaded: $(tail -c 300 "$OUT/download-1.ndjson")"; sleep 0.5
 done
-cozy --json model download "$MD@$CD" --on "$NAME" > "$OUT/download-2.ndjson" 2> "$OUT/download-2.err" & D2=$!
+cozy --json model install "$MD@$CD" --on "$NAME" > "$OUT/download-2.ndjson" 2> "$OUT/download-2.err" & D2=$!
 tensors "$W/u3.safetensors" 1
 step upload-3 --json model upload "$W/u3.safetensors" "$MU" --lane f32 --source-format as-is --on "$NAME" || fail "upload 3 --on the pod"
 wait $D1 || fail "download 1: $(tail -c 300 "$OUT/download-1.ndjson")"

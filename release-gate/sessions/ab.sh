@@ -13,7 +13,7 @@
 #              run id, and "gpu_memory_limit" (`10GiB`, `off`: the development VRAM cap); the pod's `machine update`
 #              before this cell, so cells before and after compare two pairs)}];
 #              "expect" (optional: the status the cell must end in, `completed` by default; `failed` for a refusal it proves);
-#              "download" (optional: [[model ref, `cozy model download` flags…], …] made present on the pod first, so
+#              "download" (optional: [[model ref, `cozy model install` flags…], …] made present on the pod first, so
 #              the cell's run starts with its weights on disk, as a machine whose package was installed earlier does);
 #              in args, `{ref}` is release-gate/ref and `{out:<cell>}` an earlier cell's image or video;
 #              two failed cells stop the session
@@ -103,7 +103,7 @@ for k in "${names[@]}"; do
   mapfile -t downloads < <(jq -c '.download // [] | .[]' <<<"$c")
   for i in "${!downloads[@]}"; do
     mapfile -t dl < <(jq -r '.[]' <<<"${downloads[$i]}")
-    step "download-$k-$i" model download "${dl[@]}" --on "$NAME" < /dev/null || fail "$k: the download of ${dl[0]}"
+    step "download-$k-$i" model install "${dl[@]}" --on "$NAME" < /dev/null || fail "$k: the download of ${dl[0]}"
   done
   echo "$k" > "$OUT/current"
   tree=$(jq -r '.tree // empty' <<<"$c") target=$(jq -r .target <<<"$c")

@@ -221,7 +221,7 @@ that pair misses takes its own Runtime in its own environment, and the machine's
   download/upload path change. It shows TensorFS moves weights as fast as before and dedups:
   - `probe` (on the rental): the machine's disk, written and read cold (the varena method); an executor never dials
     (cr-012), so there is no network ceiling, and downloads are held against the last pass.
-  - `model download` of a large many-object model cold (Hub and datacenter-cache times are separate baselines), again
+  - `model install` of a large many-object model cold (Hub and datacenter-cache times are separate baselines), again
     (nothing from the Hub), and cut part-way then resumed (only the rest comes): once by a cancel, once by killing
     TensorD on the rental, as a crash ends it (`kill`, rented with SSH; an `only` without it rents none). Unfinished
     chunks count: at least 80% of the bytes that had arrived must be held. A boot that ends `boot_idle` is ordered again.

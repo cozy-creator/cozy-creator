@@ -1,7 +1,7 @@
 # capability: a pod renews its own run capability and outlives its runner's Calcifer (cl-675, AuthKit's workload
 # grant). One rental, no GPU work:
 #   1. the pod's TensorD becomes the session's cozy (`cozy machine update --tensord`, as the runner's already is);
-#   2. a private commit the runner uploads from its own machine, read on the pod: model download --on;
+#   2. a private commit the runner uploads from its own machine, read on the pod: model install --on;
 #   3. an upload --on the pod: a private commit written under the pod's token;
 #   4. the e2e cell (e2e/capabilities) with the rental live: renewal, a copied token, widened scope, the rental granted;
 #   5. the executor probe (e2e/capabilities/probe.py), its weights a private commit: it waits probe_s while the
@@ -38,7 +38,7 @@ say "pod TensorD $v"
 tiny "$OUT/a.safetensors"
 step upload-a model upload "$OUT/a.safetensors" "$MA" --lane f32 --source-format as-is || fail "upload from the runner"
 CA=$(made upload-a); say "$MA@$CA (private)"
-step read model download "$MA@$CA" --on "$NAME" || fail "the pod did not read a private commit"
+step read model install "$MA@$CA" --on "$NAME" || fail "the pod did not read a private commit"
 say "read: $(grep -E 'bytes|hub' "$OUT/read.txt" | tail -2 | tr -s ' ' | paste -sd';')"
 
 # 3. An upload on the pod, under its token.

@@ -30,13 +30,13 @@ check() {
   if [ "$status" = "$2" ] && { [ -z "${3:-}" ] || grep -qF -- "$3" <<<"$reason"; }; then say "CHECK $1: run $n $status${reason:+: $reason}"
   else say "CHECK FAILED $1: run $n $status, wanted $2${3:+ with \"$3\"}: $reason"; failed=$((failed + 1)); fi
 }
-step dl-sdxl model download stabilityai/sdxl@1.0.0 --on "$NAME" || fail "sdxl weights"
-step dl-lora model download "$LORA" local/byo-lora --on "$NAME" || fail "the LoRA's download"
+step dl-sdxl model install stabilityai/sdxl@1.0.0 --on "$NAME" || fail "sdxl weights"
+step dl-lora model install "$LORA" local/byo-lora --on "$NAME" || fail "the LoRA's download"
 step lora-local run "$SDXL" --on "$NAME" --lora model=local/byo-lora,0.8 prompt="a lighthouse on a cliff at dusk, pixel art" seed:=$RANDOM
 check lora-local completed
 step lora-absent run "$SDXL" --on "$NAME" --lora model=local/byo-never-downloaded,0.8 prompt="a red bicycle, pixel art" seed:=$RANDOM
 check lora-absent failed "this machine holds no local/byo-never-downloaded"
-step dl-whole model download "$WHOLE" local/byo-whole --on "$NAME" || fail "the checkpoint's download"
+step dl-whole model install "$WHOLE" local/byo-whole --on "$NAME" || fail "the checkpoint's download"
 step whole-local run "$SDXL" --on "$NAME" model.model=local/byo-whole prompt="a portrait of an old fisherman, photo" seed:=$RANDOM
 check whole-local completed
 step whole-source run "$SDXL" --on "$NAME" model.model="$WHOLE" prompt="a mountain lake at sunrise, photo" seed:=$RANDOM

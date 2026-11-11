@@ -27,7 +27,7 @@ mock Hub, or second daemon is used.
 1. Use a real Hub, account and fresh remote store. Prefer a dedicated proof Hub with ordinary
    short-lived credentials; production credentials otherwise require a download that remains
    active past their expiry. Record exact CLI/TensorD versions and both clocks.
-2. Start `cozy --json model download <model> --lane <lane> --on <machine>`. This uses TensorD's
+2. Start `cozy --json model install <model> --lane <lane> --on <machine>`. This uses TensorD's
    download path and isolates the controller repair from Runtime's separate Load-reader fix.
    Record its run ID and nonzero transfer progress before restarting anything.
 3. Perform the coordinator's normal CLI update/restart, while leaving the remote machine and
