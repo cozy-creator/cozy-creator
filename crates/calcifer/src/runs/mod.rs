@@ -22,6 +22,7 @@ use api::{
 };
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
+use tokio::sync::OwnedRwLockReadGuard;
 
 use crate::api::{Api, IdempotencyKey, Refusal, parse};
 
@@ -63,6 +64,7 @@ pub(crate) async fn quote(
 
 /// What `ask` would rent.
 pub(crate) async fn priced(api: &Arc<Api>, ask: RunRequest) -> Result<Option<RunQuote>, Error> {
+    let _access = project_access(api, ask.project.as_deref()).await?;
     let scope = match ask.project.as_deref() {
         Some(project) => {
             let root = crate::project::named(api, project)?;
@@ -108,6 +110,7 @@ pub(crate) async fn estimate(
     let body = body?;
     prebuilt(&body)?;
     let ask: RunRequest = parse(&body)?;
+    let _access = project_access(&api, ask.project.as_deref()).await.map_err(Refusal)?;
     let count = copies.count.unwrap_or(1).clamp(1, COPIES);
     let (submit, mut notes, offers) = match prepare(&api, &key, &ask, For::Estimate(count)).await.map_err(Refusal)? {
         Prepared::Install(run) => {
@@ -218,9 +221,13 @@ pub(crate) async fn request(api: &Arc<Api>, key: &str, ask: RunRequest) -> Resul
         if recorded != digest {
             return Err(crate::api::conflict(key));
         }
+        crate::project::vault::require_path(&row.out_dir)?;
         let run = calcifer.record(&row).map_err(refused)?;
         return Ok(Submitted { run, replay: true, notes: vec![], preparing: false });
     }
+    // Prepared inputs can name files in the mounted view. Keep the view
+    // leased until submission takes them and their history is kept.
+    let access = project_access(api, ask.project.as_deref()).await?;
     match prepare(api, key, &ask, For::Run).await? {
         Prepared::Install(run) => {
             let notes = updating(&run).into_iter().collect();
@@ -242,9 +249,12 @@ pub(crate) async fn request(api: &Arc<Api>, key: &str, ask: RunRequest) -> Resul
                     Err(_) => None,
                 };
                 if let Some(uploads) = uploads {
-                    let kept = tokio::task::spawn_blocking(move || crate::project::keep_given(&project, &given, &uploads)).await;
-                    let said = kept.map_err(|e| Error::internal("keep_given", e.to_string()))??;
-                    notes.extend(said.into_iter().map(|message| Note { level: NoteLevel::Warning, message }));
+                    // Even if this request is canceled, the queued worker owns
+                    // the lease until its retention work has finished.
+                    let (kept, _access) = tokio::task::spawn_blocking(move || {
+                        (crate::project::keep_given(&project, &given, &uploads), access)
+                    }).await.map_err(|e| Error::internal("keep_given", e.to_string()))?;
+                    notes.extend(kept?.into_iter().map(|message| Note { level: NoteLevel::Warning, message }));
                 } else {
                     notes.push(Note { level: NoteLevel::Warning, message: "the run was accepted, but its private inputs could not be added to project history while the view was closing".into() });
                 }
@@ -320,6 +330,13 @@ enum For {
     /// Its machines' estimates, for this many copies sent at once: every machine it may go to is asked, and nothing installs but local
     /// code.
     Estimate(u32),
+}
+
+async fn project_access(api: &Api, project: Option<&str>) -> Result<Option<OwnedRwLockReadGuard<()>>, Error> {
+    match project {
+        Some(named) => crate::project::vault::admit_project(api, named).await.map(Some),
+        None => Ok(None),
+    }
 }
 
 /// Resolves and binds `ask` into the submission Calcifer records, on the machine of its set that would finish it soonest (cl-816).
