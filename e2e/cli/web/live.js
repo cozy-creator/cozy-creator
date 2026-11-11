@@ -510,7 +510,10 @@ function linesOf(text, name) {
     const said = await page.evaluate(() => window.progressSaid);
     seen.render_said = said;
     // The time is Calcifer's for the whole run; its first run here says so until it has steps of its own.
-    check('steps_read_as_denoise_steps', said.some((text) => /^Denoise steps: \d+\/10(, (\d+[smhd](\d+[smh])? left|first run on this machine))?$/.test(text)) && !said.some((text) => /drawing/i.test(text)), said);
+    const isStep = (text) => /\d+\/\d+/.test(text);
+    const denoiseStep = /^Denoise steps: \d+\/10(, (\d+[smhd](\d+[smh])? left|first run on this machine))?$/;
+    const firstStep = said.findIndex(isStep);
+    check('steps_read_as_denoise_steps', firstStep >= 0 && said.filter(isStep).every((text) => denoiseStep.test(text)) && !said.slice(firstStep).some((text) => /drawing/i.test(text)), said);
     const fileAt = await landed;
     times.render_lands = shownAt - fileAt;
     check('render_lands_live', times.render_lands <= LIVE_MS, times.render_lands);
