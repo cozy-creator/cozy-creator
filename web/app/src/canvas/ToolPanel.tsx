@@ -15,10 +15,7 @@ import { carryingTool } from "./toolchange"
 /** A tool carried out of the list: a box of it where it's let go, or on a box, that box's tool. Words and what's made here are boxes of their own: nothing takes them. */
 const toolLoad = (tool: Tool, operation: Operation): Load => ({ tool, operation, box: tool === TEXT_TOOL || madeHere(tool.id) ? undefined : {
   ...carryingTool(tool),
-  put(store, name) {
-    store.putTool(name, tool)
-    store.patch(name, { operation })
-  },
+  put: (store, name) => store.putTool(name, tool, operation),
 } })
 
 function ToolRow({ entry, place }: { entry: PaletteEntry; place: (tool: Tool, operation: Operation) => void }) {

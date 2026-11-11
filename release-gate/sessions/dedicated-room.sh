@@ -22,9 +22,9 @@ memlines() { cozy machine logs "$NAME" memory -n 0 2>/dev/null | wc -l; }
 declare -A REUSED
 phase() {
   local p=$1 m0 verdict; m0=$(memlines)
-  run "$p-klein" flux-3-klein/generate_turbo --lane bf16 prompt="a brass compass on a map, studio photo" seed:=$RANDOM
+  run "$p-klein" flux.3/generate_turbo --lane bf16 prompt="a brass compass on a map, studio photo" seed:=$RANDOM
   run "$p-qwen" qwen-image-2/generate prompt="a lighthouse at dusk, photo" seed:=$RANDOM megapixels:=1
-  run "$p-klein2" flux-3-klein/generate_turbo --lane bf16 prompt="a ceramic teapot on linen, studio photo" seed:=$RANDOM
+  run "$p-klein2" flux.3/generate_turbo --lane bf16 prompt="a ceramic teapot on linen, studio photo" seed:=$RANDOM
   (cd "$FIX/pause-twice" && run "$p-twice" ./twice prompt="a red bicycle by a canal, photo" seed:=$RANDOM pause_s:=30)
   cozy machine logs "$NAME" memory -n 0 2>/dev/null | tail -n +$((m0 + 1)) > "$OUT/$p-memory.log"
   local s; for s in klein qwen klein2 twice; do [ "$(status "$p-$s")" = completed ] || fail "$p: $s is $(status "$p-$s")"; done

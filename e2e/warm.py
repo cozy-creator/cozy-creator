@@ -51,8 +51,19 @@ def main() -> int:
             data=json.dumps(request).encode(),
             headers={**headers, "Content-Type": "application/json", "Idempotency-Key": key},
         )
-        with urllib.request.urlopen(call) as response:
-            answer = json.load(response)
+        try:
+            with urllib.request.urlopen(call) as response:
+                answer = json.load(response)
+        except urllib.error.HTTPError as error:
+            said = error.read().decode()
+            # `on` is a list since cl-873; a Calcifer before it takes one machine. Its version can't say which: an RC's dev
+            # build says the release it follows (0.24.0+dev.g…), so its answer to the list does.
+            if error.code != 400 or not isinstance(request["on"], list) or "sequence, expected a string" not in said:
+                print(said, file=sys.stderr)
+                return 1
+            print(f"this Calcifer ({holder.get('version', '?')}) takes one machine: on {args.on}", file=sys.stderr)
+            request["on"], key = args.on, str(uuid.uuid4())
+            continue
         run = answer["run"]
         if not answer.get("preparing"):
             break

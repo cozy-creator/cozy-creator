@@ -36,7 +36,7 @@ if [ -z "$ONLY" ] || [[ $ONLY == *",loop-"* || $ONLY == *",qwen-image-2,"* || $O
   loop_expect loop-eager '.status == "completed" and (.measurements.execution.loops[0] | .mode == "eager"
     and (.eager // "" | endswith("and no call keeps the program")))'
   # Cancel once the loop is past its first steps.
-  run_submit "$OUT" loop-cancel run "$LQ" prompt="$OBJECT, a canceled loop" megapixels:=1.0 seed:=$((R + 324)) \
+  run_submit "$OUT" loop-cancel run "$LQ" prompt="$OBJECT, a canceled loop" megapixels:=1 seed:=$((R + 324)) \
     --lane int8 --gpus=1 --on "$M" > /dev/null
   n=$(cat loop-cancel.number)
   while run_show "$OUT" loop-cancel "$n"; [ "$(run_get "$OUT" loop-cancel .status)" != completed ] \
@@ -46,6 +46,6 @@ if [ -z "$ONLY" ] || [[ $ONLY == *",loop-"* || $ONLY == *",qwen-image-2,"* || $O
   "$CLI" --json run cancel "$n" > loop-cancel-cancel.json 2>&1
   run_wait "$OUT" loop-cancel || true
   loop_expect loop-cancel '.status == "canceled"'
-  cell loop-after-cancel "$LQ" prompt="$OBJECT, after a canceled loop" megapixels:=1.0 seed:=$((R + 325)) --lane int8 --gpus=1
+  cell loop-after-cancel "$LQ" prompt="$OBJECT, after a canceled loop" megapixels:=1 seed:=$((R + 325)) --lane int8 --gpus=1
   loop_expect loop-after-cancel '.status == "completed"'
 fi

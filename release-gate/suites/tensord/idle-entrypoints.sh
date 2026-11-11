@@ -11,7 +11,7 @@
 #   idle-h3-lf         a two-piece shot's pieces on idle-h3-t's processes: one construction serves both
 #   idle-after-cancel, idle-h3-after-cancel  the other construction's call after idle-cancel (idle-h3-cancel) was
 #                      canceled mid-call, which ends every construction of its process: completed, on new processes
-KA=$(pkg flux-3-klein generate) KB=$(pkg flux-3-klein generate_turbo)
+KA=$(pkg flux.3 generate) KB=$(pkg flux.3 generate_turbo)
 # The bf16 lane (17.6 GiB of weights each): one fits a 24 GiB card, two never fit 32 GiB.
 klein() { cell "$1" "$2" prompt="$3" prompt_upsampling:=false megapixels:=1 seed:=$((R + $4)) --lane bf16 --gpus=1; }
 klein idle-klein-a "$KA" "$CHAR, studio portrait" 401
