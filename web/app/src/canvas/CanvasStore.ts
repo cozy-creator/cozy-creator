@@ -30,7 +30,7 @@ import { Field, fit, type Give, GLIDE_MS, pushAside } from "./clear"
 import { type Box, homesFor, readsOf, warningsOf } from "./graph"
 import type { ReadableProjection } from "./readableSurface"
 import { fieldsOf, fullRows, heldTo, shapesOf, snapped } from "./controls"
-import { baseOf } from "./ranges"
+import { angleOf, baseOf } from "./ranges"
 import { asName, freeName, nameKey } from "./names"
 import { faceOf, heightFor, madeHere, makes, NARROWEST, paints, ratioOf, refusal, reshapes, sentShape, type Shown, shownOf, toolName, underOf, valueIn, valuesOf, watched, widthFor } from "./shown"
 import { mentionsIn, rowsIn, textsIn } from "./text"
@@ -1942,11 +1942,13 @@ export class CanvasStore {
     return main ? { ...main, number: said.number } : null
   }
 
-  /** What a mention is: `image`, `video`, `audio` or `text`. */
+  /** What a mention is: `image`, `video`, `audio` or `text`. An orbit's frame at an angle is a picture. */
   kindOf(mention: string, asset: string): string | undefined {
     const said = this.mentionOf(mention, asset)
     const view = said && this.get(said.name)
     if (!view) return undefined
+    const angled = angleOf(mention)
+    if (angled && angled.to === undefined) return "image"
     return this.fileOf(mention, asset)?.field ?? view.asset?.kind
   }
 

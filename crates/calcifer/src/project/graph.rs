@@ -13,7 +13,7 @@ fn in_a_name(c: char) -> bool {
     c.is_alphanumeric() || matches!(c, '_' | '-')
 }
 
-/// Whether `text` can be a name: only letters, digits, `_` and `-`. A `.` selects inside a box, and `:` a range of its frames.
+/// Whether `text` can be a name: only letters, digits, `_` and `-`. A `.` selects inside a box, and `:` a part of its video.
 pub(crate) fn is_name(text: &str) -> bool {
     !text.is_empty() && text.chars().all(in_a_name)
 }
@@ -21,15 +21,25 @@ pub(crate) fn is_name(text: &str) -> bool {
 /// What a box calls itself in its own text: `<self.2>`, a version of it.
 pub(crate) const SELF: &str = "self";
 
-/// A mention, `<name.2.cleaned:48-120>`: a box, a version of it, an extra of that version, and a range of its frames.
+/// A mention, `<name.2.cleaned:48-120>`: a box, a version of it, an extra of that version, and a part of its video.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Mention<'a> {
     pub name: &'a str,
     pub version: Option<u32>,
     /// An extra output of the version: `<page.cleaned>`.
     pub part: Option<&'a str>,
-    /// Frames `in` to `out` (not counting it), or to its end.
-    pub range: Option<(u32, Option<u32>)>,
+    pub span: Option<Span>,
+}
+
+/// What a mention names of a video, after its `:`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Span {
+    /// Frames `in` to `out` (not counting it), or to its end: `:48-120`, `:48-`.
+    Frames(u32, Option<u32>),
+    /// An orbit's frame at this angle, as a picture: `:120deg`.
+    Angle(f64),
+    /// An orbit's turn from one angle to another, as a clip: `:90deg-180deg`.
+    Turn(f64, f64),
 }
 
 impl Mention<'_> {
@@ -42,8 +52,11 @@ impl Mention<'_> {
         if let Some(part) = self.part {
             out.push_str(&format!(".{part}"));
         }
-        if let Some((from, to)) = self.range {
-            out.push_str(&format!(":{from}-{}", to.map_or_else(String::new, |to| to.to_string())));
+        match self.span {
+            None => {}
+            Some(Span::Frames(from, to)) => out.push_str(&format!(":{from}-{}", to.map_or_else(String::new, |to| to.to_string()))),
+            Some(Span::Angle(at)) => out.push_str(&format!(":{at}deg")),
+            Some(Span::Turn(from, to)) => out.push_str(&format!(":{from}deg-{to}deg")),
         }
         out
     }
@@ -51,14 +64,9 @@ impl Mention<'_> {
 
 /// `inner` as a mention, if it is one.
 pub(crate) fn mention(inner: &str) -> Option<Mention<'_>> {
-    let (head, range) = match inner.split_once(':') {
+    let (head, span) = match inner.split_once(':') {
         None => (inner, None),
-        Some((head, range)) => {
-            let (from, to) = range.split_once('-')?;
-            let number = |text: &str| text.bytes().all(|byte| byte.is_ascii_digit()).then(|| text.parse::<u32>().ok()).flatten();
-            let to = if to.is_empty() { None } else { Some(number(to)?) };
-            (head, Some((number(from)?, to)))
-        }
+        Some((head, span)) => (head, Some(span_of(span)?)),
     };
     let mut parts = head.split('.');
     let name = parts.next().filter(|name| is_name(name))?;
@@ -70,7 +78,23 @@ pub(crate) fn mention(inner: &str) -> Option<Mention<'_>> {
             _ => return None,
         }
     }
-    Some(Mention { name, version, part, range })
+    Some(Mention { name, version, part, span })
+}
+
+/// `48-120`, `48-`, `120deg` or `90deg-180deg`.
+fn span_of(text: &str) -> Option<Span> {
+    let number = |text: &str| text.bytes().all(|byte| byte.is_ascii_digit()).then(|| text.parse::<u32>().ok()).flatten();
+    let degrees = |text: &str| {
+        let digits = text.strip_suffix("deg")?;
+        let (whole, fraction) = digits.split_once('.').unwrap_or((digits, "0"));
+        let plain = |part: &str| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit());
+        (plain(whole) && plain(fraction)).then(|| digits.parse::<f64>().ok()).flatten().filter(|at| at.is_finite())
+    };
+    match text.split_once('-') {
+        None => Some(Span::Angle(degrees(text)?)),
+        Some((from, to)) if from.ends_with("deg") => Some(Span::Turn(degrees(from)?, degrees(to)?)),
+        Some((from, to)) => Some(Span::Frames(number(from)?, if to.is_empty() { None } else { Some(number(to)?) })),
+    }
 }
 
 /// `abr.2` as the name it's a version of, and that number.

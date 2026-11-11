@@ -14,18 +14,18 @@ use serde_json::{Map, Value, json};
 use super::{
     folder::{self, Files, Lock},
     format::{Doc, Standing},
-    graph::{self, SELF, mentions, mentions_replaced, name_key},
+    graph::{self, SELF, Span, mentions, mentions_replaced, name_key},
 };
+use crate::runs::clip::Range;
 
-/// What a payload holds in place of a range of a video, until it's cut: `cut:<n>`, the `n`th of `Bound::cuts`.
+/// What a payload holds in place of a part of a video, until it's cut: `cut:<n>`, the `n`th of `Bound::cuts`.
 pub(crate) const CUT: &str = "cut:";
 
-/// A range of a video, cut on this computer before it's sent.
+/// A part of a video, cut on this computer before it's sent.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Cut {
     pub source: String,
-    pub from: u32,
-    pub to: Option<u32>,
+    pub range: Range,
 }
 
 /// One box's call, as it's asked for.
@@ -94,11 +94,13 @@ struct Binder<'a> {
     bound: Bound,
     /// Mentions that name nothing, as written.
     nothing: Vec<String>,
+    /// Mentions of a video by angle, where the video isn't an orbit.
+    unturned: Vec<String>,
 }
 
 /// `call` bound. Err: nothing sensible can be sent, said free before any machine is involved.
 pub(crate) fn bind(call: &Call) -> Result<Bound, Error> {
-    let mut binder = Binder { call, bound: Bound::default(), nothing: vec![] };
+    let mut binder = Binder { call, bound: Bound::default(), nothing: vec![], unturned: vec![] };
     let declared = &call.callable.request;
     for field in &declared.fields {
         let at = field.name.as_str();
@@ -133,6 +135,12 @@ pub(crate) fn bind(call: &Call) -> Result<Bound, Error> {
                 .remedy(format!("make <{first}> a box of the run's project, or name it in the run: references:='[{{\"name\": \"{first}\", \"image\": \"<file>\"}}]'"))
                 .next("cozy open"),
         });
+    }
+    if let Some(first) = binder.unturned.first() {
+        let name = graph::mention(first).map_or(first.as_str(), |mention| mention.name);
+        let said: Vec<String> = binder.unturned.iter().map(|key| format!("<{key}>")).collect();
+        let said = format!("{}: {} names an angle, and {name} isn't an orbit", call.name, said.join(", "));
+        return Err(Error::new(Kind::Validation, "mention_not_orbit", said).remedy(format!("turn on Orbit on {name}'s box, or name its frames, as <{name}:48-120>")));
     }
     let mut payload = std::mem::take(&mut binder.bound.payload);
     binder.rows(declared, &mut payload, call.name);
@@ -285,7 +293,7 @@ impl Binder<'_> {
     /// `inner` as a mention: a box written with a dotted name, whole, else by the grammar.
     fn mention_of<'m>(&self, inner: &'m str) -> Option<graph::Mention<'m>> {
         match self.call.doc.dotted_box(inner) {
-            Some(_) => Some(graph::Mention { name: inner, version: None, part: None, range: None }),
+            Some(_) => Some(graph::Mention { name: inner, version: None, part: None, span: None }),
             None => graph::mention(inner),
         }
     }
@@ -328,13 +336,24 @@ impl Binder<'_> {
         let made_by = version.and_then(|version| version.tool.clone()).unwrap_or_default();
         let metadata = version.map(|version| version.metadata_of(&file)).unwrap_or_default();
         let mut named = Named { key: mention.spelled(&asset.name), kind, file, files, description: asset.description.clone(), metadata, made_by, own: Some(j) == self.call.own };
-        if let Some((from, to)) = mention.range {
-            match self.range(&named, from, to) {
-                Ok(cut) => named.file = cut,
-                Err(why) => {
-                    self.warn(format!("{}: <{}> {why}: it's sent whole", self.call.name, named.key));
-                    named.key = graph::Mention { range: None, ..*mention }.spelled(&asset.name);
+        let cut = match mention.span {
+            None => return Some(Some(named)),
+            Some(Span::Frames(from, to)) => self.range(&named, from, to).map(|cut| Some((cut, named.kind.clone()))),
+            Some(span) => self.turned(&named, span),
+        };
+        match cut {
+            // A cut is a file of its own: what its source's file says of itself, and a picture's version's other files, aren't its.
+            Ok(Some((file, kind))) => {
+                if kind != named.kind {
+                    named.files.clear();
                 }
+                named.metadata.clear();
+                (named.file, named.kind) = (file, kind);
+            }
+            Ok(None) => self.unturned.push(named.key.clone()),
+            Err(why) => {
+                self.warn(format!("{}: <{}> {why}: it's sent whole", self.call.name, named.key));
+                named.key = graph::Mention { span: None, ..*mention }.spelled(&asset.name);
             }
         }
         Some(Some(named))
@@ -342,7 +361,7 @@ impl Binder<'_> {
 
     /// The run's own reference `mention` names, whole: no version, part or range of it.
     fn inline(&self, mention: &graph::Mention) -> Option<Named> {
-        if mention.version.is_some() || mention.part.is_some() || mention.range.is_some() {
+        if mention.version.is_some() || mention.part.is_some() || mention.span.is_some() {
             return None;
         }
         let own = self.call.inline.iter().find(|inline| name_key(&inline.name) == name_key(mention.name))?;
@@ -366,12 +385,78 @@ impl Binder<'_> {
         if to.is_some_and(|to| to <= from) || (frames > 0 && from >= frames) {
             return Err(format!("names no frames of its {frames}"));
         }
-        let cut = Cut { source: named.file.clone(), from, to };
+        Ok(self.cut(&named.file, Range::Frames { from, to }))
+    }
+
+    /// An orbit's frame at an angle, as a picture, or its turn from one angle to another, as a clip, to be cut, with the kind it is. An angle
+    /// is the frame `floor(angle / degrees × frames) mod frames`, as the page shows it, and a turn the frames shown while turning. A looping
+    /// orbit's angles wrap, and its turn may cross 0°; another's are held to its turn, said. None: the video isn't an orbit.
+    fn turned(&mut self, named: &Named, span: Span) -> Result<Option<(String, String)>, String> {
+        /// Below a frame's rounding, so 120° of 48 frames is frame 16.
+        const EVEN: f64 = 1e-9;
+        if named.kind != "video" {
+            return Err(format!("is {}, and only an orbit video takes an angle", a(&named.kind)));
+        }
+        let Some(orbit) = named.metadata.get("orbit").and_then(Value::as_object) else { return Ok(None) };
+        let degrees = orbit.get("degrees").and_then(Value::as_f64).filter(|degrees| degrees.is_finite() && *degrees > 0.0).unwrap_or(360.0);
+        let loops = orbit.get("loops").and_then(Value::as_bool) != Some(false);
+        let measured = self.call.lock.files.get(&named.file).map_or(0, |file| match file.frames {
+            0 => (file.lasts_ms() as f64 / 1000.0 * file.fps).round() as u64,
+            frames => frames,
+        });
+        let frames = u32::try_from(measured).unwrap_or(u32::MAX);
+        if frames == 0 {
+            return Err("isn't measured yet, so no angle of it can be found".into());
+        }
+        let at = |angle: f64| angle * f64::from(frames) / degrees;
+        let first = |angle: f64| (at(angle) + EVEN).floor() as u32;
+        let end = |angle: f64| (at(angle) - EVEN).ceil() as u32;
+        let range = match span {
+            Span::Frames(..) => unreachable!("frames are a range"),
+            Span::Angle(angle) if loops => Range::Frame(first(angle.rem_euclid(degrees)) % frames),
+            Span::Angle(angle) => {
+                if angle > degrees {
+                    self.warn(format!("{}: <{}> is past its {degrees}° turn: its last frame", self.call.name, named.key));
+                }
+                Range::Frame(first(angle.min(degrees)).min(frames - 1))
+            }
+            Span::Turn(from, to) if loops => {
+                let turn = if to - from >= degrees { degrees } else { (to - from).rem_euclid(degrees) };
+                if turn <= 0.0 {
+                    return Err(format!("names no part of its {degrees}° turn"));
+                }
+                let start = from.rem_euclid(degrees);
+                let from = first(start) % frames;
+                match end(start + turn).clamp(from + 1, from + frames) {
+                    to if to <= frames => Range::Frames { from, to: (to < frames).then_some(to) },
+                    to => Range::Wrapped { from, to: to - frames },
+                }
+            }
+            Span::Turn(from, to) => {
+                if to > degrees {
+                    self.warn(format!("{}: <{}> runs past its {degrees}° turn: cut to its end", self.call.name, named.key));
+                }
+                let (start, stop) = (from.min(degrees), to.min(degrees));
+                if stop <= start {
+                    return Err(format!("names no part of its {degrees}° turn, which doesn't loop past 0°"));
+                }
+                let from = first(start).min(frames - 1);
+                let to = end(stop).clamp(from + 1, frames);
+                Range::Frames { from, to: (to < frames).then_some(to) }
+            }
+        };
+        let kind = if matches!(range, Range::Frame(_)) { "image" } else { "video" };
+        Ok(Some((self.cut(&named.file, range), kind.to_owned())))
+    }
+
+    /// `range` of `source`, cut once however often it's named: what the payload holds in its place.
+    fn cut(&mut self, source: &str, range: Range) -> String {
+        let cut = Cut { source: source.to_owned(), range };
         let n = self.bound.cuts.iter().position(|held| *held == cut).unwrap_or_else(|| {
             self.bound.cuts.push(cut);
             self.bound.cuts.len() - 1
         });
-        Ok(format!("{CUT}{n}"))
+        format!("{CUT}{n}")
     }
 
     /// The files a slot takes from what's written in it: each mention, else a hash of the project's. One of the wrong kind is left out,

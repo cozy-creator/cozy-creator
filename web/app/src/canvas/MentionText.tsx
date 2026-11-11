@@ -9,12 +9,14 @@ import { ClipRange } from "./ClipRange"
 import { useCanvasStore, useElement } from "./context"
 import { WANTED } from "./controls"
 import { Thumb } from "./Media"
-import { baseOf, FPS, framesIn, rangeOf, ranged, retext, timecode } from "./ranges"
+import { angleOf, baseOf, degrees, FPS, framesIn, rangeOf, ranged, retext, timecode } from "./ranges"
 import { chipWords, mentionsIn, withMentions } from "./text"
 import { isSelf, mentionFrom, NO_BARE_SELF } from "./versions"
 
-/** What a chip says: its name in its brackets, and a range of a video as timecode. */
+/** What a chip says: its name in its brackets, a range of a video as timecode, and an orbit's angle in degrees. */
 function chipSaid(store: CanvasStore, name: string, asset: string): string {
+  const angled = angleOf(name)
+  if (angled) return `${chipWords(angled.base)} ${degrees(angled)}`
   const range = rangeOf(name)
   if (!range) return chipWords(name)
   const file = store.fileOf(name, asset)
@@ -364,6 +366,8 @@ function MentionThumb({ name, asset, takes, pictures, onRange }: { name: string;
   useElement(said?.name ?? baseOf(name))
   const shown = store.fileOf(name, asset)
   if (!shown || shown.absent || shown.field === "audio" || unsent(store, name, asset, takes)) return null
+  // An orbit's angle has no in and out to drag: its chip says it.
+  if (angleOf(name)) return null
   if (shown.field === "video") {
     const fps = shown.fps ?? FPS
     const frames = framesIn(shown.duration_ms, fps)
