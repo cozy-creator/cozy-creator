@@ -1,7 +1,7 @@
-//! `cozy model ls --on`, `download` and `upload`: models on machines, through Calcifer
+//! `cozy model ls --on`, `install` and `upload`: models on machines, through Calcifer
 //! (CALCIFER-API.md "Models"). Download and upload are warm runs on the machine `--on` names. The
 //! machine fetches, makes and publishes the bytes itself, so no weight passes through this
-//! computer; a local file goes to the machine as the run's input. A Hub commit is recorded at the
+//! computer; a local file goes to the machine as the run's input. A Hub checkpoint is recorded at the
 //! Hub: nothing moves.
 use std::process::ExitCode;
 
@@ -29,7 +29,7 @@ fn made(ctx: &Context, run: &Run) {
             record = record.field(if key == "repository" { "model" } else { key }, value);
         }
     }
-    // A composition: its base's commit, the components the source took, and what was sent.
+    // A composition: its base's checkpoint, the components the source took, and what was sent.
     if let Some(checkpoint) = model["base"]["tree"].as_str() {
         record = record.field("base", format!("{}@{checkpoint}", model["base"]["repository"].as_str().unwrap_or_default()));
     }
@@ -110,7 +110,7 @@ pub(crate) async fn upload(ctx: &Context, args: Upload) -> Result<ExitCode, Erro
     };
     crate::send::held(ctx, &mut ask.source, &mut ask.name, true).await?;
     let run = crate::run::job(ctx, job::MODEL_UPLOAD, &ask, on, None).await?;
-    // A Hub commit is recorded there by Calcifer: no machine ran.
+    // A Hub checkpoint is recorded there by Calcifer: no machine ran.
     if run.kind == RunKind::Here {
         recorded(ctx, &crate::run::done(ctx, run).await?);
         return Ok(ExitCode::SUCCESS);
@@ -148,7 +148,7 @@ fn display(ctx: &Context, shown: &Displayed) {
     output::say(ctx, &format!("{}: {}", shown.model, said.join(", ")));
 }
 
-/// A Hub commit recorded as a commit of another model: no machine pulled it and no byte uploaded.
+/// A Hub checkpoint recorded as a checkpoint of another model: no machine pulled it and no byte uploaded.
 fn recorded(ctx: &Context, made: &RecordedCheckpoint) {
     made.warnings.iter().for_each(|warning| output::warn(warning));
     if ctx.json {

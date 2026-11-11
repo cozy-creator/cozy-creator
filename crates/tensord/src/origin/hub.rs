@@ -1,7 +1,7 @@
 //! A model at a Hub: TensorFS's distribution `Endpoint` at the Hub's origin, presenting the
-//! signer's newest run capability when the request carried one (the Hub reads the commits it names
+//! signer's newest run capability when the request carried one (the Hub reads the checkpoints it names
 //! to it), else anonymous (released content). The Hub resolves a
-//! release and lane, or the machine's hardware, to one commit. Every Hub call runs on the fetch
+//! release and lane, or the machine's hardware, to one checkpoint. Every Hub call runs on the fetch
 //! runtime.
 use std::sync::Arc;
 
@@ -34,7 +34,7 @@ pub(crate) fn remote(machine: &Machine, source: &hub::Source) -> Result<Remote> 
     Ok(Remote { origin: Arc::new(endpoint), trust, local })
 }
 
-/// `repository`'s commit at `source`'s Hub: of `release` (empty: the newest) in `lane` (empty:
+/// `model`'s checkpoint at `source`'s Hub: of `release` (empty: the newest) in `lane` (empty:
 /// the one `hardware` runs best).
 pub(crate) fn resolve(machine: &Machine, source: &hub::Source, model: &str, release: &str, lane: &str, hardware: &Hardware) -> Result<Resolved> {
     let (endpoint, _) = endpoint(machine, source)?;

@@ -20,8 +20,8 @@ pub(crate) struct Listing {
     pub bytes: u64,
 }
 
-/// A Hub commit this machine pulled: `tree`, `repository`'s `release` in `lane` (an empty
-/// release: a commit by hash). The store's ref of the repository records it.
+/// A Hub checkpoint this machine pulled: `tree`, `model`'s `release` in `lane` (an empty
+/// release: a checkpoint by hash). The store's ref of the model records it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Pulled {
     pub model: String,
@@ -31,7 +31,7 @@ pub(crate) struct Pulled {
 }
 
 impl Pulled {
-    /// Names the pull in the store: `repository`'s ref, a cache TensorFS may expire. The tree
+    /// Names the pull in the store: `model`'s ref, a cache TensorFS may expire. The tree
     /// must be here. One the ref already names writes nothing.
     pub(crate) fn record(&self, store: &Store) -> io::Result<()> {
         let held = store.get_ref(&self.model).map_err(storage::io_error)?;
@@ -51,7 +51,7 @@ impl Pulled {
             .map_err(storage::io_error)
     }
 
-    /// The Hub commit whose header is `header`, as this machine pulled it; None for one never
+    /// The Hub checkpoint whose header is `header`, as this machine pulled it; None for one never
     /// pulled.
     pub(crate) fn of(store: &Store, header: &ObjectRef) -> io::Result<Option<Pulled>> {
         for model in store.refs().map_err(storage::io_error)? {
@@ -73,13 +73,13 @@ impl Pulled {
     }
 }
 
-/// Each commit `model` records: (its release, empty for none; its lane there; the commit).
+/// Each checkpoint `model` records: (its release, empty for none; its lane there; the checkpoint).
 fn entries(model: &Model) -> impl Iterator<Item = (&str, Option<&str>, &ObjectRef)> {
     let released = model.releases.iter().flat_map(|r| r.lanes.iter().map(|(lane, tree)| (r.version.as_str(), Some(lane.as_str()), tree)));
     released.chain(model.checkpoints.iter().map(|tree| ("", None, tree)))
 }
 
-/// Each model's rows: repository, release, lane, header.
+/// Each model's rows: model, release, lane, header.
 type Seen = Vec<(String, String, String, ObjectRef)>;
 
 #[derive(PartialEq, Eq)]

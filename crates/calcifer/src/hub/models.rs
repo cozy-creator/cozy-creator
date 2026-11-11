@@ -1,6 +1,6 @@
 //! `/v1/models`: the Hub's model catalog, and a model's family, releases and deletion as a member
 //! of its org. Signed in, a search also lists the caller's own unreleased (private) models and a
-//! model lists its commits to its org's members.
+//! model lists its checkpoints to its org's members.
 use std::{collections::BTreeSet, sync::Arc};
 
 use futures_util::{StreamExt as _, stream};
@@ -274,7 +274,7 @@ pub(super) async fn info(
     Ok(Json(detail(&api, &hub, &model_id, ask.release).await?))
 }
 
-/// A model as its card and its header say: its releases (one, when named) and, to its members, its commits.
+/// A model as its card and its header say: its releases (one, when named) and, to its members, its checkpoints.
 async fn detail(api: &Api, hub: &Origin, model_id: &ModelId, release: Option<String>) -> Result<ModelDetail, Refusal> {
     let card = (reader(api, hub)?.get_model(&model_id.org, &model_id.name).await).map_err(|e| refusal(hub, e))?;
     let facts = checkpoints::of_card(api, hub, &card).await;
@@ -426,7 +426,7 @@ pub(super) async fn delete_release(
     deleted(&api, query?.0, &org, &name, Some(version), None).await
 }
 
-/// `DELETE /v1/models/{org}/{name}/commits/{checkpoint}`: a commit no release names.
+/// `DELETE /v1/models/{org}/{name}/checkpoints/{checkpoint}`: a checkpoint no release names.
 pub(super) async fn delete_checkpoint(
     State(api): State<Arc<Api>>,
     Path((org, name, checkpoint)): Path<(String, String, String)>,

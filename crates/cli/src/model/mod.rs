@@ -206,7 +206,7 @@ pub(crate) struct Upload {
     /// Destination model, org/name.
     #[arg(value_name = "MODEL")]
     destination: String,
-    /// Commit lane, such as bf16 or fp8.
+    /// Checkpoint lane, such as bf16 or fp8.
     #[arg(long, value_parser = api::model_ref::lane)]
     lane: String,
     /// Source format, such as h3.lora. Usually detected.

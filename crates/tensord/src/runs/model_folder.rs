@@ -10,7 +10,7 @@ pub(super) struct Folder {
     pub store: Store,
     pub tree: ObjectRef,
     pub header: ObjectRef,
-    // Opening the commit retains the complete tree and its present closure during upload.
+    // Opening the checkpoint retains the complete tree and its present closure during upload.
     _checkpoint: Checkpoint,
     _staging: Staging,
 }

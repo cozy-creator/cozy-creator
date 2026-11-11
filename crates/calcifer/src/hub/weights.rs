@@ -1,7 +1,7 @@
 //! Models on machines: downloads and uploads are warm runs on the machine `on` names, which
 //! fetches, makes and publishes the bytes itself, so no weight passes through this computer; a
-//! local file goes to the machine as the run's input. A Hub commit uploads nothing: the Hub
-//! records it as a commit of another model (`commits`).
+//! local file goes to the machine as the run's input. A Hub checkpoint uploads nothing: the Hub
+//! records it as a checkpoint of another model (`checkpoints`).
 use std::{
     io::Read as _,
     path::{Path, PathBuf},
@@ -128,10 +128,10 @@ fn formatted(choice: &mut ModelChoice, format: &str) -> Result<(), Refusal> {
 }
 
 /// `base`, `MODEL[:COMPONENT,…]`: choice `base[:COMPONENT,…]` of a Hub model (a release in the
-/// commit's `lane`, or a commit) or a `local/` one.
+/// checkpoint's `lane`, or a checkpoint) or a `local/` one.
 fn base(raw: &str, lane: &str) -> Result<ModelChoice, Refusal> {
     let segment = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'));
-    // The last `:` starts a component list unless it is a commit's `sha256:`.
+    // The last `:` starts a component list unless it is a checkpoint's `sha256:`.
     let (model, names) = match raw.rsplit_once(':') {
         Some((model, names)) if !model.ends_with("@sha256") && names.split(',').all(segment) => (model, Some(names)),
         _ => (raw, None),
@@ -149,7 +149,7 @@ fn base(raw: &str, lane: &str) -> Result<ModelChoice, Refusal> {
     Ok(choice)
 }
 
-/// One warm run of `made` on `on`, uploaded to `destination` (a Hub repository, a `local/` alias,
+/// One warm run of `made` on `on`, uploaded to `destination` (a Hub model, a `local/` alias,
 /// or none) in `lane`.
 fn warm(hub: &Origin, on: On, agreed: Option<Agreed>, target: String, made: Made, destination: String, lane: String) -> SubmitRun {
     let spec = v1::RunSpec {
@@ -226,8 +226,8 @@ fn strength_within(strength: Option<f64>) -> Result<(Option<f64>, Option<String>
     }
 }
 
-/// `cozy/model_upload`: the warm run that makes `ask.source` and uploads it as a commit of its destination, with the mirror to
-/// record before it goes. A Hub commit on no base is at the Hub already: recording it there is Calcifer's own work.
+/// `cozy/model_upload`: the warm run that makes `ask.source` and uploads it as a checkpoint of its destination, with the mirror to
+/// record before it goes. A Hub checkpoint on no base is at the Hub already: recording it there is Calcifer's own work.
 pub(super) async fn upload(api: &Arc<Api>, hub: &Origin, on: On, agreed: Option<Agreed>, mut ask: ModelUpload) -> Result<Planned, Refusal> {
     let (strength, said) = strength_within(ask.strength)?;
     ask.strength = strength;
@@ -305,7 +305,7 @@ pub(super) async fn upload(api: &Arc<Api>, hub: &Origin, on: On, agreed: Option<
 }
 
 /// `run:N[#output]`: the run's weights output, a WARM run on the machine that holds it, uploaded
-/// as a commit of `destination` in `lane` without running it again.
+/// as a checkpoint of `destination` in `lane` without running it again.
 fn from_run(api: &Api, reference: &str, destination: &str, lane: &str) -> Result<SubmitRun, Refusal> {
     let (number, output) = match reference.split_once('#') {
         Some((number, output)) => (number, Some(output)),
@@ -401,7 +401,7 @@ impl Mirror {
     }
 }
 
-/// A commit of another model on the same Hub, to record as a commit of the destination: no machine pulls it and no byte uploads.
+/// A checkpoint of another model on the same Hub, to record as a checkpoint of the destination: no machine pulls it and no byte uploads.
 /// Read and checked against its lane first (`read`), so a refused record parks and credits nothing.
 pub(super) struct Record {
     ask: ModelUpload,
@@ -413,7 +413,7 @@ pub(super) struct Record {
 }
 
 impl Record {
-    /// Commit `commit` of `from`, when this account may read it and it is of the lane `ask` names.
+    /// Checkpoint `checkpoint` of `from`, when this account may read it and it is of the lane `ask` names.
     async fn read(api: &Api, hub: &Origin, ask: ModelUpload, from: ModelId, checkpoint: String, said: Option<String>, mirror: Option<Mirror>) -> Result<Self, Refusal> {
         let to = ModelId::hub(&ask.destination).map_err(Refusal)?;
         let client = signed_in(api, hub)?;
@@ -423,7 +423,7 @@ impl Record {
             .chain(lanes)
             .find(|(_, id, _)| *id == checkpoint)
             .map(|(lane, _, length)| (lane.to_owned(), length))
-            .ok_or_else(|| Refusal(Error::not_found("commit_not_found", format!("{from} has no commit {checkpoint} this account reads"))))?;
+            .ok_or_else(|| Refusal(Error::not_found("commit_not_found", format!("Checkpoint {checkpoint} is unavailable in {from}"))))?;
         if held != ask.lane {
             return Err(Refusal(
                 Error::new(Kind::Usage, "commit_lane_mismatch", format!("{from}@{checkpoint} is lane {held}, not {}", ask.lane))

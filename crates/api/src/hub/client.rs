@@ -278,7 +278,7 @@ impl Client {
         self.json(request.json(&json!({"source": source}))).await
     }
 
-    /// Records commit `sha256:<hex>` (its tree, `length` bytes) as a commit of org/name: the Hub
+    /// Records checkpoint `sha256:<hex>` (its tree, `length` bytes) as a checkpoint of org/name: the Hub
     /// takes it when the account may read its whole closure, so nothing uploads.
     pub async fn create_model_checkpoint(
         &self,
@@ -351,7 +351,7 @@ impl Client {
         self.send(request).await.map(drop)
     }
 
-    /// Releases `commits` (one per lane) as `release`, public until deleted.
+    /// Publish a release with one checkpoint per lane. Owners may unpublish it later.
     pub async fn publish_model_release(
         &self,
         org: &str,

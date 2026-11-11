@@ -1,8 +1,8 @@
-//! `cozy/model_quantize`: a new commit in a lane, written from a commit (or a release's
+//! `cozy/model_quantize`: a new checkpoint in a lane, written from a checkpoint (or a release's
 //! original weights) by the recipe a named package declares for that lane. The package is always
 //! named, a release or local code: packages that serve the same model can each declare a recipe
 //! for it. Its `quantize` (the Runtime's) runs on the machine, which uploads the output as a
-//! commit of the model in that lane.
+//! checkpoint of the model in that lane.
 use std::sync::Arc;
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -31,7 +31,7 @@ use crate::{
 /// Legacy spellings, besides TensorFS's canonical BF16/F16/F32 dtype names.
 const ORIGINAL: [&str; 3] = ["bf16", "fp16", "f32"];
 
-/// The commit a quantize reads: spelled for the run, its repository, and the components its
+/// The checkpoint a quantize reads: spelled for the run, its model, and the components its
 /// header holds.
 struct Source {
     spelled: String,
@@ -39,8 +39,8 @@ struct Source {
     components: Vec<String>,
 }
 
-/// The run of `package`'s `quantize` that writes `lane` from the commit `model` names into the
-/// commit's own model, with each calibration model it builds bound to that commit.
+/// The run of `package`'s `quantize` that writes `lane` from the checkpoint `model` names into the
+/// checkpoint's own model, with each calibration model it builds bound to that checkpoint.
 pub(super) async fn plan(api: &Arc<Api>, key: &str, hub: &Origin, on: On, agreed: Option<Agreed>, code: Option<LocalCode>, ask: ModelQuantize) -> Result<Planned, Refusal> {
     let lane = refs::label("--lane", &ask.lane).map_err(Refusal)?;
     let model = ModelRef::parse(&ask.model).map_err(Refusal)?;
@@ -71,7 +71,7 @@ pub(super) async fn plan(api: &Arc<Api>, key: &str, hub: &Origin, on: On, agreed
             .remedy(declared(&interface)),
         ));
     }
-    // The commit goes to the source's own model, in the lane; local code's records its package as
+    // The checkpoint goes to the source's own model, in the lane; local code's records its package as
     // `local/<name>` and its release as the source's commit: an unpublished recipe, exactly.
     let mut terms = vec![
         source.spelled.clone(),
@@ -113,9 +113,9 @@ fn original(kinds: &[String]) -> bool {
     kinds.iter().any(float) && kinds.iter().all(|kind| float(kind) || index(kind))
 }
 
-/// The commit `model` names, as the model's card lists it (its org's members see every commit):
-/// a commit by id, or a release's lane of original weights (its only lane when it has one). A
-/// 4-bit lane is written only from original weights (owner, 2026-10-22): from a commit holding
+/// The checkpoint `model` names, as the model's card lists it (its org's members see every checkpoint):
+/// a checkpoint by id, or a release's lane of original weights (its only lane when it has one). A
+/// 4-bit lane is written only from original weights (owner, 2026-10-22): from a checkpoint holding
 /// none it would stack two rounds of 4-bit error.
 async fn checkpoint(api: &Api, hub: &Origin, model: &ModelRef, lane: &str) -> Result<Source, Refusal> {
     let (model_id, release, id) = match model {
@@ -134,7 +134,7 @@ async fn checkpoint(api: &Api, hub: &Origin, model: &ModelRef, lane: &str) -> Re
     let (checkpoint, header, kinds) = match id {
         Some(id) => {
             let found = (card.checkpoints.iter().find(|c| c.id == id))
-                .ok_or_else(|| absent(format!("{model_id} has no commit {id} you may read")))?;
+                .ok_or_else(|| absent(format!("Checkpoint {id} is unavailable in {model_id}")))?;
             let checkpoint = ObjectRef { sha256: found.id.trim_start_matches("sha256:").into(), length: found.length as u64 };
             (checkpoint, found.header.clone(), found.kinds.clone())
         }
@@ -154,9 +154,9 @@ async fn checkpoint(api: &Api, hub: &Origin, model: &ModelRef, lane: &str) -> Re
                         Error::new(
                             Kind::Usage,
                             "model_quantize_source",
-                            format!("{model_id}@{} has lanes {lanes:?}: name the commit to quantize", found.version),
+                            format!("{model_id}@{} has lanes {lanes:?}: choose a checkpoint to quantize", found.version),
                         )
-                        .next(format!("cozy model quantize {model_id}@<commit> --lane {lane} --package <package>")),
+                        .next(format!("cozy model quantize {model_id}@<checkpoint> --lane {lane} --package <package>")),
                     ));
                 }
             };
@@ -201,7 +201,7 @@ pub(super) async fn distribution(client: &::api::hub::Client, hub: &Origin) -> R
     Endpoint::with_config(hub.as_str(), &config).map_err(|f| Refusal(Error::validation("endpoint_invalid", f.detail)))
 }
 
-/// The recipes of `lane` that read a commit holding `components`.
+/// The recipes of `lane` that read a checkpoint holding `components`.
 fn recipes<'i>(interface: &'i Interface, lane: &str, components: &[String]) -> Vec<&'i Recipe> {
     (interface.recipes.iter()).filter(|r| r.lane == lane && r.reads(components)).collect()
 }

@@ -222,7 +222,7 @@ pub struct FoundModel {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub family_from: Option<FamilyFrom>,
     pub release: Option<String>,
-    /// The newest release's lanes; a private model's commits' lanes.
+    /// The newest release's lanes; a private model's checkpoints' lanes.
     pub lanes: Vec<String>,
     pub private: bool,
     /// Who made it: the org it credits, or the parked org it mirrors into.
@@ -277,7 +277,7 @@ pub struct ModelAuthor {
 }
 
 /// `GET /v1/models/{org}/{name}?release=`: a model's releases (one, when named) and, to its org's
-/// members, every commit.
+/// members, every checkpoint.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ModelDetail {
@@ -315,7 +315,7 @@ pub struct ModelDetail {
     pub checkpoints: Vec<ModelCheckpoint>,
 }
 
-/// One release of a model: its version, each lane's commit, and whether it is a mirror.
+/// One release of a model: its version, each lane's checkpoint, and whether it is a mirror.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ModelRelease {
@@ -330,7 +330,7 @@ pub struct ModelRelease {
     pub lanes: Vec<ModelLane>,
 }
 
-/// One lane of a release: its commit, size, header kinds and provenance.
+/// One lane of a release: its checkpoint, size, header kinds and provenance.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ModelLane {
@@ -345,7 +345,7 @@ pub struct ModelLane {
     pub provenance: Option<Provenance>,
 }
 
-/// The recipe that wrote a commit: its header's `metadata.provenance`.
+/// The recipe that wrote a checkpoint: its header's `metadata.provenance`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Provenance {
@@ -359,7 +359,7 @@ pub struct Provenance {
     pub plan: serde_json::Map<String, serde_json::Value>,
 }
 
-/// One commit of a model: its lane, size and the releases naming it.
+/// One checkpoint of a model: its lane, size and the releases naming it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ModelCheckpoint {
@@ -420,8 +420,7 @@ pub struct Families {
     pub families: Vec<String>,
 }
 
-/// `POST /v1/models/{org}/{name}/releases`: one commit per lane, under a version higher than every
-/// earlier one; the Hub never reuses a version, which makes a retry safe.
+/// `POST /v1/models/{org}/{name}/releases`: one checkpoint per lane under an immutable version.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ModelReleaseAsk {
@@ -433,14 +432,14 @@ pub struct ModelReleaseAsk {
     pub checkpoints: Vec<String>,
 }
 
-/// The release a publish made: its version and each lane's commit.
+/// The release a publish made: its version and each lane's checkpoint.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ModelReleased {
     pub model: String,
     pub version: String,
     pub created_at: String,
-    /// Each lane's commit.
+    /// Each lane's checkpoint.
     pub lanes: Vec<(String, String)>,
     /// What the Hub tells its publisher; the release stands regardless.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -457,14 +456,14 @@ pub struct ModelUnpublished {
     pub unpublished: bool,
 }
 
-/// `DELETE /v1/models/{org}/{name}[/releases/{version}|/commits/{commit}]`.
+/// `DELETE /v1/models/{org}/{name}[/releases/{version}|/checkpoints/{checkpoint}]`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelDeleted {
     pub model: String,
     /// One release, by version.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub release: Option<String>,
-    /// One commit; absent when the whole model went.
+    /// One checkpoint; absent when the whole model went.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(alias = "commit")]
     pub checkpoint: Option<String>,
@@ -579,7 +578,7 @@ pub struct Retired {
 pub mod job {
     /// `input`: [`super::ModelDownload`]. A warm run that makes a model present in a machine's store.
     pub const MODEL_DOWNLOAD: &str = "cozy/model_download";
-    /// `input`: [`super::ModelUpload`]. A warm run that makes the source and uploads it as a private commit; a Hub commit on no
+    /// `input`: [`super::ModelUpload`]. A warm run that makes the source and uploads it as a private checkpoint; a Hub checkpoint on no
     /// base is recorded at the Hub by Calcifer, with no machine: its result is a [`super::RecordedCheckpoint`].
     pub const MODEL_UPLOAD: &str = "cozy/model_upload";
     /// `input`: [`super::ModelQuantize`]. A run of a package's `quantize`, the request's `code` when it is local code.
@@ -604,8 +603,8 @@ pub mod job {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ModelDownload {
-    /// `org/name[@release]`, `org/name@sha256:<commit>`, `hf://…`, `civitai://…`, `https://…`, or
-    /// a held `.safetensors` file's `sha256:<hex>` (`PUT /v1/files`).
+    /// `org/name[@release]`, `org/name@sha256:<checkpoint>`, `hf://…`, `civitai://…`, `https://…`, or
+    /// a held `.safetensors` or complete `.cozytensors` file's `sha256:<hex>` (`PUT /v1/files`).
     pub model: String,
     /// A held file's name where its client has it: the object's name, and its alias's when none is given.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -627,7 +626,7 @@ pub struct ModelDownload {
 pub struct ModelUpload {
     /// A provider source, `local/<alias>`, a Hub model, a held file's `sha256:<hex>` (`PUT /v1/files`): a `.safetensors` file, or a
     /// CozyTensors folder's tree document, its files held too, or `run:N[#output]`: a run's weights output, uploaded from the
-    /// machine that holds it. A Hub commit uploads only on a `base`; else it is recorded, and no machine runs.
+    /// machine that holds it. A Hub checkpoint uploads only on a `base`; else it is recorded, and no machine runs.
     pub source: String,
     /// A held source's name where its client has it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -653,7 +652,7 @@ pub struct ModelUpload {
     pub base: Option<String>,
 }
 
-/// A Hub commit recorded as a commit of another model when the caller may read its whole closure: nothing uploaded.
+/// A Hub checkpoint recorded as a checkpoint of another model when the caller may read its whole closure: nothing uploaded.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct RecordedCheckpoint {
@@ -717,13 +716,13 @@ pub struct RemovedRelease {
     pub hub: String,
 }
 
-/// `cozy/model_quantize`'s input: a new commit of `model` in `lane`, written from a commit (or a release's original weights) by
+/// `cozy/model_quantize`'s input: a new checkpoint of `model` in `lane`, written from a checkpoint (or a release's original weights) by
 /// the recipe the package declares for that lane, as a run of its `quantize` on the machine, which uploads it. The package is
 /// `package`, or the request's `code`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ModelQuantize {
-    /// `org/name@sha256:<commit>`, or `org/name[@release]` (none: the newest).
+    /// `org/name@sha256:<checkpoint>`, or `org/name[@release]` (none: the newest).
     pub model: String,
     /// The lane to write: a recipe the package declares for this model.
     pub lane: String,

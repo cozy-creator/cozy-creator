@@ -1,8 +1,8 @@
-//! `cozy model quantize`: a new commit in a lane, written from a commit (or a release's original
+//! `cozy model quantize`: a new checkpoint in a lane, written from a checkpoint (or a release's original
 //! weights) by the recipe a named package declares for that lane, through Calcifer
 //! (CALCIFER-API.md "Models"). The package is always named, a release or a local directory:
 //! packages that serve the same model can each declare a recipe for it. Its `quantize` (the
-//! Runtime's) runs on the machine, which uploads the output as a commit of the model in that lane.
+//! Runtime's) runs on the machine, which uploads the output as a checkpoint of the model in that lane.
 use std::process::ExitCode;
 
 use api::calcifer::{Run, Status};
@@ -30,13 +30,13 @@ pub(crate) async fn quantize(ctx: &Context, args: Quantize) -> Result<ExitCode, 
     if !ctx.json && run.status == Status::Completed
         && let Some(written) = written(&run, &args.lane)
     {
-        Record::new().field("commit", format!("{}@{}", written.model_id, written.revision)).field("lane", &written.lane).print(ctx);
+        Record::new().field("checkpoint", format!("{}@{}", written.model_id, written.revision)).field("lane", &written.lane).print(ctx);
         output::next(ctx, &[&format!("cozy model publish {} <version> {}", written.model_id, written.revision)]);
     }
     Ok(exit_code(&run))
 }
 
-/// The commit the run's `lane` output became.
+/// The checkpoint the run's `lane` output became.
 fn written<'a>(run: &'a Run, lane: &str) -> Option<&'a api::machine::CheckpointRef> {
     run.output.iter().filter(|item| item.name == lane).find_map(|item| item.checkpoint.as_ref())
 }

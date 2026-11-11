@@ -336,12 +336,12 @@ async fn placed(api: &Api, hub: &str, package: &str, release: &str, function: &s
     placed
 }
 
-/// A checkpoint's bytes in `lane`, else its least: a Hub model's release or commit, by its card, kept a while. None: the Hub doesn't say.
+/// A checkpoint's bytes in `lane`, else its least: a Hub model's release or checkpoint, by its card, kept a while. None: the Hub doesn't say.
 async fn sized(api: &Api, hub: &str, written: &str, lane: Option<&str>) -> Option<u64> {
     checkpoint(api, hub, written, lane).await.map(|(_, bytes)| bytes)
 }
 
-/// The commit and bytes of a checkpoint in `lane`, else its least, as `sized` reads them.
+/// The checkpoint and bytes of a checkpoint in `lane`, else its least, as `sized` reads them.
 async fn checkpoint(api: &Api, hub: &str, written: &str, lane: Option<&str>) -> Option<(String, u64)> {
     let key = format!("{hub}\n{written}\n{}", lane.unwrap_or_default());
     if let Some((_, held)) = SIZED.lock().expect("sized lock").get(&key).filter(|(at, _)| at.elapsed() < KEPT) {
@@ -374,7 +374,7 @@ async fn checkpoint(api: &Api, hub: &str, written: &str, lane: Option<&str>) -> 
     found
 }
 
-/// The checkpoints `function` of `package` loads, each by its Hub card's lane commit and bytes: what a machine's estimate counts the
+/// The checkpoints `function` of `package` loads, each by its Hub card's lane checkpoint and bytes: what a machine's estimate counts the
 /// fetch of (cl-816). What the Hub doesn't say in time is left out.
 pub(super) async fn checkpoints(api: &Api, hub: &str, package: &super::Package, function: &str, made: &Map<String, Value>) -> Vec<api::machine::ModelRef> {
     let Some(weights) = Weights::of(package.document(), function, made) else { return vec![] };

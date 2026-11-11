@@ -1,6 +1,5 @@
-//! `cozy model publish|delete`: a model's releases and commits, as a member of its org. A release
-//! names one commit per lane under a version higher than every earlier one, and is public for
-//! good; a commit no release names can be deleted, as can the whole model.
+//! Model releases select one checkpoint per lane. Owners may unpublish a release,
+//! delete an unreferenced checkpoint, or permanently delete the model.
 use std::process::ExitCode;
 
 use api::error::{Error, Kind};

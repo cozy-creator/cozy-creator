@@ -174,7 +174,7 @@ pub struct ModelSearch {
 #[serde(default)]
 pub struct SearchMeta {
     pub total: i64,
-    /// Echoed by a Hub that applied authoritative repository-role filtering.
+    /// Echoed by a Hub that applied authoritative model-role filtering.
     pub role: Option<String>,
 }
 
@@ -185,7 +185,7 @@ pub struct ModelSummary {
     pub org: String,
     pub name: String,
     pub family: Option<String>,
-    /// Header-derived repository role: model, lora or unknown. Absent on older Hubs.
+    /// Header-derived model role: model, lora or unknown. Absent on older Hubs.
     pub role: Option<String>,
     /// Canonical model kind from model representation v2.
     pub kind: Option<crate::model_ref::ModelKind>,
@@ -297,20 +297,20 @@ pub struct ModelAnswer {
     pub warnings: Vec<String>,
 }
 
-/// A model with its releases and, to its members, its commits (`GET /v1/models/{org}/{name}`).
+/// A model with its releases and, to its members, its checkpoints (`GET /v1/models/{org}/{name}`).
 #[derive(Debug, Deserialize)]
 pub struct ModelCard {
     pub model: ModelSummary,
     /// Newest first.
     #[serde(default, deserialize_with = "null_is_empty")]
     pub releases: Vec<ModelRelease>,
-    /// Every commit, newest first, to the model's members; empty to anyone else.
+    /// Every checkpoint, newest first, to the model's members; empty to anyone else.
     #[serde(default, deserialize_with = "null_is_empty")]
     #[serde(alias = "commits")]
     pub checkpoints: Vec<ModelCheckpoint>,
 }
 
-/// A published release of a model: each lane label's commit.
+/// A published release of a model: each lane label's checkpoint.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct ModelRelease {
@@ -329,7 +329,7 @@ pub struct ModelRelease {
     pub warnings: Vec<String>,
 }
 
-/// One lane's commit in a release: its tree, header, closure bytes and kinds.
+/// One lane's checkpoint in a release: its tree, header, closure bytes and kinds.
 #[derive(Debug, Deserialize)]
 pub struct ModelReleaseLane {
     /// `sha256:<hex>`
@@ -347,10 +347,10 @@ pub struct ModelReleaseLane {
     pub provenance: Option<ModelLaneProvenance>,
 }
 
-/// One commit of a model: its tree, lane, header and closure.
+/// One checkpoint of a model: its tree, lane, header and closure.
 #[derive(Debug, Deserialize)]
 pub struct ModelCheckpoint {
-    /// `sha256:<hex>` of the commit's tree.
+    /// `sha256:<hex>` of the checkpoint's tree.
     #[serde(default)]
     pub id: String,
     #[serde(default)]
@@ -358,7 +358,7 @@ pub struct ModelCheckpoint {
     #[serde(default)]
     pub lane: String,
     pub header: ObjectRef,
-    /// The commit's whole closure.
+    /// The checkpoint's whole closure.
     #[serde(default)]
     pub bytes: i64,
     /// Its header's schemes and dtypes (bf16, fp8.rowwise, …).
@@ -374,7 +374,7 @@ pub struct ModelCheckpoint {
     pub by_admin: bool,
 }
 
-/// The recipe that wrote a commit: its header's `metadata.provenance`.
+/// The recipe that wrote a checkpoint: its header's `metadata.provenance`.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ModelLaneProvenance {
