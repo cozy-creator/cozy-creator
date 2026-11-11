@@ -1,7 +1,7 @@
 //! Model documents: `cozytensors.tree/1`, a checkpoint (one lane, one cozytensors file and the model
-//! files beside it), and `cozytensors.repo/1`, a model's releases and checkpoints. Both parse through a
-//! `Wire` twin that carries the `format` tag. The legacy repo/1 tag and commits field remain
-//! byte-compatible until a coordinated format migration; Rust uses Model and checkpoints.
+//! files beside it), and a model's releases and checkpoints. Model documents read legacy
+//! `cozytensors.repo/1` and visibility-aware `cozytensors.model/1`; rewrites preserve modern
+//! visibility and history, while legacy records retain their encoded spelling.
 
 use std::collections::BTreeMap;
 use std::str::FromStr;
