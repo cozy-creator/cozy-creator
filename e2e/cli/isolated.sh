@@ -72,7 +72,7 @@ PY
 
 case $shard in
   entrypoints | executors | projectdb-cancel) needs='' ;;
-  runs | commands) needs='packages birefnet' ;;
+  runs | commands | local-code) needs='packages birefnet' ;;
   follow) needs='packages downloads' ;;
   '') needs='packages birefnet downloads' ;;
   *) needs='packages' ;;
