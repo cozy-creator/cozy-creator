@@ -302,21 +302,6 @@ pub fn die_with_parent(parent: u32) -> Result<bool> {
     sys::die_with_parent(parent)
 }
 
-/// Windows: `handle` goes to the next child this process starts (std hands a child every
-/// inheritable handle), named there by the value returned; the caller drops its own once that
-/// child runs. The child takes it with [`handed`].
-#[cfg(windows)]
-pub fn hand_on(handle: &impl std::os::windows::io::AsRawHandle) -> Result<u64> {
-    sys::hand_on(handle).map_err(Error::os("hand on a handle"))
-}
-
-/// Windows: a copy of the handle `value` names, as [`hand_on`] handed it to this process. Neither
-/// goes further: the inherited handle is no longer inheritable.
-#[cfg(windows)]
-pub fn take_handed(value: u64) -> Result<std::os::windows::io::OwnedHandle> {
-    sys::take_handed(value).map_err(Error::os("take a handed handle"))
-}
-
 /// Descriptors a process hands itself across an exec (Unix): the slots [`hand_on_exec`] fills
 /// and [`take_handed`] reads. After [`reserve_handed`] no owner in this process holds one.
 #[cfg(unix)]
