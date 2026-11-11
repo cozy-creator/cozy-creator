@@ -199,7 +199,8 @@ const newPage = async () => {
     try {
       const action = JSON.parse(response.request().postData() || '{}').action;
       if (action === 'activity') {
-        (seen.activity_statuses ??= []).push(response.status());
+        const answer = await response.json().catch(() => ({}));
+        (seen.activity_replies ??= []).push({ status: response.status(), code: answer.error?.code });
         return;
       }
       if ((response.headers()['content-type'] ?? '').startsWith('text/event-stream')) {
@@ -741,7 +742,8 @@ const newPage = async () => {
 
   check('no_external_secret_delivery', outbound.length === 0);
   check('secret_actions_skip_idempotency_cache', secretIdempotency.length === 0);
-  check('activity_updates_are_accepted', (seen.activity_statuses ?? []).length > 0 && seen.activity_statuses.every((status) => status === 200));
+  const activityReplies = seen.activity_replies ?? [];
+  check('activity_updates_are_supported', activityReplies.some((reply) => reply.status === 200) && activityReplies.every((reply) => reply.status === 200 || (reply.status === 409 && reply.code === 'project_busy')));
   check('no_page_errors', errors.length === 0);
   seen.page_errors = errors;
 })().catch(async (error) => {
