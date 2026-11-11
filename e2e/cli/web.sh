@@ -1,5 +1,5 @@
 # e2e/cli/web.sh: the `web-serves` cell, the part cli/run.sh calls `web_serves`, on every OS, with no machine or model. `cozy open
-# --no-open`; Chrome redeems its code (web/serves.js), the page loads under its CSP with no violation, an event arrives on
+#`; Chrome redeems its code (web/serves.js), the page loads under its CSP with no violation, an event arrives on
 # GET /v1/events; and what must be refused is: a foreign Host and Origin, a used or expired code, ?media= past a file route, a
 # call with no holder or session. Then the page as a person uses it: Place (web/place.js), one stream across tabs and a
 # `kill -9` of Calcifer (web/reconnect.js), edits with Calcifer stopped that land when it's back (web/offline.js), undo and redo of the project's history from the page and the CLI (web/undo.js), the Runs and Machines drawers with a real run from the CLI where this computer runs
@@ -39,7 +39,7 @@ local addr token base chrome id
 chrome=$(web_chrome)
 [ -n "$chrome" ] && [ -x "$chrome" ] || { check "web-serves: no Google Chrome on this runner (${chrome:-none})"; return; }
 npm install -s --prefix "$(web_path "$pw")" playwright-core@1.55.0 > "$OUT/web-npm.log" 2>&1 || { check "web-serves: npm install playwright-core failed: $(tail -c 300 "$OUT/web-npm.log")"; return; }
-cozy project new "$P" > "$OUT/web-new.txt" 2>&1 || { check "web-serves: project new failed: $(tail -c 300 "$OUT/web-new.txt")"; return; }
+starter_project "$P" > "$OUT/web-new.txt" 2>&1 || { check "web-serves: project new failed: $(tail -c 300 "$OUT/web-new.txt")"; return; }
 id=$(status "$P" | jq -r '.id // empty')
 [ -n "$id" ] || { check "web-serves: the project has no id"; return; }
 addr=$(jq -r .address < "$lock") token=$(jq -r .token < "$lock") base=http://$addr
@@ -119,10 +119,10 @@ web_held "$chrome" "$pw"
 web_held() {
   local T=$OUT/web-held id
   step "web-held: a save past project.db held by another program: said, kept, and saved when it's let go"
-  # A new project, its boxes by `cozy project import` (cl-803: a project is project.db, and YAML its import).
-  cozy project new "$T" > "$OUT/web-held-new.txt" 2>&1 || { check "web-held: project new: $(tail -c 300 "$OUT/web-held-new.txt")"; return; }
+  # A new project, its boxes by `cozy import` (cl-803: a project is project.db, and YAML its import).
+  starter_project "$T" > "$OUT/web-held-new.txt" 2>&1 || { check "web-held: project new: $(tail -c 300 "$OUT/web-held-new.txt")"; return; }
   printf 'version: 4\nassets:\n  stays:\n    tool: cozy/edit\n  goes:\n    tool: cozy/edit\n' > "$OUT/web-held.yaml"
-  cozy project -p "$T" import "$OUT/web-held.yaml" > "$OUT/web-held-import.txt" 2>&1 || { check "web-held: import: $(tail -c 300 "$OUT/web-held-import.txt")"; return; }
+  project_api "$T" /yaml -X PUT -H 'Content-Type: application/yaml' --data-binary "@$OUT/web-held.yaml" > "$OUT/web-held-import.txt" 2>&1 || { check "web-held: import: $(tail -c 300 "$OUT/web-held-import.txt")"; return; }
   id=$(status "$T" | jq -r '.id // empty')
   [ -n "$id" ] || { check "web-held: the project has no id"; return; }
   HELD_FOLDER=$(web_path "$T") HELD_ID=$id web_proof held "$1" "$2" ''
@@ -168,7 +168,7 @@ web_start() {
 }
 
 # web_proof <place|reconnect|drawers> <chrome> <playwright's prefix> <restart command, or nothing>: web/<it>.js, signed in by its own
-# `cozy open --no-open` once its browser is up (page.js: signIn), on a project of its own by name, whose folder it deletes whatever
+# `cozy open` once its browser is up (page.js: signIn), on a project of its own by name, whose folder it deletes whatever
 # happened.
 web_proof() {
   local name=$1 chrome=$2 pw=$3 restart=$4 pass=$1${ENGINE:+-$ENGINE} json shot code=0 folder
@@ -232,8 +232,12 @@ answers "ending that session" 204 - -X DELETE -H "Authorization: Bearer $other" 
 answers "no credential" 401 unauthenticated "$base/v1/machines"
 answers "a code asked for with no credential" 401 unauthenticated -X POST "$base/v1/session-codes"
 answers "a code asked for by a session, not the holder" 403 session_code_needs_bearer -X POST -H "Authorization: Bearer $session" "$base/v1/session-codes"
+issued_before=$(date +%s)
 answers "the holder asks for another code" 200 - -X POST -H "Authorization: Bearer $token" "$base/v1/session-codes"
+issued_after=$(date +%s)
 fresh=$(jq -r '.code // empty' "$OUT/web-reply.json") expires=$(jq -r '.expires_ms // 0' "$OUT/web-reply.json")
+issued_at=$(( expires / 1000 - 900 ))
+[ "$issued_at" -ge "$issued_before" ] && [ "$issued_at" -le "$issued_after" ] && [ -n "$fresh" ] || check "web-serves: sign-in code lifetime is not 15 minutes"
 
 file=$(jq -r '.imported.path // empty' "$OUT/web.json"); file=${file##*/}
 if [ -n "$file" ]; then
@@ -251,11 +255,8 @@ answers "ending the session" 204 - -X DELETE -H "Authorization: Bearer $session"
 answers "an ended session" 401 unauthenticated -H "Authorization: Bearer $session" "$base/v1/machines"
 answers "an ended session's ?media=" 401 unauthenticated "$base/v1/projects/$id/files/$file?media=$media"
 
-# A code lives 60 s: this one, kept until then. Last, as nothing else waits on it.
-wait=$(( expires / 1000 - $(date +%s) + 1 ))
-[ "$wait" -le 61 ] && [ -n "$fresh" ] || check "web-serves: a fresh code '$fresh' expires in $wait s, not 60 s"
-[ "$wait" -le 0 ] || sleep "$wait"
-redeem "an expired code" 400 session_code_invalid "$fresh"
+# Expiry boundaries and restart durability are checked without sleeping in sessions::tests.
+
 }
 
 # Alone: this computer's cozy, as it is, in the default home.

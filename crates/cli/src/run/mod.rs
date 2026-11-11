@@ -19,7 +19,7 @@ use crate::{
     Context, output,
     send::{Paths, Sender},
 };
-pub(crate) use follow::{done, exit_code, follow, follow_until, job, mint_key, settled, stalled_words, watched};
+pub(crate) use follow::{done, exit_code, follow, follow_until, job, mint_key, settled};
 
 pub(crate) mod fetch;
 mod follow;
@@ -29,31 +29,14 @@ mod play;
 mod show;
 
 /// `cozy run --help`'s examples: a YAML request file first, inline inputs as overrides.
-const EXAMPLES: &str = "Examples:
+const EXAMPLES: &str = "Examples
   cozy run sdxl/generate --input request.yaml
-      request.yaml:  prompt: a lighthouse at dusk, oil painting
-                     aspect_ratio: \"16:9\"
-                     seed: 7
-  cozy run sdxl/generate --input request.yaml seed=8   (an inline input overrides the file)
-  cozy run sdxl/generate --input request.yaml --lora org/sdxl-lora,0.8
-  cozy run birefnet/remove_background --file image=./character.png
-  cozy run sdxl/generate prompt='a fox in fresh snow'  (inline, for quick runs)
-  cozy run sdxl/generate --describe                    (the fields it takes)
-  cozy run ./my_package/generate prompt=x -o out       (local code, sent by content; its outputs downloaded to out/)
-  cozy run ./my_package/edit 'video=<clip:48-144>'    (frames 48 to 144 of the project's box clip)
-  cozy run sdxl/generate --input request.yaml --estimate  (when each machine would finish it)
-  cozy run sdxl/generate --input request.yaml --estimate 4  (four of it sent at once)
-
-A run belongs to a project: -p, else COZY_PROJECT. Its outputs land there; -o downloads them here.
-A run is followed to its end: Ctrl-C stops following, never the run; `cozy run show N` follows it again.";
+  cozy run sdxl/generate prompt='a fox in fresh snow' --on local
+  cozy run birefnet/remove_background --file image=./character.png";
 
 #[derive(clap::Args, Debug)]
 #[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true, arg_required_else_help = true, after_help = EXAMPLES)]
 pub(crate) struct Args {
-    /// The project a run belongs to: its name or id, or its folder on Calcifer's computer by its absolute path. Default:
-    /// COZY_PROJECT. `ls` lists that project's.
-    #[arg(short = 'p', value_name = "PROJECT", global = true)]
-    project: Option<String>,
     #[command(subcommand)]
     verb: Option<Verb>,
     #[command(flatten)]
@@ -62,11 +45,10 @@ pub(crate) struct Args {
 
 #[derive(clap::Args, Debug)]
 struct RunArgs {
-    /// `[org/]pkg[/fn][@release]` (no org: first-party), `./dir[/fn]` or `./script.py[/fn]`;
-    /// without a function, its functions (local code's one function runs).
+    /// `[org/]pkg[/fn][@release]`, `./dir[/fn]`, or `./script.py[/fn]`.
     #[arg(required = true, value_name = "TARGET", add = ArgValueCompleter::new(crate::completion::local))]
     target: Option<String>,
-    /// `key=value`, `key:=json`, `model.<slot>=<ref>`, one positional value, input files.
+    /// Inputs as `key=value`, `key:=json`, `model.<slot>=<ref>`, or files.
     #[arg(value_name = "INPUT", value_hint = ValueHint::FilePath)]
     inputs: Vec<String>,
     #[command(flatten)]
@@ -74,41 +56,37 @@ struct RunArgs {
     /// Use at most N GPUs for the run and its calls.
     #[arg(long, value_name = "N", value_parser = api::calcifer::gpu_count)]
     gpus: Option<u32>,
-    /// The lane of the function's main model (a label: bf16, fp8, int8, …); its LoRAs and other
-    /// models take their own. Absent, the Hub picks what this machine's hardware runs best.
+    /// Main model precision lane (bf16, fp8 or int8). Auto-selected when omitted.
     #[arg(long, value_parser = api::model_ref::lane)]
     lane: Option<String>,
-    /// Pin an attention kernel for this run: everywhere, or at one `[slot/]component`.
+    /// Select an attention kernel for all models or one `[slot/]component`.
     #[arg(long, value_name = "[[SLOT/]COMPONENT=]KERNEL", value_parser = api::calcifer::attention_pin, conflicts_with = "warm")]
     attention_kernel: Option<String>,
-    /// Dev-only (DEV.md): compute it afresh; no machine memo answers or keeps it.
+    /// Compute a fresh result without saving it to the result cache.
     #[arg(long, conflicts_with = "warm")]
     no_memo: bool,
-    /// The whole payload from a JSON or YAML file; inline inputs override it.
+    /// Read inputs from a JSON or YAML file. Inline inputs override it.
     #[arg(long = "input", value_name = "FILE")]
     input_file: Option<PathBuf>,
-    /// Attach a file: `field.path=FILE`, `label=FILE`, or `FILE` into the declared files.
+    /// Attach files with `[NAME=]FILE` or `field.path=FILE`.
     #[arg(long = "file", value_name = "[NAME=]FILE", value_hint = ValueHint::FilePath)]
     assets: Vec<String>,
-    /// A hint for one attached file: `label-or-index=auto|low|medium|high`.
+    /// Set file fidelity with `label-or-index=auto|low|medium|high`.
     #[arg(long = "file-fidelity", value_name = "FILE=FIDELITY", value_parser = api::calcifer::fidelity)]
     fidelities: Vec<String>,
-    /// Apply a LoRA, in order: `org/lora[,strength]` adapts the function's model; `slot=org/lora`
-    /// names one of several (strength 1 by default).
+    /// Apply a LoRA using `[SLOT=]REF[,STRENGTH]`. Default strength is 1.
     #[arg(long = "lora", value_name = "[SLOT=]REF[,STRENGTH]")]
     loras: Vec<String>,
-    /// Keep the function ready instead of running it.
+    /// Keep the function ready at the selected level.
     #[arg(long, value_enum, ignore_case = true, value_name = "LEVEL")]
     warm: Option<Warm>,
-    /// Print the function's request contract instead of running it.
+    /// Show the function's inputs and outputs.
     #[arg(long)]
     describe: bool,
-    /// Download its outputs into this folder once they land, each named `<run>-<output>.<ext>`.
+    /// Download outputs to this directory.
     #[arg(short = 'o', long = "output", value_name = "DIR", value_hint = ValueHint::DirPath)]
     output: Option<PathBuf>,
-    /// Print when each machine it may go to would finish it, as each quotes it now, instead of
-    /// running it: GPU width, start, finish, preparation, queue position and what that stands on.
-    /// With N, N of it as if sent at once.
+    /// Estimate machine finish times for N simultaneous runs.
     #[arg(long, value_name = "N", num_args = 0..=1, default_missing_value = "1", conflicts_with_all = ["warm", "describe"])]
     estimate: Option<u32>,
 }
@@ -116,8 +94,7 @@ struct RunArgs {
 /// Where a run goes; shared by every verb that submits one.
 #[derive(clap::Args, Debug, Clone)]
 pub(crate) struct Placement {
-    /// `local`, a machine's name, `any`, or `new[:sku]` to rent one. None: Calcifer says. A run goes where it finishes
-    /// soonest; an install, a download or the like to this computer's machine, else to a rental you have.
+    /// Run on `local`, a machine name, `any`, or `new[:sku]`.
     #[arg(long = "on", value_name = "MACHINE")]
     on: Option<String>,
 }
@@ -138,40 +115,39 @@ enum Warm {
     Imported,
     Host,
     Gpu,
-    /// Take it out of the machine's warm set.
+    /// Stop keeping the function ready.
     Off,
 }
 
 #[derive(clap::Subcommand, Debug)]
 enum Verb {
-    /// Every run, newest first; live on a terminal.
+    /// List this project's runs, newest first.
     #[command(alias = "list")]
     Ls {
-        /// Only runs in this state: queued, in_progress (or running), completed, failed or canceled.
+        /// Filter by queued, in_progress (running), completed, failed or canceled.
         #[arg(long, value_name = "STATE", value_parser = run_state)]
         state: Option<String>,
         /// Only this package's runs.
         #[arg(long)]
         package: Option<String>,
-        /// Only the runs on this machine: its name or alias, or `local`.
+        /// Filter by machine name, alias, or `local`.
         #[arg(long = "on", value_name = "MACHINE")]
         on: Option<String>,
-        /// At most N runs (default 50; 0 shows all).
+        /// Show at most N runs (default 20, 0 for all).
         #[arg(long, value_name = "N")]
         limit: Option<u64>,
-        /// Every project's runs, not this one's.
+        /// Include runs from every project.
         #[arg(long)]
         all: bool,
     },
-    /// One run: its result, outputs, calls, logs and how it ran. A run not yet settled is
-    /// followed to its end (Ctrl-C stops following, never the run); its exit code is the run's.
+    /// Show a run's result, outputs and logs. Follow it while it is running.
     Show {
         /// The run's number or id.
         run: String,
-        /// A snapshot of a run still going, instead of following it.
+        /// Show the current state and exit.
         #[arg(long)]
         once: bool,
-        /// Download its outputs into this folder, each named `<run>-<output>.<ext>`.
+        /// Download outputs to this directory.
         #[arg(short = 'o', long = "output", value_name = "DIR", value_hint = ValueHint::DirPath)]
         output: Option<PathBuf>,
     },
@@ -180,14 +156,14 @@ enum Verb {
         /// The run's number or id.
         run: String,
     },
-    /// Print a link that plays a run's output in a browser, straight from its machine.
+    /// Create a browser link to a run's output.
     Play {
         /// The run's number or id.
         run: String,
-        /// The output to play: its name, or name/index for one item of a list.
+        /// Output name or `name/index` for a list item.
         #[arg(long, default_value = "video")]
         output: String,
-        /// How long the link works: anyone holding it may watch until then.
+        /// Link lifetime. Anyone with the link can view it until it expires.
         #[arg(long, default_value = "24h")]
         expires: String,
     },
@@ -204,7 +180,6 @@ fn run_state(text: &str) -> Result<String, String> {
 }
 
 pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
-    let within = crate::project::chosen(args.project.as_ref());
     match args.verb {
         Some(Verb::Ls {
             state,
@@ -213,13 +188,10 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             limit,
             all,
         }) => {
-            // A project named: only its runs. One named by its folder is listed by its id, which a run's record says.
-            let project = match within.filter(|_| !all) {
-                Some(named) if api::target::written_as_path(&named) => {
-                    let state: serde_json::Value = ctx.calcifer().await?.get(&format!("{}?assets=false", crate::project::at(&named, &[]))).await?;
-                    state["id"].as_str().map(str::to_owned)
-                }
-                named => named,
+            let project = if all {
+                None
+            } else {
+                Some(crate::project::current(ctx).await?.id)
             };
             let query = list::Query { status: state, package, machine: on, project, before: None, limit };
             list::exec(ctx, query).await
@@ -239,12 +211,13 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             output,
             expires,
         }) => play::exec(ctx, &run, &output, &expires).await,
-        None => run(ctx, *args.run, within).await,
+        None => run(ctx, *args.run).await,
     }
 }
 
 
-async fn run(ctx: &Context, args: RunArgs, within: Option<String>) -> Result<ExitCode, Error> {
+async fn run(ctx: &Context, args: RunArgs) -> Result<ExitCode, Error> {
+    let project = crate::project::current(ctx).await?;
     let cwd = std::env::current_dir()
         .map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
     let written = args.target.clone().unwrap_or_default();
@@ -257,6 +230,19 @@ async fn run(ctx: &Context, args: RunArgs, within: Option<String>) -> Result<Exi
     if args.describe && !inputs {
         return describe(ctx, &target, code.as_ref(), args.placement.on.as_deref()).await;
     }
+    // Listing a package's functions needs no project on disk. A named function with
+    // default inputs still runs, and a local package can name its one function.
+    if !inputs && args.assets.is_empty() && args.warm.is_none() {
+        let described = self::target(ctx, &target, code.as_ref(), args.placement.on.as_deref()).await?;
+        if described.contract.is_none() {
+            print_functions(ctx, &described);
+            return Ok(ExitCode::SUCCESS);
+        }
+    }
+    let within = match args.warm {
+        Some(_) => None,
+        None => Some(project.id),
+    };
     let ask = request(ctx, &args, target.clone(), code.clone(), &cwd, within).await?;
     if let Some(count) = args.estimate {
         return estimate(ctx, ask, count).await;

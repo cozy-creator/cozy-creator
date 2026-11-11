@@ -116,7 +116,7 @@ pub(crate) async fn change(State(api): State<Arc<Api>>, body: Result<Bytes, Byte
     let asked: ToolListChange = parse(&body?)?;
     if let Some(path) = asked.add.as_deref().filter(|package| api::target::written_as_path(package)) {
         let said = format!("{path} is local code, which is a project's: a box names it by its path from the project's folder");
-        return Err(Refusal(Error::new(Kind::Usage, "tool_list_local", said).next("cozy project add ./<dir>/<function>")));
+        return Err(Refusal(Error::new(Kind::Usage, "tool_list_local", said).next("cozy open")));
     }
     let add = asked.add.map(|package| (owned(&package), format!("{}/", shown(&package))));
     let add = add.as_ref().map(|(full, shown_as)| (full.as_str(), shown_as.as_str()));

@@ -1,7 +1,6 @@
-//! Rendering every verb shares. With `--json` stdout carries one JSON document (NDJSON while
-//! following), compact unless stdout is a terminal, holding what the view shows under the record's own
-//! names (`--full`: all of it). Otherwise tables and `key  value` records, root names without `_/`: a view
-//! is one short block on stdout, warnings included, its long text cut and said so (`--full`: whole).
+//! Rendering every verb shares. Structured documents use TOON, or JSON with `--json` (NDJSON while
+//! following). Views keep their selected fields and bound long text; `--full` retains the whole document.
+//! Existing table and record callers retain their rendering while they migrate to structured output.
 //! Progress and prompts go to stderr. Colors go through anstream, which drops them for pipes and `NO_COLOR`.
 use std::{
     fmt::Display,
@@ -24,7 +23,6 @@ pub(crate) const STALLED: u8 = 4;
 const KEY: Style = Style::new().bold();
 const DIM: Style = Style::new().dimmed();
 const WARN: Style = AnsiColor::Yellow.on_default().bold();
-const FAIL: Style = AnsiColor::Red.on_default().bold();
 
 /// What the terminal can show, read once at the entry.
 #[derive(Clone, Copy, Debug)]
@@ -44,11 +42,6 @@ impl Term {
             stderr: std::io::stderr().is_terminal(),
             hyperlinks: stdout && hyperlinks(),
         }
-    }
-
-    /// Whether a path can be shown as a link.
-    pub(crate) fn links(&self) -> bool {
-        self.hyperlinks
     }
 }
 
@@ -77,12 +70,41 @@ pub(crate) fn json<T: Serialize + ?Sized>(document: &T) {
     anstream::println!("{}", text.expect("a document serializes"));
 }
 
-/// Prints `document` as `--json` does for a view: only the fields `paths` name, or all with `--full`.
-pub(crate) fn view<T: Serialize + ?Sized>(ctx: &Context, document: &T, paths: &[&str]) {
-    match ctx.full {
-        true => json(document),
-        false => json(&pick(serde_json::to_value(document).expect("a document serializes"), paths)),
+/// Print a structured document in the selected output format.
+pub(crate) fn document<T: Serialize + ?Sized>(ctx: &Context, value: &T) {
+    if ctx.json {
+        json(value);
+    } else {
+        toon(value);
     }
+}
+
+fn toon<T: Serialize + ?Sized>(value: &T) {
+    let text = toon_format::encode_default(&value).unwrap_or_else(|_| {
+        toon_format::encode_default(&encoding_error()).expect("a fixed error envelope encodes")
+    });
+    anstream::println!("{text}");
+}
+
+fn encoding_error() -> Envelope {
+    Envelope {
+        error: Error::new(api::error::Kind::Internal, "output_encoding", "could not format the command's response")
+            .next("cozy --help"),
+    }
+}
+
+/// Print selected fields with bounded text, or the complete document with `--full`.
+pub(crate) fn view<T: Serialize + ?Sized>(ctx: &Context, value: &T, paths: &[&str]) {
+    if ctx.full {
+        return document(ctx, value);
+    }
+    let value = match serde_json::to_value(value) {
+        Ok(value) => value,
+        Err(_) => return document(ctx, &encoding_error()),
+    };
+    let mut value = pick(value, paths);
+    truncate(&mut value, None);
+    document(ctx, &value);
 }
 
 /// `value` holding only what `paths` name (`machines.rental.sku`): a list is walked through, and a
@@ -116,6 +138,40 @@ fn pick(value: serde_json::Value, paths: &[&str]) -> serde_json::Value {
 /// The most of a text a view shows; `--full` shows it whole.
 const TEXT: usize = 800;
 
+/// Bound display text recursively while retaining identifiers and usable locations.
+fn truncate(value: &mut serde_json::Value, field: Option<&str>) {
+    use serde_json::Value;
+    match value {
+        Value::Object(fields) => {
+            for (name, value) in fields {
+                truncate(value, Some(name));
+            }
+        }
+        Value::Array(items) => {
+            for value in items {
+                truncate(value, field);
+            }
+        }
+        Value::String(text) if !field.is_some_and(reference_field) => {
+            let count = text.chars().count();
+            if count > TEXT {
+                let preview: String = text.chars().take(TEXT).collect();
+                *text = format!("{preview}... (truncated, {count} chars total; use --full)");
+            }
+        }
+        _ => {}
+    }
+}
+
+fn reference_field(name: &str) -> bool {
+    let name = name.rsplit('_').next().unwrap_or(name);
+    matches!(name,
+        "id" | "ids" | "path" | "paths" | "url" | "urls" | "uri" | "uris" |
+        "file" | "files" | "folder" | "directory" | "root" | "sha256" | "hash" |
+        "digest" | "key" | "name" | "target" | "command" | "next" | "help"
+    )
+}
+
 /// `text` as a view shows it: past a quarter more than `TEXT` characters, its first `TEXT`, or its last
 /// when `tail` (a traceback ends with what failed), saying how long it is.
 pub(crate) fn cut(ctx: &Context, text: &str, tail: bool) -> String {
@@ -143,30 +199,13 @@ pub(crate) fn refusal(ctx: &Context, error: &Error) -> ExitCode {
 }
 
 pub(crate) fn refuse(json: bool, error: &Error) -> ExitCode {
+    let envelope = Envelope { error: error.clone() };
     if json {
-        self::json(&Envelope {
-            error: error.clone(),
-        });
+        self::json(&envelope);
     } else {
-        anstream::println!("{FAIL}error{FAIL:#}: {} ({})", shown(&error.message), error.code);
-        if let Some(remedy) = &error.remedy {
-            anstream::println!("  {}", shown(remedy));
-        }
-        for next in &error.next {
-            anstream::println!("  {DIM}next:{DIM:#} {}", shown(next));
-        }
+        toon(&envelope);
     }
     ExitCode::from(error.exit_code() as u8)
-}
-
-/// A failure in one line and where to read more; `--json` has the record.
-pub(crate) fn failure_of(ctx: &Context, error: &Error) {
-    if !ctx.json
-        && let Some(remedy) = &error.remedy
-    {
-        return failure(ctx, &format!("{}\n  {}", error.message, remedy), &error.next);
-    }
-    failure(ctx, &error.message, &error.next);
 }
 
 pub(crate) fn failure(ctx: &Context, message: &str, next: &[String]) {
@@ -246,11 +285,6 @@ pub(crate) fn hyperlink(term: Term, path: &Path, shown: &str) -> Option<String> 
     }
     let url = url::Url::from_file_path(path).ok()?;
     Some(format!("\x1b]8;;{url}\x1b\\{shown}\x1b]8;;\x1b\\"))
-}
-
-/// A link to `path` that reads `shown`, where the terminal opens links; elsewhere `plain`, as what isn't a link must name the file itself.
-pub(crate) fn named_link(ctx: &Context, path: &Path, shown: &str, plain: &str) -> String {
-    hyperlink(ctx.term, path, shown).unwrap_or_else(|| plain.to_owned())
 }
 
 /// `key  value` lines, keys aligned, then notes.
@@ -399,5 +433,47 @@ impl Table {
         for note in &self.notes {
             anstream::println!("{DIM}{note}{DIM:#}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TEXT, pick, truncate};
+    use serde_json::{Value, json};
+
+    #[test]
+    fn truncated_text_retains_unicode_count_and_full_hint() {
+        let mut value = json!({ "runs": [{ "input": { "prompt": "猫".repeat(TEXT + 17) } }] });
+        truncate(&mut value, None);
+        let text = value["runs"][0]["input"]["prompt"].as_str().unwrap();
+        assert!(text.starts_with(&"猫".repeat(TEXT)));
+        assert!(text.ends_with("... (truncated, 817 chars total; use --full)"));
+    }
+
+    #[test]
+    fn short_text_and_references_stay_whole() {
+        let value = json!({
+            "description": "x".repeat(TEXT),
+            "run_id": "x".repeat(TEXT + 1),
+            "path": format!("/{}", "x".repeat(TEXT + 1)),
+            "urls": [format!("https://example.com/{}", "x".repeat(TEXT + 1))],
+            "next": ["x".repeat(TEXT + 1)],
+        });
+        let mut truncated = value.clone();
+        truncate(&mut truncated, None);
+        assert_eq!(truncated, value);
+    }
+
+    #[test]
+    fn projected_data_round_trips_through_toon() {
+        let value = json!({ "runs": [
+            { "id": "7", "state": "completed", "message": "a,b\n\"quoted\"", "hidden": 1 },
+            { "id": "8", "state": "running", "message": "ready", "hidden": 2 },
+        ], "hidden": true });
+        let selected = pick(value, &["runs.id", "runs.state", "runs.message"]);
+        let encoded = toon_format::encode_default(&selected).unwrap();
+        let decoded: Value = toon_format::decode_default(&encoded).unwrap();
+        assert_eq!(decoded, selected);
+        assert!(encoded.starts_with("runs[2]{id,state,message}:"));
     }
 }

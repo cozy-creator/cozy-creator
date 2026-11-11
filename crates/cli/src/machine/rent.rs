@@ -15,23 +15,22 @@ use crate::{Context, calcifer_client::Client, output};
 
 #[derive(clap::Args, Debug)]
 pub(crate) struct Rent {
-    /// A product from the catalog.
+    /// GPU product to rent. Omit to list available products.
     sku: Option<String>,
-    /// GPUs on the machine: any count the catalog lists.
+    /// Number of GPUs.
     #[arg(long, requires = "sku", value_parser = clap::value_parser!(u32).range(1..))]
     gpus: Option<u32>,
-    /// Disk in GB, at least (the Hub's default is 100).
+    /// Minimum disk space in GB. Defaults to 100.
     #[arg(long, requires = "sku", value_parser = clap::value_parser!(u32).range(1..))]
     disk_gb: Option<u32>,
-    /// Log in as root over SSH with this public key (`cozy machine ssh`); alone, your
-    /// `~/.ssh/id_ed25519.pub` (or id_ecdsa, id_rsa).
+    /// SSH public key file. Omit the path to use your default key.
     #[arg(long, requires = "sku", value_name = "PUBLIC_KEY_FILE", num_args = 0..=1)]
     ssh: Option<Option<std::path::PathBuf>>,
-    /// A Hub admin's worker image by digest (sha256:<hex>), for a gated image bake.
+    /// Worker image digest for an administrator's image build.
     #[arg(long, requires = "sku", hide = true, value_parser = image_digest)]
     image_digest: Option<String>,
-    /// Dev-only (DEV.md): the one provider to buy from. The Hub then prefers a datacenter holding an
-    /// NFS drive; `cozy machine show` says where it landed and whether the drive mounted.
+    // Dev-only. The Hub prefers a datacenter with an NFS drive for this provider.
+    /// Choose the GPU provider.
     #[arg(long, requires = "sku", value_parser = ["runpod", "vast"])]
     provider: Option<String>,
 }

@@ -1,5 +1,5 @@
-import { keepPreviousData, queryOptions } from "@tanstack/react-query"
-import type { Asset, Run, RunList, CalciferStatus } from "./calcifer"
+import { keepPreviousData, queryOptions, type QueryClient } from "@tanstack/react-query"
+import type { Asset, Run, RunList, CalciferStatus, ProjectState, ProjectWarning } from "./calcifer"
 import type { Project } from "../types"
 import type { Client, RunFilter } from "./client"
 import type { EventStream } from "./events"
@@ -35,14 +35,34 @@ export function withAssets(state: Project, rows: Asset[], gone: Iterable<string>
   return { ...(head ?? state), assets, covered: state.covered }
 }
 
+const openingWarningsKey = (id: string) => ["project-opening-warnings", id]
+
+function mergeWarnings(...lists: ProjectWarning[][]): ProjectWarning[] {
+  return [...new Map(lists.flat().map((warning) => [JSON.stringify([warning.name ?? null, warning.message]), warning])).values()]
+}
+
+/** Address lookup can consume one-time upgrade notices before the canvas reads the project. */
+export function rememberProjectWarnings(queries: QueryClient, head: ProjectState) {
+  const warnings = head.warnings?.filter(({ name }) => !name)
+  if (warnings?.length) {
+    queries.setQueryData<ProjectWarning[]>(openingWarningsKey(head.id), (held = []) => mergeWarnings(held, warnings))
+  }
+}
+
 export const projectQuery = (client: Client, stream: EventStream, id: string) =>
   queryOptions({
     queryKey: ["project", id],
-    queryFn: async ({ signal }) => {
+    queryFn: async ({ client: queries, signal }) => {
       await stream.whenShown(id, signal)
       signal.throwIfAborted()
       const began = performance.now()
-      return { ...(await client.project(id, signal)), began }
+      const state = await client.project(id, signal)
+      signal.throwIfAborted()
+      const key = openingWarningsKey(id)
+      const opening = queries.getQueryData<ProjectWarning[]>(key)
+      if (!opening) return { ...state, began }
+      queries.removeQueries({ queryKey: key, exact: true })
+      return { ...state, began, warnings: mergeWarnings(state.warnings ?? [], opening) }
     },
     structuralSharing: keepAssets,
   })

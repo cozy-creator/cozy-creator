@@ -36,7 +36,7 @@ const REPORT: Duration = Duration::from_secs(5);
 
 #[derive(clap::Args, Debug)]
 pub(crate) struct Args {
-    /// The machine to check; without it, this computer's machine, which starts for it.
+    /// Machine to check. Defaults to this computer.
     #[arg(long)]
     on: Option<String>,
 }

@@ -9,7 +9,7 @@ import msgspec
 import sdxl
 from sdxl import GenerateInput, SdxlModel
 
-from cozy_runtime.author import Adjustments, App, Context, Lora, ModelChoice, Outputs, Telemetry, invocable
+from cozy_runtime.author import Adjustments, App, Context, Lora, ModelChoice, Outputs, Telemetry, call
 from cozy_runtime.image import ImageResult
 from cozy_runtime.media import File
 
@@ -17,7 +17,7 @@ app = App()
 BALLOON, IKEA = "proomptengineer/balloon-lora-sdxl", "ostris/ikea-lora-sdxl"
 
 
-@invocable(defaults={"model": "stabilityai/sdxl@1.0.0"}, memoize=True)
+@app.entrypoint(private=True, defaults={"model": "stabilityai/sdxl@1.0.0"}, memoize=True)
 async def paint(
     ctx: Context, *, prompt: str, seed: int, steps: int = 20, model: SdxlModel, out: Outputs,
     tel: Telemetry, adj: Adjustments,
@@ -26,9 +26,6 @@ async def paint(
     payload = GenerateInput(prompt=prompt, seed=seed, steps=steps)
     generate = sdxl.app._registry["generate"].fn
     return generate(ctx, payload, sdxl.resolve_generate(payload), model, out, tel, adj)
-
-
-app.entrypoint(paint, private=True)
 
 
 class Compare(msgspec.Struct):
@@ -64,7 +61,7 @@ async def compare(ctx: Context, payload: Compare, out: Outputs) -> Compared:
     images: list[File] = []
     for stack, model, seed in plan:
         started = time.monotonic()
-        result = await paint(prompt=payload.prompt, seed=seed, steps=payload.steps, model=model)
+        result = await call(paint, prompt=payload.prompt, seed=seed, steps=payload.steps, model=model)
         seconds, digest = round(time.monotonic() - started, 2), result.image.digest
         seen = any(call.digest == digest for call in calls)
         if not seen:

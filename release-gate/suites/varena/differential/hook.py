@@ -8,7 +8,8 @@ and the executor's execution record carries them."""
 
 import hashlib
 from collections.abc import Callable, Mapping, Sequence
-from typing import Protocol, TypedDict, cast
+from types import ModuleType
+from typing import TYPE_CHECKING, Protocol, TypedDict, cast
 
 import torch
 
@@ -17,10 +18,14 @@ from cozy_runtime.internal.contract import unsealed
 #: The driver's view, read on purpose: this cell tests the memory manager itself.
 mem_get_info = cast(Callable[[torch.device], tuple[int, int]], unsealed(torch, "mem_get_info"))  # torch.cuda.mem_get_info
 from cozy_runtime import graphs
+from cozy_runtime.author._errors import DoesNotFit
 from cozy_runtime.internal import executor
 from cozy_runtime.internal.execution import catch
 from cozy_runtime.internal.residency import _REQUEST
 from torch.utils._pytree import tree_leaves
+
+if TYPE_CHECKING:
+    from tensorfs.varena._facts import SplitSelection
 
 
 class _Checks(Protocol):
@@ -64,7 +69,7 @@ class Call(Protocol):
 
 
 #: The native selection this hook was written for: (level, selection), or no selection when refused.
-type Select = Callable[[int, str, Menu, int, int], tuple[str, Mapping[str, str] | None]]
+type Select = Callable[[int, str, str, Menu, int], "SplitSelection"]
 
 _sums: dict[str, dict[str, "hashlib._Hash"]] = {}
 _traces: dict[str, dict[str, list[Mark]]] = {}
@@ -127,10 +132,10 @@ def _with_loops[**P](record: Callable[P, Record]) -> Callable[P, Record]:
     return execution
 
 
-def dispatch(module: torch.nn.Module, call: Call, args: tuple[object, ...], kwargs: dict[str, object]) -> object:
-    """`_dispatch` as the Runtime has it (no `torch` argument since the typed Runtime)."""
+def dispatch(owner: ModuleType, module: torch.nn.Module, call: Call, args: tuple[object, ...], kwargs: dict[str, object]) -> object:
+    """`_dispatch` as Runtime 0.44 has it: `owner` is the torch module."""
     _press(module)
-    result: object = _dispatch(module, call, args, kwargs)
+    result: object = _dispatch(owner, module, call, args, kwargs)
     if not (graphs.BYPASS.get() or graphs._WARMING.get() or torch.cuda.is_current_stream_capturing()):
         _add(graphs._name(module), result)
     return result
@@ -139,25 +144,34 @@ def dispatch(module: torch.nn.Module, call: Call, args: tuple[object, ...], kwar
 _select: Select | None = getattr(catch, "select", None)
 
 
-def select(device: int, key: str, menu: Menu, stream: int, floor: int = 0) -> tuple[str, Mapping[str, str] | None]:
-    """Each split decision in order, run-length: [level, basis, calls]. `declared` after a site has
-    `measured` is a level that never ran (its trial); `refused` is the finest, chosen with no estimate."""
-    assert _select is not None  # installed only where it exists
-    level, selection = _select(device, key, menu, stream, floor)
+def _mark(key: str, level: int, basis: str) -> None:
     request = catch.CURRENT.get()
     if request is not None:
         trace = _traces.setdefault(request.id, {}).setdefault(key, [])
-        mark: Mark = [level, selection["basis"] if selection else "refused"]
+        mark: Mark = [level, basis]
         if trace and trace[-1][:2] == mark:
             trace[-1][2] = cast(int, trace[-1][2]) + 1  # a mark's third item is its count
         else:
             trace.append([*mark, 1])
-    return level, selection
+
+
+def select(device: int, key: str, name: str, menu: Menu, stream: int) -> "SplitSelection":
+    """Each split decision in order, run-length: [level, basis, calls]. `declared` after a site has
+    `measured` is a level that never ran (its trial); `refused` is the finest, which native selection
+    could not make room for (the call then fails with DoesNotFit). Runtime 0.44's `catch.select`."""
+    assert _select is not None  # installed only where it exists
+    try:
+        selection = _select(device, key, name, menu, stream)
+    except DoesNotFit:
+        _mark(key, len(menu) - 1, "refused")
+        raise
+    _mark(key, int(selection["choice_id"]), selection["basis"])
+    return selection
 
 
 if _select is not None:  # v2's native selection
-    catch.select = select  # type: ignore[assignment]  # bug: Runtime 0.44's select is (device, key, name, menu, stream) -> selection; this unpacks (level, selection)
-graphs._dispatch = dispatch
+    catch.select = select
+graphs._dispatch = dispatch  # type: ignore[assignment]  # graphs' own is untyped (Any): this one names the call's type
 executor.Executor._execution = _with_loops(_execution)  # type: ignore[method-assign]  # the hook wraps the executor's record
 if PRESS == "eager":
-    graphs._region_call = lambda module, recorder, call, args, kwargs: call(module, *args, **kwargs)
+    graphs._region_call = lambda torch, module, recorder, call, args, kwargs: call(module, *args, **kwargs)

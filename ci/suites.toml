@@ -5,9 +5,6 @@
 # inside one directory, `**` spans directories.
 # Tokens:
 #   cli, imports, mps, gpu, gpu-datacenter   suites
-#   cpu                                     every package through the candidate Runtime's executor on the CPU, tiny
-#                                           random weights (e2e/cpu): what the Runtime, TensorFS, varena, TensorD's
-#                                           frames or a package decide
 #   cli-release                             cozy's signed-in commands (e2e/release/run.sh): a release only, with the CI key
 #   model                                   the cli suite's real inference on the CPU (BiRefNet's forward pass): what the
 #                                           Runtime, TensorD, TensorFS, varena or the package decides. Every cli run
@@ -26,7 +23,7 @@
 # Apple silicon) and every package's uv.lock is Linux-only. It joins `everything`, `platform` and the BiRefNet/SDXL
 # extras when all land.
 
-everything = ["cli", "imports", "cpu", "model", "gpu", "gpu-datacenter", "varena", "pkg:*"]
+everything = ["cli", "imports", "model", "gpu", "gpu-datacenter", "varena", "pkg:*"]
 release = ["everything", "os:macos", "os:windows", "cli-release"]
 
 [cozy-creator]
@@ -38,7 +35,6 @@ rules = [
   # The cli suite's own parts and coverage map: a PR's cells. The imports suite cannot break by them.
   { paths = ["e2e/cli/run.sh"], select = ["cli", "model", "build:cozy"] },
   { paths = ["e2e/cli/**", "e2e/coverage.*"], select = ["cli", "build:cozy"] },
-  { paths = ["e2e/cpu/**"], select = ["cpu", "build:cozy"] },
   { paths = ["ci/**", "e2e/**", ".github/workflows/e2e.yaml"], select = ["cli", "imports", "model", "build:cozy"] },
   { paths = ["release-gate/**", ".github/workflows/release-gate.yml"], select = ["gpu", "gpu-datacenter", "varena", "pkg:*"] },
   # Installers and release archives: the cli suite installs them on every OS at release.
@@ -67,7 +63,7 @@ select = ["os:macos", "os:windows"]
 # (api, platform) is not.
 [[cozy-creator.also]]
 paths = ["crates/tensord/**", "crates/executor-api/**", "crates/tensorfs/**", "crates/tensorfs-py/**", "crates/varena/**", "crates/varena-ledger/**"]
-select = ["imports", "model", "cpu"]
+select = ["imports", "model"]
 
 # A crate's own change selects its tokens here, and also the tokens of every crate that depends on
 # it (Cargo.toml dependency tables, transitively): changing `platform` selects what `tensord` does.
@@ -114,7 +110,7 @@ rules = [
 # A directory whose pyproject.toml declares a cozy.application entry point is a package; `{dir}` is its name. SDXL rides along as the
 # shared-environment canary. `extra` adds the suites that run a package's own cells (cli: BiRefNet on the CPU).
 [packages.package]
-select = ["imports", "cpu", "gpu", "pkg:{dir}", "pkg:sdxl", "build:package"]
+select = ["imports", "gpu", "pkg:{dir}", "pkg:sdxl", "build:package"]
 extra = { birefnet = ["cli", "model"] }
 
 [tensorhub]

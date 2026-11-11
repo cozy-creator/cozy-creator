@@ -42,8 +42,8 @@ def wait(payload: Wait) -> Waited:
 @app.entrypoint(accelerator=False)
 def silent(payload: Wait, tel: Telemetry) -> Waited:
     """Says it waits, then sleeps without a word: nothing judges a run's progress (cl-663)."""
-    tel.progress(0.0, stage="waiting silently")
-    time.sleep(payload.seconds)
+    with tel.stage("waiting silently"):
+        time.sleep(payload.seconds)
     return Waited(seconds=payload.seconds)
 
 

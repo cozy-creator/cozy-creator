@@ -160,7 +160,7 @@ class Summary(TypedDict):
     execution_ms_as_reported: int | None
     accepted_to_started_ms: int
     steps: int
-    observed_step_callback_count: int
+    observed_step_count: int
     native_completed_steps: int
     native_step_observations: list[Observation]
     step_timing_scope: str
@@ -389,7 +389,7 @@ def summarize(run: RunRecord, request: Request, size: tuple[int, ...], events: l
         "execution_ms_as_reported": run.get("execution_ms"),
         "accepted_to_started_ms": run["started_at_ms"] - run["accepted_at_ms"],
         "steps": steps["count"] + native_steps,
-        "observed_step_callback_count": steps["count"],
+        "observed_step_count": steps["count"],
         "native_completed_steps": native_steps,
         "native_step_observations": native_rows,
         "step_timing_scope": "Only Python callback intervals are timed individually; native interval timing is included in the stage total.",

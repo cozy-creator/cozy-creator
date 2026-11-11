@@ -1,6 +1,6 @@
 //! Calcifer's project API (xs-151, cl-758): the projects this computer knows, a project folder
 //! opened by its path, its assets as they stand and their versions (a video's are takes), the runs
-//! that make them, what happens as they go, and its files and cuts. The CLI's `cozy project` verbs
+//! that make them, what happens as they go, and its files and cuts. The CLI's asset verbs
 //! are one client of it.
 use std::{collections::BTreeMap, path::PathBuf};
 
@@ -28,6 +28,9 @@ pub struct Open {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Opened {
     pub id: String,
+    /// Its stable, nine-character public URL code.
+    #[serde(default)]
+    pub code: String,
     /// Where it lives on Calcifer's computer.
     pub path: PathBuf,
     /// Its name, unique among the projects Calcifer knows: what `-p` takes.
@@ -40,15 +43,14 @@ pub struct Opened {
     pub said: Vec<String>,
 }
 
-/// How a client names a project: its id or name, or its folder on Calcifer's computer by its absolute path (cl-819). The
-/// folder a client is in names none: Calcifer may be on another computer.
-pub const NAMED_BY: &str = "a project's name or id, or its folder on Calcifer's computer by its absolute path";
+/// How a client names a project: its id, public code or name, or its folder on Calcifer's computer by its absolute path (cl-819). The
+/// CLI project commands resolve their current directory and send its absolute path.
+pub const NAMED_BY: &str = "a project's name, id or public code, or its folder on Calcifer's computer by its absolute path";
 
 /// A request in no project, which needs one.
 pub fn unnamed() -> Error {
-    Error::new(crate::error::Kind::Usage, "not_in_a_project", "name the project: -p <name>, or COZY_PROJECT=<name>")
-        .next("cozy project ls")
-        .next("cozy project new <name>")
+    Error::new(crate::error::Kind::Usage, "not_in_a_project", "run this command from an existing project directory. Use cozy new to create one")
+        .next("cozy new")
 }
 
 /// Where a card sits on a project's canvas: one row of `project.canvas.yaml`.
@@ -139,6 +141,9 @@ pub struct Projects {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "KnownProject"))]
 pub struct Known {
     pub id: String,
+    /// Its stable, nine-character public URL code.
+    #[serde(default)]
+    pub code: String,
     /// Its name: what `-p` takes.
     pub name: String,
     pub path: PathBuf,
@@ -155,6 +160,9 @@ pub struct Known {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "ProjectState"))]
 pub struct State {
     pub id: String,
+    /// Its stable, nine-character public URL code.
+    #[serde(default)]
+    pub code: String,
     pub path: PathBuf,
     pub assets: Vec<Asset>,
     /// What is running and what is queued, in the order it goes.
@@ -171,10 +179,7 @@ pub struct State {
     pub orphans: Vec<Orphan>,
     /// Whether its walk is going: runs being made, or asked and not yet sent.
     pub busy: bool,
-    /// Whether a push or pull is going.
-    #[serde(default)]
-    pub moving: bool,
-    /// How many files project.lock names are not on this computer (`POST /v1/projects/{id}/pull`).
+    /// How many files project.lock names are not on this computer.
     #[serde(default)]
     pub absent: u64,
     /// How many files `cozy run`s left here, that belong to no asset.
@@ -981,34 +986,6 @@ fn is_zero(n: &u64) -> bool {
     *n == 0
 }
 
-/// What a push or pull moved (`POST /v1/projects/{id}/push`, `/pull`). A push sends every file
-/// project.lock names that the Hub lacks; a pull fetches every one `files/` lacks.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct Transferred {
-    /// The files project.lock names.
-    pub files: u64,
-    /// Those sent or fetched now.
-    pub moved: u64,
-    pub bytes: u64,
-    /// The files it could not move, which stopped nothing else.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub skipped: Vec<Skipped>,
-    /// A push's: the private model and commit that keep them at the Hub, until deleted by name.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kept_in: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub commit: Option<String>,
-}
-
-/// A file a push or pull left out: its path in the project, and why.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct Skipped {
-    pub path: String,
-    pub why: String,
-}
-
 /// What a walk landed: how many takes and versions, how long it took, and its runs' execution time summed, which is more
 /// than that when they ran at once.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -1222,18 +1199,11 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         run: Option<u64>,
     },
-    /// A push or pull landed `file` (None: it is under way), `bytes` moved so far.
+    /// Materializing a stored file landed `file`, with `bytes` read from the Hub.
     Moved {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         file: Option<String>,
         bytes: u64,
-    },
-    /// A push or pull ended: what it moved, or what stopped it.
-    Transferred {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        done: Option<Transferred>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        error: Option<Error>,
     },
     /// Asset `name`'s cut (`edit.mp4`, and its `.otio`) was made here, in `took_s`: `frames` long at `fps`, the takes
     /// in `retimed` retimed to it. `unchanged`: what it holds did not change, so it was left.

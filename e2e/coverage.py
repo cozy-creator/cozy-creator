@@ -27,8 +27,6 @@ TIERS = {"pr", "release", "gate", "manual", "none", "pending"}
 UNREQUIRED = ("manual", "none", "pending")
 # Shown by every --help, exercised by the walk itself. A `--version <n>` of a command's own is a flag like any other.
 WALKED = {"--help", "--version"}
-# coverage.toml: `[command]` tables of `key = "tier: step"`.
-Manifest = dict[str, dict[str, str]]
 
 
 @dataclass
@@ -49,11 +47,7 @@ def _help(cozy: str, path: tuple[str, ...]) -> str:
 
 
 def _parse(text: str) -> tuple[list[str], dict[str, bool], dict[str, str], set[str], bool]:
-    commands: list[str] = []
-    flags: dict[str, bool] = {}
-    shorts: dict[str, str] = {}
-    short_values: set[str] = set()
-    section, runnable = "", True
+    commands, flags, shorts, short_values, section, runnable = [], {}, {}, set(), "", True
     for line in text.splitlines():
         if line.startswith("Usage:"):
             runnable = "<COMMAND>" not in line
@@ -80,7 +74,7 @@ def _parse(text: str) -> tuple[list[str], dict[str, bool], dict[str, str], set[s
     return commands, flags, shorts, short_values, runnable
 
 
-def tree(cozy: str) -> Command:
+def tree(cozy: str, hidden_roots: tuple[str, ...] = ()) -> Command:
     def walk(path: tuple[str, ...]) -> Command:
         commands, flags, shorts, short_values, runnable = _parse(_help(cozy, path))
         node = Command(path, runnable, flags, shorts, short_values)
@@ -88,12 +82,15 @@ def tree(cozy: str) -> Command:
             node.children[name] = walk((*path, name))
         return node
 
-    return walk(())
+    root = walk(())
+    for name in hidden_roots:
+        if name not in root.children:
+            root.children[name] = walk((name,))
+    return root
 
 
 def ids(root: Command) -> set[str]:
-    out: set[str] = set()
-    global_flags = set(root.flags) - WALKED
+    out, global_flags = set(), set(root.flags) - WALKED
 
     def add(node: Command) -> None:
         name = " ".join(("cozy", *node.path))
@@ -117,8 +114,7 @@ def calls(log: str) -> list[list[str]]:
 
 def exercised(root: Command, words: list[str]) -> set[str]:
     """The ids one logged invocation exercised: its command, and each flag it passed."""
-    out: set[str] = set()
-    node, i, descend = root, 0, True
+    node, out, i, descend = root, set(), 0, True
     while i < len(words):
         word = words[i]
         i += 1
@@ -156,7 +152,7 @@ def hidden_in_source(src: str) -> set[str]:
     import pathlib
     import re
 
-    names: set[str] = set()
+    names = set()
     for path in pathlib.Path(src).rglob("*.rs"):
         lines = path.read_text(encoding="utf-8").splitlines()
         for i, line in enumerate(lines):
@@ -167,9 +163,7 @@ def hidden_in_source(src: str) -> set[str]:
             if line.lstrip().startswith("#[arg"):
                 names.add("--" + (named.group(1) if named else field.split(":")[0].strip().replace("_", "-")))
             else:
-                matched = re.match(r"(\w+)", field.removeprefix("pub "))
-                assert matched is not None
-                variant = matched.group(1)
+                variant = re.match(r"(\w+)", field.removeprefix("pub ")).group(1)
                 names.add(re.sub(r"(?<!^)(?=[A-Z])", "-", variant).lower())
     return names
 
@@ -178,8 +172,8 @@ def manifest(path: str) -> dict[str, tuple[str, str]]:
     """coverage.toml: `[command]` tables (`"run ls"`), `test` for the command itself and one key per
     flag, each `"tier: the step that tests it"`; `[global]` for the root's flags."""
     with open(path, "rb") as f:
-        doc: Manifest = tomllib.load(f)
-    out: dict[str, tuple[str, str]] = {}
+        doc = tomllib.load(f)
+    out = {}
     for command, entries in doc.items():
         if command == "hidden":
             prefix = "cozy"
@@ -195,10 +189,18 @@ def manifest(path: str) -> dict[str, tuple[str, str]]:
 
 
 def check(cozy: str, toml: str, tiers: set[str], logs: list[str], source: str = "") -> int:
-    root, mapped = tree(cozy), manifest(toml)
+    mapped = manifest(toml)
     with open(toml, "rb") as f:
-        doc: Manifest = tomllib.load(f)
-        hidden = {f"cozy {k}" for k in doc.get("hidden", {})}
+        hidden = {f"cozy {k}" for k in tomllib.load(f).get("hidden", {})}
+    hidden_roots = tuple(sorted({name.split()[1] for name in hidden if not name.split()[1].startswith("--")}))
+    root = tree(cozy, hidden_roots)
+    # The hidden root flags are boolean switches; child commands inherit them.
+    for name in hidden:
+        words = name.split()[1:]
+        if len(words) == 1 and words[0].startswith("--"):
+            root.flags[words[0]] = False
+    if "--yes" in root.flags:
+        root.shorts["-y"] = "--yes"
     have = ids(root)
     absent: list[str] = []
     for h in sorted(hidden):
@@ -206,7 +208,7 @@ def check(cozy: str, toml: str, tiers: set[str], logs: list[str], source: str = 
             have.add(h)
         elif mapped[h][0] in UNREQUIRED:
             absent.append(h)
-    hidden_problems: list[str] = []
+    hidden_problems = []
     if source:
         listed = {h.split()[-1] for h in hidden}
         hidden_problems = [f"no test: hidden {n} (`hide = true` in {source}; list it in [hidden])" for n in sorted(hidden_in_source(source) - listed)]

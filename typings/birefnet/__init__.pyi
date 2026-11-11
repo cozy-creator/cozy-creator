@@ -1,7 +1,7 @@
-# The birefnet package (packages repo) as a dependent package sees it: the Runtime's interface wheel, whose
-# remove_background takes the request's fields by name and returns a PendingCall (release-gate xs132-pipeline).
+# The birefnet package (packages repo) as a dependent package imports it: its registered function, which a caller
+# runs as a managed call (`await call(remove_background, payload=...)`, release-gate xs132-pipeline).
 import msgspec
-from cozy_runtime.author import ModelChoice, PendingCall
+from cozy_runtime.author import Context, Outputs, Telemetry
 from cozy_runtime.media import ImageFile
 
 class RemoveBackgroundInput(msgspec.Struct):
@@ -10,4 +10,8 @@ class RemoveBackgroundInput(msgspec.Struct):
 class RemoveBackgroundOutput(msgspec.Struct):
     image: ImageFile
 
-def remove_background(*, image: ImageFile, model: ModelChoice | None = None) -> PendingCall[RemoveBackgroundOutput]: ...
+class BackgroundRemovalModel: ...
+
+def remove_background(
+    ctx: Context, payload: RemoveBackgroundInput, model: BackgroundRemovalModel, out: Outputs, tel: Telemetry
+) -> RemoveBackgroundOutput: ...

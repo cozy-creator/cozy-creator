@@ -1,8 +1,6 @@
-// Thousands of assets (Paul expects them): a generated 5,000-asset project, a real Calcifer, the real CLI, a real Chrome. How long `cozy project
-// status` takes, opening it in the page, one edit to show, what's read for it, a box let go on the crowd by hand, a render landing, panning, memory.
+// Thousands of assets (Paul expects them): a generated 5,000-asset project, a real Calcifer, a real Chrome. How long a project API read takes, opening it in the page, one edit to show, what's read for it, a box let go on the crowd by hand, a render landing, panning, memory.
 // It's generated as a folder of the files from before project.db (cl-803), 4,000 shots rendered twice each, which Calcifer's first open imports, as it
-// imports a person's: nothing else makes that many rendered takes short of rendering them. From there it's project.db's, and only the CLI, the page
-// and Calcifer's HTTP touch it.
+// imports a person's: nothing else makes that many rendered takes short of rendering them. From there it's project.db's, and only the page and Calcifer's HTTP API touch it.
 // The bars are what a person would feel, in BARS. What each took is seen.scale.
 //   node scale.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $SHOT: where to keep its screenshots; $ALONE: on a shared
@@ -14,7 +12,7 @@ const { createHash } = require('crypto');
 const { appendFileSync, closeSync, copyFileSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } = require('fs');
 const { homedir } = require('os');
 const { join } = require('path');
-const { calcifer, signIn, STEP_MS, lastLook, lookAt, png, noStall, closeBox, openBox, renderOf, until, projectHeld } = require('./page');
+const { projectUrl, projectAction, calcifer, signIn, STEP_MS, lastLook, lookAt, png, noStall, closeBox, openBox, renderOf, until, projectHeld } = require('./page');
 const { readFootprint, closedProjectMemory } = require('./native-memory');
 
 const failures = [];
@@ -233,19 +231,20 @@ async function nativeMemory(base, folder) {
   seen.scale = numbers;
   seen.bars = BARS;
 
-  const cozy = (...words) => new Promise((done, fail) => {
+  const cozyAt = (at, ...words) => new Promise((done, fail) => {
     if (process.env.ARGV_LOG) appendFileSync(process.env.ARGV_LOG, `${words.map((word) => `${word}\x1f`).join('')}\x1e`);
     const from = Date.now();
-    execFile(COZY, words, { cwd: folder, env: { ...process.env, COZY_PROJECT: folder }, encoding: 'utf8', maxBuffer: 1 << 28 }, (error, stdout, stderr) => {
+    execFile(COZY, words, { cwd: at, encoding: 'utf8', maxBuffer: 1 << 28 }, (error, stdout, stderr) => {
       const at = Date.now();
       if (error) fail(new Error(`cozy ${words.join(' ').slice(0, 300)}: ${error.message}: ${stdout.slice(0, 500)}${stderr.slice(0, 500)}`));
       else done({ stdout, stderr, at, ms: at - from });
     });
   });
-  const project = (...words) => cozy('project', '-p', folder, ...words);
+  const cozy = (...words) => cozyAt(folder, ...words);
+  const project = (...words) => projectAction(folder, ...words);
   const status = async (at = folder) => {
-    const answer = await cozy('--json', '--full', 'project', '-p', at, 'status');
-    return { state: JSON.parse(answer.stdout), ms: answer.ms };
+    const answer = await projectAction(at, 'status');
+    return { state: answer.value, ms: answer.ms };
   };
   const mb = (bytes) => +(bytes / 1048576).toFixed(1);
   const dbMb = () => mb(statSync(join(folder, 'project.db')).size);
@@ -263,7 +262,7 @@ async function nativeMemory(base, folder) {
   numbers.status_first_s = seconds(keyed.ms);
   const local = (await (await fetch(`${base}/v1/status`, { headers: { Authorization: `Bearer ${JSON.parse(readFileSync(process.env.HOLDER, 'utf8')).token}` } })).json()).local_usable;
   if (local) {
-    await cozy('--json', 'run', '-p', keying, `${TOOL}/still`, 'instructions=primed', '--on', 'local');
+    await cozyAt(keying, '--json', 'run', `${TOOL}/still`, 'instructions=primed', '--on', 'local');
     keyed = await status(keying);
   }
   const inputs = Object.fromEntries(keyed.state.assets.filter((asset) => asset.name.startsWith('shot_')).map((asset) => [asset.name, asset.inputs]));
@@ -279,7 +278,7 @@ async function nativeMemory(base, folder) {
   const read = await status();
   numbers.status_s = seconds(read.ms);
   numbers.db_mb = dbMb();
-  const exported = () => project('export').then(({ stdout }) => stdout);
+  const exported = () => project('export').then(({ value }) => value);
   numbers.export_mb = mb(Buffer.byteLength(await exported()));
   numbers.status_answer_mb = mb(JSON.stringify(read.state).length);
   const standing = read.state.assets.reduce((held, asset) => ({ ...held, [asset.standing]: (held[asset.standing] ?? 0) + 1 }), {});
@@ -340,19 +339,34 @@ async function nativeMemory(base, folder) {
   const readAlone = new Map();
   /** What the page read and found gone. */
   const readGone = new Set();
+  let handReads;
   page.on('request', (request) => {
     const url = new URL(request.url());
     if (request.method() !== 'GET') return;
-    if (url.pathname === `/v1/projects/${id}`) reads[url.searchParams.get('assets') === 'false' ? 'heads' : 'whole'] += 1;
-    if (url.pathname.startsWith(`/v1/projects/${id}/assets/`)) reads.assets += 1;
+    const kind = url.pathname === `/v1/projects/${id}` ? (url.searchParams.get('assets') === 'false' ? 'heads' : 'whole')
+      : url.pathname.startsWith(`/v1/projects/${id}/assets/`) ? 'assets'
+      : url.pathname === `/v1/projects/${id}/canvas` ? 'canvas' : null;
+    if (kind && kind !== 'canvas') reads[kind] += 1;
+    if (handReads && kind) {
+      handReads.counts[kind] += 1;
+      if (handReads.requests.size < 64) handReads.requests.set(request, { kind, path: url.pathname, request_ms: Date.now(), response_ms: null, status: null });
+      else handReads.truncated = true;
+    }
   });
   page.on('response', (answer) => {
-    if (answer.request().method() !== 'GET') return;
+    const request = answer.request();
+    if (request.method() !== 'GET') return;
     const { pathname } = new URL(answer.url());
+    const handRead = handReads?.requests.get(request);
+    if (handRead) { handRead.response_ms = Date.now(); handRead.status = answer.status(); }
     if (pathname === `/v1/projects/${id}`) answer.body().then((body) => { reads.whole_bytes = Math.max(reads.whole_bytes, body.length); }, () => {});
     if (pathname.startsWith(`/v1/projects/${id}/assets/`)) answer.json().then(({ asset }) => {
       if (asset) readAlone.set(asset.name, { words: asset.fields?.instructions, at: Date.now() });
       else readGone.add(decodeURIComponent(pathname.split('/').at(-1)));
+      if (handRead && handReads?.requests.get(request) === handRead && asset?.name === handReads.asset) {
+        handRead.body_seen_ms = Date.now();
+        handRead.has_hand_words = asset.fields?.instructions === 'ONE EDIT BY HAND';
+      }
     }, () => {});
   });
   const box = (name) => page.locator('.react-flow__node').filter({ has: page.locator(`.nm:text-is("${name}")`) });
@@ -406,7 +420,7 @@ async function nativeMemory(base, folder) {
   const resting = async () => {
     await closeBox(page);
     await page.locator('.card.here').waitFor({ state: 'detached' });
-    const state = await page.evaluate(() => ({ hash: location.hash, opened: document.querySelectorAll('.card.here').length }));
+    const state = await page.evaluate(() => ({ hash: location.pathname, opened: document.querySelectorAll('.card.here').length }));
     if (state.opened || state.hash.includes('/assets/')) throw new Error(`expected the real resting canvas: ${JSON.stringify(state)}`);
   };
   const measuredPan = async () => {
@@ -442,14 +456,14 @@ async function nativeMemory(base, folder) {
   const smallFolder = join(homedir(), '.cozy', 'projects', `web-scale-small-${Date.now()}`);
   mkdirSync(smallFolder, { recursive: true });
   generated(smallFolder, null, 36, 8);
-  const small = JSON.parse((await cozy('--json', '--full', 'project', '-p', smallFolder, 'status')).stdout);
-  await page.goto(`${base}/#/projects/${small.id}`);
+  const small = (await projectAction(smallFolder, 'status')).value;
+  await page.goto(await projectUrl(small.id));
   await page.waitForSelector('.react-flow__node .nm');
   numbers.pan_small = await measuredPan();
 
   // Opening it: boxes on screen, then the page settled, its frames short.
   const opening = Date.now();
-  await page.goto(`${base}/#/projects/${id}`);
+  await page.goto(await projectUrl(id));
   await page.waitForSelector('.nm:text-is("shot_0")', { timeout: 120_000 });
   numbers.open_boxes_s = seconds(Date.now() - opening);
   check('it_opens_quickly', numbers.open_boxes_s <= BARS.open_boxes_s, numbers.open_boxes_s);
@@ -518,10 +532,23 @@ async function nativeMemory(base, folder) {
   const instructionsAt = text.indexOf('    instructions: ', lineAt);
   const edit_at = join(homedir(), '.cozy', 'projects', `web-scale-hand-${Date.now()}.yaml`);
   writeFileSync(edit_at, `${text.slice(0, instructionsAt)}    instructions: ONE EDIT BY HAND${text.slice(text.indexOf('\n', instructionsAt))}`);
-  const saved = await project('import', edit_at);
-  rmSync(edit_at);
-  numbers.hand_import_s = seconds(saved.ms);
-  numbers.hand_shows_ms = (await shownHand) - saved.at;
+  handReads = { asset: byHand, armed_ms: Date.now(), counts: { whole: 0, heads: 0, canvas: 0, assets: 0 }, requests: new Map(), truncated: false };
+  const handObservation = numbers.hand_observation = { asset: byHand, armed_ms: handReads.armed_ms, import_done_ms: null, shown_browser_ms: null };
+  try {
+    const saved = await project('import', edit_at);
+    rmSync(edit_at);
+    numbers.hand_import_s = seconds(saved.ms);
+    handObservation.import_done_ms = saved.at;
+    const shown = await shownHand;
+    numbers.hand_shows_ms = shown - saved.at;
+    handObservation.shown_browser_ms = shown;
+  } finally {
+    handObservation.closed_ms = Date.now();
+    handObservation.counts_since_armed = handReads.counts;
+    handObservation.truncated = handReads.truncated;
+    handObservation.gets = [...handReads.requests.values()];
+    handReads = undefined;
+  }
   check('a_hand_shows_live', numbers.hand_shows_ms <= BARS.edit_shows_ms, numbers.hand_shows_ms);
   await resting();
   await until('its frames short again', shortFrames, (p95) => p95 < 100, 60_000);
@@ -625,7 +652,7 @@ async function nativeMemory(base, folder) {
   if (process.env.RUNNER_OS !== 'Windows') check('a_write_is_under_the_bar', Object.values(numbers.write_ms).every((ms) => ms <= BARS.write_ms), { bar: BARS.write_ms, ...numbers.write_ms, ...numbers.write_disk });
   check('writes_leave_the_project_whole', (await status()).state.assets.length === ASSETS, 'assets count changed');
 
-  // A render from the CLI, on the fixture tool, landing on the open canvas.
+  // A render from the API, on the fixture tool, landing on the open canvas.
   if ((await (await fetch(`${base}/v1/status`, { headers: { Authorization: `Bearer ${token}` } })).json()).local_usable && !process.env.ALONE) {
     await cozy('--json', 'run', `${TOOL}/still`, 'prompt=primed', '--on', 'local');
     await project('add', `${TOOL}/still`, 'scale_shot', `at=${HOLE.col * 300},${HOLE.row * 320},200`, 'instructions=A landing at scale');

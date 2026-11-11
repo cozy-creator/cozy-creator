@@ -143,6 +143,19 @@ on:
       shards:
         type: string
         default: ''
+      # skew (select it: `select=skew`): released cozy versions × a Hub built from tensorhub at hub_ref (e2e/skew/run.sh).
+      hub_ref:
+        description: "skew: the tensorhub ref the Hub is built from (the candidate)"
+        type: string
+        default: master
+      skew_clients:
+        description: "skew: released cozy versions, space-separated; `previous` is the previous minor's latest patch"
+        type: string
+        default: previous
+      cozy_min:
+        description: "skew: the Hub's clients.cozy_min (empty serves every version)"
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -172,6 +185,7 @@ jobs:
       stack: ${{ steps.pin.outputs.stack }}
       runtime: ${{ steps.pin.outputs.runtime }}
       packages: ${{ steps.pin.outputs.packages }}
+      skew_clients: ${{ steps.skew.outputs.clients }}
     steps:
       - id: what
         env:
@@ -264,7 +278,7 @@ jobs:
           else s=$(cd src && ../.creator/ci/affected "$REPO" "$BASE" "$REF" --json); fi
           echo "selection=$s" >> "$GITHUB_OUTPUT"
           # A Linux suite takes the candidate jobs' set.
-          echo "linux=$(echo "$s" | jq 'any(.suites[]; . == "cli" or . == "imports" or . == "cli-release" or . == "cpu")')" >> "$GITHUB_OUTPUT"
+          echo "linux=$(echo "$s" | jq 'any(.suites[]; . == "cli" or . == "imports" or . == "cli-release")')" >> "$GITHUB_OUTPUT"
           # The cli suite's other runners: macOS arm64 (Intel Macs aren't supported), Windows x64; a release run's installer
           # on Windows arm64 too.
           arm=$([ -z "$PUBLISH_RUN" ] || echo '"windows-11-arm"')
@@ -273,6 +287,25 @@ jobs:
           echo "release_runners=$(echo "$s" | jq -c '[.os[] | {linux: "ubuntu-24.04", macos: "macos-15", windows: "windows-2025"}[.] // empty]')" >> "$GITHUB_OUTPUT"
           { echo "### e2e selection: $REPO ${REF:0:12}"; echo '```'; echo "$s" | jq .; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           echo "$s" | jq .
+      # skew's clients: `previous` is the previous minor's latest patch, from this cozy's own version.
+      - id: skew
+        env:
+          CLIENTS: ${{ inputs.skew_clients || 'previous' }}
+          SELECTION: ${{ steps.select.outputs.selection }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          jq -e 'any(.suites[]; . == "skew")' <<< "$SELECTION" > /dev/null || { echo 'clients=[""]' >> "$GITHUB_OUTPUT"; exit 0; }
+          v=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' .creator/Cargo.toml); minor=${v%.*}
+          prev=${minor%%.*}.$(( ${minor#*.} - 1 ))
+          latest=$(gh release list -R cozy-creator/cozy-creator --exclude-pre-releases -L 100 --json tagName -q '.[].tagName' |
+            grep -E "^v${prev//./\\.}\.[0-9]+$" | sort -V | tail -1)
+          out=
+          for c in $CLIENTS; do
+            [ "$c" = previous ] && c=${latest#v}
+            [ -n "$c" ] || { echo "::error::no released cozy $prev.x (this cozy is $v)"; exit 1; }
+            out=$out${out:+,}\"${c#v}\"
+          done
+          echo "clients=[$out]" | tee -a "$GITHUB_OUTPUT"
 
   # One candidate a job (e2e/candidates/build.sh), each this run's candidate-<what>-<inputs> artifact for every Linux
   # suite: TensorD and TensorFS reused from an earlier merge-group or dispatched run that built the same build inputs
@@ -571,52 +604,6 @@ jobs:
           path: ${{ runner.temp }}/e2e
           retention-days: 14
 
-  # The free CPU test (e2e/cpu): every package's entry points through the candidate Runtime's real executor with tiny
-  # random weights, one and two ranks, outputs against stored references. No GPU, rental or sign-in.
-  cpu:
-    needs: [affected, candidate]
-    if: contains(fromJSON(needs.affected.outputs.selection).suites, 'cpu')
-    runs-on: ubuntu-24.04
-    # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal.
-    timeout-minutes: 120
-    defaults:
-      run:
-        shell: bash
-    env:
-      BUILD: ${{ join(fromJSON(needs.affected.outputs.selection).build, ' ') }}
-      UV_CACHE_DIR: ${{ github.workspace }}/.uv-cache
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          repository: cozy-creator/cozy-creator
-          ref: ${{ needs.affected.outputs.creator }}
-          path: .creator
-      - uses: ./.creator/e2e/candidates
-        with:
-          packages_ref: ${{ needs.affected.outputs.packages }}
-          repo: ${{ needs.affected.outputs.repo }}
-          ref: ${{ needs.affected.outputs.ref }}
-          build: ${{ env.BUILD }}
-          from: artifacts
-          tensorfs: ${{ inputs.tensorfs }}
-          runtime: ${{ inputs.runtime }}
-      # The locked wheels every package's environment takes (CPU torch included), by the locks that name them.
-      - uses: actions/cache@v4
-        with:
-          path: .uv-cache
-          key: cpu-uv-${{ hashFiles('.pkgs/*/uv.lock', '.src/*/uv.lock') }}
-          restore-keys: cpu-uv-
-      - name: cpu suite
-        run: bash .creator/e2e/cpu/run.sh --out "$RUNNER_TEMP/e2e" --envs "$RUNNER_TEMP/envs" $CANDIDATES $(case " $CANDIDATES " in (*" --packages "*) ;; (*) echo --packages "$PACKAGES_MASTER" ;; esac) 2>&1 | node .creator/e2e/publish/scrub.js
-      - if: always()
-        run: uv cache prune --ci
-      - if: always()
-        uses: ./.creator/e2e/publish
-        with:
-          name: e2e-cpu
-          path: ${{ runner.temp }}/e2e
-          retention-days: 14
-
   mps:
     needs: affected
     if: contains(fromJSON(needs.affected.outputs.selection).suites, 'mps')
@@ -656,9 +643,61 @@ jobs:
           path: ${{ runner.temp }}/e2e
           retention-days: 14
 
+  # xs-166: the Hub's candidate against released clients, before a Hub deploy. Chosen only explicitly (select=skew);
+  # it reports apart from `e2e`: before launch an old client's failures don't block (release-gate README).
+  skew:
+    needs: affected
+    if: contains(fromJSON(needs.affected.outputs.selection).suites, 'skew')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        client: ${{ fromJSON(needs.affected.outputs.skew_clients) }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: cozy-creator/cozy-creator
+          ref: ${{ needs.affected.outputs.creator }}
+          path: .creator
+      - uses: actions/checkout@v5
+        with:
+          repository: cozy-creator/tensorhub
+          ref: ${{ inputs.hub_ref || 'master' }}
+          ssh-key: ${{ secrets.TENSORHUB_READ_KEY }}
+          persist-credentials: false
+          path: .tensorhub
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: .tensorhub/go.mod
+          cache-dependency-path: .tensorhub/go.sum
+      - uses: astral-sh/setup-uv@v7
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/skew-tools
+          key: skew-minio-RELEASE.2025-09-07T16-13-09Z
+      - name: skew cozy ${{ matrix.client }} × tensorhub ${{ inputs.hub_ref || 'master' }}
+        env:
+          SKEW_TOOLS: ${{ runner.temp }}/skew-tools
+          CLIENT: ${{ matrix.client }}
+          MIN: ${{ inputs.cozy_min }}
+        run: |
+          # Calcifer and the local machine run as user services, as on a desktop login.
+          sudo loginctl enable-linger "$(id -un)"
+          export XDG_RUNTIME_DIR=/run/user/$(id -u)
+          until [ -S "$XDG_RUNTIME_DIR/bus" ]; do sleep 1; done
+          export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
+          bash .creator/e2e/skew/run.sh --hub-src .tensorhub --client "$CLIENT" --cozy-min "$MIN" --out "$RUNNER_TEMP/e2e"
+      - if: always()
+        uses: ./.creator/e2e/publish
+        with:
+          name: e2e-skew-${{ matrix.client }}
+          path: ${{ runner.temp }}/e2e
+          retention-days: 14
+
   e2e:
     if: always()
-    needs: [affected, candidate, cli, cli-os, cli-release, imports, cpu, mps]
+    needs: [affected, candidate, cli, cli-os, cli-release, imports, mps]
     runs-on: ubuntu-24.04
     # Last resort (tracker design/stalls.md): a runner that hangs sends no signal.
     timeout-minutes: 10

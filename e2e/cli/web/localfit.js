@@ -6,9 +6,9 @@
 //   node localfit.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT, $CHROME, $COZY, $SHOT as nodes.js; $ALONE: on a shared computer, so it runs nothing. Prints what it saw as JSON, exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
-const { execFile, execFileSync } = require('child_process');
+const { execFileSync } = require('child_process');
 const { join } = require('path');
-const { boxOf, calcifer, closeBox, importYaml, launch, lastLook, lookAt, noStall, openBox, renderOf, signIn, STEP_MS, until, watchBoxes, yamlOf } = require('./page');
+const { projectFromPage, boxOf, calcifer, closeBox, importYaml, launch, lastLook, lookAt, noStall, openBox, renderOf, signIn, STEP_MS, until, watchBoxes, yamlOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -53,11 +53,11 @@ const finish = (code) => {
     return finish(0);
   }
 
-  await page.goto(`${base}/#/projects`);
+  await page.goto(`${base}/projects`);
   await page.fill('input[aria-label="New project\'s name"]', `web-localfit-${Date.now()}`);
   await page.click('form button[type=submit]');
-  await page.waitForURL(/#\/projects\/[^/]+$/);
-  const id = page.url().match(/#\/projects\/([^/]+)/)[1];
+  await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
+  const id = (await projectFromPage(page)).id;
   const state = async () => (await api(`/v1/projects/${id}`)).body;
   const folder = (await state()).path;
   seen.project = { id, folder };
@@ -85,7 +85,7 @@ const finish = (code) => {
 
   // A still whose tool composes a GPU function that loads a model, not yet rendered here. Named before it's run, it's read by PyPI's Runtime, which
   // knows no tool; the install a run makes on this machine's Runtime takes its place, as tools.js primes its fixture.
-  execFileSync(COZY, ['--json', 'run', `${heavy}/heavy`, 'instructions=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, env: { ...process.env, COZY_PROJECT: folder }, stdio: ['ignore', 'pipe', 'pipe'], timeout: FIRST_RUN_MS });
+  execFileSync(COZY, ['--json', 'run', `${heavy}/heavy`, 'instructions=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, stdio: ['ignore', 'pipe', 'pipe'], timeout: FIRST_RUN_MS });
   const primed = (await runsOf('heavy')).length;
   importYaml(folder, `version: 4\nassets:\n  heavy:\n    tool: ${heavy}/heavy\n    instructions: a lantern in fog\n`);
   await box('heavy').waitFor();
@@ -122,17 +122,6 @@ const finish = (code) => {
   await box('heavy').waitFor();
   await render('heavy');
   check('reload_does_not_ask', await neverAsks('heavy', 3));
-
-  // 5. The CLI never asks: it says the line once, as a warning, and goes on. With no --on it sends what the page does, here only this computer.
-  const cli = (args) => new Promise((done) => execFile(COZY, ['project', '-p', folder, 'render', 'heavy', ...args], { encoding: 'utf8', timeout: FIRST_RUN_MS }, (error, stdout, stderr) => done({ code: error?.code ?? 0, stdout, stderr })));
-  const warnedOf = (said) => (said.stderr.match(/warning: This computer has no GPU/g) ?? []).length;
-  const rendered = await versions('heavy');
-  const unnamed = await cli([]);
-  check('cli_unnamed_warns_once', warnedOf(unnamed) === 1 && unnamed.code === 0, { code: unnamed.code, stderr: unnamed.stderr.slice(-600) });
-  check('cli_unnamed_goes_on', (await versions('heavy')) === rendered + 1 && (await runsOf('heavy')).every((run) => run.machine === 'local'), await versions('heavy'));
-  const named = await cli(['--on', 'local']);
-  check('cli_warns_once', warnedOf(named) === 1 && named.code === 0, { code: named.code, stderr: named.stderr.slice(-600) });
-  check('cli_goes_on', (await versions('heavy')) === rendered + 2, await versions('heavy'));
 
   // 6. Qwen Image from the Hub, as 0.22's tool list drops it. Rent a GPU opens Rent with the card the Hub places it on, and renders nothing.
   // Only if it asks: a runner can't hold its weights.

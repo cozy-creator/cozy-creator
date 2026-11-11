@@ -957,6 +957,10 @@ detail: string, };
  */
 export type KnownProject = { id: string, 
 /**
+ * Its stable, nine-character public URL code.
+ */
+code: string, 
+/**
  * Its name: what `-p` takes.
  */
 name: string, path: string, used_at_ms: number, 
@@ -1596,8 +1600,7 @@ hub?: string, gpus?: number | null, disk_gb?: number | null,
  */
 image?: string | null, 
 /**
- * A Hub admin's provider (`runpod`, `vast`), in place of every provider; the Hub refuses
- * anyone else.
+ * The one provider to buy from (`runpod`, `vast`): dev-only `--provider`.
  */
 provider?: string | null, 
 /**
@@ -1639,6 +1642,10 @@ export type Open = { name?: string | null, path?: string | null, starter?: boole
  * The project `POST /v1/projects` made: its id, folder and name.
  */
 export type Opened = { id: string, 
+/**
+ * Its stable, nine-character public URL code.
+ */
+code: string, 
 /**
  * Where it lives on Calcifer's computer.
  */
@@ -1863,7 +1870,7 @@ export type Preview = { label: string, path: string, };
  */
 export type Progress = { stage: string, fraction?: number | null, 
 /**
- * How far this stage is, when it says (`tel.progress`).
+ * How far this stage is, when it says.
  */
 stage_fraction?: number | null, completed: number, total: number, bytes_done: number, bytes_total: number, step_ms: number, 
 /**
@@ -1905,7 +1912,7 @@ export type ProjectEvent = { "type": "board", board: Board, } | { "type": "job",
 /**
  * Its run's execution time.
  */
-execution_ms?: number | null, } | { "type": "said", message: string, name?: string | null, } | { "type": "warning", message: string, name?: string | null, } | { "type": "failed", error: ErrorBody, name?: string | null, run?: number | null, } | { "type": "moved", file?: string | null, bytes: number, } | { "type": "transferred", done?: Transferred | null, error?: ErrorBody | null, } | { "type": "cut", name: string, cut: string, frames: number, fps: number, retimed?: Array<string>, took_s: number, unchanged?: boolean, 
+execution_ms?: number | null, } | { "type": "said", message: string, name?: string | null, } | { "type": "warning", message: string, name?: string | null, } | { "type": "failed", error: ErrorBody, name?: string | null, run?: number | null, } | { "type": "moved", file?: string | null, bytes: number, } | { "type": "cut", name: string, cut: string, frames: number, fps: number, retimed?: Array<string>, took_s: number, unchanged?: boolean, 
 /**
  * What this film was cut without: `<piece>: <why>`.
  */
@@ -1955,7 +1962,11 @@ export type ProjectShowReply = { held: Array<string>, refused: { [key in string]
  * Optional `covered` describes only a successful full snapshot: project-event emissions
  * before its read began. Head-only and partial/error-derived states do not claim coverage.
  */
-export type ProjectState = { id: string, path: string, assets: Array<Asset>, 
+export type ProjectState = { id: string, 
+/**
+ * Its stable, nine-character public URL code.
+ */
+code: string, path: string, assets: Array<Asset>, 
 /**
  * What is running and what is queued, in the order it goes.
  */
@@ -1977,11 +1988,7 @@ orphans?: Array<Orphan>,
  */
 busy: boolean, 
 /**
- * Whether a push or pull is going.
- */
-moving: boolean, 
-/**
- * How many files project.lock names are not on this computer (`POST /v1/projects/{id}/pull`).
+ * How many files project.lock names are not on this computer.
  */
 absent: number, 
 /**
@@ -2068,7 +2075,11 @@ agreed: Agreed,
 /**
  * What the Hub changed of the ask to quote it.
  */
-warnings?: Array<string>, };
+warnings?: Array<string>, 
+/**
+ * Where the quoted offer is, for an ask that named its provider or a Hub admin's.
+ */
+provider?: string | null, datacenter?: string | null, };
 
 /**
  * A `<mention>` an asset's text makes that names something: an asset, an entity, a sub-entity, or a link of one, as the file names it.
@@ -2190,7 +2201,12 @@ base_worker_image_digest?: string | null,
 /**
  * `host:port` of its sshd, when it was rented with an SSH key.
  */
-ssh?: string | null, };
+ssh?: string | null, 
+/**
+ * Where it runs and whether its pod mounted the datacenter's NFS drive: a Hub admin's read, or
+ * a renter's who named the provider (dev-only `--provider`).
+ */
+provider?: string | null, datacenter?: string | null, nfs_drive?: boolean, };
 
 /**
  * What a rental is expected to cost at its prices, for the expected hours plus its download.
@@ -2549,6 +2565,10 @@ lane?: string | null,
  */
 attention_kernel?: string | null, 
 /**
+ * Compute it afresh: no machine memo answers or keeps it (dev-only `--no-memo`).
+ */
+no_memo?: boolean, 
+/**
  * Keep the function at this level instead of running it (`off` takes it out).
  */
 warm?: WarmLevel | null, 
@@ -2613,11 +2633,6 @@ export type SignedOut = { email: string | null, everywhere: boolean, hub: string
  * `signed out`, or `not signed in`.
  */
 status: string, };
-
-/**
- * A file a push or pull left out: its path in the project, and why.
- */
-export type Skipped = { path: string, why: string, };
 
 /**
  * A pickup's frames: `offset + k * every`, from frame `first`.
@@ -2993,28 +3008,6 @@ note?: string | null, };
  * One track's clips as they read now.
  */
 export type TrackNow = { clips: Array<ClipNow>, };
-
-/**
- * What a push or pull moved (`POST /v1/projects/{id}/push`, `/pull`). A push sends every file
- * project.lock names that the Hub lacks; a pull fetches every one `files/` lacks.
- */
-export type Transferred = { 
-/**
- * The files project.lock names.
- */
-files: number, 
-/**
- * Those sent or fetched now.
- */
-moved: number, bytes: number, 
-/**
- * The files it could not move, which stopped nothing else.
- */
-skipped?: Array<Skipped>, 
-/**
- * A push's: the private model and commit that keep them at the Hub, until deleted by name.
- */
-kept_in?: string | null, commit?: string | null, };
 
 /**
  * When a history entry was undone, and by whom.

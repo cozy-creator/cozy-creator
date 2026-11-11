@@ -18,14 +18,13 @@ parse "$@"
 . "$(dirname "$0")/control.sh"
 . "$(dirname "$0")/project.sh"
 . "$(dirname "$0")/web.sh"
-. "$(dirname "$0")/agent.sh"
 . "$(dirname "$0")/projectdb.sh"
 . "$(dirname "$0")/statedb.sh"
 
 start() {
-step install; install_cozy; run_project "$OUT/project" || fail "cozy project new failed"
+step install; install_cozy; run_project "$OUT/project" || fail "project initialization failed"
 user_services
-step status; cozy --json status | tee "$OUT/status.json"
+step status; fixture_calcifer | tee "$OUT/status.json"
 [ -z "$LOCAL" ] || { step "the local machine"; machine_ready; }
 [ "$SHARD" != commands ] || version_skew
 step candidates; candidates
@@ -43,7 +42,7 @@ spelled=./weightless/reverse
 if (cd "$here" && cell weightless "$spelled" "text=$text"); then
   grep -q "$back" "$OUT/weightless.ndjson" || check "weightless: the reply is not $back"
 fi
-(cd "$here/weightless/e2e_weightless" && cozy --json run .. --describe --on local > "$OUT/parent.json" 2> "$OUT/parent.err") \
+(in_project "$RUN_PROJECT" --json run "$here/weightless/e2e_weightless/.." --describe --on local > "$OUT/parent.json" 2> "$OUT/parent.err") \
   || check "cozy run .. did not describe the package above: $(tail -c 300 "$OUT/parent.err")"
 
 # An idle executor killed is reaped at once (gone from ps, no zombie), and the next request works.
@@ -59,7 +58,7 @@ fi
 # their names, both run on the CPU, and its function's `accelerator=True` is taken (the GPU when there is one).
 script_package() {
 step "a script is a package"
-script=$(cd "$(dirname "$0")/script" && pwd)/words.py folder=$OUT/words-package
+script=$here/script/words.py folder=$OUT/words-package
 mkdir -p "$folder" && cp "$script" "$folder/words.py"
 cat > "$folder/pyproject.toml" <<'TOML'
 [project]
@@ -100,7 +99,7 @@ kept=$(ls ~/.cozy/packages/local/words/*.json 2> /dev/null | head -1)
 # canvas stays inside it; one outside is refused while the request decodes, before the function runs.
 image_ratio() {
 step "image ratios"
-ratio=$(cd "$(dirname "$0")/script" && pwd)/ratio.py
+ratio=$here/script/ratio.py
 # Past 16:1 a ratio holds there with a warning (xs-149).
 for r in 16:1 1:16 32000:2000 17:1 1:17 32768:32; do
   name=ratio-${r/:/-}
@@ -173,7 +172,7 @@ if calcifer_stuck; then
   if [ -n "$LOCAL" ]; then
     (cd "$here" && cell after-stuck ./weightless/reverse "text=after$RANDOM") || check "no run went after cozy doctor restarted Calcifer"
   else
-    cozy --json status | jq -e '.calcifer.running' > /dev/null || check "Calcifer does not answer after cozy doctor restarted it"
+    fixture_calcifer | jq -e '.calcifer.running' > /dev/null || check "Calcifer does not answer after cozy doctor restarted it"
   fi
 fi
 }
@@ -184,7 +183,7 @@ calcifer_restarts() {
 [ "$RUNNER_OS" = Linux ] || return 0
 step "a run followed across a Calcifer restart"
 local code n
-(cd "$here" && cozy run -p "$RUN_PROJECT" ./weightless/wait seconds:=15 --on local > "$OUT/across.txt" 2>&1; echo $? > "$OUT/across.code") &
+(cd "$here" && in_project "$RUN_PROJECT" run "$here/weightless/wait" seconds:=15 --on local > "$OUT/across.txt" 2>&1; echo $? > "$OUT/across.code") &
 local follower=$!
 for _ in $(seq 120); do n=$(grep -oE '^run [0-9]+ ' "$OUT/across.txt" | head -1 | grep -oE '[0-9]+') && break; sleep 0.5; done
 [ -n "$n" ] || check "across: the run never began"
@@ -199,7 +198,7 @@ step "a burst of Calcifer restarts past systemd's start limit"
 for _ in 1 2 3 4 5 6 7; do systemctl --user restart cozy-calcifer > /dev/null 2>&1 || true; done
 systemctl --user show -p Result --value cozy-calcifer > "$OUT/burst-result.txt" || true
 echo "after the burst: $(cat "$OUT/burst-result.txt")"
-cozy --json machine ls > "$OUT/burst-machines.json" 2> "$OUT/burst-machines.err" && cozy --json status | J '.calcifer.running == true' \
+cozy --json machine ls > "$OUT/burst-machines.json" 2> "$OUT/burst-machines.err" && fixture_calcifer | J '.calcifer.running == true' \
   || check "after a burst of restarts ($(cat "$OUT/burst-result.txt")), the next command did not start Calcifer: $(tail -c 300 "$OUT/burst-machines.err")"
 (cd "$here" && cell after-burst ./weightless/reverse "text=burst$RANDOM") || check "no run went after the burst of restarts"
 }
@@ -215,7 +214,7 @@ remove() { logs; step "remove cozy"; remove_cozy; }
 one_name_two_paths() {
 step "one name at two paths"
 local words at turn=0
-words=$(cd "$(dirname "$0")/script" && pwd)/words.py
+words=$here/script/words.py
 for at in 1 2; do
   mkdir -p "$OUT/paths/$at/one-name"
   sed "s/words=len(payload.text.split())/words=$at/" "$words" > "$OUT/paths/$at/one-name/one_name.py"
@@ -259,10 +258,11 @@ cozy --json package remove local/one_script --on local > /dev/null || check "pac
 
 # Balanced by step times (runs 40128128311, 40132063815, 40132725041). A shard keeps its parts' order; whole, the suite runs every part.
 case $SHARD in
-  '') parts="weightless script_package one_name_two_paths image_ratio describe first_run second_executor lifetime kept_preparing catalog basics yaml_requests run_flags run_follow time_left broken_answers run_filters run_play hub_away lock_refresh projects bound_runs own_references old_runtime hostile_media unseen local_edits local_quote path_manifest agent machine_show_runs writes_once web_serves page_resend queued_download machines completions calcifer_faults calcifer_restarts update remove" ;;
+  '') parts="entrypoints weightless script_package one_name_two_paths image_ratio describe first_run second_executor lifetime kept_preparing catalog basics yaml_requests run_flags run_follow time_left broken_answers run_filters run_play hub_away lock_refresh bound_runs own_references old_runtime hostile_media unseen local_edits local_quote path_manifest machine_show_runs writes_once web_serves page_resend queued_download machines completions calcifer_faults calcifer_restarts update remove" ;;
   runs) parts="weightless describe first_run run_flags run_play hub_away lock_refresh logs" ;;
   executors) parts="second_executor lifetime kept_preparing update remove" ;;
-  commands) parts="catalog basics yaml_requests run_filters projects bound_runs own_references old_runtime hostile_media agent machine_show_runs writes_once logs" ;;
+  entrypoints) parts="entrypoints" ;;
+  commands) parts="entrypoints catalog basics yaml_requests run_filters bound_runs own_references old_runtime hostile_media machine_show_runs writes_once logs" ;;
   # Its own runner: under `set -e` a cell that dies ends its shard, and a page's proofs shouldn't go with it.
   web) parts="tools_read web_serves page_resend logs" ;;
   follow) parts="script_package one_name_two_paths image_ratio run_follow time_left broken_answers queued_download machines completions calcifer_faults calcifer_restarts logs" ;;
@@ -278,9 +278,10 @@ case $SHARD in
   control) parts="machine_show_runs writes_once page_resend hub_away broken_answers logs" ;;
   *) echo "no cli shard $SHARD" >&2; exit 2 ;;
 esac
-[ -n "$LOCAL" ] || parts="catalog refusals web_serves project_files completions homebrew calcifer_faults update remove"
+[ -n "$LOCAL" ] || [ "$SHARD" = entrypoints ] || parts="entrypoints catalog refusals web_serves completions homebrew calcifer_faults update remove"
 
 start
+cd "$RUN_PROJECT" || fail "project directory is unavailable"
 for part in $parts; do $part; done
 [ -n "$SHARD" ] || [ -z "$LOCAL" ] || { step coverage; coverage "$OUT/cozy-under-test" pr; }
 finish "cli${SHARD:+ $SHARD}"

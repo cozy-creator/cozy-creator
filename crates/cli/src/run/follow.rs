@@ -149,11 +149,6 @@ pub(crate) async fn follow_until(
     }
 }
 
-/// The live view alone, until Ctrl-C, which never cancels the run.
-pub(crate) async fn watched(ctx: &Context, run: Run) -> Result<Run, Error> {
-    Ok(watch(ctx, run, ctx.json, interrupt()).await?.0)
-}
-
 /// Ctrl-C in a shell.
 async fn interrupt() {
     let _ = tokio::signal::ctrl_c().await;

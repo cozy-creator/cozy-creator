@@ -8,12 +8,12 @@
 // Calcifer's lock file, which names its process; $ARGV_LOG: where each cozy call is logged for coverage.
 // Prints what it saw as JSON and exits 1 if anything failed.
 const { chromium } = require(process.env.PLAYWRIGHT);
-const { execFile, execFileSync } = require('child_process');
+const { execFileSync } = require('child_process');
 const { createHash } = require('crypto');
-const { appendFileSync, copyFileSync, linkSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } = require('fs');
+const { copyFileSync, linkSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } = require('fs');
 const { homedir } = require('os');
 const { join } = require('path');
-const { calcifer, signIn, STEP_MS, lastLook, lookAt, png, noStall, until, projectHeld } = require('./page');
+const { projectUrl, projectAction, newProject, calcifer, signIn, STEP_MS, lastLook, lookAt, png, noStall, until, projectHeld } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -111,12 +111,12 @@ function calciferMb() {
   return Math.round(Number(execFileSync('ps', ['-o', 'rss=', '-p', String(HOLDER.pid)], { encoding: 'utf8' }).trim()) / 1024);
 }
 
-/** Calcifer's memory in MiB. Its heap, what its code holds, as `cozy status` says: what a project open costs, and closing gives back. And as
+/** Calcifer's memory in MiB. Its heap, what its status API reports: what a project open costs, and closing gives back. And as
  *  its OS says, resident, and on Linux what of that is its own (anonymous) and files mapped in (its code, read in as it's first used), and
  *  how many threads it has. Resident memory also counts what its allocator keeps of what was freed: on the same code, a minute after the
  *  last close, it stood 1.02–1.15× where it was after warm-up (cl-826), so it's kept for the record and judges nothing. */
-async function memoryNow(cozy) {
-  const { calcifer } = JSON.parse((await cozy('--json', 'status')).stdout);
+async function memoryNow(api) {
+  const calcifer = await api('/v1/status');
   const heap = Math.round((calcifer?.heap_bytes ?? NaN) / 2 ** 20 * 10) / 10;
   if (process.platform !== 'linux') return { heap, rss: calciferMb() };
   const status = readFileSync(`/proc/${HOLDER.pid}/status`, 'utf8');
@@ -131,19 +131,9 @@ const held = (folder) => projectHeld(folder, HOLDER.pid);
 (async () => {
   const base = calcifer();
   const api = (path, init = {}) => fetch(`${base}${path}`, { ...init, headers: { Authorization: `Bearer ${HOLDER.token}`, ...init.headers } }).then((answer) => answer.json());
-  const cozy = (...words) => new Promise((done, fail) => {
-    if (process.env.ARGV_LOG) appendFileSync(process.env.ARGV_LOG, `${words.map((word) => `${word}\x1f`).join('')}\x1e`);
-    const from = Date.now();
-    const env = { ...process.env };
-    delete env.COZY_PROJECT;
-    execFile(COZY, words, { env, encoding: 'utf8', maxBuffer: 1 << 28 }, (error, stdout, stderr) => {
-      if (error) fail(new Error(`cozy ${words.join(' ').slice(0, 300)}: ${error.message}: ${stdout.slice(0, 500)}${stderr.slice(0, 500)}`));
-      else done({ stdout, stderr, ms: Date.now() - from });
-    });
-  });
   const status = async (folder) => {
-    const answer = await cozy('--json', 'project', '-p', folder, 'status');
-    return { state: JSON.parse(answer.stdout), ms: answer.ms };
+    const answer = await projectAction(folder, 'status');
+    return { state: answer.value, ms: answer.ms };
   };
   const readable = process.platform === 'linux' || process.platform === 'darwin';
   /** The project in `folder` closes within CLOSE_MS of `after`, and how long that took, else null. */
@@ -173,9 +163,9 @@ const held = (folder) => projectHeld(folder, HOLDER.pid);
   // The page on what shows no project: the runs. What it held of earlier cells' projects goes.
   await signIn(page);
   await page.waitForSelector('.top');
-  await page.goto(`${base}/#/runs`);
+  await page.goto(`${base}/runs`);
   await page.waitForTimeout(SETTLE_MS);
-  memory.cold = await memoryNow(cozy);
+  memory.cold = await memoryNow(api);
   const notClosed = { cli: [], page: [] };
   const notHeld = [];
 
@@ -208,7 +198,7 @@ const held = (folder) => projectHeld(folder, HOLDER.pid);
       }
       if (afterImport === null || afterOpen === null) notClosed.cli.push(folder);
       // The page shows it, and asks nothing more of it: it's open while it does. The one it showed before closes.
-      await page.goto(`${base}/#/projects/${imported.state.id}`);
+      await page.goto(await projectUrl(imported.state.id));
       await page.waitForSelector('.nm:text-is("shot_0")', { timeout: 120_000 });
       await page.waitForTimeout(1000);
       if (readable && !held(folder)) notHeld.push(folder);
@@ -216,13 +206,13 @@ const held = (folder) => projectHeld(folder, HOLDER.pid);
         await reopened(i - 1);
         // Each with one project shown, the one before closed: what it holds after each, which levels off or grows with them.
         if (counted) {
-          const now = await memoryNow(cozy);
+          const now = await memoryNow(api);
           memory.trend.push(now.heap);
           memory.trend_rss.push(now.anon ?? now.rss);
         }
       }
     }
-    await page.goto(`${base}/#/runs`);
+    await page.goto(`${base}/runs`);
     await reopened(list.length - 1);
     await page.waitForTimeout(SETTLE_MS);
   }
@@ -232,7 +222,7 @@ const held = (folder) => projectHeld(folder, HOLDER.pid);
   const warm = [0, 1].map((i) => join(homedir(), '.cozy', 'projects', `web-closes-${stamp}-warm-${i}`));
   folders.push(...warm);
   await pass(warm, false);
-  memory.start = await memoryNow(cozy);
+  memory.start = await memoryNow(api);
   await pass(folders.slice(0, PROJECTS), true);
 
   check('each_is_open_while_the_page_shows_it', notHeld.length === 0, { not_held: notHeld });
@@ -242,10 +232,10 @@ const held = (folder) => projectHeld(folder, HOLDER.pid);
   seen.open_median_s = open;
   seen.reopen_median_s = reopen;
   check('a_reopen_is_as_quick_as_the_first_open', reopen <= open * BARS.reopen_times_open + BARS.reopen_slack_s, { open_s: open, reopen_s: reopen });
-  memory.end = await memoryNow(cozy);
+  memory.end = await memoryNow(api);
   // And left alone a minute more: what Calcifer lets go of late.
   await page.waitForTimeout(60_000);
-  memory.later = await memoryNow(cozy);
+  memory.later = await memoryNow(api);
   memory.later_times_start = { heap: +(memory.later.heap / memory.start.heap).toFixed(3), rss: +(memory.later.rss / memory.start.rss).toFixed(3) };
   check('calcifer_gives_back_what_it_closed', memory.later.heap <= memory.start.heap * BARS.memory_times_start, memory);
 
@@ -259,14 +249,14 @@ const held = (folder) => projectHeld(folder, HOLDER.pid);
     folders.push(first, second);
     const made = [];
     for (const [folder, wait] of [[first, 20], [second, 1]]) {
-      await cozy('project', 'new', folder);
-      await cozy('project', '-p', folder, 'add', `${WAITS}/wait`, 'waits', `instructions=waits ${wait}`, `seconds:=${wait}`);
+      await newProject(folder);
+      await projectAction(folder, 'add', `${WAITS}/wait`, 'waits', `instructions=waits ${wait}`, `seconds:=${wait}`);
       made.push((await status(folder)).state.id);
     }
     ids.push(...made);
     await closes(first);
     await closes(second);
-    for (const folder of [first, second]) await cozy('project', '-p', folder, 'render', 'waits', '--on', 'local', '--queue');
+    for (const folder of [first, second]) await projectAction(folder, 'render', 'waits', '--on', 'local', '--queue');
     const busy = async () => {
       const { projects } = await api('/v1/projects?limit=1000');
       return made.map((id) => projects.find((row) => row.id === id)?.busy === true);

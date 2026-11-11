@@ -42,12 +42,18 @@ trap finish EXIT
 trap 'RC=1; exit 1' INT TERM HUP
 # step <name> <cozy args…>: one call followed to its end (looked at each second, its output every 30 s); output that
 # stops growing for 15 min cancels it.
-# A run belongs to a project: this session's, wherever the session has gone (`step` names it; a direct `cozy run` says -p).
+# A run belongs to this session's working-directory project.
 RUN_PROJECT=$OUT/project
-[ -f "$RUN_PROJECT/project.db" ] || [ -f "$RUN_PROJECT/project.yaml" ] || cozy project new "$RUN_PROJECT" > /dev/null 2>> "$OUT/project.err" || fail "cozy project new: $(cat "$OUT/project.err")"
+mkdir -p "$RUN_PROJECT" && (cd "$RUN_PROJECT" && cozy --json status) > /dev/null 2>> "$OUT/project.err" || fail "project initialization: $(cat "$OUT/project.err")"
 step() {
-  local n=$1; shift; [ "$1" != run ] || set -- "$@" -p "$RUN_PROJECT"; say "step $n: cozy $*"
-  cozy "$@" > "$OUT/$n.txt" 2>&1 & local p=$! last=-1 still=0 size t=0
+  local n=$1 directory=$PWD; shift
+  local words=("$@")
+  if [ "$1" = run ]; then
+    [[ ${words[1]:-} != .* ]] || words[1]="$PWD/${words[1]}"
+    directory=$RUN_PROJECT
+  fi
+  say "step $n: cozy ${words[*]}"
+  (cd "$directory" && cozy "${words[@]}") > "$OUT/$n.txt" 2>&1 & local p=$! last=-1 still=0 size t=0
   while kill -0 "$p" 2>/dev/null; do
     sleep 1; t=$((t + 1)); [ $((t % 30)) = 0 ] || continue
     size=$(stat -c %s "$OUT/$n.txt")

@@ -8,7 +8,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { spawn } = require('child_process');
 const { writeFileSync } = require('fs');
 const { join } = require('path');
-const { calcifer, importYaml, signIn, STEP_MS, lastLook, launch, lookAt, noStall, openBox, renderOf, until } = require('./page');
+const { projectFromPage, calcifer, importYaml, signIn, STEP_MS, lastLook, launch, lookAt, noStall, openBox, renderOf, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -78,11 +78,11 @@ def draw(payload: Drawing, adj: Adjustments, out: Outputs) -> ImageResult:
   }
   seen.ran = true;
 
-  await page.goto(`${base}/#/projects`);
+  await page.goto(`${base}/projects`);
   await page.fill('input[aria-label="New project\'s name"]', `web-activity-${Date.now()}`);
   await page.click('form button[type=submit]');
-  await page.waitForURL(/#\/projects\/[^/]+$/);
-  const id = page.url().match(/#\/projects\/([^/]+)/)[1];
+  await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
+  const id = (await projectFromPage(page)).id;
   const folder = (await api(`/v1/projects/${id}`)).path;
   seen.project = { id, folder };
   const tool = join(folder, `activity_${Date.now()}.py`);

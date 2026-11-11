@@ -145,25 +145,19 @@ impl Stage {
         locked
     }
 
-    /// `uv lock` of the copy, each of `upgrade` free to move to its newest release. uv answers an index's page from its
-    /// cache for the page's max-age (PyPI's: 10 minutes), so a release newer than that page is refreshed by name when
-    /// upgraded, and a requirement the cached pages can't meet is asked once more with every page refreshed (cl-846).
+    /// `uv lock` of the copy, each of `upgrade` free to move to its newest release, by uv's index rule
+    /// (`platform::tools::uv_upgrade`, `uv_listed`): a person waits on it, so a requirement no page lists is asked once
+    /// more, refreshed, and not waited for.
     fn lock(&self, python: &str, upgrade: &[String]) -> Result<(), Error> {
         let lock = |refresh: bool| {
             let mut command = uv(&self.uv, &self.src);
-            command.args(["lock", "--no-progress", "--python", python]);
-            for package in upgrade {
-                command.args(["--upgrade-package", package, "--refresh-package", package]);
-            }
+            command.args(["lock", "--no-progress", "--python", python]).args(platform::tools::uv_upgrade(upgrade.iter().map(String::as_str)));
             if refresh {
                 command.arg("--refresh");
             }
             run(&mut command, "lock_failed").map(drop)
         };
-        match lock(false) {
-            Err(e) if e.message.contains("No solution found") || e.message.contains("unsatisfiable") => lock(true),
-            locked => locked,
-        }
+        platform::tools::uv_listed(lock, |e| Some(e.message.as_str()), || false)
     }
 }
 

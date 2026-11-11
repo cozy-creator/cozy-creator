@@ -91,9 +91,9 @@ function calcifer(): Plugin {
   return { name: "calcifer", configureServer: attach, configurePreviewServer: attach }
 }
 
-// One bundle with relative paths: Calcifer serves `/` and `/assets/*`, and any static host can too.
+// Absolute assets keep direct project URLs and their nested routes reloadable.
 export default defineConfig({
-  base: "./",
+  base: "/",
   plugins: [react(), calcifer()],
   // The app imports `web/player`, which stays public beside it.
   server: { fs: { allow: [".", "../player"] } },

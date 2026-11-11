@@ -175,10 +175,10 @@ pub(crate) fn identity(conn: &Connection) -> Option<(String, String)> {
     Some((value("id")?, value("name").unwrap_or_default()))
 }
 
-/// Keeps the project's id and name, in one transaction.
-pub(crate) fn set_identity(conn: &mut Connection, at: &Path, id: &str, name: &str) -> Result<(), Error> {
+/// Keeps the project's identity and optional public code in one transaction.
+pub(crate) fn set_identity(conn: &mut Connection, at: &Path, id: &str, name: &str, code: Option<&str>) -> Result<(), Error> {
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| sql(at, e))?;
-    for (key, value) in [("id", id), ("name", name)] {
+    for (key, value) in [("id", id), ("name", name)].into_iter().chain(code.map(|code| ("code", code))) {
         tx.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)", [key, value]).map_err(|e| sql(at, e))?;
     }
     tx.commit().map_err(|e| sql(at, e))

@@ -7,10 +7,10 @@ import os
 from typing import Annotated
 
 import msgspec
-from cozy_runtime.author import App, Context, ImageFrame, Outputs, Seed, invocable
+from cozy_runtime.author import App, Context, ImageFrame, Outputs, Seed, call
 from cozy_runtime.fields import Image, Prompt, Range
 from cozy_runtime.media import ImageFile
-from e2e_probe_callee import enlarge, shade
+from e2e_probe_callee import EnlargeInput, ShadeInput, enlarge, shade
 
 app = App()
 SIDE = 16
@@ -24,13 +24,10 @@ class Tinted(msgspec.Struct):
     image: ImageFile
 
 
-@invocable
+@app.entrypoint(private=True, accelerator=False)
 async def tint(ctx: Context, *, image: ImageFile, out: Outputs) -> Tinted:
     """A lighter still, for a page that came out dark."""
     return Tinted(_still(out, 200))
-
-
-app.entrypoint(tint, private=True, accelerator=False)
 
 
 class Compose(msgspec.Struct, kw_only=True):
@@ -55,14 +52,14 @@ class NotYet(Exception):
 @app.tool(label="Probe: composed", named="composed", accelerator=False)
 async def composed(ctx: Context, payload: Compose, out: Outputs) -> Composed:
     """Shade the page in the other package; lighten it here if that came out dark; enlarge it if asked."""
-    shaded = await shade(image=payload.page, amount=payload.darkness, hold=payload.hold)  # type: ignore[call-arg,misc]  # a cross-package call: request fields by name, awaited; the Runtime types the function itself
+    shaded = await call(shade, payload=ShadeInput(image=payload.page, amount=payload.darkness, hold=payload.hold))
     out.publish("image", shaded.image, label="Shaded")
     if payload.fails_until and not os.path.exists(payload.fails_until):
         raise NotYet(f"{payload.fails_until} isn't there yet")
     page = shaded.image
     if shaded.dark:
-        page = (await tint(image=page)).image  # type: ignore[call-arg]  # out is injected; invocable's ParamSpec still lists it
+        page = (await call(tint, image=page)).image
         out.publish("image", page, label="Lightened")
     if payload.enlarge:
-        page = (await enlarge(image=page)).image  # type: ignore[call-arg,misc]  # a cross-package call, as shade's
+        page = (await call(enlarge, payload=EnlargeInput(image=page))).image
     return Composed(page)

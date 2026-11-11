@@ -12,8 +12,17 @@ import time
 from typing import Annotated, Literal
 
 import msgspec
-from cozy_runtime.author import App, ImageFrame, Outputs, Seed, Telemetry
-from cozy_runtime.fields import AspectRatio, Audio, Count, Image, Prompt, Range, Ratios, Total, Video
+from cozy_runtime.author import App, Context, ImageFrame, Outputs, Seed, Telemetry
+from cozy_runtime.fields import (
+    AspectRatio,
+    Count,
+    Image,
+    Prompt,
+    Range,
+    Ratios,
+    Total,
+    Video,
+)
 from cozy_runtime.media import File, ImageFile, VideoFile
 
 app = App()
@@ -51,12 +60,12 @@ class SlowBox(msgspec.Struct, kw_only=True):
 
 
 @app.tool(label="A slow still")
-def slow(payload: SlowBox, out: Outputs, tel: Telemetry) -> Picture:
+def slow(ctx: Context, payload: SlowBox, out: Outputs, tel: Telemetry) -> Picture:
     """A still that takes its time, saying how far it's got in steps."""
-    step = tel.step_callback(10, stage="drawing")
-    for at in range(10):
-        time.sleep(payload.seconds / 10)
-        step(at)
+    with tel.stage("drawing"):
+        for at in range(10):
+            time.sleep(payload.seconds / 10)
+            ctx.progress(at, 10)
     return Picture(_picture(out), payload.instructions.text)
 
 
@@ -69,27 +78,26 @@ class SteppedInput(msgspec.Struct, kw_only=True):
 
 
 @app.entrypoint()
-def stepped(payload: SteppedInput, out: Outputs, tel: Telemetry) -> Picture:
+def stepped(ctx: Context, payload: SteppedInput, out: Outputs, tel: Telemetry) -> Picture:
     """A still made as a model makes one, weightless: its prompt encoded, its steps (the first slower, as a warm-up is), decoded."""
     with tel.stage("encoding prompt"):
         time.sleep(payload.step)
     with tel.stage("generating image"):
-        on_step = tel.step_callback(payload.steps, stage="generating image")
         for at in range(payload.steps):
             time.sleep(payload.first if at == 0 else payload.step)
-            on_step(at)
+            ctx.progress(at, payload.steps)
     with tel.stage("decoding image"):
         time.sleep(payload.step)
     return Picture(_picture(out), payload.prompt)
 
 
 class Beat(msgspec.Struct, kw_only=True):
-    description: Prompt[Image | Video | Audio] = Prompt()
+    description: Prompt = Prompt()
     duration: Annotated[float, Range(1, 15, step=1, unit="s"), Total()] = 5
 
 
 class ToldBox(msgspec.Struct, kw_only=True):
-    instructions: Prompt[Image | Video | Audio] = Prompt()
+    instructions: Prompt = Prompt()
     bright: bool = True
     shade: Annotated[float, Range(0, 1)] | None = None
     aspect_ratio: Annotated[AspectRatio, Ratios("1:1")] | None = None

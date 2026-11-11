@@ -270,8 +270,6 @@ export class CanvasStore {
   /** The note offering Undo of each edit, and the one saying what Undo or Redo last did: each goes once that's moved on. */
   private offers = new Map<string, number>()
   private stepped = 0
-  /** A push or pull is going. */
-  readonly transferring = signal(false)
   /** The tools known so far, by id. */
   readonly tools = signal<Map<string, Tool>>(new Map())
   /** Names came or went: a text shows a name as a chip or as words by it. */
@@ -706,7 +704,6 @@ export class CanvasStore {
   applyState(state: Project) {
     this.state = state
     this.began = state.began ?? 0
-    this.transferring.set(Boolean(state.moving))
     if (this.rows && this.flow) this.reconcile()
   }
 
@@ -1635,15 +1632,6 @@ export class CanvasStore {
       send: (served, write) => this.client.cancelRender(this.projectId!, [served], write.once),
       refused: (error) => say(`Couldn't cancel ${name}`, error),
     })
-  }
-
-  async pull() {
-    if (!this.projectId) return
-    try {
-      await this.client.pull(this.projectId)
-    } catch (error) {
-      say("Couldn't pull this project's files", error)
-    }
   }
 
   private removeNode(name: string) {

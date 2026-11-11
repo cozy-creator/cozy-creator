@@ -1,5 +1,5 @@
-// See it, in a real browser on a real Calcifer (project-web-ui §4, §8; web-ui.md §2): a project as a live graph. Files from `cozy project
-// import` and blocks of an export edited and imported (`cozy project import`) show with no reload: elements of every kind, with no edges, each placed once, left
+// See it, in a real browser on a real Calcifer (project-web-ui §4, §8; web-ui.md §2): a project as a live graph. Files from `cozy
+// import` and blocks of an export edited and imported (the import API) show with no reload: elements of every kind, with no edges, each placed once, left
 // to right of what it reads, its row written. What `GET /v1/projects/{id}` says for it. A video's poster isn't its black first frame; a rest
 // on its box, or on a take, plays its preview, made as it landed, which leaving or a pan stops; playing is Range with ?media=, at most two. A take landing shows with no reload, a failure stays across a reload and is gone when its text changes, a file that
 // leaves is "On another computer" and comes back. Where this computer runs models: versions, looking at one, pin and unpin, on a real
@@ -11,11 +11,11 @@
 // its screenshots; $ALONE: on a shared computer, so no run and no restart; $RESTART, $NO_HUB: shell commands that kill this Calcifer and
 // bring it back, the second on a Hub nothing answers. Prints what it saw as JSON and exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
-const { exec, execFileSync, spawnSync } = require('child_process');
+const { exec } = require('child_process');
 const { existsSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } = require('fs');
 const { homedir, tmpdir } = require('os');
 const { basename, join } = require('path');
-const { calcifer, signIn, DARK_OPEN, MP4, boxLog, boxOf, closeBox, openBox, STEP_MS, importYaml, lastLook, launch, lookAt, png, noStall, panning, removeGeneratedProject, renderOf, rowsOf, summary, until, watchBoxes, wav, yamlOf } = require('./page');
+const { projectFromPage, projectUrl, importFile, projectJson, newProject, calcifer, signIn, DARK_OPEN, MP4, boxLog, boxOf, closeBox, openBox, STEP_MS, importYaml, lastLook, launch, lookAt, png, noStall, panning, removeGeneratedProject, renderOf, rowsOf, summary, until, watchBoxes, wav, yamlOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -139,15 +139,15 @@ async function rest(page, handle) {
   };
 
   // A project of its own, by name, from the Projects drawer: the page is open on it from here on, and nothing below reloads it unless it says so.
-  await page.goto(`${base}/#/projects`);
+  await page.goto(`${base}/projects`);
   await page.fill('input[aria-label="New project\'s name"]', `web-see-${Date.now()}`);
   await page.click('form button[type=submit]');
-  await page.waitForURL(/#\/projects\/[^/]+$/);
-  const id = page.url().match(/#\/projects\/([^/]+)/)[1];
+  await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
+  const id = (await projectFromPage(page)).id;
   const state = () => api(`/v1/projects/${id}`);
   const folder = (await state()).path;
   seen.project = { id, folder };
-  // The project as `cozy project export` writes it; a hand's edit of it goes back by `cozy project import` (cl-803: its state is project.db).
+  // The project as the YAML export API writes it; a hand's edit of it goes back by the import API (cl-803: its state is project.db).
   const yaml = () => yamlOf(folder);
   await page.evaluate(() => { window.notReloaded = true; });
   const notReloaded = () => page.evaluate(() => window.notReloaded === true);
@@ -165,7 +165,7 @@ async function rest(page, handle) {
     ['dark_open', 'dark_open.mp4', DARK_OPEN],
   ]) {
     writeFileSync(join(scratch, file), bytes);
-    execFileSync(COZY, ['project', '-p', folder, 'import', join(scratch, file), name], { encoding: 'utf8' });
+    importFile(folder, join(scratch, file), name);
     imported[name] = (await asset(name)).sha256;
   }
   const prefix = imported.hero_art.replace('sha256:', '').slice(0, 12);
@@ -367,8 +367,8 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   await until('its dot', () => needs.locator('.dot.s-failed').count(), (n) => n === 1);
   check('failed_dot', true);
   check('no_line_at_rest', (await needs.locator('.status').count()) === 0, await needs.innerText());
-  const told = spawnSync(COZY, ['project', '-p', folder, 'status'], { encoding: 'utf8' });
-  check('terminal_hears_the_failure', `${told.stdout}${told.stderr}`.includes('cannot render'), `${told.stdout}${told.stderr}`.slice(0, 400));
+  const told = projectJson(folder);
+  check('api_hears_the_failure', JSON.stringify(told).includes('cannot render'), told);
   // A box takes its tool's shape once its tool is known, and a box it then lay on moved clear: what stands is the rows as they are now.
   const beforeReload = await cards();
   seen.moved_since_placed = named.filter((name) => beforeReload[name].x !== rows[name].x || beforeReload[name].y !== rows[name].y);
@@ -390,7 +390,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   await page.keyboard.press('f');
   await page.waitForTimeout(400);
 
-  // A file that leaves is on another computer, and when it comes back it shows, with no reload: a pull writes neither file.
+  // A file that leaves is on another computer, and when it comes back it shows, with no reload: restoring it writes neither project record.
   const older = await asset('older_art');
   const olderAt = join(folder, older.path);
   // Out of files/, where any name starting with its hash is it.
@@ -400,7 +400,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   check('wire_absent_per_file', Object.values(absent.files).every((file) => file.absent === true) && (await state()).absent > 0, absent.files);
   await until('it says so', () => element(page, 'older_art').locator('.media-note').textContent(), (text) => text === 'On another computer');
   await open(page, 'older_art');
-  check('pull_offered', (await element(page, 'older_art').locator('.status .act').textContent()) === 'Pull');
+  check('no_manual_pull', (await element(page, 'older_art').getByRole('button', { name: 'Pull', exact: true }).count()) === 0);
   check('no_hash_when_absent', !(await page.evaluate(() => document.body.innerText)).includes(older.sha256.replace('sha256:', '').slice(0, 12)));
   await shot('absent');
   renameSync(olderAway, olderAt);
@@ -481,12 +481,12 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   const scalePages = new Set();
   try {
     const big = made.path;
-    for (const [name, file] of [['a_picture', 'older.png'], ['a_video', 'clip.mp4']]) execFileSync(COZY, ['project', '-p', big, 'import', join(scratch, file), name]);
+    for (const [name, file] of [['a_picture', 'older.png'], ['a_video', 'clip.mp4']]) importFile(big, join(scratch, file), name);
     const held = await api(`/v1/projects/${made.id}`);
     const hash = (name) => held.assets.find((row) => row.name === name).sha256.replace('sha256:', '').slice(0, 12);
     const COUNT = 300;
     const perRow = Math.ceil(Math.sqrt(COUNT));
-    // Its boxes by `cozy project import`, and each one's place by the canvas's PATCH, as the page moves them.
+    // Its boxes by the import API, and each one's place by the canvas's PATCH, as the page moves them.
     let text = 'version: 4\nassets:\n';
     const placed = {};
     for (let i = 0; i < COUNT; i++) {
@@ -506,7 +506,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
       watch(tab);
       tab.setDefaultTimeout(STEP_MS);
       await tab.addInitScript(([id, zoom, x]) => localStorage.setItem(`cozy.view:${id}`, JSON.stringify({ x, y: 60, zoom })), [made.id, zoom, x]);
-      await tab.goto(`${base}/#/projects/${made.id}`);
+      await tab.goto(await projectUrl(made.id));
       await tab.waitForSelector('.react-flow__node');
       await until('every card its thumbnail', () => tab.evaluate(() => {
         const images = [...document.querySelectorAll('.react-flow__node .media img')];
@@ -610,7 +610,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   let ours = [];
   let treeTab;
   try {
-    const created = trees.map((tree) => JSON.parse(execFileSync(COZY, ['--json', 'project', 'new', join(forest, tree)], { encoding: 'utf8' })));
+    const created = await Promise.all(trees.map((tree) => newProject(join(forest, tree))));
     // The native answer identifies each project; Windows and Node need not spell its parent path alike.
     const createdIds = new Set(created.map((row) => row.id));
     const listing = await api('/v1/projects?limit=200');
@@ -625,7 +625,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
     const snap = (name) => (process.env.SHOT ? tab.screenshot({ path: `${process.env.SHOT}-${name}.png` }) : Promise.resolve());
     await tab.setViewportSize({ width: 1000, height: 800 });
     // By name: an earlier pass's forest is deleted, so its names are free (cl-842).
-    const spruce = `${base}/#/projects/${ours.find((row) => row.name === 'spruce').id}`;
+    const spruce = await projectUrl(ours.find((row) => row.name === 'spruce').id);
     await tab.goto(spruce);
     await tab.waitForSelector('nav.ptabs a.ptab.on');
     // What the bar is as each frame is painted: a ResizeObserver made after the page's hears of a resize after the page has answered it.
@@ -633,7 +633,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
       window.frames_seen = [];
       new ResizeObserver(() => window.frames_seen.push([...document.querySelectorAll('nav.ptabs a.ptab:not(.more):not(.new)')].map((link) => {
         const { x, width } = link.getBoundingClientRect();
-        return { id: link.getAttribute('href').split('/').pop(), on: link.classList.contains('on'), x, width };
+        return { code: link.getAttribute('href').split('/').pop(), on: link.classList.contains('on'), x, width };
       }))).observe(document.querySelector('.top'));
     });
     const frame = () => tab.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
@@ -643,7 +643,8 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
     }));
     const narrow = await bar();
     const all = await listed();
-    const hidden = all.map((row) => row.id).filter((held) => !narrow.tabs.includes(held));
+    check('tab_codes_match_projects', all.every((row) => /^[0-9A-HJKMNP-TV-Z]{9}$/.test(row.code)) && new Set(all.map((row) => row.code)).size === all.length, all.map((row) => ({ id: row.id, code: row.code })));
+    const hidden = all.map((row) => row.code).filter((held) => !narrow.tabs.includes(held));
     await snap('tabs-narrow');
     check('tabs_overflow', hidden.length > 0 && narrow.more === `${hidden.length} more`, { narrow, projects: all.length });
     for (let width = 1000; width <= 1800; width += 40) {
@@ -662,17 +663,17 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
     const first = new Map();
     const moved = [];
     for (const seen of frames) for (const one of seen) {
-      const was = first.get(one.id) ?? (first.set(one.id, one), one);
+      const was = first.get(one.code) ?? (first.set(one.code, one), one);
       if (Math.abs(was.width - one.width) > 0.5 || (!one.on && Math.abs(was.x - one.x) > 0.5)) moved.push({ was, now: one });
     }
     check('tabs_still_while_resizing', frames.length >= 40 && moved.length === 0, { frames: frames.length, moved: moved.slice(0, 5) });
     check('tabs_back_when_narrower', (await bar()).tabs.join() === narrow.tabs.join(), { narrow, now: await bar() });
 
     // With no project open its "untitled" tab is measured too, so what has a tab keeps its width.
-    await tab.goto(`${base}/#/projects`);
+    await tab.goto(`${base}/projects`);
     await tab.waitForSelector('nav.ptabs span.ptab.on');
-    const untitled = await tab.evaluate(() => [...document.querySelectorAll('nav.ptabs a.ptab:not(.more):not(.new)')].map((link) => ({ id: link.getAttribute('href').split('/').pop(), width: link.getBoundingClientRect().width })));
-    const squeezed = untitled.filter((one) => first.has(one.id) && !first.get(one.id).on && Math.abs(first.get(one.id).width - one.width) > 0.5);
+    const untitled = await tab.evaluate(() => [...document.querySelectorAll('nav.ptabs a.ptab:not(.more):not(.new)')].map((link) => ({ code: link.getAttribute('href').split('/').pop(), width: link.getBoundingClientRect().width })));
+    const squeezed = untitled.filter((one) => first.has(one.code) && !first.get(one.code).on && Math.abs(first.get(one.code).width - one.width) > 0.5);
     check('tabs_untitled_measured', untitled.length > 0 && squeezed.length === 0, { untitled, squeezed });
     await tab.goto(spruce);
     await tab.waitForSelector('nav.ptabs a.ptab.on');
@@ -689,11 +690,11 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
     // Found by name, and by a folder no name holds.
     const find = tab.locator('.drawer input[aria-label="Search projects"]');
     await find.fill('ginkgo');
-    const ginkgo = ours.find((row) => row.name === 'ginkgo').id;
+    const ginkgo = ours.find((row) => row.name === 'ginkgo').code;
     await until('one found by name', drawn, (now) => now.join() === ginkgo).then(() => check('tabs_find_by_name', true), (error) => check('tabs_find_by_name', false, error.message));
     await find.fill(basename(forest));
-    const ids = ours.map((row) => row.id).sort().join();
-    await until('ours found by folder', drawn, (now) => [...now].sort().join() === ids).then(() => check('tabs_find_by_folder', true), (error) => check('tabs_find_by_folder', false, error.message));
+    const codes = ours.map((row) => row.code).sort().join();
+    await until('ours found by folder', drawn, (now) => [...now].sort().join() === codes).then(() => check('tabs_find_by_folder', true), (error) => check('tabs_find_by_folder', false, error.message));
     await snap('tabs-found');
     await find.fill('');
 

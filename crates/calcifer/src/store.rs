@@ -186,6 +186,8 @@ pub(crate) enum StoreError {
     UnknownMachine(String),
     #[error("Calcifer's store holds a row it cannot read: {0}")]
     Corrupt(String),
+    #[error("{0}")]
+    ProjectCode(String),
 }
 
 pub(crate) type Result<T> = std::result::Result<T, StoreError>;
@@ -394,6 +396,7 @@ impl Store {
         writer.execute_batch(ANSWERS)?;
         writer.execute_batch(crate::state::TABLES)?;
         crate::state::project_names(&writer)?;
+        crate::state::project_codes(&writer)?;
         private(path);
         let reader = Connection::open(path)?;
         reader.pragma_update(None, "query_only", "ON")?;

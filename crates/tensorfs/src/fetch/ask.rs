@@ -58,6 +58,12 @@ impl Backoff {
         Backoff::of(5, Duration::from_secs(1), Duration::from_secs(16), Some(CALL))
     }
 
+    /// A release minutes old, until an index lists it (PyPI's CDN can lag an upload by minutes): pauses doubling from
+    /// 2 s to a minute, 10 minutes in all.
+    pub fn published() -> Backoff {
+        Backoff::of(20, Duration::from_secs(2), Duration::from_secs(60), Some(Duration::from_secs(600)))
+    }
+
     /// Work no one waits on (an output brought here, a report): 5 attempts, about 3, 6, 12 and 24 s apart.
     pub fn background() -> Backoff {
         Backoff::of(5, Duration::from_secs(2), Duration::from_secs(16), None)

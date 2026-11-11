@@ -266,13 +266,19 @@ candidate_cozy() {
   grep -q "cozy ${want#cozy }," "$OUT/doctor-candidate.json" || check "Calcifer is not the candidate ${want#cozy }"
 }
 
+# The controller's process belongs to its holder record; project status reports assets.
+calcifer_pid() {
+  cozy --json machine ls > /dev/null || return
+  jq -er .pid "$HOME/.cozy/calcifer/calcifer.lock.holder"
+}
+
 # Calcifer stuck: its process stopped (SIGSTOP), so it answers nothing and makes no progress. `cozy doctor`
 # must say so, end it and start another, and the next run must go. Windows cannot stop a process this way.
 calcifer_stuck() {
   [ "$RUNNER_OS" != Windows ] || return 0
   local pid
   pid=$(grep -o '"pid": *[0-9]*' "$HOME/.cozy/calcifer/calcifer.lock.holder" 2> /dev/null | grep -o '[0-9]*$')
-  [ -n "$pid" ] || pid=$(cozy --json status | grep -o '"pid": *[0-9]*' | head -1 | grep -o '[0-9]*$')
+  [ -n "$pid" ] || pid=$(calcifer_pid)
   [ -n "$pid" ] || { check "no Calcifer pid to stop"; return 1; }
   kill -STOP "$pid" || { check "SIGSTOP $pid failed"; return 1; }
   cozy --json doctor > "$OUT/doctor-stuck.json" || check "cozy doctor did not fix a stuck Calcifer"
@@ -358,7 +364,7 @@ gone() {
 # the one Calcifer started.
 machine_reaped() {
   local calcifer pid top='' i
-  calcifer=$(cozy --json status | grep -o '"pid": *[0-9]*' | head -1 | grep -o '[0-9]*$')
+  calcifer=$(calcifer_pid)
   for i in 1 2 3; do
     machine_ready
     pid=$(machine_pid) || { check "no process holds the local machine's root"; return; }
@@ -386,7 +392,7 @@ calcifer_restart_adopts() {
   pid=$(machine_pid) || { check "no process holds the local machine's root"; return; }
   for how in term kill; do
     [ $how = kill ] || [ "$RUNNER_OS" != Windows ] || continue
-    calcifer=$(cozy --json status | grep -o '"pid": *[0-9]*' | head -1 | grep -o '[0-9]*$')
+    calcifer=$(calcifer_pid)
     case $how in
       term) kill -TERM "$calcifer" ;;
       kill) if [ "$RUNNER_OS" = Windows ]; then taskkill //F //PID "$calcifer"; else kill -9 "$calcifer"; fi ;;

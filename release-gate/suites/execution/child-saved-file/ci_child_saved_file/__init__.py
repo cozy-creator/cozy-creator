@@ -12,7 +12,7 @@ from typing import Annotated
 import msgspec
 from PIL import Image
 
-from cozy_runtime.author import App, Context, Outputs, invocable
+from cozy_runtime.author import App, Context, Outputs, call
 from cozy_runtime.fields import FileBound
 from cozy_runtime.media import File, ImageFile
 from cozy_runtime.author._calls import ChildCallError, _current
@@ -44,22 +44,16 @@ def sha(data: bytes) -> str:
     return f"sha256:{hashlib.sha256(data).hexdigest()}"
 
 
-@invocable()
+@app.entrypoint(private=True)
 async def see_picture(ctx: Context, *, payload: Picture) -> Seen:
     data = payload.picture.read_bytes()
     return Seen(sha(data), len(data), payload.picture.media_type, Image.open(io.BytesIO(data)).width)
 
 
-app.entrypoint(see_picture, private=True)
-
-
-@invocable()
+@app.entrypoint(private=True)
 async def see_blob(ctx: Context, *, payload: Blob) -> Seen:
     data = payload.file.read_bytes()
     return Seen(sha(data), len(data), payload.file.media_type)
-
-
-app.entrypoint(see_blob, private=True)
 
 
 class Nothing(msgspec.Struct):
@@ -101,13 +95,13 @@ def wire_code(saved: SavedFile) -> str:
 
 async def main(ctx: Context, payload: Nothing, out: Outputs) -> Result:
     image = out.save_image(Image.new("RGB", (64, 48), (200, 40, 40)))
-    seen_picture = await see_picture(payload=Picture(picture=image))
+    seen_picture = await call(see_picture, payload=Picture(picture=image))
     # A frame not encoded yet, labeled before it is: the copy never hears of its bytes.
     labeled = out.save_image(Image.new("RGB", (32, 24), (40, 200, 40)))
-    seen_labeled = await see_picture(payload=Picture(picture=labeled.with_label("Picture 1")))
+    seen_labeled = await call(see_picture, payload=Picture(picture=labeled.with_label("Picture 1")))
     data = os.urandom(4096)
     blob = out.save_bytes(data, media_type="application/octet-stream")
-    seen_blob = await see_blob(payload=Blob(file=blob))
+    seen_blob = await call(see_blob, payload=Blob(file=blob))
 
     foreign = File("attempt:elsewhere/file/0001", media_type=blob.media_type, size_bytes=len(data), digest=blob.digest,
                    local=blob._local, attempt="elsewhere")
@@ -126,9 +120,9 @@ async def main(ctx: Context, payload: Nothing, out: Outputs) -> Result:
         seen_labeled=seen_labeled,
         saved_blob=sha(data),
         seen_blob=seen_blob,
-        other_attempt=await code_of(lambda: see_blob(payload=Blob(file=foreign))),
-        earlier_attempt="none here" if earlier is None else await code_of(lambda: see_blob(payload=Blob(file=earlier))),
-        ungranted=await code_of(lambda: see_blob(payload=Blob(file=File(sha(b"the owner's other file"))))),
+        other_attempt=await code_of(lambda: call(see_blob, payload=Blob(file=foreign))),
+        earlier_attempt="none here" if earlier is None else await code_of(lambda: call(see_blob, payload=Blob(file=earlier))),
+        ungranted=await code_of(lambda: call(see_blob, payload=Blob(file=File(sha(b"the owner's other file"))))),
         lying_digest=wire_code(SavedFile(asset_ref=blob.ref, digest=sha(b"not these bytes"), media_type=blob.media_type)),
         claimed_tree=wire_code(SavedFile(
             asset_ref="attempt:x/file/tree", digest=sha(b"a tree's manifest names other objects"), media_type=TREE

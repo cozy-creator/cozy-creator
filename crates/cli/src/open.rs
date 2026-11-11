@@ -1,96 +1,159 @@
-//! `cozy open`: Calcifer's page in a browser, at the project named or its home, signed in by a single-use code. The code goes in a
-//! 0600 redirect file and the browser opens the file, so it's in no process's arguments. Only with no browser to open is the link
-//! printed: it works once, for 60 s.
-use std::process::{Command, ExitCode, Stdio};
+//! Open the current project in a browser and print its local URL.
+use std::{
+    io::{self, Write},
+    net::{Ipv4Addr, TcpListener},
+    process::{Command, ExitCode, Stdio},
+};
 
-use api::{calcifer::SessionCode, error::Error};
-use serde_json::{Value, json};
+use api::{
+    calcifer::{SessionCode, project::State},
+    config,
+    error::{Error, Kind},
+};
+use platform::lock::{Kind as LockKind, LockFile};
+use serde_json::json;
 
-use crate::{Context, output, project};
+use crate::{
+    Context,
+    calcifer_client::{Client, Lock},
+    output, project,
+};
 
-/// Open the canvas in your browser: the project you name (else COZY_PROJECT's), or the home.
 #[derive(clap::Args, Debug)]
-#[command(after_help = "Examples:\n  cozy open garden\n  cozy open           COZY_PROJECT's, else the home\n  cozy open --no-open   only prints the link: for an agent, or over SSH")]
+#[command(after_help = "Examples:\n  cd my-project && cozy open\n  cozy open --port 8818")]
 pub(crate) struct Args {
-    /// The project: its name or id, or its folder on Calcifer's computer by its absolute path.
-    project: Option<String>,
-    /// Only print the link, which works once, for 60 s.
-    #[arg(long)]
-    no_open: bool,
+    /// Use this loopback port for Calcifer, and keep it for later commands.
+    #[arg(long, value_name = "PORT", value_parser = clap::value_parser!(u16).range(1..))]
+    port: Option<u16>,
 }
 
-/// The project named, else COZY_PROJECT's: an older format is refused, saying what to run. None named is the home; a folder that
-/// holds none says so.
-async fn route(ctx: &Context, named: Option<&String>) -> Result<Option<String>, Error> {
-    if project::chosen(named).is_none() {
-        return Ok(None);
-    }
-    let project = project::named(named)?;
-    match ctx.calcifer().await?.get::<Value>(&format!("{}?assets=false", project::at(&project, &[]))).await {
-        Ok(state) => Ok(state["id"].as_str().map(|id| format!("/projects/{id}"))),
-        Err(error) if error.code == "project_not_found" => {
-            output::say(ctx, &format!("{project} is in no project, so this is the home; to make one there: cozy project new {project}"));
-            Ok(None)
-        }
-        Err(error) => Err(error),
-    }
-}
-
-/// Whether a browser here would be in front of anyone: none over SSH, and on Linux none without a display.
-fn in_front_of_someone() -> bool {
-    let has = |name: &str| std::env::var_os(name).is_some();
-    !has("SSH_CONNECTION") && (std::env::consts::OS != "linux" || has("DISPLAY") || has("WAYLAND_DISPLAY"))
-}
-
-/// A build without its page is refused here, saying how to build it.
 pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
-    let to = route(ctx, args.project.as_ref()).await?;
-    let calcifer = ctx.calcifer().await?;
+    let (calcifer, project) = match args.port {
+        Some(port) => select_port(ctx, port).await?,
+        None => {
+            let project = project::current(ctx).await?;
+            (ctx.calcifer().await?, project)
+        }
+    };
     calcifer.text("/").await?;
     let code: SessionCode = calcifer.post("/v1/session-codes", &json!({}), None).await?;
-    let link = match to {
-        Some(to) => format!("{}&to={to}", code.url),
-        None => code.url,
+    let mut link = url::Url::parse(&code.url)
+        .map_err(|error| Error::new(Kind::Internal, "session_url", error.to_string()))?;
+    let path = if project.code.is_empty() {
+        format!("/projects/{}", project.id)
+    } else {
+        format!("/p/{}", project.code)
     };
-    let opened = !args.no_open
-        && in_front_of_someone()
-        && match browse(ctx, &link) {
-            Ok(()) => true,
-            Err(why) => {
-                output::warn(&format!("couldn't open your browser: {why}"));
-                false
-            }
-        };
-    if ctx.json {
-        output::json(&json!({ "url": link, "expires_ms": code.expires_ms, "opened": opened }));
-        return Ok(ExitCode::SUCCESS);
+    link.set_path(&path);
+    link.set_fragment(Some(&format!("code={}", code.code)));
+    let name = project.path.file_name().map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| project.code.clone());
+    if let Err(error) = browse(ctx, link.as_str()) {
+        output::warn(&format!("could not open the browser: {error}; use the URL below"));
     }
-    if opened {
-        output::say(ctx, "opened in your browser; if it didn't come up: cozy open --no-open");
-        return Ok(ExitCode::SUCCESS);
-    }
-    anstream::println!("{link}");
-    output::say(ctx, "it works once, for 60 s");
-    if let Some(holder) = calcifer.holder() {
-        let port = holder.address.port();
-        output::say(ctx, &format!("from another computer, forward its port first: ssh -L {port}:127.0.0.1:{port} <this computer>"));
-    }
+    output::document(ctx, &json!({ "project": name, "url": link.as_str() }));
     Ok(ExitCode::SUCCESS)
 }
 
-/// Writes the redirect and asks this computer's browser to open it, without waiting. Its code is spent at once or dead
-/// in 60 s, so one file, replaced each time, is all that ever lies there.
-fn browse(ctx: &Context, link: &str) -> Result<(), String> {
-    let file = ctx.home.root().join("cache").join("open.html");
-    let link = link.replace('&', "&amp;");
-    let page = format!(r#"<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0; url={link}"><title>cozy</title><a href="{link}">Open cozy</a>"#);
-    std::fs::create_dir_all(ctx.home.root().join("cache")).map_err(|e| e.to_string())?;
-    platform::durable::replace(&file, page.as_bytes(), 0o600).map_err(|e| e.to_string())?;
-    let (program, first): (&str, &[&str]) = match std::env::consts::OS {
+/// Keep the one-use sign-in code out of the browser process's command line.
+fn browse(ctx: &Context, url: &str) -> io::Result<()> {
+    let cache = ctx.home.root().join("cache");
+    std::fs::create_dir_all(&cache)?;
+    let mut redirect = tempfile::Builder::new().prefix("open-").suffix(".html").tempfile_in(cache)?;
+    let escaped = url.replace('&', "&amp;").replace('"', "&quot;");
+    write!(redirect, "<!doctype html><meta charset=\"utf-8\"><meta http-equiv=\"refresh\" content=\"0; url={escaped}\"><title>Cozy</title><a href=\"{escaped}\">Open Cozy</a>")?;
+    let path = redirect.into_temp_path().keep().map_err(|error| error.error)?;
+    let (program, arguments): (&str, &[&str]) = match std::env::consts::OS {
         "macos" => ("open", &[]),
         "windows" => ("cmd", &["/C", "start", ""]),
         _ => ("xdg-open", &[]),
     };
-    let opener = Command::new(program).args(first).arg(&file).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
-    opener.map(drop).map_err(|e| format!("{program}: {e}"))
+    let result = Command::new(program).args(arguments).arg(&path)
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+    if result.is_err() {
+        let _ = std::fs::remove_file(path);
+    }
+    result.map(drop)
+}
+
+fn reserve_port(port: u16) -> Result<TcpListener, Error> {
+    TcpListener::bind((Ipv4Addr::LOCALHOST, port)).map_err(|error| {
+        Error::new(Kind::Unavailable, "calcifer_port", format!("Calcifer cannot listen on 127.0.0.1:{port}: {error}"))
+            .remedy("choose a free loopback port with cozy open --port <port>")
+    })
+}
+
+async fn select_port(ctx: &Context, port: u16) -> Result<(Client, State), Error> {
+    let port_error = |error: platform::Error| Error::new(Kind::Unavailable, "calcifer_port", error.to_string());
+    ctx.home.open().map_err(port_error)?;
+    let _held = LockFile::new(ctx.home.root().join("calcifer-port.lock"))
+        .lock(LockKind::Exclusive).map_err(port_error)?;
+    let unconnected = Client::unconnected(ctx)?;
+    let running = match unconnected.lock_state() {
+        Lock::Free { .. } => None,
+        _ => Client::running(ctx).await?,
+    };
+    let was_running = running.is_some();
+    let calcifer = running.unwrap_or(unconnected);
+    let switching = !calcifer.holder().is_some_and(|holder| holder.address.port() == port);
+    let reservation = switching.then(|| reserve_port(port)).transpose()?;
+    let previous = config::set_calcifer_port(&ctx.home, Some(port))?;
+    let selected = async {
+        if switching && was_running {
+            calcifer.stop().await?;
+        }
+        drop(reservation);
+        let holder = calcifer.ready().await?;
+        if holder.address.port() != port {
+            return Err(Error::new(
+                Kind::Conflict, "calcifer_port", format!("Calcifer did not start on the requested port {port}"),
+            ));
+        }
+        project::current(ctx).await
+    }.await;
+    match selected {
+        Ok(project) => Ok((calcifer, project)),
+        Err(error) => {
+            config::set_calcifer_port(&ctx.home, previous)?;
+            if switching && calcifer.holder().is_some_and(|holder| holder.address.port() == port) {
+                calcifer.stop().await?;
+            }
+            if switching && was_running {
+                calcifer.ready().await?;
+            }
+            Err(error)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Open {
+        #[command(flatten)]
+        args: Args,
+    }
+
+    #[test]
+    fn port_argument_accepts_only_nonzero_u16_values() {
+        for port in ["1", "8818", "65535"] {
+            assert_eq!(Open::try_parse_from(["open", "--port", port]).unwrap().args.port, port.parse().ok());
+        }
+        for port in ["0", "65536", "-1", "localhost:8818"] {
+            assert!(Open::try_parse_from(["open", "--port", port]).is_err());
+        }
+        assert_eq!(Open::try_parse_from(["open"]).unwrap().args.port, None);
+    }
+
+    #[test]
+    fn occupied_port_is_refused_before_config_or_restart() {
+        let held = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = held.local_addr().unwrap().port();
+        let error = reserve_port(port).unwrap_err();
+        assert_eq!(error.code, "calcifer_port");
+        assert!(error.message.contains(&format!("127.0.0.1:{port}")));
+    }
 }

@@ -39,6 +39,7 @@ function RunRow({ run, now }: { run: Run; now: number }) {
 /** The runs, live: this project's, or every project's with `?all`; by machine and status. */
 export function Runs() {
   const { client } = useConnection()
+  const to = useTo()
   const id = useProjectId()
   const [params, setParams] = useSearchParams()
   const [limit, setLimit] = useState(PAGE)
@@ -99,7 +100,7 @@ export function Runs() {
           {id && !status && !machine && (
             <>
               {" "}
-              <Link className="more" to={`/projects/${id}/new`}>
+              <Link className="more" to={to("new")}>
                 Run a function
               </Link>
             </>

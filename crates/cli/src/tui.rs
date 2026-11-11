@@ -3,13 +3,12 @@
 //! row's own view (a run as `cozy run show` follows it, a machine as `cozy machine show` draws
 //! it), Esc or q goes back to the list as it was left, and q there quits. The terminal is restored
 //! on every way out: q, Ctrl-C, a signal, an error, and (ratatui's hook) a panic.
-use std::io::{self, Write as _};
+use std::io;
 
 use api::error::{Error, Kind};
 use crossterm::{
     cursor::{MoveTo, Show},
     event::{Event as Input, EventStream, KeyCode, KeyEventKind, KeyModifiers},
-    style::Print,
     terminal::{Clear, ClearType},
 };
 use futures_util::{Stream, StreamExt as _};
@@ -24,7 +23,7 @@ use ratatui::{
 #[cfg(unix)]
 use rustix::termios::{OptionalActions, OutputModes, tcgetattr, tcsetattr};
 
-use crate::{Context, machine, output, package, project, run};
+use crate::{Context, machine, output, package, run};
 
 /// One live view.
 pub(crate) enum Screen {
@@ -166,85 +165,6 @@ pub(crate) async fn live<B: Backend>(
             _ => {}
         }
     }
-}
-
-/// A render's live view until it ends, or q, Esc, Ctrl-C or a signal leaves it going. The render goes on either way.
-pub(crate) async fn board(ctx: &Context, view: &mut project::render::View) -> Result<(), Error> {
-    let mut terminal = ratatui::try_init().map_err(drawing)?;
-    let shown = board_live(ctx, &mut terminal, view, EventStream::new()).await;
-    ratatui::restore();
-    shown
-}
-
-async fn board_live(
-    ctx: &Context,
-    terminal: &mut ratatui::DefaultTerminal,
-    view: &mut project::render::View,
-    mut keys: EventStream,
-) -> Result<(), Error> {
-    let mut signals = Signals::new()?;
-    let mut table = TableState::default();
-    loop {
-        let mut over = vec![];
-        terminal.draw(|frame| over = view.draw(ctx, frame, &mut table)).map_err(drawing)?;
-        paint(&over).map_err(drawing)?;
-        if view.over() {
-            return Ok(());
-        }
-        let next = tokio::select! {
-            () = view.changed() => Next::Changed(Ok(())),
-            input = keys.next() => Next::Input(input),
-            () = signals.next() => Next::Quit,
-            // Redrawn each second regardless: a running job's time ticks.
-            () = tokio::time::sleep(std::time::Duration::from_secs(1)) => Next::Changed(Ok(())),
-        };
-        let key = match next {
-            Next::Changed(_) => continue,
-            Next::Quit | Next::Input(None) => {
-                view.left = true;
-                return Ok(());
-            }
-            Next::Input(Some(input)) => match input.map_err(drawing)? {
-                Input::Key(key) if key.kind == KeyEventKind::Press => key,
-                _ => continue,
-            },
-        };
-        match key.code {
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                view.left = true;
-                return Ok(());
-            }
-            KeyCode::Esc | KeyCode::Char('q') => {
-                view.left = true;
-                return Ok(());
-            }
-            KeyCode::Up | KeyCode::Char('k') => view.select(-1),
-            KeyCode::Down | KeyCode::Char('j') => view.select(1),
-            KeyCode::Enter => {
-                if let Some(run) = view.opens() {
-                    if watch(ctx, &run.to_string(), &mut keys, &mut signals).await? {
-                        view.left = true;
-                        return Ok(());
-                    }
-                    let area = terminal.size().map_err(drawing)?;
-                    terminal.resize(area.into()).map_err(drawing)?;
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-/// Over a frame, what its cells can't hold.
-fn paint(over: &[project::render::Overlay]) -> io::Result<()> {
-    if over.is_empty() {
-        return Ok(());
-    }
-    let mut out = io::stdout();
-    for overlay in over {
-        crossterm::queue!(out, MoveTo(overlay.x, overlay.y), Print(&overlay.text))?;
-    }
-    out.flush()
 }
 
 /// What woke the view.

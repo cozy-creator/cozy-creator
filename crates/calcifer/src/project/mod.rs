@@ -7,6 +7,7 @@
 //! Calcifer goes on with it. Its clients ask and watch; the runs go on without them.
 mod assets;
 mod canvas;
+pub(crate) mod code;
 mod db;
 mod fit;
 mod folder;
@@ -107,6 +108,7 @@ struct Heard {
 
 struct Project {
     id: String,
+    code: String,
     folder: Folder,
     /// What its files say, as last read.
     model: tokio::sync::Mutex<Option<Arc<model::Model>>>,
@@ -125,7 +127,7 @@ struct Project {
     cutting: Arc<Mutex<()>>,
     /// How far each Edit being rendered here is, 0 to 1.
     rendering: Arc<Mutex<BTreeMap<String, f64>>>,
-    /// Held while its files move to or from its Hub.
+    /// Serializes materialization of files already stored at the Hub.
     moving: tokio::sync::Mutex<()>,
     /// What opening it did to it, for the first to read it.
     said: Mutex<Vec<String>>,
@@ -153,6 +155,9 @@ pub(crate) struct Reader(#[allow(dead_code, reason = "held for its drop")] Arc<P
 #[path = "presence_tests.rs"]
 mod presence_tests;
 
+#[cfg(test)]
+mod code_tests;
+
 pub(crate) fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
     Router::new()
         .route("/v1/projects", post(open).get(list))
@@ -168,8 +173,6 @@ pub(crate) fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
         .route("/v1/projects/{id}/unpin", post(unpin))
         .route("/v1/projects/{id}/rename", post(rename))
         .route("/v1/projects/{id}/reclaim", post(reclaim))
-        .route("/v1/projects/{id}/push", post(remote::pushed))
-        .route("/v1/projects/{id}/pull", post(remote::pulled))
         .route("/v1/projects/{id}/events", get(events))
         .route("/v1/projects/{id}/yaml", get(yaml).put(save))
         .route("/v1/projects/{id}/assets", post(assets::create))
@@ -214,7 +217,7 @@ impl Projects {
         self.open.lock().expect("projects lock").get(id).and_then(Weak::upgrade)
     }
 
-    /// The project a route's `{id}` names (`api::calcifer::project::NAMED_BY`): its id or name, or its folder on this computer. Open,
+    /// The project a route's `{id}` names (`api::calcifer::project::NAMED_BY`): its id, public code or name, or its folder on this computer. Open,
     /// else opened from the index. It stays open while the answer is held.
     fn get(&self, api: &Arc<Api>, named: &str) -> Result<Arc<Project>, Refusal> {
         if let Some(project) = self.open_now(named) {
@@ -227,10 +230,10 @@ impl Projects {
         let project = self.open(api, &entry.path).map_err(Refusal)?;
         if project.id != entry.id {
             let said = format!("{named} was in {}, which holds another project now", entry.path.display());
-            return Err(Refusal(Error::new(Kind::NotFound, "project_unknown", said).next("cozy project ls")));
+            return Err(Refusal(Error::new(Kind::NotFound, "project_unknown", said).next("cozy open")));
         }
         // Opened for a call: used now, which the index lists by.
-        api.calcifer.store().project_opened(&project.id, &identity(&project.folder.dir).1, &project.folder.dir, Some(now_ms()))?;
+        api.calcifer.store().project_opened(&project.id, &identity(&project.folder.dir).1, &project.folder.dir, Some(now_ms()), Some(&project.code))?;
         Ok(project)
     }
 
@@ -252,7 +255,7 @@ impl Projects {
             true => Some(tokio::task::block_in_place(|| identify(api, dir))?),
             false => None,
         };
-        let id = known.as_ref().map_or_else(|| folder_id(dir), |(id, _)| id.clone());
+        let id = known.as_ref().map_or_else(|| folder_id(dir), |(id, _, _)| id.clone());
         // Moved since it opened: the same project, read where it is now, and what reads it where it was goes on reading that. One
         // rendering goes on where it was.
         let moved = self.open_now(&id).filter(|open| open.folder.dir != dir);
@@ -264,7 +267,7 @@ impl Projects {
             self.open.lock().expect("projects lock").remove(&id);
         }
         let folder = tokio::task::block_in_place(|| Folder::open(dir, api.machines.hubs.home()))?;
-        let (id, name) = match known {
+        let (id, name, code) = match known {
             Some(known) => known,
             None => tokio::task::block_in_place(|| identify(api, dir))?,
         };
@@ -277,6 +280,7 @@ impl Projects {
                 let (events, asked) = (broadcast::channel::<Event>(256).0, Notify::new());
                 let project = Arc::new(Project {
                     id: id.clone(),
+                    code,
                     folder,
                     jobs: Jobs::new(id.clone(), events.clone()),
                     model: tokio::sync::Mutex::default(),
@@ -325,7 +329,7 @@ pub(crate) fn of_landing(out_dir: &FsPath) -> Option<&FsPath> {
     out_dir.file_name().is_some_and(|name| name == folder::RUNS).then(|| out_dir.parent()).flatten()
 }
 
-/// The folder of the project a request names (`api::calcifer::project::NAMED_BY`): its id or name in the index, or the project holding
+/// The folder of the project a request names (`api::calcifer::project::NAMED_BY`): its id, public code or name in the index, or the project holding
 /// a folder of this computer's, by its absolute path. Never a client's folder: a relative path names none.
 pub(crate) fn named(api: &Api, text: &str) -> Result<PathBuf, Error> {
     let text = text.trim();
@@ -346,22 +350,47 @@ pub(crate) fn named(api: &Api, text: &str) -> Result<PathBuf, Error> {
 fn indexed(api: &Api) -> Result<Vec<crate::state::KnownProject>, Error> {
     let store = api.calcifer.store();
     let failed = |e: crate::store::StoreError| Error::internal("calcifer_store", e.to_string());
-    let (here, gone): (Vec<_>, Vec<_>) = store.known_projects().map_err(failed)?.into_iter().partition(|entry| Folder::is_project(&entry.path));
+    let (mut here, gone): (Vec<_>, Vec<_>) = store.known_projects().map_err(failed)?.into_iter().partition(|entry| Folder::is_project(&entry.path));
     if !gone.is_empty() {
         store.projects_gone(&gone.into_iter().map(|entry| entry.id).collect::<Vec<_>>()).map_err(failed)?;
+    }
+    for entry in here.iter_mut().filter(|entry| entry.code.is_empty()) {
+        match backfill_code(store, entry) {
+            Ok(code) => entry.code = code,
+            Err(error) => warn!("keeping the existing project link for {}: {}", entry.path.display(), error.message),
+        }
     }
     Ok(here)
 }
 
-/// The project the index knows by `text`, its id or its name (in any case).
+/// An older project keeps its existing link if its public code cannot be recorded.
+fn backfill_code(store: &crate::store::Store, entry: &crate::state::KnownProject) -> Result<String, Error> {
+    let path = entry.path.join(db::DB);
+    if !path.is_file() {
+        // Opening upgrades a pre-database project. Listing keeps its current format.
+        return reserve_code(store, &entry.id, &entry.name, &entry.path, None);
+    }
+    let conn = db::open(&path)?;
+    let kept = db::meta(&conn, "code");
+    let code = reserve_code(store, &entry.id, &entry.name, &entry.path, kept.as_deref())?;
+    db::set_meta(&conn, &path, "code", Some(&code))?;
+    Ok(code)
+}
+
+/// The project the index knows by `text`, its id, public code or its name (in any case).
 fn known(api: &Api, text: &str) -> Result<crate::state::KnownProject, Error> {
     let mut indexed = indexed(api)?;
     if let Some(at) = indexed.iter().position(|entry| entry.id == text) {
         return Ok(indexed.swap_remove(at));
     }
+    if let Some(code) = code::parse(text) {
+        if let Some(at) = indexed.iter().position(|entry| entry.code == code) {
+            return Ok(indexed.swap_remove(at));
+        }
+    }
     let mut named: Vec<_> = indexed.into_iter().filter(|entry| entry.name.eq_ignore_ascii_case(text)).collect();
     match named.len() {
-        0 => Err(Error::new(Kind::NotFound, "project_unknown", format!("this computer knows no project {text}")).next("cozy project ls")),
+        0 => Err(Error::new(Kind::NotFound, "project_unknown", format!("this computer knows no project {text}")).next("cozy open")),
         1 => Ok(named.remove(0)),
         _ => {
             let ids: Vec<String> = named.iter().map(|entry| format!("{} ({})", entry.id, entry.path.display())).collect();
@@ -468,7 +497,7 @@ impl Holding {
             let Some(path) = self.file(&range.source).await? else { continue };
             let fps = lock.files.get(&range.source).map_or(0.0, |file| file.fps);
             if fps <= 0.0 {
-                return Err(Error::new(Kind::Unavailable, "range_unmeasured", format!("{}: its rate isn't measured, so no range of it can be cut", folder::prefix_of(&range.source))).next("cozy project status"));
+                return Err(Error::new(Kind::Unavailable, "range_unmeasured", format!("{}: its rate isn't measured, so no range of it can be cut", folder::prefix_of(&range.source))).next("cozy status"));
             }
             let seconds = crate::runs::clip::Range { start: f64::from(range.from) / fps, end: range.to.map(|to| f64::from(to) / fps) };
             let mut notes = vec![];
@@ -589,7 +618,7 @@ fn folder_name(dir: &FsPath) -> String {
 /// The project in `dir`, its id and name kept in its `project.db` (which it never makes: a folder from before has one once it's
 /// imported) and recorded in the index. One from before cl-819 keeps the id
 /// its path gave it; a copy of a project another folder still holds takes a new id; a name another project has takes `_2`.
-fn identify(api: &Api, dir: &FsPath) -> Result<(String, String), Error> {
+fn identify(api: &Api, dir: &FsPath) -> Result<(String, String, String), Error> {
     let path = dir.join(db::DB);
     if !path.is_file() {
         return Err(Error::new(Kind::NotFound, "project_not_found", format!("{} holds no {}", dir.display(), db::DB)));
@@ -607,12 +636,21 @@ fn identify(api: &Api, dir: &FsPath) -> Result<(String, String), Error> {
         None => (folder_id(dir), String::new()),
     };
     let name = unique_name(api, &id, dir, if name.is_empty() { folder_name(dir) } else { name })?;
-    if kept.as_ref() != Some(&(id.clone(), name.clone())) {
-        db::set_identity(&mut conn, &path, &id, &name)?;
+    let kept_code = kept.as_ref().filter(|(held, _)| held == &id).and_then(|_| db::meta(&conn, "code"));
+    let code = reserve_code(store, &id, &name, dir, kept_code.as_deref())?;
+    if kept.as_ref() != Some(&(id.clone(), name.clone())) || kept_code.as_deref() != Some(&code) {
+        db::set_identity(&mut conn, &path, &id, &name, Some(&code))?;
     }
-    drop(conn);
-    store.project_opened(&id, &name, dir, None).map_err(|e| Error::internal("calcifer_store", e.to_string()))?;
-    Ok((id, name))
+    Ok((id, name, code))
+}
+
+/// The index reserves the code atomically. If recording it in project.db fails, the next open
+/// recovers the index's assignment before answering with a public URL.
+fn reserve_code(store: &crate::store::Store, id: &str, name: &str, dir: &FsPath, preferred: Option<&str>) -> Result<String, Error> {
+    store.project_opened(id, name, dir, None, preferred).map_err(|error| match error {
+        crate::store::StoreError::ProjectCode(message) => Error::new(Kind::Conflict, "project_code_conflict", message),
+        other => Error::internal("calcifer_store", other.to_string()),
+    })
 }
 
 /// `wanted`, or the first of `wanted_2`, `wanted_3`, … no other project in the index has, in any case: what `-p` names it by. The
@@ -1012,11 +1050,6 @@ pub(super) fn not_saved(why: &str) -> String {
     format!("Not saved yet: {why}, and what landed goes in as soon as it can")
 }
 
-/// What to run while a project's render goes on.
-fn status_next(folder: &Folder) -> Vec<String> {
-    vec![format!("cozy project -p {} status", identity(&folder.dir).1)]
-}
-
 /// Makes a new project called `name`: in this person's home folder, or at `path`, a folder of this computer's, recorded in the index as
 /// used now.
 async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Bytes, BytesRejection>) -> Result<Json<Opened>, Refusal> {
@@ -1030,9 +1063,11 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Byte
             return Err(Refusal(Error::new(Kind::Usage, "project_path", said)));
         }
         Some(path) => {
+            // First use from separate CLI processes can reach this path together.
+            let _creation = api.projects.made.lock().expect("made lock");
             if Folder::is_project(path) {
                 let said = format!("{} is a project already", path.display());
-                return Err(Refusal(Error::new(Kind::Conflict, "project_exists", said).next(format!("cozy project -p {} status", path.display()))));
+                return Err(Refusal(Error::new(Kind::Conflict, "project_exists", said).next("cozy status")));
             }
             std::fs::create_dir_all(path).map_err(|e| io(path, e))?;
             let name = open.name.clone().unwrap_or_else(|| folder_name(path));
@@ -1058,27 +1093,30 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Byte
     // Named, a project nothing reads is only identified: the call that reads it opens it. One open, maybe where it was before it moved,
     // and a folder of files from before project.db, which is imported now, are opened here.
     let unread = match dir.join(db::DB).is_file() {
-        true => Some(tokio::task::block_in_place(|| identify(&api, &dir)).map_err(Refusal)?.0).filter(|id| api.projects.open_now(id).is_none()),
+        true => {
+            let (id, _, code) = tokio::task::block_in_place(|| identify(&api, &dir)).map_err(Refusal)?;
+            api.projects.open_now(&id).is_none().then_some((id, code))
+        },
         false => None,
     };
-    let (id, said) = match unread {
-        Some(id) => (id, vec![]),
+    let (id, code, said) = match unread {
+        Some((id, code)) => (id, code, vec![]),
         None => {
             let project = api.projects.open(&api, &dir).map_err(Refusal)?;
             let said = std::mem::take(&mut *project.said.lock().expect("said lock"));
-            (project.id.clone(), said)
+            (project.id.clone(), project.code.clone(), said)
         }
     };
-    let opened = opened(id, &dir);
-    api.calcifer.store().project_opened(&opened.id, &opened.name, &dir, Some(now_ms()))?;
-    let next = vec![format!("cozy project -p {} render all --on <machine>", opened.name)];
+    let opened = opened(id, code, &dir);
+    api.calcifer.store().project_opened(&opened.id, &opened.name, &dir, Some(now_ms()), Some(&opened.code))?;
+    let next = vec!["cozy open".into()];
     let said = moved_on.into_iter().chain(said).collect();
     Ok(Json(Opened { next, said, ..opened }))
 }
 
 /// The project `id`, in `dir`, as an answer gives it.
-fn opened(id: String, dir: &FsPath) -> Opened {
-    Opened { id, path: dir.to_owned(), name: identity(dir).1, next: vec![], said: vec![] }
+fn opened(id: String, code: String, dir: &FsPath) -> Opened {
+    Opened { id, code, path: dir.to_owned(), name: identity(dir).1, next: vec![], said: vec![] }
 }
 
 /// A new project called `name` in this person's home folder, or the next free name: what it could be called, `_2`, `_3`, …. Whatever is
@@ -1115,7 +1153,7 @@ fn made_new(api: &Api, dir: &FsPath, name: &str, starter: bool) -> Result<PathBu
     db::create(&part, &db::Stored { written: written.into(), ..Default::default() }, &[], &[])?;
     let canonical = platform::durable::canonical(dir).map_err(io)?;
     let (id, name) = (fresh_id(), unique_name(api, "", &canonical, name.to_owned())?);
-    db::set_identity(&mut db::open(&part)?, &part, &id, &name)?;
+    db::set_identity(&mut db::open(&part)?, &part, &id, &name, None)?;
     std::fs::rename(&part, dir.join(db::DB)).map_err(|e| Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", dir.display())))?;
     crate::events::project_changed(&canonical);
     Ok(canonical)
@@ -1126,8 +1164,8 @@ fn holding(path: &FsPath) -> Result<PathBuf, Error> {
     let not_found = || {
         let said = format!("{} is in no project: no {} there or in a folder above it", path.display(), db::DB);
         Error::new(Kind::NotFound, "project_not_found", said)
-            .remedy(format!("name {}", api::calcifer::project::NAMED_BY))
-            .next("cozy project ls")
+            .remedy("run from an existing project directory, or create one with cozy new")
+            .next("cozy new")
     };
     let start = platform::durable::canonical(path).map_err(|_| not_found())?;
     (start.ancestors()).find(|dir| Folder::is_project(dir)).map(FsPath::to_owned).ok_or_else(not_found)
@@ -1161,6 +1199,7 @@ async fn list(State(api): State<Arc<Api>>, Query(page): Query<Page>) -> Result<J
             path: entry.path,
             used_at_ms: entry.used_at_ms,
             id: entry.id,
+            code: entry.code,
         })
         .collect();
     Ok(Json(Listed { projects, older }))
@@ -1182,9 +1221,8 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>, Query(asked)
             // A render going has its own text: what it owes, and what's wrong with the file, are the answer.
             let queue = queue(&project, &folder.walk_now().map_err(Refusal)?);
             let busy = *project.walking.lock().expect("walking lock");
-            let moving = project.moving.try_lock().is_err();
             let warning = format!("{}: a render going uses the text it was asked with, and a new one is refused until this reads", error.message);
-            return Ok(Json(ProjectState { covered: None, id, path: folder.dir.clone(), assets: vec![], queue, missing: vec![], stale: vec![], orphans: vec![], busy, moving, absent: 0, run_files: 0, cuts: vec![], warnings: vec![ProjectWarning { name: None, message: warning }], next: vec![], board: board_of(&project), unsent: vec![] }));
+            return Ok(Json(ProjectState { covered: None, id, code: project.code.clone(), path: folder.dir.clone(), assets: vec![], queue, missing: vec![], stale: vec![], orphans: vec![], busy, absent: 0, run_files: 0, cuts: vec![], warnings: vec![ProjectWarning { name: None, message: warning }], next: vec![], board: board_of(&project), unsent: vec![] }));
         }
     };
     // What a reader now holds is what any change from here is told against.
@@ -1208,19 +1246,9 @@ fn yes() -> bool {
     true
 }
 
-/// What to run next on a project: its orphans' renames and `reclaim`, then a pull of what isn't here, else a render of what is owed.
+/// Open the browser when the project needs an asset edit, transfer or render.
 fn next_steps(orphans: &[Orphan], absent: u64, owed: bool) -> Vec<String> {
-    let renames = orphans.iter().map(|orphan| format!("cozy project rename {} {}", orphan.name, orphan.renamed_to.as_deref().unwrap_or("<its new name>")));
-    let mut next: Vec<String> = renames.collect();
-    if !orphans.is_empty() {
-        next.push("cozy project reclaim".into());
-    }
-    if absent > 0 {
-        next.push("cozy project pull".into());
-    } else if owed {
-        next.push("cozy project render all --on <machine>".into());
-    }
-    next
+    (!orphans.is_empty() || absent > 0 || owed).then(|| "cozy open".to_owned()).into_iter().collect()
 }
 
 /// Its render going, or its last since Calcifer started.
@@ -1465,7 +1493,7 @@ fn row(reading: &Reading, i: usize) -> Row {
         .map(|sha256| folder::prefix_of(sha256))
         .collect();
     let status = match &standing.state {
-        _ if !gone.is_empty() => format!("not on this computer: {}: cozy project pull", gone.join(", ")),
+        _ if !gone.is_empty() => format!("not on this computer: {}; download it in the browser opened by cozy open", gone.join(", ")),
         Stand::Pinned { version: None, .. } => "approved".into(),
         Stand::Pinned { version: Some(version), changed } if changed.is_empty() => format!("approved: {noun} {version}"),
         Stand::Pinned { version: Some(version), changed } => format!("approved: {noun} {version}; its inputs changed: {}", changed.join(", ")),
@@ -1621,7 +1649,7 @@ async fn reclaim(
     let going = (api.calcifer.store().runs(&filter).map(|(rows, ..)| rows).unwrap_or_default().iter()).any(|row| row.state != crate::store::State::Settled);
     if asked.yes && (going || *project.walking.lock().expect("walking lock")) {
         let said = "the project is rendering: reclaim once its runs land";
-        return Err(Refusal(Error::new(Kind::Conflict, "project_busy", said).next("cozy project status")));
+        return Err(Refusal(Error::new(Kind::Conflict, "project_busy", said).next("cozy status")));
     }
     let (doc, lock) = (Doc::load(folder).map_err(Refusal)?, folder.lock().map_err(Refusal)?);
     let (orphans, kept) = (orphans(&doc, folder, &lock), kept_files(&doc, &lock));
@@ -1629,7 +1657,7 @@ async fn reclaim(
     let recorded = lock.recorded();
     if let (true, Some(why)) = (asked.yes, &lost) {
         let remedy = format!("put {} back from a backup, or delete what you don't want from files/ by hand", db::DB);
-        return Err(Refusal(Error::new(Kind::Conflict, "project_history_lost", why.clone()).remedy(remedy).next("cozy project status")));
+        return Err(Refusal(Error::new(Kind::Conflict, "project_history_lost", why.clone()).remedy(remedy).next("cozy status")));
     }
     if asked.yes {
         // An orphaned cut's film at the root goes with it.
@@ -1660,7 +1688,7 @@ async fn reclaim(
     if asked.yes {
         canvas::prune(folder, &id, |name| doc.find(name).is_some()).map_err(Refusal)?;
     }
-    let next = (!asked.yes && lost.is_none() && (files > unrecorded || !orphans.is_empty())).then(|| "cozy project reclaim --yes".to_owned()).into_iter().collect();
+    let next = (!asked.yes && lost.is_none() && (files > unrecorded || !orphans.is_empty())).then(|| "cozy open".to_owned()).into_iter().collect();
     Ok(Json(Reclaimed { orphans, files, bytes, unrecorded, deleted: asked.yes, next, lost, unheld }))
 }
 
@@ -1726,7 +1754,7 @@ fn renamed_under(project: &Arc<Project>, id: &str, asked: Rename, follows: bool)
         }
         if old.is_none() && !free && canvas::row(folder, &asked.from)?.is_none() {
             let said = format!("the project keeps no version of {}", asked.from);
-            return Err(Error::new(Kind::NotFound, "asset_unknown", said).next("cozy project status"));
+            return Err(Error::new(Kind::NotFound, "asset_unknown", said).next("cozy status"));
         }
         let to = doc.assets[i].name.clone();
         if old.is_some() && !same && lock.asset(&to).is_some_and(|held| held.on_record().next().is_some()) {
@@ -1977,7 +2005,7 @@ async fn runs(
                 takes.push(Take { key: new_key(), asset: name.clone(), target: target.clone(), approve: false, new: true, pickup: None });
             }
             if approve {
-                say(format!("--approve pins what a run lands: `cozy project approve {name}` pins this once it is made"));
+                say(format!("approve {name} in the browser once it is made; open it with `cozy open`"));
             }
             continue;
         }
@@ -2042,7 +2070,7 @@ async fn runs(
     walk(&api, &project);
     sync_jobs(&project, numbered(&api)).map_err(Refusal)?;
     let ask = (!joined || added > 0).then_some(ask.id);
-    Ok((StatusCode::ACCEPTED, Json(Asked { id, ask, path: project.folder.dir.clone(), joined, added, skipped, queued, next: status_next(&project.folder), board: project.jobs.board() })))
+    Ok((StatusCode::ACCEPTED, Json(Asked { id, ask, path: project.folder.dir.clone(), joined, added, skipped, queued, next: vec!["cozy status".into()], board: project.jobs.board() })))
 }
 
 /// A run by its number, as its record says now.
@@ -2189,7 +2217,7 @@ fn held_name(source: &str) -> Result<Option<Digest>, Refusal> {
 fn import_failed(source: &str, why: String) -> Refusal {
     // A hash is no one's to read: a person dropped a file, and is told of it by its name.
     let said = if source.starts_with("sha256:") { why } else { format!("{source}: {why}") };
-    Refusal(Error::new(Kind::Validation, "import_failed", said).remedy("cozy project import takes a picture, video or sound: a file, or an http(s) URL"))
+    Refusal(Error::new(Kind::Validation, "import_failed", said).remedy("import a picture, video or sound in the browser opened by cozy open"))
 }
 
 fn not_held(source: &str) -> Refusal {
@@ -2314,7 +2342,7 @@ async fn approve(
             [file] => file.sha256.clone(),
             [] => {
                 let said = format!("no file of this project's starts with {}", asked.version);
-                return Err(Refusal(Error::new(Kind::Usage, "version_unknown", said).next("cozy project status")));
+                return Err(Refusal(Error::new(Kind::Usage, "version_unknown", said).next("cozy status")));
             }
             several => {
                 let said = format!("{} fits {} files of this project: write more of its hash", asked.version, several.len());
@@ -2328,7 +2356,7 @@ async fn approve(
                     [] => format!("{} has no {noun} yet", asset.name),
                     numbers => format!("{} has no {noun} {wanted}: it has {}", asset.name, numbers.join(", ")),
                 };
-                return Err(Refusal(Error::new(Kind::Usage, "version_unknown", said).next("cozy project status")));
+                return Err(Refusal(Error::new(Kind::Usage, "version_unknown", said).next("cozy status")));
             };
             sha256.clone()
         }
@@ -2367,7 +2395,7 @@ async fn unpin(
     if asset.pin.is_some() {
         if asset.hollow && lock.asset(&name).is_none_or(|held| held.versions.is_empty()) {
             let said = format!("{name} is a constant, nothing but its file: to be rid of it, delete it");
-            return Err(Refusal(Error::new(Kind::Usage, "project_edit", said).next(format!("cozy project delete {name}"))));
+            return Err(Refusal(Error::new(Kind::Usage, "project_edit", said).next("cozy open")));
         }
         folder.edit(|written| written.unapproved(&name)).map_err(Refusal)?;
     }
@@ -2487,7 +2515,7 @@ fn yaml_etag(text: &str) -> String {
     format!("\"{}\"", hex::encode(Sha256::digest(text)))
 }
 
-/// `GET /v1/projects/{id}/yaml`: the project as YAML, format 4, as it is this moment (`cozy project export`), and the ETag a `PUT` may name.
+/// `GET /v1/projects/{id}/yaml`: the project as YAML, format 4, as it is this moment (the browser export), and the ETag a `PUT` may name.
 async fn yaml(State(api): State<Arc<Api>>, Path(id): Path<String>, headers: HeaderMap) -> Result<Response, Refusal> {
     let project = api.projects.get(&api, &id)?;
     let text = project.folder.text().map_err(Refusal)?;
@@ -2498,7 +2526,7 @@ async fn yaml(State(api): State<Arc<Api>>, Path(id): Path<String>, headers: Head
     Ok(([(header::CONTENT_TYPE, "application/yaml".to_owned()), (header::ETAG, etag)], text).into_response())
 }
 
-/// `PUT /v1/projects/{id}/yaml` (`cozy project import <file>.yaml`): these bytes are the project, each box, field and section that differs
+/// `PUT /v1/projects/{id}/yaml`: these bytes are the project, each box, field and section that differs
 /// written in one transaction and one entry, and a box renamed in them keeps its versions. With `If-Match`, only if the export still is
 /// what that read. What doesn't read is refused with its line, and nothing changes. Nothing is rendered, and a render going keeps the text
 /// it was asked with.
@@ -2577,7 +2605,7 @@ async fn cut(
 fn send(path: &FsPath, etag: &str, headers: &HeaderMap) -> Result<Response, Refusal> {
     let missing = |e: std::io::Error| {
         let said = format!("{} is not there: {e}", path.display());
-        Refusal(Error::new(Kind::NotFound, "file_missing", said).next("cozy project render all"))
+        Refusal(Error::new(Kind::NotFound, "file_missing", said).next("cozy open"))
     };
     let file = std::fs::File::open(path).map_err(missing)?;
     let len = file.metadata().map_err(missing)?.len();
@@ -2751,12 +2779,13 @@ impl Walk {
         };
         let said = format!("rendered {made} of {total}; {} failed{unsent}: {}", missed.failed, first.message);
         let what = match missed.whole || missed.names.is_empty() {
-            true if missed.outdated => "all --missing --outdated".to_owned(),
-            true => "all --missing".to_owned(),
+            true if missed.outdated => "all missing and outdated assets".to_owned(),
+            true => "all missing assets".to_owned(),
             false => missed.names.iter().cloned().collect::<Vec<_>>().join(" "),
         };
         let on = missed.on.iter().map(ToString::to_string).collect::<Vec<_>>().join(",");
-        let mut error = Error::new(first.kind, "render_incomplete", said).cause(first.code).next(format!("cozy project render {what} --on {on}"));
+        let mut error = Error::new(first.kind, "render_incomplete", said).cause(first.code)
+            .remedy(format!("retry rendering {what} on {on} in the browser opened by cozy open")).next("cozy open");
         error.next.extend(first.next.into_iter().take(1));
         error
     }
@@ -3763,7 +3792,7 @@ impl Walk {
                     .map(|sha256| folder::prefix_of(sha256))
                     .collect();
                 if !gone.is_empty() {
-                    return Err(cannot(&name, format!("{} of {} is not on this computer: cozy project pull", gone.join(", "), read.name)));
+                    return Err(cannot(&name, format!("{} of {} is not on this computer; download it in the browser opened by cozy open", gone.join(", "), read.name)));
                 }
             }
             let with = doc.target(i);
@@ -3917,7 +3946,7 @@ impl Walk {
             let file = lock.files.get(&range.source).ok_or_else(|| format!("{} isn't one of the project's files", folder::prefix_of(&range.source)))?;
             let path = self.folder().path(&file.path);
             if !path.is_file() || file.fps <= 0.0 {
-                return Err(format!("{} must be on this computer, and measured, to cut a range of it: cozy project pull", folder::prefix_of(&range.source)));
+                return Err(format!("{} must be on this computer, and measured, to cut a range of it; download it in the browser opened by cozy open", folder::prefix_of(&range.source)));
             }
             let seconds = crate::runs::clip::Range { start: f64::from(range.from) / file.fps, end: range.to.map(|to| f64::from(to) / file.fps) };
             let mut notes = vec![];
@@ -4012,7 +4041,7 @@ impl Walk {
                 true => file.length,
                 false => {
                     std::fs::metadata(&path)
-                        .map_err(|e| Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", path.display())).next("cozy project pull"))?
+                        .map_err(|e| Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", path.display())).next("cozy open"))?
                         .len()
                 }
             };
@@ -4460,7 +4489,7 @@ impl Walk {
         pieces.retain(|piece| !without.iter().any(|left| name_key(&left.piece) == name_key(&piece.asset)));
         for piece in skips {
             let (why, said) = match doc.find(&piece) {
-                Some(_) => ("no version yet", format!("which has no version yet: cozy project render {piece} --on {on}")),
+                Some(_) => ("no version yet", format!("which has no version yet; render {piece} on {on} in the browser opened by cozy open")),
                 None => ("no longer in the project", "which is no longer in the project".to_owned()),
             };
             self.say(Event::Warning { message: format!("{name} is cut without {piece}, {said}"), name: None });
@@ -4500,7 +4529,7 @@ impl Walk {
         .await;
         self.project.rendering.lock().expect("rendering lock").remove(&asset.name);
         crate::events::project_settled(&folder.dir);
-        let (made, left) = cutting_result.map_err(|e| Error::new(Kind::Internal, "edit_cut", e.to_string()))?.map_err(|e| e.next(format!("cozy project render {} --on {on}", asset.name)))?;
+        let (made, left) = cutting_result.map_err(|e| Error::new(Kind::Internal, "edit_cut", e.to_string()))?.map_err(|e| e.next("cozy open"))?;
         self.leave_out(&name, &on, left, &mut without);
         let Some((made, part)) = made else {
             let stands = if folder.dir.join(&name).is_file() { ": the film that stands stays" } else { "" };
@@ -4541,7 +4570,7 @@ impl Walk {
             if without.iter().any(|held| name_key(&held.piece) == name_key(&piece)) {
                 continue;
             }
-            self.say(Event::Warning { message: format!("{name} is cut without {piece}: {answer}: cozy project render {piece} --on {on}"), name: None });
+            self.say(Event::Warning { message: format!("{name} is cut without {piece}: {answer}; render {piece} on {on} in the browser opened by cozy open"), name: None });
             without.push(folder::Without { piece, why, absent: false });
         }
     }
@@ -4624,7 +4653,7 @@ impl Walk {
             let Err(reason) = brought else { continue };
             let answer = changed.then(|| tools::unread(ffprobe, &piece.path)).flatten().map_or(String::new(), |answer| format!(" ({answer})"));
             let piece = piece.asset.clone();
-            self.say(Event::Warning { message: format!("{} is cut without {piece}: {why}{answer}, and it can't be had: {reason}: cozy project render {piece} --on {on}, or cozy project pull", cut_name(&asset.name)), name: None });
+            self.say(Event::Warning { message: format!("{} is cut without {piece}: {why}{answer}, and it can't be had: {reason}; render {piece} on {on} or download its files in the browser opened by cozy open", cut_name(&asset.name)), name: None });
             without.push(folder::Without { piece, why: why.into(), absent: !here });
         }
         Ok(without)
@@ -4781,7 +4810,7 @@ fn said_by(run: &Run) -> Vec<String> {
 
 fn find(doc: &Doc, name: &str) -> Result<usize, Error> {
     doc.find(name).ok_or_else(|| {
-        Error::new(Kind::NotFound, "asset_unknown", format!("the project has nothing named {name}")).next("cozy project status")
+        Error::new(Kind::NotFound, "asset_unknown", format!("the project has nothing named {name}")).next("cozy status")
     })
 }
 

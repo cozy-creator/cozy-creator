@@ -5,7 +5,7 @@ ast-serialize==0.13.1
 certifi==2026.10.23
 charset-normalizer==3.5.2
 click==8.5.1
-cozy-runtime @ git+https://github.com/cozy-creator/cozy-runtime@ad19cafe20a6cda61870f9df2eb1f1944a7ae227
+cozy-runtime @ git+https://github.com/cozy-creator/cozy-runtime@c9fb9ade12f77c4fc237bc7ee4260d8740493386
 cuda-bindings==13.5.0
 cuda-core==1.2.2
 cuda-pathfinder==1.8.6

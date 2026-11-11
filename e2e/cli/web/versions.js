@@ -11,7 +11,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, readFileSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { calcifer, carry: carryTo, signIn, MP4, STEP_MS, boxOf, drop, lastLook, launch, lookAt, noStall, openCanvas, png, renderOf, settled, until, importYaml, upload, yamlOf, rowsOf } = require('./page');
+const { projectFromPage, projectUrl, calcifer, carry: carryTo, signIn, MP4, STEP_MS, boxOf, drop, lastLook, launch, lookAt, noStall, openCanvas, png, renderOf, settled, until, importYaml, upload, yamlOf, rowsOf } = require('./page');
 
 const fixture = join(__dirname, '..', 'project', 'waits.py');
 const failures = [];
@@ -62,17 +62,17 @@ async function died(why) {
   }, { path, init, token: held?.token });
   const post = (path, body) => api(path, { method: 'POST', body: JSON.stringify(body) });
 
-  await page.goto(`${base}/#/projects`);
+  await page.goto(`${base}/projects`);
   await page.fill('input[aria-label="New project\'s name"]', `web-versions-${Date.now()}`);
   await page.click('form button[type=submit]');
-  await page.waitForURL(/#\/projects\/[^/]+$/);
-  const id = page.url().match(/#\/projects\/([^/]+)/)[1];
+  await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
+  const id = (await projectFromPage(page)).id;
   const at = `/v1/projects/${id}`;
   const state = async () => (await api(at)).body;
   const asset = async (name) => (await state()).assets.find((row) => row.name === name);
   const folder = (await state()).path;
   seen.project = { id, folder };
-  /** Undo of the newest edit of `name` that stands, as the line `cozy project delete` prints does. */
+  /** Undo of the newest edit of `name` that stands, as the line `cozy delete` prints does. */
   const undoOf = async (name) => post(`${at}/history/undo`, { entry: (await api(`${at}/history`)).body?.entries?.find((entry) => !entry.undone && entry.names?.some((held) => held.toLowerCase() === name.toLowerCase()))?.id });
   const yamlAt = join(folder, 'project.yaml');
   const yaml = () => yamlOf(folder);
@@ -180,11 +180,11 @@ async function died(why) {
   // On the page: numbers, and a take into text.
   const shut = async () => {
     await page.keyboard.press('Escape');
-    await page.goto(`${base}/#/projects/${id}`);
+    await page.goto(await projectUrl(id));
     await page.waitForTimeout(300);
   };
   const open = async (name) => {
-    await page.goto(`${base}/#/projects/${id}/assets/${name}`);
+    await page.goto(await projectUrl(id, `/assets/${name}`));
     await page.locator(`.card.here[data-asset="${name}"]`).first().waitFor();
   };
   await open('Ada');
