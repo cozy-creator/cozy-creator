@@ -380,6 +380,27 @@ async fn vault_legacy_disconnect_does_not_resend_the_post() {
     assert_eq!(requests[1].method, "POST");
 }
 
+#[tokio::test]
+async fn vault_lost_put_headers_never_turn_a_retry_into_a_legacy_mutation() {
+    let mut attempts = 0;
+    let fixture = Fixture::new(move |request, _, _| {
+        attempts += 1;
+        if attempts == 1 { return None; } // Admitted, but no response headers reached the client.
+        Some(if request.path.contains("/operations/") {
+            Reply {
+                status: "404 Not Found", content_type: "application/json", headers: vec![],
+                body: serde_json::json!({"error":Error::not_found("unknown_route", "old controller after restart")}).to_string(),
+            }
+        } else { Reply::json(vault_changed()) })
+    });
+    let error = fixture.client.vault("/v1/projects/project/vault", &vault_ask(), |_| {}).await.err().unwrap();
+    assert_eq!(error.code, "unknown_route");
+    let requests = fixture.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests.iter().all(|request| request.method == "PUT"));
+    assert_eq!(requests[0].path, requests[1].path);
+}
+
 #[test]
 fn vault_sse_decoder_retains_fragmented_lines_and_ignores_keepalives() {
     let raw = b": alive\r\n\r\ndata: {\"type\":\"progress\",\r\ndata: \"phase\":\"copying\",\"files_done\":1,\"bytes_done\":9}\r\n\r\n";

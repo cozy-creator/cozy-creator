@@ -10,7 +10,7 @@ use std::{
     fs::OpenOptions,
     io::{self, Write as _},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}},
     time::{Duration, Instant},
 };
 
@@ -208,11 +208,13 @@ impl Client {
     ) -> Result<VaultChanged, Error> {
         let body = json_body(request)?;
         let operation = format!("{path}/operations/{}", write_key());
+        let attempts = AtomicUsize::new(0);
         let mut reconnects = Backoff::transfer();
         let (mut can_use_legacy, mut accepted) = (true, false);
         let mut last_progress = None;
         loop {
             let mut answer = self.send(Ask::Write, |c, base| {
+                attempts.fetch_add(1, Ordering::Relaxed);
                 json(c.put(format!("{base}{operation}")), &body).header(header::ACCEPT, "text/event-stream")
             }).await.map_err(vault_uncertain)?;
             if !answer.status().is_success() {
@@ -225,7 +227,11 @@ impl Client {
                     }
                 };
                 let error = vault_refusal(status, &bytes);
-                if can_use_legacy && status == StatusCode::NOT_FOUND && matches!(error.code.as_str(), "unknown_route" | UNTYPED) {
+                // A hidden transport retry may follow an admitted PUT whose headers were lost.
+                // Only the very first wire attempt can prove that an old route never accepted it.
+                if can_use_legacy && attempts.load(Ordering::Relaxed) == 1
+                    && status == StatusCode::NOT_FOUND && matches!(error.code.as_str(), "unknown_route" | UNTYPED)
+                {
                     return self.legacy_vault(path, &body).await;
                 }
                 return Err(error);
