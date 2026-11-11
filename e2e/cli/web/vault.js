@@ -687,10 +687,42 @@ const newPage = async () => {
   createdFolders.push(implicit.path);
   await page.locator('[aria-label="Save recovery secret"] pre').waitFor();
   check('implicit_creation_waits_for_saved_recovery', fileWrites.length === uploadsBeforeSetup);
-  await saveCreationRecovery('/runs');
-  await page.locator('.nm-field').waitFor();
-  await page.keyboard.press('Enter');
-  await until('implicit encrypted import lands', () => projectJson(implicit.path).assets.some((asset) => asset.sha256), Boolean, 45000);
+  // Recovery acknowledgement still verifies the real status on the global route.
+  // Hold only the selected project's subsequent refresh, after adoption, without
+  // fabricating any status reply. The pending draft must remain private in RAM.
+  const adoptionStatus = `**/v1/projects/${implicit.id}/vault`;
+  let releaseAdoption;
+  const adoptionGate = new Promise((resolve) => { releaseAdoption = resolve; });
+  let adoptionReads = 0;
+  const holdAdoption = async (route) => {
+    if (route.request().method() !== 'GET' || !new URL(page.url()).pathname.startsWith(`/p/${implicit.code}/`)) return route.continue();
+    adoptionReads++;
+    await adoptionGate;
+    await route.continue();
+  };
+  await page.route(adoptionStatus, holdAdoption);
+  try {
+    await saveCreationRecovery('/runs');
+    await until('adopted project awaits its fresh protection reply', () => adoptionReads, (count) => count > 0, 45000);
+    check('implicit_adoption_covers_the_retained_private_draft', await page.locator('.gate').isVisible() && await page.locator('.nm-field').count() === 1 && !(await page.locator('.nm-field').isVisible()));
+    const adoptionStored = await page.evaluate((project) => ['cozy.view:', 'cozy.selection:', 'cozy.more:'].some((prefix) => localStorage.getItem(prefix + project) !== null), implicit.id);
+    check('implicit_adoption_cannot_persist_as_plain_before_refresh', !adoptionStored);
+  } finally {
+    releaseAdoption();
+    await page.unroute(adoptionStatus, holdAdoption);
+  }
+  const importedName = page.getByRole('textbox', { name: 'Name', exact: true });
+  await importedName.waitFor();
+  await importedName.fill('new_private_drop');
+  await importedName.press('Enter');
+  await until('implicit encrypted import lands', () => projectJson(implicit.path).assets.some((asset) => asset.name === 'new_private_drop' && asset.sha256), Boolean, 45000);
+  const privatePan = await openCanvas(page);
+  await page.mouse.move(privatePan.x, privatePan.y);
+  await page.mouse.down();
+  await page.mouse.move(privatePan.x + 24, privatePan.y + 16, { steps: 4 });
+  await page.mouse.up();
+  await settled(page);
+  check('implicit_project_stays_private_after_fresh_refresh', !(await page.evaluate((project) => ['cozy.view:', 'cozy.selection:', 'cozy.more:'].some((prefix) => localStorage.getItem(prefix + project) !== null), implicit.id)));
   check('implicit_creation_uses_private_uploads', fileWrites.slice(uploadsBeforeSetup).length > 0 && fileWrites.slice(uploadsBeforeSetup).every((write) => write.path.startsWith('/v1/project-files/') && write.project === implicit.id));
   check('implicit_creation_is_encrypted', JSON.parse(vault(implicit.path, 'status')).encrypted && !existsSync(join(implicit.path, 'project.db')));
 
