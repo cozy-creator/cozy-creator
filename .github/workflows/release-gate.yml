@@ -72,6 +72,10 @@ on:
         description: "Suite bench's group (suites/bench/skus, matrix-skus) when it is not <sku>x<gpus>, e.g. rtx-4090x1.matrixh3"
         type: string
         default: ''
+      corpus:
+        description: "Suite attention's corpus: the release-gate run id whose attention-corpus gate captured it (empty: synthetic)"
+        type: string
+        default: ''
       establish:
         description: "Start the baseline of a SKU that has none"
         type: boolean
@@ -367,6 +371,7 @@ jobs:
           ONLY: ${{ inputs.only }}
           CELLS: ${{ inputs.cells }}
           GROUP: ${{ inputs.group }}
+          CORPUS: ${{ inputs.corpus }}
           BENCHMARKS_DIR: ${{ github.workspace }}/benchmarks
           ESTABLISH: ${{ inputs.establish }}
           PACKAGES: ${{ inputs.packages_ref != '' && 'packages' || '' }}
@@ -381,6 +386,7 @@ jobs:
           [ -z "$ONLY" ] || args+=(--only "$ONLY")
           [ -z "$CELLS" ] || args+=(--cells "$PWD/creator/$CELLS")
           [ -z "$GROUP" ] || args+=(--group "$GROUP")
+          [ -z "$CORPUS" ] || args+=(--corpus "$CORPUS")
           [ -z "$PINS" ] || args+=(--pins "$PINS")
           [ -z "$PACKAGES" ] || args+=(--packages "$PACKAGES")
           [ "$ESTABLISH" != true ] || args+=(--establish)
