@@ -25,8 +25,9 @@ use crate::err::{refuse, Code, Refusal, Result};
 const CONNECT: Duration = Duration::from_secs(5);
 /// No bytes either way for this long fails a request (CRT's and Ollama's stall rule).
 pub const STALL: Duration = Duration::from_secs(30);
-/// The most a request body hands its connection at once.
-const FRAME: usize = 1 << 20;
+/// The most a request body hands its connection at once: small enough that a stream sharing a slow link with
+/// others still moves one within [`STALL`] (16 streams on 1 MB/s: about 4 s each).
+const FRAME: usize = 256 << 10;
 /// A silent connection is probed this often, six times, after six of these with nothing on it.
 const PROBE: Duration = Duration::from_secs(5);
 
