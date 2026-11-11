@@ -4,7 +4,7 @@ Would a measured kernel table help GEMMs the way xs-171's helps attention (track
 the Runtime picks a GEMM by rule: the family's prebuilt kernel and its tile `choose()`, else cuBLASLt, comfy-kitchen or
 Triton. This suite times every candidate at our packages' real shapes beside that pick. A measurement: no pass bar.
 
-- `gemm-speed`: per shape (`SHAPES` in the Runtime's `internal/bench/gemm.py`: H3 15 s, Qwen-Image 4 MP, Klein, SDXL),
+- `gemm-speed-<model>`: per shape (`SHAPES` in the Runtime's `internal/bench/gemm.py`: H3 15 s, Qwen-Image 4 MP, Klein, SDXL),
   every candidate of every lane in one interleaved set, three rounds: bf16 cuBLAS and cuBLASLt; int8 and fp8 prebuilt
   tiles, cuBLASLt and comfy-kitchen; nvfp4 W4A4 and W4A16; w4a8 tiles. `rules` names the rule's pick per lane, and
   `same_bits` holds each tile's output to it.
