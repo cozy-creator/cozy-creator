@@ -6,12 +6,13 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from typing import Any
 import urllib.error
 import urllib.request
 import uuid
 
 
-def main():
+def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("target")
     parser.add_argument("level", choices=("installed", "downloaded", "imported", "host", "gpu", "off"))
@@ -28,7 +29,7 @@ def main():
     holder = json.loads((Path.home() / ".cozy/calcifer/calcifer.lock.holder").read_text())
     base = "http://" + holder["address"]
     headers = {"Authorization": "Bearer " + holder["token"]}
-    request = {"target": args.target, "warm": args.level, "on": args.on, "terms": args.terms, "loras": args.lora}
+    request: dict[str, Any] = {"target": args.target, "warm": args.level, "on": args.on, "terms": args.terms, "loras": args.lora}
     target = Path(args.target).expanduser()
     if args.target.startswith((".", "/", "~")) or target.exists() or target.parent.exists():
         if args.stage_code is None:
@@ -61,7 +62,7 @@ def main():
     return subprocess.call([args.cozy, "--json", "run", "watch", str(run["number"])])
 
 
-def upload(base, headers, digest, data):
+def upload(base: str, headers: dict[str, str], digest: str, data: bytes) -> None:
     url = base + "/v1/files/" + digest
     try:
         with urllib.request.urlopen(urllib.request.Request(url, headers=headers, method="HEAD")):
