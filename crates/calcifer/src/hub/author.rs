@@ -221,13 +221,10 @@ async fn bindings(hubs: &Hubs, hub: &Origin, project: &Project, root: bool, lock
         let namespace = match (root, locked.get(name), &account) {
             (true, _, _) | (false, None, None) => api::names::ROOT.to_owned(),
             (false, Some(namespace), _) => namespace.clone(),
-            (false, None, Some(account)) => {
-                let own = index(&mut urls, &reader, hub, account).await?;
-                match hubs.serves(&own, name).await? {
-                    true => account.clone(),
-                    false => api::names::ROOT.to_owned(),
-                }
-            }
+            (false, None, Some(account)) => match hubs.serves(hub, account, name).await? {
+                true => account.clone(),
+                false => api::names::ROOT.to_owned(),
+            },
         };
         let url = index(&mut urls, &reader, hub, &namespace).await?;
         bound.insert(name.clone(), (namespace, url));

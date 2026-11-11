@@ -82,9 +82,10 @@ impl Hubs {
         }
     }
 
-    /// Whether the uv index `index` (`…/simple/`) serves `distribution`, PEP 503 normalized: its page answers (cl-871).
-    pub(crate) async fn serves(&self, index: &str, distribution: &str) -> Result<bool, Error> {
-        let page = format!("{}/{distribution}/", index.trim_end_matches('/'));
+    /// Whether `namespace`'s index on `hub` serves `distribution`, PEP 503 normalized: its page answers (cl-871). Asked where
+    /// this computer dials the Hub, as its client does.
+    pub(crate) async fn serves(&self, hub: &config::Origin, namespace: &str, distribution: &str) -> Result<bool, Error> {
+        let page = format!("{}/v1/index/{namespace}/simple/{distribution}/", hub.as_str().trim_end_matches('/'));
         let unreached = |why: String| Error::new(Kind::Unavailable, "index_unreachable", format!("{page}: {why}"));
         let status = self.http.get(&page).send().await.map_err(|e| unreached(e.to_string()))?.status();
         match status {
