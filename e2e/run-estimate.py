@@ -75,7 +75,7 @@ def main() -> int:
         attach(file, args.project.resolve(), required=True)
         files.append({"name": name, "file": file})
     request = {"target": staged["target"], "code": staged["code"], "input": payload,
-               "files": files, "paths": paths, "on": "local", "hub": hub,
+               "files": files, "paths": paths, "on": ["local"], "hub": hub,
                "project": str(args.project.resolve(strict=True))}
     key = str(uuid.uuid4())
     followed: set[int] = set()
