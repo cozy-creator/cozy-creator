@@ -2,8 +2,9 @@
 # e2e/skew/run.sh (--hub-src DIR | --hub-bin DIR) (--client VERSION | --cozy-bin FILE | --candidates SET) --out DIR
 #   [--checks FILE | --command FILE [-- ARGS...]] [--admin] [--cozy-min X.Y.Z]: a cozy against a Hub built from
 # source (--hub-bin: one built already, DIR holding `tensorhub`, its config.local.yaml and `minio`, built for this OS), on a fresh
-# GitHub runner with Go (xs-166; e2e.yaml's `skew`, by hand on a computer that is yours to replace). Postgres is Docker's on
-# Linux, Homebrew's postgresql@17 on macOS and the runner image's on Windows. The Hub serves on that throwaway Postgres and
+# GitHub runner with Go (xs-166; e2e.yaml's `skew`, by hand on a computer that is yours to replace). Postgres 18 (AuthKit's
+# migrations call uuidv7) is Docker's on Linux, Homebrew's on macOS and EDB's binaries on Windows. The Hub serves on that
+# throwaway Postgres and
 # a MinIO built from its last source, whose SigV4 check is R2's: a
 # key's reserved characters are percent-encoded in the canonical request, so v0.40.33-35's bare ':' in a workload's
 # proof key fails here as it failed on R2. It runs as a development Hub (sign-in codes in its log): cozy dials it on
@@ -81,7 +82,8 @@ verdict() {
 }
 # older <a> <b>: release a is older than b (X.Y.Z; a pre-release or build suffix ignored).
 older() { local a=${1%%[-+]*} b=${2%%[-+]*}; [ "$a" != "$b" ] && [ "$(printf '%s\n%s\n' "$a" "$b" | sort -V | head -1)" = "$a" ]; }
-read -r HUB_PORT S3_PORT PG_PORT < <(python3 - <<'PY'
+# Windows's Python ends its lines in CR LF.
+read -r HUB_PORT S3_PORT PG_PORT < <(python3 - <<'PY' | tr -d '\r'
 import socket
 with socket.socket() as hub, socket.socket() as store, socket.socket() as db:
     for s in (hub, store, db):
@@ -123,14 +125,18 @@ case $OS in
     PG_PORT=$(docker port "$PG_NAME" 5432/tcp | sed 's/.*://')
     pg_ready() { docker exec "$PG_NAME" pg_isready -q -U postgres; } ;;
   *)
-    # No Docker for Linux images here: the OS's own Postgres, in a cluster of this run's.
+    # No Docker for Linux images here: Postgres 18 for this OS, in a cluster of this run's. The Windows image's is 17.
     if [ "$OS" = macOS ]; then
-      HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK=1 brew install -q postgresql@17 > postgres-install.log 2>&1 \
-        || die store "brew install postgresql@17: $(tail -c 300 postgres-install.log)"
-      PG_BIN=$(brew --prefix postgresql@17)/bin pg_options="-p $PG_PORT -c listen_addresses=127.0.0.1 -k $WORK"
+      HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK=1 brew install -q postgresql@18 > postgres-install.log 2>&1 \
+        || die store "brew install postgresql@18: $(tail -c 300 postgres-install.log)"
+      PG_BIN=$(brew --prefix postgresql@18)/bin pg_options="-p $PG_PORT -c listen_addresses=127.0.0.1 -k $WORK"
     else
-      [ -n "${PGBIN:-}" ] || die store "this Windows runner names no Postgres (PGBIN)"
-      PG_BIN=$(cygpath -u "$PGBIN") pg_options="-p $PG_PORT -c listen_addresses=127.0.0.1"
+      pg=postgresql-18.4-1-windows-x64-binaries.zip
+      curl -fsSL --retry 3 --retry-all-errors -o "$WORK/$pg" "https://get.enterprisedb.com/postgresql/$pg" > postgres-install.log 2>&1 \
+        && 7z x -y -o"$(native "$WORK")" "$(native "$WORK/$pg")" >> postgres-install.log 2>&1 \
+        || die store "Postgres 18 for Windows: $(tail -c 300 postgres-install.log)"
+      rm -f "$WORK/$pg"
+      PG_BIN=$WORK/pgsql/bin pg_options="-p $PG_PORT -c listen_addresses=127.0.0.1"
     fi
     "$PG_BIN/initdb" -D "$(native "$WORK/pg")" -U postgres -A trust -E UTF8 --no-locale > postgres-init.log 2>&1 || die store "initdb: $(tail -c 300 postgres-init.log)"
     "$PG_BIN/pg_ctl" -D "$(native "$WORK/pg")" -l "$(native "$OUT/postgres.log")" -o "$pg_options" -w start > postgres-start.log 2>&1 \
@@ -241,7 +247,7 @@ fi
 [ "$login" = 0 ] && expect "skew login" PASS "signed in: $(tail -c 200 login.out)" || die login "cozy login (exit $login, code ${code:-none logged}): $(tail -c 300 login.out)"
 
 if [ -n "$ADMIN" ]; then
-  WHO=$(cozy --json whoami | python3 -c 'import json,sys; print(json.load(sys.stdin)["account"])') && "${hub[@]}" admin grant "$WHO" > fixture-admin.log 2>&1 \
+  WHO=$(cozy --json whoami | python3 -c 'import json,sys; print(json.load(sys.stdin)["account"])' | tr -d '\r') && "${hub[@]}" admin grant "$WHO" > fixture-admin.log 2>&1 \
     || die account "could not make the fixture account its Hub's admin: $(tail -c 300 fixture-admin.log)"
 fi
 
