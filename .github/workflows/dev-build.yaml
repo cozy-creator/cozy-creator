@@ -588,7 +588,8 @@ jobs:
       - name: Compile and run isolated protocol fixtures
         if: inputs.features != 'prepare'
         run: |
-          cargo test --locked --manifest-path scripts/xs170-artifact-reissue/Cargo.toml --features operator --bins -- --nocapture
+          cargo test --locked --manifest-path scripts/xs170-artifact-reissue/Cargo.toml --features operator --bins -- --nocapture | tee xs170-operator-tests.log
+          grep -q 'seventeen_objects_six_admissions_and_explicit_publications_use_only_reviewed_refs .*ok' xs170-operator-tests.log
           cargo clippy --locked --manifest-path scripts/xs170-artifact-reissue/Cargo.toml --features operator --all-targets -- -D warnings
           cargo build --locked --manifest-path scripts/xs170-artifact-reissue/Cargo.toml --features operator --bin xs170-artifact-operator
           sha256sum "$CARGO_TARGET_DIR/debug/xs170-artifact-operator" | tee xs170-operator-sha256.txt
@@ -601,6 +602,7 @@ jobs:
           path: |
             xs170-source.txt
             xs170-operator-sha256.txt
+            xs170-operator-tests.log
             scripts/xs170-artifact-reissue/Cargo.lock
             scripts/xs170-artifact-reissue/src/operator.rs
             scripts/xs170-artifact-reissue/src/operator/tests.rs
@@ -617,4 +619,6 @@ jobs:
           ref: ${{ inputs.ref }}
       - uses: Swatinem/rust-cache@v2
       - name: Model content negotiation and catalog protocol regressions
-        run: cargo test --locked -p api --lib --features hub hub::client::catalog_tests -- --nocapture
+        run: |
+          cargo test --locked -p api --features hub --lib hub::client::catalog_tests -- --nocapture | tee api-protocol.log
+          grep -q 'model_cards_negotiate_the_canonical_checkpoint_representation .*ok' api-protocol.log
