@@ -445,7 +445,7 @@ async function died(why) {
     await shut();
 
     // On a text box its words are the prompt, at once, and the box opens.
-    await box('words').waitFor();
+    await inView('words');
     await carry('words');
     await box('words').locator('.add-on').first().waitFor({ timeout: 1000 });
     check('a_dropped_tool_opens_its_box', await page.locator('.card.here[data-asset="words"]').waitFor({ timeout: 2000 }).then(() => true, (why) => String(why)) === true);
