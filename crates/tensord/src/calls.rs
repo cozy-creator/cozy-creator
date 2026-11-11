@@ -557,12 +557,14 @@ fn cancel(engine: &Engine, child: &Execution) {
 
 /// What an attempt's progress frames told so far: its completed units, its stage's last step
 /// and the times of its last few after the first (which carries the stage's setup), and once it
-/// runs, when it started and its whole time here (None: no estimate) and the overall share shown.
+/// runs, when it started and its whole time here (None: no estimate), the stage it is in and when
+/// that began, and the overall share shown.
 #[derive(Default)]
 pub(crate) struct Seen {
     pub completed: u64,
     steps: (String, u64, Vec<f64>),
     timed: Option<Option<(u64, f64)>>,
+    stage: (String, u64),
     overall: f64,
 }
 
@@ -571,8 +573,11 @@ const OVERALL_UNDER: f64 = 0.99;
 
 impl Seen {
     /// Run `id`'s overall share (Paul 11-09, 2a): its time running over its whole time here
-    /// (`estimate::whole_ms`, worked out once), never falling; None without an estimate.
-    fn overall(&mut self, engine: &Engine, id: &str) -> Option<f64> {
+    /// (`estimate::whole_ms`, worked out once), never falling; None without an estimate. A run
+    /// slower than its history (a longer input the estimate can't see) is timed by its own pace
+    /// instead, once its stage says how far it is: the time to that stage's start plus the stage's
+    /// time so far over its share done.
+    fn overall(&mut self, engine: &Engine, id: &str, frame: &Frame) -> Option<f64> {
         if self.timed.is_none() {
             let record = engine.get(id).ok().filter(|record| record.started_at_ms > 0)?;
             // A retried attempt goes on from the share its run watched.
@@ -582,8 +587,19 @@ impl Seen {
             self.timed = Some(whole.map(|whole| (record.started_at_ms, whole)));
         }
         let (started, whole) = self.timed.flatten()?;
-        let ran = (crate::machine::lifecycle::now_ms() as u64).saturating_sub(started) as f64;
-        self.overall = self.overall.max((ran / whole).min(OVERALL_UNDER));
+        let now = (crate::machine::lifecycle::now_ms() as u64).max(started);
+        if self.stage.0 != frame.stage {
+            self.stage = (frame.stage.clone(), now);
+        }
+        let done = match (frame.position, frame.total) {
+            (Some(position), Some(total)) if total > 0 => Some(position as f64 / total as f64),
+            _ => frame.stage_fraction,
+        };
+        let paced = done
+            .filter(|done| *done > 0.0)
+            .map(|done| (self.stage.1 - started) as f64 + (now - self.stage.1) as f64 / done.min(1.0));
+        let whole = paced.map_or(whole, |paced| whole.max(paced));
+        self.overall = self.overall.max(((now - started) as f64 / whole).min(OVERALL_UNDER));
         Some(self.overall)
     }
 }
@@ -629,7 +645,7 @@ pub(crate) fn observe(engine: &Engine, id: &str, seen: &mut Seen, frame: &Frame,
             payload[name] = value;
         }
     }
-    if let Some(overall) = seen.overall(engine, id) {
+    if let Some(overall) = seen.overall(engine, id, frame) {
         payload["overall_fraction"] = overall.into();
     }
     let call = frame.call_request.as_deref().filter(|call| !call.is_empty());
