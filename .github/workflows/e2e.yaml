@@ -154,6 +154,14 @@ on:
         description: Native CLI partitions as a JSON list; empty uses the full native matrix
         type: string
         default: ''
+      cpu_only:
+        description: CPU packages to run, comma-separated; empty runs every package
+        type: string
+        default: ''
+      cpu_record:
+        description: Record selected CPU fixtures into the run's artifacts
+        type: boolean
+        default: false
       # skew (select it: `select=skew`): released cozy versions × a Hub built from tensorhub at hub_ref (e2e/skew/run.sh).
       hub_ref:
         description: "skew: the tensorhub ref the Hub is built from (the candidate)"
@@ -994,6 +1002,8 @@ jobs:
     env:
       BUILD: ${{ join(fromJSON(needs.affected.outputs.selection).build, ' ') }}
       UV_CACHE_DIR: ${{ github.workspace }}/.uv-cache
+      CPU_ONLY: ${{ inputs.cpu_only }}
+      CPU_RECORD: ${{ inputs.cpu_record && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -1025,6 +1035,9 @@ jobs:
       # restarted on it, as the cli suite's candidates step does.
       - name: cpu suite
         run: |
+          cpu_args=()
+          [ -z "$CPU_ONLY" ] || cpu_args+=(--only "$CPU_ONLY")
+          if [ "$CPU_RECORD" = true ]; then cpu_args+=(--record --refs "$RUNNER_TEMP/e2e/refs"); fi
           chmod +x "$RUNNER_TEMP/fixture-hub/tensorhub" "$RUNNER_TEMP/fixture-hub/minio"
           sudo loginctl enable-linger "$(id -un)"
           export XDG_RUNTIME_DIR=/run/user/$(id -u)
@@ -1032,7 +1045,7 @@ jobs:
           export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
           bash .creator/e2e/skew/run.sh --hub-bin "$RUNNER_TEMP/fixture-hub" --candidates "$CANDIDATES" --admin --out "$RUNNER_TEMP/e2e/hub" \
             --command .creator/e2e/isolated.sh -- cpu \
-            --out "$RUNNER_TEMP/e2e" --envs "$RUNNER_TEMP/envs" $CANDIDATES \
+            --out "$RUNNER_TEMP/e2e" --envs "$RUNNER_TEMP/envs" "${cpu_args[@]}" $CANDIDATES \
             $(case " $CANDIDATES " in (*" --packages "*) ;; (*) echo --packages "$PACKAGES_MASTER" ;; esac) 2>&1 | node .creator/e2e/publish/scrub.js
       - if: always()
         run: uv cache prune --ci
