@@ -1014,14 +1014,19 @@ foreach ($rule in $allowed) {
         if original_id == copied_id:
             raise RuntimeError('the independent folder copy reused the registered project identity')
         self.cell('decrypted_folder_copy_opens_with_its_own_identity')
-        refused = self.command('vault', '--directory', copied_path, 'encrypt',
-                               '--passphrase-file', rekey, '--recovery-out', self.recovery('copy-recovery'),
-                               '--remove-plaintext', '--idle', 0, refusal=True)
-        assert json.loads(refused.stdout)['error']['code'] == 'vault_retained_project_mismatch'
-        assert self.command('vault', '--directory', copied_path, 'status')['state'] == 'plain'
+        copied_encrypted = self.command('vault', '--directory', copied_path, 'encrypt',
+                                        '--passphrase-file', rekey, '--recovery-out', self.recovery('copy-recovery'),
+                                        '--remove-plaintext', '--idle', 0)
+        copied_view = self.view(copied_encrypted)
+        assert self.command('status', cwd=copied_path, full=True)['project']['id'] == copied['id']
         assert self.yaml(copied['id']) == copied_state
-        assert not (copied_path / 'project.vault.keys.json').exists()
-        self.cell('copied_retained_namespace_refuses_encryption_before_cutover')
+        marker = json.loads((copied_view / '.vault-local-execution.json').read_text())
+        assert marker['storage']['project_id'] == copied['id']
+        assert marker['storage']['project_id'] != self.project_id
+        for path in sources:
+            self.find_media(copied_view, path)
+        self.command('vault', '--directory', copied_path, 'lock')
+        self.cell('decrypted_folder_copy_encrypts_with_its_own_namespace')
         reencrypted = self.vault('encrypt', '--passphrase-file', rekey,
                                  '--recovery-out', self.recovery('recovery4'), '--remove-plaintext', '--idle', 0)
         self.check_recovery('recovery4')
