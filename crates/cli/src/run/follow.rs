@@ -4,7 +4,7 @@
 //! against its digest) or failed, but for what stays on its machine; an output not saved fails the follow.
 //! `--output` downloads them here (`fetch`). Ctrl-C (Esc or q in
 //! `cozy run ls`) stops following and never cancels: the run is Calcifer's, and `cozy run
-//! show` reattaches.
+//! watch` reattaches.
 use std::{
     collections::HashSet,
     fmt::Write as _,

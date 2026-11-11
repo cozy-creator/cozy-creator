@@ -34,7 +34,7 @@ const EXAMPLES: &str = "Examples
   cozy run birefnet/remove_background --file image=./character.png";
 
 #[derive(clap::Args, Debug)]
-#[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true, arg_required_else_help = true, after_help = EXAMPLES)]
+#[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true, arg_required_else_help = true, subcommand_value_name = "ls|watch|cancel", after_help = EXAMPLES)]
 pub(crate) struct Args {
     #[command(subcommand)]
     verb: Option<Verb>,
@@ -67,7 +67,7 @@ struct RunArgs {
     /// Attach files with `[NAME=]FILE` or `field.path=FILE`.
     #[arg(long = "file", value_name = "[NAME=]FILE", value_hint = ValueHint::FilePath)]
     assets: Vec<String>,
-    /// Set file fidelity with `label-or-index=auto|low|medium|high`.
+    /// Set reference-image detail: `label-or-index=auto|low|medium|high`.
     #[arg(long = "file-fidelity", value_name = "FILE=FIDELITY", value_parser = api::calcifer::fidelity)]
     fidelities: Vec<String>,
     /// Apply a LoRA using `[SLOT=]REF[,STRENGTH]`. Default strength is 1.
