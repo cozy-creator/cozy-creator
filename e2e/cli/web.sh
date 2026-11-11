@@ -156,11 +156,15 @@ web_engines() {
   case ${RUNNER_OS:-} in
     macOS) ENGINE=webkit ;;
     # H.264 is the system's libavcodec on Linux: with none, Firefox says "This browser can't play it" (41966978063).
-    Linux) ENGINE=firefox; sudo apt-get install -y -qq libavcodec-extra > "$OUT/web-firefox-codec.log" 2>&1 || check "web-firefox: no H.264: $(tail -c 300 "$OUT/web-firefox-codec.log")" ;;
+    Linux)
+      ENGINE=firefox
+      bash "$here/install-browser-deps.sh" "$pw" > "$OUT/web-firefox-deps.log" 2>&1 \
+        || { check "web-firefox: dependencies failed: $(tail -c 300 "$OUT/web-firefox-deps.log")"; return; }
+      ;;
     *) return 0 ;;
   esac
   step "web-$ENGINE: place, see and nodes, in Playwright's $ENGINE"
-  node "$pw/node_modules/playwright-core/cli.js" install $([ "$RUNNER_OS" != Linux ] || echo --with-deps) "$ENGINE" > "$OUT/web-$ENGINE-install.log" 2>&1 \
+  node "$pw/node_modules/playwright-core/cli.js" install "$ENGINE" > "$OUT/web-$ENGINE-install.log" 2>&1 \
     || { check "web-$ENGINE: install failed: $(tail -c 300 "$OUT/web-$ENGINE-install.log")"; return; }
   for cell in place see nodes; do web_proof "$cell" "$chrome" "$pw" ''; done
 }
