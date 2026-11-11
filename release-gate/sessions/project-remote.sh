@@ -13,7 +13,7 @@
 #     that copy.
 # Its commits are deleted after; the Hub's GC takes their bytes.
 . "$(dirname "$0")/lib.sh"
-command -v ffmpeg > /dev/null || sudo apt-get install -y -qq ffmpeg > /dev/null 2>&1 || fail "no ffmpeg"
+command -v ffmpeg > /dev/null || fail "no ffmpeg (pod-session.yaml installs it from the tool cache)"
 MODEL=$(cozy --json whoami | jq -r .account)/project-assets
 tidy() { local c; for c in $(jq -r '.commit // empty' "$OUT"/push-*.json 2> /dev/null | sort -u); do cozy model delete "$MODEL@$c" -y >> "$OUT/delete.txt" 2>&1 || say "could not delete $MODEL@$c"; done; }
 trap 'tidy; finish' EXIT
