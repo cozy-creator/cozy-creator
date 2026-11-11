@@ -46,7 +46,7 @@ export function ToolPanel({ project, machine, waiting, shut, setShut, place, pla
       const node = BASIC_NODES.find((node) => node.kind === from?.dataset.node)
       if (node && from) return { load: { node: node.kind }, from }
       const entry = from && entries.find((entry) => entry.key === from.dataset.operation)
-      return entry?.tool ? { load: toolLoad(entry.tool, entry.key), from } : null
+      return entry?.tool && from ? { load: toolLoad(entry.tool, entry.key), from } : null
     },
   })
   if (shut) {

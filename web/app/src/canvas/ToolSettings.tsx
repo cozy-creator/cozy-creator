@@ -34,7 +34,7 @@ export function ToolSettings({ name, asset, selected }: { name: string; asset: A
       )}
       <label className="slide">
         <span className="ctl-name">Model</span>
-        <select className="field nodrag" aria-label="Model" value={models.some((tool) => tool.id === asset.tool) ? asset.tool : ""} onChange={(event) => {
+        <select className="field nodrag" aria-label="Model" value={models.some((tool) => tool.id === asset.tool) ? asset.tool ?? "" : ""} onChange={(event) => {
           const next = tools.get(event.target.value)
           if (next) store.putTool(name, next)
         }}>
