@@ -14,6 +14,10 @@ from runs import GateRuns, Run
 DRIFT = 0.10
 #: Seconds a request a drift must cost to fail: an LM layer's 64 calls drift past DRIFT at a millisecond (gate 43104499783).
 COST = 0.1
+#: Lanes whose candidates the bench can't hold to one another: bf16's cuBLAS and cuBLASLt differ only by
+#: `preferred_blas_library`, set around each call, and on an H100 the call it was set around ran ~9% faster whichever
+#: library it named (gates 43065023645, 43104499783). Their rows stay notes.
+NOTES_ONLY = frozenset({'bf16'})
 
 
 class Timed(TypedDict):
@@ -71,6 +75,8 @@ def check(gate: GateRuns) -> tuple[list[str], list[str]]:
                         notes.append(f"{shape.get('id')} {lane} {level}: the rule's {pick.split(':')[1]} {mine:.3f} ms, "
                                      f"{best.split(':')[1]} {others[best]:.3f} ms (+{mine / others[best] - 1:.0%})")
     for (model, lane, level), (mine, best_ms) in sorted(weighted.items()):
+        if lane in NOTES_ONLY:
+            continue
         if best_ms > 0 and mine > (1 + DRIFT) * best_ms and (mine - best_ms) / 1000 >= COST:
             fails.append(f'{card} {model} {lane} {level}: the rule is {mine / best_ms - 1:.0%} slower than the best candidate '
                          f'over its shapes ({(mine - best_ms) / 1000:.2f} s a request): refit it (xs-177)')
