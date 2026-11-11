@@ -38,6 +38,8 @@ pub(super) struct Search {
     q: Option<String>,
     /// 1–200; 20 when absent.
     limit: Option<u32>,
+    #[serde(default)]
+    offset: u32,
 }
 
 /// `GET /v1/packages`.
@@ -49,15 +51,16 @@ pub(super) async fn search(
     let hub = origin(&api, ask.hub.as_deref())?;
     let q = ask.q.as_deref().map(str::trim).filter(|q| !q.is_empty());
     let limit = ask.limit.unwrap_or(20).clamp(1, 200);
-    let answer = (reader(&api, &hub)?.search_packages(q, limit).await).map_err(|e| refusal(&hub, e))?;
+    let answer = (reader(&api, &hub)?.search_packages_page(q, limit, ask.offset).await).map_err(|e| refusal(&hub, e))?;
     let packages: Vec<FoundPackage> = (answer.packages.into_iter())
         .map(|p| FoundPackage {
             package: shown(&format!("{}/{}", p.org, p.name)),
             latest_release: p.latest_release,
             created_at: stamp(&p.created_at),
+            updated_at: p.updated_at.as_deref().map(stamp),
         })
         .collect();
-    let older = (answer.search.total - packages.len() as i64).max(0);
+    let older = (answer.search.total - ask.offset as i64 - packages.len() as i64).max(0);
     Ok(Json(PackageSearch { packages, total: answer.search.total, older }))
 }
 

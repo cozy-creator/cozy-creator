@@ -41,6 +41,12 @@ cozy --json logout > "$OUT/logout.json" || check "logout while signed out failed
 step packages
 cozy --json package ls birefnet --limit 1 > "$OUT/search.json" && J '(.packages | length) == 1 and .packages[0].package == "birefnet"' "$OUT/search.json" \
   || check "package ls --limit 1: not exactly birefnet"
+cozy --json package ls --limit 1 > "$OUT/packages-first-page.json" || check "package first page failed"
+cozy --json package ls --limit 1 --offset 1 > "$OUT/packages-second-page.json" || check "package second page failed"
+if [ "$(jq '.total' "$OUT/packages-first-page.json")" -gt 1 ]; then
+  [ "$(jq -r '.packages[0].package' "$OUT/packages-first-page.json")" != "$(jq -r '.packages[0].package' "$OUT/packages-second-page.json")" ] \
+    || check "package offset repeated the first page"
+fi
 cozy --json package info birefnet > "$OUT/package-info.json" && J '(.latest_release | length > 0) and (.releases | length > 0)' "$OUT/package-info.json" \
   || check "package info birefnet: no releases"
 cozy --json run birefnet/remove_background --describe > "$OUT/describe-published.json" 2> "$OUT/describe-published.err" \

@@ -497,7 +497,7 @@ hand), and one a Calcifer stopped under fails `calcifer_stopped`: asking again i
   (`status: already published` for a version the Hub holds).
 
 **Packages.**
-- `GET /v1/packages?q=&limit=` (1–200, 20): `PackageSearch {packages, total, older}`.
+- `GET /v1/packages?q=&limit=&offset=` (limit 1–200, 20; offset 0): `PackageSearch {packages, total, older}`. Rows retain `created_at`; optional `updated_at` is the Hub's update timestamp, never inferred from creation.
 - `GET /v1/packages/{org}/{name}?release=`: `PackageDetail`, releases newest first; one named comes
   with what its publish warned of, to its owner.
 - `POST /v1/packages/{org}/{name}/releases/{release}/yank` `{hub}`: `PackageYanked`; machines keep it,
@@ -647,7 +647,6 @@ The CLI resolves the current directory to an existing project and sends its abso
 | `cozy package install` | local code's tree `PUT`, `POST /v1/runs` of `cozy/package_install` (`POST /v1/run-quotes` first for `new`); `GET /v1/runs/{id}/events` |
 | `cozy package uninstall` | `POST /v1/runs` of `cozy/package_remove`; `GET /v1/runs/{id}/events` |
 | `cozy package yank [--undo]` | `POST` (`DELETE`) `/v1/packages/{org}/{name}/releases/{release}/yank` |
-| `cozy package delete` | `DELETE /v1/packages/{org}/{name}` |
 | `cozy package lock` | the package's tree `PUT`, `POST /v1/runs` of `cozy/package_lock`, `GET /v1/runs/{id}/events`; the CLI writes the `uv.lock` its result holds |
 | `cozy package publish` | the package's tree `PUT`, `POST /v1/runs` of `cozy/package_publish`, `GET /v1/runs/{id}/events`; a `lock` its result holds, the CLI writes |
 <!-- each PR adds its verbs' rows -->

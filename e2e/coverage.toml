@@ -79,6 +79,7 @@ test = "release: rental, keepalive moves its idle deadline"
 ["package ls"]
 test = "pr: packages"
 "--limit" = "pr: packages"
+"--offset" = "pr: packages"
 "--on" = "pr: packages"
 ["package info"]
 test = "pr: packages"
@@ -99,9 +100,6 @@ test = "release: throwaway package, published"
 ["package yank"]
 test = "release: throwaway package, yanked"
 "--undo" = "release: throwaway package, un-yanked"
-["package delete"]
-test = "release: throwaway package, deleted"
-
 ["model ls"]
 test = "pr: models"
 "--family" = "pr: models"

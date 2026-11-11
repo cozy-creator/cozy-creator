@@ -407,6 +407,8 @@ pub struct PackageSummary {
     pub org: String,
     pub name: String,
     pub created_at: String,
+    /// Authoritative update time when the Hub provides it; not the creation date.
+    pub updated_at: Option<String>,
     /// The newest committed release that is not yanked.
     pub latest_release: Option<String>,
 }

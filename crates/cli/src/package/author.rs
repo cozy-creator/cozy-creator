@@ -1,11 +1,11 @@
-//! `cozy package lock|publish|yank|delete`: authoring, through Calcifer (CALCIFER-API.md
+//! `cozy package lock|publish|yank`: authoring, through Calcifer (CALCIFER-API.md
 //! "Packages"). The package goes by content, and Calcifer locks and publishes its copy with uv:
 //! package code never runs, and the authored files never change but `uv.lock`, which the CLI writes.
 use std::process::ExitCode;
 
 use api::{
     error::{Error, Kind},
-    calcifer::hub::{At, Locked, PackageDeleted, PackageLock, PackagePublish, PackageUnyanked, PackageYanked, Published, job},
+    calcifer::hub::{At, Locked, PackageLock, PackagePublish, PackageUnyanked, PackageYanked, Published, job},
 };
 
 use super::PackageRef;
@@ -126,39 +126,6 @@ pub(crate) async fn yank(ctx: &Context, package: &PackageRef, undo: bool) -> Res
             )
             .field("yanked at", &result.yanked_at)
             .note("Machines that hold it keep it; only an exact pin installs it.")
-            .print(ctx),
-    }
-    Ok(ExitCode::SUCCESS)
-}
-
-/// Never prompts: `--yes` is the confirmation, and without it nothing is sent.
-pub(crate) async fn delete(ctx: &Context, package: &PackageRef) -> Result<ExitCode, Error> {
-    if package.release.is_some() {
-        return Err(Error::new(
-            Kind::Usage,
-            "package_release_not_taken",
-            format!("Delete removes an entire package; {package} selects one release"),
-        )
-        .next(format!("cozy package yank {package}")));
-    }
-    let hub = ctx.hub();
-    if !ctx.yes {
-        return Err(Error::new(
-            Kind::Usage,
-            "package_delete_unconfirmed",
-            format!(
-                "deleting {package} and every release from {} cannot be undone",
-                hub
-            ),
-        )
-        .next(format!("cozy package delete {package} --yes")));
-    }
-    let at = path(&["v1", "packages", &package.org, &package.name]);
-    let result: PackageDeleted = ctx.calcifer().await?.delete_query(&at, &At { hub: Some(hub.to_string()) }).await?;
-    match ctx.json {
-        true => output::json(&result),
-        false => output::Record::of(&result)
-            .note("Machines that installed it keep their copies.")
             .print(ctx),
     }
     Ok(ExitCode::SUCCESS)

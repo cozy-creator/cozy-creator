@@ -35,6 +35,15 @@ pub(crate) enum Screen {
     Model(model::live::Preview),
     ModelDestinations(model::live::Destinations),
     RemoveLocalModel(String),
+    PackageCatalog(package::browse::Catalog),
+    Package(package::browse::Preview),
+    PackageDestinations(package::browse::Destinations),
+    UninstallPackage(String),
+}
+
+enum Operation {
+    Model(model::live::Operation),
+    Package(package::browse::Operation),
 }
 
 impl Screen {
@@ -45,7 +54,8 @@ impl Screen {
             Screen::Machines(view) => view.changed(ctx).await,
             Screen::Machine(view) => view.changed().await,
             Screen::Packages(view) => view.changed(ctx).await,
-            Screen::Models(_) | Screen::Model(_) | Screen::ModelDestinations(_) | Screen::RemoveLocalModel(_) => std::future::pending().await,
+            Screen::Models(_) | Screen::Model(_) | Screen::ModelDestinations(_) | Screen::RemoveLocalModel(_)
+                | Screen::PackageCatalog(_) | Screen::Package(_) | Screen::PackageDestinations(_) | Screen::UninstallPackage(_) => std::future::pending().await,
         }
     }
 
@@ -91,6 +101,10 @@ impl Screen {
             }
             Screen::ModelDestinations(view) => table_hint(frame, &view.title(), &["machine", "status"], view.rows(), selected, "↑/↓ select · Enter download · Esc/q back"),
             Screen::RemoveLocalModel(model) => detail(frame, "Remove local copy?", vec![model.clone(), "All downloaded releases and lanes on this machine will be removed.".into(), "The Hub is unchanged. Active and shared data stays protected.".into(), "Enter confirms · Esc/q cancels".into()]),
+            Screen::PackageCatalog(view) => table_hint(frame, &view.title(), &package::browse::HEADERS, view.rows(), selected, "↑/↓ select · Enter preview · i install · u uninstall local · p/n pages · q quit"),
+            Screen::Package(view) => detail(frame, view.title(), view.lines()),
+            Screen::PackageDestinations(view) => table_hint(frame, &view.title(), &["MACHINE", "STATUS"], view.rows(), selected, "↑/↓ select · Enter install · Esc/q back"),
+            Screen::UninstallPackage(package) => detail(frame, "Uninstall from local?", vec![package.clone(), "All installed releases of this package will be uninstalled from local.".into(), "Files in use stay until their runs finish.".into(), "Enter confirms · Esc/q cancels".into()]),
         }
     }
 
@@ -104,6 +118,10 @@ impl Screen {
             Screen::Model(view) => view.lines().len(),
             Screen::ModelDestinations(view) => view.rows().len(),
             Screen::RemoveLocalModel(_) => 0,
+            Screen::PackageCatalog(view) => view.rows().len(),
+            Screen::Package(view) => view.lines().len(),
+            Screen::PackageDestinations(view) => view.rows().len(),
+            Screen::UninstallPackage(_) => 0,
         }
     }
 }
@@ -118,22 +136,38 @@ pub(crate) async fn show(ctx: &Context, first: Screen) -> Result<ExitCode, Error
         let mut terminal = ratatui::try_init().map_err(drawing)?;
         let shown = drive(ctx, &mut terminal, &mut stack, &mut keys, &mut signals).await;
         ratatui::restore();
-        let notice = match shown? {
-            Some(model::live::Operation::Download(choice)) => {
+        let (notice, package_action) = match shown? {
+            Some(Operation::Model(model::live::Operation::Download(choice))) => {
                 status = model::live::download(ctx, choice).await?;
-                if status == ExitCode::SUCCESS { "Download complete".into() } else { "Download stopped or failed".into() }
+                (if status == ExitCode::SUCCESS { "Download complete".into() } else { "Download stopped or failed".into() }, false)
             }
-            Some(model::live::Operation::Remove(model)) => {
+            Some(Operation::Model(model::live::Operation::Remove(model))) => {
                 let removed = model::live::remove(ctx, &model).await?;
                 status = ExitCode::SUCCESS;
                 if removed.removed {
-                    format!("Cache {} removed · {} retained", output::bytes(removed.cache_bytes_removed), output::bytes(removed.retained_bytes))
+                    (format!("Cache {} removed · {} retained", output::bytes(removed.cache_bytes_removed), output::bytes(removed.retained_bytes)), false)
                 } else {
-                    "Local copy already absent".into()
+                    ("Local copy already absent".into(), false)
                 }
+            }
+            Some(Operation::Package(operation)) => {
+                let (code, notice) = package::browse::perform(ctx, operation).await?;
+                status = code;
+                (notice, true)
             }
             None => return Ok(status),
         };
+        if package_action {
+            let Some(at) = stack.iter().rposition(|(screen, _)| matches!(screen, Screen::PackageCatalog(_))) else { return Ok(status) };
+            stack.truncate(at + 1);
+            if let Some((Screen::PackageCatalog(view), selected)) = stack.last_mut() {
+                let previous = selected.selected().unwrap_or(0);
+                let package = view.package_at(previous).map(str::to_owned);
+                view.refresh(ctx, notice).await?;
+                selected.select(Some(view.selection_after(package.as_deref(), previous)));
+            }
+            continue;
+        }
         let Some(at) = stack.iter().rposition(|(screen, _)| matches!(screen, Screen::Models(_))) else { return Ok(status) };
         stack.truncate(at + 1);
         if let Some((Screen::Models(view), selected)) = stack.last_mut() {
@@ -155,7 +189,22 @@ pub(crate) async fn live<B: Backend>(
 ) -> Result<Option<model::live::Operation>, Error> {
     let mut stack = vec![(first, TableState::default().with_selected(Some(0)))];
     let mut signals = Signals::new()?;
-    drive(ctx, terminal, &mut stack, &mut keys, &mut signals).await
+    Ok(drive(ctx, terminal, &mut stack, &mut keys, &mut signals).await?.map(|operation| match operation {
+        Operation::Model(operation) => operation,
+        Operation::Package(_) => panic!("package operation in a model fixture"),
+    }))
+}
+
+#[cfg(test)]
+pub(crate) async fn package_live<B: Backend>(ctx: &Context, terminal: &mut Terminal<B>, first: Screen,
+    mut keys: impl Stream<Item = io::Result<Input>> + Unpin,
+) -> Result<Option<package::browse::Operation>, Error> {
+    let mut stack = vec![(first, TableState::default().with_selected(Some(0)))];
+    let mut signals = Signals::new()?;
+    Ok(drive(ctx, terminal, &mut stack, &mut keys, &mut signals).await?.map(|operation| match operation {
+        Operation::Package(operation) => operation,
+        Operation::Model(_) => panic!("model operation in a package fixture"),
+    }))
 }
 
 async fn drive<B: Backend>(
@@ -164,7 +213,7 @@ async fn drive<B: Backend>(
     stack: &mut Vec<(Screen, TableState)>,
     keys: &mut (impl Stream<Item = io::Result<Input>> + Unpin),
     signals: &mut Signals,
-) -> Result<Option<model::live::Operation>, Error> {
+) -> Result<Option<Operation>, Error> {
     let drew = |e: B::Error| drawing(io::Error::other(e.to_string()));
     loop {
         let (screen, selected) = stack.last_mut().expect("a view");
@@ -197,7 +246,29 @@ async fn drive<B: Backend>(
         let (screen, selected) = stack.last_mut().expect("a view");
         let at = selected.selected().unwrap_or(0);
         if let Screen::RemoveLocalModel(model) = &*screen {
-            if key.code == KeyCode::Enter { return Ok(Some(model::live::Operation::Remove(model.clone()))); }
+            if key.code == KeyCode::Enter { return Ok(Some(Operation::Model(model::live::Operation::Remove(model.clone())))); }
+        }
+        if let Screen::UninstallPackage(package) = &*screen {
+            if key.code == KeyCode::Enter { return Ok(Some(Operation::Package(package::browse::Operation::Uninstall(package.clone())))); }
+        }
+        let package_action = match &*screen {
+            Screen::PackageCatalog(view) => view.action(key.code, at),
+            Screen::Package(view) => view.action(key.code),
+            Screen::PackageDestinations(view) => view.action(key.code, at),
+            _ => None,
+        };
+        if let Some(action) = package_action {
+            match action {
+                package::browse::Action::Page(offset) => {
+                    if let Screen::PackageCatalog(view) = screen { view.page(ctx, offset).await?; }
+                    selected.select(Some(0));
+                }
+                package::browse::Action::Preview(view) => stack.push((Screen::Package(view), TableState::default())),
+                package::browse::Action::Destinations(package) => stack.push((Screen::PackageDestinations(package::browse::Destinations::open(ctx, package).await?), TableState::default().with_selected(Some(0)))),
+                package::browse::Action::Install { package, machine } => return Ok(Some(Operation::Package(package::browse::Operation::Install { package, machine }))),
+                package::browse::Action::ConfirmUninstall(package) => stack.push((Screen::UninstallPackage(package), TableState::default())),
+            }
+            continue;
         }
         let local_bytes = match &*screen { Screen::Models(view) => view.rows().get(at).and_then(|row| view.local_bytes(&row[0])), _ => None };
         let action = match &*screen {
@@ -214,7 +285,7 @@ async fn drive<B: Backend>(
                 }
                 model::live::Action::Preview(model) => stack.push((Screen::Model(model::live::Preview::open(ctx, &model, local_bytes).await?), TableState::default())),
                 model::live::Action::Destinations(model) => stack.push((Screen::ModelDestinations(model::live::Destinations::open(ctx, model).await?), TableState::default().with_selected(Some(0)))),
-                model::live::Action::Download(choice) => return Ok(Some(model::live::Operation::Download(choice))),
+                model::live::Action::Download(choice) => return Ok(Some(Operation::Model(model::live::Operation::Download(choice)))),
                 model::live::Action::ConfirmRemove(model) => stack.push((Screen::RemoveLocalModel(model), TableState::default())),
                 model::live::Action::Unclassified => {
                     let opened = match &*screen { Screen::Models(view) => Some(view.unclassified()), _ => None };

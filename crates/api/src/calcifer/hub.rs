@@ -462,6 +462,9 @@ pub struct FoundPackage {
     pub package: String,
     pub latest_release: Option<String>,
     pub created_at: String,
+    /// Authoritative update time when the Hub provides it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
 }
 
 /// `GET /v1/packages/{org}/{name}?release=`: a package's releases newest first, or the one named

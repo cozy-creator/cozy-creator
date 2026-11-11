@@ -98,6 +98,8 @@ def main() -> None:
         assert not re.search(r"^  remove\s", package_help, re.MULTILINE), "retired package remove is still listed"
         run("package uninstall help", ["package", "uninstall", "--help"])
         run("removed package remove", ["package", "remove", "--help"], code=2)
+        run("removed package delete", ["package", "delete", "--help"], code=2)
+        run("package pagination help", ["package", "ls", "--offset", "20", "--limit", "10", "--help"])
         run("LoRA metadata help", ["lora", "edit", "--help"])
         run("LoRA upload help", ["lora", "upload", "--help"])
         run("LoRA cloud deletion help", ["lora", "delete", "--help"])

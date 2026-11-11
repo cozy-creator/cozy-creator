@@ -14,6 +14,7 @@ use api::target::Published;
 mod author;
 mod catalog;
 pub(crate) mod live;
+pub(crate) mod browse;
 mod machine;
 
 #[derive(clap::Args, Debug)]
@@ -32,6 +33,9 @@ enum Command {
         /// Maximum packages to show.
         #[arg(long, default_value_t = 20)]
         limit: u32,
+        /// Skip this many matching catalog packages.
+        #[arg(long, default_value_t = 0)]
+        offset: u32,
         /// List installed packages on local, a named machine, or all machines.
         #[arg(long, value_name = "MACHINE")]
         on: Option<String>,
@@ -78,11 +82,6 @@ enum Command {
         #[arg(long)]
         yanked: bool,
     },
-    /// Delete a package and all its releases from the Hub.
-    Delete {
-        /// [org/]name
-        package: String,
-    },
     /// Yank a release so new unpinned installs skip it.
     Yank {
         /// [org/]name@release
@@ -95,9 +94,9 @@ enum Command {
 
 pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     match args.command {
-        Command::Ls { query, limit, on } => match on {
+        Command::Ls { query, limit, offset, on } => match on {
             Some(on) => machine::list(ctx, (on != "all").then(|| on.into()), &query).await,
-            None => catalog::search(ctx, &query.join(" "), output::at_most("--limit", limit, 200)).await,
+            None => catalog::search(ctx, &query.join(" "), output::at_most("--limit", limit, 200), offset).await,
         },
         Command::Info { package } => catalog::info(ctx, &PackageRef::parse(&package)?).await,
         Command::Install { package, placement } => match local(ctx, &package)? {
@@ -117,7 +116,6 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         } => machine::uninstall(ctx, &names(&packages)?, placement.on()?).await,
         Command::Lock { path, upgrade, root } => author::lock(ctx, path, &upgrade, root).await,
         Command::Publish { root, yanked } => author::publish(ctx, root, yanked).await,
-        Command::Delete { package } => author::delete(ctx, &PackageRef::parse(&package)?).await,
         Command::Yank { release, undo } => {
             author::yank(ctx, &PackageRef::parse(&release)?, undo).await
         }
@@ -208,5 +206,6 @@ mod tests {
         assert!(command.get_subcommands().any(|command| command.get_name() == "uninstall"));
         assert!(!command.get_subcommands().any(|command| command.get_name() == "remove"));
         assert_eq!(Cli::try_parse_from(["package", "remove", "local/example"]).unwrap_err().kind(), clap::error::ErrorKind::InvalidSubcommand);
+        assert_eq!(Cli::try_parse_from(["package", "delete", "example"]).unwrap_err().kind(), clap::error::ErrorKind::InvalidSubcommand);
     }
 }
