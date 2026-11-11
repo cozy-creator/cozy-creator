@@ -1,4 +1,6 @@
-"""Actual TensorFS encoding, production Runtime parity and Writer/readback through Cozy."""
+"""convrot-encode, TensorFS's own encoder against an independent reference (`convrot_encode_oracle.py`), public API only
+(`tensorfs.raw`, `tensorfs.Writer`, `tensorfs.Encoded`). Was the gate package `tensorfs/convrot-encode` (xs-174: a package can't
+import TensorFS); run by `release-gate/programs.sh`."""
 
 import hashlib
 import inspect
@@ -7,33 +9,19 @@ import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Unpack, cast
 
-import msgspec
-from cozy_runtime.author import App, Context
 
 if TYPE_CHECKING:
-    from ._types import F32, CaseRecord, Options, Overrides, Parts, Refusal, Stats
+    from convrot_encode_types import F32, CaseRecord, Options, Overrides, Parts, Refusal, Stats
 
-app = App()
-
-
-class Request(msgspec.Struct, forbid_unknown_fields=True):
-    seed: int = 103
+SEED = 103
 
 
-class Report(msgspec.Struct):
-    passed: bool
-    cases: int
-    refusals: int
-    detail: str
-
-
-@app.entrypoint(accelerator=False)
-def run(payload: Request, ctx: Context) -> Report:
+def run() -> dict[str, object]:
     import numpy as np
     import tensorfs
     from tensorfs import raw
 
-    from .oracle import encode_int8_convrot256, hadamard256
+    from convrot_encode_oracle import encode_int8_convrot256, hadamard256
 
     params = {"rotation": "kron_regular_h4", "rotation_size": 256}
 
@@ -80,7 +68,7 @@ def run(payload: Request, ctx: Context) -> Report:
             for role, part in encoded.parts.items()
         }
 
-    rng = np.random.default_rng(payload.seed)
+    rng = np.random.default_rng(SEED)
     outliers = rng.normal(size=(7, 512)).astype(np.float32)
     outliers[:, 259] = 1e6
     ties = np.zeros((3, 256), dtype=np.float64)
@@ -203,21 +191,28 @@ def run(payload: Request, ctx: Context) -> Report:
         "strategy": "int8-convrot256/1",
         "tensorfs": tensorfs.__version__,
         "numpy": np.__version__,
-        "native_sha256": hashlib.sha256(
-            Path(tensorfs._ext.__file__).read_bytes()
-        ).hexdigest(),
         "reference_sha256": hashlib.sha256(
             inspect.getsource(encode_int8_convrot256).encode()
         ).hexdigest(),
         "rotation_reference_sha256": hashlib.sha256(
             inspect.getsource(hadamard256).encode()
         ).hexdigest(),
-        "cases": records,
+        "cases": len(records),
+        "cases_sha256": hashlib.sha256(json.dumps(records, sort_keys=True).encode()).hexdigest()[:16],
         "logical_dtypes": ["F32", "F16", "BF16"],
         "chunk_rows": [1, 2, 7],
         "writer_verified": True,
         "refusals": len(refused),
     }
-    return Report(
-        True, len(records) * 3, len(refused), json.dumps(detail, sort_keys=True)
-    )
+    return detail
+
+
+if __name__ == "__main__":
+    import traceback
+
+    try:
+        row = {"cell": "convrot-encode", "result": "PASS", "detail": run()}
+    except Exception as error:  # noqa: BLE001 - any failure is this program's verdict
+        row = {"cell": "convrot-encode", "result": "FAIL", "detail": f"{type(error).__name__}: {error}"[:600]}
+        traceback.print_exc()
+    print("ROW " + json.dumps(row, sort_keys=True, default=str), flush=True)

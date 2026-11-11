@@ -1,33 +1,20 @@
-"""Real resident NVFP4 decode through the installed SDK and ordinary Cozy GPU lane."""
+"""Resident NVFP4 decode, TensorFS's own (`tensorfs.raw.decode_into`, public API only): 96 combinations of F32/BF16/F16
+output, low/high nibble order, multiply/divide global scales, row-major/cuBLAS scale layouts, optional BF16
+pre-quantization factors and single/stacked matrices, on a nondefault producer stream. CPU decoding and the independently
+calculated value law must agree with the resident GPU output bit for bit; malformed metadata, mixed placement and an
+overlapping output are refused before any write, and a healthy decode follows. Was the gate package
+`tensorfs/resident-nvfp4` (xs-174: a package can't import TensorFS); run by `release-gate/programs.sh`."""
 
 import hashlib
 import itertools
 import json
-from pathlib import Path
+import traceback
 from types import ModuleType
-from typing import TYPE_CHECKING
 
-import msgspec
-from cozy_runtime.author import App, Context
-
-if TYPE_CHECKING:
-    from ._types import Case, Specimen
-
-app = App()
+SEED = 103
 
 
-class Request(msgspec.Struct, forbid_unknown_fields=True):
-    seed: int = 103
-
-
-class Report(msgspec.Struct):
-    passed: bool
-    cases: int
-    refusals: int
-    detail: str
-
-
-def specimen(torch: ModuleType, shape: tuple[int, ...], layout: str, order: str, global_mode: str, with_pre: bool, seed: int) -> "Specimen":
+def specimen(torch: ModuleType, shape: tuple[int, ...], layout: str, order: str, global_mode: str, with_pre: bool, seed: int) -> tuple[dict[str, tuple[str, tuple[int, ...], object]], dict[str, object], object]:
     """Serialize explicit FP4 codes/scales; expected values use the declared value law."""
     count, cols, height = int(torch.tensor(shape).prod()), shape[-1], shape[-2]
     rows, blocks = count // cols, cols // 16
@@ -89,16 +76,17 @@ def specimen(torch: ModuleType, shape: tuple[int, ...], layout: str, order: str,
     return parts, params, expected.reshape(shape)
 
 
-@app.entrypoint(accelerator=True)
-def run(payload: Request, ctx: Context) -> Report:
+
+
+def run() -> dict[str, object]:
     import tensorfs
     import torch
     from tensorfs import raw
 
-    if ctx.device.type != "cuda":
+    if not torch.cuda.is_available():
         raise RuntimeError("resident decoding requires a real CUDA device")
     torch.set_num_threads(1)
-    rows: list[Case] = []
+    rows: list[dict[str, object]] = []
     producer = torch.cuda.Stream()
     shapes = [(3, 32), (2, 129, 80)]
     variants = itertools.product(
@@ -111,7 +99,7 @@ def run(payload: Request, ctx: Context) -> Report:
     )
     for shape, layout, order, global_mode, with_pre, (dtype, torch_dtype) in variants:
         host, params, expected = specimen(
-            torch, shape, layout, order, global_mode, with_pre, payload.seed
+            torch, shape, layout, order, global_mode, with_pre, SEED
         )
         reference = torch.empty(shape, dtype=torch_dtype)
         raw.decode_into(
@@ -147,7 +135,7 @@ def run(payload: Request, ctx: Context) -> Report:
     # Real malformed metadata, overlap and mixed-placement requests must refuse before writes.
     shape = shapes[0]
     host, params, _ = specimen(
-        torch, shape, "row_major", "low_first", "multiply", False, payload.seed
+        torch, shape, "row_major", "low_first", "multiply", False, SEED
     )
     parts = {
         name: (kind, dimensions, data.to("cuda"))
@@ -190,17 +178,24 @@ def run(payload: Request, ctx: Context) -> Report:
     refusals += 1
     raw.decode_into("nvfp4", parts, out, dtype="F32", shape=shape, params=params)
     _, _, expected = specimen(
-        torch, shape, "row_major", "low_first", "multiply", False, payload.seed
+        torch, shape, "row_major", "low_first", "multiply", False, SEED
     )
     torch.testing.assert_close(out.cpu(), expected, rtol=0, atol=0)
-    detail = {
-        "cases": rows,
+    return {
+        "cases": len(rows),
+        "refusals": refusals,
+        "digest": hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest()[:16],
         "tensorfs": tensorfs.__version__,
-        "native_sha256": hashlib.sha256(
-            Path(tensorfs._ext.__file__).read_bytes()
-        ).hexdigest(),
         "gpu": torch.cuda.get_device_name(),
         "producer_stream": "nondefault",
         "healthy_after_refusals": True,
     }
-    return Report(True, len(rows), refusals, json.dumps(detail, sort_keys=True))
+
+
+if __name__ == "__main__":
+    try:
+        row = {"cell": "resident-nvfp4", "result": "PASS", "detail": run()}
+    except Exception as error:  # noqa: BLE001 - any failure is this program's verdict
+        row = {"cell": "resident-nvfp4", "result": "FAIL", "detail": f"{type(error).__name__}: {error}"[:600]}
+        traceback.print_exc()
+    print("ROW " + json.dumps(row, sort_keys=True), flush=True)
