@@ -516,7 +516,9 @@ echo "hub published: $E2E_RELAY's environment names its callee ${callee:-nothing
 # cr-276: a package calling another package's function whose result holds a `Latents` field, as orbit calls minimax-h3's
 # `generate` for its `ShotResult`: the callee, a path dependency, fills the field with a file it saved. The caller gets that
 # field as a `Latents` holding the callee's bytes, and the `File` beside it as a `File`. Runtime 0.45.0 failed the call in the
-# caller: `child_result_invalid`, "Expected `Latents`, got `File` - at `$.latents`".
+# caller: `child_result_invalid`, "Expected `Latents`, got `File` - at `$.latents`". The caller is locked first, as orbit was:
+# cozy locks only local code whose sources name the `tensorhub` index, and a cozy package it imports must be in its uv.lock
+# (`unlocked_dependency`).
 child_latents() {
 step "a child result holding Latents, in another package's caller (cr-276)"
 [ -n "$LOCAL" ] || return 0
@@ -588,6 +590,8 @@ async def relay(payload: Ask) -> Got:
 
 app.entrypoint(relay, accelerator=False)
 PY
+(cd "$dir/caller" && uv lock -q) > "$OUT/child-latents-lock.log" 2>&1 \
+  || { check "child latents: uv lock failed: $(tail -c 300 "$OUT/child-latents-lock.log")"; return; }
 cell child-latents "$dir/caller/relay" "text=latents" || return 0
 echo "child latents: $(grep -oE '"(latents|clip|same_bytes|runtime)": *("[^"]*"|true|false)' "$OUT/child-latents.ndjson" | sort -u | paste -sd' ')"
 grep -q '"latents": *"Latents"' "$OUT/child-latents.ndjson" && grep -q '"clip": *"File"' "$OUT/child-latents.ndjson" \
