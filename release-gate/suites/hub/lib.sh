@@ -252,8 +252,12 @@ hub_models() {
 hub_dev() {
   local cfg=$HOME/.cozy/config.toml
   grep -qxE 'dev *= *true' "$cfg" 2>/dev/null && return
-  mkdir -p "${cfg%/*}" && { echo 'dev = true'; cat "$cfg" 2>/dev/null; } >"$cfg.new" && mv "$cfg.new" "$cfg"  # top level: before any [table]
-  log "dev = true written into $cfg"
+  # Top level: before any [table]. With no config.toml yet (a CI runner signed in by key has none), `cat` failing must not stop the write.
+  if mkdir -p "${cfg%/*}" && { echo 'dev = true'; [ ! -f "$cfg" ] || cat "$cfg"; } >"$cfg.new" && mv "$cfg.new" "$cfg"; then
+    log "dev = true written into $cfg"
+  else
+    log "could not write dev = true into $cfg"
+  fi
 }
 
 # hub_pod_secrets <where> <machine>: xs-157 on a fresh rental, over `cozy machine ssh` with the throwaway key.
