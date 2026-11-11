@@ -1432,7 +1432,6 @@ def main() -> None:
     proof = Proof(args.artifacts, args.source)
     try:
         proof.run()
-        step_result(proof)
     except Exception as error:
         step_result(proof, error)
         failed = traceback.extract_tb(error.__traceback__)[-1]
@@ -1459,6 +1458,7 @@ def main() -> None:
                     pass
         finally:
             shutil.rmtree(proof.credentials)
+    step_result(proof)
 
 
 if __name__ == '__main__':
