@@ -6,7 +6,7 @@
     corpus.py summary CORPUS         per model: calls, sites, shapes, captures and bytes (markdown)
 
 Sites and calls: what the judging needs, small enough to hand to every class's pod (about 768 MiB a model at most). One
-site per (block family, level, layout phase): a family is a site path with its block numbers taken out, the level the one
+site per (block family, level, exact path, layout phase): a family is a site path with its block numbers taken out, the level the one
 the site runs at (the Runtime's census row), the phase dense or sparse. Its first and last call in that phase; over the
 budget, only the first. Two heads each: the Runtime keeps the head whose keys have the largest max/RMS (the outlier an
 8-bit kernel can break on) and a typical one, and records which in the capture's facts. CORPUS holds one directory per model, the capture run's `<request id>/` beneath it
@@ -46,6 +46,8 @@ class Row(TypedDict, total=False):
     key: list[int]
     dtype: str
     layout: Layout
+    level: int  # the level the site runs at (16/8/4)
+    exact: bool  # an exact path, or an outlier-key site held to 16
     file: str
 
 
@@ -72,10 +74,12 @@ def size(r: Row, heads: int) -> int:
 
 
 def pick(where: str, census: list[Row]) -> dict[str, object]:
-    groups: dict[tuple[str, object, object], dict[str, list[int]]] = {}  # (family, level, phase) -> site -> its calls
+    # (family, level, exact, phase) -> site -> its calls: an exact path or an outlier-key site (the Runtime's `exact`, e.g.
+    # Klein's single block 23) is its own group, whatever level its family runs at.
+    groups: dict[tuple[str, object, bool, object], dict[str, list[int]]] = {}
     for r in census:
         if r.get('site'):
-            key = (family(r['site'])[0], r.get('level'), phase(r))
+            key = (family(r['site'])[0], r.get('level'), bool(r.get('exact')), phase(r))
             groups.setdefault(key, {}).setdefault(r['site'], []).append(r['call'])
     chosen: dict[str, list[int]] = {}  # site -> the calls it is chosen for
     for sites in groups.values():
@@ -90,7 +94,7 @@ def pick(where: str, census: list[Row]) -> dict[str, object]:
         total = sum(size(r, HEADS) for (site, call), r in rows.items() if site in chosen and call in keep)
         if total <= BUDGET:
             break
-    print(f'{len(chosen)} sites of {len({r.get("site") for r in census})}, {len(groups)} (family, level, phase) groups, '
+    print(f'{len(chosen)} sites of {len({r.get("site") for r in census})}, {len(groups)} (family, level, exact, phase) groups, '
           f'calls {sorted(keep)}, {HEADS} heads: {total / 2**20:.0f} MiB', file=sys.stderr)
     return {'dir': where, 'sites': sorted(chosen), 'calls': sorted(keep), 'heads': HEADS, 'seed': 171}
 
