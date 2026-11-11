@@ -192,6 +192,10 @@ impl Machine {
         json(send(self.request(Method::POST, path::KEEPALIVE, &[])).await?).await
     }
 
+    pub(crate) async fn remove_model(&self, asked: &api::machine::RemoveModel) -> Result<api::machine::RemovedModel, Error> {
+        json(send(self.request(Method::POST, path::MODELS_REMOVE, &[]).json(asked)).await?).await
+    }
+
     /// Submits a run; its state, also when it was accepted before.
     pub(crate) async fn submit(&self, run: &RunRequest) -> Result<RunState, Error> {
         json(send(self.request(Method::POST, path::RUNS, &[]).json(run)).await?).await

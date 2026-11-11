@@ -85,7 +85,7 @@ impl Hold {
 #[derive(Debug)]
 pub(crate) struct Fence(#[allow(dead_code)] File);
 
-fn fence_file(store: &Store) -> Result<File> {
+pub(super) fn fence_file(store: &Store) -> Result<File> {
     let path = store.root.join("holds").join("gc.lock");
     let opened = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(&path);
     opened.map_err(fail("open", &path))
@@ -196,6 +196,11 @@ impl Store {
     /// What the roots keep, with the processes whose live holds keep each: 0 for a header file
     /// or a `local/` ref, which no process ending lets go. Reaps dead holds and files that let go.
     pub(super) fn holders(&self) -> Result<HashMap<String, BTreeSet<u32>>> {
+        self.holders_except(None)
+    }
+
+    /// A targeted removal releases its own local ref, but no other retention source.
+    pub(super) fn holders_except(&self, removed_ref: Option<&str>) -> Result<HashMap<String, BTreeSet<u32>>> {
         let mut roots: HashMap<String, BTreeSet<u32>> = HashMap::new();
         let mut root = |digest: String, pid: u32| {
             roots.entry(digest).or_default().insert(pid);
@@ -232,7 +237,7 @@ impl Store {
                 None => drop(self.remove_record(&record)?),
             }
         }
-        for repo in self.refs()?.iter().filter(|r| local(r)) {
+        for repo in self.refs()?.iter().filter(|r| local(r) && removed_ref.is_none_or(|name| !r.name.eq_ignore_ascii_case(name))) {
             for tree in repo.roots() {
                 self.closure(tree)?.into_iter().for_each(|o| root(o.sha256, 0));
             }
