@@ -3,7 +3,7 @@
 
     static_check.py <dir>...     exits 1 naming each mismatch (cells.sh: the Runtime the machine runs, and --packages)
 
-For every `@triton.jit` function of each tree, every `TritonEntry` of it and every launch of it
+For every `@triton.jit` or `@jit` function of each tree, every `TritonEntry` of it and every launch of it
 (`launch(kernel, grid, *args)`, `_LAUNCH[i](kernel, grid, *args)`):
 - a signature names exactly the kernel's parameters, each `tl.constexpr` as `constexpr` (the order Triton's
   launcher reads, which is run 28135's Xid 31, is `inventory`'s to check, on the real entries);
@@ -52,8 +52,8 @@ def jits(tree: ast.AST) -> dict[str, list[tuple[str, bool]]]:
     found: dict[str, list[tuple[str, bool]]] = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and any(
-            ast.unparse(d) == "triton.jit" for d in node.decorator_list
-        ):
+            ast.unparse(getattr(d, "func", d)).rpartition(".")[2] == "jit" for d in node.decorator_list
+        ):  # `@triton.jit`, or a set's typed `@jit` (`cozy_runtime.accel.kernels.jit`)
             args = node.args.args
             found[node.name] = [
                 (a.arg, a.annotation is not None and ast.unparse(a.annotation) == "tl.constexpr") for a in args
