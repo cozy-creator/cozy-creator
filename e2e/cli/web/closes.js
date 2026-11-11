@@ -10,10 +10,13 @@
 const { chromium } = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
 const { createHash } = require('crypto');
-const { copyFileSync, linkSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } = require('fs');
+const { copyFileSync, linkSync, mkdirSync, readFileSync, rmSync, writeFileSync } = require('fs');
 const { homedir } = require('os');
 const { join } = require('path');
 const { projectUrl, projectAction, newProject, calcifer, signIn, STEP_MS, lastLook, lookAt, png, noStall, until, projectHeld } = require('./page');
+const { prepareCurrentSeed, seedCurrentProject } = require('./current-seed');
+// Reuse one native producer, prepared before cold/start memory and timing samples.
+prepareCurrentSeed();
 
 const failures = [];
 const seen = {};
@@ -48,8 +51,7 @@ const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const seconds = (ms) => +(ms / 1000).toFixed(3);
 const median = (values) => [...values].sort((a, b) => a - b)[values.length >> 1];
 
-/** A project as the files from before project.db, which its first open imports as it imports a person's: pictures approved as they are, and
- *  shots of them, each with two versions, the same as web-scale's. */
+/** Current native storage with the same pictures, two versions per shot and grid as web-scale. */
 function generated(folder) {
   mkdirSync(join(folder, 'files'), { recursive: true });
   const seeds = { square: [16, 16], wide: [32, 18] };
@@ -86,20 +88,14 @@ function generated(folder) {
     });
     assets[`shot ${i}`] = { name, kind: 'image', versions, numbered: 2 };
   }
-  replaceFile(join(folder, '.measured.json'), JSON.stringify(measured));
-  replaceFile(join(folder, 'project.yaml'), `${lines.join('\n')}\n`);
-  replaceFile(join(folder, 'project.lock'), JSON.stringify({ format: 3, assets, makes: { [`${TOOL}/still`]: 'image' } }));
   const side = Math.ceil(Math.sqrt(ASSETS));
-  const rows = ['# Where cards sit. Only the page reads this. Nothing here is an input.', 'version: 1', 'cards:'];
-  for (let i = 0; i < ASSETS - PICTURES; i++) rows.push(`  shot_${i}: {x: ${(i % side) * 300}, y: ${Math.floor(i / side) * 320}, w: 260}`);
-  for (let i = 0; i < PICTURES; i++) rows.push(`  pic_${i}: {x: ${((ASSETS - PICTURES + i) % side) * 300}, y: ${Math.floor((ASSETS - PICTURES + i) / side) * 320}, w: 260}`);
-  replaceFile(join(folder, 'project.canvas.yaml'), `${rows.join('\n')}\n`);
+  const cards = {};
+  for (let i = 0; i < ASSETS - PICTURES; i++) cards[`shot_${i}`] = { x: (i % side) * 300, y: Math.floor(i / side) * 320, w: 260 };
+  for (let i = 0; i < PICTURES; i++) cards[`pic_${i}`] = { x: ((ASSETS - PICTURES + i) % side) * 300, y: Math.floor((ASSETS - PICTURES + i) / side) * 320, w: 260 };
+  const seeded = seedCurrentProject(folder, { authored: `${lines.join('\n')}\n`, assets, makes: { [`${TOOL}/still`]: 'image' }, measured, cards,
+    expected_assets: ASSETS, expected_versions: (ASSETS - PICTURES) * 2 });
   for (const shape of Object.keys(seeds)) rmSync(seedOf(shape));
-}
-
-function replaceFile(at, text) {
-  writeFileSync(`${at}.part`, text);
-  renameSync(`${at}.part`, at);
+  return seeded;
 }
 
 /** Calcifer's resident memory, in MiB, as its OS says. */
@@ -184,8 +180,9 @@ const held = (folder) => projectHeld(folder, HOLDER.pid);
     for (let i = 0; i < list.length; i++) {
       const folder = list[i];
       seen.looks = (seen.looks ?? 0) + 1;
-      generated(folder);
-      // Its first read imports it; the read after is its first open of project.db. Each closes once it has answered.
+      seen.native_seed = generated(folder);
+      seen.native_seed_projects = (seen.native_seed_projects ?? 0) + 1;
+      // Both reads open current project.db; each closes once it has answered.
       const imported = await status(folder);
       ids.push(imported.state.id);
       const afterImport = await closes(folder);

@@ -277,9 +277,9 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     if let Ok(mut term) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
         let stopping = api.clone();
         tokio::spawn(async move {
-            term.recv().await;
+            if term.recv().await.is_none() { return; }
             info!("SIGTERM: stopping as down does");
-            if let Err(error) = stopping.down().await { warn!(code = %error.code, "Calcifer remains running until its encrypted views can close"); }
+            shutdown_after_signal(stopping).await;
         });
     }
     let app = api::router(api.clone()).into_make_service_with_connect_info::<SocketAddr>();
@@ -347,6 +347,32 @@ impl Steps {
 /// most of what a run stores, about 70 MB a day on a busy computer. Nothing else of a run is ever
 /// dropped: its row, result, reason, outputs, logs and calls stay for good.
 const MEASURED_FOR: Duration = Duration::from_secs(30 * 24 * 3600);
+
+/// A service stop owns its drain until views close; only transient close refusals retry.
+#[cfg(unix)]
+async fn shutdown_after_signal(api: Arc<Api>) {
+    let began = Instant::now();
+    let mut reported: Option<(String, Instant)> = None;
+    loop {
+        let error = match api.shutdown().await {
+            Ok(_) => return,
+            Err(error) => error,
+        };
+        if !matches!(error.code.as_str(), "project_busy" | "project_locked") {
+            warn!(code = %error.code, "SIGTERM: cannot finish closing encrypted views; shutdown remains blocked");
+            return;
+        }
+        if reported.as_ref().is_none_or(|(code, at)| code != &error.code || at.elapsed() >= Duration::from_secs(5)) {
+            info!(code = %error.code, elapsed_ms = began.elapsed().as_millis() as u64,
+                "SIGTERM: waiting for encrypted views to close");
+            reported = Some((error.code, Instant::now()));
+        }
+        tokio::select! {
+            () = api.stopped() => return,
+            () = tokio::time::sleep(Duration::from_millis(250)) => {},
+        }
+    }
+}
 
 /// Drops measurements past [`MEASURED_FOR`], now and daily. Each write is followed by a pause as long
 /// as it took, so the store's one writer is never held more than half the time.

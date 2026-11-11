@@ -25,16 +25,6 @@ fn tidied(card: Card) -> Card {
     Card { x: number(card.x), y: number(card.y), w: card.w.filter(|w| *w > 0.0).map(number) }
 }
 
-/// `project.canvas.yaml`'s rows, from before `project.db`, for the first open's import. What doesn't read as one is left out.
-pub(super) fn legacy_rows(text: &str) -> BTreeMap<String, Card> {
-    let row = |line: &str| {
-        let line = api::yaml::to_json(line.trim()).ok()?;
-        let (name, card) = line.as_object()?.iter().next()?;
-        Some((name.clone(), serde_json::from_value(card.clone()).ok()?))
-    };
-    text.lines().filter(|line| line.starts_with(' ')).filter_map(row).collect()
-}
-
 /// These rows set, a none gone, and told to every stream once written. A name is one row in any case, with `_` and `-` alike.
 pub(super) fn set(folder: &Folder, id: &str, changed: BTreeMap<String, Option<Card>>) -> Result<(), Error> {
     set_from(folder, id, changed, &BTreeMap::new()).map(drop)

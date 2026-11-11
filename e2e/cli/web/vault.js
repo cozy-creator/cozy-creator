@@ -709,7 +709,9 @@ const newPage = async () => {
     check('implicit_adoption_cannot_persist_as_plain_before_refresh', !adoptionStored);
   } finally {
     releaseAdoption();
-    await page.unroute(adoptionStatus, holdAdoption);
+    // This is the page's only remaining route. Drain its released callbacks before
+    // removing interception, which otherwise auto-continues their paused requests.
+    await page.unrouteAll({ behavior: 'wait' });
   }
   const importedName = page.getByRole('textbox', { name: 'Name', exact: true });
   await importedName.waitFor();
