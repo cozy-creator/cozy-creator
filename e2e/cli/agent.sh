@@ -24,14 +24,19 @@ rm -rf "$A"; mkdir -p "$A"
 # view <label> <dir> <cozy args…>: one view from the working directory <dir>, its stdout kept in <label>.out and
 # measured.
 view() {
-  local label=$1 dir=$2 bytes; shift 2
+  local label=$1 dir=$2 bytes stream=out; shift 2
   (cd "$dir" && cozy "$@") > "$A/$label.out" 2> "$A/$label.err" || true
-  bytes=$(wc -c < "$A/$label.out")
+  [ "$label" != run-show-failed ] || stream=err
+  bytes=$(wc -c < "$A/$label.$stream")
   local most; most=$(budget "$label")
   printf '%s\t%s\t%s\tcozy %s\n' "$label" "$bytes" "$most" "$*" >> "$A/bytes.tsv"
   [ -z "$MEASURE" ] || return 0
   [ -z "$most" ] || [ "$bytes" -le "$most" ] || check "agent: cozy $* printed $bytes bytes, over its $most"
-  [ ! -s "$A/$label.err" ] || check "agent: cozy $* wrote to stderr, not in its block: $(head -c 300 "$A/$label.err")"
+  if [ "$label" = run-show-failed ]; then
+    [ ! -s "$A/$label.out" ] && [ -s "$A/$label.err" ] || check "agent: failed run summary must use stderr"
+  else
+    [ ! -s "$A/$label.err" ] || check "agent: cozy $* wrote to stderr, not in its block: $(head -c 300 "$A/$label.err")"
+  fi
 }
 
 # A project's boxes are project.db's: what an agent writes goes in by `cozy import` (yaml_in, cl-803).
@@ -73,6 +78,7 @@ view machine-ls "$F" machine ls
 view run-ls "$F" run ls
 view run-show "$F" run watch "$n"
 view run-show-failed "$F" run watch "$failed"
+view run-show-failed-full "$F" run watch "$failed" --full
 view run-show-full "$F" run watch "$n" --full
 view json-home "$F" --json
 view json-project-status "$F" --json status
@@ -117,7 +123,8 @@ grep -q 'Commands:' "$A/home.out" || check "agent: bare cozy lists no commands"
 grep -q 'runs: none in this project' "$A/run-ls-empty.out" || check "agent: run ls of no runs: $(cat "$A/run-ls-empty.out")"
 grep -q 'assets: none in project.yaml' "$A/project-empty.out" || check "agent: status of no assets: $(cat "$A/project-empty.out")"
 grep -q '4 assets: 1 approved, 1 current, 1 out of date, 1 missing' "$A/status.out" || check "agent: status totals: $(cat "$A/status.out")"
-grep -q 'RuntimeError' "$A/run-show-failed.out" || check "agent: run watch of a failure has no traceback: $(cat "$A/run-show-failed.out")"
+grep -q 'RuntimeError' "$A/run-show-failed-full.out" || check "agent: run watch --full of a failure has no traceback: $(cat "$A/run-show-failed-full.out")"
+grep -q "next: cozy run watch $failed --full" "$A/run-show-failed.err" || check "agent: failed run summary has no command for full diagnostics"
 [ "$(wc -c < "$A/run-show-full.out")" -gt "$(wc -c < "$A/run-show.out")" ] || check "agent: run watch --full says no more than run watch"
 for label in json-project-status json-machine-ls json-run-ls json-run-show json-run-show-full; do
   [ "$(wc -l < "$A/$label.out")" = 1 ] && jq -e . "$A/$label.out" > /dev/null || check "agent: $label is not one line of JSON"

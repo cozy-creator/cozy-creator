@@ -79,7 +79,8 @@ fn browse(ctx: &Context, url: &str) -> io::Result<()> {
 fn reserve_port(port: u16) -> Result<TcpListener, Error> {
     TcpListener::bind((Ipv4Addr::LOCALHOST, port)).map_err(|error| {
         Error::new(Kind::Unavailable, "calcifer_port", format!("Calcifer cannot listen on 127.0.0.1:{port}: {error}"))
-            .remedy("choose a free loopback port with cozy open --port <port>")
+            .remedy("Choose an unused port")
+            .next("cozy open --port <port>")
     })
 }
 

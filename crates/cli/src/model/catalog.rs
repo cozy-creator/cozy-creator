@@ -79,7 +79,8 @@ pub(crate) async fn info(ctx: &Context, args: Info) -> Result<ExitCode, Error> {
     let (repo, selected) = match ModelRef::parse(&args.model)? {
         ModelRef::Hub { repo, release } => (repo, release),
         _ => {
-            return Err(Error::new(Kind::Usage, "model_ref_invalid", format!("{:?}: info reads org/name[@release]", args.model)));
+            return Err(Error::new(Kind::Usage, "model_ref_invalid", format!("Expected a Hub model name, received {:?}", args.model))
+                .remedy("Use org/name[@release]").next("cozy model ls"));
         }
     };
     let mut query = vec![("hub", ctx.hub().to_string())];
@@ -184,7 +185,8 @@ pub(crate) async fn edit(ctx: &Context, args: Edit) -> Result<ExitCode, Error> {
         remove_tags: args.untag,
     };
     if ask.family.is_none() && ask.trigger.is_none() && ask.strength.is_none() && !ask.tags_change() {
-        return Err(Error::new(Kind::Usage, "model_edit_empty", "name what changes: --family, --tag, --untag, --trigger or --strength"));
+        return Err(Error::new(Kind::Usage, "model_edit_empty", "No model changes specified")
+            .next("cozy model edit --help"));
     }
     let edited: ModelEdited = ctx.calcifer().await?.patch(&path(&["v1", "models", &repo.org, &repo.name]), &ask).await?;
     if ctx.json {
