@@ -648,6 +648,8 @@ foreach ($rule in $allowed) {
 
     def run(self):
         self.receipt['version'] = self.command('--version', json_output=False).strip()
+        self.command('vault', 'export', '--help', json_output=False, refusal=True)
+        self.cell('removed_vault_export_command')
         initial = self.private_file('initial', secrets.token_urlsafe(32))
         changed = self.private_file('changed', secrets.token_urlsafe(32))
         rekey = self.private_file('rekey', secrets.token_urlsafe(32))
@@ -721,18 +723,7 @@ foreach ($rule in $allowed) {
         assert state == self.yaml()
         for path in sources:
             self.find_media(view, path)
-        for forbidden in [view / 'must-refuse-recursive-export',
-                          self.project / 'project.vault.data' / 'must-refuse-plaintext-export']:
-            self.vault('export', '--output', forbidden, refusal=True)
-            if forbidden.exists():
-                raise RuntimeError('a refused recursive/backing export created its output directory')
-        self.cell('plaintext_export_refuses_view_and_backing_children')
-        exported = self.out / 'plaintext-export'
-        self.vault('export', '--output', exported)
-        for path in sources:
-            self.find_media(exported, path)
-        assert (exported / 'project.db').is_file()
-        self.cell('full_rekey_and_explicit_plaintext_export_bytes')
+        self.cell('full_rekey_preserves_media_bytes')
         # Two normal clients lock the same unlocked project; both acknowledgements must
         # agree on the locked state. Pending-unlock ordering has separate controller coverage.
         processes = [subprocess.Popen(['cozy', '--json', 'vault', '--directory', str(self.project), 'lock'],
@@ -765,9 +756,34 @@ foreach ($rule in $allowed) {
         self.receipt['global_files_scanned'] = self.scan(self.home, credentials=True)
         self.receipt['encrypted_files_scanned'] = self.scan(self.project)
         self.cell('no_known_private_canary_in_global_caches_or_backing')
-        # Opening the intentionally plaintext copy is an ordinary-project operation and
-        # may legitimately populate ordinary caches. Do it after the encrypted-only scan.
-        copied = self.command('status', cwd=exported, full=True)['project']
+        refused = self.vault('decrypt', refusal=True)
+        assert json.loads(refused.stdout)['error']['code'] == 'project_locked'
+        view = self.view(self.vault('unlock', '--recovery-file', self.recovery('recovery3'), '--idle', 0))
+        held_media = self.find_media(view, sources[0])
+        with held_media.open('rb'):
+            refused = self.vault('decrypt', refusal=True)
+            assert json.loads(refused.stdout)['error']['code'] == 'project_busy'
+            assert self.status()['encrypted'] and (self.project / 'project.vault.keys.json').is_file()
+        self.cell('decrypt_refuses_locked_project_and_busy_native_reader')
+        view = self.view(self.vault('unlock', '--recovery-file', self.recovery('recovery3'), '--idle', 0))
+        decrypted = self.vault('decrypt')['vault']
+        assert decrypted['state'] == 'plain' and not decrypted['encrypted']
+        assert not (self.project / 'project.vault.keys.json').exists()
+        assert not (self.project / 'project.vault.data').exists()
+        self.assert_inaccessible(view)
+        for path in sources:
+            self.find_media(self.project, path)
+        assert self.yaml() == state
+        assert self.command('status', cwd=self.project, full=True)['project']['id'] == self.project_id
+        assert self.vault('decrypt')['vault']['state'] == 'plain'
+        self.cell('decrypt_in_place_preserves_identity_graph_and_media')
+        self.shutdown()
+        copied_path = self.out / 'plain-folder-copy'
+        shutil.copytree(self.project, copied_path)
+        reopened = self.command('status', cwd=self.project, full=True)['project']
+        assert reopened['id'] == self.project_id and self.yaml() == state
+        self.cell('decrypted_project_reopens_after_controller_restart')
+        copied = self.command('status', cwd=copied_path, full=True)['project']
         copied_state = self.yaml(copied['id'])
         original_id, original_graph = self.graph_export(state)
         copied_id, copied_graph = self.graph_export(copied_state)
@@ -775,12 +791,24 @@ foreach ($rule in $allowed) {
         # A plain folder copy intentionally receives a new project identity when the original
         # remains registered. Compare the entire graph body, not that anti-stale-edit marker.
         if original_graph != copied_graph:
-            difference = ''.join(difflib.unified_diff(original_graph.splitlines(True), copied_graph.splitlines(True), fromfile='original graph', tofile='exported graph'))
-            raise RuntimeError('plaintext export graph changed: ' + self.redact(difference[:16384]))
+            difference = ''.join(difflib.unified_diff(original_graph.splitlines(True), copied_graph.splitlines(True), fromfile='original graph', tofile='copied graph'))
+            raise RuntimeError('plaintext folder copy graph changed: ' + self.redact(difference[:16384]))
         if original_id == copied_id:
             raise RuntimeError('the independent folder copy reused the registered project identity')
+        self.cell('decrypted_folder_copy_opens_with_its_own_identity')
+        reencrypted = self.vault('encrypt', '--passphrase-file', rekey,
+                                 '--recovery-out', self.recovery('recovery4'), '--remove-plaintext', '--idle', 0)
+        self.check_recovery('recovery4')
+        view = self.view(reencrypted)
+        assert self.yaml() == state
+        assert self.command('status', cwd=self.project, full=True)['project']['id'] == self.project_id
+        for path in sources:
+            self.find_media(view, path)
+        self.vault('lock', allow_locking=True)
         self.shutdown()
-        self.cell('plaintext_export_opens_independently_after_lock')
+        self.receipt['reencrypted_files_scanned'] = self.scan(self.project)
+        self.receipt['reencrypted_global_files_scanned'] = self.scan(self.home, credentials=True)
+        self.cell('reencrypt_decrypted_project_and_restore_locked_storage')
         self.receipt['result'] = 'pass'
         self.flush()
 

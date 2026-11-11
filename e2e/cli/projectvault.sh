@@ -6,6 +6,23 @@ projectvault() (
   work=$(mktemp -d "$OUT/project-vault.XXXXXX")
   secrets=$(mktemp -d "$OUT/vault-credentials.XXXXXX")
   P=$work/encrypted plain=$work/ordinary
+  close_vault() {
+    local name=$1 code=0
+    in_project "$P" --json vault lock > "$work/$name.json" || code=$?
+    if [ "$code" = 0 ]; then
+      jq -e '.vault.state == "locked"' "$work/$name.json" > /dev/null || fail "lock did not acknowledge locked"
+    else
+      jq -e '.error.code == "project_busy"' "$work/$name.json" > /dev/null || fail "lock failed without its typed busy response"
+      in_project "$P" --json vault status > "$work/$name-status.json"
+      jq -e '.state == "locking" or .state == "locked"' "$work/$name-status.json" > /dev/null || fail "busy lock did not revoke the view"
+      for _ in $(seq 1 80); do
+        [ "$(jq -r .state "$work/$name-status.json")" != locked ] || break
+        sleep 0.25
+        in_project "$P" --json vault status > "$work/$name-status.json"
+      done
+      jq -e '.state == "locked"' "$work/$name-status.json" > /dev/null || fail "lock did not finish draining admitted work"
+    fi
+  }
   trap 'in_project "$P" --json vault lock > /dev/null 2>&1 || true; rm -rf -- "$secrets"' EXIT
   printf '%s\n' 'synthetic initial vault passphrase' > "$secrets/initial"
   printf '%s\n' 'synthetic changed vault passphrase' > "$secrets/changed"
@@ -102,7 +119,7 @@ PY_BACKING_SCAN
   if in_project "$P" --json vault unlock --recovery-file "$secrets/recovery1" > "$work/old-recovery.json" 2> "$work/old-recovery.err"; then fail "old live recovery slot remained active"; fi
   in_project "$P" --json vault unlock --recovery-file "$secrets/recovery2" --idle 0 > "$work/new-recovery.json"
 
-  step "full local rekey and explicit plaintext export"
+  step "full local rekey"
   if [ -n "$LOCAL" ]; then
     step "private execution keeps code, inputs, outputs and failure details in protected storage"
     python3 "$E2E/cli/private_execution.py" --project "$P" --view "$(jq -r '.vault.view' "$work/new-recovery.json")" --out "$work/private-execution" --cli "$COZY"
@@ -117,10 +134,6 @@ PY_BACKING_SCAN
   [ "$(sha "$view/files/movie.mp4")" = "$before" ] || fail "rekey changed original video bytes"
   project_api "$P" /yaml > "$work/after-rekey.yaml"
   cmp "$work/before-rekey.yaml" "$work/after-rekey.yaml" || fail "rekey changed logical project history"
-  in_project "$P" --json vault export --output "$work/exported" > "$work/export.json"
-  [ "$(sha "$work/exported/files/movie.mp4")" = "$before" ] || fail "explicit export changed the video"
-  in_project "$work/exported" --json --full status > "$work/export-status.json" || fail "exported ordinary project does not open"
-
   step "status polling cannot defeat the absolute unlock deadline"
   in_project "$P" --json vault lock > /dev/null
   in_project "$P" --json vault unlock --passphrase-file "$secrets/rekey" --idle 0 --max-duration 2 > "$work/timed-unlock.json"
@@ -139,24 +152,37 @@ PY_BACKING_SCAN
     step "private media ranges stay in the mounted project for both binders"
     python3 "$E2E/cli/private_ranges.py" --project "$P" --view "$view" --out "$work/private-ranges.json" --cli "$COZY"
   fi
-  code=0
-  in_project "$P" --json vault lock > "$work/final-lock.json" || code=$?
-  if [ "$code" = 0 ]; then
-    jq -e '.vault.state == "locked"' "$work/final-lock.json" > /dev/null || fail "final lock did not acknowledge locked"
-  else
-    jq -e '.error.code == "project_busy"' "$work/final-lock.json" > /dev/null || fail "final lock failed without its typed busy response"
-    in_project "$P" --json vault status > "$work/final-lock-status.json"
-    jq -e '.state == "locking" or .state == "locked"' "$work/final-lock-status.json" > /dev/null || fail "busy final lock did not revoke the view"
-    for _ in $(seq 1 80); do
-      [ "$(jq -r .state "$work/final-lock-status.json")" != locked ] || break
-      sleep 0.25
-      in_project "$P" --json vault status > "$work/final-lock-status.json"
-    done
-    jq -e '.state == "locked"' "$work/final-lock-status.json" > /dev/null || fail "the final lock did not finish draining admitted work"
+  close_vault final-lock
+
+  step "decrypt the existing project and retain its history"
+  if in_project "$P" --json vault decrypt > "$work/locked-decrypt.json" 2> "$work/locked-decrypt.err"; then fail "a locked project decrypted without authorization"; fi
+  jq -e '.error.code == "project_locked"' "$work/locked-decrypt.json" > /dev/null || fail "locked decryption did not return its typed refusal"
+  in_project "$P" --json vault unlock --recovery-file "$secrets/recovery3" --idle 0 > "$work/decrypt-unlock.json"
+  in_project "$P" --json --full status > "$work/before-decrypt-status.json"
+  project_api "$P" /yaml > "$work/before-decrypt.yaml"
+  in_project "$P" --json vault decrypt > "$work/decrypted.json"
+  jq -e '.vault.encrypted == false and .vault.state == "plain"' "$work/decrypted.json" > /dev/null || fail "decryption did not complete as ordinary storage"
+  [ -f "$P/project.db" ] && [ ! -e "$P/project.vault.keys.json" ] && [ ! -e "$P/project.vault.data" ] || fail "decryption did not replace the encrypted backing"
+  [ "$(sha "$P/files/movie.mp4")" = "$before" ] || fail "decryption changed the video"
+  in_project "$P" --json --full status > "$work/after-decrypt-status.json"
+  [ "$(jq -r '.project.id' "$work/before-decrypt-status.json")" = "$(jq -r '.project.id' "$work/after-decrypt-status.json")" ] || fail "decryption changed the project identity"
+  project_api "$P" /yaml > "$work/after-decrypt.yaml"
+  cmp "$work/before-decrypt.yaml" "$work/after-decrypt.yaml" || fail "decryption changed project state or history"
+  if [ -n "$LOCAL" ]; then
+    python3 "$E2E/cli/private_alias.py" --verify-decrypt --project "$P" --view "$P" --out "$work/private-decrypt" --cli "$COZY"
   fi
+
+  step "encrypt the decrypted project again"
+  in_project "$P" --json vault encrypt --passphrase-file "$secrets/rekey" --recovery-out "$secrets/recovery4" --remove-plaintext --idle 0 > "$work/reencrypted.json"
+  view=$(jq -r '.vault.view // empty' "$work/reencrypted.json")
+  [ "$(sha "$view/files/movie.mp4")" = "$before" ] || fail "re-encryption changed the video"
+  if [ -n "$LOCAL" ]; then
+    python3 "$E2E/cli/private_alias.py" --verify-rekey --project "$P" --view "$view" --out "$work/private-reencrypt" --cli "$COZY"
+  fi
+  close_vault reencrypted-lock
   trap - EXIT
   rm -rf -- "$secrets"
-  printf '{"ordinary":true,"mounted_media":true,"lock":true,"recovery":true,"recovery_output_backing_refused":true,"recovery_output_view_refused":true,"rekey":true,"expiry":true,"synthetic_only":true}\n' > "$work/receipt.json"
+  printf '{"ordinary":true,"mounted_media":true,"lock":true,"recovery":true,"recovery_output_backing_refused":true,"recovery_output_view_refused":true,"rekey":true,"expiry":true,"decrypt":true,"reencrypt":true,"synthetic_only":true}\n' > "$work/receipt.json"
 )
 
 # Same installed candidate, normal browser, no mock HTTP or account service.
