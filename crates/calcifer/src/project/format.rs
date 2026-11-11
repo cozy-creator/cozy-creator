@@ -784,23 +784,6 @@ impl Doc {
         done
     }
 
-    /// Each asset's state with these versions, by name key, made its state: the key they stand on now written on each. Only a change of format does this.
-    pub(super) fn stamped(&self, lock: &mut Lock, current: &BTreeMap<String, u32>) -> Vec<Standing> {
-        let mut done = vec![Standing::default(); self.assets.len()];
-        for &i in &self.order {
-            let name = &self.assets[i].name;
-            let now = self.standing(i, lock, &done);
-            if let Some(number) = current.get(&name_key(name)).copied()
-                && let Some(version) = lock.asset_mut(name, &self.assets[i].kind).versions.iter_mut().find(|version| version.number == number)
-            {
-                version.inputs = now.inputs.unwrap_or_default();
-                version.text = self.text(i);
-            }
-            done[i] = self.standing(i, lock, &done);
-        }
-        done
-    }
-
     /// The hash in the file, else its newest version for these inputs, else none. A hash that is a version's main file brings
     /// the version's whole file set; one that is none's is just that file.
     pub(crate) fn standing(&self, i: usize, lock: &Lock, done: &[Standing]) -> Standing {

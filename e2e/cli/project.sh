@@ -89,14 +89,32 @@ sha() { { sha256sum "$1" 2> /dev/null || shasum -a 256 "$1"; } | cut -c1-64; }
 J() { jq -e "$@" > /dev/null; }
 # edited <file> <perl s///>: in place, on every OS: a Mac's sed takes neither -i alone nor a newline in what it writes.
 edited() { perl -pi.was -e "$2" "$1"; rm -f "$1.was"; }
-# yaml_in <project>: stdin as the project: its project.yaml while it's a folder no Calcifer has opened (its first open imports it, cl-803),
-# else read in by `cozy import`, one edit, as a hand's edit of its export.
+# yaml_in <project>: create current native storage, then import authoring text through the public CLI.
+# The text is outside the project; physical project.yaml is never canonical fixture storage.
 yaml_in() {
-  if [ -f "$1/project.db" ]; then
-    cat > "$1.in.yaml" && in_project "$1" import "$1.in.yaml" > "$OUT/yaml-in.txt" 2>&1 || check "import into $1: $(tail -c 300 "$OUT/yaml-in.txt")"
-  else
-    cat > "$1/project.yaml"
-  fi
+  cat > "$1.in.yaml" || return
+  run_project "$1" && in_project "$1" import "$1.in.yaml" > "$OUT/yaml-in.txt" 2>&1 \
+    || { check "import into $1: $(tail -c 300 "$OUT/yaml-in.txt")"; return 1; }
+}
+# An unsupported folder's complete entry names and bytes, before and after public calls.
+retired_tree() {
+  python3 - "$1" <<'PYTREE'
+import hashlib, json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+print(json.dumps([(str(p.relative_to(root)), 'dir' if p.is_dir() else hashlib.sha256(p.read_bytes()).hexdigest())
+                  for p in sorted(root.rglob('*'))], separators=(',', ':')))
+PYTREE
+}
+refused_folder() {
+  local directory=$1 label=$2 before code
+  before=$(retired_tree "$directory")
+  code=0; in_project "$directory" --json status > "$OUT/retired-$label-status.json" 2>&1 || code=$?
+  { [ "$code" != 0 ] && J '.error.code == "project_format_unsupported"' "$OUT/retired-$label-status.json"; } \
+    || check "$label: old storage was not explicitly refused: $(tail -c 300 "$OUT/retired-$label-status.json")"
+  code=0; cozy --json new "$directory" > "$OUT/retired-$label-new.json" 2>&1 || code=$?
+  { [ "$code" != 0 ] && J '.error.code == "project_format_unsupported"' "$OUT/retired-$label-new.json"; } \
+    || check "$label: new did not refuse old storage before credentials: $(tail -c 300 "$OUT/retired-$label-new.json")"
+  [ "$(retired_tree "$directory")" = "$before" ] || check "$label: refusal changed old entry names or bytes"
 }
 # hand <project> <perl s///>: its export edited and read back, as a hand edits a project now.
 hand() { { in_project "$1" export > "$1.hand.yaml" && edited "$1.hand.yaml" "$2" && yaml_in "$1" < "$1.hand.yaml"; } || check "a hand's edit of $1 failed"; }
@@ -115,17 +133,6 @@ PY
 # Export metadata belongs to its project/revision; compare graph bytes when the test
 # deliberately compares separate project copies or one specific graph edit.
 yaml_body() { sed '/^# cozy-project-base: /d' "$@"; }
-
-# A real historical-v1 fault, not damage to schema2's disposable SQL projection. These
-# cells run only in the fresh-runner suite; stop its owned Calcifer before replacing storage.
-v1_fault() {
-  local P=$1 statement=$2 lock=$HOME/.cozy/calcifer/calcifer.lock.holder
-  [ -z "${ALONE:-}" ] || { check "v1 fault cells require an owned fresh-runner Calcifer"; return 1; }
-  eval "$(web_stop "$lock")" 2> /dev/null || true
-  db_sql "$P" "DROP TABLE IF EXISTS crdt_document; DROP TABLE IF EXISTS crdt_changes; PRAGMA user_version=1; $statement"
-  in_project "$P" status > "$OUT/v1-fault-open.txt" 2>&1 || { check "v1 fault migration: $(tail -c 300 "$OUT/v1-fault-open.txt")"; return 1; }
-  ADDR=$(jq -r .address "$lock") TOKEN=$(jq -r .token "$lock")
-}
 
 restore_project_db() {
   local P=$1 snapshot=$2 lock=$HOME/.cozy/calcifer/calcifer.lock.holder
@@ -150,15 +157,6 @@ approved_in() { in_project "$1" export | awk -v box="  $2:" '$0 == box { in_it =
 dropped() {
   local P=$1; shift
   { in_project "$P" export | NAMES="$*" perl -ne 'BEGIN { %n = map { $_ => 1 } split / /, $ENV{NAMES} } if (/^  ([^ :]+):/ && $n{$1}) { $in = 1; next } $in = 0 if $in && /^ {0,2}\S/; print unless $in' > "$P.hand.yaml" && yaml_in "$P" < "$P.hand.yaml"; } || check "a hand's deletion from $P failed"
-}
-# db_replace <project> <from> <to>: each row of its versions with `from` in it says `to`, written past Calcifer, as a damaged file was.
-db_replace() {
-  python3 - "$1/project.db" "$2" "$3" <<'PY'
-import sqlite3, sys
-conn = sqlite3.connect(sys.argv[1])
-conn.execute("UPDATE versions SET record = replace(record, ?, ?)", (sys.argv[2], sys.argv[3]))
-conn.commit()
-PY
 }
 # prefix <project> <file>: `cozy import`, and what its export writes for it.
 prefix() { (cd "$1" && in_project "$1" --json import "$2" | jq -r '.sha256 | sub("sha256:"; "") | .[:12]') || check "import $2 failed"; }
@@ -575,168 +573,35 @@ grep -aqF "$look" "$OUT/by-asset-tty.txt" && check "by asset: the input's name i
 grep -aq 'running' "$OUT/by-asset-tty.txt" || check "by asset: the live view never showed a job running"
 }
 
-# Another format, of the file or of the lock, is said and left as it is: nothing writes over it.
+# Current authoring text is explicit and transactional; retired text never becomes folder storage.
 hard_cut() {
-step "a project: format 1 is refused, untouched"
-local O=$OUT/old code before
+step "a project: retired authoring formats are refused without changing the native graph"
+local O=$OUT/old-authoring code format
 mkdir -p "$O"
-printf 'version: 1\nentities:\n  - {name: a, kind: character}\n' | yaml_in "$O"
-code=0; in_project "$O" status > "$OUT/old-yaml.txt" 2>&1 || code=$?
-{ [ "$code" != 0 ] && grep -q 'format 1' "$OUT/old-yaml.txt"; } || check "a format 1 project.yaml was read (exit $code): $(tail -c 200 "$OUT/old-yaml.txt")"
-printf 'version: 4\nassets:\n  a:\n    description: A.\n' | yaml_in "$O"
-printf '{"nodes": {"a": {"kind": "character", "versions": [{"number": 1}]}}}\n' > "$O/project.lock"
-before=$(sha "$O/project.lock")
-code=0; in_project "$O" status > "$OUT/old-lock.txt" 2>&1 || code=$?
-{ [ "$code" != 0 ] && grep -q 'format 1' "$OUT/old-lock.txt" && [ "$(sha "$O/project.lock")" = "$before" ]; } || check "a format 1 project.lock was read or written (exit $code): $(tail -c 200 "$OUT/old-lock.txt")"
-# What a page opening to the newest project would refuse.
-rm -rf "$O"
+printf 'version: 4\nassets:\n  kept: {text: Current.}\n' | yaml_in "$O"
+in_project "$O" export > "$OUT/old-authoring-before.yaml"
+for format in 1 2 3; do
+  printf 'version: %s\nassets: {}\n' "$format" > "$OUT/old-authoring-$format.yaml"
+  code=0; in_project "$O" --json import "$OUT/old-authoring-$format.yaml" > "$OUT/old-authoring-$format.json" 2>&1 || code=$?
+  { [ "$code" != 0 ] && J '.error.code == "project_format"' "$OUT/old-authoring-$format.json"; } \
+    || check "authoring: format $format was not refused: $(tail -c 300 "$OUT/old-authoring-$format.json")"
+  cmp -s <(yaml_body "$OUT/old-authoring-before.yaml") <(in_project "$O" export | yaml_body) \
+    || check "authoring: format $format changed the native graph"
+done
 }
 
-# Format 2 through 3 to 4, here, with no Calcifer: nothing goes out of date and nothing runs. A project made for real, its files and versions
-# then said back as format 2 would, an entity and a form over its sheets, a still a shot wrote, and a mention of what nothing wrote.
+# Old physical folders are recognizable only for an explicit refusal, never imported or archived.
 upgrades() {
-step "a project: a format 2 folder opened moves to format 4 and into project.db, its files kept as .v2"
-local U=$OUT/upgrade draw=$here/project/draw.py before art wall clip
-mkdir -p "$U"; still "$U/art.png" teal; plate "$U/clip.mp4" testsrc 440 200 8
-printf 'version: 4\nassets: {}\n' | yaml_in "$U"
-art=$(prefix "$U" "$U/art.png")
-prefix "$U" "$U/clip.mp4" > /dev/null; clip=$(sha "$U/clip.mp4")
-yaml_in "$U" <<YAML
-version: 4
-assets:
-  art: {approved: $art}
-  hero_sheet: {tool: $draw/draw, instructions: From <art>.}
-  old_sheet: {tool: $draw/draw, instructions: From <hero_sheet>.}
-  wall: {tool: $draw/draw, instructions: A wall.}
-  poster: {tool: $draw/draw, instructions: Before an edit.}
-YAML
-render "$U" all || check "upgrade: making it: $(tail -c 300 "$OUT/render.txt")"
-before=$(runs "$U")
-in_project "$U" approve wall 1 > /dev/null 2>&1 || check "upgrade: approve wall"
-wall=$(take_file "$U" wall image 0); wall=${wall#sha256:}; wall=${wall:0:12}
-# What a format 2 lock said of the same, read while this cozy can read it.
-local was_lock
-old_row() { held "$U" "$1" | jq --arg n "$1" '{name: $n, kind: "image", versions: [.versions[] | {number, seed, runs, inputs: "old-key-\(.number)", made_by: {with: "local/draw/draw"}, files: (.files | map_values(.sha256))}]}'; }
-old_files() { held "$U" "$1" | jq '[.versions[].files[] | {(.sha256): {path, sha256}}] | add'; }
-was_lock=$(jq -n --argjson a "$(old_row hero_sheet)" --argjson b "$(old_row old_sheet)" --argjson c "$(old_row wall)" --argjson d "$(old_row poster)" --arg clip "sha256:$clip" \
-  --argjson files "$(jq -n --argjson a "$(old_files hero_sheet)" --argjson b "$(old_files old_sheet)" --argjson c "$(old_files wall)" --argjson d "$(old_files poster)" '$a + $b + $c + $d')" \
-  '{format: 2, files: ($files + {($clip): {path: "files/\($clip[7:]).mp4", sha256: $clip}}), assets: {"hero sheet": $a, "old sheet": $b, wall: $c, poster: $d,
-    "table.1": {name: "table.1", kind: "image", versions: [{number: 7, inputs: "old-frame", files: {image: $c.versions[0].files.image}, made_by: {with: "cozy/frame"}}]},
-    take: {name: "take", kind: "video", numbered: 4, versions: [{number: 4, inputs: "old-take", files: {video: $clip}, made_by: {with: "local/minimax-h3/generate"}}]},
-    "frame.1": {name: "frame.1", kind: "image", numbered: 4, versions: [{number: 4, inputs: "old-frame-4", files: {image: $a.versions[0].files.image}, made_by: {with: "cozy/frame"}}]}}}') || check "upgrade: what it holds: $(tail -c 300 "$OUT/held.err")"
-# What a format 2 file said of the same, in a folder of its own, with its files: what its first open moves.
-local V=$OUT/upgrade-v2
-mkdir -p "$V/files"; cp -l "$U"/files/* "$V/files/"
-cat > "$V/project.yaml" <<YAML
-# A hand's note.
-version: 2
-defaults:
-  image:
-    with: $draw
-    style: Plain.
-entities:
-  hero:
-    kind: character
-    description: A brave hero.
-    image: <hero_sheet>
-    old:
-      description: The hero of old.
-      image: <old_sheet>
-assets:
-  # Its art.
-  art:
-    image: $art  #ken
-  hero_sheet:
-    render: From <art>.
-  old_sheet:
-    render: From <hero_sheet>.
-  wall:
-    image: $wall
-    render: A wall.
-  poster:
-    render: After an edit, with <table.1> and <coast.1>.
-  clear:
-    render: {with: /nowhere/qwen-image-2, prompt: A cat., transparent: true}
-  shot:
-    kind: video
-    render: {with: cozy}
-    pieces:
-      - <hero.old>
-  # A frame a beat wrote, its one version numbered past 1.
-  frame.1:
-  take:
-    kind: video
-    render: {with: /nowhere/minimax-h3}
-    beats:
-      - duration: 4
-        description: A wave.
-      - duration: 4
-        description: It breaks.
-        writes: [{image: frame.1, at: 1.5}]
-YAML
-printf '%s\n' "$was_lock" > "$V/project.lock"
-cp "$V/project.yaml" "$OUT/upgrade-v2.yaml"; cp "$V/project.lock" "$OUT/upgrade-v2.lock"
-# What its first open says, once, is on the open's answer: the CLI prints it.
-in_project "$V" status > "$OUT/upgraded.txt" 2>&1 || check "upgrade: it said $(tail -c 400 "$OUT/upgraded.txt")"
-in_project "$V" --json --full status > "$OUT/upgraded-status.json" 2> "$OUT/upgraded.err" || check "upgrade: it said $(tail -c 400 "$OUT/upgraded.err")"
-cmp -s "$V/project.yaml.v2" "$OUT/upgrade-v2.yaml" && cmp -s "$V/project.lock.v2" "$OUT/upgrade-v2.lock" || check "upgrade: the old files aren't kept beside the new"
-{ [ -f "$V/project.db" ] && [ ! -e "$V/project.yaml" ] && [ ! -e "$V/project.lock" ] && [ -f "$V/project.yaml.v3" ]; } || check "upgrade: 2 to 3 to 4, into project.db: $(ls -A "$V" | tr '\n' ' ')"
-in_project "$V" export > "$OUT/upgraded.yaml"
-{ [ "$(made "$V" hero)" = 1 ] && [ "$(made "$V" hero_old)" = 1 ] && J '.versions[0].number == 7' <<< "$(held "$V" table_1)"; } || check "upgrade: its versions: $(counts "$V")"
-J '.assets[] | select(.name == "wall") | .approved == 1' "$OUT/upgraded-status.json" || check "upgrade: wall holds no version: $(row "$V" wall .)"
-J '.assets[] | select(.name == "clear") | .fields.instructions == "This is an RGBA image with transparency. A cat.\n\nThe image has alpha channel and the background is transparent." and (.fields | has("transparent") | not)' "$OUT/upgraded-status.json" || check "upgrade: Qwen's transparent: $(row "$V" clear .fields)"
-J '.assets[] | select(.name == "hero") | (.fields | has("asset_type") | not) and .fields.description == "A brave hero." and .fields.instructions == "From <art>." and .fields.style == "<style>"' "$OUT/upgraded-status.json" || check "upgrade: hero: $(row "$V" hero .fields)"
-J '.assets[] | select(.name == "hero_old") | .fields.description == "The hero of old." and .fields.instructions == "From <hero>." and (.fields | has("asset_type") | not)' "$OUT/upgraded-status.json" || check "upgrade: hero_old: $(row "$V" hero_old .fields)"
-J '.assets[] | select(.name == "poster") | .versions == 1 and .fields.instructions == "After an edit, with <table_1> and <coast.1>."' "$OUT/upgraded-status.json" || check "upgrade: poster: $(row "$V" poster .)"
-{ grep -q 'cozy/edit' "$OUT/upgraded.yaml" && grep -q '<hero_old>' "$OUT/upgraded.yaml" && ! grep -qE '^ *(kind|with|render|pieces|writes):|^entities|^defaults' "$OUT/upgraded.yaml"; } || check "upgrade: what it says: $(cat "$OUT/upgraded.yaml")"
-J '.assets[] | select(.name == "frame_1") | (.pinned | not) and .approved == null and .versions == 1 and .tool == "cozy/frame" and .fields.video == "<take>" and .fields.at == 5.5' "$OUT/upgraded-status.json" || check "upgrade: a frame a beat wrote isn't a frame of its shot, unapproved: $(row "$V" frame_1 .)"
-[ "$(grep -c 'poster mentions <coast.1>' "$OUT/upgraded.txt")" = 1 ] || check "upgrade: a mention of nothing wasn't said: $(cat "$OUT/upgraded.txt")"
-{ [ "$(grep -c 'hero, hero_old are now a picture reference like any other' "$OUT/upgraded.txt")" = 1 ] && [ "$(grep -c 'hero.old is hero_old' "$OUT/upgraded.txt")" = 1 ]; } || check "upgrade: what format 4 reads another way wasn't said once: $(cat "$OUT/upgraded.txt")"
-in_project "$V" status > /dev/null 2>&1 || check "upgrade: opened again"
-[ ! -e "$V/project.yaml" ] || check "upgrade: a second open left a project.yaml"
-
-step "a project: a format 2 folder opened: \`defaults\` go, a style and a soundscape are text assets, each mentioned where it was used"
-local W=$OUT/upgrade-defaults
-mkdir -p "$W"
-cat > "$W/project.yaml" <<YAML
-version: 2
-defaults:
-  image: {with: /nowhere/qwen-image-2, style: Plain, aspect_ratio: "16:9"}
-  video: {with: /nowhere/minimax-h3, style: Plain and bold., soundscape: Rain., music: N/A, aspect_ratio: "16:9", turbo: true}
-assets:
-  clear: {render: {prompt: A cat., transparent: true}}
-  dull: {render: {prompt: A dog., aspect_ratio: "3:2"}}
-  shot:
-    kind: video
-    summary: <clear> walks.
-    beats: [{duration: 5, description: It rains.}]
-  plain_shot:
-    kind: video
-    soundscape: Quiet.
-    beats: [{duration: 5, description: It stops.}]
-YAML
-# What its first open says, once, is on the open's answer: the CLI prints it.
-in_project "$W" status > "$OUT/upgraded-defaults.txt" 2>&1 || check "upgrade: defaults: $(tail -c 300 "$OUT/upgraded-defaults.txt")"
-status "$W" > "$OUT/upgraded-defaults-status.json" || check "upgrade: defaults: $(tail -c 300 "$OUT/status.err")"
-of() { jq -c --arg n "$1" '.assets[] | select(.name == $n) | .fields' "$OUT/upgraded-defaults-status.json"; }
-J '.text == "Plain"' <<< "$(of style)" || check "upgrade: style: $(of style)"
-J '.text == "<style> and bold."' <<< "$(of video_style)" || check "upgrade: video_style: $(of video_style)"
-J '.text == "Rain."' <<< "$(of soundscape)" || check "upgrade: soundscape: $(of soundscape)"
-J '.instructions == "This is an RGBA image with transparency. Style: <style>.\n\nA cat.\n\nThe image has alpha channel and the background is transparent." and .aspect_ratio == "16:9"' <<< "$(of clear)" || check "upgrade: clear: $(of clear)"
-J '.instructions == "Style: <style>.\n\nA dog." and .aspect_ratio == "3:2"' <<< "$(of dull)" || check "upgrade: an asset's own value went: $(of dull)"
-J '.summary == "<video_style>\n<clear> walks." and .soundscape == "<soundscape>" and (has("music") | not) and (has("style") | not) and .aspect_ratio == "16:9"' <<< "$(of shot)" || check "upgrade: shot: $(of shot)"
-J '.summary == "<video_style>" and .soundscape == "Quiet."' <<< "$(of plain_shot)" || check "upgrade: a shot with no summary: $(of plain_shot)"
-! grep -q '^defaults' <(in_project "$W" export) || check "upgrade: defaults stayed: $(in_project "$W" export)"
-[ "$(grep -c 'H3 shots now carry the style in their summary' "$OUT/upgraded-defaults.txt")" = 1 ] || check "upgrade: the move wasn't said once: $(cat "$OUT/upgraded-defaults.txt")"
-
-step "a project: a format 2 folder opened: names that fold to one are said, by name, and nothing is written"
-local N=$OUT/upgrade-names
-mkdir -p "$N"
-printf 'version: 2\nassets:\n  Amy_one:\n    description: One.\n  amy-ONE:\n    description: Two.\n' > "$N/project.yaml"
-cp "$N/project.yaml" "$OUT/upgrade-names.yaml"
-code=0; in_project "$N" status > "$OUT/upgrade-names.txt" 2>&1 || code=$?
-{ [ "$code" != 0 ] && grep -q 'Amy_one and amy-ONE are one name' "$OUT/upgrade-names.txt" && cmp -s "$N/project.yaml" "$OUT/upgrade-names.yaml" && [ ! -e "$N/project.db" ]; } || check "upgrade: names that are one (exit $code): $(tail -c 300 "$OUT/upgrade-names.txt")"
-rm -rf "$N"
+step "a project: physical YAML/lock formats 2, 3 and 4 are refused without any migration"
+local format U
+for format in 2 3 4; do
+  U=$OUT/retired-format-$format
+  mkdir -p "$U/files"
+  printf 'version: %s\nassets:\n  note: {text: Retained original.}\n' "$format" > "$U/project.yaml"
+  printf '{"format":%s,"assets":{},"files":{}}\n' "$format" > "$U/project.lock"
+  printf 'retained media\n' > "$U/files/original.bin"
+  refused_folder "$U" "format-$format"
+done
 }
 
 # A text asset: its words go where it's mentioned, once, in Doc, and the key follows them.
@@ -787,8 +652,9 @@ J '.assets[] | select(.name == "poster") | .standing == "current" and .pinned' <
 step "a project: a name is one name in any case, a text can't be a tag, and a typed name that's taken is refused"
 local N=$OUT/text-names id code
 mkdir -p "$N"
-printf 'version: 4\nassets:\n  Amy:\n    description: One.\n  amy:\n    description: Two.\n' | yaml_in "$N"
-code=0; in_project "$N" status > "$OUT/one-name.txt" 2>&1 || code=$?
+run_project "$N" || check "names: native project bootstrap"
+printf 'version: 4\nassets:\n  Amy:\n    description: One.\n  amy:\n    description: Two.\n' > "$OUT/one-name.yaml"
+code=0; in_project "$N" import "$OUT/one-name.yaml" > "$OUT/one-name.txt" 2>&1 || code=$?
 { [ "$code" != 0 ] && grep -q 'Amy, on line 3, and amy, on line 5, are one name' "$OUT/one-name.txt"; } || check "names: two keys of one name (exit $code): $(tail -c 300 "$OUT/one-name.txt")"
 printf 'version: 4\nassets: {}\n' | yaml_in "$N"
 [ "$(in_project "$N" add text note text='Some words.')" = note ] || check "names: add text with no name"
@@ -811,78 +677,25 @@ render "$R" look > /dev/null 2>&1 || true
 J '[.warnings[].message] | any(contains("so a text asset can'"'"'t go by it: cozy rename D"))' <<< "$(status "$R")" || check "tags: not said: $(status "$R" | jq -c .warnings)"
 }
 
-# The first thing to touch a project of format 2 moves it, as `cozy upgrade` with no status would.
+# A current project opens/reopens from native storage; physical authoring files are ordinary files.
 first_open() {
-step "a project: format 2 upgrades itself on first open, says so once, and keeps .v2 beside it"
-local T=$OUT/first-open code answer before lock=$HOME/.cozy/calcifer/calcifer.lock.holder
-ADDR=$(jq -r .address "$lock") TOKEN=$(jq -r .token "$lock")
+step "a project: native CRDT state opens and reopens without consuming physical YAML or lock files"
+local T=$OUT/first-open before id
 mkdir -p "$T"
-printf 'version: 2\nassets:\n  a:\n    description: A.\n' | yaml_in "$T"
-printf '{"format": 2, "assets": {}, "files": {}}\n' > "$T/project.lock"
-cp "$T/project.yaml" "$OUT/first-open.yaml"; cp "$T/project.lock" "$OUT/first-open.lock"
-in_project "$T" status > "$OUT/first-open.txt" 2>&1 || check "first open: status: $(tail -c 300 "$OUT/first-open.txt")"
-grep -qF 'project.yaml.v2' "$OUT/first-open.txt" || check "first open: not said: $(tail -c 300 "$OUT/first-open.txt")"
-grep -q '^version: 4$' <(in_project "$T" export) || check "first open: it didn't upgrade: $(in_project "$T" export)"
-{ cmp -s "$T/project.yaml.v2" "$OUT/first-open.yaml" && cmp -s "$T/project.lock.v2" "$OUT/first-open.lock"; } || check "first open: an original went"
-in_project "$T" status > "$OUT/first-open-2.txt" 2>&1 || check "first open: status again: $(tail -c 300 "$OUT/first-open-2.txt")"
-! grep -qF 'project.yaml.v2' "$OUT/first-open-2.txt" || check "first open: said twice: $(cat "$OUT/first-open-2.txt")"
-local P=$OUT/first-open-page
-mkdir -p "$P"
-printf 'version: 2\nassets:\n  a:\n    description: A.\n' | yaml_in "$P"
-answer=$(api "http://$ADDR/v1/projects/$(jq -rn --arg p "$P" '$p | @uri')?assets=false")
-J '.warnings | any(.message | contains("project.yaml.v2"))' <<< "$answer" || check "first open: the route doesn't say so: $answer"
-
-step "a project: what can't convert is refused with why, and left as it is"
-local C=$OUT/first-open-stuck
-mkdir -p "$C"
-printf 'version: 2\nassets:\n  Amy_one:\n    description: One.\n  amy-ONE:\n    description: Two.\n' | yaml_in "$C"
-before=$(sha "$C/project.yaml")
-code=0; in_project "$C" status > "$OUT/first-open-stuck.txt" 2>&1 || code=$?
-{ [ "$code" != 0 ] && grep -q 'Amy_one' "$OUT/first-open-stuck.txt" && [ "$(sha "$C/project.yaml")" = "$before" ] && [ ! -e "$C/project.yaml.v2" ]; } || check "first open: names that are one (exit $code): $(tail -c 300 "$OUT/first-open-stuck.txt")"
-rm -rf "$C"
-
-step "a project: format 2 opened keeps what was out of date, and says each mention of what a beat wrote"
-local S=$OUT/first-open-states draw=$here/project/draw.py art plate poster f
-mkdir -p "$S/files"
-still "$S/art.png" teal; still "$S/plate.png" navy; still "$S/poster.png" olive
-art=$(sha "$S/art.png") plate=$(sha "$S/plate.png") poster=$(sha "$S/poster.png")
-for f in art plate poster; do mv "$S/$f.png" "$S/files/$(sha "$S/$f.png").png"; done
-# As 0.19 left it: coast's plate approved, poster's one version from before keys (out of date), and two stills clash's beats wrote, never made.
-yaml_in "$S" <<YAML
-version: 2
-entities:
-  coast:
-    kind: environment
-    image: <coast_plate>
-assets:
-  art:
-    image: ${art:0:12}
-  coast_plate:
-    image: ${plate:0:12}
-    render: {with: $draw, prompt: A coast.}
-  poster:
-    render: {with: $draw, prompt: From <art>.}
-  clash:
-    kind: video
-    render: {with: /nowhere/minimax-h3}
-    beats:
-      - description: On <coast>.
-        writes: [{image: coast.1}]
-      - description: Then on <coast.1>.
-        writes: [{image: coast.2}]
-      - description: And on <coast.2>.
-YAML
-jq -n --arg art "sha256:$art" --arg plate "sha256:$plate" --arg poster "sha256:$poster" '{format: 2,
-  files: ([$art, $plate, $poster] | map({(.): {path: "files/\(.[7:]).png", sha256: .}}) | add),
-  assets: {"coast plate": {name: "coast_plate", kind: "image", numbered: 1, versions: [{number: 1, inputs: "", files: {image: $plate}}]},
-    poster: {name: "poster", kind: "image", numbered: 1, versions: [{number: 1, inputs: "", files: {image: $poster}}]}}}' > "$S/project.lock"
-in_project "$S" status > "$OUT/first-open-states.txt" 2>&1 || check "first open: states: $(tail -c 300 "$OUT/first-open-states.txt")"
-status "$S" > "$OUT/first-open-states.json"
-J '.assets[] | select(.name == "poster") | .standing == "out_of_date" and .versions == 1' "$OUT/first-open-states.json" || check "first open: what was out of date isn't: $(row "$S" poster .)"
-J '.assets[] | select(.name == "coast") | .standing == "current" and .approved == 1' "$OUT/first-open-states.json" || check "first open: coast: $(row "$S" coast .)"
-J '.assets[] | select(.name == "art") | .standing == "current"' "$OUT/first-open-states.json" || check "first open: art: $(row "$S" art .)"
-grep -qE "clash, line [0-9]+: <coast\.1> was what a beat of clash wrote, and now reads as coast's version 1" "$OUT/first-open-states.txt" || check "first open: <coast.1> not said: $(cat "$OUT/first-open-states.txt")"
-grep -qE "clash, line [0-9]+: <coast\.2> was what a beat of clash wrote, and now reads as coast's version 2, which it hasn't" "$OUT/first-open-states.txt" || check "first open: <coast.2> not said: $(cat "$OUT/first-open-states.txt")"
+printf 'version: 4\nassets:\n  a: {text: Current native state.}\n' | yaml_in "$T"
+id=$(status "$T" | jq -r .id)
+in_project "$T" export > "$OUT/first-open-before.yaml"
+printf 'version: 2\nassets: {}\n' > "$T/project.yaml"
+printf '{"format":2,"assets":{},"files":{}}\n' > "$T/project.lock"
+before="$(sha "$T/project.yaml") $(sha "$T/project.lock")"
+in_project "$T" status > "$OUT/first-open.txt" 2>&1 || check "first open: $(tail -c 300 "$OUT/first-open.txt")"
+in_project "$T" status > "$OUT/first-open-2.txt" 2>&1 || check "first reopen: $(tail -c 300 "$OUT/first-open-2.txt")"
+[ "$(status "$T" | jq -r .id)" = "$id" ] || check "first open: native identity changed"
+cmp -s <(yaml_body "$OUT/first-open-before.yaml") <(in_project "$T" export | yaml_body) || check "first open: physical files replaced native state"
+[ "$(sha "$T/project.yaml") $(sha "$T/project.lock")" = "$before" ] || check "first open: physical authoring files were changed"
+[ ! -e "$T/project.yaml.v2" ] && [ ! -e "$T/project.lock.v2" ] && [ ! -e "$T/project.yaml.v3" ] && [ ! -e "$T/.cozy-legacy-v1" ] \
+  || check "first open: created a retired migration archive"
+J '.assets[] | select(.name == "a") | .fields.text == "Current native state."' <<< "$(status "$T")" || check "first open: native authoring state went"
 }
 
 # A version keeps the words that made it, only where they changed, whatever becomes of the one that held them.
@@ -906,95 +719,33 @@ in_project "$T" reclaim --yes > /dev/null 2>&1 || check "version text: reclaim"
 J '[.versions[].text] == ["A red door.", "A blue door."]' <<< "$(held "$T" hero)" || check "version text: what held it went: $(held "$T" hero | jq -c '[.versions[].text]')"
 }
 
-# Paid-for bytes reach `files/` whatever the project is. A project of format 2, its run in flight over the upgrade, and one that can't convert.
+# An unsupported folder is refused before a render can submit work or create output directories.
 old_landing() {
-step "a project: a run landing in a project of format 2 upgrades it, lists its output, and says so"
-local T=$OUT/old-landing n
+step "a project: rendering retired storage creates no run or landing files"
+local T=$OUT/old-landing before code runs_before
 mkdir -p "$T"
-printf 'version: 2\nassets:\n  a:\n    description: A.\n' | yaml_in "$T"
-printf '{"format": 2, "assets": {}, "files": {}}\n' > "$T/project.lock"
-(cd "$T" && in_project "$T" --json run "$here/project/draw.py" instructions=kept) > "$OUT/old-landing.ndjson" 2> "$OUT/old-landing.err" || check "old landing: run: $(tail -c 300 "$OUT/old-landing.err")"
-n=$(run_number "$OUT/old-landing.ndjson")
-[ "$(ls "$T/files" 2> /dev/null | wc -l)" = 1 ] || check "old landing: nothing in files/: $(ls -a "$T" "$T/.runs" 2>&1 | tr '\n' ' ')"
-J '[.warnings[]?.message] | any(contains("project.yaml.v2"))' <<< "$(cozy --json run watch "$n" --once)" || check "old landing: no warning says it upgraded: $(cozy --json run watch "$n" --once | jq -c .warnings)"
-{ grep -q '^version: 4$' <(in_project "$T" export) && [ -f "$T/project.db" ] && [ ! -e "$T/project.yaml" ]; } || check "old landing: it didn't upgrade into project.db: $(ls -A "$T" | tr '\n' ' ')"
-J '.run_files == 1' <<< "$(status "$T")" || check "old landing: its output isn't listed: $(status "$T" | jq -c .run_files)"
-
-step "a project: a run in flight lands, and is listed"
-local going
-(cd "$T" && in_project "$T" --json run "$here/project/shots.py/slow" seconds=8) > "$OUT/old-landing-slow.ndjson" 2>&1 & going=$!
-wait "$going" || check "old landing: the slow run: $(tail -c 300 "$OUT/old-landing-slow.ndjson")"
-[ "$(ls "$T/files" | wc -l)" = 2 ] || check "old landing: its output isn't in files/: $(ls "$T/files" | tr '\n' ' ')"
-J '.run_files >= 1' <<< "$(status "$T")" || check "old landing: it isn't listed: $(status "$T" | jq -c .run_files)"
-
-step "a project: a project that can't convert still takes a run's bytes"
-local C=$OUT/old-landing-stuck
-mkdir -p "$C"
-printf 'version: 2\nassets:\n  Amy_one:\n    description: One.\n  amy-ONE:\n    description: Two.\n' | yaml_in "$C"
-code=0; in_project "$C" status > "$OUT/old-landing-stuck.txt" 2>&1 || code=$?
-[ "$code" != 0 ] || check "old landing: names that are one converted"
-(cd "$C" && in_project "$C" --json run "$here/project/draw.py" instructions=stuck) > "$OUT/old-landing-stuck.ndjson" 2>&1 || check "old landing: a run in it: $(tail -c 300 "$OUT/old-landing-stuck.ndjson")"
-# Kept by its bytes: the one file in files/ is the run's output, by its sha256.
-local kept digest
-cozy --json run watch "$(run_number "$OUT/old-landing-stuck.ndjson")" --once > "$OUT/old-landing-stuck-run.json" 2>&1 || true
-digest=$(jq -r '.output[0].sha256 // empty' "$OUT/old-landing-stuck-run.json" 2> /dev/null || true)
-kept=$(ls "$C/files" 2> /dev/null || true)
-{ [ "$(ls "$C/files" 2> /dev/null | wc -l)" = 1 ] && [ "sha256:$(sha "$C/files/$kept")" = "$digest" ]; } || check "old landing: a project that can't convert lost its output: $(ls -a "$C" 2>&1 | tr '\n' ' ')"
-echo "old landing: a project that can't convert kept ${digest:-nothing} as files/${kept:-nothing}, sha256:$(sha "$C/files/$kept" 2> /dev/null || true): $(jq -c '[.warnings[]?.message]' "$OUT/old-landing-stuck-run.json" 2> /dev/null || true)"
-rm -rf "$C"
+printf 'version: 2\nassets:\n  a: {render: {with: ./draw.py, prompt: Old.}}\n' > "$T/project.yaml"
+printf '{"format":2,"assets":{},"files":{}}\n' > "$T/project.lock"
+refused_folder "$T" landing
+before=$(retired_tree "$T")
+runs_before=$(cozy --json run ls --limit 0 | jq '.runs | length')
+code=0; in_project "$T" --json render all --on local > "$OUT/old-landing.json" 2>&1 || code=$?
+{ [ "$code" != 0 ] && grep -q project_format_unsupported "$OUT/old-landing.json"; } || check "old landing: render did not refuse storage: $(tail -c 300 "$OUT/old-landing.json")"
+[ "$(cozy --json run ls --limit 0 | jq '.runs | length')" = "$runs_before" ] || check "old landing: an unsupported project submitted work"
+[ "$(retired_tree "$T")" = "$before" ] || check "old landing: refusal created landing files"
 }
 
-# A first open stopped part way (cl-803): killed before project.db is in place, the files stand and the next open imports them again;
-# after, what's left goes. Nothing here runs anything.
+# A retired partial import is not a migration to resume. Leave every original/staged byte in place.
 upgrade_interrupted() {
-step "a project: a first open killed at any moment loses nothing, and finishes"
-local S=$OUT/old-landing-killed lock=$HOME/.cozy/calcifer/calcifer.lock.holder stopped=0 tried=0 at pid began took part F
-mkdir -p "$S"
-local native=$S
-[ "${RUNNER_OS:-}" != Windows ] || native=$(cygpath -m "$S")
-node - "$native" <<'JS'
-const { createHash } = require('crypto');
-const { writeFileSync } = require('fs');
-const assets = {}, yaml = ['version: 2', 'assets:'];
-for (let n = 0; n < 600; n++) {
-  const digest = `sha256:${createHash('sha256').update(String(n)).digest('hex')}`;
-  assets[`a ${n}`] = { name: `a_${n}`, kind: 'image', numbered: 1, versions: [{ number: 1, inputs: 'old', files: { image: digest }, made_by: { with: 'local/draw/draw' } }] };
-  yaml.push(`  a_${n}:`, '    render: {with: ./draw.py, prompt: One of many.}');
-}
-writeFileSync(`${process.argv[2]}/project.yaml`, `${yaml.join('\n')}\n`);
-writeFileSync(`${process.argv[2]}/project.lock`, JSON.stringify({ format: 2, assets, files: {} }));
-JS
-cp "$S/project.yaml" "$OUT/killed.yaml"; cp "$S/project.lock" "$OUT/killed.lock"
-began=$(node -p 'Date.now()')
-status "$S" > /dev/null || check "killed: a clean first open"
-took=$(($(node -p 'Date.now()') - began))
-in_project "$S" export > "$OUT/killed-done.yaml" || check "killed: the clean one's export"
-# From its start to past its end, each a folder of its own: how long it takes moves with the disk, so no one stretch of it can be counted on.
-for part in $(seq 1 12); do
-  at=$((took * part / 10)) tried=$((tried + 1)) F=$S-$part
-  mkdir -p "$F"; cp "$OUT/killed.yaml" "$F/project.yaml"; cp "$OUT/killed.lock" "$F/project.lock"
-  in_project "$F" status > /dev/null 2>&1 & pid=$!
-  sleep "$(printf '%d.%03d' $((at / 1000)) $((at % 1000)))"
-  if kill -0 "$pid" 2> /dev/null; then
-    eval "$(web_stop "$lock")" 2> /dev/null || true
-    stopped=$((stopped + 1))
-  fi
-  wait "$pid" 2> /dev/null || true
-  if [ ! -f "$F/project.db" ]; then
-    { [ ! -e "$F/project.yaml.v2" ] || cmp -s "$F/project.yaml.v2" "$OUT/killed.yaml"; } || check "killed at ${at} ms: project.yaml.v2 isn't the original"
-    { [ ! -e "$F/project.lock.v2" ] || cmp -s "$F/project.lock.v2" "$OUT/killed.lock"; } || check "killed at ${at} ms: project.lock.v2 isn't the original"
-  fi
-  project_api "$F" /yaml > "$OUT/killed-again.yaml" 2>&1 || check "killed at ${at} ms: opened again: $(tail -c 300 "$OUT/killed-again.yaml")"
-  cmp -s <(yaml_body "$OUT/killed-again.yaml") <(yaml_body "$OUT/killed-done.yaml") || check "killed at ${at} ms: it came out otherwise: $(diff <(yaml_body "$OUT/killed-done.yaml") <(yaml_body "$OUT/killed-again.yaml") | head -5)"
-  { cmp -s "$F/project.yaml.v2" "$OUT/killed.yaml" && cmp -s "$F/project.lock.v2" "$OUT/killed.lock"; } || check "killed at ${at} ms: an original went"
-  [ -z "$(cd "$F" && ls -A | grep -vxE 'files|\.runs|\.cozy-legacy-v1|project\.db(-wal|-shm)?|project\.(yaml|lock)\.v[23]')" ] || check "killed at ${at} ms: left: $(ls -A "$F" | tr '\n' ' ')"
-  rm -rf "$F"
-done
-echo "first open killed mid-way $stopped of $tried times, in $took ms"
-[ "$stopped" -gt 0 ] || check "killed: no kill landed before it finished"
-# The Calcifer after the kills, as the cells after this call it.
-fixture_projects > /dev/null || check "killed: cozy doesn't answer after the kills"
-ADDR=$(jq -r .address "$lock") TOKEN=$(jq -r .token "$lock")
+step "a project: incomplete legacy import stages are refused unchanged"
+local S=$OUT/retired-incomplete
+mkdir -p "$S/.cozy-legacy-v1"
+printf 'version: 3\nassets: {}\n' > "$S/.cozy-legacy-v1/project.yaml"
+printf '{"format":3,"assets":{},"files":{}}\n' > "$S/.cozy-legacy-v1/project.lock"
+printf 'unfinished old native import\n' > "$S/project.db.new"
+printf 'old canvas\n' > "$S/project.canvas.yaml"
+refused_folder "$S" incomplete
+[ ! -e "$S/project.db" ] || check "incomplete: a legacy stage became native storage"
 }
 
 # A name the project lost, and a render since, leaves its versions an orphan, and that name starts over.
@@ -1031,11 +782,14 @@ version: 4
 assets:
   made: {tool: $here/project/draw.py/draw, instructions: Paid for.}
 YAML
+# An earlier valid native snapshot has the same identity/graph but no landed versions.
+# Restoring it models lost history without reviving an unsupported database schema.
+db_sql "$L" "VACUUM INTO '$OUT/lost-lock-empty.db'"
 render "$L" made -n 2 || check "lost lock: render: $(tail -c 300 "$OUT/render.txt")"
 count=$(ls "$L/files" | wc -l)
 [ "$count" -ge 2 ] || check "lost lock: it made $count files"
 db_sql "$L" "VACUUM INTO '$OUT/lost-lock.db'"
-v1_fault "$L" "DELETE FROM versions; DELETE FROM run_files"
+restore_project_db "$L" "$OUT/lost-lock-empty.db"
 J '.deleted != true and (.next // []) == [] and (.lost | contains("lists no versions")) and .files >= 2' <<< "$(project_reclaim "$L" false)" || check "lost lock: a dry reclaim: $(project_reclaim "$L" false)"
 code=0; project_reclaim "$L" true > "$OUT/lost-lock.txt" 2>&1 || code=$?
 { [ "$code" != 0 ] && grep -qF "lists no versions" "$OUT/lost-lock.txt" && grep -q 'put project.db back' "$OUT/lost-lock.txt"; } || check "lost lock: reclaim --yes (exit $code): $(tail -c 300 "$OUT/lost-lock.txt")"
@@ -1045,7 +799,7 @@ project_reclaim "$L" true > "$OUT/lost-lock.txt" 2>&1 || check "lost lock: recla
 [ "$(ls "$L/files" | wc -l)" = "$count" ] || check "lost lock: with them back, reclaim took what they name"
 
 step "a project: with a version landed since its versions were lost, reclaim --yes takes nothing old"
-v1_fault "$L" "DELETE FROM versions; DELETE FROM run_files"
+restore_project_db "$L" "$OUT/lost-lock-empty.db"
 render "$L" made || check "lost lock: a version since: $(tail -c 300 "$OUT/render.txt")"
 count=$(ls "$L/files" | wc -l)
 J --argjson n "$((count - 1))" '.unrecorded == $n and (.lost // null) == null' <<< "$(in_project "$L" --json reclaim)" || check "lost lock: what's listed: $(in_project "$L" --json reclaim)"
@@ -1931,7 +1685,10 @@ added "$T" <<YAML
 YAML
 render "$T" all --missing || check "orphans: render all with doomed"
 gone_file=$(take_file "$T" doomed image 0)
-v1_fault "$T" "UPDATE versions SET record = json_set(record, '\$.files.frame', '$gone_file') WHERE key = 'kept'"
+project_api "$T" /assets/kept/versions -X POST -H 'Content-Type: application/json' \
+  -d "$(jq -n --arg source "$gone_file" '{source:$source}')" > "$OUT/orphan-shared-version.json" \
+  || check "orphans: joining a current shared-file version: $(tail -c 300 "$OUT/orphan-shared-version.json")"
+[ "$(take_file "$T" kept image)" = "$gone_file" ] || check "orphans: the kept native version does not share the doomed file"
 dropped "$T" doomed
 added "$T" <<YAML
   second:
@@ -3026,10 +2783,9 @@ rename_goes_on
 renames_read
 }
 
-# A film short of its pieces, as a lock from 0.18.5 can hold one, isn't its state: any render cuts it whole, with its pieces as written.
-# Naming a cut cuts it again.
+# A cut changed from short to full renders the full timeline and retains its prior versions.
 short_film_heals() {
-step "a project: a short film in its record repairs itself, and naming a cut cuts it"
+step "a project: a current short cut made out of date becomes full, and naming a cut cuts it"
 local T=$OUT/healing a b short version
 mkdir -p "$T"
 plate "$T/a.mp4" testsrc2 440 800; plate "$T/b.mp4" smptebars 660 800; plate "$T/short.mp4" testsrc2 440 800 2
@@ -3045,8 +2801,8 @@ assets:
     tool: cozy/edit
     tracks:
       - clips:
-          - <a>
           - <b>
+          - <a>
 YAML
 render "$T" edit || check "healing: first cut: $(tail -c 400 "$OUT/render.txt")"
 J '.cuts[0].frames == 288' <<< "$(status "$T")" || check "healing: the whole film: $(status "$T" | jq -c .cuts)"
@@ -3059,24 +2815,25 @@ render "$T" edit || check "healing: replacing the root export: $(tail -c 400 "$O
 if compgen -G "$T/edit.edited-*.mp4" > /dev/null; then check "healing: an edited root side copy was created"; fi
 [ "$(sha "$kept_film")" = "$kept_sha" ] && [ "$(take_file "$T" edit video)" = "$whole" ] && [ "$(made "$T" edit)" = 1 ] \
   || check "healing: replacing the root export changed its retained version"
-if [ "$(sql1 "$T" 'PRAGMA user_version')" = 2 ]; then
-  # A relational query projection is no longer authoritative. Form a REAL historical v1
-  # fixture with the bad short-film reference, then let the actual first-open migration and
-  # normal CLI render repair it. Do not weaken the out-of-date/full-length assertions.
-  local historical=$OUT/healing-v1
-  mkdir -p "$historical"; cp -R "$T/files" "$historical/files"; cp "$T/short.mp4" "$historical/short.mp4"
-  python3 - "$T/project.db" "$historical/project.db" "${whole#sha256:}" "$(sha "$T/short.mp4")" <<'PYHEAL'
-import sqlite3,sys
-with sqlite3.connect(f'file:{sys.argv[1]}?mode=ro',uri=True) as source:
-    with sqlite3.connect(sys.argv[2]) as target:
-        source.backup(target)
-        target.executescript('DROP TABLE crdt_document; DROP TABLE crdt_changes; PRAGMA user_version=1;')
-        target.execute('UPDATE versions SET record=replace(record,?,?)',(sys.argv[3],sys.argv[4]))
-PYHEAL
-  T=$historical
-else
-  db_replace "$T" "${whole#sha256:}" "$(sha "$T/short.mp4")"
-fi
+# Produce a short selected cut through normal native authoring, then author a full cut
+# in the opposite clip order. No prior version matches this final timeline.
+# The previous repair fixture edited relational-v1 records; current CRDT history is authoritative.
+hand "$T" 's/- <b>/- <short_film>/; $_ = "" if /^ *- <a>$/'
+render "$T" edit || check "healing: current short cut: $(tail -c 400 "$OUT/render.txt")"
+J '.cuts[0].frames == 48' <<< "$(status "$T")" || check "healing: the current short version is not 48 frames"
+yaml_in "$T" <<YAML
+version: 4
+assets:
+  a: {approved: $a}
+  b: {approved: $b}
+  short_film: {approved: $short}
+  edit:
+    tool: cozy/edit
+    tracks:
+      - clips:
+          - <a>
+          - <b>
+YAML
 rm -f "$T/edit.mp4"; cp "$T/short.mp4" "$T/edit.mp4"
 [ "$(row "$T" edit .standing)" = '"out_of_date"' ] || check "healing: a short film stands as its state: $(row "$T" edit .status)"
 render "$T" all --missing || check "healing: render: $(tail -c 400 "$OUT/render.txt")"
@@ -3087,9 +2844,7 @@ version=$(held "$T" edit | jq '.versions[-1].number')
 render "$T" edit || check "healing: naming it: $(tail -c 400 "$OUT/render.txt")"
 says healing "(unchanged)"
 [ "$(held "$T" edit | jq '.versions[-1].number')" = "$version" ] || check "healing: the same bytes made a new version: $(tail -c 400 "$OUT/render.txt")"
-if [ "$(sql1 "$T" 'PRAGMA user_version')" = 2 ]; then
-  [ "$(sql1 "$T" "SELECT count(*) FROM versions WHERE json_extract(record,'$.run') IS NOT NULL AND json_type(record,'$.run_id') IS NOT 'text'")" = 0 ] || check "healing: a new generated version lost its globally stable run id"
-fi
+[ "$(sql1 "$T" "SELECT count(*) FROM versions WHERE json_extract(record,'$.run') IS NOT NULL AND json_type(record,'$.run_id') IS NOT 'text'")" = 0 ] || check "healing: a new generated version lost its globally stable run id"
 }
 
 # Takes cut in the walk that lands them, new bytes nothing has measured. First in the project part: on a new computer this is also
@@ -3943,10 +3698,11 @@ J --arg to "&to=/projects/$ID" --arg base "$B/#code=" '.url | startswith($base) 
 (cd "$P/sub" && cozy --json open) > "$OUT/project-open-named.json" || check "session: open of a subdirectory failed"
 J --arg to "&to=/projects/$ID" '.url | endswith($to)' "$OUT/project-open-named.json" || check "session: open did not find the containing project"
 mkdir -p "$OUT/open-none" "$OUT/open-old"; printf 'version: 1\nassets: {}\n' > "$OUT/open-old/project.yaml"
-(cd "$OUT/open-none" && cozy open) > "$OUT/open-none.txt" 2> "$OUT/open-none.err" || check "session: open of a fresh directory failed"
+run_project "$OUT/open-none" || check "session: explicit native bootstrap failed"
+(cd "$OUT/open-none" && cozy open) > "$OUT/open-none.txt" 2> "$OUT/open-none.err" || check "session: open of a fresh native project failed"
 { grep -q '#code=' "$OUT/open-none.txt" && grep -q '&to=/projects/' "$OUT/open-none.txt" && [ -f "$OUT/open-none/project.db" ]; } || check "session: open did not initialize the working directory"
 code=0; (cd "$OUT/open-old" && cozy open) > "$OUT/open-old.txt" 2>&1 || code=$?
-{ [ "$code" != 0 ] && ! grep -q '#code=' "$OUT/open-old.txt"; } || check "session: unsupported old format was silently opened"
+{ [ "$code" != 0 ] && grep -q project_format_unsupported "$OUT/open-old.txt" && ! grep -q '#code=' "$OUT/open-old.txt" && [ ! -e "$OUT/open-old/project.db" ]; } || check "session: unsupported old format was silently opened"
 code=$(jq -r .url "$OUT/project-open.json" | sed -n 's/.*#code=\([0-9a-f]*\)&.*/\1/p')
 [ "$(curl -sS -o "$OUT/session.json" -w '%{http_code}' -X POST -d "{\"code\":\"$code\"}" "$B/v1/session")" = 200 ] || check "session: its code was not traded: $(cat "$OUT/session.json")"
 token=$(jq -r .token "$OUT/session.json") media=$(jq -r .media "$OUT/session.json")
@@ -4086,14 +3842,12 @@ soon screen_says "$OUT/runs.screen" "^ *$n .* completed" || check "live: cozy ru
 
 if [ -z "${ALONE:-}" ] && [ "$RUNNER_OS" = Linux ]; then
   step "a project: a live view across a Calcifer restart, the branch resync takes"
-  # What the index knows and this Calcifer hasn't opened, as a page finds it: format 2 upgrades on its first read, and says so there, once.
+  # An indexed native project replaced by retired folder storage is refused by id after restart.
   local G=$OUT/opened-by-id gid
   mkdir -p "$G"; printf 'version: 4\nassets: {}\n' | yaml_in "$G"
   gid=$(status "$G" | jq -r .id)
   # Its files from before, in place of its database, as a folder copied back from an old backup is.
   rm -f "$G"/project.db*
-  # Preserve the prior import's originals separately before restoring a different old backup.
-  if [ -d "$G/.cozy-legacy-v1" ]; then mv "$G/.cozy-legacy-v1" "$OUT/opened-by-id-original-archive"; fi
   printf 'version: 2\nassets:\n  a:\n    description: A.\n' > "$G/project.yaml"
   printf '{"format": 2, "assets": {}, "files": {}}\n' > "$G/project.lock"
   systemctl --user restart cozy-calcifer || check "live: systemctl --user restart cozy-calcifer failed"
@@ -4101,9 +3855,9 @@ if [ -z "${ALONE:-}" ] && [ "$RUNNER_OS" = Linux ]; then
   n=$(cd "$R" && in_project "$R" --json run ls --limit 1 | jq -r '.runs[0].number') || check "live: run ls after the restart failed"
   soon screen_says "$OUT/runs.screen" "^ *$n .* completed" || check "live: past a restart, cozy run ls does not show run $n: $(head -5 "$OUT/runs.screen")"
   ADDR=$(jq -r .address "$HOME/.cozy/calcifer/calcifer.lock.holder") TOKEN=$(jq -r .token "$HOME/.cozy/calcifer/calcifer.lock.holder")
-  J '[.warnings[]?.message] | any(contains("project.yaml.v2"))' <<< "$(api "http://$ADDR/v1/projects/$gid")" || check "first open: a read by id doesn't say it upgraded: $(api "http://$ADDR/v1/projects/$gid" | jq -c .warnings)"
-  grep -q '^version: 4$' <(in_project "$G" export) || check "first open: a read by id didn't upgrade: $(in_project "$G" export)"
-  J '[.warnings[]?.message] | any(contains("project.yaml.v2")) | not' <<< "$(api "http://$ADDR/v1/projects/$gid")" || check "first open: a read by id said it twice"
+  local old_before; old_before=$(retired_tree "$G")
+  J '.error.code == "project_format_unsupported"' <<< "$(api "http://$ADDR/v1/projects/$gid")" || check "first open: a read by id did not refuse retired storage"
+  [ "$(retired_tree "$G")" = "$old_before" ] || check "first open: a read by id mutated retired storage"
 fi
 code=0; kill "$term" 2> /dev/null || true; wait "$term" || code=$?
 [ "$code" = 0 ] || check "live: cozy run ls exited $code on q"
