@@ -144,7 +144,7 @@ fn source_describer_keeps_structured_recovery_without_expanding_detail_lines() {
     assert_eq!(kept, stderr);
     assert_eq!(error.kind, api::error::Kind::Validation);
     assert_eq!(error.code, "describe_failed");
-    assert_eq!(error.message, "cozy-runtime describe exited 3: package_contract: app.py:2: internal_import (and 1 more)");
+    assert_eq!(error.message, "cozy-runtime describe exited with code 3: package_contract: app.py:2: internal_import (and 1 more)");
     assert_eq!(error.remedy.as_deref(), Some("Use the public author APIs"));
     assert_eq!(error.next, ["cozy run --help"]);
     let envelope = serde_json::to_value(api::error::Envelope { error }).unwrap();
