@@ -1,5 +1,6 @@
 //! Published packages and their models, prepared from a Hub by name (th-245) and reused: a
-//! run whose installation and model resolution are held reads nothing from the Hub. Port of the
+//! held installations and anonymous model resolutions avoid Hub reads. Capability-backed model
+//! reads verify their current root authority before reusing local bytes. Port of the
 //! Python worker's release-root preparation (package set from the release's locked
 //! requirements with uv; each model's checkpoint as the Hub resolves it for the machine's hardware,
 //! then a TensorFS download) with its `release_root_preparing` progress answers.
@@ -831,7 +832,7 @@ impl Publisher {
     ) -> Result<(Named, Landed), Refused> {
         let failed = |(code, message)| Refused { code, message };
         let named = self.resolve(service, source, named, hardware).map_err(failed)?;
-        // A checkpoint this store already holds whole moves nothing and asks the Hub nothing.
+        // Held payload bytes move nothing; resolve already checked capability-backed authority.
         let components = structure.then_some(&[][..]);
         let moved = self.pull(source, &named, components, stop, bytes).map_err(failed)?;
         Ok((named, moved))

@@ -161,6 +161,10 @@ if [ -n "$needs" ]; then
   cd "$start"
 fi
 
+# rental_end (cli/rental.sh) signs in again as this account, with the code this development Hub logs.
+E2E_HUB_EMAIL=$(cozy --json whoami 2> /dev/null | jq -r '.email // empty' || true)
+E2E_HUB_LOG=$(cd "$seed/.." && pwd)/hub.log
+export E2E_HUB_EMAIL E2E_HUB_LOG
 # This computer as a fresh runner: signed out, Calcifer (and on Linux its machine) ended as each OS's service manager
 # ends it, ~/.cozy and the TensorFS store the uploads filled gone.
 cozy --json logout > "$seed/logout.json" 2>&1 || true

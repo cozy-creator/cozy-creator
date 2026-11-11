@@ -22,6 +22,7 @@ parse "$@"
 . "$(dirname "$0")/statedb.sh"
 . "$(dirname "$0")/projectvault.sh"
 . "$(dirname "$0")/machineset.sh"
+. "$(dirname "$0")/rental.sh"
 
 start() {
 step install; install_cozy; run_project "$OUT/project" || fail "project initialization failed"
@@ -260,7 +261,7 @@ cozy --json package uninstall local/one_script --on local > /dev/null || check "
 
 # Balanced by step times (runs 40128128311, 40132063815, 40132725041). A shard keeps its parts' order; whole, the suite runs every part.
 case $SHARD in
-  '') parts="entrypoints weightless script_package one_name_two_paths image_ratio describe first_run second_executor lifetime kept_preparing catalog basics yaml_requests run_flags run_follow time_left broken_answers run_filters run_playback hub_away lock_refresh bound_runs own_references old_runtime hostile_media unseen local_edits path_manifest machine_show_runs writes_once project_stream web_serves page_resend queued_download machines machine_set completions calcifer_faults calcifer_restarts update remove" ;;
+  '') parts="entrypoints weightless script_package one_name_two_paths image_ratio describe first_run second_executor lifetime kept_preparing catalog basics yaml_requests run_flags run_follow time_left broken_answers run_filters run_playback hub_away lock_refresh bound_runs own_references old_runtime hostile_media unseen local_edits path_manifest rental_end machine_show_runs writes_once project_stream web_serves page_resend queued_download machines machine_set completions calcifer_faults calcifer_restarts update remove" ;;
   runs) parts="weightless describe first_run run_flags run_playback hub_away lock_refresh logs" ;;
   executors) parts="second_executor lifetime kept_preparing update remove" ;;
   local-wake) parts="local_wake_update logs" ;;
@@ -291,8 +292,9 @@ case $SHARD in
   projectdb-scale) parts="tools_read db_existing_web logs"; DB_WEB=scale ;;
   # Local code and every input by content (cl-817, cl-820): the CLI in a folder Calcifer can't see,
   # edits timed, a published cozy package called from local code (cl-871) and from an account's package (cl-872), a child
-  # result's Latents in another package's caller (cr-276), a host path refused.
-  local-code) parts="unseen local_edits hub_dependency hub_published child_latents path_manifest logs" ;;
+  # result's Latents in another package's caller (cr-276), a host path refused; then a docker rental's end, signed out,
+  # with a revoked key and signed in (cl-875).
+  local-code) parts="unseen local_edits hub_dependency hub_published child_latents path_manifest rental_end logs" ;;
   # By hand: the control-plane audit's cells alone (control.sh).
   control) parts="machine_show_runs writes_once page_resend hub_away broken_answers logs" ;;
   *) echo "no cli shard $SHARD" >&2; exit 2 ;;

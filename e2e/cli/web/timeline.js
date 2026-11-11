@@ -406,6 +406,8 @@ function plate(path, color, seconds, hz) {
     await page.unroute(incoming, delayIncoming);
     await call('DELETE', `/v1/projects/${id}/assets/${encodeURIComponent(handoffName)}`);
   }
+  // Deleted while open: the page leaves it once it hears so. Until then the address still names it, and a box asked for waits on it (cl-877).
+  await page.waitForFunction((gone) => !location.pathname.endsWith(`/assets/${encodeURIComponent(gone)}`), handoffName);
   await openEdit();
 
   // Its asset deleted: the clip says so, plainly, and a render goes on without it.

@@ -3,8 +3,8 @@
 //! folder is read into one here. Calcifer works from its copy of the tree, kept by the tree's digest, and reads no client's disk.
 //! A machine installs it from TensorD's `LocalSource`, a manifest naming each source file by its content; the interface its
 //! install answers is kept by the manifest and the Runtime that read it, so the same code on the same Runtime is called at once.
-//! A script is a one-file package, its PEP 723 block its pyproject.toml. A project whose sources name the `tensorhub` index is
-//! locked as `cargo run` locks (`locked`); any other without a uv.lock is resolved on the machine. Every machine, this computer's
+//! A script is a one-file package, its PEP 723 block its pyproject.toml. Local code is locked as `cargo run` locks (`locked`),
+//! whatever its sources (a Hub index, a path, git), before it is described or installed. Every machine, this computer's
 //! too, is sent the files by content, and Calcifer writes only the bytes it lacks: no machine reads a host path (cl-817). Every client and Calcifer's projects use this one module (cl-716).
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -113,6 +113,11 @@ pub(crate) fn target(text: &str, cwd: Option<&Path>, home: &Path) -> Option<Resu
 /// Where copies of local code are kept, by their tree's digest.
 fn copies(home: &Home) -> Result<PathBuf, Error> {
     crate::private_io::cache(crate::private_io::current().as_ref(), home.calcifer().join("code"), "code")
+}
+
+/// Calcifer's copy of `code`'s tree (`copied` names the package in it): what a lock stages, path dependencies and all.
+pub(crate) fn copy_of(home: &Home, code: &LocalCode) -> Result<PathBuf, Error> {
+    Ok(copies(home)?.join(hex(&code.tree)))
 }
 
 /// How many copies are kept, at least, and for how long one unused stays.
@@ -382,11 +387,10 @@ struct Member {
     executable: bool,
 }
 
-/// `code` as a machine installs it: its manifest and every file of Calcifer's copy, sent by content, locked for `hub` first when
-/// its sources name the `tensorhub` index (`locked`), so the machine installs what the lock names.
+/// `code` as a machine installs it: its manifest and every file of Calcifer's copy, sent by content, locked for `hub` first
+/// (`locked`), so the machine installs what the lock names.
 pub(crate) async fn source(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Origin) -> Result<Source, Error> {
-    locked(home, code, hubs, hub).await?;
-    let project_dir = copied(home, code)?;
+    let (project_dir, _) = locked(home, code, hubs, hub).await?;
     let project = Project::read(project_dir.clone())?;
     let locals = shared::path_dependencies(&project_dir)?;
     let root = shared::common(
@@ -501,44 +505,71 @@ pub(crate) async fn source(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Ori
     })
 }
 
-/// What a lock of `code`'s copy for `hub` leaves beside the copy (`locked`): the lock it made, or nothing when the tree's own stood.
-fn lock_marker(home: &Home, code: &LocalCode, hub: &Origin) -> Result<PathBuf, Error> {
+/// What a lock of `code`'s copy for `hub` leaves beside the copy (`locked`): `lock`, the lock it made or nothing when the tree's
+/// own stood, and with one made, `copy`, the tree again with that lock in the package's folder. The copy itself stays the tree
+/// as it was sent, which a lock or publication asked of it reads.
+fn lock_dir(home: &Home, code: &LocalCode, hub: &Origin) -> Result<PathBuf, Error> {
     let key = Digest::of(format!("{}\n{}", hub.as_str(), code.at).as_bytes());
-    Ok(copies(home)?.join(hex(&code.tree)).join(format!("locked-{}", &hex(&key)[..16])))
+    Ok(copy_of(home, code)?.join(format!("locked-{}", &hex(&key)[..16])))
+}
+
+/// The tree of Calcifer's copy `within` (and a script's package beside it), copied under `to`: not what Calcifer keeps beside.
+pub(crate) fn copy_tree(within: &Path, to: &Path) -> Result<(), Error> {
+    let files = source_files(within, &mut vec![])?;
+    for file in files.into_iter().filter(|file| file.starts_with("tree") || file.starts_with("script")) {
+        let at = to.join(&file);
+        fs::create_dir_all(at.parent().unwrap_or(to))
+            .and_then(|()| fs::copy(within.join(&file), &at))
+            .map_err(|e| refuse("code_unwritable", format!("{}: {e}", at.display())))?;
+    }
+    Ok(())
 }
 
 /// One lock of a copy at a time: any other waits and takes what it made.
 static LOCKING: LazyLock<Mutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>> = LazyLock::new(Mutex::default);
 
-/// Local code locked as `cargo run` locks (cl-871): a project whose sources name the `tensorhub` index gets the uv.lock uv makes,
-/// or brings up to date keeping the tree's own pins, for `hub` (`hub::author::locked`), before anything describes or installs it.
-/// Its cozy dependencies are then read and called at the releases it names (`callees`). Once per copy and Hub, written into the
-/// copy. The lock when it is not the tree's own: its client writes it into the package's folder (`made`).
-pub(crate) async fn locked(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Origin) -> Result<Option<String>, Error> {
-    let project = Project::read(copied(home, code)?)?;
-    if project.hub_sources.is_empty() {
-        return Ok(None);
-    }
-    let marker = lock_marker(home, code, hub)?;
-    let turn = LOCKING.lock().expect("locking lock").entry(marker.clone()).or_default().clone();
+/// Local code locked as `cargo run` locks (cl-871, cl-878): every project gets the uv.lock uv makes, or brings up to date keeping
+/// the tree's own pins, for `hub` (`hub::author::locked`), whatever its sources name (a Hub index, a path dependency beside it in
+/// the tree, git), before anything describes or installs it. Its cozy dependencies are then read and called at the releases or
+/// sources it names (`callees`). Once per copy and Hub, beside the copy (`lock_dir`). A lock uv can't make fails the run in uv's
+/// words. The package's folder to describe and install, and the lock when it is not the tree's own: its client writes it into
+/// the package's folder (`made`).
+pub(crate) async fn locked(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Origin) -> Result<(PathBuf, Option<String>), Error> {
+    let sent = copied(home, code)?;
+    let within = copy_of(home, code)?;
+    let done = lock_dir(home, code, hub)?;
+    let turn = LOCKING.lock().expect("locking lock").entry(done.clone()).or_default().clone();
     let _turn = turn.lock().await;
-    if let Ok(made) = fs::read_to_string(&marker) {
-        return Ok(Some(made).filter(|made| !made.is_empty()));
+    if !done.is_dir() {
+        let project = Project::read(sent.clone())?;
+        let say = |line: &str| tracing::info!("{}: {line}", project.name);
+        let made = crate::hub::author::locked(hubs, hub, &project, &within, false, &[], &say).await?;
+        let nanos = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+        let part = done.with_extension(format!("part-{}-{nanos}", std::process::id()));
+        let failed = |e: std::io::Error| refuse("code_unwritable", format!("{}: {e}", part.display()));
+        let kept = if made.changed { made.lock.as_str() } else { "" };
+        fs::create_dir_all(&part).and_then(|()| fs::write(part.join("lock"), kept)).map_err(failed)?;
+        if made.changed {
+            copy_tree(&within, &part.join("copy"))?;
+            let at = sent.strip_prefix(&within).unwrap_or(Path::new(""));
+            fs::write(part.join("copy").join(at).join("uv.lock"), &made.lock).map_err(failed)?;
+        }
+        if let Err(e) = fs::rename(&part, &done) {
+            let _ = fs::remove_dir_all(&part);
+            return Err(failed(e));
+        }
     }
-    let say = |line: &str| tracing::info!("{}: {line}", project.name);
-    let made = crate::hub::author::locked(hubs, hub, &project, false, &[], &say).await?;
-    let failed = |e: platform::Error| refuse("code_unwritable", format!("{}: {e}", marker.display()));
-    if made.changed {
-        durable::replace(&project.root.join("uv.lock"), made.lock.as_bytes(), 0o600).map_err(failed)?;
-    }
-    let kept = if made.changed { made.lock.as_str() } else { "" };
-    durable::replace(&marker, kept.as_bytes(), 0o600).map_err(failed)?;
-    Ok(made.changed.then_some(made.lock))
+    let made = fs::read_to_string(done.join("lock")).ok().filter(|made| !made.is_empty());
+    let dir = match made.is_some() {
+        true => done.join("copy").join(sent.strip_prefix(&within).unwrap_or(Path::new(""))),
+        false => sent,
+    };
+    Ok((dir, made))
 }
 
 /// The lock `locked` made for `code` at `hub`, when it is not the tree's own: what its client writes into the package's folder.
 pub(crate) fn made(home: &Home, code: &LocalCode, hub: &Origin) -> Option<String> {
-    fs::read_to_string(lock_marker(home, code, hub).ok()?).ok().filter(|made| !made.is_empty())
+    fs::read_to_string(lock_dir(home, code, hub).ok()?.join("lock")).ok().filter(|made| !made.is_empty())
 }
 
 /// The distributions the lock takes from a Hub index, as the packages they are
@@ -1237,8 +1268,8 @@ async fn read_interface(api: &Arc<Api>, code: &LocalCode, on: &On, hub: &str, ru
     let hubs = &api.machines.hubs;
     let home = hubs.home();
     let origin = Origin::parse(&if hub.is_empty() { hubs.default_origin() } else { hub.to_owned() })?;
-    locked(home, code, hubs, &origin).await?;
-    let project = Project::read(copied(home, code)?)?;
+    let (dir, _) = locked(home, code, hubs, &origin).await?;
+    let project = Project::read(dir)?;
     let uv = crate::tools::uv(home, &|line| tracing::info!("{line}")).await?;
     let python = python(&project, &uv)?;
     let locked = locked_runtime(&project.root);

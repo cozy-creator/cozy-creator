@@ -2436,6 +2436,7 @@ impl From<&MachineRow> for Machine {
             controller_key: None,
             reach: None,
             ending: None,
+            end_failed: None,
         }
     }
 }

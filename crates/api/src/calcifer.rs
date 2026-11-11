@@ -1112,6 +1112,10 @@ pub struct Machine {
     /// here. None once its end is under way, or when nothing holds it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ending: Option<String>,
+    /// Why its last end failed (this computer's sign-in, or the Hub's refusal): nothing was ended,
+    /// and a rental may still bill. Ending it again asks again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_failed: Option<String>,
 }
 
 fn yes() -> bool {
