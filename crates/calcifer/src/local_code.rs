@@ -1170,8 +1170,23 @@ async fn read_interface(api: &Arc<Api>, code: &LocalCode, on: &On, runtime: Opti
     let uv = crate::tools::uv(home, &|line| tracing::info!("{line}")).await?;
     let python = python(&project, &uv)?;
     let locked = locked_runtime(&project.root);
+    let access = match crate::private_io::current() {
+        Some(scope) => {
+            let root = crate::project::vault::logical(&scope.storage.view_root);
+            let access = crate::project::vault::admit_root(&root).await?;
+            let current = crate::private_io::of_output(&crate::project::landing(&root))?;
+            if current.is_none_or(|current| current.storage != scope.storage) {
+                return Err(refuse("project_view_changed", "the mounted view changed while describing local code"));
+            }
+            Some(access)
+        }
+        None => None,
+    };
     let (root, asked, wanted) = (project.root.clone(), python.request.clone(), locked.clone());
-    let described = tokio::task::spawn_blocking(move || describe_with(&uv, &root, &asked, wanted.as_deref()))
+    let described = tokio::task::spawn_blocking(move || {
+        let _access = access;
+        describe_with(&uv, &root, &asked, wanted.as_deref())
+    })
         .await
         .map_err(|why| refuse("describe_failed", why))?;
     let described = described.map_err(|error| match (&runtime, &locked, on) {

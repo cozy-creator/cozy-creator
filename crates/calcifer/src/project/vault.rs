@@ -97,7 +97,7 @@ pub(crate) async fn admit_project(api: &Api, named: &str) -> Result<tokio::sync:
     admit_root(&root).await
 }
 
-pub(super) async fn admit_root(root: &FsPath) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, Error> {
+pub(crate) async fn admit_root(root: &FsPath) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, Error> {
     let guard = access(root).read_owned().await;
     view(root)?;
     Ok(guard)
