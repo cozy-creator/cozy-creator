@@ -26,7 +26,7 @@ impl Config { pub fn from_env() -> Config; }
 // Debug must redact provider/CA contents.
 
 pub struct Ref {
-    pub repo_id: String,
+    pub model_id: String,
     pub release: Option<String>,
     pub lane: Option<String>,
     pub endpoint: Option<String>,
@@ -168,7 +168,7 @@ impl Endpoint {
     pub fn with_config(url: &str, config: &Config) -> Result<Endpoint>;
     pub async fn document(&self, object: &ObjectRef) -> Result<Vec<u8>>;
     // The commit of `release` (none: the newest) in `lane` (none: the endpoint's pick for `hardware`).
-    pub async fn resolve(&self, repo_id: &str, release: Option<&str>, lane: Option<&str>,
+    pub async fn resolve(&self, model_id: &str, release: Option<&str>, lane: Option<&str>,
         hardware: &fetch::Hardware) -> Result<fetch::Resolved>;
 }
 // Endpoint("local") resolves default cache root; with_config supplies explicit
@@ -213,10 +213,10 @@ impl Client {
 pub struct WriterOptions<'a> {
     // Exact header-file path, or None for a checkpoint in the shared store. The file is a
     // handle into the store, rooting its data while it holds this header.
-    // dest and repo_id exclude each other; a repo_id commit names its lane.
+    // dest and model_id exclude each other; a model_id commit names its lane.
     pub dest: Option<&'a Path>,
     pub base: Option<&'a Checkpoint>, pub resume: Option<&'a str>,
-    pub repo_id: Option<&'a str>, pub lane: Option<&'a str>, pub endpoint: Option<&'a str>,
+    pub model_id: Option<&'a str>, pub lane: Option<&'a str>, pub endpoint: Option<&'a str>,
     pub token: Option<Arc<dyn TokenProvider>>,
 }
 pub struct Writer { /* owned local and optional remote write state */ }

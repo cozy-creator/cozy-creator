@@ -1,14 +1,14 @@
 use super::*;
-use crate::format::Repo;
+use crate::format::Model;
 
 fn model(store: &Store, name: &str, release: &str, chunks: Vec<ObjectRef>) -> (ObjectRef, ObjectRef) {
     let header = Header::new(chunks, None, vec![], Default::default()).unwrap();
     let header = store.put_bytes(&header.to_cbor().unwrap()).unwrap();
     let tree = store.put_tree(&Tree::of("bf16", header.clone(), &Default::default()).unwrap()).unwrap();
     store.update_ref(name, |old| {
-        let mut repo = old.unwrap_or_else(|| Repo::new(name));
-        repo.set_lane(release, "bf16", tree.clone());
-        Some(repo)
+        let mut model = old.unwrap_or_else(|| Model::new(name));
+        model.set_lane(release, "bf16", tree.clone());
+        Some(model)
     }).unwrap();
     (header, tree)
 }
@@ -45,7 +45,7 @@ fn removal_keeps_live_checkpoints_and_releases_all_model_lanes() {
     let second = store.put_bytes(b"older weights").unwrap();
     let (header, tree) = model(&store, "local/model", "1", vec![first.clone()]);
     let (old_header, old_tree) = model(&store, "local/model", "2", vec![second.clone()]);
-    let active = store.at_commit(&tree).unwrap();
+    let active = store.at_checkpoint(&tree).unwrap();
     let removed = store.remove_cached_model("local/model").unwrap();
     assert!(removed.removed);
     assert_eq!(removed.retained_bytes, header.length + tree.length + first.length);
@@ -64,15 +64,15 @@ fn another_ref_to_the_same_checkpoint_keeps_its_uses() {
     let weights = store.put_bytes(b"aliased weights").unwrap();
     let (header, tree) = model(&store, "test/model", "1", vec![weights.clone()]);
     store.update_ref("test/alias", |_| {
-        let mut repo = Repo::new("test/alias");
-        repo.add_commit(tree.clone());
-        Some(repo)
+        let mut model = Model::new("test/alias");
+        model.add_checkpoint(tree.clone());
+        Some(model)
     }).unwrap();
     let removed = store.remove_cached_model("test/model").unwrap();
     assert_eq!(removed.cache_bytes_removed, 0);
     assert_eq!(removed.retained_bytes, weights.length + header.length + tree.length);
     assert!(store.root().join("uses").join(&tree.sha256).is_file());
-    assert!(store.at_commit(&tree).is_ok());
+    assert!(store.at_checkpoint(&tree).is_ok());
 }
 
 #[test]

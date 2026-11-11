@@ -1,6 +1,6 @@
 //! `tfs export --safetensors`: a checkpoint as the Diffusers/Transformers folder it came from.
 //!
-//! - Repo files (README, LICENSE, images) are written as they are, assets byte-exact into their
+//! - Model files (README, LICENSE, images) are written as they are, assets byte-exact into their
 //!   component's folder, and `model_index.json` and each component's config (`config.json`, or
 //!   its `config_file`) as the HF writers write them ([`config_json`]): equal to the source's as
 //!   parsed JSON.

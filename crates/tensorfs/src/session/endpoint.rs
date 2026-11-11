@@ -74,9 +74,9 @@ impl Endpoint {
         self.inner.document(object).await.map_err(from_native)
     }
 
-    /// The commit of `repo_id` at `release` (none: the newest) in `lane` (none: what `hardware`
+    /// The commit of `model_id` at `release` (none: the newest) in `lane` (none: what `hardware`
     /// runs best), without opening it or filling a cache.
-    pub async fn resolve(&self, repo_id: &str, release: Option<&str>, lane: Option<&str>, hardware: &fetch::Hardware) -> Result<fetch::Resolved> {
-        self.inner.resolve(repo_id, release, lane, hardware).await.map_err(from_native)
+    pub async fn resolve(&self, model_id: &str, release: Option<&str>, lane: Option<&str>, hardware: &fetch::Hardware) -> Result<fetch::Resolved> {
+        self.inner.resolve(model_id, release, lane, hardware).await.map_err(from_native)
     }
 }

@@ -249,7 +249,7 @@ pub struct Writer {
     conversions: Vec<Conversion>,
     /// (component, asset name) → (object, given by `reuse_asset`).
     assets: BTreeMap<Name, (ObjectRef, bool)>,
-    /// Repo files given to `repo_file` (README, LICENSE).
+    /// Model files given to `repo_file` (README, LICENSE).
     repo: BTreeMap<String, ObjectRef>,
     spool: File,
     spool_len: u64,

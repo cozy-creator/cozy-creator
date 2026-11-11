@@ -154,7 +154,7 @@ pub(crate) struct Layout {
     pub pipeline: Option<Pipeline>,
     /// Header order: components with tensors in construction order, then the rest by name.
     pub components: Vec<Folder>,
-    /// Repo files by path, byte-exact; never inside the cozytensors.
+    /// Model files by path, byte-exact; never inside the cozytensors.
     pub files: BTreeMap<String, Vec<u8>>,
 }
 
@@ -806,6 +806,43 @@ fn config_class(file: &str, config: &Config) -> ClassRef {
 /// Imports `req` into a committed cozytensors in `store`: (its header, the source's repo files). With
 /// `key`, an interrupted import resumes: the tensors its journal holds are not converted again.
 pub fn into_store(store: &crate::store::Store, req: &Request, key: Option<&str>) -> Result<(crate::format::ObjectRef, std::collections::BTreeMap<String, crate::format::ObjectRef>)> {
+    if let [source] = req.sources {
+        let spec = remote::parse(source)?;
+        let native = match &spec {
+            remote::Spec::Local(path) => path.is_file() && path.extension().is_some_and(|e| e == "cozytensors"),
+            remote::Spec::Hf { path, .. } => path.ends_with(".cozytensors"),
+            remote::Spec::Url(url) => url.split(['?', '#']).next().is_some_and(|p| p.ends_with(".cozytensors")),
+            _ => false,
+        };
+        if native {
+            if req.converter.is_some() || req.source_variant.is_some() || req.trained_on.is_some() {
+                return refuse(Code::MISSING_FIELD, "a native .cozytensors checkpoint is admitted unchanged; converter, source variant and trained-on options do not apply");
+            }
+            let access = remote::Scope::new(req.access, req.stop);
+            access.check()?;
+            let (path, downloaded, _lock) = match &spec {
+                remote::Spec::Local(path) => (path.clone(), false, None),
+                _ => {
+                    let listing = access.list(&spec)?;
+                    let mut selected = listing.members.iter().filter(|m| m.path.ends_with(".cozytensors") && (listing.root.is_empty() || listing.root == m.path));
+                    let Some(member) = selected.next().filter(|_| selected.next().is_none()) else {
+                        return refuse(Code::MISSING_FIELD, "select one complete .cozytensors file by its source path");
+                    };
+                    let dest = req.tmp.join("checkpoint-files").join(format!("{}.cozytensors", digest(&[&listing.pinned, &member.path])));
+                    std::fs::create_dir_all(dest.parent().expect("staging directory")).map_err(|e| crate::err::classify_io("create native checkpoint staging", e))?;
+                    let lock = platform::lock::LockFile::new(dest.with_extension("lock")).lock(platform::lock::Kind::Exclusive)
+                        .map_err(|e| crate::err::classify_io("lock native checkpoint staging", std::io::Error::other(e.to_string())))?;
+                    let mut progress = |done| (req.progress)("downloading checkpoint", done, member.length.unwrap_or(0));
+                    (access.land(member, &dest, &mut progress)?, true, Some(lock))
+                }
+            };
+            let tree = store.admit_file(&path, "model").map_err(Error::refusal)?;
+            access.check()?;
+            let header = store.tree(&tree).map_err(Error::refusal)?.header().map_err(|e| Error::Format(e).refusal())?.1.clone();
+            if downloaded { std::fs::remove_file(&path).map_err(|e| crate::err::classify_io("remove native checkpoint staging", e))?; }
+            return Ok((header, BTreeMap::new()));
+        }
+    }
     let mut writer = crate::writer(store, None, key).map_err(crate::store::Error::refusal)?;
     convert(req, &mut writer)?;
     let header = writer.committed().cloned().expect("an import commits");
@@ -1254,6 +1291,24 @@ mod tests {
         assert_eq!(model.assets["tokenizer/spiece.spm"], [0,1,2]);
         assert_eq!(model.assets["tokenizer/template.custom"], b"{{input}}");
         assert_eq!(layout.files.len(), 3);
+    }
+
+    #[test]
+    fn native_checkpoint_import_preserves_identity_without_conversion_or_source_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("native.cozytensors");
+        let (header, weights, tokenizer, _) = crate::store::file::tests::complete(&path);
+        let store = crate::store::Store::open(dir.path().join("fresh-store")).unwrap();
+        let sources = [path.display().to_string()];
+        let request = Request { sources: &sources, converter: None, source_variant: None, trained_on: None,
+            access: &Access::default(), tmp: &dir.path().join("staging"), progress: &|_, _, _| {}, stop: None };
+        let (id, ancillary) = super::into_store(&store, &request, Some("native-import")).unwrap();
+        assert_eq!(id, crate::format::ObjectRef::of(&header.to_cbor().unwrap()));
+        assert!(ancillary.is_empty());
+        std::fs::remove_file(path).unwrap();
+        let checkpoint = store.checkpoint(&id).unwrap();
+        assert_eq!(checkpoint.read("model", "weight").unwrap(), weights);
+        assert_eq!(checkpoint.asset("model", "tokenizer.json").unwrap(), tokenizer);
     }
 
     #[test]

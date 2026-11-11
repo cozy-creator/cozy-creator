@@ -18,14 +18,14 @@ pub struct PartData<'a> {
     pub data: &'a mut dyn Read,
 }
 
-/// Options for `Client::writer`: a header file `dest` or a `repo_id` commit, a base, a resume key.
+/// Options for `Client::writer`: a complete checkpoint file `dest` or a `model_id` checkpoint, a base, a resume key.
 #[derive(Default)]
 pub struct WriterOptions<'a> {
     pub dest: Option<&'a Path>,
     pub base: Option<&'a Checkpoint>,
     pub resume: Option<&'a str>,
-    pub repo_id: Option<&'a str>,
-    /// The lane of a `repo_id` commit.
+    pub model_id: Option<&'a str>,
+    /// The lane of a `model_id` checkpoint.
     pub lane: Option<&'a str>,
     pub endpoint: Option<&'a str>,
     pub token: Option<Arc<dyn TokenProvider>>,
@@ -37,7 +37,7 @@ struct Context {
     base: Option<Checkpoint>,
     dest: Option<PathBuf>,
     lane: String,
-    repo_id: Option<String>,
+    model_id: Option<String>,
     endpoint: Option<String>,
 }
 
@@ -74,16 +74,16 @@ fn from_writer(error: crate::store::Error) -> Failure {
 
 impl Client {
     pub fn writer(&self, options: WriterOptions<'_>) -> Result<Writer> {
-        if options.dest.is_some() && options.repo_id.is_some() {
+        if options.dest.is_some() && options.model_id.is_some() {
             return fail(
                 Kind::Invalid,
-                "a Writer names a header file or an endpoint repository",
+                "a Writer names a checkpoint file or a named model",
             );
         }
-        let lane = match (options.lane, options.repo_id) {
+        let lane = match (options.lane, options.model_id) {
             (Some(lane), Some(_)) => lane.to_owned(),
-            (None, Some(_)) => return fail(Kind::Invalid, "a repo_id commit names its lane"),
-            (Some(_), None) => return fail(Kind::Invalid, "a lane labels a commit of a repo_id upload; it needs repo_id"),
+            (None, Some(_)) => return fail(Kind::Invalid, "a model_id checkpoint names its lane"),
+            (Some(_), None) => return fail(Kind::Invalid, "a lane labels a checkpoint of a model_id upload; it needs model_id"),
             (None, None) => String::new(),
         };
         let store = self.store.clone();
@@ -103,22 +103,22 @@ impl Client {
             .transpose()
             .map_err(|e| super::io_failure("writer destination", e))?;
         let mut destination_endpoint = None;
-        let raw = if let Some(repo_id) = options.repo_id {
-            let reference: Ref = repo_id.parse()?;
-            if reference.repo_id.starts_with("sha256:") || reference.release.is_some() {
-                return fail(Kind::Invalid, "Writer repo_id names a repository, without a release");
+        let raw = if let Some(model_id) = options.model_id {
+            let reference: Ref = model_id.parse()?;
+            if reference.model_id.starts_with("sha256:") || reference.release.is_some() {
+                return fail(Kind::Invalid, "Writer model_id names a model, without a release");
             }
             let mut config = (*self.config).clone();
             if let Some(token) = options.token {
                 config.token = Some(token);
             }
-            let url = if repo_id.starts_with("local/") {
+            let url = if model_id.starts_with("local/") {
                 "local"
             } else {
                 options.endpoint.unwrap_or(&config.endpoint)
             };
             let endpoint = Endpoint::with_config(url, &config)?;
-            if !repo_id.starts_with("local/") {
+            if !model_id.starts_with("local/") {
                 destination_endpoint = Some(endpoint.inner.url().to_owned());
             }
             let runtime = tokio::runtime::Handle::try_current().map_err(|_| Failure {
@@ -126,7 +126,7 @@ impl Client {
                 detail: "a streaming Writer needs the caller's active Tokio runtime".into(),
             })?;
             let stream = Arc::new(crate::fetch::Stream::new(endpoint.inner, runtime));
-            crate::fetch::streaming_writer(&store, stream, repo_id, &lane, base, options.resume).map_err(from_writer)?
+            crate::fetch::streaming_writer(&store, stream, model_id, &lane, base, options.resume).map_err(from_writer)?
         } else {
             crate::writer(&store, base, options.resume).map_err(from_writer)?
         };
@@ -142,7 +142,7 @@ impl Client {
                 base: options.base.cloned(),
                 dest,
                 lane,
-                repo_id: options.repo_id.map(str::to_owned),
+                model_id: options.model_id.map(str::to_owned),
                 endpoint: destination_endpoint,
             },
         })
@@ -156,11 +156,11 @@ impl Context {
         files: &std::collections::BTreeMap<String, ObjectRef>,
         published: Option<&ObjectRef>,
     ) -> Result<Checkpoint> {
-        // First acquire the native header owner, then build its repository context.
+        // First acquire the native header owner, then build its model context.
         let raw = self.store.checkpoint(header)?;
         if self.dest.is_some() {
             // A literal checkpoint contains run data only. Its returned handle has the same
-            // metadata as reopening that file, without inventing a repository context.
+            // metadata as reopening that file, without inventing a model context.
             return Checkpoint::managed(
                 raw,
                 None,
@@ -170,16 +170,16 @@ impl Context {
                 self.store.clone(),
             );
         }
-        // A published commit, else the writer's own, unlabelled.
+        // A published checkpoint, else the writer's own, unlabelled.
         let tree = match published {
             Some(commit) => commit.clone(),
             None => self.store.put_tree(&Tree::of("", header.clone(), files)?)?,
         };
         if self.store.tree(&tree)?.header()?.1 != header {
-            return fail(Kind::Integrity, "the commit does not name this writer's header");
+            return fail(Kind::Integrity, "the checkpoint does not name this writer's header");
         }
-        let named = published.and(self.repo_id.as_ref()).map(|name| Ref {
-            repo_id: name.clone(),
+        let named = published.and(self.model_id.as_ref()).map(|name| Ref {
+            model_id: name.clone(),
             release: None,
             lane: Some(self.lane.clone()),
             endpoint: self.endpoint.clone(),

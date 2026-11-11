@@ -11,7 +11,7 @@ use std::time::SystemTime;
 use bytes::Bytes;
 
 use base64::engine::{general_purpose::STANDARD, Engine as _};
-use super::endpoint::{upload_commit, Endpoint, Hardware, Payload, UploadControl};
+use super::endpoint::{upload_checkpoint, Endpoint, Hardware, Payload, UploadControl};
 use super::{Client, Config, Fetcher, Origin, Want};
 use crate::err::{Code, Refusal, Result};
 use crate::format::{Config as HeaderConfig, Dtype, ObjectRef, Tree};
@@ -85,7 +85,7 @@ pub async fn endpoint(endpoint: Arc<Endpoint>, client: &Client, write: bool, scr
 
 async fn write_side(endpoint: &Arc<Endpoint>, store: &Store, tree: &ObjectRef, nonce: &str, cases: &mut Cases) -> Result<bool> {
     let control = UploadControl { cancelled: &|| false, progress: &|_, _| {}, commit: &|| true };
-    let up = upload_commit(endpoint, FIXTURE, tree, store, &control).await.map(drop).map_err(|e| e.to_string());
+    let up = upload_checkpoint(endpoint, FIXTURE, tree, store, &control).await.map(drop).map_err(|e| e.to_string());
     if !cases.record("upload: HEAD 404 → PUT → HEAD 200, then the commit recorded", true, Some(up)) {
         return Ok(false);
     }

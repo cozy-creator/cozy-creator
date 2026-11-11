@@ -613,24 +613,34 @@ fn list_in(spec: &Spec, access: &Scope<'_>) -> Result<Listing> {
                 .map_err(|e| crate::err::classify_io(format!("open {}", path.display()), e))?;
             let mut members = Vec::new();
             let exact = path.is_file();
+            let mut root = String::new();
             if exact {
                 let name = path
                     .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("source")
                     .to_string();
-                members.push(Member {
+                let parent = path.parent().expect("a canonical file has a parent");
+                // A file inside a declared model directory keeps that directory's loading
+                // data and any indexed shards. An arbitrary loose file remains a lone input.
+                let context = ["config.json", "adapter_config.json", "model_index.json"].iter().any(|name| parent.join(name).is_file())
+                    || std::fs::read_dir(parent).map_err(|e| crate::err::classify_io("list source context", e))?
+                        .filter_map(std::result::Result::ok).any(|entry| entry.file_name().to_string_lossy().contains(".safetensors.index"));
+                if context {
+                    root = name;
+                    walk(parent, parent, &mut members)?;
+                } else { members.push(Member {
                     path: name,
                     at: At::Local(path.clone()),
                     length: None,
                     sha256: None,
-                });
+                }); }
             } else {
                 walk(&path, &path, &mut members)?;
             }
             Ok(Listing {
                 pinned: path.display().to_string(),
-                root: String::new(),
+                root,
                 exact,
                 members,
                 trigger: vec![],

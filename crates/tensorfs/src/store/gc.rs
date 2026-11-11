@@ -134,10 +134,10 @@ impl Store {
         fence.lock().map_err(fail("lock", self.root()))?;
         let _refs = self.lock("refs")?;
         self.restore_trash()?;
-        let Some(repo) = self.get_ref(name)? else { return Ok(RemovedModel::default()) };
+        let Some(model) = self.get_ref(name)? else { return Ok(RemovedModel::default()) };
         let mut candidates = BTreeSet::new();
         let mut own_uses = BTreeSet::new();
-        for object in repo.roots() {
+        for object in model.roots() {
             own_uses.insert(object.sha256.clone());
             if let Some(Document::Tree(tree)) = self.document(object)? {
                 own_uses.extend(tree.files.iter().filter(|(path, _)| is_header(path)).map(|(_, header)| header.sha256.clone()));
@@ -146,9 +146,9 @@ impl Store {
         }
         // Read every keeper before changing metadata: an unreadable retention source fails
         // closed. Cached refs count here too, even though ordinary pressure GC may evict them.
-        let mut keep: BTreeSet<String> = self.holders_except(Some(&repo.name))?.into_keys().collect();
+        let mut keep: BTreeSet<String> = self.holders_except(Some(&model.name))?.into_keys().collect();
         let mut other_models = BTreeSet::new();
-        for other in self.refs()?.into_iter().filter(|other| !other.name.eq_ignore_ascii_case(&repo.name)) {
+        for other in self.refs()?.into_iter().filter(|other| !other.name.eq_ignore_ascii_case(&model.name)) {
             for object in other.roots() {
                 other_models.extend(self.closure(object)?.into_iter().map(|object| object.sha256));
             }
@@ -164,7 +164,7 @@ impl Store {
                 keep.extend(used.digests);
             }
         }
-        self.remove_record(&self.ref_path(&repo.name)?)?;
+        self.remove_record(&self.ref_path(&model.name)?)?;
         for name in remove_uses {
             self.remove_record(&self.root.join("uses").join(name))?;
         }
@@ -407,9 +407,9 @@ impl Store {
     /// header's: what a use is, for people.
     pub(super) fn names(&self) -> HashMap<String, String> {
         let mut names = HashMap::new();
-        for repo in self.refs().unwrap_or_default() {
-            let lanes = repo.releases.iter().flat_map(|r| r.lanes.iter().map(|(lane, tree)| (format!("{}@{} {lane}", repo.name, r.version), tree)));
-            for (name, tree) in lanes.chain(repo.commits.iter().map(|tree| (repo.name.clone(), tree))) {
+        for model in self.refs().unwrap_or_default() {
+            let lanes = model.releases.iter().flat_map(|r| r.lanes.iter().map(|(lane, tree)| (format!("{}@{} {lane}", model.name, r.version), tree)));
+            for (name, tree) in lanes.chain(model.checkpoints.iter().map(|tree| (model.name.clone(), tree))) {
                 if let Some(header) = self.tree(tree).ok().and_then(|t| t.header().ok().map(|(_, h)| h.sha256.clone())) {
                     names.insert(header, name.clone());
                 }

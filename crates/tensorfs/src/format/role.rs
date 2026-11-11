@@ -5,7 +5,7 @@ use super::{Header, Value};
 impl Header {
     /// Classifies readable stored tensors as a model or LoRA. Ordinary saved-head tensors
     /// do not hide an adapter. Empty headers have no known repository role.
-    pub fn repository_role(&self) -> &'static str {
+    pub fn model_role(&self) -> &'static str {
         let components = self.components();
         if !components.iter().any(|component| !component.tensors.is_empty()) {
             return "unknown";
@@ -68,7 +68,7 @@ mod tests {
     }
 
     #[test]
-    fn repository_role_matches_catalog_semantics() {
+    fn model_role_matches_catalog_semantics() {
         for (label, keys, role) in [
             ("base_model", vec!["layer.weight"], "model"),
             ("standalone_component_model", vec!["embedding.weight"], "model"),
@@ -80,19 +80,19 @@ mod tests {
             ("unpaired_model", vec!["layer.lora_A.weight"], "model"),
             ("mismatched_adapter_names_model", vec!["layer.lora_A.first.weight", "layer.lora_B.second.weight"], "model"),
         ] {
-            assert_eq!(header(&[("transformer", &keys)], Default::default()).repository_role(), role, "{label}");
+            assert_eq!(header(&[("transformer", &keys)], Default::default()).model_role(), role, "{label}");
         }
-        assert_eq!(Header::default().repository_role(), "unknown", "empty_unknown");
+        assert_eq!(Header::default().model_role(), "unknown", "empty_unknown");
         let cross = header(&[("first", &["layer.lora_A.weight"]), ("second", &["layer.lora_B.weight"])], Default::default());
-        assert_eq!(cross.repository_role(), "model", "cross_component_unpaired_model");
+        assert_eq!(cross.model_role(), "model", "cross_component_unpaired_model");
     }
 
     #[test]
     fn explicit_adapter_metadata_requires_a_populated_component() {
         let adapter = |value| BTreeMap::from([("adapter".into(), Value::Map(BTreeMap::from([("transformer".into(), value)])))]);
         let valid = Value::Map(BTreeMap::from([("family".into(), "sdxl".into()), ("component".into(), "unet".into())]));
-        assert_eq!(header(&[("transformer", &["head.weight"])], adapter(valid.clone())).repository_role(), "lora", "explicit_adapter_lora");
-        assert_eq!(header(&[("transformer", &["head.weight"])], adapter("broken".into())).repository_role(), "model", "malformed_adapter_model");
-        assert_eq!(header(&[("transformer", &[]), ("other", &["head.weight"])], adapter(valid)).repository_role(), "model");
+        assert_eq!(header(&[("transformer", &["head.weight"])], adapter(valid.clone())).model_role(), "lora", "explicit_adapter_lora");
+        assert_eq!(header(&[("transformer", &["head.weight"])], adapter("broken".into())).model_role(), "model", "malformed_adapter_model");
+        assert_eq!(header(&[("transformer", &[]), ("other", &["head.weight"])], adapter(valid)).model_role(), "model");
     }
 }
