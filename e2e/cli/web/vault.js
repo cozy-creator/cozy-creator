@@ -4,7 +4,7 @@ const { execFileSync } = require('child_process');
 const { mkdtempSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { dirname, join } = require('path');
-const { calcifer, signIn, launch, png, MP4, until, drop, openCanvas, importFile, projectJson, projectUrl, settled } = require('./page');
+const { calcifer, signIn, launch, png, MP4, until, drop, openCanvas, importFile, projectJson, projectUrl, settled, fitCanvas, pointAt } = require('./page');
 const failures = [], seen = {};
 let browser, context, page, peer, scratch;
 let stage = 'starting browser';
@@ -234,8 +234,17 @@ const newPage = async () => {
   check('private_import_survives_project_navigation', true);
   // Automatic hover previews are not user activity. The real video decoder keeps
   // looping, while an idle-only deadline still locks the project.
-  await page.locator('.react-flow__node').filter({ hasText: 'private_loop_movie' }).first().hover();
-  await page.waitForFunction(() => [...document.querySelectorAll('video')].some((el) => el.loop && !el.paused && el.currentTime > 0.05));
+  stage = 'autoplay preview on the exposed canvas';
+  await fitCanvas(page);
+  const preview = page.locator('.card[data-asset="private_loop_movie"] .media').first();
+  await preview.waitFor();
+  await until('private preview exposed', async () => {
+    const rect = await preview.boundingBox();
+    return rect && page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest('.card')?.dataset.asset === 'private_loop_movie',
+      { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 });
+  }, Boolean, 45000);
+  await pointAt(page, preview);
+  await until('automatic private preview playing', () => page.evaluate(() => [...document.querySelectorAll('video')].some((el) => el.loop && !el.paused && el.currentTime > 0.05)), Boolean, 45000);
   execFileSync(process.env.COZY, ['--json', 'vault', 'unlock', '--recovery-file', '-', '--idle', '2', '--max-duration', '0'], { cwd: folder, input: `${recovery}\n`, encoding: 'utf8', timeout: 180000 });
   await page.locator('[data-vault-state="locked"]').waitFor();
   check('autoplay_preview_does_not_extend_idle_unlock', await page.locator('.react-flow').count() === 0);
@@ -292,7 +301,7 @@ const newPage = async () => {
   // and query cache, lock A while B is shown, then watch every DOM mutation on return.
   await page.evaluate(() => { window.__vaultDocument = 'same-document'; });
   await navigate(other);
-  await page.waitForFunction(() => document.querySelector('.react-flow') && !document.body.innerText.includes('private_vault_picture'));
+  await until('ordinary project canvas visible', () => page.evaluate(() => Boolean(document.querySelector('.react-flow')) && !document.body.innerText.includes('private_vault_picture')), Boolean, 45000);
   // Real browser offline mode prevents both status replies and the lock SSE event;
   // the CLI remains online. Cached unlocked data must still stay hidden on selection.
   await context.setOffline(true);
@@ -305,14 +314,14 @@ const newPage = async () => {
     window.__privateWatch.observe(document.body, { childList: true, subtree: true, characterData: true });
   }, new URL(href).pathname);
   await navigate(href);
-  await page.waitForFunction(() => document.querySelector('.gate') && !document.querySelector('.react-flow'));
+  await until('private project covered', () => page.evaluate(() => Boolean(document.querySelector('.gate')) && !document.querySelector('.react-flow')), Boolean, 45000);
   await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
   check('offline_reselection_hides_cached_private_data', await page.evaluate(() => window.__privatePaints.length === 0));
   await context.setOffline(false);
   await page.locator('[data-vault-state="locked"]').waitFor();
   check('project_reselection_verifies_before_paint', await page.evaluate(() => window.__vaultDocument === 'same-document' && window.__privatePaints.length === 0));
   await page.goBack();
-  await page.waitForFunction(() => document.querySelector('.react-flow') && !document.body.innerText.includes('private_vault_picture'));
+  await until('ordinary project canvas visible', () => page.evaluate(() => Boolean(document.querySelector('.react-flow')) && !document.body.innerText.includes('private_vault_picture')), Boolean, 45000);
   await page.goForward();
   await page.locator('[data-vault-state="locked"]').waitFor();
   check('history_return_keeps_locked_data_hidden', await page.evaluate(() => window.__privatePaints.length === 0 && !document.querySelector('.react-flow')));
