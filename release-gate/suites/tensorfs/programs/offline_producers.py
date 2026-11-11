@@ -1,4 +1,5 @@
-"""Real native FP8/W4A8 conversion, frozen byte references, Writer bounds and resume."""
+"""offline-producers, TensorFS's own (public API only), modes basic, cancel-fp8, cancel-w4a8. Was the gate package `tensorfs/offline-producers` (xs-174:
+a package can't import TensorFS); run by `release-gate/programs.sh`."""
 
 import gc
 import hashlib
@@ -9,13 +10,10 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING, Unpack, cast
 
-import msgspec
-from cozy_runtime.author import App, Context
 
 if TYPE_CHECKING:
-    from . import _types as t
+    import offline_producers_types as t
 
-app = App()
 STRATEGIES: "dict[str, tuple[str, dict[str, t.MetadataInput]]]" = {
     "fp8.rowwise": ("fp8-rowwise-rne/1", {}),
     "w4a8.convrot": (
@@ -27,17 +25,6 @@ ROLES = {
     "fp8.rowwise": ("scale",),
     "w4a8.convrot": ("group_scale", "scale", "codebook"),
 }
-
-
-class Request(msgspec.Struct, forbid_unknown_fields=True):
-    seed: int = 103
-    mode: str = "basic"
-    runtime: bool = False
-
-
-class Report(msgspec.Struct):
-    passed: bool
-    detail: str
 
 
 def parts(encoded: "t.EncodedTensor") -> "t.Parts":
@@ -57,21 +44,29 @@ def output_bytes(row: "t.Selection") -> int:
     n, k = row["shape"]
     return n * (k + 4) if row["encoding"]["scheme"] == "fp8.rowwise" else n * (k // 2 + k // 16 + 4) + 64
 
+SEED = 103
+MODES = ['basic', 'cancel-fp8', 'cancel-w4a8']
 
-@app.entrypoint(accelerator=False)
-def run(payload: Request, ctx: Context) -> Report:
+
+def Report(passed: bool, *fields: object) -> dict[str, object]:  # noqa: N802 - the verdict the package returned
+    """A mode's verdict: the last field is its JSON detail."""
+    detail = fields[-1]
+    return {"passed": passed, "detail": json.loads(detail) if isinstance(detail, str) else detail}
+
+
+def run(mode: str) -> dict[str, object]:
     import numpy as np
     import tensorfs
     from tensorfs import raw
 
-    from . import oracle
+    import offline_producers_oracle as oracle
 
     references = {
         "fp8.rowwise": oracle.encode_fp8_rowwise,
         "w4a8.convrot": oracle.encode_w4a8,
     }
-    assert payload.mode in ("basic", "cancel-fp8", "cancel-w4a8")
-    rng = np.random.default_rng(payload.seed)
+    assert mode in ("basic", "cancel-fp8", "cancel-w4a8")
+    rng = np.random.default_rng(SEED)
     records: list[t.Record] = []
     refusals = 0
 
@@ -102,8 +97,8 @@ def run(payload: Request, ctx: Context) -> Report:
 
     with tempfile.TemporaryDirectory(prefix="cozy-offline-producers-") as temporary:
         directory = Path(temporary)
-        if payload.mode != "basic":
-            scheme = "fp8.rowwise" if payload.mode == "cancel-fp8" else "w4a8.convrot"
+        if mode != "basic":
+            scheme = "fp8.rowwise" if mode == "cancel-fp8" else "w4a8.convrot"
             writer = tensorfs.Writer(directory / "source.cozytensors")
             component = writer.component("weights")
             selected: list[t.Selection] = []
@@ -114,7 +109,7 @@ def run(payload: Request, ctx: Context) -> Report:
             source = writer.commit()
             allowance = sum(map(output_bytes, selected))
             path = directory / "cancel.cozytensors"
-            output = tensorfs.Writer(path, base=source, resume=f"offline-{payload.seed}-{scheme}")
+            output = tensorfs.Writer(path, base=source, resume=f"offline-{SEED}-{scheme}")
             control = tensorfs.ConversionControl()
             with ThreadPoolExecutor(max_workers=1) as pool:
                 future = pool.submit(output.quantize, source, selected,
@@ -134,7 +129,7 @@ def run(payload: Request, ctx: Context) -> Report:
             assert output.has("weights", "first") and not output.has("weights", "large")
             del output, future
             gc.collect()
-            output = tensorfs.Writer(path, base=source, resume=f"offline-{payload.seed}-{scheme}")
+            output = tensorfs.Writer(path, base=source, resume=f"offline-{SEED}-{scheme}")
             changed = cast("list[t.Selection]", [dict(row) for row in selected])  # cast: copies of the rows
             changed[0]["dtype"] = "BF16"
             try:
@@ -152,7 +147,7 @@ def run(payload: Request, ctx: Context) -> Report:
             assert resumed["new_bytes_written"] == output_bytes(selected[1])
             checkpoint = output.commit()
             assert checkpoint.verify().ok
-            return Report(True, json.dumps({"mode": payload.mode, "resumed": resumed,
+            return Report(True, json.dumps({"mode": mode, "resumed": resumed,
                                            "progress": control.progress(), "tensorfs": tensorfs.__version__}, sort_keys=True))
 
         outliers = rng.normal(size=(7, 512)).astype("<f4")
@@ -188,14 +183,6 @@ def run(payload: Request, ctx: Context) -> Report:
                             assert all(chunk[role][2] == want[role][2] for chunk in chunks)
                         else:
                             assert b"".join(chunk[role][2] for chunk in chunks) == want[role][2]
-                if payload.runtime:
-                    from cozy_runtime.derive import microscale
-                    adapter = microscale.encode_fp8_rowwise if scheme == "fp8.rowwise" else microscale.encode_w4a8
-                    actual, original = adapter(name, values), references[scheme](name, values)
-                    assert actual[:5] == original[:5]  # type: ignore[comparison-overlap]  # two NamedTuple Companions compare as tuples
-                    assert actual.max_abs_err == original.max_abs_err
-                    np.testing.assert_allclose(actual.sse, original.sse, rtol=2e-13, atol=0)
-                    np.testing.assert_allclose(actual.energy, original.energy, rtol=2e-13, atol=0)
                 records.append({"scheme": scheme, "name": name, "shape": values.shape,
                                 "parts": {role: hashlib.sha256(part[2]).hexdigest() for role, part in want.items()}})
             good = cases["zeros"]
@@ -307,9 +294,22 @@ def run(payload: Request, ctx: Context) -> Report:
             assert not output.has("weights", row["key"])
             output.abandon()
         return Report(True, json.dumps({
-            "mode": payload.mode, "runtime_adapters": payload.runtime,
+            "mode": mode,
             "tensorfs": tensorfs.__version__, "numpy": np.__version__,
-            "native_sha256": hashlib.sha256(Path(tensorfs._ext.__file__).read_bytes()).hexdigest(),
             "oracle_sha256": hashlib.sha256(Path(oracle.__file__).read_bytes()).hexdigest(),
             "records": records, "refusals": refusals, "reports": reports,
         }, sort_keys=True))
+
+
+if __name__ == "__main__":
+    import traceback
+
+    for mode in MODES:
+        cell = "offline-producers" if mode == MODES[0] else f"offline-producers-{mode}"
+        try:
+            found = run(mode)
+            row = {"cell": cell, "result": "PASS" if found["passed"] else "FAIL", "detail": found["detail"]}
+        except Exception as error:  # noqa: BLE001 - any failure is this mode's verdict
+            row = {"cell": cell, "result": "FAIL", "detail": f"{type(error).__name__}: {error}"[:600]}
+            traceback.print_exc()
+        print("ROW " + json.dumps(row, sort_keys=True, default=str), flush=True)

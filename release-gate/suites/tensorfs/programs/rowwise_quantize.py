@@ -1,4 +1,5 @@
-"""Real bounded rowwise source decoding and native checkpoint quantization."""
+"""rowwise-quantize, TensorFS's own (public API only), modes basic, cancel. Was the gate package `tensorfs/rowwise-quantize` (xs-174:
+a package can't import TensorFS); run by `release-gate/programs.sh`."""
 
 import hashlib
 import itertools
@@ -10,39 +11,31 @@ from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING, cast
 
-import msgspec
-from cozy_runtime.author import App, Context, Telemetry
 
 if TYPE_CHECKING:
-    from . import _types as t
+    import rowwise_quantize_types as t
 
-app = App()
-
-
-class Request(msgspec.Struct, forbid_unknown_fields=True):
-    seed: int = 103
-    mode: str = "basic"
+SEED = 103
+MODES = ['basic', 'cancel']
 
 
-class Report(msgspec.Struct):
-    passed: bool
-    cases: int
-    detail: str
+def Report(passed: bool, *fields: object) -> dict[str, object]:  # noqa: N802 - the verdict the package returned
+    """A mode's verdict: the last field is its JSON detail."""
+    detail = fields[-1]
+    return {"passed": passed, "detail": json.loads(detail) if isinstance(detail, str) else detail}
 
 
-@app.entrypoint(accelerator=False)
-def run(payload: Request, ctx: Context, tel: Telemetry) -> Report:
+def run(mode: str) -> dict[str, object]:
     import numpy as np
     import tensorfs
     import torch
-    from cozy_runtime.internal.encoding.formats import RowwiseDequant
 
-    from .oracle import encode_int8_convrot256, encode_nvfp4
+    from rowwise_quantize_oracle import encode_int8_convrot256, encode_nvfp4
 
     torch.set_num_threads(1)
-    if payload.mode == "cancel":
-        return cancel_rowwise(payload.seed, tensorfs, np)  # type: ignore[arg-type]  # the module has `_ext` (private), which the Protocol names
-    assert payload.mode == "basic"
+    if mode == "cancel":
+        return cancel_rowwise(SEED, tensorfs, np)
+    assert mode == "basic"
     rows, cols = 7, 256
     kinds = [
         ("fp8.rowwise", "F8_E4M3", torch.float8_e4m3fn),
@@ -59,7 +52,7 @@ def run(payload: Request, ctx: Context, tel: Telemetry) -> Report:
     with tempfile.TemporaryDirectory(prefix="cozy-rowwise-quantize-") as temporary:
         directory = Path(temporary)
         writer = tensorfs.Writer(directory / "source.cozytensors")
-        component = writer.component("net", config={"seed": payload.seed})
+        component = writer.component("net", config={"seed": SEED})
         component.put("keep", np.arange(9, dtype=np.float32))
         for index, (
             (scheme, weight_dtype, element),
@@ -67,7 +60,7 @@ def run(payload: Request, ctx: Context, tel: Telemetry) -> Report:
             dtype,
         ) in enumerate(itertools.product(kinds, scale_kinds, logical)):
             codes = (
-                ((torch.arange(rows * cols) + payload.seed).remainder(256))
+                ((torch.arange(rows * cols) + SEED).remainder(256))
                 .to(torch.uint8)
                 .reshape(rows, cols)
             )
@@ -82,9 +75,9 @@ def run(payload: Request, ctx: Context, tel: Telemetry) -> Report:
             # Rowwise scales use an element-count contract, not an exact rank.
             scale_shape = {"F32": (rows,), "F16": (rows, 1), "BF16": (1, rows)}[dtype]
             values = torch.empty(rows, cols, dtype=torch.float32)
-            RowwiseDequant(scheme).decode(
-                torch, {"weight": weight, "scale": scales}, values
-            )
+            # The rowwise law (RowwiseDequant's, cozy-runtime encoding/formats.py): weight[i, j] * scale[i], formed in
+            # f32 and rounded once into the destination.
+            values.copy_(weight.to(torch.float32) * scales.to(torch.float32).reshape(rows, 1))
             decoded = torch.empty_like(values)
             tensorfs.raw.decode_into(
                 scheme,
@@ -234,7 +227,7 @@ def run(payload: Request, ctx: Context, tel: Telemetry) -> Report:
                         "digests": digests,
                     }
                 )
-                tel.log(
+                print(
                     json.dumps(
                         {
                             "stage": "rowwise_conversion_verified",
@@ -331,7 +324,7 @@ def run(payload: Request, ctx: Context, tel: Telemetry) -> Report:
                         "read_bytes": control.progress()[0],
                     }
                 )
-                tel.log(
+                print(
                     json.dumps(
                         {"stage": "rowwise_refusal_verified", **refusals[-1]},
                         sort_keys=True,
@@ -350,10 +343,7 @@ def run(payload: Request, ctx: Context, tel: Telemetry) -> Report:
                     "numpy": np.__version__,
                     "torch": torch.__version__,
                     "source_header": source.id,
-                    "seed": payload.seed,
-                    "native_sha256": hashlib.sha256(
-                        Path(tensorfs._ext.__file__).read_bytes()
-                    ).hexdigest(),
+                    "seed": SEED,
                     "source_cases": len(cases),
                     "refusals": refusals,
                     "summaries": summaries,
@@ -442,10 +432,21 @@ def cancel_rowwise(seed: int, tensorfs: "t.TensorFS", np: ModuleType) -> Report:
                     "seed": seed,
                     "cancel_progress": control.progress(),
                     "resumed": resumed,
-                    "native_sha256": hashlib.sha256(
-                        Path(tensorfs._ext.__file__).read_bytes()
-                    ).hexdigest(),
                 },
                 sort_keys=True,
             ),
         )
+
+
+if __name__ == "__main__":
+    import traceback
+
+    for mode in MODES:
+        cell = "rowwise-quantize" if mode == MODES[0] else f"rowwise-quantize-{mode}"
+        try:
+            found = run(mode)
+            row = {"cell": cell, "result": "PASS" if found["passed"] else "FAIL", "detail": found["detail"]}
+        except Exception as error:  # noqa: BLE001 - any failure is this mode's verdict
+            row = {"cell": cell, "result": "FAIL", "detail": f"{type(error).__name__}: {error}"[:600]}
+            traceback.print_exc()
+        print("ROW " + json.dumps(row, sort_keys=True, default=str), flush=True)

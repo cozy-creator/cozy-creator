@@ -1,4 +1,5 @@
-"""Real Writer BF16 normalization, exact frozen numerical reference, bounds and resume."""
+"""bf16-normalize, TensorFS's own (public API only), modes basic, cancel. Was the gate package `tensorfs/bf16-normalize` (xs-174:
+a package can't import TensorFS); run by `release-gate/programs.sh`."""
 
 import gc
 import hashlib
@@ -14,26 +15,11 @@ from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING, Literal, cast
 
-import msgspec
-from cozy_runtime.author import App, Context, Telemetry
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
-    from . import _types as t
-
-app = App()
-
-
-class Request(msgspec.Struct, forbid_unknown_fields=True):
-    seed: int = 103
-    mode: str = "basic"
-    runtime: bool = False
-
-
-class Report(msgspec.Struct):
-    passed: bool
-    detail: str
+    import bf16_normalize_types as t
 
 
 def selected(key: str, dtype: str, shape: tuple[int, ...]) -> "t.Selected":
@@ -84,25 +70,32 @@ def quant_selection(key: str = "quant.weight", dtype: str = "F32") -> "t.Quantiz
         "strategy": "fp8-rowwise-rne/1",
     }
 
+SEED = 103
+MODES = ['basic', 'cancel']
 
-@app.entrypoint(accelerator=False)
-def run(payload: Request, ctx: Context, tel: Telemetry) -> Report:
+
+def Report(passed: bool, *fields: object) -> dict[str, object]:  # noqa: N802 - the verdict the package returned
+    """A mode's verdict: the last field is its JSON detail."""
+    detail = fields[-1]
+    return {"passed": passed, "detail": json.loads(detail) if isinstance(detail, str) else detail}
+
+
+def run(mode: str) -> dict[str, object]:
     import numpy as np
     import tensorfs
 
-    from . import oracle
+    import bf16_normalize_oracle as oracle
 
-    assert payload.mode in ("basic", "cancel")
+    assert mode in ("basic", "cancel")
     with tempfile.TemporaryDirectory(prefix="cozy-bf16-normalize-") as temporary:
         directory = Path(temporary)
         result: t.Basic | t.Cancel
-        if payload.mode == "cancel":
-            result = cancel(directory, payload.seed, tensorfs, np, oracle)
+        if mode == "cancel":
+            result = cancel(directory, SEED, tensorfs, np, oracle)
         else:
-            result = basic(directory, payload.seed, tensorfs, np, oracle, ctx, tel, payload.runtime)
+            result = basic(directory, SEED, tensorfs, np, oracle)
         result.update({
-            "mode": payload.mode, "tensorfs": tensorfs.__version__, "numpy": np.__version__,
-            "native_sha256": hashlib.sha256(Path(tensorfs._ext.__file__).read_bytes()).hexdigest(),
+            "mode": mode, "tensorfs": tensorfs.__version__, "numpy": np.__version__,
             "oracle_sha256": hashlib.sha256(Path(oracle.__file__).read_bytes()).hexdigest(),
             "strategy": "bf16-rne/1",
             "resource_scope": "process lifetime ru_maxrss before/after each conversion; not an isolated allocation peak",
@@ -111,7 +104,7 @@ def run(payload: Request, ctx: Context, tel: Telemetry) -> Report:
         return Report(True, json.dumps(result, sort_keys=True))
 
 
-def basic(directory: Path, seed: int, tensorfs: "t.TensorFS", np: ModuleType, oracle: "t.Oracle", ctx: Context, tel: Telemetry, runtime: bool) -> "t.Basic":
+def basic(directory: Path, seed: int, tensorfs: "t.TensorFS", np: ModuleType, oracle: "t.Oracle") -> "t.Basic":
     rng = np.random.default_rng(seed)
     writer = tensorfs.Writer(directory / "source.cozytensors")
     component = writer.component("weights", config={"keep": "source config"})
@@ -257,11 +250,9 @@ def basic(directory: Path, seed: int, tensorfs: "t.TensorFS", np: ModuleType, or
     assert reports[0]["result"]["identity"] == reports[1]["result"]["identity"]
     numerical_refusals = refusal_sources(directory, tensorfs, np, oracle)
     mixed = mixed_resume(directory, source, specifications[:2], quant_values, tensorfs, np, oracle)
-    runtime_report = runtime_adapter(directory, source, specifications, cases, tensorfs, np, ctx, tel) if runtime else None
     source.close()
     return {"cases": len(cases), "reports": reports, "numerical_refusals": numerical_refusals,
-            "mixed_resume": mixed, "runtime": runtime_report,
-            "part_sha256": {name: hashlib.sha256(raw).hexdigest() for name, (raw, _) in expected.items()}}
+            "mixed_resume": mixed, "part_sha256": {name: hashlib.sha256(raw).hexdigest() for name, (raw, _) in expected.items()}}
 
 
 def refusal_sources(directory: Path, tensorfs: "t.TensorFS", np: ModuleType, oracle: "t.Oracle") -> "list[t.Refused]":
@@ -380,63 +371,6 @@ def mixed_resume(directory: Path, source: "t.Checkpoint", specifications: "list[
         overlapping.abandon()
     return {"initial_normalization": norm, "initial_quantization": quant,
             "resumed_normalization": n_again, "resumed_quantization": q_again}
-
-
-def runtime_adapter(directory: Path, source: "t.Checkpoint", specifications: "list[t.Selected]", cases: "dict[str, t.Case]", tensorfs: "t.TensorFS", np: ModuleType, ctx: Context, tel: Telemetry) -> "t.RuntimeReport":
-    """Actual Runtime Output and write_bf16; no fake Context, Writer or numerical helper."""
-    from cozy_runtime.derive import native_quantization
-    from cozy_runtime.derive.quantization import Bf16Plan, Bf16Tensor, write_bf16
-    from cozy_runtime.weights_store import Derivation, Output
-
-    plan = Bf16Plan(
-        components=["weights"],
-        order=[("weights", key) for key in source.components["weights"].tensors],
-        tensors=[Bf16Tensor(row["component"], row["key"], row["source_dtype"].lower(), tuple(row["shape"]))
-                 for row in specifications],
-        kept=[],
-    )
-    store = directory / "runtime-store"
-    transaction = "sha256:" + hashlib.sha256(str(directory).encode()).hexdigest()
-    grant = sum(math.prod(row["shape"]) * 2 for row in specifications) + 7 * (256 + 4)
-    derivation = Derivation(base=source, order=plan.order)
-    output = Output(store, "bf16", transaction, derivation, grant)
-    first, timing = timed(lambda: write_bf16(source, output, ctx, tel, plan=plan))
-    assert first.converted_keys == len(specifications) and first.reused_keys == 0
-    assert first.source_bytes_read == sum(item[2] for item in cases.values())
-    assert first.stored_source_bytes_read == sum(item[1] for item in cases.values())
-    assert first.new_bytes_written == sum(math.prod(row["shape"]) * 2 for row in specifications)
-    output.close()
-    # A real interrupted Output reopens its native journal, even with every normalization key present.
-    output = Output(store, "bf16", transaction, derivation, grant)
-    replayed = write_bf16(source, output, ctx, tel, plan=plan)
-    assert replayed.converted_keys == replayed.reused_keys == len(specifications)
-    assert replayed.source_bytes_read == replayed.stored_source_bytes_read == replayed.new_bytes_written == 0
-    assert replayed.worst_relative_frobenius is None
-    conversion, pending = output.prepare_quantization(source, [quant_selection()], max_relative_frobenius=None)
-    quant: "t.Conversion" = native_quantization._run_native(conversion, pending, ctx, tel, stage="mixed native producer")  # type: ignore[assignment]  # Runtime 0.43 gap: _run_native returns dict[str, object]
-    assert quant["encoded_keys"] == 1
-    checkpoint = output.commit()
-    assert checkpoint.verify().ok
-    output.close()
-    # Finished reuse validates the native normalization acceptance identity before skipping work.
-    output = Output(store, "bf16", transaction, derivation, grant)
-    finished = write_bf16(source, output, ctx, tel, plan=plan)
-    assert finished.converted_keys == finished.reused_keys == len(specifications)
-    assert finished.source_bytes_read == finished.stored_source_bytes_read == finished.new_bytes_written == 0
-    assert finished.worst_relative_frobenius is None
-    changed = Bf16Plan(plan.components, plan.order, plan.tensors[:-1], [])
-    from cozy_runtime.author._errors import CapabilityError
-    try:
-        write_bf16(source, output, ctx, tel, plan=changed)
-    except CapabilityError as error:
-        assert error.code == "normalization_identity"
-    else:
-        raise AssertionError("finished Runtime output reused a changed normalization selection")
-    output.close()
-    checkpoint.close()
-    return {"first": msgspec.to_builtins(first), "timing": timing,
-            "resumed": msgspec.to_builtins(replayed), "finished": msgspec.to_builtins(finished),
-            "quantization": quant}
 
 
 def cancel(directory: Path, seed: int, tensorfs: "t.TensorFS", np: ModuleType, oracle: "t.Oracle") -> "t.Cancel":
@@ -579,3 +513,17 @@ def cancel_quantization_reservation(directory: Path, source: "t.Checkpoint", sha
     assert output.has("weights", "quant.first") and not output.has("weights", "large")
     output.abandon()
     return {**result, "cancel_progress": control.progress(), "cancel_join_seconds": join_seconds}
+
+
+if __name__ == "__main__":
+    import traceback
+
+    for mode in MODES:
+        cell = "bf16-normalize" if mode == MODES[0] else f"bf16-normalize-{mode}"
+        try:
+            found = run(mode)
+            row = {"cell": cell, "result": "PASS" if found["passed"] else "FAIL", "detail": found["detail"]}
+        except Exception as error:  # noqa: BLE001 - any failure is this mode's verdict
+            row = {"cell": cell, "result": "FAIL", "detail": f"{type(error).__name__}: {error}"[:600]}
+            traceback.print_exc()
+        print("ROW " + json.dumps(row, sort_keys=True, default=str), flush=True)

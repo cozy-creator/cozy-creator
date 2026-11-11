@@ -1,0 +1,17 @@
+[build-system]
+requires = ["uv_build>=0.12.7,<0.13"]
+build-backend = "uv_build"
+
+[project]
+name = "ci-derive-adapters"
+version = "0.1.0"
+description = "The Runtime's microscale producers against frozen independent references (public API)"
+requires-python = ">=3.12"
+dependencies = ["cozy-runtime>=0.45", "msgspec>=0.19", "numpy>=1.26"]
+
+[project.entry-points."cozy.application"]
+default = "ci_derive_adapters:app"
+
+[tool.uv.build-backend]
+module-name = "ci_derive_adapters"
+module-root = ""
