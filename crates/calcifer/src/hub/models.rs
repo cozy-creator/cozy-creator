@@ -363,7 +363,6 @@ pub(super) async fn release(
         .map_err(|e| refusal(&hub, e))?;
     Ok(Json(ModelReleased {
         model: repo.to_string(),
-        role: card.model.role,
         version: release.version,
         created_at: release.created_at,
         lanes: release.lanes.into_iter().map(|(lane, l)| (lane, l.commit)).collect(),
