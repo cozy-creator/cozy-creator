@@ -475,6 +475,7 @@ jobs:
           CREATOR: ${{ needs.affected.outputs.repo == 'cozy-creator' && '.src' || '.stack' }}
         run: |
           cd "$CREATOR"
+          cargo test --locked -p platform --lib ipc::windows::tests -- --nocapture
           cargo test --locked -p tensord --lib machine::supervise::tests -- --nocapture
       - name: cli suite
         env:

@@ -15,7 +15,7 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::{
-        DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_BROKEN_PIPE, ERROR_IO_PENDING,
+        DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_BROKEN_PIPE, ERROR_IO_PENDING, ERROR_NO_DATA,
         ERROR_OPERATION_ABORTED, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, ERROR_PIPE_NOT_CONNECTED,
         GENERIC_READ, GENERIC_WRITE, HANDLE, HLOCAL, INVALID_HANDLE_VALUE, LocalFree,
         WAIT_OBJECT_0,
@@ -360,7 +360,15 @@ impl LocalListener {
 
     /// A dialer, or `None` once `process` has ended first: woken by the kernel, never a timer.
     pub fn accept_unless(&self, process: &Exact) -> Result<Option<LocalStream>> {
-        self.connect_one(Some(process.as_handle()))
+        loop {
+            match self.connect_one(Some(process.as_handle())) {
+                // A client connected and closed before ConnectNamedPipe. Discard that
+                // instance; the next accept still observes the child's process handle.
+                Err(Error::Os { source, .. })
+                    if source.raw_os_error() == Some(ERROR_NO_DATA as i32) => {}
+                result => return result,
+            }
+        }
     }
 
     fn connect_one(&self, unless: Option<BorrowedHandle<'_>>) -> Result<Option<LocalStream>> {
@@ -725,4 +733,54 @@ pub(crate) fn duplicate_into_peer(stream: &LocalStream, handle: RawHandle) -> io
         return Err(io::Error::last_os_error());
     }
     Ok(target as u64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::{Command, Stdio};
+
+    #[test]
+    fn disconnected_client_before_accept_is_not_a_listener_failure() {
+        let root = tempfile::tempdir().unwrap();
+        let listener = LocalListener::bind(&root.path().join("pipe")).unwrap();
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "ipc::windows::tests::connect_then_exit_fixture",
+                "--nocapture",
+            ])
+            .env("COZY_PIPE_CLOSE_TEST", root.path())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap();
+        while !root.path().join("connected").exists() {
+            assert!(
+                child.try_wait().unwrap().is_none(),
+                "pipe fixture exited before connecting"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let exact = Exact::open(&crate::process::Birth::of(child.id()).unwrap())
+            .unwrap()
+            .unwrap();
+        std::fs::write(root.path().join("release"), []).unwrap();
+        assert!(child.wait().unwrap().success());
+        assert!(listener.accept_unless(&exact).unwrap().is_none());
+    }
+
+    #[test]
+    fn connect_then_exit_fixture() {
+        let Some(root) = std::env::var_os("COZY_PIPE_CLOSE_TEST").map(std::path::PathBuf::from)
+        else {
+            return;
+        };
+        let stream = LocalStream::connect(&root.join("pipe")).unwrap();
+        std::fs::write(root.join("connected"), []).unwrap();
+        while !root.join("release").exists() {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        drop(stream);
+    }
 }
