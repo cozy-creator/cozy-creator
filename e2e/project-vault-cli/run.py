@@ -801,6 +801,14 @@ foreach ($rule in $allowed) {
         if original_id == copied_id:
             raise RuntimeError('the independent folder copy reused the registered project identity')
         self.cell('decrypted_folder_copy_opens_with_its_own_identity')
+        refused = self.command('vault', '--directory', copied_path, 'encrypt',
+                               '--passphrase-file', rekey, '--recovery-out', self.recovery('copy-recovery'),
+                               '--remove-plaintext', '--idle', 0, refusal=True)
+        assert json.loads(refused.stdout)['error']['code'] == 'vault_retained_project_mismatch'
+        assert self.command('vault', '--directory', copied_path, 'status')['state'] == 'plain'
+        assert self.yaml(copied['id']) == copied_state
+        assert not (copied_path / 'project.vault.keys.json').exists()
+        self.cell('copied_retained_namespace_refuses_encryption_before_cutover')
         reencrypted = self.vault('encrypt', '--passphrase-file', rekey,
                                  '--recovery-out', self.recovery('recovery4'), '--remove-plaintext', '--idle', 0)
         self.check_recovery('recovery4')
