@@ -42,17 +42,23 @@ pub(crate) async fn search(ctx: &Context, args: Ls, role: &str) -> Result<ExitCo
     };
     let view = read(ctx, &ask).await?;
 
+    let browser = super::live::Catalog::new(ask.clone(), view, super::live::local_inventory(ctx).await);
     if ctx.json {
-        output::json(&view);
+        output::json(&browser.document());
         return Ok(ExitCode::SUCCESS);
     }
-    let browser = super::live::Catalog::new(ask.clone(), view, super::live::local_inventory(ctx).await);
     if ctx.term.stdout && std::io::stdin().is_terminal() {
         return crate::tui::show(ctx, crate::tui::Screen::Models(browser)).await;
     }
-    let mut table = Table::new(ctx, ["model", "family", "size", "local"]);
-    for row in browser.rows() { table = table.row(row); }
-    table.note(browser.title()).print();
+    for (title, rows) in browser.tables() {
+        let mut table = Table::new(ctx, ["model", "family", "size", "local"]);
+        for row in rows { table = table.row(row); }
+        table.note(title).print();
+    }
+    output::say(ctx, &browser.title());
+    if ask.family.is_some() || !ask.tag.is_empty() || !ask.no_tag.is_empty() {
+        output::say(ctx, "Family and tag filters apply to the Hub page; local copies use the name query.");
+    }
     Ok(ExitCode::SUCCESS)
 }
 
