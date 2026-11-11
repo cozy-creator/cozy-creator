@@ -1,7 +1,8 @@
 # The ComfyUI matrix's pods (Paul 10-28): <sku>x<gpus>.<part>, host RAM GiB (consumer pods held to 30.46 GiB a GPU for both
 # engines; datacenter pods keep theirs: 1024 holds nothing), disk GB, each gate's hard stop in minutes. Parts: matrix (every
 # model), matrix8 (an 8 GB card: also at 6 GB free), matrixdc (datacenter: also H3 30-step), mg2 and mg4 (H3 Turbo 15 s at 1
-# GPU against 2 or 4, ComfyUI MultiStream on the same GPUs; the transport each group took is in the record).
+# GPU against 2 or 4, ComfyUI MultiStream on the same GPUs; the transport each group took is in the record); dcmg2 (the H100:
+# its single-GPU cells, each held to one GPU, on the NVLink pair that also runs H3 at 1 and 2 GPUs).
 rtx-4090x1.matrix 30.46 450 420
 rtx-5090x1.matrix 30.46 450 360
 rtx-3090x1.matrix 30.46 450 540
@@ -9,12 +10,11 @@ rtx-4070x1.matrix 30.46 450 660
 rtx-3060x1.matrix 30.46 450 720
 rtx-5060x1.matrix8 30.46 450 900
 rtx-pro-6000x1.matrixdc 1024 500 240
-h100-nvlx1.matrixdc 1024 500 240
 b200x1.matrixdc 1024 500 240
-rtx-4090x2.mg2 60.92 300 180
+rtx-4090x2.mg2 1024 300 180
 rtx-pro-6000x2.mg2 1024 400 150
-h100-sxm5-80gbx2.mg2 1024 400 150
-rtx-5090x4.mg4 121.84 400 180
+h100-sxm5-80gbx2.dcmg2 1024 500 240
+rtx-5090x4.mg4 1024 400 180
 h100-sxm5-80gbx4.mg4 1024 400 150
 # H3's pass (and any cell a Calcifer restart broke): the same cards at their own host RAM (1024 holds nothing), where ComfyUI's
 # H3 is not killed by the container's limit (it was at 30.46 GiB on the 5090, 11-11; that robustness result stands apart).
