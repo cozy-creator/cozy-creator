@@ -9,7 +9,7 @@
 # A broken step is recorded and the suite goes on, so one run reports all of them.
 # --shard runs one of `shards` below after the same start, each on its own runner: e2e.yaml checks coverage over
 # all their calls. Whole, the suite checks it itself.
-#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|web|project-stream|project-stream-web|projectdb|projectdb-latency|projectdb-existing|projectdb-web|projectvault|projectdb-cancel|projectdb-live|projectdb-scale|local-code]
+#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|web|web-core|web-scale|web-layout-1280|web-layout-1600|web-layout-2560|project-stream|project-stream-web|projectdb|projectdb-latency|projectdb-existing|projectdb-web|projectvault|projectdb-cancel|projectdb-live|projectdb-scale|local-code]
 #                  [--tensord F|V] [--tensorfs F|V] [--runtime F|V] [--packages DIR]
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
@@ -268,6 +268,11 @@ case $SHARD in
   web) parts="tools_read web_serves page_resend logs" ;;
   project-stream) parts="project_stream logs" ;;
   project-stream-web) DB_WEB="drawers activity versions timeline"; parts="tools_read db_existing_web logs" ;;
+  web-core) parts="tools_read web_core page_resend logs" ;;
+  web-scale) export DB_WEB=scale; parts="tools_read db_existing_web logs" ;;
+  web-layout-1280) export DB_WEB=layout SIZES=1280x720; parts="tools_read db_existing_web logs" ;;
+  web-layout-1600) export DB_WEB=layout SIZES=1600x1000,1600x1000@1.25; parts="tools_read db_existing_web logs" ;;
+  web-layout-2560) export DB_WEB=layout SIZES=2560x1440@2x; parts="tools_read db_existing_web logs" ;;
   follow) parts="script_package one_name_two_paths image_ratio run_follow time_left broken_answers queued_download machines completions calcifer_faults calcifer_restarts logs" ;;
   # project.db (cl-803) and state.db (cl-818) alone, and project.db's latency against the cozy before it.
   projectdb) parts="projectdb statedb logs" ;;
@@ -287,7 +292,14 @@ case $SHARD in
   control) parts="machine_show_runs writes_once page_resend hub_away broken_answers logs" ;;
   *) echo "no cli shard $SHARD" >&2; exit 2 ;;
 esac
-[ -n "$LOCAL" ] || [[ "$SHARD" = entrypoints || "$SHARD" = projectvault ]] || parts="entrypoints catalog refusals web_serves completions homebrew calcifer_faults update remove"
+if [ -z "$LOCAL" ]; then
+  case $SHARD in
+    entrypoints | projectvault) ;;
+    web-layout-* | web-scale) parts="db_existing_web logs" ;;
+    web-core) parts="entrypoints catalog refusals web_native completions homebrew calcifer_faults update remove" ;;
+    *) parts="entrypoints catalog refusals web_serves completions homebrew calcifer_faults update remove" ;;
+  esac
+fi
 
 start
 # Package fixtures must still resolve after entering the project directory.

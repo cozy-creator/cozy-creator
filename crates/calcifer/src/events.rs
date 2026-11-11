@@ -134,12 +134,14 @@ pub(crate) fn tell(api: Arc<Api>) {
                     project::model::forget(&api, &id);
                     continue;
                 }
-                let mut event = project::model::told(&api, id.clone(), &dir, settled).await;
-                // A write that came as this read the files is told here and owed again: once is enough.
-                if let StreamEvent::ProjectChanged { rev, .. } = &event
-                    && last.insert(id, rev.clone()).as_ref() == Some(rev)
-                {
+                // Redundant work must leave Told untouched: a later commit can arrive
+                // while told reads, so its computed diff must always be published.
+                if !settled && last.get(&id) == Some(&project::revision(&dir)) {
                     continue;
+                }
+                let mut event = project::model::told(&api, id.clone(), &dir, settled).await;
+                if let StreamEvent::ProjectChanged { rev, .. } = &event {
+                    last.insert(id, rev.clone());
                 }
                 if let StreamEvent::ProjectChanged { cursor: position, .. } = &mut event {
                     *position = PROJECTS.sequence.try_update(Ordering::AcqRel, Ordering::Acquire, |sequence| sequence.checked_add(1))

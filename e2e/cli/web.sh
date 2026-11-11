@@ -32,9 +32,13 @@ answers() {
 # redeem <what> <status> <error code, or -> <code>
 redeem() { answers "$1" "$2" "$3" -X POST -H 'Content-Type: application/json' -d "{\"code\":\"$4\"}" "$base/v1/session"; }
 
+# The merge check keeps functional journeys here; layout runs in parallel and scale is an explicit benchmark.
+web_core() { web_serves core; }
+web_native() { web_serves native; }
+
 web_serves() {
 step "web-serves: sign in, the page under its CSP, an event, and what is refused"
-local lock=$HOME/.cozy/calcifer/calcifer.lock.holder P=$OUT/web-project pic=$OUT/web-picture.png pw=$OUT/playwright
+local scope=${1:-full} lock=$HOME/.cozy/calcifer/calcifer.lock.holder P=$OUT/web-project pic=$OUT/web-picture.png pw=$OUT/playwright
 local addr token base chrome id
 chrome=$(web_chrome)
 [ -n "$chrome" ] && [ -x "$chrome" ] || { check "web-serves: no Google Chrome on this runner (${chrome:-none})"; return; }
@@ -63,6 +67,13 @@ if [ -n "$restart" ]; then
   STOP=$(web_halt "$lock") START=$(web_start) web_proof undo "$chrome" "$pw" "$restart"
   jq -c '{refused: .seen.refused, list: .seen.list}' "$OUT/web-undo.json" 2> /dev/null || true
 fi
+if [ "$scope" = native ]; then
+  # Keep native file and process paths here. The surrounding CLI shard checks local-execution refusal.
+  local no_hub=''
+  [ -n "${WEB_ALONE:-}" ] || no_hub=$(web_restart "$lock" http://127.0.0.1:9)
+  NO_HUB=$no_hub web_proof see "$chrome" "$pw" "$restart"
+  return
+fi
 step "web-drawers: a real run live to its end and a cancel, one log stream across tabs, the machines"
 web_proof drawers "$chrome" "$pw" ''
 step "web-activity: each machine top right, an install and a download listed once under it with their waiters, a box saying it waits"
@@ -80,8 +91,10 @@ jq -c '.seen.scale // empty' "$OUT/web-see.json" 2> /dev/null || true
 step "web-zoom: − the zoom + in the canvas's corner, its menu's fit and 100%, on a box worked on, and 300 boxes panned"
 web_proof zoom "$chrome" "$pw" ''
 jq -c '{pan_70: .seen.pan_70, pan_11: .seen.pan_11}' "$OUT/web-zoom.json" 2> /dev/null || true
-step "web-layout: every kind of box in every state, far out to close, at 1280x720, 1600x1000 and 2560x1440 at 2x, and the frame around the canvas: nothing on another, cut off, past its edge, touching or too small to read"
-web_proof layout "$chrome" "$pw" ''
+if [ "$scope" = full ]; then
+  step "web-layout: every kind of box in every state, far out to close, at 1280x720, 1600x1000 and 2560x1440 at 2x, and the frame around the canvas: nothing on another, cut off, past its edge, touching or too small to read"
+  web_proof layout "$chrome" "$pw" ''
+fi
 step "web-nodes: the tools, a box's controls, chips, approve, delete and Undo, and Paul's example where this computer runs models"
 web_proof nodes "$chrome" "$pw" ''
 step "web-localfit: a render this computer would do poorly asks on its box first; Render here kept by Calcifer; Rent a GPU chosen; the CLI warns once"
@@ -101,9 +114,11 @@ PATH=${own:+$(dirname "$own"):}$PATH web_proof timeline "$chrome" "$pw" ''
 step "web-live: the real CLI and a hand's saves on an open canvas: each within a second, what's typed kept, 200 edits, the stream fallen behind"
 web_proof live "$chrome" "$pw" ''
 jq -c '{times: .seen.times_ms, burst: .seen.burst, behind: .seen.behind}' "$OUT/web-live.json" 2> /dev/null || true
-step "web-scale: 5,000 assets: status, opening it, one edit, a landing, panning, memory"
-web_proof scale "$chrome" "$pw" ''
-jq -c '{scale: .seen.scale}' "$OUT/web-scale.json" 2> /dev/null || true
+if [ "$scope" = full ]; then
+  step "web-scale: 5,000 assets: status, opening it, one edit, a landing, panning, memory"
+  web_proof scale "$chrome" "$pw" ''
+  jq -c '{scale: .seen.scale}' "$OUT/web-scale.json" 2> /dev/null || true
+fi
 step "web-closes: twenty projects of 1,000 assets by the CLI and the page, each closed once nothing reads it, memory back, a reopen as quick, a render holding its own"
 web_proof closes "$chrome" "$pw" ''
 jq -c '{times: .seen.times, memory: .seen.memory_mb, open: .seen.open_median_s, reopen: .seen.reopen_median_s, render: .seen.render}' "$OUT/web-closes.json" 2> /dev/null || true

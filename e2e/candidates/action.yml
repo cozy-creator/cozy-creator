@@ -4,8 +4,9 @@ description: >
   the TensorFS wheel and the cozy-runtime wheel, the change's repo at its commit and the other two at `stack_ref` /
   `runtime_ref` (master), so a mismatch between them fails here and not on PyPI, plus packages master
   ($PACKAGES_MASTER) unless the change is the packages'. With `from: artifacts` (Linux) the set is this run's
-  candidate-* artifacts, which e2e.yaml's `candidate` jobs built (build.sh); otherwise it is built here, for this
-  runner's OS. No candidate leg tests a released binary: a released Runtime before CPU mode cannot run a model on these
+  candidate-* artifacts, which e2e.yaml's `candidate` jobs built (build.sh). `from: native-artifact` takes the exact
+  native_artifact built once for this runner's OS; otherwise it is built here. No candidate leg tests a released binary:
+  a released Runtime before CPU mode cannot run a model on these
   runners, and a released cozy carries the bugs master fixed. `tensord`, `tensorfs` and `runtime` take a release
   candidate instead of a build: its exact version, a prerelease's too, which `cozy machine update` fetches and
   verifies. The change's repo is at .src (with artifacts, the packages' only). Where the OS runs no models itself
@@ -21,7 +22,10 @@ inputs:
     description: Space-separated build tokens (ci/affected's build:<artifact>); `package` runs the change's packages
     default: ''
   from:
-    description: "`artifacts`: this run's candidate-* artifacts; empty: build the set here"
+    description: "`artifacts`: this run's Linux candidate-* set; `native-artifact`: the exact native_artifact; empty: build here"
+    default: ''
+  native_artifact:
+    description: "Exact same-run native cozy artifact name, used with `from: native-artifact`"
     default: ''
   stack_ref:
     description: The cozy-creator commit TensorD and TensorFS come from, unless the change is cozy-creator's
@@ -44,6 +48,10 @@ inputs:
   release:
     description: A cozy-publish.yaml run (a dry run's too) whose own installer installs its cozy, the candidate, in place of a build
     default: ''
+outputs:
+  cozy_artifact:
+    description: The built or reused cozy artifact's input-derived name
+    value: ${{ steps.reuse.outputs.name || steps.cozy.outputs.name }}
 runs:
   using: composite
   steps:
@@ -53,7 +61,7 @@ runs:
       with:
         go-version-file: ${{ github.action_path }}/../hubcheck/go.mod
         cache-dependency-path: ${{ github.action_path }}/../hubcheck/go.sum
-    - if: inputs.from != 'artifacts' || inputs.repo == 'packages'
+    - if: inputs.from == '' || inputs.repo == 'packages'
       uses: actions/checkout@v5
       with:
         repository: cozy-creator/${{ inputs.repo }}
@@ -74,13 +82,18 @@ runs:
         pattern: candidate-*
         merge-multiple: true
         path: ${{ runner.temp }}/candidates
-    - if: inputs.from != 'artifacts' && inputs.repo != 'cozy-creator'
+    - if: inputs.from == 'native-artifact' && inputs.tensord == '' && inputs.release == ''
+      uses: actions/download-artifact@v4
+      with:
+        name: ${{ inputs.native_artifact }}
+        path: ${{ runner.temp }}/candidates
+    - if: inputs.from == '' && inputs.repo != 'cozy-creator'
       uses: actions/checkout@v5
       with:
         repository: cozy-creator/cozy-creator
         ref: ${{ inputs.stack_ref }}
         path: .stack
-    - if: inputs.from != 'artifacts' && inputs.repo != 'cozy-runtime'
+    - if: inputs.from == '' && inputs.repo != 'cozy-runtime'
       uses: actions/checkout@v5
       with:
         repository: cozy-creator/cozy-runtime
@@ -89,30 +102,30 @@ runs:
     # cozy as an earlier merge-group or dispatched run built it for this OS from the same build inputs (a PR's own
     # dispatch, for its queue entry), else built here and kept for the next (build.sh).
     - id: reuse
-      if: inputs.from != 'artifacts' && inputs.tensord == '' && inputs.release == ''
+      if: inputs.from == '' && inputs.tensord == '' && inputs.release == ''
       shell: bash
       env:
         REUSE: "1"
         GH_TOKEN: ${{ github.token }}
         CREATOR: ${{ inputs.repo == 'cozy-creator' && '.src' || '.stack' }}
       run: bash "${{ github.action_path }}/build.sh" cozy "$CREATOR" "$RUNNER_TEMP/candidates" > /dev/null
-    - if: inputs.from != 'artifacts' && (steps.reuse.outputs.name == '' || runner.os == 'Linux')
+    - if: inputs.from == '' && (steps.reuse.outputs.name == '' || runner.os == 'Linux')
       uses: Swatinem/rust-cache@v2
       with:
         workspaces: ${{ inputs.repo == 'cozy-creator' && '.src' || '.stack' }} -> target
         save-if: ${{ github.ref == 'refs/heads/master' }}
     # The page cozy embeds; build.sh builds it. A ref from before web/app has none.
-    - if: inputs.from != 'artifacts' && inputs.tensord == '' && inputs.release == '' && steps.reuse.outputs.name == '' && hashFiles(format('{0}/web/app/package.json', inputs.repo == 'cozy-creator' && '.src' || '.stack')) != ''
+    - if: inputs.from == '' && inputs.tensord == '' && inputs.release == '' && steps.reuse.outputs.name == '' && hashFiles(format('{0}/web/app/package.json', inputs.repo == 'cozy-creator' && '.src' || '.stack')) != ''
       uses: actions/setup-node@v4
       with:
         node-version: 24
-    - if: inputs.from != 'artifacts' && inputs.tensord == '' && inputs.release == '' && steps.reuse.outputs.name == '' && hashFiles(format('{0}/web/app/package.json', inputs.repo == 'cozy-creator' && '.src' || '.stack')) != ''
+    - if: inputs.from == '' && inputs.tensord == '' && inputs.release == '' && steps.reuse.outputs.name == '' && hashFiles(format('{0}/web/app/package.json', inputs.repo == 'cozy-creator' && '.src' || '.stack')) != ''
       uses: pnpm/setup@v1
       with:
         package-json-file: ${{ inputs.repo == 'cozy-creator' && '.src' || '.stack' }}/web/app/package.json
         install: false
     - id: cozy
-      if: inputs.from != 'artifacts' && inputs.tensord == '' && inputs.release == '' && steps.reuse.outputs.name == ''
+      if: inputs.from == '' && inputs.tensord == '' && inputs.release == '' && steps.reuse.outputs.name == ''
       shell: bash
       env:
         CARGO_INCREMENTAL: "0"
@@ -125,7 +138,7 @@ runs:
         path: ${{ runner.temp }}/candidates
         if-no-files-found: error
         retention-days: 14
-        # cli-os and mps (or cli-release) on one OS in one run build the same cozy.
+        # The same candidate can also be built by a standalone caller in this run.
         overwrite: true
     # Where this OS runs no models, its rental (e2e/release) takes this run's Linux TensorD: the candidate job's build.
     - if: runner.os != 'Linux' && inputs.tensord == '' && inputs.release == ''
@@ -164,7 +177,7 @@ runs:
         [ "$RUNNER_OS" != Windows ] || exe=.exe
         machine=1
         [ "$RUNNER_OS" = Linux ] || machine=''
-        if [ "$FROM" != artifacts ]; then
+        if [ -z "$FROM" ]; then
           creator=.stack runtime=.rt
           [ "$REPO" != cozy-creator ] || creator=.src
           [ "$REPO" != cozy-runtime ] || runtime=.src

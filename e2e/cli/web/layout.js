@@ -11,7 +11,7 @@
 //   node layout.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $SHOT: where to keep its pictures; $ALONE: on a shared computer, so it runs nothing;
 // $PAGE_ORIGIN: the page from elsewhere (a `vite` of the tree under test), its API through it; $PROJECT: one an earlier pass made, measured again; $SIZES: some of
-// the sizes, by name. Prints what it saw as JSON and exits 1 if anything failed.
+// the sizes, by name (including 1600x1000@1.25 for the fractional raster check). Prints what it saw as JSON and exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, readFileSync, renameSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
@@ -50,6 +50,11 @@ const SIZES = [
   // Drawn at 2×, in software on a runner: each box under the pointer and selected is looked at in the two above.
   { name: '2560x1440@2x', viewport: { width: 2560, height: 1440 }, deviceScaleFactor: 2, open: true },
 ];
+const DRAWN_SIZES = [...SIZES, { name: '1600x1000@1.25', viewport: { width: 1600, height: 1000 }, deviceScaleFactor: 1.25 }];
+const requestedSizes = process.env.SIZES ? process.env.SIZES.split(',') : undefined;
+if (requestedSizes?.some((name) => !DRAWN_SIZES.some((size) => size.name === name))) throw new Error(`unknown layout size: ${process.env.SIZES}`);
+const selectedSizes = SIZES.filter((size) => !requestedSizes || requestedSizes.includes(size.name));
+const selectedDrawnSizes = DRAWN_SIZES.filter((size) => !requestedSizes || requestedSizes.includes(size.name));
 const LONG = 'a_box_whose_name_goes_on_and_on_past_any_width';
 /** The least a word may be drawn on screen, in CSS pixels. */
 const FLOOR = 10;
@@ -729,7 +734,7 @@ ${local ? `  card:
   names = ['hero_art', 'wide_art', 'tall_art', LONG, 'sea_sound', 'clip', 'clip_b', 'style', 'still', 'edit', 'odd', ...(local ? ['card', 'posed', 'shot', 'broken', 'making'] : [])];
   await placed();
   const render = async (asset, wait = true) => {
-    try { return await projectAction(folder, 'render', asset, ...(local ? ['--on', 'local'] : []), ...(wait ? [] : ['--queue'])); }
+    try { return await projectAction(folder, 'render', asset, '--on', 'local', ...(wait ? [] : ['--queue'])); }
     catch (error) { if (asset !== 'broken') throw error; }
   };
   // Takes: the frame thrice, the Edit once, and where this computer runs, many of the picture tool's, the shot's two and a failure.
@@ -762,7 +767,7 @@ ${local ? `  card:
 
   // Each size: the canvas at rest at each zoom, each box in each state, and what's around the canvas.
   // $SIZES: some of them, by name, for a quick look.
-  for (const size of SIZES.filter((held) => !process.env.SIZES || process.env.SIZES.split(',').includes(held.name))) {
+  for (const size of selectedSizes) {
     const context = await browser.newContext({ viewport: size.viewport, deviceScaleFactor: size.deviceScaleFactor });
     page = await context.newPage();
     watch(page);
@@ -1038,8 +1043,7 @@ ${local ? `  card:
   // 1.25x screen, where every edge is drawn at a fractional scale.
   const drawn = await launch(playwright, GPU);
   const decoder = await drawn.newPage();
-  const asked = SIZES.filter((held) => !process.env.SIZES || process.env.SIZES.split(',').includes(held.name));
-  for (const size of [...asked, { name: '1600x1000@1.25', viewport: { width: 1600, height: 1000 }, deviceScaleFactor: 1.25 }]) {
+  for (const size of selectedDrawnSizes) {
     const context = await drawn.newContext({ viewport: size.viewport, deviceScaleFactor: size.deviceScaleFactor });
     page = await context.newPage();
     watch(page);
