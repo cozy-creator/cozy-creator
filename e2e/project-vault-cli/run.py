@@ -984,8 +984,13 @@ foreach ($rule in $allowed) {
         assert unchanged['state'] == 'plain' and not unchanged['encrypted']
         assert before == self.yaml()
         self.cell('recovery_output_refuses_backing_before_conversion')
-        self.vault('encrypt', '--passphrase-file', initial, '--recovery-out', self.recovery('recovery1'),
-                   '--remove-plaintext', '--idle', 0)
+        self.project.joinpath('files').mkdir(exist_ok=True)
+        stream_fixture = Path(__file__).resolve().parents[1] / 'cli' / 'vault_stream.py'
+        streamed = subprocess.run([sys.executable, str(stream_fixture), str(self.project), str(initial),
+                                   str(self.recovery('recovery1'))], capture_output=True, text=True, timeout=300)
+        if streamed.returncode:
+            raise AssertionError(self.redact(streamed.stdout + streamed.stderr))
+        self.cell('vault_acknowledgment_reattach_and_missing_media')
         self.check_recovery('recovery1')
         assert before == self.yaml()
         self.cell('convert_without_changing_logical_state')

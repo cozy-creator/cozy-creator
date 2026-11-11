@@ -30,6 +30,7 @@ struct Operation {
     events: watch::Sender<VaultEvent>,
     finished: Mutex<Option<Instant>>,
     readable: Mutex<Option<Arc<AtomicBool>>>,
+    available: AtomicBool,
 }
 
 fn terminal(event: &VaultEvent) -> bool {
@@ -58,8 +59,23 @@ fn binding(named: &str, ask: &VaultAsk) -> String {
 /// tombstones remain so a delayed retry can never perform the mutation twice.
 pub(super) fn expire() {
     OPERATIONS.lock().expect("vault operations").retain(|_, operation| {
-        operation.finished.lock().expect("vault result age").is_none_or(|at| at.elapsed() < RESULT_LIFETIME)
+        let keep = operation.finished.lock().expect("vault result age").is_none_or(|at| at.elapsed() < RESULT_LIFETIME);
+        if !keep { retire(operation); }
+        keep
     });
+}
+
+fn expired_result() -> VaultEvent {
+    VaultEvent::Failed { error: Error::new(Kind::Conflict, "vault_operation_result_expired",
+        "this private operation reply is no longer available; check the vault status before starting another operation")
+        .next("cozy vault status") }
+}
+
+fn retire(operation: &Operation) {
+    operation.available.store(false, Ordering::Release);
+    // Attached readers can outlive the registry entry. Remove the stored secret
+    // and revoke their emission authority before dropping that entry.
+    operation.events.send_replace(expired_result());
 }
 
 pub(super) fn revoke(root: &std::path::Path) {
@@ -78,7 +94,10 @@ pub(super) async fn acknowledge(Path((named, id)): Path<(String, String)>) -> Re
     let mut operations = OPERATIONS.lock().expect("vault operations");
     if let Some(operation) = operations.get(&id) {
         if operation.named != named { return Err(Refusal(Error::new(Kind::Conflict, "vault_operation_conflict", "the operation belongs to another project"))); }
-        if operation.finished.lock().expect("vault result age").is_some() { operations.remove(&id); }
+        if operation.finished.lock().expect("vault result age").is_some() {
+            retire(operation);
+            operations.remove(&id);
+        }
     }
     Ok(private(StatusCode::NO_CONTENT.into_response()))
 }
@@ -101,7 +120,7 @@ pub(super) async fn write(State(api): State<Arc<Api>>, Path((named, id)): Path<(
             Some(operation) => (operation.clone(), false),
             None => {
                 let (events, _) = watch::channel(accepted.clone());
-                let operation = Arc::new(Operation { named, root: Mutex::new(None), binding, events, finished: Mutex::new(None), readable: Mutex::new(None) });
+                let operation = Arc::new(Operation { named, root: Mutex::new(None), binding, events, finished: Mutex::new(None), readable: Mutex::new(None), available: AtomicBool::new(true) });
                 operations.insert(id.clone(), operation.clone());
                 (operation, true)
             }
@@ -144,6 +163,10 @@ fn frame(event: &VaultEvent) -> Event {
 }
 
 fn sanitize(event: &mut VaultEvent, operation: &Operation) {
+    if !operation.available.load(Ordering::Acquire) {
+        *event = expired_result();
+        return;
+    }
     if let VaultEvent::Completed { changed } = event
         && changed.vault.encrypted
         && !operation.readable.lock().expect("vault result authority").as_ref().is_some_and(|token| token.load(Ordering::Acquire))

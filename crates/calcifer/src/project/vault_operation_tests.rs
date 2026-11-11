@@ -20,7 +20,7 @@ fn revoked_result_cannot_reveal_recovery_or_old_view() {
     let (events, _) = watch::channel(VaultEvent::Accepted { action: "encrypt".into() });
     let token = Arc::new(AtomicBool::new(true));
     let operation = Operation { named: "/project".into(), root: Mutex::new(None), binding: String::new(), events,
-        finished: Mutex::new(None), readable: Mutex::new(Some(token.clone())) };
+        finished: Mutex::new(None), readable: Mutex::new(Some(token.clone())), available: AtomicBool::new(true) };
     let mut event = VaultEvent::Completed { changed: VaultChanged {
         vault: api::calcifer::project::VaultStatus { encrypted: true, state: "unlocked".into(), path: "/project".into(),
             view: Some("/readable".into()), expires_at_ms: None, idle_timeout_s: 900, next: vec![] },
@@ -28,7 +28,18 @@ fn revoked_result_cannot_reveal_recovery_or_old_view() {
     }};
     token.store(false, Ordering::Release);
     sanitize(&mut event, &operation);
-    let VaultEvent::Completed { changed } = event else { panic!("expected completion") };
+    let VaultEvent::Completed { mut changed } = event else { panic!("expected completion") };
     assert!(changed.recovery_secret.is_none() && changed.vault.view.is_none());
     assert_eq!(changed.vault.state, "locked");
+
+    // A reader that already cloned a reply must also honor acknowledgment/expiry,
+    // even while the project remains unlocked and its mount token stays valid.
+    token.store(true, Ordering::Release);
+    changed.recovery_secret = Some("synthetic held recovery".into());
+    let mut copied = VaultEvent::Completed { changed };
+    operation.events.send_replace(copied.clone());
+    retire(&operation);
+    sanitize(&mut copied, &operation);
+    assert!(matches!(copied, VaultEvent::Failed { error } if error.code == "vault_operation_result_expired"));
+    assert!(matches!(&*operation.events.borrow(), VaultEvent::Failed { error } if error.code == "vault_operation_result_expired"));
 }
