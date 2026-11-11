@@ -13,8 +13,11 @@ class CheckpointStubTests(unittest.TestCase):
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         text = module.render(script.parent.parent.joinpath("src/lib.rs").read_text())
-        fields = re.search(r'_CheckpointItemFields = .*', text).group()
-        changes = re.search(r'_CheckpointItemChanges = .*', text).group()
+        fields_match = re.search(r'_CheckpointItemFields = .*', text)
+        changes_match = re.search(r'_CheckpointItemChanges = .*', text)
+        assert fields_match is not None and changes_match is not None
+        fields = fields_match.group()
+        changes = changes_match.group()
         self.assertIn("'model_id': NotRequired[str]", fields)
         self.assertIn("'repo_id': NotRequired[str]", fields)
         self.assertIn("'model_id': str", changes)

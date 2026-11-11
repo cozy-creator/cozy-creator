@@ -12,18 +12,19 @@ import tensorfs
 
 
 class PortableCheckpointTests(unittest.TestCase):
-    def test_model_identity_keyword_bridge_is_finite_and_unambiguous(self):
+    def test_model_identity_keyword_bridge_is_finite_and_unambiguous(self) -> None:
         from tensorfs import _ext
-        for writer in (tensorfs.Writer, _ext.Writer):
+        for writer_type in (tensorfs.Writer, _ext.Writer):
             with self.assertRaisesRegex(TypeError, "cannot both be supplied"):
-                writer(model_id="local/example", repo_id="local/example")
+                writer_type(model_id="local/example", repo_id="local/example")
         with self.assertRaisesRegex(TypeError, "cannot both be supplied"):
             tensorfs.download_file(model_id="local/example", repo_id="local/example", filename="README.md")
         with self.assertRaisesRegex(TypeError, "cannot both be supplied"):
             tensorfs.upload_folder(model_id="local/example", repo_id="local/example", folder_path=".", lane="f32")
         with tempfile.TemporaryDirectory() as directory:
-            for keyword in ("model_id", "repo_id"):
-                writer = tensorfs.Writer(cache_dir=directory, lane="f32", **{keyword: "local/example"})
+            for legacy in (False, True):
+                writer = (tensorfs.Writer(cache_dir=directory, lane="f32", repo_id="local/example") if legacy
+                          else tensorfs.Writer(cache_dir=directory, lane="f32", model_id="local/example"))
                 component = writer.component("model", config={"width": 1})
                 component.put("weight", array("f", [2]), dtype="F32", shape=[1])
                 checkpoint = writer.commit()
@@ -31,7 +32,7 @@ class PortableCheckpointTests(unittest.TestCase):
                 self.assertEqual(checkpoint.repo_id, checkpoint.model_id)
                 checkpoint.close()
 
-    def test_executor_checkpoint_identity_preserves_the_supported_frame(self):
+    def test_executor_checkpoint_identity_preserves_the_supported_frame(self) -> None:
         from tensorfs.executor import CheckpointItem
         fields = {"output": "weights", "revision": "sha256:" + "0" * 64}
         canonical = CheckpointItem(model_id="local/example", **fields)
@@ -45,23 +46,23 @@ class PortableCheckpointTests(unittest.TestCase):
         with self.assertRaises((TypeError, ValueError)):
             CheckpointItem(model_id="local/example", repo_id="local/example", **fields)
 
-    def test_writer_destination_is_complete_in_a_fresh_offline_store(self):
+    def test_writer_destination_is_complete_in_a_fresh_offline_store(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "source-store"
             artifact = root / "model.cozytensors"
             with tensorfs.Writer(artifact, cache_dir=source) as writer:
-                model = writer.component(
+                written_component = writer.component(
                     "model", cls=("fixture", "1", "Linear"),
                     config={"in_features": 2, "out_features": 2},
                 )
-                model.put("weight", array("f", [1, 2, 3, 4]), dtype="F32", shape=[2, 2])
-                model.asset("tokenizer.json", json.dumps({"vocab": {"hello": 2, "world": 3}}).encode())
+                written_component.put("weight", array("f", [1, 2, 3, 4]), dtype="F32", shape=[2, 2])
+                written_component.asset("tokenizer.json", json.dumps({"vocab": {"hello": 2, "world": 3}}).encode())
             saved = writer.commit()
             header_id = saved.id
             self.assertGreater(artifact.stat().st_size, 8192)
             saved.close()
-            del saved, model, writer
+            del saved, written_component, writer
             gc.collect()
             shutil.rmtree(source)
 
@@ -70,7 +71,7 @@ class PortableCheckpointTests(unittest.TestCase):
             self.assertEqual(checkpoint.missing(), [])
             model = checkpoint.components["model"]
             self.assertEqual(model.config["in_features"], 2)
-            values = array("f", model.tensors.read("weight").tobytes()).tolist()
+            values = array("f", model.tensors.read("weight", decode=True).tobytes()).tolist()
             vocab = json.loads(model.asset("tokenizer.json"))["vocab"]
             tokens = [vocab[word] for word in "hello world".split()]
             self.assertEqual([values[0] * tokens[0] + values[1] * tokens[1],
