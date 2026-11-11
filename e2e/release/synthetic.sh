@@ -179,9 +179,12 @@ cozy --json lora edit "$model-lora" --family e2e-family --tag e2e-lora --trigger
   || check "LoRA metadata was not set"
 cozy --json lora edit "$model-lora" --trigger '' --strength none > /dev/null \
   && model_details "$model-lora" | J '.trigger == null and .strength == null' || check "LoRA metadata was not cleared"
-# xs-173: its owner finds the unreleased LoRA, marked private: by search text `org/` and by its exact name, under either verb.
-cozy --json lora ls "$WHO/" > "$OUT/search-owner.json" && J --arg m "$model-lora" '.models | any(.model == $m and .private)' "$OUT/search-owner.json" \
-  || check "xs-173: lora ls $WHO/ does not list the owner's unreleased $model-lora as private: $(head -c 300 "$OUT/search-owner.json")"
+# xs-173: its owner finds the unreleased LoRA, marked private: by its exact name under either verb, and by search text `org/`
+# at a Hub that matches `org/name` (the one with model reads).
+if curl -fsS "$COZY_HUB_URL/.well-known/oauth-protected-resource" | J '.authorization_details_types_supported | index("tensorhub_model_read")'; then
+  cozy --json lora ls "$WHO/" > "$OUT/search-owner.json" && J --arg m "$model-lora" '.models | any(.model == $m and .private)' "$OUT/search-owner.json" \
+    || check "xs-173: lora ls $WHO/ does not list the owner's unreleased $model-lora as private: $(head -c 300 "$OUT/search-owner.json")"
+fi
 cozy --json model ls "$model-lora" > "$OUT/search-exact.json" && J --arg m "$model-lora" '.models | any(.model == $m and .private)' "$OUT/search-exact.json" \
   || check "xs-173: model ls $model-lora (exact) does not show the owner's unreleased LoRA as private: $(head -c 300 "$OUT/search-exact.json")"
 cozy --json lora delete "$model-lora" -y > /dev/null || check "LoRA fixture cleanup failed"
