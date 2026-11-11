@@ -7,6 +7,12 @@
 #   broken_answers      cl-810: a machine that fails when asked about a run for over 120 s: the run ends as the machine says
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
+local_wake_update() {
+step "authorized local wake and an actual binary update share one startup"
+[ -f "$CAND_COZY" ] || { check "local wake regression needs its real candidate binary"; return; }
+python3 "$here/local_wake.py" --cli "$CAND_COZY" --installed "$COZY" --out "$OUT/local-wake" || check "local wake/update regression failed (local-wake/receipt.json)"
+}
+
 # A package of one module, `<module>.py` from stdin, in <dir> with <dependencies> (a TOML array's items) and, given, a
 # [tool.uv.sources] table.
 package_at() {
