@@ -1126,6 +1126,9 @@ pub struct Checkpoint {
     pub manifest: String,
     /// `model`, `lora`, or `unknown`; empty from older machines.
     pub role: String,
+    /// Whether every object in the header's closure is cached. None from older machines.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub complete: Option<bool>,
 }
 
 /// One GPU, as measured at boot: identity, memory, driver and family.

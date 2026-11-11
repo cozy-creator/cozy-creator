@@ -33,7 +33,7 @@ get() {
 until_status() { run_wait "$T" "$(nm "$1")" "${2#terminal}"; }
 envs() { "$CLI" --json machine show "$M" 2>/dev/null | jq -r '[.status.environments[] | (.package | split("/") | last) + "@" + .release] | sort | join(" ")'; }
 released() {  # released <package>: the newest release users get (not yanked), then the one before it (an exact pin installs a yanked one)
-  "$CLI" package info "$1" --json 2>/dev/null | jq -r '[.releases[].release] as $a | ([.releases[] | select(.yanked | not) | .release][0]) as $n
+  package_details "$1" 2>/dev/null | jq -r '[.releases[].release] as $a | ([.releases[] | select(.yanked | not) | .release][0]) as $n
     | [$n, $a[($a | index($n)) + 1]] | map(select(. != null)) | join(" ")'; }
 NGPU=$("$CLI" --json machine show "$M" 2>/dev/null | jq '.status.gpus | length')
 
@@ -57,7 +57,7 @@ fi
 # An unversioned run stays on what the machine holds and `package install` of it, unversioned, moves it, with nothing published (cl-748).
 read -r newest older <<< "$(released anima)"
 if [ -n "$older" ]; then
-  "$CLI" package remove anima --on "$M" -y > "$T/unversioned-remove.log" 2>&1
+  "$CLI" package uninstall anima --on "$M" -y > "$T/unversioned-remove.log" 2>&1
   "$CLI" package install "anima@$older" --on "$M" -y > "$T/unversioned-install.log" 2>&1
   n1=$(submit anima/generate prompt="masterpiece, anime illustration of $CHAR, whatever is installed" seed:=$((R + 37))); until_status "$n1" terminal
   "$CLI" package install anima --on "$M" -y > "$T/unversioned-update.log" 2>&1

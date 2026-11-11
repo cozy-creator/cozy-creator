@@ -480,7 +480,7 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
       check('hash_mismatch_is_declared', (await box('lied_about').locator('[data-boxed]').count()) === 0 && (await box('lied_about').locator('input[type=range]').count()) === 1, await box('lied_about').innerText());
       await shot('mismatch');
 
-      await cozyHere(['--json', 'package', 'remove', package_, '--on', 'local'], { ...quiet, env, cwd: folder });
+      await cozyHere(['--json', 'package', 'uninstall', package_, '--on', 'local'], { ...quiet, env, cwd: folder });
     } finally {
       await shell(process.env.RESTART).catch(() => {});
       await until('Calcifer back as it was', () => api('/v1/status').catch(() => null), Boolean);

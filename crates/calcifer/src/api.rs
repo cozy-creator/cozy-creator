@@ -21,7 +21,7 @@ use axum::{
 };
 use api::{
     calcifer::{CalciferStatus, Down, Event, MachineKind, MachineState, Run, RunList, Status},
-    error::{Envelope, Error, Kind},
+    error::{Envelope, Error, Kind, STOPPING},
     ids::RunId,
 };
 use futures_util::{StreamExt as _, stream::BoxStream};
@@ -386,18 +386,15 @@ async fn admit(State(api): State<Arc<Api>>, request: Request, next: Next) -> Res
         let error = Error::new(Kind::Credential, "unauthenticated", said).remedy("a browser signs in from a link").next("cozy open");
         return Refusal(error).into_response();
     }
-    if request.method() == Method::GET || request.uri().path() == "/v1/down" {
+    // A read is answered while Calcifer stops: a HEAD's refusal would lose its body.
+    if matches!(*request.method(), Method::GET | Method::HEAD) || request.uri().path() == "/v1/down" {
         return next.run(request).await;
     }
     let stopping = api.stopping.read().await;
     if *stopping {
-        return refuse(
-            Kind::Unavailable,
-            "calcifer_stopping",
-            "Calcifer is stopping and admits nothing new",
-        )
-        .remedy("start Calcifer again and retry; a submission's key makes the retry safe")
-        .into_response();
+        return refuse(Kind::Unavailable, STOPPING, "Calcifer is stopping and admits nothing new")
+            .remedy("ask again once it is back; nothing was carried out")
+            .into_response();
     }
     next.run(request).await
 }

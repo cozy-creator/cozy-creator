@@ -4,34 +4,28 @@
 # account's balance and checks its buy page answers, then rents ONE machine of --sku (default: the catalog's cheapest
 # 1-GPU offer; out of stock, the cheapest in stock with at least its VRAM and compute capability; nothing dearer than
 # --max-hourly an hour; each step is refused once its GPU time reached --max-usd, which ends
-# it: the CLI's quote names no storage or traffic, so the cap leaves them headroom). A throwaway fidika/ci-e2e-<run> package and model go through lock,
-# publish, yank, un-yank and delete, run on this computer's machine or, where the OS runs none (macOS, Windows), on the
-# rental, which first takes --pod-tensord (the candidate's Linux TensorD). On the rental: package install and list,
+# it: the CLI's quote names no storage or traffic, so the cap leaves them headroom). Synthetic package/model
+# publication and retained-output checks run separately on a disposable Hub (synthetic.sh). This live suite
+# requires that proof log and first puts --pod-tensord on the rental. On the rental: package install and list,
 # BiRefNet from a YAML request and with --file, each output landed here (one in a folder named with spaces and
 # non-ASCII), SDXL with a LoRA and its other function, a weights output read after TensorD restarts, machine ls, show and logs, keepalive, a run followed and canceled, an end while a run still goes,
-# checked gone, and the ended rental in `machine ls --history`. The throwaway and the rental are removed in an EXIT
-# trap whatever fails. --quote stops at the rental's quote and rents nothing: the $0 pre-flight of every step before it.
+# checked gone, and the ended rental in `machine ls --history`. The rental is ended in an EXIT
+# trap whatever fails; this script never creates a test repository on the live Hub. --quote stops at the rental's quote and rents nothing: the $0 pre-flight of every step before it.
 #   e2e/release/run.sh --out DIR [--key FILE | --installed] [--sku SKU] [--max-hourly USD] [--max-usd USD] [--quote] [--rent-wait S]
-#                      [--rent-lock FILE] [--release DIR] [--pins N@R,...]
+#                      [--rent-lock FILE] [--release DIR] [--pins N@R,...] [--publication-log FILE]
 #                      [--tensord F|V] [--pod-tensord F|V] [--tensorfs F|V] [--runtime F|V]
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
 here=$(cd "$(dirname "$0")" && pwd)
 J() { jq -e "$@" > /dev/null; }
 run=$(date -u +%m%d%H%M)$RANDOM
-pkg=ci-e2e-$run model=fidika/ci-e2e-$run M='' ended=''
+M='' ended=''
 
 # The rental `machine rent` ordered: its id from `rental.accepted`, which names it whether or not the order has a
 # machine yet, so the trap ends an order given up on too.
 ordered() { jq -r 'select(.type? == "rental.accepted") | .rental_id // empty' "$1" 2> /dev/null | tail -1; }
 # Whether `machine ls` lists machine $1, by name or rental id.
 listed() { cozy --json machine ls | J --arg m "$1" '.machines | any(.name == $m or .rental_id == $m)'; }
-# The throwaways the suite failed to delete itself, while hubcheck still answers (finish stops it, then the trap runs).
-leftovers() {
-  ! cozy --json package info "fidika/$pkg" > /dev/null 2>&1 || cozy --json package delete "fidika/$pkg" -y > /dev/null 2>&1
-  for m in "$model" "$model-copy" "$model-store"; do ! cozy --json model info "$m" > /dev/null 2>&1 || cozy --json model delete "$m" -y > /dev/null 2>&1; done
-  return 0
-}
 cleanup() {
   set +e
   local rental=$M
@@ -43,7 +37,6 @@ cleanup() {
     cozy --json machine end "$rental" --force -y > "$OUT/end-trap.json" 2>&1
     ! listed "$rental" || echo "::error::the trap ended $rental, but machine ls still lists it: end it by hand"
   fi
-  leftovers
   # Calcifer's log holds each Hub answer about the rental (a boot that failed, why).
   mkdir -p "$OUT/cozy-logs"
   [ -n "$INSTALLED" ] || (cd ~/.cozy && find . -name '*.log' -size -20M | tar -cf - -T - | (cd "$OUT/cozy-logs" && tar -xf -)) > /dev/null 2>&1
@@ -79,6 +72,10 @@ watched() {
   [ -n "$(run_submit "$OUT" "$name" "$@")" ] && run_wait "$OUT" "$name" && [ "$(run_get "$OUT" "$name" .status)" = completed ]
 }
 
+# A full live run includes the independent, isolated publication proof. Check before installation or sign-in.
+if [ -z "$QUOTE" ]; then
+  [ -n "${PUBLICATION_LOG:-}" ] && [ -s "$PUBLICATION_LOG" ] || fail "Run the isolated publication suite first and pass --publication-log FILE"
+fi
 if [ -z "$INSTALLED" ]; then step install; install_cozy; user_services; step candidates; candidates; fi
 run_project "$OUT/project" || fail "project initialization failed"
 
@@ -171,119 +168,7 @@ if [ -n "$POD_TENSORD" ]; then
     echo "$M: $was then $now"
   fi
 fi
-# Where this OS runs no models itself, the throwaway runs on the rental.
-ON=$M
-[ -z "$LOCAL" ] || ON=local
-
-step "throwaway package"
-dir=$OUT/$pkg
-cp -r "$here/../cli/weightless" "$dir"
-# It publishes what a published package may hold: weightless's `orphan` forks on purpose (the executor cells' kill test), which
-# a Runtime's describe refuses since 0.43.1 ("os.fork: a child process is outside the sandbox"; e2e 42762119315).
-uv run -q --no-project python -I - "$dir/e2e_weightless/__init__.py" <<'PY'
-import re, sys
-path = sys.argv[1]
-text = open(path).read()
-open(path, "w").write(re.sub(r"@app\.entrypoint\(accelerator=False\)\ndef orphan\(.*?(?=\n@app\.)", "", text, flags=re.S))
-PY
-sed -i.orig -e "s/^name = \"e2e-weightless\"/name = \"$pkg\"/" "$dir/pyproject.toml" && rm -f "$dir/pyproject.toml.orig"
-(cd "$dir" && cozy --json package lock > "$OUT/lock.json") && [ -s "$dir/uv.lock" ] || check "package lock: no uv.lock"
-(cd "$dir" && cozy --json package lock --upgrade-package msgspec > "$OUT/lock-upgrade.json") && grep -q 'name = "msgspec"' "$dir/uv.lock" \
-  || check "package lock --upgrade-package msgspec: msgspec not locked"
-(cd "$dir" && cozy --json package publish > "$OUT/publish-1.json") || check "package publish 0.1.0 failed"
-sed -i.orig 's/^version = "0.1.0"/version = "0.2.0"/' "$dir/pyproject.toml" && rm -f "$dir/pyproject.toml.orig"
-(cd "$dir" && cozy --json package lock > /dev/null && cozy --json package publish > "$OUT/publish-2.json") || check "package publish 0.2.0 failed"
-cozy --json package info "fidika/$pkg" > "$OUT/pkg-info.json" && J '[.releases[].release] | index("0.1.0") and index("0.2.0")' "$OUT/pkg-info.json" \
-  || check "package info: not both releases"
-resolves() {  # the release an unversioned run of the throwaway takes
-  watched "resolve-$1" run "fidika/$pkg/reverse" text=e2e --on "$ON" || true
-  grep -oE "\"target\": *\"[^\"]*$pkg[^\"]*\"" "$OUT/resolve-$1.ndjson" | head -1 || true
-}
-[[ $(resolves before) == *@0.2.0* ]] || check "the throwaway's unversioned run is not 0.2.0"
-cozy --json package yank "fidika/$pkg@0.2.0" > "$OUT/yank.json" || check "package yank failed"
-[[ $(resolves yanked) == *@0.1.0* ]] || check "package yank: an unversioned run still takes 0.2.0"
-cozy --json package yank "fidika/$pkg@0.2.0" --undo > "$OUT/unyank.json" || check "package yank --undo failed"
-[[ $(resolves unyanked) == *@0.2.0* ]] || check "package yank --undo: an unversioned run does not take 0.2.0 again"
-# A candidate: yanked in one Hub call, so the publisher's own next unversioned run keeps the newest (cl-732).
-sed -i.orig 's/^version = "0.2.0"/version = "0.3.0"/' "$dir/pyproject.toml" && rm -f "$dir/pyproject.toml.orig"
-(cd "$dir" && cozy --json package lock > /dev/null && cozy --json package publish --yanked > "$OUT/publish-3.json") || check "package publish --yanked 0.3.0 failed"
-J '.status == "published yanked"' "$OUT/publish-3.json" || check "package publish --yanked: $(jq -r .status "$OUT/publish-3.json")"
-[[ $(resolves candidate) == *@0.2.0* ]] || check "package publish --yanked: the publisher's next unversioned run took the candidate"
-# A release its machine still holds and the Hub no longer has, as after a renumbering (birefnet 0.5.3 over 0.1.3): never chosen (cl-748).
-cozy --json package delete "fidika/$pkg" -y > "$OUT/pkg-renumber.json" || check "package delete, to renumber, failed"
-sed -i.orig 's/^version = "0.3.0"/version = "0.1.0"/' "$dir/pyproject.toml" && rm -f "$dir/pyproject.toml.orig"
-(cd "$dir" && cozy --json package lock > /dev/null && cozy --json package publish > "$OUT/publish-4.json") || check "package publish 0.1.0 again failed"
-cozy --json package ls --on "$ON" | J --arg p "fidika/$pkg" '.packages | any(.package == $p and .release == "0.2.0")' || check "the machine no longer holds 0.2.0, so this proves nothing"
-[[ $(resolves renumbered) == *@0.1.0* ]] || check "an unversioned run took a release the Hub no longer has: $(tail -c 300 "$OUT/resolve-renumbered.err")"
-[ "$(run_get "$OUT" resolve-renumbered .status)" = completed ] || check "an unversioned run, with a release the Hub no longer has held: $(run_get "$OUT" resolve-renumbered '.reason.message' | head -c 300)"
-cozy --json package delete "fidika/$pkg" -y > "$OUT/pkg-delete.json" || check "package delete failed"
-! cozy --json package info "fidika/$pkg" > /dev/null 2>&1 || check "package delete: fidika/$pkg still answers"
-
-step "throwaway model"
-uv run -q --no-project python -I - "$OUT/tiny.safetensors" <<'PY'
-import json, os, struct, sys
-header = json.dumps({"w": {"dtype": "F16", "shape": [4, 4], "data_offsets": [0, 32]}}).encode()
-header += b" " * (-len(header) % 8)
-open(sys.argv[1], "wb").write(struct.pack("<Q", len(header)) + header + os.urandom(32))
-PY
-watched upload model upload "$OUT/tiny.safetensors" "$model" --lane f16 --source-format as-is --on "$ON" || check "model upload failed"
-commit=$(jq -r '.. | objects | .commit? // empty' "$OUT/upload.ndjson" 2> /dev/null | tail -1) || true
-uv run -q --no-project python -I - "$OUT/tiny-b.safetensors" <<'PY'
-import json, os, struct, sys
-header = json.dumps({"w": {"dtype": "F32", "shape": [4, 4], "data_offsets": [0, 64]}}).encode()
-header += b" " * (-len(header) % 8)
-open(sys.argv[1], "wb").write(struct.pack("<Q", len(header)) + header + os.urandom(64))
-PY
-watched upload-b model upload "$OUT/tiny-b.safetensors" "$model" --lane f32 --source-format as-is --on "$ON" || check "model upload --lane f32 failed"
-commit_b=$(jq -r '.. | objects | .commit? // empty' "$OUT/upload-b.ndjson" 2> /dev/null | tail -1) || true
-# One route takes any source. A held file, with no path sent:
-uv run -q --no-project python -I - "$OUT/tiny-c.safetensors" <<'PY'
-import json, os, struct, sys
-header = json.dumps({"w": {"dtype": "F16", "shape": [4, 4], "data_offsets": [0, 32]}}).encode()
-header += b" " * (-len(header) % 8)
-open(sys.argv[1], "wb").write(struct.pack("<Q", len(header)) + header + os.urandom(32))
-PY
-held=$(sha256sum "$OUT/tiny-c.safetensors" | cut -c1-64) addr=$(jq -r .address ~/.cozy/calcifer/calcifer.lock.holder) token=$(jq -r .token ~/.cozy/calcifer/calcifer.lock.holder)
-curl -fsS -o /dev/null -X PUT -H "Authorization: Bearer $token" --data-binary "@$OUT/tiny-c.safetensors" "http://$addr/v1/files/sha256:$held" || check "PUT the held model file failed"
-curl -sS -X POST -H "Authorization: Bearer $token" -H "Idempotency-Key: held-$run" \
-  -d "$(jq -n --arg s "sha256:$held" --arg d "$model" --arg o "$ON" '{target: "cozy/model_upload", on: $o, input: {source: $s, destination: $d, lane: "f16", source_format: "as-is"}}')" "http://$addr/v1/runs" > "$OUT/upload-held.json"
-held_run=$(jq -r '.run.number // empty' "$OUT/upload-held.json")
-if [ -n "$held_run" ]; then
-  cozy --json run watch "$held_run" > /dev/null 2>&1 || true
-  cozy --json run watch "$held_run" 2> /dev/null | J '.status == "completed"' || check "model upload of a held file: run $held_run did not complete"
-else check "model upload of a held file: $(head -c 300 "$OUT/upload-held.json")"; fi
-# And a Hub commit, recorded with nothing uploaded.
-cozy --json model upload "$model@$commit" "$model-copy" --lane f16 > "$OUT/upload-recorded.json" 2> "$OUT/upload-recorded.err" \
-  && J --arg f "$model@$commit" '.from == $f and .lane == "f16"' "$OUT/upload-recorded.json" \
-  || check "model upload of a Hub commit: $(tail -c 300 "$OUT/upload-recorded.json") $(tail -c 300 "$OUT/upload-recorded.err")"
-cozy --json model delete "$model-copy" -y > /dev/null 2>&1 || check "model delete of the recorded copy failed"
-# While its commit is private (its random bytes are in no public release): a run capability reaches it and nothing else (cl-675).
-# Its own process: `cozy` there is the installed binary, not this suite's logging function.
-PATH="$(dirname "$COZY"):$PATH" "$here/../capabilities/run.sh" --out "$OUT/capabilities" --commit "$model@$commit" > "$OUT/capabilities.txt" \
-  || check "run capabilities: $(grep FAIL "$OUT/capabilities.txt" | head -3 | tr '\n' ' ')"
-# The rental reads the private commit through its run capability; on Linux it never held it (the upload was local's).
-watched download-private model download "$model@$commit" --on "$M" \
-  || check "model download $model@$commit --on $M: the rental did not read the private commit: $(run_get "$OUT" download-private '.reason.message' | head -c 300)"
-cozy --json model edit "$model" --family e2e-family --tag 'E2E Tag' --tag nsfw --tag anime --untag nsfw --trigger e2e --strength 0.8 > /dev/null \
-  && cozy --json model info "$model" | J '.family == "e2e-family" and .family_from == "owner" and .tags == ["anime", "e2e-tag"] and .trigger == "e2e" and .strength == 0.8' \
-  || check "model edit: family, tags, trigger or strength not set"
-# --untag is read as --tag is: any case, spaces around it. One the model doesn't have is removed already: no refusal, nothing else changed.
-cozy --json model edit "$model" --untag ' ANIME ' > /dev/null && cozy --json model info "$model" | J '.tags == ["e2e-tag"]' \
-  || check "model edit --untag ' ANIME ': $(cozy --json model info "$model" | jq -c .tags)"
-cozy --json model edit "$model" --untag 'E2E Tag' --tag anime > /dev/null && cozy --json model info "$model" | J '.tags == ["anime"]' \
-  || check "model edit --untag 'E2E Tag' --tag anime: $(cozy --json model info "$model" | jq -c .tags)"
-cozy --json model edit "$model" --untag never-there > "$OUT/untag-absent.json" 2>&1 && cozy --json model info "$model" | J '.tags == ["anime"] and .family == "e2e-family" and .trigger == "e2e"' \
-  || check "model edit --untag never-there: $(tail -c 300 "$OUT/untag-absent.json") $(cozy --json model info "$model" | jq -c '{tags, family, trigger}')"
-cozy --json model edit "$model" --tag e2e-tag > /dev/null || check "model edit --tag e2e-tag failed"
-cozy --json model edit "$model" --family none --untag e2e-tag --untag anime --trigger '' --strength none > /dev/null \
-  && cozy --json model info "$model" | J '.family == null and (.tags // []) == [] and .trigger == null and .strength == null' \
-  || check "model edit --family none --untag e2e-tag --untag anime --trigger '' --strength none: not cleared"
-cozy --json model publish "$model" 0.1.0 "$commit" "$commit_b" > "$OUT/model-publish.json" || check "model publish failed"
-cozy --json model info "$model" > "$OUT/model-info.json" \
-  && J '.releases | any(.version == "0.1.0" and ([.lanes[].lane] | sort) == ["f16", "f32"])' "$OUT/model-info.json" \
-  || check "model publish: no 0.1.0 with lanes f16 and f32"
-cozy --json model delete "$model" -y > "$OUT/model-delete.json" || check "model delete failed"
-! cozy --json model info "$model" > /dev/null 2>&1 || check "model delete: $model still answers"
+# Synthetic publication checks run against the isolated Hub in cli-publication.
 
 step "BiRefNet on $M"
 watched install-birefnet package install "$(pinned birefnet)" --on "$M" \
@@ -323,25 +208,6 @@ if run_cell "$OUT" sdxl-image "$(pinned sdxl image)" instructions="a lighthouse 
   [ -s "$(run_output "$OUT" sdxl-image 'png|webp|jpg')" ] || check "sdxl-image: no image came down"
 else check "sdxl-image: cozy run $(pinned sdxl image) --on $M did not complete: $(run_get "$OUT" sdxl-image '.reason.message' | head -c 300)"; fi
 
-step "the content store on $M: a held output across a TensorD restart, a cut upload resumed"
-# cl-843: run objects, held outputs and uploads are the machine's TensorFS store's. A weights output stays on the machine;
-# after TensorD restarts, the live hold rebuilt from its journal keeps it, and an upload of it reads it there.
-ln -sfn "$here/../../release-gate/suites/tensorfs/multi-conversion" "$OUT/ci-multi-conversion"
-src=''
-if (cd "$OUT" && run_cell "$OUT" held-source ./ci-multi-conversion/source seed:=$RANDOM --on "$M"); then src=$(cat "$OUT/held-source.number")
-else check "held-source: a weights output on $M did not complete: $(run_get "$OUT" held-source '.reason.message' | head -c 300)"; fi
-was=$(cozy --json machine show "$M" | jq -r '.status.started_at_ms // empty')
-cozy --json machine update "$M" --gpu-memory-limit off -y > "$OUT/restart.json" 2>&1 \
-  || check "machine update $M --gpu-memory-limit off, a restart: $(tail -c 300 "$OUT/restart.json")"
-now=$(cozy --json machine show "$M" | jq -r '.status.started_at_ms // empty')
-[ -n "$now" ] && [ "$now" != "$was" ] || check "machine update $M --gpu-memory-limit off: TensorD did not restart (started at $was, then $now)"
-if [ -n "$src" ]; then
-  watched held-upload model upload "run:$src#model" "$model-store" --lane bf16 --on "$M" \
-    || check "held-upload: run $src's output after TensorD restarted: $(run_get "$OUT" held-upload '.reason.message' | head -c 300)"
-fi
-# A cut upload resumes: release-gate/suites/tensord/pod-cells.sh (pc-resume) cuts one by killing Calcifer. A cancel never cuts
-# one: the canceled run's upload goes on and the next run of the file waits for it (kept so: dedup, 11-09).
-
 step "a run on $M followed, then canceled"
 deadline=$(jq '.idle_deadline_ms // 0' "$OUT/rental.json") || true
 cozy --json machine keepalive "$M" > "$OUT/keepalive.json" || check "machine keepalive failed"
@@ -380,5 +246,4 @@ cozy machine ls --history --since 1h > "$OUT/history.txt" && grep -q "^Total sin
   || check "machine ls --history --since 1h printed no total"
 
 step coverage; coverage "$COZY" release
-leftovers
-finish "cli-release: $pkg, $model, ${SKU} at \$$(usd "$hourly")/h, \$$(spent) of GPU time"
+finish "cli-release: ${SKU} at \$$(usd "$hourly")/h, \$$(spent) of GPU time"

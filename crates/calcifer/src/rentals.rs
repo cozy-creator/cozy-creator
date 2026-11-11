@@ -18,7 +18,7 @@ use api::{
         RentalSum, Rented, Replaced, RunQuote, SubmitRun, Warning,
     },
     config,
-    error::{Error, Kind},
+    error::{Error, Kind, STOPPING},
     ids::RunId,
     machine as v1,
 };
@@ -301,11 +301,7 @@ impl Machines {
                     let _ = me.ask_hub(&ask, Some(answer)).await;
                 });
                 answered.await.map_err(|_| {
-                    Error::new(
-                        Kind::Unavailable,
-                        "calcifer_stopping",
-                        "Calcifer is stopping",
-                    )
+                    Error::new(Kind::Unavailable, STOPPING, "Calcifer is stopping")
                 })??
             }
         };

@@ -568,6 +568,7 @@ impl Engine {
     fn end_observation(&self, id: &str) {
         self.progress.lock().unwrap().remove(id);
         self.owned.lock().unwrap().remove(id);
+        crate::held_models::changed();
         self.notify_activity();
     }
 
@@ -1010,6 +1011,7 @@ impl Engine {
             progress.remove(id);
         }
         drop(progress);
+        crate::held_models::changed();
         self.notify_activity();
         if let Some(settled) = self.settled.get().filter(|_| record.state.terminal() && record.invocation.parent.is_empty()) {
             settled(&record);

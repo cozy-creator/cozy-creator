@@ -27,10 +27,11 @@ Real runs of `cozy` on GitHub's runners, chosen by what a change touches (CI v2:
   and equals its one-rank twin sample by sample (0.5/255 allowed in the worst frame). An orchestrator's child calls run
   on a child executor through the driver's stand-in for TensorD's call broker. With `--cozy`, each package also goes
   through cozy's CLI (`cli.sh`): its code uploaded with an empty file and described as the executor's interface says,
-  `cozy package lock` leaving its lock as committed, and every cell's request bound by Calcifer's binder against the
+  Calcifer's private lock API leaving its lock as committed, and every cell's request bound by Calcifer's binder against the
   published release (`--estimate`: nothing runs). Also a strict typecheck, `describe` (the static reader), and
   `surface.py` (static: every TensorFS name the Runtime reads exists). One line per cell, `PASS|FAIL|SKIP <package>
-  <entry> <cell>`. No GPU, rental or sign-in. `e2e/cpu/run.sh --out DIR --packages DIR --runtime <wheel|dir|version|lock> --tensorfs <wheel|version|lock> [--cozy BIN --project DIR] [--only pkg,..] [--cells entry/cell,..] [--record]`;
+  <entry> <cell>`. No GPU, rental or sign-in. `e2e/cpu/run.sh --out DIR --packages DIR --runtime <wheel|dir|version|lock> --tensorfs <wheel|version|lock> [--cozy BIN --project DIR --stage-code BIN] [--only pkg,..] [--cells entry/cell,..] [--record]`;
+  `--cozy` uses the API `stage-code` example, supplied by candidates or built once when not supplied.
   a fixture's `WAIVE` names the release-geometry checks a tiny model cannot meet, and `PATCH` the geometry constants it
   shrinks; both stay GPU-only.
 - `mps/run.sh`: BiRefNet and SDXL on a Mac's GPU. It can't pass today: macOS answers `local_unavailable` ("local runs aren't available on macOS yet"), so it fails at once if selected. It runs only on an explicit `select`, so nothing else waits on it; it starts to mean something when macOS runs models itself.

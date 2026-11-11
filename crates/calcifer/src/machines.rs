@@ -1720,6 +1720,7 @@ fn status(frame: &v1::StatusFrame, hubs: &Hubs) -> MachineStatus {
                         precision: c.precision.clone(),
                         manifest: c.manifest.clone(),
                         role: c.role.clone(),
+                        complete: c.complete,
                     })
                     .collect(),
             })

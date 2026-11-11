@@ -36,8 +36,8 @@ static LANDED: LazyLock<(Mutex<VecDeque<(String, Drawing)>>, Notify)> = LazyLock
 
 /// A thumbnail unused this long goes the next time one is made.
 const KEPT_FOR: Duration = Duration::from_secs(30 * 24 * 60 * 60);
-/// A file ffmpeg can't read isn't tried again for this long: a page asks each time it shows one.
-const FAILED_KEPT_FOR: Duration = Duration::from_secs(24 * 60 * 60);
+/// A partial thumbnail or a failure marker left by an older version is discarded sooner.
+const TEMP_KEPT_FOR: Duration = Duration::from_secs(24 * 60 * 60);
 const WIDTH: u32 = 480;
 const WIDEST: u32 = 2048;
 const MOST_FRAMES: u32 = 32;
@@ -178,14 +178,19 @@ async fn made(host: Host, drawing: Drawing, dir: PathBuf, name: String) -> Resul
             let _turn = turn.lock().await;
             make(host, drawing, dir, name.clone()).await
         };
-        MAKING.lock().expect("making lock").remove(&key);
+        // Keep the same turn for requests already waiting to draw this name in this cache.
+        let mut making = MAKING.lock().expect("making lock");
+        drop(turn);
+        if making.get(&key).is_some_and(|turn| Arc::strong_count(turn) == 1) {
+            making.remove(&key);
+        }
         answer
     });
     let answer = making.await.map_err(|e| Refusal(Error::new(Kind::Internal, "thumb_failed", e.to_string())))?;
     answer.map_err(Refusal)
 }
 
-/// What the one making the thumbnail called `name` does: nothing if one before it did, or found ffmpeg can't.
+/// What the one making the thumbnail called `name` does, if one before it did not succeed.
 async fn make(host: Host, mut drawing: Drawing, dir: PathBuf, name: String) -> Result<PathBuf, Error> {
     let access = match &drawing.project {
         Some(root) => Some(super::vault::admit_root(root).await?),
@@ -197,10 +202,6 @@ async fn make(host: Host, mut drawing: Drawing, dir: PathBuf, name: String) -> R
     if let Some(at) = kept(&dir, &name) {
         return Ok(at);
     }
-    let marked = dir.join(format!("{name}.failed"));
-    if let Ok(why) = std::fs::read_to_string(&marked) {
-        return Err(unreadable_file(why));
-    }
     // Its turn first: finding ffmpeg runs it, and blocks, so that too is a few at a time.
     let permit = FFMPEGS.acquire().await.expect("ffmpeg's turns never close");
     let (ffmpeg, ffprobe) = host.ffmpeg().await?;
@@ -208,18 +209,13 @@ async fn make(host: Host, mut drawing: Drawing, dir: PathBuf, name: String) -> R
         let _access = access;
         let _permit = permit;
         draw(&ffmpeg, &ffprobe, &drawing, &dir, &name).map_err(|why| {
-            // Keep failure writes under the same lease as the private drawing.
-            if !private { warn!("thumbnail {marked_name} can't be drawn: {why}", marked_name = marked.display()); }
-            let _ = std::fs::write(&marked, &why);
-            unreadable_file(why)
+            // The source path can disappear while waiting for FFmpeg. Only a successful draw is cacheable.
+            if !private { warn!("thumbnail {name} can't be drawn: {why}"); }
+            Error::new(Kind::Validation, "thumb_failed", format!("ffmpeg can't draw this file: {why}"))
         })
     })
     .await
     .map_err(|e| Error::new(Kind::Internal, "thumb_failed", e.to_string()))?
-}
-
-fn unreadable_file(why: String) -> Error {
-    Error::new(Kind::Validation, "thumb_failed", format!("ffmpeg can't draw this file: {why}"))
 }
 
 /// Runs ffmpeg writing its one picture over `out`. Err: what it said.
@@ -371,13 +367,13 @@ fn strip(ffmpeg: &FsPath, ffprobe: &FsPath, drawing: &Drawing, source: &str, fra
     })
 }
 
-/// What hasn't been used in a while goes, what ffmpeg couldn't read sooner, and any part a stop left behind.
+/// Old thumbnails, partial draws and legacy failure markers are discarded.
 fn prune(dir: &FsPath) {
     let now = SystemTime::now();
     for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
         let path = entry.path();
         let kept_for = match path.extension().is_some_and(|ext| ext == "failed") || path.file_name().is_some_and(|name| name.to_string_lossy().starts_with(".making")) {
-            true => FAILED_KEPT_FOR,
+            true => TEMP_KEPT_FOR,
             false => KEPT_FOR,
         };
         let old = entry.metadata().and_then(|meta| meta.modified()).is_ok_and(|used| now.duration_since(used).is_ok_and(|age| age > kept_for));

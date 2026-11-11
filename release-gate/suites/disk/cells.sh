@@ -21,7 +21,7 @@ T=$OUT/disk; mkdir -p "$T"
 use() { "$CLI" --json machine show "$M" 2>/dev/null | jq -r --arg s "$1" '.status | [$s, .disk_free_bytes, .disk_models_bytes,
   .disk_environments_bytes, .disk_runtime_bytes] | @tsv' >> "$T/use.tsv"; }
 step() { local n=$1; shift; run_submit "$T" "$n" "$@" > /dev/null; run_wait "$T" "$n"; use "$n"; run_get "$T" "$n" .status; }
-released() { "$CLI" package info "$1" --json 2>/dev/null | jq -r '[.releases[] | select(.yanked | not) | .release][0:2] | reverse | join(" ")'; }
+released() { package_details "$1" 2>/dev/null | jq -r '[.releases[] | select(.yanked | not) | .release][0:2] | reverse | join(" ")'; }
 logs() { "$CLI" machine logs "$M" tensord -n 0 > "$T/tensord.log" 2>&1; grep -c -- "$1" "$T/tensord.log"; }
 
 use start; bad=()

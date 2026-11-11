@@ -229,7 +229,7 @@ impl Runs {
                 .engine
                 .installation_for_generation(&context.actor, &record.invocation.generation)
                 .map_err(problem)?;
-            // Its installation removed since (`cozy package remove`): the environment's own record.
+            // Its installation removed since (`cozy package uninstall`): the environment's own record.
             // Without either this is a refusal, never a 500 its controller asks about forever.
             let interface: Value = match held {
                 Some(held) => serde_json::from_slice(&held.interface)

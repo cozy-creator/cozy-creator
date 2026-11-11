@@ -453,7 +453,11 @@ export type Checkpoint = { release: string, lane: string, precision?: string, ma
 /**
  * `model`, `lora`, or `unknown`; empty from older machines.
  */
-role?: string, };
+role?: string,
+/**
+ * Whether every object in the header's closure is cached. None from older machines.
+ */
+complete?: boolean | null, };
 
 /**
  * A weights output's commit: `revision` (`sha256:<tree>`) of `repo_id`, in `lane`.
@@ -572,7 +576,7 @@ export type DevBuild = { sha256: Digest, name: string, version?: string | null, 
 export type Digest = string;
 
 /**
- * A model's display metadata as set at the Hub: shown by `cozy model info`, never applied (a
+ * A model's display metadata as set at the Hub: shown in the model browser, never applied (a
  * run's LoRA strength stays 1.0).
  */
 export type Displayed = { model: string, trigger: string | null, strength: number | null,
@@ -704,7 +708,7 @@ export type FitAsk = { names: Array<string>, outdated?: boolean, };
 /**
  * One model a search found, with its newest release, lanes, author and kind.
  */
-export type FoundModel = { model: string,
+export type FoundModel = { model: string, role?: string | null,
 /**
  * The label its owner gave it, else what its header verifies as.
  */
@@ -729,7 +733,11 @@ tags?: Array<string>, };
 /**
  * One package a search found, with its newest release.
  */
-export type FoundPackage = { package: string, latest_release: string | null, created_at: string, };
+export type FoundPackage = { package: string, latest_release: string | null, created_at: string,
+/**
+ * Authoritative update time when the Hub provides it.
+ */
+updated_at?: string | null, };
 
 /**
  * A GEMM kernel; one that served below its lane says what it served, what it wanted and why.
@@ -761,7 +769,11 @@ precision: string, checkpoint: string,
 /**
  * `model`, `lora`, or `unknown`; empty from older machines.
  */
-role?: string, bytes: number,
+role?: string,
+/**
+ * Whether every object in this checkpoint is cached. None from older machines.
+ */
+complete?: boolean | null, bytes: number,
 /**
  * The repository's bytes other held models share.
  */
@@ -1383,7 +1395,7 @@ releases: Array<string>, created_at: string, };
  * `GET /v1/models/{org}/{name}?release=`: a model's releases (one, when named) and, to its org's
  * members, every commit.
  */
-export type ModelDetail = { model: string,
+export type ModelDetail = { model: string, role?: string | null,
 /**
  * The label its owner gave it, else what its header verifies as.
  */
@@ -1533,7 +1545,7 @@ lanes: Array<[string, string]>,
 warnings?: Array<string>, };
 
 /**
- * `GET /v1/models?q=&family=&limit=`: the Hub's models the caller can see, one row each with its
+ * `GET /v1/models?q=&family=&limit=&offset=`: the Hub's models the caller can see, one row each with its
  * newest release; signed in, also its own and its orgs' while private (no release yet). `q` that
  * is exactly `org/name` is that one model.
  */

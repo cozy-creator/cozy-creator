@@ -1,5 +1,5 @@
 # e2e/lib.sh: what the e2e suites share. A suite drives `cozy` the way a person does, in the default ~/.cozy,
-# on a fresh GitHub runner: the real installer, real packages and models from tensorhub.com, real outputs.
+# on a fresh runner with an isolated Hub. Live hardware checks are explicit manual runs.
 #
 #   source e2e/lib.sh; parse "$@"
 #   --out DIR             where records, outputs and logs go
@@ -18,6 +18,7 @@
 #   --quote               the release suite stops at the rental's quote: nothing is rented ($0 pre-flight)
 #   --rent-wait SECONDS   the release suite gives up on a rent with no machine ready in this long (default 1200), and ends its order
 #   --rent-lock FILE      the release suite holds this flock only while it orders, until its Hub accepts (by hand, beside other renters)
+#   --publication-log FILE isolated publication proof to combine with live release coverage
 #   --installed           this computer's cozy as it is, signed in: no installer (the release suite by hand)
 #   --release DIR         a cozy release's files (cozy-publish.yaml's artifacts, a dry run's too): its own installer
 #                         installs cozy from DIR, served on loopback, in place of tensorhub.com's (the candidate)
@@ -29,7 +30,8 @@
 
 set -euo pipefail
 E2E=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-OUT='' CAND_COZY='' POD_TENSORD='' CAND_TFS='' CAND_RT='' PACKAGES='' PINS='' PUBLISHED='' KEY='' SKU='' INSTALLED='' SHARD='' MODEL='' RELEASE='' MAX_HOURLY=1.00 MAX_USD=0.80 QUOTE='' RENT_WAIT=1200 RENT_LOCK=''
+. "$E2E/test-hub.sh"
+OUT='' CAND_COZY='' POD_TENSORD='' CAND_TFS='' CAND_RT='' PACKAGES='' PINS='' PUBLISHED='' KEY='' SKU='' INSTALLED='' SHARD='' MODEL='' RELEASE='' MAX_HOURLY=1.00 MAX_USD=0.80 QUOTE='' RENT_WAIT=1200 RENT_LOCK='' PUBLICATION_LOG=''
 COZY=$HOME/.cozy/bin/cozy
 [ "${RUNNER_OS:-}" != Windows ] || COZY=$HOME/.cozy/bin/cozy.exe
 # Whether this OS runs models on its own machine, `local` (platform::Os::local_inference): Linux. macOS and Windows
@@ -38,6 +40,8 @@ LOCAL=1
 [ "${RUNNER_OS:-Linux}" = Linux ] || LOCAL=''
 
 parse() {
+  # Check before installation, sign-in or even a read through a default production profile.
+  require_ci_test_hub || return $?
   while [ $# -gt 0 ]; do
     case $1 in
       --out) OUT=$2 ;;
@@ -55,6 +59,7 @@ parse() {
       --quote) QUOTE=1; shift; continue ;;
       --rent-wait) RENT_WAIT=$2 ;;
       --rent-lock) RENT_LOCK=$2 ;;
+      --publication-log) PUBLICATION_LOG=$2 ;;
       --installed) INSTALLED=1; shift; continue ;;
       --shard) SHARD=$2 ;;
       --model) MODEL=1; shift; continue ;;
@@ -88,7 +93,9 @@ finish() {
 cozy() { printf '%s\x1f' "$@" >> "$OUT/argv.log"; printf '\x1e' >> "$OUT/argv.log"; "$COZY" "$@"; }
 # The coverage guard (e2e/coverage.py check) over this run's calls, for the tiers it ran.
 coverage() {
-  uv run -q --no-project python -I "$E2E/coverage.py" check "$1" "$E2E/coverage.toml" --tiers "$2" --log "$OUT/argv.log" \
+  local extra=()
+  [ -z "${PUBLICATION_LOG:-}" ] || extra=(--log "$PUBLICATION_LOG")
+  uv run -q --no-project python -I "$E2E/coverage.py" check "$1" "$E2E/coverage.toml" --tiers "$2" --log "$OUT/argv.log" "${extra[@]}" \
     --source "$E2E/../crates/cli/src" \
     || check "coverage: a command or flag has no test, or its test did not run (above)"
 }
@@ -98,6 +105,10 @@ coverage() {
 # reads too), and `cozy doctor` restarts Calcifer on it.
 install_cozy() {
   local want ps=powershell
+  if [ -n "${CI:-}${GITHUB_ACTIONS:-}" ]; then
+    echo "Use e2e/skew/run.sh with a candidate CLI: the live installer discovers releases on production." >&2
+    return 2
+  fi
   hub_check
   # Windows PowerShell under the runner's x64 shell says X64 on an Arm64 runner; PowerShell 7 says Arm64, as Windows
   # PowerShell does in a person's own terminal on Windows 11.
@@ -135,12 +146,14 @@ install_cozy() {
 
 # hubcheck between cozy and tensorhub.com, before the installer starts Calcifer: every cozy process (the CLI, Calcifer,
 # the machine) reads config.toml's hub_url, and scripts that call the Hub themselves read $COZY_HUB_URL.
-HUB_CHECK=''
+HUB_CHECK='' HUB_CHECK_UPSTREAM=''
 hub_check() {
-  local exe='' addr=''
+  local exe='' addr='' hub=${COZY_HUB_URL:-https://tensorhub.com}
+  require_ci_test_hub "$hub" || return $?
+  HUB_CHECK_UPSTREAM=$hub
   [ "${RUNNER_OS:-}" != Windows ] || exe=.exe
   go build -C "$E2E/hubcheck" -o "${RUNNER_TEMP:-$OUT}/hubcheck$exe" . || fail "e2e/hubcheck does not build"
-  "${RUNNER_TEMP:-$OUT}/hubcheck$exe" --out "$OUT" > "$OUT/hubcheck.addr" 2> "$OUT/hubcheck.log" &
+  "${RUNNER_TEMP:-$OUT}/hubcheck$exe" --hub "$hub" --out "$OUT" > "$OUT/hubcheck.addr" 2> "$OUT/hubcheck.log" &
   HUB_CHECK=$!
   for _ in $(seq 60); do
     addr=$(head -1 "$OUT/hubcheck.addr" 2> /dev/null) && [ -n "$addr" ] && break
@@ -150,7 +163,7 @@ hub_check() {
   [ -n "$addr" ] || fail "hubcheck did not start: $(cat "$OUT/hubcheck.log")"
   mkdir -p ~/.cozy && printf 'hub_url = "http://%s"\n' "$addr" >> ~/.cozy/config.toml
   export COZY_HUB_URL=http://$addr
-  echo "cozy reaches tensorhub.com through hubcheck at $addr"
+  echo "cozy reaches $hub through hubcheck at $addr"
 }
 # sign_in <key>: `cozy login --key`. A key names the Hub it was made for (tensorhub.com) and cozy refuses it for any
 # other: through hubcheck, a copy naming hubcheck's address (outside $OUT, which is uploaded) signs in, then goes.

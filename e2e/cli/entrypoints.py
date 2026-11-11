@@ -14,13 +14,19 @@ import time
 
 
 PUBLIC = {
-    "new", "open", "run", "status", "vault", "machine", "model", "package", "update", "doctor", "completion", "login", "logout", "whoami",
+    "new", "open", "run", "status", "vault", "machine", "model", "lora", "package", "update", "doctor", "completion", "login", "logout", "whoami",
 }
 REMOVED = {
     "help",
     "push", "pull", "org", "project", "import", "export", "add", "set", "delete", "render", "approve", "unapprove", "cancel",
     "wait", "history", "undo", "redo", "rename", "reclaim",
 }
+
+
+def public_usage(text: str) -> str:
+    if os.name == "nt":
+        return re.sub(r"(?m)^(Usage: | {7})cozy\.exe(?= |$)", r"\1cozy", text)
+    return text
 
 
 def main() -> None:
@@ -52,7 +58,12 @@ def main() -> None:
                 stream.write("\x1f".join(words) + "\x1f\x1e")
         started = time.monotonic()
         result = subprocess.run([binary, *words], cwd=directory, env=environment, capture_output=True, text=True)
-        records.append({"name": name, "exit": result.returncode, "elapsed_ms": round((time.monotonic() - started) * 1000)})
+        record = {"name": name, "exit": result.returncode, "elapsed_ms": round((time.monotonic() - started) * 1000)}
+        if not words or "--help" in words:
+            record.update(stdout=result.stdout, stderr=result.stderr)
+        records.append(record)
+        if "--help" in words:
+            result.stdout = public_usage(result.stdout)
         assert result.returncode == code, f"{name}: expected exit {code}, got {result.returncode}: {result.stdout}{result.stderr}"
         return result
 
@@ -87,6 +98,33 @@ def main() -> None:
         run("removed worker bootstrap flag", ["machine", "serve", "--service-ready", "1"], code=2)
         run("removed image override", ["machine", "rent", "example", "--image-digest", "sha256:" + "0" * 64], code=2)
         run("removed memo bypass", ["run", "example/function", "--no-memo"], code=2)
+        run("removed model info", ["model", "info", "--help"], code=2)
+        run("model catalog pagination", ["model", "ls", "--offset", "20", "--limit", "10", "--help"])
+        run("LoRA catalog help", ["lora", "ls", "--help"])
+        run("LoRA download help", ["lora", "install", "--help"])
+        run("local model removal help", ["model", "uninstall", "--help"])
+        run("local LoRA removal help", ["lora", "uninstall", "--help"])
+        for group in ("model", "lora"):
+            group_help = run(f"{group} help", [group, "--help"]).stdout
+            for old in ("download", "remove"):
+                run(f"removed {group} {old}", [group, old, "--help"], code=2)
+            for hidden in ("upload", "publish", "quantize"):
+                assert not re.search(rf"^  {hidden}\s", group_help, re.MULTILINE), f"{group} {hidden} is still public"
+        package_help = run("package help", ["package", "--help"]).stdout
+        assert not re.search(r"^  publish\s", package_help, re.MULTILINE), "package publish is still public"
+        assert re.search(r"^  uninstall\s", package_help, re.MULTILINE), "package uninstall is missing from help"
+        assert not re.search(r"^  remove\s", package_help, re.MULTILINE), "retired package remove is still listed"
+        run("package uninstall help", ["package", "uninstall", "--help"])
+        run("removed package remove", ["package", "remove", "--help"], code=2)
+        run("package delete help", ["package", "delete", "--help"])
+        run("removed package lock", ["package", "lock", "--help"], code=2)
+        run("removed package info", ["package", "info", "--help"], code=2)
+        run("package pagination help", ["package", "ls", "--offset", "20", "--limit", "10", "--help"])
+        run("LoRA metadata help", ["lora", "edit", "--help"])
+        run("LoRA upload help", ["lora", "upload", "--help"])
+        run("LoRA cloud deletion help", ["lora", "delete", "--help"])
+        run("removed model trigger", ["model", "edit", "author/model", "--trigger", "word"], code=2)
+        run("removed model upload strength", ["model", "upload", "file", "author/model", "--lane", "bf16", "--strength", "0.5"], code=2)
         for flag in ("--estimate", "--warm"):
             assert flag not in run_help, f"removed run flag {flag} is still in help"
             run(f"removed run flag {flag}", ["run", "example/function", flag], code=2)
