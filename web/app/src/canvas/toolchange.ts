@@ -1,6 +1,6 @@
 import type { Asset, Tool } from "../api/calcifer"
 import { addOnsOf, type Carried, modelsOf, takenOff, wordOf } from "./checkpoints"
-import { OWN } from "./controls"
+import { OWN, startingFields } from "./controls"
 import { madeHere, toolName } from "./shown"
 import { toolFitsNode } from "./palette"
 
@@ -63,12 +63,13 @@ function startsFrom(tool: Tool, kind: string, fields: Fields, own: string): Fiel
 
 /** `tool` going on `asset`, whatever it holds now. `fields` is what it says, what's typed included, and `looked` the version being looked at. */
 export function goingOn(asset: Asset, fields: Fields, from: Tool | undefined, tool: Tool, looked?: number): ToolStep {
-  const back = { row: rowBack(asset), tool: asset.tool ?? "", fields: { node_kind: fields.node_kind ?? null } as Fields }
+  const initial = Object.fromEntries(Object.entries(startingFields(tool)).filter(([field]) => fields[field] == null))
+  const back = { row: rowBack(asset), tool: asset.tool ?? "", fields: { ...Object.fromEntries(Object.keys(initial).map((field) => [field, fields[field] ?? null])), node_kind: fields.node_kind ?? null } as Fields }
   const row: Partial<Asset> = { tool: tool.id, kind: holdsPictures(asset) ? asset.kind : tool.makes, noun: holdsPictures(asset) ? asset.noun : nounOf(tool.makes) }
   if (!asset.tool && !holdsPictures(asset)) {
     // Its words are the prompt.
     const { text, ...rest } = fields
-    return { row: { ...row, standing: "missing", fields: { ...rest, node_kind: tool.makes, instructions: rest.instructions ?? text ?? "" } }, tool: tool.id, fields: { node_kind: tool.makes }, back, lost: [] }
+    return { row: { ...row, standing: "missing", fields: { ...rest, ...initial, node_kind: tool.makes, instructions: rest.instructions ?? text ?? "" } }, tool: tool.id, fields: { ...initial, node_kind: tool.makes }, back, lost: [] }
   }
   // On pictures: its prompt starts from the version shown, and what's approved stays as it was (Paul, 11-06). A lone file is its version 1.
   if (!asset.tool) {
@@ -78,14 +79,14 @@ export function goingOn(asset: Asset, fields: Fields, from: Tool | undefined, to
     const numbered: Partial<Asset> = main ? { prefixes: [{ number: 1, prefix: main.sha256.slice(0, 12), main }], versions: 1, version: 1, ...(asset.pinned ? { approved: 1 } : {}) } : {}
     const words = startsFrom(tool, asset.kind, fields, `<self.${number}>`)
     back.fields = { ...back.fields, ...Object.fromEntries(Object.keys(words).map((field) => [field, fields[field] ?? null])) }
-    return { row: { ...row, ...numbered, fields: { ...fields, ...words, node_kind: tool.makes } }, tool: tool.id, fields: { node_kind: tool.makes }, back, lost: [] }
+    return { row: { ...row, ...numbered, fields: { ...fields, ...initial, ...words, node_kind: tool.makes } }, tool: tool.id, fields: { ...initial, node_kind: tool.makes }, back, lost: [] }
   }
   // A swap: what the new tool asks of keeps, and so do its words, in the field it reads them from.
   const asks = new Set(tool.fields.map((field) => field.field))
   const { kept: addOns, lost } = addOnsOn(fields, from, tool)
   const words = wordsIn(fields)
   const reads = tool.fields.find((field) => field.type === "prompt" || field.type === "words")?.field ?? "instructions"
-  const send: Fields = { node_kind: tool.makes }
+  const send: Fields = { ...initial, node_kind: tool.makes }
   for (const field of Object.keys(fields)) if (!asks.has(field) && !OWN.includes(field) && field !== "instructions") send[field] = null
   if (words && words !== reads) {
     send[words] = null
