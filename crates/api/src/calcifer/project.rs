@@ -1348,7 +1348,15 @@ pub struct VaultChanged {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum VaultEvent {
     Accepted { action: String },
-    Progress { phase: String, files_done: u64, bytes_done: u64 },
+    Progress {
+        phase: String,
+        files_done: u64,
+        bytes_done: u64,
+        #[serde(default)]
+        files_total: u64,
+        #[serde(default)]
+        bytes_total: u64,
+    },
     Completed { changed: VaultChanged },
     Failed { error: Error },
 }

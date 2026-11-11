@@ -387,7 +387,9 @@ export class Client {
                     break
                   case "progress": {
                     if (typeof event.phase !== "string" || !Number.isFinite(event.files_done) || event.files_done < 0 || !Number.isFinite(event.bytes_done) || event.bytes_done < 0) throw invalid()
-                    const update: VaultProgress = { type: "progress", phase: event.phase, files_done: event.files_done, bytes_done: event.bytes_done }
+                    const files_total = event.files_total ?? 0, bytes_total = event.bytes_total ?? 0
+                    if (!Number.isFinite(files_total) || files_total < 0 || !Number.isFinite(bytes_total) || bytes_total < 0) throw invalid()
+                    const update: VaultProgress = { type: "progress", phase: event.phase, files_done: event.files_done, bytes_done: event.bytes_done, files_total, bytes_total }
                     const current = JSON.stringify(update)
                     if (current !== progress) onProgress?.(update)
                     progress = current

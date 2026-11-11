@@ -34,11 +34,12 @@ function pendingLine(pending: Pending | null): string {
     copying: pending.action === "decrypt" ? "Decrypting project files" : "Encrypting project files",
     verifying: "Verifying project files", committing: "Saving project changes", opening: "Opening project",
     cleaning_up: "Finishing cleanup", waiting: "Waiting for project work to finish",
+    protecting_history: "Encrypting project history", compacting_history: "Compacting local history",
   }
   const event = pending.event
   const counts = [
-    ...(event.files_done > 0 ? [`${event.files_done.toLocaleString()} ${event.files_done === 1 ? "file" : "files"} done`] : []),
-    ...(event.bytes_done > 0 ? [`${bytes(event.bytes_done)} copied`] : []),
+    ...(event.files_total > 0 ? [`${event.files_done.toLocaleString()} / ${event.files_total.toLocaleString()} files`] : event.files_done > 0 ? [`${event.files_done.toLocaleString()} files done`] : []),
+    ...(event.bytes_total > 0 ? [`${bytes(event.bytes_done)} / ${bytes(event.bytes_total)}`] : event.bytes_done > 0 ? [`${bytes(event.bytes_done)} copied`] : []),
   ]
   return `${phase[event.phase] ?? "Working on project storage"}…${counts.length ? ` ${counts.join(" · ")}` : ""}`
 }

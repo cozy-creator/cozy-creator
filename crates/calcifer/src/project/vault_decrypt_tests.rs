@@ -7,6 +7,28 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 const FIXTURE: &str = "project::vault::decrypt_tests::native_plain_recovery_fixture";
 const RESTART: &str = "project::vault::decrypt_tests::native_plain_journal_restart_fixture";
 
+#[test]
+fn vault_inventory_matches_copied_file_and_byte_totals() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    let target = temp.path().join("target");
+    fs::create_dir_all(source.join("files")).unwrap();
+    fs::create_dir(&target).unwrap();
+    fs::write(source.join("files/first"), b"retained").unwrap();
+    fs::write(source.join("files/second"), b"media").unwrap();
+    fs::write(source.join("empty"), []).unwrap();
+    fs::write(source.join("project.db-wal"), [1u8; 100]).unwrap();
+    fs::write(source.join("project.db-shm"), [2u8; 100]).unwrap();
+    let mut progress = Progress::quiet();
+    progress.begin_inventory();
+    walk_tree(&source, None, FsPath::new(""), false, false, &mut progress).unwrap();
+    assert_eq!(progress.counts(), (0, 3, 0, 13));
+    walk_tree(&source, Some(&target), FsPath::new(""), false, false, &mut progress).unwrap();
+    assert_eq!(progress.counts(), (3, 3, 13, 13));
+    assert!(!target.join("project.db-wal").exists());
+    assert!(!target.join("project.db-shm").exists());
+}
+
 #[cfg(unix)]
 #[test]
 fn legacy_missing_media_is_skipped_but_live_external_link_is_refused() {

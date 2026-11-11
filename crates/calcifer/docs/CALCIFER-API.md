@@ -632,7 +632,10 @@ operation ID and reuses it when reconnecting. Events are `VaultEvent` values:
 `accepted`, `progress`, then exactly one `completed` or `failed`. `accepted` means
 the request was received; it is not a successful conversion. The worker durably
 records its ID and metadata binding before changing storage. It sends phases and
-copied-file/byte counts while working; ordinary SSE comments keep the connection alive.
+copied-file/byte counts and total file/byte counts while working. Totals are zero
+until the source inventory is complete, then exclude skipped media and SQLite
+WAL/SHM files. Metadata-protection and compaction phases remain explicit after
+file copying finishes; ordinary SSE comments keep the connection alive.
 
 Repeating that PUT attaches to the same operation instead of executing it again.
 Only the ID, metadata digest and terminal state are durable; no credential,

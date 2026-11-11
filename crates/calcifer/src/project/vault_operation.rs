@@ -240,6 +240,8 @@ pub(super) struct Progress {
     phase: &'static str,
     files: u64,
     bytes: u64,
+    files_total: u64,
+    bytes_total: u64,
     last: Instant,
     skipped: Vec<PathBuf>,
     pub(super) readable: Option<Arc<AtomicBool>>,
@@ -247,7 +249,12 @@ pub(super) struct Progress {
 
 impl Progress {
     fn new(events: watch::Sender<VaultEvent>) -> Self { Self { events: Some(events), ..Self::quiet() } }
-    pub(super) fn quiet() -> Self { Self { events: None, phase: "preparing", files: 0, bytes: 0, last: Instant::now(), skipped: vec![], readable: None } }
+    pub(super) fn quiet() -> Self { Self { events: None, phase: "preparing", files: 0, bytes: 0, files_total: 0, bytes_total: 0, last: Instant::now(), skipped: vec![], readable: None } }
+    pub(super) fn begin_inventory(&mut self) { self.files_total = 0; self.bytes_total = 0; }
+    pub(super) fn plan_file(&mut self, bytes: u64) { self.files_total += 1; self.bytes_total = self.bytes_total.saturating_add(bytes); }
+    pub(super) fn inventory_done(&mut self) { self.report(true); }
+    #[cfg(test)]
+    pub(super) fn counts(&self) -> (u64, u64, u64, u64) { (self.files, self.files_total, self.bytes, self.bytes_total) }
     pub(super) fn skip(&mut self, path: &std::path::Path) { if !self.skipped.iter().any(|known| known == path) { self.skipped.push(path.to_owned()); } }
     pub(super) fn skipped(&self) -> Vec<PathBuf> { self.skipped.clone() }
     pub(super) fn phase(&mut self, phase: &'static str) {
@@ -259,7 +266,7 @@ impl Progress {
     fn report(&mut self, force: bool) {
         if force || self.last.elapsed() >= Duration::from_millis(250) {
             if let Some(events) = &self.events {
-                events.send_replace(VaultEvent::Progress { phase: self.phase.into(), files_done: self.files, bytes_done: self.bytes });
+                events.send_replace(VaultEvent::Progress { phase: self.phase.into(), files_done: self.files, bytes_done: self.bytes, files_total: self.files_total, bytes_total: self.bytes_total });
             }
             self.last = Instant::now();
         }

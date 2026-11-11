@@ -3163,7 +3163,7 @@ skipped_files?: Array<string>, };
  * A private vault-operation stream. Progress counts copied bytes and completed files, not an estimated percentage.
  * Only the terminal reply can contain a recovery secret; never record these events in history or shared event streams.
  */
-export type VaultEvent = { "type": "accepted", action: string, } | { "type": "progress", phase: string, files_done: number, bytes_done: number, } | { "type": "completed", changed: VaultChanged, } | { "type": "failed", error: ErrorBody, };
+export type VaultEvent = { "type": "accepted", action: string, } | { "type": "progress", phase: string, files_done: number, bytes_done: number, files_total: number, bytes_total: number, } | { "type": "completed", changed: VaultChanged, } | { "type": "failed", error: ErrorBody, };
 
 /**
  * Local project encryption. Plain projects never need a mount provider or credentials.
