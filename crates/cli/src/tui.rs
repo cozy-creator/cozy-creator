@@ -92,15 +92,18 @@ impl Screen {
                 selected,
             ),
             Screen::Machine(view) => detail(frame, &view.title(), view.lines(ctx)),
-            Screen::Models(view) => table_hint(frame, &view.title(), &["model", "family", "size", "local"], view.rows(), selected, view.hint()),
+            Screen::Models(view) => {
+                if view.model_at(selected.selected().unwrap_or(0)).is_none() { selected.select(Some(view.first_selection())); }
+                table_sections(frame, &view.title(), &["model", "family", "size", "local"], view.rows(), selected, view.hint(), &view.headings());
+            }
             Screen::Model(view) => {
                 let lines = view.lines().into_iter().map(Line::from).collect::<Vec<_>>();
                 frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false })
                     .scroll((selected.selected().unwrap_or(0).min(u16::MAX as usize) as u16, 0))
                     .block(Block::new().title(view.title()).title_bottom(view.hint())), frame.area());
             }
-            Screen::ModelDestinations(view) => table_hint(frame, &view.title(), &["machine", "status"], view.rows(), selected, "↑/↓ select · Enter download · Esc/q back"),
-            Screen::RemoveLocalModel(model) => detail(frame, "Remove local copy?", vec![model.clone(), "All downloaded releases and lanes on this machine will be removed.".into(), "The Hub is unchanged. Active and shared data stays protected.".into(), "Enter confirms · Esc/q cancels".into()]),
+            Screen::ModelDestinations(view) => table_hint(frame, &view.title(), &["machine", "status"], view.rows(), selected, "↑/↓ select · Enter install · Esc/q back"),
+            Screen::RemoveLocalModel(model) => detail(frame, "Uninstall local copy?", vec![model.clone(), "All cached releases and lanes on this machine will be removed.".into(), "The Hub is unchanged. Active and shared data stays protected.".into(), "Enter confirms · Esc/q cancels".into()]),
             Screen::PackageCatalog(view) => table_hint(frame, &view.title(), &package::browse::HEADERS, view.rows(), selected, "↑/↓ select · Enter preview · i install · u uninstall local · p/n pages · q quit"),
             Screen::Package(view) => detail(frame, view.title(), view.lines()),
             Screen::PackageDestinations(view) => table_hint(frame, &view.title(), &["MACHINE", "STATUS"], view.rows(), selected, "↑/↓ select · Enter install · Esc/q back"),
@@ -139,7 +142,7 @@ pub(crate) async fn show(ctx: &Context, first: Screen) -> Result<ExitCode, Error
         let (notice, package_action) = match shown? {
             Some(Operation::Model(model::live::Operation::Download(choice))) => {
                 status = model::live::download(ctx, choice).await?;
-                (if status == ExitCode::SUCCESS { "Download complete".into() } else { "Download stopped or failed".into() }, false)
+                (if status == ExitCode::SUCCESS { "Install complete".into() } else { "Install stopped or failed".into() }, false)
             }
             Some(Operation::Model(model::live::Operation::Remove(model))) => {
                 let removed = model::live::remove(ctx, &model).await?;
@@ -172,7 +175,7 @@ pub(crate) async fn show(ctx: &Context, first: Screen) -> Result<ExitCode, Error
         stack.truncate(at + 1);
         if let Some((Screen::Models(view), selected)) = stack.last_mut() {
             let previous = selected.selected().unwrap_or(0);
-            let model = view.model_at(previous).map(str::to_owned);
+            let model = view.model_at(previous);
             view.refresh(ctx, notice).await?;
             selected.select(Some(view.selection_after(model.as_deref(), previous)));
         }
@@ -281,7 +284,7 @@ async fn drive<B: Backend>(
             match action {
                 model::live::Action::Page(offset) => {
                     if let Screen::Models(view) = screen { view.page(ctx, offset).await?; }
-                    selected.select(Some(0));
+                    if let Screen::Models(view) = screen { selected.select(Some(view.page_selection())); }
                 }
                 model::live::Action::Preview(model) => stack.push((Screen::Model(model::live::Preview::open(ctx, &model, local_bytes).await?), TableState::default())),
                 model::live::Action::Destinations(model) => stack.push((Screen::ModelDestinations(model::live::Destinations::open(ctx, model).await?), TableState::default().with_selected(Some(0)))),
@@ -298,9 +301,9 @@ async fn drive<B: Backend>(
             _ if ctrl_c => return Ok(None),
             KeyCode::Esc | KeyCode::Char('q') if depth > 1 => drop(stack.pop()),
             KeyCode::Esc | KeyCode::Char('q') => return Ok(None),
-            KeyCode::Up | KeyCode::Char('k') => selected.select(Some(at.saturating_sub(1))),
+            KeyCode::Up | KeyCode::Char('k') => selected.select(Some(match &*screen { Screen::Models(view) => view.navigate(at, false), _ => at.saturating_sub(1) })),
             KeyCode::Down | KeyCode::Char('j') if rows > 0 => {
-                selected.select(Some((at + 1).min(rows - 1)))
+                selected.select(Some(match &*screen { Screen::Models(view) => view.navigate(at, true), _ => (at + 1).min(rows - 1) }))
             }
             KeyCode::Enter if let Screen::Runs(view) = &*screen => {
                 if let Some(id) = view.id(at) {
@@ -408,6 +411,10 @@ fn table(
 }
 
 fn table_hint(frame: &mut Frame, title: &str, headers: &[&str], rows: Vec<Vec<String>>, selected: &mut TableState, hint: &str) {
+    table_sections(frame, title, headers, rows, selected, hint, &[]);
+}
+
+fn table_sections(frame: &mut Frame, title: &str, headers: &[&str], rows: Vec<Vec<String>>, selected: &mut TableState, hint: &str, headings: &[usize]) {
     let widths: Vec<Constraint> = (0..headers.len())
         .map(|i| {
             let widest = rows
@@ -421,7 +428,10 @@ fn table_hint(frame: &mut Frame, title: &str, headers: &[&str], rows: Vec<Vec<St
             }
         })
         .collect();
-    let table = Table::new(rows.into_iter().map(Row::new), widths)
+    let table = Table::new(rows.into_iter().enumerate().map(|(index, row)| {
+        let row = Row::new(row);
+        if headings.contains(&index) { row.style(Style::new().add_modifier(Modifier::BOLD)) } else { row }
+    }), widths)
         .header(Row::new(headers.to_vec()).style(Style::new().add_modifier(Modifier::BOLD)))
         .row_highlight_style(Style::new().add_modifier(Modifier::REVERSED))
         .column_spacing(2)

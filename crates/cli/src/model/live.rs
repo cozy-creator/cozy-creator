@@ -1,7 +1,7 @@
 //! Keyboard browsing of one catalog page, with an explicit download destination.
 use api::{
     calcifer::{HeldModel, MachineList, MachineModels, MachineState, On},
-    calcifer::hub::{ModelDetail, ModelDownload, ModelSearch},
+    calcifer::hub::{FoundModel, ModelDetail, ModelDownload, ModelSearch},
     error::Error,
 };
 use crossterm::event::KeyCode;
@@ -37,6 +37,12 @@ pub(crate) struct Catalog {
     local: Option<Vec<HeldModel>>,
     local_only: bool,
     notice: Option<String>,
+}
+
+struct CatalogRow {
+    model: Option<String>,
+    fields: Vec<String>,
+    hub: bool,
 }
 
 impl Catalog {
@@ -88,6 +94,15 @@ impl Catalog {
     }
 
     pub(crate) fn title(&self) -> String {
+        if !self.local_only {
+            let local = self.local_models(&self.local_records(false).unwrap_or_default()).len();
+            let unknown = self.local_models(&self.local_records(true).unwrap_or_default()).len();
+            let local_count = if self.local.is_some() { local.to_string() } else { "unknown".into() };
+            let first = if self.page.models.is_empty() { 0 } else { self.query.offset as usize + 1 };
+            let last = self.query.offset as usize + self.page.models.len();
+            let page = format!("{} · Local {local_count} (+{unknown} unclassified) · Hub {first}–{last} of {}", self.label(), self.page.total);
+            return self.notice.as_ref().map_or_else(|| page.clone(), |notice| format!("{page} · {notice}"));
+        }
         if self.page.models.is_empty() {
             let unknown = self.local.as_ref().map_or(0, |rows| rows.iter().filter(|row| !matches!(row.role.as_str(), "model" | "lora")).count());
             let page = if self.local_only && unknown > 0 { format!("{} — no matches; {unknown} unclassified local entries", self.label()) } else { format!("{} — no matches", self.label()) };
@@ -114,17 +129,76 @@ impl Catalog {
         Self::from_local(query, self.local.clone().unwrap_or_default())
     }
 
-    pub(crate) fn rows(&self) -> Vec<Vec<String>> {
-        self.page.models.iter().map(|row| {
-            let (local, bytes) = local_state(self.local.as_deref(), &row.model);
-            let size = bytes.map_or_else(|| "—".into(), output::bytes);
-            vec![row.model.clone(), row.family.clone().unwrap_or_else(|| "—".into()), size, local.into()]
-        }).collect()
+    fn local_records(&self, unknown: bool) -> Option<Vec<HeldModel>> {
+        let words: Vec<String> = self.query.q.split_whitespace().map(str::to_owned).collect();
+        self.local.as_ref().map(|rows| rows.iter().filter(|row| {
+            let role = if unknown { !matches!(row.role.as_str(), "model" | "lora") } else { row.role == self.query.role };
+            role && output::names(&row.model, &words)
+        }).cloned().collect())
+    }
+
+    fn local_models(&self, records: &[HeldModel]) -> Vec<FoundModel> {
+        let mut models = std::collections::BTreeMap::new();
+        for held in records {
+            let key = api::model_ref::Repo::parse(&held.model).map_or_else(|_| held.model.clone(), |repo| repo.to_string());
+            models.entry(key).or_insert_with(|| self.page.models.iter().find(|row| same_model(&row.model, &held.model)).cloned().unwrap_or_else(|| FoundModel {
+                model: held.model.clone(), role: Some(held.role.clone()), release: Some(held.release.clone()), lanes: vec![held.lane.clone()], ..Default::default()
+            }));
+        }
+        models.into_values().collect()
+    }
+
+    fn sections(&self) -> Vec<(String, Vec<FoundModel>, bool)> {
+        if self.local_only { return vec![(String::new(), self.page.models.clone(), false)]; }
+        let local = self.local_models(&self.local_records(false).unwrap_or_default());
+        let unknown: Vec<_> = self.local_models(&self.local_records(true).unwrap_or_default()).into_iter()
+            .filter(|row| !local.iter().any(|known| same_model(&known.model, &row.model))).collect();
+        let hub: Vec<_> = self.page.models.iter().filter(|row| !local.iter().chain(&unknown).any(|held| same_model(&held.model, &row.model))).cloned().collect();
+        let label = if self.local.is_some() { format!("LOCAL ({})", local.len()) } else { "LOCAL (unknown)".into() };
+        let mut sections = vec![(label, local, false)];
+        if !unknown.is_empty() { sections.push((format!("UNCLASSIFIED ({})", unknown.len()), unknown, false)); }
+        sections.push((format!("HUB PAGE ({})", hub.len()), hub, true));
+        sections
+    }
+
+    fn fields(&self, row: &FoundModel) -> Vec<String> {
+        let (local, bytes) = local_state(self.local.as_deref(), &row.model);
+        vec![row.model.clone(), row.family.clone().unwrap_or_else(|| "—".into()), bytes.map_or_else(|| "—".into(), output::bytes), local.into()]
+    }
+
+    fn entries(&self) -> Vec<CatalogRow> {
+        let mut entries = Vec::new();
+        for (title, models, hub) in self.sections() {
+            if !title.is_empty() { entries.push(CatalogRow { model: None, fields: vec![title, String::new(), String::new(), String::new()], hub }); }
+            entries.extend(models.iter().map(|row| CatalogRow { model: Some(row.model.clone()), fields: self.fields(row), hub }));
+        }
+        entries
+    }
+
+    pub(crate) fn rows(&self) -> Vec<Vec<String>> { self.entries().into_iter().map(|row| row.fields).collect() }
+    pub(crate) fn headings(&self) -> Vec<usize> { self.entries().iter().enumerate().filter_map(|(index, row)| row.model.is_none().then_some(index)).collect() }
+    pub(crate) fn first_selection(&self) -> usize { self.entries().iter().position(|row| row.model.is_some()).unwrap_or(0) }
+    pub(crate) fn page_selection(&self) -> usize { self.entries().iter().position(|row| row.hub && row.model.is_some()).unwrap_or_else(|| self.first_selection()) }
+    pub(crate) fn navigate(&self, at: usize, down: bool) -> usize {
+        let selected: Vec<_> = self.entries().iter().enumerate().filter_map(|(index, row)| row.model.is_some().then_some(index)).collect();
+        if down { selected.iter().copied().find(|index| *index > at).or_else(|| selected.last().copied()).unwrap_or(0) }
+        else { selected.iter().rev().copied().find(|index| *index < at).or_else(|| selected.first().copied()).unwrap_or(0) }
+    }
+
+    pub(super) fn tables(&self) -> Vec<(String, Vec<Vec<String>>)> {
+        self.sections().into_iter().map(|(title, rows, _)| (title, rows.iter().map(|row| self.fields(row)).collect())).collect()
+    }
+
+    pub(super) fn document(&self) -> serde_json::Value {
+        let mut document = serde_json::to_value(&self.page).expect("a catalog page serializes");
+        document["local_models"] = serde_json::to_value(self.local_records(false)).expect("local inventory serializes");
+        document["unclassified_local"] = serde_json::to_value(self.local_records(true)).expect("local inventory serializes");
+        document
     }
 
     pub(crate) fn action(&self, key: KeyCode, selected: usize) -> Option<Action> {
         match key {
-            KeyCode::Enter => self.page.models.get(selected).map(|row| Action::Preview(row.model.clone())),
+            KeyCode::Enter => self.model_at(selected).map(Action::Preview),
             KeyCode::PageDown | KeyCode::Char('n') if self.page.older > 0 => Some(Action::Page(self.query.offset.saturating_add(self.query.limit))),
             KeyCode::PageUp | KeyCode::Char('p') if self.query.offset > 0 => Some(Action::Page(self.query.offset.saturating_sub(self.query.limit))),
             KeyCode::Char('u') if self.local_only && self.query.role != "unknown" => Some(Action::Unclassified),
@@ -136,13 +210,14 @@ impl Catalog {
         self.local.as_ref()?.iter().filter(|held| same_model(&held.model, model)).map(|held| held.bytes).max()
     }
 
-    pub(crate) fn model_at(&self, index: usize) -> Option<&str> {
-        self.page.models.get(index).map(|model| model.model.as_str())
+    pub(crate) fn model_at(&self, index: usize) -> Option<String> {
+        self.entries().into_iter().nth(index).and_then(|row| row.model)
     }
 
     pub(crate) fn selection_after(&self, model: Option<&str>, previous: usize) -> usize {
-        model.and_then(|name| self.page.models.iter().position(|row| same_model(&row.model, name)))
-            .unwrap_or_else(|| previous.min(self.page.models.len().saturating_sub(1)))
+        let entries = self.entries();
+        model.and_then(|name| entries.iter().position(|row| row.model.as_deref().is_some_and(|shown| same_model(shown, name))))
+            .unwrap_or_else(|| entries.iter().enumerate().filter_map(|(index, row)| row.model.is_some().then_some(index)).min_by_key(|index| index.abs_diff(previous)).unwrap_or(0))
     }
 }
 
@@ -165,16 +240,16 @@ impl Preview {
 
     pub(crate) fn action(&self, key: KeyCode) -> Option<Action> {
         match key {
-            KeyCode::Char('d') if !self.metadata_missing => Some(Action::Destinations(self.model.model.clone())),
-            KeyCode::Char('r') if self.local_bytes.is_some() => Some(Action::ConfirmRemove(self.model.model.clone())),
+            KeyCode::Char('i') if !self.metadata_missing => Some(Action::Destinations(self.model.model.clone())),
+            KeyCode::Char('u') if self.local_bytes.is_some() => Some(Action::ConfirmRemove(self.model.model.clone())),
             _ => None,
         }
     }
 
     pub(crate) fn hint(&self) -> &str {
-        if self.metadata_missing { "↑/↓ scroll · r remove local copy · Esc/q back" }
-        else if self.local_bytes.is_some() { "↑/↓ scroll · d download · r remove local copy · Esc/q back" }
-        else { "↑/↓ scroll · d download · Esc/q back" }
+        if self.metadata_missing { "↑/↓ scroll · u uninstall local copy · Esc/q back" }
+        else if self.local_bytes.is_some() { "↑/↓ scroll · i install · u uninstall local copy · Esc/q back" }
+        else { "↑/↓ scroll · i install · Esc/q back" }
     }
 
     pub(crate) fn lines(&self) -> Vec<String> {
@@ -224,8 +299,17 @@ impl Destinations {
     }
 
     pub(crate) fn title(&self) -> String {
+        if !self.local_only {
+            let local = self.local_models(&self.local_records(false).unwrap_or_default()).len();
+            let unknown = self.local_models(&self.local_records(true).unwrap_or_default()).len();
+            let local_count = if self.local.is_some() { local.to_string() } else { "unknown".into() };
+            let first = if self.page.models.is_empty() { 0 } else { self.query.offset as usize + 1 };
+            let last = self.query.offset as usize + self.page.models.len();
+            let page = format!("{} · Local {local_count} (+{unknown} unclassified) · Hub {first}–{last} of {}", self.label(), self.page.total);
+            return self.notice.as_ref().map_or_else(|| page.clone(), |notice| format!("{page} · {notice}"));
+        }
         if self.machines.is_empty() { return "No available machines — use cozy machine --help".into(); }
-        format!("Download {} to", self.model)
+        format!("Install {} on", self.model)
     }
 
     pub(crate) fn rows(&self) -> Vec<Vec<String>> {
@@ -264,7 +348,7 @@ fn local_state(models: Option<&[HeldModel]>, model: &str) -> (&'static str, Opti
 }
 
 fn same_model(left: &str, right: &str) -> bool {
-    api::model_ref::Repo::parse(left).ok().zip(api::model_ref::Repo::parse(right).ok()).is_some_and(|(left, right)| left == right)
+    left == right || api::model_ref::Repo::parse(left).ok().zip(api::model_ref::Repo::parse(right).ok()).is_some_and(|(left, right)| left == right)
 }
 
 pub(super) async fn local_inventory(ctx: &Context) -> Option<Vec<HeldModel>> {
@@ -278,29 +362,33 @@ mod tests {
     use api::calcifer::hub::{FoundModel, ModelAuthor, ModelKind};
 
     fn catalog() -> Catalog {
-        Catalog::new(Searching { hub: "https://example.test".into(), q: "fox".into(), family: Some("sdxl".into()), tag: "art".into(), no_tag: "nsfw".into(), role: "model".into(), limit: 2, offset: 2 },
+        Catalog::new(Searching { hub: "https://example.test".into(), q: String::new(), family: Some("sdxl".into()), tag: "art".into(), no_tag: "nsfw".into(), role: "model".into(), limit: 2, offset: 2 },
             ModelSearch { models: vec![FoundModel { model: "author/one".into(), ..Default::default() }, FoundModel { model: "author/two".into(), ..Default::default() }], total: 5, older: 1 },
-            Some(vec![HeldModel { model: "author/two".into(), complete: Some(true), bytes: 1024, ..Default::default() }] ))
+            Some(vec![HeldModel { model: "author/two".into(), role: "model".into(), complete: Some(true), bytes: 1024, ..Default::default() }] ))
     }
 
     #[test]
-    fn browsing_and_paging_never_request_a_download() {
+    fn browsing_and_paging_never_request_an_install() {
         let catalog = catalog();
         assert_eq!(catalog.action(KeyCode::Enter, 1), Some(Action::Preview("author/two".into())));
         assert_eq!(catalog.action(KeyCode::PageDown, 0), Some(Action::Page(4)));
         assert_eq!(catalog.action(KeyCode::PageUp, 0), Some(Action::Page(0)));
         assert_eq!(catalog.action(KeyCode::Down, 0), None);
-        assert_eq!(catalog.rows()[0][3], "no");
-        assert_eq!(catalog.rows()[1][3], "yes");
-        assert_eq!(catalog.rows()[1][2], output::bytes(1024));
+        let remote = catalog.selection_after(Some("author/one"), 0);
+        let local = catalog.selection_after(Some("author/two"), 0);
+        assert_eq!(catalog.rows()[remote][3], "no");
+        assert_eq!(catalog.rows()[local][3], "yes");
+        assert_eq!(catalog.rows()[local][2], output::bytes(1024));
+        assert_eq!(catalog.rows().iter().filter(|row| row[0] == "author/two").count(), 1);
+        assert!(catalog.headings().iter().all(|index| catalog.action(KeyCode::Enter, *index).is_none()));
     }
 
     #[test]
-    fn preview_is_concise_and_download_requires_destination_choice() {
+    fn preview_is_concise_and_install_requires_destination_choice() {
         let preview = Preview { model: ModelDetail { model: "author/one".into(), family: Some("sdxl".into()), kind: Some(ModelKind::Lora), tags: vec!["art".into()], author: Some(ModelAuthor { name: "Artist".into(), ..Default::default() }), ..Default::default() }, local_bytes: Some(1024), metadata_missing: false };
         assert_eq!(preview.action(KeyCode::Enter), None);
-        assert_eq!(preview.action(KeyCode::Char('d')), Some(Action::Destinations("author/one".into())));
-        assert_eq!(preview.action(KeyCode::Char('r')), Some(Action::ConfirmRemove("author/one".into())));
+        assert_eq!(preview.action(KeyCode::Char('i')), Some(Action::Destinations("author/one".into())));
+        assert_eq!(preview.action(KeyCode::Char('u')), Some(Action::ConfirmRemove("author/one".into())));
         assert!(preview.lines().contains(&"Publisher: Artist".into()));
         let destinations = Destinations { model: "author/one".into(), machines: vec![("local".into(), "ready".into())] };
         assert_eq!(destinations.action(KeyCode::Down, 0), None);
@@ -308,7 +396,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn terminal_navigation_and_explicit_download_use_fixtures_only() {
+    async fn terminal_navigation_and_explicit_install_use_fixtures_only() {
         use crossterm::event::{Event, KeyEvent, KeyModifiers};
         use ratatui::{Terminal, backend::TestBackend};
         let home = tempfile::tempdir().unwrap();
@@ -351,11 +439,13 @@ mod tests {
     #[test]
     fn refresh_preserves_selected_model_when_rows_are_inserted() {
         let mut catalog = catalog();
-        let selected = catalog.model_at(1).unwrap().to_owned();
+        catalog.local = Some(vec![]);
+        let previous = catalog.selection_after(Some("author/two"), 0);
+        let selected = catalog.model_at(previous).unwrap();
         catalog.page.models.insert(0, FoundModel { model: "author/new".into(), ..Default::default() });
-        assert_eq!(catalog.selection_after(Some(&selected), 1), 2);
+        assert_eq!(catalog.selection_after(Some(&selected), previous), previous + 1);
         catalog.page.models.pop();
-        assert_eq!(catalog.selection_after(Some(&selected), 2), 1);
+        assert_eq!(catalog.selection_after(Some(&selected), previous + 1), previous);
     }
     #[test]
     fn local_presence_requires_a_complete_checkpoint() {
@@ -366,6 +456,46 @@ mod tests {
         assert_eq!(local_state(Some(&[row(None, 6)]), "author/model"), ("cached", Some(6)));
         assert_eq!(local_state(Some(&[row(Some(false), 4), row(None, 6)]), "author/model"), ("cached", Some(6)));
         assert_eq!(local_state(Some(&[row(None, 6), row(Some(true), 10)]), "author/model"), ("yes", Some(10)));
+    }
+
+    #[test]
+    fn default_catalog_includes_local_only_copies_without_changing_hub_page() {
+        let mut view = catalog();
+        view.local = Some(vec![
+            HeldModel { model: "local/external".into(), role: "model".into(), complete: Some(true), bytes: 50, ..Default::default() },
+            HeldModel { model: "author/two".into(), role: "model".into(), complete: Some(false), bytes: 10, ..Default::default() },
+            HeldModel { model: "local/unknown".into(), bytes: 4, ..Default::default() },
+            HeldModel { model: "local/adapter".into(), role: "lora".into(), bytes: 2, ..Default::default() },
+        ]);
+        let selected = view.selection_after(Some("local/external"), 0);
+        assert_eq!(view.model_at(selected).as_deref(), Some("local/external"));
+        assert_eq!(view.action(KeyCode::Enter, selected), Some(Action::Preview("local/external".into())));
+        assert!(view.rows().iter().any(|row| row[0] == "UNCLASSIFIED (1)"));
+        assert!(!view.rows().iter().any(|row| row[0] == "local/adapter"));
+        assert_eq!(view.rows().iter().filter(|row| row[0] == "author/two").count(), 1);
+        let document = view.document();
+        assert_eq!(document["models"].as_array().unwrap().len(), 2);
+        assert_eq!(document["total"], 5);
+        assert_eq!(document["older"], 1);
+        assert_eq!(document["local_models"].as_array().unwrap().len(), 2);
+        assert_eq!(document["unclassified_local"].as_array().unwrap().len(), 1);
+        let preview = Preview { model: ModelDetail { model: "local/external".into(), ..Default::default() }, local_bytes: Some(50), metadata_missing: true };
+        assert_eq!(preview.action(KeyCode::Char('u')), Some(Action::ConfirmRemove("local/external".into())));
+    }
+
+    #[test]
+    fn local_name_filter_and_unavailable_inventory_are_explicit() {
+        let mut view = catalog();
+        view.query.q = "external".into();
+        view.local = Some(vec![
+            HeldModel { model: "local/external".into(), role: "model".into(), ..Default::default() },
+            HeldModel { model: "local/other".into(), role: "model".into(), ..Default::default() },
+        ]);
+        assert_eq!(view.document()["local_models"].as_array().unwrap().len(), 1);
+        assert!(view.rows().iter().any(|row| row[0] == "local/external"));
+        view.local = None;
+        assert!(view.document()["local_models"].is_null());
+        assert!(view.rows().iter().any(|row| row[0] == "LOCAL (unknown)"));
     }
 
 }
