@@ -68,6 +68,10 @@ on:
         description: "Optional existing --cells hook: a .sh or .tsv file under release-gate/ in this checkout"
         type: string
         default: ''
+      group:
+        description: "Suite bench's group (suites/bench/skus, matrix-skus) when it is not <sku>x<gpus>, e.g. rtx-4090x1.matrixh3"
+        type: string
+        default: ''
       establish:
         description: "Start the baseline of a SKU that has none"
         type: boolean
@@ -340,6 +344,7 @@ jobs:
           ARGS: ${{ steps.candidate.outputs.args }}
           ONLY: ${{ inputs.only }}
           CELLS: ${{ inputs.cells }}
+          GROUP: ${{ inputs.group }}
           ESTABLISH: ${{ inputs.establish }}
           PACKAGES: ${{ inputs.packages_ref != '' && 'packages' || '' }}
           PINS: ${{ inputs.pins }}
@@ -352,6 +357,7 @@ jobs:
           read -ra args <<< "$ARGS"
           [ -z "$ONLY" ] || args+=(--only "$ONLY")
           [ -z "$CELLS" ] || args+=(--cells "$PWD/creator/$CELLS")
+          [ -z "$GROUP" ] || args+=(--group "$GROUP")
           [ -z "$PINS" ] || args+=(--pins "$PINS")
           [ -z "$PACKAGES" ] || args+=(--packages "$PACKAGES")
           [ "$ESTABLISH" != true ] || args+=(--establish)

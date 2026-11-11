@@ -194,6 +194,9 @@ ahead() {
   key="$target ${want[*]}"
   [ -z "${AHEAD[$key]:-}" ] || return 0
   AHEAD[$key]=1
+  # Local code warms through the staging helper, built only for --packages; without it (suite bench's calibrate) the
+  # cell's first run installs it, as the run of any untimed cell would.
+  [[ $target != .* && $target != /* ]] || [ -n "${RUN_CODE_STAGE:-}" ] || return 0
   run_warm_cell "$OUT" "$name-weights" "$target" downloaded --on "$M" "${want[@]}" ||
     expect "$name-weights" FAIL "run $(cat "$name-weights.number") $(run_get "$OUT" "$name-weights" .status): $(run_get "$OUT" "$name-weights" '.reason.message')"
   run_warm_cell "$OUT" "$name-weights-off" "$target" off --on "$M" > "$name-weights-off.log" 2>&1 || log "$name: API warming off: $(tail -c 300 "$name-weights-off.log")"

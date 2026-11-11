@@ -384,6 +384,14 @@ def read_gate(d: str, judged: bool = True) -> Gate:
         parts = line.split()
         if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
             memavail.append((int(parts[0]), int(parts[1])))
+    # cells.sh's poller: each run the machine held that this controller had no record of (another of the account's
+    # controllers placed it), every 20 s. A timed run or ComfyUI pass it overlaps did not have the pod to itself.
+    foreign = [(int(f[0]), f[1]) for line in (text(d, 'foreign.tsv') or '').splitlines() if len(f := line.split('\t')) >= 2 and f[0].isdigit()]
+
+    def shared(began: int | None, ended: int | None) -> list[str]:
+        if not began or not ended:
+            return []
+        return sorted({run for at, run in foreign if began <= at <= ended + 20000})
     by: dict[str, tuple[list[Metrics], list[Metrics]]] = {}
     for line in (text(d, 'bench.tsv') or '').splitlines():
         cell, role, record, *rest = line.split('\t')
@@ -398,6 +406,8 @@ def read_gate(d: str, judged: bool = True) -> Gate:
                           'stages': {}, 'series': [], 'build': ''}
         else:
             m = metrics(run, memavail, held)
+            if others := shared(run.record.get('created_at_ms'), run.record.get('settled_at_ms')):
+                m['status'], m['reason'] = 'shared', f"another controller's run on the pod during it ({', '.join(others)})"
             if run.status == 'completed':
                 m['output'] = output_of(os.path.dirname(path), run, judged)
         m['build'] = built
@@ -405,11 +415,16 @@ def read_gate(d: str, judged: bool = True) -> Gate:
         (cold if role == 'cold' else warm).append(m)
     reference = {w: r for w in ('before', 'after') if (r := reference_of(Run.read(os.path.join(d, f'calibrate-{w}.json')), text(d, 'pod-facts.txt'))) is not None}
     rows = os.path.join(d, 'comfyui-rows.json')
+    comfy = cast(dict[str, Comfy], load_json(rows)) if os.path.exists(rows) else {}
+    window = [int(x) for x in (text(d, 'comfy-window') or '').split() if x.isdigit()]
+    if comfy and len(window) == 2 and (others := shared(window[0], window[1])):
+        for x in comfy.values():
+            x['status'], x['total_s'] = f"shared the pod with another controller's runs ({', '.join(others)}): not judged", None
     return {'dir': d, 'group': text(d, 'bench-group') or '?', 'pod': text(d, 'machine'), 'label': text(d, 'label'), 'host': text(d, 'host-ram'), 'reference': reference,
             'invalid': text(d, 'invalid'), 'only': (text(d, 'only') or '').split(),
             'cells': {name: summary(cold[0] if cold else None, warm) | {'cold_downloaded': text(d, f'{name}-0-weights.number') == 'none'}
                       for name, (cold, warm) in by.items()},
-            'comfyui': cast(dict[str, Comfy], load_json(rows)) if os.path.exists(rows) else {}}  # comfy.py rows wrote it
+            'comfyui': comfy}  # comfy.py rows wrote it
 
 
 def cells_file(path: str | None = None) -> list[CellDef]:

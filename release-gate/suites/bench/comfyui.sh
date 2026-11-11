@@ -22,6 +22,7 @@ else log "comfyui: no HF token here: gated ComfyUI files (Klein) cannot download
 retried "$CLI" machine update "$M" --gpu-memory-limit off -y > comfy-free.log 2>&1 || log "comfyui: freeing the GPU: $(tail -c 300 comfy-free.log)"
 podsh "cd /var/tmp/bm && setsid nohup python3 bench_comfy.py run jobs.json > comfy.log 2>&1 < /dev/null & echo \$! > /var/tmp/bm/comfy.pid" > /dev/null
 log "comfyui: $(jq -r 'map(.cell + " as " + .key) | join(", ")' comfy-jobs.json) on $M"
+date +%s%3N > comfy-window  # its start and end: bench.py sets the pass aside when another controller's run overlapped it
 # No Cozy run moves meanwhile, so gate.sh's hold loop renews nothing: this loop keeps the rental, and stops ComfyUI if its log
 # and its files stand still for 20 minutes.
 seen= moved=$SECONDS
@@ -36,6 +37,7 @@ while sleep 30; do
     break
   fi
 done
+date +%s%3N >> comfy-window
 mkdir -p comfyui
 "$CLI" machine ssh "$M" "tar -cf - -C /var/tmp/bm comfy.log -C results bench-comfy.jsonl bench-comfy" | tar -xf - -C comfyui
 "${COMFY_PY[@]}" rows "$OUT" > comfyui-rows.json

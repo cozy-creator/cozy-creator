@@ -34,6 +34,14 @@ if [ -z "$ON" ] && awk -v s="${stall:-0}" 'BEGIN {exit !(s >= 10)}'; then
   expect bench-disk FAIL "$(cat host-slow)"
   exit 1
 fi
+# Another of the account's controllers can place its runs on this pod: the Hub authorizes every device of the account on each
+# rental, and each Calcifer adopts the account's live rentals as its machines. Every 20 s, each run the machine holds that this
+# controller has no record of goes to foreign.tsv (epoch ms, run, state); bench.py sets aside every timed run and ComfyUI
+# pass one overlaps, so a number here is always one the pod made alone.
+( while sleep 20 && kill -0 $$ 2> /dev/null; do
+    "$CLI" --json machine show "$M" 2> /dev/null < /dev/null |
+      jq -r --arg t "$(date +%s%3N)" '.status.runs[]? | select(.run == null) | [$t, .id, .state] | @tsv' >> foreign.tsv 2> /dev/null
+  done ) &
 # refs <args>: the pictures a cell's prompts mention (<still>, <lead>, <photo>, <teapot>), as the run's own references.
 refs() {
   local nf out=()
