@@ -28,6 +28,45 @@ pub fn held() -> u64 {
     HELD.iter().map(|shard| shard.0.load(Relaxed)).sum::<isize>().max(0) as u64
 }
 
+// mimalloc's own, which the mimalloc crate doesn't wrap. Nothing here names libmimalloc-sys's Rust items, so it's named to
+// link its C library.
+#[cfg(feature = "allocator")]
+use libmimalloc_sys as _;
+#[cfg(feature = "allocator")]
+unsafe extern "C" {
+    fn mi_collect(force: bool);
+    fn mi_process_info(
+        elapsed_msecs: *mut usize,
+        user_msecs: *mut usize,
+        system_msecs: *mut usize,
+        current_rss: *mut usize,
+        peak_rss: *mut usize,
+        current_commit: *mut usize,
+        peak_commit: *mut usize,
+        page_faults: *mut usize,
+    );
+}
+
+/// Gives the OS back what mimalloc keeps of freed memory: this thread's empty pages, and every arena's freed pages at once. Left
+/// alone, mimalloc purges those a second after they're freed and only when some thread next allocates, so an idle process stays
+/// as large as its last peak (cl-870). For when much was just freed.
+#[cfg(feature = "allocator")]
+pub fn give_back() {
+    // SAFETY: takes no pointer; any thread may call it.
+    unsafe { mi_collect(true) }
+}
+
+/// Bytes mimalloc holds of the OS's memory: what's in use, and what's freed and not given back.
+#[cfg(feature = "allocator")]
+pub fn committed() -> u64 {
+    let [mut elapsed, mut user, mut system, mut rss, mut peak_rss, mut commit, mut peak_commit, mut faults] = [0usize; 8];
+    // SAFETY: each pointer is to a local, which the call writes once.
+    unsafe {
+        mi_process_info(&mut elapsed, &mut user, &mut system, &mut rss, &mut peak_rss, &mut commit, &mut peak_commit, &mut faults)
+    };
+    commit as u64
+}
+
 fn count(bytes: isize) {
     let shard = SHARD.try_with(|shard| {
         if shard.get() == usize::MAX {
