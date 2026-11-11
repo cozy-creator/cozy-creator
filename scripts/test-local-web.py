@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -79,6 +80,38 @@ def stop(process, holder):
         raise RuntimeError(f"test Calcifer {process.pid} is still draining; profile retained")
 
 
+def stop_worker(home, binary):
+    machine = home / ".cozy/machine/var/lib/cozy/machine"
+    record = machine / "agent.lock.holder"
+    if not record.is_file():
+        return None
+    pid = json.loads(record.read_text())["pid"]
+    process = Path("/proc") / str(pid)
+    if not process.exists():
+        return pid
+    if not (process / "exe").samefile(binary) or (process / "cwd").resolve() != home:
+        raise RuntimeError("the test worker record names an unexpected process")
+    birth = (process / "stat").read_text().rsplit(")", 1)[1].split()[19]
+    os.kill(pid, signal.SIGTERM)
+    deadline = time.monotonic() + 30
+    while process.exists() and time.monotonic() < deadline:
+        try:
+            current = (process / "stat").read_text().rsplit(")", 1)[1].split()[19]
+        except FileNotFoundError:
+            break
+        if current != birth:
+            break
+        time.sleep(0.1)
+    else:
+        if process.exists():
+            raise RuntimeError(f"test worker {pid} is still stopping; profile retained")
+    lock = machine / "agent.lock"
+    if lock.is_file():
+        with lock.open("r+") as held:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    return pid
+
+
 def own_profile(profile):
     actual_home = Path.home().resolve()
     if profile == actual_home or actual_home.is_relative_to(profile) or profile.is_relative_to(actual_home / ".cozy"):
@@ -112,8 +145,6 @@ def prepare_profile(profile):
 def provider(args, profile):
     if args.securefs:
         return args.securefs.resolve(strict=True)
-    if sys.platform != "linux":
-        return None
     if not os.access("/dev/fuse", os.R_OK | os.W_OK) or not shutil.which("fusermount3"):
         raise RuntimeError("local vault tests require /dev/fuse and fusermount3")
     host = subprocess.check_output(["rustc", "-vV"], text=True, cwd=ROOT)
@@ -219,7 +250,7 @@ def run_locked(args, profile):
             summary.update(test_seconds=round(time.monotonic() - began, 3), exit_code=completed.returncode)
             return completed.returncode
     finally:
-        cleanup_error = None
+        cleanup_errors = []
         try:
             if vite and vite.poll() is None:
                 vite.terminate()
@@ -227,16 +258,22 @@ def run_locked(args, profile):
             if server:
                 stop(server, holder)
         except (OSError, RuntimeError, subprocess.SubprocessError) as error:
-            cleanup_error = error
-            summary["cleanup_error"] = str(error)
+            cleanup_errors.append(str(error))
+        try:
+            summary["worker_pid"] = stop_worker(home, binary)
+        except (OSError, RuntimeError) as error:
+            cleanup_errors.append(str(error))
+        summary["cleanup_errors"] = cleanup_errors
         summary["total_seconds"] = round(time.monotonic() - started, 3)
         (result / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
         print(f"Local test results: {result}")
-        if cleanup_error:
-            raise cleanup_error
+        if cleanup_errors:
+            raise RuntimeError(". ".join(cleanup_errors))
 
 
 def main():
+    if sys.platform != "linux":
+        raise RuntimeError("this local runner currently supports Linux")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, help="reuse this existing Cozy binary")
     parser.add_argument("--harness", type=Path, default=ROOT, help="checkout containing the vault browser fixture")
