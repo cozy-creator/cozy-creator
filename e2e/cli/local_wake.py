@@ -303,7 +303,7 @@ def main() -> int:
     parser.add_argument("--cli", required=True, type=Path)
     parser.add_argument("--installed", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
-    args = cast(Args, parser.parse_args(namespace=Args()))
+    args = parser.parse_args(namespace=Args())
     args.out.mkdir(parents=True, exist_ok=True)
     try:
         return Proof(args.cli, args.installed, args.out).run()
