@@ -1,6 +1,6 @@
 // Thousands of assets (Paul expects them): a generated 5,000-asset project, a real Calcifer, a real Chrome. How long a project API read takes, opening it in the page, one edit to show, what's read for it, a box let go on the crowd by hand, a render landing, panning, memory.
-// It's generated as a folder of the files from before project.db (cl-803), 4,000 shots rendered twice each, which Calcifer's first open imports, as it
-// imports a person's: nothing else makes that many rendered takes short of rendering them. From there it's project.db's, and only the page and Calcifer's HTTP API touch it.
+// CI seeds the current native Automerge/SQLite baseline before timed reads: 4,000 shots with two versions each and 1,000 pictures, using the
+// same synthetic media and layout. From its first open onward, only the page and Calcifer's current HTTP API change that project state.
 // The bars are what a person would feel, in BARS, on the fast hosted runners: each time bar is held times this runner's
 // measured speed against those (speed.js), and seen.bars has what each was held to. What each took is seen.scale.
 //   node scale.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
