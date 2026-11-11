@@ -191,8 +191,46 @@ function calciferMb() {
   return Math.round(Number(execFileSync('ps', ['-o', 'rss=', '-p', String(pid)], { encoding: 'utf8' }).trim()) / 1024);
 }
 
+/** Numeric process residency only: no mapped filenames, argv or unrelated environment. */
+function linuxResidency(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('invalid residency PID');
+  const root = `/proc/${pid}`;
+  const birth = () => {
+    const stat = readFileSync(`${root}/stat`, 'utf8');
+    const ticks = stat.slice(stat.lastIndexOf(')') + 2).split(/\s+/)[19];
+    if (!/^[0-9]+$/.test(ticks)) throw new Error('missing process birth in residency sample');
+    return ticks;
+  };
+  const started = birth();
+  const fields = (file, names) => {
+    const text = readFileSync(`${root}/${file}`, 'utf8');
+    return Object.fromEntries(names.map((name) => {
+      const found = text.match(new RegExp(`^${name}:\\s+(\\d+)(?:\\s+kB)?$`, 'm'));
+      return [name, found ? Number(found[1]) : null];
+    }));
+  };
+  const rollup = fields('smaps_rollup', ['Rss', 'Pss', 'Pss_Anon', 'Pss_File', 'Pss_Shmem', 'Private_Clean', 'Private_Dirty', 'Shared_Clean', 'Shared_Dirty', 'Anonymous', 'LazyFree', 'AnonHugePages', 'Swap']);
+  const status = fields('status', ['VmRSS', 'RssAnon', 'RssFile', 'RssShmem', 'VmSize', 'VmSwap', 'Threads']);
+  if (rollup.Rss === null || status.Threads === null) throw new Error('missing process residency fields');
+  const environment = new Map(readFileSync(`${root}/environ`, 'utf8').split('\0').map((entry) => {
+    const at = entry.indexOf('=');
+    return [entry.slice(0, at), entry.slice(at + 1)];
+  }));
+  const allocatorNames = ['MIMALLOC_PURGE_DELAY', 'MIMALLOC_ARENA_PURGE_MULT', 'MIMALLOC_PURGE_DECOMMITS', 'MIMALLOC_ALLOW_LARGE_OS_PAGES', 'MIMALLOC_ARENA_EAGER_COMMIT', 'MIMALLOC_ARENA_RESERVE', 'MALLOC_ARENA_MAX', 'MALLOC_TRIM_THRESHOLD_', 'MALLOC_MMAP_THRESHOLD_'];
+  const numericSetting = (value) => value === undefined ? null : /^-?\d+$|^(?:true|false)$/i.test(value) ? value : 'present-nonnumeric';
+  const allocatorEnvironment = Object.fromEntries(allocatorNames.map((name) => [name, numericSetting(environment.get(name))]));
+  allocatorEnvironment.GLIBC_TUNABLES = (environment.get('GLIBC_TUNABLES') ?? '').split(':')
+    .filter((setting) => setting.startsWith('glibc.malloc.')).map((setting) => {
+      const [name, value] = setting.split('=');
+      return `${name}=${numericSetting(value)}`;
+    }).join(':') || null;
+  if (started !== birth()) throw new Error('process changed during residency sample');
+  const { Threads: threads, ...statusKb } = status;
+  return { pid, start_ticks: started, rollup_kb: rollup, status_kb: statusKb, threads, allocator_environment: allocatorEnvironment };
+}
+
 /** Native ownership evidence beside the RSS bar, from this exact scale case. */
-async function nativeMemory(base, folder) {
+async function nativeMemory(base, folder, residency = false) {
   const holder = JSON.parse(readFileSync(process.env.HOLDER, 'utf8'));
   const sample = { at_ms: Date.now(), heap_bytes: null, project_db_open: null };
   let physicalBefore;
@@ -215,6 +253,10 @@ async function nativeMemory(base, folder) {
       const current = JSON.parse(readFileSync(process.env.HOLDER, 'utf8'));
       sample.physical = { holder_pid: holder.pid, after_holder_pid: current.pid, before: physicalBefore, after: pressure };
     } catch (error) { sample.physical_error = error.message; }
+  }
+  if (residency && process.platform === 'linux') {
+    try { sample.linux_residency = linuxResidency(holder.pid); }
+    catch (error) { sample.linux_residency_error = error.message; }
   }
   sample.finished_at_ms = Date.now();
   return sample;
@@ -251,7 +293,7 @@ async function nativeMemory(base, folder) {
   const seconds = (ms) => +(ms / 1000).toFixed(2);
 
   const startMb = calciferMb();
-  numbers.calcifer_native = { before: await nativeMemory(base, folder) };
+  numbers.calcifer_native = { before: await nativeMemory(base, folder, true) };
   const generating = Date.now();
   generated(keying, null, ASSETS, PICTURES, false);
   numbers.generate_s = seconds(Date.now() - generating);
@@ -290,7 +332,7 @@ async function nativeMemory(base, folder) {
   check('status_again_is_quicker', numbers.status_again_s <= BARS.status_again_s, numbers.status_again_s);
   const memory = { before: startMb, read: calciferMb() };
   numbers.calcifer_memory_mb = memory;
-  numbers.calcifer_native.read = await nativeMemory(base, folder);
+  numbers.calcifer_native.read = await nativeMemory(base, folder, true);
 
   const browser = await chromium.launch({ executablePath: process.env.CHROME, headless: true, args: ['--enable-precise-memory-info'] });
   const context = await browser.newContext({ viewport: { width: 1800, height: 1200 } });
@@ -711,7 +753,7 @@ async function nativeMemory(base, folder) {
   // Closed once nothing reads it, the browser gone: what Calcifer built and dropped for 5,000 assets goes back.
   await new Promise((done) => setTimeout(done, CLOSED_MS));
   memory.closed = calciferMb();
-  numbers.calcifer_native.closed = await nativeMemory(base, folder);
+  numbers.calcifer_native.closed = await nativeMemory(base, folder, true);
   const closedMetric = process.platform === 'darwin' ? 'physical_footprint' : 'rss';
   numbers.calcifer_closed_memory_metric = closedMetric;
   check('calcifer_gives_back_a_closed_project', closedProjectMemory(process.platform, memory, numbers.calcifer_native, BARS.calcifer_kept_mb),
