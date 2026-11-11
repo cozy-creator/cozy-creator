@@ -266,6 +266,15 @@ class Proof:
                                                 raw.stderr.decode('utf-8', errors='replace'))
         record.update(state='complete', exit_code=completed.returncode,
                       seconds=round(time.monotonic() - began, 3))
+        if completed.returncode and json_output:
+            try:
+                refused_body = json.loads(completed.stdout)
+                if isinstance(refused_body, dict) and isinstance(refused_body.get('error'), dict):
+                    for field in ['code', 'kind']:
+                        if isinstance(refused_body['error'].get(field), str):
+                            record['error_' + field] = refused_body['error'][field]
+            except ValueError:
+                pass
         self.flush()
         if refusal:
             if completed.returncode == 0:

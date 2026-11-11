@@ -40,3 +40,17 @@ fn revoked_result_cannot_reveal_recovery_or_old_view() {
     assert!(matches!(event, VaultEvent::Failed { error } if error.code == "vault_operation_result_expired"));
     assert!(matches!(&*operation.events.borrow(), VaultEvent::Failed { error } if error.code == "vault_operation_result_expired"));
 }
+
+#[test]
+fn a_busy_transition_keeps_its_error_code_without_private_details() {
+    let (events, _) = watch::channel(VaultEvent::Accepted { action: "decrypt".into() });
+    let operation = Operation { named: "/project".into(), action: "decrypt".into(), root: Mutex::new(None), binding: String::new(), events,
+        finished: Mutex::new(None), readable: Mutex::new(None), available: AtomicBool::new(true), locked: AtomicBool::new(true) };
+    let mut error = Error::new(Kind::Conflict, "project_busy", "private-file.mp4 is held open");
+    error.remedy = Some("close private-file.mp4".into());
+    error.metadata = Some(serde_json::json!({"file":"private-file.mp4"}));
+    let mut event = VaultEvent::Failed { error };
+    sanitize(&mut event, &operation);
+    assert!(!serde_json::to_string(&event).unwrap().contains("private-file.mp4"));
+    assert!(matches!(event, VaultEvent::Failed { error } if error.kind == Kind::Conflict && error.code == "project_busy"));
+}
