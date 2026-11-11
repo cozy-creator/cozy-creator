@@ -323,11 +323,11 @@ fn mark_closing(session: &mut Session) {
 }
 
 fn close(api: &Arc<Api>, root: &FsPath) -> Result<(), Error> {
-    vault_operation::revoke(root);
     if let Some(session) = held(root) {
         let mut session = session.lock().expect("vault session");
         mark_closing(&mut session);
     }
+    vault_operation::revoke(root);
     // Existing accepted work may drain while the key is retained, but no new viewing stream can read it.
     forget(api, root)?;
     tokio::runtime::Handle::current().block_on(crate::private_io::close_private_project(api, root))?;

@@ -134,6 +134,9 @@ pub(super) async fn write(State(api): State<Arc<Api>>, Path((named, id)): Path<(
                 Ok(Err(error)) => VaultEvent::Failed { error },
                 Err(_) => VaultEvent::Failed { error: Error::new(Kind::Internal, "vault_operation_failed", "the vault operation stopped unexpectedly; check its status before retrying") },
             };
+            // Publish under the same short critical section as lock/expiry/ACK.
+            // A late worker must not reinstall a secret after it was revoked.
+            let _registry = OPERATIONS.lock().expect("vault operations");
             sanitize(&mut event, &completed);
             *completed.finished.lock().expect("vault result age") = Some(Instant::now());
             completed.events.send_replace(event);

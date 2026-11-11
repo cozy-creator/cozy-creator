@@ -156,6 +156,7 @@ export interface Hooks {
 }
 
 const project = (id: string) => `/v1/projects/${encodeURIComponent(id)}`
+const vaultOperation = (id: string, operation: string) => `/v1/projects/${encodeURIComponent(id)}/vault/operations/${operation}`
 const run = (id: string | number) => `/v1/runs/${encodeURIComponent(id)}`
 const machine = (name: string) => `/v1/machines/${encodeURIComponent(name)}`
 // `org/name` on the wire; a first-party name has no owner, and its org is `_`.
@@ -322,7 +323,7 @@ export class Client {
   async vaultChange(id: string, body: Partial<VaultAsk> & Pick<VaultAsk, "action">, onProgress?: (event: VaultProgress) => void, signal?: AbortSignal): Promise<VaultChanged> {
     if (this.transport.channel) throw new ApiError(403, { kind: "forbidden", code: "vault_local_only", message: "Open this project on its computer to enter encryption credentials" })
     signal?.throwIfAborted()
-    const operation = `${project(id)}/vault/operations/${crypto.randomUUID()}`
+    const operation = crypto.randomUUID()
     const serialized = JSON.stringify(body)
     const incomplete = () => new ApiError(0, {
       kind: "unavailable", code: "vault_stream_incomplete",
@@ -351,14 +352,17 @@ export class Client {
           }
         }, 1000)
         try {
-          const response = await this.send(legacy ? `${project(id)}/vault` : operation, {
-            method: legacy ? "POST" : "PUT",
+          const init: RequestInit = {
             headers: { "Content-Type": "application/json", Accept: "text/event-stream", "Cache-Control": "no-store" },
             body: serialized, cache: "no-store", signal: stop.signal,
-          }, { once: stop.signal })
+          }
+          const response = legacy
+            ? await this.send(`${project(id)}/vault`, { ...init, method: "POST" }, { once: stop.signal })
+            : await this.send(vaultOperation(id, operation), { ...init, method: "PUT" }, { once: stop.signal })
           this.hooks.attempt(0)
           heard = performance.now()
           if (!response.headers.get("Content-Type")?.toLowerCase().startsWith("text/event-stream")) {
+            if (!legacy) throw invalid()
             let changed: VaultChanged
             try { changed = await response.json() } catch { throw invalid() }
             if (!changed?.vault) throw invalid()
@@ -429,7 +433,7 @@ export class Client {
       this.hooks.attempt(0)
       if (!legacy && (terminal.changed || terminal.failure)) {
         // No secret in this cleanup request; losing it leaves expiry to the server.
-        void this.transport.fetch(operation, { method: "DELETE", cache: "no-store", headers: { "Cache-Control": "no-store" } })
+        void this.transport.fetch(vaultOperation(id, operation), { method: "DELETE", cache: "no-store", headers: { "Cache-Control": "no-store" } })
           .then((response) => response.body?.cancel()).catch(() => {})
       }
     }
