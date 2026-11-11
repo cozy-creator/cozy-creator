@@ -162,7 +162,8 @@ def check(corpus: Path) -> int:
         sdpa = torch.nn.functional.scaled_dot_product_attention
         exact = sdpa(q, k, v)
         half = sdpa(q.bfloat16(), k.bfloat16(), v.bfloat16()).float()
-        err = ((half - exact).norm(dim=(0, 2, 3)) / exact.norm(dim=(0, 2, 3))).tolist()
+        per_head = (0, 2, 3)  # (B, H, L, D): one error per head
+        err = (torch.linalg.vector_norm(half - exact, dim=per_head) / torch.linalg.vector_norm(exact, dim=per_head)).tolist()
         flat = ((v.mean(dim=2, keepdim=True).expand_as(exact) - exact).norm() / exact.norm()).item()
         print(f"{model}: {len(kept)} captures; {r['site']} call {r['call']} {r['query']}x{r['key'][1]}: BF16 SDPA vs FP32 "
               f"worst head {max(err):.4f}; the mean of V is {flat:.3f} from FP32")
