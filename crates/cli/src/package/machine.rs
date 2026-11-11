@@ -1,4 +1,4 @@
-//! `cozy package install|remove|ls --on`: runs on a machine through Calcifer. The machine resolves
+//! `cozy package install|uninstall|ls --on`: runs on a machine through Calcifer. The machine resolves
 //! releases from the Hub and owns its environments; the CLI reads only the release it names and
 //! that release's card, which the next `cozy run` binds against.
 use std::process::ExitCode;
@@ -144,7 +144,7 @@ pub(crate) async fn list(ctx: &Context, on: Option<On>, words: &[String]) -> Res
 
 /// Removes every release of each package from a machine: one run of Calcifer's, which sends a remove run per package and Hub
 /// the machine holds it from and sums what they answer.
-pub(crate) async fn remove(ctx: &Context, names: &[String], on: Option<On>) -> Result<ExitCode, Error> {
+pub(crate) async fn uninstall(ctx: &Context, names: &[String], on: Option<On>) -> Result<ExitCode, Error> {
     let run = run::job(ctx, job::PACKAGE_REMOVE, &PackageRemove { packages: names.to_vec() }, on, None).await?;
     let done: PackagesRemoved = run::done(ctx, run).await?;
     if ctx.json {

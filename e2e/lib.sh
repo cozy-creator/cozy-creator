@@ -1,5 +1,5 @@
 # e2e/lib.sh: what the e2e suites share. A suite drives `cozy` the way a person does, in the default ~/.cozy,
-# on a fresh GitHub runner: the real installer, real packages and models from tensorhub.com, real outputs.
+# on a fresh runner with an isolated Hub. Live hardware checks are explicit manual runs.
 #
 #   source e2e/lib.sh; parse "$@"
 #   --out DIR             where records, outputs and logs go
@@ -18,18 +18,20 @@
 #   --quote               the release suite stops at the rental's quote: nothing is rented ($0 pre-flight)
 #   --rent-wait SECONDS   the release suite gives up on a rent with no machine ready in this long (default 1200), and ends its order
 #   --rent-lock FILE      the release suite holds this flock only while it orders, until its Hub accepts (by hand, beside other renters)
+#   --publication-log FILE isolated publication proof to combine with live release coverage
 #   --installed           this computer's cozy as it is, signed in: no installer (the release suite by hand)
 #   --release DIR         a cozy release's files (cozy-publish.yaml's artifacts, a dry run's too): its own installer
 #                         installs cozy from DIR, served on loopback, in place of tensorhub.com's (the candidate)
 #   --shard S             one part of the suite, on its own runner (cli: a name; imports: K/N, every Nth package)
 #   --model               the cli suite's real inference on the CPU too (BiRefNet's forward pass; ci/affected's `model`)
 #
-# Installed by the suite, cozy reaches tensorhub.com through e2e/hubcheck (config.toml's hub_url and $COZY_HUB_URL),
+# Installed by the suite, cozy reaches the selected Hub through e2e/hubcheck (config.toml's hub_url and $COZY_HUB_URL),
 # which holds every request and response to the API document the Hub serves; `finish` fails on any mismatch.
 
 set -euo pipefail
 E2E=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-OUT='' CAND_COZY='' POD_TENSORD='' CAND_TFS='' CAND_RT='' PACKAGES='' PINS='' PUBLISHED='' KEY='' SKU='' INSTALLED='' SHARD='' MODEL='' RELEASE='' MAX_HOURLY=1.00 MAX_USD=0.80 QUOTE='' RENT_WAIT=1200 RENT_LOCK=''
+. "$E2E/test-hub.sh"
+OUT='' CAND_COZY='' POD_TENSORD='' CAND_TFS='' CAND_RT='' PACKAGES='' PINS='' PUBLISHED='' KEY='' SKU='' INSTALLED='' SHARD='' MODEL='' RELEASE='' MAX_HOURLY=1.00 MAX_USD=0.80 QUOTE='' RENT_WAIT=1200 RENT_LOCK='' PUBLICATION_LOG=''
 COZY=$HOME/.cozy/bin/cozy
 [ "${RUNNER_OS:-}" != Windows ] || COZY=$HOME/.cozy/bin/cozy.exe
 # Whether this OS runs models on its own machine, `local` (platform::Os::local_inference): Linux. macOS and Windows
@@ -38,6 +40,8 @@ LOCAL=1
 [ "${RUNNER_OS:-Linux}" = Linux ] || LOCAL=''
 
 parse() {
+  # Check before installation, sign-in or even a read through a default production profile.
+  require_ci_test_hub || return $?
   while [ $# -gt 0 ]; do
     case $1 in
       --out) OUT=$2 ;;
@@ -55,6 +59,7 @@ parse() {
       --quote) QUOTE=1; shift; continue ;;
       --rent-wait) RENT_WAIT=$2 ;;
       --rent-lock) RENT_LOCK=$2 ;;
+      --publication-log) PUBLICATION_LOG=$2 ;;
       --installed) INSTALLED=1; shift; continue ;;
       --shard) SHARD=$2 ;;
       --model) MODEL=1; shift; continue ;;
@@ -68,7 +73,7 @@ parse() {
   [ -z "$INSTALLED" ] || [ ! -f "$CAND_COZY" ] || { COZY=$CAND_COZY; CAND_COZY=''; }
   mkdir -p "$OUT"
   OUT=$(cd "$OUT" && pwd)
-  # Made up, and here so each published run shows its scrub ran (e2e/publish): in its log and this file it reads `Bearer [scrubbed]`.
+  # Made up, and here so each published run watchs its scrub ran (e2e/publish): in its log and this file it reads `Bearer [scrubbed]`.
   echo 'scrub canary: authorization: Bearer 0000-made-up-0000' | tee "$OUT/canary.err"
 }
 
@@ -88,7 +93,9 @@ finish() {
 cozy() { printf '%s\x1f' "$@" >> "$OUT/argv.log"; printf '\x1e' >> "$OUT/argv.log"; "$COZY" "$@"; }
 # The coverage guard (e2e/coverage.py check) over this run's calls, for the tiers it ran.
 coverage() {
-  uv run -q --no-project python -I "$E2E/coverage.py" check "$1" "$E2E/coverage.toml" --tiers "$2" --log "$OUT/argv.log" \
+  local extra=()
+  [ -z "${PUBLICATION_LOG:-}" ] || extra=(--log "$PUBLICATION_LOG")
+  uv run -q --no-project python -I "$E2E/coverage.py" check "$1" "$E2E/coverage.toml" --tiers "$2" --log "$OUT/argv.log" "${extra[@]}" \
     --source "$E2E/../crates/cli/src" \
     || check "coverage: a command or flag has no test, or its test did not run (above)"
 }
@@ -97,12 +104,19 @@ coverage() {
 # over it while its Calcifer runs, reading the archives from a loopback server (COZY_DOWNLOAD_URL, which `cozy update`
 # reads too), and `cozy doctor` restarts Calcifer on it.
 install_cozy() {
-  local want ps=powershell
+  local want ps=powershell ci=${CI:-}${GITHUB_ACTIONS:-}
+  if [ -n "$ci" ] && [ -z "$RELEASE" ] && [ ! -f "$CAND_COZY" ]; then
+    echo "CI installation requires local --release archives or a --tensord file." >&2
+    return 2
+  fi
   hub_check
   # Windows PowerShell under the runner's x64 shell says X64 on an Arm64 runner; PowerShell 7 says Arm64, as Windows
   # PowerShell does in a person's own terminal on Windows 11.
   [ "${RUNNER_ARCH:-}" != ARM64 ] || ps=pwsh
-  if [ "$RUNNER_OS" = Windows ]; then
+  if [ -n "$ci" ]; then
+    echo "Installing the supplied local candidate for isolated CI."
+    export PATH="$(dirname "$COZY"):$PATH"
+  elif [ "$RUNNER_OS" = Windows ]; then
     $ps -NoProfile -ExecutionPolicy Bypass -c 'irm https://tensorhub.com/install.ps1 | iex' || fail "the installer failed"
     found=$(powershell -NoProfile -c '[Environment]::GetEnvironmentVariable("Path", "User")' | tr ';' '\n' | tr -d '\r' | grep -Fix "$(cygpath -w "$(dirname "$COZY")")" || true)
     [ -n "$found" ] || fail "the user's PATH does not hold $(dirname "$COZY")"
@@ -111,7 +125,7 @@ install_cozy() {
     found=$(env -i HOME="$HOME" PATH=/usr/bin:/bin sh -lc 'command -v cozy' || true)
     [ "$found" = "$COZY" ] || fail "a login shell finds '$found', not $COZY"
   fi
-  cozy --version
+  [ -n "$ci" ] || cozy --version
   # A source candidate's cozy goes in place of the released one.
   if [ -f "$CAND_COZY" ]; then
     install_candidate_binary
@@ -120,7 +134,9 @@ install_cozy() {
   fi
   [ -n "$RELEASE" ] || return 0
   serve_release
-  cozy --json machine ls > /dev/null || check "the installed cozy's Calcifer did not start"
+  if [ -x "$COZY" ]; then
+    cozy --json machine ls > /dev/null || check "the installed cozy's Calcifer did not start"
+  fi
   want="cozy $(sed -n 's/^APP_VERSION="\(.*\)"$/\1/p' "$RELEASE/cozy-installer.sh")"
   if [ "$RUNNER_OS" = Windows ]; then
     $ps -NoProfile -ExecutionPolicy Bypass -c "& '$(cygpath -w "$RELEASE")\cozy-installer.ps1'" || fail "the release's installer failed over a running cozy"
@@ -135,12 +151,14 @@ install_cozy() {
 
 # hubcheck between cozy and tensorhub.com, before the installer starts Calcifer: every cozy process (the CLI, Calcifer,
 # the machine) reads config.toml's hub_url, and scripts that call the Hub themselves read $COZY_HUB_URL.
-HUB_CHECK=''
+HUB_CHECK='' HUB_CHECK_UPSTREAM=''
 hub_check() {
-  local exe='' addr=''
+  local exe='' addr='' hub=${COZY_HUB_URL:-https://tensorhub.com}
+  require_ci_test_hub "$hub" || return $?
+  HUB_CHECK_UPSTREAM=$hub
   [ "${RUNNER_OS:-}" != Windows ] || exe=.exe
   go build -C "$E2E/hubcheck" -o "${RUNNER_TEMP:-$OUT}/hubcheck$exe" . || fail "e2e/hubcheck does not build"
-  "${RUNNER_TEMP:-$OUT}/hubcheck$exe" --out "$OUT" > "$OUT/hubcheck.addr" 2> "$OUT/hubcheck.log" &
+  "${RUNNER_TEMP:-$OUT}/hubcheck$exe" --hub "$hub" --out "$OUT" > "$OUT/hubcheck.addr" 2> "$OUT/hubcheck.log" &
   HUB_CHECK=$!
   for _ in $(seq 60); do
     addr=$(head -1 "$OUT/hubcheck.addr" 2> /dev/null) && [ -n "$addr" ] && break
@@ -150,7 +168,7 @@ hub_check() {
   [ -n "$addr" ] || fail "hubcheck did not start: $(cat "$OUT/hubcheck.log")"
   mkdir -p ~/.cozy && printf 'hub_url = "http://%s"\n' "$addr" >> ~/.cozy/config.toml
   export COZY_HUB_URL=http://$addr
-  echo "cozy reaches tensorhub.com through hubcheck at $addr"
+  echo "cozy reaches $hub through hubcheck at $addr"
 }
 # sign_in <key>: `cozy login --key`. A key names the Hub it was made for (tensorhub.com) and cozy refuses it for any
 # other: through hubcheck, a copy naming hubcheck's address (outside $OUT, which is uploaded) signs in, then goes.
@@ -244,7 +262,10 @@ candidates() {
 install_candidate_binary() {
   local dir
   dir=$(dirname "$COZY")
-  [ "${RUNNER_OS:-}" != Windows ] || mv -f "$COZY" "$dir/.cozy-replaced-$RANDOM.exe"
+  mkdir -p "$dir"
+  if [ "${RUNNER_OS:-}" = Windows ] && [ -f "$COZY" ]; then
+    mv -f "$COZY" "$dir/.cozy-replaced-$RANDOM.exe"
+  fi
   cp "$CAND_COZY" "$COZY.new" && chmod +x "$COZY.new" && mv -f "$COZY.new" "$COZY" || fail "installing the candidate cozy failed"
 }
 
@@ -309,21 +330,23 @@ calcifer_orphaned() {
 
 # Removing cozy as the README's "Remove cozy" says, for this OS: nothing of cozy is left.
 remove_cozy() {
+  # The executable must start argv; a parent fixture names it as an argument.
+  local process_pattern="^$COZY([[:space:]]|$)"
   case $RUNNER_OS in
     Linux)
       systemctl --user disable --now cozy-calcifer > "$OUT/remove.log" 2>&1 || true
-      pkill -f "$HOME/.cozy/bin/cozy" || true; sleep 2
+      pkill -f "$process_pattern" || true; sleep 2
       rm -rf ~/.cozy ~/.config/cozy ~/.local/share/bash-completion/completions/cozy ~/.config/fish/completions/cozy.fish ;;
     macOS)
       launchctl bootout "gui/$(id -u)/com.cozy-creator.calcifer" > "$OUT/remove.log" 2>&1 || true
-      pkill -f "$HOME/.cozy/bin/cozy" || true; sleep 2
+      pkill -f "$process_pattern" || true; sleep 2
       rm -rf ~/.cozy ~/.config/cozy ~/Library/LaunchAgents/com.cozy-creator.*.plist ;;
     Windows)
       powershell -NoProfile -c 'Remove-ItemProperty HKCU:\Software\Microsoft\Windows\CurrentVersion\Run cozy-calcifer -ErrorAction SilentlyContinue; Get-Process cozy -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep 2; Remove-Item -Recurse -Force ~\.cozy, $env:LOCALAPPDATA\cozy -ErrorAction SilentlyContinue; $path = ([Environment]::GetEnvironmentVariable("Path", "User") -split ";") -ne "$HOME\.cozy\bin"; [Environment]::SetEnvironmentVariable("Path", $path -join ";", "User")' > "$OUT/remove.log" 2>&1 || true ;;
   esac
   [ ! -e "$COZY" ] || check "removing cozy left $COZY"
   [ ! -e "$HOME/.cozy" ] || check "removing cozy left ~/.cozy"
-  ! pgrep -f "$HOME/.cozy/bin/cozy" > /dev/null 2>&1 || check "a cozy process still runs after removal"
+  ! pgrep -f "$process_pattern" > /dev/null 2>&1 || check "a cozy process still runs after removal"
 }
 
 # The local machine ends, as its idle exit ends it: the holder of its root's lock. The next use starts it.
@@ -437,7 +460,7 @@ machine_ready() {
 }
 
 # cell <name> <target> [inputs...]: one `cozy run` on local (e2e/run.sh's run_cell), followed to its end. Its
-# events go to $OUT/<name>.ndjson, its record (`cozy run show`) to $OUT/<name>.json, its number to
+# events go to $OUT/<name>.ndjson, its record (`cozy run watch`) to $OUT/<name>.json, its number to
 # $OUT/<name>.number, its outputs in the script's project. A run that does not complete is a recorded failure
 # (`check`), unless ALLOW names a code its refusal carries: then $OUT/<name>.refused holds that code. Returns 1
 # when the run neither completed nor was refused as allowed.
@@ -498,7 +521,7 @@ pinned() {
 # The BiRefNet target: a pinned release, the packages checkout's directory, or the published release.
 birefnet() {
   if [ -z "$PACKAGES" ] || [[ $(pinned birefnet) == *@* ]]; then pinned birefnet remove_background
-  else echo "./$PACKAGES/birefnet/remove_background"; fi
+  else (cd "$PACKAGES" && printf '%s/birefnet/remove_background\n' "$PWD"); fi
 }
 
 echo "::group::start"

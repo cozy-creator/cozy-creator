@@ -40,23 +40,28 @@ def add_one(pointer, count, BLOCK: tl.constexpr):
     tl.store(pointer + offsets, tl.load(pointer + offsets, mask=mask) + 1.0, mask=mask)
 
 
+from collections.abc import Callable
+
+#: A step's op, and a variant's check of its values after the loop.
+type Op = Callable[[], object]
+type Check = tuple[str, Callable[[], bool]]
 # What a counting variant's tensor holds when its check fails: each distinct value and how many hold it.
-SEEN = {}
+SEEN: dict[str, torch.Tensor] = {}
 # Each launch of theirs: its stream, and whether that stream was capturing then.
-LAUNCHES = {}
+LAUNCHES: dict[str, set[tuple[str, bool]]] = {}
 
 
-def launched(name, stream):
+def launched(name: str, stream: "torch.cuda.Stream") -> None:
     LAUNCHES.setdefault(name, set()).add((hex(stream.cuda_stream), torch.cuda.is_current_stream_capturing()))
 
 
-def part(name, device, ops, checks):  # noqa: C901 - one table of small cases
+def part(name: str, device: torch.device, ops: list[Op], checks: list[Check]) -> None:  # noqa: C901 - one table of small cases
     if name in ("scalar", "labels"):
         return
     if name in ("memset", "memset32"):
         scratch = torch.full((768,), 0xAB, dtype=torch.uint8, device=device)
 
-        def memset(wide=name == "memset32"):
+        def memset(wide: bool = name == "memset32") -> None:
             stream = driver.CUstream(torch.cuda.current_stream().cuda_stream)
             pointer = driver.CUdeviceptr(scratch.data_ptr())
             result = (driver.cuMemsetD32Async(pointer, 0x5A5A5A5A, 768 // 4, stream) if wide
@@ -71,10 +76,10 @@ def part(name, device, ops, checks):  # noqa: C901 - one table of small cases
         ops.append(lambda: b.copy_(a))
         checks.append((name, lambda: torch.equal(a, b)))
     elif name == "cublas":
-        cases = []
-        for m, k, n in ((1, 3072, 18432), (8, 3072, 3072), (1024, 3072, 3072)):
-            h = torch.randn(m, k, dtype=torch.bfloat16, device=device)
-            w = torch.randn(k, n, dtype=torch.bfloat16, device=device) / k ** 0.5
+        cases: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]] = []
+        for m, inner, n in ((1, 3072, 18432), (8, 3072, 3072), (1024, 3072, 3072)):
+            h = torch.randn(m, inner, dtype=torch.bfloat16, device=device)
+            w = torch.randn(inner, n, dtype=torch.bfloat16, device=device) / inner ** 0.5
             cases.append((h, w, torch.empty(m, n, dtype=torch.bfloat16, device=device), torch.mm(h, w)))
         ops.append(lambda: [torch.mm(h, w, out=o) for h, w, o, _ in cases])
         checks.append((name, lambda: all(torch.equal(o, r) for _, _, o, r in cases)))
@@ -92,7 +97,7 @@ def part(name, device, ops, checks):  # noqa: C901 - one table of small cases
     elif name in ("triton", "triton_pdl"):
         t = torch.zeros(1 << 16, dtype=torch.float32, device=device)
         extra = {"launch_pdl": True} if name == "triton_pdl" else {}
-        def launch():
+        def launch() -> None:
             launched(name, torch.cuda.current_stream())
             add_one[(t.numel() // 1024,)](t, t.numel(), BLOCK=1024, **extra)
 
@@ -103,7 +108,7 @@ def part(name, device, ops, checks):  # noqa: C901 - one table of small cases
         side = torch.cuda.Stream(device=device)
         p = torch.zeros(64, dtype=torch.float32, device=device)
 
-        def fork():
+        def fork() -> None:
             current = torch.cuda.current_stream()
             side.wait_stream(current)
             with torch.cuda.stream(side):
@@ -118,7 +123,7 @@ def part(name, device, ops, checks):  # noqa: C901 - one table of small cases
         p = torch.zeros(64, dtype=torch.float32, device=device)
         legacy = torch.cuda.default_stream(device)
 
-        def stray():
+        def stray() -> None:
             with torch.cuda.stream(legacy):
                 launched(name, legacy)
                 p.add_(1)
@@ -149,14 +154,15 @@ def gpu(payload: Probe, ctx: Context) -> Report:
     assert ctx.device.type == "cuda"
     device = torch.device("cuda", torch.cuda.current_device())
     torch.manual_seed(payload.seed)
-    ops, checks = [], []
+    ops: list[Op] = []
+    checks: list[Check] = []
     SEEN.clear()
     LAUNCHES.clear()
     for name in MIX if payload.variant == "mix" else (payload.variant,):
         part(name, device, ops, checks)
     counter = torch.zeros(64, dtype=torch.float32, device=device)
 
-    def step(index, counter, label=None):
+    def step(index: int, counter: torch.Tensor, label: str | None = None) -> None:
         del index, label
         for op in ops:
             op()

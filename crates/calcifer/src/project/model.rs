@@ -59,21 +59,32 @@ impl Told {
 
 /// `project`'s model as its files are this moment. One read at a time, and any other waits and takes it.
 pub(super) async fn of(api: &Arc<Api>, project: &Arc<Project>) -> Result<Arc<Model>, Error> {
+    let access = Arc::new(super::vault::admit_root(&project.root).await?);
+    project.require_view()?;
     let asked = Instant::now();
     let mut held = project.model.lock().await;
+    project.require_view()?;
     let wait_ms = asked.elapsed().as_secs_f64() * 1000.0;
     let rev = revision(&project.folder.dir);
     let heard = api.projects.heard_changes.load(std::sync::atomic::Ordering::Relaxed);
     if let Some(model) = held.as_ref().filter(|model| model.rev == rev && model.heard == heard) {
+        project.require_view()?;
         return Ok(model.clone());
     }
-    let (api, read, began) = (api.clone(), project.clone(), Instant::now());
-    let answer = tokio::task::spawn_blocking(move || read_model(&api, &read, rev, heard)).await;
+    let (api, read, reading, began) = (api.clone(), project.clone(), access.clone(), Instant::now());
+    let answer = tokio::task::spawn_blocking(move || {
+        // Dropping a canceled request's JoinHandle cannot stop a blocking worker.
+        // Its own clone keeps the mounted view leased until this read ends.
+        let _reading = reading;
+        read.require_view()?;
+        read_model(&api, &read, rev, heard)
+    }).await;
     let model = Arc::new(answer.map_err(|why| Error::new(Kind::Internal, "project_read", why.to_string()))??);
     let read_ms = began.elapsed().as_secs_f64() * 1000.0;
     if wait_ms + read_ms >= 5.0 {
         info!(phase = "project_read", wait_ms, read_ms);
     }
+    project.require_view()?;
     *held = Some(model.clone());
     Ok(model)
 }
@@ -87,6 +98,7 @@ fn read_model(api: &Arc<Api>, project: &Project, rev: String, heard: u64) -> Res
     })??;
     let stand = doc.stand(&lock);
     let mut warnings = doc.warnings.clone();
+    warnings.extend(folder.crdt_conflicts()?.into_iter().map(api::calcifer::project::Warning::of_file));
     warnings.extend(doc.said_of_known(&lock));
     let known = known_packages(api, &doc);
     warnings.extend(unmade(&doc, &known, &lock));

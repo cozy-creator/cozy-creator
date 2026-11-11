@@ -38,6 +38,7 @@ import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import Any, TypedDict, cast
 
 import diffusers
 import torch
@@ -87,6 +88,26 @@ SOURCES = [
     (QWEN_IMAGE_21, "transformer"), (QWEN_IMAGE_21, "vae"), (QWEN_IMAGE_21, "text_encoder"),
     (QWEN3_VL, ""), (QWEN3_5, ""),
 ]
+# A model's config.json.
+Config = dict[str, Any]  # type: ignore[explicit-any]  # free-form model config, passed through to Diffusers/Transformers
+
+
+# `orders/<class>.json` (`class` is a keyword, hence the functional form).
+Reference = TypedDict("Reference", {"class": str, "sources": list[str], "generator": str, "diffusers": str,
+                                    "transformers": str, "children": dict[str, list[str]]})
+
+
+class Check(TypedDict):
+    """`vectors/orders/<test>.json`."""
+
+    source: str
+    components: dict[str, list[str]]
+
+
+class Args(argparse.Namespace):
+    write: bool
+
+
 # Models the tests import; their full orders are never references.
 CHECKS = [("tiny-sdxl-pipe", ("hf-internal-testing/tiny-sdxl-pipe", "20594cbc343cfcfe447af5c87cdaf6c436b453f2"),
            ["unet", "vae", "text_encoder", "text_encoder_2"])]
@@ -97,7 +118,8 @@ def get(url: str, first: int | None = None, last: int | None = None) -> bytes:
     if first is not None:
         req.add_header("Range", f"bytes={first}-{last}")
     with urllib.request.urlopen(req, timeout=120) as r:
-        return r.read()
+        body: bytes = r.read()
+        return body
 
 
 def hub(repo: tuple[str, str], path: str) -> str:
@@ -124,7 +146,7 @@ def stored_keys(repo: tuple[str, str], folder: str) -> list[str]:
     raise SystemExit(f"{repo[0]}: no weights for {folder!r}")
 
 
-def stored_names(model, keys: list[str], stored: list[str]) -> list[str]:
+def stored_names(model: torch.nn.Module, keys: list[str], stored: list[str]) -> list[str]:
     """`state_dict()` keys under the names checkpoints store them by: Transformers renames on
     load, and its reversed transforms give the saved names. Stored names the class lacks (an
     MTP head it does not build) are reported; they keep their source order at import."""
@@ -144,7 +166,7 @@ def stored_names(model, keys: list[str], stored: list[str]) -> list[str]:
     return named
 
 
-def construct(config: dict):
+def construct(config: Config) -> tuple[str, torch.nn.Module]:
     """The class name and model `config` builds, on the meta device."""
     if "_class_name" in config:
         name = config["_class_name"]
@@ -167,10 +189,11 @@ def h3_transformer() -> tuple[str, str, list[str]]:
         f.write(body)
         f.flush()
         spec = importlib.util.spec_from_file_location("convert_minimax_h3_to_diffusers", f.name)
+        assert spec is not None and spec.loader is not None
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
     with torch.device("meta"):
-        model = diffusers.MiniMaxH3Transformer3DModel(**module.MINIMAX_H3_TRANSFORMER_CONFIG)
+        model = cast(torch.nn.Module, diffusers.MiniMaxH3Transformer3DModel(**module.MINIMAX_H3_TRANSFORMER_CONFIG))  # type: ignore[no-untyped-call]  # type checkers see diffusers' dummy class
     return "MiniMaxH3Transformer3DModel", url, list(model.state_dict())
 
 
@@ -193,7 +216,7 @@ def tree(orders: list[list[str]]) -> dict[str, list[str]]:
     by_pattern: dict[str, list[list[str]]] = {}
     for (_, parent), children in instances.items():
         by_pattern.setdefault(pattern(parent), []).append(children)
-    out = {}
+    out: dict[str, list[str]] = {}
     for parent, seqs in by_pattern.items():
         first: dict[str, int] = {}
         for seq in seqs:
@@ -208,7 +231,7 @@ def tree(orders: list[list[str]]) -> dict[str, list[str]]:
         while len(order) < len(first):
             left = [c for c in first if c not in order]
             ready = [c for c in left if before[c] == 0] or left  # a cycle: first appearance wins
-            c = min(ready, key=first.get)
+            c = min(ready, key=first.__getitem__)
             order.append(c)
             for b in after[c]:
                 before[b] -= 1
@@ -216,7 +239,7 @@ def tree(orders: list[list[str]]) -> dict[str, list[str]]:
     return out
 
 
-def dump(doc: dict) -> bytes:
+def dump(doc: Reference | Check) -> bytes:
     return (json.dumps(doc, indent=1) + "\n").encode()
 
 
@@ -241,24 +264,24 @@ def build() -> dict[Path, bytes]:
         orders.append(list(model.state_dict()))
     name, source, keys = h3_transformer()
     by_class[name] = ([source], [keys])
-    out = {}
+    out: dict[Path, bytes] = {}
     for name, (sources, orders) in sorted(by_class.items()):
-        doc = {"class": name, "sources": sources, "generator": "scripts/orders.py",
+        doc: Reference = {"class": name, "sources": sources, "generator": "scripts/orders.py",
                "diffusers": DIFFUSERS, "transformers": TRANSFORMERS, "children": tree(orders)}
         out[OUT / f"{name}.json"] = dump(doc)
     for test, repo, folders in CHECKS:
-        orders = {}
+        checked: dict[str, list[str]] = {}
         for folder in folders:
             _, model = construct(json.loads(get(hub(repo, join(folder, "config.json")))))
-            orders[folder] = stored_names(model, list(model.state_dict()), stored_keys(repo, folder))
-        out[TESTS / f"{test}.json"] = dump({"source": f"hf://{repo[0]}@{repo[1]}", "components": orders})
+            checked[folder] = stored_names(model, list(model.state_dict()), stored_keys(repo, folder))
+        out[TESTS / f"{test}.json"] = dump({"source": f"hf://{repo[0]}@{repo[1]}", "components": checked})
     return out
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--write", action="store_true")
-    write = ap.parse_args().write
+    write = ap.parse_args(namespace=Args()).write
     outputs = build()
     stale = [p for p, b in outputs.items() if not p.exists() or p.read_bytes() != b]
     extra = [p for p in OUT.glob("*.json") if p not in outputs]

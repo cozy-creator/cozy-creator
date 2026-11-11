@@ -75,47 +75,6 @@ function taken(store: ReturnType<typeof useCanvasStore>, name: string, asset: No
   return { sha256: version.main.sha256, field: version.main.field, name: `${asset.name}_${version.number}`, description: typeof description === "string" ? description : undefined, from: asset.name, number: version.number }
 }
 
-/** An Edit's clips to choose from: a click puts one in, one can be carried to a place, and the row drags across. A prompt reads pictures by name. */
-function Pictures({ name }: { name: string }) {
-  const store = useCanvasStore()
-  useSignal(store.names)
-  const row = useDragScroll({
-    axis: "x",
-    lift(pressed) {
-      const from = pressed.closest<HTMLElement>(".picture")
-      return from?.dataset.name ? { load: { name: from.dataset.name }, from } : null
-    },
-  })
-  const held = store.namesLike("", name).flatMap((other) => {
-    const view = store.get(other)
-    const shown = view && shownOf(view)
-    return shown && !shown.absent && (shown.field === "image" || shown.field === "video") ? [{ other, sha256: shown.sha256 }] : []
-  })
-  if (!held.length) return null
-  return (
-    <div ref={row} className="pictures" aria-label="The project's pictures">
-      {held.map(({ other, sha256 }) => (
-        <button
-          key={other}
-          type="button"
-          className="picture nodrag"
-          title={other}
-          aria-label={`Put ${other} in`}
-          data-name={other}
-          onClick={(event) => {
-            const place = event.currentTarget.closest(".card")?.querySelector("[data-drop-target]")
-            const target = place && store.dropTargets.get(place)
-            if (target) target.drop([other], 0, 0)
-            else store.takeInto(name, [other])
-          }}
-        >
-          <Thumb sha256={sha256} cardWidth={120} />
-        </button>
-      ))}
-    </div>
-  )
-}
-
 /** The take shown, as words mention it: `<Kyogre_3.2>`, its one name. A click copies it; dragged onto a box or into a prompt it's a mention,
  *  as a box dragged is. */
 function TakeName({ view }: { view: ElementView }) {
@@ -622,6 +581,7 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
       const current = store.get(name)
       const pose = store.poseOf(name)
       if (!current?.here || !pose || !card.isConnected) return null
+      if (!card.offsetWidth || !card.offsetHeight) return null
       if (!room && !store.inPlace?.fitted && !store.inPlace?.moved && !store.inPlace?.pulled) return null
       if (!project) {
         if (previous) apply(previous.style)
@@ -824,7 +784,6 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
         <div className="here-under nodrag nopan nowheel">
           <div className="here-all">
             {asset.timeline && <Takes view={view} name={name} width={width} />}
-            {asset.timeline && editing && <Pictures name={name} />}
             {!asset.timeline && (!view.hereWords || view.pickingUp) && <PickUp view={view} name={name} />}
             {!editing && <Bar view={view} name={name} />}
             {/* Looking at a take an image tool made, only its description: its tool and words are the next take's, behind its +. */}

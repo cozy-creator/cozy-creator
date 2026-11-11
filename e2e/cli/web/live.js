@@ -283,8 +283,11 @@ function linesOf(text, name) {
     return Boolean(rect) && rect.left >= 0 && rect.top >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight;
   }, name);
 
-  // A command adds it: it shows by itself where it was told, and lands.
+  // The empty hint is published only after the first canonical reconciliation.
   await page.locator('.empty-canvas').waitFor();
+  check('initial_replica_ready', true);
+
+  // A command adds it: it shows by itself where it was told, and lands.
   let place = await spot();
   const added = await timed('add', { name: 'live_a', x: place.x, y: place.y }, () => project('add', 'cozy/edit', 'live_a', `at=${place.x},${place.y},260`, 'description=Words from the CLI'));
   check('add_returns_its_name', added.value.name === 'live_a', added.value);
@@ -328,6 +331,11 @@ function linesOf(text, name) {
   check('add_placed_on_nothing', (await overlaps()).length === 0, await overlaps());
 
   // Approved by a command: it turns into that picture. Unapproved: back. Out of date has no dot now (Paul, 11-05): what shows is the picture.
+  // Its imported picture must be usable before timing state propagation, clear of first-cold media setup.
+  await page.waitForFunction((name) => {
+    const image = window.boxOf(name)?.querySelector('.media img');
+    return image?.complete && image.naturalWidth > 0 && image.naturalHeight > 0;
+  }, 'live_pic', { timeout: FIRST_RUN_MS });
   await timed('approve', { name: 'live_tool', picture: true }, () => project('approve', 'live_tool', hash));
   check('approve_in_the_status', (await held('live_tool')).pinned === true);
   await timed('unapprove', { name: 'live_tool', picture: false }, () => project('unapprove', 'live_tool'));
@@ -480,7 +488,9 @@ function linesOf(text, name) {
     // Read with this machine's Runtime, as a run reads it: a box doesn't wait on PyPI's.
     await cozy('--json', 'run', `${TOOL}/still`, 'prompt=primed', '--on', 'local');
     place = await spot();
-    await project('add', `${TOOL}/slow`, 'live_shot', `at=${place.x},${place.y},260`, 'instructions=A slow still', 'seconds:=0.1');
+    // The machine estimates the overall bar from prior runs of this size.
+    // Match the measured work while priming that estimate, then observe the next run.
+    await project('add', `${TOOL}/slow`, 'live_shot', `at=${place.x},${place.y},260`, 'instructions=A slow still', 'seconds:=14');
     await box('live_shot').waitFor();
     await project('render', 'live_shot', '--on', 'local');
     await timed('a_first_render', { name: 'live_shot', picture: true }, async () => ({ at: Date.now() }));
@@ -500,7 +510,10 @@ function linesOf(text, name) {
     const said = await page.evaluate(() => window.progressSaid);
     seen.render_said = said;
     // The time is Calcifer's for the whole run; its first run here says so until it has steps of its own.
-    check('steps_read_as_denoise_steps', said.some((text) => /^Denoise steps: \d+\/10(, (\d+[smhd](\d+[smh])? left|first run on this machine))?$/.test(text)) && !said.some((text) => /drawing/i.test(text)), said);
+    const isStep = (text) => /\d+\/\d+/.test(text);
+    const denoiseStep = /^Denoise steps: \d+\/10(, (\d+[smhd](\d+[smh])? left|first run on this machine))?$/;
+    const firstStep = said.findIndex(isStep);
+    check('steps_read_as_denoise_steps', firstStep >= 0 && said.filter(isStep).every((text) => denoiseStep.test(text)) && !said.slice(firstStep).some((text) => /drawing/i.test(text)), said);
     const fileAt = await landed;
     times.render_lands = shownAt - fileAt;
     check('render_lands_live', times.render_lands <= LIVE_MS, times.render_lands);
@@ -556,16 +569,37 @@ function linesOf(text, name) {
   // Clear of everything so far, and all of it fitted on the screen. A row apart by more than an Edit at rest and the room it keeps under it
   // for its add-ons and the name of a box below (e139a61c6, shown.ts): about 460 at 260 wide. Closer, the page moves one off the other.
   const ROW = 500;
-  await Promise.all(fixed.map((name, i) => project('add', 'cozy/edit', name, `at=${260 + (i % 4) * 300},${2000 + Math.floor(i / 4) * ROW},260`, 'description=start')));
+  const addedBurst = await Promise.all(fixed.map((name, i) => project('add', 'cozy/edit', name, `at=${260 + (i % 4) * 300},${2000 + Math.floor(i / 4) * ROW},260`, 'description=start')));
   // Fitted to all of them: a box that comes after a fit is drawn for a moment, then not, off the screen (macOS, 41955999465).
-  await until('the boxes for the burst', async () => {
-    await page.keyboard.press('f');
-    await page.waitForTimeout(250);
-    return page.evaluate((names) => names.every((name) => {
-      const at = window.boxOf(name)?.getBoundingClientRect();
-      return at && at.bottom <= innerHeight && at.right <= innerWidth;
-    }), fixed);
-  }, Boolean);
+  try {
+    await until('the boxes for the burst', async () => {
+      await page.keyboard.press('f');
+      await page.waitForTimeout(250);
+      return page.evaluate((names) => names.every((name) => {
+        const at = window.boxOf(name)?.getBoundingClientRect();
+        return at && at.bottom <= innerHeight && at.right <= innerWidth;
+      }), fixed);
+    }, Boolean);
+  } catch (error) {
+    const state = await status();
+    const cards = await rows();
+    seen.burst_setup = {
+      requested: fixed,
+      replies: addedBurst.map(({ at, value }) => ({ at, name: value?.name })),
+      backend: state.assets.filter((asset) => asset.name.startsWith('burst_')).map(({ name, kind }) => ({ name, kind })),
+      rows: Object.fromEntries(Object.entries(cards).filter(([name]) => name.startsWith('burst_'))),
+      page: await page.evaluate((names) => ({
+        focused: document.activeElement?.tagName,
+        viewport: document.querySelector('.react-flow__viewport')?.style.transform,
+        boxes: names.map((name) => {
+          const node = window.boxOf(name);
+          const rect = node?.getBoundingClientRect();
+          return { name, id: node?.getAttribute('data-id'), transform: node?.style.transform, rect: rect && { x: rect.x, y: rect.y, width: rect.width, height: rect.height } };
+        }),
+      }), fixed),
+    };
+    throw error;
+  }
   const lanes = Array.from({ length: 8 }, () => []);
   const last = new Map();
   const targets = fixed.map((name, i) => ({ name, x: 260 + (i % 4) * 300, y: 2000 + Math.floor(i / 4) * ROW }));

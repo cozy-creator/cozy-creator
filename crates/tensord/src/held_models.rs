@@ -1,14 +1,15 @@
 //! The models this machine's store holds, for Status: each local model (`local/<name>`) and
 //! each Hub checkpoint it pulled (cached Hub refs), with what it weighs. A listing is read
-//! again only when the set of models changed or the disk moved by a hundredth, not when one was
-//! merely used: a model whose header landed first is read again as its chunks land.
+//! again after model work, eviction, a changed model set or a substantial disk change, not
+//! every status poll. A header alone is listed as partial until its whole closure is cached.
 use crate::api::v1;
 use crate::storage::{self, Store};
 use std::{
     collections::{BTreeMap, HashMap},
     io,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Mutex, atomic::{AtomicU64, Ordering}},
+    time::SystemTime,
 };
 use tensorfs::format::{ObjectRef, Repo};
 
@@ -81,7 +82,27 @@ fn entries(repo: &Repo) -> impl Iterator<Item = (&str, Option<&str>, &ObjectRef)
 /// Each model's rows: repository, release, lane, header.
 type Seen = Vec<(String, String, String, ObjectRef)>;
 
-static LAST: Mutex<Option<(PathBuf, Seen, u64, Listing)>> = Mutex::new(None);
+#[derive(PartialEq, Eq)]
+struct Stamp {
+    free: u64,
+    changed: u64,
+    evicted: Option<SystemTime>,
+}
+
+static CHANGED: AtomicU64 = AtomicU64::new(0);
+static LAST: Mutex<Option<(PathBuf, Seen, Stamp, Listing)>> = Mutex::new(None);
+
+/// Refresh model metadata after completed, failed or canceled model work, not every progress tick.
+pub(crate) fn changed() {
+    CHANGED.fetch_add(1, Ordering::AcqRel);
+}
+
+/// A pull or import refreshes the final inventory even when it failed or was canceled.
+pub(crate) struct ModelChange;
+
+impl Drop for ModelChange {
+    fn drop(&mut self) { changed(); }
+}
 
 /// Where the disk under `root` stands, in hundredths of it free.
 fn moved(root: &Path) -> u64 {
@@ -93,6 +114,7 @@ pub(crate) fn listing(root: &Path) -> Listing {
     if !root.join("format").is_file() {
         return Listing::default();
     }
+    let changed = CHANGED.load(Ordering::Acquire);
     let read = Store::open(root).map_err(storage::io_error).and_then(|store| Ok((seen(&store)?, store)));
     let (seen, store) = match read {
         Ok(read) => read,
@@ -101,10 +123,10 @@ pub(crate) fn listing(root: &Path) -> Listing {
             return Listing::default();
         }
     };
-    let free = moved(root);
+    let stamp = Stamp { free: moved(root), changed, evicted: store.evicted_at() };
     let mut last = LAST.lock().unwrap();
     if let Some((at, was, then, listing)) = last.as_ref() {
-        if at == root && *was == seen && *then == free {
+        if at == root && *was == seen && *then == stamp {
             return listing.clone();
         }
     }
@@ -112,7 +134,7 @@ pub(crate) fn listing(root: &Path) -> Listing {
         tracing::warn!("held models unreadable: {error}");
         Listing::default()
     });
-    *last = Some((root.into(), seen, free, listing.clone()));
+    *last = Some((root.into(), seen, stamp, listing.clone()));
     listing
 }
 
@@ -140,6 +162,7 @@ fn list(store: &Store, seen: &Seen) -> std::io::Result<Listing> {
     let mut models: Vec<v1::Model> = vec![];
     for (repository, release, lane, header) in seen {
         let closure = store.closure(header).map_err(storage::io_error)?;
+        let complete = closure.iter().all(|object| store.holds(object));
         let held: Vec<ObjectRef> = closure.into_iter().filter(|o| store.holds(o)).collect();
         let entry = closures.entry(repository).or_default();
         for object in held {
@@ -150,12 +173,17 @@ fn list(store: &Store, seen: &Seen) -> std::io::Result<Listing> {
         if models.last().is_none_or(|m| m.repository != *repository) {
             models.push(v1::Model { repository: repository.clone(), ..Default::default() });
         }
-        let precision = store.checkpoint(header).map(|c| crate::precision::Profile::of(c.header()).family).unwrap_or_default();
+        let (precision, role) = store.checkpoint(header).map(|c| (
+            crate::precision::Profile::of(c.header()).family,
+            c.header().repository_role().to_owned(),
+        )).unwrap_or_else(|_| (String::new(), "unknown".into()));
         models.last_mut().expect("pushed").checkpoints.push(v1::Checkpoint {
             release: release.clone(),
             lane: lane.clone(),
             precision,
             manifest: header.id(),
+            role,
+            complete: Some(complete),
         });
     }
     for objects in closures.values() {
@@ -169,4 +197,49 @@ fn list(store: &Store, seen: &Seen) -> std::io::Result<Listing> {
         model.unique_bytes = objects.iter().filter(|o| holders[*o] == 1).map(|o| o.length).sum();
     }
     Ok(Listing { models, bytes: holders.keys().map(|o| o.length).sum() })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tensorfs::format::{Header, Tree};
+
+    #[test]
+    fn header_only_partial_and_complete_downloads_are_distinct() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).unwrap();
+        let first = ObjectRef::of(b"first weights");
+        let second = ObjectRef::of(b"second weights");
+        let header = Header::new(vec![first.clone(), second.clone()], None, vec![], Default::default()).unwrap();
+        let header = store.put_bytes(&header.to_cbor().unwrap()).unwrap();
+        let tree = store.put_tree(&Tree::of("bf16", header.clone(), &Default::default()).unwrap()).unwrap();
+        store.update_ref("test/model", |_| {
+            let mut repo = Repo::new("test/model");
+            repo.set_lane("1", "bf16", tree.clone());
+            Some(repo)
+        }).unwrap();
+        let before = listing(root.path());
+        assert_eq!(before.models[0].checkpoints[0].complete, Some(false));
+        assert_eq!(before.bytes, header.length);
+
+        // A failed/canceled pull may have left useful bytes. Its exit invalidates the cache
+        // even when the object is much smaller than the disk-percentage threshold.
+        let interrupted = || -> Result<(), ()> {
+            let _inventory = ModelChange;
+            store.put_bytes(b"first weights").unwrap();
+            Err(())
+        };
+        assert!(interrupted().is_err());
+        let partial = listing(root.path());
+        assert_eq!(partial.models[0].checkpoints[0].complete, Some(false));
+        assert_eq!(partial.bytes, header.length + first.length);
+
+        {
+            let _inventory = ModelChange;
+            store.put_bytes(b"second weights").unwrap();
+        }
+        let complete = listing(root.path());
+        assert_eq!(complete.models[0].checkpoints[0].complete, Some(true));
+        assert_eq!(complete.bytes, header.length + first.length + second.length);
+    }
 }

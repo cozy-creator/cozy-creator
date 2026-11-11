@@ -19,7 +19,8 @@ function load(file, globals = {}, imports = {}) {
   return module.exports
 }
 
-const queriesModule = load("api/queries.ts")
+const projectOrder = load("api/projectOrder.ts")
+const queriesModule = load("api/queries.ts", {}, { "./projectOrder": projectOrder })
 const { projectPath, rememberProject } = load("app/project.tsx", {}, { "../api/queries": queriesModule })
 const project = { id: "project-canonical-id", code: "ABC12DEF3" }
 assert.equal(projectPath(project), "/p/ABC12DEF3")
@@ -56,4 +57,27 @@ assert.deepEqual(consume("http://localhost:7317/p/ABC12DEF3?view=wide#code=secre
 assert.deepEqual(consume("http://localhost:7317/#/projects/old/assets/picture"), { code: null, url: "http://localhost:7317/projects/old/assets/picture" })
 assert.deepEqual(consume("http://localhost:7317/#code=secret&to=/projects/old/runs"), { code: "secret", url: "http://localhost:7317/projects/old/runs" })
 assert.deepEqual(consume("http://localhost:7317/p/ABC12DEF3#code=secret&to=//elsewhere.test/path"), { code: "secret", url: "http://localhost:7317/p/ABC12DEF3" })
+
+const preferences = new Map()
+const localStorage = {
+  getItem: (key) => preferences.get(key) ?? null,
+  setItem: (key, value) => preferences.set(key, value),
+  removeItem: (key) => preferences.delete(key),
+}
+const view = load("app/view.ts", { localStorage })
+assert.equal(view.loadMachine(project.id), "")
+view.saveMachine(project.id, "ryuk")
+assert.equal(view.loadMachine(project.id), "ryuk")
+assert.equal(view.loadMachine("another-project"), "")
+preferences.set(`cozy.machine:${project.id}`, JSON.stringify({ invalid: true }))
+assert.equal(view.loadMachine(project.id), "")
+view.saveMachine(project.id, "ryuk")
+view.protectProjectView(project.id, true)
+assert.equal(preferences.has(`cozy.machine:${project.id}`), false)
+view.saveMachine(project.id, "ryuk")
+assert.equal(view.loadMachine(project.id), "")
+assert.equal(preferences.has(`cozy.machine:${project.id}`), false)
+view.protectProjectView(project.id, false)
+view.saveMachine(project.id, "")
+assert.equal(view.loadMachine(project.id), "")
 console.log("project path and auth-fragment checks passed")

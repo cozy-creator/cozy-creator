@@ -7,7 +7,18 @@ import ctypes as C
 import json
 import threading
 import time
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import TypeAlias
+
+JSON: TypeAlias = "str | int | float | bool | None | Sequence[JSON] | Mapping[str, JSON]"
+
+
+class Args(argparse.Namespace):
+    c: Path
+    rust: Path
+    order: str
+    gpu: bool
 
 
 def main() -> None:
@@ -18,17 +29,18 @@ def main() -> None:
         "--order", choices=["native-first", "python-first"], required=True
     )
     parser.add_argument("--gpu", action="store_true")
-    args = parser.parse_args()
-    if args.order == "native-first":
-        c = C.CDLL(str(args.c.resolve()), mode=C.RTLD_GLOBAL)
-        rust = C.CDLL(str(args.rust.resolve()), mode=C.RTLD_GLOBAL)
+    args = parser.parse_args(namespace=Args())
+
+    def load() -> tuple[C.CDLL, C.CDLL]:
+        """The C library, then the Rust one, each global."""
+        return C.CDLL(str(args.c.resolve()), mode=C.RTLD_GLOBAL), C.CDLL(str(args.rust.resolve()), mode=C.RTLD_GLOBAL)
+
+    first = load() if args.order == "native-first" else None
     import tensorfs.varena.torch as vt
     from tensorfs import _ext
     from tensorfs.varena import api
 
-    if args.order == "python-first":
-        c = C.CDLL(str(args.c.resolve()), mode=C.RTLD_GLOBAL)
-        rust = C.CDLL(str(args.rust.resolve()), mode=C.RTLD_GLOBAL)
+    c, rust = first if first is not None else load()  # python-first: after TensorFS
     for function in [
         c.mixed_c_identity,
         rust.mixed_rust_identity,
@@ -52,9 +64,9 @@ def main() -> None:
     # Invalid handles, including a double close, are errors rather than C pointer UB.
     assert api._lib.vr_v1_gpu_close(2**64 - 1) == 5
     main_error = api._lib.vr_v1_last_error()
-    errors = []
+    errors: list[bytes] = []
 
-    def other_thread():
+    def other_thread() -> None:
         assert c.mixed_c_error() == 1
         errors.append(api._lib.vr_v1_last_error())
 
@@ -71,7 +83,7 @@ def main() -> None:
         if line.endswith("/libvarena.so")
     }
     assert len(mapped) == 1, mapped
-    result = {
+    result: dict[str, JSON] = {
         "scope": "host",
         "order": args.order,
         "identities": identities,

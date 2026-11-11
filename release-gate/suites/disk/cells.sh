@@ -21,7 +21,7 @@ T=$OUT/disk; mkdir -p "$T"
 use() { "$CLI" --json machine show "$M" 2>/dev/null | jq -r --arg s "$1" '.status | [$s, .disk_free_bytes, .disk_models_bytes,
   .disk_environments_bytes, .disk_runtime_bytes] | @tsv' >> "$T/use.tsv"; }
 step() { local n=$1; shift; run_submit "$T" "$n" "$@" > /dev/null; run_wait "$T" "$n"; use "$n"; run_get "$T" "$n" .status; }
-released() { "$CLI" package info "$1" --json 2>/dev/null | jq -r '[.releases[] | select(.yanked | not) | .release][0:2] | reverse | join(" ")'; }
+released() { package_details "$1" 2>/dev/null | jq -r '[.releases[] | select(.yanked | not) | .release][0:2] | reverse | join(" ")'; }
 logs() { "$CLI" machine logs "$M" tensord -n 0 > "$T/tensord.log" 2>&1; grep -c -- "$1" "$T/tensord.log"; }
 
 use start; bad=()
@@ -99,7 +99,7 @@ big=$(step h3-bf16-render run "$(pkg minimax-h3 generate)" --on "$M" --lane bf16
 code=$(run_get "$T" h3-bf16-render .reason.code); why=$(run_get "$T" h3-bf16-render .reason.message)
 after=$(tail -1 "$T/use.tsv" | cut -f3); grew=$(( after > before ? after - before : 0 ))
 fits=$(step sdxl-room run "$(pkg sdxl generate)" --on "$M" prompt="$OBJECT, after a full disk" steps:=1 seed:=$((R + 703)))
-said=$("$CLI" --json --full run show "$(cat "$T/sdxl-room.number")" --once 2>/dev/null | jq -r '[.warnings[]?, .result.warnings[]?] | map(if type == "object" then .message else . end) | .[]' | grep -m1 'evicted' || true)
+said=$("$CLI" --json --full run watch "$(cat "$T/sdxl-room.number")" --once 2>/dev/null | jq -r '[.warnings[]?, .result.warnings[]?] | map(if type == "object" then .message else . end) | .[]' | grep -m1 'evicted' || true)
 evicted_sdxl=$(logs 'tensorfs: evicted stabilityai/sdxl')
 # H3 bf16 is 130 GiB: a disk that could hold it whole once all else is evicted (a CPU pod gets 160 GB for 100) judges SDXL's half only.
 if [ "$total" -gt $((135 << 30)) ]; then

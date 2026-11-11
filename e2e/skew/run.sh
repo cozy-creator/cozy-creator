@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# e2e/skew/run.sh --hub-src DIR --client VERSION --out DIR [--cozy-min X.Y.Z]: a released cozy against a Hub built from
-# source, on a fresh Linux runner with Docker and Go (xs-166; e2e.yaml's `skew`, by hand on a computer that is yours to
+# e2e/skew/run.sh (--hub-src DIR | --hub-bin DIR) (--client VERSION | --cozy-bin FILE | --candidates SET) --out DIR
+#   [--checks FILE | --command FILE [-- ARGS...]] [--admin] [--cozy-min X.Y.Z]: a cozy against a Hub built from
+# source (--hub-bin: one built already, DIR holding `tensorhub`, its config.local.yaml and `minio`), on a fresh Linux runner with Docker and Go (xs-166; e2e.yaml's `skew`, by hand on a computer that is yours to
 # replace). The Hub serves on a throwaway Postgres and a MinIO built from its last source, whose SigV4 check is R2's: a
 # key's reserved characters are percent-encoded in the canonical request, so v0.40.33-35's bare ':' in a workload's
 # proof key fails here as it failed on R2. It runs as a development Hub (sign-in codes in its log): cozy dials it on
@@ -11,16 +12,51 @@
 # catalog, package publish, install and run, new weights uploaded by the machine (the workload writer, as pods
 # upload), publish, download, delete. A client older than --cozy-min that names its version (`cozy/<version>`, from
 # 0.23.0) must instead be refused at every step with the typed client_too_old naming `cozy update`. Any 5xx fails.
+# --candidates takes e2e/candidates' $CANDIDATES: its --tensord file (or version) or its --release's Linux archive is the
+# client, with its --runtime and --tensorfs. --command runs a focused suite instead of the cells: `FILE OUT COZY RUNTIME
+# TENSORFS ARGS...`, signed in, as the Hub's admin with --admin.
 set -uo pipefail
 E2E=$(cd "$(dirname "$0")/.." && pwd) HERE=$(cd "$(dirname "$0")/../../release-gate" && pwd)
-SRC= CLIENT= OUT= MIN=
+START=$PWD
+SRC= HUB_BIN= CLIENT= BIN= CHECKS= COMMAND= OUT= MIN= RT= TF= PUBLICATION_LOG= CLIENT_READY= ADMIN= RELEASE=
+COMMAND_ARGS=()
 while [ $# -gt 0 ]; do
   case $1 in
-    --hub-src) SRC=$(cd "$2" && pwd);; --client) CLIENT=${2#v};; --out) OUT=$2;; --cozy-min) MIN=$2;;
+    --hub-src) SRC=$(cd "$2" && pwd) || exit 2;; --hub-bin) HUB_BIN=$(cd "$2" && pwd) || exit 2;;
+    --client) CLIENT=${2#v};; --cozy-bin) BIN=$(realpath "$2") || exit 2;; --checks) CHECKS=$(realpath "$2") || exit 2;; --out) OUT=$2;; --cozy-min) MIN=$2;;
+    --runtime) RT=$2; if [ -f "$RT" ]; then RT=$(realpath "$RT"); fi;;
+    --tensorfs) TF=$2; if [ -f "$TF" ]; then TF=$(realpath "$TF"); fi;;
+    --candidates)
+      read -r -a cand <<< "$2"
+      for ((i = 0; i + 1 < ${#cand[@]}; i += 2)); do
+        v=${cand[i + 1]}
+        case ${cand[i]} in
+          --tensord) if [ -f "$v" ]; then BIN=$(realpath "$v"); else CLIENT=${v#v}; fi;;
+          --runtime) RT=$v; if [ -f "$RT" ]; then RT=$(realpath "$RT"); fi;;
+          --tensorfs) TF=$v; if [ -f "$TF" ]; then TF=$(realpath "$TF"); fi;;
+          --release) RELEASE=$(realpath "$v") || exit 2;;
+        esac
+      done;;
+    --publication-log) PUBLICATION_LOG=$(realpath -m "$2");;
+    --command) COMMAND=$(realpath "$2") || exit 2;;
+    --admin) ADMIN=1; shift; continue;;
+    --) shift; COMMAND_ARGS=("$@"); break;;
     *) echo "unknown argument $1" >&2; exit 2;;
   esac; shift 2
 done
-[ -n "$SRC" ] && [ -n "$CLIENT" ] && [ -n "$OUT" ] || { echo "usage: run.sh --hub-src DIR --client VERSION --out DIR [--cozy-min X.Y.Z]" >&2; exit 2; }
+if [ -n "$RELEASE" ]; then
+  archive=$(find "$RELEASE" -maxdepth 1 -name 'cozy-x86_64-unknown-linux-gnu.tar.gz' -print -quit)
+  [ -n "$archive" ] || { echo "no Linux candidate archive in $RELEASE" >&2; exit 2; }
+  client_dir=$(mktemp -d "${TMPDIR:-/tmp}/cozy-fixture-client.XXXXXX") && tar -xzf "$archive" -C "$client_dir" || exit 2
+  BIN=$(find "$client_dir" -type f -name cozy -print -quit) && [ -n "$BIN" ] && chmod +x "$BIN" || { echo "the candidate archive has no cozy" >&2; exit 2; }
+  CLIENT=
+fi
+{ [ -n "$SRC" ] || [ -n "$HUB_BIN" ]; } && [ -n "$OUT" ] && { [ -n "$CLIENT" ] || [ -n "$BIN" ]; } \
+  || { echo "usage: run.sh (--hub-src DIR | --hub-bin DIR) (--client VERSION | --cozy-bin FILE | --candidates SET) --out DIR [--checks FILE | --command FILE [-- ARGS...]] [--admin] [--cozy-min X.Y.Z]" >&2; exit 2; }
+[ -z "$CLIENT" ] || [ -z "$BIN" ] || { echo "choose --client or --cozy-bin" >&2; exit 2; }
+[ -z "$COMMAND" ] || { [ -n "$BIN" ] && [ -z "$CHECKS" ] && [ -f "$COMMAND" ]; } \
+  || { echo "--command requires --cozy-bin and a script file, and cannot be combined with --checks" >&2; exit 2; }
+[ -z "$BIN" ] || { [ -x "$BIN" ] && CLIENT=$("$BIN" --version | awk '{print $2}'); } || exit 2
 mkdir -p "$OUT" && OUT=$(cd "$OUT" && pwd) && cd "$OUT" || exit 2
 : > expect.tsv
 log() { echo "$(date -u +%H:%M:%SZ) $*" | tee -a gate.log; }
@@ -28,7 +64,7 @@ expect() { printf '%s\t%s\t%s\n' "$1" "$2" "$(tr '\n\t' '  ' <<< "$3" | cut -c1-
 die() { expect "skew $1" FAIL "$2"; verdict; }
 verdict() {
   local fails passes
-  command -v cozy > /dev/null && for l in tensord calcifer; do timeout 30 cozy machine logs local $l -n 0 > machine-$l.log 2>&1; done
+  [ -n "$CLIENT_READY" ] && command -v cozy > /dev/null && for l in tensord calcifer; do timeout 30 cozy machine logs local $l -n 0 > machine-$l.log 2>&1; done
   fails=$(grep -c $'\tFAIL\t' expect.tsv) passes=$(grep -c $'\tPASS\t' expect.tsv)
   grep $'\tFAIL\t' expect.tsv | cut -f1,3 | sed 's/^/FAIL /' | tee verdict.txt
   if [ "$fails" = 0 ] && [ "$passes" -gt 0 ]; then echo "VERDICT PASS: cozy $CLIENT × the Hub at $(cat hub.version 2>/dev/null) ($passes cells)" | tee -a verdict.txt; exit 0; fi
@@ -36,18 +72,44 @@ verdict() {
 }
 # older <a> <b>: release a is older than b (X.Y.Z; a pre-release or build suffix ignored).
 older() { local a=${1%%[-+]*} b=${2%%[-+]*}; [ "$a" != "$b" ] && [ "$(printf '%s\n%s\n' "$a" "$b" | sort -V | head -1)" = "$a" ]; }
-HUB=http://127.0.0.1:8819 S3=http://127.0.0.1:9000 S3KEY=skew S3SECRET=skew-$RANDOM$RANDOM$RANDOM
+read -r HUB_PORT S3_PORT < <(python3 - <<'PY'
+import socket
+with socket.socket() as hub, socket.socket() as store:
+    hub.bind(("127.0.0.1", 0))
+    store.bind(("127.0.0.1", 0))
+    print(hub.getsockname()[1], store.getsockname()[1])
+PY
+)
+HUB=http://127.0.0.1:$HUB_PORT S3=http://127.0.0.1:$S3_PORT S3KEY=skew S3SECRET=skew-$RANDOM$RANDOM$RANDOM
 MINIO=RELEASE.2025-09-07T16-13-09Z  # the archived repository's last release; its source still builds
-WORK=$(mktemp -d)  # what isn't published: the store's objects, the Hub's binary, keys and scratch
-cleanup() { kill "${HUBPID:-}" "${S3PID:-}" "${INGRESS:-}" 2>/dev/null; docker rm -f skew-pg >/dev/null 2>&1; }
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/cozy-hub-fixture.XXXXXX") || exit 1
+PG_NAME=cozy-skew-pg-$$-$RANDOM
+cleanup() {
+  local status=$?
+  for pid in "${HUBPID:-}" "${S3PID:-}" "${INGRESS:-}"; do
+    [ -z "$pid" ] || { kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; }
+  done
+  docker rm -f "$PG_NAME" >/dev/null 2>&1 || true
+  rm -f "$OUT/login.in"
+  rm -rf "$WORK"
+  return "$status"
+}
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # The store, the database, the Hub.
-log "MinIO $MINIO from source"
-GOBIN=${SKEW_TOOLS:-$OUT/tools} go install "github.com/minio/minio@$MINIO" > minio-build.log 2>&1 || die store "MinIO $MINIO did not build: $(tail -c 300 minio-build.log)"
-MINIO_ROOT_USER=$S3KEY MINIO_ROOT_PASSWORD=$S3SECRET "${SKEW_TOOLS:-$OUT/tools}/minio" server "$WORK/s3" --address 127.0.0.1:9000 --quiet > minio.log 2>&1 & S3PID=$!
-docker run -d --name skew-pg -e POSTGRES_HOST_AUTH_METHOD=trust -p 127.0.0.1:5432:5432 postgres:18-alpine > /dev/null || die store "Postgres did not start"
-for _ in $(seq 60); do curl -sf "$S3/minio/health/live" > /dev/null && docker exec skew-pg pg_isready -q -U postgres && break; sleep 1; done
+TOOLS=${SKEW_TOOLS:-$OUT/tools}
+[ -z "$HUB_BIN" ] || TOOLS=$HUB_BIN
+if [ ! -x "$TOOLS/minio" ]; then
+  log "MinIO $MINIO from source"
+  GOBIN=$TOOLS go install "github.com/minio/minio@$MINIO" > minio-build.log 2>&1 || die store "MinIO $MINIO did not build: $(tail -c 300 minio-build.log)"
+fi
+# The fixture stands in for services on other computers: it takes only what CPU the suites leave (nice, Postgres's weight).
+MINIO_ROOT_USER=$S3KEY MINIO_ROOT_PASSWORD=$S3SECRET nice -n 19 "$TOOLS/minio" server "$WORK/s3" --address 127.0.0.1:$S3_PORT --quiet > minio.log 2>&1 & S3PID=$!
+docker run -d --name "$PG_NAME" --cpu-shares 64 -e POSTGRES_HOST_AUTH_METHOD=trust -p 127.0.0.1::5432 postgres:18-alpine > /dev/null || die store "Postgres did not start"
+PG_PORT=$(docker port "$PG_NAME" 5432/tcp | sed 's/.*://')
+for _ in $(seq 60); do curl -sf "$S3/minio/health/live" > /dev/null && docker exec "$PG_NAME" pg_isready -q -U postgres && break; sleep 1; done
 for b in repo source; do
   AWS_ACCESS_KEY_ID=$S3KEY AWS_SECRET_ACCESS_KEY=$S3SECRET aws --endpoint-url "$S3" --region us-east-1 s3api create-bucket --bucket "$b" > /dev/null 2>> s3.log ||
     die store "bucket $b: $(tail -c 300 s3.log)"
@@ -56,33 +118,55 @@ done
 go run "$E2E/skew/sigv4.go" "$S3" "$S3KEY" "$S3SECRET" repo > store-check.txt 2>&1 &&
   expect "skew store strict" PASS "$(cat store-check.txt)" || die store "the store is not R2's strictness: $(cat store-check.txt)"
 
-(cd "$SRC" && nice -n 19 go build -o "$WORK/tensorhub" .) > hub-build.log 2>&1 || die hub "the Hub did not build: $(tail -c 300 hub-build.log)"
+if [ -n "$HUB_BIN" ]; then
+  cp "$HUB_BIN/tensorhub" "$WORK/tensorhub" && CONFIG=$HUB_BIN/config.local.yaml || die hub "no built Hub in $HUB_BIN"
+else
+  (cd "$SRC" && nice -n 19 go build -o "$WORK/tensorhub" .) > hub-build.log 2>&1 || die hub "the Hub did not build: $(tail -c 300 hub-build.log)"
+  CONFIG=$SRC/config.local.yaml
+fi
 "$WORK/tensorhub" version | tee hub.version
-go run "$E2E/skew/ingress.go" 127.0.0.1:8443 $HUB "$WORK" > ingress.addr 2> ingress.log & INGRESS=$!
+go build -o "$WORK/ingress" "$E2E/skew/ingress.go" > ingress-build.log 2>&1 || die ingress "the local ingress did not build"
+nice -n 19 "$WORK/ingress" 127.0.0.1:0 "$HUB" "$WORK" > ingress.addr 2> ingress.log & INGRESS=$!
 for _ in $(seq 60); do [ -s ingress.addr ] && break; kill -0 $INGRESS 2>/dev/null || break; sleep 1; done
 ORIGIN=$(head -1 ingress.addr); [ -n "$ORIGIN" ] || die hub "the ingress did not start: $(tail -c 300 ingress.log)"
-hub=("$WORK/tensorhub" --config "$SRC/config.local.yaml"
-  --set env.name=development --set server.host=127.0.0.1 --set server.http_port=8819 --set server.public_origin=$ORIGIN
+hub=("$WORK/tensorhub" --config "$CONFIG"
+  --set env.name=development --set server.host=127.0.0.1 --set server.http_port=$HUB_PORT --set server.public_origin=$ORIGIN
   --set auth.issuer=$ORIGIN/v1/auth --set rental.hub_ca_path="$WORK/ca.pem" --set provider.kind=docker
   --set auth.keys_path="$WORK/authkit" --set auth.trusted_proxies=
-  --set database.url="postgres://postgres@127.0.0.1:5432/postgres?sslmode=disable"
+  --set database.url="postgres://postgres@127.0.0.1:$PG_PORT/postgres?sslmode=disable"
   --set storage.backend.kind=s3 --set storage.backend.endpoint_url=$S3 --set storage.backend.region=us-east-1
   --set storage.backend.access_key_id=$S3KEY --set storage.backend.secret_access_key=$S3SECRET
   --set storage.repo_cas.bucket=repo --set storage.package_source.bucket=source
   --set package_release.scratch_root="$WORK/release" ${MIN:+--set clients.cozy_min=$MIN})
 "${hub[@]}" migrate > hub-migrate.log 2>&1 || die hub "migrate: $(tail -c 300 hub-migrate.log)"
-"${hub[@]}" serve > hub.log 2>&1 & HUBPID=$!
+nice -n 19 "${hub[@]}" serve > hub.log 2>&1 & HUBPID=$!
 for _ in $(seq 90); do [ "$(curl -s -o /dev/null -w '%{http_code}' $HUB/healthz)" = 204 ] && break; kill -0 $HUBPID 2>/dev/null || break; sleep 1; done
 [ "$(curl -s -o /dev/null -w '%{http_code}' $HUB/healthz)" = 204 ] || die hub "the Hub did not come up: $(tail -c 600 hub.log)"
+kill -0 "$HUBPID" 2>/dev/null || die hub "the owned fixture Hub exited during startup"
 log "Hub $(cat hub.version) on $HUB, machines at $ORIGIN${MIN:+, clients.cozy_min $MIN}"
+. "$E2E/test-hub.sh"
+export COZY_TEST_HUB_ORIGIN=$ORIGIN
+require_test_hub "$HUB" || die isolation "the fixture Hub did not verify as local"
+export COZY_TEST_HUB_CA=$WORK/ca.pem
 
 # The client, as its release installs it; every cozy process reads config.toml's hub_url.
 mkdir -p ~/.cozy && printf 'hub_url = "%s"\n' "$HUB" >> ~/.cozy/config.toml
 export COZY_HUB_URL=$HUB
-curl -LsSf --retry 3 --retry-all-errors "https://github.com/cozy-creator/cozy-creator/releases/download/v$CLIENT/cozy-installer.sh" -o installer.sh &&
-  sh installer.sh > install.log 2>&1 || die client "cozy $CLIENT's installer failed: $(tail -c 300 install.log)"
+if [ -n "$BIN" ]; then
+  mkdir -p "$HOME/.cozy/bin" && install -m 0755 "$BIN" "$HOME/.cozy/bin/cozy" || die client "could not install the candidate CLI"
+else
+  curl -LsSf --retry 3 --retry-all-errors "https://github.com/cozy-creator/cozy-creator/releases/download/v$CLIENT/cozy-installer.sh" -o installer.sh &&
+    sh installer.sh > install.log 2>&1 || die client "cozy $CLIENT's installer failed: $(tail -c 300 install.log)"
+fi
 export PATH=$HOME/.cozy/bin:$PATH CLI=cozy M=local R=$(( $(date +%s%N) / 1000 % 4000000000 ))
+COZY_BIN=$HOME/.cozy/bin/cozy
+if [ -n "$PUBLICATION_LOG" ]; then mkdir -p "${PUBLICATION_LOG%/*}"; fi
+cozy() {
+  if [ -n "$PUBLICATION_LOG" ]; then printf '%s\x1f' "$@" >> "$PUBLICATION_LOG"; printf '\x1e' >> "$PUBLICATION_LOG"; fi
+  "$COZY_BIN" "$@"
+}
 [ "$(cozy --version)" = "cozy $CLIENT" ] || die client "installed cozy is '$(cozy --version)', not $CLIENT"
+CLIENT_READY=1
 REFUSE=; [ -n "$MIN" ] && older "$CLIENT" "$MIN" && ! older "$CLIENT" 0.23.0 && REFUSE=1
 
 # skew_refused <check> <cozy args...>: refused with the typed client_too_old naming `cozy update`, never a 5xx.
@@ -119,16 +203,52 @@ if [ -n "$REFUSE" ]; then
 fi
 [ "$login" = 0 ] && expect "skew login" PASS "signed in: $(tail -c 200 login.out)" || die login "cozy login (exit $login, code ${code:-none logged}): $(tail -c 300 login.out)"
 
+if [ -n "$ADMIN" ]; then
+  WHO=$(cozy --json whoami | python3 -c 'import json,sys; print(json.load(sys.stdin)["account"])') && "${hub[@]}" admin grant "$WHO" > fixture-admin.log 2>&1 \
+    || die account "could not make the fixture account its Hub's admin: $(tail -c 300 fixture-admin.log)"
+fi
+
+# A focused suite inherits the real isolated Hub, OAuth key and default home,
+# but its shell variables/traps cannot alter this runner's cleanup ownership.
+if [ -n "$COMMAND" ]; then
+  # From where this runner was started: its arguments may be relative to it.
+  (cd "$START" && bash "$COMMAND" "$OUT/command" "$COZY_BIN" "$RT" "$TF" "${COMMAND_ARGS[@]}")
+  command_status=$?
+  if [ "$command_status" = 0 ]; then expect "fixture command" PASS "the focused suite completed"
+  else expect "fixture command" FAIL "the focused suite exited $command_status"; fi
+  grep -q '"status":5[0-9][0-9]' hub.log && expect "skew no 5xx" FAIL "the Hub logged a 5xx: $(grep '"status":5' hub.log | tail -1 | cut -c1-300)"
+  verdict
+fi
+
 # The Hub suite's cells, through verbs every supported cozy has (a run's project and flags moved in 0.24.0): the
 # package is installed on the machine from the Hub's index, not run.
 HB=$OUT/hub HUB_URL=$HUB
+. "$E2E/run.sh"
+if ! older "$CLIENT" 0.24.0; then run_project "$OUT/project" || die project "could not initialize the fixture project"; fi
 . "$HERE/suites/hub/lib.sh"
+if [ -n "$RT$TF" ]; then
+  update=(machine update local)
+  [ -z "$RT" ] || update+=(--runtime "$RT")
+  [ -z "$TF" ] || update+=(--tensorfs "$TF")
+  cozy --json "${update[@]}" -y > candidate-update.json 2>&1 || die candidates "candidate update failed: $(tail -c 300 candidate-update.json)"
+fi
+TWF=$TF
+if [ -n "$TF" ] && [ ! -f "$TF" ] && [[ $TF != *://* ]]; then TWF="tensorfs==$TF"; fi
 log "account and catalog"; hub_account
 [ -n "$WHO" ] || verdict
+require_test_hub "$HUB" || die isolation "the publication account requires the owned fixture Hub"
+"${hub[@]}" admin grant "$WHO" > fixture-admin.log 2>&1 \
+  || die account "could not authorize the isolated fixture publisher: $(tail -c 300 fixture-admin.log)"
 hub_do catalog ok package ls --limit 5
 log "model upload by the machine, publish, download, delete"; hub_models
 log "package publish, then install on the machine (its first environment: slow on a fresh runner)"; hub_publish
 hub_do package-install ok package install "$WHO/$HUB_PKG" --on local
+if ! older "$CLIENT" 0.24.0; then hub_packages; fi
+if [ -n "$CHECKS" ]; then
+  . "$CHECKS"
+  checks_status=$?
+  [ "$checks_status" = 0 ] || expect "fixture extension" FAIL "additional synthetic checks failed (exit $checks_status)"
+fi
 hub_cleanup
 grep -q '"status":5[0-9][0-9]' hub.log && expect "skew no 5xx" FAIL "the Hub logged a 5xx: $(grep '"status":5' hub.log | tail -1 | cut -c1-300)"
 verdict

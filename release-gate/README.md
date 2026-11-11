@@ -15,10 +15,10 @@ same SKU and suites; any FAIL blocks the promotion. Design: tracker `design/ci-v
 | `runtime` | every first-party package's default call (H3 15 s with a described reference, SeedVR2, SDXL, Klein, Qwen, Anima, BiRefNet, the Qwen3.5 describer, Fibo, HiDream, MOSS, Qwen-Image and its one-release swap), then SDXL in a second executor, SDXL cold then two warm calls after each of three restarts and a loop step no capture records (cr-227), six SDXL child calls each with its own LoRA stack (cl-687) and an SDXL int8 quantize (a weights output), and Regenerate-2K over the whole 15 s shot at 1440p, the largest one forward takes (cr-259): kernels, times, VRAM, quality, LM coverage | rtx-4090, rtx-5090 | ~$6.5 · ~95 min, in parallel | a Runtime, TensorFS, varena or TensorD change; any rewrite |
 | `packages` | the packages `--pins` (or `--only`) names, plus the SDXL smoke | rtx-4090, rtx-5090 | ~$1–3 · 15–30 min | a package bump |
 | `varena` | the memory manager: cold load, co-residency, reload, 8/6/3 GiB caps, a real 8 GB card, host RAM, no backing left without a page (below), a warm call served by graphs, real models repeating byte for byte warm, capped, with memory unmapped and perturbed, and with a kept graph's weights gone or no room for them, and with graphs off (`differential/`), the memory authority's rules (`core`), `vt.offload` beside stock SDXL (`offload-*`) and deliberate faults over SSH (`fault-*`, `faults`); with it, run the `vram-yield` session: a game started next to cozy has its memory within 2 s, idle and mid-call, and the call completes (Sessions) | its `skus`; the session one rtx-3070 | session ~$0.5 · ~45 min | a varena, memory, TensorD or Runtime memory change |
-| `tensord` | the machine agent through `cozy`: a package generation installed, updated and rolled back, the Runtime back and forward; a run queued, canceled queued and running, its outputs landed whole; models stacked until the describer must fit (idle executors end); a new executor after a restart; a restart mid-run never re-executes; a `--warm gpu` member kept and its executor reused; two runs at once on two GPUs; output landing against this computer's download speed; distinct LoRA'd calls add nothing to the disk (cl-683) | rtx-5060-ti ×2 | ~$0.60 · ~60 min | a TensorD or cozy change |
+| `tensord` | the machine agent through `cozy`: a package generation installed, updated and rolled back, the Runtime back and forward; a run queued, canceled queued and running, its outputs landed whole; models stacked until the describer must fit (idle executors end); a new executor after a restart; a restart mid-run never re-executes; an API-warmed `gpu` member kept and its executor reused; two runs at once on two GPUs; output landing against this computer's download speed; distinct LoRA'd calls add nothing to the disk (cl-683) | rtx-5060-ti ×2 | ~$0.60 · ~60 min | a TensorD or cozy change |
 | `tensorfs` | downloads as fast as the last pass (Hub and datacenter cache), nothing from the Hub again, resume after a cut (a private model no cache holds: from the Hub); uploads of new weights, dedup of a re-upload, resume after a cut; a recipe that encodes each component in its own call writes every component; a straggler re-asked, not waited out; a LoRA's scale never taken from training metadata; a source that is no form of its family refused before it downloads (below) | cpu | ~$0.3 · ~40 min | a TensorFS, download, upload or quantize change |
-| `hub` | production right after a Hub deploy, before any client promotion: the API contract (`api/openapi.yaml`), account, package publish/yank/pin/un-yank and model upload/publish/delete through `cozy`, and the real-pod cells on each provider (RunPod, vast): rent, run, upload from the pod, pod auth, no secret in the pod's environment (below) | cpu, plus one `cpu` pod a provider | ~$0.4 · ~40 min | every Hub deploy |
-| `skew` | before a Hub deploy: this computer's cozy × the candidate Hub on the laptop's R2-backed 8819 (`hubgate.sh --swap`): contract, account, package publish/install/run/yank, model upload by the machine (the workload writer) | none | $0 · ~15 min | every Hub release |
+| `hub` | isolated contract/account/publication checks; provider qualification requires isolated hardware infrastructure | cpu, plus one `cpu` pod per provider | ~$0.4 · ~40 min | every Hub deploy |
+| `skew` | candidate Hub in a disposable Postgres/MinIO fixture with current and supported released clients; package/model publication, install and cleanup | none | $0 · ~15 min | every Hub release |
 | `h3` | minimax-h3's generate and upscale at their edges: Regenerate-2K at 1080p, 1440p and 2160p against the 768p shot it starts from (resolution, A/V sync, PSNR/SSIM, `frames.py`), SeedVR2 at 2160p, a synthetic plate as long as the shot, shorter, longer, at 30 fps and at 9:16 (frame-by-frame follow, coherence, length, canvas), first and last keyframes (`frames.py still`), and three reference-then-text-only shot switches whose executor the host rule ends as the next call starts, each placed within 30 s (cl-697), an upscale from a shot's own latents (#762: strength 0.7, no video encode) and `preset: fast` against a `balanced` run of the same request made just before it (#751: one dense step, denoise ≤ 0.90×: with #764's cheaper int4-QK dense steps the floor is near 0.85× even with no disk reads, and se-091's A/B with the residency fix measured 0.875×, runs 25377/25406), a video continued from its latents to 10 s (`continue_from`: its head kept, the join smooth), the full model at 30 steps, and h3-shot-moves-on. Prompts in MiniMax's own form used as written, each cut where the text says (`h3-own-shots`, `h3-own-sections`). `regen-2160p-15s` (three windows on 24 GB, ~1 h) only by `--only` | rtx-4090 | ~$2.5 · ~85 min | a minimax-h3 release |
 | `disk` | a 100 GB machine past a full disk (tfs-140, cl-709, tatara): three packages installed and updated, `machine show`'s disk by kind; a CPU SDXL call never evicted while H3 int8 and Qwen land; H3, Qwen, SDXL, more of H3's lanes until the store evicts and H3 again all land, each eviction logged | cpu (`--disk 100`) | ~$0.3 · ~45 min | a TensorFS store, reclaim or install change |
 | `project` | `cozy project render` on fixture projects (the walk in this computer's Calcifer): a shot of two beats in one call, its upscale from latents and the 1080p edit, a new take keeping a take's start (`--take`, `--in`), a plate, a voice, stills at 16:9 and 9:16, a node rendered with local code (`with: ./still.py/draw`), and refusals before any run | rtx-4090 | ~$0.7 · ~30 min | a project, Calcifer or shot-function change |
@@ -47,13 +47,15 @@ refuses, as with minimax-h3 on Runtime 0.40.0. A cut runs it before anything els
 
 ## What a gate does
 
+Local-package (`--packages`) gates build a small source-staging helper from this checkout before renting. It uses the CLI's source selection and sends that content through the API for download-only preparation.
+
 1. Rents one fresh machine of the SKU.
 2. Puts the candidate on it: `--runtime`, `--tensorfs`, `--tensord` (a cozy binary; each a file or `URL#sha256=`), `--pins`
    (exact package releases, `sdxl@0.1.1,…`: a package candidate is published and yanked, and installs only by its pin),
    or `--packages` (a packages checkout whose directories run). Unpinned cells run the root package users get.
    This computer's cozy puts it on (a cozy of another version would restart a shared Calcifer); `machine update` fails unless the machine then runs it.
-3. Runs the chosen suites' cells, each once, with new prompts and seeds. Before a function's first cell, `--warm downloaded`
-   puts all its weights on the disk, its on-demand models' too (an upsampler), and `--warm off` takes it out of the warm
+3. Runs the chosen suites' cells, each once, with new prompts and seeds. Before a function's first cell, API warming to `downloaded`
+   puts all its weights on the disk, its on-demand models' too (an upsampler), and `off` takes it out of the warm
    set: a cell times what a user who has used the function sees, never a download (cl-790). A slow run goes on; a hung one
    stops: when no run on the machine moves for `--stall` minutes by the runs' own progress clock (15; the longest quiet in
    786 real cells was 7.2), the gate cancels them, fails and ends the rental. It renews the rental's idle clock only while
@@ -108,32 +110,32 @@ prerelease latest plus Homebrew (cozy-promote.yaml), the packages un-yanked (`co
 
 ## Clients and the Hub
 
-The Hub is one deployment, updated at once; cozy (the CLI, Calcifer, TensorD on machines and pods) and TensorFS update
-when their owners do (xs-166; the contract is tensorhub's README, "Clients"). Two Hubs exist: production and the
-laptop's 8819. Every Hub release runs, in order:
+The Hub is one deployment, while clients update independently. Every Hub release runs:
 
-1. **Before the prod pin, the new client × the candidate Hub** (required): `release-gate/hubgate.sh --suite skew --swap
-   <candidate tensorhub binary>` on the laptop. The candidate serves on 8819 (R2 itself, so keys are signed as
-   production's store checks them) under the local stack's lock, through this computer's `cozy` in the default home;
-   8819's database and binary are restored after. No pod reaches 8819: pods are step 3.
-2. **Before the prod pin, the previous minor's released cozy × the candidate Hub** (`e2e/skew`, in CI):
-   `gh workflow run e2e.yaml -R cozy-creator/cozy-creator --ref <rc> -f select=skew -f hub_ref=<tag> [-f cozy_min=<the
-   range the pin sets>]`. A Hub built from the tag on a throwaway Postgres and MinIO (R2's SigV4 strictness, checked
-   first), the client installed by its own release's installer. Until launch it reports and does not block, but a
-   5xx, or a refusal that isn't the typed `client_too_old` naming `cozy update`, stops the pin. From launch it must
-   pass for every client in the support window.
-3. **After the pin, before any client promotion** (images, Latest, un-yanks): the `hub` suite against production, real
-   pods on RunPod and vast (release-gate.yml `suites=hub` on a dev build, or `hubgate.sh --suite hub`). A FAIL reverts
-   the pin.
+1. **Before deployment:** a disposable Hub, Postgres and MinIO fixture checks package/model
+   publication with the candidate CLI. Run `e2e/skew/run.sh --hub-src DIR --cozy-bin FILE --out DIR`.
+   The fixture validates its local resource/issuer before signing in, and destroys its state on exit.
+2. **Previous clients:** the same isolated fixture runs with `--client VERSION` through the `skew`
+   CI job. Unsupported clients must receive the typed `client_too_old` response; any 5xx fails.
+3. **Hardware qualification:** CI must provide its own isolated Hub and workers before running
+   provider or GPU suites. Missing infrastructure fails the job before any Hub read or rental;
+   production is not a fallback. Manual operator qualification outside CI remains separate.
+   See [isolated hardware CI](ISOLATED-HARDWARE-CI.md).
+
+The former `hubgate --swap` path is retired: tests must not mutate a persistent developer Hub.
+See [isolated publication tests](../e2e/test-hub.md) for candidate/cohort options and the target guard.
 
 The supported range is the Hub's `clients.cozy_min`: raise it only after the newer cozy is promoted.
 
 ## CI sign-in
 
-The runner signs in as the owner's account with its own device key: secret `COZY_CI_DEVICE_KEY` in the
-`release-gate` environment of cozy-creator and cozy-runtime. To make or rotate the key, run
-`release-gate/enroll-ci-key.sh <email>` in a terminal and type the emailed code. It runs
-`cozy login <email> --export`, which leaves this computer's own key untouched.
+CI uses the development account created by its disposable Hub. Verification jobs do not receive
+or use the production owner device key. Hardware jobs require a locally provisioned test Hub and
+workers; until available they fail explicitly. Public installer and dependency downloads remain
+ordinary build inputs.
+
+Manual operator qualification may use the operator's own `cozy login` outside CI. It is not a
+substitute for the isolated CI receipt.
 
 ## Sessions
 
@@ -184,7 +186,7 @@ bytecode, evicts their weights and runs one cold request each, now or once the i
 its kernel compiles are up; it reads the executors' memory after each machine start.
 `warming` (xs-132) covers several measurements on one pod.
 - An environment's import with its files evicted from the page cache vs cached, and with its import pages read back first (SDXL, H3).
-- `--warm gpu` held and reused.
+- API warming to `gpu` held and reused.
 - A request queued behind another package's run. With a dev TensorD (`tensord`), item `4b` runs this in shared mode (via the pod's config.toml) and then dedicated; its pipeline is the `fixtures/xs132-pipeline` orchestrator.
 `one-executor` (xs-113) runs `suites/tensord/idle-entrypoints.sh` once per TensorD arm on one pod (1 GPU or a
 `gpus` group): two constructions of one package on the same processes, then a cancel and a clean successor, with the
@@ -238,18 +240,18 @@ that pair misses takes its own Runtime in its own environment, and the machine's
     Comfy-Org's ComfyUI H3 Ref2VA DiT forced as `h3.native` fails the layout probe (`LAYOUT_MISMATCH`, at most
     512 MiB): its contiguous Q/K/V is not where the official rows are. Nothing reaches the Hub.
   - `--only` picks cases (`probe`, `download`, `upload`, `family`, `multi-conversion`, `straggler`, `lora-alpha`); `check.py` judges only those.
-- **hub** (`suites/hub`, ~$0.4, ~40 min): production right after a Hub deploy (Clients and the Hub, above). It shows the
+- **hub** (`suites/hub`): CI runs against its isolated Hub; manual operator qualification is separate (Clients and the Hub, above). It shows the
   API contract (tensorhub `api/openapi.yaml`, as the Hub serves it at `/openapi.yaml`) holds as cozy uses it:
   - `contract.py`: each path no verb reaches, called anonymously through `e2e/hubcheck`, answers as its contract says
     (200, or 401 when bearer-only), and hubcheck finds every request and response as the document has it. This is
     the one place in release-gate that speaks HTTP to the Hub by hand: it is the contract test.
-  - Through `cozy`, on a throwaway `<account>/ci-hub-<R>`: whoami (balance, buy page), the rental catalog; a package
+  - In the isolated fixture only, through `cozy`, on a throwaway `<account>/ci-hub-<R>`: whoami (balance, buy page), the rental catalog; a package
     locked, published twice, run, yanked (the simple index marks it `data-yanked`), resolved past, run by exact pin,
     un-yanked, and a yanked candidate never named newest; a model commit uploaded in a lane by the machine, published
     (listed), downloaded, downloaded by pin and lane, deleted (gone).
   - Real pods, one fresh `cpu` rental on each provider (`machine rent --provider runpod|vast`: dev-only, so the suite
-    writes `dev = true` into the home's config; never a `--help` probe): the package run there, new weights uploaded
-    from the pod (the workload writer, the path v0.40.33 broke), no process holding a Hub secret in its environment and
+    writes `dev = true` into the home's config; never a `--help` probe): a local weightless package sent by content,
+    no process holding a Hub secret in its environment and
     the machine authenticated by its own key (xs-157), ended and gone. A cozy that refuses `--provider` fails both
     cells, naming why, and the pod cells run once on the Hub's choice. Run it with a published cozy (a release, or the
     candidate's prerelease): a cozy moves each pod to its own minor first, and an unreleased dev build has none to move to.

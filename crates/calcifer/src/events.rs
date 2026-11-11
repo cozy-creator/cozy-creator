@@ -9,7 +9,7 @@ use std::{
 };
 
 use axum::{
-    extract::State,
+    extract::{Query, State, rejection::QueryRejection},
     response::sse::{self, KeepAlive, Sse},
 };
 use futures_util::Stream;
@@ -31,6 +31,7 @@ use tokio::{
     time::Instant,
 };
 use tracing::warn;
+use serde::Deserialize;
 
 use crate::{api::Api, machines::Machines, project};
 
@@ -133,12 +134,14 @@ pub(crate) fn tell(api: Arc<Api>) {
                     project::model::forget(&api, &id);
                     continue;
                 }
-                let mut event = project::model::told(&api, id.clone(), &dir, settled).await;
-                // A write that came as this read the files is told here and owed again: once is enough.
-                if let StreamEvent::ProjectChanged { rev, .. } = &event
-                    && last.insert(id, rev.clone()).as_ref() == Some(rev)
-                {
+                // Redundant work must leave Told untouched: a later commit can arrive
+                // while told reads, so its computed diff must always be published.
+                if !settled && last.get(&id) == Some(&project::revision(&dir)) {
                     continue;
+                }
+                let mut event = project::model::told(&api, id.clone(), &dir, settled).await;
+                if let StreamEvent::ProjectChanged { rev, .. } = &event {
+                    last.insert(id, rev.clone());
                 }
                 if let StreamEvent::ProjectChanged { cursor: position, .. } = &mut event {
                     *position = PROJECTS.sequence.try_update(Ordering::AcqRel, Ordering::Acquire, |sequence| sequence.checked_add(1))
@@ -179,27 +182,66 @@ pub(crate) fn ahead_updated(id: &str, ahead: &api::calcifer::project::Ahead) {
     let _ = PROJECTS.said.send(StreamEvent::AheadUpdated { project: id.to_owned(), ahead: Box::new(ahead.clone()) });
 }
 
+/// Protection changes must reach inactive/global views too; they contain no private
+/// project content and remain visible after the project's read authority is closed.
+pub(crate) fn project_vault(id: &str, state: &str) {
+    let _ = PROJECTS.said.send(StreamEvent::ProjectVault { id: id.to_owned(), state: state.to_owned() });
+}
+
+/// Tells every stream project `id`'s render, whole: more than one job of it changed.
+pub(crate) fn board_updated(id: &str, board: &api::calcifer::project::Board) {
+    let _ = PROJECTS.said.send(StreamEvent::BoardUpdated { project: id.to_owned(), board: Box::new(board.clone()) });
+}
+
 /// Tells every stream one job of project `id` changed.
 pub(crate) fn job_updated(id: &str, job: &api::calcifer::project::Job, seq: u64) {
     let _ = PROJECTS.said.send(StreamEvent::JobUpdated { project: id.to_owned(), job: Box::new(job.clone()), seq });
 }
 
-/// Subscribed to everything before this answers, so what changes after a client's first read is on
-/// the stream. Falling behind sends `resync`; the stream ends only when Calcifer stops.
+#[derive(Clone, Copy, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum Scope {
+    #[default]
+    All,
+    Runs,
+}
+
+#[derive(Default, Deserialize)]
+pub(crate) struct Subscription {
+    #[serde(default)]
+    scope: Scope,
+}
+
+/// Subscribed before this answers, so what changes after a client's first read is on the
+/// stream. Runs-only subscribers neither read machines nor enable project polling.
 pub(crate) async fn stream(
     State(api): State<Arc<Api>>,
-) -> Sse<impl Stream<Item = Result<sse::Event, Infallible>>> {
-    let mut machines_changed = api.calcifer.machines_changed();
-    machines_changed.mark_unchanged();
-    let runs = api.calcifer.subscribe();
-    let said = PROJECTS.said.subscribe();
-    let shown = listed(&api.machines).await.unwrap_or_else(|e| {
-        warn!("the events stream cannot list the machines: {}", e.message);
-        HashMap::new()
+    query: Result<Query<Subscription>, QueryRejection>,
+) -> Result<Sse<impl Stream<Item = Result<sse::Event, Infallible>>>, crate::api::Refusal> {
+    let Query(subscription) = query?;
+    let watch = subscribe(api, subscription.scope).await;
+    Ok(Sse::new(futures_util::stream::unfold(watch, Watch::next)).keep_alive(KeepAlive::default()))
+}
+
+async fn subscribe(api: Arc<Api>, scope: Scope) -> Watch {
+    let all = scope == Scope::All;
+    let machines_changed = all.then(|| {
+        let mut changed = api.calcifer.machines_changed();
+        changed.mark_unchanged();
+        changed
     });
-    let showing = Showing::new();
-    let hello = StreamEvent::Hello { version: env!("CARGO_PKG_VERSION").into(), stream: showing.0.clone() };
-    let watch = Watch {
+    let runs = api.calcifer.subscribe();
+    let said = all.then(|| PROJECTS.said.subscribe());
+    let shown = if all {
+        listed(&api.machines).await.unwrap_or_else(|e| {
+            warn!("the events stream cannot list the machines: {}", e.message);
+            HashMap::new()
+        })
+    } else { HashMap::new() };
+    let showing = all.then(Showing::new);
+    let id = showing.as_ref().map(|showing| showing.0.clone()).unwrap_or_else(stream_id);
+    let hello = StreamEvent::Hello { version: env!("CARGO_PKG_VERSION").into(), stream: id };
+    Watch {
         showing,
         pending: VecDeque::from([hello]),
         runs,
@@ -210,23 +252,48 @@ pub(crate) async fn stream(
         said,
         stop: api.stop_signal(),
         api,
-    };
-    Sse::new(futures_util::stream::unfold(watch, Watch::next)).keep_alive(KeepAlive::default())
+    }
 }
 
 /// What each stream shows, by its id: the projects it holds open (`PUT /v1/events/{stream}`), until it ends or shows others (cl-823).
 static SHOWN: LazyLock<Mutex<HashMap<String, Vec<project::Reader>>>> = LazyLock::new(Mutex::default);
 
+/// Closing storage releases the readers a still-connected page keeps alive. Drop outside SHOWN:
+/// the last reader closes SQLite and may itself publish a project-closed event.
+pub(crate) fn release_project_readers(id: &str) {
+    let mut gone = Vec::new();
+    {
+        let mut shown = SHOWN.lock().expect("shown lock");
+        for readers in shown.values_mut() {
+            let mut kept = Vec::with_capacity(readers.len());
+            for reader in std::mem::take(readers) {
+                if reader.id() == id { gone.push(reader); } else { kept.push(reader); }
+            }
+            *readers = kept;
+        }
+    }
+    drop(gone);
+}
+
 /// A stream's place in `SHOWN`, by its id: what it holds is let go when it ends.
 struct Showing(String);
 
+fn stream_id() -> String {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes).expect("the OS gives random bytes");
+    format!("stream-{}", hex::encode(bytes))
+}
+
 impl Showing {
     fn new() -> Self {
-        let mut bytes = [0u8; 16];
-        getrandom::fill(&mut bytes).expect("the OS gives random bytes");
-        let id = format!("stream-{}", hex::encode(bytes));
+        let id = stream_id();
         SHOWN.lock().expect("shown lock").insert(id.clone(), vec![]);
         Self(id)
+    }
+
+    fn includes(&self, project: &str) -> bool {
+        SHOWN.lock().expect("shown lock").get(&self.0)
+            .is_some_and(|readers| readers.iter().any(|reader| reader.id() == project))
     }
 }
 
@@ -284,16 +351,15 @@ const SHOWN_MOST: usize = 64;
 /// One subscriber: what it owes, and the machine list as it last told it.
 struct Watch {
     /// Its id, and the projects it holds open.
-    #[allow(dead_code, reason = "held for its drop")]
-    showing: Showing,
+    showing: Option<Showing>,
     pending: VecDeque<StreamEvent>,
     runs: broadcast::Receiver<(RunId, Event)>,
     /// The runs it owes an update, in the order they changed.
     owed: VecDeque<RunId>,
-    machines_changed: watch::Receiver<()>,
+    machines_changed: Option<watch::Receiver<()>>,
     machines_stale: bool,
     shown: HashMap<String, Machine>,
-    said: broadcast::Receiver<StreamEvent>,
+    said: Option<broadcast::Receiver<StreamEvent>>,
     stop: watch::Receiver<bool>,
     api: Arc<Api>,
 }
@@ -306,6 +372,7 @@ impl Watch {
             }
             self.arrived()?;
             if let Some(event) = self.pending.pop_front() {
+                if !self.visible(&event) { continue; }
                 return Some((Ok(frame(&event)), self));
             }
             if let Some(id) = self.owed.pop_front() {
@@ -324,18 +391,41 @@ impl Watch {
                     Err(RecvError::Lagged(_)) => self.fell_behind(),
                     Err(RecvError::Closed) => return None,
                 },
-                received = self.said.recv() => match received {
+                received = async { match self.said.as_mut() {
+                    Some(said) => said.recv().await,
+                    None => std::future::pending().await,
+                }} => match received {
                     Ok(event) => self.pending.push_back(event),
                     Err(RecvError::Lagged(_)) => self.fell_behind(),
                     Err(RecvError::Closed) => return None,
                 },
-                changed = self.machines_changed.changed() => {
+                changed = async { match self.machines_changed.as_mut() {
+                    Some(changed) => changed.changed().await,
+                    None => std::future::pending().await,
+                }} => {
                     changed.ok()?;
                     self.machines_stale = true;
                 }
                 () = stopping(&mut self.stop) => return None,
             }
         }
+    }
+
+    fn visible(&self, event: &StreamEvent) -> bool {
+        let project_id = match event {
+            StreamEvent::ProjectVault { .. } => return true,
+            StreamEvent::ProjectChanged { id, .. } | StreamEvent::Canvas { id, .. } | StreamEvent::History { id, .. } => Some(id),
+            StreamEvent::BoardUpdated { project, .. } | StreamEvent::JobUpdated { project, .. } | StreamEvent::AheadUpdated { project, .. } => Some(project),
+            StreamEvent::RunUpdated { run } => {
+                return self.api.calcifer.store().run(run.id.as_str()).ok().flatten().is_some_and(|row| project::vault::require_path(&row.out_dir).is_ok());
+            }
+            _ => None,
+        };
+        project_id.is_none_or(|id| {
+            self.showing.as_ref().is_some_and(|showing| showing.includes(id))
+                && self.api.calcifer.store().known_project(id).ok().flatten()
+                    .is_some_and(|known| project::vault::require_path(&known.path).is_ok())
+        })
     }
 
     /// Takes in whatever else has arrived: a run is sent once, as it is now, and nothing waits behind
@@ -350,7 +440,8 @@ impl Watch {
             }
         }
         loop {
-            match self.said.try_recv() {
+            let Some(said) = self.said.as_mut() else { return Some(()) };
+            match said.try_recv() {
                 Ok(event) => self.pending.push_back(event),
                 Err(TryRecvError::Empty) => return Some(()),
                 Err(TryRecvError::Lagged(_)) => self.fell_behind(),
@@ -362,7 +453,7 @@ impl Watch {
     /// Owes `id` an update unless `event` is a log line or byte growth, or it is owed one already. A
     /// run's lifecycle also moves its machine's running and queued counts.
     fn owe(&mut self, id: RunId, event: &Event) {
-        self.machines_stale |= matches!(
+        self.machines_stale |= self.machines_changed.is_some() && matches!(
             event,
             Event::Created { .. }
                 | Event::Queued { .. }
@@ -379,7 +470,7 @@ impl Watch {
 
     /// Something was skipped: the client reads again, and so does this, of the machines.
     fn fell_behind(&mut self) {
-        self.machines_stale = true;
+        self.machines_stale = self.machines_changed.is_some();
         self.resync();
     }
 
@@ -393,7 +484,8 @@ impl Watch {
     fn run(&mut self, id: &RunId) -> Option<StreamEvent> {
         let calcifer = &self.api.calcifer;
         let run = match calcifer.store().run(id.as_str()) {
-            Ok(Some(row)) => calcifer.record(&row),
+            Ok(Some(row)) if project::vault::require_path(&row.out_dir).is_ok() => calcifer.record(&row),
+            Ok(Some(_)) => return None,
             Ok(None) => return None,
             Err(e) => Err(crate::Error::Store(e)),
         };
@@ -443,3 +535,7 @@ async fn listed(machines: &Arc<Machines>) -> Result<HashMap<String, Machine>, Er
     let list = machines.list(false).await?;
     Ok(list.machines.into_iter().map(|m| (m.name.clone(), m)).collect())
 }
+
+#[cfg(test)]
+#[path = "events_tests.rs"]
+mod tests;

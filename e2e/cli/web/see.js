@@ -96,11 +96,16 @@ async function rest(page, handle) {
 
 (async () => {
   const base = calcifer();
+  seen.setup = 'launch browser';
   const browser = await launch(playwright);
+  seen.setup = 'create context';
   const context = await browser.newContext({ viewport: { width: 1800, height: 1200 } });
+  seen.setup = 'create page';
   const page = await context.newPage();
   lookAt(page);
+  seen.setup = 'watch boxes';
   await watchBoxes(page);
+  seen.setup = 'ready';
   page.setDefaultTimeout(STEP_MS);
   const errors = [];
   const thumbs = [];
@@ -625,7 +630,8 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
     const snap = (name) => (process.env.SHOT ? tab.screenshot({ path: `${process.env.SHOT}-${name}.png` }) : Promise.resolve());
     await tab.setViewportSize({ width: 1000, height: 800 });
     // By name: an earlier pass's forest is deleted, so its names are free (cl-842).
-    const spruce = await projectUrl(ours.find((row) => row.name === 'spruce').id);
+    const selected = ours.find((row) => row.name === 'spruce');
+    const spruce = await projectUrl(selected.id);
     await tab.goto(spruce);
     await tab.waitForSelector('nav.ptabs a.ptab.on');
     // What the bar is as each frame is painted: a ResizeObserver made after the page's hears of a resize after the page has answered it.
@@ -639,6 +645,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
     const frame = () => tab.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
     const bar = () => tab.evaluate(() => ({
       tabs: [...document.querySelectorAll('nav.ptabs a.ptab:not(.more):not(.new)')].map((link) => link.getAttribute('href').split('/').pop()),
+      selected: document.querySelector('nav.ptabs a.ptab[aria-current="page"]')?.getAttribute('href').split('/').pop() ?? null,
       more: document.querySelector('nav.ptabs .ptab.more')?.textContent ?? null,
     }));
     const narrow = await bar();
@@ -653,7 +660,11 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
     }
     const wide = await bar();
     await snap('tabs-wide');
-    check('tabs_more_when_wider', wide.tabs.length > narrow.tabs.length && wide.tabs.slice(0, narrow.tabs.length).join() === narrow.tabs.join(), { narrow, wide });
+    // The selected project can occupy the last visible slot while more ordinary tabs fit before it.
+    const retained = wide.tabs.filter((code) => narrow.tabs.includes(code));
+    check('tabs_more_when_wider', wide.tabs.length > narrow.tabs.length
+      && retained.join() === narrow.tabs.join()
+      && narrow.selected === selected.code && wide.selected === selected.code, { narrow, wide, retained, expectedSelected: selected.code });
     check('tabs_wide_counts_hidden', wide.more === (all.length > wide.tabs.length ? `${all.length - wide.tabs.length} more` : null), wide);
     for (let width = 1800; width >= 1000; width -= 40) {
       await tab.setViewportSize({ width, height: 800 });

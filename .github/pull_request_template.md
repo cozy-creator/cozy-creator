@@ -4,6 +4,6 @@
 
 - **Touched:** <!-- sections, e.g. nvfp4 reads, varena, `cozy machine update` -->
 - **Runs:** <!-- cozy run numbers · machine/SKU · model · lane -->
-- **Vs current release:** <!-- total · step 1 · steady s/step · peak VRAM · kernels served (`cozy run show`) -->
+- **Vs current release:** <!-- total · step 1 · steady s/step · peak VRAM · kernels served (`cozy run watch`) -->
 
 <!-- Docs/CI only: `n/a: <why>` -->

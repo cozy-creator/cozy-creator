@@ -39,7 +39,7 @@ def meminfo(key: str) -> int | None:
 
 @app.entrypoint(accelerator=False)
 def main(payload: Nothing) -> Measured:
-    limits = []
+    limits: list[int] = []
     for line in Path("/proc/self/cgroup").read_text().splitlines():
         hierarchy, controllers, relative = line.split(":", 2)
         v2 = hierarchy == "0"

@@ -28,6 +28,7 @@ mod outputs;
 mod others;
 mod page;
 mod placement;
+pub(crate) mod private_io;
 mod play;
 mod project;
 mod rentals;
@@ -209,6 +210,7 @@ impl Calcifer {
     pub(crate) fn open(home: &Path, outputs: &Path) -> Result<Arc<Self>, Error> {
         let store = Store::open(&home.join("state.db"))?;
         state::import(&store, home);
+        project::vault::restore_plain_roots(&store);
         // Before 0.23 Calcifer kept uploaded files here; they are objects of this computer's TensorFS store now
         // (`runs::files`). A run recorded since staged its own (`inputs/`), and a sender still has the rest.
         let _ = std::fs::remove_dir_all(home.join("files"));
@@ -247,20 +249,17 @@ impl Calcifer {
         for id in unsettled {
             self.drive(id);
         }
-        // Its own work stopped with the Calcifer that was doing it.
-        for id in self.store.unsettled_here()? {
-            let stopped = ::api::error::Error::new(::api::error::Kind::Unavailable, "calcifer_stopped", "Calcifer stopped before this ended")
-                .remedy("ask again: it is safe");
-            self.ended_here(&id, Err(stopped));
-        }
+        // Its own work, which stopped with the Calcifer that was doing it, is carried out again by `hub::jobs::resume`.
         self.export_outputs()?;
         Ok(resumed)
     }
 
-    /// Records a run Calcifer carries out itself (`Kind::Here`) under `key` as the ask `digest` names, and starts `work` on it,
-    /// which says what it does as it goes (`Here::say`) and answers the run's result. The same key again answers the recorded
-    /// run and starts nothing; another ask under it is a conflict. Canceled, `work` is dropped where it stands.
-    pub(crate) async fn here<F, Fut>(self: &Arc<Self>, key: &str, digest: &str, target: String, hub: &Origin, work: F) -> Result<Submitted, Error>
+    /// Records a run Calcifer carries out itself (`Kind::Here`) under `key` as the ask `digest` names, kept whole (`job`), and
+    /// starts `work` on it, which says what it does as it goes (`Here::say`) and answers the run's result. The same key again
+    /// answers the recorded run and starts nothing; another ask under it is a conflict. Canceled, `work` is dropped where it
+    /// stands. A Calcifer that stops under it leaves it to the next, which carries out its ask again (`hub::jobs::resume`).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn here<F, Fut>(self: &Arc<Self>, key: &str, digest: &str, target: String, hub: &Origin, job: Vec<u8>, work: F) -> Result<Submitted, Error>
     where
         F: FnOnce(Here) -> Fut + Send + 'static,
         Fut: Future<Output = Result<serde_json::Value, ::api::error::Error>> + Send + 'static,
@@ -280,38 +279,58 @@ impl Calcifer {
             agreed: None,
             stays: vec![],
             batch: String::new(),
+            job: Some(job),
         };
         let (row, fresh) = self.store.submit(key, digest, new)?;
         if fresh {
             self.publish(&row.id, self.store.events_after(row.id.as_str(), 0)?);
-            let wake = Arc::new(Notify::new());
-            lock(&self.drivers).insert(row.id.clone(), wake.clone());
-            let (me, id) = (self.clone(), row.id.clone());
-            let mut tasks = lock(&self.tasks);
-            while tasks.try_join_next().is_some() {}
-            tasks.spawn(async move {
-                let canceled = async {
-                    loop {
-                        wake.notified().await;
-                        if me.store.run(id.as_str()).ok().flatten().is_none_or(|row| row.cancel_requested) {
-                            return;
-                        }
-                    }
-                };
-                let end = tokio::select! {
-                    end = work(Here { calcifer: me.clone(), id: id.clone() }) => end,
-                    () = canceled => Err(::api::error::Error::new(::api::error::Kind::Conflict, "canceled", "canceled")),
-                };
-                me.ended_here(&id, end);
-                lock(&me.drivers).remove(&id);
-            });
+            self.start_here(row.id.clone(), work);
         }
         Ok(Submitted { run: self.record(&row)?, replay: !fresh, notes: vec![], preparing: false })
     }
 
+    /// Carries out Calcifer's own run `id` again, as an earlier Calcifer left it (`hub::jobs::resume`): said in its log.
+    pub(crate) fn here_again<F, Fut>(self: &Arc<Self>, id: RunId, work: F)
+    where
+        F: FnOnce(Here) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<serde_json::Value, ::api::error::Error>> + Send + 'static,
+    {
+        Here { calcifer: self.clone(), id: id.clone() }.say("Calcifer restarted under this; it starts again");
+        self.start_here(id, work);
+    }
+
+    /// Starts `work` on Calcifer's own run `id`, settled as it ends or dropped when the run is canceled.
+    fn start_here<F, Fut>(self: &Arc<Self>, id: RunId, work: F)
+    where
+        F: FnOnce(Here) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<serde_json::Value, ::api::error::Error>> + Send + 'static,
+    {
+        let wake = Arc::new(Notify::new());
+        lock(&self.drivers).insert(id.clone(), wake.clone());
+        let me = self.clone();
+        let mut tasks = lock(&self.tasks);
+        while tasks.try_join_next().is_some() {}
+        tasks.spawn(async move {
+            let canceled = async {
+                loop {
+                    wake.notified().await;
+                    if me.store.run(id.as_str()).ok().flatten().is_none_or(|row| row.cancel_requested) {
+                        return;
+                    }
+                }
+            };
+            let end = tokio::select! {
+                end = work(Here { calcifer: me.clone(), id: id.clone() }) => end,
+                () = canceled => Err(::api::error::Error::new(::api::error::Kind::Conflict, "canceled", "canceled")),
+            };
+            me.ended_here(&id, end);
+            lock(&me.drivers).remove(&id);
+        });
+    }
+
     /// Settles Calcifer's own run `id` as its work ended: completed with its result, canceled, or failed with the refusal, which
     /// its result keeps whole as `error`.
-    fn ended_here(&self, id: &RunId, end: Result<serde_json::Value, ::api::error::Error>) {
+    pub(crate) fn ended_here(&self, id: &RunId, end: Result<serde_json::Value, ::api::error::Error>) {
         let json = |value: &serde_json::Value| v1::Json::parse(value.to_string()).ok();
         let outcome = match end {
             Ok(result) => v1::Outcome { status: "succeeded".into(), result: json(&result), ..Default::default() },
@@ -472,14 +491,16 @@ impl Calcifer {
             agreed: submit.agreed,
             stays: submit.stays,
             batch: batch.to_owned(),
+            job: None,
         };
         let (me, key, given, held, digest) = (self.clone(), key.to_owned(), submit.inputs, submit.held, digest.to_owned());
         let (row, fresh) = tokio::task::spawn_blocking(move || {
             // Copied first; then, against a settled run's deletion of the same objects, checked
             // again and recorded under one guard.
-            stage(&me.inputs, &new.spec, &given, &held)?;
+            let input_root = private_io::input_root(&new.out_dir, &me.inputs).map_err(Error::Refused)?;
+            stage(&input_root, &new.spec, &given, &held)?;
             let _staging = lock(&me.staging);
-            let inputs = stage(&me.inputs, &new.spec, &given, &held)?;
+            let inputs = stage(&input_root, &new.spec, &given, &held)?;
             Ok::<_, Error>(me.store.submit(&key, &digest, NewRun { inputs, ..new })?)
         })
         .await
@@ -1244,6 +1265,13 @@ impl Calcifer {
         wake: &Notify,
         pause: &mut Pause,
     ) -> Result<(), Stop> {
+        let private = if machine == "local" {
+            private_io::of_output(&run.out_dir).map_err(|error| Stop::Refused(Reason {
+                code: error.code, message: error.message, origin: "private_storage".into(), ..Default::default()
+            }))?.map(|scope| link.with_private(scope))
+        } else { None };
+        let link = private.as_ref().unwrap_or(link);
+        if private.is_some() { link.probe_private().await?; }
         let id = run.id.as_str();
         let mut canceled = false;
         let (state, stream) = match run.state {
@@ -1321,8 +1349,23 @@ impl Calcifer {
     /// driver. Its own state; none when another driver sent it meanwhile, or a cancel won.
     async fn deliver(&self, run: &RunRow, machine: &str, link: &Link) -> Result<Option<v1::RunState>, Stop> {
         let mut sent = vec![];
+        let own_scope = if machine == "local" { private_io::of_output(&run.out_dir).map_err(|error| Stop::Refused(Reason {
+            code: error.code, message: error.message, origin: "private_storage".into(), ..Default::default()
+        }))?.map(|scope| scope.storage.project_id) } else { None };
         for row in self.store.batched(run.id.as_str())? {
             let own = row.id == run.id;
+            if machine == "local" {
+                let candidate = match private_io::of_output(&row.out_dir) {
+                    Ok(scope) => scope.map(|scope| scope.storage.project_id),
+                    Err(error) if own => return Err(Stop::Refused(Reason {
+                        code: error.code, message: error.message, origin: "private_storage".into(), ..Default::default()
+                    })),
+                    // A different project's unavailable view must neither spill into this
+                    // batch nor prevent an unrelated authorized batch from progressing.
+                    Err(_) => continue,
+                };
+                if candidate != own_scope { continue }
+            }
             if own && row.state != run.state {
                 return Ok(None);
             }
@@ -1514,12 +1557,18 @@ impl Calcifer {
                 Frame::Outcome(mut outcome) => {
                     // What its ask does once the machine completed it, before it settles.
                     self.after(id, &mut outcome).await;
-                    // What it ran on, for the runs after it on another machine of that GPU.
-                    if outcome.gpu.is_empty()
-                        && let Ok(Some(row)) = self.store.run(id.as_str())
+                    if let Ok(Some(row)) = self.store.run(id.as_str())
                         && let Some(machine) = row.machine.as_deref()
                     {
-                        outcome.gpu = self.gpu_of(machine);
+                        // What it ran on, for the runs after it on another machine of that GPU.
+                        if outcome.gpu.is_empty() {
+                            outcome.gpu = self.gpu_of(machine);
+                        }
+                        // A machine names itself `<machine>` in the commands its refusal names: this computer's name for it.
+                        if let Some(reason) = outcome.reason.as_mut() {
+                            reason.message = reason.message.replace("<machine>", machine);
+                            reason.next.iter_mut().for_each(|next| *next = next.replace("<machine>", machine));
+                        }
                     }
                     let received = Instant::now();
                     tracing::info!(run = %id, phase = "outcome_received", sequence = durable,
@@ -1597,12 +1646,15 @@ impl Calcifer {
         let names: HashMap<&str, &str> = (run.spec.inputs.iter())
             .map(|i| (i.digest.as_str(), i.field.as_str()))
             .collect();
+        let input_root = private_io::input_root(&run.out_dir, &self.inputs).map_err(|error| Stop::Refused(Reason {
+            code: error.code, message: error.message, origin: "private_storage".into(), ..Default::default()
+        }))?;
         let digests: Vec<Digest> = run.inputs.iter().map(|(digest, _)| *digest).collect();
         let held = link.held_many(&digests).await?;
         // An empty object's ranges cannot say it is held: it is always sent (one empty PUT).
         let whole = |held: &v1::Ranges, length: u64| length > 0 && v1::held_bytes(held) >= length;
         // The request's files the machine already holds are not sent again, and the run's log says
-        // so: `run show` and a follower that attaches late read it too.
+        // so: `run watch` and a follower that attaches late read it too.
         let reused: Vec<(&str, u64)> = (run.inputs.iter().zip(&held))
             .filter(|((_, length), held)| whole(held, *length))
             .filter_map(|((digest, length), _)| {
@@ -1625,7 +1677,7 @@ impl Calcifer {
                 continue;
             }
             let hex = hex::encode(digest.bytes());
-            let path = self.inputs.join(&hex);
+            let path = input_root.join(&hex);
             let name = match names.get(digest.to_string().as_str()) {
                 Some(field) => field.to_string(),
                 None => format!("sha256:{}", &hex[..12]),
@@ -1724,10 +1776,12 @@ impl Calcifer {
 
     /// Deletes the staged inputs of a settled run that no unsettled run names.
     fn release_inputs(&self, run: &RunRow) {
+        // A locked private view defers cleanup, never redirects it to plaintext staging.
+        let Ok(input_root) = private_io::input_root(&run.out_dir, &self.inputs) else { return };
         let _staging = lock(&self.staging);
         for (digest, _) in &run.inputs {
             if let Ok(false) = self.store.input_in_use(digest) {
-                let _ = std::fs::remove_file(self.inputs.join(hex::encode(digest.bytes())));
+                let _ = std::fs::remove_file(input_root.join(hex::encode(digest.bytes())));
             }
         }
     }

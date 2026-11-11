@@ -230,6 +230,9 @@ pub(crate) type Files = BTreeMap<String, String>;
 /// One result of a tool: its number, its files and the key it was made under.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Version {
+    /// Stable identity independent of the local display number.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
     /// 1 first, never reused.
     #[serde(default)]
     pub number: u32,
@@ -244,6 +247,9 @@ pub(crate) struct Version {
     /// The last run that made it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<u64>,
+    /// The globally stable run identity; the number remains a local display label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<api::ids::RunId>,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub execution_ms: u64,
     /// What made it, `org/package/function@release`, as the asset's tool can change after.
@@ -331,6 +337,9 @@ pub(crate) struct Pending {
 /// kept for the next try on those inputs.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Asset {
+    /// Stable identity shared with the written box; a rename preserves it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
     /// Its name as the file wrote it when it was made.
     #[serde(default)]
     pub name: String,
@@ -398,6 +407,9 @@ impl Asset {
 
     /// `version` on the list in its place, in place of one of that number.
     pub(crate) fn list(&mut self, mut version: Version) {
+        if version.id.is_empty() {
+            version.id = self.version(version.number).filter(|held| !held.id.is_empty()).map_or_else(super::new_key, |held| held.id.clone());
+        }
         let mut texts = self.texts();
         texts.extend(version.text.take().map(|text| (version.number, text)));
         self.versions.retain(|held| held.number != version.number);
@@ -467,8 +479,12 @@ pub(crate) struct Lock {
 }
 
 /// One file a `cozy run` left in the project.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct RunFile {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<api::ids::RunId>,
     pub run: u64,
     pub function: String,
     pub output: String,
@@ -542,6 +558,7 @@ struct KeptBoard {
 
 /// This Calcifer's id, the same across its restarts, once it has said it.
 static CALCIFER: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
 
 /// Reads this Calcifer's id from `dir`, or makes it. Before any project is read.
 pub(crate) fn bind_calcifer(dir: &Path) -> Result<(), Error> {
@@ -816,8 +833,8 @@ impl Lock {
 
 /// What this Calcifer holds of one project folder, whichever `Folder` names it, for as long as one does: the last to go closes it (cl-823).
 struct Shared {
-    /// Its canonical folder, which `SHARED` knows it by.
-    dir: PathBuf,
+    /// Captured logical ownership and canonical physical view; a reused drive is another owner.
+    key: (PathBuf, PathBuf, Option<super::vault::MountIdentity>),
     /// One writer at a time, with the connection that writes: an act, or a write of no act's, holds it from what it changes to its commit,
     /// SQLite's wait on another program's write lock too. Nothing that only reads waits on it (cl-837).
     writing: Mutex<Option<rusqlite::Connection>>,
@@ -830,7 +847,7 @@ struct Shared {
     /// A checkpoint is going.
     checkpointing: std::sync::atomic::AtomicBool,
     /// Its history, read from project.db once.
-    book: std::sync::OnceLock<Arc<super::history::Book>>,
+    book: Mutex<Option<Arc<super::history::Book>>>,
     /// What ffprobe last said of each film at its root.
     films: Mutex<HashMap<PathBuf, Frames>>,
 }
@@ -842,8 +859,8 @@ impl Drop for Shared {
     /// Nothing names the folder now: project.db's connection closes, beside whatever dropped it, as closing it may checkpoint its WAL.
     fn drop(&mut self) {
         let mut shared = SHARED.lock().unwrap_or_else(|e| e.into_inner());
-        if shared.get(&self.dir).is_some_and(|held| held.strong_count() == 0) {
-            shared.remove(&self.dir);
+        if shared.get(&self.key).is_some_and(|held| held.strong_count() == 0) {
+            shared.remove(&self.key);
         }
         drop(shared);
         let writing = self.writing.get_mut().unwrap_or_else(|e| e.into_inner()).take();
@@ -870,25 +887,28 @@ struct Held {
 }
 
 /// Each project folder some `Folder` names now, by its canonical path: one `Shared` while any does.
-static SHARED: LazyLock<Mutex<HashMap<PathBuf, std::sync::Weak<Shared>>>> = LazyLock::new(Mutex::default);
+static SHARED: LazyLock<Mutex<HashMap<(PathBuf, PathBuf, Option<super::vault::MountIdentity>), std::sync::Weak<Shared>>>> = LazyLock::new(Mutex::default);
 
 fn shared(dir: &Path) -> Arc<Shared> {
     let dir = durable::canonical(dir).unwrap_or_else(|_| dir.to_owned());
+    let owner = super::vault::logical(&dir);
+    let identity = super::vault::mount_identity(&owner);
+    let key = (owner, dir, identity);
     let mut shared = SHARED.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(held) = shared.get(&dir).and_then(std::sync::Weak::upgrade) {
+    if let Some(held) = shared.get(&key).and_then(std::sync::Weak::upgrade) {
         return held;
     }
     let held = Arc::new(Shared {
-        dir: dir.clone(),
+        key: key.clone(),
         writing: Mutex::default(),
         collecting: Mutex::default(),
         held: Mutex::default(),
         reading: Mutex::default(),
         checkpointing: std::sync::atomic::AtomicBool::default(),
-        book: std::sync::OnceLock::new(),
+        book: Mutex::default(),
         films: Mutex::default(),
     });
-    shared.insert(dir, Arc::downgrade(&held));
+    shared.insert(key, Arc::downgrade(&held));
     held
 }
 
@@ -980,11 +1000,47 @@ pub(crate) struct Folder {
 }
 
 impl Folder {
+    /// Release cached connections before unmounting or moving the storage. The caller has
+    /// stopped admissions and checked background work; an in-flight DB operation refuses it.
+    pub(crate) fn close_connections(&self, checkpoint: bool) -> Result<(), Error> {
+        let busy = || Error::new(api::error::Kind::Conflict, "project_busy", "a project database operation is still running");
+        if self.shared.checkpointing.load(std::sync::atomic::Ordering::Acquire) { return Err(busy()); }
+        let mut writer = self.shared.writing.try_lock().map_err(|_| busy())?;
+        let mut reader = self.shared.reading.try_lock().map_err(|_| busy())?;
+        let reading = reader.take();
+        drop(reading);
+        if checkpoint {
+            let extra;
+            let conn = match writer.as_ref() {
+                Some(conn) => conn,
+                None => {
+                    extra = rusqlite::Connection::open_with_flags(self.db(), rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
+                        .map_err(|e| Error::new(api::error::Kind::Unavailable, "vault_database", format!("open project checkpoint: {e}")))?;
+                    &extra
+                }
+            };
+            let occupied: i64 = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))
+                .map_err(|e| Error::new(api::error::Kind::Unavailable, "vault_database", format!("checkpoint project before closing: {e}")))?;
+            if occupied != 0 { return Err(busy()); }
+        }
+        let writing = writer.take();
+        *self.shared.held.lock().expect("held lock") = None;
+        drop(reader);
+        drop(writer);
+        drop(writing);
+        *self.shared.book.lock().expect("history cache") = None;
+        self.shared.films.lock().expect("film cache").clear();
+        Ok(())
+    }
+
     /// `stamp` of the project in `dir` while anything holds it. Of one nothing does, its transactions' count, read with nothing opened:
     /// another than any it had open, and it moves with each commit.
     pub(crate) fn stamp_at(dir: &Path) -> String {
         let canonical = durable::canonical(dir).unwrap_or_else(|_| dir.to_owned());
-        let held = SHARED.lock().unwrap_or_else(|e| e.into_inner()).get(&canonical).and_then(std::sync::Weak::upgrade);
+        let owner = super::vault::logical(&canonical);
+        let identity = super::vault::mount_identity(&owner);
+        let key = (owner, canonical, identity);
+        let held = SHARED.lock().unwrap_or_else(|e| e.into_inner()).get(&key).and_then(std::sync::Weak::upgrade);
         match held {
             Some(shared) => Self { dir: dir.to_owned(), tools: PathBuf::new(), shared, unsaved: Mutex::default() }.stamp(),
             None => db::seq_at(&dir.join(db::DB)).map_or_else(String::new, |seq| seq.to_string()),
@@ -999,11 +1055,38 @@ impl Folder {
     /// The project in `dir`, its files measured with the ffprobe in `home`'s tools (else PATH's). A folder of the files before
     /// `project.db` is imported now, once, and they're deleted (cl-803).
     pub(crate) fn open(dir: &Path, home: &Home) -> Result<Self, Error> {
+        Self::open_with(dir, home, |_| Ok(())).map(|(folder, ())| folder)
+    }
+
+    /// Inspect the loaded canonical state before resuming any local work. In particular a
+    /// copy must receive its own identity before deciding whether its inherited walk belongs here.
+    pub(crate) fn open_with<T>(dir: &Path, home: &Home, inspect: impl FnOnce(&Self) -> Result<T, Error>) -> Result<(Self, T), Error> {
         let folder = Self { dir: dir.to_owned(), tools: home.tools(), shared: shared(dir), unsaved: Mutex::default() };
         drop(folder.held()?);
+        let inspected = inspect(&folder)?;
         super::legacy::leftovers(dir);
         folder.unbind_elsewhere()?;
-        Ok(folder)
+        Ok((folder, inspected))
+    }
+
+    /// Identity from the same native document used by this open, never a query projection
+    /// or another independent decode of its Automerge snapshot.
+    pub(crate) fn canonical_identity(&self) -> Result<Option<(String, String)>, Error> {
+        let held = self.held()?;
+        Ok(held.as_ref().and_then(|held| held.stored.crdt.as_ref()).and_then(|doc| doc.identity()))
+    }
+
+    /// The public route code is local metadata, separate from the native project id.
+    pub(crate) fn public_code(&self) -> Result<Option<String>, Error> {
+        self.reading_db(|conn| db::meta(conn, "code"))
+    }
+
+    /// Rare identity changes (first name or a copied project) invalidate the held native view.
+    pub(crate) fn set_identity(&self, id: &str, name: &str, code: &str) -> Result<(), Error> {
+        let mut turn = self.shared.writing.lock().unwrap_or_else(|e| e.into_inner());
+        db::set_identity(self.writer(&mut turn)?, &self.db(), id, name, Some(code))?;
+        *self.shared.held.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        Ok(())
     }
 
     /// What the first open's upgrade said and nothing has said yet: once. project.db keeps it until then, whatever closes between.
@@ -1060,7 +1143,7 @@ impl Folder {
 
     /// Its history, as `read` first reads it, for as long as anything holds the project.
     pub(super) fn book(&self, read: impl FnOnce() -> super::history::Book) -> Arc<super::history::Book> {
-        self.shared.book.get_or_init(|| Arc::new(read())).clone()
+        self.shared.book.lock().expect("history cache").get_or_insert_with(|| Arc::new(read())).clone()
     }
 
     pub(crate) fn db(&self) -> PathBuf {
@@ -1108,6 +1191,12 @@ impl Folder {
             held.files = now;
         }
         Ok(held)
+    }
+
+    /// Native CRDT conflicts are kept visible even though an ordinary value read chooses one.
+    pub(crate) fn crdt_conflicts(&self) -> Result<Vec<String>, Error> {
+        let held = self.held()?;
+        Ok(held.as_ref().and_then(|held| held.stored.crdt.as_ref()).map_or_else(Vec::new, |doc| doc.conflicts()))
     }
 
     /// The revision: one more with each commit.
@@ -1184,9 +1273,16 @@ impl Folder {
         // SQLite's wait on another program's write lock holds the turn alone: every read goes on meanwhile (cl-837).
         let conn = self.writer(&mut turn)?;
         let mut current = false;
-        let seq = db::commit(conn, &self.db(), &act.base, &mut after, &extra, || current = self.version() == seen)?;
+        // Readers retain the old view throughout preparation and an outside writer's
+        // BEGIN wait. Only COMMIT and publication share the held guard: a reader can
+        // never see our committed data_version with the cache still on the old view.
+        let mut publication = None;
+        let seq = db::commit(conn, &self.db(), &act.base, &mut after, &extra, || current = self.version() == seen,
+            || publication = Some(self.shared.held.lock().unwrap_or_else(|e| e.into_inner())))?;
         let (seq, shown) = {
-            let mut held = self.shared.held.lock().unwrap_or_else(|e| e.into_inner());
+            // A no-op rollback does not call before_commit; local-only file facts
+            // still use the existing short publication path in that case.
+            let mut held = publication.unwrap_or_else(|| self.shared.held.lock().unwrap_or_else(|e| e.into_inner()));
             let held = held.as_mut().expect("held");
             after.seq = seq.unwrap_or(act.base.seq);
             let shown = seq.is_none() && changed[2] && after.lock.files != act.base.lock.files;
@@ -1246,7 +1342,7 @@ impl Folder {
     }
 
     /// History rows this act writes, and those it deletes.
-    pub(super) fn write_ops(&self, ops: Vec<db::OpRow>, gone: Vec<u64>) -> Result<(), Error> {
+    pub(super) fn write_ops(&self, ops: Vec<db::OpRow>, gone: Vec<(String, u64)>) -> Result<(), Error> {
         self.act(|| {
             let act = acting(self.id()).expect("in its act");
             let mut extra = act.extra.borrow_mut();
@@ -1293,7 +1389,9 @@ impl Folder {
 
     /// Every history row, oldest first.
     pub(super) fn ops(&self) -> Result<Vec<db::OpRow>, Error> {
-        self.reading_db(|conn| db::ops(conn, &self.db()))?
+        let held = self.held()?;
+        held.as_ref().and_then(|held| held.stored.crdt.as_ref())
+            .ok_or_else(|| Error::new(Kind::Validation, "project_crdt", "the canonical project document is missing"))?.ops()
     }
 
     /// What the request under `key` asked and answered here, if it was kept.
@@ -1313,7 +1411,16 @@ impl Folder {
 
     /// `seen` of its boxes, with no copy made.
     pub(crate) fn reading_boxes<R>(&self, seen: impl FnOnce(&Written) -> R) -> Result<R, Error> {
-        self.reading_written(seen)
+        if acting(self.id()).is_some() {
+            return self.reading_written(seen);
+        }
+        let written = {
+            let held = self.held()?;
+            held.as_ref().expect("held").stored.written.clone()
+        };
+        // A bounded immutable snapshot, not a cache: building a model from it must
+        // not retain the held mutex and delay publication of an independent edit.
+        Ok(seen(&written))
     }
 
     /// The project as YAML, format 4: its export, and what a render keeps of what it was asked.
@@ -1325,7 +1432,11 @@ impl Folder {
     pub(crate) fn edit<R>(&self, change: impl FnOnce(&mut Written) -> Result<R, Error>) -> Result<R, Error> {
         self.act(|| {
             let before = self.written()?;
-            let answer = self.writing_written(change)?;
+            let answer = self.writing_written(|written| {
+                let answer = change(written)?;
+                written.in_stored_order();
+                Ok(answer)
+            })?;
             let after = self.written()?;
             if before != after {
                 self.made(|| Made::Written(before, after));
@@ -1403,8 +1514,9 @@ impl Folder {
 
     /// Who may go on with this project's walk: this project, under this Calcifer. None where no Calcifer runs, which judges nothing.
     fn bound(&self) -> Option<Bound> {
-        let dir = durable::canonical(&self.dir).unwrap_or_else(|_| self.dir.clone());
-        CALCIFER.get().map(|calcifer| Bound { project: super::project_id(&dir), calcifer: calcifer.clone() })
+        let calcifer = CALCIFER.get()?;
+        let (project, _) = self.canonical_identity().ok()??;
+        Some(Bound { project, calcifer: calcifer.clone() })
     }
 
     /// A walk of another project (this is a copy) or another Calcifer's doesn't go on here: what it owes is dropped.
@@ -1578,9 +1690,16 @@ impl Folder {
             }
             let old = std::cell::RefCell::new(vec![]);
             let listed = |rows: &mut Vec<RunFile>| {
-                let earlier = rows.iter().position(|row| row.run == made.run && row.output == made.output);
+                let earlier = rows.iter().position(|row| row.output == made.output && match (&row.run_id, &made.run_id) {
+                    (Some(held), Some(made)) => held == made,
+                    (None, None) => row.run == made.run,
+                    _ => false,
+                });
                 match earlier {
-                    Some(at) => *old.borrow_mut() = vec![std::mem::replace(&mut rows[at], made.clone()).sha256],
+                    Some(at) => {
+                        let next = RunFile { id: rows[at].id.clone(), ..made.clone() };
+                        *old.borrow_mut() = vec![std::mem::replace(&mut rows[at], next).sha256];
+                    }
                     None => rows.push(made.clone()),
                 }
             };

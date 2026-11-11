@@ -35,7 +35,7 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, BENCH)
 import media  # noqa: E402  (suites/bench/media.py)
 from comfy import Row as Comfy, Tier  # noqa: E402  (suites/bench/comfy.py: ComfyUI's row for a cell)
-from runs import Run  # noqa: E402
+from runs import GateDir, Run  # noqa: E402
 
 # The owner's bar: a judged time more than 5% over its baseline fails, unless the cell's own measured noise is wider.
 BAR = 0.05
@@ -896,10 +896,10 @@ def known_issues(path: str | None = None) -> list[Known]:
     return cast(list[Known], load_json(path)) if os.path.exists(path) else []  # rows of Known
 
 
-def check(gate: dict[str, object]) -> tuple[list[str], list[str]]:
+def check(gate: GateDir) -> tuple[list[str], list[str]]:
     """analyze.py's check for suite bench: this gate's group against the newest stored baseline, beside the groups bench.sh
     ran into the same directory. The table goes to bench-table.md."""
-    out = os.path.abspath(str(gate['out']))
+    out = os.path.abspath(gate['out'])
     here = read_gate(out)
     beside = [read_gate(d) for d in sorted(glob.glob(os.path.join(os.path.dirname(out), '*')))
               if d != out and os.path.exists(os.path.join(d, 'bench-group')) and os.path.exists(os.path.join(d, 'bench.tsv'))]

@@ -48,10 +48,10 @@ struct Cli {
     #[arg(long, global = true)]
     json: bool,
     /// Include complete records and untruncated text.
-    #[arg(long, global = true, hide = true)]
+    #[arg(long, global = true)]
     full: bool,
     /// Confirm actions without prompting.
-    #[arg(long, short = 'y', global = true, hide = true)]
+    #[arg(long, short = 'y', global = true)]
     yes: bool,
     /// None: show the available commands.
     #[command(subcommand)]
@@ -62,17 +62,21 @@ struct Cli {
 enum Command {
     /// Create a project in a new or existing directory.
     New(project::New),
-    /// Print the current project's local browser URL.
+    /// Open the current project in your browser.
     Open(open::Args),
     /// Run a function in the current project.
     Run(run::Args),
     /// Show the current project's health and warnings.
     Status(daemon::Status),
+    /// Encrypt, lock or recover the current project.
+    Vault(project::vault::Args),
     /// Local, rented and added machines.
     Machine(machine::Args),
-    /// Find, download, upload and publish models.
+    /// Browse and install models.
     Model(model::Args),
-    /// Find, install and publish packages.
+    /// Browse and install LoRAs.
+    Lora(model::LoraArgs),
+    /// Browse and install packages.
     Package(package::Args),
     /// Replace this binary with the newest release.
     Update(update::Args),
@@ -82,7 +86,7 @@ enum Command {
     Login(account::Login),
     /// Sign out of your TensorHub account.
     Logout(account::Logout),
-    #[command(hide = true)]
+    /// Show your account and available credit.
     Whoami(account::Whoami),
     /// Set up Tab completion for your shell.
     Completion(completion::Args),
@@ -141,12 +145,17 @@ fn usage(error: clap::Error) -> ExitCode {
     if matches!(error.kind(), ErrorKind::DisplayHelp | ErrorKind::DisplayVersion | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand) {
         error.exit();
     }
+    output::refuse(json, &usage_error(&error, &arguments))
+}
+
+fn usage_error(error: &clap::Error, arguments: &[std::ffi::OsString]) -> Error {
     let rendered = error.render().to_string();
-    let message = rendered.lines().next().unwrap_or_default().trim_start_matches("error: ");
+    let message = rendered.lines().take_while(|line| !line.trim().is_empty()).collect::<Vec<_>>().join("\n");
+    let message = message.trim_start_matches("error: ");
     let mut command = dev::hide(Cli::command());
     command.build();
     let mut invocation = String::from("cozy");
-    for argument in &arguments {
+    for argument in arguments {
         if matches!(argument.to_str(), Some("--json" | "--full" | "--yes" | "-y")) {
             continue;
         }
@@ -155,12 +164,7 @@ fn usage(error: clap::Error) -> ExitCode {
         invocation.push_str(&argument.to_string_lossy());
         command = child.clone().bin_name(invocation.clone());
     }
-    let reference = command
-        .try_get_matches_from([invocation, "--help".to_owned()])
-        .expect_err("every command supports --help")
-        .render()
-        .to_string();
-    output::refuse(json, &Error::new(Kind::Usage, "usage", message).remedy(reference))
+    Error::new(Kind::Usage, "usage", message).remedy(format!("{invocation} --help"))
 }
 
 async fn dispatch(ctx: &Context, command: Command) -> Result<ExitCode, Error> {
@@ -169,8 +173,10 @@ async fn dispatch(ctx: &Context, command: Command) -> Result<ExitCode, Error> {
         Command::Machine(args) => machine::exec(ctx, args).await,
         Command::Package(args) => package::exec(ctx, args).await,
         Command::Model(args) => model::exec(ctx, args).await,
+        Command::Lora(args) => model::lora_exec(ctx, args).await,
         Command::New(args) => project::create(ctx, args).await,
         Command::Status(args) => daemon::status(ctx, args).await,
+        Command::Vault(args) => project::vault::exec(ctx, args).await,
         Command::Open(args) => open::exec(ctx, args).await,
         Command::Login(args) => account::login(ctx, args).await,
         Command::Logout(args) => account::logout(ctx, args).await,
@@ -178,5 +184,39 @@ async fn dispatch(ctx: &Context, command: Command) -> Result<ExitCode, Error> {
         Command::Update(args) => update::exec(ctx, args).await,
         Command::Completion(args) => completion::exec(ctx, args).await,
         Command::Doctor(args) => doctor::exec(ctx, args).await,
+    }
+}
+
+#[cfg(test)]
+mod error_tests {
+    use super::*;
+
+    #[test]
+    fn usage_errors_name_the_nearest_help_command() {
+        for (words, expected) in [
+            (vec!["ls"], "cozy --help"),
+            (vec!["machine", "unknown-command"], "cozy machine --help"),
+            (vec!["--unknown-option"], "cozy --help"),
+            (vec!["machine", "ls", "--unknown-option"], "cozy machine ls --help"),
+            (vec!["run", "watch", "1", "--unknown-option"], "cozy run watch --help"),
+            (vec!["--json", "--full", "machine", "rent", "--unknown-option"], "cozy machine rent --help"),
+        ] {
+            let arguments: Vec<std::ffi::OsString> = words.iter().map(|word| std::ffi::OsString::from(*word)).collect();
+            let error = dev::hide(Cli::command()).try_get_matches_from(std::iter::once("cozy").chain(words)).unwrap_err();
+            let body = usage_error(&error, &arguments);
+            assert_eq!(body.remedy.as_deref(), Some(expected));
+            assert_eq!(body.kind, Kind::Usage);
+            assert_eq!(body.exit_code(), 2);
+            assert!(!body.message.contains("Usage:"));
+        }
+    }
+
+    #[test]
+    fn usage_errors_retain_missing_argument_names() {
+        let arguments = ["machine".into(), "show".into()];
+        let error = dev::hide(Cli::command()).try_get_matches_from(["cozy", "machine", "show"]).unwrap_err();
+        let body = usage_error(&error, &arguments);
+        assert!(body.message.contains("<NAME>"));
+        assert_eq!(body.remedy.as_deref(), Some("cozy machine show --help"));
     }
 }

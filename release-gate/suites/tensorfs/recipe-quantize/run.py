@@ -7,10 +7,79 @@ import json
 import subprocess
 import time
 from pathlib import Path
+from typing import TypedDict
+
+type JSON = str | int | float | bool | None | list[JSON] | dict[str, JSON]
 
 
-def records(text):
-    result, decoder = [], json.JSONDecoder()
+class Published(TypedDict, total=False):
+    destination: str
+    commit: str
+
+
+class Uploaded(TypedDict, total=False):
+    published: Published
+
+
+class Committed(TypedDict):
+    repo_id: str
+    lane: str
+    revision: str
+
+
+class Output(TypedDict, total=False):
+    name: str
+    checkpoint: Committed
+
+
+class Result(TypedDict, total=False):
+    models: list[Uploaded]
+    passed: bool
+    detail: str
+
+
+class Run(TypedDict, total=False):
+    number: int
+    status: str
+    result: Result
+    output: list[Output]
+
+
+class Line(Run, total=False):
+    """One `--json` record: a run (bare or under `run`) or one of its events."""
+
+    run: Run
+    type: str
+    text: str
+
+
+class Lane(TypedDict):
+    lane: str
+    commit: str
+    quantize_run: int
+    inference_run: int
+    measurement: str
+    inference: JSON
+
+
+class Evidence(TypedDict):
+    source_run: int
+    upload_run: int
+    source_commit: str
+    seed: int
+    lanes: list[Lane]
+
+
+class Args(argparse.Namespace):
+    machine: str
+    model: str
+    out: Path
+    seed: int
+
+
+def records(text: str) -> list[Line]:
+    result: list[Line] = []
+    decoder = json.JSONDecoder()
     while text.strip():
         value, end = decoder.raw_decode(text.lstrip())
         result.append(value)
@@ -18,7 +87,7 @@ def records(text):
     return result
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--machine", required=True)
     parser.add_argument(
@@ -28,7 +97,7 @@ def main():
     )
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--seed", type=int, default=int(time.time()))
-    args = parser.parse_args()
+    args = parser.parse_args(namespace=Args())
     package = Path(__file__).resolve().parent
     args.out.mkdir(parents=True, exist_ok=True)
 
@@ -36,7 +105,7 @@ def main():
     if not (args.out / "project" / "project.yaml").is_file():
         subprocess.run(["cozy", "project", "new", str(args.out / "project")], check=True, stdout=subprocess.DEVNULL)
 
-    def call(name, argv):
+    def call(name: str, argv: list[str | Path]) -> tuple[Run, list[Line]]:
         with (
             (args.out / f"{name}.json").open("w") as stdout,
             (args.out / f"{name}.err").open("w") as stderr,
@@ -76,7 +145,7 @@ def main():
         if m.get("published", {}).get("destination") == args.model
     ]
     original = args.model + "@" + published["commit"]
-    evidence = {
+    evidence: Evidence = {
         "source_run": made["number"],
         "upload_run": uploaded["number"],
         "source_commit": original,

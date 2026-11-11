@@ -30,7 +30,7 @@ use super::{reader, refusal, signed_in};
 use crate::{
     Here,
     api::Api,
-    local_code::{INDEX, Project, account, describe_with, index_url, locked_namespace, python, refuse, run, source_files, uv},
+    local_code::{INDEX, Project, account, describe_with, index_url, locked_namespace, python, refuse, run, run_said, source_files, uv},
     tools::Say,
 };
 
@@ -155,9 +155,9 @@ impl Stage {
             if refresh {
                 command.arg("--refresh");
             }
-            run(&mut command, "lock_failed").map(drop)
+            run_said(&mut command, "lock_failed", "uv lock").map(drop)
         };
-        platform::tools::uv_listed(lock, |e| Some(e.message.as_str()), || false)
+        platform::tools::uv_listed(lock, |(_, said)| Some(said.as_str()), || false).map_err(|(error, _)| error)
     }
 }
 
@@ -309,23 +309,16 @@ pub(super) async fn publish(api: &Arc<Api>, hub: &Origin, code: &LocalCode, ask:
             e => return Err(e),
         },
     }
-    // Locked first, its lock is answered for the client to write, and the release holds it.
-    if !project.root.join("uv.lock").is_file() {
-        say("this project has no uv.lock: locking it first");
-        let locked = lock(api, hub, code, &PackageLock { root: ask.root, upgrade: vec![] }, work).await?;
-        result.lock = Some(locked.lock);
+    // Refresh the root version and authored constraints without upgrading unchanged dependency pins.
+    // The client receives the new lock only when publishing succeeds.
+    let locked = lock(api, hub, code, &PackageLock { root: ask.root, upgrade: vec![] }, work).await?;
+    let committed = locked.lock;
+    if locked.changed {
+        result.lock = Some(committed.clone());
     }
     let uv_path = tools(api, &project, say).await?;
     let stage = blocking(|| Stage::new(&project, uv_path, say))?;
-    let committed = match &result.lock {
-        Some(lock) => {
-            fs::write(stage.src.join("uv.lock"), lock).map_err(|e| refuse("stage_unavailable", e))?;
-            lock.clone()
-        }
-        None => fs::read_to_string(project.root.join("uv.lock")).map_err(|_| {
-            Error::new(Kind::Validation, "package_unlocked", "this project has no uv.lock").next("cozy package lock")
-        })?,
-    };
+    fs::write(stage.src.join("uv.lock"), &committed).map_err(|e| refuse("stage_unavailable", e))?;
     // Locking the copy is a no-op for a lock made for this Hub and account. For another, it moves
     // the account's packages to this index pinned to the versions the lock holds: a pin this Hub
     // cannot meet is refused by name, never re-resolved to a newer release.
@@ -390,7 +383,7 @@ fn built(
     package: &str,
     hub: &Origin,
 ) -> Result<(Vec<File>, Vec<String>), Error> {
-    run(uv(&stage.uv, &stage.src).args(["lock", "--no-progress", "--python", python]), "lock_failed")?;
+    run(uv(&stage.uv, &stage.src).args(["lock", "--no-progress", "--python", python]), "lock_failed", "uv lock")?;
     let bound = fs::read_to_string(stage.src.join("uv.lock")).map_err(|e| refuse("lock_failed", e))?;
     let (before, after) = (versions(committed)?, versions(&bound)?);
     if before != after {
@@ -406,12 +399,13 @@ fn built(
             format!("uv.lock does not hold for {package} on {}: {detail}", hub.as_str()),
         )
         .remedy("publish the locked versions of your own dependencies to this Hub first, or relock")
-        .next("cozy package lock"));
+        .next("uv lock"));
     }
     let dist = stage.root.join("dist");
     run(
         uv(&stage.uv, &stage.src).args(["build", "--no-progress", "--python", python, "--out-dir"]).arg(&dist),
         "build_failed",
+        "uv build",
     )?;
     let git_wheels = git_wheels(stage, python)?;
     let runtime = after.get("cozy-runtime").map(String::as_str);
@@ -454,7 +448,7 @@ fn unmet(error: Error, pins: &BTreeMap<String, String>, account: &str, hub: &Ori
             format!("uv.lock pins {account}/{name} {version}, which {} does not publish", hub.as_str()),
         )
         .remedy(format!("publish {name} {version} to this Hub as {account} first, or relock against it"))
-        .next("cozy package lock"),
+        .next("uv lock"),
         None => error,
     }
 }
@@ -618,6 +612,7 @@ fn git_wheel(stage: &Stage, python: &str, name: &str, vcs: &Vcs) -> Result<PathB
             .arg(&out)
             .env("SOURCE_DATE_EPOCH", &epoch),
         "git_dependency_build",
+        &format!("uv build of {name}"),
     )?;
     let built = single(&out, ".whl")?;
     let bytes = fs::read(&built).map_err(|e| refuse("git_dependency_wheel", e))?;

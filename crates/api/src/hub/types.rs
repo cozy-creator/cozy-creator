@@ -174,6 +174,8 @@ pub struct ModelSearch {
 #[serde(default)]
 pub struct SearchMeta {
     pub total: i64,
+    /// Echoed by a Hub that applied authoritative repository-role filtering.
+    pub role: Option<String>,
 }
 
 /// A model's row in a search, or the head of its card.
@@ -183,6 +185,8 @@ pub struct ModelSummary {
     pub org: String,
     pub name: String,
     pub family: Option<String>,
+    /// Header-derived repository role: model, lora or unknown. Absent on older Hubs.
+    pub role: Option<String>,
     pub created_at: String,
     /// The pinned upstream source (on a card).
     pub source: Option<String>,
@@ -403,6 +407,8 @@ pub struct PackageSummary {
     pub org: String,
     pub name: String,
     pub created_at: String,
+    /// Authoritative update time when the Hub provides it; not the creation date.
+    pub updated_at: Option<String>,
     /// The newest committed release that is not yanked.
     pub latest_release: Option<String>,
 }
@@ -629,8 +635,10 @@ pub struct RentalRequest {
     pub fallbacks: Vec<RentalFallback>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub image: Option<String>,
+    /// Retained only when replaying a rental request recorded by an older client.
+    #[doc(hidden)]
+    #[serde(rename = "image", skip_serializing_if = "Option::is_none")]
+    pub legacy_image: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub accelerator_count: Option<i64>,
     /// SHA-256 of the media token, 64 lowercase hex.

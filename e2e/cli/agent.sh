@@ -24,14 +24,19 @@ rm -rf "$A"; mkdir -p "$A"
 # view <label> <dir> <cozy args…>: one view from the working directory <dir>, its stdout kept in <label>.out and
 # measured.
 view() {
-  local label=$1 dir=$2 bytes; shift 2
+  local label=$1 dir=$2 bytes stream=out; shift 2
   (cd "$dir" && cozy "$@") > "$A/$label.out" 2> "$A/$label.err" || true
-  bytes=$(wc -c < "$A/$label.out")
+  [ "$label" != run-show-failed ] || stream=err
+  bytes=$(wc -c < "$A/$label.$stream")
   local most; most=$(budget "$label")
   printf '%s\t%s\t%s\tcozy %s\n' "$label" "$bytes" "$most" "$*" >> "$A/bytes.tsv"
   [ -z "$MEASURE" ] || return 0
   [ -z "$most" ] || [ "$bytes" -le "$most" ] || check "agent: cozy $* printed $bytes bytes, over its $most"
-  [ ! -s "$A/$label.err" ] || check "agent: cozy $* wrote to stderr, not in its block: $(head -c 300 "$A/$label.err")"
+  if [ "$label" = run-show-failed ]; then
+    [ ! -s "$A/$label.out" ] && [ -s "$A/$label.err" ] || check "agent: failed run summary must use stderr"
+  else
+    [ ! -s "$A/$label.err" ] || check "agent: cozy $* wrote to stderr, not in its block: $(head -c 300 "$A/$label.err")"
+  fi
 }
 
 # A project's boxes are project.db's: what an agent writes goes in by `cozy import` (yaml_in, cl-803).
@@ -71,15 +76,16 @@ view status "$F" status
 view project-status "$F" status
 view machine-ls "$F" machine ls
 view run-ls "$F" run ls
-view run-show "$F" run show "$n"
-view run-show-failed "$F" run show "$failed"
-view run-show-full "$F" run show "$n" --full
+view run-show "$F" run watch "$n"
+view run-show-failed "$F" run watch "$failed"
+view run-show-failed-full "$F" run watch "$failed" --full
+view run-show-full "$F" run watch "$n" --full
 view json-home "$F" --json
 view json-project-status "$F" --json status
 view json-machine-ls "$F" --json machine ls
 view json-run-ls "$F" --json run ls
-view json-run-show "$F" --json run show "$n"
-view json-run-show-full "$F" --json --full run show "$n"
+view json-run-show "$F" --json run watch "$n"
+view json-run-show-full "$F" --json --full run watch "$n"
 view json-run-ls-full "$F" --json --full run ls
 cat "$A/bytes.tsv"
 [ -z "$MEASURE" ] || return 0
@@ -117,13 +123,14 @@ grep -q 'Commands:' "$A/home.out" || check "agent: bare cozy lists no commands"
 grep -q 'runs: none in this project' "$A/run-ls-empty.out" || check "agent: run ls of no runs: $(cat "$A/run-ls-empty.out")"
 grep -q 'assets: none in project.yaml' "$A/project-empty.out" || check "agent: status of no assets: $(cat "$A/project-empty.out")"
 grep -q '4 assets: 1 approved, 1 current, 1 out of date, 1 missing' "$A/status.out" || check "agent: status totals: $(cat "$A/status.out")"
-grep -q 'RuntimeError' "$A/run-show-failed.out" || check "agent: run show of a failure has no traceback: $(cat "$A/run-show-failed.out")"
-[ "$(wc -c < "$A/run-show-full.out")" -gt "$(wc -c < "$A/run-show.out")" ] || check "agent: run show --full says no more than run show"
+grep -q 'RuntimeError' "$A/run-show-failed-full.out" || check "agent: run watch --full of a failure has no traceback: $(cat "$A/run-show-failed-full.out")"
+grep -q "next: cozy run watch $failed --full" "$A/run-show-failed.err" || check "agent: failed run summary has no command for full diagnostics"
+[ "$(wc -c < "$A/run-show-full.out")" -gt "$(wc -c < "$A/run-show.out")" ] || check "agent: run watch --full says no more than run watch"
 for label in json-project-status json-machine-ls json-run-ls json-run-show json-run-show-full; do
   [ "$(wc -l < "$A/$label.out")" = 1 ] && jq -e . "$A/$label.out" > /dev/null || check "agent: $label is not one line of JSON"
 done
-J 'has("measurements") or has("calls") or has("report") or has("request") | not' "$A/json-run-show.out" || check "agent: run show --json holds what --full is for"
-J '.request.input.text | startswith("agent ")' "$A/json-run-show-full.out" || check "agent: run show --json --full has no request"
+J 'has("measurements") or has("calls") or has("report") or has("request") | not' "$A/json-run-show.out" || check "agent: run watch --json holds what --full is for"
+J '.request.input.text | startswith("agent ")' "$A/json-run-show-full.out" || check "agent: run watch --json --full has no request"
 J --argjson n "$n" '.runs | any(.number == $n) and all(has("result") | not)' "$A/json-run-ls.out" || check "agent: run ls --json: $(head -c 300 "$A/json-run-ls.out")"
 J '.runs | any(has("result"))' "$A/json-run-ls-full.out" || check "agent: run ls --json --full has no result"
 J '.machines | any(.name == "local") and all(.status.kernels == null)' "$A/json-machine-ls.out" || check "agent: machine ls --json: $(head -c 300 "$A/json-machine-ls.out")"

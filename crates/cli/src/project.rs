@@ -8,12 +8,32 @@ use api::{
 
 use crate::{Context, output, run::mint_key};
 
-/// The existing project containing the current directory.
-pub(crate) async fn current(ctx: &Context) -> Result<State, Error> {
+pub(crate) mod vault;
+
+pub(crate) fn directory() -> Result<String, Error> {
     let directory = std::env::current_dir()
         .map_err(|error| Error::new(Kind::Unavailable, "cwd", format!("the current directory: {error}")))?;
-    let project = directory.into_os_string().into_string()
-        .map_err(|_| Error::new(Kind::Usage, "project_path", "the current directory is not a UTF-8 path"))?;
+    directory.into_os_string().into_string()
+        .map_err(|_| Error::new(Kind::Usage, "project_path", "the current directory is not a UTF-8 path"))
+}
+
+/// Identify the current project without evaluating its canvas or checking its files.
+pub(crate) async fn identity(ctx: &Context) -> Result<api::calcifer::project::Address, Error> {
+    let directory = directory()?;
+    let path = crate::calcifer_client::path(&["v1", "projects", &directory, "address"]);
+    match ctx.calcifer().await?.get(&path).await {
+        Err(error) if error.code == "project_not_found" => Err(Error::new(
+            Kind::Usage,
+            "not_in_a_project",
+            format!("{directory} is outside a Cozy project"),
+        ).next("cozy new")),
+        answer => answer,
+    }
+}
+
+/// The existing project containing the current directory.
+pub(crate) async fn current(ctx: &Context) -> Result<State, Error> {
+    let project = directory()?;
     let path = format!("{}?assets={}", crate::calcifer_client::path(&["v1", "projects", &project]), ctx.full);
     match ctx.calcifer().await?.get::<State>(&path).await {
         Err(error) if error.code == "project_not_found" => Err(Error::new(

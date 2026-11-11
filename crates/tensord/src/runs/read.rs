@@ -30,6 +30,14 @@ pub(crate) struct OutputSnapshot {
     pub sha256: Option<String>,
 }
 
+fn scope_allows(record: &Execution) -> bool {
+    match crate::private_io::http_scope() {
+        None => true,
+        Some(scope) => scope.as_ref().map(|scope| scope.project_id.as_str())
+            == record.invocation.local_private.as_ref().map(|scope| scope.project_id.as_str()),
+    }
+}
+
 const LIVE: [&str; 3] = ["queued", "starting", "running"];
 
 /// A run's state by name. An attempt is queued until it runs; only a run sent here is accepted
@@ -53,13 +61,15 @@ impl Runs {
     }
     /// `actor`'s run `id`.
     fn record(&self, actor: VerifiedActor, id: &str) -> Result<Execution, Error> {
-        self.service
+        let record = self.service
             .engine
             .get_public(reader(actor).as_deref(), id)
             .map_err(|error| match error.kind() {
                 io::ErrorKind::NotFound => Error::not_found("run_not_found", "this machine has no such run"),
                 _ => problem(error),
-            })
+            })?;
+        if !scope_allows(&record) { return Err(Error::forbidden("private_storage_scope", "the run belongs to another project storage scope")); }
+        Ok(record)
     }
     fn state_of(&self, record: &Execution) -> Result<v1::RunState, Error> {
         let context = record
@@ -110,7 +120,7 @@ impl Runs {
             .engine
             .actor_page(reader(actor).as_deref(), 0, before, newest, states, limit)
             .map_err(problem)?;
-        records.iter().map(|record| self.state_of(record)).collect()
+        records.iter().filter(|record| scope_allows(record)).map(|record| self.state_of(record)).collect()
     }
     /// The runs `actor` reads, newest first, before the run numbered `before` (0: the newest).
     pub(crate) fn list(&self, actor: VerifiedActor, before: u64, limit: u32) -> Result<v1::RunList, Error> {
@@ -123,6 +133,12 @@ impl Runs {
     }
     /// Cancels `actor`'s run `id`; an id this machine never received is recorded canceled.
     pub(crate) fn cancel(&self, actor: VerifiedActor, id: &str) -> Result<v1::RunState, Error> {
+        match self.service.engine.get_public(reader(actor).as_deref(), id) {
+            Ok(record) if !scope_allows(&record) => return Err(Error::forbidden("private_storage_scope", "the run belongs to another project storage scope")),
+            Ok(_) => {},
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {},
+            Err(error) => return Err(problem(error)),
+        }
         let canceled = self.service.engine.cancel_run(&actor_id(actor), id).map_err(|error| match error.kind() {
             io::ErrorKind::Unsupported => refusal("update_control_unsupported", error.to_string()),
             io::ErrorKind::ResourceBusy => refusal("cancel_unavailable", error.to_string()),
@@ -174,8 +190,11 @@ impl Runs {
     /// now, so no later read depends on what may go meanwhile (its installation, its result
     /// copies, a store under pressure). One that can't be made yet is made by its next reader.
     pub(crate) fn settled(&self, record: &Execution) {
-        if let Err(error) = self.terminal(record) {
-            tracing::warn!("run {}: its outcome is not made yet: {}: {}", record.id, error.code, error.message);
+        let made = self.service.engine.private_storage(&record.id).map_err(problem)
+            .and_then(|scope| crate::private_io::within(scope, || self.terminal(record)));
+        if let Err(error) = made {
+            crate::private_io::warning(&self.service.engine, &record.id,
+                format_args!("outcome is not made yet: {}: {}", error.code, error.message));
         }
     }
     fn terminal(&self, record: &Execution) -> Result<stored::LogPage, Error> {
@@ -210,7 +229,7 @@ impl Runs {
                 .engine
                 .installation_for_generation(&context.actor, &record.invocation.generation)
                 .map_err(problem)?;
-            // Its installation removed since (`cozy package remove`): the environment's own record.
+            // Its installation removed since (`cozy package uninstall`): the environment's own record.
             // Without either this is a refusal, never a 500 its controller asks about forever.
             let interface: Value = match held {
                 Some(held) => serde_json::from_slice(&held.interface)
@@ -495,11 +514,12 @@ impl Runs {
                 .filter_map(|p| p.content.as_ref())
                 .collect()
         };
+        let store = self.service.engine.store_for(&record.id).map_err(problem)?;
         let parts = refs
             .into_iter()
             .map(|r| {
                 let object = ObjectRef { sha256: sha256::hex(&r.digest), length: r.length };
-                let file = crate::storage::file(&self.service.engine.store, &object).map_err(problem)?;
+                let file = crate::storage::file(&store, &object).map_err(problem)?;
                 Ok((file, r.length))
             })
             .collect::<Result<Vec<_>, Error>>()?;
@@ -534,7 +554,9 @@ impl Runs {
             .get(member)
             .ok_or_else(|| Error::not_found("output_not_found", "the tree has no such member"))?;
         let (sha, length) = (object.sha256.as_str(), object.length);
-        let file = crate::storage::file(&self.service.engine.store, object).map_err(storage)?;
+        let record = self.record(actor, id)?;
+        let store = self.service.engine.store_for(&record.id).map_err(problem)?;
+        let file = crate::storage::file(&store, object).map_err(storage)?;
         Ok(OutputSnapshot {
             parts: vec![(file, length)],
             length,
@@ -549,13 +571,14 @@ impl Runs {
         let held = self
             .service
             .engine
-            .with_journal(|j| j.object(&actor_id(actor), sha256))
+            .with_journal(|j| j.object(&crate::private_io::resource_key(&actor_id(actor)), sha256))
             .map_err(problem)?;
         let Some(length) = held else {
             return Err(Error::not_found("object_not_found", "this signer wrote no such object"));
         };
         let object = ObjectRef { sha256: sha256.to_string(), length };
-        crate::storage::file(&self.service.engine.store, &object).map_err(storage)
+        let store = self.objects.store().map_err(problem)?;
+        crate::storage::file(&store, &object).map_err(storage)
     }
     /// `actor`'s installations, each with what it holds now (`StatusFrame.environments`).
     pub(crate) fn environments(&self, actor: VerifiedActor) -> Result<Vec<v1::Environment>, Error> {
@@ -720,7 +743,7 @@ impl Runs {
             });
             let arriving = payload.as_ref().is_some_and(|p| p["bytes_done"].as_u64() < p["bytes_total"].as_u64());
             if let Some(payload) = payload.filter(|_| (running || preparing) && waiting.is_none() || arriving) {
-                // When it last moved, never when it is read: a silent run shows how long it is.
+                // When it last moved, never when it is read: a silent run watchs how long it is.
                 let mut moved = event(record.revision, "progress", &json!({"type":"progress","payload":payload}))?;
                 let at = record.progress_at_ms.max(record.started_at_ms);
                 if at > 0 {

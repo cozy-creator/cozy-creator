@@ -20,7 +20,7 @@ cd "$FIX" || fail "no fixtures"
 step fault run ./cuda-fault/fault --on "$NAME" seed:=$RANDOM marker="$MARK"  # expected to fail
 F=$(runno fault)
 [ -n "$F" ] || fail "the fault call named no run"
-cozy run show "$F" --once --json --full > "$OUT/fault.json" 2>&1
+cozy run watch "$F" --once --json --full > "$OUT/fault.json" 2>&1
 st=$(jq -r '.status // empty' "$OUT/fault.json")
 code=$(jq -r '.reason.code // empty' "$OUT/fault.json")
 say "fault run $F: $st ($code): $(jq -r '.reason.message // empty' "$OUT/fault.json" | cut -c1-200)"
@@ -37,7 +37,7 @@ say "detail and machine log carry the executor's stderr: $(grep -c . "$OUT/fault
 
 step ok run ./cuda-fault/ok --on "$NAME" seed:=$RANDOM || fail "the successor failed"
 S=$(runno ok)
-cozy run show "$S" --once --json --full > "$OUT/ok.json" 2>&1
+cozy run watch "$S" --once --json --full > "$OUT/ok.json" 2>&1
 [ "$(jq -r '.status // empty' "$OUT/ok.json")" = completed ] || fail "successor $S is $(jq -r .status "$OUT/ok.json")"
 spid=$(jq -r '.result.pid // (.result | fromjson? | .pid) // empty' "$OUT/ok.json")
 { [ -n "$spid" ] && [ "$spid" != "$fpid" ]; } || fail "the successor did not run in a fresh process ($fpid -> $spid)"

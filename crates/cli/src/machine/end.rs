@@ -95,11 +95,11 @@ async fn ended(
                 Kind::Conflict,
                 "release_unconfirmed",
                 format!(
-                    "the Hub has not confirmed {}'s pod destroyed, and its missing record is not proof",
+                    "Shutdown of {} is not confirmed; billing may continue",
                     machine.name
                 ),
             )
-            .remedy("Calcifer keeps the record and keeps asking; the pod may still be billing")
+            .remedy("Calcifer will keep checking")
             .next(format!("cozy machine show {}", machine.name)));
         }
         match &machine.ending {
@@ -129,14 +129,14 @@ async fn ended(
                     true => Error::new(
                         Kind::Unavailable,
                         "end_waiting",
-                        format!("stopped watching; {name} ends once its outputs land, as Calcifer carries it out"),
+                        format!("Stopped watching; {name} will shut down after its outputs are saved"),
                     )
-                    .remedy("--force ends it now and gives up the outputs that have not landed")
+                    .remedy("To stop immediately and discard unsaved outputs, use --force")
                     .next(format!("cozy machine end {name} --force")),
                     false => Error::new(
                         Kind::Unavailable,
                         "end_unconfirmed",
-                        format!("stopped watching; the release of {name} continues in Calcifer"),
+                        format!("Stopped watching; {name} is still shutting down"),
                     )
                     .next(format!("cozy machine show {name}")),
                 });

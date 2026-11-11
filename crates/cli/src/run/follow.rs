@@ -4,7 +4,7 @@
 //! against its digest) or failed, but for what stays on its machine; an output not saved fails the follow.
 //! `--output` downloads them here (`fetch`). Ctrl-C (Esc or q in
 //! `cozy run ls`) stops following and never cancels: the run is Calcifer's, and `cozy run
-//! show` reattaches.
+//! watch` reattaches.
 use std::{
     collections::HashSet,
     fmt::Write as _,
@@ -75,7 +75,7 @@ pub(crate) async fn job(ctx: &Context, target: &str, input: &impl serde::Seriali
 /// One of Calcifer's own runs (`Kind::Here`), followed quietly to its end: its result, or the refusal it ended with, whole.
 pub(crate) async fn done<T: serde::de::DeserializeOwned>(ctx: &Context, run: Run) -> Result<T, Error> {
     let run = settle(ctx, run).await?;
-    let show = format!("cozy run show {}", run.name());
+    let show = format!("cozy run watch {}", run.name());
     let result = run.result.clone().unwrap_or_default();
     match run.status {
         Status::Completed => serde_json::from_value(result).map_err(|e| Error::new(Kind::Internal, "untyped_answer", format!("run {}'s result: {e}", run.name()))),
@@ -83,7 +83,7 @@ pub(crate) async fn done<T: serde::de::DeserializeOwned>(ctx: &Context, run: Run
             let reason = run.reason.clone().unwrap_or_default();
             Error::new(Kind::Unavailable, "run_failed", format!("{}: {}", run.target, reason.message)).next(&show)
         })),
-        _ => Err(Error::new(Kind::Unavailable, "run_unfollowed", format!("run {} goes on, no longer followed", run.name())).next(&show)),
+        _ => Err(Error::new(Kind::Unavailable, "run_unfollowed", format!("Stopped watching run {}; it is still running", run.name())).next(&show)),
     }
 }
 
@@ -114,7 +114,7 @@ pub(crate) fn exit_code(run: &Run) -> ExitCode {
         Status::Failed | Status::Canceled => ExitCode::FAILURE,
         _ if let Some(stalled) = run.stalled.as_ref().filter(|_| !settled(run)) => {
             let n = run.name();
-            output::warned(&format!("run {n}: {}. It keeps running: `cozy run show {n}` follows it", stalled_words(stalled)));
+            output::warned(&format!("run {n}: {}. It keeps running: `cozy run watch {n}` follows it", stalled_words(stalled)));
             ExitCode::from(output::STALLED)
         }
         _ => ExitCode::SUCCESS,
@@ -133,7 +133,7 @@ pub(crate) async fn follow(ctx: &Context, run: Run) -> Result<Run, Error> {
     follow_until(ctx, run, interrupt()).await
 }
 
-/// `cozy run show` until `stop`, which never cancels the run: the live view, then the record.
+/// `cozy run watch` until `stop`, which never cancels the run: the live view, then the record.
 pub(crate) async fn follow_until(
     ctx: &Context,
     run: Run,
@@ -173,21 +173,18 @@ fn saved(run: Run) -> Result<Run, Error> {
     if lost.is_empty() || !settled(&run) {
         return Ok(run);
     }
-    let show = format!("cozy run show {}", run.name());
+    let show = format!("cozy run watch {}", run.name());
     Err(Error::new(
         Kind::Unavailable,
         "output_not_saved",
         format!(
-            "run {} ended {}, but its output {} did not land",
+            "Run {} {}. Outputs not saved: {}",
             run.number,
             status_word(run.status),
             lost.join(", ")
         ),
     )
-    .remedy(format!(
-        "`cozy run show {}` saves what its machine still holds",
-        run.number
-    ))
+    .remedy("Watch again to download outputs still held by the machine")
     .next(&show))
 }
 
@@ -223,66 +220,73 @@ async fn watch(
         return Ok((run, true));
     }
     loop {
-        tokio::select! {
-            _ = tick.tick() => view.tick(),
-            next = next_of(&mut placing, &calcifer), if placing.is_some() => match next {
-                Ok(Some(machine)) if !placed(&view, &machine, &mut notices) => {}
-                _ => placing = None,
-            },
-            _ = &mut interrupt => {
-                view.done();
-                let run = calcifer.run(id.as_str()).await?;
-                let n = run.name();
-                output::say(ctx, &match settled(&run) {
-                    true => format!("stopped following: run {n} ended and its outputs are still being saved; `cozy run show {n}` follows them"),
-                    false => format!("stopped following: run {n} keeps running; `cozy run show {n}` follows it again, `cozy run cancel {n}` cancels it"),
-                });
-                return Ok((run, true));
+        // One read of the stream, kept going across the view's ticks: a reconnect's pause and retries carry on.
+        let event = {
+            let mut reading = std::pin::pin!(events.next());
+            loop {
+                tokio::select! {
+                    _ = tick.tick() => view.tick(),
+                    next = next_of(&mut placing, &calcifer), if placing.is_some() => match next {
+                        Ok(Some(machine)) if !placed(&view, &machine, &mut notices) => {}
+                        _ => placing = None,
+                    },
+                    _ = &mut interrupt => {
+                        view.done();
+                        let run = calcifer.run(id.as_str()).await?;
+                        let n = run.name();
+                        output::say(ctx, &match settled(&run) {
+                            true => format!("stopped following: run {n} ended and its outputs are still being saved; `cozy run watch {n}` follows them"),
+                            false => format!("stopped following: run {n} keeps running; `cozy run watch {n}` follows it again, `cozy run cancel {n}` cancels it"),
+                        });
+                        return Ok((run, true));
+                    }
+                    event = &mut reading => break event,
+                }
             }
-            event = events.next() => match event {
-                None => {
-                    let run = calcifer.run(id.as_str()).await?;
-                    // Its Calcifer stopped with an output still owed: wait on the next one.
-                    if settled(&run) && owed(&run) {
-                        events.again();
-                        continue;
-                    }
-                    view.done();
-                    if let Some(sequence_number) = terminal {
-                        output::ndjson(&Event::lifecycle(sequence_number, run.clone(), false));
-                    }
-                    return Ok((run, false));
+        };
+        match event {
+            None => {
+                let run = calcifer.run(id.as_str()).await?;
+                // Its Calcifer stopped with an output still owed: wait on the next one.
+                if settled(&run) && owed(&run) {
+                    events.again();
+                    continue;
                 }
-                Some(Err(error)) => {
-                    view.done();
-                    return Err(error);
+                view.done();
+                if let Some(sequence_number) = terminal {
+                    output::ndjson(&Event::lifecycle(sequence_number, run.clone(), false));
                 }
-                Some(Ok(event)) if stalls(&event) => {
-                    match events_out {
-                        true => output::ndjson(&event),
-                        false => view.on(&event),
-                    }
-                    view.done();
-                    return Ok((calcifer.run(id.as_str()).await?, true));
+                return Ok((run, false));
+            }
+            Some(Err(error)) => {
+                view.done();
+                return Err(error);
+            }
+            Some(Ok(event)) if stalls(&event) => {
+                match events_out {
+                    true => output::ndjson(&event),
+                    false => view.on(&event),
                 }
-                Some(Ok(event)) if events.restarted() && !events_out => {
-                    view.line(&format!("  Calcifer restarted; following run {} again", view.number));
-                    let before = view.machine.clone();
-                    view.on(&event);
-                    if let Some(name) = view.machine.as_deref().filter(|_| view.machine != before) {
-                        placing = follow_placement(&calcifer, &view, name, &mut notices).await;
-                    }
+                view.done();
+                return Ok((calcifer.run(id.as_str()).await?, true));
+            }
+            Some(Ok(event)) if events.restarted() && !events_out => {
+                view.line(&format!("  Calcifer restarted; following run {} again", view.number));
+                let before = view.machine.clone();
+                view.on(&event);
+                if let Some(name) = view.machine.as_deref().filter(|_| view.machine != before) {
+                    placing = follow_placement(&calcifer, &view, name, &mut notices).await;
                 }
-                Some(Ok(event)) if events_out && event.is_terminal() => {
-                    terminal = event.sequence_number();
-                }
-                Some(Ok(event)) if events_out => output::ndjson(&event),
-                Some(Ok(event)) => {
-                    let before = view.machine.clone();
-                    view.on(&event);
-                    if let Some(name) = view.machine.as_deref().filter(|_| view.machine != before) {
-                        placing = follow_placement(&calcifer, &view, name, &mut notices).await;
-                    }
+            }
+            Some(Ok(event)) if events_out && event.is_terminal() => {
+                terminal = event.sequence_number();
+            }
+            Some(Ok(event)) if events_out => output::ndjson(&event),
+            Some(Ok(event)) => {
+                let before = view.machine.clone();
+                view.on(&event);
+                if let Some(name) = view.machine.as_deref().filter(|_| view.machine != before) {
+                    placing = follow_placement(&calcifer, &view, name, &mut notices).await;
                 }
             }
         }
@@ -337,13 +341,36 @@ pub(crate) fn record(ctx: &Context, run: &Run) {
         output::json(run);
         return;
     }
-    if let (Status::Failed | Status::Canceled, Some(reason)) = (run.status, &run.reason) {
-        let line = format!("{}: {}: {}", run.target, status_word(run.status), reason.message);
-        let next: Vec<String> = reason.next.iter().cloned().chain([format!("cozy run show {}", run.name())]).take(2).collect();
-        return output::failure(ctx, &line, &next);
+    if matches!(run.status, Status::Failed | Status::Canceled) {
+        let mut line = format!("Run {} {}", run.name(), status_word(run.status));
+        if let Some(reason) = &run.reason {
+            if !reason.code.is_empty() {
+                let _ = write!(line, " [{}]", reason.code);
+            }
+            if !reason.message.is_empty() {
+                let _ = write!(line, ": {}", reason.message);
+            }
+        }
+        return output::failure(ctx, &line, &failure_next(run));
     }
     fields(ctx, run).print(ctx);
     next(ctx, run);
+}
+
+/// The failure's suggested actions, followed by full diagnostics when space permits.
+fn failure_next(run: &Run) -> Vec<String> {
+    let mut next = Vec::new();
+    for command in run.reason.iter().flat_map(|reason| &reason.next)
+        .cloned().chain([format!("cozy run watch {} --full", run.name())])
+    {
+        if !command.trim().is_empty() && !next.contains(&command) {
+            next.push(command);
+        }
+        if next.len() == 2 {
+            break;
+        }
+    }
+    next
 }
 
 /// A weights output's commit.
@@ -387,8 +414,16 @@ pub(super) fn fields(ctx: &Context, run: &Run) -> output::Record {
     if let Some(stalled) = run.stalled.as_ref().filter(|_| !settled(run)) {
         record = record.field("stalled", format!("{}. It keeps running until you end it", stalled_words(stalled)));
     }
-    if let Some(ms) = run.execution_ms {
-        record = record.field("execution", format!("{:.1}s", ms as f64 / 1000.0));
+    // All of its time: until its machine started it, executing there, and recording it here after.
+    let s = |ms: i64| format!("{:.1}s", ms.max(0) as f64 / 1000.0);
+    match (run.execution_ms, run.started_at_ms, run.settled_at_ms) {
+        (Some(ms), Some(started), Some(settled)) => {
+            let (ms, created) = (ms as i64, run.created_at_ms);
+            let parts = format!("{} to start + {} executing + {} to record", s(started - created), s(ms), s(settled - started - ms));
+            record = record.field("time", format!("{} = {parts}", s(settled - created)));
+        }
+        (Some(ms), ..) => record = record.field("execution", s(ms as i64)),
+        _ => {}
     }
     if let Some(memo) = &run.memo {
         let done = match memo.memoized {
@@ -457,11 +492,10 @@ fn adjustment(row: &Adjustment) -> String {
 
 /// What to do next with `run`: follow it while it goes on, show it when it did not succeed.
 pub(super) fn next(ctx: &Context, run: &Run) {
-    let watch = format!("cozy run show {}", run.name());
-    let show = format!("cozy run show {}", run.name());
+    let watch = format!("cozy run watch {}", run.name());
     match run.status {
         Status::Completed => {}
-        Status::Failed | Status::Canceled => output::next(ctx, &[&show]),
+        Status::Failed | Status::Canceled => output::next(ctx, &failure_next(run).iter().map(String::as_str).collect::<Vec<_>>()),
         _ if run.stalled.is_some() => {
             let logs = run.machine.as_ref().map(|machine| format!("cozy machine logs {machine} -n 40"));
             output::next(ctx, &[&format!("cozy run cancel {}", run.name()), logs.as_deref().unwrap_or(&watch)]);
@@ -625,7 +659,7 @@ impl View {
                     self.line(&format!("  {level}: {text}"));
                 }
             }
-            // A call that failed is told by its run's reason, or by `cozy run show` when its run went on.
+            // A call that failed is told by its run's reason, or by `cozy run watch` when its run went on.
             Event::Call { call, .. } if call.reason.is_none() => {
                 let mut line = format!("  call {}", call.function);
                 if !call.label.is_empty() {

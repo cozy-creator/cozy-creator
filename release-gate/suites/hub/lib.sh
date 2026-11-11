@@ -4,13 +4,29 @@
 # and $HUB_URL first. Every cozy call goes to $HUB_URL: exported as COZY_HUB_URL, the CLI names it to Calcifer and the
 # machine on each call.
 export COZY_HUB_URL=$HUB_URL
-HUB_PKG= HUB_MODELS= HUB_LIVE= HUB_RENTED= WHO=
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../e2e" && pwd)/test-hub.sh"
+require_ci_test_hub "$HUB_URL" || return 2
+hub_test_target() {
+  if ! require_test_hub "$HUB_URL"; then
+    expect "hub isolation" FAIL "synthetic checks require the isolated fixture Hub"
+    return 2
+  fi
+  if [ "${COZY_HUB_URL:-}" != "$HUB_URL" ] && ! require_test_hub "${COZY_HUB_URL:-}"; then
+    expect "hub isolation" FAIL "the CLI target differs from the isolated fixture Hub"
+    return 2
+  fi
+}
+HUB_PKG= HUB_CREATED= HUB_MODELS= HUB_LIVE= HUB_RENTED= WHO=
 mkdir -p "$HB"
 # hub_5xx <file>: the Hub answered a server failure, which no cell accepts, as a refusal or otherwise.
 hub_5xx() { grep -qE '"status": ?5[0-9][0-9]|HTTP 5[0-9][0-9]|: 5[0-9][0-9]; |unexpected internal failure|"code": ?"(internal|hub_answer)"' "$1"; }
 # hub_do <check> ok|refused <cozy args...>: PASS (returns 0) when the command exits as wanted and the Hub answered no 5xx.
 hub_do() {
   local check=$1 want=$2 code; shift 2
+  case "$1 ${2:-}" in
+    'package publish'|'package yank'|'package delete'|'model upload'|'model publish'|'model edit'|'model delete'|'lora upload'|'lora publish'|'lora edit'|'lora delete'|'org claim')
+      hub_test_target || { expect "hub $check" FAIL "synthetic mutation requires the isolated fixture Hub"; return 2; } ;;
+  esac
   "$CLI" --json "$@" >"$HB/$check.out" 2>&1; code=$?
   if hub_5xx "$HB/$check.out"; then
     expect "hub $check" FAIL "cozy $* → exit $code, a server failure: $(tail -c 300 "$HB/$check.out")"
@@ -22,6 +38,14 @@ hub_do() {
     return 1
   fi
 }
+
+# This suite also runs released clients in skew tests. The product exposes only uninstall;
+# an older client still needs its original spelling to exercise the same wire operation.
+hub_uninstall() {
+  local check=$1 verb=uninstall; shift
+  "$CLI" package uninstall --help > /dev/null 2>&1 || verb=remove
+  hub_do "$check" ok package "$verb" "$@"
+}
 # hub_runs <check> <release> <package> [pin] [machine]: `cozy run <package>/echo[@pin]` on the machine ($M) answers with that release.
 hub_runs() {
   local check=$1 want=$2 on=${5:-$M} n got
@@ -32,17 +56,20 @@ hub_runs() {
 }
 # hub_release <version> [publish flag...]: the throwaway package at that version, published from its own directory.
 hub_release() {
+  hub_test_target || return 2
+  HUB_CREATED=1
   local dir=$HB/pkg-$1
   rm -rf "$dir" && cp -r "$HERE/suites/hub/pkg" "$dir"
   sed -i "s/^name = \"ci-hub-pkg\"/name = \"$HUB_PKG\"/; s/^version = \"0.1.0\"/version = \"$1\"/" "$dir/pyproject.toml"
   sed -i "s/^RELEASE = \"0.1.0\"/RELEASE = \"$1\"/" "$dir/ci_hub_pkg/__init__.py"
-  (cd "$dir" && hub_do "package-lock-$1" ok package lock && hub_do "package-publish-$1" ok package publish -y "${@:2}")
+  (cd "$dir" && hub_do "package-publish-$1" ok package publish -y "${@:2}" && test -s uv.lock)
 }
 # hub_candidate <version>: published yanked while the Hub's newest is read throughout: no read names it (cl-732).
 hub_candidate() {
+  hub_test_target || return 2
   local seen=$HB/package-candidate-newest.txt poller
   : >"$seen"
-  ( while :; do "$CLI" --json package info "$WHO/$HUB_PKG" 2>/dev/null |
+  ( while :; do package_details "$WHO/$HUB_PKG" 2>/dev/null |
       python3 -I -c 'import json,sys; print(json.load(sys.stdin)["latest_release"])' >>"$seen" 2>/dev/null; sleep 0.2; done ) &
   poller=$!
   hub_release "$1" --yanked && HUB_LIVE="$HUB_LIVE $1"
@@ -52,12 +79,12 @@ hub_candidate() {
   [ "$reads" -gt 0 ] && [ "$named" = 0 ] && expect "hub package-candidate-never-newest" PASS "$reads reads of the Hub's newest during the publish, none named $1" ||
     expect "hub package-candidate-never-newest" FAIL "$reads reads of the Hub's newest during the publish, $named named $1"
 }
-# hub_listed <check> <model>: `cozy model info` lists the model's release 0.1.0 with its one lane, f16.
+# hub_listed <check> <model>: the model metadata API lists the model's release 0.1.0 with its one lane, f16.
 hub_listed() {
-  "$CLI" --json model info "$2" >"$HB/$1.out" 2>&1
+  model_details "$2" >"$HB/$1.out" 2>&1
   python3 -I -c 'import json,sys; r=[x for x in json.load(open(sys.argv[1])).get("releases") or [] if x.get("version")=="0.1.0"]; sys.exit(0 if r and [l["lane"] for l in r[0]["lanes"]]==["f16"] else 1)' "$HB/$1.out" &&
-    expect "hub $1" PASS "model info lists 0.1.0 with lane f16" ||
-    expect "hub $1" FAIL "model info does not list 0.1.0 with lane f16: $(tail -c 300 "$HB/$1.out")"
+    expect "hub $1" PASS "model metadata lists 0.1.0 with lane f16" ||
+    expect "hub $1" FAIL "model metadata does not list 0.1.0 with lane f16: $(tail -c 300 "$HB/$1.out")"
 }
 # hub_weights <dir>: 8 MiB of new random weights as a CozyTensors folder (new blobs, so an upload sends every one).
 hub_weights() {
@@ -83,11 +110,36 @@ def walk(o):
 walk(json.load(sys.stdin))' 2>/dev/null | sort -u
 }
 hub_cleanup() {
-  local v
-  for v in $HUB_LIVE; do "$CLI" package yank "$WHO/$HUB_PKG@$v" -y >>"$HB/cleanup.log" 2>&1; done
-  for v in $HUB_MODELS; do "$CLI" model delete "$v" -y >>"$HB/cleanup.log" 2>&1; done
-  for v in $HUB_RENTED; do "$CLI" machine end "$v" -y >>"$HB/cleanup.log" 2>&1; done
-  HUB_LIVE= HUB_MODELS= HUB_RENTED=
+  local v failed=0
+  if [ -n "$HUB_CREATED$HUB_MODELS" ]; then
+    if hub_test_target; then
+      if [ -n "$HUB_CREATED" ]; then
+        if python3 "$HERE/../e2e/delete-test-package.py" "$WHO/$HUB_PKG" >>"$HB/cleanup.log" 2>&1; then
+          HUB_CREATED= HUB_LIVE=
+        else
+          expect "hub package-cleanup" FAIL "could not remove the isolated test package; see cleanup.log"
+          failed=1
+        fi
+      fi
+      for v in $HUB_MODELS; do
+        if "$CLI" model delete "$v" -y >>"$HB/cleanup.log" 2>&1; then HUB_MODELS=${HUB_MODELS/ $v/}; else
+          expect "hub model-cleanup" FAIL "could not remove isolated model $v; see cleanup.log"
+          failed=1
+        fi
+      done
+    else
+      expect "hub cleanup" FAIL "refusing synthetic cleanup outside the isolated fixture Hub"
+      failed=1
+    fi
+  fi
+  # Rentals remain explicitly owned by this run even when a fixture cleanup failed.
+  for v in $HUB_RENTED; do
+    if "$CLI" machine end "$v" -y >>"$HB/cleanup.log" 2>&1; then HUB_RENTED=${HUB_RENTED/ $v/}; else
+      expect "hub rental-cleanup" FAIL "could not end owned rental $v; see cleanup.log"
+      failed=1
+    fi
+  done
+  return "$failed"
 }
 
 # hub_contract [paths|paths-empty]: each path no verb reaches, called anonymously through e2e/hubcheck (contract.py),
@@ -130,21 +182,23 @@ hub_account() {
 # data-yanked, a fresh install takes 0.1.0, its exact pin still installs; un-yank → 0.1.1 again; publish 0.1.2 --yanked →
 # the Hub's newest never names it, read throughout, the publisher's next unversioned run keeps 0.1.1, and its pin installs.
 hub_publish() {
+  hub_test_target || return 2
   hub_release 0.1.0 && HUB_LIVE="0.1.0"
   hub_release 0.1.1 && HUB_LIVE="0.1.0 0.1.1"
-  hub_do package-info ok package info "$WHO/$HUB_PKG"
+  package_details "$WHO/$HUB_PKG" > "$HB/package-detail.out" || expect "hub package detail" FAIL "package metadata is unavailable"
   hub_do package-ls ok package ls "$WHO/$HUB_PKG"
 }
 hub_packages() {
+  hub_test_target || return 2
   hub_runs package-newest 0.1.1 "$WHO/$HUB_PKG"
   hub_do package-yank ok package yank "$WHO/$HUB_PKG@0.1.1"
   while IFS=$'\t' read -r check verdict what; do expect "$check" "$verdict" "$what"; done < <(uv run -q --no-project \
     --with pyyaml python -I "$HERE/suites/hub/contract.py" "$HUB_URL" yanked "$WHO" "$HUB_PKG" 0.1.1)
-  hub_do package-remove ok package remove "$WHO/$HUB_PKG" --on "$M"
+  hub_uninstall package-remove "$WHO/$HUB_PKG" --on "$M"
   hub_runs package-skips-yanked 0.1.0 "$WHO/$HUB_PKG"
   hub_runs package-pinned-yanked 0.1.1 "$WHO/$HUB_PKG" 0.1.1
   hub_do package-unyank ok package yank --undo "$WHO/$HUB_PKG@0.1.1"
-  hub_do package-remove-again ok package remove "$WHO/$HUB_PKG" --on "$M"
+  hub_uninstall package-remove-again "$WHO/$HUB_PKG" --on "$M"
   hub_runs package-unyanked 0.1.1 "$WHO/$HUB_PKG"
   hub_candidate 0.1.2
   hub_runs package-candidate-skipped 0.1.1 "$WHO/$HUB_PKG"
@@ -154,25 +208,40 @@ hub_packages() {
 # hub_model_upload <check> <machine> <model>: new weights uploaded by that machine (its run capability: the workload
 # writer's path, as every machine and pod uploads) as a commit in lane f16, which it sets in HUB_COMMIT.
 hub_model_upload() {
+  hub_test_target || return 2
   local w=$HB/w-$1
   HUB_COMMIT=
   hub_weights "$w" || { expect "hub $1" FAIL "no weights to upload: tfs import/export failed"; return 1; }
   HUB_MODELS="$HUB_MODELS $3"
   hub_do "$1" ok model upload "$w" "$3" --lane f16 --on "$2" -y || return 1
-  HUB_COMMIT=$("$CLI" --json model info "$3" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["commits"][0]["commit"])' 2>/dev/null)
-  [ -n "$HUB_COMMIT" ] || { expect "hub $1-commit" FAIL "model info $3 names no commit after the upload"; return 1; }
+  HUB_COMMIT=$(model_details "$3" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["commits"][0]["commit"])' 2>/dev/null)
+  [ -n "$HUB_COMMIT" ] || { expect "hub $1-commit" FAIL "model metadata for $3 names no commit after the upload"; return 1; }
 }
+# Released clients use download; the current CLI shares package install terminology.
+hub_model_install() {
+  local check=$1 verb=install; shift
+  "$CLI" model install --help > /dev/null 2>&1 || verb=download
+  hub_do "$check" ok model "$verb" "$@"
+}
+
 # hub_models: on $M, upload a commit (the workload writer), publish it as 0.1.0 (listed), download; the exact pin and
-# lane download; delete → gone, as the Hub serves the model and as `model info` shows it.
+# lane download; delete → gone, as the Hub serves the model and as the model metadata API shows it.
 hub_models() {
+  hub_test_target || return 2
   local model=$WHO/$HUB_PKG
   hub_model_upload model-upload "$M" "$model" || return 0
   hub_do model-publish ok model publish "$model" 0.1.0 "$HUB_COMMIT"
   hub_listed model-info-published "$model"
-  hub_do model-download ok model download "$model" --on "$M" -y
-  hub_do model-pinned ok model download "$model@0.1.0" --lane f16 --on "$M" -y
+  hub_model_install model-download "$model" --on "$M" -y
+  hub_model_install model-pinned "$model@0.1.0" --lane f16 --on "$M" -y
   hub_do model-delete ok model delete "$model" -y && HUB_MODELS=${HUB_MODELS/ $model/}
-  hub_do model-gone refused model info "$model"
+  if model_details "$model" > "$HB/model-gone.out" 2>&1; then
+    expect "hub model-gone" FAIL "deleted model still answers"
+  elif hub_5xx "$HB/model-gone.out"; then
+    expect "hub model-gone" FAIL "model lookup returned a server failure"
+  else
+    expect "hub model-gone" PASS "deleted model is absent"
+  fi
 }
 
 # hub_dev: `dev = true` in this home's cozy config, which turns on dev-only options (cl-844: hidden from --help,
@@ -218,22 +287,27 @@ hub_pod_secrets() {
   fi
 }
 # hub_pod <provider|any>: the real-pod cells on one fresh `cpu` rental with a throwaway SSH key: rented (`--provider`, a
-# dev-only option, unless `any`, the Hub's choice), the published package run there, new weights uploaded from it (the
-# workload writer on a pod, the path v0.40.33 broke), pod-env and pod-auth (hub_pod_secrets), ended and checked gone.
+# dev-only option, unless `any`, the Hub's choice), a local weightless package run there by content, pod-env and pod-auth (hub_pod_secrets), ended and checked gone.
+# Synthetic package publication and model uploads run separately against the isolated fixture Hub.
 # Only a machine the rent reply names is ended (hub_cleanup ends any left); returns 2 when this cozy refuses the
 # provider option, having failed the cell.
 hub_pod() {
-  local p=$1 m before model=$WHO/$HUB_PKG-$1 prov=()
+  local p=$1 m before prov=()
   [ "$p" = any ] || prov=(--provider "$p")
   before=$(hub_machines)
   [ -s "$HB/pod-ssh.pub" ] || ssh-keygen -q -t ed25519 -N '' -C ci-hub-pod -f "$HB/pod-ssh"
-  # A provider with no `cpu` right now answers rental.sku_out_of_stock, whose remedy is to ask again: every minute, 10 at most.
-  local code
-  for _ in $(seq 10); do
-    "$CLI" --json machine rent cpu "${prov[@]}" --ssh "$HB/pod-ssh.pub" -y >"$HB/rent-$p.out" 2>&1; code=$?
-    grep -q '"rental.sku_out_of_stock"' "$HB/rent-$p.out" || break
-    log "hub rent on $p: no cpu inventory on $p right now; asking again in 60 s"; sleep 60
+  # A provider with no `cpu` right now answers rental.sku_out_of_stock: ask again each minute, 3 at most, then take its cheapest
+  # GPU of HUB_GPU_FALLBACK in turn (vast went without `cpu` for hours on 11-10, and xs-157's proof must still reach it).
+  local code sku
+  for sku in cpu ${HUB_GPU_FALLBACK:-rtx-3060 rtx-4060-ti rtx-3070 rtx-a4000 rtx-3080 rtx-3090}; do
+    for _ in $( [ "$sku" = cpu ] && seq 3 || echo 1 ); do
+      "$CLI" --json machine rent "$sku" "${prov[@]}" --ssh "$HB/pod-ssh.pub" -y >"$HB/rent-$p.out" 2>&1; code=$?
+      grep -qE '"rental.sku_out_of_stock"|no provider inventory' "$HB/rent-$p.out" || break 2
+      [ "$sku" != cpu ] || { log "hub rent on $p: no cpu inventory on $p right now; asking again in 60 s"; sleep 60; }
+    done
+    log "hub rent on $p: no $sku there; trying the next"
   done
+  echo "$sku" > "$HB/rent-$p.sku"
   if grep -qE "unexpected argument '--provider'|dev_only" "$HB/rent-$p.out"; then
     expect "hub rent on $p" FAIL "this cozy refuses --provider with dev = true (it needs cl-844's switch): $(tail -c 200 "$HB/rent-$p.out")"
     return 2
@@ -244,7 +318,7 @@ while (i := t.find("{", i)) >= 0:
     d, i = dec.raw_decode(t, i)
     if isinstance(d.get("machine"), dict) and d["machine"].get("name"): print(d["machine"]["name"]); break' "$HB/rent-$p.out" 2>/dev/null)
   if [ "$code" != 0 ] && ! grep -q '"machine"' "$HB/rent-$p.out"; then
-    expect "hub rent on $p" FAIL "cozy machine rent cpu ${prov[*]} → exit $code: $(grep -o '"code":"[^"]*","message":"[^"]*"' "$HB/rent-$p.out" | tail -1 || tail -c 300 "$HB/rent-$p.out")"
+    expect "hub rent on $p" FAIL "cozy machine rent $sku ${prov[*]} → exit $code: $(grep -o '"code":"[^"]*","message":"[^"]*"' "$HB/rent-$p.out" | tail -1 || tail -c 300 "$HB/rent-$p.out")"
     return
   fi
   # Only the machine the reply names is ours: another session may rent at the same moment, and its pod is never ended here.
@@ -256,9 +330,8 @@ while (i := t.find("{", i)) >= 0:
   else
     expect "hub rent on $p" FAIL "rented $m on $p, but the reply named no machine: $(tail -c 200 "$HB/rent-$p.out")"
   fi
-  hub_runs "run-on-$p" 0.1.1 "$WHO/$HUB_PKG" '' "$m"
-  hub_model_upload "upload-from-$p" "$m" "$model" &&
-    hub_do "upload-from-$p-gone" ok model delete "$model" -y && HUB_MODELS=${HUB_MODELS/ $model/}
+  # Source travels by content; provider qualification never creates a Hub repository.
+  hub_runs "run-on-$p" 0.1.0 "$HERE/suites/hub/pkg" '' "$m"
   hub_pod_secrets "$p" "$m"
   "$CLI" machine end "$m" -y >"$HB/end-$p.out" 2>&1
   for _ in $(seq 30); do

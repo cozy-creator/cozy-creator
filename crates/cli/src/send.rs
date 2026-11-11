@@ -26,11 +26,16 @@ const PART: u64 = 64 << 20;
 pub(crate) struct Sender<'a> {
     ctx: &'a Context,
     calcifer: Client,
+    project: Option<String>,
 }
 
 impl<'a> Sender<'a> {
     pub(crate) async fn new(ctx: &'a Context) -> Result<Self, Error> {
-        Ok(Self { ctx, calcifer: ctx.calcifer().await? })
+        Ok(Self { ctx, calcifer: ctx.calcifer().await?, project: None })
+    }
+
+    pub(crate) async fn for_project(ctx: &'a Context, project: &str) -> Result<Self, Error> {
+        Ok(Self { ctx, calcifer: ctx.calcifer().await?, project: Some(project.to_owned()) })
     }
 
     fn memo(&self) -> PathBuf {
@@ -39,8 +44,8 @@ impl<'a> Sender<'a> {
 
     /// The file at `path`, held by Calcifer: its digest.
     pub(crate) async fn file(&self, path: &Path) -> Result<Digest, Error> {
-        let (at, memo) = (path.to_owned(), self.memo());
-        let digest = tokio::task::spawn_blocking(move || api::digests::of(Some(&memo), &at))
+        let (at, memo) = (path.to_owned(), self.project.is_none().then(|| self.memo()));
+        let digest = tokio::task::spawn_blocking(move || api::digests::of(memo.as_deref(), &at))
             .await
             .map_err(|e| Error::internal("digest", e.to_string()))??;
         let length = std::fs::metadata(path).map_err(|e| unreadable(path, e))?.len();
@@ -50,8 +55,8 @@ impl<'a> Sender<'a> {
 
     /// The folder at `root`, each file and then its tree document held by Calcifer: the document's digest.
     pub(crate) async fn tree(&self, root: &Path) -> Result<Digest, Error> {
-        let (at, memo) = (root.to_owned(), self.memo());
-        let staged = tokio::task::spawn_blocking(move || api::stage::stage(&at, Some(&memo)))
+        let (at, memo) = (root.to_owned(), self.project.is_none().then(|| self.memo()));
+        let staged = tokio::task::spawn_blocking(move || api::stage::stage(&at, memo.as_deref()))
             .await
             .map_err(|e| Error::internal("stage", e.to_string()))??;
         for file in &staged.files {
@@ -59,8 +64,8 @@ impl<'a> Sender<'a> {
         }
         let digest = Digest::of(&staged.document);
         let length = staged.document.len() as u64;
-        if self.calcifer.held(&digest).await?.is_some() {
-            self.calcifer.put_part(&digest, staged.document.into(), 0, length).await?;
+        if self.calcifer.held_for(&digest, self.project.as_deref()).await?.is_some() {
+            self.calcifer.put_part_for(&digest, staged.document.into(), 0, length, self.project.as_deref()).await?;
         }
         Ok(digest)
     }
@@ -68,8 +73,8 @@ impl<'a> Sender<'a> {
     /// The package at `path` (a folder or a script) as local code: its tree, each file and then the document held by Calcifer
     /// (`api::code`). What never goes is said.
     pub(crate) async fn code(&self, path: &Path) -> Result<LocalCode, Error> {
-        let (at, memo) = (path.to_owned(), self.memo());
-        let staged = tokio::task::spawn_blocking(move || api::code::stage(&at, Some(&memo)))
+        let (at, memo) = (path.to_owned(), self.project.is_none().then(|| self.memo()));
+        let staged = tokio::task::spawn_blocking(move || api::code::stage(&at, memo.as_deref()))
             .await
             .map_err(|e| Error::internal("stage", e.to_string()))??;
         if !staged.left.is_empty() {
@@ -80,20 +85,31 @@ impl<'a> Sender<'a> {
         }
         let code = staged.code();
         let length = staged.document.len() as u64;
-        if self.calcifer.held(&code.tree).await?.is_some() {
-            self.calcifer.put_part(&code.tree, staged.document.into(), 0, length).await?;
+        if self.calcifer.held_for(&code.tree, self.project.as_deref()).await?.is_some() {
+            self.calcifer.put_part_for(&code.tree, staged.document.into(), 0, length, self.project.as_deref()).await?;
         }
         Ok(code)
     }
 
-    /// `path`'s `length` bytes under `digest`, but what Calcifer holds of them.
+    /// `path`'s `length` bytes under `digest`, but what Calcifer holds of them, until Calcifer holds the file whole: another sender of
+    /// the same file can hold ranges this one skipped and not finish them (cl-864).
     async fn bytes(&self, path: &Path, digest: Digest, length: u64) -> Result<(), Error> {
-        let Some(held) = self.calcifer.held(&digest).await? else { return Ok(()) };
-        if length == 0 {
-            self.calcifer.put_part(&digest, bytes::Bytes::new(), 0, 0).await?;
-            return Ok(());
+        for _ in 0..3 {
+            let Some(held) = self.calcifer.held_for(&digest, self.project.as_deref()).await? else { return Ok(()) };
+            if self.missing(path, digest, length, &held).await? {
+                return Ok(());
+            }
         }
-        let gaps = missing(&held, length);
+        let said = format!("Calcifer holds only part of {} after three sends", path.display());
+        Err(Error::new(Kind::Unavailable, "file_incomplete", said).next("cozy doctor"))
+    }
+
+    /// The bytes of `path` Calcifer doesn't hold (`held`), sent: whether that made the file whole.
+    async fn missing(&self, path: &Path, digest: Digest, length: u64, held: &[(u64, u64)]) -> Result<bool, Error> {
+        if length == 0 {
+            return self.calcifer.put_part_for(&digest, bytes::Bytes::new(), 0, 0, self.project.as_deref()).await;
+        }
+        let gaps = missing(held, length);
         let shown = !self.ctx.json && self.ctx.term.stderr && length > PART;
         let bar = crate::progress::Line::stderr(shown, Some(length), |s| {
             format!("sending {}: {}/{} at {}", s.msg(), s.bytes(), s.total_bytes(), s.bytes_per_sec())
@@ -101,6 +117,7 @@ impl<'a> Sender<'a> {
         bar.set_message(path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
         bar.set_position(length - gaps.iter().map(|(start, end)| end - start).sum::<u64>());
         let mut file = tokio::fs::File::open(path).await.map_err(|e| unreadable(path, e))?;
+        let mut whole = false;
         for (start, end) in gaps {
             let mut at = start;
             file.seek(SeekFrom::Start(at)).await.map_err(|e| unreadable(path, e))?;
@@ -108,13 +125,13 @@ impl<'a> Sender<'a> {
                 let mut part = vec![0; (end - at).min(PART) as usize];
                 file.read_exact(&mut part).await.map_err(|e| unreadable(path, e))?;
                 let n = part.len() as u64;
-                self.calcifer.put_part(&digest, part.into(), at, length).await?;
+                whole = self.calcifer.put_part_for(&digest, part.into(), at, length, self.project.as_deref()).await?;
                 at += n;
                 bar.inc(n);
             }
         }
         bar.finish_and_clear();
-        Ok(())
+        Ok(whole)
     }
 
     /// `written` (relative to `base`, `~` this user's home) sent when it names a file here, or, `folders` and written as a path, a folder.

@@ -5,8 +5,9 @@ sparse site's walk at each level (its sparse cells at that level and above, the 
 import json
 import math
 import statistics
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from functools import partial
+from typing import TYPE_CHECKING, TypeAlias, TypedDict, cast
 
 import msgspec
 import torch
@@ -23,7 +24,12 @@ from cozy_runtime.internal import (
 from cozy_runtime.internal.encoding.selection import measure_device
 from diffusers.models.attention_dispatch import dispatch_attention_fn
 
+if TYPE_CHECKING:
+    from cozy_runtime.internal.attention_ulysses import Options
+
 app = App()
+#: A call with no options: `refusal` reads each with `.get`.
+NO_OPTIONS = cast("Options", {})
 #: M, then (N, K) of qkv/out, FFN up and FFN down: SDXL 1024² (CFG batch 2) at 64² and 32²,
 #: Qwen-Image 1024², H3 15 s on one GPU
 GEMMS = {
@@ -49,8 +55,47 @@ class Report(msgspec.Struct):
     detail: str
 
 
+#: Prebuilt's int8 or fp8 GEMM: (q, its scales, weight, weight scale, bias, out dtype, config).
+Gemm: TypeAlias = Callable[[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None, torch.dtype, int], torch.Tensor]
+
+
+class Level(TypedDict):
+    rule: str
+    best: str
+    regret: float
+
+
+class Row(TypedDict, total=False):
+    """A report row: a GEMM site's, an attention shape's or a sparse shape's times, or why it has none."""
+    format: str
+    level: int
+    shape: str
+    skipped: str
+    refused: dict[str, str]
+    ms: dict[str, float]
+    best: str
+    regret: float
+    same_bits: dict[int, bool]
+    levels: dict[int, Level]
+    not_sparse: dict[str, dict[str, int]]
+
+
+class Regrets(TypedDict, total=False):
+    card: str
+    sm: int
+    driver: str
+    sms: int
+    l2: int
+    gemm: str | list[Row]  # why the library does not serve here, else each site's row
+    attention: list[Row]
+    sparse: list[Row]
+    over_3pct: list[str]
+
+
 def _bench(calls: dict[str, Callable[[int], object]], rounds: int = 7) -> dict[str, float]:
     """Median device ms per call, in rounds whose order rotates; each sample runs >= 2 ms."""
+    reps: dict[str, int]
+    samples: dict[str, list[float]]
     reps, samples, names = {}, {n: [] for n in calls}, list(calls)
     for round_ in range(-1, rounds):  # round -1 warms each and sizes its sample
         for name in names[round_ % len(names) :] + names[: round_ % len(names)]:
@@ -76,7 +121,7 @@ def _bytes(*shape: int, fp8: bool) -> torch.Tensor:
     return (b & 0x77).view(torch.float8_e4m3fn) if fp8 else b.view(torch.int8)
 
 
-def _gemm(gemm: Callable[..., torch.Tensor], fp8: bool, m: int, n: int, k: int, l2: int) -> dict:
+def _gemm(gemm: Gemm, fp8: bool, m: int, n: int, k: int, l2: int) -> Row:
     """The rule against every tile the card's table holds at (M, N, K), and their bits."""
     q, xs, scale = _bytes(m, k, fp8=fp8), torch.rand(m, device="cuda"), torch.rand(n, device="cuda")
     # weight copies over twice the L2: no call reads its weights warm, as no served call does
@@ -85,6 +130,8 @@ def _gemm(gemm: Callable[..., torch.Tensor], fp8: bool, m: int, n: int, k: int, 
     def run(config: int) -> Callable[[int], torch.Tensor]:
         return lambda i: gemm(q, xs, ws[i % len(ws)], scale, None, torch.bfloat16, config)
 
+    calls: dict[str, Callable[[int], object]]
+    same: dict[int, bool]
     rule, calls, same = run(-1)(0), {"rule": run(-1)}, {}
     for config in range(8):
         try:
@@ -99,11 +146,11 @@ def _gemm(gemm: Callable[..., torch.Tensor], fp8: bool, m: int, n: int, k: int, 
     return {"ms": ms, "best": best, "regret": regret, "same_bits": same}
 
 
-def _attend(ready: dict, shape: tuple[int, ...]) -> dict:
+def _attend(ready: "dict[str, attention.Ready]", shape: tuple[int, ...]) -> Row:
     """The cell's kernels at one shape, in the cell's order: the first is the rule's pick."""
     q, k, v = (torch.randn(*shape, device="cuda", dtype=torch.bfloat16) for _ in range(3))
-    calls = {name: partial(lambda i, m: dispatch_attention_fn(q, k, v, backend=m), m=attention._member(r.candidate))
-             for name, r in ready.items() if not r.candidate.refusal(q, k, {})}  # fmt: skip
+    calls: dict[str, Callable[[int], object]] = {name: partial(lambda i, m: dispatch_attention_fn(q, k, v, backend=m), m=attention._member(r.candidate))
+             for name, r in ready.items() if not r.candidate.refusal(q, k, NO_OPTIONS)}  # fmt: skip
     if not calls:
         return {"ms": {}}
     ms = _bench(calls)
@@ -112,30 +159,32 @@ def _attend(ready: dict, shape: tuple[int, ...]) -> dict:
 
 
 def _sol_built(q: torch.Tensor) -> None:
-    """Upstream Sol's CuTe object and preprocess kernels for this length, waited for: until they
-    land, a sparse step serves its dense reference (`attention_sol._ready`, `_preprocessed`)."""
+    """Upstream Sol's CuTe object for this length and its preprocess kernels for this card, waited
+    for: until they land, a sparse step serves its dense reference (`attention_sol._ready`, `_preprocessed`)."""
     card, store, index = attention_sol._capability(q.device), kernel_cache.configured(), q.device.index or 0
     if card is None or store is None:
         return
-    tokens, heads, found = q.shape[1], q.shape[2], attention_sol._job_for(q.shape[1], card)
+    found = attention_sol._job_for(q.shape[1], card)
     kernel_ready.wait(f"{attention_sol.KERNEL} {found.key.digest[:16]}",
                       partial(attention_sol._open, store, found, card))  # fmt: skip
-    kernel_ready.wait(f"{attention_sol.KERNEL} preprocess {tokens}x{heads} cuda:{index}",
-                      partial(attention_sol._warm, index, tokens, heads))  # fmt: skip
+    kernel_ready.wait(f"{attention_sol.KERNEL} preprocess cuda:{index}",
+                      partial(attention_sol._warm, index))  # fmt: skip
 
 
-def _sparse(row: arch.Row, ready: dict, shape: tuple[int, ...]) -> dict:
+def _sparse(row: arch.Row, ready: "dict[str, attention.Ready]", shape: tuple[int, ...]) -> Row:
     """Each sparse candidate as a sparse step calls it (inside its model's layout and a Sol site),
     and per level the rule's pick (the walk's first that serves) against the walk's best."""
     tokens, heads, prefix = shape
     q, k, v = (torch.randn(1, tokens, heads, 128, device="cuda", dtype=torch.bfloat16) for _ in range(3))
     layout = AttentionLayout(live_tokens=tokens, protected_prefix=prefix, step=1, dense_until_step=1)
+    calls: dict[str, Callable[[int], object]]
+    not_sparse: dict[str, dict[str, int]]
     calls, not_sparse = {}, {}
     site = attention_sol._SITE.set(attention_sol.Site("kernel-regret", "h3.attn"))
     try:
         with attention_scope(layout):
             for name, r in ready.items():
-                if r.candidate.refusal(q, k, {}):
+                if r.candidate.refusal(q, k, NO_OPTIONS):
                     continue
                 if r.candidate.import_name == "sol_attn":
                     _sol_built(q)
@@ -149,6 +198,7 @@ def _sparse(row: arch.Row, ready: dict, shape: tuple[int, ...]) -> dict:
             ms = _bench(calls) if calls else {}
     finally:
         attention_sol._SITE.reset(site)
+    levels: dict[int, Level]
     family, levels = attention.SPARSE.get(row.family, {}), {}
     for at in attention.LEVELS:
         walk = [n for lv in attention.LEVELS[attention.LEVELS.index(at) :] for n in family.get(lv, ())]
@@ -159,7 +209,7 @@ def _sparse(row: arch.Row, ready: dict, shape: tuple[int, ...]) -> dict:
     return {"ms": ms, "levels": levels, "not_sparse": not_sparse}
 
 
-def _measured(what: str, measure: Callable[[], dict]) -> dict:
+def _measured(what: str, measure: Callable[[], Row]) -> Row:
     try:
         return {"shape": what, **measure()}
     except torch.OutOfMemoryError:
@@ -174,23 +224,27 @@ def gpu(payload: Probe, ctx: Context) -> Report:
     index = torch.cuda.current_device()
     props, device = torch.cuda.get_device_properties(index), measure_device(torch, index)
     ops, why = prebuilt.library(torch, index, device.sm)
-    report: dict = {"card": device.name, "sm": device.sm, "driver": device.driver,
+    report: Regrets = {"card": device.name, "sm": device.sm, "driver": device.driver,
                     "sms": props.multi_processor_count, "l2": props.L2_cache_size, "gemm": why,
                     "attention": []}  # fmt: skip
     if ops is not None:
-        report["gemm"] = []
+        report["gemm"] = gemms = list[Row]()
         for f in (prebuilt.INT8, prebuilt.FP8) if ops.cutlass_fp8 else (prebuilt.INT8,):
             gemm = ops.fp8_gemm if f.fp8 else ops.int8_gemm
             for model, (m, *sites) in GEMMS.items():
                 for site, (n, k) in zip(("qkv", "up", "down"), sites, strict=True):
                     ctx.raise_if_cancelled()
-                    row = {"format": f.name, "shape": f"{model} {site}"}
+                    row: Row = {"format": f.name, "shape": f"{model} {site}"}
                     if k % f.multiple:  # the op takes K in whole groups (int8: ConvRot's 256)
-                        report["gemm"].append({**row, "skipped": f"K {k} % {f.multiple}"})
+                        gemms.append({**row, "skipped": f"K {k} % {f.multiple}"})
                         continue
                     measure = partial(_gemm, gemm, f.fp8, m, n, k, props.L2_cache_size)
-                    report["gemm"].append({**row, **_measured(row["shape"], measure)})
+                    gemms.append({**row, **_measured(row["shape"], measure)})
+    names: Sequence[str]  # a dense cell's, then the sparse walk's
+    shape: tuple[int, ...]  # ATTENTION's, then SPARSE's
     for level, names in attention.DENSE.get(arch.row(device.sm).family, {}).items():
+        ready: "dict[str, attention.Ready]"
+        refused: dict[str, str]
         ready, refused = {}, {}
         for name in names:
             try:
@@ -201,8 +255,8 @@ def gpu(payload: Probe, ctx: Context) -> Report:
             ctx.raise_if_cancelled()
             row = _measured(label, partial(_attend, ready, shape))
             report["attention"].append({"level": level, "refused": refused, **row})
-    row = arch.row(device.sm)
-    names = list(dict.fromkeys(n for cell in attention.SPARSE.get(row.family, {}).values() for n in cell))
+    card = arch.row(device.sm)
+    names = list(dict.fromkeys(n for cell in attention.SPARSE.get(card.family, {}).values() for n in cell))
     ready, refused = {}, {}
     for name in names:
         try:
@@ -210,13 +264,13 @@ def gpu(payload: Probe, ctx: Context) -> Report:
         except Exception as exc:
             refused[name] = f"{type(exc).__name__}: {exc}"[:300]
     if "sol-attn" in ready:  # its dense rows: what its walk binds at the family's 8-bit level
-        walk = attention.walk(row, 8 if 8 in attention.DENSE.get(row.family, {}) else 16, layout=True)
+        walk = attention.walk(card, 8 if 8 in attention.DENSE.get(card.family, {}) else 16, layout=True)
         attention._bind_sol_dense(attention._sol_dense(walk[walk.index("sol-attn") + 1 :], device, {}, {}))
     report["sparse"] = []
     for label, shape in SPARSE.items():
         ctx.raise_if_cancelled()
-        report["sparse"].append({"refused": refused, **_measured(label, partial(_sparse, row, ready, shape))})
-    rows = [*(report["gemm"] if ops is not None else []), *report["attention"]]
+        report["sparse"].append({"refused": refused, **_measured(label, partial(_sparse, card, ready, shape))})
+    rows = [*(cast(list[Row], report["gemm"]) if ops is not None else []), *report["attention"]]  # a list where ops serve
     report["over_3pct"] = [
         f"{r.get('format', r.get('level'))} {r['shape']}: {r['regret']:.1%}, best {r['best']}"
         for r in rows

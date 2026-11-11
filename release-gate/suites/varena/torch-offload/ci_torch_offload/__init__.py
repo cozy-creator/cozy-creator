@@ -36,20 +36,21 @@ class Report(msgspec.Struct):
     images: list[File] = msgspec.field(default_factory=list)
 
 
-def _child(script, request, ctx, out):
+def _child(script: str, request: dict[str, str | int | list[str]], ctx: Context, out: Outputs) -> Report:
     env = {k: v for k, v in os.environ.items() if k != "TORCH_CUBLAS_WORKSPACE_CACHE"}
     with tempfile.TemporaryDirectory() as folder:
         path = Path(folder) / "request.json"
         path.write_text(json.dumps({**request, "out": folder}))
         child = subprocess.Popen([sys.executable, "-I", "-B", str(Path(__file__).with_name(script)), str(path)],
                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
-        lines = []
+        assert child.stdout is not None
+        lines: list[str] = []
         for line in child.stdout:
             lines.append(line.rstrip())
             ctx.raise_if_cancelled()
         code = child.wait()
         report = next((json.loads(line)["report"] for line in reversed(lines) if line.startswith('{"report"')), None)
-        images = [out.save_file(image, media_type="image/png") for image in sorted(Path(folder).glob("*.png"))]
+        images: list[File] = [out.save_file(image, media_type="image/png") for image in sorted(Path(folder).glob("*.png"))]
     return Report(code == 0 and report is not None, json.dumps({"exit": code, "report": report, "tail": lines[-40:]}), images)
 
 

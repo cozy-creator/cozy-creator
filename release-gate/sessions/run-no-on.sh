@@ -9,7 +9,7 @@
 E2E=$(cd "$(dirname "$0")/../../e2e/cli" && pwd)
 for f in project/tool.py web/heavy.py; do [ -f "$E2E/$f" ] || fail "no e2e/cli/$f"; done
 # landed <step>: the machine the run its step names ran on.
-landed() { cozy --json run show "$(runno "$1")" --once | jq -r '.machine // empty'; }
+landed() { cozy --json run watch "$(runno "$1")" --once | jq -r '.machine // empty'; }
 # ran <step> <target> <field=value…>: `cozy run` with no --on, to its end; fails on a warning that this computer would do it poorly.
 ran() {
   local n=$1; shift

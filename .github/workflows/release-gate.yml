@@ -5,8 +5,8 @@ name: release-gate
 # promotion requires (cozy-promote.yaml, tensorfs-publish.yaml, cozy-runtime runtime-publish.yaml, packages
 # `task promote`). No workflow calls it.
 #   gh workflow run release-gate.yml -R cozy-creator/cozy-creator -f suites=runtime,packages -f cozy=v0.12.0 -f runtime_wheel=https://…#sha256=… -f pins=…
-# The runner signs in as the owner's account with the CI device key (environment release-gate, secret
-# COZY_CI_DEVICE_KEY; release-gate/README.md) and rents through tensorhub.com.
+# CI verification requires an isolated Hub. Hardware gates remain blocked until their runner
+# provisions an isolated qualification environment; they never borrow the production owner account.
 on:
   workflow_dispatch:
     inputs:
@@ -18,6 +18,10 @@ on:
         description: "cozy on the runner and the machine: released (the Hub's target), a release tag (v0.12.0) or a dev-build run id"
         type: string
         default: released
+      hub_ref:
+        description: "TensorHub source for isolated publication tests when the hub suite is selected"
+        type: string
+        default: master
       runtime_wheel:
         description: "Candidate Runtime wheel: https://…/<wheel>#sha256=<hex>, or artifact:[<run id>/]<name>, of this run or another of this repo's (empty: the Hub's target)"
         type: string
@@ -58,10 +62,6 @@ on:
         description: "Optional existing --cells hook: a .sh or .tsv file under release-gate/ in this checkout"
         type: string
         default: ''
-      image:
-        description: "A staged worker image the rentals boot, sha256:<hex> (an admin's; empty: the Hub's current one)"
-        type: string
-        default: ''
       establish:
         description: "Start the baseline of a SKU that has none"
         type: boolean
@@ -92,6 +92,7 @@ jobs:
       contents: read
     outputs:
       matrix: ${{ steps.select.outputs.matrix }}
+      hub_fixture: ${{ steps.select.outputs.hub_fixture }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -133,7 +134,89 @@ jobs:
           [ -z "$GPUS" ] || matrix=$(jq -c --argjson gpus "$GPUS" 'map(.gpus = $gpus)' <<< "$matrix")
           [ -z "$DISK" ] || matrix=$(jq -c --argjson disk "$DISK" 'map(.disk = $disk)' <<< "$matrix")
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          if jq -e 'any(.[]; (.suite | split(",") | index("hub")) != null)' <<< "$matrix" > /dev/null; then echo "hub_fixture=true" >> "$GITHUB_OUTPUT"; else echo "hub_fixture=false" >> "$GITHUB_OUTPUT"; fi
           echo "gates: $(jq -r 'map(.sku + " (" + .suite + ")") | join(", ")' <<< "$matrix")"
+
+  # Publication tests have their own database, object store and development account.
+  # This job receives no production device key and creates no production repositories.
+  hub-fixture:
+    needs: select
+    if: needs.select.outputs.hub_fixture == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: cozy-creator/cozy-creator
+          ref: ${{ github.repository == 'cozy-creator/cozy-creator' && github.sha || 'master' }}
+          path: creator
+      - uses: actions/checkout@v5
+        with:
+          repository: cozy-creator/tensorhub
+          ref: ${{ inputs.hub_ref }}
+          ssh-key: ${{ secrets.TENSORHUB_READ_KEY }}
+          persist-credentials: false
+          path: tensorhub
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tensorhub/go.mod
+          cache-dependency-path: tensorhub/go.sum
+      - uses: astral-sh/setup-uv@v7
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/skew-tools
+          key: skew-minio-RELEASE.2025-09-07T16-13-09Z
+      - name: Prepare candidate CLI
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COZY: ${{ inputs.cozy }}
+          RUNTIME_WHEEL: ${{ inputs.runtime_wheel }}
+          TENSORFS_WHEEL: ${{ inputs.tensorfs_wheel }}
+        run: |
+          set -euo pipefail
+          if [ "$COZY" = released ]; then
+            curl -LsSf https://tensorhub.com/install.sh | sh
+            cp "$HOME/.cozy/bin/cozy" "$RUNNER_TEMP/cozy-candidate"
+          elif [[ "$COZY" == v* ]]; then
+            curl -LsSf "https://github.com/cozy-creator/cozy-creator/releases/download/$COZY/cozy-installer.sh" | sh
+            cp "$HOME/.cozy/bin/cozy" "$RUNNER_TEMP/cozy-candidate"
+          else
+            gh run download "$COZY" -R cozy-creator/cozy-creator -p 'cozy-*' -D dev
+            install -m 0755 dev/cozy-*/cozy-linux-x86_64 "$RUNNER_TEMP/cozy-candidate"
+          fi
+          : > "$RUNNER_TEMP/hub-fixture-args.txt"
+          for item in "runtime|$RUNTIME_WHEEL|cozy_runtime" "tensorfs|$TENSORFS_WHEEL|tensorfs"; do
+            IFS='|' read -r flag value distribution <<< "$item"
+            [ -n "$value" ] || continue
+            if [[ "$value" == artifact:* ]]; then
+              artifact=${value#artifact:}; run=$GITHUB_RUN_ID
+              if [[ "$artifact" == */* ]]; then run=${artifact%%/*}; artifact=${artifact#*/}; fi
+              gh run download "$run" -R "$GITHUB_REPOSITORY" -n "$artifact" -D "wheel-$flag"
+              value=$(find "$PWD/wheel-$flag" -type f -name "$distribution-*.whl" -print -quit)
+              [ -n "$value" ] || { echo "::error::candidate $distribution wheel is missing"; exit 1; }
+            fi
+            printf '%s\n' "--$flag" "$value" >> "$RUNNER_TEMP/hub-fixture-args.txt"
+          done
+      - name: Isolated Hub publication checks
+        env:
+          SKEW_TOOLS: ${{ runner.temp }}/skew-tools
+        run: |
+          set -euo pipefail
+          sudo loginctl enable-linger "$(id -un)"
+          export XDG_RUNTIME_DIR=/run/user/$(id -u)
+          until [ -S "$XDG_RUNTIME_DIR/bus" ]; do sleep 1; done
+          export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
+          mapfile -t args < "$RUNNER_TEMP/hub-fixture-args.txt"
+          bash creator/e2e/skew/run.sh --hub-src tensorhub --cozy-bin "$RUNNER_TEMP/cozy-candidate" --out "$RUNNER_TEMP/hub-fixture" "${args[@]}"
+      - if: always()
+        uses: ./creator/e2e/publish
+        with:
+          name: hub-fixture
+          path: ${{ runner.temp }}/hub-fixture
+          retention-days: 14
 
   gate:
     needs: select
@@ -144,7 +227,6 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.select.outputs.matrix) }}
     runs-on: ubuntu-24.04
-    environment: release-gate
     permissions:
       contents: read
       actions: read  # a dev-build cozy, a wheel artifact of this run
@@ -164,12 +246,18 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       OUT: ${{ github.workspace }}/gate
+      COZY_HUB_URL: ${{ vars.COZY_TEST_HUB_URL }}
+      COZY_TEST_HUB_ORIGIN: ${{ vars.COZY_TEST_HUB_ORIGIN }}
     steps:
       - uses: actions/checkout@v5
         with:
           repository: cozy-creator/cozy-creator
           ref: ${{ github.repository == 'cozy-creator/cozy-creator' && github.sha || 'master' }}
           path: creator
+      - name: Require isolated qualification environment
+        run: |
+          . creator/e2e/test-hub.sh
+          require_ci_test_hub || { echo "::error::hardware CI needs an isolated Hub and preallocated test machines; production is forbidden"; exit 2; }
       - if: ${{ inputs.packages_ref != '' }}
         uses: actions/checkout@v5
         with:
@@ -221,22 +309,13 @@ jobs:
           done
           "$bin/cozy" --version
           echo "args=${args[*]}" >> "$GITHUB_OUTPUT"
-      - name: Sign in
-        env:
-          KEY: ${{ secrets.COZY_CI_DEVICE_KEY }}
+      - name: Prepare local service session
         run: |
-          [ -n "$KEY" ] || { echo "::error::the release-gate environment has no COZY_CI_DEVICE_KEY (release-gate/README.md)"; exit 1; }
-          # Calcifer and the local machine run as user services, as on a desktop login.
           sudo loginctl enable-linger "$(id -un)"
           echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
           export XDG_RUNTIME_DIR=/run/user/$(id -u)
           until [ -S "$XDG_RUNTIME_DIR/bus" ]; do sleep 1; done
           echo "DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus" >> "$GITHUB_ENV"
-          export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
-          umask 077; printf '%s' "$KEY" > "$RUNNER_TEMP/key.json"
-          cozy login --key "$RUNNER_TEMP/key.json"; code=$?
-          rm -f "$RUNNER_TEMP/key.json"
-          exit $code
       - name: Gate ${{ matrix.sku }} (${{ matrix.suite }})
         env:
           ARGS: ${{ steps.candidate.outputs.args }}
@@ -245,7 +324,6 @@ jobs:
           ESTABLISH: ${{ inputs.establish }}
           PACKAGES: ${{ inputs.packages_ref != '' && 'packages' || '' }}
           PINS: ${{ inputs.pins }}
-          IMAGE: ${{ inputs.image }}
           DISK: ${{ matrix.disk }}
           GPUS: ${{ matrix.gpus }}
           SEEDS: ${{ inputs.seeds }}
@@ -256,7 +334,6 @@ jobs:
           [ -z "$ONLY" ] || args+=(--only "$ONLY")
           [ -z "$CELLS" ] || args+=(--cells "$PWD/creator/$CELLS")
           [ -z "$PINS" ] || args+=(--pins "$PINS")
-          [ -z "$IMAGE" ] || args+=(--image "$IMAGE")
           [ -z "$PACKAGES" ] || args+=(--packages "$PACKAGES")
           [ "$ESTABLISH" != true ] || args+=(--establish)
           [ "$DISK" = 0 ] || args+=(--disk "$DISK")
@@ -276,6 +353,8 @@ jobs:
       - if: always()
         run: |
           r=$(cat "$OUT/rental" 2>/dev/null) || exit 0
+          . creator/e2e/test-hub.sh
+          require_ci_test_hub || exit 2
           . creator/release-gate/machines.sh
           # A cap ends the job with its cell still running, and the pod's logs leave with the pod.
           if listed "$r"; then
@@ -298,8 +377,8 @@ jobs:
 
   # A passed SKU's numbers and references become its baseline.
   baseline:
-    needs: gate
-    if: ${{ always() && inputs.publish && github.repository == 'cozy-creator/cozy-creator' && needs.gate.result != 'skipped' }}
+    needs: [gate, hub-fixture]
+    if: ${{ always() && inputs.publish && github.repository == 'cozy-creator/cozy-creator' && needs.gate.result != 'skipped' && (needs['hub-fixture'].result == 'success' || needs['hub-fixture'].result == 'skipped') }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write

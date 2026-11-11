@@ -130,7 +130,7 @@ async fn commit(api: &Api, hub: &Origin, model: &ModelRef, lane: &str) -> Result
     };
     let card: ModelCard = (reader(api, hub)?.get_model(&repo.org, &repo.name).await).map_err(|e| refusal(hub, e))?;
     let absent =
-        |what: String| Refusal(Error::not_found("model_commit_not_found", what).next(format!("cozy model info {repo}")));
+        |what: String| Refusal(Error::not_found("model_commit_not_found", what).next(format!("cozy model ls {repo}")));
     let (commit, header, kinds) = match id {
         Some(id) => {
             let found = (card.commits.iter().find(|c| c.id == id))

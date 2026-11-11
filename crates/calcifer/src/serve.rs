@@ -33,6 +33,56 @@ use crate::{
     machines::Machines,
 };
 
+#[cfg(not(windows))]
+use ::api::config::load as configuration;
+
+#[cfg(windows)]
+fn configuration() -> Result<Loaded, Error> {
+    let failed = |e: std::io::Error| Error::new(Kind::Internal, "calcifer_path", e.to_string());
+    // Capture relative path settings before the configuration's environment snapshot
+    // and before leaving the launching directory. Children inherit these paths too.
+    for name in [
+        "COZY_MACHINE_ROOT", "COZY_TENSORFS_ROOT", "COZY_TENSORFS_CACHE", "TENSORFS_HOME",
+        "COZY_SECUREFS_PROVIDER", "TMPDIR", "TEMP", "TMP", "XDG_CACHE_HOME",
+        "UV_CACHE_DIR", "UV_TOOL_DIR", "UV_PYTHON_INSTALL_DIR", "SSL_CERT_FILE",
+    ] {
+        if let Some(value) = std::env::var_os(name).filter(|value| !value.is_empty()) {
+            let path = std::path::absolute(value).map_err(failed)?;
+            process::set_environment(std::ffi::OsStr::new(name), path.as_os_str());
+        }
+    }
+    for (name, empty_is_current_directory) in [("PATH", true), ("SSL_CERT_DIR", false)] {
+        if let Some(value) = std::env::var_os(name) {
+            let paths = std::env::split_paths(&value)
+                .map(|path| {
+                    if path.as_os_str().is_empty() {
+                        if !empty_is_current_directory { return Ok(path); }
+                        return std::path::absolute(".");
+                    }
+                    std::path::absolute(path)
+                })
+                .collect::<std::io::Result<Vec<_>>>()
+                .map_err(failed)?;
+            let paths = std::env::join_paths(paths)
+                .map_err(|e| Error::new(Kind::Internal, "calcifer_path", e.to_string()))?;
+            process::set_environment(std::ffi::OsStr::new(name), &paths);
+        }
+    }
+    let mut loaded = config::load()?;
+    for (name, path) in [
+        ("COZY_MACHINE_ROOT", &mut loaded.config.machine.root),
+        ("COZY_TENSORFS_ROOT", &mut loaded.config.machine.store),
+        ("COZY_TENSORFS_CACHE", &mut loaded.config.machine.cache),
+    ] {
+        if let Some(path) = path {
+            let directory = if path.as_os_str().is_empty() { std::path::Path::new(".") } else { path.as_path() };
+            *path = std::path::absolute(directory).map_err(failed)?;
+            process::set_environment(std::ffi::OsStr::new(name), path.as_os_str());
+        }
+    }
+    Ok(loaded)
+}
+
 /// Why `serve` returned.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Stopped {
@@ -52,8 +102,8 @@ pub fn main() -> ExitCode {
     {
         warn!("{e}");
     }
-    let served = match config::load() {
-        Ok(loaded) => match tokio::runtime::Runtime::new() {
+    let served = match configuration() {
+        Ok(loaded) => match runtime(&loaded) {
             // Stopped, Calcifer exits now: nothing left on the runtime holds the process (or its
             // service) past `down`.
             Ok(runtime) => {
@@ -61,10 +111,7 @@ pub fn main() -> ExitCode {
                 runtime.shutdown_background();
                 served
             }
-            Err(e) => Err(refuse(
-                &loaded.home,
-                Error::new(Kind::Internal, "calcifer_runtime", e.to_string()),
-            )),
+            Err(error) => Err(refuse(&loaded.home, error)),
         },
         Err(error) => match std::env::home_dir() {
             Some(user_home) => Err(refuse(&Home::under(&user_home), error)),
@@ -75,6 +122,20 @@ pub fn main() -> ExitCode {
         Ok(_) => ExitCode::SUCCESS,
         Err(_) => ExitCode::FAILURE,
     }
+}
+
+/// Release Windows' working-directory lock before any runtime worker starts.
+fn runtime(_loaded: &Loaded) -> Result<tokio::runtime::Runtime, Error> {
+    #[cfg(windows)]
+    {
+        let directory = _loaded.home.calcifer();
+        durable::private_dir(&directory)
+            .map_err(|e| Error::new(Kind::Internal, "calcifer_home", e.to_string()))?;
+        std::env::set_current_dir(directory)
+            .map_err(|e| Error::new(Kind::Internal, "calcifer_working_directory", e.to_string()))?;
+    }
+    tokio::runtime::Runtime::new()
+        .map_err(|e| Error::new(Kind::Internal, "calcifer_runtime", e.to_string()))
 }
 
 /// Logs why Calcifer cannot start and leaves it in `<home>/calcifer/refused.json` for the CLI.
@@ -214,7 +275,7 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
         tokio::spawn(async move {
             term.recv().await;
             info!("SIGTERM: stopping as down does");
-            stopping.down().await;
+            if let Err(error) = stopping.down().await { warn!(code = %error.code, "Calcifer remains running until its encrypted views can close"); }
         });
     }
     let app = api::router(api.clone()).into_make_service_with_connect_info::<SocketAddr>();
@@ -251,11 +312,13 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
         Ok(runs) => steps.done(&format!("resume ({runs} runs)")),
         Err(e) => warn!("resuming what an earlier Calcifer left: {e}"),
     }
+    tokio::spawn(crate::hub::jobs::resume(api.clone()));
     crate::events::tell(api.clone());
     crate::project::previews(api.clone());
     crate::project::resume(&api);
 
     api.stopped().await;
+    tokio::task::block_in_place(|| crate::project::vault::close_all(&api)).map_err(failed)?;
     if let Ok(Err(e)) = server.await {
         warn!("the API server ended: {e}");
     }
@@ -276,7 +339,7 @@ impl Steps {
     }
 }
 
-/// How long a settled run keeps its measurements, the timing `cozy run show` breaks down. They are
+/// How long a settled run keeps its measurements, the timing `cozy run watch` breaks down. They are
 /// most of what a run stores, about 70 MB a day on a busy computer. Nothing else of a run is ever
 /// dropped: its row, result, reason, outputs, logs and calls stay for good.
 const MEASURED_FOR: Duration = Duration::from_secs(30 * 24 * 3600);

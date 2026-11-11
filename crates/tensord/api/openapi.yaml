@@ -15,6 +15,33 @@ info:
 security: [{cozy_cap: []}]
 
 paths:
+  /v1/local-private/{project_id}/{rest}:
+    parameters:
+      - {name: project_id, in: path, required: true, schema: {type: string}}
+      - {name: rest, in: path, required: true, schema: {type: string}, description: Existing v1 data route suffix including its path parameters}
+      - {name: cozy-local-private-storage, in: header, required: true, schema: {type: string}, description: Base64url descriptor of the active local encrypted view}
+      - {name: cozy-local-private-token, in: header, required: true, schema: {type: string}, description: Secret live-view proof; never log or retain}
+    get:
+      summary: Read within verified local project storage; health answers 204 after verification.
+      description: Local machine-scope authentication and a live owned mount are required. Existing read schemas apply; global machine logs are forbidden. No fallback to public storage.
+      responses: {'200': {description: Existing data response}, '204': {description: Private proof accepted}, '403': {description: Scope or proof refused}, '404': {description: Route or feature unavailable}}
+    post:
+      summary: Submit or prepare within verified local project storage.
+      description: Existing data schemas apply. Software updates and keepalive are forbidden. Old peers refuse this namespace before receiving private bodies.
+      responses: {'200': {description: Existing data response}, '403': {description: Scope or operation refused}, '404': {description: Route or feature unavailable}}
+    put:
+      summary: Upload object bytes only into verified local project storage.
+      description: Uses the existing object Content-Range and held-byte protocol. Public model weights remain separate; private bytes never fall back to global storage.
+      responses: {'200': {description: Object held}, '201': {description: Object committed}, '204': {description: Part accepted}, '403': {description: Scope or proof refused}}
+  /v1/local-private/{project_id}/close:
+    post:
+      summary: Release this project's idle execution handles before normal unmount.
+      description: Requires machine authentication plus the same descriptor and live-view token as other private routes. Active work or held handles return busy; no other project is closed.
+      parameters:
+        - {name: project_id, in: path, required: true, schema: {type: string}}
+        - {name: cozy-local-private-storage, in: header, required: true, schema: {type: string}}
+        - {name: cozy-local-private-token, in: header, required: true, schema: {type: string}}
+      responses: {'204': {description: Private namespace closed}, '403': {description: Scope or proof refused}, '409': {description: Private work or custody remains active}}
   /v1/health:
     get:
       summary: >-
@@ -61,6 +88,26 @@ paths:
           content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
         '503':
           description: '`log_follow_unsupported`: this machine''s OS cannot follow'
+          content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
+  /v1/models/remove:
+    post:
+      summary: Remove a repository from this computer's ordinary local model cache.
+      description: >-
+        Requires machine-scoped access on a local machine. Removes unreferenced cached objects
+        for the requested repository.
+      operationId: remove_model
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/RemoveModel'}}}
+      responses:
+        '200':
+          description: The normalized repository name and the cache removal result.
+          content: {application/json: {schema: {$ref: '#/components/schemas/RemovedModel'}}}
+        '400':
+          description: '`invalid_request` or `model_ref_invalid`'
+          content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
+        '403':
+          description: '`capability_scope` or `model_remove_local_only`'
           content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
   /v1/objects/held:
     post:
@@ -123,6 +170,32 @@ paths:
           content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
         '507':
           description: '`machine_disk_full`'
+          content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
+  /v1/models/remove:
+    post:
+      summary: Remove a repository's locally cached model copies.
+      description: >-
+        Requires machine scope and the ordinary local cache. Removes cached releases and lanes while
+        preserving active readers and content shared with other models. The origin is unchanged.
+      operationId: remove_model
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/RemoveModel'}}}
+      responses:
+        '200':
+          description: The local removal result
+          content: {application/json: {schema: {$ref: '#/components/schemas/RemovedModel'}}}
+        '400':
+          description: '`invalid_request` or `model_ref_invalid`'
+          content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
+        '403':
+          description: '`capability_scope` or `model_remove_local_only`'
+          content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
+        '500':
+          description: '`model_remove_failed`'
+          content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
+        '503':
+          description: '`machine_updating` or `machine_released`'
           content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
   /v1/runs:
     get:
@@ -624,6 +697,27 @@ components:
           description: >-
             The place after them, also the event's id: a follow resumed there goes on with the next line.
         text: {type: string}
+    RemoveModel:
+      type: object
+      required: [model]
+      properties:
+        model: {type: string, description: Repository name in org/name format.}
+    RemovedModel:
+      type: object
+      required: [model, removed, cache_bytes_removed, retained_bytes]
+      properties:
+        model: {type: string}
+        removed: {type: boolean}
+        cache_bytes_removed:
+          type: integer
+          minimum: 0
+          maximum: 18446744073709551615
+          description: Bytes removed from cache object paths.
+        retained_bytes:
+          type: integer
+          minimum: 0
+          maximum: 18446744073709551615
+          description: Bytes retained for active readers, shared objects, or failed removals.
     Model:
       type: object
       properties:
@@ -639,6 +733,25 @@ components:
           format: int64
           description: Reached by no other held repository.
           minimum: 0
+    RemoveModel:
+      type: object
+      required: [model]
+      properties:
+        model: {type: string, description: Repository as org/name without a release or lane}
+    RemovedModel:
+      type: object
+      required: [model, removed, cache_bytes_removed, retained_bytes]
+      properties:
+        model: {type: string}
+        removed: {type: boolean}
+        cache_bytes_removed:
+          type: integer
+          minimum: 0
+          description: Bytes removed from cache object paths
+        retained_bytes:
+          type: integer
+          minimum: 0
+          description: Candidate bytes retained because they are in use, shared or unsafe to remove
     ModelChoice:
       type: object
       description: >-
@@ -918,11 +1031,6 @@ components:
             the machine's hardware. For a model-only warm run with a weights destination, the lane its commit
             is labelled. The package's own children inherit it; another package's take none.
         models: {type: array, items: {$ref: '#/components/schemas/ModelChoice'}}
-        no_memo:
-          type: boolean
-          description: >-
-            Computed afresh, its children too: the machine memo neither answers nor keeps it (`unmemoized`
-            says so).
         owner: {type: string, description: The account that org-relative references of local code name.}
         payload:
           description: The function's parameters, a JSON object.

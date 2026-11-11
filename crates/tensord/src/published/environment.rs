@@ -99,7 +99,9 @@ impl Publisher {
         };
         let torch = layer.as_ref().and_then(|l| l.version("torch")).unwrap_or_default();
         let warning = format!("requires {missed}; this machine's torch is {torch}: its environment installs its own");
-        tracing::warn!("package {} {warning}", project.label);
+        if crate::private_io::current().is_none() {
+            tracing::warn!("package {} {warning}", project.label);
+        }
         job.stage(format!("warning: {warning}"));
         let own: Vec<String> = missed.split(", ").filter(|r| on_root(r)).map(String::from).collect();
         let mut built = self.build_on(env, project, job, None, &own)?;
@@ -453,6 +455,7 @@ impl Publisher {
     pub(crate) fn uv(&self, args: &[&str], env: &[(&str, &std::ffi::OsStr)], job: &Job) -> Result<(), Failure> {
         let mut command = self.sdk.uv.command().map_err(|e| ("uv_unavailable", e.to_string()))?;
         command.args(args).envs(env.iter().copied()).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
+        crate::private_io::protect_command(&mut command).map_err(io_failure)?;
         let (ended, stderr) = run_builder(&mut command, &self.scope_namespace, job.stop.as_ref(), &|read| job.bytes(read, 0))?;
         let step = args[..2.min(args.len())].join(" ");
         match ended {
@@ -570,31 +573,55 @@ fn ask_runtime(python: &Path, request: &Value, stop: Option<&crate::stop::Stop>)
         sys.argv=['cozy-runtime','machine-describe'];runpy.run_module('cozy_runtime.cli.main',run_name='__main__')";
     let failed = |why: String| ("package_prepare_description_failed", why);
     let mut command = Command::new(python);
-    command.args(["-I", "-S", "-c", BOOTSTRAP]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
+    command.args(["-I", "-B", "-S", "-c", BOOTSTRAP]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    if crate::private_io::protect_command(&mut command).map_err(io_failure)? {
+        command.stderr(Stdio::null());
+    }
     platform::process::own_group(&mut command);
     let mut child = command.spawn().map_err(io_failure)?;
     // Its own exit says why, should it stop before reading the request.
     let _ = child.stdin.take().expect("piped").write_all(request.to_string().as_bytes());
-    let mut stdout = child.stdout.take().expect("piped");
+    let (mut stdout, stderr) = (child.stdout.take().expect("piped"), child.stderr.take());
     // Supervised, as uv is: a cancel ends it, so a description that does not end holds no install.
-    let (ended, read) = std::thread::scope(|scope| {
+    let (ended, read, said) = std::thread::scope(|scope| {
         let drained = scope.spawn(move || {
             let mut kept = Vec::new();
             let _ = stdout.read_to_end(&mut kept);
             kept
         });
+        let told = scope.spawn(move || {
+            let mut kept = Vec::new();
+            if let Some(mut stderr) = stderr {
+                let _ = stderr.read_to_end(&mut kept);
+            }
+            String::from_utf8_lossy(&kept).into_owned()
+        });
         let ended = crate::process::supervise(&mut child, stop, &|_| ());
-        (ended, drained.join().unwrap_or_default())
+        (ended, drained.join().unwrap_or_default(), told.join().unwrap_or_default())
     });
     let status = match ended.map_err(io_failure)? {
         Supervised::Exited(status) => status,
         Supervised::Canceled => return Err(canceled()),
     };
-    let reply: Value = serde_json::from_slice(&read).map_err(|e| failed(format!("the description failed: {e}")))?;
+    // How it ended comes before what it printed: one that died answers nothing to read (cl-867). Its stderr is the machine
+    // log's, which `cozy machine logs` keeps.
+    let (how, _) = platform::process::ended(&status);
+    if !status.success() && !said.trim().is_empty() {
+        tracing::warn!("the describer {how}; its stderr ends:\n{}", platform::process::tail(&said, 40));
+    }
+    let died = || failed(match platform::process::last_line(&said) {
+        Some(words) => format!("the describer {how}: {words}"),
+        None => format!("the describer {how} before it answered"),
+    });
+    let reply: Value = match serde_json::from_slice(&read) {
+        Ok(reply) => reply,
+        Err(_) if !status.success() => return Err(died()),
+        Err(e) => return Err(failed(format!("the describer answered no reply: {e}"))),
+    };
     match reply["kind"].as_str() {
         Some("describe_failed") => Err(failed(format!("{}: {}", reply["code"].as_str().unwrap_or_default(), reply["detail"].as_str().unwrap_or_default()))),
         Some(_) if status.success() => Ok(reply),
-        _ => Err(failed("the description did not complete".into())),
+        _ => Err(died()),
     }
 }
 
@@ -729,7 +756,7 @@ fn platform(failure: Failure, label: &str) -> Failure {
         (code, detail) if code == "package_installation_uv_failed" && OUTSIDE.iter().any(|s| detail.contains(s)) => (
             "release_platform_unsupported",
             format!("{label} is not locked for this machine ({}/{}): {detail}\n{}", std::env::consts::OS, std::env::consts::ARCH, match cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-                true => format!("Its author adds this platform and locks again; another release may hold it: `cozy package info {}`", label.split(' ').next().unwrap_or(label)),
+                true => format!("Ask its author to support this platform; browse available packages with `cozy package ls {}`", label.split(' ').next().unwrap_or(label)),
                 false => "`--on new` rents a Linux machine, or its author adds this platform and locks again".to_string(),
             }),
         ),
@@ -830,13 +857,19 @@ fn on_pair(line: &str) -> bool {
 /// How an older pair takes this machine's: update the refusing SDK requirement or its
 /// dependency owner, then re-lock local code; a published package needs a newer release.
 fn relock(project: &Project, ranged: bool) -> String {
-    const LOCK: &str = "`cozy package lock --upgrade-package cozy-runtime`";
+    const LOCK: &str = "`uv lock --upgrade-package cozy-runtime`";
     match (project.package.starts_with("local/"), project.locked.is_some(), ranged) {
         (true, true, false) => format!("re-lock it on this machine's: {LOCK}"),
         (true, true, true) => format!("update the refusing cozy-runtime or tensorfs requirement in pyproject.toml, or upgrade the dependency that declares it, then re-lock it: {LOCK}"),
         (true, false, _) => "update the refusing cozy-runtime or tensorfs requirement in pyproject.toml, or upgrade the dependency that declares it, to admit this machine's pair".into(),
-        (false, ..) => format!("a newer release of it may: `cozy package info {}`", project.package),
+        (false, ..) => newest_hint(project.package),
     }
+}
+
+/// A published release's next where nothing better is known: its newest. Its install names the one that speaks this
+/// machine's protocol in its place (`Publisher::onward`).
+pub(crate) fn newest_hint(package: &str) -> String {
+    format!("try its newest release: `cozy package install {package}`")
 }
 
 /// `name` at the newest release of `locked`'s series: `cozy-runtime>=0.41.0,==0.41.*`.
@@ -876,7 +909,7 @@ fn full(said: &str) -> bool {
 fn floor_remedy(label: &str) -> String {
     let own = "or run it on a Runtime you built: `cozy machine update <machine> --runtime <path>`";
     match label.split(' ').next().filter(|package| !package.starts_with("local/")) {
-        Some(package) => format!("an older release may not need it (`cozy package info {package}` lists them; `cozy run {package}@<release>`), {own}"),
+        Some(package) => format!("try a compatible release with `cozy run {package}@<release>`, {own}"),
         None => format!("lower that bound in its pyproject.toml, {own}"),
     }
 }

@@ -4,7 +4,7 @@ use api::error::{Error, Kind};
 
 /// Every dev-only option or subcommand: the command it belongs to below `cozy`, then its id (a
 /// subcommand's name, or an option's field name).
-const DEV_ONLY: &[(&[&str], &str)] = &[(&["machine", "rent"], "provider"), (&["run"], "no_memo")];
+const DEV_ONLY: &[(&[&str], &str)] = &[(&["machine", "rent"], "provider")];
 
 /// `cozy`'s grammar with every dev-only entry hidden.
 pub(crate) fn hide(command: clap::Command) -> clap::Command {

@@ -119,6 +119,18 @@ impl Link {
         })
     }
 
+    pub(crate) fn with_private(&self, scope: crate::private_io::Scope) -> Self {
+        Self { machine: self.machine.with_private(scope), lanes: Arc::new(Mutex::new(vec![None; LANES])) }
+    }
+
+    pub(crate) async fn probe_private(&self) -> Result<(), LinkError> {
+        self.machine.probe_private().await.map_err(LinkError::from)
+    }
+
+    pub(crate) async fn close_private(&self) -> Result<(), LinkError> {
+        self.machine.close_private().await.map_err(LinkError::from)
+    }
+
     /// Bulk lane `i`, connected again when `fresh`.
     pub(crate) fn lane(&self, i: usize, fresh: bool) -> Option<Bulk> {
         let mut lanes = self.lanes.lock().unwrap_or_else(|e| e.into_inner());
@@ -189,6 +201,10 @@ impl Link {
     /// Starts a rental's idle clock over; answers the picture with its new deadline.
     pub(crate) async fn keepalive(&self) -> Result<v1::StatusFrame, LinkError> {
         Ok(self.machine.keepalive().await?)
+    }
+
+    pub(crate) async fn remove_model(&self, asked: &v1::RemoveModel) -> Result<v1::RemovedModel, LinkError> {
+        Ok(self.machine.remove_model(asked).await?)
     }
 
     /// The identity frame the machine at `address` gives anyone who reaches it: its worker id,

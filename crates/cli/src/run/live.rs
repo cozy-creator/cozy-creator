@@ -24,7 +24,7 @@ impl Runs {
     /// Subscribes, then lists: a run that changes in between is in the stream. Changes match
     /// `--on` by the machine's name, which an alias or rental id resolved to.
     pub(crate) async fn open(ctx: &Context, query: list::Query, limit: u64) -> Result<Self, Error> {
-        let watch = ctx.calcifer().await?.changes().await?.quiet();
+        let watch = ctx.calcifer().await?.run_changes().await?.quiet();
         let list = list::runs(ctx, &query).await?;
         Ok(Self {
             query: list::Query {

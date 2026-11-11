@@ -1,7 +1,8 @@
-//! Print the authenticated local browser URL for the current project.
+//! Open the current project in a browser and print its local URL.
 use std::{
+    io::{self, Write},
     net::{Ipv4Addr, TcpListener},
-    process::ExitCode,
+    process::{Command, ExitCode, Stdio},
 };
 
 use api::{
@@ -45,14 +46,41 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     };
     link.set_path(&path);
     link.set_fragment(Some(&format!("code={}", code.code)));
-    output::document(ctx, &json!({ "url": link.as_str(), "expires_ms": code.expires_ms }));
+    let name = project.path.file_name().map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| project.code.clone());
+    if let Err(error) = browse(ctx, link.as_str()) {
+        output::warn(&format!("could not open the browser: {error}; use the URL below"));
+    }
+    output::document(ctx, &json!({ "project": name, "url": link.as_str() }));
     Ok(ExitCode::SUCCESS)
+}
+
+/// Keep the one-use sign-in code out of the browser process's command line.
+fn browse(ctx: &Context, url: &str) -> io::Result<()> {
+    let cache = ctx.home.root().join("cache");
+    std::fs::create_dir_all(&cache)?;
+    let mut redirect = tempfile::Builder::new().prefix("open-").suffix(".html").tempfile_in(cache)?;
+    let escaped = url.replace('&', "&amp;").replace('"', "&quot;");
+    write!(redirect, "<!doctype html><meta charset=\"utf-8\"><meta http-equiv=\"refresh\" content=\"0; url={escaped}\"><title>Cozy</title><a href=\"{escaped}\">Open Cozy</a>")?;
+    let path = redirect.into_temp_path().keep().map_err(|error| error.error)?;
+    let (program, arguments): (&str, &[&str]) = match std::env::consts::OS {
+        "macos" => ("open", &[]),
+        "windows" => ("cmd", &["/C", "start", ""]),
+        _ => ("xdg-open", &[]),
+    };
+    let result = Command::new(program).args(arguments).arg(&path)
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+    if result.is_err() {
+        let _ = std::fs::remove_file(path);
+    }
+    result.map(drop)
 }
 
 fn reserve_port(port: u16) -> Result<TcpListener, Error> {
     TcpListener::bind((Ipv4Addr::LOCALHOST, port)).map_err(|error| {
         Error::new(Kind::Unavailable, "calcifer_port", format!("Calcifer cannot listen on 127.0.0.1:{port}: {error}"))
-            .remedy("choose a free loopback port with cozy open --port <port>")
+            .remedy("Choose an unused port")
+            .next("cozy open --port <port>")
     })
 }
 

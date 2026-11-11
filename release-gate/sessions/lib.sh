@@ -6,6 +6,10 @@
 # checkouts), REF (release-gate/ref).
 # Every failure is handled here (the trap ends the rental), not by bash -e.
 set +e -uo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/../../e2e/test-hub.sh"
+require_ci_test_hub || exit 2
+MODEL_DETAILS=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../e2e" && pwd)/model-details.py
+model_details() { python3 "$MODEL_DETAILS" "$1"; }
 mkdir -p "$OUT"; OUT=$(cd "$OUT" && pwd); R=$OUT/results.txt
 say() { echo "$(date -u +%T) $*" | tee -a "$R"; }
 # Made up, and here so each published session shows its scrub ran (e2e/publish): in its log, results.txt and this file it reads `Bearer [scrubbed]`.

@@ -1,6 +1,6 @@
 # e2e/cli/lifetime.sh: how a run ends now that nothing judges its progress (cl-663, design stalls.md), the part
 # cli/run.sh calls `lifetime`, with the local machine up. A run silent in a native wait far past the old 30 s floor
-# completes, and `run show` says how long it has made no progress; a cancel ends a silent run at once (its executor is
+# completes, and `run watch` says how long it has made no progress; a cancel ends a silent run at once (its executor is
 # killed); an update waits for the runs in flight, says which, holds new runs behind it, and goes on once a halted run
 # is canceled. A package can no longer fork (the contract's `process` rule), so the executor's dying under a child that
 # holds its channel is the release gate's to prove, with a Runtime-owned child.
@@ -22,7 +22,7 @@ launch() {
 # suite), into $OUT/<name>.show.json; its follower is stopped.
 settled() {
   for _ in $(seq "$2"); do
-    cozy --json run show "$n" --once > "$OUT/$1.show.json" 2> /dev/null || true
+    cozy --json run watch "$n" --once > "$OUT/$1.show.json" 2> /dev/null || true
     J '.status | IN("completed", "failed", "canceled")' "$OUT/$1.show.json" && break
     sleep 1
   done
@@ -42,7 +42,7 @@ update_waiting() {
   done
   J --arg w "$said" '.status.update == $w' "$OUT/$1.machine.json" \
     || check "$1: machine show local never said \"$said\": $(jq -c .status.update "$OUT/$1.machine.json")"
-  cozy --json run ls > "$OUT/$1.list.json" || true
+  cozy --json run ls --all --on local > "$OUT/$1.list.json" || true
   J --arg w "$said" 'any(.runs[]; .kind == "update" and ((.waiting // "") | contains($w)))' "$OUT/$1.list.json" \
     || check "$1: run ls shows no update $said: $(jq -c '[.runs[] | select(.kind == "update") | .waiting]' "$OUT/$1.list.json")"
 }
@@ -58,13 +58,13 @@ update_done() {
 lifetime() {
 step "a silent run is never judged, and shows how long it has not moved"
 if launch silent silent seconds:=70; then
-  # Past the old 30 s floor, and past the minute after which run show says how long the run has not moved.
+  # Past the old 30 s floor, and past the minute after which run watch says how long the run has not moved.
   for _ in $(seq 70); do
-    cozy run show "$n" --once > "$OUT/silent.still.txt" 2>&1 || true
+    cozy run watch "$n" --once > "$OUT/silent.still.txt" 2>&1 || true
     grep -q 'no progress for 1m' "$OUT/silent.still.txt" && break
     sleep 1
   done
-  grep -q 'no progress for 1m' "$OUT/silent.still.txt" || check "silent: run show $n does not say how long it has made no progress: $(grep -i progress "$OUT/silent.still.txt")"
+  grep -q 'no progress for 1m' "$OUT/silent.still.txt" || check "silent: run watch $n does not say how long it has made no progress: $(grep -i progress "$OUT/silent.still.txt")"
   settled silent 120
   J '.status == "completed"' "$OUT/silent.show.json" || check "silent: run $n is $(jq -c '[.status, .reason]' "$OUT/silent.show.json"), not completed"
   echo "silent: run $n completed after 70 s without a word; while it went: $(grep -o 'no progress for [0-9a-z]*' "$OUT/silent.still.txt")"
@@ -265,11 +265,11 @@ queued_download() {
 [ "$RUNNER_OS" = Linux ] || return 0
 step "a download queued behind another run's says whose, and how much is ahead (cl-849)"
 local first second n1='' n2='' said='' behind
-cozy --json model download qwen/qwen3.5-0.8b --on local > "$OUT/queued-first.ndjson" 2>&1 &
+cozy --json model install qwen/qwen3.5-0.8b --on local > "$OUT/queued-first.ndjson" 2>&1 &
 first=$!
 # The second goes once the first's bytes move: its objects queue behind all of the first's.
 for _ in $(seq 240); do grep -qE '"bytes_done": *[1-9]' "$OUT/queued-first.ndjson" && break; sleep 0.25; done
-cozy --json model download lilylilith/fontbox --on local > "$OUT/queued-second.ndjson" 2>&1 &
+cozy --json model install lilylilith/fontbox --on local > "$OUT/queued-second.ndjson" 2>&1 &
 second=$!
 for _ in $(seq 80); do
   n1=$(grep -oE '"number": *[0-9]+' "$OUT/queued-first.ndjson" | head -1 | grep -oE '[0-9]+$') || true
@@ -279,7 +279,7 @@ for _ in $(seq 80); do
 done
 behind="waiting for run $n1's download ("
 for _ in $(seq 240); do
-  cozy --json run show "${n2:-0}" --once > "$OUT/queued-show.json" 2> /dev/null || true
+  cozy --json run watch "${n2:-0}" --once > "$OUT/queued-show.json" 2> /dev/null || true
   said=$(jq -r '.waiting // empty' "$OUT/queued-show.json" 2> /dev/null) || said=
   [[ $said == "$behind"*" ahead)" ]] && break
   J '.status == "completed"' "$OUT/queued-show.json" 2> /dev/null && break

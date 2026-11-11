@@ -28,14 +28,14 @@ cell cli-cap6 "$(pkg sdxl generate)" prompt="$CHAR at dusk, photo" seed:=$((R + 
 # A model's int8 and fp8 lanes by its package's recipes, from a throwaway repository's copy of anima's original
 # weights, deleted at once. The copy names anima's bf16 commit: the Hub records it, and nothing moves.
 q=fidika/ci-e2e-q-$R
-bf16=$("$CLI" --json model info circlestone-labs/anima 2>/dev/null | python3 -c 'import json,sys; print(next(l["commit"] for l in json.load(sys.stdin)["releases"][0]["lanes"] if l["lane"] == "bf16"))' 2>/dev/null)
+bf16=$(model_details circlestone-labs/anima 2>/dev/null | python3 -c 'import json,sys; print(next(l["commit"] for l in json.load(sys.stdin)["releases"][0]["lanes"] if l["lane"] == "bf16"))' 2>/dev/null)
 "$CLI" --json model upload "circlestone-labs/anima@$bf16" "$q" --lane bf16 > cli-copy.ndjson 2>&1 || cli_fail "model upload circlestone-labs/anima@$bf16 $q: $(tail -c 400 cli-copy.ndjson)"
-qc=$("$CLI" --json model info "$q" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["commits"][0]["commit"])' 2>/dev/null)
+qc=$(model_details "$q" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["commits"][0]["commit"])' 2>/dev/null)
 "$CLI" --json model quantize "$q@$qc" --lane int8 --package anima --on "$M" > cli-quantize.ndjson 2>&1 \
   || cli_fail "model quantize --lane int8: $(tail -c 400 cli-quantize.ndjson)"
 "$CLI" --json model quantize "$q@$qc" --lane fp8 --package anima --on "$M" > cli-recipe.ndjson 2>&1 \
   || cli_fail "model quantize --lane fp8: $(tail -c 400 cli-recipe.ndjson)"
-"$CLI" --json model info "$q" > cli-quantized.json 2>&1 || cli_fail "model info $q: $(tail -c 300 cli-quantized.json)"
+model_details "$q" > cli-quantized.json 2>&1 || cli_fail "model metadata for $q: $(tail -c 300 cli-quantized.json)"
 grep -q '"lane": *"int8"' cli-quantized.json || cli_fail "model quantize --lane int8: $q has no int8 commit"
 grep -q '"lane": *"fp8"' cli-quantized.json || cli_fail "model quantize --lane fp8: $q has no fp8 commit"
 # `model upload` of a Hub model by name copies the lane --lane names, as `download --lane` reads it: bf16 weights.
@@ -179,7 +179,7 @@ stall_cell() {
   grep '"type":"job.updated"' "$stream" | grep '"asset":"held"' | tail -1 | grep -vq '"stalled"' || cli_fail "stall: the page's last job.updated for held still says stalled"
   kill "$page" 2> /dev/null || true
   n=$(run_number stall-run.ndjson)
-  [ -n "$n" ] && [ "$("$CLI" --json run show "$n" --once | jq -r .status)" = in_progress ] || cli_fail "stall: run ${n:-?} isn't going on after its follower left"
+  [ -n "$n" ] && [ "$("$CLI" --json run watch "$n" --once | jq -r .status)" = in_progress ] || cli_fail "stall: run ${n:-?} isn't going on after its follower left"
   "$CLI" project -p "$S" cancel held > stall-cancel.log 2>&1 || cli_fail "stall: project cancel held: $(tail -c 300 stall-cancel.log)"
   [ -z "$n" ] || "$CLI" run cancel "$n" > stall-run-cancel.log 2>&1 || cli_fail "stall: run cancel $n: $(tail -c 300 stall-run-cancel.log)"
 }

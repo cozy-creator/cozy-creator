@@ -20,6 +20,7 @@ use std::{
     fs::{self, File},
     io,
     path::{Path, PathBuf},
+    str::FromStr as _,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -254,7 +255,7 @@ pub(crate) const UNREACHABLE: &str = "hub_unreachable";
 const TICK: Duration = Duration::from_millis(100);
 
 /// `prepare` asked again while the network leaves it unanswered ([`UNREACHABLE`]), by the one retry rule
-/// (`tensorfs::fetch::Backoff`): its cancel ends the wait, and the run shows each attempt and why. Nothing has executed, so
+/// (`tensorfs::fetch::Backoff`): its cancel ends the wait, and the run watchs each attempt and why. Nothing has executed, so
 /// asking again re-executes nothing, and what an earlier ask resolved is held. A hint (no run to
 /// stop) is asked once.
 pub(crate) fn patiently<T>(job: &Job, mut prepare: impl FnMut() -> Result<T, Failure>) -> Result<T, Failure> {
@@ -582,6 +583,8 @@ impl Publisher {
     fn make(&self, source: &str, profiles: &[String], trained_on: &str, providers: &Providers,
         stop: Option<&Stop>, progress: &(dyn Fn(&str, u64, u64) + Sync),
     ) -> Result<Made, Failure> {
+        let _inventory = crate::held_models::ModelChange;
+        crate::private_io::check_model_source(source).map_err(|error| ("private_model_import_unsupported", error.to_string()))?;
         let mut sorted = profiles.to_vec();
         sorted.sort();
         let key = json!([source, sorted, trained_on]).to_string();
@@ -603,6 +606,7 @@ impl Publisher {
     /// components' walk found them). Whatever is here moves nothing.
     fn pull(&self, source: &hub::Source, named: &Named, components: Option<&[String]>, stop: Option<&Stop>,
         bytes: &(dyn Fn(u64, u64) + Sync)) -> Result<Landed, Failure> {
+        let _inventory = crate::held_models::ModelChange;
         let header = named.header()?;
         let remote = origin::remote(&self.machine, source).map_err(|e| unsigned(source, refused("model_download_failed", e.clone()), &e))?;
         let stop = stop.cloned().unwrap_or_default();
@@ -1085,7 +1089,17 @@ impl Publisher {
             source,
             stage: &stage,
         };
-        self.generation(service.catalog.root(), &identity, &wanted, job)?;
+        match self.generation(service.catalog.root(), &identity, &wanted, job) {
+            Err((code, detail)) if code == "runtime_protocol_unspoken" => {
+                let hint = environment::newest_hint(&request.package);
+                let onward = || self.onward(&catalog().ok()?, source, &request.package, &release);
+                return Err((code, match detail.strip_suffix(hint.as_str()).zip(onward()) {
+                    Some((said, onward)) => format!("{said}{onward}"),
+                    None => detail,
+                }));
+            }
+            built => built?,
+        }
         keep_card(&service.catalog.root().join(&identity), &card);
         let held = service.catalog.resolve(&identity).map_err(io_failure)?;
         service.installed(&held);
@@ -1191,6 +1205,34 @@ impl Publisher {
         environment::publish(&dir, &record)
     }
 
+    /// What a release refused for its lock's Runtime pair names next (cl-863): its newest later release whose lock speaks this
+    /// machine's executor protocol, and the command that puts it on the machine (an unversioned run then takes it); else that no
+    /// later release does yet. None when the Hub said too little to tell.
+    fn onward(&self, catalog: &Catalog, source: &hub::Source, package: &str, release: &str) -> Option<String> {
+        let (org, name) = package.split_once('/')?;
+        let version = |release: &str| pep440_rs::Version::from_str(release).ok();
+        let refused = version(release)?;
+        let card = catalog.package(org, name).ok()?;
+        let mut later: Vec<(pep440_rs::Version, &str)> = card.releases.iter()
+            .filter(|row| row.yanked != Some(true) && row.yanked_at.as_deref().is_none_or(str::is_empty))
+            .filter_map(|row| Some((version(&row.release)?, row.release.as_str())))
+            .filter(|(later, _)| *later > refused)
+            .collect();
+        later.sort_by(|(a, _), (b, _)| b.is_stable().cmp(&a.is_stable()).then_with(|| b.cmp(a)));
+        let mut unread = false;
+        for (_, candidate) in later.iter().take(5) {
+            let Ok(locked) = hub_card(catalog, package, candidate, &self.sdk.python)
+                .and_then(|card| read_lock(&card.pyproject, &card.lock, Some(source))) else {
+                unread = true;
+                continue;
+            };
+            if self.speaks(&environment::pair_of(&locked.packages)) {
+                return Some(format!("{package} {candidate} speaks it: `cozy package install {package}@{candidate} --on <machine>`"));
+            }
+        }
+        (!unread).then(|| format!("no later release of {package} speaks it yet: its author relocks it (`uv lock --upgrade-package cozy-runtime`) and publishes one"))
+    }
+
     /// The release's Hub-hosted wheels through TensorFS's downloader instead of uv's: 1 MiB
     /// ranged parts side by side, a late one asked again, verified by sha256 into the store.
     /// uv asks one GET per wheel and waits out every stall of it (run 5107, oczy: the install
@@ -1254,7 +1296,7 @@ impl Publisher {
     /// Held shared through one environment build, so `reclaim` removes nothing from the cache
     /// between uv's own per-command holds either.
     pub(super) fn uv_cache_hold(&self) -> io::Result<File> {
-        let cache = self.uv_cache();
+        let cache = crate::private_io::cache_root(self.uv_cache(), "uv-cache")?;
         fs::create_dir_all(&cache)?;
         let lock = File::options()
             .create(true)
@@ -1643,7 +1685,7 @@ fn opens_views(service: &Service, installation: &Installation, choice: &stored::
     }
     let runs: Vec<String> = pair.iter().map(|(label, _, version)| format!("{label} {}", if version.is_empty() { "none" } else { version })).collect();
     Err(("model_adapter_refused", format!(
-        "LoRAs need Runtime {0} and TensorFS {1} or newer, and {2} {3} runs on {4}: a newer release of it may (`cozy package info {2}`)",
+        "LoRAs need Runtime {0} and TensorFS {1} or newer, and {2} {3} runs on {4}: try its newest release with `cozy package install {2}`",
         VIEWS[0].2, VIEWS[1].2, installation.package, installation.release, runs.join(" / "))))
 }
 
@@ -1806,7 +1848,7 @@ fn hub_card(catalog: &Catalog, package: &str, release: &str, python: &str) -> Re
     let (org, name) = package.split_once('/').unwrap_or_default();
     let read = format!("the install plan of {package}@{release} at {}", catalog.origin());
     let plan = catalog.install_plan(org, name, release, None).map_err(|e| absent(e, "release_absent", &read, || {
-        format!("{package} has no release {release} at {}: `cozy package info {package}` lists its releases", catalog.origin())
+        format!("{package} has no release {release} at {}: browse packages with `cozy package ls {package}`", catalog.origin())
     }))?;
     if plan.release != release {
         return Err(("catalog_read_failed", format!("{package}@{release} named another release")));
@@ -1850,11 +1892,11 @@ fn newest_release(catalog: &Catalog, org: &str, name: &str) -> Result<String, Fa
     let card = catalog
         .package(org, name)
         .map_err(|e| absent(e, "package_absent", &format!("the releases of {org}/{name} at {}", catalog.origin()),
-            || format!("{org}/{name} is not published at {}, or is private: `cozy package ls {name}` lists what you can see", catalog.origin())))?;
+            || format!("{org}/{name} is not published at {}: `cozy package ls {name}` lists what you can see", catalog.origin())))?;
     let open = card.releases.iter().filter(|row| row.yanked != Some(true) && row.yanked_at.as_deref().is_none_or(str::is_empty));
     tensorfs::format::newest_by(open, |row| row.release.as_str())
         .map(|row| row.release.clone())
-        .ok_or(("release_absent", format!("{org}/{name} has no release that is not yanked: `cozy package info {org}/{name}` lists them")))
+        .ok_or(("release_absent", format!("{org}/{name} has no release that is not yanked: browse packages with `cozy package ls {org}/{name}`")))
 }
 
 /// A wheel the run's Hub hosts, downloaded by its digest (`fetch_hub`) and installed from disk.

@@ -31,6 +31,8 @@ use std::os::{fd::AsRawFd, unix::process::ExitStatusExt};
 
 #[derive(Clone, Debug)]
 pub(crate) struct ExecutorConfig {
+    /// Machine-verified project scope; private processes have their own protected cwd for their whole lifetime.
+    pub private: bool,
     pub python: PathBuf,
     pub root: PathBuf,
     pub socket: PathBuf,
@@ -316,12 +318,13 @@ fn endpoint(config: &ExecutorConfig) -> io::Result<(LocalListener, BTreeMap<Stri
 
 /// Where an executor dials the listener at `root/name`. A Unix socket path has a short limit
 /// (`sun_path`: 104 bytes on macOS); past it, the socket lives in this user's private directory
-/// under /tmp, named by the hash of the path it stands for. A Windows pipe takes any path.
-#[cfg(not(target_os = "linux"))]
+/// under /tmp, named by the hash of the path it stands for. Private filesystem roots
+/// also use that directory: userspace encrypted filesystems may not support sockets.
+/// No message bytes are stored in the socket inode. A Windows pipe takes any path.
 pub(crate) fn socket_path(root: &Path, name: &str) -> io::Result<PathBuf> {
     let natural = root.join(name);
     #[cfg(unix)]
-    if natural.as_os_str().len() > 100 {
+    if natural.as_os_str().len() > 100 || crate::private_io::is_private_path(root) {
         use std::os::unix::fs::MetadataExt;
         let dir = PathBuf::from(format!("/tmp/cozy-{}", crate::launch_identity::euid()));
         platform::durable::private_dir(&dir)?;
@@ -775,6 +778,7 @@ impl DeviceExecutor {
             .stdin(Stdio::null())
             .stdout(File::create(config.root.join("stdout.log"))?)
             .stderr(File::create(config.root.join("stderr.log"))?);
+        if config.private { command.current_dir(&config.root); }
         // Its generation and kernel namespace stay held while it lives, past this machine's death.
         crate::launch_identity::inherit(
             &mut command,

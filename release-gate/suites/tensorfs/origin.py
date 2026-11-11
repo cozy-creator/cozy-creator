@@ -7,20 +7,21 @@ import os
 import sys
 import threading
 import time
+from collections.abc import Iterable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT, STORE, LOG, LINK, FROM, TO = int(sys.argv[1]), sys.argv[2], sys.argv[3], int(sys.argv[4]), float(sys.argv[5]), float(sys.argv[6])
 lock = threading.Lock()
 link = {'at': time.time(), 'tokens': 0.0}
-began = []
+began: list[float] = []
 
 
-def log(**row):
+def log(**row: str | int | bool) -> None:
     with lock, open(LOG, 'a') as f:
         f.write(json.dumps({'at': time.time(), **row}) + '\n')
 
 
-def through(n):
+def through(n: int) -> None:
     """Wait until the link has carried n more bytes: one bucket for every request."""
     while True:
         with lock:
@@ -37,17 +38,17 @@ def through(n):
 class Handler(BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
 
-    def log_message(self, *_):
+    def log_message(self, format: str, *args: object) -> None:
         pass
 
-    def short(self, code, headers=()):
+    def short(self, code: int, headers: Iterable[tuple[str, str]] = ()) -> None:
         self.send_response(code)
         for k, v in headers:
             self.send_header(k, v)
         self.send_header('Content-Length', '0')
         self.end_headers()
 
-    def do_HEAD(self):
+    def do_HEAD(self) -> None:
         rest = self.path.split('?')[0].lstrip('/').partition('/')[2]
         blob = os.path.join(STORE, 'blobs', rest)
         if not os.path.isfile(blob):
@@ -56,7 +57,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Content-Length', str(os.path.getsize(blob)))
         self.end_headers()
 
-    def do_GET(self):
+    def do_GET(self) -> None:
         path = self.path.split('?')[0]
         kind, _, rest = path.lstrip('/').partition('/')
         blob = os.path.join(STORE, 'blobs', rest)

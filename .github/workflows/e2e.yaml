@@ -89,6 +89,10 @@ on:
         description: cli-release stops at the rental's quote and rents nothing (its $0 pre-flight)
         type: boolean
         default: false
+      native_shards:
+        description: Native CLI partitions as a JSON list; empty uses the full native matrix
+        type: string
+        default: ''
   workflow_dispatch:
     inputs:
       repo:
@@ -143,6 +147,10 @@ on:
       shards:
         type: string
         default: ''
+      native_shards:
+        description: Native CLI partitions as a JSON list; empty uses the full native matrix
+        type: string
+        default: ''
       # skew (select it: `select=skew`): released cozy versions × a Hub built from tensorhub at hub_ref (e2e/skew/run.sh).
       hub_ref:
         description: "skew: the tensorhub ref the Hub is built from (the candidate)"
@@ -178,7 +186,8 @@ jobs:
       selection: ${{ steps.select.outputs.selection }}
       linux: ${{ steps.select.outputs.linux }}
       runners: ${{ steps.select.outputs.runners }}
-      release_runners: ${{ steps.select.outputs.release_runners }}
+      native_runners: ${{ steps.select.outputs.native_runners }}
+      native_build: ${{ steps.select.outputs.native_build }}
       repo: ${{ steps.what.outputs.repo }}
       ref: ${{ steps.pin.outputs.ref }}
       creator: ${{ steps.pin.outputs.creator }}
@@ -278,13 +287,17 @@ jobs:
           else s=$(cd src && ../.creator/ci/affected "$REPO" "$BASE" "$REF" --json); fi
           echo "selection=$s" >> "$GITHUB_OUTPUT"
           # A Linux suite takes the candidate jobs' set.
-          echo "linux=$(echo "$s" | jq 'any(.suites[]; . == "cli" or . == "imports" or . == "cli-release")')" >> "$GITHUB_OUTPUT"
+          echo "linux=$(echo "$s" | jq 'any(.suites[]; . == "cli" or . == "imports" or . == "cli-release" or . == "cpu")')" >> "$GITHUB_OUTPUT"
           # The cli suite's other runners: macOS arm64 (Intel Macs aren't supported), Windows x64; a release run's installer
           # on Windows arm64 too.
           arm=$([ -z "$PUBLISH_RUN" ] || echo '"windows-11-arm"')
-          echo "runners=$(echo "$s" | jq -c "[.os[] | {macos: [\"macos-15\"], windows: [\"windows-2025\"${arm:+, $arm}]}[.] // [] | .[]]")" >> "$GITHUB_OUTPUT"
-          # cli-release's, each renting one machine: Linux, and one macOS and one Windows runner when selected.
-          echo "release_runners=$(echo "$s" | jq -c '[.os[] | {linux: "ubuntu-24.04", macos: "macos-15", windows: "windows-2025"}[.] // empty]')" >> "$GITHUB_OUTPUT"
+          runners=$(echo "$s" | jq -c "[.os[] | {macos: [\"macos-15\"], windows: [\"windows-2025\"${arm:+, $arm}]}[.] // [] | .[]]")
+          echo "runners=$runners" >> "$GITHUB_OUTPUT"
+          # One native cozy per OS across CLI partitions and explicit Apple-GPU inference.
+          echo "native_runners=$(echo "$s" | jq -c --argjson cli "$runners" '
+            [if (.suites | any(. == "cli" or . == "supervisor")) then $cli[] else empty end,
+             if (.suites | index("mps")) then "macos-15" else empty end] | unique')" >> "$GITHUB_OUTPUT"
+          echo "native_build=$(echo "$s" | jq 'any(.suites[]; . == "cli" or . == "mps")')" >> "$GITHUB_OUTPUT"
           { echo "### e2e selection: $REPO ${REF:0:12}"; echo '```'; echo "$s" | jq .; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           echo "$s" | jq .
       # skew's clients: `previous` is the previous minor's latest patch, from this cozy's own version.
@@ -313,7 +326,7 @@ jobs:
   candidate:
     name: candidate ${{ matrix.what }}
     needs: affected
-    if: needs.affected.outputs.linux == 'true'
+    if: needs.affected.outputs.linux == 'true' && !(inputs.publish_run != '' && inputs.select == 'cli' && inputs.shards == '["projectvault"]' && needs.affected.outputs.repo == 'cozy-creator')
     strategy:
       matrix:
         include:
@@ -363,6 +376,12 @@ jobs:
         with:
           package-json-file: .build/web/app/package.json
           install: false
+      - if: matrix.what == 'cozy' && (matrix.take != '' || steps.reuse.outputs.name == '')
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .creator -> target
+          key: stage-code
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - id: build
         if: matrix.take == '' && steps.reuse.outputs.name == ''
         env:
@@ -375,17 +394,212 @@ jobs:
           path: ${{ runner.temp }}/candidates
           if-no-files-found: error
           retention-days: 14
+      # A taken cozy still stages local warming fixtures with the immutable harness's native API helper.
+      - name: Build the local source staging helper for a taken cozy
+        if: matrix.what == 'cozy' && matrix.take != ''
+        env:
+          CARGO_INCREMENTAL: "0"
+          COZY_COMMIT: ${{ needs.affected.outputs.creator }}
+        run: |
+          (cd .creator && cargo build --release --locked -p api --example stage-code)
+          mkdir -p "$RUNNER_TEMP/candidates"
+          cp .creator/target/release/examples/stage-code "$RUNNER_TEMP/candidates/stage-code"
+      - if: matrix.what == 'cozy' && matrix.take != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-stage-code-${{ needs.affected.outputs.creator }}
+          path: ${{ runner.temp }}/candidates/stage-code
+          if-no-files-found: error
+          retention-days: 14
 
-  # Linux, in shards (e2e/cli/run.sh --shard) on the candidate jobs' set; `e2e` checks coverage over all of them.
+  # The isolated Hub every cli shard runs against (e2e/skew/run.sh --hub-bin): tensorhub at hub_ref (master, as
+  # cli-release and skew take it), and MinIO, built once a run and kept in the Actions cache by its commit.
+  hub:
+    name: isolated Hub
+    needs: affected
+    if: contains(fromJSON(needs.affected.outputs.selection).suites, 'cli') && inputs.shards != '[]' && !(inputs.publish_run != '' && inputs.select == 'cli' && inputs.shards == '["projectvault"]' && needs.affected.outputs.repo == 'cozy-creator')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: cozy-creator/tensorhub
+          ref: ${{ inputs.hub_ref || 'master' }}
+          ssh-key: ${{ secrets.TENSORHUB_READ_KEY }}
+          persist-credentials: false
+          path: .tensorhub
+      - id: ref
+        run: echo "hub=$(git -C .tensorhub rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - id: cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/fixture-hub
+          key: fixture-hub-${{ steps.ref.outputs.hub }}
+      # The skew jobs' MinIO.
+      - id: minio
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/skew-tools
+          key: skew-minio-RELEASE.2025-09-07T16-13-09Z
+      - if: steps.cache.outputs.cache-hit != 'true' || steps.minio.outputs.cache-hit != 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: .tensorhub/go.mod
+          cache-dependency-path: .tensorhub/go.sum
+      - if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/fixture-hub"
+          (cd .tensorhub && go build -o "$RUNNER_TEMP/fixture-hub/tensorhub" .)
+          cp .tensorhub/config.local.yaml "$RUNNER_TEMP/fixture-hub/"
+      - if: steps.minio.outputs.cache-hit != 'true'
+        run: GOBIN=$RUNNER_TEMP/skew-tools go install github.com/minio/minio@RELEASE.2025-09-07T16-13-09Z
+      - run: cp "$RUNNER_TEMP/skew-tools/minio" "$RUNNER_TEMP/fixture-hub/"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fixture-hub
+          path: ${{ runner.temp }}/fixture-hub
+          if-no-files-found: error
+          retention-days: 3
+
+  # Linux, in shards (e2e/cli/run.sh --shard) on the candidate jobs' set, each against its own isolated Hub; `e2e` checks
+  # coverage over all of them.
+  # The exact published-vault focus uses its producer's archives and the real isolated Hub,
+  # without rebuilding Creator or a staging helper that this suite never calls.
+  projectvault-archive:
+    name: published projectvault Linux
+    needs: affected
+    if: inputs.publish_run != '' && inputs.select == 'cli' && inputs.shards == '["projectvault"]' && needs.affected.outputs.repo == 'cozy-creator'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.affected.outputs.creator }}
+          path: .creator
+          persist-credentials: false
+      - name: Verify and extract the exact published producer
+        id: archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRODUCER: ${{ inputs.publish_run }}
+          SOURCE: ${{ needs.affected.outputs.ref }}
+          STACK: ${{ needs.affected.outputs.stack }}
+          HARNESS: ${{ needs.affected.outputs.creator }}
+          RUNTIME_REF: ${{ needs.affected.outputs.runtime }}
+          PACKAGES_REF: ${{ needs.affected.outputs.packages }}
+          RUNTIME: ${{ inputs.runtime }}
+          TENSORFS: ${{ inputs.tensorfs }}
+        run: |
+          set -euo pipefail
+          [[ $PRODUCER =~ ^[0-9]+$ && $SOURCE =~ ^[0-9a-f]{40}$ && $STACK == "$SOURCE" ]]
+          [[ $RUNTIME =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ && $TENSORFS =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]
+          mkdir -p "$RUNNER_TEMP/e2e/provenance" "$RUNNER_TEMP/vault-release" "$RUNNER_TEMP/vault-manifest"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PRODUCER" > "$RUNNER_TEMP/e2e/provenance/producer.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PRODUCER/artifacts" > "$RUNNER_TEMP/e2e/provenance/artifacts.json"
+          jq -e --arg source "$SOURCE" '.head_sha == $source and .status == "completed" and .conclusion == "success" and .event == "workflow_dispatch" and (.path | split("@")[0]) == ".github/workflows/cozy-publish.yaml"' "$RUNNER_TEMP/e2e/provenance/producer.json"
+          gh run download "$PRODUCER" -R "$GITHUB_REPOSITORY" -n artifacts-build-local-x86_64-unknown-linux-gnu -D "$RUNNER_TEMP/vault-release"
+          gh run download "$PRODUCER" -R "$GITHUB_REPOSITORY" -n artifacts-build-global -D "$RUNNER_TEMP/vault-release"
+          gh run download "$PRODUCER" -R "$GITHUB_REPOSITORY" -n artifacts-dist-manifest -D "$RUNNER_TEMP/vault-manifest"
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess, tarfile
+          root = pathlib.Path(os.environ['RUNNER_TEMP'])
+          manifest = json.loads((root/'vault-manifest/dist-manifest.json').read_text())
+          name = 'cozy-x86_64-unknown-linux-gnu.tar.gz'
+          archive = root/'vault-release'/name
+          digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+          assert digest == manifest['artifacts'][name]['checksums']['sha256']
+          assert (root/'vault-release'/(name+'.sha256')).read_text().split()[0] == digest
+          client = root/'vault-client'; client.mkdir()
+          with tarfile.open(archive) as source:
+              source.extractall(client, filter='data')
+          binaries = [p for p in client.rglob('cozy') if p.is_file() and not p.is_symlink()]
+          assert len(binaries) == 1
+          binary = binaries[0]; binary.chmod(0o755)
+          binary_sha = hashlib.sha256(binary.read_bytes()).hexdigest()
+          version = subprocess.check_output([str(binary), '--version'], text=True).strip()
+          release = next(r for r in manifest['releases'] if r['app_name'] == 'cozy')
+          assert version == 'cozy '+release['app_version']
+          record = dict(producer=os.environ['PRODUCER'], source=os.environ['SOURCE'], harness=os.environ['HARNESS'],
+              requested_runtime_ref=os.environ['RUNTIME_REF'], requested_packages_ref=os.environ['PACKAGES_REF'], uses_packages_checkout=False,
+              runtime=os.environ['RUNTIME'], tensorfs=os.environ['TENSORFS'], archive=name, archive_sha256=digest,
+              binary_sha256=binary_sha, version=version, boundary='archive binary; installer is a separate gate')
+          (root/'e2e/provenance/cohort.json').write_text(json.dumps(record, indent=2)+'\n')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('binary='+str(binary)+'\n')
+              output.write('binary_sha256='+binary_sha+'\n')
+          PY
+          cp "$RUNNER_TEMP/vault-manifest/dist-manifest.json" "$RUNNER_TEMP/e2e/provenance/dist-manifest.json"
+          pin=$(tr -d '\r\n' < .creator/ci/hub-ref)
+          [ -n "$pin" ]
+          echo "hub_ref=$pin" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v5
+        with:
+          repository: cozy-creator/tensorhub
+          ref: ${{ steps.archive.outputs.hub_ref }}
+          ssh-key: ${{ secrets.TENSORHUB_READ_KEY }}
+          persist-credentials: false
+          path: .tensorhub
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: .tensorhub/go.mod
+          cache-dependency-path: .tensorhub/go.sum
+      - uses: astral-sh/setup-uv@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: AnimMouse/setup-ffmpeg@v1
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/skew-tools
+          key: skew-minio-RELEASE.2025-09-07T16-13-09Z
+      - name: Native filesystem driver and real isolated Hub vault proof
+        env:
+          BINARY: ${{ steps.archive.outputs.binary }}
+          RUNTIME: ${{ inputs.runtime }}
+          TENSORFS: ${{ inputs.tensorfs }}
+          SKEW_TOOLS: ${{ runner.temp }}/skew-tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y fuse libfuse2t64
+          sudo modprobe fuse || test -e /dev/fuse
+          sudo loginctl enable-linger "$(id -un)"
+          export XDG_RUNTIME_DIR=/run/user/$(id -u)
+          until [ -S "$XDG_RUNTIME_DIR/bus" ]; do sleep 1; done
+          export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
+          git -C .tensorhub rev-parse HEAD > "$RUNNER_TEMP/e2e/provenance/hub-source.txt"
+          bash .creator/e2e/skew/run.sh --hub-src .tensorhub --cozy-bin "$BINARY" \
+            --runtime "$RUNTIME" --tensorfs "$TENSORFS" --out "$RUNNER_TEMP/e2e" \
+            --command .creator/e2e/cli/projectvault-isolated.sh 2>&1 | node .creator/e2e/publish/scrub.js
+      - name: The installed proof used the exact archive binary
+        if: always() && steps.archive.outputs.binary_sha256 != ''
+        env:
+          EXPECTED: ${{ steps.archive.outputs.binary_sha256 }}
+        run: |
+          jq -e --arg sha "$EXPECTED" '.sha256 == $sha' "$RUNNER_TEMP/e2e/command/cohort.json"
+      - if: always()
+        uses: ./.creator/e2e/publish
+        with:
+          name: e2e-cli-linux-projectvault
+          path: ${{ runner.temp }}/e2e
+          retention-days: 14
+
   cli:
     name: cli ${{ matrix.shard }}
-    needs: [affected, candidate]
-    if: contains(fromJSON(needs.affected.outputs.selection).suites, 'cli')
+    needs: [affected, candidate, hub]
+    if: contains(fromJSON(needs.affected.outputs.selection).suites, 'cli') && inputs.shards != '[]' && !(inputs.publish_run != '' && inputs.select == 'cli' && inputs.shards == '["projectvault"]' && needs.affected.outputs.repo == 'cozy-creator')
     strategy:
       fail-fast: false
       matrix:
-        # projectdb*: project.db (cl-803), e2e/cli/projectdb.sh; projectdb also state.db (cl-818), e2e/cli/statedb.sh. local-code: local code by content (cl-817, cl-820).
-        shard: ${{ fromJSON(inputs.shards || '["runs","executors","commands","follow","web","projectdb","projectdb-latency","projectdb-existing","projectdb-web","local-code"]') }}
+        # projectdb covers project.db and state.db; the older projectdb-* aliases repeat its calls.
+        # Web behavior and the layout viewport partitions run separately. Manual shard selections remain available.
+        shard: ${{ fromJSON(inputs.shards || '["runs","executors","commands","follow","web-core","web-layout-1280","web-layout-1600","web-layout-2560","projectdb","projectvault","local-code"]') }}
     runs-on: ubuntu-24.04
     # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal. The suites fail on the
     # CLI's typed errors and exits, never on time.
@@ -413,15 +627,34 @@ jobs:
           runtime: ${{ inputs.runtime }}
           release: ${{ inputs.publish_run }}
       # The project part's fixtures and probes (e2e/cli/project.sh); Calcifer, a service, fetches its own.
-      - if: matrix.shard == 'commands' || matrix.shard == 'web' || matrix.shard == 'local-code' || matrix.shard == 'control' || startsWith(matrix.shard, 'projectdb')
+      - if: matrix.shard == 'commands' || matrix.shard == 'web' || startsWith(matrix.shard, 'web-') || matrix.shard == 'local-code' || matrix.shard == 'control' || matrix.shard == 'projectvault' || startsWith(matrix.shard, 'projectdb') || startsWith(matrix.shard, 'project-stream')
         uses: AnimMouse/setup-ffmpeg@v1
+      - name: Install the optional project-encryption filesystem driver
+        if: matrix.shard == 'projectvault'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fuse libfuse2t64
+          sudo modprobe fuse || test -e /dev/fuse
+      - uses: actions/download-artifact@v4
+        with:
+          name: fixture-hub
+          path: ${{ runner.temp }}/fixture-hub
       - name: cli suite
         env:
           PINS: ${{ inputs.pins }}
           GH_TOKEN: ${{ github.token }}
           MODEL: ${{ contains(fromJSON(needs.affected.outputs.selection).suites, 'model') && '--model' || '' }}
-        # BiRefNet: a pin, the change's packages, or packages master (the set's own).
-        run: bash .creator/e2e/cli/run.sh --out "$RUNNER_TEMP/e2e" --shard ${{ matrix.shard }} $MODEL $CANDIDATES ${PINS:+--pins "$PINS"} $(case " $CANDIDATES " in (*" --packages "*) ;; (*) echo ${PACKAGES_MASTER:+--packages "$PACKAGES_MASTER"} ;; esac) 2>&1 | node .creator/e2e/publish/scrub.js
+        # Against its own isolated Hub, which e2e/cli/isolated.sh seeds with what the shard reads from one. BiRefNet: a pin,
+        # the change's packages, or packages master (the set's own).
+        run: |
+          chmod +x "$RUNNER_TEMP/fixture-hub/tensorhub" "$RUNNER_TEMP/fixture-hub/minio"
+          sudo loginctl enable-linger "$(id -un)"
+          export XDG_RUNTIME_DIR=/run/user/$(id -u)
+          until [ -S "$XDG_RUNTIME_DIR/bus" ]; do sleep 1; done
+          export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
+          bash .creator/e2e/skew/run.sh --hub-bin "$RUNNER_TEMP/fixture-hub" --candidates "$CANDIDATES" --admin --out "$RUNNER_TEMP/e2e/hub" \
+            --command .creator/e2e/cli/isolated.sh -- \
+            --out "$RUNNER_TEMP/e2e" --shard ${{ matrix.shard }} $MODEL $CANDIDATES ${PINS:+--pins "$PINS"} $(case " $CANDIDATES " in (*" --packages "*) ;; (*) echo ${PACKAGES_MASTER:+--packages "$PACKAGES_MASTER"} ;; esac) 2>&1 | node .creator/e2e/publish/scrub.js
       # cozy's logs (Calcifer's too) however the suite ended: one the job's timeout ends never reaches its `logs` part (cl-837).
       - if: always()
         run: mkdir -p "$RUNNER_TEMP/e2e/cozy-logs" && cd ~/.cozy && find . -name '*.log' -size -20M | tar -cf - -T - | tar -xf - -C "$RUNNER_TEMP/e2e/cozy-logs" || true
@@ -432,16 +665,89 @@ jobs:
           path: ${{ runner.temp }}/e2e
           retention-days: 14
 
-  # macOS (arm64) and Windows, when selected: the whole suite on each runner, its cozy built there. These OSes run
-  # no models themselves (platform::Os::local_inference): what needs no machine, and every local verb refused.
-  cli-os:
-    name: cli ${{ matrix.runner }}
+  # Each native runner builds or reuses cozy once for CLI partitions and MPS.
+  # An explicit supervisor-only selection runs the process checks without building a candidate.
+  candidate-os:
+    name: candidate ${{ matrix.runner }}
     needs: affected
-    if: contains(fromJSON(needs.affected.outputs.selection).suites, 'cli') && needs.affected.outputs.runners != '[]'
+    if: needs.affected.outputs.native_runners != '[]' && !(inputs.publish_run != '' && inputs.select == 'cli' && inputs.shards == '["projectvault"]' && needs.affected.outputs.repo == 'cozy-creator')
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: ${{ fromJSON(needs.affected.outputs.native_runners) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: cozy-creator/cozy-creator
+          ref: ${{ needs.affected.outputs.creator }}
+          path: .creator
+      - id: native
+        if: needs.affected.outputs.native_build == 'true' && inputs.tensord == '' && inputs.publish_run == ''
+        uses: ./.creator/e2e/candidates
+        with:
+          packages_ref: ${{ needs.affected.outputs.packages }}
+          repo: ${{ needs.affected.outputs.repo }}
+          ref: ${{ needs.affected.outputs.ref }}
+          stack_ref: ${{ needs.affected.outputs.stack }}
+          runtime_ref: ${{ needs.affected.outputs.runtime }}
+      - if: runner.os == 'Windows' && (needs.affected.outputs.native_build != 'true' || inputs.tensord != '' || inputs.publish_run != '')
+        uses: actions/checkout@v5
+        with:
+          repository: cozy-creator/cozy-creator
+          ref: ${{ needs.affected.outputs.repo == 'cozy-creator' && needs.affected.outputs.ref || needs.affected.outputs.stack }}
+          path: .native-tests
+      - if: runner.os == 'Windows' && (needs.affected.outputs.native_build != 'true' || inputs.tensord != '' || inputs.publish_run != '')
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .native-tests -> target
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+      - name: Windows supervisor process tests
+        if: >-
+          runner.os == 'Windows' &&
+          (inputs.native_shards == '' ||
+           contains(fromJSON(needs.affected.outputs.selection).suites, 'supervisor'))
+        env:
+          CREATOR: ${{ (needs.affected.outputs.native_build != 'true' || inputs.tensord != '' || inputs.publish_run != '') && '.native-tests' || (needs.affected.outputs.repo == 'cozy-creator' && '.src' || '.stack') }}
+        run: |
+          cd "$CREATOR"
+          cargo test --release --locked -p platform --lib ipc::windows::tests -- --nocapture
+          cargo test --release --locked -p tensord --lib machine::supervise::tests -- --nocapture
+      - if: needs.affected.outputs.native_build == 'true' && inputs.tensord == '' && inputs.publish_run == ''
+        env:
+          SOURCE: ${{ needs.affected.outputs.repo == 'cozy-creator' && needs.affected.outputs.ref || needs.affected.outputs.stack }}
+          ARTIFACT: ${{ steps.native.outputs.cozy_artifact }}
+        run: |
+          exe=''; [ "$RUNNER_OS" != Windows ] || exe=.exe
+          version=$("$RUNNER_TEMP/candidates/cozy$exe" --version)
+          jq -n --arg source "$SOURCE" --arg os "$RUNNER_OS" --arg arch "$RUNNER_ARCH" \
+            --arg artifact "$ARTIFACT" --arg version "$version" \
+            '{source: $source, os: $os, arch: $arch, artifact: $artifact, version: $version}' \
+            > "$RUNNER_TEMP/candidates/native-candidate.json"
+      - if: needs.affected.outputs.native_build == 'true' && inputs.tensord == '' && inputs.publish_run == ''
+        uses: actions/upload-artifact@v4
+        with:
+          # Outside candidate-*: Linux suites download that set whole.
+          name: native-cozy-${{ matrix.runner }}
+          path: ${{ runner.temp }}/candidates
+          if-no-files-found: error
+          retention-days: 14
+
+  # macOS (arm64) and Windows: native file/restart/browser paths plus three layout viewport partitions.
+  # Generic browser journeys run on Linux; an explicit native `web` shard still runs the full suite.
+  cli-os:
+    name: cli ${{ matrix.runner }} ${{ matrix.shard }}
+    needs: [affected, candidate-os]
+    if: contains(fromJSON(needs.affected.outputs.selection).suites, 'cli') && needs.affected.outputs.runners != '[]' && inputs.native_shards != '[]' && !(inputs.publish_run != '' && inputs.select == 'cli' && inputs.shards == '["projectvault"]' && needs.affected.outputs.repo == 'cozy-creator')
     strategy:
       fail-fast: false
       matrix:
         runner: ${{ fromJSON(needs.affected.outputs.runners) }}
+        shard: ${{ fromJSON(inputs.native_shards || '["web-core","web-layout-1280","web-layout-1600","web-layout-2560"]') }}
     runs-on: ${{ matrix.runner }}
     # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal. The suites fail on the
     # CLI's typed errors and exits, never on time.
@@ -463,6 +769,8 @@ jobs:
           repo: ${{ needs.affected.outputs.repo }}
           ref: ${{ needs.affected.outputs.ref }}
           build: ${{ env.BUILD }}
+          from: native-artifact
+          native_artifact: native-cozy-${{ matrix.runner }}
           stack_ref: ${{ needs.affected.outputs.stack }}
           runtime_ref: ${{ needs.affected.outputs.runtime }}
           tensord: ${{ inputs.tensord }}
@@ -473,28 +781,21 @@ jobs:
         env:
           PINS: ${{ inputs.pins }}
           GH_TOKEN: ${{ github.token }}
-        run: bash .creator/e2e/cli/run.sh --out "$RUNNER_TEMP/e2e" $CANDIDATES ${PINS:+--pins "$PINS"} $(case " $CANDIDATES " in (*" --packages "*) ;; (*) echo ${PACKAGES_MASTER:+--packages "$PACKAGES_MASTER"} ;; esac) 2>&1 | node .creator/e2e/publish/scrub.js
+        run: bash .creator/e2e/cli/run.sh --out "$RUNNER_TEMP/e2e" --shard ${{ matrix.shard }} $CANDIDATES ${PINS:+--pins "$PINS"} $(case " $CANDIDATES " in (*" --packages "*) ;; (*) echo ${PACKAGES_MASTER:+--packages "$PACKAGES_MASTER"} ;; esac) 2>&1 | node .creator/e2e/publish/scrub.js
       - if: always()
         uses: ./.creator/e2e/publish
         with:
-          name: e2e-cli-${{ matrix.runner }}
+          name: e2e-cli-${{ matrix.runner }}-${{ matrix.shard }}
           path: ${{ runner.temp }}/e2e
           retention-days: 14
 
-  # cozy's signed-in commands, with the CI key: only where the release-gate environment admits the ref (master,
-  # release branches), so a release (`--tokens release`) or a dispatch selects it, never a pull request.
+  # Publication checks use an owned Hub, Postgres and object store. Hardware qualification
+  # remains separate; this job neither rents production machines nor uses a production account.
   cli-release:
-    name: cli-release ${{ matrix.runner }}
+    name: isolated publication
     needs: [affected, candidate]
     if: contains(fromJSON(needs.affected.outputs.selection).suites, 'cli-release')
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: ${{ fromJSON(needs.affected.outputs.release_runners) }}
-    runs-on: ${{ matrix.runner }}
-    environment: release-gate
-    # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal. The suites fail on the
-    # CLI's typed errors and exits, never on time.
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     defaults:
       run:
@@ -513,45 +814,42 @@ jobs:
           repo: ${{ needs.affected.outputs.repo }}
           ref: ${{ needs.affected.outputs.ref }}
           build: ${{ env.BUILD }}
-          # Linux takes the candidate jobs' set; macOS and Windows build their cozy here.
-          from: ${{ matrix.runner == 'ubuntu-24.04' && 'artifacts' || '' }}
+          from: artifacts
           stack_ref: ${{ needs.affected.outputs.stack }}
           runtime_ref: ${{ needs.affected.outputs.runtime }}
           tensord: ${{ inputs.tensord }}
           tensorfs: ${{ inputs.tensorfs }}
           runtime: ${{ inputs.runtime }}
           release: ${{ inputs.publish_run }}
-      - name: cli-release suite
+      - uses: actions/checkout@v5
+        with:
+          repository: cozy-creator/tensorhub
+          ref: ${{ inputs.hub_ref || 'master' }}
+          ssh-key: ${{ secrets.TENSORHUB_READ_KEY }}
+          persist-credentials: false
+          path: .tensorhub
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: .tensorhub/go.mod
+          cache-dependency-path: .tensorhub/go.sum
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/skew-tools
+          key: skew-minio-RELEASE.2025-09-07T16-13-09Z
+      - name: Publication checks against the isolated Hub
         env:
-          KEY: ${{ secrets.COZY_CI_DEVICE_KEY }}
-          SKU: ${{ inputs.sku }}
-          QUOTE: ${{ inputs.quote && '1' || '' }}
-          PINS: ${{ inputs.pins }}
+          SKEW_TOOLS: ${{ runner.temp }}/skew-tools
         run: |
-          [ -n "$KEY" ] || { echo "::error::the release-gate environment has no COZY_CI_DEVICE_KEY (release-gate/README.md)"; exit 1; }
-          umask 077; printf '%s' "$KEY" > "$RUNNER_TEMP/key.json"
-          code=0; bash .creator/e2e/release/run.sh --out "$RUNNER_TEMP/e2e" --key "$RUNNER_TEMP/key.json" ${SKU:+--sku "$SKU"} ${QUOTE:+--quote} ${PINS:+--pins "$PINS"} $CANDIDATES 2>&1 | node .creator/e2e/publish/scrub.js || code=$?
-          rm -f "$RUNNER_TEMP/key.json"; exit $code
-      # The suite's trap ends its order; a cancel kills it before `machine end` returns (42747641307's order stayed): end it here too.
-      - if: always()
-        run: |
-          r=$(jq -r 'select(.type? == "rental.accepted") | .rental_id // empty' "$RUNNER_TEMP/e2e/rent.ndjson" 2> /dev/null | tail -1) || true
-          [ -n "$r" ] || exit 0
-          cozy=$HOME/.cozy/bin/cozy hc=$RUNNER_TEMP/hubcheck
-          [ -x "$hc" ] || hc=$hc.exe
-          # Calcifer reaches the Hub through hubcheck, which the suite stopped: the same address again.
-          addr=$(head -1 "$RUNNER_TEMP/e2e/hubcheck.addr" 2> /dev/null) || true
-          [ -z "$addr" ] || [ ! -x "$hc" ] || { "$hc" --listen "$addr" --out "$RUNNER_TEMP" > /dev/null 2>&1 & sleep 2; }
-          . .creator/release-gate/machines.sh
-          for _ in $(seq 1 30); do
-            listed "$r" "$cozy" || { echo "$r is gone"; exit 0; }
-            "$cozy" machine end "$r" --force -y < /dev/null || true; sleep 10
-          done
-          echo "::error::$r is still listed, or no machine listing answered: end it by hand (cozy machine end $r)"; exit 1
+          sudo loginctl enable-linger "$(id -un)"
+          export XDG_RUNTIME_DIR=/run/user/$(id -u)
+          until [ -S "$XDG_RUNTIME_DIR/bus" ]; do sleep 1; done
+          export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
+          bash .creator/e2e/skew/run.sh --hub-src .tensorhub --candidates "$CANDIDATES" \
+            --checks .creator/e2e/release/synthetic.sh --publication-log "$RUNNER_TEMP/e2e/argv.log" --out "$RUNNER_TEMP/e2e"
       - if: always()
         uses: ./.creator/e2e/publish
         with:
-          name: e2e-cli-release-${{ matrix.runner }}
+          name: e2e-cli-publication
           path: ${{ runner.temp }}/e2e
           retention-days: 14
 
@@ -604,8 +902,74 @@ jobs:
           path: ${{ runner.temp }}/e2e
           retention-days: 14
 
+  # The free CPU test (e2e/cpu): every package's entry points through the candidate Runtime's real executor with tiny
+  # random weights, one and two ranks, outputs against stored references; each package uploaded, locked and its
+  # requests bound through the candidate cozy. No GPU, rental or sign-in.
+  cpu:
+    needs: [affected, candidate]
+    if: contains(fromJSON(needs.affected.outputs.selection).suites, 'cpu')
+    runs-on: ubuntu-24.04
+    # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal.
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    env:
+      BUILD: ${{ join(fromJSON(needs.affected.outputs.selection).build, ' ') }}
+      UV_CACHE_DIR: ${{ github.workspace }}/.uv-cache
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: cozy-creator/cozy-creator
+          ref: ${{ needs.affected.outputs.creator }}
+          path: .creator
+      - uses: ./.creator/e2e/candidates
+        with:
+          packages_ref: ${{ needs.affected.outputs.packages }}
+          repo: ${{ needs.affected.outputs.repo }}
+          ref: ${{ needs.affected.outputs.ref }}
+          build: ${{ env.BUILD }}
+          from: artifacts
+          tensord: ${{ inputs.tensord }}
+          tensorfs: ${{ inputs.tensorfs }}
+          runtime: ${{ inputs.runtime }}
+          release: ${{ inputs.publish_run }}
+      # The locked wheels every package's environment takes (CPU torch included), by the locks that name them.
+      - uses: actions/cache@v4
+        with:
+          path: .uv-cache
+          key: cpu-uv-${{ hashFiles('.pkgs/*/uv.lock', '.src/*/uv.lock') }}
+          restore-keys: cpu-uv-
+      # The CLI cells' cozy (e2e/cpu/cli.sh): installed as a person installs it, the candidate in its place and Calcifer
+      # restarted on it, as the cli suite's candidates step does.
+      - name: cpu suite
+        run: |
+          . .creator/e2e/lib.sh
+          parse --out "$RUNNER_TEMP/e2e/cozy" $CANDIDATES
+          install_cozy
+          user_services
+          if [ -f "$CAND_COZY" ]; then
+            cozy --json doctor > "$OUT/doctor.json" || true
+            grep -q "$("$CAND_COZY" --version)," "$OUT/doctor.json" || fail "Calcifer is not the candidate $("$CAND_COZY" --version)"
+          fi
+          mkdir -p "$RUNNER_TEMP/project" && (cd "$RUNNER_TEMP/project" && cozy --json new > /dev/null) || fail "cozy new failed"
+          code=0
+          bash .creator/e2e/cpu/run.sh --out "$RUNNER_TEMP/e2e" --envs "$RUNNER_TEMP/envs" $CANDIDATES \
+            $(case " $CANDIDATES " in (*" --packages "*) ;; (*) echo --packages "$PACKAGES_MASTER" ;; esac) \
+            --cozy "$COZY" --project "$RUNNER_TEMP/project" 2>&1 | node .creator/e2e/publish/scrub.js || code=$?
+          finish cpu
+          exit "$code"
+      - if: always()
+        run: uv cache prune --ci
+      - if: always()
+        uses: ./.creator/e2e/publish
+        with:
+          name: e2e-cpu
+          path: ${{ runner.temp }}/e2e
+          retention-days: 14
+
   mps:
-    needs: affected
+    needs: [affected, candidate-os]
     if: contains(fromJSON(needs.affected.outputs.selection).suites, 'mps')
     runs-on: macos-15
     # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal. The suites fail on the
@@ -628,6 +992,8 @@ jobs:
           repo: ${{ needs.affected.outputs.repo }}
           ref: ${{ needs.affected.outputs.ref }}
           build: ${{ env.BUILD }}
+          from: native-artifact
+          native_artifact: native-cozy-macos-15
           stack_ref: ${{ needs.affected.outputs.stack }}
           runtime_ref: ${{ needs.affected.outputs.runtime }}
           tensord: ${{ inputs.tensord }}
@@ -681,13 +1047,19 @@ jobs:
           SKEW_TOOLS: ${{ runner.temp }}/skew-tools
           CLIENT: ${{ matrix.client }}
           MIN: ${{ inputs.cozy_min }}
+          RUNTIME: ${{ inputs.runtime }}
+          TENSORFS: ${{ inputs.tensorfs }}
         run: |
           # Calcifer and the local machine run as user services, as on a desktop login.
           sudo loginctl enable-linger "$(id -un)"
           export XDG_RUNTIME_DIR=/run/user/$(id -u)
           until [ -S "$XDG_RUNTIME_DIR/bus" ]; do sleep 1; done
           export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
-          bash .creator/e2e/skew/run.sh --hub-src .tensorhub --client "$CLIENT" --cozy-min "$MIN" --out "$RUNNER_TEMP/e2e"
+          sdk=()
+          [ -z "$RUNTIME" ] || sdk+=(--runtime "$RUNTIME")
+          [ -z "$TENSORFS" ] || sdk+=(--tensorfs "$TENSORFS")
+          bash .creator/e2e/skew/run.sh --hub-src .tensorhub --client "$CLIENT" --cozy-min "$MIN" \
+            "${sdk[@]}" --out "$RUNNER_TEMP/e2e"
       - if: always()
         uses: ./.creator/e2e/publish
         with:
@@ -697,7 +1069,7 @@ jobs:
 
   e2e:
     if: always()
-    needs: [affected, candidate, cli, cli-os, cli-release, imports, mps]
+    needs: [affected, candidate, candidate-os, projectvault-archive, hub, cli, cli-os, cli-release, imports, cpu, mps]
     runs-on: ubuntu-24.04
     # Last resort (tracker design/stalls.md): a runner that hangs sends no signal.
     timeout-minutes: 10

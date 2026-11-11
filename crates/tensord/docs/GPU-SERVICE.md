@@ -93,7 +93,7 @@ The machine builds its `GpuConfig` at start (`serve.rs`) from its GPUs and `conf
 - Memory observations, ended executors and placements are lines of the store's
   `logs/memory.log` (rotated once past 4 MiB), machine log `memory`
   (`cozy machine logs <name> memory`; `local` names this computer's). Each call's own memory is
-  the run's `memory` measurements (`cozy run show`): torch's peaks and the executor's `stats`
+  the run's `memory` measurements (`cozy run watch`): torch's peaks and the executor's `stats`
   (bytes paged in per model per step, evictions with rung and reason, activation peaks per
   shape, leftover), which the merge gate reads as `measurements.memory.stats`.
 - Ending idle executors for room runs under that GPU's call slot; host pressure ends idle
@@ -124,7 +124,7 @@ The machine builds its `GpuConfig` at start (`serve.rs`) from its GPUs and `conf
   On this computer's machine a member at `imported` or above keeps TensorD from its 15-minute idle
   exit, the 5-minute release leaves a `host`/`gpu` member's executor, and a kept-up machine's
   parent release (`release_parents`) leaves a member's parent. Pressure still takes them.
-  `--warm off` takes a member out of the set; what it holds stays until something needs the room.
+  A warming request at `off` takes a member out of the set; what it holds stays until something needs the room.
 - An executor's failed terminal (its own refusal before entry, or a failed invoke) first keeps a
   triage bundle (`triage.rs`: terminal, traceback, executor pid and stderr tail; canonical JSON
   under `execution/triage/`, fsynced) and binds it in the journal; its detail is the outcome's

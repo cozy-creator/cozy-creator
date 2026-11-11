@@ -5,13 +5,14 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import OrderedDict
-from typing import Any
+from typing import TYPE_CHECKING, cast
 
 import msgspec
 import numpy as np
 import torch
 from cozy_runtime.author import (
     App,
+    Config,
     Context,
     Loader,
     Model,
@@ -23,6 +24,9 @@ from cozy_runtime.author import (
     uses_components,
 )
 from cozy_runtime.weights_store import Derivation
+
+if TYPE_CHECKING:
+    from tensorfs import Array, Encoded
 
 app = App()
 
@@ -39,7 +43,7 @@ def source_values(seed: int) -> tuple[torch.Tensor, torch.Tensor]:
 
 
 class Pipeline:
-    def __init__(self, config: Any) -> None:
+    def __init__(self, config: Config) -> None:
         # A one-component checkpoint presents that component's config directly.
         self.components = {
             "net": torch.nn.Sequential(
@@ -59,7 +63,7 @@ class Pipeline:
         }
 
 
-def build(config: Any) -> Pipeline:
+def build(config: Config) -> Pipeline:
     return Pipeline(config)
 
 
@@ -72,7 +76,7 @@ class LinearModel(Model[Pipeline]):
     @uses_components("net")
     def predict(self, operand: torch.Tensor) -> tuple[torch.Tensor, str, str]:
         net = self.pipe.components["net"]
-        layer = net.proj
+        layer = cast(torch.nn.Linear, net.proj)  # cast: the Linear the Pipeline built
         with torch.inference_mode():
             result = net(operand.to(device=layer.bias.device, dtype=torch.bfloat16))
         return (
@@ -146,7 +150,7 @@ def predict(
     assert payload.encoding in ("int8.convrot", "nvfp4")
     checkpoint = ctx.tensorfs_source(weights)
     held = checkpoint.components["net"].tensors
-    encoded = held.read("proj.weight")
+    encoded = cast("Encoded", held.read("proj.weight"))  # cast: a recipe lane's weight is encoded
     assert encoded.scheme == payload.encoding, encoded.scheme
     parts = {
         name: (part.dtype, part.shape, part.tobytes())
@@ -163,7 +167,7 @@ def predict(
     )
     original, original_bias = source_values(payload.seed)
     bias = torch.frombuffer(
-        bytearray(held.read("proj.bias").tobytes()), dtype=torch.bfloat16
+        bytearray(cast("Array", held.read("proj.bias")).tobytes()), dtype=torch.bfloat16  # cast: the bias stays plain
     ).float()
     assert torch.equal(bias, original_bias.float())
     reference_weight = torch.from_numpy(decoded)

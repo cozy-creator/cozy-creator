@@ -18,7 +18,7 @@ import { lost } from "../api/outbox"
 import { canvasQuery, machinesQuery, projectQuery, toolsQuery } from "../api/queries"
 import { useTo } from "../app/project"
 import { useConnection } from "../app/Connection"
-import { loadMore, loadSelection, loadToolsShut, loadViewport, saveMore, saveSelection, saveToolsShut, saveViewport } from "../app/view"
+import { loadMachine, loadMore, loadSelection, loadToolsShut, loadViewport, saveMachine, saveMore, saveSelection, saveToolsShut, saveViewport } from "../app/view"
 import type { Tool } from "../api/calcifer"
 import { Copyable } from "../ui/Copyable"
 import { dismiss, say } from "../ui/notes"
@@ -80,7 +80,7 @@ function ProjectSync({ id }: { id: string }) {
   const store = useCanvasStore()
   const navigate = useNavigate()
   const { data: state, error: stateError } = useQuery(projectQuery(client, stream, id))
-  const { data: canvas, error: canvasError } = useQuery(canvasQuery(client, id))
+  const { data: canvas, error: canvasError } = useQuery(canvasQuery(client, stream, id))
   const asked = useRef(new Set<string>())
   const queries = useQueryClient()
 
@@ -116,15 +116,18 @@ function ProjectSync({ id }: { id: string }) {
     if (canvasError && !lost(canvasError)) say("Couldn't read where things sit", canvasError)
   }, [canvasError])
   useEffect(() => {
-    store.history.read()
-    return stream.subscribe((event) => {
+    const controller = new AbortController()
+    const readHistory = () => void stream.whenShown(id, controller.signal).then(() => store.history.read(), () => {})
+    readHistory()
+    const unsubscribe = stream.subscribe((event) => {
       if (event.type === "canvas" && event.id === id) store.applyRows(event.cards, event.seq)
       if (event.type === "history" && event.id === id) store.history.read()
       if (event.type === "resync" || event.type === "hello") {
         store.fellBehind()
-        store.history.read()
+        readHistory()
       }
     })
+    return () => { controller.abort(); unsubscribe() }
   }, [stream, store, id])
   useEffect(() => bridge.onRun((run) => store.applyRun(run)), [bridge, store])
   useEffect(() => {
@@ -134,40 +137,54 @@ function ProjectSync({ id }: { id: string }) {
 }
 
 /**
- * The machines a render may go to, as `cozy project render` sends them: there's no choosing, the walk places each job on whichever ends it first (Paul,
- * 11-05). Every rental of yours, up or on its way, since a rented GPU is for using; another computer's that's up; this one last, which loses a tie.
- * Another computer's rental of your account takes nothing from here. With none, Render asks for one under Machines. Null until they're read.
+ * Automatic placement considers available machines. An explicit choice restricts model renders
+ * to that machine, including while it is unavailable, so it cannot silently fall back elsewhere.
  */
-function useMachines(store: CanvasStore): string[] | null {
+function useMachines(store: CanvasStore) {
   const { client, status } = useConnection()
   const { data, isPending } = useQuery(machinesQuery(client))
+  const [chosen, setChosen] = useState(() => loadMachine(store.projectId))
   const held = (data?.machines ?? []).filter((machine) => machine.ordered !== false && !machine.offline)
   // One still booting takes what's sent to it, which waits for it there.
   const rented = held.filter((machine) => machine.kind === "rental" && (machine.state === "ready" || machine.state === "booting"))
   const up = held.filter((machine) => machine.kind !== "rental" && machine.state === "ready" && !machine.unreachable && (machine.kind !== "local" || status.local_usable))
-  const names = [...rented, ...up.filter((machine) => machine.kind !== "local"), ...up.filter((machine) => machine.kind === "local")].map((machine) => machine.name)
+  const automatic = [...rented, ...up.filter((machine) => machine.kind !== "local"), ...up.filter((machine) => machine.kind === "local")].map((machine) => machine.name)
+  const choices = [...new Set([...(status.local_usable ? ["local"] : []), ...held.filter((machine) => machine.kind !== "local").map((machine) => machine.name)])]
+  const names = chosen ? [chosen] : automatic
   const key = names.join()
   // biome-ignore lint/correctness/useExhaustiveDependencies: the names, as text
   useEffect(() => {
     store.machines = () => names
     if (names.length) store.machineUp()
   }, [store, key])
-  return isPending ? null : names
+  const choose = (name: string) => {
+    store.machines = () => name ? [name] : automatic
+    setChosen(name)
+    if (store.projectId) saveMachine(store.projectId, name)
+  }
+  return { machines: isPending ? null : names, choices, chosen, choose }
 }
 
 /** Render all, and how many that is. Approved assets stay. */
-function RenderAll({ id }: { id: string }) {
+function RenderAll({ id, routing }: { id: string; routing: ReturnType<typeof useMachines> }) {
   const { client, stream } = useConnection()
   const store = useCanvasStore()
   const { data } = useQuery(projectQuery(client, stream, id))
   const fresh = (data?.assets ?? []).filter((asset) => asset.tool && !madeHere(asset.tool) && !asset.pinned).length
   const asking = useSignal(store.allAsking)
-  if (!fresh) return null
   return (
     <span className="render-all">
-      <button type="button" className="tb primary" onClick={() => store.runAll()}>
+      <label>
+        Run on
+        <select className="field" aria-label="Render machine" value={routing.chosen} onChange={(event) => routing.choose(event.target.value)} title="Machine for model renders. Edit assembly runs locally.">
+          <option value="">Automatically</option>
+          {routing.chosen && !routing.choices.includes(routing.chosen) && <option value={routing.chosen}>{routing.chosen} (unavailable)</option>}
+          {routing.choices.map((name) => <option key={name} value={name}>{name === "local" ? "This computer" : name}</option>)}
+        </select>
+      </label>
+      {fresh > 0 && <button type="button" className="tb primary" onClick={() => store.runAll()}>
         Render all {fresh}
-      </button>
+      </button>}
       {asking && <Asking fit={asking.fit} all />}
     </span>
   )
@@ -226,11 +243,13 @@ function Empty({ choose }: { choose: () => void }) {
 
 function Canvas({
   projectId,
+  active,
   slot,
   history,
   onAdopt,
 }: {
   projectId: string | null
+  active: boolean
   slot: HTMLElement | null
   history: HTMLElement | null
   onAdopt: (id: string, code: string) => void
@@ -245,7 +264,9 @@ function Canvas({
   // One a code reload left is another class's, and is made again.
   const [store] = useState(() => {
     const kept = projectId ? canvases.get(projectId) : undefined
-    return kept instanceof CanvasStore ? kept : new CanvasStore(client, outbox, projectId, loadSelection(projectId), loadMore(projectId))
+    if (kept instanceof CanvasStore) return kept
+    const made: CanvasStore = new CanvasStore(client, outbox.scoped(() => made.projectId), projectId, loadSelection(projectId), loadMore(projectId))
+    return made
   })
   // A canvas's first box makes its project: kept from then on.
   useEffect(() => {
@@ -261,6 +282,16 @@ function Canvas({
   const legacyAsset = useMatch("/projects/:id/assets/:name")
   const opened = (compactAsset ?? legacyAsset)?.params.name
   const stage = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    if (active) {
+      store.refreshSurface(flow.getViewport())
+      store.fitHere(true)
+      return
+    }
+    // Keep draft/import owners alive under the cover, while closing any mention
+    // popup portaled outside its hidden DOM subtree. Shell pauses covered media.
+    if (document.activeElement instanceof HTMLElement && stage.current?.contains(document.activeElement)) document.activeElement.blur()
+  }, [active, store, flow])
   const returning = useRef<{ view: Viewport; until: number } | null>(null)
   const folded = useRef(false)
   const shutNow = useRef(shut)
@@ -366,6 +397,8 @@ function Canvas({
     store.patch(held.name, { here: undefined, hereWords: undefined, pickingUp: undefined })
     store.view(held.name)
     returning.current = { view: held.back, until: performance.now() + HERE_MS }
+    // A reload while it goes back finds where it was, not where the box was.
+    if (store.projectId) saveViewport(store.projectId, held.back)
     if (folded.current) {
       folded.current = false
       setShut(false)
@@ -387,7 +420,8 @@ function Canvas({
   const settling = useRef<ReturnType<typeof setTimeout>>(undefined)
   const pointer = useRef<{ x: number; y: number } | null>(null)
   // Which machine's packages a list leads with. The list waits to know, or it would be asked for twice, each a wait on the Hub.
-  const machines = useMachines(store)
+  const routing = useMachines(store)
+  const machines = routing.machines
   const machine = machines?.at(-1) ?? null
   // What can't be read says so on the canvas, and everything around it still works. One already read stays while Calcifer's away.
   const { data: read, error } = useQuery({ ...projectQuery(client, stream, projectId ?? ""), enabled: Boolean(projectId) })
@@ -561,7 +595,10 @@ function Canvas({
 
   const moved = useCallback(
     (_: unknown, viewport: Viewport) => {
-      if (store.projectId && !store.inPlace) saveViewport(store.projectId, viewport)
+      if (!store.projectId || store.inPlace) return
+      // A draw-in cut short by leaving the box ends here part way: what's kept is where it's going back to.
+      const going = returning.current
+      saveViewport(store.projectId, going && performance.now() < going.until ? going.view : viewport)
     },
     [store],
   )
@@ -642,6 +679,7 @@ function Canvas({
   )
 
   useEffect(() => {
+    if (!active) return
     const key = (event: KeyboardEvent) => {
       // Bubbling up to here: a name field or the names offered in a text has taken its own Esc, and a menu goes first.
       if (store.viewing.get()) return
@@ -696,10 +734,11 @@ function Canvas({
     }
     window.addEventListener("keydown", key)
     return () => window.removeEventListener("keydown", key)
-  }, [flow, store, fit, fitSelected, zoomTo, zoomBy, leaveHere, stepTakes])
+  }, [active, flow, store, fit, fitSelected, zoomTo, zoomBy, leaveHere, stepTakes])
 
   // A text copies and pastes its own, and so does any selection of words on the page.
   useEffect(() => {
+    if (!active) return
     const copy = (event: ClipboardEvent) => {
       if (typing(event.target) || store.viewing.get() || !event.clipboardData || !document.getSelection()?.isCollapsed) return
       const here = store.inPlace?.name
@@ -729,12 +768,14 @@ function Canvas({
       window.removeEventListener("copy", copy)
       window.removeEventListener("paste", paste)
     }
-  }, [store, client, flow, placer, visibleCentre])
+  }, [active, store, client, flow, placer, visibleCentre])
 
   // Every box's node is handed these: made once, so drawing the canvas again draws no box again.
   const moveStarted = useCallback(
     (event: unknown) => {
       if (event && store.inPlace) store.inPlace.moved = true
+      // Moved by hand on its way back: it stays where it's moved to.
+      if (event) returning.current = null
     },
     [store],
   )
@@ -908,10 +949,10 @@ function Canvas({
         {veil && <div className="dropveil" />}
       </div>
       {opened && <Addressed name={opened} enter={writeHere} leave={leaveHere} />}
-      <AssetMenu />
-      <Viewer />
+      {active && <AssetMenu />}
+      {active && <Viewer />}
       <input ref={picker} className="picker" type="file" multiple accept={ACCEPT} onChange={picked} aria-label="Add a file" />
-      {slot && projectId && createPortal(<RenderAll id={projectId} />, slot)}
+      {slot && projectId && createPortal(<RenderAll id={projectId} routing={routing} />, slot)}
       {history && projectId && createPortal(<HistoryControls />, history)}
       {projectId && <ProjectSync id={projectId} />}
     </CanvasStoreProvider>
@@ -929,7 +970,7 @@ const LAYERED = /AppleWebKit/.test(navigator.userAgent) && !/Chrome|Chromium/.te
 const textScale = (zoom: number) => Math.round((1 / Math.min(2.5, Math.max(0.25, zoom))) * 20) / 20
 
 /** Always mounted: everything else is a drawer over it, so opening one loses no viewport, no draft and no import in flight. */
-export function CanvasHost(props: { projectId: string | null; slot: HTMLElement | null; history: HTMLElement | null; onAdopt: (id: string, code: string) => void }) {
+export function CanvasHost(props: { projectId: string | null; active: boolean; slot: HTMLElement | null; history: HTMLElement | null; onAdopt: (id: string, code: string) => void }) {
   return (
     <ReactFlowProvider defaultNodes={[]}>
       <Canvas {...props} />

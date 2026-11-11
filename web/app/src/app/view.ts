@@ -1,6 +1,18 @@
 import type { Viewport } from "@xyflow/react"
 
-// Viewport and selection stay in the browser. They can come back empty, and the page works without them.
+// Ordinary-project view preferences can stay in the browser. Encrypted-project names and
+// selections are never persisted; a locked project also removes preferences saved before conversion.
+const privateProjects = new Set<string>()
+export const privateProject = (id: string | null) => id !== null && privateProjects.has(id)
+export function forgetProjectView(id: string) {
+  for (const prefix of ["cozy.view:", "cozy.selection:", "cozy.more:", "cozy.machine:"]) {
+    try { localStorage.removeItem(`${prefix}${id}`) } catch { /* storage is optional */ }
+  }
+}
+export function protectProjectView(id: string, encrypted: boolean) {
+  if (encrypted) { privateProjects.add(id); forgetProjectView(id) }
+  else privateProjects.delete(id)
+}
 
 function read<T>(key: string): T | null {
   try {
@@ -21,6 +33,7 @@ function write(key: string, value: unknown) {
 const viewKey = (id: string) => `cozy.view:${id}`
 const selectionKey = (id: string) => `cozy.selection:${id}`
 const moreKey = (id: string) => `cozy.more:${id}`
+const machineKey = (id: string) => `cozy.machine:${id}`
 const TOOLS_KEY = "cozy.tools-shut"
 const NSFW_KEY = "cozy.show-nsfw"
 
@@ -32,9 +45,14 @@ export const saveShowNsfw = (shown: boolean) => write(NSFW_KEY, shown)
 export const loadToolsShut = () => read<boolean>(TOOLS_KEY) === true
 export const saveToolsShut = (shut: boolean) => write(TOOLS_KEY, shut)
 
-export const loadViewport = (id: string | null) => (id ? read<Viewport>(viewKey(id)) : null)
-export const saveViewport = (id: string, viewport: Viewport) => write(viewKey(id), viewport)
-export const loadSelection = (id: string | null) => (id ? (read<string[]>(selectionKey(id)) ?? []) : [])
-export const saveSelection = (id: string, names: string[]) => write(selectionKey(id), names)
-export const loadMore = (id: string | null) => (id ? (read<string[]>(moreKey(id)) ?? []) : [])
-export const saveMore = (id: string, names: string[]) => write(moreKey(id), names)
+export const loadViewport = (id: string | null) => (id && !privateProject(id) ? read<Viewport>(viewKey(id)) : null)
+export const saveViewport = (id: string, viewport: Viewport) => privateProject(id) ? undefined : write(viewKey(id), viewport)
+export const loadSelection = (id: string | null) => (id && !privateProject(id) ? (read<string[]>(selectionKey(id)) ?? []) : [])
+export const saveSelection = (id: string, names: string[]) => privateProject(id) ? undefined : write(selectionKey(id), names)
+export const loadMore = (id: string | null) => (id && !privateProject(id) ? (read<string[]>(moreKey(id)) ?? []) : [])
+export const saveMore = (id: string, names: string[]) => privateProject(id) ? undefined : write(moreKey(id), names)
+export function loadMachine(id: string | null): string {
+  const name = id && !privateProject(id) ? read<unknown>(machineKey(id)) : null
+  return typeof name === "string" ? name : ""
+}
+export const saveMachine = (id: string, name: string) => privateProject(id) ? undefined : write(machineKey(id), name)

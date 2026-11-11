@@ -1,4 +1,4 @@
-// probes.sh's browsers: a `cozy run play` link opened on its real HTTPS origin, under that page's real CSP, with its real cozy-webrtc.js, in
+// probes.sh's browsers: a playback API link opened on its real HTTPS origin, under that page's real CSP, with its real cozy-webrtc.js, in
 // Chromium, Firefox and WebKit. Playwright's WebKit on Linux is not Safari, and nothing here speaks for Safari or iOS.
 //   node webrtc.js <link> <results.json>
 // $PLAYWRIGHT: playwright-core's directory; $NET: net.sh; $MACHINE: the machine, by name. Prints one line per browser; results.json grows as

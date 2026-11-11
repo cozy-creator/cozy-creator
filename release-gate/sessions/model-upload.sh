@@ -15,7 +15,7 @@ for p in "${pairs[@]}"; do
   step "upload-$n" model upload "${p#*=}" "$m" --lane "$LANE" --on local || fail "upload $m"
   c=$(awk '$1=="commit"{c=$2} END{sub(/.*@/, "", c); print c}' "$OUT/upload-$n.txt")
   [ -n "$c" ] || fail "upload $m named no commit"
-  cozy model info "$m" > "$OUT/info-$n.txt" 2>&1
+  model_details "$m" > "$OUT/info-$n.txt" 2>&1
   say "COMMIT $m $LANE $c"
 done
 say "PASS: ${pairs[*]%%=*}"

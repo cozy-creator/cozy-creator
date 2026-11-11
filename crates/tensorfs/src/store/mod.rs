@@ -23,6 +23,7 @@ mod checkpoint;
 mod folder;
 pub use folder::{copy_checked, files as folder_files};
 mod gc;
+pub use gc::RemovedModel;
 mod records;
 pub mod retention;
 
@@ -201,7 +202,7 @@ impl Store {
     pub fn open(root: impl Into<PathBuf>) -> Result<Store> {
         let root = root.into();
         fs::create_dir_all(&root).map_err(fail("create", &root))?;
-        let root = fs::canonicalize(&root).map_err(fail("resolve", &root))?;
+        let root = platform::durable::canonical(&root).map_err(|e| fail("resolve", &root)(e.into()))?;
         let record = root.join("format");
         match fs::read(&record) {
             Ok(bytes) => {

@@ -7,12 +7,13 @@ import importlib.metadata as md
 import pkgutil
 import sys
 import traceback
+from collections.abc import Callable
 
 name = sys.argv[1]
 failed: list[str] = []
 
 
-def load(what: str, call) -> object | None:
+def load(what: str, call: Callable[[], object]) -> object | None:
     try:
         return call()
     except BaseException:

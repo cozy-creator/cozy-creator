@@ -24,7 +24,7 @@ run() { # run <name> <target> [input...]: follow to its end; the run's number an
   local name=$1 target=$2 n status; shift 2
   cozy run "$target" --on "$M" --json "$@" >"$D/$name.ndjson" 2>&1
   n=$(grep -o '"number": *[0-9]*' "$D/$name.ndjson" | head -1 | grep -o '[0-9]*$')
-  cozy run show "$n" --json >"$D/$name.json" 2>&1
+  cozy run watch "$n" --json >"$D/$name.json" 2>&1
   status=$(jq -r .status "$D/$name.json" 2>/dev/null)
   log "$name: run $n $status"
   [ "$status" = completed ] || log "$name: $(jq -c '.outcome.reason // .error // .' "$D/$name.json" 2>/dev/null | cut -c1-400)"

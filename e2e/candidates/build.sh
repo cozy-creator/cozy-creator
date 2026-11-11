@@ -35,11 +35,24 @@ case $what in
 esac
 sha=$(git -C "$src" rev-parse HEAD)
 inputs=$sha
+stage_src=''
+[ "$what" != cozy ] || stage_src=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 # cozy embeds the page, web/app, which imports web/player. A ref from before web has none.
 web=''
 [ "$what" != cozy ] || ! git -C "$src" rev-parse -q --verify HEAD:web > /dev/null || web=HEAD:web
-[ "$repo" != cozy-creator ] || inputs=$(git -C "$src" rev-parse HEAD:crates HEAD:vendor HEAD:Cargo.toml HEAD:Cargo.lock \
-  HEAD:rust-toolchain.toml HEAD:e2e/candidates $web | sha256sum | cut -c1-40)
+provider=''
+[ "$what" != cozy ] || ! git -C "$src" cat-file -e HEAD:scripts/prepare-securefs.py 2> /dev/null || provider=HEAD:scripts/prepare-securefs.py
+if [ "$repo" = cozy-creator ]; then
+  inputs=$({
+    git -C "$src" rev-parse HEAD:crates HEAD:vendor HEAD:Cargo.toml HEAD:Cargo.lock \
+      HEAD:rust-toolchain.toml HEAD:e2e/candidates $web $provider
+    # The harness may stage code for an older product that has no helper of its own.
+    if [ "$what" = cozy ]; then
+      git -C "$stage_src" rev-parse HEAD:crates HEAD:vendor HEAD:Cargo.toml HEAD:Cargo.lock HEAD:rust-toolchain.toml
+      sha256sum < "${BASH_SOURCE[0]}" | cut -d ' ' -f 1
+    fi
+  } | sha256sum | cut -c1-40)
+fi
 # Another OS's or CPU's build (macOS, Windows: e2e.yaml's cli-os legs build their own) is named for it, and outside
 # candidate-*, the Linux set every Linux job takes whole: a macOS `cozy` merged into it replaces the Linux one.
 plat=$(printf '%s-%s' "${RUNNER_OS:-Linux}" "${RUNNER_ARCH:-X64}" | tr '[:upper:]' '[:lower:]')
@@ -53,13 +66,24 @@ elif [ "$what" = cozy ]; then
   (cd "$src"
     # To stderr: this script's stdout is its file, and callers drop it. A page that doesn't build must say why.
     [ ! -f web/build.sh ] || bash web/build.sh >&2
+    if [ -f scripts/prepare-securefs.py ]; then
+      target=$(rustc -vV | sed -n 's/^host: //p')
+      archive=$(uv run -q --no-project python scripts/prepare-securefs.py --target "$target" --out-dir "$PWD/target/vault-helper")
+      case "$target" in
+        *apple-darwin) ;; # Native hdiutil/APFS; no third-party helper is embedded.
+        *) export COZY_SECUREFS_ARCHIVE="$archive" COZY_SECUREFS_REQUIRED=1 ;;
+      esac
+    fi
     cargo fetch --locked
     uv run -q --no-project python -c 'import re,sys; p="Cargo.toml"; s=open(p).read(); open(p,"w").write(re.sub(r"(?m)^version = \"([^\"]+)\"$", lambda m: f"version = \"{m[1]}+dev.g{sys.argv[1][:8]}\"", s, count=1))' "$sha"
     cargo update -w --offline
     COZY_COMMIT=$sha cargo build --release --locked --offline -p cozy --bin cozy
     git checkout -- Cargo.toml Cargo.lock)
+  (cd "$stage_src"
+    COZY_COMMIT=$(git rev-parse HEAD) cargo build --release --locked -p api --example stage-code)
   # cozy is one file (00e565d72): varena is the TensorFS wheel's.
   cp "$src/target/release/cozy$exe" "$out/cozy$exe"
+  cp "$stage_src/target/release/examples/stage-code$exe" "$out/stage-code$exe"
 elif [ "$what" = tensorfs ]; then
   # Staged as the release wheel is (backend/stage_cli.py, as dev-build): `tfs` with the extension's features, so TensorFS
   # and every dependency compile once for both, and on Linux the Torch allocator shims, without which the candidate runs

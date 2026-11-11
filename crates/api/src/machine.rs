@@ -11,8 +11,48 @@ pub mod capability;
 /// The one DNS name every machine's self-signed leaf carries; clients pin the leaf itself.
 pub const SERVER_NAME: &str = "cozy-worker";
 
+/// An authenticated local controller's protected execution storage. Only the NEW
+/// `/v1/local-private/{project_id}` namespace interprets this descriptor; it is never
+/// an ignored optional privacy switch on the ordinary machine endpoints.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalPrivateStorage {
+    pub project_id: String,
+    pub generation: u64,
+    pub view_root: std::path::PathBuf,
+}
+
+pub const LOCAL_PRIVATE_PREFIX: &str = "/v1/local-private";
+pub const LOCAL_PRIVATE_DESCRIPTOR: &str = "cozy-local-private-storage";
+pub const LOCAL_PRIVATE_TOKEN: &str = "cozy-local-private-token";
+pub const LOCAL_PRIVATE_MARKER: &str = ".vault-local-execution.json";
+
+/// A proof file written only INSIDE the live encrypted mount. Its random token is sent
+/// as a private authentication header, never as RunSpec, URL, log or global journal data.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalPrivateMarker {
+    pub format_version: u32,
+    pub storage: LocalPrivateStorage,
+    pub token: String,
+}
+
+impl std::fmt::Debug for LocalPrivateMarker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LocalPrivateMarker")
+            .field("format_version", &self.format_version)
+            .field("storage", &self.storage)
+            .field("token", &"[REDACTED]")
+            .finish()
+    }
+}
+
 /// Routes, as axum templates.
 pub mod path {
+    /// Verified local encrypted-project namespace; forwards GET/POST/PUT to existing data routes.
+    pub const LOCAL_PRIVATE: &str = "/v1/local-private/{project_id}/{*rest}";
+    /// Close only this project's idle local execution namespace before unmount.
+    pub const PRIVATE_CLOSE: &str = "/v1/local-private/{project_id}/close";
     /// `GET` with no credential: 204 while the machine serves.
     pub const HEALTH: &str = "/v1/health";
     /// `GET`: one JSON [`super::StatusFrame`]; SSE `status` frames with `Accept: text/event-stream`.
@@ -38,6 +78,27 @@ pub mod path {
     pub const OBJECTS_HELD: &str = "/v1/objects/held";
     /// `POST` an [`super::EstimateRequest`]: when each job would finish here; a quote, not a reservation.
     pub const ESTIMATE: &str = "/v1/estimate";
+    /// Remove one repository's locally cached model copies; never changes its origin.
+    pub const MODELS_REMOVE: &str = "/v1/models/remove";
+}
+
+/// Remove all locally cached releases and lanes of one model repository.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct RemoveModel {
+    pub model: String,
+}
+
+/// Local removal leaves active readers and content shared with other models intact.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct RemovedModel {
+    pub model: String,
+    pub removed: bool,
+    /// Bytes removed from cache object paths, not a measurement of freed filesystem blocks.
+    pub cache_bytes_removed: u64,
+    /// Candidate bytes kept because they are in use, shared, or could not safely be removed.
+    pub retained_bytes: u64,
 }
 
 /// The header naming the byte ranges of an object the machine holds: `0-1048575,2097152-4194303`
@@ -339,9 +400,6 @@ pub struct RunSpec {
     /// the lane its commit is labelled. The package's own children inherit it; another
     /// package's take none.
     pub lane: String,
-    /// Computed afresh, its children too: the machine memo neither answers nor keeps it.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub no_memo: bool,
 }
 
 /// The caller's provider tokens, for models a run makes from a provider source.
@@ -1066,6 +1124,11 @@ pub struct Checkpoint {
     pub precision: String,
     /// `sha256:<hex>` of its header.
     pub manifest: String,
+    /// `model`, `lora`, or `unknown`; empty from older machines.
+    pub role: String,
+    /// Whether every object in the header's closure is cached. None from older machines.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub complete: Option<bool>,
 }
 
 /// One GPU, as measured at boot: identity, memory, driver and family.

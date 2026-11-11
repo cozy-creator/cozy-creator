@@ -24,6 +24,7 @@ toml_edit.workspace = true
 libc.workspace = true
 rusqlite = { workspace = true, features = ["fallible_uint"] }
 tokio.workspace = true
+tower-service.workspace = true
 futures-util.workspace = true
 tokio-rustls.workspace = true
 hyper = { workspace = true, features = ["client", "http1"] }

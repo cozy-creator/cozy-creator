@@ -115,7 +115,7 @@ cut_run() {
   line up
   t=0
   while [ $t -lt 300 ]; do
-    record=$(c "--json run show $run --once")
+    record=$(c "--json run watch $run --once")
     jq -e '.status == "completed" and (.output[0].url // "") != ""' <<<"$record" > /dev/null 2>&1 && break
     t=$((t + 5)); sleep 5
   done
@@ -123,7 +123,7 @@ cut_run() {
   jq -e '.status == "completed" and (.output[0].url // "") != ""' <<<"$record" > /dev/null || { wrong "$part: back again, run $run did not land: $(head -c 400 <<<"$record")"; return; }
   local path sha want
   # Downloaded by its digest, as any client fetches what it asks for.
-  c "run show $run --once -o /tmp/landed-$part-$TAG" > /dev/null
+  c "run watch $run --once -o /tmp/landed-$part-$TAG" > /dev/null
   path=$(sh "ls /tmp/landed-$part-$TAG/* | head -1") want=$(jq -r '.output[0].sha256' <<<"$record")
   sha=$(sh "sha256sum $path" | cut -c1-64)
   [ "sha256:$sha" = "$want" ] || wrong "$part: its file is $sha, not $want"
@@ -172,9 +172,9 @@ YAML
   until sh "test -f /home/client/$TAG/$path" > /dev/null || [ $t2 -ge 600 ]; do t2=$((t2 + 3)); sleep 3; done
   [ "sha256:$(sh "sha256sum /home/client/$TAG/$path" | cut -c1-64)" = "$sha" ] || wrong "b: $path is not its hash"
   landed=$(sh "stat -c %Y /home/client/$TAG/$path")000
-  began=$(c "--json run show $shot --once" | jq -r '.created_at_ms // 0')
-  c "--json run show $shot --once" > "$OUT/b-$TAG-shot.json"
-  c "--json run show $still --once" > "$OUT/b-$TAG-still.json"
+  began=$(c "--json run watch $shot --once" | jq -r '.created_at_ms // 0')
+  c "--json run watch $shot --once" > "$OUT/b-$TAG-shot.json"
+  c "--json run watch $still --once" > "$OUT/b-$TAG-still.json"
   say "$TAG b: still is run $still, shot run $shot: shot was sent $(( (landed - began) / 1000 )) s before still landed; what it says of its input: $(jq -r '[.logs[]? | select(.level == "inputs") | .text] | first // "nothing"' "$OUT/b-$TAG-shot.json")"
   [ $((landed - began)) -ge 5000 ] || wrong "b: shot was sent only $(( (landed - began) / 1000 )) s before still landed: it waited for this computer"
   line up
@@ -312,14 +312,14 @@ part_s() {
   sleep 660
   sh "kill -CONT $pid"
   sleep 75
-  record=$(c "--json run show $run --once")
+  record=$(c "--json run watch $run --once")
   echo "$record" > "$OUT/s-$TAG-woke.json"
   local warned; warned=$(jq -r '[.warnings[]? | select(.code == "no_progress") | .message] | first // ""' <<<"$record")
   line up
   [ -z "$warned" ] && say "$TAG s: woken, no false alarm on run $run" || wrong "s: woken, it says: $warned"
   t=0
   while [ $t -lt 120 ]; do
-    record=$(c "--json run show $run --once")
+    record=$(c "--json run watch $run --once")
     jq -e '.status == "completed"' <<<"$record" > /dev/null 2>&1 && break
     t=$((t + 5)); sleep 5
   done

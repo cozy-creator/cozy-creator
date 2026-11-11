@@ -1,10 +1,15 @@
-"""A run's record as `cozy run show <n> --once --json --full` prints it (e2e/run.sh keeps it as <name>.json), read once into the
+"""A run's record as `cozy run watch <n> --once --json --full` prints it (e2e/run.sh keeps it as <name>.json), read once into the
 summary analyze.py and every check use. Its VRAM is the driver's (`vram`); varena's own figures are record.py's."""
 import json
 import os
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import TypedDict, cast
+from typing import NotRequired, Required, TypeAlias, TypedDict, cast
+
+# Free JSON: a record's `result`, and whatever a walk over it meets.
+JSON: TypeAlias = str | int | float | bool | None | list['JSON'] | dict[str, 'JSON']
+# An observation's value or field (cozy_runtime.author._observations.Scalar).
+Scalar: TypeAlias = str | int | float | bool | None
 
 
 # The Runtime's host-stall codes (cozy_runtime/author/_stalls.py) that are a weight read: bytes from TensorFS into the
@@ -81,42 +86,100 @@ class Fill(TypedDict, total=False):
     at_unix_ms: float
 
 
-class Bake(TypedDict, total=False):
+class Flow(TypedDict, total=False):
+    """What moved one way in a request (`stats.moved[origin]`), or its bakes (`moved.bake`: device_ns)."""
+    bytes: int
+    ns: int
     device_ns: int
 
 
-class Moved(TypedDict, total=False):
-    bake: Bake | None
+Moved: TypeAlias = dict[str, Flow]  # by origin (store, derived, kept, leased), and `bake`
+
+
+class Outlived(TypedDict, total=False):
+    bytes: int | None
 
 
 class WeightResidency(TypedDict, total=False):
     fills: int | None
     evictions: int | None
+    resident_bytes: int | None
+    ready_bytes: int | None
 
 
 class WorkingAllocator(TypedDict, total=False):
     weights_filled: int | None
 
 
+class Refused(TypedDict, total=False):
+    pure: bool | None
+    level: int | str | None
+
+
+class WorkingSplit(TypedDict, total=False):
+    site: str | None
+    refused: Refused | None
+
+
+class EscapedLoop(TypedDict, total=False):
+    """One loop's escaped record (tensorfs-py `_varena_escapes_take`): what its passes left live as plain working blocks."""
+    head: str
+    passes: int
+    escaped_peak_bytes: int
+    growth_bytes: int
+    carried_bytes: int
+    escaped_sites: list[tuple[str, int]]  # [birth site, bytes]
+
+
 class VarenaStats(TypedDict, total=False):
+    """Varena's Stats for one GPU (0.32): record.py's figures, the bench's, and the contract and escaped suites'."""
     trace: list[Fill] | None
     moved: Moved | None
     weight_residency: WeightResidency | None
     working_allocator: WorkingAllocator | None
+    evicted: list[int] | None
+    leftover: int | None
+    outlived: list[Outlived | JSON] | None  # record.py skips other shapes
+    host: int | None
+    working_splits: list[WorkingSplit] | None
+    swallowed_ooms: int | None
+    finer_splits: int | None
+    retained_bytes: int | None
+    escaped: list[EscapedLoop] | None
 
 
 class VarenaRow(TypedDict, total=False):
     stats: VarenaStats | None
 
 
+class Copy(TypedDict, total=False):
+    """0.30's copy record."""
+    kind: str
+    bytes: int | None
+    seconds: float | None
+
+
+class StreamRow(TypedDict, total=False):
+    streamed: int | None
+
+
+class Eviction(TypedDict, total=False):
+    nbytes: int | None
+
+
 class MemoryStats(TypedDict, total=False):
-    varena: list[VarenaRow] | None
+    varena: list[VarenaRow] | None  # 0.32
+    copies: list[Copy] | None  # 0.30 from here
+    rows: list[StreamRow | JSON] | None  # record.py skips other shapes
+    paged_in: int | None
+    evictions: list[Eviction | JSON] | None  # as rows
+    leftover: int | None
 
 
 class Memory(TypedDict, total=False):
     driver: list[DriverRow] | None
     stats: MemoryStats | None
-    peak_reserved_bytes: int | None  # what the executor process held from the driver at most (torch and varena)
+    peak_reserved_bytes: int | None
 
 
 class Loop(TypedDict, total=False):
@@ -129,8 +192,9 @@ class OnDemand(TypedDict, total=False):
 
 
 class Executor(TypedDict, total=False):
+    """An executor's start, or a model's construction (no `started_unix_ms`)."""
     started_unix_ms: float
-    legs_ms: dict[str, float] | None  # fork, cuda_init, package_import, ...: the host's own speed
+    legs_ms: dict[str, float] | None
 
 
 class Execution(TypedDict, total=False):
@@ -142,10 +206,7 @@ class Execution(TypedDict, total=False):
 
 
 class Graph(TypedDict, total=False):
-    """A component's per-call CUDA graphs (0.22: a call's regions; there are no denoise loops)."""
     replays: int | None
-    captures: int | None
-    region_calls: int | None
 
 
 class Residency(TypedDict, total=False):
@@ -154,14 +215,21 @@ class Residency(TypedDict, total=False):
 
 class Observation(TypedDict, total=False):
     name: str
-    value: str
-    fields: dict[str, str]
+    value: Scalar
+    fields: dict[str, Scalar]
+
+
+class Adapter(TypedDict, total=False):
+    model: str | None
+    strength: float | None
+    components: list[str] | None
 
 
 class ModelUse(TypedDict, total=False):
     slot: str
     repository: str
     lane: str
+    adapters: list[Adapter] | None
 
 
 class Measurements(TypedDict, total=False):
@@ -194,7 +262,7 @@ class Memo(TypedDict, total=False):
 
 class Request(TypedDict, total=False):
     seed: int | None
-    input: dict[str, object]
+    input: dict[str, JSON]
 
 
 class RunRecord(TypedDict, total=False):
@@ -208,7 +276,7 @@ class RunRecord(TypedDict, total=False):
     created_at_ms: int | None
     started_at_ms: int | None
     settled_at_ms: int | None
-    result: object
+    result: JSON
     output: list[OutputFile] | None
     measurements: Measurements | None
     calls: list[Call] | None
@@ -229,7 +297,7 @@ class Run:
     reason: str  # why it did not complete: `code: message`
     target: str
     execution_ms: int | None
-    result: object
+    result: JSON
     outputs: tuple[str, ...]  # output[].path, sorted
     measurements: tuple[Measurements, ...]  # the run's, then each call's
 
@@ -257,22 +325,21 @@ class Run:
     @property
     def gemm(self) -> list[list[str]]:
         """[format, kernel] of every GEMM it selected."""
-        return [list(x) for x in sorted({(o['fields'].get('format', ''), o['value']) for o in self.observations if o.get('name') == 'gemm.selected'})]
+        # gemm.selected's format and kernel are names.
+        return [list(x) for x in sorted({(cast(str, o['fields'].get('format', '')), cast(str, o['value'])) for o in self.observations if o.get('name') == 'gemm.selected'})]
 
     @property
     def attention(self) -> list[str]:
-        return sorted({o['value'] for o in self.observations if o.get('name') == 'attention.selected'})
+        return sorted({cast(str, o['value']) for o in self.observations if o.get('name') == 'attention.selected'})  # a kernel's name
 
     @property
     def graphs(self) -> str | None:
-        """How its compiled work ran: `native` when anything replayed a captured CUDA graph (a denoise loop's
-        `native_steps` before 0.22; a component's per-call `replays` since, where `execution.loops` is null), `eager` when
-        work ran and nothing replayed, None when neither recorded any (a text model, a describer)."""
+        """How its denoise loops ran: `native` when any step replayed a captured CUDA graph, `eager` when none did,
+        None with no loop (a text model, a describer)."""
         loops = [l for m in self.measurements for l in (m.get('execution') or {}).get('loops') or []]
-        regions = [g for m in self.measurements for g in ((m.get('residency') or {}).get('graphs') or {}).values()]
-        if any((l.get('native_steps') or 0) > 0 for l in loops) or any((g.get('replays') or 0) > 0 for g in regions):
-            return 'native'
-        return 'eager' if loops or any((g.get('region_calls') or 0) or (g.get('captures') or 0) for g in regions) else None
+        if not loops:
+            return None
+        return 'native' if any((l.get('native_steps') or 0) > 0 for l in loops) else 'eager'
 
     @property
     def replays(self) -> int:
@@ -415,3 +482,111 @@ class Run:
     @property
     def seed(self) -> int | None:
         return (self.record.get('request') or {}).get('seed')
+
+
+# A gate dir as analyze.py reads it and hands it to every check: check(gate) -> (fails, notes). A check's own `__main__`
+# builds only the keys it reads, so each check takes the narrowest of these.
+class Cell(TypedDict):
+    """A completed cell's numbers (analyze.py's summary)."""
+    blocking: dict[str, int]
+    run: int | None
+    target: str
+    gemm: list[list[str]]
+    attention: list[str]
+    graphs: str | None
+    execution_ms: int | None
+    step1_ms: int | None
+    step1_read_ms: int
+    to_step1_ms: int | None
+    vram_mb: int | None
+    host: dict[str, int]
+    steady_ms: int | None
+    files: list[str]
+
+
+class Good(TypedDict, total=False):
+    """A cell's pass in the baseline file: Cell's numbers, its gate's label and when. An older pass may lack a later key."""
+    run: int | None
+    target: Required[str]
+    gemm: Required[list[list[str]]]
+    attention: Required[list[str]]
+    graphs: str | None
+    execution_ms: int | None
+    step1_ms: int | None
+    to_step1_ms: int | None
+    steady_ms: int | None
+    vram_mb: int | None
+    blocking: dict[str, int]
+    host: dict[str, int]
+    label: str
+    at: str
+
+
+class CellHistory(TypedDict, total=False):
+    good: list[Good]
+
+
+class QualityRef(TypedDict, total=False):
+    """A video cell's adherence on one prompt and seed (`key`), held for the next gate."""
+    key: str
+    adherence: float
+    label: str
+
+
+class QualityPass(TypedDict):
+    sharpness: float
+    adherence: float
+    cells: dict[str, list[tuple[float, float]]]  # (adherence, sharpness) per image
+    label: str
+
+
+class VarenaPass(TypedDict):
+    shares: dict[str, float]  # '<cell> <copy kind>': its share of the ceiling
+
+
+class CaseGood(TypedDict):
+    """A tensorfs suite case's known-good (suites/tensorfs/check.py): its time and bytes, and the gate that passed it."""
+    seconds: float
+    bytes: NotRequired[int]
+    label: str
+    at: str
+
+
+class Suites(TypedDict, total=False):
+    tensorfs: dict[str, list[CaseGood]]  # per case
+
+
+class Baseline(TypedDict, total=False):
+    """The SKU's baseline file (gate-<SKU>.json): each cell's passes and each check's history."""
+    sku: str
+    cells: dict[str, CellHistory]
+    quality_ref: dict[str, QualityRef]
+    quality: list[QualityPass]
+    varena: list[VarenaPass]
+    suites: Suites
+
+
+class KnownFailing(TypedDict):
+    """A known-failing.json row: a cell parked on a known open bug, not run until it is fixed."""
+    sku: str  # or '*'
+    cell: str
+    issue: str
+    what: str
+    cells: NotRequired[list[str]]  # the cells it parks (varena's check reads these)
+
+
+class GateDir(TypedDict):
+    out: str  # the gate dir
+
+
+class GateHistory(GateDir):
+    baseline: Baseline
+
+
+class GateRuns(GateDir):
+    sku: str
+    runs: dict[str, Run]  # the completed cells
+
+
+class Gate(GateHistory, GateRuns):
+    summary: dict[str, Cell]

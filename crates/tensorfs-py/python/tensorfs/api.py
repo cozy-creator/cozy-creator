@@ -6,11 +6,24 @@ import io
 import os
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, TypedDict
 
 from . import _ext
 
-_settings: dict[str, Any] = {}
+if TYPE_CHECKING:
+    from .api import StrPath, Token  # api.pyi's
+
+
+class _Settings(TypedDict, total=False):
+    """What `configure` was given (its arguments other than None)."""
+
+    endpoint: str
+    cache_dir: StrPath
+    token: Token
+    ca_der: bytes
+
+
+_settings: _Settings = {}
 
 
 def configure(*, endpoint=None, cache_dir=None, token=None, ca_der=None) -> None:

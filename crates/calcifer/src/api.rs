@@ -21,7 +21,7 @@ use axum::{
 };
 use api::{
     calcifer::{CalciferStatus, Down, Event, MachineKind, MachineState, Run, RunList, Status},
-    error::{Envelope, Error, Kind},
+    error::{Envelope, Error, Kind, STOPPING},
     ids::RunId,
 };
 use futures_util::{StreamExt as _, stream::BoxStream};
@@ -73,7 +73,7 @@ impl Api {
         machines: Arc<Machines>,
         token: &str,
     ) -> Arc<Self> {
-        Arc::new(Self {
+        let api = Arc::new(Self {
             sessions: crate::sessions::Sessions::open(calcifer.store()),
             calcifer,
             machines,
@@ -84,19 +84,25 @@ impl Api {
             bearer: Sha256::digest(token).into(),
             stopping: RwLock::new(false),
             stop: watch::channel(false).0,
-        })
+        });
+        crate::project::vault::start(&api);
+        api
     }
 
     /// `down`: admission closes once the mutations in flight are done, then every stream and the
     /// server end. Machines run on. What Calcifer still owes (`resume` takes it up) is answered.
-    pub(crate) async fn down(&self) -> Vec<String> {
+    pub(crate) async fn down(self: &Arc<Self>) -> Result<Vec<String>, Error> {
         let mut stopping = self.stopping.write().await;
         *stopping = true;
+        if let Err(error) = tokio::task::block_in_place(|| crate::project::vault::close_all(self)) {
+            *stopping = false;
+            return Err(error);
+        }
         let owed = self.calcifer.owed();
         drop(stopping);
         info!(owed = owed.len(), "down: stopping");
         self.stop();
-        owed
+        Ok(owed)
     }
 
     /// Ends every stream and the server.
@@ -148,6 +154,7 @@ pub(crate) fn router(api: Arc<Api>) -> Router {
         .route("/v1/machines/{name}/logs/{log}", get(machines::logs))
         .route("/v1/machines/{name}/packages", get(machines::packages))
         .route("/v1/machines/{name}/models", get(machines::models))
+        .route("/v1/machines/{name}/models/remove", post(machines::remove_model))
         .route("/v1/machines/{name}/update", post(crate::update::update))
         .route(
             "/v1/machines/{name}/authorized-keys/{key}",
@@ -159,10 +166,17 @@ pub(crate) fn router(api: Arc<Api>) -> Router {
         .route("/v1/run-quotes", post(crate::runs::quote))
         .route("/v1/run-estimates", post(crate::runs::estimate))
         .route("/v1/targets", get(crate::runs::describe))
+        .route("/v1/project-targets", get(crate::runs::describe))
         .route("/v1/tools", get(crate::toolbox::list))
         .route("/v1/tools/list", post(crate::toolbox::change))
         .route("/v1/tools/browse", get(crate::toolbox::browse))
         .route("/v1/tools/{id}/ui", get(crate::tool_ui::find))
+        .route(
+            "/v1/project-files/{name}",
+            axum::routing::put(crate::runs::files::project_put)
+                .head(crate::runs::files::project_head)
+                .layer(DefaultBodyLimit::disable()),
+        )
         .route(
             "/v1/files/{name}",
             axum::routing::put(crate::runs::files::put)
@@ -230,6 +244,7 @@ impl From<crate::Error> for Refusal {
     fn from(e: crate::Error) -> Self {
         Refusal(match e {
             crate::Error::Store(StoreError::Conflict(key)) => conflict(&key),
+            crate::Error::Store(StoreError::Locked(_)) => Error::new(Kind::Conflict, "project_locked", "the project is locked; unlock it to read its private run history"),
             crate::Error::Store(StoreError::UnknownMachine(name)) => Error::new(
                 Kind::NotFound,
                 "machine_not_found",
@@ -371,18 +386,15 @@ async fn admit(State(api): State<Arc<Api>>, request: Request, next: Next) -> Res
         let error = Error::new(Kind::Credential, "unauthenticated", said).remedy("a browser signs in from a link").next("cozy open");
         return Refusal(error).into_response();
     }
-    if request.method() == Method::GET || request.uri().path() == "/v1/down" {
+    // A read is answered while Calcifer stops: a HEAD's refusal would lose its body.
+    if matches!(*request.method(), Method::GET | Method::HEAD) || request.uri().path() == "/v1/down" {
         return next.run(request).await;
     }
     let stopping = api.stopping.read().await;
     if *stopping {
-        return refuse(
-            Kind::Unavailable,
-            "calcifer_stopping",
-            "Calcifer is stopping and admits nothing new",
-        )
-        .remedy("start Calcifer again and retry; a submission's key makes the retry safe")
-        .into_response();
+        return refuse(Kind::Unavailable, STOPPING, "Calcifer is stopping and admits nothing new")
+            .remedy("ask again once it is back; nothing was carried out")
+            .into_response();
     }
     next.run(request).await
 }
@@ -440,12 +452,14 @@ pub(crate) fn find(api: &Api, key: &str) -> Result<RunRow, Refusal> {
             Err(_) => None,
         },
     };
-    row.ok_or_else(|| {
+    let row = row.ok_or_else(|| {
         Refusal(
             Error::new(Kind::NotFound, "run_not_found", format!("no run {key}"))
                 .next("cozy run ls"),
         )
-    })
+    })?;
+    crate::project::vault::require_path(&row.out_dir).map_err(Refusal)?;
+    Ok(row)
 }
 
 #[derive(Deserialize)]
@@ -491,6 +505,7 @@ async fn list(
     })?;
     let mut runs = Vec::with_capacity(rows.len());
     for row in &rows {
+        if crate::project::vault::require_path(&row.out_dir).is_err() { continue; }
         match api.calcifer.record(row) {
             Ok(run) => runs.push(run),
             Err(e) => unreadable.push(format!("run {}: {e}", row.number)),
@@ -563,14 +578,14 @@ async fn cancel(
     Ok((StatusCode::ACCEPTED, Json(run)))
 }
 
-/// Stops Calcifer. It never refuses and never cancels: machines keep what they accepted, and the
-/// next Calcifer resumes what is owed.
-async fn down(State(api): State<Arc<Api>>) -> Json<Down> {
-    let owed = api.down().await;
-    Json(Down {
+/// Stops Calcifer after its encrypted mounts close. Busy views refuse without losing custody.
+/// Machines keep what they accepted, and the next Calcifer resumes what is owed.
+async fn down(State(api): State<Arc<Api>>) -> Result<Json<Down>, Refusal> {
+    let owed = api.down().await.map_err(Refusal)?;
+    Ok(Json(Down {
         stopping: true,
         owed,
-    })
+    }))
 }
 
 async fn status(State(api): State<Arc<Api>>) -> Result<Json<CalciferStatus>, Refusal> {
@@ -625,6 +640,7 @@ async fn events(
     );
     pending.extend(api.calcifer.live(&row.id));
     let follow = Follow {
+        vault_token: crate::project::vault::readable_token(&row.out_dir),
         id: row.id,
         pending,
         last: starting_after,
@@ -639,6 +655,7 @@ async fn events(
 
 /// One SSE subscriber's place in its run's stream.
 struct Follow {
+    vault_token: Option<Arc<std::sync::atomic::AtomicBool>>,
     id: RunId,
     pending: VecDeque<Event>,
     /// The highest sequence number sent; a durable event at or below it is already known.
@@ -653,6 +670,7 @@ struct Follow {
 impl Follow {
     async fn next(mut self) -> Option<(Result<sse::Event, Infallible>, Self)> {
         loop {
+            if self.vault_token.as_ref().is_some_and(|token| !token.load(std::sync::atomic::Ordering::Acquire)) { return None; }
             if let Some(event) = self.pending.pop_front() {
                 self.ended |= event.is_terminal();
                 let mut sent = sse::Event::default();

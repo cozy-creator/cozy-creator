@@ -33,7 +33,7 @@ get() {
 until_status() { run_wait "$T" "$(nm "$1")" "${2#terminal}"; }
 envs() { "$CLI" --json machine show "$M" 2>/dev/null | jq -r '[.status.environments[] | (.package | split("/") | last) + "@" + .release] | sort | join(" ")'; }
 released() {  # released <package>: the newest release users get (not yanked), then the one before it (an exact pin installs a yanked one)
-  "$CLI" package info "$1" --json 2>/dev/null | jq -r '[.releases[].release] as $a | ([.releases[] | select(.yanked | not) | .release][0]) as $n
+  package_details "$1" 2>/dev/null | jq -r '[.releases[].release] as $a | ([.releases[] | select(.yanked | not) | .release][0]) as $n
     | [$n, $a[($a | index($n)) + 1]] | map(select(. != null)) | join(" ")'; }
 NGPU=$("$CLI" --json machine show "$M" 2>/dev/null | jq '.status.gpus | length')
 
@@ -57,7 +57,7 @@ fi
 # An unversioned run stays on what the machine holds and `package install` of it, unversioned, moves it, with nothing published (cl-748).
 read -r newest older <<< "$(released anima)"
 if [ -n "$older" ]; then
-  "$CLI" package remove anima --on "$M" -y > "$T/unversioned-remove.log" 2>&1
+  "$CLI" package uninstall anima --on "$M" -y > "$T/unversioned-remove.log" 2>&1
   "$CLI" package install "anima@$older" --on "$M" -y > "$T/unversioned-install.log" 2>&1
   n1=$(submit anima/generate prompt="masterpiece, anime illustration of $CHAR, whatever is installed" seed:=$((R + 37))); until_status "$n1" terminal
   "$CLI" package install anima --on "$M" -y > "$T/unversioned-update.log" 2>&1
@@ -126,23 +126,23 @@ case "$(get "$x" status):$(get "$x" attempt)" in
   *) expect tensord-no-reexecution FAIL "run $x $(get "$x" status), attempt $(get "$x" attempt)";;
 esac
 
-# Warm set (xs-132): after a restart (no executor), `--warm gpu` loads SDXL; the machine lists it at gpu, and a minute
-# later too; the next request runs on its executor (started before the request) vs run $r's cold start; `--warm off`
+# Warm set (xs-132): after a restart (no executor), API warming to `gpu` loads SDXL; the machine lists it at gpu, and a minute
+# later too; the next request runs on its executor (started before the request) vs run $r's cold start; `off`
 # takes it out of the set (what it holds stays until the room is needed, owner 10-05).
 "$CLI" machine update "$M" --gpu-memory-limit off -y > "$T/warm-restart.log" 2>&1
 wn=$(basename "$(mktemp -u "$T/run-XXXXXX")")
-w=$(run_submit "$T" "$wn" run "sdxl/generate@$NEW" --warm gpu --on "$M") && echo "$wn" > "$T/$w.name"; until_status "$w" terminal
+w=$(run_warm_submit "$T" "$wn" "sdxl/generate@$NEW" gpu --on "$M") && echo "$wn" > "$T/$w.name"; until_status "$w" terminal
 warm_level() { "$CLI" --json machine show "$M" 2>/dev/null | jq -r '[.status.warm[]? | select(.entrypoint == "generate")][0]
   | if . == null then "none" else "\(.level)/\(if .holds == "" then .level else .holds end)" end'; }
 l1=$(warm_level); sleep 60; l2=$(warm_level)
 x=$(submit "sdxl/generate@$NEW" prompt="$CHAR, kept warm" seed:=$((R + 44))); until_status "$x" terminal
 read -r x0 _ <<< "$(get "$x" window)"; xe=$(get "$x" executor)
-"$CLI" run "sdxl/generate@$NEW" --on "$M" --warm off > "$T/warm-off.log" 2>&1; l3=$(warm_level)
+run_warm_cell "$T" warm-off "sdxl/generate@$NEW" off --on "$M" > "$T/warm-off.log" 2>&1; l3=$(warm_level)
 if [ "$(get "$w" status)" = completed ] && [ "$l1 $l2" = "gpu/gpu gpu/gpu" ] && [ "$(get "$x" status)" = completed ] \
    && [ "${xe:-0}" -gt 0 ] && [ "${xe:-0}" -lt "${x0:-0}" ] && [ "$l3" = none ]; then
-  expect tensord-warm-gpu PASS "--warm gpu run $w held gpu, a minute later too; run $x on its executor (started $(( (x0 - xe) / 1000 )) s before the request) in $(get "$x" ms) ms vs run $r's cold $(get "$r" ms) ms; --warm off left the set"
+  expect tensord-warm-gpu PASS "API warming at gpu run $w held gpu, a minute later too; run $x on its executor (started $(( (x0 - xe) / 1000 )) s before the request) in $(get "$x" ms) ms vs run $r's cold $(get "$r" ms) ms; off left the set"
 else
-  expect tensord-warm-gpu FAIL "--warm gpu run $w $(get "$w" status), held $l1 then $l2; run $x $(get "$x" status), executor ${xe:-?} vs request ${x0:-?}; after --warm off $l3"
+  expect tensord-warm-gpu FAIL "API warming at gpu run $w $(get "$w" status), held $l1 then $l2; run $x $(get "$x" status), executor ${xe:-?} vs request ${x0:-?}; after off $l3"
 fi
 
 # Multi-GPU placement: two runs at once go to two GPUs.

@@ -27,7 +27,7 @@ function cozy(...args) {
     throw error;
   }
 }
-const shown = (number) => JSON.parse(cozy('--json', 'run', 'show', String(number), '--once'));
+const shown = (number) => JSON.parse(cozy('--json', 'run', 'watch', String(number), '--once'));
 const body = (page) => page.textContent('.drawer');
 const rowOf = (page, words) => page.locator('.runrow').filter({ hasText: words });
 const numberIn = async (row) => Number((await row.first().locator('b').textContent()).slice(1));

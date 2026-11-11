@@ -21,6 +21,7 @@ from .api import (
     Region,
     SourceError,
     Split,
+    SplitSelection,
     Unsupported,
     Use,
     core_identity,
@@ -29,4 +30,4 @@ from .api import (
 )
 from .sources import Source
 
-__all__ = ['Allocation', 'Busy', 'Cache', 'CacheView', 'Capturing', 'Error', 'Exhausted', 'Fault', 'Gpu', 'Invalid', 'Plan', 'Region', 'Source', 'SourceError', 'Split', 'Unsupported', 'Use', 'core_identity', 'open', 'retirement_stats']
+__all__ = ['Allocation', 'Busy', 'Cache', 'CacheView', 'Capturing', 'Error', 'Exhausted', 'Fault', 'Gpu', 'Invalid', 'Plan', 'Region', 'Source', 'SourceError', 'Split', 'SplitSelection', 'Unsupported', 'Use', 'core_identity', 'open', 'retirement_stats']

@@ -9,7 +9,7 @@
 # A broken step is recorded and the suite goes on, so one run reports all of them.
 # --shard runs one of `shards` below after the same start, each on its own runner: e2e.yaml checks coverage over
 # all their calls. Whole, the suite checks it itself.
-#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|web|projectdb|projectdb-latency|projectdb-existing|projectdb-web|local-code]
+#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|web|web-core|web-scale|web-layout-1280|web-layout-1600|web-layout-2560|project-stream|project-stream-web|projectdb|projectdb-latency|projectdb-existing|projectdb-web|projectvault|projectdb-cancel|projectdb-live|projectdb-scale|local-code]
 #                  [--tensord F|V] [--tensorfs F|V] [--runtime F|V] [--packages DIR]
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
@@ -20,6 +20,7 @@ parse "$@"
 . "$(dirname "$0")/web.sh"
 . "$(dirname "$0")/projectdb.sh"
 . "$(dirname "$0")/statedb.sh"
+. "$(dirname "$0")/projectvault.sh"
 
 start() {
 step install; install_cozy; run_project "$OUT/project" || fail "project initialization failed"
@@ -127,8 +128,8 @@ cozy --json run "$(birefnet)" --describe > "$OUT/describe.json" 2> "$OUT/describ
 grep -Eq '(^|[[:space:]"])image("|:)' "$OUT/describe.json" || check "the description of $(birefnet) names no image input"
 }
 
-# The forward pass (~190 s on a runner's two cores) runs when the change can alter it (--model); run_flags' --warm
-# levels resolve, download, import and hold BiRefNet on every run.
+# The forward pass (~190 s on a runner's two cores) runs when the change can alter it (--model).
+# run_flags separately checks BiRefNet preparation through the warming API.
 first_run() {
 [ -n "$MODEL" ] || { echo "BiRefNet's forward pass: not selected (ci/affected's model)"; return 0; }
 step "BiRefNet on the CPU, from a YAML request"
@@ -139,7 +140,7 @@ printf 'image: request-dog.jpg\n' > "$OUT/request.yaml"
 if cell first "$(birefnet)" --input "$OUT/request.yaml"; then white_background "$(output first webp)" "$dog" || check "first: not a background removal"; fi
 first=$(cat "$OUT/first.number")
 if [ "$first" != none ]; then
-  grep -q '"number": *'"$first" "$OUT/first.json" || check "cozy run show $first does not show it"
+  grep -q '"number": *'"$first" "$OUT/first.json" || check "cozy run watch $first does not show it"
   cozy --json run ls > "$OUT/runs.json" || check "cozy run ls failed"
   grep -Eq "\"number\": *$first([^0-9]|\$)" "$OUT/runs.json" || check "cozy run ls does not list run $first"
 fi
@@ -192,7 +193,7 @@ wait "$follower" || true
 code=$(cat "$OUT/across.code" 2>/dev/null) || code=
 { [ "$code" = 0 ] && grep -q "Calcifer restarted; following run $n again" "$OUT/across.txt"; } \
   || check "across: the follow of run ${n:-?} did not go on past the restart (exit $code): $(tail -c 300 "$OUT/across.txt")"
-cozy --json run show "$n" --once | J '.status == "completed"' || check "across: run $n did not complete"
+cozy --json run watch "$n" --once | J '.status == "completed"' || check "across: run $n did not complete"
 
 step "a burst of Calcifer restarts past systemd's start limit"
 for _ in 1 2 3 4 5 6 7; do systemctl --user restart cozy-calcifer > /dev/null 2>&1 || true; done
@@ -242,7 +243,7 @@ for at in 1 2 1; do
     grep -q "\"words\": *$at\b" "$OUT/folder-$turn.ndjson" || check "one package name at two paths: path $at ran another's code"
   fi
 done
-cozy --json package remove local/one-name --on local > /dev/null || check "package remove local/one-name failed"
+cozy --json package uninstall local/one-name --on local > /dev/null || check "package uninstall local/one-name failed"
 for at in 1 2; do
   mkdir -p "$OUT/paths/$at/scripts"
   sed "s/words=len(payload.text.split())/words=$at/" "$words" > "$OUT/paths/$at/scripts/one_script.py"
@@ -253,34 +254,59 @@ for at in 1 2 1; do
     grep -q "\"words\": *$at\b" "$OUT/script-$turn.ndjson" || check "one script name at two paths: path $at ran another's code"
   fi
 done
-cozy --json package remove local/one_script --on local > /dev/null || check "package remove local/one_script failed"
+cozy --json package uninstall local/one_script --on local > /dev/null || check "package uninstall local/one_script failed"
 }
 
 # Balanced by step times (runs 40128128311, 40132063815, 40132725041). A shard keeps its parts' order; whole, the suite runs every part.
 case $SHARD in
-  '') parts="entrypoints weightless script_package one_name_two_paths image_ratio describe first_run second_executor lifetime kept_preparing catalog basics yaml_requests run_flags run_follow time_left broken_answers run_filters run_play hub_away lock_refresh bound_runs own_references old_runtime hostile_media unseen local_edits local_quote path_manifest machine_show_runs writes_once web_serves page_resend queued_download machines completions calcifer_faults calcifer_restarts update remove" ;;
-  runs) parts="weightless describe first_run run_flags run_play hub_away lock_refresh logs" ;;
+  '') parts="entrypoints weightless script_package one_name_two_paths image_ratio describe first_run second_executor lifetime kept_preparing catalog basics yaml_requests run_flags run_follow time_left broken_answers run_filters run_playback hub_away lock_refresh bound_runs own_references old_runtime hostile_media unseen local_edits path_manifest machine_show_runs writes_once project_stream web_serves page_resend queued_download machines completions calcifer_faults calcifer_restarts update remove" ;;
+  runs) parts="weightless describe first_run run_flags run_playback hub_away lock_refresh logs" ;;
   executors) parts="second_executor lifetime kept_preparing update remove" ;;
   entrypoints) parts="entrypoints" ;;
-  commands) parts="entrypoints catalog basics yaml_requests run_filters bound_runs own_references old_runtime hostile_media machine_show_runs writes_once logs" ;;
+  commands) parts="entrypoints catalog basics yaml_requests run_filters bound_runs own_references old_runtime hostile_media machine_show_runs writes_once project_stream logs" ;;
   # Its own runner: under `set -e` a cell that dies ends its shard, and a page's proofs shouldn't go with it.
   web) parts="tools_read web_serves page_resend logs" ;;
+  project-stream) parts="project_stream logs" ;;
+  project-stream-web) DB_WEB="drawers activity versions timeline"; parts="tools_read db_existing_web logs" ;;
+  web-core) parts="tools_read web_core page_resend logs" ;;
+  web-scale) export DB_WEB=scale; parts="tools_read db_existing_web logs" ;;
+  web-layout-1280) export DB_WEB=layout SIZES=1280x720; parts="tools_read db_existing_web logs" ;;
+  web-layout-1600) export DB_WEB=layout SIZES=1600x1000,1600x1000@1.25; parts="tools_read db_existing_web logs" ;;
+  web-layout-2560) export DB_WEB=layout SIZES=2560x1440@2x; parts="tools_read db_existing_web logs" ;;
   follow) parts="script_package one_name_two_paths image_ratio run_follow time_left broken_answers queued_download machines completions calcifer_faults calcifer_restarts logs" ;;
   # project.db (cl-803) and state.db (cl-818) alone, and project.db's latency against the cozy before it.
   projectdb) parts="projectdb statedb logs" ;;
+  projectvault) parts="projectvault vault_web logs" ;;
   projectdb-latency) parts="db_latency logs" ;;
   projectdb-existing) parts="db_existing logs" ;;
   projectdb-web) parts="tools_read db_existing_web logs" ;;
-  # Local code and every input by content (cl-817, cl-820): the CLI in a folder Calcifer can't see, edits timed, its quote from its
-  # runs (cl-816), a host path refused.
-  local-code) parts="unseen local_edits local_quote path_manifest logs" ;;
+  projectdb-cancel) parts="db_cancel_undo logs" ;;
+  projectdb-live) parts="tools_read db_existing_web logs"; DB_WEB=live ;;
+  projectdb-instant) parts="tools_read db_existing_web logs"; DB_WEB=instant ;;
+  projectdb-versions) parts="tools_read db_existing_web logs"; DB_WEB=versions ;;
+  projectdb-offline) parts="tools_read db_existing_web logs"; DB_WEB=offline ;;
+  projectdb-scale) parts="tools_read db_existing_web logs"; DB_WEB=scale ;;
+  # Local code and every input by content (cl-817, cl-820): the CLI in a folder Calcifer can't see,
+  # edits timed, a host path refused.
+  local-code) parts="unseen local_edits path_manifest logs" ;;
   # By hand: the control-plane audit's cells alone (control.sh).
   control) parts="machine_show_runs writes_once page_resend hub_away broken_answers logs" ;;
   *) echo "no cli shard $SHARD" >&2; exit 2 ;;
 esac
-[ -n "$LOCAL" ] || [ "$SHARD" = entrypoints ] || parts="entrypoints catalog refusals web_serves completions homebrew calcifer_faults update remove"
+if [ -z "$LOCAL" ]; then
+  case $SHARD in
+    entrypoints | projectvault) ;;
+    web-layout-* | web-scale) parts="db_existing_web logs" ;;
+    web-core) parts="entrypoints catalog refusals web_native completions homebrew calcifer_faults update remove" ;;
+    *) parts="entrypoints catalog refusals web_serves completions homebrew calcifer_faults update remove" ;;
+  esac
+fi
 
 start
+# Package fixtures must still resolve after entering the project directory.
+if [ -n "$PACKAGES" ]; then
+  PACKAGES=$(cd "$PACKAGES" && pwd) || fail "package checkout is unavailable"
+fi
 cd "$RUN_PROJECT" || fail "project directory is unavailable"
 for part in $parts; do $part; done
 [ -n "$SHARD" ] || [ -z "$LOCAL" ] || { step coverage; coverage "$OUT/cozy-under-test" pr; }

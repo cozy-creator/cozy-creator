@@ -68,7 +68,7 @@ impl Store {
     }
 
     /// Case-folded local filenames; a nonportable segment is its hash, prefixed `%`.
-    fn ref_path(&self, name: &str) -> Result<PathBuf> {
+    pub(super) fn ref_path(&self, name: &str) -> Result<PathBuf> {
         // The format's repository name, as the public Ref takes it; is_name remains the
         // stricter grammar for writer keys.
         match name.split_once('/') {

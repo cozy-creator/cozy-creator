@@ -24,6 +24,56 @@ use sys as tree;
 #[cfg(unix)]
 use unix as tree;
 
+/// How a process ended, as a refusal says it (`exited with code 2`, `was killed by signal 9 (SIGKILL)`), and whether a
+/// signal ended it.
+pub fn ended(status: &ExitStatus) -> (String, bool) {
+    #[cfg(unix)]
+    if let Some(signal) = std::os::unix::process::ExitStatusExt::signal(status) {
+        let name = match signal {
+            1 => " (SIGHUP)",
+            2 => " (SIGINT)",
+            6 => " (SIGABRT)",
+            7 => " (SIGBUS)",
+            9 => " (SIGKILL)",
+            11 => " (SIGSEGV)",
+            15 => " (SIGTERM)",
+            _ => "",
+        };
+        return (format!("was killed by signal {signal}{name}"), true);
+    }
+    match status.code() {
+        Some(code) => (format!("exited with code {code}"), false),
+        None => (format!("ended: {status}"), false),
+    }
+}
+
+/// A failed tool's last meaningful line on stderr: its last that is no hint or warning, without uv's decoration, cut to 400
+/// characters.
+pub fn last_line(said: &str) -> Option<String> {
+    let line = said.lines().rev()
+        .map(|line| line.trim_start_matches(|c: char| c.is_whitespace() || "×╰─▶│".contains(c)).trim_end())
+        .find(|line| !line.is_empty() && !["hint:", "help:", "warning:"].iter().any(|prefix| line.starts_with(prefix)))?;
+    Some(match line.char_indices().nth(400) {
+        Some((cut, _)) => format!("{}…", &line[..cut]),
+        None => line.to_owned(),
+    })
+}
+
+/// `said`'s last `lines` lines that aren't blank, for a log.
+pub fn tail(said: &str, lines: usize) -> String {
+    let kept: Vec<&str> = said.lines().filter(|line| !line.trim().is_empty()).collect();
+    kept[kept.len().saturating_sub(lines)..].join("\n")
+}
+
+/// Set a process environment value on Windows, whose OS environment operations
+/// are thread-safe. This interface is deliberately unavailable on Unix.
+#[cfg(windows)]
+pub fn set_environment(name: &std::ffi::OsStr, value: &std::ffi::OsStr) {
+    // SAFETY: std::env::set_var permits concurrent environment access on Windows;
+    // cfg(windows) excludes platforms where the caller must exclude other threads.
+    unsafe { std::env::set_var(name, value) }
+}
+
 /// One process incarnation: no other process ever has the same birth. The field names are
 /// TensorD's journal `ProcessBirth`, so a machine reads its journal across an update.
 /// `start_ticks` is the OS's start stamp: clock ticks since boot (Linux), microseconds since the
@@ -152,6 +202,12 @@ impl Exact {
 
     pub fn birth(&self) -> &Birth {
         &self.birth
+    }
+
+    /// Windows executable identity read through this exact process handle, never its argv.
+    #[cfg(windows)]
+    pub fn executable(&self) -> Result<std::path::PathBuf> {
+        sys::executable(&self.handle).map_err(Error::os("read a process executable"))
     }
 
     pub fn scope(&self) -> Option<&Arc<crate::contain::Scope>> {
@@ -300,21 +356,6 @@ pub fn become_subreaper() -> Result<()> {
 /// exec); Windows answers `Unsupported`.
 pub fn die_with_parent(parent: u32) -> Result<bool> {
     sys::die_with_parent(parent)
-}
-
-/// Windows: `handle` goes to the next child this process starts (std hands a child every
-/// inheritable handle), named there by the value returned; the caller drops its own once that
-/// child runs. The child takes it with [`handed`].
-#[cfg(windows)]
-pub fn hand_on(handle: &impl std::os::windows::io::AsRawHandle) -> Result<u64> {
-    sys::hand_on(handle).map_err(Error::os("hand on a handle"))
-}
-
-/// Windows: a copy of the handle `value` names, as [`hand_on`] handed it to this process. Neither
-/// goes further: the inherited handle is no longer inheritable.
-#[cfg(windows)]
-pub fn take_handed(value: u64) -> Result<std::os::windows::io::OwnedHandle> {
-    sys::take_handed(value).map_err(Error::os("take a handed handle"))
 }
 
 /// Descriptors a process hands itself across an exec (Unix): the slots [`hand_on_exec`] fills

@@ -2,48 +2,133 @@
 A cell that did not run prints nothing."""
 import json
 import sys
+from collections.abc import Iterator
 from pathlib import Path
+from typing import Required, TypedDict
 
 
+# The run record's fields read here (`cozy run show --json --full`): a GPU call's `execution` is read directly.
+class Gpu(TypedDict, total=False):
+    pid: Required[int]
+    start_us: int
+    end_us: int
 
-def record(name):
+
+class Executor(TypedDict, total=False):
+    started_unix_ms: float
+    legs_ms: dict[str, float] | None
+
+
+class Execution(TypedDict, total=False):
+    gpus: list[Gpu]
+    executor: Executor | None
+
+
+class Fill(TypedDict, total=False):
+    origin: str
+    speculative: bool
+    set: str
+    block: int
+    bytes: int | None
+
+
+class WeightResidency(TypedDict, total=False):
+    reclaimed_bytes: int | None
+
+
+class VarenaStats(TypedDict, total=False):
+    trace: list[Fill] | None
+    weight_residency: WeightResidency | None
+
+
+class VarenaRow(TypedDict, total=False):
+    stats: VarenaStats | None
+
+
+class MemoryStats(TypedDict, total=False):
+    varena: list[VarenaRow] | None
+
+
+class DriverRow(TypedDict, total=False):
+    peak_bytes: int | None
+
+
+class Memory(TypedDict, total=False):
+    driver: list[DriverRow] | None
+    stats: MemoryStats | None
+
+
+class Stage(TypedDict, total=False):
+    total_ms: float | None
+
+
+class Attribution(TypedDict, total=False):
+    stages: dict[str, Stage] | None
+
+
+class Measurements(TypedDict, total=False):
+    execution: Execution
+    memory: Memory | None
+    attribution: Attribution | None
+
+
+class Call(TypedDict, total=False):
+    function: str
+    measurements: Measurements
+
+
+class RunRecord(TypedDict, total=False):
+    status: str
+    accepted_at_ms: int | None
+    measurements: Measurements | None
+    calls: list[Call] | None
+
+
+class Offload(TypedDict, total=False):
+    """A line of TensorD's memory log."""
+    event: str
+    failed: bool
+    pid: int
+
+
+def record(name: str) -> RunRecord | None:
     path = Path(sys.argv[1]) / f'{name}.json'
     return json.loads(path.read_text()) if path.exists() else None
 
 
-def gpu_calls(rec):
+def gpu_calls(rec: RunRecord) -> list[Measurements]:
     """Each GPU call's measurements, in order."""
     rows = [rec.get('measurements') or {}] + [c.get('measurements') or {} for c in rec.get('calls') or []]
     return [m for m in rows if (m.get('execution') or {}).get('gpus')]
 
 
-def piece_calls(rec):
+def piece_calls(rec: RunRecord) -> list[Measurements]:
     """minimax-h3 generate's piece calls' measurements, in order (not its one-latent decode)."""
     return [c['measurements'] for c in rec.get('calls') or []
             if str(c.get('function', '')).endswith('_piece') and ((c.get('measurements') or {}).get('execution') or {}).get('gpus')]
 
 
-def executor(m):
+def executor(m: Measurements) -> tuple[tuple[int, ...], float | None]:
     e = m['execution']
     return tuple(sorted(g['pid'] for g in e['gpus'])), (e.get('executor') or {}).get('started_unix_ms')
 
 
-def kernels_ms(m):
+def kernels_ms(m: Measurements) -> tuple[float, float]:
     """When its GPU work began and ended, machine clock (unknown: the widest window)."""
     gpus = m['execution']['gpus']
     starts, ends = [g['start_us'] for g in gpus if g.get('start_us')], [g['end_us'] for g in gpus if g.get('end_us')]
     return (min(starts) / 1e3 if starts else float('inf')), (max(ends) / 1e3 if ends else 0.0)
 
 
-def peak(m):
+def peak(m: Measurements) -> int:
     return max((d.get('peak_bytes') or 0 for d in (m.get('memory') or {}).get('driver') or []), default=0)
 
 
-def refilled(m):
+def refilled(m: Measurements) -> int:
     """Weight bytes demand-read again within the call: its own blocks paged out and back."""
     again = 0
     for r in ((m.get('memory') or {}).get('stats') or {}).get('varena') or []:
-        seen = set()
+        seen: set[tuple[str | None, int | None]] = set()
         for t in (r.get('stats') or {}).get('trace') or []:
             if t.get('origin') == 'store' and not t.get('speculative'):
                 key = (t.get('set'), t.get('block'))
@@ -52,16 +137,16 @@ def refilled(m):
     return again
 
 
-def host_stall_s(m):
+def host_stall_s(m: Measurements) -> float:
     stages = (m.get('attribution') or {}).get('stages') or {}
     return sum(v.get('total_ms') or 0 for k, v in stages.items() if k.startswith('host')) / 1e3
 
 
-def offloads():
+def offloads() -> Iterator[tuple[float, int | None]]:
     for line in Path(sys.argv[2]).read_text(errors='replace').splitlines():
         head, brace, body = line.partition('{')
         try:
-            event = json.loads(brace + body)
+            event: Offload = json.loads(brace + body)
             at = float(head.split()[-1])
         except (ValueError, IndexError):
             continue
@@ -69,23 +154,23 @@ def offloads():
             yield at * 1e3, event.get('pid')
 
 
-def row(name, ok, why):
+def row(name: str, ok: bool, why: str) -> None:
     print(f'{name}\tPASS\t{why}' if ok else f'{name}\tFAIL\t{why}')
 
 
-def reclaimed(m):
+def reclaimed(m: Measurements) -> int:
     """Bytes the process's Runtime had reclaimed of its weights by the call's end (cumulative, every GPU)."""
     return sum(((r.get('stats') or {}).get('weight_residency') or {}).get('reclaimed_bytes') or 0
                for r in ((m.get('memory') or {}).get('stats') or {}).get('varena') or [])
 
 
-def ready_s(rec, m):
+def ready_s(rec: RunRecord, m: Measurements) -> float:
     """From the run's acceptance to its GPU call's first kernel."""
     accepted = rec.get('accepted_at_ms') or 0
     return (kernels_ms(m)[0] - accepted) / 1e3 if accepted else float('nan')
 
 
-def legs(m):
+def legs(m: Measurements) -> dict[str, float]:
     return ((m['execution'].get('executor') or {}).get('legs_ms')) or {}
 
 
@@ -94,14 +179,15 @@ pairs = (('idle-klein-a', 'idle-klein-b'), ('idle-klein-b', 'idle-klein-a2'), ('
          ('idle-h3-s', 'idle-h3-t'))
 recs = {n: record(n) for pair in pairs for n in pair}
 for idle, active in pairs:
-    if not recs[active]:
-        continue
     ri, ra = recs[idle], recs[active]
-    ci = ri and ri.get('status') == 'completed' and gpu_calls(ri)
+    if not ra:
+        continue
+    ci = ri is not None and ri.get('status') == 'completed' and gpu_calls(ri)
     ca = ra.get('status') == 'completed' and gpu_calls(ra)
     if not (ci and ca):
         row(active, False, f'{idle} {ri and ri.get("status")}, {active} {ra.get("status")}')
         continue
+    assert ri is not None  # ci holds its calls
     mi, ma = ci[-1], ca[-1]
     was, now = executor(mi), executor(ma)
     since, until = kernels_ms(mi)[1], kernels_ms(ma)[0]
@@ -119,7 +205,7 @@ for idle, active in pairs:
 t, lf = record('idle-h3-t'), record('idle-h3-lf')
 if lf:
     ok = all(r is not None and r.get('status') == 'completed' and piece_calls(r) for r in (t, lf))
-    first, second = (executor(piece_calls(r)[-1]) if ok else None for r in (t, lf))
+    first, second = (executor(piece_calls(r)[-1]) if ok and r is not None else None for r in (t, lf))  # ok: both are
     row('idle-h3-lf', ok and first == second,
         f'turbo call executor {first}, two-piece shot executor {second}; statuses '
         f'{t and t.get("status")}, {lf and lf.get("status")}')
@@ -131,10 +217,11 @@ for befores, canceled, after in ((('idle-klein-b2',), 'idle-cancel', 'idle-after
         continue
     rb = next(filter(None, map(record, befores)), None)
     ca = ra.get('status') == 'completed' and gpu_calls(ra)
-    cb = rb and rb.get('status') == 'completed' and gpu_calls(rb)
+    cb = rb is not None and rb.get('status') == 'completed' and gpu_calls(rb)
     if not (rc and rc.get('status') == 'canceled' and ca and cb):
         row(after, False, f'{canceled} {rc and rc.get("status")}, {after} {ra.get("status")}')
         continue
+    assert rb is not None  # cb holds its calls
     was, now = executor(cb[-1]), executor(ca[-1])
     row(after, was != now, f'on {now} after {canceled} was canceled, which ran beside {was}; ready '
         f'{ready_s(ra, ca[-1]):.1f} s after acceptance (warm before: {ready_s(rb, cb[-1]):.1f} s), its start {legs(ca[-1])}')

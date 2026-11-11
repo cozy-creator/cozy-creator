@@ -182,7 +182,7 @@ export class Session {
 const RETRY = new Set(["evicted", "shutdown"]);
 const BYE = {
   auth: "This link is not valid for this machine.",
-  expired: "This link has expired. Make a new one with `cozy run play`.",
+  expired: "This link has expired. Reopen the project in Cozy.",
   revoked: "The key that signed this link was revoked.",
   evicted: "The machine closed this session to make room for another.",
   shutdown: "The machine is shutting down.",

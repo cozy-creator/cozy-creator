@@ -9,6 +9,8 @@
 # A new command or flag fails `coverage.py check` until it has a line here and its test runs.
 
 [global]
+"--full" = "pr: entrypoints, complete project records"
+"--yes" = "pr: entrypoints, noninteractive confirmation"
 "--json" = "pr: every step reads the JSON answer"
 
 [completion]
@@ -77,19 +79,14 @@ test = "release: rental, keepalive moves its idle deadline"
 ["package ls"]
 test = "pr: packages"
 "--limit" = "pr: packages"
+"--offset" = "pr: packages"
 "--on" = "pr: packages"
-["package info"]
-test = "pr: packages"
 ["package install"]
 test = "pr: packages (gate: tensord unversioned-installed, an installed package moved to its newest)"
 "--on" = "pr: packages"
-["package remove"]
+["package uninstall"]
 test = "pr: packages"
 "--on" = "pr: packages"
-["package lock"]
-test = "release: throwaway package, locked"
-"--upgrade-package" = "release: throwaway package, locked"
-"--root" = "manual: first-party releases only (packages' task publish), never a throwaway at the root"
 ["package publish"]
 test = "release: throwaway package, published"
 "--root" = "manual: first-party releases only (packages' task publish), never a throwaway at the root"
@@ -97,39 +94,71 @@ test = "release: throwaway package, published"
 ["package yank"]
 test = "release: throwaway package, yanked"
 "--undo" = "release: throwaway package, un-yanked"
-["package delete"]
-test = "release: throwaway package, deleted"
 
+["package delete"]
+test = "release: delete an isolated publication fixture"
 ["model ls"]
 test = "pr: models"
 "--family" = "pr: models"
 "--tag" = "pr: models, only models tagged nsfw"
 "--no-tag" = "pr: models, none tagged nsfw"
 "--limit" = "pr: models"
+"--offset" = "pr: catalog pagination parser and model list pages"
 "--on" = "pr: models"
-["model info"]
-test = "pr: models"
-["model download"]
+["model install"]
 test = "pr: models"
 "--lane" = "pr: models"
 "--on" = "pr: models"
 "--source-format" = "pr: models, the local file no format knows kept as-is"
+["lora ls"]
+test = "pending: authoritative Hub role metadata"
+"--family" = "pending: authoritative Hub role metadata"
+"--tag" = "pending: authoritative Hub role metadata"
+"--no-tag" = "pending: authoritative Hub role metadata"
+"--limit" = "pending: authoritative Hub role metadata"
+"--offset" = "pending: authoritative Hub role metadata"
+"--on" = "pending: LoRA classification in local inventory"
+["lora install"]
+test = "pending: same download handler as model install"
+"--lane" = "pending: same download handler as model install"
+"--on" = "pending: same download handler as model install"
+"--source-format" = "pending: same download handler as model install"
+["model uninstall"]
+test = "pending: local model removal backend fixture"
+["lora uninstall"]
+test = "pending: shared local model removal backend fixture"
+["lora edit"]
+test = "release: LoRA metadata fixture"
+"--family" = "release: LoRA metadata fixture"
+"--tag" = "release: LoRA metadata fixture"
+"--untag" = "pending: shared model edit handler"
+"--trigger" = "release: LoRA metadata fixture"
+"--strength" = "release: LoRA metadata fixture"
+["lora upload"]
+test = "release: adapter weights uploaded without inference"
+"--lane" = "release: adapter weights uploaded without inference"
+"--source-format" = "release: adapter weights uploaded without inference"
+"--on" = "release: adapter weights uploaded without inference"
+"--mirror" = "manual: shared model upload handler"
+"--trained-on" = "manual: LoRA training metadata"
+"--trigger" = "manual: shared LoRA metadata handler"
+"--strength" = "manual: shared LoRA metadata handler"
+"--base" = "manual: shared model upload handler"
+["lora publish"]
+test = "pending: shared model publish handler"
+["lora delete"]
+test = "release: LoRA fixture cleanup through the shared model deletion handler"
 ["model edit"]
-test = "release: throwaway model, family, tags, trigger and strength set and cleared"
+test = "release: throwaway model, family and tags set and cleared"
 "--family" = "release: throwaway model, family set and cleared (none)"
 "--tag" = "release: throwaway model, tags added"
 "--untag" = "release: throwaway model, a tag removed in any case and spacing, one it never had, then each cleared"
-"--trigger" = "release: throwaway model, trigger set and cleared"
-"--strength" = "release: throwaway model, strength set and cleared (none)"
 ["model upload"]
 test = "release: throwaway model, uploaded from a file, from a held file, from a run's output, and a commit recorded"
 "--on" = "release: throwaway model"
 "--lane" = "release: throwaway model, two lanes"
 "--source-format" = "release: throwaway model, its files kept as-is"
 "--mirror" = "manual: an admin mirrors a real author's model into its parked org (xs-131, proved on the dev Hub); a CI run would park a real author's org on tensorhub.com"
-"--trained-on" = "manual: tfs-137 proof, an SDXL LoRA's adapter record on local (the H3 warning run on a 4090)"
-"--trigger" = "manual: tfs-137 proof on the dev Hub, set at upload and shown by model info"
-"--strength" = "manual: tfs-137 proof on the dev Hub, set at upload and shown by model info"
 "--base" = "none: a community DiT (66 GB) on a Hub model's header, on a rental; proven by hand"
 ["model publish"]
 test = "release: throwaway model, published with two lanes"
@@ -147,15 +176,14 @@ test = "pr: a weightless request; BiRefNet on the CPU"
 "--file" = "pr: BiRefNet on the CPU"
 "--file-fidelity" = "pr: run flags"
 "--describe" = "pr: run flags, the contract and no run"
-"--warm" = "pr: run flags, each warm level and off"
 "--on" = "pr: BiRefNet on the CPU"
 "--lane" = "pr: run flags"
+"--model" = "pr: entrypoints rejects malformed model overrides; run flags forwards a model slot"
 "--gpus" = "gate: cli cells"
 "--attention-kernel" = "gate: cli cells"
 "--lora" = "gate: cli cells"
 "--output" = "pr: the CLI in a folder Calcifer can't see: a script's still, downloaded by its digest (-o)"
-"--estimate" = "pr: local code is quoted from its runs"
-["run show"]
+["run watch"]
 test = "pr: a run followed, a snapshot, a cancel"
 "--once" = "pr: a run followed, a snapshot, a cancel"
 "--output" = "pr: a tool: a Latents result stays on its machine, any other file comes down (-o)"
@@ -168,21 +196,57 @@ test = "pr: run ls filters"
 "--limit" = "pr: run ls filters"
 ["run cancel"]
 test = "pr: a run followed, a snapshot, a cancel"
-["run play"]
-test = "pr: run play, its link serves the output, then expires"
-"--output" = "pr: run play"
-"--expires" = "pr: run play"
 
 # Hidden (`hide = true`, in no --help): probed in the binary; `coverage.py --source` finds any not listed here.
 [hidden]
-"--full" = "pr: entrypoints, full project health; run records and live view columns"
-"--yes" = "pr: candidates (machine update -y) and entrypoint flag parsing"
-"whoami" = "pr: signed out, whoami says so"
-"completion" = "pr: completion, each shell script loads and completes the visible verbs"
 "machine rent --provider" = "pending: dev-only (`dev = true`, crates/cli/DEV.md); release-gate/suites/hub rents cpu once per provider where the config has it, ended and checked gone"
-"run --no-memo" = "pending: dev-only (`dev = true`, crates/cli/DEV.md); the bench suite's same-seed pairs"
-"machine rent --image-digest" = "pending: release tier, a Hub admin's gated worker-image bake; waits for the CI key"
+"package publish" = "release: isolated package publication; TensorHub admins only in v1"
+"model upload" = "release: isolated model upload; TensorHub admins only in v1"
+"model publish" = "release: isolated model publication; TensorHub admins only in v1"
+"model quantize" = "manual: package-defined quantization; TensorHub admins only in v1"
+"lora upload" = "release: isolated LoRA upload; TensorHub admins only in v1"
+"lora publish" = "pending: shared model publication; TensorHub admins only in v1"
 
 [open]
 "--port" = "pr: entrypoint parser, loopback listener and preserved config tests"
 test = "pr: entrypoints, local authenticated URL and expiry; web-serves redeems the link in Chrome"
+
+["vault"]
+"--directory" = "pr: projectvault: convert and rekey from outside the backing folder"
+
+["vault encrypt"]
+test = "pr: projectvault: conversion preserves mounted media and logical state"
+"--passphrase-file" = "pr: projectvault: conversion reads its credential file"
+"--recovery-out" = "pr: projectvault: recovery is saved outside storage; unsafe destination refuses"
+"--remove-plaintext" = "pr: projectvault: verified conversion and encrypted backing scan"
+"--idle" = "pr: projectvault: conversion disables idle expiry"
+"--max-duration" = "pr: projectvault: returned absolute expiry is within the submitted clock interval"
+
+["vault lock"]
+test = "pr: projectvault: reads and the old mounted view become inaccessible"
+
+["vault unlock"]
+test = "pr: projectvault: saved credentials reopen media; wrong credentials refuse"
+"--passphrase-file" = "pr: projectvault: wrong and replaced passphrase slots"
+"--recovery-file" = "pr: projectvault: saved recovery and replacement generations"
+"--idle" = "pr: projectvault: recovery sessions disable idle expiry"
+"--max-duration" = "pr: projectvault: polling cannot defeat the absolute unlock deadline"
+
+["vault status"]
+test = "pr: projectvault: ordinary, unlocked and expired storage states"
+
+["vault passphrase"]
+test = "pr: projectvault: new credential reopens files and the old slot refuses"
+"--passphrase-file" = "pr: projectvault: replacement credential comes from a file"
+
+["vault recovery"]
+test = "pr: projectvault: replace recovery and refuse old slots and unsafe destinations"
+"--recovery-out" = "pr: projectvault: replacement is written outside storage"
+
+["vault decrypt"]
+test = "pr: projectvault: in-place decryption preserves identity, logical history and media"
+
+["vault rotate"]
+test = "pr: projectvault: full rekey preserves logical history and media"
+"--passphrase-file" = "pr: projectvault: new generation uses its new credential file"
+"--recovery-out" = "pr: projectvault: saved recovery reopens the new generation"

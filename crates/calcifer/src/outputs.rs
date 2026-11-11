@@ -14,14 +14,15 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Instant,
 };
 
 use axum::{
+    body::Body,
     extract::{Path as Route, Query, State, rejection::QueryRejection},
-    http::{HeaderMap, HeaderValue},
+    http::{HeaderMap, HeaderValue, header},
     response::Response,
 };
 use futures_util::StreamExt as _;
@@ -114,6 +115,17 @@ impl From<StoreError> for Failure {
     }
 }
 
+fn private_path(path: &Path) -> bool {
+    crate::project::vault::logical(path).ancestors().any(crate::project::vault::encrypted)
+}
+
+fn private_run(run: &RunRow) -> bool { private_path(&run.out_dir) }
+
+fn export_warning(run: &RunRow, detail: impl std::fmt::Display) {
+    if private_run(run) { warn!(run = %run.id, "private output transfer waits; open its project for details"); }
+    else { warn!(run = %run.id, "{detail}"); }
+}
+
 impl Calcifer {
     /// Starts an exporter for each run that owes one, then for each run whose outputs change.
     pub(crate) fn export_outputs(self: &Arc<Self>) -> Result<(), Error> {
@@ -192,7 +204,7 @@ impl Calcifer {
         for item in run.output.iter().filter(|item| item.stays && item.path.is_none()) {
             let Some(sha256) = &item.sha256 else { continue };
             if let Err(why) = crate::project::stays(project, &sha256.to_string(), machine, item.length) {
-                warn!(run = %id, output = %item.name, "not in its project's lock: {why}");
+                export_warning(&row, format_args!("output {} not in its project lock: {why}", item.name));
             }
         }
     }
@@ -265,7 +277,7 @@ impl Calcifer {
                 Err(Failure::Again(message) | Failure::Wrong(message)) => message,
             };
             let Some((wait, said)) = backoff.again(&why, false, None) else { return Err(why) };
-            info!(run = %run.id, output = %item.name, "bringing it here: {said}");
+            if !private_run(&run) { info!(run = %run.id, output = %item.name, "bringing it here: {said}"); }
             tokio::time::sleep(wait).await;
         }
     }
@@ -291,7 +303,7 @@ impl Calcifer {
                 && let Some(machines) = self.machines()
                 && let Err(e) = machines.local_up().await
             {
-                warn!(run = %id, "exporting its outputs: {}", e.message);
+                export_warning(&run, format_args!("exporting outputs: {}", e.message));
                 pause.wait(wake, None).await;
                 continue;
             }
@@ -324,16 +336,13 @@ impl Calcifer {
                 match exported {
                     Ok(()) | Err(Failure::Superseded) => {}
                     Err(Failure::Lost(reason)) => {
-                        warn!(run = %id, output = %name, rev, "not exported: {reason}");
-                        let dest = (run.out_dir).join(file_name(
-                            run.number,
-                            name,
-                            index,
-                            &item.media_type,
-                        ));
-                        remove(&suffixed(&dest, ".part"));
-                        remove(&suffixed(&dest, HELD));
-                        remove(&suffixed(&dest, ".manifest.part"));
+                        export_warning(&run, format_args!("output {name} revision {rev} not exported: {reason}"));
+                        if let Ok(out_dir) = crate::project::vault::resolve_path(&run.out_dir) {
+                            let dest = out_dir.join(file_name(run.number, name, index, &item.media_type));
+                            remove(&suffixed(&dest, ".part"));
+                            remove(&suffixed(&dest, HELD));
+                            remove(&suffixed(&dest, ".manifest.part"));
+                        }
                         match (self.store).export_failed(id.as_str(), name, index, rev, &reason) {
                             Ok(events) => self.publish(id, events),
                             Err(e) => {
@@ -343,7 +352,7 @@ impl Calcifer {
                         }
                     }
                     Err(Failure::Again(message) | Failure::Refused(message) | Failure::Wrong(message)) => {
-                        warn!(run = %id, output = %name, rev, "export waits: {message}");
+                        export_warning(&run, format_args!("output {name} revision {rev} waits: {message}"));
                         again = true;
                     }
                 }
@@ -396,7 +405,13 @@ impl Calcifer {
             let reason = machine.reason.as_deref().unwrap_or("no reason was given");
             return Err(Failure::Lost(format!("its machine {name} ended: {reason}")));
         }
-        link.ok_or_else(|| Failure::Again(format!("waiting for {name} to start")))
+        let link = link.ok_or_else(|| Failure::Again(format!("waiting for {name} to start")))?;
+        if name == "local" {
+            if let Some(scope) = crate::private_io::of_output(&run.out_dir).map_err(|error| Failure::Again(error.message))? {
+                return Ok(link.with_private(scope));
+            }
+        }
+        Ok(link)
     }
 
     /// Makes the item's file (a directory for a tree) this revision's bytes. A newer revision
@@ -417,10 +432,11 @@ impl Calcifer {
             return Err(Failure::Superseded);
         }
         let began = Instant::now();
-        info!(run = %run.id, output = %item.name, index = item.index, rev = item.rev,
-            bytes = item.length, phase = "output_export", state = "begin");
+        if !private_run(run) { info!(run = %run.id, output = %item.name, index = item.index, rev = item.rev,
+            bytes = item.length, phase = "output_export", state = "begin"); }
         let name = file_name(run.number, &item.name, item.index, &item.media_type);
-        let dest = run.out_dir.join(name);
+        let out_dir = crate::project::vault::resolve_path(&run.out_dir).map_err(|error| Failure::Again(error.message))?;
+        let dest = out_dir.join(name);
         let target = v1::OutputTarget {
             run: run.id.to_string(),
             output: item.name.clone(),
@@ -431,8 +447,8 @@ impl Calcifer {
         let key = (run.id.clone(), item.name.clone(), item.index);
         lock(&self.exports.moving).insert(key.clone(), moved.clone());
         let work = async {
-            tokio::fs::create_dir_all(&run.out_dir).await.map_err(|e| {
-                Failure::Again(format!("cannot create {}: {e}", run.out_dir.display()))
+            tokio::fs::create_dir_all(&out_dir).await.map_err(|e| {
+                Failure::Again(format!("cannot create {}: {e}", out_dir.display()))
             })?;
             let staged = if item.media_type == tree::MEDIA {
                 fetch_tree(link, &target, item, &dest, &moved).await?
@@ -483,9 +499,9 @@ impl Calcifer {
             }
         };
         lock(&self.exports.moving).remove(&key);
-        info!(run = %run.id, output = %item.name, index = item.index, rev = item.rev,
+        if !private_run(run) { info!(run = %run.id, output = %item.name, index = item.index, rev = item.rev,
             bytes = moved.load(Ordering::Relaxed), phase = "output_export", state = "end",
-            ok = done.is_ok(), elapsed_ms = began.elapsed().as_secs_f64() * 1000.0);
+            ok = done.is_ok(), elapsed_ms = began.elapsed().as_secs_f64() * 1000.0); }
         done
     }
 
@@ -557,7 +573,7 @@ impl Calcifer {
             let mut unlisted = None;
             let kept = match crate::project::of_landing(&run.out_dir).filter(|_| item.media_type != tree::MEDIA) {
                 Some(project) => {
-                    let made = crate::project::Landed { run: run.number, target: &run.target, output: name, index, digest: &item.digest, measured };
+                    let made = crate::project::Landed { run_id: &run.id, run: run.number, target: &run.target, output: name, index, digest: &item.digest, measured };
                     match crate::project::landed(project, &made, dest) {
                         Ok((kept, said)) => {
                             unlisted = said;
@@ -581,7 +597,7 @@ impl Calcifer {
             });
             let mut events = self.store.exported(id, name, index, rev, &kept, measured)?;
             if let Some(said) = unlisted {
-                warn!(run = %run.id, output = %name, "{said}");
+                export_warning(run, &said);
                 events.extend(self.store.warned(id, &::api::calcifer::Warning { code: "output_unlisted".to_owned(), message: said })?);
             }
             let store_ms = store_began.elapsed().as_secs_f64() * 1000.0;
@@ -596,9 +612,9 @@ impl Calcifer {
             )
         };
         let (lock_ms, rename_ms, project_ms, store_ms, publish_ms) = timings;
-        info!(run = %run.id, output = %item.name, index = item.index, rev = item.rev,
+        if !private_run(run) { info!(run = %run.id, output = %item.name, index = item.index, rev = item.rev,
             phase = "output_land", lock_ms, rename_ms, project_ms, store_ms, publish_ms,
-            elapsed_ms = began.elapsed().as_secs_f64() * 1000.0);
+            elapsed_ms = began.elapsed().as_secs_f64() * 1000.0); }
         remove(&old);
         Ok(())
     }
@@ -624,26 +640,28 @@ pub(crate) async fn serve(
 ) -> Result<Response, Refusal> {
     let Item { index, member } = query?.0;
     let row = api::find(&api, &run)?;
+    crate::project::vault::require_path(&row.out_dir).map_err(Refusal)?;
+    let readable = crate::project::vault::readable_token(&row.out_dir);
     let number = row.number;
     let (item, file, landed_folder) = {
         let _placing = lock(&api.calcifer.exports.placing);
         let item = api.calcifer.store().output(row.id.as_str(), &name, index)?;
         let item = item.ok_or_else(|| {
             let message = format!("run {number} has no output {name} at index {index}");
-            Refusal(api::refuse(Kind::NotFound, "output_not_found", message).0.next(format!("cozy run show {number}")))
+            Refusal(api::refuse(Kind::NotFound, "output_not_found", message).0.next(format!("cozy run watch {number}")))
         })?;
         let (file, landed_folder) = match (&item.checkpoint, &item.path, item.exported_rev) {
-            (None, Some(path), Some(_)) if item.media_type == tree::MEDIA => (None, Some(path.clone())),
-            (None, Some(path), Some(_)) => (Some(std::fs::File::open(path).map_err(|e| {
+            (None, Some(path), Some(_)) if item.media_type == tree::MEDIA => (None, Some(crate::project::vault::resolve_path(path).map_err(Refusal)?)),
+            (None, Some(path), Some(_)) => (Some(std::fs::File::open(crate::project::vault::resolve_path(path).map_err(Refusal)?).map_err(|e| {
                 let message = format!("its file {} is gone: {e}", path.display());
-                Refusal(api::refuse(Kind::NotFound, "output_file_missing", message).0.next(format!("cozy run show {number}")))
+                Refusal(api::refuse(Kind::NotFound, "output_file_missing", message).0.next(format!("cozy run watch {number}")))
             })?), None),
             _ => (None, None),
         };
         (item, file, landed_folder)
     };
     if let Some(dir) = landed_folder {
-        return folder(&dir, member.as_deref(), number, &name, &headers).await;
+        return folder(&dir, member.as_deref(), number, &name, &headers).await.map(|response| protect(response, readable));
     }
     if let Some(checkpoint) = &item.checkpoint {
         let message = format!(
@@ -661,11 +679,11 @@ pub(crate) async fn serve(
         if record.output.iter().any(|kept| kept.stays && kept.name == name && kept.index == index) {
             let on = row.machine.as_deref().unwrap_or("its machine");
             let message = format!("output {name} of run {number} stays on {on}: it isn't brought to this computer");
-            return Err(Refusal(api::refuse(Kind::Conflict, "output_on_its_machine", message).0.next(format!("cozy run show {number}"))));
+            return Err(Refusal(api::refuse(Kind::Conflict, "output_on_its_machine", message).0.next(format!("cozy run watch {number}"))));
         }
         if let Some(reason) = item.export_error {
             let message = format!("output {name} of run {number} will not land: {reason}");
-            return Err(Refusal(api::refuse(Kind::Unavailable, "output_not_exported", message).0.next(format!("cozy run show {number}"))));
+            return Err(Refusal(api::refuse(Kind::Unavailable, "output_not_exported", message).0.next(format!("cozy run watch {number}"))));
         }
         let state = match row.state {
             RunState::Settled => "has ended",
@@ -674,7 +692,7 @@ pub(crate) async fn serve(
         };
         let message = format!("output {name} of run {number} has not landed yet; the run {state}");
         let refusal = api::refuse(Kind::Conflict, "output_not_ready", message);
-        return Err(Refusal(refusal.0.next(format!("cozy run show {number}"))));
+        return Err(Refusal(refusal.0.next(format!("cozy run watch {number}"))));
     };
     let len = file.metadata().map(|m| m.len()).unwrap_or(0);
     let mut response = crate::files::send(file, len, &item.media_type, &format!("\"r{rev}\""), &headers)
@@ -684,14 +702,29 @@ pub(crate) async fn serve(
     {
         response.headers_mut().insert("x-cozy-digest", digest);
     }
-    Ok(response)
+    Ok(protect(response, readable))
+}
+
+/// Every chunk checks the viewing lease, including an already-open range response.
+fn protect(mut response: Response, readable: Option<Arc<AtomicBool>>) -> Response {
+    let Some(readable) = readable else { return response };
+    response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response.headers_mut().insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
+    let body = std::mem::replace(response.body_mut(), Body::empty());
+    let chunks = body.into_data_stream().map(move |chunk| {
+        if !readable.load(Ordering::Acquire) {
+            Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "the project is locked"))
+        } else { chunk.map_err(std::io::Error::other) }
+    });
+    *response.body_mut() = Body::from_stream(chunks);
+    response
 }
 
 /// A folder output: its tree document, or with `member` one of its files, each named by its content so a client caches it.
 async fn folder(dir: &Path, member: Option<&str>, number: u64, name: &str, headers: &HeaderMap) -> Result<Response, Refusal> {
     let gone = |e: std::io::Error| {
         let message = format!("its folder {} is gone: {e}", dir.display());
-        Refusal(api::refuse(Kind::NotFound, "output_file_missing", message).0.next(format!("cozy run show {number}")))
+        Refusal(api::refuse(Kind::NotFound, "output_file_missing", message).0.next(format!("cozy run watch {number}")))
     };
     let at = dir.to_owned();
     let staged = tokio::task::spawn_blocking(move || ::api::stage::stage(&at, None))
@@ -701,7 +734,8 @@ async fn folder(dir: &Path, member: Option<&str>, number: u64, name: &str, heade
     let (file, media_type, etag) = match member {
         None => {
             let digest = ::api::ids::Digest::of(&staged.document);
-            let mut part = tempfile::tempfile().map_err(gone)?;
+            let private = crate::private_io::of_path(dir).map_err(Refusal)?.is_some();
+            let mut part = if private { tempfile::tempfile_in(dir.parent().unwrap_or(dir)) } else { tempfile::tempfile() }.map_err(gone)?;
             std::io::Write::write_all(&mut part, &staged.document).and_then(|()| std::io::Seek::rewind(&mut part)).map_err(gone)?;
             (part, tree::MEDIA.to_owned(), format!("\"{digest}\""))
         }
@@ -711,7 +745,7 @@ async fn folder(dir: &Path, member: Option<&str>, number: u64, name: &str, heade
             let held = staged.files.iter().find(|file| file.path == path).filter(|_| !parts.iter().any(|part| matches!(*part, "" | "." | "..")));
             let Some(held) = held else {
                 let message = format!("output {name} of run {number} holds no {member}");
-                return Err(Refusal(api::refuse(Kind::NotFound, "output_member_not_found", message).0.next(format!("cozy run show {number}"))));
+                return Err(Refusal(api::refuse(Kind::NotFound, "output_member_not_found", message).0.next(format!("cozy run watch {number}"))));
             };
             let media = crate::runs::bind::sniff(&held.path).map(|sniffed| sniffed.media_type).unwrap_or_else(|_| "application/octet-stream".into());
             (std::fs::File::open(&held.path).map_err(gone)?, media, format!("\"{}\"", held.digest))
@@ -814,9 +848,9 @@ async fn fetch_file(
             }
         };
         let in_place = v1::held_bytes(&held);
-        info!(run = %target.run, output = %target.output, index = target.index, rev = item.rev,
+        if !private_path(dest) { info!(run = %target.run, output = %target.output, index = target.index, rev = item.rev,
             phase = "output_prepare_file", bytes = item.length, appended_from = from, in_place,
-            elapsed_ms = prepare_began.elapsed().as_secs_f64() * 1000.0);
+            elapsed_ms = prepare_began.elapsed().as_secs_f64() * 1000.0); }
         moved.store(in_place, Ordering::Relaxed);
         fetch(link, target, item.rev, &held, item.length, &part, Some(&journal), moved).await?;
         match check(&part, item.length, &item.digest).await {
@@ -946,6 +980,7 @@ fn merged(mut stretches: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
 
 /// Whether `path` holds exactly `length` bytes with `digest`; they are on the disk if so, before any name is.
 async fn check(path: &Path, length: u64, digest: &str) -> Result<(), Failure> {
+    let private = private_path(path);
     let (path, digest) = (path.to_owned(), digest.to_owned());
     let reported_path = path.clone();
     let queued = Instant::now();
@@ -974,13 +1009,13 @@ async fn check(path: &Path, length: u64, digest: &str) -> Result<(), Failure> {
         }
         let sync_began = Instant::now();
         platform::durable::ordered(&file)?;
-        info!(path = %path.display(), phase = "output_check", bytes = held,
-            blocking_queue_ms, hash_ms, sync_ms = sync_began.elapsed().as_secs_f64() * 1000.0);
+        if !private { info!(path = %path.display(), phase = "output_check", bytes = held,
+            blocking_queue_ms, hash_ms, sync_ms = sync_began.elapsed().as_secs_f64() * 1000.0); }
         Ok(Ok(()))
     });
     let result = checked.await.unwrap_or_else(|e| Err(Failure::Again(e.to_string())));
-    info!(path = %reported_path.display(), phase = "output_check_result", ok = result.is_ok(),
-        elapsed_ms = queued.elapsed().as_secs_f64() * 1000.0);
+    if !private { info!(path = %reported_path.display(), phase = "output_check_result", ok = result.is_ok(),
+        elapsed_ms = queued.elapsed().as_secs_f64() * 1000.0); }
     result
 }
 
@@ -1032,7 +1067,8 @@ impl Drop for Stretch {
             let line = format!("{} {at}\n", self.first);
             let appended = std::fs::OpenOptions::new().append(true).open(journal);
             if let Err(e) = appended.and_then(|mut file| std::io::Write::write_all(&mut file, line.as_bytes())) {
-                warn!(path = %journal.display(), "what a range left in place is not kept: {e}");
+                if private_path(journal) { warn!("private output range progress could not be saved"); }
+                else { warn!(path = %journal.display(), "what a range left in place is not kept: {e}"); }
             }
         }
     }
@@ -1040,6 +1076,7 @@ impl Drop for Stretch {
 
 /// Logs even when a range fails or a slow/replaced transfer drops its future.
 struct RangeTiming<'a> {
+    private: bool,
     target: &'a v1::OutputTarget,
     rev: u64,
     first: u64,
@@ -1057,6 +1094,7 @@ struct RangeTiming<'a> {
 
 impl Drop for RangeTiming<'_> {
     fn drop(&mut self) {
+        if self.private { return; }
         info!(run = %self.target.run, output = %self.target.output, index = self.target.index,
             rev = self.rev, member = %self.target.member, phase = "output_range",
             stopped_at = self.phase, first = self.first, end = self.end,
@@ -1080,6 +1118,7 @@ async fn read_range(
     moved: &AtomicU64,
 ) -> Result<(), Ranged<Failure>> {
     let mut timing = RangeTiming {
+        private: private_path(&part),
         target: &target,
         rev,
         first,

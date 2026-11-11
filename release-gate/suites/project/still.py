@@ -31,4 +31,4 @@ class Kept(msgspec.Struct, kw_only=True):
 
 @app.entrypoint()
 def keep(payload: Kept, out: Outputs) -> Kept:
-    return Kept(out.save_bytes(payload.image.read_bytes(), media_type="image/png"))
+    return Kept(image=out.save_bytes(payload.image.read_bytes(), media_type="image/png"))

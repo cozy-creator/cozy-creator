@@ -4,7 +4,7 @@ use std::{fs::File, sync::Arc};
 
 use ::api::hub::{Client, Credential};
 use platform::durable::FileAt as _;
-use api::{config::Origin, error::{Error, Kind}, calcifer::project::Event};
+use api::{config::Origin, error::{Error, Kind}};
 use tensorfs::{
     err::{Code, Refusal as Failed},
     fetch::{self, is_loopback_origin, Endpoint, Request, SourcePolicy, TokenProvider},
@@ -77,12 +77,11 @@ async fn fetch(project: &Project, endpoint: &Endpoint, wanted: folder::File) -> 
     let from = file.metadata().map_err(named)?.len();
     let from = if from > total { 0 } else { from };
     file.set_len(from).map_err(named)?;
-    let (mut start, mut bytes) = (0, 0);
+    let mut start = 0;
     for object in &objects {
         let end = start + object.length;
         if from < end {
             let mut landing = |within: u64, frame: &[u8]| {
-                bytes += frame.len() as u64;
                 file.write_all_at(frame, start + within).map_err(named)
             };
             endpoint.read(object, from.saturating_sub(start), &mut landing).await?;
@@ -92,7 +91,11 @@ async fn fetch(project: &Project, endpoint: &Endpoint, wanted: folder::File) -> 
     file.sync_all().map_err(named)?;
     drop(file);
     let checking = part.clone();
-    let got = tokio::task::spawn_blocking(move || folder::hash(&checking)).await.map_err(local)?;
+    let access = super::vault::admit_work(project).await.map_err(|e| local(e.message))?;
+    let got = tokio::task::spawn_blocking(move || {
+        let _access = access;
+        folder::hash(&checking)
+    }).await.map_err(local)?;
     if got.as_deref().map(hex).ok() != Some(hex(&sha256)) {
         let _ = std::fs::remove_file(&part);
         return Err(Failed { code: Code::OBJECT_ID_MISMATCH, detail: format!("{path}: what landed is not its sha256; retry fetching it") });
@@ -103,7 +106,6 @@ async fn fetch(project: &Project, endpoint: &Endpoint, wanted: folder::File) -> 
     let at = infer::get(&head).map_or_else(|| at.clone(), |kind| at.with_extension(kind.extension()));
     std::fs::rename(&part, &at).map_err(named)?;
     folder::sealed(&at);
-    let _ = project.events.send(Event::Moved { file: Some(path), bytes });
     Ok(())
 }
 

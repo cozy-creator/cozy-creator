@@ -1,26 +1,19 @@
-//! `cozy package lock|publish|yank|delete`: authoring, through Calcifer (CALCIFER-API.md
+//! `cozy package publish|yank|delete`: authoring, through Calcifer (CALCIFER-API.md
 //! "Packages"). The package goes by content, and Calcifer locks and publishes its copy with uv:
 //! package code never runs, and the authored files never change but `uv.lock`, which the CLI writes.
 use std::process::ExitCode;
 
 use api::{
     error::{Error, Kind},
-    calcifer::hub::{At, Locked, PackageDeleted, PackageLock, PackagePublish, PackageUnyanked, PackageYanked, Published, job},
+    calcifer::hub::{At, PackageDeleted, PackagePublish, PackageUnyanked, PackageYanked, Published, job},
 };
 
 use super::PackageRef;
 use crate::{Context, calcifer_client::path, output, run};
 
-fn here() -> Result<std::path::PathBuf, Error> {
-    std::env::current_dir().map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))
-}
-
-/// The package folder `path` names (else this one), sent by content.
-async fn sent(ctx: &Context, path: Option<std::path::PathBuf>) -> Result<(std::path::PathBuf, api::code::LocalCode), Error> {
-    let dir = match path {
-        Some(path) => here()?.join(path),
-        None => here()?,
-    };
+/// Send the current package directory by content for locking and publication.
+async fn sent(ctx: &Context) -> Result<(std::path::PathBuf, api::code::LocalCode), Error> {
+    let dir = std::env::current_dir().map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
     let code = crate::send::Sender::new(ctx).await?.code(&dir).await?;
     Ok((dir, code))
 }
@@ -33,28 +26,8 @@ fn written(dir: &std::path::Path, lock: &str) -> Result<std::path::PathBuf, Erro
     Ok(path)
 }
 
-pub(crate) async fn lock(ctx: &Context, path: Option<std::path::PathBuf>, upgrade: &[String], root: bool) -> Result<ExitCode, Error> {
-    let (dir, code) = sent(ctx, path).await?;
-    // Calcifer's own run, which says uv's notices as it goes.
-    let going = run::job(ctx, job::PACKAGE_LOCK, &PackageLock { root, upgrade: upgrade.to_vec() }, None, Some(code)).await?;
-    let result: Locked = run::done(ctx, going).await?;
-    let lock = match result.changed {
-        true => written(&dir, &result.lock)?,
-        false => dir.join("uv.lock"),
-    };
-    match ctx.json {
-        true => output::json(&serde_json::json!({"lock": lock, "account_index": result.account_index, "changed": result.changed})),
-        false => output::Record::new()
-            .field("lock", lock.display())
-            .field("account index", result.account_index.as_deref().unwrap_or("none"))
-            .field("changed", result.changed)
-            .print(ctx),
-    }
-    Ok(ExitCode::SUCCESS)
-}
-
 pub(crate) async fn publish(ctx: &Context, root: bool, yanked: bool) -> Result<ExitCode, Error> {
-    let (dir, code) = sent(ctx, None).await?;
+    let (dir, code) = sent(ctx).await?;
     let going = run::job(ctx, job::PACKAGE_PUBLISH, &PackagePublish { root, yanked }, None, Some(code)).await?;
     let result: Published = run::done(ctx, going).await?;
     // Locked first, it holds the lock it was published with.
@@ -86,8 +59,8 @@ pub(crate) async fn yank(ctx: &Context, package: &PackageRef, undo: bool) -> Res
         return Err(Error::new(
             Kind::Usage,
             "yank_release_required",
-            "name the release to yank: [org/]name@release",
-        ));
+            "Specify a release to yank",
+        ).next(format!("cozy package yank {package}@<release>")));
     };
     let hub = At { hub: Some(ctx.hub().to_string()) };
     let at = path(&["v1", "packages", &package.org, &package.name, "releases", release, "yank"]);
@@ -131,35 +104,22 @@ pub(crate) async fn yank(ctx: &Context, package: &PackageRef, undo: bool) -> Res
     Ok(ExitCode::SUCCESS)
 }
 
-/// Never prompts: `--yes` is the confirmation, and without it nothing is sent.
+/// `--yes` explicitly confirms permanent deletion before any request is sent.
 pub(crate) async fn delete(ctx: &Context, package: &PackageRef) -> Result<ExitCode, Error> {
     if package.release.is_some() {
-        return Err(Error::new(
-            Kind::Usage,
-            "package_release_not_taken",
-            format!("{package} names a release; delete takes the whole package, [org/]name"),
-        )
-        .remedy(format!("cozy package yank {package}")));
+        return Err(Error::new(Kind::Usage, "package_release_not_taken", "Delete removes the whole package; yank withdraws one release")
+            .next(format!("cozy package yank {package}")));
     }
-    let hub = ctx.hub();
     if !ctx.yes {
-        return Err(Error::new(
-            Kind::Usage,
-            "package_delete_unconfirmed",
-            format!(
-                "deleting {package} and every release from {} cannot be undone",
-                hub
-            ),
-        )
-        .remedy("run it again with --yes"));
+        return Err(Error::new(Kind::Usage, "package_delete_unconfirmed", format!("Deleting {package} and all its releases cannot be undone"))
+            .next(format!("cozy package delete {package} --yes")));
     }
     let at = path(&["v1", "packages", &package.org, &package.name]);
-    let result: PackageDeleted = ctx.calcifer().await?.delete_query(&at, &At { hub: Some(hub.to_string()) }).await?;
-    match ctx.json {
-        true => output::json(&result),
-        false => output::Record::of(&result)
-            .note("Machines that installed it keep their copies.")
-            .print(ctx),
+    let result: PackageDeleted = ctx.calcifer().await?.delete_query(&at, &At { hub: Some(ctx.hub().to_string()) }).await?;
+    if ctx.json {
+        output::json(&result);
+    } else {
+        output::Record::of(&result).note("Existing installed copies remain on their machines.").print(ctx);
     }
     Ok(ExitCode::SUCCESS)
 }

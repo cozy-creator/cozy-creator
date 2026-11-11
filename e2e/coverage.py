@@ -21,6 +21,7 @@ import subprocess
 import sys
 import tomllib
 from dataclasses import dataclass, field
+from typing import cast
 
 TIERS = {"pr", "release", "gate", "manual", "none", "pending"}
 # Tiers no run requires: listed and shown, each with its why.
@@ -74,7 +75,7 @@ def _parse(text: str) -> tuple[list[str], dict[str, bool], dict[str, str], set[s
     return commands, flags, shorts, short_values, runnable
 
 
-def tree(cozy: str, hidden_roots: tuple[str, ...] = ()) -> Command:
+def tree(cozy: str, hidden_paths: tuple[tuple[str, ...], ...] = ()) -> Command:
     def walk(path: tuple[str, ...]) -> Command:
         commands, flags, shorts, short_values, runnable = _parse(_help(cozy, path))
         node = Command(path, runnable, flags, shorts, short_values)
@@ -83,9 +84,12 @@ def tree(cozy: str, hidden_roots: tuple[str, ...] = ()) -> Command:
         return node
 
     root = walk(())
-    for name in hidden_roots:
-        if name not in root.children:
-            root.children[name] = walk((name,))
+    for path in hidden_paths:
+        node = root
+        for index, name in enumerate(path):
+            if name not in node.children:
+                node.children[name] = walk(path[:index + 1])
+            node = node.children[name]
     return root
 
 
@@ -163,7 +167,8 @@ def hidden_in_source(src: str) -> set[str]:
             if line.lstrip().startswith("#[arg"):
                 names.add("--" + (named.group(1) if named else field.split(":")[0].strip().replace("_", "-")))
             else:
-                variant = re.match(r"(\w+)", field.removeprefix("pub ")).group(1)
+                # cast: a hidden #[command] attribute precedes its enum variant, a name
+                variant = cast(re.Match[str], re.match(r"(\w+)", field.removeprefix("pub "))).group(1)
                 names.add(re.sub(r"(?<!^)(?=[A-Z])", "-", variant).lower())
     return names
 
@@ -192,8 +197,8 @@ def check(cozy: str, toml: str, tiers: set[str], logs: list[str], source: str = 
     mapped = manifest(toml)
     with open(toml, "rb") as f:
         hidden = {f"cozy {k}" for k in tomllib.load(f).get("hidden", {})}
-    hidden_roots = tuple(sorted({name.split()[1] for name in hidden if not name.split()[1].startswith("--")}))
-    root = tree(cozy, hidden_roots)
+    hidden_paths = tuple(sorted({tuple(word for word in name.split()[1:] if not word.startswith("--")) for name in hidden}))
+    root = tree(cozy, hidden_paths)
     # The hidden root flags are boolean switches; child commands inherit them.
     for name in hidden:
         words = name.split()[1:]

@@ -24,7 +24,7 @@ checks=0 failed=0
 check() {
   local n; n=$(runno "$1")
   [ -n "$n" ] || { say "CHECK $1: no run"; failed=$((failed + 1)); return; }
-  cozy run show "$n" --once --json --full > "$OUT/$1.json" 2>&1
+  cozy run watch "$n" --once --json --full > "$OUT/$1.json" 2>&1
   local status reason; status=$(jq -r .status "$OUT/$1.json"); reason=$(jq -r '.reason.message // ""' "$OUT/$1.json")
   checks=$((checks + 1))
   if [ "$status" = "$2" ] && { [ -z "${3:-}" ] || grep -qF -- "$3" <<<"$reason"; }; then say "CHECK $1: run $n $status${reason:+: $reason}"

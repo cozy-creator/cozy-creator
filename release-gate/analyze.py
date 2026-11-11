@@ -5,6 +5,8 @@ in the baseline file; `--accept` records a FAIL the lead accepted. Exit 1 on any
     analyze.py <gate dir> <SKU> <baseline file> [--accept]
 More checks (quality, lm, swap, a suite's check.py) are modules imported here and listed in CHECKS: check(gate) -> (fails, notes)."""
 import fnmatch, json, os, re, subprocess, sys, time
+from collections.abc import Callable, Iterator
+from typing import Literal, TypeAlias, TypedDict, cast
 import numpy as np
 from PIL import Image
 
@@ -14,7 +16,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, 'suites'))
 import lm, quality, swap  # noqa: E402
-from runs import STEP_EXTRA_MS, STEP_RATIO, Run, slow_steps  # noqa: E402
+from runs import JSON, STEP_EXTRA_MS, STEP_RATIO, Baseline, Cell, Gate, Good, KnownFailing, Observation, Run, slow_steps  # noqa: E402
 from tensorfs import check as tensorfs  # noqa: E402  (release-gate/suites/tensorfs, never the tensorfs library)
 from varena import check as varena  # noqa: E402
 from cli import check as cli  # noqa: E402
@@ -24,12 +26,14 @@ import bench  # noqa: E402  (release-gate/bench.py: suite bench's judging)
 from contract import check as contract  # noqa: E402  (every gate: the records the other suites made)
 # A suite's check runs when gate.sh ran the suite (--suite: the names in <gate dir>/suites).
 SUITES = open(os.path.join(out, 'suites')).read().split() if os.path.exists(os.path.join(out, 'suites')) else []
-SUITE_CHECKS = {'tensorfs': tensorfs.check, 'varena': varena.check, 'cli': cli.check, 'kernels': kernels.check, 'escaped': escaped.check, 'bench': bench.check}  # runtime, packages: quality, lm and swap; hub, tensord: their expect rows
-CHECKS = [quality.check, lm.check, swap.check, contract.check] + [SUITE_CHECKS[s] for s in SUITES if s in SUITE_CHECKS]
+Check: TypeAlias = Callable[[Gate], tuple[list[str], list[str]]]
+SUITE_CHECKS: dict[str, Check] = {'tensorfs': tensorfs.check, 'varena': varena.check, 'cli': cli.check, 'kernels': kernels.check, 'escaped': escaped.check, 'bench': bench.check}  # runtime, packages: quality, lm and swap; hub, tensord: their expect rows
+CHECKS: list[Check] = [quality.check, lm.check, swap.check, contract.check] + [SUITE_CHECKS[s] for s in SUITES if s in SUITE_CHECKS]
 # Allowed rise over the worst known-good number, unless the good numbers' own spread is wider.
 # Step 1 is judged as load + step 1 (the run's or call's start to step 1's end; agreed by the lead, 2026-11-06): v2 readies
 # weights on first use inside step 1, where v1 readied them in a load before it. step1_ms is kept, not judged.
-SLACK = {'execution_ms': 0.25, 'to_step1_ms': 0.5, 'steady_ms': 0.10, 'vram_mb': 0.10}
+Judged: TypeAlias = Literal['execution_ms', 'to_step1_ms', 'steady_ms', 'vram_mb']
+SLACK: dict[Judged, float] = {'execution_ms': 0.25, 'to_step1_ms': 0.5, 'steady_ms': 0.10, 'vram_mb': 0.10}
 # And at least this much: a CUDA context's size moves between drivers (MiB); a sub-second CPU cell's time is its
 # host's scheduling (ms).
 FLOOR = {'vram_mb': 256, 'execution_ms': 250}
@@ -42,10 +46,27 @@ KNOWN_FAILING = os.path.join(HERE, 'known-failing.json')
 # At SLOW_HOST times those or more, the host is slow and its time fails say so, not a regression (purin 11-05: imports
 # 2.6x and CUDA init 2.2x mochizou's, th-364). A leg under HOST_FLOOR_MS (an executor forked from an imported parent) isn't judged.
 HOST_LEGS, SLOW_HOST, HOST_FLOOR_MS = ('package_import', 'cuda_init'), 2, 250
+fails: list[str]
+notes: list[str]
 fails, notes = [], []
 
 
-def walk(o):
+class KnownBlocking(TypedDict):
+    pattern: str  # fnmatch, over the blocking work's name
+    issue: str
+    site: str
+
+
+class KernelProbe(TypedDict, total=False):
+    """A kernel self-check in machine-end.json's `status.kernels`."""
+    ok: bool
+    kernel: str
+    sm: int
+    driver: str
+    detail: str
+
+
+def walk(o: JSON) -> Iterator[dict[str, JSON]]:
     if isinstance(o, dict):
         yield o
         for v in o.values():
@@ -60,7 +81,7 @@ def walk(o):
 RENAMED = {'minimax-h3/shot': 'minimax-h3/generate'}
 
 
-def canonical(target):
+def canonical(target: str) -> str:
     """The package function a target names, whether published (org/pkg/fn@v) or a checkout (./pkg/fn)."""
     name = re.sub(r'^(\./|[^/]+/(?=[^/]+/[^/]+$))', '', re.sub(r'@.*$', '', target))
     return RENAMED.get(name, name)
@@ -68,14 +89,18 @@ def canonical(target):
 
 # A device without fp8 tensor cores (before sm89) serves an fp8 lane's weights at 16-bit compute (cozy-creator #2210):
 # the expected path there, not a fallback.
-def fp8_weight_only(o):
+def fp8_weight_only(o: Observation) -> bool:
     f = o.get('fields') or {}
-    m = re.search(r'needs cuda\.sm(\d+)\+ and this device is cuda\.sm(\d+)', f.get('reason') or '')
+    m = re.search(r'needs cuda\.sm(\d+)\+ and this device is cuda\.sm(\d+)', cast(str, f.get('reason') or ''))  # its reason is text
     return (o.get('name') == 'gemm.fallback' and f.get('wanted') == 'fp8' and f.get('served') in ('bf16', 'fp16')
-            and bool(m) and int(m.group(2)) < 89 <= int(m.group(1)))
+            and m is not None and int(m.group(2)) < 89 <= int(m.group(1)))
 
 
 cells = [l.rstrip('\n').split('\t') for l in open(os.path.join(out, 'cells.tsv')) if l.strip()]
+summary: dict[str, Cell]
+c: Cell | None
+runs: dict[str, Run]
+host_legs: dict[str, dict[str, int]]
 summary, runs, host_legs = {}, {}, {}
 for name, target, number in cells:
     run = Run.read(os.path.join(out, name + '.json'))
@@ -104,14 +129,15 @@ for name, target, number in cells:
             fails.append(f'{name}: int8 GEMM served by {val}, not cozy-int8')
         if any(s in val for s in ('_int_mm', 'dense', 'decoded_float', 'fallback')):
             fails.append(f'{name}: GEMM {fmt} served by {val}')
-    blocking = {}
+    blocking: dict[str, int] = {}
     for o in obs:
-        if o.get('name') == 'request_path.blocking':
-            blocking[o['value']] = blocking.get(o['value'], 0) + round(float(o['fields'].get('ms', 0)))
+        if o.get('name') == 'request_path.blocking':  # its value names the work, its `ms` field is a number
+            blocking[cast(str, o['value'])] = blocking.get(cast(str, o['value']), 0) + round(float(cast(float, o['fields'].get('ms', 0))))
     s = run.steps
-    legs = {}
+    legs: dict[str, int] = {}
     for m in run.measurements:
         ex = m.get('execution') or {}
+        part: Literal['executor', 'construction']
         for part in ('executor', 'construction'):
             for leg in ('cuda_init', 'measure_device', 'package_import'):
                 v = ((ex.get(part) or {}).get('legs_ms') or {}).get(leg)
@@ -137,7 +163,7 @@ for name, target, number in cells:
         fails.append(f'{name}: step {i} {ms / 1000:.1f} s vs {what} {ref / 1000:.1f} s (at most {STEP_RATIO}x + {STEP_EXTRA_MS // 1000} s)')
 
 
-def image(name):
+def image(name: str) -> Image.Image | None:
     c = summary.get(name)
     if not c: return None
     p = [f for f in c['files'] if f.endswith(('.png', '.webp', '.jpg'))]
@@ -171,7 +197,7 @@ if 'describer' in runs:
     if not texts: fails.append('describer: no description text')
 for n, min_h, min_frames in (('h3', 700, 300), ('seedvr2', 1000, 20)):
     c = summary.get(n)
-    vids = [f for f in (c or {}).get('files', []) if f.endswith('.mp4')]
+    vids = [f for f in (c['files'] if c else []) if f.endswith('.mp4')]
     if c and not vids:
         fails.append(f'{n}: no video output'); continue
     if vids:
@@ -188,13 +214,13 @@ if a and b:
         fails.append(f'sdxl-p2: second executor serves {b["gemm"]} / {b["attention"]}, first {a["gemm"]} / {a["attention"]}')
 
 # Against the last known-good numbers.
-base = json.load(open(BASE)) if os.path.exists(BASE) else {'sku': sku, 'cells': {}}
-known = json.load(open(KNOWN_BLOCKING)) if os.path.exists(KNOWN_BLOCKING) else []
-mid = lambda xs: sorted(xs)[len(xs) // 2]
-known_good = lambda name, c: [g for g in base['cells'].get(name, {}).get('good', []) if canonical(g['target']) == c['target']]
-slow = []
+base: Baseline = json.load(open(BASE)) if os.path.exists(BASE) else {'sku': sku, 'cells': {}}
+known: list[KnownBlocking] = json.load(open(KNOWN_BLOCKING)) if os.path.exists(KNOWN_BLOCKING) else []
+mid: Callable[[list[float]], float] = lambda xs: sorted(xs)[len(xs) // 2]
+known_good: Callable[[str, Cell], list[Good]] = lambda name, c: [g for g in base['cells'].get(name, {}).get('good', []) if canonical(g['target']) == c['target']]
+slow: list[str] = []
 for leg in HOST_LEGS:
-    pairs = []  # (this run's, the most its known-good took)
+    pairs: list[tuple[int, int]] = []  # (this run's, the most its known-good took)
     for name, c in summary.items():
         vals = [g['host'][leg] for g in known_good(name, c) if (g.get('host') or {}).get(leg, 0) >= HOST_FLOOR_MS]
         if vals and c['host'].get(leg, 0) >= HOST_FLOOR_MS:
@@ -229,20 +255,22 @@ for name, c in summary.items():
     if last.get('graphs') == 'native' and c['graphs'] == 'eager':
         fails.append(f'{name}: CUDA graphs native -> eager (its denoise ran no captured step)')
     for k, slack in SLACK.items():
-        vals = [g[k] for g in good if g.get(k) is not None]
+        vals = [cast(int, g[k]) for g in good if g.get(k) is not None]  # not None: filtered
         if c.get(k) is None:
             continue
         if not vals:
             notes.append(f'{name}: no known-good {k} for {c["target"]} on {sku}: this run starts it'); continue
         limit = max(vals) + max(slack * max(vals), max(vals) - min(vals), FLOOR.get(k, 0))
         unit, div = ('GiB', 1024) if k == 'vram_mb' else ('s', 1000)
-        line = (f'{name} {k.rsplit("_", 1)[0]}: {c[k] / div:.1f} {unit} vs known-good {min(vals) / div:.1f}-{max(vals) / div:.1f} {unit}'
+        # c[k] is not None: skipped above.
+        line = (f'{name} {k.rsplit("_", 1)[0]}: {cast(int, c[k]) / div:.1f} {unit} vs known-good {min(vals) / div:.1f}-{max(vals) / div:.1f} {unit}'
                 f' (limit {limit / div:.1f})')
-        (fails if c[k] > limit else notes).append(line + (' (slow host)' if slow and c[k] > limit and k != 'vram_mb' else ''))
+        (fails if cast(int, c[k]) > limit else notes).append(line + (' (slow host)' if slow and cast(int, c[k]) > limit and k != 'vram_mb' else ''))
 
-for k in (json.load(open(KNOWN_FAILING)) if os.path.exists(KNOWN_FAILING) else []):
-    if k['sku'] in (sku, '*'):
-        notes.append(f"known failing, not run: {k['cell']} ({k['issue']}: {k['what']})")
+failing: KnownFailing
+for failing in (json.load(open(KNOWN_FAILING)) if os.path.exists(KNOWN_FAILING) else []):
+    if failing['sku'] in (sku, '*'):
+        notes.append(f"known failing, not run: {failing['cell']} ({failing['issue']}: {failing['what']})")
 # The host: a slow driver makes every first pass slow and must read as the host, not the code (lead 10-23).
 for leg in ('cuda_init', 'measure_device'):
     vals = [l[leg] for l in host_legs.values() if leg in l]
@@ -260,27 +288,30 @@ for line in (l for l in open(LOG, errors='replace') if re.search(r'GPU \d+ (repo
     else:
         fails.append(f'gpu fault: {line.strip()[:200]}')
 END = os.path.join(out, 'machine-end.json')
+kernel: KernelProbe
 for kernel in (json.load(open(END)).get('status', {}).get('kernels', []) if os.path.getsize(END) else []) if os.path.exists(END) else []:
     if not kernel.get('ok'):
         fails.append(f"kernel probe crashed: {kernel.get('kernel')} sm{kernel.get('sm')} driver {kernel.get('driver')}: {kernel.get('detail', '')[:160]}")
-gate = {'out': out, 'sku': sku, 'summary': summary, 'runs': runs, 'baseline': base}
+gate: Gate = {'out': out, 'sku': sku, 'summary': summary, 'runs': runs, 'baseline': base}
 # CLI-behaviour checks a cells/*.sh recorded with gate.sh's `expect` (expect.tsv: check, PASS|FAIL, what happened).
 EXPECT = os.path.join(out, 'expect.tsv')
 for row in (l.rstrip('\n').split('\t') + [''] for l in open(EXPECT)) if os.path.exists(EXPECT) else []:
     (notes if row[1] == 'PASS' else fails).append(f'{row[0]}: {row[1]} {row[2]}'.rstrip())
 for check in CHECKS:
-    f, n = check(gate)
-    fails += f; notes += n
+    found, noted = check(gate)
+    fails += found; notes += noted
 for n in notes: print('note', n)
-for f in fails: print('FAIL', f)
+for line in fails: print('FAIL', line)
 print('SUITES', ','.join(SUITES) or 'none')
 print('VERDICT', 'FAIL' if fails else 'PASS', f'({len(cells)} cells)', '' if not fails or not accept else '(accepted by the lead)',
       f'(slow host: {" and ".join(slow)})' if slow and fails else '')
 if not fails or accept:
     label = open(os.path.join(out, 'label')).read().strip()
     for name, c in summary.items():
-        entry = {k: c[k] for k in ('run', 'target', 'gemm', 'attention', 'graphs', 'execution_ms', 'step1_ms', 'to_step1_ms', 'steady_ms', 'vram_mb', 'blocking', 'host')}
-        entry.update(label=label, at=time.strftime('%Y-%m-%dT%H:%MZ', time.gmtime()))
+        entry: Good = {'run': c['run'], 'target': c['target'], 'gemm': c['gemm'], 'attention': c['attention'], 'graphs': c['graphs'],
+                       'execution_ms': c['execution_ms'], 'step1_ms': c['step1_ms'], 'to_step1_ms': c['to_step1_ms'],
+                       'steady_ms': c['steady_ms'], 'vram_mb': c['vram_mb'], 'blocking': c['blocking'], 'host': c['host']}
+        entry.update({'label': label, 'at': time.strftime('%Y-%m-%dT%H:%MZ', time.gmtime())})
         base['cells'].setdefault(name, {'good': []})['good'].append(entry)
     json.dump(base, open(BASE, 'w'), indent=1)
     print('recorded', BASE)

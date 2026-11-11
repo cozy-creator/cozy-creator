@@ -6,11 +6,11 @@ import sys
 import time
 
 listen, host, port, control = int(sys.argv[1]), sys.argv[2], int(sys.argv[3]), sys.argv[4]
-writers = set()
+writers: set[asyncio.StreamWriter] = set()
 free_at = {True: 0.0, False: 0.0}
 
 
-def said():
+def said() -> tuple[str, int, bool]:
     try:
         words = open(control).read().split()
     except OSError:
@@ -18,7 +18,7 @@ def said():
     return (words[0] if words else "up"), (int(words[1]) if len(words) > 1 else 0), words[2:] == ["both"]
 
 
-async def carry(reader, writer, paced):
+async def carry(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, paced: bool) -> None:
     global free_at
     try:
         while data := await reader.read(1 << 16):
@@ -37,7 +37,7 @@ async def carry(reader, writer, paced):
         writer.close()
 
 
-async def serve(client_reader, client_writer):
+async def serve(client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter) -> None:
     try:
         machine_reader, machine_writer = await asyncio.open_connection(host, port)
     except OSError:
@@ -48,8 +48,8 @@ async def serve(client_reader, client_writer):
     writers.difference_update((client_writer, machine_writer))
 
 
-async def main():
-    server = None
+async def main() -> None:
+    server: asyncio.Server | None = None
     while True:
         state = said()[0]
         if state == "down" and server:

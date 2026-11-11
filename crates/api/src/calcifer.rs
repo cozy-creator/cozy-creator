@@ -20,6 +20,7 @@ use crate::ids::{Digest, RunId};
 
 pub mod hub;
 pub mod project;
+pub use crate::machine::{RemoveModel, RemovedModel};
 pub mod report;
 pub mod tool;
 
@@ -192,9 +193,6 @@ pub struct RunRequest {
     /// `KERNEL` or `[SLOT/]COMPONENT=KERNEL`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attention_kernel: Option<String>,
-    /// Compute it afresh: no machine memo answers or keeps it (dev-only `--no-memo`).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub no_memo: bool,
     /// Keep the function at this level instead of running it (`off` takes it out).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warm: Option<crate::machine::WarmLevel>,
@@ -974,9 +972,16 @@ pub enum StreamEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cursor: Option<ProjectEventCursor>,
     },
+    /// Public protection metadata reaches every tab, including tabs showing another project.
+    #[serde(rename = "project.vault")]
+    ProjectVault { id: String, state: String },
     /// The rows of a project's canvas that changed, at revision `seq`; none is a row gone.
     #[serde(rename = "canvas")]
     Canvas { id: String, seq: u64, cards: BTreeMap<String, Option<crate::calcifer::project::Card>> },
+    /// A project's render as it stands now, whole, when more than one job changed: it began or ended, said something, or a machine or
+    /// a shot joined it. `GET /v1/projects/{id}` has it as `board`; a client keeps the one with the highest `seq`.
+    #[serde(rename = "board.updated")]
+    BoardUpdated { project: String, board: Box<crate::calcifer::project::Board> },
     /// One job of a project's render as it stands now, whole; `GET /v1/projects/{id}` has them all under `board`.
     #[serde(rename = "job.updated")]
     JobUpdated { project: String, job: Box<crate::calcifer::project::Job>, seq: u64 },
@@ -1354,6 +1359,12 @@ pub struct Checkpoint {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub precision: String,
     pub manifest: String,
+    /// `model`, `lora`, or `unknown`; empty from older machines.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub role: String,
+    /// Whether every object in the header's closure is cached. None from older machines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub complete: Option<bool>,
 }
 
 /// `ssh` into a rental, as root, trusting its host key the first time, in a known-hosts file of that rental's own.
@@ -1423,6 +1434,12 @@ pub struct HeldModel {
     /// Its header's precision lane (`int8`, …).
     pub precision: String,
     pub checkpoint: String,
+    /// `model`, `lora`, or `unknown`; empty from older machines.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub role: String,
+    /// Whether every object in this checkpoint is cached. None from older machines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub complete: Option<bool>,
     pub bytes: u64,
     /// The repository's bytes other held models share.
     pub shared_bytes: u64,
@@ -1460,20 +1477,22 @@ impl Machine {
         let Some(status) = &self.status else { return held };
         (held.repositories, held.bytes, held.stored_bytes) = (status.models.len() as u64, status.models_bytes, status.disk_models_bytes);
         for model in &status.models {
-            let row = |release: &str, lane: &str, precision: &str, checkpoint: &str| HeldModel {
+            let row = |release: &str, lane: &str, precision: &str, checkpoint: &str, role: &str, complete| HeldModel {
                 machine: self.name.clone(),
                 model: model.repository.clone(),
                 release: release.into(),
                 lane: lane.into(),
                 precision: precision.into(),
                 checkpoint: checkpoint.into(),
+                role: role.into(),
+                complete,
                 bytes: model.total_bytes,
                 shared_bytes: model.total_bytes.saturating_sub(model.unique_bytes),
             };
             if model.checkpoints.is_empty() {
-                held.models.push(row("", "", "", ""));
+                held.models.push(row("", "", "", "", "unknown", None));
             }
-            held.models.extend(model.checkpoints.iter().map(|c| row(&c.release, &c.lane, &c.precision, &c.manifest)));
+            held.models.extend(model.checkpoints.iter().map(|c| row(&c.release, &c.lane, &c.precision, &c.manifest, &c.role, c.complete)));
         }
         held
     }
@@ -1715,10 +1734,6 @@ pub enum NewMachine {
         gpus: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         disk_gb: Option<u32>,
-        /// A Hub admin's worker image, `sha256:<hex>`, in place of the machine kind's current
-        /// one; the Hub refuses anyone else.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        image: Option<String>,
         /// The one provider to buy from (`runpod`, `vast`): dev-only `--provider`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider: Option<String>,

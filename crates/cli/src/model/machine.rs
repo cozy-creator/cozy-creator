@@ -52,12 +52,45 @@ fn made(ctx: &Context, run: &Run) {
 
 pub(crate) async fn download(ctx: &Context, args: Download) -> Result<ExitCode, Error> {
     let on = args.placement.on()?;
-    let mut ask = ModelDownload { model: args.model.clone(), name: None, alias: args.alias, lane: args.lane, source_format: args.format };
+    let ask = ModelDownload { model: args.model.clone(), name: None, alias: args.alias, lane: args.lane, source_format: args.format };
+    download_to(ctx, ask, on).await
+}
+
+pub(super) async fn download_to(ctx: &Context, mut ask: ModelDownload, on: Option<api::calcifer::On>) -> Result<ExitCode, Error> {
     crate::send::held(ctx, &mut ask.model, &mut ask.name, false).await?;
     let run = crate::run::job(ctx, job::MODEL_DOWNLOAD, &ask, on, None).await?;
     let run = crate::run::follow(ctx, run).await?;
     made(ctx, &run);
     Ok(crate::run::exit_code(&run))
+}
+
+pub(super) async fn remove(ctx: &Context, model: &str) -> Result<ExitCode, Error> {
+    let removed = remove_local(ctx, model).await?;
+    print_removed(ctx, &removed);
+    Ok(ExitCode::SUCCESS)
+}
+
+pub(super) async fn remove_local(ctx: &Context, model: &str) -> Result<api::calcifer::RemovedModel, Error> {
+    let repo = api::model_ref::Repo::parse(model)?;
+    let key = crate::run::mint_key();
+    let removed: api::calcifer::RemovedModel = ctx.calcifer().await?.post(
+        "/v1/machines/local/models/remove", &api::calcifer::RemoveModel { model: repo.to_string() }, Some(&key),
+    ).await?;
+    Ok(removed)
+}
+
+fn print_removed(ctx: &Context, removed: &api::calcifer::RemovedModel) {
+    let model = &removed.model;
+    if ctx.json {
+        output::json(&removed);
+    } else if removed.removed {
+        anstream::println!("Removed local copy of {}. Cache bytes removed: {}.", model, output::bytes(removed.cache_bytes_removed));
+        if removed.retained_bytes > 0 {
+            anstream::println!("{} retained because the data is in use or shared.", output::bytes(removed.retained_bytes));
+        }
+    } else {
+        anstream::println!("No local copy of {model} was found.");
+    }
 }
 
 pub(crate) async fn upload(ctx: &Context, args: Upload) -> Result<ExitCode, Error> {
@@ -131,15 +164,20 @@ fn recorded(ctx: &Context, made: &RecordedCommit) {
 }
 
 /// The models machines hold: `on` one, read from it now (`GET /v1/machines/{name}/models`), else every machine as Calcifer last saw it.
-pub(crate) async fn list(ctx: &Context, on: Option<String>, words: &[String]) -> Result<ExitCode, Error> {
+pub(crate) async fn list(ctx: &Context, on: Option<String>, words: &[String], role: &str, limit: u32, offset: u32) -> Result<ExitCode, Error> {
     let calcifer = ctx.calcifer().await?;
     let machines: Vec<MachineModels> = match &on {
         Some(on) => vec![calcifer.get(&format!("{}/models", crate::machine::route(&on.to_ascii_lowercase())?)).await?],
         None => calcifer.machines().await?.machines.iter().map(|machine| machine.models()).collect(),
     };
-    let rows = machines.iter().flat_map(|machine| &machine.models).filter(|row| output::names(&row.model, words));
+    let matching: Vec<_> = machines.iter().flat_map(|machine| &machine.models).filter(|row| output::names(&row.model, words)).collect();
+    let unclassified: Vec<_> = matching.iter().copied().filter(|row| !matches!(row.role.as_str(), "model" | "lora")).collect();
+    let classified: Vec<_> = matching.into_iter().filter(|row| row.role == role).collect();
+    let total = classified.len();
+    let rows: Vec<_> = classified.into_iter().skip(offset as usize).take(output::at_most("--limit", limit, 100) as usize).collect();
+    let older = total.saturating_sub(offset as usize).saturating_sub(rows.len());
     if ctx.json {
-        output::json(&serde_json::json!({ "models": rows.collect::<Vec<_>>() }));
+        output::json(&serde_json::json!({ "models": rows, "total": total, "older": older, "unclassified": unclassified }));
         return Ok(ExitCode::SUCCESS);
     }
     let mut table = Table::new(ctx, ["machine", "model", "release", "lane", "size", "shared"]);
@@ -151,6 +189,7 @@ pub(crate) async fn list(ctx: &Context, on: Option<String>, words: &[String]) ->
         let (size, shared) = (output::bytes(row.bytes), output::bytes(row.shared_bytes));
         table = table.row([row.machine.as_str(), &row.model, &row.release, &lane, &size, &shared]);
     }
+    if !unclassified.is_empty() { table = table.note(format!("{} local entries could not be classified; --json includes their records", unclassified.len())); }
     // A store's total counts shared content once.
     for machine in machines.iter().filter(|machine| !machine.silent) {
         // What its store holds besides them, once it is a hundredth of the store or more.

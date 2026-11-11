@@ -11,16 +11,18 @@ pages while a ballast keeps the DiT paging within and between calls (`exercise`)
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from functools import partial
 from itertools import pairwise
-from typing import Any
+from typing import Literal, cast
 
 import msgspec
 import torch
 from cozy_runtime import rng
 from cozy_runtime.accel import lora
 from cozy_runtime.author import App, Config, Context, Loader, Model, Telemetry, uses_components
-from diffusers import QwenImageTransformer2DModel
+from diffusers.configuration_utils import ConfigMixin
+from diffusers.models.transformers.transformer_qwenimage import QwenImageTransformer2DModel
 from torch import nn
 
 app = App()
@@ -48,26 +50,42 @@ LORA_COMPONENT = "model"
 _DTYPES = {"f32": torch.float32, "bf16": torch.bfloat16, "f16": torch.float16, "i64": torch.int64}
 
 
-def _armed(dit: nn.Module, path: str) -> nn.Module | None:
-    arming = dit._ci_arming
-    return None if arming is None else arming.get_submodule(path)
+def _arm(dit: nn.Module, overlay: object) -> None:
+    """Arms `dit` with `overlay` (the LoRA's root module), or disarms it (None)."""
+    dit._ci_arming = overlay  # type: ignore[assignment]  # torch types Module.__setattr__'s value Tensor | Module; it keeps None too
+
+
+def _armed(dit: nn.Module, path: str) -> Factors | None:
+    arming = dit._ci_arming  # torch types Module.__getattr__ Tensor | Module: here it is `_arm`'s module or None
+    # LoRAGraph puts a Factors at every site.
+    return cast(Factors, arming.get_submodule(path)) if isinstance(arming, nn.Module) else None
+
+
+def _construct[M: ConfigMixin](cls: type[M], config: dict[str, object]) -> M:
+    """`cls.from_config(config)`, typed: it returns a tuple only with `return_unused_kwargs=True`."""
+    return cast(M, cls.from_config(config))
+
+
+def _bf16[M: nn.Module](module: M) -> M:
+    """`module.to(dtype=torch.bfloat16)`, typed: Diffusers' `to` is functools.wraps'd, which mypy reads untyped."""
+    return module.to(dtype=torch.bfloat16)
 
 
 class DiTGraph:
     """The DiT in bf16 with a permanent `lora.Hook` per site, armed per forward by its pre-hook."""
 
     def __init__(self, config: Config) -> None:
-        dit = QwenImageTransformer2DModel.from_config(config.section("transformer").mapping())
-        dit = dit.to(dtype=torch.bfloat16)
-        dit._ci_arming = None
+        dit = _construct(QwenImageTransformer2DModel, config.section("transformer").mapping())
+        dit = _bf16(dit)
+        _arm(dit, None)
 
-        def arm(_: nn.Module, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
-            options = dict(kwargs.get("attention_kwargs") or {})
-            dit._ci_arming = options.pop(OVERLAY, None)
+        def arm(_: nn.Module, args: tuple[object, ...], kwargs: dict[str, object]) -> tuple[tuple[object, ...], dict[str, object]]:
+            options = dict(cast(dict[str, object] | None, kwargs.get("attention_kwargs")) or {})  # diffusers' attention options
+            _arm(dit, options.pop(OVERLAY, None))
             return args, {**kwargs, "attention_kwargs": options}
 
         def disarm(*_: object) -> None:
-            dit._ci_arming = None
+            _arm(dit, None)
 
         dit.register_forward_pre_hook(arm, with_kwargs=True)
         dit.register_forward_hook(disarm, always_call=True)
@@ -76,11 +94,13 @@ class DiTGraph:
                 path = f"transformer_blocks.{index}.{site}"
                 hook = lora.Hook(partial(_armed, dit, path))
                 dit.get_submodule(path).register_forward_hook(hook)
-        self.components: dict[str, nn.Module] = {"transformer": dit}
+        self.components: dict[str, QwenImageTransformer2DModel] = {"transformer": dit}
 
 
 class Factors(nn.Module):
     """One linear's kohya factors (`lora_A`/`lora_B`) and alpha, as Qwen-Image's package reads."""
+
+    alpha: torch.Tensor
 
     def __init__(self, inputs: int, outputs: int, weights: torch.dtype, alpha: torch.dtype) -> None:
         super().__init__()
@@ -145,7 +165,7 @@ class QwenDiT(Model[DiTGraph]):
         self.graph = loader.construct(DiTGraph)
 
     @uses_components("transformer")
-    def denoise(self, inputs: Inputs, overlay: nn.Module | None, after: Any) -> torch.Tensor:
+    def denoise(self, inputs: Inputs, overlay: nn.Module | None, after: Callable[[int], None]) -> torch.Tensor:
         """`inputs.steps` Euler steps from seeded noise and seeded text rows, each DiT forward
         armed with `overlay` (or a base forward); `after(step)` runs after each forward."""
         dit = self.graph.components["transformer"]
@@ -178,7 +198,7 @@ class Lightning(Model[LoRAGraph]):
         self.graph = loader.construct(LoRAGraph)
 
     @uses_components(LORA_COMPONENT)
-    def denoise(self, base: QwenDiT, inputs: Inputs, after: Any) -> torch.Tensor:
+    def denoise(self, base: QwenDiT, inputs: Inputs, after: Callable[[int], None]) -> torch.Tensor:
         """`base.denoise` with this LoRA handed to each of its forwards, as H3's `_sample` hands
         its overlay through `attention_kwargs` while its own scope holds the factors."""
         return base.denoise(inputs, self.graph.components[LORA_COMPONENT], after)
@@ -216,7 +236,8 @@ def gpu(
     result = exercise(payload, model, turbo_lora, ctx, tel)
     tel.log("lora overlay refill result", result=json.dumps(result, sort_keys=True))
     if not result["passed"]:
-        keys = ("failures", "lora_effect", "bake_error", "runtime", "runtime_commit")
+        keys: tuple[Literal["failures", "lora_effect", "bake_error", "runtime", "runtime_commit"], ...] = (
+            "failures", "lora_effect", "bake_error", "runtime", "runtime_commit")
         brief = {k: result[k] for k in keys}
         raise RuntimeError(f"LoRA overlay refill failed: {json.dumps(brief, sort_keys=True)}")
     return Report(True, json.dumps(result, sort_keys=True))

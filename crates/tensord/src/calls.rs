@@ -302,7 +302,7 @@ impl Calls {
             if news {
                 let warning = format!("a memoized function's result isn't kept for later calls: {why}");
                 if let Err(error) = service.engine.append_warning(&parent.id, &warning) {
-                    tracing::warn!("run {}: {warning} ({error})", parent.id);
+                    crate::private_io::warning(&service.engine, &parent.id, format_args!("{warning} ({error})"));
                 }
             }
         }
@@ -407,7 +407,9 @@ impl Calls {
                         .spool
                         .join("child-results")
                         .join(call_index.to_string());
-                    let (text, rows, held) = receive(&service.engine.root, result, &parent.spool, &directory)
+                    let root = service.engine.custody_root(&record.id)
+                        .map_err(|e| ("child_result_unavailable", e.to_string()))?;
+                    let (text, rows, held) = receive(&root, result, &parent.spool, &directory)
                         .map_err(|e| ("child_result_unavailable", e.to_string()))?;
                     let settled = (text, rows);
                     // Each file is the signer's object too: a later child may be handed it.
@@ -499,7 +501,9 @@ impl Calls {
             // to build the construction. This answer does not promise completed loading.
             // A hint: its failure fails nothing, and the Runtime ignores this code.
             Some(Request::ModelPrefetch(prefetch)) => self.model_prefetch(parent, frame.seq, prefetch).map_err(|(code, why)| {
-                tracing::warn!("run {}: a model prefetch was not taken ({code}): {why}", parent.id);
+                if let Some(service) = self.service.upgrade() {
+                    crate::private_io::warning(&service.engine, &parent.id, format_args!("model prefetch was not taken ({code}): {why}"));
+                }
                 ("model_prefetch_unsupported", why)
             }),
             Some(Request::GpuRelease(_)) => {
@@ -547,18 +551,20 @@ impl Calls {
 fn cancel(engine: &Engine, child: &Execution) {
     let actor = child.submission.as_ref().map(|s| s.actor.as_str()).unwrap_or_default();
     if let Err(error) = engine.cancel(&child.id, actor) {
-        tracing::warn!("child run {} of {} remains: {error}", child.id, child.invocation.parent);
+        crate::private_io::warning(engine, &child.id, format_args!("child of {} remains: {error}", child.invocation.parent));
     }
 }
 
 /// What an attempt's progress frames told so far: its completed units, its stage's last step
 /// and the times of its last few after the first (which carries the stage's setup), and once it
-/// runs, when it started and its whole time here (None: no estimate) and the overall share shown.
+/// runs, when it started and its whole time here (None: no estimate), the stage it is in and when
+/// that began, and the overall share shown.
 #[derive(Default)]
 pub(crate) struct Seen {
     pub completed: u64,
     steps: (String, u64, Vec<f64>),
     timed: Option<Option<(u64, f64)>>,
+    stage: (String, u64),
     overall: f64,
 }
 
@@ -567,19 +573,33 @@ const OVERALL_UNDER: f64 = 0.99;
 
 impl Seen {
     /// Run `id`'s overall share (Paul 11-09, 2a): its time running over its whole time here
-    /// (`estimate::whole_ms`, worked out once), never falling; None without an estimate.
-    fn overall(&mut self, engine: &Engine, id: &str) -> Option<f64> {
+    /// (`estimate::whole_ms`, worked out once), never falling; None without an estimate. A run
+    /// slower than its history (a longer input the estimate can't see) is timed by its own pace
+    /// instead, once its stage says how far it is: the time to that stage's start plus the stage's
+    /// time so far over its share done.
+    fn overall(&mut self, engine: &Engine, id: &str, frame: &Frame) -> Option<f64> {
         if self.timed.is_none() {
             let record = engine.get(id).ok().filter(|record| record.started_at_ms > 0)?;
-            // A retried attempt goes on from the share its run showed.
+            // A retried attempt goes on from the share its run watched.
             let shown = record.progress.as_deref().and_then(|p| serde_json::from_str::<Value>(p).ok());
             self.overall = shown.and_then(|p| p["overall_fraction"].as_f64()).unwrap_or(0.0);
             let whole = crate::estimate::whole_ms(engine, &record).ok().flatten().filter(|ms| *ms > 0.0);
             self.timed = Some(whole.map(|whole| (record.started_at_ms, whole)));
         }
         let (started, whole) = self.timed.flatten()?;
-        let ran = (crate::machine::lifecycle::now_ms() as u64).saturating_sub(started) as f64;
-        self.overall = self.overall.max((ran / whole).min(OVERALL_UNDER));
+        let now = (crate::machine::lifecycle::now_ms() as u64).max(started);
+        if self.stage.0 != frame.stage {
+            self.stage = (frame.stage.clone(), now);
+        }
+        let done = match (frame.position, frame.total) {
+            (Some(position), Some(total)) if total > 0 => Some(position as f64 / total as f64),
+            _ => frame.stage_fraction,
+        };
+        let paced = done
+            .filter(|done| *done > 0.0)
+            .map(|done| (self.stage.1 - started) as f64 + (now - self.stage.1) as f64 / done.min(1.0));
+        let whole = paced.map_or(whole, |paced| whole.max(paced));
+        self.overall = self.overall.max(((now - started) as f64 / whole).min(OVERALL_UNDER));
         Some(self.overall)
     }
 }
@@ -625,7 +645,7 @@ pub(crate) fn observe(engine: &Engine, id: &str, seen: &mut Seen, frame: &Frame,
             payload[name] = value;
         }
     }
-    if let Some(overall) = seen.overall(engine, id) {
+    if let Some(overall) = seen.overall(engine, id, frame) {
         payload["overall_fraction"] = overall.into();
     }
     let call = frame.call_request.as_deref().filter(|call| !call.is_empty());
@@ -987,7 +1007,7 @@ fn nudge(calls: Weak<Calls>, engine: Arc<Engine>) {
 }
 
 /// Journals a settled child as a `call` event on its parent: the callee, the author's label,
-/// how it ended and when, and what its executor measured (`run show` lists each call). True
+/// how it ended and when, and what its executor measured (`run watch` lists each call). True
 /// once it is in the parent's log, or the parent has ended and takes no more.
 fn record_call(
     engine: &Engine,
@@ -1002,7 +1022,7 @@ fn record_call(
         _ => match Failure::decode(record.failure.as_deref().unwrap_or_default()) {
             Ok(failure) => ("failed", failure.code, failure.message),
             Err(error) => {
-                tracing::warn!("run {}: invalid child failure record: {error}", parent.id);
+                crate::private_io::warning(engine, &parent.id, format_args!("invalid child failure record: {error}"));
                 return false;
             }
         },
@@ -1025,7 +1045,7 @@ fn record_call(
     match engine.append_call(&parent.id, &record.id, &crate::boundary_json::exact(&body)) {
         Ok(_) => true,
         Err(error) => {
-            tracing::warn!("run {}: call {index}: {error}", parent.id);
+            crate::private_io::warning(engine, &parent.id, format_args!("call {index}: {error}"));
             false
         }
     }

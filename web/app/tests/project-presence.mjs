@@ -74,7 +74,7 @@ const requestWaiters = new Set()
 const owned = []
 let delayedShow = null
 let delayedSnapshot = null
-let delayCreation = null
+let delayedWhole = null
 let legacy = false
 let failShow = null
 let connection = new AbortController()
@@ -109,12 +109,10 @@ async function api(route, init = {}) {
   assert.ok(response.ok, JSON.stringify(body))
   return body
 }
-async function made(name, settle = true) {
-  const after = events.length
+async function made(name) {
   const project = await api("/v1/projects", { method: "POST", body: JSON.stringify({ name }) })
   assert.ok(path.resolve(project.path).startsWith(path.resolve(process.env.COZY_PRESENCE_ROOT) + path.sep))
   owned.push(project.id)
-  if (settle) await waitEvent((event) => event.type === "project.changed" && event.id === project.id, after)
   return project
 }
 function observeHealth(stream, state) {
@@ -213,9 +211,9 @@ const transport = {
                 buffered = buffered.slice(end + 2)
                 const data = frame.split("\n").find((line) => line.startsWith("data: "))?.slice(6)
                 const event = data ? JSON.parse(data) : null
-                if (delayCreation && event?.type === "project.changed" && event.rev === "1.none") {
-                  const held = delayCreation
-                  delayCreation = null
+                if (delayedWhole && event?.type === "project.changed" && event.id === delayedWhole.id && !event.assets) {
+                  const held = delayedWhole
+                  delayedWhole = null
                   held.entered.done(event)
                   await held.release.promise
                 }
@@ -473,13 +471,17 @@ try {
     process.exit(0)
   }
 
-  // Delay a real emitted creation frame across its full snapshot, keeping YAML invalidation.
+  // Delay a real whole-project frame across its full snapshot, keeping YAML invalidation.
   const entered = deferred(), release = deferred()
-  delayCreation = { entered, release }
-  const late = await made("late-creation", false)
+  const late = await made("late-creation")
+  owner.show(late.id)
+  await query(client, owner, late.id)
+  delayedWhole = { id: late.id, entered, release }
+  await writeYaml(late.id, 257, "before")
   const creation = await entered.promise
   const queries = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } })
-  const bridge = new Bridge(queries, client)
+  const vaultChanges = []
+  const bridge = new Bridge(queries, client, (id, state) => vaultChanges.push({ id, state }))
   let unsubscribe = owner.subscribe(bridge.handle)
   const reads = readsOf(bridge)
   const options = projectQuery(client, owner, late.id)
@@ -502,7 +504,7 @@ try {
   const firstSnapshot = queries.getQueryData(key)
   assert.equal(firstSnapshot.covered.generation, creation.cursor.generation)
   assert.ok(firstSnapshot.covered.sequence >= creation.cursor.sequence)
-  console.log(JSON.stringify({ delayed_native_creation_event: creation, snapshot_covered: firstSnapshot.covered, redundant_project_gets: 0, yaml_invalidation_preserved: true }))
+  console.log(JSON.stringify({ delayed_native_whole_event: creation, snapshot_covered: firstSnapshot.covered, redundant_project_gets: 0, yaml_invalidation_preserved: true }))
   // A real other writer still refreshes the asset instead of being suppressed as an own echo.
   unsubscribe()
   const eventFrom = events.length
@@ -589,6 +591,8 @@ try {
   const oldAck = acknowledgements.findLast((ack) => ack.project === late.id && ack.tab === owner.tab)
   assert.ok(oldAck)
   const reconnected = holdShow(late.id)
+  const recheckFrom = vaultChanges.length
+  const reconnectRead = reads.mark()
   connection.abort()
   connection = new AbortController()
   await reconnected.entered.promise
@@ -597,10 +601,18 @@ try {
   reconnected.release.done()
   await waitRequest(() => getRequests.slice(requested).includes(`/v1/projects/${late.id}`))
   assert.equal(owner.health.get().state, "live")
+  assert.ok(vaultChanges.slice(recheckFrom).some(({ id, state }) => id === "" && state === "recheck"), "new hello did not request vault recheck")
+  console.log(JSON.stringify({ reconnect_teardown_boundary: { bridge_reads_started: reads.mark() - reconnectRead, fetching_queries: queries.isFetching(), project_fetch_status: queries.getQueryState(key)?.fetchStatus } }))
+  // The last-Reader assertion assumes no accepted read still owns Project.
+  // Starting the refresh is not its completion; do not cancel it at teardown.
+  await reads.done(reconnectRead)
+  await Promise.all(queries.getQueryCache().getAll().flatMap((query) => query.promise ? [query.promise] : []))
+  assert.equal(queries.isFetching(), 0, "project refreshes are still active before hide")
+  console.log(JSON.stringify({ reconnect_reads_completed_before_hide: true, fetching_queries: queries.isFetching() }))
   stop(); yStop(); unsubscribe(); queries.clear()
   await clear(owner, follower)
   for (const id of owned) assert.equal(await open(id), false, `Reader retained after hide: ${id}`)
-  console.log(JSON.stringify({ genuine_external_refresh_and_new_hello_preserved: true, stale_stream_ack_rejected: true, readers_released: owned, source_hashes: sourceHashes }))
+  console.log(JSON.stringify({ genuine_external_refresh_and_new_hello_preserved: true, reconnect_recheck_callback: true, stale_stream_ack_rejected: true, readers_released: owned, source_hashes: sourceHashes }))
   clearTimeout(safety)
   fs.rmSync(temporary, { recursive: true, force: true })
   console.log(JSON.stringify({ compiled_modules_removed: !fs.existsSync(temporary), no_user_profile_or_service: true }))

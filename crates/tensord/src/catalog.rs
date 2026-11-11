@@ -180,7 +180,7 @@ impl Catalog {
                 "generation must name a published 32-hex installation",
             ));
         }
-        Ok(self.root.join(identity))
+        Ok(crate::private_io::generation_path(identity)?.unwrap_or_else(|| self.root.join(identity)))
     }
     fn read(&self, directory: &Path, identity: &str) -> io::Result<Generation> {
         let manifest = platform::durable::open_nofollow(&directory.join("generation.json"), OpenOptions::new().read(true))?;

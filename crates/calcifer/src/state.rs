@@ -31,6 +31,10 @@ pub(crate) const TABLES: &str = "
         media_sha256 TEXT NOT NULL UNIQUE,
         used_at_ms INTEGER NOT NULL
     ) STRICT;
+    CREATE TABLE IF NOT EXISTS session_codes (
+        code_sha256 TEXT PRIMARY KEY,
+        expires_ms INTEGER NOT NULL
+    ) STRICT;
     CREATE TABLE IF NOT EXISTS tool_list (
         ord INTEGER PRIMARY KEY,
         package TEXT NOT NULL UNIQUE
@@ -248,15 +252,28 @@ impl Store {
         })
     }
 
-    /// A new session; those unused since `since_ms` end with it.
-    pub(crate) fn session_started(&self, session: &SessionRow, since_ms: i64) -> Result<()> {
+    /// Keep only the digest of an unredeemed browser sign-in code.
+    pub(crate) fn session_code(&self, code: &str, now: i64, expires_ms: i64) -> Result<()> {
         self.write(|tx| {
+            tx.execute("DELETE FROM session_codes WHERE expires_ms <= ?1", [now])?;
+            tx.execute("INSERT INTO session_codes (code_sha256, expires_ms) VALUES (?1, ?2)", params![code, expires_ms])?;
+            Ok(())
+        })
+    }
+
+    /// Redeem a valid code and save its session in the same transaction.
+    pub(crate) fn session_started(&self, code: &str, session: &SessionRow, now: i64, since_ms: i64) -> Result<bool> {
+        self.write(|tx| {
+            tx.execute("DELETE FROM session_codes WHERE expires_ms <= ?1", [now])?;
+            if tx.execute("DELETE FROM session_codes WHERE code_sha256 = ?1", [code])? == 0 {
+                return Ok(false);
+            }
             tx.execute("DELETE FROM sessions WHERE used_at_ms <= ?1", [since_ms])?;
             tx.execute(
                 "INSERT INTO sessions (token_sha256, media_sha256, used_at_ms) VALUES (?1, ?2, ?3)",
                 params![session.token, session.media, session.used_at_ms],
             )?;
-            Ok(())
+            Ok(true)
         })
     }
 

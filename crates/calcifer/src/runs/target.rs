@@ -62,10 +62,11 @@ fn local(api: &Api, text: &str, code: Option<&LocalCode>, cwd: Option<&Path>) ->
     }
 }
 
-/// A client's local code named by its path, which Calcifer can't read.
+/// A client's local code named by its path, which Calcifer can't read. API clients upload
+/// the tree's files with `PUT /v1/files` and send its `code` reference (see `api::code`).
 pub(crate) fn by_path(text: &str) -> Error {
-    Error::new(Kind::Usage, "target_by_path", format!("{} is a path, and Calcifer reads no client's folder", text.trim()))
-        .remedy("send local code by content: its tree's files by PUT /v1/files, and `code` naming the tree (cozy does)")
+    Error::new(Kind::Usage, "target_by_path", format!("Local code was not uploaded: {}", text.trim()))
+        .remedy("Run local code with cozy run ./path, which uploads it automatically.")
 }
 
 /// `text` resolved for a run `on` its machine: local code made ready there (or its install sent
@@ -103,6 +104,11 @@ pub(crate) async fn resolve(
 /// checked as a run checks it; local code (a client's `code`, or a project's from its folder `cwd`) as its machine read it, else
 /// from its source, installing and starting nothing.
 pub(crate) async fn describe(api: &Arc<Api>, hub: &str, text: &str, code: Option<&LocalCode>, cwd: Option<&Path>, on: &On) -> Result<Target, Error> {
+    let scope = match cwd { Some(path) => crate::private_io::of_path(path)?, None => crate::private_io::current() };
+    crate::private_io::context(scope, describe_scoped(api, hub, text, code, cwd, on)).await
+}
+
+async fn describe_scoped(api: &Arc<Api>, hub: &str, text: &str, code: Option<&LocalCode>, cwd: Option<&Path>, on: &On) -> Result<Target, Error> {
     if let Some(found) = local(api, text, code, cwd) {
         let (code, function) = found?;
         let (package, document) = crate::local_code::describe(api, &code, on, hub).await?;

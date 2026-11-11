@@ -10,14 +10,244 @@ import json
 import statistics
 import subprocess
 import time
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Literal, NotRequired, Required, TypeAlias, TypedDict, cast
+
+JSON: TypeAlias = str | int | float | bool | None | list['JSON'] | dict[str, 'JSON']
+Scalar: TypeAlias = str | int | float | bool | None
 
 
-def write(path, value):
+# The run record's fields read here (`cozy --json run show <id> --once`).
+class Output(TypedDict, total=False):
+    media_type: str
+    path: Required[str]
+    sha256: Required[str]
+
+
+class Result(TypedDict):
+    seed: int
+    width: int
+    height: int
+
+
+class GpuInterval(TypedDict):
+    pid: int
+    start_us: int
+    end_us: int
+
+
+class Execution(TypedDict, total=False):
+    gpus: Required[list[GpuInterval]]
+    executor: JSON
+    construction: JSON
+    plan_reports: JSON
+
+
+class Device(TypedDict, total=False):
+    series: list[float]
+
+
+class Steps(TypedDict, total=False):
+    count: Required[int]
+    started_unix_ms: Required[int]
+    ended_unix_ms: Required[int]
+    device: Device | None
+
+
+class Attribution(TypedDict, total=False):
+    steps: Required[dict[str, Steps]]
+    stages: JSON
+
+
+class Observation(TypedDict, total=False):
+    name: str
+    kind: str
+    value: Scalar
+    at_unix_ms: int
+
+
+class Residency(TypedDict, total=False):
+    graphs: JSON
+
+
+class Model(TypedDict, total=False):
+    lane: str
+
+
+class Measurements(TypedDict, total=False):
+    execution: Required[Execution]
+    attribution: Required[Attribution]
+    observations: list[Observation]
+    memory: Required[dict[str, JSON]]
+    residency: Required[Residency]
+    models: Required[list[Model]]
+    software: Required[dict[str, str]]
+
+
+class RunRecord(TypedDict, total=False):
+    id: Required[str]
+    number: Required[int]
+    status: Required[str]
+    reason: JSON
+    result: Required[Result]
+    measurements: Required[Measurements]
+    created_at_ms: Required[int]
+    accepted_at_ms: Required[int]
+    started_at_ms: Required[int]
+    settled_at_ms: Required[int]
+    execution_ms: int
+    output: Required[list[Output]]
+
+
+class RunRef(TypedDict):
+    id: str
+
+
+class Event(TypedDict, total=False):
+    """A line of a call's ndjson stream."""
+    type: str
+    level: str
+    run: RunRef
+
+
+class MachineStatus(TypedDict, total=False):
+    runs: JSON
+
+
+class Machine(TypedDict):
+    """`machine show`, the fields read here."""
+    state: str
+    status: MachineStatus
+
+
+class Queued(TypedDict):
+    """`run list`, the field read here."""
+    runs: list[JSON]
+
+
+class Request(TypedDict, total=False):
+    """The input template, with this call's steps and seed."""
+    steps: Required[int]
+    seed: Required[int]
+
+
+class ImageEvidence(TypedDict):
+    path: str
+    bytes: int
+    sha256: str
+    format: str | None
+    size: list[int]
+    rgb_sha256: str
+    rgb_extrema: tuple[float, float] | tuple[tuple[float, float], ...]
+
+
+class Steady(TypedDict):
+    count: int
+    mean: float
+    median: float
+    min: float
+    max: float
+
+
+class Summary(TypedDict):
+    """One completed call in the report."""
+    run_id: str
+    run_number: int
+    seed: JSON
+    cli_wall_ms: float | None
+    request_created_to_settled_ms: int
+    execution_ms_as_reported: int | None
+    accepted_to_started_ms: int
+    steps: int
+    observed_step_count: int
+    native_completed_steps: int
+    native_step_observations: list[Observation]
+    step_timing_scope: str
+    step_stage: str
+    device_steps_as_reported: Device | None
+    device_first_step_ms: float | None
+    device_steady_step_ms: Steady | None
+    host_steps_as_reported: Steps
+    stages_as_reported: JSON
+    executor_initialization_as_reported: JSON
+    construction_as_reported: JSON
+    download_ms: None
+    download_timing_note: str
+    stage_events: list[Event]
+    executor_pids: list[int]
+    gpu_intervals_as_reported: list[GpuInterval]
+    current_request_timing_verified: bool
+    models: list[Model]
+    software: dict[str, str]
+    routes: list[Observation]
+    plan_reports: JSON
+    graphs_as_reported: JSON
+    tracked_peak_allocated_bytes: JSON
+    tracked_peak_reserved_bytes: JSON
+    memory_as_reported: dict[str, JSON]
+    memory_scope_note: str
+    images: list[ImageEvidence]
+    metric_gaps: list[str]
+    required_metric_gaps: list[str]
+    device_step_timing_complete: bool
+    unmeasured: list[str]
+    label: NotRequired[str]
+    cli_wall_note: NotRequired[str]
+    executor_reused: NotRequired[bool]
+
+
+class Failed(TypedDict):
+    """A call that did not complete: the report's last row before the controller raises."""
+    label: str
+    cli_wall_ms: float | None
+    run: RunRecord
+
+
+class Source(TypedDict, total=False):
+    target: Required[str]
+    kind: Required[str]
+    commit: str
+    package_tree: str
+
+
+class Report(TypedDict, total=False):
+    target: str
+    source: Source
+    lane: str
+    machine: str
+    runs: list[Summary | Failed]
+    controller_sha256: str
+    controller_commit: str
+    resumed_from: str
+    machine_before: Machine
+    cold_definition: str
+    metric_gaps: dict[str, list[str]]
+    required_metric_gaps: dict[str, list[str]]
+    measurements_complete: bool
+    passed: bool
+    machine_after: Machine
+    error: str
+
+
+class Args(argparse.Namespace):
+    target: str
+    input: Path
+    machine: str
+    lane: str
+    seeds: list[int]
+    steps: int
+    step_stage: str
+    expect_size: str
+    output: Path
+    resume: bool
+
+
+def write(path: Path, value: Mapping[str, object]) -> None:
     path.write_text(json.dumps(value, indent=2) + "\n")
 
 
-def command(cozy, directory, name, arguments):
+def command(cozy: str, directory: Path, name: str, arguments: list[str]) -> tuple[int, float]:
     with (
         (directory / f"{name}.ndjson").open("w") as out,
         (directory / f"{name}.stderr").open("w") as err,
@@ -30,19 +260,19 @@ def command(cozy, directory, name, arguments):
     return result.returncode, elapsed_ms
 
 
-def read_snapshot(cozy, directory, name, arguments):
+def read_snapshot(cozy: str, directory: Path, name: str, arguments: list[str]) -> dict[str, JSON]:
     status, _ = command(cozy, directory, name, arguments)
-    document = json.loads((directory / f"{name}.ndjson").read_text())
+    document: dict[str, JSON] = json.loads((directory / f"{name}.ndjson").read_text())
     if status and document.get("status") not in ("failed", "canceled"):
         raise RuntimeError(f"{name} failed; see its saved CLI output")
     return document
 
 
-def run_events(path):
-    rows = []
+def run_events(path: Path) -> list[Event]:
+    rows: list[Event] = []
     for line in path.read_text().splitlines():
         try:
-            row = json.loads(line)
+            row: Event = json.loads(line)
         except ValueError:
             continue
         if isinstance(row, dict):
@@ -50,10 +280,10 @@ def run_events(path):
     return rows
 
 
-def image_evidence(run, size):
+def image_evidence(run: RunRecord, size: tuple[int, ...]) -> list[ImageEvidence]:
     from PIL import Image
 
-    images = []
+    images: list[ImageEvidence] = []
     for output in run["output"]:
         if not output.get("media_type", "").startswith("image/"):
             continue
@@ -79,7 +309,8 @@ def image_evidence(run, size):
     return images
 
 
-def summarize(run, request, size, events, cli_wall_ms, step_stage):
+def summarize(run: RunRecord, request: Request, size: tuple[int, ...], events: list[Event], cli_wall_ms: float | None,
+              step_stage: str) -> Summary:
     assert run["status"] == "completed", run.get("reason", run["status"])
     assert run["result"]["seed"] == request["seed"], run["result"]
     assert (run["result"]["width"], run["result"]["height"]) == size
@@ -95,7 +326,7 @@ def summarize(run, request, size, events, cli_wall_ms, step_stage):
     native_steps = 0
     if native_rows:
         row = native_rows[0]
-        value = row.get("value")
+        value = cast(float, row.get("value"))  # a number: asserted next
         assert row.get("kind") == "metric" and type(value) in (int, float), row
         assert 0 <= value <= request["steps"] and value == int(value), row
         native_steps = int(value)
@@ -133,7 +364,7 @@ def summarize(run, request, size, events, cli_wall_ms, step_stage):
     steady = samples[1:]
     memory = measured["memory"]
     graphs = measured["residency"].get("graphs")
-    gaps = []
+    gaps: list[str] = []
     if len(samples) != request["steps"]:
         gaps.append("complete device-step timing series unavailable")
     for key in ("peak_allocated_bytes", "peak_reserved_bytes"):
@@ -213,7 +444,7 @@ def summarize(run, request, size, events, cli_wall_ms, step_stage):
     }
 
 
-def source_identity(target):
+def source_identity(target: str) -> Source:
     directory = Path(target).absolute().parent
     if not (directory / "pyproject.toml").is_file():
         return {"target": target, "kind": "published"}
@@ -233,7 +464,7 @@ def source_identity(target):
     return {"target": target, "kind": "source", "commit": head, "package_tree": tree}
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--target", required=True)
     parser.add_argument("--input", required=True, type=Path)
@@ -249,7 +480,7 @@ def main():
         action="store_true",
         help="reuse saved completed receipts, submit only missing calls",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(namespace=Args())
     assert len(set(args.seeds)) == 4, "distinct seeds prevent request memoization"
     size = tuple(int(value) for value in args.expect_size.split("x"))
     assert len(size) == 2 and all(0 < value <= 8192 for value in size)
@@ -258,7 +489,7 @@ def main():
     cozy = str(Path.home() / ".cozy/bin/cozy")
     template = json.loads(args.input.read_text())
     source = source_identity(args.target)
-    report = {
+    report: Report = {
         "target": args.target,
         "source": source,
         "lane": args.lane,
@@ -269,9 +500,10 @@ def main():
             ["git", "-C", str(Path(__file__).parent), "rev-parse", "HEAD"], text=True
         ).strip(),
     }
-    previous = {}
+    previous: Report = {}
     if args.resume:
         previous = json.loads((output / "report.json").read_text())
+        key: Literal["target", "source", "lane", "machine"]
         for key in ("target", "source", "lane", "machine"):
             assert previous[key] == report[key], f"resume changed {key}"
         archive = output / f"report-before-resume-{time.time_ns()}.json"
@@ -282,18 +514,18 @@ def main():
     if not (project / "project.yaml").is_file():
         subprocess.run([cozy, "project", "new", str(project)], check=True, stdout=subprocess.DEVNULL)
     try:
-        before = read_snapshot(
+        before = cast(Machine, read_snapshot(  # machine show
             cozy, output, "machine-before", ["machine", "show", args.machine]
-        )
+        ))
         assert before["state"] == "ready" and not before["status"].get("runs"), (
             "machine GPU lane is not idle"
         )
-        queued = read_snapshot(
+        queued = cast(Queued, read_snapshot(  # run list
             cozy,
             output,
             "queued-before",
             ["run", "list", "--on", args.machine, "--state", "queued", "--limit", "0"],
-        )
+        ))
         assert not queued["runs"], "machine already has queued work"
         report["machine_before"] = before
         report["cold_definition"] = (
@@ -305,16 +537,16 @@ def main():
             assert source_identity(args.target) == source, (
                 "package source changed during qualification"
             )
-            request = {**template, "steps": args.steps, "seed": seed}
+            request: Request = {**template, "steps": args.steps, "seed": seed}
             if args.resume and directory.exists():
                 assert json.loads((directory / "request.json").read_text()) == request
-                run = json.loads((directory / "run.ndjson").read_text())
+                run: RunRecord = json.loads((directory / "run.ndjson").read_text())
                 assert run["status"] == "completed", (
                     "resume never resubmits failed or unsettled work"
                 )
                 events = run_events(directory / "call.ndjson")
                 timing = directory / "call-timing.json"
-                elapsed = (
+                elapsed: float | None = (
                     json.loads(timing.read_text())["cli_wall_ms"]
                     if timing.exists()
                     else next(
@@ -357,12 +589,12 @@ def main():
                     row["run"] for row in events if isinstance(row.get("run"), dict)
                 ]
                 assert recorded, f"no admitted run; CLI exit {status}, see {directory}"
-                run = read_snapshot(
+                run = cast(RunRecord, read_snapshot(  # run watch
                     cozy,
                     directory,
                     "run",
-                    ["run", "show", recorded[-1]["id"], "--once"],
-                )
+                    ["run", "watch", recorded[-1]["id"], "--once"],
+                ))
             if status or run["status"] != "completed":
                 report["runs"].append(
                     {"label": label, "cli_wall_ms": elapsed, "run": run}
@@ -381,7 +613,7 @@ def main():
             ]
             report["runs"].append(row)
             if index:
-                prior = report["runs"][-2]
+                prior = cast(Summary, report["runs"][-2])  # a failed call raised above
                 assert row["run_id"] != prior["run_id"]
                 assert min(
                     g["start_us"] for g in row["gpu_intervals_as_reported"]
@@ -389,29 +621,30 @@ def main():
                     "GPU interval reused or overlapping a preceding sequential request"
                 )
                 assert all(
-                    row["software"][key] == report["runs"][0]["software"][key]
+                    row["software"][key] == cast(Summary, report["runs"][0])["software"][key]
                     for key in ("runtime", "tensorfs", "tensord_commit")
                 ), "software cohort changed"
                 row["executor_reused"] = (
-                    row["executor_pids"] == report["runs"][0]["executor_pids"]
+                    row["executor_pids"] == cast(Summary, report["runs"][0])["executor_pids"]
                 )
                 assert row["executor_reused"], "warm executor reuse not established"
             write(output / "report.json", report)
+        # Every call completed: a failed one raised.
         report["metric_gaps"] = {
             row["label"]: row["metric_gaps"]
-            for row in report["runs"]
+            for row in cast(list[Summary], report["runs"])
             if row["metric_gaps"]
         }
         report["required_metric_gaps"] = {
             row["label"]: row["required_metric_gaps"]
-            for row in report["runs"]
+            for row in cast(list[Summary], report["runs"])
             if row["required_metric_gaps"]
         }
         report["measurements_complete"] = not report["metric_gaps"]
         report["passed"] = not report["required_metric_gaps"]
-        report["machine_after"] = read_snapshot(
+        report["machine_after"] = cast(Machine, read_snapshot(  # machine show
             cozy, output, "machine-after", ["machine", "show", args.machine]
-        )
+        ))
         assert report["passed"], report["required_metric_gaps"]
     except BaseException as error:
         report["passed"] = False

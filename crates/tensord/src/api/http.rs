@@ -11,7 +11,7 @@ use platform::tail as logs;
 use axum::{
     body::{Body, Bytes},
     extract::{rejection::QueryRejection, DefaultBodyLimit, Path, Query, State},
-    http::{header, HeaderMap, HeaderValue, StatusCode},
+    http::{header, HeaderMap, HeaderValue, StatusCode, Request},
     response::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Response,
@@ -28,6 +28,8 @@ use std::{
 };
 use futures_util::{Stream, StreamExt};
 use v1::path;
+use tower_service::Service as _;
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 
 /// A refusal as its envelope, at the status its kind names unless the protocol names another.
 #[derive(Debug)]
@@ -55,6 +57,13 @@ pub(super) struct Machine {
 }
 
 pub(super) fn router(identity: Arc<MachineIdentity>, runs: Arc<Runs>) -> Router {
+    routes()
+        .route(path::PRIVATE_CLOSE, post(private_close_request))
+        .route(path::LOCAL_PRIVATE, get(private_request).post(private_request).put(private_request))
+        .with_state(Machine { identity, runs })
+}
+
+fn routes() -> Router<Machine> {
     Router::new()
         .route(path::STATUS, get(status))
         .route(path::KEEPALIVE, post(keepalive))
@@ -67,12 +76,96 @@ pub(super) fn router(identity: Arc<MachineIdentity>, runs: Arc<Runs>) -> Router 
         .route(path::OBJECT, put(put_object).get(follow_object))
         .route(path::OBJECTS_HELD, post(held_objects).layer(DefaultBodyLimit::max(16 << 20)))
         .route(path::ESTIMATE, post(estimate))
+        .route(path::MODELS_REMOVE, post(remove_model))
         .route(path::HEALTH, get(health))
         .fallback(|| async { Refusal::from(Error::not_found("route_not_found", "this machine serves no such path")) })
         .method_not_allowed_fallback(|| async {
             Refusal(Error::validation("method_not_allowed", "this path takes another method"), Some(StatusCode::METHOD_NOT_ALLOWED))
         })
-        .with_state(Machine { identity, runs })
+
+}
+
+async fn private_close_request(State(m): State<Machine>, Path(project): Path<String>, request: Request<Body>) -> Response {
+    private_request(State(m), Path((project, "close".into())), request).await
+}
+
+/// New privacy namespace: authenticate and verify a live protected-view proof BEFORE
+/// reading any object body. Unsupported/old peers answer404 before receiving privatebytes.
+async fn private_request(State(m): State<Machine>, Path((project, rest)): Path<(String, String)>, request: Request<Body>) -> Response {
+    let proof = (|| {
+        if !m.identity.lifecycle.is_local() {
+            return Err(Error::forbidden("local_private_only", "private filesystem execution is supported only by this computer's local machine"));
+        }
+        let caller = m.caller(request.headers())?;
+        caller.machine()?;
+        let encoded = request.headers().get(v1::LOCAL_PRIVATE_DESCRIPTOR).and_then(|value| value.to_str().ok())
+            .filter(|value| value.len() <= 12000).ok_or_else(|| Error::forbidden("private_storage_proof", "the private workspace proof is absent"))?;
+        let decoded = URL_SAFE_NO_PAD.decode(encoded).map_err(|_| Error::forbidden("private_storage_proof", "the private workspace descriptor is invalid"))?;
+        let descriptor: v1::LocalPrivateStorage = serde_json::from_slice(&decoded).map_err(|_| Error::forbidden("private_storage_proof", "the private workspace descriptor is invalid"))?;
+        if descriptor.project_id != project { return Err(Error::forbidden("private_storage_scope", "the private workspace names another project")); }
+        let token = request.headers().get(v1::LOCAL_PRIVATE_TOKEN).and_then(|value| value.to_str().ok())
+            .ok_or_else(|| Error::forbidden("private_storage_proof", "the private workspace proof is absent"))?.to_owned();
+        Ok::<_, Error>((descriptor, token, actor_id(caller.actor)))
+    })();
+    let (descriptor, token, actor) = match proof { Ok(value) => value, Err(error) => return Refusal::from(error).into_response() };
+    let selected = async {
+        let checked = descriptor.clone();
+        let fresh = tokio::task::spawn_blocking(move || crate::private_io::register(&checked, &token, &actor)).await
+            .map_err(|_| Error::internal("private_storage_stopped", "private workspace verification stopped"))?
+            .map_err(|_| Error::forbidden("private_storage_proof", "the private workspace is locked or its proof is invalid"))?;
+        if fresh {
+            let runs = m.runs.clone();
+            let scope = descriptor.clone();
+            tokio::task::spawn_blocking(move || crate::private_io::within(Some(scope.clone()), || {
+                runs.service.engine.reconcile()?;
+                crate::runs::resume_private(&runs, &scope.project_id)
+            })).await.map_err(|_| Error::internal("private_storage_stopped", "private workspace recovery stopped"))?
+                .map_err(|_| Error::conflict("private_storage_recovery", "private execution recovery requires the unlocked project"))?;
+        }
+        Ok::<_, Error>(descriptor)
+    }.await;
+    let descriptor = match selected { Ok(value) => value, Err(error) => return Refusal::from(error).into_response() };
+    if rest == "health" && request.method() == axum::http::Method::GET {
+        return StatusCode::NO_CONTENT.into_response();
+    }
+    if rest == "close" && request.method() == axum::http::Method::POST {
+        let headers = request.headers().clone();
+        return crate::private_io::request(descriptor, close_private(State(m), headers)).await.into_response();
+    }
+    // A private scope is data execution, never software updates or global machine log access.
+    if rest.starts_with("logs/") || rest == "keepalive" || (rest == "runs" && request.method() != axum::http::Method::GET) {
+        return Refusal::from(Error::forbidden("private_storage_operation", "this operation is not part of private project execution")).into_response();
+    }
+    let uri = format!("/v1/{rest}{}", request.uri().query().map(|query| format!("?{query}")).unwrap_or_default());
+    let uri = match uri.parse() { Ok(uri) => uri, Err(_) => return Refusal::from(Error::validation("invalid_request", "invalid private request path")).into_response() };
+    // Do not carry the outer wildcard's captured URL parameters into the inner router.
+    // Every inner Path extractor must see only its own run/digest parameters.
+    let (parts, body) = request.into_parts();
+    let mut request = Request::new(body);
+    *request.method_mut() = parts.method;
+    *request.version_mut() = parts.version;
+    *request.headers_mut() = parts.headers;
+    *request.uri_mut() = uri;
+    let mut routing = routes().with_state(m);
+    crate::private_io::request(descriptor, async move {
+        let ready = std::future::poll_fn(|context| <Router as tower_service::Service<Request<Body>>>::poll_ready(&mut routing, context)).await;
+        match ready { Ok(()) => {}, Err(never) => match never {} }
+        match routing.call(request).await { Ok(response) => response, Err(never) => match never {} }
+    }).await
+}
+
+async fn close_private(State(m): State<Machine>, headers: HeaderMap) -> Answer {
+    let caller = m.caller(&headers)?;
+    caller.machine()?;
+    let descriptor = crate::private_io::current().ok_or_else(|| Error::forbidden("private_storage_scope", "no private workspace was selected"))?;
+    let actor = actor_id(caller.actor);
+    m.call(move |runs| {
+        runs.service.engine.assert_private_idle(&descriptor.project_id).map_err(|_| Error::conflict("private_storage_busy", "private execution or output finalization is still active"))?;
+        if let Some(pool) = runs.service.pool() { pool.close_private_namespace(&descriptor).map_err(|_| Error::conflict("private_storage_busy", "a private executor is still exiting"))?; }
+        runs.service.engine.close_private_storage(&descriptor.project_id).map_err(|_| Error::conflict("private_storage_busy", "private output custody is still active"))?;
+        crate::private_io::close(&descriptor, &actor).map_err(|_| Error::conflict("private_storage_busy", "private input/output handles are still in use"))
+    }).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 /// Who may do what: a machine-scope cap does everything as its signer; a run-scope cap (a play
@@ -88,7 +181,7 @@ impl Caller {
             false => Err(Error::forbidden("capability_scope", "this call needs a machine-scope Cozy-Cap")),
         }
     }
-    /// An output-limited run grant (`run play`'s link), which sees only those outputs.
+    /// An output-limited run grant (a browser playback link), which sees only those outputs.
     pub(super) fn limit(&self) -> Option<Grant> {
         let limited = self.grant.action != capability::MACHINE && !self.grant.outputs.is_empty();
         limited.then(|| self.grant.clone())
@@ -151,7 +244,8 @@ pub(super) async fn blocking<T: Send + 'static>(
     f: impl FnOnce(&Arc<Runs>) -> Result<T, Error> + Send + 'static,
 ) -> Result<T, Error> {
     let runs = runs.clone();
-    tokio::task::spawn_blocking(move || f(&runs))
+    let scope = crate::private_io::current();
+    tokio::task::spawn_blocking(move || crate::private_io::within_http(scope, || f(&runs)))
         .await
         .map_err(|_| Error::internal("machine_operation_stopped", "machine operation stopped"))?
 }
@@ -222,6 +316,34 @@ async fn keepalive(State(m): State<Machine>, headers: HeaderMap) -> Answer {
     m.call(move |_| lifecycle.renew()).await?;
     let frame = super::machine_status::frame(&m.identity, &m.runs, caller.actor).await?;
     Ok(json(StatusCode::OK, &frame))
+}
+
+/// Removes a local cached repository without stopping any work or changing its origin.
+async fn remove_model(State(m): State<Machine>, headers: HeaderMap, body: Bytes) -> Answer {
+    let caller = m.caller(&headers)?;
+    caller.machine()?;
+    if !m.identity.lifecycle.is_local() || crate::private_io::current().is_some() {
+        return Err(Error::forbidden("model_remove_local_only", "Model removal is available only in this computer's ordinary local cache").into());
+    }
+    let asked: v1::RemoveModel = serde_json::from_slice(&body)
+        .map_err(|e| Error::validation("invalid_request", format!("Cannot read model removal request: {e}")))?;
+    let model = asked.model.trim().to_owned();
+    if !tensorfs::format::repo_name(&model) || model.contains('@') {
+        return Err(Error::validation("model_ref_invalid", "Specify a model repository as org/name, without a release or lane").into());
+    }
+    let admitted = m.admit()?;
+    let removed = m.call(move |runs| {
+        let result = runs.service.engine.store.remove_cached_model(&model)
+            .map_err(|e| Error::internal("model_remove_failed", e.to_string()))?;
+        if result.removed {
+            runs.service.engine.with_journal(|journal| journal.move_catalog())
+                .map_err(|e| Error::internal("model_remove_failed", e.to_string()))?;
+            runs.service.engine.notify_activity();
+        }
+        Ok(v1::RemovedModel { model, removed: result.removed, cache_bytes_removed: result.cache_bytes_removed, retained_bytes: result.retained_bytes })
+    }).await?;
+    drop(admitted);
+    Ok(json(StatusCode::OK, &removed))
 }
 
 fn run_id(id: &str) -> Result<(), Error> {
@@ -654,7 +776,8 @@ async fn put_object(
     };
     let (sender, mut receiver) = tokio::sync::mpsc::channel::<Bytes>(8);
     let landing = upload.clone();
-    let writer = tokio::task::spawn_blocking(move || -> Result<Vec<(u64, u64)>, crate::objects::Refused> {
+    let private = crate::private_io::current();
+    let writer = tokio::task::spawn_blocking(move || crate::private_io::within(private, || -> Result<Vec<(u64, u64)>, crate::objects::Refused> {
         let mut at = start;
         let mut writer = landing.writer()?;
         let mut wrote = Ok(());
@@ -675,7 +798,7 @@ async fn put_object(
         drop(receiver);
         let held = runs.objects.settle(&landing)?;
         wrote.map(|()| held)
-    });
+    }));
     let mut frames = m.authority(&caller).wrap(Box::pin(body.into_data_stream().map(|frame| {
         frame.map_err(|e| Error::validation("request_body_failed", e.to_string()))
     })));
