@@ -6,9 +6,10 @@
     corpus.py summary CORPUS         per model: calls, sites, shapes, captures and bytes (markdown)
 
 Sites: the first, middle and last of each block family (a site path with its block numbers taken out), and every site
-served by a kernel its family's other sites are not (the exact paths). Calls: the first and last of each layout phase
-(dense, sparse) of those sites, or the first, middle and last when they have none. A pick over BUDGET keeps 2 heads, then
-only each phase's first call. CORPUS holds one directory per model, the capture run's `<request id>/` beneath it
+whose calls differ from its family's usual site (other kernels, another number of calls, or other layout phases: H3's
+exact paths, which also run dense through the sparse steps). Calls: the first and last of each layout phase (dense,
+sparse) of those sites, or the first, middle and last when they have none. A pick over BUDGET keeps 2 heads, then only
+each phase's first call, then 1 head. CORPUS holds one directory per model, the capture run's `<request id>/` beneath it
 (cozy_runtime's attention_capture.py)."""
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ if TYPE_CHECKING:  # pick and summary run on any python3; check under `uv run --
     import numpy as np
     import numpy.typing as npt
 
-BUDGET = 4 << 30  # bytes a model's capture may write
+BUDGET = 2 << 30  # bytes a model's capture may write (four models must fit a runner's disk)
 
 
 class Layout(TypedDict, total=False):
@@ -77,12 +78,17 @@ def pick(where: str, census: list[Row]) -> dict[str, object]:
     families: dict[str, list[str]] = {}
     for site in by_site:
         families.setdefault(family(site)[0], []).append(site)
+    def calls_of(site: str) -> tuple[tuple[str, ...], int, tuple[str, ...]]:
+        """What a site's calls look like: its kernels, how many, and its layout phases."""
+        rs = by_site[site]
+        return tuple(sorted({r.get('backend', '') for r in rs})), len(rs), tuple(sorted({str(phase(r)) for r in rs}))
+
     chosen: set[str] = set()
     for sites in families.values():
         sites.sort(key=lambda s: family(s)[1])
         chosen |= {sites[0], sites[len(sites) // 2], sites[-1]}
-        usual = Counter(r.get('backend', '') for s in sites for r in by_site[s]).most_common(1)[0][0]
-        chosen |= {s for s in sites if {r.get('backend', '') for r in by_site[s]} != {usual}}
+        usual = Counter(calls_of(s) for s in sites).most_common(1)[0][0]
+        chosen |= {s for s in sites if calls_of(s) != usual}
     phases: dict[bool | None, set[int]] = {}
     for site in chosen:
         for r in by_site[site]:
@@ -91,7 +97,7 @@ def pick(where: str, census: list[Row]) -> dict[str, object]:
     calls = ends | ({sorted(phases[None])[len(phases[None]) // 2]} if list(phases) == [None] else set())
     firsts = {min(ordinals) for ordinals in phases.values()}
     heads, keep, total = 4, calls, 0
-    for heads, keep in ((4, calls), (2, calls), (2, firsts)):
+    for heads, keep in ((4, calls), (2, calls), (2, firsts), (1, firsts)):
         total = sum(size(r, heads) for s in chosen for r in by_site[s] if r['call'] in keep)
         if total <= BUDGET:
             break
