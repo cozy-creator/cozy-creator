@@ -1251,9 +1251,13 @@ async fn read_interface(api: &Arc<Api>, code: &LocalCode, on: &On, runtime: Opti
         .map_err(|why| refuse("describe_failed", why))?;
     let described = described.map_err(|error| match (&runtime, &locked, on) {
         // A describer killed (`Kind::Unavailable`) refused nothing.
-        (Some(runtime), None, On::Machine(name)) if error.code == "describe_failed" && error.kind != Kind::Unavailable => error
-            .remedy(format!("The Runtime describing this source refused it, and {name} runs {runtime}: a run there reads it with that one, and this then answers what it read"))
-            .next(format!("cozy run <its folder> --on {name}")),
+        (Some(runtime), None, On::Machine(name)) if error.code == "describe_failed" && error.kind != Kind::Unavailable => {
+            let mut error = error;
+            if error.remedy.is_none() {
+                error.remedy = Some(format!("The Runtime describing this source refused it, and {name} runs {runtime}: a run there reads it with that one, and this then answers what it read"));
+            }
+            error.next(format!("cozy run <its folder> --on {name}"))
+        }
         _ => error,
     });
     Ok((format!("local/{}", project.name), described?.1))
