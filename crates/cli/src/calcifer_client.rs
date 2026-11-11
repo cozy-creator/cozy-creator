@@ -175,7 +175,11 @@ impl Client {
         let body = json_body(body)?;
         match again {
             true => self.asked_again(|e| e.code == UNREACHABLE || transient(e), || self.posted(path, &body, key)).await,
-            false => self.posted(path, &body, key).await,
+            false => self.posted(path, &body, key).await.map_err(|error| {
+                if local_transient(&error) {
+                    error.remedy("Not retried; check whether the operation completed before repeating it")
+                } else { error }
+            }),
         }
     }
 

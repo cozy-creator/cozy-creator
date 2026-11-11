@@ -173,7 +173,8 @@ async fn permanent_refusals_and_unsafe_posts_are_not_retried() {
         assert_eq!(fixture.requests().len(), 1);
     }
     let fixture = Fixture::new(|_, _, _| Some(Reply::restarting()));
-    assert!(fixture.client.post::<_, serde_json::Value>("/v1/unsafe", &serde_json::json!({}), None).await.is_err());
+    let error = fixture.client.post::<_, serde_json::Value>("/v1/unsafe", &serde_json::json!({}), None).await.unwrap_err();
+    assert!(error.remedy.as_deref().unwrap().contains("check whether the operation completed"));
     assert_eq!(fixture.requests().len(), 1);
     let fixture = Fixture::new(|_, _, _| None);
     assert!(fixture.client.post::<_, serde_json::Value>("/v1/unsafe", &serde_json::json!({}), None).await.is_err());
