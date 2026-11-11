@@ -1461,7 +1461,7 @@ export class CanvasStore {
     if (!asset) return
     const prefixes = asset.prefixes?.map((version) => (version.number === number && version.main ? { ...version, main: { ...version.main, metadata } } : version))
     const edit = this.step(words, [key])
-    this.over(key, number === undefined || !prefixes ? {} : { prefixes }, (served, write) => this.client.patchVersion(this.projectId!, served, number ?? 0, metadata, write), `change ${asset.noun} ${number ?? ""} of`, edit)
+    this.over(key, number === undefined || !prefixes ? {} : { prefixes }, (served, write) => this.client.patchVersion(this.projectId!, served, number ?? 0, metadata, write).then(() => ({})), `change ${asset.noun} ${number ?? ""} of`, edit)
     this.offer(edit, words)
   }
 
