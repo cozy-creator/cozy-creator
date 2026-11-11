@@ -16,18 +16,14 @@ pub fn main(args: impl IntoIterator<Item = std::ffi::OsString>) -> ExitCode {
     struct Serve {
         #[command(flatten)]
         flags: Flags,
-        /// Windows: the readiness pipe a stable parent handed the service it started.
-        #[arg(long, hide = true)]
-        service_ready: Option<u64>,
     }
     let serve = <Serve as clap::Parser>::parse_from(args);
-    machine(serve.flags.lifetime(), serve.service_ready)
+    machine(serve.flags.lifetime())
 }
 
-/// The machine: its stable parent, then the service it starts (`service_ready`: this is that
-/// service, on Windows). Exits the process on failure.
-pub fn machine(lifetime: Lifetime, service_ready: Option<u64>) -> ExitCode {
-    if let Err(error) = run(lifetime, service_ready) {
+/// The machine's stable parent and supervised service. Exits the process on failure.
+pub fn machine(lifetime: Lifetime) -> ExitCode {
+    if let Err(error) = run(lifetime) {
         config::init_logs(None);
         tracing::error!("{error}");
         std::process::exit(1);
@@ -35,7 +31,7 @@ pub fn machine(lifetime: Lifetime, service_ready: Option<u64>) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn run(lifetime: Lifetime, service_ready: Option<u64>) -> io::Result<()> {
+fn run(lifetime: Lifetime) -> io::Result<()> {
     use crate::machine::{binary, identity, provider::ProviderSelf, ssh, supervise, update};
     // Where this binary was started from, before anything can rename another over it.
     if let Err(error) = binary::record() {
@@ -66,10 +62,7 @@ fn run(lifetime: Lifetime, service_ready: Option<u64>) -> io::Result<()> {
     let ready = supervise::supervise(
         &update::Paths::new(&config.grant.layout.engine(), &config.grant.layout.root),
         None,
-        service_ready,
     )?;
-    #[cfg(unix)]
-    let _ = service_ready;
     let grant = &mut config.grant;
     // A pod's provider credential, kept from everything this machine starts: on its first start
     // this re-executes the machine without the key in its environment, before any thread.

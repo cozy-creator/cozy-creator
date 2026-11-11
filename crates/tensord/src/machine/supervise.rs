@@ -8,7 +8,7 @@
 //! the parent then running: a binary by renaming the previous one back and exec'ing it.
 //!
 //! Windows forks nothing: the stable parent starts the service from the launch path, with its
-//! arguments and `--service-ready`, the inherited pipe the service reports readiness on. An
+//! arguments. A private local pipe identifies the service and carries its readiness report. An
 //! activated or restored binary is simply the next service it starts. The service's Job Object
 //! ends its tree with the parent; Windows has no orphans to reap.
 #[cfg(unix)]
@@ -20,26 +20,34 @@ use rustix::{
 };
 #[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
-use std::{
-    fs::File,
-    io::{self, Read, Write},
-};
+use std::io::{self, Read, Write};
+
+#[cfg(unix)]
+use std::fs::File;
+#[cfg(windows)]
+use platform::{ipc::{LocalListener, LocalStream}, process::{Birth, Exact}};
 
 use super::{provider::ProviderSelf, update::Recovered};
 
-/// Returns only in the service, with the pipe it reports readiness on: `service_ready`, the
-/// handle its stable parent handed it. Without one this is the parent, which starts the service
-/// and exits with its final status. Windows rents nothing, so it hands on no provider credential.
+/// A child connects to its parent's private pipe. A new parent listens before starting
+/// the service and retains the existing restart and rollback behavior.
 #[cfg(windows)]
 pub(crate) fn supervise(
     paths: &super::update::Paths,
     _provider: Option<ProviderSelf>,
-    service_ready: Option<u64>,
 ) -> io::Result<Ready> {
-    if let Some(handle) = service_ready {
-        let pipe = platform::process::take_handed(handle)?;
-        return Ok(Ready(Some(File::from(pipe))));
+    let parent = platform::process::parent_of(std::process::id())?;
+    match LocalStream::connect(&service_pipe(paths, parent)).map_err(io::Error::from) {
+        Ok(pipe) => {
+            if platform::handles::peer(&pipe)?.pid != parent {
+                return Err(io::Error::new(io::ErrorKind::PermissionDenied, "readiness pipe belongs to another process"));
+            }
+            return Ok(Ready(Some(pipe)));
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
     }
+    let listener = LocalListener::bind(&service_pipe(paths, std::process::id()))?;
     let program = std::env::current_exe()?;
     let arguments: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     let mut failures_before_ready = 0;
@@ -47,18 +55,22 @@ pub(crate) fn supervise(
         // A published binary activation needs nothing more here: the service starts from the
         // launch path, which holds it.
         super::update::recover_activation(paths)?;
-        let (mut read, write) = std::io::pipe()?;
         let mut command = std::process::Command::new(&program);
-        command
-            .args(&arguments)
-            .arg("--service-ready")
-            .arg(platform::process::hand_on(&write)?.to_string());
+        command.args(&arguments);
         let mut service = platform::process::spawn(command)?;
-        drop(write);
+        let mut pipe = match Exact::open(&Birth::of(service.pid())?)? {
+            Some(process) => loop {
+                let Some(pipe) = listener.accept_unless(&process)? else { break None };
+                if platform::handles::peer(&pipe)?.pid == service.pid() {
+                    break Some(pipe);
+                }
+            },
+            None => None,
+        };
         let code = service.wait()?.code().unwrap_or(1);
         // What the service left running ends with it.
         drop(service);
-        let ready = read.read(&mut [0u8; 1]).unwrap_or(0) == 1;
+        let ready = pipe.as_mut().is_some_and(|pipe| pipe.read(&mut [0u8; 1]).unwrap_or(0) == 1);
         if code == 0 {
             std::process::exit(0);
         }
@@ -81,6 +93,11 @@ pub(crate) fn supervise(
         }
         tracing::warn!("the service exited ({code}); starting it again");
     }
+}
+
+#[cfg(windows)]
+fn service_pipe(paths: &super::update::Paths, parent: u32) -> std::path::PathBuf {
+    paths.update(&format!("service-{parent}.pipe"))
 }
 
 /// Forks the service. Returns only in the service child, with the pipe it reports readiness
@@ -203,8 +220,13 @@ fn wait_service(child: Pid, signals: &SupervisorSignals) -> io::Result<(WaitStat
     }
 }
 
-/// The service's readiness report to its parent: written once, when this boot has proved itself.
-pub(crate) struct Ready(Option<File>);
+#[cfg(unix)]
+type ReadyPipe = File;
+#[cfg(windows)]
+type ReadyPipe = LocalStream;
+
+/// The service's readiness report to its parent, written once this boot is ready.
+pub(crate) struct Ready(Option<ReadyPipe>);
 impl Ready {
     pub(crate) fn report(&mut self) {
         if let Some(mut pipe) = self.0.take() {

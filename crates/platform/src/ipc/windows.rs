@@ -75,6 +75,12 @@ pub struct LocalStream {
 }
 
 impl LocalStream {
+    /// Connect once to a local pipe. A missing listener returns NotFound.
+    pub fn connect(path: &Path) -> Result<Self> {
+        let pipe = dial_once(&pipe_name(&path.to_string_lossy())).map_err(Error::io("connect", path))?;
+        Self::new(pipe, Side::Client).map_err(Error::io("connect", path))
+    }
+
     fn new(pipe: OwnedHandle, side: Side) -> io::Result<Self> {
         Self::sharing(pipe, side, std::sync::Arc::default(), std::sync::Arc::default())
     }
@@ -488,27 +494,28 @@ fn instance(name: &[u16], first: bool, security: &Security) -> io::Result<OwnedH
     owned(pipe)
 }
 
+fn dial_once(name: &[u16]) -> io::Result<OwnedHandle> {
+    // SAFETY: a NUL-terminated name; no template file.
+    let pipe = unsafe {
+        CreateFileW(
+            name.as_ptr(),
+            GENERIC_READ | GENERIC_WRITE,
+            0,
+            ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
+            ptr::null_mut(),
+        )
+    };
+    owned(pipe)
+}
+
 fn dial(name: &[u16]) -> io::Result<OwnedHandle> {
     loop {
-        // SAFETY: a NUL-terminated name; no template file.
-        let pipe = unsafe {
-            CreateFileW(
-                name.as_ptr(),
-                GENERIC_READ | GENERIC_WRITE,
-                0,
-                ptr::null(),
-                OPEN_EXISTING,
-                FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
-                ptr::null_mut(),
-            )
-        };
-        if pipe != INVALID_HANDLE_VALUE {
-            // SAFETY: a new handle that is now ours.
-            return Ok(unsafe { OwnedHandle::from_raw_handle(pipe) });
-        }
-        let error = io::Error::last_os_error();
-        if error.raw_os_error() != Some(ERROR_PIPE_BUSY as i32) {
-            return Err(error);
+        match dial_once(name) {
+            Ok(pipe) => return Ok(pipe),
+            Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) => {}
+            Err(error) => return Err(error),
         }
         // Every instance is taken: the kernel wakes this when one frees.
         // SAFETY: a NUL-terminated name.

@@ -13,9 +13,6 @@ struct Tensord {
     mode: Option<Mode>,
     #[command(flatten)]
     flags: Flags,
-    /// Windows: the readiness pipe a stable parent handed the service it started.
-    #[arg(long, hide = true, global = true)]
-    service_ready: Option<u64>,
 }
 
 #[derive(Subcommand)]
@@ -32,8 +29,8 @@ enum Mode {
 fn main() -> ExitCode {
     let tensord = Tensord::parse();
     let done = match tensord.mode {
-        None => return serve::machine(tensord.flags.lifetime(), tensord.service_ready),
-        Some(Mode::Run(flags)) => return serve::machine(flags.lifetime(), tensord.service_ready),
+        None => return serve::machine(tensord.flags.lifetime()),
+        Some(Mode::Run(flags)) => return serve::machine(flags.lifetime()),
         Some(Mode::Version { .. }) => serve::version(),
     };
     match done {
