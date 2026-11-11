@@ -161,8 +161,6 @@ ending turbo's idle executor and evicting both, H3 untouched while it renders, H
 the image's TensorD as `local` beside the runner's runs, one pod controls the other by `authorize`/`add`, and the
 previous release and the session's cozy control each other (`-f params='{"old": "0.13.3"}'`). A session that rents
 more than one pod calls `order` per pod, then `ready` per pod; the guard and the trap cover every one.
-`project-remote` (xs-143) proves `cozy project push` and `pull`: a second user on the runner, holding only project.yaml
-and project.lock, pulls and cuts the same `edit.mp4`; kills on both sides resume.
 `h3-8gb` is the 8 GB tier: H3 Turbo 15 s on one RTX 3070 must complete, 362 frames, under its time bar.
 `upload-proofs` uploads twice in a row on one pod, then once while a download of a private commit runs there and a second
 download waits on it; each must complete under the pod's own DPoP proofs, signed in the Hub's time, and its record has the
