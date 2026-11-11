@@ -232,7 +232,7 @@ class Bridge {
         if (event.state === "unlocked") this.allowProject(event.id)
         else this.forgetProject(event.id)
         this.queries.setQueryData(["project-vault", event.id], (held: import("../api/calcifer").VaultStatus | undefined) => ({
-          ...(held ?? { path: "", idle_timeout_s: 0 }), encrypted: true, state: event.state,
+          ...(held ?? { path: "", idle_timeout_s: 1800 }), encrypted: true, state: event.state,
           ...(event.state === "unlocked" ? {} : { view: null, expires_at_ms: null }),
         }))
         this.vaultChanged(event.id, event.state)

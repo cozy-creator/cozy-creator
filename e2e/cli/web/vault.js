@@ -243,6 +243,8 @@ const newPage = async () => {
   await body.locator('input[type=password]').nth(0).fill('synthetic browser passphrase');
   await body.locator('input[type=password]').nth(1).fill('synthetic browser passphrase');
   const preserveChoice = body.getByLabel('Keep an unencrypted copy after encryption');
+  await body.getByText('Lock timing', { exact: true }).click();
+  check('ui_default_idle_is_thirty_minutes', await body.getByLabel('Lock after inactivity (seconds; 0 disables)').inputValue() === '1800');
   check('ui_encryption_defaults_to_source_removal', !(await preserveChoice.isChecked()));
   const sourcesBeforeEncryption = sourceFolders();
   await preserveChoice.check();
@@ -661,6 +663,7 @@ const newPage = async () => {
   check('new_creation_discloses_recovery_locally', Boolean(newRecovery) && await page.locator('[aria-label="Save recovery secret"] pre').innerText() === newRecovery);
   await saveCreationRecovery();
   check('new_creation_has_no_plaintext_database', !existsSync(join(newlyCreated.path, 'project.db')) && JSON.parse(vault(newlyCreated.path, 'status')).encrypted);
+  check('new_creation_default_idle_is_thirty_minutes', JSON.parse(vault(newlyCreated.path, 'status')).idle_timeout_s === 1800);
   const persisted = await page.evaluate(() => JSON.stringify(localStorage));
   check('new_creation_credentials_are_not_browser_storage', !persisted.includes(newRecovery) && !persisted.includes('synthetic new project passphrase'));
 

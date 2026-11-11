@@ -46,7 +46,7 @@ To intentionally keep an unencrypted copy, use `--preserve-plaintext`; its locat
 The old `--remove-plaintext` flag remains accepted but is unnecessary. Existing independent
 plaintext inputs/copies remain outside this protection.
 
-Unlock defaults to 15 minutes of UI/CLI inactivity. `--idle SECONDS` changes it (zero disables
+Unlock defaults to 30 minutes of UI/CLI inactivity. `--idle SECONDS` changes it (zero disables
 idle expiry); `--max-duration SECONDS` adds an absolute limit. Polling and hover previews never
 renew it. Intentional WebUI playback does; external native players do not.
 

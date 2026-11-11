@@ -18,7 +18,7 @@ struct Encrypt {
     #[arg(long)]
     preserve_plaintext: bool,
     /// Lock after this many seconds without activity; the project's runs and renders are activity. 0 disables idle expiry.
-    #[arg(long, default_value_t = 900)]
+    #[arg(long, default_value_t = api::calcifer::project::DEFAULT_VAULT_IDLE_SECONDS)]
     idle: u64,
     /// Maximum unlock duration in seconds, even while active; reaching it ends the project's runs, as a lock does. 0 disables the maximum.
     #[arg(long, default_value_t = 0)]
@@ -33,7 +33,7 @@ struct Unlock {
     /// Use a saved recovery secret from this file. Use - for stdin.
     #[arg(long, value_name = "FILE")]
     recovery_file: Option<PathBuf>,
-    #[arg(long, default_value_t = 900)]
+    #[arg(long, default_value_t = api::calcifer::project::DEFAULT_VAULT_IDLE_SECONDS)]
     idle: u64,
     #[arg(long, default_value_t = 0)]
     max_duration: u64,

@@ -1,0 +1,1 @@
+Encrypted projects now default to locking after 30 minutes of inactivity. Explicit idle values, disabling idle expiry with zero, and absolute unlock deadlines are unchanged. Already-unlocked sessions keep their existing policy until a credentialed unlock starts a new session window.

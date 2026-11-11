@@ -70,6 +70,7 @@ class Payload(TypedDict, total=False):
     project: Project
     recovery_secret: str | None
     preserved_source: str | None
+    idle_timeout_s: int
     warnings: list[Warning]
     stopping: bool
     digest: str
@@ -1024,6 +1025,7 @@ foreach ($rule in $allowed) {
         self.check_recovery('new-project')
         protected = self.command('vault', '--directory', fresh, 'status')
         assert protected['encrypted'] and protected['state'] == 'unlocked'
+        assert protected['idle_timeout_s'] == 1800
         created_view = protected['view']
         assert created_view is not None
         assert (Path(created_view) / 'project.db').is_file()
@@ -1033,7 +1035,8 @@ foreach ($rule in $allowed) {
         assert not existing['created'] and existing['id'] == new['id']
         self.cell('new_project_starts_in_encrypted_storage')
         self.command('vault', '--directory', fresh, 'lock')
-        self.command('vault', '--directory', fresh, 'unlock', '--recovery-file', self.recovery('new-project'))
+        default_unlock = self.command('vault', '--directory', fresh, 'unlock', '--recovery-file', self.recovery('new-project'))
+        assert default_unlock['vault']['idle_timeout_s'] == 1800
         created_reopened = self.command('status', cwd=fresh, full=True)
         assert created_reopened['project']['id'] == new['id']
         self.command('vault', '--directory', fresh, 'lock')
@@ -1053,6 +1056,7 @@ foreach ($rule in $allowed) {
         assert not unsafe_backing.exists()
         unchanged = self.status()
         assert unchanged['state'] == 'plain' and not unchanged['encrypted']
+        assert unchanged['idle_timeout_s'] == 1800
         assert before == self.yaml()
         self.cell('recovery_output_refuses_backing_before_conversion')
         self.project.joinpath('files').mkdir(exist_ok=True)
@@ -1062,6 +1066,7 @@ foreach ($rule in $allowed) {
         if streamed.returncode:
             raise AssertionError(self.redact(streamed.stdout + streamed.stderr))
         self.cell('vault_acknowledgment_reattach_and_missing_media')
+        assert self.status()['idle_timeout_s'] == 0
         self.check_recovery('recovery1')
         assert before == self.yaml()
         self.cell('convert_without_changing_logical_state')
@@ -1223,7 +1228,9 @@ foreach ($rule in $allowed) {
         self.command('vault', '--directory', copied_path, 'lock')
         self.cell('decrypted_folder_copy_encrypts_with_its_own_namespace')
         reencrypted = self.vault('encrypt', '--passphrase-file', rekey,
-                                 '--recovery-out', self.recovery('recovery4'), '--idle', 0)
+                                 '--recovery-out', self.recovery('recovery4'))
+        assert reencrypted['vault']['idle_timeout_s'] == 1800
+        self.cell('default_idle_is_thirty_minutes_and_explicit_zero_is_preserved')
         assert not reencrypted.get('preserved_source')
         assert set(self.out.glob('.cozy-project-source-*')) == sources_before
         self.check_recovery('recovery4')

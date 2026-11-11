@@ -376,7 +376,7 @@ export function Shell() {
       // This callback only adopts a newly created ordinary project. Preserve the initial
       // import's live canvas/outbox while its first status read catches up.
       freshOrdinary.current = project
-      queries.setQueryData(vaultKey(project), { encrypted: false, state: "plain", path: "", idle_timeout_s: 0, next: [] })
+      queries.setQueryData(vaultKey(project), { encrypted: false, state: "plain", path: "", idle_timeout_s: 1800, next: [] })
       setVerified(project)
       void queries.invalidateQueries({ queryKey: ["projects"] })
       navigate(projectPath({ id: project, code }, location.pathname.replace(/^\/$/, "")), { replace: true })

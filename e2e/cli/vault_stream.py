@@ -23,6 +23,7 @@ class VaultStatus(TypedDict):
     encrypted: bool
     state: str
     view: str
+    idle_timeout_s: int
 
 
 class Changed(TypedDict, total=False):
@@ -122,6 +123,7 @@ def main() -> None:
     assert kinds[0] == "accepted"
     assert changed is not None
     assert changed["vault"]["encrypted"] and changed["vault"]["state"] == "unlocked"
+    assert changed["vault"]["idle_timeout_s"] == 0
     assert not changed.get("preserved_source")
     assert set(project.parent.glob(".cozy-project-source-*")) == sources_before
     assert not (project / "project.db").exists()

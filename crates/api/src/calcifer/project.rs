@@ -1300,11 +1300,15 @@ pub struct VaultStatus {
     pub view: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at_ms: Option<i64>,
-    #[serde(default)]
+    #[serde(default = "default_vault_idle_seconds")]
     pub idle_timeout_s: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub next: Vec<String>,
 }
+
+/// The default local project unlock window; explicit zero still disables idle expiry.
+pub const DEFAULT_VAULT_IDLE_SECONDS: u64 = 1800;
+fn default_vault_idle_seconds() -> u64 { DEFAULT_VAULT_IDLE_SECONDS }
 
 /// POST /v1/projects/{id}/vault. Credentials are deliberately not Debug; neither the request nor its response is cached in history.
 #[derive(Clone, Serialize, Deserialize)]

@@ -13,7 +13,7 @@ use super::vault_operation::{self, Progress};
 mod decrypt_tests;
 
 pub(super) const BACKING: &str = "project.vault.data";
-const DEFAULT_IDLE: u64 = 900;
+const DEFAULT_IDLE: u64 = api::calcifer::project::DEFAULT_VAULT_IDLE_SECONDS;
 type Held = Arc<Mutex<Session>>;
 
 /// In-memory identity of one physical mount. It survives reauthorization of that mount,
@@ -210,7 +210,7 @@ pub(super) fn location(api: &Api, named: &str) -> Result<PathBuf, Error> {
 
 fn status(root: &FsPath) -> VaultStatus {
     let mut state = if encrypted(root) { "locked" } else { "plain" };
-    let (mut view, mut expires, mut idle) = (None, None, 0);
+    let (mut view, mut expires, mut idle) = (None, None, DEFAULT_IDLE);
     if let Some(session) = held(root) {
         let mut session = session.lock().expect("vault session");
         if session.mount.reconcile().is_err() { mark_closing(&mut session); }
