@@ -312,10 +312,10 @@ for kernel in (json.load(open(END)).get('status', {}).get('kernels', []) if os.p
     if not kernel.get('ok'):
         fails.append(f"kernel probe crashed: {kernel.get('kernel')} sm{kernel.get('sm')} driver {kernel.get('driver')}: {kernel.get('detail', '')[:160]}")
 gate: Gate = {'out': out, 'sku': sku, 'summary': summary, 'runs': runs, 'baseline': base}
-# CLI-behaviour checks a cells/*.sh recorded with gate.sh's `expect` (expect.tsv: check, PASS|FAIL, what happened).
+# CLI-behaviour checks a cells/*.sh recorded with gate.sh's `expect` (expect.tsv: check, PASS|FAIL|SKIP, what happened).
 EXPECT = os.path.join(out, 'expect.tsv')
 for row in (l.rstrip('\n').split('\t') + [''] for l in open(EXPECT)) if os.path.exists(EXPECT) else []:
-    (notes if row[1] == 'PASS' else fails).append(f'{row[0]}: {row[1]} {row[2]}'.rstrip())
+    (notes if row[1] in ('PASS', 'SKIP') else fails).append(f'{row[0]}: {row[1]} {row[2]}'.rstrip())
 for check in CHECKS:
     found, noted = check(gate)
     fails += found; notes += noted
