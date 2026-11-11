@@ -3,7 +3,7 @@ steady s/step and VRAM (the driver's bytes it added at its fullest: Run.vram) ar
 gate-<SKU>.json, which gate.sh fetches from and publishes to the `release-gate-baselines` release). A PASS is recorded
 in the baseline file; `--accept` records a FAIL the lead accepted. Exit 1 on any failure: the publish is blocked.
     analyze.py <gate dir> <SKU> <baseline file> [--accept]
-More checks (quality, lm, swap, a suite's check.py) are modules imported here and listed in CHECKS: check(gate) -> (fails, notes)."""
+More checks (quality, lm, swap, served, a suite's check.py) are modules imported here and listed in CHECKS: check(gate) -> (fails, notes)."""
 import fnmatch, json, os, re, subprocess, sys, time
 from collections.abc import Callable, Iterator
 from typing import Literal, TypeAlias, TypedDict, cast
@@ -15,7 +15,7 @@ accept = '--accept' in sys.argv
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, 'suites'))
-import lm, quality, swap  # noqa: E402
+import lm, quality, served, swap  # noqa: E402
 from runs import JSON, STEP_EXTRA_MS, STEP_RATIO, Baseline, Cell, Gate, Good, KnownFailing, Observation, Run, slow_steps  # noqa: E402
 from tensorfs import check as tensorfs  # noqa: E402  (release-gate/suites/tensorfs, never the tensorfs library)
 from varena import check as varena  # noqa: E402
@@ -29,7 +29,7 @@ from contract import check as contract  # noqa: E402  (every gate: the records t
 SUITES = open(os.path.join(out, 'suites')).read().split() if os.path.exists(os.path.join(out, 'suites')) else []
 Check: TypeAlias = Callable[[Gate], tuple[list[str], list[str]]]
 SUITE_CHECKS: dict[str, Check] = {'tensorfs': tensorfs.check, 'varena': varena.check, 'cli': cli.check, 'kernels': kernels.check, 'attention': attention.check, 'escaped': escaped.check, 'bench': bench.check}  # runtime, packages: quality, lm and swap; hub, tensord: their expect rows
-CHECKS: list[Check] = [quality.check, lm.check, swap.check, contract.check] + [SUITE_CHECKS[s] for s in SUITES if s in SUITE_CHECKS]
+CHECKS: list[Check] = [quality.check, lm.check, swap.check, served.check, contract.check] + [SUITE_CHECKS[s] for s in SUITES if s in SUITE_CHECKS]
 # Allowed rise over the worst known-good number, unless the good numbers' own spread is wider.
 # Step 1 is judged as load + step 1 (the run's or call's start to step 1's end; agreed by the lead, 2026-11-06): v2 readies
 # weights on first use inside step 1, where v1 readied them in a load before it. step1_ms is kept, not judged.
