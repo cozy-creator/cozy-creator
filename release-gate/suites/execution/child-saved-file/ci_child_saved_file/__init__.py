@@ -13,7 +13,7 @@ from typing import Annotated
 import msgspec
 from PIL import Image
 
-from cozy_runtime.author import App, ChildCallError, Context, Outputs, call
+from cozy_runtime.author import App, Context, Outputs, call
 from cozy_runtime.fields import FileBound
 from cozy_runtime.media import File, ImageFile
 
@@ -72,10 +72,15 @@ class Result(msgspec.Struct):
 
 
 async def code_of(call: Callable[[], Awaitable[Seen]]) -> str:
+    """The call's refusal code. The Runtime refuses a file it can tell is not the attempt's before sending, TensorD the
+    rest (`ChildCallError`); the author API exports only the latter's type, so the code is read off either."""
     try:
         await call()
-    except ChildCallError as refused:
-        return refused.code
+    except Exception as refused:  # noqa: BLE001 - both refusals carry a code; anything else is not one
+        code = getattr(refused, "code", "")
+        if not isinstance(code, str) or not code:
+            raise
+        return code
     return ""
 
 
