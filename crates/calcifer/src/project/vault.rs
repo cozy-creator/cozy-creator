@@ -103,7 +103,7 @@ pub(super) fn view(root: &FsPath) -> Result<PathBuf, Error> {
     recover_conversion(root)?;
     if CONVERTING.lock().expect("vault conversions").contains(root) { return Err(error("vault_busy", "the project's storage is being converted")); }
     if !encrypted(root) {
-        if receipt_path(root).is_file() { return Err(error("vault_recovery", "the project's storage transition needs recovery; retry after active requests finish")); }
+        if exists(&receipt_path(root))? { return Err(error("vault_recovery", "the project's storage transition needs recovery; retry after active requests finish")); }
         return Ok(root.to_owned());
     }
     let Some(session) = held(root) else { return Err(locked(root)); };
