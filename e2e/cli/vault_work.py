@@ -13,34 +13,54 @@ import json
 from pathlib import Path
 import subprocess
 import time
-from typing import Any, cast
+from typing import TypedDict, cast
 
-# A CLI answer: JSON, read where this proof reads it.
-Answer = dict[str, Any]
+
+class Vault(TypedDict, total=False):
+    """`cozy vault status`: the fields this proof reads."""
+
+    state: str
+    view: str
+
+
+class Changed(TypedDict, total=False):
+    """A vault change's answer: the fields this proof reads."""
+
+    vault: Vault
+    ended: list[int]
+
+
+class Run(TypedDict, total=False):
+    """A run as the CLI answers it: the fields this proof reads."""
+
+    number: int
+    status: str
+    machine_state: str
 
 IDLE = 20
 OUTLIVES = 50
 
 
-def cli(args: argparse.Namespace, name: str, *words: str, fails: bool = False) -> Answer:
+def cli(args: argparse.Namespace, name: str, *words: str, fails: bool = False) -> object:
     done = subprocess.run([str(args.cli), "--json", *words], cwd=args.project, capture_output=True)
     (args.out / f"{name}.json").write_bytes(done.stdout)
     (args.out / f"{name}.stderr").write_bytes(done.stderr)
     if bool(done.returncode) != fails:
         raise AssertionError(f"{name}: exit {done.returncode}: {done.stdout[-600:]!r} {done.stderr[-600:]!r}")
     try:
-        return cast(Answer, json.loads(done.stdout))
+        answer: object = json.loads(done.stdout)
     except ValueError:
         lines = [line for line in done.stdout.splitlines() if line.strip()]
-        return cast(Answer, json.loads(lines[-1])) if lines else {}
+        answer = json.loads(lines[-1]) if lines else {}
+    return answer
 
 
 def state(args: argparse.Namespace) -> str:
-    return str(cli(args, "status", "vault", "status")["state"])
+    return cast(Vault, cli(args, "status", "vault", "status"))["state"]
 
 
 def unlock(args: argparse.Namespace, name: str, idle: int) -> Path:
-    unlocked = cli(args, name, "vault", "unlock", "--passphrase-file", str(args.passphrase_file), "--idle", str(idle))
+    unlocked = cast(Changed, cli(args, name, "vault", "unlock", "--passphrase-file", str(args.passphrase_file), "--idle", str(idle)))
     assert unlocked["vault"]["state"] == "unlocked", f"{name}: {unlocked}"
     return Path(unlocked["vault"]["view"])
 
@@ -61,14 +81,14 @@ def start(args: argparse.Namespace, name: str, script: Path, seconds: int) -> tu
     return process, stdout
 
 
-def run_of(stdout: Path) -> Answer:
+def run_of(stdout: Path) -> Run:
     for line in reversed(stdout.read_bytes().splitlines()):
         try:
-            event = cast(Answer, json.loads(line))
+            event: object = json.loads(line)
         except ValueError:
             continue
-        if isinstance(event.get("run"), dict):
-            return cast(Answer, event["run"])
+        if isinstance(event, dict) and isinstance(event.get("run"), dict):
+            return cast(Run, event["run"])
     return {}
 
 
@@ -110,7 +130,7 @@ def vault_work_sleep(payload: Request, out: Outputs) -> Answer:
 
     # 1. A run longer than the idle window: the vault stays open throughout, and locks about IDLE after the run ends.
     process, stdout = start(args, "outlives", script, OUTLIVES)
-    began, seen = time.monotonic(), set()
+    began, seen = time.monotonic(), set[str]()
     while process.poll() is None:
         seen.add(state(args))
         time.sleep(2)
@@ -131,14 +151,14 @@ def vault_work_sleep(payload: Request, out: Outputs) -> Answer:
         assert process.poll() is None, f"the run to be ended stopped first: {run}"
         time.sleep(1)
     number = run["number"]
-    lock = cli(args, "lock-mid-run", "vault", "lock")
+    lock = cast(Changed, cli(args, "lock-mid-run", "vault", "lock"))
     assert number in lock.get("ended", []), f"the lock did not say it ended run {number}: {lock}"
     assert lock["vault"]["state"] in ("locking", "locked"), f"the lock left the vault {lock['vault']['state']}"
     lock_s = locked_within(args, 120)
     process.wait(timeout=120)
     unlock(args, "unlock-after", 0)
     # `cozy run watch` exits 1 for a canceled run.
-    watched = cli(args, "ended-run", "run", "watch", str(number), fails=True)
+    watched = cast(Run, cli(args, "ended-run", "run", "watch", str(number), fails=True))
     assert watched.get("status") == "canceled", f"run {number} is {watched.get('status')} after the lock ended it"
     receipt["lock_ended"] = {"run": number, "ended": lock["ended"], "state": lock["vault"]["state"], "locked_s": round(lock_s, 1), "run_status": watched["status"]}
     receipt["synthetic_only"] = True
