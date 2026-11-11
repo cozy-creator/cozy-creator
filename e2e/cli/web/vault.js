@@ -198,6 +198,10 @@ const newPage = async () => {
     if (!isVaultWrite(response.request())) return;
     try {
       const action = JSON.parse(response.request().postData() || '{}').action;
+      if (action === 'activity') {
+        (seen.activity_statuses ??= []).push(response.status());
+        return;
+      }
       if ((response.headers()['content-type'] ?? '').startsWith('text/event-stream')) {
         // The page consumes and aborts this stream after its terminal event. Do
         // not clone or retain a second copy of its recovery-bearing body.
@@ -651,7 +655,10 @@ const newPage = async () => {
   check('new_creation_credentials_are_not_browser_storage', !persisted.includes(newRecovery) && !persisted.includes('synthetic new project passphrase'));
 
   stage = 'implicit canvas creation waits for secure setup';
-  await goto(page, `${origin}/`);
+  // Home intentionally reopens the latest project. This global route keeps an
+  // unowned canvas behind its drawer, so this actually exercises first-drop setup.
+  await goto(page, `${origin}/runs`);
+  await page.locator('.empty-canvas').waitFor();
   const uploadsBeforeSetup = fileWrites.length;
   const emptyAt = await openCanvas(page);
   await drop(page, [{ name: 'new_private_drop.png', type: 'image/png', bytes: png(109) }], emptyAt.x, emptyAt.y);
@@ -734,6 +741,7 @@ const newPage = async () => {
 
   check('no_external_secret_delivery', outbound.length === 0);
   check('secret_actions_skip_idempotency_cache', secretIdempotency.length === 0);
+  check('activity_updates_are_accepted', (seen.activity_statuses ?? []).length > 0 && seen.activity_statuses.every((status) => status === 200));
   check('no_page_errors', errors.length === 0);
   seen.page_errors = errors;
 })().catch(async (error) => {

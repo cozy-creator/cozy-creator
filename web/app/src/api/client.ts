@@ -324,6 +324,10 @@ export class Client {
   async vaultChange(id: string, body: Partial<VaultAsk> & Pick<VaultAsk, "action">, onProgress?: (event: VaultProgress) => void, signal?: AbortSignal): Promise<VaultChanged> {
     if (this.transport.channel) throw new ApiError(403, { kind: "forbidden", code: "vault_local_only", message: "Open this project on its computer to enter encryption credentials" })
     signal?.throwIfAborted()
+    // Activity is a frequent, best-effort clock update, not a durable operation.
+    if (body.action === "activity") {
+      return this.json(`${project(id)}/vault`, { method: "POST", headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }, body: JSON.stringify(body), cache: "no-store", signal })
+    }
     const operation = crypto.randomUUID()
     const serialized = JSON.stringify(body)
     const incomplete = () => new ApiError(0, {
