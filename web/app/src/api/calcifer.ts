@@ -1595,11 +1595,6 @@ export type NewMachine = { "kind": "rent", sku: string,
  */
 hub?: string, gpus?: number | null, disk_gb?: number | null, 
 /**
- * A Hub admin's worker image, `sha256:<hex>`, in place of the machine kind's current
- * one; the Hub refuses anyone else.
- */
-image?: string | null, 
-/**
  * The one provider to buy from (`runpod`, `vast`): dev-only `--provider`.
  */
 provider?: string | null, 
