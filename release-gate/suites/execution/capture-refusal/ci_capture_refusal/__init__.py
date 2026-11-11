@@ -33,7 +33,7 @@ def gpu(payload: Probe, ctx: Context) -> Report:
     want_x, want_total = x.clone(), total.clone()
     host: list[float] = []
 
-    def step(index, x, total):
+    def step(index: int, x: torch.Tensor, total: torch.Tensor) -> None:
         del index
         x.mul_(0.5)
         total.add_(x.sum())

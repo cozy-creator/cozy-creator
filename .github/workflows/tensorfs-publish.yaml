@@ -149,6 +149,14 @@ jobs:
       - name: Verify and tag the complete Linux wheel
         if: runner.os == 'Linux'
         run: uv run --no-project --with auditwheel --with patchelf python backend/portable_wheels.py dist --platform "manylinux_2_28_$(uname -m)"
+      # The stubs against the extension they describe: a name, parameter or class they get wrong fails.
+      - name: Stubs match the extension
+        if: matrix.name == 'linux-x86_64'
+        run: |
+          wheel=$(ls dist/*-cp311-abi3-*.whl)
+          uv run --no-project --python 3.12 --with "$wheel" --with mypy==2.4.1 \
+            --with 'torch @ https://download.pytorch.org/whl/cpu/torch-2.15.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl' \
+            python -m mypy.stubtest --allowlist stubtest-allowlist.txt tensorfs._ext tensorfs.api tensorfs.executor tensorfs.raw
       - uses: actions/upload-artifact@v4
         with:
           name: wheel-${{ matrix.name }}

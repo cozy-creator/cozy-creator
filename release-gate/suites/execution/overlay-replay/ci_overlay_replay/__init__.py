@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import time
 from functools import partial
-from typing import Any
+from typing import cast
 
 import msgspec
 import torch
@@ -18,7 +18,8 @@ from cozy_runtime import graphs, rng
 from cozy_runtime.accel import lora
 from cozy_runtime.author import App, Config, Context, Loader, Model, Telemetry, uses_components
 from cozy_runtime.internal import kernel_ready, lora_bake
-from diffusers import QwenImageTransformer2DModel
+from diffusers.configuration_utils import ConfigMixin
+from diffusers.models.transformers.transformer_qwenimage import QwenImageTransformer2DModel
 from torch import nn
 
 app = App()
@@ -35,26 +36,44 @@ _DTYPES = {"f32": torch.float32, "bf16": torch.bfloat16, "f16": torch.float16, "
 SIDE, TEXT, STEPS = 32, 64, 3
 
 
-def _armed(dit: nn.Module, path: str) -> nn.Module | None:
-    arming = dit._ci_arming
-    return None if arming is None else arming.get_submodule(path)
+def _arm(dit: nn.Module, overlay: nn.Module | None) -> None:
+    """Arms `dit` with `overlay`, or disarms it (None)."""
+    dit._ci_arming = overlay  # type: ignore[assignment]  # torch types Module.__setattr__'s value Tensor | Module; it keeps None too
+
+
+def _armed(dit: nn.Module, path: str) -> Factors | None:
+    arming = dit._ci_arming  # torch types Module.__getattr__ Tensor | Module: here it is `_arm`'s module or None
+    # LoRAGraph puts a Factors at every site.
+    return cast(Factors, arming.get_submodule(path)) if isinstance(arming, nn.Module) else None
+
+
+def _construct[M: ConfigMixin](cls: type[M], config: dict[str, object]) -> M:
+    """`cls.from_config(config)`, typed: it returns a tuple only with `return_unused_kwargs=True`."""
+    return cast(M, cls.from_config(config))
+
+
+def _bf16[M: nn.Module](module: M) -> M:
+    """`module.to(dtype=torch.bfloat16)`, typed: Diffusers' `to` is functools.wraps'd, which mypy reads untyped."""
+    return module.to(dtype=torch.bfloat16)
 
 
 class DiTGraph:
     """The DiT in bf16 with a permanent `lora.Hook` per site; a call arms it before its loop."""
 
     def __init__(self, config: Config) -> None:
-        dit = QwenImageTransformer2DModel.from_config(config.section("transformer").mapping())
-        dit = dit.to(dtype=torch.bfloat16)
-        dit._ci_arming = None
+        dit = _construct(QwenImageTransformer2DModel, config.section("transformer").mapping())
+        dit = _bf16(dit)
+        _arm(dit, None)
         for index in range(len(dit.transformer_blocks)):
             for site in SITES:
                 path = f"transformer_blocks.{index}.{site}"
                 dit.get_submodule(path).register_forward_hook(lora.Hook(partial(_armed, dit, path)))
-        self.components: dict[str, nn.Module] = {"transformer": dit}
+        self.components: dict[str, QwenImageTransformer2DModel] = {"transformer": dit}
 
 
 class Factors(nn.Module):
+    alpha: torch.Tensor
+
     def __init__(self, inputs: int, outputs: int, weights: torch.dtype, alpha: torch.dtype) -> None:
         super().__init__()
         self.lora_A = nn.Linear(inputs, RANK, bias=False, dtype=weights)
@@ -121,7 +140,7 @@ class QwenDiT(Model[DiTGraph]):
 
         def step(i: torch.Tensor, latents: torch.Tensor, text: torch.Tensor, sigmas: torch.Tensor) -> None:
             if inside:
-                dit._ci_arming = overlay
+                _arm(dit, overlay)
             sigma = sigmas.index_select(0, i)
             hidden = dit.img_in(latents)
             timestep = sigma.to(hidden.dtype)
@@ -138,13 +157,13 @@ class QwenDiT(Model[DiTGraph]):
             velocity = dit.proj_out(dit.norm_out(hidden, temb))
             latents.copy_(latents + (sigmas.index_select(0, i + 1) - sigma).to(latents.dtype) * velocity)
 
-        dit._ci_arming = None if inside else overlay
+        _arm(dit, None if inside else overlay)
         try:
             index = torch.arange(STEPS, device=device)
             for i in range(STEPS):
                 step(index[i : i + 1], latents, text, sigmas)
         finally:
-            dit._ci_arming = None
+            _arm(dit, None)
         return latents.float().cpu()
 
 
@@ -206,7 +225,7 @@ def gpu(payload: Probe, model: QwenDiT, turbo_lora: Lightning, ctx: Context, tel
         base = model.denoise(payload.seed + 2, None)
     finally:
         graphs.BYPASS.reset(eager)
-    checks: dict[str, Any] = {
+    checks: dict[str, bool] = {
         "armed_equals_eager": bool(torch.equal(armed, reference)),
         "lora_changes_it": not torch.equal(reference, base),
     }

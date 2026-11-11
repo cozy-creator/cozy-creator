@@ -13,11 +13,16 @@ another gate's prompts, 0.16-0.18 for noise and grey. Sharpness medians 0.80 for
 0.04 blocky (1/16), 0.16 noise.
     quality.py <gate dir> [<baseline file>]     the same verdict alone"""
 import glob, hashlib, json, os, subprocess, sys, tempfile
+from types import ModuleType
+from typing import TYPE_CHECKING
 import numpy as np
 from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from runs import Run  # noqa: E402
+from runs import Baseline, GateHistory, QualityRef, Run  # noqa: E402
+
+if TYPE_CHECKING:
+    from transformers import CLIPModel, CLIPProcessor
 
 MODEL = 'openai/clip-vit-base-patch16'
 FLOOR = 0.25
@@ -28,20 +33,20 @@ MARGIN = 0.03
 # The sharpness median may fall this far under the lowest of the last KEEP passed medians.
 BUDGET, KEEP = 0.25, 5
 SKIP = ('birefnet', 'describer', 'seedvr2')  # cutouts on white, text, upscales of H3's own frames
-_clip = None
+_clip: 'tuple[CLIPModel, CLIPProcessor, ModuleType] | None' = None
 
 
-def clip():
+def clip() -> 'tuple[CLIPModel, CLIPProcessor, ModuleType]':
     global _clip
     if _clip is None:
         import torch
         from transformers import CLIPModel, CLIPProcessor
         torch.set_num_threads(2)
-        _clip = (CLIPModel.from_pretrained(MODEL).eval(), CLIPProcessor.from_pretrained(MODEL), torch)
+        _clip = (CLIPModel.from_pretrained(MODEL).eval(), CLIPProcessor.from_pretrained(MODEL), torch)  # type: ignore[no-untyped-call]  # transformers' eval() is unannotated
     return _clip
 
 
-def judge(ims, prompt):
+def judge(ims: list[Image.Image], prompt: str) -> list[tuple[float, float]]:
     """(adherence, sharpness) per image."""
     model, proc, torch = clip()
     with torch.no_grad():
@@ -51,14 +56,14 @@ def judge(ims, prompt):
     return [(round(float(a), 4), round(float(s), 4)) for a, s in zip(adherence, sharp)]
 
 
-def rgb(path):
-    im = Image.open(path)
+def rgb(path: str) -> Image.Image:
+    im: Image.Image = Image.open(path)
     if im.mode in ('RGBA', 'LA'):  # transparency: judge the render on mid-grey, not on its alpha
         bg = Image.new('RGBA', im.size, (128, 128, 128, 255)); bg.alpha_composite(im.convert('RGBA')); im = bg
     return im.convert('RGB')
 
 
-def frames(path, n=3):
+def frames(path: str, n: int = 3) -> list[Image.Image]:
     d = tempfile.mkdtemp()
     dur = float(subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', path],
                                capture_output=True, text=True).stdout.strip() or 0)
@@ -67,16 +72,21 @@ def frames(path, n=3):
     return [Image.open(f).convert('RGB') for f in sorted(glob.glob(f'{d}/*.png'))]
 
 
-def check(gate):
+def check(gate: GateHistory) -> tuple[list[str], list[str]]:
     out, base = gate['out'], gate.get('baseline') or {}
     p = os.path.join(out, 'prompts.tsv')
     prompts = dict(l.rstrip('\n').split('\t', 1) for l in open(p) if '\t' in l) if os.path.exists(p) else {}
     p = os.path.join(out, 'seeds.tsv')
     seeds = dict(l.rstrip('\n').split('\t', 1) for l in open(p) if '\t' in l) if os.path.exists(p) else {}
     label = open(os.path.join(out, 'label')).read().strip()
+    kept: dict[str, QualityRef]
     refs, kept = base.get('quality_ref') or {}, {}
+    fails: list[str]
+    notes: list[str]
+    cells: dict[str, list[tuple[float, float]]]
     fails, notes, cells = [], [], {}
     # Every image cell, judged or not: a flat picture is a failed decode (a non-finite one reads back black).
+    line: str | None
     for line in open(os.path.join(out, 'cells.tsv')):
         name, _, number = line.rstrip('\n').split('\t')[:3]
         run = Run.read(os.path.join(out, name + '.json')) if number.isdigit() else None
@@ -131,7 +141,7 @@ def check(gate):
 
 if __name__ == '__main__':
     out = sys.argv[1].rstrip('/')
-    base = json.load(open(sys.argv[2])) if len(sys.argv) > 2 and os.path.exists(sys.argv[2]) else {}
+    base: Baseline = json.load(open(sys.argv[2])) if len(sys.argv) > 2 and os.path.exists(sys.argv[2]) else {}
     fails, notes = check({'out': out, 'baseline': base})
     for n in notes: print('note', n)
     for f in fails: print('FAIL', f)

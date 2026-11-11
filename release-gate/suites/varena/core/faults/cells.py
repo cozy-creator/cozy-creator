@@ -17,7 +17,9 @@ import signal
 import sys
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
 CELL, ROLE = sys.argv[1], sys.argv[2]
 HERE = Path(__file__).resolve().parent
@@ -30,9 +32,14 @@ faulthandler.dump_traceback_later(30, repeat=True)
 
 import torch  # noqa: E402
 import torch.nn.functional as F  # noqa: E402
+from tensorfs import _ext
 from tensorfs.varena import _runtime as varena  # noqa: E402
 from tensorfs.varena import api  # noqa: E402
 from tensorfs.varena import torch as vt  # noqa: E402
+from tensorfs.varena.torch import PoolId
+
+if TYPE_CHECKING:
+    from tensorfs.varena._offload import GraphsMode, Offload
 
 sys.path[:0] = [str(HERE.parent.parent / "native-tensor-export"), str(HERE.parent.parent / "ledger")]
 from provider import Provider  # noqa: E402
@@ -72,7 +79,7 @@ class Block(torch.nn.Module):
     """A Conv2d, norms, attention, Linear, a cuBLAS matmul and the cross-attention shape
     (154, 2048) x (2048, 1280) that writes its cuBLAS workspace."""
 
-    def __init__(self, channels=320, dim=640, heads=10, rng=False) -> None:
+    def __init__(self, channels: int = 320, dim: int = 640, heads: int = 10, rng: bool = False) -> None:
         super().__init__()
         self.dim, self.heads, self.rng = dim, heads, rng
         self.group = torch.nn.GroupNorm(32, channels)
@@ -85,24 +92,26 @@ class Block(torch.nn.Module):
         self.back = torch.nn.Conv2d(dim, channels, 1)
         self.text = torch.nn.Linear(2048, 1280, bias=False)
         self.words = torch.nn.Linear(1280, dim)
-        self.context = None
+        self.context: torch.Tensor | None = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         b, _, h, w = x.shape
         y = self.into(self.conv(F.silu(self.group(x)))).flatten(2).transpose(1, 2)
         z = self.norm(y)
-        split = lambda t: t.reshape(b, h * w, self.heads, self.dim // self.heads).transpose(1, 2)
+        split: Callable[[torch.Tensor], torch.Tensor] = lambda t: t.reshape(b, h * w, self.heads, self.dim // self.heads).transpose(1, 2)
         a = F.scaled_dot_product_attention(split(self.query(z)), split(self.key(z)), split(self.value(z)))
         y = y + a.transpose(1, 2).reshape(b, h * w, self.dim)
+        assert self.context is not None
         y = y + self.words(self.text(self.context)).mean(1, keepdim=True)
         y = y + self.down(F.gelu(self.up(self.norm(y))))
         y = torch.matmul(y, self.weight)
         if self.rng:
             y = y + 0.01 * torch.randn_like(y)
-        return x + self.back(y.transpose(1, 2).reshape(b, self.dim, h, w))
+        out: torch.Tensor = x + self.back(y.transpose(1, 2).reshape(b, self.dim, h, w))
+        return out
 
 
-def model(depth=2, seed=138, rng=False) -> torch.nn.Module:
+def model(depth: int = 2, seed: int = 138, rng: bool = False) -> torch.nn.Module:
     torch.manual_seed(seed)
     net = torch.nn.Sequential(*[Block(rng=rng) for _ in range(depth)]).to(device, HALF).eval()
     context = torch.randn(2, 77, 2048, dtype=torch.float32).to(device, HALF)
@@ -123,7 +132,7 @@ def raw(tensor: torch.Tensor) -> bytes:
     return tensor.cpu().numpy().tobytes()
 
 
-def replay(graph, stream) -> None:
+def replay(graph: torch.cuda.CUDAGraph, stream: torch.cuda.Stream) -> None:
     with vt.replay_scope(DEVICE):
         vt.replay(graph, stream=stream)
 
@@ -136,7 +145,7 @@ def give_back() -> int:
     return taken
 
 
-def unmap_pool(pool, held, stream) -> int:
+def unmap_pool(pool: PoolId, held: list[torch.Tensor], stream: torch.cuda.Stream) -> int:
     """Declare a pool's tensors dead between uses, end this use, and let the core take its pages."""
     vt.pool_scratch(pool, held, DEVICE)
     vt.record_pool_stream(pool, stream)
@@ -151,11 +160,11 @@ def unmap_pool(pool, held, stream) -> int:
         time.sleep(0.001)
 
 
-def pool_ranges(pool) -> list[tuple[int, int]]:
+def pool_ranges(pool: PoolId) -> list[tuple[int, int]]:
     return [(s["address"], s["total_size"]) for s in torch.cuda.memory_snapshot(mempool_id=pool)]
 
 
-def poison(ranges, stream, value=0xE7) -> None:
+def poison(ranges: list[tuple[int, int]], stream: torch.cuda.Stream, value: int = 0xE7) -> None:
     for base, size in ranges:
         assert cuda.cuMemsetD8Async(base, value, size, stream.cuda_stream) == 0
     stream.synchronize()
@@ -164,9 +173,10 @@ def poison(ranges, stream, value=0xE7) -> None:
 class Graph:
     """One graph in a private pool; its static input outside it, or inside as Runtime's are."""
 
-    def __init__(self, net, stream, reserve=256 * MIB, static_in_pool=False) -> None:
+    def __init__(self, net: torch.nn.Module, stream: torch.cuda.Stream, reserve: int = 256 * MIB,
+                 static_in_pool: bool = False) -> None:
         self.net, self.stream = net, stream
-        self.pool = tuple(torch.cuda.graph_pool_handle())
+        self.pool = cast(PoolId, tuple(torch.cuda.graph_pool_handle()))  # a (int, int) handle
         self.graph = torch.cuda.CUDAGraph()
         if not static_in_pool:
             self.input = torch.empty(SHAPE, dtype=HALF, device=device)
@@ -174,7 +184,7 @@ class Graph:
         with vt.graph(self.graph, pool=self.pool, stream=stream, reserve_bytes=reserve):
             if static_in_pool:
                 self.input = torch.empty(SHAPE, dtype=HALF, device=device)
-            self.output = net(self.input)
+            self.output: torch.Tensor = net(self.input)
         self.ranges = pool_ranges(self.pool)
         self.bytes = sum(size for _, size in self.ranges)
 
@@ -188,12 +198,12 @@ class Graph:
         return raw(self.output)
 
 
-def rows() -> list[dict]:
+def rows() -> list[dict[str, int]]:
     """This machine's ledger, as its peers read it."""
     return [row for path in ledger.tables() for row in ledger.rows(path)[1]]
 
 
-def setup():
+def setup() -> tuple[torch.cuda.Stream, None]:
     """A fresh process's device, a stream, warm kernels. Install joins the machine's ledger, as an
     executor does."""
     vt.install(DEVICE)
@@ -208,13 +218,13 @@ def setup():
     return stream, None
 
 
-def squeeze(leave=64 * MIB) -> torch.Tensor:
+def squeeze(leave: int = 64 * MIB) -> torch.Tensor:
     """Hold the card so released pages are the only free ones."""
     free, _ = torch.cuda.mem_get_info(DEVICE)
-    while True:
+    hold: torch.Tensor | None = None
+    while hold is None:
         try:
             hold = torch.empty(free - leave, dtype=torch.uint8, device=device)
-            break
         except torch.OutOfMemoryError:
             leave += 128 * MIB
     hold.fill_(0x11)
@@ -519,7 +529,9 @@ def create_oom(reclaimable: bool) -> None:
         spare = torch.empty(64 * MIB, dtype=torch.uint8, device=device)
         del spare  # completed and idle: the first step of the reclaim order takes it
         stream.synchronize()
-    vt._ext._varena_fail_create_after(DEVICE, 5, 1 if reclaimable else 1 << 62)
+    _ext._varena_fail_create_after(DEVICE, 5, 1 if reclaimable else 1 << 62)
+    refused: torch.OutOfMemoryError | None
+    held = False
     try:
         big = torch.empty(256 * MIB, dtype=torch.uint8, device=device)  # 16 handles of 16 MiB
     except torch.OutOfMemoryError as error:
@@ -529,7 +541,7 @@ def create_oom(reclaimable: bool) -> None:
         big.fill_(0x5A)
         stream.synchronize()
         held = bool((big == 0x5A).all())
-    vt._ext._varena_fail_create_after(DEVICE, 0, 0)
+    _ext._varena_fail_create_after(DEVICE, 0, 0)
     after = torch.empty(256 * MIB, dtype=torch.uint8, device=device)
     after.fill_(0x3C)
     stream.synchronize()
@@ -576,20 +588,23 @@ def raw_graph(prepared: bool = False) -> None:
     eager = raw(net(value))
     static = value.clone()
     stream.synchronize()
+    graph: torch.cuda.CUDAGraph | None
     graph = torch.cuda.CUDAGraph()
-    output = None
-    pool = tuple(torch.cuda.graph_pool_handle())
+    output: torch.Tensor | None = None
+    pool = cast(PoolId, tuple(torch.cuda.graph_pool_handle()))  # a (int, int) handle
     if prepared:
         vt.prepare_pool(pool, 256 * MIB, DEVICE)
     try:
-        with torch.cuda.graph(graph, pool=pool):
+        with torch.cuda.graph(graph, pool=pool):  # type: ignore[arg-type]  # a plain (int, int), not torch's _POOL_HANDLE NewType
             output = net(static)
         say("raw_captured")
     except BaseException as error:  # noqa: BLE001 - the measurement
         say("raw_capture_refused", kind=classify(error), type=type(error).__name__, message=str(error)[:300])
         graph = None
-    same = trimmed = None
+    same: bool | None = None
+    trimmed: bool | None = None
     if graph is not None:
+        assert output is not None
         graph.replay()
         stream.synchronize()
         same = raw(output) == eager
@@ -621,9 +636,9 @@ def raw_graph_prepared() -> None:
 
 
 def forked_child(write: int, tensor: torch.Tensor, graph: Graph) -> None:
-    results = {}
+    results: dict[str, str] = {}
     holder = [tensor]
-    gpu_ops = {
+    gpu_ops: dict[str, Callable[[], object]] = {
         "free": holder.clear,
         "open": lambda: api.open(DEVICE),
         "alloc": lambda: torch.empty(8, device=device),
@@ -673,7 +688,8 @@ def fork() -> None:
             hung += 1
             os.kill(pid, signal.SIGKILL)
         else:
-            for key, value in json.loads(os.read(read, 65536).decode()).items():
+            answered: dict[str, str] = json.loads(os.read(read, 65536).decode())
+            for key, value in answered.items():
                 label = f"{key}={value.split(':')[0]}"
                 seen[label] = seen.get(label, 0) + 1
                 messages.setdefault(label, value)
@@ -720,7 +736,8 @@ def worker() -> None:
 def foreign() -> None:
     """A plain Torch program, no Varena: takes all it can, holds, leaves."""
     torch.cuda.set_device(DEVICE)
-    chunks, grabbed = [], 0
+    chunks: list[torch.Tensor] = []
+    grabbed = 0
     while True:
         try:
             chunk = torch.empty(256 * MIB, dtype=torch.uint8, device=device)
@@ -764,6 +781,7 @@ def unmap_under_kernel() -> None:
         replay(graph.graph, stream)
     facts = attack_while_running()
     stream.synchronize()
+    assert graph.output is not None
     same = raw(graph.output) == reference
     say("under_replay", identical=same, **facts)
 
@@ -806,6 +824,7 @@ def remap_scrambled() -> None:
     same = refused = 0
     shuffle = random.Random(138)
     cycles = 24
+    pieces: list[torch.Tensor] | None
     for cycle in range(cycles):
         value = sample(cycle)
         control = graph.run(value)
@@ -859,7 +878,7 @@ def aux_write() -> None:
     aux = torch.cuda.Stream(device=DEVICE)
     net = model(seed=19)
     graph = torch.cuda.CUDAGraph()
-    pool = tuple(torch.cuda.graph_pool_handle())
+    pool = cast(PoolId, tuple(torch.cuda.graph_pool_handle()))  # a (int, int) handle
     static = sample(0)
     with vt.graph(graph, pool=pool, stream=stream, reserve_bytes=256 * MIB):
         with torch.cuda.stream(aux):
@@ -884,6 +903,7 @@ def alias_unmapped() -> None:
     stream, _ = setup()
     graph = Graph(model(seed=20), stream)
     graph.run(sample(0))
+    assert graph.output is not None
     alias = graph.output.detach()
     unmap_pool(graph.pool, [graph.input, graph.output], stream)
     alias.add_(1.0)
@@ -899,7 +919,7 @@ def lazy_workspace() -> None:
     net = torch.nn.Linear(2048, 1280, bias=False).to(device, HALF).eval()
     static = torch.randn(2, 77, 2048, dtype=HALF, device=device)
     graph = torch.cuda.CUDAGraph()
-    pool = tuple(torch.cuda.graph_pool_handle())
+    pool = cast(PoolId, tuple(torch.cuda.graph_pool_handle()))  # a (int, int) handle
     with vt.graph(graph, pool=pool, stream=fresh, reserve_bytes=64 * MIB):
         output = net(static)
     replay(graph, fresh)
@@ -921,18 +941,20 @@ class NoStream(torch.nn.Module):
     def forward(self, value: torch.Tensor) -> torch.Tensor:
         middle = self.first(value)
         if not middle.is_cuda:  # The reference, computed before any CUDA.
-            return self.second(middle.add(1.0))
+            reference: torch.Tensor = self.second(middle.add(1.0))
+            return reference
         with torch.cuda.stream(torch.cuda.default_stream(DEVICE)):
             middle = middle.add(1.0)
-        return self.second(middle)
+        out: torch.Tensor = self.second(middle)
+        return out
 
 
-def no_stream_adopted(graphs: str):
+def no_stream_adopted(graphs: GraphsMode) -> tuple[NoStream, torch.Tensor, torch.Tensor, Offload]:
     torch.manual_seed(138)
     net = NoStream().eval()
     value = torch.randn(8, 256)
     reference = net(value)
-    handle = vt.offload(net, device=DEVICE, graphs=graphs)
+    handle: Offload = vt.offload(net, device=DEVICE, graphs=graphs)
     handle.owner.current()
     return net, value.to(device), reference, handle
 
@@ -954,6 +976,7 @@ def no_stream_capture() -> None:
     """Under capture: it can't be in the graph, so the capture falls back to eager, output correct."""
     net, value, reference, handle = no_stream_adopted("auto")
     same = all(torch.allclose(net(value).cpu(), reference, atol=1e-5) for _ in range(12))
+    assert handle.graphs is not None
     counts = handle.graphs.counts
     say("counts", captures=counts["captures"], replays=counts["replays"], declines=str(counts["declines"])[:200])
     # CUDA's own refusal: a check of one replay against eager would only see what changes its output.
@@ -974,7 +997,7 @@ def no_stream_graph() -> None:
     verdict("correct" if refused and "capturing blocking stream" in refused else "corrupt", refused=str(refused)[:120])
 
 
-def workspace_graphs(stream):
+def workspace_graphs(stream: torch.cuda.Stream) -> tuple[Graph, Graph, int | None, int]:
     """Two graphs on one stream at flag 1, sharing Torch's cached workspace."""
     a, b = Graph(model(seed=21), stream), Graph(model(seed=22), stream)
     a.run(sample(0))
@@ -990,7 +1013,7 @@ def workspace_unmapped() -> None:
     a, b, address, want = workspace_graphs(stream)
     reference = b.run(sample(1))
     a.graph.reset()
-    a.output = None
+    a.output = None  # type: ignore[assignment]  # released: its pool's memory goes back
     stream.synchronize()
     give_back()
     gone = not any(s["address"] <= (address or 0) < s["address"] + s["total_size"] for s in torch.cuda.memory_snapshot())
@@ -1005,9 +1028,10 @@ def workspace_reuse() -> None:
     a, b, address, want = workspace_graphs(stream)
     reference = b.run(sample(1))
     a.graph.reset()
-    a.output = None
+    a.output = None  # type: ignore[assignment]  # released: its pool's memory goes back
     stream.synchronize()
-    held, found = [], None
+    held: list[torch.Tensor] = []
+    found: torch.Tensor | None = None
     for _ in range(64):
         tensor = torch.empty(want, dtype=torch.uint8, device=device)
         if tensor.data_ptr() == address:
@@ -1076,7 +1100,7 @@ def tool_perturb() -> None:
             given_stale=sum(b != 0xA5 for b in given), reused_at_address=again.data_ptr() == address)
 
 
-def overrun(guards: bool):
+def overrun(guards: bool) -> tuple[int, int, torch.Tensor]:
     """A write just past the first of two large blocks; what that left in the second."""
     stream, _ = setup()
     vt.checks(guards=guards)

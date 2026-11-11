@@ -41,40 +41,110 @@ pattern over the whole frame raises and a picture's edges, being sparse, do not.
 import json
 import subprocess
 import sys
+from typing import TypedDict
 
 import numpy as np
+import numpy.typing as npt
 
 FPS = 24
+Frames = npt.NDArray[np.float64]
 
 
-def probe(path: str) -> dict:
+class Probe(TypedDict):
+    width: int
+    height: int
+    frames: int
+
+
+class Regen(Probe):
+    psnr: float
+    ssim: float
+    structure_psnr: float
+    structure_ssim: float
+    lag_ms: float | None
+    corr: float | None
+    flicker: int
+    flicker_at_s: list[float]
+
+
+class Guide(Probe):
+    guided_frames: int
+    ssim: float
+    within_1: float
+    coherence_after: float | None
+
+
+class Still(Probe):
+    ssim: float
+    other: float
+    seam: float
+
+
+class Variant(Probe):
+    ssim: float
+    ssim_first: float
+    ssim_second: float
+    contrast: float
+    control_contrast: float
+    coherence: float
+    seam: float
+    seam_at_s: float
+
+
+class Boundary(TypedDict):
+    at: float
+    worst_at_s: float
+    ratio: float
+    ssim: float
+
+
+class Seams(Probe):
+    median_change: float
+    inside_ssim: float | None
+    boundaries: list[Boundary]
+    flicker: int
+    flicker_at_s: list[float]
+
+
+class Coherent(Probe):
+    contrast: float
+    spread: float
+    motion: float
+    coherence: float
+    least: float
+    fine: float
+    pattern: float
+
+
+def probe(path: str) -> Probe:
     out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-count_frames", "-show_entries",
                           "stream=width,height,nb_read_frames", "-of", "json", path], capture_output=True, check=True)
     s = json.loads(out.stdout)["streams"][0]
     return {"width": int(s["width"]), "height": int(s["height"]), "frames": int(s["nb_read_frames"])}
 
 
-def gray(path: str, width: int, height: int, vf: str = "") -> np.ndarray:
+def gray(path: str, width: int, height: int, vf: str = "") -> Frames:
     chain = f"{vf}{',' if vf else ''}scale={width}:{height}:flags=area,format=gray"
     raw = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-i", path, "-vf", chain, "-f", "rawvideo", "-"],
                          capture_output=True, check=True).stdout
     return np.frombuffer(raw, np.uint8).reshape(-1, height, width).astype(np.float64)
 
 
-def ssim(a: np.ndarray, b: np.ndarray) -> float:
+def ssim(a: Frames, b: Frames) -> float:
     """Mean SSIM with an 8x8 box window."""
     c1, c2, k = (0.01 * 255) ** 2, (0.03 * 255) ** 2, 8
 
-    def box(z: np.ndarray) -> np.ndarray:
-        s = np.pad(z.cumsum(-1).cumsum(-2), [(0, 0)] * (z.ndim - 2) + [(1, 0), (1, 0)])
-        return (s[..., k:, k:] - s[..., :-k, k:] - s[..., k:, :-k] + s[..., :-k, :-k]) / (k * k)
+    def box(z: Frames) -> Frames:
+        s: Frames = np.pad(z.cumsum(-1).cumsum(-2), [(0, 0)] * (z.ndim - 2) + [(1, 0), (1, 0)])
+        out: Frames = (s[..., k:, k:] - s[..., :-k, k:] - s[..., k:, :-k] + s[..., :-k, :-k]) / (k * k)
+        return out
 
     ma, mb = box(a), box(b)
     va, vb, cov = box(a * a) - ma**2, box(b * b) - mb**2, box(a * b) - ma * mb
     return float((((2 * ma * mb + c1) * (2 * cov + c2)) / ((ma**2 + mb**2 + c1) * (va + vb + c2))).mean())
 
 
-def pcm(path: str) -> np.ndarray:
+def pcm(path: str) -> npt.NDArray[np.float32]:
     raw = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-i", path, "-vn", "-ac", "1", "-ar", "8000",
                           "-f", "f32le", "-"], capture_output=True, check=True).stdout
     return np.frombuffer(raw, np.float32)
@@ -99,7 +169,7 @@ def flicker(original: str, output: str) -> tuple[int, list[float]]:
     return len(frames), [round(int(f) / FPS, 2) for f in frames[:8]]
 
 
-def regen(original: str, output: str) -> dict:
+def regen(original: str, output: str) -> Regen:
     psnr, ss = similarity(original, output, 1344, 768)
     structure_psnr, structure_ssim = similarity(original, output, 112, 64)
     flickers, flicker_at_s = flicker(original, output)
@@ -117,7 +187,7 @@ def regen(original: str, output: str) -> dict:
             "lag_ms": lag, "corr": corr, "flicker": flickers, "flicker_at_s": flicker_at_s}
 
 
-def guide(source: str, output: str, guided: float | None, fps24: bool) -> dict:
+def guide(source: str, output: str, guided: float | None, fps24: bool) -> Guide:
     src, out = gray(source, 192, 108, f"fps={FPS}" if fps24 else ""), gray(output, 192, 108)
     n = min(len(out), len(src), len(out) if guided is None else round(guided * FPS))
     same = [ssim(out[i], src[i]) for i in range(n)]
@@ -131,7 +201,7 @@ def guide(source: str, output: str, guided: float | None, fps24: bool) -> dict:
             "coherence_after": round(float(np.mean(after)), 3) if after else None}
 
 
-def still(image: str, output: str, at: str) -> dict:
+def still(image: str, output: str, at: str) -> Still:
     info = probe(output)
     w, h = info["width"], info["height"]
     crop = f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h}"
@@ -143,10 +213,12 @@ def still(image: str, output: str, at: str) -> dict:
             "seam": round(min(ssim(edge[i], edge[i + 1]) for i in range(len(edge) - 1)), 3)}
 
 
-def variant(control: str, output: str) -> dict:
+def variant(control: str, output: str) -> Variant:
     a, b = gray(control, 192, 108), gray(output, 192, 108)
     n = min(len(a), len(b))
-    pair = lambda r: round(float(np.mean([ssim(a[i], b[i]) for i in r])), 3)
+    def pair(r: range) -> float:
+        return round(float(np.mean([ssim(a[i], b[i]) for i in r])), 3)
+
     cons = [ssim(b[i], b[i + 1]) for i in range(len(b) - 1)]
     k = int(np.argmin(cons))
     return {**probe(output), "ssim": pair(range(0, n, 4)), "ssim_first": pair(range(0, n // 2, 4)),
@@ -155,7 +227,7 @@ def variant(control: str, output: str) -> dict:
             "coherence": round(float(np.mean(cons)), 3), "seam": round(cons[k], 3), "seam_at_s": round((k + 1) / FPS, 2)}
 
 
-def seams(output: str, at: list[float]) -> dict:
+def seams(output: str, at: list[float]) -> Seams:
     b = gray(output, 224, 128)
     d = np.abs(np.diff(b, axis=0)).mean(axis=(1, 2))
     med = max(float(np.median(d)), 0.5)
@@ -168,7 +240,7 @@ def seams(output: str, at: list[float]) -> dict:
         lo, hi = window(t)
         return min(ssim(b[i], b[i + 1]) for i in range(lo, hi))
 
-    out = []
+    out: list[Boundary] = []
     for t in at:
         lo, hi = window(t)
         k = lo + int(np.argmax(d[lo:hi]))
@@ -197,7 +269,7 @@ def fine(output: str) -> tuple[float, float]:
     return float(np.percentile(ratios, 90)), float(np.median(levels))
 
 
-def coherent(output: str) -> dict:
+def coherent(output: str) -> Coherent:
     a = gray(output, 192, 108)
     pairs = [ssim(a[i - 1], a[i]) for i in range(1, len(a))]
     high, pattern = fine(output)

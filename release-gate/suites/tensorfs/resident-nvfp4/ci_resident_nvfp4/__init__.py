@@ -4,9 +4,14 @@ import hashlib
 import itertools
 import json
 from pathlib import Path
+from types import ModuleType
+from typing import TYPE_CHECKING
 
 import msgspec
 from cozy_runtime.author import App, Context
+
+if TYPE_CHECKING:
+    from ._types import Case, Specimen
 
 app = App()
 
@@ -22,7 +27,7 @@ class Report(msgspec.Struct):
     detail: str
 
 
-def specimen(torch, shape, layout, order, global_mode, with_pre, seed):
+def specimen(torch: ModuleType, shape: tuple[int, ...], layout: str, order: str, global_mode: str, with_pre: bool, seed: int) -> "Specimen":
     """Serialize explicit FP4 codes/scales; expected values use the declared value law."""
     count, cols, height = int(torch.tensor(shape).prod()), shape[-1], shape[-2]
     rows, blocks = count // cols, cols // 16
@@ -93,7 +98,7 @@ def run(payload: Request, ctx: Context) -> Report:
     if ctx.device.type != "cuda":
         raise RuntimeError("resident decoding requires a real CUDA device")
     torch.set_num_threads(1)
-    rows = []
+    rows: list[Case] = []
     producer = torch.cuda.Stream()
     shapes = [(3, 32), (2, 129, 80)]
     variants = itertools.product(

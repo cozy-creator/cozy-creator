@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cozy", required=True)
     args = parser.parse_args()

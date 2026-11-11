@@ -20,14 +20,14 @@ ESCAPE = re.compile(r"\x1b(?:\[([?0-9;]*)[ -/]*([@-~])|\][^\x07\x1b]*(?:\x07|\x1
 
 
 class Screen:
-    def __init__(self):
+    def __init__(self) -> None:
         self.clear()
 
-    def clear(self):
-        self.cells = [[" "] * COLS for _ in range(ROWS)]
+    def clear(self) -> None:
+        self.cells: list[list[str]] = [[" "] * COLS for _ in range(ROWS)]
         self.row, self.col = 0, 0
 
-    def feed(self, text):
+    def feed(self, text: str) -> str:
         """Draws `text`; answers what may be the start of an escape sequence still to come."""
         at = 0
         while at < len(text):
@@ -42,7 +42,7 @@ class Screen:
             at += 1
         return ""
 
-    def escape(self, numbers, final):
+    def escape(self, numbers: str | None, final: str | None) -> None:
         if final == "H":
             row, _, col = (numbers or "").partition(";")
             self.row, self.col = int(row or 1) - 1, int(col or 1) - 1
@@ -53,7 +53,7 @@ class Screen:
         elif final == "K":
             self.cells[self.row][self.col :] = [" "] * (COLS - self.col)
 
-    def char(self, char):
+    def char(self, char: str) -> None:
         if char == "\r":
             self.col = 0
         elif char == "\n":
@@ -62,11 +62,11 @@ class Screen:
             self.cells[self.row][self.col] = char
             self.col += 1
 
-    def text(self):
+    def text(self) -> str:
         return "\n".join("".join(row).rstrip() for row in self.cells).rstrip() + "\n"
 
 
-def main():
+def main() -> None:
     out, command = sys.argv[1], sys.argv[2:]
     pid, terminal = pty.fork()
     if pid == 0:
@@ -74,7 +74,8 @@ def main():
         os.environ["TERM"] = "xterm-256color"
         os.execvp(command[0], command)
     signal.signal(signal.SIGTERM, lambda *_: os.write(terminal, b"q"))
-    screen, decoder, held, shown = Screen(), codecs.getincrementaldecoder("utf-8")("replace"), "", None
+    shown: str | None = None
+    screen, decoder, held = Screen(), codecs.getincrementaldecoder("utf-8")("replace"), ""
     while True:
         try:
             if not select.select([terminal], [], [], 0.2)[0]:

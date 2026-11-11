@@ -11,6 +11,8 @@ from collections.abc import Callable
 from functools import partial
 from importlib import import_module
 from pathlib import Path
+from types import ModuleType
+from typing import TYPE_CHECKING, NotRequired, Protocol, TypedDict, cast
 
 import cozy_runtime
 import msgspec
@@ -19,7 +21,7 @@ import torch
 from cozy_runtime.internal.contract import unsealed
 
 #: The driver's view, read on purpose: this cell tests the memory manager itself.
-mem_get_info = unsealed(torch, "mem_get_info")
+mem_get_info = cast(Callable[[int], tuple[int, int]], unsealed(torch, "mem_get_info"))  # torch.cuda.mem_get_info
 import triton
 from cozy_runtime import _kernels
 from cozy_runtime import lm
@@ -55,6 +57,9 @@ from triton.runtime.jit import JITFunction
 
 from ci_kernels import static_check
 
+if TYPE_CHECKING:
+    from cozy_runtime.internal.encoding.selection import DeviceFacts
+
 app = App()
 #: minimax-h3's glue as `cells.sh` copied it here: the one package with kernels of its own.
 _H3_GLUE = "ci_kernels._h3.glue" if (Path(__file__).parent / "_h3" / "glue.py").exists() else ""
@@ -82,24 +87,56 @@ class Report(msgspec.Struct):
     detail: str
 
 
+class Outcome(TypedDict, total=False):
+    """An exerciser's verdict, and what it measured beside it."""
+    passed: bool
+    detail: str
+    outliers: str
+    shapes: str
+
+
+class Declared(TypedDict):
+    """What this card claims (`declared`), and what `inventory` adds to it."""
+    names: list[str]
+    entries: dict[str, list[str]]
+    row: str
+    sm: int
+    jits: NotRequired[dict[str, list[str]]]
+    gpus: NotRequired[int]
+    mismatches: NotRequired[list[str]]
+
+
+class _Kernel(Protocol):
+    """A Triton jit function, as the launch recorders read it."""
+    __name__: str
+    arg_names: list[str]
+
+
+class _Probed(Protocol):
+    """A Runtime module with a Triton set and its probe against the exact law."""
+    KERNELS: author_kernels.TritonKernels
+
+    def probe(self, torch_: ModuleType, device: torch.device, launch: author_kernels.Launch, /) -> "verify.Verdict": ...
+
+
 def _record_launches() -> None:
     entry, run = triton_kernels._Launcher.__call__, JITFunction.run
 
-    def launched(self, kernel, grid, *args):
+    def launched(self: "triton_kernels._Launcher", kernel: "author_kernels.JitKernel", grid: tuple[int, ...], *args: object) -> None:
         params = kernel.arg_names
         values = {name: args[params.index(name)] for name in self.names[kernel.__name__]}
         _ENTRIES_SEEN.add(author_kernels.entry_key(kernel.__name__, values))
         _JITS_SEEN.add(kernel.__name__)
         return entry(self, kernel, grid, *args)
 
-    def jit(self, *args, **kwargs):
+    def jit(self: _Kernel, *args: object, **kwargs: object) -> object:
         _JITS_SEEN.add(self.__name__)
         for value in (*args, *kwargs.values()):
             if isinstance(value, JITFunction):
                 _JITS_SEEN.add(value.__name__)
         return run(self, *args, **kwargs)
 
-    triton_kernels._Launcher.__call__ = launched
+    triton_kernels._Launcher.__call__ = launched  # type: ignore[method-assign]  # every launch counted
     JITFunction.run = jit
 
 
@@ -152,7 +189,7 @@ def launched_jits(sources: dict[str, ast.Module], names: list[str]) -> dict[str,
     return {module: jits for module, jits in found.items() if jits}
 
 
-def declared(row: arch.Row, sm: int) -> dict:
+def declared(row: arch.Row, sm: int) -> Declared:
     """What this card claims, read from the code."""
     sources = _sources()
     for name, tree in sources.items():
@@ -216,13 +253,12 @@ def _launcher_order() -> list[str]:
 # ---- attention
 
 
-def _exact(q, k, v, causal: bool = False):
-    return torch.nn.functional.scaled_dot_product_attention(
-        *(t.transpose(1, 2).double() for t in (q, k, v)), is_causal=causal
-    ).transpose(1, 2)
+def _exact(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, causal: bool = False) -> torch.Tensor:
+    q, k, v = (t.transpose(1, 2).double() for t in (q, k, v))
+    return torch.nn.functional.scaled_dot_product_attention(q, k, v, is_causal=causal).transpose(1, 2)
 
 
-def _beats_trivial(torch_, got, want, v) -> tuple[float, float]:
+def _beats_trivial(torch_: ModuleType, got: torch.Tensor, want: torch.Tensor, v: torch.Tensor) -> tuple[float, float]:
     """(its error, the best of the answers a kernel can return without computing: V, V's mean, 0)."""
     error = verify.error(torch_, got, want)
     trivial = [verify.error(torch_, v.expand_as(want), want)] if v.shape[1] == want.shape[1] else []
@@ -230,7 +266,7 @@ def _beats_trivial(torch_, got, want, v) -> tuple[float, float]:
     return error, min(trivial)
 
 
-def _attention(name: str, index: int) -> dict:
+def _attention(name: str, index: int) -> Outcome:
     device = measure_device(torch, index)
     candidate = attention.known()[name]
     ready = attention.pinned(name, device)[0]
@@ -239,6 +275,8 @@ def _attention(name: str, index: int) -> dict:
     budget = prebuilt.ATTENTION_BUDGET[candidate.exact]
     target = torch.device("cuda", index)
     generator = torch.Generator(device=target).manual_seed(20261104)
+    errors: dict[str, float]
+    skipped: list[str]
     errors, skipped = {}, []
     dims = sorted(candidate.head_dims | {d for d, _ in candidate.shapes}) or (64, 128, 256)
     for dim in dims:
@@ -271,7 +309,7 @@ def _attention(name: str, index: int) -> dict:
     }
 
 
-def _outliers(ready, candidate, target, generator) -> str:
+def _outliers(ready: "attention.Ready", candidate: "attention.Candidate", target: torch.device, generator: torch.Generator) -> str:
     """The same call on activations with real outliers (a few rows far past the rest, as H3's key
     gain has): FA3 FP8 passed the random probe and garbled H3 (runs 1240-1252). Measured, no bar yet."""
     dim = 128 if candidate.admits("bfloat16", 128) else 64
@@ -285,7 +323,7 @@ def _outliers(ready, candidate, target, generator) -> str:
         x[:, ::97] *= 64.0
     want = _exact(q, k, v)
     half = [t.to(torch.bfloat16) for t in (q, k, v)]
-    out = dispatch_attention_fn(*half, backend=attention._member(ready.candidate))
+    out = dispatch_attention_fn(*half, backend=attention._member(ready.candidate))  # type: ignore[arg-type]  # a splat of the 3-list (mypy can't count it)
     got = out[0] if isinstance(out, tuple) else out
     return f"{verify.error(torch, got, want):.3f}"
 
@@ -296,7 +334,7 @@ def _outliers(ready, candidate, target, generator) -> str:
 _BIG = (1, 392_000, 56, 128)
 
 
-def _not_fit(name: str, index: int, work: Callable[..., dict]) -> dict:
+def _not_fit(name: str, index: int, work: Callable[[str, int, tuple[int, ...], bool], Outcome]) -> Outcome:
     """H3's largest, else the least past 2^31 elements with Q, K and V one tensor, on a card that
     can't hold that. A card that can't hold either hasn't exercised it: said, and no failure (its real
     runs cut attention to fit, so no kernel call is this big there)."""
@@ -306,10 +344,10 @@ def _not_fit(name: str, index: int, work: Callable[..., dict]) -> dict:
         except torch.OutOfMemoryError as exc:
             torch.cuda.empty_cache()
             why = str(exc)[:80]
-    return {"passed": True, "detail": f"not run: does not fit this card ({why})"}
+    return {"passed": True, "detail": f"not run: does not fit this card ({why})"}  # type: ignore[possibly-undefined]  # both shapes raised
 
 
-def _big(name: str, index: int, shape: tuple[int, ...], shared: bool) -> dict:
+def _big(name: str, index: int, shape: tuple[int, ...], shared: bool) -> Outcome:
     """One call past the int32 element limit: its heads hold one head's values, so a wild offset
     shows as heads that differ, and sampled rows of the last head against exact attention in
     float64, which costs no N^2."""
@@ -370,7 +408,7 @@ def _big(name: str, index: int, shape: tuple[int, ...], shared: bool) -> dict:
     return {"passed": ok, "detail": f"{tokens}x{heads}x{dim}: last head vs first {spread:.2e}, sampled rows vs exact {error:.2e} (budget {budget:.3g}) {took or ''}"}
 
 
-def _sol_built(q) -> None:
+def _sol_built(q: torch.Tensor) -> None:
     """Sol's object for this length, on a card whose route has one, and upstream's preprocess, on
     every route (FA4's too): until they land a sparse step serves its dense reference."""
     card, store, index = attention_sol._capability(q.device), kernel_cache.configured(), q.device.index or 0
@@ -384,7 +422,7 @@ def _sol_built(q) -> None:
                       partial(attention_sol._warm, index))  # fmt: skip
 
 
-def _sparse(ready, device) -> dict:
+def _sparse(ready: "attention.Ready", device: "DeviceFacts") -> Outcome:
     """A sparse kernel as a sparse step calls it: inside its model's layout and a Sol site. Its
     routed blocks are exact and the rest approximate, so the bar is sanity, and that the sparse
     path really ran."""
@@ -401,7 +439,7 @@ def _sparse(ready, device) -> dict:
     site = attention_sol._SITE.set(attention_sol.Site("kernels-suite", "attn"))
     try:
         with attention_scope(layout), attention_sol.observing() as counts:
-            out = dispatch_attention_fn(*half, backend=attention._member(ready.candidate))
+            out = dispatch_attention_fn(*half, backend=attention._member(ready.candidate))  # type: ignore[arg-type]  # a splat of the 3-list (mypy can't count it)
     finally:
         attention_sol._SITE.reset(site)
     got = out[0] if isinstance(out, tuple) else out
@@ -412,7 +450,7 @@ def _sparse(ready, device) -> dict:
     return {"passed": ok, "detail": f"rel L2 {error:.3f} (nothing-computed answers {trivial:.3f}), calls {dict(counts)}"}
 
 
-def _routable(tokens: int, heads: int, target):
+def _routable(tokens: int, heads: int, target: torch.device) -> tuple[list[torch.Tensor], torch.Tensor, float]:
     """Q, K and V a sparse kernel can route: each query row belongs to one block of keys, so exact
     attention lands there, and a kernel that routes it wrong or misaddresses a tile misses it by O(1)."""
     g = torch.Generator(device=target).manual_seed(20261105)
@@ -433,13 +471,15 @@ def _routable(tokens: int, heads: int, target):
 # ---- Triton sets
 
 
-def _launcher(kernels, index: int):
-    return triton_kernels.ready(kernels, True, device=f"cuda:{index}")
+def _launcher(kernels: author_kernels.TritonKernels, index: int) -> author_kernels.Launch:
+    return cast(author_kernels.Launch, triton_kernels.ready(kernels, True, device=f"cuda:{index}"))  # waited: never None
 
 
-def _e4m3(index: int) -> dict:
+def _e4m3(index: int) -> Outcome:
     target = torch.device("cuda", index)
     attention_fp8.serve(index, _launcher(attention_fp8.KERNELS, index))
+    errors: dict[str, tuple[float, float]]
+    scales: dict[str, float]
     generator, errors, scales = torch.Generator(device=target).manual_seed(1), {}, {}
     for dtype in (torch.bfloat16, torch.float16):
         for dim in attention_fp8.DIMS:
@@ -456,11 +496,11 @@ def _e4m3(index: int) -> dict:
     return {"passed": rounding.ok and scale.ok, "detail": f"{rounding.detail}; scale {scale.detail}"}
 
 
-def _verdict(verdict: verify.Verdict) -> dict:
+def _verdict(verdict: verify.Verdict) -> Outcome:
     return {"passed": verdict.ok, "detail": verdict.detail}
 
 
-def _means(launch, index: int, errors: dict) -> None:
+def _means(launch: author_kernels.Launch, index: int, errors: dict[str, float]) -> None:
     """Every `finish_mean` specialization: a tile count at each power of two, a ragged last tile."""
     target = torch.device("cuda", index)
     generator = torch.Generator(device=target).manual_seed(2)
@@ -475,14 +515,16 @@ def _means(launch, index: int, errors: dict) -> None:
         del x
 
 
-def _kmean(index: int) -> dict:
+def _kmean(index: int) -> Outcome:
+    errors: dict[str, float]
     launch, errors = _launcher(attention_sage2_fixed_mean.KERNELS, index), {}
     _means(launch, index, errors)
     return _verdict(verify.within(errors, prebuilt.BUDGET))
 
 
-def _sage3_fixed(index: int) -> dict:
+def _sage3_fixed(index: int) -> Outcome:
     target = torch.device("cuda", index)
+    errors: dict[str, float]
     launch, errors = _launcher(attention_sage3_fixed.KERNELS, index), {}
     attention_sage3_fixed.serve(index, launch)
     _means(launch, index, errors)
@@ -508,9 +550,10 @@ def _sage3_fixed(index: int) -> dict:
     return _verdict(verify.within(errors, prebuilt.BUDGET))
 
 
-def _group_mean(index: int) -> dict:
+def _group_mean(index: int) -> Outcome:
     target = torch.device("cuda", index)
     sage3.serve(index, _launcher(sage3.KERNELS, index))
+    errors: dict[str, float]
     generator, errors = torch.Generator(device=target).manual_seed(4), {}
     for dtype in (torch.bfloat16, torch.float16):
         for dim in (64, 128):
@@ -526,12 +569,12 @@ def _group_mean(index: int) -> dict:
     return _verdict(verify.within(errors, 0.1))
 
 
-def _probed(module, index: int) -> dict:
+def _probed(module: _Probed, index: int) -> Outcome:
     launch = _launcher(module.KERNELS, index)
     return _verdict(module.probe(torch, torch.device("cuda", index), launch))
 
 
-def _glue(index: int) -> dict:
+def _glue(index: int) -> Outcome:
     module = import_module(_H3_GLUE)
     target = torch.device("cuda", index)
     launch = _launcher(module.kernels(target), index)
@@ -544,13 +587,14 @@ def _glue(index: int) -> dict:
     return {"passed": not wrong, "detail": wrong or f"every entry within its bar (fp8 {fp8})"}
 
 
-def _bf16(*shape, generator, device):
+def _bf16(*shape: int, generator: torch.Generator, device: torch.device) -> torch.Tensor:
     return torch.randn(*shape, generator=generator, device=device, dtype=torch.float32).to(torch.bfloat16)
 
 
-def _lm(index: int) -> dict:
+def _lm(index: int) -> Outcome:
     """Decode's conv and recurrent kernels against their arithmetic, in float32, in Python."""
     target = torch.device("cuda", index)
+    errors: dict[str, float]
     launch, errors = _launcher(lm.KERNELS, index), {}
     g = torch.Generator(device=target).manual_seed(5)
     conv, block = lm_kernels.CONV, lm_kernels.CONV_BLOCK
@@ -581,6 +625,7 @@ def _lm(index: int) -> dict:
     out = v.new_empty((batch, tokens, heads, dv))
     scale = float(dk) ** 0.5
     launch(lm_kernels.recurrent_steps_kernel, (batch * heads, dv // bv, 1), q, k, v, gate, beta, start, states, out, heads, tokens, *q.stride()[:3], *k.stride()[:3], *v.stride()[:3], scale, dk, dv, bv)
+    wants: list[torch.Tensor]
     state, wants = start.clone(), []
     for t in range(tokens):
         qq = torch.nn.functional.normalize(q[:, t].float(), dim=-1, eps=1e-3) / scale
@@ -594,9 +639,10 @@ def _lm(index: int) -> dict:
     return _verdict(verify.within(errors, prebuilt.BUDGET))
 
 
-def _moe(index: int) -> dict:
+def _moe(index: int) -> Outcome:
     """Routed experts against each expert's own product."""
     target = torch.device("cuda", index)
+    errors: dict[str, float]
     launch, errors = _launcher(moe.KERNELS, index), {}
     g = torch.Generator(device=target).manual_seed(6)
     n, k, pairs, experts = moe_kernels.BLOCK_N + 5, moe_kernels.BLOCK_K + 9, 7, 3
@@ -637,7 +683,8 @@ FUSED = author_kernels.TritonKernels(
 )
 
 
-def _fused_row(launch, entry, target, g, errors) -> None:
+def _fused_row(launch: author_kernels.Launch, entry: author_kernels.TritonEntry, target: torch.device, g: torch.Generator,
+               errors: dict[str, float]) -> None:
     c = dict(entry.constexprs)
     n, width = 5, 256
     if c["F16"]:
@@ -651,7 +698,7 @@ def _fused_row(launch, entry, target, g, errors) -> None:
     weight = torch.randn(width, generator=g, device=target, dtype=torch.float32).to(torch.float32 if c["F16"] else torch.bfloat16) * 0.1
     index = torch.tensor([0, 2, 1, 1, 0], device=target, dtype=torch.int64)
     gate, scale, shift = tables
-    args = {}
+    args: dict[str, torch.Tensor] = {}
     if c["BRANCHES"]:
         args = {"branch": branch, "gate": gate}
         if c["BRANCHES"] == 2:
@@ -675,10 +722,12 @@ def _fused_row(launch, entry, target, g, errors) -> None:
             want = want * (1 + scale[index].double())
         if c["MODULATE"] == 2:
             want = want + shift[index].double()
+        assert out is not None  # a NORM entry writes out
         errors[f"out {key}"] = verify.error(torch, out, want)
 
 
-def _fused_rope(launch, entry, target, g, errors) -> None:
+def _fused_rope(launch: author_kernels.Launch, entry: author_kernels.TritonEntry, target: torch.device, g: torch.Generator,
+                errors: dict[str, float]) -> None:
     c = dict(entry.constexprs)
     seq, heads, dim, rotary = 7, c["HEADS"] + 3, c["HEAD_DIM"], c["ROTARY"]
     dtype = torch.float32 if c["X32"] else (torch.float16 if c["ROUND"] == fused.FP16 else torch.bfloat16)
@@ -705,7 +754,8 @@ def _fused_rope(launch, entry, target, g, errors) -> None:
     errors[f"rope {entry.key}"] = verify.error(torch, got, want)
 
 
-def _fused_channel(launch, entry, target, g, errors) -> None:
+def _fused_channel(launch: author_kernels.Launch, entry: author_kernels.TritonEntry, target: torch.device, g: torch.Generator,
+                   errors: dict[str, float]) -> None:
     c = dict(entry.constexprs)
     batch, channels, plane = 2, 4, fused.CHANNEL_BLOCK + 11
     x = _bf16(batch, channels, plane, generator=g, device=target)
@@ -718,8 +768,9 @@ def _fused_channel(launch, entry, target, g, errors) -> None:
     errors[f"channel {entry.key}"] = verify.error(torch, out, want)
 
 
-def _fused(index: int) -> dict:
+def _fused(index: int) -> Outcome:
     target = torch.device("cuda", index)
+    errors: dict[str, float]
     launch, errors = _launcher(FUSED, index), {}
     g = torch.Generator(device=target).manual_seed(8)
     for entry in FUSED.entries:
@@ -744,7 +795,7 @@ def _fused(index: int) -> dict:
 # ---- native
 
 
-def _library(index: int):
+def _library(index: int) -> "prebuilt.Prebuilt":
     device = measure_device(torch, index)
     ops, why = prebuilt.library(torch, index, device.sm)
     if ops is None:
@@ -752,15 +803,15 @@ def _library(index: int):
     return ops
 
 
-def _format(index: int, f) -> dict:
+def _format(index: int, f: "prebuilt._Format") -> Outcome:
     return _verdict(prebuilt.probe(torch, _library(index), f))
 
 
-def _w4a8(index: int) -> dict:
+def _w4a8(index: int) -> Outcome:
     return _verdict(prebuilt.probe_w4a8(torch, _library(index)))
 
 
-def _norm(index: int) -> dict:
+def _norm(index: int) -> Outcome:
     """RMS norm and split-half RoPE against the arithmetic it fuses: rotation matrices over the
     first `rot_dim` channels, each half of them multiplied by its 2x2."""
     target = torch.device("cuda", index)
@@ -773,7 +824,7 @@ def _norm(index: int) -> dict:
     freqs = torch.stack([torch.stack([cos, -sin], -1), torch.stack([sin, cos], -1)], -2)[None, :, None]
     q_out, k_out = author_kernels.rms_rope_split_half(q, k, freqs, q_scale, k_scale, 1e-5, rotary)
 
-    def law(x, scale):
+    def law(x: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
         x = x.double()
         rms = x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + 1e-5) * scale.double()
         one, two, rest = rms[..., : rotary // 2], rms[..., rotary // 2 : rotary], rms[..., rotary:]
@@ -785,7 +836,7 @@ def _norm(index: int) -> dict:
     return {**_verdict(verdict), "shapes": str(freqs.shape)}
 
 
-def _big_gemm(name: str, index: int) -> dict:
+def _big_gemm(name: str, index: int) -> Outcome:
     """The 8-bit GEMM at H3's largest: past 2^31 elements of its activation, sampled rows against
     the product in float64 (M x K wraps an int32 in upstream's CUTLASS, if anywhere)."""
     target = torch.device("cuda", index)
@@ -800,7 +851,7 @@ def _big_gemm(name: str, index: int) -> dict:
     g = torch.Generator(device=target).manual_seed(10)
     m, n, k = 392_000, 7168, 7168
 
-    def data(*shape):
+    def data(*shape: int) -> torch.Tensor:
         raw = torch.randint(0, 256, shape, generator=g, dtype=torch.uint8, device=target)
         # Signed, as real activations are: Hopper's fast-accumulation fp8 loses 3% at K 7168 when every
         # operand has one sign (run 29196) and 0.2% otherwise (run 29211). 0xF7 masks off NaN.
@@ -817,18 +868,18 @@ def _big_gemm(name: str, index: int) -> dict:
     return {"passed": error <= prebuilt.BUDGET, "detail": f"{m}x{k}x{n}: sampled rows vs exact {error:.2e} (budget {prebuilt.BUDGET:g})"}
 
 
-def _svdq_native(index: int) -> dict:
+def _svdq_native(index: int) -> Outcome:
     return _verdict(svdq_linear.probe_native(torch, torch.device("cuda", index), _kernels._gemm))
 
 
-def _kitchen(index: int, probe) -> dict:
+def _kitchen(index: int, probe: "Callable[[ModuleType, int, ModuleType], verify.Verdict]") -> Outcome:
     found = int8_linear.kitchen_module(torch, index, True)
     if found is None:
         return {"passed": False, "detail": "comfy-kitchen has no build here"}
     return _verdict(probe(torch, index, found[0]))
 
 
-def _decode(index: int) -> dict:
+def _decode(index: int) -> Outcome:
     device = measure_device(torch, index)
     report = conform(torch, launch_providers(), device, ("bfloat16", "float16", "float32"), release=cozy_runtime.__version__)
     failed = [
@@ -839,7 +890,7 @@ def _decode(index: int) -> dict:
     return {"passed": not failed, "detail": f"{len(report.observations)} cells; failed {failed}"}
 
 
-EXERCISES: dict[str, Callable[[int], dict]] = {
+EXERCISES: dict[str, Callable[[int], Outcome]] = {
     "big:gemm-int8": lambda i: _big_gemm("int8", i),
     "big:gemm-fp8": lambda i: _big_gemm("fp8", i),
     "native:int8": lambda i: _format(i, prebuilt.INT8),
@@ -867,7 +918,7 @@ EXERCISES: dict[str, Callable[[int], dict]] = {
 }
 
 
-def exercise(name: str, index: int) -> dict:
+def exercise(name: str, index: int) -> Outcome:
     kind, _, kernel = name.partition(":")
     if kind == "attention":
         return _attention(kernel, index)
@@ -878,17 +929,17 @@ def exercise(name: str, index: int) -> dict:
     return EXERCISES[name](index)
 
 
-def _off_request(work: Callable[[], dict]) -> dict:
+def _off_request(work: Callable[[], Outcome]) -> Outcome:
     """On a thread of its own: a request never compiles or probes, so a kernel opened here is not
     the gate's request-path blocking, and each opens as `kernel_ready`'s background openers do."""
-    found: dict = {}
+    found: Outcome = {}
 
     def body() -> None:
         try:
             with torch.no_grad(), kernel_ready.EXECUTION[0]():
                 found.update(work())
         except Exception as exc:  # noqa: BLE001 - a kernel that raises is that cell's finding
-            found.update(passed=False, detail=f"{type(exc).__name__}: {exc}"[:1500])
+            found.update({"passed": False, "detail": f"{type(exc).__name__}: {exc}"[:1500]})
 
     thread = threading.Thread(target=body, name="kernels-suite")
     thread.start()

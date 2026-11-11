@@ -19,6 +19,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Required, TypedDict, cast
 
 import msgspec
 from cozy_runtime.author import App
@@ -250,14 +251,41 @@ S.update(phase="released", t_released=time.time(), released_by="stop" if os.path
 write(st, S)
 '''
 
-def env(gpu: bool) -> dict:
+
+class Cfg(TypedDict, total=False):
+    """An op and its cfg (`main`); the holder reads the rest of its knobs (HOLDER)."""
+    op: Required[str]
+    name: str
+    mode: str
+    wait_s: float
+
+
+class State(TypedDict, total=False):
+    """The holder's state file, as `run` reads it."""
+    pid: int
+    t_done: float
+    phase: str
+    log: str
+
+
+class ModeSet(TypedDict):
+    path: str
+    after: str
+
+
+class Launch(TypedDict):
+    launch: str
+    state: str
+
+
+def env(gpu: bool) -> dict[str, str]:
     e = {k: v for k, v in os.environ.items() if k in KEEP}
     if gpu:
         e["CUDA_VISIBLE_DEVICES"] = "0"
     return e
 
 
-def daemon(code: str, cfg: dict, gpu: bool, log: str) -> int:
+def daemon(code: str, cfg: Cfg, gpu: bool, log: str) -> int:
     path = D / f"{log}.py"
     path.write_text(code)
     with open(D / f"{log}.log", "ab") as f:
@@ -273,14 +301,14 @@ def alive(pid: int) -> bool:
         return False
 
 
-def load(path: Path) -> dict:
+def load(path: Path) -> State:
     try:
-        return json.loads(path.read_text())
+        return cast(State, json.loads(path.read_text()))  # the holder's state file
     except (OSError, ValueError):
         return {}
 
 
-def stop_and_wait(state: Path, stopfile: Path, secs: float = 30) -> dict:
+def stop_and_wait(state: Path, stopfile: Path, secs: float = 30) -> State:
     s = load(state)
     stopfile.touch()
     t = time.time()
@@ -289,7 +317,7 @@ def stop_and_wait(state: Path, stopfile: Path, secs: float = 30) -> dict:
     return load(state)
 
 
-def mode(cfg: dict) -> dict:
+def mode(cfg: Cfg) -> ModeSet:
     """`machine.mode` in TensorD's config.toml (its COZY_HOME, else HOME/.cozy)."""
     home = Path.home() / ".cozy"
     for proc in Path("/proc").iterdir():
@@ -304,6 +332,7 @@ def mode(cfg: dict) -> dict:
     path = home / "config.toml"
     path.parent.mkdir(parents=True, exist_ok=True)
     text = path.read_text() if path.exists() else ""
+    out: list[str]
     out, section, done = [], "", False
     for line in text.splitlines():
         if line.strip().startswith("["):
@@ -323,7 +352,7 @@ def mode(cfg: dict) -> dict:
     return {"path": str(path), "after": path.read_text()[-2000:]}
 
 
-def run(cfg: dict) -> dict:
+def run(cfg: Cfg) -> State | ModeSet | Launch:
     op, name = cfg["op"], cfg.get("name", "game")
     st, stop = D / f"game-{name}.json", D / f"game-{name}.stop"
     if op == "mode":
@@ -334,6 +363,7 @@ def run(cfg: dict) -> dict:
         stop.unlink(missing_ok=True)
         st.unlink(missing_ok=True)
         pid = daemon(HOLDER, cfg, True, f"holder-{name}")
+        s: State
         t, s = time.time(), {}
         while time.time() - t < cfg.get("wait_s", 0):
             s = load(st)

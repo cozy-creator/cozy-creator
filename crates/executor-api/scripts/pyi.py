@@ -1,0 +1,191 @@
+"""Writes tensorfs-py's `executor.pyi` from this crate's pyclass structs, so the Python types are the
+Rust ones. `python3 scripts/pyi.py` rewrites it; `--check` fails when it is stale."""
+
+import re
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent.parent
+SOURCE = HERE / "src/lib.rs"
+STUB = HERE.parent / "tensorfs-py/python/tensorfs/executor.pyi"
+
+SCALARS = {
+    "String": ("str", "str"), "PathBuf": ("Path", "_StrPath"), "bool": ("bool", "bool"), "f64": ("float", "float"),
+    "f32": ("float", "float"), "Value": ("_JSON", "_JSON"), "Json": ("_JSON", "_JSON"),
+}
+INTS = {"u8", "u16", "u32", "u64", "usize", "i8", "i16", "i32", "i64", "isize"}
+
+
+def split_top(text: str) -> list[str]:
+    parts, depth, start = [], 0, 0
+    for i, c in enumerate(text):
+        if c in "<(":
+            depth += 1
+        elif c in ">)":
+            depth -= 1
+        elif c == "," and depth == 0:
+            parts.append(text[start:i].strip())
+            start = i + 1
+    if text[start:].strip():
+        parts.append(text[start:].strip())
+    return parts
+
+
+class Types:
+    def __init__(self, classes: set[str], enums: dict[str, list[str]]) -> None:
+        self.classes, self.enums = classes, enums
+
+    def py(self, rust: str, *, given: bool) -> str:
+        """The Python type a getter returns (`given=False`) or a constructor takes (`given=True`)."""
+        rust = rust.strip().removeprefix("serde_json::").removeprefix("std::path::")
+        m = re.fullmatch(r"(\w+)<(.*)>", rust, re.S)
+        if m:
+            outer, args = m.group(1), split_top(m.group(2))
+            inner = [self.py(a, given=given) for a in args]
+            if outer == "Option":
+                return f"{inner[0]} | None"
+            if outer == "Box":
+                return inner[0]
+            if outer == "Vec" and args == ["u8"]:
+                return "str" if given else "bytes"  # base64 text on the wire
+            if outer == "Vec":
+                return f"Sequence[{inner[0]}]" if given else f"list[{inner[0]}]"
+            if outer in ("BTreeMap", "HashMap", "Map"):
+                return f"Mapping[{inner[0]}, {inner[1]}]" if given else f"dict[{inner[0]}, {inner[1]}]"
+            raise SystemExit(f"unknown generic {outer}")
+        if rust.startswith("("):
+            return f"tuple[{', '.join(self.py(a, given=given) for a in split_top(rust[1:-1]))}]"
+        if rust in INTS:
+            return "int"
+        if rust in SCALARS:
+            return SCALARS[rust][1 if given else 0]
+        if rust in self.classes:
+            return rust
+        if rust in self.enums:
+            return "Literal[" + ", ".join(f'"{v}"' for v in self.enums[rust]) + "]"
+        raise SystemExit(f"unknown type {rust}")
+
+
+def snake(name: str) -> str:
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
+
+
+def parse(source: str) -> tuple[list[tuple[str, bool, list[tuple[str, str, str, bool]]]], set[str], dict[str, list[str]]]:
+    source = re.sub(r"(?m)^\s*//.*\n", "", source)
+    enums: dict[str, list[str]] = {}
+    for m in re.finditer(r"#\[serde\(rename_all = \"snake_case\"\)\]\s*pub enum (\w+) \{([^}]*)\}", source):
+        variants = [v.strip().rstrip(",") for v in re.sub(r"///.*|#\[[^]]*\]", "", m.group(2)).split("\n")]
+        if all(re.fullmatch(r"\w+", v) for v in variants if v):
+            enums[m.group(1)] = [snake(v) for v in variants if v]
+    structs = []
+    pattern = re.compile(r"pyo3::pyclass\(module = \"tensorfs\.executor\"[^\n]*\n((?:\s*#\[[^\n]*\n|\s*///[^\n]*\n)*)\s*pub struct (\w+) \{(.*?)\n?\}", re.S)
+    for m in pattern.finditer(source):
+        defaulted = "#[serde(default)]" in m.group(1)
+        fields, attrs, body = [], "", re.sub(r"//[^\n]*", "", m.group(3))
+        for item in split_top(body.replace("\n", " ")):
+            for attr in re.findall(r"#\[serde\(([^]]*)\)\]", item):
+                attrs += attr + ","
+            decl = re.sub(r"#\[[^]]*\]", "", item).strip()
+            if not decl:
+                continue
+            fm = re.fullmatch(r"pub (?:r#)?(\w+): (.+)", decl, re.S)
+            if not fm:
+                raise SystemExit(f"{m.group(2)}: cannot read {decl!r}")
+            rename = re.search(r"rename = \"(\w+)\"", attrs)
+            optional = defaulted or bool(re.search(r"(^|,|\s)default\b", attrs)) or fm.group(2).startswith("Option<")
+            fields.append((fm.group(1), rename.group(1) if rename else fm.group(1), fm.group(2), optional))
+            attrs = ""
+        structs.append((m.group(2), defaulted, fields))
+    return structs, {name for name, _, _ in structs}, enums
+
+
+def render(source: str) -> str:
+    structs, classes, enums = parse(source)
+    types = Types(classes, enums)
+    built = {
+        name.strip()
+        for m in re.finditer(r"\n    (?:request_|command_)?methods!\((.*?)\);", source, re.S)
+        for name in re.sub(r"=>[^,]*(?:\([^)]*\))?[^,]*", "", m.group(1)).split(",")
+    }
+    out = [
+        f"# Generated by crates/executor-api/scripts/pyi.py from executor-api's pyclass structs: do not edit.",
+        "from collections.abc import Mapping, Sequence",
+        "from os import PathLike",
+        "from pathlib import Path",
+        "from typing import Literal, TypeAlias, TypedDict, final",
+        "",
+        "from typing_extensions import NotRequired, Self, Unpack",
+        "",
+        "_JSON: TypeAlias = None | bool | int | float | str | list[_JSON] | dict[str, _JSON]",
+        "_StrPath: TypeAlias = str | PathLike[str]",
+        "__all__ = [",
+        *(f"    {n!r}," for n in sorted({"COMMANDS", "Command", "Malformed", "Hello", "Request", "decode_answer", "decode_command", *classes}, key=str.lower)),
+        "]",
+        "",
+        "COMMANDS: frozenset[str]",
+        "",
+        "class Malformed(ValueError): ...",
+        "",
+        "@final",
+        "class Hello: ...",
+    ]
+    for name, _, fields in structs:
+        given = ", ".join(
+            f"{wire!r}: " + (f"NotRequired[{types.py(rust, given=True)}]" if optional else types.py(rust, given=True))
+            for _, wire, rust, optional in fields
+        )
+        changes = ", ".join(f"{wire!r}: {types.py(rust, given=True)}" for _, wire, rust, _ in fields)
+        if name in built:
+            out += [
+                "",
+                f'_{name}Fields = TypedDict("_{name}Fields", {{{given}}})',
+                f'_{name}Changes = TypedDict("_{name}Changes", {{{changes}}}, total=False)',
+            ]
+        out += ["", "@final", f"class {name}:"]
+        out += [f"    @property\n    def {field}(self) -> {types.py(rust, given=False)}: ..." for field, _, rust, _ in fields]
+        if name in built:
+            out += [
+                f"    def __new__(cls, /, **fields: Unpack[_{name}Fields]) -> Self: ...",
+                "    def json(self) -> str: ...",
+                f"    def replace(self, /, **changes: Unpack[_{name}Changes]) -> Self: ...",
+            ]
+        elif not fields:
+            out[-1] += " ..."
+    out += [
+        "",
+        "Command: TypeAlias = Hello | Start | Load | PrepareRequest | Cancel | Invoke | Map | Fork",
+        "Request: TypeAlias = (",
+        "    ChildEvents",
+        "    | ChildCall",
+        "    | ChildPoll",
+        "    | ChildCancel",
+        "    | ChildForget",
+        "    | GpuRelease",
+        "    | ModelPrefetch",
+        "    | Publish",
+        "    | CheckpointItem",
+        "    | StageMemoLookup",
+        "    | StageMemoStore",
+        ")",
+        "",
+        "def decode_command(data: bytes) -> Command: ...",
+        "def decode_answer(data: bytes) -> Answer: ...",
+        "",
+    ]
+    missing = built - classes
+    if missing:
+        raise SystemExit(f"constructible but not read: {sorted(missing)}")
+    return "\n".join(out)
+
+
+def main() -> None:
+    text = render(SOURCE.read_text())
+    if sys.argv[1:] == ["--check"]:
+        if STUB.read_text() != text:
+            raise SystemExit(f"{STUB} is stale: run python3 {Path(__file__).relative_to(HERE.parent.parent)}")
+        return
+    STUB.write_text(text)
+
+
+if __name__ == "__main__":
+    main()
