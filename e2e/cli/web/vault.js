@@ -615,10 +615,14 @@ const newPage = async () => {
   await page.unroute(statusPath, statusRoute);
   stage = 'default encrypted project creation';
   const origin = new URL(href).origin;
-  const saveCreationRecovery = async () => {
+  const saveCreationRecovery = async (closeProjects = false) => {
     await page.locator('[aria-label="Save recovery secret"] pre').waitFor();
     await page.getByLabel('I saved this somewhere away from this computer').check();
     await page.getByRole('button', { name: 'Done', exact: true }).click();
+    if (closeProjects) {
+      await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}\/projects$/);
+      await page.locator('.drawer').getByRole('link', { name: 'Close', exact: true }).click();
+    }
     await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
   };
   await goto(page, `${origin}/projects`);
@@ -642,7 +646,11 @@ const newPage = async () => {
   check('new_creation_credentials_are_not_browser_storage', !persisted.includes(newRecovery) && !persisted.includes('synthetic new project passphrase'));
 
   stage = 'implicit canvas creation waits for secure setup';
-  await goto(page, `${origin}/`);
+  // Home resumes a known project. Projects exposes the real unowned canvas behind its drawer.
+  await goto(page, `${origin}/projects`);
+  await page.locator('.react-flow').waitFor();
+  check('implicit_creation_starts_on_empty_canvas', (await page.locator('.react-flow__node').count()) === 0
+    && (await page.locator('nav.ptabs a[aria-current="page"]').count()) === 0);
   const uploadsBeforeSetup = fileWrites.length;
   const emptyAt = await openCanvas(page);
   await drop(page, [{ name: 'new_private_drop.png', type: 'image/png', bytes: png(109) }], emptyAt.x, emptyAt.y);
@@ -658,7 +666,7 @@ const newPage = async () => {
   createdFolders.push(implicit.path);
   await page.locator('[aria-label="Save recovery secret"] pre').waitFor();
   check('implicit_creation_waits_for_saved_recovery', fileWrites.length === uploadsBeforeSetup);
-  await saveCreationRecovery();
+  await saveCreationRecovery(true);
   await page.locator('.nm-field').waitFor();
   await page.keyboard.press('Enter');
   await until('implicit encrypted import lands', () => projectJson(implicit.path).assets.some((asset) => asset.sha256), Boolean, 45000);
