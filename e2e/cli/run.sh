@@ -293,12 +293,14 @@ case $SHARD in
   control) parts="machine_show_runs writes_once page_resend hub_away broken_answers logs" ;;
   *) echo "no cli shard $SHARD" >&2; exit 2 ;;
 esac
+# macOS and Windows run what's theirs: the CLI, Calcifer, paths, the service and the page, on a Hub with only packages
+# published (e2e/isolated.sh). The catalog's reads of published weights are the same on every OS: Linux's commands shard.
 if [ -z "$LOCAL" ]; then
   case $SHARD in
     entrypoints | projectvault) ;;
     web-layout-* | web-scale) parts="db_existing_web logs" ;;
-    web-core) parts="entrypoints catalog refusals web_native completions homebrew calcifer_faults update remove" ;;
-    *) parts="entrypoints catalog refusals web_serves completions homebrew calcifer_faults update remove" ;;
+    web-core) parts="entrypoints refusals web_native completions homebrew calcifer_faults update remove" ;;
+    *) parts="entrypoints refusals web_serves completions homebrew calcifer_faults update remove" ;;
   esac
 fi
 
