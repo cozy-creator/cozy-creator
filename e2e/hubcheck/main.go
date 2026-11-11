@@ -2,9 +2,8 @@
 // it serves at GET /openapi.yaml (tensorhub api/openapi.yaml: the server is the truth, the document follows it).
 // Each mismatch is one JSON line in <out>/hub-mismatches.jsonl: a request that breaks the document is the client's
 // drift, a response that breaks it the document's. A route the document lacks is a mismatch; an operation marked
-// `x-raw-body` (pages, redirects, bytes) has its status checked, not its body. Every object the document gives
-// properties takes no others, so an undocumented field is a mismatch too. <out>/hub-calls.json counts the calls
-// of each operation.
+// `x-raw-body` (pages, redirects, bytes) has its status checked, not its body. Object fields follow the document's
+// additionalProperties policy. <out>/hub-calls.json counts the calls of each operation.
 //
 //	hubcheck --hub https://tensorhub.com --out DIR [--listen 127.0.0.1:0] [--spec FILE]
 //
@@ -98,8 +97,7 @@ func fail(err error) {
 	os.Exit(1)
 }
 
-// load reads the document the Hub serves (or --spec), checks it is a valid OpenAPI document, and closes every
-// object that lists properties to any other.
+// load reads the document the Hub serves (or --spec) and validates it without changing its schema semantics.
 func load(hub *url.URL, file string) (*openapi3.T, error) {
 	var raw []byte
 	var err error
@@ -124,48 +122,6 @@ func load(hub *url.URL, file string) (*openapi3.T, error) {
 	}
 	if err := doc.Validate(context.Background()); err != nil {
 		return nil, err
-	}
-	closed := map[*openapi3.Schema]bool{}
-	var close func(*openapi3.SchemaRef)
-	close = func(ref *openapi3.SchemaRef) {
-		if ref == nil || ref.Value == nil || closed[ref.Value] {
-			return
-		}
-		s := ref.Value
-		closed[s] = true
-		if len(s.Properties) > 0 && s.AdditionalProperties.Has == nil && s.AdditionalProperties.Schema == nil {
-			no := false
-			s.AdditionalProperties.Has = &no
-		}
-		for _, p := range s.Properties {
-			close(p)
-		}
-		close(s.Items)
-		close(s.AdditionalProperties.Schema)
-		for _, list := range []openapi3.SchemaRefs{s.AllOf, s.OneOf, s.AnyOf} {
-			for _, p := range list {
-				close(p)
-			}
-		}
-	}
-	for _, s := range doc.Components.Schemas {
-		close(s)
-	}
-	for _, item := range doc.Paths.Map() {
-		for _, op := range item.Operations() {
-			if op.RequestBody != nil && op.RequestBody.Value != nil {
-				for _, media := range op.RequestBody.Value.Content {
-					close(media.Schema)
-				}
-			}
-			for _, resp := range op.Responses.Map() {
-				if resp.Value != nil {
-					for _, media := range resp.Value.Content {
-						close(media.Schema)
-					}
-				}
-			}
-		}
 	}
 	return doc, nil
 }
