@@ -5,7 +5,7 @@ faults_run() {
   fpod() { timeout 120 "$CLI" machine ssh "$M" -- "$@"; }
   mkdir -p "$D"
   # run.py takes a generation's Python, with this candidate's TensorFS in it: a gate whose --only ran nothing else has none.
-  [ -f offload-adapter.json ] || run_cell "$OUT" faults-generation "$V/torch-offload/adapter" --on "$M" label="$NAME $R" --gpus=1
+  [ -f programs-env.json ] || run_cell "$OUT" faults-generation "$HERE/programs/env/ready" --on "$M"
   cap off  # the core and offload cells' executors: run.py needs the card free
   tar -C "$V" -cz core/faults native-tensor-export public-source ledger/table.py -C "$HERE/../crates/varena" include |
     fpod "rm -rf $F && mkdir -p $F && tar -xz -C $F" || { expect faults FAIL "could not copy the suite to $M"; return; }

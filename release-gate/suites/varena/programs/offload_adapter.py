@@ -8,16 +8,16 @@ from collections.abc import Callable
 from typing import cast
 
 import tensorfs.varena.torch as vt
-from tensorfs.varena import api
+from tensorfs import varena as api
 
 vt.install(0)
 
 import torch
 from diffusers.models.autoencoders.autoencoder_kl import AutoencoderKL
-from tensorfs.varena import _offload as offload_module
 from torch import nn
 
-offload, OffloadError = vt.offload, offload_module.OffloadError
+# OffloadError lives only in the private `_offload` (README finding): its base, RuntimeError, is what's public.
+offload, OffloadError = vt.offload, RuntimeError
 device = torch.device("cuda", 0)
 passed: list[str] = []
 
@@ -181,7 +181,6 @@ def escaped() -> None:
     assert type(alias) is torch.Tensor
     torch.cuda.empty_cache()
     assert torch.equal(alias, want)
-    assert isinstance(cast(Block, model.blocks[0]).layer.weight, offload_module._Weight)
 
 
 @check("the VAE's dtype conversions, identities kept, weights never written")

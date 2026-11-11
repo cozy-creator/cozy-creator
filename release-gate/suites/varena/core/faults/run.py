@@ -7,7 +7,7 @@ Run on a rental over `cozy machine ssh`, never on a laptop or through `cozy run`
   PYTHONPATH=<wheel dir> FAULT_PROVIDER=<provider.so> python3 run.py --out <dir> [cell ...]
 
 Build provider.so from native-tensor-export/source_provider.c against the wheel's .native directory.
-The rules that fault nothing are in ../ci_varena_core/cases.py, through `cozy run`.
+The rules that fault nothing are in ../../programs/core.py, a program like this one (xs-174).
 """
 from __future__ import annotations
 
