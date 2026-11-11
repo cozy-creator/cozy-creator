@@ -348,8 +348,7 @@ impl Steps {
 /// dropped: its row, result, reason, outputs, logs and calls stay for good.
 const MEASURED_FOR: Duration = Duration::from_secs(30 * 24 * 3600);
 
-/// Drops measurements past [`MEASURED_FOR`], now and daily. Each write is followed by a pause as long
-/// as it took, so the store's one writer is never held more than half the time.
+/// A service stop owns its drain until views close; only transient close refusals retry.
 #[cfg(unix)]
 async fn shutdown_after_signal(api: Arc<Api>) {
     let began = Instant::now();
@@ -375,6 +374,8 @@ async fn shutdown_after_signal(api: Arc<Api>) {
     }
 }
 
+/// Drops measurements past [`MEASURED_FOR`], now and daily. Each write is followed by a pause as long
+/// as it took, so the store's one writer is never held more than half the time.
 async fn drop_old_measurements(calcifer: Arc<Calcifer>) {
     let mut after = 0;
     loop {
