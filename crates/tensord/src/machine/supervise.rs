@@ -53,7 +53,6 @@ pub(crate) fn supervise(
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(error),
     }
-    let listener = LocalListener::bind(&service_pipe(paths, std::process::id()))?;
     let program = std::env::current_exe()?;
     let arguments: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     let mut failures_before_ready = 0;
@@ -61,9 +60,14 @@ pub(crate) fn supervise(
         // A published binary activation needs nothing more here: the service starts from the
         // launch path, which holds it.
         super::update::recover_activation(paths)?;
+        let listener = LocalListener::bind(&service_pipe(paths, std::process::id()))?;
         let mut command = std::process::Command::new(&program);
         command.args(&arguments);
         let mut service = platform::process::spawn(command)?;
+        #[cfg(test)]
+        if tests::wait_before_open() {
+            service.wait()?;
+        }
         let mut pipe = match Exact::open(&Birth::of(service.pid())?)? {
             Some(process) => loop {
                 let Some(pipe) = listener.accept_unless(&process)? else { break None };
@@ -279,6 +283,15 @@ mod tests {
         root
     }
 
+    // Force the first child to leave a closed pipe before its parent can open Exact.
+    // This hook is absent from production builds.
+    pub(super) fn wait_before_open() -> bool {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static FIRST: AtomicBool = AtomicBool::new(true);
+        matches!(std::env::var("COZY_SUPERVISOR_TEST_CASE").as_deref(), Ok("exited-before-open"))
+            && FIRST.swap(false, Ordering::Relaxed)
+    }
+
     #[test]
     fn readiness_survives_service_exit_and_resets_early_failures() {
         run_case("ready-restart", 0, 3);
@@ -292,6 +305,11 @@ mod tests {
     #[test]
     fn a_child_that_connects_then_exits_is_counted_as_unready() {
         run_case("connect-exit", 7, 2);
+    }
+
+    #[test]
+    fn a_child_exited_before_open_does_not_poison_its_successor() {
+        run_case("exited-before-open", 0, 3);
     }
 
     #[test]
@@ -336,7 +354,7 @@ mod tests {
         let case = std::env::var("COZY_SUPERVISOR_TEST_CASE").unwrap();
         let paths = super::super::update::Paths::new(&root.join("engine"), &root);
         std::fs::create_dir_all(paths.update("")).unwrap();
-        if case == "connect-exit" {
+        if case == "connect-exit" || (case == "exited-before-open" && !root.join("starts").exists()) {
             let parent = platform::process::parent_of(std::process::id()).unwrap();
             match LocalStream::connect(&service_pipe(&paths, parent)).map_err(io::Error::from) {
                 Ok(pipe) => {
@@ -356,7 +374,7 @@ mod tests {
         std::fs::write(&starts, count.to_string()).unwrap();
         match case.as_str() {
             "early-exit" => std::process::exit(7),
-            "ready-restart" => {
+            "ready-restart" | "exited-before-open" => {
                 ready.report();
                 std::process::exit(if count < 3 { 7 } else { 0 });
             }
