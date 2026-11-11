@@ -217,7 +217,7 @@ status=$(curl -sS -o "$OUT/private-public-card.json" -w '%{http_code}' "$COZY_HU
 [ "$status" = 404 ] || check "unpublished model remained publicly visible (HTTP $status)"
 watched install-private-version model install "$model@0.1.0" --lane f16 --on "$ON" \
   || check "owner private-version install failed: $(run_get "$OUT" install-private-version '.reason.message')"
-uv run -q --no-project --with cryptography python -I "$here/../capabilities/private_cache.py" \
+uv run -q --no-project --with cryptography==50.0.2 python -I "$here/../capabilities/private_cache.py" \
   --cozy "$COZY" --out "$OUT/private-cache" --hub-log "$ROOT_OUT/hub.log" --hub-source "$(git -C "$SRC" rev-parse HEAD)" --model "$model" \
   --a-version 0.1.0 --b-version 0.2.0 --a-checkpoints "$commit,$commit_b" --b-checkpoint "$checkpoint_c" \
   || check "private cache authority regression failed"
@@ -226,7 +226,7 @@ cozy --json model unpublish "$model@0.1.0" > "$OUT/model-unpublish-again.json" \
 "${hub[@]}" admin grant "$WHO" > "$OUT/owner-admin-grant.log" 2>&1 || check "could not restore the isolated fixture publisher"
 cozy --json model publish "$model" 0.1.0 "$commit" "$commit_b" > "$OUT/model-republish.json" || check "identical release republish failed"
 model_details "$model" | J '.releases | any(.version == "0.1.0" and .visibility == "public")' || check "republish did not restore public availability"
-uv run -q --no-project --with cryptography python -I "$here/../capabilities/private_cache.py" --public \
+uv run -q --no-project --with cryptography==50.0.2 python -I "$here/../capabilities/private_cache.py" --public \
   --cozy "$COZY" --out "$OUT/private-cache-public" --hub-log "$ROOT_OUT/hub.log" --hub-source "$(git -C "$SRC" rev-parse HEAD)" --model "$model" \
   --a-version 0.1.0 --b-version 0.2.0 --a-checkpoints "$commit,$commit_b" --b-checkpoint "$checkpoint_c" \
   || check "public cache and legacy quarantine regression failed"

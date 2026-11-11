@@ -545,9 +545,10 @@ impl Publisher {
     }
 
     /// A checkpoint held here, named by its header: a Hub checkpoint pulled by hash is the request's
-    /// only as `checkpoint` serves it; a release, or one made here, is anyone's.
+    /// only as `checkpoint` serves it. A nonempty version can be private too. Local headers
+    /// made here have no Hub provenance and keep their local-custody path.
     pub(crate) fn held_for(&self, service: &Service, source: Option<&hub::Source>, header: &ObjectRef) -> Result<(), Failure> {
-        let Some(pulled) = Pulled::of(&self.store, header).map_err(io_failure)?.filter(|p| p.release.is_empty()) else {
+        let Some(pulled) = Pulled::of(&self.store, header).map_err(io_failure)? else {
             return Ok(());
         };
         let named = Named { model: pulled.model, lane: pulled.lane, tree: Some(pulled.tree), ..Named::default() };
@@ -931,7 +932,8 @@ impl Publisher {
         let origin = request.origin();
         let package = request.installed.as_ref().map(|i| i.package.as_str()).unwrap_or(&request.package);
         let release = request.installed.as_ref().map(|i| i.release.as_str()).unwrap_or(&request.release);
-        let key = json!({"installation":alias,"package":package,"release":release,"hub":origin,"owner":request.owner,"catalog":catalog,"entrypoint":request.entrypoint,"choices":choices,"row":gpus,"gpus":request.gpus,"lane":request.lane});
+        let capability = request.source.as_ref().is_some_and(|source| source.capability.is_some());
+        let key = json!({"installation":alias,"package":package,"release":release,"hub":origin,"owner":request.owner,"capability":capability,"catalog":catalog,"entrypoint":request.entrypoint,"choices":choices,"row":gpus,"gpus":request.gpus,"lane":request.lane});
         Ok(format!("hub-{}", sha256::hex_digest(key.to_string().as_bytes())))
     }
 
@@ -958,6 +960,10 @@ impl Publisher {
                 plan: None,
                 warnings: vec![],
             }));
+        }
+        // A prepared plan's account does not prove this capability may read its model roots.
+        if request.source.as_ref().is_some_and(|source| source.capability.is_some()) {
+            return Ok(None);
         }
         // An alias may now name another tree, or be gone. Resolve its current local metadata
         // before building a plan; the raw request key cannot prove a cached header is current.

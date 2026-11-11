@@ -3,9 +3,11 @@ annotated-types==0.8.0
 anyio==4.16.0
 ast-serialize==0.13.1
 certifi==2026.10.23
+cffi==2.1.1
 charset-normalizer==3.5.2
 click==8.5.1
 cozy-runtime==0.45.0
+cryptography==50.0.2
 cuda-bindings==13.5.0
 cuda-core==1.2.2
 cuda-pathfinder==1.8.6
@@ -38,6 +40,7 @@ opentimelineio==0.18.1
 packaging==26.3
 pathspec==1.1.1
 pillow==13.0.0
+pycparser==3.12
 pydantic==2.14.3
 pydantic-core==2.50.4
 pygments==2.21.0

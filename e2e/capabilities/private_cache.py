@@ -19,12 +19,85 @@ import time
 import urllib.parse
 import urllib.request
 import uuid
+from typing import Literal, NotRequired, TypedDict, cast, overload
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from test_hub import require_test_hub
+
+
+Object = dict[str, object]
+
+
+class Account(TypedDict):
+    name: str
+    user_id: str
+
+
+class DeviceKey(TypedDict):
+    device_key_id: str
+    private_key: str
+
+
+class Device(DeviceKey):
+    bearer: str
+
+
+class HubMetadata(TypedDict):
+    resource: str
+    authorization_servers: list[str]
+
+
+class OAuthMetadata(TypedDict):
+    token_endpoint: str
+
+
+class MachineDetail(TypedDict):
+    address: str
+    fingerprint: str
+
+
+class MachineStatus(TypedDict):
+    worker_id: str
+    workload_key: str
+    models: NotRequired[list["MachineModel"]]
+
+
+class MachineModel(TypedDict):
+    repository: str
+    checkpoints: list["MachineCheckpoint"]
+
+
+class MachineCheckpoint(TypedDict):
+    manifest: str
+    release: str
+
+
+class ObjectRef(TypedDict):
+    sha256: str
+    length: int
+
+
+class Resolution(TypedDict):
+    release: str
+    lane: str
+    commit: ObjectRef
+    header: ObjectRef
+    reasons: NotRequired[list[str]]
+
+
+class Trace(TypedDict):
+    method: str
+    path: str
+    status: int
+
+
+class Outcome(TypedDict):
+    status: str
+    reason: NotRequired[object]
+    result: NotRequired[object]
 
 
 def b64(raw: bytes) -> str:
@@ -36,7 +109,7 @@ def encoded(value: object) -> str:
 
 
 class Fixture:
-    def __init__(self, args: argparse.Namespace):
+    def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
         self.hub = os.environ["COZY_HUB_URL"]
         require_test_hub(self.hub, os.environ["COZY_TEST_HUB_ORIGIN"])
@@ -48,45 +121,47 @@ class Fixture:
         self.key = Ed25519PrivateKey.generate()
         self.machine_public = self.key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
         self.cli("machine", "authorize", b64(self.machine_public))
-        machine = json.loads(self.cli("machine", "show", "local"))
+        machine = cast(MachineDetail, json.loads(self.cli("machine", "show", "local")))
         self.address = urllib.parse.urlsplit(machine["address"])
-        assert self.address.hostname and ipaddress.ip_address(self.address.hostname).is_loopback
+        host = self.address.hostname
+        assert host and ipaddress.ip_address(host).is_loopback
+        self.machine_host = host
         self.fingerprint = machine["fingerprint"].removeprefix("sha256:")
-        status = json.loads(self.machine("GET", "/v1/status", authorized=False))
+        status = cast(MachineStatus, json.loads(self.machine("GET", "/v1/status", authorized=False)))
         self.workload = status["workload_key"]
         grant = json.dumps({"m": status["worker_id"], "a": "machine", "e": int(time.time()) + 1800,
                             "k": b64(hashlib.sha256(self.machine_public).digest()[:16])}).encode()
         self.control = b64(grant) + "." + b64(self.key.sign(b"cozy-capability/1\0" + grant))
-        self.metadata = self.http("/.well-known/oauth-protected-resource")
+        self.metadata = cast(HubMetadata, self.http("/.well-known/oauth-protected-resource"))
         self.origin = self.metadata["resource"]
         issuer = self.metadata["authorization_servers"][0]
-        server = self.http(issuer + "/.well-known/oauth-authorization-server")
+        server = cast(OAuthMetadata, self.http(issuer + "/.well-known/oauth-authorization-server"))
         self.token_path = urllib.parse.urlsplit(server["token_endpoint"]).path
         self.ca = base64.b64encode(ssl.PEM_cert_to_DER_cert(Path(os.environ["COZY_TEST_HUB_CA"]).read_text())).decode()
 
     def cli(self, *args: str) -> str:
         return subprocess.check_output([self.args.cozy, "--json", *args], text=True)
 
-    def admin(self, account: str, action: str):
+    def admin(self, account: str, action: str) -> None:
         command = [word.decode() for word in Path(os.environ["COZY_TEST_HUB_COMMAND_FILE"]).read_bytes().split(b"\0") if word]
         subprocess.check_output([*command, "admin", action, account])
 
-    def http(self, path: str, bearer: str = "") -> dict:
+    def http(self, path: str, bearer: str = "") -> Object:
         url = path if path.startswith("http") else self.hub + path
         request = urllib.request.Request(url, headers={"Authorization": "Bearer " + bearer} if bearer else {})
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(
             context=ssl.create_default_context(cafile=os.environ["COZY_TEST_HUB_CA"])))
         with opener.open(request, timeout=60) as response:
-            return json.load(response)
+            return cast(Object, json.load(response))
 
-    def credentials(self) -> tuple[dict, dict]:
+    def credentials(self) -> tuple[Device, Account]:
         prefix = Path.home() / ".cozy/keys" / ("device-" + hashlib.sha256(self.hub.encode()).hexdigest())
-        key = json.loads(Path(str(prefix) + ".json").read_text())
-        bearer = json.loads(Path(str(prefix) + ".bearer.json").read_text())["token"]
-        key["bearer"] = bearer
-        return key, self.http("/v1/accounts/current", bearer)
+        key = cast(DeviceKey, json.loads(Path(str(prefix) + ".json").read_text()))
+        bearer = cast(dict[str, str], json.loads(Path(str(prefix) + ".bearer.json").read_text()))["token"]
+        device = Device(device_key_id=key["device_key_id"], private_key=key["private_key"], bearer=bearer)
+        return device, cast(Account, self.http("/v1/accounts/current", bearer))
 
-    def capability(self, credentials: tuple[dict, dict], details: list[dict]) -> str:
+    def capability(self, credentials: tuple[Device, Account], details: list[Object]) -> str:
         key, account = credentials
         seed = base64.urlsafe_b64decode(key["private_key"] + "=" * (-len(key["private_key"]) % 4))
         claims = {"sub": account["user_id"], "aud": self.origin, "cnf": {"jkt": self.workload},
@@ -95,13 +170,25 @@ class Fixture:
         value = encoded({"alg": "EdDSA", "typ": "authkit-capability+jwt", "kid": key["device_key_id"]}) + "." + encoded(claims)
         return value + "." + b64(Ed25519PrivateKey.from_private_bytes(seed).sign(value.encode()))
 
-    def machine(self, method: str, path: str, value: object = None, *, authorized: bool = True, stream: bool = False):
+    @overload
+    def machine(self, method: str, path: str, value: object = None, *, authorized: bool = True,
+                stream: Literal[False] = False) -> bytes: ...
+
+    @overload
+    def machine(self, method: str, path: str, value: object = None, *, authorized: bool = True,
+                stream: Literal[True]) -> tuple[http.client.HTTPSConnection, http.client.HTTPResponse]: ...
+
+    def machine(self, method: str, path: str, value: object = None, *, authorized: bool = True,
+                stream: bool = False) -> bytes | tuple[http.client.HTTPSConnection, http.client.HTTPResponse]:
         tls = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         tls.check_hostname = False
         tls.verify_mode = ssl.CERT_NONE
-        connection = http.client.HTTPSConnection(self.address.hostname, self.address.port, context=tls, timeout=300)
+        connection = http.client.HTTPSConnection(self.machine_host, self.address.port, context=tls, timeout=300)
         connection.connect()
-        assert hashlib.sha256(connection.sock.getpeercert(binary_form=True)).hexdigest() == self.fingerprint
+        assert connection.sock is not None
+        certificate = connection.sock.getpeercert(binary_form=True)
+        assert certificate is not None
+        assert hashlib.sha256(certificate).hexdigest() == self.fingerprint
         body = None if value is None else json.dumps(value).encode()
         headers = {"Content-Type": "application/json"}
         if authorized:
@@ -117,15 +204,17 @@ class Fixture:
         connection.close()
         return answer
 
-    def trace_rows(self) -> list[dict]:
-        return [json.loads(line) for line in self.trace.read_text().splitlines() if line]
+    def trace_rows(self) -> list[Trace]:
+        return [cast(Trace, json.loads(line)) for line in self.trace.read_text().splitlines() if line]
 
     def warm(self, label: str, *, release: str = "", checkpoint: str = "", capability: str = "",
              model: str = "", lane: str = "f16", succeeds: bool, redemption_denied: bool = False,
-             cached: bool = False) -> dict:
+             cached: bool = False, bare: bool = False, origin_checkpoint: str = "") -> Outcome:
         before = len(self.trace_rows())
         ident = "private-cache-" + uuid.uuid4().hex
-        choice = {"parameter": "model", "repository": model or self.args.model, "lane": lane}
+        choice = {"parameter": "model", "lane": lane}
+        if not bare:
+            choice["repository"] = model or self.args.model
         choice.update({"manifest": checkpoint} if checkpoint else {"release": release})
         hub = {"origin": self.origin, "ca_der": self.ca}
         if capability:
@@ -135,7 +224,7 @@ class Fixture:
         admitted = answer["runs"][0]
         assert not admitted.get("refusal"), (label, admitted)
         connection, response = self.machine("GET", "/v1/runs/" + ident + "/events", stream=True)
-        outcome = None
+        outcome: Outcome | None = None
         data = []
         try:
             while line := response.readline():
@@ -160,12 +249,12 @@ class Fixture:
                              "outcome": outcome, "origin_requests": traffic}
         self.save()
         assert outcome and outcome["status"] == ("succeeded" if succeeds else "failed"), (label, outcome)
-        digest = checkpoint.removeprefix("sha256:")
+        digest = (origin_checkpoint or checkpoint).removeprefix("sha256:")
         path = (f"/blobs/{digest[:2]}/{digest[2:4]}/{digest}" if checkpoint else
                 "/v1/models/" + (model or self.args.model) + "/resolve")
         reads = [row for row in traffic if row["method"] in ("GET", "HEAD") and row["path"] == path]
         if cached:
-            assert not reads, (label, "public answer did not take its cache", traffic)
+            assert not reads, (label, "expected local reuse without an origin metadata read", traffic)
         else:
             assert any((200 <= row["status"] < 400) if succeeds else row["status"] in (403, 404)
                        for row in reads), (label, "no matching origin authorization result", traffic)
@@ -175,12 +264,12 @@ class Fixture:
         print("PASS", label)
         return outcome
 
-    def save(self):
+    def save(self) -> None:
         (self.out / "private-cache.json").write_text(json.dumps({
             "model": self.args.model, "hub_source": self.args.hub_source, "cases": self.cases,
         }, indent=2) + "\n")
 
-    def login(self, email: str, name: str = ""):
+    def login(self, email: str, name: str = "") -> None:
         current = json.loads(self.cli("whoami"))
         if current.get("logged_in") and (current.get("email") or "").lower() == email.lower():
             return
@@ -207,21 +296,33 @@ class Fixture:
                     child.kill()
                     child.wait()
 
-    def restricted(self):
+    def restricted(self) -> None:
         owner = self.credentials()
-        broad = [{"type": "tensorhub_model_read", "model": self.args.model}]
+        broad: list[Object] = [{"type": "tensorhub_model_read", "model": self.args.model}]
         roots = sorted(set(self.args.a_checkpoints.split(",")))
         assert self.args.b_checkpoint not in roots, "B must be outside A's frozen complete root set"
-        frozen = [{"type": "tensorhub_release_read", "model": self.args.model, "release": self.args.a_version,
+        frozen: list[Object] = [{"type": "tensorhub_release_read", "model": self.args.model, "release": self.args.a_version,
                    "checkpoints": roots}]
         self.warm("owner_warms_B_by_name", release=self.args.b_version, capability=self.capability(owner, broad), succeeds=True)
         self.warm("owner_warms_B_by_hash", checkpoint=self.args.b_checkpoint, capability=self.capability(owner, broad), succeeds=True)
+        query = urllib.parse.urlencode({"release": self.args.b_version, "lane": "f16"})
+        resolved = cast(Resolution, self.http("/v1/models/" + self.args.model + "/resolve?" + query, owner[0]["bearer"]))
+        b_header = "sha256:" + resolved["header"]["sha256"]
+        status = cast(MachineStatus, json.loads(self.machine("GET", "/v1/status")))
+        assert any(row["repository"] == self.args.model and any(
+            checkpoint["release"] == self.args.b_version and checkpoint["manifest"] == b_header
+            for checkpoint in row["checkpoints"]) for row in status.get("models", [])), "B's version header was not cached"
         self.warm("A_only_denies_warm_B_name", release=self.args.b_version, capability=self.capability(owner, frozen), succeeds=False)
         self.warm("A_only_denies_warm_B_hash", checkpoint=self.args.b_checkpoint, capability=self.capability(owner, frozen), succeeds=False)
+        self.warm("A_only_denies_warm_B_bare_header", checkpoint=b_header, bare=True,
+                  origin_checkpoint=self.args.b_checkpoint, capability=self.capability(owner, frozen), succeeds=False)
         self.warm("A_only_still_reads_A_name", release=self.args.a_version, capability=self.capability(owner, frozen), succeeds=True)
         self.warm("A_only_still_reads_A_hash", checkpoint=self.args.a_checkpoints.split(",")[0], capability=self.capability(owner, frozen), succeeds=True)
         self.warm("anonymous_denies_warm_B_name", release=self.args.b_version, succeeds=False)
         self.warm("anonymous_denies_warm_B_hash", checkpoint=self.args.b_checkpoint, succeeds=False)
+        self.warm("anonymous_denies_warm_B_bare_header", checkpoint=b_header, bare=True,
+                  origin_checkpoint=self.args.b_checkpoint, succeeds=False)
+        self.local_positive(self.capability(owner, frozen))
         other_model = ""
         try:
             self.login("cache-" + uuid.uuid4().hex + "@skew.test", "cache" + uuid.uuid4().hex[:16])
@@ -238,7 +339,7 @@ class Fixture:
                     self.cli("model", "upload", str(file), other_model, "--lane", "f16", "--source-format", "as-is", "--on", "local", "-y")
                 finally:
                     self.admin(other[1]["name"], "revoke")
-            assert not self.http("/v1/accounts/current", other[0]["bearer"]).get("admin", False)
+            assert self.http("/v1/accounts/current", other[0]["bearer"]).get("admin", False) is False
             # Rewarm immediately with the old owner's still-valid key; then change only the signing subject.
             self.warm("owner_rewarms_B_before_subject_switch", release=self.args.b_version, capability=self.capability(owner, broad), succeeds=True)
             self.warm("other_subject_same_scope_denied", release=self.args.b_version, capability=self.capability(other, broad),
@@ -252,9 +353,32 @@ class Fixture:
             finally:
                 self.login(self.args.owner_email)
 
-    def public(self):
+    def local_positive(self, capability: str) -> None:
+        alias = "local/cache-bare-" + uuid.uuid4().hex[:12]
+        with tempfile.TemporaryDirectory() as temp:
+            file = Path(temp) / "local.safetensors"
+            header = json.dumps({"w": {"dtype": "F16", "shape": [4, 4], "data_offsets": [0, 32]}}).encode()
+            header += b" " * (-len(header) % 8)
+            file.write_bytes(struct.pack("<Q", len(header)) + header + os.urandom(32))
+            self.cli("model", "install", str(file), alias, "--source-format", "as-is", "--on", "local")
+        try:
+            status = cast(MachineStatus, json.loads(self.machine("GET", "/v1/status")))
+            local = [checkpoint["manifest"] for row in status.get("models", []) if row["repository"] == alias
+                     for checkpoint in row["checkpoints"]]
+            assert len(local) == 1, "local positive did not create one actual header"
+            self.warm("bare_local_header_positive", checkpoint=local[0], bare=True,
+                      capability=capability, succeeds=True, cached=True)
+            self.warm("local_alias_positive", model=alias, capability=capability, succeeds=True, cached=True)
+        finally:
+            self.cli("model", "uninstall", alias)
+
+    def public(self) -> None:
         self.warm("public_anonymous_origin_positive", release=self.args.a_version, succeeds=True)
         self.warm("public_anonymous_cache_positive", release=self.args.a_version, succeeds=True, cached=True)
+        query_a = urllib.parse.urlencode({"release": self.args.a_version, "lane": "f16"})
+        resolved_a = cast(Resolution, self.http("/v1/models/" + self.args.model + "/resolve?" + query_a))
+        self.warm("public_bare_header_positive", checkpoint="sha256:" + resolved_a["header"]["sha256"], bare=True,
+                  origin_checkpoint=self.args.a_checkpoints.split(",")[0], succeeds=True)
         # Replay the exact legacy format using a real anonymous answer's hardware and an
         # owner's real private-B answer. This is persisted v4 pollution, not a fake origin.
         database = Path.home() / ".cozy/machine/var/lib/cozy/tensord/execution/executions.sqlite3"
@@ -273,23 +397,23 @@ class Fixture:
             key, public = rows[0]
             owner = self.credentials()
             query = urllib.parse.urlencode({"release": self.args.b_version, "lane": "f16"})
-            private = self.http("/v1/models/" + self.args.model + "/resolve?" + query, owner[0]["bearer"])
+            private = cast(Resolution, self.http("/v1/models/" + self.args.model + "/resolve?" + query, owner[0]["bearer"]))
             assert private["commit"]["sha256"] == self.args.b_checkpoint.removeprefix("sha256:")
-            private.setdefault("reasons", [])
-            private["hardware"] = public["hardware"]
+            legacy_answer: Object = {"release": private["release"], "lane": private["lane"], "commit": private["commit"],
+                                     "header": private["header"], "reasons": private.get("reasons", []), "hardware": public["hardware"]}
             key[0], key[3] = "resolve-v4", self.args.b_version
             legacy = json.dumps(key, separators=(",", ":"))
             connection.execute("INSERT OR REPLACE INTO held_names(name,named,read_ms) VALUES(?,?,?)",
-                               (legacy, json.dumps(private), int(time.time() * 1000)))
+                               (legacy, json.dumps(legacy_answer), int(time.time() * 1000)))
             self.cases["legacy_v4_seed"] = {"key": key, "checkpoint": self.args.b_checkpoint,
                                              "source": "actual owner origin response and actual v5 hardware"}
         self.warm("legacy_v4_private_answer_is_quarantined", release=self.args.b_version, succeeds=False)
 
-    def close(self):
+    def close(self) -> None:
         self.cli("machine", "authorize", b64(self.machine_public), "--remove")
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("cozy", "out", "hub-log", "hub-source", "model", "a-version", "b-version", "a-checkpoints", "b-checkpoint"):
         parser.add_argument("--" + name, required=True)
