@@ -111,29 +111,35 @@ function linesOf(text, name) {
   const tool = await until('the fixture listed', async () => (await api(`/v1/tools?project=${id}`)).body.tools.find((held) => held.local && held.id === `${fixture}/shot`), Boolean, FIRST_RUN_MS);
   // The page reads its list again as that install ends, with no reload.
   await until('the page lists it', () => page.evaluate((id) => Boolean(document.querySelector(`.tools li.tool[data-tool="${CSS.escape(id)}"]`)), tool.id), Boolean);
-  // The list is by package (Paul, 11-06): each one a heading in its own words, once, and under it what each of its tools does there.
+  // Four basic node types, then model entries. A local package without a declared model retains each output capability.
   const listed = () => page.evaluate(() => [...document.querySelectorAll('.tools .tool-groups section')].map((section) => ({
-    package: section.dataset.package,
+    section: section.dataset.palette,
     title: section.querySelector('h4').textContent,
-    tools: [...section.querySelectorAll('li.tool')].map((row) => ({ id: row.dataset.tool, label: row.querySelector('b').textContent })),
+    tools: [...section.querySelectorAll('li.tool')].map((row) => ({ id: row.dataset.tool, entry: row.dataset.entry, model: row.dataset.model, kind: row.dataset.kind, label: row.querySelector('b').textContent })),
   })));
-  const ours = (list) => list.filter((one) => one.tools.some((row) => row.id.startsWith(fixture)));
+  const ours = (list) => list.flatMap((one) => one.tools).filter((row) => row.id?.startsWith(fixture));
   const atRest = await listed();
   seen.listed = atRest.map((one) => `${one.title}: ${one.tools.map((row) => row.label).join(', ')}`);
-  check('a_package_heads_its_tools', ours(atRest).length === 1 && ours(atRest)[0].title === 'Boxes' && tool.package_title === 'Boxes' && ['Every field', 'A still'].every((label) => ours(atRest)[0].tools.some((row) => row.label === label)), atRest);
-  check('each_package_once', new Set(atRest.map((one) => one.package)).size === atRest.length && atRest.every((one) => one.tools.length > 0), seen.listed);
+  check('nodes_and_tools_are_separate', atRest.length === 2 && atRest[0].title === 'Nodes' && atRest[1].title === 'Tools', atRest);
+  check('exactly_four_basic_node_types', JSON.stringify(atRest.find((one) => one.section === 'nodes')?.tools.map((row) => row.label)) === JSON.stringify(['Text', 'Image', 'Video', 'VideoEdit']), atRest);
+  check('local_output_capabilities_remain', ours(atRest).length === 2 && ours(atRest).some((row) => row.id === `${fixture}/shot` && row.kind === 'video') && ours(atRest).some((row) => row.id === `${fixture}/still` && row.kind === 'image'), ours(atRest));
+  const modelRows = atRest.flatMap((one) => one.tools).filter((row) => row.model);
+  const publishedModels = [...new Set((await api(`/v1/tools?project=${id}`)).body.tools.flatMap((one) => one.model?.default ? [one.model.default.split('@')[0].replace(/^_\//, '')] : []))];
+  check('each_declared_model_once', modelRows.length === publishedModels.length && new Set(modelRows.map((row) => row.model)).size === modelRows.length && publishedModels.every((model) => modelRows.some((row) => row.model === model)), modelRows);
+  const h3 = modelRows.find((row) => /\/minimax-h3$/.test(row.model));
+  check('minimax_h3_is_a_video_tool', h3?.kind === 'video', h3);
   const search = page.locator('.tools input[aria-label="Search the tools"]');
-  // Searched, once the list is the search's: Text and the Edit are Cozy's, which neither search names.
+  // Searching a function still finds its model/capability entry without exposing a second helper row.
   const found = async (q, wanted) => {
     await search.fill(q);
     return until(`"${q}" searched`, listed, wanted).catch(() => listed());
   };
-  const cozyListed = (list) => list.some((one) => one.package === 'cozy');
-  const byPackage = await found('boxes', (list) => ours(list)[0]?.tools.length === 2 && !cozyListed(list));
-  check('search_finds_the_package', ours(byPackage)[0]?.title === 'Boxes' && !cozyListed(byPackage) && byPackage.every((one) => `${one.package} ${one.title}`.toLowerCase().includes('boxes') || one.tools.every((row) => row.label.toLowerCase().includes('boxes'))), byPackage);
-  const byLabel = await found('every field', (list) => ours(list)[0]?.tools.length === 1 && !cozyListed(list));
-  check('search_finds_the_label', ours(byLabel)[0]?.tools[0].id === `${fixture}/shot` && ours(byLabel)[0].title === 'Boxes' && !cozyListed(byLabel), byLabel);
-  await found('', (list) => ours(list)[0]?.tools.length === 2 && cozyListed(list));
+  const basics = (list) => list.find((one) => one.section === 'nodes')?.tools ?? [];
+  const byPackage = await found('boxes', (list) => ours(list).length === 2 && basics(list).length === 0);
+  check('search_finds_the_package', ours(byPackage).length === 2 && basics(byPackage).length === 0 && ours(byPackage).every((row) => row.label.startsWith('Boxes ')), byPackage);
+  const byLabel = await found('every field', (list) => ours(list).length === 1 && basics(list).length === 0);
+  check('search_finds_the_label', ours(byLabel)[0]?.id === `${fixture}/shot` && basics(byLabel).length === 0, byLabel);
+  await found('', (list) => ours(list).length === 2 && basics(list).length === 4);
   // The rest stand beside it, in reach while it's worked on.
   const cards = (await api(`/v1/projects/${id}/canvas`)).body.cards;
   const at = cards.shot;
