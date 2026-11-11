@@ -98,6 +98,8 @@ faulted retry stop "$CONT"
 grep -q SIGCONT "$OUT/retry.stall.txt" || fail "retry: the fixture did not continue the follower: $(tail -2 "$OUT/retry.stall.txt")"
 grep -q 'attempt 2 of 3' "$OUT/retry.txt" || fail "retry: run $N never formed again: $(why retry)"
 [ "$(jq -r .status "$OUT/retry.json")" = completed ] || fail "retry: run $N is $(jq -r .status "$OUT/retry.json"): $(why retry)"
+F=$(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 "$(ls "$OUT"/retry/*.mp4 2> /dev/null | head -1)" 2> /dev/null)
+[ "$F" = 362 ] || fail "retry: run $N's video decodes to ${F:-no} frames, not 362"
 say "retry: run $N formed on attempt 2 and completed in $S s"
 fi
 
@@ -105,7 +107,7 @@ fi
 cozy machine update "$NAME" --gpu-memory-limit off -y > "$OUT/restart-untouched.txt" 2>&1 || fail "restart before untouched"
 h3 untouched
 [ "$(jq -r .status "$OUT/untouched.json")" = completed ] || fail "untouched: run $N is $(jq -r .status "$OUT/untouched.json"): $(why untouched)"
-V=$(jq -r '[.output[]?.path | select(endswith(".mp4"))][0] // empty' "$OUT/untouched.json")
+V=$(ls "$OUT"/untouched/*.mp4 2> /dev/null | head -1)
 F=$(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 "$V" 2> /dev/null)
 [ "$F" = 362 ] || fail "untouched: run $N's video decodes to ${F:-no} frames, not 362"
 say "PASS: kill, stop and retry as bounded; untouched run $N completed in $S s, 362 frames; $(jq -c '[.. | objects | select(has("route") and has("degree")) | {route, nccl, check}][0]' "$OUT/untouched.json")"
