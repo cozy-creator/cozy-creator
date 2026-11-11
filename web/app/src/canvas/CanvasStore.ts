@@ -37,6 +37,7 @@ import { mentionsIn, rowsIn, textsIn } from "./text"
 import { clipOf, wire } from "./timeline/model"
 import { PageHistory, type Target } from "./history"
 import { comingOff, goingOn, holdsPictures, type ToolStep } from "./toolchange"
+import { isVideoEdit, toolFitsNode } from "./palette"
 import { isSelf, mentionFrom, numbersOf, SELF, versionIn, versionOf } from "./versions"
 
 /** The body width in this geometry publication; the node width may be an opened envelope. */
@@ -1515,7 +1516,7 @@ export class CanvasStore {
   /** Whether a picture dropped here joins it: a box of pictures with no tool. */
   joins(name: string): boolean {
     const asset = this.get(name)?.asset
-    return Boolean(asset && !asset.tool && holdsPictures(asset))
+    return Boolean(asset && !asset.tool && !asset.timeline && ["image", "video", "audio"].includes(asset.kind))
   }
 
   /** A slot in its row while a file is on its way to it. What it answers says that's over. */
@@ -1564,6 +1565,10 @@ export class CanvasStore {
     const key = this.resolveName(name)
     const asset = this.views.get(key)?.asset
     if (!asset || asset.timeline || madeHere(asset.tool)) return false
+    if (!asset.tool && asset.kind !== file.field) {
+      say(`${key} is a ${asset.kind} node and cannot take ${file.field}`)
+      return true
+    }
     const own = file.from !== undefined && nameKey(file.from) === nameKey(key)
     // Another box's take on one that picks up: from there, at a frame chosen on it.
     if (!own && file.from && file.number && file.field === "video" && this.tools.get().get(asset.tool ?? "")?.pickup) {
@@ -1586,6 +1591,7 @@ export class CanvasStore {
     const key = this.resolveName(name)
     const view = this.views.get(key)
     if (!view?.asset || view.asset.tool === tool.id) return
+    if (!toolFitsNode(tool, view.asset)) return void say(`${toolName(tool)} makes ${tool.makes}; ${name} is a ${isVideoEdit(view.asset) ? "VideoEdit" : view.asset.kind} node`)
     void this.save(key)
     const step = goingOn(view.asset, { ...view.asset.fields, ...view.sent, ...view.drafts }, this.tools.get().get(view.asset.tool ?? ""), tool, view.viewed)
     this.retool(key, step, step.lost.length ? `${name} runs ${toolName(tool)} now, which can't take ${step.lost.join(" or ")}` : undefined)
@@ -1601,6 +1607,7 @@ export class CanvasStore {
     const key = this.resolveName(name)
     const view = this.views.get(key)
     if (!view?.asset) return
+    if (isVideoEdit(view.asset)) return void say("VideoEdit keeps its built-in timeline engine")
     void this.save(key)
     const known = this.tools.get().get(view.asset.tool ?? "")
     const word = known ? toolName(known) : "Its tool"

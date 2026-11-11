@@ -9,34 +9,17 @@ import { useSignal } from "../ui/signal"
 import type { Load } from "./carry"
 import { BoxShelf } from "./BoxShelf"
 import { useCanvasStore, useOfElement } from "./context"
-import { TEXT_TOOL } from "./controls"
+import { TEXT_TOOL, VIDEO_EDIT_TOOL } from "./controls"
+import { BASIC_NODES, paletteEntries, type BasicNodeKind, type PaletteEntry } from "./palette"
 import { useDragScroll } from "./dragScroll"
 import { ModelBrowse } from "./ModelBrowse"
-import { madeHere, toolName } from "./shown"
+import { madeHere } from "./shown"
 import { carryingTool } from "./toolchange"
 import { ToolBrowse } from "./ToolBrowse"
 
-/** A package of the list: its title heading what each of its tools does, in the order Calcifer lists them. One with no tools for a canvas isn't one. */
-interface Package {
-  package: string
-  title: string
-  local: boolean
-  tools: Tool[]
-}
-
-function packagesOf(tools: Tool[]): Package[] {
-  const packages = new Map<string, Package>()
-  for (const tool of tools) {
-    const held = packages.get(tool.package) ?? { package: tool.package, title: tool.package_title || tool.package, local: Boolean(tool.local), tools: [] }
-    held.tools.push(tool)
-    packages.set(tool.package, held)
-  }
-  return [...packages.values()]
-}
-
-/** Whether every word of `q` is in the tool's package's name or its label, as Calcifer's search reads them. */
-const says = (tool: Tool, q: string) => {
-  const text = `${tool.package} ${tool.package_title} ${tool.label}`.toLowerCase()
+/** Search the displayed model and its declared functions without listing helpers separately. */
+const says = (entry: PaletteEntry, q: string) => {
+  const text = `${entry.label} ${entry.model ?? ""} ${entry.variants.map((tool) => `${tool.package} ${tool.label}`).join(" ")}`.toLowerCase()
   return q.toLowerCase().split(/\s+/).every((word) => text.includes(word))
 }
 
@@ -59,20 +42,21 @@ function useRemove() {
   }
 }
 
-function ToolRow({ tool, place, yours }: { tool: Tool; place: (tool: Tool) => void; yours: boolean }) {
+function ToolRow({ entry, place, yours }: { entry: PaletteEntry; place: (tool: Tool) => void; yours: boolean }) {
   const remove = useRemove()
+  const tool = entry.tool
   return (
-    <li className="tool" title={tool.description || tool.id} data-kind={tool.makes} data-tool={tool.id} onClick={() => place(tool)}>
-      <b>{tool.label}</b>
+    <li className="tool" title={tool.description || entry.model || tool.id} data-kind={tool.makes} data-tool={tool.id} data-model={entry.model ?? undefined} onClick={() => place(tool)}>
+      <b>{entry.label}</b>
       {yours && !tool.local && !madeHere(tool.id) && (
         <button
           type="button"
           className="tool-off"
-          aria-label={`Take ${toolName(tool)} off your list`}
+          aria-label={`Take ${entry.label} off your list`}
           title="Take off your list"
           onClick={(event) => {
             event.stopPropagation()
-            remove([tool.id])
+            remove(entry.variants.map((variant) => variant.id))
           }}
         >
           <Icon name="close" />
@@ -85,7 +69,7 @@ function ToolRow({ tool, place, yours }: { tool: Tool; place: (tool: Tool) => vo
 /** What can be dropped on the canvas, by package (Paul, 11-06: "the key point is the package, not the model"), and it folds away. The canvas stays
  *  where it is under it. While a box whose tool runs a model is open, it's what goes on that box instead (Paul, 11-06); leaving the box, the tools
  *  are back as they were, searched and scrolled as they were. */
-export function ToolPanel({ project, machine, waiting, shut, setShut, place, choose, box }: { project: string | null; machine: string | null; waiting: boolean; shut: boolean; setShut: (shut: boolean) => void; place: (tool: Tool) => void; choose: () => void; box?: string }) {
+export function ToolPanel({ project, machine, waiting, shut, setShut, place, placeNode, choose, box }: { project: string | null; machine: string | null; waiting: boolean; shut: boolean; setShut: (shut: boolean) => void; place: (tool: Tool) => void; placeNode: (kind: BasicNodeKind) => void; choose: () => void; box?: string }) {
   const { client } = useConnection()
   const store = useCanvasStore()
   const runs = useOfElement(box ?? "", (view) => view?.asset?.tool ?? undefined)
@@ -100,15 +84,18 @@ export function ToolPanel({ project, machine, waiting, shut, setShut, place, cho
     const timer = setTimeout(() => setQ(typed.trim()), 250)
     return () => clearTimeout(timer)
   }, [typed])
-  const { data, error, isPending, isPlaceholderData } = useQuery({ ...toolsQuery(client, shelf === "tools" ? q : "", machine, project), enabled: !waiting })
+  const { data, error, isPending, isPlaceholderData } = useQuery({ ...toolsQuery(client, "", machine, project), enabled: !waiting })
   useEffect(() => {
-    store.addTools(data && !isPlaceholderData ? [TEXT_TOOL, ...data.tools] : [TEXT_TOOL])
+    store.addTools(data && !isPlaceholderData ? [TEXT_TOOL, VIDEO_EDIT_TOOL, ...data.tools] : [TEXT_TOOL, VIDEO_EDIT_TOOL])
   }, [store, data, isPlaceholderData])
   const tools = data?.tools ?? []
-  const packages = packagesOf([...(says(TEXT_TOOL, q) ? [TEXT_TOOL] : []), ...tools])
+  const entries = paletteEntries(tools).filter((entry) => says(entry, q))
+  const nodes = BASIC_NODES.filter((node) => q.toLowerCase().split(/\s+/).every((word) => node.label.toLowerCase().includes(word)))
   const list = useDragScroll({
     lift(pressed) {
       const from = pressed.closest<HTMLElement>("li.tool")
+      const node = BASIC_NODES.find((node) => node.kind === from?.dataset.node)
+      if (node && from) return { load: { node: node.kind }, from }
       const tool = from && [TEXT_TOOL, ...tools].find((one) => one.id === from.dataset.tool)
       return tool ? { load: toolLoad(tool), from } : null
     },
@@ -147,6 +134,12 @@ export function ToolPanel({ project, machine, waiting, shut, setShut, place, cho
         {browsing && <ToolBrowse q={q} listed={tools} />}
         {exploring && <ModelBrowse q={q} />}
         <div ref={list} className={`tool-groups ${isPlaceholderData ? "stale" : ""}`} hidden={shelf !== "tools"}>
+          <section data-palette="nodes">
+            <h4>Nodes</h4>
+            <ul>{nodes.map((node) => <li key={node.kind} className="tool" data-node={node.kind} data-kind={node.kind === "video_edit" ? "video" : node.kind} data-tool={node.kind === "text" ? "text" : node.kind === "video_edit" ? "cozy/edit" : undefined} onClick={() => placeNode(node.kind)}><b>{node.label}</b></li>)}</ul>
+          </section>
+          <section data-palette="tools">
+          <h4>Tools</h4>
           {error ? <p className="warn">{error instanceof Error ? error.message : String(error)}</p> : null}
           {isPending && !error && (
             <ul aria-hidden="true">
@@ -155,21 +148,10 @@ export function ToolPanel({ project, machine, waiting, shut, setShut, place, cho
               ))}
             </ul>
           )}
-          {packages.map((held) => (
-            <section key={held.package} data-package={held.package} data-local={held.local || undefined}>
-              <h4 title={held.local ? `Your own code: ${held.package}` : held.package}>
-                {held.local && <Icon name="edit" />}
-                <span>{held.title}</span>
-              </h4>
-              <ul>
-                {held.tools.map((tool) => (
-                  <ToolRow key={tool.id} tool={tool} place={place} yours={!q && tool !== TEXT_TOOL} />
-                ))}
-              </ul>
-            </section>
-          ))}
-          {data && !tools.length && !isPlaceholderData && <p className="muted">Nothing for "{q}"</p>}
+          <ul>{entries.map((entry) => <ToolRow key={entry.key} entry={entry} place={place} yours={!q} />)}</ul>
+          {data && !entries.length && !isPlaceholderData && <p className="muted">{q ? `No tools match "${q}"` : "No tools added"}</p>}
           {data?.note && <p className="muted">{data.note}</p>}
+          </section>
         </div>
       </div>
     </aside>

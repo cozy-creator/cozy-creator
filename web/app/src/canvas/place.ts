@@ -4,7 +4,8 @@ import { hashFile, inLine, sendFile } from "../api/upload"
 import { say } from "../ui/notes"
 import type { Asset, Imported, Card, Tool, Opened } from "../api/calcifer"
 import { CARD_WIDTH, type CanvasStore, type CarriedFile, type MediaKind, type Pushes, type Stage, UNDO_MS } from "./CanvasStore"
-import { startingFields, TEXT_TOOL } from "./controls"
+import { startingFields, TEXT_TOOL, VIDEO_EDIT_TOOL } from "./controls"
+import type { BasicNodeKind } from "./palette"
 import type { CopiedBox } from "./copy"
 import { asName, stemName } from "./names"
 
@@ -70,16 +71,26 @@ export class Placer {
     const at = { x: Math.round(point.x - CARD_WIDTH / 2), y: Math.round(point.y - 16) }
     const text = tool === TEXT_TOOL
     const timeline = tool.fields.some((field) => field.type === "timeline") ? { fps: 24, tracks: [{ clips: [] }] } : undefined
-    const name = this.box(asName(tool.name ?? tool.label), { kind: tool.makes, tool: text ? undefined : tool.id, fields: text ? { text: "" } : { ...startingFields(tool), ...fields }, timeline }, at, `Couldn't place ${tool.label}`)
+    const name = this.box(asName(tool.name ?? tool.label), { kind: tool.makes, tool: text ? undefined : tool.id, fields: text ? { text: "", node_kind: "text" } : { ...startingFields(tool), ...fields, node_kind: timeline ? "video_edit" : tool.makes }, timeline }, at, `Couldn't place ${tool.label}`)
     this.store.focusing = name
     if (!text && !timeline) this.store.openHere(name)
+  }
+
+  /** Basic media nodes retain their type before a model or file is assigned. */
+  addNode(kind: BasicNodeKind, point: { x: number; y: number }) {
+    if (kind === "text") return this.addTool(TEXT_TOOL, point)
+    if (kind === "video_edit") return this.addTool(VIDEO_EDIT_TOOL, point)
+    const at = { x: Math.round(point.x - CARD_WIDTH / 2), y: Math.round(point.y - 16) }
+    const name = this.box(kind, { kind, fields: { node_kind: kind } }, at, `Couldn't create ${kind}`)
+    this.store.focusing = name
+    this.store.openHere(name)
   }
 
   /** An asset that holds these, there at once, with nothing made yet. */
   private box(wanted: string, { kind, tool, fields, timeline }: Pick<Asset, "kind" | "tool" | "fields" | "timeline">, at: Card, failed: string, edit?: string): string {
     const key = `asset-${crypto.randomUUID()}`
-    const text = !tool
-    const body = text ? { tool: "", name: wanted, fields } : { tool, name: wanted, fields, kind }
+    const text = kind === "text"
+    const body = { tool: tool ?? "", name: wanted, fields, kind }
     const row: Asset = { name: "", standing: text ? "current" : "missing", kind, noun: kind === "video" ? "take" : "version", tool, versions: 0, status: "", fields, timeline }
     return this.store.place(wanted, { asset: row }, at, async (clear, write, pushes) => this.client.newAsset(await this.project(), key, { ...body, at: clear, moves: pushes.moves, placed: pushes.placed }, write), (error) => say(failed, error), undefined, edit)
   }
@@ -120,7 +131,12 @@ export class Placer {
 
   /** Files dropped on a box with no tool: each its next version, with its slot in the row until it's there. */
   join(files: File[], name: string) {
+    const kind = this.store.get(name)?.asset?.kind
     for (const file of files) {
+      if (kind && file.type && file.type.split("/")[0] !== kind) {
+        say(`${name} is a ${kind} node and cannot take ${file.name}`)
+        continue
+      }
       const landed = this.store.joining(name)
       const owed = this.store.outbox.owing()
       const signal = new AbortController().signal
