@@ -189,8 +189,8 @@ fn local_alias(text: &str) -> Result<String, String> {
         Some(_) => return Err("Use a local name; downloading does not create a Hub repository".into()),
         None => text,
     };
-    let repo = api::model_ref::Repo::parse(&format!("local/{name}")).map_err(|error| error.message)?;
-    Ok(repo.to_string())
+    let model_id = api::model_ref::ModelId::parse(&format!("local/{name}")).map_err(|error| error.message)?;
+    Ok(model_id.to_string())
 }
 
 #[derive(clap::Args, Debug)]

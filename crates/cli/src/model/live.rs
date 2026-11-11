@@ -146,7 +146,7 @@ impl Catalog {
     fn local_models(&self, records: &[HeldModel]) -> Vec<FoundModel> {
         let mut models = std::collections::BTreeMap::new();
         for held in records {
-            let key = api::model_ref::Repo::parse(&held.model).map_or_else(|_| held.model.clone(), |repo| repo.to_string());
+            let key = api::model_ref::ModelId::parse(&held.model).map_or_else(|_| held.model.clone(), |model_id| model_id.to_string());
             models.entry(key).or_insert_with(|| self.page.models.iter().find(|row| same_model(&row.model, &held.model)).cloned().unwrap_or_else(|| FoundModel {
                 model: held.model.clone(), role: Some(held.role.clone()), release: Some(held.release.clone()), lanes: vec![held.lane.clone()], ..Default::default()
             }));
@@ -345,7 +345,7 @@ fn local_state(models: Option<&[HeldModel]>, model: &str) -> (&'static str, Opti
 }
 
 fn same_model(left: &str, right: &str) -> bool {
-    left == right || api::model_ref::Repo::parse(left).ok().zip(api::model_ref::Repo::parse(right).ok()).is_some_and(|(left, right)| left == right)
+    left == right || api::model_ref::ModelId::parse(left).ok().zip(api::model_ref::ModelId::parse(right).ok()).is_some_and(|(left, right)| left == right)
 }
 
 pub(super) async fn local_inventory(ctx: &Context) -> Option<Vec<HeldModel>> {

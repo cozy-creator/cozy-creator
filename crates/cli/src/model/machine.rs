@@ -71,10 +71,10 @@ pub(super) async fn remove(ctx: &Context, model: &str) -> Result<ExitCode, Error
 }
 
 pub(super) async fn remove_local(ctx: &Context, model: &str) -> Result<api::calcifer::RemovedModel, Error> {
-    let repo = api::model_ref::Repo::parse(model)?;
+    let model_id = api::model_ref::ModelId::parse(model)?;
     let key = crate::run::mint_key();
     let removed: api::calcifer::RemovedModel = ctx.calcifer().await?.post(
-        "/v1/machines/local/models/remove", &api::calcifer::RemoveModel { model: repo.to_string() }, Some(&key),
+        "/v1/machines/local/models/remove", &api::calcifer::RemoveModel { model: model_id.to_string() }, Some(&key),
     ).await?;
     Ok(removed)
 }

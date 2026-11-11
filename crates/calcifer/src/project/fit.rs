@@ -347,13 +347,13 @@ async fn checkpoint(api: &Api, hub: &str, written: &str, lane: Option<&str>) -> 
     if let Some((_, held)) = SIZED.lock().expect("sized lock").get(&key).filter(|(at, _)| at.elapsed() < KEPT) {
         return held.clone();
     }
-    let (repo, release, commit) = match ModelRef::parse(written).ok()? {
-        ModelRef::Hub { repo, release } => (repo, release, None),
-        ModelRef::Commit { repo, commit } => (repo, None, Some(commit)),
+    let (model_id, release, commit) = match ModelRef::parse(written).ok()? {
+        ModelRef::Hub { model: model_id, release } => (model_id, release, None),
+        ModelRef::Checkpoint { model: model_id, checkpoint: commit } => (model_id, None, Some(commit.to_string())),
         _ => return None,
     };
     let reader = api.machines.hubs.reader(hub).ok()?;
-    let card = tokio::time::timeout(HUB_LATE, reader.get_model(&repo.org, &repo.name)).await.ok()?.ok()?;
+    let card = tokio::time::timeout(HUB_LATE, reader.get_model(&model_id.org, &model_id.name)).await.ok()?.ok()?;
     let found = match (&commit, &release) {
         (Some(commit), _) => (card.releases.iter().flat_map(|release| release.lanes.values()))
             .find(|held| &held.commit == commit)

@@ -15,7 +15,7 @@ use api::{
     calcifer::hub::{ModelDownload, ModelUpload, RecordedCommit},
     ids::Digest,
     machine::{self as v1, InputFile, ModelChoice},
-    model_ref::{self as refs, ModelRef, Repo},
+    model_ref::{self as refs, ModelRef, ModelId},
 };
 
 use super::{
@@ -173,8 +173,8 @@ fn warm(hub: &Origin, on: On, agreed: Option<Agreed>, target: String, made: Made
 /// `cozy/model_download`: the warm run that makes `ask.model` present on `on`.
 pub(super) fn download(hub: &Origin, on: On, agreed: Option<Agreed>, ask: ModelDownload) -> Result<Planned, Refusal> {
     let mut said = vec![];
-    let mut destination = match ask.alias.as_deref().map(Repo::parse).transpose().map_err(Refusal)? {
-        Some(repo) if repo.org == "local" => repo.to_string(),
+    let mut destination = match ask.alias.as_deref().map(ModelId::parse).transpose().map_err(Refusal)? {
+        Some(model_id) if model_id.org == "local" => model_id.to_string(),
         Some(_) => return Err(usage("model_alias_invalid", "the name a machine keeps a model under is local/<name>")),
         None => String::new(),
     };
@@ -192,7 +192,7 @@ pub(super) fn download(hub: &Origin, on: On, agreed: Option<Agreed>, ask: ModelD
         };
         let stem = Path::new(name).file_stem().map(|stem| stem.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
         let stem: String = stem.chars().map(|c| if c.is_ascii_alphanumeric() || "._-".contains(c) { c } else { '-' }).collect();
-        destination = Repo::parse(&format!("local/{stem}")).map_err(Refusal)?.to_string();
+        destination = ModelId::parse(&format!("local/{stem}")).map_err(Refusal)?.to_string();
         said.push(format!("kept as {destination}"));
     }
     if let Some(lane) = ask.lane {
@@ -226,19 +226,19 @@ fn strength_within(strength: Option<f64>) -> Result<(Option<f64>, Option<String>
 pub(super) async fn upload(api: &Arc<Api>, hub: &Origin, on: On, agreed: Option<Agreed>, mut ask: ModelUpload) -> Result<Planned, Refusal> {
     let (strength, said) = strength_within(ask.strength)?;
     ask.strength = strength;
-    let destination = Repo::hub(&ask.destination).map_err(Refusal)?;
+    let destination = ModelId::hub(&ask.destination).map_err(Refusal)?;
     let lane = refs::label("--lane", &ask.lane).map_err(Refusal)?;
     let mirror = ask.mirror.clone().map(|page| Mirror { source: ask.source.clone(), page, to: destination.clone() });
-    if let Ok(ModelRef::Commit { repo: from, commit }) = ModelRef::parse(&ask.source)
+    if let Ok(ModelRef::Checkpoint { model: from, checkpoint: commit }) = ModelRef::parse(&ask.source)
         && ask.base.is_none()
     {
         let target = format!("{from}@{commit} → {destination} ({lane})");
-        let record = Record::read(api, hub, ask, from, commit, said, mirror).await?;
+        let record = Record::read(api, hub, ask, from, commit.to_string(), said, mirror).await?;
         return Ok(Planned::Here { target, work: Work::Record(Box::new(record)) });
     }
     let destination = destination.to_string();
     let warnings: Vec<Warning> = said.into_iter().map(|message| Warning { code: "input_limit".into(), message }).collect();
-    let commit = matches!(ModelRef::parse(&ask.source), Ok(ModelRef::Commit { .. }));
+    let commit = matches!(ModelRef::parse(&ask.source), Ok(ModelRef::Checkpoint { .. }));
     let converted = !ask.source.starts_with("run:") && !commit;
     if ask.trained_on.is_some() && !converted {
         return Err(usage("model_trained_on_unused", "--trained-on is read when a LoRA source is converted; this source already was"));
@@ -369,13 +369,13 @@ fn weights<'a>(run: &'a Run, output: Option<&str>) -> Result<&'a OutputItem, Ref
 pub(super) struct Mirror {
     source: String,
     page: String,
-    to: Repo,
+    to: ModelId,
 }
 
 impl Mirror {
     /// Records it at `hub`: what it then says, for whoever asked.
     pub(super) async fn record(&self, api: &Api, hub: &Origin) -> Result<Vec<String>, Refusal> {
-        let (source, repo) = (&self.source, &self.to);
+        let (source, model_id) = (&self.source, &self.to);
         let page = match self.page.as_str() {
             "" if source.starts_with("hf://") || source.starts_with("civitai://") => source,
             "" => {
@@ -386,8 +386,8 @@ impl Mirror {
             }
             page => page,
         };
-        let answer = (signed_in(api, hub)?.mirror_model(&repo.org, &repo.name, page).await).map_err(|e| refusal(hub, e))?;
-        let org = answer.author.as_ref().map_or_else(|| repo.org.clone(), |a| a.org.clone());
+        let answer = (signed_in(api, hub)?.mirror_model(&model_id.org, &model_id.name, page).await).map_err(|e| refusal(hub, e))?;
+        let org = answer.author.as_ref().map_or_else(|| model_id.org.clone(), |a| a.org.clone());
         let by = answer.author.map(|a| a.reserved.unwrap_or(format!("credits {} ({})", a.name, a.org)));
         let by = by.map(|by| format!(". {by}")).unwrap_or_default();
         let mut said = vec![format!("{} mirrors {}{by}", answer.model, answer.source)];
@@ -400,7 +400,7 @@ impl Mirror {
 /// Read and checked against its lane first (`read`), so a refused record parks and credits nothing.
 pub(super) struct Record {
     ask: ModelUpload,
-    from: Repo,
+    from: ModelId,
     commit: String,
     length: i64,
     said: Option<String>,
@@ -409,8 +409,8 @@ pub(super) struct Record {
 
 impl Record {
     /// Commit `commit` of `from`, when this account may read it and it is of the lane `ask` names.
-    async fn read(api: &Api, hub: &Origin, ask: ModelUpload, from: Repo, commit: String, said: Option<String>, mirror: Option<Mirror>) -> Result<Self, Refusal> {
-        let to = Repo::hub(&ask.destination).map_err(Refusal)?;
+    async fn read(api: &Api, hub: &Origin, ask: ModelUpload, from: ModelId, commit: String, said: Option<String>, mirror: Option<Mirror>) -> Result<Self, Refusal> {
+        let to = ModelId::hub(&ask.destination).map_err(Refusal)?;
         let client = signed_in(api, hub)?;
         let card = (client.get_model(&from.org, &from.name).await).map_err(|e| refusal(hub, e))?;
         let lanes = card.releases.iter().flat_map(|r| r.lanes.iter().map(|(lane, l)| (lane.as_str(), l.commit.as_str(), l.length)));
@@ -431,7 +431,7 @@ impl Record {
     /// Records it, the mirror before it, and sets its trigger and strength.
     pub(super) async fn run(self, api: &Api, hub: &Origin) -> Result<RecordedCommit, Refusal> {
         let Self { ask, from, commit, length, said, mirror } = self;
-        let to = Repo::hub(&ask.destination).map_err(Refusal)?;
+        let to = ModelId::hub(&ask.destination).map_err(Refusal)?;
         let mut warnings: Vec<String> = said.into_iter().collect();
         if let Some(mirror) = mirror {
             warnings.extend(mirror.record(api, hub).await?);

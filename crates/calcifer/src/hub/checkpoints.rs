@@ -14,7 +14,7 @@ use ::api::hub::{Client, types};
 use api::{
     config::Origin,
     calcifer::hub::{FamilyFrom, FoundModel, ModelKind},
-    model_ref::{ModelRef, Repo},
+    model_ref::{ModelRef, ModelId},
     calcifer::tool::Tool,
 };
 use tensorfs::{
@@ -155,11 +155,11 @@ fn named_so_far() -> &'static Mutex<HashMap<String, (Instant, Option<String>)>> 
 
 /// The family of the release a package names: its label, else its header's.
 async fn named(api: &Api, client: &Client, endpoint: &Endpoint, hub: &Origin, default: &str) -> Option<String> {
-    let (repo, release): (Repo, Option<String>) = match ModelRef::parse(default).ok()? {
-        ModelRef::Hub { repo, release } => (repo, release),
+    let (model_id, release): (ModelId, Option<String>) = match ModelRef::parse(default).ok()? {
+        ModelRef::Hub { model: model_id, release } => (model_id, release),
         _ => return None,
     };
-    let card = (client.get_model(&repo.org, &repo.name).await).inspect_err(|why| tracing::debug!("{default}: {why}")).ok()?;
+    let card = (client.get_model(&model_id.org, &model_id.name).await).inspect_err(|why| tracing::debug!("{default}: {why}")).ok()?;
     // The Hub's label is its family: only a model with none is read for what its header says.
     if let Some(label) = card.model.family.clone().filter(|label| !label.is_empty()) {
         return Some(label);

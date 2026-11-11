@@ -4,7 +4,7 @@
 //! ```text
 //! [org/]name[@release]          a Hub model by name (no org: first-party, the root's); the Hub
 //!                               resolves the release (none: the newest) and its lane
-//! [org/]name@sha256:<64 hex>    one of the model's commits by id
+//! [org/]name@sha256:<64 hex>    one of the model's checkpoints by id
 //! local/<alias>                 a model a machine holds under that name
 //! hf://… civitai://… https://…  a provider source, passed through: the machine pins and makes it
 //! ```
@@ -14,30 +14,77 @@ use crate::error::{Error, Kind};
 use crate::machine::{Adapter, ModelChoice};
 use crate::names::ROOT;
 
-/// A Hub repository, `org/name`, lowercased (names are case-insensitive); a root one's org is
+/// A named model, `org/name`, lowercased (names are case-insensitive); a root one's org is
 /// [`ROOT`].
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Repo {
+pub struct ModelId {
     pub org: String,
     pub name: String,
 }
 
-/// One parsed model reference: a Hub release, a commit, a local alias or a provider source.
+/// Whether a named model supplies base weights or an adaptation to another model.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelKind {
+    Base,
+    Lora,
+}
+
+impl ModelKind {
+    /// Read older catalog/machine roles without treating unknown content as a base model.
+    pub fn from_role(role: &str) -> Option<Self> {
+        match role {
+            "base" | "model" => Some(Self::Base),
+            "lora" => Some(Self::Lora),
+            _ => None,
+        }
+    }
+}
+
+/// The immutable tree identity of a checkpoint, distinct from its header digest.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[serde(transparent)]
+pub struct CheckpointId(String);
+
+impl CheckpointId {
+    pub fn parse(value: &str) -> Result<Self, Error> {
+        checkpoint(value).map(Self)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for CheckpointId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for CheckpointId {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = <String as serde::Deserialize>::deserialize(deserializer)?;
+        Self::parse(&value).map_err(|error| serde::de::Error::custom(error.message))
+    }
+}
+
+/// One parsed model reference: a Hub release, a checkpoint, a local alias or a provider source.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ModelRef {
     Hub {
-        repo: Repo,
+        model: ModelId,
         release: Option<String>,
     },
-    Commit {
-        repo: Repo,
-        commit: String,
+    Checkpoint {
+        model: ModelId,
+        checkpoint: CheckpointId,
     },
     Local(String),
     Provider(String),
 }
 
-const GRAMMAR: &str = "[org/]name[@release], [org/]name@sha256:<commit>, local/<alias>, hf://…, civitai://… or https://…";
+const GRAMMAR: &str = "[org/]name[@release], [org/]name@sha256:<checkpoint>, local/<alias>, hf://…, civitai://… or https://…";
 
 fn usage(code: &str, message: String) -> Error {
     Error::new(Kind::Usage, code, message)
@@ -69,8 +116,8 @@ pub fn lane(value: &str) -> Result<String, String> {
     label("--lane", value).map_err(|e| e.message)
 }
 
-/// A commit id: `sha256:` and 64 lowercase hex digits.
-pub fn commit(value: &str) -> Result<String, Error> {
+/// A checkpoint id: `sha256:` and 64 lowercase hex digits.
+pub fn checkpoint(value: &str) -> Result<String, Error> {
     match value.strip_prefix("sha256:") {
         Some(hex)
             if hex.len() == 64
@@ -80,18 +127,18 @@ pub fn commit(value: &str) -> Result<String, Error> {
         }
         _ => Err(usage(
             "checkpoint_invalid",
-            format!("{value:?} is not a commit id"),
+            format!("{value:?} is not a checkpoint id"),
         )
         .remedy("write sha256:<64 lowercase hex>")),
     }
 }
 
-impl Repo {
+impl ModelId {
     /// `name` or `org/name`, lowercased; no org is [`ROOT`].
     pub fn parse(raw: &str) -> Result<Self, Error> {
         let lower = raw.trim().to_ascii_lowercase();
         match lower.split_once('/').unwrap_or((ROOT, &lower)) {
-            (org, name) if (slug(org) || org == ROOT) && slug(name) => Ok(Repo {
+            (org, name) if (slug(org) || org == ROOT) && slug(name) => Ok(ModelId {
                 org: org.to_owned(),
                 name: name.to_owned(),
             }),
@@ -105,19 +152,19 @@ impl Repo {
 
     /// A destination on the Hub: never `local/`.
     pub fn hub(raw: &str) -> Result<Self, Error> {
-        let repo = Self::parse(raw)?;
-        if repo.org == "local" {
+        let model = Self::parse(raw)?;
+        if model.org == "local" {
             return Err(usage(
                 "model_local_destination",
                 format!("{raw} is a local alias; local/ names stay on a machine"),
             )
-            .remedy(format!("name a repository of your account, e.g. <you>/{}", repo.name)));
+            .remedy(format!("name a model in your account, e.g. <you>/{}", model.name)));
         }
-        Ok(repo)
+        Ok(model)
     }
 }
 
-impl fmt::Display for Repo {
+impl fmt::Display for ModelId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}/{}", self.org, self.name)
     }
@@ -140,10 +187,10 @@ impl ModelRef {
             Some((name, pin)) => (name, Some(pin)),
             None => (raw, None),
         };
-        let repo = Repo::parse(name).map_err(|_| grammar(raw))?;
-        if repo.org == "local" {
+        let model = ModelId::parse(name).map_err(|_| grammar(raw))?;
+        if model.org == "local" {
             return match pin {
-                None => Ok(ModelRef::Local(repo.name)),
+                None => Ok(ModelRef::Local(model.name)),
                 Some(_) => Err(usage(
                     "model_ref_invalid",
                     format!("{raw:?}: a local alias has no releases"),
@@ -151,11 +198,11 @@ impl ModelRef {
             };
         }
         if let Some(id) = pin.filter(|pin| pin.starts_with("sha256:")) {
-            return Ok(ModelRef::Commit { repo, commit: commit(id)? });
+            return Ok(ModelRef::Checkpoint { model, checkpoint: CheckpointId::parse(id)? });
         }
         // `@latest` is what naming no release means.
         let release = pin.filter(|pin| !pin.eq_ignore_ascii_case("latest")).map(|release| label("release", release)).transpose()?;
-        Ok(ModelRef::Hub { repo, release })
+        Ok(ModelRef::Hub { model, release })
     }
 
     /// The machine's choice for `parameter`.
@@ -165,13 +212,13 @@ impl ModelRef {
             ..Default::default()
         };
         match self {
-            ModelRef::Hub { repo, release } => {
-                choice.repository = repo.to_string();
+            ModelRef::Hub { model, release } => {
+                choice.repository = model.to_string();
                 choice.release = release.clone().unwrap_or_default();
             }
-            ModelRef::Commit { repo, commit } => {
-                choice.repository = repo.to_string();
-                choice.manifest = commit.clone();
+            ModelRef::Checkpoint { model, checkpoint } => {
+                choice.repository = model.to_string();
+                choice.manifest = checkpoint.to_string();
             }
             ModelRef::Local(alias) => choice.repository = format!("local/{alias}"),
             ModelRef::Provider(source) => choice.source = source.clone(),
@@ -216,14 +263,14 @@ pub fn strength(raw: &str) -> Result<String, Error> {
 impl fmt::Display for ModelRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ModelRef::Hub { repo, release } => {
-                write!(f, "{repo}")?;
+            ModelRef::Hub { model, release } => {
+                write!(f, "{model}")?;
                 if let Some(release) = release {
                     write!(f, "@{release}")?;
                 }
                 Ok(())
             }
-            ModelRef::Commit { repo, commit } => write!(f, "{repo}@{commit}"),
+            ModelRef::Checkpoint { model, checkpoint } => write!(f, "{model}@{checkpoint}"),
             ModelRef::Local(alias) => write!(f, "local/{alias}"),
             ModelRef::Provider(source) => f.write_str(source),
         }
@@ -235,4 +282,44 @@ fn grammar(raw: &str) -> Error {
         "model_ref_invalid",
         format!("{raw:?} is not a model: use {GRAMMAR}"),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn named_model_and_exact_checkpoint_keep_the_reference_contract() {
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let reference = ModelRef::parse(&format!("Author/Model@{digest}")).unwrap();
+        let ModelRef::Checkpoint { model, checkpoint } = &reference else { panic!("expected checkpoint") };
+        assert_eq!(model.to_string(), "author/model");
+        assert_eq!(checkpoint.as_str(), digest);
+        assert_eq!(reference.to_string(), format!("author/model@{digest}"));
+        let choice = reference.choice("weights");
+        assert_eq!(choice.repository, "author/model");
+        assert_eq!(choice.manifest, digest);
+        assert_eq!(ModelId::parse("flux.2").unwrap().to_string(), "_/flux.2");
+        assert_eq!(ModelRef::parse("local/adapter").unwrap().to_string(), "local/adapter");
+        assert!(ModelId::hub("local/adapter").is_err());
+    }
+
+    #[test]
+    fn checkpoint_ids_are_validated_when_read_from_json() {
+        let digest = format!("sha256:{}", "b".repeat(64));
+        let json = serde_json::to_string(&CheckpointId::parse(&digest).unwrap()).unwrap();
+        assert_eq!(serde_json::from_str::<CheckpointId>(&json).unwrap().as_str(), digest);
+        for invalid in ["sha256:1234", "sha256:ABCDEF", "author/model@1.0", ""] {
+            assert!(serde_json::from_str::<CheckpointId>(&serde_json::to_string(invalid).unwrap()).is_err());
+        }
+    }
+
+    #[test]
+    fn unknown_roles_do_not_become_base_models() {
+        assert_eq!(ModelKind::from_role("model"), Some(ModelKind::Base));
+        assert_eq!(ModelKind::from_role("base"), Some(ModelKind::Base));
+        assert_eq!(ModelKind::from_role("lora"), Some(ModelKind::Lora));
+        assert_eq!(ModelKind::from_role("unknown"), None);
+        assert_eq!(serde_json::to_string(&ModelKind::Base).unwrap(), "\"base\"");
+    }
 }

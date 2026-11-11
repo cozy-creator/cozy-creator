@@ -21,7 +21,7 @@ use api::{
         At, Families, FoundModel, ModelAuthor, ModelCommit, ModelDeleted, ModelDetail, ModelEdit, ModelEdited,
         ModelLane, ModelRelease, ModelReleaseAsk, ModelReleased, ModelSearch, Provenance,
     },
-    model_ref::{self as refs, Repo},
+    model_ref::{self as refs, ModelId},
     names::shown,
 };
 use serde::Deserialize;
@@ -77,7 +77,7 @@ pub(super) async fn search(
     // One word that is org/name is that model; anything else is search text.
     let tagged = ask.tag.as_deref().is_some_and(|t| !t.trim().is_empty()) || ask.no_tag.as_deref().is_some_and(|t| !t.trim().is_empty());
     let exact = match (family, q, tagged) {
-        (None, Some(one), false) if one.contains('/') && !one.contains(char::is_whitespace) => Repo::parse(one).ok(),
+        (None, Some(one), false) if one.contains('/') && !one.contains(char::is_whitespace) => ModelId::parse(one).ok(),
         _ => None,
     };
     let (tags, no_tags) = (listed(ask.tag.as_deref()), listed(ask.no_tag.as_deref()));
@@ -119,7 +119,7 @@ pub(super) async fn search(
         }
     }
     let cards = match &exact {
-        Some(repo) => vec![client.get_model(&repo.org, &repo.name).await.map_err(|e| refusal(&hub, e))?],
+        Some(model_id) => vec![client.get_model(&model_id.org, &model_id.name).await.map_err(|e| refusal(&hub, e))?],
         None => {
             let reads = names.into_iter().map(|model| {
                 let client = client.clone();
@@ -263,13 +263,13 @@ pub(super) async fn info(
 ) -> Result<Json<ModelDetail>, Refusal> {
     let Query(ask) = query?;
     let hub = origin(&api, ask.hub.as_deref())?;
-    let repo = Repo::parse(&format!("{org}/{name}")).map_err(Refusal)?;
-    Ok(Json(detail(&api, &hub, &repo, ask.release).await?))
+    let model_id = ModelId::parse(&format!("{org}/{name}")).map_err(Refusal)?;
+    Ok(Json(detail(&api, &hub, &model_id, ask.release).await?))
 }
 
 /// A model as its card and its header say: its releases (one, when named) and, to its members, its commits.
-async fn detail(api: &Api, hub: &Origin, repo: &Repo, release: Option<String>) -> Result<ModelDetail, Refusal> {
-    let card = (reader(api, hub)?.get_model(&repo.org, &repo.name).await).map_err(|e| refusal(hub, e))?;
+async fn detail(api: &Api, hub: &Origin, model_id: &ModelId, release: Option<String>) -> Result<ModelDetail, Refusal> {
+    let card = (reader(api, hub)?.get_model(&model_id.org, &model_id.name).await).map_err(|e| refusal(hub, e))?;
     let facts = checkpoints::of_card(api, hub, &card).await;
     let (family, family_from) = checkpoints::family(card.model.family.clone(), facts.as_ref().and_then(|f| f.family.as_deref()));
     let releases: Vec<ModelRelease> = (card.releases.into_iter())
@@ -292,15 +292,15 @@ async fn detail(api: &Api, hub: &Origin, repo: &Repo, release: Option<String>) -
         .collect();
     if let Some(release) = release.filter(|_| releases.is_empty()) {
         return Err(Refusal(
-            Error::not_found("model_release_not_found", format!("{repo} has no release {release:?}"))
-                .next(format!("cozy model ls {repo}")),
+            Error::not_found("model_release_not_found", format!("{model_id} has no release {release:?}"))
+                .next(format!("cozy model ls {model_id}")),
         ));
     }
     let commits = (card.commits.into_iter())
         .map(|c| ModelCommit { commit: c.id, lane: c.lane, bytes: c.bytes, releases: c.releases, created_at: c.created_at })
         .collect();
     Ok(ModelDetail {
-        model: repo.to_string(),
+        model: model_id.to_string(),
         role: card.model.role,
         family,
         family_from,
@@ -337,7 +337,7 @@ pub(super) async fn edit(
 ) -> Result<Json<ModelEdited>, Refusal> {
     let edit: ModelEdit = parse(&body?)?;
     let hub = origin(&api, edit.hub.as_deref())?;
-    let repo = Repo::hub(&format!("{org}/{name}")).map_err(Refusal)?;
+    let model_id = ModelId::hub(&format!("{org}/{name}")).map_err(Refusal)?;
     if edit.family.is_none() && edit.trigger.is_none() && edit.strength.is_none() && !edit.tags_change() {
         return Err(Refusal(Error::new(Kind::Usage, "model_edit_empty", "name what changes: family, tags, trigger or strength")));
     }
@@ -346,14 +346,14 @@ pub(super) async fn edit(
     if edit.family.is_some() || edit.tags_change() {
         let family = edit.family.as_deref().map(str::trim).map(|f| (if f.eq_ignore_ascii_case("none") { "" } else { f }).to_owned());
         let update = types::ModelUpdate { family, tags: None, add_tags: edit.add_tags, remove_tags: edit.remove_tags };
-        let answer = (client.update_model(&repo.org, &repo.name, &update).await).map_err(|e| refusal(&hub, e))?;
+        let answer = (client.update_model(&model_id.org, &model_id.name, &update).await).map_err(|e| refusal(&hub, e))?;
         warnings = answer.warnings;
     }
     if edit.trigger.is_some() || edit.strength.is_some() {
-        let answer = (client.set_model_display(&repo.org, &repo.name, edit.trigger.as_deref(), edit.strength).await).map_err(|e| refusal(&hub, e))?;
+        let answer = (client.set_model_display(&model_id.org, &model_id.name, edit.trigger.as_deref(), edit.strength).await).map_err(|e| refusal(&hub, e))?;
         warnings.extend(answer.warnings);
     }
-    Ok(Json(ModelEdited { model: detail(&api, &hub, &repo, None).await?, warnings }))
+    Ok(Json(ModelEdited { model: detail(&api, &hub, &model_id, None).await?, warnings }))
 }
 
 /// `GET /v1/families`: the families TensorFS tells from a header, for an owner to pick from.
@@ -369,14 +369,14 @@ pub(super) async fn release(
 ) -> Result<Json<ModelReleased>, Refusal> {
     let ModelReleaseAsk { hub, version, commits } = parse(&body?)?;
     let hub = origin(&api, hub.as_deref())?;
-    let repo = Repo::hub(&format!("{org}/{name}")).map_err(Refusal)?;
+    let model_id = ModelId::hub(&format!("{org}/{name}")).map_err(Refusal)?;
     let version = refs::label("version", &version).map_err(Refusal)?;
     let commits = (commits.iter().map(|c| refs::commit(c)).collect::<Result<Vec<_>, _>>()).map_err(Refusal)?;
     let client = signed_in(&api, &hub)?;
-    let release = (client.publish_model_release(&repo.org, &repo.name, &version, &commits).await)
+    let release = (client.publish_model_release(&model_id.org, &model_id.name, &version, &commits).await)
         .map_err(|e| refusal(&hub, e))?;
     Ok(Json(ModelReleased {
-        model: repo.to_string(),
+        model: model_id.to_string(),
         version: release.version,
         created_at: release.created_at,
         lanes: release.lanes.into_iter().map(|(lane, l)| (lane, l.commit)).collect(),
@@ -421,13 +421,13 @@ async fn deleted(
     commit: Option<String>,
 ) -> Result<Json<ModelDeleted>, Refusal> {
     let hub = origin(api, at.hub.as_deref())?;
-    let repo = Repo::hub(&format!("{org}/{name}")).map_err(Refusal)?;
+    let model_id = ModelId::hub(&format!("{org}/{name}")).map_err(Refusal)?;
     let client = signed_in(api, &hub)?;
     let gone = match (&release, &commit) {
-        (Some(version), _) => client.delete_model_release(&repo.org, &repo.name, version).await,
-        (None, Some(id)) => client.delete_model_commit(&repo.org, &repo.name, id).await,
-        (None, None) => client.delete_model(&repo.org, &repo.name).await,
+        (Some(version), _) => client.delete_model_release(&model_id.org, &model_id.name, version).await,
+        (None, Some(id)) => client.delete_model_commit(&model_id.org, &model_id.name, id).await,
+        (None, None) => client.delete_model(&model_id.org, &model_id.name).await,
     };
     gone.map_err(|e| refusal(&hub, e))?;
-    Ok(Json(ModelDeleted { model: repo.to_string(), release, commit }))
+    Ok(Json(ModelDeleted { model: model_id.to_string(), release, commit }))
 }
