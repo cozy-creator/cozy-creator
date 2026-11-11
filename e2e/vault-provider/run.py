@@ -9,9 +9,14 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+from typing import TypedDict, cast
 
 
-def main():
+class _Session(TypedDict, total=False):
+    start_new_session: bool
+
+
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--probe', type=Path, required=True)
     parser.add_argument('--securefs', type=Path, required=True)
@@ -36,7 +41,7 @@ def main():
     result = {'normal': json.loads(normal.stdout.strip().splitlines()[-1])}
     crash = args.artifacts / 'crash'
     with (args.artifacts / 'crash.log').open('w') as log:
-        host = subprocess.Popen([str(args.probe), 'crash-host', str(args.securefs), str(crash)], stdout=log, stderr=log, env=environment, **({'start_new_session': True} if os.name != 'nt' else {}))
+        host = subprocess.Popen([str(args.probe), 'crash-host', str(args.securefs), str(crash)], stdout=log, stderr=log, env=environment, **cast(_Session, {'start_new_session': True} if os.name != 'nt' else {}))  # cast: Popen's one option it may add
         ready = crash / 'ready.json'
         try:
             deadline = time.monotonic() + 90
@@ -57,6 +62,7 @@ def main():
                 host.kill()
             host.wait(timeout=10)
             deadline = time.monotonic() + 15
+            mounted: bool  # the loop runs at least once: its deadline is ahead
             while time.monotonic() < deadline:
                 if Path('/proc/self/mountinfo').exists():
                     paths = [line.split()[4].replace('\\040', ' ').replace('\\134', '\\') for line in Path('/proc/self/mountinfo').read_text().splitlines()]

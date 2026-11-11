@@ -8,22 +8,46 @@ from pathlib import Path
 import sqlite3
 import sys
 import time
+from typing import NotRequired, TypedDict, cast
 from uuid import uuid4
 
 from project_http import project_path, request
 
 
+class Asset(TypedDict):
+    name: str
+    versions: int
+
+
+class Job(TypedDict):
+    asset: str
+    run: NotRequired[int | None]
+
+
+class Board(TypedDict):
+    jobs: list[Job]
+
+
+class ProjectState(TypedDict):
+    """The project route's answer: the fields this reads."""
+
+    assets: list[Asset]
+    busy: bool
+    queue: NotRequired[list[object]]
+    board: NotRequired[Board]
+
+
 def main() -> int:
     project, output, tool = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
-    report: dict = {}
+    report: dict[str, object] = {}
 
-    def status() -> dict:
-        return json.loads(request(project_path(project)))
+    def status() -> ProjectState:
+        return cast(ProjectState, json.loads(request(project_path(project))))  # cast: the project route's JSON
 
-    def versions(state: dict) -> int:
+    def versions(state: ProjectState) -> int:
         return next((asset["versions"] for asset in state["assets"] if asset["name"] == "shot"), 0)
 
-    def edit(path: str, method: str, body: dict) -> str:
+    def edit(path: str, method: str, body: dict[str, object]) -> str:
         return request(project_path(project, path), method, body)
 
     def render(label: str) -> None:
@@ -50,6 +74,7 @@ def main() -> int:
         "tool": tool, "name": "shot", "exact": True,
         "fields": {"seconds": 0.01, "instructions": "Before cancellation."},
     })
+    current: ProjectState  # each wait below runs at least once: its deadline is ahead
     for count in range(1, 4):
         edit("/assets/shot", "PATCH", {"fields": {"instructions": f"Prior version {count}."}})
         render(str(count))
@@ -68,6 +93,7 @@ def main() -> int:
     edit("/assets/shot", "PATCH", {"fields": {"seconds": 60}})
     render("long")
     deadline = time.monotonic() + 24
+    run: int | None  # the wait runs at least once: its deadline is ahead
     while time.monotonic() < deadline:
         jobs = status().get("board", {}).get("jobs", [])
         run = next((job["run"] for job in jobs if job["asset"] == "shot" and job.get("run")), None)

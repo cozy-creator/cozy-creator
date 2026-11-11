@@ -17,7 +17,7 @@ class Refused(Exception):
         self.payload = payload
 
 
-def request(path: str, method: str = "GET", body: dict | bytes | None = None, *,
+def request(path: str, method: str = "GET", body: dict[str, object] | bytes | None = None, *,
             edit: str | None = None) -> str:
     holder = json.loads((Path.home() / ".cozy/calcifer/calcifer.lock.holder").read_text())
     address = urlsplit(f"http://{holder['address']}")

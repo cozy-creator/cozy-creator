@@ -4,12 +4,13 @@ on top of the request's `--lora`. The gate cell reads each call's stack from the
 from __future__ import annotations
 
 import time
+from typing import cast
 
 import msgspec
 import sdxl
 from sdxl import GenerateInput, SdxlModel
 
-from cozy_runtime.author import Adjustments, App, Context, Lora, ModelChoice, Outputs, Telemetry, call
+from cozy_runtime.author import Adjustments, App, Context, Lora, ModelChoice, Outputs, Seed, Telemetry, call
 from cozy_runtime.image import ImageResult
 from cozy_runtime.media import File
 
@@ -23,9 +24,10 @@ async def paint(
     tel: Telemetry, adj: Adjustments,
 ) -> ImageResult:
     """sdxl's own generate, as this package's GPU call."""
-    payload = GenerateInput(prompt=prompt, seed=seed, steps=steps)
+    payload = GenerateInput(prompt=prompt, seed=cast(Seed, seed), steps=steps)  # cast: Seed is a NewType of int
     generate = sdxl.app._registry["generate"].fn
-    return generate(ctx, payload, sdxl.resolve_generate(payload), model, out, tel, adj)
+    # cast: a registration's handler is typed `object`; sdxl's generate returns its ImageResult (typings/sdxl)
+    return cast(ImageResult, generate(ctx, payload, sdxl.resolve_generate(payload), model, out, tel, adj))
 
 
 class Compare(msgspec.Struct):

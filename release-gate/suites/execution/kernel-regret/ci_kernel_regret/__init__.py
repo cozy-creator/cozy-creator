@@ -5,7 +5,7 @@ sparse site's walk at each level (its sparse cells at that level and above, the 
 import json
 import math
 import statistics
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from functools import partial
 from typing import TYPE_CHECKING, TypeAlias, TypedDict, cast
 
@@ -240,6 +240,8 @@ def gpu(payload: Probe, ctx: Context) -> Report:
                         continue
                     measure = partial(_gemm, gemm, f.fp8, m, n, k, props.L2_cache_size)
                     gemms.append({**row, **_measured(row["shape"], measure)})
+    names: Sequence[str]  # a dense cell's, then the sparse walk's
+    shape: tuple[int, ...]  # ATTENTION's, then SPARSE's
     for level, names in attention.DENSE.get(arch.row(device.sm).family, {}).items():
         ready: "dict[str, attention.Ready]"
         refused: dict[str, str]
