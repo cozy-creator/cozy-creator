@@ -251,6 +251,7 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
         Ok(runs) => steps.done(&format!("resume ({runs} runs)")),
         Err(e) => warn!("resuming what an earlier Calcifer left: {e}"),
     }
+    tokio::spawn(crate::hub::jobs::resume(api.clone()));
     crate::events::tell(api.clone());
     crate::project::previews(api.clone());
     crate::project::resume(&api);

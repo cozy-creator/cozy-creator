@@ -76,7 +76,8 @@ const SCHEMA: &str = "
         agreed TEXT,
         started_at INTEGER,
         stays TEXT NOT NULL DEFAULT '[]',
-        batch TEXT NOT NULL DEFAULT ''
+        batch TEXT NOT NULL DEFAULT '',
+        job BLOB
     ) STRICT;
     CREATE INDEX runs_owed ON runs (machine) WHERE state <> 'settled';
     CREATE TABLE outputs (
@@ -146,6 +147,20 @@ fn batch_column(writer: &mut Connection) -> Result<()> {
     )?;
     if !has {
         writer.execute_batch("ALTER TABLE runs ADD COLUMN batch TEXT NOT NULL DEFAULT ''")?;
+    }
+    Ok(())
+}
+
+/// A store made before Calcifer's own runs kept their job gains that column, empty: such a run the next Calcifer can't carry
+/// out again fails `calcifer_stopped` (cl-866).
+fn job_column(writer: &mut Connection) -> Result<()> {
+    let has: bool = writer.query_row(
+        "SELECT EXISTS (SELECT 1 FROM pragma_table_info('runs') WHERE name = 'job')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !has {
+        writer.execute_batch("ALTER TABLE runs ADD COLUMN job BLOB")?;
     }
     Ok(())
 }
@@ -384,6 +399,8 @@ pub(crate) struct NewRun {
     pub stays: Vec<String>,
     /// The runs submitted with it: those on its machine go there in one admission (cl-816). Empty: alone.
     pub batch: String,
+    /// Calcifer's own run (`Kind::Here`): its job's ask, which a next Calcifer carries out again (cl-866).
+    pub job: Option<Vec<u8>>,
 }
 
 /// How to reach a machine: the id its caps name, its address and its TLS leaf's sha256.
@@ -539,6 +556,7 @@ impl Store {
                 measured_columns(&mut writer)?;
                 stays_column(&mut writer)?;
                 batch_column(&mut writer)?;
+                job_column(&mut writer)?;
             }
             other => return Err(StoreError::Version(other)),
         }
@@ -1147,6 +1165,14 @@ impl Store {
         })
     }
 
+    /// The job's ask Calcifer's own run `id` carries out, when it kept one.
+    pub(crate) fn job(&self, id: &str) -> Result<Option<Vec<u8>>> {
+        self.read(|db| {
+            let job: Option<Vec<u8>> = db.query_row("SELECT job FROM runs WHERE id = ?1", [id], |r| r.get(0)).optional()?.flatten();
+            job.map(|job| open_bytes(&run_context(id, "job"), &job)).transpose()
+        })
+    }
+
     /// The idempotency key run `id` was submitted under.
     pub(crate) fn key(&self, id: &str) -> Result<Option<String>> {
         self.read(|db| {
@@ -1185,9 +1211,9 @@ impl Store {
             };
             tx.execute(
                 "INSERT INTO runs (id, number, idempotency_key, digest, hub, kind, target, machine, pinned, spec,
-                     out_dir, state, created_at, warnings, inputs, wants, agreed, stays, batch, accepted_at, started_at)
+                     out_dir, state, created_at, warnings, inputs, wants, agreed, stays, batch, accepted_at, started_at, job)
                  VALUES (?1, (SELECT COALESCE(MAX(number), 0) + 1 FROM runs), ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
-                     ?10, ?18, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?19, ?19)",
+                     ?10, ?18, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?19, ?19, ?20)",
                 params![
                     new.id.as_str(),
                     key,
@@ -1220,6 +1246,7 @@ impl Store {
                     new.batch,
                     state,
                     began,
+                    new.job.as_deref().map(|job| seal_at(&new.out_dir, &run_context(new.id.as_str(), "job"), job)).transpose()?,
                 ],
             )?;
             Ok((new.id.to_string(), true))
