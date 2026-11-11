@@ -50,7 +50,6 @@ e2e/cli/private_ranges.py: [no-untyped-def] Function is missing a type annotatio
 e2e/cli/private_ranges.py: [no-untyped-def] Function is missing a type annotation
 e2e/cli/private_ranges.py: [no-untyped-def] Function is missing a type annotation
 e2e/cli/private_ranges.py: [no-untyped-def] Function is missing a type annotation
-e2e/cli/project/shots.py: [arg-type] Argument 1 to "BareTake" has incompatible type "VideoFile | None"; expected "File"
 e2e/cli/project/shots.py: [arg-type] Argument 2 to "Take" has incompatible type "File"; expected "Latents"
 e2e/cli/project/shots.py: [type-arg] Missing type arguments for generic type "Prompt"
 e2e/cli/project/shots.py: [type-arg] Missing type arguments for generic type "Prompt"

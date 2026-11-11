@@ -104,6 +104,8 @@ def scenes(ctx: Context, payload: Scenes, out: Outputs, tel: Telemetry) -> BareT
                 ctx.progress(at, steps)
         video = out.save_bytes(payload.plate.read_bytes() + struct.pack(">I4s", 24, b"free") + os.urandom(16), media_type="video/mp4")
         out.publish("video", video, label="Video" if index + 1 == count else f"Segment {index + 1} of {count}")
+    if video is None:
+        raise InvalidRequest("a long shot has at least one segment")
     return BareTake(video)
 
 
