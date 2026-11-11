@@ -121,9 +121,57 @@ pub(crate) async fn request(api: &Arc<Api>, key: &str, digest: &str, ask: RunReq
             Ok(Submitted { notes, ..submitted.map_err(crate::runs::refused)? })
         }
         Planned::Here { target, work } => {
+            let kept = serde_json::to_vec(&ask).map_err(|e| Error::internal("job_ask", e.to_string()))?;
             let (its_api, its_hub, its_key) = (api.clone(), hub.clone(), key.to_owned());
             let work = move |here: Here| async move { work.run(&its_api, &its_hub, &its_key, &here).await };
-            calcifer.here(key, digest, target, &hub, work).await.map_err(crate::runs::refused)
+            calcifer.here(key, digest, target, &hub, kept, work).await.map_err(crate::runs::refused)
+        }
+    }
+}
+
+/// Carries out again each of Calcifer's own jobs an earlier Calcifer stopped under, from its kept ask, under the same run: each
+/// is safe to do again (a lock is `uv lock`; a publication answers a version already published, and the Hub takes the same
+/// release declared again; the Hub answers a commit it has; a removal's runs go under keys named for its own). One with a cancel
+/// asked settles canceled; one with no ask kept, or whose ask now plans otherwise, fails `calcifer_stopped`.
+pub(crate) async fn resume(api: Arc<Api>) {
+    let calcifer = &api.calcifer;
+    let ids = match calcifer.store().unsettled_here() {
+        Ok(ids) => ids,
+        Err(e) => return tracing::warn!("Calcifer's own jobs left by an earlier Calcifer: {e}"),
+    };
+    for id in ids {
+        let stopped = || Error::new(Kind::Unavailable, "calcifer_stopped", "Calcifer stopped before this ended").remedy("ask again: it is safe");
+        let store = calcifer.store();
+        let (row, key, kept) = match (store.run(id.as_str()), store.key(id.as_str()), store.job(id.as_str())) {
+            (Ok(Some(row)), Ok(Some(key)), Ok(Some(kept))) => (row, key, kept),
+            _ => {
+                calcifer.ended_here(&id, Err(stopped()));
+                continue;
+            }
+        };
+        if row.cancel_requested {
+            calcifer.ended_here(&id, Err(Error::new(Kind::Conflict, "canceled", "canceled")));
+            continue;
+        }
+        let ask = match serde_json::from_slice::<RunRequest>(&kept) {
+            Ok(ask) => ask,
+            Err(_) => {
+                calcifer.ended_here(&id, Err(stopped()));
+                continue;
+            }
+        };
+        let planned = match origin(&api, Some(&ask.hub)) {
+            Ok(hub) => plan(&api, &key, &hub, &ask).await.map(|planned| (hub, planned)),
+            Err(refused) => Err(refused),
+        };
+        match planned {
+            Ok((hub, Planned::Here { work, .. })) => {
+                let its_api = api.clone();
+                let work = move |here: Here| async move { work.run(&its_api, &hub, &key, &here).await };
+                calcifer.here_again(id, work);
+            }
+            Ok(_) => calcifer.ended_here(&id, Err(stopped())),
+            Err(Refusal(refused)) => calcifer.ended_here(&id, Err(refused)),
         }
     }
 }
