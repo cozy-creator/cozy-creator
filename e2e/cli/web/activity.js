@@ -121,7 +121,7 @@ def draw(payload: Drawing, adj: Adjustments, out: Outputs) -> ImageResult:
 
   // A download: listed once, by the bytes it fetches, with its rate and time left, and the run that waits on it.
   const name = `local/activity-vae-${Date.now()}`;
-  const download = spawn(COZY, ['--json', 'model', 'download', VAE, name, '--on', 'local'], { cwd: folder, stdio: ['ignore', 'pipe', 'pipe'] });
+  const download = spawn(COZY, ['--json', 'model', 'install', VAE, name, '--on', 'local'], { cwd: folder, stdio: ['ignore', 'pipe', 'pipe'] });
   const evidence = seen.download_cli = { events: [], exit_code: null, signal: null, stderr: '' };
   const safe = (text) => String(text ?? '').replace(/Bearer\s+\S+/gi, 'Bearer [redacted]').replace(/cozy1-[a-z0-9_-]+/gi, '[recovery redacted]').replace(/[A-Za-z0-9_+/-]{64,}/g, '[opaque value redacted]').slice(-2048);
   let pending = '';
