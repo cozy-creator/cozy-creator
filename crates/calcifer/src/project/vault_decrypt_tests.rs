@@ -49,8 +49,8 @@ fn staged(root: &FsPath, name: &str, bag: &Keybag) -> Conversion {
     }
 }
 
-#[test]
-fn native_plain_recovery_fixture() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_plain_recovery_fixture() {
     let Some(root) = std::env::var_os("COZY_DECRYPT_FIXTURE").map(PathBuf::from) else { return };
     let id = format!("decrypt-{}", fresh());
     let created = Keybag::create_generation(&id, 2, SecretString::from("native fixture passphrase".to_owned())).unwrap();
@@ -60,6 +60,8 @@ fn native_plain_recovery_fixture() {
     let copying = staged(&root, "copying", &created.keybag);
     fs::write(copying.staged.join("partial"), b"partial copy").unwrap();
     save_conversion(&copying).unwrap();
+    assert!(finish_conversion(&copying.root).is_err());
+    assert!(receipt_path(&copying.root).is_file() && copying.staged.join("partial").is_file());
     recover_conversion(&copying.root).unwrap();
     assert!(copying.root.join(KEYBAG_FILE).is_file());
     assert!(!copying.staged.exists() && !receipt_path(&copying.root).exists());
@@ -158,10 +160,44 @@ fn native_plain_recovery_fixture() {
     // cannot grant the original namespace, but its ordinary identity stays usable.
     let copy = root.join("foreign-copy"); native_project(&copy, "new-copy-id");
     fs::copy(ready.root.join(api::machine::LOCAL_PRIVATE_MARKER), copy.join(api::machine::LOCAL_PRIVATE_MARKER)).unwrap();
+    KEY_ROOTS.lock().unwrap().insert(id.clone(), copy.clone());
     register_plain_root(&copy, "new-copy-id").unwrap();
+    assert_ne!(KEY_ROOTS.lock().unwrap().get(&id), Some(&copy));
     assert!(crate::private_io::retained_scope(&copy, "new-copy-id").unwrap().is_none());
     assert!(crate::private_io::retained_view(&copy, &id).is_err());
     assert_eq!(plain_project_id(&copy).as_deref(), Some("new-copy-id"));
+    let copied_db = hash(&copy.join(db::DB)).unwrap();
+    let refusal = plain_scope_for_encrypt(&copy, "new-copy-id").err().expect("foreign copied namespace must refuse before encryption");
+    assert_eq!(refusal.code, "vault_retained_project_mismatch");
+    assert_eq!(hash(&copy.join(db::DB)).unwrap(), copied_db);
+    assert!(!copy.join(KEYBAG_FILE).exists());
+
+    // The original list predicate is demonstrably false between the renames.
+    // The real indexed/named functions must retain the ID throughout that gap,
+    // and the actual GET handler must remain Pending while the writer owns ACCESS.
+    let home = platform::paths::Home::under(&root.join("api-home")); home.open().unwrap();
+    fs::create_dir_all(home.calcifer()).unwrap();
+    let calcifer = crate::Calcifer::open(&home.calcifer(), &home.outputs()).unwrap();
+    let config = api::config::Config { hub_url: api::config::Origin::parse("http://127.0.0.1:9").unwrap(), ..Default::default() };
+    let machines = crate::machines::Machines::start(calcifer.clone(), home, &root, &config);
+    let api = crate::api::Api::new(calcifer, machines, "native-decrypt-fixture");
+    api.calcifer.store().project_opened(&id, "Gap", &copying.root, None, None).unwrap();
+    let writer = exclusive(&copying.root).unwrap();
+    CONVERTING.lock().unwrap().insert(copying.root.clone());
+    let converting = Converting(copying.root.clone());
+    let gap = root.join("gap-encrypted-source"); fs::rename(&copying.root, &gap).unwrap();
+    assert!(!super::super::Folder::is_project(&copying.root) && !encrypted(&copying.root));
+    assert!(super::super::indexed(&api).unwrap().iter().any(|project| project.id == id));
+    assert_eq!(super::super::named(&api, &id).unwrap(), copying.root);
+    let mut reading = Box::pin(read(State(api.clone()), Path(id.clone())));
+    assert!(futures_util::poll!(&mut reading).is_pending(), "GET answered a transient plaintext status during the rename gap");
+    fs::rename(&gap, &copying.root).unwrap();
+    drop(converting); drop(writer);
+    let response = reading.await.unwrap();
+    let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+    let observed: VaultStatus = serde_json::from_slice(&bytes).unwrap();
+    assert!(observed.encrypted && observed.state == "locked");
+    api.down().await.unwrap();
 
     #[cfg(windows)]
     for directory in [&ready.root, &next] {
@@ -171,7 +207,9 @@ fn native_plain_recovery_fixture() {
     }
     println!("{}", serde_json::json!({"copying_rollback":true,"ready_rename_recovery":true,"installed_recovery":true,
         "changed_file_ids_refused":true,"escaped_path_preserved":true,"readonly_bytes_and_permissions":true,
-        "retained_source_preserved_caches_rebuilt":true,"foreign_copy_marker_denied":true}));
+        "retained_source_preserved_caches_rebuilt":true,"foreign_copy_marker_denied":true,
+        "foreign_copy_encrypt_refused_without_mutation":true,"encryption_finisher_preserves_plain_intent":true,
+        "original_gap_predicate_false":true,"index_and_named_survive_rename_gap":true,"status_waits_for_transition":true}));
 }
 
 #[test]

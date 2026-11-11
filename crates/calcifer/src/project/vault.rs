@@ -74,9 +74,7 @@ pub(crate) fn restore_plain_roots(store: &crate::store::Store) {
     for project in projects {
         if recover_conversion(&project.path).is_err() || encrypted(&project.path)
             || !project.path.join(api::machine::LOCAL_PRIVATE_MARKER).exists() { continue; }
-        if plain_project_id(&project.path).as_deref() == Some(&project.id) {
-            let _ = register_plain_root(&project.path, &project.id);
-        }
+        let _ = register_plain_root(&project.path, &project.id);
     }
 }
 
@@ -110,6 +108,13 @@ pub(super) fn view(root: &FsPath) -> Result<PathBuf, Error> {
     if session.mount.reconcile().is_err() { mark_closing(&mut session); }
     if session.closing || expired(&session) || !session.mount.is_mounted().map_err(provider)? { return Err(locked(root)); }
     platform::durable::canonical(session.mount.view()).map_err(provider)
+}
+
+/// The conversion flag and filesystem classification are one observation. In
+/// particular listing cannot retire the index while its directory is renamed.
+pub(super) fn keeps_index(root: &FsPath) -> bool {
+    let converting = CONVERTING.lock().expect("vault conversions");
+    converting.contains(root) || super::Folder::is_project(root) || encrypted(root)
 }
 
 /// A key-holding work lease can drain already-authorized work while the viewing session is locking.
@@ -324,7 +329,10 @@ fn close(api: &Arc<Api>, root: &FsPath) -> Result<(), Error> {
     crate::runs::files::release_private(root)?;
     if let Some(session) = held(root) {
         let mut session = session.lock().expect("vault session");
-        session.mount.try_unmount().map_err(provider)?;
+        session.mount.try_unmount().map_err(|why| match why {
+            project_mount::Error::Busy(_) => Error::new(Kind::Conflict, "project_busy", "close programs using the project, then retry the storage change"),
+            other => provider(other),
+        })?;
         drop(session);
         SESSIONS.lock().expect("vault sessions").remove(root);
         ROOTS.lock().expect("vault roots").retain(|_, logical| logical != root);
@@ -375,6 +383,7 @@ pub(crate) fn start(api: &Arc<Api>) {
 
 pub(super) async fn read(State(api): State<Arc<Api>>, Path(named): Path<String>) -> Result<Response, Refusal> {
     let root = location(&api, &named).map_err(Refusal)?;
+    let _access = access(&root).read_owned().await;
     Ok(private(axum::Json(status(&root)).into_response()))
 }
 
@@ -397,6 +406,7 @@ fn private(mut response: Response) -> Response {
 }
 
 fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk) -> Result<VaultChanged, Error> {
+    recover_conversion(root)?;
     let (mut recovery_secret, mut preserved_source) = (None, None);
     match ask.action.as_str() {
         "encrypt" => {
@@ -404,7 +414,7 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk) -> Result<VaultChan
             let project = api.projects.open(api, root)?;
             let id = project.id.clone();
             drop(project);
-            let generation = crate::private_io::retained_scope(root, &id)?.map(|scope| scope.storage.generation)
+            let generation = plain_scope_for_encrypt(root, &id)?.map(|scope| scope.storage.generation)
                 .map(|generation| generation.checked_add(1).ok_or_else(|| error("vault_key", "project key generations are exhausted")))
                 .transpose()?.unwrap_or(1);
             let created = Keybag::create_generation(&id, generation, new_passphrase(ask)?).map_err(key)?;
@@ -546,6 +556,7 @@ pub(super) fn recover_conversion(root: &FsPath) -> Result<(), Error> {
 
 fn finish_conversion(root: &FsPath) -> Result<(), Error> {
     let Some(record) = conversion(root)? else { return Ok(()); };
+    if record.plain.is_some() { return Err(error("vault_recovery", "a plaintext conversion must finish its own recorded cleanup; retry decrypt")); }
     if Keybag::load(&root.join(KEYBAG_FILE)).map_err(key)?.info().key_id != record.key_id { return Err(error("vault_recovery", "replacement keybag does not match the verified conversion")); }
     if record.remove_source && record.saved.exists() {
         fs::remove_dir_all(&record.saved).map_err(|e| error("vault_cleanup_pending", format!("replacement verified, but old source cleanup is pending at {}: {e}", record.saved.display())))?;
@@ -739,6 +750,7 @@ fn convert(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret,
     // its live storage as an incidental part of converting its parent.
     no_nested(api, root)?;
     let old_secret = held(root).map(|session| session.lock().expect("vault session").secret.duplicate());
+    if old_secret.is_none() { plain_scope_for_encrypt(root, &keybag.info().project_id)?; }
     let target_keybag = keybag.clone();
     if !CONVERTING.lock().expect("vault conversions").insert(root.to_owned()) { return Err(error("vault_busy", "the project is already being converted")); }
     let _converting = Converting(root.to_owned());
@@ -799,6 +811,15 @@ fn convert(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret,
     journal_cleanup_done(root)?;
     finish_conversion(root)?;
     Ok(saved)
+}
+
+fn plain_scope_for_encrypt(root: &FsPath, id: &str) -> Result<Option<crate::private_io::Scope>, Error> {
+    if !exists(&root.join(api::machine::LOCAL_PRIVATE_MARKER))? { return Ok(None); }
+    crate::private_io::retained_scope(root, id)?.map(Some).ok_or_else(|| {
+        Error::new(Kind::Conflict, "vault_retained_project_mismatch",
+            "this copied project's retained execution storage belongs to its source project; encryption was not started")
+            .remedy("keep this copy unencrypted; its files and history have been preserved")
+    })
 }
 
 fn copy_tree(source: &FsPath, target: &FsPath) -> Result<(), Error> {
