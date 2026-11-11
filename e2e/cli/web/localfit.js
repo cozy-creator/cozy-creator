@@ -55,7 +55,8 @@ function provider(upstream) {
         let body = {};
         try { body = JSON.parse(Buffer.concat(chunks).toString() || '{}'); } catch { body = {}; }
         stand.asked.push(`${request.method} ${pathname} ${answer.statusCode}`);
-        if (sold) body.rental_skus = [...(body.rental_skus ?? []).filter((sku) => sku.name !== CARD.name), CARD];
+        // The Hub lists its catalog as a bare array (api::hub::Client::list_rental_skus).
+        if (sold) body = [...(Array.isArray(body) ? body : []).filter((sku) => sku.name !== CARD.name), CARD];
         if (placing && !(body.machines ?? []).length) {
           const width = CARD.widths[0];
           body = { weight_bytes: 0, accelerator: true, weights: [], excluded: [], warnings: [], ...(answer.statusCode < 300 ? body : {}),
