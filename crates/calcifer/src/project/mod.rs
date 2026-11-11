@@ -491,6 +491,7 @@ impl Holding {
     /// (`inline`, each with its file here), ranges are cut here, and `pickup.` terms are the gesture. Answers the call, the files it
     /// names (the project's fetched here if a machine keeps them), and what was said.
     pub(crate) async fn bound(&self, target: &str, package: &str, callable: &api::interface::Callable, written: Map<String, Value>, clips: &crate::runs::clip::Clips, inline: &[(binder::Inline, PathBuf)]) -> Result<(Map<String, Value>, Vec<crate::runs::bind::InputFile>, Vec<String>), Error> {
+        let _access = vault::admit_root(&self.dir).await?;
         let physical = vault::resolve_path(&self.dir)?;
         let folder = Folder::at(&physical);
         // One that doesn't read as this format (an older one moves as the run lands) still takes the run, as written, its mentions unread.
@@ -530,10 +531,15 @@ impl Holding {
             }
             let seconds = crate::runs::clip::Range { start: f64::from(range.from) / fps, end: range.to.map(|to| f64::from(to) / fps) };
             let mut notes = vec![];
-            let made = clips.cut(&format!("frames {}-{}", range.from, range.to.map_or_else(String::new, |to| to.to_string())), &path, seconds, &mut notes).await?;
+            let access = vault::admit_root(&self.dir).await?;
+            let made = clips.cut(&format!("frames {}-{}", range.from, range.to.map_or_else(String::new, |to| to.to_string())), &path, seconds, &mut notes, access).await?;
             bound.warnings.extend(notes.into_iter().filter(|note| note.level == api::calcifer::NoteLevel::Warning).map(|note| note.message));
             let clip = made.clip.clone();
-            let sha256 = tokio::task::spawn_blocking(move || folder::hash(&clip)).await.map_err(|e| Error::new(Kind::Internal, "clip_hash", e.to_string()))??;
+            let access = vault::admit_root(&self.dir).await?;
+            let sha256 = tokio::task::spawn_blocking(move || {
+                let _access = access;
+                folder::hash(&clip)
+            }).await.map_err(|e| Error::new(Kind::Internal, "clip_hash", e.to_string()))??;
             cut.insert(sha256.clone(), made.clip);
             digests.push(sha256);
         }
@@ -3813,13 +3819,14 @@ impl Walk {
         tools::past_end(&mut pieces, canvas.fps);
         let project = self.project.clone();
         let (cut, fps) = (name.to_owned(), canvas.fps);
-        let written = match self.host.ffmpeg().await {
-            Ok((_, ffprobe)) => tokio::task::spawn_blocking(move || tools::timeline(&ffprobe, &project.folder, &pieces, fps, &cut))
-                .await
-                .map_err(|e| Error::new(Kind::Internal, "edit_cut", e.to_string()))
-                .and_then(|written| written),
-            Err(error) => Err(error),
-        };
+        let written = async {
+            let (_, ffprobe) = self.host.ffmpeg().await?;
+            let access = vault::admit_work(&project).await?;
+            tokio::task::spawn_blocking(move || {
+                let _access = access;
+                tools::timeline(&ffprobe, &project.folder, &pieces, fps, &cut)
+            }).await.map_err(|e| Error::new(Kind::Internal, "edit_cut", e.to_string()))?
+        }.await;
         if let Err(error) = written {
             self.say(Told::Warning { message: format!("{name}'s timeline is gone and isn't written again: {}", error.message), name: None });
         }
@@ -4017,7 +4024,9 @@ impl Walk {
             return Ok(());
         }
         let home = self.host.home();
-        let clips = crate::runs::clip::Clips { dir: home.root().join("cache").join("clips"), home: home.clone() };
+        let scope = crate::private_io::of_path(&self.project.folder.dir).map_err(|e| e.message)?;
+        let dir = crate::private_io::cache(scope.as_ref(), home.root().join("cache").join("clips"), "clips").map_err(|e| e.message)?;
+        let clips = crate::runs::clip::Clips { dir, home: home.clone() };
         let mut cut = vec![];
         for range in &bound.cuts {
             let file = lock.files.get(&range.source).ok_or_else(|| format!("{} isn't one of the project's files", folder::prefix_of(&range.source)))?;
@@ -4027,10 +4036,15 @@ impl Walk {
             }
             let seconds = crate::runs::clip::Range { start: f64::from(range.from) / file.fps, end: range.to.map(|to| f64::from(to) / file.fps) };
             let mut notes = vec![];
-            let made = clips.cut(&format!("frames {}-{}", range.from, range.to.map_or_else(String::new, |to| to.to_string())), &path, seconds, &mut notes).await.map_err(|e| e.message)?;
+            let access = vault::admit_work(&self.project).await.map_err(|e| e.message)?;
+            let made = clips.cut(&format!("frames {}-{}", range.from, range.to.map_or_else(String::new, |to| to.to_string())), &path, seconds, &mut notes, access).await.map_err(|e| e.message)?;
             notes.into_iter().filter(|note| note.level == api::calcifer::NoteLevel::Warning).for_each(|note| self.say(Told::Warning { message: note.message, name: None }));
             let clip = made.clip.clone();
-            let sha256 = tokio::task::spawn_blocking(move || folder::hash(&clip)).await.map_err(|e| e.to_string())?.map_err(|e| e.message)?;
+            let access = vault::admit_work(&self.project).await.map_err(|e| e.message)?;
+            let sha256 = tokio::task::spawn_blocking(move || {
+                let _access = access;
+                folder::hash(&clip)
+            }).await.map_err(|e| e.to_string())?.map_err(|e| e.message)?;
             self.clips.lock().expect("clips lock").insert(sha256.clone(), made.clip);
             cut.push(sha256);
         }
@@ -4486,9 +4500,11 @@ impl Walk {
         let (ffmpeg, _) = self.host.ffmpeg().await?;
         let (dir, path) = (self.folder().dir.clone(), video.to_owned());
         let early = at.map(|at| (at - 1.0 / 48.0).max(0.0));
-        let grabbed = tokio::task::spawn_blocking(move || tools::frame(&ffmpeg, &path, early, &dir))
-            .await
-            .map_err(|e| Error::new(Kind::Internal, "frame", e.to_string()))?;
+        let access = vault::admit_work(&self.project).await?;
+        // The abandoned result must drop its temporary frame before releasing the view.
+        let (grabbed, _access) = tokio::task::spawn_blocking(move || {
+            (tools::frame(&ffmpeg, &path, early, &dir), access)
+        }).await.map_err(|e| Error::new(Kind::Internal, "frame", e.to_string()))?;
         let (frame, past) = grabbed?;
         if let (true, Some(at)) = (past, at) {
             self.say(Told::Warning { message: format!("{name}: its video ends before {at:.2} s: its last frame stands in"), name: None });
@@ -4606,9 +4622,11 @@ impl Walk {
         let cutting_name = name.clone();
         let fps = canvas.fps;
         let (rendering, rendered) = (self.project.rendering.clone(), asset.name.clone());
+        let access = vault::admit_work(&self.project).await?;
         rendering.lock().expect("rendering lock").insert(rendered.clone(), 0.0);
         crate::events::project_settled(&folder.dir);
         let cutting_result = tokio::task::spawn_blocking(move || {
+            let _access = access;
             let _held = cutting.lock().expect("cutting lock");
             let dir = project.folder.dir.clone();
             // Each twentieth, so a page shows it moving and reads the project a few times, however long the film.
@@ -4736,7 +4754,15 @@ impl Walk {
             // A file is named for its bytes, and a cut reads them all anyway.
             let here = piece.path.is_file();
             let (path, digest) = (piece.path.clone(), piece.digest.clone());
-            let changed = here && tokio::task::spawn_blocking(move || folder::hash(&path).is_ok_and(|got| got != digest)).await.unwrap_or(false);
+            let changed = if here {
+                let access = vault::admit_work(&self.project).await?;
+                tokio::task::spawn_blocking(move || {
+                    let _access = access;
+                    folder::hash(&path).is_ok_and(|got| got != digest)
+                }).await.unwrap_or(false)
+            } else {
+                false
+            };
             if here && !changed {
                 continue;
             }

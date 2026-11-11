@@ -91,7 +91,11 @@ async fn fetch(project: &Project, endpoint: &Endpoint, wanted: folder::File) -> 
     file.sync_all().map_err(named)?;
     drop(file);
     let checking = part.clone();
-    let got = tokio::task::spawn_blocking(move || folder::hash(&checking)).await.map_err(local)?;
+    let access = super::vault::admit_work(project).await.map_err(|e| local(e.message))?;
+    let got = tokio::task::spawn_blocking(move || {
+        let _access = access;
+        folder::hash(&checking)
+    }).await.map_err(local)?;
     if got.as_deref().map(hex).ok() != Some(hex(&sha256)) {
         let _ = std::fs::remove_file(&part);
         return Err(Failed { code: Code::OBJECT_ID_MISMATCH, detail: format!("{path}: what landed is not its sha256; retry fetching it") });
