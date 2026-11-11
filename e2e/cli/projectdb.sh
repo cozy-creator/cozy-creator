@@ -175,11 +175,11 @@ echo "together: all $((5 * n)) writes kept (fields, boxes and rows, from both), 
 db_crash() {
 step "project.db: Calcifer killed amid writes: each is whole or absent, and its resend is done once"
 local K=$OUT/db-crash n=150 i seq yaml writer answer
-mkdir -p "$K"
+run_project "$K" > "$OUT/db-crash-new.txt" 2>&1 || { check "crash: native bootstrap"; return; }
 yaml="version: 4\nassets:\n"
 for ((i = 1; i <= n; i++)); do yaml+="  m_$i: {text: Marker $i.}\n  r_$i: {text: Renamed $i.}\n"; done
-printf "$yaml" > "$K/project.yaml"
-in_project "$K" status > /dev/null 2>&1 || { check "crash: open"; return; }
+printf '%b' "$yaml" > "$OUT/db-crash-seed.yaml"
+project_api "$K" /yaml -X PUT -H 'Content-Type: application/yaml' --data-binary "@$OUT/db-crash-seed.yaml" > "$OUT/db-crash-seed.txt" 2>&1 || { check "crash: seed current native project"; return; }
 db_calcifer; ID=$(id_of "$K")
 for ((i = 1; i <= n; i++)); do echo "\"m_$i\": {\"x\": 0, \"y\": $((i * 10))}"; done | paste -sd, | sed 's/^/{"cards": {/; s/$/}}/' > "$OUT/db-crash-rows.json"
 api -X PATCH -H 'Content-Type: application/json' -d @"$OUT/db-crash-rows.json" "http://$ADDR/v1/projects/$ID/canvas" > /dev/null
