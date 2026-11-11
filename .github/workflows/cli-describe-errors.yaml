@@ -1,6 +1,11 @@
 name: cli-describe-errors
 
 on:
+  pull_request:
+    paths:
+      - crates/calcifer/src/local_code.rs
+      - crates/calcifer/src/local_code_tests.rs
+      - .github/workflows/cli-describe-errors.yaml
   workflow_dispatch:
 
 permissions:
