@@ -154,11 +154,13 @@ impl Upload {
             return Ok(Settled::Partly(held));
         }
         self.ended.store(true, Ordering::Release);
-        UPLOADS.lock().expect("uploads lock").remove(&(self.storage.root().to_owned(), self.digest));
         let partial = self.partial.lock().expect("partial lock").take().expect("an upload has its partial until it ends");
-        partial.commit().map_err(refused)?;
         let object = object(&self.digest, self.length);
-        self.storage.used(&object.sha256, [&object]).map_err(|e| refused(e.refusal()))?;
+        let named = partial.commit().and_then(|()| self.storage.used(&object.sha256, [&object]).map_err(|e| e.refusal()));
+        // Until it is named, a write or a look at the same file finds this upload and waits for this settle; only then does one
+        // start afresh. A second sender answered before the first had named it, and an update then found no file (cl-864).
+        UPLOADS.lock().expect("uploads lock").remove(&(self.storage.root().to_owned(), self.digest));
+        named.map_err(refused)?;
         Ok(Settled::Whole)
     }
 }
