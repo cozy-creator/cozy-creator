@@ -559,11 +559,17 @@ An operation is a tool (`[org/]package/function[@release]`, or local code, `./di
 `models` and `lora` go on its call: a tool's `model` is what they mean with no slot named, the one model its function runs, its `slot` the key in `models` and `family` what the header of its `default` says. A tool whose function runs several, or none, has no `model`. The version records its run, and each file by its output's name. The package `cozy` is reserved: `cozy/edit`, a video, and `cozy/frame`, a picture, run here, free, with no machine, once what they
 read settles and on `approve`, reading each asset's state, else its newest version, which they say. An edit keeps its versions, each with the clips that made it, and the same edit isn't rendered again; a frame keeps one and its approved one.
 
-- `POST /v1/projects` `{name, path?, starter?}`: a
+- `POST /v1/projects` `{name?, path?, starter?, passphrase?, unencrypted?}`: new projects are encrypted by default.
+  A nonempty user-supplied `passphrase` is required unless `unencrypted: true` explicitly opts out; opt-out and
+  passphrase cannot be combined. Encrypted creation requires a new/empty directory and initializes its first
+  database inside the native encrypted mount. Credentials and the one-time `recovery_secret` response have no
+  Debug representation, outbox or persistent response cache. Encrypted creation refuses `Idempotency-Key` and
+  returns `Cache-Control: private, no-store`; ordinary opt-out creation retains the existing idempotency behavior.
+  The caller must save recovery off-device and must retain the encrypted backing/keybag too. This creates a
   new project called `name`, at `~/<name>` in this person's home folder, through `as_name` with `.` as `_` (`untitled` when nothing is left),
   taking `<name>_2` when anything is there, a project or not, which stays as it is and `said` says so; or at `path`, a folder of this
   computer's by its absolute path (`409 project_exists`, its name the folder's unless given; `400 project_path` for a relative one); `starter`: it holds the starter film. The same
-  `Idempotency-Key` again answers the same project. Answers `{id, path, name, next, said?}` and records it in the index as used now. An existing
+  `Idempotency-Key` again answers the same ordinary project. Answers `{id, code, path, name, next, said?, recovery_secret?}` and records it in the index as used now. An existing
   project needs no call here: a route names it, and `404 project_unknown`, `409 project_ambiguous` (a name two projects share, which they never
   do once each is opened here) or `404 project_not_found` (a folder in none) refuse one that names none. A folder of
   files from before `project.db` is imported by the first call that names it, a format 2 one upgraded first, and `GET /v1/projects/{id}` says it in
@@ -617,7 +623,7 @@ ffmpeg (cuts, frames, clips) and uv (local code). No route asks for them.
 
 ## CLI verbs and their calls
 
-The CLI resolves the current directory to an existing project and sends its absolute path as the routes' `{id}`. `cozy new [directory]` creates a project explicitly through `POST /v1/projects`. `cozy open`, `cozy run` and `cozy status` require an existing project. API clients can also use a project name or id. The browser provides asset import, editing, rendering, export and history through the project endpoints described above.
+The CLI resolves the current directory to an existing project and sends its absolute path as the routes' `{id}`. `cozy new [directory]` creates an encrypted project by default through `POST /v1/projects`; `--unencrypted` explicitly opts out. `cozy open`, function execution and `cozy status` require an existing project. Metadata-only `cozy run --describe` does not create a project or require a new passphrase. API clients can also use a project name or id. The browser provides asset import, editing, rendering, export and history through the project endpoints described above.
 
 | Verb | Calls |
 |---|---|

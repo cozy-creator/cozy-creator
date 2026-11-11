@@ -29,11 +29,11 @@ projectvault() (
   printf '%s\n' 'synthetic rekey vault passphrase' > "$secrets/rekey"
   printf '%s\n' 'deliberately wrong credential' > "$secrets/wrong"
   chmod 600 "$secrets/"*
-  cozy --json new "$plain" > "$work/plain-created.json"
+  cozy --json new --unencrypted "$plain" > "$work/plain-created.json"
   in_project "$plain" --json vault status > "$work/plain-status.json"
   jq -e '.encrypted == false and .state == "plain"' "$work/plain-status.json" > /dev/null || fail "ordinary project unexpectedly needs encryption"
   in_project "$plain" --json --full status > "$work/plain-project.json" || fail "ordinary project no longer opens"
-  cozy --json new "$P" > "$work/created.json"
+  cozy --json new --unencrypted "$P" > "$work/created.json"
   project_api "$P" /yaml > "$work/before.yaml"
   mkdir -p "$P/files"
   printf '%s\n' 'SYNTHETIC_PRIVATE_VAULT_CONTENT_1762838400' > "$P/files/private-sentinel.txt"

@@ -51,7 +51,7 @@ const shows = (at) => at.shown === `${Math.round(at.zoom * 100)}%`;
   const api = async (path, init = {}) => (await fetch(base + path, { ...init, headers: { Authorization: `Bearer ${token}`, ...init.headers } })).json();
 
   const scratch = mkdtempSync(join(tmpdir(), 'web-zoom-'));
-  const made = await api('/v1/projects', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `zoom-${Date.now()}` }, body: JSON.stringify({ name: `web-zoom-${Date.now()}` }) });
+  const made = await api('/v1/projects', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `zoom-${Date.now()}` }, body: JSON.stringify({ name: `web-zoom-${Date.now()}`, unencrypted: true }) });
   try {
     // 300 boxes in 18 columns, each a picture (see.js's scale case, with no video).
     writeFileSync(join(scratch, 'a.png'), png(140));

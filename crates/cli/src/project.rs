@@ -65,7 +65,13 @@ pub(crate) struct New {
 pub(crate) async fn create(ctx: &Context, args: New) -> Result<ExitCode, Error> {
     let directory = std::path::absolute(&args.directory)
         .map_err(|error| Error::new(Kind::Usage, "project_path", error.to_string()))?;
-    let passphrase = if args.unencrypted { None } else {
+    // Repeating New on an existing project reads its identity; it never asks for a new credential or changes storage.
+    let existing = if ["project.db", "project.yaml", "project.vault.keys.json"].iter().any(|file| directory.join(file).is_file()) {
+        let client = ctx.calcifer().await?;
+        let path = crate::calcifer_client::path(&["v1", "projects", &directory.to_string_lossy(), "address"]);
+        Some(client.get::<api::calcifer::project::Address>(&path).await?)
+    } else { None };
+    let passphrase = if args.unencrypted || existing.is_some() { None } else {
         if args.passphrase_file.is_none() && !std::io::stdin().is_terminal() {
             return Err(Error::new(Kind::Usage, "vault_credential", "new projects are encrypted; a noninteractive caller must supply a passphrase file or explicitly choose unencrypted storage")
                 .next("cozy new --passphrase-file <file>").next("cozy new --unencrypted"));
@@ -81,7 +87,9 @@ pub(crate) async fn create(ctx: &Context, args: New) -> Result<ExitCode, Error> 
     let request = Open { path: Some(directory.clone()), unencrypted: args.unencrypted, passphrase, ..Open::default() };
     let client = ctx.calcifer().await?;
     let key = args.unencrypted.then(mint_key);
-    let (id, code, path, created, mut recovery_secret) = match client.post::<_, Opened>("/v1/projects", &request, key.as_deref()).await {
+    let (id, code, path, created, mut recovery_secret) = if let Some(address) = existing {
+        (address.id, address.code, directory.clone(), false, None)
+    } else { match client.post::<_, Opened>("/v1/projects", &request, key.as_deref()).await {
         Ok(opened) => (opened.id, opened.code, opened.path, true, opened.recovery_secret),
         Err(error) if error.code == "project_exists" => {
             let path = crate::calcifer_client::path(&["v1", "projects", &directory.to_string_lossy()]);
@@ -89,7 +97,7 @@ pub(crate) async fn create(ctx: &Context, args: New) -> Result<ExitCode, Error> 
             (state.id, state.code, state.path, false, None)
         }
         Err(error) => return Err(error),
-    };
+    } };
     let label = if code.is_empty() { &id } else { &code };
     let message = if created {
         format!("Created project {label} at {}.", path.display())
@@ -102,11 +110,18 @@ pub(crate) async fn create(ctx: &Context, args: New) -> Result<ExitCode, Error> 
         output::say(ctx, &format!("recovery secret saved to {}; keep a copy off this computer", output.display()));
     }
     let mut document = serde_json::json!({ "id": id, "code": code, "path": path, "created": created, "message": message });
+    if created && !args.unencrypted {
+        let status_path = crate::calcifer_client::path(&["v1", "projects", &directory.to_string_lossy(), "vault"]);
+        if let Ok(status) = client.get::<api::calcifer::project::VaultStatus>(&status_path).await {
+            if let Some(view) = status.view { document["view"] = serde_json::json!(view); }
+        }
+    }
     if ctx.json {
         if let Some(secret) = recovery_secret { document["recovery_secret"] = secret.into(); }
         output::document(ctx, &document);
     } else {
         output::view(ctx, &document, &["message"]);
+        if let Some(view) = document["view"].as_str() { output::say(ctx, &format!("readable view: {view}")); }
         if let Some(secret) = recovery_secret { vault::show_recovery(ctx, &secret); }
     }
     Ok(ExitCode::SUCCESS)

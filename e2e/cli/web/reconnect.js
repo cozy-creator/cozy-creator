@@ -49,6 +49,7 @@ async function drag(page, name, dx, dy) {
   await first.waitForSelector('.top');
   await first.goto(`${base}/projects`);
   await first.fill('input[aria-label="New project\'s name"]', `web-reconnect-${Date.now()}`);
+  await first.getByLabel("Create without encryption", { exact: true }).check();
   await first.click('form button[type=submit]');
   await first.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
   const url = first.url();

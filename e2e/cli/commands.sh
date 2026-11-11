@@ -292,7 +292,7 @@ if [[ $(uname -s) == Linux ]]; then
   # A literal questionmark is a valid POSIX project path, not an image sequence pattern.
   local literal; literal=$(mktemp -d "$RUNNER_TEMP/hostile?image.XXXXXX")
   ffmpeg -v error -y -f lavfi -i color=c=blue:size=8x8 -frames:v 1 "$dir/image.png"
-  cozy --json new "$literal" > "$OUT/hostile-questionmark-new.json" 2>&1 || check "literal image: project creation failed"
+  cozy --json new --unencrypted "$literal" > "$OUT/hostile-questionmark-new.json" 2>&1 || check "literal image: project creation failed"
   project_import "$literal" "$dir/image.png" literal_image > "$OUT/hostile-questionmark-import.json" 2>&1 || check "literal image: import failed"
   for _ in $(seq 60); do
     in_project "$literal" --json --full status > "$OUT/hostile-questionmark.json" 2> "$OUT/hostile-questionmark.err" || true
@@ -318,7 +318,7 @@ step "the CLI in a folder Calcifer can't see"
 # The runner's own OS: a candidate cozy is built on it, for its glibc (debian:12's 2.36 runs only a release's).
 local src=$OUT/unseen seen=$OUT/unseen-seen image=ubuntu:24.04 size name n hex
 rm -rf "$src" "$seen"; mkdir -p "$src/folder/sub" "$src/sub" "$seen/project"
-(cd "$seen/project" && cozy --json new) > "$OUT/unseen-new.out" || { check "unseen: initialize project"; return; }
+(cd "$seen/project" && cozy --json new --unencrypted) > "$OUT/unseen-new.out" || { check "unseen: initialize project"; return; }
 echo one > "$src/folder/a.txt"; echo two > "$src/folder/sub/b.txt"
 ffmpeg -v error -y -f lavfi -i testsrc2=size=320x240:rate=24:duration=3 -c:v libx264 -pix_fmt yuv420p "$src/clip.mp4"
 for name in still other; do

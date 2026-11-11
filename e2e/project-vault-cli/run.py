@@ -870,14 +870,68 @@ foreach ($rule in $allowed) {
         rekey = self.private_file('rekey', secrets.token_urlsafe(32))
         wrong = self.private_file('wrong', secrets.token_urlsafe(32))
         plain = self.out / 'ordinary'
-        created = self.command('new', plain)
+        created = self.command('new', '--unencrypted', plain)
         assert created['created']
         plain_status = self.command('status', cwd=plain, full=True)
         assert plain_status['project']['id'] == created['id']
         ordinary = self.command('vault', 'status', cwd=plain)
         assert ordinary['state'] == 'plain' and not ordinary['encrypted']
         self.cell('ordinary_project_without_encryption')
-        created = self.command('new', self.project)
+
+        missing = self.out / 'missing-creation-credential'
+        refused = self.command('new', missing, refusal=True)
+        assert json.loads(refused.stdout)['error']['code'] == 'vault_credential'
+        assert not missing.exists()
+        try:
+            self.request('POST', '/v1/projects', body={'path': str(missing)})
+        except RuntimeError as error:
+            assert 'vault_credential' in str(error)
+        else:
+            raise AssertionError('API creation silently opted out of encryption')
+        assert not missing.exists()
+        self.cell('new_project_requires_a_known_credential')
+
+        try:
+            self.request('POST', '/v1/projects', body={'path': str(missing), 'passphrase': initial.read_text()},
+                         headers={'Idempotency-Key': 'must-not-cache-creation-recovery'})
+        except RuntimeError as error:
+            assert 'vault_idempotency' in str(error)
+        else:
+            raise AssertionError('encrypted creation accepted a globally cached response')
+        assert not missing.exists()
+        occupied = self.out / 'nonempty-new-project'
+        occupied.mkdir()
+        unrelated = occupied / 'keep.txt'
+        unrelated.write_bytes(b'Existing unrelated data must be preserved.\n')
+        refused = self.command('new', occupied, '--passphrase-file', initial, refusal=True)
+        assert json.loads(refused.stdout)['error']['code'] == 'project_not_empty'
+        assert unrelated.read_bytes() == b'Existing unrelated data must be preserved.\n'
+        assert sorted(path.name for path in occupied.iterdir()) == ['keep.txt']
+        self.cell('new_encryption_refuses_caching_and_unrelated_plaintext')
+
+        fresh = self.out / 'default-encrypted'
+        preserved_before = set(self.out.glob('.cozy-project-source-*'))
+        new = self.command('new', fresh, '--passphrase-file', initial, '--recovery-out', self.recovery('new-project'))
+        assert new['created'] and 'recovery_secret' not in new
+        self.check_recovery('new-project')
+        protected = self.command('vault', '--directory', fresh, 'status')
+        assert protected['encrypted'] and protected['state'] == 'unlocked'
+        view = protected['view']
+        assert view is not None
+        assert (Path(view) / 'project.db').is_file()
+        assert not (fresh / 'project.db').exists() and not (fresh / 'project.db.new').exists()
+        assert set(self.out.glob('.cozy-project-source-*')) == preserved_before
+        existing = self.command('new', fresh)
+        assert not existing['created'] and existing['id'] == new['id']
+        self.cell('new_project_starts_in_encrypted_storage')
+        self.command('vault', '--directory', fresh, 'lock')
+        self.command('vault', '--directory', fresh, 'unlock', '--recovery-file', self.recovery('new-project'))
+        reopened = self.command('status', cwd=fresh, full=True)
+        assert reopened['project']['id'] == new['id']
+        self.command('vault', '--directory', fresh, 'lock')
+        self.cell('new_project_recovery_reopens_same_identity')
+
+        created = self.command('new', '--unencrypted', self.project)
         assert created['created']
         # The compact code is for display. Project routes and upload scope use the canonical ID.
         self.project_id = created['id']

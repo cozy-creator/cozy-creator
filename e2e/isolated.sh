@@ -108,7 +108,7 @@ esac
 if [ -n "$needs" ]; then
   [ -n "$packages" ] || { echo "the isolated Hub's first-party packages come from run.sh's --packages checkout" >&2; exit 2; }
   mkdir -p "$seed/project"
-  cd "$seed/project" && cozy --json new > /dev/null
+  cd "$seed/project" && cozy --json new --unencrypted > /dev/null
   # A stand-in for the root index's minimax-h3-tools, which the packages no longer hold (combined into minimax-h3).
   tools=$seed/minimax-h3-tools
   rm -rf "$tools" && cp -r "$here/../release-gate/suites/hub/pkg" "$tools"

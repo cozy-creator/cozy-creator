@@ -163,6 +163,8 @@ export class Placer {
   private async run(key: string, file: File, signal: AbortSignal, dropped: { x: number; y: number; w: number }, then: ((name: string) => void) | undefined, edit: string, own: boolean) {
     const owed = this.store.outbox.owing()
     try {
+      await this.project()
+      signal.throwIfAborted()
       const digest = await inLine(() => this.hashAndSend(key, file, signal))
       await this.store.whenNamed(key, signal)
       // Its import is in the queue from here, and counted there.
@@ -216,8 +218,6 @@ export class Placer {
   }
 
   private async hashAndSend(key: string, file: File, signal: AbortSignal): Promise<string> {
-    signal.throwIfAborted()
-    await this.project()
     signal.throwIfAborted()
     this.stage(key, "reading", 0)
     let shown = 0

@@ -66,5 +66,5 @@ export function ProjectCreate({ onCreated, onCancel, modal = false, autoFocus = 
       </div>
     </form>}
   </div>
-  return modal ? <dialog ref={dialog} className="project-setup" onCancel={(event) => { event.preventDefault(); if (!busy && !created) onCancel?.() }}>{content}</dialog> : content
+  return modal ? <dialog ref={dialog} className="project-setup" aria-label="New project" onCancel={(event) => { event.preventDefault(); if (!busy && !created) onCancel?.() }}>{content}</dialog> : content
 }

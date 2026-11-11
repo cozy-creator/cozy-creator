@@ -38,6 +38,7 @@ const DESCRIBED_MS = 300_000;
   await page.waitForSelector('.top');
   await page.goto(`${base}/projects`);
   await page.fill('input[aria-label="New project\'s name"]', `web-offline-${Date.now()}`);
+  await page.getByLabel("Create without encryption", { exact: true }).check();
   await page.click('form button[type=submit]');
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
   const id = (await projectFromPage(page)).id;
@@ -108,7 +109,7 @@ const DESCRIBED_MS = 300_000;
   await openQuick(DESCRIBED_MS);
   await closeBox(page);
   // Another project, for a tab to go to and come back from while Calcifer's away.
-  const other = (await api('/v1/projects', { method: 'POST', body: JSON.stringify({ name: `web-offline-other-${Date.now()}` }), headers: { 'Idempotency-Key': `other-${Date.now()}` } })).body;
+  const other = (await api('/v1/projects', { method: 'POST', body: JSON.stringify({ name: `web-offline-other-${Date.now()}`, unencrypted: true }), headers: { 'Idempotency-Key': `other-${Date.now()}` } })).body;
   dropOther = async () => rmSync(other.path, { recursive: true, force: true });
   // Read again, as the tabs list what's read at the start.
   await page.goto(await projectUrl(other.id));

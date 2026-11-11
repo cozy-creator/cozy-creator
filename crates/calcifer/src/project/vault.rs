@@ -453,7 +453,11 @@ pub(super) fn create_new(api: &Api, root: &FsPath, id: &str, name: &str, written
             idle_timeout_s: None, max_duration_s: None, remove_plaintext: false };
         mount(api, root, created.keybag, created.secret, &ask)
     })();
-    outcome.map_err(|why| error("vault_creation", format!("Encrypted project setup at {} could not finish: {}. Its storage is preserved; keep the passphrase to recover it.", root.display(), why.message)))?;
+    outcome.map_err(|why| {
+        let next = if root.join(KEYBAG_FILE).is_file() { "Its storage is preserved; keep the passphrase to recover it." }
+            else { "No project state was written. The unfinished backing is preserved; resolve it before retrying creation." };
+        error("vault_creation", format!("Encrypted project setup at {} could not finish: {}. {next}", root.display(), why.message))
+    })?;
     Ok(recovery)
 }
 

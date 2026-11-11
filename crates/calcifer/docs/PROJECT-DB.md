@@ -6,6 +6,10 @@ CLI and the page go through Calcifer's HTTP. Schema 2 makes native Automerge val
 project structure, canvas, versions and undo history. SQLite commits those bytes with local execution bookkeeping and disposable
 relational projections. Media stays content-addressed in `files/`; video, audio and images are never CRDT values. Encryption is optional.
 
+`cozy new` encrypts new projects by default and writes this database directly through the readable
+mount. The paths below are inside that view. `cozy new --unencrypted` explicitly creates ordinary
+storage; existing projects are unchanged. See [local encryption](PROJECT-ENCRYPTION.md) for credentials and recovery.
+
 ## The folder
 
 | Path | Holds |

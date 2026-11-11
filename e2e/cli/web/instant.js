@@ -72,6 +72,7 @@ async function loseAnswers(page, method, path, times) {
   await page.waitForSelector('.top');
   await page.goto(`${base}/projects`);
   await page.fill('input[aria-label="New project\'s name"]', `web-instant-${Date.now()}`);
+  await page.getByLabel("Create without encryption", { exact: true }).check();
   await page.click('form button[type=submit]');
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
   const id = (await projectFromPage(page)).id;
@@ -293,7 +294,7 @@ async function loseAnswers(page, method, path, times) {
 
   // Each project a tab, top left: one click, its boxes there at once, its own view kept. One that can't be read says why and what to do, on the canvas, with the tools
   // still there, and what's dropped on it comes back with one line.
-  const made = async (word) => (await api('/v1/projects', { method: 'POST', body: JSON.stringify({ name: `web-instant-${word}-${Date.now()}` }), headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `${word}-${Date.now()}` } })).body;
+  const made = async (word) => (await api('/v1/projects', { method: 'POST', body: JSON.stringify({ name: `web-instant-${word}-${Date.now()}`, unencrypted: true }), headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `${word}-${Date.now()}` } })).body;
   const [second_project, old] = [await made('tab'), await made('old')];
   dropMade = async () => {
     dropMade = async () => {};

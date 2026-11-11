@@ -1026,7 +1026,7 @@ jobs:
             cozy --json doctor > "$OUT/doctor.json" || true
             grep -q "$("$CAND_COZY" --version)," "$OUT/doctor.json" || fail "Calcifer is not the candidate $("$CAND_COZY" --version)"
           fi
-          mkdir -p "$RUNNER_TEMP/project" && (cd "$RUNNER_TEMP/project" && cozy --json new > /dev/null) || fail "cozy new failed"
+          mkdir -p "$RUNNER_TEMP/project" && (cd "$RUNNER_TEMP/project" && cozy --json new --unencrypted > /dev/null) || fail "cozy new failed"
           code=0
           bash .creator/e2e/cpu/run.sh --out "$RUNNER_TEMP/e2e" --envs "$RUNNER_TEMP/envs" $CANDIDATES \
             $(case " $CANDIDATES " in (*" --packages "*) ;; (*) echo --packages "$PACKAGES_MASTER" ;; esac) \

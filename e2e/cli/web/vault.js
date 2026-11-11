@@ -1,12 +1,13 @@
 // The real browser/Calcifer/securefs path. Synthetic project only; no requests are mocked.
 const playwright = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
-const { mkdtempSync, rmSync, writeFileSync } = require('fs');
+const { existsSync, mkdtempSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { dirname, join } = require('path');
 const { calcifer, signIn, launch, png, MP4, until, drop, openCanvas, importFile, projectJson, projectUrl, settled, fitCanvas, pointAt } = require('./page');
 const failures = [], seen = {};
 let browser, context, page, peer, scratch;
+const createdFolders = [];
 let stage = 'starting browser';
 let reportedStage;
 const progress = process.env.COZY_TEST_PROGRESS ? setInterval(() => {
@@ -98,7 +99,7 @@ const newPage = async () => {
   const folder = join(scratch, 'project');
   const picture = join(scratch, 'private_vault_picture.png');
   writeFileSync(picture, png(23));
-  cli('new', folder);
+  cli('new', '--unencrypted', folder);
   importFile(folder, picture);
   const movie = join(scratch, 'private_loop_movie.mp4');
   writeFileSync(movie, MP4);
@@ -160,7 +161,8 @@ const newPage = async () => {
       projectReads.add(request);
     }
     if (request.method() === 'PUT' && /^\/v1\/(project-)?files\//.test(url.pathname)) fileWrites.push({ path: url.pathname, project: url.searchParams.get('project') });
-    if (request.method() === 'POST' && /\/vault$/.test(url.pathname) && request.headers()['idempotency-key']) secretIdempotency.push(url.pathname);
+    const secretCreation = url.pathname === '/v1/projects' && !JSON.parse(request.postData() || '{}').unencrypted;
+    if (request.method() === 'POST' && (/\/vault$/.test(url.pathname) || secretCreation) && request.headers()['idempotency-key']) secretIdempotency.push(url.pathname);
     if (request.method() === 'POST' && url.pathname === `/v1/projects/${id}/vault` && JSON.parse(request.postData() || '{}').action === 'encrypt') {
       (seen.reads_at_encrypt_submit ??= []).push([...projectReads].map(readMetadata));
     }
@@ -300,7 +302,7 @@ const newPage = async () => {
   // Route changes also retire only the drawn canvas, never an unlocked project's
   // pending upload. Exercise the real private upload/retry path across A -> B -> A.
   const ordinary = join(scratch, 'other-project');
-  cli('new', ordinary);
+  cli('new', '--unencrypted', ordinary);
   const other = await projectUrl(projectJson(ordinary));
   const navigate = (to) => page.evaluate((url) => {
     history.pushState(null, '', url);
@@ -599,6 +601,64 @@ const newPage = async () => {
   await until('fresh status confirms current generation locked', () => page.locator('[data-vault-state="locked"]').count(), (count) => count > 0, 45000);
   check('plain_recheck_respects_current_locked_generation', await covered() && await page.locator('[aria-label="Save recovery secret"]').count() === 0);
   await page.unroute(statusPath, statusRoute);
+  stage = 'default encrypted project creation';
+  const origin = new URL(href).origin;
+  const saveCreationRecovery = async () => {
+    await page.locator('[aria-label="Save recovery secret"] pre').waitFor();
+    await page.getByLabel('I saved this somewhere away from this computer').check();
+    await page.getByRole('button', { name: 'Done', exact: true }).click();
+    await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
+  };
+  await goto(page, `${origin}/projects`);
+  check('new_form_defaults_to_encryption', !(await page.getByLabel('Create without encryption', { exact: true }).isChecked()));
+  await page.getByLabel("New project's name", { exact: true }).fill(`web-vault-new-${Date.now()}`);
+  await page.getByLabel('Passphrase', { exact: true }).fill('synthetic new project passphrase');
+  await page.getByLabel('Confirm passphrase', { exact: true }).fill('synthetic new project passphrase');
+  const creationReply = page.waitForResponse((answer) => answer.request().method() === 'POST' && new URL(answer.url()).pathname === '/v1/projects' && answer.ok());
+  await page.getByRole('button', { name: 'Create project', exact: true }).click();
+  const createdResponse = await creationReply;
+  const newlyCreated = await createdResponse.json();
+  const newRecovery = newlyCreated.recovery_secret;
+  delete newlyCreated.recovery_secret;
+  createdFolders.push(newlyCreated.path);
+  check('new_creation_response_is_private', /no-store/.test(createdResponse.headers()['cache-control'] || '') && !createdResponse.request().headers()['idempotency-key']);
+  await page.locator('[aria-label="Save recovery secret"] pre').waitFor();
+  check('new_creation_discloses_recovery_locally', Boolean(newRecovery) && await page.locator('[aria-label="Save recovery secret"] pre').innerText() === newRecovery);
+  await saveCreationRecovery();
+  check('new_creation_has_no_plaintext_database', !existsSync(join(newlyCreated.path, 'project.db')) && JSON.parse(vault(newlyCreated.path, 'status')).encrypted);
+  const persisted = await page.evaluate(() => JSON.stringify(localStorage));
+  check('new_creation_credentials_are_not_browser_storage', !persisted.includes(newRecovery) && !persisted.includes('synthetic new project passphrase'));
+
+  stage = 'implicit canvas creation waits for secure setup';
+  await goto(page, `${origin}/`);
+  const uploadsBeforeSetup = fileWrites.length;
+  const emptyAt = await openCanvas(page);
+  await drop(page, [{ name: 'new_private_drop.png', type: 'image/png', bytes: png(109) }], emptyAt.x, emptyAt.y);
+  const setup = page.getByRole('dialog', { name: 'New project', exact: true });
+  await setup.waitFor();
+  check('implicit_creation_waits_before_upload', fileWrites.length === uploadsBeforeSetup);
+  await setup.getByLabel('Passphrase', { exact: true }).fill('synthetic implicit project passphrase');
+  await setup.getByLabel('Confirm passphrase', { exact: true }).fill('synthetic implicit project passphrase');
+  const implicitReply = page.waitForResponse((answer) => answer.request().method() === 'POST' && new URL(answer.url()).pathname === '/v1/projects' && answer.ok());
+  await setup.getByRole('button', { name: 'Create project', exact: true }).click();
+  const implicit = await (await implicitReply).json();
+  delete implicit.recovery_secret;
+  createdFolders.push(implicit.path);
+  await page.locator('[aria-label="Save recovery secret"] pre').waitFor();
+  check('implicit_creation_waits_for_saved_recovery', fileWrites.length === uploadsBeforeSetup);
+  await saveCreationRecovery();
+  await page.locator('.nm-field').waitFor();
+  await page.keyboard.press('Enter');
+  await until('implicit encrypted import lands', () => projectJson(implicit.path).assets.some((asset) => asset.sha256), Boolean, 45000);
+  check('implicit_creation_uses_private_uploads', fileWrites.slice(uploadsBeforeSetup).length > 0 && fileWrites.slice(uploadsBeforeSetup).every((write) => write.path.startsWith('/v1/project-files/') && write.project === implicit.id));
+  check('implicit_creation_is_encrypted', JSON.parse(vault(implicit.path, 'status')).encrypted && !existsSync(join(implicit.path, 'project.db')));
+  await goto(page, `${origin}/projects`);
+  for (const directory of createdFolders) {
+    requestLock(directory);
+    await drainedLock(directory);
+    rmSync(directory, { recursive: true, force: true });
+  }
+
   check('no_external_secret_delivery', outbound.length === 0);
   check('secret_actions_skip_idempotency_cache', secretIdempotency.length === 0);
   check('no_page_errors', errors.length === 0);
@@ -625,6 +685,17 @@ const newPage = async () => {
   if (peer) await peer.close().catch(() => {});
   if (page) await page.close().catch(() => {});
   if (browser) await browser.close().catch(() => {});
+  for (const directory of createdFolders) {
+    if (!existsSync(directory)) continue;
+    try {
+      requestLock(directory);
+      await drainedLock(directory);
+      rmSync(directory, { recursive: true, force: true });
+    } catch {
+      seen.creation_cleanup_pending = 'new fixture backing retained because its lock did not complete';
+      failures.push('new fixture mount cleanup');
+    }
+  }
   if (scratch) {
     try {
       const folder = join(scratch, 'project');

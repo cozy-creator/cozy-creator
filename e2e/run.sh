@@ -21,7 +21,7 @@ run_project() {
   if [ -f "$1/project.db" ] || [ -f "$1/project.yaml" ]; then
     (cd "$1" && "$RUN_CLI" --json status > /dev/null) || return 1
   else
-    (cd "$1" && "$RUN_CLI" --json new > /dev/null) || return 1
+    (cd "$1" && "$RUN_CLI" --json new --unencrypted > /dev/null) || return 1
   fi
   RUN_PROJECT=$(cd "$1" && pwd)
 }

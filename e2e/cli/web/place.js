@@ -137,6 +137,7 @@ async function placedInView(page, expected) {
   const projectName = `web-place-${Date.now()}`;
   await page.goto(`${base}/projects`);
   await page.fill('input[aria-label="New project\'s name"]', projectName);
+  await page.getByLabel("Create without encryption", { exact: true }).check();
   await page.click('form button[type=submit]');
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
   const id = (await projectFromPage(page)).id;
