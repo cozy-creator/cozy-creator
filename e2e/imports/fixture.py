@@ -190,9 +190,9 @@ def verify(report: Path, origin: str) -> None:
         raise ValueError("the authoritative packages checkout changed during fixture staging")
     guard(staged, origin)
     changed = {target["directory"] + "/uv.lock" for target in manifest["relock"]}
-    for path, expected in manifest["original_locks"].items():
-        if path not in changed and digest(staged / path) != expected:
-            raise ValueError(f"unaffected staged lock changed: {path}")
+    for relative, original_digest in manifest["original_locks"].items():
+        if relative not in changed and digest(staged / relative) != original_digest:
+            raise ValueError(f"unaffected staged lock changed: {relative}")
     if snapshot(staged, "*/pyproject.toml") != manifest["original_projects"]:
         raise ValueError("staged package source metadata changed")
     expected = {item["name"]: item["version"] for item in manifest["dependencies"]}
@@ -214,7 +214,9 @@ def verify(report: Path, origin: str) -> None:
             actual.append({"package": target["directory"], "dependency": dependency,
                            "version": text(row["version"]), "registry": registry, "wheels": wheels,
                            "lock_sha256": digest(path)})
-    manifest.update(verified=actual, authoritative_checkout_unchanged=True, unaffected_locks_unchanged=True)
+    manifest["verified"] = actual
+    manifest["authoritative_checkout_unchanged"] = True
+    manifest["unaffected_locks_unchanged"] = True
     report.write_text(json.dumps(manifest, indent=2) + "\n")
 
 
