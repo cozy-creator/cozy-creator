@@ -110,6 +110,7 @@ class Receipt(TypedDict, total=False):
     reencrypted_files_scanned: int
     reencrypted_global_files_scanned: int
     decrypt_with_open_reader: str
+    file_write_modes: dict[str, int]
 
 
 class Args(argparse.Namespace):
@@ -977,6 +978,12 @@ foreach ($rule in $allowed) {
         readonly = view / 'readonly-retained.txt'
         readonly.write_text(self.canary)
         readonly.chmod(0o444)
+        # Securefs 2.0 on Windows acknowledges chmod without changing attributes.
+        # Preserve what the mounted source actually exposes through both conversions.
+        write_mode = readonly.stat().st_mode & 0o222
+        if os.name != 'nt':
+            assert write_mode == 0
+        file_modes = self.receipt['file_write_modes'] = {'source': write_mode}
         held_media = self.find_media(view, sources[0])
         decrypted: Payload | None = None
         with held_media.open('rb'):
@@ -1004,7 +1011,8 @@ foreach ($rule in $allowed) {
         for path in sources:
             self.find_media(self.project, path)
         assert (self.project / readonly.name).read_text() == self.canary
-        assert (self.project / readonly.name).stat().st_mode & 0o222 == 0
+        file_modes['decrypted'] = (self.project / readonly.name).stat().st_mode & 0o222
+        assert file_modes['decrypted'] == write_mode
         assert self.yaml() == state
         assert self.command('status', cwd=self.project, full=True)['project']['id'] == self.project_id
         assert self.vault('decrypt')['vault']['state'] == 'plain'
@@ -1050,8 +1058,9 @@ foreach ($rule in $allowed) {
         for path in sources:
             self.find_media(view, path)
         assert (view / readonly.name).read_text() == self.canary
-        assert (view / readonly.name).stat().st_mode & 0o222 == 0
-        self.cell('readonly_file_survives_decrypt_and_reencrypt')
+        file_modes['reencrypted'] = (view / readonly.name).stat().st_mode & 0o222
+        assert file_modes['reencrypted'] == write_mode
+        self.cell('file_permissions_survive_decrypt_and_reencrypt')
         self.vault('lock', allow_locking=True)
         self.shutdown()
         self.receipt['reencrypted_files_scanned'] = self.scan(self.project)
