@@ -185,7 +185,7 @@ read -r v rest < "$T/delivery.txt"; expect tensord-output-delivery "$v" "$rest"
 # records and outputs).
 free_bytes() { "$CLI" --json machine show "$M" 2>/dev/null | jq -r '.status.disk_free_bytes // empty'; }
 ikea=ostris/ikea-lora-sdxl balloon=proomptengineer/balloon-lora-sdxl
-for l in $ikea $balloon; do "$CLI" model download "$l" --on "$M" -y > "$T/views-$(basename "$l").log" 2>&1; done
+for l in $ikea $balloon; do "$CLI" model install "$l" --on "$M" -y > "$T/views-$(basename "$l").log" 2>&1; done
 v0=$(submit "sdxl/generate@$NEW" prompt="$OBJECT as flat-pack furniture, catalog photo" seed:=$((R + 60)) --lora "$ikea")
 until_status "$v0" terminal; f0=$(free_bytes)
 v1=$(submit "sdxl/generate@$NEW" prompt="PEBalloonStyle, $CHAR made of balloons" seed:=$((R + 61)) --lora "$balloon")

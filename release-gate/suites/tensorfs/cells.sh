@@ -208,13 +208,13 @@ WHO=; for _ in 1 2 3; do  # a dropped connection is asked again
   sleep 5
 done
 if tfs_case download; then
-  tfs_step download-cold model download "$TFS_MODEL" --on "$M" -y
-  tfs_step download-again model download "$TFS_MODEL" --on "$M" -y
+  tfs_step download-cold model install "$TFS_MODEL" --on "$M" -y
+  tfs_step download-again model install "$TFS_MODEL" --on "$M" -y
   d=$WHO/ci-tfs-resume-$R
   tfs_fixture download-fixture "$d"
   if [ -n "${TFS_COMMIT:-}" ]; then
-    tfs_cut download-cut download 0.3 model download "$d@$TFS_COMMIT" --on "$M" -y
-    tfs_step download-resume model download "$d@$TFS_COMMIT" --on "$M" -y
+    tfs_cut download-cut download 0.3 model install "$d@$TFS_COMMIT" --on "$M" -y
+    tfs_step download-resume model install "$d@$TFS_COMMIT" --on "$M" -y
   else
     expect tensorfs-download-resume FAIL "no private model to resume (${WHO:-not signed in}): $(run_get "$T" download-fixture .reason.message)"
   fi
@@ -225,7 +225,7 @@ if [ -n "${SSH:-}" ] && tfs_case kill; then
   d=$WHO/ci-tfs-kill-$R
   tfs_fixture kill-fixture "$d"
   if [ -n "${TFS_COMMIT:-}" ]; then
-    tfs_kill_cut kill-cut $((TFS_RESUME_MB * 3 / 10 << 20)) download model download "$d@$TFS_COMMIT" --on "$M" -y
+    tfs_kill_cut kill-cut $((TFS_RESUME_MB * 3 / 10 << 20)) download model install "$d@$TFS_COMMIT" --on "$M" -y
   else
     expect tensorfs-kill-cut FAIL "no private model to resume (${WHO:-not signed in}): $(run_get "$T" kill-fixture .reason.message)"
   fi

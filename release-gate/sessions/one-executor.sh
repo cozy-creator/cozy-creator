@@ -73,7 +73,7 @@ k=0
 while read -r m; do
   k=$((k + 1)); [ -n "$m" ] || continue
   # shellcheck disable=SC2086 # a model and its flags
-  step "model-$k" model download $m --on "$NAME" || fail "download $m"
+  step "model-$k" model install $m --on "$NAME" || fail "download $m"
 done < <(jq -r '.[]' <<<"$MODELS")
 # What idle-entrypoints.sh reads from gate.sh: cell, pkg, expect, $CLI, $M, $R, $REF, the scenario, $GPUS, $ONLY, $HERE.
 RUN_CLI=cozy; . "$HERE/../e2e/run.sh"

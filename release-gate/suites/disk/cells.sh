@@ -52,8 +52,8 @@ made=$(step held-output run ./ci-multi-conversion/source --on "$M" seed:=$((R + 
 held=$(basename "$(mktemp -u "$T/run-XXXXXX")")
 run_submit "$T" "$held" run "$(pkg sdxl generate)" --on "$M" prompt="$OBJECT, held through a full disk" steps:=8 seed:=$((R + 700)) > /dev/null
 run_wait "$T" "$held" in_progress  # accepted: its preparation holds SDXL from here
-h3=$(step h3 model download minimaxai/minimax-h3 --lane int8 --on "$M" -y)
-qwen=$(step qwen model download qwen/qwen-image-2.1 --lane int8 --on "$M" -y)
+h3=$(step h3 model install minimaxai/minimax-h3 --lane int8 --on "$M" -y)
+qwen=$(step qwen model install qwen/qwen-image-2.1 --lane int8 --on "$M" -y)
 # On a CPU the call is minutes a step: it held SDXL while both landed, and it is canceled once they have.
 run_show "$T" "$held" "$(cat "$T/$held.number")"; during=$(run_get "$T" "$held" .status)
 "$CLI" run cancel "$(cat "$T/$held.number")" -y > "$T/held-cancel.log" 2>&1; run_wait "$T" "$held"
@@ -62,12 +62,12 @@ evicted_sdxl=$(logs 'tensorfs: evicted stabilityai/sdxl')
   && expect disk-held PASS "SDXL run $(cat "$T/$held.number") ran while H3 and Qwen landed; SDXL never evicted" \
   || expect disk-held FAIL "h3 $h3, qwen $qwen $(run_get "$T" qwen .reason.message), SDXL run $during, SDXL evicted $evicted_sdxl times"
 
-sdxl=$(step sdxl model download stabilityai/sdxl --lane int8 --on "$M" -y)
+sdxl=$(step sdxl model install stabilityai/sdxl --lane int8 --on "$M" -y)
 # Not fp8: a lane few runs read has cold objects in R2, and one dripped at 52 KB/s here for as long as we watched (tfs-138).
 for lane in nvfp4 bf16; do
-  [ "$(logs 'tensorfs: evicted')" = 0 ] && step "h3-$lane" model download minimaxai/minimax-h3 --lane "$lane" --on "$M" -y > /dev/null
+  [ "$(logs 'tensorfs: evicted')" = 0 ] && step "h3-$lane" model install minimaxai/minimax-h3 --lane "$lane" --on "$M" -y > /dev/null
 done
-again=$(step h3-again model download minimaxai/minimax-h3 --lane int8 --on "$M" -y)
+again=$(step h3-again model install minimaxai/minimax-h3 --lane int8 --on "$M" -y)
 evictions=$(logs 'tensorfs: evicted'); garbage=$(grep -cE 'reclaimed .*(uv cache entries|package environments)' "$T/tensord.log")
 silent=$(grep -cE 'tensorfs: freed .* \(0 evicted' "$T/tensord.log")
 [ "$sdxl$again" = completedcompleted ] && [ "$evictions" -gt 0 ] \

@@ -75,7 +75,7 @@ for p in "${pairs[@]}"; do
   m=${p%%=*}
   for lane in "${lanes[@]}"; do
     [ -n "${LANE[$m/$lane]:-}" ] && continue
-    step "pull-$m" model download "$m@${BF16[$m]}" --on "$NAME" || fail "pull $m's bf16 commit"
+    step "pull-$m" model install "$m@${BF16[$m]}" --on "$NAME" || fail "pull $m's bf16 commit"
     break
   done
 done

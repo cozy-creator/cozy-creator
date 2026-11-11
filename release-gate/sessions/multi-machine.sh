@@ -147,13 +147,13 @@ tiny "$OUT/tiny.safetensors"
 M=$ACCOUNT/mm-private-$TS
 step p-upload model upload "$OUT/tiny.safetensors" "$M" --lane f32 --source-format as-is || fail "p: upload of a private model"
 MC=$M@$(awk '$1=="commit"{c=$2} END{sub(/.*@/, "", c); print c}' "$OUT/p-upload.txt")
-step p-cold model download "$MC" --on "$A" || fail "p: the renter did not read its private model on A: $(tail -3 "$OUT/p-cold.txt")"
+step p-cold model install "$MC" --on "$A" || fail "p: the renter did not read its private model on A: $(tail -3 "$OUT/p-cold.txt")"
 q=$(asked 'a commit asked of the Hub') r=$(asked 'redeemed the run capability')
 [ "$q" -ge 1 ] || fail "p: A never asked the Hub for the commit as the renter"
-step p-warm model download "$MC" --on "$A" || fail "p: the renter's warm read on A: $(tail -3 "$OUT/p-warm.txt")"
+step p-warm model install "$MC" --on "$A" || fail "p: the renter's warm read on A: $(tail -3 "$OUT/p-warm.txt")"
 [ "$(asked 'a commit asked of the Hub')" = "$q" ] && [ "$(asked 'redeemed the run capability')" = "$r" ] ||
   fail "p: the renter's warm read asked the Hub (commit asks $q -> $(asked 'a commit asked of the Hub'), redemptions $r -> $(asked 'redeemed the run capability'))"
-on "$A" p-shell "cozy model download $MC" && fail "p: A's signed-out shell read the renter's private model A holds"
+on "$A" p-shell "cozy model install $MC" && fail "p: A's signed-out shell read the renter's private model A holds"
 grep -q 'is private' "$OUT/p-shell.txt" && grep -q 'cozy login' "$OUT/p-shell.txt" ||
   fail "p: the shell's refusal does not say private and name cozy login: $(tail -4 "$OUT/p-shell.txt")"
 say "p: $MC served warm to the renter with no Hub read (commit asks $q, redemptions $r, unchanged); A's signed-out shell refused: $(grep -m1 -o 'is private[^(]*' "$OUT/p-shell.txt")"
