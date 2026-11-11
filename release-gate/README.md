@@ -211,6 +211,8 @@ that pair misses takes its own Runtime in its own environment, and the machine's
   `$SCENE`, `$CHAR`, `$R`, `$K`, `$M` and `$CLI`. A FILE ending in `.sh` is sourced after the last product cell.
   `released.sh` runs every cell of a `--packages` checkout again from the release the Hub serves, on the same pod,
   twice in turn: a candidate's same-pod A/B (each pair's execution, steady step and output, in the notes).
+  `tensorfs-ab.sh` (with `-f tensorfs_wheel=…`) is the varena matrix: SDXL, Klein, Qwen-Image 4 MP and H3 Turbo 15 s, cold
+  and warm, uncapped and at 8 and 6 GiB, on the TensorFS the pod came with and then the candidate, alternating on one pod.
 - **One release, two checkpoints** (`swap.py`): Qwen-Image text → edit → text and its two Lightning LoRAs in turn, each group on one executor with no restart (run 15744: TFS 0.15.0's `{release}/{component}` set names collided). No first-party SDXL LoRA exists to swap.
 - **LM coverage** (`lm.py`, every gate): Fibo's and Klein's prompt upsamplers and H3's reference describer ran their
   greedy token loops (H3's cell gives a character reference, which BiRefNet cleans and Qwen3.5 describes).
