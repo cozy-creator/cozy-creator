@@ -2613,6 +2613,10 @@ lane?: string | null,
  */
 attention_kernel?: string | null,
 /**
+ * Dev-only: the Runtime's attention capture spec (JSON), passed to its executors verbatim.
+ */
+attention_capture?: string | null,
+/**
  * Keep the function at this level instead of running it (`off` takes it out).
  */
 warm?: WarmLevel | null,

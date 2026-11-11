@@ -22,6 +22,7 @@ pub(crate) struct Call {
     pub entrypoint: String,
     pub input: Value,
     pub attention_kernel: String,
+    pub attention_capture: String,
     pub gpus: u32,
     pub lane: String,
     pub inputs: Vec<crate::journal::InputFile>,
@@ -241,6 +242,7 @@ impl Service {
         let held = self.catalog.resolve(generation)?;
         let mut invocation = held.invocation_of(&call.application, &call.entrypoint, call.input)?;
         invocation.attention_kernel = call.attention_kernel;
+        invocation.attention_capture = call.attention_capture;
         invocation.gpus = call.gpus;
         invocation.lane = call.lane;
         invocation.inputs = call.inputs;

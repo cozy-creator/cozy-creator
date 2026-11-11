@@ -3632,6 +3632,7 @@ impl Pool {
                 spool: spool.clone(),
                 deadline_s: None,
                 attention_kernel: record.invocation.attention_kernel.clone(),
+                attention_capture: record.invocation.attention_capture.clone(),
                 bits: plan.bits(),
                 inputs: inputs.inputs,
                 trees: inputs.trees,

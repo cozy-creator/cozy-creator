@@ -201,6 +201,9 @@ pub struct Invoke {
     pub deadline_s: Option<f64>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub attention_kernel: String,
+    /// Dev-only: what the Runtime's attention capture records (a JSON spec); empty: nothing.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub attention_capture: String,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub bits: u32,
     /// File inputs by field path: read-only copies in this call's spool.

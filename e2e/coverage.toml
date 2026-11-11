@@ -200,6 +200,7 @@ test = "pr: a run followed, a snapshot, a cancel"
 # Hidden (`hide = true`, in no --help): probed in the binary; `coverage.py --source` finds any not listed here.
 [hidden]
 "machine rent --provider" = "pending: dev-only (`dev = true`, crates/cli/DEV.md); release-gate/suites/hub rents cpu once per provider where the config has it, ended and checked gone"
+"run --attention-capture" = "manual: dev-only (`dev = true`, crates/cli/DEV.md); release-gate/suites/attention-corpus captures with it on a rented pod (xs-171 M-B)"
 "package publish" = "release: isolated package publication; TensorHub admins only in v1"
 "model upload" = "release: isolated model upload; TensorHub admins only in v1"
 "model publish" = "release: isolated model publication; TensorHub admins only in v1"
