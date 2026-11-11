@@ -36,7 +36,18 @@ for attention_set in $attention_sets; do
     cell "$attention_cell" "$KD/attention_speed" kernels="$attention_set" corpus="$attention_corpus" seed:=$((attention_seed++)) --gpus=1
     [ "$(run_get "$OUT" "$attention_cell" .status)" != completed ] || break
     attention_fault=$(run_get "$OUT" "$attention_cell" .reason.message | grep -oE 'fault in [^ ]+' | head -1 | cut -d' ' -f3)
-    [ -n "$attention_fault" ] || break
+    if [ -z "$attention_fault" ]; then
+      # A fault that names no kernel (the GPU's own, an Xid: release gate 43112805556 on an RTX PRO 6000) took the whole
+      # process: each kernel of the set runs alone, so the one that faults is named and the rest are timed (SDPA joins each).
+      if [[ $(run_get "$OUT" "$attention_cell" .reason.code) == gpu_fault* || $(run_get "$OUT" "$attention_cell" .reason.message) == *Xid* ]]; then
+        log "$attention_cell: the GPU faulted with no kernel named; each kernel of the set alone"
+        for attention_one in ${attention_set//,/ }; do
+          [ "$attention_one" != sdpa ] || continue
+          cell "attention-speed-$attention_n-$attention_one" "$KD/attention_speed" kernels="$attention_one" corpus="$attention_corpus" seed:=$((attention_seed++)) --gpus=1
+        done
+      fi
+      break
+    fi
     log "$attention_cell: $attention_fault faulted; the set again without it"
     attention_set=$(tr , '\n' <<< "$attention_set" | grep -vxF "$attention_fault" | paste -sd,)
   done
