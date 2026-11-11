@@ -9,7 +9,7 @@
 # A broken step is recorded and the suite goes on, so one run reports all of them.
 # --shard runs one of `shards` below after the same start, each on its own runner: e2e.yaml checks coverage over
 # all their calls. Whole, the suite checks it itself.
-#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|web|projectdb|projectdb-latency|projectdb-existing|projectdb-web|projectvault|projectdb-cancel|projectdb-live|projectdb-scale|local-code]
+#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|web|project-stream|project-stream-web|projectdb|projectdb-latency|projectdb-existing|projectdb-web|projectvault|projectdb-cancel|projectdb-live|projectdb-scale|local-code]
 #                  [--tensord F|V] [--tensorfs F|V] [--runtime F|V] [--packages DIR]
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
@@ -259,13 +259,15 @@ cozy --json package remove local/one_script --on local > /dev/null || check "pac
 
 # Balanced by step times (runs 40128128311, 40132063815, 40132725041). A shard keeps its parts' order; whole, the suite runs every part.
 case $SHARD in
-  '') parts="entrypoints weightless script_package one_name_two_paths image_ratio describe first_run second_executor lifetime kept_preparing catalog basics yaml_requests run_flags run_follow time_left broken_answers run_filters run_play hub_away lock_refresh bound_runs own_references old_runtime hostile_media unseen local_edits local_quote path_manifest machine_show_runs writes_once web_serves page_resend queued_download machines completions calcifer_faults calcifer_restarts update remove" ;;
+  '') parts="entrypoints weightless script_package one_name_two_paths image_ratio describe first_run second_executor lifetime kept_preparing catalog basics yaml_requests run_flags run_follow time_left broken_answers run_filters run_play hub_away lock_refresh bound_runs own_references old_runtime hostile_media unseen local_edits local_quote path_manifest machine_show_runs writes_once project_stream web_serves page_resend queued_download machines completions calcifer_faults calcifer_restarts update remove" ;;
   runs) parts="weightless describe first_run run_flags run_play hub_away lock_refresh logs" ;;
   executors) parts="second_executor lifetime kept_preparing update remove" ;;
   entrypoints) parts="entrypoints" ;;
-  commands) parts="entrypoints catalog basics yaml_requests run_filters bound_runs own_references old_runtime hostile_media machine_show_runs writes_once logs" ;;
+  commands) parts="entrypoints catalog basics yaml_requests run_filters bound_runs own_references old_runtime hostile_media machine_show_runs writes_once project_stream logs" ;;
   # Its own runner: under `set -e` a cell that dies ends its shard, and a page's proofs shouldn't go with it.
   web) parts="tools_read web_serves page_resend logs" ;;
+  project-stream) parts="project_stream logs" ;;
+  project-stream-web) DB_WEB="drawers activity versions timeline"; parts="tools_read db_existing_web logs" ;;
   follow) parts="script_package one_name_two_paths image_ratio run_follow time_left broken_answers queued_download machines completions calcifer_faults calcifer_restarts logs" ;;
   # project.db (cl-803) and state.db (cl-818) alone, and project.db's latency against the cozy before it.
   projectdb) parts="projectdb statedb logs" ;;
@@ -288,6 +290,10 @@ esac
 [ -n "$LOCAL" ] || [[ "$SHARD" = entrypoints || "$SHARD" = projectvault ]] || parts="entrypoints catalog refusals web_serves completions homebrew calcifer_faults update remove"
 
 start
+# Package fixtures must still resolve after entering the project directory.
+if [ -n "$PACKAGES" ]; then
+  PACKAGES=$(cd "$PACKAGES" && pwd) || fail "package checkout is unavailable"
+fi
 cd "$RUN_PROJECT" || fail "project directory is unavailable"
 for part in $parts; do $part; done
 [ -n "$SHARD" ] || [ -z "$LOCAL" ] || { step coverage; coverage "$OUT/cozy-under-test" pr; }

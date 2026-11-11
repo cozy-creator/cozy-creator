@@ -53,7 +53,13 @@ const newPage = async () => {
     if (url.origin !== new URL(calcifer()).origin && /cozy1-|synthetic browser passphrase/.test(text)) outbound.push('secret-bearing external request');
   });
   context.on('response', async (response) => {
-    if (response.request().method() !== 'POST' || !/\/vault$/.test(new URL(response.url()).pathname)) return;
+    const path = new URL(response.url()).pathname;
+    const method = response.request().method();
+    if (method === 'GET' && /^\/v1\/projects\/[^/]+\/(address|vault)$/.test(path)) {
+      const route = path.endsWith('/address') ? 'address' : 'vault';
+      (seen.vault_read_statuses ??= {})[route] = response.status();
+    }
+    if (method !== 'POST' || !/\/vault$/.test(path)) return;
     try {
       const action = JSON.parse(response.request().postData() || '{}').action;
       const answer = await response.json();
@@ -61,8 +67,12 @@ const newPage = async () => {
     } catch { /* Failed/offline replies carry no readable evidence. Never retain secret bodies. */ }
   });
   await signIn(page);
+  // Code redemption finishes after the document loads. Wait for its signed-in
+  // shell before opening the compact link in another document.
+  await page.locator('.top').waitFor();
   await page.goto(`${href}/vault`);
   const body = page.locator('.drawer [data-vault-state]');
+  await page.locator('.drawer [data-vault-state="plain"]').waitFor();
   // Import returns before first-use ffprobe preparation and background measurement.
   // Wait for its actual committed result before asking to replace that plain storage.
   await until('plain seed media measured before encryption', () => {
@@ -323,8 +333,14 @@ const newPage = async () => {
   if (page) await page.close().catch(() => {});
   if (browser) await browser.close().catch(() => {});
   if (scratch) {
-    try { vault(join(scratch, 'project'), 'lock'); rmSync(scratch, { recursive: true, force: true }); }
-    catch { seen.cleanup_pending = 'fixture backing retained because its lock did not complete'; failures.push('fixture mount cleanup'); }
+    try {
+      const folder = join(scratch, 'project');
+      if (JSON.parse(vault(folder, 'status')).encrypted) vault(folder, 'lock');
+      rmSync(scratch, { recursive: true, force: true });
+    } catch {
+      seen.cleanup_pending = 'fixture backing retained because its lock did not complete';
+      failures.push('fixture mount cleanup');
+    }
   }
   console.log(JSON.stringify({ seen, failures }, null, 2));
   if (failures.length) process.exitCode = 1;

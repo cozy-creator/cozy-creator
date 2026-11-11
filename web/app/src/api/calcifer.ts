@@ -117,7 +117,7 @@ stale: Array<string>, warnings?: Array<string>,
 etag?: string | null, };
 
 /**
- * `POST /v1/projects/{id}/runs`: what the ask found. `/events` opens with the runs already going.
+ * `POST /v1/projects/{id}/runs`: what the ask found. `GET /v1/events` tells its board's changes from here.
  */
 export type Asked = { id: string,
 /**
@@ -141,11 +141,15 @@ skipped?: Array<string>,
  */
 queued?: Array<QueuedNow>,
 /**
+ * What the ask found of what it names, each line once: what it skips and why, a flag it ignores.
+ */
+said?: Array<Said>,
+/**
  * Commands to run next.
  */
 next?: Array<string>,
 /**
- * The render as this ask left it: `/events` says each change from here.
+ * The render as this ask left it: `board.updated` and `job.updated` on `GET /v1/events` say each change from here.
  */
 board: Board, };
 
@@ -332,7 +336,19 @@ shots: number, jobs?: Array<Job>,
 /**
  * What machines are fetching ahead of what's queued, one per function.
  */
-ahead?: Array<Ahead>, };
+ahead?: Array<Ahead>,
+/**
+ * What it said as it went, each line once, in order.
+ */
+said?: Array<Said>,
+/**
+ * What failed of no one asset, each once; what does not read it goes on. A job's failure is its own `error`.
+ */
+errors?: Array<ErrorBody>,
+/**
+ * How its walk ended, once it has.
+ */
+ended?: RenderEnded | null, };
 
 /**
  * `GET /v1/tools/browse`: a page of the Hub's packages that make media.
@@ -1911,27 +1927,6 @@ eta_basis?: EtaBasis | null, };
 export type ProjectAddress = { id: string, code: string, };
 
 /**
- * `GET /v1/projects/{id}/events`: what the project's runs do, as they do it.
- */
-export type ProjectEvent = { "type": "board", board: Board, } | { "type": "job", job: Job, seq: number, } | { "type": "ahead", ahead: Ahead, } | { "type": "started", name: string, run: string, number: number, } | { "type": "landed", name: string, noun: string, number: number, files: { [key in string]: ProjectFile }, path: string,
-/**
- * Its run's execution time.
- */
-execution_ms?: number | null, } | { "type": "said", message: string, name?: string | null, } | { "type": "warning", message: string, name?: string | null, } | { "type": "failed", error: ErrorBody, name?: string | null, run?: number | null, } | { "type": "moved", file?: string | null, bytes: number, } | { "type": "cut", name: string, cut: string, frames: number, fps: number, retimed?: Array<string>, took_s: number, unchanged?: boolean,
-/**
- * What this film was cut without: `<piece>: <why>`.
- */
-without?: Array<string>, } | { "type": "ended", error?: ErrorBody | null,
-/**
- * What this walk landed, if it landed anything.
- */
-rendered?: Rendered | null,
-/**
- * The renders it ended, by `Asked::ask`: an ask made as another walk ends is the next one's.
- */
-asks?: Array<string>, };
-
-/**
  * A project event's position in one controller process. Generations never compare across
  * restarts; a full snapshot covers only positions captured before its read began.
  */
@@ -2155,6 +2150,21 @@ export type Rename = { from: string, to: string, };
  * A rename done: `from`, `to`, and how many versions it kept.
  */
 export type Renamed = { from: string, to: string, versions: number, };
+
+/**
+ * How a render's walk ended: nothing it was asked is left to send or follow, and every take it made is whole here. `error` is the
+ * first thing that failed, or when more than that was asked, `render_incomplete`: how far it got, that failure, and the command for
+ * the rest.
+ */
+export type RenderEnded = { error?: ErrorBody | null,
+/**
+ * What it landed, if it landed anything.
+ */
+rendered?: Rendered | null,
+/**
+ * The renders it ended, by `Asked::ask`: an ask made as another walk ends is the next one's.
+ */
+asks?: Array<string>, };
 
 /**
  * What a walk landed: how many takes and versions, how long it took, and its runs' execution time summed, which is more
@@ -2624,6 +2634,12 @@ outdated?: boolean,
 pickup?: Pickup | null, };
 
 /**
+ * A line a render said, once however often it came: of the assets `names` (a warning's are those whose runs gave it), or of the
+ * render.
+ */
+export type Said = { level: NoteLevel, message: string, names?: Array<string>, };
+
+/**
  * A file or folder a client sent by content (`PUT /v1/files`): a file's digest, or a folder's
  * tree document's (`api::tree`), sent after each file it names.
  */
@@ -2701,7 +2717,7 @@ gone?: Array<string>,
 /**
  * What's said of the project besides its assets changed: `GET /v1/projects/{id}?assets=false`.
  */
-head?: boolean, cursor?: ProjectEventCursor | null, } | { "type": "project.vault", id: string, state: string, } | { "type": "canvas", id: string, seq: number, cards: { [key in string]: Card | null }, } | { "type": "job.updated", project: string, job: Job, seq: number, } | { "type": "ahead.updated", project: string, ahead: Ahead, } | { "type": "history", id: string, undo?: HistoryEntry | null, redo?: HistoryEntry | null, } | { "type": "resync" };
+head?: boolean, cursor?: ProjectEventCursor | null, } | { "type": "project.vault", id: string, state: string, } | { "type": "canvas", id: string, seq: number, cards: { [key in string]: Card | null }, } | { "type": "board.updated", project: string, board: Board, } | { "type": "job.updated", project: string, job: Job, seq: number, } | { "type": "ahead.updated", project: string, ahead: Ahead, } | { "type": "history", id: string, undo?: HistoryEntry | null, redo?: HistoryEntry | null, } | { "type": "resync" };
 
 /**
  * A killed process in uninterruptible sleep (`D`: a driver after an Xid, a hung network
@@ -3036,6 +3052,10 @@ version?: number | null,
  * What this put out of date, itself too.
  */
 stale: Array<string>,
+/**
+ * What making the tools that read it now said.
+ */
+warnings?: Array<string>,
 /**
  * What `If-Match` names from here on.
  */

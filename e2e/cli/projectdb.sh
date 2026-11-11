@@ -670,7 +670,7 @@ prior=$(id_of "$P")
 pid=$(jq -r .pid "$HOME/.cozy/calcifer/calcifer.lock.holder")
 kill9
 in_project "$P" --json --full status > "$OUT/crdt-restart.json" 2> "$OUT/crdt-restart.err" || check "CRDT: status did not restart Calcifer"
-J --arg id "$prior" '.id == $id' "$OUT/crdt-restart.json" || check "CRDT: native appended identity changed across daemon restart"
+J --arg id "$prior" '($id | length > 0) and .project.id == $id' "$OUT/crdt-restart.json" || check "CRDT: native appended identity changed across daemon restart"
 [ "$(jq -r .pid "$HOME/.cozy/calcifer/calcifer.lock.holder")" != "$pid" ] || check "CRDT: Calcifer PID did not change"
 db_calcifer
 python3 - "$P/project.db" "$OUT/crdt-stream-after.am" <<'STREAM_RESTART' || check "CRDT: native appended stream changed on readonly restart"

@@ -498,7 +498,7 @@ pinned() {
 # The BiRefNet target: a pinned release, the packages checkout's directory, or the published release.
 birefnet() {
   if [ -z "$PACKAGES" ] || [[ $(pinned birefnet) == *@* ]]; then pinned birefnet remove_background
-  else echo "./$PACKAGES/birefnet/remove_background"; fi
+  else (cd "$PACKAGES" && printf '%s/birefnet/remove_background\n' "$PWD"); fi
 }
 
 echo "::group::start"

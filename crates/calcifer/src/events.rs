@@ -185,6 +185,11 @@ pub(crate) fn project_vault(id: &str, state: &str) {
     let _ = PROJECTS.said.send(StreamEvent::ProjectVault { id: id.to_owned(), state: state.to_owned() });
 }
 
+/// Tells every stream project `id`'s render, whole: more than one job of it changed.
+pub(crate) fn board_updated(id: &str, board: &api::calcifer::project::Board) {
+    let _ = PROJECTS.said.send(StreamEvent::BoardUpdated { project: id.to_owned(), board: Box::new(board.clone()) });
+}
+
 /// Tells every stream one job of project `id` changed.
 pub(crate) fn job_updated(id: &str, job: &api::calcifer::project::Job, seq: u64) {
     let _ = PROJECTS.said.send(StreamEvent::JobUpdated { project: id.to_owned(), job: Box::new(job.clone()), seq });
@@ -251,6 +256,11 @@ impl Showing {
         SHOWN.lock().expect("shown lock").insert(id.clone(), vec![]);
         Self(id)
     }
+
+    fn includes(&self, project: &str) -> bool {
+        SHOWN.lock().expect("shown lock").get(&self.0)
+            .is_some_and(|readers| readers.iter().any(|reader| reader.id() == project))
+    }
 }
 
 impl Drop for Showing {
@@ -307,7 +317,6 @@ const SHOWN_MOST: usize = 64;
 /// One subscriber: what it owes, and the machine list as it last told it.
 struct Watch {
     /// Its id, and the projects it holds open.
-    #[allow(dead_code, reason = "held for its drop")]
     showing: Showing,
     pending: VecDeque<StreamEvent>,
     runs: broadcast::Receiver<(RunId, Event)>,
@@ -366,13 +375,17 @@ impl Watch {
         let project_id = match event {
             StreamEvent::ProjectVault { .. } => return true,
             StreamEvent::ProjectChanged { id, .. } | StreamEvent::Canvas { id, .. } | StreamEvent::History { id, .. } => Some(id),
-            StreamEvent::JobUpdated { project, .. } | StreamEvent::AheadUpdated { project, .. } => Some(project),
+            StreamEvent::BoardUpdated { project, .. } | StreamEvent::JobUpdated { project, .. } | StreamEvent::AheadUpdated { project, .. } => Some(project),
             StreamEvent::RunUpdated { run } => {
                 return self.api.calcifer.store().run(run.id.as_str()).ok().flatten().is_some_and(|row| project::vault::require_path(&row.out_dir).is_ok());
             }
             _ => None,
         };
-        project_id.is_none_or(|id| self.api.calcifer.store().known_project(id).ok().flatten().is_some_and(|known| project::vault::require_path(&known.path).is_ok()))
+        project_id.is_none_or(|id| {
+            self.showing.includes(id)
+                && self.api.calcifer.store().known_project(id).ok().flatten()
+                    .is_some_and(|known| project::vault::require_path(&known.path).is_ok())
+        })
     }
 
     /// Takes in whatever else has arrived: a run is sent once, as it is now, and nothing waits behind
