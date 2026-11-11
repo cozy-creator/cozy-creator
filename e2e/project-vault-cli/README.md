@@ -9,6 +9,12 @@ directories, and exercises the `cozy vault` lifecycle. Encrypt and rotate run
 from outside the project with `cozy vault --directory`, so Windows can rename
 the backing directory. Calcifer starts through the normal CLI service path.
 
+Locked `cozy open` coverage keeps JSON and noninteractive guidance on every platform. On POSIX,
+real PTYs additionally verify hidden passphrase input, a single failed attempt without browser
+launch, successful open without a vault-result preamble, and unlock on the selected `--port`
+daemon without rollback. Console output and one-use browser codes stay in memory; receipts
+contain only command/exit metadata. Windows interactive-console coverage is not implied by those PTY cells.
+
 Media imports, field edits, history, and YAML reads use the installed
 controller's authenticated browser API over loopback. Media uploaded after
 encryption goes to `/v1/project-files/{digest}?project={id}` before the import.

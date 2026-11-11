@@ -929,6 +929,127 @@ foreach ($rule in $allowed) {
         self.cell('explicit_preservation_keeps_and_reports_the_original_after_restart')
         shutil.rmtree(preserved)
 
+    def open_in_tty(self, password: str | None, environment: dict[str, str], *options: str) -> tuple[int, str, str]:
+        # Real console input, not a credential mock. Raw console/session-code output stays in memory.
+        import errno
+        import fcntl
+        import pty
+        import select
+        import termios
+
+        master, slave = pty.openpty()
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 100, 0, 0))
+        def controlling_terminal() -> None:
+            os.setsid()
+            fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+        arguments = ['cozy', *options, 'open']
+        if '--port' in options:
+            arguments = ['cozy', 'open', *options]
+        record: dict[str, object] = {'args': arguments[1:], 'cwd': str(self.project), 'state': 'running', 'pty': True}
+        self.commands.append(record)
+        self.flush()
+        process = subprocess.Popen(arguments, cwd=self.project, env=environment, stdin=slave,
+                                   stdout=subprocess.PIPE, stderr=slave, text=True, encoding='utf-8',
+                                   preexec_fn=controlling_terminal)
+        os.close(slave)
+        transcript = bytearray()
+        entered = False
+        prompt = b'Project passphrase: '
+        deadline = time.monotonic() + FIRST_COLD_SECONDS
+        try:
+            while process.poll() is None:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError('interactive open did not finish within its native CLI deadline')
+                if select.select([master], [], [], 0.05)[0]:
+                    try:
+                        block = os.read(master, 65536)
+                    except OSError as error:
+                        if error.errno != errno.EIO:
+                            raise
+                        block = b''
+                    transcript.extend(block)
+                if transcript.count(prompt) > 1:
+                    raise RuntimeError('open repeated its credential prompt instead of returning the failure')
+                if prompt in transcript and not entered:
+                    if password is None:
+                        raise RuntimeError('JSON open unexpectedly requested a terminal credential')
+                    # Wait for the actual console echo guard, not a timing sleep, before typing.
+                    if not termios.tcgetattr(master)[3] & termios.ECHO:
+                        os.write(master, password.encode('utf-8') + b'\n')
+                        entered = True
+            stdout, _ = process.communicate(timeout=FIRST_COLD_SECONDS)
+            while select.select([master], [], [], 0)[0]:
+                try:
+                    block = os.read(master, 65536)
+                except OSError as error:
+                    if error.errno == errno.EIO:
+                        break
+                    raise
+                if not block:
+                    break
+                transcript.extend(block)
+            stderr = transcript.decode('utf-8', errors='replace')
+            if password is not None:
+                assert entered, 'interactive open did not request a hidden credential'
+                assert password not in stdout and password not in stderr, 'interactive open echoed its credential'
+            assert process.returncode is not None
+            record.update(state='complete', exit_code=process.returncode, hidden_input=entered)
+            return process.returncode, stdout, stderr
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.communicate()
+            os.close(master)
+            self.flush()
+
+    def open_unlocks_locked_project(self, password: Path, wrong: Path) -> None:
+        refused = self.command('open', cwd=self.project, refusal=True)
+        assert json.loads(refused.stdout)['error']['code'] == 'project_locked'
+        assert 'Project passphrase:' not in refused.stdout + refused.stderr
+        plain = self.command('open', cwd=self.project, refusal=True, json_output=False)
+        assert 'cozy vault unlock' in plain.stdout + plain.stderr
+        assert 'Project passphrase:' not in plain.stdout + plain.stderr
+        self.assert_locked()
+        self.cell('open_noninteractive_and_json_keep_unlock_guidance')
+        if os.name != 'posix':
+            return  # POSIX PTY below; Windows still qualifies the noninteractive guard above.
+        import socket
+
+        browser_bin = self.out / 'open-browser-bin'
+        browser_bin.mkdir()
+        browser_log = self.out / 'open-browser-argv.txt'
+        browser = browser_bin / ('open' if sys.platform == 'darwin' else 'xdg-open')
+        browser.write_text('#!/bin/sh\nprintf \'%s\\n\' "$1" >> "$COZY_TEST_BROWSER_LOG"\n')
+        browser.chmod(0o755)
+        environment = dict(os.environ if self.cli_env is None else self.cli_env)
+        environment['PATH'] = str(browser_bin) + os.pathsep + environment.get('PATH', '')
+        environment['COZY_TEST_BROWSER_LOG'] = str(browser_log)
+        code, stdout, stderr = self.open_in_tty(None, environment, '--json')
+        assert code != 0 and json.loads(stdout)['error']['code'] == 'project_locked'
+        assert 'Project passphrase:' not in stderr and not browser_log.exists()
+        self.cell('open_json_with_a_real_tty_still_never_prompts')
+        code, stdout, _ = self.open_in_tty(wrong.read_text().strip(), environment)
+        assert code != 0 and not browser_log.exists()
+        self.assert_locked()
+        self.cell('open_wrong_hidden_credential_stays_locked_without_a_browser')
+        code, stdout, _ = self.open_in_tty(password.read_text().strip(), environment)
+        assert code == 0 and 'project:' in stdout and 'url:' in stdout
+        assert 'readable view:' not in stdout and ': unlocked' not in stdout
+        assert self.status()['state'] == 'unlocked' and browser_log.exists()
+        self.cell('open_unlocks_once_and_keeps_only_the_normal_open_response')
+        self.vault('lock', allow_locking=True)
+        self.assert_locked()
+        with socket.socket() as available:
+            available.bind(('127.0.0.1', 0))
+            port = available.getsockname()[1]
+        code, stdout, _ = self.open_in_tty(password.read_text().strip(), environment, '--port', str(port))
+        assert code == 0 and 'url:' in stdout
+        assert self.controller()['address'].endswith(':' + str(port)) and self.status()['state'] == 'unlocked'
+        assert len(browser_log.read_text().splitlines()) == 2
+        self.cell('open_port_unlocks_the_selected_daemon_without_rollback')
+        self.vault('lock', allow_locking=True)
+        self.assert_locked()
+
     def creation_lock_race(self, password: Path) -> None:
         directory = self.out / 'creation-lock-race'
         args = ['cozy', '--json', 'new', str(directory), '--passphrase-file', str(password),
@@ -1086,6 +1207,7 @@ foreach ($rule in $allowed) {
         assert not unsafe_view.exists()
         self.vault('lock', allow_locking=True)
         self.assert_locked(view, saved[0])
+        self.open_unlocks_locked_project(initial, wrong)
         self.vault('unlock', '--passphrase-file', wrong, refusal=True)
         self.view(self.vault('unlock', '--recovery-file', self.recovery('recovery1'), '--idle', 0))
         assert self.yaml() == state
