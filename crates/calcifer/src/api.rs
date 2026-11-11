@@ -92,10 +92,21 @@ impl Api {
     /// `down`: admission closes once the mutations in flight are done, then every stream and the
     /// server end. Machines run on. What Calcifer still owes (`resume` takes it up) is answered.
     pub(crate) async fn down(self: &Arc<Self>) -> Result<Vec<String>, Error> {
+        self.down_inner(false).await
+    }
+
+    /// A service-manager stop keeps mutation admission closed while existing work/views drain.
+    #[cfg(unix)]
+    pub(crate) async fn shutdown(self: &Arc<Self>) -> Result<Vec<String>, Error> {
+        self.down_inner(true).await
+    }
+
+    async fn down_inner(self: &Arc<Self>, keep_admission_closed: bool) -> Result<Vec<String>, Error> {
         let mut stopping = self.stopping.write().await;
+        let was_stopping = *stopping;
         *stopping = true;
         if let Err(error) = tokio::task::block_in_place(|| crate::project::vault::close_all(self)) {
-            *stopping = false;
+            *stopping = was_stopping || keep_admission_closed;
             return Err(error);
         }
         let owed = self.calcifer.owed();
