@@ -1719,6 +1719,7 @@ fn status(frame: &v1::StatusFrame, hubs: &Hubs) -> MachineStatus {
                         lane: c.lane.clone(),
                         precision: c.precision.clone(),
                         manifest: c.manifest.clone(),
+                        role: c.role.clone(),
                     })
                     .collect(),
             })

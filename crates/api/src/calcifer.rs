@@ -1359,6 +1359,9 @@ pub struct Checkpoint {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub precision: String,
     pub manifest: String,
+    /// `model`, `lora`, or `unknown`; empty from older machines.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub role: String,
 }
 
 /// `ssh` into a rental, as root, trusting its host key the first time, in a known-hosts file of that rental's own.
@@ -1428,6 +1431,9 @@ pub struct HeldModel {
     /// Its header's precision lane (`int8`, …).
     pub precision: String,
     pub checkpoint: String,
+    /// `model`, `lora`, or `unknown`; empty from older machines.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub role: String,
     pub bytes: u64,
     /// The repository's bytes other held models share.
     pub shared_bytes: u64,
@@ -1465,20 +1471,21 @@ impl Machine {
         let Some(status) = &self.status else { return held };
         (held.repositories, held.bytes, held.stored_bytes) = (status.models.len() as u64, status.models_bytes, status.disk_models_bytes);
         for model in &status.models {
-            let row = |release: &str, lane: &str, precision: &str, checkpoint: &str| HeldModel {
+            let row = |release: &str, lane: &str, precision: &str, checkpoint: &str, role: &str| HeldModel {
                 machine: self.name.clone(),
                 model: model.repository.clone(),
                 release: release.into(),
                 lane: lane.into(),
                 precision: precision.into(),
                 checkpoint: checkpoint.into(),
+                role: role.into(),
                 bytes: model.total_bytes,
                 shared_bytes: model.total_bytes.saturating_sub(model.unique_bytes),
             };
             if model.checkpoints.is_empty() {
-                held.models.push(row("", "", "", ""));
+                held.models.push(row("", "", "", "", "unknown"));
             }
-            held.models.extend(model.checkpoints.iter().map(|c| row(&c.release, &c.lane, &c.precision, &c.manifest)));
+            held.models.extend(model.checkpoints.iter().map(|c| row(&c.release, &c.lane, &c.precision, &c.manifest, &c.role)));
         }
         held
     }
