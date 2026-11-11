@@ -1,6 +1,7 @@
 """What the page asks of a project that no CLI verb does, for the gate's fixtures (the current folder is the project; 0.24 has
 no `cozy project` verbs). Each prints JSON on stdout; a refusal goes to stderr and exits 1.
     page.py import <project> <file> [--name N] [--description D]    the file as a box, as a drop on the canvas
+    page.py add <project> <name> --tool T [--fields JSON]           a tool's box, as a drop on the canvas (`<name>` exactly)
     page.py yaml <project> <file>                                    project.yaml (format 4) read into the project
     page.py render <project> --on M[,M] [--n N] [--approve] [--pickup '<take>' FRAME] [--wait A,B] <name>...
                                                                      a render, followed until each name's (or --wait's) new
@@ -90,6 +91,11 @@ def main() -> int:
     one.add_argument("file")
     one.add_argument("--name")
     one.add_argument("--description")
+    one = verbs.add_parser("add")
+    one.add_argument("project")
+    one.add_argument("name")
+    one.add_argument("--tool", required=True)
+    one.add_argument("--fields", default="{}")
     one = verbs.add_parser("yaml")
     one.add_argument("project")
     one.add_argument("file")
@@ -109,6 +115,9 @@ def main() -> int:
         ask = {"source": held(Path(args.file).read_bytes())}
         ask |= {key: value for key, value in (("name", args.name), ("description", args.description)) if value}
         print(json.dumps(call("POST", project(args.project) + "/imports", json.dumps(ask).encode())))
+    elif args.verb == "add":
+        drop: Json = {"tool": args.tool, "name": args.name, "exact": True, "fields": json.loads(args.fields)}
+        print(json.dumps(call("POST", project(args.project) + "/assets", json.dumps(drop).encode())))
     elif args.verb == "yaml":
         print(json.dumps(call("PUT", project(args.project) + "/yaml", Path(args.file).read_bytes(), "application/yaml")))
     elif args.verb == "render":
