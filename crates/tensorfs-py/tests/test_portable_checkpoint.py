@@ -78,7 +78,7 @@ class PortableCheckpointTests(unittest.TestCase):
             copied = root / "copied.cozytensors"
             checkpoint.write_file(copied)
             self.assertEqual(artifact.read_bytes(), copied.read_bytes())
-            with self.assertRaisesRegex(tensorfs.InvalidError, "missing-tokenizer"):
+            with self.assertRaisesRegex(tensorfs.NotFoundError, "missing-tokenizer"):
                 model.asset("missing-tokenizer.model")
             checkpoint.close()
 
