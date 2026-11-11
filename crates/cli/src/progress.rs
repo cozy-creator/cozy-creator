@@ -243,6 +243,7 @@ struct TransferState {
     finalizing: bool,
     counts: TransferCounts,
     measured: Option<(u64, Instant)>,
+    last_moved: Option<(u64, Instant)>,
     rate: Option<f64>,
     logged: Option<Instant>,
     finished: bool,
@@ -270,11 +271,17 @@ impl Transfer {
     pub(crate) fn stderr(tty: bool, label: impl Into<String>) -> Self {
         let label: String = label.into();
         let line = Line::stderr(tty, None, |shown| format!("{} {}", shown.spinner(), shown.msg()));
-        if tty { line.steady(Duration::from_millis(100)); }
-        Self(Arc::new(TransferShared { label: single_line(&label), tty, line, state: Mutex::new(TransferState {
+        let meter = Self(Arc::new(TransferShared { label: single_line(&label), tty, line, state: Mutex::new(TransferState {
             phase: "starting".into(), finalizing: false, counts: TransferCounts::default(),
-            measured: None, rate: None, logged: None, finished: false,
-        }) }))
+            measured: None, last_moved: None, rate: None, logged: None, finished: false,
+        }) }));
+        let weak = Arc::downgrade(&meter.0);
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_millis(100));
+            let Some(shared) = weak.upgrade() else { return };
+            if !shared.tick() { return; }
+        });
+        meter
     }
 
     pub(crate) fn phase(&self, phase: &str) { self.set_phase(phase, false); }
@@ -290,7 +297,7 @@ impl Transfer {
         let mode_changed = state.finalizing != finalizing;
         state.phase = phase;
         state.finalizing = finalizing;
-        self.0.show(&mut state, changed && (finalizing || mode_changed));
+        self.0.show(&mut state, changed && (finalizing || mode_changed), false);
     }
 
     /// The first snapshot establishes a rate baseline. Later snapshots may change totals as inventory expands.
@@ -299,26 +306,9 @@ impl Transfer {
         if state.finished { return; }
         let known = (state.counts.files_total.is_none() && counts.files_total.is_some())
             || (state.counts.bytes_total.is_none() && counts.bytes_total.is_some());
-        let now = Instant::now();
-        match state.measured {
-            None => state.measured = Some((counts.bytes_moved, now)),
-            Some((at, _)) if counts.bytes_moved < at => {
-                state.measured = Some((counts.bytes_moved, now));
-                state.rate = None;
-            }
-            Some((at, since)) => {
-                let seconds = now.duration_since(since).as_secs_f64();
-                if seconds >= 0.25 {
-                    let recent = (counts.bytes_moved - at) as f64 / seconds;
-                    let before = state.rate.unwrap_or(0.0);
-                    let weight = if before == 0.0 { 1.0 } else { (seconds / 3.0).min(1.0) };
-                    state.rate = Some(before + (recent - before) * weight);
-                    state.measured = Some((counts.bytes_moved, now));
-                }
-            }
-        }
+        measure_transfer(&mut state, counts.bytes_moved, Instant::now());
         state.counts = counts;
-        self.0.show(&mut state, known);
+        self.0.show(&mut state, known, false);
     }
 
     /// A warning belongs above the active meter, never in its counters or final JSON.
@@ -339,7 +329,20 @@ impl Transfer {
 }
 
 impl TransferShared {
-    fn show(&self, state: &mut TransferState, force: bool) {
+    fn tick(&self) -> bool {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.finished { return false; }
+        // No synthetic zero sample before the first observed snapshot: a reconnect
+        // may start with a large copied/cached baseline which was not moved here.
+        if state.measured.is_some() {
+            let moved = state.counts.bytes_moved;
+            measure_transfer(&mut state, moved, Instant::now());
+        }
+        self.show(&mut state, false, true);
+        true
+    }
+
+    fn show(&self, state: &mut TransferState, force: bool, tick: bool) {
         if self.tty {
             let width = crossterm::terminal::size().map_or(80, |(columns, _)| columns as usize);
             let message = transfer_message(&self.label, state, Some(width.saturating_sub(2)));
@@ -347,11 +350,40 @@ impl TransferShared {
                 line.msg = message;
                 line.pos = state.counts.bytes_done;
                 line.len = state.counts.bytes_total;
+                line.steady = true;
+                if tick { line.tick += 1; }
             }, force);
         } else if force || state.logged.is_none_or(|at| at.elapsed() >= Duration::from_secs(5)) {
             let _ = writeln!(std::io::stderr().lock(), "{}", transfer_message(&self.label, state, None));
             state.logged = Some(Instant::now());
         }
+    }
+}
+
+/// Observe actual I/O at an explicit instant. Ticks may age a rate, never advance its counters.
+fn measure_transfer(state: &mut TransferState, moved: u64, now: Instant) {
+    if state.last_moved.is_none_or(|(previous, _)| previous != moved) {
+        state.last_moved = Some((moved, now));
+    }
+    match state.measured {
+        None => state.measured = Some((moved, now)),
+        Some((at, _)) if moved < at => {
+            state.measured = Some((moved, now));
+            state.rate = None;
+        }
+        Some((at, since)) => {
+            let seconds = now.duration_since(since).as_secs_f64();
+            if seconds >= 0.25 {
+                let recent = (moved - at) as f64 / seconds;
+                let before = state.rate.unwrap_or(0.0);
+                let weight = if before == 0.0 { 1.0 } else { (seconds / 3.0).min(1.0) };
+                state.rate = Some(before + (recent - before) * weight);
+                state.measured = Some((moved, now));
+            }
+        }
+    }
+    if state.last_moved.is_some_and(|(_, at)| now.duration_since(at) >= Duration::from_secs(3)) && state.rate.is_some() {
+        state.rate = Some(0.0);
     }
 }
 
@@ -470,7 +502,7 @@ mod transfer_tests {
             phase: "copying".into(), finalizing: false,
             counts: TransferCounts { files_done: 1, files_total: Some(2), bytes_done: 1_000_000,
                 bytes_total: Some(2_000_000), bytes_moved: 1_000_000 },
-            measured: None, rate: Some(500_000.0), logged: None, finished: false,
+            measured: None, last_moved: None, rate: Some(500_000.0), logged: None, finished: false,
         }
     }
 
@@ -531,5 +563,24 @@ mod transfer_tests {
     fn labels_are_one_line_without_double_escaping_literal_text() {
         assert_eq!(single_line("a\nb\r\t\u{1b}"), "a\\nb\\r\\t\\u{1b}");
         assert_eq!(single_line(r"already\nescaped"), r"already\nescaped");
+    }
+
+    #[test]
+    fn clock_ticks_retire_a_stalled_rate_without_moving_progress() {
+        let mut state = sample();
+        state.rate = None;
+        let began = Instant::now();
+        measure_transfer(&mut state, 0, began);
+        measure_transfer(&mut state, 1_000_000, began + Duration::from_secs(1));
+        assert_eq!(state.rate, Some(1_000_000.0));
+        let counts = state.counts;
+        measure_transfer(&mut state, 1_000_000, began + Duration::from_secs(5));
+        assert_eq!(state.rate, Some(0.0));
+        assert_eq!(state.counts.bytes_done, counts.bytes_done);
+        assert_eq!(state.counts.files_done, counts.files_done);
+        let shown = transfer_message("download", &state, None);
+        assert!(shown.contains("0.0 MB/s ETA —"));
+        measure_transfer(&mut state, 1_500_000, began + Duration::from_secs(6));
+        assert_eq!(state.rate, Some(500_000.0));
     }
 }
