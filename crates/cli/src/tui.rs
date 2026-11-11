@@ -392,3 +392,24 @@ impl Signals {
 fn drawing(e: io::Error) -> Error {
     Error::new(Kind::Internal, "terminal", format!("the terminal: {e}"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::KeyEvent;
+    use ratatui::backend::TestBackend;
+
+    #[tokio::test]
+    async fn confirmed_action_consumes_enter_before_browser_resumes() {
+        let home = tempfile::tempdir().unwrap();
+        let ctx = Context::new(false, false, false, api::config::Loaded {
+            config: Default::default(), home: platform::paths::Home::under(home.path()), user_home: home.path().into(), warnings: vec![],
+        }, output::Term::detect());
+        let mut terminal = Terminal::new(TestBackend::new(90, 12)).unwrap();
+        let mut stack = vec![(Screen::RemoveLocalModel("local/example".into()), TableState::default())];
+        let mut keys = futures_util::stream::iter([KeyCode::Enter, KeyCode::Char('q')].map(|code| Ok(Input::Key(KeyEvent::new(code, KeyModifiers::NONE)))));
+        let mut signals = Signals::new().unwrap();
+        assert_eq!(drive(&ctx, &mut terminal, &mut stack, &mut keys, &mut signals).await.unwrap(), Some(model::live::Operation::Remove("local/example".into())));
+        assert_eq!(drive(&ctx, &mut terminal, &mut stack, &mut keys, &mut signals).await.unwrap(), None);
+    }
+}
