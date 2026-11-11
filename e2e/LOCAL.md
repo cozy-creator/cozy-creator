@@ -22,6 +22,8 @@ For UI iteration, Vite serves current sources and proxies to the test Calcifer. 
 python3 scripts/test-local-web.py --vite --watch
 ```
 
+Pass `--target-dir target/dev-local` to reuse the Cargo cache used by `scripts/dev-local.sh`.
+
 Use `--securefs /absolute/path/to/securefs` for an explicitly prepared helper. `scripts/prepare-securefs.py` downloads and verifies the repository's pinned archive. `--harness` can select another checkout's vault fixture when comparing an unchanged binary with a fixture correction.
 
 Each run writes its result, binary digest, timings and logs under `target/local-web/results`. Cleanup asks the owned Calcifer to close its views and stop, then stops any TensorD supervisor started for that test profile. A process that cannot drain leaves its profile and diagnostics available for inspection.

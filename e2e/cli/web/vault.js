@@ -14,6 +14,8 @@ const progress = process.env.COZY_TEST_PROGRESS ? setInterval(() => {
 }, 250) : undefined;
 progress?.unref();
 const errors = [];
+const projectReads = new Set();
+const responseStatuses = new WeakMap();
 const check = (name, okay) => { seen[name] = !!okay; if (!okay) failures.push(name); };
 const cli = (...args) => execFileSync(process.env.COZY, ['--json', ...args], { encoding: 'utf8', timeout: 180000 });
 const vault = (directory, ...args) => execFileSync(process.env.COZY, ['--json', 'vault', ...args], { cwd: directory, encoding: 'utf8', timeout: 180000 });
@@ -67,7 +69,6 @@ const newPage = async () => {
   page = await newPage();
   page.setDefaultTimeout(45000);
   const outbound = [], fileWrites = [], secretIdempotency = [];
-  const projectReads = new Set();
   page.on('pageerror', (error) => errors.push(error.message));
   context.on('requestfinished', (request) => projectReads.delete(request));
   context.on('requestfailed', (request) => projectReads.delete(request));
@@ -84,6 +85,7 @@ const newPage = async () => {
     if (url.origin !== new URL(calcifer()).origin && /cozy1-|synthetic browser passphrase/.test(text)) outbound.push('secret-bearing external request');
   });
   context.on('response', async (response) => {
+    responseStatuses.set(response.request(), response.status());
     const path = new URL(response.url()).pathname;
     const method = response.request().method();
     if (method === 'GET' && /^\/v1\/projects\/[^/]+\/(address|vault)$/.test(path)) {
@@ -395,6 +397,10 @@ const newPage = async () => {
   seen.failure = sanitized(error.message);
   seen.failure_stage = stage;
   seen.page_errors = errors.map(sanitized);
+  seen.pending_project_reads = [...projectReads].map((request) => ({
+    method: request.method(), path: new URL(request.url()).pathname,
+    resource_type: request.resourceType(), response_status: responseStatuses.get(request) ?? null,
+  }));
   if (page) {
     seen.canvas_at_failure = await page.evaluate(() => ({
       covered: Boolean(document.querySelector('.gate')),

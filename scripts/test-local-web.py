@@ -2,6 +2,7 @@
 """Run the vault browser fixture against an owned local Calcifer profile."""
 
 import argparse
+from collections.abc import Mapping, Sequence
 import fcntl
 import hashlib
 import json
@@ -13,6 +14,8 @@ import socket
 import subprocess
 import sys
 import time
+from types import FrameType
+from typing import IO, NoReturn, TypedDict, cast
 import urllib.error
 import urllib.request
 import zipfile
@@ -22,18 +25,44 @@ ROOT = Path(__file__).resolve().parents[1]
 HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
-def command(argv, *, cwd=ROOT, env=None, stdout=None):
+class Args(argparse.Namespace):
+    binary: Path | None
+    harness: Path
+    profile: Path
+    target_dir: Path
+    jobs: str
+    securefs: Path | None
+    chrome: str | None
+    vite: bool
+    watch: bool
+
+
+class PidRecord(TypedDict):
+    pid: int
+
+
+class Holder(PidRecord):
+    address: str
+    token: str
+
+
+class Status(TypedDict):
+    version: str
+
+
+def command(argv: Sequence[str | Path], *, cwd: Path = ROOT,
+            env: Mapping[str, str] | None = None, stdout: IO[str] | None = None) -> None:
     subprocess.run([str(arg) for arg in argv], cwd=cwd, env=env, stdout=stdout,
                    stderr=subprocess.STDOUT if stdout else None, check=True)
 
 
-def port():
+def port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
+        return cast(tuple[str, int], sock.getsockname())[1]
 
 
-def digest(path):
+def digest(path: Path) -> str:
     result = hashlib.sha256()
     with path.open("rb") as source:
         for block in iter(lambda: source.read(1024 * 1024), b""):
@@ -41,7 +70,7 @@ def digest(path):
     return result.hexdigest()
 
 
-def snapshot_binary(source, profile):
+def snapshot_binary(source: Path, profile: Path) -> tuple[Path, str]:
     sha256 = digest(source)
     directory = profile / "binaries" / sha256
     directory.mkdir(parents=True, exist_ok=True)
@@ -57,36 +86,37 @@ def snapshot_binary(source, profile):
     return binary, sha256
 
 
-def request(holder, path, method="GET"):
+def request(holder: Holder, path: str, method: str = "GET") -> object:
     url = f"http://{holder['address']}{path}"
     req = urllib.request.Request(url, method=method,
                                  headers={"Authorization": f"Bearer {holder['token']}"})
     with HTTP.open(req, timeout=2) as response:
         body = response.read()
-        return json.loads(body) if body else None
+        return cast(object, json.loads(body)) if body else None
 
 
-def ready(process, holder_path, timeout=30):
+def ready(process: subprocess.Popen[bytes], holder_path: Path,
+          timeout: float = 30) -> tuple[Holder, Status]:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if process.poll() is not None:
             raise RuntimeError("test Calcifer exited during startup; see calcifer.log")
         try:
-            holder = json.loads(holder_path.read_text())
+            holder: Holder = json.loads(holder_path.read_text())
             if holder["pid"] != process.pid:
                 time.sleep(0.1)
                 continue
             host, _ = holder["address"].rsplit(":", 1)
             if host != "127.0.0.1":
                 raise RuntimeError("test Calcifer did not bind IPv4 loopback")
-            status = request(holder, "/v1/status")
+            status = cast(Status, request(holder, "/v1/status"))
             return holder, status
         except (OSError, ValueError, KeyError, urllib.error.URLError):
             time.sleep(0.1)
     raise RuntimeError("test Calcifer did not become ready; see calcifer.log")
 
 
-def stop(process, holder):
+def stop(process: subprocess.Popen[bytes], holder: Holder | None) -> None:
     deadline = time.monotonic() + 30
     while process.poll() is None and time.monotonic() < deadline:
         if holder:
@@ -104,12 +134,13 @@ def stop(process, holder):
         raise RuntimeError(f"test Calcifer {process.pid} is still draining; profile retained")
 
 
-def stop_worker(home, binary):
+def stop_worker(home: Path, binary: Path) -> int | None:
     machine = home / ".cozy/machine/var/lib/cozy/machine"
     record = machine / "agent.lock.holder"
     if not record.is_file():
         return None
-    pid = json.loads(record.read_text())["pid"]
+    value: PidRecord = json.loads(record.read_text())
+    pid = value["pid"]
     process = Path("/proc") / str(pid)
     if not process.exists():
         return pid
@@ -136,7 +167,7 @@ def stop_worker(home, binary):
     return pid
 
 
-def own_profile(profile):
+def own_profile(profile: Path) -> None:
     actual_home = Path.home().resolve()
     if profile == actual_home or actual_home.is_relative_to(profile) or profile.is_relative_to(actual_home / ".cozy"):
         raise RuntimeError("choose a dedicated test profile outside the installed Cozy home")
@@ -147,7 +178,7 @@ def own_profile(profile):
     marker.touch(mode=0o600, exist_ok=True)
 
 
-def prepare_profile(profile):
+def prepare_profile(profile: Path) -> tuple[Path, Path]:
     for part in ("home", "tmp", "cache", "driver", "results", "tensorfs", "uv-cache"):
         (profile / part).mkdir(exist_ok=True, mode=0o700)
     home = profile / "home"
@@ -158,7 +189,7 @@ def prepare_profile(profile):
         if not record.is_file():
             continue
         try:
-            prior = json.loads(record.read_text())
+            prior: PidRecord = json.loads(record.read_text())
             os.kill(prior["pid"], 0)
         except (OSError, ValueError, KeyError):
             pass
@@ -168,7 +199,7 @@ def prepare_profile(profile):
     return home, holder_path
 
 
-def provider(args, profile):
+def provider(args: Args, profile: Path) -> Path:
     if args.securefs:
         return args.securefs.resolve(strict=True)
     if not os.access("/dev/fuse", os.R_OK | os.W_OK) or not shutil.which("fusermount3"):
@@ -186,7 +217,7 @@ def provider(args, profile):
     return executable
 
 
-def run(args):
+def run(args: Args) -> int:
     profile = args.profile.resolve()
     os.umask(0o077)
     own_profile(profile)
@@ -195,7 +226,7 @@ def run(args):
         return run_locked(args, profile)
 
 
-def run_locked(args, profile):
+def run_locked(args: Args, profile: Path) -> int:
     home, holder_path = prepare_profile(profile)
     harness = args.harness.resolve()
     fixture = harness / "e2e/cli/web/vault.js"
@@ -233,7 +264,7 @@ def run_locked(args, profile):
 
     # HOME here is the child process's actual test home, never the invoking shell's home.
     env = os.environ.copy()
-    for name in ("ENGINE", "COZY_TENSORFS_CACHE", "COZY_LISTEN_HOST", "COZY_WORKER_ID",
+    for name in ("ENGINE", "COZY_TENSORFS_CACHE", "COZY_VAULT_PROVIDER_DIAGNOSTICS", "COZY_LISTEN_HOST", "COZY_WORKER_ID",
                  "COZY_WORKER_INTERNAL_PORT", "COZY_WEBRTC_INTERNAL_PORT", "COZY_SSH_PUBLIC_KEY",
                  "TENSORHUB_ORIGIN", "TENSORHUB_CA_DER_B64URL", "TENSORHUB_OBJECT_STORAGE_HOSTS"):
         env.pop(name, None)
@@ -242,15 +273,15 @@ def run_locked(args, profile):
                COZY_MACHINE_ROOT=str(home / ".cozy/machine"), COZY_TENSORFS_ROOT=str(profile / "tensorfs"),
                COZY_HUB_URL="http://127.0.0.1:9", HOLDER=str(holder_path), COZY=str(binary),
                PLAYWRIGHT=str(module), CHROME=str(Path(chrome).resolve()), COZY_TEST_PROGRESS="1")
-    if securefs:
+    if securefs is not None:
         env["COZY_SECUREFS_PROVIDER"] = str(securefs)
     result = profile / "results" / f"{time.strftime('%Y%m%dT%H%M%S')}-{time.time_ns() % 1_000_000_000:09d}"
     result.mkdir()
-    holder = None
-    vite = None
-    server = None
-    browser_process = None
-    summary = {"binary": str(binary), "binary_source": str(binary_source), "version": version, "binary_sha256": binary_sha256,
+    holder: Holder | None = None
+    vite: subprocess.Popen[bytes] | None = None
+    server: subprocess.Popen[bytes] | None = None
+    browser_process: subprocess.Popen[str] | None = None
+    summary: dict[str, object] = {"binary": str(binary), "binary_source": str(binary_source), "version": version, "binary_sha256": binary_sha256,
                "fixture": str(fixture), "fixture_sha256": hashlib.sha256(fixture.read_bytes()).hexdigest(),
                "build_seconds": round(build_seconds, 3)}
     source = subprocess.run(["git", "rev-parse", "HEAD"], cwd=harness, text=True, capture_output=True)
@@ -285,7 +316,7 @@ def run_locked(args, profile):
             with (result / "vault.json").open("w") as out, (result / "vault.err").open("w") as err:
                 browser_process = subprocess.Popen(["node", fixture], cwd=harness, env=env, stdout=out,
                                                    stderr=subprocess.PIPE, text=True, start_new_session=True)
-                for line in browser_process.stderr:
+                for line in cast(IO[str], browser_process.stderr):
                     err.write(line)
                     if line.startswith("[local-vault] "):
                         print(line.rstrip(), flush=True)
@@ -326,7 +357,7 @@ def run_locked(args, profile):
             raise RuntimeError(". ".join(cleanup_errors))
 
 
-def main():
+def main() -> int:
     if sys.platform != "linux":
         raise RuntimeError("this local runner currently supports Linux")
     parser = argparse.ArgumentParser(description=__doc__)
@@ -339,7 +370,7 @@ def main():
     parser.add_argument("--chrome", help="Google Chrome executable")
     parser.add_argument("--vite", action="store_true", help="serve current WebUI sources through a dedicated Vite process")
     parser.add_argument("--watch", action="store_true", help="queue another build/test after source changes")
-    args = parser.parse_args()
+    args = parser.parse_args(namespace=Args())
     if args.watch:
         words = [word for word in sys.argv[1:] if word != "--watch"]
         os.execvp("watchexec", ["watchexec", "--debounce", "500ms", "--on-busy-update", "queue", "--shell", "none",
@@ -352,7 +383,7 @@ def main():
     return run(args)
 
 
-def interrupted(_signum, _frame):
+def interrupted(_signum: int, _frame: FrameType | None) -> NoReturn:
     raise KeyboardInterrupt
 
 
