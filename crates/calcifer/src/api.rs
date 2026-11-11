@@ -399,8 +399,11 @@ async fn admit(State(api): State<Arc<Api>>, mut request: Request, next: Next) ->
             .remedy("ask again once it is back; nothing was carried out")
             .into_response();
     }
-    request.extensions_mut().insert(Arc::new(stopping));
-    next.run(request).await
+    let lease = Arc::new(stopping);
+    request.extensions_mut().insert(lease.clone());
+    let response = next.run(request).await;
+    drop(lease);
+    response
 }
 
 /// The `Idempotency-Key` a durable ask is recorded under; required.
