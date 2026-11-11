@@ -143,7 +143,11 @@ def exercise(args, home, receipt):
         assert cell['frames'] == 24 and 900 <= cell['duration_ms'] <= 1100, 'the cached clip is not the selected one-second range'
         assert (cell['width'], cell['height']) == (320, 180) and clip_hash != source_hash, 'the cached range is not a cut of the source'
         run = api('GET', f'/v1/runs/{number}?detail=full')
-        assert run['project_id'] == project_id and run['machine'] == 'local' and run['status'] == 'completed', 'the actual project run did not complete locally'
+        cell.update(project_id_matches=run.get('project_id') == project_id,
+                    local_machine=run.get('machine') == 'local', run_status=run.get('status'))
+        assert cell['project_id_matches'], 'the run did not retain the canonical project identity'
+        assert cell['local_machine'], 'the run did not use the local machine'
+        assert cell['run_status'] == 'completed', 'the actual project run did not complete'
         assert run['request']['input']['video'] == clip_hash, 'the run did not bind the new private clip digest'
         output, = [item for item in run['output'] if item['name'] == 'video']
         assert output['status'] == 'completed' and output.get('sha256'), 'the local function did not land its video'

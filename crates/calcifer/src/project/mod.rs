@@ -630,6 +630,14 @@ pub(crate) fn identity(dir: &FsPath) -> (String, String) {
     if let Some(known) = IDENTITIES.lock().expect("identities lock").get(dir) {
         return known.clone();
     }
+    let root = vault::logical(dir);
+    if vault::encrypted(&root) && let Some(id) = vault::project_id(&root) {
+        let name = vault::resolve_path(&root).ok().and_then(|view| {
+            IDENTITIES.lock().expect("identities lock").get(&view)
+                .filter(|(held, _)| held == &id).map(|(_, name)| name.clone())
+        }).unwrap_or_else(|| folder_name(&root));
+        return (id, name);
+    }
     kept_identity(dir).unwrap_or_else(|| (folder_id(dir), folder_name(dir)))
 }
 

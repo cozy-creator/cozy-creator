@@ -11,6 +11,7 @@ use axum::{
     Json,
     body::Bytes,
     extract::{Query, State, rejection::{BytesRejection, QueryRejection}},
+    response::Response,
 };
 use futures_util::{StreamExt as _, stream};
 use ::api::hub::cards;
@@ -55,27 +56,30 @@ pub(crate) struct Asked {
 }
 
 /// `GET /v1/tools`: the Edit and your list, then local code and what's installed, each as it is on that machine, and with `q` the Hub's, each at its newest.
-pub(crate) async fn list(State(api): State<Arc<Api>>, query: Result<Query<Asked>, QueryRejection>) -> Result<Json<Tools>, Refusal> {
+pub(crate) async fn list(State(api): State<Arc<Api>>, query: Result<Query<Asked>, QueryRejection>) -> Result<Response, Refusal> {
     let Query(asked) = query?;
-    let hub = runs::hub(&api, asked.hub.as_deref().unwrap_or_default());
+    let project = asked.project.clone();
+    vault::project_reply(&api, project.as_deref(), list_tools(&api, asked)).await
+}
+
+async fn list_tools(api: &Arc<Api>, asked: Asked) -> Result<Json<Tools>, Refusal> {
+    let hub = runs::hub(api, asked.hub.as_deref().unwrap_or_default());
     let q = asked.q.as_deref().map(str::trim).filter(|q| !q.is_empty());
     let on = On::Machine(asked.on.unwrap_or_else(|| "local".into()));
-    let mine = mine(&api)?;
-    let (local, project_access) = match asked.project.as_deref() {
+    let mine = mine(api)?;
+    let local = match asked.project.as_deref() {
         Some(named) => {
-            let access = vault::admit_project(&api, named).await.map_err(Refusal)?;
-            let root = project::named(&api, named).map_err(Refusal)?;
+            let root = project::named(api, named).map_err(Refusal)?;
             let scope = private_io::of_output(&project::landing(&root)).map_err(Refusal)?;
-            let tools = private_io::context(scope, async {
-                let named = project::local_code_named(&api, named)?;
-                Ok::<_, Refusal>(read_local(&api, &hub, named, &on).await)
-            }).await?;
-            (tools, Some((root, access)))
+            private_io::context(scope, async {
+                let named = project::local_code_named(api, named)?;
+                Ok::<_, Refusal>(read_local(api, &hub, named, &on).await)
+            }).await?
         }
-        None => (vec![], None),
+        None => vec![],
     };
-    let held = held(&api, &hub, &on).await;
-    let (cards, mut note) = on_your_list(&api, &hub, &mine, &held).await;
+    let held = held(api, &hub, &on).await;
+    let (cards, mut note) = on_your_list(api, &hub, &mine, &held).await;
     let place = |tool: &Tool| mine.packages.iter().position(|package| shown(package) == tool.package);
     let (mut first, rest): (Vec<Tool>, Vec<Tool>) = held.into_iter().partition(|tool| place(tool).is_some());
     first.extend(cards);
@@ -85,17 +89,14 @@ pub(crate) async fn list(State(api): State<Arc<Api>>, query: Result<Query<Asked>
     let mut tools: Vec<Tool> = std::iter::once(tool::edit()).chain(first).chain(local).chain(rest).filter(shows).collect();
     if let Some(q) = q {
         let listed: BTreeSet<String> = tools.iter().map(|tool| tool.package.clone()).collect();
-        match tokio::time::timeout(HUB_LATE, on_the_hub(&api, &hub, q)).await {
+        match tokio::time::timeout(HUB_LATE, on_the_hub(api, &hub, q)).await {
             Ok(Ok(found)) => tools.extend(found.into_iter().filter(|tool| !listed.contains(&tool.package))),
             Ok(Err(why)) => note = Some(format!("only what's installed: the Hub said {}", why.message)),
             Err(_) => note = Some(late()),
         }
     }
     // A Hub that's late leaves them unsaid, and a later list says what's been read by then.
-    let _ = tokio::time::timeout(HUB_LATE, crate::hub::checkpoints::families(&api, &hub, &mut tools)).await;
-    if let Some((root, _)) = &project_access {
-        vault::require_path(root).map_err(Refusal)?;
-    }
+    let _ = tokio::time::timeout(HUB_LATE, crate::hub::checkpoints::families(api, &hub, &mut tools)).await;
     Ok(Json(Tools { tools, note }))
 }
 

@@ -12,6 +12,7 @@ use axum::{
     body::Bytes,
     extract::{Query, State, rejection::BytesRejection},
     http::StatusCode,
+    response::Response,
 };
 use api::{
     calcifer::{Kind as RunKind, MachineEstimate, MachineKind, MachineState, Note, NoteLevel, On, RunEstimate, RunQuote, RunRequest, StagedInput, SubmitRun, Submitted},
@@ -24,7 +25,7 @@ use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 use tokio::sync::OwnedRwLockReadGuard;
 
-use crate::api::{Api, IdempotencyKey, Refusal, parse};
+use crate::{api::{Api, IdempotencyKey, Refusal, parse}, project::vault};
 
 pub(crate) mod bind;
 pub(crate) mod clip;
@@ -41,13 +42,16 @@ pub(crate) async fn submit(
     State(api): State<Arc<Api>>,
     IdempotencyKey(key): IdempotencyKey,
     body: Result<Bytes, BytesRejection>,
-) -> Result<(StatusCode, Json<Submitted>), Refusal> {
+) -> Result<Response, Refusal> {
     let body = body?;
     prebuilt(&body)?;
     let ask: RunRequest = parse(&body)?;
-    let submitted = request(&api, &key, ask).await.map_err(Refusal)?;
-    let status = if submitted.replay { StatusCode::OK } else { StatusCode::ACCEPTED };
-    Ok((status, Json(submitted)))
+    let project = ask.project.clone();
+    vault::project_reply(&api, project.as_deref(), async {
+        let submitted = request(&api, &key, ask).await.map_err(Refusal)?;
+        let status = if submitted.replay { StatusCode::OK } else { StatusCode::ACCEPTED };
+        Ok((status, Json(submitted)))
+    }).await
 }
 
 /// `POST /v1/run-quotes`: what a `new` run would rent and its price; `null` for one that rents nothing, as Calcifer's own work
@@ -55,11 +59,14 @@ pub(crate) async fn submit(
 pub(crate) async fn quote(
     State(api): State<Arc<Api>>,
     body: Result<Bytes, BytesRejection>,
-) -> Result<Json<Option<RunQuote>>, Refusal> {
+) -> Result<Response, Refusal> {
     let body = body?;
     prebuilt(&body)?;
     let ask: RunRequest = parse(&body)?;
-    Ok(Json(priced(&api, ask).await.map_err(Refusal)?))
+    let project = ask.project.clone();
+    vault::project_reply(&api, project.as_deref(), async {
+        Ok(Json(priced(&api, ask).await.map_err(Refusal)?))
+    }).await
 }
 
 /// What `ask` would rent.
@@ -105,14 +112,17 @@ pub(crate) async fn estimate(
     IdempotencyKey(key): IdempotencyKey,
     query: Result<Query<Copies>, axum::extract::rejection::QueryRejection>,
     body: Result<Bytes, BytesRejection>,
-) -> Result<Json<RunEstimate>, Refusal> {
+) -> Result<Response, Refusal> {
     let Query(copies) = query?;
     let body = body?;
     prebuilt(&body)?;
     let ask: RunRequest = parse(&body)?;
-    let _access = project_access(&api, ask.project.as_deref()).await.map_err(Refusal)?;
+    vault::project_reply(&api, ask.project.as_deref(), estimate_asked(&api, &key, &ask, copies)).await
+}
+
+async fn estimate_asked(api: &Arc<Api>, key: &str, ask: &RunRequest, copies: Copies) -> Result<Json<RunEstimate>, Refusal> {
     let count = copies.count.unwrap_or(1).clamp(1, COPIES);
-    let (submit, mut notes, offers) = match prepare(&api, &key, &ask, For::Estimate(count)).await.map_err(Refusal)? {
+    let (submit, mut notes, offers) = match prepare(api, key, ask, For::Estimate(count)).await.map_err(Refusal)? {
         Prepared::Install(run) => {
             let notes = updating(&run).into_iter().collect();
             return Ok(Json(RunEstimate { preparing: Some(Box::new(run)), notes, ..RunEstimate::default() }));
@@ -170,23 +180,27 @@ pub(crate) struct Asked {
 pub(crate) async fn describe(
     State(api): State<Arc<Api>>,
     query: Result<Query<Asked>, axum::extract::rejection::QueryRejection>,
-) -> Result<Json<api::calcifer::Target>, Refusal> {
+) -> Result<Response, Refusal> {
     let Query(asked) = query?;
-    let _access = project_access(&api, asked.project.as_deref()).await.map_err(Refusal)?;
-    let hub = hub(&api, asked.hub.as_deref().unwrap_or_default());
-    let on = asked.on.map_or_else(|| default_on(&api), On::from);
+    let project = asked.project.clone();
+    vault::project_reply(&api, project.as_deref(), describe_asked(&api, asked)).await
+}
+
+async fn describe_asked(api: &Arc<Api>, asked: Asked) -> Result<Json<api::calcifer::Target>, Refusal> {
+    let hub = hub(api, asked.hub.as_deref().unwrap_or_default());
+    let on = asked.on.map_or_else(|| default_on(api), On::from);
     let code = match (asked.tree, asked.at) {
         (Some(tree), at) => Some(LocalCode { tree, at: at.unwrap_or_default() }),
         (None, _) => None,
     };
     let scope = match asked.project.as_deref() {
         Some(project) => {
-            let root = crate::project::named(&api, project).map_err(Refusal)?;
+            let root = crate::project::named(api, project).map_err(Refusal)?;
             crate::private_io::of_output(&crate::project::landing(&root)).map_err(Refusal)?
         },
         None => None,
     };
-    let resolved = crate::private_io::context(scope, target::describe(&api, &hub, &asked.target, code.as_ref(), None, &on)).await.map_err(Refusal)?;
+    let resolved = crate::private_io::context(scope, target::describe(api, &hub, &asked.target, code.as_ref(), None, &on)).await.map_err(Refusal)?;
     Ok(Json(resolved))
 }
 

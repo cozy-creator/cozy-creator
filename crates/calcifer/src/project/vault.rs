@@ -1,6 +1,6 @@
 //! Optional local encrypted project sessions. A registered path never becomes a plaintext fallback mount.
 use std::{collections::{BTreeMap, BTreeSet}, fs, io::Read as _, path::{Path as FsPath, PathBuf}, sync::{Arc, LazyLock, Mutex, atomic::{AtomicBool, Ordering}}, time::Duration};
-use axum::{body::Bytes, extract::{Path, State, rejection::BytesRejection}, http::{HeaderValue, header}, response::{IntoResponse as _, Response}};
+use axum::{body::Bytes, extract::{Path, State, rejection::BytesRejection}, http::{HeaderValue, header}, response::{IntoResponse, Response}};
 use api::{calcifer::project::{VaultAsk, VaultChanged, VaultStatus}, error::{Error, Kind}};
 use project_mount::{MountOptions, Mounted, Provider};
 use project_vault::{Credential, Keybag, ProjectSecret, SecretString, SessionPolicy, SessionTimer, KEYBAG_FILE};
@@ -47,6 +47,14 @@ fn key(e: project_vault::Error) -> Error { error("vault_key", e) }
 fn held(root: &FsPath) -> Option<Held> { SESSIONS.lock().expect("vault sessions").get(root).cloned() }
 pub(crate) fn mount_identity(root: &FsPath) -> Option<MountIdentity> { held(root).map(|session| session.lock().expect("vault session").identity.clone()) }
 pub(crate) fn encrypted(root: &FsPath) -> bool { root.join(KEYBAG_FILE).is_file() || SESSIONS.lock().expect("vault sessions").contains_key(root) }
+
+/// The canonical id is available without opening the project's content database.
+pub(super) fn project_id(root: &FsPath) -> Option<String> {
+    if let Some(session) = held(root) {
+        return Some(session.lock().expect("vault session").secret.project_id().to_owned());
+    }
+    Keybag::load(&root.join(KEYBAG_FILE)).ok().map(|keybag| keybag.info().project_id)
+}
 
 /// Logical registered path of an unlocked mount, including any relative subpath.
 pub(crate) fn logical(path: &FsPath) -> PathBuf {
@@ -794,7 +802,6 @@ pub(super) async fn privacy(
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    use futures_util::StreamExt as _;
     let root = params.get("id").and_then(|id| location(&api, id).ok());
     let Some(root) = root else { return next.run(request).await };
     let _access = access(&root).read_owned().await;
@@ -804,7 +811,27 @@ pub(super) async fn privacy(
     if request.method() != axum::http::Method::GET && request.method() != axum::http::Method::HEAD {
         if let Some(session) = held(&root) { let mut session = session.lock().expect("vault session"); if !session.closing && !expired(&session) { if session.timer.activity() { session.active_ms = super::now_ms(); } } }
     }
-    let response = private(next.run(request).await);
+    protect_reply(next.run(request).await, token)
+}
+
+/// Project-scoped APIs outside the project router use the same response boundary.
+pub(crate) async fn project_reply<T: IntoResponse>(
+    api: &Api,
+    named: Option<&str>,
+    answer: impl std::future::Future<Output = Result<T, Refusal>>,
+) -> Result<Response, Refusal> {
+    let Some(named) = named else { return answer.await.map(IntoResponse::into_response) };
+    let root = location(api, named).map_err(Refusal)?;
+    let _access = admit_root(&root).await.map_err(Refusal)?;
+    let encrypted = encrypted(&root);
+    let token = readable_token(&root);
+    let response = answer.await.into_response();
+    Ok(if encrypted { protect_reply(response, token) } else { response })
+}
+
+fn protect_reply(response: Response, token: Option<Arc<AtomicBool>>) -> Response {
+    use futures_util::StreamExt as _;
+    let response = private(response);
     let Some(token) = token else { return response };
     let (parts, body) = response.into_parts();
     let body = body.into_data_stream().take_while(move |_| futures_util::future::ready(token.load(Ordering::Acquire)));
