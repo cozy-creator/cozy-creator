@@ -219,8 +219,13 @@ code {
 .top > * {
   pointer-events: auto;
 }
-.top > .gap {
+.top > .ptabs-room,
+.ptabs-said {
   pointer-events: none;
+}
+.ptabs-room > .ptabs,
+.ptabs-said > * {
+  pointer-events: auto;
 }
 /* What only holds controls takes the pointer only on them: between them, a press is the canvas's. */
 .top > .history-controls,
@@ -257,9 +262,6 @@ code {
 }
 .sum.ood {
   color: var(--ood);
-}
-.gap {
-  flex: 1;
 }
 .canvas-controls {
   display: flex;
@@ -3586,7 +3588,22 @@ input[type="checkbox"] {
   font-size: var(--body);
 }
 
-/* Each project a tab, top left, as many as fit: one click to any, the rest behind "N more", and + for a new one. */
+/* Each project a tab, top left, as many as fit: one click to any, the rest behind "N more", and + for a new one. Their room is the bar's
+   free space, whatever is in it, and what's said beside them (Shell.tsx: ProjectTabs). */
+.ptabs-room {
+  flex: 1 1 0;
+  min-width: 0;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  gap: calc(8px * var(--ui));
+}
+.ptabs-said {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: calc(8px * var(--ui));
+}
 .ptabs {
   display: flex;
   align-items: stretch;
@@ -3599,7 +3616,7 @@ input[type="checkbox"] {
 }
 /* A block, so a name too long for its tab ends in an ellipsis: a flex box cuts its text where it ends. */
 .ptab,
-.ptabs-ghost > span {
+.ptabs-ghost span {
   display: block;
   max-width: calc(150px * var(--ui));
   padding: calc(4px * var(--ui)) calc(10px * var(--ui));
@@ -3627,18 +3644,21 @@ input[type="checkbox"] {
   align-items: center;
   padding: calc(4px * var(--ui)) calc(8px * var(--ui));
 }
-/* What each tab takes at its full width, laid out where no one sees it. */
+/* What each tab takes at its full width, laid out where no one sees it: a row as wide as all of them, so a font arriving resizes it. */
 .ptabs-ghost {
   position: absolute;
-  display: flex;
   width: 0;
   overflow: hidden;
   visibility: hidden;
 }
-.ptabs-ghost > span {
+.ptabs-ghost > div {
+  display: flex;
+  width: max-content;
+}
+.ptabs-ghost span {
   flex: none;
 }
-.ptabs-ghost > .on {
+.ptabs-ghost .on {
   font-weight: var(--w-title);
 }
 
