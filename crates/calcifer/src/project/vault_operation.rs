@@ -3,7 +3,7 @@
 //! filenames, progress and recovery secrets never enter that receipt or the global stream.
 use std::{collections::HashMap, convert::Infallible, path::PathBuf, sync::{Arc, LazyLock, Mutex, atomic::{AtomicBool, Ordering}}, time::{Duration, Instant}};
 use api::{calcifer::project::{VaultAsk, VaultChanged, VaultEvent}, error::{Error, Kind}};
-use axum::{body::Bytes, extract::{Path, State, rejection::BytesRejection}, http::{HeaderValue, StatusCode, header}, response::{IntoResponse, Response, sse::{Event, KeepAlive, Sse}}};
+use axum::{Extension, body::Bytes, extract::{Path, State, rejection::BytesRejection}, http::{HeaderValue, StatusCode, header}, response::{IntoResponse, Response, sse::{Event, KeepAlive, Sse}}};
 use futures_util::StreamExt as _;
 use rusqlite::OptionalExtension as _;
 use sha2::{Digest as _, Sha256};
@@ -100,7 +100,7 @@ pub(super) async fn acknowledge(Path((named, id)): Path<(String, String)>) -> Re
     Ok(private(StatusCode::NO_CONTENT.into_response()))
 }
 
-pub(super) async fn write(State(api): State<Arc<Api>>, Path((named, id)): Path<(String, String)>, body: Result<Bytes, BytesRejection>) -> Result<Response, Refusal> {
+pub(super) async fn write(State(api): State<Arc<Api>>, Path((named, id)): Path<(String, String)>, Extension(lease): Extension<crate::api::MutationLease>, body: Result<Bytes, BytesRejection>) -> Result<Response, Refusal> {
     if !valid_id(&id) { return Err(Refusal(Error::new(Kind::Usage, "vault_operation_id", "use a unique operation ID of 16 to 128 letters, numbers, dashes or underscores"))); }
     let ask: VaultAsk = parse(&body?)?;
     if !matches!(ask.action.as_str(), "encrypt" | "unlock" | "lock" | "decrypt" | "passphrase" | "recovery" | "rotate") {
@@ -127,6 +127,9 @@ pub(super) async fn write(State(api): State<Arc<Api>>, Path((named, id)): Path<(
     if fresh {
         let worker = operation.clone();
         tokio::spawn(async move {
+            // The HTTP handler can return its ACK now; shutdown must still wait
+            // for this exact admitted mutation, including final receipt storage.
+            let _lease = lease;
             let completed = worker.clone();
             let result = tokio::task::spawn_blocking(move || perform(&api, &id, &worker, ask)).await;
             let mut event = match result {
