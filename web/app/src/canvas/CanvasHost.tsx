@@ -152,25 +152,35 @@ function useMachines(store: CanvasStore, pinned: string[]) {
   const up = held.filter((machine) => machine.kind !== "rental" && machine.state === "ready" && !machine.unreachable && (machine.kind !== "local" || status.local_usable))
   const automatic = [...rented, ...up.filter((machine) => machine.kind !== "local"), ...up.filter((machine) => machine.kind === "local")].map((machine) => machine.name)
   const choices = [...new Set([...(status.local_usable ? ["local"] : []), ...held.filter((machine) => machine.kind !== "local").map((machine) => machine.name)])]
-  const names = pinned.length ? pinned : automatic
+  // A choice is shown at once, in the click that made it, until what Calcifer keeps moves: its answer, or the CLI's.
+  const [choosing, setChoosing] = useState<string[] | null>(null)
+  const asked = useRef(0)
+  const kept = pinned.join()
+  // biome-ignore lint/correctness/useExhaustiveDependencies: what Calcifer keeps, as text
+  useEffect(() => setChoosing(null), [kept])
+  const chosen = choosing ?? pinned
+  const names = chosen.length ? chosen : automatic
   const key = names.join()
   // biome-ignore lint/correctness/useExhaustiveDependencies: the names, as text
   useEffect(() => {
     store.machines = () => names
     if (names.length) store.machineUp()
   }, [store, key])
-  // Shown at once, then as Calcifer keeps it; refused, back as it was.
-  const choose = (chosen: string[]) => {
+  // Refused, it's back as Calcifer keeps it.
+  const choose = (next: string[]) => {
     const id = store.projectId
     if (!id) return
-    const kept = (machines: string[]) => queries.setQueryData<Project>(["project", id], (state) => state && { ...state, machines })
-    kept(chosen)
-    void client.setMachines(id, chosen).then(({ machines }) => kept(machines), (error) => {
-      kept(pinned)
-      say("Couldn't choose where this project runs", error)
-    })
+    const mine = ++asked.current
+    setChoosing(next)
+    void client.setMachines(id, next).then(
+      ({ machines }) => queries.setQueryData<Project>(["project", id], (state) => state && { ...state, machines }),
+      (error) => {
+        if (asked.current === mine) setChoosing(null)
+        say("Couldn't choose where this project runs", error)
+      },
+    )
   }
-  return { machines: isPending ? null : names, choices, chosen: pinned, choose }
+  return { machines: isPending ? null : names, choices, chosen, choose }
 }
 
 /** The project's machines, any number of them; none is automatic. */
