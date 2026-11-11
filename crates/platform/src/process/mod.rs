@@ -24,6 +24,47 @@ use sys as tree;
 #[cfg(unix)]
 use unix as tree;
 
+/// How a process ended, as a refusal says it (`exited with code 2`, `was killed by signal 9 (SIGKILL)`), and whether a
+/// signal ended it.
+pub fn ended(status: &ExitStatus) -> (String, bool) {
+    #[cfg(unix)]
+    if let Some(signal) = std::os::unix::process::ExitStatusExt::signal(status) {
+        let name = match signal {
+            1 => " (SIGHUP)",
+            2 => " (SIGINT)",
+            6 => " (SIGABRT)",
+            7 => " (SIGBUS)",
+            9 => " (SIGKILL)",
+            11 => " (SIGSEGV)",
+            15 => " (SIGTERM)",
+            _ => "",
+        };
+        return (format!("was killed by signal {signal}{name}"), true);
+    }
+    match status.code() {
+        Some(code) => (format!("exited with code {code}"), false),
+        None => (format!("ended: {status}"), false),
+    }
+}
+
+/// A failed tool's last meaningful line on stderr: its last that is no hint or warning, without uv's decoration, cut to 400
+/// characters.
+pub fn last_line(said: &str) -> Option<String> {
+    let line = said.lines().rev()
+        .map(|line| line.trim_start_matches(|c: char| c.is_whitespace() || "×╰─▶│".contains(c)).trim_end())
+        .find(|line| !line.is_empty() && !["hint:", "help:", "warning:"].iter().any(|prefix| line.starts_with(prefix)))?;
+    Some(match line.char_indices().nth(400) {
+        Some((cut, _)) => format!("{}…", &line[..cut]),
+        None => line.to_owned(),
+    })
+}
+
+/// `said`'s last `lines` lines that aren't blank, for a log.
+pub fn tail(said: &str, lines: usize) -> String {
+    let kept: Vec<&str> = said.lines().filter(|line| !line.trim().is_empty()).collect();
+    kept[kept.len().saturating_sub(lines)..].join("\n")
+}
+
 /// One process incarnation: no other process ever has the same birth. The field names are
 /// TensorD's journal `ProcessBirth`, so a machine reads its journal across an update.
 /// `start_ticks` is the OS's start stamp: clock ticks since boot (Linux), microseconds since the

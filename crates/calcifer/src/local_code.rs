@@ -943,9 +943,8 @@ pub(crate) fn run_said(command: &mut Command, code: &str, what: &str) -> Result<
         return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
     }
     let said = String::from_utf8_lossy(&out.stderr).into_owned();
-    let (ended, killed) = ended(&out.status);
-    let tail: Vec<&str> = said.lines().filter(|l| !l.trim().is_empty()).collect();
-    tracing::warn!(code, "{what} {ended}; its stderr ends:\n{}", tail[tail.len().saturating_sub(40)..].join("\n"));
+    let (ended, killed) = platform::process::ended(&out.status);
+    tracing::warn!(code, "{what} {ended}; its stderr ends:\n{}", platform::process::tail(&said, 40));
     let message = match (last_words(&said), killed) {
         (Some(words), _) => format!("{what} {ended}: {words}"),
         (None, true) => format!("{what} {ended} before it answered"),
@@ -955,30 +954,8 @@ pub(crate) fn run_said(command: &mut Command, code: &str, what: &str) -> Result<
     Err((Error::new(kind, code, message).next("cozy machine logs local calcifer"), said))
 }
 
-/// How a process ended (`exited with code 2`, `was killed by signal 9 (SIGKILL)`), and whether a signal ended it.
-fn ended(status: &std::process::ExitStatus) -> (String, bool) {
-    #[cfg(unix)]
-    if let Some(signal) = std::os::unix::process::ExitStatusExt::signal(status) {
-        let name = match signal {
-            1 => " (SIGHUP)",
-            2 => " (SIGINT)",
-            6 => " (SIGABRT)",
-            7 => " (SIGBUS)",
-            9 => " (SIGKILL)",
-            11 => " (SIGSEGV)",
-            15 => " (SIGTERM)",
-            _ => "",
-        };
-        return (format!("was killed by signal {signal}{name}"), true);
-    }
-    match status.code() {
-        Some(code) => (format!("exited with code {code}"), false),
-        None => (format!("ended: {status}"), false),
-    }
-}
-
 /// A failed tool's last meaningful words on stderr, as one line: a JSON refusal's message (`cozy-runtime --json`), else its
-/// last line that is no hint or warning, without uv's decoration.
+/// last line that is no hint or warning (`platform::process::last_line`).
 fn last_words(said: &str) -> Option<String> {
     let lines: Vec<&str> = said.lines().collect();
     for at in (0..lines.len()).rev().filter(|&at| lines[at].starts_with('{')) {
@@ -991,13 +968,7 @@ fn last_words(said: &str) -> Option<String> {
             });
         }
     }
-    let line = lines.iter().rev()
-        .map(|line| line.trim_start_matches(|c: char| c.is_whitespace() || "×╰─▶│".contains(c)).trim_end())
-        .find(|line| !line.is_empty() && !["hint:", "help:", "warning:"].iter().any(|prefix| line.starts_with(prefix)))?;
-    Some(match line.char_indices().nth(400) {
-        Some((cut, _)) => format!("{}…", &line[..cut]),
-        None => line.to_owned(),
-    })
+    platform::process::last_line(said)
 }
 
 /// The Python a release of `project` runs on: `.python-version`, else requires-python's floor;
