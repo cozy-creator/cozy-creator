@@ -404,7 +404,7 @@ impl Proposal {
                     let encoder = restored
                         .iter_mut()
                         .find(|component| component.name == "text_encoder")
-                        .ok_or_else(|| format_error())?;
+                        .ok_or_else(format_error)?;
                     for asset in &manifest.processor_assets {
                         require(
                             encoder.assets.remove(&asset.name) == Some(asset.object.clone()),
@@ -424,7 +424,7 @@ impl Proposal {
                     let model = restored
                         .iter_mut()
                         .find(|component| component.name == "model")
-                        .ok_or_else(|| format_error())?;
+                        .ok_or_else(format_error)?;
                     require(
                         model.config.remove("latent_normalization").is_some(),
                         "normalization_missing",
