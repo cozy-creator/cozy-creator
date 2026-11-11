@@ -1,5 +1,7 @@
 """Isolation regressions for the Linux hardware harness; no Hub or provider calls."""
 import importlib.util
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -16,7 +18,45 @@ runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
 
 
+def probe_result(device):
+    return {'result': 368, 'device': device, 'tensorfs_products': [8., 18.],
+            'tensorfs_revision': 'sha256:' + 'c' * 64, 'tensorfs_native_sha256': 'd' * 64,
+            'torch_shim_sha256': 'e' * 64 if device.startswith('cuda:') else ''}
+
+
 class Isolation(unittest.TestCase):
+    def test_failing_fixture_verdict_is_live_and_retained(self):
+        with tempfile.TemporaryDirectory() as temporary, contextlib.redirect_stdout(io.StringIO()) as console:
+            path = Path(temporary) / 'console.log'
+            status = runner.run_logged([sys.executable, '-c', 'print("fixture verdict FAIL"); raise SystemExit(3)'],
+                                       os.environ.copy(), path)
+            self.assertEqual(status, 3)
+            self.assertIn('fixture verdict FAIL', path.read_text())
+            self.assertIn('fixture verdict FAIL', console.getvalue())
+
+    def test_readonly_owned_tree_removes_without_touching_linked_public_cache(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            owned, cache = root / 'owned', root / 'public-cache'
+            locked = owned / 'sandbox'
+            locked.mkdir(parents=True)
+            cache.mkdir()
+            (cache / 'wheel').write_text('public immutable dependency')
+            (locked / 'README.md').write_text('sandbox package')
+            (locked / 'README.md').chmod(0o444)
+            (owned / 'cache').symlink_to(cache, target_is_directory=True)
+            locked.chmod(0o555)
+            cache.chmod(0o555)
+            try:
+                runner.remove_owned_tree(owned)
+                self.assertFalse(owned.exists())
+                self.assertEqual((cache / 'wheel').read_text(), 'public immutable dependency')
+                self.assertEqual(cache.stat().st_mode & 0o777, 0o555)
+            finally:
+                if locked.exists():
+                    locked.chmod(0o700)
+                cache.chmod(0o700)
+
     def test_environment_does_not_inherit_production_or_service_credentials(self):
         incoming = {'PATH': os.defpath, 'RUNPOD_API_KEY': 'production', 'COZY_HUB_URL': 'https://tensorhub.com',
                     'HTTPS_PROXY': 'https://tensorhub.com', 'AWS_SECRET_ACCESS_KEY': 'production',
@@ -76,22 +116,58 @@ class Isolation(unittest.TestCase):
     def test_numeric_mismatch_and_cpu_fallback_fail(self):
         with tempfile.TemporaryDirectory() as tmp:
             proof = Path(tmp)
-            cpu = {'status': 'completed', 'result': {'result': 368, 'device': 'cpu'}}
-            gpu = {'status': 'completed', 'result': {'result': 368, 'device': 'cuda:0'},
-                   'measurements': {'execution': {'gpus': [{'uuid': 'GPU-owned'}]}}}
+            software = {'runtime': '0.45.0', 'tensorfs': '0.24.1'}
+            cpu = {'status': 'completed', 'result': probe_result('cpu'), 'measurements': {'software': software}}
+            gpu = {'status': 'completed', 'result': probe_result('cuda:0'),
+                   'measurements': {'software': software, 'execution': {'gpus': [{'uuid': 'GPU-owned'}]}}}
             (proof / 'cpu.json').write_text(json.dumps(cpu))
+            (proof / 'candidate-update.ndjson').write_text(json.dumps({'type': 'run.completed', 'run': {'result': {'to': software}}}) + '\n')
             def verify():
                 (proof / 'gpu.json').write_text(json.dumps(gpu))
-                return subprocess.run([sys.executable, str(HERE / 'verify.py'), tmp],
+                return subprocess.run([sys.executable, str(HERE / 'verify.py'), tmp, '0.45.0', '0.24.1'],
                     env=os.environ | {'CUDA_VISIBLE_DEVICES': 'GPU-owned'}, capture_output=True).returncode
             self.assertEqual(verify(), 0)
             gpu['result']['result'] = 367
             self.assertNotEqual(verify(), 0)
-            gpu['result'] = {'result': 368, 'device': 'cpu'}
+            gpu['result'] = probe_result('cpu')
             self.assertNotEqual(verify(), 0)
-            gpu['result']['device'] = 'cuda:0'
+            gpu['result'] = probe_result('cuda:0')
             gpu['measurements']['execution']['gpus'] = [{'uuid': 'GPU-other'}]
             self.assertNotEqual(verify(), 0)
+            gpu['measurements']['execution']['gpus'] = [{'uuid': 'GPU-owned'}]
+            gpu['result']['tensorfs_products'] = [8., 19.]
+            self.assertNotEqual(verify(), 0)
+
+    def test_gpu_proof_rejects_old_sdk_even_when_numeric_result_matches(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            proof = Path(temporary)
+            software = {'runtime': '0.45.0', 'tensorfs': '0.24.0'}
+            for name in ('cpu', 'gpu'):
+                record = {'status': 'completed', 'result': probe_result('cuda:0' if name == 'gpu' else 'cpu'),
+                          'measurements': {'software': software, 'execution': {'gpus': [{'uuid': 'GPU-owned'}]}}}
+                (proof / f'{name}.json').write_text(json.dumps(record))
+            installed = {'runtime': '0.45.0', 'tensorfs': '0.24.0', 'tensorfs_sha256': 'b' * 64}
+            (proof / 'candidate-update.ndjson').write_text(json.dumps({'type': 'run.completed', 'run': {'result': {'to': installed}}}) + '\n')
+            candidate = 'https://example.invalid/tensorfs-0.24.1-cp311-abi3-linux_x86_64.whl#sha256=' + 'a' * 64
+            result = subprocess.run([sys.executable, str(HERE / 'verify.py'), temporary, '0.45.0', candidate],
+                env=os.environ | {'CUDA_VISIBLE_DEVICES': 'GPU-owned'}, capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            # Matching labels cannot hide another wheel payload with the same version.
+            installed['tensorfs'] = '0.24.1'
+            (proof / 'candidate-update.ndjson').write_text(json.dumps({'type': 'run.completed', 'run': {'result': {'to': installed}}}) + '\n')
+            for name in ('cpu', 'gpu'):
+                path = proof / f'{name}.json'
+                record = json.loads(path.read_text())
+                record['measurements']['software']['tensorfs'] = '0.24.1'
+                path.write_text(json.dumps(record))
+            result = subprocess.run([sys.executable, str(HERE / 'verify.py'), temporary, '0.45.0', candidate],
+                env=os.environ | {'CUDA_VISIBLE_DEVICES': 'GPU-owned'}, capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            installed['tensorfs_sha256'] = 'a' * 64
+            (proof / 'candidate-update.ndjson').write_text(json.dumps({'type': 'run.completed', 'run': {'result': {'to': installed}}}) + '\n')
+            result = subprocess.run([sys.executable, str(HERE / 'verify.py'), temporary, '0.45.0', candidate],
+                env=os.environ | {'CUDA_VISIBLE_DEVICES': 'GPU-owned'}, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr.decode())
 
 
 if __name__ == '__main__':

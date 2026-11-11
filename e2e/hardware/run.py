@@ -7,12 +7,56 @@ import os
 from pathlib import Path
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
 import time
 
 HERE = Path(__file__).resolve().parent
+
+
+def remove_owned_tree(path):
+    """Remove an allocated job tree; repair only its own directories, never link targets."""
+    root = Path(path).absolute()
+    if not root.exists():
+        return
+    if root.is_symlink() or root.lstat().st_uid != os.getuid():
+        raise PermissionError(f'cleanup root is not an owned directory: {root}')
+    try:
+        shutil.rmtree(root)
+    except PermissionError:
+        # Sandboxed package trees and uv Python installations deliberately keep read-only
+        # directories. Unlinking their files needs write access on those owned directories.
+        def writable(directory):
+            metadata = directory.lstat()
+            if directory.is_symlink() or metadata.st_uid != os.getuid() or not directory.is_relative_to(root):
+                raise PermissionError(f'cannot repair cleanup permissions outside the owned tree: {directory}')
+            directory.chmod(stat.S_IMODE(metadata.st_mode) | 0o700, follow_symlinks=False)
+        writable(root)
+        for directory, children, _ in os.walk(root, followlinks=False):
+            for name in children:
+                child = Path(directory) / name
+                if not child.is_symlink():
+                    writable(child)
+        shutil.rmtree(root)
+
+
+def run_logged(command, environment, output):
+    with output.open('w') as log:
+        child = subprocess.Popen(command, env=environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                 text=True, errors='replace', bufsize=1, start_new_session=True)
+        try:
+            for line in child.stdout:
+                log.write(line)
+                log.flush()
+                print(line, end='', flush=True)
+            return child.wait()
+        finally:
+            if child.poll() is None:
+                os.killpg(child.pid, signal.SIGTERM)
+                child.wait()
+            child.stdout.close()
 
 
 def processes():
@@ -150,11 +194,11 @@ def main():
     for name, default in [('GOCACHE', Path(original_home) / '.cache/go-build'),
                           ('GOMODCACHE', Path(original_home) / 'go/pkg/mod'),
                           ('UV_CACHE_DIR', Path(original_home) / '.cache/uv')]:
-        env[name] = str(default)
+        env[name] = os.environ.get(name, str(default))
     command = ['bash', str(HERE.parent / 'skew/run.sh'), '--hub-src', str(args.hub_src.resolve()),
                '--cozy-bin', str(args.cozy_bin.resolve()), '--runtime', args.runtime,
                '--tensorfs', args.tensorfs, '--out', str(args.out / 'hub'),
-               '--checks', str(HERE / 'checks.sh')]
+               '--admin', '--command', str(HERE / 'checks.sh')]
     receipt = {'mode': args.mode, 'home': str(home), 'owner': owner, 'device': args.device,
                'gpu_inventory': inventory.splitlines(), 'command': command,
                'cozy_sha256': hashlib.sha256(args.cozy_bin.read_bytes()).hexdigest(),
@@ -166,13 +210,7 @@ def main():
         raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, interrupted)
     try:
-        with (args.out / 'console.log').open('w') as log:
-            child = subprocess.Popen(command, env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
-            try:
-                status = child.wait()
-            except KeyboardInterrupt:
-                os.killpg(child.pid, signal.SIGTERM)
-                status = child.wait()
+        status = run_logged(command, env, args.out / 'console.log')
     finally:
         receipt['created_container_ids'] = container_ids.read_text().split() if container_ids.exists() else []
         try:
@@ -184,13 +222,23 @@ def main():
         after = processes()
         receipt['existing_cozy_processes_unchanged'] = all(same_process(p, after.get(pid)) for pid, p in before.items())
         receipt['fixture_status'] = status
+        receipt['private_home_removed'] = False
+        # Preserve the verdict even if removal itself fails or the runner is cancelled later.
+        (args.out / 'receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
         if not receipt['cleanup'].get('error') and not receipt['cleanup'].get('remaining_pids'):
-            shutil.rmtree(home)
+            try:
+                remove_owned_tree(home)
+            except Exception as error:
+                receipt['cleanup']['tree_error'] = str(error)
         receipt['private_home_removed'] = not home.exists()
         (args.out / 'receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
+        print(f"hardware fixture exit={status}; home removed={receipt['private_home_removed']}; "
+              f"existing services preserved={receipt['existing_cozy_processes_unchanged']}", flush=True)
+        if receipt['cleanup'].get('error') or receipt['cleanup'].get('tree_error'):
+            print(f"hardware cleanup failed: {receipt['cleanup'].get('error') or receipt['cleanup'].get('tree_error')}", flush=True)
     safe = (receipt['existing_cozy_processes_unchanged'] and not receipt['cleanup'].get('error')
             and not receipt['cleanup'].get('remaining_pids') and not receipt['cleanup'].get('remaining_containers')
-            and not receipt['cleanup'].get('remaining_created_containers'))
+            and not receipt['cleanup'].get('remaining_created_containers') and receipt['private_home_removed'])
     return status if safe else 1
 
 

@@ -39,14 +39,15 @@ run in CI. Their manual performance boundary has not been replaced by a mock or 
 
 `e2e/hardware/run.py` reuses `e2e/skew/run.sh` with a fresh private HOME, machine root,
 TensorFS store and sanitized environment. The same owned PostgreSQL/MinIO/development Hub
-first runs its existing publication checks, then seeds a tiny package into its own catalog and
-runs CPU and CUDA arithmetic through the selected CLI/Runtime/TensorFS. It requires an explicit
+uses its focused `--admin --command` bootstrap, seeds one tiny package into its own catalog and
+runs CPU and CUDA arithmetic through the selected CLI/Runtime/TensorFS. The complete publication
+suite is separately qualified instead of repeated on every hardware run. It requires an explicit
 idle NVIDIA GPU UUID and fails when another compute process is using it. No user service is
 installed or restarted: a second HOME has no login service manager.
 
 ```sh
 python3 e2e/hardware/run.py --hub-src /path/to/tensorhub --cozy-bin /path/to/candidate/cozy \
-  --runtime 0.45.0 --tensorfs 0.24.0 --device GPU-... --out /path/to/empty/receipt
+  --runtime 0.45.0 --tensorfs /path/to/tensorfs-0.24.1-...whl --device GPU-... --out /path/to/empty/receipt
 ```
 
 Linux prerequisites are Docker, Go, uv, AWS CLI and an NVIDIA driver. The source checkout and
@@ -54,7 +55,18 @@ candidate CLI are explicit; public dependency/compiler caches are reusable build
 Provider keys, proxy settings, production Hub URLs, device credentials and service environment
 are excluded. The outer receipt records the binary digest, cohort, device, owned process births,
 container cleanup and preservation of existing Cozy processes. The private HOME is removed;
-scrubbed execution records remain in the output directory.
+scrubbed execution records remain in the output directory. Candidate wheel URLs require their
+SHA256 fragment; the update journal must name that digest and both CPU/GPU measurements must
+name the requested versions. Live output is streamed and saved. Actions stores receipts under
+the durable job workspace, because its temporary directory is erased before a runner listener
+returns. The receipt is written before teardown, including when an owned read-only tree cannot
+be removed. Permission repair touches only directories with this job's UID inside its allocated
+root; symlink targets and public dependency caches are excluded.
+
+The native SDK cell writes a complete 2x2 F32 checkpoint, deletes its source cache, opens the
+file with a fresh store and `local_files_only=True`, and uses public `tensors.read` plus DLPack
+on CPU/CUDA. Matrix products must be `[8, 18]`. Its records include the loaded `_ext` and exact
+Torch shim file hashes; matching version labels alone cannot qualify a different wheel payload.
 
 `hardware-isolated.yaml` selects a unique `cozy-isolated-gpu-<16 hex digits>` runner label.
 An operator registers an ephemeral runner without default labels for one trusted dispatch; this

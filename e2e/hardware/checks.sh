@@ -1,22 +1,31 @@
-# Sourced by the existing skew fixture, after it grants its private account admin.
-hardware_checks() (
-  set -euo pipefail
-  . "$E2E/test-hub.sh"
-  require_test_hub "${COZY_HUB_URL:?}"
-  local proof=$OUT/hardware package=ci-hardware-$R fixture
-  fixture=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/probe
-  mkdir -p "$proof"
-  cp -r "$fixture" "$proof/$package"
-  sed -i "s/^name = \"ci-hardware-probe\"/name = \"$package\"/" "$proof/$package/pyproject.toml"
-  # This catalog is created only through the verified fixture, never copied from production.
-  (cd "$proof/$package" && cozy --json package publish) > "$proof/publish.json"
-  cozy --json package install "$WHO/$package@0.1.0" --on local > "$proof/install.json"
-  run_cell "$proof" cpu "$WHO/$package/cpu" value:=19 --on local
-  run_cell "$proof" gpu "$WHO/$package/gpu" value:=19 --on local
-  python3 "$(dirname "$fixture")/verify.py" "$proof"
-  cozy --json package delete "$WHO/$package" -y > "$proof/delete.json"
-)
-hardware_checks
-hardware_status=$?
-if [ "$hardware_status" = 0 ]; then expect "hardware CUDA" PASS "published fixture package, CPU and real CUDA arithmetic/output verified"
-else expect "hardware CUDA" FAIL "the fixture CUDA probe failed; see hardware receipts"; fi
+#!/usr/bin/env bash
+# e2e/skew/run.sh --admin --command: OUT INSTALLED_COZY RUNTIME TENSORFS.
+set -euo pipefail
+[ "$#" = 4 ] || { echo 'usage: checks.sh OUT COZY RUNTIME TENSORFS' >&2; exit 2; }
+OUT=$1 COZY=$2 RUNTIME=$3 TENSORFS=$4
+E2E=$(cd "$(dirname "$0")/.." && pwd)
+. "$E2E/test-hub.sh"
+require_test_hub "${COZY_HUB_URL:?}"
+mkdir -p "$OUT"
+cozy() { "$COZY" "$@"; }
+log() { echo "$(date -u +%H:%M:%SZ) hardware: $*"; }
+WHO=$(cozy --json whoami | python3 -c 'import json,sys; print(json.load(sys.stdin)["account"])')
+package=ci-hardware-$(date +%s)-$RANDOM
+fixture=$E2E/hardware/probe
+cp -r "$fixture" "$OUT/$package"
+sed -i "s/^name = \"ci-hardware-probe\"/name = \"$package\"/" "$OUT/$package/pyproject.toml"
+RUN_CLI=$COZY
+. "$E2E/run.sh"
+run_project "$OUT/project"
+log "installing the exact Runtime/TensorFS candidates"
+cozy --json machine update local --runtime "$RUNTIME" --tensorfs "$TENSORFS" -y | tee "$OUT/candidate-update.ndjson"
+log "publishing and installing the owned probe at the verified fixture"
+(cd "$OUT/$package" && cozy --json package publish) > "$OUT/publish.json"
+cozy --json package install "$WHO/$package@0.1.0" --on local | tee "$OUT/install.ndjson"
+log 'running CPU arithmetic'
+run_cell "$OUT" cpu "$WHO/$package/cpu" value:=19 --on local
+log 'running physical CUDA arithmetic'
+run_cell "$OUT" gpu "$WHO/$package/gpu" value:=19 --on local
+python3 "$E2E/hardware/verify.py" "$OUT" "$RUNTIME" "$TENSORFS"
+cozy --json package delete "$WHO/$package" -y > "$OUT/delete.json"
+log 'PASS exact candidate software, CPU and real CUDA arithmetic/output verified'

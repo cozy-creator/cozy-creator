@@ -17,7 +17,7 @@ on:
         type: string
         required: true
       tensorfs:
-        description: Exact TensorFS version
+        description: Exact TensorFS version or candidate wheel URL with sha256 fragment
         type: string
         required: true
       hub_ref:
@@ -112,10 +112,11 @@ jobs:
           test -n "$binary"
           PATH="$RUNNER_TEMP/hardware-tools/bin:$PATH" python3 creator/e2e/hardware/run.py \
             --hub-src tensorhub --cozy-bin "$binary" --runtime "$RUNTIME" --tensorfs "$TENSORFS" \
-            --device "$DEVICE" --out "$RUNNER_TEMP/hardware-proof"
+            --device "$DEVICE" --tools "${SKEW_TOOLS:-$RUNNER_TEMP/hardware-tools/skew}" \
+            --out "$GITHUB_WORKSPACE/hardware-proof" 2>&1 | node creator/e2e/publish/scrub.js
       - if: always()
         uses: ./creator/e2e/publish
         with:
           name: isolated-hardware
-          path: ${{ runner.temp }}/hardware-proof
+          path: ${{ github.workspace }}/hardware-proof
           retention-days: 14
