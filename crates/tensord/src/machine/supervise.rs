@@ -241,3 +241,112 @@ pub(crate) fn cloexec_pipe() -> io::Result<(std::os::fd::OwnedFd, std::os::fd::O
     let (read, write) = std::io::pipe()?;
     Ok((read.into(), write.into()))
 }
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+    use std::{path::Path, process::{Command, Stdio}};
+
+    fn command(root: &Path, case: &str) -> Command {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command.args(["--exact", "machine::supervise::tests::service_fixture", "--nocapture"])
+            .env("COZY_SUPERVISOR_TEST_ROOT", root)
+            .env("COZY_SUPERVISOR_TEST_CASE", case);
+        command
+    }
+
+    fn run_case(case: &str, exit: i32, starts: u32) -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        let output = command(root.path(), case).output().unwrap();
+        assert_eq!(output.status.code(), Some(exit), "{}", String::from_utf8_lossy(&output.stderr));
+        assert_eq!(std::fs::read_to_string(root.path().join("starts")).unwrap(), starts.to_string());
+        root
+    }
+
+    #[test]
+    fn readiness_survives_service_exit_and_resets_early_failures() {
+        run_case("ready-restart", 0, 3);
+    }
+
+    #[test]
+    fn two_early_exits_stop_the_supervisor() {
+        run_case("early-exit", 7, 2);
+    }
+
+    #[test]
+    fn requested_restart_uses_the_same_private_handoff() {
+        run_case("updated", 0, 2);
+    }
+
+    #[test]
+    fn two_early_exits_roll_back_pending_activation() {
+        let root = run_case("rollback", 0, 3);
+        let status: super::super::update::Status = serde_json::from_slice(
+            &std::fs::read(root.path().join("engine/update/status.json")).unwrap(),
+        ).unwrap();
+        assert_eq!(status.state, "rolled_back");
+        assert!(!root.path().join("engine/update/pending.json").exists());
+    }
+
+    #[test]
+    fn parent_exit_ends_the_service_job() {
+        let root = tempfile::tempdir().unwrap();
+        let mut parent = command(root.path(), "parent-exit").stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+        let file = root.path().join("service-pid");
+        let pid: u32 = loop {
+            if let Ok(text) = std::fs::read_to_string(&file) {
+                if let Ok(pid) = text.parse() {
+                    break pid;
+                }
+            }
+            assert!(parent.try_wait().unwrap().is_none(), "supervisor exited before its service was ready");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        let service = Exact::open(&Birth::of(pid).unwrap()).unwrap().unwrap();
+        parent.kill().unwrap();
+        parent.wait().unwrap();
+        service.wait().unwrap();
+        assert!(service.ended());
+    }
+
+    #[test]
+    fn service_fixture() {
+        let Some(root) = std::env::var_os("COZY_SUPERVISOR_TEST_ROOT").map(std::path::PathBuf::from) else { return };
+        let case = std::env::var("COZY_SUPERVISOR_TEST_CASE").unwrap();
+        let paths = super::super::update::Paths::new(&root.join("engine"), &root);
+        std::fs::create_dir_all(paths.update("")).unwrap();
+        let mut ready = supervise(&paths, None).unwrap();
+        let starts = root.join("starts");
+        let count = std::fs::read_to_string(&starts).ok().and_then(|text| text.parse::<u32>().ok()).unwrap_or(0) + 1;
+        std::fs::write(&starts, count.to_string()).unwrap();
+        match case.as_str() {
+            "early-exit" => std::process::exit(7),
+            "ready-restart" => {
+                ready.report();
+                std::process::exit(if count < 3 { 7 } else { 0 });
+            }
+            "updated" => {
+                ready.report();
+                std::process::exit(if count == 1 { super::super::update::REPLACE_EXIT } else { 0 });
+            }
+            "rollback" if count < 3 => {
+                if count == 1 {
+                    let status = super::super::update::Status { state: "starting".into(), ..Default::default() };
+                    let pending = serde_json::json!({"status": status, "sdk_before": null, "binary": null});
+                    std::fs::write(paths.update("pending.json"), serde_json::to_vec(&pending).unwrap()).unwrap();
+                }
+                std::process::exit(7);
+            }
+            "rollback" => {
+                ready.report();
+                std::process::exit(0);
+            }
+            "parent-exit" => {
+                ready.report();
+                std::fs::write(root.join("service-pid"), std::process::id().to_string()).unwrap();
+                loop { std::thread::park(); }
+            }
+            _ => panic!("unknown supervisor fixture {case}"),
+        }
+    }
+}
