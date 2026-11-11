@@ -267,7 +267,9 @@ impl Service {
     /// its import-only parent imports now, while its weights come, so its first call forks
     /// (`Pool::installed`).
     pub(crate) fn installed(&self, held: &crate::catalog::HeldGeneration) {
-        crate::published::environment::compile_bytecode(&held.record.python);
+        if !crate::private_io::is_private_path(&held.record.python) {
+            crate::published::environment::compile_bytecode(&held.record.python);
+        }
         if let Some(gpu) = self.gpu() {
             gpu.installed(held.clone());
         }
@@ -690,6 +692,10 @@ impl Service {
     }
     /// The plan `record` runs: its journaled preparation's, else a weightless call's.
     fn plan(&self, pool: &Pool, record: &Execution) -> io::Result<Plan> {
+        let scope = self.engine.private_storage(&record.id)?;
+        crate::private_io::within(scope, || self.plan_scoped(pool, record))
+    }
+    fn plan_scoped(&self, pool: &Pool, record: &Execution) -> io::Result<Plan> {
         let invocation = &record.invocation;
         match record.submission.as_ref().map(|s| s.preparation_id.as_str()) {
             None | Some("") => Ok(Plan::weightless(&invocation.generation, &invocation.module, &invocation.entrypoint, invocation.degree)),

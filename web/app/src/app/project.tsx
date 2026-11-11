@@ -2,21 +2,15 @@ import { type QueryClient, useQuery, useQueryClient } from "@tanstack/react-quer
 import { createContext, type ReactNode, useCallback, useContext, useLayoutEffect } from "react"
 import { Link, useLocation, useMatch, useNavigate } from "react-router-dom"
 import type { Client } from "../api/client"
-import type { ProjectState } from "../api/calcifer"
-import { rememberProjectWarnings } from "../api/queries"
+import type { ProjectAddress } from "../api/calcifer"
 import { useConnection } from "./Connection"
-
-type ProjectAddress = Pick<ProjectState, "id" | "code">
 
 const CurrentProject = createContext<ProjectAddress | null>(null)
 const referenceKey = (reference: string) => ["project-reference", reference]
 const referenceQuery = (client: Client, reference: string) => ({
   queryKey: referenceKey(reference),
-  queryFn: async ({ client: queries }: { client: QueryClient }) => {
-    const head = await client.projectHead(reference)
-    rememberProjectWarnings(queries, head)
-    return { id: head.id, code: head.code }
-  },
+  // The first content read retains any one-time upgrade warnings.
+  queryFn: () => client.projectAddress(reference),
   staleTime: Infinity,
 })
 

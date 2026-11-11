@@ -50,15 +50,15 @@ export function inLine<T>(work: () => Promise<T>): Promise<T> {
 }
 
 /** Sends what Calcifer lacks of a file, resumably, until it holds it whole. */
-export async function sendFile(client: Client, file: File, digest: string, signal: AbortSignal, onDone: (done: number) => void, onAttempt: (attempt: number) => void) {
+export async function sendFile(client: Client, file: File, digest: string, signal: AbortSignal, onDone: (done: number) => void, onAttempt: (attempt: number) => void, projectId?: string) {
   signal.throwIfAborted()
   if (file.size === 0) {
-    await client.put(digest, file, 0, 0, signal, onAttempt)
+    await client.put(digest, file, 0, 0, signal, onAttempt, projectId)
     return
   }
   // Sent whole and still not whole means what it held expired under it, so ask again; a third time isn't chance.
   for (let pass = 0; pass < 3; pass++) {
-    const held = await client.held(digest, signal, onAttempt)
+    const held = await client.held(digest, signal, onAttempt, projectId)
     if (held === true) return
     const missing = gaps(held, file.size)
     let sent = file.size - missing.reduce((sum, [from, to]) => sum + to - from, 0)
@@ -66,7 +66,7 @@ export async function sendFile(client: Client, file: File, digest: string, signa
     for (const [from, to] of missing) {
       for (let at = from; at < to; at += PART_BYTES) {
         const end = Math.min(to, at + PART_BYTES)
-        const whole = await client.put(digest, file.slice(at, end), at, file.size, signal, onAttempt)
+        const whole = await client.put(digest, file.slice(at, end), at, file.size, signal, onAttempt, projectId)
         sent += end - at
         onDone(sent / file.size)
         if (whole) return
@@ -79,7 +79,7 @@ export async function sendFile(client: Client, file: File, digest: string, signa
 export type Moving = { stage: "reading" | "sending"; done: number }
 
 /** Hashes a file as it reads it, and sends it: its `sha256:`, held by Calcifer for a day. */
-export function moveBytes(client: Client, file: File, signal: AbortSignal, onMoving: (moving: Moving) => void, onAttempt: (attempt: number) => void): Promise<string> {
+export function moveBytes(client: Client, file: File, signal: AbortSignal, onMoving: (moving: Moving) => void, onAttempt: (attempt: number) => void, projectId?: string): Promise<string> {
   return inLine(async () => {
     onMoving({ stage: "reading", done: 0 })
     let shown = 0
@@ -89,7 +89,7 @@ export function moveBytes(client: Client, file: File, signal: AbortSignal, onMov
       onMoving({ stage: "reading", done })
     })
     onMoving({ stage: "sending", done: 0 })
-    await sendFile(client, file, digest, signal, (done) => onMoving({ stage: "sending", done }), onAttempt)
+    await sendFile(client, file, digest, signal, (done) => onMoving({ stage: "sending", done }), onAttempt, projectId)
     return digest
   })
 }

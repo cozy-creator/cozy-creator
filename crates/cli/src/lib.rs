@@ -68,6 +68,8 @@ enum Command {
     Run(run::Args),
     /// Show the current project's health and warnings.
     Status(daemon::Status),
+    /// Encrypt, lock or recover the current project.
+    Vault(project::vault::Args),
     /// Local, rented and added machines.
     Machine(machine::Args),
     /// Find, download, upload and publish models.
@@ -171,6 +173,7 @@ async fn dispatch(ctx: &Context, command: Command) -> Result<ExitCode, Error> {
         Command::Model(args) => model::exec(ctx, args).await,
         Command::New(args) => project::create(ctx, args).await,
         Command::Status(args) => daemon::status(ctx, args).await,
+        Command::Vault(args) => project::vault::exec(ctx, args).await,
         Command::Open(args) => open::exec(ctx, args).await,
         Command::Login(args) => account::login(ctx, args).await,
         Command::Logout(args) => account::logout(ctx, args).await,

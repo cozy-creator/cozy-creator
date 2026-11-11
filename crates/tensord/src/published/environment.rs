@@ -99,7 +99,9 @@ impl Publisher {
         };
         let torch = layer.as_ref().and_then(|l| l.version("torch")).unwrap_or_default();
         let warning = format!("requires {missed}; this machine's torch is {torch}: its environment installs its own");
-        tracing::warn!("package {} {warning}", project.label);
+        if crate::private_io::current().is_none() {
+            tracing::warn!("package {} {warning}", project.label);
+        }
         job.stage(format!("warning: {warning}"));
         let own: Vec<String> = missed.split(", ").filter(|r| on_root(r)).map(String::from).collect();
         let mut built = self.build_on(env, project, job, None, &own)?;
@@ -453,6 +455,7 @@ impl Publisher {
     pub(crate) fn uv(&self, args: &[&str], env: &[(&str, &std::ffi::OsStr)], job: &Job) -> Result<(), Failure> {
         let mut command = self.sdk.uv.command().map_err(|e| ("uv_unavailable", e.to_string()))?;
         command.args(args).envs(env.iter().copied()).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
+        crate::private_io::protect_command(&mut command).map_err(io_failure)?;
         let (ended, stderr) = run_builder(&mut command, &self.scope_namespace, job.stop.as_ref(), &|read| job.bytes(read, 0))?;
         let step = args[..2.min(args.len())].join(" ");
         match ended {
@@ -570,7 +573,10 @@ fn ask_runtime(python: &Path, request: &Value, stop: Option<&crate::stop::Stop>)
         sys.argv=['cozy-runtime','machine-describe'];runpy.run_module('cozy_runtime.cli.main',run_name='__main__')";
     let failed = |why: String| ("package_prepare_description_failed", why);
     let mut command = Command::new(python);
-    command.args(["-I", "-S", "-c", BOOTSTRAP]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
+    command.args(["-I", "-B", "-S", "-c", BOOTSTRAP]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
+    if crate::private_io::protect_command(&mut command).map_err(io_failure)? {
+        command.stderr(Stdio::null());
+    }
     platform::process::own_group(&mut command);
     let mut child = command.spawn().map_err(io_failure)?;
     // Its own exit says why, should it stop before reading the request.

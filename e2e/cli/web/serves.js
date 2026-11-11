@@ -91,6 +91,15 @@ let [mine, asked] = [false, 0];
     return r.status;
   }, out.session.token));
   await until('hello on the stream', () => window.streamed.some((e) => e.type === 'hello'));
+  out.stream_interest = await page.evaluate(async ({ token, id }) => {
+    const stream = window.streamed.find((event) => event.type === 'hello').stream;
+    const response = await fetch(`/v1/events/${encodeURIComponent(stream)}`, {
+      method: 'PUT', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ projects: [id] }),
+    });
+    const reply = await response.json();
+    if (!response.ok || !reply.held.includes(id)) throw new Error(`project interest refused: ${response.status}`);
+    return reply.held;
+  }, { token: out.session.token, id });
   out.imported = importFile(folder, file);
   await until('project.changed on the stream', (id) => window.streamed.some((e) => e.type === 'project.changed' && e.id === id && e.rev), id);
   out.streamed = await page.evaluate(() => { window.endStream(); return window.streamed; });
