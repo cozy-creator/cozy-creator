@@ -62,7 +62,7 @@ cozy model ls sdxl
 
 On a terminal, `cozy model ls` opens a keyboard browser. Use ↑/↓ to select, Enter for a short
 preview, and PgUp/PgDn (or p/n) for pages. `cozy lora ls` browses adapters separately.
-The list shows local availability and stored size.
+The list shows local availability and stored size. Local is yes only for a complete checkpoint, partial for an incomplete download, and cached when an older worker has not reported completeness.
 Press d in a preview, then choose a machine and confirm with Enter to download. Esc or q goes back.
 For a downloaded model, r opens a local-removal confirmation. This removes its downloaded lanes
 and releases from this machine, while protecting active/shared data and leaving the Hub unchanged.

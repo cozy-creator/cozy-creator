@@ -104,7 +104,7 @@ pub(crate) struct Ls {
     /// Skip this many matching models.
     #[arg(long, default_value_t = 0)]
     offset: u32,
-    /// List downloaded models on local, a named machine, or all machines.
+    /// List cached models on local, a named machine, or all machines.
     #[arg(long, value_name = "MACHINE")]
     on: Option<String>,
 }
@@ -112,6 +112,7 @@ pub(crate) struct Ls {
 #[derive(clap::Args, Debug)]
 pub(crate) struct Edit {
     /// org/name.
+    #[arg(value_name = "REPO")]
     model: String,
     /// Set the discovery family. Use none to clear.
     #[arg(long)]
@@ -143,6 +144,7 @@ struct LoraEdit {
 #[derive(clap::Args, Debug)]
 pub(crate) struct Remove {
     /// org/name. Removes all downloaded releases and lanes, keeping the Hub model.
+    #[arg(value_name = "REPO")]
     model: String,
 }
 
@@ -163,6 +165,7 @@ pub(crate) struct Download {
     #[arg(long, value_parser = api::model_ref::lane)]
     lane: Option<String>,
     /// Model or commit, hf://…, civitai://…, or an HTTPS URL.
+    #[arg(value_name = "REFERENCE")]
     model: String,
     /// Local alias for the downloaded model.
     #[arg(value_name = "local/ALIAS")]
@@ -179,7 +182,8 @@ pub(crate) struct Upload {
     /// Weights file, CozyTensors folder, local alias, model source, or run:N[#output].
     #[arg(add = clap_complete::ArgValueCompleter::new(crate::completion::local))]
     source: String,
-    /// Destination model, org/name.
+    /// Destination repository, org/name.
+    #[arg(value_name = "REPO")]
     destination: String,
     /// Commit lane, such as bf16 or fp8.
     #[arg(long, value_parser = api::model_ref::lane)]
@@ -235,6 +239,7 @@ struct LoraUpload {
 #[derive(clap::Args, Debug)]
 pub(crate) struct Publish {
     /// org/name.
+    #[arg(value_name = "REPO")]
     model: String,
     /// New, increasing release version (PEP 440).
     version: String,
@@ -246,6 +251,7 @@ pub(crate) struct Publish {
 #[derive(clap::Args, Debug)]
 pub(crate) struct Delete {
     /// org/name, org/name@version, or org/name@sha256:<commit>.
+    #[arg(value_name = "REPO")]
     model: String,
 }
 

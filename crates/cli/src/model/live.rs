@@ -116,12 +116,8 @@ impl Catalog {
 
     pub(crate) fn rows(&self) -> Vec<Vec<String>> {
         self.page.models.iter().map(|row| {
-            let held = self.local.as_ref().map(|models| models.iter().filter(|held| same_model(&held.model, &row.model)).map(|held| held.bytes).max());
-            let (local, size) = match held {
-                Some(Some(bytes)) => ("yes", output::bytes(bytes)),
-                Some(None) => ("no", "—".into()),
-                None => ("unknown", "—".into()),
-            };
+            let (local, bytes) = local_state(self.local.as_deref(), &row.model);
+            let size = bytes.map_or_else(|| "—".into(), output::bytes);
             vec![row.model.clone(), row.family.clone().unwrap_or_else(|| "—".into()), size, local.into()]
         }).collect()
     }
@@ -251,6 +247,22 @@ pub(crate) async fn download(ctx: &Context, choice: DownloadChoice) -> Result<st
     super::machine::download_to(ctx, ask, Some(On::Machine(choice.machine))).await
 }
 
+fn local_state(models: Option<&[HeldModel]>, model: &str) -> (&'static str, Option<u64>) {
+    let Some(models) = models else { return ("unknown", None) };
+    let mut bytes = None;
+    let (mut complete, mut partial, mut unknown) = (false, false, false);
+    for held in models.iter().filter(|held| same_model(&held.model, model)) {
+        bytes = Some(bytes.map_or(held.bytes, |size: u64| size.max(held.bytes)));
+        match held.complete {
+            Some(true) => complete = true,
+            Some(false) => partial = true,
+            None => unknown = true,
+        }
+    }
+    let state = if complete { "yes" } else if unknown { "cached" } else if partial { "partial" } else { "no" };
+    (state, bytes)
+}
+
 fn same_model(left: &str, right: &str) -> bool {
     api::model_ref::Repo::parse(left).ok().zip(api::model_ref::Repo::parse(right).ok()).is_some_and(|(left, right)| left == right)
 }
@@ -268,7 +280,7 @@ mod tests {
     fn catalog() -> Catalog {
         Catalog::new(Searching { hub: "https://example.test".into(), q: "fox".into(), family: Some("sdxl".into()), tag: "art".into(), no_tag: "nsfw".into(), role: "model".into(), limit: 2, offset: 2 },
             ModelSearch { models: vec![FoundModel { model: "author/one".into(), ..Default::default() }, FoundModel { model: "author/two".into(), ..Default::default() }], total: 5, older: 1 },
-            Some(vec![HeldModel { model: "author/two".into(), bytes: 1024, ..Default::default() }] ))
+            Some(vec![HeldModel { model: "author/two".into(), complete: Some(true), bytes: 1024, ..Default::default() }] ))
     }
 
     #[test]
@@ -345,4 +357,15 @@ mod tests {
         catalog.page.models.pop();
         assert_eq!(catalog.selection_after(Some(&selected), 2), 1);
     }
+    #[test]
+    fn local_presence_requires_a_complete_checkpoint() {
+        let row = |complete, bytes| HeldModel { model: "author/model".into(), complete, bytes, ..Default::default() };
+        assert_eq!(local_state(None, "author/model"), ("unknown", None));
+        assert_eq!(local_state(Some(&[]), "author/model"), ("no", None));
+        assert_eq!(local_state(Some(&[row(Some(false), 4)]), "author/model"), ("partial", Some(4)));
+        assert_eq!(local_state(Some(&[row(None, 6)]), "author/model"), ("cached", Some(6)));
+        assert_eq!(local_state(Some(&[row(Some(false), 4), row(None, 6)]), "author/model"), ("cached", Some(6)));
+        assert_eq!(local_state(Some(&[row(None, 6), row(Some(true), 10)]), "author/model"), ("yes", Some(10)));
+    }
+
 }

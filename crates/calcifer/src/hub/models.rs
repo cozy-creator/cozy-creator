@@ -139,10 +139,6 @@ pub(super) async fn search(
     if role.is_none() || family.is_some() {
         checkpoints::said(&api, &hub, &cards, &mut models).await;
     }
-    if exact.is_some() && role.is_some() {
-        models.retain(|model| model.role.as_deref() == role);
-        total = models.len() as i64;
-    }
     if let Some(family) = family.filter(|_| !upstream_paged) {
         let is = |row: &FoundModel| row.family.as_deref().is_some_and(|its| its.eq_ignore_ascii_case(family));
         let labelled = |card: &types::ModelCard| card.model.family.as_deref().is_some_and(|its| its.eq_ignore_ascii_case(family));
@@ -152,7 +148,14 @@ pub(super) async fn search(
         models.retain(is);
 
     }
+    // A publication can change the card's role after the summary page was read.
+    retain_role(&mut models, role);
+    if exact.is_some() { total = models.len() as i64; }
     Ok(Json(page(models, total, ask.offset, limit, (upstream_paged || family.is_none()) && exact.is_none())))
+}
+
+fn retain_role(models: &mut Vec<FoundModel>, role: Option<&str>) {
+    if let Some(role) = role { models.retain(|model| model.role.as_deref() == Some(role)); }
 }
 
 fn role_unavailable() -> Refusal {
@@ -176,6 +179,17 @@ mod pagination_tests {
 
     fn rows(names: &[&str]) -> Vec<FoundModel> {
         names.iter().map(|name| FoundModel { model: (*name).into(), ..Default::default() }).collect()
+    }
+
+    #[test]
+    fn changed_card_roles_cannot_leak_into_a_filtered_page() {
+        let mut models = vec![
+            FoundModel { model: "author/still-model".into(), role: Some("model".into()), ..Default::default() },
+            FoundModel { model: "author/changed-to-lora".into(), role: Some("lora".into()), ..Default::default() },
+        ];
+        retain_role(&mut models, Some("model"));
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].model, "author/still-model");
     }
 
     #[test]
