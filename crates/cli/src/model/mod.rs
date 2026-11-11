@@ -281,11 +281,11 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::Parser;
+    use clap::{CommandFactory as _, Parser};
 
-    #[derive(Parser)]
+    #[derive(Parser, Debug)]
     struct ModelCommand { #[command(flatten)] args: Args }
-    #[derive(Parser)]
+    #[derive(Parser, Debug)]
     struct LoraCommand { #[command(flatten)] args: LoraArgs }
 
     #[test]
@@ -304,15 +304,26 @@ mod tests {
     #[test]
     fn adapter_metadata_is_only_exposed_in_lora_commands() {
         for (flag, value) in [("--trigger", "word"), ("--strength", "0.5")] {
-            assert!(ModelCommand::try_parse_from(["model", "edit", "author/model", flag, value]).is_err());
+            let error = ModelCommand::try_parse_from(["model", "edit", "author/model", flag, value]).unwrap_err();
+            assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
         }
         for (flag, value) in [("--trigger", "word"), ("--strength", "0.5"), ("--trained-on", "author/base")] {
-            assert!(ModelCommand::try_parse_from(["model", "upload", "file", "author/model", flag, value]).is_err());
+            let error = ModelCommand::try_parse_from(["model", "upload", "file", "author/model", "--lane", "bf16", flag, value]).unwrap_err();
+            assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
         }
         assert!(LoraCommand::try_parse_from(["lora", "edit", "author/adapter", "--trigger", "word", "--strength", "0.5"]).is_ok());
-        assert!(LoraCommand::try_parse_from(["lora", "upload", "file", "author/adapter", "--trained-on", "base", "--strength", "0.5"]).is_ok());
+        LoraCommand::try_parse_from(["lora", "upload", "file", "author/adapter", "--lane", "bf16", "--trained-on", "base", "--strength", "0.5"]).unwrap_or_else(|error| panic!("{error}"));
         assert!(ModelCommand::try_parse_from(["model", "remove", "author/model"]).is_ok());
         assert!(LoraCommand::try_parse_from(["lora", "remove", "author/adapter"]).is_ok());
         assert!(LoraCommand::try_parse_from(["lora", "info", "author/adapter"]).is_err());
+    }
+
+    #[test]
+    fn model_and_lora_help_list_their_public_controls() {
+        let mut cli = crate::dev::hide(crate::Cli::command());
+        cli.build();
+        let names = |name: &str| cli.find_subcommand(name).unwrap().get_subcommands().map(|command| command.get_name().to_owned()).collect::<Vec<_>>();
+        assert_eq!(names("model"), ["ls", "edit", "download", "remove", "upload", "quantize", "publish", "delete"]);
+        assert_eq!(names("lora"), ["ls", "download", "remove", "edit", "upload", "publish"]);
     }
 }

@@ -71,9 +71,9 @@ pub(super) async fn search(
     if role.is_some_and(|role| !matches!(role, "model" | "lora")) {
         return Err(Refusal(Error::new(Kind::Usage, "catalog_role_invalid", "role must be model or lora")));
     }
-    let upstream_paged = role.is_some();
     let q = ask.q.as_deref().map(str::trim).filter(|q| !q.is_empty());
     let family = ask.family.as_deref().map(str::trim).filter(|family| !family.is_empty());
+    let upstream_paged = role.is_some() && family.is_none();
     // One word that is org/name is that model; anything else is search text.
     let tagged = ask.tag.as_deref().is_some_and(|t| !t.trim().is_empty()) || ask.no_tag.as_deref().is_some_and(|t| !t.trim().is_empty());
     let exact = match (family, q, tagged) {
@@ -107,7 +107,8 @@ pub(super) async fn search(
             newest = Some(names.len());
             let (mut seen, mut offset) = (BTreeSet::new(), 0);
             while offset < READ_AT_MOST {
-                let answer = (client.search_models(q, None, &tags, &no_tags, PAGE, offset).await).map_err(|e| refusal(&hub, e))?;
+                let answer = (client.search_models_by_role(q, None, &tags, &no_tags, PAGE, offset, role).await).map_err(|e| refusal(&hub, e))?;
+                if !role_page_matches(&answer, role) { return Err(role_unavailable()); }
                 let fresh = answer.models.iter().filter(|m| seen.insert((m.org.clone(), m.name.clone()))).count();
                 offset += answer.models.len() as u32;
                 take(&mut names, answer.models);
@@ -132,10 +133,11 @@ pub(super) async fn search(
         total = 1;
     }
     let mut models: Vec<FoundModel> = cards.iter().map(found).collect();
-    if role.is_none() {
-        checkpoints::said(&api, &hub, &cards, &mut models).await;
-    } else if cards.iter().any(|card| card.model.role.is_none()) {
+    if role.is_some() && cards.iter().any(|card| card.model.role.is_none()) {
         return Err(role_unavailable());
+    }
+    if role.is_none() || family.is_some() {
+        checkpoints::said(&api, &hub, &cards, &mut models).await;
     }
     if exact.is_some() && role.is_some() {
         models.retain(|model| model.role.as_deref() == role);
