@@ -28,6 +28,8 @@ Use `--securefs /absolute/path/to/securefs` for an explicitly prepared helper. `
 
 Each run writes its result, binary digest, timings and logs under `target/local-web/results`. Cleanup asks the owned Calcifer to close its views and stop, then stops any TensorD supervisor started for that test profile. A process that cannot drain leaves its profile and diagnostics available for inspection.
 
+Per-run temporary files use a short owner-only directory under `/tmp` so Chromium's Unix sockets fit their path limit. Successful runs remove it. Its location is recorded with failed or interrupted results for inspection.
+
 This runner exercises the real Rust service and real Chromium vault flow. The cross-platform release jobs remain the qualification for installed Windows and macOS behavior. Other browser cases that execute functions also need an explicitly prepared local worker and matching Runtime environment.
 
 The focused native HTTP and browser-client contract test also creates and removes its own profile. It can share the test build cache.

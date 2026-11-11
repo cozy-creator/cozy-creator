@@ -13,6 +13,7 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from types import FrameType
 from typing import IO, NoReturn, TypedDict, cast
@@ -277,11 +278,14 @@ def run_locked(args: Args, profile: Path) -> int:
         env["COZY_SECUREFS_PROVIDER"] = str(securefs)
     result = profile / "results" / f"{time.strftime('%Y%m%dT%H%M%S')}-{time.time_ns() % 1_000_000_000:09d}"
     result.mkdir()
+    scratch = Path(tempfile.mkdtemp(prefix="cozy-web-", dir="/tmp"))
+    env["TMPDIR"] = str(scratch)
     holder: Holder | None = None
     vite: subprocess.Popen[bytes] | None = None
     server: subprocess.Popen[bytes] | None = None
     browser_process: subprocess.Popen[str] | None = None
     summary: dict[str, object] = {"binary": str(binary), "binary_source": str(binary_source), "version": version, "binary_sha256": binary_sha256,
+               "temporary_directory": str(scratch),
                "fixture": str(fixture), "fixture_sha256": hashlib.sha256(fixture.read_bytes()).hexdigest(),
                "build_seconds": round(build_seconds, 3)}
     source = subprocess.run(["git", "rev-parse", "HEAD"], cwd=harness, text=True, capture_output=True)
@@ -349,6 +353,12 @@ def run_locked(args: Args, profile: Path) -> int:
             summary["worker_pid"] = stop_worker(home, binary)
         except (OSError, RuntimeError) as error:
             cleanup_errors.append(str(error))
+        if not cleanup_errors and summary.get("exit_code") == 0:
+            try:
+                shutil.rmtree(scratch)
+            except OSError as error:
+                cleanup_errors.append(str(error))
+        summary["temporary_directory_retained"] = scratch.exists()
         summary["cleanup_errors"] = cleanup_errors
         summary["total_seconds"] = round(time.monotonic() - started, 3)
         (result / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
