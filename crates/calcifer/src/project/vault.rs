@@ -6,6 +6,7 @@ use project_mount::{MountOptions, Mounted, Provider};
 use project_vault::{Credential, Keybag, ProjectSecret, SecretString, SessionPolicy, SessionTimer, KEYBAG_FILE};
 use sha2::{Digest as _, Sha256};
 use crate::api::{Api, Refusal, parse};
+use super::vault_operation::{self, Progress};
 
 #[cfg(test)]
 #[path = "vault_decrypt_tests.rs"]
@@ -322,6 +323,7 @@ fn mark_closing(session: &mut Session) {
 }
 
 fn close(api: &Arc<Api>, root: &FsPath) -> Result<(), Error> {
+    vault_operation::revoke(root);
     if let Some(session) = held(root) {
         let mut session = session.lock().expect("vault session");
         mark_closing(&mut session);
@@ -362,6 +364,7 @@ pub(crate) fn start(api: &Arc<Api>) {
         loop {
             tokio::time::sleep(Duration::from_secs(1)).await;
             let Some(api) = api.upgrade() else { return };
+            vault_operation::expire();
             let roots: Vec<PathBuf> = SESSIONS.lock().expect("vault sessions").keys().cloned().collect();
             for root in roots {
                 let api = api.clone();
@@ -403,24 +406,31 @@ pub(super) async fn read(State(api): State<Arc<Api>>, Path(named): Path<String>)
 pub(super) async fn write(State(api): State<Arc<Api>>, Path(named): Path<String>, body: Result<Bytes, BytesRejection>) -> Result<Response, Refusal> {
     let mut ask: VaultAsk = parse(&body?)?;
     let root = location(&api, &named).map_err(Refusal)?;
-    let changed = tokio::task::block_in_place(|| {
-        let op = operation(&root); let _guard = op.lock().expect("vault operation");
-        let mut ended = vec![];
-        if ask.action == "lock" {
-            if let Some(session) = held(&root) { mark_closing(&mut session.lock().expect("vault session")); }
-            // An explicit lock ends the project's work first, so nothing goes on billing behind a locked vault.
-            ended = end_work(&api, &root)?;
-        }
-        let _access = exclusive(&root)?;
-        let mut changed = match change(&api, &root, &mut ask) {
-            // What it ended is still settling: the session is closing, and the sweeper locks it once it has.
-            Err(busy) if !ended.is_empty() && busy.code == "project_busy" => VaultChanged { vault: status(&root), recovery_secret: None, preserved_source: None, ended: vec![] },
-            changed => changed?,
-        };
-        changed.ended = ended;
-        Ok(changed)
-    }).map_err(Refusal)?;
+    let changed = tokio::task::block_in_place(|| operate(&api, &root, &mut ask, &mut Progress::quiet())).map_err(Refusal)?;
     Ok(private(axum::Json(changed).into_response()))
+}
+
+pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Progress) -> Result<VaultChanged, Error> {
+    progress.phase("waiting");
+    let op = operation(&root); let _guard = op.lock().expect("vault operation");
+    let mut ended = vec![];
+    if ask.action == "lock" {
+        if let Some(session) = held(&root) { mark_closing(&mut session.lock().expect("vault session")); }
+        // An explicit lock ends the project's work first, so nothing goes on billing behind a locked vault.
+        ended = end_work(&api, &root)?;
+    }
+    let _access = exclusive(&root)?;
+    progress.phase("preparing");
+    let mut changed = match change(&api, &root, ask, progress) {
+        // What it ended is still settling: the session is closing, and the sweeper locks it once it has.
+        Err(busy) if !ended.is_empty() && busy.code == "project_busy" => VaultChanged { vault: status(&root), recovery_secret: None, preserved_source: None, ended: vec![], skipped_files: vec![] },
+        changed => changed?,
+    };
+    changed.ended = ended;
+    // Capture this exact mount's revocation token while the operation still
+    // holds the transition guard, so a later lock cannot revive its reply.
+    progress.readable = readable_token(root);
+    Ok(changed)
 }
 
 fn private(mut response: Response) -> Response {
@@ -429,7 +439,7 @@ fn private(mut response: Response) -> Response {
     response
 }
 
-fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk) -> Result<VaultChanged, Error> {
+fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Progress) -> Result<VaultChanged, Error> {
     recover_under_guards(root)?;
     require_transition_ready(root, &ask.action)?;
     let (mut recovery_secret, mut preserved_source) = (None, None);
@@ -444,13 +454,14 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk) -> Result<VaultChan
             let generation = plain_generation_for_encrypt(root, &id)?;
             let created = Keybag::create_generation(&id, generation, new_passphrase(ask)?).map_err(key)?;
             recovery_secret = Some(created.recovery_secret.expose().to_owned());
-            preserved_source = Some(convert(api, root, created.keybag, created.secret, ask)?);
+            preserved_source = Some(convert(api, root, created.keybag, created.secret, ask, progress)?);
             drop(project);
             if ask.remove_plaintext {
                 preserved_source = None;
             }
         }
         "unlock" => {
+            progress.phase("opening");
             if !encrypted(root) { return Err(Error::new(Kind::Usage, "project_plain", "this project is not encrypted")); }
             let keybag = Keybag::load(&root.join(KEYBAG_FILE)).map_err(key)?;
             let secret = keybag.unlock(credential(ask)?).map_err(key)?;
@@ -500,16 +511,16 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk) -> Result<VaultChan
             session.keybag = keybag;
             if session.timer.activity() { session.active_ms = super::now_ms(); }
         }
-        "decrypt" => decrypt(api, root)?,
+        "decrypt" => decrypt(api, root, progress)?,
         "rotate" => {
             let session = held(root).ok_or_else(|| locked(root))?;
             let created = session.lock().expect("vault session").keybag.new_generation(new_passphrase(ask)?).map_err(key)?;
             recovery_secret = Some(created.recovery_secret.expose().to_owned());
-            convert(api, root, created.keybag, created.secret, ask)?;
+            convert(api, root, created.keybag, created.secret, ask, progress)?;
         }
         _ => return Err(Error::new(Kind::Usage, "vault_action", "unknown local vault action")),
     }
-    Ok(VaultChanged { vault: status(root), recovery_secret, preserved_source, ended: vec![] })
+    Ok(VaultChanged { vault: status(root), recovery_secret, preserved_source, ended: vec![], skipped_files: progress.skipped() })
 }
 
 /// Whether the project has work in progress: a run not settled, or a render, cut or file move going.
@@ -770,7 +781,7 @@ fn sync_plain_file(path: &FsPath) -> Result<(), Error> {
     }
 }
 
-fn decrypt(api: &Arc<Api>, root: &FsPath) -> Result<(), Error> {
+fn decrypt(api: &Arc<Api>, root: &FsPath, progress: &mut Progress) -> Result<(), Error> {
     // This makes a retry after a completed or recovered switch harmless.
     if !encrypted(root) { return Ok(()); }
     let published = view(root)?;
@@ -809,15 +820,21 @@ fn decrypt(api: &Arc<Api>, root: &FsPath) -> Result<(), Error> {
         fs::create_dir_all(&runtime).map_err(io)?;
         platform::durable::set_mode(&runtime, 0o700).map_err(provider)?;
         let source_view = project_mount::view_path(&runtime).map_err(provider)?;
+        progress.phase("mounting");
         let mut source = secret.with_bytes(|bytes| engine.mount(&root.join(BACKING), &source_view, bytes,
             MountOptions { idle_timeout: None, read_only: !cfg!(windows) })).map_err(provider)?;
-        copy_tree_at(source.view(), &staged, FsPath::new(""), true, !cfg!(windows))?;
+        progress.phase("validating");
+        walk_tree(source.view(), None, FsPath::new(""), true, !cfg!(windows), progress)?;
+        progress.phase("copying");
+        walk_tree(source.view(), Some(&staged), FsPath::new(""), true, !cfg!(windows), progress)?;
+        progress.phase("verifying");
         sync_tree(&staged)?;
         if !plain_target(&record, &staged)? { return Err(error("vault_identity", "the plaintext snapshot did not retain the project identity")); }
         source.try_unmount().map_err(provider)?;
         record.plain.as_mut().expect("plaintext conversion").ready = true;
         save_conversion(&record)?;
         if !original_plain_source(&record, root)? || exists(&record.saved)? { return Err(error("vault_recovery", "the encrypted source changed before cutover")); }
+        progress.phase("committing");
         fs::rename(root, &record.saved).map_err(io)?;
         platform::durable::sync_dir(parent).map_err(provider)?;
         fs::rename(&staged, root).map_err(io)?;
@@ -847,11 +864,14 @@ fn no_nested(api: &Api, root: &FsPath) -> Result<(), Error> {
     Ok(())
 }
 
-fn convert(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret, ask: &VaultAsk) -> Result<PathBuf, Error> {
+fn convert(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret, ask: &VaultAsk, progress: &mut Progress) -> Result<PathBuf, Error> {
     let source = view(root)?;
     // A child project has its own activity, connections and transition gate. Never move/delete
     // its live storage as an incidental part of converting its parent.
     no_nested(api, root)?;
+    progress.phase("validating");
+    let managed = managed_tree(&source)?;
+    walk_tree(&source, None, FsPath::new(""), managed, false, progress)?;
     let old_secret = held(root).map(|session| session.lock().expect("vault session").secret.duplicate());
     if old_secret.is_none() && plain_generation_for_encrypt(root, &keybag.info().project_id)? != keybag.info().generation {
         return Err(error("vault_key", "the plaintext execution generation changed before encryption"));
@@ -893,20 +913,25 @@ fn convert(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret,
     fs::create_dir_all(&runtime).map_err(io)?;
     platform::durable::set_mode(&runtime, 0o700).map_err(provider)?;
     let view = project_mount::view_path(&runtime).map_err(provider)?;
+    progress.phase("mounting");
     let mut target = secret.with_bytes(|bytes| engine.mount(&staged.join(BACKING), &view, bytes, MountOptions { idle_timeout: None, read_only: false })).map_err(provider)?;
-    if source_mount.is_some() { copy_tree_at(&source, target.view(), FsPath::new(""), true, !cfg!(windows))?; }
-    else { copy_tree(&source, target.view())?; }
+    progress.phase("copying");
+    walk_tree(&source, Some(target.view()), FsPath::new(""), managed, source_mount.is_some() && !cfg!(windows), progress)?;
+    progress.phase("verifying");
     target.try_unmount().map_err(provider)?;
     if let Some(mut source) = source_mount.take() { source.try_unmount().map_err(provider)?; }
     let receipt = Conversion { root: root.to_owned(), staged: staged.clone(), saved: saved.clone(), key_id: target_keybag.info().key_id, remove_source: old_secret.is_some() || ask.remove_plaintext, plain: None };
+    progress.phase("committing");
     save_conversion(&receipt)?;
     fs::rename(root, &saved).map_err(|why| error("vault_io", format!("preserve the project source before encryption: {why}")))?;
     platform::durable::sync_dir(parent).map_err(provider)?;
     if let Err(e) = fs::rename(&staged, root) { return Err(error("vault_recovery", format!("source preserved at {}; retry opening the project to complete conversion: {e}", saved.display()))); }
     platform::durable::sync_dir(parent).map_err(provider)?;
     // The source is still intact if reopening fails. It is never deleted before the verified switch.
+    progress.phase("opening");
     mount(api, root, keybag, secret, ask)?;
     drop(_converting);
+    progress.phase("cleaning_up");
     let journal = match old_secret {
         Some(old) => api.calcifer.store().rekey_project_journal(root, &old, &target_keybag),
         None => api.calcifer.store().protect_project_journal(root),
@@ -928,7 +953,7 @@ fn plain_generation_for_encrypt(root: &FsPath, id: &str) -> Result<u64, Error> {
     }
 }
 
-fn copy_tree(source: &FsPath, target: &FsPath) -> Result<(), Error> {
+fn managed_tree(source: &FsPath) -> Result<bool, Error> {
     // Executable environments contain interpreter symlinks. They are reproducible caches,
     // not retained content. Only omit them for a verified managed view, never a plain user folder.
     let logical = logical(source);
@@ -941,15 +966,24 @@ fn copy_tree(source: &FsPath, target: &FsPath) -> Result<(), Error> {
                 && marker.storage.generation > 0 && generation.is_none_or(|generation| marker.storage.generation == generation)
                 && platform::durable::canonical(source).is_ok_and(|path| path == marker.storage.view_root))
     }) || (plain_project_id(source).is_some() && crate::private_io::retained_copy_storage(source)?.is_some());
-    copy_tree_at(source, target, FsPath::new(""), managed, false)
+    Ok(managed)
 }
 
+#[cfg(test)]
+fn copy_tree(source: &FsPath, target: &FsPath) -> Result<(), Error> {
+    walk_tree(source, Some(target), FsPath::new(""), managed_tree(source)?, false, &mut Progress::quiet())
+}
+
+#[cfg(test)]
 fn copy_tree_at(source: &FsPath, target: &FsPath, relative: &FsPath, managed: bool, frozen: bool) -> Result<(), Error> {
+    walk_tree(source, Some(target), relative, managed, frozen, &mut Progress::quiet())
+}
+
+fn walk_tree(source: &FsPath, target: Option<&FsPath>, relative: &FsPath, managed: bool, frozen: bool, progress: &mut Progress) -> Result<(), Error> {
     for entry in fs::read_dir(source).map_err(io)? {
         let entry = entry.map_err(io)?;
         let kind = entry.file_type().map_err(io)?;
         let from = entry.path();
-        let to = target.join(entry.file_name());
         let relative = relative.join(entry.file_name());
         let top = relative.components().next().and_then(|part| part.as_os_str().to_str());
         let apple_volume = managed && cfg!(target_os = "macos");
@@ -969,7 +1003,21 @@ fn copy_tree_at(source: &FsPath, target: &FsPath, relative: &FsPath, managed: bo
                 || (first == Some(".vault-machine") && matches!(second,
                     Some("editable" | "generations" | "executors" | "home" | "jit" | "kernels" | "tmp" | "cache" | "matplotlib" | "uv-cache" | "uv-tools"))) { continue; }
         }
-        if kind.is_symlink() { return Err(Error::new(Kind::Usage, "vault_symlink", "storage conversion refuses symlinks; replace them with project-owned files")); }
+        if kind.is_symlink() {
+            // Legacy media links with no bytes already represent missing media. Keep
+            // that project record missing; following a live external link is never implied.
+            if relative.starts_with(super::folder::FILES) && fs::metadata(&from).is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound) {
+                progress.skip(&relative);
+                continue;
+            }
+            return Err(Error::new(Kind::Usage, "vault_symlink", format!("storage conversion cannot copy symbolic link {}; import its contents into the project first", relative.display())));
+        }
+        if !kind.is_dir() && !kind.is_file() { return Err(Error::new(Kind::Usage, "vault_file_type", format!("storage conversion accepts ordinary files and directories only: {}", relative.display()))); }
+        let Some(target) = target else {
+            if kind.is_dir() { walk_tree(&from, None, &relative, managed, frozen, progress)?; }
+            continue;
+        };
+        let to = target.join(entry.file_name());
         if kind.is_dir() {
             match fs::create_dir(&to) {
                 Ok(()) => {},
@@ -977,18 +1025,19 @@ fn copy_tree_at(source: &FsPath, target: &FsPath, relative: &FsPath, managed: bo
                     && fs::symlink_metadata(&to).is_ok_and(|meta| meta.is_dir() && !meta.file_type().is_symlink()) => {},
                 Err(e) => return Err(error("vault_copy", format!("create directory {}: {e}", relative.display()))),
             }
-            copy_tree_at(&from, &to, &relative, managed, frozen)?;
+            walk_tree(&from, Some(&to), &relative, managed, frozen, progress)?;
         }
         else if kind.is_file() {
             if entry.file_name() == "project.db-wal" || entry.file_name() == "project.db-shm" { continue; }
             if entry.file_name() == "project.db" {
                 if frozen {
                     if fs::metadata(from.with_file_name("project.db-wal")).is_ok_and(|meta| meta.len() > 0) { return Err(error("vault_database", "read-only project snapshot was not fully checkpointed")); }
-                    fs::copy(&from, &to).map_err(io)?;
+                    copy_file(&from, &to, progress)?;
                     if hash(&from)? != hash(&to)? { return Err(error("vault_database", "frozen project database copy did not verify")); }
                 } else {
                     let conn = rusqlite::Connection::open_with_flags(&from, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| error("vault_database", format!("open source snapshot: {e}")))?;
                     conn.backup(rusqlite::MAIN_DB, &to, rusqlite::backup::NO_PROGRESS).map_err(|e| error("vault_database", format!("backup project snapshot: {e}")))?;
+                    progress.copied(fs::metadata(&to).map_err(io)?.len());
                 }
                 // Leave a self-contained database, not a WAL header that needs a writable SHM
                 // beside it. Immutable verification is safe only after this explicit checkpoint.
@@ -1005,12 +1054,27 @@ fn copy_tree_at(source: &FsPath, target: &FsPath, relative: &FsPath, managed: bo
                 let okay: String = copied.query_row("PRAGMA quick_check", [], |row| row.get(0)).map_err(|e| error("vault_database", e))?;
                 if okay != "ok" { return Err(error("vault_database", "the copied project database did not verify")); }
             } else {
-                fs::copy(&from, &to).map_err(io)?;
+                copy_file(&from, &to, progress)?;
                 if hash(&from)? != hash(&to)? { return Err(error("vault_copy_mismatch", "a copied project file changed or did not verify")); }
             }
+            progress.file_done();
         } else { return Err(Error::new(Kind::Usage, "vault_file_type", "storage conversion accepts ordinary files and directories only")); }
     }
     Ok(())
+}
+
+fn copy_file(from: &FsPath, to: &FsPath, progress: &mut Progress) -> Result<(), Error> {
+    use std::io::Write as _;
+    let mut source = fs::File::open(from).map_err(io)?;
+    let mut destination = fs::File::create(to).map_err(io)?;
+    let mut buffer = vec![0u8; 1024 * 1024];
+    loop {
+        let count = source.read(&mut buffer).map_err(io)?;
+        if count == 0 { break; }
+        destination.write_all(&buffer[..count]).map_err(io)?;
+        progress.copied(count as u64);
+    }
+    fs::set_permissions(to, source.metadata().map_err(io)?.permissions()).map_err(io)
 }
 
 fn hash(path: &FsPath) -> Result<[u8;32], Error> {

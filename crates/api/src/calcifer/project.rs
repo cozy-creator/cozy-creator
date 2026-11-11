@@ -1316,4 +1316,19 @@ pub struct VaultChanged {
     /// The project's runs a lock canceled first, by number.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ended: Vec<u64>,
+    /// Already-missing retained media skipped during conversion. Their project records remain missing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skipped_files: Vec<PathBuf>,
+}
+
+/// A private vault-operation stream. Progress counts copied bytes and completed files, not an estimated percentage.
+/// Only the terminal reply can contain a recovery secret; never record these events in history or shared event streams.
+#[derive(Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum VaultEvent {
+    Accepted { action: String },
+    Progress { phase: String, files_done: u64, bytes_done: u64 },
+    Completed { changed: VaultChanged },
+    Failed { error: Error },
 }

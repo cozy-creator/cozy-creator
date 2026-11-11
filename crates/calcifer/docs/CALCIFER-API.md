@@ -615,6 +615,34 @@ ffmpeg (cuts, frames, clips) and uv (local code). No route asks for them.
 - `POST /v1/down`: `{stopping: true, owed}`. Admission closes, mutations in flight finish, every stream ends,
   then the server. Machines keep what they accepted; the next Calcifer resumes `owed`. Never refused.
 
+### Vault operation progress and reconnection
+
+`PUT /v1/projects/{id}/vault/operations/{operation}` accepts the existing `VaultAsk`
+body and immediately opens a private SSE response. The caller chooses one random
+operation ID and reuses it when reconnecting. Events are `VaultEvent` values:
+`accepted`, `progress`, then exactly one `completed` or `failed`. `accepted` means
+the request was received; it is not a successful conversion. The worker durably
+records its ID and metadata binding before changing storage. It sends phases and
+copied-file/byte counts while working; ordinary SSE comments keep the connection alive.
+
+Repeating that PUT attaches to the same operation instead of executing it again.
+Only the ID, metadata digest and terminal state are durable; no credential,
+request body, recovery secret or content filename is recorded. After a real
+Calcifer crash, a known ID whose reply is unavailable returns a typed interruption
+or expired-result error, so the client does not repeat a possibly committed
+storage change. The user can inspect vault status and start a new operation.
+
+Completed private replies are held in memory for at most 15 minutes and can be
+discarded sooner with `DELETE` on the operation URL. Locking revokes their
+recovery secrets and old view paths. These events never go through global SSE,
+history, outboxes or the ordinary response cache. The original JSON
+`POST /v1/projects/{id}/vault` remains supported for older clients.
+
+Conversion validates its source before copying media. A dangling legacy link
+under `files/` is omitted and returned in `skipped_files`; its project-state
+reference remains missing. Readable external links and unsupported entries
+still refuse with their relative path instead of silently importing outside data.
+
 ## CLI verbs and their calls
 
 The CLI resolves the current directory to an existing project and sends its absolute path as the routes' `{id}`. `cozy new [directory]` creates a project explicitly through `POST /v1/projects`. `cozy open`, `cozy run` and `cozy status` require an existing project. API clients can also use a project name or id. The browser provides asset import, editing, rendering, export and history through the project endpoints described above.

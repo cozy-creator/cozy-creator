@@ -73,6 +73,7 @@ fn main() {
     v.visit::<project::VaultStatus>();
     v.visit::<project::VaultAsk>();
     v.visit::<project::VaultChanged>();
+    v.visit::<project::VaultEvent>();
     v.visit::<project::State>();
     v.visit::<project::Asked>();
     v.visit::<project::Runs>();

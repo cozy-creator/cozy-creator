@@ -30,6 +30,7 @@ mod walker;
 mod written;
 mod legacy;
 pub(crate) mod vault;
+pub(crate) mod vault_operation;
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -193,6 +194,7 @@ pub(crate) fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
         .route_layer(axum::middleware::from_fn_with_state(api.clone(), keyed::answered))
         .route_layer(axum::middleware::from_fn_with_state(api.clone(), vault::privacy))
         .route("/v1/projects/{id}/vault", get(vault::read).post(vault::write))
+        .route("/v1/projects/{id}/vault/operations/{operation}", axum::routing::put(vault_operation::write).delete(vault_operation::acknowledge))
         .route("/v1/projects/{id}/address", get(address))
 }
 

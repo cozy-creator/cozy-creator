@@ -55,7 +55,7 @@ projectvault() (
   step "encrypt the same project and read its mounted view"
   local encrypt_before_ms encrypt_after_ms
   encrypt_before_ms=$(python3 -c 'import time; print(time.time_ns() // 1000000)')
-  cozy --json vault --directory "$P" encrypt --passphrase-file "$secrets/initial" --recovery-out "$secrets/recovery1" --remove-plaintext --idle 0 --max-duration 86400 > "$work/encrypted.json"
+  python3 "$E2E/cli/vault_stream.py" "$P" "$secrets/initial" "$secrets/recovery1" > "$work/encrypted.json"
   encrypt_after_ms=$(python3 -c 'import time; print(time.time_ns() // 1000000)')
   python3 - "$work/encrypted.json" "$encrypt_before_ms" "$encrypt_after_ms" <<'PY_ENCRYPT_DEADLINE' > "$work/encrypted-deadline.json" || fail "conversion did not retain its requested absolute expiry"
 import json,sys
