@@ -98,9 +98,21 @@ async fn typed_nodes_fixture() {
     assert!(project.folder.written().unwrap().get(&name).unwrap().get(format::TEXT).is_none());
 
     make(&api, &id, json!({"name":"known_video","tool":"fixture/video","kind":"video","fields":{}})).await;
+    make(&api, &id, json!({"name":"known_text","tool":"fixture/text","kind":"text","fields":{}})).await;
+    edit(&api, &id, "note", json!({"tool":"fixture/text","fields":{}})).await;
+    let doc = Doc::load(&project.folder).unwrap();
+    let note = &doc.assets[doc.find("note").unwrap()];
+    assert_eq!(note.kind, "text");
+    assert_eq!(note.node_kind.as_deref(), Some("text"));
+    assert_eq!(note.tool.as_deref(), Some("fixture/text"));
+    assert_eq!(note.inputs.get("instructions"), Some(&json!("Some words.")));
     for (name, value) in [
         ("image", json!({"tool":"fixture/video","fields":{}})),
         ("image", json!({"tool":"fixture/video","fields":{"node_kind":"image"}})),
+        ("image", json!({"tool":"fixture/text","fields":{}})),
+        ("video", json!({"tool":"fixture/text","fields":{}})),
+        ("audio", json!({"tool":"fixture/text","fields":{}})),
+        ("note", json!({"tool":"fixture/video","fields":{}})),
         ("edit", json!({"tool":"fixture/video","fields":{}})),
         ("edit", json!({"tool":"fixture/video","fields":{"node_kind":"video_edit"}})),
         ("edit", json!({"tool":"","fields":{}})),
@@ -112,6 +124,11 @@ async fn typed_nodes_fixture() {
         assert_eq!(project.folder.written().unwrap(), before, "a rejected model must not change type, tool or words");
         assert_eq!(project.folder.seq(), seq);
     }
+    edit(&api, &id, "note", json!({"tool":"","fields":{}})).await;
+    let doc = Doc::load(&project.folder).unwrap();
+    let note = &doc.assets[doc.find("note").unwrap()];
+    assert_eq!(note.kind, "text");
+    assert_eq!(note.text.as_deref(), Some("Some words."));
     // A model without cached output metadata still cannot implicitly change the container.
     edit(&api, &id, "image", json!({"tool":"uncached/model","fields":{}})).await;
     let doc = Doc::load(&project.folder).unwrap();
