@@ -66,7 +66,7 @@ pub(crate) async fn create(ctx: &Context, args: New) -> Result<ExitCode, Error> 
     let directory = std::path::absolute(&args.directory)
         .map_err(|error| Error::new(Kind::Usage, "project_path", error.to_string()))?;
     // Repeating New on an existing project reads its identity; it never asks for a new credential or changes storage.
-    let existing = if ["project.db", "project.yaml", "project.vault.keys.json"].iter().any(|file| directory.join(file).is_file()) {
+    let existing = if ["project.db", "project.yaml", "project.lock", "project.canvas.yaml", "project.db.new", ".cozy-legacy-v1", "project.vault.keys.json"].iter().any(|file| directory.join(file).exists()) {
         let client = ctx.calcifer().await?;
         let path = crate::calcifer_client::path(&["v1", "projects", &directory.to_string_lossy(), "address"]);
         Some(client.get::<api::calcifer::project::Address>(&path).await?)
