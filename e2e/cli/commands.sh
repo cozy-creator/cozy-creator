@@ -131,7 +131,6 @@ refused() {  # refused <name> <cozy args...>
 }
 refused run run birefnet/remove_background --file "image=$dog"
 refused run-on-local run birefnet/remove_background --input "$OUT/refused.yaml" --on local
-refused run-warm run birefnet/remove_background --warm installed
 (refused run-code run "$here/weightless/reverse" text=refused)
 # Describing local code reads its source here and uses no machine: it works where none runs.
 (in_project "$RUN_PROJECT" --json run "$here/weightless/reverse" --describe > "$OUT/describe-code.json" 2> "$OUT/describe-code.err") \
@@ -422,36 +421,6 @@ sed -i 's/"msgspec>=0.19"\]/"msgspec>=0.19", "six>=1.16"]/' "$code/pyproject.tom
 if now=$(timed dependency cba); then [ -n "$now" ] && [ "$now" != "$first" ] || check "edit: a new dependency ran on the environment before it ($now)"; fi
 }
 
-# cl-816: the machine quotes local code from its own runs of it, by the installation it holds, not by a manifest object a run
-# ended with. Quoted after its install, before any run, it stands on nothing; after one run, on that run (`measured`), its run
-# time that run's, nothing to prepare. The second run is timed beside the quote.
-local_quote() {
-step "local code is quoted from its runs"
-[ -n "$LOCAL" ] || return 0
-local code=$OUT/quoted/e2e-quoted first quoted
-rm -rf "$code" && mkdir -p "$OUT/quoted" && cp -r "$here/weightless" "$code"
-sed -i 's/^name = "e2e-weightless"/name = "e2e-quoted"/' "$code/pyproject.toml"
-estimate() {  # estimate <name>: the local machine's quote of one run, in <name>.json
-  in_project "$RUN_PROJECT" --json run "$code/reverse" text=abc --estimate --on local > "$OUT/$1-all.json" 2> "$OUT/$1.err" \
-    || { check "$1: cozy run --estimate failed: $(tail -c 300 "$OUT/$1.err")"; return 1; }
-  jq '.machines[] | select(.machine == "local")' "$OUT/$1-all.json" > "$OUT/$1.json"
-  jq -c '{basis, width, start_ms, finish_ms, prepare_ms}' "$OUT/$1.json" | sed "s/^/$1: /" | tee -a "$OUT/quoted.txt"
-}
-: > "$OUT/quoted.txt"
-estimate quote-unrun || return 0
-jq -e '.basis != "measured"' "$OUT/quote-unrun.json" > /dev/null || check "local quote: measured before any run of it"
-cell quote-first "$code/reverse" text=abc || return 0
-estimate quote-run || return 0
-first=$(run_get "$OUT" quote-first .execution_ms)
-quoted=$(jq '.finish_ms - .start_ms' "$OUT/quote-run.json")
-echo "first run ${first:-?} ms; quoted ${quoted} ms" | tee -a "$OUT/quoted.txt"
-J '.basis == "measured"' "$OUT/quote-run.json" || check "local quote: after a run, not measured: $(jq -c . "$OUT/quote-run.json")"
-J '.prepare_ms == 0' "$OUT/quote-run.json" || check "local quote: its installation not found, $(jq .prepare_ms "$OUT/quote-run.json") ms to prepare"
-[ -n "$first" ] && jq -en --argjson q "$quoted" --argjson f "$first" '($q - $f | fabs) <= ([0.2 * $f, 100] | max)' > /dev/null \
-  || check "local quote: its run time ${quoted} ms, the run's ${first:-?} ms"
-cell quote-second "$code/reverse" text=abc && echo "second run $(run_get "$OUT" quote-second .execution_ms) ms" | tee -a "$OUT/quoted.txt"
-}
-
 # cl-820: a signer this machine admits sends TensorD a manifest that names a host path, as only a hand-made one can (no cozy sends
 # one): it is refused, typed, before the run is accepted, so nothing installs from that folder.
 path_manifest() {
@@ -530,26 +499,30 @@ if cell birefnet-yaml "$(birefnet)" --input "$OUT/birefnet.yaml" --lane "$lane";
 fi
 }
 
-# After a BiRefNet run: the warm levels find it installed.
+# Run options and the retained warming API.
 run_flags() {
 step "run flags"
 before=$(cozy --json run ls --limit 0 | jq '.runs | length') || true
 (in_project "$RUN_PROJECT" --json run "$here/weightless/reverse" --describe) > "$OUT/describe.json" || check "run --describe failed"
 J '.fields | any(.name == "text")' "$OUT/describe.json" || check "run --describe: no text field"
 [ "$(cozy --json run ls --limit 0 | jq '.runs | length')" = "$before" ] || check "run --describe started a run"
+if in_project "$RUN_PROJECT" --json run "$here/weightless/reverse" text=test --model missing=owner/example > "$OUT/model-slot.json" 2> "$OUT/model-slot.err"; then
+  check "--model accepted a slot the function does not declare"
+fi
+J '.error.code == "model_slot_unknown"' "$OUT/model-slot.json" || check "--model did not reach slot validation: $(cat "$OUT/model-slot.json")"
 note=$OUT/inputs/note.txt; mkdir -p "$OUT/inputs"; echo "an asset" > "$note"
 if (cd "$here" && cell fidelity ./weightless/fidelities --file "notes=$note" --file-fidelity notes=high); then
   grep -q 'notes=high' "$OUT/fidelity.ndjson" || check "--file-fidelity notes=high: the executor saw $(grep -o '"assets":\[[^]]*\]' "$OUT/fidelity.ndjson")"
 fi
 for level in installed downloaded imported host; do
-  cozy --json run "$(birefnet)" --warm "$level" --on local > "$OUT/warm-$level.ndjson" || check "run --warm $level failed"
+  run_warm_cell "$OUT" "warm-$level" "$(birefnet)" "$level" --on local || check "warming API at $level failed"
   cozy --json machine show local > "$OUT/warm-$level.json" || true
   # The warm set holds the level asked, or says why it holds less (a CPU binds no model on a GPU).
   J --arg l "$level" '.status.warm | any(.entrypoint == "remove_background" and .level == $l and (.holds == $l or (.held_back | length > 0)))' "$OUT/warm-$level.json" \
-    || check "--warm $level: the warm set does not hold birefnet at $level: $(jq -c '.status.warm' "$OUT/warm-$level.json")"
+    || check "warming API at $level: the warm set does not hold birefnet at $level: $(jq -c '.status.warm' "$OUT/warm-$level.json")"
 done
-cozy --json run "$(birefnet)" --warm off --on local > "$OUT/warm-off.ndjson" || check "run --warm off failed"
-cozy --json machine show local | J '.status.warm | all(.entrypoint != "remove_background")' || check "--warm off: birefnet is still in the warm set"
+run_warm_cell "$OUT" warm-off "$(birefnet)" off --on local || check "warming API at off failed"
+cozy --json machine show local | J '.status.warm | all(.entrypoint != "remove_background")' || check "warming API at off: birefnet is still in the warm set"
 }
 
 # Calcifer's time left, on a weightless run whose stages and steps time it as a model's do (tool.py's `stepped`, its first step slow as a

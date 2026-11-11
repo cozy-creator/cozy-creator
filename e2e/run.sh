@@ -9,6 +9,7 @@
 # long: a slow run watchs its progress in its events, a Calcifer that stops answering is named on the follower's stderr
 # (<name>.err). Only a run that never gets its number ends its follower (`run_submit`).
 RUN_CLI=${RUN_CLI:-cozy}
+RUN_WARM_API=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/warm.py
 
 # run_project <dir>: <dir> made a project unless it is one, for this script's runs wherever the script goes.
 run_project() {
@@ -27,14 +28,18 @@ run_project() {
 # without one is said on stderr (attempt k/5, with the follower's last line); after the fifth the follower is ended,
 # never a run.
 run_submit() {
-  local dir=$1 name=$2 n='' k=1 limit=${RUN_NUMBER_S:-1860} start=$SECONDS at; shift 2
+  local dir=$1 name=$2; shift 2
   local words=("$@")
   if [[ ${words[0]} = run && ${words[1]:-} = .* ]]; then
     words[1]="$PWD/${words[1]//\\//}"
   fi
+  run_start "$dir" "$name" "$RUN_CLI" --json "${words[@]}"
+}
 
+run_start() {
+  local dir=$1 name=$2 n='' k=1 limit=${RUN_NUMBER_S:-1860} start=$SECONDS at; shift 2
   rm -f "$dir/$name".{ndjson,err,json,number,pid}
-  (cd "${RUN_PROJECT:-$PWD}" && "$RUN_CLI" --json "${words[@]}") > "$dir/$name.ndjson" 2> "$dir/$name.err" &
+  (cd "${RUN_PROJECT:-$PWD}" && "$@") > "$dir/$name.ndjson" 2> "$dir/$name.err" &
   local pid=$!
   echo "$pid" > "$dir/$name.pid"
   at=$((limit / 31))
@@ -53,6 +58,18 @@ run_submit() {
   [ -n "$n" ] || n=$(run_number "$dir/$name.ndjson")
   echo "${n:-none}" > "$dir/$name.number"
   [ -z "$n" ] || echo "$n"
+}
+
+# API warming stays available to fixtures after the public CLI option is removed.
+run_warm_submit() {
+  local dir=$1 name=$2; shift 2
+  run_start "$dir" "$name" python3 "$RUN_WARM_API" --cozy "${COZY:-$RUN_CLI}" "$@"
+}
+
+run_warm_cell() {
+  local dir=$1 name=$2; shift 2
+  [ -n "$(run_warm_submit "$dir" "$name" "$@")" ] || return 1
+  run_wait "$dir" "$name" && [ "$(run_get "$dir" "$name" .status)" = completed ]
 }
 # Its events' lines (a merged stderr's are not JSON).
 run_number() { { grep '^{' "$1" 2> /dev/null | jq -r 'select(.run.number != null) | .run.number' 2> /dev/null || true; } | head -1; }

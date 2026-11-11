@@ -128,8 +128,8 @@ cozy --json run "$(birefnet)" --describe > "$OUT/describe.json" 2> "$OUT/describ
 grep -Eq '(^|[[:space:]"])image("|:)' "$OUT/describe.json" || check "the description of $(birefnet) names no image input"
 }
 
-# The forward pass (~190 s on a runner's two cores) runs when the change can alter it (--model); run_flags' --warm
-# levels resolve, download, import and hold BiRefNet on every run.
+# The forward pass (~190 s on a runner's two cores) runs when the change can alter it (--model).
+# run_flags separately checks BiRefNet preparation through the warming API.
 first_run() {
 [ -n "$MODEL" ] || { echo "BiRefNet's forward pass: not selected (ci/affected's model)"; return 0; }
 step "BiRefNet on the CPU, from a YAML request"
@@ -259,7 +259,7 @@ cozy --json package remove local/one_script --on local > /dev/null || check "pac
 
 # Balanced by step times (runs 40128128311, 40132063815, 40132725041). A shard keeps its parts' order; whole, the suite runs every part.
 case $SHARD in
-  '') parts="entrypoints weightless script_package one_name_two_paths image_ratio describe first_run second_executor lifetime kept_preparing catalog basics yaml_requests run_flags run_follow time_left broken_answers run_filters run_playback hub_away lock_refresh bound_runs own_references old_runtime hostile_media unseen local_edits local_quote path_manifest machine_show_runs writes_once project_stream web_serves page_resend queued_download machines completions calcifer_faults calcifer_restarts update remove" ;;
+  '') parts="entrypoints weightless script_package one_name_two_paths image_ratio describe first_run second_executor lifetime kept_preparing catalog basics yaml_requests run_flags run_follow time_left broken_answers run_filters run_playback hub_away lock_refresh bound_runs own_references old_runtime hostile_media unseen local_edits path_manifest machine_show_runs writes_once project_stream web_serves page_resend queued_download machines completions calcifer_faults calcifer_restarts update remove" ;;
   runs) parts="weightless describe first_run run_flags run_playback hub_away lock_refresh logs" ;;
   executors) parts="second_executor lifetime kept_preparing update remove" ;;
   entrypoints) parts="entrypoints" ;;
@@ -280,9 +280,9 @@ case $SHARD in
   projectdb-instant) parts="tools_read db_existing_web logs"; DB_WEB=instant ;;
   projectdb-offline) parts="tools_read db_existing_web logs"; DB_WEB=offline ;;
   projectdb-scale) parts="tools_read db_existing_web logs"; DB_WEB=scale ;;
-  # Local code and every input by content (cl-817, cl-820): the CLI in a folder Calcifer can't see, edits timed, its quote from its
-  # runs (cl-816), a host path refused.
-  local-code) parts="unseen local_edits local_quote path_manifest logs" ;;
+  # Local code and every input by content (cl-817, cl-820): the CLI in a folder Calcifer can't see,
+  # edits timed, a host path refused.
+  local-code) parts="unseen local_edits path_manifest logs" ;;
   # By hand: the control-plane audit's cells alone (control.sh).
   control) parts="machine_show_runs writes_once page_resend hub_away broken_answers logs" ;;
   *) echo "no cli shard $SHARD" >&2; exit 2 ;;

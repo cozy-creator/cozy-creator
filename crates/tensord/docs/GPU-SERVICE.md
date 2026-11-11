@@ -124,7 +124,7 @@ The machine builds its `GpuConfig` at start (`serve.rs`) from its GPUs and `conf
   On this computer's machine a member at `imported` or above keeps TensorD from its 15-minute idle
   exit, the 5-minute release leaves a `host`/`gpu` member's executor, and a kept-up machine's
   parent release (`release_parents`) leaves a member's parent. Pressure still takes them.
-  `--warm off` takes a member out of the set; what it holds stays until something needs the room.
+  A warming request at `off` takes a member out of the set; what it holds stays until something needs the room.
 - An executor's failed terminal (its own refusal before entry, or a failed invoke) first keeps a
   triage bundle (`triage.rs`: terminal, traceback, executor pid and stderr tail; canonical JSON
   under `execution/triage/`, fsynced) and binds it in the journal; its detail is the outcome's

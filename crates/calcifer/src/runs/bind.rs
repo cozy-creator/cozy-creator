@@ -215,7 +215,7 @@ pub(crate) async fn warm_choices(
         }
         notes.push(Note {
             level: NoteLevel::Warning,
-            message: "--warm keeps a function ready and takes no inputs, only model.<slot>= and --lora choices: they are ignored".into(),
+            message: "warming keeps a function ready and takes only model and LoRA choices; other inputs are ignored".into(),
         });
     }
     Ok((binder.choices.into_choices(), None))

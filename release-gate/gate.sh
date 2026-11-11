@@ -62,6 +62,7 @@ while [ $# -gt 0 ]; do
     *) echo "unknown argument $1" >&2; exit 2;;
   esac; shift 2
 done
+[ -z "$PKGS" ] || { echo "--packages needs local-source warming support; use a published or pinned candidate for this gate" >&2; exit 2; }
 [ -n "$SUITES" ] || { echo "gate.sh needs --suite: $(ls "$HERE/suites" | paste -sd, -) (release-gate/README.md)" >&2; exit 2; }
 for s in ${SUITES//,/ }; do
   [ -f "$HERE/suites/$s/cells.sh" ] || { echo "no suite $s: $(ls "$HERE/suites" | paste -sd, -)" >&2; exit 2; }
@@ -163,8 +164,8 @@ one_beat() {
 }
 # ahead <name> <target> [args...]: the function's weights on $M's disk before its first timed call, its on-demand models'
 # too (cl-790), as a user who has used it has them: TensorD admits a call on its up-front models and fetches on-demand ones
-# behind it, so a cold upsampler's download was timed as Klein's execution. `--warm downloaded` ends once they're here, and
-# `--warm off` takes the function out of the warm set, so nothing stays held from eviction. Once per function and the
+# behind it, so a cold upsampler's download was timed as Klein's execution. API warming to `downloaded` ends once they're here, and
+# `off` takes the function out of the warm set, so nothing stays held from eviction. Once per function and the
 # arguments that choose its weights.
 declare -A AHEAD
 ahead() {
@@ -175,10 +176,14 @@ ahead() {
   done
   key="$target ${want[*]}"
   [ -z "${AHEAD[$key]:-}" ] || return 0
+  if [[ $target = .* || $target = /* || -e $target || -e ${target%/*} ]]; then
+    log "local-package preparation needs a content-stage API; use a published or pinned candidate for this gate"
+    exit 2
+  fi
   AHEAD[$key]=1
-  run_cell "$OUT" "$name-weights" "$target" --on "$M" --warm downloaded "${want[@]}" ||
+  run_warm_cell "$OUT" "$name-weights" "$target" downloaded --on "$M" "${want[@]}" ||
     expect "$name-weights" FAIL "run $(cat "$name-weights.number") $(run_get "$OUT" "$name-weights" .status): $(run_get "$OUT" "$name-weights" '.reason.message')"
-  "$CLI" run "$target" --on "$M" --warm off > "$name-weights-off.log" 2>&1 || log "$name: --warm off: $(tail -c 300 "$name-weights-off.log")"
+  run_warm_cell "$OUT" "$name-weights-off" "$target" off --on "$M" > "$name-weights-off.log" 2>&1 || log "$name: API warming off: $(tail -c 300 "$name-weights-off.log")"
 }
 # cell <name> <target> [args...]: one run on $M (e2e/run.sh's run_cell): its record <name>.json, its outputs <name>/.
 # --only names cells or packages. $TWIN, when a suite sets it, names a second run (<name>$TWIN) of the cells $TWINS lists.

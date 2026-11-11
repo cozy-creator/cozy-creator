@@ -87,6 +87,12 @@ def main() -> None:
         run("removed worker bootstrap flag", ["machine", "serve", "--service-ready", "1"], code=2)
         run("removed image override", ["machine", "rent", "example", "--image-digest", "sha256:" + "0" * 64], code=2)
         run("removed memo bypass", ["run", "example/function", "--no-memo"], code=2)
+        for flag in ("--estimate", "--warm"):
+            assert flag not in run_help, f"removed run flag {flag} is still in help"
+            run(f"removed run flag {flag}", ["run", "example/function", flag], code=2)
+        assert "--model <SLOT=REF>" in run_help
+        for value in ("slot", "=ref", "slot=", " =ref", "slot= "):
+            run(f"invalid model override {value!r}", ["run", "example/function", "--model", value], code=2)
         for words in (
             ["machine", "help"],
             ["machine", "rent", "--unknown-option"],

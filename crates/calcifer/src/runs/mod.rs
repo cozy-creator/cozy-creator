@@ -588,7 +588,7 @@ async fn call(
     let (spec, bound, out) = match ask.warm {
         Some(level) => {
             if ask.gpus.is_some() {
-                notes.push(Note { level: NoteLevel::Warning, message: "--gpus applies to a run, not to --warm: ignored".into() });
+                notes.push(Note { level: NoteLevel::Warning, message: "GPU count applies to a run and is ignored when warming".into() });
             }
             let (models, payload) = bind::warm_choices(
                 &target, code.release, code.interface, callable, &terms, level == WarmLevel::Gpu, &mut notes,
