@@ -34,6 +34,14 @@ on:
         description: "project-vault-cli only: take the exact archives from a successful cozy-publish run instead of rebuilding"
         type: string
         default: ''
+      coverage_runs:
+        description: "cli-coverage only: completed E2E run IDs, primary full run first, then focused retries"
+        type: string
+        default: ''
+      coverage_candidate:
+        description: "cli-coverage only: candidate-cozy artifact ID from the primary full run"
+        type: string
+        default: ''
       nonce:
         description: Caller's id, shown in the run name so the caller can find its run
         type: string
@@ -545,5 +553,41 @@ jobs:
         with:
           name: project-vault-cli-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}
           path: product-vault-evidence
+          if-no-files-found: warn
+          retention-days: 14
+
+  cli-coverage:
+    if: inputs.build == 'cli-coverage'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          path: .coverage-harness
+          persist-credentials: false
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+          path: .coverage-source
+          persist-credentials: false
+      - name: Verify retained CLI command coverage
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE: ${{ inputs.ref }}
+          RUNS: ${{ inputs.coverage_runs }}
+          CANDIDATE: ${{ inputs.coverage_candidate }}
+        run: |
+          python3 .coverage-harness/e2e/coverage-artifacts.py --source "$SOURCE" \
+            --checkout "$PWD/.coverage-source" --out "$RUNNER_TEMP/cli-coverage" \
+            --candidate "$CANDIDATE" --runs "$RUNS"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-coverage
+          path: |
+            ${{ runner.temp }}/cli-coverage/INPUTS.json
+            ${{ runner.temp }}/cli-coverage/coverage.log
+            ${{ runner.temp }}/cli-coverage/argv
           if-no-files-found: warn
           retention-days: 14
