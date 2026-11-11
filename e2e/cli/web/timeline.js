@@ -342,7 +342,7 @@ function plate(path, color, seconds, hz) {
     tool: 'cozy/edit', name: 'handoff_preview', exact: true,
     fields: { timeline: { tracks: [{ clips: [{ clip: '<blue>' }, { clip: '<red>' }] }] } },
   });
-  if (handoff.status !== 200 || !handoff.body?.name) throw new Error(`preview fixture refused: ${handoff.status}`);
+  if (handoff.status !== 201 || !handoff.body?.name) throw new Error(`preview fixture refused: ${handoff.status}`);
   const handoffName = handoff.body.name;
   const incomingPath = `/v1/projects/${id}/${file('red').split('/').map(encodeURIComponent).join('/')}`;
   const incoming = (url) => url.pathname === incomingPath;
