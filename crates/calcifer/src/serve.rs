@@ -53,7 +53,10 @@ fn configuration() -> Result<Loaded, Error> {
     }
     if let Some(value) = std::env::var_os("PATH") {
         let paths = std::env::split_paths(&value)
-            .map(std::path::absolute)
+            .map(|path| {
+                let path = if path.as_os_str().is_empty() { std::path::PathBuf::from(".") } else { path };
+                std::path::absolute(path)
+            })
             .collect::<std::io::Result<Vec<_>>>()
             .map_err(failed)?;
         let paths = std::env::join_paths(paths)
