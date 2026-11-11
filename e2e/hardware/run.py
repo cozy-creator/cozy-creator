@@ -28,6 +28,7 @@ def processes():
                 'birth': stat[19], 'state': stat[0],
                 'exe': str((entry / 'exe').resolve(strict=True)),
                 'home': os.fsdecode(env.get(b'HOME', b'')),
+                'args': [os.fsdecode(arg) for arg in (entry / 'cmdline').read_bytes().split(b'\0') if arg],
             }
         except (OSError, ValueError):
             pass
@@ -36,6 +37,10 @@ def processes():
 
 def owned(record, home):
     return record['home'] == str(home) and record['state'] != 'Z'
+
+
+def same_process(first, second):
+    return second is not None and all(first[key] == second[key] for key in ('birth', 'exe', 'home'))
 
 
 def private_environment(home, shim, device, tools=None):
@@ -48,6 +53,7 @@ def private_environment(home, shim, device, tools=None):
         'COZY_MACHINE_ROOT': str(home / '.cozy/machine'),
         'COZY_TENSORFS_ROOT': str(home / 'tensorfs'),
         'CUDA_VISIBLE_DEVICES': device,
+        'GOMAXPROCS': '4',
     }
     if tools:
         env['SKEW_TOOLS'] = str(tools)
@@ -111,7 +117,8 @@ def main():
         parser.error('the selected GPU has an existing compute process; reserve an idle runner')
     original_home = str(Path.home())
     before = {pid: p for pid, p in processes().items()
-              if p['home'] == original_home and '/.cozy/' in p['exe']}
+              if p['home'] == original_home and '/.cozy/' in p['exe']
+              and (p['args'][1:] == ['calcifer'] or p['args'][1:] == ['machine', 'serve'])}
     # A short path also keeps executor Unix sockets within Linux's path limit.
     home = Path(tempfile.mkdtemp(prefix='cozy-hardware-'))
     owner = home.name
@@ -138,9 +145,13 @@ def main():
     receipt = {'mode': args.mode, 'home': str(home), 'owner': owner, 'device': args.device,
                'gpu_inventory': inventory.splitlines(), 'command': command,
                'cozy_sha256': hashlib.sha256(args.cozy_bin.read_bytes()).hexdigest(),
+               'hub_source_sha': subprocess.check_output(['git', '-C', str(args.hub_src), 'rev-parse', 'HEAD'], text=True).strip(),
                'runtime': args.runtime, 'tensorfs': args.tensorfs,
                'existing_cozy_processes': before}
     status = 1
+    def interrupted(signum, frame):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, interrupted)
     try:
         with (args.out / 'console.log').open('w') as log:
             child = subprocess.Popen(command, env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
@@ -150,14 +161,19 @@ def main():
                 os.killpg(child.pid, signal.SIGTERM)
                 status = child.wait()
     finally:
-        receipt['cleanup'] = cleanup(home, docker, owner)
+        try:
+            receipt['cleanup'] = cleanup(home, docker, owner)
+        except Exception as error:
+            receipt['cleanup'] = {'error': str(error)}
         after = processes()
-        receipt['existing_cozy_processes_unchanged'] = all(after.get(pid) == p for pid, p in before.items())
+        receipt['existing_cozy_processes_unchanged'] = all(same_process(p, after.get(pid)) for pid, p in before.items())
         receipt['fixture_status'] = status
-        shutil.rmtree(home)
+        if not receipt['cleanup'].get('error') and not receipt['cleanup'].get('remaining_pids'):
+            shutil.rmtree(home)
         receipt['private_home_removed'] = not home.exists()
         (args.out / 'receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
-    safe = receipt['existing_cozy_processes_unchanged'] and not receipt['cleanup']['remaining_pids'] and not receipt['cleanup']['remaining_containers']
+    safe = (receipt['existing_cozy_processes_unchanged'] and not receipt['cleanup'].get('error')
+            and not receipt['cleanup'].get('remaining_pids') and not receipt['cleanup'].get('remaining_containers'))
     return status if safe else 1
 
 
