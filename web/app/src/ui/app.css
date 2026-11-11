@@ -753,6 +753,125 @@ code {
 .card:not(.here) .play {
   opacity: 0;
 }
+/* An orbit (design/file-metadata.md): open, a drag across it turns it; its bar holds the dial, Spin and Front. */
+.orbit {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  outline: none;
+}
+.card.here > .media > .orbit {
+  left: 50%;
+  right: auto;
+  width: var(--surface-content-width, 100%);
+  transform: translateX(-50%);
+}
+.orbit:active {
+  cursor: grabbing;
+}
+.orbit:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--ember);
+}
+.orbit-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  opacity: 0;
+}
+.orbit.ready .orbit-video {
+  opacity: 1;
+}
+.orbit-hint {
+  position: absolute;
+  left: 50%;
+  top: 10px;
+  transform: translateX(-50%);
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #000a;
+  color: #fff;
+  font-size: var(--small);
+  pointer-events: none;
+}
+.orbit-bar {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px 3px 3px;
+  border-radius: 999px;
+  background: #000a;
+  color: #fff;
+}
+.orbit-dial {
+  width: calc(44px * var(--text, 1));
+  height: calc(44px * var(--text, 1));
+}
+.orbit-dial .ring {
+  fill: none;
+  stroke: #fffa;
+  stroke-width: 2;
+}
+.orbit-dial .tick {
+  stroke: #fffa;
+  stroke-width: 0.7;
+}
+.orbit-dial .tick.major {
+  stroke-width: 1.4;
+}
+.orbit-dial .arc {
+  fill: none;
+  stroke: var(--on-ember);
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+.orbit-dial .dot {
+  fill: var(--on-ember);
+}
+.orbit-deg {
+  min-width: 3.2em;
+  font: var(--tiny) var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+.orbit-act {
+  padding: 1px 8px;
+  border: 1px solid #fff6;
+  border-radius: 999px;
+  background: none;
+  color: inherit;
+  font-size: var(--small);
+  cursor: pointer;
+}
+.orbit-act:hover,
+.orbit-act[aria-pressed="true"] {
+  background: var(--ember);
+  border-color: var(--ember);
+  color: var(--on-ember);
+}
+.orbit-badge {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  z-index: 2;
+  display: flex;
+  padding: 4px;
+  border-radius: 50%;
+  background: #000a;
+  color: #fff;
+  pointer-events: none;
+}
+.orbit-toggle {
+  gap: 8px;
+  align-items: center;
+}
 /* How far it's got, on the picture itself: a veil that only ever moves. */
 .prog {
   position: absolute;
@@ -1292,7 +1411,8 @@ video.preview.on {
   cursor: grab;
   z-index: 1;
 }
-.media:has(.live) .take-out {
+.media:has(.live) .take-out,
+.media:has(.orbit) .take-out {
   display: none;
 }
 /* The one being looked at, and the one approved: each plain at a glance, on the row and the tile. */

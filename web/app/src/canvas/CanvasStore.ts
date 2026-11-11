@@ -1453,6 +1453,18 @@ export class CanvasStore {
     note = this.offer(edit, `Discarded ${asset.noun} ${number} of ${name}.${stands}${read}`)
   }
 
+  /** What take or version `number` of `name` says of its file, whole, at once: orbit viewing on for any video, or off. With no number, the
+   *  file a box with no version shows, which Calcifer numbers first. A note offers Undo. */
+  setMetadata(name: string, number: number | undefined, metadata: Record<string, unknown>, words: string) {
+    const key = this.resolveName(name)
+    const asset = this.views.get(key)?.asset
+    if (!asset) return
+    const prefixes = asset.prefixes?.map((version) => (version.number === number && version.main ? { ...version, main: { ...version.main, metadata } } : version))
+    const edit = this.step(words, [key])
+    this.over(key, number === undefined || !prefixes ? {} : { prefixes }, (served, write) => this.client.patchVersion(this.projectId!, served, number ?? 0, metadata, write).then(() => ({})), `change ${asset.noun} ${number ?? ""} of`, edit)
+    this.offer(edit, words)
+  }
+
   /** Take `number` off its box, in its turn, under `edit`: what's approved going leaves it following its inputs. */
   private dropTake(key: string, number: number, edit: string, refused?: () => void) {
     const asset = this.views.get(key)?.asset

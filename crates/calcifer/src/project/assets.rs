@@ -12,9 +12,10 @@ use axum::{
     http::{HeaderMap, StatusCode, header},
 };
 use serde::Deserialize;
+use serde_json::{Map, Value};
 use api::{
     error::{Error, Kind},
-    calcifer::project::{NewAsset, AssetDeleted, AssetMade, AssetPatch, AssetPatched, AssetVersions, NewVersion, Version as VersionRow, VersionMoved},
+    calcifer::project::{NewAsset, AssetDeleted, AssetMade, AssetPatch, AssetPatched, AssetVersions, NewVersion, Version as VersionRow, VersionMoved, VersionPatch, VersionPatched},
     calcifer::tool::{self, FieldType},
 };
 
@@ -110,7 +111,10 @@ pub(super) async fn read(State(api): State<Arc<Api>>, Path((id, name)): Path<(St
     let versions = (lock.asset(&asset.name).into_iter().flat_map(|held| &held.versions))
         .map(|version| VersionRow {
             number: version.number,
-            files: listed(lock, &version.files),
+            files: listed(lock, &version.files).into_iter().map(|(output, mut file)| {
+                file.metadata = version.metadata.get(&output).cloned().unwrap_or_default();
+                (output, file)
+            }).collect(),
             made_by: version.tool.clone().or_else(|| asset.tool.clone()),
             seed: version.seed,
             runs: version.run.into_iter().collect(),
@@ -341,6 +345,55 @@ pub(super) async fn join(State(api): State<Arc<Api>>, Path((id, name)): Path<(St
     measure_soon(&api, &project);
     let noun = noun(&doc, &folder.lock().map_err(Refusal)?, i);
     moved(&api, &project, name, number, noun, false, &before).await.map(|Json(answer)| Json(VersionMoved { already, ..answer }))
+}
+
+/// `PATCH /v1/projects/{id}/assets/{name}/versions/{number}`: what its main file says of itself, whole, as a person sets it on its box (orbit
+/// viewing on for any video). Number 0 is the file a box with no version shows (a dropped video): numbered first, as a join numbers it.
+/// Nothing goes out of date: it's how the file shows, not what made it. Undo puts the old map back.
+pub(super) async fn patch_version(State(api): State<Arc<Api>>, Path((id, name, number)): Path<(String, String, String)>, body: Result<Bytes, BytesRejection>) -> Result<Json<VersionPatched>, Refusal> {
+    let asked: VersionPatch = parse(&body?)?;
+    let length = serde_json::to_vec(&asked.metadata).map_or(usize::MAX, |bytes| bytes.len());
+    if length > super::METADATA_MAX {
+        let said = format!("metadata is {length} bytes, over {}", super::METADATA_MAX);
+        return Err(Refusal(Error::new(Kind::Validation, "metadata_too_large", said).remedy("keep it to a few small keys")));
+    }
+    let project = api.projects.get(&api, &id)?;
+    let folder = &project.folder;
+    let asked_number: u32 = number.parse().unwrap_or(0);
+    let doc = Doc::load(folder).map_err(Refusal)?;
+    let i = find(&doc, &name).map_err(Refusal)?;
+    let asset = &doc.assets[i];
+    let name = asset.name.clone();
+    let after = asked.metadata;
+    let number = folder
+        .act(|| {
+            let number = match (asked_number, &asset.pin) {
+                (0, Some(pin)) => constant_numbered(folder, asset, pin)?,
+                (number, _) => number,
+            };
+            let lock = folder.lock()?;
+            let noun = noun(&doc, &lock, i);
+            let version = lock.asset(&name).and_then(|held| held.version(number)).ok_or_else(|| no_version(&lock, &name, noun, number))?;
+            let output = version.main_output().cloned().ok_or_else(|| Error::new(Kind::NotFound, "version_unknown", format!("{name}'s {noun} {number} has no file")).next("cozy status --full"))?;
+            let before = version.metadata.get(&output).cloned().unwrap_or_default();
+            if before != after {
+                folder.update_lock(|lock| set_metadata(lock, &name, number, &output, after.clone()))?;
+                history::metadata(folder, &name, number, noun, &output, before, after.clone());
+            }
+            Ok(number)
+        })
+        .map_err(Refusal)?;
+    Ok(Json(VersionPatched { name, number, metadata: after }))
+}
+
+/// Version `number` of `name`: its file `output` says `metadata` of itself, or nothing when it's empty.
+pub(super) fn set_metadata(lock: &mut folder::Lock, name: &str, number: u32, output: &str, metadata: Map<String, Value>) {
+    let Some(version) = lock.asset_mut(name, "").versions.iter_mut().find(|version| version.number == number) else { return };
+    if metadata.is_empty() {
+        version.metadata.remove(output);
+    } else {
+        version.metadata.insert(output.to_owned(), metadata);
+    }
 }
 
 /// Why `name` has no version `number` to discard.
