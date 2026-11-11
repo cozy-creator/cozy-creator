@@ -305,6 +305,5 @@ release-gate/suites/kernels/ci_kernels/__init__.py: [unreachable] Subclass of "T
 release-gate/suites/kernels/ci_kernels/__init__.py: [unreachable] Subclass of "Tensor" and "tuple[Any, ...]" cannot exist: would have incompatible method signatures
 release-gate/suites/kernels/ci_kernels/__init__.py: [unreachable] Subclass of "Tensor" and "tuple[Any, ...]" cannot exist: would have incompatible method signatures
 release-gate/suites/kernels/ci_kernels/__init__.py: [unreachable] Subclass of "Tensor" and "tuple[Any, ...]" cannot exist: would have incompatible method signatures
-release-gate/suites/project/still.py: [call-arg] Too many positional arguments for "Kept"
 scripts/prepare-securefs.py: [no-untyped-call] Call to untyped function "main" in typed context
 scripts/prepare-securefs.py: [no-untyped-def] Function is missing a return type annotation
