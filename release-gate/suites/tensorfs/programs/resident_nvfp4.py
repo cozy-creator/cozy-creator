@@ -10,11 +10,15 @@ import itertools
 import json
 import traceback
 from types import ModuleType
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import torch
 
 SEED = 103
 
 
-def specimen(torch: ModuleType, shape: tuple[int, ...], layout: str, order: str, global_mode: str, with_pre: bool, seed: int) -> tuple[dict[str, tuple[str, tuple[int, ...], object]], dict[str, object], object]:
+def specimen(torch: ModuleType, shape: tuple[int, ...], layout: str, order: str, global_mode: str, with_pre: bool, seed: int) -> tuple[dict[str, tuple[str, tuple[int, ...], "torch.Tensor"]], dict[str, object], "torch.Tensor"]:
     """Serialize explicit FP4 codes/scales; expected values use the declared value law."""
     count, cols, height = int(torch.tensor(shape).prod()), shape[-1], shape[-2]
     rows, blocks = count // cols, cols // 16

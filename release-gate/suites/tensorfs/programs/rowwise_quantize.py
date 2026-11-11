@@ -353,7 +353,7 @@ def run(mode: str) -> dict[str, object]:
         )
 
 
-def cancel_rowwise(seed: int, tensorfs: "t.TensorFS", np: ModuleType) -> Report:
+def cancel_rowwise(seed: int, tensorfs: "t.TensorFS", np: ModuleType) -> dict[str, object]:
     with tempfile.TemporaryDirectory(prefix="cozy-rowwise-cancel-") as temporary:
         directory = Path(temporary)
         writer = tensorfs.Writer(directory / "source.cozytensors")

@@ -119,14 +119,6 @@ class Reversed(Reservation):
     cancel_join_seconds: float
 
 
-class RuntimeReport(TypedDict):
-    first: JSON
-    timing: Timing
-    resumed: JSON
-    finished: JSON
-    quantization: Conversion
-
-
 class Stamp(TypedDict, total=False):
     """What `run` adds to either mode's report."""
 
@@ -145,7 +137,6 @@ class Basic(Stamp):
     reports: list[Pass]
     numerical_refusals: list[Refused]
     mixed_resume: Mixed
-    runtime: RuntimeReport | None
     part_sha256: dict[str, str]
 
 
