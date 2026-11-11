@@ -50,7 +50,7 @@ pub(crate) async fn search(ctx: &Context, args: Ls, role: &str) -> Result<ExitCo
     if ctx.term.stdout && std::io::stdin().is_terminal() {
         return crate::tui::show(ctx, crate::tui::Screen::Models(browser)).await;
     }
-    let mut table = Table::new(ctx, ["model", "family", "disk", "local"]);
+    let mut table = Table::new(ctx, ["model", "family", "size", "local"]);
     for row in browser.rows() { table = table.row(row); }
     table.note(browser.title()).print();
     Ok(ExitCode::SUCCESS)

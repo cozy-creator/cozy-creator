@@ -82,7 +82,7 @@ impl Screen {
                 selected,
             ),
             Screen::Machine(view) => detail(frame, &view.title(), view.lines(ctx)),
-            Screen::Models(view) => table_hint(frame, &view.title(), &["model", "family", "disk", "local"], view.rows(), selected, view.hint()),
+            Screen::Models(view) => table_hint(frame, &view.title(), &["model", "family", "size", "local"], view.rows(), selected, view.hint()),
             Screen::Model(view) => {
                 let lines = view.lines().into_iter().map(Line::from).collect::<Vec<_>>();
                 frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false })
@@ -120,15 +120,14 @@ pub(crate) async fn show(ctx: &Context, first: Screen) -> Result<ExitCode, Error
         ratatui::restore();
         let notice = match shown? {
             Some(model::live::Operation::Download(choice)) => {
-                let notice = format!("Download finished: {} → {}", choice.model, choice.machine);
                 status = model::live::download(ctx, choice).await?;
-                if status == ExitCode::SUCCESS { notice } else { "Download stopped or failed; inspect the run before retrying".into() }
+                if status == ExitCode::SUCCESS { "Download complete".into() } else { "Download stopped or failed".into() }
             }
             Some(model::live::Operation::Remove(model)) => {
                 let removed = model::live::remove(ctx, &model).await?;
                 status = ExitCode::SUCCESS;
                 if removed.removed {
-                    format!("Local removal: {} cache bytes removed, {} retained (in use/shared)", output::bytes(removed.cache_bytes_removed), output::bytes(removed.retained_bytes))
+                    format!("Cache {} removed · {} retained", output::bytes(removed.cache_bytes_removed), output::bytes(removed.retained_bytes))
                 } else {
                     "Local copy already absent".into()
                 }

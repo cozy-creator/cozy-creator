@@ -176,7 +176,7 @@ impl Preview {
         let model = &self.model;
         let mut lines = Vec::new();
         if self.metadata_missing { lines.push("Catalog details unavailable; showing the local copy.".into()); }
-        if let Some(bytes) = self.local_bytes { lines.push(format!("Local disk: {}", output::bytes(bytes))); }
+        if let Some(bytes) = self.local_bytes { lines.push(format!("Local size: {}", output::bytes(bytes))); }
         if let Some(family) = &model.family { lines.push(format!("Family: {family}")); }
         if model.role.as_deref() == Some("lora") {
             lines.push("Kind: LoRA".into());
