@@ -1,6 +1,8 @@
 //! `/v1/account`: this computer's device key at each Hub. A key is enrolled by a code the Hub
 //! emails (`codes`), kept in `~/.cozy/keys`, and signs every later call silently. An exported key
-//! is answered to the client and kept nowhere here.
+//! is answered to the client and kept nowhere here: it is another computer's own key, which that
+//! computer installs (`PUT /v1/account/key`). Signing out revokes a key this computer enrolled; an
+//! installed one may sign in elsewhere too, so it is only forgotten here.
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -299,14 +301,15 @@ pub(super) async fn name(
 }
 
 /// `PUT /v1/account/key`: an exported key becomes this computer's at its Hub, proven by naming
-/// its account.
+/// its account. It is kept as installed: signing out here never revokes it.
 pub(super) async fn install(
     State(api): State<Arc<Api>>,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Json<Account>, Refusal> {
     let KeyInstall { hub, key } = parse(&body?)?;
     let hub = origin(&api, hub.as_deref())?;
-    let key = DeviceKey::read(key.as_bytes(), "the key").map_err(|e| refusal(&hub, e))?;
+    let mut key = DeviceKey::read(key.as_bytes(), "the key").map_err(|e| refusal(&hub, e))?;
+    key.installed = true;
     if key.hub.trim_end_matches('/') != hub.as_str().trim_end_matches('/') {
         return Err(refuse(Kind::Usage, "key_other_hub", format!("the key is for {}, not {hub}", key.hub)));
     }
@@ -314,7 +317,8 @@ pub(super) async fn install(
     Ok(Json(enrolled(&api, &hub).await?))
 }
 
-/// `DELETE /v1/account`: this computer's key, revoked at the Hub and erased here.
+/// `DELETE /v1/account`: this computer's key, erased here, and revoked at the Hub when this
+/// computer enrolled it.
 pub(super) async fn sign_out(
     State(api): State<Arc<Api>>,
     query: Result<Query<At>, QueryRejection>,
@@ -323,7 +327,10 @@ pub(super) async fn sign_out(
     Ok(Json(erase(&api, &hub, false).await?))
 }
 
-/// Asks the Hub to revoke this computer's key, then erases it whatever the Hub answers.
+/// Erases this computer's key, whatever the Hub answers. A key this computer enrolled is revoked at
+/// the Hub first: no other computer holds it. One installed from a file (`cozy login --key`) may
+/// sign in elsewhere (CI jobs share one exported key; a copied key is another computer's), so it
+/// is revoked only when signing out everywhere.
 async fn erase(api: &Api, hub: &Origin, everywhere: bool) -> Result<SignedOut, Refusal> {
     let home = api.machines.hubs.home();
     let mut out = SignedOut {
@@ -338,7 +345,10 @@ async fn erase(api: &Api, hub: &Origin, everywhere: bool) -> Result<SignedOut, R
     }
     let user = signed_in(api, hub)?;
     let key = key(&user);
-    let revoked = user.revoke_sign_in_key(&key.id).await;
+    let revoked = match everywhere || !key.installed {
+        true => Some(user.revoke_sign_in_key(&key.id).await),
+        false => None,
+    };
     for path in [hub.device_key(home), hub.bearer(home)] {
         if let Err(e) = std::fs::remove_file(&path)
             && e.kind() != std::io::ErrorKind::NotFound
@@ -346,9 +356,17 @@ async fn erase(api: &Api, hub: &Origin, everywhere: bool) -> Result<SignedOut, R
             return Err(refuse(Kind::Internal, "key_unremovable", format!("{}: {e}", path.display())));
         }
     }
-    if let Err(e) = revoked {
-        let code = refusal(hub, e).0.code;
-        out.notes.push(format!("{hub} did not confirm revoking this computer's key ({code}); it is erased here"));
+    match revoked {
+        Some(Err(e)) => {
+            let code = refusal(hub, e).0.code;
+            out.notes.push(format!("{hub} did not confirm revoking this computer's key ({code}); it is erased here"));
+        }
+        None => out.notes.push(
+            "this computer's key came from `cozy login --key`, so it is forgotten here but not revoked: \
+             another computer may sign in with it. `cozy logout --everywhere` revokes every key"
+                .into(),
+        ),
+        Some(Ok(())) => {}
     }
     out.email = Some(key.email.clone());
     out.everywhere = everywhere;

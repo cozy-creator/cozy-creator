@@ -655,7 +655,10 @@ impl Machines {
             machine.state = MachineState::Ending;
             let owed = self.end_owes(&ask.key, &row.name);
             machine.ending = (!owed.is_empty()).then(|| exporting(&owed));
-        } else if row.state == MachineState::Ready
+        } else if let Some(failed) = self.failed_end(row)? {
+            machine.end_failed = Some(failed);
+        }
+        if machine.state == MachineState::Ready
             && let Some(reason) = self.offline(&row.name)
         {
             machine.offline = Some(reason);

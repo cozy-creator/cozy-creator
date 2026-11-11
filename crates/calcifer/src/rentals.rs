@@ -489,7 +489,7 @@ impl Machines {
                         self.store()
                             .settle_ask(&ask.key, Err(STOPPED))
                             .map_err(internal)?;
-                        self.ask_end(&format!("end-{id}"), &row.hub, &id, Some(row.name.clone()), false)?;
+                        self.ask_end(&end_key(&id), &row.hub, &id, Some(row.name.clone()), false)?;
                         if let Some(run) = &ask.run {
                             let reason = Reason {
                                 code: "rental_refused".into(),
@@ -550,7 +550,7 @@ impl Machines {
                 Ok(listing) => {
                     for rental in listing.rentals.iter().filter(|rental| rental.name == name) {
                         warn!(ask = ask.key, rental = rental.rental_id, "the stopped order was placed: ending it");
-                        self.ask_end(&format!("end-{}", rental.rental_id), &ask.hub, &rental.rental_id, None, false)?;
+                        self.ask_end(&end_key(&rental.rental_id), &ask.hub, &rental.rental_id, None, false)?;
                     }
                     break;
                 }
@@ -1139,7 +1139,7 @@ impl Machines {
         let key = match pending {
             Some(ask) => ask.key,
             None => match &row.rental_id {
-                Some(id) => format!("end-{id}"),
+                Some(id) => end_key(id),
                 // An added machine's name is given again once it is removed.
                 None => format!("remove-{}-{}", row.name, crate::store::now_ms()),
             },
@@ -1157,6 +1157,15 @@ impl Machines {
     pub(crate) fn pending_end(&self, name: &str) -> Result<Option<Ask>, Error> {
         let asks = self.store().pending_asks().map_err(internal)?;
         Ok(asks.into_iter().find(|ask| ask.kind == AskKind::End && ask.machine.as_deref() == Some(name)))
+    }
+
+    /// Why the last end asked of a live rental failed: nothing was ended.
+    pub(crate) fn failed_end(&self, row: &MachineRow) -> Result<Option<String>, Error> {
+        let Some(id) = row.rental_id.as_deref().filter(|_| row.state != MachineState::Ended) else {
+            return Ok(None);
+        };
+        let ask = self.store().ask(&end_key(id)).map_err(internal)?;
+        Ok(ask.filter(|ask| ask.state == AskState::Failed).map(|ask| ask.reason.unwrap_or_default()))
     }
 
     /// Records the end under `key` (`wait`: once its runs' outputs land) and carries it out; one
@@ -1236,9 +1245,10 @@ impl Machines {
         }
     }
 
-    /// Releases the rental at its Hub, then reads it until the Hub says it ended. A Hub that
-    /// does not know the rental proves nothing: the ask fails `release_unconfirmed` and the
-    /// machine stays, as it does when the Hub refuses this computer's credential.
+    /// Releases the rental at its Hub, then reads it until the Hub says it ended. Only a Hub that
+    /// does not answer is asked again: a Hub that does not know the rental proves nothing
+    /// (`release_unconfirmed`), and one that refuses the release or this computer's sign-in ended
+    /// nothing. Either fails the ask, and the machine stays, showing why (`end_failed`).
     async fn finish_end(self: Arc<Self>, ask: Ask) {
         if let Some(name) = &ask.machine {
             self.outputs_landed(&ask.key, name).await;
@@ -1267,24 +1277,25 @@ impl Machines {
             pause = (pause * 2).clamp(Duration::from_secs(2), Duration::from_secs(30));
             let client = match self.hubs.client(&ask.hub) {
                 Ok(client) => client,
-                Err(e) => return settle(Err(e.message)),
+                Err(e) => return settle(Err(said(&e))),
             };
             if !released {
                 let release = client.release_rental(&id).await;
                 match release.map_err(|e| hub_refusal(&ask.hub, e)) {
-                    Ok(_) => released = true,
+                    // Released, or released already (a conflict): its end is read below.
+                    Ok(()) => released = true,
+                    Err(e) if e.kind == Kind::Conflict => released = true,
                     Err(e) if e.kind == Kind::NotFound => {
                         return settle(Err(format!(
                             "release_unconfirmed: {} does not know rental {id}; nothing was ended",
                             ask.hub
                         )));
                     }
-                    Err(e) if e.kind == Kind::Credential => return settle(Err(said(&e))),
                     Err(e) if e.kind == Kind::Unavailable => {
                         warn!(rental = id, "releasing it: {e}");
                         pause = e.wait_or(pause);
                     }
-                    Err(_) => released = true,
+                    Err(e) => return settle(Err(said(&e))),
                 }
             }
             if released {
@@ -1321,6 +1332,11 @@ impl Hubs {
         self.seen(origin, rental.clone());
         Ok(rental)
     }
+}
+
+/// The key a rental's end is asked under: one end per rental, asked again under the same key.
+fn end_key(rental_id: &str) -> String {
+    format!("end-{rental_id}")
 }
 
 /// An end ask as recorded: whether it waits for its machine's runs' outputs to land first. One

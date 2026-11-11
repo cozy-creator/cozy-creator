@@ -5,7 +5,7 @@ use std::{
 };
 
 use api::{
-    calcifer::{Ended, Machine, MachineState, NewMachine, Quote, RentalSkus, Rented, RunQuote},
+    calcifer::{Ended, Machine, MachineKind, MachineState, NewMachine, Quote, RentalSkus, Rented, RunQuote},
     config::Origin,
     error::{Error, Kind},
 };
@@ -357,14 +357,20 @@ async fn stopped_waiting(ctx: &Context, calcifer: &Client, machine: &Machine) ->
         return Ok(unfollowed(ctx, machine, None));
     }
     let id = machine.rental_id.as_deref().unwrap_or(&machine.name);
-    match calcifer.delete::<Ended>(&super::route(id)?).await {
-        Ok(_) => Err(Error::new(
-            Kind::Unavailable,
-            "rental_ended",
-            format!("{}: ended while waiting for a machine, nothing bills", machine.name),
-        )),
-        Err(e) => Ok(unfollowed(ctx, machine, Some(e))),
+    let asked = match calcifer.delete::<Ended>(&super::route(id)?).await {
+        Ok(asked) => asked.machine,
+        Err(e) => return Ok(unfollowed(ctx, machine, Some(e))),
+    };
+    // Said only once its Hub affirms it ended, as `cozy machine end` says it.
+    let order = asked.kind == MachineKind::Rental && asked.rental_id.is_none();
+    if !order {
+        super::end::confirmed(ctx, calcifer, asked).await?;
     }
+    Err(Error::new(
+        Kind::Unavailable,
+        "rental_ended",
+        format!("{}: ended while waiting for a machine, nothing bills", machine.name),
+    ))
 }
 
 /// Ctrl-C, or SIGTERM from a supervisor (`timeout`).
