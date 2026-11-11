@@ -43,7 +43,7 @@ cap() {
   log "cap $1 on $M: machine show says ${said:-nothing} bytes; $(grep -E '^status' "cap-$1.log")"
   [ "$said" = "$want" ] || expect "cap-$1" FAIL "machine show says ${said:-nothing} bytes, not $want"
 }
-SDXL=$(pkg sdxl generate) KLEIN=$(pkg flux-3-klein generate_turbo) H3=$(pkg minimax-h3 generate)
+SDXL=$(pkg sdxl generate) KLEIN=$(pkg flux.3 generate_turbo) H3=$(pkg minimax-h3 generate)
 # One character picture, as a project sends it: no model but H3's.
 H3REF="[{\"name\": \"Lead\", \"kind\": \"character\", \"image\": \"$REF\"}]"
 h3() { vcell "$1" "$H3" references:="$H3REF" prompt="<Lead> $MOTION $4" seed:=$((R + $2)) duration_s:="$3"; }

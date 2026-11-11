@@ -230,13 +230,17 @@ cell() {
   log "$name run $n $(run_get "$OUT" "$name" .status)$(jq -r 'select(.error) | ": " + .error.message' "$name.ndjson" 2>/dev/null | head -1)"
 }
 # pkg <package> <fn>: the root package's function users get, its --pins release, or the --packages checkout's dir.
+# A checkout's folder is found by the package's name: flux-3-klein/ holds flux.3.
 pkg() {
-  local pin; pin=$(tr , '\n' <<< "$PINS" | grep -m1 "^$1@" | cut -d@ -f2)
+  local pin d=; pin=$(tr , '\n' <<< "$PINS" | grep -m1 "^$1@" | cut -d@ -f2)
+  [ -z "$PKGS" ] || { d=$PKGS/$1/pyproject.toml; [ -f "$d" ] || d=$(grep -lxF "name = \"$1\"" "$PKGS"/*/pyproject.toml 2>/dev/null | head -1); }
   if [ -n "$pin" ]; then echo "$1/$2@$pin"
-  elif [ -n "$PKGS" ] && grep -qs cozy.application "$PKGS/$1/pyproject.toml"; then ln -sfn "$PKGS/$1" "$OUT/$1"; echo "./$1/$2"
+  elif [ -n "$d" ] && grep -qs cozy.application "$d"; then d=$(dirname "$d"); ln -sfn "$d" "$OUT/${d##*/}"; echo "./${d##*/}/$2"
   else echo "$1/$2"; fi
 }
 output() { run_output "$OUT" "$1" "$2"; }
+# box <name> <file> <description>: the file as a described box of the gate's project (run_box), its mention; nothing without a file.
+box() { local b; [ -f "$2" ] && b=$(run_box "$@" 2>> box.err) && echo "<$b>"; }
 . "$HERE/products.sh"
 . "$HERE/programs.sh"
 log "gate on $SKU (suites ${SUITES//,/ }): scenario $NAME, seeds from $R, candidate: ${CAND[*]:-released}${PKGS:+ packages $PKGS}${PINS:+ pins ${PINS//,/ }}, cli: $CLI"

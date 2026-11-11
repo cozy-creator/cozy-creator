@@ -2,7 +2,7 @@
 # with a scenario prompt and its own seed. A cell that takes another's output (SeedVR2 H3's clip, BiRefNet Klein's image,
 # Qwen-Image's edits its render) falls back to the gate's reference when that one did not run. The describer reads the
 # checked-in ref/seed.jpg, so both arms of a comparison caption the same picture.
-PRODUCTS=(minimax-h3 seedvr2 sdxl flux-3-klein qwen-image-2 anima birefnet qwen3.5 fibo-2 hidream-o1 moss-image qwen-image
+PRODUCTS=(minimax-h3 seedvr2 sdxl flux.3 qwen-image-2 anima birefnet qwen3.5 fibo-2 hidream-o1 moss-image qwen-image
   flux-2 ideogram-4 krea-2 hunyuan-image-3)
 # --first runs these packages before the rest, in its order: a clean standalone number before models stack.
 [ -z "$FIRST" ] || mapfile -t PRODUCTS < <(tr , '\n' <<< "$FIRST"; printf '%s\n' "${PRODUCTS[@]}" | grep -vxF -f <(tr , '\n' <<< "$FIRST"))
@@ -30,31 +30,32 @@ av() {
 refs() {  # refs <cell> <package> <function> <seed> [more args]
   local name=$1 package=$2 fn=$3 seed=$4; shift 4
   cell "$name" "$(pkg "$package" "$fn")" seed:=$seed prompt="<Hero> stands on the rocks below <Lighthouse>, in its light and weather" \
-    pictures:="[{\"name\": \"Hero\", \"image\": \"${K:-$REF}\"}, {\"name\": \"Lighthouse\", \"image\": \"$REF\"}]" "$@"
+    references:="[{\"name\": \"Hero\", \"image\": \"${K:-$REF}\"}, {\"name\": \"Lighthouse\", \"image\": \"$REF\"}]" "$@"
 }
 product_minimax_h3() {
   # One fixed request (the Skater row, H3_SEED): quality.py holds its CLIP against the last passed gate's on it. The
   # character picture goes to H3 as given (a project cleans it first).
-  local name who motion p="$SCENE, slow push-in, ambient sound" SAVED=$ONLY r
+  local name who motion p="$SCENE, slow push-in, ambient sound" SAVED=$ONLY r v
   IFS=$'\t' read -r name who motion _ _ <<< "$(grep -m1 $'^Skater\t' "$HERE/scenarios.tsv")"
   [[ $ONLY == *",regen-1440p-15s,"* ]] && ONLY="$ONLY,h3,"
   cell h3 "$(pkg minimax-h3 generate)" references:="[{\"name\": \"$name\", \"kind\": \"character\", \"image\": \"$REF\"}]" \
     prompt="<$name> $motion" seed:=$H3_SEED duration_s:=15
   ONLY=$SAVED
   CLIP=$(output h3 mp4)
-  # Above 768p a video is upscaled whole, by SeedVR2 (the lock's seedvr2) by default, with its soundtrack.
+  # Above 768p a take is re-rendered whole by Regenerate-2K (UPSCALE.md) with its soundtrack, from its frames and the
+  # description of the box it is in.
   [[ $ONLY == *",h3-1080p,"* || $ONLY == *",h3-1440p,"* ]] && ONLY="$ONLY,h3-5s,"
   cell h3-5s "$(pkg minimax-h3 generate)" prompt="$p" seed:=$((R + 16)) duration_s:=5
   ONLY=$SAVED
+  v=$(box h3_5s "$(output h3-5s mp4)" "$p")
   for r in 1080 1440; do
-    cell "h3-${r}p" "$(pkg minimax-h3 upscale)" --file video="$(output h3-5s mp4)" resolution=${r}p seed:=$((R + 17))
+    cell "h3-${r}p" "$(pkg minimax-h3 upscale)" video="$v" to=${r}p
     av "h3-${r}p" $r
   done
   # The largest one forward takes: Regenerate-2K over the whole 15 s shot at 1440p, one window from 24 GB up
   # (`regenerate.windows`). 5 s cells never reach it: whole Q, K and V ran a 32 GB card out of memory on nvfp4 (run 28696,
   # cr-259). About 11 min and $0.22 on a 5090 (run 28788), about 18 min and $0.30 on a 4090, past the shot it starts from.
-  cell regen-1440p-15s "$(pkg minimax-h3 upscale)" --file video="$CLIP" resolution=1440p prompt="$who. $motion" \
-    seed:=$((R + 19)) 'upscale:={"model": "regenerate-2k"}'
+  cell regen-1440p-15s "$(pkg minimax-h3 upscale)" video="$(box h3_15s "$CLIP" "$who. $motion")" to=1440p
   av regen-1440p-15s 1440
   if [ -f "regen-1440p-15s${TWIN:-}.number" ]; then
     r=$(nice -n 19 uv run -q --no-project --with numpy python -I "$HERE/frames.py" regen "$CLIP" "$(output "regen-1440p-15s${TWIN:-}" mp4)" 2>&1 | tail -1)
@@ -74,10 +75,10 @@ product_seedvr2() {
   av seedvr2-1440p 1440
 }
 product_sdxl() { cell sdxl "$(pkg sdxl generate)" prompt="$SCENE, photo" seed:=$((R + 3)); }
-product_flux_3_klein() {
-  cell klein "$(pkg flux-3-klein generate_turbo)" prompt="$CHAR" prompt_upsampling:=true seed:=$((R + 4))
+product_flux_3() {
+  cell klein "$(pkg flux.3 generate_turbo)" prompt="$CHAR" prompt_upsampling:=true seed:=$((R + 4))
   K=$(output klein 'png|webp|jpg')
-  refs klein-refs flux-3-klein generate_turbo $((R + 19))
+  refs klein-refs flux.3 generate_turbo $((R + 19))
 }
 product_qwen_image_2() {
   # 1 MP in both cells: 0.6.0 defaults to 2 MP (Paul's ruling) where 0.5.0 rendered 1024x1024; the comparison is like for like.
@@ -131,12 +132,12 @@ product_qwen_image() {
   # Qwen-Image-Edit-2511 for an edit, text again; then the Lightning LoRAs, turbo_lora for text and edit_turbo_lora for
   # an edit. No first-party SDXL LoRA exists to swap.
   local qi; qi=$(output qwen-image 'png|webp|jpg')
-  cell qwen-image-edit "$(pkg qwen-image generate)" prompt="$SCENE at dusk, covered in fresh snow, wide shot" \
-    pictures:="[{\"name\": \"Scene\", \"image\": \"${qi:-$REF}\"}]" seed:=$((R + 12))
+  cell qwen-image-edit "$(pkg qwen-image generate)" prompt="<Scene> at dusk, covered in fresh snow, wide shot" \
+    references:="[{\"name\": \"Scene\", \"image\": \"${qi:-$REF}\"}]" seed:=$((R + 12))
   cell qwen-image-t2i "$(pkg qwen-image generate)" prompt="$OBJECT on a beach at noon, photo" seed:=$((R + 13))
   cell qwen-image-turbo "$(pkg qwen-image generate_turbo)" prompt="$CHAR on a rainy street at night, photo" seed:=$((R + 14))
-  cell qwen-image-turbo-edit "$(pkg qwen-image generate_turbo)" prompt="$SCENE in bright morning sun, wide shot" \
-    pictures:="[{\"name\": \"Scene\", \"image\": \"${qi:-$REF}\"}]" seed:=$((R + 15))
+  cell qwen-image-turbo-edit "$(pkg qwen-image generate_turbo)" prompt="<Scene> in bright morning sun, wide shot" \
+    references:="[{\"name\": \"Scene\", \"image\": \"${qi:-$REF}\"}]" seed:=$((R + 15))
   refs qwen-image-refs qwen-image generate_turbo $((R + 23))
 }
 # FLUX.2 [dev] through fal's turbo (8 steps), text then two pictures.
