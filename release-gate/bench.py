@@ -124,7 +124,8 @@ class Cell(TypedDict):
     throttles: list[str]
     stages: dict[str, float]  # the warm runs' median of each stage, ms
     series: list[float]  # the warm runs' median of each step, ms
-    builds: list[str]  # every build its runs went out on
+    builds: list[str]  # every machine build (cozy, Runtime, TensorFS) its runs ran on
+    senders: list[str]  # every build of this computer's cozy that sent them (the RC laptop rebuilds live)
     cold_downloaded: bool  # its weights step made no run (a cozy without --warm), so its cold run fetched them
 
 
@@ -330,7 +331,8 @@ def summary(cold: Metrics | None, warm: list[Metrics]) -> Cell:
                        if (v := [m['stages'][k] for m in done if k in m.get('stages', {})])},
             'series': [statistics.median(v) for i in range(max((len(m.get('series', [])) for m in done), default=0))
                        if (v := [m['series'][i] for m in done if len(m.get('series', [])) > i])],
-            'builds': sorted({m['build'] for m in runs if m.get('build')}), 'cold_downloaded': False}
+            'builds': sorted({m['build'].split(' on ')[-1] for m in runs if m.get('build')}),
+            'senders': sorted({m['build'].split(' on ')[0] for m in runs if ' on ' in m.get('build', '')}), 'cold_downloaded': False}
 
 
 def text(d: str, name: str) -> str | None:
@@ -546,8 +548,10 @@ def judge(defs: list[CellDef], cand: Gate, base: Group | None, version: str | No
             won = was is not None and was['total_s'] is not None and b['warm']['total_ms'] / 1000 < was['total_s']
             if won and x['total_s'] <= ours:
                 v.why.append(f"loses to ComfyUI ({ours:.1f} s against {x['total_s']:.1f} s) where {version} won")
-        if len(c.get('builds', [])) > 1 or any('>' in b for b in c.get('builds', [])):
-            v.notes.append(f"ran on more than one build: {', '.join(c['builds'])}")
+        if len(c.get('builds', [])) > 1:
+            v.notes.append(f"ran on more than one machine build: {', '.join(c['builds'])}")
+        if len(c.get('senders', [])) > 1 or any('>' in b for b in c.get('senders', [])):
+            v.notes.append(f"sent by {len(c['senders'])} builds of this computer's cozy (the machine's stayed)")
         if 'sw_thermal' in c['throttles']:
             v.notes.append(f"thermal throttling ({w.get('temperature_c')} C, throttled {w.get('throttled', 0):.0%} of the time)")
         issue = next((k for k in known if k['cell'] == d['name'] and k.get('group', cand['group']) == cand['group']), None)
@@ -675,7 +679,7 @@ def versus(gates: list[Gate], defs: list[CellDef]) -> tuple[list[str], list[str]
             judged = {'warm total': (sec(w.get('total_ms')), x['total_s'], 's'), 'steady step': (sec(w.get('steady_ms')), x.get('steady_s'), 's'),
                       'peak VRAM': (gib(ours_peak), gib(x.get('peak_mib')), 'GiB')}
             gaps = [f"{k} +{a - b:.3g} {u} ({a / b - 1:+.0%})" for k, (a, b, u) in judged.items() if a is not None and b and a > b]
-            mixed = f" (ran on {len(c['builds'])} builds: rerun it)" if c and len(c.get('builds', [])) > 1 else ''
+            mixed = f" (ran on {len(c['builds'])} machine builds: rerun it)" if c and len(c.get('builds', [])) > 1 else ''
             if not w:
                 gaps = [f"Cozy did not complete: {'; '.join(c['failed'][:1]) if c else 'not run'}"]
             elif x['status'] != 'ok' and x['total_s'] is None:
