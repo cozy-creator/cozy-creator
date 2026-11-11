@@ -89,7 +89,7 @@ while IFS=$'\t' read -r name group cap warm seed target args before _; do
     b=$(build)
     eval "cell \"\$name-\$i\" \"\$t\" $a $s$(refs "$a")"
     [ "$(build)" = "$b" ] || b="$b>$(build)"
-    mv=$("$CLI" --json machine show "$M" 2> /dev/null < /dev/null | jq -r '.status.version // empty')
+    mv=$("$CLI" --json machine show "$M" 2> /dev/null < /dev/null | jq -r '"\(.status.version // "?") rt\(.status.runtime // "?") tfs\(.status.tensorfs // "?")"')
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$([ "$i" = 0 ] && echo cold || echo warm)" "$name-$i" "$HELD" "$b" "$mv" >> bench.tsv
   done
   read -r held want_bytes < <(podsh "sh /var/tmp/bench-pod.sh check" 2>/dev/null)
