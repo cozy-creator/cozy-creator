@@ -700,21 +700,29 @@ impl Publisher {
         let origin = hub::origin_key(&source.origin).unwrap_or_default();
         let public = json!(["resolve-v4", origin, named.repository, named.release, named.lane, hardware.gpus, hardware.plain]).to_string();
         // A model with no release resolves for a reader of its commits to its newest (xs-173): that
-        // answer, release "", is its reader's alone, held under its account.
-        let reader = source.capability.as_ref().and_then(|capability| capability.account());
-        let private = reader.map(|account| json!(["resolve-v4", origin, named.repository, named.release, named.lane, hardware.gpus, hardware.plain, account]).to_string());
+        // answer, release "", is its reader's alone, held under its account. A public one held is
+        // read without waiting on the capability's token.
+        let private = |account: String| json!(["resolve-v4", origin, named.repository, named.release, named.lane, hardware.gpus, hardware.plain, account]).to_string();
         let read = |name: &String| -> Result<Option<(String, Answer, i64)>, Failure> {
             let held = service.engine.with_journal(|j| j.named(name)).map_err(io_failure)?;
             Ok(held.and_then(|(answer, read)| Some((name.clone(), serde_json::from_str::<Answer>(&answer).ok()?, read))))
         };
-        let held = match &private {
+        let capability = source.capability.as_ref();
+        let mut reader = capability.and_then(|c| c.account_now()).map(private);
+        let mut held = match &reader {
             Some(name) => read(name)?,
             None => None,
         };
-        let held = match held {
-            Some(held) => Some(held),
-            None => read(&public)?,
-        };
+        if held.is_none() {
+            held = read(&public)?;
+        }
+        if held.is_none() && reader.is_none() {
+            reader = capability.and_then(|c| c.account()).map(private);
+            if let Some(name) = &reader {
+                held = read(name)?;
+            }
+        }
+        let private = reader;
         let answer = match held {
             Some((name, answer, read)) => {
                 if stale(read) {
