@@ -40,8 +40,8 @@ way a suite runs `cozy` and reads a run), optional `check.py` (`check(gate) -> (
 
 ## Before renting
 
-`release-gate/interfaces.sh --runtime <wheel file|version> [--tensorfs <wheel file|version>] <packages checkout>` reads each
-package's interface back through the reader an executor starts on, as TensorD writes it, with the TensorFS the Runtime imports
+`release-gate/interfaces.sh --runtime <wheel file|version> [--tensorfs <wheel file|version>] <dir>...` (each a package or a
+checkout of them) reads each package's interface back through the reader an executor starts on, as TensorD writes it, with the TensorFS the Runtime imports
 (its own requirement from PyPI unless named): no GPU, no pod, seconds. Describing alone misses what only that reader
 refuses, as with minimax-h3 on Runtime 0.40.0. A cut runs it before anything else.
 
@@ -54,6 +54,9 @@ Local-package (`--packages`) gates build a small source-staging helper from this
    (exact package releases, `sdxl@0.1.1,…`: a package candidate is published and yanked, and installs only by its pin),
    or `--packages` (a packages checkout whose directories run). Unpinned cells run the root package users get.
    This computer's cozy puts it on (a cozy of another version would restart a shared Calcifer); `machine update` fails unless the machine then runs it.
+   The chosen suites' own packages are described on the Runtime the machine runs (`interfaces.sh`): one the package contract
+   refuses fails `gate-packages` by name, whatever its cells do. Gate packages use the public API only; what needs the
+   Runtime's internals is a built-in of the Runtime (`cozy_runtime.bench`, xs-174) that a gate package calls.
 3. Runs the chosen suites' cells, each once, with new prompts and seeds. Before a function's first cell, API warming to `downloaded`
    puts all its weights on the disk, its on-demand models' too (an upsampler), and `off` takes it out of the warm
    set: a cell times what a user who has used the function sees, never a download (cl-790). A slow run goes on; a hung one

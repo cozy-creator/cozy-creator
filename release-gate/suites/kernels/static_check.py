@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Triton kernels against what launches them, by reading the source: no GPU, torch or Triton.
 
-    static_check.py <dir>...     exits 1 naming each mismatch
+    static_check.py <dir>...     exits 1 naming each mismatch (cells.sh: the Runtime the machine runs, and --packages)
 
 For every `@triton.jit` function of each tree, every `TritonEntry` of it and every launch of it
 (`launch(kernel, grid, *args)`, `_LAUNCH[i](kernel, grid, *args)`):
