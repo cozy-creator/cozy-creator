@@ -135,6 +135,10 @@ PY_BACKING_SCAN
   in_project "$P" --json vault unlock --recovery-file "$secrets/recovery3" --idle 0 > "$work/rekey-recovery.json"
   view=$(jq -r '.vault.view // empty' "$work/rekey-recovery.json")
   [ "$(sha "$view/files/movie.mp4")" = "$before" ] || fail "new-generation recovery lost the video"
+  if [ "${RUNNER_OS:-}" = Linux ] && [ -n "$LOCAL" ]; then
+    step "private media ranges stay in the mounted project for both binders"
+    python3 "$E2E/cli/private_ranges.py" --project "$P" --view "$view" --out "$work/private-ranges.json" --cli "$COZY"
+  fi
   in_project "$P" --json vault lock > "$work/final-lock.json"
   printf '{"ordinary":true,"mounted_media":true,"lock":true,"recovery":true,"recovery_output_backing_refused":true,"recovery_output_view_refused":true,"rekey":true,"expiry":true,"synthetic_only":true}\n' > "$work/receipt.json"
 )
