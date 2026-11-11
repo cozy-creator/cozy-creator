@@ -5,7 +5,7 @@ import type { Viewport } from "@xyflow/react"
 const privateProjects = new Set<string>()
 export const privateProject = (id: string | null) => id !== null && privateProjects.has(id)
 export function forgetProjectView(id: string) {
-  for (const prefix of ["cozy.view:", "cozy.selection:", "cozy.more:"]) {
+  for (const prefix of ["cozy.view:", "cozy.selection:", "cozy.more:", "cozy.machine:"]) {
     try { localStorage.removeItem(`${prefix}${id}`) } catch { /* storage is optional */ }
   }
 }
@@ -33,6 +33,7 @@ function write(key: string, value: unknown) {
 const viewKey = (id: string) => `cozy.view:${id}`
 const selectionKey = (id: string) => `cozy.selection:${id}`
 const moreKey = (id: string) => `cozy.more:${id}`
+const machineKey = (id: string) => `cozy.machine:${id}`
 const TOOLS_KEY = "cozy.tools-shut"
 const NSFW_KEY = "cozy.show-nsfw"
 
@@ -50,3 +51,8 @@ export const loadSelection = (id: string | null) => (id && !privateProject(id) ?
 export const saveSelection = (id: string, names: string[]) => privateProject(id) ? undefined : write(selectionKey(id), names)
 export const loadMore = (id: string | null) => (id && !privateProject(id) ? (read<string[]>(moreKey(id)) ?? []) : [])
 export const saveMore = (id: string, names: string[]) => privateProject(id) ? undefined : write(moreKey(id), names)
+export function loadMachine(id: string | null): string {
+  const name = id && !privateProject(id) ? read<unknown>(machineKey(id)) : null
+  return typeof name === "string" ? name : ""
+}
+export const saveMachine = (id: string, name: string) => privateProject(id) ? undefined : write(machineKey(id), name)
