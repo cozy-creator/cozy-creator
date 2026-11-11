@@ -417,11 +417,14 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk) -> Result<VaultChan
             if encrypted(root) { return Err(Error::new(Kind::Conflict, "project_encrypted", "the project is already encrypted")); }
             let project = api.projects.open(api, root)?;
             let id = project.id.clone();
-            drop(project);
+            // Keep the folder registered until convert closes its connections. Its
+            // ordinary final drop closes SQLite asynchronously, which can retain
+            // Windows file handles across the source-directory rename.
             let generation = plain_generation_for_encrypt(root, &id)?;
             let created = Keybag::create_generation(&id, generation, new_passphrase(ask)?).map_err(key)?;
             recovery_secret = Some(created.recovery_secret.expose().to_owned());
             preserved_source = Some(convert(api, root, created.keybag, created.secret, ask)?);
+            drop(project);
             if ask.remove_plaintext {
                 preserved_source = None;
             }
@@ -842,7 +845,7 @@ fn convert(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret,
     if let Some(mut source) = source_mount.take() { source.try_unmount().map_err(provider)?; }
     let receipt = Conversion { root: root.to_owned(), staged: staged.clone(), saved: saved.clone(), key_id: target_keybag.info().key_id, remove_source: old_secret.is_some() || ask.remove_plaintext, plain: None };
     save_conversion(&receipt)?;
-    fs::rename(root, &saved).map_err(io)?;
+    fs::rename(root, &saved).map_err(|why| error("vault_io", format!("preserve the project source before encryption: {why}")))?;
     platform::durable::sync_dir(parent).map_err(provider)?;
     if let Err(e) = fs::rename(&staged, root) { return Err(error("vault_recovery", format!("source preserved at {}; retry opening the project to complete conversion: {e}", saved.display()))); }
     platform::durable::sync_dir(parent).map_err(provider)?;
