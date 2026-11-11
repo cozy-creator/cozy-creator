@@ -227,12 +227,24 @@ hub_model_install() {
   hub_do "$check" ok model "$verb" "$@"
 }
 
+# hub_unreleased <model>: xs-173, the owner's model with no release named by name on $M: a cozy that signs model reads
+# (0.24.0 on) at a Hub that grants them installs its newest commit; an older cozy, or a Hub before them, is refused, typed
+# (hub_do fails a 5xx).
+hub_unreleased() {
+  local want=refused verb=install version
+  version=$("$CLI" --version | awk '{print $2}'); version=${version%%[-+]*}
+  if [ "$(printf '%s\n0.24.0\n' "$version" | sort -V | head -1)" = 0.24.0 ] &&
+    curl -fsS "$HUB_URL/.well-known/oauth-protected-resource" | grep -q '"tensorhub_model_read"'; then want=ok; fi
+  "$CLI" model install --help > /dev/null 2>&1 || verb=download
+  hub_do model-unreleased "$want" model "$verb" "$1" --on "$M" -y
+}
 # hub_models: on $M, upload a commit (the workload writer), publish it as 0.1.0 (listed), download; the exact pin and
 # lane download; delete → gone, as the Hub serves the model and as the model metadata API shows it.
 hub_models() {
   hub_test_target || return 2
   local model=$WHO/$HUB_PKG
   hub_model_upload model-upload "$M" "$model" || return 0
+  hub_unreleased "$model"
   hub_do model-publish ok model publish "$model" 0.1.0 "$HUB_COMMIT"
   hub_listed model-info-published "$model"
   hub_model_install model-download "$model" --on "$M" -y

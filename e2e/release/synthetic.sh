@@ -143,6 +143,15 @@ PATH="$(dirname "$COZY"):$PATH" "$here/../capabilities/run.sh" --out "$OUT/capab
 # Install the private commit on the fixture's local machine; the capability suite above checks scoped access.
 watched download-private model install "$model@$commit" --on "$M" \
   || check "model install $model@$commit --on $M: the machine did not read the private commit: $(run_get "$OUT" download-private '.reason.message' | head -c 300)"
+# xs-173: the model has no release, and its owner names it by name: the machine resolves it under the run capability's model
+# read (Calcifer signs it, TensorD redeems it, the Hub answers the newest commit of the lane). A Hub before it has no model reads.
+if curl -fsS "$COZY_HUB_URL/.well-known/oauth-protected-resource" | J '.authorization_details_types_supported | index("tensorhub_model_read")'; then
+  watched download-unversioned model install "$model" --lane f32 --on "$M" \
+    && cozy --json model ls --on "$M" | J --arg m "$model" '.models | any(.model == $m and .lane == "f32" and .release == "" and .complete)' \
+    || check "xs-173: model install $model --lane f32 (no release) by its owner: $(run_get "$OUT" download-unversioned '.reason.message' | head -c 300)"
+  watched download-unversioned-any model install "$model" --on "$M" \
+    || check "xs-173: model install $model (no release, no lane) by its owner: $(run_get "$OUT" download-unversioned-any '.reason.message' | head -c 300)"
+fi
 cozy --json model edit "$model" --family e2e-family --tag 'E2E Tag' --tag nsfw --tag anime --untag nsfw > /dev/null \
   && model_details "$model" | J '.family == "e2e-family" and .family_from == "owner" and .tags == ["anime", "e2e-tag"]' \
   || check "model edit: family or tags not set"

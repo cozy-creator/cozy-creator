@@ -10,7 +10,10 @@
 //   - a copied token is refused without its DPoP key, and a proof is spent once;
 //   - widened scope is refused: another repository, a release, a delete, rentals; a capability naming another account's
 //     repository; a capability altered after signing; an expired one;
-//   - with --rental, a capability naming that rental is granted while it is live and refused once it ended.
+//   - with --rental, a capability naming that rental is granted while it is live and refused once it ended;
+//   - the commit's model, which has no release (xs-173): its owner resolves it to its newest commit, as does a
+//     capability's tensorhub_model_read of it, which reads every commit's bytes; anonymous, a commit read and an
+//     absent model are refused 403 model.not_readable.
 package main
 
 import (
@@ -30,6 +33,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -72,6 +76,7 @@ func main() {
 	var resource struct {
 		Resource string   `json:"resource"`
 		Issuers  []string `json:"authorization_servers"`
+		Types    []string `json:"authorization_details_types_supported"`
 	}
 	call("protected-resource", "GET", *hub+"/.well-known/oauth-protected-resource", "", "", nil, &resource)
 	var metadata struct {
@@ -119,6 +124,27 @@ func main() {
 	expect("rentals", status("rentals", "GET", rentals, "DPoP "+at, key.proof("GET", rentals, at)), 403, "capability.operation_forbidden")
 	// Straight to the Hub: hubcheck reports any route its document lacks, and this one is gone on purpose.
 	expect("minted-route-gone", status("minted-route-gone", "POST", origin+"/v1/capabilities", "Bearer "+bearer, ""), 404, "")
+
+	// xs-173: a model named by name, with no release, resolves for its owner to its newest commit; a run
+	// capability's model read resolves and reads it as the owner; anyone else is refused model.not_readable,
+	// never a 404 that reads like absence. A Hub before it advertises no model reads.
+	if slices.Contains(resource.Types, "tensorhub_model_read") {
+		resolve := origin + "/v1/models/" + org + "/" + name + "/resolve"
+		expect("resolve-anonymous", status("resolve-anonymous", "GET", resolve, "", ""), 403, "model.not_readable")
+		expect("resolve-commit-read", status("resolve-commit-read", "GET", resolve, "DPoP "+at, key.proof("GET", resolve, at)), 403, "model.not_readable")
+		expect("resolve-owner", status("resolve-owner", "GET", resolve, "Bearer "+bearer, ""), 200, "")
+		newest := unreleased("resolve-owner", "")
+		modelRead := map[string]any{"type": "tensorhub_model_read", "model": org + "/" + name}
+		mr := redeem(key, token, capability([]map[string]any{modelRead}, time.Hour, nil))
+		expect("model-read-redeem", mr.status, 200, "")
+		expect("resolve-model-read", status("resolve-model-read", "GET", resolve, "DPoP "+mr.token, key.proof("GET", resolve, mr.token)), 200, "")
+		unreleased("resolve-model-read", newest)
+		expect("read-model-read", status("read-model-read", "GET", blob, "DPoP "+mr.token, key.proof("GET", blob, mr.token)), 307, "")
+		absent := origin + "/v1/models/" + org + "/" + name + "-e2e-absent/resolve"
+		expect("resolve-absent", status("resolve-absent", "GET", absent, "", ""), 403, "model.not_readable")
+	} else {
+		fmt.Println("skip model reads: this Hub advertises none (before xs-173)")
+	}
 
 	// The CI key's account is a platform admin, who may write any org, audited (xs-131).
 	foreign := capability([]map[string]any{read, {"type": "tensorhub_write", "model": account.Name + "-e2e-not-yours/x"}}, time.Hour, nil)
@@ -303,6 +329,24 @@ func expect(name string, got, want int, code string) {
 		return
 	}
 	fail(fmt.Sprintf("%s: want %d %s, got %d %s", name, want, code, got, codes[name]))
+}
+
+// unreleased is the commit the resolve kept as NAME.json answered, checked to be one with no release (and
+// want, unless empty).
+func unreleased(name, want string) string {
+	var resolved struct {
+		Release string `json:"release"`
+		Commit  struct {
+			SHA256 string `json:"sha256"`
+		} `json:"commit"`
+	}
+	raw, _ := os.ReadFile(filepath.Join(out, name+".json"))
+	if json.Unmarshal(raw, &resolved) != nil || resolved.Release != "" || len(resolved.Commit.SHA256) != 64 || (want != "" && resolved.Commit.SHA256 != want) {
+		fail(fmt.Sprintf("%s: want a commit with no release %s, got %s", name, want, raw))
+		return ""
+	}
+	fmt.Printf("ok   %s: commit %s, no release\n", name, resolved.Commit.SHA256[:12])
+	return resolved.Commit.SHA256
 }
 
 func expectRefused(name string, got redeemed, reason string) {

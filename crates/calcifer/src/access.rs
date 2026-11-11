@@ -1,11 +1,12 @@
 //! What a run's send carries for its Hub: where its machine reads the Hub (the Hub's own word,
 //! kept per Hub: in a dev or CI Hub it is not the origin this computer dials) and, signed in, a run
 //! capability (cl-675) this computer's device key signs offline for the machine's workload key:
-//! the commits this computer's unsettled runs on that machine name by hash, the repositories they
-//! publish into, and the rental the machine is, for at most a day. The machine redeems it at the
-//! Hub itself (AuthKit's jwt-bearer grant), again while its runs need it, and the Hub decides each
-//! time, so nothing more comes from this computer and its sign-in never leaves it. A run that reads
-//! only public releases carries none. Signed out, a run reads public releases at its Hub's origin; a
+//! the commits this computer's unsettled runs on that machine name by hash, the models they name
+//! by name that the account may hold private commits of (xs-173: its own, its orgs', any for a
+//! platform admin), the repositories they publish into, and the rental the machine is, for at most
+//! a day. The machine redeems it at the Hub itself (AuthKit's jwt-bearer grant), again while its
+//! runs need it, and the Hub decides each time, so nothing more comes from this computer and its
+//! sign-in never leaves it. A run that reads only public releases carries none. Signed out, a run reads public releases at its Hub's origin; a
 //! run that publishes needs the sign-in.
 use std::{
     collections::BTreeSet,
@@ -65,13 +66,29 @@ pub(crate) struct Facts {
     names: Vec<Origin>,
     /// The CA a machine trusts for the Hub when a private one signs it (a test Hub).
     ca_der: Vec<u8>,
+    /// The orgs the account is a member of, and whether it is a platform admin: whose models' private
+    /// commits it reads.
+    orgs: Vec<String>,
+    admin: bool,
+    /// The Hub grants model reads (`tensorhub_model_read`, xs-173); one before it refuses a
+    /// capability naming them.
+    model_reads: bool,
 }
 
-/// What runs need of a Hub's private side: the commits they name by hash, the repositories they
-/// publish into.
+impl Facts {
+    /// Whether the account may hold private commits of model `org/name`.
+    fn reads_privately(&self, model: &str) -> bool {
+        let org = model.split('/').next().unwrap_or_default();
+        self.model_reads && (self.admin || org == self.account || self.orgs.iter().any(|o| o == org))
+    }
+}
+
+/// What runs need of a Hub's private side: the commits they name by hash, the models they name by
+/// name (no release, no hash), the repositories they publish into.
 #[derive(Default)]
 pub(crate) struct Needs {
     reads: BTreeSet<String>,
+    models: BTreeSet<String>,
     writes: BTreeSet<String>,
 }
 
@@ -88,10 +105,17 @@ impl Needs {
             .chain(warm)
             .filter(|c| !c.repository.starts_with("local/"))
         {
-            let adapters = choice.adapters.iter().map(|adapter| &adapter.manifest);
-            for manifest in std::iter::once(&choice.manifest).chain(adapters) {
+            // A name with no release and no hash is its newest: a model of the account's may hold
+            // only private commits (xs-173).
+            let named = std::iter::once((&choice.repository, &choice.release, &choice.manifest));
+            let adapters = choice.adapters.iter().map(|a| (&a.model, &a.release, &a.manifest));
+            for (model, release, manifest) in named.chain(adapters) {
                 if is_digest(manifest) {
                     self.reads.insert(manifest.clone());
+                } else if release.is_empty()
+                    && let Some(model) = model_name(model)
+                {
+                    self.models.insert(model);
                 }
             }
         }
@@ -101,14 +125,15 @@ impl Needs {
     }
 
     fn is_empty(&self) -> bool {
-        self.reads.is_empty() && self.writes.is_empty()
+        self.reads.is_empty() && self.models.is_empty() && self.writes.is_empty()
     }
 
     /// Their RFC 9396 `authorization_details`, in one order: the same needs sign the same.
     fn details(&self) -> serde_json::Value {
         let reads = self.reads.iter().map(|commit| json!({"type": "tensorhub_read", "commit": commit}));
+        let models = self.models.iter().map(|model| json!({"type": "tensorhub_model_read", "model": model}));
         let writes = self.writes.iter().map(|model| json!({"type": "tensorhub_write", "model": model}));
-        reads.chain(writes).collect()
+        reads.chain(models).chain(writes).collect()
     }
 }
 
@@ -159,6 +184,8 @@ impl Machines {
     ) -> Result<String, Denied> {
         let mut needs = self.needs(origin, machine, Some(run));
         needs.add(spec);
+        // A model of anyone else's reads its releases, which need no capability.
+        needs.models.retain(|model| facts.reads_privately(model));
         if needs.is_empty() {
             return Ok(String::new());
         }
@@ -225,6 +252,15 @@ fn now_s() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+/// A Hub model's one spelling (`org/name`, `_/name` for a first-party one, lowercase) as a
+/// capability names it; none for a `local/` alias or a name the Hub would not read.
+fn model_name(text: &str) -> Option<String> {
+    let text = text.to_ascii_lowercase();
+    let (org, name) = text.split_once('/').unwrap_or(("_", &text));
+    let slug = |s: &str| (1..=64).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b));
+    (org != "local" && (org == "_" || slug(org)) && slug(name)).then(|| format!("{org}/{name}"))
+}
+
 fn is_digest(text: &str) -> bool {
     text.strip_prefix("sha256:").is_some_and(|hex| {
         hex.len() == 64 && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
@@ -257,7 +293,8 @@ impl Hubs {
         let hub = |error| hub_refusal(origin, error);
         let account = client.get_current_account().await.map_err(hub)?;
         let environment = client.get_execution_environment().await.map_err(hub)?.environment;
-        let resource = client.get_protected_resource_metadata().await.map_err(hub)?.resource;
+        let metadata = client.get_protected_resource_metadata().await.map_err(hub)?;
+        let model_reads = metadata.authorization_details_types_supported.iter().any(|t| t == "tensorhub_model_read");
         let names = [
             &environment.tensorhub_origin,
             &environment.tensorhub_public_origin,
@@ -266,7 +303,10 @@ impl Hubs {
             key,
             account: account.name,
             user: account.user_id,
-            resource,
+            resource: metadata.resource,
+            orgs: account.orgs,
+            admin: account.admin,
+            model_reads,
             names: names.iter().filter_map(|o| Origin::parse(o).ok()).collect(),
             reads: environment.tensorhub_origin,
             ca_der: environment
