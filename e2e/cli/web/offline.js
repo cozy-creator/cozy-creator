@@ -166,9 +166,16 @@ const DESCRIBED_MS = 300_000;
   check('drop_shows_at_once', (await box('late').count()) === 1);
   const shown = async () => ({ boxes: (await page.locator('.card[data-asset]').evaluateAll((cards) => cards.map((card) => card.dataset.asset))).sort().join(), shot: await place('shot') });
   const left = await shown();
-  await page.getByTitle(other.path, { exact: true }).click();
+  // Offline status and machine controls can put a project behind the visible overflow link.
+  // Follow the same client-side project links a person uses; queued edits remain in memory.
+  const switchProject = async (path) => {
+    const tab = page.locator('nav.ptabs').getByTitle(path, { exact: true });
+    if (!(await tab.count())) await page.locator('nav.ptabs .ptab.more').click();
+    await page.getByTitle(path, { exact: true }).click();
+  };
+  await switchProject(other.path);
   await page.locator('.ptab.on').and(page.getByTitle(other.path, { exact: true })).waitFor();
-  await page.getByTitle(folder, { exact: true }).click();
+  await switchProject(folder);
   await box('quick').waitFor();
   await page.waitForTimeout(500);
   const back = await shown();
