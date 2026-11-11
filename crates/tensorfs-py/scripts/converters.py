@@ -1221,6 +1221,56 @@ def h3_latent_upscaler() -> Table[TableRow]:
             "components": [{"name": "upscaler", "rows": [(k,) for k in census]}]}
 
 
+# ------------------------------------------------------------------ RelayVSR
+
+RELAYVSR = "e856773350f53036d825404c9ea9228e6dffadca"  # kopperx/RelayVSR, Apache-2.0
+RELAYVSR_HEADERS = VECTORS / "relayvsr-headers"  # hf://kopper/RelayVSR@d43dc5545f9a3bd1c7730b68ebff4ab1f9199bd1
+
+
+def relayvsr_census() -> dict[str, list[str]]:
+    """The Wan transformer's and the Flash decoder's `state_dict()` order, built on the meta device
+    from RelayVSR's code at the pinned commit with each file's own `config` (its `checkpoints.py`).
+    Its Triton spatial-attention module (a kernel defined at import) is stubbed: construction calls none."""
+    body = fetch(f"https://codeload.github.com/kopperx/RelayVSR/zip/{RELAYVSR}")
+    root = Path(tempfile.mkdtemp())
+    zipfile.ZipFile(io.BytesIO(body)).extractall(root)
+    sys.path.insert(0, str(root / f"RelayVSR-{RELAYVSR}"))
+    spatial = types.ModuleType("refvsr_inference.models.wan.spatial_attention")
+    spatial.SpatialAttentionSpec = spatial.spatial_attention = None  # type: ignore[attr-defined]  # a stand-in module
+    sys.modules.setdefault(spatial.__name__, spatial)
+    from refvsr_inference.models.flash.model import FlashVSRConditionNet
+    from refvsr_inference.models.wan.transformer import WanTransformer3DModel
+
+    def metadata(name: str) -> dict[str, str]:
+        raw = (RELAYVSR_HEADERS / f"{name}.safetensors.header").read_bytes()
+        (length,) = struct.unpack("<Q", raw[:8])
+        return cast(dict[str, str], json.loads(raw[8 : 8 + length])["__metadata__"])
+
+    wan_meta, flash_meta = metadata("wan"), metadata("flash")
+    assert (wan_meta["format"], flash_meta["format"]) == ("refvsr-wan-v1", "refvsr-flash-v1")
+    flash_config = json.loads(flash_meta["config"])
+    prompt = header(RELAYVSR_HEADERS / "wan.safetensors.header")["prompt_embeds"][1]
+    with torch.device("meta"):
+        wan = WanTransformer3DModel.from_config(json.loads(wan_meta["config"]))
+        wan.lq_proj = wan.build_lq_proj()
+        wan.register_buffer("prompt_embeds", torch.empty(prompt))
+        flash = FlashVSRConditionNet.from_variant(flash_config.pop("variant"), **flash_config)
+        return {"wan": list(wan.state_dict()), "flash": list(flash.state_dict())}
+
+
+def relayvsr() -> Table[TableRow]:
+    """RelayVSR's two files as they are, named for the relayvsr package's components: `wan`
+    (bf16, with its prompt embeddings) and `flash` (F32). Rows follow upstream's construction
+    order; the banked headers hold exactly their keys."""
+    census = relayvsr_census()
+    components: list[Component[TableRow]] = []
+    for name in ("wan", "flash"):
+        keys = header(RELAYVSR_HEADERS / f"{name}.safetensors.header")
+        assert sorted(keys) == sorted(census[name]), name
+        components.append({"name": name, "rows": [(k,) for k in census[name]]})
+    return {"name": "relayvsr", "files": {"config.json": {"architecture": "RelayVSR"}}, "components": components}
+
+
 # ------------------------------------------------------------------ Ideogram 4
 
 # Diffusers #14126's `convert_ideogram4_transformer_checkpoint_to_diffusers` (`attention.o` ->
@@ -1352,6 +1402,7 @@ def generate() -> dict[str, Generated]:
         "fibo2.lora": fibo2_lora(),
         "seedvr2": seedvr2(),
         "h3.latent_upscaler": h3_latent_upscaler(),
+        "relayvsr": relayvsr(),
         "ideogram4.fp8": ideogram4(),
         **{name: qwen_moe(name, pinned) for name, pinned in QWEN_MOE.items()},
     }

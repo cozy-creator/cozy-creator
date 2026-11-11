@@ -5,7 +5,8 @@
 # machine on each call.
 export COZY_HUB_URL=$HUB_URL
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../e2e" && pwd)/test-hub.sh"
-require_ci_test_hub "$HUB_URL" || return 2
+# A gate on production (gate.sh --hub prod) reads it and rents there; every synthetic write still needs the fixture (hub_test_target).
+[ "${HUB_TARGET:-}" = prod ] || require_ci_test_hub "$HUB_URL" || return 2
 hub_test_target() {
   if ! require_test_hub "$HUB_URL"; then
     expect "hub isolation" FAIL "synthetic checks require the isolated fixture Hub"
@@ -147,7 +148,9 @@ hub_cleanup() {
 # FAILs. paths-empty: a Hub without production's data, where a named package, model or SKU may be absent (404).
 hub_contract() {
   local hc=''
-  go build -C "$HERE/../e2e/hubcheck" -o "$HB/hubcheck" . 2> "$HB/hubcheck.log" && { "$HB/hubcheck" --hub "$HUB_URL" --out "$HB" > "$HB/hubcheck.addr" 2>> "$HB/hubcheck.log" & hc=$!; }
+  local production=()
+  [ "${HUB_TARGET:-}" != prod ] || production=(--production)
+  go build -C "$HERE/../e2e/hubcheck" -o "$HB/hubcheck" . 2> "$HB/hubcheck.log" && { "$HB/hubcheck" --hub "$HUB_URL" "${production[@]}" --out "$HB" > "$HB/hubcheck.addr" 2>> "$HB/hubcheck.log" & hc=$!; }
   until [ -z "$hc" ] || [ -s "$HB/hubcheck.addr" ] || ! kill -0 "$hc" 2> /dev/null; do sleep 1; done
   if [ -s "$HB/hubcheck.addr" ]; then
     while IFS=$'\t' read -r check verdict what; do expect "$check" "$verdict" "$what"; done < <(uv run -q --no-project \
