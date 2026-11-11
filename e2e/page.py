@@ -2,11 +2,17 @@
 no `cozy project` verbs). Each prints JSON on stdout; a refusal goes to stderr and exits 1.
     page.py import <project> <file> [--name N] [--description D]    the file as a box, as a drop on the canvas
     page.py add <project> <name> --tool T [--fields JSON]           a tool's box, as a drop on the canvas (`<name>` exactly)
-    page.py yaml <project> <file>                                    project.yaml (format 4) read into the project
-    page.py render <project> --on M[,M] [--n N] [--approve] [--pickup '<take>' FRAME] [--wait A,B] <name>...
+    page.py yaml <project> [file]                                    project.yaml (format 4) read into the project; no file:
+                                                                     the project as YAML
+    page.py render <project> --on M[,M]|auto [--n N] [--approve] [--pickup '<take>' FRAME] [--wait A,B] [--queue] <name>...
                                                                      a render, followed until each name's (or --wait's) new
-                                                                     versions land: one JSON line each, exit 1 on a failure
-    page.py asset <project> <name>                                   the box and its versions
+                                                                     versions land: one JSON line each, exit 1 on a failure.
+                                                                     `auto`: what the page sends for Automatically; --queue:
+                                                                     asked, not followed
+    page.py approve <project> <name> <version>                       a version approved, as a double tap on its take does
+    page.py asset <project> <name>...                                each box and its versions, a JSON line each
+    page.py board <project>                                          the project's render as the page shows it
+    page.py tools <project>                                          the tools a box can be, as the page lists them
 <project> is its folder, which names it in a route."""
 
 import argparse
@@ -57,14 +63,34 @@ def asset(folder: str, name: str) -> Json:
     return call("GET", project(folder) + "/assets/" + urllib.parse.quote(name, safe=""))
 
 
+def read(folder: str) -> Json:
+    return call("GET", project(folder) + "?assets=false")
+
+
+def automatic(folder: str) -> list[str]:
+    """What the page sends when its Run on says Automatically (web/app CanvasHost.tsx `useMachines`): the project's machines, else every
+    rental this computer ordered that's up or booting, another computer's that's up, and this one last where it runs models."""
+    chosen = cast(list[str], read(folder).get("machines", []))
+    if chosen:
+        return chosen
+    listed = cast(list[Json], call("GET", "/v1/machines")["machines"])
+    held = [machine for machine in listed if machine.get("ordered", True) and not machine.get("offline")]
+    rented = [machine for machine in held if machine["kind"] == "rental" and machine["state"] in ("ready", "booting")]
+    up = [machine for machine in held if machine["kind"] != "rental" and machine["state"] == "ready" and not machine.get("unreachable")]
+    others = [machine for machine in up if machine["kind"] != "local"]
+    here = [machine for machine in up if machine["kind"] == "local"] if call("GET", "/v1/status").get("local_usable") else []
+    return [str(machine["name"]) for machine in rented + others + here]
+
+
 def render(args: argparse.Namespace) -> int:
     names: list[str] = args.names
-    waited = args.wait.split(",") if args.wait else [name for name in names if name != "all"]
+    on = automatic(args.project) if args.on == "auto" else args.on.split(",")
+    waited = [] if args.queue else args.wait.split(",") if args.wait else [name for name in names if name != "all"]
     before = {name: len(cast(list[object], asset(args.project, name)["versions"])) for name in waited}
-    ask: Json = {"names": names, "n": args.n, "on": args.on.split(","), "approve": args.approve}
+    ask: Json = {"names": names, "n": args.n, "on": on, "approve": args.approve}
     if args.pickup:
         ask["pickup"] = {"take": args.pickup[0], "out_frame": int(args.pickup[1])}
-    print(json.dumps({"asked": call("POST", project(args.project) + "/runs", json.dumps(ask).encode())}), flush=True)
+    print(json.dumps({"on": on, "asked": call("POST", project(args.project) + "/runs", json.dumps(ask).encode())}), flush=True)
     left, quiet, failed = dict(before), time.monotonic(), False
     while left:
         time.sleep(3)
@@ -98,7 +124,7 @@ def main() -> int:
     one.add_argument("--fields", default="{}")
     one = verbs.add_parser("yaml")
     one.add_argument("project")
-    one.add_argument("file")
+    one.add_argument("file", nargs="?")
     one = verbs.add_parser("render")
     one.add_argument("project")
     one.add_argument("--on", required=True)
@@ -106,10 +132,17 @@ def main() -> int:
     one.add_argument("--approve", action="store_true")
     one.add_argument("--pickup", nargs=2, metavar=("TAKE", "FRAME"))
     one.add_argument("--wait")
+    one.add_argument("--queue", action="store_true")
     one.add_argument("names", nargs="+")
-    one = verbs.add_parser("asset")
+    one = verbs.add_parser("approve")
     one.add_argument("project")
     one.add_argument("name")
+    one.add_argument("version")
+    one = verbs.add_parser("asset")
+    one.add_argument("project")
+    one.add_argument("names", nargs="+")
+    for verb in ("board", "tools"):
+        verbs.add_parser(verb).add_argument("project")
     args = parser.parse_args()
     if args.verb == "import":
         ask = {"source": held(Path(args.file).read_bytes())}
@@ -118,12 +151,22 @@ def main() -> int:
     elif args.verb == "add":
         drop: Json = {"tool": args.tool, "name": args.name, "exact": True, "fields": json.loads(args.fields)}
         print(json.dumps(call("POST", project(args.project) + "/assets", json.dumps(drop).encode())))
-    elif args.verb == "yaml":
+    elif args.verb == "yaml" and args.file:
         print(json.dumps(call("PUT", project(args.project) + "/yaml", Path(args.file).read_bytes(), "application/yaml")))
+    elif args.verb == "yaml":
+        with OPENER.open(urllib.request.Request(BASE + project(args.project) + "/yaml", headers=AUTH), timeout=60) as response:
+            sys.stdout.write(response.read().decode())
     elif args.verb == "render":
         return render(args)
+    elif args.verb == "approve":
+        print(json.dumps(call("POST", project(args.project) + "/approve", json.dumps({"name": args.name, "version": args.version}).encode())))
+    elif args.verb == "board":
+        print(json.dumps(read(args.project).get("board")))
+    elif args.verb == "tools":
+        print(json.dumps(call("GET", "/v1/tools?" + urllib.parse.urlencode({"project": str(read(args.project)["id"])}))))
     else:
-        print(json.dumps(asset(args.project, args.name)))
+        for name in args.names:
+            print(json.dumps(asset(args.project, name)))
     return 0
 
 

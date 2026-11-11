@@ -84,6 +84,7 @@ jobs:
             e2e/capabilities
             e2e/publish
             e2e/cli/project/boxed
+            e2e/cli/web
           path: creator
       - name: The Hub this session rents on
         run: |

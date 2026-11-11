@@ -119,8 +119,8 @@ turns() {
   jq -rs 'sort_by(.started_at_ms) as [$x, $y] |
     "accepted \(((map(.accepted_at_ms) | max) - (map(.accepted_at_ms) | min)) / 1000) s apart; run \($x.number) executed \($x.started_at_ms) to \($x.settled_at_ms), run \($y.number) from \($y.started_at_ms) (\(if $y.started_at_ms < $x.settled_at_ms then "overlapping" else "\($y.started_at_ms - $x.settled_at_ms) ms after" end))"' "$OUT/$1.json" "$OUT/$2.json"
 }
-# A run belongs to a project, on A as here.
-on "$A" project "cozy project new /root/session" || fail "A: cozy project new"
+# A run belongs to a project, on A as here: 0.24.0's `cozy new` makes a plain one, rc/0.25.0's with --unencrypted.
+on "$A" project 'cozy new /root/session $(cozy new --help | grep -q -- --unencrypted && echo --unencrypted)' || fail "A: cozy new"
 # Round 1, cold: SDXL from the runner and BiRefNet from A's shell, sent together.
 step a1-remote run sdxl/generate --on "$A" prompt="a brass telescope on a windowsill at dawn, photo" seed:=$SEED & P=$!
 on "$A" a1-local "cd /root/session && cozy run birefnet/remove_background --file image=/root/seed.jpg" & Q=$!

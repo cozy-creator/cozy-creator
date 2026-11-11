@@ -44,7 +44,8 @@ PY
   RUN_PROJECT=$(cd "$1" && pwd)
 }
 
-# run_page <verb> <args…>: what the page asks of this script's project that no CLI verb does (e2e/page.py: import, add, yaml, render, asset).
+# run_page <verb> <args…>: what the page asks of this script's project that no CLI verb does (e2e/page.py: import, add, yaml, render,
+# approve, asset, board, tools).
 run_page() { local verb=$1; shift; python3 "$RUN_PAGE" "$verb" "$RUN_PROJECT" "$@"; }
 # run_box <name> <file> <description>: the file a described box of this script's project; prints its name, for a function to read by
 # mention (`video=<name>`) with its description. The CLI attaches a file but can't describe it.
