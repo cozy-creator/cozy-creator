@@ -8,18 +8,19 @@ import { fileURLToPath } from "node:url"
 const app = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const require = createRequire(path.join(app, "package.json"))
 const ts = require("typescript")
-function load(file, globals = {}) {
+function load(file, globals = {}, imports = {}) {
   const module = { exports: {} }
   const source = fs.readFileSync(path.join(app, "src", file), "utf8")
   const { outputText } = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } })
   vm.runInNewContext(outputText, {
-    module, exports: module.exports, URL, URLSearchParams,
-    require: (name) => name === "./Connection" ? {} : require(name), ...globals,
+    module, exports: module.exports, URL, URLSearchParams, performance,
+    require: (name) => Object.hasOwn(imports, name) ? imports[name] : name === "./Connection" ? {} : require(name), ...globals,
   }, { filename: file })
   return module.exports
 }
 
-const { projectPath, rememberProject } = load("app/project.tsx")
+const queriesModule = load("api/queries.ts")
+const { projectPath, rememberProject } = load("app/project.tsx", {}, { "../api/queries": queriesModule })
 const project = { id: "project-canonical-id", code: "ABC12DEF3" }
 assert.equal(projectPath(project), "/p/ABC12DEF3")
 assert.equal(projectPath(project, "assets/a%20picture"), "/p/ABC12DEF3/assets/a%20picture")
@@ -29,6 +30,18 @@ const cached = new Map()
 rememberProject({ setQueryData: (key, value) => cached.set(key.join("/"), value) }, project)
 assert.equal(cached.get("project-reference/ABC12DEF3").id, project.id)
 assert.equal(cached.get("project-reference/project-canonical-id").code, project.code)
+
+const { QueryClient } = require("@tanstack/react-query")
+const queries = new QueryClient()
+const upgraded = { message: "project.yaml was format 3 and is format 4 now" }
+const stillPresent = { message: "Check the source file" }
+queriesModule.rememberProjectWarnings(queries, { ...project, warnings: [upgraded, stillPresent] })
+const state = { ...project, assets: [], warnings: [stillPresent] }
+const options = queriesModule.projectQuery({ project: async () => state }, { whenShown: async () => {} }, project.id)
+assert.deepEqual(Array.from((await queries.fetchQuery(options)).warnings), [stillPresent, upgraded])
+await queries.invalidateQueries({ queryKey: options.queryKey, refetchType: "none" })
+assert.deepEqual((await queries.fetchQuery(options)).warnings, [stillPresent])
+queries.clear()
 
 function consume(url) {
   const location = new URL(url)

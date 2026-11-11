@@ -36,9 +36,7 @@ class DisplayPace:
 class CallInterface(_Wire):
     module: str
     export: str
-    interface_path: Path
     self_call: bool
-    interface_document: Any | None
     builtin: str | None
     #: The wire spells `self_call` as `self`.
     def __init__(self, **fields: Any) -> None: ...

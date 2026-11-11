@@ -3,9 +3,9 @@
 from typing import Annotated
 
 import msgspec
-from birefnet import remove_background
+from birefnet import RemoveBackgroundInput, remove_background
 
-from cozy_runtime.author import App, Context
+from cozy_runtime.author import App, Context, call
 from cozy_runtime.fields import FileBound
 from cozy_runtime.media import ImageFile
 
@@ -24,7 +24,7 @@ class CutOutput(msgspec.Struct):
 
 
 async def cut(ctx: Context, payload: CutInput) -> CutOutput:
-    await remove_background(image=payload.image)
+    await call(remove_background, payload=RemoveBackgroundInput(image=payload.image))
     return CutOutput(cut=True)
 
 

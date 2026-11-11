@@ -9,6 +9,7 @@ const CurrentProject = createContext<ProjectAddress | null>(null)
 const referenceKey = (reference: string) => ["project-reference", reference]
 const referenceQuery = (client: Client, reference: string) => ({
   queryKey: referenceKey(reference),
+  // The first content read retains any one-time upgrade warnings.
   queryFn: () => client.projectAddress(reference),
   staleTime: Infinity,
 })

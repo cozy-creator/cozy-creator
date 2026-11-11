@@ -145,7 +145,8 @@ fn usage(error: clap::Error) -> ExitCode {
     }
     let rendered = error.render().to_string();
     let message = rendered.lines().next().unwrap_or_default().trim_start_matches("error: ");
-    let mut command = Cli::command();
+    let mut command = dev::hide(Cli::command());
+    command.build();
     let mut invocation = String::from("cozy");
     for argument in &arguments {
         if matches!(argument.to_str(), Some("--json" | "--full" | "--yes" | "-y")) {
@@ -156,7 +157,11 @@ fn usage(error: clap::Error) -> ExitCode {
         invocation.push_str(&argument.to_string_lossy());
         command = child.clone().bin_name(invocation.clone());
     }
-    let reference = command.render_help().to_string();
+    let reference = command
+        .try_get_matches_from([invocation, "--help".to_owned()])
+        .expect_err("every command supports --help")
+        .render()
+        .to_string();
     output::refuse(json, &Error::new(Kind::Usage, "usage", message).remedy(reference))
 }
 

@@ -86,14 +86,21 @@ state. Putting old text back returns the old take with no run, and approving pin
 cozy new garden
 cd garden
 cozy open                                  # edit assets in the browser
-cozy status                                # this project's runs and machines
+cozy status                                # project health and warnings
 ```
 
 The format and every command: [PROJECT-YAML.md](crates/calcifer/docs/PROJECT-YAML.md).
 
 ## Remove cozy
 
-End your rentals first (`cozy machine ls`, `cozy machine end <name>`). Then:
+End your rentals first (`cozy machine ls`, `cozy machine end <name>`).
+If you enabled local development services, stop them first:
+
+```sh
+systemctl --user disable --now cozy-dev-local cozy-dev-web
+```
+
+Then remove Cozy:
 
 Linux:
 
@@ -141,7 +148,7 @@ Python package and wheel configuration together. The browser player is `web/play
 
 On Linux, `scripts/dev-local.sh` watches the checkout with Watchexec, builds incrementally, installs
 successful builds into `~/.cozy/bin/cozy`, and restarts `cozy-calcifer.service`. It needs Watchexec,
-pnpm, binutils, and the pinned Rust toolchain. `scripts/dev-local.sh --once` runs one update.
+pnpm, Python 3, binutils, and the pinned Rust toolchain. `scripts/dev-local.sh --once` runs one update.
 
 For browser hot reload, run `pnpm --dir web/app dev --host 127.0.0.1`. Vite uses the local Calcifer
 through the existing development proxy. The watcher also rebuilds the page embedded in the binary.

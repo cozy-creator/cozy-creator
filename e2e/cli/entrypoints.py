@@ -67,6 +67,18 @@ def main() -> None:
         for command in HIDDEN:
             run(f"hidden {command}", [command, "--help"])
         run("nested cancellation", ["run", "cancel", "--help"])
+        for words in (
+            ["machine", "help"],
+            ["machine", "rent", "--unknown-option"],
+            ["run", "example/function", "ls", "--unknown-option"],
+        ):
+            error = json.loads(run("usage remedy " + " ".join(words), ["--json", *words], code=2).stdout)["error"]
+            reference = error["remedy"]
+            assert "  help " not in reference, "usage remedy advertises removed help command"
+            assert "--json" in reference, "usage remedy omitted inherited global flags"
+            help_words = ["machine", "rent", "--help"] if words[:2] == ["machine", "rent"] else [words[0], "--help"]
+            expected = run("reference " + " ".join(help_words), help_words).stdout
+            assert reference.strip() == expected.strip(), "usage remedy differs from command help"
         run("removed nested help", ["machine", "help"], code=2)
         run("local port option", ["open", "--port", "8818", "--help"])
         run("bash completion", ["completion", "bash"])

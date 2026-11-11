@@ -611,7 +611,8 @@ pub struct RunList {
 #[serde(default)]
 pub struct Progress {
     pub stage: String,
-    /// -1: unknown.
+    /// How far the run is: its time running over its machine's estimate of its whole, short of 1;
+    /// -1: no estimate.
     pub fraction: f64,
     pub completed: u64,
     pub total: u64,

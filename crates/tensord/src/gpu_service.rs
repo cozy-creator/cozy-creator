@@ -2896,7 +2896,7 @@ impl Pool {
                 &Command::Start(Start {
                     devices: self.lane_devices(0, self.devices.len().min(1) as u32)?,
                     application: held.record.application.clone(),
-                    call_interfaces: crate::calls::call_interfaces(held, &interface),
+                    call_interfaces: crate::calls::call_interfaces(held),
                     constructions: vec![],
                     package_interface: interface,
                     sequence_parallel_degree: 1,
@@ -3405,7 +3405,7 @@ impl Pool {
                     package_interface: interface_path.clone(),
                     sequence_parallel_degree: ranks,
                     import_only: false,
-                    call_interfaces: crate::calls::call_interfaces(held, &interface_path),
+                    call_interfaces: crate::calls::call_interfaces(held),
                     constructions: constructions(&plan),
                     memo: session.executor.memo_settings(),
                     gpu_memory_limit: self.config.gpu_memory_limit,
@@ -3576,8 +3576,7 @@ impl Pool {
         let document = held.record.app(&record.invocation.module)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "installed output App is absent"))?.2;
         // The attempt's calls reach their records; its sources and outputs, its weights grant.
-        let interface = session.executor.root_path().join("package-interface.json");
-        let caller = calls.map(|calls| calls.caller(&record, held, document, &interface, &spool).0);
+        let caller = calls.map(|calls| calls.caller(&record, held, document, &spool));
         callbacks.caller = caller.as_ref();
         let entry = api::interface::entrypoint(document, &plan.entrypoint).cloned().unwrap_or_default();
         let weights = api::interface::weights_outputs(&entry)
