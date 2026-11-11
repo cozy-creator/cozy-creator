@@ -97,7 +97,7 @@ async fn prove(
 }
 
 fn unexpected() -> Error {
-    Error::new(Kind::Internal, "untyped_answer", "Calcifer proved another code than the one asked")
+    Error::new(Kind::Internal, "untyped_answer", "Calcifer returned an unexpected sign-in response")
 }
 
 /// Reports the account a key signs in as, naming it first when it has no name yet.
@@ -231,7 +231,7 @@ fn ask_line(_ctx: &Context, prompt: &str, what: &str) -> Result<String, Error> {
         return Err(Error::new(
             Kind::Usage,
             "input_missing",
-            format!("no {what} was given"),
+            format!("Enter your {what}"),
         ));
     }
     Ok(line.to_owned())

@@ -83,7 +83,7 @@ pub(crate) async fn done<T: serde::de::DeserializeOwned>(ctx: &Context, run: Run
             let reason = run.reason.clone().unwrap_or_default();
             Error::new(Kind::Unavailable, "run_failed", format!("{}: {}", run.target, reason.message)).next(&show)
         })),
-        _ => Err(Error::new(Kind::Unavailable, "run_unfollowed", format!("run {} goes on, no longer followed", run.name())).next(&show)),
+        _ => Err(Error::new(Kind::Unavailable, "run_unfollowed", format!("Stopped watching run {}; it is still running", run.name())).next(&show)),
     }
 }
 
@@ -178,16 +178,13 @@ fn saved(run: Run) -> Result<Run, Error> {
         Kind::Unavailable,
         "output_not_saved",
         format!(
-            "run {} ended {}, but its output {} did not land",
+            "Run {} {}. Outputs not saved: {}",
             run.number,
             status_word(run.status),
             lost.join(", ")
         ),
     )
-    .remedy(format!(
-        "`cozy run watch {}` saves what its machine still holds",
-        run.number
-    ))
+    .remedy("Watch again to download outputs still held by the machine")
     .next(&show))
 }
 
@@ -337,13 +334,36 @@ pub(crate) fn record(ctx: &Context, run: &Run) {
         output::json(run);
         return;
     }
-    if let (Status::Failed | Status::Canceled, Some(reason)) = (run.status, &run.reason) {
-        let line = format!("{}: {}: {}", run.target, status_word(run.status), reason.message);
-        let next: Vec<String> = reason.next.iter().cloned().chain([format!("cozy run watch {}", run.name())]).take(2).collect();
-        return output::failure(ctx, &line, &next);
+    if matches!(run.status, Status::Failed | Status::Canceled) {
+        let mut line = format!("Run {} {}", run.name(), status_word(run.status));
+        if let Some(reason) = &run.reason {
+            if !reason.code.is_empty() {
+                let _ = write!(line, " [{}]", reason.code);
+            }
+            if !reason.message.is_empty() {
+                let _ = write!(line, ": {}", reason.message);
+            }
+        }
+        return output::failure(ctx, &line, &failure_next(run));
     }
     fields(ctx, run).print(ctx);
     next(ctx, run);
+}
+
+/// The failure's suggested actions, followed by full diagnostics when space permits.
+fn failure_next(run: &Run) -> Vec<String> {
+    let mut next = Vec::new();
+    for command in run.reason.iter().flat_map(|reason| &reason.next)
+        .cloned().chain([format!("cozy run watch {} --full", run.name())])
+    {
+        if !command.trim().is_empty() && !next.contains(&command) {
+            next.push(command);
+        }
+        if next.len() == 2 {
+            break;
+        }
+    }
+    next
 }
 
 /// A weights output's commit.
@@ -458,10 +478,9 @@ fn adjustment(row: &Adjustment) -> String {
 /// What to do next with `run`: follow it while it goes on, show it when it did not succeed.
 pub(super) fn next(ctx: &Context, run: &Run) {
     let watch = format!("cozy run watch {}", run.name());
-    let show = format!("cozy run watch {}", run.name());
     match run.status {
         Status::Completed => {}
-        Status::Failed | Status::Canceled => output::next(ctx, &[&show]),
+        Status::Failed | Status::Canceled => output::next(ctx, &failure_next(run).iter().map(String::as_str).collect::<Vec<_>>()),
         _ if run.stalled.is_some() => {
             let logs = run.machine.as_ref().map(|machine| format!("cozy machine logs {machine} -n 40"));
             output::next(ctx, &[&format!("cozy run cancel {}", run.name()), logs.as_deref().unwrap_or(&watch)]);

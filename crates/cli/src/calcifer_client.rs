@@ -330,12 +330,12 @@ impl Client {
                         let lacks = format!("answers without what this cozy reads ({e})");
                         self.say(&format!("{}; it carried out the ask, which isn't sent again", self.lacking(&lacks)));
                         self.restart(&lacks).await?;
-                        let said = format!("Calcifer carried this out and answered in a shape this cozy doesn't read: {e}");
+                        let said = format!("The operation completed, but its response could not be read: {e}");
                         return Err(Error::new(Kind::Internal, "answer_unreadable", said));
                     }
                     Err(e) if self.other_version() => format!("answers without what this cozy reads ({e})"),
                     Err(e) => {
-                        let said = format!("Calcifer answered without what this cozy reads: {e}");
+                        let said = format!("Cannot read Calcifer's response: {e}");
                         return Err(Error::new(Kind::Internal, "answer_unreadable", said));
                     }
                 },
@@ -415,7 +415,7 @@ impl Client {
             "calcifer_outdated",
             format!("{}; this is cozy {}", self.lacking(lacks), env!("CARGO_PKG_VERSION")),
         )
-        .remedy("update the installed cozy to this one (`cozy update`), or run the installed one")
+        .next("cozy update")
     }
 
     /// A run by its id or number.
@@ -678,7 +678,7 @@ impl Client {
                         Error::new(
                             Kind::Unavailable,
                             "calcifer_start_failed",
-                            format!("Calcifer exited ({status}) before it served"),
+                            format!("Calcifer exited before startup completed: {status}"),
                         )
                         .next("cozy machine logs local calcifer")
                     }));
@@ -896,11 +896,10 @@ impl Events {
                             Kind::Unavailable,
                             "events_closed",
                             format!(
-                                "the event stream closed {} times without an event",
+                                "Lost the run's event stream after {} reconnects; the run is still recorded",
                                 self.empty
                             ),
                         )
-                        .remedy("the run is still recorded")
                         .next("cozy run ls")));
                     }
                 }
@@ -1155,7 +1154,7 @@ fn unreachable(error: reqwest::Error) -> Error {
         "calcifer_unreachable",
         format!("Calcifer stopped answering: {error}"),
     )
-    .remedy("it may have stopped mid-request; run the command again")
+    .remedy("Run the command again")
 }
 
 async fn ok(answer: Response) -> Result<Response, Error> {
@@ -1174,7 +1173,7 @@ async fn decode<T: DeserializeOwned>(answer: Response) -> Result<T, Error> {
         Error::new(
             Kind::Internal,
             "untyped_answer",
-            format!("Calcifer's answer is not what this cozy reads: {e}"),
+            format!("Cannot read Calcifer's response: {e}"),
         )
     })
 }
@@ -1191,7 +1190,7 @@ async fn envelope(answer: Response) -> Error {
                 Kind::Internal,
                 "untyped_answer",
                 format!(
-                    "Calcifer answered {status} with no typed refusal: {}",
+                    "Calcifer returned {status}: {}",
                     text.trim()
                 ),
             )

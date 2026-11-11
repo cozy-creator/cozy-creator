@@ -73,7 +73,7 @@ pub(crate) async fn exec(ctx: &Context, rent: Rent) -> Result<ExitCode, Error> {
         Err(e) if matches!(e.kind, Kind::Unavailable | Kind::Internal) => {
             let e = match e.remedy {
                 Some(_) => e,
-                None => e.remedy("the order may stand: `cozy machine ls` shows it before you rent again"),
+                None => e.remedy("The rental may have started. Check before renting again"),
             };
             let e = e.next("cozy machine ls");
             output::refusal(ctx, &e);
@@ -152,7 +152,8 @@ fn ssh_key(ctx: &Context, file: Option<&std::path::Path>) -> Result<String, Erro
             .find(|path| path.is_file())
             .ok_or_else(|| {
                 Error::new(Kind::Usage, "ssh_key_missing", "no SSH public key in ~/.ssh")
-                    .remedy("make one (`ssh-keygen -t ed25519`), or name its .pub file: --ssh <file>")
+                    .remedy("Create a key, or provide an existing .pub file with --ssh <file>")
+                    .next("ssh-keygen -t ed25519")
             })?,
     };
     let text = std::fs::read_to_string(&file).map_err(|e| {
@@ -164,9 +165,9 @@ fn ssh_key(ctx: &Context, file: Option<&std::path::Path>) -> Result<String, Erro
         return Err(Error::new(
             Kind::Usage,
             "ssh_key_invalid",
-            format!("{} is not one OpenSSH public key line", file.display()),
+            format!("{} must contain one OpenSSH public key, not a private key", file.display()),
         )
-        .remedy("name the .pub file: --ssh ~/.ssh/id_ed25519.pub"));
+        .remedy("Provide the .pub file with --ssh <file>"));
     }
     Ok(key.to_owned())
 }
@@ -253,8 +254,8 @@ pub(crate) fn agree(ctx: &Context, quoted: &RunQuote) -> Result<bool, Error> {
         return Ok(true);
     }
     if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
-        return Err(Error::new(Kind::Usage, "quote_unagreed", format!("{offer}: nothing was rented"))
-            .remedy("to rent at this price, run the same command with --yes"));
+        return Err(Error::new(Kind::Usage, "quote_unagreed", format!("Rental not confirmed: {offer}. Nothing was rented"))
+            .remedy("Run the same command with --yes to accept this price"));
     }
     if !why.is_empty() {
         anstream::eprintln!("{why}");
