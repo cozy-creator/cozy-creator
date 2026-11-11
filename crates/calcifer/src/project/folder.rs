@@ -856,7 +856,9 @@ struct Shared {
 type Frames = ((u64, std::time::SystemTime), Option<u64>);
 
 impl Drop for Shared {
-    /// Nothing names the folder now: project.db's connection closes, beside whatever dropped it, as closing it may checkpoint its WAL.
+    /// Nothing names the folder now: project.db's connections close, beside whatever dropped it, as closing them may checkpoint its
+    /// WAL. What the project held is freed there too, and its memory given back to the OS (cl-870): without that, Calcifer stays as
+    /// large as the project made it.
     fn drop(&mut self) {
         let mut shared = SHARED.lock().unwrap_or_else(|e| e.into_inner());
         if shared.get(&self.key).is_some_and(|held| held.strong_count() == 0) {
@@ -865,9 +867,28 @@ impl Drop for Shared {
         drop(shared);
         let writing = self.writing.get_mut().unwrap_or_else(|e| e.into_inner()).take();
         let reading = self.reading.get_mut().unwrap_or_else(|e| e.into_inner()).take();
-        if writing.is_some() || reading.is_some() {
-            std::thread::spawn(move || drop((writing, reading)));
+        let held = self.held.get_mut().unwrap_or_else(|e| e.into_inner()).take();
+        let book = self.book.get_mut().unwrap_or_else(|e| e.into_inner()).take();
+        let films = std::mem::take(self.films.get_mut().unwrap_or_else(|e| e.into_inner()));
+        if writing.is_none() && reading.is_none() && held.is_none() {
+            return;
         }
+        let dir = self.key.1.clone();
+        std::thread::spawn(move || {
+            let resident = || platform::contain::host_memory::process(std::process::id()).map_or(0, |memory| memory.rss) >> 20;
+            let before = (resident(), platform::heap::committed() >> 20);
+            drop((writing, reading, held, book, films));
+            platform::heap::give_back();
+            tracing::info!(
+                "{} closed: resident {} → {} MiB, allocator committed {} → {} MiB, in use {} MiB",
+                dir.display(),
+                before.0,
+                resident(),
+                before.1,
+                platform::heap::committed() >> 20,
+                platform::heap::held() >> 20,
+            );
+        });
     }
 }
 

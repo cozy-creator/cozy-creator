@@ -76,6 +76,8 @@ libloading = "0.9"
 # The cozy binary's allocator (cl-822): it gives back what any thread freed, on every OS. No transparent huge pages:
 # a 2 MiB page that holds a few small allocations is 2 MiB resident.
 mimalloc = { version = "0.1.52", default-features = false, features = ["no_thp"] }
+# The same allocator's C library, for what the mimalloc crate doesn't wrap: giving freed memory back (platform::heap).
+libmimalloc-sys = { version = "0.1.49", default-features = false }
 nvml-wrapper = "0.13"
 nvml-wrapper-sys = "0.10"
 percent-encoding = "2.3"

@@ -12,6 +12,7 @@ thiserror.workspace = true
 getrandom = { workspace = true, optional = true }
 hex = { workspace = true, optional = true }
 libloading = { workspace = true, optional = true }
+libmimalloc-sys = { workspace = true, optional = true }
 nvml-wrapper = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
@@ -26,6 +27,9 @@ zip = { workspace = true, optional = true }
 default = ["seams"]
 # Every seam but `signal`, which varena's shared core links alone. Without it: thiserror, and rustix or windows-sys.
 seams = ["dep:getrandom", "dep:hex", "dep:libc", "dep:libloading", "dep:nvml-wrapper", "dep:serde", "dep:sha2", "dep:tracing"]
+# The cozy binary's allocator, mimalloc, asked to give freed memory back (`heap::give_back`): for the crates that run in that
+# binary only. A library that links platform (varena's dylib, TensorFS) carries no mimalloc.
+allocator = ["seams", "dep:libmimalloc-sys"]
 # Fetched archives: a cozy release verified (`release`) and members unpacked (`tools::unpack`).
 fetch = ["seams", "dep:flate2", "dep:serde_json", "dep:sigstore-verify", "dep:tar", "dep:zip"]
 

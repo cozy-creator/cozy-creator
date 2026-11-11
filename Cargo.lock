@@ -2633,6 +2633,7 @@ dependencies = [
  "hex",
  "libc",
  "libloading 0.9.0",
+ "libmimalloc-sys",
  "nvml-wrapper",
  "rustix",
  "serde",

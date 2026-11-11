@@ -199,6 +199,28 @@ function calciferMb() {
   return Math.round(Number(execFileSync('ps', ['-o', 'rss=', '-p', String(pid)], { encoding: 'utf8' }).trim()) / 1024);
 }
 
+/** What holds Calcifer's resident memory (Linux, /proc/<pid>/smaps), in MiB: by mapping kind, and its largest mappings. An anonymous
+ *  mapping of 256 MiB or more is a mimalloc arena; [heap] and the smaller anonymous ones are glibc's (SQLite's pages among them),
+ *  stacks and small maps. */
+function residentByMapping() {
+  const { pid } = JSON.parse(readFileSync(process.env.HOLDER, 'utf8'));
+  let text;
+  try { text = readFileSync(`/proc/${pid}/smaps`, 'utf8'); } catch { return null; }
+  const maps = [];
+  for (const line of text.split('\n')) {
+    const head = line.match(/^([0-9a-f]+)-([0-9a-f]+) (\S+) \S+ \S+ \d+\s*(.*)$/);
+    if (head) maps.push({ size_mib: (parseInt(head[2], 16) - parseInt(head[1], 16)) / 1048576, perms: head[3], name: head[4], rss_mib: 0 });
+    const rss = line.match(/^Rss:\s+(\d+) kB/);
+    if (rss && maps.length) maps.at(-1).rss_mib += Number(rss[1]) / 1024;
+  }
+  const kind = ({ size_mib, name }) => (name === '[heap]' ? 'heap' : name.startsWith('[') ? name : name ? 'file' : size_mib >= 256 ? 'arena' : 'anon');
+  const kinds = {};
+  for (const map of maps) kinds[kind(map)] = +((kinds[kind(map)] ?? 0) + map.rss_mib).toFixed(1);
+  const largest = maps.filter((map) => map.rss_mib >= 1).sort((a, b) => b.rss_mib - a.rss_mib).slice(0, 12)
+    .map((map) => ({ ...map, size_mib: +map.size_mib.toFixed(1), rss_mib: +map.rss_mib.toFixed(1) }));
+  return { kinds, anon_mappings: maps.filter((map) => !map.name).length, largest };
+}
+
 /** Native ownership evidence beside the RSS bar, from this exact scale case. */
 async function nativeMemory(base, folder) {
   const holder = JSON.parse(readFileSync(process.env.HOLDER, 'utf8'));
@@ -261,6 +283,7 @@ async function nativeMemory(base, folder) {
   const seconds = (ms) => +(ms / 1000).toFixed(2);
 
   const startMb = calciferMb();
+  numbers.calcifer_mappings = { before: residentByMapping() };
   numbers.calcifer_native = { before: await nativeMemory(base, folder) };
   const generating = Date.now();
   generated(keying, null, ASSETS, PICTURES, false);
@@ -723,6 +746,7 @@ async function nativeMemory(base, folder) {
   numbers.closed_wait_ms = Math.round(CLOSED_MS * SPEED.factor);
   await new Promise((done) => setTimeout(done, numbers.closed_wait_ms));
   memory.closed = calciferMb();
+  numbers.calcifer_mappings.closed = residentByMapping();
   numbers.calcifer_native.closed = await nativeMemory(base, folder);
   const closedMetric = process.platform === 'darwin' ? 'physical_footprint' : 'rss';
   numbers.calcifer_closed_memory_metric = closedMetric;
