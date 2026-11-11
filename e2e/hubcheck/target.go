@@ -7,12 +7,18 @@ import (
 	"strings"
 )
 
-// verificationTarget rejects implicit targets, and CI can only use a local test Hub.
-// The outer fixture guard additionally verifies resource/issuer metadata against proxies.
-func verificationTarget(raw string, ci bool) (*url.URL, error) {
+// verificationTarget rejects implicit targets, and CI can only use a local test Hub, or production when the caller says so
+// (a release gate that rents there: --production). The outer fixture guard additionally verifies resource/issuer metadata.
+func verificationTarget(raw string, ci, production bool) (*url.URL, error) {
 	target, err := url.Parse(strings.TrimRight(raw, "/"))
 	if err != nil || target == nil || target.Hostname() == "" || (target.Scheme != "http" && target.Scheme != "https") || target.User != nil || target.RawQuery != "" || target.Fragment != "" || target.Path != "" {
 		return nil, fmt.Errorf("--hub or COZY_HUB_URL must explicitly name an HTTP(S) Hub origin")
+	}
+	if production {
+		if target.String() != "https://tensorhub.com" {
+			return nil, fmt.Errorf("--production names https://tensorhub.com, not %s", target)
+		}
+		return target, nil
 	}
 	host := target.Hostname()
 	ip := net.ParseIP(host)

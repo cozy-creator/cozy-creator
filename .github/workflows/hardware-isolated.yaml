@@ -1,0 +1,140 @@
+name: isolated hardware
+on:
+  pull_request:
+    paths:
+      - 'e2e/hardware/**'
+      - 'e2e/test-hub*'
+      - 'e2e/test_hub*'
+      - '.github/workflows/hardware-isolated.yaml'
+  workflow_dispatch:
+    inputs:
+      cozy:
+        description: Exact published Cozy release tag (public immutable build input)
+        type: string
+        required: true
+      runtime:
+        description: Exact Runtime version
+        type: string
+        required: true
+      tensorfs:
+        description: Exact TensorFS candidate wheel URL with sha256 fragment
+        type: string
+        required: true
+      hub_ref:
+        description: TensorHub source commit
+        type: string
+        required: true
+      device:
+        description: Reserved idle NVIDIA GPU UUID on the self-hosted runner
+        type: string
+        required: true
+      runner_label:
+        description: Unique cozy-isolated-gpu- plus 16 lowercase hex digits; ephemeral runner has no default labels
+        type: string
+        required: true
+      mode:
+        description: Provider lifecycle requires separately configured sandbox infrastructure
+        type: choice
+        options: [local-gpu, provider-sandbox]
+        default: local-gpu
+permissions:
+  contents: read
+concurrency:
+  group: isolated-hardware-${{ inputs.device || github.ref }}
+  cancel-in-progress: false
+jobs:
+  harness:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+      - name: Published probe Runtime.describe author contract
+        run: |
+          set -euo pipefail
+          uv venv --python 3.12 "$RUNNER_TEMP/author-contract"
+          uv pip install --python "$RUNNER_TEMP/author-contract/bin/python" 'cozy-runtime==0.45.0'
+          python3 e2e/hardware/contract_test.py --runtime-cli "$RUNNER_TEMP/author-contract/bin/cozy-runtime" --out "$RUNNER_TEMP/author-contract-results"
+      - name: Fixture isolation and cleanup regressions
+        run: |
+          python3 -m unittest discover -s e2e/hardware -p 'test_*.py' -v
+          python3 -m unittest discover -s e2e -p 'test_hub_test.py' -v
+      - name: Source syntax and frozen helper provenance
+        run: |
+          python3 -m py_compile e2e/hardware/*.py e2e/hardware/probe/ci_hardware_probe/__init__.py
+          bash -n e2e/hardware/checks.sh
+          sha256sum e2e/hardware/run.py e2e/hardware/operator_sdk.py
+      - name: Validate dispatch ownership
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          LABEL: ${{ inputs.runner_label }}
+          HUB_REF: ${{ inputs.hub_ref }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          [[ "$LABEL" =~ ^cozy-isolated-gpu-[a-f0-9]{16}$ ]] || { echo '::error::use a unique task-owned ephemeral runner label'; exit 2; }
+          [[ "$HUB_REF" =~ ^[a-f0-9]{40}$ ]] || { echo '::error::hub_ref must be an exact reviewed commit'; exit 2; }
+          [ "$MODE" = local-gpu ] || { echo '::error::provider lifecycle unqualified: no provider sandbox account, budget or reachable test allocation is configured'; exit 2; }
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: author-contract-results
+          path: ${{ runner.temp }}/author-contract-results
+          retention-days: 3
+  hardware:
+    needs: harness
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ${{ inputs.runner_label }}
+    timeout-minutes: 60
+    steps:
+      - name: Require configured hardware mode
+        env:
+          MODE: ${{ inputs.mode }}
+        run: |
+          [ "$MODE" = local-gpu ] || { echo '::error::provider lifecycle unqualified: no provider sandbox account, budget or reachable test allocation is configured'; exit 2; }
+      - uses: actions/checkout@v5
+        with:
+          path: creator
+          persist-credentials: false
+      - uses: actions/checkout@v5
+        with:
+          repository: cozy-creator/tensorhub
+          ref: ${{ inputs.hub_ref }}
+          ssh-key: ${{ secrets.TENSORHUB_READ_KEY }}
+          persist-credentials: false
+          path: tensorhub
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tensorhub/go.mod
+          cache-dependency-path: tensorhub/go.sum
+      - uses: astral-sh/setup-uv@v7
+      - name: Prepare public build inputs in owned directories
+        env:
+          COZY: ${{ inputs.cozy }}
+        run: |
+          set -euo pipefail
+          [[ "$COZY" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([+-][A-Za-z0-9.-]+)?$ ]] || { echo '::error::cozy must be an exact release tag'; exit 2; }
+          mkdir -p "$RUNNER_TEMP/hardware-inputs"
+          curl -LsSf --retry 3 "https://github.com/cozy-creator/cozy-creator/releases/download/$COZY/cozy-x86_64-unknown-linux-gnu.tar.gz" -o "$RUNNER_TEMP/hardware-inputs/cozy.tar.gz"
+          tar -xzf "$RUNNER_TEMP/hardware-inputs/cozy.tar.gz" -C "$RUNNER_TEMP/hardware-inputs"
+          uv venv --python 3.12 "$RUNNER_TEMP/hardware-tools"
+          uv pip install --python "$RUNNER_TEMP/hardware-tools/bin/python" awscli
+      - name: Isolated publication, CPU and physical CUDA execution
+        env:
+          DEVICE: ${{ inputs.device }}
+          RUNTIME: ${{ inputs.runtime }}
+          TENSORFS: ${{ inputs.tensorfs }}
+        run: |
+          set -euo pipefail
+          binary=$(find "$RUNNER_TEMP/hardware-inputs" -type f -name cozy -print -quit)
+          test -n "$binary"
+          PATH="$RUNNER_TEMP/hardware-tools/bin:$PATH" python3 creator/e2e/hardware/run.py \
+            --hub-src tensorhub --cozy-bin "$binary" --runtime "$RUNTIME" --tensorfs "$TENSORFS" \
+            --device "$DEVICE" --tools "${SKEW_TOOLS:-$RUNNER_TEMP/hardware-tools/skew}" \
+            --out "$GITHUB_WORKSPACE/hardware-proof" 2>&1 | node creator/e2e/publish/scrub.js
+      - if: always()
+        uses: ./creator/e2e/publish
+        with:
+          name: isolated-hardware
+          path: ${{ github.workspace }}/hardware-proof
+          retention-days: 14

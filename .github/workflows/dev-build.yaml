@@ -606,3 +606,15 @@ jobs:
             scripts/xs170-artifact-reissue/src/operator/tests.rs
             scripts/xs170-artifact-reissue/src/bin/operator.rs
             target/xs170-artifact-operator/debug/xs170-artifact-operator
+
+  api-protocol:
+    if: contains(inputs.build, 'api-protocol')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Model content negotiation and catalog protocol regressions
+        run: cargo test --locked -p api --lib hub::client::catalog_tests -- --nocapture

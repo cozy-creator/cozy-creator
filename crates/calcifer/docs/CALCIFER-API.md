@@ -543,7 +543,7 @@ doesn't list is listed by the first call that names it. Every file the
 project uses is a real file in `files/<sha256>.<ext>`, flat, and a file the database has a row for says only what a file can't: where it
 stays and its parts. YAML is its export (`PROJECT-YAML.md`): `GET …/yaml` writes it and `PUT …/yaml` reads it back. A folder of the files
 from before (`project.yaml`, `project.lock`, `project.canvas.yaml`, `.measured.json`, `.history.json`, `.keys.json`, `.runs/walk.json`) is
-imported on its first open, a format 2 or 3 file upgraded to 4 first, and they're deleted.
+imported on its first open, a format 2 or 3 file upgraded to 4 first, and archived under `.cozy-legacy-v1/`.
 
 An asset's state is its `approved` hash (a hash of a version's main file brings its whole file set), else its
 newest version whose `inputs` match now, else none; with no `tool`, its newest version, which nothing puts out of date. A box is its words, an optional tool, and its versions: with no tool and no versions it's a text asset, whichever of `text`, `summary` or `instructions` holds its words. `inputs` is blind to names: eight hex digits of its `tool` (no release, no `_/`), `models`, `lora` and

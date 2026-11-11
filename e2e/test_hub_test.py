@@ -76,7 +76,7 @@ HERE="$1/release-gate"; HB="$2/receipt"; CLI="$3"; HUB_URL=https://tensorhub.com
 export COZY_TEST_HUB_ORIGIN=https://127.0.0.1:8443
 expect() { :; }
 log() { :; }
-. "$4"
+. "$4" || exit $?
 WHO=fidika; HUB_PKG=ci-hub-fixture
 hub_publish
 '''

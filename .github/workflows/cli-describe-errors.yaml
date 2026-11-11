@@ -1,0 +1,27 @@
+name: cli-describe-errors
+
+on:
+  pull_request:
+    paths:
+      - crates/calcifer/src/local_code.rs
+      - crates/calcifer/src/local_code_tests.rs
+      - .github/workflows/cli-describe-errors.yaml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  describe-errors:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - uses: Swatinem/rust-cache@v2
+      - name: Actual Runtime refusals through Calcifer and CLI rendering regressions
+        run: |
+          cargo test --locked -p calcifer --lib local_code::tests::source_describer_ -- --include-ignored --nocapture
+          cargo test --locked -p cli --lib output::tests -- --nocapture
