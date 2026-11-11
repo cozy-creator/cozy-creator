@@ -37,6 +37,23 @@ publish() {
   log "published ${1##*/} $(sed -n 's/^version = "\(.*\)"$/\1/p' "$copy/pyproject.toml" | head -1) at the root"
 }
 
+# relay: e2e/cli/relay published as the admin's own account's package (not the root): its lock takes the stand-in
+# minimax-h3-tools from the root's index (hub_published, cl-872). A refusal is the cell's to report: what it said is exported.
+relay() {
+  local copy=$seed/packages/e2e-relay account
+  rm -rf "$copy" && mkdir -p "$seed/packages" && cp -r "$here/cli/relay" "$copy"
+  account=$(cozy --json whoami | jq -r '.account // empty')
+  export E2E_RELAY_PUBLISHED=$seed/publish-e2e-relay.json
+  if (cd "$copy" && cozy --json package publish -y) > "$E2E_RELAY_PUBLISHED" 2>&1; then
+    export E2E_RELAY=$account/e2e-relay
+    log "published $E2E_RELAY 0.1.0"
+  else
+    E2E_RELAY_REFUSED=$(tail -c 400 "$E2E_RELAY_PUBLISHED" | tr '\n' ' ')
+    export E2E_RELAY_REFUSED
+    log "publishing e2e-relay as $account was refused: $E2E_RELAY_REFUSED"
+  fi
+}
+
 # mirror <source> <org/name> <lane> <release> <page> [upload flags...]: a model uploaded by this computer's machine and
 # published, as an admin mirrors an author's model.
 mirror() {
@@ -103,6 +120,14 @@ if [ -n "$needs" ]; then
   done
   publish "$tools"
   for p in qwen-image-2 minimax-h3 birefnet; do publish "$packages/$p"; done
+  case $shard in
+    local-code | '')
+      # Its lock reads the Hub's index, under the Hub's own CA: Calcifer's uv takes the system's bundle once restarted.
+      sudo cp "${COZY_TEST_HUB_CA:?}" /usr/local/share/ca-certificates/cozy-test-hub.crt && sudo update-ca-certificates > "$seed/ca.log" 2>&1
+      systemctl --user set-environment SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+      systemctl --user restart cozy-calcifer > "$seed/calcifer-restart.log" 2>&1 || true
+      relay ;;
+  esac
   if [[ " $needs " == *" birefnet "* || " $needs " == *" downloads "* ]]; then
     update=()
     [ -z "$runtime" ] || update+=(--runtime "$runtime")

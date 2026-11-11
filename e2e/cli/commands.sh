@@ -456,7 +456,7 @@ step "local code calling a published cozy package, locked at its run (cl-871)"
 [ -n "$LOCAL" ] || return 0
 local dir=$OUT/hub-dependency
 rm -rf "$dir"
-package_at "$dir" e2e_relay '"cozy-runtime>=0.45", "msgspec>=0.19", "minimax-h3-tools"' \
+package_at "$dir" e2e_local_relay '"cozy-runtime>=0.45", "msgspec>=0.19", "minimax-h3-tools"' \
   "$(printf '\n[tool.uv.sources]\nminimax-h3-tools = { index = "tensorhub" }')" <<'PY'
 import minimax_h3_tools
 import msgspec
@@ -487,6 +487,30 @@ grep -q '"text": *"from the root index"' "$OUT/hub-dependency.ndjson" && grep -q
   || check "hub dependency: the reply is not minimax-h3-tools 0.1.0's echo: $(tail -c 300 "$OUT/hub-dependency.ndjson")"
 grep -q '/v1/index/_/simple/' "$dir/uv.lock" 2> /dev/null \
   || check "hub dependency: the package's folder holds no uv.lock naming the root's index: $(ls "$dir" | paste -sd' ')"
+}
+
+# cl-872: an account's published package that calls a root package. isolated.sh publishes e2e/cli/relay as its admin's own
+# `<account>/e2e-relay`, its lock taking minimax-h3-tools from the root's index. Run signed out by its name, it answers with the
+# stand-in's echo; the environment the machine built names that callee by its own package, `_/minimax-h3-tools` (TensorD read
+# every Hub row of a release as the release's org: `<account>/minimax-h3-tools`, the callee's slots, memo and records then
+# another package's); and the Hub's publication warned of no other Hub's index. cozy 0.24.0 could not publish it at all: its
+# account's index serves no root package.
+hub_published() {
+step "an account's published package calling a root package (cl-872)"
+[ -n "$LOCAL" ] || return 0
+[ -n "${E2E_RELAY:-}" ] || { check "hub published: isolated.sh published no e2e-relay: ${E2E_RELAY_REFUSED:-not seeded}"; return; }
+! grep -q "another Hub's index" "$E2E_RELAY_PUBLISHED" \
+  || check "hub published: its publication warned of another Hub's index: $(grep -o "uv.lock package [^\"]*" "$E2E_RELAY_PUBLISHED" | head -1)"
+cell hub-published "$E2E_RELAY/relay" "text=from a published package" || return 0
+grep -q '"text": *"from a published package"' "$OUT/hub-published.ndjson" && grep -q '"release": *"0.1.0"' "$OUT/hub-published.ndjson" \
+  || check "hub published: the reply is not minimax-h3-tools 0.1.0's echo: $(tail -c 300 "$OUT/hub-published.ndjson")"
+local callee
+# A generation's record names its package by distribution, and each callee by the package it is.
+callee=$(find "$HOME/.cozy/machine" -name generation.json -path '*generations*' -exec jq -r \
+  'select(.package == "e2e-relay") | .callees[]? | select(.distribution | ascii_downcase | gsub("[-_.]+"; "-") == "minimax-h3-tools") | .package' \
+  {} + 2> /dev/null | sort -u | paste -sd, -)
+echo "hub published: $E2E_RELAY's environment names its callee ${callee:-nothing}"
+[ "$callee" = _/minimax-h3-tools ] || check "hub published: $E2E_RELAY's environment names its callee ${callee:-nothing}, not _/minimax-h3-tools"
 }
 
 # cl-820: a signer this machine admits sends TensorD a manifest that names a host path, as only a hand-made one can (no cozy sends
