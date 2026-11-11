@@ -19,6 +19,8 @@ mod history;
 #[cfg(test)]
 #[path = "retired_storage_tests.rs"]
 mod retired_storage_tests;
+#[cfg(test)]
+mod web_seed_tests;
 pub(crate) mod host;
 mod jobs;
 mod keyed;
