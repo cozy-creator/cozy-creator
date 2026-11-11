@@ -22,7 +22,7 @@ use platform::{
     tools,
 };
 use api::{
-    calcifer::{Down, Event, Holder, LogEvent, MachineList, REFUSED, Run, RunList, StreamEvent},
+    calcifer::{Down, Event, Holder, LogEvent, MachineList, REFUSED, Run, RunList, StreamEvent, project::{VaultAsk, VaultChanged, VaultEvent}},
     error::{Envelope, Error, Kind, STOPPING},
     ids::Digest,
     machine::{HELD, LogLines, Ranges, parse_held},
@@ -75,6 +75,13 @@ pub(crate) enum Lock {
 /// One command's connection to Calcifer. Cheap to clone; clones share the connection.
 #[derive(Clone)]
 pub(crate) struct Client(Arc<Inner>);
+
+/// A vault operation's public progress. Its terminal response, which may carry a recovery secret,
+/// is returned separately and never sent to the progress renderer.
+pub(crate) enum VaultProgress<'a> {
+    Accepted { action: &'a str },
+    Progress { phase: &'a str, files_done: u64, bytes_done: u64 },
+}
 
 struct Inner {
     http: reqwest::Client,
@@ -188,6 +195,64 @@ impl Client {
         let key = key.unwrap_or(&minted);
         let body = json_body(body)?;
         self.exchange(ask, |c, base| json(c.post(format!("{base}{path}")), &body).header(KEY, key)).await
+    }
+
+    /// One vault mutation, with progress on the same connection as its final answer. The POST is
+    /// unkeyed: after it reaches Calcifer, neither a broken stream nor an unreadable answer resends
+    /// it. Older Calcifers may return their ordinary JSON answer instead of an event stream.
+    pub(crate) async fn vault(
+        &self,
+        path: &str,
+        request: &VaultAsk,
+        mut progress: impl FnMut(VaultProgress<'_>),
+    ) -> Result<VaultChanged, Error> {
+        let body = json_body(request)?;
+        let mut answer = self.send(Ask::Unkeyed, |c, base| {
+            json(c.post(format!("{base}{path}")), &body).header(header::ACCEPT, "text/event-stream")
+        }).await?;
+        if !answer.status().is_success() {
+            let status = answer.status();
+            let body = answer.bytes().await.map_err(|_| vault_interrupted("the refusal could not be read"))?;
+            return Err(match serde_json::from_slice::<Envelope>(&body) {
+                Ok(envelope) => envelope.error,
+                // Do not quote an untyped body: a vault response can carry a recovery secret.
+                Err(_) => Error::new(Kind::Internal, UNTYPED, format!("Calcifer returned {status} for the vault operation")),
+            });
+        }
+        let content_type = answer.headers().get(header::CONTENT_TYPE).and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split(';').next()).map(str::trim).unwrap_or("");
+        match content_type {
+            "application/json" => {
+                let body = answer.bytes().await.map_err(|_| vault_interrupted("the final response was interrupted"))?;
+                return serde_json::from_slice(&body).map_err(|_| vault_interrupted("the final response could not be read"));
+            }
+            "text/event-stream" => {}
+            _ => return Err(vault_interrupted("Calcifer returned an unsupported response type")),
+        }
+        let mut sse = Sse::default();
+        loop {
+            while let Some(data) = sse.next() {
+                // Parse errors can quote values from the response. Keep credential-bearing event
+                // data out of both the diagnostic and the progress callback.
+                let event: VaultEvent = serde_json::from_str(&data)
+                    .map_err(|_| vault_interrupted("an event could not be read"))?;
+                match event {
+                    VaultEvent::Accepted { action } => progress(VaultProgress::Accepted { action: &action }),
+                    VaultEvent::Progress { phase, files_done, bytes_done } => {
+                        progress(VaultProgress::Progress { phase: &phase, files_done, bytes_done });
+                    }
+                    VaultEvent::Completed { changed } => return Ok(changed),
+                    VaultEvent::Failed { error } => return Err(error),
+                }
+            }
+            // Keepalives are handled by the same decoder as other Calcifer streams. Unlike a
+            // run's event log, this secret-bearing mutation has no replay cursor or reconnect.
+            match self.heard(self.pid(), Instant::now(), 2 * KEEPALIVE, answer.chunk()).await {
+                Ok(Some(bytes)) => sse.push(&bytes),
+                Ok(None) => return Err(vault_interrupted("the stream ended without a final result")),
+                Err(_) => return Err(vault_interrupted("the stream was interrupted before its final result")),
+            }
+        }
     }
 
     /// A PUT: idempotent by its path, and under its call's key too.
@@ -1227,6 +1292,12 @@ fn unreachable(error: reqwest::Error) -> Error {
         format!("Calcifer stopped answering: {error}"),
     )
     .remedy("Run the command again")
+}
+
+fn vault_interrupted(reason: &str) -> Error {
+    Error::new(Kind::Unavailable, "vault_stream_interrupted", format!("Vault operation: {reason}; it was not sent again"))
+        .remedy("Check the project's vault status before deciding whether to repeat the operation")
+        .next("cozy vault status")
 }
 
 async fn ok(answer: Response) -> Result<Response, Error> {

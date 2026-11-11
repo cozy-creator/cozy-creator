@@ -232,3 +232,93 @@ async fn follower_reconnects_with_the_same_run_and_durable_cursor() {
     let paths: Vec<_> = fixture.requests().into_iter().map(|request| request.path).collect();
     assert_eq!(paths, ["/v1/runs/same-run/events?starting_after=0", "/v1/runs/same-run/events?starting_after=7", "/v1/runs/same-run/events?starting_after=7"]);
 }
+
+fn vault_ask() -> VaultAsk {
+    VaultAsk {
+        action: "encrypt".into(), passphrase: Some("request-secret".into()), recovery_secret: None,
+        idle_timeout_s: None, max_duration_s: None, remove_plaintext: false,
+    }
+}
+
+fn vault_changed() -> serde_json::Value {
+    serde_json::json!({
+        "vault": {"encrypted": true, "state": "unlocked", "path": "/project"},
+        "recovery_secret": "terminal-secret"
+    })
+}
+
+#[tokio::test]
+async fn vault_stream_keeps_progress_separate_from_the_final_secret() {
+    let fixture = Fixture::new(|_, _, _| Some(Reply {
+        status: "200 OK", content_type: "text/event-stream; charset=utf-8", headers: vec![],
+        body: format!("data: {{\"type\":\"accepted\",\"action\":\"encrypt\"}}\n\n: keepalive\n\ndata: {{\"type\":\"progress\",\"phase\":\"copying\",\"files_done\":2,\"bytes_done\":128}}\n\ndata: {}\n\n",
+            serde_json::json!({"type":"completed", "changed":vault_changed()})),
+    }));
+    let mut progress = Vec::new();
+    let changed = fixture.client.vault("/v1/projects/project/vault", &vault_ask(), |event| {
+        progress.push(match event {
+            VaultProgress::Accepted { action } => format!("accepted {action}"),
+            VaultProgress::Progress { phase, files_done, bytes_done } => format!("{phase} {files_done} {bytes_done}"),
+        });
+    }).await.unwrap();
+    assert_eq!(progress, ["accepted encrypt", "copying 2 128"]);
+    assert_eq!(changed.recovery_secret.as_deref(), Some("terminal-secret"));
+    let requests = fixture.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].headers["authorization"], "Bearer first-token");
+    assert_eq!(requests[0].headers["accept"], "text/event-stream");
+    assert!(!requests[0].headers.contains_key("idempotency-key"));
+}
+
+#[tokio::test]
+async fn vault_stream_failure_never_replays_or_discloses_partial_data() {
+    for body in [
+        "data: {\"type\":\"accepted\",\"action\":\"encrypt\"}\n\n",
+        "data: {\"type\":\"completed\",\"changed\":\"terminal-secret\"}\n\n",
+    ] {
+        let fixture = Fixture::new(move |_, _, _| Some(Reply {
+            status: "200 OK", content_type: "text/event-stream", headers: vec![], body: body.into(),
+        }));
+        let error = fixture.client.vault("/v1/projects/project/vault", &vault_ask(), |_| {}).await.err().unwrap();
+        assert_eq!(error.code, "vault_stream_interrupted");
+        assert!(error.remedy.as_deref().unwrap().contains("status"));
+        assert!(!serde_json::to_string(&error).unwrap().contains("terminal-secret"));
+        assert_eq!(fixture.requests().len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn vault_failed_event_preserves_the_typed_refusal_without_retry() {
+    let refusal = Error::conflict("project_busy", "a project request is still running");
+    let sent = refusal.clone();
+    let fixture = Fixture::new(move |_, _, _| Some(Reply::event(serde_json::json!({
+        "type":"failed", "error":sent
+    }))));
+    let error = fixture.client.vault("/v1/projects/project/vault", &vault_ask(), |_| {}).await.err().unwrap();
+    assert_eq!(error, refusal);
+    assert_eq!(fixture.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn vault_old_backend_json_is_read_once_without_progress() {
+    let fixture = Fixture::new(|_, _, _| Some(Reply::json(vault_changed())));
+    let mut progress = 0;
+    let changed = fixture.client.vault("/v1/projects/project/vault", &vault_ask(), |_| progress += 1).await.unwrap();
+    assert_eq!(changed.recovery_secret.as_deref(), Some("terminal-secret"));
+    assert_eq!(progress, 0);
+    assert_eq!(fixture.requests().len(), 1);
+}
+
+#[test]
+fn vault_sse_decoder_retains_fragmented_lines_and_ignores_keepalives() {
+    let raw = b": alive\r\n\r\ndata: {\"type\":\"progress\",\r\ndata: \"phase\":\"copying\",\"files_done\":1,\"bytes_done\":9}\r\n\r\n";
+    let mut sse = Sse::default();
+    let mut decoded = Vec::new();
+    for byte in raw {
+        sse.push(&[*byte]);
+        if let Some(data) = sse.next() { decoded.push(data); }
+    }
+    assert_eq!(decoded.len(), 1);
+    assert!(matches!(serde_json::from_str::<VaultEvent>(&decoded[0]).unwrap(),
+        VaultEvent::Progress { files_done: 1, bytes_done: 9, .. }));
+}

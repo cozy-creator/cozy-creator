@@ -143,7 +143,17 @@ async fn change(ctx: &Context, path: &str, request: VaultAsk, recovery_out: Opti
         recovery_location(output, &status)?;
     }
     // No client idempotency cache for responses containing a recovery secret.
-    let mut changed: VaultChanged = client.post(path, &request, None).await?;
+    let mut changed: VaultChanged = client.vault(path, &request, |progress| {
+        use crate::calcifer_client::VaultProgress;
+        let message = match progress {
+            VaultProgress::Accepted { action } => format!("vault {action}: accepted"),
+            VaultProgress::Progress { phase, files_done, bytes_done } => {
+                format!("vault {phase}: {files_done} files, {bytes_done} bytes")
+            }
+        };
+        // Progress stays on stderr, including with --json; stdout contains only the final result.
+        output::warned(&message);
+    }).await?;
     if let (Some(path), Some(secret)) = (&recovery_out, &changed.recovery_secret) {
         let failed = |e: String| Error::new(Kind::Unavailable, "vault_recovery_save", format!("Cannot save the recovery secret to {}: {e}", path.display()))
             .remedy("Keep the project unlocked and replace its recovery secret")
