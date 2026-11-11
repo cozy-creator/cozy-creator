@@ -507,7 +507,7 @@ jobs:
       - name: Windows supervisor process tests
         if: >-
           runner.os == 'Windows' &&
-          (inputs.native_shards == '' || contains(inputs.native_shards, '"web-core"') ||
+          (inputs.native_shards == '' ||
            contains(fromJSON(needs.affected.outputs.selection).suites, 'supervisor') ||
            contains(fromJSON(needs.affected.outputs.selection).suites, 'cli-release'))
         env:
