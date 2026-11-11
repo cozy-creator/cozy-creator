@@ -67,8 +67,8 @@ def check(gate: GateRuns) -> tuple[list[str], list[str]]:
                     if mine > (1 + DRIFT) * others[best]:
                         notes.append(f"{shape.get('id')} {lane} {level}: the rule's {pick.split(':')[1]} {mine:.3f} ms, "
                                      f"{best.split(':')[1]} {others[best]:.3f} ms (+{mine / others[best] - 1:.0%})")
-    for (model, lane, level), (mine, best) in sorted(weighted.items()):
-        if best > 0 and mine > (1 + DRIFT) * best:
-            fails.append(f'{card} {model} {lane} {level}: the rule is {mine / best - 1:.0%} slower than the best candidate '
-                         f'over its shapes ({(mine - best) / 1000:.2f} s a request): refit it (xs-177)')
+    for (model, lane, level), (mine, best_ms) in sorted(weighted.items()):
+        if best_ms > 0 and mine > (1 + DRIFT) * best_ms:
+            fails.append(f'{card} {model} {lane} {level}: the rule is {mine / best_ms - 1:.0%} slower than the best candidate '
+                         f'over its shapes ({(mine - best_ms) / 1000:.2f} s a request): refit it (xs-177)')
     return fails, notes
