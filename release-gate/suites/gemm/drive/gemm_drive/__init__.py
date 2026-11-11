@@ -25,3 +25,9 @@ async def gemm_speed(ctx: Context, *, lanes: str = "", shapes: str = "", seed: i
 async def gemm_tiles(ctx: Context, *, seed: int = 177) -> Measured:
     """nvfp4's Triton decode and GEMV over the tile settings that keep every output bit."""
     return Measured((await call(bench.gemm_tiles, seed=seed)).detail)
+
+
+@app.entrypoint(accelerator=False)
+async def calibrate(ctx: Context) -> Measured:
+    """This pod's sustained bf16 GEMM TFLOPS and memory GB/s, held against its card's reference (calibrate.sh)."""
+    return Measured((await call(bench.calibrate)).detail)
