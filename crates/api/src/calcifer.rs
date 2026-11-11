@@ -193,6 +193,9 @@ pub struct RunRequest {
     /// `KERNEL` or `[SLOT/]COMPONENT=KERNEL`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attention_kernel: Option<String>,
+    /// Dev-only: the Runtime's attention capture spec (JSON), passed to its executors verbatim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attention_capture: Option<String>,
     /// Keep the function at this level instead of running it (`off` takes it out).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warm: Option<crate::machine::WarmLevel>,

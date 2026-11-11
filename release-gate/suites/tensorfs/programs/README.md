@@ -26,6 +26,3 @@ The Runtime halves of the split packages (xs-174):
   producers against the same frozen references. The old package ran this only with `runtime=true`, which no gate set.
 - rowwise-quantize: the Runtime's `RowwiseDequant` was this program's reference; the program now holds TensorFS to the
   rowwise law itself, and the Runtime's decoders are the kernels suite's `decode:conform` cells.
-- bf16-normalize: its `runtime=true` branch (never set by a gate) needs Runtime internals a package can't import: it
-  builds a TensorFS source with `tensorfs.Writer` and hands it to `derive.quantization.write_bf16` through a
-  `weights_store.Output` it makes itself, and catches `author._errors.CapabilityError`. Left for a Runtime built-in.

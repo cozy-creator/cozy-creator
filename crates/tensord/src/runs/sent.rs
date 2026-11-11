@@ -197,6 +197,7 @@ fn spec_of(mut spec: v1::RunSpec) -> Result<(crate::runs::Spec, Option<v1::HubAc
             .collect(),
         models,
         attention_kernel: spec.attention_kernel,
+        attention_capture: spec.attention_capture,
         gpus: spec.gpus,
         lane: spec.lane,
         hub: None,

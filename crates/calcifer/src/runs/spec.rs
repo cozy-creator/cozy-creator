@@ -23,6 +23,8 @@ pub(crate) struct Call<'a> {
     pub lane: String,
     /// `--attention-kernel`; empty: the machine's own selection.
     pub attention_kernel: &'a str,
+    /// Dev-only `--attention-capture`; empty: none.
+    pub attention_capture: &'a str,
 }
 
 /// Where the machine finds the function's code.
@@ -71,6 +73,7 @@ impl Call<'_> {
             models: choices::wire(&bound.models)?,
             weights_destination: bound.destination.clone().unwrap_or_default(),
             attention_kernel: self.attention_kernel.to_owned(),
+            attention_capture: self.attention_capture.to_owned(),
             gpus: self.gpus,
             lane: self.lane.clone(),
             ..Default::default()

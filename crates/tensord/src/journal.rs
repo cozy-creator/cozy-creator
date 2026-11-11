@@ -31,6 +31,9 @@ pub(crate) struct Invocation {
     /// The caller's attention-kernel pin, passed to the executor verbatim.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub attention_kernel: String,
+    /// Dev-only: the Runtime's attention capture spec, passed to the executor verbatim.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub attention_capture: String,
     /// An explicit run GPU group; zero selects the package's widest supported group.
     #[serde(default)]
     pub gpus: u32,

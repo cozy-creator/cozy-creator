@@ -76,6 +76,8 @@ pub(crate) struct Spec {
     pub inputs: Vec<InputFile>,
     pub models: Vec<stored::ModelChoice>,
     pub attention_kernel: String,
+    /// Dev-only: the Runtime's attention capture spec; its run, and every child, always runs.
+    pub attention_capture: String,
     pub gpus: u32,
     /// The main model's lane; empty, and every other slot: the Hub's pick for the hardware. A
     /// model-only upload's commit lane.
@@ -133,6 +135,7 @@ pub(crate) struct RunContext {
     pub(crate) weights_destination: String,
     pub(crate) owner: String,
     pub(crate) attention_kernel: String,
+    pub(crate) attention_capture: String,
     pub(crate) gpus: u32,
     pub(crate) lane: String,
     pub(crate) models: Vec<stored::ModelChoice>,
@@ -453,6 +456,7 @@ impl Runs {
             entrypoint: spec.entrypoint.clone(),
             input: spec.input.clone(),
             attention_kernel: spec.attention_kernel.clone(),
+            attention_capture: spec.attention_capture.clone(),
             gpus: spec.gpus,
             lane: spec.lane.clone(),
             inputs: spec.inputs.clone(),
@@ -989,7 +993,8 @@ impl Runs {
         // published media) has an effect beyond its result: it always runs.
         let writer = api::interface::weights_outputs(entry).next().is_some()
             || api::interface::publishes(entry)
-            || !spec.weights_destination.is_empty();
+            || !spec.weights_destination.is_empty()
+            || !spec.attention_capture.is_empty();
         let memo = match writer {
             false => call_memo::of(
                 &generation.record,
@@ -1021,6 +1026,7 @@ impl Runs {
                 weights_destination: spec.weights_destination.clone(),
                 owner: spec.owner.clone(),
                 attention_kernel: spec.attention_kernel.clone(),
+                attention_capture: spec.attention_capture.clone(),
                 gpus: spec.gpus,
                 lane: spec.lane.clone(),
                 models: spec.models.clone(),
@@ -1035,6 +1041,7 @@ impl Runs {
                 entrypoint: spec.entrypoint,
                 input: spec.input,
                 attention_kernel: spec.attention_kernel,
+                attention_capture: spec.attention_capture,
                 gpus: spec.gpus,
                 lane: spec.lane.clone(),
                 inputs: spec.inputs,
@@ -1459,6 +1466,7 @@ impl Runs {
                 })
                 .collect(),
             attention_kernel: context.attention_kernel,
+            attention_capture: context.attention_capture,
             // The caller's count caps a child's group, else the GPUs its root took; the child's own
             // declaration picks within it.
             gpus: match context.gpus {

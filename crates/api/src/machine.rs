@@ -373,6 +373,9 @@ pub struct RunSpec {
     pub inputs: Vec<InputFile>,
     pub models: Vec<ModelChoice>,
     pub attention_kernel: String,
+    /// Dev-only: the Runtime's attention capture spec (JSON); empty: none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub attention_capture: String,
     /// org/name: the requester's repository for the call's weights outputs, or a warm run's
     /// source model.
     pub weights_destination: String,

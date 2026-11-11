@@ -3,7 +3,6 @@
 # child calls (also in `runtime`: a cell one suite ran does not run again), TensorFS's producers and decoders, and SDXL's
 # cold and warm qualification. varena's mechanisms are suite `varena`'s (core, faults, ledger, public API).
 # What needs the Runtime's internals is a Runtime built-in (`cozy_runtime.bench`) that drive/ calls (xs-174).
-# Not here: mps-residency (`bench.mps_residency`, drive/), which needs an Apple GPU no suite has now.
 EXEC_DIR=$HERE/suites/execution TFS_DIR=$HERE/suites/tensorfs
 source "$EXEC_DIR/core-cells.sh"
 for part in first-warm-capture capture-refusal lora-overlay-refill overlay-replay child-lora-stacks child-saved-file; do
