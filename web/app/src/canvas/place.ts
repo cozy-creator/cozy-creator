@@ -2,7 +2,7 @@ import { ApiError, type Client } from "../api/client"
 import { lost } from "../api/outbox"
 import { hashFile, inLine, sendFile } from "../api/upload"
 import { say } from "../ui/notes"
-import type { Asset, Imported, Card, Tool } from "../api/calcifer"
+import type { Asset, Imported, Card, Tool, Opened } from "../api/calcifer"
 import { CARD_WIDTH, type CanvasStore, type CarriedFile, type MediaKind, type Pushes, type Stage, UNDO_MS } from "./CanvasStore"
 import { startingFields, TEXT_TOOL } from "./controls"
 import type { CopiedBox } from "./copy"
@@ -16,6 +16,8 @@ function mediaOf(file: File): MediaKind {
 }
 
 export interface Hooks {
+  /** Collect local credentials and save recovery before sending an empty canvas's files. */
+  create(): Promise<Opened>
   /** The first import on an empty canvas made this project. */
   adopt(id: string, code: string): void
 }
@@ -29,7 +31,6 @@ export class Placer {
   private client: Client
   private hooks: Hooks
   private made?: Promise<string>
-  private projectKey = `project-${crypto.randomUUID()}`
   private nextKey = 0
 
   constructor(store: CanvasStore, client: Client, hooks: Hooks) {
@@ -162,6 +163,8 @@ export class Placer {
   private async run(key: string, file: File, signal: AbortSignal, dropped: { x: number; y: number; w: number }, then: ((name: string) => void) | undefined, edit: string, own: boolean) {
     const owed = this.store.outbox.owing()
     try {
+      await this.project()
+      signal.throwIfAborted()
       const digest = await inLine(() => this.hashAndSend(key, file, signal))
       await this.store.whenNamed(key, signal)
       // Its import is in the queue from here, and counted there.
@@ -256,10 +259,10 @@ export class Placer {
     }
   }
 
-  /** The project this canvas makes with its first box, under one key however often it's asked: one that didn't reach Calcifer is asked again. */
+  /** One setup for all pending imports. Credentials stay in the local setup form, outside the outbox. */
   private project(): Promise<string> {
     if (this.store.projectId) return Promise.resolve(this.store.projectId)
-    this.made ??= this.client.newProject("untitled", this.projectKey).then(
+    this.made ??= this.hooks.create().then(
       ({ id, code, said }) => {
         this.store.projectId = id
         for (const line of said ?? []) say(line)

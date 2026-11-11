@@ -17,7 +17,7 @@ export const vaultQuery = (client: Client, id: string) => queryOptions({
   refetchIntervalInBackground: true,
 })
 
-function Recovery({ secret, onDone }: { secret: string; onDone: () => void }) {
+export function Recovery({ secret, onDone, disabled = false }: { secret: string; onDone: () => void; disabled?: boolean }) {
   const [saved, setSaved] = useState(false)
   const [copied, setCopied] = useState(false)
   const download = () => {
@@ -56,7 +56,7 @@ function Recovery({ secret, onDone }: { secret: string; onDone: () => void }) {
         <button className="tb" type="button" onClick={print}>Print</button>
       </div>
       <label><input type="checkbox" checked={saved} onChange={(event) => setSaved(event.target.checked)} /> I saved this somewhere away from this computer</label>
-      <button className="tb primary" type="button" disabled={!saved} onClick={onDone}>Done</button>
+      <button className="tb primary" type="button" disabled={!saved || disabled} onClick={onDone}>Done</button>
     </section>
   )
 }

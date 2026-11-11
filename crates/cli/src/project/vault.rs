@@ -80,7 +80,7 @@ fn ask(action: &str) -> VaultAsk {
     VaultAsk { action: action.into(), passphrase: None, recovery_secret: None, idle_timeout_s: None, max_duration_s: None, remove_plaintext: false }
 }
 
-fn credential(path: Option<&PathBuf>, prompt: &str, confirm: bool) -> Result<String, Error> {
+pub(super) fn credential(path: Option<&PathBuf>, prompt: &str, confirm: bool) -> Result<String, Error> {
     let io = |e: std::io::Error| Error::new(Kind::Usage, "vault_credential", format!("cannot read the credential: {e}"));
     let value = if let Some(path) = path {
         let mut bytes = Vec::new();
@@ -102,7 +102,7 @@ fn credential(path: Option<&PathBuf>, prompt: &str, confirm: bool) -> Result<Str
     Ok(value)
 }
 
-fn recovery_location(output: &Path, status: &VaultStatus) -> Result<(), Error> {
+pub(super) fn recovery_location(output: &Path, status: &VaultStatus) -> Result<(), Error> {
     let refuse = |why: &str| Error::new(Kind::Usage, "vault_recovery_location", why)
         .remedy("Save the recovery secret outside the project, with a copy on another device");
     let name = output.file_name().ok_or_else(|| refuse("recovery output must name a new file"))?;
@@ -119,6 +119,19 @@ fn recovery_location(output: &Path, status: &VaultStatus) -> Result<(), Error> {
         }
     }
     Ok(())
+}
+
+pub(super) fn save_recovery(path: &Path, secret: &str) -> Result<(), Error> {
+    let failed = |e: String| Error::new(Kind::Unavailable, "vault_recovery_save", format!("Cannot save the recovery secret to {}: {e}", path.display()))
+        .remedy("Keep the project unlocked and replace its recovery secret")
+        .next("cozy vault recovery --recovery-out <file>");
+    let mut file = platform::durable::create_private_new(path).map_err(|e| failed(e.to_string()))?;
+    writeln!(file, "{secret}").and_then(|()| file.sync_all()).map_err(|e| failed(e.to_string()))
+}
+
+pub(super) fn show_recovery(ctx: &Context, secret: &str) {
+    output::say(ctx, "Save this recovery secret on another device or in your password manager. TensorHub does not receive it:");
+    output::say(ctx, secret);
 }
 
 fn vault_path(directory: Option<PathBuf>) -> Result<String, Error> {
@@ -145,11 +158,7 @@ async fn change(ctx: &Context, path: &str, request: VaultAsk, recovery_out: Opti
     // No client idempotency cache for responses containing a recovery secret.
     let mut changed: VaultChanged = client.post(path, &request, None).await?;
     if let (Some(path), Some(secret)) = (&recovery_out, &changed.recovery_secret) {
-        let failed = |e: String| Error::new(Kind::Unavailable, "vault_recovery_save", format!("Cannot save the recovery secret to {}: {e}", path.display()))
-            .remedy("Keep the project unlocked and replace its recovery secret")
-            .next("cozy vault recovery --recovery-out <file>");
-        let mut file = platform::durable::create_private_new(path).map_err(|e| failed(e.to_string()))?;
-        writeln!(file, "{secret}").and_then(|()| file.sync_all()).map_err(|e| failed(e.to_string()))?;
+        save_recovery(path, secret)?;
         changed.recovery_secret = None;
         output::say(ctx, &format!("recovery secret saved to {}; keep a copy off this computer", path.display()));
     }
@@ -164,8 +173,7 @@ async fn change(ctx: &Context, path: &str, request: VaultAsk, recovery_out: Opti
         output::warn(&format!("source preserved at {}; {protection}", source.display()));
     }
     if let Some(secret) = changed.recovery_secret {
-        output::say(ctx, "Save this recovery secret on another device or in your password manager. TensorHub does not receive it:");
-        output::say(ctx, &secret);
+        show_recovery(ctx, &secret);
     }
     Ok(ExitCode::SUCCESS)
 }

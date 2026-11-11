@@ -146,8 +146,12 @@ def main() -> None:
         run("local port option", ["open", "--port", "8818", "--help"])
         run("bash completion", ["completion", "bash"])
 
+        missing_credential = case / "encrypted without credential"
+        refused = json.loads(run("new requires secure input", ["--json", "new", str(missing_credential)], code=2).stdout)
+        assert refused["error"]["code"] == "vault_credential"
+        assert not missing_credential.exists(), "refused new created a project without a known credential"
         project = case / "film with spaces"
-        created = json.loads(run("new directory", ["--json", "new", str(project)]).stdout)
+        created = json.loads(run("new directory", ["--json", "new", "--unencrypted", str(project)]).stdout)
         assert Path(created["path"]).resolve() == project
         assert (project / "project.db").is_file(), "new did not create project.db"
         assert created["created"] is True, "new did not report creating the project"
@@ -160,7 +164,7 @@ def main() -> None:
         assert "Project not created." in friendly and created["code"] in friendly
         existing_directory = case / "existing directory"
         existing_directory.mkdir(exist_ok=True)
-        initialized = json.loads(run("new current directory", ["--json", "new"], existing_directory).stdout)
+        initialized = json.loads(run("new current directory", ["--json", "new", "--unencrypted"], existing_directory).stdout)
         assert Path(initialized["path"]).resolve() == existing_directory
         assert initialized["created"] is True
         environment["COZY_PROJECT"] = str(project)

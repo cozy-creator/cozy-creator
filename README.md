@@ -25,7 +25,21 @@ release's signature, restarts Calcifer on it, and the local machine follows once
 
 ## Use
 
-Write the request in a YAML file, `request.yaml`:
+Create a project in a new or empty directory. New projects are encrypted by default: enter a
+passphrase locally and save the recovery secret on another device, in a password manager or on paper.
+
+```sh
+cozy login you@example.com
+cozy new garden
+```
+
+For local source/request files, use the reported readable view as your working directory so those
+files are encrypted too. The WebUI resolves that view automatically. `cozy new --unencrypted garden`
+explicitly opts out; ordinary projects need no filesystem driver. Existing projects keep their storage.
+Noninteractive creation uses `--passphrase-file FILE|-` and `--recovery-out NEWFILE` outside the project,
+or the explicit opt-out. [Platform requirements and recovery](crates/calcifer/docs/PROJECT-ENCRYPTION.md).
+
+Write the request in that working directory as `request.yaml`:
 
 ```yaml
 prompt: a lighthouse on a basalt cliff at dusk, oil painting
@@ -35,8 +49,6 @@ seed: 7
 ```
 
 ```sh
-cozy login you@example.com
-cozy new                                  # initialize the current directory
 cozy run sdxl/generate --input request.yaml
 cozy run sdxl/generate --input request.yaml seed=8      # an inline input overrides the file
 cozy run sdxl/generate --input request.yaml --model model=stabilityai/sdxl@1.0.0

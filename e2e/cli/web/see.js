@@ -146,6 +146,7 @@ async function rest(page, handle) {
   // A project of its own, by name, from the Projects drawer: the page is open on it from here on, and nothing below reloads it unless it says so.
   await page.goto(`${base}/projects`);
   await page.fill('input[aria-label="New project\'s name"]', `web-see-${Date.now()}`);
+  await page.getByLabel("Create without encryption", { exact: true }).check();
   await page.click('form button[type=submit]');
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
   const id = (await projectFromPage(page)).id;
@@ -482,7 +483,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   }
 
   // 300 elements, on React Flow, by project-web-ui §8's three cases. What's measured is reported; what's checked is that each case really happened.
-  const made = await api('/v1/projects', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `see-${Date.now()}` }, body: JSON.stringify({ name: `web-see-scale-${Date.now()}` }) });
+  const made = await api('/v1/projects', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `see-${Date.now()}` }, body: JSON.stringify({ name: `web-see-scale-${Date.now()}`, unencrypted: true }) });
   const scalePages = new Set();
   try {
     const big = made.path;

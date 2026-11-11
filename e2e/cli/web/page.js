@@ -593,7 +593,7 @@ async function newProject(folder) {
   const answer = await fetch(`http://${holder.address}/v1/projects`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${holder.token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path: folder, starter: true }),
+    body: JSON.stringify({ path: folder, starter: true, unencrypted: true }),
   });
   const opened = await answer.json();
   if (!answer.ok) throw new Error(`create starter project ${folder}: ${answer.status} ${JSON.stringify(opened)}`);

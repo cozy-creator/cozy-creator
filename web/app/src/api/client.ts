@@ -37,6 +37,7 @@ import type {
   ModelReleased,
   ModelSearch,
   NewAsset,
+  Open,
   Opened,
   OrgClaim,
   PackageDetail,
@@ -296,8 +297,12 @@ export class Client {
     return this.json(`/v1/projects?limit=${limit}`)
   }
 
-  newProject(name: string, key: string): Promise<Opened> {
-    return this.write("POST", "/v1/projects", { name }, key)
+  async newProject(body: Open): Promise<Opened> {
+    if (body.unencrypted) return this.write("POST", "/v1/projects", body, `project-${crypto.randomUUID()}`)
+    if (this.transport.channel) return Promise.reject(new ApiError(403, { kind: "forbidden", code: "vault_local_only", message: "Open Cozy on this computer to enter encryption credentials" }))
+    const status = await this.json<CalciferStatus>("/v1/status", { cache: "no-store" })
+    if (status.encrypted_project_creation !== true) throw new ApiError(503, { kind: "unavailable", code: "calcifer_outdated", message: "Calcifer cannot create encrypted projects directly. Update or restart it; no credential or creation request was sent." })
+    return this.json("/v1/projects", { method: "POST", headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }, body: JSON.stringify(body), cache: "no-store" })
   }
 
   vault(id: string, signal?: AbortSignal): Promise<VaultStatus> {

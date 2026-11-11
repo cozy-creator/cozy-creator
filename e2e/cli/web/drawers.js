@@ -119,6 +119,7 @@ async function runs(page, base, id, folder) {
   // A project of its own, by name, from the Projects drawer.
   await page.goto(`${base}/projects`);
   await page.fill('input[aria-label="New project\'s name"]', `web-drawers-${Date.now()}`);
+  await page.getByLabel("Create without encryption", { exact: true }).check();
   await page.click('form button[type=submit]');
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
   const id = (await projectFromPage(page)).id;

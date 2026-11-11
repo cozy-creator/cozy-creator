@@ -668,6 +668,7 @@ async function edgesOf({ shown, bare, black, white, clip, frame }) {
   else {
   await page.goto(`${base}/projects`);
   await page.fill('input[aria-label="New project\'s name"]', `web-layout-${Date.now()}`);
+  await page.getByLabel("Create without encryption", { exact: true }).check();
   await page.click('form button[type=submit]');
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
   id = (await projectFromPage(page)).id;
