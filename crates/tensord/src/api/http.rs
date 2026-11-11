@@ -88,7 +88,7 @@ impl Caller {
             false => Err(Error::forbidden("capability_scope", "this call needs a machine-scope Cozy-Cap")),
         }
     }
-    /// An output-limited run grant (`run play`'s link), which sees only those outputs.
+    /// An output-limited run grant (a browser playback link), which sees only those outputs.
     pub(super) fn limit(&self) -> Option<Grant> {
         let limited = self.grant.action != capability::MACHINE && !self.grant.outputs.is_empty();
         limited.then(|| self.grant.clone())

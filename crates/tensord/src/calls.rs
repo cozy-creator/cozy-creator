@@ -571,7 +571,7 @@ impl Seen {
     fn overall(&mut self, engine: &Engine, id: &str) -> Option<f64> {
         if self.timed.is_none() {
             let record = engine.get(id).ok().filter(|record| record.started_at_ms > 0)?;
-            // A retried attempt goes on from the share its run showed.
+            // A retried attempt goes on from the share its run watched.
             let shown = record.progress.as_deref().and_then(|p| serde_json::from_str::<Value>(p).ok());
             self.overall = shown.and_then(|p| p["overall_fraction"].as_f64()).unwrap_or(0.0);
             let whole = crate::estimate::whole_ms(engine, &record).ok().flatten().filter(|ms| *ms > 0.0);
@@ -987,7 +987,7 @@ fn nudge(calls: Weak<Calls>, engine: Arc<Engine>) {
 }
 
 /// Journals a settled child as a `call` event on its parent: the callee, the author's label,
-/// how it ended and when, and what its executor measured (`run show` lists each call). True
+/// how it ended and when, and what its executor measured (`run watch` lists each call). True
 /// once it is in the parent's log, or the parent has ended and takes no more.
 fn record_call(
     engine: &Engine,

@@ -1,6 +1,6 @@
 # ab: one rental, a list of cells (each one run of a package function from a packages checkout, run in order), and
 # pairs of cells compared for identical output: a refactor's proof is the same request giving the same bytes (xs-101).
-# While cells run, `machine show` and the current run's `run show --once` are timed every 15 s (probe.tsv): a busy
+# While cells run, `machine show` and the current run's `run watch --once` are timed every 15 s (probe.tsv): a busy
 # machine keeps answering and is never "unreachable" (cl-671).
 # A pod's first call of each tree serves what has not compiled yet (its LoRA per step until the bake kernel is ready,
 # a fused block eager until it is built), so give each tree a warm-up cell before the cells it compares; each cell's
@@ -67,7 +67,7 @@ echo -e "utc\tshow_ms\tshow_rc\tstate\trun\trunshow_ms\trunshow_rc\tstatus\tunre
     t=$(date +%s%3N); s=$(timeout 120 cozy machine show "$RID" --json 2>&1); src=$?; sm=$(( $(date +%s%3N) - t ))
     k=$(cat "$OUT/current" 2>/dev/null); N=''; [ -z "$k" ] || N=$(current "$k")
     rs='' rms='' rrc='' rst=''
-    if [ -n "$N" ]; then t=$(date +%s%3N); rs=$(timeout 120 cozy run show "$N" --once --json --full 2>&1); rrc=$?; rms=$(( $(date +%s%3N) - t ))
+    if [ -n "$N" ]; then t=$(date +%s%3N); rs=$(timeout 120 cozy run watch "$N" --once --json --full 2>&1); rrc=$?; rms=$(( $(date +%s%3N) - t ))
       rst=$(jq -r '.status // empty' <<<"$rs" 2>/dev/null | head -1); fi
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%T)" "$sm" "$src" "$(jq -r '.state // empty' <<<"$s" 2>/dev/null | head -1)" \
       "$N" "$rms" "$rrc" "$rst" "$(printf '%s\n%s' "$s" "$rs" | grep -ci unreachable)" >> "$OUT/probe.tsv"
@@ -112,7 +112,7 @@ for k in "${names[@]}"; do
   step "$k" run "$target" "${args[@]}" --on "$NAME"; code=$?
   cd "$OUT" || fail "no $OUT"
   N=$(runno "$k")
-  if [ -n "$N" ]; then cozy run show "$N" --once --json --full > "$OUT/$k.json" 2>/dev/null; cozy run show "$N" --once -o "$OUT/$k.out" > /dev/null 2>&1; fi
+  if [ -n "$N" ]; then cozy run watch "$N" --once --json --full > "$OUT/$k.json" 2>/dev/null; cozy run watch "$N" --once -o "$OUT/$k.out" > /dev/null 2>&1; fi
   st=$(jq -r '.status // "none"' "$OUT/$k.json" 2>/dev/null); st=${st:-none}
   MADE[$k]=$(ls "$OUT/$k.out"/* 2> /dev/null | grep -E '[.](png|webp|jpg|mp4)$' | sort | head -1)
   say "$k run ${N:-none} ${st:-none} (exit $code): $(summary "$k")"
@@ -142,5 +142,5 @@ done < <(jq -r '.[] | "\(.[0]) \(.[1])"' <<<"$COMPARE")
 u=0; for k in "${names[@]}"; do x=$(grep -ci unreachable "$OUT/$k.txt" 2>/dev/null); u=$((u + ${x:-0})); done
 say "unreachable lines in the cells' follow output: $u"
 awk -F'\t' 'NR>1{n++; if($2>m)m=$2; if($3!=0)e++; if($6!=""){r++; if($6>q)q=$6; if($7!=0)f++}; u+=$9}
-  END{printf "probe: %d machine show (max %d ms, %d failed), %d run show (max %d ms, %d non-zero), %d unreachable\n", n, m, e, r, q, f, u}' "$OUT/probe.tsv" | tee -a "$R"
+  END{printf "probe: %d machine show (max %d ms, %d failed), %d run watch (max %d ms, %d non-zero), %d unreachable\n", n, m, e, r, q, f, u}' "$OUT/probe.tsv" | tee -a "$R"
 [ "$fails" = 0 ] && [ "$differ" = 0 ] || fail "$fails cells did not complete, $differ pairs differ"

@@ -243,11 +243,11 @@ a spec.
   has landed here or failed to.
 - `POST /v1/runs/{id}/cancel`: `202`, or `200` when it had ended.
 - `GET /v1/runs/{id}/play?output=&expires=` (`expires`: `90s`, `30m`, `24h`, `7d`, default `1h`): `Play {address, fingerprint, token, url, expires_s}`: how a browser plays that output straight from its machine, and `url`, the hosted player's link. `400 play_expires_invalid`, `400 play_output_invalid`.
-- `GET /v1/runs/{id}/outputs/{name}` (`?index=` an item of a list): an output's bytes, where its `url` says. A folder's is its tree document (`application/vnd.cozy.tree-manifest`), and `?member=<path>` one file of it: a client fetches what it asks for and holds each to its digest (`cozy run -o`, `cozy run show -o`). An output names no path of Calcifer's. An item with `stays`, an output its function's result declares `Latents`, stays on its machine: no `url`, nothing waits for it, and this answers `409 output_on_its_machine`.
+- `GET /v1/runs/{id}/outputs/{name}` (`?index=` an item of a list): an output's bytes, where its `url` says. A folder's is its tree document (`application/vnd.cozy.tree-manifest`), and `?member=<path>` one file of it: a client fetches what it asks for and holds each to its digest (`cozy run -o`, `cozy run watch -o`). An output names no path of Calcifer's. An item with `stays`, an output its function's result declares `Latents`, stays on its machine: no `url`, nothing waits for it, and this answers `409 output_on_its_machine`.
 
 ### Time left
 
-Calcifer says how long a run has left, all of it, so the page, `cozy run`, `run show`, `run ls` and a machine's activity show one
+Calcifer says how long a run has left, all of it, so the page, `cozy run`, `run watch`, `run ls` and a machine's activity show one
 number. `eta_s` is the seconds left, `eta_confidence` 0 to 1, and `eta_basis` what it stands on: `machine` (runs like it on this
 machine), `gpu` (on other machines of its GPU, by the name each run's record keeps as `gpu`), `steps` (its own steps alone), or
 `first_run` with no `eta_s` (nothing like it ran here, and it has fewer than two steps of its own).
@@ -623,9 +623,8 @@ The CLI resolves the current directory to an existing project and sends its abso
 | `cozy run <target> --describe`, `cozy run <package>` | local code's tree `PUT`, `GET /v1/targets` (`tree`, `at`) |
 | `cozy run <target> [inputs] --estimate [N]` | local code's tree `PUT`, `POST /v1/run-estimates?count=N` (again after a `preparing` install) |
 | `cozy run ls` | `GET /v1/runs`; live: `GET /v1/events`, then `GET /v1/runs` |
-| `cozy run show <run> [-o DIR]` | `GET /v1/runs/{id}?detail=full`, `GET /v1/runs/{id}/events`; `-o DIR`, each output `GET /v1/runs/{id}/outputs/{name}` (a folder's tree, then `?member=`) |
+| `cozy run watch <run> [-o DIR]` | `GET /v1/runs/{id}?detail=full`, `GET /v1/runs/{id}/events`; `-o DIR`, each output `GET /v1/runs/{id}/outputs/{name}` (a folder's tree, then `?member=`) |
 | `cozy run cancel <run>` | `GET /v1/runs/{id}`, `POST /v1/runs/{id}/cancel` |
-| `cozy run play <run>` | `GET /v1/runs/{id}/play` |
 | `cozy login <email>` | `GET /v1/account`; `POST /v1/account/codes` (`sign_in`), `POST /v1/account/codes/{id}`; `PUT /v1/account/name` while unnamed |
 | `cozy login --export FILE` | `POST /v1/account/codes` (`export`), `POST /v1/account/codes/{id}`; the CLI writes the file |
 | `cozy login --key FILE` | `PUT /v1/account/key`; `PUT /v1/account/name` while unnamed |

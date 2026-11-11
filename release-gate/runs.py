@@ -1,4 +1,4 @@
-"""A run's record as `cozy run show <n> --once --json --full` prints it (e2e/run.sh keeps it as <name>.json), read once into the
+"""A run's record as `cozy run watch <n> --once --json --full` prints it (e2e/run.sh keeps it as <name>.json), read once into the
 summary analyze.py and every check use. Its VRAM is the driver's (`vram`); varena's own figures are record.py's."""
 import json
 import os

@@ -844,7 +844,7 @@ impl Store {
     /// The runs `filter` names, newest first; how many more match beyond its limit; and each
     /// matching run it cannot read, as `run N: why`, left out.
     pub(crate) fn runs(&self, filter: &RunFilter) -> Result<(Vec<RunRow>, u64, Vec<String>)> {
-        // A run of a project adapter, from when there were any, is no one's to read in a list, though `run show` has it.
+        // A run of a project adapter, from when there were any, is no one's to read in a list, though `run watch` has it.
         const MATCHING: &str = "FROM runs WHERE number < ?1
             AND target NOT LIKE '%/project-adapter-%'
             AND (?2 IS NULL OR CASE state WHEN 'accepted' THEN 'in_progress' WHEN 'settled' THEN status

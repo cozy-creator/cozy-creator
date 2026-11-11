@@ -327,7 +327,7 @@ impl Engine {
     }
     /// The machine's warning for a run (its precision, its SDK), on its root run's log as its
     /// package's lines are: a call's leads with its function, since only the root's log
-    /// reaches its follower and `run show`.
+    /// reaches its follower and `run watch`.
     /// `id`'s success is held for no later call, nor is that of any memoized run that called it:
     /// whether that is news for `id`.
     pub(crate) fn unmemoize(&self, id: &str, why: &str) -> io::Result<bool> {
@@ -347,7 +347,7 @@ impl Engine {
         }
     }
     /// One line a run's package logged (`Telemetry.log`), on its root run's log, the one
-    /// `run show` displays: a call's lines lead with its function. A line keeps at most
+    /// `run watch` displays: a call's lines lead with its function. A line keeps at most
     /// `PACKAGE_LOG_LINE` bytes of text; past the root log's bound the first line becomes one
     /// notice and later ones are dropped (`Journal::append_package_log`).
     pub(crate) fn append_package_log(&self, id: &str, level: &str, text: &str) -> io::Result<()> {

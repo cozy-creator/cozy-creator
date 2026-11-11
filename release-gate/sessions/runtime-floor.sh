@@ -21,7 +21,7 @@ step update machine update "$NAME" --tensord "$(command -v cozy)" --runtime "$WH
 cozy machine show "$NAME" --json > "$OUT/show.json"
 [ "$(jq -r .status.runtime "$OUT/show.json")" = "$RUNTIME" ] || fail "the machine runs Runtime $(jq -r .status.runtime "$OUT/show.json"), not $RUNTIME"
 step run run "$FIX/runtime-floor.py/versions" --on "$NAME" || fail "the run failed: $(tail -3 "$OUT/run.txt")"
-cozy run show "$(runno run)" --once --json --full > "$OUT/run.json" 2>&1
+cozy run watch "$(runno run)" --once --json --full > "$OUT/run.json" 2>&1
 HELD=$(jq -r .result.runtime "$OUT/run.json")
 if [ "$SENT" = 1 ]; then
   [ "$HELD" = "$RUNTIME" ] || fail "the environment holds Runtime $HELD, not the $RUNTIME sent"

@@ -1134,7 +1134,7 @@ pub struct Job {
     pub error: Option<Error>,
 }
 
-/// A file a run showed before it ended: its package's word for it, in a sentence (`segment 1/2`), and its path in the project.
+/// A file a run watched before it ended: its package's word for it, in a sentence (`segment 1/2`), and its path in the project.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Preview {

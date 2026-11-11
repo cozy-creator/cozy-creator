@@ -157,7 +157,7 @@ test = "pr: a weightless request; BiRefNet on the CPU"
 "--lora" = "gate: cli cells"
 "--output" = "pr: the CLI in a folder Calcifer can't see: a script's still, downloaded by its digest (-o)"
 "--estimate" = "pr: local code is quoted from its runs"
-["run show"]
+["run watch"]
 test = "pr: a run followed, a snapshot, a cancel"
 "--once" = "pr: a run followed, a snapshot, a cancel"
 "--output" = "pr: a tool: a Latents result stays on its machine, any other file comes down (-o)"
@@ -170,10 +170,6 @@ test = "pr: run ls filters"
 "--limit" = "pr: run ls filters"
 ["run cancel"]
 test = "pr: a run followed, a snapshot, a cancel"
-["run play"]
-test = "pr: run play, its link serves the output, then expires"
-"--output" = "pr: run play"
-"--expires" = "pr: run play"
 
 # Hidden (`hide = true`, in no --help): probed in the binary; `coverage.py --source` finds any not listed here.
 [hidden]

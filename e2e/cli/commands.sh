@@ -31,7 +31,7 @@ if [ -n "$LOCAL" ] && (cd "$here" && COZY_HUB_URL=http://127.0.0.1:9 cell other-
   n=$(cat "$OUT/other-hub.number")
   cozy --json --full run ls --limit 0 | J --argjson n "$n" 'any(.runs[]; .number == $n and .hub == "http://127.0.0.1:9")' \
     || check "run ls: run $n, made at another Hub, is not listed"
-  cozy --json run show "$n" --once | J '.hub == "http://127.0.0.1:9" and .status == "completed"' || check "run show $n: not its record at the other Hub"
+  cozy --json run watch "$n" --once | J '.hub == "http://127.0.0.1:9" and .status == "completed"' || check "run watch $n: not its record at the other Hub"
 fi
 
 step "signed out"
@@ -349,8 +349,8 @@ if AFTER='sha256sum out/*' inside script --json run ./draw.py/draw instructions=
   hex=$(tail -1 "$OUT/unseen-script.out" | jq -r '.run.output[0].sha256 // empty' | sed 's/^sha256://')
   { [ -n "$hex" ] && grep -q "^$hex  out/" "$OUT/unseen-script.err"; } || check "unseen script: out/ holds $(grep '  out/' "$OUT/unseen-script.err"), not sha256:$hex"
   n=$(tail -1 "$OUT/unseen-script.out" | jq -r '.run.number // empty')
-  AFTER='sha256sum again/*' inside show run show "$n" -o again && grep -q "^$hex  again/" "$OUT/unseen-show.err" \
-    || check "unseen show: run show $n -o again: $(tail -c 300 "$OUT/unseen-show.err")"
+  AFTER='sha256sum again/*' inside show run watch "$n" -o again && grep -q "^$hex  again/" "$OUT/unseen-show.err" \
+    || check "unseen show: run watch $n -o again: $(tail -c 300 "$OUT/unseen-show.err")"
 fi
 inside install --json package install ./weightless --on local && J '.run.status == "completed"' <(tail -1 "$OUT/unseen-install.out") \
   || check "unseen install: $(tail -c 300 "$OUT/unseen-install.out")"
@@ -578,17 +578,17 @@ waiting=$!
 until n=$(run_number "$OUT/wait.ndjson"); [ -n "$n" ] || ! kill -0 "$waiting" 2> /dev/null; do sleep 0.2; done
 if [ -z "$n" ]; then check "the waiting run never got a number"; else
   until run_reached "$OUT/wait.ndjson" in_progress || ! kill -0 "$waiting" 2> /dev/null; do sleep 0.2; done
-  cozy --json run show "$n" --once > "$OUT/snapshot.json" || true
-  J '.status == "in_progress"' "$OUT/snapshot.json" || check "run show --once: run $n is $(jq -r .status "$OUT/snapshot.json"), not in_progress"
-  cozy --json run show "$n" > "$OUT/followed.ndjson" &
+  cozy --json run watch "$n" --once > "$OUT/snapshot.json" || true
+  J '.status == "in_progress"' "$OUT/snapshot.json" || check "run watch --once: run $n is $(jq -r .status "$OUT/snapshot.json"), not in_progress"
+  cozy --json run watch "$n" > "$OUT/followed.ndjson" &
   following=$!
   sleep 3
-  kill -0 "$following" 2> /dev/null || check "run show $n stopped before the run settled (it should follow it)"
+  kill -0 "$following" 2> /dev/null || check "run watch $n stopped before the run settled (it should follow it)"
   cozy --json run cancel "$n" > "$OUT/cancel.json" || check "run cancel $n failed"
   wait "$following" || true
   wait "$waiting" || true
-  grep -qE '"status": *"canceled"' "$OUT/followed.ndjson" || check "run show $n did not follow it to canceled"
-  cozy --json run show "$n" --once > "$OUT/canceled.json" || true
+  grep -qE '"status": *"canceled"' "$OUT/followed.ndjson" || check "run watch $n did not follow it to canceled"
+  cozy --json run watch "$n" --once > "$OUT/canceled.json" || true
   J '.status == "canceled"' "$OUT/canceled.json" || check "run cancel: run $n is $(jq -r '.status, .reason.code? // empty' "$OUT/canceled.json" | paste -sd' ' -), not canceled"
 fi
 
@@ -607,10 +607,12 @@ cozy --json run ls --on local > "$OUT/by-machine.json" && J '(.runs | length > 0
 cozy --json run ls --limit 1 > "$OUT/limit.json" && J '(.runs | length) == 1' "$OUT/limit.json" || check "run ls --limit 1: not one run"
 }
 
-run_play() {
-step "run play"
+run_playback() {
+step "run playback API"
 # The link opens the browser player (GitHub Pages) with this machine, the output and a token in its fragment; the
-# token's expiry is --expires from now. The output: a weightless still (the project cell's renderer).
+# token's expiry comes from the API query. The output is a weightless still.
+local holder=$HOME/.cozy/calcifer/calcifer.lock.holder base id
+base="http://$(jq -r .address "$holder")"
 (cd "$here" && cell play-still ./project/draw.py/draw "instructions=play $RANDOM") || true
 first=$(cat "$OUT/play-still.number")
 name=$(jq -r '.output[0].name // empty' "$OUT/play-still.json") || true
@@ -619,13 +621,16 @@ expiry() {  # the token's expiry (unix s), from the link's fragment (unpadded ba
   while (( ${#t} % 4 )); do t+==; done
   base64 -d <<< "$t" 2> /dev/null | jq -r '.e // empty' 2> /dev/null || true
 }
-if [ "$first" = none ] || [ -z "$name" ]; then check "run play: no still to play"; else
+if [ "$first" = none ] || [ -z "$name" ]; then check "run playback API: no still to play"; else
+  id=$(cozy --json run watch "$first" --once | jq -r .id)
   for expires in 30s 2h; do
-    url=$(cozy --json run play "$first" --output "$name" --expires "$expires" | tee "$OUT/play-$expires.json" | jq -r '.link // empty') || true
-    curl -fsS -o /dev/null "${url%%#*}" || check "run play: its player page ${url%%#*} does not answer"
-    [[ $url == *"o=$name"* && $url == *"a="* ]] || check "run play: the link names no machine or not output $name: $url"
+    url=$(curl --fail-with-body -sS -G -H "Authorization: Bearer $(jq -r .token "$holder")" \
+      --data-urlencode "output=$name" --data-urlencode "expires=$expires" "$base/v1/runs/$id/play" \
+      | tee "$OUT/play-$expires.json" | jq -r '.url // empty') || true
+    curl -fsS -o /dev/null "${url%%#*}" || check "run playback API: its player page ${url%%#*} does not answer"
+    [[ $url == *"o=$name"* && $url == *"a="* ]] || check "run playback API: the link names no machine or not output $name: $url"
     want=$(( $(date +%s) + ${expires%[sh]} * $([ "${expires: -1}" = h ] && echo 3600 || echo 1) )) e=$(expiry "$url")
-    [ -n "$e" ] && [ $(( e - want )) -le 10 ] && [ $(( want - e )) -le 10 ] || check "run play --expires $expires: the token expires at ${e:-?}, not about $want"
+    [ -n "$e" ] && [ $(( e - want )) -le 10 ] && [ $(( want - e )) -le 10 ] || check "run playback API expires $expires: the token expires at ${e:-?}, not about $want"
   done
 fi
 }

@@ -96,7 +96,7 @@ judge guide-aspect guide-aspect '.width == 768 and .height == 1344 and .within_1
 span_seams() {
   [ -f "$2.number" ] && [ "$(run_get "$OUT" "$2" .status)" = completed ] || return 0
   local b r
-  b=$("$CLI" run show --full "$(cat "$2.number")" --once 2>/dev/null | grep -o 'boundaries_s=[0-9.,]*' | head -1 | cut -d= -f2)
+  b=$("$CLI" run watch --full "$(cat "$2.number")" --once 2>/dev/null | grep -o 'boundaries_s=[0-9.,]*' | head -1 | cut -d= -f2)
   r=$([ -n "$b" ] && "${FR[@]}" seams "$(video_of "$2")" --at "$b" 2>&1 | tail -1)
   expect "$1" "$(jq -r 'if (.boundaries | length) >= 2 and ((([0.6, 0.9 * (.inside_ssim // 1)] | min) as $bar | [.boundaries[] | .ratio <= 3 and .ssim >= $bar] | all)) then "PASS" else "FAIL" end' <<< "$r" 2>/dev/null || echo FAIL)" "boundaries ${b:-unread}: $r"
 }
@@ -118,7 +118,7 @@ if [[ $ONLY == *",footage-30s,"* ]]; then
     prompt="[Shot 1] <Sweep> gives the motion and timing: a synthetic broadcast test pattern, colour bars, a moving gradient sweep and a running timecode on a dark field; no person appears."$'\n'"$T30" \
     references:="[$PATTERN_REF, {\"name\": \"Sweep\", \"kind\": \"video\", \"video\": \"$OUT/footage-30s.mp4\"}]"
   if [ -f footage-30s.number ]; then
-    s=$("$CLI" run show --full "$(cat footage-30s.number)" --once 2>/dev/null)
+    s=$("$CLI" run watch --full "$(cat footage-30s.number)" --once 2>/dev/null)
     b=$(grep -o 'boundaries_s=[0-9.,]*' <<< "$s" | head -1 | cut -d= -f2)
     w=$(grep -o 'clip_windows=[^ ]*' <<< "$s" | head -1 | cut -d= -f2)
     want=$(awk -v b="$b" 'BEGIN { n = split(b, e, ","); printf "Sweep@0"; for (i = 1; i <= n; i++) printf ";Sweep@%d", int(e[i] * 24 + 0.5) - 22 }')
@@ -153,7 +153,7 @@ judge h3-lora-20s-frames h3-lora-20s '.contrast >= 0.5 * .control_contrast and .
 # The seam is judged at the piece boundary (its record's `boundaries_s`), as h3-shot-40s judges its own: a camera move at
 # a beat inside a piece is content (0.2.1 and 0.2.2 make the same jump at the 10 s beat from one seed, runs 24512/24340).
 if [ -f h3-lora-20s.number ] && [ "$(run_get "$OUT" h3-lora-20s .status)" = completed ]; then
-  b=$("$CLI" run show --full "$(cat h3-lora-20s.number)" --once 2>/dev/null | grep -o 'boundaries_s=[0-9.,]*' | head -1 | cut -d= -f2)
+  b=$("$CLI" run watch --full "$(cat h3-lora-20s.number)" --once 2>/dev/null | grep -o 'boundaries_s=[0-9.,]*' | head -1 | cut -d= -f2)
   r=$([ -n "$b" ] && "${FR[@]}" seams "$(video_of h3-lora-20s)" --at "$b" 2>&1 | tail -1)
   expect h3-lora-20s-seams "$(jq -r 'if (.boundaries | length) >= 1 and ((([0.6, 0.9 * (.inside_ssim // 1)] | min) as $bar | [.boundaries[] | .ratio <= 3 and .ssim >= $bar] | all)) then "PASS" else "FAIL" end' <<< "$r" 2>/dev/null || echo FAIL)" "boundaries ${b:-unread}: $r"
 fi
@@ -194,7 +194,7 @@ done
 own_form() {  # own_form <check> <cell> <what its first piece's text opens with> <cut seconds>...
   [ -f "$2.number" ] && [ "$(run_get "$OUT" "$2" .status)" = completed ] || return 0
   local check=$1 name=$2 opens=$3 s first v t at r; shift 3
-  s=$("$CLI" run show --full "$(cat "$name.number")" --once 2>/dev/null | grep -E 'h3 (piece|segment) prompt')
+  s=$("$CLI" run watch --full "$(cat "$name.number")" --once 2>/dev/null | grep -E 'h3 (piece|segment) prompt')
   first=$(head -1 <<< "$s")
   expect "$check-text" "$(grep -qF "head=\"$opens" <<< "$first" && ! grep -qE 'One continuous shot|The same unbroken take|\[Shot 1\] \[Shot 1\]' <<< "$s" && echo PASS || echo FAIL)" "$(cut -c1-260 <<< "$first")"
   v=$(video_of "$name")
@@ -227,7 +227,7 @@ fi
 warned() {
   [ -f "$2.number" ] && [ "$(run_get "$OUT" "$2" .status)" = completed ] || { [ -f "$2.number" ] && expect "$1" FAIL "$2 did not complete"; return 0; }
   local w f v; v=$(video_of "$2")
-  w=$("$CLI" --json --full run show "$(cat "$2.number")" --once 2>/dev/null | jq -r '.result.warnings[]?' | grep -E "$4")
+  w=$("$CLI" --json --full run watch "$(cat "$2.number")" --once 2>/dev/null | jq -r '.result.warnings[]?' | grep -E "$4")
   f=$(ffprobe -v error -select_streams v:0 -count_frames -show_entries stream=nb_read_frames -of csv=p=0 "$v" 2>/dev/null)
   expect "$1" "$([ -n "$w" ] && [ "$f" = "$3" ] && echo PASS || echo FAIL)" "$f frames (want $3); warned: ${w:-nothing}"
   nice -n 19 ffmpeg -v error -y -i "$v" -vf "fps=2,scale=200:-2,tile=10x6" -frames:v 1 "$2-sheet.png" && log "$2: judge by eye: $PWD/$2-sheet.png"
@@ -292,7 +292,7 @@ cell h3-shot-40s "$SHOT" references:="[{\"name\": \"Rider\", \"kind\": \"charact
 # A three-segment take holds with no continuation text (se-096). One take can't prove this (26253: no cut at 13.67 or 27.83 s),
 # so every gate checks it: three pieces, none told to carry on, and a sheet to judge by eye (its seams are judged below).
 if [ -f h3-shot-40s.number ] && [ "$(run_get "$OUT" h3-shot-40s .status)" = completed ]; then
-  s=$("$CLI" run show --full "$(cat h3-shot-40s.number)" --once 2>/dev/null)
+  s=$("$CLI" run watch --full "$(cat h3-shot-40s.number)" --once 2>/dev/null)
   expect h3-take-no-continuation "$(grep -qE 'h3 shot (pieces .*pieces|segments .*segments)=3' <<< "$s" && ! grep -qE 'The same unbroken take|For its first two seconds|One continuous shot with no cuts' <<< "$s" && echo PASS || echo FAIL)" "$(grep -m1 'h3 shot pieces' <<< "$s" | cut -c1-200)"
   nice -n 19 ffmpeg -v error -y -i "$(video_of h3-shot-40s)" -vf "fps=1,scale=224:-2,tile=10x5" -frames:v 1 h3-shot-40s-sheet.png && log "h3-shot-40s: judge by eye for a cut at each join: $PWD/h3-shot-40s-sheet.png"
 fi
@@ -321,7 +321,7 @@ if [ -f latents-shot.number ] && [ "$(run_get "$OUT" latents-shot .status)" = co
       preset=balanced seed:=$((R + 99))
     if [ -f latents-upscale.number ] && [ "$(run_get "$OUT" latents-upscale .status)" = completed ]; then
       enc=$(jq '[.. | objects | select(has("stages")) | .stages | keys[]] | map(select(. == "encode_video")) | length' "$OUT/latents-upscale.json" 2>/dev/null)
-      log=$("$CLI" run show --full "$(cat latents-upscale.number)" --once 2>/dev/null | grep -m1 'h3 regenerate')
+      log=$("$CLI" run watch --full "$(cat latents-upscale.number)" --once 2>/dev/null | grep -m1 'h3 regenerate')
       expect latents-upscale-path "$([ "${enc:-1}" = 0 ] && [[ $log == *strength=0.7* ]] && echo PASS || echo FAIL)" "encode_video stages ${enc:-?}; ${log:-no h3 regenerate line}"
       judge latents-upscale-frames latents-upscale ".structure_psnr >= 18 and .structure_ssim >= 0.5 and .flicker <= 2 and (.lag_ms | $ABS) <= 10 and .corr >= 0.95" regen "$lv"
     fi

@@ -4244,7 +4244,7 @@ impl Walk {
             false => tally.versions = tally.versions.saturating_sub(1),
         }
         let said = format!("{name}: run {} made its file, and it can't be brought here: {}", run.number, output.export_error.clone().unwrap_or_default());
-        Err(Error::new(Kind::Unavailable, "version_unsaved", said).next(format!("cozy run show {}", run.number)))
+        Err(Error::new(Kind::Unavailable, "version_unsaved", said).next(format!("cozy run watch {}", run.number)))
     }
 
     /// The run sent under `key`, once it ended on its machine, into the project: its outputs listed as its asset's newest version in
@@ -4284,7 +4284,7 @@ impl Walk {
                 None => format!("{name}: {status}"),
             };
             let code = if run.status == RunStatus::Canceled { CANCELED } else { "version_failed" };
-            let next = run.reason.iter().flat_map(|reason| reason.next.iter().cloned()).chain([format!("cozy run show {}", run.number)]);
+            let next = run.reason.iter().flat_map(|reason| reason.next.iter().cloned()).chain([format!("cozy run watch {}", run.number)]);
             return Err(next.fold(Error::new(Kind::Unavailable, code, said), Error::next));
         }
         let mut version = pending.version.clone();
@@ -4331,7 +4331,7 @@ impl Walk {
         }
         if saved.is_empty() && version.files.is_empty() {
             let said = format!("{name}: run {} saved no file", run.number);
-            return Err(Error::new(Kind::Unavailable, "version_unsaved", said).next(format!("cozy run show {}", run.number)));
+            return Err(Error::new(Kind::Unavailable, "version_unsaved", said).next(format!("cozy run watch {}", run.number)));
         }
         saved.append(&mut stayed);
         version.files.extend(saved.clone());

@@ -7,7 +7,7 @@
 . "$(dirname "$0")/lib.sh"
 FIX=$(cd "$(dirname "$0")/fixtures" && pwd)
 MIB=$(param hold_mib 2560)
-status() { cozy run show "$(runno "$1")" --once --json --full > "$OUT/$1.json" 2>&1; jq -r '.status // empty' "$OUT/$1.json"; }
+status() { cozy run watch "$(runno "$1")" --once --json --full > "$OUT/$1.json" 2>&1; jq -r '.status // empty' "$OUT/$1.json"; }
 holder_pid() { jq -r '.result.pid // (.result | fromjson? | .pid) // empty' "$OUT/$1.json"; }
 [ -f "$FIX/gpu-hold/gpu_hold/__init__.py" ] || fail "no fixture checkout"
 quote 2400

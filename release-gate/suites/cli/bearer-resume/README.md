@@ -31,7 +31,7 @@ mock Hub, or second daemon is used.
    download path and isolates the controller repair from Runtime's separate Load-reader fix.
    Record its run ID and nonzero transfer progress before restarting anything.
 3. Perform the coordinator's normal CLI update/restart, while leaving the remote machine and
-   accepted run alive. Reattach with `cozy --json run show <run>`. Capture Calcifer's restart
+   accepted run alive. Reattach with `cozy --json run watch <run>`. Capture Calcifer's restart
    and resumed-run log, then cross at least two ordinary credential refresh points.
 4. Require continued byte progress and successful completion with the same accepted run ID
    and one attempt. Capture machine logs proving no credential-expiry failure; repeat the

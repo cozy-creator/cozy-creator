@@ -1,7 +1,7 @@
 # probes (cl-774 Part E, cl-775, cl-633): two measurements on one cpu pod with SSH, on the session's cozy sent with `--tensord`. It builds nothing.
 #   memory   from a real executor (a run's own process) and from the machine's shell: can it read TensorD's memory? fixtures/probes/fixture.py says
 #            exactly what it touches: at most four bytes of a mapping's start, and whether they're an ELF header.
-#   webrtc   a `cozy run play` link on its published HTTPS origin, on a real output of a real run, in Chromium, Firefox and WebKit on this runner
+#   webrtc   a playback API link on its published HTTPS origin, on a real output of a real run, in Chromium, Firefox and WebKit on this runner
 #            (fixtures/probes/webrtc.js). Playwright's WebKit on Linux isn't Safari: nothing here speaks for Safari or iOS.
 # Before any rental, at $0, whichever `rent` says, all of it on this runner's own machine, so a pod's first answer isn't when it's learned that it doesn't work.
 # params:
@@ -43,7 +43,7 @@ memory() {
   step "memread-$l" run "$FIX/fixture.py/memread" "note=$l $RANDOM" --on "$x" || { check "memread on $x: $(tail -3 "$OUT/memread-$l.txt")"; return 1; }
   n=$(runno "memread-$l")
   for _ in $(seq 60); do
-    path=$(cozy --json --full run show "$n" --once | jq -r '.output[] | select(.name == "report") | .path // empty')
+    path=$(cozy --json --full run watch "$n" --once | jq -r '.output[] | select(.name == "report") | .path // empty')
     [ -n "$path" ] && break
     sleep 1
   done
@@ -54,11 +54,13 @@ memory() {
 
 # speed <machine> <label>: a real output, the same bytes over HTTPS for what the path itself can carry, then the browsers.
 speed() {
-  local x=$1 l=$2 n link api cap id
+  local x=$1 l=$2 n link api cap id holder=$HOME/.cozy/calcifer/calcifer.lock.holder
   step "blob-$l" run "$FIX/fixture.py/blob" "megabytes:=$MB" --on "$x" || { check "blob on $x: $(tail -3 "$OUT/blob-$l.txt")"; return 1; }
   n=$(runno "blob-$l")
-  link=$(cozy --json run play "$n" --output blob --expires 2h | jq -r '.link // empty')
-  [ -n "$link" ] || { check "run play $n on $x named no link"; return 1; }
+  id=$(cozy --json run watch "$n" --once | jq -r .id)
+  link=$(curl --fail-with-body -sS -G -H "Authorization: Bearer $(jq -r .token "$holder")" \
+    --data-urlencode output=blob --data-urlencode expires=2h "http://$(jq -r .address "$holder")/v1/runs/$id/play" | jq -r '.url // empty')
+  [ -n "$link" ] || { check "playback API for $n on $x named no link"; return 1; }
   [[ $link == https://* ]] || { check "the link's origin isn't HTTPS: ${link%%#*}"; return 1; }
   say "player origin ${link%%#*}; the machine says $(cozy machine show "$x" --json | jq -c '.status.webrtc | {addresses, port, unavailable_reason}')"
   api=$(cozy machine show "$x" --json | jq -r .address)

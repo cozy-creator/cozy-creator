@@ -24,7 +24,7 @@ canceled() {
   [ -z "$ONLY" ] || [[ $ONLY == *",$name,"* ]] || return 0
   ( for _ in $(seq 1 3600); do
       n=$(cat "$name.number" 2>/dev/null)
-      [ -n "$n" ] && [ "$n" != none ] && "$CLI" --json --full run show "$n" --once 2>/dev/null |
+      [ -n "$n" ] && [ "$n" != none ] && "$CLI" --json --full run watch "$n" --once 2>/dev/null |
         jq -e '[.. | objects | .stage? | strings] | any(test("generat|denois"))' >/dev/null &&
         { "$CLI" run cancel "$n" -y > "$name.cancel" 2>&1; break; }
       sleep 1

@@ -361,7 +361,7 @@ def main():
                     cozy,
                     directory,
                     "run",
-                    ["run", "show", recorded[-1]["id"], "--once"],
+                    ["run", "watch", recorded[-1]["id"], "--once"],
                 )
             if status or run["status"] != "completed":
                 report["runs"].append(

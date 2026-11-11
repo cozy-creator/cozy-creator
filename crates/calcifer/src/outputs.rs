@@ -630,13 +630,13 @@ pub(crate) async fn serve(
         let item = api.calcifer.store().output(row.id.as_str(), &name, index)?;
         let item = item.ok_or_else(|| {
             let message = format!("run {number} has no output {name} at index {index}");
-            Refusal(api::refuse(Kind::NotFound, "output_not_found", message).0.next(format!("cozy run show {number}")))
+            Refusal(api::refuse(Kind::NotFound, "output_not_found", message).0.next(format!("cozy run watch {number}")))
         })?;
         let (file, landed_folder) = match (&item.checkpoint, &item.path, item.exported_rev) {
             (None, Some(path), Some(_)) if item.media_type == tree::MEDIA => (None, Some(path.clone())),
             (None, Some(path), Some(_)) => (Some(std::fs::File::open(path).map_err(|e| {
                 let message = format!("its file {} is gone: {e}", path.display());
-                Refusal(api::refuse(Kind::NotFound, "output_file_missing", message).0.next(format!("cozy run show {number}")))
+                Refusal(api::refuse(Kind::NotFound, "output_file_missing", message).0.next(format!("cozy run watch {number}")))
             })?), None),
             _ => (None, None),
         };
@@ -661,11 +661,11 @@ pub(crate) async fn serve(
         if record.output.iter().any(|kept| kept.stays && kept.name == name && kept.index == index) {
             let on = row.machine.as_deref().unwrap_or("its machine");
             let message = format!("output {name} of run {number} stays on {on}: it isn't brought to this computer");
-            return Err(Refusal(api::refuse(Kind::Conflict, "output_on_its_machine", message).0.next(format!("cozy run show {number}"))));
+            return Err(Refusal(api::refuse(Kind::Conflict, "output_on_its_machine", message).0.next(format!("cozy run watch {number}"))));
         }
         if let Some(reason) = item.export_error {
             let message = format!("output {name} of run {number} will not land: {reason}");
-            return Err(Refusal(api::refuse(Kind::Unavailable, "output_not_exported", message).0.next(format!("cozy run show {number}"))));
+            return Err(Refusal(api::refuse(Kind::Unavailable, "output_not_exported", message).0.next(format!("cozy run watch {number}"))));
         }
         let state = match row.state {
             RunState::Settled => "has ended",
@@ -674,7 +674,7 @@ pub(crate) async fn serve(
         };
         let message = format!("output {name} of run {number} has not landed yet; the run {state}");
         let refusal = api::refuse(Kind::Conflict, "output_not_ready", message);
-        return Err(Refusal(refusal.0.next(format!("cozy run show {number}"))));
+        return Err(Refusal(refusal.0.next(format!("cozy run watch {number}"))));
     };
     let len = file.metadata().map(|m| m.len()).unwrap_or(0);
     let mut response = crate::files::send(file, len, &item.media_type, &format!("\"r{rev}\""), &headers)
@@ -691,7 +691,7 @@ pub(crate) async fn serve(
 async fn folder(dir: &Path, member: Option<&str>, number: u64, name: &str, headers: &HeaderMap) -> Result<Response, Refusal> {
     let gone = |e: std::io::Error| {
         let message = format!("its folder {} is gone: {e}", dir.display());
-        Refusal(api::refuse(Kind::NotFound, "output_file_missing", message).0.next(format!("cozy run show {number}")))
+        Refusal(api::refuse(Kind::NotFound, "output_file_missing", message).0.next(format!("cozy run watch {number}")))
     };
     let at = dir.to_owned();
     let staged = tokio::task::spawn_blocking(move || ::api::stage::stage(&at, None))
@@ -711,7 +711,7 @@ async fn folder(dir: &Path, member: Option<&str>, number: u64, name: &str, heade
             let held = staged.files.iter().find(|file| file.path == path).filter(|_| !parts.iter().any(|part| matches!(*part, "" | "." | "..")));
             let Some(held) = held else {
                 let message = format!("output {name} of run {number} holds no {member}");
-                return Err(Refusal(api::refuse(Kind::NotFound, "output_member_not_found", message).0.next(format!("cozy run show {number}"))));
+                return Err(Refusal(api::refuse(Kind::NotFound, "output_member_not_found", message).0.next(format!("cozy run watch {number}"))));
             };
             let media = crate::runs::bind::sniff(&held.path).map(|sniffed| sniffed.media_type).unwrap_or_else(|_| "application/octet-stream".into());
             (std::fs::File::open(&held.path).map_err(gone)?, media, format!("\"{}\"", held.digest))

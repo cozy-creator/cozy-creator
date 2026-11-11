@@ -23,7 +23,7 @@ pub(crate) const FIELDS: &[&str] = &[
     "others.machine_state", "others.waiting", "others.reason.code", "others.reason.message", "others.accepted_at_ms",
     "others.started_at_ms", "others.settled_at_ms",
 ];
-/// A target or progress is one table cell; `cozy run show` has it whole.
+/// A target or progress is one table cell; `cozy run watch` has it whole.
 const CELL: usize = 72;
 
 /// `GET /v1/runs`' filters.
@@ -79,7 +79,7 @@ pub(crate) async fn exec(ctx: &Context, mut query: Query) -> Result<ExitCode, Er
         println!("{own} newest of {}: cozy run ls --limit 0 lists them all", own as u64 + list.older);
     }
     if let Some(machine) = list.machine.as_ref().filter(|_| !list.others.is_empty()) {
-        println!("{machine}/N: sent by another client of this account; `cozy run show {machine}/N` follows one");
+        println!("{machine}/N: sent by another client of this account; `cozy run watch {machine}/N` follows one");
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -174,12 +174,12 @@ fn clip_target(target: String) -> String {
 /// The runs as rows of the table and the live view: # · TARGET · PROJECT · MACHINE · STATUS · PROGRESS ·
 /// TIME. A queued run's STATUS is its place in its machine's line (`queue: 1` is next: only the
 /// running work is ahead of it). PROGRESS is the stage while it runs, and a failed or canceled
-/// run's reason in one line; `cozy run show` has it whole. TIME is its own, never its queue's.
+/// run's reason in one line; `cozy run watch` has it whole. TIME is its own, never its queue's.
 pub(crate) fn rows(runs: &[Run]) -> Vec<Vec<String>> {
     runs.iter().map(row).collect()
 }
 
-/// Whether the list people read shows it: what a walk sends ahead of itself is `cozy project`'s own (`run show` and `--json` have it).
+/// Whether the list people read shows it: what a walk sends ahead of itself is `cozy project`'s own (`run watch` and `--json` have it).
 pub(crate) fn shown(run: &Run) -> bool {
     !run.target.starts_with(api::calcifer::project::AHEAD)
 }

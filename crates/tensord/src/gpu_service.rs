@@ -150,10 +150,10 @@ impl GpuConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct PlanSlot {
     pub binding: Binding,
-    /// The Hub lane its checkpoint was resolved in (`run show`); empty for one held here.
+    /// The Hub lane its checkpoint was resolved in (`run watch`); empty for one held here.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub lane: String,
-    /// Its header's precision lane (`int8`, `bf16`, …; `run show` beside its path).
+    /// Its header's precision lane (`int8`, `bf16`, …; `run watch` beside its path).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub precision: String,
     /// Native selected encoded source bytes; not a GPU-fit or full-memory charge.
@@ -166,7 +166,7 @@ pub(crate) struct PlanSlot {
     /// the GPU that keeps each at Load (`Binding::homes`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub placeable: Vec<String>,
-    /// Its LoRAs, when its checkpoint is their adapter view (`run show`).
+    /// Its LoRAs, when its checkpoint is their adapter view (`run watch`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adapted: Option<Adapted>,
     /// What composes its adapter view again, when its checkpoint is one (`adapter::ensure`).
@@ -279,7 +279,7 @@ impl Plan {
     pub(crate) fn selections(&self) -> Vec<SelectedManifest> {
         merged(&self.slots)
     }
-    /// Each model it runs as the machine resolved it, constructed or raw (`run show`).
+    /// Each model it runs as the machine resolved it, constructed or raw (`run watch`).
     pub(crate) fn models(&self) -> Vec<serde_json::Value> {
         let row = |slot: &str, model: (&str, &str), lane: (&str, &str), manifest: &str| {
             let mut row = serde_json::json!({"slot": slot, "repository": model.0, "release": model.1, "lane": lane.0, "manifest": manifest});
@@ -4237,7 +4237,7 @@ fn refused(error: &io::Error) -> Option<&Refused> {
     error.get_ref()?.downcast_ref::<Refused>()
 }
 
-/// What the call's executor measured, kept as the run's (`run show`): its stage and step
+/// What the call's executor measured, kept as the run's (`run watch`): its stage and step
 /// tracks, its ranks' execution records, its kernel observations (the attention and GEMM
 /// kernels that served, Sol's dense and sparse calls), its residency (graph counters) and the
 /// models it ran, as resolved.

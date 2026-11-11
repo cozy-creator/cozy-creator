@@ -287,7 +287,7 @@ export function sourceOf(view: ElementView, shown: Shown | null): Source | null 
   return shown.machine && shown.run ? { run: shown.run, output: shown.output } : null
 }
 
-/** Straight from the machine: `play` says where and signs a cap for this output alone, and the same player as `cozy run play` follows it. */
+/** Straight from the machine: `play` says where and signs a cap for this output alone, and the shared browser player follows it. */
 async function fromMachine(client: Client, source: { run: number; output: string }, el: HTMLMediaElement, failed: (why: string) => void): Promise<Playback> {
   const [name, index] = source.output.split("/")
   const answer = await client.play(String(source.run), name, Number(index ?? 0))

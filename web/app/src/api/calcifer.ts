@@ -1856,7 +1856,7 @@ url: string,
 expires_s: number, };
 
 /**
- * A file a run showed before it ended: its package's word for it, in a sentence (`segment 1/2`), and its path in the project.
+ * A file a run watched before it ended: its package's word for it, in a sentence (`segment 1/2`), and its path in the project.
  */
 export type Preview = { label: string, path: string, };
 

@@ -756,7 +756,7 @@ pub(crate) fn installed(run: Run) -> Result<Installed, Error> {
             |r| (r.code, r.message, r.next),
         );
         let failed = Error::new(Kind::Unavailable, "local_install_failed", format!("the machine did not install this code: {message}")).cause(code);
-        return Err(next.into_iter().chain([format!("cozy run show {}", run.number)]).fold(failed, Error::next));
+        return Err(next.into_iter().chain([format!("cozy run watch {}", run.number)]).fold(failed, Error::next));
     }
     let mut result = run.result.unwrap_or_default();
     if !interface(&result["interface"]) {

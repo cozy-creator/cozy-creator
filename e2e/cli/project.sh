@@ -128,12 +128,12 @@ ask() {
   while :; do
     answer=$(api -X POST -H "Idempotency-Key: $key" -d "$1" "http://$ADDR/v1/runs")
     [ "$(jq -r '.preparing // false' <<< "$answer")" = true ] || break
-    cozy --json run show "$(jq -r .run.number <<< "$answer")" > /dev/null 2>&1 || true
+    cozy --json run watch "$(jq -r .run.number <<< "$answer")" > /dev/null 2>&1 || true
   done
   printf '%s\n' "$answer"
 }
 # ended <number>: the run at its end with its outputs landed, whole.
-ended() { cozy --json run show "$1" > /dev/null 2>&1 || true; cozy --json --full run show "$1" 2> /dev/null; }
+ended() { cozy --json run watch "$1" > /dev/null 2>&1 || true; cozy --json --full run watch "$1" 2> /dev/null; }
 # status <project> [file]: its status as JSON.
 # status <project>: what status says. Why it can't be read goes to the log, and an answer the CLI can't read is a failure of its own.
 status() { project_api "$1" '' 2> "$OUT/status.err"; }
@@ -150,7 +150,7 @@ counts() { status "$1" | jq -c '[.assets[] | {(.name): (.versions // 0)}] | add'
 # runs <project>: every version's last run its lock records.
 runs() { status "$1" | jq '[.assets[].prefixes[]?.run // empty] | length'; }
 # asked <project> <asset> [version index]: what that version's last run was asked.
-asked() { cozy --json --full run show "$(held "$1" "$2" | jq -r --argjson v "${3:--1}" '.versions[$v].runs[-1]')" --once | jq -c .request; }
+asked() { cozy --json --full run watch "$(held "$1" "$2" | jq -r --argjson v "${3:--1}" '.versions[$v].runs[-1]')" --once | jq -c .request; }
 # prompt <project> <asset>: the instructions its newest version's run was told.
 prompt() { asked "$1" "$2" | jq -r .input.instructions.text; }
 # read_of <project> <asset>: the names what it reads go by, as status says.
@@ -874,7 +874,7 @@ printf '{"format": 2, "assets": {}, "files": {}}\n' > "$T/project.lock"
 (cd "$T" && in_project "$T" --json run "$here/project/draw.py" instructions=kept) > "$OUT/old-landing.ndjson" 2> "$OUT/old-landing.err" || check "old landing: run: $(tail -c 300 "$OUT/old-landing.err")"
 n=$(run_number "$OUT/old-landing.ndjson")
 [ "$(ls "$T/files" 2> /dev/null | wc -l)" = 1 ] || check "old landing: nothing in files/: $(ls -a "$T" "$T/.runs" 2>&1 | tr '\n' ' ')"
-J '[.warnings[]?.message] | any(contains("project.yaml.v2"))' <<< "$(cozy --json run show "$n" --once)" || check "old landing: no warning says it upgraded: $(cozy --json run show "$n" --once | jq -c .warnings)"
+J '[.warnings[]?.message] | any(contains("project.yaml.v2"))' <<< "$(cozy --json run watch "$n" --once)" || check "old landing: no warning says it upgraded: $(cozy --json run watch "$n" --once | jq -c .warnings)"
 { grep -q '^version: 4$' <(in_project "$T" export) && [ -f "$T/project.db" ] && [ ! -e "$T/project.yaml" ]; } || check "old landing: it didn't upgrade into project.db: $(ls -A "$T" | tr '\n' ' ')"
 J '.run_files == 1' <<< "$(status "$T")" || check "old landing: its output isn't listed: $(status "$T" | jq -c .run_files)"
 
@@ -894,7 +894,7 @@ code=0; in_project "$C" status > "$OUT/old-landing-stuck.txt" 2>&1 || code=$?
 (cd "$C" && in_project "$C" --json run "$here/project/draw.py" instructions=stuck) > "$OUT/old-landing-stuck.ndjson" 2>&1 || check "old landing: a run in it: $(tail -c 300 "$OUT/old-landing-stuck.ndjson")"
 # Kept by its bytes: the one file in files/ is the run's output, by its sha256.
 local kept digest
-cozy --json run show "$(run_number "$OUT/old-landing-stuck.ndjson")" --once > "$OUT/old-landing-stuck-run.json" 2>&1 || true
+cozy --json run watch "$(run_number "$OUT/old-landing-stuck.ndjson")" --once > "$OUT/old-landing-stuck-run.json" 2>&1 || true
 digest=$(jq -r '.output[0].sha256 // empty' "$OUT/old-landing-stuck-run.json" 2> /dev/null || true)
 kept=$(ls "$C/files" 2> /dev/null || true)
 { [ "$(ls "$C/files" 2> /dev/null | wc -l)" = 1 ] && [ "sha256:$(sha "$C/files/$kept")" = "$digest" ]; } || check "old landing: a project that can't convert lost its output: $(ls -a "$C" 2>&1 | tr '\n' ' ')"
@@ -1341,7 +1341,7 @@ if touch "$U/files/.writable" 2> /dev/null; then
 fi
 (cd "$U" && in_project "$U" --json run "$here/project/draw.py" instructions=unheld) > "$OUT/unheld.ndjson" 2>&1 || check "unheld: a run: $(tail -c 300 "$OUT/unheld.ndjson")"
 n=$(run_number "$OUT/unheld.ndjson")
-cozy --json run show "$n" --once > "$OUT/unheld-run.json" 2>&1 || true
+cozy --json run watch "$n" --once > "$OUT/unheld-run.json" 2>&1 || true
 digest=$(jq -r '.output[0].sha256 // empty' "$OUT/unheld-run.json" 2> /dev/null || true)
 left=$(find "$U/.runs" -type f 2> /dev/null || true)
 { [ -n "$digest" ] && [ "$(printf '%s\n' "$left" | grep -c .)" = 1 ] && [ "sha256:$(sha "$left")" = "$digest" ] && [ -z "$(ls -A "$U/files")" ]; } \
@@ -1357,7 +1357,7 @@ said=$(grep -F "files/ doesn't hold what runs left here, so it stays" "$OUT/unhe
 { [ -n "$said" ] && grep -qF "${digest:0:19}" <<< "$said"; } || check "unheld: reclaim --yes doesn't say what stays: $(tail -c 300 "$OUT/unheld-reclaim.txt")"
 { [ -f "$left" ] && [ "sha256:$(sha "$left")" = "$digest" ]; } || check "unheld: reclaim --yes deleted an output files/ doesn't hold: $(ls -A "$U" "$U/.runs" 2>&1 | tr '\n' ' ')"
 rm -rf "$OUT/unheld-out"
-cozy run show "$n" --once -o "$OUT/unheld-out" > "$OUT/unheld-show.txt" 2>&1 || true
+cozy run watch "$n" --once -o "$OUT/unheld-out" > "$OUT/unheld-show.txt" 2>&1 || true
 { [ "$(find "$OUT/unheld-out" -type f 2> /dev/null | wc -l)" = 1 ] && [ "sha256:$(sha "$(find "$OUT/unheld-out" -type f)")" = "$digest" ]; } \
   || check "unheld: after reclaim --yes its run can't give its output: $(tail -c 300 "$OUT/unheld-show.txt")"
 echo "unheld: run $n output ${digest:-none}; reclaim --yes left ${left#"$U"/} sha256:$(sha "$left" 2> /dev/null || true); said: ${said:-nothing}"
@@ -1423,7 +1423,7 @@ local held=${TENSORFS_HOME:-$HOME/.cache/tensorfs}/blobs/${hex:0:2}/${hex:2:2}/$
 # What held it is gone, as once the store let it go.
 rm -f "$held"
 [ "$(api -o /dev/null -w '%{http_code}' -I "http://$ADDR/v1/files/sha256:$hex")" = 404 ] || check "path-free: the held file is still held"
-input=$(cozy --json --full run show "$n" | jq -c .request.input)
+input=$(cozy --json --full run watch "$n" | jq -c .request.input)
 J --arg s "sha256:$hex" '.image == $s' <<< "$input" || check "path-free: request.input: $input"
 asked=$(ask "$(jq -n --arg t "$copied" --arg p "$id" --argjson i "$input" '{target: "", code: {tree: $t, at: "copied.py"}, project: $p, on: "local", input: $i}')")
 n=$(jq -r '.run.number // empty' <<< "$asked")
@@ -1993,8 +1993,8 @@ local tail=$!
 in_project "$W" render all --queue --on local > "$OUT/walking-queue.txt" 2>&1 || check "walking: render: $(tail -c 300 "$OUT/walking-queue.txt")"
 J '[.board.jobs[].asset] as $a | (["running_gone", "reads_gone", "slow", "beside", "one", "two", "last", "gone_soon"] - $a) == []' <<< "$(status "$W")" || check "walking: not every job is on the board at once: $(status "$W" | jq -c '[.board.jobs[] | .asset]')"
 J '.board.jobs[] | select(.asset == "last") | .needs | contains(["one", "two"])' <<< "$(status "$W")" || check "walking: last doesn't say what it waits for: $(status "$W" | jq -c '.board.jobs[] | select(.asset == "last")')"
-for _ in $(seq 240); do run=$(status "$W" | jq -r '.board.jobs[] | select(.asset == "running_gone") | .run // empty'); [ -n "$run" ] && [ "$(cozy --json run show "$run" --once | jq -r .status)" = in_progress ] && break; sleep 0.25; done
-[ "$(cozy --json run show "$run" --once | jq -r .status)" = in_progress ] || check "walking: running_gone isn't running: $(status "$W" | jq -c '.board.jobs[] | select(.asset == "running_gone")')"
+for _ in $(seq 240); do run=$(status "$W" | jq -r '.board.jobs[] | select(.asset == "running_gone") | .run // empty'); [ -n "$run" ] && [ "$(cozy --json run watch "$run" --once | jq -r .status)" = in_progress ] && break; sleep 0.25; done
+[ "$(cozy --json run watch "$run" --once | jq -r .status)" = in_progress ] || check "walking: running_gone isn't running: $(status "$W" | jq -c '.board.jobs[] | select(.asset == "running_gone")')"
 # On one machine they queue there: each went as soon as it could, not after the long job.
 for _ in $(seq 120); do J '[.board.jobs[] | select(.asset == "slow" or .asset == "beside") | .run] | all' <<< "$(status "$W")" && break; sleep 0.25; done
 J '[.board.jobs[] | select(.asset == "slow" or .asset == "beside") | .run] | all' <<< "$(status "$W")" || check "walking: what reads nothing waited for the long job: $(status "$W" | jq -c '[.board.jobs[] | {asset, run}]')"
@@ -2003,8 +2003,8 @@ dropped "$W" gone_soon
 for _ in $(seq 20); do J '.board.jobs[] | select(.asset == "gone_soon") | .state == "canceled"' <<< "$(status "$W")" && break; sleep 0.25; done
 api -o /dev/null -X DELETE "http://$ADDR/v1/projects/$id/assets/running_gone"
 back=$(api "http://$ADDR/v1/projects/$id/history" | jq -r '[.entries[] | select(.undone == null and (.names | index("running_gone")))][0].id')
-for _ in $(seq 60); do [ "$(cozy --json run show "$run" --once | jq -r .status)" = canceled ] && break; sleep 0.5; done
-[ "$(cozy --json run show "$run" --once | jq -r .status)" = canceled ] || check "walking: a deleted asset's run goes on billing: $(cozy --json run show "$run" --once | jq -c '{status, progress}')"
+for _ in $(seq 60); do [ "$(cozy --json run watch "$run" --once | jq -r .status)" = canceled ] && break; sleep 0.5; done
+[ "$(cozy --json run watch "$run" --once | jq -r .status)" = canceled ] || check "walking: a deleted asset's run goes on billing: $(cozy --json run watch "$run" --once | jq -c '{status, progress}')"
 for _ in $(seq 240); do J '.busy | not' <<< "$(status "$W")" && break; sleep 0.5; done
 kill "$tail" 2> /dev/null
 { [ "$(made "$W" slow)" = 1 ] && [ "$(made "$W" beside)" = 1 ] && [ "$(made "$W" one)" = 1 ] && [ "$(made "$W" two)" = 1 ] && [ "$(made "$W" last)" = 1 ]; } || check "walking: made $(status "$W" | jq -c '[.assets[] | {(.name): .versions}] | add')"
@@ -2039,8 +2039,8 @@ assets:
     instructions: From <first> and <second>.
 YAML
 in_project "$R" render all --queue --on local > "$OUT/walk-restarted.txt" 2>&1 || check "restarted: render: $(tail -c 300 "$OUT/walk-restarted.txt")"
-for _ in $(seq 240); do run=$(status "$R" | jq -r '.board.jobs[] | select(.asset == "first") | .run // empty'); [ -n "$run" ] && [ "$(cozy --json run show "$run" --once | jq -r .status)" = in_progress ] && break; sleep 0.25; done
-[ "$(cozy --json run show "$run" --once | jq -r .status)" = in_progress ] || check "restarted: first isn't running: $(status "$R" | jq -c .board.jobs)"
+for _ in $(seq 240); do run=$(status "$R" | jq -r '.board.jobs[] | select(.asset == "first") | .run // empty'); [ -n "$run" ] && [ "$(cozy --json run watch "$run" --once | jq -r .status)" = in_progress ] && break; sleep 0.25; done
+[ "$(cozy --json run watch "$run" --once | jq -r .status)" = in_progress ] || check "restarted: first isn't running: $(status "$R" | jq -c .board.jobs)"
 # A copy of the folder is a project of its own, with its own id, and goes on with none of what its render owes.
 local copy=$OUT/walk-restarted-copy
 cp -a "$R" "$copy"
@@ -2079,7 +2079,7 @@ assets:
 YAML
 render "$S" first || check "spend: first: $(tail -c 300 "$OUT/render.txt")"
 in_project "$S" render slow reader --queue --on local > "$OUT/spend-queue.txt" 2>&1 || check "spend: render: $(tail -c 300 "$OUT/spend-queue.txt")"
-for _ in $(seq 240); do run=$(status "$S" | jq -r '.board.jobs[] | select(.asset == "slow") | .run // empty'); [ -n "$run" ] && [ "$(cozy --json run show "$run" --once | jq -r .status)" = in_progress ] && break; sleep 0.25; done
+for _ in $(seq 240); do run=$(status "$S" | jq -r '.board.jobs[] | select(.asset == "slow") | .run // empty'); [ -n "$run" ] && [ "$(cozy --json run watch "$run" --once | jq -r .status)" = in_progress ] && break; sleep 0.25; done
 [ -n "$run" ] || check "spend: slow never ran"
 # A copy is a project of its own, and goes on with none of what this one owes.
 cp -a "$S" "$copy"
@@ -2755,11 +2755,11 @@ assets:
   long: {tool: $here/project/probe/composed, page: <page>, hold: 20}
 YAML
 in_project "$T" render long --queue --on local > "$OUT/cancel.txt" 2>&1 || check "cancel: render: $(tail -c 300 "$OUT/cancel.txt")"
-for _ in $(seq 240); do run=$(status "$T" | jq -r '.board.jobs[] | select(.asset == "long") | .run // empty'); [ -n "$run" ] && [ "$(cozy --json run show "$run" --once | jq -r .status)" = in_progress ] && break; sleep 0.5; done
+for _ in $(seq 240); do run=$(status "$T" | jq -r '.board.jobs[] | select(.asset == "long") | .run // empty'); [ -n "$run" ] && [ "$(cozy --json run watch "$run" --once | jq -r .status)" = in_progress ] && break; sleep 0.5; done
 # Into shade's 20 s.
 sleep 6
 in_project "$T" cancel long > /dev/null 2>&1 || check "cancel: cancel long"
-for _ in $(seq 120); do [ "$(cozy --json run show "$run" --once | jq -r .status)" = canceled ] && break; sleep 0.5; done
+for _ in $(seq 120); do [ "$(cozy --json run watch "$run" --once | jq -r .status)" = canceled ] && break; sleep 0.5; done
 ended "$run" > "$OUT/cancel.json" || true
 J '.status == "canceled" and ((.calls // []) | all(.function == "composed" or .status == "canceled"))' "$OUT/cancel.json" || check "cancel: the render and its calls: $(jq -c '{status, calls}' "$OUT/cancel.json")"
 [ "$(made "$T" long)" = 0 ] || check "cancel: a canceled render made a version"
@@ -2790,7 +2790,7 @@ rendered=$(asked "$T" same | jq -S -c .input)
 called=$(in_project "$T" --json --full status same | jq -S -c '.call // .asset.call // empty')
 (cd "$T" && in_project "$T" --json run "$here/project/tool.py/told" 'instructions=<Amy> by <coast>, in <mood>.' 'shade:=0.5' 'beats:=[{"description": "<coast> at dusk.", "duration": 4}]' 'seed:=9' --on local) > "$OUT/same.ndjson" 2> "$OUT/same.err" \
   || check "same: cozy run: $(tail -c 400 "$OUT/same.err")"
-ran=$(cozy --json --full run show "$(tail -1 "$OUT/same.ndjson" | jq -r .run.number)" --once | jq -S -c .request.input)
+ran=$(cozy --json --full run watch "$(tail -1 "$OUT/same.ndjson" | jq -r .run.number)" --once | jq -S -c .request.input)
 [ "$rendered" = "$ran" ] || check "same: Render sent $rendered and cozy run $ran"
 J '.instructions.text == "<amy> by <coast>, in Soft light.." and (.instructions.references | map(.key) == ["amy", "coast"]) and (.beats[0].description.references | map(.key) == ["coast"])' <<< "$rendered" || check "same: what it sent: $rendered"
 [ -z "$called" ] || [ "$(jq -S -c '.input // .' <<< "$called")" = "$rendered" ] || check "same: status's call is $called, and Render sent $rendered"
@@ -2809,7 +2809,7 @@ ended "$run" > "$OUT/latents.json"
 J '.output[] | select(.name == "latents") | .stays and .url == null and .sha256 != null' "$OUT/latents.json" || check "latents: a Latents field: $(jq -c '[.output[] | {name, stays, url}]' "$OUT/latents.json")"
 J '[.output[] | select(.name == "video" or .name == "given")] | length == 2 and all(.url != null and (.stays | not))' "$OUT/latents.json" || check "latents: what else it made didn't come down: $(jq -c '[.output[] | {name, stays, url}]' "$OUT/latents.json")"
 # Downloaded by its digest, each is what the run says it made; what stays isn't among them.
-cozy run show "$run" --once -o "$OUT/latents-out" > "$OUT/latents-out.txt" 2>&1 || check "latents: run show -o: $(tail -c 300 "$OUT/latents-out.txt")"
+cozy run watch "$run" --once -o "$OUT/latents-out" > "$OUT/latents-out.txt" 2>&1 || check "latents: run watch -o: $(tail -c 300 "$OUT/latents-out.txt")"
 for name in video given; do
   held=$(jq -r --arg n "$name" '.output[] | select(.name == $n) | .sha256' "$OUT/latents.json")
   [ "sha256:$(sha "$(ls "$OUT/latents-out/$run-$name"* 2> /dev/null | head -1)")" = "$held" ] || check "latents: $name downloaded isn't $held: $(ls "$OUT/latents-out")"
@@ -2874,7 +2874,7 @@ for _ in $(seq 240); do [ "$(made "$T" clash)" = 3 ] && J '.busy | not' <<< "$(s
 J '.versions[-1].pickup == {"take": "<clash.2>", "out_frame": 24}' <<< "$(held "$T" clash)" && J '.pickup.out_frame == 24' <<< "$(given clash)" || check "pickup: POST runs: $(cat "$OUT/pickup-route.json") $(held "$T" clash | jq -c '[.versions[] | {number, pickup}]')"
 # `cozy run`, by the same binder.
 (cd "$T" && in_project "$T" --json run "$here/project/shots.py/shoot" 'summary=Two lights meet on <look>.' 'pickup.take=<clash.1>' pickup.out_frame=30 --on local) > "$OUT/pickup-run.ndjson" 2> "$OUT/pickup-run.err" || check "pickup: cozy run: $(tail -c 300 "$OUT/pickup-run.err")"
-input=$(cozy --json --full run show "$(tail -1 "$OUT/pickup-run.ndjson" | jq -r .run.number)" --once | jq -c .request.input)
+input=$(cozy --json --full run watch "$(tail -1 "$OUT/pickup-run.ndjson" | jq -r .run.number)" --once | jq -c .request.input)
 J '.pickup.out_frame == 30 and .pickup.take.type == "video" and (.summary.references | map(.key) == ["look"])' <<< "$input" || check "pickup: cozy run's call: $input"
 # Written in the file, it's said and not sent.
 printf '  written: {tool: %s/project/shots.py/shoot, summary: On <look>., pickup: {take: <clash.1>, out_frame: 5}}\n' "$here" | added "$T"

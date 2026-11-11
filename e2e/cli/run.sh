@@ -139,7 +139,7 @@ printf 'image: request-dog.jpg\n' > "$OUT/request.yaml"
 if cell first "$(birefnet)" --input "$OUT/request.yaml"; then white_background "$(output first webp)" "$dog" || check "first: not a background removal"; fi
 first=$(cat "$OUT/first.number")
 if [ "$first" != none ]; then
-  grep -q '"number": *'"$first" "$OUT/first.json" || check "cozy run show $first does not show it"
+  grep -q '"number": *'"$first" "$OUT/first.json" || check "cozy run watch $first does not show it"
   cozy --json run ls > "$OUT/runs.json" || check "cozy run ls failed"
   grep -Eq "\"number\": *$first([^0-9]|\$)" "$OUT/runs.json" || check "cozy run ls does not list run $first"
 fi
@@ -192,7 +192,7 @@ wait "$follower" || true
 code=$(cat "$OUT/across.code" 2>/dev/null) || code=
 { [ "$code" = 0 ] && grep -q "Calcifer restarted; following run $n again" "$OUT/across.txt"; } \
   || check "across: the follow of run ${n:-?} did not go on past the restart (exit $code): $(tail -c 300 "$OUT/across.txt")"
-cozy --json run show "$n" --once | J '.status == "completed"' || check "across: run $n did not complete"
+cozy --json run watch "$n" --once | J '.status == "completed"' || check "across: run $n did not complete"
 
 step "a burst of Calcifer restarts past systemd's start limit"
 for _ in 1 2 3 4 5 6 7; do systemctl --user restart cozy-calcifer > /dev/null 2>&1 || true; done
@@ -258,8 +258,8 @@ cozy --json package remove local/one_script --on local > /dev/null || check "pac
 
 # Balanced by step times (runs 40128128311, 40132063815, 40132725041). A shard keeps its parts' order; whole, the suite runs every part.
 case $SHARD in
-  '') parts="entrypoints weightless script_package one_name_two_paths image_ratio describe first_run second_executor lifetime kept_preparing catalog basics yaml_requests run_flags run_follow time_left broken_answers run_filters run_play hub_away lock_refresh bound_runs own_references old_runtime hostile_media unseen local_edits local_quote path_manifest machine_show_runs writes_once web_serves page_resend queued_download machines completions calcifer_faults calcifer_restarts update remove" ;;
-  runs) parts="weightless describe first_run run_flags run_play hub_away lock_refresh logs" ;;
+  '') parts="entrypoints weightless script_package one_name_two_paths image_ratio describe first_run second_executor lifetime kept_preparing catalog basics yaml_requests run_flags run_follow time_left broken_answers run_filters run_playback hub_away lock_refresh bound_runs own_references old_runtime hostile_media unseen local_edits local_quote path_manifest machine_show_runs writes_once web_serves page_resend queued_download machines completions calcifer_faults calcifer_restarts update remove" ;;
+  runs) parts="weightless describe first_run run_flags run_playback hub_away lock_refresh logs" ;;
   executors) parts="second_executor lifetime kept_preparing update remove" ;;
   entrypoints) parts="entrypoints" ;;
   commands) parts="entrypoints catalog basics yaml_requests run_filters bound_runs own_references old_runtime hostile_media machine_show_runs writes_once logs" ;;

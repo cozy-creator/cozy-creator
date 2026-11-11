@@ -1602,7 +1602,7 @@ impl Calcifer {
         // An empty object's ranges cannot say it is held: it is always sent (one empty PUT).
         let whole = |held: &v1::Ranges, length: u64| length > 0 && v1::held_bytes(held) >= length;
         // The request's files the machine already holds are not sent again, and the run's log says
-        // so: `run show` and a follower that attaches late read it too.
+        // so: `run watch` and a follower that attaches late read it too.
         let reused: Vec<(&str, u64)> = (run.inputs.iter().zip(&held))
             .filter(|((_, length), held)| whole(held, *length))
             .filter_map(|((digest, length), _)| {

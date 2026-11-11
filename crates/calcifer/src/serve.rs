@@ -276,7 +276,7 @@ impl Steps {
     }
 }
 
-/// How long a settled run keeps its measurements, the timing `cozy run show` breaks down. They are
+/// How long a settled run keeps its measurements, the timing `cozy run watch` breaks down. They are
 /// most of what a run stores, about 70 MB a day on a busy computer. Nothing else of a run is ever
 /// dropped: its row, result, reason, outputs, logs and calls stay for good.
 const MEASURED_FOR: Duration = Duration::from_secs(30 * 24 * 3600);

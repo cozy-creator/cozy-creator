@@ -76,8 +76,8 @@ record() {
   local n; n=$(num "$2")
   [ -n "$n" ] || { echo "no run"; return; }
   case $1 in
-    -) cozy run show "$n" --once --json --full ;;
-    *) sh "$1" "cd /root/session && cozy run show $n --once --json --full" ;;
+    -) cozy run watch "$n" --once --json --full ;;
+    *) sh "$1" "cd /root/session && cozy run watch $n --once --json --full" ;;
   esac > "$OUT/$2.json" 2>&1
   jq -r '.status // empty' "$OUT/$2.json"
 }
@@ -212,7 +212,7 @@ sh "$A" "nohup /usr/local/bin/.cozy-previous run sdxl/generate --on b prompt='a 
   seed:=$((SEED + 6)) steps:=50 < /dev/null > /root/inflight.txt 2>&1 &"
 N=''; for _ in $(seq 1 90); do
   N=$(sh "$A" 'cat /root/inflight.txt' | grep -m1 -oE '^run [0-9]+' | awk '{print $2}')
-  [ -n "$N" ] && sh "$A" "/usr/local/bin/.cozy-previous run show $N --once --json" | jq -e '.machine_state == "running"' > /dev/null && break
+  [ -n "$N" ] && sh "$A" "/usr/local/bin/.cozy-previous run watch $N --once --json" | jq -e '.machine_state == "running"' > /dev/null && break
   sleep 2
 done
 [ -n "$N" ] || fail "c: the run from A's $OLD Calcifer never started: $(sh "$A" 'tail -3 /root/inflight.txt')"
@@ -220,8 +220,8 @@ say "c: run $N from A's Calcifer on $OLD is running on B; the next command on A"
 on "$A" c-restart 'cozy machine ls' || fail "c: the first command after the update"
 grep -q "restarting it on $NEW" "$OUT/c-restart.txt" || fail "c: the command did not restart Calcifer: $(head -3 "$OUT/c-restart.txt")"
 [ "$(calcifer_on "$A")" = "$NEW" ] || fail "c: A's Calcifer runs $(calcifer_on "$A") after the restart, not $NEW"
-on "$A" c-inflight "cd /root/session && cozy run show $N"
-s=$(sh "$A" "cd /root/session && cozy run show $N --once --json --full" | jq -r .status)
+on "$A" c-inflight "cd /root/session && cozy run watch $N"
+s=$(sh "$A" "cd /root/session && cozy run watch $N --once --json --full" | jq -r .status)
 [ "$s" = completed ] || fail "c: run $N, going while Calcifer restarted, is $s"
 say "c: A's Calcifer restarted itself on $NEW at the next command; run $N, going on B through it, completed"
 update "$B" "$OLD" "$OLD"

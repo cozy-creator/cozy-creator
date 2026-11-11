@@ -35,7 +35,7 @@ call() {
     <<<"$REQUEST" > "$OUT/$n.json" || return 1
   step "$n" run "./$PACKAGE/$FUNCTION" "model.$SLOT=$ref" --input "$OUT/$n.json" "${asset[@]}" --on "$NAME" || return 1
   N=$(runno "$n"); [ -n "$N" ] || return 1
-  cozy run show "$N" --json --full > "$OUT/$n-run.json" 2>/dev/null
+  cozy run watch "$N" --json --full > "$OUT/$n-run.json" 2>/dev/null
   say "$n run $N $(jq -r .status "$OUT/$n-run.json"): $(grep -E 'resolving|served' "$OUT/$n.txt" | tr -s ' ' | paste -sd';')"
   say "$n result: $(jq -c .result "$OUT/$n-run.json" | cut -c1-800)"
   jq -e --arg e "$EXPECT" '.status=="completed" and .result != null

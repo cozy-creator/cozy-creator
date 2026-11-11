@@ -254,7 +254,7 @@ pub(crate) const UNREACHABLE: &str = "hub_unreachable";
 const TICK: Duration = Duration::from_millis(100);
 
 /// `prepare` asked again while the network leaves it unanswered ([`UNREACHABLE`]), by the one retry rule
-/// (`tensorfs::fetch::Backoff`): its cancel ends the wait, and the run shows each attempt and why. Nothing has executed, so
+/// (`tensorfs::fetch::Backoff`): its cancel ends the wait, and the run watchs each attempt and why. Nothing has executed, so
 /// asking again re-executes nothing, and what an earlier ask resolved is held. A hint (no run to
 /// stop) is asked once.
 pub(crate) fn patiently<T>(job: &Job, mut prepare: impl FnMut() -> Result<T, Failure>) -> Result<T, Failure> {

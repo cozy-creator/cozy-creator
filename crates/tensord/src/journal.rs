@@ -1990,7 +1990,7 @@ impl Journal {
         )
     }
 
-    /// What the execution's executor measured of its latest attempt (`run show`).
+    /// What the execution's executor measured of its latest attempt (`run watch`).
     pub(crate) fn record_measurements(&mut self, id: &str, measurements: &[u8]) -> io::Result<()> {
         self.connection
             .execute(

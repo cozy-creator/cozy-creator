@@ -25,8 +25,7 @@ pub(crate) mod fetch;
 mod follow;
 pub(crate) mod list;
 pub(crate) mod live;
-mod play;
-mod show;
+mod watch;
 
 /// `cozy run --help`'s examples: a YAML request file first, inline inputs as overrides.
 const EXAMPLES: &str = "Examples
@@ -137,8 +136,8 @@ enum Verb {
         #[arg(long)]
         all: bool,
     },
-    /// Show a run's result, outputs and logs. Follow it while it is running.
-    Show {
+    /// Watch a run's progress, result, outputs and logs.
+    Watch {
         /// The run's number or id.
         run: String,
         /// Show the current state and exit.
@@ -152,17 +151,6 @@ enum Verb {
     Cancel {
         /// The run's number or id.
         run: String,
-    },
-    /// Create a browser link to a run's output.
-    Play {
-        /// The run's number or id.
-        run: String,
-        /// Output name or `name/index` for a list item.
-        #[arg(long, default_value = "video")]
-        output: String,
-        /// Link lifetime. Anyone with the link can view it until it expires.
-        #[arg(long, default_value = "24h")]
-        expires: String,
     },
 }
 
@@ -193,7 +181,7 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             let query = list::Query { status: state, package, machine: on, project, before: None, limit };
             list::exec(ctx, query).await
         }
-        Some(Verb::Show { run, once, output }) => show::exec(ctx, &run, once, output.as_deref()).await,
+        Some(Verb::Watch { run, once, output }) => watch::exec(ctx, &run, once, output.as_deref()).await,
         Some(Verb::Cancel { run }) => {
             let calcifer = ctx.calcifer().await?;
             let mut run = calcifer.run(&run).await?;
@@ -203,11 +191,6 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             follow::record(ctx, &run);
             Ok(ExitCode::SUCCESS)
         }
-        Some(Verb::Play {
-            run,
-            output,
-            expires,
-        }) => play::exec(ctx, &run, &output, &expires).await,
         None => run(ctx, *args.run).await,
     }
 }

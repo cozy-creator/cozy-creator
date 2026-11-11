@@ -47,8 +47,8 @@ cozy run sdxl/generate --input request.yaml --estimate  # when each machine woul
 Inline `key=value` inputs are the quick form: `cozy run sdxl/generate prompt='a fox in fresh snow'`.
 Files go in with `--file` (or by path inside the YAML, relative to it), and local code as `./dir/function`
 or `./script.py/function`: each is sent by content, so Calcifer, here or on another computer, reads no folder
-of yours. A run is followed to its end; Ctrl-C stops following, never the run, and `cozy run show <N>` picks
-it up again. `-o <dir>` downloads its outputs, on `cozy run` and `cozy run show`. A video's frames are a box
+of yours. A run is followed to its end; Ctrl-C stops following, never the run, and `cozy run watch <N>` picks
+it up again. `-o <dir>` downloads its outputs, on `cozy run` and `cozy run watch`. A video's frames are a box
 of the project mentioned with them, `clip='<match:48-144>'`, cut before it's sent.
 With no `--on`, a run goes to the machine that quotes the soonest finish, and that machine chooses how many
 GPUs it uses; `--estimate [N]` prints each machine's quote for N of it sent at once (GPUs, start, finish,

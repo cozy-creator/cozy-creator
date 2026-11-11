@@ -164,7 +164,7 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         println!("  calcifer: {}", step(&updated.calcifer));
         println!("  machine: {}", adopted(&updated.machine));
         if let Adopted::Moves { run } = updated.machine {
-            crate::output::next(ctx, &[&format!("cozy run show {run}")]);
+            crate::output::next(ctx, &[&format!("cozy run watch {run}")]);
         }
     }
     Ok(ExitCode::SUCCESS)
