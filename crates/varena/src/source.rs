@@ -2,7 +2,7 @@
 //! absent Region calls its Source on the caller's thread. One worker per GPU calls it ahead of
 //! demand: what comes next in the observed order, else the Plan's. No lock crosses a Source.
 use crate::{Contents, Device, Error, Fill, Pin, Region, Result, gpu, plan};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::ThreadId;
 
@@ -31,8 +31,8 @@ pub trait Source: Send + Sync + 'static {
 
 #[derive(Default)]
 struct Slot {
-    /// The next Region to fill, and whether it may only take room already free.
-    wanted: Option<(Arc<Region>, bool)>,
+    /// The next Region to fill.
+    wanted: Option<Arc<Region>>,
     running: Option<Arc<Region>>,
     worker: Option<ThreadId>,
 }
@@ -43,12 +43,26 @@ pub(crate) struct Ahead {
     slot: Mutex<Slot>,
     settled: Condvar,
     wake: Condvar,
+    /// The running fill was asked to stop: its wait for room ends.
+    halt: AtomicBool,
 }
 
 impl Ahead {
     fn slot(&self) -> MutexGuard<'_, Slot> {
         self.slot.lock().unwrap_or_else(|error| error.into_inner())
     }
+
+    /// Stop the running fill, unless it fills `keep`. Under the slot's lock, so it is that fill's.
+    fn halt(&self, slot: &Slot, keep: Option<&Arc<Region>>) -> Option<Arc<Region>> {
+        let running = slot.running.as_ref().filter(|running| keep.is_none_or(|keep| !Arc::ptr_eq(running, keep)))?;
+        self.halt.store(true, Ordering::Release);
+        Some(Arc::clone(running))
+    }
+}
+
+/// Whether the running fill was asked to stop.
+pub(crate) fn halted(device: &Device) -> bool {
+    device.ahead.halt.load(Ordering::Acquire)
 }
 
 /// What comes after `region`: the Region observed next, else the Plan's next.
@@ -86,12 +100,12 @@ fn upcoming(region: &Arc<Region>) -> Result<Option<Arc<Region>>> {
 /// A use of `region` happened, or its demand fill is about to run: fill what comes next, if absent.
 pub(crate) fn after_use(region: &Arc<Region>) -> Result<()> {
     if let Some(next) = upcoming(region)? {
-        want(region.gpu, next, false)?;
+        want(region.gpu, next)?;
     }
     Ok(())
 }
 
-fn want(device: &'static Device, region: Arc<Region>, free_only: bool) -> Result<()> {
+fn want(device: &'static Device, region: Arc<Region>) -> Result<()> {
     let mut slot = device.ahead.slot();
     if slot.running.as_ref().is_some_and(|running| Arc::ptr_eq(running, &region)) {
         return Ok(());
@@ -102,7 +116,7 @@ fn want(device: &'static Device, region: Arc<Region>, free_only: bool) -> Result
             .map_err(|error| Error::Unsupported(format!("fill worker could not start: {error}")))?;
         slot.worker = Some(worker.thread().id());
     }
-    let replaced = slot.wanted.replace((region, free_only));
+    let replaced = slot.wanted.replace(region);
     device.ahead.wake.notify_all();
     drop(slot);
     drop(replaced); // A Region's last drop needs the gate.
@@ -111,18 +125,19 @@ fn want(device: &'static Device, region: Arc<Region>, free_only: bool) -> Result
 
 fn run(device: &'static Device) {
     loop {
-        let (region, free_only) = {
+        let region = {
             let mut slot = device.ahead.slot();
             loop {
                 if let Some(wanted) = slot.wanted.take() {
-                    slot.running = Some(Arc::clone(&wanted.0));
+                    slot.running = Some(Arc::clone(&wanted));
+                    device.ahead.halt.store(false, Ordering::Release);
                     break wanted;
                 }
                 slot = device.ahead.wake.wait(slot).unwrap_or_else(|error| error.into_inner());
             }
         };
-        let filled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| fill_ahead(&region, free_only)));
-        // Past the one Region a use asked for, only into room nothing else needs.
+        let filled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| fill_ahead(&region)));
+        // Then what comes after it: the room rule keeps the lead to about one Region.
         let chained = match filled {
             Ok(Ok(true)) => upcoming(&region).unwrap_or(None),
             Ok(_) => None,
@@ -138,19 +153,19 @@ fn run(device: &'static Device) {
             if let Some(next) = chained
                 && slot.wanted.is_none()
             {
-                slot.wanted = Some((next, true));
+                slot.wanted = Some(next);
             }
         }
     }
 }
 
-fn fill_ahead(region: &Arc<Region>, free_only: bool) -> Result<bool> {
+fn fill_ahead(region: &Arc<Region>) -> Result<bool> {
     let hold = match crate::enter_producer(region.device()) {
         Ok(hold) => hold,
         Err(Error::CaptureActive) => return Ok(false),
         Err(error) => return Err(error),
     };
-    let Some(fill) = region.prepare_ahead(free_only)? else { return Ok(false) };
+    let Some(fill) = region.prepare_ahead()? else { return Ok(false) };
     let filled = region.source.fill(fill, None);
     drop(hold);
     match filled {
@@ -164,7 +179,7 @@ fn fill_ahead(region: &Arc<Region>, free_only: bool) -> Result<bool> {
 pub(crate) fn yield_to(region: &Arc<Region>) {
     let mut slot = region.gpu.ahead.slot();
     let wanted = slot.wanted.take();
-    let running = slot.running.as_ref().filter(|running| !Arc::ptr_eq(running, region)).cloned();
+    let running = region.gpu.ahead.halt(&slot, Some(region));
     drop(slot);
     if let Some(running) = running {
         running.source.stop();
@@ -191,7 +206,7 @@ pub(crate) fn stop_and_wait(device: &Device) -> bool {
     let mut slot = device.ahead.slot();
     let wanted = slot.wanted.take();
     let on_worker = slot.worker == Some(std::thread::current().id());
-    let running = slot.running.clone().filter(|_| !on_worker);
+    let running = if on_worker { None } else { device.ahead.halt(&slot, None) };
     drop(slot);
     drop(wanted);
     let Some(running) = running else { return false };
@@ -202,9 +217,10 @@ pub(crate) fn stop_and_wait(device: &Device) -> bool {
 
 /// A capture is about to start: nothing may stay behind it.
 pub(crate) fn stop(device: i32) -> Result<()> {
-    let mut slot = gpu(device)?.ahead.slot();
+    let device = gpu(device)?;
+    let mut slot = device.ahead.slot();
     let wanted = slot.wanted.take();
-    let running = slot.running.clone();
+    let running = device.ahead.halt(&slot, None);
     drop(slot);
     drop(wanted);
     if let Some(running) = running {
