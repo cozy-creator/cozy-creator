@@ -25,12 +25,14 @@ static OPERATIONS: LazyLock<Mutex<HashMap<String, Arc<Operation>>>> = LazyLock::
 
 struct Operation {
     named: String,
+    action: String,
     root: Mutex<Option<PathBuf>>,
     binding: String,
     events: watch::Sender<VaultEvent>,
     finished: Mutex<Option<Instant>>,
     readable: Mutex<Option<Arc<AtomicBool>>>,
     available: AtomicBool,
+    locked: AtomicBool,
 }
 
 fn terminal(event: &VaultEvent) -> bool {
@@ -80,13 +82,9 @@ fn retire(operation: &Operation) {
 
 pub(super) fn revoke(root: &std::path::Path) {
     for operation in OPERATIONS.lock().expect("vault operations").values().filter(|operation| operation.root.lock().expect("vault operation root").as_deref() == Some(root)) {
-        operation.events.send_modify(|event| {
-            if let VaultEvent::Completed { changed } = event {
-                changed.recovery_secret = None;
-                changed.vault.view = None;
-                changed.vault.state = "locking".into();
-            }
-        });
+        operation.locked.store(true, Ordering::Release);
+        let completed = terminal(&operation.events.borrow());
+        if completed { retire(operation); }
     }
 }
 
@@ -120,7 +118,7 @@ pub(super) async fn write(State(api): State<Arc<Api>>, Path((named, id)): Path<(
             Some(operation) => (operation.clone(), false),
             None => {
                 let (events, _) = watch::channel(accepted.clone());
-                let operation = Arc::new(Operation { named, root: Mutex::new(None), binding, events, finished: Mutex::new(None), readable: Mutex::new(None), available: AtomicBool::new(true) });
+                let operation = Arc::new(Operation { named, action: ask.action.clone(), root: Mutex::new(None), binding, events, finished: Mutex::new(None), readable: Mutex::new(None), available: AtomicBool::new(true), locked: AtomicBool::new(false) });
                 operations.insert(id.clone(), operation.clone());
                 (operation, true)
             }
@@ -167,13 +165,22 @@ fn sanitize(event: &mut VaultEvent, operation: &Operation) {
         *event = expired_result();
         return;
     }
+    if matches!(event, VaultEvent::Failed { .. }) && operation.locked.load(Ordering::Acquire) {
+        *event = VaultEvent::Failed { error: Error::new(Kind::Conflict, "project_locked", "the project was locked before its private result was read").next("cozy vault unlock") };
+        return;
+    }
     if let VaultEvent::Completed { changed } = event
         && changed.vault.encrypted
         && !operation.readable.lock().expect("vault result authority").as_ref().is_some_and(|token| token.load(Ordering::Acquire))
     {
-        changed.recovery_secret = None;
-        changed.vault.view = None;
-        changed.vault.state = "locked".into();
+        if operation.action == "lock" {
+            changed.recovery_secret = None;
+            changed.vault.view = None;
+            changed.skipped_files.clear();
+            changed.preserved_source = None;
+        } else {
+            *event = VaultEvent::Failed { error: Error::new(Kind::Conflict, "project_locked", "the project was locked before its private result was read").next("cozy vault unlock") };
+        }
     }
 }
 
