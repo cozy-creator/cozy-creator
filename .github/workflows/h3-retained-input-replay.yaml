@@ -1,0 +1,94 @@
+name: replay retained H3 input
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/h3-retained-input-replay.yaml
+      - e2e/cpu/h3_replay_fixture.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  replay:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - id: scope
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" = workflow_dispatch ] || git show --pretty=format: --name-only HEAD | grep -Fxq -e '.github/workflows/h3-retained-input-replay.yaml' -e 'e2e/cpu/h3_replay_fixture.py'; then
+            echo run=true >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v5
+        if: steps.scope.outputs.run == 'true'
+        with:
+          repository: cozy-creator/packages
+          ref: de71b31a32b16e4310a5b1fdb0f7aef6c56485cc
+          path: .pkgs
+      - uses: astral-sh/setup-uv@v7
+        if: steps.scope.outputs.run == 'true'
+        with:
+          enable-cache: true
+      - name: Replay the unchanged pair with exact retained bytes
+        if: steps.scope.outputs.run == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CUDA_VISIBLE_DEVICES: ''
+        run: |
+          set -euo pipefail
+          gh run download 43061139019 -R cozy-creator/cozy-creator -n e2e-cpu -D "$RUNNER_TEMP/h3-source"
+          gh run download 43061139019 -R cozy-creator/cozy-creator -n candidate-runtime-c06fdaa76cd7207a266d4ad6d4669eb0b91c64f0 -D "$RUNNER_TEMP/h3-runtime"
+          gh run download 43061139019 -R cozy-creator/cozy-creator -n candidate-tensorfs-2a34ff61c6cc0fbba50e84cf71ab9c97f83e5133 -D "$RUNNER_TEMP/h3-tensorfs"
+          runtime_wheels=("$RUNNER_TEMP/h3-runtime"/cozy_runtime-*.whl)
+          tensorfs_wheels=("$RUNNER_TEMP/h3-tensorfs"/tensorfs-*.whl)
+          [ "${#runtime_wheels[@]}" = 1 ] && [ "${#tensorfs_wheels[@]}" = 1 ]
+          printf '%s  %s\n' 1e2f6707a9fe5a0df453dbd002b62ced222da44b2fafd0c870bc8a62708ef3f6 "${runtime_wheels[0]}" \
+            b64724e4f7ecca847c5f24ce3e9db5f0474e18748365bd1531166145c7a27218 "${tensorfs_wheels[0]}" | sha256sum --check
+          git fetch --no-tags origin 6791a02e5f8ea42edc81b453b11d6e29715a0b37
+          mkdir -p "$RUNNER_TEMP/h3-frozen" "$RUNNER_TEMP/h3-replay"
+          git archive 6791a02e5f8ea42edc81b453b11d6e29715a0b37 e2e/cpu | tar -x -C "$RUNNER_TEMP/h3-frozen"
+          frozen=$RUNNER_TEMP/h3-frozen/e2e/cpu
+          package=$GITHUB_WORKSPACE/.pkgs/minimax-h3
+          env_dir=$RUNNER_TEMP/h3-env
+          out=$RUNNER_TEMP/h3-replay
+          # This direct retained replay resolves no Hub releases.
+          ! grep -q 'registry = "https://tensorhub.com' "$package/uv.lock"
+          bash "$frozen/env.sh" "$package" "$env_dir" "${runtime_wheels[0]}" "${tensorfs_wheels[0]}"
+          export H3_REPLAY_ARTIFACT=$RUNNER_TEMP/h3-source/minimax-h3
+          export H3_REPLAY_ORIGINAL_FIXTURE=$frozen/tiny/minimax_h3.py
+          "$env_dir/bin/python" "$frozen/provenance.py" "$out/environment.json" "${runtime_wheels[0]}" "${tensorfs_wheels[0]}" "$H3_REPLAY_ORIGINAL_FIXTURE"
+          code=0
+          "$env_dir/bin/python" "$frozen/drive.py" "$package" "$H3_REPLAY_ARTIFACT/interface.json" \
+            "$GITHUB_WORKSPACE/e2e/cpu/h3_replay_fixture.py" "$out" --refs "$frozen/refs" \
+            --only regenerate_shot/native,regenerate_shot/native-2-ranks | tee "$out/cells.txt" || code=$?
+          python3 - "$out" <<'PY'
+          import hashlib, json, sys
+          from pathlib import Path
+          out = Path(sys.argv[1])
+          inputs = {}
+          for name in ('regenerate_shot-native', 'regenerate_shot-native-2-ranks'):
+              request = json.loads((out / 'requests' / (name + '.json')).read_text())
+              path = Path(request['files']['video'])
+              inputs[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+          if set(inputs.values()) != {'a288b49c8432886b78923359c20fa6459d586734f001b6b0ccfdf57b5c9f9291'}:
+              raise SystemExit('replay inputs differ from the exact retained rank-1 bytes')
+          (out / 'input-identity.json').write_text(json.dumps(inputs, indent=2) + '\n')
+          PY
+          exit "$code"
+      - if: always() && steps.scope.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: h3-retained-input-replay-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/h3-replay
+            !${{ runner.temp }}/h3-replay/store/**
+          if-no-files-found: warn
+          retention-days: 14
