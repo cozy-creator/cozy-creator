@@ -332,7 +332,8 @@ async function loseAnswers(page, method, path, times) {
     await tab(old).click();
     const unread = page.locator('.unread');
     await unread.waitFor();
-    check('what_cant_be_read_says_why', /schema 99/.test(await unread.innerText()) && /cozy update/.test(await unread.innerText()) && (await page.locator('.empty-canvas').count()) === 0, await unread.innerText());
+    const refusal = await unread.innerText();
+    check('what_cant_be_read_says_why', /schema 99/.test(refusal) && /only current CRDT schema 2 is supported/.test(refusal) && /Preserve this database/.test(refusal) && /new current-format project in a separate empty directory/.test(refusal) && (await page.locator('.empty-canvas').count()) === 0, refusal);
     await until('the tools still there', () => row('cozy/edit').count(), (n) => n === 1);
     await carry(page, row('cozy/edit'), { x: 1200, y: 300 });
     await until('what was dropped on it came back', async () => (await notes()).filter((line) => /Couldn't place Edit/.test(line)).length, (n) => n === 1);
