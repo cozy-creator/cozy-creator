@@ -45,6 +45,13 @@ def same_process(first, second):
     return second is not None and all(first[key] == second[key] for key in ('birth', 'exe', 'home'))
 
 
+def existing_services(snapshot, user_home):
+    # Ordinary CLI calls can finish during the job. Preserve the user's serving processes,
+    # whose lifetime this harness must not alter, rather than treating completed calls as damage.
+    return {pid: p for pid, p in snapshot.items() if p['home'] == user_home and '/.cozy/' in p['exe']
+            and (p['args'][1:] == ['calcifer'] or p['args'][1:] == ['machine', 'serve'])}
+
+
 def private_environment(home, shim, device, tools=None):
     # Do not inherit provider, Hub, proxy, auth, dotenv or user service credentials.
     env = {
@@ -118,9 +125,7 @@ def main():
     if any(line.startswith(args.device + ',') for line in busy.splitlines()):
         parser.error('the selected GPU has an existing compute process; reserve an idle runner')
     original_home = str(Path.home())
-    before = {pid: p for pid, p in processes().items()
-              if p['home'] == original_home and '/.cozy/' in p['exe']
-              and (p['args'][1:] == ['calcifer'] or p['args'][1:] == ['machine', 'serve'])}
+    before = existing_services(processes(), original_home)
     # A short path also keeps executor Unix sockets within Linux's path limit.
     home = Path(tempfile.mkdtemp(prefix='cozy-hardware-'))
     owner = home.name

@@ -58,6 +58,14 @@ class Isolation(unittest.TestCase):
         self.assertFalse(runner.owned(record | {'home': '/owned/job-other'}, Path('/owned/job')))
         self.assertFalse(runner.owned(record | {'home': ''}, Path('/owned/job')))
 
+    def test_completed_cli_calls_are_not_mistaken_for_restarted_user_services(self):
+        record = {'home': '/person', 'exe': '/person/.cozy/bin/cozy'}
+        snapshot = {1: record | {'args': ['cozy', 'calcifer']},
+                    2: record | {'args': ['cozy', 'machine', 'serve']},
+                    3: record | {'args': ['cozy', 'machine', 'rent', 'cpu']},
+                    4: record | {'args': ['cozy', 'run', 'package/function']}}
+        self.assertEqual(set(runner.existing_services(snapshot, '/person')), {1, 2})
+
     def test_provider_selection_fails_before_fixture_startup(self):
         result = subprocess.run([sys.executable, str(HERE / 'run.py'), '--hub-src', '/absent',
             '--cozy-bin', '/absent', '--runtime', '0.45.0', '--tensorfs', '0.24.0',
