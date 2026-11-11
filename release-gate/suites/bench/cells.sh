@@ -8,6 +8,8 @@ read -r _ HOST_GIB _ < <(cat "$HERE"/suites/bench/*skus | awk -v g="$BG" '$1 == 
 BENCH_PY=(nice -n 19 uv run -q --no-project --with numpy python -I "$HERE/bench.py")
 # Never the caller's stdin: inside the cell loop that is cells.tsv, which an ssh would swallow after the first cell (1a, 11-10).
 podsh() { timeout 900 "$CLI" machine ssh "$M" "$1" < /dev/null; }
+# retried <cmd...>: again with backoff and jitter while it fails, for about 5 minutes (this computer's cozy restarting).
+retried() { local w=2 t=$SECONDS; until "$@"; do [ $((SECONDS - t)) -lt 300 ] || return 1; sleep $((w + RANDOM % (w + 1))); w=$((w * 2 > 60 ? 60 : w * 2)); done; }
 # The pod side's scripts, then the host's RAM held to the group's: the rest of the pod's limit is a hog no cozy process can
 # take back. One attempt: a pod it cannot hold runs its cells anyway, labelled in host-ram and the table (coordinator 11-10).
 podsh "echo $(base64 -w0 "$HERE/suites/bench/pod.sh") | base64 -d > /var/tmp/bench-pod.sh && echo $(base64 -w0 "$HERE/suites/bench/hog.py") |
@@ -75,7 +77,7 @@ while IFS=$'\t' read -r name group cap warm seed target args before _; do
   [ -z "$ONLY_ASKED" ] || [[ $ONLY_ASKED == *",$name,"* ]] || continue
   want=off; [ "$cap" = - ] || want=$cap
   if [ "$want" != "$CAPNOW" ]; then
-    "$CLI" machine update "$M" --gpu-memory-limit off -y < /dev/null > "restart-$want.log" 2>&1 || log "restart for $want: $(tail -c 300 "restart-$want.log")"
+    retried "$CLI" machine update "$M" --gpu-memory-limit off -y < /dev/null > "restart-$want.log" 2>&1 || log "restart for $want: $(tail -c 300 "restart-$want.log")"
     HELD=0 LEVEL_OK=1
     if [ "$want" = off ]; then
       podsh "sh /var/tmp/bench-pod.sh vram off" > /dev/null 2>&1
