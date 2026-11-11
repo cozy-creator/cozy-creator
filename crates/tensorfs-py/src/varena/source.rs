@@ -217,7 +217,7 @@ impl Inner {
         *self.disk.lock().unwrap_or_else(|e| e.into_inner()) = Disk::Unknown;
     }
 
-    /// The tier's name for its stored bytes read ahead (`Tier::stage`), when they are not its page:
+    /// The tier's name for its stored bytes read ahead (`Tier::read_ahead`), when they are not its page:
     /// a derive makes the page from them. Every overlay of its block shares it.
     pub(super) fn stored_key(&self) -> Option<String> {
         self.slot.as_ref().filter(|_| self.stored.is_some()).map(|slot| format!("stored:{slot}"))
@@ -588,14 +588,14 @@ impl varena::Source for PageSource {
             this.tier.expect(key.clone(), this);
         }
         if let Some(stored) = &this.stored {
-            // A derive's stored bytes the tier read ahead (`Tier::stage`), else the store's.
+            // A derive's stored bytes the tier read ahead (`Tier::read_ahead`), else the store's.
             let staged = derive.and(this.stored_key())
                 .and_then(|key| this.tier.take(&key, &this.set, fill.len(), false).map(|page| (key, page)));
             let read: Result<(), tensorfs::io::source::Error> = match staged {
                 Some((key, page)) => {
                     let read = this.from_page(&fill, &page).map_err(tensorfs::io::source::Error::from);
                     if read.is_ok() {
-                        this.row(page.len() as u64, "staged", ahead, began);
+                        this.row(page.len() as u64, "host", ahead, began);
                     }
                     drop(page);
                     this.tier.let_go(&key, "served");

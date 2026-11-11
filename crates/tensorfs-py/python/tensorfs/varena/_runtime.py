@@ -173,11 +173,11 @@ class Pages:
     def request_ended(self) -> None:
         self._native.request_ended()
 
-    def stage(self, sources: Sequence[Source]) -> None:
+    def read_ahead(self, sources: Sequence[Source]) -> None:
         """Read `sources`' pages ahead of their use, in this order, in place of what was queued:
         a slot's derived page on disk, else a derive's stored bytes, else a plain page's stored
         bytes, each into pinned host RAM within free room. The first that does not fit ends it."""
-        self._native.stage([source._native for source in sources])
+        self._native.read_ahead([source._native for source in sources])
 
     def retained_room(self) -> int:
         """Host bytes retained regions may take now: available beyond the headroom, this tier's
