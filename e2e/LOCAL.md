@@ -8,6 +8,8 @@ python3 scripts/test-local-web.py
 
 The first run builds Cozy and the embedded page. Later runs reuse `target/dev-tests`. Google Chrome, pnpm, the repository Rust toolchain and FUSE are required. On Linux the runner prepares the repository's pinned securefs provider once. A distribution binary can be supplied directly.
 
+Development builds optimize Argon2 to keep passphrase operations responsive.
+
 ```sh
 python3 scripts/test-local-web.py --binary /absolute/path/to/cozy
 ```
