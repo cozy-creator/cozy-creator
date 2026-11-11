@@ -10,6 +10,7 @@ import signal
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 
 def executors() -> dict[int, int]:
@@ -18,9 +19,15 @@ def executors() -> dict[int, int]:
         if not d.isdigit():
             continue
         try:
-            if b"cozy_runtime.internal.executor" not in open(f"/proc/{d}/cmdline", "rb").read():
+            if (
+                b"cozy_runtime.internal.executor"
+                not in Path(f"/proc/{d}/cmdline").read_bytes()
+            ):
                 continue
-            ppid = int(next(l for l in open(f"/proc/{d}/status") if l.startswith("PPid")).split()[1])
+            status = Path(f"/proc/{d}/status").read_text().splitlines()
+            ppid = int(
+                next(line for line in status if line.startswith("PPid")).split()[1]
+            )
         except (OSError, StopIteration):
             continue
         found[int(d)] = ppid
@@ -54,9 +61,11 @@ def tcp() -> list[tuple[str, str, str, str]]:
     rows = []
     for name in ("/proc/net/tcp", "/proc/net/tcp6"):
         try:
-            for line in open(name).read().splitlines()[1:]:
+            for line in Path(name).read_text().splitlines()[1:]:
                 f = line.split()
-                rows.append((f[1].rsplit(":", 1)[1], f[2].rsplit(":", 1)[1], f[3], f[9]))  # local port, remote port, state, inode
+                rows.append(
+                    (f[1].rsplit(":", 1)[1], f[2].rsplit(":", 1)[1], f[3], f[9])
+                )  # local port, remote port, state, inode
         except OSError:
             pass
     return rows
@@ -66,7 +75,9 @@ def joined(pid: int, parent: int) -> bool:
     mine, theirs = sockets(pid), sockets(parent)
     rows = tcp()
     listening = {lp for lp, _, st, ino in rows if st == "0A" and ino in theirs}
-    return any(st == "01" and ino in mine and rp in listening for _, rp, st, ino in rows)
+    return any(
+        st == "01" and ino in mine and rp in listening for _, rp, st, ino in rows
+    )
 
 
 def main() -> None:
@@ -74,11 +85,18 @@ def main() -> None:
     cont = float(sys.argv[2]) if len(sys.argv) > 2 else 0.0
     seen = set(executors())
     began = time.time()
-    say = lambda what: print(f"{time.strftime('%H:%M:%S')} +{time.time() - began:.3f}s {what}", flush=True)
+
+    def say(what: str) -> None:
+        print(
+            f"{time.strftime('%H:%M:%S')} +{time.time() - began:.3f}s {what}",
+            flush=True,
+        )
+
     say(f"waiting for a new follower ({len(seen)} executors now)")
     while (found := follower(seen)) is None:
         if time.time() - began > 600:
-            say("no follower in 10 min"); return
+            say("no follower in 10 min")
+            return
         time.sleep(0.005)
     pid, parent = found
     say(f"follower {pid} of GPU 0 {parent}")
@@ -88,7 +106,8 @@ def main() -> None:
     else:
         while not joined(pid, parent):
             if not os.path.exists(f"/proc/{pid}"):
-                say("follower gone before joining"); return
+                say("follower gone before joining")
+                return
             time.sleep(0.001)
         os.kill(pid, signal.SIGSTOP)
         stopped = time.time()
@@ -99,8 +118,15 @@ def main() -> None:
             say(f"SIGCONT {pid} after {time.time() - stopped:.1f} s")
     time.sleep(1)
     say(f"executors: {executors()}")
-    say(subprocess.run(["nvidia-smi", "--query-compute-apps=pid,gpu_bus_id,used_memory", "--format=csv,noheader"],
-                       capture_output=True, text=True).stdout.strip() or "no GPU processes")
+    apps = [
+        "nvidia-smi",
+        "--query-compute-apps=pid,gpu_bus_id,used_memory",
+        "--format=csv,noheader",
+    ]
+    say(
+        subprocess.run(apps, capture_output=True, text=True, check=False).stdout.strip()
+        or "no GPU processes"
+    )
 
 
 if __name__ == "__main__":
