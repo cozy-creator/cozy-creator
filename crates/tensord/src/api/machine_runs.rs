@@ -42,9 +42,11 @@ pub(super) async fn follow(
     let snapshot = v1::RunEvent { sequence: 0, at_ms: 0, event: v1::Event::State(current) };
     let _ = sender.try_send(Ok(snapshot));
     let owner = limit.is_none();
-    tokio::spawn(async move {
+    let scope = crate::private_io::current();
+    tokio::spawn(crate::private_io::request_optional(scope.clone(), async move {
         if let Err(error) = log(runs.clone(), actor, id.clone(), cursor, limit, &sender).await {
-            tracing::warn!("run {id}: its log can't be read: {error}");
+            if scope.is_some() { tracing::warn!("private run {id}: its protected log cannot be read"); }
+            else { tracing::warn!("run {id}: its log can't be read: {error}"); }
             // An outcome that can't be made never can be: said as its outcome, the run ends (cl-773).
             if matches!(error.code.as_str(), "custody_corrupt" | "result_unreadable") {
                 let reason = v1::Reason { code: error.code, message: error.message, origin: "machine".into(), ..Default::default() };
@@ -65,7 +67,7 @@ pub(super) async fn follow(
             // Any other error breaks the stream off, and its controller attaches again.
             let _ = sender.send(Err(error)).await;
         }
-    });
+    }));
     Ok(receiver)
 }
 

@@ -1,6 +1,6 @@
 //! Calcifer's project API (xs-151, cl-758): the projects this computer knows, a project folder
 //! opened by its path, its assets as they stand and their versions (a video's are takes), the runs
-//! that make them, what happens as they go, and its files and cuts. The CLI's `cozy project` verbs
+//! that make them, what happens as they go, and its files and cuts. The CLI's asset verbs
 //! are one client of it.
 use std::{collections::BTreeMap, path::PathBuf};
 
@@ -28,6 +28,9 @@ pub struct Open {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Opened {
     pub id: String,
+    /// Its stable, nine-character public URL code.
+    #[serde(default)]
+    pub code: String,
     /// Where it lives on Calcifer's computer.
     pub path: PathBuf,
     /// Its name, unique among the projects Calcifer knows: what `-p` takes.
@@ -40,15 +43,14 @@ pub struct Opened {
     pub said: Vec<String>,
 }
 
-/// How a client names a project: its id or name, or its folder on Calcifer's computer by its absolute path (cl-819). The
-/// folder a client is in names none: Calcifer may be on another computer.
-pub const NAMED_BY: &str = "a project's name or id, or its folder on Calcifer's computer by its absolute path";
+/// How a client names a project: its id, public code or name, or its folder on Calcifer's computer by its absolute path (cl-819). The
+/// CLI project commands resolve their current directory and send its absolute path.
+pub const NAMED_BY: &str = "a project's name, id or public code, or its folder on Calcifer's computer by its absolute path";
 
 /// A request in no project, which needs one.
 pub fn unnamed() -> Error {
-    Error::new(crate::error::Kind::Usage, "not_in_a_project", "name the project: -p <name>, or COZY_PROJECT=<name>")
-        .next("cozy project ls")
-        .next("cozy project new <name>")
+    Error::new(crate::error::Kind::Usage, "not_in_a_project", "run this command from an existing project directory. Use cozy new to create one")
+        .next("cozy new")
 }
 
 /// Where a card sits on a project's canvas: one row of `project.canvas.yaml`.
@@ -61,7 +63,7 @@ pub struct Card {
     pub w: Option<f64>,
 }
 
-/// `POST /v1/projects/{id}/runs`: what the ask found. `/events` opens with the runs already going.
+/// `POST /v1/projects/{id}/runs`: what the ask found. `GET /v1/events` tells its board's changes from here.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Asked {
@@ -82,10 +84,13 @@ pub struct Asked {
     /// What it added, each with what is ahead of it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub queued: Vec<QueuedNow>,
+    /// What the ask found of what it names, each line once: what it skips and why, a flag it ignores.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub said: Vec<Said>,
     /// Commands to run next.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub next: Vec<String>,
-    /// The render as this ask left it: `/events` says each change from here.
+    /// The render as this ask left it: `board.updated` and `job.updated` on `GET /v1/events` say each change from here.
     pub board: Board,
 }
 
@@ -139,6 +144,9 @@ pub struct Projects {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "KnownProject"))]
 pub struct Known {
     pub id: String,
+    /// Its stable, nine-character public URL code.
+    #[serde(default)]
+    pub code: String,
     /// Its name: what `-p` takes.
     pub name: String,
     pub path: PathBuf,
@@ -148,6 +156,14 @@ pub struct Known {
     pub busy: bool,
 }
 
+/// `GET /v1/projects/{id}/address`: the indexed identity used to open a browser route.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "ProjectAddress"))]
+pub struct Address {
+    pub id: String,
+    pub code: String,
+}
+
 /// `GET /v1/projects/{id}`: its assets in order, and what reading the project said.
 /// Optional `covered` describes only a successful full snapshot: project-event emissions
 /// before its read began. Head-only and partial/error-derived states do not claim coverage.
@@ -155,6 +171,9 @@ pub struct Known {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "ProjectState"))]
 pub struct State {
     pub id: String,
+    /// Its stable, nine-character public URL code.
+    #[serde(default)]
+    pub code: String,
     pub path: PathBuf,
     pub assets: Vec<Asset>,
     /// What is running and what is queued, in the order it goes.
@@ -171,10 +190,7 @@ pub struct State {
     pub orphans: Vec<Orphan>,
     /// Whether its walk is going: runs being made, or asked and not yet sent.
     pub busy: bool,
-    /// Whether a push or pull is going.
-    #[serde(default)]
-    pub moving: bool,
-    /// How many files project.lock names are not on this computer (`POST /v1/projects/{id}/pull`).
+    /// How many files project.lock names are not on this computer.
     #[serde(default)]
     pub absent: u64,
     /// How many files `cozy run`s left here, that belong to no asset.
@@ -910,6 +926,9 @@ pub struct Unpinned {
     pub version: Option<u32>,
     /// What this put out of date, itself too.
     pub stale: Vec<String>,
+    /// What making the tools that read it now said.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
     /// What `If-Match` names from here on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub etag: Option<String>,
@@ -981,34 +1000,6 @@ fn is_zero(n: &u64) -> bool {
     *n == 0
 }
 
-/// What a push or pull moved (`POST /v1/projects/{id}/push`, `/pull`). A push sends every file
-/// project.lock names that the Hub lacks; a pull fetches every one `files/` lacks.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct Transferred {
-    /// The files project.lock names.
-    pub files: u64,
-    /// Those sent or fetched now.
-    pub moved: u64,
-    pub bytes: u64,
-    /// The files it could not move, which stopped nothing else.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub skipped: Vec<Skipped>,
-    /// A push's: the private model and commit that keep them at the Hub, until deleted by name.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kept_in: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub commit: Option<String>,
-}
-
-/// A file a push or pull left out: its path in the project, and why.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct Skipped {
-    pub path: String,
-    pub why: String,
-}
-
 /// What a walk landed: how many takes and versions, how long it took, and its runs' execution time summed, which is more
 /// than that when they ran at once.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -1042,6 +1033,42 @@ pub struct Board {
     /// What machines are fetching ahead of what's queued, one per function.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ahead: Vec<Ahead>,
+    /// What it said as it went, each line once, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub said: Vec<Said>,
+    /// What failed of no one asset, each once; what does not read it goes on. A job's failure is its own `error`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub errors: Vec<Error>,
+    /// How its walk ended, once it has.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended: Option<Ended>,
+}
+
+/// A line a render said, once however often it came: of the assets `names` (a warning's are those whose runs gave it), or of the
+/// render.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct Said {
+    pub level: crate::calcifer::NoteLevel,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub names: Vec<String>,
+}
+
+/// How a render's walk ended: nothing it was asked is left to send or follow, and every take it made is whole here. `error` is the
+/// first thing that failed, or when more than that was asked, `render_incomplete`: how far it got, that failure, and the command for
+/// the rest.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "RenderEnded"))]
+pub struct Ended {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<Error>,
+    /// What it landed, if it landed anything.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rendered: Option<Rendered>,
+    /// The renders it ended, by `Asked::ask`: an ask made as another walk ends is the next one's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub asks: Vec<String>,
 }
 
 /// How the target of a run fetching ahead starts.
@@ -1165,107 +1192,6 @@ pub struct Preview {
     pub path: String,
 }
 
-/// `GET /v1/projects/{id}/events`: what the project's runs do, as they do it.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "ProjectEvent"))]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum Event {
-    /// The project's render as it stands now, whole: heard when the stream opens and at each change, later ones standing for any
-    /// a slow reader missed.
-    Board {
-        board: Board,
-    },
-    /// One job as it stands now, whole. What changed since the `board` heard first: `seq` as that board's goes up.
-    Job {
-        job: Job,
-        seq: u64,
-    },
-    /// What a machine is fetching ahead, as it stands now, whole.
-    Ahead {
-        ahead: Ahead,
-    },
-    /// A run for `name` began: its id and number, which `GET /v1/runs/{id}/events` follows.
-    Started {
-        name: String,
-        run: String,
-        number: u64,
-    },
-    /// `name`'s version `number` (its `noun`) was made: its files, and the one people mean by it.
-    Landed {
-        name: String,
-        noun: String,
-        number: u32,
-        files: BTreeMap<String, File>,
-        path: String,
-        /// Its run's execution time.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        execution_ms: Option<u64>,
-    },
-    /// `name`: the asset it is of, if it is of one.
-    Said {
-        message: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        name: Option<String>,
-    },
-    /// `name`: the asset whose run said it. The same `message` can come from several. With none, it names its asset itself, if it is of one.
-    Warning {
-        message: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        name: Option<String>,
-    },
-    /// Something asked could not be made, said as it happens; the walk goes on with what does not
-    /// read it. `name`, the asset, and `run`, the run that failed, when it is of one: its row's `failure` holds this for later readers.
-    Failed {
-        error: Error,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        name: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        run: Option<u64>,
-    },
-    /// A push or pull landed `file` (None: it is under way), `bytes` moved so far.
-    Moved {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        file: Option<String>,
-        bytes: u64,
-    },
-    /// A push or pull ended: what it moved, or what stopped it.
-    Transferred {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        done: Option<Transferred>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        error: Option<Error>,
-    },
-    /// Asset `name`'s cut (`edit.mp4`, and its `.otio`) was made here, in `took_s`: `frames` long at `fps`, the takes
-    /// in `retimed` retimed to it. `unchanged`: what it holds did not change, so it was left.
-    Cut {
-        name: String,
-        cut: String,
-        frames: u64,
-        fps: f64,
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        retimed: Vec<String>,
-        took_s: f64,
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        unchanged: bool,
-        /// What this film was cut without: `<piece>: <why>`.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        without: Vec<String>,
-    },
-    /// The walk is over: nothing it was asked is left to send or follow, and every take it made is whole here (its file, its row and
-    /// what's measured of it). `error` is the first thing that failed (`Failed` said it already, unless the walk itself stopped), or
-    /// when more than that was asked, `render_incomplete`: how far it got, that failure, and the command for the rest.
-    Ended {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        error: Option<Error>,
-        /// What this walk landed, if it landed anything.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        rendered: Option<Rendered>,
-        /// The renders it ended, by `Asked::ask`: an ask made as another walk ends is the next one's.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        asks: Vec<String>,
-    },
-}
-
 /// Who made a change to a project: the page (`client` names its tab), the CLI, a hand in project.yaml, or another client of the API.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -1340,4 +1266,53 @@ pub struct HistoryStepped {
     pub undo: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub redo: Option<u64>,
+}
+
+/// Local project encryption. Plain projects never need a mount provider or credentials.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct VaultStatus {
+    pub encrypted: bool,
+    /// plain, locked, unlocked, or locking (a native application still holds the mount).
+    pub state: String,
+    pub path: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<i64>,
+    #[serde(default)]
+    pub idle_timeout_s: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub next: Vec<String>,
+}
+
+/// POST /v1/projects/{id}/vault. Credentials are deliberately not Debug; neither the request nor its response is cached in history.
+#[derive(Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct VaultAsk {
+    pub action: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passphrase: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_secret: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_timeout_s: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_duration_s: Option<u64>,
+    /// Remove a verified plaintext conversion source, only when explicitly asked.
+    #[serde(default)]
+    pub remove_plaintext: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<PathBuf>,
+}
+
+/// A vault operation can disclose a new recovery secret exactly to the caller. Do not persist this response in request/history caches.
+#[derive(Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct VaultChanged {
+    pub vault: VaultStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_secret: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preserved_source: Option<PathBuf>,
 }

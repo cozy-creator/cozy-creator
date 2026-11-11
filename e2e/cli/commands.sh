@@ -4,10 +4,17 @@
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 J() { jq -e "$@" > /dev/null; }  # J <filter> <file>: the answer holds what the filter asks
 
+# The public entrypoints work without the retired canvas-editing command group.
+entrypoints() {
+  step "public commands and explicit project creation"
+  ARGV_LOG="$OUT/argv.log" python3 "$here/entrypoints.py" --cozy "$COZY" --out "$OUT/entrypoints" \
+    || check "entrypoints: see $OUT/entrypoints/results.json"
+}
+
 # What needs no machine: Calcifer, the Hub setting, signing out, the Hub's packages and models.
 catalog() {
 step status
-cozy --json status > "$OUT/status.json" || check "cozy status failed"
+fixture_calcifer > "$OUT/status.json" || check "cozy status failed"
 J '.calcifer.running == true and (.calcifer.version | length > 0)' "$OUT/status.json" || check "status: Calcifer is not running"
 if [ -n "$LOCAL" ]; then
   J '.machines | any(.name == "local")' "$OUT/status.json" || check "status: the local machine is not listed"
@@ -66,7 +73,7 @@ cozy machine rent > "$OUT/rent-catalog.txt" 2>&1 && grep -q -E '^NAME +GPU +GPUS
   || check "machine rent: no catalog table: $(head -c 300 "$OUT/rent-catalog.txt")"
 cozy --json machine rent > "$OUT/rent-catalog.json" 2> "$OUT/rent-catalog.err" && J 'type == "array" and all(.[]; .name | length > 0)' "$OUT/rent-catalog.json" \
   || check "machine rent --json: no catalog array: $(head -c 300 "$OUT/rent-catalog.json") $(head -c 200 "$OUT/rent-catalog.err")"
-code=0; cozy --json run -p "$RUN_PROJECT" birefnet/remove_background --file "image=$(picture dog1.jpg)" --on new > "$OUT/rent-signed-out.json" 2>&1 || code=$?
+code=0; in_project "$RUN_PROJECT" --json run birefnet/remove_background --file "image=$(picture dog1.jpg)" --on new > "$OUT/rent-signed-out.json" 2>&1 || code=$?
 [ "$code" != 0 ] && grep -q 'cozy login' "$OUT/rent-signed-out.json" || check "run --on new signed out: exit $code, not refused for sign-in: $(head -c 300 "$OUT/rent-signed-out.json")"
 printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n' > "$OUT/id_private"
 code=0; cozy --json machine rent rtx-4090 --ssh "$OUT/id_private" > "$OUT/rent-ssh.json" 2> "$OUT/rent-ssh.err" || code=$?
@@ -122,12 +129,12 @@ refused() {  # refused <name> <cozy args...>
   [ "$code" = 1 ] && J '.error.code == "local_unavailable" and (.error.remedy | contains("--on new"))' "$OUT/refused-$name.json" \
     || check "cozy $*: exit $code, not refused local_unavailable: $(head -c 300 "$OUT/refused-$name.json") $(head -c 200 "$OUT/refused-$name.err")"
 }
-refused run run -p "$RUN_PROJECT" birefnet/remove_background --file "image=$dog"
-refused run-on-local run -p "$RUN_PROJECT" birefnet/remove_background --input "$OUT/refused.yaml" --on local
+refused run run birefnet/remove_background --file "image=$dog"
+refused run-on-local run birefnet/remove_background --input "$OUT/refused.yaml" --on local
 refused run-warm run birefnet/remove_background --warm installed
-(cd "$here" && refused run-code run -p "$RUN_PROJECT" ./weightless/reverse text=refused)
+(refused run-code run "$here/weightless/reverse" text=refused)
 # Describing local code reads its source here and uses no machine: it works where none runs.
-(cd "$here" && cozy --json run ./weightless/reverse --describe > "$OUT/describe-code.json" 2> "$OUT/describe-code.err") \
+(in_project "$RUN_PROJECT" --json run "$here/weightless/reverse" --describe > "$OUT/describe-code.json" 2> "$OUT/describe-code.err") \
   && J '.fields | any(.name == "text")' "$OUT/describe-code.json" \
   || check "cozy run ./weightless/reverse --describe: $(tail -c 300 "$OUT/describe-code.json") $(tail -c 200 "$OUT/describe-code.err")"
 refused install package install birefnet
@@ -148,7 +155,7 @@ grep -q "local runs aren't available on" "$OUT/refused.txt" && grep -q -- '--on 
 step "no local machine"
 cozy --json machine ls > "$OUT/machines.json" && J '.machines | all(.name != "local")' "$OUT/machines.json" || check "machine ls: a local machine is listed"
 cozy machine ls > "$OUT/machines.txt" 2>&1 && grep -q "local runs aren't available on" "$OUT/machines.txt" || check "machine ls does not say local runs aren't available"
-cozy status > "$OUT/status.txt" 2>&1 && grep -q "local runs aren't available on" "$OUT/status.txt" || check "status does not say local runs aren't available"
+fixture_calcifer > "$OUT/status.txt" && J '.calcifer.local_usable == false' "$OUT/status.txt" || check "status does not say local runs aren't available"
 cozy --json doctor > "$OUT/doctor-gated.json" && J '.healthy and (.checks | any(.check == "machine" and (.state | contains("aren'"'"'t available"))))' "$OUT/doctor-gated.json" \
   || check "doctor: not healthy, or no line that local runs aren't available: $(jq -c .checks "$OUT/doctor-gated.json")"
 cozy machine logs local calcifer --lines 5 > "$OUT/log-calcifer.txt" && [ -s "$OUT/log-calcifer.txt" ] || check "machine logs local calcifer: no Calcifer log"
@@ -181,10 +188,10 @@ mkdir -p "$dir/folder/sub"; echo one > "$dir/folder/a.txt"; echo two > "$dir/fol
 ffmpeg -v error -y -f lavfi -i testsrc2=size=320x240:rate=24:duration=8 -c:v libx264 -pix_fmt yuv420p -g 24 "$dir/clip.mp4"
 ffmpeg -v error -y -f lavfi -i "color=c=teal:size=64x64" -frames:v 1 "$dir/still.png"
 size=$(stat -c %s "$dir/still.png")
-[ -n "$(row "$RUN_PROJECT" bound_clip .name)" ] || cozy project -p "$RUN_PROJECT" import "$dir/clip.mp4" bound_clip > /dev/null || check "bound: import the clip"
+[ -n "$(row "$RUN_PROJECT" bound_clip .name)" ] || project_import "$RUN_PROJECT" "$dir/clip.mp4" bound_clip > /dev/null || check "bound: import the clip"
 for _ in $(seq 60); do [ "$(row "$RUN_PROJECT" bound_clip .duration_ms)" != null ] && break; sleep 0.5; done
 # Frames 48 up to 144 at 24 fps: 2 to 6 s.
-if (cd "$dir" && cell bound "$here/inspect/inspect" 'clip=<bound_clip:48-144>' --file still=./still.png folder=./folder label=bound); then
+if (cd "$dir" && cell bound "$here/inspect/inspect" 'clip=<bound_clip:48-144>' --file "still=$dir/still.png" "folder=$dir/folder" label=bound); then
   grep -qE '"clip_seconds": *(3\.9|4\.0|4\.1)' "$OUT/bound.ndjson" && grep -qE "\"still_bytes\": *$size" "$OUT/bound.ndjson" \
     && grep -qE '"folder_files": *\[ *"a.txt", *"sub/b.txt" *\]' "$OUT/bound.ndjson" \
     || check "bound: not a 4 s clip, the picture and the folder's two files: $(grep -oE '"(clip_seconds|still_bytes|folder_files)": *[^,}]*' "$OUT/bound.ndjson" | head -3 | paste -sd' ')"
@@ -199,11 +206,11 @@ code=$(curl -sS -o "$OUT/put.json" -w '%{http_code}' -X PUT -H "Authorization: B
 # 200: the CLI sent it already, for the run above.
 { [ "$code" = 201 ] || [ "$code" = 200 ]; } || check "PUT /v1/files/sha256:$hex is not 201 or 200: $(head -c 300 "$OUT/put.json")"
 [ "$(curl -sS -o /dev/null -w '%{http_code}' -I -H "Authorization: Bearer $token" "http://$addr/v1/files/sha256:$hex")" = 200 ] || check "HEAD of an uploaded file is not 200"
-if (cd "$dir" && cell bound-digest "$here/inspect/inspect" --file "clip=./clip.mp4" --file "still=sha256:$hex" folder=./folder label=digest); then
+if (cd "$dir" && cell bound-digest "$here/inspect/inspect" --file "clip=$dir/clip.mp4" --file "still=sha256:$hex" "folder=$dir/folder" label=digest); then
   grep -qE "\"still_bytes\": *$size" "$OUT/bound-digest.ndjson" || check "bound-digest: the run was not given the uploaded picture"
 fi
 before=$(cozy --json run ls --limit 0 | jq '.runs | length')
-(cd "$dir" && ALLOW=file_not_held cell bound-unheld "$here/inspect/inspect" --file "clip=./clip.mp4" --file "still=sha256:$(head -c 64 /dev/urandom | sha256sum | cut -c1-64)" folder=./folder) || true
+(cd "$dir" && ALLOW=file_not_held cell bound-unheld "$here/inspect/inspect" --file "clip=$dir/clip.mp4" --file "still=sha256:$(head -c 64 /dev/urandom | sha256sum | cut -c1-64)" "folder=$dir/folder") || true
 { [ -f "$OUT/bound-unheld.refused" ] && [ "$(cozy --json run ls --limit 0 | jq '.runs | length')" = "$before" ]; } \
   || check "a digest Calcifer does not hold was not refused file_not_held before any run"
 
@@ -229,12 +236,12 @@ step "a run's own references: the <name> its request gives"
 local dir=$OUT/own-refs code=0
 rm -rf "$dir"; mkdir -p "$dir"
 ffmpeg -v error -y -f lavfi -i "color=c=teal:size=48x32" -frames:v 1 "$dir/amy.png"
-if (cd "$dir" && cell own-refs "$here/project/mentions.py/mentions" 'instructions=<Amy> waves at <Amy>' 'references:=[{"name": "Amy", "image": "./amy.png"}]'); then
+if (cd "$dir" && cell own-refs "$here/project/mentions.py/mentions" 'instructions=<Amy> waves at <Amy>' "references:=$(jq -cn --arg image "$dir/amy.png" '[{name: "Amy", image: $image}]')"); then
   grep -qE '"keys": *\[ *"Amy" *\]' "$OUT/own-refs.ndjson" && grep -qE '"widths": *\[ *48 *\]' "$OUT/own-refs.ndjson" \
     || check "own references: <Amy> did not send its picture: $(grep -oE '"(text|keys|widths)": *("[^"]*"|\[[^]]*\])' "$OUT/own-refs.ndjson" | head -3 | paste -sd' ')"
 fi
-(cd "$dir" && cozy --json run -p "$RUN_PROJECT" "$here/project/mentions.py/mentions" 'instructions=<Nobody> waves' --on local) > "$OUT/own-refs-nothing.json" 2>&1 || code=$?
-[ "$code" != 0 ] && grep -q input_missing "$OUT/own-refs-nothing.json" && grep -q 'cozy project import <file> Nobody' "$OUT/own-refs-nothing.json" \
+(cd "$dir" && in_project "$RUN_PROJECT" --json run "$here/project/mentions.py/mentions" 'instructions=<Nobody> waves' --on local) > "$OUT/own-refs-nothing.json" 2>&1 || code=$?
+[ "$code" != 0 ] && grep -q input_missing "$OUT/own-refs-nothing.json" && grep -q 'cozy open' "$OUT/own-refs-nothing.json" \
   || check "own references: <Nobody> was not refused with the command that makes it a box (exit $code): $(tail -c 300 "$OUT/own-refs-nothing.json")"
 }
 
@@ -248,7 +255,7 @@ if cell old-runtime "$here/old-runtime/takes/echo" text=old; then
   grep -q "can't speak this machine's executor protocol.*cozy package lock --upgrade-package cozy-runtime" "$OUT/old-runtime.err" \
     || check "old runtime: its install doesn't say it runs on the machine's pair, or how to re-lock: $(grep -m1 warning "$OUT/old-runtime.err" | head -c 400)"
 fi
-cozy --json run -p "$RUN_PROJECT" "$here/old-runtime/refuses/echo" text=old --on local > "$OUT/old-runtime-refused.json" 2>&1 || code=$?
+in_project "$RUN_PROJECT" --json run "$here/old-runtime/refuses/echo" text=old --on local > "$OUT/old-runtime-refused.json" 2>&1 || code=$?
 [ "$code" != 0 ] && grep -q runtime_protocol_unspoken "$OUT/old-runtime-refused.json" && grep -q 'cozy package lock --upgrade-package cozy-runtime' "$OUT/old-runtime-refused.json" \
   || check "old runtime: a range refusing the machine's Runtime wasn't refused naming the re-lock (exit $code): $(tail -c 400 "$OUT/old-runtime-refused.json")"
 }
@@ -266,11 +273,25 @@ printf "ffconcat version 1.0\nfile '%s'\n" "$dir/marker" > "$dir/list.mp4"
 ffmpeg -v error -y -f lavfi -i testsrc2=size=160x120:rate=24:duration=2 -c:v libx264 -pix_fmt yuv420p "$dir/control.mp4"
 (timeout 120 sh -c 'echo read > "$1"' _ "$dir/marker" && touch "$dir/opened") &
 for name in playlist list control; do
-  cozy --json project -p "$RUN_PROJECT" import "$dir/$name.mp4" "hostile_$name" > "$OUT/hostile-$name.json" 2>&1 || true
+  project_import "$RUN_PROJECT" "$dir/$name.mp4" "hostile_$name" > "$OUT/hostile-$name.json" 2>&1 || true
 done
 for _ in $(seq 60); do [[ $(row "$RUN_PROJECT" hostile_control .duration_ms) =~ ^[0-9]+$ ]] && break; sleep 0.5; done
 sleep 5
 [[ $(row "$RUN_PROJECT" hostile_control .duration_ms) =~ ^[0-9]+$ ]] || check "hostile media: the control clip was never probed: $(tail -c 200 "$OUT/hostile-control.json")"
+if [[ $(uname -s) == Linux ]]; then
+  # A literal questionmark is a valid POSIX project path, not an image sequence pattern.
+  local literal; literal=$(mktemp -d "$RUNNER_TEMP/hostile?image.XXXXXX")
+  ffmpeg -v error -y -f lavfi -i color=c=blue:size=8x8 -frames:v 1 "$dir/image.png"
+  cozy --json new "$literal" > "$OUT/hostile-questionmark-new.json" 2>&1 || check "literal image: project creation failed"
+  project_import "$literal" "$dir/image.png" literal_image > "$OUT/hostile-questionmark-import.json" 2>&1 || check "literal image: import failed"
+  for _ in $(seq 60); do
+    in_project "$literal" --json --full status > "$OUT/hostile-questionmark.json" 2> "$OUT/hostile-questionmark.err" || true
+    J 'any(.project.assets[]; .name == "literal_image" and .width == 8 and .height == 8)' "$OUT/hostile-questionmark.json" && break
+    sleep 0.5
+  done
+  J 'any(.project.assets[]; .name == "literal_image" and .width == 8 and .height == 8)' "$OUT/hostile-questionmark.json" \
+    || check "literal image: the CLI never measured its PNG in the questionmark project: $(tail -c 300 "$OUT/hostile-questionmark.json")"
+fi
 [ ! -e "$dir/opened" ] || check "hostile media: ffmpeg or ffprobe opened a file an imported playlist or concat list names"
 echo "hostile media: playlist $(tail -c 160 "$OUT/hostile-playlist.json"); list $(tail -c 160 "$OUT/hostile-list.json")"
 }
@@ -286,7 +307,8 @@ step "the CLI in a folder Calcifer can't see"
 [ -n "$LOCAL" ] && command -v docker > /dev/null || { echo "skipped: no local machine or no docker"; return 0; }
 # The runner's own OS: a candidate cozy is built on it, for its glibc (debian:12's 2.36 runs only a release's).
 local src=$OUT/unseen seen=$OUT/unseen-seen image=ubuntu:24.04 size name n hex
-rm -rf "$src" "$seen"; mkdir -p "$src/folder/sub" "$src/sub" "$seen"
+rm -rf "$src" "$seen"; mkdir -p "$src/folder/sub" "$src/sub" "$seen/project"
+(cd "$seen/project" && cozy --json new) > "$OUT/unseen-new.out" || { check "unseen: initialize project"; return; }
 echo one > "$src/folder/a.txt"; echo two > "$src/folder/sub/b.txt"
 ffmpeg -v error -y -f lavfi -i testsrc2=size=320x240:rate=24:duration=3 -c:v libx264 -pix_fmt yuv420p "$src/clip.mp4"
 for name in still other; do
@@ -300,7 +322,7 @@ rm -rf "$src"/*/.venv "$src"/*/uv.lock
 size=$(stat -c %s "$src/still.png")
 [ ! -e /work ] || { check "unseen: /work is on this computer too"; return; }
 docker pull -q "$image" > /dev/null || { check "unseen: docker pull $image"; return; }
-# inside <name> <cozy words…>: the CLI in /work (or $DIR in it), a copy of $src that only its container has. $AFTER, a shell
+# inside <name> <cozy words…>: the CLI at the host project path with client-only source files mounted over it. $AFTER, a shell
 # line, then runs there, its words on stderr. Its stdout is unseen-<name>.out, its stderr unseen-<name>.err. $REFUSED: its
 # failure is the caller's to judge.
 inside() {
@@ -308,12 +330,12 @@ inside() {
   printf '%s\x1f' "$@" >> "$OUT/argv.log"; printf '\x1e' >> "$OUT/argv.log"  # docker runs the binary itself
   cp "$HOME/.cozy/calcifer/calcifer.lock.holder" "$HOME/.cozy/config.toml" "$seen/"
   docker run --rm --network host --pid host -u "$(id -u):$(id -g)" -e HOME=/home/cli -e COZY_HUB_URL="${COZY_HUB_URL:-}" \
-    -e COZY_PROJECT="${UNSEEN_PROJECT:-}" -e AFTER="${AFTER:-}" -e DIR="${DIR:-.}" \
-    --tmpfs "/home/cli:rw,exec,uid=$(id -u),gid=$(id -g),mode=0700" --tmpfs "/work:rw,exec,uid=$(id -u),gid=$(id -g),mode=0700" \
+    -e PROJECT_DIRECTORY="$seen/project" -e AFTER="${AFTER:-}" -e DIR="${DIR:-.}" \
+    --tmpfs "/home/cli:rw,exec,uid=$(id -u),gid=$(id -g),mode=0700" --tmpfs "$seen/project:rw,exec,uid=$(id -u),gid=$(id -g),mode=0700" \
     -v "$seen:/seen:ro" -v "$COZY:/usr/local/bin/cozy:ro" -v "$src:/src:ro" -v /etc/ssl/certs:/etc/ssl/certs:ro \
-    ${CAND_RT:+-v "$(dirname "$CAND_RT"):/wheels:ro"} -w /work "$image" \
+    ${CAND_RT:+-v "$(dirname "$CAND_RT"):/wheels:ro"} -w "$seen/project" "$image" \
     sh -c 'mkdir -p ~/.cozy/calcifer && cp /seen/calcifer.lock.holder ~/.cozy/calcifer/ && cp /seen/config.toml ~/.cozy/ \
-      && cp -r /src/. /work && cd "$DIR" && cozy "$@" && { [ -z "$AFTER" ] || sh -c "$AFTER" >&2; }' sh "$@" \
+      && cp -r /src/. "$PROJECT_DIRECTORY" && cd "$PROJECT_DIRECTORY/$DIR" && cozy "$@" && { [ -z "$AFTER" ] || sh -c "$AFTER" >&2; }' sh "$@" \
     > "$OUT/unseen-$name.out" 2> "$OUT/unseen-$name.err" && return 0
   [ -n "${REFUSED:-}" ] || check "unseen $name: cozy $*: $(tail -c 400 "$OUT/unseen-$name.err") $(tail -c 300 "$OUT/unseen-$name.out")"
   return 1
@@ -325,12 +347,7 @@ refused_inside() {
   grep -q "\"code\": *\"$code\"" "$OUT/unseen-$name.out" || check "unseen $name: cozy $*: not $code: $(tail -c 400 "$OUT/unseen-$name.out")"
 }
 said() { grep -qE "$2" "$OUT/unseen-$1.out" || check "unseen $1: not $2: $(grep -oE '"(clip_seconds|still_bytes|folder_files|label)": *[^,}]*' "$OUT/unseen-$1.out" | paste -sd' ')"; }
-# A project made from in there, by its name, then named by COZY_PROJECT: no path of either side's names it.
-if inside new --json project new unseen-film; then
-  UNSEEN_PROJECT=$(jq -r .name "$OUT/unseen-new.out")
-  J '.path | startswith("/work") | not' "$OUT/unseen-new.out" || check "unseen new: made in the container's folder: $(cat "$OUT/unseen-new.out")"
-fi
-export UNSEEN_PROJECT
+# Client code is sent by content; its working directory names the separate host project.
 if inside files --json run ./inspect/inspect --file clip=./clip.mp4 --file still=./still.png folder=./folder label=files --on local; then
   said files '"clip_seconds": *(2\.9|3\.0|3\.1)' && said files "\"still_bytes\": *$size" && said files '"folder_files": *\[ *"a.txt", *"sub/b.txt" *\]'
   said files '"target": *"local/e2e-inspect/inspect"'
@@ -359,9 +376,6 @@ AFTER='grep -c "name = \"e2e-weightless\"" uv.lock' DIR=weightless inside lock -
 # Locked in Calcifer's copy of the tree, which it holds by the tree's digest.
 ls -d "$HOME"/.cozy/calcifer/code/*/tree/e2e_weightless > /dev/null 2>&1 || check "unseen lock: Calcifer holds no copy of the package: $(ls "$HOME/.cozy/calcifer/code" 2> /dev/null | head -3)"
 DIR=weightless refused_inside publish not_logged_in package publish
-inside import project import ./still.png && grep -qx still "$OUT/unseen-import.out" || check "unseen import: not named still: $(cat "$OUT/unseen-import.out")"
-inside into project import ./other.png --into still && grep -qx still.2 "$OUT/unseen-into.out" || check "unseen into: not still.2: $(cat "$OUT/unseen-into.out")"
-[ "$(row "${UNSEEN_PROJECT:-none}" still .versions)" = 2 ] || check "unseen: still has not 2 versions: $(row "${UNSEEN_PROJECT:-none}" still .)"
 inside model --json model download ./tiny.safetensors local/e2e-unseen --source-format as-is --on local \
   && cozy --json model ls --on local | grep -q e2e-unseen || check "unseen model: local/e2e-unseen is not on local"
 if [ -f "${CAND_RT:-}" ]; then
@@ -372,7 +386,6 @@ local lock=$HOME/.cozy/calcifer/calcifer.lock.holder
 [ "$(curl -sS -o "$OUT/unseen-list.json" -w '%{http_code}' -H "Authorization: Bearer $(jq -r .token "$lock")" -H 'Content-Type: application/json' \
   -d '{"add": "/work/weightless"}' "http://$(jq -r .address "$lock")/v1/tools/list")" = 400 ] && J '.error.code == "tool_list_local"' "$OUT/unseen-list.json" \
   || check "unseen: a path added to the tool list: $(cat "$OUT/unseen-list.json")"
-unset UNSEEN_PROJECT
 }
 
 # cl-820: local code edited between runs on `local`, as cl-817's edit.sh timed it (an edit took 7.9 s read in place, 10.2 s once it
@@ -391,7 +404,7 @@ sed -i 's/^name = "e2e-weightless"/name = "e2e-edits"/' "$code/pyproject.toml"
 timed() {  # timed <step> <reply>: the environment its run had, on stdout
   local t0 t1 env
   t0=$(date +%s.%N)
-  cozy --json run -p "$RUN_PROJECT" "$code/reverse" text=abc --on local > "$OUT/edit-$1.ndjson" 2> "$OUT/edit-$1.err" \
+  in_project "$RUN_PROJECT" --json run "$code/reverse" text=abc --on local > "$OUT/edit-$1.ndjson" 2> "$OUT/edit-$1.err" \
     || { check "edit $1: cozy run did not complete: $(tail -c 300 "$OUT/edit-$1.err")" >&2; return 1; }
   t1=$(date +%s.%N)
   grep -q "\"text\": *\"$2\"" "$OUT/edit-$1.ndjson" || check "edit $1: the reply is not $2: $(grep -o '"text": *"[^"]*"' "$OUT/edit-$1.ndjson" | tail -1)" >&2
@@ -419,7 +432,7 @@ local code=$OUT/quoted/e2e-quoted first quoted
 rm -rf "$code" && mkdir -p "$OUT/quoted" && cp -r "$here/weightless" "$code"
 sed -i 's/^name = "e2e-weightless"/name = "e2e-quoted"/' "$code/pyproject.toml"
 estimate() {  # estimate <name>: the local machine's quote of one run, in <name>.json
-  cozy --json run -p "$RUN_PROJECT" "$code/reverse" text=abc --estimate --on local > "$OUT/$1-all.json" 2> "$OUT/$1.err" \
+  in_project "$RUN_PROJECT" --json run "$code/reverse" text=abc --estimate --on local > "$OUT/$1-all.json" 2> "$OUT/$1.err" \
     || { check "$1: cozy run --estimate failed: $(tail -c 300 "$OUT/$1.err")"; return 1; }
   jq '.machines[] | select(.machine == "local")' "$OUT/$1-all.json" > "$OUT/$1.json"
   jq -c '{basis, width, start_ms, finish_ms, prepare_ms}' "$OUT/$1.json" | sed "s/^/$1: /" | tee -a "$OUT/quoted.txt"
@@ -521,7 +534,7 @@ fi
 run_flags() {
 step "run flags"
 before=$(cozy --json run ls --limit 0 | jq '.runs | length') || true
-(cd "$here" && cozy --json run ./weightless/reverse --describe) > "$OUT/describe.json" || check "run --describe failed"
+(in_project "$RUN_PROJECT" --json run "$here/weightless/reverse" --describe) > "$OUT/describe.json" || check "run --describe failed"
 J '.fields | any(.name == "text")' "$OUT/describe.json" || check "run --describe: no text field"
 [ "$(cozy --json run ls --limit 0 | jq '.runs | length')" = "$before" ] || check "run --describe started a run"
 note=$OUT/inputs/note.txt; mkdir -p "$OUT/inputs"; echo "an asset" > "$note"
@@ -573,7 +586,7 @@ done
 
 run_follow() {
 step "a run followed, a snapshot, a cancel"
-(cd "$here" && cozy --json run -p "$RUN_PROJECT" ./weightless/wait seconds:=120 --on local > "$OUT/wait.ndjson" 2>&1) &
+(cd "$here" && in_project "$RUN_PROJECT" --json run "$here/weightless/wait" seconds:=120 --on local > "$OUT/wait.ndjson" 2>&1) &
 waiting=$!
 # Its own events say its number, then that it runs (e2e/run.sh); its follower exiting first ends the wait.
 until n=$(run_number "$OUT/wait.ndjson"); [ -n "$n" ] || ! kill -0 "$waiting" 2> /dev/null; do sleep 0.2; done
@@ -601,7 +614,7 @@ cozy --json run ls --state canceled > "$OUT/canceled.json" && J --argjson n "${n
 # After `basics`: its model downloads are runs of zhengpeng7/birefnet.
 run_filters() {
 step "run ls filters"
-cozy --json run ls --package zhengpeng7/birefnet > "$OUT/by-package.json" && J '(.runs | length > 0) and all(.runs[]; .target | startswith("zhengpeng7/birefnet"))' "$OUT/by-package.json" \
+cozy --json run ls --all --package zhengpeng7/birefnet > "$OUT/by-package.json" && J '(.runs | length > 0) and all(.runs[]; .target | startswith("zhengpeng7/birefnet"))' "$OUT/by-package.json" \
   || check "run ls --package zhengpeng7/birefnet: none listed, or others listed"
 cozy --json run ls --on local > "$OUT/by-machine.json" && J '(.runs | length > 0) and all(.runs[]; .machine == "local")' "$OUT/by-machine.json" \
   || check "run ls --on local: other machines listed"
@@ -720,5 +733,5 @@ cozy --json update "${newest#v}" > "$OUT/update.json" || check "update ${newest#
 echo "update ${newest#v}: $((SECONDS - t0)) s"
 [ "$(cozy --version)" = "cozy ${newest#v}" ] || check "update: cozy is $(cozy --version), not ${newest#v}"
 J '.calcifer == "restarted"' "$OUT/update.json" || check "update: Calcifer was not restarted ($(jq -c .calcifer "$OUT/update.json"))"
-cozy --json status | J --arg v "${newest#v}" '.calcifer.version == $v' || check "update: Calcifer does not run ${newest#v}"
+fixture_calcifer | J --arg v "${newest#v}" '.calcifer.version == $v' || check "update: Calcifer does not run ${newest#v}"
 }

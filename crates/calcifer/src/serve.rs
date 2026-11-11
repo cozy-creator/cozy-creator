@@ -96,17 +96,55 @@ fn refuse(home: &Home, error: Error) -> Error {
 
 /// Where Calcifer listens unless `calcifer.port` says: the same port each start, so a page's origin,
 /// and what it keeps there, outlive a restart.
-const PORT: u16 = 7317;
+const PORT: u16 = config::DEFAULT_CALCIFER_PORT;
 
-/// The port asked for and no other; none asked for, [`PORT`] or the next free one.
-async fn listen(asked: Option<u16>) -> std::io::Result<TcpListener> {
-    let mut port = asked.unwrap_or(PORT);
+/// The port asked for and no other; none asked for, the default or the next free one.
+async fn listen(asked: Option<u16>, default: u16) -> std::io::Result<TcpListener> {
+    let mut port = asked.unwrap_or(default);
+    if port == 0 {
+        return Err(std::io::Error::new(ErrorKind::InvalidInput, "Calcifer's port must be between 1 and 65535"));
+    }
     loop {
         match TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await {
             // Windows answers a reserved port with permission denied.
             Err(e) if asked.is_none() && port < u16::MAX && matches!(e.kind(), ErrorKind::AddrInUse | ErrorKind::PermissionDenied) => port += 1,
             bound => return bound,
         }
+    }
+}
+
+#[cfg(test)]
+mod port_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn explicit_port_is_exact_and_busy_port_is_refused() {
+        let held = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let port = held.local_addr().unwrap().port();
+        assert!(matches!(listen(Some(port), PORT).await.unwrap_err().kind(), ErrorKind::AddrInUse | ErrorKind::PermissionDenied));
+        drop(held);
+        let listener = listen(Some(port), PORT).await.unwrap();
+        assert_eq!(listener.local_addr().unwrap(), (Ipv4Addr::LOCALHOST, port).into());
+    }
+
+    #[tokio::test]
+    async fn unconfigured_port_uses_the_next_free_loopback_port() {
+        let held = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let port = held.local_addr().unwrap().port();
+        assert!(port < u16::MAX);
+        let listener = listen(None, port).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        assert!(address.ip().is_loopback());
+        assert!(address.port() > port);
+        assert_eq!(PORT, 8818);
+        drop(held);
+        let at_default = listen(None, port).await.unwrap();
+        assert_eq!(at_default.local_addr().unwrap().port(), port);
+    }
+
+    #[tokio::test]
+    async fn zero_never_requests_a_random_port() {
+        assert_eq!(listen(Some(0), PORT).await.unwrap_err().kind(), ErrorKind::InvalidInput);
     }
 }
 
@@ -144,7 +182,7 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     let calcifer = Calcifer::open(&home.calcifer(), &home.outputs())
         .map_err(|e| failed(Error::new(Kind::Internal, "calcifer_store", e.to_string())))?;
     steps.done("store");
-    let listener = match listen(port).await {
+    let listener = match listen(port, PORT).await {
         Ok(listener) => listener,
         Err(e) => {
             calcifer.close();
@@ -176,7 +214,7 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
         tokio::spawn(async move {
             term.recv().await;
             info!("SIGTERM: stopping as down does");
-            stopping.down().await;
+            if let Err(error) = stopping.down().await { warn!(code = %error.code, "Calcifer remains running until its encrypted views can close"); }
         });
     }
     let app = api::router(api.clone()).into_make_service_with_connect_info::<SocketAddr>();
@@ -218,6 +256,7 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     crate::project::resume(&api);
 
     api.stopped().await;
+    tokio::task::block_in_place(|| crate::project::vault::close_all(&api)).map_err(failed)?;
     if let Ok(Err(e)) = server.await {
         warn!("the API server ended: {e}");
     }

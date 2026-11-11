@@ -11,7 +11,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
 const { existsSync, readFileSync, renameSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { MP4, boxOf, calcifer, closeBox, openBox, signIn, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, until, watchBoxes, wav, importYaml, yamlOf } = require('./page');
+const { projectFromPage, MP4, boxOf, calcifer, closeBox, openBox, signIn, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, until, watchBoxes, wav, importYaml, yamlOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -75,11 +75,11 @@ function linesOf(text, name) {
   const local = (await api('/v1/status')).body.local_usable && !process.env.ALONE;
   seen.ran = local;
 
-  await page.goto(`${base}/#/projects`);
+  await page.goto(`${base}/projects`);
   await page.fill('input[aria-label="New project\'s name"]', `web-tools-${Date.now()}`);
   await page.click('form button[type=submit]');
-  await page.waitForURL(/#\/projects\/[^/]+$/);
-  const id = page.url().match(/#\/projects\/([^/]+)/)[1];
+  await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
+  const id = (await projectFromPage(page)).id;
   const state = async () => (await api(`/v1/projects/${id}`)).body;
   const folder = (await state()).path;
   seen.project = { id, folder };
@@ -106,7 +106,7 @@ function linesOf(text, name) {
   // Named first, it's read by PyPI's Runtime, which knows no tool; the install a run makes on this machine's Runtime takes its place.
   importYaml(folder, `${yaml().trimEnd()}\n  shot:\n    tool: ${fixture}/shot\n    plate: <walk>\n`);
   await box('shot').waitFor();
-  if (local) execFileSync(COZY, ['--json', 'run', `${fixture}/still`, 'instructions=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, env: { ...process.env, COZY_PROJECT: folder }, stdio: ['ignore', 'pipe', 'inherit'], timeout: FIRST_RUN_MS });
+  if (local) execFileSync(COZY, ['--json', 'run', `${fixture}/still`, 'instructions=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, stdio: ['ignore', 'pipe', 'inherit'], timeout: FIRST_RUN_MS });
   const tool = await until('the fixture listed', async () => (await api(`/v1/tools?project=${id}`)).body.tools.find((held) => held.local && held.id === `${fixture}/shot`), Boolean, FIRST_RUN_MS);
   // The page reads its list again as that install ends, with no reload.
   await until('the page lists it', () => page.evaluate((id) => Boolean(document.querySelector(`.tools li.tool[data-tool="${CSS.escape(id)}"]`)), tool.id), Boolean);
@@ -374,7 +374,9 @@ function linesOf(text, name) {
     await until('a picked-up take', () => versions('shot'), (n) => n === 2, FIRST_RUN_MS);
     const picked = await given('shot');
     check('pickup_reaches_the_function', picked.pickup?.out_frame === 2 && picked.pickup.take?.file?.file === 'VideoFile', picked.pickup);
-    check('pickup_writes_nothing', linesOf(yaml(), 'shot') === typed && !yaml().includes('pickup'), linesOf(yaml(), 'shot'));
+    const afterPickup = yaml();
+    const pickedLines = linesOf(afterPickup, 'shot');
+    check('pickup_writes_nothing', pickedLines === typed && !afterPickup.includes('pickup'), { before: typed, after: pickedLines, hasPickup: afterPickup.includes('pickup') });
 
     // Another box's take let go on it: from that take, at a frame chosen on it.
     importYaml(folder, `${yaml().trimEnd()}\n  other:\n    tool: ${fixture}/shot\n    plate: <walk>\n`);

@@ -46,7 +46,6 @@ pub(super) struct Told {
     making: HashMap<String, Vec<u64>>,
     queue: Vec<api::calcifer::project::Queued>,
     busy: bool,
-    moving: bool,
 }
 
 impl Told {
@@ -54,27 +53,38 @@ impl Told {
         let rendering = project.rendering.lock().expect("rendering lock").clone();
         let busy = *project.walking.lock().expect("walking lock");
         let walk = project.folder.walk_now().unwrap_or_default();
-        Self { model, rendering, making: making_now(&walk), queue: queue(project, &walk), busy, moving: project.moving.try_lock().is_err() }
+        Self { model, rendering, making: making_now(&walk), queue: queue(project, &walk), busy }
     }
 }
 
 /// `project`'s model as its files are this moment. One read at a time, and any other waits and takes it.
 pub(super) async fn of(api: &Arc<Api>, project: &Arc<Project>) -> Result<Arc<Model>, Error> {
+    let access = Arc::new(super::vault::admit_root(&project.root).await?);
+    project.require_view()?;
     let asked = Instant::now();
     let mut held = project.model.lock().await;
+    project.require_view()?;
     let wait_ms = asked.elapsed().as_secs_f64() * 1000.0;
     let rev = revision(&project.folder.dir);
     let heard = api.projects.heard_changes.load(std::sync::atomic::Ordering::Relaxed);
     if let Some(model) = held.as_ref().filter(|model| model.rev == rev && model.heard == heard) {
+        project.require_view()?;
         return Ok(model.clone());
     }
-    let (api, read, began) = (api.clone(), project.clone(), Instant::now());
-    let answer = tokio::task::spawn_blocking(move || read_model(&api, &read, rev, heard)).await;
+    let (api, read, reading, began) = (api.clone(), project.clone(), access.clone(), Instant::now());
+    let answer = tokio::task::spawn_blocking(move || {
+        // Dropping a canceled request's JoinHandle cannot stop a blocking worker.
+        // Its own clone keeps the mounted view leased until this read ends.
+        let _reading = reading;
+        read.require_view()?;
+        read_model(&api, &read, rev, heard)
+    }).await;
     let model = Arc::new(answer.map_err(|why| Error::new(Kind::Internal, "project_read", why.to_string()))??);
     let read_ms = began.elapsed().as_secs_f64() * 1000.0;
     if wait_ms + read_ms >= 5.0 {
         info!(phase = "project_read", wait_ms, read_ms);
     }
+    project.require_view()?;
     *held = Some(model.clone());
     Ok(model)
 }
@@ -88,6 +98,7 @@ fn read_model(api: &Arc<Api>, project: &Project, rev: String, heard: u64) -> Res
     })??;
     let stand = doc.stand(&lock);
     let mut warnings = doc.warnings.clone();
+    warnings.extend(folder.crdt_conflicts()?.into_iter().map(api::calcifer::project::Warning::of_file));
     warnings.extend(doc.said_of_known(&lock));
     let known = known_packages(api, &doc);
     warnings.extend(unmade(&doc, &known, &lock));
@@ -119,7 +130,7 @@ fn read_model(api: &Arc<Api>, project: &Project, rev: String, heard: u64) -> Res
     let next = next_steps(&orphans, absent, !missing.is_empty() || !stale.is_empty());
     let failed: std::collections::BTreeSet<&str> = rows.iter().filter_map(|row| Some(row.failure.as_ref()?.message.as_str())).collect();
     warnings.retain(|warning| !failed.contains(warning.message.as_str()));
-    let head = ProjectState { covered: None, id: super::project_id(&folder.dir), path: folder.dir.clone(), assets: vec![], queue: vec![], missing, stale, orphans, busy: false, moving: false, absent, run_files, cuts, warnings, next, board: None, unsent: vec![] };
+    let head = ProjectState { covered: None, id: project.id.clone(), code: project.code.clone(), path: folder.dir.clone(), assets: vec![], queue: vec![], missing, stale, orphans, busy: false, absent, run_files, cuts, warnings, next, board: None, unsent: vec![] };
     Ok(Model { rev, heard, doc, lock, head, rows, stand })
 }
 
@@ -153,7 +164,6 @@ impl Model {
             state.warnings.insert(0, api::calcifer::project::Warning::of_file(super::not_saved(&why)));
         }
         state.busy = *project.walking.lock().expect("walking lock");
-        state.moving = project.moving.try_lock().is_err();
         state.board = board_of(project);
         let walk = project.folder.walk_now().unwrap_or_default();
         state.queue = queue(project, &walk);
@@ -198,7 +208,7 @@ pub(crate) async fn told(api: &Arc<Api>, id: String, dir: &Path, settled: bool) 
     let (assets, gone) = changed(&was, &now);
     let (from, to) = (&was.model.head, &now.model.head);
     // Told with no file moved, it's what the head says that moved, even if it went there and back since the last telling and a reader saw it there.
-    let head = settled || was.busy != now.busy || was.moving != now.moving || was.queue != now.queue || (&from.missing, &from.stale, &from.orphans, &from.absent, &from.run_files, &from.cuts, &from.warnings, &from.next) != (&to.missing, &to.stale, &to.orphans, &to.absent, &to.run_files, &to.cuts, &to.warnings, &to.next);
+    let head = settled || was.busy != now.busy || was.queue != now.queue || (&from.missing, &from.stale, &from.orphans, &from.absent, &from.run_files, &from.cuts, &from.warnings, &from.next) != (&to.missing, &to.stale, &to.orphans, &to.absent, &to.run_files, &to.cuts, &to.warnings, &to.next);
     match assets.len() + gone.len() > MOST_TOLD {
         true => whole(id, rev),
         false => StreamEvent::ProjectChanged { id, rev, cursor: None, assets: Some(assets), gone, head },

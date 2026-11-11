@@ -1,18 +1,14 @@
-// The CLI and the page are one project (Paul, 11-04: "edits to the same project with a CLI will appear almost immediately in the webui; the
-// user should see the canvas being edited live"), in a real browser on a real Calcifer, with the real CLI, and the canvas never reloaded. From
-// each command's return to it showing, or a hand's save: add, text, approve, delete, put back, move, rename. A new box finds a free place on
-// screen and lands. A render from the CLI shows progress on its card and lands, on the fixture tool. What's typed and unsaved stays when the
-// CLI changes that field, and the page shows the conflict. What the page does reads back in the CLI. 200 edits as fast as they go: right at the
-// end, shown as it goes, only what changed read, frames sampled. And the stream made to fall behind for real, so `resync` runs: nothing's lost.
+// A second API client and the page edit one project on a real Calcifer. The canvas is never reloaded.
+// Each request is timed through its appearance, including typing conflicts, renders, and a 200-edit burst.
 //   node live.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $SHOT: where to keep its screenshots; $ALONE: on a shared
 // computer, so it runs nothing; $ARGV_LOG: where each cozy call is logged for coverage. Prints what it saw as JSON and exits 1 if anything failed.
 const { chromium } = require(process.env.PLAYWRIGHT);
-const { execFile, execFileSync } = require('child_process');
+const { execFile } = require('child_process');
 const { appendFileSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { calcifer, signIn, STEP_MS, boxOf, closeBox, lastLook, lookAt, noStall, openBox, png, until, pointAt, importYaml, yamlOf } = require('./page');
+const { projectFromPage, projectAction, projectJson, calcifer, signIn, STEP_MS, boxOf, closeBox, lastLook, lookAt, noStall, openBox, png, until, pointAt, importYaml, yamlOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -65,7 +61,7 @@ const WATCH = () => {
   /** What the pointer did and where the page was, for a box that doesn't open. First at the window, so it hears a click d3-drag then swallows. */
   window.clicks = [];
   for (const type of ['pointerdown', 'pointerup', 'click']) {
-    window.addEventListener(type, ({ target }) => window.clicks.push(`${type} ${target.tagName}.${target.className} ${location.hash}`.slice(0, 160)), true);
+    window.addEventListener(type, ({ target }) => window.clicks.push(`${type} ${target.tagName}.${target.className} ${location.pathname}`.slice(0, 160)), true);
   }
   /** All it says, at rest or worked on where it stands. */
   const wordsOf = (name) => box(name)?.textContent ?? '';
@@ -186,11 +182,11 @@ function linesOf(text, name) {
   const local = (await api('/v1/status')).body.local_usable && !process.env.ALONE;
   seen.ran = local;
 
-  await page.goto(`${base}/#/projects`);
+  await page.goto(`${base}/projects`);
   await page.fill('input[aria-label="New project\'s name"]', `web-live-${Date.now()}`);
   await page.click('form button[type=submit]');
-  await page.waitForURL(/#\/projects\/[^/]+$/);
-  const id = page.url().match(/#\/projects\/([^/]+)/)[1];
+  await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
+  const id = (await projectFromPage(page)).id;
   const folder = (await api(`/v1/projects/${id}`)).body.path;
   seen.project = { id, folder };
   const yaml = () => yamlOf(folder);
@@ -231,14 +227,14 @@ function linesOf(text, name) {
   });
   const cozy = (...words) => new Promise((done, fail) => {
     if (process.env.ARGV_LOG) appendFileSync(process.env.ARGV_LOG, `${words.map((word) => `${word}\x1f`).join('')}\x1e`);
-    execFile(COZY, words, { cwd: folder, env: { ...process.env, COZY_PROJECT: folder }, encoding: 'utf8', maxBuffer: 1 << 26, timeout: FIRST_RUN_MS }, (error, stdout, stderr) => {
+    execFile(COZY, words, { cwd: folder, encoding: 'utf8', maxBuffer: 1 << 26, timeout: FIRST_RUN_MS }, (error, stdout, stderr) => {
       const at = Date.now();
       if (error) fail(new Error(`cozy ${words.join(' ')}: ${error.message}: ${stdout}${stderr}`));
       else done({ stdout, stderr, at });
     });
   });
-  const project = (...words) => cozy('project', '-p', folder, ...words);
-  const asJson = async (...words) => JSON.parse((await cozy('--json', '--full', 'project', '-p', folder, ...words)).stdout);
+  const project = (...words) => projectAction(folder, ...words);
+  const asJson = async (...words) => (await project(...words)).value;
   const status = () => asJson('status');
   const rows = async () => (await api(`/v1/projects/${id}/canvas`)).body.cards;
   const held = async (name) => (await status()).assets.find((asset) => asset.name === name);
@@ -287,11 +283,14 @@ function linesOf(text, name) {
     return Boolean(rect) && rect.left >= 0 && rect.top >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight;
   }, name);
 
-  // A command adds it: it shows by itself where it was told, and lands.
+  // The empty hint is published only after the first canonical reconciliation.
   await page.locator('.empty-canvas').waitFor();
+  check('initial_replica_ready', true);
+
+  // A command adds it: it shows by itself where it was told, and lands.
   let place = await spot();
   const added = await timed('add', { name: 'live_a', x: place.x, y: place.y }, () => project('add', 'cozy/edit', 'live_a', `at=${place.x},${place.y},260`, 'description=Words from the CLI'));
-  check('add_prints_its_name', added.stdout.trim() === 'live_a', added.stdout);
+  check('add_returns_its_name', added.value.name === 'live_a', added.value);
   check('add_lands', added.landing);
   check('add_in_the_status', (await held('live_a'))?.tool === 'cozy/edit');
 
@@ -302,13 +301,13 @@ function linesOf(text, name) {
   // A picture.
   const picture = join(scratch, 'Live Picture.png');
   writeFileSync(picture, png(77));
-  const imported = await timed('import', { name: 'live_pic' }, () => cozy('--json', 'project', '-p', folder, 'import', picture, 'live_pic'));
+  const imported = await timed('import', { name: 'live_pic' }, () => project('import', picture, 'live_pic'));
   check('import_lands', imported.landing);
-  const hash = JSON.parse(imported.stdout).sha256.replace('sha256:', '').slice(0, 12);
+  const hash = imported.value.sha256.replace('sha256:', '').slice(0, 12);
 
   // A file of the project's lifted out as an asset of its own, with its description.
   const lifted = await timed('lift_a_file', { name: 'live_lift' }, () => project('import', hash, 'live_lift', '--description', 'Lifted out'));
-  check('lift_prints_its_name', lifted.stdout.trim() === 'live_lift', lifted.stdout);
+  check('lift_returns_its_name', lifted.value.name === 'live_lift', lifted.value);
   check('lift_keeps_its_words', (await held('live_lift'))?.fields?.description === 'Lifted out');
 
   // By hand, in place and by a rename over it, as editors save.
@@ -332,6 +331,11 @@ function linesOf(text, name) {
   check('add_placed_on_nothing', (await overlaps()).length === 0, await overlaps());
 
   // Approved by a command: it turns into that picture. Unapproved: back. Out of date has no dot now (Paul, 11-05): what shows is the picture.
+  // Its imported picture must be usable before timing state propagation, clear of first-cold media setup.
+  await page.waitForFunction((name) => {
+    const image = window.boxOf(name)?.querySelector('.media img');
+    return image?.complete && image.naturalWidth > 0 && image.naturalHeight > 0;
+  }, 'live_pic', { timeout: FIRST_RUN_MS });
   await timed('approve', { name: 'live_tool', picture: true }, () => project('approve', 'live_tool', hash));
   check('approve_in_the_status', (await held('live_tool')).pinned === true);
   await timed('unapprove', { name: 'live_tool', picture: false }, () => project('unapprove', 'live_tool'));
@@ -348,16 +352,16 @@ function linesOf(text, name) {
 
   // Deleted by a command, which prints the command that undoes it. That brings it back where it was.
   const deleted = await timed('delete', { gone: 'live_b' }, () => project('delete', 'live_b'));
-  const back = deleted.stdout.trim().split('\n').at(-1);
-  check('delete_prints_its_undo', back.startsWith(`cozy project -p ${folder} undo `) && /^\d+$/.test(back.split(' ').at(-1)), deleted.stdout);
+  const back = deleted.value.history;
+  check('delete_has_an_undo_entry', Number.isInteger(back), deleted.value);
   check('delete_gone_from_the_status', !(await held('live_b')));
-  await timed('undo', { name: 'live_b', x: place.x, y: place.y, w: 320 }, () => project('undo', back.split(' ').at(-1)));
+  await timed('undo', { name: 'live_b', x: place.x, y: place.y, w: 320 }, () => project('undo', back));
   check('undo_in_the_status', (await held('live_b'))?.fields?.description === 'Hand words two');
 
-  // By hand: a row from the CLI, an asset gone in an edited export, and an export that doesn't read, which is refused and changes nothing.
+  // By hand: a row from the API, an asset gone in an edited export, and an export that doesn't read, which is refused and changes nothing.
   place = await spot();
   await timed('hand_row', { name: 'live_b', x: place.x, y: place.y }, () => saved(() => {
-    execFileSync(process.env.COZY, ['project', '-p', folder, 'set', 'live_b', `at=${place.x},${place.y}`], { stdio: 'ignore' });
+    projectJson(folder, 'PATCH', '/canvas', { cards: { 'live_b': { x: place.x, y: place.y } } });
   }));
   await timed('hand_delete', { gone: 'live_auto' }, () => saved(() => importYaml(folder, yaml().replace(`${linesOf(yaml(), 'live_auto').trimEnd()}\n`, ''))));
   const whole = yaml();
@@ -424,7 +428,7 @@ function linesOf(text, name) {
   await until('typed saved under its new name', async () => (await held('live_held'))?.fields?.instructions, (text) => text?.includes('TYPED-FOUR'));
   check('typed_survives_a_rename', true);
 
-  // What the page does, the CLI reads at once.
+  // What the page does, the API reads at once.
   const readsBack = async (label, read, wanted) => {
     const from = Date.now();
     await until(label, read, wanted);
@@ -473,18 +477,20 @@ function linesOf(text, name) {
   // An Edit's tracks and clips from a file, as its timeline's gestures write them: the page shows its clip.
   place = await spot();
   const cutFile = join(scratch, 'cut.yaml');
-  writeFileSync(cutFile, 'description: A cut from a file\ntimeline:\n  tracks:\n    - clips:\n        - {clip: live_pic, frames: 24}\n');
+  writeFileSync(cutFile, JSON.stringify({ description: 'A cut from a file', timeline: { tracks: [{ clips: [{ clip: 'live_pic', frames: 24 }] }] } }));
   await project('add', 'cozy/edit', 'live_cut', `at=${place.x},${place.y},260`);
   await timed('edit_from_a_file', { name: 'live_cut', picture: true }, () => project('set', 'live_cut', '--input', cutFile));
   check('edit_reads_back', (await held('live_cut')).timeline?.tracks?.[0]?.clips?.[0]?.name === 'live_pic', (await held('live_cut')).timeline);
   await project('delete', 'live_cut');
 
   if (local) {
-    // A render from the CLI, on the fixture tool: its progress on its card, moving, with no reload, and it lands. The first one only readies its environment.
+    // A render from the API, on the fixture tool: its progress on its card, moving, with no reload, and it lands. The first one only readies its environment.
     // Read with this machine's Runtime, as a run reads it: a box doesn't wait on PyPI's.
     await cozy('--json', 'run', `${TOOL}/still`, 'prompt=primed', '--on', 'local');
     place = await spot();
-    await project('add', `${TOOL}/slow`, 'live_shot', `at=${place.x},${place.y},260`, 'instructions=A slow still', 'seconds:=0.1');
+    // The machine estimates the overall bar from prior runs of this size.
+    // Match the measured work while priming that estimate, then observe the next run.
+    await project('add', `${TOOL}/slow`, 'live_shot', `at=${place.x},${place.y},260`, 'instructions=A slow still', 'seconds:=14');
     await box('live_shot').waitFor();
     await project('render', 'live_shot', '--on', 'local');
     await timed('a_first_render', { name: 'live_shot', picture: true }, async () => ({ at: Date.now() }));
@@ -504,7 +510,10 @@ function linesOf(text, name) {
     const said = await page.evaluate(() => window.progressSaid);
     seen.render_said = said;
     // The time is Calcifer's for the whole run; its first run here says so until it has steps of its own.
-    check('steps_read_as_denoise_steps', said.some((text) => /^Denoise steps: \d+\/10(, (\d+[smhd](\d+[smh])? left|first run on this machine))?$/.test(text)) && !said.some((text) => /drawing/i.test(text)), said);
+    const isStep = (text) => /\d+\/\d+/.test(text);
+    const denoiseStep = /^Denoise steps: \d+\/10(, (\d+[smhd](\d+[smh])? left|first run on this machine))?$/;
+    const firstStep = said.findIndex(isStep);
+    check('steps_read_as_denoise_steps', firstStep >= 0 && said.filter(isStep).every((text) => denoiseStep.test(text)) && !said.slice(firstStep).some((text) => /drawing/i.test(text)), said);
     const fileAt = await landed;
     times.render_lands = shownAt - fileAt;
     check('render_lands_live', times.render_lands <= LIVE_MS, times.render_lands);
@@ -544,7 +553,7 @@ function linesOf(text, name) {
     const stopped = await timed('delete_while_rendering', { gone: 'live_shot' }, () => project('delete', 'live_shot'));
     const going = await until('nothing owed', async () => (await status()).queue ?? [], (queue) => queue.length === 0, 30_000);
     check('delete_stops_its_render', going.length === 0, going);
-    await timed('undo_after_a_render', { name: 'live_shot' }, () => project('undo', stopped.stdout.trim().split(' ').at(-1)));
+    await timed('undo_after_a_render', { name: 'live_shot' }, () => project('undo', stopped.value.history));
     check('undo_keeps_its_takes', (await held('live_shot')).versions === 3, await held('live_shot'));
 
   }
@@ -592,8 +601,14 @@ function linesOf(text, name) {
   const [projectReads, headReads, canvasReads, assetReads] = [reads.project, reads.heads, reads.canvas, reads.assets];
   const cdp = await context.newCDPSession(page);
   await cdp.send('Performance.enable');
-  const threadBusy = async () => (await cdp.send('Performance.getMetrics')).metrics.find(({ name }) => name === 'TaskDuration').value * 1000;
-  const busyFrom = await threadBusy();
+  const threadSample = async () => {
+    const { metrics } = await cdp.send('Performance.getMetrics');
+    const task = metrics.find(({ name }) => name === 'TaskDuration')?.value;
+    const at = metrics.find(({ name }) => name === 'Timestamp')?.value;
+    if (!Number.isFinite(task) || task < 0 || !Number.isFinite(at) || at < 0) throw new Error('invalid Performance TaskDuration/Timestamp sample');
+    return { TaskDuration: task, Timestamp: at };
+  };
+  const busyFrom = await threadSample();
   const started = Date.now();
   const lasts = await Promise.all(lanes.map(async (lane) => {
     let at = 0;
@@ -603,7 +618,11 @@ function linesOf(text, name) {
   const ended = Math.max(...lasts);
   const right = { all: fixed.map((name, i) => ({ name, has: last.get(name), x: targets[i].x, y: targets[i].y })) };
   const { when } = await shows(right, STEP_MS);
-  const thread = ((await threadBusy()) - busyFrom) / (when - started);
+  const busyTo = await threadSample();
+  const task_s = busyTo.TaskDuration - busyFrom.TaskDuration;
+  const elapsed_s = busyTo.Timestamp - busyFrom.Timestamp;
+  if (!Number.isFinite(task_s) || task_s < 0 || !Number.isFinite(elapsed_s) || elapsed_s <= 0) throw new Error('invalid Performance TaskDuration/Timestamp interval');
+  const thread = task_s / elapsed_s;
   const { frames, texts } = await bounded(page.evaluate(() => new Promise((done) => { window.stopWatching = done; })), STEP_MS, () => 'no frame came');
   const burst = {
     edits: 200,
@@ -616,6 +635,8 @@ function linesOf(text, name) {
     shown_along_the_way: texts.length,
     frames: summary(frames),
     thread: +thread.toFixed(2),
+    thread_mixed: +(task_s * 1000 / (when - started)).toFixed(2),
+    thread_samples: { before: busyFrom, after: busyTo, task_s, elapsed_s, started_ms: started, shown_ms: when },
   };
   seen.burst = burst;
   check('burst_right_in_a_second', burst.right_after_ms <= LIVE_MS, burst);

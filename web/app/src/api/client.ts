@@ -42,6 +42,7 @@ import type {
   PackageDetail,
   PackageSearch,
   Play,
+  ProjectAddress,
   ProjectState,
   ProjectShowReply,
   Projects,
@@ -66,9 +67,14 @@ import type {
   Unpinned,
   Updating,
   VersionMoved,
+  VaultAsk,
+  VaultStatus,
+  VaultChanged,
 } from "./calcifer"
 import type { MachineLogName, Rent } from "../types"
 import type { Transport } from "./transport"
+
+export type { VaultAsk, VaultStatus, VaultChanged } from "./calcifer"
 
 export const TRIES = 5
 
@@ -252,8 +258,10 @@ export class Client {
   // Files
 
   /** `true` when held whole, else the ranges held, `[first, last]` inclusive. */
-  async held(digest: string, signal: AbortSignal, onAttempt?: (attempt: number) => void): Promise<true | [number, number][]> {
-    const response = await this.send(`/v1/files/${digest}`, { method: "HEAD", signal }, { accept: [404], onAttempt })
+  async held(digest: string, signal: AbortSignal, onAttempt?: (attempt: number) => void, projectId?: string): Promise<true | [number, number][]> {
+    const response = projectId === undefined
+      ? await this.send(`/v1/files/${digest}`, { method: "HEAD", signal }, { accept: [404], onAttempt })
+      : await this.send(`/v1/project-files/${digest}?project=${encodeURIComponent(projectId)}`, { method: "HEAD", signal }, { accept: [404], onAttempt })
     if (response.ok) return true
     // A pod's `Cozy-*` headers are hostile too: read as numbers, and a nonsense range is no range.
     const ranges: [number, number][] = []
@@ -272,10 +280,13 @@ export class Client {
     total: number,
     signal: AbortSignal,
     onAttempt?: (attempt: number) => void,
+    projectId?: string,
   ): Promise<HeldFile | null> {
     const headers: Record<string, string> = { "Content-Type": "application/octet-stream" }
     if (total > 0) headers["Content-Range"] = `bytes ${start}-${start + part.size - 1}/${total}`
-    const response = await this.send(`/v1/files/${digest}`, { method: "PUT", headers, body: part, signal }, { onAttempt })
+    const response = projectId === undefined
+      ? await this.send(`/v1/files/${digest}`, { method: "PUT", headers, body: part, signal }, { onAttempt })
+      : await this.send(`/v1/project-files/${digest}?project=${encodeURIComponent(projectId)}`, { method: "PUT", headers, body: part, signal }, { onAttempt })
     return response.status === 204 ? null : response.json()
   }
 
@@ -289,6 +300,16 @@ export class Client {
     return this.write("POST", "/v1/projects", { name }, key)
   }
 
+  vault(id: string, signal?: AbortSignal): Promise<VaultStatus> {
+    return this.json(`${project(id)}/vault`, { signal, cache: "no-store" })
+  }
+
+  /** Credentials and one-time recovery responses never enter an outbox or idempotency cache. */
+  vaultChange(id: string, body: Partial<VaultAsk> & Pick<VaultAsk, "action">): Promise<VaultChanged> {
+    if (this.transport.channel) return Promise.reject(new ApiError(403, { kind: "forbidden", code: "vault_local_only", message: "Open this project on its computer to enter encryption credentials" }))
+    return this.json(`${project(id)}/vault`, { method: "POST", headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }, body: JSON.stringify(body), cache: "no-store" })
+  }
+
   project(id: string, signal?: AbortSignal): Promise<ProjectState> {
     return this.json(project(id), { signal })
   }
@@ -296,6 +317,10 @@ export class Client {
   /** One asset as it is now: what a change of it costs, whatever else the project holds. */
   asset(id: string, name: string): Promise<AssetVersions> {
     return this.json(`${project(id)}/assets/${encodeURIComponent(name)}`)
+  }
+
+  projectAddress(reference: string): Promise<ProjectAddress> {
+    return this.json(`${project(reference)}/address`)
   }
 
   /** What's said of the project besides its assets. */
@@ -411,11 +436,6 @@ export class Client {
   /** These assets' queued work dropped and their runs canceled. */
   cancelRender(id: string, names: string[], once?: AbortSignal): Promise<unknown> {
     return this.write("POST", `${project(id)}/cancel`, { names }, undefined, { once })
-  }
-
-  /** Every file `files/` lacks, from the Hub; a project's `moving` says it's going. */
-  pull(id: string): Promise<Opened> {
-    return this.write("POST", `${project(id)}/pull`, {})
   }
 
   rename(id: string, from: string, to: string, write: Write = {}): Promise<Renamed> {

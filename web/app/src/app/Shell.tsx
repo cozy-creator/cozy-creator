@@ -1,8 +1,11 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { flushSync } from "react-dom"
-import { Link, Outlet, useLocation, useMatch, useMatches, useNavigate } from "react-router-dom"
+import { Link, Outlet, useLocation, useMatches, useNavigate } from "react-router-dom"
 import { TRIES } from "../api/client"
+import { ProjectLocked, vaultKey, vaultQuery } from "../panels/ProjectVault"
+import { protectProjectView, forgetProjectView, privateProject } from "./view"
+import { notes } from "../ui/notes"
 import { projectQuery, projectsQuery } from "../api/queries"
 import { CanvasHost } from "../canvas/CanvasHost"
 import { warningsOf } from "../canvas/graph"
@@ -16,16 +19,8 @@ import { Notes } from "../ui/NoteList"
 import { useSignal } from "../ui/signal"
 import { landscape, setLandscape, setTheme, theme } from "../ui/theme"
 import { useConnection } from "./Connection"
-
-export function useProjectId(): string | null {
-  return useMatch("/projects/:id/*")?.params.id ?? null
-}
-
-/** A path under the current project, or under nothing. */
-export function useTo() {
-  const id = useProjectId()
-  return (rest = "") => (id ? `/projects/${id}${rest && `/${rest}`}` : `/${rest}`)
-}
+import { projectPath, rememberProject, useProjectId, useTo } from "./project"
+export { useProjectId, useTo } from "./project"
 
 /** A few tries in, it isn't a blip. Nothing restarts Calcifer on Windows, and `cozy open` does anywhere. */
 const SAYS_HOW = 5
@@ -55,7 +50,7 @@ function Connectivity() {
           {owed.held ? `Not saved: ${noHash(owed.held)}: ${changes} waiting` : `Saving ${changes}`}
         </span>
       ) : (
-        trying > 0 && <span className="pill warn">Trying again, attempt {trying}/{TRIES}</span>
+        trying > 0 && <span className="pill warn">Trying again, attempt {trying}/{TRIES}{owed.count > 0 && ` · ${changes} waiting`}</span>
       )}
       {version && (
         <button type="button" className="pill warn" onClick={() => location.reload()}>
@@ -83,10 +78,11 @@ function tabsOf(order: KnownProject[], id: string | null, count: number): KnownP
 }
 
 /** As many tabs as fit the bar, the rest behind "N more". `room` is the bar's free space past them; a hidden copy of every tab says what each takes. */
-function ProjectTabs({ id, room }: { id: string | null; room: HTMLElement | null }) {
+function ProjectTabs({ id, room, readable }: { id: string | null; room: HTMLElement | null; readable: boolean }) {
   const { client, stream } = useConnection()
   const to = useTo()
-  const { data } = useQuery({ ...projectQuery(client, stream, id ?? ""), enabled: Boolean(id) })
+  const { data: heldProject } = useQuery({ ...projectQuery(client, stream, id ?? ""), enabled: Boolean(id) && readable })
+  const data = readable ? heldProject : undefined
   const { data: list } = useQuery(projectsQuery(client))
   const order = useOrder(list?.projects ?? [])
   const [count, setCount] = useState(Number.POSITIVE_INFINITY)
@@ -140,7 +136,7 @@ function ProjectTabs({ id, room }: { id: string | null; room: HTMLElement | null
     <>
       <nav className="ptabs" aria-label="Projects" ref={strip}>
         {tabs.map((tab) => (
-          <Link key={tab.id} className={`ptab ${tab.id === id ? "on" : ""}`} to={`/projects/${tab.id}`} title={tab.path} aria-current={tab.id === id ? "page" : undefined}>
+          <Link key={tab.id} className={`ptab ${tab.id === id ? "on" : ""}`} to={projectPath(tab)} title={tab.path} aria-current={tab.id === id ? "page" : undefined}>
             {tab.name}
           </Link>
         ))}
@@ -232,6 +228,7 @@ function MainMenu({ id }: { id: string | null }) {
             project.yaml
           </Link>
         )}
+        {id && <Link className="tb" to={to("vault")}>Project encryption</Link>}
         <ThemeSwitch />
       </nav>
     </details>
@@ -239,13 +236,42 @@ function MainMenu({ id }: { id: string | null }) {
 }
 
 export function Shell() {
-  const { stream } = useConnection()
+  const { client, stream, bridge, outbox, canvases, privateViewEpoch } = useConnection()
+  const privateEpoch = useSignal(privateViewEpoch)
   const id = useProjectId()
-  // Calcifer holds the project open while a tab shows it.
+  const vault = useQuery({ ...vaultQuery(client, id ?? ""), enabled: Boolean(id) })
+  const [verified, setVerified] = useState<string | null>(null)
+  const [checking, setChecking] = useState(false)
+  // A cached unlocked status is not authority after selecting this project again.
+  // The initial empty-canvas import alone already has a fresh ordinary-project reply.
+  const freshOrdinary = useRef<string | null>(null)
+  const freshChecked = vault.isSuccess && (vault.isFetchedAfterMount || freshOrdinary.current === id)
+  // Cached ordinary content stays editable offline; a remembered private project needs fresh verification.
+  const knownPlainCache = Boolean(id && vault.data?.encrypted === false && vault.data.state === "plain" && !privateProject(id))
+  const checked = freshChecked || knownPlainCache
+  const allowed = Boolean(vault.data && (vault.data.state === "plain" || vault.data.state === "unlocked"))
+  const uncertain = Boolean(vault.data?.encrypted && vault.isError)
+  const revoked = Boolean(checked && vault.data?.encrypted && (vault.data.state === "locked" || vault.data.state === "locking"))
+  const readable = !id || (verified === id && checked && allowed && !checking && !uncertain)
+  // Temporary verification covers the existing canvas. Its private drafts, queued edits and
+  // imports stay in memory; only a confirmed lock releases their ownership.
+  const heldCanvas = !id || (verified === id && !revoked)
+  useLayoutEffect(() => {
+    if (readable) return
+    const pause = (event: Event) => { if (event.target instanceof HTMLMediaElement) event.target.pause() }
+    for (const media of document.querySelectorAll<HTMLMediaElement>("video,audio")) media.pause()
+    // Also stop a pending source load from starting playback after the cover appeared.
+    document.addEventListener("play", pause, true)
+    return () => document.removeEventListener("play", pause, true)
+  }, [readable])
   useEffect(() => {
-    stream.show(id)
+    stream.show(readable ? id : null)
     return () => stream.show(null)
-  }, [stream, id])
+  }, [stream, id, readable])
+  useEffect(() => {
+    if (freshOrdinary.current !== id || vault.isFetchedAfterMount) freshOrdinary.current = null
+    if (checked && document.visibilityState === "visible") setChecking(false)
+  }, [id, vault.dataUpdatedAt, vault.isFetchedAfterMount, checked])
   const to = useTo()
   const navigate = useNavigate()
   const location = useLocation()
@@ -258,11 +284,90 @@ export function Shell() {
   const hostKey = (id && adopted.current.get(id)) ?? id ?? "empty"
   const queries = useQueryClient()
 
+  useLayoutEffect(() => {
+    if (!id || !vault.data) { if (id) setVerified(null); return }
+    if (vault.data.encrypted) protectProjectView(id, true)
+    else if (freshChecked && vault.data.encrypted === false && vault.data.state === "plain") protectProjectView(id, false)
+    if (checked && allowed && !checking && !uncertain) {
+      bridge.allowProject(id)
+      outbox.allowProject(id)
+      setVerified(id)
+      return
+    }
+    if (!revoked) return
+    setVerified(null)
+    bridge.forgetProject(id)
+    outbox.discardProject(id)
+    canvases.get(id)?.revokePrivateView()
+    canvases.delete(id)
+    forgetProjectView(id)
+    for (const media of document.querySelectorAll<HTMLMediaElement>("video,audio")) {
+      media.pause(); media.removeAttribute("src"); media.load()
+    }
+    for (const image of document.querySelectorAll<HTMLImageElement>("img")) {
+      if (image.src.startsWith("blob:")) URL.revokeObjectURL(image.src)
+      image.removeAttribute("src")
+    }
+    const privateData = ({ queryKey }: { queryKey: readonly unknown[] }) =>
+      (["project", "canvas", "yaml"].includes(String(queryKey[0])) && queryKey[1] === id) || ["runs", "run", "tools", "history"].includes(String(queryKey[0]))
+    void queries.cancelQueries({ predicate: privateData })
+    queries.removeQueries({ predicate: privateData })
+    notes.set([])
+  }, [id, vault.data, freshChecked, checked, allowed, checking, uncertain, revoked, bridge, outbox, canvases, queries])
+
+  useEffect(() => {
+    if (!id || !vault.data?.encrypted) return
+    const cover = () => flushSync(() => setChecking(true))
+    const recheck = () => {
+      cover()
+      void vault.refetch().then((answer) => { if (!answer.isError) setChecking(false) })
+    }
+    const visible = () => { if (document.visibilityState === "hidden") cover(); else recheck() }
+    document.addEventListener("visibilitychange", visible)
+    window.addEventListener("pagehide", cover)
+    window.addEventListener("pageshow", recheck)
+    return () => {
+      document.removeEventListener("visibilitychange", visible)
+      window.removeEventListener("pagehide", cover)
+      window.removeEventListener("pageshow", recheck)
+    }
+  }, [id, vault.data?.encrypted, vault.refetch])
+
+  useEffect(() => {
+    if (!id || !vault.data?.encrypted || vault.data.state !== "unlocked" || vault.data.expires_at_ms == null) return
+    const timer = setTimeout(() => {
+      flushSync(() => setChecking(true))
+      void vault.refetch().then((answer) => { if (!answer.isError) setChecking(false) })
+    }, Math.max(0, vault.data.expires_at_ms - Date.now()))
+    return () => clearTimeout(timer)
+  }, [id, vault.data?.encrypted, vault.data?.state, vault.data?.expires_at_ms, vault.refetch])
+
+  useEffect(() => {
+    if (!id || !readable || !vault.data?.encrypted) return
+    let last = Number.NEGATIVE_INFINITY
+    const interval = Math.min(10_000, Math.max(100, (vault.data?.idle_timeout_s || 30) * 1000 / 3))
+    const activity = (event: Event) => {
+      if (!event.isTrusted || document.visibilityState !== "visible" || performance.now() - last < interval) return
+      if ((event.type === "play" || event.type === "timeupdate") && (!(event.target instanceof HTMLMediaElement) || event.target.paused || !event.target.controls)) return
+      if (event.type === "pointermove" && (!(event instanceof PointerEvent) || event.buttons === 0)) return
+      last = performance.now()
+      void client.vaultChange(id, { action: "activity" }).catch(() => { void vault.refetch() })
+    }
+    for (const event of ["pointerdown", "pointermove", "keydown", "play", "timeupdate"]) document.addEventListener(event, activity, true)
+    return () => { for (const event of ["pointerdown", "pointermove", "keydown", "play", "timeupdate"]) document.removeEventListener(event, activity, true) }
+  }, [id, readable, vault.data?.encrypted, vault.data?.idle_timeout_s, client, vault.refetch])
+
   const adopt = useCallback(
-    (project: string) => {
+    (project: string, code: string) => {
       adopted.current.set(project, "empty")
+      rememberProject(queries, { id: project, code })
+      // This callback only adopts a newly created ordinary project. Preserve the initial
+      // import's live canvas/outbox while its first status read catches up.
+      freshOrdinary.current = project
+      queries.setQueryData(vaultKey(project), { encrypted: false, state: "plain", path: "", idle_timeout_s: 0, next: [] })
+      setVerified(project)
       void queries.invalidateQueries({ queryKey: ["projects"] })
-      navigate(`/projects/${project}${location.pathname.replace(/^\/$/, "")}`, { replace: true })
+      navigate(projectPath({ id: project, code }, location.pathname.replace(/^\/$/, "")), { replace: true })
     },
     [navigate, location.pathname, queries],
   )
@@ -280,26 +385,30 @@ export function Shell() {
     }
   }, [])
 
+  const mixedDrawer = /(?:^|\/)(?:runs|new|packages|models)(?:\/|$)/.test(location.pathname)
+  const drawerEpoch = mixedDrawer ? privateEpoch : 0
   const handle = matches[matches.length - 1]?.handle as { drawer?: "normal" | "wide" } | undefined
+  const drawerReadable = readable || (location.pathname.endsWith("/vault") && checked && !checking && !uncertain)
   return (
     <div className="shell" data-drawer={handle?.drawer ?? "none"}>
       <header className="top">
         <span className="history-controls" ref={setHistory} />
-        <ProjectTabs id={id} room={room} />
+        <ProjectTabs id={id} room={room} readable={readable} />
         <Connectivity />
         <span className="gap" ref={setRoom} />
         <MachineTabs to={to} projectId={id} />
         <span className="canvas-controls" ref={setSlot} />
         <MainMenu id={id} />
       </header>
-      <CanvasHost key={hostKey} projectId={id} slot={slot} history={history} onAdopt={adopt} />
-      {handle?.drawer && (
-        <aside className="drawer">
-          <Outlet />
+      {heldCanvas && <div hidden={!readable} inert={!readable} style={{ display: readable ? "contents" : "none" }}><CanvasHost key={hostKey} projectId={id} active={readable} slot={readable ? slot : null} history={readable ? history : null} onAdopt={adopt} /></div>}
+      {!readable && id && (checking || !checked || uncertain ? <main className="gate"><p>{vault.isError ? "Project protection could not be checked." : "Checking project protection…"}</p>{vault.isError && <button className="tb" type="button" onClick={() => void vault.refetch()}>Try again</button>}</main> : location.pathname.endsWith("/vault") ? <main className="gate"><p>Project protection</p></main> : <ProjectLocked id={id} />)}
+      {handle?.drawer && (heldCanvas || drawerReadable) && (
+        <aside className="drawer" hidden={!drawerReadable} inert={!drawerReadable} style={drawerReadable ? undefined : { display: "none" }}>
+          <Outlet key={drawerEpoch} />
         </aside>
       )}
-      {!handle?.drawer && <Outlet />}
-      <Notes />
+      {!handle?.drawer && readable && <Outlet />}
+      {readable && <Notes />}
     </div>
   )
 }

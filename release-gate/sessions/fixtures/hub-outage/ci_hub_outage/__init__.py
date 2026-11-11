@@ -10,7 +10,7 @@ import time
 
 import msgspec
 
-from cozy_runtime.author import App, ChildCallError, Context, ModelChoice, Weights, invocable
+from cozy_runtime.author import App, ChildCallError, Context, ModelChoice, Weights, call
 
 app = App()
 
@@ -19,13 +19,10 @@ class Read(msgspec.Struct):
     checkpoint: str
 
 
-@invocable
+@app.entrypoint(private=True, accelerator=False)
 async def piece(ctx: Context, *, model: Weights) -> Read:
     """The checkpoint its model resolved to."""
     return Read(model.checkpoint_ref)
-
-
-app.entrypoint(piece, private=True, accelerator=False)
 
 
 class Pieces(msgspec.Struct):
@@ -54,7 +51,7 @@ async def pieces(ctx: Context, payload: Pieces) -> Report:
             await asyncio.sleep(payload.pause_s)
         started = time.monotonic()
         try:
-            read = await piece(model=ModelChoice(ref=ref))
+            read = await call(piece, model=ModelChoice(ref=ref))
             done.append(Piece(ref, round(time.monotonic() - started, 2), checkpoint=read.checkpoint))
         except ChildCallError as refused:
             done.append(Piece(ref, round(time.monotonic() - started, 2), code=refused.code))

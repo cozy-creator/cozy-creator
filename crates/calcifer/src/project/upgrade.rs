@@ -1,6 +1,6 @@
 //! One way, once: a project folder of format 2 to format 3 (design/project-format-ui.md), in this process, with no Calcifer, for a Calcifer of
 //! this format can't read it yet. Each asset's current version is its state in format 2, worked out as the cozy that reads it did (`format2`),
-//! or what its `cozy project status --json` said; the new key is stamped on those versions, so nothing goes out of date and nothing runs. Each
+//! or what its `cozy status --json` said; the new key is stamped on those versions, so nothing goes out of date and nothing runs. Each
 //! entity folds into its sheet, which takes its name, `description` and `asset_type`; each form becomes an asset of its dotted name; a written
 //! still a file. Comments come along. The old files stay beside the new. It writes the file whole, the one place anything does, as nothing of
 //! the old lines can stand.
@@ -704,7 +704,7 @@ fn format_of(text: &str) -> Option<u64> {
     }
 }
 
-/// The first thing to touch `dir`'s project moves it, if it's format 2, as `cozy project upgrade` would. What to say of that, once:
+/// The first thing to touch `dir`'s project moves it, if it's format 2, as `cozy upgrade` would. What to say of that, once:
 /// nothing if there was nothing to move. What can't convert refuses, says why and is left as it is.
 pub(super) fn on_touch(dir: &Path) -> Result<Vec<String>, Error> {
     let _one = MOVING.lock().unwrap_or_else(|e| e.into_inner());
@@ -717,7 +717,7 @@ pub(super) fn on_touch(dir: &Path) -> Result<Vec<String>, Error> {
     Ok(std::iter::once(said).chain(done.said).collect())
 }
 
-/// `dir`'s project, format 2, as format 3. `status`: what `cozy project status --json` said.
+/// `dir`'s project, format 2, as format 3. `status`: what `cozy status --json` said.
 pub(super) fn upgrade(dir: &Path, status: Option<&str>) -> Result<Upgraded, Error> {
     let dir = holding(dir)?;
     let folder = Folder::at(&dir);
@@ -729,7 +729,7 @@ pub(super) fn upgrade(dir: &Path, status: Option<&str>) -> Result<Upgraded, Erro
         Some(FORMAT) => return Ok(Upgraded { assets: vec![], said: vec![format!("{} is format {FORMAT} already: nothing to upgrade", folder::PROJECT)], current: true }),
         Some(3) => return tools(&dir),
         Some(2) | None => {}
-        Some(other) => return Err(refused("project_format", format!("{} is format {other}, and this moves format 2", folder::PROJECT)).next("cozy project new")),
+        Some(other) => return Err(refused("project_format", format!("{} is format {other}, and this moves format 2", folder::PROJECT)).next("cozy open")),
     }
     // A move cut short left the new lock beside the old: it starts from the old. A lock still of format 2 is the truth, whatever is beside it.
     let here = dir.join(folder::LOCK);
@@ -743,11 +743,11 @@ pub(super) fn upgrade(dir: &Path, status: Option<&str>) -> Result<Upgraded, Erro
         None => json!({"format": 2}),
     };
     if old["pending"].as_object().is_some_and(|pending| !pending.is_empty()) || old["walk"]["asks"].as_array().is_some_and(|asks| !asks.is_empty()) {
-        return Err(Error::new(Kind::Conflict, "project_busy", "it has runs on their way: let them land first").next("cozy project status"));
+        return Err(Error::new(Kind::Conflict, "project_busy", "it has runs on their way: let them land first").next("cozy status"));
     }
     let was_lock: format2::Lock = serde_json::from_value(old.clone()).map_err(|e| Error::new(Kind::Validation, "lock_unreadable", format!("{}: {e}", folder::LOCK)))?;
     let was = format2::Doc::read(&dir, &text, top, &was_lock);
-    let status: Option<Value> = status.map(serde_json::from_str).transpose().map_err(|e| refused("status_unreadable", format!("that isn't what `cozy project status --json` says: {e}")))?;
+    let status: Option<Value> = status.map(serde_json::from_str).transpose().map_err(|e| refused("status_unreadable", format!("that isn't a format-2 status report: {e}")))?;
     let rows = match &status {
         Some(status) => status["assets"].as_array().cloned().unwrap_or_default(),
         None => was.rows(&was_lock),
@@ -985,7 +985,7 @@ fn four(dir: &Path, told: &BTreeMap<String, BTreeSet<String>>) -> Result<Upgrade
     let folder = Folder::at(&dir);
     let (text, mut lock) = legacy::files_of(&folder)?;
     if !lock.pending.is_empty() || !lock.walk.asks.is_empty() {
-        return Err(Error::new(Kind::Conflict, "project_busy", "it has runs on their way: let them land first").next("cozy project status"));
+        return Err(Error::new(Kind::Conflict, "project_busy", "it has runs on their way: let them land first").next("cozy status"));
     }
     // What stood, as format 3 read it.
     let was = Doc::of_three(&folder, &text, &lock)?;

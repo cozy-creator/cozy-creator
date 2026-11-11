@@ -16,6 +16,7 @@ from cozy_runtime.internal.contract import unsealed
 #: The driver's view, read on purpose: this cell tests the memory manager itself.
 mem_get_info = unsealed(torch, "mem_get_info")
 from cozy_runtime import graphs
+from cozy_runtime.author._errors import DoesNotFit
 from cozy_runtime.internal import executor
 from cozy_runtime.internal.execution import catch
 from cozy_runtime.internal.residency import _REQUEST
@@ -97,19 +98,28 @@ def dispatch(owner: Any, module: Any, call: Any, args: Any, kwargs: Any) -> Any:
 _select = getattr(catch, "select", None)
 
 
-def select(device: int, key: str, menu: Any, stream: int, floor: int = 0) -> Any:
-    """Each split decision in order, run-length: [level, basis, calls]. `declared` after a site has
-    `measured` is a level that never ran (its trial); `refused` is the finest, chosen with no estimate."""
-    level, selection = _select(device, key, menu, stream, floor)
+def _mark(key: str, level: int, basis: str) -> None:
     request = catch.CURRENT.get()
     if request is not None:
         trace = _traces.setdefault(request.id, {}).setdefault(key, [])
-        mark = [level, selection["basis"] if selection else "refused"]
+        mark = [level, basis]
         if trace and trace[-1][:2] == mark:
             trace[-1][2] += 1
         else:
             trace.append([*mark, 1])
-    return level, selection
+
+
+def select(device: int, key: str, name: str, menu: Any, stream: int) -> Any:
+    """Each split decision in order, run-length: [level, basis, calls]. `declared` after a site has
+    `measured` is a level that never ran (its trial); `refused` is the finest, which native selection
+    could not make room for (the call then fails with DoesNotFit). Runtime 0.44's `catch.select`."""
+    try:
+        selection = _select(device, key, name, menu, stream)
+    except DoesNotFit:
+        _mark(key, len(menu) - 1, "refused")
+        raise
+    _mark(key, int(selection["choice_id"]), selection["basis"])
+    return selection
 
 
 if _select is not None:  # v2's native selection

@@ -31,6 +31,7 @@ const PATH: char = '\u{1}';
 
 #[derive(clap::Args, Debug)]
 pub(crate) struct Args {
+    /// Shell to generate completion for.
     shell: Shell,
 }
 

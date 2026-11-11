@@ -7,7 +7,9 @@
 //! Calcifer goes on with it. Its clients ask and watch; the runs go on without them.
 mod assets;
 mod canvas;
+pub(crate) mod code;
 mod db;
+mod crdt;
 mod fit;
 mod folder;
 mod format;
@@ -27,10 +29,10 @@ mod upgrade;
 mod walker;
 mod written;
 mod legacy;
+pub(crate) mod vault;
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
-    convert::Infallible,
     path::{Path as FsPath, PathBuf},
     sync::{
         Arc, Mutex, Weak,
@@ -44,23 +46,20 @@ use axum::{
     body::Bytes,
     extract::{Path, Query, State, rejection::BytesRejection},
     http::{HeaderMap, HeaderValue, StatusCode, header},
-    response::{
-        IntoResponse as _, Response,
-        sse::{self, KeepAlive, Sse},
-    },
+    response::{IntoResponse as _, Response},
     routing::{delete, get, post},
 };
-use futures_util::{FutureExt as _, Stream, StreamExt as _, future::BoxFuture, stream::FuturesUnordered};
+use futures_util::{FutureExt as _, StreamExt as _, future::BoxFuture, stream::FuturesUnordered};
 use api::{
-    calcifer::{Kind as RunKind, On, Run, StagedInput, Status as RunStatus, SubmitRun, Warning},
+    calcifer::{Kind as RunKind, NoteLevel, On, Run, StagedInput, Status as RunStatus, SubmitRun, Warning},
     choices::{self, Choices},
     config::Origin,
     error::{Error, Kind},
     ids::{Digest, RunId},
     machine as v1,
     calcifer::project::{
-        Approve, Approved, Asked, Asset as Row, Cancel, Cancelled, Cut, Event, File as Listing, Import, Imported, Job, JobState, Known, MainFile, Open, Opened,
-        Orphan, Projects as Listed, Queued, QueuedNow, Reclaim, Reclaimed, Rename, Renamed, Rendered, Runs, Stale, Standing as RowStanding, State as ProjectState, Unpin, Unpinned,
+        Approve, Approved, Asked, Asset as Row, Cancel, Cancelled, Cut, File as Listing, Import, Imported, Job, JobState, Known, MainFile, Open, Opened,
+        Orphan, Projects as Listed, Queued, QueuedNow, Reclaim, Reclaimed, Rename, Renamed, Rendered, Runs, Said, Stale, Standing as RowStanding, State as ProjectState, Unpin, Unpinned,
         VersionPrefix, Warning as ProjectWarning,
     },
 };
@@ -78,7 +77,7 @@ use folder::{Ask, Coming, Failed, Files, Folder, Lock, Pending, Take, Target, Tr
 use format::{ALL, Doc, Standing, State as Stand, Tool};
 use graph::name_key;
 use host::{Host, Package, Renderer};
-use jobs::{Going, Jobs};
+use jobs::{Going, Jobs, Told};
 use walker::{End, Frozen, Graph, Kind as JobKind, Named, Node, Turn};
 use tools::Canvas;
 
@@ -107,17 +106,21 @@ struct Heard {
 
 struct Project {
     id: String,
+    code: String,
+    /// Immutable owner. A recycled physical mount path must never choose another project's root.
+    root: PathBuf,
+    /// Cache ownership follows the physical mount, not a replaceable viewer authorization.
+    mount_id: Option<vault::MountIdentity>,
     folder: Folder,
     /// What its files say, as last read.
     model: tokio::sync::Mutex<Option<Arc<model::Model>>>,
     /// What streams were last told of it.
     told: Mutex<Option<model::Told>>,
-    events: broadcast::Sender<Event>,
     /// What its render is doing, asset by asset.
     jobs: Jobs,
     /// What its walker needn't read again: the jobs, and each text.
     walker: Mutex<Walker>,
-    /// Whether its one walker is going; it goes until nothing is owed.
+    /// Whether its one walker is going. Admission and the terminal board share this lock.
     walking: Mutex<bool>,
     /// Tells the walker something was asked.
     asked: Notify,
@@ -125,7 +128,7 @@ struct Project {
     cutting: Arc<Mutex<()>>,
     /// How far each Edit being rendered here is, 0 to 1.
     rendering: Arc<Mutex<BTreeMap<String, f64>>>,
-    /// Held while its files move to or from its Hub.
+    /// Serializes materialization of files already stored at the Hub.
     moving: tokio::sync::Mutex<()>,
     /// What opening it did to it, for the first to read it.
     said: Mutex<Vec<String>>,
@@ -147,11 +150,18 @@ impl Drop for Project {
 }
 
 /// A project held open, by a stream that shows it: it closes once nothing holds it.
-pub(crate) struct Reader(#[allow(dead_code, reason = "held for its drop")] Arc<Project>);
+pub(crate) struct Reader(Arc<Project>);
+
+impl Reader {
+    pub(crate) fn id(&self) -> &str { &self.0.id }
+}
 
 #[cfg(test)]
 #[path = "presence_tests.rs"]
 mod presence_tests;
+
+#[cfg(test)]
+mod code_tests;
 
 pub(crate) fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
     Router::new()
@@ -168,9 +178,6 @@ pub(crate) fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
         .route("/v1/projects/{id}/unpin", post(unpin))
         .route("/v1/projects/{id}/rename", post(rename))
         .route("/v1/projects/{id}/reclaim", post(reclaim))
-        .route("/v1/projects/{id}/push", post(remote::pushed))
-        .route("/v1/projects/{id}/pull", post(remote::pulled))
-        .route("/v1/projects/{id}/events", get(events))
         .route("/v1/projects/{id}/yaml", get(yaml).put(save))
         .route("/v1/projects/{id}/assets", post(assets::create))
         .route("/v1/projects/{id}/assets/{name}", get(assets::read).patch(assets::patch).delete(assets::delete))
@@ -184,6 +191,9 @@ pub(crate) fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
         .route_layer(axum::middleware::from_fn(history::record))
         // Outside the history's: a write answered again is no edit of its own.
         .route_layer(axum::middleware::from_fn_with_state(api.clone(), keyed::answered))
+        .route_layer(axum::middleware::from_fn_with_state(api.clone(), vault::privacy))
+        .route("/v1/projects/{id}/vault", get(vault::read).post(vault::write))
+        .route("/v1/projects/{id}/address", get(address))
 }
 
 impl Projects {
@@ -195,6 +205,7 @@ impl Projects {
         for project in self.now_open() {
             let id = &project.id;
             let dir = &project.folder.dir;
+            if vault::encrypted(&project.root) || project.require_view().is_err() { continue; }
             let rev = format!("{}.{}", project.folder.stamp(), stamp(&dir.join(folder::FILES)));
             // Held while it's told: a forget waits for it.
             let still = self.open.lock().expect("projects lock");
@@ -211,10 +222,12 @@ impl Projects {
 
     /// Project `id` as it's open now, if it is.
     fn open_now(&self, id: &str) -> Option<Arc<Project>> {
-        self.open.lock().expect("projects lock").get(id).and_then(Weak::upgrade)
+        let project = self.open.lock().expect("projects lock").get(id).and_then(Weak::upgrade)?;
+        project.require_view().ok()?;
+        Some(project)
     }
 
-    /// The project a route's `{id}` names (`api::calcifer::project::NAMED_BY`): its id or name, or its folder on this computer. Open,
+    /// The project a route's `{id}` names (`api::calcifer::project::NAMED_BY`): its id, public code or name, or its folder on this computer. Open,
     /// else opened from the index. It stays open while the answer is held.
     fn get(&self, api: &Arc<Api>, named: &str) -> Result<Arc<Project>, Refusal> {
         if let Some(project) = self.open_now(named) {
@@ -227,10 +240,10 @@ impl Projects {
         let project = self.open(api, &entry.path).map_err(Refusal)?;
         if project.id != entry.id {
             let said = format!("{named} was in {}, which holds another project now", entry.path.display());
-            return Err(Refusal(Error::new(Kind::NotFound, "project_unknown", said).next("cozy project ls")));
+            return Err(Refusal(Error::new(Kind::NotFound, "project_unknown", said).next("cozy open")));
         }
         // Opened for a call: used now, which the index lists by.
-        api.calcifer.store().project_opened(&project.id, &identity(&project.folder.dir).1, &project.folder.dir, Some(now_ms()))?;
+        api.calcifer.store().project_opened(&project.id, &identity(&project.folder.dir).1, &project.root, Some(now_ms()), Some(&project.code))?;
         Ok(project)
     }
 
@@ -242,49 +255,49 @@ impl Projects {
     /// The project in `dir` (canonical), opened if it isn't, given its id and name and recorded in the index; its walk goes on when
     /// one is owed. It stays open while the answer is held.
     fn open(&self, api: &Arc<Api>, dir: &FsPath) -> Result<Arc<Project>, Error> {
+        let root = vault::logical(dir);
+        let mount_id = vault::mount_identity(&root);
+        let physical = current_view(&root)?;
+        let dir = physical.as_path();
         // Before `project.db`: a format 2 or 3 folder moves to 4, and its files are imported once (cl-803).
         let said = match dir.join(db::DB).is_file() {
             true => vec![],
             false => tokio::task::block_in_place(|| upgrade::on_touch(dir))?,
         };
-        // A folder from before project.db is imported as it opens, and given its id once it has one.
-        let known = match dir.join(db::DB).is_file() {
-            true => Some(tokio::task::block_in_place(|| identify(api, dir))?),
-            false => None,
-        };
-        let id = known.as_ref().map_or_else(|| folder_id(dir), |(id, _)| id.clone());
-        // Moved since it opened: the same project, read where it is now, and what reads it where it was goes on reading that. One
-        // rendering goes on where it was.
-        let moved = self.open_now(&id).filter(|open| open.folder.dir != dir);
-        if let Some(open) = moved {
-            if *open.walking.lock().expect("walking lock") {
-                let said = format!("{id} moved from {} while it renders: move it back, or once its runs land", open.folder.dir.display());
-                return Err(Error::new(Kind::Conflict, "project_busy", said));
+        let (folder, (id, name, code)) = tokio::task::block_in_place(|| Folder::open_with(dir, api.machines.hubs.home(), |folder| {
+            let (id, name, code) = identify_loaded(api, dir, folder)?;
+            // Validate a move before inherited local work can be unbound or resumed. A
+            // rendering project keeps its original physical folder until its runs land.
+            let moved = self.open.lock().expect("projects lock").get(&id).and_then(Weak::upgrade)
+                .filter(|open| open.root != root || open.mount_id != mount_id || open.folder.dir != dir);
+            if let Some(open) = moved {
+                if *open.walking.lock().expect("walking lock") {
+                    let said = format!("{id} moved from {} while it renders: move it back, or once its runs land", open.folder.dir.display());
+                    return Err(Error::new(Kind::Conflict, "project_busy", said));
+                }
+                self.open.lock().expect("projects lock").remove(&id);
             }
-            self.open.lock().expect("projects lock").remove(&id);
-        }
-        let folder = tokio::task::block_in_place(|| Folder::open(dir, api.machines.hubs.home()))?;
-        let (id, name) = match known {
-            Some(known) => known,
-            None => tokio::task::block_in_place(|| identify(api, dir))?,
-        };
+            Ok((id, name, code))
+        }))?;
         IDENTITIES.lock().expect("identities lock").insert(dir.to_owned(), (id.clone(), name));
         crate::events::project_opened(dir);
         let mut open = self.open.lock().expect("projects lock");
-        let project = match open.get(&id).and_then(Weak::upgrade) {
+        let project = match open.get(&id).and_then(Weak::upgrade)
+            .filter(|project| project.root == root && project.mount_id == mount_id && project.folder.dir == dir) {
             Some(project) => project,
             None => {
-                let (events, asked) = (broadcast::channel::<Event>(256).0, Notify::new());
                 let project = Arc::new(Project {
                     id: id.clone(),
+                    code,
+                    root,
+                    mount_id,
                     folder,
-                    jobs: Jobs::new(id.clone(), events.clone()),
+                    jobs: Jobs::new(id.clone()),
                     model: tokio::sync::Mutex::default(),
                     told: Mutex::default(),
-                    events,
                     walker: Mutex::default(),
                     walking: Mutex::new(false),
-                    asked,
+                    asked: Notify::new(),
                     cutting: Arc::default(),
                     rendering: Arc::default(),
                     moving: tokio::sync::Mutex::default(),
@@ -301,6 +314,7 @@ impl Projects {
             }
         };
         drop(open);
+        project.require_view()?;
         project.said.lock().expect("said lock").extend(said);
         if project.folder.lock()?.owes() {
             walk(api, &project);
@@ -317,7 +331,7 @@ const HEARD_FOR: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
 /// Where a run of the project in `dir` lands its outputs.
 pub(crate) fn landing(dir: &FsPath) -> PathBuf {
-    dir.join(folder::RUNS)
+    vault::logical(dir).join(folder::RUNS)
 }
 
 /// The project a run's landing folder is in, if it's one.
@@ -325,7 +339,7 @@ pub(crate) fn of_landing(out_dir: &FsPath) -> Option<&FsPath> {
     out_dir.file_name().is_some_and(|name| name == folder::RUNS).then(|| out_dir.parent()).flatten()
 }
 
-/// The folder of the project a request names (`api::calcifer::project::NAMED_BY`): its id or name in the index, or the project holding
+/// The folder of the project a request names (`api::calcifer::project::NAMED_BY`): its id, public code or name in the index, or the project holding
 /// a folder of this computer's, by its absolute path. Never a client's folder: a relative path names none.
 pub(crate) fn named(api: &Api, text: &str) -> Result<PathBuf, Error> {
     let text = text.trim();
@@ -335,6 +349,8 @@ pub(crate) fn named(api: &Api, text: &str) -> Result<PathBuf, Error> {
             let said = format!("{text} is relative, and Calcifer has no folder of a client's to start it from");
             return Err(Error::new(Kind::Usage, "project_path", said).remedy(format!("name {}", api::calcifer::project::NAMED_BY)));
         }
+        vault::recover_conversion(path)?;
+        if let Some(root) = path.ancestors().find(|root| vault::encrypted(root)) { return Ok(root.to_owned()); }
         return holding(path);
     }
     Ok(known(api, text)?.path)
@@ -346,22 +362,52 @@ pub(crate) fn named(api: &Api, text: &str) -> Result<PathBuf, Error> {
 fn indexed(api: &Api) -> Result<Vec<crate::state::KnownProject>, Error> {
     let store = api.calcifer.store();
     let failed = |e: crate::store::StoreError| Error::internal("calcifer_store", e.to_string());
-    let (here, gone): (Vec<_>, Vec<_>) = store.known_projects().map_err(failed)?.into_iter().partition(|entry| Folder::is_project(&entry.path));
+    let known = store.known_projects().map_err(failed)?;
+    for entry in &known { vault::recover_conversion(&entry.path)?; }
+    let (mut here, gone): (Vec<_>, Vec<_>) = known.into_iter().partition(|entry| Folder::is_project(&entry.path) || vault::encrypted(&entry.path));
     if !gone.is_empty() {
         store.projects_gone(&gone.into_iter().map(|entry| entry.id).collect::<Vec<_>>()).map_err(failed)?;
+    }
+    for entry in here.iter_mut().filter(|entry| entry.code.is_empty()) {
+        // A locked project still has its canonical id. Do not mint a public
+        // code until an opened view can recover the code stored in its DB.
+        if vault::encrypted(&entry.path) { continue; }
+        match backfill_code(store, entry) {
+            Ok(code) => entry.code = code,
+            Err(error) => warn!("keeping the existing project link for {}: {}", entry.path.display(), error.message),
+        }
     }
     Ok(here)
 }
 
-/// The project the index knows by `text`, its id or its name (in any case).
+/// An older project keeps its existing link if its public code cannot be recorded.
+fn backfill_code(store: &crate::store::Store, entry: &crate::state::KnownProject) -> Result<String, Error> {
+    let path = entry.path.join(db::DB);
+    if !path.is_file() {
+        // Opening upgrades a pre-database project. Listing keeps its current format.
+        return reserve_code(store, &entry.id, &entry.name, &entry.path, None);
+    }
+    let conn = db::open(&path)?;
+    let kept = db::meta(&conn, "code");
+    let code = reserve_code(store, &entry.id, &entry.name, &entry.path, kept.as_deref())?;
+    db::set_meta(&conn, &path, "code", Some(&code))?;
+    Ok(code)
+}
+
+/// The project the index knows by `text`, its id, public code or its name (in any case).
 fn known(api: &Api, text: &str) -> Result<crate::state::KnownProject, Error> {
     let mut indexed = indexed(api)?;
     if let Some(at) = indexed.iter().position(|entry| entry.id == text) {
         return Ok(indexed.swap_remove(at));
     }
+    if let Some(code) = code::parse(text) {
+        if let Some(at) = indexed.iter().position(|entry| entry.code == code) {
+            return Ok(indexed.swap_remove(at));
+        }
+    }
     let mut named: Vec<_> = indexed.into_iter().filter(|entry| entry.name.eq_ignore_ascii_case(text)).collect();
     match named.len() {
-        0 => Err(Error::new(Kind::NotFound, "project_unknown", format!("this computer knows no project {text}")).next("cozy project ls")),
+        0 => Err(Error::new(Kind::NotFound, "project_unknown", format!("this computer knows no project {text}")).next("cozy open")),
         1 => Ok(named.remove(0)),
         _ => {
             let ids: Vec<String> = named.iter().map(|entry| format!("{} ({})", entry.id, entry.path.display())).collect();
@@ -373,13 +419,22 @@ fn known(api: &Api, text: &str) -> Result<crate::state::KnownProject, Error> {
 
 /// The files a run is `given`, each `(path, sha256)`, kept in its project unless they're there. What Calcifer holds in `uploads` is
 /// named by its content and linked; anything else is a person's file and is copied. Says what it couldn't keep.
-pub(crate) fn keep_given(project: &FsPath, given: &[(PathBuf, String)], uploads: &FsPath) -> Vec<String> {
-    let folder = Folder::at(project);
+/// An encrypted project's transport uploads stay inside its mounted storage, never the shared plaintext CAS.
+pub(crate) fn private_upload_root(api: &Arc<Api>, named: &str) -> Result<Option<PathBuf>, Error> {
+    let root = self::named(api, named)?;
+    if !vault::encrypted(&root) { return Ok(None); }
+    let project = api.projects.get(api, named).map_err(|e| e.0)?;
+    Ok(Some(project.folder.dir.clone()))
+}
+
+pub(crate) fn keep_given(project: &FsPath, given: &[(PathBuf, String)], uploads: &FsPath) -> Result<Vec<String>, Error> {
+    let physical = vault::resolve_path(project)?;
+    let folder = Folder::at(&physical);
     let unkept = given.iter().filter_map(|(path, sha256)| {
         let why = folder.keep_given(path, sha256, path.starts_with(uploads)).err()?;
         Some(format!("{} isn't kept in its project, so asking this run again needs it given again: {}", path.display(), why.message))
     });
-    unkept.collect()
+    Ok(unkept.collect())
 }
 
 /// The folder a project's runs land in, as a run's record has it.
@@ -408,14 +463,15 @@ fn written_hash(written: &str) -> Option<String> {
 
 impl Holding {
     pub(crate) fn new(calcifer: Arc<crate::Calcifer>, dir: PathBuf) -> Self {
-        Self { calcifer, dir }
+        Self { calcifer, dir: vault::logical(&dir) }
     }
 
     /// The file of this project `written` names by its hash, what stays on a machine fetched now that it's named. None: it names
     /// none of them.
     pub(crate) async fn file(&self, written: &str) -> Result<Option<PathBuf>, Error> {
         let Some(hex) = written_hash(written) else { return Ok(None) };
-        let folder = Folder::at(&self.dir);
+        let physical = vault::resolve_path(&self.dir)?;
+        let folder = Folder::at(&physical);
         let lock = folder.lock()?;
         match lock.matching(&hex).as_slice() {
             [] => Ok(None),
@@ -435,11 +491,14 @@ impl Holding {
     /// (`inline`, each with its file here), ranges are cut here, and `pickup.` terms are the gesture. Answers the call, the files it
     /// names (the project's fetched here if a machine keeps them), and what was said.
     pub(crate) async fn bound(&self, target: &str, package: &str, callable: &api::interface::Callable, written: Map<String, Value>, clips: &crate::runs::clip::Clips, inline: &[(binder::Inline, PathBuf)]) -> Result<(Map<String, Value>, Vec<crate::runs::bind::InputFile>, Vec<String>), Error> {
-        let folder = Folder::at(&self.dir);
+        let _access = vault::admit_root(&self.dir).await?;
+        let physical = vault::resolve_path(&self.dir)?;
+        let folder = Folder::at(&physical);
         // One that doesn't read as this format (an older one moves as the run lands) still takes the run, as written, its mentions unread.
         let (doc, lock) = match (Doc::load(&folder), folder.lock()) {
             (Ok(doc), Ok(lock)) => (doc, lock),
             (Err(why), _) | (_, Err(why)) => {
+                if vault::encrypted(&vault::logical(&self.dir)) { return Err(why); }
                 let mut written = written;
                 for field in callable.request.fields.iter().filter(|field| matches!(field.ty.plain(), api::interface::Type::Prompt(_))) {
                     if let Some(Value::String(text)) = written.get(&field.name).cloned() {
@@ -468,14 +527,19 @@ impl Holding {
             let Some(path) = self.file(&range.source).await? else { continue };
             let fps = lock.files.get(&range.source).map_or(0.0, |file| file.fps);
             if fps <= 0.0 {
-                return Err(Error::new(Kind::Unavailable, "range_unmeasured", format!("{}: its rate isn't measured, so no range of it can be cut", folder::prefix_of(&range.source))).next("cozy project status"));
+                return Err(Error::new(Kind::Unavailable, "range_unmeasured", format!("{}: its rate isn't measured, so no range of it can be cut", folder::prefix_of(&range.source))).next("cozy status"));
             }
             let seconds = crate::runs::clip::Range { start: f64::from(range.from) / fps, end: range.to.map(|to| f64::from(to) / fps) };
             let mut notes = vec![];
-            let made = clips.cut(&format!("frames {}-{}", range.from, range.to.map_or_else(String::new, |to| to.to_string())), &path, seconds, &mut notes).await?;
+            let access = vault::admit_root(&self.dir).await?;
+            let made = clips.cut(&format!("frames {}-{}", range.from, range.to.map_or_else(String::new, |to| to.to_string())), &path, seconds, &mut notes, access).await?;
             bound.warnings.extend(notes.into_iter().filter(|note| note.level == api::calcifer::NoteLevel::Warning).map(|note| note.message));
             let clip = made.clip.clone();
-            let sha256 = tokio::task::spawn_blocking(move || folder::hash(&clip)).await.map_err(|e| Error::new(Kind::Internal, "clip_hash", e.to_string()))??;
+            let access = vault::admit_root(&self.dir).await?;
+            let sha256 = tokio::task::spawn_blocking(move || {
+                let _access = access;
+                folder::hash(&clip)
+            }).await.map_err(|e| Error::new(Kind::Internal, "clip_hash", e.to_string()))??;
             cut.insert(sha256.clone(), made.clip);
             digests.push(sha256);
         }
@@ -497,6 +561,7 @@ impl Holding {
 
 /// What a project's run landed: which run, of what, its bytes' digest, and what's measured of them.
 pub(crate) struct Landed<'a> {
+    pub run_id: &'a api::ids::RunId,
     pub run: u64,
     pub target: &'a str,
     pub output: &'a str,
@@ -519,11 +584,13 @@ pub(crate) fn measured(tools: &FsPath, path: &FsPath, media_type: &str) -> Optio
 /// A run's output, landed at `dest`, kept in its project's `files/` and listed there. An operation's run takes its files off the
 /// list when it lands them on its version. Answers the file's path, and what to say if its project couldn't list it.
 pub(crate) fn landed(project: &FsPath, made: &Landed, dest: &FsPath) -> Result<(PathBuf, Option<String>), String> {
+    let physical = vault::resolve_path(project).map_err(|error| error.message)?;
+    let project = physical.as_path();
     let output = match made.index {
         0 => made.output.to_owned(),
         n => format!("{}-{n}", made.output),
     };
-    let row = folder::RunFile { run: made.run, function: made.target.to_owned(), output, sha256: made.digest.to_owned() };
+    let row = folder::RunFile { run: made.run, run_id: Some(made.run_id.clone()), function: made.target.to_owned(), output, sha256: made.digest.to_owned(), ..Default::default() };
     // A folder from before project.db moves to format 4 here, said once, and its first read imports it. One a read moved as the run
     // was sent (it binds to the project) is said here too.
     let folder = Folder::at(project);
@@ -546,7 +613,8 @@ pub(crate) fn landed(project: &FsPath, made: &Landed, dest: &FsPath) -> Result<(
 
 /// An output its machine keeps, in its project's lock.
 pub(crate) fn stays(project: &FsPath, sha256: &str, machine: &str, length: u64) -> Result<(), String> {
-    Folder::at(project).stays(sha256, machine, length).map_err(|e| e.message)
+    let physical = vault::resolve_path(project).map_err(|error| error.message)?;
+    Folder::at(&physical).stays(sha256, machine, length).map_err(|e| e.message)
 }
 
 /// Each open project's id and name by its folder, as its `project.db` keeps them, read as it opens.
@@ -562,6 +630,14 @@ pub(crate) fn identity(dir: &FsPath) -> (String, String) {
     if let Some(known) = IDENTITIES.lock().expect("identities lock").get(dir) {
         return known.clone();
     }
+    let root = vault::logical(dir);
+    if vault::encrypted(&root) && let Some(id) = vault::project_id(&root) {
+        let name = vault::resolve_path(&root).ok().and_then(|view| {
+            IDENTITIES.lock().expect("identities lock").get(&view)
+                .filter(|(held, _)| held == &id).map(|(_, name)| name.clone())
+        }).unwrap_or_else(|| folder_name(&root));
+        return (id, name);
+    }
     kept_identity(dir).unwrap_or_else(|| (folder_id(dir), folder_name(dir)))
 }
 
@@ -572,6 +648,7 @@ fn kept_identity(dir: &FsPath) -> Option<(String, String)> {
 
 /// The id a folder from before cl-819 takes at its first open: its path's, as it was known by then, so links to it stand.
 fn folder_id(dir: &FsPath) -> String {
+    let dir = vault::logical(dir);
     format!("project-{}", &hex::encode(Sha256::digest(dir.to_string_lossy().as_bytes()))[..16])
 }
 
@@ -589,30 +666,65 @@ fn folder_name(dir: &FsPath) -> String {
 /// The project in `dir`, its id and name kept in its `project.db` (which it never makes: a folder from before has one once it's
 /// imported) and recorded in the index. One from before cl-819 keeps the id
 /// its path gave it; a copy of a project another folder still holds takes a new id; a name another project has takes `_2`.
-fn identify(api: &Api, dir: &FsPath) -> Result<(String, String), Error> {
+fn identify(api: &Api, dir: &FsPath) -> Result<(String, String, String), Error> {
     let path = dir.join(db::DB);
     if !path.is_file() {
         return Err(Error::new(Kind::NotFound, "project_not_found", format!("{} holds no {}", dir.display(), db::DB)));
     }
     let mut conn = db::open(&path)?;
     let kept = db::identity(&conn);
+    let code = db::meta(&conn, "code");
+    identify_with(api, dir, kept, code, |id, name, code| db::set_identity(&mut conn, &path, id, name, Some(code)))
+}
+
+fn identify_loaded(api: &Api, dir: &FsPath, folder: &Folder) -> Result<(String, String, String), Error> {
+    identify_with(api, dir, folder.canonical_identity()?, folder.public_code()?, |id, name, code| folder.set_identity(id, name, code))
+}
+
+fn identify_with(api: &Api, dir: &FsPath, kept: Option<(String, String)>, kept_code: Option<String>, keep: impl FnOnce(&str, &str, &str) -> Result<(), Error>) -> Result<(String, String, String), Error> {
     let store = api.calcifer.store();
+    let logical = vault::logical(dir);
+    let encrypted = vault::encrypted(&logical);
     let copied = |id: &str| {
-        let elsewhere = store.known_project(id).ok().flatten().filter(|known| known.path != dir);
-        elsewhere.is_some_and(|known| kept_identity(&known.path).is_some_and(|(held, _)| held == id))
+        let elsewhere = store.known_project(id).ok().flatten().filter(|known| known.path != logical);
+        elsewhere.is_some_and(|known| {
+            if vault::encrypted(&known.path) {
+                project_vault::Keybag::load(&known.path.join(project_vault::KEYBAG_FILE))
+                    .is_ok_and(|keybag| keybag.info().project_id == id)
+            } else { kept_identity(&known.path).is_some_and(|(held, _)| held == id) }
+        })
     };
+    if encrypted {
+        let keybag = project_vault::Keybag::load(&logical.join(project_vault::KEYBAG_FILE))
+            .map_err(|_| Error::new(Kind::Conflict, "vault_identity", "the encrypted project keybag is unreadable"))?;
+        if kept.as_ref().is_none_or(|(id, _)| id != &keybag.info().project_id) {
+            return Err(Error::new(Kind::Conflict, "vault_identity", "the encrypted project identity does not match its keybag"));
+        }
+        if copied(&keybag.info().project_id) {
+            return Err(Error::new(Kind::Conflict, "vault_copy", "another folder still holds this encrypted project; open that project or move its folder instead"));
+        }
+    }
     let (id, name) = match &kept {
         Some((id, name)) if !copied(id) => (id.clone(), name.clone()),
         Some((_, name)) => (fresh_id(), name.clone()),
         None => (folder_id(dir), String::new()),
     };
     let name = unique_name(api, &id, dir, if name.is_empty() { folder_name(dir) } else { name })?;
-    if kept.as_ref() != Some(&(id.clone(), name.clone())) {
-        db::set_identity(&mut conn, &path, &id, &name)?;
+    let kept_code = kept.as_ref().filter(|(held, _)| held == &id).and(kept_code);
+    let code = reserve_code(store, &id, &name, &logical, kept_code.as_deref())?;
+    if kept.as_ref() != Some(&(id.clone(), name.clone())) || kept_code.as_deref() != Some(&code) {
+        keep(&id, &name, &code)?;
     }
-    drop(conn);
-    store.project_opened(&id, &name, dir, None).map_err(|e| Error::internal("calcifer_store", e.to_string()))?;
-    Ok((id, name))
+    Ok((id, name, code))
+}
+
+/// The index reserves the code atomically. If recording it in project.db fails, the next open
+/// recovers the index's assignment before answering with a public URL.
+fn reserve_code(store: &crate::store::Store, id: &str, name: &str, dir: &FsPath, preferred: Option<&str>) -> Result<String, Error> {
+    store.project_opened(id, name, dir, None, preferred).map_err(|error| match error {
+        crate::store::StoreError::ProjectCode(message) => Error::new(Kind::Conflict, "project_code_conflict", message),
+        other => Error::internal("calcifer_store", other.to_string()),
+    })
 }
 
 /// `wanted`, or the first of `wanted_2`, `wanted_3`, … no other project in the index has, in any case: what `-p` names it by. The
@@ -655,49 +767,55 @@ pub(crate) fn resume(api: &Arc<Api>) {
     }
 }
 
-/// Starts the project's walker, or tells the one going that something was asked.
+/// Starts the project's walker, or tells the one going that something was asked. Its board begins once the last walk's end is told.
 fn walk(api: &Arc<Api>, project: &Arc<Project>) {
-    if std::mem::replace(&mut *project.walking.lock().expect("walking lock"), true) {
+    let mut walking = project.walking.lock().expect("walking lock");
+    walk_under(api, project, &mut walking);
+}
+
+fn walk_under(api: &Arc<Api>, project: &Arc<Project>, walking: &mut bool) {
+    if std::mem::replace(walking, true) {
         return project.asked.notify_one();
     }
-    project.jobs.begin();
+    let active = project.jobs.begin();
     let walk = Walk::new(api, project);
-    let following = following(api, project);
     let api = api.clone();
     tokio::spawn(async move {
-        remember(&api);
-        let error = match walk.go().await {
-            Ok(first) => first.map(|first| walk.last_word(first)),
+        let _access = match vault::admit_work(&walk.project).await {
+            Ok(access) => access,
             Err(error) => {
-                *walk.project.walking.lock().expect("walking lock") = false;
+                let mut walking = walk.project.walking.lock().expect("walking lock");
                 walk.project.unsent.lock().expect("unsent lock").push(error.clone());
-                // What it was asked stays owed for the next walk; for whoever follows these, this one stopped.
-                if let Ok(owed) = walk.folder().walk_now() {
-                    walk.ended.lock().expect("ended lock").extend(owed.walk.asks.into_iter().map(|ask| ask.id));
-                }
-                Some(error)
+                let ended = api::calcifer::project::Ended { error: Some(error), rendered: None, asks: vec![] };
+                walk.project.jobs.end(walk.began.elapsed().as_millis() as u64, ended);
+                *walking = false;
+                drop(walking);
+                remember(&api);
+                return;
             }
         };
+        let following = following(&api, &walk.project, active);
         remember(&api);
-        // A take is measured as it lands. What this walk made here (a cut, a frame), or what landed before ffprobe was, is measured now.
-        if let Err(error) = walk.measure() {
-            warn!("measuring a project's files: {}", error.message);
+        if let Err(error) = walk.go(&following).await {
+            walk.measure_at_end();
+            let mut walking = walk.project.walking.lock().expect("walking lock");
+            walk.project.unsent.lock().expect("unsent lock").push(error.clone());
+            // The stopped walk reports every accepted ask it still owes. Their
+            // durable rows remain for a later walk to resume.
+            if let Ok(owed) = walk.folder().walk_now() {
+                walk.ended.lock().expect("ended lock").extend(owed.walk.asks.into_iter().map(|ask| ask.id));
+            }
+            walk.end(&mut walking, Some(error), &following);
         }
-        crate::events::project_settled(&walk.project.folder.dir);
         following.abort();
-        walk.project.jobs.end(walk.began.elapsed().as_millis() as u64);
-        // What it ended on is read after the project has closed, as status gives it.
-        if let Err(error) = walk.project.folder.keep_board(&walk.project.jobs.board()) {
-            warn!("keeping a render's board: {}", error.message);
-        }
-        let asks = std::mem::take(&mut *walk.ended.lock().expect("ended lock"));
-        // The walk holds its project until here: what follows it hears `ended` before the project can close.
-        walk.say(Event::Ended { error, rendered: walk.rendered(), asks });
+        let _ = following.await;
+        remember(&api);
+        crate::events::project_settled(&walk.project.folder.dir);
     });
 }
 
-/// Keeps the board as the project's runs go, and says the warnings their logs give, each once, as its asset's.
-fn following(api: &Arc<Api>, project: &Arc<Project>) -> tokio::task::JoinHandle<()> {
+/// Keeps the board as the project's runs go, with the warnings their logs give, each once, as its asset's.
+fn following(api: &Arc<Api>, project: &Arc<Project>, active: u64) -> tokio::task::JoinHandle<()> {
     let mut tail = api.calcifer.subscribe();
     let project = project.clone();
     tokio::spawn(async move {
@@ -707,15 +825,14 @@ fn following(api: &Arc<Api>, project: &Arc<Project>) -> tokio::task::JoinHandle<
                 Err(broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(broadcast::error::RecvError::Closed) => return,
             };
-            if let Some((name, message)) = project.jobs.ran(&id, &event, &project.folder.dir) {
-                let _ = project.events.send(Event::Warning { message, name: Some(name) });
-            }
+            project.jobs.ran(active, &id, &event, &project.folder.dir);
         }
     })
 }
 
 /// The board as the graph and what is on its way stand now. `run` reads a run by its number.
 fn sync_jobs(project: &Project, run: impl Fn(u64) -> Option<Run>) -> Result<(), Error> {
+    let Some(active) = project.jobs.active() else { return Ok(()) };
     let walk = project.folder.walk_now()?;
     let walker = project.walker.lock().expect("walker lock");
     let graph = &walker.graph;
@@ -766,7 +883,7 @@ fn sync_jobs(project: &Project, run: impl Fn(u64) -> Option<Run>) -> Result<(), 
     drop(walker);
     let on = walk.walk.asks.iter().map(|ask| &ask.target).chain(walk.pending.values().map(|pending| &pending.target));
     let on = on.flat_map(|target| target.on.iter().map(ToString::to_string)).collect();
-    project.jobs.sync(on, going, coming, run);
+    project.jobs.sync(active, on, going, coming, run);
     Ok(())
 }
 
@@ -918,7 +1035,20 @@ impl Frozen for Now<'_> {
     }
 }
 
+fn current_view(root: &FsPath) -> Result<PathBuf, Error> {
+    platform::durable::canonical(&vault::view(root)?)
+        .map_err(|why| Error::new(Kind::Conflict, "project_view_unavailable", why.to_string()))
+}
+
 impl Project {
+    /// Old references are bound to their original physical view, never a recycled drive.
+    fn require_view(&self) -> Result<(), Error> {
+        if self.mount_id != vault::mount_identity(&self.root) || current_view(&self.root)? != self.folder.dir {
+            return Err(Error::new(Kind::Conflict, "project_view_changed", "the project's mounted view changed; reopen this project"));
+        }
+        Ok(())
+    }
+
     /// The renders going say `to` for `from` from now on, as project.lock does: their texts, what they plan on those, and the board. What landed under `from` stands, what lands
     /// is `to`'s, and what reads it reads on. Each text keeps its place in the walk, under its new digest. The old reading stays for this walk: a turn may be holding its digest.
     fn rename_walk(&self, from: &str, to: &str) -> Result<(), Error> {
@@ -1012,11 +1142,6 @@ pub(super) fn not_saved(why: &str) -> String {
     format!("Not saved yet: {why}, and what landed goes in as soon as it can")
 }
 
-/// What to run while a project's render goes on.
-fn status_next(folder: &Folder) -> Vec<String> {
-    vec![format!("cozy project -p {} status", identity(&folder.dir).1)]
-}
-
 /// Makes a new project called `name`: in this person's home folder, or at `path`, a folder of this computer's, recorded in the index as
 /// used now.
 async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Bytes, BytesRejection>) -> Result<Json<Opened>, Refusal> {
@@ -1030,9 +1155,12 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Byte
             return Err(Refusal(Error::new(Kind::Usage, "project_path", said)));
         }
         Some(path) => {
-            if Folder::is_project(path) {
+            // First use from separate CLI processes can reach this path together.
+            let _creation = api.projects.made.lock().expect("made lock");
+            refuse_encrypted_parent(path).map_err(Refusal)?;
+            if Folder::is_project(path) || vault::encrypted(path) {
                 let said = format!("{} is a project already", path.display());
-                return Err(Refusal(Error::new(Kind::Conflict, "project_exists", said).next(format!("cozy project -p {} status", path.display()))));
+                return Err(Refusal(Error::new(Kind::Conflict, "project_exists", said).next("cozy status")));
             }
             std::fs::create_dir_all(path).map_err(|e| io(path, e))?;
             let name = open.name.clone().unwrap_or_else(|| folder_name(path));
@@ -1058,33 +1186,37 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Byte
     // Named, a project nothing reads is only identified: the call that reads it opens it. One open, maybe where it was before it moved,
     // and a folder of files from before project.db, which is imported now, are opened here.
     let unread = match dir.join(db::DB).is_file() {
-        true => Some(tokio::task::block_in_place(|| identify(&api, &dir)).map_err(Refusal)?.0).filter(|id| api.projects.open_now(id).is_none()),
+        true => {
+            let (id, _, code) = tokio::task::block_in_place(|| identify(&api, &dir)).map_err(Refusal)?;
+            api.projects.open_now(&id).is_none().then_some((id, code))
+        },
         false => None,
     };
-    let (id, said) = match unread {
-        Some(id) => (id, vec![]),
+    let (id, code, said) = match unread {
+        Some((id, code)) => (id, code, vec![]),
         None => {
             let project = api.projects.open(&api, &dir).map_err(Refusal)?;
             let said = std::mem::take(&mut *project.said.lock().expect("said lock"));
-            (project.id.clone(), said)
+            (project.id.clone(), project.code.clone(), said)
         }
     };
-    let opened = opened(id, &dir);
-    api.calcifer.store().project_opened(&opened.id, &opened.name, &dir, Some(now_ms()))?;
-    let next = vec![format!("cozy project -p {} render all --on <machine>", opened.name)];
+    let opened = opened(id, code, &dir);
+    api.calcifer.store().project_opened(&opened.id, &opened.name, &dir, Some(now_ms()), Some(&opened.code))?;
+    let next = vec!["cozy open".into()];
     let said = moved_on.into_iter().chain(said).collect();
     Ok(Json(Opened { next, said, ..opened }))
 }
 
 /// The project `id`, in `dir`, as an answer gives it.
-fn opened(id: String, dir: &FsPath) -> Opened {
-    Opened { id, path: dir.to_owned(), name: identity(dir).1, next: vec![], said: vec![] }
+fn opened(id: String, code: String, dir: &FsPath) -> Opened {
+    Opened { id, code, path: dir.to_owned(), name: identity(dir).1, next: vec![], said: vec![] }
 }
 
 /// A new project called `name` in this person's home folder, or the next free name: what it could be called, `_2`, `_3`, …. Whatever is
 /// there already stays as it is, a folder of anything or another project, and it says so: nothing is made in a folder it didn't make.
 fn named_project(api: &Api, name: &str, starter: bool) -> Result<(PathBuf, Option<String>), Error> {
     let home = &api.machines.user_home;
+    refuse_encrypted_parent(home)?;
     let io = |e: std::io::Error| Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", home.display()));
     let wanted = format::plain_name(name).unwrap_or_else(|| "untitled".to_owned());
     let names = std::iter::once(wanted.clone()).chain((2..).map(|n| format!("{wanted}_{n}")));
@@ -1106,6 +1238,7 @@ fn named_project(api: &Api, name: &str, starter: bool) -> Result<(PathBuf, Optio
 /// A new project called `name` in `dir`, with a new id, holding the starter film or nothing: its `project.db`, made whole and then
 /// named. Its canonical folder.
 fn made_new(api: &Api, dir: &FsPath, name: &str, starter: bool) -> Result<PathBuf, Error> {
+    refuse_encrypted_parent(dir)?;
     let io = |e: platform::Error| Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", dir.display()));
     let written = match starter {
         true => written::Written::from_yaml(&format::starter())?,
@@ -1115,10 +1248,17 @@ fn made_new(api: &Api, dir: &FsPath, name: &str, starter: bool) -> Result<PathBu
     db::create(&part, &db::Stored { written: written.into(), ..Default::default() }, &[], &[])?;
     let canonical = platform::durable::canonical(dir).map_err(io)?;
     let (id, name) = (fresh_id(), unique_name(api, "", &canonical, name.to_owned())?);
-    db::set_identity(&mut db::open(&part)?, &part, &id, &name)?;
+    db::set_identity(&mut db::open(&part)?, &part, &id, &name, None)?;
     std::fs::rename(&part, dir.join(db::DB)).map_err(|e| Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", dir.display())))?;
     crate::events::project_changed(&canonical);
     Ok(canonical)
+}
+
+fn refuse_encrypted_parent(dir: &FsPath) -> Result<(), Error> {
+    if vault::logical(dir).ancestors().any(vault::encrypted) {
+        return Err(Error::new(Kind::Conflict, "vault_nested_project", "create a separate project outside the encrypted project's storage"));
+    }
+    Ok(())
 }
 
 /// The project folder holding `path`: the nearest, up from it, that is one.
@@ -1126,8 +1266,8 @@ fn holding(path: &FsPath) -> Result<PathBuf, Error> {
     let not_found = || {
         let said = format!("{} is in no project: no {} there or in a folder above it", path.display(), db::DB);
         Error::new(Kind::NotFound, "project_not_found", said)
-            .remedy(format!("name {}", api::calcifer::project::NAMED_BY))
-            .next("cozy project ls")
+            .remedy("run from an existing project directory, or create one with cozy new")
+            .next("cozy new")
     };
     let start = platform::durable::canonical(path).map_err(|_| not_found())?;
     (start.ancestors()).find(|dir| Folder::is_project(dir)).map(FsPath::to_owned).ok_or_else(not_found)
@@ -1161,9 +1301,16 @@ async fn list(State(api): State<Arc<Api>>, Query(page): Query<Page>) -> Result<J
             path: entry.path,
             used_at_ms: entry.used_at_ms,
             id: entry.id,
+            code: entry.code,
         })
         .collect();
     Ok(Json(Listed { projects, older }))
+}
+
+/// A compact link can reach the unlock UI using only the index, while content stays locked.
+async fn address(State(api): State<Arc<Api>>, Path(reference): Path<String>) -> Result<Json<api::calcifer::project::Address>, Refusal> {
+    let entry = known(&api, &reference).map_err(Refusal)?;
+    Ok(Json(api::calcifer::project::Address { id: entry.id, code: entry.code }))
 }
 
 /// Its assets as they stand.
@@ -1182,9 +1329,8 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>, Query(asked)
             // A render going has its own text: what it owes, and what's wrong with the file, are the answer.
             let queue = queue(&project, &folder.walk_now().map_err(Refusal)?);
             let busy = *project.walking.lock().expect("walking lock");
-            let moving = project.moving.try_lock().is_err();
             let warning = format!("{}: a render going uses the text it was asked with, and a new one is refused until this reads", error.message);
-            return Ok(Json(ProjectState { covered: None, id, path: folder.dir.clone(), assets: vec![], queue, missing: vec![], stale: vec![], orphans: vec![], busy, moving, absent: 0, run_files: 0, cuts: vec![], warnings: vec![ProjectWarning { name: None, message: warning }], next: vec![], board: board_of(&project), unsent: vec![] }));
+            return Ok(Json(ProjectState { covered: None, id, code: project.code.clone(), path: folder.dir.clone(), assets: vec![], queue, missing: vec![], stale: vec![], orphans: vec![], busy, absent: 0, run_files: 0, cuts: vec![], warnings: vec![ProjectWarning { name: None, message: warning }], next: vec![], board: board_of(&project), unsent: vec![] }));
         }
     };
     // What a reader now holds is what any change from here is told against.
@@ -1208,19 +1354,9 @@ fn yes() -> bool {
     true
 }
 
-/// What to run next on a project: its orphans' renames and `reclaim`, then a pull of what isn't here, else a render of what is owed.
+/// Open the browser when the project needs an asset edit, transfer or render.
 fn next_steps(orphans: &[Orphan], absent: u64, owed: bool) -> Vec<String> {
-    let renames = orphans.iter().map(|orphan| format!("cozy project rename {} {}", orphan.name, orphan.renamed_to.as_deref().unwrap_or("<its new name>")));
-    let mut next: Vec<String> = renames.collect();
-    if !orphans.is_empty() {
-        next.push("cozy project reclaim".into());
-    }
-    if absent > 0 {
-        next.push("cozy project pull".into());
-    } else if owed {
-        next.push("cozy project render all --on <machine>".into());
-    }
-    next
+    (!orphans.is_empty() || absent > 0 || owed).then(|| "cozy open".to_owned()).into_iter().collect()
 }
 
 /// Its render going, or its last since Calcifer started.
@@ -1465,7 +1601,7 @@ fn row(reading: &Reading, i: usize) -> Row {
         .map(|sha256| folder::prefix_of(sha256))
         .collect();
     let status = match &standing.state {
-        _ if !gone.is_empty() => format!("not on this computer: {}: cozy project pull", gone.join(", ")),
+        _ if !gone.is_empty() => format!("not on this computer: {}; download it in the browser opened by cozy open", gone.join(", ")),
         Stand::Pinned { version: None, .. } => "approved".into(),
         Stand::Pinned { version: Some(version), changed } if changed.is_empty() => format!("approved: {noun} {version}"),
         Stand::Pinned { version: Some(version), changed } => format!("approved: {noun} {version}; its inputs changed: {}", changed.join(", ")),
@@ -1621,7 +1757,7 @@ async fn reclaim(
     let going = (api.calcifer.store().runs(&filter).map(|(rows, ..)| rows).unwrap_or_default().iter()).any(|row| row.state != crate::store::State::Settled);
     if asked.yes && (going || *project.walking.lock().expect("walking lock")) {
         let said = "the project is rendering: reclaim once its runs land";
-        return Err(Refusal(Error::new(Kind::Conflict, "project_busy", said).next("cozy project status")));
+        return Err(Refusal(Error::new(Kind::Conflict, "project_busy", said).next("cozy status")));
     }
     let (doc, lock) = (Doc::load(folder).map_err(Refusal)?, folder.lock().map_err(Refusal)?);
     let (orphans, kept) = (orphans(&doc, folder, &lock), kept_files(&doc, &lock));
@@ -1629,7 +1765,7 @@ async fn reclaim(
     let recorded = lock.recorded();
     if let (true, Some(why)) = (asked.yes, &lost) {
         let remedy = format!("put {} back from a backup, or delete what you don't want from files/ by hand", db::DB);
-        return Err(Refusal(Error::new(Kind::Conflict, "project_history_lost", why.clone()).remedy(remedy).next("cozy project status")));
+        return Err(Refusal(Error::new(Kind::Conflict, "project_history_lost", why.clone()).remedy(remedy).next("cozy status")));
     }
     if asked.yes {
         // An orphaned cut's film at the root goes with it.
@@ -1660,7 +1796,7 @@ async fn reclaim(
     if asked.yes {
         canvas::prune(folder, &id, |name| doc.find(name).is_some()).map_err(Refusal)?;
     }
-    let next = (!asked.yes && lost.is_none() && (files > unrecorded || !orphans.is_empty())).then(|| "cozy project reclaim --yes".to_owned()).into_iter().collect();
+    let next = (!asked.yes && lost.is_none() && (files > unrecorded || !orphans.is_empty())).then(|| "cozy open".to_owned()).into_iter().collect();
     Ok(Json(Reclaimed { orphans, files, bytes, unrecorded, deleted: asked.yes, next, lost, unheld }))
 }
 
@@ -1726,7 +1862,7 @@ fn renamed_under(project: &Arc<Project>, id: &str, asked: Rename, follows: bool)
         }
         if old.is_none() && !free && canvas::row(folder, &asked.from)?.is_none() {
             let said = format!("the project keeps no version of {}", asked.from);
-            return Err(Error::new(Kind::NotFound, "asset_unknown", said).next("cozy project status"));
+            return Err(Error::new(Kind::NotFound, "asset_unknown", said).next("cozy status"));
         }
         let to = doc.assets[i].name.clone();
         if old.is_some() && !same && lock.asset(&to).is_some_and(|held| held.on_record().next().is_some()) {
@@ -1877,7 +2013,7 @@ pub(super) fn renamed(lock: &mut Lock, from: &str, to: &str) {
 }
 
 /// Adds what `Runs` asks to the project's walk, answered at once (`202`; `200` when its
-/// `Idempotency-Key` asked it already); `/events` says how it goes.
+/// `Idempotency-Key` asked it already); its board on `GET /v1/events` says how it goes.
 async fn runs(
     State(api): State<Arc<Api>>,
     Path(id): Path<String>,
@@ -1909,8 +2045,10 @@ async fn runs(
     let all = matches!(asked.names.as_slice(), [only] if name_key(only) == name_key(ALL));
     let lock = project.folder.lock().map_err(Refusal)?;
     let stand = doc.stand(&lock);
-    let say = |message: String| drop(project.events.send(Event::Warning { message, name: None }));
-    let said = |name: &str, message: String| drop(project.events.send(Event::Said { message, name: Some(name.to_owned()) }));
+    // What the ask finds is its answer's: the walk it joins or begins says only what it does.
+    let lines = std::cell::RefCell::new(Vec::<Said>::new());
+    let say = |message: String| lines.borrow_mut().push(Said { level: NoteLevel::Warning, message, names: vec![] });
+    let said = |name: &str, message: String| lines.borrow_mut().push(Said { level: NoteLevel::Info, message, names: vec![name.to_owned()] });
     // Several are for a node you name: of everything it's more than anyone wants, so one of each.
     let n = if all { 1 } else { asked.n.max(1) };
     if all && asked.n > 1 {
@@ -1977,7 +2115,7 @@ async fn runs(
                 takes.push(Take { key: new_key(), asset: name.clone(), target: target.clone(), approve: false, new: true, pickup: None });
             }
             if approve {
-                say(format!("--approve pins what a run lands: `cozy project approve {name}` pins this once it is made"));
+                say(format!("approve {name} in the browser once it is made; open it with `cozy open`"));
             }
             continue;
         }
@@ -2010,8 +2148,9 @@ async fn runs(
     if let (Some(error), true, false) = (first, takes.is_empty(), all) {
         return Err(Refusal(error));
     }
-    // Held until the ask is in the walk's file: a walk ending in between would take its text from under it.
-    let walking = project.walking.lock().expect("walking lock");
+    // Hold admission through the commit and its board. The previous walk
+    // publishes its end under this same lock before a new one can begin.
+    let mut walking = project.walking.lock().expect("walking lock");
     let joined = *walking;
     let new_all = all && missing && !lock.walk.asks.iter().any(|ask| ask.all && ask.digest == digest);
     let new_outdated = outdated && !lock.walk.asks.iter().any(|ask| ask.outdated && ask.digest == digest);
@@ -2036,13 +2175,15 @@ async fn runs(
         })
     }))
     .map_err(Refusal)?;
-    drop(walking);
     project.join(&project.folder.lock().map_err(Refusal)?);
     let queued = queued_now(&project, &ask.id);
-    walk(&api, &project);
+    walk_under(&api, &project, &mut walking);
     sync_jobs(&project, numbered(&api)).map_err(Refusal)?;
+    let board = project.jobs.board();
+    drop(walking);
     let ask = (!joined || added > 0).then_some(ask.id);
-    Ok((StatusCode::ACCEPTED, Json(Asked { id, ask, path: project.folder.dir.clone(), joined, added, skipped, queued, next: status_next(&project.folder), board: project.jobs.board() })))
+    let said = lines.into_inner();
+    Ok((StatusCode::ACCEPTED, Json(Asked { id, ask, path: project.folder.dir.clone(), joined, added, skipped, queued, said, next: vec!["cozy status".into()], board })))
 }
 
 /// A run by its number, as its record says now.
@@ -2171,7 +2312,7 @@ async fn keep_file(folder: &Folder, source: &str) -> Result<folder::Kept, Refusa
     let Some(digest) = held_name(source)? else {
         return folder.import(source).await.map_err(|why| import_failed(source, why));
     };
-    match crate::runs::files::held(&digest) {
+    match crate::runs::files::held_for(&folder.dir, &digest) {
         Some(at) => tokio::task::block_in_place(|| folder.take_held(&at, &digest.to_string())).map_err(|why| import_failed(source, why)),
         None => folder.own(&digest.to_string()).ok_or_else(|| not_held(source)),
     }
@@ -2189,7 +2330,7 @@ fn held_name(source: &str) -> Result<Option<Digest>, Refusal> {
 fn import_failed(source: &str, why: String) -> Refusal {
     // A hash is no one's to read: a person dropped a file, and is told of it by its name.
     let said = if source.starts_with("sha256:") { why } else { format!("{source}: {why}") };
-    Refusal(Error::new(Kind::Validation, "import_failed", said).remedy("cozy project import takes a picture, video or sound: a file, or an http(s) URL"))
+    Refusal(Error::new(Kind::Validation, "import_failed", said).remedy("import a picture, video or sound in the browser opened by cozy open"))
 }
 
 fn not_held(source: &str) -> Refusal {
@@ -2246,6 +2387,8 @@ fn element(project: &Project, id: &str, wanted: &str, at: Option<api::calcifer::
 fn measure_soon(api: &Arc<Api>, project: &Arc<Project>) {
     let (host, project) = (Host::new(api), project.clone());
     tokio::spawn(async move {
+        let Ok(access) = vault::admit_root(&project.root).await else { return; };
+        if project.require_view().is_err() { return; }
         if project.folder.lock().map_or(true, |lock| !lock.files.values().any(folder::File::unmeasured)) {
             return;
         }
@@ -2255,14 +2398,17 @@ fn measure_soon(api: &Arc<Api>, project: &Arc<Project>) {
         }
         let dir = project.folder.dir.clone();
         let measuring = tokio::task::spawn_blocking(move || {
+            // This task can outlive its importer and must drain before storage is replaced.
+            let _access = access;
             let _permit = permit;
-            project.folder.lock().and_then(|mut lock| project.folder.measure(&mut lock))
+            let measured = project.folder.lock().and_then(|mut lock| project.folder.measure(&mut lock));
+            // What was read before this finished said nothing of how long a clip is.
+            crate::events::project_settled(&dir);
+            measured
         });
         if let Ok(Err(error)) = measuring.await {
             warn!("measuring a project's files: {}", error.message);
         }
-        // What was read before this finished said nothing of how long a clip is.
-        crate::events::project_settled(&dir);
     });
 }
 
@@ -2314,7 +2460,7 @@ async fn approve(
             [file] => file.sha256.clone(),
             [] => {
                 let said = format!("no file of this project's starts with {}", asked.version);
-                return Err(Refusal(Error::new(Kind::Usage, "version_unknown", said).next("cozy project status")));
+                return Err(Refusal(Error::new(Kind::Usage, "version_unknown", said).next("cozy status")));
             }
             several => {
                 let said = format!("{} fits {} files of this project: write more of its hash", asked.version, several.len());
@@ -2328,7 +2474,7 @@ async fn approve(
                     [] => format!("{} has no {noun} yet", asset.name),
                     numbers => format!("{} has no {noun} {wanted}: it has {}", asset.name, numbers.join(", ")),
                 };
-                return Err(Refusal(Error::new(Kind::Usage, "version_unknown", said).next("cozy project status")));
+                return Err(Refusal(Error::new(Kind::Usage, "version_unknown", said).next("cozy status")));
             };
             sha256.clone()
         }
@@ -2367,16 +2513,14 @@ async fn unpin(
     if asset.pin.is_some() {
         if asset.hollow && lock.asset(&name).is_none_or(|held| held.versions.is_empty()) {
             let said = format!("{name} is a constant, nothing but its file: to be rid of it, delete it");
-            return Err(Refusal(Error::new(Kind::Usage, "project_edit", said).next(format!("cozy project delete {name}"))));
+            return Err(Refusal(Error::new(Kind::Usage, "project_edit", said).next("cozy open")));
         }
         folder.edit(|written| written.unapproved(&name)).map_err(Refusal)?;
     }
-    for message in settle(&api, &project).await {
-        let _ = project.events.send(Event::Warning { message, name: None });
-    }
+    let warnings = settle(&api, &project).await;
     let stale = newly_stale(folder, &before).map_err(Refusal)?;
     let etag = folder.reading_boxes(|written| written.get(&name).map(written::Boxed::etag)).map_err(Refusal)?;
-    Ok(Json(Unpinned { name, version, stale, etag }))
+    Ok(Json(Unpinned { name, version, stale, warnings, etag }))
 }
 
 fn stale_names(doc: &Doc, stand: &[Standing]) -> BTreeSet<String> {
@@ -2423,82 +2567,31 @@ async fn settle(api: &Arc<Api>, project: &Arc<Project>) -> Vec<String> {
     }
 }
 
-async fn events(
-    State(api): State<Arc<Api>>,
-    Path(id): Path<String>,
-) -> Result<Sse<impl Stream<Item = Result<sse::Event, Infallible>>>, Refusal> {
-    let project = api.projects.get(&api, &id)?;
-    // Heard from before what is going is read, so nothing falls between: a run can be told twice, never not at all.
-    let tail = project.events.subscribe();
-    let mut boards = project.jobs.subscribe();
-    let board = boards.borrow_and_update().clone();
-    let mut going = going(&api, &project.folder).map_err(Refusal)?;
-    if board.seq > 0 {
-        going.push(Event::Board { board });
-    }
-    let told = going.into_iter().map(|event| Ok(sse::Event::default().json_data(&event).expect("an event serializes")));
-    let stop = api.stop_signal();
-    let stream = futures_util::stream::iter(told).chain(futures_util::stream::unfold((tail, boards, stop), |(mut tail, mut boards, mut stop)| async move {
-        // The board first: what the walk says last, it has already shown.
-        let event = tokio::select! {
-            biased;
-            changed = boards.changed() => match changed {
-                Ok(()) => Ok(Event::Board { board: boards.borrow_and_update().clone() }),
-                Err(_) => return None,
-            },
-            event = tail.recv() => event,
-            _ = stop.wait_for(|stopping| *stopping) => return None,
-        };
-        match event {
-            Ok(event) => {
-                let sent = sse::Event::default().json_data(&event).expect("an event serializes");
-                return Some((Ok(sent), (tail, boards, stop)));
-            }
-            // It fell behind: what it missed is in the board.
-            Err(broadcast::error::RecvError::Lagged(_)) => {
-                let event = Event::Board { board: boards.borrow().clone() };
-                let sent = sse::Event::default().json_data(&event).expect("an event serializes");
-                return Some((Ok(sent), (tail, boards, stop)));
-            }
-            Err(broadcast::error::RecvError::Closed) => return None,
-        }
-    }));
-    // Its project stays open while it's followed.
-    let stream = stream.map(move |sent| {
-        let _reading = &project;
-        sent
-    });
-    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
-}
+const YAML_EXPORT_BASE: &str = "# cozy-project-base: ";
 
-/// The runs going in the project now, as each was told when it began, for whoever comes after: one more render, or a page.
-fn going(api: &Api, folder: &Folder) -> Result<Vec<Event>, Error> {
-    let lock = folder.lock()?;
-    let store = api.calcifer.store();
-    let running = lock.pending.values().filter(|pending| pending.run > 0).filter_map(|pending| {
-        let row = store.run_by_number(pending.run).ok()??;
-        (row.state != crate::store::State::Settled).then(|| Event::Started { name: pending.asset.clone(), run: row.id.to_string(), number: pending.run })
-    });
-    Ok(running.collect())
-}
-
-/// The export's ETag, as `text` holds it.
+/// The digest of the exact bytes a conditional HTTP request names.
 fn yaml_etag(text: &str) -> String {
     format!("\"{}\"", hex::encode(Sha256::digest(text)))
 }
 
-/// `GET /v1/projects/{id}/yaml`: the project as YAML, format 4, as it is this moment (`cozy project export`), and the ETag a `PUT` may name.
+/// Only the canonical graph body participates in the editable export's base stamp.
+fn yaml_export(id: &str, text: &str) -> String {
+    format!("{YAML_EXPORT_BASE}{id} {}\n{text}", yaml_etag(text))
+}
+
+/// `GET /v1/projects/{id}/yaml`: the project as YAML, format 4, as it is this moment (the browser export), and the ETag a `PUT` may name.
 async fn yaml(State(api): State<Arc<Api>>, Path(id): Path<String>, headers: HeaderMap) -> Result<Response, Refusal> {
     let project = api.projects.get(&api, &id)?;
     let text = project.folder.text().map_err(Refusal)?;
-    let etag = yaml_etag(&text);
+    let exported = yaml_export(&project.id, &text);
+    let etag = yaml_etag(&exported);
     if headers.get(header::IF_NONE_MATCH).and_then(|value| value.to_str().ok()) == Some(etag.as_str()) {
         return Ok((StatusCode::NOT_MODIFIED, [(header::ETAG, etag)]).into_response());
     }
-    Ok(([(header::CONTENT_TYPE, "application/yaml".to_owned()), (header::ETAG, etag)], text).into_response())
+    Ok(([(header::CONTENT_TYPE, "application/yaml".to_owned()), (header::ETAG, etag)], exported).into_response())
 }
 
-/// `PUT /v1/projects/{id}/yaml` (`cozy project import <file>.yaml`): these bytes are the project, each box, field and section that differs
+/// `PUT /v1/projects/{id}/yaml`: these bytes are the project, each box, field and section that differs
 /// written in one transaction and one entry, and a box renamed in them keeps its versions. With `If-Match`, only if the export still is
 /// what that read. What doesn't read is refused with its line, and nothing changes. Nothing is rendered, and a render going keeps the text
 /// it was asked with.
@@ -2513,13 +2606,17 @@ async fn save(
     let text = std::str::from_utf8(&body).map_err(|e| Refusal(Error::new(Kind::Validation, "project_yaml", format!("{}: {e}", folder::PROJECT))))?;
     let project = api.projects.get(&api, &id)?;
     let folder = &project.folder;
+    let exported = text.lines().next().and_then(|line| line.strip_prefix(YAML_EXPORT_BASE));
+    let base = exported.map(|base| base.split_once(' ').ok_or_else(|| Refusal(Error::new(Kind::Validation, "project_yaml", "the export's project/base marker is incomplete")))).transpose()?;
     let given = written::Written::from_yaml(text).map_err(Refusal)?;
     // Read from its text, so what it refuses names its lines.
     let doc = Doc::of_text(folder, text, &folder.lock().map_err(Refusal)?).map_err(Refusal)?;
     let text = folder
         .act(|| {
-            if let Some(read) = &read
-                && yaml_etag(&folder.text()?) != *read
+            let current = folder.text()?;
+            let representation = yaml_etag(&yaml_export(&project.id, &current));
+            if read.as_ref().is_some_and(|read| *read != representation)
+                || base.is_some_and(|(owner, base)| owner == project.id && base != yaml_etag(&current))
             {
                 return Err(Error::new(Kind::Conflict, "project_changed", "the project changed since it was read").remedy("export it again and make the edit on what it holds"));
             }
@@ -2532,7 +2629,7 @@ async fn save(
             folder.text()
         })
         .map_err(Refusal)?;
-    Ok((StatusCode::NO_CONTENT, [(header::ETAG, yaml_etag(&text))]).into_response())
+    Ok((StatusCode::NO_CONTENT, [(header::ETAG, yaml_etag(&yaml_export(&project.id, &text)))]).into_response())
 }
 
 /// One of the project's files by its name in files/ (`<sha256>.<ext>`): content-addressed, so its sha256 is its ETag.
@@ -2577,7 +2674,7 @@ async fn cut(
 fn send(path: &FsPath, etag: &str, headers: &HeaderMap) -> Result<Response, Refusal> {
     let missing = |e: std::io::Error| {
         let said = format!("{} is not there: {e}", path.display());
-        Refusal(Error::new(Kind::NotFound, "file_missing", said).next("cozy project render all"))
+        Refusal(Error::new(Kind::NotFound, "file_missing", said).next("cozy open"))
     };
     let file = std::fs::File::open(path).map_err(missing)?;
     let len = file.metadata().map_err(missing)?.len();
@@ -2751,12 +2848,13 @@ impl Walk {
         };
         let said = format!("rendered {made} of {total}; {} failed{unsent}: {}", missed.failed, first.message);
         let what = match missed.whole || missed.names.is_empty() {
-            true if missed.outdated => "all --missing --outdated".to_owned(),
-            true => "all --missing".to_owned(),
+            true if missed.outdated => "all missing and outdated assets".to_owned(),
+            true => "all missing assets".to_owned(),
             false => missed.names.iter().cloned().collect::<Vec<_>>().join(" "),
         };
         let on = missed.on.iter().map(ToString::to_string).collect::<Vec<_>>().join(",");
-        let mut error = Error::new(first.kind, "render_incomplete", said).cause(first.code).next(format!("cozy project render {what} --on {on}"));
+        let mut error = Error::new(first.kind, "render_incomplete", said).cause(first.code)
+            .remedy(format!("retry rendering {what} on {on} in the browser opened by cozy open")).next("cozy open");
         error.next.extend(first.next.into_iter().take(1));
         error
     }
@@ -2802,7 +2900,7 @@ impl Walk {
             fresh
         };
         if fresh {
-            self.say(Event::Warning { message: format!("{machine}: {seen} runs failed the same way, so this render sends it nothing more: {why}"), name: None });
+            self.say(Told::Warning { message: format!("{machine}: {seen} runs failed the same way, so this render sends it nothing more: {why}"), name: None });
         }
         for pending in lock.pending.values().filter(|pending| pending.run > 0 && asks.contains(&pending.ask)) {
             self.host.cancel_unstarted(pending.run, machine);
@@ -2833,12 +2931,12 @@ impl Walk {
         if !self.folder().wants_ffprobe(lock) || self.measuring.swap(true, Ordering::Relaxed) {
             return;
         }
-        self.say(Event::Said { message: "fetching ffmpeg and ffprobe, which measure this project's files".into(), name: None });
+        self.say(Told::Said { message: "fetching ffmpeg and ffprobe, which measure this project's files".into(), name: None });
         let (api, project) = (self.host.api(), self.project.clone());
         tokio::spawn(async move {
             match Host::new(&api).ffmpeg().await {
                 Ok(_) => project.asked.notify_one(),
-                Err(error) => drop(project.events.send(Event::Warning { message: format!("functions see no sizes for this project's files: {}: cozy doctor", error.message), name: None })),
+                Err(error) => project.jobs.told(Told::Warning { message: format!("functions see no sizes for this project's files: {}: cozy doctor", error.message), name: None }),
             }
         });
     }
@@ -2856,6 +2954,25 @@ impl Walk {
     /// What has landed, measured: a cut and a function read those sizes, and a film is judged by its frames.
     fn measure(&self) -> Result<(), Error> {
         self.folder().measure(&mut self.folder().lock()?)
+    }
+
+    /// Measure the files the walk made here, or that landed before ffprobe was available.
+    fn measure_at_end(&self) {
+        if let Err(error) = self.measure() {
+            warn!("measuring a project's files: {}", error.message);
+        }
+    }
+
+    /// Publish and keep the old board before another request can admit a new walk.
+    fn end(&self, walking: &mut bool, error: Option<Error>, following: &tokio::task::JoinHandle<()>) {
+        following.abort();
+        let asks = std::mem::take(&mut *self.ended.lock().expect("ended lock"));
+        let ended = api::calcifer::project::Ended { error, rendered: self.rendered(), asks };
+        let board = self.project.jobs.end(self.began.elapsed().as_millis() as u64, ended);
+        if let Err(error) = self.folder().keep_board(&board) {
+            warn!("keeping a render's board: {}", error.message);
+        }
+        *walking = false;
     }
 
     /// A render has nothing more that can go: each cut it ends on is said, and it is done.
@@ -2916,7 +3033,7 @@ impl Walk {
                 answer => return answer,
             };
             if let Some((wait, message)) = backoff.again(&e.message, false, e.retry_after_s.map(std::time::Duration::from_secs)) {
-                self.say(Event::Warning { message, name: None });
+                self.say(Told::Warning { message, name: None });
                 tokio::time::sleep(wait).await;
                 continue;
             }
@@ -2925,18 +3042,14 @@ impl Walk {
                 return Err(Error { message: backoff.spent(&e.message), ..e });
             }
             if !std::mem::replace(&mut said, true) {
-                self.say(Event::Warning { message: format!("{}; this computer reaches nothing: it goes on once it does", e.message), name: None });
+                self.say(Told::Warning { message: format!("{}; this computer reaches nothing: it goes on once it does", e.message), name: None });
             }
             tokio::time::sleep(OFFLINE).await;
         }
     }
 
-    fn say(&self, event: Event) {
-        self.project.jobs.told(&event);
-        if matches!(event, Event::Started { .. }) {
-            self.sync();
-        }
-        let _ = self.project.events.send(event);
+    fn say(&self, told: Told) {
+        self.project.jobs.told(told);
     }
 
     /// The board as project.lock stands now, with the times last quoted.
@@ -2957,8 +3070,8 @@ impl Walk {
     }
 
     /// Gives each ready job its turn as it comes up, each sending, making or following on its own so none holds up another, and goes on
-    /// as each ends or something is asked, until nothing is owed: then the first thing that failed, if one did.
-    async fn go(&self) -> Result<Option<Error>, Error> {
+    /// as each ends or something is asked, until nothing is owed and its terminal board is kept.
+    async fn go(&self, following: &tokio::task::JoinHandle<()>) -> Result<(), Error> {
         let (mut first, mut followed) = (None, HashSet::new());
         let mut work: FuturesUnordered<BoxFuture<'_, Done>> = FuturesUnordered::new();
         // An edit by hand says nothing, so the file's stamp is looked at. One stat a second, and nothing more if it's the same.
@@ -3016,8 +3129,8 @@ impl Walk {
                 for ask in self.folder().walk_now()?.walk.asks.into_iter().filter(|ask| done.contains(&ask.id)) {
                     self.finish(&ask.id).await?;
                 }
-                if self.over()? {
-                    return Ok(first);
+                if self.over(&mut first, following)? {
+                    return Ok(());
                 }
                 continue;
             }
@@ -3096,7 +3209,8 @@ impl Walk {
         let (source, inputs) = match &renderer.local {
             None => (v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone() }), vec![]),
             Some(path) => {
-                let prepared = self.host.ready(path, &placed, &hub).await?;
+                let scope = crate::private_io::of_path(&self.folder().dir)?;
+                let prepared = crate::private_io::context(scope, self.host.ready(path, &placed, &hub)).await?;
                 (v1::Source::Local(prepared.source), prepared.files)
             }
         };
@@ -3220,7 +3334,7 @@ impl Walk {
                 walker.readings.get(&ask.digest).map(|reading| reading.doc.clone())
             };
             for warning in warnings.iter().flat_map(|doc| &doc.warnings) {
-                self.say(Event::Warning { message: warning.message.clone(), name: warning.name.clone() });
+                self.say(Told::Warning { message: warning.message.clone(), name: warning.name.clone() });
             }
         }
         for (ask, error) in unread {
@@ -3284,14 +3398,14 @@ impl Walk {
         }
         let (dropped, _) = stop_jobs(&self.host.api(), &self.project, &lock, &|name| gone.contains(&name_key(name)), false, &deleted_why)?;
         for name in &dropped {
-            self.say(Event::Said { message: deleted_why(name), name: Some(name.clone()) });
+            self.say(Told::Said { message: deleted_why(name), name: Some(name.clone()) });
         }
         Ok(!dropped.is_empty())
     }
 
     /// A job's asset was deleted, and it ended with nothing made: its row, and a line, say so.
     fn deleted(&self, job: &str, name: &str) {
-        self.say(Event::Said { message: deleted_why(name), name: Some(name.to_owned()) });
+        self.say(Told::Said { message: deleted_why(name), name: Some(name.to_owned()) });
         self.project.jobs.ended(Job { id: job.to_owned(), asset: name.to_owned(), state: JobState::Canceled, why: Some(deleted_why(name)), ..Job::default() });
     }
 
@@ -3464,7 +3578,7 @@ impl Walk {
                 end(id, End::Stands);
             }
             Act::Kept { id, ask, key, asset, said } => {
-                self.say(Event::Said { message: said, name: Some(asset.clone()) });
+                self.say(Told::Said { message: said, name: Some(asset.clone()) });
                 self.settled(&ask, &asset, &key)?;
                 self.project.jobs.ended(Job { id: key, asset, state: JobState::Done, noun: "version".into(), why: Some("stays pinned".into()), ..Job::default() });
                 end(id, End::Stands);
@@ -3619,13 +3733,20 @@ impl Walk {
         Ok(())
     }
 
-    /// Whether the walk is over, nothing owed or followed. Decided under `walking`, so an ask finds
-    /// this walker going or starts the next.
-    fn over(&self) -> Result<bool, Error> {
+    /// Measure before taking the admission lock. An ask can join meanwhile,
+    /// so check what is owed again before closing the walk under the lock.
+    fn over(&self, first: &mut Option<Error>, following: &tokio::task::JoinHandle<()>) -> Result<bool, Error> {
+        let owes = |walk: &folder::WalkFile| !walk.walk.asks.is_empty() || !walk.pending.is_empty();
+        if owes(&self.folder().walk_now()?) {
+            return Ok(false);
+        }
+        self.measure_at_end();
         let mut walking = self.project.walking.lock().expect("walking lock");
         let walk = self.folder().walk_now()?;
-        *walking = !walk.walk.asks.is_empty() || !walk.pending.is_empty();
-        if !*walking && !walk.walk.renames.is_empty() {
+        if owes(&walk) {
+            return Ok(false);
+        }
+        if !walk.walk.renames.is_empty() {
             self.folder().update_lock(|lock| {
                 for (from, to) in std::mem::take(&mut lock.walk.renames) {
                     // Still under its old name: a rename an older Calcifer left for this moment.
@@ -3638,23 +3759,22 @@ impl Walk {
                 }
             })?;
         }
-        if !*walking {
-            self.folder().update_walk(|walk| {
-                walk.walk.runs.clear();
-                walk.walk.landing.clear();
-                walk.walk.numbered.clear();
-            })?;
-            *self.project.walker.lock().expect("walker lock") = Walker::default();
-            self.folder().drop_texts();
-        }
-        Ok(!*walking)
+        self.folder().update_walk(|walk| {
+            walk.walk.runs.clear();
+            walk.walk.landing.clear();
+            walk.walk.numbered.clear();
+        })?;
+        *self.project.walker.lock().expect("walker lock") = Walker::default();
+        self.folder().drop_texts();
+        self.end(&mut walking, first.take().map(|error| self.last_word(error)), following);
+        Ok(true)
     }
 
     /// What failed, of no one asset: said now; what does not read it goes on.
     fn failed(&self, error: Error, first: &mut Option<Error>) {
         self.missed.lock().expect("missed lock").failed += 1;
         self.project.unsent.lock().expect("unsent lock").push(error.clone());
-        self.say(Event::Failed { error: error.clone(), name: None, run: None });
+        self.say(Told::Failed { error: error.clone(), name: None, run: None });
         first.get_or_insert(error);
     }
 
@@ -3672,7 +3792,7 @@ impl Walk {
                 warn!("{name}: {error}");
             }
         }
-        self.say(Event::Failed { error: error.clone(), name: Some(name.to_owned()), run });
+        self.say(Told::Failed { error: error.clone(), name: Some(name.to_owned()), run });
         first.get_or_insert(error);
     }
 
@@ -3694,7 +3814,7 @@ impl Walk {
             return;
         }
         let row = cut_row(doc, self.folder(), lock, stand, i);
-        self.say(Event::Cut { name: doc.assets[i].name.clone(), cut: name, frames: row.frames.unwrap_or(file.frames), fps: row.fps, retimed: row.retimed, took_s: 0.0, unchanged: true, without: row.without });
+        self.say(Told::Cut { name: doc.assets[i].name.clone(), cut: name, frames: row.frames.unwrap_or(file.frames), fps: row.fps, retimed: row.retimed, took_s: 0.0, unchanged: true, without: row.without });
     }
 
     /// A standing cut's `.otio`, written again from its pieces; one that can't be says so and the walk goes on.
@@ -3707,15 +3827,16 @@ impl Walk {
         tools::past_end(&mut pieces, canvas.fps);
         let project = self.project.clone();
         let (cut, fps) = (name.to_owned(), canvas.fps);
-        let written = match self.host.ffmpeg().await {
-            Ok((_, ffprobe)) => tokio::task::spawn_blocking(move || tools::timeline(&ffprobe, &project.folder, &pieces, fps, &cut))
-                .await
-                .map_err(|e| Error::new(Kind::Internal, "edit_cut", e.to_string()))
-                .and_then(|written| written),
-            Err(error) => Err(error),
-        };
+        let written = async {
+            let (_, ffprobe) = self.host.ffmpeg().await?;
+            let access = vault::admit_work(&project).await?;
+            tokio::task::spawn_blocking(move || {
+                let _access = access;
+                tools::timeline(&ffprobe, &project.folder, &pieces, fps, &cut)
+            }).await.map_err(|e| Error::new(Kind::Internal, "edit_cut", e.to_string()))?
+        }.await;
         if let Err(error) = written {
-            self.say(Event::Warning { message: format!("{name}'s timeline is gone and isn't written again: {}", error.message), name: None });
+            self.say(Told::Warning { message: format!("{name}'s timeline is gone and isn't written again: {}", error.message), name: None });
         }
     }
 
@@ -3750,9 +3871,9 @@ impl Walk {
             return self.folder().update_walk(|walk| settle(&mut walk.walk));
         }
         match &standing.state {
-            Stand::Stale(why) if !new => self.say(Event::Said { message: format!("{name}: out of date: {why}"), name: Some(name.clone()) }),
-            Stand::Missing if !new => self.say(Event::Said { message: format!("{name}: no {noun} yet"), name: Some(name.clone()) }),
-            Stand::Pinned { changed, .. } if next.unpin => self.say(Event::Said { message: format!("{name}: pinned, and {} changed: a new {noun} takes its place, and the one it held stays", changed.join(", ")), name: Some(name.clone()) }),
+            Stand::Stale(why) if !new => self.say(Told::Said { message: format!("{name}: out of date: {why}"), name: Some(name.clone()) }),
+            Stand::Missing if !new => self.say(Told::Said { message: format!("{name}: no {noun} yet"), name: Some(name.clone()) }),
+            Stand::Pinned { changed, .. } if next.unpin => self.say(Told::Said { message: format!("{name}: pinned, and {} changed: a new {noun} takes its place, and the one it held stays", changed.join(", ")), name: Some(name.clone()) }),
             _ => {}
         }
         let sent = async {
@@ -3763,13 +3884,13 @@ impl Walk {
                     .map(|sha256| folder::prefix_of(sha256))
                     .collect();
                 if !gone.is_empty() {
-                    return Err(cannot(&name, format!("{} of {} is not on this computer: cozy project pull", gone.join(", "), read.name)));
+                    return Err(cannot(&name, format!("{} of {} is not on this computer; download it in the browser opened by cozy open", gone.join(", "), read.name)));
                 }
             }
             let with = doc.target(i);
             let package = self.again(|| self.host.package(&target.hub, &with, &self.folder().dir, &target.on)).await?;
             if let Some(moved) = &package.moved {
-                self.say(Event::Warning { message: moved.clone(), name: None });
+                self.say(Told::Warning { message: moved.clone(), name: None });
             }
             // What it outputs says what `defaults` fill, and so its key: planned again knowing that.
             if read_tags(doc, self.folder(), lock, i, &package) {
@@ -3781,7 +3902,7 @@ impl Walk {
                 return Err(Error::new(Kind::Validation, "input_missing", why).remedy(format!("bring it back, or edit {name}'s text")));
             }
             let Some(maker) = package.maker()? else {
-                self.say(Event::Warning { message: no_function(&name, &package.name), name: None });
+                self.say(Told::Warning { message: no_function(&name, &package.name), name: None });
                 return self.folder().update_walk(|walk| settle(&mut walk.walk));
             };
             let now = self.folder().lock()?;
@@ -3815,11 +3936,11 @@ impl Walk {
                 let why = if fixed { "fixes its seed" } else { "takes no seed" };
                 match holds {
                     Some(number) => self.stands(&name, noun, number, format!("{} {why}, so it has one result per inputs", package.name)),
-                    None => self.say(Event::Said { message: format!("{name}: {} {why}, so it has one result per inputs: {stands}", package.name), name: Some(name.clone()) }),
+                    None => self.say(Told::Said { message: format!("{name}: {} {why}, so it has one result per inputs: {stands}", package.name), name: Some(name.clone()) }),
                 }
                 return self.folder().update_walk(|walk| settle(&mut walk.walk));
             }
-            warnings.iter().for_each(|message| self.say(Event::Warning { message: message.clone(), name: None }));
+            warnings.iter().for_each(|message| self.say(Told::Warning { message: message.clone(), name: None }));
             let mut version = Version { inputs: inputs.clone(), warnings, text: doc.text(i), ..Default::default() };
             if seeded {
                 // A failed run's seed is kept for the next try on these inputs, so finished segments aren't paid twice.
@@ -3911,20 +4032,27 @@ impl Walk {
             return Ok(());
         }
         let home = self.host.home();
-        let clips = crate::runs::clip::Clips { dir: home.root().join("cache").join("clips"), home: home.clone() };
+        let scope = crate::private_io::of_path(&self.project.folder.dir).map_err(|e| e.message)?;
+        let dir = crate::private_io::cache(scope.as_ref(), home.root().join("cache").join("clips"), "clips").map_err(|e| e.message)?;
+        let clips = crate::runs::clip::Clips { dir, home: home.clone() };
         let mut cut = vec![];
         for range in &bound.cuts {
             let file = lock.files.get(&range.source).ok_or_else(|| format!("{} isn't one of the project's files", folder::prefix_of(&range.source)))?;
             let path = self.folder().path(&file.path);
             if !path.is_file() || file.fps <= 0.0 {
-                return Err(format!("{} must be on this computer, and measured, to cut a range of it: cozy project pull", folder::prefix_of(&range.source)));
+                return Err(format!("{} must be on this computer, and measured, to cut a range of it; download it in the browser opened by cozy open", folder::prefix_of(&range.source)));
             }
             let seconds = crate::runs::clip::Range { start: f64::from(range.from) / file.fps, end: range.to.map(|to| f64::from(to) / file.fps) };
             let mut notes = vec![];
-            let made = clips.cut(&format!("frames {}-{}", range.from, range.to.map_or_else(String::new, |to| to.to_string())), &path, seconds, &mut notes).await.map_err(|e| e.message)?;
-            notes.into_iter().filter(|note| note.level == api::calcifer::NoteLevel::Warning).for_each(|note| self.say(Event::Warning { message: note.message, name: None }));
+            let access = vault::admit_work(&self.project).await.map_err(|e| e.message)?;
+            let made = clips.cut(&format!("frames {}-{}", range.from, range.to.map_or_else(String::new, |to| to.to_string())), &path, seconds, &mut notes, access).await.map_err(|e| e.message)?;
+            notes.into_iter().filter(|note| note.level == api::calcifer::NoteLevel::Warning).for_each(|note| self.say(Told::Warning { message: note.message, name: None }));
             let clip = made.clip.clone();
-            let sha256 = tokio::task::spawn_blocking(move || folder::hash(&clip)).await.map_err(|e| e.to_string())?.map_err(|e| e.message)?;
+            let access = vault::admit_work(&self.project).await.map_err(|e| e.message)?;
+            let sha256 = tokio::task::spawn_blocking(move || {
+                let _access = access;
+                folder::hash(&clip)
+            }).await.map_err(|e| e.to_string())?.map_err(|e| e.message)?;
             self.clips.lock().expect("clips lock").insert(sha256.clone(), made.clip);
             cut.push(sha256);
         }
@@ -3997,12 +4125,12 @@ impl Walk {
             match self.reach(file, holder.as_ref().map_or(on.as_slice(), std::slice::from_ref)).await {
                 Reach::Here => {}
                 Reach::There(machine) => {
-                    self.say(Event::Said { message: format!("{name}: {field} is read on {machine}, which holds it"), name: Some(name.clone()) });
+                    self.say(Told::Said { message: format!("{name}: {field} is read on {machine}, which holds it"), name: Some(name.clone()) });
                     holder = Some(machine);
                     on_machine = true;
                 }
                 Reach::Fetch => {
-                    self.say(Event::Said { message: format!("{name}: fetching {field} from {}", file.machine), name: Some(name.clone()) });
+                    self.say(Told::Said { message: format!("{name}: fetching {field} from {}", file.machine), name: Some(name.clone()) });
                     let fetched = self.fetching(&digest, &file.machine).await;
                     fetched.map_err(|why| cannot(&name, format!("{field} is on {}, and can't be had: {why}", file.machine)))?;
                 }
@@ -4012,7 +4140,7 @@ impl Walk {
                 true => file.length,
                 false => {
                     std::fs::metadata(&path)
-                        .map_err(|e| Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", path.display())).next("cozy project pull"))?
+                        .map_err(|e| Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", path.display())).next("cozy open"))?
                         .len()
                 }
             };
@@ -4040,7 +4168,10 @@ impl Walk {
         let source = match &renderer.local {
             None => v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone() }),
             Some(path) => {
-                let prepared = self.again(|| self.host.ready(path, &placed, &hub)).await.map_err(named)?;
+                let prepared = self.again(|| async {
+                    let scope = crate::private_io::of_path(&self.folder().dir)?;
+                    crate::private_io::context(scope, self.host.ready(path, &placed, &hub)).await
+                }).await.map_err(named)?;
                 staged.extend(prepared.files);
                 v1::Source::Local(prepared.source)
             }
@@ -4101,7 +4232,7 @@ impl Walk {
             self.host.quoted(&run.id, offer.quoted());
             self.project.walker.lock().expect("walker lock").sent.insert(job, offer);
         }
-        self.say(Event::Started { name, run: run.id.to_string(), number: run.number });
+        self.sync();
         crate::events::project_settled(&self.folder().dir);
         Ok(())
     }
@@ -4113,7 +4244,7 @@ impl Walk {
             return false;
         }
         if self.folder().unsaved().is_none() {
-            self.say(Event::Warning { message: not_saved(&error.message), name: None });
+            self.say(Told::Warning { message: not_saved(&error.message), name: None });
             self.folder().set_unsaved(Some(error.message.clone()));
             crate::events::project_settled(&self.folder().dir);
         }
@@ -4239,13 +4370,27 @@ impl Walk {
             self.missed.lock().expect("missed lock").names.insert(name.clone());
             // Made again with what it asked, its seed too; and its number stays taken, so the next try is the next.
             let tried = pending.version.seed.map(|seed| Tried { inputs: pending.version.inputs.clone(), seed });
-            folder.update_lock(|lock| {
-                let held = lock.asset_mut(&name, &pending.kind);
-                held.numbered = held.numbered.max(pending.version.number);
-                if tried.is_some() {
-                    held.tried.clone_from(&tried);
+            let remains = folder.act(|| {
+                // A delete can stage its cancellation while its commit waits on SQLite.
+                // Readers still see the old name then. Recheck under the same project
+                // transaction as the mutation, so a late canceled result cannot create an
+                // empty live row that hides the deleted asset's retained versions from undo.
+                if self.gone(&name) {
+                    return Ok(false);
                 }
+                folder.update_lock(|lock| {
+                    let held = lock.asset_mut(&name, &pending.kind);
+                    held.numbered = held.numbered.max(pending.version.number);
+                    if tried.is_some() {
+                        held.tried.clone_from(&tried);
+                    }
+                })?;
+                Ok(true)
             })?;
+            if !remains {
+                self.deleted(pending.job_of(key), &name);
+                return Ok(None);
+            }
             if let (Some(machine), Some(reason), RunStatus::Failed) = (&run.machine, &run.reason, run.status) {
                 self.fault(machine, &reason.code, &reason.message)?;
             }
@@ -4260,11 +4405,12 @@ impl Walk {
         }
         let mut version = pending.version.clone();
         version.run = Some(run.number);
+        version.run_id = Some(run.id.clone());
         version.execution_ms += run.execution_ms.unwrap_or(0);
         for said in said_by(run) {
             let message = format!("{name}: {said}");
             if !self.project.jobs.warned(&name, &said) {
-                self.say(Event::Warning { message: said, name: Some(name.clone()) });
+                self.say(Told::Warning { message: said, name: Some(name.clone()) });
             }
             if !version.warnings.contains(&message) {
                 version.warnings.push(message);
@@ -4331,7 +4477,7 @@ impl Walk {
     /// `name`'s re-run landed, so what it approved goes: from project.yaml, and from the text its render plans on, so what reads it reads this.
     fn unpin_landed(&self, ask: &str, name: &str) {
         if let Err(error) = self.folder().edit(|written| written.unapproved(name)) {
-            self.say(Event::Warning { message: error.message, name: None });
+            self.say(Told::Warning { message: error.message, name: None });
         }
         if let Err(error) = self.unpin_asked(ask, name) {
             warn!("{name}: {error}");
@@ -4362,12 +4508,14 @@ impl Walk {
         let (ffmpeg, _) = self.host.ffmpeg().await?;
         let (dir, path) = (self.folder().dir.clone(), video.to_owned());
         let early = at.map(|at| (at - 1.0 / 48.0).max(0.0));
-        let grabbed = tokio::task::spawn_blocking(move || tools::frame(&ffmpeg, &path, early, &dir))
-            .await
-            .map_err(|e| Error::new(Kind::Internal, "frame", e.to_string()))?;
+        let access = vault::admit_work(&self.project).await?;
+        // The abandoned result must drop its temporary frame before releasing the view.
+        let (grabbed, _access) = tokio::task::spawn_blocking(move || {
+            (tools::frame(&ffmpeg, &path, early, &dir), access)
+        }).await.map_err(|e| Error::new(Kind::Internal, "frame", e.to_string()))?;
         let (frame, past) = grabbed?;
         if let (true, Some(at)) = (past, at) {
-            self.say(Event::Warning { message: format!("{name}: its video ends before {at:.2} s: its last frame stands in"), name: None });
+            self.say(Told::Warning { message: format!("{name}: its video ends before {at:.2} s: its last frame stands in"), name: None });
         }
         self.folder().keep(frame.path())
     }
@@ -4382,7 +4530,7 @@ impl Walk {
         for read in &standing.reads {
             if let Some(number) = read.newest {
                 let noun = noun(doc, lock, read.asset);
-                self.say(Event::Warning { message: format!("{name} reads {}'s newest {noun}, {number}, which is out of date", read.name), name: None });
+                self.say(Told::Warning { message: format!("{name} reads {}'s newest {noun}, {number}, which is out of date", read.name), name: None });
             }
         }
         let mut version = Version { inputs, ..Default::default() };
@@ -4460,10 +4608,10 @@ impl Walk {
         pieces.retain(|piece| !without.iter().any(|left| name_key(&left.piece) == name_key(&piece.asset)));
         for piece in skips {
             let (why, said) = match doc.find(&piece) {
-                Some(_) => ("no version yet", format!("which has no version yet: cozy project render {piece} --on {on}")),
+                Some(_) => ("no version yet", format!("which has no version yet; render {piece} on {on} in the browser opened by cozy open")),
                 None => ("no longer in the project", "which is no longer in the project".to_owned()),
             };
-            self.say(Event::Warning { message: format!("{name} is cut without {piece}, {said}"), name: None });
+            self.say(Told::Warning { message: format!("{name} is cut without {piece}, {said}"), name: None });
             without.push(folder::Without { piece, why: why.into(), absent: false });
         }
         // The same edit, with everything it took here and its film right, isn't rendered again.
@@ -4475,15 +4623,18 @@ impl Walk {
         self.leave_out(&name, &on, tools::unreadable(&ffprobe, &pieces)?, &mut without);
         pieces.retain(|piece| piece.still || piece.shape.is_some());
         said.extend(tools::past_end(&mut pieces, canvas.fps));
-        said.iter().for_each(|message| self.say(Event::Warning { message: message.clone(), name: None }));
+        said.iter().for_each(|message| self.say(Told::Warning { message: message.clone(), name: None }));
         let (project, cutting, began) = (self.project.clone(), self.project.cutting.clone(), Instant::now());
-        let cache = self.host.cache().join("cuts");
+        let scope = crate::private_io::of_path(&self.project.folder.dir)?;
+        let cache = crate::private_io::cache(scope.as_ref(), self.host.cache().join("cuts"), "cuts")?;
         let cutting_name = name.clone();
         let fps = canvas.fps;
         let (rendering, rendered) = (self.project.rendering.clone(), asset.name.clone());
+        let access = vault::admit_work(&self.project).await?;
         rendering.lock().expect("rendering lock").insert(rendered.clone(), 0.0);
         crate::events::project_settled(&folder.dir);
         let cutting_result = tokio::task::spawn_blocking(move || {
+            let _access = access;
             let _held = cutting.lock().expect("cutting lock");
             let dir = project.folder.dir.clone();
             // Each twentieth, so a page shows it moving and reads the project a few times, however long the film.
@@ -4500,11 +4651,11 @@ impl Walk {
         .await;
         self.project.rendering.lock().expect("rendering lock").remove(&asset.name);
         crate::events::project_settled(&folder.dir);
-        let (made, left) = cutting_result.map_err(|e| Error::new(Kind::Internal, "edit_cut", e.to_string()))?.map_err(|e| e.next(format!("cozy project render {} --on {on}", asset.name)))?;
+        let (made, left) = cutting_result.map_err(|e| Error::new(Kind::Internal, "edit_cut", e.to_string()))?.map_err(|e| e.next("cozy open"))?;
         self.leave_out(&name, &on, left, &mut without);
         let Some((made, part)) = made else {
             let stands = if folder.dir.join(&name).is_file() { ": the film that stands stays" } else { "" };
-            self.say(Event::Warning { message: format!("{name} isn't cut, and no version is made: none of its clips can be used{stands}"), name: None });
+            self.say(Told::Warning { message: format!("{name} isn't cut, and no version is made: none of its clips can be used{stands}"), name: None });
             return Ok(None);
         };
         let now = folder.lock()?;
@@ -4526,12 +4677,12 @@ impl Walk {
         // What the film is, not what its pieces add up to.
         let frames = folder.film_frames(&film).unwrap_or(made.frames);
         if frames.abs_diff(made.frames) > 1 + standing.reads.len() as u64 {
-            self.say(Event::Warning { message: format!("{name} holds {frames} frames, and its pieces add up to {}", made.frames), name: None });
+            self.say(Told::Warning { message: format!("{name} holds {frames} frames, and its pieces add up to {}", made.frames), name: None });
         }
         let (retimed, took_s) = (made.retimed, began.elapsed().as_secs_f64());
         self.cut.lock().expect("cut lock").insert(name.clone());
         let said = without.iter().map(folder::Without::said).collect();
-        self.say(Event::Cut { name: asset.name.clone(), cut: name, frames, fps, retimed, took_s, unchanged: before.as_ref() == Some(&sha256), without: said });
+        self.say(Told::Cut { name: asset.name.clone(), cut: name, frames, fps, retimed, took_s, unchanged: before.as_ref() == Some(&sha256), without: said });
         Ok(Some((Files::from([("video".to_owned(), sha256), ("timeline".to_owned(), timeline)]), without)))
     }
 
@@ -4541,7 +4692,7 @@ impl Walk {
             if without.iter().any(|held| name_key(&held.piece) == name_key(&piece)) {
                 continue;
             }
-            self.say(Event::Warning { message: format!("{name} is cut without {piece}: {answer}: cozy project render {piece} --on {on}"), name: None });
+            self.say(Told::Warning { message: format!("{name} is cut without {piece}: {answer}; render {piece} on {on} in the browser opened by cozy open"), name: None });
             without.push(folder::Without { piece, why, absent: false });
         }
     }
@@ -4555,7 +4706,7 @@ impl Walk {
         let stem = at.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default();
         let aside = at.with_file_name(format!("{stem}.edited-{}.mp4", folder::prefix_of(&got)));
         if std::fs::rename(at, &aside).is_ok() {
-            self.say(Event::Warning { message: format!("{} isn't a version of {asset}: it is kept as {}", at.display(), aside.display()), name: None });
+            self.say(Told::Warning { message: format!("{} isn't a version of {asset}: it is kept as {}", at.display(), aside.display()), name: None });
         }
     }
 
@@ -4568,7 +4719,7 @@ impl Walk {
             true => format!("{name} is open in another program, so it wasn't updated: close it, and the next render updates it"),
             false => format!("{name}: {error}"),
         };
-        self.say(Event::Warning { message, name: None });
+        self.say(Told::Warning { message, name: None });
     }
 
     /// The film and timeline at the root as asset `i`'s state has them: a version chosen, a memo gone back to, one deleted, or one
@@ -4594,7 +4745,7 @@ impl Walk {
         match files.get("timeline").and_then(|sha256| lock.files.get(sha256)) {
             Some(kept) if !same || !timeline.is_file() => {
                 if let Err(e) = tools::publish(&self.folder().path(&kept.path), &timeline) {
-                    self.say(Event::Warning { message: format!("{}: {e}", timeline.display()), name: None });
+                    self.say(Told::Warning { message: format!("{}: {e}", timeline.display()), name: None });
                 }
             }
             None if !timeline.is_file() => self.timeline_again(&doc.assets[i], &stand[i], lock, &cut_name(&doc.assets[i].name)).await,
@@ -4611,12 +4762,20 @@ impl Walk {
             // A file is named for its bytes, and a cut reads them all anyway.
             let here = piece.path.is_file();
             let (path, digest) = (piece.path.clone(), piece.digest.clone());
-            let changed = here && tokio::task::spawn_blocking(move || folder::hash(&path).is_ok_and(|got| got != digest)).await.unwrap_or(false);
+            let changed = if here {
+                let access = vault::admit_work(&self.project).await?;
+                tokio::task::spawn_blocking(move || {
+                    let _access = access;
+                    folder::hash(&path).is_ok_and(|got| got != digest)
+                }).await.unwrap_or(false)
+            } else {
+                false
+            };
             if here && !changed {
                 continue;
             }
             let why = if changed { "its bytes changed" } else { "not on this computer" };
-            self.say(Event::Said { message: format!("{}: {} is {why}: fetching it", asset.name, piece.asset), name: Some(asset.name.clone()) });
+            self.say(Told::Said { message: format!("{}: {} is {why}: fetching it", asset.name, piece.asset), name: Some(asset.name.clone()) });
             let brought = match file.stays() && self.host.fetchable(&file.sha256, &file.machine).await {
                 true => self.host.fetch(&file.sha256, &file.machine).await,
                 false => self.host.pull_one(&self.project, &target.hub, file.clone()).await,
@@ -4624,7 +4783,7 @@ impl Walk {
             let Err(reason) = brought else { continue };
             let answer = changed.then(|| tools::unread(ffprobe, &piece.path)).flatten().map_or(String::new(), |answer| format!(" ({answer})"));
             let piece = piece.asset.clone();
-            self.say(Event::Warning { message: format!("{} is cut without {piece}: {why}{answer}, and it can't be had: {reason}: cozy project render {piece} --on {on}, or cozy project pull", cut_name(&asset.name)), name: None });
+            self.say(Told::Warning { message: format!("{} is cut without {piece}: {why}{answer}, and it can't be had: {reason}; render {piece} on {on} or download its files in the browser opened by cozy open", cut_name(&asset.name)), name: None });
             without.push(folder::Without { piece, why: why.into(), absent: !here });
         }
         Ok(without)
@@ -4677,7 +4836,7 @@ impl Walk {
             && let Some(sha256) = version.main()
             && let Err(error) = self.folder().edit(|written| written.approved(name, sha256))
         {
-            self.say(Event::Warning { message: error.message, name: None });
+            self.say(Told::Warning { message: error.message, name: None });
         }
         {
             let mut tally = self.tally.lock().expect("tally lock");
@@ -4694,9 +4853,9 @@ impl Walk {
         let lock = self.folder().lock()?;
         let path = main_path(&lock, &version.files).unwrap_or_default();
         let execution_ms = (version.execution_ms > 0).then_some(version.execution_ms);
-        self.say(Event::Landed { name: name.into(), noun: noun.into(), number, files: listed(&lock, &version.files), path, execution_ms });
+        self.say(Told::Landed { name: name.into(), noun: noun.into(), number, path, execution_ms });
         if let Some(pickup) = &version.pickup {
-            self.say(Event::Said { message: pickup.said(name, number), name: Some(name.to_owned()) });
+            self.say(Told::Said { message: pickup.said(name, number), name: Some(name.to_owned()) });
             self.project.jobs.why(name, number, format!("picks up {} at frame {}", pickup.take, pickup.out_frame));
         }
         Ok(())
@@ -4781,7 +4940,7 @@ fn said_by(run: &Run) -> Vec<String> {
 
 fn find(doc: &Doc, name: &str) -> Result<usize, Error> {
     doc.find(name).ok_or_else(|| {
-        Error::new(Kind::NotFound, "asset_unknown", format!("the project has nothing named {name}")).next("cozy project status")
+        Error::new(Kind::NotFound, "asset_unknown", format!("the project has nothing named {name}")).next("cozy status")
     })
 }
 

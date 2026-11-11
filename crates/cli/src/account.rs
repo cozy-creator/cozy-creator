@@ -15,13 +15,12 @@ use crate::{Context, calcifer_client::{Client, path}, machine::usd, output};
 
 #[derive(clap::Args, Debug)]
 pub(crate) struct Login {
-    /// Your Tensorhub account's email; asked for when it isn't given.
+    /// Account email. Prompts when omitted.
     email: Option<String>,
-    /// Enroll a new key for another computer, such as CI, and write it to FILE (owner-only);
-    /// this computer's own key is untouched
+    /// Save a login key for another computer or CI to FILE.
     #[arg(long, value_name = "FILE", conflicts_with = "key")]
     export: Option<PathBuf>,
-    /// Sign this computer in with a key `--export` wrote
+    /// Sign in with a previously exported key.
     #[arg(long, value_name = "FILE", conflicts_with = "email")]
     key: Option<PathBuf>,
 }
@@ -138,7 +137,7 @@ async fn signed_in(
 
 #[derive(clap::Args, Debug)]
 pub(crate) struct Logout {
-    /// Also sign out every other computer of this account (asks for an emailed code).
+    /// Sign out all computers using an emailed verification code.
     #[arg(long)]
     everywhere: bool,
 }

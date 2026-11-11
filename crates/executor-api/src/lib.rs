@@ -342,13 +342,8 @@ pub struct Construction {
 pub struct CallInterface {
     pub module: String,
     pub export: String,
-    #[serde(default)]
-    pub interface_path: PathBuf,
     #[serde(default, rename = "self")]
     pub self_call: bool,
-    /// Another package's interface: the Runtime installs its typed callers from it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub interface_document: Option<Json>,
     /// A Runtime built-in surface (`operations`): the Runtime binds it from its own code.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub builtin: Option<String>,
@@ -578,7 +573,6 @@ pub struct Frame {
     pub position: Option<u64>,
     pub total: Option<u64>,
     pub stage_fraction: Option<f64>,
-    pub overall_fraction: Option<f64>,
     pub step_ms: Option<f64>,
     pub advance: u64,
     /// `progress`: the child call whose stage a job relays.

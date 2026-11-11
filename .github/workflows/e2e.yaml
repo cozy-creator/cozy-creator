@@ -143,6 +143,19 @@ on:
       shards:
         type: string
         default: ''
+      # skew (select it: `select=skew`): released cozy versions × a Hub built from tensorhub at hub_ref (e2e/skew/run.sh).
+      hub_ref:
+        description: "skew: the tensorhub ref the Hub is built from (the candidate)"
+        type: string
+        default: master
+      skew_clients:
+        description: "skew: released cozy versions, space-separated; `previous` is the previous minor's latest patch"
+        type: string
+        default: previous
+      cozy_min:
+        description: "skew: the Hub's clients.cozy_min (empty serves every version)"
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -172,6 +185,7 @@ jobs:
       stack: ${{ steps.pin.outputs.stack }}
       runtime: ${{ steps.pin.outputs.runtime }}
       packages: ${{ steps.pin.outputs.packages }}
+      skew_clients: ${{ steps.skew.outputs.clients }}
     steps:
       - id: what
         env:
@@ -273,6 +287,25 @@ jobs:
           echo "release_runners=$(echo "$s" | jq -c '[.os[] | {linux: "ubuntu-24.04", macos: "macos-15", windows: "windows-2025"}[.] // empty]')" >> "$GITHUB_OUTPUT"
           { echo "### e2e selection: $REPO ${REF:0:12}"; echo '```'; echo "$s" | jq .; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           echo "$s" | jq .
+      # skew's clients: `previous` is the previous minor's latest patch, from this cozy's own version.
+      - id: skew
+        env:
+          CLIENTS: ${{ inputs.skew_clients || 'previous' }}
+          SELECTION: ${{ steps.select.outputs.selection }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          jq -e 'any(.suites[]; . == "skew")' <<< "$SELECTION" > /dev/null || { echo 'clients=[""]' >> "$GITHUB_OUTPUT"; exit 0; }
+          v=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' .creator/Cargo.toml); minor=${v%.*}
+          prev=${minor%%.*}.$(( ${minor#*.} - 1 ))
+          latest=$(gh release list -R cozy-creator/cozy-creator --exclude-pre-releases -L 100 --json tagName -q '.[].tagName' |
+            grep -E "^v${prev//./\\.}\.[0-9]+$" | sort -V | tail -1)
+          out=
+          for c in $CLIENTS; do
+            [ "$c" = previous ] && c=${latest#v}
+            [ -n "$c" ] || { echo "::error::no released cozy $prev.x (this cozy is $v)"; exit 1; }
+            out=$out${out:+,}\"${c#v}\"
+          done
+          echo "clients=[$out]" | tee -a "$GITHUB_OUTPUT"
 
   # One candidate a job (e2e/candidates/build.sh), each this run's candidate-<what>-<inputs> artifact for every Linux
   # suite: TensorD and TensorFS reused from an earlier merge-group or dispatched run that built the same build inputs
@@ -352,7 +385,7 @@ jobs:
       fail-fast: false
       matrix:
         # projectdb*: project.db (cl-803), e2e/cli/projectdb.sh; projectdb also state.db (cl-818), e2e/cli/statedb.sh. local-code: local code by content (cl-817, cl-820).
-        shard: ${{ fromJSON(inputs.shards || '["runs","executors","commands","follow","web","projectdb","projectdb-latency","projectdb-existing","projectdb-web","local-code"]') }}
+        shard: ${{ fromJSON(inputs.shards || '["runs","executors","commands","follow","web","projectdb","projectdb-latency","projectdb-existing","projectdb-web","projectvault","local-code"]') }}
     runs-on: ubuntu-24.04
     # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal. The suites fail on the
     # CLI's typed errors and exits, never on time.
@@ -380,8 +413,14 @@ jobs:
           runtime: ${{ inputs.runtime }}
           release: ${{ inputs.publish_run }}
       # The project part's fixtures and probes (e2e/cli/project.sh); Calcifer, a service, fetches its own.
-      - if: matrix.shard == 'commands' || matrix.shard == 'web' || matrix.shard == 'local-code' || matrix.shard == 'control' || startsWith(matrix.shard, 'projectdb')
+      - if: matrix.shard == 'commands' || matrix.shard == 'web' || matrix.shard == 'local-code' || matrix.shard == 'control' || matrix.shard == 'projectvault' || startsWith(matrix.shard, 'projectdb') || startsWith(matrix.shard, 'project-stream')
         uses: AnimMouse/setup-ffmpeg@v1
+      - name: Install the optional project-encryption filesystem driver
+        if: matrix.shard == 'projectvault'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fuse libfuse2t64
+          sudo modprobe fuse || test -e /dev/fuse
       - name: cli suite
         env:
           PINS: ${{ inputs.pins }}
@@ -607,6 +646,58 @@ jobs:
         uses: ./.creator/e2e/publish
         with:
           name: e2e-mps
+          path: ${{ runner.temp }}/e2e
+          retention-days: 14
+
+  # xs-166: the Hub's candidate against released clients, before a Hub deploy. Chosen only explicitly (select=skew);
+  # it reports apart from `e2e`: before launch an old client's failures don't block (release-gate README).
+  skew:
+    needs: affected
+    if: contains(fromJSON(needs.affected.outputs.selection).suites, 'skew')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        client: ${{ fromJSON(needs.affected.outputs.skew_clients) }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: cozy-creator/cozy-creator
+          ref: ${{ needs.affected.outputs.creator }}
+          path: .creator
+      - uses: actions/checkout@v5
+        with:
+          repository: cozy-creator/tensorhub
+          ref: ${{ inputs.hub_ref || 'master' }}
+          ssh-key: ${{ secrets.TENSORHUB_READ_KEY }}
+          persist-credentials: false
+          path: .tensorhub
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: .tensorhub/go.mod
+          cache-dependency-path: .tensorhub/go.sum
+      - uses: astral-sh/setup-uv@v7
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/skew-tools
+          key: skew-minio-RELEASE.2025-09-07T16-13-09Z
+      - name: skew cozy ${{ matrix.client }} × tensorhub ${{ inputs.hub_ref || 'master' }}
+        env:
+          SKEW_TOOLS: ${{ runner.temp }}/skew-tools
+          CLIENT: ${{ matrix.client }}
+          MIN: ${{ inputs.cozy_min }}
+        run: |
+          # Calcifer and the local machine run as user services, as on a desktop login.
+          sudo loginctl enable-linger "$(id -un)"
+          export XDG_RUNTIME_DIR=/run/user/$(id -u)
+          until [ -S "$XDG_RUNTIME_DIR/bus" ]; do sleep 1; done
+          export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
+          bash .creator/e2e/skew/run.sh --hub-src .tensorhub --client "$CLIENT" --cozy-min "$MIN" --out "$RUNNER_TEMP/e2e"
+      - if: always()
+        uses: ./.creator/e2e/publish
+        with:
+          name: e2e-skew-${{ matrix.client }}
           path: ${{ runner.temp }}/e2e
           retention-days: 14
 

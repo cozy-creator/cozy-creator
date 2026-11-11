@@ -74,7 +74,7 @@ const requestWaiters = new Set()
 const owned = []
 let delayedShow = null
 let delayedSnapshot = null
-let delayCreation = null
+let delayedWhole = null
 let legacy = false
 let failShow = null
 let connection = new AbortController()
@@ -109,20 +109,19 @@ async function api(route, init = {}) {
   assert.ok(response.ok, JSON.stringify(body))
   return body
 }
-async function made(name, settle = true) {
-  const after = events.length
+async function made(name) {
   const project = await api("/v1/projects", { method: "POST", body: JSON.stringify({ name }) })
   assert.ok(path.resolve(project.path).startsWith(path.resolve(process.env.COZY_PRESENCE_ROOT) + path.sep))
   owned.push(project.id)
-  if (settle) await waitEvent((event) => event.type === "project.changed" && event.id === project.id, after)
   return project
 }
 function observeHealth(stream, state) {
   if (stream.health.get().state === state) return Promise.resolve()
   return new Promise((done) => { const stop = stream.health.subscribe(() => { if (stream.health.get().state === state) { stop(); done() } }) })
 }
+const queryCache = new QueryClient()
 function query(client, stream, id, signal = new AbortController().signal) {
-  return (baseline ? projectQuery(client, id) : projectQuery(client, stream, id)).queryFn({ signal })
+  return (baseline ? projectQuery(client, id) : projectQuery(client, stream, id)).queryFn({ client: queryCache, signal })
 }
 async function open(id) { return (await api(`/fixture/open/${id}`)).open }
 function readsOf(bridge) {
@@ -212,9 +211,9 @@ const transport = {
                 buffered = buffered.slice(end + 2)
                 const data = frame.split("\n").find((line) => line.startsWith("data: "))?.slice(6)
                 const event = data ? JSON.parse(data) : null
-                if (delayCreation && event?.type === "project.changed" && event.rev === "1.none") {
-                  const held = delayCreation
-                  delayCreation = null
+                if (delayedWhole && event?.type === "project.changed" && event.id === delayedWhole.id && !event.assets) {
+                  const held = delayedWhole
+                  delayedWhole = null
                   held.entered.done(event)
                   await held.release.promise
                 }
@@ -472,10 +471,13 @@ try {
     process.exit(0)
   }
 
-  // Delay a real emitted creation frame across its full snapshot, keeping YAML invalidation.
+  // Delay a real whole-project frame across its full snapshot, keeping YAML invalidation.
   const entered = deferred(), release = deferred()
-  delayCreation = { entered, release }
-  const late = await made("late-creation", false)
+  const late = await made("late-creation")
+  owner.show(late.id)
+  await query(client, owner, late.id)
+  delayedWhole = { id: late.id, entered, release }
+  await writeYaml(late.id, 257, "before")
   const creation = await entered.promise
   const queries = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } })
   const bridge = new Bridge(queries, client)
@@ -501,7 +503,7 @@ try {
   const firstSnapshot = queries.getQueryData(key)
   assert.equal(firstSnapshot.covered.generation, creation.cursor.generation)
   assert.ok(firstSnapshot.covered.sequence >= creation.cursor.sequence)
-  console.log(JSON.stringify({ delayed_native_creation_event: creation, snapshot_covered: firstSnapshot.covered, redundant_project_gets: 0, yaml_invalidation_preserved: true }))
+  console.log(JSON.stringify({ delayed_native_whole_event: creation, snapshot_covered: firstSnapshot.covered, redundant_project_gets: 0, yaml_invalidation_preserved: true }))
   // A real other writer still refreshes the asset instead of being suppressed as an own echo.
   unsubscribe()
   const eventFrom = events.length

@@ -127,8 +127,8 @@ impl Client {
     /// Whether the Calcifer `holder` names answers one request: any reply is an answer. Waits as
     /// long as the request does; the caller judges a silence by the process's progress.
     pub(crate) async fn answers(&self, holder: &Holder) -> bool {
-        let probe = format!("http://{}/v1/runs", holder.address);
-        let request = self.0.http.get(probe).query(&[("limit", 1)]);
+        let probe = format!("http://{}/v1/status", holder.address);
+        let request = self.0.http.get(probe);
         request.bearer_auth(&holder.token).send().await.is_ok()
     }
 
@@ -237,37 +237,31 @@ impl Client {
         self.exchange(true, |c, base| c.patch(format!("{base}{path}")).json(body).header(KEY, &key)).await
     }
 
-    /// A PATCH that is part of the edit `edit` (`Cozy-Edit`): those that share one are one entry of a project's history.
-    pub(crate) async fn patch_as<B, T>(&self, path: &str, body: &B, edit: &str) -> Result<T, Error>
-    where
-        B: Serialize + ?Sized,
-        T: DeserializeOwned,
-    {
-        let key = write_key();
-        self.exchange(true, |c, base| c.patch(format!("{base}{path}")).json(body).header(KEY, &key).header("cozy-edit", edit)).await
-    }
-
-    /// A text body PUT, as an export read back, under its call's key; its answer's body isn't read.
-    pub(crate) async fn put_text(&self, path: &str, body: &str) -> Result<(), Error> {
-        let key = write_key();
-        self.opened(|c, base| c.put(format!("{base}{path}")).header(reqwest::header::CONTENT_TYPE, "application/yaml").header(KEY, &key).body(body.to_owned())).await.map(drop)
-    }
-
     /// What Calcifer holds of the file `digest` names: all of it (`None`), else the ranges held.
-    pub(crate) async fn held(&self, digest: &Digest) -> Result<Option<Ranges>, Error> {
-        let path = format!("/v1/files/{digest}");
-        let answer = self.send(&|c: &reqwest::Client, base: &str| c.head(format!("{base}{path}"))).await?;
+    pub(crate) async fn held_for(&self, digest: &Digest, project: Option<&str>) -> Result<Option<Ranges>, Error> {
+        let path = match project { Some(_) => format!("/v1/project-files/{digest}"), None => format!("/v1/files/{digest}") };
+        let answer = self.send(&|c: &reqwest::Client, base: &str| {
+            let request = c.head(format!("{base}{path}"));
+            match project { Some(project) => request.query(&[("project", project)]), None => request }
+        }).await?;
+        if project.is_some() && answer.status() == StatusCode::NOT_FOUND && !answer.headers().contains_key(HELD) {
+            return Err(Error::new(Kind::Unavailable, "project_upload_unsupported", "Calcifer does not support protected project uploads; update it before sending private files"));
+        }
         let ranges = || answer.headers().get(HELD).and_then(|v| v.to_str().ok()).and_then(parse_held).unwrap_or_default();
         match answer.status() {
             status if status.is_success() => Ok(None),
             StatusCode::NOT_FOUND => Ok(Some(ranges())),
-            status => Err(Error::new(Kind::Internal, "file_unreadable", format!("Calcifer answered HEAD {path} with {status}"))),
+            _ => Err(envelope(answer).await),
         }
     }
 
     /// `part`, the bytes of `digest` from `start`, of a file of `length` bytes. Whether the file is now whole.
     pub(crate) async fn put_part(&self, digest: &Digest, part: bytes::Bytes, start: u64, length: u64) -> Result<bool, Error> {
-        let path = format!("/v1/files/{digest}");
+        self.put_part_for(digest, part, start, length, None).await
+    }
+
+    pub(crate) async fn put_part_for(&self, digest: &Digest, part: bytes::Bytes, start: u64, length: u64, project: Option<&str>) -> Result<bool, Error> {
+        let path = match project { Some(_) => format!("/v1/project-files/{digest}"), None => format!("/v1/files/{digest}") };
         let range = match part.is_empty() {
             true => None,
             false => Some(format!("bytes {start}-{}/{length}", start + part.len() as u64 - 1)),
@@ -275,6 +269,7 @@ impl Client {
         let answer = self
             .send(&|c: &reqwest::Client, base: &str| {
                 let put = c.put(format!("{base}{path}")).header(header::CONTENT_TYPE, "application/octet-stream");
+                let put = match project { Some(project) => put.query(&[("project", project)]), None => put };
                 // A whole file goes by its Content-Length, stated: an empty body carries none of its own.
                 match &range {
                     Some(range) if part.len() as u64 != length => put.header(header::CONTENT_RANGE, range),
@@ -575,8 +570,8 @@ impl Client {
     /// stays open for the command: Calcifer stays up while a client is connected.
     async fn live(&self) -> Option<Holder> {
         let holder = self.record()?;
-        let probe = format!("http://{}/v1/runs", holder.address);
-        let request = self.0.http.get(probe).query(&[("limit", 1)]);
+        let probe = format!("http://{}/v1/status", holder.address);
+        let request = self.0.http.get(probe);
         let answer = request.bearer_auth(&holder.token).send();
         self.heard(holder.pid, Instant::now(), REPORT, answer).await.ok()?;
         Some(holder)

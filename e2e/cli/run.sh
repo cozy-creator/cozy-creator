@@ -9,7 +9,7 @@
 # A broken step is recorded and the suite goes on, so one run reports all of them.
 # --shard runs one of `shards` below after the same start, each on its own runner: e2e.yaml checks coverage over
 # all their calls. Whole, the suite checks it itself.
-#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|web|projectdb|projectdb-latency|projectdb-existing|projectdb-web|local-code]
+#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|web|project-stream|project-stream-web|projectdb|projectdb-latency|projectdb-existing|projectdb-web|projectvault|projectdb-cancel|projectdb-live|projectdb-scale|local-code]
 #                  [--tensord F|V] [--tensorfs F|V] [--runtime F|V] [--packages DIR]
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
@@ -18,14 +18,14 @@ parse "$@"
 . "$(dirname "$0")/control.sh"
 . "$(dirname "$0")/project.sh"
 . "$(dirname "$0")/web.sh"
-. "$(dirname "$0")/agent.sh"
 . "$(dirname "$0")/projectdb.sh"
 . "$(dirname "$0")/statedb.sh"
+. "$(dirname "$0")/projectvault.sh"
 
 start() {
-step install; install_cozy; run_project "$OUT/project" || fail "cozy project new failed"
+step install; install_cozy; run_project "$OUT/project" || fail "project initialization failed"
 user_services
-step status; cozy --json status | tee "$OUT/status.json"
+step status; fixture_calcifer | tee "$OUT/status.json"
 [ -z "$LOCAL" ] || { step "the local machine"; machine_ready; }
 [ "$SHARD" != commands ] || version_skew
 step candidates; candidates
@@ -43,7 +43,7 @@ spelled=./weightless/reverse
 if (cd "$here" && cell weightless "$spelled" "text=$text"); then
   grep -q "$back" "$OUT/weightless.ndjson" || check "weightless: the reply is not $back"
 fi
-(cd "$here/weightless/e2e_weightless" && cozy --json run .. --describe --on local > "$OUT/parent.json" 2> "$OUT/parent.err") \
+(in_project "$RUN_PROJECT" --json run "$here/weightless/e2e_weightless/.." --describe --on local > "$OUT/parent.json" 2> "$OUT/parent.err") \
   || check "cozy run .. did not describe the package above: $(tail -c 300 "$OUT/parent.err")"
 
 # An idle executor killed is reaped at once (gone from ps, no zombie), and the next request works.
@@ -59,7 +59,7 @@ fi
 # their names, both run on the CPU, and its function's `accelerator=True` is taken (the GPU when there is one).
 script_package() {
 step "a script is a package"
-script=$(cd "$(dirname "$0")/script" && pwd)/words.py folder=$OUT/words-package
+script=$here/script/words.py folder=$OUT/words-package
 mkdir -p "$folder" && cp "$script" "$folder/words.py"
 cat > "$folder/pyproject.toml" <<'TOML'
 [project]
@@ -100,7 +100,7 @@ kept=$(ls ~/.cozy/packages/local/words/*.json 2> /dev/null | head -1)
 # canvas stays inside it; one outside is refused while the request decodes, before the function runs.
 image_ratio() {
 step "image ratios"
-ratio=$(cd "$(dirname "$0")/script" && pwd)/ratio.py
+ratio=$here/script/ratio.py
 # Past 16:1 a ratio holds there with a warning (xs-149).
 for r in 16:1 1:16 32000:2000 17:1 1:17 32768:32; do
   name=ratio-${r/:/-}
@@ -173,7 +173,7 @@ if calcifer_stuck; then
   if [ -n "$LOCAL" ]; then
     (cd "$here" && cell after-stuck ./weightless/reverse "text=after$RANDOM") || check "no run went after cozy doctor restarted Calcifer"
   else
-    cozy --json status | jq -e '.calcifer.running' > /dev/null || check "Calcifer does not answer after cozy doctor restarted it"
+    fixture_calcifer | jq -e '.calcifer.running' > /dev/null || check "Calcifer does not answer after cozy doctor restarted it"
   fi
 fi
 }
@@ -184,7 +184,7 @@ calcifer_restarts() {
 [ "$RUNNER_OS" = Linux ] || return 0
 step "a run followed across a Calcifer restart"
 local code n
-(cd "$here" && cozy run -p "$RUN_PROJECT" ./weightless/wait seconds:=15 --on local > "$OUT/across.txt" 2>&1; echo $? > "$OUT/across.code") &
+(cd "$here" && in_project "$RUN_PROJECT" run "$here/weightless/wait" seconds:=15 --on local > "$OUT/across.txt" 2>&1; echo $? > "$OUT/across.code") &
 local follower=$!
 for _ in $(seq 120); do n=$(grep -oE '^run [0-9]+ ' "$OUT/across.txt" | head -1 | grep -oE '[0-9]+') && break; sleep 0.5; done
 [ -n "$n" ] || check "across: the run never began"
@@ -199,7 +199,7 @@ step "a burst of Calcifer restarts past systemd's start limit"
 for _ in 1 2 3 4 5 6 7; do systemctl --user restart cozy-calcifer > /dev/null 2>&1 || true; done
 systemctl --user show -p Result --value cozy-calcifer > "$OUT/burst-result.txt" || true
 echo "after the burst: $(cat "$OUT/burst-result.txt")"
-cozy --json machine ls > "$OUT/burst-machines.json" 2> "$OUT/burst-machines.err" && cozy --json status | J '.calcifer.running == true' \
+cozy --json machine ls > "$OUT/burst-machines.json" 2> "$OUT/burst-machines.err" && fixture_calcifer | J '.calcifer.running == true' \
   || check "after a burst of restarts ($(cat "$OUT/burst-result.txt")), the next command did not start Calcifer: $(tail -c 300 "$OUT/burst-machines.err")"
 (cd "$here" && cell after-burst ./weightless/reverse "text=burst$RANDOM") || check "no run went after the burst of restarts"
 }
@@ -215,7 +215,7 @@ remove() { logs; step "remove cozy"; remove_cozy; }
 one_name_two_paths() {
 step "one name at two paths"
 local words at turn=0
-words=$(cd "$(dirname "$0")/script" && pwd)/words.py
+words=$here/script/words.py
 for at in 1 2; do
   mkdir -p "$OUT/paths/$at/one-name"
   sed "s/words=len(payload.text.split())/words=$at/" "$words" > "$OUT/paths/$at/one-name/one_name.py"
@@ -259,18 +259,27 @@ cozy --json package remove local/one_script --on local > /dev/null || check "pac
 
 # Balanced by step times (runs 40128128311, 40132063815, 40132725041). A shard keeps its parts' order; whole, the suite runs every part.
 case $SHARD in
-  '') parts="weightless script_package one_name_two_paths image_ratio describe first_run second_executor lifetime kept_preparing catalog basics yaml_requests run_flags run_follow time_left broken_answers run_filters run_play hub_away lock_refresh projects bound_runs own_references old_runtime hostile_media unseen local_edits local_quote path_manifest agent machine_show_runs writes_once web_serves page_resend queued_download machines completions calcifer_faults calcifer_restarts update remove" ;;
+  '') parts="entrypoints weightless script_package one_name_two_paths image_ratio describe first_run second_executor lifetime kept_preparing catalog basics yaml_requests run_flags run_follow time_left broken_answers run_filters run_play hub_away lock_refresh bound_runs own_references old_runtime hostile_media unseen local_edits local_quote path_manifest machine_show_runs writes_once project_stream web_serves page_resend queued_download machines completions calcifer_faults calcifer_restarts update remove" ;;
   runs) parts="weightless describe first_run run_flags run_play hub_away lock_refresh logs" ;;
   executors) parts="second_executor lifetime kept_preparing update remove" ;;
-  commands) parts="catalog basics yaml_requests run_filters projects bound_runs own_references old_runtime hostile_media agent machine_show_runs writes_once logs" ;;
+  entrypoints) parts="entrypoints" ;;
+  commands) parts="entrypoints catalog basics yaml_requests run_filters bound_runs own_references old_runtime hostile_media machine_show_runs writes_once project_stream logs" ;;
   # Its own runner: under `set -e` a cell that dies ends its shard, and a page's proofs shouldn't go with it.
   web) parts="tools_read web_serves page_resend logs" ;;
+  project-stream) parts="project_stream logs" ;;
+  project-stream-web) DB_WEB="drawers activity versions timeline"; parts="tools_read db_existing_web logs" ;;
   follow) parts="script_package one_name_two_paths image_ratio run_follow time_left broken_answers queued_download machines completions calcifer_faults calcifer_restarts logs" ;;
   # project.db (cl-803) and state.db (cl-818) alone, and project.db's latency against the cozy before it.
   projectdb) parts="projectdb statedb logs" ;;
+  projectvault) parts="projectvault vault_web logs" ;;
   projectdb-latency) parts="db_latency logs" ;;
   projectdb-existing) parts="db_existing logs" ;;
   projectdb-web) parts="tools_read db_existing_web logs" ;;
+  projectdb-cancel) parts="db_cancel_undo logs" ;;
+  projectdb-live) parts="tools_read db_existing_web logs"; DB_WEB=live ;;
+  projectdb-instant) parts="tools_read db_existing_web logs"; DB_WEB=instant ;;
+  projectdb-offline) parts="tools_read db_existing_web logs"; DB_WEB=offline ;;
+  projectdb-scale) parts="tools_read db_existing_web logs"; DB_WEB=scale ;;
   # Local code and every input by content (cl-817, cl-820): the CLI in a folder Calcifer can't see, edits timed, its quote from its
   # runs (cl-816), a host path refused.
   local-code) parts="unseen local_edits local_quote path_manifest logs" ;;
@@ -278,9 +287,14 @@ case $SHARD in
   control) parts="machine_show_runs writes_once page_resend hub_away broken_answers logs" ;;
   *) echo "no cli shard $SHARD" >&2; exit 2 ;;
 esac
-[ -n "$LOCAL" ] || parts="catalog refusals web_serves project_files completions homebrew calcifer_faults update remove"
+[ -n "$LOCAL" ] || [[ "$SHARD" = entrypoints || "$SHARD" = projectvault ]] || parts="entrypoints catalog refusals web_serves completions homebrew calcifer_faults update remove"
 
 start
+# Package fixtures must still resolve after entering the project directory.
+if [ -n "$PACKAGES" ]; then
+  PACKAGES=$(cd "$PACKAGES" && pwd) || fail "package checkout is unavailable"
+fi
+cd "$RUN_PROJECT" || fail "project directory is unavailable"
 for part in $parts; do $part; done
 [ -n "$SHARD" ] || [ -z "$LOCAL" ] || { step coverage; coverage "$OUT/cozy-under-test" pr; }
 finish "cli${SHARD:+ $SHARD}"

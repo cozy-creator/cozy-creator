@@ -1,12 +1,11 @@
-// The web-serves cell's browser (e2e/cli/web.sh): `cozy open --no-open`'s link, opened in a real Chrome once it's up. The page redeems
+// The web-serves cell's browser (e2e/cli/web.sh): `cozy open `'s link, opened in a real Chrome once it's up. The page redeems
 // its code and clears it, renders under its CSP and opens GET /v1/events. On its session a stream here then sees `hello`, and the
 // `project.changed` of an import the CLI makes. Prints what it saw as JSON, and web.sh judges it: `signed_in` says how long the browser
 // took to launch and the code to be redeemed, and a refusal's code.
 //   node serves.js <project id> <project folder> <file to import>
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: Google Chrome; $COZY: the CLI; $HOLDER: Calcifer's lock record. Every browser step is bounded.
 const { chromium } = require(process.env.PLAYWRIGHT);
-const { execFileSync } = require('child_process');
-const { calcifer, signIn } = require('./page');
+const { importFile, calcifer, signIn } = require('./page');
 const [id, folder, file] = process.argv.slice(2);
 const origin = calcifer();
 const STEP_MS = 60000;
@@ -92,7 +91,16 @@ let [mine, asked] = [false, 0];
     return r.status;
   }, out.session.token));
   await until('hello on the stream', () => window.streamed.some((e) => e.type === 'hello'));
-  out.imported = JSON.parse(execFileSync(process.env.COZY, ['--json', 'project', '-p', folder, 'import', file], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }));
+  out.stream_interest = await page.evaluate(async ({ token, id }) => {
+    const stream = window.streamed.find((event) => event.type === 'hello').stream;
+    const response = await fetch(`/v1/events/${encodeURIComponent(stream)}`, {
+      method: 'PUT', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ projects: [id] }),
+    });
+    const reply = await response.json();
+    if (!response.ok || !reply.held.includes(id)) throw new Error(`project interest refused: ${response.status}`);
+    return reply.held;
+  }, { token: out.session.token, id });
+  out.imported = importFile(folder, file);
   await until('project.changed on the stream', (id) => window.streamed.some((e) => e.type === 'project.changed' && e.id === id && e.rev), id);
   out.streamed = await page.evaluate(() => { window.endStream(); return window.streamed; });
   out.violations.push(...await page.evaluate(() => window.__violations));

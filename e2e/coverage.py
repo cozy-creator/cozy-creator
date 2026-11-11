@@ -74,7 +74,7 @@ def _parse(text: str) -> tuple[list[str], dict[str, bool], dict[str, str], set[s
     return commands, flags, shorts, short_values, runnable
 
 
-def tree(cozy: str) -> Command:
+def tree(cozy: str, hidden_roots: tuple[str, ...] = ()) -> Command:
     def walk(path: tuple[str, ...]) -> Command:
         commands, flags, shorts, short_values, runnable = _parse(_help(cozy, path))
         node = Command(path, runnable, flags, shorts, short_values)
@@ -82,7 +82,11 @@ def tree(cozy: str) -> Command:
             node.children[name] = walk((*path, name))
         return node
 
-    return walk(())
+    root = walk(())
+    for name in hidden_roots:
+        if name not in root.children:
+            root.children[name] = walk((name,))
+    return root
 
 
 def ids(root: Command) -> set[str]:
@@ -185,9 +189,18 @@ def manifest(path: str) -> dict[str, tuple[str, str]]:
 
 
 def check(cozy: str, toml: str, tiers: set[str], logs: list[str], source: str = "") -> int:
-    root, mapped = tree(cozy), manifest(toml)
+    mapped = manifest(toml)
     with open(toml, "rb") as f:
         hidden = {f"cozy {k}" for k in tomllib.load(f).get("hidden", {})}
+    hidden_roots = tuple(sorted({name.split()[1] for name in hidden if not name.split()[1].startswith("--")}))
+    root = tree(cozy, hidden_roots)
+    # The hidden root flags are boolean switches; child commands inherit them.
+    for name in hidden:
+        words = name.split()[1:]
+        if len(words) == 1 and words[0].startswith("--"):
+            root.flags[words[0]] = False
+    if "--yes" in root.flags:
+        root.shorts["-y"] = "--yes"
     have = ids(root)
     absent: list[str] = []
     for h in sorted(hidden):

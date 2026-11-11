@@ -1,7 +1,7 @@
 import type { Edge, Node, ReactFlowInstance, Viewport } from "@xyflow/react"
 import { flushSync } from "react-dom"
 import { ApiError, type Client, type Write } from "../api/client"
-import { type Action, lost, type Outbox } from "../api/outbox"
+import { type Action, lost, type OutboxPort } from "../api/outbox"
 import type {
   ToolField as BoxField,
   Fit,
@@ -256,7 +256,7 @@ export class CanvasStore {
   private unsentSaid = new Set<string>()
   private runs = new Map<number, Run>()
   /** What a person did, in order, on its way to Calcifer. */
-  readonly outbox: Outbox
+  readonly outbox: OutboxPort
   /** The project's history, and what this page did in it: Undo and Redo. */
   readonly history: PageHistory<Snap[]>
   /** The edit what's typed in a box saves under while it goes on being typed there: one entry for all of it. */
@@ -270,8 +270,6 @@ export class CanvasStore {
   /** The note offering Undo of each edit, and the one saying what Undo or Redo last did: each goes once that's moved on. */
   private offers = new Map<string, number>()
   private stepped = 0
-  /** A push or pull is going. */
-  readonly transferring = signal(false)
   /** The tools known so far, by id. */
   readonly tools = signal<Map<string, Tool>>(new Map())
   /** Names came or went: a text shows a name as a chip or as words by it. */
@@ -373,7 +371,7 @@ export class CanvasStore {
   /** More was opened or shut. */
   onMore?: (names: string[]) => void
 
-  constructor(client: Client, outbox: Outbox, projectId: string | null, selected: Iterable<string>, moreOpen: Iterable<string>) {
+  constructor(client: Client, outbox: OutboxPort, projectId: string | null, selected: Iterable<string>, moreOpen: Iterable<string>) {
     this.client = client
     this.outbox = outbox
     this.projectId = projectId
@@ -420,6 +418,21 @@ export class CanvasStore {
     this.dragging.clear()
     this.dragFrom.clear()
     this.setHot(null)
+    this.menu.set(null)
+    this.viewing.set(null)
+  }
+
+  /** A confirmed vault lock retires even an off-route store. Navigation alone keeps its work. */
+  revokePrivateView() {
+    for (const pause of this.pauses.values()) clearTimeout(pause)
+    this.pauses.clear()
+    for (const view of this.views.values()) {
+      view.placing?.abort.abort()
+      if (view.preview) {
+        URL.revokeObjectURL(view.preview)
+        view.preview = undefined
+      }
+    }
     this.menu.set(null)
     this.viewing.set(null)
   }
@@ -706,7 +719,6 @@ export class CanvasStore {
   applyState(state: Project) {
     this.state = state
     this.began = state.began ?? 0
-    this.transferring.set(Boolean(state.moving))
     if (this.rows && this.flow) this.reconcile()
   }
 
@@ -1635,15 +1647,6 @@ export class CanvasStore {
       send: (served, write) => this.client.cancelRender(this.projectId!, [served], write.once),
       refused: (error) => say(`Couldn't cancel ${name}`, error),
     })
-  }
-
-  async pull() {
-    if (!this.projectId) return
-    try {
-      await this.client.pull(this.projectId)
-    } catch (error) {
-      say("Couldn't pull this project's files", error)
-    }
   }
 
   private removeNode(name: string) {

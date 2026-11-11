@@ -13,11 +13,10 @@
 // $PAGE_ORIGIN: the page from elsewhere (a `vite` of the tree under test), its API through it; $PROJECT: one an earlier pass made, measured again; $SIZES: some of
 // the sizes, by name. Prints what it saw as JSON and exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
-const { execFileSync, spawn } = require('child_process');
 const { mkdtempSync, readFileSync, renameSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { BARS, GPU, calcifer, MP4, boxOf, closeBox, openBox, fitCanvas, STEP_MS, lastLook, launch, lookAt, png, noStall, renderOf, settled, until, wav, importYaml, yamlOf } = require('./page');
+const { projectFromPage, projectUrl, signIn,importFile, projectAction, projectJson, BARS, GPU, calcifer, MP4, boxOf, closeBox, openBox, fitCanvas, STEP_MS, lastLook, launch, lookAt, png, noStall, renderOf, settled, until, wav, importYaml, yamlOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -74,7 +73,7 @@ async function restClose(page) {
   const state = () => page.evaluate(() => {
     const transform = document.querySelector('.react-flow__viewport')?.style.transform;
     return {
-      hash: location.hash,
+      hash: location.pathname,
       open: [...document.querySelectorAll('.card.here')].map((card) => card.dataset.asset),
       transform,
       zoom: transform ? new DOMMatrix(transform).a : null,
@@ -340,8 +339,85 @@ function emptyHits({ around, step }) {
   return [...found].map(([at, [x, y]]) => ({ rule: 'unseen-blocker', at, what: `takes the pointer at ${x},${y}, where nothing is drawn, from the canvas` }));
 }
 
-/** Each drawn edge on top, as the GPU draws it: its line on all four sides, and nothing of it past the line. Each is pictured with it and
- *  without it, the page held still, and what it draws is where the two differ; `decoder` reads the pictures. */
+/** Same SVG, two fixed outline colors; all other paths, alpha and rendering context are retained. */
+async function frameInkReferences(page, i) {
+  return page.evaluate(async (i) => {
+    const el = window.drawnFrames[i];
+    if (!el?.isConnected) throw new Error('outline reference target is detached');
+    const source = getComputedStyle(el).borderImageSource;
+    const match = /^url\(["']?(.*?)["']?\)$/.exec(source);
+    if (!match) throw new Error(`outline reference needs one SVG source: ${source}`);
+    const response = await fetch(match[1]);
+    if (!response.ok) throw new Error(`outline reference SVG refused: ${response.status}`);
+    const text = await response.text();
+    const svg = new DOMParser().parseFromString(text, 'image/svg+xml');
+    const root = svg.documentElement;
+    const paths = [...root.children];
+    if (svg.querySelector('parsererror') || root.localName !== 'svg' || paths.length !== 2 || paths.some((path) => path.localName !== 'path' || path.children.length) || paths[1].getAttribute('fill-rule') !== 'evenodd' || paths.some((path) => !/^#[0-9a-f]{6}$/i.test(path.getAttribute('fill') ?? ''))) throw new Error('unsupported outline reference SVG schema');
+    const allowedRoot = new Set(['xmlns', 'width', 'height', 'viewBox']);
+    const allowedPath = new Set(['d', 'fill', 'fill-rule', 'opacity', 'fill-opacity']);
+    if ([...root.attributes].some((a) => !allowedRoot.has(a.name)) || paths.some((path) => [...path.attributes].some((a) => !allowedPath.has(a.name)))) throw new Error('unsupported outline reference SVG attributes');
+    const signature = (doc) => {
+      const root = doc.documentElement;
+      return JSON.stringify({ root: [...root.attributes].map((a) => [a.name, a.value]), paths: [...root.children].map((path, at) => [...path.attributes].filter((a) => !(at === 1 && a.name === 'fill')).map((a) => [a.name, a.value])) });
+    };
+    const identity = signature(svg);
+    const saved = Object.fromEntries(['border-image-source', 'visibility'].map((name) => [name, [el.style.getPropertyValue(name), el.style.getPropertyPriority(name)]]));
+    const urls = [];
+    const xml = {};
+    try {
+      for (const [name, color] of [['black', '#000000'], ['white', '#ffffff']]) {
+        const copy = svg.cloneNode(true);
+        copy.documentElement.children[1].setAttribute('fill', color);
+        if (signature(copy) !== identity) throw new Error('outline reference changed SVG geometry or alpha');
+        xml[name] = new XMLSerializer().serializeToString(copy);
+        const url = URL.createObjectURL(new Blob([xml[name]], { type: 'image/svg+xml' }));
+        urls.push(url);
+        const image = new Image();
+        image.src = url;
+        await image.decode();
+      }
+      return { source, saved, urls, black: urls[0], white: urls[1], identity, original: text, xml };
+    } catch (error) {
+      for (const url of urls) URL.revokeObjectURL(url);
+      throw error;
+    }
+  }, i);
+}
+
+async function frameInkPaint(page, i, reference, source) {
+  return page.evaluate(async ({ i, reference, source }) => {
+    const el = window.drawnFrames[i];
+    if (!el?.isConnected) throw new Error('outline reference target moved away');
+    if (source === 'original') {
+      const saved = reference.saved['border-image-source'];
+      if (saved[0]) el.style.setProperty('border-image-source', saved[0], saved[1]);
+      else el.style.removeProperty('border-image-source');
+    } else el.style.setProperty('border-image-source', `url("${reference[source]}")`, 'important');
+    await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
+    const actual = getComputedStyle(el).borderImageSource;
+    if (source === 'original' ? actual !== reference.source : !actual.includes(reference[source])) throw new Error('outline reference source did not paint');
+  }, { i, reference, source });
+}
+
+async function frameInkRelease(page, i, reference) {
+  return page.evaluate(async ({ i, reference }) => {
+    const el = window.drawnFrames[i];
+    try {
+      if (el) for (const [name, saved] of Object.entries(reference.saved)) {
+        if (saved[0]) el.style.setProperty(name, saved[0], saved[1]);
+        else el.style.removeProperty(name);
+      }
+      if (!el) throw new Error('outline reference target missing at restoration');
+      await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
+      const current = Object.fromEntries(Object.keys(reference.saved).map((name) => [name, [el.style.getPropertyValue(name), el.style.getPropertyPriority(name)]]));
+      if (JSON.stringify(current) !== JSON.stringify(reference.saved) || getComputedStyle(el).borderImageSource !== reference.source) throw new Error('outline reference original style did not restore');
+      return current;
+    } finally { for (const url of reference.urls) URL.revokeObjectURL(url); }
+  }, { i, reference });
+}
+
+/** Hold each visible frame still for four pictures: actual, black outline, white outline, and bare. */
 async function drawnEdges(page, decoder, label) {
   const said = [];
   const proofs = [];
@@ -354,15 +430,17 @@ async function drawnEdges(page, decoder, label) {
       const all = [...document.querySelectorAll('body *')].filter((el) => getComputedStyle(el).borderImageSource !== 'none' && el.checkVisibility({ opacityProperty: true, visibilityProperty: true }));
       const ids = [];
       window.drawnFrames = [];
+      window.drawnEdgeBefore = [];
       for (const el of all) {
         if (all.some((other) => other !== el && other.contains(el))) continue;
+        window.drawnEdgeBefore.push({ marker: el.getAttribute('data-drawn-edge'), hadStyle: el.hasAttribute('style') });
         el.dataset.drawnEdge = String(ids.length);
         window.drawnFrames.push(el);
         ids.push(ids.length);
       }
       return ids;
     });
-    // Each pair has its own current frame. The viewport may refit while earlier pairs are read.
+    // Each capture has its own current frame. The viewport may refit while earlier frames are read.
     const frameAt = (i) => page.evaluate((i) => {
       const el = window.drawnFrames[i];
       if (!el?.isConnected) return null;
@@ -379,21 +457,28 @@ async function drawnEdges(page, decoder, label) {
           if (top && el.contains(top)) samples.push({ side, x, y });
         }
       }
+      const clipping = [];
+      for (let at = el; at; at = at.parentElement) {
+        const css = getComputedStyle(at);
+        clipping.push([css.overflowX, css.overflowY, css.clipPath, css.maskImage, css.borderRadius, css.opacity, css.filter, css.transform, at === el ? '' : css.visibility]);
+      }
       return {
         at: `${el.tagName.toLowerCase()}${[...el.classList].slice(0, 3).map((c) => `.${c}`).join('')}`,
         rect: [r.left, r.top, r.right, r.bottom], o, scale, samples,
         view: [innerWidth, innerHeight, devicePixelRatio, document.querySelector('.react-flow__viewport')?.style.transform ?? ''],
         image: style.borderImageSource,
+        slices: [style.borderImageSlice, style.borderImageWidth, style.borderImageRepeat, style.borderImageOutset],
+        clipping,
         eligible: !(r.width < 40 || r.height < 30 || r.left - o < 1 || r.top - o < 1 || r.right + o > innerWidth - 1 || r.bottom + o > innerHeight - 1),
       };
     }, i);
-    const geometry = (frame) => frame && JSON.stringify([frame.rect, frame.scale, frame.view]);
+    const geometry = (frame) => frame && JSON.stringify([frame.rect, frame.scale, frame.view, frame.slices, frame.clipping]);
     const paint = (frame) => frame && JSON.stringify([frame.o, frame.image]);
     for (const i of ids) {
       const first = await frameAt(i);
       if (first && !first.eligible) continue; // The same size/on-screen exclusions as the pixel audit.
       let last;
-      const what = `drawn edge ${i} stays in place through its two pictures`;
+      const what = `drawn edge ${i} stays in place through its four pictures`;
       let pair;
       try {
         await until(what, async () => {
@@ -404,32 +489,26 @@ async function drawnEdges(page, decoder, label) {
           const [width, height] = frame.view;
           const [x, y] = [Math.max(0, Math.floor(left - pad)), Math.max(0, Math.floor(top - pad))];
           const clip = { x, y, width: Math.min(width, Math.ceil(right + pad)) - x, height: Math.min(height, Math.ceil(bottom + pad)) - y };
-          const shown = await page.screenshot({ clip });
-          const afterShown = await frameAt(i);
-          const visibility = await page.evaluate((i) => {
-            const el = window.drawnFrames[i];
-            if (!el?.isConnected) return null;
-            const saved = [el.style.getPropertyValue('visibility'), el.style.getPropertyPriority('visibility')];
-            el.style.setProperty('visibility', 'hidden', 'important');
-            return saved;
-          }, i);
-          if (!visibility) { last = { frame, afterShown, stable: false }; return false; }
-          let bare, afterBare;
+          const reference = await frameInkReferences(page, i);
+          let shown, black, white, bare, afterShown, afterBlack, afterWhite, afterBare, release;
           try {
+            shown = await page.screenshot({ clip });
+            afterShown = await frameAt(i);
+            await frameInkPaint(page, i, reference, 'black');
+            black = await page.screenshot({ clip });
+            afterBlack = await frameAt(i);
+            await frameInkPaint(page, i, reference, 'white');
+            white = await page.screenshot({ clip });
+            afterWhite = await frameAt(i);
+            await frameInkPaint(page, i, reference, 'original');
+            await page.evaluate((i) => window.drawnFrames[i].style.setProperty('visibility', 'hidden', 'important'), i);
             bare = await page.screenshot({ clip });
             afterBare = await frameAt(i);
-          } finally {
-            await page.evaluate(({ i, saved }) => {
-              const el = window.drawnFrames[i];
-              if (!el) return;
-              if (saved[0]) el.style.setProperty('visibility', saved[0], saved[1]);
-              else el.style.removeProperty('visibility');
-            }, { i, saved: visibility });
-          }
+          } finally { release = await frameInkRelease(page, i, reference); }
           const restored = await frameAt(i);
-          const stable = [afterShown, afterBare, restored].every((after) => geometry(after) === geometry(frame))
-            && [afterShown, restored].every((after) => paint(after) === paint(frame));
-          last = { frame, afterShown, afterBare, restored, clip, viewport: { width, height }, shown, bare, stable };
+          const stable = reference.source === frame.image && afterBlack?.image.includes(reference.black) && afterWhite?.image.includes(reference.white) && [afterShown, afterBlack, afterWhite, afterBare, restored].every((after) => geometry(after) === geometry(frame))
+            && [afterShown, afterBare, restored].every((after) => paint(after) === paint(frame));
+          last = { frame, afterShown, afterBlack, afterWhite, afterBare, restored, reference, release, clip, viewport: { width, height }, shown, black, white, bare, stable };
           return stable;
         }, (stable) => stable, STEP_MS);
         pair = last;
@@ -440,25 +519,34 @@ async function drawnEdges(page, decoder, label) {
         if (process.env.SHOT) proofs.push({ i, ...last, found });
         continue;
       }
-      const { frame, clip, shown, bare } = pair;
-      const found = await decoder.evaluate(edgesOf, { shown: shown.toString('base64'), bare: bare.toString('base64'), clip, frame });
+      const { frame, clip, shown, black, white, bare } = pair;
+      const found = await decoder.evaluate(edgesOf, { shown: shown.toString('base64'), black: black.toString('base64'), white: white.toString('base64'), bare: bare.toString('base64'), clip, frame });
       for (const { rule, what } of found) said.push({ rule, at: frame.at, what });
       if (found.length && process.env.SHOT) proofs.push({ i, ...pair, found });
     }
   } finally {
     await page.evaluate(() => {
-      for (const el of window.drawnFrames ?? []) delete el.dataset.drawnEdge;
+      for (const [i, el] of (window.drawnFrames ?? []).entries()) {
+        const { marker, hadStyle } = window.drawnEdgeBefore[i];
+        if (marker === null) delete el.dataset.drawnEdge;
+        else el.setAttribute('data-drawn-edge', marker);
+        // Read the attribute itself: CSSOM may not have serialized the empty style yet.
+        if (!hadStyle && el.getAttribute('style') === '') el.removeAttribute('style');
+      }
       for (const held of window.heldStill ?? []) held.play();
       delete window.drawnFrames;
+      delete window.drawnEdgeBefore;
       delete window.heldStill;
     });
   }
   // Keep the exact comparison inputs after this pass has finished measuring, without another screenshot or DOM read.
-  for (const { i, frame, clip, viewport, shown, bare, afterShown, afterBare, restored, found } of proofs) {
+  for (const { i, frame, clip, viewport, shown, black, white, bare, afterShown, afterBlack, afterWhite, afterBare, restored, reference, release, found } of proofs) {
     const path = `${process.env.SHOT}-${label}-edge-${i}`;
     if (shown) writeFileSync(`${path}-drawn.png`, shown);
     if (bare) writeFileSync(`${path}-bare.png`, bare);
-    writeFileSync(`${path}-frame.json`, JSON.stringify({ label, frame, clip, viewport, afterShown, afterBare, restored, findings: found }, null, 2));
+    if (black) writeFileSync(`${path}-black.png`, black);
+    if (white) writeFileSync(`${path}-white.png`, white);
+    writeFileSync(`${path}-frame.json`, JSON.stringify({ label, frame, clip, viewport, afterShown, afterBlack, afterWhite, afterBare, restored, reference, release, findings: found }, null, 2));
   }
   return said;
 }
@@ -496,39 +584,40 @@ async function panCanvas(page) {
   return { from, fitted, before, after: await viewport() };
 }
 
-/** A frame's sides from its two pictures, with it and without it: on each, its line is drawn within a few pixels of its edge, and nothing of
- *  it lies past that. Self-contained: it runs in the decoder's page. */
-async function edgesOf({ shown, bare, clip, frame }) {
+/** Compare the outline references near each edge, and the original with the bare capture outside it. Runs in the decoder's page. */
+async function edgesOf({ shown, bare, black, white, clip, frame }) {
   const read = async (base64) => {
     const bitmap = await createImageBitmap(await (await fetch(`data:image/png;base64,${base64}`)).blob());
     const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
     const context = canvas.getContext('2d');
     context.drawImage(bitmap, 0, 0);
-    return context.getImageData(0, 0, bitmap.width, bitmap.height);
+    try { return context.getImageData(0, 0, bitmap.width, bitmap.height); }
+    finally { bitmap.close(); }
   };
-  const [a, b] = [await read(shown), await read(bare)];
+  const [a, b, inkBlack, inkWhite] = await Promise.all([read(shown), read(bare), read(black), read(white)]);
+  if ([b, inkBlack, inkWhite].some((image) => image.width !== a.width || image.height !== a.height)) throw new Error('outline comparison dimensions differ');
   const k = a.width / clip.width;
-  const differs = (x, y) => {
+  const differs = (one, two, x, y) => {
     const [px, py] = [Math.round((x - clip.x) * k), Math.round((y - clip.y) * k)];
     if (px < 0 || py < 0 || px >= a.width || py >= a.height) return 0;
     const i = (py * a.width + px) * 4;
-    return Math.max(Math.abs(a.data[i] - b.data[i]), Math.abs(a.data[i + 1] - b.data[i + 1]), Math.abs(a.data[i + 2] - b.data[i + 2]));
+    return Math.max(Math.abs(one.data[i] - two.data[i]), Math.abs(one.data[i + 1] - two.data[i + 1]), Math.abs(one.data[i + 2] - two.data[i + 2]));
   };
   const [left, top, right, bottom] = frame.rect;
   const sides = {};
   for (const { side, x, y } of frame.samples) {
     const [dx, dy] = { top: [0, -1], right: [1, 0], bottom: [0, 1], left: [-1, 0] }[side];
     const [ex, ey] = { top: [x, top], right: [right, y], bottom: [x, bottom], left: [left, y] }[side];
-    const most = (from, to) => {
+    const most = (one, two, from, to) => {
       let held = 0;
-      for (let d = from; d <= to; d += 0.5 / k) held = Math.max(held, differs(ex + dx * d, ey + dy * d));
+      for (let d = from; d <= to; d += 0.5 / k) held = Math.max(held, differs(one, two, ex + dx * d, ey + dy * d));
       return held;
     };
     const tally = (sides[side] ??= { at: 0, line: 0, past: 0 });
     tally.at++;
     // The line wobbles from 3 px inside its edge to 2 px out; past it to the edge of its picture, nothing.
-    if (most(-4 * frame.scale, 2.5 * frame.scale) > 80) tally.line++;
-    if (frame.o - 0.5 > 3.5 * frame.scale && most(3.5 * frame.scale, frame.o - 0.5) > 12) tally.past++;
+    if (most(inkBlack, inkWhite, -4 * frame.scale, 2.5 * frame.scale) > 80) tally.line++;
+    if (frame.o - 0.5 > 3.5 * frame.scale && most(a, b, 3.5 * frame.scale, frame.o - 0.5) > 12) tally.past++;
   }
   const found = [];
   for (const [side, { at, line, past }] of Object.entries(sides)) {
@@ -543,11 +632,7 @@ async function edgesOf({ shown, bare, clip, frame }) {
   const browser = await launch(playwright, BARS);
   const holder = JSON.parse(readFileSync(process.env.HOLDER, 'utf8'));
   const signedIn = async (page) => {
-    // `cozy open --no-open`'s link, on the page under test.
-    const said = execFileSync(COZY, ['open', '--no-open'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-    const link = said.match(/http:\/\/\S+#code=[0-9a-f]+\S*/)?.[0];
-    if (!link) throw new Error(`cozy open --no-open printed no link: ${said.slice(0, 300)}`);
-    await page.goto(link.replace(/^http:\/\/[^/]+/, base));
+    await signIn(page);
     await page.waitForSelector('.top');
     return page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session')).token);
   };
@@ -576,11 +661,11 @@ async function edgesOf({ shown, bare, clip, frame }) {
   };
   if (id) names = (await api(`/v1/projects/${id}`)).assets.map((held) => held.name);
   else {
-  await page.goto(`${base}/#/projects`);
+  await page.goto(`${base}/projects`);
   await page.fill('input[aria-label="New project\'s name"]', `web-layout-${Date.now()}`);
   await page.click('form button[type=submit]');
-  await page.waitForURL(/#\/projects\/[^/]+$/);
-  id = page.url().match(/#\/projects\/([^/]+)/)[1];
+  await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
+  id = (await projectFromPage(page)).id;
   const folder = (await api(`/v1/projects/${id}`)).path;
   seen.project = { id, folder };
   const scratch = mkdtempSync(join(tmpdir(), 'web-layout-'));
@@ -594,7 +679,7 @@ async function edgesOf({ shown, bare, clip, frame }) {
     ['clip_b', 'clip_b.mp4', MP4],
   ]) {
     writeFileSync(join(scratch, file), bytes);
-    execFileSync(COZY, ['project', '-p', folder, 'import', join(scratch, file), asset], { encoding: 'utf8' });
+    importFile(folder, join(scratch, file), asset);
   }
   const local = (await api('/v1/status')).local_usable && !process.env.ALONE;
   seen.ran = local;
@@ -643,39 +728,34 @@ ${local ? `  card:
 ` : ''}`);
   names = ['hero_art', 'wide_art', 'tall_art', LONG, 'sea_sound', 'clip', 'clip_b', 'style', 'still', 'edit', 'odd', ...(local ? ['card', 'posed', 'shot', 'broken', 'making'] : [])];
   await placed();
-  const render = (asset, wait = true) => {
-    const words = ['project', '-p', folder, 'render', asset, ...(local ? ['--on', 'local'] : [])];
-    if (!wait) return spawn(COZY, words, { stdio: 'ignore' });
-    try {
-      execFileSync(COZY, words, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: RUN_MS });
-    } catch (error) {
-      if (asset !== 'broken') throw error;
-    }
+  const render = async (asset, wait = true) => {
+    try { return await projectAction(folder, 'render', asset, ...(local ? ['--on', 'local'] : []), ...(wait ? [] : ['--queue'])); }
+    catch (error) { if (asset !== 'broken') throw error; }
   };
   // Takes: the frame thrice, the Edit once, and where this computer runs, many of the picture tool's, the shot's two and a failure.
   for (const at of [0.2, 0.5, 0.8]) {
     importYaml(folder, yamlOf(folder).replace(/(\n  still:\n    video: <clip>\n    at: )[\d.]+/, `$1${at}`));
-    render('still');
+    await render('still');
   }
-  render('edit');
+  await render('edit');
   const box = (asset) => boxOf(page, asset);
   if (local) {
     // Its first render waits on its install, which the box says.
-    render('card', false);
+    await render('card', false);
     const waiting = await until('the picture tool waits', () => box('card').locator('.prog b, .take.making').count(), (n) => n > 0, RUN_MS).catch(() => 0);
     seen.waits = waiting > 0;
     if (waiting) for (const finding of await page.evaluate(audit, { floor: FLOOR, hangZoom: HANG_ZOOM })) findings.push({ size: '1600x1000', state: 'waiting-on-install', ...finding });
     await until('the first take', () => api(`/v1/projects/${id}`), (state) => state.assets.find((held) => held.name === 'card')?.prefixes?.length >= 1, RUN_MS);
-    for (let i = 0; i < 8; i++) render('card');
-    render('shot');
-    render('shot');
-    render('broken');
+    for (let i = 0; i < 8; i++) await render('card');
+    await render('shot');
+    await render('shot');
+    await render('broken');
   }
   await until('every take landed', () => api(`/v1/projects/${id}`), (state) => !state.assets.some((held) => held.standing === 'making'), RUN_MS);
   // One being made all through the measuring, saying how far it's got, its steps a second each.
   if (local) {
-    render('making', false);
-    stopMaking = () => execFileSync(COZY, ['project', '-p', folder, 'cancel', 'making'], { stdio: 'ignore' });
+    await render('making', false);
+    stopMaking = () => projectJson(folder, 'POST', '/cancel', { names: ['making'] });
   }
   }
   await first.close();
@@ -688,12 +768,13 @@ ${local ? `  card:
     watch(page);
     lookAt(page);
     await signedIn(page);
-    await page.goto(`${base}/#/projects/${id}`);
+    await page.goto(await projectUrl(id));
     await page.locator('.react-flow__node').first().waitFor();
     await placed();
-    const look = async (state, keep, fitted = true) => {
+    const look = async (state, keep, fitted = true, beforeAudit) => {
       // What opens animates in: measured once it's still. A pulse goes on forever, and is no move.
       await page.waitForFunction(() => !document.getAnimations().some((held) => held.playState === 'running' && held.timeline === document.timeline && held.effect?.getComputedTiming().iterations !== Infinity), null, { timeout: 5000 }).catch(() => {});
+      if (beforeAudit) await beforeAudit();
       seen.looks = (seen.looks ?? 0) + 1;
       const said = await page.evaluate(audit, { floor: FLOOR, hangZoom: HANG_ZOOM, fitted });
       // The pointer where nothing's drawn, around a box worked on or all over.
@@ -718,8 +799,9 @@ ${local ? `  card:
         const now = await zoom();
         if (Math.abs(now - want) < 0.005) break;
         await page.click(now > want ? 'button[aria-label="Zoom out"]' : 'button[aria-label="Zoom in"]');
-        await page.waitForTimeout(80);
+        await settled(page);
       }
+      await until(`the camera reaches ${want}`, () => page.evaluate(() => new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a), (actual) => actual === want);
       await settled(page);
     };
     const home = async () => {
@@ -751,18 +833,74 @@ ${local ? `  card:
     // At rest, being made, at 75%: what it says of how far it's got hangs off it as all else at rest does, one size on screen.
     const making = page.locator('.react-flow__node .card[data-asset="making"] > .media').first();
     await home();
-    if (names.includes('making') && (await making.count())) {
+    if (names.includes('making')) {
+      const makingState = () => page.evaluate(() => {
+        const media = document.querySelector('.card[data-asset="making"] > .media');
+        const rect = media?.getBoundingClientRect();
+        const left = document.querySelector('.tools')?.getBoundingClientRect().right ?? 0;
+        const top = document.querySelector('.top')?.getBoundingClientRect().bottom ?? 0;
+        const viewport = document.querySelector('.react-flow__viewport');
+        const transform = viewport ? getComputedStyle(viewport).transform : null;
+        const progress = media?.querySelector('.prog b');
+        const visibility = { opacityProperty: true, visibilityProperty: true };
+        const rendered = Boolean(media?.checkVisibility?.(visibility));
+        const inBounds = Boolean(rect && rect.width && rect.height && rect.left >= left && rect.top >= top && rect.right <= innerWidth && rect.bottom <= innerHeight);
+        const progressVisible = Boolean(progress?.checkVisibility?.(visibility));
+        const text = progress?.innerText ?? null;
+        let reason = null;
+        if (!media) reason = 'missing-media';
+        else if (!rendered) reason = 'hidden-media';
+        else if (!inBounds) reason = 'offscreen-media';
+        else if (!progress) reason = 'missing-progress-label';
+        else if (!progressVisible) reason = 'hidden-progress-label';
+        else if (!text) reason = 'empty-progress-text';
+        return {
+          hash: location.pathname, open: [...document.querySelectorAll('.card.here')].map((card) => card.dataset.asset),
+          selected: [...document.querySelectorAll('.react-flow__node.selected')].map((node) => node.querySelector('.card')?.dataset.asset ?? node.dataset.id),
+          zoom: transform === null ? null : new DOMMatrix(transform).a, transform, mounted: Boolean(media),
+          rect: rect && { x: rect.x, y: rect.y, width: rect.width, height: rect.height }, rendered, inBounds, visible: rendered && inBounds,
+          progress: Boolean(progress), progressVisible, text, reason,
+        };
+      });
+      const restingMaking = (at) => at.zoom === 0.75 && at.mounted && at.visible && !at.open.length && !at.selected.length;
+      const makingProgress = (at) => restingMaking(at) && at.progressVisible && /steps/i.test(at.text ?? '');
+      await making.waitFor().catch(async (error) => {
+        const state = await makingState();
+        (seen.making_setup ??= []).push({ size: size.name, phase: 'mount', ...state });
+        throw new Error(`making media did not mount visibly: ${JSON.stringify(state)}`, { cause: error });
+      });
+      // Shift adds to a selection: rest-close leaves its box selected, and Shift+2 would fit both.
+      await page.keyboard.press('Escape');
+      await page.waitForFunction(() => !document.querySelector('.card.here') && !document.querySelector('.react-flow__node.selected'));
       const at = await making.boundingBox();
       await page.keyboard.down('Shift');
       await page.mouse.click(at.x + at.width / 2, at.y + at.height / 2);
       await page.keyboard.up('Shift');
+      await page.waitForFunction(() => {
+        const selected = [...document.querySelectorAll('.react-flow__node.selected')];
+        return selected.length === 1 && selected[0].querySelector('.card')?.dataset.asset === 'making';
+      });
+      (seen.making_selected ??= []).push({ size: size.name, selected: await page.evaluate(() => [...document.querySelectorAll('.react-flow__node.selected')].map((node) => ({ id: node.getAttribute('data-id'), name: node.querySelector('.card')?.dataset.asset }))) });
       await page.keyboard.press('Shift+2');
       await settled(page);
-      await page.mouse.click(2, size.viewport.height - 2);
+      await page.keyboard.press('Escape');
+      await page.waitForFunction(() => !document.querySelector('.card.here') && !document.querySelector('.react-flow__node.selected'));
       await zoomTo(0.75);
-      const said = await until('it says how far', () => making.locator('.prog b').innerText().catch(() => ''), (text) => /steps/i.test(text)).catch(() => '');
+      const setup = await makingState();
+      (seen.making_setup ??= []).push({ size: size.name, ...setup });
+      if (!restingMaking(setup)) throw new Error(`making setup is not a visible resting 75% canvas: ${JSON.stringify(setup)}`);
+      const progress = await until('it says how far', makingState, makingProgress).catch(async () => {
+        const state = await makingState();
+        (seen.making_progress_failure ??= []).push({ size: size.name, ...state });
+        return null;
+      });
+      const said = progress?.text ?? '';
       check(`making_says_how_far_${size.name}`, /steps/i.test(said), said);
-      await look('rest-making', true);
+      await look('rest-making', true, true, async () => {
+        const state = await makingState();
+        (seen.making_audit ??= []).push({ size: size.name, ...state });
+        if (!restingMaking(state)) throw new Error(`making is not visible on the resting 75% canvas before audit: ${JSON.stringify(state)}`);
+      });
     }
     await home();
     for (const asset of size.open ? [] : names) {
@@ -887,12 +1025,12 @@ ${local ? `  card:
       await page.keyboard.press('Escape');
     }
     for (const drawer of ['machines', 'runs', 'account', 'projects', 'packages']) {
-      await page.goto(`${base}/#/projects/${id}/${drawer}`);
+      await page.goto(await projectUrl(id, `/${drawer}`));
       await page.locator('.drawer').waitFor();
       await page.waitForTimeout(400);
       await look(`drawer-${drawer}`, true);
     }
-    await page.goto(`${base}/#/projects/${id}`);
+    await page.goto(await projectUrl(id));
     await context.close();
   }
 
@@ -907,7 +1045,7 @@ ${local ? `  card:
     watch(page);
     lookAt(page);
     await signedIn(page);
-    await page.goto(`${base}/#/projects/${id}`);
+    await page.goto(await projectUrl(id));
     await page.locator('.react-flow__node').first().waitFor();
     await placed();
     const edges = async (state) => {
@@ -945,7 +1083,7 @@ ${local ? `  card:
     }
     await closeBox(page);
     for (const drawer of ['runs', 'packages']) {
-      await page.goto(`${base}/#/projects/${id}/${drawer}`);
+      await page.goto(await projectUrl(id, `/${drawer}`));
       await page.locator('.drawer').waitFor();
       await page.waitForTimeout(400);
       await edges(`drawer-${drawer}`);

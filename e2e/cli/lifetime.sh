@@ -12,7 +12,7 @@ J() { jq -e "$@" > /dev/null; }
 launch() {
   local name=$1 entry=$2
   shift 2
-  (cd "$here" && cozy --json run -p "$RUN_PROJECT" "./weightless/$entry" "$@" --on local > "$OUT/$name.ndjson" 2>&1) &
+  (cd "$RUN_PROJECT" && cozy --json run "$here/weightless/$entry" "$@" --on local > "$OUT/$name.ndjson" 2>&1) &
   begun=$! n=''
   for _ in $(seq 180); do grep -qE '"stage": *"waiting silently"' "$OUT/$name.ndjson" && break; sleep 1; done
   grep -qE '"stage": *"waiting silently"' "$OUT/$name.ndjson" || { check "$name: its executor never began"; return 1; }
@@ -42,7 +42,7 @@ update_waiting() {
   done
   J --arg w "$said" '.status.update == $w' "$OUT/$1.machine.json" \
     || check "$1: machine show local never said \"$said\": $(jq -c .status.update "$OUT/$1.machine.json")"
-  cozy --json run ls > "$OUT/$1.list.json" || true
+  cozy --json run ls --all --on local > "$OUT/$1.list.json" || true
   J --arg w "$said" 'any(.runs[]; .kind == "update" and ((.waiting // "") | contains($w)))' "$OUT/$1.list.json" \
     || check "$1: run ls shows no update $said: $(jq -c '[.runs[] | select(.kind == "update") | .waiting]' "$OUT/$1.list.json")"
 }
@@ -235,7 +235,7 @@ TOML
 trap "kept_restore '$gate' '$config' '$OUT/kept/config.toml'" EXIT
 { echo 'huggingface_token = "hf_e2e_kept_preparing"'; cat "$OUT/kept/config.toml" 2> /dev/null || true; } > "$config"
 systemctl --user restart cozy-calcifer || check "kept: systemctl --user restart cozy-calcifer failed"
-"$RUN_CLI" --json run "$dir" "text=kept $RANDOM" --on local -p "$RUN_PROJECT" > "$OUT/kept.ndjson" 2> "$OUT/kept.err" &
+(cd "$RUN_PROJECT" && "$RUN_CLI" --json run "$dir" "text=kept $RANDOM" --on local) > "$OUT/kept.ndjson" 2> "$OUT/kept.err" &
 echo $! > "$OUT/kept.pid"
 install=$(kept_install) || install=
 if [ -z "$install" ]; then

@@ -80,7 +80,7 @@ watched() {
 }
 
 if [ -z "$INSTALLED" ]; then step install; install_cozy; user_services; step candidates; candidates; fi
-run_project "$OUT/project" || fail "cozy project new failed"
+run_project "$OUT/project" || fail "project initialization failed"
 
 step sign-in
 if [ -n "$KEY" ]; then sign_in "$KEY" > "$OUT/login.json" || fail "cozy login --key failed: $(head -c 300 "$OUT/login.json")"; fi
@@ -292,7 +292,7 @@ cozy --json package ls --on "$M" > "$OUT/packages-rental.json" && grep -q birefn
 # A request file beside its image, in a folder named with spaces and non-ASCII; its output lands in a project in another such folder.
 far="$OUT/in dir é ü" landing="$OUT/out dir é ü"
 mkdir -p "$far" && cp "$(picture dog1.jpg)" "$far/chien é.jpg" && printf 'image: chien é.jpg\n' > "$far/request é.yaml"
-cozy project new "$landing" > /dev/null || check "project new '$landing' failed"
+mkdir -p "$landing" && (cd "$landing" && cozy --json status > /dev/null) || check "project initialization '$landing' failed"
 if RUN_PROJECT=$landing watched birefnet-yaml run "$(pinned birefnet remove_background)" --input "$far/request é.yaml" --on "$M"; then
   # Downloaded by its digest (cl-819), it is the file the project holds under that digest.
   out=$(run_output "$OUT" birefnet-yaml webp) sha=''
@@ -361,7 +361,7 @@ fi
 run_wait "$OUT" cancel-wait || true
 
 step "an end while a run goes"
-(cd "$here/../cli" && cozy --json run -p "$RUN_PROJECT" ./weightless/wait seconds:=600 --on "$M" > "$OUT/rental-wait.ndjson" 2>&1) &
+(cd "$RUN_PROJECT" && cozy --json run "$here/../cli/weightless/wait" seconds:=600 --on "$M" > "$OUT/rental-wait.ndjson" 2>&1) &
 going=$!
 until run_reached "$OUT/rental-wait.ndjson" in_progress || ! kill -0 "$going" 2> /dev/null; do sleep 0.2; done
 # `machine end` returns once the Hub affirms the pod gone.

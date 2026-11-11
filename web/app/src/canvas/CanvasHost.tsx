@@ -16,6 +16,7 @@ import { useMatch, useNavigate } from "react-router-dom"
 import { ApiError } from "../api/client"
 import { lost } from "../api/outbox"
 import { canvasQuery, machinesQuery, projectQuery, toolsQuery } from "../api/queries"
+import { useTo } from "../app/project"
 import { useConnection } from "../app/Connection"
 import { loadMore, loadSelection, loadToolsShut, loadViewport, saveMore, saveSelection, saveToolsShut, saveViewport } from "../app/view"
 import type { Tool } from "../api/calcifer"
@@ -79,7 +80,7 @@ function ProjectSync({ id }: { id: string }) {
   const store = useCanvasStore()
   const navigate = useNavigate()
   const { data: state, error: stateError } = useQuery(projectQuery(client, stream, id))
-  const { data: canvas, error: canvasError } = useQuery(canvasQuery(client, id))
+  const { data: canvas, error: canvasError } = useQuery(canvasQuery(client, stream, id))
   const asked = useRef(new Set<string>())
   const queries = useQueryClient()
 
@@ -115,15 +116,18 @@ function ProjectSync({ id }: { id: string }) {
     if (canvasError && !lost(canvasError)) say("Couldn't read where things sit", canvasError)
   }, [canvasError])
   useEffect(() => {
-    store.history.read()
-    return stream.subscribe((event) => {
+    const controller = new AbortController()
+    const readHistory = () => void stream.whenShown(id, controller.signal).then(() => store.history.read(), () => {})
+    readHistory()
+    const unsubscribe = stream.subscribe((event) => {
       if (event.type === "canvas" && event.id === id) store.applyRows(event.cards, event.seq)
       if (event.type === "history" && event.id === id) store.history.read()
       if (event.type === "resync" || event.type === "hello") {
         store.fellBehind()
-        store.history.read()
+        readHistory()
       }
     })
+    return () => { controller.abort(); unsubscribe() }
   }, [stream, store, id])
   useEffect(() => bridge.onRun((run) => store.applyRun(run)), [bridge, store])
   useEffect(() => {
@@ -225,25 +229,30 @@ function Empty({ choose }: { choose: () => void }) {
 
 function Canvas({
   projectId,
+  active,
   slot,
   history,
   onAdopt,
 }: {
   projectId: string | null
+  active: boolean
   slot: HTMLElement | null
   history: HTMLElement | null
-  onAdopt: (id: string) => void
+  onAdopt: (id: string, code: string) => void
 }) {
   const connection = useConnection()
   const flow = useReactFlow<ElementNode, Edge>()
   const navigate = useNavigate()
+  const to = useTo()
   const { client, stream, bridge, outbox, canvases } = connection
   const [saved] = useState(() => loadViewport(projectId))
   // One per project for as long as the tab is open: a tab gone to and back finds what it showed, and what's still waiting for Calcifer shows as done.
   // One a code reload left is another class's, and is made again.
   const [store] = useState(() => {
     const kept = projectId ? canvases.get(projectId) : undefined
-    return kept instanceof CanvasStore ? kept : new CanvasStore(client, outbox, projectId, loadSelection(projectId), loadMore(projectId))
+    if (kept instanceof CanvasStore) return kept
+    const made: CanvasStore = new CanvasStore(client, outbox.scoped(() => made.projectId), projectId, loadSelection(projectId), loadMore(projectId))
+    return made
   })
   // A canvas's first box makes its project: kept from then on.
   useEffect(() => {
@@ -251,12 +260,24 @@ function Canvas({
   })
   const adopt = useRef(onAdopt)
   adopt.current = onAdopt
-  const [placer] = useState(() => new Placer(store, client, { adopt: (id) => adopt.current(id) }))
+  const [placer] = useState(() => new Placer(store, client, { adopt: (id, code) => adopt.current(id, code) }))
   const [openedOn] = useState(projectId)
   const [veil, setVeil] = useState(false)
   const [shut, setShut] = useState(loadToolsShut)
-  const opened = useMatch("/projects/:id/assets/:name")?.params.name
+  const compactAsset = useMatch("/p/:code/assets/:name")
+  const legacyAsset = useMatch("/projects/:id/assets/:name")
+  const opened = (compactAsset ?? legacyAsset)?.params.name
   const stage = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    if (active) {
+      store.refreshSurface(flow.getViewport())
+      store.fitHere(true)
+      return
+    }
+    // Keep draft/import owners alive under the cover, while closing any mention
+    // popup portaled outside its hidden DOM subtree. Shell pauses covered media.
+    if (document.activeElement instanceof HTMLElement && stage.current?.contains(document.activeElement)) document.activeElement.blur()
+  }, [active, store, flow])
   const returning = useRef<{ view: Viewport; until: number } | null>(null)
   const folded = useRef(false)
   const shutNow = useRef(shut)
@@ -349,7 +370,7 @@ function Canvas({
   )
   store.openHere = (name: string) => {
     writeHere(name)
-    navigate(`/projects/${store.projectId}/assets/${encodeURIComponent(name)}`)
+    navigate(to(`assets/${encodeURIComponent(name)}`))
   }
   const stopWriting = useCallback(() => {
     const held = store.inPlace
@@ -371,10 +392,10 @@ function Canvas({
   const leaveHere = useCallback(() => {
     if (!store.inPlace) return
     stopWriting()
-    navigate(`/projects/${store.projectId}`)
-  }, [store, navigate, stopWriting])
+    navigate(to())
+  }, [store, navigate, stopWriting, to])
   store.leaveHere = leaveHere
-  store.hereRenamed = (name) => navigate(`/projects/${store.projectId}/assets/${encodeURIComponent(name)}`, { replace: true })
+  store.hereRenamed = (name) => navigate(to(`assets/${encodeURIComponent(name)}`), { replace: true })
   // The address says which box is being worked on, so a reload or Back finds it, and anything else leaves it.
   useEffect(() => {
     if (!opened) stopWriting()
@@ -408,14 +429,14 @@ function Canvas({
     store.onMore = (names) => {
       if (store.projectId) saveMore(store.projectId, names)
     }
-    store.askMachine = () => navigate(store.projectId ? `/projects/${store.projectId}/machines` : "/machines")
+    store.askMachine = () => navigate(to("machines"))
     store.rent = (pick) => {
       const chosen = pick ? `?${new URLSearchParams({ rent: pick.sku, gpus: String(pick.gpus) })}` : ""
-      navigate(`${store.projectId ? `/projects/${store.projectId}` : ""}/machines${chosen}`)
+      navigate(`${to("machines")}${chosen}`)
     }
     store.attach(flow)
     return () => store.detach()
-  }, [store, flow, saved, openedOn, bridge, navigate])
+  }, [store, flow, saved, openedOn, bridge, navigate, to])
 
   /** Where the last zoom of the buttons or keys is going, so a second press steps on from there, not from part of the way. */
   const aim = useRef<{ view: Viewport; until: number } | null>(null)
@@ -638,6 +659,7 @@ function Canvas({
   )
 
   useEffect(() => {
+    if (!active) return
     const key = (event: KeyboardEvent) => {
       // Bubbling up to here: a name field or the names offered in a text has taken its own Esc, and a menu goes first.
       if (store.viewing.get()) return
@@ -692,10 +714,11 @@ function Canvas({
     }
     window.addEventListener("keydown", key)
     return () => window.removeEventListener("keydown", key)
-  }, [flow, store, fit, fitSelected, zoomTo, zoomBy, leaveHere, stepTakes])
+  }, [active, flow, store, fit, fitSelected, zoomTo, zoomBy, leaveHere, stepTakes])
 
   // A text copies and pastes its own, and so does any selection of words on the page.
   useEffect(() => {
+    if (!active) return
     const copy = (event: ClipboardEvent) => {
       if (typing(event.target) || store.viewing.get() || !event.clipboardData || !document.getSelection()?.isCollapsed) return
       const here = store.inPlace?.name
@@ -725,7 +748,7 @@ function Canvas({
       window.removeEventListener("copy", copy)
       window.removeEventListener("paste", paste)
     }
-  }, [store, client, flow, placer, visibleCentre])
+  }, [active, store, client, flow, placer, visibleCentre])
 
   // Every box's node is handed these: made once, so drawing the canvas again draws no box again.
   const moveStarted = useCallback(
@@ -746,9 +769,9 @@ function Canvas({
       // A click opens at once: only Shift selects.
       flow.setNodes((nodes) => nodes.map((held) => (held.selected ? { ...held, selected: false } : held)))
       writeHere(name)
-      navigate(`/projects/${store.projectId}/assets/${encodeURIComponent(name)}`)
+      navigate(to(`assets/${encodeURIComponent(name)}`))
     },
-    [store, flow, writeHere, navigate],
+    [store, flow, writeHere, navigate, to],
   )
   const paneClicked = useCallback(() => leaveHere(), [leaveHere])
   const nodeMenu = useCallback(
@@ -904,8 +927,8 @@ function Canvas({
         {veil && <div className="dropveil" />}
       </div>
       {opened && <Addressed name={opened} enter={writeHere} leave={leaveHere} />}
-      <AssetMenu />
-      <Viewer />
+      {active && <AssetMenu />}
+      {active && <Viewer />}
       <input ref={picker} className="picker" type="file" multiple accept={ACCEPT} onChange={picked} aria-label="Add a file" />
       {slot && projectId && createPortal(<RenderAll id={projectId} />, slot)}
       {history && projectId && createPortal(<HistoryControls />, history)}
@@ -925,7 +948,7 @@ const LAYERED = /AppleWebKit/.test(navigator.userAgent) && !/Chrome|Chromium/.te
 const textScale = (zoom: number) => Math.round((1 / Math.min(2.5, Math.max(0.25, zoom))) * 20) / 20
 
 /** Always mounted: everything else is a drawer over it, so opening one loses no viewport, no draft and no import in flight. */
-export function CanvasHost(props: { projectId: string | null; slot: HTMLElement | null; history: HTMLElement | null; onAdopt: (id: string) => void }) {
+export function CanvasHost(props: { projectId: string | null; active: boolean; slot: HTMLElement | null; history: HTMLElement | null; onAdopt: (id: string, code: string) => void }) {
   return (
     <ReactFlowProvider defaultNodes={[]}>
       <Canvas {...props} />

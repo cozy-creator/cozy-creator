@@ -8,13 +8,59 @@
 # purpose: no deliberately failing run goes in a person's history.
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
+# A fixture chooses its project by running the actual CLI in that directory.
+in_project() { local directory=$1; shift; (cd "$directory" && cozy "$@"); }
+# Fixture edits use the project HTTP API that the browser uses.
+project_api() {
+  local directory=$1 suffix=$2; shift 2
+  cozy --json machine ls > /dev/null || return
+  local holder=$HOME/.cozy/calcifer/calcifer.lock.holder encoded
+  encoded=$(python3 -c 'from urllib.parse import quote; import os,sys; print(quote(os.path.abspath(sys.argv[1]), safe=""))' "$directory")
+  curl --fail-with-body -sS -H "Authorization: Bearer $(jq -r .token "$holder")" "$@" "http://$(jq -r .address "$holder")/v1/projects/$encoded$suffix"
+}
+project_import() {
+  local directory=$1 file=$2 name=${3:-} source holder=$HOME/.cozy/calcifer/calcifer.lock.holder
+  cozy --json machine ls > /dev/null || return
+  source="sha256:$(sha "$file")"
+  curl --fail-with-body -sS -X PUT -H "Authorization: Bearer $(jq -r .token "$holder")" \
+    --data-binary "@$file" "http://$(jq -r .address "$holder")/v1/files/$source" > /dev/null || return
+  project_api "$directory" /imports -X POST -H 'Content-Type: application/json' \
+    -d "$(jq -n --arg source "$source" --arg name "$name" '{source: $source} + (if $name == "" then {} else {name: $name, exact: true} end)')"
+}
+
+project_history_step() { project_api "$1" "/history/$2" -X POST -H 'Content-Type: application/json' -d "$(jq -n --argjson entry "$3" '{entry:$entry}')"; }
+project_reclaim() { project_api "$1" /reclaim -X POST -H 'Content-Type: application/json' -d "$(jq -n --argjson yes "$2" '{yes:$yes}')"; }
+
+# Controller health is read through its API; `cozy status` describes project assets.
+fixture_calcifer() {
+  local machines holder=$HOME/.cozy/calcifer/calcifer.lock.holder status
+  machines=$(cozy --json machine ls) || return
+  status=$(curl -fsS -H "Authorization: Bearer $(jq -r .token "$holder")" "http://$(jq -r .address "$holder")/v1/status") || return
+  jq -n --argjson status "$status" --argjson machines "$machines" '{calcifer: ($status + {running: true}), machines: $machines.machines}'
+}
+# The starter film is fixture data, created through Calcifer's existing project API.
+fixture_projects() {
+  cozy --json machine ls > /dev/null || return
+  local holder=$HOME/.cozy/calcifer/calcifer.lock.holder
+  curl -fsS -H "Authorization: Bearer $(jq -r .token "$holder")" "http://$(jq -r .address "$holder")/v1/projects"
+}
+starter_project() {
+  local directory=$1 holder=$HOME/.cozy/calcifer/calcifer.lock.holder
+  mkdir -p "$directory" || return
+  directory=$(cd "$directory" && pwd)
+  [ "${RUNNER_OS:-}" != Windows ] || directory=$(cygpath -w "$directory")
+  cozy --json machine ls > /dev/null || return
+  curl -fsS -H "Authorization: Bearer $(jq -r .token "$holder")" -H 'Content-Type: application/json' \
+    -d "$(jq -n --arg path "$directory" '{path: $path, starter: true}')" "http://$(jq -r .address "$holder")/v1/projects"
+}
+
 # The candidate CLI from its own path against the release's Calcifer: it works where that Calcifer serves the route (every
 # release since 0.16.3 does `project ls`), and otherwise a typed calcifer_outdated with its remedy, never a bare 404.
 version_skew() {
   [ -f "$CAND_COZY" ] || return 0
   step "version skew: the candidate CLI against the release's Calcifer"
   local code=0
-  "$CAND_COZY" project ls > "$OUT/skew.txt" 2>&1 || code=$?
+  (cd "$OUT/project" && "$CAND_COZY" status) > "$OUT/skew.txt" 2>&1 || code=$?
   cat "$OUT/skew.txt"
   { { [ "$code" = 0 ] || grep -q calcifer_outdated "$OUT/skew.txt"; } && ! grep -qiE 'untyped_answer|answered 404' "$OUT/skew.txt"; } \
     || check "skew: the candidate CLI against $(cozy --version)'s Calcifer neither worked nor said calcifer_outdated (exit $code)"
@@ -34,19 +80,19 @@ J() { jq -e "$@" > /dev/null; }
 # edited <file> <perl s///>: in place, on every OS: a Mac's sed takes neither -i alone nor a newline in what it writes.
 edited() { perl -pi.was -e "$2" "$1"; rm -f "$1.was"; }
 # yaml_in <project>: stdin as the project: its project.yaml while it's a folder no Calcifer has opened (its first open imports it, cl-803),
-# else read in by `cozy project import`, one edit, as a hand's edit of its export.
+# else read in by `cozy import`, one edit, as a hand's edit of its export.
 yaml_in() {
   if [ -f "$1/project.db" ]; then
-    cat > "$1.in.yaml" && cozy project -p "$1" import "$1.in.yaml" > "$OUT/yaml-in.txt" 2>&1 || check "import into $1: $(tail -c 300 "$OUT/yaml-in.txt")"
+    cat > "$1.in.yaml" && in_project "$1" import "$1.in.yaml" > "$OUT/yaml-in.txt" 2>&1 || check "import into $1: $(tail -c 300 "$OUT/yaml-in.txt")"
   else
     cat > "$1/project.yaml"
   fi
 }
 # hand <project> <perl s///>: its export edited and read back, as a hand edits a project now.
-hand() { { cozy project -p "$1" export > "$1.hand.yaml" && edited "$1.hand.yaml" "$2" && yaml_in "$1" < "$1.hand.yaml"; } || check "a hand's edit of $1 failed"; }
+hand() { { in_project "$1" export > "$1.hand.yaml" && edited "$1.hand.yaml" "$2" && yaml_in "$1" < "$1.hand.yaml"; } || check "a hand's edit of $1 failed"; }
 # added <project>: stdin's boxes (lines under `assets:`) added by hand to its export, read back.
 added() {
-  { cozy project -p "$1" export | perl -0pe 's/^assets: \{\}\n?\z/assets:\n/m; $_ .= "assets:\n" unless /^assets:/m' > "$1.hand.yaml" && cat >> "$1.hand.yaml" && yaml_in "$1" < "$1.hand.yaml"; } || check "a hand's addition to $1 failed"
+  { in_project "$1" export | perl -0pe 's/^assets: \{\}\n?\z/assets:\n/m; $_ .= "assets:\n" unless /^assets:/m' > "$1.hand.yaml" && cat >> "$1.hand.yaml" && yaml_in "$1" < "$1.hand.yaml"; } || check "a hand's addition to $1 failed"
 }
 # db_sql <project> <sql>: statements run on its project.db past Calcifer, as another program would.
 db_sql() {
@@ -56,16 +102,44 @@ conn = sqlite3.connect(sys.argv[1], isolation_level=None, timeout=30)
 conn.executescript(sys.argv[2])
 PY
 }
+# Export metadata belongs to its project/revision; compare graph bytes when the test
+# deliberately compares separate project copies or one specific graph edit.
+yaml_body() { sed '/^# cozy-project-base: /d' "$@"; }
+
+# A real historical-v1 fault, not damage to schema2's disposable SQL projection. These
+# cells run only in the fresh-runner suite; stop its owned Calcifer before replacing storage.
+v1_fault() {
+  local P=$1 statement=$2 lock=$HOME/.cozy/calcifer/calcifer.lock.holder
+  [ -z "${ALONE:-}" ] || { check "v1 fault cells require an owned fresh-runner Calcifer"; return 1; }
+  eval "$(web_stop "$lock")" 2> /dev/null || true
+  db_sql "$P" "DROP TABLE IF EXISTS crdt_document; DROP TABLE IF EXISTS crdt_changes; PRAGMA user_version=1; $statement"
+  in_project "$P" status > "$OUT/v1-fault-open.txt" 2>&1 || { check "v1 fault migration: $(tail -c 300 "$OUT/v1-fault-open.txt")"; return 1; }
+  ADDR=$(jq -r .address "$lock") TOKEN=$(jq -r .token "$lock")
+}
+
+restore_project_db() {
+  local P=$1 snapshot=$2 lock=$HOME/.cozy/calcifer/calcifer.lock.holder
+  eval "$(web_stop "$lock")" 2> /dev/null || true
+  python3 - "$snapshot" "$P/project.db" <<'PYRESTORE'
+import sqlite3,sys
+with sqlite3.connect(f'file:{sys.argv[1]}?mode=ro',uri=True) as source:
+    with sqlite3.connect(sys.argv[2]) as target:
+        source.backup(target)
+PYRESTORE
+  in_project "$P" status > "$OUT/restored-db-open.txt" 2>&1 || { check "restored database: $(tail -c 300 "$OUT/restored-db-open.txt")"; return 1; }
+  ADDR=$(jq -r .address "$lock") TOKEN=$(jq -r .token "$lock")
+}
+
 # seq_of <project>: its revision, one more each commit.
 seq_of() { sql1 "$1" "SELECT value FROM meta WHERE key = 'seq'"; }
 # owed <project>: how many runs its walk has pending.
 owed() { sql1 "$1" "SELECT count(*) FROM walk, json_each(walk.record, '\$.pending')"; }
 # approved_in <project> <name>: the line its export writes for that box's `approved`.
-approved_in() { cozy project -p "$1" export | awk -v box="  $2:" '$0 == box { in_it = 1; next } in_it && /^    approved: / { print; exit } /^  [^ ]/ { in_it = 0 }'; }
+approved_in() { in_project "$1" export | awk -v box="  $2:" '$0 == box { in_it = 1; next } in_it && /^    approved: / { print; exit } /^  [^ ]/ { in_it = 0 }'; }
 # dropped <project> <name>…: those boxes taken out of its export by hand, read back.
 dropped() {
   local P=$1; shift
-  { cozy project -p "$P" export | NAMES="$*" perl -ne 'BEGIN { %n = map { $_ => 1 } split / /, $ENV{NAMES} } if (/^  ([^ :]+):/ && $n{$1}) { $in = 1; next } $in = 0 if $in && /^ {0,2}\S/; print unless $in' > "$P.hand.yaml" && yaml_in "$P" < "$P.hand.yaml"; } || check "a hand's deletion from $P failed"
+  { in_project "$P" export | NAMES="$*" perl -ne 'BEGIN { %n = map { $_ => 1 } split / /, $ENV{NAMES} } if (/^  ([^ :]+):/ && $n{$1}) { $in = 1; next } $in = 0 if $in && /^ {0,2}\S/; print unless $in' > "$P.hand.yaml" && yaml_in "$P" < "$P.hand.yaml"; } || check "a hand's deletion from $P failed"
 }
 # db_replace <project> <from> <to>: each row of its versions with `from` in it says `to`, written past Calcifer, as a damaged file was.
 db_replace() {
@@ -76,8 +150,8 @@ conn.execute("UPDATE versions SET record = replace(record, ?, ?)", (sys.argv[2],
 conn.commit()
 PY
 }
-# prefix <project> <file>: `cozy project import`, and what its export writes for it.
-prefix() { (cd "$1" && cozy --json project -p "$1" import "$2" | jq -r '.sha256 | sub("sha256:"; "") | .[:12]') || check "import $2 failed"; }
+# prefix <project> <file>: `cozy import`, and what its export writes for it.
+prefix() { (cd "$1" && in_project "$1" --json import "$2" | jq -r '.sha256 | sub("sha256:"; "") | .[:12]') || check "import $2 failed"; }
 # api <curl args…>: Calcifer, with the bearer of its lock record.
 api() { curl -sS -H "Authorization: Bearer $TOKEN" "$@"; }
 # ask <json>: POST /v1/runs under a new key, its answer on stdout; a local function's install is followed, then asked again under that key.
@@ -94,19 +168,13 @@ ask() {
 ended() { cozy --json run show "$1" > /dev/null 2>&1 || true; cozy --json --full run show "$1" 2> /dev/null; }
 # status <project> [file]: its status as JSON.
 # status <project>: what status says. Why it can't be read goes to the log, and an answer the CLI can't read is a failure of its own.
-status() {
-  cozy --json --full project -p "$1" status 2> "$OUT/status.err" && return 0
-  local code=$?
-  echo "status of $1: $(tail -c 300 "$OUT/status.err")" >&2
-  grep -q answer_unreadable "$OUT/status.err" && check "status of $1: $(tail -c 300 "$OUT/status.err")" >&2
-  return "$code"
-}
+status() { project_api "$1" '' 2> "$OUT/status.err"; }
 # row <project> <asset> <jq>: that of its row in status.
 row() { status "$1" | jq -c --arg n "$2" ".assets[] | select(.name == \$n) | $3"; }
 # made <project> <asset>: how many versions the lock keeps.
 made() { local n; n=$(held "$1" "$2" 2> /dev/null | jq '.versions | length'); echo "${n:-0}"; }
-# held <project> <asset>: what `cozy project status <asset>` says of it, `.asset` and `.versions`. Why it can't goes to the log.
-held() { cozy --json --full project -p "$1" status "$2" 2> "$OUT/held.err" || echo "status $2 of $1: $(tail -c 200 "$OUT/held.err")" >&2; }
+# held <project> <asset>: what `cozy status <asset>` says of it, `.asset` and `.versions`. Why it can't goes to the log.
+held() { project_api "$1" "/assets/$2" 2> "$OUT/held.err"; }
 # take_file <project> <asset> <role> [version index]: that version's file by its hash.
 take_file() { held "$1" "$2" | jq -r --arg r "$3" --argjson v "${4:--1}" '.versions[$v].files[$r].sha256 // empty'; }
 # counts <project>: how many versions each asset has.
@@ -127,7 +195,7 @@ file_at() { ls "$1/files/${2#sha256:}"* 2> /dev/null | head -1; }
 render() {
   local P=$1 pid last=-1 since=$SECONDS size why=''; shift
   : > "$OUT/render.txt"
-  cozy project -p "$P" render "$@" ${LOCAL:+--on local} >> "$OUT/render.txt" 2>&1 & pid=$!
+  in_project "$P" render "$@" ${LOCAL:+--on local} >> "$OUT/render.txt" 2>&1 & pid=$!
   while [ -z "$why" ] && kill -0 "$pid" 2> /dev/null; do
     sleep 0.2
     grep -q 'downloading .* weights' "$OUT/render.txt" && why='it started downloading weights'
@@ -138,7 +206,7 @@ render() {
   if [ -n "$why" ]; then
     check "render $*: $why: $(tail -c 300 "$OUT/render.txt")"
     kill "$pid" 2> /dev/null || true
-    cozy project -p "$P" cancel all > /dev/null 2>&1 || true
+    in_project "$P" cancel all > /dev/null 2>&1 || true
     wait "$pid" 2> /dev/null || true
     return 1
   fi
@@ -146,7 +214,7 @@ render() {
 }
 says() { grep -qF -- "$2" "$OUT/render.txt" || check "$1: render does not say '$2': $(tail -c 400 "$OUT/render.txt")"; }
 
-# What a project does with its own files on a computer with no machine (macOS, Windows: `cozy project render --on local` answers
+# What a project does with its own files on a computer with no machine (macOS, Windows: `cozy render --on local` answers
 # local_unavailable), the part cli/run.sh calls `project_files`. A film is a version nothing had to run for, so lock writes, renames and
 # versions all go through here. A take from a function can't: draw.py and shots.py need a machine, so the render, walk, take and
 # queue cells stay Linux's. After web_serves, whose Calcifer has fetched the ffmpeg these use.
@@ -239,20 +307,20 @@ film_of a b; render "$T" film || check "free versions: second: $(tail -c 300 "$O
 film_of b a; render "$T" film || check "free versions: third: $(tail -c 300 "$OUT/render.txt")"
 [ "$(made "$T" film)" = 3 ] || check "free versions: it made $(made "$T" film)"
 first=$(take_file "$T" film video 0); second=$(take_file "$T" film video 1)
-cozy project -p "$T" delete film.2 > /dev/null || check "free versions: delete the middle"
+in_project "$T" delete film.2 > /dev/null || check "free versions: delete the middle"
 J '[.versions[].number] == [1, 3] and .discarded == [2]' <<< "$(held "$T" film)" || check "free versions: after the middle: $(held "$T" film | jq -c '{versions: [.versions[].number], discarded}')"
 [ -n "$(file_at "$T" "$second")" ] || check "free versions: its file went at once"
 [ "$(sql1 "$T" "SELECT count(*) FROM versions WHERE key = 'film' AND discarded = 1")" = 1 ] || check "free versions: project.db has no record of it"
-cozy project -p "$T" undo > /dev/null || check "free versions: undo"
+in_project "$T" undo > /dev/null || check "free versions: undo"
 J '[.versions[].number] == [1, 2, 3] and (.discarded // []) == []' <<< "$(held "$T" film)" || check "free versions: after Undo: $(held "$T" film | jq -c '{versions: [.versions[].number], discarded}')"
 
-cozy project -p "$T" rename film final > "$OUT/free-rename.txt" 2>&1 || check "free versions: rename: $(tail -c 300 "$OUT/free-rename.txt")"
+in_project "$T" rename film final > "$OUT/free-rename.txt" 2>&1 || check "free versions: rename: $(tail -c 300 "$OUT/free-rename.txt")"
 J '.asset.standing == "current" and (.versions | length) == 3' <<< "$(held "$T" final)" || check "free versions: renamed: $(held "$T" final | jq -c .asset)"
 [ -f "$T/final.mp4" ] || check "free versions: the film didn't follow its name: $(ls "$T" | tr '\n' ' ')"
 
-cozy project -p "$T" delete final.1 > /dev/null || check "free versions: delete the first"
+in_project "$T" delete final.1 > /dev/null || check "free versions: delete the first"
 [ -n "$(file_at "$T" "$first")" ] || check "free versions: delete took the file"
-cozy project -p "$T" reclaim --yes > "$OUT/free-reclaim.txt" 2>&1 || check "free versions: reclaim: $(tail -c 300 "$OUT/free-reclaim.txt")"
+in_project "$T" reclaim --yes > "$OUT/free-reclaim.txt" 2>&1 || check "free versions: reclaim: $(tail -c 300 "$OUT/free-reclaim.txt")"
 [ -z "$(file_at "$T" "$first")" ] || check "free versions: reclaim left what nothing names"
 J '[.versions[].number] == [2, 3]' <<< "$(held "$T" final)" || check "free versions: after reclaim: $(held "$T" final | jq -c '[.versions[].number]')"
 }
@@ -273,7 +341,7 @@ yaml_of() {
     printf '          - <%s>\n' "$@"; } | yaml_in "$T"
 }
 yaml_of a; render "$T" film || check "held open: first: $(tail -c 300 "$OUT/render.txt")"
-cozy project -p "$T" set film 'at=40,40,320' > /dev/null || check "held open: placing it"
+in_project "$T" set film 'at=40,40,320' > /dev/null || check "held open: placing it"
 # holding <file> [ms]: it's open from when this returns, for 2.5 s or [ms], in $hold.
 holding() {
   local ready=$OUT/held-ready; rm -f "$ready"
@@ -306,7 +374,7 @@ render "$T" film || check "held long: the render after: $(tail -c 300 "$OUT/rend
 # newest, which before 0.43 is published refuses them: said once, here, and the cells don't go on.
 tools_read() {
 step "a project: the fixtures' tools read on this machine"
-(cd "$OUT/project" && cozy run -p "$OUT/project" "$here/project/draw.py/draw" instructions=read --on local) > "$OUT/tools-read.txt" 2>&1 \
+(cd "$OUT/project" && in_project "$OUT/project" run "$here/project/draw.py/draw" instructions=read --on local) > "$OUT/tools-read.txt" 2>&1 \
   || fail "the fixtures' tools don't read here: the machine's Runtime (${CAND_RUNTIME:-none of its own, so the newest on PyPI}) needs cozy-runtime's tools (rc/tools), as --runtime: $(tail -c 300 "$OUT/tools-read.txt")"
 }
 
@@ -320,17 +388,17 @@ calcifer=$(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder")
 code=0; cozy calcifer no-such-word > /dev/null 2>&1 || code=$?
 [ "$code" = 1 ] || check "cozy calcifer no-such-word exited $code, not 1"
 [ "$(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder")" = "$calcifer" ] || check "cozy calcifer --help moved Calcifer from $calcifer to $(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder")"
-cozy project new "$P" > "$OUT/project-new.txt" 2>&1 || check "project new failed: $(tail -c 300 "$OUT/project-new.txt")"
+starter_project "$P" > "$OUT/project-new.txt" 2>&1 || check "project new failed: $(tail -c 300 "$OUT/project-new.txt")"
 [ "$(ls -A "$P" 2>/dev/null | grep -vxE 'project\.db-(wal|shm)')" = project.db ] || check "project new made $(ls -A "$P" 2>/dev/null | tr '\n' ' '), not only project.db"
-grep -qE 'cozy project -p [^ ]+ render all' "$OUT/project-new.txt" || check "project new does not say what's next: $(tail -c 300 "$OUT/project-new.txt")"
-cozy project -p "$P" status > "$OUT/project-new-status.txt" 2>&1 || check "status of a new project failed: $(tail -c 300 "$OUT/project-new-status.txt")"
+J '(.id | length > 0) and (.path | length > 0)' "$OUT/project-new.txt" || check "starter fixture was not created"
+in_project "$P" status > "$OUT/project-new-status.txt" 2>&1 || check "status of a new project failed: $(tail -c 300 "$OUT/project-new-status.txt")"
 for name in kyogre groudon coast awaken erupt clash edit; do grep -q "$name" "$OUT/project-new-status.txt" || check "a new project's status names no $name"; done
 mkdir -p "$P/sub"
-# The folder you're in names no project (cl-819): Calcifer may be on another computer. A folder of Calcifer's in it does.
-(cd "$P/sub" && cozy --json project status) > "$OUT/project-cwd.json" 2> /dev/null && check "status named a project by the folder it ran in"
-J '.error.code == "not_in_a_project"' "$OUT/project-cwd.json" || check "status in a project's folder, none named: $(head -c 300 "$OUT/project-cwd.json")"
-cozy --json project -p "$P/sub" status > "$OUT/project-status.json" 2> "$OUT/project-status.err" || check "status of a folder in it failed: $(tail -c 300 "$OUT/project-status.err")"
-(cd / && cozy --json project -p "$P" status) > /dev/null 2>&1 || check "status by -p from / failed"
+# A subdirectory uses the project holding it.
+(cd "$P/sub" && cozy --json status) > "$OUT/project-cwd.json" || check "status did not use its working directory"
+J --arg p "$P" '.path == $p' "$OUT/project-cwd.json" || check "status did not find the containing project"
+in_project "$P/sub" --json status > "$OUT/project-status.json" 2> "$OUT/project-status.err" || check "status of a folder in it failed: $(tail -c 300 "$OUT/project-status.err")"
+(cd / && in_project "$P" --json status) > /dev/null 2>&1 || check "status by -p from / failed"
 ID=$(jq -r '.id // empty' "$OUT/project-status.json")
 [ -n "$ID" ] || check "project status --json names no id"
 
@@ -396,27 +464,27 @@ project_index "$P" "$ID"
 project_index() {
 step "a project: the index; a folder gone leaves it and frees its name; moved, it's back by its path"
 local P=$1 ID=$2 N=$OUT/index first
-cozy --json project ls > "$OUT/project-ls-1.json" || check "project ls failed"
+fixture_projects > "$OUT/project-ls-1.json" || check "project ls failed"
 J --arg p "$P" --arg i "$ID" '.projects | any(.path == $p and .id == $i and .name == "garden")' "$OUT/project-ls-1.json" || check "project ls does not list $P as garden"
 mv "$P" "$OUT/garden-moved"
-cozy --json project ls > "$OUT/project-ls-2.json" || check "project ls after the move failed"
+fixture_projects > "$OUT/project-ls-2.json" || check "project ls after the move failed"
 J --arg i "$ID" '.projects | all(.id != $i and .name != "garden")' "$OUT/project-ls-2.json" || check "index: a moved project is still listed: $(jq -c '[.projects[] | select(.name == "garden")]' "$OUT/project-ls-2.json")"
 mkdir -p "$N"
-cozy --json project new "$N/garden" > "$OUT/index-new.json" 2>&1 || check "index: project new: $(tail -c 300 "$OUT/index-new.json")"
+starter_project "$N/garden" > "$OUT/index-new.json" 2>&1 || check "index: project new: $(tail -c 300 "$OUT/index-new.json")"
 J '.name == "garden"' "$OUT/index-new.json" || check "index: a gone project kept its name: the new one is $(jq -r .name "$OUT/index-new.json")"
 first=$(jq -r .id "$OUT/index-new.json")
-cozy --json project -p "$OUT/garden-moved" status > /dev/null 2> "$OUT/index-moved.err" || check "index: the moved project by its path: $(tail -c 300 "$OUT/index-moved.err")"
-cozy --json project ls > "$OUT/project-ls-3.json" || check "project ls failed"
+in_project "$OUT/garden-moved" --json status > /dev/null 2> "$OUT/index-moved.err" || check "index: the moved project by its path: $(tail -c 300 "$OUT/index-moved.err")"
+fixture_projects > "$OUT/project-ls-3.json" || check "project ls failed"
 J --arg i "$ID" --arg p "$OUT/garden-moved" '.projects | any(.id == $i and .path == $p and .name == "garden_2")' "$OUT/project-ls-3.json" \
   || check "index: moved and opened by its path, it isn't back by its id as garden_2: $(jq -c --arg i "$ID" '[.projects[] | select(.id == $i or (.name | startswith("garden")))]' "$OUT/project-ls-3.json")"
 # Deleted, and made again where it was: the plain name, another project, and one row.
 rm -rf "$N/garden"
-cozy --json project new "$N/garden" > "$OUT/index-again.json" 2>&1 || check "index: project new again: $(tail -c 300 "$OUT/index-again.json")"
+starter_project "$N/garden" > "$OUT/index-again.json" 2>&1 || check "index: project new again: $(tail -c 300 "$OUT/index-again.json")"
 J --arg f "$first" '.name == "garden" and .id != $f' "$OUT/index-again.json" || check "index: made again after its folder was deleted: $(jq -c '{name, id}' "$OUT/index-again.json")"
-cozy --json project ls > "$OUT/project-ls-4.json" || check "project ls failed"
+fixture_projects > "$OUT/project-ls-4.json" || check "project ls failed"
 J --arg f "$first" '([.projects[] | select(.name == "garden")] | length) == 1 and (.projects | all(.id != $f))' "$OUT/project-ls-4.json" \
   || check "index: the deleted project is still listed: $(jq -c '[.projects[] | select(.name | startswith("garden")) | {name, id, path}]' "$OUT/project-ls-4.json")"
-cozy --json project -p garden status > /dev/null 2> "$OUT/index-named.err" || check "index: -p garden: $(tail -c 300 "$OUT/index-named.err")"
+in_project "$N/garden" --json status > /dev/null 2> "$OUT/index-named.err" || check "index: -p garden: $(tail -c 300 "$OUT/index-named.err")"
 }
 
 # Several runs at once, off a terminal and on one: every line names its asset, a preview is no take, a warning says whose it is, once,
@@ -478,17 +546,17 @@ J '.board.jobs | map(select(.asset == "long")) | .[0] | .state == "done" and .no
 J '.board.shots == 2 and ([.board.jobs[] | {(.asset): .shot}] | add | [.amy, .sophia, .cut] == [null, null, null] and ([.long, .short] | sort) == [1, 2])' <<< "$(status "$T")" || check "by asset: its shots: $(status "$T" | jq -c '{shots: .board.shots, jobs: [.board.jobs[] | {asset, shot}]}')"
 
 step "a project: --json is each run's own events"
-cozy --json project -p "$T" render short --on local > "$OUT/by-asset.ndjson" 2> "$OUT/by-asset-json.err" || check "by asset: --json: $(tail -c 300 "$OUT/by-asset-json.err")"
+in_project "$T" --json render short --on local > "$OUT/by-asset.ndjson" 2> "$OUT/by-asset-json.err" || check "by asset: --json: $(tail -c 300 "$OUT/by-asset-json.err")"
 for type in run.completed output_item.landed run.log; do
   jq -se --arg t "$type" 'any(.type == $t)' "$OUT/by-asset.ndjson" > /dev/null || check "by asset: --json has no $type: $(cut -c1-120 "$OUT/by-asset.ndjson" | head -20)"
 done
 
 step "a project: TERM=dumb on a terminal is one line per event"
-script -qfec "stty rows 24 cols 120; TERM=dumb '$COZY' project -p '$T' render sophia --on local" "$OUT/by-asset-plain.txt" > /dev/null 2>&1 || check "by asset: TERM=dumb: $(tail -c 400 "$OUT/by-asset-plain.txt")"
+script -qfec "stty rows 24 cols 120; TERM=dumb cd '$T' && '$COZY' render sophia --on local" "$OUT/by-asset-plain.txt" > /dev/null 2>&1 || check "by asset: TERM=dumb: $(tail -c 400 "$OUT/by-asset-plain.txt")"
 { grep -aqE '^sophia: version [0-9]+' "$OUT/by-asset-plain.txt" && ! grep -aq $'\x1b\\[?1049h' "$OUT/by-asset-plain.txt"; } || check "by asset: TERM=dumb drew a view: $(cat -v "$OUT/by-asset-plain.txt" | tail -c 400)"
 
 step "a project: on a terminal, the live view and then a block in the scrollback"
-FORCE_HYPERLINK=1 script -qfec "stty rows 24 cols 120; '$COZY' project -p '$T' render all --on local" "$OUT/by-asset-tty.txt" > /dev/null 2>&1 || check "by asset: on a terminal: $(tail -c 400 "$OUT/by-asset-tty.txt")"
+FORCE_HYPERLINK=1 script -qfec "stty rows 24 cols 120; cd '$T' && '$COZY' render all --on local" "$OUT/by-asset-tty.txt" > /dev/null 2>&1 || check "by asset: on a terminal: $(tail -c 400 "$OUT/by-asset-tty.txt")"
 sed -e 's/\x1b\]8;;[^\x1b]*\x1b\\//g' -e 's/\r$//' "$OUT/by-asset-tty.txt" | sed -n '/\x1b\[?1049l/,$p' > "$OUT/by-asset-block.txt"
 grep -aqE '^long +take [0-9]+ +[0-9]+s +files/[0-9a-f]{8}\.mp4$' "$OUT/by-asset-block.txt" || check "by asset: the block has no long, or no short link: $(cat -v "$OUT/by-asset-block.txt")"
 grep -aqE '^cut +(take|version) [0-9]+ +.*cut\.mp4, [0-9.]+ s' "$OUT/by-asset-block.txt" || check "by asset: the block has no cut with its length: $(cat -v "$OUT/by-asset-block.txt")"
@@ -503,12 +571,12 @@ step "a project: format 1 is refused, untouched"
 local O=$OUT/old code before
 mkdir -p "$O"
 printf 'version: 1\nentities:\n  - {name: a, kind: character}\n' | yaml_in "$O"
-code=0; cozy project -p "$O" status > "$OUT/old-yaml.txt" 2>&1 || code=$?
+code=0; in_project "$O" status > "$OUT/old-yaml.txt" 2>&1 || code=$?
 { [ "$code" != 0 ] && grep -q 'format 1' "$OUT/old-yaml.txt"; } || check "a format 1 project.yaml was read (exit $code): $(tail -c 200 "$OUT/old-yaml.txt")"
 printf 'version: 4\nassets:\n  a:\n    description: A.\n' | yaml_in "$O"
 printf '{"nodes": {"a": {"kind": "character", "versions": [{"number": 1}]}}}\n' > "$O/project.lock"
 before=$(sha "$O/project.lock")
-code=0; cozy project -p "$O" status > "$OUT/old-lock.txt" 2>&1 || code=$?
+code=0; in_project "$O" status > "$OUT/old-lock.txt" 2>&1 || code=$?
 { [ "$code" != 0 ] && grep -q 'format 1' "$OUT/old-lock.txt" && [ "$(sha "$O/project.lock")" = "$before" ]; } || check "a format 1 project.lock was read or written (exit $code): $(tail -c 200 "$OUT/old-lock.txt")"
 # What a page opening to the newest project would refuse.
 rm -rf "$O"
@@ -534,7 +602,7 @@ assets:
 YAML
 render "$U" all || check "upgrade: making it: $(tail -c 300 "$OUT/render.txt")"
 before=$(runs "$U")
-cozy project -p "$U" approve wall 1 > /dev/null 2>&1 || check "upgrade: approve wall"
+in_project "$U" approve wall 1 > /dev/null 2>&1 || check "upgrade: approve wall"
 wall=$(take_file "$U" wall image 0); wall=${wall#sha256:}; wall=${wall:0:12}
 # What a format 2 lock said of the same, read while this cozy can read it.
 local was_lock
@@ -599,11 +667,11 @@ YAML
 printf '%s\n' "$was_lock" > "$V/project.lock"
 cp "$V/project.yaml" "$OUT/upgrade-v2.yaml"; cp "$V/project.lock" "$OUT/upgrade-v2.lock"
 # What its first open says, once, is on the open's answer: the CLI prints it.
-cozy project -p "$V" status > "$OUT/upgraded.txt" 2>&1 || check "upgrade: it said $(tail -c 400 "$OUT/upgraded.txt")"
-cozy --json --full project -p "$V" status > "$OUT/upgraded-status.json" 2> "$OUT/upgraded.err" || check "upgrade: it said $(tail -c 400 "$OUT/upgraded.err")"
+in_project "$V" status > "$OUT/upgraded.txt" 2>&1 || check "upgrade: it said $(tail -c 400 "$OUT/upgraded.txt")"
+in_project "$V" --json --full status > "$OUT/upgraded-status.json" 2> "$OUT/upgraded.err" || check "upgrade: it said $(tail -c 400 "$OUT/upgraded.err")"
 cmp -s "$V/project.yaml.v2" "$OUT/upgrade-v2.yaml" && cmp -s "$V/project.lock.v2" "$OUT/upgrade-v2.lock" || check "upgrade: the old files aren't kept beside the new"
 { [ -f "$V/project.db" ] && [ ! -e "$V/project.yaml" ] && [ ! -e "$V/project.lock" ] && [ -f "$V/project.yaml.v3" ]; } || check "upgrade: 2 to 3 to 4, into project.db: $(ls -A "$V" | tr '\n' ' ')"
-cozy project -p "$V" export > "$OUT/upgraded.yaml"
+in_project "$V" export > "$OUT/upgraded.yaml"
 { [ "$(made "$V" hero)" = 1 ] && [ "$(made "$V" hero_old)" = 1 ] && J '.versions[0].number == 7' <<< "$(held "$V" table_1)"; } || check "upgrade: its versions: $(counts "$V")"
 J '.assets[] | select(.name == "wall") | .approved == 1' "$OUT/upgraded-status.json" || check "upgrade: wall holds no version: $(row "$V" wall .)"
 J '.assets[] | select(.name == "clear") | .fields.instructions == "This is an RGBA image with transparency. A cat.\n\nThe image has alpha channel and the background is transparent." and (.fields | has("transparent") | not)' "$OUT/upgraded-status.json" || check "upgrade: Qwen's transparent: $(row "$V" clear .fields)"
@@ -614,7 +682,7 @@ J '.assets[] | select(.name == "poster") | .versions == 1 and .fields.instructio
 J '.assets[] | select(.name == "frame_1") | (.pinned | not) and .approved == null and .versions == 1 and .tool == "cozy/frame" and .fields.video == "<take>" and .fields.at == 5.5' "$OUT/upgraded-status.json" || check "upgrade: a frame a beat wrote isn't a frame of its shot, unapproved: $(row "$V" frame_1 .)"
 [ "$(grep -c 'poster mentions <coast.1>' "$OUT/upgraded.txt")" = 1 ] || check "upgrade: a mention of nothing wasn't said: $(cat "$OUT/upgraded.txt")"
 { [ "$(grep -c 'hero, hero_old are now a picture reference like any other' "$OUT/upgraded.txt")" = 1 ] && [ "$(grep -c 'hero.old is hero_old' "$OUT/upgraded.txt")" = 1 ]; } || check "upgrade: what format 4 reads another way wasn't said once: $(cat "$OUT/upgraded.txt")"
-cozy project -p "$V" status > /dev/null 2>&1 || check "upgrade: opened again"
+in_project "$V" status > /dev/null 2>&1 || check "upgrade: opened again"
 [ ! -e "$V/project.yaml" ] || check "upgrade: a second open left a project.yaml"
 
 step "a project: a format 2 folder opened: \`defaults\` go, a style and a soundscape are text assets, each mentioned where it was used"
@@ -638,7 +706,7 @@ assets:
     beats: [{duration: 5, description: It stops.}]
 YAML
 # What its first open says, once, is on the open's answer: the CLI prints it.
-cozy project -p "$W" status > "$OUT/upgraded-defaults.txt" 2>&1 || check "upgrade: defaults: $(tail -c 300 "$OUT/upgraded-defaults.txt")"
+in_project "$W" status > "$OUT/upgraded-defaults.txt" 2>&1 || check "upgrade: defaults: $(tail -c 300 "$OUT/upgraded-defaults.txt")"
 status "$W" > "$OUT/upgraded-defaults-status.json" || check "upgrade: defaults: $(tail -c 300 "$OUT/status.err")"
 of() { jq -c --arg n "$1" '.assets[] | select(.name == $n) | .fields' "$OUT/upgraded-defaults-status.json"; }
 J '.text == "Plain"' <<< "$(of style)" || check "upgrade: style: $(of style)"
@@ -648,7 +716,7 @@ J '.instructions == "This is an RGBA image with transparency. Style: <style>.\n\
 J '.instructions == "Style: <style>.\n\nA dog." and .aspect_ratio == "3:2"' <<< "$(of dull)" || check "upgrade: an asset's own value went: $(of dull)"
 J '.summary == "<video_style>\n<clear> walks." and .soundscape == "<soundscape>" and (has("music") | not) and (has("style") | not) and .aspect_ratio == "16:9"' <<< "$(of shot)" || check "upgrade: shot: $(of shot)"
 J '.summary == "<video_style>" and .soundscape == "Quiet."' <<< "$(of plain_shot)" || check "upgrade: a shot with no summary: $(of plain_shot)"
-! grep -q '^defaults' <(cozy project -p "$W" export) || check "upgrade: defaults stayed: $(cozy project -p "$W" export)"
+! grep -q '^defaults' <(in_project "$W" export) || check "upgrade: defaults stayed: $(in_project "$W" export)"
 [ "$(grep -c 'H3 shots now carry the style in their summary' "$OUT/upgraded-defaults.txt")" = 1 ] || check "upgrade: the move wasn't said once: $(cat "$OUT/upgraded-defaults.txt")"
 
 step "a project: a format 2 folder opened: names that fold to one are said, by name, and nothing is written"
@@ -656,7 +724,7 @@ local N=$OUT/upgrade-names
 mkdir -p "$N"
 printf 'version: 2\nassets:\n  Amy_one:\n    description: One.\n  amy-ONE:\n    description: Two.\n' > "$N/project.yaml"
 cp "$N/project.yaml" "$OUT/upgrade-names.yaml"
-code=0; cozy project -p "$N" status > "$OUT/upgrade-names.txt" 2>&1 || code=$?
+code=0; in_project "$N" status > "$OUT/upgrade-names.txt" 2>&1 || code=$?
 { [ "$code" != 0 ] && grep -q 'Amy_one and amy-ONE are one name' "$OUT/upgrade-names.txt" && cmp -s "$N/project.yaml" "$OUT/upgrade-names.yaml" && [ ! -e "$N/project.db" ]; } || check "upgrade: names that are one (exit $code): $(tail -c 300 "$OUT/upgrade-names.txt")"
 rm -rf "$N"
 }
@@ -695,7 +763,7 @@ render "$T" lost > /dev/null 2>&1 || true
 says text "<nothing_here> is no longer in the project"
 
 step "a project: editing a text marks what reaches it, an approved asset stays approved, and a deleted one is gone, not changed"
-cozy project -p "$T" approve poster 1 > /dev/null 2>&1 || check "text: approve poster"
+in_project "$T" approve poster 1 > /dev/null 2>&1 || check "text: approve poster"
 was=$(made "$T" poster)
 hand "$T" 's/Soft light\./Hard light./'
 J '.assets[] | select(.name == "sheet") | .standing == "out_of_date"' <<< "$(status "$T")" || check "text: an edit didn't reach sheet, through mood: $(row "$T" sheet .)"
@@ -710,15 +778,15 @@ step "a project: a name is one name in any case, a text can't be a tag, and a ty
 local N=$OUT/text-names id code
 mkdir -p "$N"
 printf 'version: 4\nassets:\n  Amy:\n    description: One.\n  amy:\n    description: Two.\n' | yaml_in "$N"
-code=0; cozy project -p "$N" status > "$OUT/one-name.txt" 2>&1 || code=$?
+code=0; in_project "$N" status > "$OUT/one-name.txt" 2>&1 || code=$?
 { [ "$code" != 0 ] && grep -q 'Amy, on line 3, and amy, on line 5, are one name' "$OUT/one-name.txt"; } || check "names: two keys of one name (exit $code): $(tail -c 300 "$OUT/one-name.txt")"
 printf 'version: 4\nassets: {}\n' | yaml_in "$N"
-[ "$(cozy project -p "$N" add text note text='Some words.')" = note ] || check "names: add text with no name"
-[ "$(cozy project -p "$N" add text Note_2 text='More words.')" = Note_2 ] || check "names: add text with a name"
-code=0; cozy project -p "$N" add text NOTE text=Again. > "$OUT/typed.txt" 2>&1 || code=$?
+[ "$(in_project "$N" add text note text='Some words.')" = note ] || check "names: add text with no name"
+[ "$(in_project "$N" add text Note_2 text='More words.')" = Note_2 ] || check "names: add text with a name"
+code=0; in_project "$N" add text NOTE text=Again. > "$OUT/typed.txt" 2>&1 || code=$?
 { [ "$code" != 0 ] && grep -q 'note is in the project already' "$OUT/typed.txt"; } || check "names: a typed name that's taken (exit $code): $(tail -c 300 "$OUT/typed.txt")"
-[ "$(cozy project -p "$N" add text text='Picked for it.')" = text ] || check "names: a picked name"
-[ "$(cozy project -p "$N" add text text='Picked again.')" = text_2 ] || check "names: a picked name is numbered"
+[ "$(in_project "$N" add text text='Picked for it.')" = text ] || check "names: a picked name"
+[ "$(in_project "$N" add text text='Picked again.')" = text_2 ] || check "names: a picked name is numbered"
 J '.assets[] | select(.name == "note") | .kind == "text" and .fields.text == "Some words."' <<< "$(status "$N")" || check "names: a text from the CLI: $(row "$N" note .)"
 step "a project: a text asset can't take a package's tag"
 local R=$OUT/text-tags
@@ -730,10 +798,10 @@ assets:
   D: {text: A tag.}
 YAML
 render "$R" look > /dev/null 2>&1 || true
-J '[.warnings[].message] | any(contains("so a text asset can'"'"'t go by it: cozy project rename D"))' <<< "$(status "$R")" || check "tags: not said: $(status "$R" | jq -c .warnings)"
+J '[.warnings[].message] | any(contains("so a text asset can'"'"'t go by it: cozy rename D"))' <<< "$(status "$R")" || check "tags: not said: $(status "$R" | jq -c .warnings)"
 }
 
-# The first thing to touch a project of format 2 moves it, as `cozy project upgrade` with no status would.
+# The first thing to touch a project of format 2 moves it, as `cozy upgrade` with no status would.
 first_open() {
 step "a project: format 2 upgrades itself on first open, says so once, and keeps .v2 beside it"
 local T=$OUT/first-open code answer before lock=$HOME/.cozy/calcifer/calcifer.lock.holder
@@ -742,11 +810,11 @@ mkdir -p "$T"
 printf 'version: 2\nassets:\n  a:\n    description: A.\n' | yaml_in "$T"
 printf '{"format": 2, "assets": {}, "files": {}}\n' > "$T/project.lock"
 cp "$T/project.yaml" "$OUT/first-open.yaml"; cp "$T/project.lock" "$OUT/first-open.lock"
-cozy project -p "$T" status > "$OUT/first-open.txt" 2>&1 || check "first open: status: $(tail -c 300 "$OUT/first-open.txt")"
+in_project "$T" status > "$OUT/first-open.txt" 2>&1 || check "first open: status: $(tail -c 300 "$OUT/first-open.txt")"
 grep -qF 'project.yaml.v2' "$OUT/first-open.txt" || check "first open: not said: $(tail -c 300 "$OUT/first-open.txt")"
-grep -q '^version: 4$' <(cozy project -p "$T" export) || check "first open: it didn't upgrade: $(cozy project -p "$T" export)"
+grep -q '^version: 4$' <(in_project "$T" export) || check "first open: it didn't upgrade: $(in_project "$T" export)"
 { cmp -s "$T/project.yaml.v2" "$OUT/first-open.yaml" && cmp -s "$T/project.lock.v2" "$OUT/first-open.lock"; } || check "first open: an original went"
-cozy project -p "$T" status > "$OUT/first-open-2.txt" 2>&1 || check "first open: status again: $(tail -c 300 "$OUT/first-open-2.txt")"
+in_project "$T" status > "$OUT/first-open-2.txt" 2>&1 || check "first open: status again: $(tail -c 300 "$OUT/first-open-2.txt")"
 ! grep -qF 'project.yaml.v2' "$OUT/first-open-2.txt" || check "first open: said twice: $(cat "$OUT/first-open-2.txt")"
 local P=$OUT/first-open-page
 mkdir -p "$P"
@@ -759,7 +827,7 @@ local C=$OUT/first-open-stuck
 mkdir -p "$C"
 printf 'version: 2\nassets:\n  Amy_one:\n    description: One.\n  amy-ONE:\n    description: Two.\n' | yaml_in "$C"
 before=$(sha "$C/project.yaml")
-code=0; cozy project -p "$C" status > "$OUT/first-open-stuck.txt" 2>&1 || code=$?
+code=0; in_project "$C" status > "$OUT/first-open-stuck.txt" 2>&1 || code=$?
 { [ "$code" != 0 ] && grep -q 'Amy_one' "$OUT/first-open-stuck.txt" && [ "$(sha "$C/project.yaml")" = "$before" ] && [ ! -e "$C/project.yaml.v2" ]; } || check "first open: names that are one (exit $code): $(tail -c 300 "$OUT/first-open-stuck.txt")"
 rm -rf "$C"
 
@@ -798,7 +866,7 @@ jq -n --arg art "sha256:$art" --arg plate "sha256:$plate" --arg poster "sha256:$
   files: ([$art, $plate, $poster] | map({(.): {path: "files/\(.[7:]).png", sha256: .}}) | add),
   assets: {"coast plate": {name: "coast_plate", kind: "image", numbered: 1, versions: [{number: 1, inputs: "", files: {image: $plate}}]},
     poster: {name: "poster", kind: "image", numbered: 1, versions: [{number: 1, inputs: "", files: {image: $poster}}]}}}' > "$S/project.lock"
-cozy project -p "$S" status > "$OUT/first-open-states.txt" 2>&1 || check "first open: states: $(tail -c 300 "$OUT/first-open-states.txt")"
+in_project "$S" status > "$OUT/first-open-states.txt" 2>&1 || check "first open: states: $(tail -c 300 "$OUT/first-open-states.txt")"
 status "$S" > "$OUT/first-open-states.json"
 J '.assets[] | select(.name == "poster") | .standing == "out_of_date" and .versions == 1' "$OUT/first-open-states.json" || check "first open: what was out of date isn't: $(row "$S" poster .)"
 J '.assets[] | select(.name == "coast") | .standing == "current" and .approved == 1' "$OUT/first-open-states.json" || check "first open: coast: $(row "$S" coast .)"
@@ -823,8 +891,8 @@ render "$T" hero || check "version text: again: $(tail -c 300 "$OUT/render.txt")
 J '[.versions[].text] == ["A red door.", "A red door.", "A blue door."]' <<< "$(held "$T" hero)" || check "version text: $(held "$T" hero | jq -c '[.versions[].text]')"
 local texts; texts=$(python3 -c 'import sqlite3, sys; print(sqlite3.connect(sys.argv[1]).execute("SELECT count(*) FROM versions WHERE record LIKE ?", (sys.argv[2],)).fetchone()[0])' "$T/project.db" '%"text":"A %')
 [ "$texts" = 2 ] || check "version text: stored where it didn't change: $texts rows hold words"
-cozy project -p "$T" delete hero.1 > /dev/null || check "version text: discard"
-cozy project -p "$T" reclaim --yes > /dev/null 2>&1 || check "version text: reclaim"
+in_project "$T" delete hero.1 > /dev/null || check "version text: discard"
+in_project "$T" reclaim --yes > /dev/null 2>&1 || check "version text: reclaim"
 J '[.versions[].text] == ["A red door.", "A blue door."]' <<< "$(held "$T" hero)" || check "version text: what held it went: $(held "$T" hero | jq -c '[.versions[].text]')"
 }
 
@@ -835,16 +903,16 @@ local T=$OUT/old-landing n
 mkdir -p "$T"
 printf 'version: 2\nassets:\n  a:\n    description: A.\n' | yaml_in "$T"
 printf '{"format": 2, "assets": {}, "files": {}}\n' > "$T/project.lock"
-(cd "$T" && cozy --json run -p "$T" "$here/project/draw.py" instructions=kept) > "$OUT/old-landing.ndjson" 2> "$OUT/old-landing.err" || check "old landing: run: $(tail -c 300 "$OUT/old-landing.err")"
+(cd "$T" && in_project "$T" --json run "$here/project/draw.py" instructions=kept) > "$OUT/old-landing.ndjson" 2> "$OUT/old-landing.err" || check "old landing: run: $(tail -c 300 "$OUT/old-landing.err")"
 n=$(run_number "$OUT/old-landing.ndjson")
 [ "$(ls "$T/files" 2> /dev/null | wc -l)" = 1 ] || check "old landing: nothing in files/: $(ls -a "$T" "$T/.runs" 2>&1 | tr '\n' ' ')"
 J '[.warnings[]?.message] | any(contains("project.yaml.v2"))' <<< "$(cozy --json run show "$n" --once)" || check "old landing: no warning says it upgraded: $(cozy --json run show "$n" --once | jq -c .warnings)"
-{ grep -q '^version: 4$' <(cozy project -p "$T" export) && [ -f "$T/project.db" ] && [ ! -e "$T/project.yaml" ]; } || check "old landing: it didn't upgrade into project.db: $(ls -A "$T" | tr '\n' ' ')"
+{ grep -q '^version: 4$' <(in_project "$T" export) && [ -f "$T/project.db" ] && [ ! -e "$T/project.yaml" ]; } || check "old landing: it didn't upgrade into project.db: $(ls -A "$T" | tr '\n' ' ')"
 J '.run_files == 1' <<< "$(status "$T")" || check "old landing: its output isn't listed: $(status "$T" | jq -c .run_files)"
 
 step "a project: a run in flight lands, and is listed"
 local going
-(cd "$T" && cozy --json run -p "$T" "$here/project/shots.py/slow" seconds=8) > "$OUT/old-landing-slow.ndjson" 2>&1 & going=$!
+(cd "$T" && in_project "$T" --json run "$here/project/shots.py/slow" seconds=8) > "$OUT/old-landing-slow.ndjson" 2>&1 & going=$!
 wait "$going" || check "old landing: the slow run: $(tail -c 300 "$OUT/old-landing-slow.ndjson")"
 [ "$(ls "$T/files" | wc -l)" = 2 ] || check "old landing: its output isn't in files/: $(ls "$T/files" | tr '\n' ' ')"
 J '.run_files >= 1' <<< "$(status "$T")" || check "old landing: it isn't listed: $(status "$T" | jq -c .run_files)"
@@ -853,9 +921,9 @@ step "a project: a project that can't convert still takes a run's bytes"
 local C=$OUT/old-landing-stuck
 mkdir -p "$C"
 printf 'version: 2\nassets:\n  Amy_one:\n    description: One.\n  amy-ONE:\n    description: Two.\n' | yaml_in "$C"
-code=0; cozy project -p "$C" status > "$OUT/old-landing-stuck.txt" 2>&1 || code=$?
+code=0; in_project "$C" status > "$OUT/old-landing-stuck.txt" 2>&1 || code=$?
 [ "$code" != 0 ] || check "old landing: names that are one converted"
-(cd "$C" && cozy --json run -p "$C" "$here/project/draw.py" instructions=stuck) > "$OUT/old-landing-stuck.ndjson" 2>&1 || check "old landing: a run in it: $(tail -c 300 "$OUT/old-landing-stuck.ndjson")"
+(cd "$C" && in_project "$C" --json run "$here/project/draw.py" instructions=stuck) > "$OUT/old-landing-stuck.ndjson" 2>&1 || check "old landing: a run in it: $(tail -c 300 "$OUT/old-landing-stuck.ndjson")"
 # Kept by its bytes: the one file in files/ is the run's output, by its sha256.
 local kept digest
 cozy --json run show "$(run_number "$OUT/old-landing-stuck.ndjson")" --once > "$OUT/old-landing-stuck-run.json" 2>&1 || true
@@ -890,12 +958,12 @@ cp "$S/project.yaml" "$OUT/killed.yaml"; cp "$S/project.lock" "$OUT/killed.lock"
 began=$(node -p 'Date.now()')
 status "$S" > /dev/null || check "killed: a clean first open"
 took=$(($(node -p 'Date.now()') - began))
-cozy project -p "$S" export > "$OUT/killed-done.yaml" || check "killed: the clean one's export"
+in_project "$S" export > "$OUT/killed-done.yaml" || check "killed: the clean one's export"
 # From its start to past its end, each a folder of its own: how long it takes moves with the disk, so no one stretch of it can be counted on.
 for part in $(seq 1 12); do
   at=$((took * part / 10)) tried=$((tried + 1)) F=$S-$part
   mkdir -p "$F"; cp "$OUT/killed.yaml" "$F/project.yaml"; cp "$OUT/killed.lock" "$F/project.lock"
-  cozy project -p "$F" status > /dev/null 2>&1 & pid=$!
+  in_project "$F" status > /dev/null 2>&1 & pid=$!
   sleep "$(printf '%d.%03d' $((at / 1000)) $((at % 1000)))"
   if kill -0 "$pid" 2> /dev/null; then
     eval "$(web_stop "$lock")" 2> /dev/null || true
@@ -906,16 +974,16 @@ for part in $(seq 1 12); do
     { [ ! -e "$F/project.yaml.v2" ] || cmp -s "$F/project.yaml.v2" "$OUT/killed.yaml"; } || check "killed at ${at} ms: project.yaml.v2 isn't the original"
     { [ ! -e "$F/project.lock.v2" ] || cmp -s "$F/project.lock.v2" "$OUT/killed.lock"; } || check "killed at ${at} ms: project.lock.v2 isn't the original"
   fi
-  cozy project -p "$F" export > "$OUT/killed-again.yaml" 2>&1 || check "killed at ${at} ms: opened again: $(tail -c 300 "$OUT/killed-again.yaml")"
-  cmp -s "$OUT/killed-again.yaml" "$OUT/killed-done.yaml" || check "killed at ${at} ms: it came out otherwise: $(diff "$OUT/killed-done.yaml" "$OUT/killed-again.yaml" | head -5)"
+  project_api "$F" /yaml > "$OUT/killed-again.yaml" 2>&1 || check "killed at ${at} ms: opened again: $(tail -c 300 "$OUT/killed-again.yaml")"
+  cmp -s <(yaml_body "$OUT/killed-again.yaml") <(yaml_body "$OUT/killed-done.yaml") || check "killed at ${at} ms: it came out otherwise: $(diff <(yaml_body "$OUT/killed-done.yaml") <(yaml_body "$OUT/killed-again.yaml") | head -5)"
   { cmp -s "$F/project.yaml.v2" "$OUT/killed.yaml" && cmp -s "$F/project.lock.v2" "$OUT/killed.lock"; } || check "killed at ${at} ms: an original went"
-  [ -z "$(cd "$F" && ls -A | grep -vxE 'files|\.runs|project\.db(-wal|-shm)?|project\.(yaml|lock)\.v[23]')" ] || check "killed at ${at} ms: left: $(ls -A "$F" | tr '\n' ' ')"
+  [ -z "$(cd "$F" && ls -A | grep -vxE 'files|\.runs|\.cozy-legacy-v1|project\.db(-wal|-shm)?|project\.(yaml|lock)\.v[23]')" ] || check "killed at ${at} ms: left: $(ls -A "$F" | tr '\n' ' ')"
   rm -rf "$F"
 done
 echo "first open killed mid-way $stopped of $tried times, in $took ms"
 [ "$stopped" -gt 0 ] || check "killed: no kill landed before it finished"
 # The Calcifer after the kills, as the cells after this call it.
-cozy project ls > /dev/null || check "killed: cozy doesn't answer after the kills"
+fixture_projects > /dev/null || check "killed: cozy doesn't answer after the kills"
 ADDR=$(jq -r .address "$lock") TOKEN=$(jq -r .token "$lock")
 }
 
@@ -938,7 +1006,7 @@ printf '  once: {tool: %s/draw, instructions: Something else entirely.}\n' "$dra
 J '[.orphans[].name] == ["once"]' <<< "$(status "$N")" || check "tombstones: the old one is no orphan: $(status "$N" | jq -c .orphans)"
 dropped "$N" once
 printf '  again: {tool: %s/draw, instructions: The first of that name.}\n' "$draw" | added "$N"
-cozy project -p "$N" rename once again > "$OUT/tombstones-rename.txt" 2>&1 || check "tombstones: rename: $(tail -c 300 "$OUT/tombstones-rename.txt")"
+in_project "$N" rename once again > "$OUT/tombstones-rename.txt" 2>&1 || check "tombstones: rename: $(tail -c 300 "$OUT/tombstones-rename.txt")"
 [ "$(made "$N" again)" = 1 ] || check "tombstones: rename didn't bring its versions: $(counts "$N")"
 }
 
@@ -957,21 +1025,21 @@ render "$L" made -n 2 || check "lost lock: render: $(tail -c 300 "$OUT/render.tx
 count=$(ls "$L/files" | wc -l)
 [ "$count" -ge 2 ] || check "lost lock: it made $count files"
 db_sql "$L" "VACUUM INTO '$OUT/lost-lock.db'"
-db_sql "$L" "DELETE FROM versions; DELETE FROM run_files"
-J '.deleted != true and (.next // []) == [] and (.lost | contains("lists no versions")) and .files >= 2' <<< "$(cozy --json project -p "$L" reclaim)" || check "lost lock: a dry reclaim: $(cozy --json project -p "$L" reclaim)"
-code=0; cozy project -p "$L" reclaim --yes > "$OUT/lost-lock.txt" 2>&1 || code=$?
+v1_fault "$L" "DELETE FROM versions; DELETE FROM run_files"
+J '.deleted != true and (.next // []) == [] and (.lost | contains("lists no versions")) and .files >= 2' <<< "$(project_reclaim "$L" false)" || check "lost lock: a dry reclaim: $(project_reclaim "$L" false)"
+code=0; project_reclaim "$L" true > "$OUT/lost-lock.txt" 2>&1 || code=$?
 { [ "$code" != 0 ] && grep -qF "lists no versions" "$OUT/lost-lock.txt" && grep -q 'put project.db back' "$OUT/lost-lock.txt"; } || check "lost lock: reclaim --yes (exit $code): $(tail -c 300 "$OUT/lost-lock.txt")"
 [ "$(ls "$L/files" | wc -l)" = "$count" ] || check "lost lock: reclaim --yes deleted: $(ls "$L/files" | wc -l) of $count"
-db_sql "$L" "ATTACH '$OUT/lost-lock.db' AS kept; INSERT INTO versions SELECT * FROM kept.versions; INSERT INTO run_files SELECT * FROM kept.run_files"
-cozy project -p "$L" reclaim --yes > "$OUT/lost-lock.txt" 2>&1 || check "lost lock: reclaim with them back: $(tail -c 300 "$OUT/lost-lock.txt")"
+restore_project_db "$L" "$OUT/lost-lock.db"
+project_reclaim "$L" true > "$OUT/lost-lock.txt" 2>&1 || check "lost lock: reclaim with them back: $(tail -c 300 "$OUT/lost-lock.txt")"
 [ "$(ls "$L/files" | wc -l)" = "$count" ] || check "lost lock: with them back, reclaim took what they name"
 
 step "a project: with a version landed since its versions were lost, reclaim --yes takes nothing old"
-db_sql "$L" "DELETE FROM versions; DELETE FROM run_files"
+v1_fault "$L" "DELETE FROM versions; DELETE FROM run_files"
 render "$L" made || check "lost lock: a version since: $(tail -c 300 "$OUT/render.txt")"
 count=$(ls "$L/files" | wc -l)
-J --argjson n "$((count - 1))" '.unrecorded == $n and (.lost // null) == null' <<< "$(cozy --json project -p "$L" reclaim)" || check "lost lock: what's listed: $(cozy --json project -p "$L" reclaim)"
-cozy project -p "$L" reclaim --yes > "$OUT/lost-lock.txt" 2>&1 || check "lost lock: reclaim since: $(tail -c 300 "$OUT/lost-lock.txt")"
+J --argjson n "$((count - 1))" '.unrecorded == $n and (.lost // null) == null' <<< "$(in_project "$L" --json reclaim)" || check "lost lock: what's listed: $(in_project "$L" --json reclaim)"
+in_project "$L" reclaim --yes > "$OUT/lost-lock.txt" 2>&1 || check "lost lock: reclaim since: $(tail -c 300 "$OUT/lost-lock.txt")"
 [ "$(ls "$L/files" | wc -l)" = "$count" ] || check "lost lock: reclaim --yes took what it had no record of: $(ls "$L/files" | wc -l) of $count"
 
 step "a project: a deleted asset is an orphan, its name starts clean, and undo or reclaim settles it"
@@ -985,26 +1053,26 @@ YAML
 render "$D" kept || check "deleted: render: $(tail -c 300 "$OUT/render.txt")"
 # What it did, then what undoes it, a line each on stdout.
 was=$(take_file "$D" kept image)
-line=$(cozy project -p "$D" delete kept) || check "deleted: delete"
+line=$(in_project "$D" delete kept) || check "deleted: delete"
 line=${line##*$'\n'}
 J '[.orphans[] | select(.name == "kept") | .versions] == [1]' <<< "$(status "$D")" || check "deleted: no orphan: $(status "$D" | jq -c .orphans)"
 printf '  kept: {tool: %s/project/draw.py/draw, instructions: Something else.}\n' "$here" | added "$D"
 [ "$(made "$D" kept)" = 0 ] || check "deleted: a new asset took its name's versions: $(made "$D" kept)"
 # While another box has its name the delete's undo is refused, naming the edit to undo first; nothing changes.
-code=0; cozy --json project -p "$D" undo "${line##* }" > "$OUT/deleted-undo.json" 2> /dev/null || code=$?
+code=0; in_project "$D" --json undo "${line##* }" > "$OUT/deleted-undo.json" 2> /dev/null || code=$?
 { [ "$code" != 0 ] && J '.error.code == "history_conflict" and (.error.next[0] | test("undo [0-9]+$"))' "$OUT/deleted-undo.json"; } \
   || check "deleted: undo while its name is taken (exit $code): $(head -c 400 "$OUT/deleted-undo.json")"
-grep -q 'Something else' <(cozy project -p "$D" export) || check "deleted: a refused undo changed the box that has the name"
+grep -q 'Something else' <(in_project "$D" export) || check "deleted: a refused undo changed the box that has the name"
 # Added then dropped, the name is free again: undo puts back exactly what was deleted, its text, its version and its file.
 dropped "$D" kept
-eval "$line" > /dev/null || check "deleted: undo: $line"
+(cd "$T" && eval "$line") > /dev/null || check "deleted: undo: $line"
 [ "$(made "$D" kept)" = 1 ] || check "deleted: undo lost its version: $(made "$D" kept)"
-{ grep -q 'One\.' <(cozy project -p "$D" export) && ! grep -q 'Something else' <(cozy project -p "$D" export); } || check "deleted: undo after an add and a drop of its name: $(cozy project -p "$D" export | tr '\n' ' ')"
+{ grep -q 'One\.' <(in_project "$D" export) && ! grep -q 'Something else' <(in_project "$D" export); } || check "deleted: undo after an add and a drop of its name: $(in_project "$D" export | tr '\n' ' ')"
 J '.asset.standing == "current"' <<< "$(held "$D" kept)" || check "deleted: put back, it isn't current: $(held "$D" kept | jq -c .asset)"
 { [ "$(take_file "$D" kept image)" = "$was" ] && [ -n "$(file_at "$D" "$was")" ]; } || check "deleted: put back, its version's file is $(take_file "$D" kept image), not $was"
 J '(.orphans // []) == []' <<< "$(status "$D")" || check "deleted: put back, it's still an orphan: $(status "$D" | jq -c .orphans)"
-cozy project -p "$D" delete kept > /dev/null || check "deleted: delete again"
-cozy project -p "$D" reclaim --yes > "$OUT/deleted.txt" 2>&1 || check "deleted: reclaim: $(tail -c 300 "$OUT/deleted.txt")"
+in_project "$D" delete kept > /dev/null || check "deleted: delete again"
+in_project "$D" reclaim --yes > "$OUT/deleted.txt" 2>&1 || check "deleted: reclaim: $(tail -c 300 "$OUT/deleted.txt")"
 { J '(.orphans // []) == []' <<< "$(status "$D")" && [ "$(ls "$D/files" | wc -l)" = 0 ]; } || check "deleted: reclaim left: $(ls "$D/files"), $(status "$D" | jq -c .orphans)"
 }
 
@@ -1020,44 +1088,44 @@ assets:
   scene: {tool: $here/project/draw.py/draw, instructions: <hero> in a doorway.}
 YAML
 render "$T" hero -n 3 || check "discards: render: $(tail -c 300 "$OUT/render.txt")"
-cozy project -p "$T" approve hero 3 > /dev/null || check "discards: approve"
+in_project "$T" approve hero 3 > /dev/null || check "discards: approve"
 render "$T" scene || check "discards: render scene: $(tail -c 300 "$OUT/render.txt")"
 second=$(take_file "$T" hero image 1); third=$(take_file "$T" hero image 2)
-line=$(cozy project -p "$T" delete hero.2) || check "discards: delete the middle"
+line=$(in_project "$T" delete hero.2) || check "discards: delete the middle"
 line=${line##*$'\n'}
-[[ $line =~ ^"cozy project -p $T undo "[0-9]+$ ]] || check "discards: delete printed: $line"
+[[ $line =~ ^"cozy undo "[0-9]+$ ]] || check "discards: delete printed: $line"
 J '[.versions[].number] == [1, 3] and .discarded == [2] and .versions[-1].approved' <<< "$(held "$T" hero)" || check "discards: after the middle: $(held "$T" hero | jq -c '{versions: [.versions[].number], discarded}')"
 [ -n "$(file_at "$T" "$second")" ] || check "discards: its file went at once"
 [ "$(sql1 "$T" "SELECT count(*) FROM versions WHERE key = 'hero' AND discarded = 1")" -ge 1 ] || check "discards: project.db has no record of it"
-back=$(cozy --json project -p "$T" delete hero.3) || check "discards: delete the approved: $back"
-J --arg p "cozy project -p $T undo " '.approved and .stands == 1 and .stale == ["scene"] and (.next | length) == 1 and (.next[0] | startswith($p) and (ltrimstr($p) | test("^[0-9]+$")))' <<< "$back" || check "discards: the approved's answer: $back"
-! grep -q 'approved:' <(cozy project -p "$T" export) || check "discards: approved: stayed"
+back=$(in_project "$T" --json delete hero.3) || check "discards: delete the approved: $back"
+J --arg p "cozy undo " '.approved and .stands == 1 and .stale == ["scene"] and (.next | length) == 1 and (.next[0] | startswith($p) and (ltrimstr($p) | test("^[0-9]+$")))' <<< "$back" || check "discards: the approved's answer: $back"
+! grep -q 'approved:' <(in_project "$T" export) || check "discards: approved: stayed"
 J '[.versions[].number] == [1] and .discarded == [2, 3] and .asset.standing == "current"' <<< "$(held "$T" hero)" || check "discards: after the approved: $(held "$T" hero | jq -c '{versions: [.versions[].number], discarded, standing: .asset.standing}')"
 J '.asset.standing == "out_of_date" and (.versions | length) == 1' <<< "$(held "$T" scene)" || check "discards: its reader: $(held "$T" scene | jq -c .asset)"
 eval "$(jq -r '.next[0]' <<< "$back")" > /dev/null || check "discards: undo the approved"
-eval "$line" > /dev/null || check "discards: undo the middle: $line"
+(cd "$T" && eval "$line") > /dev/null || check "discards: undo the middle: $line"
 J '[.versions[].number] == [1, 2, 3] and (.discarded // []) == [] and .versions[-1].approved' <<< "$(held "$T" hero)" || check "discards: Undo: $(held "$T" hero | jq -c '{versions: [.versions[].number], discarded}')"
-grep -q 'approved:' <(cozy project -p "$T" export) || check "discards: Undo left no approved:"
+grep -q 'approved:' <(in_project "$T" export) || check "discards: Undo left no approved:"
 J '.asset.standing == "current"' <<< "$(held "$T" scene)" || check "discards: its reader after Undo: $(held "$T" scene | jq -c .asset)"
 render "$T" all --missing || check "discards: render what's missing: $(tail -c 300 "$OUT/render.txt")"
 [ "$(made "$T" hero) $(made "$T" scene)" = "3 1" ] || check "discards: something ran again: $(counts "$T")"
 
 step "a project: a discarded number is never given again, and reclaim clears only what nothing names"
-cozy project -p "$T" delete hero.2 hero.3 > "$OUT/discards.txt" || check "discards: delete of two"
-[ "$(grep -cE '^cozy project -p .* undo [0-9]+$' "$OUT/discards.txt")" = 2 ] || check "discards: delete of two printed: $(cat "$OUT/discards.txt")"
+in_project "$T" delete hero.2 hero.3 > "$OUT/discards.txt" || check "discards: delete of two"
+[ "$(grep -cE '^cozy undo [0-9]+$' "$OUT/discards.txt")" = 2 ] || check "discards: delete of two printed: $(cat "$OUT/discards.txt")"
 undo=$(tail -1 "$OUT/discards.txt")
-cozy project -p "$T" import "${second:7:12}" kept > /dev/null || check "discards: import what another asset then names"
+in_project "$T" import "${second:7:12}" kept > /dev/null || check "discards: import what another asset then names"
 render "$T" hero -n 1 || check "discards: another: $(tail -c 300 "$OUT/render.txt")"
 J '[.versions[].number] == [1, 4]' <<< "$(held "$T" hero)" || check "discards: a number given again: $(held "$T" hero | jq -c '[.versions[].number]')"
-J '.files >= 1 and .next == ["cozy project reclaim --yes"]' <<< "$(cozy --json project -p "$T" reclaim)" || check "discards: reclaim lists: $(cozy --json project -p "$T" reclaim)"
+J '.files >= 1 and .next == ["cozy reclaim --yes"]' <<< "$(in_project "$T" --json reclaim)" || check "discards: reclaim lists: $(in_project "$T" --json reclaim)"
 [ -n "$(file_at "$T" "$third")" ] || check "discards: reclaim with no --yes deleted"
-cozy project -p "$T" reclaim --yes > "$OUT/discards.txt" 2>&1 || check "discards: reclaim: $(tail -c 300 "$OUT/discards.txt")"
+in_project "$T" reclaim --yes > "$OUT/discards.txt" 2>&1 || check "discards: reclaim: $(tail -c 300 "$OUT/discards.txt")"
 [ -z "$(file_at "$T" "$third")" ] || check "discards: reclaim left what nothing names"
 [ -n "$(file_at "$T" "$second")" ] || check "discards: reclaim took what another asset names"
 J '(.discarded // []) == [] and [.versions[].number] == [1, 4]' <<< "$(held "$T" hero)" || check "discards: after reclaim: $(held "$T" hero | jq -c '{versions: [.versions[].number], discarded}')"
 # Undoing take 3's discard, reclaimed, is refused: its files are deleted. It says reclaim cleared it, blames no other edit, names what's
 # next (another take), and changes nothing.
-code=0; cozy --json project -p "$T" undo "${undo##* }" > "$OUT/discards-undo.json" 2> /dev/null || code=$?
+code=0; in_project "$T" --json undo "${undo##* }" > "$OUT/discards-undo.json" 2> /dev/null || code=$?
 { [ "$code" != 0 ] && J '.error.code == "history_conflict" and (.error.message | test("3 is gone") and contains("reclaim") and (contains(", by ") | not)) and (.error.next[0] | contains("render hero"))' "$OUT/discards-undo.json"; } \
   || check "discards: undo after reclaim (exit $code): $(head -c 400 "$OUT/discards-undo.json")"
 J '(.discarded // []) == [] and [.versions[].number] == [1, 4]' <<< "$(held "$T" hero)" || check "discards: a refused undo changed hero: $(held "$T" hero | jq -c '{versions: [.versions[].number], discarded}')"
@@ -1067,7 +1135,7 @@ J '[.versions[].number] == [1, 4, 5]' <<< "$(held "$T" hero)" || check "discards
 step "a project: a box with its last take discarded stays, with none, until it's put back"
 printf '  lone: {tool: %s/project/draw.py/draw, instructions: Only one.}\n' "$here" | added "$T"
 render "$T" lone || check "discards: lone: $(tail -c 300 "$OUT/render.txt")"
-back=$(cozy --json project -p "$T" delete lone.1) || check "discards: the last: $back"
+back=$(in_project "$T" --json delete lone.1) || check "discards: the last: $back"
 J '.stands == null' <<< "$back" || check "discards: the last's answer: $back"
 J '.asset.standing == "missing" and .asset.versions == 0 and .discarded == [1]' <<< "$(held "$T" lone)" || check "discards: the box: $(held "$T" lone | jq -c .asset)"
 eval "$(jq -r '.next[0]' <<< "$back")" > /dev/null || check "discards: undo the last"
@@ -1095,9 +1163,9 @@ YAML
 render "$C" all || check "discards: cut: $(tail -c 300 "$OUT/render.txt")"
 first=$(take_file "$C" clash video 0)
 render "$C" clash 'pickup.take=<clash.1>' pickup.out_frame=72 || check "discards: a pickup of take 1: $(tail -c 300 "$OUT/render.txt")"
-cozy project -p "$C" delete clash.1 > /dev/null || check "discards: delete what's built on"
+in_project "$C" delete clash.1 > /dev/null || check "discards: delete what's built on"
 J '[.versions[].number] == [2] and .versions[0].pickup.take == "<clash.1>" and .asset.standing == "current"' <<< "$(held "$C" clash)" || check "discards: what's built on it: $(held "$C" clash | jq -c '{versions, standing: .asset.standing}')"
-cozy project -p "$C" reclaim --yes > "$OUT/discards.txt" 2>&1 || check "discards: reclaim with a clip: $(tail -c 300 "$OUT/discards.txt")"
+in_project "$C" reclaim --yes > "$OUT/discards.txt" 2>&1 || check "discards: reclaim with a clip: $(tail -c 300 "$OUT/discards.txt")"
 [ -n "$(file_at "$C" "$first")" ] || check "discards: reclaim took what a cut's clip names"
 
 step "a project: a take still being made is canceled, not discarded"
@@ -1108,14 +1176,14 @@ version: 4
 assets:
   slow: {tool: $here/project/shots.py/slow, seconds: 30}
 YAML
-cozy project -p "$S" render slow --queue --on local > "$OUT/discards.txt" 2>&1 || check "discards: slow: $(tail -c 300 "$OUT/discards.txt")"
+in_project "$S" render slow --queue --on local > "$OUT/discards.txt" 2>&1 || check "discards: slow: $(tail -c 300 "$OUT/discards.txt")"
 for _ in $(seq 100); do
-  cozy project -p "$S" delete slow.1 > "$OUT/discards.txt" 2>&1 || true
+  in_project "$S" delete slow.1 > "$OUT/discards.txt" 2>&1 || true
   grep -q 'still being made' "$OUT/discards.txt" && break
   sleep 0.1
 done
-{ grep -q 'still being made' "$OUT/discards.txt" && grep -q 'cozy project cancel slow' "$OUT/discards.txt"; } || check "discards: a running take: $(cat "$OUT/discards.txt")"
-cozy project -p "$S" cancel slow > /dev/null 2>&1 || check "discards: cancel"
+{ grep -q 'still being made' "$OUT/discards.txt" && grep -q 'cozy cancel slow' "$OUT/discards.txt"; } || check "discards: a running take: $(cat "$OUT/discards.txt")"
+in_project "$S" cancel slow > /dev/null 2>&1 || check "discards: cancel"
 for _ in $(seq 240); do J '.busy | not' <<< "$(status "$S")" && break; sleep 0.5; done
 }
 
@@ -1153,7 +1221,7 @@ step "a project: nothing to do, and what changes no key"
 render "$T" all --missing || check "memo: render all again: $(tail -c 300 "$OUT/render.txt")"
 [ "$(runs "$T")" = "$first" ] || check "memo: a second render all --missing ran something"
 was=$(row "$T" card .inputs)
-{ printf '# a note\n'; cozy project -p "$T" export; } | yaml_in "$T"
+{ printf '# a note\n'; in_project "$T" export; } | yaml_in "$T"
 hand "$T" 's/instructions: A test card\./instructions: "  A test card.  "/'
 [ "$(row "$T" card .inputs)" = "$was" ] || check "memo: a comment, quotes or trailing spaces moved card's key"
 hand "$T" 's/instructions: "  A test card.  "/instructions: A test card./'
@@ -1206,20 +1274,18 @@ first=$(made "$T" copied)
 render "$T" copied || check "memo: a render of a function with no seed: $(tail -c 300 "$OUT/render.txt")"
 says memo "takes no seed"
 [ "$(made "$T" copied)" = "$first" ] || check "memo: a render of a function with no seed made a version"
-code=0; cozy project -p "$T" render card -n 2 --approve --on local > "$OUT/render.txt" 2>&1 || code=$?
+code=0; in_project "$T" render card -n 2 --approve --on local > "$OUT/render.txt" 2>&1 || code=$?
 { [ "$code" != 0 ] && says memo --approve; } || check "memo: -n 2 --approve was not refused (exit $code)"
 }
 
-# A run belongs to a project, as a commit to a repository: naming none it refuses (the folder it's run in names none: cl-819), and in
-# one its outputs land in files/ by hash, where --file and approve name them, and reclaim takes them once nothing does.
+# A run creates a project in its working directory, and its outputs land there by hash.
 project_runs() {
-step "a project: a run outside one refuses, and in one lands in files/"
+step "a project: a run initializes its working directory and lands in files/"
 local R=$OUT/run-project away code hash other real lines
-away=$(mktemp -d)
+away=$OUT/run-first-use; mkdir -p "$away"
 code=0; (cd "$away" && cozy run "$here/project/draw.py" instructions=outside) > "$OUT/outside.txt" 2>&1 || code=$?
-rmdir "$away"
-{ [ "$code" = 2 ] && grep -qF 'name the project: -p <name>, or COZY_PROJECT=<name>' "$OUT/outside.txt" && grep -qF 'next: cozy project new <name>' "$OUT/outside.txt"; } || check "runs: outside a project: exit $code: $(tail -c 300 "$OUT/outside.txt")"
-cozy project new "$R" > /dev/null || check "runs: project new"
+{ [ "$code" = 0 ] && [ -f "$away/project.db" ]; } || check "runs: first use did not initialize cwd: exit $code: $(tail -c 300 "$OUT/outside.txt")"
+starter_project "$R" > /dev/null || check "runs: project new"
 yaml_in "$R" <<YAML
 version: 4
 assets:
@@ -1228,34 +1294,34 @@ assets:
     instructions: A blue whale.
 YAML
 real=$(status "$R" | jq -r .id)
-(cd "$R" && cozy run -p "$R" "$here/project/draw.py" instructions=first) > "$OUT/run-first.txt" 2>&1 || check "runs: a run in the project: $(tail -c 300 "$OUT/run-first.txt")"
+(cd "$R" && in_project "$R" run "$here/project/draw.py" instructions=first) > "$OUT/run-first.txt" 2>&1 || check "runs: a run in the project: $(tail -c 300 "$OUT/run-first.txt")"
 hash=$(sed -n 's/^image: \([0-9a-f]\{12\}\)$/\1/p' "$OUT/run-first.txt"); [ -n "$hash" ] || check "runs: no line to paste: $(tail -c 300 "$OUT/run-first.txt")"
 ls "$R/files/$hash"* > /dev/null 2>&1 || check "runs: $hash is not in files/: $(ls "$R/files")"
 [ "$(find "$R/.runs" -type f 2> /dev/null | wc -l)" = 0 ] || check "runs: a file stayed where it landed: $(find "$R/.runs" -type f)"
 { J '.run_files == 1' <<< "$(status "$R")" && [ -n "$(file_at "$R" "$hash")" ] && [ "$(sql1 "$R" "SELECT count(*) FROM run_files WHERE run > 0 AND output != ''")" = 1 ]; } || check "runs: its row: $(sql "$R" 'SELECT * FROM run_files')"
 J '.run_files == 1' <<< "$(status "$R")" || check "runs: status does not count it: $(status "$R" | jq -c .run_files)"
-cozy run -p "$R" "$here/project/draw.py" instructions=second > "$OUT/run-second.txt" 2>&1 || check "runs: -p: $(tail -c 300 "$OUT/run-second.txt")"
+in_project "$R" run "$here/project/draw.py" instructions=second > "$OUT/run-second.txt" 2>&1 || check "runs: -p: $(tail -c 300 "$OUT/run-second.txt")"
 other=$(sed -n 's/^image: \([0-9a-f]\{12\}\)$/\1/p' "$OUT/run-second.txt"); [ -n "$other" ] && [ "$other" != "$hash" ] || check "runs: -p made no new file: $(tail -c 300 "$OUT/run-second.txt")"
-(cd "$R" && cozy run -p "$R" "$here/project/copied.py" --file "image=$hash") > "$OUT/run-copy.txt" 2>&1 || check "runs: --file by hash: $(tail -c 300 "$OUT/run-copy.txt")"
+(cd "$R" && in_project "$R" run "$here/project/copied.py" --file "image=$hash") > "$OUT/run-copy.txt" 2>&1 || check "runs: --file by hash: $(tail -c 300 "$OUT/run-copy.txt")"
 J '.run_files == 3' <<< "$(status "$R")" || check "runs: three runs, and status says $(status "$R" | jq -c .run_files)"
 
 step "a project: run ls in it lists its runs, and --all every one"
-(cd "$R" && cozy --json run ls -p "$R") > "$OUT/runs-in.json" 2> "$OUT/runs-in.err" || check "runs: run ls in it: $(tail -c 300 "$OUT/runs-in.err")"
+(cd "$R" && in_project "$R" --json run ls ) > "$OUT/runs-in.json" 2> "$OUT/runs-in.err" || check "runs: run ls in it: $(tail -c 300 "$OUT/runs-in.err")"
 J --arg p "$real" '(.runs | length == 3) and all(.runs[]; .project_id == $p)' "$OUT/runs-in.json" || check "runs: run ls in it: $(jq -c '[.runs[] | {number, project_id}]' "$OUT/runs-in.json")"
-(cd "$R" && cozy --json run ls -p "$R" --all --limit 500) > "$OUT/runs-all.json" 2> "$OUT/runs-all.err" || check "runs: run ls --all: $(tail -c 300 "$OUT/runs-all.err")"
+(cd "$R" && in_project "$R" --json run ls --all --limit 500) > "$OUT/runs-all.json" 2> "$OUT/runs-all.err" || check "runs: run ls --all: $(tail -c 300 "$OUT/runs-all.err")"
 J --arg p "$real" 'any(.runs[]; .project_id != $p)' "$OUT/runs-all.json" || check "runs: run ls --all lists only this project"
 
 step "a project: approve takes any file of its, by hash"
-cozy project -p "$R" approve kyogre "$hash" > "$OUT/approve.txt" 2>&1 || check "runs: approve by hash: $(tail -c 300 "$OUT/approve.txt")"
-grep -Eq "^    approved: \"?$hash\"?\$" <(cozy project -p "$R" export) || check "runs: approve wrote: $(grep -n 'approved' <(cozy project -p "$R" export))"
+in_project "$R" approve kyogre "$hash" > "$OUT/approve.txt" 2>&1 || check "runs: approve by hash: $(tail -c 300 "$OUT/approve.txt")"
+grep -Eq "^    approved: \"?$hash\"?\$" <(in_project "$R" export) || check "runs: approve wrote: $(grep -n 'approved' <(in_project "$R" export))"
 J '.assets[] | select(.name == "kyogre") | .pinned and (.status | startswith("approved"))' <<< "$(status "$R")" || check "runs: kyogre: $(row "$R" kyogre .)"
 J '.run_files == 2' <<< "$(status "$R")" || check "runs: a pinned file still counts as loose: $(status "$R" | jq -c .run_files)"
 
 step "a project: reclaim takes a run's file once nothing names it"
-lines=$(cozy --json project -p "$R" reclaim | jq .files); [ "$lines" -ge 2 ] || check "runs: reclaim lists $lines files"
-J '.next == ["cozy project reclaim --yes"]' <<< "$(cozy --json project -p "$R" reclaim)" || check "runs: reclaim does not say what's next"
+lines=$(in_project "$R" --json reclaim | jq .files); [ "$lines" -ge 2 ] || check "runs: reclaim lists $lines files"
+J '.next == ["cozy reclaim --yes"]' <<< "$(in_project "$R" --json reclaim)" || check "runs: reclaim does not say what's next"
 ls "$R/files/$other"* > /dev/null 2>&1 || check "runs: reclaim with no --yes deleted"
-cozy project -p "$R" reclaim --yes > "$OUT/reclaim.txt" 2>&1 || check "runs: reclaim --yes: $(tail -c 300 "$OUT/reclaim.txt")"
+in_project "$R" reclaim --yes > "$OUT/reclaim.txt" 2>&1 || check "runs: reclaim --yes: $(tail -c 300 "$OUT/reclaim.txt")"
 ! ls "$R/files/$other"* > /dev/null 2>&1 || check "runs: reclaim --yes left a file nothing names"
 ls "$R/files/$hash"* > /dev/null 2>&1 || check "runs: reclaim --yes took the pinned file"
 { [ "$(sql1 "$R" "SELECT count(*) FROM run_files")" = 1 ] && [ "$(sql1 "$R" "SELECT substr(sha256, 8, 12) FROM run_files")" = "$hash" ] && [ -n "$(file_at "$R" "$hash")" ]; } || check "runs: rows left: $(sql "$R" 'SELECT * FROM run_files')"
@@ -1289,7 +1355,7 @@ class Said(msgspec.Struct):
 def echo(payload: Ask) -> Said:
     return Said(back=payload.text[::-1])
 PY
-  (cd "$R" && cozy --json run -p "$R" "$OUT/$name.py/echo" text=abc --on local) > "$OUT/named-$name.ndjson" 2> "$OUT/named-$name.err" || check "runs: $name.py: $(tail -c 300 "$OUT/named-$name.err")"
+  (cd "$R" && in_project "$R" --json run "$OUT/$name.py/echo" text=abc --on local) > "$OUT/named-$name.ndjson" 2> "$OUT/named-$name.err" || check "runs: $name.py: $(tail -c 300 "$OUT/named-$name.err")"
   tail -1 "$OUT/named-$name.ndjson" | J '.run.result.back == "cba"' || check "runs: $name.py did not answer: $(tail -1 "$OUT/named-$name.ndjson" | jq -c .run.reason)"
 done
 }
@@ -1299,13 +1365,13 @@ done
 reclaim_unheld() {
 step "a project: reclaim --yes leaves an output files/ couldn't take"
 local U=$OUT/reclaim-unheld n digest left said
-cozy project new "$U" > /dev/null || check "unheld: project new"
+starter_project "$U" > /dev/null || check "unheld: project new"
 mkdir -p "$U/files" && chmod a-w "$U/files"
 if touch "$U/files/.writable" 2> /dev/null; then
   echo "unheld: files/ takes writes here even read-only (root, or Windows): nothing makes it refuse"
   rm -rf "$U"; return 0
 fi
-(cd "$U" && cozy --json run -p "$U" "$here/project/draw.py" instructions=unheld) > "$OUT/unheld.ndjson" 2>&1 || check "unheld: a run: $(tail -c 300 "$OUT/unheld.ndjson")"
+(cd "$U" && in_project "$U" --json run "$here/project/draw.py" instructions=unheld) > "$OUT/unheld.ndjson" 2>&1 || check "unheld: a run: $(tail -c 300 "$OUT/unheld.ndjson")"
 n=$(run_number "$OUT/unheld.ndjson")
 cozy --json run show "$n" --once > "$OUT/unheld-run.json" 2>&1 || true
 digest=$(jq -r '.output[0].sha256 // empty' "$OUT/unheld-run.json" 2> /dev/null || true)
@@ -1315,10 +1381,10 @@ left=$(find "$U/.runs" -type f 2> /dev/null || true)
 J '[.warnings[]?.message] | any(contains("stands in .runs/"))' "$OUT/unheld-run.json" || check "unheld: no warning says where it stands: $(jq -c .warnings "$OUT/unheld-run.json" 2> /dev/null)"
 # files/ takes writes again, as once its owner fixes it: what a run left there before it could still be the only copy.
 chmod u+w "$U/files"
-cozy --json project -p "$U" reclaim > "$OUT/unheld-dry.json" 2>&1 || check "unheld: reclaim: $(tail -c 300 "$OUT/unheld-dry.json")"
+in_project "$U" --json reclaim > "$OUT/unheld-dry.json" 2>&1 || check "unheld: reclaim: $(tail -c 300 "$OUT/unheld-dry.json")"
 J --arg d "$digest" '(.unheld | length) == 1 and .unheld[0].sha256 == $d and (.unheld[0].path | startswith(".runs/")) and .files == 0' "$OUT/unheld-dry.json" \
   || check "unheld: reclaim doesn't list it as unheld: $(head -c 300 "$OUT/unheld-dry.json")"
-cozy project -p "$U" reclaim --yes > "$OUT/unheld-reclaim.txt" 2>&1 || check "unheld: reclaim --yes: $(tail -c 300 "$OUT/unheld-reclaim.txt")"
+in_project "$U" reclaim --yes > "$OUT/unheld-reclaim.txt" 2>&1 || check "unheld: reclaim --yes: $(tail -c 300 "$OUT/unheld-reclaim.txt")"
 said=$(grep -F "files/ doesn't hold what runs left here, so it stays" "$OUT/unheld-reclaim.txt" || true)
 { [ -n "$said" ] && grep -qF "${digest:0:19}" <<< "$said"; } || check "unheld: reclaim --yes doesn't say what stays: $(tail -c 300 "$OUT/unheld-reclaim.txt")"
 { [ -f "$left" ] && [ "sha256:$(sha "$left")" = "$digest" ]; } || check "unheld: reclaim --yes deleted an output files/ doesn't hold: $(ls -A "$U" "$U/.runs" 2>&1 | tr '\n' ' ')"
@@ -1348,7 +1414,7 @@ by_content() {
 path_free() {
 step "a project: a run with no path sent"
 local R=$OUT/path-free lock=$HOME/.cozy/calcifer/calcifer.lock.holder id pic hex other n asked input code w h url script tree copied
-cozy project new "$R" > /dev/null || check "path-free: project new"
+starter_project "$R" > /dev/null || check "path-free: project new"
 id=$(status "$R" | jq -r .id)
 ADDR=$(jq -r .address "$lock") TOKEN=$(jq -r .token "$lock")
 script=$here/project/draw.py
@@ -1399,19 +1465,19 @@ asked=$(ask "$(jq -n --arg t "$copied" --arg p "$id" --arg x "image: ${hex:0:12}
 n=$(jq -r '.run.number // empty' <<< "$asked")
 [ -n "$n" ] && J '.status == "completed"' <<< "$(ended "$n")" || check "path-free: a hash prefix in input_text: $asked"
 printf 'image: %s\n' "${hex:0:12}" > "$R/req.yaml"
-cozy run -p "$R" "$here/project/copied.py" --input "$R/req.yaml" > "$OUT/free-input.txt" 2>&1 || check "path-free: a hash prefix in --input: $(tail -c 300 "$OUT/free-input.txt")"
+in_project "$R" run "$here/project/copied.py" --input "$R/req.yaml" > "$OUT/free-input.txt" 2>&1 || check "path-free: a hash prefix in --input: $(tail -c 300 "$OUT/free-input.txt")"
 J '.error.code == "file_not_held"' <<< "$(ask "$(jq -n --arg t "$copied" --arg p "$id" --arg x "image: sha256:$(printf %064d 1)" '{target: "", code: {tree: $t, at: "copied.py"}, project: $p, on: "local", input_text: $x}')")" || check "path-free: a hash nothing holds was not refused file_not_held"
 # A person's own file is copied: changing it later changes nothing of the project's.
 other=$OUT/free-other.png
 ffmpeg -v error -y -f lavfi -i "color=c=0x$(printf %06x $((RANDOM * RANDOM % 16777216))):size=48x64" -frames:v 1 "$other"
 hex=$(sha "$other")
-cozy run -p "$R" "$here/project/copied.py" --file "image=$other" > "$OUT/free-other.txt" 2>&1 || check "path-free: a run given a person's file: $(tail -c 300 "$OUT/free-other.txt")"
+in_project "$R" run "$here/project/copied.py" --file "image=$other" > "$OUT/free-other.txt" 2>&1 || check "path-free: a run given a person's file: $(tail -c 300 "$OUT/free-other.txt")"
 printf x >> "$other"
 [ "$(sha "$R/files/$hex.png")" = "$hex" ] || check "path-free: the project's copy changed with the person's file"
 
 step "a project: GET /v1/targets says what a person runs and a function's contract, and the CLI prints them"
 # A package, as a run reads it: its machine's Runtime, kept from installing this source, whatever PyPI's newest can read.
-cozy run -p "$R" "$here/project/shots.py" > "$OUT/free-functions.txt" 2>&1 || check "path-free: run of a package names no function: $(tail -c 300 "$OUT/free-functions.txt")"
+in_project "$R" run "$here/project/shots.py" > "$OUT/free-functions.txt" 2>&1 || check "path-free: run of a package names no function: $(tail -c 300 "$OUT/free-functions.txt")"
 grep -q shoot "$OUT/free-functions.txt" || check "path-free: its functions: $(tail -c 300 "$OUT/free-functions.txt")"
 tree=$(by_content "$here/project/shots.py") || check "path-free: PUT shots.py by content"
 api --get --data-urlencode "tree=$tree" --data-urlencode "at=shots.py" "http://$ADDR/v1/targets" > "$OUT/free-target.json"
@@ -1460,14 +1526,14 @@ assets:
 YAML
 render "$T" all || check "pins: render all: $(tail -c 300 "$OUT/render.txt")"
 render "$T" card -n 2 || check "pins: render card -n 2: $(tail -c 300 "$OUT/render.txt")"
-before=$OUT/pins-before.yaml; cozy project -p "$T" export > "$before"
+before=$OUT/pins-before.yaml; in_project "$T" export > "$before"
 # An edit saved just before the approve stands.
 hand "$T" 's/instructions: A flat one\./instructions: A flat one, edited just now./'
-cozy project -p "$T" approve card 1 > "$OUT/approve.txt" 2>&1 || check "pins: approve card 1: $(tail -c 300 "$OUT/approve.txt")"
-grep -q 'A flat one, edited just now' <(cozy project -p "$T" export) || check "pins: an edit saved just before approve is gone"
+in_project "$T" approve card 1 > "$OUT/approve.txt" 2>&1 || check "pins: approve card 1: $(tail -c 300 "$OUT/approve.txt")"
+grep -q 'A flat one, edited just now' <(in_project "$T" export) || check "pins: an edit saved just before approve is gone"
 file=$(take_file "$T" card image 0); file=${file#sha256:}
 hand "$T" 's/instructions: A flat one, edited just now\./instructions: A flat one./'
-diff "$before" <(cozy project -p "$T" export) > "$OUT/approve.diff" || true
+diff <(yaml_body "$before") <(project_api "$T" /yaml | yaml_body) > "$OUT/approve.diff" || true
 { [ "$(grep -c '^[<>]' "$OUT/approve.diff")" = 1 ] && grep -Eq "^> *approved: \"?${file:0:12}\"?$" "$OUT/approve.diff"; } || check "pins: approve changed more than its one line: $(cat "$OUT/approve.diff")"
 J '.assets[] | select(.name == "card") | .approved == 1 and .pinned and .status == "approved: version 1"' <<< "$(status "$T")" || check "pins: status does not say card is pinned to 1: $(row "$T" card .)"
 [ "$(sql1 "$T" "SELECT count(*) FROM versions WHERE record LIKE '%\"pin\"%'")" = 0 ] || check "pins: a version's record holds an approval"
@@ -1496,29 +1562,29 @@ J '.standing == "current"' <<< "$(row "$T" card .)" || check "pins: a descriptio
 hand "$T" '$_ = "" if /^    description: Words for a reader\.$/'
 
 step "a project: unpin takes the line away"
-cozy project -p "$T" unapprove card > "$OUT/unpin.txt" 2>&1 || check "pins: unpin card: $(tail -c 300 "$OUT/unpin.txt")"
-diff "$before" <(cozy project -p "$T" export) > "$OUT/unpin.diff" || check "pins: unpin did not give back the box: $(cat "$OUT/unpin.diff")"
+in_project "$T" unapprove card > "$OUT/unpin.txt" 2>&1 || check "pins: unpin card: $(tail -c 300 "$OUT/unpin.txt")"
+diff "$before" <(in_project "$T" export) > "$OUT/unpin.diff" || check "pins: unpin did not give back the box: $(cat "$OUT/unpin.diff")"
 J '.assets[] | select(.name == "card") | (.pinned | not) and .approved == null' <<< "$(status "$T")" || check "pins: unpinned, status is $(row "$T" card .)"
 
 step "a project: a pin over an input keeps it, and a line of its own"
 render "$T" copied > /dev/null 2>&1 || true
-cozy project -p "$T" approve copied 1 > "$OUT/approve.txt" 2>&1 || check "pins: approve copied 1: $(tail -c 300 "$OUT/approve.txt")"
-{ grep -q '^    image: <card>$' <(cozy project -p "$T" export) && grep -q '^    approved: ' <(cozy project -p "$T" export); } || check "pins: a pin over <card> lost it: $(grep -n 'image:' <(cozy project -p "$T" export))"
-cozy project -p "$T" unapprove copied > "$OUT/unpin.txt" 2>&1 || check "pins: unpin copied: $(tail -c 300 "$OUT/unpin.txt")"
-diff "$before" <(cozy project -p "$T" export) > "$OUT/unpin.diff" || check "pins: unpin copied did not give back the box: $(cat "$OUT/unpin.diff")"
-cozy project -p "$T" approve flat 1 > "$OUT/approve.txt" 2>&1 || check "pins: approve an asset on one line: $(tail -c 300 "$OUT/approve.txt")"
-[ "$(row "$T" flat .approved)" = 1 ] || check "pins: flat: $(grep -n -A3 'flat:' <(cozy project -p "$T" export))"
-cozy project -p "$T" unapprove flat > "$OUT/unpin.txt" 2>&1 || check "pins: unpin flat: $(tail -c 300 "$OUT/unpin.txt")"
-diff "$before" <(cozy project -p "$T" export) > "$OUT/unpin.diff" || check "pins: unpin flat did not give back the box: $(cat "$OUT/unpin.diff")"
+in_project "$T" approve copied 1 > "$OUT/approve.txt" 2>&1 || check "pins: approve copied 1: $(tail -c 300 "$OUT/approve.txt")"
+{ grep -q '^    image: <card>$' <(in_project "$T" export) && grep -q '^    approved: ' <(in_project "$T" export); } || check "pins: a pin over <card> lost it: $(grep -n 'image:' <(in_project "$T" export))"
+in_project "$T" unapprove copied > "$OUT/unpin.txt" 2>&1 || check "pins: unpin copied: $(tail -c 300 "$OUT/unpin.txt")"
+diff "$before" <(in_project "$T" export) > "$OUT/unpin.diff" || check "pins: unpin copied did not give back the box: $(cat "$OUT/unpin.diff")"
+in_project "$T" approve flat 1 > "$OUT/approve.txt" 2>&1 || check "pins: approve an asset on one line: $(tail -c 300 "$OUT/approve.txt")"
+[ "$(row "$T" flat .approved)" = 1 ] || check "pins: flat: $(grep -n -A3 'flat:' <(in_project "$T" export))"
+in_project "$T" unapprove flat > "$OUT/unpin.txt" 2>&1 || check "pins: unpin flat: $(tail -c 300 "$OUT/unpin.txt")"
+diff "$before" <(in_project "$T" export) > "$OUT/unpin.diff" || check "pins: unpin flat did not give back the box: $(cat "$OUT/unpin.diff")"
 
 step "a project: re-approving art brings what was made from it back with no run"
 local copies; copies=$(made "$T" copied)
-cozy project -p "$T" approve card 1 > /dev/null 2>&1 || check "pins: approve card 1 again"
+in_project "$T" approve card 1 > /dev/null 2>&1 || check "pins: approve card 1 again"
 render "$T" copied || check "pins: render copied: $(tail -c 300 "$OUT/render.txt")"
-cozy project -p "$T" approve card 2 > /dev/null 2>&1 || check "pins: approve card 2"
+in_project "$T" approve card 2 > /dev/null 2>&1 || check "pins: approve card 2"
 render "$T" copied --missing || check "pins: render copied on 2: $(tail -c 300 "$OUT/render.txt")"
 copies=$(made "$T" copied)
-cozy project -p "$T" approve card 1 > /dev/null 2>&1 || check "pins: approve card 1 again"
+in_project "$T" approve card 1 > /dev/null 2>&1 || check "pins: approve card 1 again"
 render "$T" copied --missing || check "pins: render copied on 1 again: $(tail -c 300 "$OUT/render.txt")"
 [ "$(made "$T" copied)" = "$copies" ] || check "pins: re-approving art ran what reads it: $(made "$T" copied), not $copies"
 
@@ -1553,7 +1619,7 @@ J '.assets[] | select(.name == "teal") | .kind == "image"' <<< "$(status "$C")" 
 J '[.warnings[].message] | any(contains("no file'"'"'s hash starts with cafe0000")) and any(contains("is not a hash"))' <<< "$(status "$C")" || check "pins: a bad pin is not warned of: $(status "$C" | jq -c .warnings)"
 render "$C" teal || check "pins: render a constant: $(tail -c 300 "$OUT/render.txt")"
 says pins "is a constant"
-code=0; cozy project -p "$C" unapprove teal > "$OUT/unpin.txt" 2>&1 || code=$?
+code=0; in_project "$C" unapprove teal > "$OUT/unpin.txt" 2>&1 || code=$?
 [ "$code" != 0 ] || check "pins: unpinning a constant took its one line"
 render "$C" wrong || check "pins: wrong's bad pin stopped it: $(tail -c 300 "$OUT/render.txt")"
 [ "$(made "$C" wrong)" = 1 ] || check "pins: wrong was not made without its bad pin"
@@ -1607,15 +1673,15 @@ step "a project: a name that can't be one is refused, with the fix; a dot is rea
 local N=$OUT/names
 mkdir -p "$N"
 printf 'version: 4\nassets:\n  kyogre sheet:\n    instructions: A.\n' | yaml_in "$N"
-code=0; cozy project -p "$N" status > "$OUT/name.txt" 2>&1 || code=$?
+code=0; in_project "$N" status > "$OUT/name.txt" 2>&1 || code=$?
 { [ "$code" != 0 ] && grep -qF "\`kyogre sheet\`: names can't hold spaces or commas; use \`kyogre_sheet\`" "$OUT/name.txt"; } || check "names: a space in a name: exit $code: $(tail -c 300 "$OUT/name.txt")"
 printf 'version: 4\nassets:\n  a,b:\n    instructions: A.\n' | yaml_in "$N"
-code=0; cozy project -p "$N" status > "$OUT/name.txt" 2>&1 || code=$?
+code=0; in_project "$N" status > "$OUT/name.txt" 2>&1 || code=$?
 { [ "$code" != 0 ] && grep -qF "use \`a_b\`" "$OUT/name.txt"; } || check "names: a comma in a name: exit $code: $(tail -c 300 "$OUT/name.txt")"
 printf 'version: 4\nassets:\n  a:\n    description: Prose <a b> here.\n  Amy.original: {instructions: From <a>.}\n' | yaml_in "$N"
-J '([.assets[].name] | index("Amy_original") != null and index("Amy.original") == null) and ([.warnings[].message] | any(contains("Amy.original")))' <<< "$(status "$N")" || check "names: a dot in a name written by hand: $(cozy --json project -p "$N" status 2>&1 | jq -c '{names: [.assets[]?.name], warnings: [.warnings[]?.message], error}')"
+J '([.assets[].name] | index("Amy_original") != null and index("Amy.original") == null) and ([.warnings[].message] | any(contains("Amy.original")))' <<< "$(status "$N")" || check "names: a dot in a name written by hand: $(in_project "$N" --json status 2>&1 | jq -c '{names: [.assets[]?.name], warnings: [.warnings[]?.message], error}')"
 J '[(.warnings // [])[].message] | any(contains("<a b>")) | not' <<< "$(status "$N")" || check "names: <a b> is just text, and was said: $(status "$N" | jq -c .warnings)"
-code=0; cozy project -p "$N" rename a "b c" > "$OUT/name.txt" 2>&1 || code=$?
+code=0; in_project "$N" rename a "b c" > "$OUT/name.txt" 2>&1 || code=$?
 { [ "$code" != 0 ] && grep -q "names can't hold" "$OUT/name.txt"; } || check "names: rename took a space: exit $code: $(tail -c 300 "$OUT/name.txt")"
 
 step "a project: a package's own tags are text, and so is what can't be a name"
@@ -1689,8 +1755,8 @@ for name in gone typo reader; do [ "$(made "$G" "$name")" = 0 ] || [ "$(made "$G
 [ "$(owed "$G")" = 0 ] || check "gone: something is pending"
 J '[.warnings[]?.message] | any(contains("accepted")) | not' "$OUT/gone-status.json" || check "gone: a pin was warned of: $(jq -c .warnings "$OUT/gone-status.json")"
 [ "$(jq '[.warnings[]?.message | select(contains("<Image-1>"))] | length' "$OUT/gone-status.json")" = 0 ] || check "gone: a kept failure is also a warning: $(jq -c .warnings "$OUT/gone-status.json")"
-cozy project -p "$G" status > "$OUT/gone-status.txt" 2>&1 || true
-grep -qF 'gone: <Image-1> is no longer in the project' "$OUT/gone-status.txt" || check "gone: cozy project status does not say it: $(tail -c 400 "$OUT/gone-status.txt")"
+in_project "$G" status > "$OUT/gone-status.txt" 2>&1 || true
+grep -qF 'gone: <Image-1> is no longer in the project' "$OUT/gone-status.txt" || check "gone: cozy status does not say it: $(tail -c 400 "$OUT/gone-status.txt")"
 before=$(cozy --json run ls --limit 0 | jq '.runs | length')
 code=0; render "$G" gone || code=$?
 { [ "$code" != 0 ] && [ "$(cozy --json run ls --limit 0 | jq '.runs | length')" = "$before" ]; } || check "gone: naming it sent a run (exit $code): $(tail -c 300 "$OUT/render.txt")"
@@ -1737,8 +1803,8 @@ assets:
     instructions: From <image_c>.
 YAML
 render "$O" all || check "outdated: render all: $(tail -c 300 "$OUT/render.txt")"
-cozy project -p "$O" approve image_c 1 > "$OUT/outdated-approve.txt" 2>&1 || check "outdated: approve image_c: $(cat "$OUT/outdated-approve.txt")"
-cozy project -p "$O" approve image_d 1 > "$OUT/outdated-approve.txt" 2>&1 || check "outdated: approve image_d: $(cat "$OUT/outdated-approve.txt")"
+in_project "$O" approve image_c 1 > "$OUT/outdated-approve.txt" 2>&1 || check "outdated: approve image_c: $(cat "$OUT/outdated-approve.txt")"
+in_project "$O" approve image_d 1 > "$OUT/outdated-approve.txt" 2>&1 || check "outdated: approve image_d: $(cat "$OUT/outdated-approve.txt")"
 J '.assets[] | select(.name == "image_c") | .pinned and .standing == "current" and .changed == null' <<< "$(status "$O")" || check "outdated: a fresh pin: $(row "$O" image_c .)"
 render "$O" image_a || check "outdated: a new image_a: $(tail -c 300 "$OUT/render.txt")"
 status "$O" > "$OUT/outdated-pinned.json"
@@ -1748,14 +1814,14 @@ render "$O" all || check "outdated: the plain run: $(tail -c 300 "$OUT/render.tx
 { [ "$(made "$O" image_c)" = 1 ] && [ "$(made "$O" image_d)" = 1 ] && [ "$(made "$O" image_a)" = 3 ]; } || check "outdated: the plain run: image_a $(made "$O" image_a), image_c $(made "$O" image_c), image_d $(made "$O" image_d)"
 J '[.assets[] | select(.name == "image_c" or .name == "image_d") | .pinned] == [true, true]' <<< "$(status "$O")" || check "outdated: the plain run moved a pin"
 render "$O" all --outdated || check "outdated: --outdated: $(tail -c 400 "$OUT/render.txt")"
-cp "$OUT/render.txt" "$OUT/outdated-render.txt"; cozy project -p "$O" export > "$OUT/outdated-after.yaml"; status "$O" > "$OUT/outdated-after.json"
+cp "$OUT/render.txt" "$OUT/outdated-render.txt"; in_project "$O" export > "$OUT/outdated-after.yaml"; status "$O" > "$OUT/outdated-after.json"
 { [ "$(made "$O" image_c)" = 2 ] && [ "$(made "$O" image_d)" = 2 ]; } || check "outdated: image_c $(made "$O" image_c), image_d $(made "$O" image_d): a pin downstream of a new version counts: $(tail -c 400 "$OUT/render.txt")"
 says outdated "image_c: pinned, and"
 J '[.assets[] | select(.name == "image_c" or .name == "image_d")] | all(.pinned != true and .standing == "current" and .changed == null)' "$OUT/outdated-after.json" || check "outdated: pins left: $(jq -c '[.assets[] | {name, pinned, standing, changed}]' "$OUT/outdated-after.json")"
 J '.assets[] | select(.name == "dropped") | .pinned and .versions == 0 and .standing == "current"' "$OUT/outdated-after.json" || check "outdated: a dropped file: $(jq -c '.assets[] | select(.name == "dropped")' "$OUT/outdated-after.json")"
-! grep -E '^    approved: [^$]' <<< "$(sed -n '/^  image_c:/,/^  image_d:/p' <(cozy project -p "$O" export))" || check "outdated: project.yaml keeps a pin: $(grep -nE '^    approved: ' <(cozy project -p "$O" export))"
+! grep -E '^    approved: [^$]' <<< "$(sed -n '/^  image_c:/,/^  image_d:/p' <(in_project "$O" export))" || check "outdated: project.yaml keeps a pin: $(grep -nE '^    approved: ' <(in_project "$O" export))"
 J --arg drew "$(asked "$O" image_d 1)" '.versions[1].files.image.sha256 as $c | ($drew | contains($c)) and $c != .versions[0].files.image.sha256' <<< "$(held "$O" image_c)" || check "outdated: the new image_d did not read the new image_c: $(held "$O" image_d | jq -c '[.versions[].reads]')"
-cozy project -p "$O" approve image_c 1 > "$OUT/outdated-again.txt" 2>&1 || check "outdated: the version it held can't be approved again: $(cat "$OUT/outdated-again.txt")"
+in_project "$O" approve image_c 1 > "$OUT/outdated-again.txt" 2>&1 || check "outdated: the version it held can't be approved again: $(cat "$OUT/outdated-again.txt")"
 J '.assets[] | select(.name == "image_c") | .pinned and .approved == 1 and .standing == "out_of_date" and .versions == 2' <<< "$(status "$O")" || check "outdated: approved again: $(row "$O" image_c .)"
 # Edited, and an input gone as well: it can't be made again, so it stays, and says why.
 dropped "$O" image_b
@@ -1781,8 +1847,8 @@ assets:
     instructions: From <sheet>.
 YAML
 render "$S2" all || check "sheet: render all: $(tail -c 300 "$OUT/render.txt")"
-cozy project -p "$S2" approve sheet 1 > "$OUT/sheet-approve.txt" 2>&1 || check "sheet: approve: $(cat "$OUT/sheet-approve.txt")"
-cozy project -p "$S2" approve poster 1 > "$OUT/sheet-approve.txt" 2>&1 || check "sheet: approve poster: $(cat "$OUT/sheet-approve.txt")"
+in_project "$S2" approve sheet 1 > "$OUT/sheet-approve.txt" 2>&1 || check "sheet: approve: $(cat "$OUT/sheet-approve.txt")"
+in_project "$S2" approve poster 1 > "$OUT/sheet-approve.txt" 2>&1 || check "sheet: approve poster: $(cat "$OUT/sheet-approve.txt")"
 held=$(take_file "$S2" sheet image 0)
 dropped "$S2" image_one image_two
 status "$S2" > "$OUT/sheet-status.json"
@@ -1793,7 +1859,7 @@ runs_before2=$(cozy --json run ls --limit 0 | jq '.runs | length')
 render "$S2" all --outdated || check "sheet: --outdated: $(tail -c 300 "$OUT/render.txt")"
 { [ "$(cozy --json run ls --limit 0 | jq '.runs | length')" = "$runs_before2" ] && [ "$(made "$S2" sheet)" = 1 ] && [ "$(made "$S2" poster)" = 1 ]; } || check "sheet: --outdated sent a run: sheet $(made "$S2" sheet), poster $(made "$S2" poster): $(tail -c 300 "$OUT/render.txt")"
 J '.assets[] | select(.name == "sheet") | .pinned and .approved == 1 and .failure == null' <<< "$(status "$S2")" || check "sheet: --outdated moved it: $(row "$S2" sheet .)"
-cozy project -p "$S2" unapprove poster > "$OUT/sheet-unpin.txt" 2>&1 || check "sheet: unpin poster: $(cat "$OUT/sheet-unpin.txt")"
+in_project "$S2" unapprove poster > "$OUT/sheet-unpin.txt" 2>&1 || check "sheet: unpin poster: $(cat "$OUT/sheet-unpin.txt")"
 render "$S2" poster || check "sheet: what reads it, again: $(tail -c 300 "$OUT/render.txt")"
 grep -qF "$held" <<< "$(asked "$S2" poster)" || check "sheet: what reads it did not read its pinned file: $(asked "$S2" poster)"
 runs_before2=$(cozy --json run ls --limit 0 | jq '.runs | length')
@@ -1855,7 +1921,7 @@ added "$T" <<YAML
 YAML
 render "$T" all --missing || check "orphans: render all with doomed"
 gone_file=$(take_file "$T" doomed image 0)
-db_sql "$T" "UPDATE versions SET record = json_set(record, '\$.files.frame', '$gone_file') WHERE key = 'kept'"
+v1_fault "$T" "UPDATE versions SET record = json_set(record, '\$.files.frame', '$gone_file') WHERE key = 'kept'"
 dropped "$T" doomed
 added "$T" <<YAML
   second:
@@ -1865,10 +1931,10 @@ YAML
 render "$T" second || check "orphans: render second"
 local second_file; second_file=$(take_file "$T" second image 0)
 dropped "$T" second
-cozy --json project -p "$T" reclaim > "$OUT/reclaim.json" 2>&1 || check "orphans: reclaim: $(tail -c 300 "$OUT/reclaim.json")"
+in_project "$T" --json reclaim > "$OUT/reclaim.json" 2>&1 || check "orphans: reclaim: $(tail -c 300 "$OUT/reclaim.json")"
 J '[.orphans[].name] == ["doomed", "second"] and (.deleted | not)' "$OUT/reclaim.json" || check "orphans: reclaim lists $(jq -c . "$OUT/reclaim.json")"
 { J '.orphans | any(.name == "second" and .versions == 1)' "$OUT/reclaim.json" && [ -f "$T/files/${second_file#sha256:}.png" ]; } || check "orphans: a listing deleted something"
-cozy --json project -p "$T" reclaim --yes > "$OUT/reclaim.json" 2>&1 || check "orphans: reclaim --yes: $(tail -c 300 "$OUT/reclaim.json")"
+in_project "$T" --json reclaim --yes > "$OUT/reclaim.json" 2>&1 || check "orphans: reclaim --yes: $(tail -c 300 "$OUT/reclaim.json")"
 J '.deleted and .files >= 1 and .bytes > 0' "$OUT/reclaim.json" || check "orphans: reclaim --yes says $(jq -c . "$OUT/reclaim.json")"
 { J '(.orphans // []) == []' <<< "$(status "$T")" && [ "$(sql1 "$T" "SELECT count(*) FROM versions WHERE key LIKE 'doomed%' OR key LIKE 'second%'")" = 0 ]; } || check "orphans: their versions are still in project.db"
 [ ! -e "$T/files/${second_file#sha256:}.png" ] || check "orphans: a file nothing names was not deleted"
@@ -1881,10 +1947,10 @@ added "$T" <<YAML
     tool: $here/project/shots.py/slow
     seconds: 15
 YAML
-cozy project -p "$T" render waiting --on local > "$OUT/slow.txt" 2>&1 &
+in_project "$T" render waiting --on local > "$OUT/slow.txt" 2>&1 &
 local going=$!
 for _ in $(seq 60); do J '.busy' <<< "$(status "$T")" && break; sleep 0.5; done
-code=0; cozy project -p "$T" reclaim --yes > "$OUT/busy.txt" 2>&1 || code=$?
+code=0; in_project "$T" reclaim --yes > "$OUT/busy.txt" 2>&1 || code=$?
 { [ "$code" != 0 ] && grep -q 'rendering' "$OUT/busy.txt"; } || check "orphans: reclaim --yes while rendering (exit $code): $(tail -c 300 "$OUT/busy.txt")"
 wait "$going" || check "orphans: the slow render: $(tail -c 300 "$OUT/slow.txt")"
 }
@@ -1901,12 +1967,12 @@ assets:
     tool: $here/project/shots.py/slow
     seconds: 15
 YAML
-cozy project -p "$T" render waiting --on local > "$OUT/join-first.txt" 2>&1 &
+in_project "$T" render waiting --on local > "$OUT/join-first.txt" 2>&1 &
 first=$!
 n=''
 for _ in $(seq 240); do n=$(row "$T" waiting .status | sed -n 's/.*making (run \([0-9]*\)).*/\1/p'); [ -n "$n" ] && break; sleep 0.25; done
 [ -n "$n" ] || check "joining: the first render never showed a run: $(tail -c 300 "$OUT/join-first.txt")"
-cozy project -p "$T" render waiting --missing --on local > "$OUT/join-second.txt" 2>&1 &
+in_project "$T" render waiting --missing --on local > "$OUT/join-second.txt" 2>&1 &
 second=$!
 heard=''
 for _ in $(seq 12); do
@@ -1953,10 +2019,12 @@ assets:
     tool: $here/project/draw.py/draw
     instructions: Also from <slow>, and deleted while it waits.
 YAML
-id=$(cozy --json project -p "$W" status | jq -r .id)
+id=$(status "$W" | jq -r .id)
 api -N --max-time 120 "http://$ADDR/v1/events" > "$stream" 2> /dev/null &
 local tail=$!
-cozy project -p "$W" render all --queue --on local > "$OUT/walking-queue.txt" 2>&1 || check "walking: render: $(tail -c 300 "$OUT/walking-queue.txt")"
+show_events "$stream" "$id" || check "walking: project interest not held"
+api -f -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: walking-$RANDOM$RANDOM" \
+  -d '{"names":["all"],"on":["local"]}' "http://$ADDR/v1/projects/$id/runs" > "$OUT/walking-queue.txt" 2>&1 || check "walking: render: $(tail -c 300 "$OUT/walking-queue.txt")"
 J '[.board.jobs[].asset] as $a | (["running_gone", "reads_gone", "slow", "beside", "one", "two", "last", "gone_soon"] - $a) == []' <<< "$(status "$W")" || check "walking: not every job is on the board at once: $(status "$W" | jq -c '[.board.jobs[] | .asset]')"
 J '.board.jobs[] | select(.asset == "last") | .needs | contains(["one", "two"])' <<< "$(status "$W")" || check "walking: last doesn't say what it waits for: $(status "$W" | jq -c '.board.jobs[] | select(.asset == "last")')"
 for _ in $(seq 240); do run=$(status "$W" | jq -r '.board.jobs[] | select(.asset == "running_gone") | .run // empty'); [ -n "$run" ] && [ "$(cozy --json run show "$run" --once | jq -r .status)" = in_progress ] && break; sleep 0.25; done
@@ -1965,13 +2033,15 @@ for _ in $(seq 240); do run=$(status "$W" | jq -r '.board.jobs[] | select(.asset
 for _ in $(seq 120); do J '[.board.jobs[] | select(.asset == "slow" or .asset == "beside") | .run] | all' <<< "$(status "$W")" && break; sleep 0.25; done
 J '[.board.jobs[] | select(.asset == "slow" or .asset == "beside") | .run] | all' <<< "$(status "$W")" || check "walking: what reads nothing waited for the long job: $(status "$W" | jq -c '[.board.jobs[] | {asset, run}]')"
 [ "$(owed "$W")" -ge 1 ] || check "walking: what the walk owes isn't in project.db"
-dropped "$W" gone_soon
+project_api "$W" /yaml | perl -ne 'if (/^  gone_soon:/) { $skip = 1; next } $skip = 0 if /^ {0,2}\S/; print unless $skip' > "$OUT/walking-drop.yaml"
+project_api "$W" /yaml -X PUT -H 'Content-Type: application/yaml' --data-binary "@$OUT/walking-drop.yaml" > /dev/null || check "walking: hand deletion failed"
 for _ in $(seq 20); do J '.board.jobs[] | select(.asset == "gone_soon") | .state == "canceled"' <<< "$(status "$W")" && break; sleep 0.25; done
 api -o /dev/null -X DELETE "http://$ADDR/v1/projects/$id/assets/running_gone"
 back=$(api "http://$ADDR/v1/projects/$id/history" | jq -r '[.entries[] | select(.undone == null and (.names | index("running_gone")))][0].id')
 for _ in $(seq 60); do [ "$(cozy --json run show "$run" --once | jq -r .status)" = canceled ] && break; sleep 0.5; done
 [ "$(cozy --json run show "$run" --once | jq -r .status)" = canceled ] || check "walking: a deleted asset's run goes on billing: $(cozy --json run show "$run" --once | jq -c '{status, progress}')"
 for _ in $(seq 240); do J '.busy | not' <<< "$(status "$W")" && break; sleep 0.5; done
+soon told "$stream" ".type == \"board.updated\" and .project == \"$id\" and .board.ended != null" || check "walking: terminal board not delivered"
 kill "$tail" 2> /dev/null
 { [ "$(made "$W" slow)" = 1 ] && [ "$(made "$W" beside)" = 1 ] && [ "$(made "$W" one)" = 1 ] && [ "$(made "$W" two)" = 1 ] && [ "$(made "$W" last)" = 1 ]; } || check "walking: made $(status "$W" | jq -c '[.assets[] | {(.name): .versions}] | add')"
 for gone in gone_soon running_gone; do
@@ -1981,10 +2051,14 @@ done
 J '.board.jobs[] | select(.asset == "reads_gone") | .state == "failed" and (.error.message | test("running_gone was deleted"))' <<< "$(status "$W")" || check "walking: what read a deleted asset says $(status "$W" | jq -c '.board.jobs[] | select(.asset == "reads_gone")')"
 # Its delete undone, it is the asset, and not the render it stopped.
 J --argjson e "$back" '[.entries[].id] == [$e]' <<< "$(api -X POST -d "{\"entry\": $back}" "http://$ADDR/v1/projects/$id/history/undo")" || check "walking: undo didn't take back the DELETE (entry $back)"
-{ grep -q '^  running_gone:' <(cozy project -p "$W" export) && J '.busy | not' <<< "$(status "$W")" && [ "$(made "$W" running_gone)" = 0 ]; } || check "walking: put back, running_gone went again: $(status "$W" | jq -c '{busy, jobs: [.board.jobs[] | select(.asset == "running_gone")]}')"
+{ grep -q '^  running_gone:' <(project_api "$W" /yaml) && J '.busy | not' <<< "$(status "$W")" && [ "$(made "$W" running_gone)" = 0 ]; } || check "walking: put back, running_gone went again: $(status "$W" | jq -c '{busy, jobs: [.board.jobs[] | select(.asset == "running_gone")]}')"
 [ "$(owed "$W")" = 0 ] || check "walking: what the walk owed outlived the render"
 [ -z "$(find "$W/.runs" -type f 2> /dev/null)" ] || check "walking: left in .runs: $(find "$W/.runs" -type f)"
 grep -q "\"type\":\"job.updated\".*\"project\":\"$id\"\|\"project\":\"$id\".*\"type\":\"job.updated\"" "$stream" || check "walking: /v1/events told no job.updated: $(head -c 300 "$stream")"
+# Its end is the board's, told whole on the same stream, as status keeps it.
+sse "$stream" | J -s --arg id "$id" 'map(select(.type == "board.updated" and .project == $id)) | (length > 1) and (last.board.ended != null) and (first.board.ended == null)' \
+  || check "walking: /v1/events told no board.updated that began and ended it: $(sse "$stream" | jq -c --arg id "$id" 'select(.type == "board.updated" and .project == $id) | {seq: .board.seq, ended: .board.ended}' | tail -3)"
+J '.board.ended != null and .board.elapsed_ms != null' <<< "$(status "$W")" || check "walking: status's board doesn't say it ended: $(status "$W" | jq -c '.board | {elapsed_ms, ended}')"
 }
 
 walk_restarted() {
@@ -2004,7 +2078,7 @@ assets:
     tool: $here/project/draw.py/draw
     instructions: From <first> and <second>.
 YAML
-cozy project -p "$R" render all --queue --on local > "$OUT/walk-restarted.txt" 2>&1 || check "restarted: render: $(tail -c 300 "$OUT/walk-restarted.txt")"
+in_project "$R" render all --queue --on local > "$OUT/walk-restarted.txt" 2>&1 || check "restarted: render: $(tail -c 300 "$OUT/walk-restarted.txt")"
 for _ in $(seq 240); do run=$(status "$R" | jq -r '.board.jobs[] | select(.asset == "first") | .run // empty'); [ -n "$run" ] && [ "$(cozy --json run show "$run" --once | jq -r .status)" = in_progress ] && break; sleep 0.25; done
 [ "$(cozy --json run show "$run" --once | jq -r .status)" = in_progress ] || check "restarted: first isn't running: $(status "$R" | jq -c .board.jobs)"
 # A copy of the folder is a project of its own, with its own id, and goes on with none of what its render owes.
@@ -2014,7 +2088,7 @@ J '(.busy | not) and ((.board.jobs // []) | length == 0) and ((.queue // []) | l
 [ "$(owed "$copy")" = 0 ] || check "restarted: a copy kept what the render owes"
 pid=$(jq -r .pid "$lock")
 kill -9 "$pid"; while kill -0 "$pid" 2> /dev/null; do sleep 0.1; done
-cozy project ls > /dev/null || check "restarted: cozy doesn't answer after Calcifer was killed"
+fixture_projects > /dev/null || check "restarted: cozy doesn't answer after Calcifer was killed"
 ADDR=$(jq -r .address "$lock") TOKEN=$(jq -r .token "$lock")
 [ "$(jq -r .pid "$lock")" != "$pid" ] || check "restarted: Calcifer is still pid $pid"
 for _ in $(seq 240); do J '.busy | not' <<< "$(status "$R")" && break; sleep 0.5; done
@@ -2044,7 +2118,7 @@ assets:
     instructions: From <slow>.
 YAML
 render "$S" first || check "spend: first: $(tail -c 300 "$OUT/render.txt")"
-cozy project -p "$S" render slow reader --queue --on local > "$OUT/spend-queue.txt" 2>&1 || check "spend: render: $(tail -c 300 "$OUT/spend-queue.txt")"
+in_project "$S" render slow reader --queue --on local > "$OUT/spend-queue.txt" 2>&1 || check "spend: render: $(tail -c 300 "$OUT/spend-queue.txt")"
 for _ in $(seq 240); do run=$(status "$S" | jq -r '.board.jobs[] | select(.asset == "slow") | .run // empty'); [ -n "$run" ] && [ "$(cozy --json run show "$run" --once | jq -r .status)" = in_progress ] && break; sleep 0.25; done
 [ -n "$run" ] || check "spend: slow never ran"
 # A copy is a project of its own, and goes on with none of what this one owes.
@@ -2072,10 +2146,10 @@ assets:
     tool: $here/project/draw.py/draw
     instructions: Two.
 YAML
-cozy project -p "$A" render all -n 3 --on local > "$OUT/all-n.txt" 2>&1 || check "all -n: $(tail -c 300 "$OUT/all-n.txt")"
+in_project "$A" render all -n 3 --on local > "$OUT/all-n.txt" 2>&1 || check "all -n: $(tail -c 300 "$OUT/all-n.txt")"
 { [ "$(made "$A" first)" = 1 ] && [ "$(made "$A" second)" = 1 ]; } || check "all -n: made $(status "$A" | jq -c '[.assets[] | {(.name): .versions}] | add')"
 grep -q 'makes one of each' "$OUT/all-n.txt" || check "all -n: doesn't say so: $(cat "$OUT/all-n.txt")"
-cozy project -p "$A" render first -n 2 --on local > "$OUT/one-n.txt" 2>&1 || check "name -n: $(tail -c 300 "$OUT/one-n.txt")"
+in_project "$A" render first -n 2 --on local > "$OUT/one-n.txt" 2>&1 || check "name -n: $(tail -c 300 "$OUT/one-n.txt")"
 [ "$(made "$A" first)" = 3 ] || check "name -n: made $(made "$A" first) of first"
 }
 
@@ -2096,15 +2170,15 @@ assets:
     tool: $here/project/draw.py/draw
     instructions: Also from <first>.
 YAML
-cozy project -p "$T" render first --queue --on local > "$OUT/queue-1.txt" 2>&1 || check "queue: first: $(tail -c 300 "$OUT/queue-1.txt")"
-cozy project -p "$T" render second --queue --on local > "$OUT/queue-2.txt" 2>&1 || check "queue: second: $(tail -c 300 "$OUT/queue-2.txt")"
-cozy project -p "$T" render third --queue --on local > "$OUT/queue-3.txt" 2>&1 || check "queue: third: $(tail -c 300 "$OUT/queue-3.txt")"
+in_project "$T" render first --queue --on local > "$OUT/queue-1.txt" 2>&1 || check "queue: first: $(tail -c 300 "$OUT/queue-1.txt")"
+in_project "$T" render second --queue --on local > "$OUT/queue-2.txt" 2>&1 || check "queue: second: $(tail -c 300 "$OUT/queue-2.txt")"
+in_project "$T" render third --queue --on local > "$OUT/queue-3.txt" 2>&1 || check "queue: third: $(tail -c 300 "$OUT/queue-3.txt")"
 grep -q 'queued first' "$OUT/queue-1.txt" || check "queue: first said $(cat "$OUT/queue-1.txt")"
 grep -q 'queued third, after .*first' "$OUT/queue-3.txt" || check "queue: third said $(cat "$OUT/queue-3.txt")"
 J '[.queue[].name] == ["first", "second", "third"]' <<< "$(status "$T")" || check "queue: status shows $(status "$T" | jq -c .queue)"
-cozy project -p "$T" status > "$OUT/queue-status.txt" 2>&1
+in_project "$T" status > "$OUT/queue-status.txt" 2>&1
 grep -q '^queued: .*second, third' "$OUT/queue-status.txt" || check "queue: status says $(cat "$OUT/queue-status.txt")"
-cozy project -p "$T" cancel third > "$OUT/queue-cancel.txt" 2>&1 || check "queue: cancel: $(tail -c 300 "$OUT/queue-cancel.txt")"
+in_project "$T" cancel third > "$OUT/queue-cancel.txt" 2>&1 || check "queue: cancel: $(tail -c 300 "$OUT/queue-cancel.txt")"
 grep -q 'dropped third' "$OUT/queue-cancel.txt" || check "queue: cancel said $(cat "$OUT/queue-cancel.txt")"
 J '[.queue[].name] | index("third") == null' <<< "$(status "$T")" || check "queue: third is still queued: $(status "$T" | jq -c .queue)"
 for _ in $(seq 240); do J '.busy | not' <<< "$(status "$T")" && break; sleep 0.5; done
@@ -2125,14 +2199,14 @@ assets:
     tool: $here/project/draw.py/draw
     instructions: Also from <slow>.
 YAML
-cozy project -p "$B" render after also --queue --on local > "$OUT/queue-broken.txt" 2>&1 || check "broken: render after: $(tail -c 300 "$OUT/queue-broken.txt")"
-cozy project -p "$B" export > "$OUT/queue-broken.yaml"
+in_project "$B" render after also --queue --on local > "$OUT/queue-broken.txt" 2>&1 || check "broken: render after: $(tail -c 300 "$OUT/queue-broken.txt")"
+in_project "$B" export > "$OUT/queue-broken.yaml"
 { cat "$OUT/queue-broken.yaml"; printf '  : [ this does not read\n'; } > "$B.broken.yaml"
-code=0; cozy project -p "$B" import "$B.broken.yaml" > "$OUT/queue-broken-refused.txt" 2>&1 || code=$?
+code=0; in_project "$B" import "$B.broken.yaml" > "$OUT/queue-broken-refused.txt" 2>&1 || code=$?
 [ "$code" != 0 ] || check "broken: an edit that doesn't read was taken"
-cmp -s "$OUT/queue-broken.yaml" <(cozy project -p "$B" export) || check "broken: a refused edit changed the project: $(diff "$OUT/queue-broken.yaml" <(cozy project -p "$B" export) | head -5)"
+cmp -s "$OUT/queue-broken.yaml" <(in_project "$B" export) || check "broken: a refused edit changed the project: $(diff "$OUT/queue-broken.yaml" <(in_project "$B" export) | head -5)"
 J '.busy and ([.queue[].name] | index("after") != null)' <<< "$(status "$B")" || check "broken: the render stopped: $(status "$B" | jq -c '{busy, queue}')"
-cozy project -p "$B" cancel also > "$OUT/queue-broken-cancel.txt" 2>&1 || check "broken: cancel: $(tail -c 300 "$OUT/queue-broken-cancel.txt")"
+in_project "$B" cancel also > "$OUT/queue-broken-cancel.txt" 2>&1 || check "broken: cancel: $(tail -c 300 "$OUT/queue-broken-cancel.txt")"
 grep -q 'dropped also' "$OUT/queue-broken-cancel.txt" || check "broken: cancel said $(cat "$OUT/queue-broken-cancel.txt")"
 for _ in $(seq 240); do J '.busy | not' <<< "$(status "$B")" && break; sleep 0.5; done
 { [ "$(made "$B" slow)" = 1 ] && [ "$(made "$B" after)" = 1 ] && [ "$(made "$B" also)" = 0 ]; } || check "broken: made $(counts "$B")"
@@ -2153,7 +2227,7 @@ assets:
     tool: $here/project/draw.py/draw
     instructions: From <words> after <gate>.
 YAML
-cozy project -p "$W" render all --on local > "$OUT/queue-edit.txt" 2>&1 &
+in_project "$W" render all --on local > "$OUT/queue-edit.txt" 2>&1 &
 going=$!
 for _ in $(seq 120); do [ "$(status "$W" | jq '[.queue[]? | select(.name == "gate" and .run != null)] | length')" = 1 ] && break; sleep 0.25; done
 hand "$W" 's/instructions: Old words\./instructions: New words./'
@@ -2179,9 +2253,9 @@ assets:
     tool: $here/project/draw.py/draw
     instructions: Text one, after <gate>.
 YAML
-cozy project -p "$Q" render note --queue --on local > "$OUT/queue-two-1.txt" 2>&1 || check "two: first: $(tail -c 300 "$OUT/queue-two-1.txt")"
+in_project "$Q" render note --queue --on local > "$OUT/queue-two-1.txt" 2>&1 || check "two: first: $(tail -c 300 "$OUT/queue-two-1.txt")"
 hand "$Q" 's/Text one/Text two/'
-cozy project -p "$Q" render note --queue --on local > "$OUT/queue-two-2.txt" 2>&1 || check "two: second: $(tail -c 300 "$OUT/queue-two-2.txt")"
+in_project "$Q" render note --queue --on local > "$OUT/queue-two-2.txt" 2>&1 || check "two: second: $(tail -c 300 "$OUT/queue-two-2.txt")"
 for _ in $(seq 240); do J '.busy | not' <<< "$(status "$Q")" && break; sleep 0.5; done
 J --arg a "$(asked "$Q" note 0 | jq -r .input.instructions.text)" --arg b "$(asked "$Q" note 1 | jq -r .input.instructions.text)" -n '[$a, $b] | any(startswith("Text one")) and any(startswith("Text two"))' || check "two: note was made from: $(asked "$Q" note 0 | jq -r .input.instructions.text) / $(asked "$Q" note 1 | jq -r .input.instructions.text)"
 [ "$(sql1 "$Q" "SELECT count(*) FROM asked")" = 0 ] || check "two: a finished render left its text in project.db: $(sql "$Q" 'SELECT digest FROM asked')"
@@ -2200,9 +2274,9 @@ assets:
     tool: $here/project/draw.py/draw
     instructions: From <long>.
 YAML
-cozy project -p "$A" render all --queue --on local > "$OUT/queue-all.txt" 2>&1 || check "queue: render all: $(tail -c 300 "$OUT/queue-all.txt")"
+in_project "$A" render all --queue --on local > "$OUT/queue-all.txt" 2>&1 || check "queue: render all: $(tail -c 300 "$OUT/queue-all.txt")"
 for _ in $(seq 120); do [ "$(status "$A" | jq '[.queue[] | select(.run != null)] | length')" = 1 ] && break; sleep 0.5; done
-cozy project -p "$A" cancel all > "$OUT/queue-all-cancel.txt" 2>&1 || check "queue: cancel all: $(tail -c 300 "$OUT/queue-all-cancel.txt")"
+in_project "$A" cancel all > "$OUT/queue-all-cancel.txt" 2>&1 || check "queue: cancel all: $(tail -c 300 "$OUT/queue-all-cancel.txt")"
 { grep -q 'canceled run' "$OUT/queue-all-cancel.txt" && grep -q 'dropped after' "$OUT/queue-all-cancel.txt"; } || check "queue: cancel all said $(cat "$OUT/queue-all-cancel.txt")"
 for _ in $(seq 120); do J '(.busy | not) and (.queue // [] | length == 0)' <<< "$(status "$A")" && break; sleep 0.5; done
 J '(.busy | not) and (.queue // [] | length == 0)' <<< "$(status "$A")" || check "queue: after cancel all: $(status "$A" | jq -c '{busy, queue}')"
@@ -2228,8 +2302,8 @@ assets:
     instructions: <card> as a poster.
 YAML
 render "$T" fixed || check "every render: fixed: $(tail -c 300 "$OUT/render.txt")"
-cozy project -p "$T" approve fixed 1 > "$OUT/approve.txt" 2>&1 || check "every render: approve: $(tail -c 300 "$OUT/approve.txt")"
-line=$(grep -n '^    approved: ' <(cozy project -p "$T" export))
+in_project "$T" approve fixed 1 > "$OUT/approve.txt" 2>&1 || check "every render: approve: $(tail -c 300 "$OUT/approve.txt")"
+line=$(grep -n '^    approved: ' <(in_project "$T" export))
 render "$T" all || check "every render: render all: $(tail -c 300 "$OUT/render.txt")"
 says every-render "fixed is approved: skipped. Name it to make a new version, or unapprove it"
 render "$T" all || check "every render: render all again: $(tail -c 300 "$OUT/render.txt")"
@@ -2237,7 +2311,7 @@ render "$T" all || check "every render: render all again: $(tail -c 300 "$OUT/re
 grep -qF "$(take_file "$T" card image -1)" <<< "$(asked "$T" poster)" || check "every render: the poster did not read the newest card"
 J '[.versions[].seed] | unique | length == 2' <<< "$(held "$T" card)" || check "every render: a pass did not draw a new seed"
 render "$T" fixed || check "every render: naming the pinned: $(tail -c 300 "$OUT/render.txt")"
-{ [ "$(made "$T" fixed)" = 2 ] && [ "$(grep -n '^    approved: ' <(cozy project -p "$T" export))" = "$line" ] && [ "$(row "$T" fixed .approved)" = 1 ]; } || check "every render: naming the pinned moved its pin: $(grep -n 'image:' <(cozy project -p "$T" export)), $(row "$T" fixed .approved)"
+{ [ "$(made "$T" fixed)" = 2 ] && [ "$(grep -n '^    approved: ' <(in_project "$T" export))" = "$line" ] && [ "$(row "$T" fixed .approved)" = 1 ]; } || check "every render: naming the pinned moved its pin: $(grep -n 'image:' <(in_project "$T" export)), $(row "$T" fixed .approved)"
 render "$T" all --missing || check "every render: --missing: $(tail -c 300 "$OUT/render.txt")"
 { [ "$(made "$T" card)" = 2 ] && [ "$(made "$T" poster)" = 2 ] && [ "$(made "$T" fixed)" = 2 ]; } || check "every render: --missing made $(counts "$T")"
 }
@@ -2366,74 +2440,74 @@ printf 'version: 4\nassets: {}\n' | yaml_in "$T"
 ADDR=$(jq -r .address "$lock") TOKEN=$(jq -r .token "$lock")
 refuses() { # refuses <what> <what it says> <command…>
   local what=$1 says=$2 code=0; shift 2
-  cozy project -p "$T" "$@" > "$OUT/by-cli.txt" 2>&1 || code=$?
+  in_project "$T" "$@" > "$OUT/by-cli.txt" 2>&1 || code=$?
   [ "$code" != 0 ] && grep -qF -- "$says" "$OUT/by-cli.txt" || check "by the CLI: $what: exit $code: $(tail -c 300 "$OUT/by-cli.txt")"
 }
 # A list typed with `=` goes by what the tool declares: `beats` is a list, and text in a text field stays text whatever it looks like.
-cozy project -p "$T" add "$tool/told" typed instructions=plain > /dev/null || check "by the CLI: add typed"
-cozy project -p "$T" set typed 'beats=[{"description":"One","duration":3}]' 'instructions=[1, 2]' > /dev/null || check "by the CLI: set typed"
+in_project "$T" add "$tool/told" typed instructions=plain > /dev/null || check "by the CLI: add typed"
+in_project "$T" set typed 'beats=[{"description":"One","duration":3}]' 'instructions=[1, 2]' > /dev/null || check "by the CLI: set typed"
 J '(.asset.fields.beats | type) == "array" and .asset.fields.instructions == "[1, 2]"' <<< "$(held "$T" typed)" || check "by the CLI: fields aren't as the tool declares: $(held "$T" typed | jq -c .asset.fields)"
-cozy project -p "$T" delete typed > /dev/null || check "by the CLI: delete typed"
+in_project "$T" delete typed > /dev/null || check "by the CLI: delete typed"
 rows() { api "http://$ADDR/v1/projects/$(status "$T" | jq -r .id)/canvas"; }
-[ "$(cozy project -p "$T" import "$T/red.png" red_art)" = red_art ] || check "by the CLI: import did not print its name"
+[ "$(in_project "$T" import "$T/red.png" red_art)" = red_art ] || check "by the CLI: import did not print its name"
 # Read with this machine's Runtime, as a run reads it: a box doesn't wait on PyPI's.
-(cd "$T" && cozy --json run -p "$T" "$tool/still" instructions=primed --on local > /dev/null 2>&1) || check "by the CLI: a run to read the tool"
+(cd "$T" && in_project "$T" --json run "$tool/still" instructions=primed --on local > /dev/null 2>&1) || check "by the CLI: a run to read the tool"
 
-[ "$(cozy project -p "$T" add "$tool/still" drawn 'instructions=From the line' count=3 style=flat soft:=true at=400,120,360)" = drawn ] || check "by the CLI: add: no name"
+[ "$(in_project "$T" add "$tool/still" drawn 'instructions=From the line' count=3 style=flat soft:=true at=400,120,360)" = drawn ] || check "by the CLI: add: no name"
 J '.assets[] | select(.name == "drawn") | .tool != null and .fields.instructions == "From the line" and .fields.count == 3 and .fields.style == "flat" and .fields.soft == true' <<< "$(status "$T")" || check "by the CLI: add: $(row "$T" drawn .fields)"
 J '.cards.drawn == {"x": 400, "y": 120, "w": 360}' <<< "$(rows)" || check "by the CLI: add at=: $(rows | head -c 300)"
-refuses "a name taken" "cozy project set drawn" add "$tool/still" drawn
-[ "$(cozy project -p "$T" add "$tool/still")" = still_1 ] || check "by the CLI: add with no name takes what its tool calls it"
-[ "$(cozy project -p "$T" add "$tool/still")" = still_2 ] || check "by the CLI: a name cozy picks counts up"
-[ "$(cozy project -p "$T" add "$tool/slow")" = tool_1 ] || check "by the CLI: with no name of its tool's, its package's"
-cozy project -p "$T" delete still_1 still_2 tool_1 > /dev/null || check "by the CLI: delete of three"
-[ "$(cozy project -p "$T" add text mood 'text=Soft light.')" = mood ] || check "by the CLI: add text"
+refuses "a name taken" "cozy set drawn" add "$tool/still" drawn
+[ "$(in_project "$T" add "$tool/still")" = still_1 ] || check "by the CLI: add with no name takes what its tool calls it"
+[ "$(in_project "$T" add "$tool/still")" = still_2 ] || check "by the CLI: a name cozy picks counts up"
+[ "$(in_project "$T" add "$tool/slow")" = tool_1 ] || check "by the CLI: with no name of its tool's, its package's"
+in_project "$T" delete still_1 still_2 tool_1 > /dev/null || check "by the CLI: delete of three"
+[ "$(in_project "$T" add text mood 'text=Soft light.')" = mood ] || check "by the CLI: add text"
 printf 'text: |\n  Soft light,\n  a long way down.\n' > "$T/mood.yaml"
-cozy project -p "$T" set mood --input "$T/mood.yaml" > /dev/null || check "by the CLI: a text asset from a file"
+in_project "$T" set mood --input "$T/mood.yaml" > /dev/null || check "by the CLI: a text asset from a file"
 grep -q 'a long way down' <<< "$(row "$T" mood .fields.text)" || check "by the CLI: a text asset's words: $(row "$T" mood .)"
-cozy project -p "$T" delete mood > /dev/null || check "by the CLI: delete mood"
+in_project "$T" delete mood > /dev/null || check "by the CLI: delete mood"
 refuses "two names" "one name, not" add "$tool/still" one two
 refuses "a tool that makes nothing" "cozy package ls" add "$tool/words" nothing
 refuses "a place that isn't one" "at is x,y or x,y,w" add "$tool/still" nowhere at=here
 
-cozy project -p "$T" set drawn instructions='Plain words' count=4 'seed:=7' > /dev/null || check "by the CLI: set"
+in_project "$T" set drawn instructions='Plain words' count=4 'seed:=7' > /dev/null || check "by the CLI: set"
 J '.assets[] | select(.name == "drawn") | .fields.instructions == "Plain words" and .fields.count == 4 and .fields.seed == 7' <<< "$(status "$T")" || check "by the CLI: set: $(row "$T" drawn .fields)"
-cozy project -p "$T" set drawn style= > /dev/null || check "by the CLI: set style="
+in_project "$T" set drawn style= > /dev/null || check "by the CLI: set style="
 J '.assets[] | select(.name == "drawn") | .fields | has("style") | not' <<< "$(status "$T")" || check "by the CLI: style= did not clear it: $(row "$T" drawn .fields)"
 printf 'aspect_ratio: "16:9"\ncount: 2\n' > "$T/fields.yaml"
-cozy project -p "$T" set drawn --input "$T/fields.yaml" count=1 > /dev/null || check "by the CLI: set --input"
+in_project "$T" set drawn --input "$T/fields.yaml" count=1 > /dev/null || check "by the CLI: set --input"
 J '.assets[] | select(.name == "drawn") | .fields.aspect_ratio == "16:9" and .fields.count == 1' <<< "$(status "$T")" || check "by the CLI: set --input, a term over it: $(row "$T" drawn .fields)"
-printf 'count: 2\n' | cozy project -p "$T" set drawn --input - > /dev/null || check "by the CLI: set --input -"
+printf 'count: 2\n' | in_project "$T" set drawn --input - > /dev/null || check "by the CLI: set --input -"
 [ "$(row "$T" drawn .fields.count)" = 2 ] || check "by the CLI: set --input -: $(row "$T" drawn .fields)"
-cozy project -p "$T" set drawn "tool=$tool/told" > /dev/null || check "by the CLI: set tool="
+in_project "$T" set drawn "tool=$tool/told" > /dev/null || check "by the CLI: set tool="
 [ "$(row "$T" drawn .tool)" = "\"$tool/told\"" ] || check "by the CLI: tool= did not change what makes it: $(row "$T" drawn .tool)"
-cozy project -p "$T" set drawn "tool=$tool/still" > /dev/null || check "by the CLI: set tool= back"
-cozy project -p "$T" set drawn at=-50,75 > /dev/null || check "by the CLI: set at="
+in_project "$T" set drawn "tool=$tool/still" > /dev/null || check "by the CLI: set tool= back"
+in_project "$T" set drawn at=-50,75 > /dev/null || check "by the CLI: set at="
 J '.cards.drawn == {"x": -50, "y": 75}' <<< "$(rows)" || check "by the CLI: set at=: $(rows | head -c 300)"
-cozy project -p "$T" set DRAWN at=1,2,320 > /dev/null || check "by the CLI: set at=, in any case"
+in_project "$T" set DRAWN at=1,2,320 > /dev/null || check "by the CLI: set at=, in any case"
 J '.cards.drawn == {"x": 1, "y": 2, "w": 320} and (.cards | has("DRAWN") | not)' <<< "$(rows)" || check "by the CLI: a row under another spelling: $(rows | head -c 300)"
 refuses "nothing to set" "nothing to set" set drawn
 refuses "not a term" "isn't field=value" set drawn instructions
-refuses "nothing named that" "cozy project status" set no_such words=here
-refuses "no such asset's place" "cozy project status" set no_such at=1,2
+refuses "nothing named that" "cozy status" set no_such words=here
+refuses "no such asset's place" "cozy status" set no_such at=1,2
 
 render "$T" drawn || check "by the CLI: render drawn: $(tail -c 300 "$OUT/render.txt")"
-J '.asset.name == "drawn" and (.versions | length == 1)' <<< "$(cozy --json project -p "$T" status drawn)" || check "by the CLI: status of one: $(cozy --json project -p "$T" status drawn | head -c 300)"
-cozy project -p "$T" status drawn | grep -q 'Plain words' || check "by the CLI: status of one does not say its words"
-refuses "status of nothing" "cozy project status" status no_such
-line=$(cozy project -p "$T" delete drawn) || check "by the CLI: delete"
+J '.asset.name == "drawn" and (.versions | length == 1)' <<< "$(in_project "$T" --json status drawn)" || check "by the CLI: status of one: $(in_project "$T" --json status drawn | head -c 300)"
+in_project "$T" status drawn | grep -q 'Plain words' || check "by the CLI: status of one does not say its words"
+refuses "status of nothing" "cozy status" status no_such
+line=$(in_project "$T" delete drawn) || check "by the CLI: delete"
 line=${line##*$'\n'}
 J '.assets | all(.name != "drawn")' <<< "$(status "$T")" || check "by the CLI: delete left it"
-[[ $line =~ ^"cozy project -p $T undo "[0-9]+$ ]] || check "by the CLI: delete did not print what undoes it: $line"
-refuses "an entry the history hasn't" "cozy project history" undo 999999
-refuses "nothing named that" "cozy project status" delete no_such
-eval "$line" > /dev/null || check "by the CLI: what delete printed: $line"
+[[ $line =~ ^"cozy undo "[0-9]+$ ]] || check "by the CLI: delete did not print what undoes it: $line"
+refuses "an entry the history hasn't" "cozy history" undo 999999
+refuses "nothing named that" "cozy status" delete no_such
+(cd "$T" && eval "$line") > /dev/null || check "by the CLI: what delete printed: $line"
 J '.assets[] | select(.name == "drawn") | .versions == 1 and .fields.instructions == "Plain words"' <<< "$(status "$T")" || check "by the CLI: undo lost it: $(row "$T" drawn .)"
 J '.cards.drawn == {"x": 1, "y": 2, "w": 320}' <<< "$(rows)" || check "by the CLI: undo lost its place"
 # Again, it's undone already: nothing more.
-eval "$line" > "$OUT/by-cli.txt" 2>&1 || check "by the CLI: undone twice: $(tail -c 300 "$OUT/by-cli.txt")"
+(cd "$T" && eval "$line") > "$OUT/by-cli.txt" 2>&1 || check "by the CLI: undone twice: $(tail -c 300 "$OUT/by-cli.txt")"
 { grep -qF "nothing to undo" "$OUT/by-cli.txt" && [ "$(row "$T" drawn .versions)" = 1 ]; } || check "by the CLI: undone twice did more: $(tail -c 300 "$OUT/by-cli.txt")"
-J --arg p "cozy project -p $T undo " '.name == "drawn" and (.next[0] | startswith($p) and (ltrimstr($p) | test("^[0-9]+$")))' <<< "$(cozy --json project -p "$T" delete drawn)" || check "by the CLI: delete --json names no next"
+J --arg p "cozy undo " '.name == "drawn" and (.next[0] | startswith($p) and (ltrimstr($p) | test("^[0-9]+$")))' <<< "$(in_project "$T" --json delete drawn)" || check "by the CLI: delete --json names no next"
 }
 
 tool_functions() {
@@ -2486,12 +2560,12 @@ read=$(heard reader)
 grep -q PUBLIC-MADEUP-WORDS <<< "$read" || check "tools: a description didn't reach what mentions it: $read"
 ! grep -q SECRET-PROMPT-WORDS <<< "$read" || check "tools: a prompt crossed its mention: $read"
 J '.instructions.references | length == 1 and (.[0] | keys == ["description", "file", "key", "type"])' <<< "$read" || check "tools: a read carries more than what's meant for a reader: $read"
-cozy project -p "$T" approve madeup 1 > /dev/null 2>&1 || check "tools: approve madeup"
+in_project "$T" approve madeup 1 > /dev/null 2>&1 || check "tools: approve madeup"
 was=$(row "$T" reader .inputs)
 hand "$T" 's/instructions: SECRET-PROMPT-WORDS/instructions: SECRET-WORDS-EDITED/'
 [ "$(row "$T" reader .inputs)" = "$was" ] || check "tools: an approved read's instructions moved its reader's key"
 hand "$T" 's/instructions: SECRET-WORDS-EDITED/instructions: SECRET-PROMPT-WORDS/'
-cozy project -p "$T" unapprove madeup > /dev/null 2>&1 || check "tools: unapprove madeup"
+in_project "$T" unapprove madeup > /dev/null 2>&1 || check "tools: unapprove madeup"
 render "$T" alone || check "tools: a package alone stopped the render: $(tail -c 400 "$OUT/render.txt")"
 says tools "alone: a tool is a function, and"
 
@@ -2535,9 +2609,9 @@ for n in 1 2; do
   J '.name == "by_key"' <<< "$one" || check "tools: POST assets under a key: $one"
   [ "$n" = 2 ] || before=$(seq_of "$T")
 done
-[ "$(grep -c '^  by_key' <(cozy project -p "$T" export))" = 1 ] || check "tools: a key's retry made another asset"
+[ "$(grep -c '^  by_key' <(in_project "$T" export))" = 1 ] || check "tools: a key's retry made another asset"
 [ "$(seq_of "$T")" = "$before" ] || check "tools: a key's retry wrote again"
-cozy project -p "$T" delete by_key > /dev/null || check "tools: delete by_key"
+in_project "$T" delete by_key > /dev/null || check "tools: delete by_key"
 before=$(runs "$T")
 render "$T" kept_video || true
 says tools "needs its video"
@@ -2545,7 +2619,7 @@ says tools "needs its video"
 }
 
 # The tools (design/tools.md, weightless proofs 1 to 11): a box's fields, by its tool's types, as its function gets them through the one
-# binder that Render, `cozy project render` and `cozy run` share. The every-type tool is project/boxes.py's `shot`, the composed one
+# binder that Render, `cozy render` and `cozy run` share. The every-type tool is project/boxes.py's `shot`, the composed one
 # project/probe's `composed`, which calls project/probe-callee, and the takes are project/shots.py's.
 
 # tool_pictures <dir>: a project of three pictures (amy, with words, sky and the still coast makes), a 6 s video and a sound, and a text box.
@@ -2693,7 +2767,7 @@ assets:
   flaky: {tool: $here/project/probe/composed, page: <page>, darkness: 0.5, fails_until: $T/ready}
 YAML
 render "$T" flaky || code=$?
-failed=$(cozy --json run ls -p "$T" --limit 0 --state failed | jq -r '[.runs[] | select(.target | endswith("/composed"))][0].number // empty')
+failed=$(in_project "$T" --json run ls --limit 0 --state failed | jq -r '[.runs[] | select(.target | endswith("/composed"))][0].number // empty')
 { [ "$code" != 0 ] && [ -n "$failed" ] && [ "$(made "$T" flaky)" = 0 ]; } || check "retry: the deliberate failure (exit $code, run ${failed:-none}): $(tail -c 400 "$OUT/render.txt")"
 [ -z "$failed" ] || ended "$failed" > "$OUT/retry-failed.json" || true
 J '.status == "failed" and ([.calls[] | select(.function == "shade") | [.status, .memoized]] == [["succeeded", false]])' "$OUT/retry-failed.json" || check "retry: the failed run's shade: $(jq -c '{status, calls: [.calls[]? | {function, status, memoized}]}' "$OUT/retry-failed.json")"
@@ -2720,11 +2794,11 @@ assets:
   page: {approved: $page}
   long: {tool: $here/project/probe/composed, page: <page>, hold: 20}
 YAML
-cozy project -p "$T" render long --queue --on local > "$OUT/cancel.txt" 2>&1 || check "cancel: render: $(tail -c 300 "$OUT/cancel.txt")"
+in_project "$T" render long --queue --on local > "$OUT/cancel.txt" 2>&1 || check "cancel: render: $(tail -c 300 "$OUT/cancel.txt")"
 for _ in $(seq 240); do run=$(status "$T" | jq -r '.board.jobs[] | select(.asset == "long") | .run // empty'); [ -n "$run" ] && [ "$(cozy --json run show "$run" --once | jq -r .status)" = in_progress ] && break; sleep 0.5; done
 # Into shade's 20 s.
 sleep 6
-cozy project -p "$T" cancel long > /dev/null 2>&1 || check "cancel: cancel long"
+in_project "$T" cancel long > /dev/null 2>&1 || check "cancel: cancel long"
 for _ in $(seq 120); do [ "$(cozy --json run show "$run" --once | jq -r .status)" = canceled ] && break; sleep 0.5; done
 ended "$run" > "$OUT/cancel.json" || true
 J '.status == "canceled" and ((.calls // []) | all(.function == "composed" or .status == "canceled"))' "$OUT/cancel.json" || check "cancel: the render and its calls: $(jq -c '{status, calls}' "$OUT/cancel.json")"
@@ -2753,8 +2827,8 @@ added "$T" <<YAML
 YAML
 render "$T" coast same || { check "same: render: $(tail -c 500 "$OUT/render.txt")"; return; }
 rendered=$(asked "$T" same | jq -S -c .input)
-called=$(cozy --json --full project -p "$T" status same | jq -S -c '.call // .asset.call // empty')
-(cd "$T" && cozy --json run -p "$T" "$here/project/tool.py/told" 'instructions=<Amy> by <coast>, in <mood>.' 'shade:=0.5' 'beats:=[{"description": "<coast> at dusk.", "duration": 4}]' 'seed:=9' --on local) > "$OUT/same.ndjson" 2> "$OUT/same.err" \
+called=$(in_project "$T" --json --full status same | jq -S -c '.call // .asset.call // empty')
+(cd "$T" && in_project "$T" --json run "$here/project/tool.py/told" 'instructions=<Amy> by <coast>, in <mood>.' 'shade:=0.5' 'beats:=[{"description": "<coast> at dusk.", "duration": 4}]' 'seed:=9' --on local) > "$OUT/same.ndjson" 2> "$OUT/same.err" \
   || check "same: cozy run: $(tail -c 400 "$OUT/same.err")"
 ran=$(cozy --json --full run show "$(tail -1 "$OUT/same.ndjson" | jq -r .run.number)" --once | jq -S -c .request.input)
 [ "$rendered" = "$ran" ] || check "same: Render sent $rendered and cozy run $ran"
@@ -2768,7 +2842,7 @@ latents_stay() {
 step "a tool: a Latents result stays on its machine, any other file comes down, and only its own package reads its extras (weightless 9)"
 local T=$OUT/latents run held name url
 tool_pictures "$T"
-(cd "$T" && cozy --json run -p "$T" "$here/project/boxes.py/shot" 'plate=<walk>' --on local) > "$OUT/latents.ndjson" 2> "$OUT/latents.err" || { check "latents: the run: $(tail -c 400 "$OUT/latents.err")"; return; }
+(cd "$T" && in_project "$T" --json run "$here/project/boxes.py/shot" 'plate=<walk>' --on local) > "$OUT/latents.ndjson" 2> "$OUT/latents.err" || { check "latents: the run: $(tail -c 400 "$OUT/latents.err")"; return; }
 run=$(tail -1 "$OUT/latents.ndjson" | jq -r .run.number)
 ended "$run" > "$OUT/latents.json"
 # Landed, an output has a url that serves its bytes (cl-819): none for what stays.
@@ -2784,7 +2858,7 @@ done
 held=$(jq -r '.output[] | select(.name == "latents") | .sha256' "$OUT/latents.json")
 { sql1 "$T" "SELECT record FROM lock_files WHERE sha256 = '$held'" | grep -q '"machine":"local"' && [ ! -e "$T/files/${held#sha256:}" ]; } || check "latents: project.db doesn't say who holds them, or they came here: $(sql "$T" "SELECT record FROM lock_files WHERE sha256 = '$held'")"
 [ "$(api -o /dev/null -w '%{http_code}' "http://$ADDR/v1/runs/$run/outputs/latents")" = 409 ] || check "latents: the output route served what stays"
-(cd "$T" && cozy --json run -p "$T" "$here/project/shots.py/only_untyped" prompt=alone --on local) > "$OUT/untyped.ndjson" 2> "$OUT/untyped.err" || check "latents: an untyped run: $(tail -c 300 "$OUT/untyped.err")"
+(cd "$T" && in_project "$T" --json run "$here/project/shots.py/only_untyped" prompt=alone --on local) > "$OUT/untyped.ndjson" 2> "$OUT/untyped.err" || check "latents: an untyped run: $(tail -c 300 "$OUT/untyped.err")"
 tail -1 "$OUT/untyped.ndjson" | J '.run.output[0] | (.stays | not) and .url != null' || check "latents: an untyped File didn't come down: $(tail -1 "$OUT/untyped.ndjson" | jq -c .run.output)"
 url=$(tail -1 "$OUT/untyped.ndjson" | jq -r '.run.output[0].url')
 [ "$(api -o "$OUT/untyped.blob" -w '%{http_code}' "http://$ADDR$url")" = 200 ] && [ "sha256:$(sha "$OUT/untyped.blob")" = "$(tail -1 "$OUT/untyped.ndjson" | jq -r '.run.output[0].sha256')" ] \
@@ -2801,7 +2875,7 @@ J '.input.video | .type == "video" and .latents == null and (.file | startswith(
 J '.absent == 0' <<< "$(status "$T")" || check "latents: status counts what stays on its machine as absent: $(status "$T" | jq -c .absent)"
 }
 
-# Pick up from here: only the gesture fills a pickup, from `cozy project render`, Calcifer's route and `cozy run`, and the take it makes says so.
+# Pick up from here: only the gesture fills a pickup, from `cozy render`, Calcifer's route and `cozy run`, and the take it makes says so.
 pickup_take() {
 step "a tool: Pick up from here reaches the function, writes nothing, and its take records it (weightless 10)"
 local T=$OUT/pickup look before id input
@@ -2818,11 +2892,11 @@ YAML
 given() { cat "$(file_at "$T" "$(take_file "$T" "$1" given "${2:--1}")")"; }
 render "$T" clash shaped || { check "pickup: the first takes: $(tail -c 400 "$OUT/render.txt")"; return; }
 J '.pickup == null' <<< "$(given clash)" || check "pickup: a render with no gesture picked up: $(given clash)"
-before=$OUT/pickup-before.yaml; cozy project -p "$T" export > "$before"
+before=$OUT/pickup-before.yaml; in_project "$T" export > "$before"
 render "$T" clash 'pickup.take=<clash.1>' pickup.out_frame=12 || check "pickup: render: $(tail -c 400 "$OUT/render.txt")"
 J '.pickup.out_frame == 12' <<< "$(given clash)" || check "pickup: it didn't reach the function: $(given clash)"
 J '.input.pickup | .out_frame == 12 and .take.type == "video" and (.take.file | startswith("sha256:"))' <<< "$(asked "$T" clash)" || check "pickup: the call: $(asked "$T" clash | jq -c .input.pickup)"
-{ cmp -s "$before" <(cozy project -p "$T" export) && ! grep -q pickup <(cozy project -p "$T" export); } || check "pickup: the boxes changed: $(diff "$before" <(cozy project -p "$T" export))"
+{ cmp -s "$before" <(in_project "$T" export) && ! grep -q pickup <(in_project "$T" export); } || check "pickup: the boxes changed: $(diff "$before" <(in_project "$T" export))"
 J '.versions[-1].pickup == {"take": "<clash.1>", "out_frame": 12} and .versions[0].pickup == null' <<< "$(held "$T" clash)" || check "pickup: the take doesn't record it: $(held "$T" clash | jq -c '[.versions[] | {number, pickup}]')"
 says pickup "picks up <clash.1> at frame 12"
 # On the frames the tool's take lands on, with its own extras.
@@ -2839,7 +2913,7 @@ api -X POST -H "Idempotency-Key: pickup-$RANDOM$RANDOM" -d '{"names": ["clash"],
 for _ in $(seq 240); do [ "$(made "$T" clash)" = 3 ] && J '.busy | not' <<< "$(status "$T")" && break; sleep 0.5; done
 J '.versions[-1].pickup == {"take": "<clash.2>", "out_frame": 24}' <<< "$(held "$T" clash)" && J '.pickup.out_frame == 24' <<< "$(given clash)" || check "pickup: POST runs: $(cat "$OUT/pickup-route.json") $(held "$T" clash | jq -c '[.versions[] | {number, pickup}]')"
 # `cozy run`, by the same binder.
-(cd "$T" && cozy --json run -p "$T" "$here/project/shots.py/shoot" 'summary=Two lights meet on <look>.' 'pickup.take=<clash.1>' pickup.out_frame=30 --on local) > "$OUT/pickup-run.ndjson" 2> "$OUT/pickup-run.err" || check "pickup: cozy run: $(tail -c 300 "$OUT/pickup-run.err")"
+(cd "$T" && in_project "$T" --json run "$here/project/shots.py/shoot" 'summary=Two lights meet on <look>.' 'pickup.take=<clash.1>' pickup.out_frame=30 --on local) > "$OUT/pickup-run.ndjson" 2> "$OUT/pickup-run.err" || check "pickup: cozy run: $(tail -c 300 "$OUT/pickup-run.err")"
 input=$(cozy --json --full run show "$(tail -1 "$OUT/pickup-run.ndjson" | jq -r .run.number)" --once | jq -c .request.input)
 J '.pickup.out_frame == 30 and .pickup.take.type == "video" and (.summary.references | map(.key) == ["look"])' <<< "$input" || check "pickup: cozy run's call: $input"
 # Written in the file, it's said and not sent.
@@ -2857,7 +2931,7 @@ if [ "$(cozy --json machine ls | jq '[.machines[] | select(.kind != "local" and 
   echo "another machine is up: release-gate/sessions/run-no-on.sh is that case"; return 0
 fi
 mkdir -p "$T"; printf 'version: 4\nassets: {}\n' | yaml_in "$T"
-(cd "$T" && cozy --json run -p "$T" "$here/project/tool.py/still" 'instructions=Wherever it ends first.') > "$OUT/no-on.ndjson" 2> "$OUT/no-on.err" || { check "no --on: $(tail -c 300 "$OUT/no-on.err")"; return; }
+(cd "$T" && in_project "$T" --json run "$here/project/tool.py/still" 'instructions=Wherever it ends first.') > "$OUT/no-on.ndjson" 2> "$OUT/no-on.err" || { check "no --on: $(tail -c 300 "$OUT/no-on.err")"; return; }
 tail -1 "$OUT/no-on.ndjson" | J '.run.machine == "local" and .run.status == "completed"' || check "no --on: it went to $(tail -1 "$OUT/no-on.ndjson" | jq -c '.run | {machine, status}')"
 }
 
@@ -2895,14 +2969,14 @@ assets:
       - clips:
           - <bad>
 YAML
-cozy project -p "$U" render all --on local > "$OUT/render.txt" 2>&1 || code=$?
+in_project "$U" render all --on local > "$OUT/render.txt" 2>&1 || code=$?
 [ "$code" = 0 ] || check "unreadable: render exited $code: $(tail -c 400 "$OUT/render.txt")"
 says unreadable "film.mp4 is cut without bad: "
 says unreadable "holds no video ffprobe reads"
 says unreadable "(without bad: ffprobe can't read it)"
 [ "$(frames_of "$U/film.mp4")" = 168 ] || check "unreadable: the film is $(frames_of "$U/film.mp4") frames, not good's 96 and the still's 72"
 J --arg bad "bad: ffprobe can't read it" '.cuts[] | select(.cut == "film.mp4") | .without == [$bad]' <<< "$(status "$U")" || check "unreadable: status: $(status "$U" | jq -c .cuts)"
-cozy project -p "$U" status 2>&1 | grep -qF "(without bad: ffprobe can't read it" || check "unreadable: status doesn't say what it went without"
+in_project "$U" status 2>&1 | grep -qF "(without bad: ffprobe can't read it" || check "unreadable: status doesn't say what it went without"
 step "a project: with no clip to use, there is no film, or the one that stands stays, and no version is made"
 says unreadable "hopeless.mp4 isn't cut, and no version is made: none of its clips can be used"
 [ ! -e "$U/hopeless.mp4" ] || check "unreadable: a film was made of nothing"
@@ -2967,7 +3041,24 @@ YAML
 render "$T" edit || check "healing: first cut: $(tail -c 400 "$OUT/render.txt")"
 J '.cuts[0].frames == 288' <<< "$(status "$T")" || check "healing: the whole film: $(status "$T" | jq -c .cuts)"
 local whole; whole=$(take_file "$T" edit video)
-db_replace "$T" "${whole#sha256:}" "$(sha "$T/short.mp4")"
+if [ "$(sql1 "$T" 'PRAGMA user_version')" = 2 ]; then
+  # A relational query projection is no longer authoritative. Form a REAL historical v1
+  # fixture with the bad short-film reference, then let the actual first-open migration and
+  # normal CLI render repair it. Do not weaken the out-of-date/full-length assertions.
+  local historical=$OUT/healing-v1
+  mkdir -p "$historical"; cp -R "$T/files" "$historical/files"; cp "$T/short.mp4" "$historical/short.mp4"
+  python3 - "$T/project.db" "$historical/project.db" "${whole#sha256:}" "$(sha "$T/short.mp4")" <<'PYHEAL'
+import sqlite3,sys
+with sqlite3.connect(f'file:{sys.argv[1]}?mode=ro',uri=True) as source:
+    with sqlite3.connect(sys.argv[2]) as target:
+        source.backup(target)
+        target.executescript('DROP TABLE crdt_document; DROP TABLE crdt_changes; PRAGMA user_version=1;')
+        target.execute('UPDATE versions SET record=replace(record,?,?)',(sys.argv[3],sys.argv[4]))
+PYHEAL
+  T=$historical
+else
+  db_replace "$T" "${whole#sha256:}" "$(sha "$T/short.mp4")"
+fi
 rm -f "$T/edit.mp4"; cp "$T/short.mp4" "$T/edit.mp4"
 [ "$(row "$T" edit .standing)" = '"out_of_date"' ] || check "healing: a short film stands as its state: $(row "$T" edit .status)"
 render "$T" all --missing || check "healing: render: $(tail -c 400 "$OUT/render.txt")"
@@ -2978,6 +3069,9 @@ version=$(held "$T" edit | jq '.versions[-1].number')
 render "$T" edit || check "healing: naming it: $(tail -c 400 "$OUT/render.txt")"
 says healing "(unchanged)"
 [ "$(held "$T" edit | jq '.versions[-1].number')" = "$version" ] || check "healing: the same bytes made a new version: $(tail -c 400 "$OUT/render.txt")"
+if [ "$(sql1 "$T" 'PRAGMA user_version')" = 2 ]; then
+  [ "$(sql1 "$T" "SELECT count(*) FROM versions WHERE json_extract(record,'$.run') IS NOT NULL AND json_type(record,'$.run_id') IS NOT 'text'")" = 0 ] || check "healing: a new generated version lost its globally stable run id"
+fi
 }
 
 # Takes cut in the walk that lands them, new bytes nothing has measured. First in the project part: on a new computer this is also
@@ -3038,8 +3132,8 @@ render "$T" all || code=$?
 [ "$code" != 0 ] || check "stops: render exited 0: $(tail -c 400 "$OUT/render.txt")"
 says stops "runs failed the same way, so this render sends it nothing more"
 says stops "rendered 0 of 8; "
-says stops "cozy project render all --missing --on local"
-failed=$(cozy --json run ls -p "$T" --limit 0 --state failed | jq '.runs | length')
+says stops "cozy render all --missing --on local"
+failed=$(in_project "$T" --json run ls --limit 0 --state failed | jq '.runs | length')
 [ "$failed" -lt 8 ] || check "stops: $failed of 8 runs ran: $(tail -c 400 "$OUT/render.txt")"
 }
 
@@ -3064,7 +3158,7 @@ assets:
     tool: $here/project/shots.py/shoot
     summary: <look> after <broken>.
 YAML
-tried() { cozy --json run ls -p "$T" --limit 0 --state failed | jq '[.runs[] | select(.target | endswith("/crash"))] | length'; }
+tried() { in_project "$T" --json run ls --limit 0 --state failed | jq '[.runs[] | select(.target | endswith("/crash"))] | length'; }
 render "$T" all || code=$?
 [ "$code" != 0 ] || check "failed once: render exited 0: $(tail -c 400 "$OUT/render.txt")"
 [ "$(tried)" = 1 ] || check "failed once: the walk sent it $(tried) times: $(tail -c 600 "$OUT/render.txt")"
@@ -3109,7 +3203,7 @@ says absent "film.mp4 is cut without b"
 says absent "(without b: not on this computer)"
 [ "$(frames_of "$T/film.mp4")" = 288 ] || check "absent: the film is $(frames_of "$T/film.mp4") frames, not the 288 of what it could have"
 J '.cuts[0].without == ["b: not on this computer"]' <<< "$(status "$T")" || check "absent: status: $(status "$T" | jq -c .cuts)"
-cozy project -p "$T" status 2>&1 | grep -qF '(without b: not on this computer)' || check "absent: status doesn't say what it went without"
+in_project "$T" status 2>&1 | grep -qF '(without b: not on this computer)' || check "absent: status doesn't say what it went without"
 [ "$(made "$T" film)" = 2 ] || check "absent: the short film is no new version: $(made "$T" film)"
 ls "$T/files/$first"* > /dev/null 2>&1 || check "absent: the longer film went"
 prefix "$T" "$T/b.mp4" > /dev/null
@@ -3216,18 +3310,18 @@ hand "$T" 's/^          - <a>$/          - <a>\n          - <b>/'
 render "$T" edit || check "edits: second cut: $(tail -c 400 "$OUT/render.txt")"
 two=$(sha "$T/edit.mp4")
 [ "$one" != "$two" ] || check "edits: the second cut is the first"
-cozy project -p "$T" status > "$OUT/edits-status.txt" 2>&1 || check "edits: cozy project status can't read a project with a cut: $(tail -c 300 "$OUT/edits-status.txt")"
-cozy --json --full project -p "$T" status > "$OUT/edits-status.json" 2> "$OUT/edits-status.err" || check "edits: cozy --json project status can't read a project with a cut: $(tail -c 300 "$OUT/edits-status.err")"
+in_project "$T" status > "$OUT/edits-status.txt" 2>&1 || check "edits: cozy status can't read a project with a cut: $(tail -c 300 "$OUT/edits-status.txt")"
+in_project "$T" --json --full status > "$OUT/edits-status.json" 2> "$OUT/edits-status.err" || check "edits: cozy --json status can't read a project with a cut: $(tail -c 300 "$OUT/edits-status.err")"
 J '[.assets[] | select(.name == "edit") | .prefixes[].timeline.tracks[0].clips[].sha256] | length == 3 and all(startswith("sha256:"))' "$OUT/edits-status.json" || check "edits: a clip's one hash: $(jq -c '.assets[] | select(.name == "edit") | .prefixes' "$OUT/edits-status.json")"
 J '.assets[] | select(.name == "edit") | (.prefixes | length) == 2 and (.prefixes[0].from == ["a"]) and (.prefixes[1].from == ["a", "b"])' <<< "$(status "$T")" || check "edits: status: $(row "$T" edit .prefixes)"
 ls "$T/files/$one"* > /dev/null 2>&1 || check "edits: the first film is gone from files/"
 render "$T" edit || check "edits: naming it: $(tail -c 400 "$OUT/render.txt")"
 says edits "(unchanged)"
 [ "$(made "$T" edit)" = 2 ] || check "edits: the same pieces made a version: $(made "$T" edit)"
-cozy project -p "$T" approve edit "$(held "$T" edit | jq '.versions[0].number')" > "$OUT/edits-approve.txt" 2>&1 || check "edits: approve: $(tail -c 300 "$OUT/edits-approve.txt")"
+in_project "$T" approve edit "$(held "$T" edit | jq '.versions[0].number')" > "$OUT/edits-approve.txt" 2>&1 || check "edits: approve: $(tail -c 300 "$OUT/edits-approve.txt")"
 [ "$(sha "$T/edit.mp4")" = "$one" ] || check "edits: edit.mp4 isn't the approved film: $(tail -c 300 "$OUT/edits-approve.txt")"
 [ "$(sha "$T/edit.otio")" = "$first_timeline" ] || check "edits: edit.otio isn't the approved film's"
-cozy project -p "$T" unapprove edit > "$OUT/edits-unpin.txt" 2>&1 || check "edits: unpin: $(tail -c 300 "$OUT/edits-unpin.txt")"
+in_project "$T" unapprove edit > "$OUT/edits-unpin.txt" 2>&1 || check "edits: unpin: $(tail -c 300 "$OUT/edits-unpin.txt")"
 [ "$(sha "$T/edit.mp4")" = "$two" ] || check "edits: edit.mp4 didn't go back to the state: $(tail -c 300 "$OUT/edits-unpin.txt")"
 [ "$(made "$T" edit)" = 2 ] || check "edits: choosing made a version: $(made "$T" edit)"
 }
@@ -3251,7 +3345,7 @@ assets:
     seconds: 12
 YAML
 render "$T" old whole || check "rename: first render: $(tail -c 400 "$OUT/render.txt")"
-cozy project -p "$T" render busy --on local > "$OUT/rename-busy.txt" 2>&1 &
+in_project "$T" render busy --on local > "$OUT/rename-busy.txt" 2>&1 &
 going=$!
 n=''
 for _ in $(seq 120); do n=$(row "$T" busy .status | sed -n 's/.*making (run \([0-9]*\)).*/\1/p'); [ -n "$n" ] && break; sleep 0.25; done
@@ -3259,10 +3353,10 @@ for _ in $(seq 120); do n=$(row "$T" busy .status | sed -n 's/.*making (run \([0
 # By hand, its export's import is the rename (cl-803): nothing more to run.
 hand "$T" 's/^  old:/  new:/'
 [ "$(made "$T" new)" = 1 ] || check "rename: new has $(made "$T" new) versions during the render"
-cozy project -p "$T" rename whole entire > "$OUT/rename.txt" 2>&1 || check "rename: the one call, during a render: $(tail -c 300 "$OUT/rename.txt")"
-grep -q '^  entire:$' <(cozy project -p "$T" export) || check "rename: the file did not change at once: $(cozy project -p "$T" export)"
+in_project "$T" rename whole entire > "$OUT/rename.txt" 2>&1 || check "rename: the one call, during a render: $(tail -c 300 "$OUT/rename.txt")"
+grep -q '^  entire:$' <(in_project "$T" export) || check "rename: the file did not change at once: $(in_project "$T" export)"
 [ "$(made "$T" entire)" = 1 ] || check "rename: entire has $(made "$T" entire) versions during the render"
-cozy project -p "$T" rename busy going > "$OUT/rename.txt" 2>&1 || check "rename: what's rendering: $(tail -c 300 "$OUT/rename.txt")"
+in_project "$T" rename busy going > "$OUT/rename.txt" 2>&1 || check "rename: what's rendering: $(tail -c 300 "$OUT/rename.txt")"
 wait "$going" || check "rename: the render: $(tail -c 300 "$OUT/rename-busy.txt")"
 [ "$(made "$T" new)" = 1 ] || check "rename: new has $(made "$T" new) versions after the render ended"
 [ "$(made "$T" entire)" = 1 ] || check "rename: entire has $(made "$T" entire) versions after the render ended"
@@ -3302,11 +3396,11 @@ assets:
           - <clash>
 YAML
 render "$T" all || check "renames: render: $(tail -c 300 "$OUT/render.txt")"
-cozy project -p "$T" approve framed 1 > /dev/null || check "renames: approve"
+in_project "$T" approve framed 1 > /dev/null || check "renames: approve"
 before=$(counts "$T")
-cozy project -p "$T" rename still picture > /dev/null || check "renames: a read"
-cozy project -p "$T" rename mood tone > /dev/null || check "renames: a text asset"
-cozy project -p "$T" rename clash fight > /dev/null || check "renames: a clip"
+in_project "$T" rename still picture > /dev/null || check "renames: a read"
+in_project "$T" rename mood tone > /dev/null || check "renames: a text asset"
+in_project "$T" rename clash fight > /dev/null || check "renames: a clip"
 # By hand, the import is the rename: an approved one too.
 hand "$T" 's/^  poster:$/  print:/'
 hand "$T" 's/^  framed:$/  hung:/'
@@ -3316,7 +3410,7 @@ render "$T" all --missing || check "renames: render what's missing: $(tail -c 30
 [ "$(counts "$T" | tr -d '"' | sed 's/picture/still/; s/tone/mood/; s/fight/clash/; s/print/poster/; s/hung/framed/')" = "$(tr -d '"' <<< "$before")" ] || check "renames: something ran: $before then $(counts "$T")"
 
 step "a project: a rename by hand keeps the box's versions and approval, and puts nothing out of date; a description edit does (weightless 4)"
-# As an editor saves it, with no `cozy project rename`: a read and its mentions, and an approved box.
+# As an editor saves it, with no `cozy rename`: a read and its mentions, and an approved box.
 hand "$T" 's/^  picture:$/  painting:/; s/<picture>/<painting>/g; s/^  hung:$/  shown:/'
 J '[.assets[] | select(.standing != "current") | {name, status}] == []' <<< "$(status "$T")" || check "renames: by hand, out of date: $(status "$T" | jq -c '[.assets[] | select(.standing != "current") | {name, status}]')"
 { [ "$(made "$T" painting)" = 1 ] && [ "$(made "$T" shown)" = 1 ] && J '.versions[-1].approved' <<< "$(held "$T" shown)"; } || check "renames: by hand, a box lost its versions or approval: $(counts "$T"), $(held "$T" shown | jq -c '.versions')"
@@ -3347,7 +3441,7 @@ render "$T" all || code=$?
 [ "$code" != 0 ] || check "once: render exited 0"
 [ "$(grep -v render_incomplete "$OUT/render.txt" | grep -c 'pyproject.toml')" = 1 ] || check "once: not said once: $(tail -c 400 "$OUT/render.txt")"
 says once "rendered 0 of 3; 3 failed"
-says once "cozy project render all --missing --on local"
+says once "cozy render all --missing --on local"
 }
 
 # The two kinds of pieces, in frames; two cuts side by side, each its own film and timeline; an edit recut on approve with no machine;
@@ -3457,7 +3551,7 @@ render "$S" all || check "recut: render all: $(tail -c 300 "$OUT/render.txt")"
 hand "$S" 's/summary: One\./summary: Two./; s/^    tracks:$/    fps: 30\n$&/'
 render "$S" look --missing || check "recut: render look"
 says recut "which is out of date"
-cozy project -p "$S" approve shot 1 > "$OUT/approve.txt" 2>&1 || check "recut: approve: $(tail -c 300 "$OUT/approve.txt")"
+in_project "$S" approve shot 1 > "$OUT/approve.txt" 2>&1 || check "recut: approve: $(tail -c 300 "$OUT/approve.txt")"
 [ -s "$S/edit.mp4" ] || check "recut: approve lost edit.mp4"
 rm "$S/edit.mp4"
 render "$S" look --missing || check "recut: render look again"
@@ -3523,7 +3617,7 @@ YAML
 render "$P" all || check "cuts: the HTTP surface's project: $(tail -c 300 "$OUT/render.txt")"
 }
 
-# `cozy project import` by path and URL: one call, a real file, a name, one constant, with no machine. Then what the
+# `cozy import` by path and URL: one call, a real file, a name, one constant, with no machine. Then what the
 # page does by the same routes: a project by name, bytes by parts and resumed, an element by hash, its canvas row, its thumbnail.
 imports() {
 step "a project: import by path and by URL, and the name it gets"
@@ -3532,30 +3626,30 @@ local seed=https://github.com/cozy-creator/cozy-creator/raw/master/release-gate/
 local lost=https://raw.githubusercontent.com/cozy-creator/cozy-creator/master/release-gate/ref/no-such.jpg
 ADDR=$(jq -r .address "$lock") TOKEN=$(jq -r .token "$lock")
 mkdir -p "$U"; printf 'version: 4\nassets: {}\n' | yaml_in "$U"
-name=$(cozy project -p "$U" import "$seed" 2> "$OUT/import-url.err") || check "import: a URL: $(tail -c 300 "$OUT/import-url.err")"
+name=$(in_project "$U" import "$seed" 2> "$OUT/import-url.err") || check "import: a URL: $(tail -c 300 "$OUT/import-url.err")"
 hash=$(sha256sum "$U"/files/*.jpg | cut -c1-64)
 { [ "$name" = seed ] && [ ! -L "$U/files/$hash.jpg" ] && approved_in "$U" seed | grep -Eq "^    approved: \"?${hash:0:12}\"?$"; } \
-  || check "import: a URL did not print its name, land as a real file and become one constant: $name; $(cozy project -p "$U" export); $(ls -l "$U/files" 2>&1 | head -3)"
+  || check "import: a URL did not print its name, land as a real file and become one constant: $name; $(in_project "$U" export); $(ls -l "$U/files" 2>&1 | head -3)"
 [ "$(row "$U" seed .pinned)" = true ] || check "import: status does not show seed as a constant: $(row "$U" seed .)"
 ! sql "$U" "SELECT record FROM lock_files UNION ALL SELECT record FROM versions UNION ALL SELECT value FROM fields" | grep -q github || check "import: project.db names the URL"
-code=0; cozy project -p "$U" import "$lost" > "$OUT/import-lost.txt" 2>&1 || code=$?
+code=0; in_project "$U" import "$lost" > "$OUT/import-lost.txt" 2>&1 || code=$?
 [ "$code" != 0 ] || check "import: a URL that is not there was accepted"
 printf 'not a picture\n' > "$U/note.txt"
-code=0; cozy project -p "$U" import "$U/note.txt" > "$OUT/import-txt.txt" 2>&1 || code=$?
+code=0; in_project "$U" import "$U/note.txt" > "$OUT/import-txt.txt" 2>&1 || code=$?
 [ "$code" != 0 ] || check "import: a text file was accepted"
 still "$U/Kyogre Art (1).png" red
-[ "$(cozy project -p "$U" import "$U/Kyogre Art (1).png")" = kyogre_art_1 ] || check "import: a stem is not lower-cased and made a name"
-[ "$(cozy project -p "$U" import "$U/Kyogre Art (1).png" 'Hero.Sheet one')" = Hero_Sheet_one ] || check "import: a written name does not keep its case, with its dot and space as _ (a dot is a sub-selector, 7a5dd659b)"
-code=0; cozy project -p "$U" import "$U/Kyogre Art (1).png" hero.sheet-one > "$OUT/import-taken.txt" 2>&1 || code=$?
+[ "$(in_project "$U" import "$U/Kyogre Art (1).png")" = kyogre_art_1 ] || check "import: a stem is not lower-cased and made a name"
+[ "$(in_project "$U" import "$U/Kyogre Art (1).png" 'Hero.Sheet one')" = Hero_Sheet_one ] || check "import: a written name does not keep its case, with its dot and space as _ (a dot is a sub-selector, 7a5dd659b)"
+code=0; in_project "$U" import "$U/Kyogre Art (1).png" hero.sheet-one > "$OUT/import-taken.txt" 2>&1 || code=$?
 { [ "$code" != 0 ] && grep -q 'Hero_Sheet_one is in the project already' "$OUT/import-taken.txt"; } || check "import: a typed name taken in another case, with - for _ (exit $code): $(tail -c 300 "$OUT/import-taken.txt")"
-[ "$(cozy project -p "$U" import "$U/Kyogre Art (1).png")" = kyogre_art_2 ] || check "import: a picked name doesn't count up"
+[ "$(in_project "$U" import "$U/Kyogre Art (1).png")" = kyogre_art_2 ] || check "import: a picked name doesn't count up"
 [ "$(ls "$U/files" | grep -c "^$(sha "$U/Kyogre Art (1).png")")" = 1 ] || check "import: three elements of one file are not one file: $(ls "$U/files")"
-[ "$(cozy --json project -p "$U" import "$U/Kyogre Art (1).png" | jq -r .already)" = true ] || check "import: a file the project has does not say already"
+[ "$(in_project "$U" --json import "$U/Kyogre Art (1).png" | jq -r .already)" = true ] || check "import: a file the project has does not say already"
 still "$U/joins.png" blue
-name=$(cozy project -p "$U" import "$U/joins.png" --into kyogre_art_1 2> "$OUT/import-into.err") || check "import --into: $(tail -c 300 "$OUT/import-into.err")"
+name=$(in_project "$U" import "$U/joins.png" --into kyogre_art_1 2> "$OUT/import-into.err") || check "import --into: $(tail -c 300 "$OUT/import-into.err")"
 [ "$name" = kyogre_art_1.2 ] || check "import --into: a file did not join kyogre_art_1 as its version 2: $name"
 [ "$(row "$U" kyogre_art_1 .versions)" = 2 ] || check "import --into: status does not count two versions: $(row "$U" kyogre_art_1 .)"
-! grep -q '^  joins' <(cozy project -p "$U" export) || check "import --into: it made an asset of its own: $(cozy project -p "$U" export)"
+! grep -q '^  joins' <(in_project "$U" export) || check "import --into: it made an asset of its own: $(in_project "$U" export)"
 
 step "a project: import keeps every other box as it was, and reads no name twice"
 local Y=$OUT/imported-kept; mkdir -p "$Y"
@@ -3576,15 +3670,15 @@ assets:
 
 # Before the end.
 YAML
-cozy project -p "$Y" export > "$OUT/imported-kept.before"
+in_project "$Y" export > "$OUT/imported-kept.before"
 still "$Y/hero.png" navy
-[ "$(cozy project -p "$Y" import "$Y/hero.png")" = hero_2 ] || check "import: a name the project has is not taken"
-cozy project -p "$Y" export | perl -0pe 's/\n  hero_2:\n    approved: "?\w+"?\n//' | diff - "$OUT/imported-kept.before" > "$OUT/imported-kept.diff" || check "import: other boxes moved: $(cat "$OUT/imported-kept.diff")"
+[ "$(project_import "$Y" "$Y/hero.png" | jq -r .name)" = hero_2 ] || check "import: a name the project has is not taken"
+project_api "$Y" /yaml | yaml_body | perl -0pe 's/\n  hero_2:\n    approved: "?\w+"?\n//' | diff - <(yaml_body "$OUT/imported-kept.before") > "$OUT/imported-kept.diff" || check "import: other boxes moved: $(cat "$OUT/imported-kept.diff")"
 J '.assets | map(.name) | sort == ["hero", "hero_2", "shot"]' <<< "$(status "$Y")" || check "import: the file does not read as it did with one asset more: $(status "$Y" | jq -c '.assets | map(.name)')"
 
 step "a project: a take lifted out: a file by its hash, a name and words, and what it held goes on standing"
 local lifted_from; lifted_from=$(ls "$Y/files" | head -1); lifted_from=${lifted_from%%.*}
-local lifted; lifted=$(cozy --json project -p "$Y" import "${lifted_from#sha256:}" lifted_one --description "Its own words." | jq -r .name)
+local lifted; lifted=$(in_project "$Y" --json import "${lifted_from#sha256:}" lifted_one --description "Its own words." | jq -r .name)
 [ "$lifted" = lifted_one ] || check "lift: it took the name $lifted"
 J '.assets[] | select(.name == "lifted_one") | .pinned and (.tool == null) and .fields.description == "Its own words."' <<< "$(status "$Y")" || check "lift: $(row "$Y" lifted_one .)"
 
@@ -3592,7 +3686,7 @@ step "a project: a name makes one, bytes by parts in any order and resumed, an e
 local X P2 len hex mid url held big n
 api -o "$OUT/named.json" -X POST -d '{"name":"web made.it"}' "http://$ADDR/v1/projects" > /dev/null
 X=$(jq -r .path "$OUT/named.json") ID=$(jq -r .id "$OUT/named.json")
-{ [ "$X" = "$HOME/web_made_it" ] && [ "$(jq -r .name "$OUT/named.json")" = web_made_it ] && ! grep -q '^  ' <(cozy project -p "$X" export); } || check "POST /v1/projects {name}: $(cat "$OUT/named.json")"
+{ [ "$X" = "$HOME/web_made_it" ] && [ "$(jq -r .name "$OUT/named.json")" = web_made_it ] && ! grep -q '^  ' <(in_project "$X" export); } || check "POST /v1/projects {name}: $(cat "$OUT/named.json")"
 P2=$(api -X POST -d '{"name":"web made.it"}' "http://$ADDR/v1/projects" | jq -r .path)
 [ "$P2" = "$X"_2 ] || check "POST /v1/projects {name}, again: $P2"
 # A folder of anything in the home is left as it is: the next free name, and it says so.
@@ -3629,8 +3723,8 @@ code=$(api -o "$OUT/by-hash.json" -w '%{http_code}' -X POST -H 'Idempotency-Key:
 [ "$(api -o /dev/null -w '%{http_code}' -I "http://$ADDR/v1/files/sha256:$hex")" = 200 ] && [ "$(sha "$X/files/$hex.mp4")" = "$hex" ] \
   || check "import by hash: the held file is gone, or the project's is not its bytes"
 api -o "$OUT/by-hash-2.json" -X POST -H 'Idempotency-Key: place-1' -d "{\"source\":\"sha256:$hex\",\"name\":\"my clip\",\"at\":{\"x\":10.5,\"y\":-20,\"w\":320}}" "http://$ADDR/v1/projects/$ID/imports" > /dev/null
-{ diff -q "$OUT/by-hash.json" "$OUT/by-hash-2.json" > /dev/null && [ "$(grep -c my_clip <(cozy project -p "$X" export))" = 1 ]; } || check "the same Idempotency-Key made another element: $(cat "$OUT/by-hash-2.json")"
-cozy project -p "$X" export > "$OUT/named-after-replay.yaml"
+{ diff -q "$OUT/by-hash.json" "$OUT/by-hash-2.json" > /dev/null && [ "$(grep -c my_clip <(in_project "$X" export))" = 1 ]; } || check "the same Idempotency-Key made another element: $(cat "$OUT/by-hash-2.json")"
+in_project "$X" export > "$OUT/named-after-replay.yaml"
 [ "$(api -o "$OUT/by-hash-conflict.json" -w '%{http_code}' -X POST -H 'Idempotency-Key: place-1' -d '{"source":"sha256:'"$hex"'","name":"other"}' "http://$ADDR/v1/projects/$ID/imports")" = 409 ] || check "one Idempotency-Key, another import: not refused"
 api -o "$OUT/by-hash-again.json" -X POST -d "{\"source\":\"sha256:$hex\"}" "http://$ADDR/v1/projects/$ID/imports" > /dev/null
 [ "$(jq -r '.name + " " + (.already | tostring)' "$OUT/by-hash-again.json")" = "file true" ] || check "the same file by hash: not a second element with no new bytes: $(cat "$OUT/by-hash-again.json")"
@@ -3654,10 +3748,10 @@ sql "$X" "SELECT x, y FROM canvas WHERE name = 'my_clip'" | grep -qxE '\[-5\.1(2
 sql "$X" "SELECT name, x, y, w FROM canvas ORDER BY name" > "$OUT/named-canvas-moved.json"
 [ "$(status "$X" | jq -c '[.assets[] | [.name, .inputs]]')" = "$inputs" ] || check "canvas: a move changed inputs"
 api -o /dev/null -X PATCH -d '{"cards":{"zebra":null}}' "$C"; J '.cards | has("zebra") | not' <<< "$(api "$C")" || check "canvas: a null did not remove a row"
-cozy project -p "$X" rename my_clip the_clip > "$OUT/rename-clip.txt" 2>&1 || check "rename of an element: $(cat "$OUT/rename-clip.txt")"
-{ [ "$(sql1 "$X" "SELECT count(*) FROM canvas WHERE name = 'the_clip'")" = 1 ] && [ "$(sql1 "$X" "SELECT count(*) FROM canvas WHERE name = 'my_clip'")" = 0 ] && grep -q '^  the_clip:$' <(cozy project -p "$X" export) && ! grep -q my_clip <(cozy project -p "$X" export); } || check "rename did not move the key and the row: $(cozy project -p "$X" export) $(sql "$X" 'SELECT name FROM canvas')"
-cozy project -p "$X" export > "$OUT/named-renamed.yaml"
-cozy project -p "$X" reclaim --yes > "$OUT/reclaim-canvas.txt" 2>&1 || check "reclaim: $(cat "$OUT/reclaim-canvas.txt")"
+in_project "$X" rename my_clip the_clip > "$OUT/rename-clip.txt" 2>&1 || check "rename of an element: $(cat "$OUT/rename-clip.txt")"
+{ [ "$(sql1 "$X" "SELECT count(*) FROM canvas WHERE name = 'the_clip'")" = 1 ] && [ "$(sql1 "$X" "SELECT count(*) FROM canvas WHERE name = 'my_clip'")" = 0 ] && grep -q '^  the_clip:$' <(in_project "$X" export) && ! grep -q my_clip <(in_project "$X" export); } || check "rename did not move the key and the row: $(in_project "$X" export) $(sql "$X" 'SELECT name FROM canvas')"
+in_project "$X" export > "$OUT/named-renamed.yaml"
+in_project "$X" reclaim --yes > "$OUT/reclaim-canvas.txt" 2>&1 || check "reclaim: $(cat "$OUT/reclaim-canvas.txt")"
 [ "$(sql1 "$X" "SELECT count(*) FROM canvas WHERE name = 'apple'")" = 0 ] || check "reclaim did not prune a row nothing names: $(sql "$X" 'SELECT name FROM canvas')"
 [ "$(sql1 "$X" "SELECT count(*) FROM canvas WHERE name = 'the_clip'")" = 1 ] || check "reclaim pruned a row something names"
 
@@ -3706,7 +3800,7 @@ added "$X" <<'YAML'
 YAML
 hash=$(seq_of "$X"); status "$X" > "$OUT/named-status.json"; status "$X" > /dev/null
 [ "$(seq_of "$X")" = "$hash" ] || check "reading a project wrote project.db"
-cozy project -p "$X" export > "$OUT/named-final.yaml"
+in_project "$X" export > "$OUT/named-final.yaml"
 # The Hub reachable and not answering, as a stopped hubcheck is: packages never heard of, each of which a read once waited 3 s for.
 if [ -n "${HUB_CHECK:-}" ]; then
   step "a project: reading it with the Hub not answering"
@@ -3754,8 +3848,8 @@ PY
 over=$(awk '$1 == "over" { print $2 }' "$OUT/numbers.txt") fits=$(awk '$1 == "fits" { print $2 }' "$OUT/numbers.txt")
 digits=$(awk '$1 == "digits" { print $2 }' "$OUT/numbers.txt") zero=$(awk '$1 == "zero" { print $2 }' "$OUT/numbers.txt")
 for name in over fits digits zero; do
-  [ "$(cozy --json project -p "$V" import "$V/$name.png" "$name" | jq -r .name)" = "$name" ] || check "numbers: importing $name"
-  approved_in "$V" "$name" | grep -Eq '^    approved: "?[0-9a-fe]{12}"?$' || check "numbers: cozy did not write $name: $(grep "$name" <(cozy project -p "$V" export))"
+  [ "$(in_project "$V" --json import "$V/$name.png" "$name" | jq -r .name)" = "$name" ] || check "numbers: importing $name"
+  approved_in "$V" "$name" | grep -Eq '^    approved: "?[0-9a-fe]{12}"?$' || check "numbers: cozy did not write $name: $(grep "$name" <(in_project "$V" export))"
 done
 yaml_in "$V" <<YAML
 version: 4
@@ -3770,14 +3864,14 @@ assets:
     tool: $here/project/draw.py/draw
     instructions: "from <over>, <fits>, <digits> and <zero>"
 YAML
-status "$V" > "$OUT/numbers-status.json" || check "numbers: a person's file was refused: $(cozy project -p "$V" status 2>&1 | tail -c 300)"
+status "$V" > "$OUT/numbers-status.json" || check "numbers: a person's file was refused: $(in_project "$V" status 2>&1 | tail -c 300)"
 for name in over fits digits zero; do
   J --arg n "$name" --arg p "sha256:$(eval echo "\$$name")" '[.assets[] | select(.name == $n)][0] | .pinned and (.files.image.sha256 | startswith($p))' "$OUT/numbers-status.json" || check "numbers: $name is not its file: $(jq -c --arg n "$name" '.assets[] | select(.name == $n) | {sha256, status}' "$OUT/numbers-status.json")"
 done
 J '[.assets[] | select(.name == "reader")][0].inputs != null' "$OUT/numbers-status.json" || check "numbers: what mentions them has no inputs: $(jq -c '.assets[] | select(.name == "reader")' "$OUT/numbers-status.json")"
 ! jq -c .warnings "$OUT/numbers-status.json" | grep -Eq "is not a hash|no file's hash" || check "numbers: warned: $(jq -c .warnings "$OUT/numbers-status.json")"
-cozy project -p "$V" approve zero "$over" > "$OUT/numbers-approve.txt" 2>&1 || check "numbers: approving over one: $(cat "$OUT/numbers-approve.txt")"
-grep -Eq "^  zero:|approved: \"$over\"" <(cozy project -p "$V" export) || check "numbers: approve wrote: $(grep -n -A2 'zero:' <(cozy project -p "$V" export))"
+in_project "$V" approve zero "$over" > "$OUT/numbers-approve.txt" 2>&1 || check "numbers: approving over one: $(cat "$OUT/numbers-approve.txt")"
+grep -Eq "^  zero:|approved: \"$over\"" <(in_project "$V" export) || check "numbers: approve wrote: $(grep -n -A2 'zero:' <(in_project "$V" export))"
 
 }
 
@@ -3826,16 +3920,15 @@ session_surface() {
 step "a project: its link, and what's kept of a session"
 local P=$1 ID=$2 B=http://$ADDR code token media store=$HOME/.cozy/calcifer/state.db U
 U=$B/v1/projects/$ID/cuts/edit.mp4
-COZY_PROJECT=$ID cozy --json open --no-open > "$OUT/project-open.json" || check "session: open --no-open of COZY_PROJECT failed"
-J --arg to "&to=/projects/$ID" --arg base "$B/#code=" '.url | startswith($base) and endswith($to)' "$OUT/project-open.json" || check "session: open's link of COZY_PROJECT: $(cat "$OUT/project-open.json")"
-J '.url | contains("&to=") | not' <<< "$(cd "$P" && cozy --json open --no-open)" || check "session: open naming no project isn't the home, though it's run in a project's folder"
-cozy --json open "$P/sub" --no-open > "$OUT/project-open-named.json" || check "session: open of a folder in it failed"
-J --arg to "&to=/projects/$ID" '.url | endswith($to)' "$OUT/project-open-named.json" || check "session: open of a folder in it: $(cat "$OUT/project-open-named.json")"
+(cd "$P" && cozy --json open) > "$OUT/project-open.json" || check "session: open of working directory failed"
+J --arg to "&to=/projects/$ID" --arg base "$B/#code=" '.url | startswith($base) and endswith($to)' "$OUT/project-open.json" || check "session: open did not select the working directory"
+(cd "$P/sub" && cozy --json open) > "$OUT/project-open-named.json" || check "session: open of a subdirectory failed"
+J --arg to "&to=/projects/$ID" '.url | endswith($to)' "$OUT/project-open-named.json" || check "session: open did not find the containing project"
 mkdir -p "$OUT/open-none" "$OUT/open-old"; printf 'version: 1\nassets: {}\n' > "$OUT/open-old/project.yaml"
-cozy open "$OUT/open-none" --no-open > "$OUT/open-none.txt" 2> "$OUT/open-none.err" || check "session: open of a folder of none failed"
-{ grep -q '#code=' "$OUT/open-none.txt" && ! grep -q '&to=' "$OUT/open-none.txt" && grep -q 'cozy project new' "$OUT/open-none.err"; } || check "session: a folder of none: $(cat "$OUT/open-none.txt" "$OUT/open-none.err")"
-code=0; cozy open "$OUT/open-old" --no-open > "$OUT/open-old.txt" 2>&1 || code=$?
-{ [ "$code" != 0 ] && grep -qF 'cozy project new' "$OUT/open-old.txt" && ! grep -q '#code=' "$OUT/open-old.txt"; } || check "session: a format that can't convert says what to run: exit $code: $(cat "$OUT/open-old.txt")"
+(cd "$OUT/open-none" && cozy open) > "$OUT/open-none.txt" 2> "$OUT/open-none.err" || check "session: open of a fresh directory failed"
+{ grep -q '#code=' "$OUT/open-none.txt" && grep -q '&to=/projects/' "$OUT/open-none.txt" && [ -f "$OUT/open-none/project.db" ]; } || check "session: open did not initialize the working directory"
+code=0; (cd "$OUT/open-old" && cozy open) > "$OUT/open-old.txt" 2>&1 || code=$?
+{ [ "$code" != 0 ] && ! grep -q '#code=' "$OUT/open-old.txt"; } || check "session: unsupported old format was silently opened"
 code=$(jq -r .url "$OUT/project-open.json" | sed -n 's/.*#code=\([0-9a-f]*\)&.*/\1/p')
 [ "$(curl -sS -o "$OUT/session.json" -w '%{http_code}' -X POST -d "{\"code\":\"$code\"}" "$B/v1/session")" = 200 ] || check "session: its code was not traded: $(cat "$OUT/session.json")"
 token=$(jq -r .token "$OUT/session.json") media=$(jq -r .media "$OUT/session.json")
@@ -3867,28 +3960,29 @@ grep -qi '^content-disposition: inline' "$OUT/hostile-drawing.hdr" || check "hos
 yaml_routes() {
 step "a project: its export read and imported over HTTP"
 local P=$1 U=http://$ADDR/v1/projects/$2/yaml et next
-cozy project -p "$P" export > "$OUT/yaml-kept.yaml"
+in_project "$P" export > "$OUT/yaml-kept.yaml"
 api -D "$OUT/yaml.hdr" -o "$OUT/yaml.got" "$U" || true
 et=$(grep -i '^etag:' "$OUT/yaml.hdr" | cut -d' ' -f2 | tr -d '\r')
 { head -1 "$OUT/yaml.hdr" | grep -q ' 200' && cmp -s "$OUT/yaml.got" "$OUT/yaml-kept.yaml" && [ -n "$et" ]; } || check "GET yaml: $(tr -d '\r' < "$OUT/yaml.hdr" | paste -sd' ')"
 [ "$(api -o /dev/null -w '%{http_code}' -H "If-None-Match: $et" "$U")" = 304 ] || check "If-None-Match on yaml is not 304"
 # Another's edit since it was read: a save naming what it read is refused, and changes nothing.
 { cat "$OUT/yaml.got"; printf '  theirs:\n    text: From another editor.\n'; } | yaml_in "$P"
-cozy project -p "$P" export > "$OUT/yaml-theirs.yaml"
+in_project "$P" export > "$OUT/yaml-theirs.yaml"
 { cat "$OUT/yaml.got"; printf '  mine:\n    text: Saved over HTTP.\n'; } > "$OUT/yaml-mine.yaml"
 [ "$(api -o "$OUT/yaml-put.json" -w '%{http_code}' -X PUT -H "If-Match: $et" --data-binary @"$OUT/yaml-mine.yaml" "$U")" = 409 ] || check "a save over a project changed since it was read was not 409: $(cat "$OUT/yaml-put.json")"
 J '.error.code == "project_changed"' "$OUT/yaml-put.json" || check "the stale save's refusal: $(cat "$OUT/yaml-put.json")"
-cmp -s <(cozy project -p "$P" export) "$OUT/yaml-theirs.yaml" || check "a stale save changed the project"
+cmp -s <(in_project "$P" export) "$OUT/yaml-theirs.yaml" || check "a stale save changed the project"
 et=$(api -I "$U" | grep -i '^etag:' | cut -d' ' -f2 | tr -d '\r')
 printf 'version: 4\nassets: [\n' > "$OUT/yaml-broken.yaml"
 [ "$(api -o "$OUT/yaml-put.json" -w '%{http_code}' -X PUT -H "If-Match: $et" --data-binary @"$OUT/yaml-broken.yaml" "$U")" = 400 ] || check "text that isn't a project was not refused 400: $(cat "$OUT/yaml-put.json")"
-cmp -s <(cozy project -p "$P" export) "$OUT/yaml-theirs.yaml" || check "a refused save changed the project"
+cmp -s <(in_project "$P" export) "$OUT/yaml-theirs.yaml" || check "a refused save changed the project"
 { cat "$OUT/yaml-theirs.yaml"; printf '  mine:\n    text: Saved over HTTP.\n'; } > "$OUT/yaml-mine.yaml"
 [ "$(api -D "$OUT/yaml-put.hdr" -o /dev/null -w '%{http_code}' -X PUT -H "If-Match: $et" --data-binary @"$OUT/yaml-mine.yaml" "$U")" = 204 ] || check "a good save was not 204"
-grep -q '^  mine:$' <(cozy project -p "$P" export) || check "the save isn't in the project: $(cozy project -p "$P" export | tail -5)"
+grep -q '^  mine:$' <(in_project "$P" export) || check "the save isn't in the project: $(in_project "$P" export | tail -5)"
 next=$(grep -i '^etag:' "$OUT/yaml-put.hdr" | cut -d' ' -f2 | tr -d '\r')
-[ "$next" = "\"$(cozy project -p "$P" export | sha /dev/stdin)\"" ] || check "the save's ETag isn't its export's digest: $next"
-yaml_in "$P" < "$OUT/yaml-kept.yaml"
+[ "$next" = "\"$(project_api "$P" /yaml | sha /dev/stdin)\"" ] || check "the save's ETag isn't its export's digest: $next"
+# An explicit fixture reset is intentionally unstamped; stale stamped saves were refused above.
+yaml_body "$OUT/yaml-kept.yaml" | yaml_in "$P"
 }
 
 # sse <file>: what a stream wrote, one JSON object a line.
@@ -3899,38 +3993,58 @@ revs() { sse "$1" | jq -r --arg i "$2" 'select(.type == "project.changed" and .i
 soon() { for _ in $(seq 100); do "$@" && return 0; sleep 0.2; done; return 1; }
 told() { sse "$1" | jq -e "select($2)" > /dev/null; }
 told_more() { [ "$(revs "$1" "$2" | wc -l)" -gt "$3" ]; }
+show_events() {
+  local log=$1 project=$2 stream
+  soon told "$log" '.type == "hello"' || return
+  stream=$(sse "$log" | sed -n '1p' | jq -er 'select(.type == "hello") | .stream') || return
+  api -f -X PUT -H 'Content-Type: application/json' -d "$(jq -nc --arg id "$project" '{projects: [$id]}')" \
+    "http://$ADDR/v1/events/$stream" | J --arg id "$project" '.held | index($id) != null'
+}
+
+project_stream() {
+  local holder=$HOME/.cozy/calcifer/calcifer.lock.holder ADDR TOKEN
+  ADDR=$(jq -er .address "$holder") && TOKEN=$(jq -er .token "$holder") || fail "project stream: missing Calcifer session"
+  walking
+  event_stream
+}
 
 # `GET /v1/events`, read as the page reads it: the first event, an edit from outside, a landing that writes only the lock, the local
 # machine, a comment when nothing happens, and the routes it replaced gone.
 event_stream() {
 step "a project: GET /v1/events"
-local R=$OUT/stream log=$OUT/events.sse stream id n seen yaml real
-cozy project new "$R" > /dev/null || check "stream: project new"
-real=$(status "$R" | jq -r .id)
-id=$(status "$R" | jq -r .id)
+local R=$OUT/stream log=$OUT/events.sse other=$OUT/events-unrelated.sse stream other_stream id code state n seen yaml
+starter_project "$R" > /dev/null || check "stream: project new"
+state=$(status "$R") || fail "stream: project state unavailable"
+id=$(jq -er .id <<< "$state") && code=$(jq -er .code <<< "$state") || fail "stream: project identity or link code unavailable"
 curl -sSN -H "Authorization: Bearer $TOKEN" "http://$ADDR/v1/events" > "$log" 2> "$OUT/events.err" & stream=$!
-soon told "$log" '.type == "hello"' || check "stream: no hello: $(head -c 300 "$log"; cat "$OUT/events.err")"
-sse "$log" | sed -n 1p | J --arg v "$(cozy --json status | jq -r .calcifer.version)" '.type == "hello" and .version == $v' || check "stream: its first event: $(sse "$log" | sed -n 1p)"
+# Register with the public link code; deliveries still use the stable project ID.
+show_events "$log" "$code" || check "stream: project interest not held: $(head -c 300 "$log"; cat "$OUT/events.err")"
+curl -sSN -H "Authorization: Bearer $TOKEN" "http://$ADDR/v1/events" > "$other" 2> "$OUT/events-unrelated.err" & other_stream=$!
+soon told "$other" '.type == "hello"' || check "stream: no hello on unrelated connection"
+sse "$log" | sed -n 1p | J --arg v "$(fixture_calcifer | jq -r .calcifer.version)" '.type == "hello" and .version == $v' || check "stream: its first event: $(sse "$log" | sed -n 1p)"
 
 seen=$(revs "$log" "$id" | wc -l)
 # A hand's edit, its export imported (project.db has no other writer to watch for, cl-803).
-printf '  edited:\n    text: By hand.\n' | added "$R"
+{ project_api "$R" /yaml | perl -0pe 's/^assets: \{\}\n?\z/assets:\n/m; $_ .= "assets:\n" unless /^assets:/m'; printf '  edited:\n    text: By hand.\n'; } > "$OUT/stream-hand.yaml"
+project_api "$R" /yaml -X PUT -H 'Content-Type: application/yaml' --data-binary "@$OUT/stream-hand.yaml" > /dev/null || check "stream: hand edit refused"
 soon told_more "$log" "$id" "$seen" || check "stream: a hand's edit told nothing: $(sse "$log" | cut -c1-200 | tail -5)"
 
-seen=$(revs "$log" "$id" | wc -l) yaml=$(cozy project -p "$R" export | sha /dev/stdin)
-(cd "$R" && cozy run -p "$R" "$here/project/draw.py" instructions=stream) > "$OUT/stream-run.txt" 2>&1 || check "stream: a run in the project: $(tail -c 300 "$OUT/stream-run.txt")"
-n=$(cd "$R" && cozy --json run ls -p "$R" --limit 1 | jq -r '.runs[0].number') || check "stream: run ls in the project failed"
-[ "$(cozy project -p "$R" export | sha /dev/stdin)" = "$yaml" ] || check "stream: a landing changed the boxes, and this was to prove its own rows reach the stream"
+seen=$(revs "$log" "$id" | wc -l) yaml=$(project_api "$R" /yaml | sha /dev/stdin)
+(cd "$R" && in_project "$R" run "$here/project/draw.py" instructions=stream) > "$OUT/stream-run.txt" 2>&1 || check "stream: a run in the project: $(tail -c 300 "$OUT/stream-run.txt")"
+n=$(cd "$R" && in_project "$R" --json run ls --limit 1 | jq -r '.runs[0].number') || check "stream: run ls in the project failed"
+[ "$(project_api "$R" /yaml | sha /dev/stdin)" = "$yaml" ] || check "stream: a landing changed the boxes, and this was to prove its own rows reach the stream"
 soon told_more "$log" "$id" "$seen" || check "stream: a landing's lock told nothing"
-soon told "$log" ".type == \"run.updated\" and .run.number == $n and .run.status == \"completed\" and .run.project_id == \"$real\"" \
-  || check "stream: no run.updated says run $n completed in $real: $(sse "$log" | jq -c 'select(.type == "run.updated") | [.run.number, .run.status, .run.project_id]' | tail -5)"
+soon told "$log" ".type == \"run.updated\" and .run.number == $n and .run.status == \"completed\" and .run.project_id == \"$id\"" \
+  || check "stream: no run.updated says run $n completed in $id: $(sse "$log" | jq -c 'select(.type == "run.updated") | [.run.number, .run.status, .run.project_id]' | tail -5)"
+soon told "$other" ".type == \"run.updated\" and .run.number == $n and .run.status == \"completed\"" || check "stream: a connection with no projects missed the global run"
+[ -z "$(revs "$other" "$id")" ] || check "stream: project changes reached a connection with no interest"
 soon told "$log" '.type == "machine.updated" and .machine.name == "local"' || check "stream: a run on local moved no machine.updated"
 [ -z "$(revs "$log" "$id" | sort | uniq -d)" ] || check "stream: a rev told twice: $(revs "$log" "$id" | sort | uniq -d)"
 
 soon grep -q '^:' "$log" || check "stream: no comment after 20 s"
 kill -0 "$stream" 2> /dev/null || check "stream: it ended: $(cat "$OUT/events.err")"
-kill "$stream" 2> /dev/null || true
-for route in runs machines; do
+kill "$stream" "$other_stream" 2> /dev/null || true
+for route in runs machines "projects/$id"; do
   [ "$(api -o /dev/null -w '%{http_code}' "http://$ADDR/v1/$route/events")" = 404 ] || check "stream: /v1/$route/events still answers"
 done
 }
@@ -3945,11 +4059,11 @@ running_back() { [ "$(running "$1")" -le "$2" ] 2> /dev/null; }
 live_views() {
 step "a project: the live views follow the stream"
 local R=$OUT/live term n before code follower
-cozy project new "$R" > /dev/null || check "live: project new"
+starter_project "$R" > /dev/null || check "live: project new"
 python3 "$here/project/terminal.py" "$OUT/runs.screen" "$COZY" run ls --all > /dev/null & term=$!
 soon screen_says "$OUT/runs.screen" 'TARGET' || check "live: cozy run ls drew nothing"
-(cd "$R" && cozy run -p "$R" "$here/project/draw.py" instructions=live) > "$OUT/live-run.txt" 2>&1 || check "live: a run: $(tail -c 300 "$OUT/live-run.txt")"
-n=$(cd "$R" && cozy --json run ls -p "$R" --limit 1 | jq -r '.runs[0].number') || check "live: run ls in the project failed"
+(cd "$R" && in_project "$R" run "$here/project/draw.py" instructions=live) > "$OUT/live-run.txt" 2>&1 || check "live: a run: $(tail -c 300 "$OUT/live-run.txt")"
+n=$(cd "$R" && in_project "$R" --json run ls --limit 1 | jq -r '.runs[0].number') || check "live: run ls in the project failed"
 soon screen_says "$OUT/runs.screen" "^ *$n .* completed" || check "live: cozy run ls does not show run $n completed: $(head -5 "$OUT/runs.screen")"
 
 if [ -z "${ALONE:-}" ] && [ "$RUNNER_OS" = Linux ]; then
@@ -3960,15 +4074,17 @@ if [ -z "${ALONE:-}" ] && [ "$RUNNER_OS" = Linux ]; then
   gid=$(status "$G" | jq -r .id)
   # Its files from before, in place of its database, as a folder copied back from an old backup is.
   rm -f "$G"/project.db*
+  # Preserve the prior import's originals separately before restoring a different old backup.
+  if [ -d "$G/.cozy-legacy-v1" ]; then mv "$G/.cozy-legacy-v1" "$OUT/opened-by-id-original-archive"; fi
   printf 'version: 2\nassets:\n  a:\n    description: A.\n' > "$G/project.yaml"
   printf '{"format": 2, "assets": {}, "files": {}}\n' > "$G/project.lock"
   systemctl --user restart cozy-calcifer || check "live: systemctl --user restart cozy-calcifer failed"
-  (cd "$R" && cozy run -p "$R" "$here/project/draw.py" instructions=restarted) > "$OUT/live-restarted.txt" 2>&1 || check "live: a run after the restart: $(tail -c 300 "$OUT/live-restarted.txt")"
-  n=$(cd "$R" && cozy --json run ls -p "$R" --limit 1 | jq -r '.runs[0].number') || check "live: run ls after the restart failed"
+  (cd "$R" && in_project "$R" run "$here/project/draw.py" instructions=restarted) > "$OUT/live-restarted.txt" 2>&1 || check "live: a run after the restart: $(tail -c 300 "$OUT/live-restarted.txt")"
+  n=$(cd "$R" && in_project "$R" --json run ls --limit 1 | jq -r '.runs[0].number') || check "live: run ls after the restart failed"
   soon screen_says "$OUT/runs.screen" "^ *$n .* completed" || check "live: past a restart, cozy run ls does not show run $n: $(head -5 "$OUT/runs.screen")"
   ADDR=$(jq -r .address "$HOME/.cozy/calcifer/calcifer.lock.holder") TOKEN=$(jq -r .token "$HOME/.cozy/calcifer/calcifer.lock.holder")
   J '[.warnings[]?.message] | any(contains("project.yaml.v2"))' <<< "$(api "http://$ADDR/v1/projects/$gid")" || check "first open: a read by id doesn't say it upgraded: $(api "http://$ADDR/v1/projects/$gid" | jq -c .warnings)"
-  grep -q '^version: 4$' <(cozy project -p "$G" export) || check "first open: a read by id didn't upgrade: $(cozy project -p "$G" export)"
+  grep -q '^version: 4$' <(in_project "$G" export) || check "first open: a read by id didn't upgrade: $(in_project "$G" export)"
   J '[.warnings[]?.message] | any(contains("project.yaml.v2")) | not' <<< "$(api "http://$ADDR/v1/projects/$gid")" || check "first open: a read by id said it twice"
 fi
 code=0; kill "$term" 2> /dev/null || true; wait "$term" || code=$?
@@ -3977,7 +4093,7 @@ code=0; kill "$term" 2> /dev/null || true; wait "$term" || code=$?
 python3 "$here/project/terminal.py" "$OUT/machines.screen" "$COZY" machine ls > /dev/null & term=$!
 soon screen_says "$OUT/machines.screen" '^ *local ' || check "live: cozy machine ls shows no local: $(head -5 "$OUT/machines.screen")"
 before=$(running "$OUT/machines.screen")
-(cd "$here" && cozy run -p "$R" ./weightless/wait seconds:=8 --on local > "$OUT/live-wait.txt" 2>&1) & follower=$!
+(cd "$here" && in_project "$R" run "$here/weightless/wait" seconds:=8 --on local > "$OUT/live-wait.txt" 2>&1) & follower=$!
 # Its first run here may install first: it's judged while its follower lives.
 until running_above "$OUT/machines.screen" "$before" || ! kill -0 "$follower" 2> /dev/null; do sleep 0.2; done
 running_above "$OUT/machines.screen" "$before" || check "live: cozy machine ls never showed the run on local: $(head -5 "$OUT/machines.screen")"
@@ -3998,14 +4114,14 @@ port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0));
 python3 -m http.server "$port" --bind 127.0.0.1 --directory "$here/project" > "$OUT/cross-site.log" 2>&1 & server=$!
 for _ in $(seq 50); do curl -fsS -o /dev/null "http://localhost:$port/cross-site.html" && break; sleep 0.1; done
 # The re-cut the page follows: the edit a second shorter.
-cozy project -p "$P" export | sed -E 's/^( +)- <a>$/\1- {video: <a>, start: 0, end: 120}/' > "$OUT/recut.yaml"
-code_got=$(cd "$OUT" && cozy --json open --no-open | jq -r .url | sed -n 's/.*#code=\([0-9a-f]*\)$/\1/p')
+project_api "$P" /yaml | sed -E 's/^( +)- <a>$/\1- {video: <a>, start: 0, end: 120}/' > "$OUT/recut.yaml"
+code_got=$(in_project "$P" --json open | jq -r .url | sed -n 's/.*#code=\([0-9a-f]*\).*/\1/p')
 local code=0 log=$HOME/.cozy/calcifer/calcifer.log seen pid
 seen=$(stat -c %s "$log" 2>/dev/null || echo 0)
 pid=$(jq -r .pid "$lock") was_addr=$(jq -r .address "$lock") was_token=$(jq -r .token "$lock")
 CHROME=$CHROME PLAYWRIGHT=$pw/node_modules/playwright-core node "$here/project/browser.js" "$ADDR" "$code_got" "$ID" "$HOSTILE" "$port" \
-  "'$COZY' project -p '$P' import '$OUT/recut.yaml' && '$COZY' project -p '$P' render all --on local" \
-  "kill -TERM $pid; while kill -0 $pid 2> /dev/null; do sleep 0.1; done; '$COZY' project ls > /dev/null" > "$OUT/browser.json" 2> "$OUT/browser.err" || code=$?
+  "$OUT/recut.yaml" \
+  "kill -TERM $pid; while kill -0 $pid 2> /dev/null; do sleep 0.1; done; '$COZY' machine ls > /dev/null" > "$OUT/browser.json" 2> "$OUT/browser.err" || code=$?
 kill "$server" 2> /dev/null || true
 ADDR=$(jq -r .address "$lock") TOKEN=$(jq -r .token "$lock")
 { [ "$(jq -r .pid "$lock")" != "$pid" ] && [ "$TOKEN" != "$was_token" ]; } || check "browser: Calcifer did not restart: pid $pid is $(jq -r .pid "$lock")"
@@ -4032,13 +4148,9 @@ tail -c +$((seen + 1)) "$log" | grep 'refused ' > "$OUT/browser-refused.txt" || 
 [ "$(owed "$P")" = 0 ] && ! sql "$P" "SELECT record FROM walk" | grep -q nothing || check "another origin's POST started a render"
 }
 
-# Alone: this computer's cozy, as it is, in the default home.
+# The standalone CLI check covers the retained project and run entrypoints.
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   . "$here/../lib.sh"
   parse "$@"
-  ALONE=1
-  hub_checked() { :; }
-  run_project "$OUT/project" || fail "cozy project new failed"
-  projects
-  finish project
+  python3 "$here/entrypoints.py" --cozy "$COZY" --out "$OUT/entrypoints"
 fi

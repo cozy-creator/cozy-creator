@@ -10,8 +10,6 @@
 
 [global]
 "--json" = "pr: every step reads the JSON answer"
-"--full" = "pr: agent, a run's whole record and the live view's columns"
-"--yes" = "pr: candidates (machine update -y)"
 
 [completion]
 test = "pr: completion, each shell's script loads and completes cozy's verbs"
@@ -30,8 +28,11 @@ test = "pr: signed out, logout says so (signed in, it revokes the CI key: none)"
 [whoami]
 test = "pr: signed out, whoami says so (release: signed in as fidika, its balance and the buy page)"
 
+[new]
+test = "pr: entrypoints, explicit creation in the current directory or a named directory"
+
 [status]
-test = "pr: status, Calcifer and the local machine"
+test = "pr: entrypoints, current-project health counts and warnings with an expanded full record"
 
 [update]
 test = "pr: update, the candidate to the newest release"
@@ -140,14 +141,6 @@ test = "gate: cli cells, the throwaway model's int8 and fp8 lanes"
 "--package" = "gate: cli cells"
 "--on" = "gate: cli cells"
 
-["org edit"]
-test = "manual: a platform admin edits a parked org's name, links and handles on tensorhub.com (xs-131); a CI edit would change a real parked org"
-"--name" = "manual: as the command"
-"--link" = "manual: as the command"
-"--handle" = "manual: as the command"
-["org claim"]
-test = "manual: the author posts the code on a handle the org lists, then claims (xs-131, proved on the dev Hub); a CI claim needs a parked org and a public handle"
-
 [run]
 test = "pr: a weightless request; BiRefNet on the CPU"
 "--input" = "pr: a YAML request, then inline inputs over it"
@@ -182,80 +175,55 @@ test = "pr: run play, its link serves the output, then expires"
 
 # Hidden (`hide = true`, in no --help): probed in the binary; `coverage.py --source` finds any not listed here.
 [hidden]
-"machine rent --provider" = "pending: dev builds only (cargo feature `dev`), never in a release; release-gate/suites/hub rents cpu once per provider with a dev-build cozy, ended and checked gone; the Hub decides who may"
+"--full" = "pr: entrypoints, full project health; run records and live view columns"
+"--yes" = "pr: candidates (machine update -y) and entrypoint flag parsing"
+"whoami" = "pr: signed out, whoami says so"
+"completion" = "pr: completion, each shell script loads and completes the visible verbs"
+"machine rent --provider" = "pending: dev-only (`dev = true`, crates/cli/DEV.md); release-gate/suites/hub rents cpu once per provider where the config has it, ended and checked gone"
+"run --no-memo" = "pending: dev-only (`dev = true`, crates/cli/DEV.md); the bench suite's same-seed pairs"
 "machine rent --image-digest" = "pending: release tier, a Hub admin's gated worker-image bake; waits for the CI key"
 
 [open]
-test = "pr: web-serves (e2e/cli/web.sh), every OS: its link, redeemed in Chrome; each refusal; Place and a kill -9 in the page"
-"--no-open" = "pr: web-serves; a project's session: its folder, a folder of none, an older format. Opening a browser: manual, a person on a desktop"
+"--port" = "pr: entrypoint parser, loopback listener and preserved config tests"
+test = "pr: entrypoints, local authenticated URL and expiry; web-serves redeems the link in Chrome"
 
-["project new"]
-test = "pr: projects (e2e/cli/project.sh): a folder holding only project.yaml"
+["vault"]
+"--directory" = "pr: projectvault: convert and rekey from outside the backing folder"
 
-["project ls"]
-test = "pr: projects: the index; a folder gone leaves it and frees its name; moved, back by its path"
+["vault encrypt"]
+test = "pr: projectvault: conversion preserves mounted media and logical state"
+"--passphrase-file" = "pr: projectvault: conversion reads its credential file"
+"--recovery-out" = "pr: projectvault: recovery is saved outside storage; unsafe destination refuses"
+"--remove-plaintext" = "pr: projectvault: verified conversion and encrypted backing scan"
+"--idle" = "pr: projectvault: conversion disables idle expiry"
+"--max-duration" = "pr: projectvault: returned absolute expiry is within the submitted clock interval"
 
-["project status"]
-test = "pr: projects: by -p from elsewhere; what changed; a rename suggested; orphans with their bytes; by the CLI: one asset"
+["vault lock"]
+test = "pr: projectvault: reads and the old mounted view become inaccessible"
 
-["project wait"]
-test = "pr: agent: nothing going says the project, a render followed to its end, a failure exits 1 (gate: a stall exits 4)"
+["vault unlock"]
+test = "pr: projectvault: saved credentials reopen media; wrong credentials refuse"
+"--passphrase-file" = "pr: projectvault: wrong and replaced passphrase slots"
+"--recovery-file" = "pr: projectvault: saved recovery and replacement generations"
+"--idle" = "pr: projectvault: recovery sessions disable idle expiry"
+"--max-duration" = "pr: projectvault: polling cannot defeat the absolute unlock deadline"
 
-["project render"]
-test = "pr: projects: only what has no state; reverting runs nothing; cuts; a function's inputs; every mention filled; a world-state series"
-"--on" = "pr: projects: --on local"
-"--approve" = "pr: projects: --approve with -n 2 refused before any run"
-"--missing" = "pr: projects: only what has no state; reverting runs nothing"
-"--outdated" = "pr: a pin out of date: skipped by the plain run, re-run at its turn, its pin gone, the version it held kept"
-"--queue" = "pr: projects: three queued, one canceled, the rest land"
+["vault status"]
+test = "pr: projectvault: ordinary, unlocked and expired storage states"
 
-["project cancel"]
-test = "pr: projects: a queued take dropped; alone or not, what it canceled isn't sent again"
+["vault passphrase"]
+test = "pr: projectvault: new credential reopens files and the old slot refuses"
+"--passphrase-file" = "pr: projectvault: replacement credential comes from a file"
 
-["project import"]
-test = "pr: projects: a path and a URL as real files and named elements, a type refused, one file for two elements; what the page does: parts, by hash, canvas, thumbs; projectdb: a .yaml read back as the project"
-"--description" = "pr: web-live: a file lifted out as its own asset, with its words"
-"--into" = "pr: projects: a file joins a box as its next version, and makes no asset of its own"
+["vault recovery"]
+test = "pr: projectvault: replace recovery and refuse old slots and unsafe destinations"
+"--recovery-out" = "pr: projectvault: replacement is written outside storage"
 
-["project add"]
-test = "pr: by the CLI: fields, a name, where it sits; web-live: shows on the open canvas within a second"
+["vault export"]
+test = "pr: projectvault: plaintext copy opens normally and retains video bytes"
+"--output" = "pr: projectvault: export writes into a new destination"
 
-["project set"]
-test = "pr: by the CLI: a value, JSON, clearing, what makes it, where it sits; web-live: on the open canvas, past what's typed"
-"--input" = "pr: by the CLI: fields from a file, from stdin, a term over them; web-live: an Edit's clips"
-
-["project delete"]
-test = "pr: by the CLI: prints the undo line; discards: <name>.<n>, a take off its box at once, one or several, each printing its undo line; web-live: gone from the open canvas"
-
-["project export"]
-test = "pr: projectdb: the project as YAML, read back by import unchanged; an edited one imports as one entry"
-"--out" = "pr: projectdb: roundtrip: written to a file (-o)"
-
-["project approve"]
-test = "pr: projects: its approved set, an edit just before it surviving"
-
-["project unapprove"]
-test = "pr: projects: gives the file back, restoring an input the pin was over"
-
-["project history"]
-test = "pr: web-undo: the history kept across a Calcifer restart, newest first (-n)"
-
-["project undo"]
-test = "pr: web-undo: the page's edit undone from the CLI, a clobbering undo refused; by the CLI, discards: the line delete printed, an approved take back with its approval, a reclaimed take refused with what's next; deleted: refused while its name is taken, exact after an add and a drop of it; web-live: back where it was"
-"--to" = "pending: every edit back to one; web-undo undoes one at a time"
-
-["project redo"]
-test = "pr: web-undo: what undo took back done again after a restart"
-"--to" = "pending: every undone edit up to one; web-undo redoes one at a time"
-
-["project rename"]
-test = "pr: projects: old renamed new, its versions kept, its reader out of date"
-
-["project reclaim"]
-test = "pr: projects: lists, deletes only what nothing else names, refuses while rendering, and with --yes deletes"
-
-["project push"]
-test = "manual: release-gate/sessions/project-remote.sh (pod-session, signed in): nothing moves twice, a killed push goes on"
-
-["project pull"]
-test = "manual: release-gate/sessions/project-remote.sh: a clone of yaml and lock, signed in as a second home: the same edit.mp4"
+["vault rotate"]
+test = "pr: projectvault: full rekey preserves logical history and media"
+"--passphrase-file" = "pr: projectvault: new generation uses its new credential file"
+"--recovery-out" = "pr: projectvault: saved recovery reopens the new generation"

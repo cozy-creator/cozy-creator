@@ -11,6 +11,7 @@ use axum::{
     Json,
     body::Bytes,
     extract::{Query, State, rejection::{BytesRejection, QueryRejection}},
+    response::Response,
 };
 use futures_util::{StreamExt as _, stream};
 use ::api::hub::cards;
@@ -27,7 +28,8 @@ use tensorfs::format::newest_by;
 
 use crate::{
     api::{Api, Refusal, parse},
-    local_code,
+    local_code, private_io,
+    project::{self, vault},
     runs::{self, target},
 };
 
@@ -54,19 +56,30 @@ pub(crate) struct Asked {
 }
 
 /// `GET /v1/tools`: the Edit and your list, then local code and what's installed, each as it is on that machine, and with `q` the Hub's, each at its newest.
-pub(crate) async fn list(State(api): State<Arc<Api>>, query: Result<Query<Asked>, QueryRejection>) -> Result<Json<Tools>, Refusal> {
+pub(crate) async fn list(State(api): State<Arc<Api>>, query: Result<Query<Asked>, QueryRejection>) -> Result<Response, Refusal> {
     let Query(asked) = query?;
-    let hub = runs::hub(&api, asked.hub.as_deref().unwrap_or_default());
+    let project = asked.project.clone();
+    vault::project_reply(&api, project.as_deref(), list_tools(&api, asked)).await
+}
+
+async fn list_tools(api: &Arc<Api>, asked: Asked) -> Result<Json<Tools>, Refusal> {
+    let hub = runs::hub(api, asked.hub.as_deref().unwrap_or_default());
     let q = asked.q.as_deref().map(str::trim).filter(|q| !q.is_empty());
     let on = On::Machine(asked.on.unwrap_or_else(|| "local".into()));
-    let mine = mine(&api)?;
-    let mut named = match &asked.project {
-        Some(project) => crate::project::local_code_named(&api, project)?,
+    let mine = mine(api)?;
+    let local = match asked.project.as_deref() {
+        Some(named) => {
+            let root = project::named(api, named).map_err(Refusal)?;
+            let scope = private_io::of_output(&project::landing(&root)).map_err(Refusal)?;
+            private_io::context(scope, async {
+                let named = project::local_code_named(api, named)?;
+                Ok::<_, Refusal>(read_local(api, &hub, named, &on).await)
+            }).await?
+        }
         None => vec![],
     };
-    let local = read_local(&api, &hub, named, &on).await;
-    let held = held(&api, &hub, &on).await;
-    let (cards, mut note) = on_your_list(&api, &hub, &mine, &held).await;
+    let held = held(api, &hub, &on).await;
+    let (cards, mut note) = on_your_list(api, &hub, &mine, &held).await;
     let place = |tool: &Tool| mine.packages.iter().position(|package| shown(package) == tool.package);
     let (mut first, rest): (Vec<Tool>, Vec<Tool>) = held.into_iter().partition(|tool| place(tool).is_some());
     first.extend(cards);
@@ -76,14 +89,14 @@ pub(crate) async fn list(State(api): State<Arc<Api>>, query: Result<Query<Asked>
     let mut tools: Vec<Tool> = std::iter::once(tool::edit()).chain(first).chain(local).chain(rest).filter(shows).collect();
     if let Some(q) = q {
         let listed: BTreeSet<String> = tools.iter().map(|tool| tool.package.clone()).collect();
-        match tokio::time::timeout(HUB_LATE, on_the_hub(&api, &hub, q)).await {
+        match tokio::time::timeout(HUB_LATE, on_the_hub(api, &hub, q)).await {
             Ok(Ok(found)) => tools.extend(found.into_iter().filter(|tool| !listed.contains(&tool.package))),
             Ok(Err(why)) => note = Some(format!("only what's installed: the Hub said {}", why.message)),
             Err(_) => note = Some(late()),
         }
     }
     // A Hub that's late leaves them unsaid, and a later list says what's been read by then.
-    let _ = tokio::time::timeout(HUB_LATE, crate::hub::checkpoints::families(&api, &hub, &mut tools)).await;
+    let _ = tokio::time::timeout(HUB_LATE, crate::hub::checkpoints::families(api, &hub, &mut tools)).await;
     Ok(Json(Tools { tools, note }))
 }
 
@@ -116,7 +129,7 @@ pub(crate) async fn change(State(api): State<Arc<Api>>, body: Result<Bytes, Byte
     let asked: ToolListChange = parse(&body?)?;
     if let Some(path) = asked.add.as_deref().filter(|package| api::target::written_as_path(package)) {
         let said = format!("{path} is local code, which is a project's: a box names it by its path from the project's folder");
-        return Err(Refusal(Error::new(Kind::Usage, "tool_list_local", said).next("cozy project add ./<dir>/<function>")));
+        return Err(Refusal(Error::new(Kind::Usage, "tool_list_local", said).next("cozy open")));
     }
     let add = asked.add.map(|package| (owned(&package), format!("{}/", shown(&package))));
     let add = add.as_ref().map(|(full, shown_as)| (full.as_str(), shown_as.as_str()));
@@ -180,6 +193,7 @@ async fn on_your_list(api: &Arc<Api>, hub: &str, mine: &ToolList, held: &[Tool])
 /// The tools of each local package `named`, by its path as it's written, and saying they're local: what a project's nodes name, and what's on
 /// your list. One that can't be read is left out, and a render says why.
 async fn read_local(api: &Arc<Api>, hub: &str, named: Vec<(String, PathBuf)>, on: &On) -> Vec<Tool> {
+    let private = private_io::current().is_some();
     let mut tools = vec![];
     for (written, path) in named {
         let described = match local_code::own(api.machines.hubs.home(), &path) {
@@ -189,7 +203,7 @@ async fn read_local(api: &Arc<Api>, hub: &str, named: Vec<(String, PathBuf)>, on
         let (package, document) = match described {
             Ok(described) => described,
             Err(why) => {
-                tracing::warn!("{written} isn't listed: {}", why.message);
+                if !private { tracing::warn!("{written} isn't listed: {}", why.message); }
                 continue;
             }
         };

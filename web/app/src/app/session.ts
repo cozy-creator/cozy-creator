@@ -20,13 +20,25 @@ export function saveSession(session: BrowserSession | null) {
   }
 }
 
-/** `#code=…&to=/projects/<id>`, taken out of the URL before anything else happens. */
+/** Consume auth fragments and old hash routes before the history router is created. */
 export function takeCode(): string | null {
+  if (location.hash.startsWith("#/")) {
+    history.replaceState(null, "", location.hash.slice(1))
+    return null
+  }
   const params = new URLSearchParams(location.hash.slice(1))
   const code = params.get("code")
   if (!code) return null
   const to = params.get("to")
-  const route = to?.startsWith("/") ? to : "/"
-  history.replaceState(null, "", `${location.pathname}${location.search}#${route}`)
+  let route = `${location.pathname}${location.search}`
+  if (to?.startsWith("/")) {
+    try {
+      const target = new URL(to, location.origin)
+      if (target.origin === location.origin) route = `${target.pathname}${target.search}`
+    } catch {
+      // Keep the current path when an old link's target cannot be read.
+    }
+  }
+  history.replaceState(null, "", route)
   return code
 }

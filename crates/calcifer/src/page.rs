@@ -1,5 +1,5 @@
 //! The app's page (`web/app`), embedded by `build.rs`, on Calcifer's own port. It holds no secret, so it's below the
-//! guard and outside `admit`. Calcifer serves only `/` and `/assets/*`; the page's routes are in its URL's fragment.
+//! guard and outside `admit`. Client routes serve the same page so direct navigation and reload work.
 use std::sync::Arc;
 
 use axum::{
@@ -23,7 +23,23 @@ include!(concat!(env!("OUT_DIR"), "/page_files.rs"));
 pub(crate) const POLICY: &str = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
 pub(crate) fn routes() -> Router<Arc<Api>> {
-    Router::new().route("/", get(index)).route("/assets/{file}", get(asset))
+    Router::new()
+        .route("/", get(index))
+        .route("/assets/{file}", get(asset))
+        .route("/p/{code}", get(index))
+        .route("/p/{code}/{*rest}", get(index))
+        .route("/projects", get(index))
+        .route("/projects/{id}", get(index))
+        .route("/projects/{id}/{*rest}", get(index))
+        .route("/runs", get(index))
+        .route("/runs/{number}", get(index))
+        .route("/machines", get(index))
+        .route("/machines/{name}", get(index))
+        .route("/packages", get(index))
+        .route("/packages/{name}", get(index))
+        .route("/models", get(index))
+        .route("/models/{name}", get(index))
+        .route("/account", get(index))
 }
 
 fn not_built() -> Refusal {

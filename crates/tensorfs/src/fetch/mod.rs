@@ -54,6 +54,7 @@ pub async fn get_pinned(url: &str, from: u64, sink: &mut (dyn FnMut(u64, &[u8]) 
 /// byte, whose answer states the whole (`Content-Range`, or a server that sends all of it: `Content-Length`). `roots`:
 /// PEM roots beyond the public ones.
 pub async fn length_pinned(url: &str, roots: Option<&[u8]>) -> Result<u64> {
+    let display_url = net::shown(url);
     let policy = SourcePolicy { any_host: true, allow_local: policy::is_loopback_origin(url), max_redirects: 5, ..Default::default() };
     let client = match roots {
         Some(pem) => Client::with_roots(policy, pem)?,
@@ -66,12 +67,12 @@ pub async fn length_pinned(url: &str, roots: Option<&[u8]>) -> Result<u64> {
                 let length = match answer.status() {
                     206 => answer.content_range().and_then(|(_, total)| total),
                     200 => answer.header("content-length").and_then(|length| length.parse().ok()),
-                    status @ (404 | 410) => return refuse(Code::REF_NOT_FOUND, format!("{url}: HTTP {status}")),
+                    status @ (404 | 410) => return refuse(Code::REF_NOT_FOUND, format!("{display_url}: HTTP {status}")),
                     _ => None,
                 };
-                return length.ok_or_else(|| Refusal { code: Code::ORIGIN_REFUSED, detail: format!("{url}: HTTP {} with no length", answer.status()) });
+                return length.ok_or_else(|| Refusal { code: Code::ORIGIN_REFUSED, detail: format!("{display_url}: HTTP {} with no length", answer.status()) });
             }
-            Ok(answer) => (format!("{url}: HTTP {}", answer.status()), answer.stated_wait()),
+            Ok(answer) => (format!("{display_url}: HTTP {}", answer.status()), answer.stated_wait()),
             Err(GetError::Exchange(refusal)) if ask::transient(&refusal) => (refusal.detail, None),
             Err(error) => return Err(error.refusal()),
         };

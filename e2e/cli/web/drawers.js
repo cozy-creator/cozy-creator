@@ -7,7 +7,7 @@
 const { chromium } = require(process.env.PLAYWRIGHT);
 const { execFileSync, spawn } = require('child_process');
 const { join } = require('path');
-const { signIn, STEP_MS, noStall, until } = require('./page');
+const { projectFromPage, projectUrl, cozyIn, signIn, STEP_MS, noStall, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -35,13 +35,13 @@ const numberIn = async (row) => Number((await row.first().locator('b').textConte
 async function runs(page, base, id, folder) {
   /** A real run the terminal asks for: the CLI follows it, and exits when it ends. */
   const asked = (seconds) => {
-    const child = spawn(process.env.COZY, ['run', '-p', folder, './weightless/wait', `seconds:=${seconds}`, '--on', 'local'], { cwd: here, stdio: 'ignore' });
+    const child = spawn(process.env.COZY, ['run', join(here, 'weightless/wait'), `seconds:=${seconds}`, '--on', 'local'], { cwd: folder, stdio: 'ignore' });
     return new Promise((done) => child.on('exit', done));
   };
   // Local code installs on first use, as its own run: past that, a run of it is one row.
-  cozy('run', '-p', folder, './weightless/reverse', 'text=warm', '--on', 'local');
+  cozyIn(folder, ['run', join(here, 'weightless/reverse'), 'text=warm', '--on', 'local'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 600_000 });
 
-  await page.goto(`${base}/#/projects/${id}/runs`);
+  await page.goto(await projectUrl(id, `/runs`));
   await page.waitForSelector('.drawer');
   let reloads = 0;
   page.on('load', () => { reloads += 1; });
@@ -73,7 +73,7 @@ async function runs(page, base, id, folder) {
   if (process.env.SHOT) await page.screenshot({ path: `${process.env.SHOT}-run.png` });
 
   // A cancel, from the page, under its confirmation: the terminal's follower ends with it.
-  await page.goto(`${base}/#/projects/${id}/runs`);
+  await page.goto(await projectUrl(id, `/runs`));
   const second = asked(300);
   const secondNumber = await until('the second run', () => numberIn(rowOf(page, 'wait')), (now) => now > number);
   await rowOf(page, 'wait').first().locator('a').click();
@@ -96,7 +96,7 @@ async function runs(page, base, id, folder) {
   check('cli_agrees_it_canceled', shown(secondNumber).status === 'canceled', shown(secondNumber).status);
   await second;
 
-  await page.goto(`${base}/#/projects/${id}/runs?status=canceled`);
+  await page.goto(await projectUrl(id, `/runs?status=canceled`));
   await until('only canceled', () => page.locator('.runrow').allTextContents(), (rows) => rows.length > 0 && rows.every((text) => text.includes('canceled')));
   check('filter_by_status', true);
 }
@@ -117,11 +117,11 @@ async function runs(page, base, id, folder) {
   const base = new URL(page.url()).origin;
 
   // A project of its own, by name, from the Projects drawer.
-  await page.goto(`${base}/#/projects`);
+  await page.goto(`${base}/projects`);
   await page.fill('input[aria-label="New project\'s name"]', `web-drawers-${Date.now()}`);
   await page.click('form button[type=submit]');
-  await page.waitForURL(/#\/projects\/[^/]+$/);
-  const id = page.url().match(/#\/projects\/([^/]+)/)[1];
+  await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
+  const id = (await projectFromPage(page)).id;
   const read = (path) =>
     page.evaluate(async (path) => {
       const { token } = JSON.parse(localStorage.getItem('cozy.session'));
@@ -135,18 +135,18 @@ async function runs(page, base, id, folder) {
   if (runsHere) await runs(page, base, id, folder);
 
   // The filters: every project goes in the route.
-  await page.goto(`${base}/#/projects/${id}/runs`);
+  await page.goto(await projectUrl(id, `/runs`));
   await page.click('.filters input[type=checkbox]');
   await until('every project in the route', () => Promise.resolve(page.url()), (url) => url.includes('all'));
   check('filter_every_project', true);
 
   // Local code is the CLI's: it says so, and offers no button to run it.
-  await page.goto(`${base}/#/projects/${id}/new?target=${encodeURIComponent('./weightless/wait')}`);
+  await page.goto(await projectUrl(id, `/new?target=${encodeURIComponent('./weightless/wait')}`));
   await page.waitForSelector('.drawer .copyable');
   check('local_code_stays_cli_only', (await page.locator('.drawer .primary').count()) === 0);
 
   // Machines: the live list, as `cozy machine ls` has it.
-  await page.goto(`${base}/#/machines`);
+  await page.goto(`${base}/machines`);
   await page.waitForSelector('.sect');
   const listed = JSON.parse(cozy('--json', 'machine', 'ls')).machines.filter((machine) => machine.state !== 'ended').map((machine) => machine.name);
   await until('the machines', () => page.locator('.runrow b').allTextContents(), (rows) => listed.every((name) => rows.includes(name)));

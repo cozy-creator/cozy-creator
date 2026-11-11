@@ -15,4 +15,16 @@ impl Stop {
     pub(crate) fn is_cancelled(&self) -> bool {
         self.0.load(Ordering::Acquire)
     }
+    /// Waits out `pause` unless stopped first: whether it waited all of it.
+    pub(crate) fn sleep(&self, pause: std::time::Duration) -> bool {
+        let until = std::time::Instant::now() + pause;
+        while !self.is_cancelled() {
+            let left = until.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                return true;
+            }
+            std::thread::sleep(left.min(std::time::Duration::from_millis(100)));
+        }
+        false
+    }
 }

@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query"
 import * as React from "react"
 import { ApiError } from "../api/client"
 import { useConnection } from "../app/Connection"
+import { privateProject } from "../app/view"
 import type { Asset, ToolField, Tool } from "../api/calcifer"
 import type { ElementView } from "./CanvasStore"
 import { useCanvasStore } from "./context"
@@ -62,8 +63,8 @@ async function imported(module: string): Promise<Own> {
 function useOwn(tool: Tool | undefined) {
   const { client } = useConnection()
   const store = useCanvasStore()
-  const id = tool?.ui ? tool.id : null
   const project = store.projectId
+  const id = tool?.ui && !(tool.local && privateProject(project)) ? tool.id : null
   const { data, error } = useQuery({
     queryKey: ["tool-ui", id, project],
     queryFn: async () => imported((await client.toolUi(id ?? "", project)).module),

@@ -1,5 +1,5 @@
 //! Format 2 as cozy 0.19 read it, for the one move to format 3: each asset's state, worked out from project.yaml and project.lock as
-//! `cozy project status` did, so what was out of date stays so with no word from that cozy. Only what decides a state is here: the file
+//! `cozy status` did, so what was out of date stays so with no word from that cozy. Only what decides a state is here: the file
 //! after `defaults`, an entity's nodes, a beat's writes, what each reads, and the memo key. It goes when format 2 does.
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -220,7 +220,7 @@ impl Doc {
         doc
     }
 
-    /// Each asset's row as `cozy project status --json` gave it: its name, `standing`, and the version that is its state.
+    /// Each asset's row as `cozy status --json` gave it: its name, `standing`, and the version that is its state.
     pub(crate) fn rows(&self, lock: &Lock) -> Vec<Value> {
         let stood = self.stand(lock);
         let rows = self.assets.iter().zip(&stood).filter(|(asset, _)| asset.links.is_none()).map(|(asset, stood)| {
