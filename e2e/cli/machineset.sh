@@ -50,7 +50,7 @@ wait $b; b=$?
 cozy --json machine ls > "$OUT/set-machines.json"
 J '[.machines[] | select(.name == "stand-a" or .name == "stand-b") | select(.state == "ready")] | length == 2' "$OUT/set-machines.json" \
   || { check "machine set: the stand-ins aren't ready: $(jq -c '[.machines[] | {name, state, unreachable}]' "$OUT/set-machines.json")"; return; }
-cozy --json new "$P" > "$OUT/set-new.json" 2>&1 || { check "machine set: new: $(tail -c 300 "$OUT/set-new.json")"; return; }
+cozy --json new --unencrypted "$P" > "$OUT/set-new.json" 2>&1 || { check "machine set: new: $(tail -c 300 "$OUT/set-new.json")"; return; }
 
 # Pinned, as the CLI and the page both read it.
 in_project "$P" --json machine use local,stand-a > "$OUT/set-use.json" 2> "$OUT/set-use.err" \
