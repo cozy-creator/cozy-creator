@@ -36,7 +36,7 @@ import { copyBoxes, ownCopy } from "./copy"
 import { EntityCard } from "./EntityCard"
 import { HistoryControls } from "./HistoryControls"
 import { Placer } from "./place"
-import type { BasicNodeKind } from "./palette"
+import type { BasicNodeKind, Operation } from "./palette"
 import { Dots, Sheet } from "./Sheet"
 import { HANG, madeHere, shownOf } from "./shown"
 import { noHash } from "./text"
@@ -581,10 +581,10 @@ function Canvas({
 
   // A click puts a box in the middle of what's visible, and `place` keeps it clear of what's there.
   const placeTool = useCallback(
-    (tool: Tool) => {
+    (tool: Tool, operation?: Operation) => {
       const width = tool.fields.some((field) => field.type === "timeline") ? 720 : tool.makes === "video" ? 360 : 300
       const { x, y } = visibleCentre()
-      placer.addTool(tool, { x: x - width / 2 + CARD_WIDTH / 2, y: y - (width * 0.75) / 2 + 16 })
+      placer.addTool(tool, { x: x - width / 2 + CARD_WIDTH / 2, y: y - (width * 0.75) / 2 + 16 }, undefined, operation)
     },
     [placer, visibleCentre],
   )
@@ -620,7 +620,7 @@ function Canvas({
         return
       }
       if (load.node) placer.addNode(load.node, point)
-      else if (load.tool) placer.addTool(load.tool, point, load.fields)
+      else if (load.tool) placer.addTool(load.tool, point, load.fields, load.operation)
       if (load.take && !(under && store.takePicture(under, load.take))) placer.addFile(load.take, point)
     },
     [placer, flow, store],

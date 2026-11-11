@@ -37,7 +37,7 @@ import { mentionsIn, rowsIn, textsIn } from "./text"
 import { clipOf, wire } from "./timeline/model"
 import { PageHistory, type Target } from "./history"
 import { comingOff, goingOn, holdsPictures, type ToolStep } from "./toolchange"
-import { isVideoEdit, toolFitsNode } from "./palette"
+import { isVideoEdit, toolFitsNode, type Operation } from "./palette"
 import { isSelf, mentionFrom, numbersOf, SELF, versionIn, versionOf } from "./versions"
 
 /** The body width in this geometry publication; the node width may be an opened envelope. */
@@ -71,6 +71,8 @@ export interface Placing {
 /** Everything a card shows that isn't a position. Culling unmounts cards, so a card holds none of it. */
 export interface ElementView {
   name: string
+  /** The operation chosen on this page; a model can support both image creation and editing. */
+  operation?: Operation
   asset?: Asset
   entity?: Entity
   /** An entity's: how the assets it links stand, the worst of them. */

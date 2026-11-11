@@ -50,10 +50,16 @@ export const modelLabel = (tool: Tool) => {
   return model ? `${tool.package_title || model} (${model})` : `${tool.package_title || tool.package} · ${tool.label}`
 }
 
+const takesImage = (fields: ToolField[]): boolean => fields.some((field) =>
+  (field.type === "prompt" && (!field.takes || field.takes.includes("image"))) ||
+  (field.type === "slot" && field.accept === "image") ||
+  (field.type === "group" && takesImage(field.members ?? [])))
+
 /** Stable operation rows; executable choices live in the node's model control. */
 export function paletteEntries(tools: Tool[]): PaletteEntry[] {
   return OPERATIONS.map((operation) => {
-    const variants = tools.filter((tool) => operationOf(tool) === operation.key)
+    const variants = tools.filter((tool) => operationOf(tool) === operation.key ||
+      (operation.key === "edit_image" && operationOf(tool) === "image" && takesImage(tool.fields)))
       .sort((a, b) => Number(Boolean(a.local)) - Number(Boolean(b.local)) || a.id.localeCompare(b.id))
     return { ...operation, tool: variants[0], variants }
   })

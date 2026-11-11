@@ -2,7 +2,7 @@ import type { Tool } from "../api/calcifer"
 import { signal } from "../ui/signal"
 import type { CarriedFile } from "./CanvasStore"
 import { type Carried, carried } from "./checkpoints"
-import type { BasicNodeKind } from "./palette"
+import type { BasicNodeKind, Operation } from "./palette"
 
 // What's picked up within the page goes by pointer events, a mouse's, a pen's or a finger's alike, so a list can tell a scroll from a carry by
 // which way a press first moves. Only files from the computer come by the browser's own drag.
@@ -15,6 +15,7 @@ export interface Load {
   node?: BasicNodeKind
   box?: Carried
   tool?: Tool
+  operation?: Operation
   fields?: Record<string, unknown>
   take?: CarriedFile
   name?: string

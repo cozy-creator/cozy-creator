@@ -807,7 +807,7 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
       {here && asset && (
         <div className="here-under nodrag nopan nowheel">
           <div className="here-all">
-            {!looking && <ToolSettings key={asset.tool ?? "none"} name={name} asset={asset} />}
+            {!looking && <ToolSettings name={name} asset={asset} selected={view.operation} />}
             {asset.timeline && <Takes view={view} name={name} width={width} />}
             {!asset.timeline && (!view.hereWords || view.pickingUp) && <PickUp view={view} name={name} />}
             {!asset.timeline && <OrbitToggle view={view} name={name} />}

@@ -5,7 +5,7 @@ import { say } from "../ui/notes"
 import type { Asset, Imported, Card, Tool, Opened } from "../api/calcifer"
 import { CARD_WIDTH, type CanvasStore, type CarriedFile, type MediaKind, type Pushes, type Stage, UNDO_MS } from "./CanvasStore"
 import { startingFields, TEXT_TOOL, VIDEO_EDIT_TOOL } from "./controls"
-import type { BasicNodeKind } from "./palette"
+import type { BasicNodeKind, Operation } from "./palette"
 import type { CopiedBox } from "./copy"
 import { asName, stemName } from "./names"
 
@@ -67,12 +67,13 @@ export class Placer {
 
   /** A tool dropped at a point: an asset of it, there at once, as wide as what it makes and called what its tool says, `fields` with what it starts with
    *  (a checkpoint dropped is on it). A tool's box opens on its words, the caret in them; a text box takes the keys where it stands, and an Edit stays shut. */
-  addTool(tool: Tool, point: { x: number; y: number }, fields?: Record<string, unknown>) {
+  addTool(tool: Tool, point: { x: number; y: number }, fields?: Record<string, unknown>, operation?: Operation) {
     const at = { x: Math.round(point.x - CARD_WIDTH / 2), y: Math.round(point.y - 16) }
     const text = tool === TEXT_TOOL
     const timeline = tool.fields.some((field) => field.type === "timeline") ? { fps: 24, tracks: [{ clips: [] }] } : undefined
     const name = this.box(asName(tool.name ?? tool.label), { kind: tool.makes, tool: text ? undefined : tool.id, fields: text ? { text: "", node_kind: "text" } : { ...startingFields(tool), ...fields, node_kind: timeline ? "video_edit" : tool.makes }, timeline }, at, `Couldn't place ${tool.label}`)
     this.store.focusing = name
+    if (operation) this.store.patch(name, { operation })
     if (!text && !timeline) this.store.openHere(name)
   }
 
