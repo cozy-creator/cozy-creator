@@ -582,6 +582,7 @@ impl Publisher {
     fn make(&self, source: &str, profiles: &[String], trained_on: &str, providers: &Providers,
         stop: Option<&Stop>, progress: &(dyn Fn(&str, u64, u64) + Sync),
     ) -> Result<Made, Failure> {
+        let _inventory = crate::held_models::ModelChange;
         crate::private_io::check_model_source(source).map_err(|error| ("private_model_import_unsupported", error.to_string()))?;
         let mut sorted = profiles.to_vec();
         sorted.sort();
@@ -604,6 +605,7 @@ impl Publisher {
     /// components' walk found them). Whatever is here moves nothing.
     fn pull(&self, source: &hub::Source, named: &Named, components: Option<&[String]>, stop: Option<&Stop>,
         bytes: &(dyn Fn(u64, u64) + Sync)) -> Result<Landed, Failure> {
+        let _inventory = crate::held_models::ModelChange;
         let header = named.header()?;
         let remote = origin::remote(&self.machine, source).map_err(|e| unsigned(source, refused("model_download_failed", e.clone()), &e))?;
         let stop = stop.cloned().unwrap_or_default();
