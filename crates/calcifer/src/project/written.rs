@@ -11,7 +11,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::{
     folder::prefix_of,
-    format::{FORMAT, INSTRUCTIONS, LEADS, TEXT, canonical, end_trimmed, invalid, names_a_file, yaml_key},
+    format::{FORMAT, INSTRUCTIONS, LEADS, NODE_KIND, TEXT, canonical, end_trimmed, invalid, names_a_file, yaml_key},
     graph::{mention, mention_moved, name_key},
 };
 
@@ -19,7 +19,7 @@ use super::{
 pub(super) const TOOL: &str = "tool";
 const SECTION: &str = "assets";
 /// What a box holds whatever its tool: the platform's words.
-const BOX: [&str; 6] = ["tool", "approved", "description", "models", "lora", "text"];
+const BOX: [&str; 7] = ["tool", "approved", "description", "models", "lora", "text", NODE_KIND];
 
 /// A project's boxes and what else it says, in order.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -145,6 +145,9 @@ impl Written {
         let head = ordered(&top, &order).into_iter().filter(|(key, _)| key != SECTION).collect();
         let empty = Map::new();
         let assets = top.get(SECTION).and_then(Value::as_object).unwrap_or(&empty);
+        for body in assets.values().filter_map(Value::as_object) {
+            super::format::node_kind(body.get(NODE_KIND))?;
+        }
         // Each box's fields in the order the text writes them, from one more read of it: a read per box made a 5,000-box import take minutes.
         let orders: std::collections::HashMap<String, Vec<String>> = child_keys_at(text, &[SECTION]).unwrap_or_default().into_iter().collect();
         let boxes = listed
@@ -187,6 +190,7 @@ impl Written {
     /// Box `name`'s fields set, a null cleared, and what was said doing so. Setting what it holds changes nothing. A text is kept with
     /// nothing after its last word, as everything reads it: the space a chip leaves to type on isn't words, and a `|` block can't hold it.
     pub(crate) fn set(&mut self, name: &str, fields: &Map<String, Value>) -> Result<Vec<String>, Error> {
+        super::format::node_kind(fields.get(NODE_KIND))?;
         let (translated, said) = super::tools::in_the_file(fields)?;
         let held = self.get_mut(name)?;
         for (field, mut value) in translated {
@@ -201,9 +205,12 @@ impl Written {
 
     /// What a change of its tool writes of box `name`, with what `fields` ask, `tool` empty taking it off, and its fields with it (Paul,
     /// 11-06). Its pictures, numbers, approval and description stay. Only a box with none of those pictures has its words in another field:
-    /// `text` with no tool, `instructions` with one. A tool going on a picture, `holds`, starts by reading it where `start` says.
+    /// `text` with no tool, `instructions` with one. Typed media keep their type and prompt words when a model is removed.
+    /// A tool going on a picture, `holds`, starts by reading it where `start` says.
     pub(crate) fn with_tool(&self, name: &str, tool: &str, holds: Option<u32>, start: Option<Start>, fields: &mut Map<String, Value>) -> Result<(), Error> {
         let held = self.get(name).ok_or_else(|| unknown(name))?.map();
+        let kind = super::format::node_kind(fields.get(NODE_KIND).or_else(|| held.get(NODE_KIND)))?;
+        let media = kind.is_some_and(|kind| kind != TEXT);
         let said = fields.contains_key(INSTRUCTIONS) || fields.contains_key(TEXT);
         let moved = |fields: &mut Map<String, Value>, from: &str, to: &str| {
             if let Some(words) = held.get(from).filter(|_| !said) {
@@ -212,7 +219,7 @@ impl Written {
             }
         };
         match (tool.is_empty(), holds) {
-            (true, None) => LEADS.iter().rev().find(|field| held.contains_key(**field)).into_iter().for_each(|field| moved(fields, field, TEXT)),
+            (true, None) if !media => LEADS.iter().rev().find(|field| held.contains_key(**field)).into_iter().for_each(|field| moved(fields, field, TEXT)),
             (false, None) => moved(fields, TEXT, INSTRUCTIONS),
             (false, Some(number)) if !said && !held.contains_key(TOOL) => {
                 let own = format!("<self.{number}>");
@@ -229,20 +236,20 @@ impl Written {
         }
         // Off, its fields go with it; what it was given back by Undo is a write of them.
         if tool.is_empty() {
-            let gone: Vec<String> = held.keys().filter(|field| !BOX.contains(&field.as_str()) && !fields.contains_key(*field)).cloned().collect();
+            let gone: Vec<String> = held.keys().filter(|field| !BOX.contains(&field.as_str()) && !(media && LEADS.contains(&field.as_str())) && !fields.contains_key(*field)).cloned().collect();
             fields.extend(gone.into_iter().map(|field| (field, Value::Null)));
         }
         fields.insert(TOOL.to_owned(), if tool.is_empty() { Value::Null } else { json!(tool) });
         Ok(())
     }
 
-    /// A new box at the end, made by `tool`, or with none a text box.
+    /// A new box at the end; a blank media container has no tool or implicit text input.
     pub(crate) fn added(&mut self, name: &str, tool: &str, fields: &Map<String, Value>) -> Result<Vec<String>, Error> {
-        let first = match tool.is_empty() {
-            true => (TEXT.to_owned(), json!("")),
-            false => (TOOL.to_owned(), json!(tool)),
-        };
-        self.push(Boxed { id: super::new_key(), name: name.to_owned(), fields: vec![first], at: None })?;
+        let media = super::format::node_kind(fields.get(NODE_KIND))?.is_some_and(|kind| kind != TEXT);
+        let first = if !tool.is_empty() { vec![(TOOL.to_owned(), json!(tool))] }
+            else if media { vec![] }
+            else { vec![(TEXT.to_owned(), json!(""))] };
+        self.push(Boxed { id: super::new_key(), name: name.to_owned(), fields: first, at: None })?;
         self.set(name, fields)
     }
 

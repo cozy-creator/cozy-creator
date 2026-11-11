@@ -687,7 +687,7 @@ pub struct AssetVersions {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct NewAsset {
-    /// A tool's `id`, from `GET /v1/tools`. Empty: a text asset, its words in `fields.text`.
+    /// A tool's `id`, from `GET /v1/tools`. Empty: text in `fields.text`, or a blank media container selected by `kind`.
     #[serde(default)]
     pub tool: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -700,7 +700,7 @@ pub struct NewAsset {
     /// A person typed `name`: refused if the project has it, not numbered.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub exact: bool,
-    /// What the tool makes, as its `GET /v1/tools` row said. Absent: Calcifer works it out behind the answer.
+    /// What the tool makes, or image/video/audio for an empty-tool container. Calcifer persists this as reserved `fields.node_kind`; intrinsic cozy/edit uses video_edit. Absent: infer the tool or text kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
     /// What its drop pushed aside, written with it, each only if no other client wrote it after the revision in `placed`.

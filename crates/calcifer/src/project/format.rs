@@ -24,13 +24,27 @@ use super::{
 pub(crate) const ALL: &str = "all";
 pub(super) const FORMAT: u64 = 4;
 /// What the platform reads of an asset. Any other key is an input.
-const PLATFORM: [&str; 5] = ["tool", "approved", "description", "models", "lora"];
+const PLATFORM: [&str; 6] = ["tool", "approved", "description", "models", "lora", NODE_KIND];
 /// What goes on a function's first call, beside its input.
 const MADE: [&str; 2] = ["models", "lora"];
 pub(super) const KINDS: [&str; 3] = ["image", "video", "audio"];
 const SECTIONS: [&str; 3] = ["version", "defaults", "assets"];
 /// What a text asset holds, and what it is.
 pub(super) const TEXT: &str = "text";
+/// Persistent container identity; this is project metadata, never a tool input.
+pub(super) const NODE_KIND: &str = "node_kind";
+
+pub(super) fn node_kind(value: Option<&Value>) -> Result<Option<&str>, Error> {
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(kind)) if matches!(kind.as_str(), "text" | "image" | "video" | "audio" | "video_edit") => Ok(Some(kind)),
+        _ => Err(invalid("node_kind", "node_kind must be text, image, video, audio or video_edit")),
+    }
+}
+
+pub(super) fn node_media(kind: &str) -> &str {
+    if kind == "video_edit" { "video" } else { kind }
+}
 /// The reserved package Calcifer runs itself.
 const COZY: &str = "cozy";
 const FRAME: &str = "cozy/frame";
@@ -143,6 +157,8 @@ pub(crate) struct Asset {
     pub name: String,
     /// What its file is: what it holds or last made, else what its tool's interface last said, else a picture. No more than what to call it.
     pub kind: String,
+    /// Explicit container identity, preserved independently of its selected tool.
+    pub node_kind: Option<String>,
     /// Whether anything said that.
     pub tool_makes: bool,
     /// What makes it, as the memo holds it: no release, no root namespace, and local code by its directory's name.
@@ -347,6 +363,9 @@ impl Doc {
             defaults.insert(section.clone(), Value::Object(filled));
         }
         let declared = top.get("assets").and_then(Value::as_object).unwrap_or(&empty);
+        for body in declared.values().filter_map(Value::as_object) {
+            node_kind(body.get(NODE_KIND))?;
+        }
         // A name holds no `.` (decision 4): one written with one reads as its `_` form, said.
         let read_as = |name: &String| if format == FORMAT && name.contains('.') { name.replace('.', "_") } else { name.clone() };
         for name in listed.iter().filter(|_| format == FORMAT) {
@@ -397,6 +416,7 @@ impl Doc {
             three.asset_types.push(text_of(body.get("asset_type")));
             body.retain(|key, _| !THREE_ONLY.contains(&key.as_str()));
         }
+        let node_kind = node_kind(body.get(NODE_KIND)).expect("node kind was validated").map(str::to_owned);
         let target = text_of(body.get("tool")).trim().to_owned();
         let tool = (!target.is_empty()).then(|| plain_tool(&target, folder));
         let mut pin = None;
@@ -417,8 +437,8 @@ impl Doc {
         let of_file = pin.as_ref().and_then(|sha256| lock.files.get(sha256)).and_then(folder::File::media);
         let makes = tool.as_ref().and_then(|tool| lock.makes.get(tool)).and_then(|kind| KINDS.iter().copied().find(|known| known == kind));
         // No tool and no images: it's words, in whichever field they stayed.
-        let text = (tool.is_none() && pin.is_none() && held.is_none()).then(|| body.get(TEXT).or_else(|| LEADS.iter().find_map(|field| body.get(*field)))).flatten().map(|words| text_of(Some(words)).trim_end().to_owned());
-        let said = tool.as_deref().and_then(kind_made_here).or(of_file).or(made).or(makes).or(text.as_ref().map(|_| TEXT));
+        let text = (tool.is_none() && pin.is_none() && held.is_none() && node_kind.as_deref().is_none_or(|kind| kind == TEXT)).then(|| body.get(TEXT).or_else(|| LEADS.iter().find_map(|field| body.get(*field)))).flatten().map(|words| text_of(Some(words)).trim_end().to_owned());
+        let said = tool.as_deref().and_then(kind_made_here).or(node_kind.as_deref().map(node_media)).or(of_file).or(made).or(makes).or(text.as_ref().map(|_| TEXT));
         let kind = said.unwrap_or("image").to_owned();
         let description = text_of(body.get("description")).trim().to_owned();
         for mention in mentions(&description) {
@@ -451,7 +471,7 @@ impl Doc {
         }
         let hollow = body.is_empty() || tool.as_deref().is_none_or(|tool| made_here(tool) && kind_made_here(tool).is_none());
         self.index.insert(key, self.assets.len());
-        self.assets.push(Asset { name: name.to_owned(), kind, tool_makes: makes.is_some(), tool, target, made, inputs, written: None, inlined: vec![], text, own, description, pin, hollow, reads: vec![] });
+        self.assets.push(Asset { name: name.to_owned(), kind, node_kind, tool_makes: makes.is_some(), tool, target, made, inputs, written: None, inlined: vec![], text, own, description, pin, hollow, reads: vec![] });
     }
 
     /// Each mention of a text asset in what a tool is given replaced by its words, and theirs in turn. Only here: what's read, what's sent and
@@ -617,6 +637,7 @@ impl Doc {
         flat.values_mut().for_each(end_trimmed);
         flat.extend(asset.made.iter().map(|(field, value)| (field.clone(), value.clone())));
         flat.extend(asset.text.iter().map(|text| (TEXT.to_owned(), json!(text))));
+        if let Some(kind) = &asset.node_kind { flat.insert(NODE_KIND.to_owned(), json!(kind)); }
         if !asset.description.is_empty() {
             flat.insert("description".to_owned(), json!(asset.description));
         }
