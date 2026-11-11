@@ -1,7 +1,8 @@
 # The native loop and kernel readiness, for the `execution` suite.
 # --only still applies to these names.
 # No H3 request, independent rental or SDK update is introduced here.
-CORE_READY_TARGET=$HERE/suites/execution/kernel-ready-publication/cpu
+# Kernel readiness publication, the Runtime's own exerciser (`bench.kernel_ready`, CPU).
+CORE_READY_TARGET=$HERE/suites/execution/drive/kernel_ready
 
 cell kernel-ready-late-success "$CORE_READY_TARGET" mode=late-success seed:=$((R + 311))
 cell kernel-ready-late-error "$CORE_READY_TARGET" mode=late-error seed:=$((R + 312))

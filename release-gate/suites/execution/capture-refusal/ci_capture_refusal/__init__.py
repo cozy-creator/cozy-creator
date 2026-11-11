@@ -7,6 +7,7 @@ import json
 
 import msgspec
 import torch
+from cozy_runtime import rng
 from cozy_runtime.author import App, Context
 
 app = App()
@@ -28,7 +29,7 @@ def gpu(payload: Probe, ctx: Context) -> Report:
     if payload.variant not in ("warm", "item", "sync"):
         raise ValueError(f"unknown variant {payload.variant}; warm, item or sync")
     device = torch.device("cuda", torch.cuda.current_device())
-    x = torch.randn(1 << 16, device=device, generator=torch.Generator(device).manual_seed(payload.seed))
+    x = rng.noise((1 << 16,), payload.seed, device=device)
     total = torch.zeros(1, device=device)
     want_x, want_total = x.clone(), total.clone()
     host: list[float] = []
