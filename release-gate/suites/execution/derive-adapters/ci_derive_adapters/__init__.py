@@ -7,6 +7,7 @@ import json
 
 import msgspec
 import numpy as np
+import numpy.typing as npt
 
 from cozy_runtime.author import App, Context
 from cozy_runtime.derive import microscale
@@ -21,7 +22,7 @@ class Report(msgspec.Struct):
     detail: str
 
 
-def cases(seed: int) -> dict[str, np.ndarray]:
+def cases(seed: int) -> dict[str, npt.NDArray[np.float32]]:
     rng = np.random.default_rng(seed)
     outliers = rng.normal(size=(7, 512)).astype("<f4")
     outliers[:, 259] = 1e6

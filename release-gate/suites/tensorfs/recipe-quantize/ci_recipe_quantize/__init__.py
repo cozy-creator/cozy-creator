@@ -5,11 +5,13 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import OrderedDict
-from typing import cast
+from collections.abc import Mapping
+from typing import Protocol, cast
 
 import msgspec
 import numpy as np
 import torch
+from torch.utils.dlpack import from_dlpack
 from cozy_runtime.author import (
     App,
     Config,
@@ -24,6 +26,23 @@ from cozy_runtime.author import (
     uses_components,
 )
 from cozy_runtime.weights_store import Derivation
+
+
+class Stored(Protocol):
+    """One stored part's bytes."""
+
+    def tobytes(self) -> bytes: ...
+
+
+class EncodedWeight(Protocol):
+    """A recipe lane's weight as the checkpoint reads it back: TensorFS's `Encoded`, whose type a package can't import."""
+
+    @property
+    def scheme(self) -> str: ...
+
+    @property
+    def parts(self) -> Mapping[str, Stored]: ...
+
 
 app = App()
 
@@ -145,13 +164,13 @@ def predict(
     assert payload.encoding in ("int8.convrot", "nvfp4")
     checkpoint = ctx.tensorfs_source(weights)
     held = checkpoint.components["net"].tensors
-    encoded = held.read("proj.weight")  # a recipe lane's weight is encoded
+    encoded = cast("EncodedWeight", held.read("proj.weight"))  # a recipe lane's weight is encoded
     assert encoded.scheme == payload.encoding, encoded.scheme
     # Decoded by the checkpoint itself, to its logical BF16: no TensorFS import (xs-174, the package contract).
-    decoded = torch.from_dlpack(held.read("proj.weight", decode=True)).float()
+    decoded = from_dlpack(held.read("proj.weight", decode=True)).float()
     original, original_bias = source_values(payload.seed)
     bias = torch.frombuffer(
-        bytearray(held.read("proj.bias").tobytes()), dtype=torch.bfloat16  # the bias stays plain
+        bytearray(held.read("proj.bias", decode=True).tobytes()), dtype=torch.bfloat16  # the bias stays plain
     ).float()
     assert torch.equal(bias, original_bias.float())
     reference_weight = decoded
