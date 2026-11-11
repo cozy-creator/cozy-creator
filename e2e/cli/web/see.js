@@ -96,11 +96,16 @@ async function rest(page, handle) {
 
 (async () => {
   const base = calcifer();
+  seen.setup = 'launch browser';
   const browser = await launch(playwright);
+  seen.setup = 'create context';
   const context = await browser.newContext({ viewport: { width: 1800, height: 1200 } });
+  seen.setup = 'create page';
   const page = await context.newPage();
   lookAt(page);
+  seen.setup = 'watch boxes';
   await watchBoxes(page);
+  seen.setup = 'ready';
   page.setDefaultTimeout(STEP_MS);
   const errors = [];
   const thumbs = [];
