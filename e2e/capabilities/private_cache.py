@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
-import http.client
+from http.client import HTTPResponse, HTTPSConnection
 import ipaddress
 import json
 import os
@@ -176,14 +176,14 @@ class Fixture:
 
     @overload
     def machine(self, method: str, path: str, value: object = None, *, authorized: bool = True,
-                stream: Literal[True]) -> tuple[http.client.HTTPSConnection, http.client.HTTPResponse]: ...
+                stream: Literal[True]) -> tuple[HTTPSConnection, HTTPResponse]: ...
 
     def machine(self, method: str, path: str, value: object = None, *, authorized: bool = True,
-                stream: bool = False) -> bytes | tuple[http.client.HTTPSConnection, http.client.HTTPResponse]:
+                stream: bool = False) -> bytes | tuple[HTTPSConnection, HTTPResponse]:
         tls = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         tls.check_hostname = False
         tls.verify_mode = ssl.CERT_NONE
-        connection = http.client.HTTPSConnection(self.machine_host, self.address.port, context=tls, timeout=300)
+        connection = HTTPSConnection(self.machine_host, self.address.port, context=tls, timeout=300)
         connection.connect()
         assert connection.sock is not None
         certificate = connection.sock.getpeercert(binary_form=True)
