@@ -41,10 +41,3 @@ async def lora_overlay_refill(ctx: Context, *, seed: int = 4242) -> Report:
     """The LoRA armed in its DiT's own forward through baked int8 pages under a ballast; fails when a warm call differs
     from its reference."""
     return Report((await call(bench.lora_overlay_refill, payload=bench.RefillProbe(seed=seed))).detail)
-
-
-@app.entrypoint(accelerator=False)
-async def mps_residency(ctx: Context, *, seed: int = 103) -> Report:
-    """MPS checkpoint loading, an escaped alias and a refill through the Runtime's residency, on an Apple GPU (no suite
-    runs it while none has an Apple GPU)."""
-    return Report((await call(bench.mps_residency, seed=seed)).detail)
