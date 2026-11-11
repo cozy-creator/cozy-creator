@@ -121,6 +121,31 @@ impl Drop for Fixture {
 }
 
 #[tokio::test]
+async fn download_progress_reports_written_bytes_and_total_including_empty_files() {
+    let fixture = Fixture::new(|request, _, _| Some(Reply {
+        status: "200 OK",
+        body: if request.path == "/v1/empty" { String::new() } else { "abcdé".into() },
+        content_type: "application/octet-stream",
+        headers: vec![],
+    }));
+    for (path, expected) in [("/v1/file", "abcdé".as_bytes()), ("/v1/empty", b"".as_slice())] {
+        let destination = fixture._home.path().join("download");
+        let observed = Mutex::new(Vec::new());
+        let written = fixture.client.download_progress(path, &destination, &|done, total| {
+            observed.lock().unwrap().push((done, total));
+        }).await.unwrap();
+        let count = expected.len() as u64;
+        assert_eq!(written, count);
+        assert_eq!(std::fs::read(destination).unwrap(), expected);
+        let observed = observed.into_inner().unwrap();
+        assert_eq!(observed.first(), Some(&(0, Some(count))));
+        assert_eq!(observed.last(), Some(&(count, Some(count))));
+        assert!(observed.iter().all(|(_, total)| *total == Some(count)));
+        assert!(observed.windows(2).all(|pair| pair[0].0 <= pair[1].0));
+    }
+}
+
+#[tokio::test]
 async fn raw_503_retries_and_reads_the_rotated_holder_token() {
     let mut attempt = 0;
     let fixture = Fixture::new(move |_, claim, original| {
