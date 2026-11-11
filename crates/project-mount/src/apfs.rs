@@ -6,6 +6,14 @@ use plist::Value;
 pub(super) const MARKER: &str = ".cozy-apfs-v1";
 const MAGIC: &[u8] = b"cozy-encrypted-apfs-sparsebundle-v1\n";
 const IMAGE: &str = "project.sparsebundle";
+const NORMAL_DETACH_ACK: Duration = Duration::from_secs(2);
+const MONITOR_POLL: Duration = Duration::from_millis(100);
+// EOF can arrive during a control probe. A detach pass can then use its initial
+// probe, normal detach, confirmation probe, forced detach and final probe.
+pub(super) const SHUTDOWN_ACK: Duration = CONTROL_ACK
+    .saturating_mul(5)
+    .saturating_add(NORMAL_DETACH_ACK)
+    .saturating_add(MONITOR_POLL);
 
 pub(super) fn validate(backing: &Path) -> Result<PathBuf> {
     let marker = backing.join(MARKER);
@@ -295,7 +303,7 @@ impl Lease {
             normal,
             "close owned encrypted image",
             None,
-            Duration::from_secs(2),
+            NORMAL_DETACH_ACK,
         )
         .is_err()
             && current_device(&self.provider, &self.image)?.as_deref() == Some(current.as_str())
@@ -402,7 +410,7 @@ pub(super) fn serve(request: Request) -> Result<()> {
     });
     let mut next_status = Instant::now() + Duration::from_secs(1);
     loop {
-        if stop.try_recv().is_ok() || parent.wait_for(Duration::from_millis(100))? {
+        if stop.try_recv().is_ok() || parent.wait_for(MONITOR_POLL)? {
             while !lease.finish()? {
                 thread::sleep(Duration::from_secs(1));
             }
