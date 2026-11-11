@@ -12,7 +12,7 @@ use crate::{calcifer::On, error::Error};
 /// `POST /v1/projects`: a new project called `name`, in Calcifer's home folder (`~/<name>`, the next free name when that is
 /// taken) or at `path` (absolute, on Calcifer's computer), with the starter film when `starter`. A project is its id, kept in
 /// its `project.db`: the folder is only where it lives. An existing one is named in a route (`NAMED_BY`) and needs no call here.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Open {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -21,10 +21,16 @@ pub struct Open {
     pub path: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub starter: bool,
+    /// Explicitly create ordinary local storage instead of the default encrypted project.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unencrypted: bool,
+    /// New encrypted projects require a user-supplied passphrase. Never cache this request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passphrase: Option<String>,
 }
 
 /// The project `POST /v1/projects` made: its id, folder and name.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Opened {
     pub id: String,
@@ -41,6 +47,9 @@ pub struct Opened {
     /// What opening it did to it, said once.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub said: Vec<String>,
+    /// Disclosed once for a new encrypted project; never persist this response in a request cache.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_secret: Option<String>,
 }
 
 /// How a client names a project: its id, public code or name, or its folder on Calcifer's computer by its absolute path (cl-819). The
@@ -1316,4 +1325,19 @@ pub struct VaultChanged {
     /// The project's runs a lock canceled first, by number.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ended: Vec<u64>,
+    /// Already-missing retained media skipped during conversion. Their project records remain missing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skipped_files: Vec<PathBuf>,
+}
+
+/// A private vault-operation stream. Progress counts copied bytes and completed files, not an estimated percentage.
+/// Only the terminal reply can contain a recovery secret; never record these events in history or shared event streams.
+#[derive(Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum VaultEvent {
+    Accepted { action: String },
+    Progress { phase: String, files_done: u64, bytes_done: u64 },
+    Completed { changed: VaultChanged },
+    Failed { error: Error },
 }

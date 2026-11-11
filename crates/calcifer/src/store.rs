@@ -562,6 +562,7 @@ impl Store {
         }
         run_list_indexes(&writer)?;
         writer.execute_batch(ANSWERS)?;
+        writer.execute_batch(crate::project::vault_operation::TABLES)?;
         writer.execute_batch(crate::state::TABLES)?;
         crate::state::project_names(&writer)?;
         crate::state::project_codes(&writer)?;

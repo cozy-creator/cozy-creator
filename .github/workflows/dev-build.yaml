@@ -426,6 +426,12 @@ jobs:
         env:
           CARGO_INCREMENTAL: '0'
         run: bash e2e/candidates/build.sh cozy . "$RUNNER_TEMP/project-vault-candidate"
+      - name: Check vault streaming and legacy-file boundaries
+        if: inputs.publish_run == ''
+        run: |
+          cargo test --release --locked -p cli --lib vault_
+          cargo test --release --locked -p calcifer --lib project::vault_operation::tests
+          cargo test --release --locked -p calcifer --lib legacy_missing_media_is_skipped
       - name: Take the exact published native archive
         if: inputs.publish_run != ''
         env:

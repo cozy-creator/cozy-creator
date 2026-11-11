@@ -1056,6 +1056,7 @@ jobs:
             --command .creator/e2e/isolated.sh -- cpu \
             --out "$RUNNER_TEMP/e2e" --envs "$RUNNER_TEMP/envs" "${cpu_args[@]}" $CANDIDATES \
             $(case " $CANDIDATES " in (*" --packages "*) ;; (*) echo --packages "$PACKAGES_MASTER" ;; esac) 2>&1 | node .creator/e2e/publish/scrub.js
+
       - if: always()
         run: uv cache prune --ci
       - if: always()

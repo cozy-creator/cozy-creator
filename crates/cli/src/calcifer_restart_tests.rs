@@ -3,6 +3,7 @@ use std::{collections::BTreeMap, io::Read as _, net::{TcpListener, TcpStream}, s
 
 #[derive(Clone)]
 struct Request {
+    method: String,
     path: String,
     headers: BTreeMap<String, String>,
     body: Vec<u8>,
@@ -20,7 +21,9 @@ fn read(socket: &mut TcpStream) -> Request {
     };
     let head = String::from_utf8(bytes[..end].to_vec()).unwrap();
     let mut lines = head.lines();
-    let path = lines.next().unwrap().split_whitespace().nth(1).unwrap().to_owned();
+    let mut target = lines.next().unwrap().split_whitespace();
+    let method = target.next().unwrap().to_owned();
+    let path = target.next().unwrap().to_owned();
     let headers: BTreeMap<String, String> = lines.filter_map(|line| line.split_once(':'))
         .map(|(key, value)| (key.to_ascii_lowercase(), value.trim().to_owned())).collect();
     let length = headers.get("content-length").and_then(|value| value.parse().ok()).unwrap_or(0);
@@ -29,7 +32,7 @@ fn read(socket: &mut TcpStream) -> Request {
         assert!(n > 0);
         bytes.extend_from_slice(&buffer[..n]);
     }
-    Request { path, headers, body: bytes[end..end + length].to_vec() }
+    Request { method, path, headers, body: bytes[end..end + length].to_vec() }
 }
 
 struct Reply {
@@ -191,6 +194,25 @@ async fn persistent_503_stops_after_five_attempts() {
 }
 
 #[tokio::test]
+async fn vault_private_creation_omits_the_response_cache_key() {
+    let fixture = Fixture::new(|_, _, _| Some(Reply::json(serde_json::json!({"created":true}))));
+    let result: serde_json::Value = fixture.client.private_post("/v1/projects", &serde_json::json!({"passphrase":"synthetic"})).await.unwrap();
+    assert_eq!(result["created"], true);
+    let requests = fixture.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(!requests[0].headers.contains_key("idempotency-key"));
+}
+
+#[tokio::test]
+async fn vault_private_creation_does_not_replay_a_lost_reply() {
+    let fixture = Fixture::new(|_, _, _| None);
+    assert!(fixture.client.private_post::<_, serde_json::Value>("/v1/projects", &serde_json::json!({"passphrase":"synthetic"})).await.is_err());
+    let requests = fixture.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(!requests[0].headers.contains_key("idempotency-key"));
+}
+
+#[tokio::test]
 async fn credentials_are_refreshed_only_when_the_holder_changed() {
     for rotate in [false, true] {
         let mut attempt = 0;
@@ -231,4 +253,183 @@ async fn follower_reconnects_with_the_same_run_and_durable_cursor() {
     assert!(events.next().await.is_none());
     let paths: Vec<_> = fixture.requests().into_iter().map(|request| request.path).collect();
     assert_eq!(paths, ["/v1/runs/same-run/events?starting_after=0", "/v1/runs/same-run/events?starting_after=7", "/v1/runs/same-run/events?starting_after=7"]);
+}
+
+fn vault_ask() -> VaultAsk {
+    VaultAsk {
+        action: "encrypt".into(), passphrase: Some("request-secret".into()), recovery_secret: None,
+        idle_timeout_s: None, max_duration_s: None, remove_plaintext: false,
+    }
+}
+
+fn vault_changed() -> serde_json::Value {
+    serde_json::json!({
+        "vault": {"encrypted": true, "state": "unlocked", "path": "/project"},
+        "recovery_secret": "terminal-secret"
+    })
+}
+
+#[tokio::test]
+async fn vault_stream_keeps_progress_separate_from_the_final_secret() {
+    let fixture = Fixture::new(|_, _, _| Some(Reply {
+        status: "200 OK", content_type: "text/event-stream; charset=utf-8", headers: vec![],
+        body: format!("data: {{\"type\":\"accepted\",\"action\":\"encrypt\"}}\n\n: keepalive\n\ndata: {{\"type\":\"progress\",\"phase\":\"copying\",\"files_done\":2,\"bytes_done\":128}}\n\ndata: {}\n\n",
+            serde_json::json!({"type":"completed", "changed":vault_changed()})),
+    }));
+    let mut progress = Vec::new();
+    let changed = fixture.client.vault("/v1/projects/project/vault", &vault_ask(), |event| {
+        progress.push(match event {
+            VaultProgress::Accepted { action } => format!("accepted {action}"),
+            VaultProgress::Progress { phase, files_done, bytes_done } => format!("{phase} {files_done} {bytes_done}"),
+        });
+    }).await.unwrap();
+    assert_eq!(progress, ["accepted encrypt", "copying 2 128"]);
+    assert_eq!(changed.recovery_secret.as_deref(), Some("terminal-secret"));
+    let requests = fixture.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, "PUT");
+    assert!(requests[0].path.starts_with("/v1/projects/project/vault/operations/cli-"));
+    assert_eq!(requests[0].headers["authorization"], "Bearer first-token");
+    assert_eq!(requests[0].headers["accept"], "text/event-stream");
+    assert!(!requests[0].headers.contains_key("idempotency-key"));
+}
+
+#[tokio::test]
+async fn vault_unreadable_event_never_discloses_partial_data() {
+    let fixture = Fixture::new(|_, _, _| Some(Reply {
+        status: "200 OK", content_type: "text/event-stream", headers: vec![],
+        body: "data: {\"type\":\"completed\",\"changed\":\"terminal-secret\"}\n\n".into(),
+    }));
+    let error = fixture.client.vault("/v1/projects/project/vault", &vault_ask(), |_| {}).await.err().unwrap();
+    assert_eq!(error.code, "vault_stream_interrupted");
+    assert!(error.remedy.as_deref().unwrap().contains("status"));
+    assert!(!serde_json::to_string(&error).unwrap().contains("terminal-secret"));
+    assert_eq!(fixture.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn vault_disconnect_reattaches_to_the_same_operation_and_admits_once() {
+    let admitted = Arc::new(AtomicUsize::new(0));
+    let count = admitted.clone();
+    let mut operation = None;
+    let fixture = Fixture::new(move |request, _, _| {
+        if let Some(path) = &operation {
+            assert_eq!(&request.path, path);
+            return Some(Reply::event(serde_json::json!({"type":"completed", "changed":vault_changed()})));
+        }
+        count.fetch_add(1, Ordering::Relaxed);
+        operation = Some(request.path.clone());
+        Some(Reply::event(serde_json::json!({"type":"accepted", "action":"encrypt"})))
+    });
+    let changed = fixture.client.vault("/v1/projects/project/vault", &vault_ask(), |_| {}).await.unwrap();
+    assert_eq!(changed.recovery_secret.as_deref(), Some("terminal-secret"));
+    assert_eq!(admitted.load(Ordering::Relaxed), 1);
+    let requests = fixture.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].method, "PUT");
+    assert_eq!(requests[0].path, requests[1].path);
+    assert_eq!(requests[0].body, requests[1].body);
+}
+
+#[tokio::test]
+async fn vault_expired_operation_never_falls_back_to_a_new_mutation() {
+    let mut attempts = 0;
+    let fixture = Fixture::new(move |_, _, _| {
+        attempts += 1;
+        Some(if attempts == 1 {
+            Reply::event(serde_json::json!({"type":"accepted", "action":"encrypt"}))
+        } else {
+            Reply {
+                status: "404 Not Found", content_type: "application/json", headers: vec![],
+                body: serde_json::json!({"error":Error::not_found("vault_operation_expired", "result no longer available")}).to_string(),
+            }
+        })
+    });
+    let error = fixture.client.vault("/v1/projects/project/vault", &vault_ask(), |_| {}).await.err().unwrap();
+    assert_eq!(error.code, "vault_operation_expired");
+    let requests = fixture.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests.iter().all(|request| request.method == "PUT"));
+    assert_eq!(requests[0].path, requests[1].path);
+}
+
+#[tokio::test]
+async fn vault_failed_event_preserves_the_typed_refusal_without_retry() {
+    let refusal = Error::conflict("project_busy", "a project request is still running");
+    let sent = refusal.clone();
+    let fixture = Fixture::new(move |_, _, _| Some(Reply::event(serde_json::json!({
+        "type":"failed", "error":sent
+    }))));
+    let error = fixture.client.vault("/v1/projects/project/vault", &vault_ask(), |_| {}).await.err().unwrap();
+    assert_eq!(error, refusal);
+    assert_eq!(fixture.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn vault_old_backend_json_is_read_once_without_progress() {
+    let fixture = Fixture::new(|request, _, _| Some(if request.path.contains("/operations/") {
+        Reply {
+            status: "404 Not Found", content_type: "application/json", headers: vec![],
+            body: serde_json::json!({"error":Error::not_found("unknown_route", "Calcifer does not serve this route")}).to_string(),
+        }
+    } else { Reply::json(vault_changed()) }));
+    let mut progress = 0;
+    let changed = fixture.client.vault("/v1/projects/project/vault", &vault_ask(), |_| progress += 1).await.unwrap();
+    assert_eq!(changed.recovery_secret.as_deref(), Some("terminal-secret"));
+    assert_eq!(progress, 0);
+    let requests = fixture.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].method, "PUT");
+    assert_eq!(requests[1].method, "POST");
+    assert_eq!(requests[1].path, "/v1/projects/project/vault");
+    assert!(!requests[1].headers.contains_key("idempotency-key"));
+}
+
+#[tokio::test]
+async fn vault_legacy_disconnect_does_not_resend_the_post() {
+    let fixture = Fixture::new(|request, _, _| {
+        request.path.contains("/operations/").then(|| Reply {
+            status: "404 Not Found", content_type: "application/json", headers: vec![],
+            body: serde_json::json!({"error":Error::not_found("unknown_route", "old controller")}).to_string(),
+        })
+    });
+    assert!(fixture.client.vault("/v1/projects/project/vault", &vault_ask(), |_| {}).await.is_err());
+    let requests = fixture.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[1].method, "POST");
+}
+
+#[tokio::test]
+async fn vault_lost_put_headers_never_turn_a_retry_into_a_legacy_mutation() {
+    let mut attempts = 0;
+    let fixture = Fixture::new(move |request, _, _| {
+        attempts += 1;
+        if attempts == 1 { return None; } // Admitted, but no response headers reached the client.
+        Some(if request.path.contains("/operations/") {
+            Reply {
+                status: "404 Not Found", content_type: "application/json", headers: vec![],
+                body: serde_json::json!({"error":Error::not_found("unknown_route", "old controller after restart")}).to_string(),
+            }
+        } else { Reply::json(vault_changed()) })
+    });
+    let error = fixture.client.vault("/v1/projects/project/vault", &vault_ask(), |_| {}).await.err().unwrap();
+    assert_eq!(error.code, "unknown_route");
+    let requests = fixture.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests.iter().all(|request| request.method == "PUT"));
+    assert_eq!(requests[0].path, requests[1].path);
+}
+
+#[test]
+fn vault_sse_decoder_retains_fragmented_lines_and_ignores_keepalives() {
+    let raw = b": alive\r\n\r\ndata: {\"type\":\"progress\",\r\ndata: \"phase\":\"copying\",\"files_done\":1,\"bytes_done\":9}\r\n\r\n";
+    let mut sse = Sse::default();
+    let mut decoded = Vec::new();
+    for byte in raw {
+        sse.push(&[*byte]);
+        if let Some(data) = sse.next() { decoded.push(data); }
+    }
+    assert_eq!(decoded.len(), 1);
+    assert!(matches!(serde_json::from_str::<VaultEvent>(&decoded[0]).unwrap(),
+        VaultEvent::Progress { files_done: 1, bytes_done: 9, .. }));
 }

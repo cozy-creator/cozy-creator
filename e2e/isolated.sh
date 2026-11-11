@@ -95,7 +95,7 @@ PY
 }
 
 case $suite:$shard in
-  cli:entrypoints | cli:executors | cli:projectdb-cancel) needs='' ;;
+  cli:entrypoints | cli:executors | cli:projectdb-cancel | cli:local-wake) needs='' ;;
   cli:runs | cli:commands | cli:local-code) needs='packages birefnet' ;;
   cli:follow) needs='packages downloads' ;;
   cli:) needs='packages birefnet downloads' ;;
@@ -113,7 +113,7 @@ esac
 if [ "$suite" = cpu ]; then
   project=$seed/project
   mkdir -p "$project"
-  (cd "$project" && cozy --json new > /dev/null)
+  (cd "$project" && cozy --json new --unencrypted > /dev/null)
   log "the cpu suite starts against its owned Hub with the installed candidate"
   exec bash "$here/cpu/run.sh" "$@" --cozy "$cozy_bin" --project "$project"
 fi
@@ -121,7 +121,7 @@ fi
 if [ -n "$needs" ]; then
   [ -n "$packages" ] || { echo "the isolated Hub's first-party packages come from run.sh's --packages checkout" >&2; exit 2; }
   mkdir -p "$seed/project"
-  cd "$seed/project" && cozy --json new > /dev/null
+  cd "$seed/project" && cozy --json new --unencrypted > /dev/null
   # A stand-in for the root index's minimax-h3-tools, which the packages no longer hold (combined into minimax-h3).
   tools=$seed/minimax-h3-tools
   rm -rf "$tools" && cp -r "$here/../release-gate/suites/hub/pkg" "$tools"

@@ -7,6 +7,39 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 const FIXTURE: &str = "project::vault::decrypt_tests::native_plain_recovery_fixture";
 const RESTART: &str = "project::vault::decrypt_tests::native_plain_journal_restart_fixture";
 
+#[cfg(unix)]
+#[test]
+fn legacy_missing_media_is_skipped_but_live_external_link_is_refused() {
+    use std::os::unix::fs::symlink;
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    let target = temp.path().join("target");
+    fs::create_dir_all(source.join("files")).unwrap();
+    fs::create_dir(&target).unwrap();
+    fs::write(source.join("files/retained.jpg"), b"retained original bytes").unwrap();
+    symlink(temp.path().join("missing.jpg"), source.join("files/missing.jpg")).unwrap();
+    let mut progress = Progress::quiet();
+    walk_tree(&source, None, FsPath::new(""), false, false, &mut progress).unwrap();
+    walk_tree(&source, Some(&target), FsPath::new(""), false, false, &mut progress).unwrap();
+    assert_eq!(progress.skipped(), vec![PathBuf::from("files/missing.jpg")]);
+    assert_eq!(fs::read(target.join("files/retained.jpg")).unwrap(), b"retained original bytes");
+    assert!(fs::symlink_metadata(target.join("files/missing.jpg")).is_err());
+    assert!(fs::symlink_metadata(source.join("files/missing.jpg")).unwrap().file_type().is_symlink());
+
+    let outside = temp.path().join("outside.jpg");
+    fs::write(&outside, b"outside the project").unwrap();
+    symlink(outside, source.join("files/external.jpg")).unwrap();
+    let error = walk_tree(&source, None, FsPath::new(""), false, false, &mut Progress::quiet()).unwrap_err();
+    assert_eq!(error.code, "vault_symlink");
+    assert!(error.message.contains("files/external.jpg"));
+
+    let absent_directory = temp.path().join("absent-directory");
+    let invalid_root = temp.path().join("invalid-root");
+    fs::create_dir(&invalid_root).unwrap();
+    symlink(absent_directory, invalid_root.join("files")).unwrap();
+    assert_eq!(walk_tree(&invalid_root, None, FsPath::new(""), false, false, &mut Progress::quiet()).unwrap_err().code, "vault_symlink");
+}
+
 #[test]
 fn decrypt_recovery_and_plain_retention() {
     let owned = tempfile::tempdir().unwrap();

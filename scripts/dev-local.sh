@@ -15,6 +15,7 @@ cd "$root"
 if [[ ${1:-} != --once ]]; then
     exec watchexec --debounce 500ms --on-busy-update queue --shell none \
         --watch crates --watch web --watch vendor --watch scripts/dev-local.sh \
+        --watch scripts/prepare-securefs.py \
         --watch Cargo.toml --watch Cargo.lock --watch rust-toolchain.toml \
         --ignore '**/target/**' --ignore '**/node_modules/**' --ignore '**/dist/**' \
         --ignore '**/__pycache__/**' --ignore '**/*.pyc' \
@@ -25,6 +26,14 @@ exec 8>"$CARGO_TARGET_DIR/build.lock"
 flock 8
 started=$SECONDS
 printf '\n%s building local Cozy from %s\n' "$(date -Is)" "$root"
+
+# Embed the same checksum-pinned filesystem provider as published releases. The
+# preparation script reuses the verified archive on subsequent incremental builds.
+host_target=$(rustc -vV | sed -n 's/^host: //p')
+export COZY_SECUREFS_ARCHIVE
+COZY_SECUREFS_ARCHIVE=$(python3 scripts/prepare-securefs.py \
+    --target "$host_target" --out-dir "$CARGO_TARGET_DIR/vault-helper")
+export COZY_SECUREFS_REQUIRED=1
 
 # Hash names and contents so deletion, rename and checkout also rebuild the page.
 page_stamp="$CARGO_TARGET_DIR/page-built"

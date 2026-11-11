@@ -2025,6 +2025,9 @@ pub struct CalciferStatus {
     /// allocator keeps of what was freed.
     #[serde(default)]
     pub heap_bytes: u64,
+    /// Whether the encrypted-creation protocol is supported. Native driver requirements still apply; older controllers omit this.
+    #[serde(default)]
+    pub encrypted_project_creation: bool,
 }
 
 /// `POST /v1/session-codes`: a code a browser trades once for a session.

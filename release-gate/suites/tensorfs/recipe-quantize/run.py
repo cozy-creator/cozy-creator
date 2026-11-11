@@ -104,7 +104,7 @@ def main() -> None:
     # A run belongs to a project.
     # cozy 0.24 (xs-174): `cozy new <dir>` makes the project (a project.db), and a run belongs to the project it runs in.
     if not any((args.out / "project" / name).is_file() for name in ("project.db", "project.yaml")):
-        subprocess.run(["cozy", "new", str(args.out / "project")], check=True, stdout=subprocess.DEVNULL)
+        subprocess.run(["cozy", "new", "--unencrypted", str(args.out / "project")], check=True, stdout=subprocess.DEVNULL)
 
     def call(name: str, argv: list[str | Path]) -> tuple[Run, list[Line]]:
         with (

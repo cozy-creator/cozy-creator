@@ -3,7 +3,8 @@
 The manual `dev-build` option `project-vault-cli` builds the actual candidate page
 and single Cozy executable, embeds its pinned provider, and installs it at the
 ordinary `~/.cozy/bin/cozy` path in a fresh GitHub runner. The installed CLI
-creates projects with `cozy new`, reads them with `cozy status` from their
+qualifies default encrypted creation with secure file input and explicit `cozy new --unencrypted`
+for ordinary/conversion controls, reads them with `cozy status` from their
 directories, and exercises the `cozy vault` lifecycle. Encrypt and rotate run
 from outside the project with `cozy vault --directory`, so Windows can rename
 the backing directory. Calcifer starts through the normal CLI service path.

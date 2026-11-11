@@ -204,21 +204,35 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
 
 
 async fn run(ctx: &Context, args: RunArgs) -> Result<ExitCode, Error> {
-    let project = crate::project::identity(ctx).await?;
-    let within = project.id;
     let cwd = std::env::current_dir()
         .map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
     let written = args.target.clone().unwrap_or_default();
+    let inputs = !args.inputs.is_empty() || !args.models.is_empty() || args.input_file.is_some();
+    if args.describe && !inputs {
+        return match local(ctx, &written, &cwd)? {
+            None => describe(ctx, &written, None, args.placement.on.as_deref(), None).await,
+            Some((package, function)) => {
+                let project = match crate::project::identity(ctx).await {
+                    Ok(project) => Some(project.id),
+                    Err(error) if error.code == "not_in_a_project" => None,
+                    Err(error) => return Err(error),
+                };
+                let sender = match &project {
+                    Some(id) => Sender::for_project(ctx, id).await?,
+                    None => Sender::new(ctx).await?,
+                };
+                let code = sender.code(&package).await?;
+                describe(ctx, &function.unwrap_or_default(), Some(&code), args.placement.on.as_deref(), project.as_deref()).await
+            }
+        };
+    }
+    let within = crate::project::identity(ctx).await?.id;
     let sender = Sender::for_project(ctx, &within).await?;
     // Local code goes by content: the target is then the function it names.
     let (target, code, package) = match local(ctx, &written, &cwd)? {
         Some((package, function)) => (function.unwrap_or_default(), Some(sender.code(&package).await?), Some(package)),
         None => (written, None, None),
     };
-    let inputs = !args.inputs.is_empty() || !args.models.is_empty() || args.input_file.is_some();
-    if args.describe && !inputs {
-        return describe(ctx, &target, code.as_ref(), args.placement.on.as_deref(), Some(&within)).await;
-    }
     // A named function with default inputs still runs; an unnamed package lists its functions.
     if !inputs && args.assets.is_empty() {
         let described = self::target(ctx, &target, code.as_ref(), args.placement.on.as_deref(), Some(&within)).await?;

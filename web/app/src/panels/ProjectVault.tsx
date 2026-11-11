@@ -1,12 +1,13 @@
 import { queryOptions, useQuery, useQueryClient } from "@tanstack/react-query"
 import { type FormEvent, useEffect, useRef, useState } from "react"
 import QRCode from "react-qr-code"
-import type { Client, VaultAsk } from "../api/client"
+import type { Client, VaultAsk, VaultProgress } from "../api/client"
 import { useConnection } from "../app/Connection"
 import { useProjectId } from "../app/Shell"
 import { useSignal } from "../ui/signal"
 import { DrawerFrame } from "./Drawer"
 import { Failure, useAsk } from "./common"
+import { bytes } from "./format"
 
 export const vaultKey = (id: string) => ["project-vault", id] as const
 export const vaultQuery = (client: Client, id: string) => queryOptions({
@@ -17,7 +18,32 @@ export const vaultQuery = (client: Client, id: string) => queryOptions({
   refetchIntervalInBackground: true,
 })
 
-function Recovery({ secret, onDone }: { secret: string; onDone: () => void }) {
+type Pending = { action: string; event: VaultProgress | null }
+
+function pendingLine(pending: Pending | null): string {
+  if (!pending) return "Working…"
+  const action: Record<string, string> = {
+    encrypt: "Encryption", decrypt: "Decryption", rotate: "Key rotation", unlock: "Unlock",
+    lock: "Lock", passphrase: "Passphrase update", recovery: "Recovery update",
+  }
+  const name = action[pending.action] ?? "Project change"
+  if (!pending.event) return `${name}: sending request…`
+  if (pending.event.type === "accepted") return `${name} request accepted…`
+  const phase: Record<string, string> = {
+    preparing: "Preparing project storage", validating: "Checking project storage", mounting: "Opening encrypted storage",
+    copying: pending.action === "decrypt" ? "Decrypting project files" : "Encrypting project files",
+    verifying: "Verifying project files", committing: "Saving project changes", opening: "Opening project",
+    cleaning_up: "Finishing cleanup", waiting: "Waiting for project work to finish",
+  }
+  const event = pending.event
+  const counts = [
+    ...(event.files_done > 0 ? [`${event.files_done.toLocaleString()} ${event.files_done === 1 ? "file" : "files"} done`] : []),
+    ...(event.bytes_done > 0 ? [`${bytes(event.bytes_done)} copied`] : []),
+  ]
+  return `${phase[event.phase] ?? "Working on project storage"}…${counts.length ? ` ${counts.join(" · ")}` : ""}`
+}
+
+export function Recovery({ secret, onDone, disabled = false }: { secret: string; onDone: () => void; disabled?: boolean }) {
   const [saved, setSaved] = useState(false)
   const [copied, setCopied] = useState(false)
   const download = () => {
@@ -56,7 +82,7 @@ function Recovery({ secret, onDone }: { secret: string; onDone: () => void }) {
         <button className="tb" type="button" onClick={print}>Print</button>
       </div>
       <label><input type="checkbox" checked={saved} onChange={(event) => setSaved(event.target.checked)} /> I saved this somewhere away from this computer</label>
-      <button className="tb primary" type="button" disabled={!saved} onClick={onDone}>Done</button>
+      <button className="tb primary" type="button" disabled={!saved || disabled} onClick={onDone}>Done</button>
     </section>
   )
 }
@@ -67,6 +93,8 @@ function VaultBody({ id }: { id: string }) {
   const { data: status, error, refetch } = useQuery(vaultQuery(client, id))
   const pending = useSignal(outbox.owed)
   const ask = useAsk()
+  const [operation, setOperation] = useState<Pending | null>(null)
+  const [skipped, setSkipped] = useState<string[]>([])
   const [passphrase, setPassphrase] = useState("")
   const [confirmation, setConfirmation] = useState("")
   const [recovery, setRecovery] = useState("")
@@ -78,47 +106,72 @@ function VaultBody({ id }: { id: string }) {
   const [idle, setIdle] = useState("900")
   const [maximum, setMaximum] = useState("0")
   const mounted = useRef(false)
-  useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
+  const request = useRef<AbortController | null>(null)
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false; request.current?.abort(); request.current = null }
+  }, [])
 
   useEffect(() => {
     if (status?.state === "plain" || (status?.encrypted && status.state !== "unlocked")) {
       setPassphrase(""); setConfirmation(""); setRecovery(""); setNewRecovery(null)
     }
   }, [status?.encrypted, status?.state])
+  useEffect(() => {
+    if (!status || error || (status.encrypted && status.state !== "unlocked")) setSkipped([])
+  }, [status?.encrypted, status?.state, error])
 
   const change = (action: string, fields: Partial<VaultAsk> = {}) => ask.run(async () => {
     setPassphrase(""); setConfirmation(""); setRecovery("")
+    setSkipped([])
+    setOperation({ action, event: null })
+    const stop = new AbortController()
+    request.current = stop
     const epoch = bridge.projectEpoch(id)
-    const answer = await client.vaultChange(id, { action, ...fields })
-    if (!mounted.current) { delete answer.recovery_secret; return answer.vault }
-    setEnded(answer.ended ?? [])
-    if (action === "decrypt") {
-      // The mutation reply cannot reopen a view: a concurrent conversion or lock
-      // may already have superseded it. The status query verifies current storage.
-      setNewRecovery(null)
-      delete answer.recovery_secret
-      await queries.invalidateQueries({ queryKey: vaultKey(id) })
-      await queries.invalidateQueries({ queryKey: ["projects"] })
-      return answer.vault
-    }
-    if (bridge.projectEpoch(id) !== epoch) {
-      // Conversion/rekey can briefly close their own view. Recheck that completed
-      // project before showing its secret; an unrelated lock suppresses late replies.
-      const completed = bridge.projectEpoch(id)
-      const current = await client.vault(id)
-      if (!mounted.current || !["encrypt", "rotate"].includes(action) || !current.encrypted || current.state !== "unlocked" || bridge.projectEpoch(id) !== completed) {
+    try {
+      const answer = await client.vaultChange(id, { action, ...fields }, (event) => {
+        if (mounted.current) setOperation({ action, event })
+      }, stop.signal)
+      if (!mounted.current) { delete answer.recovery_secret; return answer.vault }
+      setEnded(answer.ended ?? [])
+      if (action === "decrypt") {
+        // The mutation reply cannot reopen a view: a concurrent conversion or lock
+        // may already have superseded it. The status query verifies current storage.
+        setNewRecovery(null)
         delete answer.recovery_secret
         await queries.invalidateQueries({ queryKey: vaultKey(id) })
-        return current
+        await queries.invalidateQueries({ queryKey: ["projects"] })
+        if (answer.skipped_files?.length) {
+          const completed = bridge.projectEpoch(id)
+          const current = await client.vault(id)
+          if (mounted.current && !current.encrypted && current.state === "plain" && bridge.projectEpoch(id) === completed) setSkipped(answer.skipped_files)
+        }
+        return answer.vault
       }
-      answer.vault = current
+      if (bridge.projectEpoch(id) !== epoch) {
+        // Conversion/rekey can briefly close their own view. Recheck that completed
+        // project before showing its secret; an unrelated lock suppresses late replies.
+        const completed = bridge.projectEpoch(id)
+        const current = await client.vault(id)
+        if (!mounted.current || !["encrypt", "rotate"].includes(action) || !current.encrypted || current.state !== "unlocked" || bridge.projectEpoch(id) !== completed) {
+          delete answer.recovery_secret
+          await queries.invalidateQueries({ queryKey: vaultKey(id) })
+          return current
+        }
+        answer.vault = current
+      }
+      queries.setQueryData(vaultKey(id), answer.vault)
+      if (answer.recovery_secret) setNewRecovery(answer.recovery_secret)
+      if (answer.preserved_source) setPreserved(answer.preserved_source)
+      if (answer.skipped_files?.length) setSkipped(answer.skipped_files)
+      delete answer.recovery_secret
+      await queries.invalidateQueries({ queryKey: ["projects"] })
+      return answer.vault
+    } finally {
+      if (request.current === stop) request.current = null
+      stop.abort()
+      if (mounted.current) setOperation(null)
     }
-    queries.setQueryData(vaultKey(id), answer.vault)
-    if (answer.recovery_secret) setNewRecovery(answer.recovery_secret)
-    if (answer.preserved_source) setPreserved(answer.preserved_source)
-    delete answer.recovery_secret
-    await queries.invalidateQueries({ queryKey: ["projects"] })
-    return answer.vault
   })
   const timeout = () => ({ idle_timeout_s: Number(idle), max_duration_s: Number(maximum) })
   const submit = (event: FormEvent, action: string) => {
@@ -151,6 +204,10 @@ function VaultBody({ id }: { id: string }) {
       <Failure error={ask.error} plain />
       {preserved && <p className="warn">An unencrypted copy was preserved at {preserved}. That copy is not protected.</p>}
       {ended.length > 0 && <p className="muted">Locking ended the project's runs {ended.join(", ")}.</p>}
+      {skipped.length > 0 && !error && (!status.encrypted || unlocked) && <div className="warn">
+        <p>The operation finished, but these missing files were skipped:</p>
+        <ul>{skipped.map((file, at) => <li key={`${at}:${file}`}><code>{file}</code></li>)}</ul>
+      </div>}
       {newRecovery && status.encrypted && unlocked && <Recovery secret={newRecovery} onDone={() => setNewRecovery(null)} />}
       {!status.encrypted ? (
         <form className="stack" onSubmit={(event) => submit(event, "encrypt")}>
@@ -183,7 +240,7 @@ function VaultBody({ id }: { id: string }) {
           <details className="sect"><summary>Rotate project key</summary><p>Re-encrypt all retained files and history. This can take time and temporary disk space.</p><form className="stack" onSubmit={(event) => submit(event, "rotate")}>{passwordControls}<button className="tb" type="submit" disabled={ask.busy || !passphrase || passphrase !== confirmation || pending.count > 0}>Re-encrypt project</button></form></details>
         </>
       )}
-      {ask.busy && <p role="status">Working…</p>}
+      {ask.busy && <p role="status">{pendingLine(operation)}</p>}
     </div>
   )
 }

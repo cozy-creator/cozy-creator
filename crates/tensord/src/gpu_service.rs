@@ -963,6 +963,7 @@ impl Pool {
         // Weight sources and output transport can retain many descriptors; executors inherit
         // this process limit even though GPU handles no longer cross the seam.
         platform::process::raise_fd_limit();
+        crate::process::keep_cores();
         let envelope = config.envelope();
         let incarnation = crate::uuid::simple();
         crate::launch_identity::remove_stale_jit(root, &incarnation);
@@ -3234,7 +3235,7 @@ impl Pool {
                 Err(error) => {
                     *disposition = Disposition::Unknown(executor_births(&session.executor.birth, &session.followers));
                     if undelivered(&error) {
-                        ending(error, session.executor)
+                        ending(error, session.executor).0
                     } else {
                         return Err(ended_with(engine, id, error, session.executor));
                     }
@@ -3936,8 +3937,8 @@ impl Drop for Dispatched<'_> {
 
 /// An error ends its executor; exact exit is observed before settlement.
 fn ended_with(engine: &Engine, id: &str, error: io::Error, executor: DeviceExecutor) -> io::Error {
-    let (pid, stderr_tail) = (executor.birth.pid, executor.stderr_tail());
-    let error = ending(error, executor);
+    let pid = executor.birth.pid;
+    let (error, stderr_tail) = ending(error, executor);
     // The executor died mid-command (a signal, a GPU fault ending it): its reason names the signal,
     // and its stderr says why.
     let fault = error.to_string();
@@ -3945,33 +3946,70 @@ fn ended_with(engine: &Engine, id: &str, error: io::Error, executor: DeviceExecu
     error
 }
 
-fn ending(error: io::Error, executor: DeviceExecutor) -> io::Error {
-    match executor.terminate() {
-        Ok(ended) => with_end(error, &ended),
+/// The executor ended, with the error that ends it and the stderr of the request it served.
+fn ending(error: io::Error, executor: DeviceExecutor) -> (io::Error, String) {
+    let stderr = executor.stderr_tail();
+    let error = match executor.terminate() {
+        Ok(ended) => with_end(error, &ended, &stderr),
         Err(unproven) => io::Error::other(format!("{error}; executor exit unproven: {unproven}")),
-    }
+    };
+    (error, stderr)
 }
 
 /// The exit of an executor that ended on its own mid-command joins the reason: its signal or
 /// exit code is then the only cause there is.
-fn with_end(error: io::Error, ended: &device_executor::Ended) -> io::Error {
+fn with_end(error: io::Error, ended: &device_executor::Ended, stderr: &str) -> io::Error {
     if !channel_lost(&error) {
         return error;
     }
     #[cfg(unix)]
-    let oom = ended.oom_killed && std::os::unix::process::ExitStatusExt::signal(&ended.status) == Some(libc::SIGKILL);
+    let signal = std::os::unix::process::ExitStatusExt::signal(&ended.status);
+    #[cfg(not(unix))]
+    let signal: Option<i32> = None;
+    #[cfg(unix)]
+    let oom = ended.oom_killed && signal == Some(libc::SIGKILL);
     #[cfg(not(unix))]
     let oom = false;
-    let why = match oom {
-        true => host_out_of_memory(),
-        false => format!("the executor ended on its own ({})", ended.status),
+    let crash = signal.and_then(|signal| crashed(signal, stderr));
+    if crash.is_some() {
+        crate::process::kept_core(&ended.status);
+    }
+    let why = match (oom, &crash) {
+        (true, _) => host_out_of_memory(),
+        (false, Some(crash)) => crash.clone(),
+        (false, None) => format!("the executor ended on its own ({})", ended.status),
     };
     match refused(&error) {
         Some(_) => error,
         None if undelivered(&error) => io::Error::other(Undelivered(why)),
         None if oom => io::Error::other(Refused { code: "host_out_of_memory".into(), detail: why }),
+        None if crash.is_some() => io::Error::other(Refused { code: "executor_crashed".into(), detail: why }),
         None => io::Error::other(why),
     }
+}
+
+/// A fatal signal's reason, `executor crashed: SIGSEGV in <frame>` (cr-275): the signal is the exit
+/// status's, the frame the Runtime's crash record's (its last `executor crashed:` line on stderr)
+/// when that names the same signal. None for any other signal.
+#[cfg(unix)]
+fn crashed(signal: i32, stderr: &str) -> Option<String> {
+    let name = match signal {
+        libc::SIGSEGV => "SIGSEGV",
+        libc::SIGBUS => "SIGBUS",
+        libc::SIGABRT => "SIGABRT",
+        libc::SIGFPE => "SIGFPE",
+        libc::SIGILL => "SIGILL",
+        _ => return None,
+    };
+    let frame = stderr.lines().rev().find_map(|line| line.strip_prefix("executor crashed: ")?.strip_prefix(name)?.strip_prefix(" in "));
+    Some(match frame {
+        Some(frame) => format!("executor crashed: {name} in {}", crate::triage::ends(frame.trim(), 240)),
+        None => format!("executor crashed: {name}"),
+    })
+}
+#[cfg(not(unix))]
+fn crashed(_: i32, _: &str) -> Option<String> {
+    None
 }
 
 /// Why the kernel killed an executor for host memory, in this machine's numbers.

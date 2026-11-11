@@ -79,7 +79,7 @@ db_cancel_undo() {
 [ -z "${ALONE:-}" ] || { check "cancel/undo proof requires an owned fresh-runner Calcifer"; return; }
 step "project: a delete held at commit cancels its render, and undo retains its three prior versions"
 local P=$OUT/cancel-undo tool=$here/project/tool.py/slow
-cozy --json new "$P" > "$OUT/cancel-new.json" 2> "$OUT/cancel-new.err" || { check "cancel/undo: new"; return; }
+cozy --json new --unencrypted "$P" > "$OUT/cancel-new.json" 2> "$OUT/cancel-new.err" || { check "cancel/undo: new"; return; }
 in_project "$P" --json run "$tool" 'seconds:=0.01' 'instructions=Warm up before cancellation.' --on local \
   > "$OUT/cancel-warm.ndjson" 2> "$OUT/cancel-warm.err" || { check "cancel/undo: local source warmup"; return; }
 python3 "$here/cancel_undo.py" "$P" "$OUT" "$tool" > "$OUT/cancel-undo-proof.json" 2> "$OUT/cancel-undo-proof.err" \
@@ -376,7 +376,7 @@ PY
 db_crdt() {
 step "project CRDT: canonical state, stable identities, v1 migration and native replica convergence"
 local P=$OUT/crdt-project V=$OUT/crdt-v1 before after source
-cozy --json new "$P" > "$OUT/crdt-new.json" 2> "$OUT/crdt-new.err" || { check "CRDT: project new: $(tail -c 300 "$OUT/crdt-new.err")"; return; }
+cozy --json new --unencrypted "$P" > "$OUT/crdt-new.json" 2> "$OUT/crdt-new.err" || { check "CRDT: project new: $(tail -c 300 "$OUT/crdt-new.err")"; return; }
 J '.created == true and (.id | length > 0)' "$OUT/crdt-new.json" || check "CRDT: new did not create a project"
 [ "$(sql1 "$P" 'PRAGMA user_version')" = 2 ] || { check "CRDT: project.db is not schema 2"; return; }
 [ "$(sql1 "$P" 'SELECT count(*) FROM crdt_document WHERE format = 1 AND length(snapshot) > 0')" = 1 ] || check "CRDT: no native snapshot"

@@ -63,7 +63,7 @@ pub(crate) struct Api {
     bearer: [u8; 32],
     /// Shut once Calcifer is stopping: a mutation holds it open while it runs, so the exit can
     /// never land between a submission's check and its commit.
-    stopping: RwLock<bool>,
+    stopping: Arc<RwLock<bool>>,
     stop: watch::Sender<bool>,
 }
 
@@ -82,7 +82,7 @@ impl Api {
             codes: Default::default(),
             tool_uis: Default::default(),
             bearer: Sha256::digest(token).into(),
-            stopping: RwLock::new(false),
+            stopping: Arc::new(RwLock::new(false)),
             stop: watch::channel(false).0,
         });
         crate::project::vault::start(&api);
@@ -376,7 +376,10 @@ fn media_secret(request: &Request) -> Option<&str> {
 }
 
 /// The bearer or a session, then the admission gate for every mutation but `down`, held while it runs.
-async fn admit(State(api): State<Arc<Api>>, request: Request, next: Next) -> Response {
+/// Detached request work retains this existing admission lease until its mutation is finished.
+pub(crate) type MutationLease = Arc<tokio::sync::OwnedRwLockReadGuard<bool>>;
+
+async fn admit(State(api): State<Arc<Api>>, mut request: Request, next: Next) -> Response {
     let admitted = match bearer(request.headers()) {
         Some(token) => api.admits(token) || api.sessions.admits_token(api.calcifer.store(), token),
         None => media_secret(&request).is_some_and(|media| api.sessions.admits_media(api.calcifer.store(), media)),
@@ -390,13 +393,17 @@ async fn admit(State(api): State<Arc<Api>>, request: Request, next: Next) -> Res
     if matches!(*request.method(), Method::GET | Method::HEAD) || request.uri().path() == "/v1/down" {
         return next.run(request).await;
     }
-    let stopping = api.stopping.read().await;
+    let stopping = api.stopping.clone().read_owned().await;
     if *stopping {
         return refuse(Kind::Unavailable, STOPPING, "Calcifer is stopping and admits nothing new")
             .remedy("ask again once it is back; nothing was carried out")
             .into_response();
     }
-    next.run(request).await
+    let lease = Arc::new(stopping);
+    request.extensions_mut().insert(lease.clone());
+    let response = next.run(request).await;
+    drop(lease);
+    response
 }
 
 /// The `Idempotency-Key` a durable ask is recorded under; required.
@@ -596,6 +603,7 @@ async fn status(State(api): State<Arc<Api>>) -> Result<Json<CalciferStatus>, Ref
         local_usable: platform::Os::CURRENT.local_inference(),
         signed_in: hub.device_key(api.machines.hubs.home()).exists(),
         heap_bytes: platform::heap::held(),
+        encrypted_project_creation: true,
     }))
 }
 

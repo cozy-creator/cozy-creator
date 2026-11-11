@@ -29,11 +29,11 @@ projectvault() (
   printf '%s\n' 'synthetic rekey vault passphrase' > "$secrets/rekey"
   printf '%s\n' 'deliberately wrong credential' > "$secrets/wrong"
   chmod 600 "$secrets/"*
-  cozy --json new "$plain" > "$work/plain-created.json"
+  cozy --json new --unencrypted "$plain" > "$work/plain-created.json"
   in_project "$plain" --json vault status > "$work/plain-status.json"
   jq -e '.encrypted == false and .state == "plain"' "$work/plain-status.json" > /dev/null || fail "ordinary project unexpectedly needs encryption"
   in_project "$plain" --json --full status > "$work/plain-project.json" || fail "ordinary project no longer opens"
-  cozy --json new "$P" > "$work/created.json"
+  cozy --json new --unencrypted "$P" > "$work/created.json"
   project_api "$P" /yaml > "$work/before.yaml"
   mkdir -p "$P/files"
   printf '%s\n' 'SYNTHETIC_PRIVATE_VAULT_CONTENT_1762838400' > "$P/files/private-sentinel.txt"
@@ -55,7 +55,7 @@ projectvault() (
   step "encrypt the same project and read its mounted view"
   local encrypt_before_ms encrypt_after_ms
   encrypt_before_ms=$(python3 -c 'import time; print(time.time_ns() // 1000000)')
-  cozy --json vault --directory "$P" encrypt --passphrase-file "$secrets/initial" --recovery-out "$secrets/recovery1" --remove-plaintext --idle 0 --max-duration 86400 > "$work/encrypted.json"
+  python3 "$E2E/cli/vault_stream.py" "$P" "$secrets/initial" "$secrets/recovery1" > "$work/encrypted.json"
   encrypt_after_ms=$(python3 -c 'import time; print(time.time_ns() // 1000000)')
   python3 - "$work/encrypted.json" "$encrypt_before_ms" "$encrypt_after_ms" <<'PY_ENCRYPT_DEADLINE' > "$work/encrypted-deadline.json" || fail "conversion did not retain its requested absolute expiry"
 import json,sys

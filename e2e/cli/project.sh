@@ -51,7 +51,7 @@ starter_project() {
   [ "${RUNNER_OS:-}" != Windows ] || directory=$(cygpath -w "$directory")
   cozy --json machine ls > /dev/null || return
   curl -fsS -H "Authorization: Bearer $(jq -r .token "$holder")" -H 'Content-Type: application/json' \
-    -d "$(jq -n --arg path "$directory" '{path: $path, starter: true}')" "http://$(jq -r .address "$holder")/v1/projects"
+    -d "$(jq -n --arg path "$directory" '{path: $path, starter: true, unencrypted: true}')" "http://$(jq -r .address "$holder")/v1/projects"
 }
 
 # The candidate CLI from its own path against the release's Calcifer: it works where that Calcifer serves the route (every
@@ -64,6 +64,16 @@ version_skew() {
   cat "$OUT/skew.txt"
   { { [ "$code" = 0 ] || grep -q calcifer_outdated "$OUT/skew.txt"; } && ! grep -qiE 'untyped_answer|answered 404' "$OUT/skew.txt"; } \
     || check "skew: the candidate CLI against $(cozy --version)'s Calcifer neither worked nor said calcifer_outdated (exit $code)"
+  local holder=$HOME/.cozy/calcifer/calcifer.lock.holder address capability fresh=$OUT/skew-new-$RANDOM
+  address=$(jq -r .address "$holder")
+  capability=$(curl -fsS -H "Authorization: Bearer $(jq -r .token "$holder")" "http://$address/v1/status" | jq -r '.encrypted_project_creation // false')
+  if [ "$capability" != true ]; then
+    # The missing file also proves the capability refusal precedes reading a credential.
+    code=0
+    "$CAND_COZY" --json new "$fresh" --passphrase-file "$fresh.missing" > "$OUT/skew-encryption.txt" 2>&1 || code=$?
+    { [ "$code" != 0 ] && grep -q calcifer_outdated "$OUT/skew-encryption.txt" && [ ! -e "$fresh" ]; } \
+      || check "skew: unsupported encrypted creation was not refused before credential read/project creation"
+  fi
 }
 
 # plate <file> <lavfi source> <tone Hz> <video kb/s> [seconds] [size] [rate]: at 24 fps by default, a keyframe a second, constant bitrate;
@@ -3684,14 +3694,14 @@ J '.assets[] | select(.name == "lifted_one") | .pinned and (.tool == null) and .
 
 step "a project: a name makes one, bytes by parts in any order and resumed, an element by hash"
 local X P2 len hex mid url held big n
-api -o "$OUT/named.json" -X POST -d '{"name":"web made.it"}' "http://$ADDR/v1/projects" > /dev/null
+api -o "$OUT/named.json" -X POST -d '{"name":"web made.it","unencrypted":true}' "http://$ADDR/v1/projects" > /dev/null
 X=$(jq -r .path "$OUT/named.json") ID=$(jq -r .id "$OUT/named.json")
 { [ "$X" = "$HOME/web_made_it" ] && [ "$(jq -r .name "$OUT/named.json")" = web_made_it ] && ! grep -q '^  ' <(in_project "$X" export); } || check "POST /v1/projects {name}: $(cat "$OUT/named.json")"
-P2=$(api -X POST -d '{"name":"web made.it"}' "http://$ADDR/v1/projects" | jq -r .path)
+P2=$(api -X POST -d '{"name":"web made.it","unencrypted":true}' "http://$ADDR/v1/projects" | jq -r .path)
 [ "$P2" = "$X"_2 ] || check "POST /v1/projects {name}, again: $P2"
 # A folder of anything in the home is left as it is: the next free name, and it says so.
 mkdir -p "$HOME/web_taken" && echo mine > "$HOME/web_taken/keep"
-api -o "$OUT/named-taken.json" -X POST -d '{"name":"web taken"}' "http://$ADDR/v1/projects" > /dev/null
+api -o "$OUT/named-taken.json" -X POST -d '{"name":"web taken","unencrypted":true}' "http://$ADDR/v1/projects" > /dev/null
 { [ "$(jq -r .path "$OUT/named-taken.json")" = "$HOME/web_taken_2" ] && [ "$(ls "$HOME/web_taken")" = keep ] && jq -e '.said | any(contains("is taken"))' "$OUT/named-taken.json" > /dev/null; } || check "POST /v1/projects {name}, a folder there: $(jq -c . "$OUT/named-taken.json")"
 plate "$OUT/parts.mp4" testsrc2 440 800 2
 len=$(stat -c %s "$OUT/parts.mp4") hex=$(sha "$OUT/parts.mp4") mid=$((len / 2))

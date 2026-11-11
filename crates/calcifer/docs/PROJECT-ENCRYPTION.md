@@ -1,16 +1,18 @@
 # Optional local project encryption
 
 All projects use canonical Automerge state inside `project.db`; media stay separate files.
-Encryption is optional. Ordinary projects need no account, password or mount driver.
+New projects are encrypted by default. Encryption remains optional: explicitly choose ordinary
+storage with `cozy new --unencrypted` or the WebUI's “Create without encryption”. Ordinary
+projects need no account, password or mount driver. Existing projects keep their current storage.
 Multiplayer, encrypted hosted backup and trusted collaboration hosting are later phases.
 
 ## Basic use
 
-Enable encryption before importing or generating private data:
+Create the encrypted project before importing or generating private data. Its directory must be
+new or empty; existing unrelated files are preserved and refuse encrypted initialization:
 
 ```sh
-cozy new /absolute/path/MyProject
-cozy vault --directory /absolute/path/MyProject encrypt --recovery-out /separate/device/recovery.txt --remove-plaintext
+cozy new /absolute/path/MyProject --recovery-out /separate/device/recovery.txt
 cd /absolute/path/MyProject
 cozy vault status
 cozy vault lock
@@ -21,18 +23,26 @@ The vault commands use the current project directory unless you give `--director
 On Windows, run encryption, decryption and full rekey from outside the project with `--directory`;
 close other applications and shells that are holding the project directory.
 
-The CLI prompts for a passphrase. Automation uses `--passphrase-file FILE` or stdin (`-`),
-never a literal secret argument. Recovery output must be a new file, created with owner-only
+The CLI prompts locally for a passphrase and confirmation. Noninteractive creation requires
+`--passphrase-file FILE` or stdin (`-`), or the explicit `--unencrypted` opt-out. No unknown
+password is generated. Never pass a literal secret argument. Recovery output must be a new file, created with owner-only
 access before its first secret write. `unlock --recovery-file FILE` uses the independent saved
 recovery secret. The WebUI offers local copy, download, print and QR. Save recovery off-device;
 TensorHub never receives it. Recovery also needs a copy of the encrypted project/keybag: a
 secret alone cannot recreate lost files.
 
-Unlock reports a temporary readable view. Use that path in Explorer/Finder or a media player;
+Creation and unlock report a temporary readable view. Use that path in Explorer/Finder, a media
+player, or as the working directory for writing private source/request files;
 Calcifer and the WebUI resolve it automatically. The registered project folder holds encrypted
 backing and a wrapped keybag. Do not edit backing files directly.
 
 ## Locking and copies
+
+The first `project.db` is initialized inside the encrypted mount. New encrypted creation leaves
+no plaintext starter database or conversion source. To encrypt an existing ordinary project,
+use `cozy vault encrypt --remove-plaintext` and save its recovery secret; the native conversion
+removes the source only after the encrypted replacement is verified. Without that flag the
+verified source is retained. Existing plaintext inputs/copies remain outside this protection.
 
 Unlock defaults to 15 minutes of UI/CLI inactivity. `--idle SECONDS` changes it (zero disables
 idle expiry); `--max-duration SECONDS` adds an absolute limit. Polling and hover previews never

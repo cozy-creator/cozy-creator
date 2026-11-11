@@ -861,6 +861,43 @@ foreach ($rule in $allowed) {
                 inspected += 1
         return inspected
 
+    def creation_lock_race(self, password: Path) -> None:
+        directory = self.out / 'creation-lock-race'
+        args = ['cozy', '--json', 'new', str(directory), '--passphrase-file', str(password),
+                '--recovery-out', str(self.recovery('creation-race'))]
+        record: dict[str, object] = {'args': args[1:], 'cwd': str(self.out), 'state': 'running'}
+        self.commands.append(record)
+        self.flush()
+        creation = subprocess.Popen(args, cwd=self.out, env=self.cli_env, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, text=True, encoding='utf-8')
+        try:
+            deadline = time.monotonic() + FIRST_COLD_SECONDS
+            while not (directory / 'project.vault.keys.json').exists() and creation.poll() is None:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError('new project did not reach its creation barrier')
+                time.sleep(0.01)
+            assert (directory / 'project.vault.keys.json').exists(), 'creation did not publish its wrapped key'
+            assert creation.poll() is None, 'creation finished before the concurrent lock was exercised'
+            locked = self.command('vault', '--directory', directory, 'lock', refusal=True)
+            output, stderr = creation.communicate(timeout=FIRST_COLD_SECONDS)
+            record.update(state='complete', exit_code=creation.returncode)
+            if locked.returncode:
+                assert json.loads(locked.stdout)['error']['code'] == 'project_busy'
+            if creation.returncode:
+                assert json.loads(output)['error']['code'] in ('project_locked', 'project_busy'), self.redact(stderr)
+            state = self.command('vault', '--directory', directory, 'status')
+            deadline = time.monotonic() + FIRST_COLD_SECONDS
+            while state['state'] == 'locking' and time.monotonic() < deadline:
+                time.sleep(0.05)
+                state = self.command('vault', '--directory', directory, 'status')
+            assert state['state'] == 'locked' and not state.get('view'), 'creation reopened after the concurrent lock'
+            self.cell('new_project_cannot_reopen_after_lock')
+        finally:
+            if creation.poll() is None:
+                creation.kill()
+                creation.communicate()
+            self.flush()
+
     def run(self) -> None:
         self.receipt['version'] = self.command('--version', json_output=False).strip()
         self.command('vault', 'export', '--help', json_output=False, refusal=True)
@@ -870,14 +907,69 @@ foreach ($rule in $allowed) {
         rekey = self.private_file('rekey', secrets.token_urlsafe(32))
         wrong = self.private_file('wrong', secrets.token_urlsafe(32))
         plain = self.out / 'ordinary'
-        created = self.command('new', plain)
+        created = self.command('new', '--unencrypted', plain)
         assert created['created']
         plain_status = self.command('status', cwd=plain, full=True)
         assert plain_status['project']['id'] == created['id']
         ordinary = self.command('vault', 'status', cwd=plain)
         assert ordinary['state'] == 'plain' and not ordinary['encrypted']
         self.cell('ordinary_project_without_encryption')
-        created = self.command('new', self.project)
+
+        missing = self.out / 'missing-creation-credential'
+        refused = self.command('new', missing, refusal=True)
+        assert json.loads(refused.stdout)['error']['code'] == 'vault_credential'
+        assert not missing.exists()
+        try:
+            self.request('POST', '/v1/projects', body={'path': str(missing)})
+        except RuntimeError as error:
+            assert 'vault_credential' in str(error)
+        else:
+            raise AssertionError('API creation silently opted out of encryption')
+        assert not missing.exists()
+        self.cell('new_project_requires_a_known_credential')
+
+        try:
+            self.request('POST', '/v1/projects', body={'path': str(missing), 'passphrase': initial.read_text()},
+                         headers={'Idempotency-Key': 'must-not-cache-creation-recovery'})
+        except RuntimeError as error:
+            assert 'vault_idempotency' in str(error)
+        else:
+            raise AssertionError('encrypted creation accepted a globally cached response')
+        assert not missing.exists()
+        occupied = self.out / 'nonempty-new-project'
+        occupied.mkdir()
+        unrelated = occupied / 'keep.txt'
+        unrelated.write_bytes(b'Existing unrelated data must be preserved.\n')
+        refused = self.command('new', occupied, '--passphrase-file', initial, refusal=True)
+        assert json.loads(refused.stdout)['error']['code'] == 'project_not_empty'
+        assert unrelated.read_bytes() == b'Existing unrelated data must be preserved.\n'
+        assert sorted(path.name for path in occupied.iterdir()) == ['keep.txt']
+        self.cell('new_encryption_refuses_caching_and_unrelated_plaintext')
+
+        fresh = self.out / 'default-encrypted'
+        preserved_before = set(self.out.glob('.cozy-project-source-*'))
+        new = self.command('new', fresh, '--passphrase-file', initial, '--recovery-out', self.recovery('new-project'))
+        assert new['created'] and 'recovery_secret' not in new
+        self.check_recovery('new-project')
+        protected = self.command('vault', '--directory', fresh, 'status')
+        assert protected['encrypted'] and protected['state'] == 'unlocked'
+        created_view = protected['view']
+        assert created_view is not None
+        assert (Path(created_view) / 'project.db').is_file()
+        assert not (fresh / 'project.db').exists() and not (fresh / 'project.db.new').exists()
+        assert set(self.out.glob('.cozy-project-source-*')) == preserved_before
+        existing = self.command('new', fresh)
+        assert not existing['created'] and existing['id'] == new['id']
+        self.cell('new_project_starts_in_encrypted_storage')
+        self.command('vault', '--directory', fresh, 'lock')
+        self.command('vault', '--directory', fresh, 'unlock', '--recovery-file', self.recovery('new-project'))
+        created_reopened = self.command('status', cwd=fresh, full=True)
+        assert created_reopened['project']['id'] == new['id']
+        self.command('vault', '--directory', fresh, 'lock')
+        self.cell('new_project_recovery_reopens_same_identity')
+        self.creation_lock_race(initial)
+
+        created = self.command('new', '--unencrypted', self.project)
         assert created['created']
         # The compact code is for display. Project routes and upload scope use the canonical ID.
         self.project_id = created['id']
@@ -892,8 +984,13 @@ foreach ($rule in $allowed) {
         assert unchanged['state'] == 'plain' and not unchanged['encrypted']
         assert before == self.yaml()
         self.cell('recovery_output_refuses_backing_before_conversion')
-        self.vault('encrypt', '--passphrase-file', initial, '--recovery-out', self.recovery('recovery1'),
-                   '--remove-plaintext', '--idle', 0)
+        self.project.joinpath('files').mkdir(exist_ok=True)
+        stream_fixture = Path(__file__).resolve().parents[1] / 'cli' / 'vault_stream.py'
+        streamed = subprocess.run([sys.executable, str(stream_fixture), str(self.project), str(initial),
+                                   str(self.recovery('recovery1'))], capture_output=True, text=True, timeout=300)
+        if streamed.returncode:
+            raise AssertionError(self.redact(streamed.stdout + streamed.stderr))
+        self.cell('vault_acknowledgment_reattach_and_missing_media')
         self.check_recovery('recovery1')
         assert before == self.yaml()
         self.cell('convert_without_changing_logical_state')
