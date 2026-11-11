@@ -273,17 +273,18 @@ fn vault_changed() -> serde_json::Value {
 async fn vault_stream_keeps_progress_separate_from_the_final_secret() {
     let fixture = Fixture::new(|_, _, _| Some(Reply {
         status: "200 OK", content_type: "text/event-stream; charset=utf-8", headers: vec![],
-        body: format!("data: {{\"type\":\"accepted\",\"action\":\"encrypt\"}}\n\n: keepalive\n\ndata: {{\"type\":\"progress\",\"phase\":\"copying\",\"files_done\":2,\"bytes_done\":128}}\n\ndata: {}\n\n",
+        body: format!("data: {{\"type\":\"accepted\",\"action\":\"encrypt\"}}\n\n: keepalive\n\ndata: {{\"type\":\"progress\",\"phase\":\"copying\",\"files_done\":2,\"bytes_done\":128}}\n\ndata: {{\"type\":\"progress\",\"phase\":\"copying\",\"files_done\":2,\"bytes_done\":128,\"files_total\":4,\"bytes_total\":1000000}}\n\ndata: {}\n\n",
             serde_json::json!({"type":"completed", "changed":vault_changed()})),
     }));
     let mut progress = Vec::new();
     let changed = fixture.client.vault("/v1/projects/project/vault", &vault_ask(), |event| {
         progress.push(match event {
             VaultProgress::Accepted { action } => format!("accepted {action}"),
-            VaultProgress::Progress { phase, files_done, bytes_done } => format!("{phase} {files_done} {bytes_done}"),
+            VaultProgress::Notice { message } => format!("notice {message}"),
+            VaultProgress::Progress { phase, files_done, bytes_done, files_total, bytes_total } => format!("{phase} {files_done}/{files_total} {bytes_done}/{bytes_total}"),
         });
     }).await.unwrap();
-    assert_eq!(progress, ["accepted encrypt", "copying 2 128"]);
+    assert_eq!(progress, ["accepted encrypt", "copying 2/0 128/0", "copying 2/4 128/1000000"]);
     assert_eq!(changed.recovery_secret.as_deref(), Some("terminal-secret"));
     let requests = fixture.requests();
     assert_eq!(requests.len(), 1);

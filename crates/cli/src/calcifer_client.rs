@@ -80,7 +80,8 @@ pub(crate) struct Client(Arc<Inner>);
 /// is returned separately and never sent to the progress renderer.
 pub(crate) enum VaultProgress<'a> {
     Accepted { action: &'a str },
-    Progress { phase: &'a str, files_done: u64, bytes_done: u64 },
+    Progress { phase: &'a str, files_done: u64, bytes_done: u64, files_total: u64, bytes_total: u64 },
+    Notice { message: &'a str },
 }
 
 struct Inner {
@@ -230,7 +231,7 @@ impl Client {
                 let bytes = match answer.bytes().await {
                     Ok(bytes) => bytes,
                     Err(_) => {
-                        self.vault_reconnect(&mut reconnects, false, "the refusal was interrupted").await?;
+                        self.vault_reconnect(&mut reconnects, false, "the refusal was interrupted", &mut progress).await?;
                         continue;
                     }
                 };
@@ -265,11 +266,11 @@ impl Client {
                             if !accepted { progress(VaultProgress::Accepted { action: &action }); }
                             accepted = true;
                         }
-                        VaultEvent::Progress { phase, files_done, bytes_done } => {
-                            let point = (phase, files_done, bytes_done);
+                        VaultEvent::Progress { phase, files_done, bytes_done, files_total, bytes_total } => {
+                            let point = (phase, files_done, bytes_done, files_total, bytes_total);
                             if last_progress.as_ref() != Some(&point) {
                                 moved = true;
-                                progress(VaultProgress::Progress { phase: &point.0, files_done, bytes_done });
+                                progress(VaultProgress::Progress { phase: &point.0, files_done, bytes_done, files_total, bytes_total });
                                 last_progress = Some(point);
                             }
                         }
@@ -286,17 +287,17 @@ impl Client {
                     Err(_) => break "the stream missed two keepalives",
                 }
             };
-            self.vault_reconnect(&mut reconnects, moved, reason).await?;
+            self.vault_reconnect(&mut reconnects, moved, reason, &mut progress).await?;
         }
     }
 
-    async fn vault_reconnect(&self, reconnects: &mut Backoff, moved: bool, reason: &str) -> Result<(), Error> {
+    async fn vault_reconnect(&self, reconnects: &mut Backoff, moved: bool, reason: &str, progress: &mut impl FnMut(VaultProgress<'_>)) -> Result<(), Error> {
         let why = format!("Vault operation: {reason}; reconnecting to the same operation");
         let Some((pause, said)) = reconnects.again(&why, moved, None) else {
             return Err(vault_interrupted(&reconnects.spent(reason)));
         };
         self.remember(None);
-        output::warned(&said);
+        progress(VaultProgress::Notice { message: &said });
         tokio::time::sleep(pause).await;
         Ok(())
     }
