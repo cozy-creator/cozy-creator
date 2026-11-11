@@ -36,6 +36,6 @@ fi
 # 24 GB or more: about 30 min. Only `--only kernels-largest` runs it where a plain inventory pass is what's asked for.
 if [[ $ONLY == *",kernels-largest,"* ]]; then
   nice -n 19 ffmpeg -v error -y -f lavfi -i testsrc2=size=1344x768:rate=24:duration=15 -c:v libx264 -pix_fmt yuv420p kernels-plate.mp4
-  cell kernels-largest "$(pkg minimax-h3 upscale)" --file video="$OUT/kernels-plate.mp4" resolution=1440p \
-    prompt="a test pattern with a moving sweep and a running timecode" seed:=$((R + 490)) 'upscale:={"model": "regenerate-2k"}' --gpus=1
+  cell kernels-largest "$(pkg minimax-h3 upscale)" to=1440p --gpus=1 \
+    video="$(box kernels_plate "$OUT/kernels-plate.mp4" "a test pattern with a moving sweep and a running timecode")"
 fi

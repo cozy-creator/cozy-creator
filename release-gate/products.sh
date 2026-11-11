@@ -2,7 +2,7 @@
 # with a scenario prompt and its own seed. A cell that takes another's output (SeedVR2 H3's clip, BiRefNet Klein's image,
 # Qwen-Image's edits its render) falls back to the gate's reference when that one did not run. The describer reads the
 # checked-in ref/seed.jpg, so both arms of a comparison caption the same picture.
-PRODUCTS=(minimax-h3 seedvr2 sdxl flux-3-klein qwen-image-2 anima birefnet qwen3.5 fibo-2 hidream-o1 moss-image qwen-image
+PRODUCTS=(minimax-h3 seedvr2 sdxl flux.3 qwen-image-2 anima birefnet qwen3.5 fibo-2 hidream-o1 moss-image qwen-image
   flux-2 ideogram-4 krea-2 hunyuan-image-3)
 # --first runs these packages before the rest, in its order: a clean standalone number before models stack.
 [ -z "$FIRST" ] || mapfile -t PRODUCTS < <(tr , '\n' <<< "$FIRST"; printf '%s\n' "${PRODUCTS[@]}" | grep -vxF -f <(tr , '\n' <<< "$FIRST"))
@@ -30,7 +30,7 @@ av() {
 refs() {  # refs <cell> <package> <function> <seed> [more args]
   local name=$1 package=$2 fn=$3 seed=$4; shift 4
   cell "$name" "$(pkg "$package" "$fn")" seed:=$seed prompt="<Hero> stands on the rocks below <Lighthouse>, in its light and weather" \
-    pictures:="[{\"name\": \"Hero\", \"image\": \"${K:-$REF}\"}, {\"name\": \"Lighthouse\", \"image\": \"$REF\"}]" "$@"
+    references:="[{\"name\": \"Hero\", \"image\": \"${K:-$REF}\"}, {\"name\": \"Lighthouse\", \"image\": \"$REF\"}]" "$@"
 }
 product_minimax_h3() {
   # One fixed request (the Skater row, H3_SEED): quality.py holds its CLIP against the last passed gate's on it. The
@@ -75,10 +75,10 @@ product_seedvr2() {
   av seedvr2-1440p 1440
 }
 product_sdxl() { cell sdxl "$(pkg sdxl generate)" prompt="$SCENE, photo" seed:=$((R + 3)); }
-product_flux_3_klein() {
-  cell klein "$(pkg flux-3-klein generate_turbo)" prompt="$CHAR" prompt_upsampling:=true seed:=$((R + 4))
+product_flux_3() {
+  cell klein "$(pkg flux.3 generate_turbo)" prompt="$CHAR" prompt_upsampling:=true seed:=$((R + 4))
   K=$(output klein 'png|webp|jpg')
-  refs klein-refs flux-3-klein generate_turbo $((R + 19))
+  refs klein-refs flux.3 generate_turbo $((R + 19))
 }
 product_qwen_image_2() {
   # 1 MP in both cells: 0.6.0 defaults to 2 MP (Paul's ruling) where 0.5.0 rendered 1024x1024; the comparison is like for like.
@@ -132,12 +132,12 @@ product_qwen_image() {
   # Qwen-Image-Edit-2511 for an edit, text again; then the Lightning LoRAs, turbo_lora for text and edit_turbo_lora for
   # an edit. No first-party SDXL LoRA exists to swap.
   local qi; qi=$(output qwen-image 'png|webp|jpg')
-  cell qwen-image-edit "$(pkg qwen-image generate)" prompt="$SCENE at dusk, covered in fresh snow, wide shot" \
-    pictures:="[{\"name\": \"Scene\", \"image\": \"${qi:-$REF}\"}]" seed:=$((R + 12))
+  cell qwen-image-edit "$(pkg qwen-image generate)" prompt="<Scene> at dusk, covered in fresh snow, wide shot" \
+    references:="[{\"name\": \"Scene\", \"image\": \"${qi:-$REF}\"}]" seed:=$((R + 12))
   cell qwen-image-t2i "$(pkg qwen-image generate)" prompt="$OBJECT on a beach at noon, photo" seed:=$((R + 13))
   cell qwen-image-turbo "$(pkg qwen-image generate_turbo)" prompt="$CHAR on a rainy street at night, photo" seed:=$((R + 14))
-  cell qwen-image-turbo-edit "$(pkg qwen-image generate_turbo)" prompt="$SCENE in bright morning sun, wide shot" \
-    pictures:="[{\"name\": \"Scene\", \"image\": \"${qi:-$REF}\"}]" seed:=$((R + 15))
+  cell qwen-image-turbo-edit "$(pkg qwen-image generate_turbo)" prompt="<Scene> in bright morning sun, wide shot" \
+    references:="[{\"name\": \"Scene\", \"image\": \"${qi:-$REF}\"}]" seed:=$((R + 15))
   refs qwen-image-refs qwen-image generate_turbo $((R + 23))
 }
 # FLUX.2 [dev] through fal's turbo (8 steps), text then two pictures.

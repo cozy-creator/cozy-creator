@@ -1,8 +1,8 @@
 # Suite `h3`: minimax-h3's generate and upscale at their edges, from the package users get (or its --pins release).
-# - Regenerate-2K (`upscale.model: regenerate-2k`) at 1080p, 1440p and 2160p, each against the 768p shot it starts from: its
+# - Regenerate-2K (`upscale`, the shot a described box) at 1080p, 1440p and 2160p, each against the 768p shot it starts from: its
 #   layout at 112x64 (frames.py), since regenerated texture rightly differs, and that it moves as the original does (no
 #   flicker: a refine window off the latent chunk grid flickers at every chunk, run 22567).
-# - SeedVR2, the default model, at 2160p on the same shot, its lane the one an empty card gives.
+# - SeedVR2 (its own package) at 2160p on the same shot, its lane the one an empty card gives.
 # - A plate (a synthetic, people-free test pattern) as long as the shot, shorter, longer, at 30 fps and at 9:16: the
 #   output must follow it frame by frame.
 # - First and last keyframes: the shot opens and ends on them without a cut.
@@ -28,19 +28,19 @@ judge() {
 ABS='if . < 0 then -. else . end'
 
 # Regenerate-2K and SeedVR2: one 5 s shot, upscaled whole at each size.
-SHOT=$(pkg minimax-h3 generate) UP=$(pkg minimax-h3 upscale)
+SHOT=$(pkg minimax-h3 generate) UP=$(pkg minimax-h3 upscale) SVR=$(pkg seedvr2 upscale)
 P="$SCENE, a painted shop sign reads OPEN, slow push-in, street sounds"
 SAVED=$ONLY; [[ $ONLY == *",regen-"* || $ONLY == *",seedvr2-2160p,"* ]] && ONLY="$ONLY,regen-768p,"
 cell regen-768p "$SHOT" prompt="$P" seed:=$((R + 70)) duration_s:=5
 ONLY=$SAVED
+REGEN_BOX=$(box regen_768p "$(video_of regen-768p)" "$P")
 for r in 1080 1440 2160; do
-  cell "regen-${r}p" "$UP" --file video="$(video_of regen-768p)" resolution=${r}p prompt="$P" seed:=$((R + 70)) \
-    'upscale:={"model": "regenerate-2k"}'
+  cell "regen-${r}p" "$UP" video="$REGEN_BOX" to=${r}p
   av "regen-${r}p" $r
   judge "regen-${r}p-frames" "regen-${r}p" ".structure_psnr >= 18 and .structure_ssim >= 0.5 and .flicker <= 2 and .lag_ms != null and (.lag_ms | $ABS) <= 10 and .corr >= 0.95" \
     regen "$(video_of regen-768p)"
 done
-cell seedvr2-2160p "$UP" --file video="$(video_of regen-768p)" resolution=2160p seed:=$((R + 71))
+cell seedvr2-2160p "$SVR" --file video="$(video_of regen-768p)" resolution=2160p seed:=$((R + 71))
 av seedvr2-2160p 2160
 # After the shot and Regenerate-2K, SeedVR2's lane is the one it gets on an empty card: the idle models leave for its
 # call, so it never resolves for the free bytes beside them (pawoo 22998, TensorD 0.14.3: "no lane ... fits 0.3 GiB
@@ -54,8 +54,7 @@ if [[ $ONLY == *",regen-2160p-15s,"* ]]; then
   SAVED=$ONLY; ONLY="$ONLY,regen-768p-15s,"
   cell regen-768p-15s "$SHOT" prompt="$P15" seed:=$((R + 72)) duration_s:=15
   ONLY=$SAVED
-  cell regen-2160p-15s "$UP" --file video="$(video_of regen-768p-15s)" resolution=2160p prompt="$P15" seed:=$((R + 72)) \
-    'upscale:={"model": "regenerate-2k"}'
+  cell regen-2160p-15s "$UP" video="$(box regen_768p_15s "$(video_of regen-768p-15s)" "$P15")" to=2160p
   av regen-2160p-15s 2160
   judge regen-2160p-15s-frames regen-2160p-15s ".structure_psnr >= 18 and .structure_ssim >= 0.5 and .flicker <= 2 and (.lag_ms | $ABS) <= 10 and .corr >= 0.95" \
     regen "$(video_of regen-768p-15s)"

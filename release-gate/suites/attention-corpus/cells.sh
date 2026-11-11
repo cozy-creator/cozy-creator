@@ -32,7 +32,7 @@ ac_model qwen4mp qwen-image-2/generate prompt="A rooftop garden in a rainy megac
   prompt_upsampling:=false --gpus=1
 ac_model moss moss-image/generate prompt="A hot air balloon festival over a desert canyon at dawn" megapixels:=4 aspect_ratio=1:1 \
   steps:=50 guidance:=3 --gpus=1
-ac_model klein flux-3-klein/generate prompt="A ceramic fox figurine on a mossy stone, macro photo, soft window light" \
+ac_model klein flux.3/generate prompt="A ceramic fox figurine on a mossy stone, macro photo, soft window light" \
   prompt_upsampling:=false prompt_drafting:=false --gpus=1
 # The captures, over SSH. No run moves meanwhile, so the rental's idle clock is renewed by hand.
 mkdir -p corpus
