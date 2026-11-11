@@ -2,7 +2,7 @@
 # `scripts/typecheck.sh lock` pins them into typecheck-requirements.txt. TensorFS is checked from crates/tensorfs-py/python;
 # sdxl and birefnet (packages repo) are local stubs under typings/.
 mypy
-cozy-runtime @ git+https://github.com/cozy-creator/cozy-runtime@c9fb9ade12f77c4fc237bc7ee4260d8740493386
+cozy-runtime @ git+https://github.com/cozy-creator/cozy-runtime@af45a1335a149de539882872cc1ae4f4cb287a48
 msgspec
 numpy
 pillow
