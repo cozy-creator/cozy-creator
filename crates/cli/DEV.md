@@ -13,3 +13,4 @@ and list it here.
 | Command | What |
 |---|---|
 | `cozy machine rent <sku> --provider runpod\|vast` | Quote and buy on that provider only. The Hub prefers a datacenter holding one of our NFS drives; the quote names provider and datacenter, and `cozy machine show` (`--json`: `rental.provider`, `rental.datacenter`, `rental.nfs_drive`) says where it landed and whether the drive mounted. |
+| `cozy run <fn> --attention-capture SPEC` | The Runtime writes what its attention kernels receive, on the machine (xs-171's corpus): SPEC is JSON or `@FILE`, `{"dir": "/abs/path", "sites": ["<component>/<module path>" fnmatch, ...], "calls": [ordinal, ...], "heads": 4, "seed": 0}`. Under `dir/<request id>/`: `census.jsonl` (every call's shape, band and kernel) and one safetensors of the kept heads' Q/K/V per matching call. The run, and every child it calls, is never answered from the call memo. Needs TensorD and TensorFS of the same build. |
