@@ -12,7 +12,10 @@ use serde::Deserialize;
 /// The run's report: its own executor's measurements over its execution, then each call's over
 /// its call. None when nothing measured it.
 pub(crate) fn of(run: &Run) -> Option<Report> {
-    let execution = run.settled_at_ms.zip(run.execution_ms).map(|(end, ms)| (end - ms as i64, end));
+    // On the machine's clock, as its calls' spans are: settling can come long after it finished.
+    let execution = (run.started_at_ms.or(run.settled_at_ms.zip(run.execution_ms).map(|(end, ms)| end - ms as i64)))
+        .zip(run.execution_ms)
+        .map(|(start, ms)| (start, start + ms as i64));
     let measured = measured(run.measurements.as_ref().map(|m| (m, execution)), &run.calls);
     if measured.is_empty() {
         return None;
@@ -299,25 +302,25 @@ struct Adapter {
 
 
 /// One executor's measurements, by who measured them (`run`, or the call's index), and the
-/// span they account for: the run's execution, or the call from its call to its end.
+/// span they account for: the run's execution, or the call from its call to its end. The run's
+/// calls account for their own spans within it.
 struct Measured {
     who: String,
     span: Option<(i64, i64)>,
+    calls: Vec<(i64, i64)>,
     m: Measurements,
 }
 
 type Span = Option<(i64, i64)>;
 
 fn measured(own: Option<(&serde_json::Value, Span)>, calls: &[Call]) -> Vec<Measured> {
-    let read = |who: String, m: &serde_json::Value, span: Span| {
+    let read = |who: String, m: &serde_json::Value, span: Span, calls: Vec<(i64, i64)>| {
         let m = Measurements::deserialize(m).ok()?;
-        Some(Measured { who, span, m })
+        Some(Measured { who, span, calls, m })
     };
-    let own = own.and_then(|(m, span)| read("run".into(), m, span));
-    let calls = calls.iter().filter_map(|c| {
-        let span = (c.finished_at_ms >= c.called_at_ms).then_some((c.called_at_ms, c.finished_at_ms));
-        read(c.index.to_string(), c.measurements.as_ref()?, span)
-    });
+    let span = |c: &Call| (c.finished_at_ms >= c.called_at_ms).then_some((c.called_at_ms, c.finished_at_ms));
+    let own = own.and_then(|(m, own)| read("run".into(), m, own, calls.iter().filter_map(span).collect()));
+    let calls = calls.iter().filter_map(|c| read(c.index.to_string(), c.measurements.as_ref()?, span(c), vec![]));
     own.into_iter().chain(calls).collect()
 }
 
@@ -362,6 +365,7 @@ fn stages(measured: &Measured) -> Vec<report::Stage> {
         }
         rows.push((start, report::Stage { name: name.clone(), ms: track.total_ms, steps, ..Default::default() }));
     }
+    covers.extend(measured.calls.iter().map(|&(start, end)| (start as f64, end as f64)));
     rows.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.name.cmp(&b.1.name)));
     covers.sort_by(|a, b| a.0.total_cmp(&b.0));
     let unaccounted = measured.span.map(|(from, to)| {
