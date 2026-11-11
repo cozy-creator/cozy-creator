@@ -1,10 +1,6 @@
 name: replay retained H3 input
 
 on:
-  pull_request:
-    paths:
-      - .github/workflows/h3-retained-input-replay.yaml
-      - e2e/cpu/h3_replay_fixture.py
   workflow_dispatch:
 
 permissions:

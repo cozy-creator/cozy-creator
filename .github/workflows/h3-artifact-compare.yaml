@@ -1,10 +1,6 @@
 name: inspect H3 artifacts
 
 on:
-  pull_request:
-    paths:
-      - .github/workflows/h3-artifact-compare.yaml
-      - e2e/cpu/h3_artifact_compare.py
   workflow_dispatch:
     inputs:
       run_ids:
