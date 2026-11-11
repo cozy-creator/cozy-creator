@@ -12,6 +12,8 @@ The first run builds Cozy and the embedded page. Later runs reuse `target/dev-te
 python3 scripts/test-local-web.py --binary /absolute/path/to/cozy
 ```
 
+Each run uses an immutable copy of that binary inside the test profile, so a concurrent Watchexec rebuild cannot replace the CLI halfway through a test.
+
 For UI iteration, Vite serves current sources and proxies to the test Calcifer. Watchexec queues the next run when the source or fixture changes.
 
 ```sh

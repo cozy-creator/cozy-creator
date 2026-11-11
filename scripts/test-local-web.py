@@ -33,6 +33,30 @@ def port():
         return sock.getsockname()[1]
 
 
+def digest(path):
+    result = hashlib.sha256()
+    with path.open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            result.update(block)
+    return result.hexdigest()
+
+
+def snapshot_binary(source, profile):
+    sha256 = digest(source)
+    directory = profile / "binaries" / sha256
+    directory.mkdir(parents=True, exist_ok=True)
+    binary = directory / "cozy"
+    if not binary.is_file() or digest(binary) != sha256:
+        staged = directory / "cozy.part"
+        shutil.copyfile(source, staged)
+        staged.chmod(0o700)
+        if digest(staged) != sha256:
+            staged.unlink()
+            raise RuntimeError("the build changed while it was copied; rerun against the completed binary")
+        staged.replace(binary)
+    return binary, sha256
+
+
 def request(holder, path, method="GET"):
     url = f"http://{holder['address']}{path}"
     req = urllib.request.Request(url, method=method,
@@ -185,6 +209,8 @@ def run_locked(args, profile):
             command(["bash", "web/build.sh"])
         command(["cargo", "build", "--locked", "--jobs", args.jobs, "-p", "cozy"], env=build_env)
         binary = args.target_dir.resolve() / "debug/cozy"
+    binary_source = binary
+    binary, binary_sha256 = snapshot_binary(binary_source, profile)
     version = subprocess.check_output([binary, "--version"], text=True).strip()
     if subprocess.run([binary, "vault", "--help"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode:
         raise RuntimeError("this binary does not contain the vault feature")
@@ -216,7 +242,7 @@ def run_locked(args, profile):
     vite = None
     server = None
     browser_process = None
-    summary = {"binary": str(binary), "version": version, "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+    summary = {"binary": str(binary), "binary_source": str(binary_source), "version": version, "binary_sha256": binary_sha256,
                "fixture": str(fixture), "fixture_sha256": hashlib.sha256(fixture.read_bytes()).hexdigest(),
                "build_seconds": round(build_seconds, 3)}
     source = subprocess.run(["git", "rev-parse", "HEAD"], cwd=harness, text=True, capture_output=True)
@@ -232,7 +258,8 @@ def run_locked(args, profile):
                     command(["pnpm", "--dir", "web/app", "install", "--frozen-lockfile"])
                 web_port = port()
                 vite = subprocess.Popen(["pnpm", "--dir", "web/app", "dev", "--host", "127.0.0.1", "--port", str(web_port), "--strictPort"],
-                                        cwd=ROOT, env=env, stdout=vite_log, stderr=subprocess.STDOUT)
+                                        cwd=ROOT, env=env, stdout=vite_log, stderr=subprocess.STDOUT, start_new_session=True)
+                summary.update(vite_pid=vite.pid, vite_port=web_port)
                 env["PAGE_ORIGIN"] = f"http://127.0.0.1:{web_port}"
                 deadline = time.monotonic() + 30
                 while True:
@@ -256,6 +283,9 @@ def run_locked(args, profile):
                 code = browser_process.wait()
             summary.update(test_seconds=round(time.monotonic() - began, 3), exit_code=code)
             return code
+    except KeyboardInterrupt:
+        summary["interrupted"] = True
+        raise
     finally:
         cleanup_errors = []
         try:
@@ -266,7 +296,7 @@ def run_locked(args, profile):
             cleanup_errors.append(str(error))
         try:
             if vite and vite.poll() is None:
-                vite.terminate()
+                os.killpg(vite.pid, signal.SIGINT)
                 vite.wait(timeout=10)
         except (OSError, subprocess.SubprocessError) as error:
             cleanup_errors.append(str(error))
@@ -304,6 +334,7 @@ def main():
     if args.watch:
         words = [word for word in sys.argv[1:] if word != "--watch"]
         os.execvp("watchexec", ["watchexec", "--debounce", "500ms", "--on-busy-update", "queue", "--shell", "none",
+                              "--stop-signal", "SIGINT", "--stop-timeout", "90s",
                               "--watch", str(ROOT / "crates"), "--watch", str(ROOT / "web"), "--watch", str(args.harness.resolve() / "e2e/cli/web"),
                               "--watch", str(ROOT / "Cargo.toml"), "--watch", str(ROOT / "Cargo.lock"),
                               "--watch", str(ROOT / "rust-toolchain.toml"), "--watch", str(Path(__file__).resolve()),
@@ -315,6 +346,9 @@ def main():
 if __name__ == "__main__":
     try:
         sys.exit(main())
+    except KeyboardInterrupt:
+        print("Local test interrupted", file=sys.stderr)
+        sys.exit(130)
     except (OSError, RuntimeError, subprocess.SubprocessError) as error:
         print(f"Local test failed: {error}", file=sys.stderr)
         sys.exit(1)
