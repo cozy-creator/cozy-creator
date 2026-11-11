@@ -3,7 +3,7 @@ import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useSta
 import { flushSync } from "react-dom"
 import { Link, Outlet, useLocation, useMatches, useNavigate } from "react-router-dom"
 import { TRIES } from "../api/client"
-import { ProjectLocked, vaultKey, vaultQuery } from "../panels/ProjectVault"
+import { ProjectLocked, vaultQuery } from "../panels/ProjectVault"
 import { protectProjectView, forgetProjectView, privateProject } from "./view"
 import { notes } from "../ui/notes"
 import { projectQuery, projectsQuery } from "../api/queries"
@@ -255,10 +255,8 @@ export function Shell() {
   const vault = useQuery({ ...vaultQuery(client, id ?? ""), enabled: Boolean(id) })
   const [verified, setVerified] = useState<string | null>(null)
   const [checking, setChecking] = useState(false)
-  // A cached unlocked status is not authority after selecting this project again.
-  // The initial empty-canvas import alone already has a fresh ordinary-project reply.
-  const freshOrdinary = useRef<string | null>(null)
-  const freshChecked = vault.isSuccess && (vault.isFetchedAfterMount || freshOrdinary.current === id)
+  // A cached unlocked status is not authority after selecting or adopting a project.
+  const freshChecked = vault.isSuccess && vault.isFetchedAfterMount
   // Cached ordinary content stays editable offline; a remembered private project needs fresh verification.
   const knownPlainCache = Boolean(id && vault.data?.encrypted === false && vault.data.state === "plain" && !privateProject(id))
   const checked = freshChecked || knownPlainCache
@@ -282,7 +280,6 @@ export function Shell() {
     return () => stream.show(null)
   }, [stream, id, readable])
   useEffect(() => {
-    if (freshOrdinary.current !== id || vault.isFetchedAfterMount) freshOrdinary.current = null
     if (checked && document.visibilityState === "visible") setChecking(false)
   }, [id, vault.dataUpdatedAt, vault.isFetchedAfterMount, checked])
   const to = useTo()
@@ -371,12 +368,12 @@ export function Shell() {
 
   const adopt = useCallback(
     (project: string, code: string) => {
+      // Keep the pending canvas in memory while its own fresh protection read
+      // completes. Creation may be encrypted; never replace its validated status
+      // with invented ordinary authority or allow persistence before that read.
+      protectProjectView(project, true)
       adopted.current.set(project, "empty")
       rememberProject(queries, { id: project, code })
-      // This callback only adopts a newly created ordinary project. Preserve the initial
-      // import's live canvas/outbox while its first status read catches up.
-      freshOrdinary.current = project
-      queries.setQueryData(vaultKey(project), { encrypted: false, state: "plain", path: "", idle_timeout_s: 1800, next: [] })
       setVerified(project)
       void queries.invalidateQueries({ queryKey: ["projects"] })
       navigate(projectPath({ id: project, code }, location.pathname.replace(/^\/$/, "")), { replace: true })
