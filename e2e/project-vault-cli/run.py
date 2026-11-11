@@ -32,6 +32,7 @@ Arg = str | Path | int
 class Holder(TypedDict):
     address: str
     token: str
+    pid: int
 
 
 class WindowsVersion(Protocol):
@@ -872,6 +873,84 @@ foreach ($rule in $allowed) {
                 inspected += 1
         return inspected
 
+    def supervised_shutdown(self, view: Path, media: Path) -> Path:
+        if os.name != 'posix':
+            return view
+        import selectors
+        import signal
+        holder = self.controller()
+        pid = holder['pid']
+        assert pid > 1
+        digest = self.digest(media)
+        log = self.home / 'calcifer/calcifer.log'
+        stopped_before = log.read_text(errors='replace').count('calcifer::serve: Calcifer stopped')
+        reader = subprocess.Popen([sys.executable, '-c',
+                                   "import sys; held=open(sys.argv[1],'rb'); print('ready',flush=True); sys.stdin.buffer.read(1); held.close()",
+                                   str(media)], cwd=view, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            assert reader.stdout is not None
+            with selectors.DefaultSelector() as ready:
+                ready.register(reader.stdout, selectors.EVENT_READ)
+                assert ready.select(timeout=10), 'owned native reader did not become ready'
+                assert reader.stdout.readline() == b'ready\n'
+            try:
+                self.request('POST', '/v1/down', body={}, holder=holder)
+            except RuntimeError as error:
+                assert 'project_busy' in str(error)
+            else:
+                raise AssertionError('manual down ignored a live native reader and working directory')
+            activity = self.request('POST', self.project_route() + '/vault', body={'action': 'activity'}, holder=holder)
+            assert activity['vault']['state'] == 'locking'
+            self.cell('manual_down_busy_preserves_normal_admission')
+            # Main-only TERM is systemd KillMode=mixed's normal signal. Its owned
+            # provider must stay alive while this real external reader holds it.
+            os.kill(pid, signal.SIGTERM)
+            deadline = time.monotonic() + 30
+            admission_closed = False
+            while time.monotonic() < deadline:
+                try:
+                    self.request('POST', self.project_route() + '/vault', body={'action': 'activity'}, holder=holder)
+                except RuntimeError as error:
+                    if 'calcifer_stopping' not in str(error) or '(503)' not in str(error):
+                        raise
+                    admission_closed = True
+                    break
+                time.sleep(0.05)
+            assert admission_closed, 'SIGTERM did not retain its shutdown admission intent after Busy'
+            os.kill(pid, 0)
+            assert self.digest(media) == digest
+            self.cell('sigterm_waits_for_the_real_owned_mount_without_killing_its_provider')
+        finally:
+            if reader.stdin is not None:
+                try:
+                    reader.stdin.write(b'\n')
+                    reader.stdin.flush()
+                except BrokenPipeError:
+                    pass
+                reader.stdin.close()
+            try:
+                reader.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                reader.terminate()
+                reader.wait(timeout=10)
+        assert reader.returncode == 0, 'owned native reader did not exit normally'
+        deadline = time.monotonic() + 30
+        while True:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            if time.monotonic() >= deadline:
+                raise AssertionError('Calcifer did not exit after its native reader released the view')
+            time.sleep(0.05)
+        assert log.read_text(errors='replace').count('calcifer::serve: Calcifer stopped') > stopped_before
+        self.assert_inaccessible(view, media)
+        assert self.status()['state'] == 'locked'
+        reopened = self.view(self.vault('unlock', '--recovery-file', self.recovery('recovery1'), '--idle', 0))
+        assert self.digest(reopened / media.relative_to(view)) == digest
+        self.cell('sigterm_drains_then_exits_gracefully_and_reopens_unchanged_media')
+        return reopened
+
     def preservation_policy(self, password: Path) -> None:
         directory = self.out / 'explicit-preservation'
         made = self.command('new', '--unencrypted', directory)
@@ -1210,6 +1289,9 @@ foreach ($rule in $allowed) {
         refused = self.vault('recovery', '--recovery-out', unsafe_view, refusal=True)
         assert json.loads(refused.stdout)['error']['code'] == 'vault_recovery_location'
         assert not unsafe_view.exists()
+        if os.name == 'posix':
+            view = self.supervised_shutdown(view, saved[1])
+            saved = [self.find_media(view, path) for path in sources]
         self.vault('lock', allow_locking=True)
         self.assert_locked(view, saved[0])
         self.open_unlocks_locked_project(initial, wrong)

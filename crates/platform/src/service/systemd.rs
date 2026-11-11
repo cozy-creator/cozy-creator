@@ -92,8 +92,11 @@ fn render(spec: &ServiceSpec) -> String {
         let log = log.to_string_lossy().replace('%', "%%");
         format!("StandardOutput=append:{log}\nStandardError=append:{log}\n")
     });
+    // Calcifer must checkpoint and close its encrypted views before its owned
+    // filesystem guardians receive a signal. The final timeout still kills the group.
+    let kill_mode = if spec.name == "calcifer" { "KillMode=mixed\n" } else { "" };
     format!(
-        "[Unit]\nDescription=cozy {}\n\n[Service]\nExecStart={exec}\nRestart=on-failure\n{log}\n\
+        "[Unit]\nDescription=cozy {}\n\n[Service]\nExecStart={exec}\nRestart=on-failure\n{kill_mode}{log}\n\
          [Install]\nWantedBy=default.target\n",
         spec.name
     )
