@@ -806,6 +806,9 @@ fn config_class(file: &str, config: &Config) -> ClassRef {
 /// Imports `req` into a committed cozytensors in `store`: (its header, the source's repo files). With
 /// `key`, an interrupted import resumes: the tensors its journal holds are not converted again.
 pub fn into_store(store: &crate::store::Store, req: &Request, key: Option<&str>) -> Result<(crate::format::ObjectRef, std::collections::BTreeMap<String, crate::format::ObjectRef>)> {
+    if req.sources.len() != 1 && req.sources.iter().any(|s| s.split(['?', '#']).next().is_some_and(|s| s.ends_with(".cozytensors"))) {
+        return refuse(Code::MISSING_FIELD, "select exactly one native .cozytensors checkpoint; combining native artifacts requires an explicit composition");
+    }
     if let [source] = req.sources {
         let spec = remote::parse(source)?;
         let native = match &spec {
