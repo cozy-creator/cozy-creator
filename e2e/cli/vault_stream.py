@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import subprocess
 import sys
 import time
 import urllib.parse
@@ -34,6 +35,38 @@ class VaultEvent(TypedDict, total=False):
     type: str
     error: dict[str, str]
     changed: Changed
+
+
+def write_recovery(path: Path, secret: str) -> None:
+    if os.name == "nt":
+        # Windows PowerShell uses .NET Framework's FileStream overload accepting
+        # FileSecurity, so the protected DACL is applied at creation, before bytes.
+        script = """
+$ErrorActionPreference = 'Stop'
+$sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+$acl = [Security.AccessControl.FileSecurity]::new()
+$acl.SetOwner($sid)
+$acl.SetAccessRuleProtection($true, $false)
+$rule = [Security.AccessControl.FileSystemAccessRule]::new($sid, [Security.AccessControl.FileSystemRights]::FullControl, [Security.AccessControl.AccessControlType]::Allow)
+$acl.AddAccessRule($rule)
+$stream = [IO.FileStream]::new($env:COZY_PROOF_RECOVERY_PATH, [IO.FileMode]::CreateNew, [Security.AccessControl.FileSystemRights]::FullControl, [IO.FileShare]::None, 4096, [IO.FileOptions]::WriteThrough, $acl)
+try {
+    $bytes = [Text.UTF8Encoding]::new($false).GetBytes([Console]::In.ReadToEnd())
+    $stream.Write($bytes, 0, $bytes.Length)
+    $stream.Flush($true)
+} finally { $stream.Dispose() }
+"""
+        result = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                                input=(secret + "\n").encode(), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                env={**os.environ, "COZY_PROOF_RECOVERY_PATH": str(path)})
+        if result.returncode:
+            raise RuntimeError("private recovery output failed: " + result.stderr.decode(errors="replace").replace(secret, "[REDACTED]"))
+        return
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w") as target:
+        target.write(secret + "\n")
+        target.flush()
+        os.fsync(target.fileno())
 
 
 def events(response: Iterable[bytes]) -> Iterator[VaultEvent]:
@@ -90,11 +123,7 @@ def main() -> None:
         assert "files/missing-legacy-image.jpg" in changed["skipped_files"]
         assert not (Path(changed["vault"]["view"]) / "files/missing-legacy-image.jpg").exists()
     secret = changed.pop("recovery_secret")
-    descriptor = os.open(recovery, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(descriptor, "w") as target:
-        target.write(secret + "\n")
-        target.flush()
-        os.fsync(target.fileno())
+    write_recovery(recovery, secret)
     database = Path.home() / ".cozy/calcifer/state.db"
     connection = sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)
     rows = connection.execute("SELECT id,binding,state FROM vault_operations WHERE id=?", (operation,)).fetchall()
