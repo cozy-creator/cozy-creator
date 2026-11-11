@@ -25,37 +25,55 @@ const STRIP_FRAMES = 8
 const PREVIEW_AFTER_MS = 250
 
 /**
- * At most two thumbnails asked at once. Calcifer makes few at a time, and `<img>`s waiting on it would fill the browser's six
- * connections to it, stalling every other call. An element scrolled away gives up its place. What a person is looking at right now,
- * `now`, goes at once, past the line.
+ * At most two different thumbnails asked at once. Calcifer makes few at a time, and `<img>`s waiting on it would fill the browser's six
+ * connections to it, stalling every other call. Boxes drawing the same request share its place in line. An element scrolled away gives up
+ * its own place. What a person is looking at right now, `now`, goes at once, past the line.
  */
 function line(limit: number) {
+  type Start = (complete: () => void) => void
+  type Load = { path: string; starts: Set<Start>; running: boolean }
+  const loads = new Map<string, Load>()
+  const waiting = new Set<Load>()
   let running = 0
-  const waiting: (() => void)[] = []
+
+  const complete = (load: Load) => {
+    if (loads.get(load.path) !== load) return
+    loads.delete(load.path)
+    load.starts.clear()
+    if (load.running) running -= 1
+    else waiting.delete(load)
+    next()
+  }
+  const begin = (load: Load) => {
+    waiting.delete(load)
+    load.running = true
+    running += 1
+    const done = () => complete(load)
+    for (const start of load.starts) start(done)
+  }
   const next = () => {
-    while (running < limit && waiting.length) {
-      running += 1
-      waiting.shift()!()
+    for (const load of waiting) {
+      if (running >= limit) break
+      begin(load)
     }
   }
-  return (start: () => void, now = false): (() => void) => {
-    let state: "waiting" | "running" | "done" = "waiting"
-    const go = () => {
-      state = "running"
-      start()
+
+  return (path: string, start: Start, now = false): (() => void) => {
+    let load = loads.get(path)
+    if (!load) {
+      load = { path, starts: new Set(), running: false }
+      loads.set(path, load)
+      waiting.add(load)
     }
-    if (now) {
-      running += 1
-      go()
-    } else waiting.push(go)
+    const joined = load
+    joined.starts.add(start)
+    if (joined.running) start(() => complete(joined))
+    else if (now) begin(joined)
     next()
+
     return () => {
-      if (state === "waiting") waiting.splice(waiting.indexOf(go), 1)
-      if (state === "running") {
-        running -= 1
-        next()
-      }
-      state = "done"
+      joined.starts.delete(start)
+      if (!joined.starts.size) complete(joined)
     }
   }
 }
@@ -114,41 +132,46 @@ export function Thumb({
 }) {
   const { client } = useConnection()
   const store = useCanvasStore()
-  const [src, setSrc] = useState<string>()
+  const [image, setImage] = useState<{ src: string; complete: () => void }>()
   const [failed, setFailed] = useState(false)
   const projectId = store.projectId
-  const leaveLine = useRef(() => {})
   const zoom = useSignal(store.sharpness)
   const width = exact ? cardWidth : Math.max(thumbWidth(cardWidth, zoom), strip ? 0 : (widest.get(sha256) ?? 0))
   useEffect(() => {
     if (!projectId) return
     let live = true
-    leaveLine.current = thumbLine(() => {
-      void client.transport.src(client.thumb(projectId, sha256, width, strip)).then((url) => {
-        if (live) setSrc(url)
+    const path = client.thumb(projectId, sha256, width, strip)
+    const leave = thumbLine(path, (complete) => {
+      void client.transport.src(path).then((src) => {
+        if (live) setImage({ src, complete })
+      }, () => {
+        if (!live) return
+        leave()
+        setFailed(true)
       })
     }, now)
     return () => {
       live = false
-      leaveLine.current()
+      leave()
     }
   }, [client, projectId, sha256, width, strip])
   // A strip that can't be made leaves the poster under it as it was.
   if (failed) return strip ? null : <span className="media-note">No preview</span>
-  if (!src) return null
+  if (!image) return null
   return (
     <img
-      src={src}
+      key={image.src}
+      src={image.src}
       alt=""
       className={`${className ?? ""} ${arrived.has(`${sha256}:${width}`) ? "" : "arrives"}`}
       draggable={false}
       style={frame === undefined ? undefined : { transform: `translateX(${(-frame * 100) / (strip ?? 1)}%)` }}
       onError={() => {
-        leaveLine.current()
+        image.complete()
         setFailed(true)
       }}
       onLoad={(event) => {
-        leaveLine.current()
+        image.complete()
         const { naturalWidth, naturalHeight } = event.currentTarget
         if (naturalWidth && naturalHeight) onSize?.(naturalWidth / naturalHeight)
         arrived.add(`${sha256}:${width}`)
