@@ -1,6 +1,6 @@
 //! Open the current project in a browser and print its local URL.
 use std::{
-    io::{self, Write},
+    io::{self, IsTerminal as _, Write},
     net::{Ipv4Addr, TcpListener},
     process::{Command, ExitCode, Stdio},
 };
@@ -31,7 +31,7 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     let (calcifer, project) = match args.port {
         Some(port) => select_port(ctx, port).await?,
         None => {
-            let project = project::current(ctx).await?;
+            let project = current_or_unlock(ctx).await?;
             (ctx.calcifer().await?, project)
         }
     };
@@ -53,6 +53,17 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     }
     output::document(ctx, &json!({ "project": name, "url": link.as_str() }));
     Ok(ExitCode::SUCCESS)
+}
+
+/// One explicit Open may unlock once. Pipes and JSON never acquire credentials implicitly.
+async fn current_or_unlock(ctx: &Context) -> Result<State, Error> {
+    match project::current(ctx).await {
+        Err(error) if error.code == "project_locked" && !ctx.json && io::stdin().is_terminal() && ctx.term.stderr => {
+            project::vault::unlock_for_open(ctx).await?;
+            project::current(ctx).await
+        }
+        answer => answer,
+    }
 }
 
 /// Keep the one-use sign-in code out of the browser process's command line.
@@ -110,7 +121,7 @@ async fn select_port(ctx: &Context, port: u16) -> Result<(Client, State), Error>
                 Kind::Conflict, "calcifer_port", format!("Calcifer did not start on the requested port {port}"),
             ));
         }
-        project::current(ctx).await
+        current_or_unlock(ctx).await
     }.await;
     match selected {
         Ok(project) => Ok((calcifer, project)),

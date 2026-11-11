@@ -148,7 +148,7 @@ pub(crate) async fn create(ctx: &Context, args: New) -> Result<ExitCode, Error> 
         output::document(ctx, &document);
     } else {
         output::view(ctx, &document, &["message"]);
-        if let Some(view) = document["view"].as_str() { output::say(ctx, &format!("readable view: {view}")); }
+        if let Some(view) = document["view"].as_str() { output::say(ctx, &format!("readable view: {}", output::link(ctx, std::path::Path::new(view)))); }
         if let Some(secret) = recovery_secret { vault::show_recovery(ctx, &secret); }
     }
     Ok(ExitCode::SUCCESS)
