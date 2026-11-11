@@ -677,7 +677,12 @@ def versus(gates: list[Gate], defs: list[CellDef]) -> tuple[list[str], list[str]
         for name, x in g['comfyui'].items():
             c = g['cells'].get(name)
             w, ours_peak, cold = ours(g, name)
-            judged = {'warm total': (sec(w.get('total_ms')), x['total_s'], 's'), 'steady step': (sec(w.get('steady_ms')), x.get('steady_s'), 's'),
+            # Steps unlike each other (H3's dense and sparse, HiDiffusion's two sizes) have no steady step to hold side by side:
+            # their stage table does that.
+            series = [v for v in (c['series'] if c else []) if v]
+            alike = not series or max(series) <= 1.5 * min(series)
+            judged = {'warm total': (sec(w.get('total_ms')), x['total_s'], 's'),
+                      'steady step': (sec(w.get('steady_ms')) if alike else None, x.get('steady_s'), 's'),
                       'peak VRAM': (gib(ours_peak), gib(x.get('peak_mib')), 'GiB')}
             gaps = [f"{k} +{a - b:.3g} {u} ({a / b - 1:+.0%})" for k, (a, b, u) in judged.items() if a is not None and b and a > b]
             # A run's total is Calcifer's, on this computer: it also counts recording the run here (cl-865).
