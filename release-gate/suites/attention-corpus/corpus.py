@@ -130,6 +130,8 @@ def check(corpus: Path) -> int:
     import torch
 
     fails: list[str] = []
+    if not any(True for _ in captures(corpus)):
+        fails.append(f'no capture run under {corpus}')
     for model, run, census in captures(corpus):
         kept = [r for r in census if r.get('file')]
         if not kept:

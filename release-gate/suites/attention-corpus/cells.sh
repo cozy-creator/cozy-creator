@@ -24,14 +24,16 @@ ac_model() {
   log "ac-$name: $(tail -n 1 "ac-$name.err")"
   cell "ac-$name" "$target" "$@" seed:=$seed --attention-capture "$spec"
 }
-ac_model klein flux-3-klein/generate prompt="A ceramic fox figurine on a mossy stone, macro photo, soft window light" \
-  prompt_upsampling:=false prompt_drafting:=false --gpus=1
+# The largest download first: a host too slow for the cap is found on it (gate.sh hold, too_slow) and replaced before
+# the smaller models spend its time (release gate 43020656677: 2 MB/s, canceled).
+ac_model h3-15s minimax-h3/generate beats:='[{"description":"[Shot 1]\nA slow bank of fog crosses the bay. The camera tracks along the cliff edge while gulls ride the wind. Spray climbs the rocks below the gallery.","duration":15}]' \
+  soundscape="Wind and ocean surf, with waves splashing against the rocks." turbo:=true --gpus=1
 ac_model qwen4mp qwen-image-2/generate prompt="A rooftop garden in a rainy megacity, neon reflections, fine detail" megapixels:=4 \
   prompt_upsampling:=false --gpus=1
 ac_model moss moss-image/generate prompt="A hot air balloon festival over a desert canyon at dawn" megapixels:=4 aspect_ratio=1:1 \
   steps:=50 guidance:=3 --gpus=1
-ac_model h3-15s minimax-h3/generate beats:='[{"description":"[Shot 1]\nA slow bank of fog crosses the bay. The camera tracks along the cliff edge while gulls ride the wind. Spray climbs the rocks below the gallery.","duration":15}]' \
-  soundscape="Wind and ocean surf, with waves splashing against the rocks." turbo:=true --gpus=1
+ac_model klein flux-3-klein/generate prompt="A ceramic fox figurine on a mossy stone, macro photo, soft window light" \
+  prompt_upsampling:=false prompt_drafting:=false --gpus=1
 # The captures, over SSH. No run moves meanwhile, so the rental's idle clock is renewed by hand.
 mkdir -p corpus
 ( while sleep 120; do "$CLI" machine keepalive "$M" > /dev/null 2>&1; done ) & ac_keep=$!
