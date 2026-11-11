@@ -115,18 +115,18 @@ function plate(path, color, seconds, hz) {
   const onHover = await card('Edit').locator('.tl').boundingBox();
   check('opened_it_has_the_room', onHover.width > atRest.width, { atRest, onHover });
   check('hover_opens_no_video', (await page.locator('video').count()) === 0);
+  check('edit_has_no_project_picture_gallery', (await card('Edit').locator('.pictures').count()) === 0);
+  // Keep the source boxes and the open Edit in reach for real canvas-to-track drags.
+  await page.click('.zoom-at');
+  await page.getByRole('menuitem', { name: 'Zoom to 50%', exact: true }).click();
+  await settled(page);
   const clips = () => page.$$eval('.tl-clip', (els) => els.map((el) => ({ name: el.dataset.name, in: Number(el.dataset.in), out: Number(el.dataset.out), frames: Number(el.dataset.frames), missing: el.dataset.missing })));
   const order = async () => (await clips()).map((clip) => clip.name).join(' ');
   // A real drag, by its head, on a real mouse: back where it started, and in the box.
-  // A box goes in from the row of the project's pictures in the open Edit, to a place on its track.
+  // A box goes from the canvas into a place on the Edit's track.
   const dragIn = async (name, x, y) => {
     await openEdit();
-    const from = await page.locator(`.picture[title="${name}"]`).boundingBox();
-    await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
-    await page.mouse.down();
-    await page.mouse.move(from.x + from.width / 2 + 12, from.y + from.height / 2 - 12, { steps: 3 });
-    await page.mouse.move(x, y, { steps: 10 });
-    await page.mouse.up();
+    await carry(page, card(name).locator('.nm'), { x, y });
     await until(`${name} on the track`, order, (now) => now.includes(name));
     return true;
   };
