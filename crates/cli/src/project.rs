@@ -1,5 +1,5 @@
 //! Current-directory project lookup and explicit project creation.
-use std::{path::PathBuf, process::ExitCode};
+use std::{io::IsTerminal as _, path::PathBuf, process::ExitCode};
 
 use api::{
     calcifer::project::{Open, Opened, State},
@@ -51,19 +51,42 @@ pub(crate) struct New {
     /// The project directory, created when it does not exist.
     #[arg(default_value = ".", value_hint = clap::ValueHint::DirPath)]
     directory: PathBuf,
+    /// Explicitly create ordinary local storage without encryption.
+    #[arg(long, conflicts_with_all = ["passphrase_file", "recovery_out"])]
+    unencrypted: bool,
+    /// Read the new passphrase from a file or - for stdin instead of a local terminal prompt.
+    #[arg(long, value_name = "FILE")]
+    passphrase_file: Option<PathBuf>,
+    /// Save the recovery secret to a new private file outside the project. Otherwise it is shown once.
+    #[arg(long, value_name = "FILE")]
+    recovery_out: Option<PathBuf>,
 }
 
 pub(crate) async fn create(ctx: &Context, args: New) -> Result<ExitCode, Error> {
     let directory = std::path::absolute(&args.directory)
         .map_err(|error| Error::new(Kind::Usage, "project_path", error.to_string()))?;
-    let request = Open { path: Some(directory.clone()), ..Open::default() };
+    let passphrase = if args.unencrypted { None } else {
+        if args.passphrase_file.is_none() && !std::io::stdin().is_terminal() {
+            return Err(Error::new(Kind::Usage, "vault_credential", "new projects are encrypted; a noninteractive caller must supply a passphrase file or explicitly choose unencrypted storage")
+                .next("cozy new --passphrase-file <file>").next("cozy new --unencrypted"));
+        }
+        if let Some(output) = &args.recovery_out {
+            if output.exists() { return Err(Error::new(Kind::Conflict, "vault_recovery_exists", "the recovery output file already exists; choose a new path")); }
+            let status = api::calcifer::project::VaultStatus { encrypted: true, state: "new".into(), path: directory.clone(), view: None,
+                expires_at_ms: None, idle_timeout_s: 900, next: vec![] };
+            vault::recovery_location(output, &status)?;
+        }
+        Some(vault::credential(args.passphrase_file.as_ref(), "New project passphrase: ", true)?)
+    };
+    let request = Open { path: Some(directory.clone()), unencrypted: args.unencrypted, passphrase, ..Open::default() };
     let client = ctx.calcifer().await?;
-    let (id, code, path, created) = match client.post::<_, Opened>("/v1/projects", &request, Some(&mint_key())).await {
-        Ok(opened) => (opened.id, opened.code, opened.path, true),
+    let key = args.unencrypted.then(mint_key);
+    let (id, code, path, created, mut recovery_secret) = match client.post::<_, Opened>("/v1/projects", &request, key.as_deref()).await {
+        Ok(opened) => (opened.id, opened.code, opened.path, true, opened.recovery_secret),
         Err(error) if error.code == "project_exists" => {
             let path = crate::calcifer_client::path(&["v1", "projects", &directory.to_string_lossy()]);
             let state: State = client.get(&format!("{path}?assets=false")).await?;
-            (state.id, state.code, state.path, false)
+            (state.id, state.code, state.path, false, None)
         }
         Err(error) => return Err(error),
     };
@@ -73,11 +96,18 @@ pub(crate) async fn create(ctx: &Context, args: New) -> Result<ExitCode, Error> 
     } else {
         format!("Project not created. {} already contains project {label}.", path.display())
     };
-    let document = serde_json::json!({ "id": id, "code": code, "path": path, "created": created, "message": message });
+    if let (Some(output), Some(secret)) = (&args.recovery_out, &recovery_secret) {
+        vault::save_recovery(output, secret)?;
+        recovery_secret = None;
+        output::say(ctx, &format!("recovery secret saved to {}; keep a copy off this computer", output.display()));
+    }
+    let mut document = serde_json::json!({ "id": id, "code": code, "path": path, "created": created, "message": message });
     if ctx.json {
+        if let Some(secret) = recovery_secret { document["recovery_secret"] = secret.into(); }
         output::document(ctx, &document);
     } else {
         output::view(ctx, &document, &["message"]);
+        if let Some(secret) = recovery_secret { vault::show_recovery(ctx, &secret); }
     }
     Ok(ExitCode::SUCCESS)
 }

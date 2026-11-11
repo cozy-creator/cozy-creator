@@ -1667,7 +1667,15 @@ export type On = string;
  * taken) or at `path` (absolute, on Calcifer's computer), with the starter film when `starter`. A project is its id, kept in
  * its `project.db`: the folder is only where it lives. An existing one is named in a route (`NAMED_BY`) and needs no call here.
  */
-export type Open = { name?: string | null, path?: string | null, starter?: boolean, };
+export type Open = { name?: string | null, path?: string | null, starter?: boolean,
+/**
+ * Explicitly create ordinary local storage instead of the default encrypted project.
+ */
+unencrypted?: boolean,
+/**
+ * New encrypted projects require a user-supplied passphrase. Never cache this request.
+ */
+passphrase?: string | null, };
 
 /**
  * The project `POST /v1/projects` made: its id, folder and name.
@@ -1692,7 +1700,11 @@ next?: Array<string>,
 /**
  * What opening it did to it, said once.
  */
-said?: Array<string>, };
+said?: Array<string>,
+/**
+ * Disclosed once for a new encrypted project; never persist this response in a request cache.
+ */
+recovery_secret?: string | null, };
 
 /**
  * Weights arriving or a package's environment built on a machine (`machine::Operation`), and the runs waiting on it.

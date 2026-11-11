@@ -17,7 +17,7 @@ export const vaultQuery = (client: Client, id: string) => queryOptions({
   refetchIntervalInBackground: true,
 })
 
-function Recovery({ secret, onDone }: { secret: string; onDone: () => void }) {
+export function Recovery({ secret, onDone }: { secret: string; onDone: () => void }) {
   const [saved, setSaved] = useState(false)
   const [copied, setCopied] = useState(false)
   const download = () => {

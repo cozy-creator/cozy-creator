@@ -1,11 +1,13 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query"
-import { type FormEvent, useEffect, useRef, useState } from "react"
+import { useEffect, useState } from "react"
 import { Link, useLocation, useNavigate } from "react-router-dom"
 import { projectsQuery } from "../api/queries"
 import { projectPath, rememberProject } from "../app/project"
 import { useConnection } from "../app/Connection"
 import { say } from "../ui/notes"
 import { DrawerFrame } from "./Drawer"
+import { ProjectCreate } from "./ProjectCreate"
+import type { Opened } from "../api/calcifer"
 
 /** Past this many, a field searches them by name or folder. */
 const FINDS = 8
@@ -23,9 +25,7 @@ export function Projects() {
   const { key, state } = useLocation()
   const ask: ProjectsAsk = state ?? {}
   const { data, error } = useQuery(projectsQuery(client))
-  const [name, setName] = useState("")
   const [find, setFind] = useState("")
-  const naming = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     void queries.invalidateQueries({ queryKey: ["projects"] })
@@ -33,9 +33,6 @@ export function Projects() {
   useEffect(() => {
     if (error) say("Couldn't list projects", error)
   }, [error])
-  useEffect(() => {
-    if (ask.new) naming.current?.focus()
-  }, [key, ask.new])
 
   const all = data?.projects ?? []
   const finds = all.length > FINDS
@@ -45,35 +42,16 @@ export function Projects() {
     .filter((project) => !words || project.name.toLowerCase().includes(words) || project.path.toLowerCase().includes(words))
     .sort((a, b) => Number(first.has(b.id)) - Number(first.has(a.id)))
 
-  const create = async (event: FormEvent) => {
-    event.preventDefault()
-    try {
-      const made = await client.newProject(name.trim() || "untitled", `project-${crypto.randomUUID()}`)
-      void queries.invalidateQueries({ queryKey: ["projects"] })
-      for (const line of made.said ?? []) say(line)
-      rememberProject(queries, made)
-      navigate(projectPath(made))
-    } catch (failure) {
-      say("Couldn't make the project", failure)
-    }
+  const created = (made: Opened) => {
+    void queries.invalidateQueries({ queryKey: ["projects"] })
+    for (const line of made.said ?? []) say(line)
+    rememberProject(queries, made)
+    navigate(projectPath(made))
   }
 
   return (
     <DrawerFrame title="Projects">
-      <form className="row" onSubmit={create}>
-        <input
-          ref={naming}
-          className="field"
-          aria-label="New project's name"
-          placeholder="New project's name"
-          spellCheck={false}
-          value={name}
-          onChange={(event) => setName(event.target.value)}
-        />
-        <button type="submit" className="tb">
-          New
-        </button>
-      </form>
+      <ProjectCreate key={key} autoFocus={ask.new} onCreated={created} />
       {finds && (
         <input
           className="field wide find"

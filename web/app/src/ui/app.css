@@ -82,6 +82,20 @@ html.carrying * {
   cursor: grabbing !important;
 }
 
+.project-setup {
+  width: min(36rem, calc(100vw - 2rem));
+  max-height: calc(100vh - 2rem);
+  overflow: auto;
+  padding: 24px;
+  border: 1px solid var(--mute);
+  border-radius: 12px;
+  background: var(--bg);
+  color: var(--ink);
+}
+.project-setup::backdrop {
+  background: rgb(0 0 0 / 0.65);
+}
+
 /* The five steps at a surface's size. The frame draws them at --ui; a drawer is zoomed, an open box's sheet and takes are drawn larger
    by --here, and a box's insides scale with the canvas, so each sets --m. Its name, its words and what's said around them read the
    same at any zoom: --on. */

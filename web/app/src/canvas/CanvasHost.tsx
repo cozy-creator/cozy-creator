@@ -19,7 +19,8 @@ import { canvasQuery, machinesQuery, projectQuery, toolsQuery } from "../api/que
 import { useTo } from "../app/project"
 import { useConnection } from "../app/Connection"
 import { loadMachine, loadMore, loadSelection, loadToolsShut, loadViewport, saveMachine, saveMore, saveSelection, saveToolsShut, saveViewport } from "../app/view"
-import type { Tool } from "../api/calcifer"
+import type { Tool, Opened } from "../api/calcifer"
+import { ProjectCreate } from "../panels/ProjectCreate"
 import { Copyable } from "../ui/Copyable"
 import { dismiss, say } from "../ui/notes"
 import { useSignal } from "../ui/signal"
@@ -274,7 +275,17 @@ function Canvas({
   })
   const adopt = useRef(onAdopt)
   adopt.current = onAdopt
-  const [placer] = useState(() => new Placer(store, client, { adopt: (id, code) => adopt.current(id, code) }))
+  const [creation, setCreation] = useState<{ resolve(project: Opened): void; reject(why: Error): void } | null>(null)
+  const creating = useRef<typeof creation>(null)
+  const [placer] = useState(() => new Placer(store, client, {
+    adopt: (id, code) => adopt.current(id, code),
+    create: () => new Promise<Opened>((resolve, reject) => {
+      const pending = { resolve, reject }
+      creating.current = pending
+      setCreation(pending)
+    }),
+  }))
+  useEffect(() => () => { creating.current?.reject(new Error("Project creation was canceled")); creating.current = null }, [])
   const [openedOn] = useState(projectId)
   const [veil, setVeil] = useState(false)
   const [shut, setShut] = useState(loadToolsShut)
@@ -872,6 +883,7 @@ function Canvas({
 
   return (
     <CanvasStoreProvider value={store}>
+      {creation && <ProjectCreate modal onCreated={(project) => { creating.current = null; setCreation(null); creation.resolve(project) }} onCancel={() => { creating.current = null; setCreation(null); creation.reject(new Error("Project creation was canceled")) }} />}
       <ToolPanel
         project={readable}
         machine={machine}

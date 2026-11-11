@@ -423,10 +423,38 @@ pub(super) async fn write(State(api): State<Arc<Api>>, Path(named): Path<String>
     Ok(private(axum::Json(changed).into_response()))
 }
 
-fn private(mut response: Response) -> Response {
+pub(super) fn private(mut response: Response) -> Response {
     response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("private, no-store"));
     response.headers_mut().insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
     response
+}
+
+/// Initialize the first database through encrypted storage. There is no plaintext source to convert or preserve.
+pub(super) fn create_new(api: &Api, root: &FsPath, id: &str, name: &str, written: super::written::Written, passphrase: SecretString) -> Result<String, Error> {
+    let engine = Provider::discover(&api.machines.hubs.home().tools()).map_err(provider)?;
+    let created = Keybag::create(id, passphrase).map_err(key)?;
+    let recovery = created.recovery_secret.expose().to_owned();
+    let outcome = (|| {
+        created.secret.with_bytes(|bytes| engine.create(&root.join(BACKING), bytes)).map_err(provider)?;
+        // Persist the wrapping slots before writing any project state: the user's known passphrase
+        // can reopen this backing even if setup or delivery of the recovery response is interrupted.
+        created.keybag.save(&root.join(KEYBAG_FILE)).map_err(key)?;
+        let runtime = api.machines.hubs.home().calcifer().join("vaults").join(format!("new-{}", fresh()));
+        fs::create_dir_all(&runtime).map_err(io)?;
+        platform::durable::set_mode(&runtime, 0o700).map_err(provider)?;
+        let view = project_mount::view_path(&runtime).map_err(provider)?;
+        let mut target = created.secret.with_bytes(|bytes| engine.mount(&root.join(BACKING), &view, bytes,
+            MountOptions { idle_timeout: None, read_only: false })).map_err(provider)?;
+        let initialized = super::new_database(target.view(), id, name, written);
+        target.try_unmount().map_err(provider)?;
+        initialized?;
+        platform::durable::sync_dir(root).map_err(provider)?;
+        let ask = VaultAsk { action: "encrypt".into(), passphrase: None, recovery_secret: None,
+            idle_timeout_s: None, max_duration_s: None, remove_plaintext: false };
+        mount(api, root, created.keybag, created.secret, &ask)
+    })();
+    outcome.map_err(|why| error("vault_creation", format!("Encrypted project setup at {} could not finish: {}. Its storage is preserved; keep the passphrase to recover it.", root.display(), why.message)))?;
+    Ok(recovery)
 }
 
 fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk) -> Result<VaultChanged, Error> {
