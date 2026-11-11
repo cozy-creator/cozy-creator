@@ -19,7 +19,8 @@ function load(file, globals = {}, imports = {}) {
   return module.exports
 }
 
-const queriesModule = load("api/queries.ts")
+const projectOrder = load("api/projectOrder.ts")
+const queriesModule = load("api/queries.ts", {}, { "./projectOrder": projectOrder })
 const { projectPath, rememberProject } = load("app/project.tsx", {}, { "../api/queries": queriesModule })
 const project = { id: "project-canonical-id", code: "ABC12DEF3" }
 assert.equal(projectPath(project), "/p/ABC12DEF3")
