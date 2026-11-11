@@ -16,3 +16,11 @@ rtx-pro-6000x2.mg2 1024 400 150
 h100-sxm5-80gbx2.mg2 1024 400 150
 rtx-5090x4.mg4 121.84 400 180
 h100-sxm5-80gbx4.mg4 1024 400 150
+# H3's pass (and any cell a Calcifer restart broke): the same cards at their own host RAM (1024 holds nothing), where ComfyUI's
+# H3 is not killed by the container's limit (it was at 30.46 GiB on the 5090, 11-11; that robustness result stands apart).
+rtx-3060x1.matrixh3 1024 300 600
+rtx-3090x1.matrixh3 1024 300 360
+rtx-4070x1.matrixh3 1024 300 480
+rtx-4090x1.matrixh3 1024 300 300
+rtx-5060x1.matrix8h3 1024 300 720
+rtx-5090x1.matrixh3 1024 300 240
