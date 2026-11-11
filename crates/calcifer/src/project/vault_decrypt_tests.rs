@@ -109,6 +109,7 @@ async fn native_plain_recovery_fixture() {
     ready.plain.as_mut().unwrap().ready = true;
     save_conversion(&ready).unwrap();
     fs::rename(&ready.root, &ready.saved).unwrap();
+    assert!(keeps_index(&ready.root), "the durable receipt must retain a temporarily missing project after interruption");
     recover_conversion(&ready.root).unwrap();
     assert!(!ready.saved.exists() && !ready.staged.exists() && !receipt_path(&ready.root).exists());
     assert_eq!(plain_project_id(&ready.root).as_deref(), Some(id.as_str()));
@@ -150,9 +151,10 @@ async fn native_plain_recovery_fixture() {
     save_conversion(&cleanup).unwrap();
     fs::remove_file(cleanup.saved.join(KEYBAG_FILE)).unwrap();
     assert!(cleanup.saved.join(BACKING).exists());
-    recover_conversion(&cleanup.root).unwrap();
+    recover_pending_plain(&cleanup.root).unwrap();
     assert!(cleanup.root.join("retained.txt").is_file() && !cleanup.saved.exists());
     assert!(!receipt_path(&cleanup.root).exists());
+    assert!(recover_pending_plain(&cleanup.root).is_err(), "a missing receipt must not mask an earlier durability error");
 
     // Rebinding an older pre-move pointer is reconstructed from the real index
     // and native ID in a FRESH process, not by keeping this test's static map.

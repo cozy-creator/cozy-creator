@@ -114,7 +114,7 @@ pub(super) fn view(root: &FsPath) -> Result<PathBuf, Error> {
 /// particular listing cannot retire the index while its directory is renamed.
 pub(super) fn keeps_index(root: &FsPath) -> bool {
     let converting = CONVERTING.lock().expect("vault conversions");
-    converting.contains(root) || super::Folder::is_project(root) || encrypted(root)
+    converting.contains(root) || receipt_path(root).is_file() || super::Folder::is_project(root) || encrypted(root)
 }
 
 /// A key-holding work lease can drain already-authorized work while the viewing session is locking.
@@ -616,6 +616,12 @@ fn recover_plain(record: &Conversion) -> Result<(), Error> {
     finish_plain(record)
 }
 
+fn recover_pending_plain(root: &FsPath) -> Result<(), Error> {
+    let record = conversion(root)?.filter(|record| record.plain.is_some())
+        .ok_or_else(|| error("vault_recovery", "the durable plaintext conversion receipt is unavailable"))?;
+    recover_plain(&record)
+}
+
 fn finish_plain(record: &Conversion) -> Result<(), Error> {
     let plain = record.plain.as_ref().expect("plaintext conversion");
     if !plain.ready || !plain_target(record, &record.root)? { return Err(error("vault_recovery", "the plaintext replacement did not verify")); }
@@ -732,13 +738,15 @@ fn decrypt(api: &Arc<Api>, root: &FsPath) -> Result<(), Error> {
         platform::durable::sync_dir(parent).map_err(provider)?;
         finish_plain(&record)
     })();
-    drop(converting);
     if let Err(why) = outcome {
-        if let Err(recovery) = recover_conversion(root) {
+        // Keep the directory handoff active and reload its durable state: cleanup
+        // may have advanced beyond our original in-memory record before failing.
+        if let Err(recovery) = recover_pending_plain(root) {
             return Err(error("vault_recovery", format!("{why}; {recovery}; retry decrypt after resolving the preserved source/stage")));
         }
         if encrypted(root) { return Err(why); }
     }
+    drop(converting);
     crate::events::release_project_readers(&info.project_id);
     crate::events::project_vault(&info.project_id, "plain");
     Ok(())
