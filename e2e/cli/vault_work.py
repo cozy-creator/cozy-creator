@@ -124,7 +124,8 @@ def vault_work_sleep(payload: Request, out: Outputs) -> Answer:
     receipt["outlived"] = {"run": run_of(stdout).get("number"), "run_s": round(took), "idle_s": IDLE, "locked_after_end_s": round(after)}
 
     # 2. An explicit lock mid-run ends the run first, says so, and locks.
-    unlock(args, "unlock-for-lock", 0)
+    # Each unlock mounts the view afresh, at a new path.
+    script = unlock(args, "unlock-for-lock", 0) / "vault-work-proof" / "sleeper.py"
     process, stdout = start(args, "ended", script, 900)
     while (run := run_of(stdout)).get("machine_state") != "running":
         assert process.poll() is None, f"the run to be ended stopped first: {run}"
