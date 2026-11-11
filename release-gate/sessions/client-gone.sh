@@ -83,11 +83,12 @@ put() {
   grep -q -- --unencrypted "$OUT/new-help-$tag.txt" && plain=--unencrypted
   c "new /home/client/$tag $plain" > "$OUT/new-$tag.txt" 2>&1 || fail "cozy new: $(tail -3 "$OUT/new-$tag.txt")"
   sh "cp /home/client/art.py /home/client/$tag/art.py; chown client /home/client/$tag/art.py"
-  c "machine add box 127.0.0.1:$LINK --fingerprint $FINGERPRINT" > "$OUT/add-$tag.txt" 2>&1
+  # The first add is refused machine_unauthorized, its hint naming the key: on stderr, which ssh keeps apart.
+  c "machine add box 127.0.0.1:$LINK --fingerprint $FINGERPRINT 2>&1" > "$OUT/add-$tag.txt" 2>&1
   key=$(grep -oE 'cozy machine authorize [A-Za-z0-9_-]{43}' "$OUT/add-$tag.txt" | awk '{print $4}' | head -1)
   [ -n "$key" ] || fail "no key to authorize: $(tail -3 "$OUT/add-$tag.txt")"
   sh "cozy machine authorize $key" > "$OUT/authorize-$tag.txt" 2>&1 || fail "authorize"
-  c "machine add box 127.0.0.1:$LINK --fingerprint $FINGERPRINT" > "$OUT/add-$tag.txt" 2>&1 || fail "add: $(tail -3 "$OUT/add-$tag.txt")"
+  c "machine add box 127.0.0.1:$LINK --fingerprint $FINGERPRINT 2>&1" > "$OUT/add-$tag.txt" 2>&1 || fail "add: $(tail -3 "$OUT/add-$tag.txt")"
 }
 
 # The parts; `judged` fails on what a fix should have changed, and only says it otherwise.
