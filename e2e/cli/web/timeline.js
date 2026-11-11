@@ -11,7 +11,7 @@ const { execFileSync, spawnSync } = require('child_process');
 const { existsSync, mkdtempSync, readFileSync, rmSync, statSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFromPage, projectJson, calcifer, carry, signIn, STEP_MS, boxOf, closeBox, drop, lastLook, lookAt, noStall, openBox, openCanvas, settled, until, watchBoxes, pointAt, yamlOf } = require('./page');
+const { projectFromPage, projectJson, calcifer, carry, signIn, STEP_MS, boxOf, closeBox, drop, lastLook, lookAt, noStall, openBox, openCanvas, settled, fitCanvas, until, watchBoxes, pointAt, yamlOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -333,6 +333,78 @@ function plate(path, color, seconds, hz) {
   await setting('Aspect ratio', '');
   await setting('Resolution', '');
   await until('back as it was', async () => (await edit()).fields, (fields) => fields.fps === FPS && fields.aspect_ratio === undefined && fields.resolution === undefined);
+  await openEdit();
+
+  // A real incoming clip waits on its file. Hold only its transport request:
+  // the previous decoded frame must stay visible, and pausing must not be undone
+  // when the delayed response finally arrives. The rendered Edit above is unchanged.
+  const handoff = await call('POST', `/v1/projects/${id}/assets`, {
+    tool: 'cozy/edit', name: 'handoff_preview', exact: true,
+    fields: { timeline: { tracks: [{ clips: [{ clip: '<blue>' }, { clip: '<red>' }] }] } },
+  });
+  if (handoff.status !== 200 || !handoff.body?.name) throw new Error(`preview fixture refused: ${handoff.status}`);
+  const handoffName = handoff.body.name;
+  const incomingPath = `/v1/projects/${id}/${file('red').split('/').map(encodeURIComponent).join('/')}`;
+  const incoming = (url) => url.pathname === incomingPath;
+  const heldRequests = [];
+  let holdIncoming = true;
+  const delayIncoming = (route) => holdIncoming ? heldRequests.push(route) : route.continue();
+  const previewPixels = () => page.evaluate((name) => {
+    const monitor = document.querySelector(`.card[data-asset="${name}"] .tl-monitor`);
+    const canvas = monitor?.querySelector('canvas');
+    const video = monitor?.querySelector('video');
+    const visible = (element) => Boolean(element && getComputedStyle(element).visibility !== 'hidden' && element.getBoundingClientRect().width > 0);
+    const sample = (source) => {
+      const copy = document.createElement('canvas'); copy.width = 1; copy.height = 1;
+      const context = copy.getContext('2d');
+      context.drawImage(source, 0, 0, 1, 1);
+      return [...context.getImageData(0, 0, 1, 1).data].slice(0, 3);
+    };
+    const videoReady = Boolean(video && !video.seeking && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA);
+    return {
+      clip: monitor?.dataset.clip,
+      canvas_visible: visible(canvas), canvas_pixel: canvas?.width ? sample(canvas) : null,
+      video_visible: visible(video), video_ready: videoReady, video_paused: video?.paused ?? true,
+      video_pixel: videoReady ? sample(video) : null,
+    };
+  }, handoffName);
+  try {
+    await away();
+    await fitCanvas(page);
+    await openBox(page, handoffName);
+    await card(handoffName).locator('.tl-monitor').waitFor();
+    await page.route(incoming, delayIncoming);
+    await card(handoffName).getByRole('button', { name: 'Play', exact: true }).click();
+    await until('first preview clip decoded', previewPixels, (now) => now.clip === 'blue' && now.video_visible && now.video_ready && looksLike(now.video_pixel, BLUE));
+    await until('incoming preview request held', () => heldRequests.length, (count) => count > 0);
+    await until('preview entered its delayed clip', previewPixels, (now) => now.clip === 'red');
+    await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+    const waitingFrame = await previewPixels();
+    check('preview_handoff_keeps_last_decoded_frame', waitingFrame.canvas_visible && Array.isArray(waitingFrame.canvas_pixel) && looksLike(waitingFrame.canvas_pixel, BLUE) && !waitingFrame.video_visible, waitingFrame);
+    await card(handoffName).getByRole('button', { name: 'Pause', exact: true }).click();
+    const arrivals = heldRequests.map((route) => route.request());
+    holdIncoming = false;
+    for (const route of heldRequests.splice(0)) await route.continue();
+    let transfersSettled = false, transferError;
+    void Promise.all(arrivals.map(async (request) => {
+      const response = await request.response();
+      if (response) await response.finished();
+    })).then(() => { transfersSettled = true; }, (error) => { transferError = error; });
+    await until('delayed preview transfer settled', () => {
+      if (transferError) throw transferError;
+      return transfersSettled;
+    }, Boolean);
+    await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+    check('preview_handoff_does_not_resume_after_pause', await card(handoffName).getByRole('button', { name: 'Play', exact: true }).count() === 1 && (await previewPixels()).video_paused);
+    await card(handoffName).getByRole('button', { name: 'Play', exact: true }).click();
+    const nextFrame = await until('incoming preview clip decoded', previewPixels, (now) => now.clip === 'red' && now.video_visible && now.video_ready && looksLike(now.video_pixel, RED));
+    check('preview_handoff_reveals_decoded_next_frame', true, nextFrame);
+  } finally {
+    holdIncoming = false;
+    for (const route of heldRequests.splice(0)) await route.continue().catch(() => {});
+    await page.unroute(incoming, delayIncoming);
+    await call('DELETE', `/v1/projects/${id}/assets/${encodeURIComponent(handoffName)}`);
+  }
   await openEdit();
 
   // Its asset deleted: the clip says so, plainly, and a render goes on without it.
