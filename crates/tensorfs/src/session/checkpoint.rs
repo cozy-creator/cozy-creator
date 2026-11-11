@@ -430,6 +430,27 @@ impl Checkpoint {
         )
     }
 
+    /// Page `page` derived from this checkpoint's bytes for `slot`, or with none the one used last,
+    /// when it is here (`Store::derived`), with a read-engine source over its object.
+    pub fn derived(
+        &self, slot: &str, page: Option<&str>, direct_io: bool,
+    ) -> Result<Option<(crate::store::Derived, crate::io::source::Source)>> {
+        let Some(derived) = self.data.store.derived(slot, page)? else { return Ok(None) };
+        let file = match self.data.store.file(&derived.object) {
+            Ok(file) => file,
+            Err(crate::store::Error::Absent(_)) => return Ok(None), // Collected since the look.
+            Err(error) => return Err(error.into()),
+        };
+        let source = crate::io::source::Source::files(vec![(derived.object.clone(), file)], direct_io, 0);
+        Ok(Some((derived, source)))
+    }
+
+    /// Keeps `bytes` as page `page` of `slot`, cached in this checkpoint's lane
+    /// (`Store::keep_derived`). None: the disk has no room for it.
+    pub fn keep_derived(&self, slot: &str, page: &str, bytes: &[u8]) -> Result<Option<crate::store::Derived>> {
+        Ok(self.data.store.keep_derived(slot, page, self.id(), bytes)?)
+    }
+
     fn view(&self) -> crate::io::view::View {
         let checkpoint = self.clone();
         crate::io::view::View::from(&self.data.raw).with_fetch(move |objects| {
