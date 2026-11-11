@@ -100,6 +100,9 @@ test = "release: throwaway package, published"
 ["package yank"]
 test = "release: throwaway package, yanked"
 "--undo" = "release: throwaway package, un-yanked"
+
+["package delete"]
+test = "release: delete an isolated publication fixture"
 ["model ls"]
 test = "pr: models"
 "--family" = "pr: models"
@@ -108,7 +111,7 @@ test = "pr: models"
 "--limit" = "pr: models"
 "--offset" = "pr: catalog pagination parser and model list pages"
 "--on" = "pr: models"
-["model download"]
+["model install"]
 test = "pr: models"
 "--lane" = "pr: models"
 "--on" = "pr: models"
@@ -121,14 +124,14 @@ test = "pending: authoritative Hub role metadata"
 "--limit" = "pending: authoritative Hub role metadata"
 "--offset" = "pending: authoritative Hub role metadata"
 "--on" = "pending: LoRA classification in local inventory"
-["lora download"]
-test = "pending: same download handler as model download"
-"--lane" = "pending: same download handler as model download"
-"--on" = "pending: same download handler as model download"
-"--source-format" = "pending: same download handler as model download"
-["model remove"]
+["lora install"]
+test = "pending: same download handler as model install"
+"--lane" = "pending: same download handler as model install"
+"--on" = "pending: same download handler as model install"
+"--source-format" = "pending: same download handler as model install"
+["model uninstall"]
 test = "pending: local model removal backend fixture"
-["lora remove"]
+["lora uninstall"]
 test = "pending: shared local model removal backend fixture"
 ["lora edit"]
 test = "release: LoRA metadata fixture"
@@ -203,6 +206,12 @@ test = "pr: a run followed, a snapshot, a cancel"
 # Hidden (`hide = true`, in no --help): probed in the binary; `coverage.py --source` finds any not listed here.
 [hidden]
 "machine rent --provider" = "pending: dev-only (`dev = true`, crates/cli/DEV.md); release-gate/suites/hub rents cpu once per provider where the config has it, ended and checked gone"
+"package publish" = "release: isolated package publication; TensorHub admins only in v1"
+"model upload" = "release: isolated model upload; TensorHub admins only in v1"
+"model publish" = "release: isolated model publication; TensorHub admins only in v1"
+"model quantize" = "manual: package-defined quantization; TensorHub admins only in v1"
+"lora upload" = "release: isolated LoRA upload; TensorHub admins only in v1"
+"lora publish" = "pending: shared model publication; TensorHub admins only in v1"
 
 [open]
 "--port" = "pr: entrypoint parser, loopback listener and preserved config tests"

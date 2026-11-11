@@ -74,6 +74,7 @@ enum Command {
         root: bool,
     },
     /// Publish the package in the current directory.
+    #[command(hide = true)]
     Publish {
         /// Use the first-party root namespace (Hub admins only).
         #[arg(long)]
@@ -81,6 +82,11 @@ enum Command {
         /// Publish as yanked. Only exact version pins can install it.
         #[arg(long)]
         yanked: bool,
+    },
+    /// Permanently delete your package and all its releases from the Hub.
+    Delete {
+        /// [org/]name.
+        package: String,
     },
     /// Yank a release so new unpinned installs skip it.
     Yank {
@@ -116,6 +122,7 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         } => machine::uninstall(ctx, &names(&packages)?, placement.on()?).await,
         Command::Lock { path, upgrade, root } => author::lock(ctx, path, &upgrade, root).await,
         Command::Publish { root, yanked } => author::publish(ctx, root, yanked).await,
+        Command::Delete { package } => author::delete(ctx, &PackageRef::parse(&package)?).await,
         Command::Yank { release, undo } => {
             author::yank(ctx, &PackageRef::parse(&release)?, undo).await
         }
@@ -206,6 +213,6 @@ mod tests {
         assert!(command.get_subcommands().any(|command| command.get_name() == "uninstall"));
         assert!(!command.get_subcommands().any(|command| command.get_name() == "remove"));
         assert_eq!(Cli::try_parse_from(["package", "remove", "local/example"]).unwrap_err().kind(), clap::error::ErrorKind::InvalidSubcommand);
-        assert_eq!(Cli::try_parse_from(["package", "delete", "example"]).unwrap_err().kind(), clap::error::ErrorKind::InvalidSubcommand);
+        assert!(Cli::try_parse_from(["package", "delete", "example"]).is_ok());
     }
 }

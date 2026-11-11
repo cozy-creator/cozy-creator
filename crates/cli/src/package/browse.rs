@@ -3,7 +3,9 @@ use std::process::ExitCode;
 use api::{calcifer::{HeldPackage, MachineList, MachinePackages, MachineState, On, hub::{FoundPackage, PackageSearch}}, error::Error};
 use crossterm::event::KeyCode;
 use serde::Serialize;
-use crate::{Context, output};
+use crate::Context;
+#[cfg(test)]
+use crate::output;
 
 pub(crate) const HEADERS: [&str; 4] = ["PACKAGE", "LATEST", "INSTALLED", "UPDATED"];
 

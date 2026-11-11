@@ -217,6 +217,13 @@ hub_model_upload() {
   HUB_COMMIT=$(model_details "$3" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["commits"][0]["commit"])' 2>/dev/null)
   [ -n "$HUB_COMMIT" ] || { expect "hub $1-commit" FAIL "model metadata for $3 names no commit after the upload"; return 1; }
 }
+# Released clients use download; the current CLI shares package install terminology.
+hub_model_install() {
+  local check=$1 verb=install; shift
+  "$CLI" model install --help > /dev/null 2>&1 || verb=download
+  hub_do "$check" ok model "$verb" "$@"
+}
+
 # hub_models: on $M, upload a commit (the workload writer), publish it as 0.1.0 (listed), download; the exact pin and
 # lane download; delete → gone, as the Hub serves the model and as the model metadata API shows it.
 hub_models() {
@@ -225,8 +232,8 @@ hub_models() {
   hub_model_upload model-upload "$M" "$model" || return 0
   hub_do model-publish ok model publish "$model" 0.1.0 "$HUB_COMMIT"
   hub_listed model-info-published "$model"
-  hub_do model-download ok model download "$model" --on "$M" -y
-  hub_do model-pinned ok model download "$model@0.1.0" --lane f16 --on "$M" -y
+  hub_model_install model-download "$model" --on "$M" -y
+  hub_model_install model-pinned "$model@0.1.0" --lane f16 --on "$M" -y
   hub_do model-delete ok model delete "$model" -y && HUB_MODELS=${HUB_MODELS/ $model/}
   if model_details "$model" > "$HB/model-gone.out" 2>&1; then
     expect "hub model-gone" FAIL "deleted model still answers"

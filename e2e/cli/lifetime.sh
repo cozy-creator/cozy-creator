@@ -265,11 +265,11 @@ queued_download() {
 [ "$RUNNER_OS" = Linux ] || return 0
 step "a download queued behind another run's says whose, and how much is ahead (cl-849)"
 local first second n1='' n2='' said='' behind
-cozy --json model download qwen/qwen3.5-0.8b --on local > "$OUT/queued-first.ndjson" 2>&1 &
+cozy --json model install qwen/qwen3.5-0.8b --on local > "$OUT/queued-first.ndjson" 2>&1 &
 first=$!
 # The second goes once the first's bytes move: its objects queue behind all of the first's.
 for _ in $(seq 240); do grep -qE '"bytes_done": *[1-9]' "$OUT/queued-first.ndjson" && break; sleep 0.25; done
-cozy --json model download lilylilith/fontbox --on local > "$OUT/queued-second.ndjson" 2>&1 &
+cozy --json model install lilylilith/fontbox --on local > "$OUT/queued-second.ndjson" 2>&1 &
 second=$!
 for _ in $(seq 80); do
   n1=$(grep -oE '"number": *[0-9]+' "$OUT/queued-first.ndjson" | head -1 | grep -oE '[0-9]+$') || true

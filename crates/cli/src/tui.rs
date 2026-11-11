@@ -99,8 +99,8 @@ impl Screen {
                     .scroll((selected.selected().unwrap_or(0).min(u16::MAX as usize) as u16, 0))
                     .block(Block::new().title(view.title()).title_bottom(view.hint())), frame.area());
             }
-            Screen::ModelDestinations(view) => table_hint(frame, &view.title(), &["machine", "status"], view.rows(), selected, "↑/↓ select · Enter download · Esc/q back"),
-            Screen::RemoveLocalModel(model) => detail(frame, "Remove local copy?", vec![model.clone(), "All downloaded releases and lanes on this machine will be removed.".into(), "The Hub is unchanged. Active and shared data stays protected.".into(), "Enter confirms · Esc/q cancels".into()]),
+            Screen::ModelDestinations(view) => table_hint(frame, &view.title(), &["machine", "status"], view.rows(), selected, "↑/↓ select · Enter install · Esc/q back"),
+            Screen::RemoveLocalModel(model) => detail(frame, "Uninstall local copy?", vec![model.clone(), "All downloaded releases and lanes on this machine will be removed.".into(), "The Hub is unchanged. Active and shared data stays protected.".into(), "Enter confirms · Esc/q cancels".into()]),
             Screen::PackageCatalog(view) => table_hint(frame, &view.title(), &package::browse::HEADERS, view.rows(), selected, "↑/↓ select · Enter preview · i install · u uninstall local · p/n pages · q quit"),
             Screen::Package(view) => detail(frame, view.title(), view.lines()),
             Screen::PackageDestinations(view) => table_hint(frame, &view.title(), &["MACHINE", "STATUS"], view.rows(), selected, "↑/↓ select · Enter install · Esc/q back"),
@@ -482,7 +482,7 @@ mod tests {
         let mut stack = vec![(Screen::RemoveLocalModel("local/example".into()), TableState::default())];
         let mut keys = futures_util::stream::iter([KeyCode::Enter, KeyCode::Char('q')].map(|code| Ok(Input::Key(KeyEvent::new(code, KeyModifiers::NONE)))));
         let mut signals = Signals::new().unwrap();
-        assert_eq!(drive(&ctx, &mut terminal, &mut stack, &mut keys, &mut signals).await.unwrap(), Some(model::live::Operation::Remove("local/example".into())));
-        assert_eq!(drive(&ctx, &mut terminal, &mut stack, &mut keys, &mut signals).await.unwrap(), None);
+        assert!(matches!(drive(&ctx, &mut terminal, &mut stack, &mut keys, &mut signals).await.unwrap(), Some(Operation::Model(model::live::Operation::Remove(name))) if name == "local/example"));
+        assert!(drive(&ctx, &mut terminal, &mut stack, &mut keys, &mut signals).await.unwrap().is_none());
     }
 }
