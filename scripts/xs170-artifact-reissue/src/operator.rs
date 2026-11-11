@@ -362,6 +362,9 @@ async fn run(options: Options) -> Result<()> {
         let proposal = Proposal::read(&options.manifest, &options.inputs, MANIFEST_SHA)?;
         journal.note(json!({"step":"local_proposal_verified","objects":proposal.objects.len(),"mapping_count":proposal.manifest.mappings.len(),"bytes":proposal.manifest.total_new_bytes,"mappings":proposal.manifest.mappings}))?;
         let (client, endpoint) = connection(&options.user_home)?;
+        let actor = client.get_current_account().await.map_err(|error| hub_error(error, "verify the existing user actor"))?;
+        require(!actor.name.is_empty() && !actor.user_id.is_empty(), "user_actor_unavailable", "The existing sign-in has no usable user account")?;
+        journal.note(json!({"step":"existing_user_actor","account":actor.name,"user_id":actor.user_id}))?;
         execute(options.phase, &proposal, options.model.as_deref(), &client, &endpoint, &mut journal).await
     }.await;
     match &result { Ok(()) => journal.data.succeeded = true, Err(error) => journal.data.error = Some(error.clone()) }
@@ -385,4 +388,5 @@ pub async fn entry() -> ExitCode {
 }
 
 #[cfg(test)]
+#[path = "operator/tests.rs"]
 mod tests;
