@@ -26,27 +26,10 @@ pub(crate) struct Rent {
     /// SSH public key file. Omit the path to use your default key.
     #[arg(long, requires = "sku", value_name = "PUBLIC_KEY_FILE", num_args = 0..=1)]
     ssh: Option<Option<std::path::PathBuf>>,
-    /// Worker image digest for an administrator's image build.
-    #[arg(long, requires = "sku", hide = true, value_parser = image_digest)]
-    image_digest: Option<String>,
     // Dev-only. The Hub prefers a datacenter with an NFS drive for this provider.
     /// Choose the GPU provider.
     #[arg(long, requires = "sku", value_parser = ["runpod", "vast"])]
     provider: Option<String>,
-}
-
-fn image_digest(digest: &str) -> Result<String, String> {
-    match digest.strip_prefix("sha256:") {
-        Some(hex)
-            if hex.len() == 64
-                && hex
-                    .bytes()
-                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) =>
-        {
-            Ok(digest.to_owned())
-        }
-        _ => Err("name a worker image as sha256:<64 lowercase hex>".to_owned()),
-    }
 }
 
 pub(crate) async fn exec(ctx: &Context, rent: Rent) -> Result<ExitCode, Error> {
@@ -64,7 +47,6 @@ pub(crate) async fn exec(ctx: &Context, rent: Rent) -> Result<ExitCode, Error> {
         hub: hub.to_string(),
         gpus: rent.gpus,
         disk_gb: rent.disk_gb,
-        image: rent.image_digest.clone(),
         provider: provider.clone(),
         agreed,
         ssh_key: ssh_key.clone(),

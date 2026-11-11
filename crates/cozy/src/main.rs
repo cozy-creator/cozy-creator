@@ -15,7 +15,7 @@ fn main() -> std::process::ExitCode {
         [role] if *role == "calcifer" => calcifer::serve::main(),
         // It takes nothing, so `--help` or a typo starts no daemon.
         [role, rest @ ..] if *role == "calcifer" => {
-            println!("cozy calcifer is this computer's daemon, which cozy starts when it needs it. It takes no arguments: `cozy status` shows it, and `cozy doctor` restarts a stuck one.");
+            println!("Run the local controller. Cozy starts it automatically; use `cozy doctor` for repairs.");
             match rest.iter().all(|arg| *arg == "--help" || *arg == "-h") {
                 true => std::process::ExitCode::SUCCESS,
                 false => std::process::ExitCode::FAILURE,

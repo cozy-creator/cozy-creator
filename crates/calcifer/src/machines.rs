@@ -1274,7 +1274,6 @@ pub(crate) async fn quote(
         hub,
         gpus,
         disk_gb,
-        image,
         provider,
         agreed: _,
         ssh_key,
@@ -1293,7 +1292,6 @@ pub(crate) async fn quote(
     let shape = Shape {
         gpus,
         disk_gb,
-        image,
         provider,
         agreed: None,
         ssh_key,
@@ -1347,7 +1345,6 @@ pub(crate) async fn create(
             hub,
             gpus,
             disk_gb,
-            image,
             provider,
             agreed,
             ssh_key,
@@ -1371,7 +1368,6 @@ pub(crate) async fn create(
             let shape = Shape {
                 gpus,
                 disk_gb,
-                image,
                 provider,
                 agreed,
                 ssh_key,

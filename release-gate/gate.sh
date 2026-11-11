@@ -4,9 +4,8 @@
 # .github/workflows/release-gate.yaml on a runner signed in with `cozy login --key`.
 #   gate.sh <SKU> --suite name,... [--gpus N] [--out DIR] [--establish] [--publish] [--runtime F|URL] [--tensorfs F|URL]
 #           [--tensord BIN|URL] [--packages DIR] [--pins name@release,...] [--only cell,cell] [--before FILE]...
-#           [--cells FILE]... [--first pkg,...] [--cli BIN] [--disk GB] [--on MACHINE] [--image sha256:HEX] [--stall MIN]
+#           [--cells FILE]... [--first pkg,...] [--cli BIN] [--disk GB] [--on MACHINE] [--stall MIN]
 #           [--cap MIN]
-# --image boots that worker image (a staged candidate's digest; a Hub admin's choice) in place of the Hub's current one.
 # --on runs on that machine as it is (a dev proof on `local`): no rental, no --before, nothing ended.
 # --stall: how long no run on the machine may stand still before the gate calls its cell hung (`hold`; default 15 minutes).
 # --cap: the job's hard stop in minutes from the gate's start (the workflow's cap_minutes; 300). A download that can't land
@@ -35,7 +34,7 @@ fi
 HERE=$2 BEGAN=$3 HOST=$4 BEGUN_IN=$PWD; shift 4; ARGS=("$@")
 . "$HERE/machines.sh"
 REPO=cozy-creator/cozy-creator TAG=release-gate-baselines
-SKU=$1; shift; CAND=() ONLY= EXTRA=() BEFORE=() CLI=cozy DISK=400 OUT= PKGS= ESTABLISH= PUBLISH= PINS= SUITES= K= CLIP= GPUS= FIRST= ON= IMAGE= STALL=15 STALL_STAGE=30 SEEDS= SCENARIO=
+SKU=$1; shift; CAND=() ONLY= EXTRA=() BEFORE=() CLI=cozy DISK=400 OUT= PKGS= ESTABLISH= PUBLISH= PINS= SUITES= K= CLIP= GPUS= FIRST= ON= STALL=15 STALL_STAGE=30 SEEDS= SCENARIO=
 BIN= RW= TW= TD= CAP=300 HOSTS=5
 while [ $# -gt 0 ]; do
   case $1 in
@@ -51,7 +50,6 @@ while [ $# -gt 0 ]; do
     --cli) CLI=$2;;
     --disk) DISK=$2;;
     --on) ON=$2;;
-    --image) IMAGE=$2;;
     --stall) STALL=$2;;
     --cap) CAP=$2;;
     --packages) PKGS=$(cd "$2" && pwd);;
@@ -295,7 +293,7 @@ if [ -z "$ON" ]; then
   RENT_BEGAN=$SECONDS
   for ((order = 1; order <= REORDERS; order++)); do
     : > rent.err
-    "$CLI" machine rent "$SKU" ${GPUS:+--gpus "$GPUS"} ${IMAGE:+--image-digest "$IMAGE"} ${SSH:+--ssh} --disk-gb "$DISK" -y >rent.out 2>rent.err & RP=$!
+    "$CLI" machine rent "$SKU" ${GPUS:+--gpus "$GPUS"} ${SSH:+--ssh} --disk-gb "$DISK" -y >rent.out 2>rent.err & RP=$!
     until first=$(grep -m1 -oE '^[a-z0-9][a-z0-9-]*: (booting|ready|offline)' rent.err | cut -d: -f1); [ -n "$first" ] || ! kill -0 "$RP" 2>/dev/null; do
       sleep 2
     done

@@ -1715,10 +1715,6 @@ pub enum NewMachine {
         gpus: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         disk_gb: Option<u32>,
-        /// A Hub admin's worker image, `sha256:<hex>`, in place of the machine kind's current
-        /// one; the Hub refuses anyone else.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        image: Option<String>,
         /// The one provider to buy from (`runpod`, `vast`): dev-only `--provider`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider: Option<String>,

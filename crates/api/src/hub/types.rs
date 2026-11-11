@@ -629,8 +629,10 @@ pub struct RentalRequest {
     pub fallbacks: Vec<RentalFallback>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub image: Option<String>,
+    /// Retained only when replaying a rental request recorded by an older client.
+    #[doc(hidden)]
+    #[serde(rename = "image", skip_serializing_if = "Option::is_none")]
+    pub legacy_image: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub accelerator_count: Option<i64>,
     /// SHA-256 of the media token, 64 lowercase hex.

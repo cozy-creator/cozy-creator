@@ -9,6 +9,8 @@
 # A new command or flag fails `coverage.py check` until it has a line here and its test runs.
 
 [global]
+"--full" = "pr: entrypoints, complete project records"
+"--yes" = "pr: entrypoints, noninteractive confirmation"
 "--json" = "pr: every step reads the JSON answer"
 
 [completion]
@@ -175,13 +177,7 @@ test = "pr: run play, its link serves the output, then expires"
 
 # Hidden (`hide = true`, in no --help): probed in the binary; `coverage.py --source` finds any not listed here.
 [hidden]
-"--full" = "pr: entrypoints, full project health; run records and live view columns"
-"--yes" = "pr: candidates (machine update -y) and entrypoint flag parsing"
-"whoami" = "pr: signed out, whoami says so"
-"completion" = "pr: completion, each shell script loads and completes the visible verbs"
 "machine rent --provider" = "pending: dev-only (`dev = true`, crates/cli/DEV.md); release-gate/suites/hub rents cpu once per provider where the config has it, ended and checked gone"
-"run --no-memo" = "pending: dev-only (`dev = true`, crates/cli/DEV.md); the bench suite's same-seed pairs"
-"machine rent --image-digest" = "pending: release tier, a Hub admin's gated worker-image bake; waits for the CI key"
 
 [open]
 "--port" = "pr: entrypoint parser, loopback listener and preserved config tests"
