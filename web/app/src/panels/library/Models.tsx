@@ -420,7 +420,7 @@ export function ModelDrawer() {
                 })
               }
             />
-            <Failure error={remove.error} lead="Couldn't change the release" />
+            <Failure error={remove.error} lead="Couldn't delete the model" />
           </Section>
         </>
       )}
