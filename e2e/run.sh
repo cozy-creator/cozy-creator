@@ -78,8 +78,11 @@ run_wait() {
 
 # run_show <dir> <name> <number>: the run's record now, into <name>.json (kept as it was when the read fails). `run
 # show` exits non-zero for a run that failed or was canceled: the record is what it printed.
+# run_view: the CLI's verb for one run's record, `watch` (0.24) or `show` (before it).
+run_view() { if "$RUN_CLI" run watch --help > /dev/null 2>&1; then echo watch; else echo show; fi; }
+
 run_show() {
-  "$RUN_CLI" --json --full run show "$3" --once > "$1/$2.json.new" 2> /dev/null || true
+  "$RUN_CLI" --json --full run "$(run_view)" "$3" --once > "$1/$2.json.new" 2> /dev/null || true
   if jq -e .status "$1/$2.json.new" > /dev/null 2>&1; then
     mv "$1/$2.json.new" "$1/$2.json"
   else
@@ -114,7 +117,7 @@ run_outputs() {
   n=$(cat "$1/$2.number" 2> /dev/null || true)
   [ -n "$n" ] && [ "$n" != none ] || return 0
   # JSON's paths belong to Calcifer and are not sent; the CLI says each downloaded path on stderr.
-  "$RUN_CLI" run show "$n" --once -o "$1/$2.out" > /dev/null 2> "$1/$2.export.err" || true
+  "$RUN_CLI" run "$(run_view)" "$n" --once -o "$1/$2.out" > /dev/null 2> "$1/$2.export.err" || true
   while IFS= read -r line; do
     while IFS= read -r name; do
       case "$line" in
