@@ -87,14 +87,14 @@ export function End({ machine }: { machine: Machine }) {
           />
         </>
       )}
-      {machine.state === "ending" && !machine.ending && machine.reason !== "release_unconfirmed" && (
+      {machine.state === "ending" && !machine.ending && (
         <p>Shutting down.{order ? " It buys nothing more, and leaves this list once its Hub answers." : ` It bills${hourly ? ` ${hourly}/h` : ""} until its Hub affirms the pod gone, which this page shows when it does.`}</p>
       )}
-      {machine.reason === "release_unconfirmed" && (
+      {machine.end_failed && (
         <div className="failure" role="alert">
-          <span>The Hub has not confirmed {machine.name}'s pod destroyed, and its missing record is not proof.</span>
-          <span className="remedy">Calcifer keeps the record and keeps asking. The pod may still be billing.</span>
-          <Copyable text={`cozy machine show ${machine.name}`} />
+          <span>{machine.name} was not shut down: {machine.end_failed}</span>
+          <span className="remedy">Nothing was ended, and it may still be billing. End it again to ask again.</span>
+          <Copyable text={`cozy machine end ${machine.name}`} />
         </div>
       )}
       <Failure error={ask.error} lead="Couldn't end it" />

@@ -25,6 +25,9 @@ pub struct DeviceKey {
     pub hub: String,
     pub email: String,
     pub id: String,
+    /// Installed from a file (`cozy login --key`), not enrolled here: other computers may hold
+    /// it too, so signing out here forgets it rather than revoking it.
+    pub installed: bool,
     key: SigningKey,
 }
 
@@ -36,6 +39,8 @@ struct Kept {
     device_key_id: String,
     /// The Ed25519 seed, base64url.
     private_key: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    installed: bool,
 }
 
 impl DeviceKey {
@@ -57,6 +62,7 @@ impl DeviceKey {
             hub: kept.hub,
             email: kept.email,
             id: kept.device_key_id,
+            installed: kept.installed,
             key: SigningKey::from_bytes(&seed),
         })
     }
@@ -74,6 +80,7 @@ impl DeviceKey {
             email: self.email.clone(),
             device_key_id: self.id.clone(),
             private_key: b64(self.key.to_bytes()),
+            installed: self.installed,
         };
         serde_json::to_vec(&kept).expect("a key serializes")
     }
@@ -301,6 +308,7 @@ impl Enrollment {
             hub: self.hub.clone(),
             email: self.email.clone(),
             id: bearer.device_key_id.clone(),
+            installed: false,
             key: self.key.clone(),
         };
         Ok((key, bearer))

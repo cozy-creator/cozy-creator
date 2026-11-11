@@ -34,7 +34,8 @@ function MachineRow({ machine, now }: { machine: Machine; now: number }) {
           {trying ? `Still trying${machine.attempt ? `, attempt ${machine.attempt.number}` : ""}: ${stateWords(machine, now)}` : stateWords(machine, now)}
         </small>
         {machine.state === "ready" && machine.kind === "rental" && <small className="under">{endsWords(machine, now)}</small>}
-        {machine.state === "ending" && <small className="under warn">{machine.ending ? `Waiting to end it: ${machine.ending}` : machine.reason === "release_unconfirmed" ? "The Hub hasn't confirmed it gone: it may still be billing" : "Bills until its Hub affirms it gone"}</small>}
+        {machine.end_failed && <small className="under warn">Not shut down, may still be billing: {machine.end_failed}</small>}
+        {machine.state === "ending" && <small className="under warn">{machine.ending ? `Waiting to end it: ${machine.ending}` : "Bills until its Hub affirms it gone"}</small>}
       </Link>
       {trying && machine.ordered !== false && (
         <div className="rowend">

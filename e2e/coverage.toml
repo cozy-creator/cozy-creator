@@ -21,11 +21,11 @@ test = "pr: doctor, healthy, then a stuck Calcifer it restarts"
 "--on" = "pr: doctor --on local"
 
 [login]
-test = "manual: a person types the emailed code (release-gate/enroll-ci-key.sh)"
-"--export" = "manual: release-gate/enroll-ci-key.sh mints the CI key with it"
-"--key" = "release: sign-in, the runner loads the CI key"
+test = "pr: rental_end, with the code the isolated Hub logs (by hand: the emailed code, release-gate/enroll-ci-key.sh)"
+"--export" = "pr: rental_end, a pod's own key (release-gate/enroll-ci-key.sh mints the CI key with it)"
+"--key" = "pr: rental_end, the exported key and a copy of this computer's (release: the runner loads the CI key)"
 [logout]
-test = "pr: signed out, logout says so (signed in, it revokes the CI key: none)"
+test = "pr: signed out, logout says so; rental_end: an enrolled key revoked, an installed one only forgotten"
 "--everywhere" = "none: revokes every other key of the account (Paul's own); needs a separate test account"
 [whoami]
 test = "pr: signed out, whoami says so (release: signed in as fidika, its balance and the buy page)"
@@ -65,9 +65,9 @@ test = "pr: a new controller's key, then where to add the machine (session multi
 "--remove" = "pr: the key taken back (session multi-machine: its next call refused)"
 ["machine end"]
 test = "pr: local, refused (release: a rental; session multi-machine: an added pod removed)"
-"--force" = "release: rental, ended with a run still going"
+"--force" = "pr: rental_end, the isolated Hub's docker rental refused signed out and with a revoked key, then ended (release: a rental ended with a run still going)"
 ["machine rent"]
-test = "release: rental"
+test = "pr: rental_end, the isolated Hub's docker cpu (release: a GPU rental)"
 "--disk-gb" = "release: rental, its disk"
 "--gpus" = "release: rental, more GPUs than the SKU has is refused before buying"
 "--ssh" = "pr: renting, signed out, a private key file refused before any ask (release-gate session multi-machine rents and logs in with it)"
