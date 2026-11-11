@@ -2480,7 +2480,7 @@ pub fn pool_reserve(device: i32, pool: PoolId, bytes: usize) -> Result<usize> {
             session.prepared = true;
         }
         let unbacked: usize = state.segments.values().filter(|s| s.pool == Some(pool)).map(Segment::unbacked).sum();
-        (unbacked, if Device::pool_room(&state, pool) < wanted { wanted } else { 0 })
+        (unbacked, if wanted != 0 && Device::pool_room(&state, pool) < wanted { wanted } else { 0 })
     };
     let need = grow + unbacked;
     // A recording in no request, an idle period's, is a guess: it takes only room already free,
@@ -2502,8 +2502,11 @@ pub fn pool_reserve(device: i32, pool: PoolId, bytes: usize) -> Result<usize> {
         let mut state = owner.lock()?;
         let _context = owner.driver().enter()?;
         let result = (|| -> crate::AllocationResult<usize> {
-            owner.poll(&mut state)?;  // a settled free joins its run
             let have = pool_back(owner, &mut state, pool)?;
+            if wanted == 0 {  // a replay's or a token's use: nothing to make room for
+                return Ok(have);
+            }
+            owner.poll(&mut state)?;  // a settled free joins its run
             if Device::pool_room(&state, pool) >= wanted {
                 return Ok(have);
             }
