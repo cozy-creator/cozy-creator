@@ -90,6 +90,7 @@ cleanup() {
     [ -z "$pid" ] || { kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; }
   done
   docker rm -f "$PG_NAME" >/dev/null 2>&1 || true
+  rm -f "$OUT/login.in"
   rm -rf "$WORK"
   return "$status"
 }
