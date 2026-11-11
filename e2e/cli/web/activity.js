@@ -121,10 +121,36 @@ def draw(payload: Drawing, adj: Adjustments, out: Outputs) -> ImageResult:
 
   // A download: listed once, by the bytes it fetches, with its rate and time left, and the run that waits on it.
   const name = `local/activity-vae-${Date.now()}`;
-  const download = spawn(COZY, ['model', 'download', VAE, name, '--on', 'local'], { cwd: folder, stdio: 'ignore' });
-  const ended = new Promise((done) => download.on('exit', done));
+  const download = spawn(COZY, ['--json', 'model', 'install', VAE, name, '--on', 'local'], { cwd: folder, stdio: ['ignore', 'pipe', 'pipe'] });
+  const evidence = seen.download_cli = { events: [], exit_code: null, signal: null, stderr: '' };
+  const safe = (text) => String(text ?? '').replace(/Bearer\s+\S+/gi, 'Bearer [redacted]').replace(/cozy1-[a-z0-9_-]+/gi, '[recovery redacted]').replace(/[A-Za-z0-9_+/-]{64,}/g, '[opaque value redacted]').slice(-2048);
+  let pending = '';
+  download.stdout.on('data', (chunk) => {
+    pending = (pending + chunk.toString()).slice(-65536);
+    const lines = pending.split('\n');
+    pending = lines.pop();
+    for (const line of lines) {
+      try {
+        const event = JSON.parse(line);
+        const run = event.run, progress = event.progress, error = event.error;
+        evidence.events.push({ type: event.type, run: run && { number: run.number, kind: run.kind, status: run.status, machine_state: run.machine_state, reason: safe(run.reason) }, progress: progress && { stage: progress.stage, bytes_done: progress.bytes_done, bytes_total: progress.bytes_total }, error: error && { kind: error.kind, code: error.code, message: safe(error.message) } });
+        if (evidence.events.length > 24) evidence.events.shift();
+      } catch { /* only typed command events are retained */ }
+    }
+  });
+  download.stderr.on('data', (chunk) => { evidence.stderr = safe(evidence.stderr + chunk.toString()); });
+  const ended = new Promise((done) => {
+    download.on('error', (error) => { evidence.spawn_error = safe(error.message); done(null); });
+    download.on('exit', (code, signal) => { evidence.exit_code = code; evidence.signal = signal; done(code); });
+  });
   const fetching = list.locator('[data-doing=download]');
-  await until('the download listed under local', () => fetching.count(), (n) => n === 1, 120_000);
+  await until('the download listed under local', async () => {
+    const count = await fetching.count();
+    if (count === 0 && (evidence.exit_code !== null || evidence.signal !== null || evidence.spawn_error)) {
+      throw new Error(`download ended before its row was observed: ${JSON.stringify(evidence)}`);
+    }
+    return count;
+  }, (n) => n === 1, 120_000);
   const row = await until('its bytes moving', () => fetching.first().innerText(), (text) => /[1-9][\d.]* [KMG]iB \/ /.test(text), 60_000);
   seen.download = row;
   check('download_counts_its_bytes', /iB \/ \d+ MiB/.test(row), row);

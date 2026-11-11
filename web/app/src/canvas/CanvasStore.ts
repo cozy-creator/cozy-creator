@@ -1257,7 +1257,7 @@ export class CanvasStore {
     const view = this.views.get(key)
     const asset = view?.asset
     if (!asset || view.conflict) return
-    const on = madeHere(asset.tool) ? ["local"] : this.machines()
+    const on = here || madeHere(asset.tool) ? ["local"] : this.machines()
     const saved = this.save(key)
     if (!on.length) {
       this.patch(key, { waiting: also, asking: undefined })
@@ -1324,7 +1324,7 @@ export class CanvasStore {
 
   /** Render all. What's approved stays. */
   runAll(here = false) {
-    const on = this.machines()
+    const on = here ? ["local"] : this.machines()
     const id = this.projectId
     if (!id) return
     this.allAsking.set(null)

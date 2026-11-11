@@ -330,21 +330,23 @@ calcifer_orphaned() {
 
 # Removing cozy as the README's "Remove cozy" says, for this OS: nothing of cozy is left.
 remove_cozy() {
+  # The executable must start argv; a parent fixture names it as an argument.
+  local process_pattern="^$COZY([[:space:]]|$)"
   case $RUNNER_OS in
     Linux)
       systemctl --user disable --now cozy-calcifer > "$OUT/remove.log" 2>&1 || true
-      pkill -f "$HOME/.cozy/bin/cozy" || true; sleep 2
+      pkill -f "$process_pattern" || true; sleep 2
       rm -rf ~/.cozy ~/.config/cozy ~/.local/share/bash-completion/completions/cozy ~/.config/fish/completions/cozy.fish ;;
     macOS)
       launchctl bootout "gui/$(id -u)/com.cozy-creator.calcifer" > "$OUT/remove.log" 2>&1 || true
-      pkill -f "$HOME/.cozy/bin/cozy" || true; sleep 2
+      pkill -f "$process_pattern" || true; sleep 2
       rm -rf ~/.cozy ~/.config/cozy ~/Library/LaunchAgents/com.cozy-creator.*.plist ;;
     Windows)
       powershell -NoProfile -c 'Remove-ItemProperty HKCU:\Software\Microsoft\Windows\CurrentVersion\Run cozy-calcifer -ErrorAction SilentlyContinue; Get-Process cozy -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep 2; Remove-Item -Recurse -Force ~\.cozy, $env:LOCALAPPDATA\cozy -ErrorAction SilentlyContinue; $path = ([Environment]::GetEnvironmentVariable("Path", "User") -split ";") -ne "$HOME\.cozy\bin"; [Environment]::SetEnvironmentVariable("Path", $path -join ";", "User")' > "$OUT/remove.log" 2>&1 || true ;;
   esac
   [ ! -e "$COZY" ] || check "removing cozy left $COZY"
   [ ! -e "$HOME/.cozy" ] || check "removing cozy left ~/.cozy"
-  ! pgrep -f "$HOME/.cozy/bin/cozy" > /dev/null 2>&1 || check "a cozy process still runs after removal"
+  ! pgrep -f "$process_pattern" > /dev/null 2>&1 || check "a cozy process still runs after removal"
 }
 
 # The local machine ends, as its idle exit ends it: the holder of its root's lock. The next use starts it.
