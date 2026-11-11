@@ -19,6 +19,9 @@ storage; existing projects are unchanged. See [local encryption](PROJECT-ENCRYPT
 | `<edit>.mp4`, `<edit>.otio` | Each edit's film |
 | `.runs/` | Where a run's outputs land on their way into `files/`. Nothing else |
 
+An edit's root film and timeline follow its selected version. Replacing a root film does not create
+an `edited-*` side copy. The retained version's media and timeline stay in `files/` and version history.
+
 ## Schema
 
 | Table | Row | Was |

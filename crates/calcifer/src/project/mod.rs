@@ -4740,7 +4740,6 @@ impl Walk {
         let path = folder.lock()?.files.get(&sha256).map(|file| folder.path(&file.path));
         let mut film = folder.dir.join(&name);
         if let Some(path) = path {
-            self.keep_aside(&asset.name, &film, &now);
             // The version is in `files/`: a film at the root that can't be replaced costs it nothing.
             if let Err(e) = tools::publish(&path, &film) {
                 self.film_stays(&name, &e);
@@ -4772,19 +4771,6 @@ impl Walk {
         }
     }
 
-    /// A file at `at`, where a film goes, that is no version of `asset`: someone made it there. It is kept beside it, and said.
-    fn keep_aside(&self, asset: &str, at: &FsPath, lock: &Lock) {
-        let Ok(got) = tokio::task::block_in_place(|| folder::hash(at)) else { return };
-        if lock.asset(asset).is_some_and(|held| held.versions.iter().any(|version| version.main() == Some(&got))) {
-            return;
-        }
-        let stem = at.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default();
-        let aside = at.with_file_name(format!("{stem}.edited-{}.mp4", folder::prefix_of(&got)));
-        if std::fs::rename(at, &aside).is_ok() {
-            self.say(Told::Warning { message: format!("{} isn't a version of {asset}: it is kept as {}", at.display(), aside.display()), name: None });
-        }
-    }
-
     /// Said once of a film at the root that couldn't be replaced: its version stands, and `film_follows` puts it there the next time it can.
     fn film_stays(&self, name: &str, error: &std::io::Error) {
         if !self.stays.lock().expect("stays lock").insert(name.to_owned()) {
@@ -4811,7 +4797,6 @@ impl Walk {
         }
         let same = !tools::shares_bytes(&at) && tokio::task::block_in_place(|| folder::hash(&at)).is_ok_and(|got| got == file.sha256);
         if !same {
-            self.keep_aside(&doc.assets[i].name, &at, lock);
             if let Err(e) = tools::publish(&from, &at) {
                 self.film_stays(&cut_name(&doc.assets[i].name), &e);
             }

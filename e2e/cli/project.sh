@@ -3050,7 +3050,15 @@ assets:
 YAML
 render "$T" edit || check "healing: first cut: $(tail -c 400 "$OUT/render.txt")"
 J '.cuts[0].frames == 288' <<< "$(status "$T")" || check "healing: the whole film: $(status "$T" | jq -c .cuts)"
-local whole; whole=$(take_file "$T" edit video)
+local whole kept_film kept_sha; whole=$(take_file "$T" edit video)
+kept_film=$(file_at "$T" "$whole"); kept_sha=$(sha "$kept_film")
+step "an edit's root export is replaced without an edited side copy; its retained version stays"
+printf 'an external edit of the root export\n' > "$T/edit.mp4"
+render "$T" edit || check "healing: replacing the root export: $(tail -c 400 "$OUT/render.txt")"
+[ "$(sha "$T/edit.mp4")" = "$kept_sha" ] || check "healing: root export does not follow the selected version"
+if compgen -G "$T/edit.edited-*.mp4" > /dev/null; then check "healing: an edited root side copy was created"; fi
+[ "$(sha "$kept_film")" = "$kept_sha" ] && [ "$(take_file "$T" edit video)" = "$whole" ] && [ "$(made "$T" edit)" = 1 ] \
+  || check "healing: replacing the root export changed its retained version"
 if [ "$(sql1 "$T" 'PRAGMA user_version')" = 2 ]; then
   # A relational query projection is no longer authoritative. Form a REAL historical v1
   # fixture with the bad short-film reference, then let the actual first-open migration and
