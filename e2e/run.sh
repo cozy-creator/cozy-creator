@@ -26,7 +26,23 @@ run_project() {
 # when none came in RUN_NUMBER_S (default 1860 s: local code installs before its call is sent, cold on a new pod). Each doubling wait
 # without one is said on stderr (attempt k/5, with the follower's last line); after the fifth the follower is ended,
 # never a run.
+# run_transient <err file>: the CLI could not reach Calcifer (restarting, 503, refused or no answer): try again, not a failure.
+run_transient() { grep -qiE '503 Service Unavailable|connection refused|no answer for|error sending request|Calcifer (is )?(not running|unreachable|restart)' "$1" 2> /dev/null; }
+
+# run_submit: as run_submit1, again with backoff and jitter while Calcifer is unreachable and no run was made (a restart of
+# this computer's cozy: its runs keep going on their machines, but a call sent meanwhile is refused), for about 5 minutes.
 run_submit() {
+  local dir=$1 name=$2 n wait=2 began=$SECONDS
+  while :; do
+    n=$(run_submit1 "$@")
+    [ -z "$n" ] && run_transient "$dir/$name.err" && [ $((SECONDS - began)) -lt 300 ] || break
+    echo "$name: Calcifer unreachable, no run made: again in ${wait} s: $(tail -n 1 "$dir/$name.err" | cut -c1-120)" >&2
+    sleep $((wait + RANDOM % (wait + 1))); wait=$((wait * 2 > 60 ? 60 : wait * 2))
+  done
+  [ -z "$n" ] || echo "$n"
+}
+
+run_submit1() {
   local dir=$1 name=$2 n='' k=1 limit=${RUN_NUMBER_S:-1860} start=$SECONDS at; shift 2
   local words=("$@")
   if [[ ${words[0]} = run && ${words[1]:-} = .* ]]; then
@@ -72,7 +88,13 @@ run_wait() {
   done
   run_show "$dir" "$name" "$n"
   if [ -n "$want" ]; then run_reached "$dir/$name.ndjson" "$want"; return; fi
-  case $(run_get "$dir" "$name" .status) in completed | failed | canceled) return 0 ;; esac
+  # The follower can end with the run still going (this computer's cozy restarted under it): the run keeps going on its
+  # machine, so its record is read again until it settles, through Calcifer's own restarts.
+  local s began=$SECONDS
+  while s=$(run_get "$dir" "$name" .status); { [ -z "$s" ] || [ "$s" = queued ] || [ "$s" = in_progress ]; } && [ $((SECONDS - began)) -lt 10800 ]; do
+    sleep 15; run_show "$dir" "$name" "$n"
+  done
+  case $s in completed | failed | canceled) return 0 ;; esac
   return 1
 }
 
