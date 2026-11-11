@@ -157,7 +157,7 @@ concurrency:
 jobs:
   affected:
     # On a pull request (here or a caller's) nothing runs: the merge queue's group is where e2e runs.
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && inputs.select != 'diagnostic-approve-windows'
     runs-on: ubuntu-24.04
     # Last resort (tracker design/stalls.md): a runner that hangs sends no signal.
     timeout-minutes: 10
@@ -610,8 +610,49 @@ jobs:
           path: ${{ runner.temp }}/e2e
           retention-days: 14
 
+  approve-diagnostic:
+    name: diagnostic Windows approval timeline
+    if: github.event_name == 'workflow_dispatch' && inputs.select == 'diagnostic-approve-windows'
+    runs-on: windows-2025
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: .creator
+      - name: Verify diagnostic inputs
+        env:
+          CREATOR: ${{ inputs.ref }}
+          STACK: ${{ inputs.stack_ref }}
+          RUNTIME: ${{ inputs.runtime_ref }}
+          PACKAGES: ${{ inputs.packages_ref }}
+        run: |
+          test "$CREATOR" = e2a4930b5fb2afe7174e876496459448a6c9875e
+          test "$STACK" = "$CREATOR"
+          test "$RUNTIME" = df9f170da7882c4ac94155188da528d5d8d85ca8
+          test "$PACKAGES" = 456706fc793cf41e493343fc57214af720982e01
+          printf 'creator=%s\nstack=%s\nruntime=%s\npackages=%s\n' "$CREATOR" "$STACK" "$RUNTIME" "$PACKAGES"
+      - uses: ./.creator/e2e/candidates
+        with:
+          packages_ref: ${{ inputs.packages_ref }}
+          repo: cozy-creator
+          ref: ${{ inputs.ref }}
+          build: cozy tensorfs
+          stack_ref: ${{ inputs.stack_ref }}
+          runtime_ref: ${{ inputs.runtime_ref }}
+      - name: Observe the approval cell
+        run: bash .creator/e2e/cli/approve-diagnostic.sh --out "$RUNNER_TEMP/e2e" $CANDIDATES 2>&1 | node .creator/e2e/publish/scrub.js
+      - if: always()
+        uses: ./.creator/e2e/publish
+        with:
+          name: diagnostic-windows-approval-timeline
+          path: ${{ runner.temp }}/e2e
+          retention-days: 14
+
   e2e:
-    if: always()
+    if: always() && inputs.select != 'diagnostic-approve-windows'
     needs: [affected, candidate, cli, cli-os, cli-release, imports, mps]
     runs-on: ubuntu-24.04
     # Last resort (tracker design/stalls.md): a runner that hangs sends no signal.
