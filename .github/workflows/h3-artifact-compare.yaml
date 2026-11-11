@@ -1,0 +1,60 @@
+name: inspect H3 artifacts
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/h3-artifact-compare.yaml
+      - e2e/cpu/h3_artifact_compare.py
+  workflow_dispatch:
+    inputs:
+      run_ids:
+        description: Existing e2e runs whose retained H3 rank pairs to compare
+        type: string
+        default: '43061139019 43061144441 43061149787'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  compare:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - id: scope
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" = workflow_dispatch ] || git show --pretty=format: --name-only HEAD | grep -qE '^(e2e/cpu/h3_artifact_compare.py|.github/workflows/h3-artifact-compare.yaml)$'; then
+            echo run=true >> "$GITHUB_OUTPUT"
+          fi
+      - uses: astral-sh/setup-uv@v7
+        if: steps.scope.outputs.run == 'true'
+      - name: Decode retained media with the same pinned PyAV wheel
+        if: steps.scope.outputs.run == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_IDS: ${{ inputs.run_ids || '43061139019 43061144441 43061149787' }}
+        run: |
+          set -euo pipefail
+          read -r -a runs <<< "$RUN_IDS"
+          [ "${#runs[@]}" -gt 0 ] || { echo 'No run IDs provided' >&2; exit 2; }
+          for run in "${runs[@]}"; do
+            [[ "$run" =~ ^[0-9]+$ ]] || { echo 'Run IDs must be decimal integers' >&2; exit 2; }
+            gh run download "$run" -R cozy-creator/cozy-creator -n e2e-cpu -D "$RUNNER_TEMP/h3-artifacts/$run"
+          done
+          uv run --no-project --python 3.12 \
+            --with 'av @ https://files.pythonhosted.org/packages/b2/7a/1305243ab47f724fdd99ddef7309a594e669af7f0e655e11bdd2c325dfae/av-16.0.1-cp312-cp312-manylinux_2_28_x86_64.whl#sha256=daecc2072b82b6a942acbdaa9a2e00c05234c61fef976b22713983c020b07992' \
+            --with numpy==2.5.2 python e2e/cpu/h3_artifact_compare.py \
+            --artifacts "$RUNNER_TEMP/h3-artifacts" --out "$RUNNER_TEMP/h3-comparison.json" "${runs[@]}"
+      - if: always() && steps.scope.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: h3-artifact-comparison-${{ github.run_id }}
+          path: ${{ runner.temp }}/h3-comparison.json
+          if-no-files-found: warn
+          retention-days: 14
