@@ -1,6 +1,6 @@
 """Every cell served the attention table's choice (xs-171, measurement-design §4.4). For each component of an unpinned run,
 each band's kernel must be the head of the table's cell for the run's hardware class and the site's layout, level and head
-dim, or a package producer standing in before that head. The table is the candidate's (`attention-table.json` in the gate
+dim, or a package producer standing in before that head (SDPA beside it is a call the head refused). The table is the candidate's (`attention-table.json` in the gate
 directory, gate.sh); the records name `attention.class` and `attention.sites` (Runtime xs-171 R2, R4). A run without them,
 or a gate without a table, is noted, never failed. A fallback is analyze.py's FAIL already.
     check(gate) -> (fails, notes)"""
@@ -16,18 +16,20 @@ class Cell(TypedDict):
 
 
 class Site(TypedDict, total=False):
-    """One component's site facts and the kernel each band served (runtime-design §8)."""
+    """A component's sites at one level (runtime-design §8, R4): their facts, and the kernel each band served. A band
+    `+`-joins kernels when refusals split it; a one-rung site has the band ""; head_dim 0 is a module that doesn't say."""
     layout: str
     level: int
     head_dim: int
+    sites: int
     bands: dict[str, str]
+    producers: dict[str, str]
 
 
 class Attention(TypedDict, total=False):
     requested: str
     observed: str
-    sites: dict[str, Site]
-    producers: dict[str, str]
+    sites: dict[str, list[Site]]
 
 
 def band(edges: list[int], b: int) -> str:
@@ -82,14 +84,20 @@ def check(gate: Mapping[str, object]) -> tuple[list[str], list[str]]:
                 unjudged += 1
                 continue
             judged += 1
-            for component, site in sorted(sites.items()):
-                for label, kernel in sorted((site.get('bands') or {}).items()):
-                    key = (klass, site.get('layout', 'dense'), site.get('level', 16), site.get('head_dim'), label)
-                    want = head.get(key) or head.get((*key[:3], None, label))
-                    if want is None:
-                        fails.append(f'{name}: {component} served {kernel} in band {label or "all"}, and the table has no cell {key[:3]} there')
-                    elif kernel != want and (att.get('producers') or {}).get(kernel) != want:
-                        fails.append(f'{name}: {component} served {kernel} in band {label or "all"}; the table\'s head for {klass} {key[1]} {key[2]} is {want}')
+            for component, rows in sorted(sites.items()):
+                for site in rows:
+                    for label, served in sorted((site.get('bands') or {}).items()):
+                        level, layout, dim = site.get('level', 16), site.get('layout', 'dense'), site.get('head_dim') or None
+                        bands = [label] if label else sorted({k[4] for k in head if k[:3] == (klass, layout, level)})
+                        for b in bands:
+                            want = head.get((klass, layout, level, dim, b)) or head.get((klass, layout, level, None, b))
+                            # A call the head refuses runs on SDPA: `head+sdpa` is the head serving.
+                            kernels = [k for k in served.split('+') if k != 'sdpa' or served == 'sdpa']
+                            ok = want is not None and all(k == want or (site.get('producers') or {}).get(k) == want for k in kernels)
+                            if want is None:
+                                fails.append(f'{name}: {component} served {served} in band {b or "all"}, and the table has no {klass} {layout} {level} cell')
+                            elif not ok:
+                                fails.append(f'{name}: {component} served {served} in band {b or "all"}; the table\'s head for {klass} {layout} {level} is {want}')
     if unjudged:
         notes.append(f'served kernels: {unjudged} records name no attention class and sites (a Runtime before xs-171 R4), not judged')
     if judged:
