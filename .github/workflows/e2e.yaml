@@ -158,8 +158,16 @@ on:
         description: CPU packages to run, comma-separated; empty runs every package
         type: string
         default: ''
+      cpu_cells:
+        description: CPU entry/cell pairs to run, comma-separated; empty runs every cell
+        type: string
+        default: ''
       cpu_record:
         description: Record selected CPU fixtures into the run's artifacts
+        type: boolean
+        default: false
+      cpu_keep:
+        description: Keep CPU fixture inputs, weights and outputs in the run's artifacts
         type: boolean
         default: false
       # skew (select it: `select=skew`): released cozy versions × a Hub built from tensorhub at hub_ref (e2e/skew/run.sh).
@@ -1003,7 +1011,9 @@ jobs:
       BUILD: ${{ join(fromJSON(needs.affected.outputs.selection).build, ' ') }}
       UV_CACHE_DIR: ${{ github.workspace }}/.uv-cache
       CPU_ONLY: ${{ inputs.cpu_only }}
+      CPU_CELLS: ${{ inputs.cpu_cells }}
       CPU_RECORD: ${{ inputs.cpu_record && 'true' || 'false' }}
+      CPU_KEEP: ${{ inputs.cpu_keep && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -1037,7 +1047,9 @@ jobs:
         run: |
           cpu_args=()
           [ -z "$CPU_ONLY" ] || cpu_args+=(--only "$CPU_ONLY")
+          [ -z "$CPU_CELLS" ] || cpu_args+=(--cells "$CPU_CELLS")
           if [ "$CPU_RECORD" = true ]; then cpu_args+=(--record --refs "$RUNNER_TEMP/e2e/refs"); fi
+          if [ "$CPU_KEEP" = true ]; then cpu_args+=(--keep); fi
           chmod +x "$RUNNER_TEMP/fixture-hub/tensorhub" "$RUNNER_TEMP/fixture-hub/minio"
           sudo loginctl enable-linger "$(id -un)"
           export XDG_RUNTIME_DIR=/run/user/$(id -u)
