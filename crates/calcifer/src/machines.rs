@@ -515,13 +515,18 @@ impl Machines {
 
     /// `local`'s TensorD exited: while another computer's controller is authorized to use it, it
     /// starts again at once (after `cozy update`, on the new binary).
-    async fn local_exited(self: &Arc<Self>) {
+    fn local_exited(self: &Arc<Self>) {
         self.local_stopped();
-        if self.local.authorized()
-            && let Err(e) = self.local_up().await
-        {
-            warn!("starting this computer's machine again for its authorized controllers: {}", e.message);
-        }
+        // The old joined status/log task was just aborted. Machines owns the wake through readiness,
+        // so canceling that watcher cannot drop its startup mutex while the detached child boots.
+        let me = self.clone();
+        self.spawn(async move {
+            if me.local.authorized()
+                && let Err(e) = me.local_up().await
+            {
+                warn!("starting this computer's machine again for its authorized controllers: {}", e.message);
+            }
+        });
     }
 
     /// Ends a rental at its Hub (`ending` until the Hub affirms it), or removes an added machine
@@ -803,7 +808,7 @@ impl Machines {
             let mut unreachable = false;
             if !offline {
                 let error = match self.status_frames(&name, &mut pause).await {
-                    Ok(()) if kind == MachineKind::Local => return self.local_exited().await,
+                    Ok(()) if kind == MachineKind::Local => return self.local_exited(),
                     Ok(()) => {
                         self.ended(&name, "released_by_pod");
                         return;
@@ -811,7 +816,7 @@ impl Machines {
                     Err(error) => error,
                 };
                 if kind == MachineKind::Local && !self.local.running() {
-                    return self.local_exited().await;
+                    return self.local_exited();
                 }
                 if let LinkError::Unreachable(reason) = error {
                     self.unreachable(&name, reason);
