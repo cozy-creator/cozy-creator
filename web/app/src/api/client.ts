@@ -70,11 +70,15 @@ import type {
   VaultAsk,
   VaultStatus,
   VaultChanged,
+  VaultEvent,
 } from "./calcifer"
+import { readEvents } from "./events"
 import type { MachineLogName, Rent } from "../types"
 import type { Transport } from "./transport"
 
 export type { VaultAsk, VaultStatus, VaultChanged } from "./calcifer"
+/** Only non-secret acknowledgement/progress events may leave the vault request reader. */
+export type VaultProgress = Extract<VaultEvent, { type: "accepted" | "progress" }>
 
 export const TRIES = 5
 
@@ -87,6 +91,11 @@ export class ApiError extends Error {
     this.status = status
     this.body = body
   }
+}
+
+const failureStatus: Record<ErrorBody["kind"], number> = {
+  usage: 400, validation: 400, credential: 401, forbidden: 403, not_found: 404,
+  conflict: 409, capacity: 507, unavailable: 503, internal: 500,
 }
 
 const unreachable = () =>
@@ -304,10 +313,121 @@ export class Client {
     return this.json(`${project(id)}/vault`, { signal, cache: "no-store" })
   }
 
-  /** Credentials and one-time recovery responses never enter an outbox or idempotency cache. */
-  vaultChange(id: string, body: Partial<VaultAsk> & Pick<VaultAsk, "action">): Promise<VaultChanged> {
-    if (this.transport.channel) return Promise.reject(new ApiError(403, { kind: "forbidden", code: "vault_local_only", message: "Open this project on its computer to enter encryption credentials" }))
-    return this.json(`${project(id)}/vault`, { method: "POST", headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }, body: JSON.stringify(body), cache: "no-store" })
+  /** One operation ID survives connection loss; credentials and final secrets stay in this caller's memory. */
+  async vaultChange(id: string, body: Partial<VaultAsk> & Pick<VaultAsk, "action">, onProgress?: (event: VaultProgress) => void, signal?: AbortSignal): Promise<VaultChanged> {
+    if (this.transport.channel) throw new ApiError(403, { kind: "forbidden", code: "vault_local_only", message: "Open this project on its computer to enter encryption credentials" })
+    signal?.throwIfAborted()
+    const operation = `${project(id)}/vault/operations/${crypto.randomUUID()}`
+    const serialized = JSON.stringify(body)
+    const incomplete = () => new ApiError(0, {
+      kind: "unavailable", code: "vault_stream_incomplete",
+      message: "The connection ended before the project operation finished. It may still be running; check project protection before trying again.",
+    })
+    const invalid = () => new ApiError(502, { kind: "internal", code: "vault_stream_invalid", message: "The project operation response could not be read. Check project protection before trying again." })
+    const terminal: { changed?: VaultChanged; failure?: ApiError } = {}
+    let legacy = false
+    let attempt = 0
+    let acknowledged = false
+    let progress = ""
+    try {
+      for (;;) {
+        signal?.throwIfAborted()
+        const first = attempt++ === 0
+        const stop = new AbortController()
+        const cancel = () => stop.abort(signal?.reason)
+        signal?.addEventListener("abort", cancel, { once: true })
+        let heard = performance.now()
+        let silent = false
+        // Same 45-second silence rule as the shared event stream. Comments are health, not progress.
+        const health = legacy ? undefined : setInterval(() => {
+          if (performance.now() - heard >= 45_000) {
+            silent = true
+            stop.abort()
+          }
+        }, 1000)
+        try {
+          const response = await this.send(legacy ? `${project(id)}/vault` : operation, {
+            method: legacy ? "POST" : "PUT",
+            headers: { "Content-Type": "application/json", Accept: "text/event-stream", "Cache-Control": "no-store" },
+            body: serialized, cache: "no-store", signal: stop.signal,
+          }, { once: stop.signal })
+          this.hooks.attempt(0)
+          heard = performance.now()
+          if (!response.headers.get("Content-Type")?.toLowerCase().startsWith("text/event-stream")) {
+            let changed: VaultChanged
+            try { changed = await response.json() } catch { throw invalid() }
+            if (!changed?.vault) throw invalid()
+            terminal.changed = changed
+          } else {
+            if (!response.body) throw incomplete()
+            try {
+              await readEvents(response.body, (data) => {
+                if (terminal.changed || terminal.failure) return
+                let event: VaultEvent
+                try { event = JSON.parse(data) as VaultEvent } catch { throw invalid() }
+                switch (event?.type) {
+                  case "accepted":
+                    if (typeof event.action !== "string") throw invalid()
+                    if (!acknowledged) onProgress?.({ type: "accepted", action: event.action })
+                    acknowledged = true
+                    break
+                  case "progress": {
+                    if (typeof event.phase !== "string" || !Number.isFinite(event.files_done) || event.files_done < 0 || !Number.isFinite(event.bytes_done) || event.bytes_done < 0) throw invalid()
+                    const update: VaultProgress = { type: "progress", phase: event.phase, files_done: event.files_done, bytes_done: event.bytes_done }
+                    const current = JSON.stringify(update)
+                    if (current !== progress) onProgress?.(update)
+                    progress = current
+                    acknowledged = true
+                    break
+                  }
+                  case "completed":
+                    if (!event.changed?.vault) throw invalid()
+                    terminal.changed = event.changed
+                    stop.abort()
+                    break
+                  case "failed":
+                    if (typeof event.error?.message !== "string" || typeof event.error.code !== "string" || typeof event.error.kind !== "string") throw invalid()
+                    terminal.failure = new ApiError(failureStatus[event.error.kind] ?? 500, event.error)
+                    stop.abort()
+                    break
+                  default: throw invalid()
+                }
+              }, () => { heard = performance.now() })
+            } catch (error) {
+              if (!terminal.changed && !terminal.failure) throw error
+            }
+          }
+          if (terminal.failure) throw terminal.failure
+          if (!terminal.changed) throw incomplete()
+          return terminal.changed
+        } catch (error) {
+          signal?.throwIfAborted()
+          if (terminal.failure || terminal.changed) throw error
+          // Only an initial, unambiguous unknown route may use old POST semantics.
+          // A later 404 could follow admission on the lost connection: never replay as a new operation.
+          if (first && !acknowledged && error instanceof ApiError && error.status === 404 && ["unknown_route", "http_404"].includes(error.body.code)) {
+            legacy = true
+            continue
+          }
+          const lost = silent || error instanceof TypeError || (error instanceof ApiError && error.status === 0)
+          if (!lost) throw error
+          if (legacy) throw incomplete()
+        } finally {
+          if (health !== undefined) clearInterval(health)
+          signal?.removeEventListener("abort", cancel)
+          stop.abort()
+        }
+        this.hooks.attempt(attempt + 1)
+        await pause(Math.min(5000, 500 * 2 ** Math.min(attempt - 1, 4)), signal)
+      }
+    } finally {
+      this.hooks.attempt(0)
+      if (!legacy && (terminal.changed || terminal.failure)) {
+        // No secret in this cleanup request; losing it leaves expiry to the server.
+        void this.transport.fetch(operation, { method: "DELETE", cache: "no-store", headers: { "Cache-Control": "no-store" } })
+          .then((response) => response.body?.cancel()).catch(() => {})
+      }
+    }
   }
 
   project(id: string, signal?: AbortSignal): Promise<ProjectState> {
