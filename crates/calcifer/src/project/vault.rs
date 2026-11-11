@@ -7,6 +7,10 @@ use project_vault::{Credential, Keybag, ProjectSecret, SecretString, SessionPoli
 use sha2::{Digest as _, Sha256};
 use crate::api::{Api, Refusal, parse};
 
+#[cfg(test)]
+#[path = "vault_decrypt_tests.rs"]
+mod decrypt_tests;
+
 pub(super) const BACKING: &str = "project.vault.data";
 const DEFAULT_IDLE: u64 = 900;
 type Held = Arc<Mutex<Session>>;
@@ -626,10 +630,32 @@ fn sync_tree(path: &FsPath) -> Result<(), Error> {
         let entry = entry.map_err(io)?;
         let kind = entry.file_type().map_err(io)?;
         if kind.is_dir() { sync_tree(&entry.path())?; }
-        else if kind.is_file() { fs::OpenOptions::new().read(true).write(true).open(entry.path()).and_then(|file| file.sync_all()).map_err(io)?; }
+        else if kind.is_file() { sync_plain_file(&entry.path())?; }
         else { return Err(error("vault_file_type", "plaintext staging accepts ordinary files and directories only")); }
     }
     platform::durable::sync_dir(path).map_err(provider)
+}
+
+fn sync_plain_file(path: &FsPath) -> Result<(), Error> {
+    #[cfg(not(windows))]
+    { fs::File::open(path).and_then(|file| file.sync_all()).map_err(io) }
+    #[cfg(windows)]
+    {
+        // FlushFileBuffers needs a writable handle. Only the owned stage is changed;
+        // restore its original attribute even if opening that handle fails.
+        let permissions = fs::metadata(path).map_err(io)?.permissions();
+        let readonly = permissions.readonly();
+        if readonly {
+            let mut writable = permissions.clone();
+            writable.set_readonly(false);
+            fs::set_permissions(path, writable).map_err(io)?;
+        }
+        let opened = fs::OpenOptions::new().read(true).write(true).open(path);
+        let restored = if readonly { fs::set_permissions(path, permissions) } else { Ok(()) };
+        let file = opened.map_err(io)?;
+        restored.map_err(io)?;
+        file.sync_all().map_err(io)
+    }
 }
 
 fn decrypt(api: &Arc<Api>, root: &FsPath) -> Result<(), Error> {
@@ -806,7 +832,7 @@ fn copy_tree_at(source: &FsPath, target: &FsPath, relative: &FsPath, managed: bo
         if apple_volume && relative.components().count() == 1 && matches!(top, Some(".fseventsd" | ".Spotlight-V100")) { continue; }
         let merge_os_directory = apple_volume && matches!(top, Some(".Trashes" | ".TemporaryItems" | ".DocumentRevisions-V100"));
         if entry.file_name() == KEYBAG_FILE || (entry.file_name() == "project.db" && relative.parent().is_some_and(|parent| !parent.as_os_str().is_empty())) {
-            return Err(Error::new(Kind::Conflict, "vault_nested_project", "conversion/export refuses a nested project's storage"));
+            return Err(Error::new(Kind::Conflict, "vault_nested_project", "storage conversion refuses a nested project's storage"));
         }
         if managed {
             let mut parts = relative.components();
@@ -816,7 +842,7 @@ fn copy_tree_at(source: &FsPath, target: &FsPath, relative: &FsPath, managed: bo
                 || (first == Some(".vault-machine") && matches!(second,
                     Some("editable" | "generations" | "executors" | "home" | "jit" | "kernels" | "tmp" | "cache" | "matplotlib" | "uv-cache" | "uv-tools"))) { continue; }
         }
-        if kind.is_symlink() { return Err(Error::new(Kind::Usage, "vault_symlink", "conversion/export refuses symlinks; replace them with project-owned files")); }
+        if kind.is_symlink() { return Err(Error::new(Kind::Usage, "vault_symlink", "storage conversion refuses symlinks; replace them with project-owned files")); }
         if kind.is_dir() {
             match fs::create_dir(&to) {
                 Ok(()) => {},
@@ -855,7 +881,7 @@ fn copy_tree_at(source: &FsPath, target: &FsPath, relative: &FsPath, managed: bo
                 fs::copy(&from, &to).map_err(io)?;
                 if hash(&from)? != hash(&to)? { return Err(error("vault_copy_mismatch", "a copied project file changed or did not verify")); }
             }
-        } else { return Err(Error::new(Kind::Usage, "vault_file_type", "conversion/export accepts ordinary files and directories only")); }
+        } else { return Err(Error::new(Kind::Usage, "vault_file_type", "storage conversion accepts ordinary files and directories only")); }
     }
     Ok(())
 }
