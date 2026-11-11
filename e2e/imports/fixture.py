@@ -44,6 +44,7 @@ class Manifest(TypedDict):
     dependencies: list[Dependency]
     relock: list[Target]
     pre_uv_guard: NotRequired[str]
+    original_guard_refusal: NotRequired[str]
     verified: NotRequired[list[Verified]]
     authoritative_checkout_unchanged: NotRequired[bool]
     unaffected_locks_unchanged: NotRequired[bool]
@@ -169,6 +170,11 @@ def prepare(source: Path, staged: Path, report: Path) -> None:
                 "original_projects": snapshot(source, "*/pyproject.toml"),
                 "dependencies": list(dependencies.values()), "relock": targets}
     shutil.copytree(source, staged, ignore=shutil.ignore_patterns(".git", ".venv", "__pycache__"))
+    try:
+        guard(staged)
+    except ValueError as error:
+        # Record that the actual incoming lock is rejected without invoking a resolver.
+        manifest["original_guard_refusal"] = str(error)
     for target in targets:
         # Never hand the original Hub wheel/index URLs to uv, even during lock regeneration.
         (staged / target["directory"] / "uv.lock").unlink(missing_ok=True)
