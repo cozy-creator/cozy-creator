@@ -57,6 +57,8 @@ MODES = ("basic", "cancel", "empty-dlpack")
 SEED = 256001
 STRATEGY = "svdq-nvfp4-r32-faer/1"
 WORKSPACE = 64 << 20
+# The 1024x1024 fit's grant: since TensorFS's parallel alpha fit (xs-066, 10-28) it needs 69,661,767 bytes.
+CANCEL_WORKSPACE = 128 << 20
 # What the cancellation cell's conversion reads: its two weights, and each one's 64 calibration rows and maxima.
 SOURCE_BYTES = sum(4 * (rows * cols + 64 * cols + cols) for rows, cols in ((64, 256), (1024, 1024)))
 PARAMS: "dict[str, MetadataInput]" = {
@@ -650,7 +652,7 @@ def cancel_worker(seed: int) -> None:
                 source,
                 specs,
                 calibration=calibration,
-                max_buffer_bytes=WORKSPACE,
+                max_buffer_bytes=CANCEL_WORKSPACE,
                 max_new_bytes=allowance,
                 control=control,
             )
@@ -699,7 +701,7 @@ def cancel_worker(seed: int) -> None:
                     source,
                     rows,
                     calibration=calibration_arg,
-                    max_buffer_bytes=WORKSPACE,
+                    max_buffer_bytes=CANCEL_WORKSPACE,
                     max_new_bytes=allowance,
                     control=tensorfs.ConversionControl(),
                 )
@@ -716,7 +718,7 @@ def cancel_worker(seed: int) -> None:
             source,
             specs,
             calibration=calibration,
-            max_buffer_bytes=WORKSPACE,
+            max_buffer_bytes=CANCEL_WORKSPACE,
             max_new_bytes=allowance,
             control=tensorfs.ConversionControl(),
         )
