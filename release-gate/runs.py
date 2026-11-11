@@ -17,7 +17,7 @@ STEP_RATIO, STEP_EXTRA_MS = 2, 5_000
 # one median, a healthy turbo call with dense steps 2.07x its sparse ones failed (gate 40834197815).
 def dense_steps(target, steps):
     return (4 if steps <= 8 else 10) if target == 'minimax-h3/generate' else 1
-# The step tracks the step rule judges: a sampler's steps (`tel.step_callback` stages). Not an autoregressive stage
+# The step tracks the step rule judges: a sampler's steps (`ctx.progress` stages). Not an autoregressive stage
 # (HunyuanImage-3's `thinking`: token 1 is the prompt's prefill, gate 40907841888) and not per-item work (`decode_video`
 # frames, `scan`, `assemble`, `calibrating`).
 # 0.22's plain loops name a sampler's track after the function's stage: SDXL's is `generate` (runs 43985, 43986).

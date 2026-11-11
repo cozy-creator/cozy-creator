@@ -111,10 +111,9 @@ impl Drop for Caller {
     }
 }
 
-/// What a package's executor may call, sent on its Start (`interface`: its App's interface
-/// beside the executor).
-pub(crate) fn call_interfaces(held: &HeldGeneration, interface: &Path) -> Vec<CallInterface> {
-    invocables(&held.record, &held.record.application, &held.record.interface, interface).0
+/// What a package's executor may call, sent on its Start.
+pub(crate) fn call_interfaces(held: &HeldGeneration) -> Vec<CallInterface> {
+    invocables(&held.record, &held.record.application, &held.record.interface).0
 }
 
 #[derive(Default)]
@@ -202,16 +201,15 @@ impl Calls {
     }
 
     /// `record`'s attempt as a caller of its environment's callables (`document`: its App's
-    /// interface, at `interface` beside its executor), and the call interfaces it is sent.
+    /// interface).
     pub(crate) fn caller(
         self: &Arc<Self>,
         record: &Execution,
         held: &HeldGeneration,
         document: &Value,
-        interface: &Path,
         spool: &Path,
-    ) -> (Caller, Vec<CallInterface>) {
-        let (rows, callables) = invocables(&held.record, &record.invocation.module, document, interface);
+    ) -> Caller {
+        let callables = invocables(&held.record, &record.invocation.module, document).1;
         let submission = record.submission.as_ref();
         let parent = Arc::new(Parent {
             id: record.id.clone(),
@@ -226,7 +224,7 @@ impl Calls {
             calls: Mutex::new(CallTable::default()),
         });
         self.parents.lock().unwrap().insert(record.id.clone(), parent.clone());
-        (Caller { calls: self.clone(), parent }, rows)
+        Caller { calls: self.clone(), parent }
     }
 
     /// What the store must not evict now (`objects::Objects::sweep`).
@@ -553,12 +551,37 @@ fn cancel(engine: &Engine, child: &Execution) {
     }
 }
 
-/// What an attempt's progress frames told so far: its completed units, and its stage's last step
-/// and the times of its last few after the first (which carries the stage's setup).
+/// What an attempt's progress frames told so far: its completed units, its stage's last step
+/// and the times of its last few after the first (which carries the stage's setup), and once it
+/// runs, when it started and its whole time here (None: no estimate) and the overall share shown.
 #[derive(Default)]
 pub(crate) struct Seen {
     pub completed: u64,
     steps: (String, u64, Vec<f64>),
+    timed: Option<Option<(u64, f64)>>,
+    overall: f64,
+}
+
+/// The overall share short of the run's end: only its end is done.
+const OVERALL_UNDER: f64 = 0.99;
+
+impl Seen {
+    /// Run `id`'s overall share (Paul 11-09, 2a): its time running over its whole time here
+    /// (`estimate::whole_ms`, worked out once), never falling; None without an estimate.
+    fn overall(&mut self, engine: &Engine, id: &str) -> Option<f64> {
+        if self.timed.is_none() {
+            let record = engine.get(id).ok().filter(|record| record.started_at_ms > 0)?;
+            // A retried attempt goes on from the share its run showed.
+            let shown = record.progress.as_deref().and_then(|p| serde_json::from_str::<Value>(p).ok());
+            self.overall = shown.and_then(|p| p["overall_fraction"].as_f64()).unwrap_or(0.0);
+            let whole = crate::estimate::whole_ms(engine, &record).ok().flatten().filter(|ms| *ms > 0.0);
+            self.timed = Some(whole.map(|whole| (record.started_at_ms, whole)));
+        }
+        let (started, whole) = self.timed.flatten()?;
+        let ran = (crate::machine::lifecycle::now_ms() as u64).saturating_sub(started) as f64;
+        self.overall = self.overall.max((ran / whole).min(OVERALL_UNDER));
+        Some(self.overall)
+    }
 }
 
 /// How many of a stage's latest steps its steady pace is the median of.
@@ -595,13 +618,15 @@ pub(crate) fn observe(engine: &Engine, id: &str, seen: &mut Seen, frame: &Frame,
     let mut payload = json!({"stage": frame.stage.chars().take(STAGE_CHARS).collect::<String>(), "step_ms": frame.step_ms.unwrap_or(0.0)});
     for (name, value) in [
         ("stage_fraction", frame.stage_fraction.map(Value::from)),
-        ("overall_fraction", frame.overall_fraction.map(Value::from)),
         ("position", frame.position.map(Value::from)),
         ("total", frame.total.map(Value::from)),
     ] {
         if let Some(value) = value {
             payload[name] = value;
         }
+    }
+    if let Some(overall) = seen.overall(engine, id) {
+        payload["overall_fraction"] = overall.into();
     }
     let call = frame.call_request.as_deref().filter(|call| !call.is_empty());
     match (call, frame.position, frame.step_ms.filter(|ms| *ms > 0.0)) {
@@ -653,13 +678,9 @@ fn invocables(
     generation: &crate::catalog::Generation,
     application: &str,
     own: &Value,
-    path: &Path,
 ) -> (Vec<CallInterface>, Callables) {
     let mut rows = vec![];
     let mut callables: Callables = HashMap::new();
-    // A callee module's typed callers need only its own callables: its first row carries that
-    // part of its App's interface, so the whole App travels once, not once per export.
-    let mut documented = std::collections::HashSet::new();
     let apps = std::iter::once((application, own, false))
         .chain(std::iter::once((generation.application.as_str(), &generation.interface, false)))
         .chain(generation.callees.iter().map(|c| {
@@ -688,29 +709,12 @@ fn invocables(
             rows.push(CallInterface {
                 module: module.into(),
                 export: export.into(),
-                interface_path: if own { path.into() } else { PathBuf::new() },
                 self_call: own,
-                // The Runtime binds its own operations from its own code, not a document.
-                interface_document: (!own && !builtin && documented.insert(module.to_string()))
-                    .then(|| executor_api::Json(module_interface(interface, module))),
                 builtin: (builtin && !own).then(|| "operations".into()),
             });
         }
     }
     (rows, callables)
-}
-
-/// An App's interface narrowed to one module's exported callables (the Runtime generates that
-/// module's callers from it).
-fn module_interface(interface: &Value, module: &str) -> Value {
-    let mut narrowed = interface.clone();
-    if let Some(Value::Array(entries)) = narrowed.get_mut(api::interface::ENTRYPOINTS) {
-        entries.retain(|entry| {
-            api::interface::callable(entry).is_some_and(|(m, _)| m == module)
-                && !api::interface::internal(entry)
-        });
-    }
-    narrowed
 }
 
 /// A serving call's request and the model choices it carries (`model_choices`).

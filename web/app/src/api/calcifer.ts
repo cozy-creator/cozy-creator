@@ -1870,7 +1870,7 @@ export type Preview = { label: string, path: string, };
  */
 export type Progress = { stage: string, fraction?: number | null, 
 /**
- * How far this stage is, when it says (`tel.progress`).
+ * How far this stage is, when it says.
  */
 stage_fraction?: number | null, completed: number, total: number, bytes_done: number, bytes_total: number, step_ms: number, 
 /**

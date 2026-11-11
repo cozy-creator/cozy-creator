@@ -644,7 +644,7 @@ pub struct Progress {
     pub stage: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fraction: Option<f64>,
-    /// How far this stage is, when it says (`tel.progress`).
+    /// How far this stage is, when it says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stage_fraction: Option<f64>,
     #[serde(default)]

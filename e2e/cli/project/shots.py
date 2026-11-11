@@ -14,7 +14,7 @@ import time
 from typing import Annotated
 
 import msgspec
-from cozy_runtime.author import App, InvalidRequest, Outputs, Seed, Telemetry
+from cozy_runtime.author import App, Context, InvalidRequest, Outputs, Seed, Telemetry
 from cozy_runtime.fields import Pickup, Prompt, Range, Total, Video
 from cozy_runtime.media import File, Latents, VideoFile
 
@@ -93,16 +93,15 @@ class Scenes(msgspec.Struct, kw_only=True):
 
 
 @app.entrypoint()
-def scenes(payload: Scenes, out: Outputs, tel: Telemetry) -> BareTake:
+def scenes(ctx: Context, payload: Scenes, out: Outputs, tel: Telemetry) -> BareTake:
     """A long shot's way: its segments in turn, each in counted steps and shown as it ends, and a warning any shot gives alike."""
     tel.log("the fixture's lens is dusty", level="warn")
     (count, steps, video) = (payload.segments, 5, None)
     for index in range(count):
-        with tel.scope(f"Segment {index + 1} of {count}", overall_range=(index / count, (index + 1) / count)):
-            step = tel.step_callback(steps, stage="denoise")
+        with tel.scope(f"Segment {index + 1} of {count}"), tel.stage("denoise"):
             for at in range(steps):
                 time.sleep(payload.each / steps)
-                step(at)
+                ctx.progress(at, steps)
         video = out.save_bytes(payload.plate.read_bytes() + struct.pack(">I4s", 24, b"free") + os.urandom(16), media_type="video/mp4")
         out.publish("video", video, label="Video" if index + 1 == count else f"Segment {index + 1} of {count}")
     return BareTake(video)

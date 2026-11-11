@@ -3,6 +3,7 @@
 //! with its weights not here, its download and its measured load (release owner, 11-09). Its scheduler gives each root its width from the same picture (`widths`), so a quote is
 //! what happens as far as the times hold.
 use crate::{
+    execution::Engine,
     journal::{function_key, Execution, Installation, RunTime, State, PREPARING},
     pack::{self, Job, Scaling},
     runs::Runs,
@@ -71,6 +72,31 @@ fn time(runs: &[RunTime], size: &JobSize, prior_ms: f64) -> Time {
     Time { one_ms: ms / scaling.at(width), scaling, load_ms, basis: Basis::Measured }
 }
 
+/// `package` (a generation's, as its runs name it) at `size`; empty: none of it ran here.
+fn timed(engine: &Engine, package: &str, entrypoint: &str, size: &JobSize, prior_ms: f64) -> io::Result<Time> {
+    let runs = match package.is_empty() {
+        true => vec![],
+        false => engine.run_times(&function_key(package, entrypoint), HISTORY)?,
+    };
+    Ok(time(&runs, size, prior_ms))
+}
+
+/// The GPUs a started run holds.
+fn held_width(record: &Execution) -> u32 {
+    match record.width {
+        0 => record.invocation.degree,
+        width => width,
+    }
+}
+
+/// A started run's whole time here at its width, from its function's runs (`time`); None when
+/// none of it ran here (Paul 11-09, 2a: the overall bar is the machine's).
+pub(crate) fn whole_ms(engine: &Engine, record: &Execution) -> io::Result<Option<f64>> {
+    let invocation = &record.invocation;
+    let time = timed(engine, &invocation.package, &invocation.entrypoint, &JobSize::of(&invocation.input), 0.0)?;
+    Ok((time.basis != Basis::None).then(|| time.one_ms * time.scaling.at(held_width(record))))
+}
+
 fn median(values: &[f64]) -> f64 {
     let mut sorted = values.to_vec();
     sorted.sort_by(f64::total_cmp);
@@ -105,15 +131,6 @@ impl<'a> Here<'a> {
             link: link.map_or(LINK, |(bytes, time)| bytes as f64 / (time.as_secs_f64() * 1e3)),
             now_ms: crate::machine::lifecycle::now_ms() as u64,
         }
-    }
-
-    /// `package` (a generation's, as its runs name it) at `size`; empty: none of it ran here.
-    fn time(&self, package: &str, entrypoint: &str, size: &JobSize, prior_ms: f64) -> io::Result<Time> {
-        let runs = match package.is_empty() {
-            true => vec![],
-            false => self.service.engine.run_times(&function_key(package, entrypoint), HISTORY)?,
-        };
-        Ok(time(&runs, size, prior_ms))
     }
 
     /// `actor`'s installation here (of `installations`, theirs) of code as a run or a job names it: local code by its
@@ -172,14 +189,11 @@ impl<'a> Here<'a> {
                 }
                 false => (invocation.widths.clone(), invocation.package.clone()),
             };
-            let time = self.time(&package, &invocation.entrypoint, &JobSize::of(&invocation.input), 0.0)?;
+            let time = timed(engine, &package, &invocation.entrypoint, &JobSize::of(&invocation.input), 0.0)?;
             let mut job = Job { widths, one_ms: time.one_ms, scaling: time.scaling, ready_ms: 0.0, running: None };
             match record.state {
                 State::Starting | State::Running => {
-                    let width = match record.width {
-                        0 => invocation.degree,
-                        width => width,
-                    };
+                    let width = held_width(&record);
                     let whole = job.ms(width);
                     let ran = match record.started_at_ms {
                         0 => 0.0,
@@ -261,7 +275,7 @@ pub(crate) fn quote(runs: &Runs, actor: &str, request: v1::EstimateRequest) -> R
             .map_or((None, String::new()), |i| here.installed(i, entrypoint, job.gpus));
         let widths = widths.unwrap_or_else(|| here.unknown_widths(job.gpus));
         let fetch: u64 = job.models.iter().map(|model| absent(store, model)).sum();
-        let time = here.time(&package, entrypoint, &job.size, job.prior_ms as f64).map_err(internal)?;
+        let time = timed(&service.engine, &package, entrypoint, &job.size, job.prior_ms as f64).map_err(internal)?;
         // Weights not here: their download at this machine's link, and the load its runs measured putting them on its GPUs.
         let load_ms = match fetch {
             0 => 0.0,
