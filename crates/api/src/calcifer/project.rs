@@ -1302,8 +1302,6 @@ pub struct VaultAsk {
     /// Remove a verified plaintext conversion source, only when explicitly asked.
     #[serde(default)]
     pub remove_plaintext: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output: Option<PathBuf>,
 }
 
 /// A vault operation can disclose a new recovery secret exactly to the caller. Do not persist this response in request/history caches.
