@@ -126,7 +126,7 @@ function plate(path, color, seconds, hz) {
   // A box goes from the canvas into a place on the Edit's track.
   const dragIn = async (name, x, y) => {
     await openEdit();
-    await carry(page, card(name).locator('.head'), { x, y });
+    await carry(page, card(name).locator('.nm'), { x, y });
     await until(`${name} on the track`, order, (now) => now.includes(name));
     return true;
   };
