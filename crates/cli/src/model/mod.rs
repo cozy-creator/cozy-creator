@@ -1,8 +1,8 @@
 //! `cozy model`: the Hub's model catalog, and models on machines.
-use std::process::ExitCode;
+use std::{io::IsTerminal as _, process::ExitCode};
 
 use clap::Subcommand;
-use api::error::{Error, Kind};
+use api::error::Error;
 
 use crate::{Context, output};
 
@@ -43,10 +43,7 @@ enum LoraVerb {
 
 pub(crate) async fn lora_exec(ctx: &Context, args: LoraArgs) -> Result<ExitCode, Error> {
     match args.verb {
-        LoraVerb::Ls(args) => match args.on {
-            Some(_) => Err(Error::new(Kind::Unavailable, "local_role_unavailable", "The local inventory does not classify LoRAs yet").next("cozy model ls --on local")),
-            None => catalog::search(ctx, args, "lora").await,
-        },
+        LoraVerb::Ls(args) => list(ctx, args, "lora").await,
         LoraVerb::Download(args) => machine::download(ctx, args).await,
         LoraVerb::Remove(args) => machine::remove(ctx, &args.model).await,
         LoraVerb::Edit(mut args) => {
@@ -102,7 +99,7 @@ pub(crate) struct Ls {
     #[arg(long, default_value_t = 20)]
     limit: u32,
     /// Skip this many matching models.
-    #[arg(long, default_value_t = 0, conflicts_with = "on")]
+    #[arg(long, default_value_t = 0)]
     offset: u32,
     /// List downloaded models on local, a named machine, or all machines.
     #[arg(long, value_name = "MACHINE")]
@@ -249,17 +246,28 @@ pub(crate) struct Delete {
     model: String,
 }
 
+async fn list(ctx: &Context, mut args: Ls, role: &str) -> Result<ExitCode, Error> {
+    match args.on.clone() {
+        Some(on) => {
+            if args.family.is_some() || !args.tags.is_empty() || !args.no_tags.is_empty() {
+                output::warn("--family, --tag and --no-tag search the Hub; with --on they are ignored");
+                args.family = None;
+                args.tags.clear();
+                args.no_tags.clear();
+            }
+            if on == "local" && !ctx.json && ctx.term.stdout && std::io::stdin().is_terminal() {
+                catalog::local(ctx, args, role).await
+            } else {
+                machine::list(ctx, (on != "all").then_some(on), &args.query, role, args.limit, args.offset).await
+            }
+        }
+        None => catalog::search(ctx, args, role).await,
+    }
+}
+
 pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     match args.verb {
-        Verb::Ls(args) => match args.on {
-            Some(on) => {
-                if args.family.is_some() || !args.tags.is_empty() || !args.no_tags.is_empty() {
-                    output::warn("--family, --tag and --no-tag search the Hub; with --on they are ignored");
-                }
-                machine::list(ctx, (on != "all").then_some(on), &args.query).await
-            }
-            None => catalog::search(ctx, args, "model").await,
-        },
+        Verb::Ls(args) => list(ctx, args, "model").await,
         Verb::Edit(args) => catalog::edit(ctx, args).await,
         Verb::Publish(args) => releases::publish(ctx, args).await,
         Verb::Delete(args) => releases::delete(ctx, args).await,

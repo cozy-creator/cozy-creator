@@ -65,7 +65,7 @@ pub(super) async fn download_to(ctx: &Context, mut ask: ModelDownload, on: Optio
 }
 
 pub(super) async fn remove(ctx: &Context, model: &str) -> Result<ExitCode, Error> {
-    let repo = api::model_ref::Repo::hub(model)?;
+    let repo = api::model_ref::Repo::parse(model)?;
     let key = crate::run::mint_key();
     let removed: api::calcifer::RemovedModel = ctx.calcifer().await?.post(
         "/v1/machines/local/models/remove", &api::calcifer::RemoveModel { model: repo.to_string() }, Some(&key),
@@ -154,15 +154,20 @@ fn recorded(ctx: &Context, made: &RecordedCommit) {
 }
 
 /// The models machines hold: `on` one, read from it now (`GET /v1/machines/{name}/models`), else every machine as Calcifer last saw it.
-pub(crate) async fn list(ctx: &Context, on: Option<String>, words: &[String]) -> Result<ExitCode, Error> {
+pub(crate) async fn list(ctx: &Context, on: Option<String>, words: &[String], role: &str, limit: u32, offset: u32) -> Result<ExitCode, Error> {
     let calcifer = ctx.calcifer().await?;
     let machines: Vec<MachineModels> = match &on {
         Some(on) => vec![calcifer.get(&format!("{}/models", crate::machine::route(&on.to_ascii_lowercase())?)).await?],
         None => calcifer.machines().await?.machines.iter().map(|machine| machine.models()).collect(),
     };
-    let rows = machines.iter().flat_map(|machine| &machine.models).filter(|row| output::names(&row.model, words));
+    let matching: Vec<_> = machines.iter().flat_map(|machine| &machine.models).filter(|row| output::names(&row.model, words)).collect();
+    let unclassified = matching.iter().filter(|row| !matches!(row.role.as_str(), "model" | "lora")).count();
+    let classified: Vec<_> = matching.into_iter().filter(|row| row.role == role).collect();
+    let total = classified.len();
+    let rows: Vec<_> = classified.into_iter().skip(offset as usize).take(output::at_most("--limit", limit, 100) as usize).collect();
+    let older = total.saturating_sub(offset as usize).saturating_sub(rows.len());
     if ctx.json {
-        output::json(&serde_json::json!({ "models": rows.collect::<Vec<_>>() }));
+        output::json(&serde_json::json!({ "models": rows, "total": total, "older": older, "unclassified": unclassified }));
         return Ok(ExitCode::SUCCESS);
     }
     let mut table = Table::new(ctx, ["machine", "model", "release", "lane", "size", "shared"]);
@@ -174,6 +179,7 @@ pub(crate) async fn list(ctx: &Context, on: Option<String>, words: &[String]) ->
         let (size, shared) = (output::bytes(row.bytes), output::bytes(row.shared_bytes));
         table = table.row([row.machine.as_str(), &row.model, &row.release, &lane, &size, &shared]);
     }
+    if unclassified > 0 { table = table.note(format!("{unclassified} local entries could not be classified")); }
     // A store's total counts shared content once.
     for machine in machines.iter().filter(|machine| !machine.silent) {
         // What its store holds besides them, once it is a hundredth of the store or more.

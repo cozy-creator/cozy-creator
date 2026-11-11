@@ -56,6 +56,12 @@ pub(crate) async fn search(ctx: &Context, args: Ls, role: &str) -> Result<ExitCo
     Ok(ExitCode::SUCCESS)
 }
 
+pub(super) async fn local(ctx: &Context, args: Ls, role: &str) -> Result<ExitCode, Error> {
+    let query = Searching { hub: ctx.hub().to_string(), q: args.query.join(" "), family: None, tag: String::new(), no_tag: String::new(), limit: output::at_most("--limit", args.limit, 100), offset: args.offset, role: role.into() };
+    let inventory: api::calcifer::MachineModels = ctx.calcifer().await?.get("/v1/machines/local/models").await?;
+    crate::tui::show(ctx, crate::tui::Screen::Models(super::live::Catalog::from_local(query, inventory.models))).await
+}
+
 pub(super) async fn read(ctx: &Context, ask: &Searching) -> Result<ModelSearch, Error> {
     ctx.calcifer().await?.get_query("/v1/models", ask).await
 }

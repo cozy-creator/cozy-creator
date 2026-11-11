@@ -152,7 +152,7 @@ test = "release: adapter weights uploaded without inference"
 ["lora publish"]
 test = "pending: shared model publish handler"
 ["model edit"]
-test = "release: throwaway model, family, tags, trigger and strength set and cleared"
+test = "release: throwaway model, family and tags set and cleared"
 "--family" = "release: throwaway model, family set and cleared (none)"
 "--tag" = "release: throwaway model, tags added"
 "--untag" = "release: throwaway model, a tag removed in any case and spacing, one it never had, then each cleared"

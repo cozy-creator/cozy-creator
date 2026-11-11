@@ -34,33 +34,56 @@ pub(crate) struct Catalog {
     query: Searching,
     page: ModelSearch,
     local: Option<Vec<HeldModel>>,
+    local_only: bool,
 }
 
 impl Catalog {
     pub(super) fn new(query: Searching, page: ModelSearch, local: Option<Vec<HeldModel>>) -> Self {
-        Self { query, page, local }
+        Self { query, page, local, local_only: false }
+    }
+
+    pub(super) fn from_local(query: Searching, local: Vec<HeldModel>) -> Self {
+        let mut named = std::collections::BTreeMap::new();
+        for held in &local {
+            if held.role != query.role || !output::names(&held.model, &query.q.split_whitespace().map(str::to_owned).collect::<Vec<_>>()) { continue; }
+            named.entry(held.model.clone()).or_insert_with(|| api::calcifer::hub::FoundModel {
+                model: held.model.clone(), role: Some(held.role.clone()), release: Some(held.release.clone()), lanes: vec![held.lane.clone()], ..Default::default()
+            });
+        }
+        let total = named.len() as i64;
+        let models: Vec<_> = named.into_values().skip(query.offset as usize).take(query.limit as usize).collect();
+        let older = (total - query.offset as i64 - models.len() as i64).max(0);
+        Self { query, page: ModelSearch { models, total, older }, local: Some(local), local_only: true }
     }
 
     pub(crate) async fn page(&mut self, ctx: &Context, offset: u32) -> Result<(), Error> {
         let mut query = self.query.clone();
         query.offset = offset;
-        let page = catalog::read(ctx, &query).await?;
-        self.query = query;
-        self.page = page;
-        self.local = local_inventory(ctx).await;
+        if self.local_only {
+            let inventory: MachineModels = ctx.calcifer().await?.get("/v1/machines/local/models").await?;
+            *self = Self::from_local(query, inventory.models);
+        } else {
+            let page = catalog::read(ctx, &query).await?;
+            self.query = query;
+            self.page = page;
+            self.local = local_inventory(ctx).await;
+        }
         Ok(())
     }
 
     pub(crate) fn title(&self) -> String {
-        if self.page.models.is_empty() { return format!("{} — no matches", self.label()); }
+        if self.page.models.is_empty() {
+            let unknown = self.local.as_ref().map_or(0, |rows| rows.iter().filter(|row| !matches!(row.role.as_str(), "model" | "lora")).count());
+            return if self.local_only && unknown > 0 { format!("{} — no matches; {unknown} unclassified local entries", self.label()) } else { format!("{} — no matches", self.label()) };
+        }
         format!("{} {}–{} of {}", self.label(), self.query.offset + 1, self.query.offset as usize + self.page.models.len(), self.page.total)
     }
 
-    fn label(&self) -> &str { if self.query.role == "lora" { "LoRAs" } else { "models" } }
+    fn label(&self) -> &str { if self.local_only { if self.query.role == "lora" { "local LoRAs" } else { "local models" } } else if self.query.role == "lora" { "LoRAs" } else { "models" } }
 
     pub(crate) fn rows(&self) -> Vec<Vec<String>> {
         self.page.models.iter().map(|row| {
-            let held = self.local.as_ref().map(|models| models.iter().filter(|held| held.model == row.model).map(|held| held.bytes).max());
+            let held = self.local.as_ref().map(|models| models.iter().filter(|held| same_model(&held.model, &row.model)).map(|held| held.bytes).max());
             let (local, size) = match held {
                 Some(Some(bytes)) => ("yes", output::bytes(bytes)),
                 Some(None) => ("no", "—".into()),
@@ -80,38 +103,45 @@ impl Catalog {
     }
 
     pub(crate) fn local_bytes(&self, model: &str) -> Option<u64> {
-        self.local.as_ref()?.iter().filter(|held| held.model == model).map(|held| held.bytes).max()
+        self.local.as_ref()?.iter().filter(|held| same_model(&held.model, model)).map(|held| held.bytes).max()
     }
 }
 
 pub(crate) struct Preview {
     model: ModelDetail,
     local_bytes: Option<u64>,
+    metadata_missing: bool,
 }
 
 impl Preview {
     pub(crate) async fn open(ctx: &Context, model: &str, local_bytes: Option<u64>) -> Result<Self, Error> {
-        Ok(Self { model: catalog::detail(ctx, model).await?, local_bytes })
+        match catalog::detail(ctx, model).await {
+            Ok(model) => Ok(Self { model, local_bytes, metadata_missing: false }),
+            Err(_) if local_bytes.is_some() => Ok(Self { model: ModelDetail { model: model.into(), ..Default::default() }, local_bytes, metadata_missing: true }),
+            Err(error) => Err(error),
+        }
     }
 
     pub(crate) fn title(&self) -> &str { &self.model.model }
 
     pub(crate) fn action(&self, key: KeyCode) -> Option<Action> {
         match key {
-            KeyCode::Char('d') => Some(Action::Destinations(self.model.model.clone())),
+            KeyCode::Char('d') if !self.metadata_missing => Some(Action::Destinations(self.model.model.clone())),
             KeyCode::Char('r') if self.local_bytes.is_some() => Some(Action::ConfirmRemove(self.model.model.clone())),
             _ => None,
         }
     }
 
     pub(crate) fn hint(&self) -> &str {
-        if self.local_bytes.is_some() { "↑/↓ scroll · d download · r remove local copy · Esc/q back" }
+        if self.metadata_missing { "↑/↓ scroll · r remove local copy · Esc/q back" }
+        else if self.local_bytes.is_some() { "↑/↓ scroll · d download · r remove local copy · Esc/q back" }
         else { "↑/↓ scroll · d download · Esc/q back" }
     }
 
     pub(crate) fn lines(&self) -> Vec<String> {
         let model = &self.model;
         let mut lines = Vec::new();
+        if self.metadata_missing { lines.push("Catalog details unavailable; showing the local copy.".into()); }
         if let Some(bytes) = self.local_bytes { lines.push(format!("Local disk: {}", output::bytes(bytes))); }
         if let Some(family) = &model.family { lines.push(format!("Family: {family}")); }
         if model.role.as_deref() == Some("lora") {
@@ -132,7 +162,7 @@ impl Preview {
         if let Some(release) = model.releases.first() {
             lines.push(format!("Release: {}", release.version));
             for lane in &release.lanes { lines.push(format!("{}: {}", lane.lane, output::bytes(lane.bytes.max(0) as u64))); }
-        } else {
+        } else if !self.metadata_missing {
             lines.push("Private model — no published release".into());
         }
         lines
@@ -178,9 +208,13 @@ pub(crate) async fn download(ctx: &Context, choice: DownloadChoice) -> Result<st
     super::machine::download_to(ctx, ask, Some(On::Machine(choice.machine))).await
 }
 
+fn same_model(left: &str, right: &str) -> bool {
+    api::model_ref::Repo::parse(left).ok().zip(api::model_ref::Repo::parse(right).ok()).is_some_and(|(left, right)| left == right)
+}
+
 pub(super) async fn local_inventory(ctx: &Context) -> Option<Vec<HeldModel>> {
     let inventory: MachineModels = ctx.calcifer().await.ok()?.get("/v1/machines/local/models").await.ok()?;
-    Some(inventory.models)
+    (!inventory.silent).then_some(inventory.models)
 }
 
 #[cfg(test)]
@@ -208,7 +242,7 @@ mod tests {
 
     #[test]
     fn preview_is_concise_and_download_requires_destination_choice() {
-        let preview = Preview { model: ModelDetail { model: "author/one".into(), family: Some("sdxl".into()), kind: Some(ModelKind::Lora), tags: vec!["art".into()], author: Some(ModelAuthor { name: "Artist".into(), ..Default::default() }), ..Default::default() }, local_bytes: Some(1024) };
+        let preview = Preview { model: ModelDetail { model: "author/one".into(), family: Some("sdxl".into()), kind: Some(ModelKind::Lora), tags: vec!["art".into()], author: Some(ModelAuthor { name: "Artist".into(), ..Default::default() }), ..Default::default() }, local_bytes: Some(1024), metadata_missing: false };
         assert_eq!(preview.action(KeyCode::Enter), None);
         assert_eq!(preview.action(KeyCode::Char('d')), Some(Action::Destinations("author/one".into())));
         assert_eq!(preview.action(KeyCode::Char('r')), Some(Action::ConfirmRemove("author/one".into())));
@@ -238,5 +272,24 @@ mod tests {
         let screen = crate::tui::Screen::RemoveLocalModel("author/one".into());
         let keys = futures_util::stream::iter([Ok(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)))]);
         assert_eq!(crate::tui::live(&ctx, &mut terminal, screen, keys).await.unwrap(), Some(Operation::Remove("author/one".into())));
+    }
+
+    #[test]
+    fn local_catalog_uses_authoritative_roles_and_lists_local_aliases() {
+        let mut query = catalog().query;
+        query.offset = 0;
+        query.q.clear();
+        let local = vec![
+            HeldModel { model: "local/weights".into(), role: "model".into(), bytes: 100, ..Default::default() },
+            HeldModel { model: "local/adapter".into(), role: "lora".into(), bytes: 20, ..Default::default() },
+            HeldModel { model: "local/unknown".into(), ..Default::default() },
+        ];
+        let models = Catalog::from_local(query.clone(), local.clone());
+        assert_eq!(models.rows().len(), 1);
+        assert_eq!(models.rows()[0][0], "local/weights");
+        query.role = "lora".into();
+        let loras = Catalog::from_local(query, local);
+        assert_eq!(loras.rows()[0][0], "local/adapter");
+        assert_eq!(loras.local_bytes("local/adapter"), Some(20));
     }
 }
