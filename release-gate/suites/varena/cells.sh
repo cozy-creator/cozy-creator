@@ -12,8 +12,10 @@
 #   (≤ 8 GB card)    cold, co and reload only: the driver's own out-of-memory paths (a capped card never fills)
 #   h3-8gb           (≤ 8 GB card) H3 Turbo 15 s, the 8 GB tier's product shape
 #   host-*           on a CPU rental, under its cgroup's memory.max (host-cap.py): pages must spill to disk
-#   core-*           (every GPU card, last) the memory authority's rules, one fresh process per mode (programs/)
-#   offload-*        vt.offload's promises, and SDXL through it beside stock Torch (programs/, --env diffusers)
+#   core-*           (every GPU card, last) the memory authority's rules, one fresh process per mode (programs/); the
+#                    rules only the Runtime's own varena adapter reaches, one fresh process per case (drive/, built-ins)
+#   offload-*        vt.offload's promises, and SDXL through it beside stock Torch (programs/, --env diffusers); inside
+#                    an executor (drive/, a built-in)
 #   public-*         C, Rust and Python clients on one core; sizing and Region priority (public-api/, a program)
 #   fault-*          deliberate faults: correct bytes or a typed error, the GPU recovered, no hang, no Xid (faults.sh)
 #   diff-*           real models repeat byte for byte, under a cap and with memory taken and perturbed (differential/cell.sh)
@@ -48,10 +50,18 @@ h3() { vcell "$1" "$H3" references:="$H3REF" prompt="<Lead> $MOTION $4" seed:=$(
 ln -sfn "$V/ceiling.py" ceiling.py; ln -sfn "$V/host-cap.py" host-cap.py
 # After every model cell, as a fault may leave the card unusable. A restart first: no executor stays on the card.
 authority() {
-  local mode i=0
+  local mode i=0 rule
   cap off
   # The memory authority's rules: a program on the rental over its public API, not a package (programs.sh, xs-174).
   programs core "$V/programs" varena_core.py
+  # The rules only the Runtime's own varena adapter reaches (weights Regions with staging pages and a derive, phased
+  # Plans, cache owners, capture guards) and vt.offload inside an executor: Runtime built-ins (`bench.varena_core`,
+  # `bench.offload_in_executor`) that drive/ calls (xs-174).
+  for rule in abandoned-fill pending-working-before-weights split-waits-and-caps fill-keeps-phase-pages eviction-order \
+      prefetch-rule fill-paths-agree owner-wait-physical owner-wait-capped short-holders-wait capture-refuses-a-fill; do
+    vcell "core-$rule" "$V/drive/core" case="$rule" --gpus=1
+  done
+  vcell offload-in-executor "$V/drive/offload_in_executor" --gpus=1
   # vt.offload's promises and SDXL through it beside stock Torch: programs over the public API, in the Diffusers
   # environment (programs.sh --env diffusers, xs-174). Rows offload-adapter, offload-stock/eager/graphs.
   programs offload "$V/programs" --env diffusers varena_offload.py
