@@ -52,6 +52,12 @@ class Isolation(unittest.TestCase):
         self.assertFalse(runner.same_process(before, before | {'birth': '2'}))
         self.assertTrue(runner.same_process(before, before | {'state': 'R'}))
 
+    def test_contained_executor_home_is_owned_but_sibling_prefix_is_not(self):
+        record = {'home': '/owned/job/.cozy/machine/executor-home', 'state': 'S'}
+        self.assertTrue(runner.owned(record, Path('/owned/job')))
+        self.assertFalse(runner.owned(record | {'home': '/owned/job-other'}, Path('/owned/job')))
+        self.assertFalse(runner.owned(record | {'home': ''}, Path('/owned/job')))
+
     def test_provider_selection_fails_before_fixture_startup(self):
         result = subprocess.run([sys.executable, str(HERE / 'run.py'), '--hub-src', '/absent',
             '--cozy-bin', '/absent', '--runtime', '0.45.0', '--tensorfs', '0.24.0',

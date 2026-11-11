@@ -26,7 +26,7 @@ def processes():
             env = dict(item.split(b'=', 1) for item in (entry / 'environ').read_bytes().split(b'\0') if b'=' in item)
             result[int(entry.name)] = {
                 'birth': stat[19], 'state': stat[0],
-                'exe': str((entry / 'exe').resolve(strict=True)),
+                'exe': os.readlink(entry / 'exe'),
                 'home': os.fsdecode(env.get(b'HOME', b'')),
                 'args': [os.fsdecode(arg) for arg in (entry / 'cmdline').read_bytes().split(b'\0') if arg],
             }
@@ -36,7 +36,9 @@ def processes():
 
 
 def owned(record, home):
-    return record['home'] == str(home) and record['state'] != 'Z'
+    # Runtime's contained executor gets a HOME below the machine root. A path boundary
+    # includes it while excluding similarly named sibling jobs.
+    return bool(record['home']) and Path(record['home']).is_relative_to(home) and record['state'] != 'Z'
 
 
 def same_process(first, second):
@@ -62,8 +64,8 @@ def private_environment(home, shim, device, tools=None):
 
 def cleanup(home, docker, owner):
     captured = {}
-    # Detached Calcifer/TensorD retain this exact private HOME, including any replacement
-    # spawned by a candidate update. Signal only the birth that was inspected.
+    # Detached Calcifer/TensorD retain this private HOME, including any replacement spawned
+    # by a candidate update; contained executors get its descendants. Signal only inspected births.
     for sig in (signal.SIGTERM, signal.SIGKILL):
         snapshot = processes()
         for pid, record in snapshot.items():
