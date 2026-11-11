@@ -287,8 +287,9 @@ case $SHARD in
   projectdb-offline) parts="tools_read db_existing_web logs"; DB_WEB=offline ;;
   projectdb-scale) parts="tools_read db_existing_web logs"; DB_WEB=scale ;;
   # Local code and every input by content (cl-817, cl-820): the CLI in a folder Calcifer can't see,
-  # edits timed, a published cozy package called (cl-871), a host path refused.
-  local-code) parts="unseen local_edits hub_dependency path_manifest logs" ;;
+  # edits timed, a published cozy package called from local code (cl-871) and from an account's package (cl-872), a host
+  # path refused.
+  local-code) parts="unseen local_edits hub_dependency hub_published path_manifest logs" ;;
   # By hand: the control-plane audit's cells alone (control.sh).
   control) parts="machine_show_runs writes_once page_resend hub_away broken_answers logs" ;;
   *) echo "no cli shard $SHARD" >&2; exit 2 ;;

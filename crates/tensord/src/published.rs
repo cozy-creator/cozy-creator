@@ -1194,11 +1194,14 @@ impl Publisher {
             fetch: (!files.is_empty()).then_some(&fetch as &dyn Fn() -> Result<(), Failure>),
         }, job)?;
         environment::hold(&dir)?;
-        // The Hub package each hosted wheel installs is its own name in the release's org, the
-        // one org a Hub lock names; never read from the URL, whose shape is the Hub's to change
-        // (th-245 did, and every callee became `local/<name>`: run 5234).
+        // The Hub package each wheel installs: the release's own files are its org's; a lock row from a
+        // Hub index is its name in the namespace that index names (an account's package locks a root
+        // one from `_`, cl-872), whoever fetches its file. Never read from a wheel's URL, whose shape is
+        // the Hub's to change (th-245 did, and every callee became `local/<name>`: run 5234).
         let org = package.split_once('/').map_or("", |(org, _)| org);
-        let hub_packages: BTreeMap<String, String> = files.iter().map(|file| (file.distribution(), format!("{org}/{}", file.distribution()))).collect();
+        let own = files.iter().map(|file| (file.distribution(), format!("{org}/{}", file.distribution())));
+        let rows = locked.namespaces.iter().map(|(name, namespace)| (name.clone(), format!("{namespace}/{name}")));
+        let hub_packages: BTreeMap<String, String> = own.chain(rows).collect();
         let described = environment::describe_environment(&platform::paths::venv_python(&env), &locked.distribution, &hub_packages, true, job.stop.as_ref())?;
         let record = built.record((identity, identity), (&locked.distribution, release), &env, &card.interface, &self.sdk.runtime_build, described)?;
         environment::publish(&dir, &record)
@@ -1993,6 +1996,8 @@ pub(crate) struct Locked {
     git: Vec<String>,
     local: Vec<String>,
     hub: Vec<HubFile>,
+    /// The Hub namespace each row from a Hub index takes it from (`…/v1/index/<namespace>/simple/`), by name.
+    namespaces: BTreeMap<String, String>,
     /// Each package it names, at its version.
     packages: BTreeMap<String, String>,
     /// The rows only its Torch brings that a machine's layer provides (`layer::provides`): never
@@ -2081,6 +2086,13 @@ pub(crate) fn read_lock(pyproject: &str, lock: &str, source: Option<&hub::Source
         .filter(|name| layer::provides(name) && !other.contains(name)).collect();
     for row in rows {
         let name = normalized(&row.name);
+        let namespace = (row.source.get("registry").and_then(|registry| registry.as_str()))
+            .and_then(|registry| registry.split_once("/v1/index/"))
+            .and_then(|(_, rest)| rest.trim_end_matches('/').strip_suffix("/simple"))
+            .filter(|namespace| !namespace.is_empty() && !namespace.contains('/'));
+        if let Some(namespace) = namespace {
+            locked.namespaces.insert(name.clone(), namespace.to_owned());
+        }
         let local = ["directory", "editable", "path"].iter().any(|key| row.source.contains_key(*key));
         if row.source.contains_key("git") {
             locked.git.push(name.clone());
