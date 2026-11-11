@@ -46,5 +46,11 @@ mapfile -t DIRS < <(for d in "$OUT"/*/; do [ ! -f "$d/bench-group" ] || echo "$d
 "${BENCH_PY[@]}" versus "${DIRS[@]}" > "$OUT/comfyui.md" 2>&1
 "${BENCH_PY[@]}" table "${DIRS[@]}" | tee "$OUT/table.md"
 code=${PIPESTATUS[0]}
+# A group that stopped before its cells (no pod, candidate not installed) fails the run too.
+for d in "$OUT"/*/; do
+  [ -f "$d/bench-group" ] && continue
+  echo "FAIL $(basename "$d"): $(grep -h '^FAIL\|^VERDICT' "$d/verdict.txt" 2>/dev/null | head -1 || true)$(grep -h 'rent failed' "$d/gate.log" 2>/dev/null | head -1)"
+  code=1
+done
 cat "$OUT/comfyui.md"
 exit "$code"
