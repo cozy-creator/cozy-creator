@@ -3113,7 +3113,11 @@ remove_plaintext: boolean, };
 /**
  * A vault operation can disclose a new recovery secret exactly to the caller. Do not persist this response in request/history caches.
  */
-export type VaultChanged = { vault: VaultStatus, recovery_secret?: string | null, preserved_source?: string | null, };
+export type VaultChanged = { vault: VaultStatus, recovery_secret?: string | null, preserved_source?: string | null,
+/**
+ * The project's runs a lock canceled first, by number.
+ */
+ended?: Array<number>, };
 
 /**
  * Local project encryption. Plain projects never need a mount provider or credentials.

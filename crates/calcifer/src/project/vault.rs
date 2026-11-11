@@ -369,13 +369,23 @@ pub(crate) fn start(api: &Arc<Api>) {
                 tokio::task::spawn_blocking(move || {
                     let op = operation(&root);
                     let Ok(_operation) = op.try_lock() else { return; };
-                    let needs = held(&root).is_some_and(|session| {
+                    let working = working(&api, &root);
+                    let (needs, capped) = held(&root).map_or((false, false), |session| {
                         let mut session = session.lock().expect("vault session");
                         if session.mount.reconcile().is_err() { mark_closing(&mut session); }
-                        session.closing || expired(&session) || !session.mount.is_mounted().unwrap_or(false)
+                        // Work in progress holds it open: the idle clock starts when the last of it ends.
+                        session.timer.hold(working);
+                        if working && !session.closing { session.active_ms = super::now_ms(); }
+                        let expired = expired(&session);
+                        // Expired while working is its maximum, a limit the user set: it ends the work, as a lock does.
+                        let capped = working && expired && !session.closing;
+                        (session.closing || expired || !session.mount.is_mounted().unwrap_or(false), capped)
                     });
                     if !needs { return; }
                     if let Some(session) = held(&root) { mark_closing(&mut session.lock().expect("vault session")); }
+                    if capped {
+                        let _ = end_work(&api, &root);
+                    }
                     let Ok(_access) = exclusive(&root) else { return; };
                     let _ = close(&api, &root);
                 });
@@ -395,9 +405,20 @@ pub(super) async fn write(State(api): State<Arc<Api>>, Path(named): Path<String>
     let root = location(&api, &named).map_err(Refusal)?;
     let changed = tokio::task::block_in_place(|| {
         let op = operation(&root); let _guard = op.lock().expect("vault operation");
-        if ask.action == "lock" { if let Some(session) = held(&root) { mark_closing(&mut session.lock().expect("vault session")); } }
+        let mut ended = vec![];
+        if ask.action == "lock" {
+            if let Some(session) = held(&root) { mark_closing(&mut session.lock().expect("vault session")); }
+            // An explicit lock ends the project's work first, so nothing goes on billing behind a locked vault.
+            ended = end_work(&api, &root)?;
+        }
         let _access = exclusive(&root)?;
-        change(&api, &root, &mut ask)
+        let mut changed = match change(&api, &root, &mut ask) {
+            // What it ended is still settling: the session is closing, and the sweeper locks it once it has.
+            Err(busy) if !ended.is_empty() && busy.code == "project_busy" => VaultChanged { vault: status(&root), recovery_secret: None, preserved_source: None, ended: vec![] },
+            changed => changed?,
+        };
+        changed.ended = ended;
+        Ok(changed)
     }).map_err(Refusal)?;
     Ok(private(axum::Json(changed).into_response()))
 }
@@ -488,7 +509,41 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk) -> Result<VaultChan
         }
         _ => return Err(Error::new(Kind::Usage, "vault_action", "unknown local vault action")),
     }
-    Ok(VaultChanged { vault: status(root), recovery_secret, preserved_source })
+    Ok(VaultChanged { vault: status(root), recovery_secret, preserved_source, ended: vec![] })
+}
+
+/// Whether the project has work in progress: a run not settled, or a render, cut or file move going.
+fn working(api: &Api, root: &FsPath) -> bool {
+    let landing = super::landing(root);
+    let runs = api.calcifer.store().read(|conn| Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM runs WHERE out_dir = ?1 AND state <> 'settled')", [landing.to_string_lossy().as_ref()], |row| row.get::<_, bool>(0))?));
+    // A journal that can't be read holds the vault open rather than lock a render.
+    runs.unwrap_or(true) || api.projects.now_open().iter().any(|project| {
+        project.root == root && (*project.walking.lock().expect("walking lock") || project.moving.try_lock().is_err() || project.cutting.try_lock().is_err())
+    })
+}
+
+/// Ends the project's work in progress, as an explicit lock does: what its renders still owe dropped, and each of its
+/// runs not settled canceled. The runs it canceled, by number.
+fn end_work(api: &Arc<Api>, root: &FsPath) -> Result<Vec<u64>, Error> {
+    let mut ended = BTreeSet::new();
+    let all = [super::format::ALL.to_owned()];
+    for project in api.projects.now_open().iter().filter(|project| project.root == root) {
+        let cancelled = super::cancelled(api, project, &all, &|name| format!("{name}: the project was locked")).map_err(|refused| refused.0)?;
+        ended.extend(cancelled.canceled);
+    }
+    let landing = super::landing(root);
+    let store = api.calcifer.store();
+    let ids = store.read(|conn| {
+        let mut unsettled = conn.prepare("SELECT id FROM runs WHERE out_dir = ?1 AND state <> 'settled'")?;
+        let ids = unsettled.query_map([landing.to_string_lossy().as_ref()], |row| row.get::<_, String>(0))?;
+        Ok(ids.collect::<Result<Vec<_>, _>>()?)
+    }).map_err(|e| error("vault_journal", e))?;
+    for id in ids {
+        let Some(row) = store.run(&id).map_err(|e| error("vault_journal", e))? else { continue };
+        api.calcifer.cancel(&row.id).map_err(|e| Error::new(Kind::Internal, "run_cancel", e.to_string()))?;
+        ended.insert(row.number);
+    }
+    Ok(ended.into_iter().collect())
 }
 
 fn require_transition_ready(root: &FsPath, action: &str) -> Result<(), Error> {
