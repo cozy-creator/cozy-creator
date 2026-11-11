@@ -196,8 +196,16 @@ ahead() {
   fi
   # A cozy with no --warm (0.24's RC): the cell's own request once, on another seed, untimed, brings every weight it reads to
   # the machine; then the machine restarts (its executors leave), so the timed cold run starts from weights on disk.
+  # Its own prompt too, so its text encoding is no stage memo for the timed cold run.
   local args=() a
-  for a in "${ALL_ARGS[@]}"; do [[ $a == seed:=* ]] || args+=("$a"); done
+  for a in "${ALL_ARGS[@]}"; do
+    case $a in
+      seed:=*) ;;
+      prompt=*) args+=("$a, warm-up") ;;
+      beats:=*) args+=("${a//\"description\":\"/\"description\":\"Warm-up. }") ;;
+      *) args+=("$a") ;;
+    esac
+  done
   run_cell "$OUT" "$name-weights" "$target" --on "$M" "${args[@]}" seed:=$((RANDOM + 2000000)) ||
     expect "$name-weights" FAIL "run $(cat "$name-weights.number") $(run_get "$OUT" "$name-weights" .status): $(run_get "$OUT" "$name-weights" '.reason.message')"
   "$CLI" machine update "$M" --gpu-memory-limit off -y > "$name-weights-off.log" 2>&1 || log "$name: restart: $(tail -c 300 "$name-weights-off.log")"
