@@ -236,8 +236,11 @@ impl<'a> Sequence<'a> {
                 self.working(want)?;
                 Ok(true)
             }
-            // Processes in no request hold what nothing is about to use: theirs before our weights.
-            Step::IdlePeers if waiting && physical => Ok(idle_peers_gave(self.device, want)),
+            // Processes in no request hold what nothing is about to use: theirs before our weights. What
+            // they can't give back (a context, a graph's pinned weights) returns when TensorD ends one:
+            // Ideogram 4 paged its two DiTs every step beside 10 GB that idle MOSS and Anima kept.
+            Step::IdlePeers if waiting && physical => Ok(idle_peers_gave(self.device, want)
+                || (self.wait == Wait::Yes && self.gpu.in_request() && ended_idle_peer(self.device))),
             Step::Join if waiting => {
                 let classes = CONTENTLESS..=PHASE_NEXT;
                 let blocks = working::unjoined(self.device)?;
@@ -343,6 +346,13 @@ fn idle_peers_gave(device: i32, bytes: usize) -> bool {
     return crate::cooperative::peers_idle(device) && crate::cooperative::ask_idle_peers(device, bytes);
     #[cfg(not(target_os = "linux"))]
     { let _ = (device, bytes); false }
+}
+
+fn ended_idle_peer(device: i32) -> bool {
+    #[cfg(target_os = "linux")]
+    return crate::cooperative::end_idle_peer(device);
+    #[cfg(not(target_os = "linux"))]
+    { let _ = device; false }
 }
 
 /// Call `try_map` until it succeeds, running the reclaim order between attempts. `need` is what

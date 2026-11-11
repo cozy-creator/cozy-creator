@@ -417,6 +417,34 @@ impl Table {
             && words.running.load(Acquire) == 0 && words.idle.load(Acquire) != 0)
     }
 
+    /// What no ask returns from a process in no request (its context, a graph's pinned weights):
+    /// TensorD's supervisor ends one, oldest use first and never the asker's own. Whether one
+    /// exited before `deadline`. False at once with no such process holding memory, or no supervisor.
+    pub fn end_idle(&self, row: Row, deadline: Instant) -> bool {
+        let live = || self.page.rows.iter().filter(|words| words.pid.load(Acquire) != 0).count();
+        let holder = self.page.rows.iter().enumerate().any(|(index, words)| index != row.0 && words.pid.load(Acquire) != 0
+            && words.running.load(Acquire) == 0 && words.held.load(Acquire) != 0);
+        if !holder || !self.held_elsewhere(0) {
+            return false;
+        }
+        let page = self.page;
+        let rows = live();
+        let short = &page.rows[row.0].short;
+        short.store(page.released.load(Acquire) + 1, Release);
+        self.changed();
+        let exited = loop {
+            let seen = page.answers.load(Acquire);
+            self.reap();
+            // Its memory comes back with its exit, which frees its row.
+            if live() < rows { break true; }
+            let now = Instant::now();
+            if now >= deadline || short.load(Acquire) == REFUSED || !self.held_elsewhere(0) { break false; }
+            wait(&page.answers, seen, TICK.min(deadline - now));
+        };
+        self.stop_asking(row);
+        exited
+    }
+
     /// Before this process evicts its own weights: one ask, and whether memory came back. Nothing
     /// final hangs on it, so no re-asking and no supervisor.
     pub fn ask_idle_peers(&self, row: Row, bytes: u64, deadline: Instant) -> bool {
