@@ -183,11 +183,6 @@ pub(super) async fn patch(
     format::node_kind(asked.fields.get(format::NODE_KIND)).map_err(Refusal)?;
     let project = api.projects.get(&api, &id)?;
     let folder = &project.folder;
-    let selected_kind = asked.tool.as_ref().filter(|tool| !tool.is_empty()).and_then(|tool| {
-        let plain = format::plain_tool(tool, folder);
-        if plain == tool::EDIT { Some("video_edit".to_owned()) }
-        else { folder.reading_lock(|lock| lock.makes.get(&plain).cloned()).ok().flatten() }
-    });
     let holds = match &asked.tool {
         Some(tool) => Some(pictures(folder, &name, tool, false).map_err(Refusal)?),
         None => None,
@@ -210,23 +205,34 @@ pub(super) async fn patch(
         let written = folder.written()?;
         let was = written.get(&name).ok_or_else(|| own_lines(&name))?.etag();
         let mut fields = asked.fields.clone();
-        let target = asked.tool.as_deref().or_else(|| written.get(&name).and_then(|held| held.get("tool")).and_then(Value::as_str));
-        if target.is_some_and(|target| format::plain_tool(target, folder) == tool::EDIT) {
-            fields.insert(format::NODE_KIND.to_owned(), Value::String("video_edit".to_owned()));
-        }
         if let (Some(tool), Some(holds)) = (&asked.tool, &holds) {
-            if tool.is_empty() {
-                let doc = Doc::load(folder)?;
-                if let Some(i) = doc.find(&name) {
-                    let asset = &doc.assets[i];
-                    fields.insert(format::NODE_KIND.to_owned(), Value::String(asset.node_kind.as_ref().unwrap_or(&asset.kind).clone()));
-                }
-            } else if let Some(kind) = &selected_kind {
-                fields.insert(format::NODE_KIND.to_owned(), Value::String(kind.clone()));
-            } else if !fields.contains_key(format::NODE_KIND) && written.get(&name).and_then(|held| held.get(format::NODE_KIND)).and_then(Value::as_str) == Some(format::TEXT) {
-                fields.insert(format::NODE_KIND.to_owned(), Value::Null);
+            let held = written.get(&name).ok_or_else(|| own_lines(&name))?;
+            let intrinsic = held.get("tool").and_then(Value::as_str).is_some_and(|target| format::plain_tool(target, folder) == tool::EDIT);
+            let current = if intrinsic { "video_edit".to_owned() }
+                else if let Some(kind) = format::node_kind(held.get(format::NODE_KIND))? { kind.to_owned() }
+                else {
+                    let doc = Doc::load(folder)?;
+                    let i = doc.find(&name).ok_or_else(|| own_lines(&name))?;
+                    doc.assets[i].kind.clone()
+                };
+            // A different explicit hint is an intentional conversion. Merely assigning/removing
+            // a model preserves the current container, including when its output is not cached yet.
+            let next = format::node_kind(asked.fields.get(format::NODE_KIND))?.unwrap_or(&current);
+            let plain = format::plain_tool(tool, folder);
+            if (plain == tool::EDIT) != (next == "video_edit") {
+                return Err(Error::new(Kind::Validation, "asset_tool_kind", "Video Edit uses its built-in editor")
+                    .remedy("Keep the built-in editor for a Video Edit node; choose a matching model for an Image or Video node"));
             }
+            let incoming = format::kind_made_here(&plain).map(str::to_owned)
+                .or_else(|| folder.reading_lock(|lock| lock.makes.get(&plain).cloned()).ok().flatten());
+            if !tool.is_empty() && incoming.as_deref().is_some_and(|kind| kind != format::node_media(next)) {
+                return Err(Error::new(Kind::Validation, "asset_tool_kind", format!("this {next} node cannot use a model that produces {}", incoming.as_deref().unwrap_or_default()))
+                    .remedy("Choose a model that matches the node's media type"));
+            }
+            fields.insert(format::NODE_KIND.to_owned(), Value::String(next.to_owned()));
             written.with_tool(&name, tool, *holds, start.clone(), &mut fields)?;
+        } else if written.get(&name).and_then(|held| held.get("tool")).and_then(Value::as_str).is_some_and(|target| format::plain_tool(target, folder) == tool::EDIT) {
+            fields.insert(format::NODE_KIND.to_owned(), Value::String("video_edit".to_owned()));
         }
         let mut edited = written.clone();
         let warnings = edited.set(&name, &fields)?;

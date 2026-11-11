@@ -97,6 +97,39 @@ async fn typed_nodes_fixture() {
     assert_eq!(project.folder.written().unwrap().get(&name).unwrap().get(format::NODE_KIND), Some(&json!("image")));
     assert!(project.folder.written().unwrap().get(&name).unwrap().get(format::TEXT).is_none());
 
+    make(&api, &id, json!({"name":"known_video","tool":"fixture/video","kind":"video","fields":{}})).await;
+    for (name, value) in [
+        ("image", json!({"tool":"fixture/video","fields":{}})),
+        ("image", json!({"tool":"fixture/video","fields":{"node_kind":"image"}})),
+        ("edit", json!({"tool":"fixture/video","fields":{}})),
+        ("edit", json!({"tool":"fixture/video","fields":{"node_kind":"video_edit"}})),
+        ("edit", json!({"tool":"","fields":{}})),
+    ] {
+        let before = project.folder.written().unwrap();
+        let seq = project.folder.seq();
+        let refusal = patch(State(api.clone()), Path((id.clone(), name.to_owned())), HeaderMap::new(), Ok(Bytes::from(value.to_string()))).await.err().unwrap();
+        assert_eq!(refusal.0.code, "asset_tool_kind");
+        assert_eq!(project.folder.written().unwrap(), before, "a rejected model must not change type, tool or words");
+        assert_eq!(project.folder.seq(), seq);
+    }
+    // A model without cached output metadata still cannot implicitly change the container.
+    edit(&api, &id, "image", json!({"tool":"uncached/model","fields":{}})).await;
+    let doc = Doc::load(&project.folder).unwrap();
+    let image = &doc.assets[doc.find("image").unwrap()];
+    assert_eq!(image.kind, "image");
+    assert_eq!(image.node_kind.as_deref(), Some("image"));
+    // Explicit API conversion is distinct from ordinary model assignment.
+    make(&api, &id, json!({"name":"convertible","kind":"image","fields":{}})).await;
+    edit(&api, &id, "convertible", json!({"tool":"fixture/video","fields":{"node_kind":"video"}})).await;
+    let doc = Doc::load(&project.folder).unwrap();
+    assert_eq!(doc.assets[doc.find("convertible").unwrap()].kind, "video");
+    make(&api, &id, json!({"name":"convert_edit","tool":"cozy/edit","kind":"video","fields":{}})).await;
+    edit(&api, &id, "convert_edit", json!({"tool":"fixture/video","fields":{"node_kind":"video"}})).await;
+    let doc = Doc::load(&project.folder).unwrap();
+    let converted = &doc.assets[doc.find("convert_edit").unwrap()];
+    assert_eq!(converted.node_kind.as_deref(), Some("video"));
+    assert_eq!(converted.tool.as_deref(), Some("fixture/video"));
+
     let before = project.folder.seq();
     let refused = create(State(api.clone()), Path(id.clone()), Ok(Bytes::from(json!({"name":"bad","kind":"image","fields":{"node_kind":"unknown"}}).to_string()))).await.err().unwrap();
     assert_eq!(refused.0.code, "node_kind");
