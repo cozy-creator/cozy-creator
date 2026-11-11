@@ -57,10 +57,17 @@ jobs:
             .mypy_cache
           key: hardware-typecheck-${{ runner.os }}-${{ hashFiles('scripts/typecheck-requirements.txt') }}-${{ github.sha }}
           restore-keys: hardware-typecheck-${{ runner.os }}-${{ hashFiles('scripts/typecheck-requirements.txt') }}-
-      - name: Full strict typing with unchanged baseline
+      - name: Hardware strict typing for both import roots
         run: |
-          python3 crates/executor-api/scripts/pyi.py --check
-          scripts/typecheck.sh
+          set -euo pipefail
+          if ! cmp -s scripts/typecheck-requirements.txt .venv-typecheck/requirements.txt; then
+            uv venv -q --clear --python 3.12 .venv-typecheck
+            uv pip install -q --python .venv-typecheck/bin/python -r scripts/typecheck-requirements.txt
+            cp scripts/typecheck-requirements.txt .venv-typecheck/requirements.txt
+          fi
+          top=$PWD
+          (cd e2e/hardware && MYPYPATH="$top/crates/tensorfs-py/python:$top/typings" "$top/.venv-typecheck/bin/mypy" --config-file "$top/mypy.ini" --cache-dir "$top/.mypy_cache" --python-executable "$top/.venv-typecheck/bin/python" --show-error-codes ./*.py)
+          (cd e2e/hardware/probe && MYPYPATH="$top/crates/tensorfs-py/python:$top/typings" "$top/.venv-typecheck/bin/mypy" --config-file "$top/mypy.ini" --cache-dir "$top/.mypy_cache" --python-executable "$top/.venv-typecheck/bin/python" --show-error-codes ci_hardware_probe/__init__.py)
       - name: Published probe Runtime.describe author contract
         run: |
           set -euo pipefail
@@ -76,6 +83,10 @@ jobs:
           python3 -m py_compile e2e/hardware/*.py e2e/hardware/probe/ci_hardware_probe/__init__.py
           bash -n e2e/hardware/checks.sh
           sha256sum e2e/hardware/run.py e2e/hardware/operator_sdk.py
+      - name: Full strict typing with unchanged baseline
+        run: |
+          python3 crates/executor-api/scripts/pyi.py --check
+          scripts/typecheck.sh
       - name: Validate dispatch ownership
         if: github.event_name == 'workflow_dispatch'
         env:

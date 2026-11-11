@@ -159,7 +159,7 @@ class Isolation(unittest.TestCase):
             sibling = subprocess.Popen(['sleep', '60'], env={'HOME': second, 'PATH': os.defpath})
             try:
                 time.sleep(.05)
-                with patch.object(runner.subprocess, 'check_output', return_value=''):
+                with patch.object(subprocess, 'check_output', return_value=''):
                     receipt = runner.cleanup(Path(first), '/unused/docker', 'test-owned')
                 child.wait(timeout=2)
                 self.assertIsNone(sibling.poll())
