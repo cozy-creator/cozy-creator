@@ -3029,11 +3029,10 @@ impl Walk {
     /// `ask`, and again while its machine answers no connect or the Hub doesn't answer, each attempt said. Everything asked this way
     /// is a read, or goes under a key.
     async fn again<T, F: Future<Output = Result<T, Error>>>(&self, ask: impl Fn() -> F) -> Result<T, Error> {
-        let again = |e: &Error| e.code == "machine_unreachable" || e.hub_transient();
         let (mut backoff, mut said) = (tensorfs::fetch::Backoff::call(), false);
         loop {
             let e = match ask().await {
-                Err(e) if again(&e) => e,
+                Err(e) if e.transient() => e,
                 answer => return answer,
             };
             if let Some((wait, message)) = backoff.again(&e.message, false, e.retry_after_s.map(std::time::Duration::from_secs)) {

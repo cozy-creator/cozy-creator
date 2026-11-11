@@ -54,6 +54,10 @@ pub struct Error {
     pub metadata: Option<serde_json::Value>,
 }
 
+/// Calcifer's refusal while it stops (a restart): the ask was not carried out, or goes on under its key, so it is sent
+/// again to the next Calcifer.
+pub const STOPPING: &str = "calcifer_stopping";
+
 /// The HTTP body of a refusal.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -131,9 +135,11 @@ impl Error {
         self
     }
 
-    /// Whether asking the Hub again may be answered: it gave no answer, a slow one, or failed on its side. A refusal is final.
-    pub fn hub_transient(&self) -> bool {
-        matches!(self.code.as_str(), "hub_unreachable" | "hub_slow") || (self.kind == Kind::Unavailable && self.cause.as_ref() == Some(&self.code))
+    /// Whether asking again may be answered: a machine or the Hub gave no answer, a slow one, or failed on its side. Any
+    /// other refusal is final.
+    pub fn transient(&self) -> bool {
+        matches!(self.code.as_str(), "machine_unreachable" | "hub_unreachable" | "hub_slow")
+            || (self.kind == Kind::Unavailable && self.cause.as_ref() == Some(&self.code))
     }
 
     /// The process exit code: 2 for usage, 1 for everything else.
