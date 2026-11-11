@@ -20,6 +20,7 @@ use std::{
     fs::{self, File},
     io,
     path::{Path, PathBuf},
+    str::FromStr as _,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -1088,7 +1089,17 @@ impl Publisher {
             source,
             stage: &stage,
         };
-        self.generation(service.catalog.root(), &identity, &wanted, job)?;
+        match self.generation(service.catalog.root(), &identity, &wanted, job) {
+            Err((code, detail)) if code == "runtime_protocol_unspoken" => {
+                let hint = environment::newest_hint(&request.package);
+                let onward = || self.onward(&catalog().ok()?, source, &request.package, &release);
+                return Err((code, match detail.strip_suffix(hint.as_str()).zip(onward()) {
+                    Some((said, onward)) => format!("{said}{onward}"),
+                    None => detail,
+                }));
+            }
+            built => built?,
+        }
         keep_card(&service.catalog.root().join(&identity), &card);
         let held = service.catalog.resolve(&identity).map_err(io_failure)?;
         service.installed(&held);
@@ -1192,6 +1203,34 @@ impl Publisher {
         let described = environment::describe_environment(&platform::paths::venv_python(&env), &locked.distribution, &hub_packages, true, job.stop.as_ref())?;
         let record = built.record((identity, identity), (&locked.distribution, release), &env, &card.interface, &self.sdk.runtime_build, described)?;
         environment::publish(&dir, &record)
+    }
+
+    /// What a release refused for its lock's Runtime pair names next (cl-863): its newest later release whose lock speaks this
+    /// machine's executor protocol, and the command that puts it on the machine (an unversioned run then takes it); else that no
+    /// later release does yet. None when the Hub said too little to tell.
+    fn onward(&self, catalog: &Catalog, source: &hub::Source, package: &str, release: &str) -> Option<String> {
+        let (org, name) = package.split_once('/')?;
+        let version = |release: &str| pep440_rs::Version::from_str(release).ok();
+        let refused = version(release)?;
+        let card = catalog.package(org, name).ok()?;
+        let mut later: Vec<(pep440_rs::Version, &str)> = card.releases.iter()
+            .filter(|row| row.yanked != Some(true) && row.yanked_at.as_deref().is_none_or(str::is_empty))
+            .filter_map(|row| Some((version(&row.release)?, row.release.as_str())))
+            .filter(|(later, _)| *later > refused)
+            .collect();
+        later.sort_by(|(a, _), (b, _)| b.is_stable().cmp(&a.is_stable()).then_with(|| b.cmp(a)));
+        let mut unread = false;
+        for (_, candidate) in later.iter().take(5) {
+            let Ok(locked) = hub_card(catalog, package, candidate, &self.sdk.python)
+                .and_then(|card| read_lock(&card.pyproject, &card.lock, Some(source))) else {
+                unread = true;
+                continue;
+            };
+            if self.speaks(&environment::pair_of(&locked.packages)) {
+                return Some(format!("{package} {candidate} speaks it: `cozy package install {package}@{candidate} --on <machine>`"));
+            }
+        }
+        (!unread).then(|| format!("no later release of {package} speaks it yet: its author relocks it (`uv lock --upgrade-package cozy-runtime`) and publishes one"))
     }
 
     /// The release's Hub-hosted wheels through TensorFS's downloader instead of uv's: 1 MiB

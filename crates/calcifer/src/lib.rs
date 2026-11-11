@@ -1556,12 +1556,18 @@ impl Calcifer {
                 Frame::Outcome(mut outcome) => {
                     // What its ask does once the machine completed it, before it settles.
                     self.after(id, &mut outcome).await;
-                    // What it ran on, for the runs after it on another machine of that GPU.
-                    if outcome.gpu.is_empty()
-                        && let Ok(Some(row)) = self.store.run(id.as_str())
+                    if let Ok(Some(row)) = self.store.run(id.as_str())
                         && let Some(machine) = row.machine.as_deref()
                     {
-                        outcome.gpu = self.gpu_of(machine);
+                        // What it ran on, for the runs after it on another machine of that GPU.
+                        if outcome.gpu.is_empty() {
+                            outcome.gpu = self.gpu_of(machine);
+                        }
+                        // A machine names itself `<machine>` in the commands its refusal names: this computer's name for it.
+                        if let Some(reason) = outcome.reason.as_mut() {
+                            reason.message = reason.message.replace("<machine>", machine);
+                            reason.next.iter_mut().for_each(|next| *next = next.replace("<machine>", machine));
+                        }
                     }
                     let received = Instant::now();
                     tracing::info!(run = %id, phase = "outcome_received", sequence = durable,
