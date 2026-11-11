@@ -22,6 +22,14 @@ hub_do() {
     return 1
   fi
 }
+
+# This suite also runs released clients in skew tests. The product exposes only uninstall;
+# an older client still needs its original spelling to exercise the same wire operation.
+hub_uninstall() {
+  local check=$1 verb=uninstall; shift
+  "$CLI" package uninstall --help > /dev/null 2>&1 || verb=remove
+  hub_do "$check" ok package "$verb" "$@"
+}
 # hub_runs <check> <release> <package> [pin] [machine]: `cozy run <package>/echo[@pin]` on the machine ($M) answers with that release.
 hub_runs() {
   local check=$1 want=$2 on=${5:-$M} n got
@@ -140,11 +148,11 @@ hub_packages() {
   hub_do package-yank ok package yank "$WHO/$HUB_PKG@0.1.1"
   while IFS=$'\t' read -r check verdict what; do expect "$check" "$verdict" "$what"; done < <(uv run -q --no-project \
     --with pyyaml python -I "$HERE/suites/hub/contract.py" "$HUB_URL" yanked "$WHO" "$HUB_PKG" 0.1.1)
-  hub_do package-remove ok package remove "$WHO/$HUB_PKG" --on "$M"
+  hub_uninstall package-remove "$WHO/$HUB_PKG" --on "$M"
   hub_runs package-skips-yanked 0.1.0 "$WHO/$HUB_PKG"
   hub_runs package-pinned-yanked 0.1.1 "$WHO/$HUB_PKG" 0.1.1
   hub_do package-unyank ok package yank --undo "$WHO/$HUB_PKG@0.1.1"
-  hub_do package-remove-again ok package remove "$WHO/$HUB_PKG" --on "$M"
+  hub_uninstall package-remove-again "$WHO/$HUB_PKG" --on "$M"
   hub_runs package-unyanked 0.1.1 "$WHO/$HUB_PKG"
   hub_candidate 0.1.2
   hub_runs package-candidate-skipped 0.1.1 "$WHO/$HUB_PKG"

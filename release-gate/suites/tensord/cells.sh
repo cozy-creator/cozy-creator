@@ -57,7 +57,7 @@ fi
 # An unversioned run stays on what the machine holds and `package install` of it, unversioned, moves it, with nothing published (cl-748).
 read -r newest older <<< "$(released anima)"
 if [ -n "$older" ]; then
-  "$CLI" package remove anima --on "$M" -y > "$T/unversioned-remove.log" 2>&1
+  "$CLI" package uninstall anima --on "$M" -y > "$T/unversioned-remove.log" 2>&1
   "$CLI" package install "anima@$older" --on "$M" -y > "$T/unversioned-install.log" 2>&1
   n1=$(submit anima/generate prompt="masterpiece, anime illustration of $CHAR, whatever is installed" seed:=$((R + 37))); until_status "$n1" terminal
   "$CLI" package install anima --on "$M" -y > "$T/unversioned-update.log" 2>&1

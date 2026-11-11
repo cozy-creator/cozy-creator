@@ -93,6 +93,11 @@ def main() -> None:
         run("LoRA download help", ["lora", "download", "--help"])
         run("local model removal help", ["model", "remove", "--help"])
         run("local LoRA removal help", ["lora", "remove", "--help"])
+        package_help = run("package help", ["package", "--help"]).stdout
+        assert re.search(r"^  uninstall\s", package_help, re.MULTILINE), "package uninstall is missing from help"
+        assert not re.search(r"^  remove\s", package_help, re.MULTILINE), "retired package remove is still listed"
+        run("package uninstall help", ["package", "uninstall", "--help"])
+        run("removed package remove", ["package", "remove", "--help"], code=2)
         run("LoRA metadata help", ["lora", "edit", "--help"])
         run("LoRA upload help", ["lora", "upload", "--help"])
         run("LoRA cloud deletion help", ["lora", "delete", "--help"])

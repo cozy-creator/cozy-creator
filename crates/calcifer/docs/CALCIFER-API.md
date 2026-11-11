@@ -645,7 +645,7 @@ The CLI resolves the current directory to an existing project and sends its abso
 | `cozy package ls --on` | `GET /v1/machines/{name}`, `GET /v1/machines/{name}/packages?fresh=true`; `--on all`: `GET /v1/machines` |
 | `cozy package info` | `GET /v1/packages/{org}/{name}` |
 | `cozy package install` | local code's tree `PUT`, `POST /v1/runs` of `cozy/package_install` (`POST /v1/run-quotes` first for `new`); `GET /v1/runs/{id}/events` |
-| `cozy package remove` | `POST /v1/runs` of `cozy/package_remove`; `GET /v1/runs/{id}/events` |
+| `cozy package uninstall` | `POST /v1/runs` of `cozy/package_remove`; `GET /v1/runs/{id}/events` |
 | `cozy package yank [--undo]` | `POST` (`DELETE`) `/v1/packages/{org}/{name}/releases/{release}/yank` |
 | `cozy package delete` | `DELETE /v1/packages/{org}/{name}` |
 | `cozy package lock` | the package's tree `PUT`, `POST /v1/runs` of `cozy/package_lock`, `GET /v1/runs/{id}/events`; the CLI writes the `uv.lock` its result holds |

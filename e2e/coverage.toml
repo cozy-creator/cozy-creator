@@ -85,7 +85,7 @@ test = "pr: packages"
 ["package install"]
 test = "pr: packages (gate: tensord unversioned-installed, an installed package moved to its newest)"
 "--on" = "pr: packages"
-["package remove"]
+["package uninstall"]
 test = "pr: packages"
 "--on" = "pr: packages"
 ["package lock"]

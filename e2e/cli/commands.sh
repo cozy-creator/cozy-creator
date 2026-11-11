@@ -93,9 +93,9 @@ step "packages on local"
 cozy --json package install "$here/weightless" --on local > "$OUT/install.ndjson" \
   || check "package install ./weightless --on local failed: $(grep -oE '"message": *"[^"]*"' "$OUT/install.ndjson" | tail -1)"
 cozy --json package ls --on local > "$OUT/packages.json" && grep -q 'e2e-weightless' "$OUT/packages.json" || check "package ls --on local: no local/e2e-weightless"
-cozy --json package remove local/e2e-weightless --on local > "$OUT/remove.ndjson" || check "package remove local/e2e-weightless --on local failed"
+cozy --json package uninstall local/e2e-weightless --on local > "$OUT/remove.ndjson" || check "package uninstall local/e2e-weightless --on local failed"
 cozy --json package ls --on local > "$OUT/packages-after.json" && ! grep -q 'e2e-weightless' "$OUT/packages-after.json" \
-  || check "package remove: local/e2e-weightless is still installed"
+  || check "package uninstall: local/e2e-weightless is still installed"
 
 step "models on local"
 cozy --json model download zhengpeng7/birefnet --lane "$lane" --on local > "$OUT/download.ndjson" || check "model download --lane $lane failed"
@@ -143,7 +143,7 @@ refused run-on-local run birefnet/remove_background --input "$OUT/refused.yaml" 
   || check "cozy run ./weightless/reverse --describe: $(tail -c 300 "$OUT/describe-code.json") $(tail -c 200 "$OUT/describe-code.err")"
 refused install package install birefnet
 refused install-code package install "$here/weightless"
-refused remove package remove birefnet
+refused remove package uninstall birefnet
 refused download model download zhengpeng7/birefnet
 refused upload model upload "$OUT/refused.safetensors" fidika/e2e-refused --lane f16
 refused quantize model quantize circlestone-labs/anima --lane int8 --package anima

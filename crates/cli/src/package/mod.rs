@@ -1,6 +1,6 @@
 //! `cozy package`: find packages on a Hub, keep them on machines, and publish your own.
 //!
-//! Install, update and remove are runs on a machine through Calcifer; the machine resolves and
+//! Install, update and uninstall are runs on a machine through Calcifer; the machine resolves and
 //! installs releases. `lock` and `publish` send the package by content: Calcifer locks and builds
 //! its copy with uv, never running package code, and a lock comes back for the CLI to write.
 use std::{path::PathBuf, process::ExitCode};
@@ -49,8 +49,8 @@ enum Command {
         #[command(flatten)]
         placement: Placement,
     },
-    /// Remove packages from a machine.
-    Remove {
+    /// Uninstall packages from a machine.
+    Uninstall {
         /// [org/]name or local/name.
         #[arg(required = true)]
         packages: Vec<String>,
@@ -111,10 +111,10 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
                 machine::install(ctx, named.package(), None, named.release, placement.on()?).await
             }
         },
-        Command::Remove {
+        Command::Uninstall {
             packages,
             placement,
-        } => machine::remove(ctx, &names(&packages)?, placement.on()?).await,
+        } => machine::uninstall(ctx, &names(&packages)?, placement.on()?).await,
         Command::Lock { path, upgrade, root } => author::lock(ctx, path, &upgrade, root).await,
         Command::Publish { root, yanked } => author::publish(ctx, root, yanked).await,
         Command::Delete { package } => author::delete(ctx, &PackageRef::parse(&package)?).await,
@@ -173,17 +173,40 @@ pub(crate) fn local(ctx: &Context, text: &str) -> Result<Option<PathBuf>, Error>
     }
 }
 
-/// Names to remove: `[org/]name` (or `local/name`), with no release.
+/// Names to uninstall: `[org/]name` (or `local/name`), with no release.
 fn names(texts: &[String]) -> Result<Vec<String>, Error> {
     texts
         .iter()
         .map(|text| match PackageRef::parse(text)? {
             parsed => {
                 if parsed.release.is_some() {
-                    output::warn(&format!("{text}: a machine holds one release of a package: removing {}", parsed.package()));
+                    output::warn(&format!("{text}: a machine holds one release of a package: uninstalling {}", parsed.package()));
                 }
                 Ok(parsed.package())
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::{CommandFactory, Parser};
+
+    #[derive(Debug, Parser)]
+    struct Cli {
+        #[command(flatten)]
+        args: Args,
+    }
+
+    #[test]
+    fn uninstall_is_the_only_public_spelling() {
+        let parsed = Cli::try_parse_from(["package", "uninstall", "local/example", "--on", "local"]).unwrap();
+        let Command::Uninstall { packages, .. } = parsed.args.command else { panic!("expected uninstall") };
+        assert_eq!(packages, ["local/example"]);
+        let command = Cli::command();
+        assert!(command.get_subcommands().any(|command| command.get_name() == "uninstall"));
+        assert!(!command.get_subcommands().any(|command| command.get_name() == "remove"));
+        assert_eq!(Cli::try_parse_from(["package", "remove", "local/example"]).unwrap_err().kind(), clap::error::ErrorKind::InvalidSubcommand);
+    }
 }
