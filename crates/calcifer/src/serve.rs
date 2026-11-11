@@ -44,24 +44,29 @@ fn configuration() -> Result<Loaded, Error> {
     for name in [
         "COZY_MACHINE_ROOT", "COZY_TENSORFS_ROOT", "COZY_TENSORFS_CACHE", "TENSORFS_HOME",
         "COZY_SECUREFS_PROVIDER", "TMPDIR", "TEMP", "TMP", "XDG_CACHE_HOME",
-        "UV_CACHE_DIR", "UV_TOOL_DIR", "UV_PYTHON_INSTALL_DIR", "SSL_CERT_FILE", "SSL_CERT_DIR",
+        "UV_CACHE_DIR", "UV_TOOL_DIR", "UV_PYTHON_INSTALL_DIR", "SSL_CERT_FILE",
     ] {
         if let Some(value) = std::env::var_os(name).filter(|value| !value.is_empty()) {
             let path = std::path::absolute(value).map_err(failed)?;
             process::set_environment(std::ffi::OsStr::new(name), path.as_os_str());
         }
     }
-    if let Some(value) = std::env::var_os("PATH") {
-        let paths = std::env::split_paths(&value)
-            .map(|path| {
-                let path = if path.as_os_str().is_empty() { std::path::PathBuf::from(".") } else { path };
-                std::path::absolute(path)
-            })
-            .collect::<std::io::Result<Vec<_>>>()
-            .map_err(failed)?;
-        let paths = std::env::join_paths(paths)
-            .map_err(|e| Error::new(Kind::Internal, "calcifer_path", e.to_string()))?;
-        process::set_environment(std::ffi::OsStr::new("PATH"), &paths);
+    for (name, empty_is_current_directory) in [("PATH", true), ("SSL_CERT_DIR", false)] {
+        if let Some(value) = std::env::var_os(name) {
+            let paths = std::env::split_paths(&value)
+                .map(|path| {
+                    if path.as_os_str().is_empty() {
+                        if !empty_is_current_directory { return Ok(path); }
+                        return std::path::absolute(".");
+                    }
+                    std::path::absolute(path)
+                })
+                .collect::<std::io::Result<Vec<_>>>()
+                .map_err(failed)?;
+            let paths = std::env::join_paths(paths)
+                .map_err(|e| Error::new(Kind::Internal, "calcifer_path", e.to_string()))?;
+            process::set_environment(std::ffi::OsStr::new(name), &paths);
+        }
     }
     let mut loaded = config::load()?;
     for (name, path) in [
