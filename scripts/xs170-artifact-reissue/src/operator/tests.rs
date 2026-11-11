@@ -206,12 +206,20 @@ fn model_card(model: &str, rows: &[&Mapping]) -> Value {
 fn auth(headers: &HeaderMap) {
     assert_eq!(headers.get("authorization").unwrap(), "Bearer fixture-only");
 }
+fn canonical(headers: &HeaderMap) {
+    assert_eq!(headers.get_all("accept").iter().count(), 1);
+    assert_eq!(
+        headers.get("accept").unwrap(),
+        "application/vnd.cozy.model+json;version=2"
+    );
+}
 async fn card(
     State(state): State<FixtureState>,
     RoutePath((org, name)): RoutePath<(String, String)>,
     headers: HeaderMap,
 ) -> Json<Value> {
     auth(&headers);
+    canonical(&headers);
     let model = format!("{org}/{name}");
     state
         .calls
@@ -310,6 +318,7 @@ async fn publish(
     Json(body): Json<Value>,
 ) -> (StatusCode, Json<Value>) {
     auth(&headers);
+    canonical(&headers);
     let model = format!("{org}/{name}");
     state
         .calls
