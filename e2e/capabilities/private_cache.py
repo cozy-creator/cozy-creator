@@ -225,10 +225,10 @@ class Fixture:
         assert not admitted.get("refusal"), (label, admitted)
         connection, response = self.machine("GET", "/v1/runs/" + ident + "/events", stream=True)
         outcome: Outcome | None = None
-        data = []
+        data: list[str] = []
         try:
-            while line := response.readline():
-                line = line.decode().strip()
+            while raw := response.readline():
+                line = raw.decode().strip()
                 if line.startswith("data:"):
                     data.append(line[5:].strip())
                 elif not line and data:
