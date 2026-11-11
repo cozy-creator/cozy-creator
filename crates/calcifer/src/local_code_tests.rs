@@ -124,3 +124,42 @@ fn source_describer_refuses_invalid_bounds_before_invoking_uv() {
     .unwrap_err();
     assert_eq!(error.code, "runtime_requirement_invalid");
 }
+
+#[test]
+#[ignore = "requires uv and the published Runtime; hosted cli-describe-errors workflow runs it explicitly"]
+fn source_describer_reports_the_published_runtime_diagnostic_and_remedy() {
+    let project = tempfile::tempdir().unwrap();
+    fs::create_dir(project.path().join("invalid_app")).unwrap();
+    fs::write(project.path().join("pyproject.toml"), r#"
+[project]
+name = "invalid-app"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = ["cozy-runtime==0.45.0"]
+[project.entry-points."cozy.application"]
+default = "invalid_app:app"
+[tool.uv.build-backend]
+module-name = "invalid_app"
+module-root = ""
+"#).unwrap();
+    fs::write(project.path().join("invalid_app/__init__.py"), r#"from cozy_runtime.author import App
+import tensorfs
+from tensorfs import _ext
+
+app = App()
+
+@app.entrypoint(accelerator=False)
+def echo(value: int) -> int:
+    return value
+"#).unwrap();
+    let error = describe_with(Path::new("uv"), project.path(), "3.12", Some("0.45.0")).unwrap_err();
+    println!("{}", serde_json::to_string(&api::error::Envelope { error: error.clone() }).unwrap());
+    assert_eq!(error.kind, api::error::Kind::Validation);
+    assert_eq!(error.code, "describe_failed");
+    assert!(error.message.contains("internal_import: import tensorfs"), "{}", error.message);
+    assert_eq!(error.message.lines().count(), 1);
+    assert!(error.remedy.as_deref().is_some_and(|remedy| remedy.contains("surface must be valid")));
+    let encoded = serde_json::to_value(api::error::Envelope { error: error.clone() }).unwrap();
+    assert_eq!(encoded["error"]["message"], error.message);
+    assert!(!encoded["error"]["message"].as_str().unwrap().contains("\"error\""));
+}
