@@ -81,6 +81,7 @@ def main() -> None:
         run("removed run play", ["run", "play", "1", "--expires", "1h"], code=2)
         run("internal controller help", ["calcifer", "--help"])
         run("internal worker help", ["machine", "serve", "--help"])
+        run("removed worker bootstrap flag", ["machine", "serve", "--service-ready", "1"], code=2)
         run("removed image override", ["machine", "rent", "example", "--image-digest", "sha256:" + "0" * 64], code=2)
         run("removed memo bypass", ["run", "example/function", "--no-memo"], code=2)
         for words in (
