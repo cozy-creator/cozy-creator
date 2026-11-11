@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 import av
 import numpy as np
@@ -34,7 +35,10 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
     torch.manual_seed(0)
     seedvr.DIT, seedvr.VAE = DIT, VAE  # this process only: the executor takes PATCH
     with defined():
-        built: dict[str, torch.nn.Module] = {**seedvr.modules(), "conditioning": seedvr.Conditioning()}
+        made = seedvr.modules()
+        # cast: upstream's VAE wrapper is an nn.Module, which the package types by the calls it makes (VideoVae)
+        vae = cast(torch.nn.Module, made["vae"])
+        built: dict[str, torch.nn.Module] = {"dit": made["dit"], "vae": vae, "conditioning": seedvr.Conditioning()}
     writer = tensorfs.Writer(cache_dir=store)
     generator = torch.Generator().manual_seed(1)
     for name, module in built.items():
