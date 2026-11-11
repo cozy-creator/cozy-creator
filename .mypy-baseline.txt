@@ -297,10 +297,8 @@ release-gate/suites/execution/child-saved-file/ci_child_saved_file/__init__.py: 
 release-gate/suites/execution/child-saved-file/ci_child_saved_file/__init__.py: [union-attr] Item "None" of "Path | None" has no attribute "read_bytes"
 release-gate/suites/execution/child-saved-file/ci_child_saved_file/__init__.py: [union-attr] Item "None" of "Path | None" has no attribute "read_bytes"
 release-gate/suites/execution/child-saved-file/ci_child_saved_file/__init__.py: [union-attr] Item "None" of "_Broker | None" has no attribute "exchange"
-release-gate/suites/execution/kernel-regret/ci_kernel_regret/__init__.py: [arg-type] Argument 2 to "_warm" has incompatible type "int"; expected "bool"
 release-gate/suites/execution/kernel-regret/ci_kernel_regret/__init__.py: [assignment] Incompatible types in assignment (expression has type "list[str]", variable has type "tuple[str, ...]")
 release-gate/suites/execution/kernel-regret/ci_kernel_regret/__init__.py: [assignment] Incompatible types in assignment (expression has type "tuple[int, int, int]", variable has type "tuple[int, int, int, int]")
-release-gate/suites/execution/kernel-regret/ci_kernel_regret/__init__.py: [call-arg] Too many arguments for "_warm"
 release-gate/suites/kernels/ci_kernels/__init__.py: [unreachable] Subclass of "Tensor" and "tuple[Any, ...]" cannot exist: would have incompatible method signatures
 release-gate/suites/kernels/ci_kernels/__init__.py: [unreachable] Subclass of "Tensor" and "tuple[Any, ...]" cannot exist: would have incompatible method signatures
 release-gate/suites/kernels/ci_kernels/__init__.py: [unreachable] Subclass of "Tensor" and "tuple[Any, ...]" cannot exist: would have incompatible method signatures

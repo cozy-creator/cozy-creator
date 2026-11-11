@@ -159,16 +159,16 @@ def _attend(ready: "dict[str, attention.Ready]", shape: tuple[int, ...]) -> Row:
 
 
 def _sol_built(q: torch.Tensor) -> None:
-    """Upstream Sol's CuTe object and preprocess kernels for this length, waited for: until they
-    land, a sparse step serves its dense reference (`attention_sol._ready`, `_preprocessed`)."""
+    """Upstream Sol's CuTe object for this length and its preprocess kernels for this card, waited
+    for: until they land, a sparse step serves its dense reference (`attention_sol._ready`, `_preprocessed`)."""
     card, store, index = attention_sol._capability(q.device), kernel_cache.configured(), q.device.index or 0
     if card is None or store is None:
         return
-    tokens, heads, found = q.shape[1], q.shape[2], attention_sol._job_for(q.shape[1], card)
+    found = attention_sol._job_for(q.shape[1], card)
     kernel_ready.wait(f"{attention_sol.KERNEL} {found.key.digest[:16]}",
                       partial(attention_sol._open, store, found, card))  # fmt: skip
-    kernel_ready.wait(f"{attention_sol.KERNEL} preprocess {tokens}x{heads} cuda:{index}",
-                      partial(attention_sol._warm, index, tokens, heads))  # fmt: skip
+    kernel_ready.wait(f"{attention_sol.KERNEL} preprocess cuda:{index}",
+                      partial(attention_sol._warm, index))  # fmt: skip
 
 
 def _sparse(row: arch.Row, ready: "dict[str, attention.Ready]", shape: tuple[int, ...]) -> Row:
