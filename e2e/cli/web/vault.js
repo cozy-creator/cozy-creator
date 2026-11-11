@@ -388,6 +388,130 @@ const newPage = async () => {
   await until('timed unlock', () => page.locator('.drawer [data-vault-state]').getAttribute('data-vault-state'), (state) => state === 'unlocked', 45000);
   await until('absolute lock', () => page.locator('.drawer [data-vault-state]').getAttribute('data-vault-state'), (state) => state === 'locked', 20000);
   check('polling_does_not_extend_unlock', true);
+
+  stage = 'decrypt waits for fresh plain status';
+  const openSection = async (name) => {
+    const summary = page.locator('summary').filter({ hasText: new RegExp(`^${name}$`) });
+    if (!await summary.evaluate((element) => element.parentElement.open)) await summary.click();
+  };
+  await page.getByLabel('Unlock with').selectOption('recovery');
+  await page.getByLabel('Recovery secret', { exact: true }).fill(recovery);
+  await openSection('Lock timing');
+  await page.getByLabel('Lock after inactivity (seconds; 0 disables)').fill('0');
+  await page.getByLabel('Maximum unlock duration (seconds; 0 disables)').fill('0');
+  await page.getByRole('button', { name: 'Unlock project', exact: true }).click();
+  await until('unlocked before decryption', () => page.locator('.drawer [data-vault-state]').getAttribute('data-vault-state'), (state) => state === 'unlocked', 45000);
+  await page.locator('.react-flow').waitFor();
+  const beforeDecrypt = projectJson(folder);
+  const assetDigests = (project) => project.assets.map((asset) => [asset.name, asset.sha256]).sort(([left], [right]) => left.localeCompare(right));
+  const oldCanvas = await page.locator('.react-flow').elementHandle();
+  // Delay transport of real responses only. No status body or production handler is replaced.
+  const statusPath = (url) => url.pathname === `/v1/projects/${id}/vault`;
+  const heldStatuses = [];
+  let holdStatus = true, captureOldStatus = true, oldStatus, statusTransportError;
+  const statusRoute = async (route) => {
+    if (route.request().method() !== 'GET' || !holdStatus) return route.continue();
+    if (captureOldStatus) {
+      captureOldStatus = false;
+      try {
+        const response = await route.fetch();
+        oldStatus = { route, response, state: (await response.json()).state };
+      } catch (error) { statusTransportError = error; }
+    } else heldStatuses.push(route);
+  };
+  const liveStatuses = () => heldStatuses.filter((route) => !route.request().failure());
+  const deliver = async (route, response) => {
+    try {
+      if (response) await route.fulfill({ response });
+      else await route.continue();
+    } catch (error) {
+      if (!route.request().failure()) throw error;
+    }
+  };
+  const resumeStatus = async () => {
+    holdStatus = false;
+    for (const route of heldStatuses.splice(0)) await deliver(route);
+  };
+  const covered = () => page.evaluate(() => Boolean(document.querySelector('.gate')) && !document.querySelector('.react-flow') && !/private_vault_picture|private_after_encryption/.test(document.body.innerText));
+  await page.route(statusPath, statusRoute);
+  await until('actual old unlocked status held', () => {
+    if (statusTransportError) throw statusTransportError;
+    return oldStatus?.state;
+  }, (state) => state === 'unlocked', 45000);
+  await openSection('Decrypt project');
+  await page.getByRole('button', { name: 'Decrypt project', exact: true }).click();
+  await until('same project converted to plain', () => JSON.parse(vault(folder, 'status')), (status) => status.encrypted === false && status.state === 'plain', 45000);
+  await until('plain event covers old private view', covered, Boolean, 45000);
+  check('decrypt_purges_private_canvas_before_status', oldCanvas !== null && !await oldCanvas.evaluate((element) => element.isConnected));
+  check('decrypt_keeps_browser_persistence_private_until_status', await page.evaluate((project) => !['cozy.view:', 'cozy.selection:', 'cozy.more:'].some((prefix) => localStorage.getItem(prefix + project) !== null), id));
+  await deliver(oldStatus.route, oldStatus.response);
+  await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+  check('pre_decrypt_status_cannot_reopen_private_view', await covered());
+  await until('fresh status request held', () => liveStatuses().length, (count) => count > 0, 45000);
+  const failedStatus = liveStatuses()[0];
+  heldStatuses.splice(heldStatuses.indexOf(failedStatus), 1);
+  await failedStatus.abort('failed');
+  await until('fresh status network error observed', () => failedStatus.request().failure(), Boolean, 45000);
+  await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+  check('failed_plain_status_recheck_keeps_view_covered', await covered());
+  await resumeStatus();
+  await until('fresh plain status reveals project', () => page.locator('.drawer [data-vault-state]').getAttribute('data-vault-state'), (state) => state === 'plain', 45000);
+  await page.locator('.react-flow').waitFor();
+  const decrypted = projectJson(folder);
+  check('decrypt_preserves_project_identity_and_assets', decrypted.id === id && JSON.stringify(assetDigests(decrypted)) === JSON.stringify(assetDigests(beforeDecrypt)));
+  await oldCanvas.dispose();
+  await page.unroute(statusPath, statusRoute);
+  await page.goto(href);
+  const plainAt = await openCanvas(page);
+  await page.mouse.move(plainAt.x, plainAt.y);
+  await page.mouse.down();
+  await page.mouse.move(plainAt.x + 24, plainAt.y + 16, { steps: 4 });
+  await page.mouse.up();
+  await until('ordinary viewport persists after fresh plain status', () => page.evaluate((project) => localStorage.getItem(`cozy.view:${project}`) !== null, id), Boolean, 45000);
+  check('fresh_plain_status_allows_browser_persistence', true);
+  const plainImported = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === `/v1/projects/${id}/imports` && response.ok());
+  const plainImportAt = await openCanvas(page);
+  await drop(page, [{ name: 'after_decrypt_plain.png', type: 'image/png', bytes: png(97) }], plainImportAt.x, plainImportAt.y);
+  await page.locator('.nm-field').waitFor();
+  await page.keyboard.press('Enter');
+  await plainImported;
+  await until('ordinary edit lands after decryption', () => projectJson(folder).assets.some((asset) => asset.name === 'after_decrypt_plain' && asset.sha256), Boolean, 45000);
+  check('fresh_plain_status_allows_editing', true);
+
+  stage = 'UI encryption after in-place decryption';
+  await page.goto(`${href}/vault`);
+  await page.locator('.drawer [data-vault-state="plain"]').waitFor();
+  await until('ordinary imported media ready for encryption', () => {
+    const state = projectJson(folder);
+    return !state.busy && !state.moving && state.assets.find((asset) => asset.name === 'after_decrypt_plain')?.width > 0;
+  }, Boolean, 45000);
+  await until('ordinary reads drained before re-encryption', () => projectReads.size, (count) => count === 0, 45000);
+  await page.locator('.drawer input[type=password]').nth(0).fill('synthetic browser passphrase');
+  await page.locator('.drawer input[type=password]').nth(1).fill('synthetic browser passphrase');
+  await page.getByLabel('Remove the verified unencrypted source after conversion').check();
+  await page.getByRole('button', { name: 'Enable encryption', exact: true }).click();
+  await page.locator('[aria-label="Save recovery secret"] pre').waitFor();
+  const replacementRecovery = await page.locator('[aria-label="Save recovery secret"] pre').innerText();
+  check('decrypted_project_can_be_encrypted_again', projectJson(folder).id === id && JSON.parse(vault(folder, 'status')).encrypted === true);
+
+  stage = 'plain recheck observes a later locked generation';
+  holdStatus = true; captureOldStatus = false;
+  await page.route(statusPath, statusRoute);
+  await openSection('Decrypt project');
+  await page.getByRole('button', { name: 'Decrypt project', exact: true }).click();
+  await until('second in-place decryption complete', () => JSON.parse(vault(folder, 'status')), (status) => status.encrypted === false && status.state === 'plain', 45000);
+  await until('second plain transition awaits status', covered, Boolean, 45000);
+  check('decrypt_removes_one_time_recovery_disclosure', await page.locator('[aria-label="Save recovery secret"]').count() === 0 && !(await page.locator('body').innerText()).includes(replacementRecovery));
+  const competing = JSON.parse(execFileSync(process.env.COZY, ['--json', 'vault', '--directory', folder, 'encrypt', '--passphrase-file', '-', '--remove-plaintext', '--idle', '0'], { cwd: scratch, input: 'synthetic browser passphrase\n', encoding: 'utf8', timeout: 180000 }));
+  if (!competing.vault.encrypted || competing.vault.state !== 'unlocked') throw new Error('competing encryption did not finish unlocked');
+  delete competing.recovery_secret;
+  requestLock(folder);
+  await drainedLock(folder);
+  await until('new encrypted generation concealed', covered, Boolean, 45000);
+  await resumeStatus();
+  await until('fresh status confirms current generation locked', () => page.locator('[data-vault-state="locked"]').count(), (count) => count > 0, 45000);
+  check('plain_recheck_respects_current_locked_generation', await covered() && await page.locator('[aria-label="Save recovery secret"]').count() === 0);
+  await page.unroute(statusPath, statusRoute);
   check('no_external_secret_delivery', outbound.length === 0);
   check('secret_actions_skip_idempotency_cache', secretIdempotency.length === 0);
   check('no_page_errors', errors.length === 0);

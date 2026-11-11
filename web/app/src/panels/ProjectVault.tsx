@@ -90,6 +90,15 @@ function VaultBody({ id }: { id: string }) {
     const epoch = bridge.projectEpoch(id)
     const answer = await client.vaultChange(id, { action, ...fields })
     if (!mounted.current) { delete answer.recovery_secret; return answer.vault }
+    if (action === "decrypt") {
+      // The mutation reply cannot reopen a view: a concurrent conversion or lock
+      // may already have superseded it. The status query verifies current storage.
+      setNewRecovery(null)
+      delete answer.recovery_secret
+      await queries.invalidateQueries({ queryKey: vaultKey(id) })
+      await queries.invalidateQueries({ queryKey: ["projects"] })
+      return answer.vault
+    }
     if (bridge.projectEpoch(id) !== epoch) {
       // Conversion/rekey can briefly close their own view. Recheck that completed
       // project before showing its secret; an unrelated lock suppresses late replies.
