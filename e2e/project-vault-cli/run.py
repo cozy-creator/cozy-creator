@@ -759,6 +759,9 @@ foreach ($rule in $allowed) {
         refused = self.vault('decrypt', refusal=True)
         assert json.loads(refused.stdout)['error']['code'] == 'project_locked'
         view = self.view(self.vault('unlock', '--recovery-file', self.recovery('recovery3'), '--idle', 0))
+        readonly = view / 'readonly-retained.txt'
+        readonly.write_text(self.canary)
+        readonly.chmod(0o444)
         held_media = self.find_media(view, sources[0])
         with held_media.open('rb'):
             refused = self.vault('decrypt', refusal=True)
@@ -773,6 +776,8 @@ foreach ($rule in $allowed) {
         self.assert_inaccessible(view)
         for path in sources:
             self.find_media(self.project, path)
+        assert (self.project / readonly.name).read_text() == self.canary
+        assert (self.project / readonly.name).stat().st_mode & 0o222 == 0
         assert self.yaml() == state
         assert self.command('status', cwd=self.project, full=True)['project']['id'] == self.project_id
         assert self.vault('decrypt')['vault']['state'] == 'plain'
@@ -804,6 +809,9 @@ foreach ($rule in $allowed) {
         assert self.command('status', cwd=self.project, full=True)['project']['id'] == self.project_id
         for path in sources:
             self.find_media(view, path)
+        assert (view / readonly.name).read_text() == self.canary
+        assert (view / readonly.name).stat().st_mode & 0o222 == 0
+        self.cell('readonly_file_survives_decrypt_and_reencrypt')
         self.vault('lock', allow_locking=True)
         self.shutdown()
         self.receipt['reencrypted_files_scanned'] = self.scan(self.project)
