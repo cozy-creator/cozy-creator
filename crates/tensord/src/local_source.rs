@@ -320,7 +320,7 @@ impl LocalSources {
         &self,
         service: &Service,
         actor: &str,
-        alias: String,
+        manifest_digest: &str,
         manifest: Manifest,
         digest: &str,
         job: &Job,
@@ -342,8 +342,9 @@ impl LocalSources {
                 return Err(refused("local_source_invalid", format!("index {name:?} = {url:?} is not a named HTTP(S) index")));
             }
         }
-        // This machine's PyTorch first (its own, the first time): the environment is keyed on it.
+        // This machine's PyTorch first (its own, the first time): the environment and alias are keyed on it.
         self.publisher.layer(job, None).map_err(failed)?;
+        let alias = alias(&self.publisher, manifest_digest);
         let pyproject = fs::read_to_string(project.join("pyproject.toml"))?;
         let locked = match fs::read_to_string(project.join("uv.lock")) {
             Ok(lock) => Some(published::read_lock(&pyproject, &lock, None).map_err(failed)?),
@@ -500,7 +501,6 @@ impl LocalSources {
         run: &str,
         observer: published::Observer,
     ) -> Result<Installation, Refused> {
-        let alias = alias(&self.publisher, digest);
         let package = open_manifest(&self.objects, actor, digest).map(|(m, _)| m.package).unwrap_or_default();
         let installer = self.installer(&package);
         let _installing = match installer.turn.try_lock() {
@@ -523,6 +523,7 @@ impl LocalSources {
         };
         *installer.holder.lock().unwrap() = Some(service.engine.caller_id(run));
         let _held = Holder(&installer.holder);
+        let alias = alias(&self.publisher, digest);
         if let Some(held) = service.engine.installation(actor, &alias)? {
             if service.catalog.resolve(&held.generation).is_ok() {
                 self.preparing.lock().unwrap().insert(run.to_string(), held.generation.clone());
@@ -544,7 +545,7 @@ impl LocalSources {
             }),
             ..Default::default()
         };
-        let installed = self.install_live(service, actor, alias, manifest, &object.sha256, &job)?;
+        let installed = self.install_live(service, actor, digest, manifest, &object.sha256, &job)?;
         self.preparing.lock().unwrap().insert(run.to_string(), installed.generation.clone());
         Ok(installed)
     }
