@@ -1411,7 +1411,8 @@ video.preview.on {
   cursor: grab;
   z-index: 1;
 }
-.media:has(.live) .take-out {
+.media:has(.live) .take-out,
+.media:has(.orbit) .take-out {
   display: none;
 }
 /* The one being looked at, and the one approved: each plain at a glance, on the row and the tile. */
