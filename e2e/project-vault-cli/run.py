@@ -899,8 +899,21 @@ foreach ($rule in $allowed) {
                 assert 'project_busy' in str(error)
             else:
                 raise AssertionError('manual down ignored a live native reader and working directory')
-            activity = self.request('POST', self.project_route() + '/vault', body={'action': 'activity'}, holder=holder)
-            assert activity['vault']['state'] == 'locking'
+            route = self.project_route() + '/vault'
+            try:
+                activity = self.request('POST', route, body={'action': 'activity'}, holder=holder)
+            except RuntimeError as error:
+                # Global admission is open; the mount's pending close may still own ACCESS.
+                prefix = f'POST {route} refused (409): '
+                detail = str(error)
+                if not detail.startswith(prefix):
+                    raise
+                refused: Payload = json.loads(detail[len(prefix):])
+                if refused.get('error', {}).get('code') != 'project_busy':
+                    raise
+            else:
+                assert self.commands[-1].get('http_status') == 200
+                assert activity['vault']['state'] == 'locking'
             self.cell('manual_down_busy_preserves_normal_admission')
             # Main-only TERM is systemd KillMode=mixed's normal signal. Its owned
             # provider must stay alive while this real external reader holds it.
