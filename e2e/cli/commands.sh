@@ -104,12 +104,12 @@ cozy --json package ls --on local > "$OUT/packages-after.json" && ! grep -q 'e2e
   || check "package uninstall: local/e2e-weightless is still installed"
 
 step "models on local"
-cozy --json model download zhengpeng7/birefnet --lane "$lane" --on local > "$OUT/download.ndjson" || check "model download --lane $lane failed"
-cozy --json model download zhengpeng7/birefnet local/e2e-birefnet > "$OUT/download-alias.ndjson" || check "model download zhengpeng7/birefnet local/e2e-birefnet failed"
+cozy --json model install zhengpeng7/birefnet --lane "$lane" --on local > "$OUT/download.ndjson" || check "model install --lane $lane failed"
+cozy --json model install zhengpeng7/birefnet local/e2e-birefnet > "$OUT/download-alias.ndjson" || check "model install zhengpeng7/birefnet local/e2e-birefnet failed"
 # A local .safetensors file, made into a model the machine keeps by name: the file is written to the machine
 # and made from its object (object://sha256:…/<name>). No format knows its one key `w`, so it is kept as-is.
 safetensors_file "$OUT/tiny.safetensors"
-cozy --json model download "$OUT/tiny.safetensors" local/e2e-tiny --source-format as-is > "$OUT/download-file.ndjson" || check "model download ./tiny.safetensors local/e2e-tiny failed: $(grep -oE '"message": *"[^"]*"' "$OUT/download-file.ndjson" | tail -1)"
+cozy --json model install "$OUT/tiny.safetensors" local/e2e-tiny --source-format as-is > "$OUT/download-file.ndjson" || check "model install ./tiny.safetensors local/e2e-tiny failed: $(grep -oE '"message": *"[^"]*"' "$OUT/download-file.ndjson" | tail -1)"
 cozy --json model ls --on local > "$OUT/models.json" || check "model ls --on local failed"
 grep -q e2e-tiny "$OUT/models.json" || check "model ls --on local: the local file's local/e2e-tiny is not listed"
 J --arg lane "$lane" 'any(.models[]; .model == "zhengpeng7/birefnet" and .lane == $lane)' "$OUT/models.json" || check "model ls --on local: no zhengpeng7/birefnet in lane $lane after --lane $lane"
@@ -150,7 +150,7 @@ refused run-on-local run birefnet/remove_background --input "$OUT/refused.yaml" 
 refused install package install birefnet
 refused install-code package install "$here/weightless"
 refused remove package uninstall birefnet
-refused download model download zhengpeng7/birefnet
+refused download model install zhengpeng7/birefnet
 refused upload model upload "$OUT/refused.safetensors" fidika/e2e-refused --lane f16
 refused quantize model quantize circlestone-labs/anima --lane int8 --package anima
 refused update machine update local --runtime 0.30.0 -y
@@ -390,7 +390,7 @@ AFTER='grep -c "name = \"e2e-weightless\"" uv.lock' DIR=weightless inside lock -
 # Locked in Calcifer's copy of the tree, which it holds by the tree's digest.
 ls -d "$HOME"/.cozy/calcifer/code/*/tree/e2e_weightless > /dev/null 2>&1 || check "unseen lock: Calcifer holds no copy of the package: $(ls "$HOME/.cozy/calcifer/code" 2> /dev/null | head -3)"
 DIR=weightless refused_inside publish not_logged_in package publish
-inside model --json model download ./tiny.safetensors local/e2e-unseen --source-format as-is --on local \
+inside model --json model install ./tiny.safetensors local/e2e-unseen --source-format as-is --on local \
   && cozy --json model ls --on local | grep -q e2e-unseen || check "unseen model: local/e2e-unseen is not on local"
 if [ -f "${CAND_RT:-}" ]; then
   inside runtime --json machine update local --runtime "/wheels/$(basename "$CAND_RT")" -y || true
@@ -599,7 +599,7 @@ cozy --json run ls --state canceled > "$OUT/canceled.json" && J --argjson n "${n
   || check "run ls --state canceled: wrong runs"
 }
 
-# After `basics`: its model downloads are runs of zhengpeng7/birefnet.
+# After `basics`: its model installs are runs of zhengpeng7/birefnet.
 run_filters() {
 step "run ls filters"
 cozy --json run ls --all --package zhengpeng7/birefnet > "$OUT/by-package.json" && J '(.runs | length > 0) and all(.runs[]; .target | startswith("zhengpeng7/birefnet"))' "$OUT/by-package.json" \

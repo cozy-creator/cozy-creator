@@ -29,15 +29,17 @@ enum LoraVerb {
     /// Browse LoRAs from the model catalog.
     #[command(alias = "list")]
     Ls(Ls),
-    /// Download a LoRA to a machine.
-    Download(Download),
-    /// Remove downloaded copies from this machine.
-    Remove(Remove),
+    /// Install a LoRA on a machine.
+    Install(Download),
+    /// Uninstall downloaded copies from this machine.
+    Uninstall(Remove),
     /// Update a LoRA's family, tags, trigger words or recommended strength.
     Edit(LoraEdit),
     /// Upload a LoRA as a private commit.
+    #[command(hide = true)]
     Upload(LoraUpload),
     /// Publish commits as a LoRA release.
+    #[command(hide = true)]
     Publish(Publish),
     /// Delete a LoRA, release or commit from TensorHub.
     Delete(Delete),
@@ -46,8 +48,8 @@ enum LoraVerb {
 pub(crate) async fn lora_exec(ctx: &Context, args: LoraArgs) -> Result<ExitCode, Error> {
     match args.verb {
         LoraVerb::Ls(args) => list(ctx, args, "lora").await,
-        LoraVerb::Download(args) => machine::download(ctx, args).await,
-        LoraVerb::Remove(args) => machine::remove(ctx, &args.model).await,
+        LoraVerb::Install(args) => machine::download(ctx, args).await,
+        LoraVerb::Uninstall(args) => machine::remove(ctx, &args.model).await,
         LoraVerb::Edit(mut args) => {
             args.edit.trigger = args.trigger;
             args.edit.strength = args.strength;
@@ -71,15 +73,18 @@ enum Verb {
     Ls(Ls),
     /// Update a model's family or tags.
     Edit(Edit),
-    /// Download a model to a machine.
-    Download(Download),
-    /// Remove downloaded copies from this machine.
-    Remove(Remove),
+    /// Install a model on a machine.
+    Install(Download),
+    /// Uninstall downloaded copies from this machine.
+    Uninstall(Remove),
     /// Upload weights as a private model commit.
+    #[command(hide = true)]
     Upload(Upload),
     /// Create a model commit in a package-defined quantization lane.
+    #[command(hide = true)]
     Quantize(Quantize),
     /// Publish commits as a model release.
+    #[command(hide = true)]
     Publish(Publish),
     /// Delete a model, release or commit from TensorHub.
     Delete(Delete),
@@ -167,14 +172,25 @@ pub(crate) struct Download {
     /// Model or commit, hf://…, civitai://…, or an HTTPS URL.
     #[arg(value_name = "REFERENCE")]
     model: String,
-    /// Local alias for the downloaded model.
-    #[arg(value_name = "local/ALIAS")]
+    /// Local name for the downloaded copy. The local/ prefix is optional.
+    #[arg(value_name = "NAME", value_parser = local_alias)]
     alias: Option<String>,
     /// Source format, such as h3.lora. Usually detected.
     #[arg(long = "source-format", value_name = "FORMAT")]
     format: Option<String>,
     #[command(flatten)]
     placement: crate::run::Placement,
+}
+
+fn local_alias(text: &str) -> Result<String, String> {
+    let text = text.trim();
+    let name = match text.split_once('/') {
+        Some((org, name)) if org.eq_ignore_ascii_case("local") => name,
+        Some(_) => return Err("Use a local name; downloading does not create a Hub repository".into()),
+        None => text,
+    };
+    let repo = api::model_ref::Repo::parse(&format!("local/{name}")).map_err(|error| error.message)?;
+    Ok(repo.to_string())
 }
 
 #[derive(clap::Args, Debug)]
@@ -280,8 +296,8 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         Verb::Edit(args) => catalog::edit(ctx, args).await,
         Verb::Publish(args) => releases::publish(ctx, args, "model").await,
         Verb::Delete(args) => releases::delete(ctx, args, "model").await,
-        Verb::Download(args) => machine::download(ctx, args).await,
-        Verb::Remove(args) => machine::remove(ctx, &args.model).await,
+        Verb::Install(args) => machine::download(ctx, args).await,
+        Verb::Uninstall(args) => machine::remove(ctx, &args.model).await,
         Verb::Upload(args) => machine::upload(ctx, args).await,
         Verb::Quantize(args) => quantize::quantize(ctx, args).await,
     }
@@ -311,6 +327,19 @@ mod tests {
     }
 
     #[test]
+    fn download_names_are_local_without_an_explicit_prefix() {
+        for name in ["my-model", "local/my-model"] {
+            let model = ModelCommand::try_parse_from(["model", "install", "hf://owner/model", name]).unwrap();
+            let Verb::Install(model) = model.args.verb else { panic!("expected download") };
+            assert_eq!(model.alias.as_deref(), Some("local/my-model"));
+            let lora = LoraCommand::try_parse_from(["lora", "install", "civitai://123", name]).unwrap();
+            let LoraVerb::Install(lora) = lora.args.verb else { panic!("expected download") };
+            assert_eq!(lora.alias.as_deref(), Some("local/my-model"));
+        }
+        assert!(ModelCommand::try_parse_from(["model", "install", "hf://owner/model", "owner/model"]).is_err());
+    }
+
+    #[test]
     fn adapter_metadata_is_only_exposed_in_lora_commands() {
         for (flag, value) in [("--trigger", "word"), ("--strength", "0.5")] {
             let error = ModelCommand::try_parse_from(["model", "edit", "author/model", flag, value]).unwrap_err();
@@ -322,8 +351,8 @@ mod tests {
         }
         assert!(LoraCommand::try_parse_from(["lora", "edit", "author/adapter", "--trigger", "word", "--strength", "0.5"]).is_ok());
         LoraCommand::try_parse_from(["lora", "upload", "file", "author/adapter", "--lane", "bf16", "--trained-on", "base", "--strength", "0.5"]).unwrap_or_else(|error| panic!("{error}"));
-        assert!(ModelCommand::try_parse_from(["model", "remove", "author/model"]).is_ok());
-        assert!(LoraCommand::try_parse_from(["lora", "remove", "author/adapter"]).is_ok());
+        assert!(ModelCommand::try_parse_from(["model", "uninstall", "author/model"]).is_ok());
+        assert!(LoraCommand::try_parse_from(["lora", "uninstall", "author/adapter"]).is_ok());
         assert!(LoraCommand::try_parse_from(["lora", "info", "author/adapter"]).is_err());
     }
 
@@ -331,8 +360,8 @@ mod tests {
     fn model_and_lora_help_list_their_public_controls() {
         let mut cli = crate::dev::hide(crate::Cli::command());
         cli.build();
-        let names = |name: &str| cli.find_subcommand(name).unwrap().get_subcommands().map(|command| command.get_name().to_owned()).collect::<Vec<_>>();
-        assert_eq!(names("model"), ["ls", "edit", "download", "remove", "upload", "quantize", "publish", "delete"]);
-        assert_eq!(names("lora"), ["ls", "download", "remove", "edit", "upload", "publish", "delete"]);
+        let names = |name: &str| cli.find_subcommand(name).unwrap().get_subcommands().filter(|command| !command.is_hide_set()).map(|command| command.get_name().to_owned()).collect::<Vec<_>>();
+        assert_eq!(names("model"), ["ls", "edit", "install", "uninstall", "delete"]);
+        assert_eq!(names("lora"), ["ls", "install", "uninstall", "edit", "delete"]);
     }
 }

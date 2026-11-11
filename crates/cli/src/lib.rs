@@ -72,11 +72,11 @@ enum Command {
     Vault(project::vault::Args),
     /// Local, rented and added machines.
     Machine(machine::Args),
-    /// Find, download, upload and publish models.
+    /// Browse and install models.
     Model(model::Args),
-    /// Browse and download LoRAs.
+    /// Browse and install LoRAs.
     Lora(model::LoraArgs),
-    /// Find, install and publish packages.
+    /// Browse and install packages.
     Package(package::Args),
     /// Replace this binary with the newest release.
     Update(update::Args),

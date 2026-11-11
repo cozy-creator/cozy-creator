@@ -492,7 +492,7 @@ mod tests {
         let mut stack = vec![(Screen::RemoveLocalModel("local/example".into()), TableState::default())];
         let mut keys = futures_util::stream::iter([KeyCode::Enter, KeyCode::Char('q')].map(|code| Ok(Input::Key(KeyEvent::new(code, KeyModifiers::NONE)))));
         let mut signals = Signals::new().unwrap();
-        assert_eq!(drive(&ctx, &mut terminal, &mut stack, &mut keys, &mut signals).await.unwrap(), Some(model::live::Operation::Remove("local/example".into())));
-        assert_eq!(drive(&ctx, &mut terminal, &mut stack, &mut keys, &mut signals).await.unwrap(), None);
+        assert!(matches!(drive(&ctx, &mut terminal, &mut stack, &mut keys, &mut signals).await.unwrap(), Some(Operation::Model(model::live::Operation::Remove(name))) if name == "local/example"));
+        assert!(drive(&ctx, &mut terminal, &mut stack, &mut keys, &mut signals).await.unwrap().is_none());
     }
 }

@@ -90,15 +90,22 @@ def main() -> None:
         run("removed model info", ["model", "info", "--help"], code=2)
         run("model catalog pagination", ["model", "ls", "--offset", "20", "--limit", "10", "--help"])
         run("LoRA catalog help", ["lora", "ls", "--help"])
-        run("LoRA download help", ["lora", "download", "--help"])
-        run("local model removal help", ["model", "remove", "--help"])
-        run("local LoRA removal help", ["lora", "remove", "--help"])
+        run("LoRA download help", ["lora", "install", "--help"])
+        run("local model removal help", ["model", "uninstall", "--help"])
+        run("local LoRA removal help", ["lora", "uninstall", "--help"])
+        for group in ("model", "lora"):
+            group_help = run(f"{group} help", [group, "--help"]).stdout
+            for old in ("download", "remove"):
+                run(f"removed {group} {old}", [group, old, "--help"], code=2)
+            for hidden in ("upload", "publish", "quantize"):
+                assert not re.search(rf"^  {hidden}\s", group_help, re.MULTILINE), f"{group} {hidden} is still public"
         package_help = run("package help", ["package", "--help"]).stdout
+        assert not re.search(r"^  publish\s", package_help, re.MULTILINE), "package publish is still public"
         assert re.search(r"^  uninstall\s", package_help, re.MULTILINE), "package uninstall is missing from help"
         assert not re.search(r"^  remove\s", package_help, re.MULTILINE), "retired package remove is still listed"
         run("package uninstall help", ["package", "uninstall", "--help"])
         run("removed package remove", ["package", "remove", "--help"], code=2)
-        run("removed package delete", ["package", "delete", "--help"], code=2)
+        run("package delete help", ["package", "delete", "--help"])
         run("package pagination help", ["package", "ls", "--offset", "20", "--limit", "10", "--help"])
         run("LoRA metadata help", ["lora", "edit", "--help"])
         run("LoRA upload help", ["lora", "upload", "--help"])
