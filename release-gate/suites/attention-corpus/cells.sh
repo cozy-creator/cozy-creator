@@ -3,14 +3,17 @@
 # site, shape, band and kernel), then the capture of the sites and calls corpus.py picks from it, same request and seed. The
 # captures come back over SSH into corpus/ (this gate's artifact), and corpus.py checks each against its census row.
 AC=$HERE/suites/attention-corpus AC_DIR=/tmp/attention-corpus
-# A dev-only option needs `dev = true` at the top of this home's config (a runner signed in by key has no config yet).
+# A dev-only option needs `dev = true` at the top of this home's config (a runner signed in by key has no config yet, so
+# no `cat` of it may stop the write: release gate 43019157186).
 ac_cfg=$HOME/.cozy/config.toml
 grep -qxE 'dev *= *true' "$ac_cfg" 2>/dev/null ||
-  { mkdir -p "${ac_cfg%/*}" && { echo 'dev = true'; cat "$ac_cfg" 2>/dev/null; } > "$ac_cfg.new" && mv "$ac_cfg.new" "$ac_cfg"; }
+  { mkdir -p "${ac_cfg%/*}" && { echo 'dev = true'; [ ! -f "$ac_cfg" ] || cat "$ac_cfg"; } > "$ac_cfg.new" && mv "$ac_cfg.new" "$ac_cfg"; } ||
+  log "could not write dev = true into $ac_cfg"
 ac_seed=$((R + 720))
-# ac_model <name> <target> [args...]: its census run, then its capture run.
+# ac_model <name> <package/function> [args...]: its census run, then its capture run, of the package users get, or its
+# --packages checkout's (`pkg`: a published release may lock an older Runtime than the candidate's).
 ac_model() {
-  local name=$1 target=$2 seed=$((ac_seed++)) spec; shift 2
+  local name=$1 target seed=$((ac_seed++)) spec; target=$(pkg "${2%/*}" "${2##*/}"); shift 2
   cell "ac-$name-census" "$target" "$@" seed:=$seed --attention-capture "{\"dir\":\"$AC_DIR/census-$name\"}"
   [ "$(run_get "$OUT" "ac-$name-census" .status)" = completed ] || return 0
   "$CLI" machine ssh "$M" -- "cat $AC_DIR/census-$name/*/census.jsonl" < /dev/null > "ac-$name-census.jsonl" 2> "ac-$name.err"

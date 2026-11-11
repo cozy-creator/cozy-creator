@@ -15,7 +15,7 @@ holds each capture to its census row (shape, BF16, finite) and runs one short si
 rounding, at most 0.01). `corpus-summary.md` tabulates calls, sites, shapes and bytes per model.
 
 ```sh
-gh workflow run release-gate.yml -f hub=prod -f suites=attention-corpus -f establish=true -f publish=false \
+gh workflow run release-gate.yml -f hub=prod -f suites=attention-corpus -f establish=true -f publish=false -f packages_ref=<open rc> \
   -f cozy=<dev-build run> -f tensorfs_wheel=artifact:<dev-build run>/tensorfs-wheel-<sha> -f runtime_wheel=<cozy-runtime dev-build run>
 ```
 

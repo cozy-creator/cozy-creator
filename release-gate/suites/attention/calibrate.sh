@@ -17,6 +17,7 @@ for cal in $cal_cells; do
   for cal_arm in "$cal" "$cal-exact"; do
     IFS=$'\t' read -r _ _ _ _ cal_seed cal_target cal_args _ < <(awk -F'\t' -v n="$cal_arm" '$1 == n' "$HERE/suites/bench/cells.tsv")
     [ -n "${cal_target:-}" ] || { expect "calibrate-$cal_arm" FAIL "no $cal_arm row in suites/bench/cells.tsv"; continue 2; }
+    cal_target=$(pkg "${cal_target%/*}" "${cal_target##*/}")  # a --packages checkout's, as bench's cells
     eval "cell \"calibrate-\$cal_arm\" \"\$cal_target\" $cal_args seed:=$cal_seed"
   done
   cal_table=$(output "calibrate-$cal" 'png|webp|jpg|mp4') cal_exact=$(output "calibrate-$cal-exact" 'png|webp|jpg|mp4')
