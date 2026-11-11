@@ -1,25 +1,27 @@
 # Sourced by a suite's cells.sh. A library's own tests (TensorFS's, varena's) are plain Python programs on this rental over
 # `cozy machine ssh`, never `cozy run`: they test the library itself, so the package contract, which keeps packages off a
 # library, is not theirs (xs-174). Each uses that library's public API only; what it can't reach that way is a finding in
-# the program's README, never a private import. They run in programs/env's environment: its TensorFS (varena with it) and
-# Torch are the ones the machine installed, what ships.
-#   programs <label> <dir> <program.py>...
+# the program's README, never a private import. They run in an environment package's environment, programs/env unless
+# `--env <name>` names another (programs/<name>, module programs_<name>, e.g. `diffusers`): its TensorFS (varena with it)
+# and Torch are the ones the machine installed, what ships.
+#   programs <label> <dir> [--env <name>] <program.py>...
 # A program prints `ROW {"cell": ..., "result": "PASS"|"FAIL", "detail": ...}` lines; each is an expect row. A program
 # that exits non-zero, or prints no row, fails as itself. `--on` (a machine the gate did not rent) runs none, as faults.sh.
 programs() {
-  local label=$1 dir=$2 P=/root/programs-$1 D=$OUT/programs-$1 program name ended= seen= size moved=$SECONDS row; shift 2
+  local label=$1 dir=$2 P=/root/programs-$1 D=$OUT/programs-$1 program name ended= seen= size moved=$SECONDS row env=env; shift 2
+  [ "${1:-}" != --env ] || { env=$2; shift 2; }
   [ -z "$ON" ] || { log "programs $label: not on a machine this gate did not rent"; return 0; }
   [ -z "$ONLY" ] || [[ $ONLY == *",$label,"* ]] || return 0
   ppod() { timeout 120 "$CLI" machine ssh "$M" -- "$@"; }
   mkdir -p "$D"
-  ONLY=${ONLY:+$ONLY,programs-env,} cell programs-env "$HERE/programs/env/ready"
-  [ "$(run_get "$OUT" programs-env .status)" = completed ] || { expect "programs-$label" FAIL "programs/env did not run"; return; }
+  ONLY=${ONLY:+$ONLY,programs-$env,} cell "programs-$env" "$HERE/programs/$env/ready"
+  [ "$(run_get "$OUT" "programs-$env" .status)" = completed ] || { expect "programs-$label" FAIL "programs/$env did not run"; return; }
   # No executor keeps the card or its memory: a restart ends them, and the environment stays on disk.
   "$CLI" machine update "$M" --gpu-memory-limit off -y > "$D/restart.log" 2>&1
   tar -C "$dir" -cz . | ppod "rm -rf $P && mkdir -p $P/out && tar -xz -C $P" || { expect "programs-$label" FAIL "could not copy $dir to $M"; return; }
   ppod "cat > $P/start.sh" <<POD || { expect "programs-$label" FAIL "could not copy start.sh to $M"; return; }
-site=\$(ls -dt /var/lib/cozy/tensord/generations/*/env/lib/python3*/site-packages/programs_env* 2>/dev/null | head -1)
-[ -n "\$site" ] || { echo "no environment holds programs_env"; exit 2; }
+site=\$(ls -dt /var/lib/cozy/tensord/generations/*/env/lib/python3*/site-packages/programs_$env* 2>/dev/null | head -1)
+[ -n "\$site" ] || { echo "no environment holds programs_$env"; exit 2; }
 py=\${site%/lib/python3*}/bin/python
 for _ in \$(seq 60); do [ -z "\$(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null)" ] && break; sleep 1; done
 for program in $*; do

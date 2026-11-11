@@ -12,8 +12,8 @@
 #   (≤ 8 GB card)    cold, co and reload only: the driver's own out-of-memory paths (a capped card never fills)
 #   h3-8gb           (≤ 8 GB card) H3 Turbo 15 s, the 8 GB tier's product shape
 #   host-*           on a CPU rental, under its cgroup's memory.max (host-cap.py): pages must spill to disk
-#   core             (every GPU card, last) the memory authority's rules, one fresh process per call (core/)
-#   offload-*        vt.offload's promises, and SDXL through it beside stock Torch (torch-offload/)
+#   core-*           (every GPU card, last) the memory authority's rules, one fresh process per mode (programs/)
+#   offload-*        vt.offload's promises, and SDXL through it beside stock Torch (programs/, --env diffusers)
 #   public-*         C, Rust and Python clients on one core; sizing and Region priority (public-api/, a program)
 #   fault-*          deliberate faults: correct bytes or a typed error, the GPU recovered, no hang, no Xid (faults.sh)
 #   diff-*           real models repeat byte for byte, under a cap and with memory taken and perturbed (differential/cell.sh)
@@ -50,14 +50,11 @@ ln -sfn "$V/ceiling.py" ceiling.py; ln -sfn "$V/host-cap.py" host-cap.py
 authority() {
   local mode i=0
   cap off
-  vcell core "$V/core/core" seed:=$((R + 61)) --gpus=1
-  vcell offload-adapter "$V/torch-offload/adapter" label="$NAME $R" --gpus=1
-  vcell offload-in-executor "$V/torch-offload/in_executor" label="$NAME $R" --gpus=1
-  for mode in stock eager graphs; do
-    i=$((i + 1))
-    vcell "offload-$mode" "$V/torch-offload/sdxl" mode="$mode" seed:=$((R + 61 + i)) --gpus=1 \
-      prompts:="$(jq -nc --arg a "$SCENE, photo, take $i" --arg b "$CHAR, film still, take $i" '[$a, $b]')"
-  done
+  # The memory authority's rules: a program on the rental over its public API, not a package (programs.sh, xs-174).
+  programs core "$V/programs" varena_core.py
+  # vt.offload's promises and SDXL through it beside stock Torch: programs over the public API, in the Diffusers
+  # environment (programs.sh --env diffusers, xs-174). Rows offload-adapter, offload-stock/eager/graphs.
+  programs offload "$V/programs" --env diffusers varena_offload.py
   # The public API across bindings: a program on the rental (programs.sh), not a package (xs-174). Rows public-*.
   "$V/public-api/pack.sh" "$OUT/varena-public" && programs public "$OUT/varena-public" public_api.py
   . "$V/faults.sh"

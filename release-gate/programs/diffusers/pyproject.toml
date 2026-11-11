@@ -1,0 +1,21 @@
+[build-system]
+requires = ["uv_build>=0.12.7,<0.13"]
+build-backend = "uv_build"
+
+[project]
+name = "programs-diffusers"
+version = "0.1.0"
+description = "The environment of the release gate's library programs that need Diffusers (programs.sh --env diffusers)"
+requires-python = ">=3.12"
+# varena/torch-offload's own set: SDXL through vt.offload beside stock Torch, and its adapter checks.
+dependencies = [
+    "cozy-runtime>=0.45", "msgspec>=0.19", "numpy>=1.26", "torch==2.15.0", "diffusers==0.41.0", "transformers==5.22.1",
+    "accelerate>=1.0", "safetensors>=0.8", "huggingface-hub>=1.0", "nvidia-ml-py>=13", "pillow>=12",
+]
+
+[project.entry-points."cozy.application"]
+default = "programs_diffusers:app"
+
+[tool.uv.build-backend]
+module-name = "programs_diffusers"
+module-root = ""

@@ -1,0 +1,2 @@
+[application]
+object = "programs_diffusers:app"
