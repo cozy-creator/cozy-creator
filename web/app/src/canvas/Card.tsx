@@ -25,7 +25,7 @@ import { chipWords, noHash, piecesOf, rowsIn, took } from "./text"
 import { TimelineControl } from "./timeline/TimelineControl"
 import { AddOns, Stack } from "./AddOns"
 import { ImageVersions } from "./ImageVersions"
-import { FocusFrame } from "./FocusFrame"
+import { FocusFrame, useFocusResize } from "./FocusFrame"
 import { Asking } from "./Asking"
 import { readableSurface } from "./readableSurface"
 import type { Box } from "./graph"
@@ -441,15 +441,25 @@ function Status({ view, name }: { view: ElementView; name: string }) {
   return null
 }
 
-/** The corner, pulled to size a box. Showing no picture, or its words, a box takes its tool's shape from the pull, both ways: the nearest it can make shows in the middle, and it settles there when let go. Showing a picture, it only scales. */
+/** The corner changes output shape freely within its tool's bounds, or to its declared ratios. Focus fits the result only once the pull ends. */
 function Corner({ name, view, width, focused = false }: { name: string; view: ElementView; width: number; focused?: boolean }) {
   const store = useCanvasStore()
+  const focusResize = useFocusResize()
   const flow = useReactFlow()
   const tools = useSignal(store.tools)
   const control = view.asset && reshapes(view) ? fieldsOf(view.asset, tools).find((held) => held.type === "shape") : undefined
-  const from = useRef<{ x: number; y: number; w: number; h: number; inverse: number; owner: CanvasStore["inPlace"] } | null>(null)
-  const pulled = useRef<{ w: number; h: number } | null>(null)
+  const from = useRef<{ x: number; y: number; w: number; h: number; pixels?: { w: number; h: number }; inverse: number; owner: CanvasStore["inPlace"] } | null>(null)
+  const pulled = useRef<{ w: number; h: number; shape?: string } | null>(null)
   const [nearest, setNearest] = useState<string | null>(null)
+  const shapeFor = (width: number, height: number) => {
+    if (control?.ratios?.length) return snapped(width / height, shapesOf(control))
+    let w = Math.max(1, Math.round(width)), h = Math.max(1, Math.round(height))
+    const ratio = Math.min(control?.max ?? Infinity, Math.max(control?.min ?? 0, w / h))
+    if (ratio !== w / h) { w = Math.round(ratio * 1_000_000); h = 1_000_000 }
+    let a = w, b = h
+    while (b) [a, b] = [b, a % b]
+    return `${w / a}:${h / a}`
+  }
   const moved = (event: PointerEvent) => {
     const start = from.current
     if (!start) return
@@ -461,10 +471,14 @@ function Corner({ name, view, width, focused = false }: { name: string; view: El
         return store.setWidth(name, w, false)
       }
       const w = Math.min(WIDEST, Math.max(NARROWEST, start.w + dx))
-      const h = Math.min(WIDEST, Math.max(LOWEST, start.h + dy))
-      pulled.current = { w, h }
+      const requestedHeight = Math.min(WIDEST, Math.max(LOWEST, start.h + dy))
+      const shape = shapeFor(w, requestedHeight)
+      const [rw, rh] = shape.split(":").map(Number)
+      const h = w * rh / rw
+      pulled.current = { w, h, shape }
       store.drawShape(name, w, h)
-      setNearest(snapped(w / h, shapesOf(control)))
+      if (focused && start.pixels) focusResize?.move(start.pixels.w * w / start.w, start.pixels.h * h / start.h)
+      setNearest(shape)
     })
   }
   const done = () => {
@@ -476,10 +490,11 @@ function Corner({ name, view, width, focused = false }: { name: string; view: El
       const size = pulled.current
       pulled.current = null
       setNearest(null)
-      if (size && control) store.setShape(name, control, size.w, snapped(size.w / size.h, shapesOf(control)))
+      if (size && control) store.setShape(name, control, size.w, size.shape ?? shapeFor(size.w, size.h))
       else if (size) store.setWidth(name, size.w)
+      if (owner && store.inPlace === owner) owner.pulled = false
+      if (focused) { focusResize?.end(); return }
       if (!owner || store.inPlace !== owner) return
-      owner.pulled = false
       requestAnimationFrame(() => {
         if (store.inPlace === owner) store.fitHere(true)
       })
@@ -500,13 +515,16 @@ function Corner({ name, view, width, focused = false }: { name: string; view: El
         tabIndex={-1}
         onClick={(event) => event.stopPropagation()}
         onPointerDown={(event) => {
+          if (event.button !== 0) return
+          event.stopPropagation()
           const pose = store.poseOf(name)
           if (!pose) return
           event.currentTarget.setPointerCapture(event.pointerId)
           // Canvas pixels per screen pixel: the zoom's, or focused, the frame's against its box.
           const frame = event.currentTarget.closest(".media")?.getBoundingClientRect()
           const inverse = focused && frame?.width ? pose.w / frame.width : 1 / flow.getZoom()
-          from.current = { x: event.clientX, y: event.clientY, w: pose.w, h: bodyBox(view, pose).w / aspectOf(view), inverse, owner: store.inPlace }
+          from.current = { x: event.clientX, y: event.clientY, w: pose.w, h: bodyBox(view, pose).w / aspectOf(view), inverse, pixels: focused && frame ? { w: frame.width, h: frame.height } : undefined, owner: store.inPlace }
+          if (focused && control) focusResize?.start()
           if (store.inPlace) store.inPlace.pulled = true
         }}
         onPointerMove={moved}
