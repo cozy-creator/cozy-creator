@@ -20,6 +20,8 @@
 //!   next fetch of the object takes them up, and the object's digest judges them with the rest.
 
 mod checkpoint;
+mod borrowed;
+pub use borrowed::BorrowedObjects;
 mod derived;
 pub use derived::Derived;
 pub(crate) mod file;
@@ -111,6 +113,7 @@ impl Error {
     /// The refusal the fetch and import layers speak.
     pub fn refusal(self) -> Refusal {
         let code = match &self {
+            Error::Io { source, .. } if source.kind() == io::ErrorKind::WouldBlock => Code::STORE_BUSY,
             Error::Io { .. } => Code::IO_FAILED,
             Error::Full { .. } => Code::CAPACITY_EXHAUSTED,
             Error::Absent(_) => Code::OBJECT_ABSENT,
@@ -388,7 +391,7 @@ impl Store {
         if length == object.length {
             return Ok(true);
         }
-        tracing::warn!("tensorfs: {} is {length} bytes, not {}: removed, to be replaced", path.display(), object.length);
+        let _fence = retention::exclusive(self)?;
         match fs::remove_file(&path) {
             Err(error) if error.kind() != io::ErrorKind::NotFound => Err(fail("remove", &path)(error)),
             _ => self.stamp_eviction().map(|()| false),

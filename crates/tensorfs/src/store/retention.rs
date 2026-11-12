@@ -106,6 +106,18 @@ pub(crate) fn try_collect(store: &Store) -> Result<Option<Fence>> {
     }
 }
 
+/// Destructive cache operations do not wait for a project reader's entire lifetime.
+pub(super) fn exclusive(store: &Store) -> Result<Fence> {
+    let file = fence_file(store)?;
+    match file.try_lock() {
+        Ok(()) => Ok(Fence(file)),
+        Err(TryLockError::WouldBlock) => Err(fail("modify", store.root())(io::Error::new(
+            io::ErrorKind::WouldBlock, "model data is in use; retry after current work finishes",
+        ))),
+        Err(TryLockError::Error(error)) => Err(fail("lock", store.root())(error)),
+    }
+}
+
 /// `files/<id>`: a header file outside the store's own data.
 #[derive(Serialize, Deserialize)]
 struct FileRoot {
@@ -310,9 +322,8 @@ impl Store {
         }
         let short = || shortfall(&self.root, incoming);
         let mut collections = self.collections.lock().unwrap_or_else(PoisonError::into_inner);
-        // Waits out readers that are taking holds, so what they hold is judged.
-        let fence = fence_file(self)?;
-        fence.lock().map_err(fail("lock", &self.root))?;
+        // Refuse promptly while a read-only borrower protects this source store.
+        let _fence = exclusive(self)?;
         let mut all = Collected::default();
         if short()? > 0 {
             self.drop_partials()?;
