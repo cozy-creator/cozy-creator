@@ -208,8 +208,16 @@ class Named(TypedDict):
     cmd: Literal["hello", "shutdown"]
 
 
+class Watch(TypedDict):
+    """A client watches `request_id`'s previews for `for_ms`; out of band, unanswered."""
+
+    cmd: Literal["preview"]
+    request_id: str
+    for_ms: int
+
+
 type Command = Start | Load | PrepareRequest | Invoke | Named
-type Frame = Command | Answer
+type Frame = Command | Answer | Watch
 
 
 class Outcome(TypedDict, total=False):
