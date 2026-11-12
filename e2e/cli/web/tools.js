@@ -190,7 +190,7 @@ function linesOf(text, name) {
   check('wire_described_choice', byName.edit.descriptions?.head && byName.edit.words?.head === 'Head swap', byName.edit);
   check('wire_advanced', byName.steps.advanced && !byName.segments.advanced, byName.steps);
 
-  // Focused video tools expose a large Beats-first parameter form, without an Advanced fold.
+  // Focused video tools expose a large parameter form, without an Advanced fold.
   await open('shot');
   const shotBox = box('shot');
   check('face_holds_prompts_groups_and_filled_slots', (await shotBox.locator('.mention-text[data-field=summary]').count()) === 1 && (await shotBox.locator('.mention-text[data-field=pictures]').count()) === 1 && (await shotBox.locator('.edit-shown .beats-edit[data-field=beats]').count()) === 1 && (await shotBox.locator('.edit-shown .slot-control[data-field=plate]').count()) === 1, await shotBox.innerText());
