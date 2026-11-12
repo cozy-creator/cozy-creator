@@ -1,5 +1,5 @@
 // Focus is a viewport workspace, independent of Wander's camera. Real imported image states
-// exercise full-fit viewing, retained previews, explicit model configuration and return gestures.
+// exercise full-fit viewing, preview versus approval, an independent image camera and explicit exits.
 // A weightless local image render, where available, proves editing an older state prunes nothing.
 const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, writeFileSync } = require('fs');
@@ -112,8 +112,15 @@ async function died(error) {
     const take = history.locator(`.take[data-take="${number}"]`);
     await take.scrollIntoViewIfNeeded();
     await take.click();
-    await until(`state ${number} is current`, asset, (item) => item.version === number);
     await until(`state ${number} is selected in the previews`, () => history.locator('.take.on[data-take]').getAttribute('data-take'), (current) => current === String(number));
+  };
+  const approve = async (number) => {
+    const item = await asset();
+    const take = history.locator(`.take[data-take="${number}"]`);
+    await take.scrollIntoViewIfNeeded();
+    if (!item.pinned || item.approved !== number) await take.dblclick();
+    else await take.click();
+    await until(`state ${number} is approved separately`, asset, (current) => current.version === number && current.approved === number && current.pinned);
   };
   const measure = () => card.evaluate((element) => {
     const rect = (node) => {
@@ -121,7 +128,7 @@ async function died(error) {
       return { x: value.x, y: value.y, width: value.width, height: value.height, right: value.right, bottom: value.bottom };
     };
     const viewer = element.querySelector('.focus-viewer');
-    const media = viewer.querySelector(':scope > .media');
+    const media = viewer.querySelector('.focus-image-transform > .media');
     const loaded = [...media.querySelectorAll('.media-pixels img')].some((image) => image.complete && image.naturalWidth > 0);
     return { viewer: rect(viewer), media: rect(media), controls: rect(element.querySelector('.image-controls')), loaded };
   });
@@ -131,6 +138,10 @@ async function died(error) {
     && Math.abs((look.media.width / look.media.height) / ratio - 1) < 0.03
     && Math.min(Math.abs(look.media.width - look.viewer.width), Math.abs(look.media.height - look.viewer.height)) < 3;
   const expectFit = (ratio) => until('the full image fits the Focus viewer', measure, (look) => fits(look, ratio));
+  const imageCamera = () => card.locator('.focus-image-transform').evaluate((element) => {
+    const matrix = new DOMMatrix(getComputedStyle(element).transform);
+    return { x: matrix.e, y: matrix.f, zoom: matrix.a };
+  });
 
   const wander = await camera();
   const expanded = await palette();
@@ -139,14 +150,28 @@ async function died(error) {
   check('node_click_opens_one_focus_workspace', await page.locator('[data-focused-asset]').count() === 1 && await card.count() === 1);
   check('focus_preserves_wander_camera', sameCamera(wander, await camera()), { before: wander, after: await camera() });
   check('focus_keeps_temporary_palette_collapse_out_of_saved_settings', (await palette()).saved === expanded.saved);
+  const background = await focus.evaluate((element) => ({ color: getComputedStyle(element).backgroundColor, image: getComputedStyle(element).backgroundImage }));
+  check('focus_keeps_the_canvas_background_visible', background.image === 'none' && /^(transparent|rgba\(.*[,/]\s*0\))$/.test(background.color), background);
   check('right_hand_original_previews_are_available', await history.isVisible() && await history.locator('.take[data-take]').count() === 10);
-  check('focus_has_no_linear_counter_or_edit_button', await focus.locator('.count:visible').count() === 0 && await focus.getByRole('button', { name: /^(Previous version|Next version|Edit image)$/ }).count() === 0);
+  check('focus_has_no_linear_counter_or_arrow_controls', await focus.locator('.count:visible').count() === 0 && await focus.getByRole('button', { name: /^(Previous version|Next version)$/ }).count() === 0);
+  const title = focus.getByRole('button', { name: 'Rename node', exact: true });
+  check('focus_title_is_large_and_version_is_separate', await title.innerText() === NAME && await title.evaluate((element) => parseFloat(getComputedStyle(element).fontSize) >= 24) && await focus.getByLabel('Image version', { exact: true }).innerText() === 'v1');
+  await title.click();
+  const titleInput = focus.locator('.focus-heading input[aria-label="Name"]');
+  await titleInput.fill(NAME);
+  await titleInput.press('Enter');
+  await title.waitFor();
+  check('title_is_editable_without_leaving_focus', await focus.isVisible() && (await asset()).name === NAME);
+  check('seed_and_advanced_fold_controls_are_absent', await focus.locator('[data-field="seed"], .seed, .advanced-toggle').count() === 0);
   await shot('wide');
   await choose(2);
   const tall = await expectFit(0.25);
   check('wide_and_tall_states_fit_the_same_viewport_room', sameRect(wide.viewer, tall.viewer) && fits(wide, 4) && fits(tall, 0.25), { wide, tall });
   check('tool_controls_stay_pinned_when_state_ratio_changes', sameRect(wide.controls, tall.controls), { wide: wide.controls, tall: tall.controls });
-  check('state_selection_does_not_zoom_wander', sameCamera(wander, await camera()));
+  check('thumbnail_click_previews_without_approving', (await asset()).version === 1 && (await asset()).approved === 1 && await focus.getByLabel('Image version', { exact: true }).innerText() === 'v2');
+  check('state_preview_does_not_zoom_wander', sameCamera(wander, await camera()));
+  await approve(2);
+  check('double_click_approves_the_preview_separately', (await asset()).version === 2 && (await asset()).approved === 2);
   await shot('tall');
 
   await choose(10);
@@ -158,7 +183,12 @@ async function died(error) {
   check('scrolling_previews_keeps_focus_and_wander_camera', await focus.isVisible() && sameCamera(wander, await camera()));
   await choose(1);
   await expectFit(4);
-  check('models_button_is_explicit_and_not_an_edit_button', await focus.getByRole('button', { name: 'Models and LoRAs', exact: true }).isVisible() && await focus.getByRole('button', { name: 'Edit image', exact: true }).count() === 0);
+  check('previewing_another_state_keeps_approval', (await asset()).version === 2 && (await asset()).approved === 2);
+  const edit = focus.getByRole('button', { name: 'Edit image', exact: true });
+  const editBox = await edit.boundingBox();
+  const imageBox = (await measure()).media;
+  check('edit_overlay_is_in_the_lower_right_of_the_image', editBox.x + editBox.width / 2 > imageBox.x + imageBox.width / 2 && editBox.y + editBox.height / 2 > imageBox.y + imageBox.height / 2 && editBox.x + editBox.width <= imageBox.right + 2 && editBox.y + editBox.height <= imageBox.bottom + 2, { editBox, imageBox });
+  check('models_button_is_explicit_below_the_image', await focus.getByRole('button', { name: 'Models and LoRAs', exact: true }).isVisible());
   const toolBeforePicker = (await asset()).tool;
   await focus.getByRole('button', { name: 'Models and LoRAs', exact: true }).click();
   const picker = page.getByRole('dialog', { name: 'Models and LoRAs', exact: true });
@@ -167,12 +197,20 @@ async function died(error) {
   await picker.getByRole('button', { name: 'Close model picker', exact: true }).click();
   check('model_dialog_preserves_focus_tool_and_states', await focus.isVisible() && (await asset()).tool === toolBeforePicker && (await asset()).versions === 10);
 
+  await edit.click();
+  const prompt = focus.locator('.in-frame .mention-text').first();
+  await prompt.waitFor();
+  await until('Edit begins from the displayed preview rather than the approved state', () => prompt.innerText(), (text) => /<self\.1>/i.test(text) && !text.includes('stale edit text'));
+  check('opening_edit_does_not_approve_the_preview', (await asset()).version === 2 && (await asset()).approved === 2);
+  await choose(10);
   const newImage = history.locator('.take.add[aria-label="Its next take"]');
   await newImage.scrollIntoViewIfNeeded();
   await newImage.click();
-  const prompt = focus.locator('.in-frame .mention-text').first();
   await prompt.waitFor();
-  await until('New image begins from the currently displayed state', () => prompt.innerText(), (text) => /<self\.1>/i.test(text) && !text.includes('stale edit text'));
+  await until('New image begins from its displayed preview', () => prompt.innerText(), (text) => /<self\.10>/i.test(text) && !text.includes('stale edit text'));
+  await choose(1);
+  await newImage.click();
+  await prompt.waitFor();
   await until('the fresh source prompt is saved', asset, (item) => /<self\.1>/i.test(item.fields?.[promptField] ?? '') && !item.fields[promptField].includes('stale edit text'));
   check('new_image_is_explicit_and_does_not_discard_variants', (await asset()).versions === 10 && await history.locator('.take[data-take]').count() === 10);
 
@@ -185,14 +223,14 @@ async function died(error) {
     await newImage.click();
     await focus.getByRole('button', { name: 'Render', exact: true }).click();
     const edited = await until('editing an older state appends another alternative', asset, (item) => item.versions === 11 && !item.making?.length, 300_000);
-    check('generation_from_old_state_retains_every_alternative', edited.version === 11 && JSON.stringify(edited.prefixes.slice(0, 10).map((version) => [version.number, version.main.sha256])) === JSON.stringify(before), edited.prefixes);
+    check('generation_from_old_state_retains_every_alternative', JSON.stringify(edited.prefixes.slice(0, 10).map((version) => [version.number, version.main.sha256])) === JSON.stringify(before), edited.prefixes);
     await until('new alternative has a preview', () => history.locator('.take[data-take]').count(), (count) => count === 11);
     await choose(2);
     await expectFit(0.25);
-    check('old_tall_state_stays_selectable_after_generation', (await asset()).version === 2 && (await asset()).versions === 11);
+    check('old_tall_state_stays_previewable_after_generation', await history.locator('.take.on[data-take]').getAttribute('data-take') === '2' && (await asset()).versions === 11);
   } else seen.skipped_render = 'no free local execution in this cell';
 
-  await choose(2);
+  await approve(2);
   await expectFit(0.25);
   await focus.getByRole('button', { name: 'Back to canvas', exact: true }).click();
   await focus.waitFor({ state: 'detached' });
@@ -203,22 +241,63 @@ async function died(error) {
   const beforeGestures = await camera();
   await focusByClick();
   await expectFit(0.25);
-  const panRoom = await card.locator('.focus-viewer').boundingBox();
-  await page.mouse.move(panRoom.x + 5, panRoom.y + 5);
-  await page.mouse.down();
-  await page.mouse.move(panRoom.x + 20, panRoom.y + 14);
-  await page.mouse.up();
-  await focus.waitFor({ state: 'detached' });
-  await settled(page);
-  check('panning_the_viewer_exits_focus_without_a_camera_jump', sameCamera(beforeGestures, await camera()) && (await palette()).shut === collapsed.shut && (await palette()).saved === collapsed.saved);
-  await focusByClick();
-  await expectFit(0.25);
+  await focus.getByRole('button', { name: 'Zoom in image', exact: true }).click();
+  const zoomed = await until('the Focus image camera zooms in', imageCamera, (position) => position.zoom > 1);
   const wheelRoom = await card.locator('.focus-viewer').boundingBox();
-  await page.mouse.move(wheelRoom.x + 5, wheelRoom.y + 5);
-  await page.mouse.wheel(0, 120);
+  await page.mouse.move(wheelRoom.x + wheelRoom.width / 2, wheelRoom.y + wheelRoom.height / 2);
+  await page.mouse.wheel(0, -120);
+  const wheeled = await until('wheel zoom stays inside the Focus image camera', imageCamera, (position) => position.zoom > zoomed.zoom);
+  check('wheel_zoom_keeps_focus_and_wander_unchanged', await focus.isVisible() && sameCamera(beforeGestures, await camera()), { zoomed, wheeled });
+  const namesBeforePan = (await state()).assets.map((item) => item.name).sort();
+  const panRoom = await card.locator('.focus-viewer').boundingBox();
+  await page.mouse.move(panRoom.x + panRoom.width / 2, panRoom.y + panRoom.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(panRoom.x + panRoom.width / 2 + 40, panRoom.y + panRoom.height / 2 + 80, { steps: 8 });
+  await page.mouse.up();
+  const panned = await until('the Focus image camera pans', imageCamera, (position) => Math.abs(position.x - wheeled.x) > 1 || Math.abs(position.y - wheeled.y) > 1);
+  check('panning_keeps_focus_and_does_not_move_the_wander_camera', await focus.isVisible() && sameCamera(beforeGestures, await camera()), { wheeled, panned });
+  check('panning_an_image_does_not_drag_out_a_new_asset', await page.locator('.carry-ghost').count() === 0 && JSON.stringify((await state()).assets.map((item) => item.name).sort()) === JSON.stringify(namesBeforePan));
+  await focus.getByRole('button', { name: 'Fit image', exact: true }).click();
+  await until('Fit resets the image camera', imageCamera, (position) => Math.abs(position.zoom - 1) < 0.0001 && Math.abs(position.x) < 0.5 && Math.abs(position.y) < 0.5);
+  await expectFit(0.25);
+  check('Fit_keeps_focus_open_and_wander_unchanged', await focus.isVisible() && sameCamera(beforeGestures, await camera()));
+  await page.keyboard.press('Escape');
   await focus.waitFor({ state: 'detached' });
   await settled(page);
-  check('wheel_in_the_viewer_exits_focus_without_zooming_wander', sameCamera(beforeGestures, await camera()) && (await palette()).shut === collapsed.shut && (await palette()).saved === collapsed.saved);
+  check('Escape_explicitly_exits_focus_without_a_camera_jump', sameCamera(beforeGestures, await camera()) && (await palette()).shut === collapsed.shut && (await palette()).saved === collapsed.saved);
+
+  // An unrendered video tool gets a large editable Beats-first workspace and a New tile.
+  const videoTool = metadata.tools.find((item) => item.makes === 'video' && item.id !== 'cozy/edit'
+    && item.fields.some((field) => field.type === 'group' && field.field === 'beats')
+    && !item.fields.some((field) => field.required && field.type === 'slot' && field.accept === 'video'));
+  if (!videoTool) throw new Error('the video tool metadata needed by the Beats fixture is unavailable');
+  const VIDEO = 'focus_video';
+  await api(`${at}/assets`, 'POST', { name: VIDEO, exact: true, kind: 'video', tool: videoTool.id, fields: { summary: 'A focused video scene.', beats: [{ duration: 5, description: 'A large focused video beat.' }] }, at: { x: 1100, y: 600, w: 360 } });
+  await boxOf(page, VIDEO).waitFor();
+  await fitCanvas(page);
+  const videoWander = await camera();
+  const videoTile = await boxOf(page, VIDEO).locator('.media').boundingBox();
+  await page.mouse.click(videoTile.x + videoTile.width / 2, videoTile.y + videoTile.height / 2);
+  const videoFocus = page.locator(`[data-focused-asset="${VIDEO}"]`);
+  await videoFocus.waitFor();
+  const videoForm = videoFocus.locator('.focus-parameter-tool > .here-under');
+  await videoForm.waitFor();
+  const beatPrompt = videoForm.locator('[data-field="beats"] .beat .mention-text').first();
+  await beatPrompt.waitFor();
+  const formGeometry = await videoForm.boundingBox();
+  const videoRoom = await videoFocus.locator('.focus-body').boundingBox();
+  check('video_Beats_get_a_prominent_editable_workspace', await videoForm.locator('.focus-parameter-group h3').first().innerText() === 'Beats' && formGeometry.width > videoRoom.width * 0.5 && formGeometry.height > videoRoom.height * 0.6 && await beatPrompt.evaluate((element) => parseFloat(getComputedStyle(element).fontSize) >= 18) && (await beatPrompt.boundingBox()).height >= 100, { formGeometry, videoRoom });
+  await beatPrompt.fill('Edited in the large video Beats form.');
+  await videoFocus.getByRole('button', { name: 'Rename node', exact: true }).focus();
+  await until('video Beats edits are saved', () => state(), (value) => value.assets.find((item) => item.name === VIDEO)?.fields?.beats?.[0]?.description === 'Edited in the large video Beats form.');
+  check('video_seed_and_advanced_fold_controls_are_absent', await videoForm.locator('[data-field="seed"], .seed, .advanced-toggle').count() === 0 && await videoForm.getByRole('button', { name: 'Advanced', exact: true }).count() === 0);
+  const newVideo = videoFocus.getByRole('button', { name: 'New video', exact: true });
+  check('video_has_a_new_state_tile', await newVideo.isVisible());
+  await newVideo.click();
+  check('new_video_tile_keeps_focus_and_does_not_render_implicitly', await videoFocus.isVisible() && (await state()).assets.find((item) => item.name === VIDEO).versions === 0);
+  check('video_focus_preserves_wander_camera', sameCamera(videoWander, await camera()));
+  await videoFocus.getByRole('button', { name: 'Back to canvas', exact: true }).click();
+  await videoFocus.waitFor({ state: 'detached' });
   check('no_focus_workspace_or_carry_ghost_remains', await page.locator('[data-focused-asset], .carry-ghost').count() === 0);
   check('no_page_errors', errors.length === 0, errors);
   await browser.close();
