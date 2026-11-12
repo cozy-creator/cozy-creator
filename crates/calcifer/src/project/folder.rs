@@ -1516,6 +1516,30 @@ impl Folder {
         Ok(seen(&written))
     }
 
+    /// `seen` of its boxes and the project document's heads they're at, one snapshot.
+    pub(crate) fn reading_document<R>(&self, seen: impl FnOnce(&Written, Vec<String>) -> R) -> Result<R, Error> {
+        if let Some(act) = acting(self.id()) {
+            let written = act.written.borrow();
+            let heads = act.base.crdt.as_ref().map(|doc| doc.heads()).unwrap_or_default();
+            return Ok(seen(written.as_ref().unwrap_or(&*act.base.written), heads));
+        }
+        let (written, heads) = {
+            let held = self.held()?;
+            let held = held.as_ref().expect("held");
+            (held.stored.written.clone(), held.stored.crdt.as_ref().map(|doc| doc.heads()).unwrap_or_default())
+        };
+        Ok(seen(&written, heads))
+    }
+
+    /// The project document an act began from: what words typed on an older one merge into (`crdt::Document::typed`).
+    pub(super) fn document(&self) -> Result<Option<Arc<super::crdt::Document>>, Error> {
+        if let Some(act) = acting(self.id()) {
+            return Ok(act.base.crdt.clone());
+        }
+        let held = self.held()?;
+        Ok(held.as_ref().and_then(|held| held.stored.crdt.clone()))
+    }
+
     /// The project as YAML, format 4: its export, and what a render keeps of what it was asked.
     pub(crate) fn text(&self) -> Result<String, Error> {
         self.reading_written(Written::to_yaml)

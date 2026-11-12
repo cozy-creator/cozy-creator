@@ -185,6 +185,9 @@ pub struct State {
     pub code: String,
     pub path: PathBuf,
     pub assets: Vec<Asset>,
+    /// The project document's heads its boxes were read at: what words typed on them were typed on (`AssetPatch.typed`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub heads: Vec<String>,
     /// What is running and what is queued, in the order it goes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub queue: Vec<Queued>,
@@ -680,6 +683,9 @@ pub struct Asset {
 pub struct AssetVersions {
     pub asset: Asset,
     pub versions: Vec<Version>,
+    /// The project document's heads it was read at, as a project's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub heads: Vec<String>,
     /// The numbers discarded that `PUT` can still bring back: `reclaim` ends that.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub discarded: Vec<u32>,
@@ -769,6 +775,31 @@ pub struct AssetPatch {
     pub fields: Map<String, Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool: Option<String>,
+    /// Words typed, as splices made on the project at `heads`: merged by character with whatever was written since (cl-904).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub typed: Option<Typed>,
+}
+
+/// Splices of a box's words, by where they are: a field, or words in one (`beats.0.description`), made on the project document as it
+/// stood at `heads` (a read's).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct Typed {
+    pub heads: Vec<String>,
+    pub fields: BTreeMap<String, Vec<Splice>>,
+    /// What the typer's words say with them: words that say it already are left as they are, so the same edit sent twice (a last
+    /// write as a page goes, and a save on its way) lands once.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub to: BTreeMap<String, String>,
+}
+
+/// `delete` Unicode code points of the words at `at`, and `insert` in their place.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct Splice {
+    pub at: u32,
+    pub delete: u32,
+    pub insert: String,
 }
 
 /// What a `PATCH` answers. `was` is the ETag it wrote over: equal to what a window read means nobody else wrote since.
@@ -780,6 +811,11 @@ pub struct AssetPatched {
     pub was: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// Each field written, whole, as it stands at `heads` once merged: what the page types on from.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub fields: BTreeMap<String, Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub heads: Vec<String>,
 }
 
 /// What `DELETE /v1/projects/{id}/assets/{name}` took, and where its box sat: undo puts it back, its versions with it.

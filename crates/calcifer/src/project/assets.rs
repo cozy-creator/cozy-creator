@@ -235,7 +235,7 @@ pub(super) async fn read(State(api): State<Arc<Api>>, Path((id, name)): Path<(St
         }
         false => (None, vec![]),
     };
-    Ok(Json(AssetVersions { asset, versions, discarded, call, call_warnings }))
+    Ok(Json(AssetVersions { asset, versions, heads: model.heads(), discarded, call, call_warnings }))
 }
 
 #[derive(Deserialize)]
@@ -303,6 +303,38 @@ pub(super) async fn patch(
         }
         let was = written.get(&name).ok_or_else(|| own_lines(&name))?.etag();
         let mut fields = asked.fields.clone();
+        // Words typed on an older project merge with what's been written since, by character (cl-904): each in its field as it is now.
+        if let Some(typed) = &asked.typed {
+            let document = folder.document()?.ok_or_else(|| Error::new(Kind::Validation, "project_crdt", "the canonical project document is missing"))?;
+            let held = written.get(&name).ok_or_else(|| own_lines(&name))?;
+            for (path, splices) in &typed.fields {
+                let (field, within) = path.split_once('.').map_or((path.as_str(), None), |(field, within)| (field, Some(within)));
+                let now = within.map_or(held.get(field), |within| within.split('.').try_fold(held.get(field)?, |at, step| match at {
+                    Value::Array(items) => items.get(step.parse::<usize>().ok()?),
+                    _ => at.get(step),
+                }));
+                if typed.to.get(path).is_some_and(|to| now.and_then(Value::as_str) == Some(to.as_str())) {
+                    continue;
+                }
+                let words = Value::String(document.typed(&held.id, path, &typed.heads, splices)?);
+                match within {
+                    None => drop(fields.insert(field.to_owned(), words)),
+                    Some(within) => {
+                        let mut value = fields.get(field).cloned().or_else(|| held.get(field).cloned()).unwrap_or(Value::Null);
+                        let leaf = within.split('.').try_fold(&mut value, |at, step| match at {
+                            Value::Array(items) => items.get_mut(step.parse::<usize>().ok()?),
+                            Value::Object(map) => map.get_mut(step),
+                            _ => None,
+                        });
+                        let Some(leaf) = leaf else {
+                            return Err(Error::new(Kind::Conflict, "words_moved", format!("{name} no longer has {path}")).remedy("read it again"));
+                        };
+                        *leaf = words;
+                        fields.insert(field.to_owned(), value);
+                    }
+                }
+            }
+        }
         if let (Some(tool), Some(holds)) = (&asked.tool, &holds) {
             let held = written.get(&name).ok_or_else(|| own_lines(&name))?;
             let intrinsic = held.get("tool").and_then(Value::as_str).is_some_and(|target| format::plain_tool(target, folder) == tool::EDIT);
@@ -339,9 +371,20 @@ pub(super) async fn patch(
             Ok(())
         })?;
         let etag = folder.reading_boxes(|written| written.get(&name).map(Boxed::etag))?.ok_or_else(|| own_lines(&name))?;
-        Ok(AssetPatched { name: name.clone(), etag, was, warnings })
+        Ok(AssetPatched { name: name.clone(), etag, was, warnings, fields: Default::default(), heads: vec![] })
     });
-    patched.map(Json).map_err(Refusal)
+    let mut patched = patched.map_err(Refusal)?;
+    // What each field written came to, whole, and the heads it's at: what the page types on next.
+    let typed = asked.typed.iter().flat_map(|typed| typed.fields.keys().map(|path| path.split('.').next().unwrap_or(path)));
+    let fields: BTreeSet<&str> = asked.fields.keys().map(String::as_str).chain(typed).collect();
+    if !fields.is_empty() {
+        (patched.fields, patched.heads) = folder.reading_document(|written, heads| {
+            let held = written.get(&name);
+            let came = fields.into_iter().map(|field| (field.to_owned(), held.and_then(|held| held.get(field)).cloned().unwrap_or(Value::Null)));
+            (came.collect(), heads)
+        }).map_err(Refusal)?;
+    }
+    Ok(Json(patched))
 }
 
 /// Old rows are recoverable only from authored documents with the same complete

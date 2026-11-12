@@ -395,8 +395,8 @@ function replaceFile(at, text) {
   await until('typed saved over it', async () => (await held('live_tool')).fields, (fields) => fields?.instructions?.includes('TYPED-ONE') && fields?.style === 'noir');
   check('typed_and_theirs_both_stand', true);
 
-  // The command changes that field while what's typed is on its way: what's typed stands, shown and then saved over theirs, and typing goes on, with
-  // nothing asked (cl-904, Paul 11-12: the page's unsent words win, field by field). Its write waits until the command's is in, as a slower network's would.
+  // The command changes that field while what's typed is on its way: what's typed stands, then both merge by character, and typing goes on, with
+  // nothing asked (cl-904, Paul 11-12: Automerge text). Its write waits until the command's is in, as a slower network's would.
   await open('live_tool');
   await words.click();
   const release = await holdWrites('live_tool');
@@ -406,12 +406,14 @@ function replaceFile(at, text) {
   await project('set', 'live_tool', 'instructions=FROM-THE-CLI');
   check('theirs_in_the_file', (await held('live_tool')).fields?.instructions === 'FROM-THE-CLI');
   await page.waitForTimeout(LIVE_MS);
-  check('unsent_words_stand', (await typedText()) === typedBefore, { typed: await typedText(), typedBefore });
+  check('typed_words_kept', (await typedText()).includes('TYPED-TWO'), { typed: await typedText(), typedBefore });
   await page.keyboard.type(' MORE');
-  check('typing_goes_on', (await typedText()).endsWith('MORE'), await typedText());
-  await shot('unsent-words-stand');
   await release();
-  await until('mine saved over theirs', async () => (await held('live_tool')).fields?.instructions, (text) => text?.includes('TYPED-TWO MORE'));
+  await until('mine merged with theirs', async () => (await held('live_tool')).fields?.instructions, (text) => text?.includes('TYPED-TWO MORE') && text.includes('FROM-THE-CLI'));
+  // The page shows the merged words, typing on where its caret was.
+  const merged = await until('the page shows them merged', typedText, (text) => text.includes('FROM-THE-CLI') && text.endsWith('TYPED-TWO MORE')).catch(typedText);
+  check('typing_goes_on_merged', merged.includes('FROM-THE-CLI') && merged.endsWith('TYPED-TWO MORE'), merged);
+  await shot('merged');
   check('nothing_asked', (await box('live_tool').locator('button:has-text("Keep mine")').count()) === 0);
 
   // Renamed by a command while being typed in: the same box, and what's typed stays.

@@ -506,6 +506,23 @@ function replaceFile(at, text) {
   await page.keyboard.press('ArrowRight');
   const beats = await until('both beats stored', () => Promise.resolve(storedBox('knobs')?.beats ?? []), (held) => held.some((beat) => beat.description?.includes('Second.')) && held.some((beat) => beat.duration === 5));
   check('a_beat_keeps_what_it_holds', beats.some((beat) => beat.camera === 'low'), beats);
+
+  // Another's words in one beat while the page types in another, its write held until theirs is in: both stand, each merged by character
+  // (cl-904: words anywhere in a box are Automerge text).
+  let rowsIn;
+  const rowsGoing = new Promise((done) => (rowsIn = done));
+  const rowsLate = (call) => (call.request().method() === 'PATCH' ? rowsGoing.then(() => call.fallback().catch(() => {})) : call.fallback());
+  await page.route('**/v1/projects/*/assets/knobs', rowsLate);
+  await page.locator('.card.here[data-asset="knobs"] .beat .mention-text').nth(0).click();
+  await page.keyboard.press('End');
+  await page.keyboard.type(' Page.');
+  const theirBeats = (await of('knobs')).fields.beats.map((beat, i) => (i === 1 ? { ...beat, description: 'Second, theirs.' } : beat));
+  await api(`/v1/projects/${id}/assets/knobs`, { method: 'PATCH', body: JSON.stringify({ fields: { beats: theirBeats } }) });
+  await page.waitForTimeout(800);
+  rowsIn();
+  await page.unroute('**/v1/projects/*/assets/knobs', rowsLate);
+  const merged = await until('both beats merged', async () => (await of('knobs')).fields.beats, (held) => held?.[0]?.description?.includes('First. Page.') && held?.[1]?.description === 'Second, theirs.').catch(async () => (await of('knobs')).fields.beats);
+  check('two_beats_merged', merged?.[0]?.description?.includes('First. Page.') && merged?.[1]?.description === 'Second, theirs.', merged);
   await open('knobs');
   await knobs.locator('[aria-label="Remove beat 2"]').click();
   await until('one beat again', () => Promise.resolve(storedBox('knobs')?.beats ?? []), (held) => held.length === 1);
@@ -513,8 +530,8 @@ function replaceFile(at, text) {
   await api(`/v1/projects/${id}/assets/knobs`, { method: 'DELETE' });
   await until('knobs gone', () => box('knobs').count(), (n) => n === 0);
 
-  // Another's edit merges field by field (cl-904): of another asset, or another field, it applies; of the words being typed, the page's unsent
-  // words stand and are saved, with nothing asked.
+  // Another's edit merges (cl-904): of another asset, or another field, it applies; of the words being typed, the page's unsent words stand
+  // and then both merge by character, with nothing asked.
   await open('Sheet');
   await sheetText.click();
   await page.keyboard.press('End');
@@ -535,10 +552,10 @@ function replaceFile(at, text) {
   check('theirs_in_the_file', storedBox('Sheet').instructions.includes(' theirs'), storedBox('Sheet'));
   await page.waitForTimeout(1000);
   await shot('unsent-words-stand');
-  check('unsent_words_stand', (await sheetText.innerText()).includes('mine again'), await sheetText.innerText());
+  check('typed_words_kept', (await sheetText.innerText()).includes(' again'), await sheetText.innerText());
   theirsIn();
   await page.unroute('**/v1/projects/*/assets/Sheet', late);
-  await until('mine saved over theirs', () => Promise.resolve(storedBox('Sheet')?.instructions), (words) => words?.includes(' mine again'));
+  await until('theirs and mine merged', () => Promise.resolve(storedBox('Sheet')?.instructions), (words) => words?.includes(' theirs') && words.includes(' again') && !words.includes(' mine'));
   check('nothing_asked', (await box('Sheet').locator('button:has-text("Keep mine")').count()) === 0);
 
   // A caret never rests in a name, where what's typed goes nowhere: a click on one puts it just after, and what's typed there is saved there.
