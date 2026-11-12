@@ -3,7 +3,7 @@
 # sdxl and birefnet (packages repo) are local stubs under typings/.
 mypy
 cryptography
-cozy-runtime==0.45.0
+cozy-runtime @ git+https://github.com/cozy-creator/cozy-runtime@490b9f592dc812630818ee86375df434c33accba
 msgspec
 numpy
 pillow
