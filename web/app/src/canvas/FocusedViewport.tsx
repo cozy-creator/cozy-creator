@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef } from "react"
+import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { useCanvasStore, useElement } from "./context"
 import { FocusedCard } from "./Card"
 import { Icon } from "../ui/Icon"
@@ -61,11 +61,18 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
   }, [name, store, onCopyVersion])
   // Made, its file still on its way here: it says so as a render on its way does.
   const arriving = useArriving(view)
+  // A render on its way says how between its name and its picture, large, and covers none of it (Paul, 11-12).
+  const onItsWay = view?.asset?.standing === "making" || Boolean(view?.queued) || view?.asked !== undefined
+  const above = (onItsWay || arriving !== undefined) && view?.asset?.rendering == null
+  // Its lines gone, their room stays till Focus leaves the box: what was made lands where it was being made (Paul, 11-12, cl-907).
+  const [room, setRoom] = useState<{ name: string; height: number } | null>(null)
+  useLayoutEffect(() => {
+    const height = above ? element.current?.querySelector<HTMLElement>(":scope > .run-face.above")?.offsetHeight : undefined
+    if (height && (room?.name !== name || room.height !== height)) setRoom({ name, height })
+  })
   if (!view?.asset && !view?.entity) return null
   const version = shownOf(view)?.number
   const writing = Boolean(view.hereWords) && !watched(view)
-  // A render on its way says how between its name and its picture, large, and covers none of it (Paul, 11-12).
-  const onItsWay = view.asset?.standing === "making" || Boolean(view.queued) || view.asked !== undefined
   // What its runs said (a slow run, a hot GPU: cl-913), as an open box's head says it: a ! that shows the lines.
   const warnings = view.warnings ?? []
   return (
@@ -95,7 +102,7 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
         </div>
         <button type="button" className="iconb" aria-label="Close focus" title="Close focus" onClick={onClose}><Icon name="close" /></button>
       </header>
-      {(onItsWay || arriving !== undefined) && view.asset?.rendering == null && <RunFace view={view} name={name} number={onItsWay ? makingRun(view) : arriving} full above />}
+      {above ? <RunFace view={view} name={name} number={onItsWay ? makingRun(view) : arriving} full above /> : room?.name === name && <div className="run-face-room" style={{ height: room.height, flex: "none" }} aria-hidden="true" />}
       {view.warned && warnings.length > 0 && (
         <div className="warned-lines focus-warnings">
           {warnings.map((warning) => (

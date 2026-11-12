@@ -387,7 +387,10 @@ function PickUp({ view, name }: { view: ElementView; name: string }) {
 function OrbitToggle({ view, name }: { view: ElementView; name: string }) {
   const store = useCanvasStore()
   const shown = shownOf(view)
-  if (!shown || shown.field !== "video" || view.hereWords || !view.asset) return null
+  if (view.hereWords || !view.asset) return null
+  // A take on its way that the frame looks at: its row is kept for it, so the take lands where it was being made (Paul, 11-12, cl-907).
+  if (!shown) return watched(view) ? <label className="row orbit-toggle" aria-hidden="true" style={{ visibility: "hidden" }}><input type="checkbox" tabIndex={-1} disabled /><span>Orbit</span></label> : null
+  if (shown.field !== "video") return null
   const on = Boolean(orbitOf(shown))
   const which = shown.number === undefined ? name : `${view.asset.noun} ${shown.number} of ${name}`
   const flip = (want: boolean) => {
