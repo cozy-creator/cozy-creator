@@ -71,7 +71,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
 use tokio::sync::{Notify, broadcast};
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::{
     api::{Api, Refusal, parse},
@@ -866,6 +866,7 @@ fn sync_jobs(project: &Project, run: impl Fn(u64) -> Option<Run>) -> Result<(), 
     });
     let going = going.collect();
     let sent: HashSet<&str> = walk.pending.iter().map(|(key, pending)| pending.job_of(key)).collect();
+    let now = now_ms();
     let coming = (graph.open_jobs().into_iter())
         .filter(|&id| !sent.contains(graph.jobs[id].key.as_str()))
         .map(|id| {
@@ -878,12 +879,15 @@ fn sync_jobs(project: &Project, run: impl Fn(u64) -> Option<Run>) -> Result<(), 
                 waits => format!("after {}", waits.join(", ")),
             };
             let placed = walker.placed.get(&job.key);
+            // Its turn come, held for a machine on its way that finishes it sooner (cl-915): `waits for pluto, ready in about 2 min`.
+            let held = placed.filter(|_| waits.is_empty()).and_then(|placed| Some((placed.soonest.waits_for(now)?, placed.soonest.machine.to_string())));
             let row = Job {
                 id: job.key.clone(),
                 asset: job.asset.clone(),
                 noun: noun(Some(job)).into(),
                 needs: waits.iter().map(|name| (*name).to_owned()).collect(),
-                why: Some(why),
+                why: Some(held.as_ref().map_or(why, |(said, _)| said.clone())),
+                machine: held.map(|(_, machine)| machine),
                 gpus: placed.map(|placed| placed.soonest.width).filter(|width| *width > 0),
                 starts_at_ms: placed.map(|placed| placed.soonest.start_at_ms),
                 ends_at_ms: placed.map(|placed| placed.soonest.finish_at_ms),
@@ -3451,12 +3455,20 @@ impl Walk {
         said.into_iter().for_each(|line| warn!("{}: {line}", self.folder().dir.display()));
         let now = now_ms();
         let mut walker = self.project.walker.lock().expect("walker lock");
-        walker.placed = (jobs.into_iter().zip(offers))
+        let placed: HashMap<String, Placed> = (jobs.into_iter().zip(offers))
             .filter_map(|(job, offers)| {
                 let soonest = placement::soonest(&offers, now)?.clone();
                 Some((job.key, Placed { offers, soonest }))
             })
             .collect();
+        // Where each job goes, said when that changes: what placement weighed, for anyone asking why a job went where it did.
+        for (key, now_placed) in &placed {
+            if walker.placed.get(key).is_none_or(|was| was.soonest.machine != now_placed.soonest.machine) {
+                let quoted: Vec<String> = now_placed.offers.iter().map(|offer| placement::said(offer, now)).collect();
+                info!("{}: {key} goes to {}: {}", self.folder().dir.display(), now_placed.soonest.machine, quoted.join("; "));
+            }
+        }
+        walker.placed = placed;
         walker.quoted_at = Some(Instant::now());
     }
 

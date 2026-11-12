@@ -818,6 +818,9 @@ pub struct MachineEstimate {
     /// How many runs start there before it.
     pub queue_position: u32,
     pub basis: crate::machine::Basis,
+    /// A machine on its way (a rental booting or ordered): when it should serve, part of `start_ms` (cl-915).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ready_ms: Option<u64>,
 }
 
 /// One event of a run's stream.

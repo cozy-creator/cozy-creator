@@ -627,6 +627,8 @@ pub struct RentalPlacementMachine {
     pub fast: Option<bool>,
     /// Cost per run against the cheapest machine's (1).
     pub run_cost: Option<f64>,
+    /// How long a rental of it took from its order to serving, the median of its recent boots; none from a Hub that keeps none.
+    pub boot_seconds: Option<f64>,
 }
 
 /// A machine that cannot hold the run, and why.
@@ -796,6 +798,52 @@ pub struct RentalBoot {
     pub observed_at: String,
     pub replanned_from: Option<ReplannedBoot>,
     pub pull: Option<RentalPull>,
+    /// When its Hub expects it to serve, by its provider and card's recent boots from the phase it is in; none without them.
+    pub expected_ready_at: Option<String>,
+    /// How many boots that stands on.
+    pub expected_samples: Option<u32>,
+}
+
+/// A function's recent run times on rented cards (`GET /v1/run-times`), as their renters reported them.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct RunTimes {
+    pub function: String,
+    #[serde(deserialize_with = "null_is_empty")]
+    pub skus: Vec<SkuRunTimes>,
+}
+
+/// One product at one GPU count: its newest runs of the function.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct SkuRunTimes {
+    pub sku: String,
+    pub accelerator_count: u32,
+    #[serde(deserialize_with = "null_is_empty")]
+    pub runs: Vec<RunTime>,
+}
+
+/// One run of a published function on a rental (`POST /v1/rentals/{id}/run-times`).
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct RunTime {
+    /// `org/package/function`
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub function: String,
+    pub release: String,
+    /// The GPUs it ran on.
+    pub width: u32,
+    pub size: crate::machine::JobSize,
+    /// Its callable's time.
+    pub execution_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub measured_at: Option<String>,
+}
+
+/// Runs of a rental, reported to its Hub.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct RunTimesReport {
+    pub runs: Vec<RunTime>,
 }
 
 /// The image pull as the provider's boot log measured it: the layers in flight, not the image.

@@ -102,6 +102,10 @@ async fn priced_scoped(api: &Arc<Api>, ask: RunRequest) -> Result<Option<RunQuot
             Prepared::Install(_) => unreachable!("a published target installs nothing first"),
         },
     };
+    // A `new` run that a machine up or on its way finishes sooner goes there, and rents nothing (cl-915).
+    if !matches!(bound.on, On::New(_)) {
+        return Ok(None);
+    }
     api.machines.hubs.client(&bound.hub)?;
     Ok(Some(api.machines.run_quote(&bound).await?))
 }
@@ -138,7 +142,7 @@ async fn estimate_asked(api: &Arc<Api>, key: &str, ask: &RunRequest, copies: Cop
     let mut machines: Vec<MachineEstimate> = shown.collect();
     machines.sort_by_key(|machine| (machine.job, !machine.fits, machine.finish_ms));
     if machines.is_empty() {
-        notes.push(Note { level: NoteLevel::Warning, message: format!("{} quotes nothing: only a machine that is up does", submit.on) });
+        notes.push(Note { level: NoteLevel::Warning, message: format!("{} quotes nothing: only a machine up or on its way does", submit.on) });
     }
     // Where it would go, if that machine can run it at all.
     let soonest = match &submit.on {
@@ -479,6 +483,8 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
         _ => (false, 1),
     };
     let mut offers = vec![];
+    // Placed among machines here rather than named: one of several, or a `new` run a machine up or on its way finishes sooner.
+    let mut placed = set.len() > 1;
     match &resolved {
         Resolved::Release { package, card, .. } if set.len() > 1 || estimates => {
             let (chosen, offered, said) = crate::project::run_on(api, &set, &hub, package, &card.release, &callable.name, size, gpus, needs_gpu, count, !estimates).await;
@@ -490,8 +496,20 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
                     Err(_) if estimates => on,
                     Err(e) => return Err(e),
                 };
+                // Held for a machine on its way that finishes it sooner, it says so (cl-915).
+                let now = crate::store::now_ms();
+                let waits = offered.first().and_then(|offers| offers.iter().find(|offer| offer.machine == on)).and_then(|offer| offer.waits_for(now));
+                notes.extend(waits.map(|message| Note { level: NoteLevel::Info, message: format!("{named}: {message}") }));
             }
             offers = offered;
+        }
+        Resolved::Release { package, card, .. } if matches!(on, On::New(None)) => {
+            let run = Weighed { hub: &hub, package, release: &card.release, function: &callable.name, spec: &submit.spec, size, gpus, gpu: needs_gpu };
+            if let Some((machine, said, offered)) = instead_of_renting(api, run).await {
+                // Not what was asked: said as a warning, which every client shows.
+                notes.push(Note { level: NoteLevel::Warning, message: format!("{named}: {said}") });
+                (on, offers, placed) = (machine, offered, true);
+            }
         }
         Resolved::Local { local, .. } if estimates => {
             let function = format!("{}/{}", local.source.manifest, callable.name);
@@ -519,7 +537,7 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
         }
     }
     // The machine placement chose, on this cozy's minor likewise.
-    if let (On::Machine(machine), For::Run, true) = (&submit.on, purpose, set.len() > 1) {
+    if let (On::Machine(machine), For::Run, true) = (&submit.on, purpose, placed) {
         match api.machines.current(machine).await {
             Ok(Some(update)) => return Ok(Prepared::Install(update)),
             Err(e) if e.code == crate::update::OTHER_MINOR => return Err(e),
@@ -531,6 +549,49 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
         notes.push(Note { level: NoteLevel::Warning, message: moved.clone() });
     }
     Ok(Prepared::Run { submit, notes, offers })
+}
+
+/// A published function's run asked `--on new`, as placement weighs it.
+struct Weighed<'a> {
+    hub: &'a str,
+    package: &'a str,
+    release: &'a str,
+    function: &'a str,
+    spec: &'a v1::RunSpec,
+    size: v1::JobSize,
+    gpus: u32,
+    gpu: bool,
+}
+
+/// Where a `new` run goes instead of a rental (cl-915, Paul 11-12): the soonest finish of this controller's rentals up or on their way
+/// and the computers added here, when it is sooner than a new rental's boot, preparation and run on the card its Hub would place it on;
+/// what it says of that, and the offers. None: it rents. This computer's machine isn't weighed: a run asked to rent wants a rented GPU.
+async fn instead_of_renting(api: &Arc<Api>, run: Weighed<'_>) -> Option<(On, String, Vec<Vec<crate::placement::Offer>>)> {
+    let list = api.machines.list(false).await.ok()?;
+    let set: Vec<On> = list.render_set().into_iter().filter(|on| !on.is_local()).collect();
+    if set.is_empty() {
+        return None;
+    }
+    let (chosen, offers, _) = crate::project::run_on(api, &set, run.hub, run.package, run.release, run.function, run.size, run.gpus, run.gpu, 1, false).await;
+    let chosen = chosen.ok()?;
+    let offer = offers.first()?.iter().find(|offer| offer.machine == chosen && offer.fits)?.clone();
+    let rental = api.machines.new_rental(run.hub, run.spec).await.ok()?;
+    let way = crate::rentals::OnItsWay { ready_at_ms: 0, sku: rental.sku.clone(), card: rental.card.clone(), gpus: rental.gpus };
+    let target = format!("{}/{}", run.package, run.function);
+    let (one_ms, _) = crate::coming::card_time(api, run.hub, &way, &target, &run.size).await;
+    let prepare_ms = api::estimate::prepare_ms(false, rental.weight_bytes, api::estimate::LINK, 0.0);
+    let now = crate::store::now_ms();
+    let new_finish = now + rental.boot_ms + (prepare_ms + one_ms) as i64;
+    if offer.finish_at_ms >= new_finish {
+        return None;
+    }
+    let (here, there) = (crate::placement::within(offer.finish_at_ms - now), crate::placement::within(new_finish - now));
+    let card = rental.card.to_uppercase();
+    let said = match offer.waits_for(now) {
+        Some(waits) => format!("{chosen}, on its way, finishes it {here}, a new {card} {there}: it {waits}, and nothing is rented"),
+        None => format!("{chosen} finishes it {here}, a new {card} {there}: it goes there, and nothing is rented"),
+    };
+    Some((chosen, said, offers))
 }
 
 /// Where a run goes (cl-873): the machines it names, else `unnamed_set`.
