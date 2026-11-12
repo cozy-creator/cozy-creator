@@ -1,6 +1,7 @@
 // Deleting is a trash can; ✕ only closes (cl-939, Paul 11-12: "if you want a delete button it should probably be a trash can icon ... This can
-// be undone with the undo history"), in a real browser on a real Calcifer. A video with two takes, watched in Focus: its take's discard is a
-// trash can, discards the take, and Undo brings it back; Focus's close is ✕. On the canvas, a box's delete is a trash can.
+// be undone with the undo history"), in a real browser on a real Calcifer. A video with two takes, playing in Focus: its player stops by a
+// stop square, not ✕; the playing take's discard is a trash can, discards it, and Undo brings it back; Focus's close is ✕. On the canvas, a
+// box's delete is a trash can.
 //   node trash.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER.
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots. Prints what it saw as JSON and exits 1
 // if anything failed.
@@ -86,7 +87,19 @@ async function died(why) {
   const close = await focus.locator('button[aria-label="Close focus"] svg').getAttribute('data-icon');
   seen.focus_close = close;
   check('focus_close_is_x', close === 'close', close);
-  const [first, second] = await takes();
+  // Playing, its player stops by a stop square, not ✕.
+  await focus.locator('video').first().evaluate((video) => video.play().catch(() => {})).catch(() => {});
+  await page.waitForTimeout(500);
+  const stop = focus.locator('button[aria-label="Stop"]').first();
+  const stopIcon = await stop.locator('svg').getAttribute('data-icon').catch(() => null);
+  const stopTitle = await stop.getAttribute('title').catch(() => null);
+  seen.stop = { icon: stopIcon, title: stopTitle };
+  check('the_players_stop_is_a_stop_square', stopIcon === 'stop' && stopTitle === 'Stop', seen.stop);
+
+  // The take playing is the one deleted: by its trash can, and Undo brings it back.
+  const playing = Number(await focus.locator('.take.on[data-take]').first().getAttribute('data-take', { timeout: 5_000 }).catch(() => null)) || Math.max(...(await takes()));
+  const second = playing;
+  seen.playing_take = { playing, paused: await focus.locator('video').first().evaluate((video) => video.paused).catch(() => null) };
   const tile = focus.locator(`.take[data-take="${second}"]`).first();
   await tile.hover();
   const discard = focus.locator(`button[aria-label="Discard take ${second}"]`).first();
@@ -99,7 +112,7 @@ async function died(why) {
   await discard.click();
   const after = await until('the take discarded', takes, (numbers) => numbers.length === 1).catch(() => takes());
   seen.after_discard = after;
-  check('it_discards_the_take', after.length === 1 && after[0] === first, after);
+  check('it_discards_the_playing_take', after.length === 1 && !after.includes(second), after);
 
   // Undo brings it back.
   await page.locator('button[aria-label="Undo"]').first().click();

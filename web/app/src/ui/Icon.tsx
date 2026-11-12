@@ -23,6 +23,7 @@ const STROKES = {
 
 const FILLS = {
   play: "M6.5 4.3v11.4c0 .5.6.8 1 .5l8.8-5.7c.4-.3.4-.8 0-1L7.5 3.8c-.4-.3-1 0-1 .5z",
+  stop: "M6 5h8c.6 0 1 .4 1 1v8c0 .6-.4 1-1 1H6c-.6 0-1-.4-1-1V6c0-.6.4-1 1-1z",
 } as const
 
 export type IconName = keyof typeof STROKES | keyof typeof FILLS

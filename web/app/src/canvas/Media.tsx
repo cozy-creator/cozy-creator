@@ -459,8 +459,9 @@ export function Player({ field, path, machine, seek, auto, onTime }: { field: st
           if (path !== undefined && el?.getAttribute("src") && el.error?.code !== MediaError.MEDIA_ERR_NETWORK && stream.health.get().state === "live") setState("unplayable")
         }}
       />
-      <button type="button" className="stop nodrag" aria-label="Stop" onClick={() => stopRef.current()}>
-        <Icon name="close" />
+      {/* A stop, not ✕: in a corner ✕ reads as close or delete (Paul, 11-12). */}
+      <button type="button" className="stop nodrag" aria-label="Stop" title="Stop" onClick={() => stopRef.current()}>
+        <Icon name="stop" />
       </button>
     </>
   )
